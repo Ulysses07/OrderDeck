@@ -14,4 +14,6 @@ public sealed record Customer(
     int TrustScore,
     bool IsBlacklisted,
     string? BlacklistReason,
-    string? Notes);
+    string? Notes,
+    int TotalLabelsPrinted,
+    decimal TotalAmount);
