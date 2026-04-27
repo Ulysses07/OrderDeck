@@ -43,6 +43,15 @@ public sealed class SessionRepository
         return row is null ? null : Map(row);
     }
 
+    public StreamSession? GetById(string id)
+    {
+        using var conn = _factory.Open();
+        var row = conn.QueryFirstOrDefault<Row>(
+            "SELECT Id, Title, StartedAt, EndedAt, Platforms, Notes " +
+            "FROM StreamSession WHERE Id=@id", new { id });
+        return row is null ? null : Map(row);
+    }
+
     private static StreamSession Map(Row r) => new(
         r.Id, r.Title, r.StartedAt, r.EndedAt,
         JsonSerializer.Deserialize<string[]>(r.Platforms ?? "[]") ?? System.Array.Empty<string>(),
