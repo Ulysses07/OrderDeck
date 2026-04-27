@@ -1,0 +1,185 @@
+using System;
+using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Linq;
+using System.Windows;
+using System.Windows.Threading;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using LiveDeck.Core.Chat;
+using LiveDeck.Core.Sales;
+using LiveDeck.Core.Sessions;
+using LiveDeck.Labeling;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace LiveDeck.App.ViewModels;
+
+public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
+{
+    private readonly LabelService _labels;
+    private readonly StreamSessionService _sessions;
+    private readonly LabelPrinter _printer;
+    private readonly Dispatcher _dispatcher;
+    private readonly IDisposable _busSubscription;
+
+    private const int MaxChatMessages = 200;
+
+    /// <summary>Live merged chat (read-only in the UI; double-click adds to print queue).</summary>
+    public ObservableCollection<ChatMessage> ChatMessages { get; } = new();
+
+    /// <summary>Etiketler waiting to be printed.</summary>
+    public ObservableCollection<Label> PrintQueue { get; } = new();
+
+    [ObservableProperty] private string _activeCode = "";
+    [ObservableProperty] private string _activePriceText = "0";
+    [ObservableProperty] private string _streamStatusLabel = "Yayın aktif değil";
+
+    public MainShellViewModel(
+        IChatBus bus,
+        LabelService labels,
+        StreamSessionService sessions,
+        LabelPrinter printer)
+    {
+        _labels = labels;
+        _sessions = sessions;
+        _printer = printer;
+        _dispatcher = Dispatcher.CurrentDispatcher;
+        _busSubscription = bus.Subscribe(OnChatMessage);
+
+        UpdateStreamStatusLabel();
+        ReloadQueueFromActiveSession();
+    }
+
+    private void OnChatMessage(ChatMessage m)
+    {
+        _dispatcher.BeginInvoke(() =>
+        {
+            ChatMessages.Add(m);
+            while (ChatMessages.Count > MaxChatMessages) ChatMessages.RemoveAt(0);
+        });
+    }
+
+    private void UpdateStreamStatusLabel()
+    {
+        var session = _sessions.GetActive();
+        StreamStatusLabel = session is null
+            ? "Yayın aktif değil"
+            : $"Yayın aktif (başlangıç: {DateTimeOffset.FromUnixTimeSeconds(session.StartedAt):HH:mm})";
+    }
+
+    private void ReloadQueueFromActiveSession()
+    {
+        PrintQueue.Clear();
+        var session = _sessions.GetActive();
+        if (session is null) return;
+        foreach (var l in _labels.GetQueue(session.Id)) PrintQueue.Add(l);
+    }
+
+    [RelayCommand] private void StartStream()
+    {
+        if (_sessions.GetActive() is not null)
+        {
+            MessageBox.Show("Zaten aktif bir yayın var. Önce mevcut yayını bitir.",
+                "Yayın aktif", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        _sessions.Start("Yeni Yayın", new[] { "instagram" });
+        UpdateStreamStatusLabel();
+        ReloadQueueFromActiveSession();
+    }
+
+    [RelayCommand] private void EndStream()
+    {
+        var session = _sessions.GetActive();
+        if (session is null) return;
+
+        var confirm = MessageBox.Show("Yayını bitirmek istediğinden emin misin?",
+            "Yayını Bitir", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.Yes) return;
+
+        // Auto-print any unprinted labels before closing the session (decision B).
+        if (PrintQueue.Count > 0)
+        {
+            try { Print(); }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Yazdırma sırasında hata oluştu, yine de yayını bitiriyorum:\n{ex.Message}",
+                    "Yazdırma hatası", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        _sessions.End(session.Id);
+        UpdateStreamStatusLabel();
+
+        var dialog = App.Host.Services
+            .GetRequiredService<Views.StreamReportDialog>();
+        dialog.LoadReport(session.Id);
+        dialog.Owner = Application.Current?.MainWindow;
+        dialog.ShowDialog();
+    }
+
+    /// <summary>
+    /// Adds the chat message to the print queue with the *current* ActivePrice and ActiveCode.
+    /// Called from MainShellView's chat ListBox MouseDoubleClick handler.
+    /// </summary>
+    public void AddChatToQueue(ChatMessage message)
+    {
+        var session = _sessions.GetActive();
+        if (session is null)
+        {
+            MessageBox.Show("Önce yayın başlat.",
+                "Aktif yayın yok", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!TryParsePrice(ActivePriceText, out var price))
+        {
+            MessageBox.Show("Geçerli bir fiyat gir (örn: 100 veya 99.50).",
+                "Geçersiz fiyat", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var label = _labels.Add(session.Id, message, price,
+            string.IsNullOrWhiteSpace(ActiveCode) ? null : ActiveCode.Trim());
+        PrintQueue.Add(label);
+    }
+
+    [RelayCommand]
+    private void RemoveSelectedFromQueue(Label? selected)
+    {
+        if (selected is null) return;
+        _labels.Delete(selected.Id);
+        PrintQueue.Remove(selected);
+    }
+
+    [RelayCommand]
+    private void ClearQueue()
+    {
+        if (PrintQueue.Count == 0) return;
+        var confirm = MessageBox.Show($"Kuyruktaki {PrintQueue.Count} etiket silinecek. Emin misin?",
+            "Hepsini Temizle", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.Yes) return;
+
+        foreach (var label in PrintQueue.ToList()) _labels.Delete(label.Id);
+        PrintQueue.Clear();
+    }
+
+    [RelayCommand]
+    private void Print()
+    {
+        if (PrintQueue.Count == 0) return;
+
+        var snapshot = PrintQueue.ToList();
+        _printer.Print(snapshot);
+        _labels.MarkPrintedAndRecord(snapshot.Select(l => l.Id).ToList());
+        PrintQueue.Clear();
+    }
+
+    private static bool TryParsePrice(string text, out decimal price)
+    {
+        return decimal.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out price)
+            || decimal.TryParse(text, NumberStyles.Any, new CultureInfo("tr-TR"), out price);
+    }
+
+    public void Dispose() => _busSubscription.Dispose();
+}
