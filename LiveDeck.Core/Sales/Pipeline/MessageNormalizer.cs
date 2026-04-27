@@ -16,7 +16,7 @@ public sealed class MessageNormalizer
 {
     private static readonly Regex Whitespace = new(@"\s+", RegexOptions.Compiled);
     private static readonly Regex EmojiOrSymbol = new(
-        @"[\p{So}\p{Sk}\p{Sm}\p{Cs}\p{Cn}\p{Mn}\p{Cf}]+|[\uD800-\uDFFF]+",
+        @"[\p{So}\p{Sk}\p{Cs}\p{Cn}\p{Mn}\p{Cf}]+|[\uD800-\uDFFF]+",
         RegexOptions.Compiled);
 
     public string Normalize(string input)
