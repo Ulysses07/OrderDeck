@@ -30,20 +30,24 @@ public class SettingsStoreTests
         var original = new AppSettings
         {
             OverlayPort = 5000,
+            ChatTheme = "neon",
             CaptureOrderHotkey = "F8",
             ParserHighConfidence = 75,
             ParserLowConfidence = 40,
-            EtiketIntegrationEnabled = true
+            EtiketIntegrationEnabled = true,
+            EtiketWindowTitle = "MyLabelApp"
         };
 
         store.Save(original);
         var reloaded = store.Load();
 
         reloaded.OverlayPort.Should().Be(5000);
+        reloaded.ChatTheme.Should().Be("neon");
         reloaded.CaptureOrderHotkey.Should().Be("F8");
         reloaded.ParserHighConfidence.Should().Be(75);
         reloaded.ParserLowConfidence.Should().Be(40);
         reloaded.EtiketIntegrationEnabled.Should().BeTrue();
+        reloaded.EtiketWindowTitle.Should().Be("MyLabelApp");
 
         File.Delete(path);
     }
