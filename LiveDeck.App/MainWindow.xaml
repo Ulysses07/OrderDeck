@@ -8,7 +8,7 @@
 
     <Window.Resources>
         <DataTemplate DataType="{x:Type vm:OrderQueueViewModel}">
-            <TextBlock Text="(Order queue panel — Task 33)" FontSize="16" Foreground="#FFAAAAAA" />
+            <views:OrderQueueView />
         </DataTemplate>
         <DataTemplate DataType="{x:Type vm:ActiveCodesViewModel}">
             <views:ActiveCodesView />
