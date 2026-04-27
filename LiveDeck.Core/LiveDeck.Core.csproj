@@ -8,6 +8,10 @@
     <WarningsNotAsErrors>CS1591</WarningsNotAsErrors>
   </PropertyGroup>
   <ItemGroup>
+    <EmbeddedResource Include="Storage\Migrations\*.sql" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Dapper" Version="2.1.35" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.0" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.0" />
