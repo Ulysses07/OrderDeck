@@ -5,8 +5,6 @@ using LiveDeck.Chat.Ingestors;
 using LiveDeck.Core;
 using LiveDeck.Core.Chat;
 using LiveDeck.Core.Customers;
-using LiveDeck.Core.Sales;
-using LiveDeck.Core.Sales.Pipeline;
 using LiveDeck.Core.Sessions;
 using LiveDeck.Core.Settings;
 using LiveDeck.Core.Storage;
@@ -55,24 +53,11 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<IDbConnectionFactory>(_ => new SqliteConnectionFactory(AppPaths.DatabaseFile));
         services.AddSingleton<MigrationRunner>();
         services.AddSingleton<SessionRepository>();
-        services.AddSingleton<ActiveCodeRepository>();
-        services.AddSingleton<OrderRepository>();
         services.AddSingleton<CustomerRepository>();
 
         // Domain services
         services.AddSingleton<StreamSessionService>();
-        services.AddSingleton<ActiveCodeService>();
         services.AddSingleton<CustomerService>();
-
-        // Capture pipeline
-        services.AddSingleton<MessageNormalizer>();
-        services.AddSingleton<CodeMatcher>();
-        services.AddSingleton<VariantExtractor>();
-        services.AddSingleton<QuantityExtractor>();
-        services.AddSingleton<IntentScorer>();
-        services.AddSingleton<ConfidenceScorer>();
-        services.AddSingleton<OrderCaptureEngine>();
-        services.AddSingleton<OrderService>();
 
         // Chat plumbing
         services.AddSingleton<IChatBus>(_ => new ChatBus(ringBufferSize: 200));
