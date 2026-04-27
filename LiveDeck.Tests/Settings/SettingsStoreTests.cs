@@ -17,9 +17,10 @@ public class SettingsStoreTests
         var settings = store.Load();
 
         settings.OverlayPort.Should().Be(4747);
-        settings.CaptureOrderHotkey.Should().Be("F9");
-        settings.ParserHighConfidence.Should().Be(80);
-        settings.ParserLowConfidence.Should().Be(50);
+        settings.LabelWidthMm.Should().Be(60);
+        settings.LabelHeightMm.Should().Be(30);
+        settings.LabelFontFamily.Should().Be("Arial");
+        settings.PrinterName.Should().BeNull();
     }
 
     [Fact]
@@ -31,11 +32,15 @@ public class SettingsStoreTests
         {
             OverlayPort = 5000,
             ChatTheme = "neon",
-            CaptureOrderHotkey = "F8",
             ParserHighConfidence = 75,
             ParserLowConfidence = 40,
-            EtiketIntegrationEnabled = true,
-            EtiketWindowTitle = "MyLabelApp"
+            PrinterName = "Zebra ZD220",
+            LabelWidthMm = 75,
+            LabelHeightMm = 40,
+            LabelGapMm = 3,
+            LabelFontFamily = "Segoe UI",
+            LabelUserFontSize = 16,
+            LabelMessageFontSize = 13
         };
 
         store.Save(original);
@@ -43,11 +48,15 @@ public class SettingsStoreTests
 
         reloaded.OverlayPort.Should().Be(5000);
         reloaded.ChatTheme.Should().Be("neon");
-        reloaded.CaptureOrderHotkey.Should().Be("F8");
         reloaded.ParserHighConfidence.Should().Be(75);
         reloaded.ParserLowConfidence.Should().Be(40);
-        reloaded.EtiketIntegrationEnabled.Should().BeTrue();
-        reloaded.EtiketWindowTitle.Should().Be("MyLabelApp");
+        reloaded.PrinterName.Should().Be("Zebra ZD220");
+        reloaded.LabelWidthMm.Should().Be(75);
+        reloaded.LabelHeightMm.Should().Be(40);
+        reloaded.LabelGapMm.Should().Be(3);
+        reloaded.LabelFontFamily.Should().Be("Segoe UI");
+        reloaded.LabelUserFontSize.Should().Be(16);
+        reloaded.LabelMessageFontSize.Should().Be(13);
 
         File.Delete(path);
     }
