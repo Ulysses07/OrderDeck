@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            width: 280px;
+            padding: 16px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+        }
+        .header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+        .logo {
+            width: 32px;
+            height: 32px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 14px;
+        }
+        .title {
+            font-size: 16px;
+            font-weight: 600;
+        }
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px;
+            background: #16213e;
+            border-radius: 8px;
+            margin-bottom: 12px;
+        }
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #ef4444;
+        }
+        .status-dot.connected {
+            background: #22c55e;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .status-text {
+            font-size: 13px;
+            color: #aaa;
+        }
+        .info {
+            font-size: 12px;
+            color: #666;
+            line-height: 1.5;
+        }
+        .info p {
+            margin-bottom: 8px;
+        }
+        .info strong {
+            color: #888;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="logo">LD</div>
+        <div class="title">LiveDeck Chat Bridge</div>
+    </div>
+
+    <div class="status">
+        <div class="status-dot" id="statusDot"></div>
+        <div class="status-text" id="statusText">Checking connection...</div>
+    </div>
+
+    <div class="info">
+        <p><strong>Usage:</strong></p>
+        <p>1. Start the LiveDeck application</p>
+        <p>2. Open an Instagram Live page</p>
+        <p>3. Chat messages are forwarded automatically</p>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+</html>
