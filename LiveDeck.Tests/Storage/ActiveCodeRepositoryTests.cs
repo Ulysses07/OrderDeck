@@ -16,7 +16,7 @@ public class ActiveCodeRepositoryTests
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
 
-        var sessionRepo = new SessionRepositoryStub(db);
+        var sessionRepo = new SessionRepository(db);
         var sessionId = "session-1";
         sessionRepo.Insert(new StreamSession(sessionId, null, 100, null, new[] { "instagram" }, null));
 
@@ -78,20 +78,5 @@ public class ActiveCodeRepositoryTests
         repo.End("c1", endedAt: 300);
 
         repo.GetActiveBySession(sessionId).Should().BeEmpty();
-    }
-}
-
-internal sealed class SessionRepositoryStub
-{
-    private readonly InMemorySqlite _db;
-    public SessionRepositoryStub(InMemorySqlite db) => _db = db;
-
-    public void Insert(StreamSession s)
-    {
-        using var conn = _db.Open();
-        Dapper.SqlMapper.Execute(conn,
-            "INSERT INTO StreamSession(Id, Title, StartedAt, EndedAt, Platforms, Notes) " +
-            "VALUES(@Id, @Title, @StartedAt, @EndedAt, @Platforms, @Notes)",
-            new { s.Id, s.Title, s.StartedAt, s.EndedAt, Platforms = "[\"instagram\"]", s.Notes });
     }
 }
