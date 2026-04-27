@@ -14,7 +14,7 @@
             <views:ActiveCodesView />
         </DataTemplate>
         <DataTemplate DataType="{x:Type vm:ChatPanelViewModel}">
-            <TextBlock Text="(Chat panel — Task 34)" FontSize="16" Foreground="#FFAAAAAA" />
+            <views:ChatPanelView />
         </DataTemplate>
     </Window.Resources>
 
