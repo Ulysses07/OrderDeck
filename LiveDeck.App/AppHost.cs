@@ -5,11 +5,13 @@ using LiveDeck.Chat.Ingestors;
 using LiveDeck.Core;
 using LiveDeck.Core.Chat;
 using LiveDeck.Core.Customers;
+using LiveDeck.Core.Sales;
 using LiveDeck.Core.Sessions;
 using LiveDeck.Core.Settings;
 using LiveDeck.Core.Storage;
 using LiveDeck.Core.Storage.Repositories;
 using LiveDeck.Core.Time;
+using LiveDeck.Labeling;
 using LiveDeck.Overlay;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -42,11 +44,9 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<ILoggerFactory>(_ => new SerilogLoggerFactory(_serilog, dispose: false));
         services.AddSingleton(typeof(ILogger<>), typeof(Logger<>));
 
-        // Settings
+        // Settings + time
         services.AddSingleton(new SettingsStore(AppPaths.SettingsFile));
         services.AddSingleton(sp => sp.GetRequiredService<SettingsStore>().Load());
-
-        // Time
         services.AddSingleton<IClock, SystemClock>();
 
         // Storage
@@ -54,37 +54,41 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<MigrationRunner>();
         services.AddSingleton<SessionRepository>();
         services.AddSingleton<CustomerRepository>();
+        services.AddSingleton<LabelRepository>();
 
-        // Domain services
+        // Domain
         services.AddSingleton<StreamSessionService>();
         services.AddSingleton<CustomerService>();
+        services.AddSingleton<LabelService>();
 
-        // Chat plumbing
+        // Chat plumbing (unchanged from P1)
         services.AddSingleton<IChatBus>(_ => new ChatBus(ringBufferSize: 200));
-        services.AddSingleton(sp =>
-        {
-            return new ExtensionBridgeServer(
-                sp.GetRequiredService<IChatBus>(),
-                port: 4748,
-                log: sp.GetRequiredService<ILogger<ExtensionBridgeServer>>());
-        });
+        services.AddSingleton(sp => new ExtensionBridgeServer(
+            sp.GetRequiredService<IChatBus>(),
+            port: 4748,
+            log: sp.GetRequiredService<ILogger<ExtensionBridgeServer>>()));
         services.AddSingleton<InstagramIngestor>();
 
-        // Overlay
-        services.AddSingleton(sp =>
-        {
-            var settings = sp.GetRequiredService<AppSettings>();
-            return new OverlayHost(
-                sp.GetRequiredService<IChatBus>(),
-                port: settings.OverlayPort,
-                log: sp.GetRequiredService<ILogger<OverlayHost>>());
-        });
+        // Overlay (unchanged from P1)
+        services.AddSingleton(sp => new OverlayHost(
+            sp.GetRequiredService<IChatBus>(),
+            port: sp.GetRequiredService<AppSettings>().OverlayPort,
+            log: sp.GetRequiredService<ILogger<OverlayHost>>()));
+
+        // Printing
+        services.AddSingleton(sp => new LabelPrinter(
+            sp.GetRequiredService<AppSettings>(),
+            sp.GetRequiredService<ILogger<LabelPrinter>>()));
+
+        // ViewModels + dialogs
+        services.AddSingleton<ViewModels.MainShellViewModel>();
+        services.AddTransient<ViewModels.StreamReportViewModel>();
+        services.AddTransient<Views.StreamReportDialog>();
 
         Services = services.BuildServiceProvider();
 
         // Apply migrations once at boot
         Services.GetRequiredService<MigrationRunner>().Run();
-
     }
 
     public void Dispose()
