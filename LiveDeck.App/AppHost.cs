@@ -80,17 +80,6 @@ public sealed class AppHost : IDisposable
                 log: sp.GetRequiredService<ILogger<OverlayHost>>());
         });
 
-        // ViewModels
-        services.AddSingleton<ViewModels.MainViewModel>();
-        services.AddSingleton<ViewModels.ActiveCodesViewModel>();
-        services.AddSingleton<ViewModels.OrderQueueViewModel>();
-        services.AddSingleton<ViewModels.ChatPanelViewModel>();
-
-        services.AddSingleton<Services.ClipboardService>();
-        services.AddSingleton<Services.HotkeyService>();
-        services.AddSingleton<Services.EtiketIntegration>();
-        services.AddSingleton<LiveDeck.Labeling.ClipboardLabelFormatter>();
-
         Services = services.BuildServiceProvider();
 
         // Apply migrations once at boot

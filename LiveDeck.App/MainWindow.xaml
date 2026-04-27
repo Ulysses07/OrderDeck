@@ -1,44 +1,11 @@
 <Window x:Class="LiveDeck.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:vm="clr-namespace:LiveDeck.App.ViewModels"
-        xmlns:views="clr-namespace:LiveDeck.App.Views"
         Title="LiveDeck" Height="800" Width="1280"
         Background="#FF1A1A1A" Foreground="White">
-
-    <Window.Resources>
-        <DataTemplate DataType="{x:Type vm:OrderQueueViewModel}">
-            <views:OrderQueueView />
-        </DataTemplate>
-        <DataTemplate DataType="{x:Type vm:ActiveCodesViewModel}">
-            <views:ActiveCodesView />
-        </DataTemplate>
-        <DataTemplate DataType="{x:Type vm:ChatPanelViewModel}">
-            <views:ChatPanelView />
-        </DataTemplate>
-    </Window.Resources>
-
     <Grid>
-        <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="220"/>
-            <ColumnDefinition Width="*"/>
-        </Grid.ColumnDefinitions>
-
-        <!-- Sidebar -->
-        <StackPanel Grid.Column="0" Background="#FF111111" >
-            <TextBlock Text="LiveDeck" FontSize="22" FontWeight="Bold"
-                       Foreground="#FFFFD166" Margin="20,20,20,30"/>
-
-            <Button Content="Sipariş Kuyruğu" Command="{Binding NavigateToOrdersCommand}"
-                    Style="{DynamicResource SidebarButton}" />
-            <Button Content="Aktif Kodlar"   Command="{Binding NavigateToActiveCodesCommand}"
-                    Style="{DynamicResource SidebarButton}" />
-            <Button Content="Chat"           Command="{Binding NavigateToChatCommand}"
-                    Style="{DynamicResource SidebarButton}" />
-        </StackPanel>
-
-        <ContentControl Grid.Column="1"
-                        Content="{Binding CurrentView}"
-                        Margin="20"/>
+        <TextBlock Text="LiveDeck"
+                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                   FontSize="32" Foreground="#FF555555"/>
     </Grid>
 </Window>
