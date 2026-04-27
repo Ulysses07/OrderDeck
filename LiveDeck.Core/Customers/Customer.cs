@@ -1,0 +1,17 @@
+namespace LiveDeck.Core.Customers;
+
+public sealed record Customer(
+    string Id,
+    string Platform,
+    string Username,
+    string? DisplayName,
+    string? AvatarUrl,
+    long FirstSeenAt,
+    long LastSeenAt,
+    int TotalOrders,
+    int CompletedOrders,
+    int CancelledOrders,
+    int TrustScore,
+    bool IsBlacklisted,
+    string? BlacklistReason,
+    string? Notes);
