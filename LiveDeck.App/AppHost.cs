@@ -101,10 +101,15 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<ViewModels.OrderQueueViewModel>();
         services.AddSingleton<ViewModels.ChatPanelViewModel>();
 
+        services.AddSingleton<Services.OrderCaptureWiring>();
+
         Services = services.BuildServiceProvider();
 
         // Apply migrations once at boot
         Services.GetRequiredService<MigrationRunner>().Run();
+
+        // Force-create singletons so they start running even before any window opens
+        _ = Services.GetRequiredService<Services.OrderCaptureWiring>();
     }
 
     public void Dispose()
