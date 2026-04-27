@@ -12,7 +12,5 @@
   <ItemGroup>
     <ProjectReference Include="..\LiveDeck.Core\LiveDeck.Core.csproj" />
   </ItemGroup>
-  <ItemGroup>
-    <Content Include="wwwroot\**\*.*" CopyToOutputDirectory="PreserveNewest" />
-  </ItemGroup>
+
 </Project>

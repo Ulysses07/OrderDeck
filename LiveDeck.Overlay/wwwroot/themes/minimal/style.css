@@ -1,0 +1,64 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100vw;
+  height: 100vh;
+  background: transparent;
+  font-family: 'Segoe UI', Roboto, system-ui, sans-serif;
+  color: #fff;
+  overflow: hidden;
+}
+
+#chat-container {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 100vh;
+  overflow: hidden;
+}
+
+.chat-message {
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(8px);
+  border-radius: 12px;
+  padding: 10px 14px;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  animation: slide-in 0.25s ease-out;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+
+.chat-message .platform-badge {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.chat-message .platform-badge.instagram {
+  background: linear-gradient(45deg, #f09433, #e6683c, #dc2743, #cc2366, #bc1888);
+}
+
+.chat-message .body { flex: 1; min-width: 0; }
+.chat-message .username { font-weight: 700; font-size: 14px; color: #ffd166; }
+.chat-message .text {
+  font-size: 16px; line-height: 1.4;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.chat-message.fade-out { animation: fade-out 0.4s ease-in forwards; }
+@keyframes fade-out {
+  to { opacity: 0; transform: translateY(-4px); }
+}
