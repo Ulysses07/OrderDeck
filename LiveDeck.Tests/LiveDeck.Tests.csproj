@@ -28,9 +28,4 @@
     <ProjectReference Include="..\LiveDeck.Labeling\LiveDeck.Labeling.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <None Update="Sales\Fixtures\tr_chat_samples.json">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-  </ItemGroup>
 </Project>

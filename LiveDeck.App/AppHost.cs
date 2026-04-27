@@ -101,7 +101,6 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<ViewModels.OrderQueueViewModel>();
         services.AddSingleton<ViewModels.ChatPanelViewModel>();
 
-        services.AddSingleton<Services.OrderCaptureWiring>();
         services.AddSingleton<Services.ClipboardService>();
         services.AddSingleton<Services.HotkeyService>();
         services.AddSingleton<Services.EtiketIntegration>();
@@ -112,8 +111,6 @@ public sealed class AppHost : IDisposable
         // Apply migrations once at boot
         Services.GetRequiredService<MigrationRunner>().Run();
 
-        // Force-create singletons so they start running even before any window opens
-        _ = Services.GetRequiredService<Services.OrderCaptureWiring>();
     }
 
     public void Dispose()
