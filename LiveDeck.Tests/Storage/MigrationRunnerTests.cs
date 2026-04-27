@@ -9,7 +9,7 @@ namespace LiveDeck.Tests.Storage;
 public class MigrationRunnerTests
 {
     [Fact]
-    public void Run_creates_all_six_tables_and_meta()
+    public void Run_creates_label_and_customer_aggregates_at_version_2()
     {
         using var db = new InMemorySqlite();
         var runner = new MigrationRunner(db);
@@ -22,12 +22,19 @@ public class MigrationRunnerTests
 
         tables.Should().Contain(new[]
         {
-            "ActiveCode", "Customer", "Giveaway", "GiveawayParticipant",
-            "OrderItem", "Settings", "StreamSession", "_meta"
+            "Customer", "Label", "Settings", "StreamSession", "_meta"
+        });
+        tables.Should().NotContain(new[]
+        {
+            "ActiveCode", "OrderItem", "Giveaway", "GiveawayParticipant"
         });
 
         var version = conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().Be(1);
+        version.Should().Be(2);
+
+        var customerColumns = conn.Query<string>(
+            "SELECT name FROM pragma_table_info('Customer')").AsList();
+        customerColumns.Should().Contain(new[] { "TotalLabelsPrinted", "TotalAmount" });
     }
 
     [Fact]
@@ -37,10 +44,10 @@ public class MigrationRunnerTests
         var runner = new MigrationRunner(db);
 
         runner.Run();
-        runner.Run();   // second call must not throw
+        runner.Run();   // second call must not throw or duplicate columns
 
         using var conn = db.Open();
         var version = conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().Be(1);
+        version.Should().Be(2);
     }
 }
