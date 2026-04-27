@@ -15,18 +15,21 @@ public sealed class CustomerRepository
             @"INSERT INTO Customer
               (Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
                TotalOrders, CompletedOrders, CancelledOrders, TrustScore,
-               IsBlacklisted, BlacklistReason, Notes)
+               IsBlacklisted, BlacklistReason, Notes,
+               TotalLabelsPrinted, TotalAmount)
               VALUES
               (@Id, @Platform, @Username, @DisplayName, @AvatarUrl, @FirstSeenAt, @LastSeenAt,
                @TotalOrders, @CompletedOrders, @CancelledOrders, @TrustScore,
-               @IsBlacklisted, @BlacklistReason, @Notes)",
+               @IsBlacklisted, @BlacklistReason, @Notes,
+               @TotalLabelsPrinted, @TotalAmount)",
             new
             {
                 c.Id, c.Platform, c.Username, c.DisplayName, c.AvatarUrl,
                 c.FirstSeenAt, c.LastSeenAt,
                 c.TotalOrders, c.CompletedOrders, c.CancelledOrders, c.TrustScore,
                 IsBlacklisted = c.IsBlacklisted ? 1 : 0,
-                c.BlacklistReason, c.Notes
+                c.BlacklistReason, c.Notes,
+                c.TotalLabelsPrinted, c.TotalAmount
             });
     }
 
@@ -48,23 +51,28 @@ public sealed class CustomerRepository
         return row is null ? null : Map(row);
     }
 
-    public void UpdateAggregates(string id, int totalOrders, int completedOrders,
-        int cancelledOrders, int trustScore, long lastSeenAt)
+    /// <summary>
+    /// Atomically bumps TotalLabelsPrinted by labelDelta, TotalAmount by amountDelta,
+    /// and refreshes LastSeenAt.
+    /// </summary>
+    public void IncrementLabelStats(string id, int labelDelta, decimal amountDelta, long lastSeenAt)
     {
         using var conn = _factory.Open();
         conn.Execute(
             @"UPDATE Customer
-              SET TotalOrders=@totalOrders, CompletedOrders=@completedOrders,
-                  CancelledOrders=@cancelledOrders, TrustScore=@trustScore, LastSeenAt=@lastSeenAt
-              WHERE Id=@id",
-            new { id, totalOrders, completedOrders, cancelledOrders, trustScore, lastSeenAt });
+              SET TotalLabelsPrinted = TotalLabelsPrinted + @labelDelta,
+                  TotalAmount        = TotalAmount + @amountDelta,
+                  LastSeenAt         = @lastSeenAt
+              WHERE Id = @id",
+            new { id, labelDelta, amountDelta, lastSeenAt });
     }
 
     private static Customer Map(Row r) => new(
         r.Id, r.Platform, r.Username, r.DisplayName, r.AvatarUrl,
         r.FirstSeenAt, r.LastSeenAt,
         r.TotalOrders, r.CompletedOrders, r.CancelledOrders, r.TrustScore,
-        r.IsBlacklisted == 1, r.BlacklistReason, r.Notes);
+        r.IsBlacklisted == 1, r.BlacklistReason, r.Notes,
+        r.TotalLabelsPrinted, r.TotalAmount);
 
     private sealed class Row
     {
@@ -82,5 +90,7 @@ public sealed class CustomerRepository
         public int IsBlacklisted { get; init; }
         public string? BlacklistReason { get; init; }
         public string? Notes { get; init; }
+        public int TotalLabelsPrinted { get; init; }
+        public decimal TotalAmount { get; init; }
     }
 }

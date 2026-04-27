@@ -36,8 +36,18 @@ public sealed class CustomerService
             TrustScore: 100,
             IsBlacklisted: false,
             BlacklistReason: null,
-            Notes: null);
+            Notes: null,
+            TotalLabelsPrinted: 0,
+            TotalAmount: 0m);
         _repo.Insert(customer);
         return customer;
+    }
+
+    /// <summary>
+    /// Increments label aggregate counters when one or more labels are printed.
+    /// </summary>
+    public void RecordPrintedLabels(string customerId, int labelCount, decimal amount)
+    {
+        _repo.IncrementLabelStats(customerId, labelCount, amount, _clock.UnixNow());
     }
 }
