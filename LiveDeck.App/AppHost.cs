@@ -95,6 +95,12 @@ public sealed class AppHost : IDisposable
                 log: sp.GetRequiredService<ILogger<OverlayHost>>());
         });
 
+        // ViewModels
+        services.AddSingleton<ViewModels.MainViewModel>();
+        services.AddSingleton<ViewModels.ActiveCodesViewModel>();
+        services.AddSingleton<ViewModels.OrderQueueViewModel>();
+        services.AddSingleton<ViewModels.ChatPanelViewModel>();
+
         Services = services.BuildServiceProvider();
 
         // Apply migrations once at boot
