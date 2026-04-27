@@ -42,6 +42,10 @@ public partial class MainWindow : Window
         var order = _orderQueue.Selected;
         if (order is null) return;
 
+        // Optional: write price into etiket.exe before clipboard
+        var etiket = App.Host.Services.GetRequiredService<EtiketIntegration>();
+        etiket.TrySetPrice(order.UnitPrice);
+
         var customer = _customers.GetById(order.CustomerId);
         var username = customer?.Username ?? "@unknown";
 

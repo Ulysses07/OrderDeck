@@ -104,6 +104,7 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<Services.OrderCaptureWiring>();
         services.AddSingleton<Services.ClipboardService>();
         services.AddSingleton<Services.HotkeyService>();
+        services.AddSingleton<Services.EtiketIntegration>();
         services.AddSingleton<LiveDeck.Labeling.ClipboardLabelFormatter>();
 
         Services = services.BuildServiceProvider();
