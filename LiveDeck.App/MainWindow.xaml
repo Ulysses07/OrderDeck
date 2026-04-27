@@ -2,6 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="clr-namespace:LiveDeck.App.ViewModels"
+        xmlns:views="clr-namespace:LiveDeck.App.Views"
         Title="LiveDeck" Height="800" Width="1280"
         Background="#FF1A1A1A" Foreground="White">
 
@@ -10,7 +11,7 @@
             <TextBlock Text="(Order queue panel — Task 33)" FontSize="16" Foreground="#FFAAAAAA" />
         </DataTemplate>
         <DataTemplate DataType="{x:Type vm:ActiveCodesViewModel}">
-            <TextBlock Text="(Active codes panel — Task 32)" FontSize="16" Foreground="#FFAAAAAA" />
+            <views:ActiveCodesView />
         </DataTemplate>
         <DataTemplate DataType="{x:Type vm:ChatPanelViewModel}">
             <TextBlock Text="(Chat panel — Task 34)" FontSize="16" Foreground="#FFAAAAAA" />
