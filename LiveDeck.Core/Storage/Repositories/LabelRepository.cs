@@ -95,6 +95,25 @@ public sealed class LabelRepository
         return rows.Select(r => new TopCustomer(r.Username, r.Platform, r.LabelCount, r.TotalAmount)).ToList();
     }
 
+    /// <summary>Returns labels for a customer, most recent first. Empty list if none.</summary>
+    public IReadOnlyList<CustomerLabelRow> GetByCustomer(string customerId)
+    {
+        using var conn = _factory.Open();
+        var rows = conn.Query<(string Id, string SessionId, string MessageText, string? Code,
+                                decimal Price, long AddedAt, long? PrintedAt)>(
+            @"SELECT Id, SessionId, MessageText, Code, Price, AddedAt, PrintedAt
+              FROM Label
+              WHERE CustomerId=@customerId
+              ORDER BY AddedAt DESC",
+            new { customerId });
+
+        return rows
+            .Select(r => new CustomerLabelRow(
+                r.Id, r.SessionId, r.MessageText, r.Code, r.Price, r.AddedAt,
+                IsPrinted: r.PrintedAt is not null))
+            .ToList();
+    }
+
     private static Label Map(Row r) =>
         new(r.Id, r.SessionId, r.CustomerId, r.Platform, r.Username, r.MessageText,
             r.Code, r.Price, r.AddedAt, r.PrintedAt);
@@ -131,3 +150,13 @@ public sealed class LabelRepository
 
 public sealed record SessionTotals(int PrintedCount, decimal TotalAmount, int UniqueCustomers);
 public sealed record TopCustomer(string Username, string Platform, int LabelCount, decimal TotalAmount);
+
+/// <summary>UI projection of a Label for the customer detail dialog.</summary>
+public sealed record CustomerLabelRow(
+    string Id,
+    string SessionId,
+    string MessageText,
+    string? Code,
+    decimal Price,
+    long AddedAt,
+    bool IsPrinted);

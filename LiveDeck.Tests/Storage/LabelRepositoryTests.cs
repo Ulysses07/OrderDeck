@@ -111,4 +111,32 @@ public class LabelRepositoryTests
         top[1].Username.Should().Be("@a");
         top[1].LabelCount.Should().Be(2);
     }
+
+    [Fact]
+    public void GetByCustomer_returns_labels_ordered_by_recent_for_only_that_customer()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        new SessionRepository(db).Insert(
+            new StreamSession("s1", null, 100, null, new[] { "instagram" }, null));
+        var customerRepo = new CustomerRepository(db);
+        customerRepo.Insert(new Customer("c-A", "instagram", "@ali",  null, null, 100, 100,
+            false, null, null, 0, 0m, null));
+        customerRepo.Insert(new Customer("c-B", "instagram", "@veli", null, null, 100, 100,
+            false, null, null, 0, 0m, null));
+        var repo = new LabelRepository(db);
+
+        repo.Insert(new Label("l1", "s1", "c-A", "instagram", "@ali",  "kazak", "K01", 100m, AddedAt: 100, PrintedAt: 110));
+        repo.Insert(new Label("l2", "s1", "c-A", "instagram", "@ali",  "ceket", "C02", 250m, AddedAt: 200, PrintedAt: null));
+        repo.Insert(new Label("l3", "s1", "c-B", "instagram", "@veli", "etek",  null,  150m, AddedAt: 150, PrintedAt: 160));
+
+        var rows = repo.GetByCustomer("c-A");
+        rows.Should().HaveCount(2);
+        rows[0].Id.Should().Be("l2");
+        rows[0].IsPrinted.Should().BeFalse();
+        rows[1].Id.Should().Be("l1");
+        rows[1].IsPrinted.Should().BeTrue();
+
+        repo.GetByCustomer("c-X").Should().BeEmpty();
+    }
 }
