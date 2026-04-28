@@ -12,8 +12,7 @@ public class CustomerRepositoryTests
     private static Customer NewCustomer(string id = "c1") =>
         new(id, "instagram", "@ayse_y", "Ayşe", null,
             FirstSeenAt: 1000, LastSeenAt: 1000,
-            TotalOrders: 0, CompletedOrders: 0, CancelledOrders: 0,
-            TrustScore: 100, IsBlacklisted: false, BlacklistReason: null, Notes: null,
+            IsBlacklisted: false, BlacklistReason: null, Notes: null,
             TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null);
 
     [Fact]

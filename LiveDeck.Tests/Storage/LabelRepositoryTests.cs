@@ -19,7 +19,7 @@ public class LabelRepositoryTests
         new SessionRepository(db).Insert(
             new StreamSession("s1", null, 100, null, new[] { "instagram" }, null));
         new CustomerRepository(db).Insert(
-            new Customer("c1", "instagram", "@a", null, null, 100, 100, 0, 0, 0, 100,
+            new Customer("c1", "instagram", "@a", null, null, 100, 100,
                 false, null, null, 0, 0m, BlacklistedAt: null));
 
         return (db, new LabelRepository(db), "s1", "c1");
@@ -93,9 +93,9 @@ public class LabelRepositoryTests
 
         var customers = new CustomerRepository(db);
         customers.Insert(new Customer("c2", "instagram", "@b", null, null,
-            100, 100, 0, 0, 0, 100, false, null, null, 0, 0m, BlacklistedAt: null));
+            100, 100, false, null, null, 0, 0m, BlacklistedAt: null));
         customers.Insert(new Customer("c3", "instagram", "@c", null, null,
-            100, 100, 0, 0, 0, 100, false, null, null, 0, 0m, BlacklistedAt: null));
+            100, 100, false, null, null, 0, 0m, BlacklistedAt: null));
 
         repo.Insert(MakeLabel("l1", sid, "c1", price: 100m, printedAt: 500));
         repo.Insert(MakeLabel("l2", sid, "c1", price: 100m, printedAt: 500));

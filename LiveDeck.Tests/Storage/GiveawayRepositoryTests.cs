@@ -20,7 +20,7 @@ public class GiveawayRepositoryTests
         new SessionRepository(db).Insert(
             new StreamSession("s1", null, 100, null, new[] { "instagram" }, null));
         new CustomerRepository(db).Insert(
-            new Customer("c1", "instagram", "@a", null, null, 100, 100, 0, 0, 0, 100,
+            new Customer("c1", "instagram", "@a", null, null, 100, 100,
                 false, null, null, 0, 0m, null));
 
         return (db, new GiveawayRepository(db), "s1", "c1");
@@ -157,7 +157,7 @@ public class GiveawayRepositoryTests
         using var _ = db;
 
         new CustomerRepository(db).Insert(
-            new Customer("c2", "instagram", "@b", null, null, 100, 100, 0, 0, 0, 100,
+            new Customer("c2", "instagram", "@b", null, null, 100, 100,
                 false, null, null, 0, 0m, null));
 
         repo.Insert(NewGiveaway("g1") with { EndedAt = 500 });

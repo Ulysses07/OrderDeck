@@ -124,7 +124,7 @@ public class GiveawayServiceTests
         var c = customers.FindByPlatformAndUsername("instagram", "@bad")
                 ?? new Customer(System.Guid.NewGuid().ToString("N"),
                     "instagram", "@bad", null, null, 100, 100,
-                    0, 0, 0, 100, false, null, null, 0, 0m, null);
+                    false, null, null, 0, 0m, null);
         if (customers.GetById(c.Id) is null) customers.Insert(c);
         customers.UpdateBlacklist(c.Id, true, "test", 999);
 

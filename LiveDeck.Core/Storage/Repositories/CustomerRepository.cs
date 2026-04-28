@@ -16,19 +16,16 @@ public sealed class CustomerRepository
         conn.Execute(
             @"INSERT INTO Customer
               (Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
-               TotalOrders, CompletedOrders, CancelledOrders, TrustScore,
                IsBlacklisted, BlacklistReason, Notes,
                TotalLabelsPrinted, TotalAmount, BlacklistedAt)
               VALUES
               (@Id, @Platform, @Username, @DisplayName, @AvatarUrl, @FirstSeenAt, @LastSeenAt,
-               @TotalOrders, @CompletedOrders, @CancelledOrders, @TrustScore,
                @IsBlacklisted, @BlacklistReason, @Notes,
                @TotalLabelsPrinted, @TotalAmount, @BlacklistedAt)",
             new
             {
                 c.Id, c.Platform, c.Username, c.DisplayName, c.AvatarUrl,
                 c.FirstSeenAt, c.LastSeenAt,
-                c.TotalOrders, c.CompletedOrders, c.CancelledOrders, c.TrustScore,
                 IsBlacklisted = c.IsBlacklisted ? 1 : 0,
                 c.BlacklistReason, c.Notes,
                 c.TotalLabelsPrinted, c.TotalAmount, c.BlacklistedAt
@@ -97,7 +94,6 @@ public sealed class CustomerRepository
     private static Customer Map(Row r) => new(
         r.Id, r.Platform, r.Username, r.DisplayName, r.AvatarUrl,
         r.FirstSeenAt, r.LastSeenAt,
-        r.TotalOrders, r.CompletedOrders, r.CancelledOrders, r.TrustScore,
         r.IsBlacklisted == 1, r.BlacklistReason, r.Notes,
         r.TotalLabelsPrinted, r.TotalAmount, r.BlacklistedAt);
 
@@ -110,10 +106,6 @@ public sealed class CustomerRepository
         public string? AvatarUrl { get; init; }
         public long FirstSeenAt { get; init; }
         public long LastSeenAt { get; init; }
-        public int TotalOrders { get; init; }
-        public int CompletedOrders { get; init; }
-        public int CancelledOrders { get; init; }
-        public int TrustScore { get; init; }
         public int IsBlacklisted { get; init; }
         public string? BlacklistReason { get; init; }
         public string? Notes { get; init; }
