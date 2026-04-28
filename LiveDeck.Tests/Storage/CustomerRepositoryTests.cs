@@ -1,3 +1,4 @@
+using System.Linq;
 using FluentAssertions;
 using LiveDeck.Core.Customers;
 using LiveDeck.Core.Storage;
@@ -108,5 +109,52 @@ public class CustomerRepositoryTests
         list.Should().HaveCount(2);
         list[0].Id.Should().Be("c3");
         list[1].Id.Should().Be("c1");
+    }
+
+    [Fact]
+    public void UpdateNotes_sets_notes_or_normalizes_whitespace_to_null()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+        var c = new Customer("c-1", "instagram", "@ali", "Ali", null,
+            FirstSeenAt: 100, LastSeenAt: 100,
+            IsBlacklisted: false, BlacklistReason: null, Notes: null,
+            TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null);
+        repo.Insert(c);
+
+        repo.UpdateNotes("c-1", "VIP müşteri");
+        repo.GetById("c-1")!.Notes.Should().Be("VIP müşteri");
+
+        repo.UpdateNotes("c-1", "   ");
+        repo.GetById("c-1")!.Notes.Should().BeNull();
+
+        repo.UpdateNotes("c-1", null);
+        repo.GetById("c-1")!.Notes.Should().BeNull();
+    }
+
+    [Fact]
+    public void Search_returns_matching_customers_ordered_by_last_seen()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+
+        repo.Insert(new Customer("c-1", "instagram", "@ali",     "Ali", null,
+            100, 200, false, null, null, 0, 0m, null));
+        repo.Insert(new Customer("c-2", "instagram", "@alican",  "Alican", null,
+            100, 300, false, null, null, 0, 0m, null));
+        repo.Insert(new Customer("c-3", "tiktok",    "@veli",    "Veli", null,
+            100, 400, false, null, null, 0, 0m, null));
+
+        var results = repo.Search("ali", limit: 50);
+        results.Select(c => c.Id).Should().Equal(new[] { "c-2", "c-1" });
+
+        repo.Search("ALI", limit: 50).Select(c => c.Id)
+            .Should().Equal(new[] { "c-2", "c-1" });
+
+        repo.Search("xyz", limit: 50).Should().BeEmpty();
+
+        repo.Search("ali", limit: 1).Should().HaveCount(1);
     }
 }

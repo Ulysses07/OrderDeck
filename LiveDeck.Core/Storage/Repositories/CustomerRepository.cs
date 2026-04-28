@@ -91,6 +91,31 @@ public sealed class CustomerRepository
         return rows.Select(Map).ToList();
     }
 
+    /// <summary>Updates only the Notes column. Whitespace input normalizes to NULL.</summary>
+    public void UpdateNotes(string customerId, string? notes)
+    {
+        using var conn = _factory.Open();
+        conn.Execute(
+            "UPDATE Customer SET Notes=@notes WHERE Id=@id",
+            new { id = customerId, notes = string.IsNullOrWhiteSpace(notes) ? null : notes.Trim() });
+    }
+
+    /// <summary>Case-insensitive substring search on Username, ordered by LastSeenAt DESC.</summary>
+    public IReadOnlyList<Customer> Search(string usernameContains, int limit = 50)
+    {
+        if (string.IsNullOrWhiteSpace(usernameContains))
+            return System.Array.Empty<Customer>();
+
+        using var conn = _factory.Open();
+        var rows = conn.Query<Row>(
+            @"SELECT * FROM Customer
+              WHERE LOWER(Username) LIKE LOWER(@q)
+              ORDER BY LastSeenAt DESC
+              LIMIT @limit",
+            new { q = "%" + usernameContains + "%", limit }).ToList();
+        return rows.Select(Map).ToList();
+    }
+
     private static Customer Map(Row r) => new(
         r.Id, r.Platform, r.Username, r.DisplayName, r.AvatarUrl,
         r.FirstSeenAt, r.LastSeenAt,
