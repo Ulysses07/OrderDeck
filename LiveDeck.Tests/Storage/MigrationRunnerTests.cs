@@ -9,7 +9,7 @@ namespace LiveDeck.Tests.Storage;
 public class MigrationRunnerTests
 {
     [Fact]
-    public void Run_creates_label_aggregates_blacklist_at_version_3()
+    public void Run_creates_all_tables_at_version_4()
     {
         using var db = new InMemorySqlite();
         var runner = new MigrationRunner(db);
@@ -19,14 +19,27 @@ public class MigrationRunnerTests
         using var conn = db.Open();
         var tables = conn.Query<string>(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").AsList();
-        tables.Should().Contain(new[] { "Customer", "Label", "Settings", "StreamSession", "_meta" });
+        tables.Should().Contain(new[]
+        {
+            "Customer", "Giveaway", "GiveawayParticipant", "Label",
+            "Settings", "StreamSession", "_meta"
+        });
 
         var version = conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().Be(3);
+        version.Should().Be(4);
 
         var customerColumns = conn.Query<string>(
             "SELECT name FROM pragma_table_info('Customer')").AsList();
         customerColumns.Should().Contain(new[] { "TotalLabelsPrinted", "TotalAmount", "BlacklistedAt" });
+
+        var giveawayColumns = conn.Query<string>(
+            "SELECT name FROM pragma_table_info('Giveaway')").AsList();
+        giveawayColumns.Should().Contain(new[]
+        {
+            "Id", "SessionId", "Keyword", "DurationSeconds", "WinnerCount",
+            "PlatformFilter", "PreventRewinning", "RandomSeed",
+            "StartedAt", "EndedAt", "CancelledAt"
+        });
     }
 
     [Fact]
@@ -40,6 +53,6 @@ public class MigrationRunnerTests
 
         using var conn = db.Open();
         var version = conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().Be(3);
+        version.Should().Be(4);
     }
 }
