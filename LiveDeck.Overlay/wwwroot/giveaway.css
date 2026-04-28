@@ -1,0 +1,87 @@
+html, body {
+  margin: 0; padding: 0;
+  background: transparent;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  color: #ffffff;
+  overflow: hidden;
+  height: 100%;
+}
+
+.hidden { display: none !important; }
+.fade-out { opacity: 0; transition: opacity 0.6s ease-out; }
+
+#giveaway-root {
+  position: absolute; left: 24px; top: 24px;
+  min-width: 360px;
+  background: rgba(15, 17, 24, 0.85);
+  border-radius: 12px;
+  padding: 16px 20px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(8px);
+}
+
+#header {
+  display: flex; align-items: center; gap: 12px;
+  font-size: 22px; font-weight: 600;
+}
+#emoji { font-size: 28px; }
+#keyword { color: #ffce46; }
+#counter { margin-left: auto; font-size: 16px; opacity: 0.85; }
+#countdown { font-variant-numeric: tabular-nums; font-size: 18px; color: #4dd0ff; }
+
+#roulette {
+  margin-top: 16px;
+  font-size: 36px; font-weight: 700;
+  text-align: center;
+  padding: 18px;
+  background: linear-gradient(135deg, #ff6b9d, #ffce46);
+  border-radius: 8px;
+  color: #0f1118;
+  text-shadow: 0 1px 0 rgba(255,255,255,0.4);
+  animation: pulse 0.4s ease-in-out infinite alternate;
+}
+
+@keyframes pulse {
+  from { transform: scale(1.0); }
+  to   { transform: scale(1.04); }
+}
+
+#reveal {
+  margin-top: 16px;
+}
+#reveal-title {
+  font-size: 14px; letter-spacing: 4px;
+  color: #ffce46;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+#winners-list {
+  list-style: none; margin: 0; padding: 0;
+}
+.winner {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 26px; font-weight: 600;
+  padding: 8px 0;
+  animation: slideIn 0.4s ease-out both;
+}
+.winner:nth-child(2) { animation-delay: 0.1s; }
+.winner:nth-child(3) { animation-delay: 0.2s; }
+.winner:nth-child(n+4) { animation-delay: 0.3s; }
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(-20px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+.platform-instagram, .platform-tiktok { font-size: 22px; }
+
+.confetti {
+  position: fixed; top: -10px;
+  width: 10px; height: 14px;
+  pointer-events: none;
+  animation: confetti-fall linear forwards;
+  z-index: 999;
+}
+@keyframes confetti-fall {
+  to { transform: translateY(110vh) rotate(720deg); opacity: 0.2; }
+}

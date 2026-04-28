@@ -13,4 +13,14 @@
     <ProjectReference Include="..\LiveDeck.Core\LiveDeck.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Copy wwwroot to consumers' bin/wwwroot. The Web SDK adds Content items by default;
+         we only override metadata so they propagate into the WPF App's output folder
+         (OverlayHost reads files via AppContext.BaseDirectory at runtime). -->
+    <Content Update="wwwroot\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
 </Project>
