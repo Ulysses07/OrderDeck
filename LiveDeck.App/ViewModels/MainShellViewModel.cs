@@ -6,9 +6,12 @@ using System.Windows;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using LiveDeck.App.Views;
 using LiveDeck.Core.Chat;
+using LiveDeck.Core.Customers;
 using LiveDeck.Core.Sales;
 using LiveDeck.Core.Sessions;
+using LiveDeck.Core.Storage.Repositories;
 using LiveDeck.Labeling;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -19,16 +22,15 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private readonly LabelService _labels;
     private readonly StreamSessionService _sessions;
     private readonly LabelPrinter _printer;
+    private readonly CustomerService _customers;
+    private readonly CustomerRepository _customerRepo;
     private readonly Dispatcher _dispatcher;
     private readonly IDisposable _busSubscription;
 
     private const int MaxChatMessages = 200;
 
-    /// <summary>Live merged chat (read-only in the UI; double-click adds to print queue).</summary>
-    public ObservableCollection<ChatMessage> ChatMessages { get; } = new();
-
-    /// <summary>Etiketler waiting to be printed.</summary>
-    public ObservableCollection<Label> PrintQueue { get; } = new();
+    public ObservableCollection<ChatMessageViewModel> ChatMessages { get; } = new();
+    public ObservableCollection<LabelViewModel>       PrintQueue   { get; } = new();
 
     [ObservableProperty] private string _activeCode = "";
     [ObservableProperty] private string _activePriceText = "0";
@@ -38,11 +40,15 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         IChatBus bus,
         LabelService labels,
         StreamSessionService sessions,
-        LabelPrinter printer)
+        LabelPrinter printer,
+        CustomerService customers,
+        CustomerRepository customerRepo)
     {
         _labels = labels;
         _sessions = sessions;
         _printer = printer;
+        _customers = customers;
+        _customerRepo = customerRepo;
         _dispatcher = Dispatcher.CurrentDispatcher;
         _busSubscription = bus.Subscribe(OnChatMessage);
 
@@ -54,7 +60,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     {
         _dispatcher.BeginInvoke(() =>
         {
-            ChatMessages.Add(m);
+            var customer = _customerRepo.FindByPlatformAndUsername(m.Platform, m.Username);
+            var blacklisted = customer?.IsBlacklisted ?? false;
+            ChatMessages.Add(new ChatMessageViewModel(m, blacklisted));
             while (ChatMessages.Count > MaxChatMessages) ChatMessages.RemoveAt(0);
         });
     }
@@ -72,7 +80,11 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         PrintQueue.Clear();
         var session = _sessions.GetActive();
         if (session is null) return;
-        foreach (var l in _labels.GetQueue(session.Id)) PrintQueue.Add(l);
+        foreach (var l in _labels.GetQueue(session.Id))
+        {
+            var customer = _customerRepo.GetById(l.CustomerId);
+            PrintQueue.Add(new LabelViewModel(l, customer?.IsBlacklisted ?? false));
+        }
     }
 
     [RelayCommand] private void StartStream()
@@ -83,7 +95,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
                 "Yayın aktif", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
-        _sessions.Start("Yeni Yayın", new[] { "instagram" });
+        _sessions.Start("Yeni Yayın", new[] { "instagram", "tiktok" });
         UpdateStreamStatusLabel();
         ReloadQueueFromActiveSession();
     }
@@ -97,7 +109,6 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             "Yayını Bitir", MessageBoxButton.YesNo, MessageBoxImage.Question);
         if (confirm != MessageBoxResult.Yes) return;
 
-        // Auto-print any unprinted labels before closing the session (decision B).
         if (PrintQueue.Count > 0)
         {
             try { Print(); }
@@ -111,18 +122,13 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _sessions.End(session.Id);
         UpdateStreamStatusLabel();
 
-        var dialog = App.Host.Services
-            .GetRequiredService<Views.StreamReportDialog>();
+        var dialog = App.Host.Services.GetRequiredService<StreamReportDialog>();
         dialog.LoadReport(session.Id);
         dialog.Owner = Application.Current?.MainWindow;
         dialog.ShowDialog();
     }
 
-    /// <summary>
-    /// Adds the chat message to the print queue with the *current* ActivePrice and ActiveCode.
-    /// Called from MainShellView's chat ListBox MouseDoubleClick handler.
-    /// </summary>
-    public void AddChatToQueue(ChatMessage message)
+    public void AddChatToQueue(ChatMessageViewModel messageVm)
     {
         var session = _sessions.GetActive();
         if (session is null)
@@ -139,13 +145,13 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             return;
         }
 
-        var label = _labels.Add(session.Id, message, price,
+        var label = _labels.Add(session.Id, messageVm.Message, price,
             string.IsNullOrWhiteSpace(ActiveCode) ? null : ActiveCode.Trim());
-        PrintQueue.Add(label);
+        PrintQueue.Add(new LabelViewModel(label, messageVm.IsSenderBlacklisted));
     }
 
     [RelayCommand]
-    private void RemoveSelectedFromQueue(Label? selected)
+    private void RemoveSelectedFromQueue(LabelViewModel? selected)
     {
         if (selected is null) return;
         _labels.Delete(selected.Id);
@@ -160,7 +166,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             "Hepsini Temizle", MessageBoxButton.YesNo, MessageBoxImage.Question);
         if (confirm != MessageBoxResult.Yes) return;
 
-        foreach (var label in PrintQueue.ToList()) _labels.Delete(label.Id);
+        foreach (var item in PrintQueue.ToList()) _labels.Delete(item.Id);
         PrintQueue.Clear();
     }
 
@@ -168,11 +174,81 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private void Print()
     {
         if (PrintQueue.Count == 0) return;
-
-        var snapshot = PrintQueue.ToList();
+        var snapshot = PrintQueue.Select(vm => vm.Label).ToList();
         _printer.Print(snapshot);
         _labels.MarkPrintedAndRecord(snapshot.Select(l => l.Id).ToList());
         PrintQueue.Clear();
+    }
+
+    [RelayCommand] private void OpenSettings()
+    {
+        var dlg = App.Host.Services.GetRequiredService<SettingsDialog>();
+        dlg.Owner = Application.Current?.MainWindow;
+        dlg.ShowDialog();
+        RefreshHighlights();
+    }
+
+    [RelayCommand] private void OpenStreamHistory()
+    {
+        var dlg = App.Host.Services.GetRequiredService<StreamHistoryDialog>();
+        dlg.Owner = Application.Current?.MainWindow;
+        dlg.ShowDialog();
+    }
+
+    [RelayCommand] private void OpenBlacklist()
+    {
+        var dlg = App.Host.Services.GetRequiredService<BlacklistDialog>();
+        dlg.Owner = Application.Current?.MainWindow;
+        dlg.ShowDialog();
+        RefreshHighlights();
+    }
+
+    [RelayCommand]
+    private void AddChatSenderToBlacklist(ChatMessageViewModel? msg)
+    {
+        if (msg is null) return;
+        var dlg = new AddToBlacklistDialog
+        {
+            Mode = AddToBlacklistDialog.DialogMode.Prefilled,
+            UsernameText = msg.Username,
+            PlatformText = msg.Platform
+        };
+        dlg.Owner = Application.Current?.MainWindow;
+        if (dlg.ShowDialog() != true) return;
+
+        _customers.EnsureBlacklistedManual(msg.Platform, msg.Username, dlg.ReasonText);
+        RefreshHighlights();
+    }
+
+    [RelayCommand]
+    private void AddQueueRowToBlacklist(LabelViewModel? row)
+    {
+        if (row is null) return;
+        var dlg = new AddToBlacklistDialog
+        {
+            Mode = AddToBlacklistDialog.DialogMode.Prefilled,
+            UsernameText = row.Username,
+            PlatformText = row.Label.Platform
+        };
+        dlg.Owner = Application.Current?.MainWindow;
+        if (dlg.ShowDialog() != true) return;
+
+        _customers.EnsureBlacklistedManual(row.Label.Platform, row.Username, dlg.ReasonText);
+        RefreshHighlights();
+    }
+
+    private void RefreshHighlights()
+    {
+        foreach (var vm in ChatMessages)
+        {
+            var c = _customerRepo.FindByPlatformAndUsername(vm.Platform, vm.Username);
+            vm.IsSenderBlacklisted = c?.IsBlacklisted ?? false;
+        }
+        foreach (var vm in PrintQueue)
+        {
+            var c = _customerRepo.GetById(vm.CustomerId);
+            vm.IsCustomerBlacklisted = c?.IsBlacklisted ?? false;
+        }
     }
 
     private static bool TryParsePrice(string text, out decimal price)

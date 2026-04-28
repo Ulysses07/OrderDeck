@@ -5,8 +5,9 @@
              StartupUri="MainWindow.xaml">
     <Application.Resources>
         <ResourceDictionary>
-            <converters:NullToCollapsedConverter x:Key="NullToCollapsedConverter"/>
-            <converters:UnixToDateConverter      x:Key="UnixToDateConverter"/>
+            <converters:NullToCollapsedConverter   x:Key="NullToCollapsedConverter"/>
+            <converters:UnixToDateConverter        x:Key="UnixToDateConverter"/>
+            <converters:BlacklistToBrushConverter  x:Key="BlacklistToBrushConverter"/>
         </ResourceDictionary>
     </Application.Resources>
 </Application>

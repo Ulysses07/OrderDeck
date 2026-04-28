@@ -8,7 +8,7 @@
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <!-- Top bar: Code/Price + Start/End -->
+        <!-- Top bar -->
         <Grid Grid.Row="0" Margin="0,0,0,12">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto"/>
@@ -19,6 +19,7 @@
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
 
             <TextBlock Grid.Column="0" Text="Kod:" VerticalAlignment="Center" Margin="0,0,8,0"/>
@@ -27,12 +28,29 @@
 
             <TextBlock Grid.Column="3" Text="Fiyat:" VerticalAlignment="Center" Margin="0,0,8,0"/>
             <TextBox  Grid.Column="4" Text="{Binding ActivePriceText, UpdateSourceTrigger=PropertyChanged}"
-                      Padding="6" FontSize="14" />
+                      Padding="6" FontSize="14"/>
 
             <Button   Grid.Column="6" Content="Yayın Başlat"
                       Command="{Binding StartStreamCommand}" Padding="14,6" Margin="0,0,8,0"/>
             <Button   Grid.Column="7" Content="Yayını Bitir"
                       Command="{Binding EndStreamCommand}"   Padding="14,6"/>
+
+            <Button   Grid.Column="8" Content="⋮"
+                      x:Name="MenuButton"
+                      Click="OnMenuClick"
+                      Padding="10,6" Margin="8,0,0,0"
+                      FontSize="18" FontWeight="Bold">
+                <Button.ContextMenu>
+                    <ContextMenu x:Name="MainMenu">
+                        <MenuItem Header="Ayarlar"
+                                  Command="{Binding OpenSettingsCommand}"/>
+                        <MenuItem Header="Yayın Geçmişi"
+                                  Command="{Binding OpenStreamHistoryCommand}"/>
+                        <MenuItem Header="Kara Liste"
+                                  Command="{Binding OpenBlacklistCommand}"/>
+                    </ContextMenu>
+                </Button.ContextMenu>
+            </Button>
         </Grid>
 
         <!-- Status -->
@@ -61,17 +79,39 @@
                           MouseDoubleClick="ChatList_OnDoubleClick"
                           Background="#FF1A1A1A" Foreground="White"
                           BorderBrush="#FF333333" BorderThickness="1">
+                    <ListBox.ItemContainerStyle>
+                        <Style TargetType="ListBoxItem">
+                            <Setter Property="Background"
+                                    Value="{Binding IsSenderBlacklisted,
+                                                    Converter={StaticResource BlacklistToBrushConverter}}"/>
+                        </Style>
+                    </ListBox.ItemContainerStyle>
                     <ListBox.ItemTemplate>
                         <DataTemplate>
-                            <StackPanel Orientation="Horizontal" Margin="0,4">
-                                <TextBlock Text="{Binding Platform}" FontWeight="Bold"
-                                           Foreground="#FFFFD166" Width="80"/>
-                                <TextBlock Text="{Binding Username}" FontWeight="Bold"
-                                           Width="160" TextTrimming="CharacterEllipsis"/>
-                                <TextBlock Text="{Binding Text}" TextWrapping="Wrap"/>
-                            </StackPanel>
+                            <Grid Margin="0,4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="80"/>
+                                    <ColumnDefinition Width="160"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="{Binding Platform}"
+                                           FontWeight="Bold" Foreground="#FFFFD166"/>
+                                <TextBlock Grid.Column="1" Text="{Binding Username}"
+                                           FontWeight="Bold" TextTrimming="CharacterEllipsis"/>
+                                <TextBlock Grid.Column="2" Text="{Binding Text}"
+                                           TextWrapping="Wrap"/>
+                            </Grid>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
+                    <ListBox.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="Kara Listeye Al…"
+                                      Command="{Binding PlacementTarget.DataContext.AddChatSenderToBlacklistCommand,
+                                                        RelativeSource={RelativeSource Self}}"
+                                      CommandParameter="{Binding PlacementTarget.SelectedItem,
+                                                                 RelativeSource={RelativeSource Self}}"/>
+                        </ContextMenu>
+                    </ListBox.ContextMenu>
                 </ListBox>
             </Grid>
 
@@ -89,6 +129,13 @@
                          ItemsSource="{Binding PrintQueue}"
                          Background="#FF1A1A1A" Foreground="White"
                          BorderBrush="#FF333333" BorderThickness="1">
+                    <ListBox.ItemContainerStyle>
+                        <Style TargetType="ListBoxItem">
+                            <Setter Property="Background"
+                                    Value="{Binding IsCustomerBlacklisted,
+                                                    Converter={StaticResource BlacklistToBrushConverter}}"/>
+                        </Style>
+                    </ListBox.ItemContainerStyle>
                     <ListBox.ItemTemplate>
                         <DataTemplate>
                             <Grid Margin="0,4">
@@ -109,6 +156,15 @@
                             </Grid>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
+                    <ListBox.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="Kara Listeye Al…"
+                                      Command="{Binding PlacementTarget.DataContext.AddQueueRowToBlacklistCommand,
+                                                        RelativeSource={RelativeSource Self}}"
+                                      CommandParameter="{Binding PlacementTarget.SelectedItem,
+                                                                 RelativeSource={RelativeSource Self}}"/>
+                        </ContextMenu>
+                    </ListBox.ContextMenu>
                 </ListBox>
 
                 <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,12,0,0">
