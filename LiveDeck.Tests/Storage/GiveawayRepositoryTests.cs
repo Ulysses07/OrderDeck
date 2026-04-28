@@ -204,4 +204,37 @@ public class GiveawayRepositoryTests
         repo.GetParticipantCount("g1").Should().Be(2);
         repo.GetParticipantCount("g-nonexistent").Should().Be(0);
     }
+
+    [Fact]
+    public void GetParticipationsByCustomer_returns_history_with_status_flags()
+    {
+        var (db, repo, _, cid) = Fx();
+        using var _2 = db;
+
+        // g1: ended, customer won
+        repo.Insert(NewGiveaway("g1", "s1") with { EndedAt = 500 });
+        repo.AddParticipant(new GiveawayParticipant("p1", "g1", cid, "instagram", "@a", 300, IsWinner: true));
+
+        // g2: ended, customer participated but did not win
+        repo.Insert(NewGiveaway("g2", "s1") with { EndedAt = 600 });
+        repo.AddParticipant(new GiveawayParticipant("p2", "g2", cid, "instagram", "@a", 400, IsWinner: false));
+
+        // g3: cancelled
+        repo.Insert(NewGiveaway("g3", "s1") with { CancelledAt = 700 });
+        repo.AddParticipant(new GiveawayParticipant("p3", "g3", cid, "instagram", "@a", 500, IsWinner: false));
+
+        // g4: another customer's participation — must not appear
+        new CustomerRepository(db).Insert(new Customer("c-2", "instagram", "@other", null, null,
+            100, 100, false, null, null, 0, 0m, null));
+        repo.Insert(NewGiveaway("g4", "s1") with { EndedAt = 800 });
+        repo.AddParticipant(new GiveawayParticipant("p4", "g4", "c-2", "instagram", "@other", 600, IsWinner: false));
+
+        var rows = repo.GetParticipationsByCustomer(cid);
+
+        rows.Select(r => r.GiveawayId).Should().Equal(new[] { "g3", "g2", "g1" });
+        rows[0].GiveawayCancelledAt.Should().Be(700);
+        rows[1].IsWinner.Should().BeFalse();
+        rows[2].IsWinner.Should().BeTrue();
+        rows[2].GiveawayEndedAt.Should().Be(500);
+    }
 }

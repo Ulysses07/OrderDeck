@@ -194,6 +194,30 @@ public sealed class GiveawayRepository
             .ToList();
     }
 
+    /// <summary>Returns the customer's giveaway participation history (joined with Giveaway),
+    /// most recent first. Includes cancelled giveaways for audit visibility.</summary>
+    public IReadOnlyList<CustomerGiveawayRow> GetParticipationsByCustomer(string customerId)
+    {
+        using var conn = _factory.Open();
+        var rows = conn.Query<(string GiveawayId, string Keyword, long EnteredAt,
+                                int IsWinner, long? GiveawayEndedAt, long? GiveawayCancelledAt)>(
+            @"SELECT  gp.GiveawayId, g.Keyword, gp.EnteredAt, gp.IsWinner,
+                      g.EndedAt    AS GiveawayEndedAt,
+                      g.CancelledAt AS GiveawayCancelledAt
+              FROM    GiveawayParticipant gp
+              INNER JOIN Giveaway g ON g.Id = gp.GiveawayId
+              WHERE   gp.CustomerId = @customerId
+              ORDER BY gp.EnteredAt DESC",
+            new { customerId });
+
+        return rows
+            .Select(r => new CustomerGiveawayRow(
+                r.GiveawayId, r.Keyword, r.EnteredAt,
+                IsWinner: r.IsWinner == 1,
+                r.GiveawayEndedAt, r.GiveawayCancelledAt))
+            .ToList();
+    }
+
     private static Giveaway Map(Row r) => new(
         r.Id, r.SessionId, r.Keyword, r.DurationSeconds, r.WinnerCount,
         string.IsNullOrEmpty(r.PlatformFilter)
@@ -238,3 +262,12 @@ public sealed record GiveawaySessionTotals(int Count, int TotalWinners);
 /// <summary>One row per completed giveaway, used by the stream-end report.</summary>
 public sealed record GiveawaySummary(
     string Id, string Keyword, int ParticipantCount, int WinnerCount, long StartedAt);
+
+/// <summary>UI projection of a customer's giveaway participation row.</summary>
+public sealed record CustomerGiveawayRow(
+    string GiveawayId,
+    string Keyword,
+    long EnteredAt,
+    bool IsWinner,
+    long? GiveawayEndedAt,
+    long? GiveawayCancelledAt);
