@@ -86,6 +86,8 @@ public sealed class AppHost : IDisposable
         services.AddTransient<Views.StreamReportDialog>();
         services.AddTransient<ViewModels.StreamHistoryViewModel>();
         services.AddTransient<Views.StreamHistoryDialog>();
+        services.AddTransient<ViewModels.BlacklistViewModel>();
+        services.AddTransient<Views.BlacklistDialog>();
 
         Services = services.BuildServiceProvider();
 

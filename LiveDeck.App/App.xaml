@@ -6,6 +6,7 @@
     <Application.Resources>
         <ResourceDictionary>
             <converters:NullToCollapsedConverter x:Key="NullToCollapsedConverter"/>
+            <converters:UnixToDateConverter      x:Key="UnixToDateConverter"/>
         </ResourceDictionary>
     </Application.Resources>
 </Application>
