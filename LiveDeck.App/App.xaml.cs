@@ -1,5 +1,8 @@
+using System.Globalization;
 using System.Threading;
 using System.Windows;
+using System.Windows.Markup;
+using LiveDeck.App.Formatting;
 using LiveDeck.Chat.Ingestors;
 using LiveDeck.Overlay;
 using Microsoft.Extensions.DependencyInjection;
@@ -16,6 +19,17 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        // Lock culture to tr-TR so number/date/currency formatting is consistent regardless
+        // of the OS locale. WPF Binding StringFormat and C# default formats both pick this up.
+        var tr = TrFormats.TR;
+        Thread.CurrentThread.CurrentCulture = tr;
+        Thread.CurrentThread.CurrentUICulture = tr;
+        CultureInfo.DefaultThreadCurrentCulture = tr;
+        CultureInfo.DefaultThreadCurrentUICulture = tr;
+        FrameworkElement.LanguageProperty.OverrideMetadata(
+            typeof(FrameworkElement),
+            new FrameworkPropertyMetadata(XmlLanguage.GetLanguage(tr.IetfLanguageTag)));
+
         Host = new AppHost();
 
         var logger = Host.Services.GetRequiredService<ILogger<App>>();
