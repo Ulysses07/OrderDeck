@@ -1,5 +1,6 @@
 using System;
 using System.Collections.ObjectModel;
+using LiveDeck.App.Formatting;
 using LiveDeck.Core.Sessions;
 using LiveDeck.Core.Storage.Repositories;
 
@@ -30,8 +31,7 @@ public sealed partial class StreamHistoryViewModel : ViewModelBase
 
             Sessions.Add(new StreamHistoryRow(
                 SessionId:    s.Id,
-                StartedLabel: DateTimeOffset.FromUnixTimeSeconds(s.StartedAt).LocalDateTime
-                                .ToString("yyyy-MM-dd HH:mm"),
+                StartedLabel: TrFormats.DateTime(s.StartedAt),
                 Duration:     FormatDuration(seconds),
                 LabelCount:   totals.PrintedCount,
                 TotalAmount:  totals.TotalAmount,
