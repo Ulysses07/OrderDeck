@@ -32,8 +32,6 @@ public class SettingsStoreTests
         {
             OverlayPort = 5000,
             ChatTheme = "neon",
-            ParserHighConfidence = 75,
-            ParserLowConfidence = 40,
             PrinterName = "Zebra ZD220",
             LabelWidthMm = 75,
             LabelHeightMm = 40,
@@ -48,8 +46,6 @@ public class SettingsStoreTests
 
         reloaded.OverlayPort.Should().Be(5000);
         reloaded.ChatTheme.Should().Be("neon");
-        reloaded.ParserHighConfidence.Should().Be(75);
-        reloaded.ParserLowConfidence.Should().Be(40);
         reloaded.PrinterName.Should().Be("Zebra ZD220");
         reloaded.LabelWidthMm.Should().Be(75);
         reloaded.LabelHeightMm.Should().Be(40);
