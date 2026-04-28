@@ -1,4 +1,6 @@
+using System;
 using System.Collections.ObjectModel;
+using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using LiveDeck.App.Formatting;
@@ -68,6 +70,14 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
     private void SaveNotes()
     {
         if (_customerId is null) return;
-        _customers.UpdateNotes(_customerId, NotesEdit);
+        try
+        {
+            _customers.UpdateNotes(_customerId, NotesEdit);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Notlar kaydedilemedi: {ex.Message}",
+                "Hata", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 }
