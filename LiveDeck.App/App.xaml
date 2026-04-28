@@ -8,6 +8,8 @@
             <converters:NullToCollapsedConverter   x:Key="NullToCollapsedConverter"/>
             <converters:UnixToDateConverter        x:Key="UnixToDateConverter"/>
             <converters:BlacklistToBrushConverter  x:Key="BlacklistToBrushConverter"/>
+            <converters:BoolToVisibleConverter     x:Key="BoolToVisibleConverter"/>
+            <converters:BoolToCollapsedConverter   x:Key="BoolToCollapsedConverter"/>
         </ResourceDictionary>
     </Application.Resources>
 </Application>

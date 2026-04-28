@@ -24,6 +24,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private readonly LabelPrinter _printer;
     private readonly CustomerService _customers;
     private readonly CustomerRepository _customerRepo;
+    private readonly GiveawayService _giveaways;
     private readonly Dispatcher _dispatcher;
     private readonly IDisposable _busSubscription;
 
@@ -32,9 +33,15 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     public ObservableCollection<ChatMessageViewModel> ChatMessages { get; } = new();
     public ObservableCollection<LabelViewModel>       PrintQueue   { get; } = new();
 
+    public GiveawayBannerViewModel Banner { get; }
+
     [ObservableProperty] private string _activeCode = "";
     [ObservableProperty] private string _activePriceText = "0";
     [ObservableProperty] private string _streamStatusLabel = "Yayın aktif değil";
+    [ObservableProperty] private bool _isGiveawayActive;
+    [ObservableProperty] private bool _canStartGiveaway;
+
+    private string? _activeGiveawayId;
 
     public MainShellViewModel(
         IChatBus bus,
@@ -42,17 +49,24 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         StreamSessionService sessions,
         LabelPrinter printer,
         CustomerService customers,
-        CustomerRepository customerRepo)
+        CustomerRepository customerRepo,
+        GiveawayService giveaways,
+        GiveawayBannerViewModel banner)
     {
         _labels = labels;
         _sessions = sessions;
         _printer = printer;
         _customers = customers;
         _customerRepo = customerRepo;
+        _giveaways = giveaways;
+        Banner = banner;
         _dispatcher = Dispatcher.CurrentDispatcher;
         _busSubscription = bus.Subscribe(OnChatMessage);
 
+        Banner.AutoDrawRequested += () => DrawGiveawayNowCommand.Execute(null);
+
         UpdateStreamStatusLabel();
+        UpdateGiveawayCanStart();
         ReloadQueueFromActiveSession();
     }
 
@@ -60,10 +74,15 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     {
         _dispatcher.BeginInvoke(() =>
         {
+            // Chat panel + blacklist highlight
             var customer = _customerRepo.FindByPlatformAndUsername(m.Platform, m.Username);
             var blacklisted = customer?.IsBlacklisted ?? false;
             ChatMessages.Add(new ChatMessageViewModel(m, blacklisted));
             while (ChatMessages.Count > MaxChatMessages) ChatMessages.RemoveAt(0);
+
+            // Forward to active giveaway, if any
+            if (_activeGiveawayId is not null)
+                _giveaways.AddParticipantFromChat(_activeGiveawayId, m);
         });
     }
 
@@ -73,6 +92,11 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         StreamStatusLabel = session is null
             ? "Yayın aktif değil"
             : $"Yayın aktif (başlangıç: {DateTimeOffset.FromUnixTimeSeconds(session.StartedAt):HH:mm})";
+    }
+
+    private void UpdateGiveawayCanStart()
+    {
+        CanStartGiveaway = _sessions.GetActive() is not null && !IsGiveawayActive;
     }
 
     private void ReloadQueueFromActiveSession()
@@ -97,6 +121,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         }
         _sessions.Start("Yeni Yayın", new[] { "instagram", "tiktok" });
         UpdateStreamStatusLabel();
+        UpdateGiveawayCanStart();
         ReloadQueueFromActiveSession();
     }
 
@@ -104,6 +129,13 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     {
         var session = _sessions.GetActive();
         if (session is null) return;
+
+        if (IsGiveawayActive)
+        {
+            MessageBox.Show("Aktif çekiliş var. Önce çekilişi tamamla veya iptal et.",
+                "Çekiliş aktif", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
 
         var confirm = MessageBox.Show("Yayını bitirmek istediğinden emin misin?",
             "Yayını Bitir", MessageBoxButton.YesNo, MessageBoxImage.Question);
@@ -121,6 +153,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
         _sessions.End(session.Id);
         UpdateStreamStatusLabel();
+        UpdateGiveawayCanStart();
 
         var dialog = App.Host.Services.GetRequiredService<StreamReportDialog>();
         dialog.LoadReport(session.Id);
@@ -204,6 +237,63 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     }
 
     [RelayCommand]
+    private void StartGiveaway()
+    {
+        var session = _sessions.GetActive();
+        if (session is null)
+        {
+            MessageBox.Show("Önce yayın başlat.", "Aktif yayın yok",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (IsGiveawayActive) return;
+
+        var dlg = new NewGiveawayDialog { Owner = Application.Current?.MainWindow };
+        if (dlg.ShowDialog() != true) return;
+
+        var vm = dlg.ViewModel;
+        var g = _giveaways.Start(
+            sessionId: session.Id,
+            keyword: vm.Keyword.Trim(),
+            durationSeconds: vm.SelectedDuration.Seconds,
+            winnerCount: vm.WinnerCount,
+            platformFilter: vm.SelectedPlatform.Filter,
+            preventRewinning: vm.PreventRewinning);
+
+        _activeGiveawayId = g.Id;
+        IsGiveawayActive = true;
+        UpdateGiveawayCanStart();
+        Banner.StartTracking(g);
+    }
+
+    [RelayCommand]
+    private void DrawGiveawayNow()
+    {
+        if (_activeGiveawayId is null) return;
+
+        _giveaways.Draw(_activeGiveawayId);
+        Banner.StopTracking();
+        _activeGiveawayId = null;
+        IsGiveawayActive = false;
+        UpdateGiveawayCanStart();
+    }
+
+    [RelayCommand]
+    private void CancelGiveaway()
+    {
+        if (_activeGiveawayId is null) return;
+        var confirm = MessageBox.Show("Çekiliş iptal edilecek. Emin misin?",
+            "Çekilişi İptal", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.Yes) return;
+
+        _giveaways.Cancel(_activeGiveawayId);
+        Banner.StopTracking();
+        _activeGiveawayId = null;
+        IsGiveawayActive = false;
+        UpdateGiveawayCanStart();
+    }
+
+    [RelayCommand]
     private void AddChatSenderToBlacklist(ChatMessageViewModel? msg)
     {
         if (msg is null) return;
@@ -257,5 +347,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             || decimal.TryParse(text, NumberStyles.Any, new CultureInfo("tr-TR"), out price);
     }
 
-    public void Dispose() => _busSubscription.Dispose();
+    public void Dispose()
+    {
+        Banner.Dispose();
+        _busSubscription.Dispose();
+    }
 }

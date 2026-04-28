@@ -20,6 +20,7 @@
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
 
             <TextBlock Grid.Column="0" Text="Kod:" VerticalAlignment="Center" Margin="0,0,8,0"/>
@@ -35,7 +36,12 @@
             <Button   Grid.Column="7" Content="Yayını Bitir"
                       Command="{Binding EndStreamCommand}"   Padding="14,6"/>
 
-            <Button   Grid.Column="8" Content="⋮"
+            <Button   Grid.Column="8" Content="🎁 Çekiliş"
+                      Command="{Binding StartGiveawayCommand}"
+                      IsEnabled="{Binding CanStartGiveaway}"
+                      Padding="14,6" Margin="8,0,0,0"/>
+
+            <Button   Grid.Column="9" Content="⋮"
                       x:Name="MenuButton"
                       Click="OnMenuClick"
                       Padding="10,6" Margin="8,0,0,0"
@@ -53,9 +59,38 @@
             </Button>
         </Grid>
 
-        <!-- Status -->
-        <TextBlock Grid.Row="1" Text="{Binding StreamStatusLabel}"
-                   Foreground="#FFAAAAAA" Margin="0,0,0,12"/>
+        <!-- Status row: stream-status text OR giveaway banner -->
+        <Grid Grid.Row="1" Margin="0,0,0,12">
+            <TextBlock Text="{Binding StreamStatusLabel}"
+                       Foreground="#FFAAAAAA"
+                       Visibility="{Binding IsGiveawayActive, Converter={StaticResource BoolToCollapsedConverter}}"/>
+
+            <DockPanel Visibility="{Binding IsGiveawayActive, Converter={StaticResource BoolToVisibleConverter}}"
+                       Background="#FF332B00" LastChildFill="False">
+                <TextBlock DockPanel.Dock="Left"
+                           Text="{Binding Banner.Keyword, StringFormat={}🎁 {0}}"
+                           Foreground="#FFFFD166" FontWeight="Bold" FontSize="14"
+                           VerticalAlignment="Center" Margin="8,4,16,4"/>
+                <TextBlock DockPanel.Dock="Left"
+                           Text="{Binding Banner.ParticipantCount, StringFormat={}{0} katılımcı}"
+                           Foreground="White" Margin="0,4,16,4"
+                           VerticalAlignment="Center"/>
+                <TextBlock DockPanel.Dock="Left"
+                           Text="{Binding Banner.CountdownText}"
+                           Foreground="White" Margin="0,4,16,4"
+                           VerticalAlignment="Center"/>
+                <Button DockPanel.Dock="Right"
+                        Content="İptal"
+                        Command="{Binding CancelGiveawayCommand}"
+                        Padding="10,4" Margin="4,2"
+                        Foreground="#FFFF6666"/>
+                <Button DockPanel.Dock="Right"
+                        Content="Şimdi Çek"
+                        Command="{Binding DrawGiveawayNowCommand}"
+                        Padding="10,4" Margin="4,2"
+                        FontWeight="Bold"/>
+            </DockPanel>
+        </Grid>
 
         <!-- Two-pane: live chat | print queue -->
         <Grid Grid.Row="2">
