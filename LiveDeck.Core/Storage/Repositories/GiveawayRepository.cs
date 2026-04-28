@@ -146,6 +146,22 @@ public sealed class GiveawayRepository
     }
 
     /// <summary>
+    /// Marks every still-running giveaway (no EndedAt, no CancelledAt) as cancelled with the
+    /// given timestamp. Called once at app boot to clean up phantom rows from a previous
+    /// crash. Returns the number of rows cleaned up.
+    /// </summary>
+    public int CancelAllOrphaned(long cancelledAt)
+    {
+        using var conn = _factory.Open();
+        return conn.Execute(
+            @"UPDATE Giveaway
+              SET    CancelledAt = @cancelledAt
+              WHERE  EndedAt IS NULL
+                AND  CancelledAt IS NULL",
+            new { cancelledAt });
+    }
+
+    /// <summary>
     /// Returns one summary row per completed (EndedAt set, not cancelled) giveaway in the
     /// session, ordered by start time. Used by the stream-end report.
     /// </summary>

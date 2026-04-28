@@ -104,6 +104,14 @@ public sealed class AppHost : IDisposable
 
         // Apply migrations once at boot
         Services.GetRequiredService<MigrationRunner>().Run();
+
+        // If a previous run crashed mid-giveaway, mark phantom rows cancelled so the next
+        // session starts clean (otherwise GetActiveBySession would surface stale rows).
+        var orphans = Services.GetRequiredService<GiveawayRepository>()
+            .CancelAllOrphaned(Services.GetRequiredService<IClock>().UnixNow());
+        if (orphans > 0)
+            Services.GetRequiredService<ILogger<AppHost>>()
+                .LogWarning("Cancelled {Count} orphaned giveaway(s) from prior session", orphans);
     }
 
     public void Dispose()
