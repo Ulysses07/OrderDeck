@@ -1,0 +1,64 @@
+<Window x:Class="LiveDeck.App.Views.NewGiveawayDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Yeni Çekiliş" Width="460" Height="380"
+        WindowStartupLocation="CenterOwner"
+        Background="#FF1A1A1A" Foreground="White">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="160"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <TextBlock Grid.Row="0" Grid.Column="0" Text="Anahtar kelime:" Margin="0,8,8,8"/>
+        <TextBox   Grid.Row="0" Grid.Column="1"
+                   Text="{Binding Keyword, UpdateSourceTrigger=PropertyChanged}"
+                   Padding="6" Margin="0,4"/>
+
+        <TextBlock Grid.Row="1" Grid.Column="0" Text="Süre:" Margin="0,8,8,8"/>
+        <ComboBox  Grid.Row="1" Grid.Column="1"
+                   ItemsSource="{Binding DurationOptions}"
+                   SelectedItem="{Binding SelectedDuration}"
+                   DisplayMemberPath="Label"
+                   Margin="0,4"/>
+
+        <TextBlock Grid.Row="2" Grid.Column="0" Text="Kazanan sayısı:" Margin="0,8,8,8"/>
+        <TextBox   Grid.Row="2" Grid.Column="1"
+                   Text="{Binding WinnerCount, UpdateSourceTrigger=PropertyChanged}"
+                   Padding="6" Margin="0,4"/>
+
+        <TextBlock Grid.Row="3" Grid.Column="0" Text="Platform filtresi:" Margin="0,8,8,8"/>
+        <ComboBox  Grid.Row="3" Grid.Column="1"
+                   ItemsSource="{Binding PlatformOptions}"
+                   SelectedItem="{Binding SelectedPlatform}"
+                   DisplayMemberPath="Label"
+                   Margin="0,4"/>
+
+        <CheckBox  Grid.Row="4" Grid.Column="1"
+                   Content="Önceki kazananları dahil etme"
+                   IsChecked="{Binding PreventRewinning}"
+                   Foreground="White"
+                   Margin="0,12,0,0"/>
+
+        <TextBlock Grid.Row="6" Grid.ColumnSpan="2"
+                   Text="{Binding ValidationError}"
+                   Foreground="#FFFF6666" Margin="0,8,0,0"
+                   Visibility="{Binding ValidationError, Converter={StaticResource NullToCollapsedConverter}}"/>
+
+        <StackPanel Grid.Row="7" Grid.ColumnSpan="2"
+                    Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Content="İptal"   Click="OnCancel" Padding="14,6" Margin="0,0,8,0" IsCancel="True"/>
+            <Button Content="Başlat"  Click="OnStart"  Padding="14,6" IsDefault="True"/>
+        </StackPanel>
+    </Grid>
+</Window>
