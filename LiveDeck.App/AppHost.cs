@@ -67,7 +67,7 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<IChatBus>(),
             port: 4748,
             log: sp.GetRequiredService<ILogger<ExtensionBridgeServer>>()));
-        services.AddSingleton<InstagramIngestor>();
+        services.AddSingleton<ChatBridgeIngestor>();
 
         // Overlay (unchanged from P1)
         services.AddSingleton(sp => new OverlayHost(

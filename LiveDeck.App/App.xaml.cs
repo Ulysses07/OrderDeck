@@ -11,7 +11,7 @@ public partial class App : Application
 {
     public static AppHost Host { get; private set; } = null!;
 
-    private InstagramIngestor? _ingestor;
+    private ChatBridgeIngestor? _ingestor;
     private OverlayHost? _overlay;
 
     protected override void OnStartup(StartupEventArgs e)
@@ -22,7 +22,7 @@ public partial class App : Application
         logger.LogInformation("LiveDeck starting up");
 
         _overlay  = Host.Services.GetRequiredService<OverlayHost>();
-        _ingestor = Host.Services.GetRequiredService<InstagramIngestor>();
+        _ingestor = Host.Services.GetRequiredService<ChatBridgeIngestor>();
 
         // Fire-and-forget — bridge & overlay should always be running
         _ = _overlay.StartAsync();
