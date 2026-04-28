@@ -61,7 +61,7 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<CustomerService>();
         services.AddSingleton<LabelService>();
 
-        // Chat plumbing (unchanged from P1)
+        // Chat plumbing
         services.AddSingleton<IChatBus>(_ => new ChatBus(ringBufferSize: 200));
         services.AddSingleton(sp => new ExtensionBridgeServer(
             sp.GetRequiredService<IChatBus>(),
@@ -69,7 +69,7 @@ public sealed class AppHost : IDisposable
             log: sp.GetRequiredService<ILogger<ExtensionBridgeServer>>()));
         services.AddSingleton<ChatBridgeIngestor>();
 
-        // Overlay (unchanged from P1)
+        // Overlay
         services.AddSingleton(sp => new OverlayHost(
             sp.GetRequiredService<IChatBus>(),
             port: sp.GetRequiredService<AppSettings>().OverlayPort,
@@ -80,13 +80,17 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<AppSettings>(),
             sp.GetRequiredService<ILogger<LabelPrinter>>()));
 
-        // ViewModels + dialogs
+        // ViewModels
         services.AddSingleton<ViewModels.MainShellViewModel>();
         services.AddTransient<ViewModels.StreamReportViewModel>();
-        services.AddTransient<Views.StreamReportDialog>();
+        services.AddTransient<ViewModels.SettingsViewModel>();
         services.AddTransient<ViewModels.StreamHistoryViewModel>();
-        services.AddTransient<Views.StreamHistoryDialog>();
         services.AddTransient<ViewModels.BlacklistViewModel>();
+
+        // Dialogs (transient — fresh instance per open)
+        services.AddTransient<Views.StreamReportDialog>();
+        services.AddTransient<Views.SettingsDialog>();
+        services.AddTransient<Views.StreamHistoryDialog>();
         services.AddTransient<Views.BlacklistDialog>();
 
         Services = services.BuildServiceProvider();
