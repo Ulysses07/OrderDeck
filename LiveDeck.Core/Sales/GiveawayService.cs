@@ -13,7 +13,11 @@ public sealed class GiveawayService
     /// <summary>SQLite extended error code for UNIQUE constraint violations.</summary>
     private const int SqliteUniqueConstraintCode = 2067;
 
-    /// <summary>tr-TR CompareInfo for keyword matching (handles dotted/dotless i correctly).</summary>
+    /// <summary>
+    /// tr-TR CompareInfo for keyword matching (handles dotted/dotless i correctly).
+    /// Pinned to "tr-TR" explicitly because Core does not depend on App's startup
+    /// culture lock — unit tests run under whatever culture the test host picks.
+    /// </summary>
     private static readonly System.Globalization.CompareInfo TrCompare =
         new System.Globalization.CultureInfo("tr-TR").CompareInfo;
 

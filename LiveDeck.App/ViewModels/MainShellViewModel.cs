@@ -344,7 +344,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private static bool TryParsePrice(string text, out decimal price)
     {
         return decimal.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out price)
-            || decimal.TryParse(text, NumberStyles.Any, new CultureInfo("tr-TR"), out price);
+            || decimal.TryParse(text, NumberStyles.Any, Formatting.TrFormats.TR, out price);
     }
 
     public void Dispose()
