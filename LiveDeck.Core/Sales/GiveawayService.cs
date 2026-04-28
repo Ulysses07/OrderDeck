@@ -25,6 +25,14 @@ public sealed class GiveawayService
     /// <summary>The most recently started giveaway that has not yet been drawn or cancelled. Null if none.</summary>
     public Giveaway? Active { get; private set; }
 
+    /// <summary>
+    /// Cached set of customer ids that won previous (non-cancelled) giveaways in this
+    /// session, populated at <see cref="Start"/> when PreventRewinning is true. Cleared
+    /// in <see cref="Draw"/> and <see cref="Cancel"/>. Null when no active giveaway or
+    /// when PreventRewinning is off.
+    /// </summary>
+    private HashSet<string>? _activePreviousWinners;
+
     public event Action<GiveawayStartedEvent>? Started;
     public event Action<GiveawayParticipantEvent>? ParticipantAdded;
     public event Action<GiveawayWinnersDrawnEvent>? WinnersDrawn;
@@ -59,6 +67,12 @@ public sealed class GiveawayService
             CancelledAt: null);
         _giveaways.Insert(g);
         Active = g;
+
+        // Cache previous winners ONCE so per-message lookups stay O(1) instead of hitting the DB.
+        _activePreviousWinners = preventRewinning
+            ? new HashSet<string>(_giveaways.GetWinnerCustomerIdsForSession(g.SessionId, g.Id))
+            : null;
+
         Started?.Invoke(new GiveawayStartedEvent(
             g.Id, g.Keyword, g.WinnerCount, g.DurationSeconds, g.StartedAt));
         return g;
@@ -92,10 +106,11 @@ public sealed class GiveawayService
         // (c) Blacklist check
         if (customer.IsBlacklisted) return;
 
-        // (d) PreventRewinning check
+        // (d) PreventRewinning check — cache populated by Start; defensive fallback to DB if null.
         if (g.PreventRewinning)
         {
-            var prevWinners = _giveaways.GetWinnerCustomerIdsForSession(g.SessionId, g.Id);
+            var prevWinners = _activePreviousWinners
+                ?? new HashSet<string>(_giveaways.GetWinnerCustomerIdsForSession(g.SessionId, g.Id));
             if (prevWinners.Contains(customer.Id)) return;
         }
 
@@ -143,7 +158,11 @@ public sealed class GiveawayService
             _giveaways.MarkWinners(winners.Select(w => w.Id));
 
         _giveaways.MarkEnded(g.Id, _clock.UnixNow());
-        if (Active?.Id == g.Id) Active = null;
+        if (Active?.Id == g.Id)
+        {
+            Active = null;
+            _activePreviousWinners = null;
+        }
 
         var animationPool = BuildAnimationPool(participants, winners);
         WinnersDrawn?.Invoke(new GiveawayWinnersDrawnEvent(
@@ -159,7 +178,11 @@ public sealed class GiveawayService
     public void Cancel(string giveawayId)
     {
         _giveaways.MarkCancelled(giveawayId, _clock.UnixNow());
-        if (Active?.Id == giveawayId) Active = null;
+        if (Active?.Id == giveawayId)
+        {
+            Active = null;
+            _activePreviousWinners = null;
+        }
         Cancelled?.Invoke(new GiveawayCancelledEvent(giveawayId));
     }
 
