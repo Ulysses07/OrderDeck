@@ -13,6 +13,10 @@ public sealed class GiveawayService
     /// <summary>SQLite extended error code for UNIQUE constraint violations.</summary>
     private const int SqliteUniqueConstraintCode = 2067;
 
+    /// <summary>tr-TR CompareInfo for keyword matching (handles dotted/dotless i correctly).</summary>
+    private static readonly System.Globalization.CompareInfo TrCompare =
+        new System.Globalization.CultureInfo("tr-TR").CompareInfo;
+
     private readonly GiveawayRepository _giveaways;
     private readonly CustomerService _customers;
     private readonly GiveawayDrawer _drawer;
@@ -72,8 +76,8 @@ public sealed class GiveawayService
         var g = _giveaways.GetById(giveawayId);
         if (g is null || g.EndedAt is not null || g.CancelledAt is not null) return;
 
-        // (a) Keyword match — case-insensitive substring
-        if (!message.Text.Contains(g.Keyword, StringComparison.OrdinalIgnoreCase))
+        // (a) Keyword match — Turkish-aware case-insensitive substring
+        if (TrCompare.IndexOf(message.Text, g.Keyword, System.Globalization.CompareOptions.IgnoreCase) < 0)
             return;
 
         // (b) Platform filter

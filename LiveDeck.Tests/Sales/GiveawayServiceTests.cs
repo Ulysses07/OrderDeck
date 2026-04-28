@@ -76,7 +76,10 @@ public class GiveawayServiceTests
     {
         var (svc, repo, _, db, sid) = Fx();
         using var _2 = db;
-        var g = svc.Start(sid, "katil", 60, 1, null, true);
+        // "katıl" (dotless ı) ↔ "KATIL" (dotless I) — correct Turkish case pair.
+        // The previous "katil" (dotted i) was masquerading as a match only because
+        // OrdinalIgnoreCase ignored the dot distinction (P3d Task 1 fixed this).
+        var g = svc.Start(sid, "katıl", 60, 1, null, true);
 
         svc.AddParticipantFromChat(g.Id, Msg("@ayse", "KATIL ben"));
 
