@@ -38,16 +38,37 @@ public sealed class CustomerService
             BlacklistReason: null,
             Notes: null,
             TotalLabelsPrinted: 0,
-            TotalAmount: 0m);
+            TotalAmount: 0m,
+            BlacklistedAt: null);
         _repo.Insert(customer);
         return customer;
     }
 
-    /// <summary>
-    /// Increments label aggregate counters when one or more labels are printed.
-    /// </summary>
     public void RecordPrintedLabels(string customerId, int labelCount, decimal amount)
     {
         _repo.IncrementLabelStats(customerId, labelCount, amount, _clock.UnixNow());
+    }
+
+    /// <summary>Marks the customer as blacklisted with optional reason.</summary>
+    public void AddToBlacklist(string customerId, string? reason)
+    {
+        _repo.UpdateBlacklist(customerId, isBlacklisted: true, reason, blacklistedAt: _clock.UnixNow());
+    }
+
+    /// <summary>Clears the blacklist flag, reason, and timestamp.</summary>
+    public void RemoveFromBlacklist(string customerId)
+    {
+        _repo.UpdateBlacklist(customerId, isBlacklisted: false, reason: null, blacklistedAt: null);
+    }
+
+    /// <summary>
+    /// Creates the customer if missing, then blacklists. Returns the post-blacklist record.
+    /// Used by the "+ Manuel Ekle" flow in the Blacklist dialog.
+    /// </summary>
+    public Customer EnsureBlacklistedManual(string platform, string username, string? reason)
+    {
+        var c = GetOrCreate(platform, username, displayName: null, avatarUrl: null);
+        AddToBlacklist(c.Id, reason);
+        return _repo.GetById(c.Id)!;
     }
 }
