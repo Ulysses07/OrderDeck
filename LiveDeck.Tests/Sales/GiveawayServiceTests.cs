@@ -33,7 +33,7 @@ public class GiveawayServiceTests
         var giveawayRepo  = new GiveawayRepository(db);
         var drawer        = new GiveawayDrawer();
 
-        var svc = new GiveawayService(giveawayRepo, customerSvc, customerRepo, drawer, clock.Object);
+        var svc = new GiveawayService(giveawayRepo, customerSvc, drawer, clock.Object);
         return (svc, giveawayRepo, customerRepo, db, "s1");
     }
 

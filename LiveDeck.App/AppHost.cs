@@ -61,6 +61,12 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<CustomerService>();
         services.AddSingleton<LabelService>();
 
+        // Giveaway (Phase 2b)
+        services.AddSingleton<GiveawayRepository>();
+        services.AddSingleton<GiveawayDrawer>();
+        services.AddSingleton<GiveawayService>();
+        services.AddSingleton<ViewModels.GiveawayBannerViewModel>();
+
         // Chat plumbing
         services.AddSingleton<IChatBus>(_ => new ChatBus(ringBufferSize: 200));
         services.AddSingleton(sp => new ExtensionBridgeServer(
@@ -72,6 +78,7 @@ public sealed class AppHost : IDisposable
         // Overlay
         services.AddSingleton(sp => new OverlayHost(
             sp.GetRequiredService<IChatBus>(),
+            sp.GetRequiredService<GiveawayService>(),
             port: sp.GetRequiredService<AppSettings>().OverlayPort,
             log: sp.GetRequiredService<ILogger<OverlayHost>>()));
 

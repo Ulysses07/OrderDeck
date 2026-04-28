@@ -10,22 +10,30 @@ namespace LiveDeck.Core.Sales;
 
 public sealed class GiveawayService
 {
+    /// <summary>SQLite extended error code for UNIQUE constraint violations.</summary>
+    private const int SqliteUniqueConstraintCode = 2067;
+
     private readonly GiveawayRepository _giveaways;
     private readonly CustomerService _customers;
-    private readonly CustomerRepository _customerRepo;
     private readonly GiveawayDrawer _drawer;
     private readonly IClock _clock;
+
+    /// <summary>The most recently started giveaway that has not yet been drawn or cancelled. Null if none.</summary>
+    public Giveaway? Active { get; private set; }
+
+    public event Action<GiveawayStartedEvent>? Started;
+    public event Action<GiveawayParticipantEvent>? ParticipantAdded;
+    public event Action<GiveawayWinnersDrawnEvent>? WinnersDrawn;
+    public event Action<GiveawayCancelledEvent>? Cancelled;
 
     public GiveawayService(
         GiveawayRepository giveaways,
         CustomerService customers,
-        CustomerRepository customerRepo,
         GiveawayDrawer drawer,
         IClock clock)
     {
         _giveaways = giveaways;
         _customers = customers;
-        _customerRepo = customerRepo;
         _drawer = drawer;
         _clock = clock;
     }
@@ -46,6 +54,9 @@ public sealed class GiveawayService
             EndedAt: null,
             CancelledAt: null);
         _giveaways.Insert(g);
+        Active = g;
+        Started?.Invoke(new GiveawayStartedEvent(
+            g.Id, g.Keyword, g.WinnerCount, g.DurationSeconds, g.StartedAt));
         return g;
     }
 
@@ -85,21 +96,30 @@ public sealed class GiveawayService
         }
 
         // (e) UNIQUE INDEX guard — wrap insert in try/catch to swallow duplicate
+        var participant = new GiveawayParticipant(
+            Id: Guid.NewGuid().ToString("N"),
+            GiveawayId: g.Id,
+            CustomerId: customer.Id,
+            Platform: message.Platform,
+            Username: message.Username,
+            EnteredAt: _clock.UnixNow(),
+            IsWinner: false);
         try
         {
-            _giveaways.AddParticipant(new GiveawayParticipant(
-                Id: Guid.NewGuid().ToString("N"),
-                GiveawayId: g.Id,
-                CustomerId: customer.Id,
-                Platform: message.Platform,
-                Username: message.Username,
-                EnteredAt: _clock.UnixNow(),
-                IsWinner: false));
+            _giveaways.AddParticipant(participant);
         }
-        catch (Microsoft.Data.Sqlite.SqliteException ex) when (ex.SqliteErrorCode == 19)
+        catch (Microsoft.Data.Sqlite.SqliteException ex)
+            when (ex.SqliteExtendedErrorCode == SqliteUniqueConstraintCode)
         {
-            // 19 = SQLITE_CONSTRAINT — duplicate (already entered). Silently ignore.
+            // Duplicate participant for this giveaway. Silently ignore.
+            return;
         }
+
+        // Successful add → broadcast count
+        var total = _giveaways.GetParticipants(g.Id).Count;
+        ParticipantAdded?.Invoke(new GiveawayParticipantEvent(
+            g.Id, message.Username, message.DisplayName, message.AvatarUrl,
+            message.Platform, total));
     }
 
     /// <summary>
@@ -119,6 +139,15 @@ public sealed class GiveawayService
             _giveaways.MarkWinners(winners.Select(w => w.Id));
 
         _giveaways.MarkEnded(g.Id, _clock.UnixNow());
+        if (Active?.Id == g.Id) Active = null;
+
+        var animationPool = BuildAnimationPool(participants, winners);
+        WinnersDrawn?.Invoke(new GiveawayWinnersDrawnEvent(
+            g.Id,
+            winners.Select(ToWinnerDto).ToList(),
+            animationPool,
+            participants.Count));
+
         return winners;
     }
 
@@ -126,5 +155,43 @@ public sealed class GiveawayService
     public void Cancel(string giveawayId)
     {
         _giveaways.MarkCancelled(giveawayId, _clock.UnixNow());
+        if (Active?.Id == giveawayId) Active = null;
+        Cancelled?.Invoke(new GiveawayCancelledEvent(giveawayId));
     }
+
+    /// <summary>
+    /// Builds the OBS roulette animation pool: a shuffled prefix of participants ending
+    /// with the actual winners. Capped at 50 entries to keep the overlay snappy.
+    /// </summary>
+    private static IReadOnlyList<GiveawayWinnerDto> BuildAnimationPool(
+        IReadOnlyList<GiveawayParticipant> participants,
+        IReadOnlyList<GiveawayParticipant> winners)
+    {
+        const int MaxPoolSize = 50;
+        if (participants.Count == 0) return Array.Empty<GiveawayWinnerDto>();
+
+        var winnerIds = new HashSet<string>(winners.Select(w => w.Id));
+        var nonWinners = participants.Where(p => !winnerIds.Contains(p.Id)).ToList();
+
+        // Shuffle non-winners for visual variety; deterministic shuffle is unnecessary here.
+        var rng = new Random();
+        for (int i = nonWinners.Count - 1; i > 0; i--)
+        {
+            int j = rng.Next(i + 1);
+            (nonWinners[i], nonWinners[j]) = (nonWinners[j], nonWinners[i]);
+        }
+
+        // Reserve last N slots for the actual winners (in order). Fill earlier slots from
+        // the shuffled non-winner pool.
+        int total = Math.Min(MaxPoolSize, participants.Count);
+        int filler = Math.Max(0, total - winners.Count);
+        var pool = new List<GiveawayWinnerDto>(total);
+        for (int i = 0; i < filler && i < nonWinners.Count; i++)
+            pool.Add(ToWinnerDto(nonWinners[i]));
+        foreach (var w in winners) pool.Add(ToWinnerDto(w));
+        return pool;
+    }
+
+    private static GiveawayWinnerDto ToWinnerDto(GiveawayParticipant p) =>
+        new(p.Username, DisplayName: null, AvatarUrl: null, p.Platform);
 }

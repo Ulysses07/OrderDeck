@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using LiveDeck.Core.Chat;
+using LiveDeck.Core.Sales;
 using LiveDeck.Overlay.Models;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -23,20 +24,29 @@ namespace LiveDeck.Overlay;
 /// Hosts the OBS Browser Source endpoints. Started/stopped by the WPF App.
 ///   * GET  /overlay/chat       → static HTML page bundled via wwwroot
 ///   * WS   /ws/chat            → live ChatMessage stream
+///   * GET  /overlay/giveaway   → static HTML page for giveaway roulette
+///   * WS   /ws/giveaway        → live giveaway event stream
 /// </summary>
 public sealed class OverlayHost : IAsyncDisposable
 {
     private readonly IChatBus _bus;
+    private readonly GiveawayService _giveaway;
     private readonly ILogger<OverlayHost> _log;
     private WebApplication? _app;
-    private readonly ConcurrentDictionary<Guid, WebSocket> _clients = new();
+    private readonly ConcurrentDictionary<Guid, WebSocket> _chatClients = new();
+    private readonly ConcurrentDictionary<Guid, WebSocket> _giveawayClients = new();
     private IDisposable? _busSub;
+    private Action<GiveawayStartedEvent>? _onStarted;
+    private Action<GiveawayParticipantEvent>? _onParticipant;
+    private Action<GiveawayWinnersDrawnEvent>? _onWinners;
+    private Action<GiveawayCancelledEvent>? _onCancelled;
 
     public int Port { get; private set; }
 
-    public OverlayHost(IChatBus bus, int port = 4747, ILogger<OverlayHost>? log = null)
+    public OverlayHost(IChatBus bus, GiveawayService giveaway, int port = 4747, ILogger<OverlayHost>? log = null)
     {
         _bus = bus;
+        _giveaway = giveaway;
         _log = log ?? NullLogger<OverlayHost>.Instance;
         Port = port;
     }
@@ -62,22 +72,40 @@ public sealed class OverlayHost : IAsyncDisposable
         _app.MapGet("/overlay/chat", async (HttpContext ctx) =>
         {
             ctx.Response.ContentType = "text/html; charset=utf-8";
-            var html = Path.Combine(wwwroot, "chat.html");
-            await ctx.Response.SendFileAsync(html);
+            await ctx.Response.SendFileAsync(Path.Combine(wwwroot, "chat.html"));
+        });
+
+        _app.MapGet("/overlay/giveaway", async (HttpContext ctx) =>
+        {
+            ctx.Response.ContentType = "text/html; charset=utf-8";
+            await ctx.Response.SendFileAsync(Path.Combine(wwwroot, "giveaway.html"));
         });
 
         _app.Map("/ws/chat", async (HttpContext ctx) =>
         {
-            if (!ctx.WebSockets.IsWebSocketRequest)
-            {
-                ctx.Response.StatusCode = 400;
-                return;
-            }
+            if (!ctx.WebSockets.IsWebSocketRequest) { ctx.Response.StatusCode = 400; return; }
             using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
-            await HandleClient(ws, ctx.RequestAborted);
+            await HandleChatClient(ws, ctx.RequestAborted);
+        });
+
+        _app.Map("/ws/giveaway", async (HttpContext ctx) =>
+        {
+            if (!ctx.WebSockets.IsWebSocketRequest) { ctx.Response.StatusCode = 400; return; }
+            using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
+            await HandleGiveawayClient(ws, ctx.RequestAborted);
         });
 
         _busSub = _bus.Subscribe(BroadcastChatMessage);
+
+        _onStarted = e => BroadcastGiveaway("giveaway.started", e);
+        _onParticipant = e => BroadcastGiveaway("giveaway.participant", e);
+        _onWinners = e => BroadcastGiveaway("giveaway.winners.drawn", e);
+        _onCancelled = e => BroadcastGiveaway("giveaway.cancelled", e);
+
+        _giveaway.Started += _onStarted;
+        _giveaway.ParticipantAdded += _onParticipant;
+        _giveaway.WinnersDrawn += _onWinners;
+        _giveaway.Cancelled += _onCancelled;
 
         await _app.StartAsync();
         _log.LogInformation("OverlayHost listening on http://localhost:{Port}", Port);
@@ -86,6 +114,11 @@ public sealed class OverlayHost : IAsyncDisposable
     public async Task StopAsync()
     {
         _busSub?.Dispose();
+        if (_onStarted is not null) _giveaway.Started -= _onStarted;
+        if (_onParticipant is not null) _giveaway.ParticipantAdded -= _onParticipant;
+        if (_onWinners is not null) _giveaway.WinnersDrawn -= _onWinners;
+        if (_onCancelled is not null) _giveaway.Cancelled -= _onCancelled;
+
         if (_app is not null)
         {
             await _app.StopAsync();
@@ -94,35 +127,61 @@ public sealed class OverlayHost : IAsyncDisposable
         }
     }
 
-    private async Task HandleClient(WebSocket ws, CancellationToken ct)
+    private async Task HandleChatClient(WebSocket ws, CancellationToken ct)
     {
         var id = Guid.NewGuid();
-        _clients.TryAdd(id, ws);
+        _chatClients.TryAdd(id, ws);
         try
         {
-            // Send snapshot of recent messages
-            var snapshot = new OverlayEvent("chat.snapshot", new ChatSnapshotEvent(
-                BuildSnapshot()));
+            var snapshot = new OverlayEvent("chat.snapshot", new ChatSnapshotEvent(BuildChatSnapshot()));
             await SendJson(ws, snapshot, ct);
-
-            var buf = new byte[1024];
-            while (ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
-            {
-                var res = await ws.ReceiveAsync(buf, ct);
-                if (res.MessageType == WebSocketMessageType.Close) break;
-            }
+            await PumpReceiveLoop(ws, ct);
         }
-        catch (OperationCanceledException) { /* normal shutdown */ }
-        catch (Exception ex) { _log.LogWarning(ex, "Overlay client error"); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { _log.LogWarning(ex, "Overlay chat client error"); }
         finally
         {
-            _clients.TryRemove(id, out _);
-            try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None); }
-            catch { /* ignore */ }
+            _chatClients.TryRemove(id, out _);
+            try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None); } catch { }
         }
     }
 
-    private System.Collections.Generic.IReadOnlyList<ChatMessageEvent> BuildSnapshot()
+    private async Task HandleGiveawayClient(WebSocket ws, CancellationToken ct)
+    {
+        var id = Guid.NewGuid();
+        _giveawayClients.TryAdd(id, ws);
+        try
+        {
+            // If a giveaway is already active, send a "started" snapshot so a late-joining overlay catches up.
+            var active = _giveaway.Active;
+            if (active is not null)
+            {
+                var evt = new OverlayEvent("giveaway.started", new GiveawayStartedEvent(
+                    active.Id, active.Keyword, active.WinnerCount, active.DurationSeconds, active.StartedAt));
+                await SendJson(ws, evt, ct);
+            }
+            await PumpReceiveLoop(ws, ct);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { _log.LogWarning(ex, "Overlay giveaway client error"); }
+        finally
+        {
+            _giveawayClients.TryRemove(id, out _);
+            try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None); } catch { }
+        }
+    }
+
+    private static async Task PumpReceiveLoop(WebSocket ws, CancellationToken ct)
+    {
+        var buf = new byte[1024];
+        while (ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
+        {
+            var res = await ws.ReceiveAsync(buf, ct);
+            if (res.MessageType == WebSocketMessageType.Close) break;
+        }
+    }
+
+    private System.Collections.Generic.IReadOnlyList<ChatMessageEvent> BuildChatSnapshot()
     {
         var recent = _bus.RecentMessages();
         var list = new System.Collections.Generic.List<ChatMessageEvent>(recent.Count);
@@ -137,10 +196,18 @@ public sealed class OverlayHost : IAsyncDisposable
         var evt = new OverlayEvent("chat.message",
             new ChatMessageEvent(m.Id, m.Platform, m.Username, m.DisplayName,
                 m.AvatarUrl, m.Text, m.ReceivedAt));
-        var json = JsonSerializer.Serialize(evt);
-        var bytes = Encoding.UTF8.GetBytes(json);
+        var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(evt));
+        foreach (var (_, ws) in _chatClients)
+        {
+            if (ws.State != WebSocketState.Open) continue;
+            _ = SendBytes(ws, bytes, CancellationToken.None);
+        }
+    }
 
-        foreach (var (id, ws) in _clients)
+    private void BroadcastGiveaway(string type, object data)
+    {
+        var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new OverlayEvent(type, data)));
+        foreach (var (_, ws) in _giveawayClients)
         {
             if (ws.State != WebSocketState.Open) continue;
             _ = SendBytes(ws, bytes, CancellationToken.None);
@@ -149,16 +216,12 @@ public sealed class OverlayHost : IAsyncDisposable
 
     private static async Task SendJson(WebSocket ws, object payload, CancellationToken ct)
     {
-        var json = JsonSerializer.Serialize(payload);
-        await SendBytes(ws, Encoding.UTF8.GetBytes(json), ct);
+        await SendBytes(ws, Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload)), ct);
     }
 
     private static async Task SendBytes(WebSocket ws, byte[] bytes, CancellationToken ct)
     {
-        try
-        {
-            await ws.SendAsync(bytes, WebSocketMessageType.Text, true, ct);
-        }
+        try { await ws.SendAsync(bytes, WebSocketMessageType.Text, true, ct); }
         catch { /* swallow per-client errors so one slow client doesn't kill the broadcast */ }
     }
 
