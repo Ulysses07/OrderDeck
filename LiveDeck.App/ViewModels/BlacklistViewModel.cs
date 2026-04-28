@@ -4,6 +4,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using LiveDeck.Core.Customers;
 using LiveDeck.Core.Storage.Repositories;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace LiveDeck.App.ViewModels;
 
@@ -61,5 +62,16 @@ public sealed partial class BlacklistViewModel : ViewModelBase
             dialog.UsernameText ?? "",
             dialog.ReasonText);
         Reload();
+    }
+
+    [RelayCommand]
+    private void OpenCustomerDetail(string? customerId)
+    {
+        if (string.IsNullOrEmpty(customerId)) return;
+        var dlg = App.Host.Services.GetRequiredService<Views.CustomerDetailDialog>();
+        dlg.Owner = Application.Current?.Windows.Count > 0
+            ? Application.Current?.Windows[Application.Current.Windows.Count - 1]
+            : null;
+        dlg.Open(customerId);
     }
 }

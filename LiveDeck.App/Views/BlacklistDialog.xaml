@@ -37,6 +37,16 @@
                 <DataGridTextColumn Header="Tarih"
                                     Binding="{Binding BlacklistedAt, Converter={StaticResource UnixToDateConverter}}"
                                     Width="2*"/>
+                <DataGridTemplateColumn Header="" Width="40">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <Button Content="…" Padding="4,0" FontWeight="Bold"
+                                    Command="{Binding DataContext.OpenCustomerDetailCommand,
+                                                      RelativeSource={RelativeSource AncestorType=Window}}"
+                                    CommandParameter="{Binding Id}"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
             </DataGrid.Columns>
         </DataGrid>
 

@@ -100,6 +100,12 @@ public sealed class AppHost : IDisposable
         services.AddTransient<Views.StreamHistoryDialog>();
         services.AddTransient<Views.BlacklistDialog>();
 
+        // Customer center (Phase 3a)
+        services.AddTransient<ViewModels.CustomerDetailViewModel>();
+        services.AddTransient<ViewModels.CustomerSearchViewModel>();
+        services.AddTransient<Views.CustomerDetailDialog>();
+        services.AddTransient<Views.CustomerSearchDialog>();
+
         Services = services.BuildServiceProvider();
 
         // Apply migrations once at boot

@@ -54,6 +54,8 @@
                                   Command="{Binding OpenStreamHistoryCommand}"/>
                         <MenuItem Header="Kara Liste"
                                   Command="{Binding OpenBlacklistCommand}"/>
+                        <MenuItem Header="Müşteriler"
+                                  Command="{Binding OpenCustomerSearchCommand}"/>
                     </ContextMenu>
                 </Button.ContextMenu>
             </Button>
@@ -140,6 +142,11 @@
                     </ListBox.ItemTemplate>
                     <ListBox.ContextMenu>
                         <ContextMenu>
+                            <MenuItem Header="Müşteri Detayı"
+                                      Command="{Binding PlacementTarget.DataContext.OpenCustomerDetailFromChatCommand,
+                                                        RelativeSource={RelativeSource Self}}"
+                                      CommandParameter="{Binding PlacementTarget.SelectedItem,
+                                                                 RelativeSource={RelativeSource Self}}"/>
                             <MenuItem Header="Kara Listeye Al…"
                                       Command="{Binding PlacementTarget.DataContext.AddChatSenderToBlacklistCommand,
                                                         RelativeSource={RelativeSource Self}}"
@@ -193,6 +200,11 @@
                     </ListBox.ItemTemplate>
                     <ListBox.ContextMenu>
                         <ContextMenu>
+                            <MenuItem Header="Müşteri Detayı"
+                                      Command="{Binding PlacementTarget.DataContext.OpenCustomerDetailFromQueueCommand,
+                                                        RelativeSource={RelativeSource Self}}"
+                                      CommandParameter="{Binding PlacementTarget.SelectedItem,
+                                                                 RelativeSource={RelativeSource Self}}"/>
                             <MenuItem Header="Kara Listeye Al…"
                                       Command="{Binding PlacementTarget.DataContext.AddQueueRowToBlacklistCommand,
                                                         RelativeSource={RelativeSource Self}}"

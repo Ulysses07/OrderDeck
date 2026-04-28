@@ -11,6 +11,8 @@
             <converters:BoolToVisibleConverter     x:Key="BoolToVisibleConverter"/>
             <converters:BoolToCollapsedConverter   x:Key="BoolToCollapsedConverter"/>
             <converters:CountToVisibleConverter    x:Key="CountToVisibleConverter"/>
+            <converters:CountToCollapsedConverter  x:Key="CountToCollapsedConverter"/>
+            <converters:GiveawayParticipationStatusConverter x:Key="GiveawayParticipationStatusConverter"/>
         </ResourceDictionary>
     </Application.Resources>
 </Application>

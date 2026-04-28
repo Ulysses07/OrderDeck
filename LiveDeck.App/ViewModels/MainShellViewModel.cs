@@ -327,6 +327,42 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         RefreshHighlights();
     }
 
+    [RelayCommand]
+    private void OpenCustomerDetailFromChat(ChatMessageViewModel? msg)
+    {
+        if (msg is null) return;
+        var customer = _customerRepo.FindByPlatformAndUsername(msg.Platform, msg.Username);
+        if (customer is null)
+        {
+            MessageBox.Show("Bu kullanıcı henüz kayıtlı değil.", "Müşteri yok",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        ShowCustomerDetail(customer.Id);
+    }
+
+    [RelayCommand]
+    private void OpenCustomerDetailFromQueue(LabelViewModel? row)
+    {
+        if (row is null) return;
+        ShowCustomerDetail(row.CustomerId);
+    }
+
+    [RelayCommand]
+    private void OpenCustomerSearch()
+    {
+        var dlg = App.Host.Services.GetRequiredService<Views.CustomerSearchDialog>();
+        dlg.Owner = Application.Current?.MainWindow;
+        dlg.ShowDialog();
+    }
+
+    private static void ShowCustomerDetail(string customerId)
+    {
+        var dlg = App.Host.Services.GetRequiredService<Views.CustomerDetailDialog>();
+        dlg.Owner = Application.Current?.MainWindow;
+        dlg.Open(customerId);
+    }
+
     private void RefreshHighlights()
     {
         foreach (var vm in ChatMessages)
