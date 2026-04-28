@@ -89,9 +89,15 @@ public sealed partial class StreamReportViewModel : ViewModelBase
             ws.Cell(1, 1).Style.Font.Bold = true;
 
             ws.Cell(3, 1).Value = "Süre";          ws.Cell(3, 2).Value = DurationLabel;
+
             ws.Cell(4, 1).Value = "Toplam etiket"; ws.Cell(4, 2).Value = TotalLabels;
+            ws.Cell(4, 2).Style.NumberFormat.Format = "0";
+
             ws.Cell(5, 1).Value = "Toplam ciro";   ws.Cell(5, 2).Value = TotalAmount;
+            ws.Cell(5, 2).Style.NumberFormat.Format = "#,##0.00 \"TL\"";
+
             ws.Cell(6, 1).Value = "Tekil müşteri"; ws.Cell(6, 2).Value = UniqueCustomers;
+            ws.Cell(6, 2).Style.NumberFormat.Format = "0";
 
             ws.Cell(8, 1).Value = "En çok alan müşteriler";
             ws.Cell(8, 1).Style.Font.Bold = true;
@@ -108,7 +114,9 @@ public sealed partial class StreamReportViewModel : ViewModelBase
                 ws.Cell(row, 1).Value = c.Username;
                 ws.Cell(row, 2).Value = c.Platform;
                 ws.Cell(row, 3).Value = c.LabelCount;
+                ws.Cell(row, 3).Style.NumberFormat.Format = "0";
                 ws.Cell(row, 4).Value = c.TotalAmount;
+                ws.Cell(row, 4).Style.NumberFormat.Format = "#,##0.00 \"TL\"";
                 row++;
             }
 
