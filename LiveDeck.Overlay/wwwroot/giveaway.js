@@ -115,11 +115,13 @@
   function revealWinners(winners) {
     hide($roulette);
     $winnersList.innerHTML = '';
+    const PLATFORM_EMOJI = { instagram: '📷', tiktok: '🎵' };
     for (const w of winners) {
       const li = document.createElement('li');
       li.className = 'winner';
+      const emoji = PLATFORM_EMOJI[w.Platform] || '💬';
       li.innerHTML = `
-        <span class="platform-${w.Platform}">${w.Platform === 'instagram' ? '📷' : '🎵'}</span>
+        <span class="platform-${w.Platform}">${emoji}</span>
         <span class="name">${escapeHtml(w.DisplayName || w.Username)}</span>
       `;
       $winnersList.appendChild(li);

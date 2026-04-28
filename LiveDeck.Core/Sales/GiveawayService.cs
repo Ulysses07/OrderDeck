@@ -33,6 +33,10 @@ public sealed class GiveawayService
     /// </summary>
     private HashSet<string>? _activePreviousWinners;
 
+    /// <summary>Live participant count for the active giveaway, or 0 when none active.</summary>
+    public int GetActiveParticipantCount() =>
+        Active is null ? 0 : _giveaways.GetParticipantCount(Active.Id);
+
     public event Action<GiveawayStartedEvent>? Started;
     public event Action<GiveawayParticipantEvent>? ParticipantAdded;
     public event Action<GiveawayWinnersDrawnEvent>? WinnersDrawn;

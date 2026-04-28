@@ -156,9 +156,23 @@ public sealed class OverlayHost : IAsyncDisposable
             var active = _giveaway.Active;
             if (active is not null)
             {
-                var evt = new OverlayEvent("giveaway.started", new GiveawayStartedEvent(
+                var startedEvt = new OverlayEvent("giveaway.started", new GiveawayStartedEvent(
                     active.Id, active.Keyword, active.WinnerCount, active.DurationSeconds, active.StartedAt));
-                await SendJson(ws, evt, ct);
+                await SendJson(ws, startedEvt, ct);
+
+                // Late-joining overlay should also see current participant count, not 0.
+                var count = _giveaway.GetActiveParticipantCount();
+                if (count > 0)
+                {
+                    var countEvt = new OverlayEvent("giveaway.participant", new GiveawayParticipantEvent(
+                        active.Id,
+                        Username: "",
+                        DisplayName: null,
+                        AvatarUrl: null,
+                        Platform: "",
+                        TotalCount: count));
+                    await SendJson(ws, countEvt, ct);
+                }
             }
             await PumpReceiveLoop(ws, ct);
         }
