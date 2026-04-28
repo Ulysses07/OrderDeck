@@ -84,6 +84,14 @@ public sealed class GiveawayRepository
             });
     }
 
+    public int GetParticipantCount(string giveawayId)
+    {
+        using var conn = _factory.Open();
+        return conn.ExecuteScalar<int>(
+            "SELECT COUNT(*) FROM GiveawayParticipant WHERE GiveawayId=@giveawayId",
+            new { giveawayId });
+    }
+
     public IReadOnlyList<GiveawayParticipant> GetParticipants(string giveawayId)
     {
         using var conn = _factory.Open();

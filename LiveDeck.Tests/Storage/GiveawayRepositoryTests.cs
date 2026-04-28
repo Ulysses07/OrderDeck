@@ -191,4 +191,17 @@ public class GiveawayRepositoryTests
         totals.Count.Should().Be(2);
         totals.TotalWinners.Should().Be(3);
     }
+
+    [Fact]
+    public void GetParticipantCount_returns_count_for_giveaway()
+    {
+        var (db, repo, _, cid) = Fx();
+        using var _2 = db;
+        repo.Insert(NewGiveaway());
+        repo.AddParticipant(new GiveawayParticipant("p1", "g1", cid, "instagram", "@a", 300, false));
+        repo.AddParticipant(new GiveawayParticipant("p2", "g1", cid, "instagram", "@b", 301, false));
+
+        repo.GetParticipantCount("g1").Should().Be(2);
+        repo.GetParticipantCount("g-nonexistent").Should().Be(0);
+    }
 }
