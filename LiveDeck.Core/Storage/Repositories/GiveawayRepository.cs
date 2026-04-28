@@ -145,6 +145,31 @@ public sealed class GiveawayRepository
         return new GiveawaySessionTotals(count, winnerTotal);
     }
 
+    /// <summary>
+    /// Returns one summary row per completed (EndedAt set, not cancelled) giveaway in the
+    /// session, ordered by start time. Used by the stream-end report.
+    /// </summary>
+    public IReadOnlyList<GiveawaySummary> ListSummariesBySession(string sessionId)
+    {
+        using var conn = _factory.Open();
+        var rows = conn.Query<(string Id, string Keyword, int Total, int Winners, long StartedAt)>(
+            @"SELECT  g.Id, g.Keyword,
+                      COUNT(p.Id)                                                  AS Total,
+                      COALESCE(SUM(CASE WHEN p.IsWinner = 1 THEN 1 ELSE 0 END), 0) AS Winners,
+                      g.StartedAt
+              FROM    Giveaway g
+              LEFT JOIN GiveawayParticipant p ON p.GiveawayId = g.Id
+              WHERE   g.SessionId  = @sessionId
+                AND   g.EndedAt   IS NOT NULL
+                AND   g.CancelledAt IS NULL
+              GROUP BY g.Id, g.Keyword, g.StartedAt
+              ORDER BY g.StartedAt;",
+            new { sessionId });
+        return rows
+            .Select(r => new GiveawaySummary(r.Id, r.Keyword, r.Total, r.Winners, r.StartedAt))
+            .ToList();
+    }
+
     private static Giveaway Map(Row r) => new(
         r.Id, r.SessionId, r.Keyword, r.DurationSeconds, r.WinnerCount,
         string.IsNullOrEmpty(r.PlatformFilter)
@@ -185,3 +210,7 @@ public sealed class GiveawayRepository
 }
 
 public sealed record GiveawaySessionTotals(int Count, int TotalWinners);
+
+/// <summary>One row per completed giveaway, used by the stream-end report.</summary>
+public sealed record GiveawaySummary(
+    string Id, string Keyword, int ParticipantCount, int WinnerCount, long StartedAt);

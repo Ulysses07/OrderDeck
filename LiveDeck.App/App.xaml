@@ -10,6 +10,7 @@
             <converters:BlacklistToBrushConverter  x:Key="BlacklistToBrushConverter"/>
             <converters:BoolToVisibleConverter     x:Key="BoolToVisibleConverter"/>
             <converters:BoolToCollapsedConverter   x:Key="BoolToCollapsedConverter"/>
+            <converters:CountToVisibleConverter    x:Key="CountToVisibleConverter"/>
         </ResourceDictionary>
     </Application.Resources>
 </Application>

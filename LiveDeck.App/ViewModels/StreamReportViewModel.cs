@@ -14,20 +14,23 @@ public sealed partial class StreamReportViewModel : ViewModelBase
 {
     private readonly LabelRepository _labels;
     private readonly SessionRepository _sessions;
+    private readonly GiveawayRepository _giveaways;
 
     [ObservableProperty] private string _durationLabel = "—";
     [ObservableProperty] private int    _totalLabels;
     [ObservableProperty] private decimal _totalAmount;
     [ObservableProperty] private int    _uniqueCustomers;
 
-    public ObservableCollection<TopCustomer> TopCustomers { get; } = new();
+    public ObservableCollection<TopCustomer>     TopCustomers { get; } = new();
+    public ObservableCollection<GiveawaySummary> Giveaways    { get; } = new();
 
     private string? _sessionId;
 
-    public StreamReportViewModel(LabelRepository labels, SessionRepository sessions)
+    public StreamReportViewModel(LabelRepository labels, SessionRepository sessions, GiveawayRepository giveaways)
     {
         _labels = labels;
         _sessions = sessions;
+        _giveaways = giveaways;
     }
 
     public void Load(string sessionId)
@@ -42,6 +45,10 @@ public sealed partial class StreamReportViewModel : ViewModelBase
         TopCustomers.Clear();
         foreach (var c in _labels.GetTopCustomersBySession(sessionId, limit: 10))
             TopCustomers.Add(c);
+
+        Giveaways.Clear();
+        foreach (var g in _giveaways.ListSummariesBySession(sessionId))
+            Giveaways.Add(g);
 
         var session = _sessions.GetById(sessionId);
         if (session is not null)
