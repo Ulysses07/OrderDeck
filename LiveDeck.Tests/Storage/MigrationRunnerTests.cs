@@ -9,7 +9,7 @@ namespace LiveDeck.Tests.Storage;
 public class MigrationRunnerTests
 {
     [Fact]
-    public void Run_creates_all_tables_at_version_4()
+    public void Run_creates_all_tables_at_version_5_with_dropped_legacy_columns()
     {
         using var db = new InMemorySqlite();
         var runner = new MigrationRunner(db);
@@ -26,20 +26,14 @@ public class MigrationRunnerTests
         });
 
         var version = conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().Be(4);
+        version.Should().Be(5);
 
         var customerColumns = conn.Query<string>(
             "SELECT name FROM pragma_table_info('Customer')").AsList();
-        customerColumns.Should().Contain(new[] { "TotalLabelsPrinted", "TotalAmount", "BlacklistedAt" });
-
-        var giveawayColumns = conn.Query<string>(
-            "SELECT name FROM pragma_table_info('Giveaway')").AsList();
-        giveawayColumns.Should().Contain(new[]
-        {
-            "Id", "SessionId", "Keyword", "DurationSeconds", "WinnerCount",
-            "PlatformFilter", "PreventRewinning", "RandomSeed",
-            "StartedAt", "EndedAt", "CancelledAt"
-        });
+        customerColumns.Should().Contain(new[]
+            { "TotalLabelsPrinted", "TotalAmount", "BlacklistedAt", "Notes", "IsBlacklisted" });
+        customerColumns.Should().NotContain(new[]
+            { "TrustScore", "TotalOrders", "CompletedOrders", "CancelledOrders" });
     }
 
     [Fact]
@@ -53,6 +47,6 @@ public class MigrationRunnerTests
 
         using var conn = db.Open();
         var version = conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().Be(4);
+        version.Should().Be(5);
     }
 }
