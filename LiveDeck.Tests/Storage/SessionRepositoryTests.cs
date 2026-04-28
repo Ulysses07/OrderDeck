@@ -36,4 +36,22 @@ public class SessionRepositoryTests
 
         repo.GetActive().Should().BeNull();
     }
+
+    [Fact]
+    public void GetAllEnded_returns_only_ended_sessions_newest_first()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new SessionRepository(db);
+
+        repo.Insert(new StreamSession("s1", null, 1000, EndedAt: 1500, new[] { "instagram" }, null));
+        repo.Insert(new StreamSession("s2", null, 2000, EndedAt: null,  new[] { "instagram" }, null));
+        repo.Insert(new StreamSession("s3", null, 3000, EndedAt: 3500, new[] { "tiktok" },    null));
+
+        var ended = repo.GetAllEnded(limit: 10);
+
+        ended.Should().HaveCount(2);
+        ended[0].Id.Should().Be("s3");
+        ended[1].Id.Should().Be("s1");
+    }
 }

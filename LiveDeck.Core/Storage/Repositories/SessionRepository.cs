@@ -52,6 +52,19 @@ public sealed class SessionRepository
         return row is null ? null : Map(row);
     }
 
+    public System.Collections.Generic.IReadOnlyList<Sessions.StreamSession> GetAllEnded(int limit)
+    {
+        using var conn = _factory.Open();
+        var rows = Dapper.SqlMapper.Query<Row>(conn,
+            @"SELECT Id, Title, StartedAt, EndedAt, Platforms, Notes
+              FROM StreamSession
+              WHERE EndedAt IS NOT NULL
+              ORDER BY StartedAt DESC
+              LIMIT @limit",
+            new { limit }).ToList();
+        return rows.Select(Map).ToList();
+    }
+
     private static StreamSession Map(Row r) => new(
         r.Id, r.Title, r.StartedAt, r.EndedAt,
         JsonSerializer.Deserialize<string[]>(r.Platforms ?? "[]") ?? System.Array.Empty<string>(),
