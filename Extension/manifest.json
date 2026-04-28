@@ -1,15 +1,23 @@
 {
   "manifest_version": 3,
   "name": "LiveDeck Chat Bridge",
-  "version": "1.0.0",
-  "description": "Forwards Instagram Live chat to LiveDeck",
+  "version": "1.1.0",
+  "description": "Forwards Instagram + TikTok Live chat to LiveDeck",
   "background": { "service_worker": "background.js" },
   "permissions": ["storage"],
-  "host_permissions": ["*://*.instagram.com/*"],
+  "host_permissions": [
+    "*://*.instagram.com/*",
+    "*://*.tiktok.com/*"
+  ],
   "content_scripts": [
     {
       "matches": ["*://*.instagram.com/*"],
       "js": ["content-instagram.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://*.tiktok.com/*"],
+      "js": ["content-tiktok.js"],
       "run_at": "document_idle"
     }
   ],
