@@ -16,4 +16,5 @@ public sealed record Customer(
     string? BlacklistReason,
     string? Notes,
     int TotalLabelsPrinted,
-    decimal TotalAmount);
+    decimal TotalAmount,
+    long? BlacklistedAt);
