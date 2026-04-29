@@ -45,6 +45,9 @@ public class Program
         else
             builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
 
+        builder.Services.AddSingleton<UnsubscribeTokenSigner>();
+        builder.Services.AddScoped<EmailSendCoordinator>();
+
         // JWT auth — two schemes (use IOptions so tests can override Jwt:SecretKey via config)
         builder.Services.AddAuthentication()
             .AddJwtBearer("Bearer-Customer", _ => { })
