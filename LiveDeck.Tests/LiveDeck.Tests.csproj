@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
@@ -26,6 +27,6 @@
     <ProjectReference Include="..\LiveDeck.Core\LiveDeck.Core.csproj" />
     <ProjectReference Include="..\LiveDeck.Chat\LiveDeck.Chat.csproj" />
     <ProjectReference Include="..\LiveDeck.Labeling\LiveDeck.Labeling.csproj" />
+    <ProjectReference Include="..\LiveDeck.App\LiveDeck.App.csproj" />
   </ItemGroup>
-
 </Project>

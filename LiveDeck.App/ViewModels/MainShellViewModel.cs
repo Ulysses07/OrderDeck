@@ -21,7 +21,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 {
     private readonly LabelService _labels;
     private readonly StreamSessionService _sessions;
-    private readonly LabelPrinter _printer;
+    private readonly ILabelPrinter _printer;
     private readonly CustomerService _customers;
     private readonly CustomerRepository _customerRepo;
     private readonly GiveawayService _giveaways;
@@ -48,7 +48,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         IChatBus bus,
         LabelService labels,
         StreamSessionService sessions,
-        LabelPrinter printer,
+        ILabelPrinter printer,
         CustomerService customers,
         CustomerRepository customerRepo,
         GiveawayService giveaways,

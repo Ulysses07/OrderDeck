@@ -83,9 +83,10 @@ public sealed class AppHost : IDisposable
             log: sp.GetRequiredService<ILogger<OverlayHost>>()));
 
         // Printing
-        services.AddSingleton(sp => new LabelPrinter(
+        services.AddSingleton<LabelPrinter>(sp => new LabelPrinter(
             sp.GetRequiredService<AppSettings>(),
             sp.GetRequiredService<ILogger<LabelPrinter>>()));
+        services.AddSingleton<ILabelPrinter>(sp => sp.GetRequiredService<LabelPrinter>());
 
         // ViewModels
         services.AddSingleton<ViewModels.MainShellViewModel>();

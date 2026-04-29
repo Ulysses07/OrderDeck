@@ -12,7 +12,7 @@ namespace LiveDeck.Labeling;
 /// Printer-independent — works with any Windows-driver-backed printer.
 /// </summary>
 [SupportedOSPlatform("windows")]
-public sealed class LabelPrinter
+public sealed class LabelPrinter : ILabelPrinter
 {
     private readonly AppSettings _settings;
     private readonly ILogger<LabelPrinter> _log;
