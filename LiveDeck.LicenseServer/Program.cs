@@ -5,6 +5,7 @@ using LiveDeck.LicenseServer.Services.Auth;
 using LiveDeck.LicenseServer.Services.Email;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 
 namespace LiveDeck.LicenseServer;
@@ -35,36 +36,39 @@ public class Program
         else
             builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
 
-        // JWT auth — two schemes
-        var jwtSecret = builder.Configuration["Jwt:SecretKey"]
-            ?? throw new InvalidOperationException("Jwt:SecretKey missing");
-        var jwtIssuer = builder.Configuration["Jwt:Issuer"]
-            ?? throw new InvalidOperationException("Jwt:Issuer missing");
-        var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret));
-
+        // JWT auth — two schemes (use IOptions so tests can override Jwt:SecretKey via config)
         builder.Services.AddAuthentication()
-            .AddJwtBearer("Bearer-Customer", o =>
+            .AddJwtBearer("Bearer-Customer", _ => { })
+            .AddJwtBearer("Bearer-Admin", _ => { });
+
+        builder.Services.AddOptions<JwtBearerOptions>("Bearer-Customer")
+            .Configure<IOptions<JwtOptions>>((o, jwtOpts) =>
             {
+                var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOpts.Value.SecretKey));
                 o.TokenValidationParameters = new TokenValidationParameters
                 {
-                    ValidateIssuer = true, ValidIssuer = jwtIssuer,
+                    ValidateIssuer = true, ValidIssuer = jwtOpts.Value.Issuer,
                     ValidateAudience = true, ValidAudience = JwtOptions.CustomerAudience,
-                    ValidateIssuerSigningKey = true, IssuerSigningKey = signingKey,
-                    ValidateLifetime = true,
-                    ClockSkew = TimeSpan.FromSeconds(30)
-                };
-            })
-            .AddJwtBearer("Bearer-Admin", o =>
-            {
-                o.TokenValidationParameters = new TokenValidationParameters
-                {
-                    ValidateIssuer = true, ValidIssuer = jwtIssuer,
-                    ValidateAudience = true, ValidAudience = JwtOptions.AdminAudience,
-                    ValidateIssuerSigningKey = true, IssuerSigningKey = signingKey,
+                    ValidateIssuerSigningKey = true, IssuerSigningKey = key,
                     ValidateLifetime = true,
                     ClockSkew = TimeSpan.FromSeconds(30)
                 };
             });
+
+        builder.Services.AddOptions<JwtBearerOptions>("Bearer-Admin")
+            .Configure<IOptions<JwtOptions>>((o, jwtOpts) =>
+            {
+                var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOpts.Value.SecretKey));
+                o.TokenValidationParameters = new TokenValidationParameters
+                {
+                    ValidateIssuer = true, ValidIssuer = jwtOpts.Value.Issuer,
+                    ValidateAudience = true, ValidAudience = JwtOptions.AdminAudience,
+                    ValidateIssuerSigningKey = true, IssuerSigningKey = key,
+                    ValidateLifetime = true,
+                    ClockSkew = TimeSpan.FromSeconds(30)
+                };
+            });
+
         builder.Services.AddAuthorization();
 
         // Rate limiting
