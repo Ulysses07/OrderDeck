@@ -1,0 +1,47 @@
+@page
+@model IssueModel
+@{
+    ViewData["Title"] = "Yeni Lisans";
+}
+<h1 class="h3 mb-4">Yeni Lisans İhraç</h1>
+
+@if (!string.IsNullOrEmpty(Model.ErrorMessage))
+{
+    <div class="alert alert-danger">@Model.ErrorMessage</div>
+}
+
+<form method="post" style="max-width: 600px;">
+    <div class="mb-3">
+        <label asp-for="Input.CustomerEmail" class="form-label">Müşteri E-postası</label>
+        <input asp-for="Input.CustomerEmail" class="form-control" />
+        <span asp-validation-for="Input.CustomerEmail" class="text-danger"></span>
+    </div>
+
+    <div class="mb-3">
+        <label asp-for="Input.SkuCode" class="form-label">SKU</label>
+        <select asp-for="Input.SkuCode" class="form-select">
+            <option value="">— Seç —</option>
+            @foreach (var sku in Model.Skus)
+            {
+                <option value="@sku.Code">@sku.Code — @sku.DisplayName (@sku.DefaultDurationDays gün, @sku.DefaultActivationSlots slot)</option>
+            }
+        </select>
+        <span asp-validation-for="Input.SkuCode" class="text-danger"></span>
+    </div>
+
+    <div class="row">
+        <div class="col-md-6 mb-3">
+            <label asp-for="Input.DurationDaysOverride" class="form-label">Süre (gün, opsiyonel override)</label>
+            <input asp-for="Input.DurationDaysOverride" type="number" class="form-control" placeholder="SKU varsayılanını kullan" />
+            <span asp-validation-for="Input.DurationDaysOverride" class="text-danger"></span>
+        </div>
+        <div class="col-md-6 mb-3">
+            <label asp-for="Input.SlotsOverride" class="form-label">Slot (opsiyonel override)</label>
+            <input asp-for="Input.SlotsOverride" type="number" class="form-control" placeholder="SKU varsayılanını kullan" />
+            <span asp-validation-for="Input.SlotsOverride" class="text-danger"></span>
+        </div>
+    </div>
+
+    <button type="submit" class="btn btn-primary">İhraç Et</button>
+    <a asp-page="/Admin/Index" class="btn btn-link">İptal</a>
+</form>

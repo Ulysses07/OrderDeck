@@ -13,6 +13,7 @@ public sealed class LicenseDbContext : DbContext
     public DbSet<License> Licenses => Set<License>();
     public DbSet<Activation> Activations => Set<Activation>();
     public DbSet<EmailConfirmationToken> EmailConfirmationTokens => Set<EmailConfirmationToken>();
+    public DbSet<AuditLogEntry> AuditLogs => Set<AuditLogEntry>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -72,6 +73,20 @@ public sealed class LicenseDbContext : DbContext
             b.HasOne(t => t.Customer).WithMany()
                 .HasForeignKey(t => t.CustomerId).OnDelete(DeleteBehavior.Cascade);
             b.HasIndex(t => new { t.CustomerId, t.UsedAt });
+        });
+
+        mb.Entity<AuditLogEntry>(b =>
+        {
+            b.HasKey(a => a.Id);
+            b.Property(a => a.AdminUsername).HasMaxLength(64).IsRequired();
+            b.Property(a => a.EventType).HasMaxLength(64).IsRequired();
+            b.Property(a => a.TargetType).HasMaxLength(32).IsRequired();
+            b.Property(a => a.TargetId).HasMaxLength(64);
+            b.Property(a => a.Details).HasMaxLength(4000);
+            b.Property(a => a.IpAddress).HasMaxLength(64);
+            b.HasIndex(a => a.OccurredAt);
+            b.HasIndex(a => new { a.AdminId, a.OccurredAt });
+            b.HasIndex(a => new { a.TargetType, a.TargetId });
         });
 
         // Seed SKUs

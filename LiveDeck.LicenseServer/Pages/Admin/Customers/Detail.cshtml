@@ -1,0 +1,84 @@
+@page "/admin/customers/{id:guid}"
+@model DetailModel
+@{
+    ViewData["Title"] = "Müşteri Detayı";
+}
+<h1 class="h3 mb-4">@Model.Customer!.Name</h1>
+
+<div class="row mb-4">
+    <div class="col-md-6">
+        <h5>Profil</h5>
+        <table class="table">
+            <tr><th>E-posta</th><td>@Model.Customer.Email</td></tr>
+            <tr><th>Ad Soyad</th><td>@Model.Customer.Name</td></tr>
+            <tr>
+                <th>Doğrulama</th>
+                <td>
+                    @if (Model.Customer.EmailConfirmedAt is null)
+                    {
+                        <form method="post" asp-page-handler="ConfirmEmail" asp-route-id="@Model.Customer.Id" class="d-inline">
+                            <button type="submit" class="btn btn-sm btn-warning">E-postayı doğrula</button>
+                        </form>
+                    }
+                    else
+                    {
+                        <span>Evet (@Model.Customer.EmailConfirmedAt.Value.ToString("dd.MM.yyyy"))</span>
+                    }
+                </td>
+            </tr>
+            <tr><th>Kayıt</th><td>@Model.Customer.CreatedAt.ToString("dd.MM.yyyy HH:mm")</td></tr>
+        </table>
+    </div>
+</div>
+
+<h5>Lisanslar</h5>
+@if (!Model.Licenses.Any())
+{
+    <p class="text-muted">Bu müşteriye henüz lisans verilmedi.</p>
+    <a asp-page="/Admin/Licenses/Issue" asp-route-customerEmail="@Model.Customer.Email" class="btn btn-primary btn-sm">Yeni lisans ihraç et</a>
+}
+else
+{
+    <table class="table" data-table="licenses">
+        <thead><tr><th>Anahtar</th><th>SKU</th><th>Bitiş</th><th>Durum</th><th></th></tr></thead>
+        <tbody>
+            @foreach (var l in Model.Licenses)
+            {
+                <tr>
+                    <td><code>@l.LicenseKey</code></td>
+                    <td>@l.SkuCode</td>
+                    <td>@l.ExpiresAt.ToString("dd.MM.yyyy")</td>
+                    <td>
+                        @if (l.RevokedAt is not null) { <span class="badge text-bg-danger">İptal</span> }
+                        else if (l.ExpiresAt < DateTimeOffset.UtcNow) { <span class="badge text-bg-warning">Süresi Doldu</span> }
+                        else { <span class="badge text-bg-success">Aktif</span> }
+                    </td>
+                    <td><a asp-page="/Admin/Licenses/Detail" asp-route-key="@l.LicenseKey" class="btn btn-sm btn-outline-secondary">Detay</a></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+<h5 class="mt-4">Son Audit Olayları</h5>
+@if (!Model.AuditEntries.Any())
+{
+    <p class="text-muted">Henüz audit kaydı yok.</p>
+}
+else
+{
+    <table class="table table-sm">
+        <thead><tr><th>Zaman</th><th>Olay</th><th>Hedef</th><th>Admin</th></tr></thead>
+        <tbody>
+            @foreach (var a in Model.AuditEntries)
+            {
+                <tr>
+                    <td>@a.OccurredAt.ToString("dd.MM HH:mm")</td>
+                    <td>@a.EventType</td>
+                    <td>@a.TargetType / @a.TargetId</td>
+                    <td>@a.AdminUsername</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}

@@ -1,0 +1,110 @@
+@page "/admin/licenses/{key}"
+@model DetailModel
+@{
+    ViewData["Title"] = "Lisans Detayı";
+    var isActive = Model.License!.RevokedAt is null && Model.License.ExpiresAt > DateTimeOffset.UtcNow;
+    var customer = Model.Customer!;
+}
+<h1 class="h3 mb-4"><code>@Model.License.LicenseKey</code></h1>
+
+<div class="row">
+    <div class="col-md-6">
+        <h5>Bilgi</h5>
+        <table class="table">
+            <tr><th>Müşteri</th><td><a asp-page="/Admin/Customers/Detail" asp-route-id="@customer.Id">@customer.Email</a></td></tr>
+            <tr><th>SKU</th><td>@Model.License.SkuCode</td></tr>
+            <tr><th>Slot</th><td>@Model.License.ActivationSlots</td></tr>
+            <tr><th>İhraç</th><td>@Model.License.IssuedAt.ToString("dd.MM.yyyy HH:mm")</td></tr>
+            <tr><th>Bitiş</th><td>@Model.License.ExpiresAt.ToString("dd.MM.yyyy HH:mm")</td></tr>
+            <tr>
+                <th>Durum</th>
+                <td>
+                    @if (Model.License.RevokedAt is not null)
+                    {
+                        <span class="badge text-bg-danger">İptal</span> <small class="text-muted">(@Model.License.RevokeReason)</small>
+                    }
+                    else if (Model.License.ExpiresAt < DateTimeOffset.UtcNow)
+                    {
+                        <span class="badge text-bg-warning">Süresi Doldu</span>
+                    }
+                    else
+                    {
+                        <span class="badge text-bg-success">Aktif</span>
+                    }
+                </td>
+            </tr>
+        </table>
+    </div>
+
+    <div class="col-md-6">
+        @if (isActive)
+        {
+            <h5>Uzat</h5>
+            <form method="post" asp-page-handler="Extend" asp-route-key="@Model.License.LicenseKey" class="mb-4">
+                <div class="input-group" style="max-width: 300px;">
+                    <input asp-for="ExtendForm.AdditionalDays" type="number" class="form-control" />
+                    <span class="input-group-text">gün</span>
+                    <button type="submit" class="btn btn-primary">Uzat</button>
+                </div>
+                <span asp-validation-for="ExtendForm.AdditionalDays" class="text-danger"></span>
+            </form>
+
+            <h5>İptal</h5>
+            <form method="post" asp-page-handler="Revoke" asp-route-key="@Model.License.LicenseKey">
+                <div class="mb-2">
+                    <input asp-for="RevokeForm.Reason" class="form-control" placeholder="İptal sebebi" />
+                    <span asp-validation-for="RevokeForm.Reason" class="text-danger"></span>
+                </div>
+                <button type="submit" class="btn btn-danger">İptal Et</button>
+            </form>
+        }
+    </div>
+</div>
+
+<h5 class="mt-4">Aktivasyonlar</h5>
+@if (!Model.Activations.Any())
+{
+    <p class="text-muted">Bu lisansa henüz aktivasyon yok.</p>
+}
+else
+{
+    <a asp-page="/Admin/Activations/Index" asp-route-licenseKey="@Model.License.LicenseKey" class="btn btn-sm btn-outline-secondary mb-2">Tümünü gör + yönet</a>
+    <table class="table table-sm" data-table="activations">
+        <thead><tr><th>Cihaz</th><th>HW</th><th>Aktif tarih</th><th>Son görülme</th><th>Durum</th></tr></thead>
+        <tbody>
+            @foreach (var a in Model.Activations)
+            {
+                <tr>
+                    <td>@(a.MachineName ?? "—")</td>
+                    <td><code>@(a.HardwareFingerprint.Length > 16 ? a.HardwareFingerprint[..16] + "…" : a.HardwareFingerprint)</code></td>
+                    <td>@a.ActivatedAt.ToString("dd.MM HH:mm")</td>
+                    <td>@a.LastSeenAt.ToString("dd.MM HH:mm")</td>
+                    <td>@(a.DeactivatedAt is null ? "Aktif" : "İptal")</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+<h5 class="mt-4">Son Audit Olayları</h5>
+@if (!Model.AuditEntries.Any())
+{
+    <p class="text-muted">Henüz audit kaydı yok.</p>
+}
+else
+{
+    <table class="table table-sm">
+        <thead><tr><th>Zaman</th><th>Olay</th><th>Admin</th><th>Detay</th></tr></thead>
+        <tbody>
+            @foreach (var a in Model.AuditEntries)
+            {
+                <tr>
+                    <td>@a.OccurredAt.ToString("dd.MM HH:mm")</td>
+                    <td>@a.EventType</td>
+                    <td>@a.AdminUsername</td>
+                    <td><code>@(a.Details?.Length > 60 ? a.Details[..60] + "…" : a.Details)</code></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}

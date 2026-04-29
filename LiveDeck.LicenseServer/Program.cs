@@ -3,6 +3,7 @@ using System.Threading.RateLimiting;
 using LiveDeck.LicenseServer.Data;
 using LiveDeck.LicenseServer.Services.Auth;
 using LiveDeck.LicenseServer.Services.Email;
+using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -31,6 +32,9 @@ public class Program
         builder.Services.AddScoped<LiveDeck.LicenseServer.Services.Licensing.LicenseIssuer>();
         builder.Services.AddScoped<LiveDeck.LicenseServer.Services.Licensing.LicenseValidator>();
         builder.Services.AddScoped<LiveDeck.LicenseServer.Services.Licensing.ActivationManager>();
+        builder.Services.AddHttpContextAccessor();
+        builder.Services.AddScoped<LiveDeck.LicenseServer.Services.Audit.IAuditService,
+                                    LiveDeck.LicenseServer.Services.Audit.AuditService>();
 
         // Email sender selection
         var emailProvider = builder.Configuration["Email:Provider"] ?? "smtp";
@@ -42,7 +46,19 @@ public class Program
         // JWT auth — two schemes (use IOptions so tests can override Jwt:SecretKey via config)
         builder.Services.AddAuthentication()
             .AddJwtBearer("Bearer-Customer", _ => { })
-            .AddJwtBearer("Bearer-Admin", _ => { });
+            .AddJwtBearer("Bearer-Admin", _ => { })
+            .AddCookie("AdminCookie", o =>
+            {
+                o.LoginPath = "/admin/login";
+                o.AccessDeniedPath = "/admin/login";
+                o.LogoutPath = "/admin/logout";
+                o.ExpireTimeSpan = TimeSpan.FromHours(8);
+                o.SlidingExpiration = true;
+                o.Cookie.HttpOnly = true;
+                o.Cookie.SameSite = SameSiteMode.Lax;
+                o.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+                o.Cookie.Name = "LiveDeckAdmin";
+            });
 
         builder.Services.AddOptions<JwtBearerOptions>("Bearer-Customer")
             .Configure<IOptions<JwtOptions>>((o, jwtOpts) =>
@@ -72,7 +88,12 @@ public class Program
                 };
             });
 
-        builder.Services.AddAuthorization();
+        builder.Services.AddAuthorization(opt =>
+        {
+            opt.AddPolicy("AdminOnly", p => p
+                .AddAuthenticationSchemes("AdminCookie")
+                .RequireAuthenticatedUser());
+        });
 
         // Rate limiting
         builder.Services.AddRateLimiter(opt =>
@@ -109,6 +130,12 @@ public class Program
             opt.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
 
         builder.Services.AddControllers();
+        builder.Services.AddRazorPages(opt =>
+        {
+            opt.Conventions.AuthorizeFolder("/Admin", "AdminOnly");
+            opt.Conventions.AllowAnonymousToPage("/Admin/Login");
+            opt.Conventions.AllowAnonymousToPage("/Admin/Logout");
+        });
         builder.Services.AddEndpointsApiExplorer();
         builder.Services.AddSwaggerGen();
 
@@ -129,11 +156,13 @@ public class Program
         }
 
         app.UseHttpsRedirection();
+        app.UseStaticFiles();
         app.UseCors();
         app.UseRateLimiter();
         app.UseAuthentication();
         app.UseAuthorization();
         app.MapControllers();
+        app.MapRazorPages();
 
         app.Run();
     }
