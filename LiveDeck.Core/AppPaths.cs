@@ -24,6 +24,7 @@ public static class AppPaths
 
     public static string AuthFile => Path.Combine(DataFolder, "auth.dat");
     public static string LicenseFile => Path.Combine(DataFolder, "license.dat");
+    public static string TrialFile => Path.Combine(DataFolder, "trial.dat");
 
     public static void EnsureDirectoriesExist()
     {

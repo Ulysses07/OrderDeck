@@ -16,6 +16,7 @@ using LiveDeck.Licensing;
 using LiveDeck.Licensing.Api;
 using LiveDeck.Licensing.Services;
 using LiveDeck.Licensing.Storage;
+using LiveDeck.Licensing.Trial;
 using LiveDeck.Overlay;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -138,6 +139,30 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<LicenseService>();
         services.AddHostedService<HeartbeatHostedService>();
 
+        // Licensing — Trial (Phase 4c)
+        services.AddSingleton<HkcuTrialStorage>();
+        services.AddSingleton<ProgramDataTrialStorage>(sp =>
+        {
+            var opt = sp.GetRequiredService<IOptions<LicensingOptions>>().Value;
+            return new ProgramDataTrialStorage(opt.TrialProgramDataPath,
+                sp.GetRequiredService<ILogger<ProgramDataTrialStorage>>());
+        });
+        services.AddSingleton<LocalAppDataTrialStorage>(sp =>
+            new LocalAppDataTrialStorage(
+                sp.GetRequiredService<EncryptedStore>(),
+                AppPaths.TrialFile));
+        services.AddSingleton<ITrialStorage>(sp => new CompositeTrialStorage(
+            sp.GetRequiredService<HkcuTrialStorage>(),
+            sp.GetRequiredService<ProgramDataTrialStorage>(),
+            sp.GetRequiredService<LocalAppDataTrialStorage>(),
+            sp.GetRequiredService<ILogger<CompositeTrialStorage>>()));
+        services.AddSingleton<TrialService>(sp => new TrialService(
+            sp.GetRequiredService<ITrialStorage>(),
+            sp.GetRequiredService<IHardwareIdProvider>(),
+            sp.GetRequiredService<IOptions<LicensingOptions>>(),
+            () => DateTimeOffset.UtcNow,
+            sp.GetRequiredService<ILogger<TrialService>>()));
+
         // Licensing dialogs (Phase 4b)
         services.AddTransient<ViewModels.LoginDialogViewModel>();
         services.AddTransient<Views.LoginDialog>();
@@ -163,6 +188,16 @@ public sealed class AppHost : IDisposable
         var opt = new LicensingOptions();
         var envBase = Environment.GetEnvironmentVariable("LIVEDECK_LICENSE_BASE_URL");
         if (!string.IsNullOrWhiteSpace(envBase)) opt.ServerBaseUrl = envBase.Trim();
+
+        var envTrialDays = Environment.GetEnvironmentVariable("LIVEDECK_TRIAL_DURATION_DAYS");
+        if (int.TryParse(envTrialDays, out var d) && d >= 0) opt.TrialDurationDays = d;
+
+        var envTrialPath = Environment.GetEnvironmentVariable("LIVEDECK_TRIAL_PROGRAMDATA_PATH");
+        if (!string.IsNullOrWhiteSpace(envTrialPath)) opt.TrialProgramDataPath = envTrialPath.Trim();
+
+        var envTrialKey = Environment.GetEnvironmentVariable("LIVEDECK_TRIAL_REGISTRY_SUBKEY");
+        if (!string.IsNullOrWhiteSpace(envTrialKey)) opt.TrialRegistrySubKey = envTrialKey.Trim();
+
         return opt;
     }
 
