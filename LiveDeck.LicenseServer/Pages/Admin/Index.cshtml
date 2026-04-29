@@ -1,0 +1,40 @@
+@page
+@model IndexModel
+@{
+    ViewData["Title"] = "Dashboard";
+}
+<h1 class="h3 mb-4">Dashboard</h1>
+<div class="row g-3">
+    <div class="col-md-3">
+        <div class="card text-bg-primary">
+            <div class="card-body">
+                <h6 class="card-subtitle mb-2 text-white-50">Toplam Müşteri</h6>
+                <p class="card-text display-6" data-stat="customers">@Model.TotalCustomers</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-bg-success">
+            <div class="card-body">
+                <h6 class="card-subtitle mb-2 text-white-50">Aktif Lisans</h6>
+                <p class="card-text display-6" data-stat="active-licenses">@Model.ActiveLicenses</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-bg-warning">
+            <div class="card-body">
+                <h6 class="card-subtitle mb-2 text-white-50">İptal/Süresi Dolmuş</h6>
+                <p class="card-text display-6" data-stat="expired-licenses">@Model.ExpiredOrRevokedLicenses</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-bg-info">
+            <div class="card-body">
+                <h6 class="card-subtitle mb-2 text-white-50">Aktif Aktivasyon</h6>
+                <p class="card-text display-6" data-stat="active-activations">@Model.ActiveActivations</p>
+            </div>
+        </div>
+    </div>
+</div>

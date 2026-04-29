@@ -82,16 +82,8 @@ public sealed class AdminAuthFlowTests : IClassFixture<ApiFactory>
             AllowAutoRedirect = false
         });
         var resp = await client.GetAsync("/admin");
-        // 404 if Index page yet (Task 4); accept either 302 OR 404 for now.
-        // After Task 4: must be 302 with Location starting "/admin/login"
-        if (resp.StatusCode == HttpStatusCode.Redirect)
-        {
-            resp.Headers.Location!.ToString().Should().StartWith("/admin/login");
-        }
-        else
-        {
-            resp.StatusCode.Should().Be(HttpStatusCode.NotFound);   // Index page coming in Task 4
-        }
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        resp.Headers.Location!.PathAndQuery.Should().StartWith("/admin/login");
     }
 
     [Fact]
