@@ -57,6 +57,25 @@ public sealed class MeController : ControllerBase
         return NoContent();
     }
 
+    [HttpGet("licenses")]
+    public async Task<IActionResult> GetMyLicenses(CancellationToken ct)
+    {
+        var id = GetCustomerId();
+        var now = DateTimeOffset.UtcNow;
+        var rows = await _db.Licenses
+            .Where(l => l.CustomerId == id && l.RevokedAt == null && l.ExpiresAt > now)
+            .OrderByDescending(l => l.IssuedAt)
+            .Select(l => new
+            {
+                licenseKey = l.LicenseKey,
+                skuCode = l.SkuCode,
+                expiresAt = l.ExpiresAt,
+                revokedAt = (DateTimeOffset?)null
+            })
+            .ToListAsync(ct);
+        return Ok(rows);
+    }
+
     private Guid GetCustomerId()
     {
         var sub = User.FindFirst("sub")?.Value

@@ -31,6 +31,20 @@
             <TextBox  Grid.Column="4" Text="{Binding ActivePriceText, UpdateSourceTrigger=PropertyChanged}"
                       Padding="6" FontSize="14"/>
 
+            <TextBlock Grid.Column="5"
+                       Text="{Binding LicenseStatusText}"
+                       Foreground="{Binding LicenseStatusBrush}"
+                       FontWeight="SemiBold"
+                       VerticalAlignment="Center"
+                       HorizontalAlignment="Right"
+                       Margin="12,0"
+                       Cursor="Hand"
+                       ToolTip="Hesap detayları için tıkla">
+                <TextBlock.InputBindings>
+                    <MouseBinding MouseAction="LeftClick" Command="{Binding OpenAccountCommand}"/>
+                </TextBlock.InputBindings>
+            </TextBlock>
+
             <Button   Grid.Column="6" Content="Yayın Başlat"
                       Command="{Binding StartStreamCommand}" Padding="14,6" Margin="0,0,8,0"/>
             <Button   Grid.Column="7" Content="Yayını Bitir"
@@ -56,6 +70,9 @@
                                   Command="{Binding OpenBlacklistCommand}"/>
                         <MenuItem Header="Müşteriler"
                                   Command="{Binding OpenCustomerSearchCommand}"/>
+                        <Separator/>
+                        <MenuItem Header="Hesap"
+                                  Command="{Binding OpenAccountCommand}"/>
                     </ContextMenu>
                 </Button.ContextMenu>
             </Button>

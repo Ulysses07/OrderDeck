@@ -12,9 +12,15 @@ using LiveDeck.Core.Storage;
 using LiveDeck.Core.Storage.Repositories;
 using LiveDeck.Core.Time;
 using LiveDeck.Labeling;
+using LiveDeck.Licensing;
+using LiveDeck.Licensing.Api;
+using LiveDeck.Licensing.Services;
+using LiveDeck.Licensing.Storage;
 using LiveDeck.Overlay;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Serilog;
 using Serilog.Extensions.Logging;
 
@@ -113,6 +119,31 @@ public sealed class AppHost : IDisposable
         services.AddTransient<ViewModels.ShortcutsTabViewModel>();
         services.AddTransient<Views.ShortcutHelpDialog>();
 
+        // Licensing (Phase 4b)
+        var licensingOptions = BuildLicensingOptions();
+        services.AddSingleton(Options.Create(licensingOptions));
+        services.AddSingleton<IHardwareIdProvider, HardwareIdProvider>();
+        services.AddSingleton<EncryptedStore>();
+        services.AddSingleton(sp => new AuthStore(
+            sp.GetRequiredService<EncryptedStore>(), AppPaths.AuthFile));
+        services.AddSingleton(sp => new LicenseStateStore(
+            sp.GetRequiredService<EncryptedStore>(), AppPaths.LicenseFile));
+        services.AddHttpClient<LicenseApiClient>((sp, http) =>
+        {
+            var opt = sp.GetRequiredService<IOptions<LicensingOptions>>().Value;
+            http.BaseAddress = new Uri(opt.ServerBaseUrl);
+            http.Timeout = TimeSpan.FromSeconds(opt.RequestTimeoutSeconds);
+        });
+        services.AddSingleton<LoginService>();
+        services.AddSingleton<LicenseService>();
+        services.AddHostedService<HeartbeatHostedService>();
+
+        // Licensing dialogs (Phase 4b)
+        services.AddTransient<ViewModels.LoginDialogViewModel>();
+        services.AddTransient<Views.LoginDialog>();
+        services.AddTransient<ViewModels.AccountDialogViewModel>();
+        services.AddTransient<Views.AccountDialog>();
+
         Services = services.BuildServiceProvider();
 
         // Apply migrations once at boot
@@ -125,6 +156,14 @@ public sealed class AppHost : IDisposable
         if (orphans > 0)
             Services.GetRequiredService<ILogger<AppHost>>()
                 .LogWarning("Cancelled {Count} orphaned giveaway(s) from prior session", orphans);
+    }
+
+    private static LicensingOptions BuildLicensingOptions()
+    {
+        var opt = new LicensingOptions();
+        var envBase = Environment.GetEnvironmentVariable("LIVEDECK_LICENSE_BASE_URL");
+        if (!string.IsNullOrWhiteSpace(envBase)) opt.ServerBaseUrl = envBase.Trim();
+        return opt;
     }
 
     public void Dispose()
