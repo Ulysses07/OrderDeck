@@ -40,6 +40,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private string _streamStatusLabel = "Yayın aktif değil";
     [ObservableProperty] private bool _isGiveawayActive;
     [ObservableProperty] private bool _canStartGiveaway;
+    [ObservableProperty] private LabelViewModel? _selectedQueueItem;
 
     private string? _activeGiveawayId;
 
@@ -352,6 +353,23 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private void OpenCustomerSearch()
     {
         var dlg = App.Host.Services.GetRequiredService<Views.CustomerSearchDialog>();
+        dlg.Owner = Application.Current?.MainWindow;
+        dlg.ShowDialog();
+    }
+
+    [RelayCommand]
+    private void DeleteSelectedFromQueueViaShortcut()
+    {
+        if (SelectedQueueItem is null) return;
+        _labels.Delete(SelectedQueueItem.Id);
+        PrintQueue.Remove(SelectedQueueItem);
+        SelectedQueueItem = null;
+    }
+
+    [RelayCommand]
+    private void OpenShortcutHelp()
+    {
+        var dlg = App.Host.Services.GetRequiredService<Views.ShortcutHelpDialog>();
         dlg.Owner = Application.Current?.MainWindow;
         dlg.ShowDialog();
     }

@@ -169,6 +169,7 @@
                 <ListBox Grid.Row="1"
                          x:Name="QueueList"
                          ItemsSource="{Binding PrintQueue}"
+                         SelectedItem="{Binding SelectedQueueItem, Mode=TwoWay}"
                          Background="#FF1A1A1A" Foreground="White"
                          BorderBrush="#FF333333" BorderThickness="1">
                     <ListBox.ItemContainerStyle>

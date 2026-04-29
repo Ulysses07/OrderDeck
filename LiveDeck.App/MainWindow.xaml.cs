@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Windows;
+using LiveDeck.App.Shortcuts;
 using LiveDeck.App.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -10,6 +11,13 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        Loaded += OnLoaded;
+    }
+
+    private void OnLoaded(object sender, RoutedEventArgs e)
+    {
+        var binder = App.Host.Services.GetRequiredService<ShortcutBinder>();
+        binder.Apply(this);
     }
 
     protected override void OnClosing(CancelEventArgs e)

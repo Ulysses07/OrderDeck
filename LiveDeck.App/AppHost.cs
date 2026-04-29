@@ -106,6 +106,12 @@ public sealed class AppHost : IDisposable
         services.AddTransient<Views.CustomerDetailDialog>();
         services.AddTransient<Views.CustomerSearchDialog>();
 
+        // Shortcuts (Phase 3b-1)
+        services.AddSingleton<LiveDeck.Core.Shortcuts.ShortcutRegistry>();
+        services.AddSingleton<LiveDeck.App.Shortcuts.ShortcutBinder>();
+        services.AddTransient<ViewModels.ShortcutsTabViewModel>();
+        services.AddTransient<Views.ShortcutHelpDialog>();
+
         Services = services.BuildServiceProvider();
 
         // Apply migrations once at boot

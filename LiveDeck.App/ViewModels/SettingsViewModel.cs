@@ -48,11 +48,14 @@ public sealed partial class SettingsViewModel : ViewModelBase
     /// <summary>True iff Save committed changes; dialog uses to set DialogResult.</summary>
     public bool Saved { get; private set; }
 
-    public SettingsViewModel(AppSettings settings, SettingsStore store)
+    public ShortcutsTabViewModel ShortcutsTab { get; }
+
+    public SettingsViewModel(AppSettings settings, SettingsStore store, ShortcutsTabViewModel shortcutsTab)
     {
         _liveSettings = settings;
         _store = store;
         _originalOverlayPort = settings.OverlayPort;
+        ShortcutsTab = shortcutsTab;
 
         LoadFromSettings();
         LoadInstalledPrinters();
