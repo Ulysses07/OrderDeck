@@ -32,6 +32,9 @@ public class Program
         builder.Services.AddScoped<LiveDeck.LicenseServer.Services.Licensing.LicenseIssuer>();
         builder.Services.AddScoped<LiveDeck.LicenseServer.Services.Licensing.LicenseValidator>();
         builder.Services.AddScoped<LiveDeck.LicenseServer.Services.Licensing.ActivationManager>();
+        builder.Services.AddHttpContextAccessor();
+        builder.Services.AddScoped<LiveDeck.LicenseServer.Services.Audit.IAuditService,
+                                    LiveDeck.LicenseServer.Services.Audit.AuditService>();
 
         // Email sender selection
         var emailProvider = builder.Configuration["Email:Provider"] ?? "smtp";
