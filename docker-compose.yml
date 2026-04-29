@@ -1,0 +1,28 @@
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Strong!Pass123"
+    ports:
+      - "1433:1433"
+    volumes:
+      - mssql-data:/var/opt/mssql
+
+  license-server:
+    build:
+      context: .
+      dockerfile: LiveDeck.LicenseServer/Dockerfile
+    environment:
+      ConnectionStrings__LicenseDb: "Server=sqlserver;Database=LiveDeckLicense;User=sa;Password=Strong!Pass123;TrustServerCertificate=true;"
+      Jwt__SecretKey: "change-me-in-production-at-least-32-chars-long-secret"
+      Jwt__Issuer: "livedeck-license-server"
+      Email__Provider: "disk"
+      App__PublicBaseUrl: "http://localhost:8080"
+    ports:
+      - "8080:8080"
+    depends_on:
+      - sqlserver
+
+volumes:
+  mssql-data:
