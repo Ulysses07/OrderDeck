@@ -22,6 +22,9 @@ public static class AppPaths
     public static string DatabaseFile => Path.Combine(DataFolder, "livedeck.db");
     public static string SettingsFile => Path.Combine(DocumentsRoot, "settings.json");
 
+    public static string AuthFile => Path.Combine(DataFolder, "auth.dat");
+    public static string LicenseFile => Path.Combine(DataFolder, "license.dat");
+
     public static void EnsureDirectoriesExist()
     {
         Directory.CreateDirectory(DocumentsRoot);
