@@ -1,6 +1,8 @@
+using LiveDeck.Core.Chat;
 using LiveDeck.Licensing.Api;
 using LiveDeck.Licensing.Api.Models;
 using LiveDeck.Licensing.Storage;
+using LiveDeck.Licensing.Trial;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -9,14 +11,17 @@ namespace LiveDeck.Licensing.Services;
 /// <summary>
 /// State machine controller. Loads cached auth/license, calls /licenses/validate,
 /// and emits a <see cref="LicenseStatus"/> for the UI to bind to.
+/// Implements <see cref="ITrialModeProbe"/> so the chat bridge can drop non-Instagram
+/// messages when the app is in trial mode.
 /// </summary>
-public sealed class LicenseService
+public sealed class LicenseService : ITrialModeProbe
 {
     private readonly LicenseApiClient _api;
     private readonly AuthStore _authStore;
     private readonly LicenseStateStore _licenseStore;
     private readonly IHardwareIdProvider _hwId;
     private readonly LicensingOptions _opt;
+    private readonly TrialService _trial;
     private readonly ILogger<LicenseService> _log;
 
     public LicenseService(
@@ -25,6 +30,7 @@ public sealed class LicenseService
         LicenseStateStore licenseStore,
         IHardwareIdProvider hwId,
         IOptions<LicensingOptions> opt,
+        TrialService trial,
         ILogger<LicenseService> log)
     {
         _api = api;
@@ -32,10 +38,14 @@ public sealed class LicenseService
         _licenseStore = licenseStore;
         _hwId = hwId;
         _opt = opt.Value;
+        _trial = trial;
         _log = log;
     }
 
     public LicenseStatus CurrentStatus { get; private set; } = LicenseStatus.Initializing;
+
+    /// <inheritdoc cref="ITrialModeProbe.IsTrialMode"/>
+    public bool IsTrialMode => CurrentStatus.IsTrialMode();
 
     public AuthRecord? CurrentAuth { get; private set; }
 
@@ -43,17 +53,19 @@ public sealed class LicenseService
 
     public event EventHandler<LicenseStatus>? StatusChanged;
 
+    public TrialState? CurrentTrial { get; private set; }
+    public bool JustStartedTrial { get; private set; }
+
     /// <summary>
     /// Called once at app startup. Loads cached auth, attempts online validate, falls back to offline grace.
+    /// If no auth is present, falls through to trial path.
     /// </summary>
     public async Task InitializeAsync(CancellationToken ct = default)
     {
         var auth = _authStore.Load();
         if (auth is null)
         {
-            CurrentAuth = null;
-            CurrentLicense = null;
-            SetStatus(LicenseStatus.NoLicense);
+            await InitializeTrialPathAsync();
             return;
         }
 
@@ -61,9 +73,7 @@ public sealed class LicenseService
         {
             _log.LogInformation("Saved auth token expired locally; clearing.");
             _authStore.Clear();
-            CurrentAuth = null;
-            CurrentLicense = null;
-            SetStatus(LicenseStatus.NoLicense);
+            await InitializeTrialPathAsync();
             return;
         }
 
@@ -74,11 +84,47 @@ public sealed class LicenseService
         CurrentLicense = license;
         if (license is null)
         {
-            SetStatus(LicenseStatus.NoLicense);
+            // Auth present but no license — check trial fallback (no new trial start for logged-in users)
+            var trialState = _trial.GetState();
+            if (trialState is TrialState.Active a)
+            {
+                CurrentTrial = a;
+                SetStatus(LicenseStatus.TrialActive);
+            }
+            else if (trialState is TrialState.Expired e)
+            {
+                CurrentTrial = e;
+                SetStatus(LicenseStatus.TrialExpired);
+            }
+            else
+            {
+                // NoTrial — logged-in user has no license and no trial; do not auto-start trial
+                SetStatus(LicenseStatus.NoLicense);
+            }
             return;
         }
 
         await RefreshAsync(ct);
+    }
+
+    private Task InitializeTrialPathAsync()
+    {
+        var state = _trial.GetState();
+        if (state is TrialState.NoTrial)
+        {
+            state = _trial.StartNewTrial();
+            JustStartedTrial = true;
+            _log.LogInformation("Trial started for new user.");
+        }
+
+        CurrentTrial = state;
+        SetStatus(state switch
+        {
+            TrialState.Active   => LicenseStatus.TrialActive,
+            TrialState.Expired  => LicenseStatus.TrialExpired,
+            _                   => LicenseStatus.NoLicense
+        });
+        return Task.CompletedTask;
     }
 
     /// <summary>
@@ -163,7 +209,13 @@ public sealed class LicenseService
         HandleValidateResponse(seed, validate);
     }
 
-    /// <summary>Logout: clear caches and force NoLicense state.</summary>
+    /// <summary>UI calls this once after showing the trial-start banner so it's not shown again.</summary>
+    public void AcknowledgeTrialStartBanner()
+    {
+        JustStartedTrial = false;
+    }
+
+    /// <summary>Logout: clear caches and force NoLicense state. Trial storage is NOT cleared.</summary>
     public void Logout()
     {
         _authStore.Clear();
@@ -171,7 +223,10 @@ public sealed class LicenseService
         _api.SetAuthToken(null);
         CurrentAuth = null;
         CurrentLicense = null;
+        CurrentTrial = null;
+        JustStartedTrial = false;
         SetStatus(LicenseStatus.NoLicense);
+        // Trial storage NOT cleared — anti-reset preserves trial state across logout
     }
 
     private void HandleValidateResponse(LicenseRecord prior, ValidateResponse response)

@@ -150,8 +150,17 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             LicenseStatus.OfflineExpired or LicenseStatus.ExpiredOnline or LicenseStatus.Revoked
                                         => ("Lisans gerekli", Brushes.Crimson),
             LicenseStatus.NoLicense     => ("Lisans yok", Brushes.Gray),
+            LicenseStatus.TrialActive   => ($"Deneme: {RemainingTrialDays()} gün kaldı", (Brush)Brushes.DodgerBlue),
+            LicenseStatus.TrialExpired  => ("Deneme süresi doldu — Lisans gerekli", Brushes.Crimson),
             _                           => ("Başlatılıyor", Brushes.Gray)
         };
+    }
+
+    private int RemainingTrialDays()
+    {
+        if (_licenseService.CurrentTrial is LiveDeck.Licensing.Trial.TrialState.Active a)
+            return a.RemainingDays;
+        return 0;
     }
 
     partial void OnIsLicenseWritableChanged(bool value)

@@ -3,6 +3,7 @@ using LiveDeck.Licensing.Api;
 using LiveDeck.Licensing.Services;
 using LiveDeck.Licensing.Storage;
 using LiveDeck.Licensing.Tests.TestHelpers;
+using LiveDeck.Licensing.Trial;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
@@ -37,7 +38,18 @@ public sealed class LicenseServiceTests : IDisposable
         var handler = new FakeHttpMessageHandler(responder);
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
         var api = new LicenseApiClient(http);
-        return new LicenseService(api, _authStore, _licenseStore, _hwId, _opts, NullLogger<LicenseService>.Instance);
+        var trialStorage = new FakeTrialStorageStub();
+        var trialOpts = Options.Create(new LicensingOptions { TrialDurationDays = 14 });
+        var trial = new TrialService(trialStorage, _hwId, trialOpts, () => DateTimeOffset.UtcNow, NullLogger<TrialService>.Instance);
+        return new LicenseService(api, _authStore, _licenseStore, _hwId, _opts, trial, NullLogger<LicenseService>.Instance);
+    }
+
+    private sealed class FakeTrialStorageStub : ITrialStorage
+    {
+        public string Name => "stub";
+        public TrialRecord? TryRead() => null;
+        public void Write(TrialRecord r) { }
+        public void Clear() { }
     }
 
     private void SeedAuth(DateTimeOffset? tokenExp = null) =>
@@ -61,24 +73,27 @@ public sealed class LicenseServiceTests : IDisposable
     // ─── Initialize: no auth ──────────────────────────────────────────
 
     [Fact]
-    public async Task Initialize_with_no_auth_sets_NoLicense()
+    public async Task Initialize_with_no_auth_starts_trial_and_sets_TrialActive()
     {
         var svc = Build(_ => throw new InvalidOperationException("should not call api"));
 
         await svc.InitializeAsync();
 
-        svc.CurrentStatus.Should().Be(LicenseStatus.NoLicense);
+        // Phase 4c: no auth → trial path → new trial started
+        svc.CurrentStatus.Should().Be(LicenseStatus.TrialActive);
+        svc.JustStartedTrial.Should().BeTrue();
     }
 
     [Fact]
-    public async Task Initialize_with_expired_token_clears_auth_and_sets_NoLicense()
+    public async Task Initialize_with_expired_token_clears_auth_and_starts_trial()
     {
         SeedAuth(tokenExp: DateTimeOffset.UtcNow.AddDays(-1));
         var svc = Build(_ => throw new InvalidOperationException("should not call api"));
 
         await svc.InitializeAsync();
 
-        svc.CurrentStatus.Should().Be(LicenseStatus.NoLicense);
+        // Phase 4c: expired token → trial path → new trial started
+        svc.CurrentStatus.Should().Be(LicenseStatus.TrialActive);
         _authStore.IsPresent.Should().BeFalse();
     }
 

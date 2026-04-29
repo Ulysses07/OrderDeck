@@ -13,6 +13,25 @@ public partial class MainShellView : UserControl
     {
         InitializeComponent();
         DataContext = App.Host.Services.GetRequiredService<MainShellViewModel>();
+        Loaded += OnLoaded;
+    }
+
+    private void OnLoaded(object sender, RoutedEventArgs e)
+    {
+        // Phase 4c: trial just started this session — show banner once
+        var licenseService = global::LiveDeck.App.App.Host.Services
+            .GetRequiredService<global::LiveDeck.Licensing.Services.LicenseService>();
+        if (licenseService.JustStartedTrial)
+        {
+            System.Windows.MessageBox.Show(
+                "Deneme süresi başladı. 14 gün boyunca Instagram chat ile tüm özellikleri ücretsiz kullanabilirsiniz.",
+                "LiveDeck — Deneme süresi",
+                System.Windows.MessageBoxButton.OK,
+                System.Windows.MessageBoxImage.Information);
+
+            // Flag'i hemen düş — bir sonraki Loaded'da göstermesin
+            licenseService.AcknowledgeTrialStartBanner();
+        }
     }
 
     private void ChatList_OnDoubleClick(object sender, MouseButtonEventArgs e)

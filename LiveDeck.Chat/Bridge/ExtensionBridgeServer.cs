@@ -20,6 +20,7 @@ namespace LiveDeck.Chat.Bridge;
 public sealed class ExtensionBridgeServer : IAsyncDisposable
 {
     private readonly IChatBus _bus;
+    private readonly ITrialModeProbe? _trialProbe;
     private readonly ILogger<ExtensionBridgeServer> _log;
     private readonly HttpListener _listener = new();
     private CancellationTokenSource? _cts;
@@ -28,9 +29,11 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
     public int Port { get; private set; }
 
     public ExtensionBridgeServer(IChatBus bus, int port = 4748,
-        ILogger<ExtensionBridgeServer>? log = null)
+        ILogger<ExtensionBridgeServer>? log = null,
+        ITrialModeProbe? trialProbe = null)
     {
         _bus = bus;
+        _trialProbe = trialProbe;
         _log = log ?? NullLogger<ExtensionBridgeServer>.Instance;
         Port = port == 0 ? FindFreePort() : port;
         _listener.Prefixes.Add($"http://localhost:{Port}/");
@@ -114,6 +117,15 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
 
                 if (msg is { Type: "chat", Platform: not null, Username: not null, Text: not null })
                 {
+                    if (_trialProbe?.IsTrialMode == true &&
+                        !string.Equals(msg.Platform, "instagram", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _log.LogDebug(
+                            "Trial mode: dropping non-Instagram message from platform '{Platform}' by {Username}",
+                            msg.Platform, msg.Username);
+                        continue;
+                    }
+
                     _bus.Publish(new ChatMessage(
                         Id: Guid.NewGuid().ToString("N"),
                         Platform: msg.Platform,

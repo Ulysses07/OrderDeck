@@ -5,6 +5,9 @@
         Width="420" Height="360"
         WindowStartupLocation="CenterScreen"
         ResizeMode="NoResize">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </Window.Resources>
     <Grid Margin="24">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -15,30 +18,47 @@
         <TextBlock Grid.Row="0" Text="Hesap Bilgileri" FontSize="18" FontWeight="Bold" Margin="0,0,0,16"/>
 
         <StackPanel Grid.Row="1">
-            <TextBlock Text="E-posta" FontWeight="SemiBold"/>
-            <TextBlock Text="{Binding Email}" Margin="0,0,0,12"/>
+            <!-- Account section: email + name -->
+            <StackPanel Visibility="{Binding IsAccountSection, Converter={StaticResource BoolToVis}}">
+                <TextBlock Text="E-posta" FontWeight="SemiBold"/>
+                <TextBlock Text="{Binding Email}" Margin="0,0,0,12"/>
 
-            <TextBlock Text="Ad Soyad" FontWeight="SemiBold"/>
-            <TextBlock Text="{Binding Name}" Margin="0,0,0,16"/>
+                <TextBlock Text="Ad Soyad" FontWeight="SemiBold"/>
+                <TextBlock Text="{Binding Name}" Margin="0,0,0,16"/>
 
-            <Separator Margin="0,4,0,12"/>
+                <Separator Margin="0,4,0,12"/>
+            </StackPanel>
 
-            <TextBlock Text="Lisans Anahtarı" FontWeight="SemiBold"/>
-            <TextBlock Text="{Binding LicenseKey}" FontFamily="Consolas" Margin="0,0,0,8"/>
+            <!-- License section -->
+            <StackPanel Visibility="{Binding IsLicenseSection, Converter={StaticResource BoolToVis}}">
+                <TextBlock Text="Lisans Anahtarı" FontWeight="SemiBold"/>
+                <TextBlock Text="{Binding LicenseKey}" FontFamily="Consolas" Margin="0,0,0,8"/>
 
-            <TextBlock Text="SKU" FontWeight="SemiBold"/>
-            <TextBlock Text="{Binding SkuCode}" Margin="0,0,0,8"/>
+                <TextBlock Text="SKU" FontWeight="SemiBold"/>
+                <TextBlock Text="{Binding SkuCode}" Margin="0,0,0,8"/>
 
-            <TextBlock Text="Bitiş Tarihi" FontWeight="SemiBold"/>
-            <TextBlock Text="{Binding ExpiresAt, StringFormat='{}{0:dd.MM.yyyy}'}" Margin="0,0,0,8"/>
+                <TextBlock Text="Bitiş Tarihi" FontWeight="SemiBold"/>
+                <TextBlock Text="{Binding ExpiresAt, StringFormat='{}{0:dd.MM.yyyy}'}" Margin="0,0,0,8"/>
+            </StackPanel>
 
+            <!-- Trial section -->
+            <StackPanel Visibility="{Binding IsTrialSection, Converter={StaticResource BoolToVis}}">
+                <TextBlock Text="Deneme Süresi" FontWeight="SemiBold"/>
+                <TextBlock Text="{Binding TrialLine}" Margin="0,0,0,16"/>
+            </StackPanel>
+
+            <!-- Status -->
             <TextBlock Text="Durum" FontWeight="SemiBold"/>
             <TextBlock Text="{Binding StatusText}" Margin="0,0,0,8"/>
         </StackPanel>
 
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button Content="Tekrar bağlan" Command="{Binding ReconnectCommand}" Padding="12,6" Margin="0,0,8,0"/>
-            <Button Content="Çıkış yap" Command="{Binding LogoutCommand}" Padding="12,6"/>
+            <Button Content="Hesap oluştur / Giriş yap" Command="{Binding OpenLoginCommand}" Padding="12,6" Margin="0,0,8,0"
+                    Visibility="{Binding IsOpenLoginAvailable, Converter={StaticResource BoolToVis}}"/>
+            <Button Content="Tekrar bağlan" Command="{Binding ReconnectCommand}" Padding="12,6" Margin="0,0,8,0"
+                    Visibility="{Binding IsReconnectAvailable, Converter={StaticResource BoolToVis}}"/>
+            <Button Content="Çıkış yap" Command="{Binding LogoutCommand}" Padding="12,6"
+                    Visibility="{Binding IsLogoutAvailable, Converter={StaticResource BoolToVis}}"/>
         </StackPanel>
     </Grid>
 </Window>
