@@ -28,6 +28,9 @@ public class Program
         builder.Services.AddSingleton<PasswordHasher>();
         builder.Services.AddSingleton<JwtTokenService>();
         builder.Services.AddScoped<EmailConfirmationService>();
+        builder.Services.AddScoped<LiveDeck.LicenseServer.Services.Licensing.LicenseIssuer>();
+        builder.Services.AddScoped<LiveDeck.LicenseServer.Services.Licensing.LicenseValidator>();
+        builder.Services.AddScoped<LiveDeck.LicenseServer.Services.Licensing.ActivationManager>();
 
         // Email sender selection
         var emailProvider = builder.Configuration["Email:Provider"] ?? "smtp";
