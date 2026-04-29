@@ -1,0 +1,23 @@
+@page
+@model IndexModel
+@{
+    ViewData["Title"] = "SKU'lar";
+}
+<h1 class="h3 mb-4">SKU'lar</h1>
+<table class="table" data-table="skus">
+    <thead>
+        <tr><th>Kod</th><th>Görünen Ad</th><th>Süre (gün)</th><th>Slot</th><th>Açıklama</th></tr>
+    </thead>
+    <tbody>
+        @foreach (var s in Model.Items)
+        {
+            <tr>
+                <td><code>@s.Code</code></td>
+                <td>@s.DisplayName</td>
+                <td>@s.DefaultDurationDays</td>
+                <td>@s.DefaultActivationSlots</td>
+                <td>@s.Description</td>
+            </tr>
+        }
+    </tbody>
+</table>
