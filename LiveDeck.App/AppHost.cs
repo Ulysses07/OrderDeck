@@ -138,6 +138,10 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<LicenseService>();
         services.AddHostedService<HeartbeatHostedService>();
 
+        // Licensing dialogs (Phase 4b)
+        services.AddTransient<ViewModels.LoginDialogViewModel>();
+        services.AddTransient<Views.LoginDialog>();
+
         Services = services.BuildServiceProvider();
 
         // Apply migrations once at boot
