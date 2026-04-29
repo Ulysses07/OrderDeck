@@ -13,4 +13,10 @@ public sealed class AppSettings
     public string LabelFontFamily { get; set; } = "Arial";
     public int   LabelUserFontSize  { get; set; } = 14;
     public int   LabelMessageFontSize { get; set; } = 12;
+
+    // Shortcuts (Phase 3b-1)
+    public bool UseCustomShortcuts { get; set; } = false;
+
+    /// <summary>Custom kısayol profili: command id → chord string. Null = henüz custom yok.</summary>
+    public System.Collections.Generic.Dictionary<string, string>? CustomShortcuts { get; set; }
 }
