@@ -1,16 +1,16 @@
 using System.Net;
 using System.Net.Http.Json;
 using FluentAssertions;
-using Microsoft.AspNetCore.Mvc.Testing;
+using LiveDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace LiveDeck.LicenseServer.Tests;
 
-public class HealthCheckTests : IClassFixture<WebApplicationFactory<Program>>
+public class HealthCheckTests : IClassFixture<ApiFactory>
 {
-    private readonly WebApplicationFactory<Program> _factory;
+    private readonly ApiFactory _factory;
 
-    public HealthCheckTests(WebApplicationFactory<Program> factory) => _factory = factory;
+    public HealthCheckTests(ApiFactory factory) => _factory = factory;
 
     [Fact]
     public async Task Health_returns_ok()
