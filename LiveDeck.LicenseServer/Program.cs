@@ -12,7 +12,7 @@ namespace LiveDeck.LicenseServer;
 
 public class Program
 {
-    public static void Main(string[] args)
+    public static async Task Main(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
 
@@ -111,6 +111,14 @@ public class Program
 
         var app = builder.Build();
 
+        // Bootstrap: ensure DB created + seed admin user if config has hash
+        using (var scope = app.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Database.EnsureCreated();
+            await SeedAdminAsync(db, app.Configuration);
+        }
+
         if (app.Environment.IsDevelopment())
         {
             app.UseSwagger();
@@ -125,5 +133,24 @@ public class Program
         app.MapControllers();
 
         app.Run();
+    }
+
+    private static async Task SeedAdminAsync(LicenseDbContext db, IConfiguration cfg)
+    {
+        var username = cfg["Admin:InitialUsername"];
+        var hash = cfg["Admin:InitialPasswordHash"];
+        if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(hash)) return;
+
+        var existing = await db.AdminUsers.FirstOrDefaultAsync(a => a.Username == username);
+        if (existing is not null) return;
+
+        db.AdminUsers.Add(new Domain.AdminUser
+        {
+            Id = Guid.NewGuid(),
+            Username = username,
+            PasswordHash = hash,
+            CreatedAt = DateTimeOffset.UtcNow
+        });
+        await db.SaveChangesAsync();
     }
 }

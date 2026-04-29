@@ -1,5 +1,8 @@
+using System.Net.Http.Json;
 using System.Threading.RateLimiting;
 using LiveDeck.LicenseServer.Data;
+using LiveDeck.LicenseServer.Domain;
+using LiveDeck.LicenseServer.Services.Auth;
 using LiveDeck.LicenseServer.Services.Email;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -89,4 +92,41 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
 
         return host;
     }
+
+    public async Task<(string Token, Guid AdminId)> SeedAdminAndLoginAsync(
+        string username = "admin", string password = "admin-password")
+    {
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var hasher = scope.ServiceProvider.GetRequiredService<LiveDeck.LicenseServer.Services.Auth.PasswordHasher>();
+
+        var existing = await db.AdminUsers.FirstOrDefaultAsync(a => a.Username == username);
+        Guid id;
+        if (existing is not null)
+        {
+            id = existing.Id;
+        }
+        else
+        {
+            id = Guid.NewGuid();
+            db.AdminUsers.Add(new LiveDeck.LicenseServer.Domain.AdminUser
+            {
+                Id = id,
+                Username = username,
+                PasswordHash = hasher.Hash(password),
+                CreatedAt = DateTimeOffset.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var client = CreateClient();
+        var resp = await client.PostAsJsonAsync("/api/v1/admin/auth/login", new
+        {
+            username, password
+        });
+        var body = await resp.Content.ReadFromJsonAsync<LoginBody>();
+        return (body!.Token, id);
+    }
+
+    private sealed record LoginBody(string Token, DateTimeOffset ExpiresAt);
 }
