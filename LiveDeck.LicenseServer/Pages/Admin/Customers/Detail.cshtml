@@ -3,10 +3,6 @@
 @{
     ViewData["Title"] = "Müşteri Detayı";
 }
-@if (TempData["Success"] is string okMsg)
-{
-    <div class="alert alert-success">@okMsg</div>
-}
 <h1 class="h3 mb-4">@Model.Customer!.Name</h1>
 
 <div class="row mb-4">

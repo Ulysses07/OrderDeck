@@ -3,10 +3,6 @@
 @{
     ViewData["Title"] = "Aktivasyonlar";
 }
-@if (TempData["Success"] is string okMsg)
-{
-    <div class="alert alert-success">@okMsg</div>
-}
 <h1 class="h3 mb-4">Aktivasyonlar — <code>@Model.License!.LicenseKey</code></h1>
 <a asp-page="/Admin/Licenses/Detail" asp-route-key="@Model.License.LicenseKey" class="btn btn-link mb-3">← Lisans detayına dön</a>
 
