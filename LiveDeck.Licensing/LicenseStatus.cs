@@ -1,7 +1,8 @@
 namespace LiveDeck.Licensing;
 
 /// <summary>
-/// Client-side license state. Active and OfflineGrace allow writing; everything else is soft-gated.
+/// Client-side license state. Active, OfflineGrace, and TrialActive allow writing;
+/// everything else is soft-gated. TrialActive/TrialExpired also drop non-Instagram chat.
 /// </summary>
 public enum LicenseStatus
 {
@@ -18,12 +19,22 @@ public enum LicenseStatus
     /// <summary>Server reports license revoked.</summary>
     Revoked,
     /// <summary>No license / no auth token / not activated on this device.</summary>
-    NoLicense
+    NoLicense,
+    /// <summary>14-day trial running; Instagram-only chat platforms.</summary>
+    TrialActive,
+    /// <summary>Trial used; soft-gate identical to Phase 4b expired state.</summary>
+    TrialExpired
 }
 
 public static class LicenseStatusExtensions
 {
     /// <summary>True only when the app is allowed to perform write actions (print, create, etc.).</summary>
     public static bool IsWritable(this LicenseStatus status) =>
-        status is LicenseStatus.Active or LicenseStatus.OfflineGrace;
+        status is LicenseStatus.Active
+             or LicenseStatus.OfflineGrace
+             or LicenseStatus.TrialActive;
+
+    /// <summary>True when app should drop non-Instagram chat platforms (Phase 4c trial restriction).</summary>
+    public static bool IsTrialMode(this LicenseStatus status) =>
+        status is LicenseStatus.TrialActive or LicenseStatus.TrialExpired;
 }
