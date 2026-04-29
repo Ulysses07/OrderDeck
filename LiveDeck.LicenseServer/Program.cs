@@ -1,3 +1,6 @@
+using LiveDeck.LicenseServer.Data;
+using Microsoft.EntityFrameworkCore;
+
 namespace LiveDeck.LicenseServer;
 
 public class Program
@@ -5,6 +8,9 @@ public class Program
     public static void Main(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
+
+        builder.Services.AddDbContext<LicenseDbContext>(opt =>
+            opt.UseSqlServer(builder.Configuration.GetConnectionString("LicenseDb")));
 
         builder.Services.AddControllers();
         builder.Services.AddEndpointsApiExplorer();

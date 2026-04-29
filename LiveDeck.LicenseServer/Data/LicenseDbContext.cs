@@ -1,0 +1,86 @@
+using LiveDeck.LicenseServer.Domain;
+using Microsoft.EntityFrameworkCore;
+
+namespace LiveDeck.LicenseServer.Data;
+
+public sealed class LicenseDbContext : DbContext
+{
+    public LicenseDbContext(DbContextOptions<LicenseDbContext> options) : base(options) { }
+
+    public DbSet<Customer> Customers => Set<Customer>();
+    public DbSet<AdminUser> AdminUsers => Set<AdminUser>();
+    public DbSet<Sku> Skus => Set<Sku>();
+    public DbSet<License> Licenses => Set<License>();
+    public DbSet<Activation> Activations => Set<Activation>();
+    public DbSet<EmailConfirmationToken> EmailConfirmationTokens => Set<EmailConfirmationToken>();
+
+    protected override void OnModelCreating(ModelBuilder mb)
+    {
+        mb.Entity<Customer>(b =>
+        {
+            b.HasKey(c => c.Id);
+            b.Property(c => c.Email).HasMaxLength(256).IsRequired();
+            b.HasIndex(c => c.Email).IsUnique();
+            b.Property(c => c.Name).HasMaxLength(200).IsRequired();
+            b.Property(c => c.PasswordHash).HasMaxLength(256).IsRequired();
+        });
+
+        mb.Entity<AdminUser>(b =>
+        {
+            b.HasKey(a => a.Id);
+            b.Property(a => a.Username).HasMaxLength(64).IsRequired();
+            b.HasIndex(a => a.Username).IsUnique();
+            b.Property(a => a.PasswordHash).HasMaxLength(256).IsRequired();
+        });
+
+        mb.Entity<Sku>(b =>
+        {
+            b.HasKey(s => s.Code);
+            b.Property(s => s.Code).HasMaxLength(16);
+            b.Property(s => s.DisplayName).HasMaxLength(80).IsRequired();
+            b.Property(s => s.Description).HasMaxLength(500);
+        });
+
+        mb.Entity<License>(b =>
+        {
+            b.HasKey(l => l.Id);
+            b.Property(l => l.LicenseKey).HasMaxLength(40).IsRequired();
+            b.HasIndex(l => l.LicenseKey).IsUnique();
+            b.HasOne(l => l.Customer).WithMany(c => c.Licenses)
+                .HasForeignKey(l => l.CustomerId).OnDelete(DeleteBehavior.Cascade);
+            b.HasOne(l => l.Sku).WithMany()
+                .HasForeignKey(l => l.SkuCode).OnDelete(DeleteBehavior.Restrict);
+            b.Property(l => l.RevokeReason).HasMaxLength(500);
+        });
+
+        mb.Entity<Activation>(b =>
+        {
+            b.HasKey(a => a.Id);
+            b.Property(a => a.HardwareFingerprint).HasMaxLength(128).IsRequired();
+            b.Property(a => a.MachineName).HasMaxLength(128);
+            b.HasOne(a => a.License).WithMany(l => l.Activations)
+                .HasForeignKey(a => a.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            // Filtered unique index — only enforce uniqueness for active rows
+            b.HasIndex(a => new { a.LicenseId, a.HardwareFingerprint })
+                .HasFilter("[DeactivatedAt] IS NULL")
+                .IsUnique();
+        });
+
+        mb.Entity<EmailConfirmationToken>(b =>
+        {
+            b.HasKey(t => t.Token);
+            b.HasOne(t => t.Customer).WithMany()
+                .HasForeignKey(t => t.CustomerId).OnDelete(DeleteBehavior.Cascade);
+            b.HasIndex(t => new { t.CustomerId, t.UsedAt });
+        });
+
+        // Seed SKUs
+        mb.Entity<Sku>().HasData(
+            new Sku { Code = "STD", DisplayName = "Standard",
+                      DefaultDurationDays = 365, DefaultActivationSlots = 1,
+                      Description = "Tek cihaz, 1 yıl" },
+            new Sku { Code = "PRO", DisplayName = "Professional",
+                      DefaultDurationDays = 365, DefaultActivationSlots = 3,
+                      Description = "3 cihaz, 1 yıl" });
+    }
+}
