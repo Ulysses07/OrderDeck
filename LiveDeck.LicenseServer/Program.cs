@@ -47,6 +47,7 @@ public class Program
 
         builder.Services.AddSingleton<UnsubscribeTokenSigner>();
         builder.Services.AddScoped<EmailSendCoordinator>();
+        builder.Services.AddScoped<ReminderJobs>();
 
         // JWT auth — two schemes (use IOptions so tests can override Jwt:SecretKey via config)
         builder.Services.AddAuthentication()
@@ -166,6 +167,19 @@ public class Program
             var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
             db.Database.EnsureCreated();
             await SeedAdminAsync(db, app.Configuration);
+        }
+
+        // Hangfire recurring jobs — production only (testte ApiFactory MemoryStorage kullanır, recurring tetiklenmesin)
+        if (!app.Environment.IsEnvironment("Testing"))
+        {
+            using var scope = app.Services.CreateScope();
+            var manager = scope.ServiceProvider.GetRequiredService<IRecurringJobManager>();
+            var cron = builder.Configuration["EmailReminder:DailyJobCron"] ?? "0 9 * * *";
+            manager.AddOrUpdate<ReminderJobs>("renewal-14d", j => j.SendRenewal14dAsync(CancellationToken.None), cron);
+            manager.AddOrUpdate<ReminderJobs>("renewal-7d",  j => j.SendRenewal7dAsync(CancellationToken.None), cron);
+            manager.AddOrUpdate<ReminderJobs>("renewal-3d",  j => j.SendRenewal3dAsync(CancellationToken.None), cron);
+            manager.AddOrUpdate<ReminderJobs>("renewal-0d",  j => j.SendRenewal0dAsync(CancellationToken.None), cron);
+            manager.AddOrUpdate<ReminderJobs>("expired-1d",  j => j.SendExpired1dAsync(CancellationToken.None), cron);
         }
 
         if (app.Environment.IsDevelopment())
