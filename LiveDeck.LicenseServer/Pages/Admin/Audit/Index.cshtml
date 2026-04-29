@@ -1,0 +1,87 @@
+@page
+@model IndexModel
+@{
+    ViewData["Title"] = "Audit Log";
+}
+<h1 class="h3 mb-4">Audit Log</h1>
+
+<form method="get" class="row g-2 mb-3">
+    <div class="col-md-3">
+        <label class="form-label">Olay Tipi</label>
+        <select name="eventType" class="form-select">
+            <option value="">Tümü</option>
+            @foreach (var t in Model.AvailableEventTypes)
+            {
+                <option value="@t" selected="@(t == Model.EventType)">@t</option>
+            }
+        </select>
+    </div>
+    <div class="col-md-3">
+        <label class="form-label">Admin</label>
+        <input type="text" name="adminUsername" value="@Model.AdminUsername" class="form-control" />
+    </div>
+    <div class="col-md-2">
+        <label class="form-label">Başlangıç</label>
+        <input type="date" name="from" value="@Model.From.ToString("yyyy-MM-dd")" class="form-control" />
+    </div>
+    <div class="col-md-2">
+        <label class="form-label">Bitiş</label>
+        <input type="date" name="to" value="@Model.To.ToString("yyyy-MM-dd")" class="form-control" />
+    </div>
+    <div class="col-md-2 d-flex align-items-end">
+        <button type="submit" class="btn btn-primary w-100">Filtrele</button>
+    </div>
+</form>
+
+@if (!Model.Entries.Any())
+{
+    <p class="text-muted">Hiç kayıt yok.</p>
+}
+else
+{
+    <table class="table table-sm" data-table="audit">
+        <thead>
+            <tr><th>Zaman</th><th>Admin</th><th>Olay</th><th>Hedef</th><th>Detay</th><th>IP</th></tr>
+        </thead>
+        <tbody>
+            @foreach (var a in Model.Entries)
+            {
+                <tr>
+                    <td>@a.OccurredAt.ToString("dd.MM.yyyy HH:mm:ss")</td>
+                    <td>@a.AdminUsername</td>
+                    <td>@a.EventType</td>
+                    <td>@a.TargetType / @a.TargetId</td>
+                    <td title="@a.Details"><code>@(a.Details?.Length > 60 ? a.Details[..60] + "…" : a.Details)</code></td>
+                    <td>@a.IpAddress</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    @if (Model.TotalPages > 1)
+    {
+        <nav>
+            <ul class="pagination">
+                @if (Model.CurrentPage > 1)
+                {
+                    <li class="page-item"><a class="page-link"
+                       asp-route-eventType="@Model.EventType"
+                       asp-route-adminUsername="@Model.AdminUsername"
+                       asp-route-from="@Model.From"
+                       asp-route-to="@Model.To"
+                       asp-route-page="@(Model.CurrentPage - 1)">Önceki</a></li>
+                }
+                <li class="page-item active"><span class="page-link">@Model.CurrentPage / @Model.TotalPages</span></li>
+                @if (Model.CurrentPage < Model.TotalPages)
+                {
+                    <li class="page-item"><a class="page-link"
+                       asp-route-eventType="@Model.EventType"
+                       asp-route-adminUsername="@Model.AdminUsername"
+                       asp-route-from="@Model.From"
+                       asp-route-to="@Model.To"
+                       asp-route-page="@(Model.CurrentPage + 1)">Sonraki</a></li>
+                }
+            </ul>
+        </nav>
+    }
+}
