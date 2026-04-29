@@ -2,7 +2,9 @@ using LiveDeck.LicenseServer.Data;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 
 namespace LiveDeck.LicenseServer.Tests.TestHelpers;
@@ -17,18 +19,18 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
 
         builder.ConfigureServices(services =>
         {
-            // Aggressively remove all descriptors related to LicenseDbContext
-            // to avoid EF Core's internal service provider conflict between SqlServer and InMemory.
-            var toRemove = services
-                .Where(d =>
-                    d.ServiceType.FullName != null &&
-                    (d.ServiceType.FullName.Contains("LicenseDbContext") ||
-                     d.ServiceType.FullName.Contains("DbContextOptions") ||
-                     d.ImplementationType?.FullName?.Contains("LicenseDbContext") == true))
-                .ToList();
+            // Precise removal — only the three descriptors that conflict for LicenseDbContext.
+            // IDbContextOptionsConfiguration<T> holds the provider-specific config callback
+            // (e.g. UseSqlServer); without removing it, both SqlServer and InMemory callbacks
+            // are applied when EF Core builds the context options, triggering EF Core 9's
+            // "two providers registered" guard.
+            services.RemoveAll<IDbContextOptionsConfiguration<LicenseDbContext>>();
 
-            foreach (var d in toRemove)
-                services.Remove(d);
+            var optionsDescriptor = services.SingleOrDefault(d => d.ServiceType == typeof(DbContextOptions<LicenseDbContext>));
+            if (optionsDescriptor is not null) services.Remove(optionsDescriptor);
+
+            var ctxDescriptor = services.SingleOrDefault(d => d.ServiceType == typeof(LicenseDbContext));
+            if (ctxDescriptor is not null) services.Remove(ctxDescriptor);
 
             services.AddDbContext<LicenseDbContext>(opt =>
                 opt.UseInMemoryDatabase(_dbName));
@@ -39,8 +41,9 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     {
         var host = base.CreateHost(builder);
 
-        // EnsureCreated after the host is fully built so DI is resolved correctly.
-        // With InMemory provider, EnsureCreated applies HasData seeds from OnModelCreating.
+        // EnsureCreated must run after the host is built — calling it inside
+        // ConfigureServices triggers EF Core 9's "providers SqlServer + InMemory
+        // both registered" guard before the provider swap is finalized.
         using var scope = host.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         db.Database.EnsureCreated();
