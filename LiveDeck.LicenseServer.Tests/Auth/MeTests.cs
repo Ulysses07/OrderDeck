@@ -3,7 +3,9 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using FluentAssertions;
 using LiveDeck.LicenseServer.Data;
+using LiveDeck.LicenseServer.Domain;
 using LiveDeck.LicenseServer.Tests.TestHelpers;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
@@ -60,6 +62,64 @@ public class MeTests : IClassFixture<ApiFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 
+    [Fact]
+    public async Task Get_my_licenses_returns_only_active_licenses()
+    {
+        var (client, email) = await CreateLoggedInClientAsync();
+
+        // Seed: aynı customer'a 1 aktif + 1 revoke + 1 expired lisans
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var customer = await db.Customers.FirstAsync(c => c.Email == email);
+
+            db.Licenses.AddRange(
+                new License
+                {
+                    Id = Guid.NewGuid(),
+                    LicenseKey = "LDK-ACTIVE-" + Guid.NewGuid().ToString("N"),
+                    CustomerId = customer.Id,
+                    SkuCode = "STD",
+                    ActivationSlots = 1,
+                    IssuedAt = DateTimeOffset.UtcNow,
+                    ExpiresAt = DateTimeOffset.UtcNow.AddDays(30)
+                },
+                new License
+                {
+                    Id = Guid.NewGuid(),
+                    LicenseKey = "LDK-REVOKED-" + Guid.NewGuid().ToString("N"),
+                    CustomerId = customer.Id,
+                    SkuCode = "STD",
+                    ActivationSlots = 1,
+                    IssuedAt = DateTimeOffset.UtcNow.AddDays(-100),
+                    ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
+                    RevokedAt = DateTimeOffset.UtcNow.AddDays(-1),
+                    RevokeReason = "test"
+                },
+                new License
+                {
+                    Id = Guid.NewGuid(),
+                    LicenseKey = "LDK-EXPIRED-" + Guid.NewGuid().ToString("N"),
+                    CustomerId = customer.Id,
+                    SkuCode = "STD",
+                    ActivationSlots = 1,
+                    IssuedAt = DateTimeOffset.UtcNow.AddDays(-400),
+                    ExpiresAt = DateTimeOffset.UtcNow.AddDays(-1)
+                });
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.GetAsync("/api/v1/me/licenses");
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var body = await resp.Content.ReadFromJsonAsync<List<LicenseSummaryBody>>();
+        body.Should().NotBeNull();
+        body!.Should().HaveCount(1);
+        body[0].licenseKey.Should().StartWith("LDK-ACTIVE-");
+        body[0].skuCode.Should().Be("STD");
+    }
+
     private sealed record LoginBody(string Token, DateTimeOffset ExpiresAt);
     private sealed record MeBody(Guid id, string email, string name, DateTimeOffset? emailConfirmedAt);
+    private sealed record LicenseSummaryBody(string licenseKey, string skuCode, DateTimeOffset expiresAt, DateTimeOffset? revokedAt);
 }
