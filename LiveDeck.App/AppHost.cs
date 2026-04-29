@@ -79,7 +79,8 @@ public sealed class AppHost : IDisposable
         services.AddSingleton(sp => new ExtensionBridgeServer(
             sp.GetRequiredService<IChatBus>(),
             port: 4748,
-            log: sp.GetRequiredService<ILogger<ExtensionBridgeServer>>()));
+            log: sp.GetRequiredService<ILogger<ExtensionBridgeServer>>(),
+            trialProbe: sp.GetRequiredService<LicenseService>()));
         services.AddSingleton<ChatBridgeIngestor>();
 
         // Overlay

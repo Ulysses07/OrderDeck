@@ -1,3 +1,4 @@
+using LiveDeck.Core.Chat;
 using LiveDeck.Licensing.Api;
 using LiveDeck.Licensing.Api.Models;
 using LiveDeck.Licensing.Storage;
@@ -10,8 +11,10 @@ namespace LiveDeck.Licensing.Services;
 /// <summary>
 /// State machine controller. Loads cached auth/license, calls /licenses/validate,
 /// and emits a <see cref="LicenseStatus"/> for the UI to bind to.
+/// Implements <see cref="ITrialModeProbe"/> so the chat bridge can drop non-Instagram
+/// messages when the app is in trial mode.
 /// </summary>
-public sealed class LicenseService
+public sealed class LicenseService : ITrialModeProbe
 {
     private readonly LicenseApiClient _api;
     private readonly AuthStore _authStore;
@@ -40,6 +43,9 @@ public sealed class LicenseService
     }
 
     public LicenseStatus CurrentStatus { get; private set; } = LicenseStatus.Initializing;
+
+    /// <inheritdoc cref="ITrialModeProbe.IsTrialMode"/>
+    public bool IsTrialMode => CurrentStatus.IsTrialMode();
 
     public AuthRecord? CurrentAuth { get; private set; }
 
