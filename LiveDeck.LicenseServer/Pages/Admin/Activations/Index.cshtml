@@ -1,0 +1,52 @@
+@page
+@model IndexModel
+@{
+    ViewData["Title"] = "Aktivasyonlar";
+}
+@if (TempData["Success"] is string okMsg)
+{
+    <div class="alert alert-success">@okMsg</div>
+}
+<h1 class="h3 mb-4">Aktivasyonlar — <code>@Model.License!.LicenseKey</code></h1>
+<a asp-page="/Admin/Licenses/Detail" asp-route-key="@Model.License.LicenseKey" class="btn btn-link mb-3">← Lisans detayına dön</a>
+
+@if (!Model.Items.Any())
+{
+    <p class="text-muted">Hiç aktivasyon yok.</p>
+}
+else
+{
+    <table class="table" data-table="activations">
+        <thead><tr><th>ID</th><th>Cihaz</th><th>HW Fingerprint</th><th>Aktif</th><th>Son Görülme</th><th>Durum</th><th></th></tr></thead>
+        <tbody>
+            @foreach (var a in Model.Items)
+            {
+                <tr>
+                    <td><code>@a.Id.ToString()[..8]</code></td>
+                    <td>@(a.MachineName ?? "—")</td>
+                    <td><code>@a.HardwareFingerprint</code></td>
+                    <td>@a.ActivatedAt.ToString("dd.MM.yyyy HH:mm")</td>
+                    <td>@a.LastSeenAt.ToString("dd.MM.yyyy HH:mm")</td>
+                    <td>
+                        @if (a.DeactivatedAt is null)
+                        {
+                            <span class="badge text-bg-success">Aktif</span>
+                        }
+                        else
+                        {
+                            <span class="badge text-bg-secondary">İptal</span>
+                        }
+                    </td>
+                    <td>
+                        @if (a.DeactivatedAt is null)
+                        {
+                            <form method="post" asp-page-handler="Deactivate" asp-route-licenseKey="@Model.License.LicenseKey" asp-route-id="@a.Id" class="d-inline">
+                                <button type="submit" class="btn btn-sm btn-outline-danger">İptal Et</button>
+                            </form>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
