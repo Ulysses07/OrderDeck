@@ -209,6 +209,12 @@ public sealed class LicenseService : ITrialModeProbe
         HandleValidateResponse(seed, validate);
     }
 
+    /// <summary>UI calls this once after showing the trial-start banner so it's not shown again.</summary>
+    public void AcknowledgeTrialStartBanner()
+    {
+        JustStartedTrial = false;
+    }
+
     /// <summary>Logout: clear caches and force NoLicense state. Trial storage is NOT cleared.</summary>
     public void Logout()
     {
