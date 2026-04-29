@@ -19,6 +19,7 @@ using LiveDeck.Licensing;
 using LiveDeck.Licensing.Api;
 using LiveDeck.Licensing.Services;
 using LiveDeck.Licensing.Storage;
+using LiveDeck.Licensing.Trial;
 using LiveDeck.Tests.TestHelpers;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -77,10 +78,12 @@ public class MainShellPrintTests
 
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
         var api = new LicenseApiClient(http);
-        var opts = Options.Create(new LicensingOptions { OfflineGraceDays = 14 });
+        var opts = Options.Create(new LicensingOptions { OfflineGraceDays = 14, TrialDurationDays = 14 });
         var hwId = new StubHardwareIdProvider();
+        var trialStorage = new NullTrialStorage();
+        var trial = new TrialService(trialStorage, hwId, opts, () => DateTimeOffset.UtcNow, NullLogger<TrialService>.Instance);
 
-        var svc = new LicenseService(api, authStore, licenseStore, hwId, opts,
+        var svc = new LicenseService(api, authStore, licenseStore, hwId, opts, trial,
             NullLogger<LicenseService>.Instance);
 
         // Initialize synchronously — loads stored auth+license, then calls RefreshAsync
@@ -100,6 +103,14 @@ public class MainShellPrintTests
     private sealed class StubHardwareIdProvider : IHardwareIdProvider
     {
         public string GetHardwareId() => "test-hw-id";
+    }
+
+    private sealed class NullTrialStorage : ITrialStorage
+    {
+        public string Name => "null";
+        public TrialRecord? TryRead() => null;
+        public void Write(TrialRecord r) { }
+        public void Clear() { }
     }
 
     private static (MainShellViewModel Vm, FakeLabelPrinter Printer, InMemorySqlite Db) Fx()

@@ -3,6 +3,7 @@ using LiveDeck.Licensing.Api;
 using LiveDeck.Licensing.Services;
 using LiveDeck.Licensing.Storage;
 using LiveDeck.Licensing.Tests.TestHelpers;
+using LiveDeck.Licensing.Trial;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
@@ -45,8 +46,11 @@ public sealed class HeartbeatHostedServiceTests : IDisposable
         });
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
         var api = new LicenseApiClient(http);
-        var opts = Options.Create(new LicensingOptions { OfflineGraceDays = 14, HeartbeatIntervalHours = 24 });
-        var licSvc = new LicenseService(api, _authStore, _licenseStore, new FakeHardwareIdProvider(), opts, NullLogger<LicenseService>.Instance);
+        var opts = Options.Create(new LicensingOptions { OfflineGraceDays = 14, HeartbeatIntervalHours = 24, TrialDurationDays = 14 });
+        var hwId = new FakeHardwareIdProvider();
+        var trialStorage = new NullTrialStorage();
+        var trial = new TrialService(trialStorage, hwId, opts, () => DateTimeOffset.UtcNow, NullLogger<TrialService>.Instance);
+        var licSvc = new LicenseService(api, _authStore, _licenseStore, hwId, opts, trial, NullLogger<LicenseService>.Instance);
         var hb = new HeartbeatHostedService(licSvc, NullLogger<HeartbeatHostedService>.Instance, interval);
         return (hb, licSvc);
     }
@@ -78,5 +82,13 @@ public sealed class HeartbeatHostedServiceTests : IDisposable
 
         var stopAct = async () => await hb.StopAsync(CancellationToken.None);
         await stopAct.Should().NotThrowAsync();
+    }
+
+    private sealed class NullTrialStorage : ITrialStorage
+    {
+        public string Name => "null";
+        public TrialRecord? TryRead() => null;
+        public void Write(TrialRecord r) { }
+        public void Clear() { }
     }
 }
