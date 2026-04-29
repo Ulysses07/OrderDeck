@@ -141,6 +141,8 @@ public sealed class AppHost : IDisposable
         // Licensing dialogs (Phase 4b)
         services.AddTransient<ViewModels.LoginDialogViewModel>();
         services.AddTransient<Views.LoginDialog>();
+        services.AddTransient<ViewModels.AccountDialogViewModel>();
+        services.AddTransient<Views.AccountDialog>();
 
         Services = services.BuildServiceProvider();
 

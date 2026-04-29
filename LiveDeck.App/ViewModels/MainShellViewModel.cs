@@ -2,7 +2,9 @@ using System;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Media;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -13,6 +15,8 @@ using LiveDeck.Core.Sales;
 using LiveDeck.Core.Sessions;
 using LiveDeck.Core.Storage.Repositories;
 using LiveDeck.Labeling;
+using LiveDeck.Licensing;
+using LiveDeck.Licensing.Services;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace LiveDeck.App.ViewModels;
@@ -27,6 +31,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private readonly GiveawayService _giveaways;
     private readonly Dispatcher _dispatcher;
     private readonly IDisposable _busSubscription;
+    private readonly LicenseService _licenseService;
 
     private const int MaxChatMessages = 200;
 
@@ -61,6 +66,12 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
     private string? _activeGiveawayId;
 
+    [ObservableProperty] private bool _isLicenseWritable = true;
+    [ObservableProperty] private string _licenseStatusText = "";
+    [ObservableProperty] private Brush _licenseStatusBrush = Brushes.Gray;
+
+    public IAsyncRelayCommand OpenAccountCommand { get; private set; } = null!;
+
     public MainShellViewModel(
         IChatBus bus,
         LabelService labels,
@@ -69,7 +80,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         CustomerService customers,
         CustomerRepository customerRepo,
         GiveawayService giveaways,
-        GiveawayBannerViewModel banner)
+        GiveawayBannerViewModel banner,
+        LicenseService licenseService)
     {
         _labels = labels;
         _sessions = sessions;
@@ -80,6 +92,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         Banner = banner;
         _dispatcher = Dispatcher.CurrentDispatcher;
         _busSubscription = bus.Subscribe(OnChatMessage);
+        _licenseService = licenseService;
+        _licenseService.StatusChanged += OnLicenseStatusChanged;
+        UpdateLicenseUiFromService();
 
         Banner.AutoDrawRequested += () => DrawGiveawayNowCommand.Execute(null);
 
@@ -88,6 +103,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             OnPropertyChanged(nameof(PrintButtonLabel));
             OnPropertyChanged(nameof(DeleteButtonLabel));
         };
+
+        OpenAccountCommand = new AsyncRelayCommand(OpenAccountAsync);
 
         UpdateStreamStatusLabel();
         UpdateGiveawayCanStart();
@@ -108,6 +125,57 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             if (_activeGiveawayId is not null)
                 _giveaways.AddParticipantFromChat(_activeGiveawayId, m);
         });
+    }
+
+    private void OnLicenseStatusChanged(object? sender, LicenseStatus status)
+    {
+        // Marshal to UI thread
+        if (System.Windows.Application.Current?.Dispatcher is { } d && !d.CheckAccess())
+        {
+            d.InvokeAsync(UpdateLicenseUiFromService);
+            return;
+        }
+        UpdateLicenseUiFromService();
+    }
+
+    private void UpdateLicenseUiFromService()
+    {
+        var status = _licenseService.CurrentStatus;
+        IsLicenseWritable = status.IsWritable();
+        (LicenseStatusText, LicenseStatusBrush) = status switch
+        {
+            LicenseStatus.Active        => ($"Lisans aktif — {_licenseService.CurrentLicense?.RemainingDaysAtLastCheck ?? 0} gün",
+                                             (Brush)Brushes.SeaGreen),
+            LicenseStatus.OfflineGrace  => ("Çevrimdışı (grace)", Brushes.Goldenrod),
+            LicenseStatus.OfflineExpired or LicenseStatus.ExpiredOnline or LicenseStatus.Revoked
+                                        => ("Lisans gerekli", Brushes.Crimson),
+            LicenseStatus.NoLicense     => ("Lisans yok", Brushes.Gray),
+            _                           => ("Başlatılıyor", Brushes.Gray)
+        };
+    }
+
+    partial void OnIsLicenseWritableChanged(bool value)
+    {
+        // Refresh CanExecute on all write commands that depend on license state
+        (StartStreamCommand as IRelayCommand)?.NotifyCanExecuteChanged();
+        (EndStreamCommand as IRelayCommand)?.NotifyCanExecuteChanged();
+        (PrintCommand as IRelayCommand)?.NotifyCanExecuteChanged();
+        (RemoveSelectedFromQueueCommand as IRelayCommand)?.NotifyCanExecuteChanged();
+        (ClearQueueCommand as IRelayCommand)?.NotifyCanExecuteChanged();
+        (StartGiveawayCommand as IRelayCommand)?.NotifyCanExecuteChanged();
+        (DrawGiveawayNowCommand as IRelayCommand)?.NotifyCanExecuteChanged();
+        (CancelGiveawayCommand as IRelayCommand)?.NotifyCanExecuteChanged();
+        (AddChatSenderToBlacklistCommand as IRelayCommand)?.NotifyCanExecuteChanged();
+        (AddQueueRowToBlacklistCommand as IRelayCommand)?.NotifyCanExecuteChanged();
+        (DeleteSelectedFromQueueViaShortcutCommand as IRelayCommand)?.NotifyCanExecuteChanged();
+    }
+
+    private async Task OpenAccountAsync()
+    {
+        await Task.Yield(); // ensure UI thread
+        var dlg = global::LiveDeck.App.App.Host.Services.GetRequiredService<global::LiveDeck.App.Views.AccountDialog>();
+        dlg.Owner = System.Windows.Application.Current?.MainWindow;
+        dlg.ShowDialog();
     }
 
     private void UpdateStreamStatusLabel()
@@ -135,7 +203,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         }
     }
 
-    [RelayCommand] private void StartStream()
+    private bool CanWrite() => IsLicenseWritable;
+
+    [RelayCommand(CanExecute = nameof(CanWrite))] private void StartStream()
     {
         if (_sessions.GetActive() is not null)
         {
@@ -149,7 +219,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         ReloadQueueFromActiveSession();
     }
 
-    [RelayCommand] private void EndStream()
+    [RelayCommand(CanExecute = nameof(CanWrite))] private void EndStream()
     {
         var session = _sessions.GetActive();
         if (session is null) return;
@@ -207,7 +277,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         PrintQueue.Add(new LabelViewModel(label, messageVm.IsSenderBlacklisted));
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanWrite))]
     private void RemoveSelectedFromQueue()
     {
         if (SelectedQueueItems.Count == 0) return;
@@ -219,7 +289,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         SelectedQueueItems.Clear();
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanWrite))]
     private void ClearQueue()
     {
         if (PrintQueue.Count == 0) return;
@@ -231,7 +301,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         PrintQueue.Clear();
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanWrite))]
     private void Print()
     {
         var snapshot = SelectedQueueItems.Count > 0
@@ -271,7 +341,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         RefreshHighlights();
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanWrite))]
     private void StartGiveaway()
     {
         var session = _sessions.GetActive();
@@ -301,7 +371,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         Banner.StartTracking(g);
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanWrite))]
     private void DrawGiveawayNow()
     {
         if (_activeGiveawayId is null) return;
@@ -313,7 +383,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         UpdateGiveawayCanStart();
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanWrite))]
     private void CancelGiveaway()
     {
         if (_activeGiveawayId is null) return;
@@ -328,7 +398,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         UpdateGiveawayCanStart();
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanWrite))]
     private void AddChatSenderToBlacklist(ChatMessageViewModel? msg)
     {
         if (msg is null) return;
@@ -345,7 +415,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         RefreshHighlights();
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanWrite))]
     private void AddQueueRowToBlacklist(LabelViewModel? row)
     {
         if (row is null) return;
@@ -391,7 +461,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         dlg.ShowDialog();
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanWrite))]
     private void DeleteSelectedFromQueueViaShortcut() => RemoveSelectedFromQueue();
 
     [RelayCommand]
