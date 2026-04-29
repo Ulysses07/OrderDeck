@@ -26,6 +26,7 @@ public class Program
         // Services
         builder.Services.AddSingleton<PasswordHasher>();
         builder.Services.AddSingleton<JwtTokenService>();
+        builder.Services.AddScoped<EmailConfirmationService>();
 
         // Email sender selection
         var emailProvider = builder.Configuration["Email:Provider"] ?? "smtp";

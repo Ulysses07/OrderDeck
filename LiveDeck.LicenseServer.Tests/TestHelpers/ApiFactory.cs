@@ -1,7 +1,11 @@
+using System.Threading.RateLimiting;
 using LiveDeck.LicenseServer.Data;
 using LiveDeck.LicenseServer.Services.Email;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Configuration;
@@ -53,6 +57,22 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             var emailDescriptor = services.SingleOrDefault(d => d.ServiceType == typeof(IEmailSender));
             if (emailDescriptor is not null) services.Remove(emailDescriptor);
             services.AddSingleton<IEmailSender>(Email);
+
+            // Disable rate limiting in tests — remove all IConfigureOptions<RateLimiterOptions>
+            // registrations (added by AddRateLimiter in Program.cs) and register a fresh
+            // unlimited configuration so auth tests don't get 429.
+            services.RemoveAll<Microsoft.Extensions.Options.IConfigureOptions<RateLimiterOptions>>();
+            services.RemoveAll<Microsoft.Extensions.Options.IPostConfigureOptions<RateLimiterOptions>>();
+            services.AddRateLimiter(opts =>
+            {
+                opts.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+                opts.AddPolicy("auth-register", _ =>
+                    RateLimitPartition.GetNoLimiter(string.Empty));
+                opts.AddPolicy("auth-login", _ =>
+                    RateLimitPartition.GetNoLimiter(string.Empty));
+                opts.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(_ =>
+                    RateLimitPartition.GetNoLimiter(string.Empty));
+            });
         });
     }
 
