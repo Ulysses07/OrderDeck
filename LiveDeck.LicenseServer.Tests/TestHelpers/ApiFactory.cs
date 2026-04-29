@@ -1,5 +1,7 @@
 using System.Net.Http.Json;
 using System.Threading.RateLimiting;
+using Hangfire;
+using Hangfire.MemoryStorage;
 using LiveDeck.LicenseServer.Data;
 using LiveDeck.LicenseServer.Domain;
 using LiveDeck.LicenseServer.Services.Auth;
@@ -60,6 +62,12 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             var emailDescriptor = services.SingleOrDefault(d => d.ServiceType == typeof(IEmailSender));
             if (emailDescriptor is not null) services.Remove(emailDescriptor);
             services.AddSingleton<IEmailSender>(Email);
+
+            // Hangfire — production SQL Server yerine InMemory storage (test isolation)
+            services.AddHangfire(cfg => cfg
+                .UseSimpleAssemblyNameTypeSerializer()
+                .UseRecommendedSerializerSettings()
+                .UseMemoryStorage());
 
             // Disable rate limiting in tests — remove all IConfigureOptions<RateLimiterOptions>
             // registrations (added by AddRateLimiter in Program.cs) and register a fresh

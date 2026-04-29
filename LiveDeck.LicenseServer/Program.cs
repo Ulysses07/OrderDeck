@@ -1,5 +1,7 @@
 using System.Text;
 using System.Threading.RateLimiting;
+using Hangfire;
+using Hangfire.SqlServer;
 using LiveDeck.LicenseServer.Data;
 using LiveDeck.LicenseServer.Services.Auth;
 using LiveDeck.LicenseServer.Services.Email;
@@ -129,6 +131,20 @@ public class Program
         builder.Services.AddCors(opt =>
             opt.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
 
+        builder.Services.AddHangfire(cfg => cfg
+            .UseSimpleAssemblyNameTypeSerializer()
+            .UseRecommendedSerializerSettings()
+            .UseSqlServerStorage(builder.Configuration.GetConnectionString("LicenseDb"),
+                new SqlServerStorageOptions
+                {
+                    CommandBatchMaxTimeout = TimeSpan.FromMinutes(5),
+                    SlidingInvisibilityTimeout = TimeSpan.FromMinutes(5),
+                    QueuePollInterval = TimeSpan.Zero,
+                    UseRecommendedIsolationLevel = true,
+                    DisableGlobalLocks = true
+                }));
+        builder.Services.AddHangfireServer();
+
         builder.Services.AddControllers();
         builder.Services.AddRazorPages(opt =>
         {
@@ -161,6 +177,10 @@ public class Program
         app.UseRateLimiter();
         app.UseAuthentication();
         app.UseAuthorization();
+        app.UseHangfireDashboard("/hangfire", new DashboardOptions
+        {
+            Authorization = new[] { new HangfireDashboardAuthFilter() }
+        });
         app.MapControllers();
         app.MapRazorPages();
 
