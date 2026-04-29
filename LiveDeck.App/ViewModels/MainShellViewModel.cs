@@ -33,6 +33,23 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     public ObservableCollection<ChatMessageViewModel> ChatMessages { get; } = new();
     public ObservableCollection<LabelViewModel>       PrintQueue   { get; } = new();
 
+    /// <summary>Multi-select kuyrukta seçili etiketler. Code-behind QueueList.SelectionChanged
+    /// event'inden senkronize eder. Boş = hiç seçim yok.</summary>
+    public ObservableCollection<LabelViewModel>       SelectedQueueItems { get; } = new();
+
+    /// <summary>Yazdır butonu için dinamik label.</summary>
+    public string PrintButtonLabel => SelectedQueueItems.Count > 0
+        ? $"Yazdır ({SelectedQueueItems.Count})"
+        : "Yazdır";
+
+    /// <summary>Sil butonu için dinamik label.</summary>
+    public string DeleteButtonLabel => SelectedQueueItems.Count switch
+    {
+        0 => "Seçileni Sil",
+        1 => "Seçileni Sil",
+        _ => $"Seçilenleri Sil ({SelectedQueueItems.Count})"
+    };
+
     public GiveawayBannerViewModel Banner { get; }
 
     [ObservableProperty] private string _activeCode = "";
@@ -65,6 +82,12 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _busSubscription = bus.Subscribe(OnChatMessage);
 
         Banner.AutoDrawRequested += () => DrawGiveawayNowCommand.Execute(null);
+
+        SelectedQueueItems.CollectionChanged += (_, _) =>
+        {
+            OnPropertyChanged(nameof(PrintButtonLabel));
+            OnPropertyChanged(nameof(DeleteButtonLabel));
+        };
 
         UpdateStreamStatusLabel();
         UpdateGiveawayCanStart();
@@ -185,11 +208,15 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     }
 
     [RelayCommand]
-    private void RemoveSelectedFromQueue(LabelViewModel? selected)
+    private void RemoveSelectedFromQueue()
     {
-        if (selected is null) return;
-        _labels.Delete(selected.Id);
-        PrintQueue.Remove(selected);
+        if (SelectedQueueItems.Count == 0) return;
+        foreach (var vm in SelectedQueueItems.ToList())
+        {
+            _labels.Delete(vm.Id);
+            PrintQueue.Remove(vm);
+        }
+        SelectedQueueItems.Clear();
     }
 
     [RelayCommand]
@@ -207,11 +234,18 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     [RelayCommand]
     private void Print()
     {
-        if (PrintQueue.Count == 0) return;
-        var snapshot = PrintQueue.Select(vm => vm.Label).ToList();
-        _printer.Print(snapshot);
-        _labels.MarkPrintedAndRecord(snapshot.Select(l => l.Id).ToList());
-        PrintQueue.Clear();
+        var snapshot = SelectedQueueItems.Count > 0
+            ? SelectedQueueItems.ToList()
+            : PrintQueue.ToList();
+        if (snapshot.Count == 0) return;
+
+        var labels = snapshot.Select(vm => vm.Label).ToList();
+        _printer.Print(labels);
+        _labels.MarkPrintedAndRecord(labels.Select(l => l.Id).ToList());
+
+        // Sadece yazdırılanları kuyruktan kaldır (smart mode'da kalan seçimsizler korunur).
+        foreach (var vm in snapshot) PrintQueue.Remove(vm);
+        SelectedQueueItems.Clear();
     }
 
     [RelayCommand] private void OpenSettings()
@@ -358,13 +392,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     }
 
     [RelayCommand]
-    private void DeleteSelectedFromQueueViaShortcut()
-    {
-        if (SelectedQueueItem is null) return;
-        _labels.Delete(SelectedQueueItem.Id);
-        PrintQueue.Remove(SelectedQueueItem);
-        SelectedQueueItem = null;
-    }
+    private void DeleteSelectedFromQueueViaShortcut() => RemoveSelectedFromQueue();
 
     [RelayCommand]
     private void OpenShortcutHelp()
