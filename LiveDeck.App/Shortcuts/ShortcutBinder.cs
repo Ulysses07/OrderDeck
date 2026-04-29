@@ -50,29 +50,18 @@ public sealed class ShortcutBinder
     private ICommand? GetCommand(string commandId) => commandId switch
     {
         ShortcutCommand.Print            => _shell.PrintCommand,
-        ShortcutCommand.DeleteSelected   => GetOptional("DeleteSelectedFromQueueViaShortcutCommand"),
+        ShortcutCommand.DeleteSelected   => _shell.DeleteSelectedFromQueueViaShortcutCommand,
         ShortcutCommand.ClearQueue       => _shell.ClearQueueCommand,
         ShortcutCommand.StartStream      => _shell.StartStreamCommand,
         ShortcutCommand.EndStream        => _shell.EndStreamCommand,
         ShortcutCommand.StartGiveaway    => _shell.StartGiveawayCommand,
-        ShortcutCommand.OpenShortcutHelp => GetOptional("OpenShortcutHelpCommand"),
+        ShortcutCommand.OpenShortcutHelp => _shell.OpenShortcutHelpCommand,
         ShortcutCommand.OpenSettings     => _shell.OpenSettingsCommand,
         ShortcutCommand.OpenHistory      => _shell.OpenStreamHistoryCommand,
         ShortcutCommand.OpenBlacklist    => _shell.OpenBlacklistCommand,
         ShortcutCommand.OpenCustomers    => _shell.OpenCustomerSearchCommand,
         _ => null
     };
-
-    /// <summary>
-    /// Reflection-based lookup for commands that may not exist yet during incremental
-    /// task execution. Once Task 9 lands, the named properties exist on MainShellViewModel
-    /// and this returns the live ICommand. Until then, returns null and the binder skips.
-    /// </summary>
-    private ICommand? GetOptional(string propertyName)
-    {
-        var prop = _shell.GetType().GetProperty(propertyName);
-        return prop?.GetValue(_shell) as ICommand;
-    }
 
     private static ModifierKeys ConvertModifiers(KeyModifiers mods)
     {
