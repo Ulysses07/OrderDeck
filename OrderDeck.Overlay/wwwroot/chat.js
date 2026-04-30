@@ -24,7 +24,7 @@
           appendMessage(evt.data);
         }
       } catch (err) {
-        console.error('LiveDeck overlay parse error', err);
+        console.error('OrderDeck overlay parse error', err);
       }
     };
     socket.onclose = scheduleReconnect;

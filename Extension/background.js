@@ -1,6 +1,6 @@
 /**
- * LiveDeck Chat Bridge - Background Service Worker
- * Manages extension status badge and periodically checks LiveDeck connection.
+ * OrderDeck Chat Bridge - Background Service Worker
+ * Manages extension status badge and periodically checks OrderDeck connection.
  */
 
 let isConnected = false;
@@ -20,7 +20,7 @@ function updateBadge(connected) {
 }
 
 /**
- * Probe the LiveDeck WebSocket bridge to check whether it is reachable.
+ * Probe the OrderDeck WebSocket bridge to check whether it is reachable.
  * Uses the /extension endpoint (same one the content script connects to).
  */
 function checkConnection() {
@@ -68,7 +68,7 @@ function startPeriodicCheck() {
 
 // Extension installed
 chrome.runtime.onInstalled.addListener(() => {
-    console.log('[LiveDeck Bridge] Extension loaded');
+    console.log('[OrderDeck Bridge] Extension loaded');
     startPeriodicCheck();
 });
 

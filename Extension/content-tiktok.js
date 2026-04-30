@@ -1,13 +1,13 @@
 /**
- * LiveDeck Chat Bridge - TikTok Content Script
- * TikTok Live sayfasındaki yorumları izler ve LiveDeck'e gönderir.
+ * OrderDeck Chat Bridge - TikTok Content Script
+ * TikTok Live sayfasındaki yorumları izler ve OrderDeck'e gönderir.
  *
  * v2.0 (ported from UniCast) - Tüm TikTok sayfalarında inject olur,
  * live tespit ederse taramaya başlar.
  */
 
 // Expose a debug handle immediately so it's available even if init crashes.
-window.__livedeckBridge = { status: () => ({ early: true, error: 'Not initialized yet' }) };
+window.__orderdeckBridge = { status: () => ({ early: true, error: 'Not initialized yet' }) };
 
 (function() {
     'use strict';
@@ -27,11 +27,11 @@ window.__livedeckBridge = { status: () => ({ early: true, error: 'Not initialize
     let isLivePage = false;
 
     function log(...args) {
-        if (debugMode) console.log('[LiveDeck TikTok]', ...args);
+        if (debugMode) console.log('[OrderDeck TikTok]', ...args);
     }
 
     function logError(...args) {
-        console.error('[LiveDeck TikTok]', ...args);
+        console.error('[OrderDeck TikTok]', ...args);
     }
 
     function extractUsername() {
@@ -48,13 +48,13 @@ window.__livedeckBridge = { status: () => ({ early: true, error: 'Not initialize
     }
 
     /**
-     * Open the WebSocket connection to the LiveDeck bridge server.
+     * Open the WebSocket connection to the OrderDeck bridge server.
      */
     function connectWebSocket() {
         if (ws && ws.readyState === WebSocket.OPEN) return;
 
         try {
-            log('Connecting to LiveDeck bridge...');
+            log('Connecting to OrderDeck bridge...');
             ws = new WebSocket(`ws://localhost:${LIVEDECK_WS_PORT}/extension`);
 
             ws.onopen = () => {
@@ -248,7 +248,7 @@ window.__livedeckBridge = { status: () => ({ early: true, error: 'Not initialize
                 SEEN_COMMENTS.add(hash);
                 newCount++;
 
-                // Flat ExtensionMessage shape expected by LiveDeck bridge
+                // Flat ExtensionMessage shape expected by OrderDeck bridge
                 const payload = {
                     type: 'chat',
                     platform: 'tiktok',
@@ -331,7 +331,7 @@ window.__livedeckBridge = { status: () => ({ early: true, error: 'Not initialize
 
     function init() {
         log('=========================================');
-        log('LiveDeck TikTok Bridge v2.0');
+        log('OrderDeck TikTok Bridge v2.0');
         log('URL:', window.location.href);
         isLivePage = checkIfLivePage();
         log('Live page:', isLivePage ? 'YES' : 'No (watching)');
@@ -361,7 +361,7 @@ window.__livedeckBridge = { status: () => ({ early: true, error: 'Not initialize
     }
 
     // Update the debug handle
-    window.__livedeckBridge = {
+    window.__orderdeckBridge = {
         scan: () => { const c = scanForComments(); console.log('Comments found:', c); return c; },
         send: sendMessage,
         status: () => ({

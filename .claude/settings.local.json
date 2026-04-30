@@ -66,7 +66,8 @@
       "Bash(find . -type d \\\\\\( -name \"obj\" -o -name \"bin\" \\\\\\) -not -path \"./.git/*\" -exec rm -rf {} + dotnet build OrderDeck.sln)",
       "Bash(grep -rn \"livedeck\\\\|LiveDeck\\\\\\\\\\\\\\\\\" --include=\"*.cs\" --include=\"*.xaml\" --include=\"*.cshtml\" --include=\"*.json\" --include=\"*.md\")",
       "Bash(grep -rn \"livedeck\\\\|LiveDeck\\\\\\\\\\\\\\\\\" --include=\"*.cs\" --include=\"*.xaml\" --include=\"*.cshtml\" --include=\"*.json\")",
-      "Bash(xargs sed:*)"
+      "Bash(xargs sed:*)",
+      "Bash(find Extension OrderDeck.Overlay/wwwroot -type f \\\\\\( -name \"*.html\" -o -name \"*.css\" -o -name \"*.js\" \\\\\\) -exec sed -i 's/LiveDeck/OrderDeck/g; s/livedeck/orderdeck/g' {} \\\\; echo \"DONE\" grep -rln \"LiveDeck\\\\|livedeck\" Extension/ OrderDeck.Overlay/wwwroot/)"
     ]
   }
 }
