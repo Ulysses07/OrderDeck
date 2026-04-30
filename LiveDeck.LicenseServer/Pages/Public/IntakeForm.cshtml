@@ -36,6 +36,14 @@
             <span asp-validation-for="Input.Address" class="text-danger"></span>
         </div>
 
+        <div class="mb-3">
+            <label asp-for="Input.Phone" class="form-label">WhatsApp Numarası <span class="text-danger">*</span></label>
+            <input asp-for="Input.Phone" type="tel" class="form-control form-control-lg"
+                   placeholder="555 123 45 67" maxlength="20" />
+            <div class="form-text">+90 otomatik eklenecek. 10 haneli mobil numarayı girin.</div>
+            <span asp-validation-for="Input.Phone" class="text-danger"></span>
+        </div>
+
         <input type="text" name="website" tabindex="-1" autocomplete="off"
                style="position:absolute;left:-9999px;display:none" />
 
