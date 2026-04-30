@@ -6,6 +6,7 @@ using System.Windows.Markup;
 using OrderDeck.App.Formatting;
 using OrderDeck.App.Views;
 using OrderDeck.Chat.Ingestors;
+using OrderDeck.Core;
 using OrderDeck.Licensing;
 using OrderDeck.Licensing.Services;
 using OrderDeck.Overlay;
@@ -36,6 +37,10 @@ public partial class App : Application
         FrameworkElement.LanguageProperty.OverrideMetadata(
             typeof(FrameworkElement),
             new FrameworkPropertyMetadata(XmlLanguage.GetLanguage(tr.IetfLanguageTag)));
+
+        // One-time legacy LiveDeck → OrderDeck data migration. Idempotent; runs before
+        // AppHost (and therefore SQLite/SettingsStore) constructs path-bound services.
+        try { AppDataMigrator.MigrateIfNeeded(); } catch { /* best-effort, fall through to fresh setup */ }
 
         Host = new AppHost();
 
