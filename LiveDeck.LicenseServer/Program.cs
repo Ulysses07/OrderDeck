@@ -52,6 +52,7 @@ public class Program
         builder.Services.AddScoped<PasswordResetService>();
         builder.Services.AddScoped<AdminActionEmailService>();
         builder.Services.AddScoped<IntakeFormService>();
+        builder.Services.AddSingleton<WhatsAppLinkBuilder>();
 
         // JWT auth — two schemes (use IOptions so tests can override Jwt:SecretKey via config)
         builder.Services.AddAuthentication()
