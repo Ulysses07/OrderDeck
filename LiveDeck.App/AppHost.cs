@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using LiveDeck.App.Services;
 using LiveDeck.App.Services.IntakeForm;
 using LiveDeck.Chat.Bridge;
 using LiveDeck.Chat.Ingestors;
@@ -115,6 +116,12 @@ public sealed class AppHost : IDisposable
         services.AddTransient<ViewModels.CustomerSearchViewModel>();
         services.AddTransient<Views.CustomerDetailDialog>();
         services.AddTransient<Views.CustomerSearchDialog>();
+
+        // Phase 4g — payment infrastructure
+        services.AddSingleton<WhatsAppMessageBuilder>();
+        services.AddSingleton<IUrlLauncher, ProcessUrlLauncher>();
+        services.AddSingleton<PaymentRequestService>();
+        services.AddSingleton<IDialogService, WpfDialogService>();
 
         // Shortcuts (Phase 3b-1)
         services.AddSingleton<LiveDeck.Core.Shortcuts.ShortcutRegistry>();
