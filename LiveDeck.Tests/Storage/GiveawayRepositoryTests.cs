@@ -21,7 +21,7 @@ public class GiveawayRepositoryTests
             new StreamSession("s1", null, 100, null, new[] { "instagram" }, null));
         new CustomerRepository(db).Insert(
             new Customer("c1", "instagram", "@a", null, null, 100, 100,
-                false, null, null, 0, 0m, null));
+                false, null, null, 0, 0m, null, null));
 
         return (db, new GiveawayRepository(db), "s1", "c1");
     }
@@ -158,7 +158,7 @@ public class GiveawayRepositoryTests
 
         new CustomerRepository(db).Insert(
             new Customer("c2", "instagram", "@b", null, null, 100, 100,
-                false, null, null, 0, 0m, null));
+                false, null, null, 0, 0m, null, null));
 
         repo.Insert(NewGiveaway("g1") with { EndedAt = 500 });
         repo.AddParticipant(new GiveawayParticipant("p1", "g1", cid,  "instagram", "@a", 300, IsWinner: true));
@@ -225,7 +225,7 @@ public class GiveawayRepositoryTests
 
         // g4: another customer's participation — must not appear
         new CustomerRepository(db).Insert(new Customer("c-2", "instagram", "@other", null, null,
-            100, 100, false, null, null, 0, 0m, null));
+            100, 100, false, null, null, 0, 0m, null, null));
         repo.Insert(NewGiveaway("g4", "s1") with { EndedAt = 800 });
         repo.AddParticipant(new GiveawayParticipant("p4", "g4", "c-2", "instagram", "@other", 600, IsWinner: false));
 

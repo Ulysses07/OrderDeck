@@ -20,7 +20,7 @@ public class LabelRepositoryTests
             new StreamSession("s1", null, 100, null, new[] { "instagram" }, null));
         new CustomerRepository(db).Insert(
             new Customer("c1", "instagram", "@a", null, null, 100, 100,
-                false, null, null, 0, 0m, BlacklistedAt: null));
+                false, null, null, 0, 0m, BlacklistedAt: null, Address: null));
 
         return (db, new LabelRepository(db), "s1", "c1");
     }
@@ -93,9 +93,9 @@ public class LabelRepositoryTests
 
         var customers = new CustomerRepository(db);
         customers.Insert(new Customer("c2", "instagram", "@b", null, null,
-            100, 100, false, null, null, 0, 0m, BlacklistedAt: null));
+            100, 100, false, null, null, 0, 0m, BlacklistedAt: null, Address: null));
         customers.Insert(new Customer("c3", "instagram", "@c", null, null,
-            100, 100, false, null, null, 0, 0m, BlacklistedAt: null));
+            100, 100, false, null, null, 0, 0m, BlacklistedAt: null, Address: null));
 
         repo.Insert(MakeLabel("l1", sid, "c1", price: 100m, printedAt: 500));
         repo.Insert(MakeLabel("l2", sid, "c1", price: 100m, printedAt: 500));
@@ -121,9 +121,9 @@ public class LabelRepositoryTests
             new StreamSession("s1", null, 100, null, new[] { "instagram" }, null));
         var customerRepo = new CustomerRepository(db);
         customerRepo.Insert(new Customer("c-A", "instagram", "@ali",  null, null, 100, 100,
-            false, null, null, 0, 0m, null));
+            false, null, null, 0, 0m, null, null));
         customerRepo.Insert(new Customer("c-B", "instagram", "@veli", null, null, 100, 100,
-            false, null, null, 0, 0m, null));
+            false, null, null, 0, 0m, null, null));
         var repo = new LabelRepository(db);
 
         repo.Insert(new Label("l1", "s1", "c-A", "instagram", "@ali",  "kazak", "K01", 100m, AddedAt: 100, PrintedAt: 110));
