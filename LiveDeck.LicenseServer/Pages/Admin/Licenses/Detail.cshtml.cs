@@ -2,6 +2,7 @@ using System.ComponentModel.DataAnnotations;
 using LiveDeck.LicenseServer.Data;
 using LiveDeck.LicenseServer.Domain;
 using LiveDeck.LicenseServer.Services.Audit;
+using LiveDeck.LicenseServer.Services.Email;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
@@ -12,11 +13,13 @@ public class DetailModel : PageModel
 {
     private readonly LicenseDbContext _db;
     private readonly IAuditService _audit;
+    private readonly AdminActionEmailService _adminEmail;
 
-    public DetailModel(LicenseDbContext db, IAuditService audit)
+    public DetailModel(LicenseDbContext db, IAuditService audit, AdminActionEmailService adminEmail)
     {
         _db = db;
         _audit = audit;
+        _adminEmail = adminEmail;
     }
 
     public License? License { get; private set; }
@@ -62,6 +65,7 @@ public class DetailModel : PageModel
         await _db.SaveChangesAsync(ct);
         await _audit.LogAsync(AuditEvents.LicenseRevoke, AuditTargets.License, key,
             new { reason = RevokeForm.Reason }, ct);
+        await _adminEmail.NotifyLicenseRevokedAsync(License!.CustomerId, key, RevokeForm.Reason, ct);
 
         TempData["Success"] = "Lisans iptal edildi.";
         return RedirectToPage("./Detail", new { key });
@@ -81,6 +85,7 @@ public class DetailModel : PageModel
         await _db.SaveChangesAsync(ct);
         await _audit.LogAsync(AuditEvents.LicenseExtend, AuditTargets.License, key,
             new { additionalDays = ExtendForm.AdditionalDays }, ct);
+        await _adminEmail.NotifyLicenseExtendedAsync(License!.CustomerId, key, License.ExpiresAt, ExtendForm.AdditionalDays, ct);
 
         TempData["Success"] = $"Lisans {ExtendForm.AdditionalDays} gün uzatıldı.";
         return RedirectToPage("./Detail", new { key });

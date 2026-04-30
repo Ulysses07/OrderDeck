@@ -49,6 +49,7 @@ public class Program
         builder.Services.AddScoped<EmailSendCoordinator>();
         builder.Services.AddScoped<ReminderJobs>();
         builder.Services.AddScoped<PasswordResetService>();
+        builder.Services.AddScoped<AdminActionEmailService>();
 
         // JWT auth — two schemes (use IOptions so tests can override Jwt:SecretKey via config)
         builder.Services.AddAuthentication()

@@ -2,6 +2,7 @@ using System.ComponentModel.DataAnnotations;
 using LiveDeck.LicenseServer.Data;
 using LiveDeck.LicenseServer.Domain;
 using LiveDeck.LicenseServer.Services.Audit;
+using LiveDeck.LicenseServer.Services.Email;
 using LiveDeck.LicenseServer.Services.Licensing;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
@@ -14,12 +15,14 @@ public class IssueModel : PageModel
     private readonly LicenseDbContext _db;
     private readonly LicenseIssuer _issuer;
     private readonly IAuditService _audit;
+    private readonly AdminActionEmailService _adminEmail;
 
-    public IssueModel(LicenseDbContext db, LicenseIssuer issuer, IAuditService audit)
+    public IssueModel(LicenseDbContext db, LicenseIssuer issuer, IAuditService audit, AdminActionEmailService adminEmail)
     {
         _db = db;
         _issuer = issuer;
         _audit = audit;
+        _adminEmail = adminEmail;
     }
 
     [BindProperty]
@@ -65,6 +68,9 @@ public class IssueModel : PageModel
             await _audit.LogAsync(AuditEvents.LicenseIssue, AuditTargets.License, result.LicenseKey,
                 new { customerEmail = Input.CustomerEmail, skuCode = Input.SkuCode, durationDaysOverride = Input.DurationDaysOverride, slotsOverride = Input.SlotsOverride },
                 ct);
+
+            var custId = await _db.Customers.Where(c => c.Email == Input.CustomerEmail).Select(c => c.Id).FirstAsync(ct);
+            await _adminEmail.NotifyLicenseIssuedAsync(custId, result.LicenseKey, Input.SkuCode, result.ExpiresAt, ct);
 
             TempData["Success"] = $"Lisans oluşturuldu: {result.LicenseKey}";
             return RedirectToPage("./Detail", new { key = result.LicenseKey });
