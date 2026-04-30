@@ -18,4 +18,5 @@ public sealed record IntakeFormSubmissionDto(
     string Username,
     string FullName,
     string Address,
+    string? Phone,
     DateTimeOffset SubmittedAt);

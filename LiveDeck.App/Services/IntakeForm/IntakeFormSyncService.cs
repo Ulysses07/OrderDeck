@@ -65,7 +65,7 @@ public sealed class IntakeFormSyncService
                 sub.Username,
                 sub.FullName,
                 sub.Address,
-                null,    // Phase 4g — Task 19'da DTO.Phone propagation
+                sub.Phone,
                 nowUnix);
             if (sub.SubmittedAt > newCursor) newCursor = sub.SubmittedAt;
         }
