@@ -34,6 +34,26 @@ fi
 SALT=$(openssl rand -base64 12 | head -c 16)
 HASH=$(printf '%s' "$PWD1" | argon2 "$SALT" -id -t 4 -m 16 -p 2 -l 32 -e)
 
+# argon2 CLI produces base64 WITHOUT padding (RFC 4648 §5).
+# .NET Convert.FromBase64String REQUIRES padding (= or ==).
+# Add padding to the salt and hash segments so PasswordHasher.cs Verify can decode them.
+pad_b64() {
+  local s="$1"
+  local mod=$(( ${#s} % 4 ))
+  case $mod in
+    2) printf '%s==' "$s" ;;
+    3) printf '%s=' "$s" ;;
+    *) printf '%s' "$s" ;;
+  esac
+}
+
+# Hash format: $argon2id$v=19$m=65536,t=4,p=2$<salt-b64>$<hash-b64>
+# Split on $ — parts[1]=argon2id, parts[2]=v=19, parts[3]=m=65536,t=4,p=2, parts[4]=salt, parts[5]=hash
+IFS='$' read -ra parts <<< "$HASH"
+SALT_PADDED=$(pad_b64 "${parts[4]}")
+HASH_PADDED=$(pad_b64 "${parts[5]}")
+HASH="\$argon2id\$v=19\$m=65536,t=4,p=2\$${SALT_PADDED}\$${HASH_PADDED}"
+
 # CRITICAL: escape $ as $$ for docker-compose interpolation in .env
 # (docker compose treats $argon2id$v=19$m=... as variable references otherwise)
 HASH_ESCAPED=$(printf '%s' "$HASH" | sed 's/\$/$$/g')
@@ -73,4 +93,4 @@ docker exec orderdeck-sqlserver /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa
   -Q "USE OrderDeckLicense; SELECT Username, LEFT(PasswordHash, 30) AS HashPrefix, CreatedAt FROM AdminUsers;" | head -8
 
 echo ""
-echo "Done. Login at https://license.orderdeck.app/admin/login (once DNS+TLS up)"
+echo "Done. Login at https://license.orderdeckapp.com/admin/login"
