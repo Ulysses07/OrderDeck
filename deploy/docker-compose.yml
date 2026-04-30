@@ -1,0 +1,77 @@
+services:
+
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: orderdeck-sqlserver
+    restart: unless-stopped
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${SQL_PASSWORD}
+      MSSQL_PID: Express
+    volumes:
+      - ./sql-data:/var/opt/mssql
+    networks:
+      - web
+    expose:
+      - "1433"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' -C -No || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
+  license-server:
+    build:
+      context: ./app
+      dockerfile: OrderDeck.LicenseServer/Dockerfile
+    container_name: orderdeck-license
+    restart: unless-stopped
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: "http://+:8080"
+      ConnectionStrings__LicenseDb: "Server=sqlserver,1433;Database=OrderDeckLicense;User=sa;Password=${SQL_PASSWORD};TrustServerCertificate=True;Encrypt=True;"
+      Jwt__SecretKey: "${JWT_SECRET}"
+      Jwt__Issuer: "orderdeck-license-server"
+      App__PublicBaseUrl: "https://license.orderdeckapp.com"
+      Smtp__Host: "${SMTP_HOST:-smtp.example.com}"
+      Smtp__Port: "${SMTP_PORT:-587}"
+      Smtp__UseSsl: "${SMTP_USESSL:-true}"
+      Smtp__Username: "${SMTP_USERNAME:-}"
+      Smtp__Password: "${SMTP_PASSWORD:-}"
+      Smtp__FromAddress: "${SMTP_FROM:-noreply@orderdeckapp.com}"
+      Smtp__FromName: "OrderDeck"
+      Admin__InitialUsername: "${ADMIN_USERNAME:-admin}"
+      Admin__InitialPasswordHash: "${ADMIN_PASSWORD_HASH}"
+    volumes:
+      - ./keys:/root/.aspnet/DataProtection-Keys
+    networks:
+      - web
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: orderdeck-caddy
+    restart: unless-stopped
+    depends_on:
+      - license-server
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - web
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+networks:
+  web:

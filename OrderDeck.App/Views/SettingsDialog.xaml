@@ -165,7 +165,7 @@
                         <Label Content="Slug (URL'in son parçası)"/>
                         <TextBox Text="{Binding Slug, UpdateSourceTrigger=PropertyChanged}"
                                  ToolTip="Sadece küçük harf, rakam, tire. 3-32 karakter."/>
-                        <TextBlock Text="Örnek: 'burakstreamer' → https://license.orderdeck.app/r/burakstreamer"
+                        <TextBlock Text="Örnek: 'burakstreamer' → https://license.orderdeckapp.com/r/burakstreamer"
                                    Foreground="Gray" FontSize="11" Margin="0,2,0,0"/>
 
                         <Label Content="WhatsApp telefon (E.164 formatı)" Margin="0,12,0,0"/>

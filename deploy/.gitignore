@@ -1,0 +1,5 @@
+.env
+*.bak
+sql-data/
+keys/
+app/

@@ -1,0 +1,21 @@
+{
+    # Force Let's Encrypt production (avoid staging fallback after early DNS failures)
+    acme_ca https://acme-v02.api.letsencrypt.org/directory
+}
+
+(security_headers) {
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        X-XSS-Protection "1; mode=block"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+}
+
+license.orderdeck.app {
+    import security_headers
+    encode gzip
+    reverse_proxy license-server:8080
+}
