@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using LiveDeck.App.Services.IntakeForm;
 using LiveDeck.Chat.Bridge;
 using LiveDeck.Chat.Ingestors;
 using LiveDeck.Core;
@@ -163,6 +164,16 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<IOptions<LicensingOptions>>(),
             () => DateTimeOffset.UtcNow,
             sp.GetRequiredService<ILogger<TrialService>>()));
+
+        // Intake form sync (Phase 4f)
+        services.AddSingleton<IntakeFormSyncService>(sp => new IntakeFormSyncService(
+            sp.GetRequiredService<LicenseApiClient>(),
+            sp.GetRequiredService<CustomerRepository>(),
+            sp.GetRequiredService<SettingsStore>(),
+            sp.GetRequiredService<AppSettings>(),
+            sp.GetRequiredService<IClock>(),
+            sp.GetRequiredService<ILogger<IntakeFormSyncService>>()));
+        services.AddHostedService<IntakeFormSyncHostedService>();
 
         // Licensing dialogs (Phase 4b)
         services.AddTransient<ViewModels.LoginDialogViewModel>();

@@ -22,6 +22,7 @@ public partial class App : Application
     private ChatBridgeIngestor? _ingestor;
     private OverlayHost? _overlay;
     private HeartbeatHostedService? _heartbeat;
+    private LiveDeck.App.Services.IntakeForm.IntakeFormSyncHostedService? _intakeSync;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -76,11 +77,18 @@ public partial class App : Application
             .FirstOrDefault();
         _ = _heartbeat?.StartAsync(CancellationToken.None);
 
+        // Phase 4f: intake form sync hosted service
+        _intakeSync = Host.Services.GetServices<IHostedService>()
+            .OfType<LiveDeck.App.Services.IntakeForm.IntakeFormSyncHostedService>()
+            .FirstOrDefault();
+        _ = _intakeSync?.StartAsync(CancellationToken.None);
+
         base.OnStartup(e);
     }
 
     protected override void OnExit(ExitEventArgs e)
     {
+        try { _intakeSync?.StopAsync(CancellationToken.None).GetAwaiter().GetResult(); } catch { /* ignore */ }
         try { _heartbeat?.StopAsync(CancellationToken.None).GetAwaiter().GetResult(); } catch { /* ignore */ }
         try { _ingestor?.StopAsync(CancellationToken.None).GetAwaiter().GetResult(); } catch { /* ignore */ }
         try { _overlay?.StopAsync().GetAwaiter().GetResult(); } catch { /* ignore */ }

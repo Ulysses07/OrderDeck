@@ -19,4 +19,7 @@ public sealed class AppSettings
 
     /// <summary>Custom kısayol profili: command id → chord string. Null = henüz custom yok.</summary>
     public System.Collections.Generic.Dictionary<string, string>? CustomShortcuts { get; set; }
+
+    /// <summary>Phase 4f: last intake form submission cursor (max SubmittedAt synced).</summary>
+    public DateTimeOffset? LastIntakeFormSync { get; set; }
 }
