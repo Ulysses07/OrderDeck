@@ -21,6 +21,7 @@
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
 
             <TextBlock Grid.Column="0" Text="Kod:" VerticalAlignment="Center" Margin="0,0,8,0"/>
@@ -45,17 +46,33 @@
                 </TextBlock.InputBindings>
             </TextBlock>
 
-            <Button   Grid.Column="6" Content="Yayın Başlat"
+            <Border Grid.Column="6"
+                    Background="Crimson" CornerRadius="10" Padding="8,3"
+                    Cursor="Hand" Margin="8,0,0,0"
+                    VerticalAlignment="Center"
+                    Visibility="{Binding HasNewIntakeSubmissions, Converter={StaticResource BoolToVisibleConverter}}"
+                    ToolTip="Yeni form başvurularını görüntülemek için tıkla">
+                <Border.InputBindings>
+                    <MouseBinding MouseAction="LeftClick" Command="{Binding OpenIntakeSubmissionsCommand}"/>
+                </Border.InputBindings>
+                <TextBlock Foreground="White" FontSize="11" FontWeight="Bold">
+                    <Run Text="🔔"/>
+                    <Run Text="{Binding NewIntakeSubmissionsCount, Mode=OneWay}"/>
+                    <Run Text="yeni başvuru"/>
+                </TextBlock>
+            </Border>
+
+            <Button   Grid.Column="7" Content="Yayın Başlat"
                       Command="{Binding StartStreamCommand}" Padding="14,6" Margin="0,0,8,0"/>
-            <Button   Grid.Column="7" Content="Yayını Bitir"
+            <Button   Grid.Column="8" Content="Yayını Bitir"
                       Command="{Binding EndStreamCommand}"   Padding="14,6"/>
 
-            <Button   Grid.Column="8" Content="🎁 Çekiliş"
+            <Button   Grid.Column="9" Content="🎁 Çekiliş"
                       Command="{Binding StartGiveawayCommand}"
                       IsEnabled="{Binding CanStartGiveaway}"
                       Padding="14,6" Margin="8,0,0,0"/>
 
-            <Button   Grid.Column="9" Content="⋮"
+            <Button   Grid.Column="10" Content="⋮"
                       x:Name="MenuButton"
                       Click="OnMenuClick"
                       Padding="10,6" Margin="8,0,0,0"

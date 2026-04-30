@@ -8,6 +8,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using LiveDeck.App.Services.IntakeForm;
 using LiveDeck.App.Views;
 using LiveDeck.Core.Chat;
 using LiveDeck.Core.Customers;
@@ -32,6 +33,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private readonly Dispatcher _dispatcher;
     private readonly IDisposable _busSubscription;
     private readonly LicenseService _licenseService;
+    private readonly IntakeFormSyncService _intakeSync;
 
     private const int MaxChatMessages = 200;
 
@@ -70,7 +72,17 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private string _licenseStatusText = "";
     [ObservableProperty] private Brush _licenseStatusBrush = Brushes.Gray;
 
+    [ObservableProperty] private int _newIntakeSubmissionsCount;
+
+    public bool HasNewIntakeSubmissions => NewIntakeSubmissionsCount > 0;
+
+    partial void OnNewIntakeSubmissionsCountChanged(int value)
+    {
+        OnPropertyChanged(nameof(HasNewIntakeSubmissions));
+    }
+
     public IAsyncRelayCommand OpenAccountCommand { get; private set; } = null!;
+    public IAsyncRelayCommand OpenIntakeSubmissionsCommand { get; private set; } = null!;
 
     public MainShellViewModel(
         IChatBus bus,
@@ -81,7 +93,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         CustomerRepository customerRepo,
         GiveawayService giveaways,
         GiveawayBannerViewModel banner,
-        LicenseService licenseService)
+        LicenseService licenseService,
+        IntakeFormSyncService intakeSync)
     {
         _labels = labels;
         _sessions = sessions;
@@ -96,6 +109,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _licenseService.StatusChanged += OnLicenseStatusChanged;
         UpdateLicenseUiFromService();
 
+        _intakeSync = intakeSync;
+        _intakeSync.SubmissionsSynced += OnIntakeSubmissionsSynced;
+
         Banner.AutoDrawRequested += () => DrawGiveawayNowCommand.Execute(null);
 
         SelectedQueueItems.CollectionChanged += (_, _) =>
@@ -105,6 +121,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         };
 
         OpenAccountCommand = new AsyncRelayCommand(OpenAccountAsync);
+        OpenIntakeSubmissionsCommand = new AsyncRelayCommand(OpenIntakeSubmissionsAsync);
 
         UpdateStreamStatusLabel();
         UpdateGiveawayCanStart();
@@ -177,6 +194,31 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         (AddChatSenderToBlacklistCommand as IRelayCommand)?.NotifyCanExecuteChanged();
         (AddQueueRowToBlacklistCommand as IRelayCommand)?.NotifyCanExecuteChanged();
         (DeleteSelectedFromQueueViaShortcutCommand as IRelayCommand)?.NotifyCanExecuteChanged();
+    }
+
+    private void OnIntakeSubmissionsSynced(object? sender, int count)
+    {
+        // UI thread dispatch (Phase 4b pattern)
+        if (System.Windows.Application.Current?.Dispatcher is { } d && !d.CheckAccess())
+        {
+            d.InvokeAsync(() => NewIntakeSubmissionsCount += count);
+            return;
+        }
+        NewIntakeSubmissionsCount += count;
+    }
+
+    private async Task OpenIntakeSubmissionsAsync()
+    {
+        await Task.Yield();
+        var dlg = global::LiveDeck.App.App.Host.Services.GetRequiredService<global::LiveDeck.App.Views.CustomerSearchDialog>();
+        var vm = (CustomerSearchViewModel)dlg.DataContext;
+        vm.PlatformFilter = "form";
+        vm.RefreshSearch();
+
+        dlg.Owner = System.Windows.Application.Current?.MainWindow;
+        dlg.ShowDialog();
+
+        NewIntakeSubmissionsCount = 0;
     }
 
     private async Task OpenAccountAsync()
