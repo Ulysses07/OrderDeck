@@ -12,6 +12,7 @@ public sealed class IntakeFormSubmission
     public string Username { get; set; } = "";
     public string FullName { get; set; } = "";
     public string Address { get; set; } = "";
+    public string? Phone { get; set; }   // Phase 4g — E.164 format
     public DateTimeOffset SubmittedAt { get; set; }
     public string? IpAddress { get; set; }
     public string? UserAgent { get; set; }

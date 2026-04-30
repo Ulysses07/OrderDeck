@@ -54,4 +54,39 @@ public class SessionRepositoryTests
         ended[0].Id.Should().Be("s3");
         ended[1].Id.Should().Be("s1");
     }
+
+    [Fact]
+    public void GetLatestEnded_NoSessions_ReturnsNull()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new SessionRepository(db);
+        repo.GetLatestEnded().Should().BeNull();
+    }
+
+    [Fact]
+    public void GetLatestEnded_OnlyActiveSession_ReturnsNull()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new SessionRepository(db);
+        repo.Insert(new StreamSession("s1", "Live", 1000, null, System.Array.Empty<string>(), null));
+        repo.GetLatestEnded().Should().BeNull();
+    }
+
+    [Fact]
+    public void GetLatestEnded_ReturnsMostRecentlyEndedByEndedAt()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new SessionRepository(db);
+        repo.Insert(new StreamSession("s1", "Old", 100, null, System.Array.Empty<string>(), null));
+        repo.End("s1", 200);
+        repo.Insert(new StreamSession("s2", "New", 300, null, System.Array.Empty<string>(), null));
+        repo.End("s2", 400);
+
+        var latest = repo.GetLatestEnded();
+        latest!.Id.Should().Be("s2");
+        latest.EndedAt.Should().Be(400);
+    }
 }

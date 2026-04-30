@@ -44,6 +44,10 @@ public class IntakeFormModel : PageModel
         [Required(ErrorMessage = "Adres gerekli")]
         [StringLength(500, ErrorMessage = "En fazla 500 karakter")]
         public string Address { get; set; } = "";
+
+        [Required(ErrorMessage = "WhatsApp numarası zorunlu.")]
+        [StringLength(20)]
+        public string Phone { get; set; } = "";
     }
 
     public async Task<IActionResult> OnGetAsync(CancellationToken ct)
@@ -70,11 +74,22 @@ public class IntakeFormModel : PageModel
 
         if (!ModelState.IsValid) return Page();
 
+        // Phase 4g — normalize TR phone to E.164
+        var normalizedPhone = PhoneNormalizer.NormalizeTr(Input.Phone);
+        if (normalizedPhone is null)
+        {
+            ModelState.AddModelError(
+                "Input.Phone",
+                "Geçersiz telefon numarası. 10 haneli TR mobil numara girin.");
+            return Page();
+        }
+
         await _service.SaveSubmissionAsync(
             Config.Id,
             Input.Username.Trim(),
             Input.FullName.Trim(),
             Input.Address.Trim(),
+            normalizedPhone,
             HttpContext.Connection.RemoteIpAddress?.ToString(),
             Request.Headers.UserAgent.ToString(),
             ct);
@@ -83,7 +98,8 @@ public class IntakeFormModel : PageModel
             Config.WhatsAppPhone,
             Input.Username.Trim(),
             Input.FullName.Trim(),
-            Input.Address.Trim());
+            Input.Address.Trim(),
+            normalizedPhone);
         return Redirect(url);
     }
 }

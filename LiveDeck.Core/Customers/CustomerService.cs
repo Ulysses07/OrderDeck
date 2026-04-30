@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using LiveDeck.Core.Storage.Repositories;
 using LiveDeck.Core.Time;
 
@@ -7,11 +8,19 @@ namespace LiveDeck.Core.Customers;
 public sealed class CustomerService
 {
     private readonly CustomerRepository _repo;
+    private readonly SessionRepository _sessions;
+    private readonly LabelRepository _labels;
     private readonly IClock _clock;
 
-    public CustomerService(CustomerRepository repo, IClock clock)
+    public CustomerService(
+        CustomerRepository repo,
+        SessionRepository sessions,
+        LabelRepository labels,
+        IClock clock)
     {
         _repo = repo;
+        _sessions = sessions;
+        _labels = labels;
         _clock = clock;
     }
 
@@ -36,7 +45,8 @@ public sealed class CustomerService
             TotalLabelsPrinted: 0,
             TotalAmount: 0m,
             BlacklistedAt: null,
-            Address: null);
+            Address: null,
+            Phone: null);
         _repo.Insert(customer);
         return customer;
     }
@@ -67,5 +77,24 @@ public sealed class CustomerService
         var c = GetOrCreate(platform, username, displayName: null, avatarUrl: null);
         AddToBlacklist(c.Id, reason);
         return _repo.GetById(c.Id)!;
+    }
+
+    /// <summary>
+    /// Phase 4g: en son tamamlanmış yayında alışveriş yapan müşteriler
+    /// (printed label'ları olanlar), tutar DESC sıralı. Yayın yoksa empty.
+    /// </summary>
+    public IReadOnlyList<Customer> GetLastStreamShoppers()
+    {
+        var session = _sessions.GetLatestEnded();
+        if (session is null) return Array.Empty<Customer>();
+
+        var top = _labels.GetTopCustomersBySession(session.Id, int.MaxValue);
+        var result = new List<Customer>(top.Count);
+        foreach (var t in top)
+        {
+            var c = _repo.FindByPlatformAndUsername(t.Platform, t.Username);
+            if (c is not null) result.Add(c);
+        }
+        return result;
     }
 }

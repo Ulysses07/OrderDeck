@@ -18,18 +18,18 @@ public sealed class CustomerRepository
             @"INSERT INTO Customer
               (Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
                IsBlacklisted, BlacklistReason, Notes,
-               TotalLabelsPrinted, TotalAmount, BlacklistedAt, Address)
+               TotalLabelsPrinted, TotalAmount, BlacklistedAt, Address, Phone)
               VALUES
               (@Id, @Platform, @Username, @DisplayName, @AvatarUrl, @FirstSeenAt, @LastSeenAt,
                @IsBlacklisted, @BlacklistReason, @Notes,
-               @TotalLabelsPrinted, @TotalAmount, @BlacklistedAt, @Address)",
+               @TotalLabelsPrinted, @TotalAmount, @BlacklistedAt, @Address, @Phone)",
             new
             {
                 c.Id, c.Platform, c.Username, c.DisplayName, c.AvatarUrl,
                 c.FirstSeenAt, c.LastSeenAt,
                 IsBlacklisted = c.IsBlacklisted ? 1 : 0,
                 c.BlacklistReason, c.Notes,
-                c.TotalLabelsPrinted, c.TotalAmount, c.BlacklistedAt, c.Address
+                c.TotalLabelsPrinted, c.TotalAmount, c.BlacklistedAt, c.Address, c.Phone
             });
     }
 
@@ -121,7 +121,7 @@ public sealed class CustomerRepository
         r.Id, r.Platform, r.Username, r.DisplayName, r.AvatarUrl,
         r.FirstSeenAt, r.LastSeenAt,
         r.IsBlacklisted == 1, r.BlacklistReason, r.Notes,
-        r.TotalLabelsPrinted, r.TotalAmount, r.BlacklistedAt, r.Address);
+        r.TotalLabelsPrinted, r.TotalAmount, r.BlacklistedAt, r.Address, r.Phone);
 
     private sealed class Row
     {
@@ -139,6 +139,7 @@ public sealed class CustomerRepository
         public decimal TotalAmount { get; init; }
         public long? BlacklistedAt { get; init; }
         public string? Address { get; init; }
+        public string? Phone { get; init; }
     }
 
     /// <summary>
@@ -146,7 +147,7 @@ public sealed class CustomerRepository
     /// Mevcut müşteri varsa DisplayName, Address, LastSeenAt güncellenir;
     /// yoksa yeni satır insert edilir.
     /// </summary>
-    public Customer UpsertFromIntakeForm(string username, string fullName, string address, long nowUnix)
+    public Customer UpsertFromIntakeForm(string username, string fullName, string address, string? phone, long nowUnix)
     {
         const string platform = "form";
         using var conn = _factory.Open();
@@ -154,7 +155,7 @@ public sealed class CustomerRepository
         var existing = conn.QueryFirstOrDefault<Row>(@"
             SELECT Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
                    IsBlacklisted, BlacklistReason, Notes, TotalLabelsPrinted, TotalAmount,
-                   BlacklistedAt, Address
+                   BlacklistedAt, Address, Phone
             FROM Customer
             WHERE Platform = @platform AND Username = @username",
             new { platform, username });
@@ -165,23 +166,33 @@ public sealed class CustomerRepository
                 UPDATE Customer
                 SET DisplayName = @fullName,
                     Address = @address,
+                    Phone = @phone,
                     LastSeenAt = @nowUnix
                 WHERE Id = @id",
-                new { fullName, address, nowUnix, id = existing.Id });
+                new { fullName, address, phone, nowUnix, id = existing.Id });
             var updated = Map(existing);
-            return updated with { DisplayName = fullName, Address = address, LastSeenAt = nowUnix };
+            return updated with { DisplayName = fullName, Address = address, Phone = phone, LastSeenAt = nowUnix };
         }
 
         var id = Guid.NewGuid().ToString("N");
         conn.Execute(@"
             INSERT INTO Customer (Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
                                   IsBlacklisted, BlacklistReason, Notes, TotalLabelsPrinted, TotalAmount,
-                                  BlacklistedAt, Address)
+                                  BlacklistedAt, Address, Phone)
             VALUES (@id, @platform, @username, @fullName, NULL, @nowUnix, @nowUnix,
-                    0, NULL, NULL, 0, 0, NULL, @address)",
-            new { id, platform, username, fullName, nowUnix, address });
+                    0, NULL, NULL, 0, 0, NULL, @address, @phone)",
+            new { id, platform, username, fullName, nowUnix, address, phone });
 
         return new Customer(id, platform, username, fullName, null, nowUnix, nowUnix,
-            false, null, null, 0, 0m, null, address);
+            false, null, null, 0, 0m, null, address, phone);
+    }
+
+    /// <summary>Phase 4g: WhatsApp E.164 telefonu güncelle. Geçersiz id no-op.</summary>
+    public void UpdatePhone(string customerId, string e164Phone)
+    {
+        using var conn = _factory.Open();
+        conn.Execute(
+            "UPDATE Customer SET Phone=@phone WHERE Id=@id",
+            new { phone = e164Phone, id = customerId });
     }
 }

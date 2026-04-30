@@ -83,9 +83,16 @@ public sealed class IntakeFormService
         return existing;
     }
 
-    public async Task<IntakeFormSubmission> SaveSubmissionAsync(
+    // Phase 4f overload kept for backwards compatibility with existing tests.
+    // Task 18 will migrate callers to pass `phone` explicitly.
+    public Task<IntakeFormSubmission> SaveSubmissionAsync(
         Guid configId, string username, string fullName, string address,
         string? ipAddress, string? userAgent, CancellationToken ct = default)
+        => SaveSubmissionAsync(configId, username, fullName, address, null, ipAddress, userAgent, ct);
+
+    public async Task<IntakeFormSubmission> SaveSubmissionAsync(
+        Guid configId, string username, string fullName, string address,
+        string? phone, string? ipAddress, string? userAgent, CancellationToken ct = default)
     {
         var sub = new IntakeFormSubmission
         {
@@ -94,6 +101,7 @@ public sealed class IntakeFormService
             Username = username,
             FullName = fullName,
             Address = address,
+            Phone = phone,
             SubmittedAt = DateTimeOffset.UtcNow,
             IpAddress = ipAddress,
             UserAgent = userAgent

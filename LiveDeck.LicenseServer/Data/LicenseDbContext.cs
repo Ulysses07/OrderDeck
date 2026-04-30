@@ -132,6 +132,7 @@ public sealed class LicenseDbContext : DbContext
             b.Property(s => s.Username).HasMaxLength(64).IsRequired();
             b.Property(s => s.FullName).HasMaxLength(200).IsRequired();
             b.Property(s => s.Address).HasMaxLength(500).IsRequired();
+            b.Property(s => s.Phone).HasMaxLength(20);
             b.Property(s => s.IpAddress).HasMaxLength(64);
             b.Property(s => s.UserAgent).HasMaxLength(500);
             b.HasIndex(s => new { s.IntakeFormConfigId, s.SubmittedAt });

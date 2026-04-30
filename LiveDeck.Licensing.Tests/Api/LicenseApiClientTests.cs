@@ -213,13 +213,14 @@ public class LicenseApiClientTests
     public async Task GetFormSubmissionsAsync_returns_list_with_since_query_param()
     {
         var (client, handler) = BuildClient(_ => FakeHttpMessageHandler.Json(200,
-            """[{"id":"00000000-0000-0000-0000-000000000001","username":"u","fullName":"n","address":"a","submittedAt":"2026-04-30T12:00:00Z"}]"""));
+            """[{"id":"00000000-0000-0000-0000-000000000001","username":"u","fullName":"n","address":"a","phone":"+905551111111","submittedAt":"2026-04-30T12:00:00Z"}]"""));
 
         var since = new DateTimeOffset(2026, 4, 30, 11, 0, 0, TimeSpan.Zero);
         var rows = await client.GetFormSubmissionsAsync(since, limit: 25);
 
         rows.Should().HaveCount(1);
         rows[0].Username.Should().Be("u");
+        rows[0].Phone.Should().Be("+905551111111");
         handler.Requests[0].RequestUri!.AbsolutePath.Should().Be("/api/v1/me/form-submissions");
         handler.Requests[0].RequestUri.Query.Should().Contain("since=").And.Contain("limit=25");
     }

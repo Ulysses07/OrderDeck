@@ -14,4 +14,5 @@ public sealed record Customer(
     int TotalLabelsPrinted,
     decimal TotalAmount,
     long? BlacklistedAt,
-    string? Address);   // Phase 4f
+    string? Address,
+    string? Phone);   // Phase 4g

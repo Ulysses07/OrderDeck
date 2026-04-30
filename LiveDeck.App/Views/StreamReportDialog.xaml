@@ -65,6 +65,20 @@
                 <DataGridTextColumn Header="Tutar"
                                     Binding="{Binding TotalAmount, StringFormat={}{0:N2} TL}"
                                     Width="*"/>
+                <DataGridTemplateColumn Header="WhatsApp" Width="80">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <Button Content="📱"
+                                    ToolTip="WhatsApp'tan ödeme iste"
+                                    Command="{Binding DataContext.OpenWhatsAppCommand,
+                                             RelativeSource={RelativeSource AncestorType=Window}}"
+                                    CommandParameter="{Binding}"
+                                    Background="#25D366" Foreground="White"
+                                    BorderThickness="0" Padding="6,2"
+                                    HorizontalAlignment="Center"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
             </DataGrid.Columns>
         </DataGrid>
 

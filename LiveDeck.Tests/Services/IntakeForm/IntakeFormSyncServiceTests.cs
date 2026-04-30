@@ -97,4 +97,17 @@ public sealed class IntakeFormSyncServiceTests
         count.Should().Be(0);
         settings.LastIntakeFormSync.Should().Be(new DateTimeOffset(2026, 4, 30, 10, 0, 0, TimeSpan.Zero));
     }
+
+    [Fact]
+    public async Task SyncOnceAsync_propagates_phone_from_dto_to_customer()
+    {
+        var (svc, repo, _, _) = Build(_ => FakeHttpMessageHandler.Json(200,
+            """[{"id":"00000000-0000-0000-0000-000000000001","username":"alice","fullName":"Alice","address":"Addr","phone":"+905551111111","submittedAt":"2026-04-30T12:00:00Z"}]"""));
+
+        var count = await svc.SyncOnceAsync();
+
+        count.Should().Be(1);
+        var customer = repo.Search("alice", limit: 5).Single(c => c.Platform == "form");
+        customer.Phone.Should().Be("+905551111111");
+    }
 }

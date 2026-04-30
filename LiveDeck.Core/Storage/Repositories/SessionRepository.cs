@@ -52,6 +52,19 @@ public sealed class SessionRepository
         return row is null ? null : Map(row);
     }
 
+    /// <summary>Phase 4g: en son tamamlanmış (EndedAt dolu) session'ı döndürür.</summary>
+    public StreamSession? GetLatestEnded()
+    {
+        using var conn = _factory.Open();
+        var row = conn.QueryFirstOrDefault<Row>(
+            @"SELECT Id, Title, StartedAt, EndedAt, Platforms, Notes
+              FROM StreamSession
+              WHERE EndedAt IS NOT NULL
+              ORDER BY EndedAt DESC
+              LIMIT 1");
+        return row is null ? null : Map(row);
+    }
+
     public System.Collections.Generic.IReadOnlyList<Sessions.StreamSession> GetAllEnded(int limit)
     {
         using var conn = _factory.Open();

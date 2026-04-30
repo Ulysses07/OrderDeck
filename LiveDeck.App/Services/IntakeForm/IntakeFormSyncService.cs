@@ -61,7 +61,12 @@ public sealed class IntakeFormSyncService
 
         foreach (var sub in submissions.OrderBy(s => s.SubmittedAt))
         {
-            _customers.UpsertFromIntakeForm(sub.Username, sub.FullName, sub.Address, nowUnix);
+            _customers.UpsertFromIntakeForm(
+                sub.Username,
+                sub.FullName,
+                sub.Address,
+                sub.Phone,
+                nowUnix);
             if (sub.SubmittedAt > newCursor) newCursor = sub.SubmittedAt;
         }
 

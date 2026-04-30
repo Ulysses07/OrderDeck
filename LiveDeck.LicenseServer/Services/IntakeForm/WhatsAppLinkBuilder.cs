@@ -12,6 +12,13 @@ public sealed class WhatsAppLinkBuilder
     /// Message: 3 lines (Kullanıcı adı / Ad Soyad / Adres) joined with newlines.
     /// </summary>
     public string Build(string e164Phone, string username, string fullName, string address)
+        => Build(e164Phone, username, fullName, address, null);
+
+    /// <summary>
+    /// Phase 4g overload — appends customer's WhatsApp/phone (E.164) as a 4th line ("Telefon: ...")
+    /// to the broadcaster's message when provided.
+    /// </summary>
+    public string Build(string e164Phone, string username, string fullName, string address, string? phoneFromCustomer)
     {
         // Normalize phone: strip +, space, dash
         var normalizedPhone = e164Phone
@@ -19,8 +26,12 @@ public sealed class WhatsAppLinkBuilder
             .Replace(" ", string.Empty)
             .Replace("-", string.Empty);
 
-        // Build message with 3 labeled lines
+        // Build message with 3 labeled lines (+ optional Telefon line)
         var message = $"Kullanıcı adı: {username}\nAd Soyad: {fullName}\nAdres: {address}";
+        if (!string.IsNullOrWhiteSpace(phoneFromCustomer))
+        {
+            message += $"\nTelefon: {phoneFromCustomer}";
+        }
 
         // Encode message for URL
         var encodedMessage = Uri.EscapeDataString(message);

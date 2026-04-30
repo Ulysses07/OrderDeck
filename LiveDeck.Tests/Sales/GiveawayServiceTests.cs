@@ -29,7 +29,7 @@ public class GiveawayServiceTests
             new StreamSession("s1", null, 100, null, new[] { "instagram", "tiktok" }, null));
 
         var customerRepo  = new CustomerRepository(db);
-        var customerSvc   = new CustomerService(customerRepo, clock.Object);
+        var customerSvc   = new CustomerService(customerRepo, new SessionRepository(db), new LabelRepository(db), clock.Object);
         var giveawayRepo  = new GiveawayRepository(db);
         var drawer        = new GiveawayDrawer();
 
@@ -124,7 +124,7 @@ public class GiveawayServiceTests
         var c = customers.FindByPlatformAndUsername("instagram", "@bad")
                 ?? new Customer(System.Guid.NewGuid().ToString("N"),
                     "instagram", "@bad", null, null, 100, 100,
-                    false, null, null, 0, 0m, null, null);
+                    false, null, null, 0, 0m, null, null, null);
         if (customers.GetById(c.Id) is null) customers.Insert(c);
         customers.UpdateBlacklist(c.Id, true, "test", 999);
 

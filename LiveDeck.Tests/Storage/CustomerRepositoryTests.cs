@@ -23,7 +23,7 @@ public class CustomerRepositoryTests
             FirstSeenAt: 1000, LastSeenAt: 1000,
             IsBlacklisted: false, BlacklistReason: null, Notes: null,
             TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null,
-            Address: null);
+            Address: null, Phone: null);
 
     [Fact]
     public void Insert_then_FindByPlatformAndUsername_returns_customer()
@@ -130,7 +130,7 @@ public class CustomerRepositoryTests
             FirstSeenAt: 100, LastSeenAt: 100,
             IsBlacklisted: false, BlacklistReason: null, Notes: null,
             TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null,
-            Address: null);
+            Address: null, Phone: null);
         repo.Insert(c);
 
         repo.UpdateNotes("c-1", "VIP müşteri");
@@ -151,11 +151,11 @@ public class CustomerRepositoryTests
         var repo = new CustomerRepository(db);
 
         repo.Insert(new Customer("c-1", "instagram", "@ali",     "Ali", null,
-            100, 200, false, null, null, 0, 0m, null, null));
+            100, 200, false, null, null, 0, 0m, null, null, null));
         repo.Insert(new Customer("c-2", "instagram", "@alican",  "Alican", null,
-            100, 300, false, null, null, 0, 0m, null, null));
+            100, 300, false, null, null, 0, 0m, null, null, null));
         repo.Insert(new Customer("c-3", "tiktok",    "@veli",    "Veli", null,
-            100, 400, false, null, null, 0, 0m, null, null));
+            100, 400, false, null, null, 0, 0m, null, null, null));
 
         var results = repo.Search("ali", limit: 50);
         results.Select(c => c.Id).Should().Equal(new[] { "c-2", "c-1" });
@@ -174,7 +174,7 @@ public class CustomerRepositoryTests
         var repo = CreateRepository();
         var now = 1714521600L;
 
-        var customer = repo.UpsertFromIntakeForm("bilalcanli", "Bilal Canlı", "Atatürk Cad. No:12", now);
+        var customer = repo.UpsertFromIntakeForm("bilalcanli", "Bilal Canlı", "Atatürk Cad. No:12", null, now);
 
         customer.Platform.Should().Be("form");
         customer.Username.Should().Be("bilalcanli");
@@ -191,8 +191,8 @@ public class CustomerRepositoryTests
         var firstNow = 1714521600L;
         var secondNow = 1714608000L;
 
-        var first = repo.UpsertFromIntakeForm("bilalcanli", "Bilal Eski", "Eski Adres", firstNow);
-        var second = repo.UpsertFromIntakeForm("bilalcanli", "Bilal Yeni", "Yeni Adres", secondNow);
+        var first = repo.UpsertFromIntakeForm("bilalcanli", "Bilal Eski", "Eski Adres", null, firstNow);
+        var second = repo.UpsertFromIntakeForm("bilalcanli", "Bilal Yeni", "Yeni Adres", null, secondNow);
 
         second.Id.Should().Be(first.Id);    // same row
         second.DisplayName.Should().Be("Bilal Yeni");
@@ -208,7 +208,7 @@ public class CustomerRepositoryTests
         var now = 1714521600L;
 
         // Same username, different platform — distinct customers
-        repo.UpsertFromIntakeForm("bilalcanli", "Bilal F", "Form Adres", now);
+        repo.UpsertFromIntakeForm("bilalcanli", "Bilal F", "Form Adres", null, now);
         // Mevcut Insert API ile Instagram customer create
         repo.Insert(new Customer(
             Id: Guid.NewGuid().ToString("N"),
@@ -218,11 +218,37 @@ public class CustomerRepositoryTests
             AvatarUrl: null, FirstSeenAt: now, LastSeenAt: now,
             IsBlacklisted: false, BlacklistReason: null, Notes: null,
             TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null,
-            Address: null));
+            Address: null, Phone: null));
 
         var allByUsername = repo.Search("bilalcanli", limit: 10);
         allByUsername.Should().HaveCount(2);
         allByUsername.Should().Contain(c => c.Platform == "form");
         allByUsername.Should().Contain(c => c.Platform == "instagram");
+    }
+
+    [Fact]
+    public void UpdatePhone_PersistsE164ValueAndCanBeReadBack()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+        var c = new Customer("id1", "twitch", "alice", "Alice", null,
+            1000, 1000, false, null, null, 0, 0m, null, null, null);
+        repo.Insert(c);
+
+        repo.UpdatePhone("id1", "+905551234567");
+
+        var loaded = repo.GetById("id1");
+        loaded!.Phone.Should().Be("+905551234567");
+    }
+
+    [Fact]
+    public void UpdatePhone_OnNonExistentId_DoesNotThrow()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+        Action act = () => repo.UpdatePhone("nonexistent-id", "+905551234567");
+        act.Should().NotThrow();
     }
 }

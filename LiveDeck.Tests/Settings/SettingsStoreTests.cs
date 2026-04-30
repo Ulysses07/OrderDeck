@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using FluentAssertions;
 using LiveDeck.Core.Settings;
@@ -55,5 +56,52 @@ public class SettingsStoreTests
         reloaded.LabelMessageFontSize.Should().Be(13);
 
         File.Delete(path);
+    }
+}
+
+public class SettingsStore_PaymentTests
+{
+    [Fact]
+    public void Save_Then_Load_RoundTripsPaymentSettings()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"livedeck-test-{Guid.NewGuid():N}.json");
+        try
+        {
+            var store = new SettingsStore(path);
+            var s = new AppSettings();
+            s.Payment.WhatsAppMessageTemplate = "Hi {ad}, pay {tutar}!";
+            s.Payment.Iban = "TR12";
+            s.Payment.AccountHolder = "Burak";
+            s.Payment.Papara = "1234567";
+            store.Save(s);
+
+            var loaded = store.Load();
+            loaded.Payment.WhatsAppMessageTemplate.Should().Be("Hi {ad}, pay {tutar}!");
+            loaded.Payment.Iban.Should().Be("TR12");
+            loaded.Payment.AccountHolder.Should().Be("Burak");
+            loaded.Payment.Papara.Should().Be("1234567");
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Load_FreshFile_HasDefaultPaymentTemplate()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"livedeck-test-{Guid.NewGuid():N}.json");
+        try
+        {
+            var store = new SettingsStore(path);
+            var loaded = store.Load();
+            loaded.Payment.Should().NotBeNull();
+            loaded.Payment.WhatsAppMessageTemplate.Should().Contain("{ad}");
+            loaded.Payment.WhatsAppMessageTemplate.Should().Contain("{tutar}");
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
     }
 }
