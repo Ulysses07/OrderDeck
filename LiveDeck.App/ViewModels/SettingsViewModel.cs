@@ -40,6 +40,12 @@ public sealed partial class SettingsViewModel : ViewModelBase
     [ObservableProperty] private int    _overlayPort;
     [ObservableProperty] private string _chatTheme = "minimal";
 
+    // Phase 4g — Payment settings
+    [ObservableProperty] private string _paymentTemplate = "";
+    [ObservableProperty] private string _iban = "";
+    [ObservableProperty] private string _accountHolder = "";
+    [ObservableProperty] private string _papara = "";
+
     [ObservableProperty] private string? _validationError;
 
     /// <summary>True iff Save was called and OverlayPort changed (caller checks for restart prompt).</summary>
@@ -77,6 +83,12 @@ public sealed partial class SettingsViewModel : ViewModelBase
         LabelMessageFontSize = _liveSettings.LabelMessageFontSize;
         OverlayPort          = _liveSettings.OverlayPort;
         ChatTheme            = _liveSettings.ChatTheme;
+
+        // Phase 4g — Payment
+        PaymentTemplate = _liveSettings.Payment.WhatsAppMessageTemplate;
+        Iban            = _liveSettings.Payment.Iban;
+        AccountHolder   = _liveSettings.Payment.AccountHolder;
+        Papara          = _liveSettings.Payment.Papara;
     }
 
     private void LoadInstalledPrinters()
@@ -133,6 +145,12 @@ public sealed partial class SettingsViewModel : ViewModelBase
         _liveSettings.LabelMessageFontSize = LabelMessageFontSize;
         _liveSettings.OverlayPort          = OverlayPort;
         _liveSettings.ChatTheme            = ChatTheme;
+
+        // Phase 4g — Payment
+        _liveSettings.Payment.WhatsAppMessageTemplate = PaymentTemplate;
+        _liveSettings.Payment.Iban                    = Iban;
+        _liveSettings.Payment.AccountHolder           = AccountHolder;
+        _liveSettings.Payment.Papara                  = Papara;
 
         _store.Save(_liveSettings);
 
