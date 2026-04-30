@@ -38,9 +38,25 @@ public sealed partial class AccountDialogViewModel : ObservableObject
     [ObservableProperty] private string _email = "";
     [ObservableProperty] private string _name = "";
     [ObservableProperty] private string _licenseKey = "—";
+    [ObservableProperty] private bool _isLicenseKeyVisible;
     [ObservableProperty] private string _skuCode = "—";
     [ObservableProperty] private DateTimeOffset? _expiresAt;
     [ObservableProperty] private string _statusText = "";
+
+    /// <summary>
+    /// LicenseKey ile aynı uzunlukta tamamen maskelenmiş veya tam görünür hâli.
+    /// IsLicenseKeyVisible toggle'ı XAML'den kontrol edilir.
+    /// </summary>
+    public string DisplayedLicenseKey =>
+        IsLicenseKeyVisible || LicenseKey == "—"
+            ? LicenseKey
+            : new string('•', LicenseKey.Length);
+
+    partial void OnIsLicenseKeyVisibleChanged(bool value) =>
+        OnPropertyChanged(nameof(DisplayedLicenseKey));
+
+    partial void OnLicenseKeyChanged(string value) =>
+        OnPropertyChanged(nameof(DisplayedLicenseKey));
 
     [ObservableProperty] private LicenseStatus _currentStatus;
     [ObservableProperty] private string _trialLine = "";

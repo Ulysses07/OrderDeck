@@ -32,7 +32,26 @@
             <!-- License section -->
             <StackPanel Visibility="{Binding IsLicenseSection, Converter={StaticResource BoolToVis}}">
                 <TextBlock Text="Lisans Anahtarı" FontWeight="SemiBold"/>
-                <TextBlock Text="{Binding LicenseKey}" FontFamily="Consolas" Margin="0,0,0,8"/>
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                    <TextBlock Text="{Binding DisplayedLicenseKey}"
+                               FontFamily="Consolas"
+                               VerticalAlignment="Center"/>
+                    <ToggleButton IsChecked="{Binding IsLicenseKeyVisible, Mode=TwoWay}"
+                                  Padding="8,2" Margin="8,0,0,0"
+                                  VerticalAlignment="Center"
+                                  ToolTip="Lisans anahtarını göster/gizle">
+                        <ToggleButton.Style>
+                            <Style TargetType="ToggleButton">
+                                <Setter Property="Content" Value="Göster"/>
+                                <Style.Triggers>
+                                    <Trigger Property="IsChecked" Value="True">
+                                        <Setter Property="Content" Value="Gizle"/>
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ToggleButton.Style>
+                    </ToggleButton>
+                </StackPanel>
 
                 <TextBlock Text="SKU" FontWeight="SemiBold"/>
                 <TextBlock Text="{Binding SkuCode}" Margin="0,0,0,8"/>
