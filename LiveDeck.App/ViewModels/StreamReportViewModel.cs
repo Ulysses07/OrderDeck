@@ -1,10 +1,13 @@
 using System;
 using System.Collections.ObjectModel;
+using System.Threading.Tasks;
 using System.Windows;
 using ClosedXML.Excel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using LiveDeck.App.Services;
 using LiveDeck.Core;
+using LiveDeck.Core.Customers;
 using LiveDeck.Core.Storage.Repositories;
 using Microsoft.Win32;
 
@@ -15,6 +18,9 @@ public sealed partial class StreamReportViewModel : ViewModelBase
     private readonly LabelRepository _labels;
     private readonly SessionRepository _sessions;
     private readonly GiveawayRepository _giveaways;
+    private readonly CustomerRepository _customers;
+    private readonly PaymentRequestService _paymentService;
+    private readonly IDialogService _dialogService;
 
     [ObservableProperty] private string _durationLabel = "—";
     [ObservableProperty] private int    _totalLabels;
@@ -25,12 +31,22 @@ public sealed partial class StreamReportViewModel : ViewModelBase
     public ObservableCollection<GiveawaySummary> Giveaways    { get; } = new();
 
     private string? _sessionId;
+    private DateTime _currentSessionDate;
 
-    public StreamReportViewModel(LabelRepository labels, SessionRepository sessions, GiveawayRepository giveaways)
+    public StreamReportViewModel(
+        LabelRepository labels,
+        SessionRepository sessions,
+        GiveawayRepository giveaways,
+        CustomerRepository customers,
+        PaymentRequestService paymentService,
+        IDialogService dialogService)
     {
         _labels = labels;
         _sessions = sessions;
         _giveaways = giveaways;
+        _customers = customers;
+        _paymentService = paymentService;
+        _dialogService = dialogService;
     }
 
     public void Load(string sessionId)
@@ -51,6 +67,10 @@ public sealed partial class StreamReportViewModel : ViewModelBase
             Giveaways.Add(g);
 
         var session = _sessions.GetById(sessionId);
+        _currentSessionDate = session?.EndedAt is long ended
+            ? DateTimeOffset.FromUnixTimeSeconds(ended).LocalDateTime
+            : DateTime.Now;
+
         if (session is not null)
         {
             var endedAt = session.EndedAt ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -131,5 +151,37 @@ public sealed partial class StreamReportViewModel : ViewModelBase
             MessageBox.Show($"Excel'e aktarma başarısız: {ex.Message}",
                 "Hata", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    [RelayCommand]
+    private async Task OpenWhatsAppAsync(TopCustomer? topCustomer)
+    {
+        if (topCustomer is null) return;
+
+        var customer = _customers.FindByPlatformAndUsername(topCustomer.Platform, topCustomer.Username);
+        if (customer is null)
+        {
+            _dialogService.ShowError("Müşteri kaydı bulunamadı.");
+            return;
+        }
+
+        var result = _paymentService.OpenWhatsApp(customer, topCustomer.TotalAmount, _currentSessionDate);
+
+        if (result == PaymentRequestResult.PhoneRequired)
+        {
+            var saved = _dialogService.ShowPhoneEntryDialog(customer.Id);
+            if (saved)
+            {
+                var updated = _customers.GetById(customer.Id);
+                if (updated is not null)
+                    _paymentService.OpenWhatsApp(updated, topCustomer.TotalAmount, _currentSessionDate);
+            }
+        }
+        else if (result == PaymentRequestResult.LaunchFailed)
+        {
+            _dialogService.ShowError("WhatsApp açılamadı. WhatsApp Desktop kurulu mu?");
+        }
+
+        await Task.CompletedTask;
     }
 }
