@@ -156,6 +156,7 @@ public class Program
             opt.Conventions.AuthorizeFolder("/Admin", "AdminOnly");
             opt.Conventions.AllowAnonymousToPage("/Admin/Login");
             opt.Conventions.AllowAnonymousToPage("/Admin/Logout");
+            opt.Conventions.AllowAnonymousToFolder("/Public");
         });
         builder.Services.AddEndpointsApiExplorer();
         builder.Services.AddSwaggerGen();
