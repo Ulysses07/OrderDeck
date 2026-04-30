@@ -11,10 +11,14 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TextBox Grid.Row="0"
-                 Text="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
-                 Padding="6" FontSize="14"
-                 Background="#FF222222" Foreground="White" BorderBrush="#FF333333"/>
+        <StackPanel Grid.Row="0">
+            <TextBox Text="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
+                     Padding="6" FontSize="14"
+                     Background="#FF222222" Foreground="White" BorderBrush="#FF333333"/>
+            <CheckBox Content="Son yayından alışveriş yapanlar"
+                      IsChecked="{Binding LastStreamShoppersOnly}"
+                      Margin="0,8,0,0" VerticalAlignment="Center"/>
+        </StackPanel>
 
         <Grid Grid.Row="1" Margin="0,12,0,0">
             <ListBox x:Name="ResultsList"
@@ -28,6 +32,7 @@
                                 <ColumnDefinition Width="2*"/>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <TextBlock Grid.Column="0" Text="{Binding Username}" FontWeight="Bold"
                                        Foreground="#FFFFD166"/>
@@ -35,6 +40,17 @@
                             <TextBlock Grid.Column="2"
                                        Text="{Binding LastSeenAt, Converter={StaticResource UnixToDateConverter}}"
                                        Foreground="#FF888888" FontSize="11"/>
+                            <Button Grid.Column="3"
+                                    Content="📱"
+                                    ToolTip="WhatsApp'tan ödeme iste"
+                                    Command="{Binding DataContext.OpenWhatsAppCommand,
+                                             RelativeSource={RelativeSource AncestorType=Window}}"
+                                    CommandParameter="{Binding}"
+                                    Background="#25D366" Foreground="White"
+                                    BorderThickness="0" Padding="6,2"
+                                    Margin="8,0,0,0"
+                                    VerticalAlignment="Center"
+                                    HorizontalAlignment="Right"/>
                         </Grid>
                     </DataTemplate>
                 </ListBox.ItemTemplate>
