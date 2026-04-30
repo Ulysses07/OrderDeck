@@ -5,6 +5,9 @@
         Title="Ayarlar" Width="540" Height="540"
         WindowStartupLocation="CenterOwner"
         Background="#FF1A1A1A" Foreground="White">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </Window.Resources>
     <Grid Margin="16">
         <Grid.RowDefinitions>
             <RowDefinition Height="*"/>
@@ -149,6 +152,53 @@
                         </ItemsControl>
                     </ScrollViewer>
                 </DockPanel>
+            </TabItem>
+
+            <!-- Form Linki tab -->
+            <TabItem Header="Form Linki" DataContext="{Binding IntakeForm}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="16">
+                        <TextBlock Text="Müşteri Bilgi Formu" FontWeight="Bold" FontSize="16" Margin="0,0,0,8"/>
+                        <TextBlock Text="Müşterilerin form doldurup WhatsApp'tan size mesaj göndermesi için kalıcı bir link."
+                                   Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,16"/>
+
+                        <Label Content="Slug (URL'in son parçası)"/>
+                        <TextBox Text="{Binding Slug, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="Sadece küçük harf, rakam, tire. 3-32 karakter."/>
+                        <TextBlock Text="Örnek: 'burakstreamer' → https://license.livedeck.app/r/burakstreamer"
+                                   Foreground="Gray" FontSize="11" Margin="0,2,0,0"/>
+
+                        <Label Content="WhatsApp telefon (E.164 formatı)" Margin="0,12,0,0"/>
+                        <TextBox Text="{Binding WhatsAppPhone, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBlock Text="Örnek: +905551234567 (başında + ve ülke kodu olmalı)"
+                                   Foreground="Gray" FontSize="11" Margin="0,2,0,0"/>
+
+                        <Label Content="Form başlığı (opsiyonel)" Margin="0,12,0,0"/>
+                        <TextBox Text="{Binding CustomTitle, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="Form sayfasının üstünde görünür. Boş bırakılırsa 'Bilgi Gönder'."/>
+
+                        <CheckBox Content="Form aktif (kapatırsan link 410 Gone döner)"
+                                  IsChecked="{Binding IsActive}" Margin="0,12,0,0"/>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
+                            <Button Content="Kaydet" Command="{Binding SaveCommand}" Padding="20,8" MinWidth="100"/>
+                            <Button Content="Linki Kopyala" Command="{Binding CopyLinkCommand}"
+                                    Padding="20,8" MinWidth="120" Margin="8,0,0,0"/>
+                        </StackPanel>
+
+                        <Border BorderBrush="LightGray" BorderThickness="1" Padding="8" Margin="0,16,0,0"
+                                Visibility="{Binding HasFormUrl, Converter={StaticResource BoolToVis}}">
+                            <StackPanel>
+                                <TextBlock Text="Linkin:" Foreground="Gray" FontSize="11"/>
+                                <TextBlock Text="{Binding FormUrl}" FontFamily="Consolas"
+                                           TextWrapping="Wrap" Foreground="DodgerBlue"/>
+                            </StackPanel>
+                        </Border>
+
+                        <TextBlock Text="{Binding StatusMessage}" Foreground="{Binding StatusBrush}"
+                                   Margin="0,12,0,0" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </ScrollViewer>
             </TabItem>
         </TabControl>
 

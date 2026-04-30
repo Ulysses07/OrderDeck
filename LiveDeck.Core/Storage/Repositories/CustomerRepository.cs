@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Dapper;
@@ -17,18 +18,18 @@ public sealed class CustomerRepository
             @"INSERT INTO Customer
               (Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
                IsBlacklisted, BlacklistReason, Notes,
-               TotalLabelsPrinted, TotalAmount, BlacklistedAt)
+               TotalLabelsPrinted, TotalAmount, BlacklistedAt, Address)
               VALUES
               (@Id, @Platform, @Username, @DisplayName, @AvatarUrl, @FirstSeenAt, @LastSeenAt,
                @IsBlacklisted, @BlacklistReason, @Notes,
-               @TotalLabelsPrinted, @TotalAmount, @BlacklistedAt)",
+               @TotalLabelsPrinted, @TotalAmount, @BlacklistedAt, @Address)",
             new
             {
                 c.Id, c.Platform, c.Username, c.DisplayName, c.AvatarUrl,
                 c.FirstSeenAt, c.LastSeenAt,
                 IsBlacklisted = c.IsBlacklisted ? 1 : 0,
                 c.BlacklistReason, c.Notes,
-                c.TotalLabelsPrinted, c.TotalAmount, c.BlacklistedAt
+                c.TotalLabelsPrinted, c.TotalAmount, c.BlacklistedAt, c.Address
             });
     }
 
@@ -120,7 +121,7 @@ public sealed class CustomerRepository
         r.Id, r.Platform, r.Username, r.DisplayName, r.AvatarUrl,
         r.FirstSeenAt, r.LastSeenAt,
         r.IsBlacklisted == 1, r.BlacklistReason, r.Notes,
-        r.TotalLabelsPrinted, r.TotalAmount, r.BlacklistedAt);
+        r.TotalLabelsPrinted, r.TotalAmount, r.BlacklistedAt, r.Address);
 
     private sealed class Row
     {
@@ -137,5 +138,50 @@ public sealed class CustomerRepository
         public int TotalLabelsPrinted { get; init; }
         public decimal TotalAmount { get; init; }
         public long? BlacklistedAt { get; init; }
+        public string? Address { get; init; }
+    }
+
+    /// <summary>
+    /// Upsert by (Platform, Username). Phase 4f intake form sync için.
+    /// Mevcut müşteri varsa DisplayName, Address, LastSeenAt güncellenir;
+    /// yoksa yeni satır insert edilir.
+    /// </summary>
+    public Customer UpsertFromIntakeForm(string username, string fullName, string address, long nowUnix)
+    {
+        const string platform = "form";
+        using var conn = _factory.Open();
+
+        var existing = conn.QueryFirstOrDefault<Row>(@"
+            SELECT Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
+                   IsBlacklisted, BlacklistReason, Notes, TotalLabelsPrinted, TotalAmount,
+                   BlacklistedAt, Address
+            FROM Customer
+            WHERE Platform = @platform AND Username = @username",
+            new { platform, username });
+
+        if (existing is not null)
+        {
+            conn.Execute(@"
+                UPDATE Customer
+                SET DisplayName = @fullName,
+                    Address = @address,
+                    LastSeenAt = @nowUnix
+                WHERE Id = @id",
+                new { fullName, address, nowUnix, id = existing.Id });
+            var updated = Map(existing);
+            return updated with { DisplayName = fullName, Address = address, LastSeenAt = nowUnix };
+        }
+
+        var id = Guid.NewGuid().ToString("N");
+        conn.Execute(@"
+            INSERT INTO Customer (Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
+                                  IsBlacklisted, BlacklistReason, Notes, TotalLabelsPrinted, TotalAmount,
+                                  BlacklistedAt, Address)
+            VALUES (@id, @platform, @username, @fullName, NULL, @nowUnix, @nowUnix,
+                    0, NULL, NULL, 0, 0, NULL, @address)",
+            new { id, platform, username, fullName, nowUnix, address });
+
+        return new Customer(id, platform, username, fullName, null, nowUnix, nowUnix,
+            false, null, null, 0, 0m, null, address);
     }
 }

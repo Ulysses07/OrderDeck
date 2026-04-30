@@ -21,6 +21,8 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <Using Include="System.Net.Http" />
+    <Using Include="System.IO" />
   </ItemGroup>
 
   <ItemGroup>

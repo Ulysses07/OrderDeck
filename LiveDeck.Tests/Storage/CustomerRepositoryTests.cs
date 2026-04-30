@@ -1,3 +1,4 @@
+using System;
 using System.Linq;
 using FluentAssertions;
 using LiveDeck.Core.Customers;
@@ -10,11 +11,19 @@ namespace LiveDeck.Tests.Storage;
 
 public class CustomerRepositoryTests
 {
+    private static CustomerRepository CreateRepository()
+    {
+        var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        return new CustomerRepository(db);
+    }
+
     private static Customer NewCustomer(string id = "c1") =>
         new(id, "instagram", "@ayse_y", "Ayşe", null,
             FirstSeenAt: 1000, LastSeenAt: 1000,
             IsBlacklisted: false, BlacklistReason: null, Notes: null,
-            TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null);
+            TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null,
+            Address: null);
 
     [Fact]
     public void Insert_then_FindByPlatformAndUsername_returns_customer()
@@ -120,7 +129,8 @@ public class CustomerRepositoryTests
         var c = new Customer("c-1", "instagram", "@ali", "Ali", null,
             FirstSeenAt: 100, LastSeenAt: 100,
             IsBlacklisted: false, BlacklistReason: null, Notes: null,
-            TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null);
+            TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null,
+            Address: null);
         repo.Insert(c);
 
         repo.UpdateNotes("c-1", "VIP müşteri");
@@ -141,11 +151,11 @@ public class CustomerRepositoryTests
         var repo = new CustomerRepository(db);
 
         repo.Insert(new Customer("c-1", "instagram", "@ali",     "Ali", null,
-            100, 200, false, null, null, 0, 0m, null));
+            100, 200, false, null, null, 0, 0m, null, null));
         repo.Insert(new Customer("c-2", "instagram", "@alican",  "Alican", null,
-            100, 300, false, null, null, 0, 0m, null));
+            100, 300, false, null, null, 0, 0m, null, null));
         repo.Insert(new Customer("c-3", "tiktok",    "@veli",    "Veli", null,
-            100, 400, false, null, null, 0, 0m, null));
+            100, 400, false, null, null, 0, 0m, null, null));
 
         var results = repo.Search("ali", limit: 50);
         results.Select(c => c.Id).Should().Equal(new[] { "c-2", "c-1" });
@@ -156,5 +166,63 @@ public class CustomerRepositoryTests
         repo.Search("xyz", limit: 50).Should().BeEmpty();
 
         repo.Search("ali", limit: 1).Should().HaveCount(1);
+    }
+
+    [Fact]
+    public void UpsertFromIntakeForm_creates_new_customer_with_form_platform()
+    {
+        var repo = CreateRepository();
+        var now = 1714521600L;
+
+        var customer = repo.UpsertFromIntakeForm("bilalcanli", "Bilal Canlı", "Atatürk Cad. No:12", now);
+
+        customer.Platform.Should().Be("form");
+        customer.Username.Should().Be("bilalcanli");
+        customer.DisplayName.Should().Be("Bilal Canlı");
+        customer.Address.Should().Be("Atatürk Cad. No:12");
+        customer.FirstSeenAt.Should().Be(now);
+        customer.LastSeenAt.Should().Be(now);
+    }
+
+    [Fact]
+    public void UpsertFromIntakeForm_updates_existing_customer_by_platform_username()
+    {
+        var repo = CreateRepository();
+        var firstNow = 1714521600L;
+        var secondNow = 1714608000L;
+
+        var first = repo.UpsertFromIntakeForm("bilalcanli", "Bilal Eski", "Eski Adres", firstNow);
+        var second = repo.UpsertFromIntakeForm("bilalcanli", "Bilal Yeni", "Yeni Adres", secondNow);
+
+        second.Id.Should().Be(first.Id);    // same row
+        second.DisplayName.Should().Be("Bilal Yeni");
+        second.Address.Should().Be("Yeni Adres");
+        second.FirstSeenAt.Should().Be(firstNow);
+        second.LastSeenAt.Should().Be(secondNow);
+    }
+
+    [Fact]
+    public void UpsertFromIntakeForm_treats_form_platform_as_distinct_from_instagram()
+    {
+        var repo = CreateRepository();
+        var now = 1714521600L;
+
+        // Same username, different platform — distinct customers
+        repo.UpsertFromIntakeForm("bilalcanli", "Bilal F", "Form Adres", now);
+        // Mevcut Insert API ile Instagram customer create
+        repo.Insert(new Customer(
+            Id: Guid.NewGuid().ToString("N"),
+            Platform: "instagram",
+            Username: "bilalcanli",
+            DisplayName: "Bilal IG",
+            AvatarUrl: null, FirstSeenAt: now, LastSeenAt: now,
+            IsBlacklisted: false, BlacklistReason: null, Notes: null,
+            TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null,
+            Address: null));
+
+        var allByUsername = repo.Search("bilalcanli", limit: 10);
+        allByUsername.Should().HaveCount(2);
+        allByUsername.Should().Contain(c => c.Platform == "form");
+        allByUsername.Should().Contain(c => c.Platform == "instagram");
     }
 }

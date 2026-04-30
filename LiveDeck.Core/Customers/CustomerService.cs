@@ -35,7 +35,8 @@ public sealed class CustomerService
             Notes: null,
             TotalLabelsPrinted: 0,
             TotalAmount: 0m,
-            BlacklistedAt: null);
+            BlacklistedAt: null,
+            Address: null);
         _repo.Insert(customer);
         return customer;
     }

@@ -26,7 +26,7 @@ public class MigrationRunnerTests
         });
 
         var version = conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().Be(5);
+        version.Should().Be(6);
 
         var customerColumns = conn.Query<string>(
             "SELECT name FROM pragma_table_info('Customer')").AsList();
@@ -47,6 +47,19 @@ public class MigrationRunnerTests
 
         using var conn = db.Open();
         var version = conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().Be(5);
+        version.Should().Be(6);
+    }
+
+    [Fact]
+    public void Migration_006_adds_Address_column_to_Customer()
+    {
+        using var db = new InMemorySqlite();
+        var runner = new MigrationRunner(db);
+        runner.Run();
+
+        using var conn = db.Open();
+        var hasAddress = conn.ExecuteScalar<int>(@"
+            SELECT COUNT(*) FROM pragma_table_info('Customer') WHERE name = 'Address'");
+        hasAddress.Should().Be(1);
     }
 }

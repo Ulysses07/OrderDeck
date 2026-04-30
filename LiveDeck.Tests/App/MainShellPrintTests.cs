@@ -6,11 +6,13 @@ using System.Net;
 using System.Net.Http;
 using System.Text;
 using FluentAssertions;
+using LiveDeck.App.Services.IntakeForm;
 using LiveDeck.App.ViewModels;
 using LiveDeck.Core.Chat;
 using LiveDeck.Core.Customers;
 using LiveDeck.Core.Sales;
 using LiveDeck.Core.Sessions;
+using LiveDeck.Core.Settings;
 using LiveDeck.Core.Storage;
 using LiveDeck.Core.Storage.Repositories;
 using LiveDeck.Core.Time;
@@ -137,12 +139,23 @@ public class MainShellPrintTests
         var banner = new GiveawayBannerViewModel(giveawayRepo, clock.Object);
         var licenseSvc = BuildActiveLicenseService();
 
+        // Stub IntakeFormSyncService — tests don't exercise sync; construct with no-op HTTP
+        var stubHttp = new HttpClient(new FakeHttpMessageHandler(
+            _ => new System.Net.Http.HttpResponseMessage(HttpStatusCode.NotFound)))
+        { BaseAddress = new Uri("http://localhost/") };
+        var stubApi = new LicenseApiClient(stubHttp);
+        var tempSettings = new AppSettings();
+        var tempStore = new SettingsStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json"));
+        var intakeSync = new IntakeFormSyncService(
+            stubApi, customerRepo, tempStore, tempSettings, clock.Object,
+            NullLogger<IntakeFormSyncService>.Instance);
+
         // Start a session so AddChatToQueue works
         sessionSvc.Start("Test", new[] { "instagram" });
 
         var vm = new MainShellViewModel(
             bus, labelSvc, sessionSvc, printer, customerSvc, customerRepo, giveawaySvc, banner,
-            licenseSvc);
+            licenseSvc, intakeSync);
 
         return (vm, printer, db);
     }
