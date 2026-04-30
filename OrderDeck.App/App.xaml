@@ -1,0 +1,18 @@
+<Application x:Class="OrderDeck.App.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:converters="clr-namespace:OrderDeck.App.Converters"
+             StartupUri="MainWindow.xaml">
+    <Application.Resources>
+        <ResourceDictionary>
+            <converters:NullToCollapsedConverter   x:Key="NullToCollapsedConverter"/>
+            <converters:UnixToDateConverter        x:Key="UnixToDateConverter"/>
+            <converters:BlacklistToBrushConverter  x:Key="BlacklistToBrushConverter"/>
+            <converters:BoolToVisibleConverter     x:Key="BoolToVisibleConverter"/>
+            <converters:BoolToCollapsedConverter   x:Key="BoolToCollapsedConverter"/>
+            <converters:CountToVisibleConverter    x:Key="CountToVisibleConverter"/>
+            <converters:CountToCollapsedConverter  x:Key="CountToCollapsedConverter"/>
+            <converters:GiveawayParticipationStatusConverter x:Key="GiveawayParticipationStatusConverter"/>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

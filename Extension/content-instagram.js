@@ -1,13 +1,13 @@
 /**
- * LiveDeck Chat Bridge - Instagram Content Script
- * Observes Instagram Live chat and forwards messages to LiveDeck.
+ * OrderDeck Chat Bridge - Instagram Content Script
+ * Observes Instagram Live chat and forwards messages to OrderDeck.
  *
  * v4.0 (ported from UniCast) - Injects into all Instagram pages; starts
  * scraping once a Live page is detected.
  */
 
 // Expose a debug handle immediately so it's available even if init crashes.
-window.__livedeckBridge = { status: () => ({ early: true, error: 'Not initialized yet' }) };
+window.__orderdeckBridge = { status: () => ({ early: true, error: 'Not initialized yet' }) };
 
 (function() {
     'use strict';
@@ -28,12 +28,12 @@ window.__livedeckBridge = { status: () => ({ early: true, error: 'Not initialize
 
     function log(...args) {
         if (debugMode) {
-            console.log('[LiveDeck Instagram]', ...args);
+            console.log('[OrderDeck Instagram]', ...args);
         }
     }
 
     function logError(...args) {
-        console.error('[LiveDeck Instagram]', ...args);
+        console.error('[OrderDeck Instagram]', ...args);
     }
 
     /**
@@ -48,7 +48,7 @@ window.__livedeckBridge = { status: () => ({ early: true, error: 'Not initialize
     }
 
     /**
-     * Open the WebSocket connection to the LiveDeck bridge server.
+     * Open the WebSocket connection to the OrderDeck bridge server.
      */
     function connectWebSocket() {
         if (ws && ws.readyState === WebSocket.OPEN) {
@@ -56,7 +56,7 @@ window.__livedeckBridge = { status: () => ({ early: true, error: 'Not initialize
         }
 
         try {
-            log('Connecting to LiveDeck bridge...');
+            log('Connecting to OrderDeck bridge...');
             ws = new WebSocket(`ws://localhost:${LIVEDECK_WS_PORT}/extension`);
 
             ws.onopen = () => {
@@ -259,7 +259,7 @@ window.__livedeckBridge = { status: () => ({ early: true, error: 'Not initialize
                 SEEN_COMMENTS.add(hash);
                 newCount++;
 
-                // Flat ExtensionMessage shape expected by LiveDeck bridge
+                // Flat ExtensionMessage shape expected by OrderDeck bridge
                 const payload = {
                     type: 'chat',
                     platform: 'instagram',
@@ -355,7 +355,7 @@ window.__livedeckBridge = { status: () => ({ early: true, error: 'Not initialize
 
     function init() {
         log('=========================================');
-        log('LiveDeck Instagram Bridge v4.0');
+        log('OrderDeck Instagram Bridge v4.0');
         log('URL:', window.location.href);
 
         isLivePage = checkIfLivePage();
@@ -392,7 +392,7 @@ window.__livedeckBridge = { status: () => ({ early: true, error: 'Not initialize
     }
 
     // Update the debug handle
-    window.__livedeckBridge = {
+    window.__orderdeckBridge = {
         scan: () => {
             const comments = scanForComments();
             console.log('Comments found:', comments);

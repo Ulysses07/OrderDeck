@@ -1,5 +1,5 @@
 /**
- * LiveDeck Chat Bridge - Popup Script
+ * OrderDeck Chat Bridge - Popup Script
  */
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -9,10 +9,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     function setStatus(connected) {
         if (connected) {
             statusDot.classList.add('connected');
-            statusText.textContent = 'Connected to LiveDeck';
+            statusText.textContent = 'Connected to OrderDeck';
         } else {
             statusDot.classList.remove('connected');
-            statusText.textContent = 'LiveDeck not running';
+            statusText.textContent = 'OrderDeck not running';
         }
     }
 
