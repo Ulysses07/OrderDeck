@@ -1,4 +1,4 @@
-namespace LiveDeck.LicenseServer.Services.Auth;
+namespace OrderDeck.LicenseServer.Services.Auth;
 
 public sealed class JwtOptions
 {

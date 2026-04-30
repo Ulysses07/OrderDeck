@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 
-namespace LiveDeck.Core.Chat;
+namespace OrderDeck.Core.Chat;
 
 /// <summary>
 /// In-memory pub/sub for chat messages. Thread-safe: subscriptions and publishes can race.

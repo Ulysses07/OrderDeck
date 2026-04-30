@@ -11,16 +11,16 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\LiveDeck.Core\LiveDeck.Core.csproj" />
-    <ProjectReference Include="..\LiveDeck.Chat\LiveDeck.Chat.csproj" />
-    <ProjectReference Include="..\LiveDeck.Overlay\LiveDeck.Overlay.csproj" />
-    <ProjectReference Include="..\LiveDeck.Labeling\LiveDeck.Labeling.csproj" />
-    <ProjectReference Include="..\LiveDeck.Licensing\LiveDeck.Licensing.csproj" />
+    <ProjectReference Include="..\OrderDeck.Core\OrderDeck.Core.csproj" />
+    <ProjectReference Include="..\OrderDeck.Chat\OrderDeck.Chat.csproj" />
+    <ProjectReference Include="..\OrderDeck.Overlay\OrderDeck.Overlay.csproj" />
+    <ProjectReference Include="..\OrderDeck.Labeling\OrderDeck.Labeling.csproj" />
+    <ProjectReference Include="..\OrderDeck.Licensing\OrderDeck.Licensing.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
-      <_Parameter1>LiveDeck.Tests</_Parameter1>
+      <_Parameter1>OrderDeck.Tests</_Parameter1>
     </AssemblyAttribute>
   </ItemGroup>
 

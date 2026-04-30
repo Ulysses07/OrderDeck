@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LiveDeck.Core.Shortcuts;
+namespace OrderDeck.Core.Shortcuts;
 
 /// <summary>
 /// Bilinen komut ID'lerinin canonical listesi. Yeni komut eklemek için:

@@ -1,4 +1,4 @@
-namespace LiveDeck.LicenseServer.Domain;
+namespace OrderDeck.LicenseServer.Domain;
 
 /// <summary>
 /// Müşterinin doldurduğu form. Polling endpoint bu kayıtları cursor (SubmittedAt) ile döndürür.

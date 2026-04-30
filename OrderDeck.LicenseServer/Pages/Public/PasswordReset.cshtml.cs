@@ -1,9 +1,9 @@
 using System.ComponentModel.DataAnnotations;
-using LiveDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Auth;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 
-namespace LiveDeck.LicenseServer.Pages.Public;
+namespace OrderDeck.LicenseServer.Pages.Public;
 
 public class PasswordResetModel : PageModel
 {

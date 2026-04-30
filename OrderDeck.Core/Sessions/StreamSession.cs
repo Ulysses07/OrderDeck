@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LiveDeck.Core.Sessions;
+namespace OrderDeck.Core.Sessions;
 
 public sealed record StreamSession(
     string Id,

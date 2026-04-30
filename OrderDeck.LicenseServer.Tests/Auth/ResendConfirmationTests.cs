@@ -1,10 +1,10 @@
 using System.Net;
 using System.Net.Http.Json;
 using FluentAssertions;
-using LiveDeck.LicenseServer.Tests.TestHelpers;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
-namespace LiveDeck.LicenseServer.Tests.Auth;
+namespace OrderDeck.LicenseServer.Tests.Auth;
 
 public class ResendConfirmationTests : IClassFixture<ApiFactory>
 {

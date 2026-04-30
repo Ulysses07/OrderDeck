@@ -1,6 +1,6 @@
 using System.Linq;
 
-namespace LiveDeck.Core.Customers;
+namespace OrderDeck.Core.Customers;
 
 /// <summary>
 /// Phase 4g: TR mobil telefon numaralarını E.164 (+90...) formatına normalize eder.

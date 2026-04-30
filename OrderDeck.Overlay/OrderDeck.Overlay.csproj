@@ -10,7 +10,7 @@
     <UseAppHost>false</UseAppHost>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\LiveDeck.Core\LiveDeck.Core.csproj" />
+    <ProjectReference Include="..\OrderDeck.Core\OrderDeck.Core.csproj" />
   </ItemGroup>
 
   <ItemGroup>

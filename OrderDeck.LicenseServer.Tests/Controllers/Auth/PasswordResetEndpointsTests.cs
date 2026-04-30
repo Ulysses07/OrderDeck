@@ -1,15 +1,15 @@
 using System.Net;
 using System.Net.Http.Json;
 using FluentAssertions;
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Domain;
-using LiveDeck.LicenseServer.Services.Auth;
-using LiveDeck.LicenseServer.Tests.TestHelpers;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
-namespace LiveDeck.LicenseServer.Tests.Controllers.Auth;
+namespace OrderDeck.LicenseServer.Tests.Controllers.Auth;
 
 public sealed class PasswordResetEndpointsTests : IClassFixture<ApiFactory>
 {

@@ -1,7 +1,7 @@
 using FluentAssertions;
 using Xunit;
 
-namespace LiveDeck.Licensing.Tests;
+namespace OrderDeck.Licensing.Tests;
 
 public class SmokeTests
 {

@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace LiveDeck.Core.Chat;
+namespace OrderDeck.Core.Chat;
 
 public interface IChatBus
 {

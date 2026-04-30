@@ -1,8 +1,8 @@
 using FluentAssertions;
-using LiveDeck.Labeling;
+using OrderDeck.Labeling;
 using Xunit;
 
-namespace LiveDeck.Tests.Labeling;
+namespace OrderDeck.Tests.Labeling;
 
 public class ClipboardLabelFormatterTests
 {

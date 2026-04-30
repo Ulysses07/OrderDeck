@@ -1,8 +1,8 @@
 using System.Linq;
 using System.Windows;
-using LiveDeck.Core.Shortcuts;
+using OrderDeck.Core.Shortcuts;
 
-namespace LiveDeck.App.Views;
+namespace OrderDeck.App.Views;
 
 public partial class ShortcutHelpDialog : Window
 {

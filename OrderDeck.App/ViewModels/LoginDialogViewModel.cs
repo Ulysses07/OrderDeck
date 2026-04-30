@@ -3,12 +3,12 @@ using System.Threading.Tasks;
 using System.Windows.Input;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using LiveDeck.Licensing.Api;
-using LiveDeck.Licensing.Api.Models;
-using LiveDeck.Licensing.Services;
-using LiveDeck.Licensing.Storage;
+using OrderDeck.Licensing.Api;
+using OrderDeck.Licensing.Api.Models;
+using OrderDeck.Licensing.Services;
+using OrderDeck.Licensing.Storage;
 
-namespace LiveDeck.App.ViewModels;
+namespace OrderDeck.App.ViewModels;
 
 public enum LoginDialogMode
 {

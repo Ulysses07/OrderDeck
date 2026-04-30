@@ -1,4 +1,4 @@
-<Window x:Class="LiveDeck.App.Views.StreamReportDialog"
+<Window x:Class="OrderDeck.App.Views.StreamReportDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Yayın Raporu" Width="600" Height="680"

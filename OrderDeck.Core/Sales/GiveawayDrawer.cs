@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace LiveDeck.Core.Sales;
+namespace OrderDeck.Core.Sales;
 
 /// <summary>
 /// Selects up to <c>winnerCount</c> winners from a participant list using a deterministic

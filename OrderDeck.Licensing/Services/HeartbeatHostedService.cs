@@ -2,7 +2,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-namespace LiveDeck.Licensing.Services;
+namespace OrderDeck.Licensing.Services;
 
 /// <summary>
 /// Periodically calls <see cref="LicenseService.RefreshAsync"/> while the app is running.

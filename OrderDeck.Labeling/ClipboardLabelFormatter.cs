@@ -1,6 +1,6 @@
 using System.Text.RegularExpressions;
 
-namespace LiveDeck.Labeling;
+namespace OrderDeck.Labeling;
 
 /// <summary>
 /// Builds the clipboard payload that the user's existing label app (etiket.exe) consumes

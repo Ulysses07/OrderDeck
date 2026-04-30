@@ -1,10 +1,10 @@
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Services.Email;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Services.Email;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
 
-namespace LiveDeck.LicenseServer.Pages.Public;
+namespace OrderDeck.LicenseServer.Pages.Public;
 
 public class UnsubscribeModel : PageModel
 {

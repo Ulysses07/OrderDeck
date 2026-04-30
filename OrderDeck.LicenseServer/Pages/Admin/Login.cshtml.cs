@@ -1,15 +1,15 @@
 using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Services.Auth;
-using LiveDeck.LicenseServer.Services.Audit;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Audit;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
 
-namespace LiveDeck.LicenseServer.Pages.Admin;
+namespace OrderDeck.LicenseServer.Pages.Admin;
 
 public class LoginModel : PageModel
 {

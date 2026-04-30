@@ -1,14 +1,14 @@
 using System.Net;
 using AngleSharp;
 using FluentAssertions;
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Domain;
-using LiveDeck.LicenseServer.Tests.TestHelpers;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
-namespace LiveDeck.LicenseServer.Tests.Pages;
+namespace OrderDeck.LicenseServer.Tests.Pages;
 
 public sealed class AdminAuditPageTests : IClassFixture<ApiFactory>
 {

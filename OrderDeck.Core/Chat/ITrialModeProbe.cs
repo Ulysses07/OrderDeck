@@ -1,10 +1,10 @@
-namespace LiveDeck.Core.Chat;
+namespace OrderDeck.Core.Chat;
 
 /// <summary>
 /// Minimal probe interface consumed by the chat bridge to decide whether to apply
 /// trial-mode platform filtering (Instagram-only). Implemented by LicenseService.
-/// Placed in LiveDeck.Core so cross-platform assemblies (net10.0) can reference it
-/// without depending on LiveDeck.Licensing (net10.0-windows).
+/// Placed in OrderDeck.Core so cross-platform assemblies (net10.0) can reference it
+/// without depending on OrderDeck.Licensing (net10.0-windows).
 /// </summary>
 public interface ITrialModeProbe
 {

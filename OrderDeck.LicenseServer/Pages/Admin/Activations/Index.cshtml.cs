@@ -1,12 +1,12 @@
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Domain;
-using LiveDeck.LicenseServer.Services.Audit;
-using LiveDeck.LicenseServer.Services.Licensing;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Audit;
+using OrderDeck.LicenseServer.Services.Licensing;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
 
-namespace LiveDeck.LicenseServer.Pages.Admin.Activations;
+namespace OrderDeck.LicenseServer.Pages.Admin.Activations;
 
 public class IndexModel : PageModel
 {

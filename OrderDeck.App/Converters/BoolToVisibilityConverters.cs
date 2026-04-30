@@ -3,7 +3,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Data;
 
-namespace LiveDeck.App.Converters;
+namespace OrderDeck.App.Converters;
 
 /// <summary>true → Visible, false → Collapsed. Used to gate UI on a bool flag.</summary>
 public sealed class BoolToVisibleConverter : IValueConverter

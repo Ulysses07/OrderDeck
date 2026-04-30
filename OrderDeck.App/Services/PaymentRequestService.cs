@@ -1,8 +1,8 @@
 using System;
-using LiveDeck.Core.Customers;
-using LiveDeck.Core.Settings;
+using OrderDeck.Core.Customers;
+using OrderDeck.Core.Settings;
 
-namespace LiveDeck.App.Services;
+namespace OrderDeck.App.Services;
 
 public enum PaymentRequestResult
 {

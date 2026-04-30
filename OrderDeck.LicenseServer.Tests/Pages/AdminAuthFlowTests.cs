@@ -1,13 +1,13 @@
 using System.Net;
 using FluentAssertions;
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Tests.TestHelpers;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
-namespace LiveDeck.LicenseServer.Tests.Pages;
+namespace OrderDeck.LicenseServer.Tests.Pages;
 
 public sealed class AdminAuthFlowTests : IClassFixture<ApiFactory>
 {

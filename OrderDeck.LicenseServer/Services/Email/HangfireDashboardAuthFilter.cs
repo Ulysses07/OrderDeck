@@ -1,7 +1,7 @@
 using Hangfire.Dashboard;
 using Microsoft.AspNetCore.Authentication;
 
-namespace LiveDeck.LicenseServer.Services.Email;
+namespace OrderDeck.LicenseServer.Services.Email;
 
 /// <summary>
 /// Hangfire dashboard auth filter — sadece AdminCookie ile auth edilmiş kullanıcılara izin verir.

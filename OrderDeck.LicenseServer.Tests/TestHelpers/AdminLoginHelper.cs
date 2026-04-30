@@ -1,14 +1,14 @@
 using System.Net.Http.Headers;
 using AngleSharp;
 using AngleSharp.Html.Dom;
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Services.Auth;
-using LiveDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Domain;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace LiveDeck.LicenseServer.Tests.TestHelpers;
+namespace OrderDeck.LicenseServer.Tests.TestHelpers;
 
 public static class AdminLoginHelper
 {

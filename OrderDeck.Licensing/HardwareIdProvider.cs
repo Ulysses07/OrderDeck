@@ -3,7 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Win32;
 
-namespace LiveDeck.Licensing;
+namespace OrderDeck.Licensing;
 
 public sealed class HardwareIdProvider : IHardwareIdProvider
 {

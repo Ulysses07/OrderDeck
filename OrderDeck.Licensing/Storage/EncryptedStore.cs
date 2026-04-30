@@ -2,7 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
-namespace LiveDeck.Licensing.Storage;
+namespace OrderDeck.Licensing.Storage;
 
 /// <summary>
 /// JSON + DPAPI (current-user scope). Tampered or cross-user files are deleted

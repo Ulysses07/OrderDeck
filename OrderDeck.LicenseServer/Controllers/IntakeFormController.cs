@@ -1,13 +1,13 @@
 using System.Security.Claims;
 using System.Text.RegularExpressions;
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Services.IntakeForm;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Services.IntakeForm;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 
-namespace LiveDeck.LicenseServer.Controllers;
+namespace OrderDeck.LicenseServer.Controllers;
 
 [ApiController]
 [Authorize(AuthenticationSchemes = "Bearer-Customer")]

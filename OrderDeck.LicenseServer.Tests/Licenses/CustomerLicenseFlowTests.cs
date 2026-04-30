@@ -2,12 +2,12 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using FluentAssertions;
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Tests.TestHelpers;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
-namespace LiveDeck.LicenseServer.Tests.Licenses;
+namespace OrderDeck.LicenseServer.Tests.Licenses;
 
 public class CustomerLicenseFlowTests : IClassFixture<ApiFactory>
 {

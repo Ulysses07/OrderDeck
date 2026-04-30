@@ -1,11 +1,11 @@
 using System.ComponentModel.DataAnnotations;
-using LiveDeck.LicenseServer.Domain;
-using LiveDeck.LicenseServer.Services.IntakeForm;
+using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.IntakeForm;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.AspNetCore.RateLimiting;
 
-namespace LiveDeck.LicenseServer.Pages.Public;
+namespace OrderDeck.LicenseServer.Pages.Public;
 
 public class IntakeFormModel : PageModel
 {

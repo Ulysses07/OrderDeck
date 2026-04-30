@@ -1,8 +1,8 @@
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
 using Microsoft.EntityFrameworkCore;
 
-namespace LiveDeck.LicenseServer.Services.IntakeForm;
+namespace OrderDeck.LicenseServer.Services.IntakeForm;
 
 /// <summary>
 /// Domain orchestration for intake form configs and submissions.

@@ -1,13 +1,13 @@
 using System;
 using System.IO;
 using FluentAssertions;
-using LiveDeck.App.Services;
-using LiveDeck.Core.Customers;
-using LiveDeck.Core.Settings;
-using LiveDeck.Tests.Fakes;
+using OrderDeck.App.Services;
+using OrderDeck.Core.Customers;
+using OrderDeck.Core.Settings;
+using OrderDeck.Tests.Fakes;
 using Xunit;
 
-namespace LiveDeck.Tests.Services;
+namespace OrderDeck.Tests.Services;
 
 public class PaymentRequestServiceTests : IDisposable
 {

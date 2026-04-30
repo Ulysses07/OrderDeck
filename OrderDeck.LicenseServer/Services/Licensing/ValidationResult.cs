@@ -1,4 +1,4 @@
-namespace LiveDeck.LicenseServer.Services.Licensing;
+namespace OrderDeck.LicenseServer.Services.Licensing;
 
 public enum LicenseStatus
 {

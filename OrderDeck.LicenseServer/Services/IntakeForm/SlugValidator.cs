@@ -1,6 +1,6 @@
 using System.Text.RegularExpressions;
 
-namespace LiveDeck.LicenseServer.Services.IntakeForm;
+namespace OrderDeck.LicenseServer.Services.IntakeForm;
 
 public enum SlugValidationResult
 {

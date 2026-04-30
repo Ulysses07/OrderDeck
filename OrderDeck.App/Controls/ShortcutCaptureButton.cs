@@ -2,9 +2,9 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
-using LiveDeck.Core.Shortcuts;
+using OrderDeck.Core.Shortcuts;
 
-namespace LiveDeck.App.Controls;
+namespace OrderDeck.App.Controls;
 
 /// <summary>
 /// Click → "tuş bekleniyor" moduna; bir sonraki KeyDown chord'u kaydeder

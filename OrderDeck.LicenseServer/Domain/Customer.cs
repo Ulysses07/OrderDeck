@@ -1,4 +1,4 @@
-namespace LiveDeck.LicenseServer.Domain;
+namespace OrderDeck.LicenseServer.Domain;
 
 public sealed class Customer
 {

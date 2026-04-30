@@ -1,4 +1,4 @@
-namespace LiveDeck.LicenseServer.Domain;
+namespace OrderDeck.LicenseServer.Domain;
 
 /// <summary>
 /// 1:1 Customer mapping. Yayıncı'nın kişisel form linki konfigürasyonu.

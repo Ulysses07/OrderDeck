@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 
-namespace LiveDeck.Core.Shortcuts;
+namespace OrderDeck.Core.Shortcuts;
 
 [Flags]
 public enum KeyModifiers

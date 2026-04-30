@@ -1,4 +1,4 @@
-namespace LiveDeck.Licensing.Storage;
+namespace OrderDeck.Licensing.Storage;
 
 public sealed record AuthRecord(
     Guid CustomerId,

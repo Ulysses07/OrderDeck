@@ -3,10 +3,10 @@ using System.Collections.ObjectModel;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using LiveDeck.App.Formatting;
-using LiveDeck.Core.Storage.Repositories;
+using OrderDeck.App.Formatting;
+using OrderDeck.Core.Storage.Repositories;
 
-namespace LiveDeck.App.ViewModels;
+namespace OrderDeck.App.ViewModels;
 
 public sealed partial class CustomerDetailViewModel : ViewModelBase
 {

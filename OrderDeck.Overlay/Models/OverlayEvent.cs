@@ -1,4 +1,4 @@
-namespace LiveDeck.Overlay.Models;
+namespace OrderDeck.Overlay.Models;
 
 /// <summary>JSON envelope sent to overlay clients over WebSocket.</summary>
 public sealed record OverlayEvent(string Type, object Data);

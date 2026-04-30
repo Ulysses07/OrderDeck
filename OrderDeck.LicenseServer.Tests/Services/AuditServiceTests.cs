@@ -1,13 +1,13 @@
 using System.Security.Claims;
 using FluentAssertions;
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Services.Audit;
-using LiveDeck.LicenseServer.Tests.TestHelpers;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Services.Audit;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
-namespace LiveDeck.LicenseServer.Tests.Services;
+namespace OrderDeck.LicenseServer.Tests.Services;
 
 public sealed class AuditServiceTests : IClassFixture<ApiFactory>
 {

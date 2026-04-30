@@ -1,9 +1,9 @@
 using FluentAssertions;
-using LiveDeck.Licensing.Storage;
-using LiveDeck.Licensing.Trial;
+using OrderDeck.Licensing.Storage;
+using OrderDeck.Licensing.Trial;
 using Xunit;
 
-namespace LiveDeck.Licensing.Tests.Trial;
+namespace OrderDeck.Licensing.Tests.Trial;
 
 public sealed class LocalAppDataTrialStorageTests : IDisposable
 {
@@ -13,7 +13,7 @@ public sealed class LocalAppDataTrialStorageTests : IDisposable
 
     public LocalAppDataTrialStorageTests()
     {
-        _dir = Path.Combine(Path.GetTempPath(), "LiveDeck.Licensing.Tests", Guid.NewGuid().ToString("N"));
+        _dir = Path.Combine(Path.GetTempPath(), "OrderDeck.Licensing.Tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_dir);
         _path = Path.Combine(_dir, "trial.dat");
         _storage = new LocalAppDataTrialStorage(new EncryptedStore(), _path);

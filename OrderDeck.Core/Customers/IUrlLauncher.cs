@@ -1,4 +1,4 @@
-namespace LiveDeck.Core.Customers;
+namespace OrderDeck.Core.Customers;
 
 /// <summary>Phase 4g: OS handler'a URL gönderme abstraction'ı (Process.Start için mock noktası).</summary>
 public interface IUrlLauncher

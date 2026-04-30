@@ -5,13 +5,13 @@ using System.Windows;
 using ClosedXML.Excel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using LiveDeck.App.Services;
-using LiveDeck.Core;
-using LiveDeck.Core.Customers;
-using LiveDeck.Core.Storage.Repositories;
+using OrderDeck.App.Services;
+using OrderDeck.Core;
+using OrderDeck.Core.Customers;
+using OrderDeck.Core.Storage.Repositories;
 using Microsoft.Win32;
 
-namespace LiveDeck.App.ViewModels;
+namespace OrderDeck.App.ViewModels;
 
 public sealed partial class StreamReportViewModel : ViewModelBase
 {

@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-namespace LiveDeck.Licensing.Trial;
+namespace OrderDeck.Licensing.Trial;
 
 /// <summary>
 /// Trial state machine. Reads from <see cref="ITrialStorage"/> (typically composite),

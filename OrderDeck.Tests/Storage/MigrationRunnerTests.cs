@@ -1,10 +1,10 @@
 using Dapper;
 using FluentAssertions;
-using LiveDeck.Core.Storage;
-using LiveDeck.Tests.TestHelpers;
+using OrderDeck.Core.Storage;
+using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
-namespace LiveDeck.Tests.Storage;
+namespace OrderDeck.Tests.Storage;
 
 public class MigrationRunnerTests
 {

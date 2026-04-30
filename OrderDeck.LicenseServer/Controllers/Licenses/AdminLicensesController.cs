@@ -1,11 +1,11 @@
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Services.Email;
-using LiveDeck.LicenseServer.Services.Licensing;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Services.Email;
+using OrderDeck.LicenseServer.Services.Licensing;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
-namespace LiveDeck.LicenseServer.Controllers.Licenses;
+namespace OrderDeck.LicenseServer.Controllers.Licenses;
 
 [ApiController]
 [Route("api/v1/admin/licenses")]

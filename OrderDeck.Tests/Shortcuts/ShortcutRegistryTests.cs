@@ -1,11 +1,11 @@
 using System.IO;
 using System.Linq;
 using FluentAssertions;
-using LiveDeck.Core.Settings;
-using LiveDeck.Core.Shortcuts;
+using OrderDeck.Core.Settings;
+using OrderDeck.Core.Shortcuts;
 using Xunit;
 
-namespace LiveDeck.Tests.Shortcuts;
+namespace OrderDeck.Tests.Shortcuts;
 
 public class ShortcutRegistryTests
 {

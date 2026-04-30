@@ -3,7 +3,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.Win32;
 
-namespace LiveDeck.Licensing.Trial;
+namespace OrderDeck.Licensing.Trial;
 
 /// <summary>
 /// HKCU registry storage. Subkey path is configurable via <see cref="LicensingOptions.TrialRegistrySubKey"/>.

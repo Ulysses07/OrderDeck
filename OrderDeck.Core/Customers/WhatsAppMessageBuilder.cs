@@ -1,7 +1,7 @@
 using System;
 using System.Globalization;
 
-namespace LiveDeck.Core.Customers;
+namespace OrderDeck.Core.Customers;
 
 /// <summary>
 /// Phase 4g: Settings template'ini PaymentContext ile substitute eder

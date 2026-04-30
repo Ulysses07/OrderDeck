@@ -1,8 +1,8 @@
 using System.Windows;
-using LiveDeck.App.ViewModels;
+using OrderDeck.App.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace LiveDeck.App.Views;
+namespace OrderDeck.App.Views;
 
 public partial class StreamReportDialog : Window
 {

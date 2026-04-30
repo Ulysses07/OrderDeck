@@ -2,19 +2,19 @@ using System;
 using System.IO;
 using System.Threading.Tasks;
 using FluentAssertions;
-using LiveDeck.App.Services;
-using LiveDeck.App.ViewModels;
-using LiveDeck.Core.Customers;
-using LiveDeck.Core.Sales;
-using LiveDeck.Core.Sessions;
-using LiveDeck.Core.Settings;
-using LiveDeck.Core.Storage;
-using LiveDeck.Core.Storage.Repositories;
-using LiveDeck.Tests.Fakes;
-using LiveDeck.Tests.TestHelpers;
+using OrderDeck.App.Services;
+using OrderDeck.App.ViewModels;
+using OrderDeck.Core.Customers;
+using OrderDeck.Core.Sales;
+using OrderDeck.Core.Sessions;
+using OrderDeck.Core.Settings;
+using OrderDeck.Core.Storage;
+using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Tests.Fakes;
+using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
-namespace LiveDeck.Tests.ViewModels;
+namespace OrderDeck.Tests.ViewModels;
 
 public class StreamReportViewModel_OpenWhatsAppTests
 {

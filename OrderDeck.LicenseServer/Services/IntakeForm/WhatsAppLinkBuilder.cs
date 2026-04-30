@@ -1,4 +1,4 @@
-namespace LiveDeck.LicenseServer.Services.IntakeForm;
+namespace OrderDeck.LicenseServer.Services.IntakeForm;
 
 /// <summary>
 /// Builds WhatsApp deep links with phone normalization and message encoding.

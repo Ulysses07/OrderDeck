@@ -1,8 +1,8 @@
 using FluentAssertions;
-using LiveDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Domain;
 using Xunit;
 
-namespace LiveDeck.LicenseServer.Tests.Domain;
+namespace OrderDeck.LicenseServer.Tests.Domain;
 
 public class EmailLogTests
 {

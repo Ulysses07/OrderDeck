@@ -1,16 +1,16 @@
 using FluentAssertions;
-using LiveDeck.Core.Chat;
-using LiveDeck.Core.Customers;
-using LiveDeck.Core.Sales;
-using LiveDeck.Core.Sessions;
-using LiveDeck.Core.Storage;
-using LiveDeck.Core.Storage.Repositories;
-using LiveDeck.Core.Time;
-using LiveDeck.Tests.TestHelpers;
+using OrderDeck.Core.Chat;
+using OrderDeck.Core.Customers;
+using OrderDeck.Core.Sales;
+using OrderDeck.Core.Sessions;
+using OrderDeck.Core.Storage;
+using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Core.Time;
+using OrderDeck.Tests.TestHelpers;
 using Moq;
 using Xunit;
 
-namespace LiveDeck.Tests.Sales;
+namespace OrderDeck.Tests.Sales;
 
 public class LabelServiceTests
 {

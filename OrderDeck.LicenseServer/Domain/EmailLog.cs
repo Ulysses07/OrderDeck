@@ -1,4 +1,4 @@
-namespace LiveDeck.LicenseServer.Domain;
+namespace OrderDeck.LicenseServer.Domain;
 
 /// <summary>
 /// Tracks email send attempts for dedup + audit. ContextKey scope is template-specific

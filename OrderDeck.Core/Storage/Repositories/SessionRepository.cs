@@ -1,9 +1,9 @@
 using System.Linq;
 using System.Text.Json;
 using Dapper;
-using LiveDeck.Core.Sessions;
+using OrderDeck.Core.Sessions;
 
-namespace LiveDeck.Core.Storage.Repositories;
+namespace OrderDeck.Core.Storage.Repositories;
 
 public sealed class SessionRepository
 {

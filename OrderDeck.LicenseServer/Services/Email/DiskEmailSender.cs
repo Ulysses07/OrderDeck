@@ -2,7 +2,7 @@ using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-namespace LiveDeck.LicenseServer.Services.Email;
+namespace OrderDeck.LicenseServer.Services.Email;
 
 public sealed class DiskEmailSender : IEmailSender
 {

@@ -1,13 +1,13 @@
 using FluentAssertions;
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Domain;
-using LiveDeck.LicenseServer.Services.IntakeForm;
-using LiveDeck.LicenseServer.Tests.TestHelpers;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.IntakeForm;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
-namespace LiveDeck.LicenseServer.Tests.Services.IntakeForm;
+namespace OrderDeck.LicenseServer.Tests.Services.IntakeForm;
 
 public sealed class IntakeFormServiceTests : IClassFixture<ApiFactory>
 {

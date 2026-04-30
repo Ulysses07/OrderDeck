@@ -1,4 +1,4 @@
-namespace LiveDeck.Chat.Bridge;
+namespace OrderDeck.Chat.Bridge;
 
 /// <summary>
 /// Wire format produced by the browser extension content scripts. Field names use camelCase

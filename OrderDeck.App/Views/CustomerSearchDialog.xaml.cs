@@ -1,10 +1,10 @@
 using System.Windows;
 using System.Windows.Input;
-using LiveDeck.App.ViewModels;
-using LiveDeck.Core.Customers;
+using OrderDeck.App.ViewModels;
+using OrderDeck.Core.Customers;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace LiveDeck.App.Views;
+namespace OrderDeck.App.Views;
 
 public partial class CustomerSearchDialog : Window
 {

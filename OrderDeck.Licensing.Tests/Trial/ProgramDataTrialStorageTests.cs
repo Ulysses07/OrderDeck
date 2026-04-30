@@ -1,10 +1,10 @@
 using System.Text.Json;
 using FluentAssertions;
-using LiveDeck.Licensing.Trial;
+using OrderDeck.Licensing.Trial;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
-namespace LiveDeck.Licensing.Tests.Trial;
+namespace OrderDeck.Licensing.Tests.Trial;
 
 public sealed class ProgramDataTrialStorageTests : IDisposable
 {
@@ -14,7 +14,7 @@ public sealed class ProgramDataTrialStorageTests : IDisposable
 
     public ProgramDataTrialStorageTests()
     {
-        _dir = Path.Combine(Path.GetTempPath(), "LiveDeck.Licensing.Tests", Guid.NewGuid().ToString("N"));
+        _dir = Path.Combine(Path.GetTempPath(), "OrderDeck.Licensing.Tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_dir);
         _path = Path.Combine(_dir, "trial.dat");
         _storage = new ProgramDataTrialStorage(_path, NullLogger<ProgramDataTrialStorage>.Instance);

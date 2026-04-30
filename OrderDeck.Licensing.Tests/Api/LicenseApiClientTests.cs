@@ -1,10 +1,10 @@
 using FluentAssertions;
-using LiveDeck.Licensing.Api;
-using LiveDeck.Licensing.Api.Models;
-using LiveDeck.Licensing.Tests.TestHelpers;
+using OrderDeck.Licensing.Api;
+using OrderDeck.Licensing.Api.Models;
+using OrderDeck.Licensing.Tests.TestHelpers;
 using Xunit;
 
-namespace LiveDeck.Licensing.Tests.Api;
+namespace OrderDeck.Licensing.Tests.Api;
 
 public class LicenseApiClientTests
 {

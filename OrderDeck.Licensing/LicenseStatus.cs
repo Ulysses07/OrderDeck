@@ -1,4 +1,4 @@
-namespace LiveDeck.Licensing;
+namespace OrderDeck.Licensing;
 
 /// <summary>
 /// Client-side license state. Active, OfflineGrace, and TrialActive allow writing;

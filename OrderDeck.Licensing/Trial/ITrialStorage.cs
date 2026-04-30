@@ -1,4 +1,4 @@
-namespace LiveDeck.Licensing.Trial;
+namespace OrderDeck.Licensing.Trial;
 
 /// <summary>
 /// One of three persistent trial state locations. Read returns null when

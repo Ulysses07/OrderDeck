@@ -3,7 +3,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Data;
 
-namespace LiveDeck.App.Converters;
+namespace OrderDeck.App.Converters;
 
 /// <summary>Null/empty string → Collapsed; non-empty → Visible. Used by validation banners.</summary>
 public sealed class NullToCollapsedConverter : IValueConverter

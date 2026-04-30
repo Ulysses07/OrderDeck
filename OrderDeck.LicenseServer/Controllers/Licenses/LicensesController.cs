@@ -1,9 +1,9 @@
 using System.Security.Claims;
-using LiveDeck.LicenseServer.Services.Licensing;
+using OrderDeck.LicenseServer.Services.Licensing;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
-namespace LiveDeck.LicenseServer.Controllers.Licenses;
+namespace OrderDeck.LicenseServer.Controllers.Licenses;
 
 [ApiController]
 [Route("api/v1/licenses")]

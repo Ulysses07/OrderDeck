@@ -1,8 +1,8 @@
 using FluentAssertions;
-using LiveDeck.LicenseServer.Services.IntakeForm;
+using OrderDeck.LicenseServer.Services.IntakeForm;
 using Xunit;
 
-namespace LiveDeck.LicenseServer.Tests.Services.IntakeForm;
+namespace OrderDeck.LicenseServer.Tests.Services.IntakeForm;
 
 public class WhatsAppLinkBuilderTests
 {

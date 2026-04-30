@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
-using LiveDeck.LicenseServer.Services.Email;
+using OrderDeck.LicenseServer.Services.Email;
 
-namespace LiveDeck.LicenseServer.Tests.TestHelpers;
+namespace OrderDeck.LicenseServer.Tests.TestHelpers;
 
 public sealed class TestEmailSender : IEmailSender
 {

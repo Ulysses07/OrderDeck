@@ -1,4 +1,4 @@
-namespace LiveDeck.Licensing.Trial;
+namespace OrderDeck.Licensing.Trial;
 
 /// <summary>
 /// Discriminated union returned by <see cref="TrialService.GetState"/>.

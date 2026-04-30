@@ -1,11 +1,11 @@
 using System;
 using System.Windows;
 using System.Windows.Input;
-using LiveDeck.App.ViewModels;
-using LiveDeck.Core.Shortcuts;
+using OrderDeck.App.ViewModels;
+using OrderDeck.Core.Shortcuts;
 using Microsoft.Extensions.Logging;
 
-namespace LiveDeck.App.Shortcuts;
+namespace OrderDeck.App.Shortcuts;
 
 /// <summary>
 /// ShortcutRegistry'deki aktif binding'leri MainWindow.InputBindings'e runtime'da uygular.

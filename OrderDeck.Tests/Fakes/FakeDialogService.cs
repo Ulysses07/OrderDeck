@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
-using LiveDeck.App.Services;
+using OrderDeck.App.Services;
 
-namespace LiveDeck.Tests.Fakes;
+namespace OrderDeck.Tests.Fakes;
 
 public sealed class FakeDialogService : IDialogService
 {

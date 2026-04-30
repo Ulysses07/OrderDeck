@@ -1,12 +1,12 @@
 using FluentAssertions;
-using LiveDeck.App.ViewModels;
-using LiveDeck.Core.Customers;
-using LiveDeck.Core.Storage;
-using LiveDeck.Core.Storage.Repositories;
-using LiveDeck.Tests.TestHelpers;
+using OrderDeck.App.ViewModels;
+using OrderDeck.Core.Customers;
+using OrderDeck.Core.Storage;
+using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
-namespace LiveDeck.Tests.ViewModels;
+namespace OrderDeck.Tests.ViewModels;
 
 public class PhoneEntryDialogViewModelTests
 {

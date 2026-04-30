@@ -3,12 +3,12 @@ using System.Threading.Tasks;
 using System.Windows.Input;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using LiveDeck.Licensing;
-using LiveDeck.Licensing.Api;
-using LiveDeck.Licensing.Services;
+using OrderDeck.Licensing;
+using OrderDeck.Licensing.Api;
+using OrderDeck.Licensing.Services;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace LiveDeck.App.ViewModels;
+namespace OrderDeck.App.ViewModels;
 
 public sealed partial class AccountDialogViewModel : ObservableObject
 {
@@ -69,9 +69,9 @@ public sealed partial class AccountDialogViewModel : ObservableObject
 
         TrialLine = _licenseService.CurrentTrial switch
         {
-            LiveDeck.Licensing.Trial.TrialState.Active a =>
+            OrderDeck.Licensing.Trial.TrialState.Active a =>
                 $"Deneme süresi: {a.RemainingDays} gün kaldı (bitiş {a.ExpiresAt:dd.MM.yyyy})",
-            LiveDeck.Licensing.Trial.TrialState.Expired e =>
+            OrderDeck.Licensing.Trial.TrialState.Expired e =>
                 $"Deneme süresi doldu ({e.ExpiredAt:dd.MM.yyyy})",
             _ => ""
         };
@@ -79,8 +79,8 @@ public sealed partial class AccountDialogViewModel : ObservableObject
 
     private void OpenLogin()
     {
-        var dlg = global::LiveDeck.App.App.Host.Services
-            .GetRequiredService<global::LiveDeck.App.Views.LoginDialog>();
+        var dlg = global::OrderDeck.App.App.Host.Services
+            .GetRequiredService<global::OrderDeck.App.Views.LoginDialog>();
         var owner = System.Windows.Application.Current.MainWindow;
         if (owner is not null) dlg.Owner = owner;
         dlg.ShowDialog();

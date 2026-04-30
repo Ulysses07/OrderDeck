@@ -1,10 +1,10 @@
 using FluentAssertions;
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Tests.TestHelpers;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
-namespace LiveDeck.LicenseServer.Tests.Data;
+namespace OrderDeck.LicenseServer.Tests.Data;
 
 public class DbContextTests : IClassFixture<ApiFactory>
 {

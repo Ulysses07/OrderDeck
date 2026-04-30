@@ -6,9 +6,9 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using LiveDeck.Core.Chat;
-using LiveDeck.Core.Sales;
-using LiveDeck.Overlay.Models;
+using OrderDeck.Core.Chat;
+using OrderDeck.Core.Sales;
+using OrderDeck.Overlay.Models;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -18,7 +18,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace LiveDeck.Overlay;
+namespace OrderDeck.Overlay;
 
 /// <summary>
 /// Hosts the OBS Browser Source endpoints. Started/stopped by the WPF App.

@@ -1,7 +1,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
-using LiveDeck.Core.Chat;
+using OrderDeck.Core.Chat;
 
-namespace LiveDeck.App.ViewModels;
+namespace OrderDeck.App.ViewModels;
 
 /// <summary>
 /// UI-side wrapper around <see cref="ChatMessage"/> that adds <see cref="IsSenderBlacklisted"/>

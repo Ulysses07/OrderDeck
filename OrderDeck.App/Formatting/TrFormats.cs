@@ -1,7 +1,7 @@
 using System;
 using System.Globalization;
 
-namespace LiveDeck.App.Formatting;
+namespace OrderDeck.App.Formatting;
 
 /// <summary>
 /// Application-wide tr-TR formatting helpers. Keep WPF Bindings culture-agnostic but

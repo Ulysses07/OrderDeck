@@ -2,10 +2,10 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
-using LiveDeck.App.ViewModels;
+using OrderDeck.App.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace LiveDeck.App.Views;
+namespace OrderDeck.App.Views;
 
 public partial class MainShellView : UserControl
 {
@@ -19,13 +19,13 @@ public partial class MainShellView : UserControl
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         // Phase 4c: trial just started this session — show banner once
-        var licenseService = global::LiveDeck.App.App.Host.Services
-            .GetRequiredService<global::LiveDeck.Licensing.Services.LicenseService>();
+        var licenseService = global::OrderDeck.App.App.Host.Services
+            .GetRequiredService<global::OrderDeck.Licensing.Services.LicenseService>();
         if (licenseService.JustStartedTrial)
         {
             System.Windows.MessageBox.Show(
                 "Deneme süresi başladı. 14 gün boyunca Instagram chat ile tüm özellikleri ücretsiz kullanabilirsiniz.",
-                "LiveDeck — Deneme süresi",
+                "OrderDeck — Deneme süresi",
                 System.Windows.MessageBoxButton.OK,
                 System.Windows.MessageBoxImage.Information);
 

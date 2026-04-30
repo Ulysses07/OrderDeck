@@ -1,4 +1,4 @@
-namespace LiveDeck.Licensing.Trial;
+namespace OrderDeck.Licensing.Trial;
 
 /// <summary>
 /// Persistent trial state record. Same shape across all 3 storage locations

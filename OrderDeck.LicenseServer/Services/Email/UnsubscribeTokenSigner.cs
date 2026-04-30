@@ -2,7 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.Configuration;
 
-namespace LiveDeck.LicenseServer.Services.Email;
+namespace OrderDeck.LicenseServer.Services.Email;
 
 /// <summary>
 /// Stateless HMAC-SHA256 signed unsubscribe tokens. Format:

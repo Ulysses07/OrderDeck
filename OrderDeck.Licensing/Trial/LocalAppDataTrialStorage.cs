@@ -1,9 +1,9 @@
-using LiveDeck.Licensing.Storage;
+using OrderDeck.Licensing.Storage;
 
-namespace LiveDeck.Licensing.Trial;
+namespace OrderDeck.Licensing.Trial;
 
 /// <summary>
-/// User-bound DPAPI-encrypted trial state at %LOCALAPPDATA%\LiveDeck\trial.dat.
+/// User-bound DPAPI-encrypted trial state at %LOCALAPPDATA%\OrderDeck\trial.dat.
 /// Reuses Phase 4b <see cref="EncryptedStore"/> for serialization + DPAPI.
 /// </summary>
 public sealed class LocalAppDataTrialStorage : ITrialStorage

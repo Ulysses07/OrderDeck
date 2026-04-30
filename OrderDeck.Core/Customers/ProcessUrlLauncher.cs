@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace LiveDeck.Core.Customers;
+namespace OrderDeck.Core.Customers;
 
 /// <summary>Default IUrlLauncher: <c>Process.Start</c> + <c>UseShellExecute=true</c>.</summary>
 public sealed class ProcessUrlLauncher : IUrlLauncher

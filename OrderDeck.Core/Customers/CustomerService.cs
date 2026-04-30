@@ -1,9 +1,9 @@
 using System;
 using System.Collections.Generic;
-using LiveDeck.Core.Storage.Repositories;
-using LiveDeck.Core.Time;
+using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Core.Time;
 
-namespace LiveDeck.Core.Customers;
+namespace OrderDeck.Core.Customers;
 
 public sealed class CustomerService
 {

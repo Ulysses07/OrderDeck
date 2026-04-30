@@ -1,8 +1,8 @@
 using FluentAssertions;
-using LiveDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Auth;
 using Xunit;
 
-namespace LiveDeck.LicenseServer.Tests.Services;
+namespace OrderDeck.LicenseServer.Tests.Services;
 
 public class PasswordHasherTests
 {

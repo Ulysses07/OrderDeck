@@ -1,10 +1,10 @@
 using System.Net;
 using AngleSharp;
 using FluentAssertions;
-using LiveDeck.LicenseServer.Tests.TestHelpers;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
-namespace LiveDeck.LicenseServer.Tests.Pages;
+namespace OrderDeck.LicenseServer.Tests.Pages;
 
 public sealed class AdminSkusPageTests : IClassFixture<ApiFactory>
 {

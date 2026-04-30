@@ -1,8 +1,8 @@
-using LiveDeck.Licensing.Api;
-using LiveDeck.Licensing.Api.Models;
-using LiveDeck.Licensing.Storage;
+using OrderDeck.Licensing.Api;
+using OrderDeck.Licensing.Api.Models;
+using OrderDeck.Licensing.Storage;
 
-namespace LiveDeck.Licensing.Services;
+namespace OrderDeck.Licensing.Services;
 
 /// <summary>
 /// Orchestrates the auth flow: register/resend/login + persisting AuthRecord.

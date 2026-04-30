@@ -10,12 +10,12 @@
 
   <ItemGroup>
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>LiveDeck.Licensing.Tests</_Parameter1>
+      <_Parameter1>OrderDeck.Licensing.Tests</_Parameter1>
     </AssemblyAttribute>
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\LiveDeck.Core\LiveDeck.Core.csproj" />
+    <ProjectReference Include="..\OrderDeck.Core\OrderDeck.Core.csproj" />
   </ItemGroup>
 
   <ItemGroup>

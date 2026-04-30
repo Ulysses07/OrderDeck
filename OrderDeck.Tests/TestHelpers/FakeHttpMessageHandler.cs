@@ -1,4 +1,4 @@
-namespace LiveDeck.Tests.TestHelpers;
+namespace OrderDeck.Tests.TestHelpers;
 
 /// <summary>
 /// Minimal DelegatingHandler that lets tests script HTTP responses by request.

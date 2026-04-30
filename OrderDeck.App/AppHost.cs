@@ -1,25 +1,25 @@
 using System;
 using System.IO;
-using LiveDeck.App.Services;
-using LiveDeck.App.Services.IntakeForm;
-using LiveDeck.Chat.Bridge;
-using LiveDeck.Chat.Ingestors;
-using LiveDeck.Core;
-using LiveDeck.Core.Chat;
-using LiveDeck.Core.Customers;
-using LiveDeck.Core.Sales;
-using LiveDeck.Core.Sessions;
-using LiveDeck.Core.Settings;
-using LiveDeck.Core.Storage;
-using LiveDeck.Core.Storage.Repositories;
-using LiveDeck.Core.Time;
-using LiveDeck.Labeling;
-using LiveDeck.Licensing;
-using LiveDeck.Licensing.Api;
-using LiveDeck.Licensing.Services;
-using LiveDeck.Licensing.Storage;
-using LiveDeck.Licensing.Trial;
-using LiveDeck.Overlay;
+using OrderDeck.App.Services;
+using OrderDeck.App.Services.IntakeForm;
+using OrderDeck.Chat.Bridge;
+using OrderDeck.Chat.Ingestors;
+using OrderDeck.Core;
+using OrderDeck.Core.Chat;
+using OrderDeck.Core.Customers;
+using OrderDeck.Core.Sales;
+using OrderDeck.Core.Sessions;
+using OrderDeck.Core.Settings;
+using OrderDeck.Core.Storage;
+using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Core.Time;
+using OrderDeck.Labeling;
+using OrderDeck.Licensing;
+using OrderDeck.Licensing.Api;
+using OrderDeck.Licensing.Services;
+using OrderDeck.Licensing.Storage;
+using OrderDeck.Licensing.Trial;
+using OrderDeck.Overlay;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -27,7 +27,7 @@ using Microsoft.Extensions.Options;
 using Serilog;
 using Serilog.Extensions.Logging;
 
-namespace LiveDeck.App;
+namespace OrderDeck.App;
 
 public sealed class AppHost : IDisposable
 {
@@ -124,8 +124,8 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<IDialogService, WpfDialogService>();
 
         // Shortcuts (Phase 3b-1)
-        services.AddSingleton<LiveDeck.Core.Shortcuts.ShortcutRegistry>();
-        services.AddSingleton<LiveDeck.App.Shortcuts.ShortcutBinder>();
+        services.AddSingleton<OrderDeck.Core.Shortcuts.ShortcutRegistry>();
+        services.AddSingleton<OrderDeck.App.Shortcuts.ShortcutBinder>();
         services.AddTransient<ViewModels.ShortcutsTabViewModel>();
         services.AddTransient<Views.ShortcutHelpDialog>();
 

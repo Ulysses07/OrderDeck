@@ -1,11 +1,11 @@
 using FluentAssertions;
-using LiveDeck.Core.Sessions;
-using LiveDeck.Core.Storage;
-using LiveDeck.Core.Storage.Repositories;
-using LiveDeck.Tests.TestHelpers;
+using OrderDeck.Core.Sessions;
+using OrderDeck.Core.Storage;
+using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
-namespace LiveDeck.Tests.Storage;
+namespace OrderDeck.Tests.Storage;
 
 public class SessionRepositoryTests
 {

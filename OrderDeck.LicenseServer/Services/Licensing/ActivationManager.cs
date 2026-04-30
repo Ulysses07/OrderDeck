@@ -1,8 +1,8 @@
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
 using Microsoft.EntityFrameworkCore;
 
-namespace LiveDeck.LicenseServer.Services.Licensing;
+namespace OrderDeck.LicenseServer.Services.Licensing;
 
 public sealed class ActivationManager
 {

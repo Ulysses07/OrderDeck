@@ -1,9 +1,9 @@
-using LiveDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
-namespace LiveDeck.LicenseServer.Controllers.Skus;
+namespace OrderDeck.LicenseServer.Controllers.Skus;
 
 [ApiController]
 [Route("api/v1/admin/skus")]

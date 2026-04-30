@@ -1,9 +1,9 @@
 using FluentAssertions;
-using LiveDeck.Licensing.Trial;
+using OrderDeck.Licensing.Trial;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
-namespace LiveDeck.Licensing.Tests.Trial;
+namespace OrderDeck.Licensing.Tests.Trial;
 
 public class CompositeTrialStorageTests
 {

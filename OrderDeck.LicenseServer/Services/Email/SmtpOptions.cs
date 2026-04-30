@@ -1,4 +1,4 @@
-namespace LiveDeck.LicenseServer.Services.Email;
+namespace OrderDeck.LicenseServer.Services.Email;
 
 public sealed class SmtpOptions
 {

@@ -1,22 +1,22 @@
 using FluentAssertions;
-using LiveDeck.Core;
+using OrderDeck.Core;
 using Xunit;
 
-namespace LiveDeck.Tests;
+namespace OrderDeck.Tests;
 
 public class AppPathsTests
 {
     [Fact]
-    public void DocumentsRoot_ends_with_LiveDeck()
+    public void DocumentsRoot_ends_with_OrderDeck()
     {
-        AppPaths.DocumentsRoot.Should().EndWith("LiveDeck");
+        AppPaths.DocumentsRoot.Should().EndWith("OrderDeck");
     }
 
     [Fact]
     public void DatabaseFile_lives_under_documents_data_folder()
     {
         AppPaths.DatabaseFile
-            .Should().Contain("LiveDeck")
+            .Should().Contain("OrderDeck")
             .And.Contain("data")
             .And.EndWith("livedeck.db");
     }

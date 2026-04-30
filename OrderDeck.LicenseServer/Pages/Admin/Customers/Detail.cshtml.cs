@@ -1,11 +1,11 @@
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Domain;
-using LiveDeck.LicenseServer.Services.Audit;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Audit;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
 
-namespace LiveDeck.LicenseServer.Pages.Admin.Customers;
+namespace OrderDeck.LicenseServer.Pages.Admin.Customers;
 
 public class DetailModel : PageModel
 {

@@ -6,11 +6,11 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using FluentAssertions;
-using LiveDeck.Chat.Bridge;
-using LiveDeck.Core.Chat;
+using OrderDeck.Chat.Bridge;
+using OrderDeck.Core.Chat;
 using Xunit;
 
-namespace LiveDeck.Tests.Chat;
+namespace OrderDeck.Tests.Chat;
 
 /// <summary>
 /// Verifies that <see cref="ExtensionBridgeServer"/> drops non-Instagram messages when

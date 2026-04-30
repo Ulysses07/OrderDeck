@@ -1,6 +1,6 @@
 using System;
 
-namespace LiveDeck.Core.Time;
+namespace OrderDeck.Core.Time;
 
 public sealed class SystemClock : IClock
 {

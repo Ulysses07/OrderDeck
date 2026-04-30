@@ -1,12 +1,12 @@
 using FluentAssertions;
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Domain;
-using LiveDeck.LicenseServer.Services.Licensing;
-using LiveDeck.LicenseServer.Tests.TestHelpers;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Licensing;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
-namespace LiveDeck.LicenseServer.Tests.Services;
+namespace OrderDeck.LicenseServer.Tests.Services;
 
 public class LicenseValidatorTests : IClassFixture<ApiFactory>
 {

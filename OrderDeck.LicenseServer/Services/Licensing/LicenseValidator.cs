@@ -1,7 +1,7 @@
-using LiveDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Data;
 using Microsoft.EntityFrameworkCore;
 
-namespace LiveDeck.LicenseServer.Services.Licensing;
+namespace OrderDeck.LicenseServer.Services.Licensing;
 
 public sealed class LicenseValidator
 {

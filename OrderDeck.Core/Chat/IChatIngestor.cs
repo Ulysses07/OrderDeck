@@ -1,7 +1,7 @@
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace LiveDeck.Core.Chat;
+namespace OrderDeck.Core.Chat;
 
 public interface IChatIngestor
 {

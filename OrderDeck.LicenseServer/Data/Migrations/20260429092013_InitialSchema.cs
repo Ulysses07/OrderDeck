@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 #pragma warning disable CA1814 // Prefer jagged arrays over multidimensional
 
-namespace LiveDeck.LicenseServer.Data.Migrations
+namespace OrderDeck.LicenseServer.Data.Migrations
 {
     /// <inheritdoc />
     public partial class InitialSchema : Migration

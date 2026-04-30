@@ -1,4 +1,4 @@
-namespace LiveDeck.Licensing.Api.Models;
+namespace OrderDeck.Licensing.Api.Models;
 
 public sealed record RegisterRequest(string Email, string Name, string Password);
 public sealed record ResendRequest(string Email);

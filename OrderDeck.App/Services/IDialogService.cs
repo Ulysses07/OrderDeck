@@ -1,4 +1,4 @@
-namespace LiveDeck.App.Services;
+namespace OrderDeck.App.Services;
 
 public interface IDialogService
 {

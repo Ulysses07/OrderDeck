@@ -2,7 +2,7 @@
 
 #nullable disable
 
-namespace LiveDeck.LicenseServer.Data.Migrations
+namespace OrderDeck.LicenseServer.Data.Migrations
 {
     /// <inheritdoc />
     public partial class AddSubmissionPhone : Migration

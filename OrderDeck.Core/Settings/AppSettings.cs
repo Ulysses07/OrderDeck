@@ -1,4 +1,4 @@
-namespace LiveDeck.Core.Settings;
+namespace OrderDeck.Core.Settings;
 
 public sealed class AppSettings
 {

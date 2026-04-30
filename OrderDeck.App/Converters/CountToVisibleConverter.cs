@@ -3,7 +3,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Data;
 
-namespace LiveDeck.App.Converters;
+namespace OrderDeck.App.Converters;
 
 /// <summary>int (or long) > 0 → Visible, otherwise Collapsed. Used to gate sections that
 /// should disappear when their bound collection is empty.</summary>

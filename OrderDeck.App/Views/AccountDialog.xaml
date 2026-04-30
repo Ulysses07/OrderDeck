@@ -1,7 +1,7 @@
-<Window x:Class="LiveDeck.App.Views.AccountDialog"
+<Window x:Class="OrderDeck.App.Views.AccountDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="LiveDeck — Hesap"
+        Title="OrderDeck — Hesap"
         Width="420" Height="360"
         WindowStartupLocation="CenterScreen"
         ResizeMode="NoResize">

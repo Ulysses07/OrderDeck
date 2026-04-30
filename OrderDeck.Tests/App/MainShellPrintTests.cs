@@ -6,29 +6,29 @@ using System.Net;
 using System.Net.Http;
 using System.Text;
 using FluentAssertions;
-using LiveDeck.App.Services.IntakeForm;
-using LiveDeck.App.ViewModels;
-using LiveDeck.Core.Chat;
-using LiveDeck.Core.Customers;
-using LiveDeck.Core.Sales;
-using LiveDeck.Core.Sessions;
-using LiveDeck.Core.Settings;
-using LiveDeck.Core.Storage;
-using LiveDeck.Core.Storage.Repositories;
-using LiveDeck.Core.Time;
-using LiveDeck.Labeling;
-using LiveDeck.Licensing;
-using LiveDeck.Licensing.Api;
-using LiveDeck.Licensing.Services;
-using LiveDeck.Licensing.Storage;
-using LiveDeck.Licensing.Trial;
-using LiveDeck.Tests.TestHelpers;
+using OrderDeck.App.Services.IntakeForm;
+using OrderDeck.App.ViewModels;
+using OrderDeck.Core.Chat;
+using OrderDeck.Core.Customers;
+using OrderDeck.Core.Sales;
+using OrderDeck.Core.Sessions;
+using OrderDeck.Core.Settings;
+using OrderDeck.Core.Storage;
+using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Core.Time;
+using OrderDeck.Labeling;
+using OrderDeck.Licensing;
+using OrderDeck.Licensing.Api;
+using OrderDeck.Licensing.Services;
+using OrderDeck.Licensing.Storage;
+using OrderDeck.Licensing.Trial;
+using OrderDeck.Tests.TestHelpers;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
-namespace LiveDeck.Tests.App;
+namespace OrderDeck.Tests.App;
 
 public class MainShellPrintTests
 {
@@ -46,7 +46,7 @@ public class MainShellPrintTests
     /// </summary>
     private static LicenseService BuildActiveLicenseService()
     {
-        var dir = Path.Combine(Path.GetTempPath(), "LiveDeckTests", Guid.NewGuid().ToString("N"));
+        var dir = Path.Combine(Path.GetTempPath(), "OrderDeckTests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
 
         var enc = new EncryptedStore();

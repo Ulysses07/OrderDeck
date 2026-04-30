@@ -1,7 +1,7 @@
 using System.Collections.Generic;
-using LiveDeck.Core.Sales;
+using OrderDeck.Core.Sales;
 
-namespace LiveDeck.Labeling;
+namespace OrderDeck.Labeling;
 
 /// <summary>Etiket yazdırma soyutlaması. Test'lerde fake implementation kullanılır.</summary>
 public interface ILabelPrinter

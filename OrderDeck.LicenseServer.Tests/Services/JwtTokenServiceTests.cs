@@ -1,10 +1,10 @@
 using System.IdentityModel.Tokens.Jwt;
 using FluentAssertions;
-using LiveDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Auth;
 using Microsoft.Extensions.Options;
 using Xunit;
 
-namespace LiveDeck.LicenseServer.Tests.Services;
+namespace OrderDeck.LicenseServer.Tests.Services;
 
 public class JwtTokenServiceTests
 {

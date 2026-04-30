@@ -1,10 +1,10 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 
-namespace LiveDeck.Licensing.Trial;
+namespace OrderDeck.Licensing.Trial;
 
 /// <summary>
-/// Cross-user JSON file storage at <c>C:\ProgramData\LiveDeck\trial.dat</c>.
+/// Cross-user JSON file storage at <c>C:\ProgramData\OrderDeck\trial.dat</c>.
 /// HMAC field detects field-level tampering (e.g. extending ExpiresAt by hand).
 /// Multi-user readable — DPAPI not applicable.
 /// </summary>

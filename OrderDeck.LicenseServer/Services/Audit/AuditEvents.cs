@@ -1,4 +1,4 @@
-namespace LiveDeck.LicenseServer.Services.Audit;
+namespace OrderDeck.LicenseServer.Services.Audit;
 
 public static class AuditEvents
 {

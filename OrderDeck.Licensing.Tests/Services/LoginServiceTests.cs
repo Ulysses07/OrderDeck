@@ -1,12 +1,12 @@
 using FluentAssertions;
-using LiveDeck.Licensing.Api;
-using LiveDeck.Licensing.Api.Models;
-using LiveDeck.Licensing.Services;
-using LiveDeck.Licensing.Storage;
-using LiveDeck.Licensing.Tests.TestHelpers;
+using OrderDeck.Licensing.Api;
+using OrderDeck.Licensing.Api.Models;
+using OrderDeck.Licensing.Services;
+using OrderDeck.Licensing.Storage;
+using OrderDeck.Licensing.Tests.TestHelpers;
 using Xunit;
 
-namespace LiveDeck.Licensing.Tests.Services;
+namespace OrderDeck.Licensing.Tests.Services;
 
 public sealed class LoginServiceTests : IDisposable
 {
@@ -15,7 +15,7 @@ public sealed class LoginServiceTests : IDisposable
 
     public LoginServiceTests()
     {
-        _dir = Path.Combine(Path.GetTempPath(), "LiveDeck.Licensing.Tests", Guid.NewGuid().ToString("N"));
+        _dir = Path.Combine(Path.GetTempPath(), "OrderDeck.Licensing.Tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_dir);
         _authStore = new AuthStore(new EncryptedStore(), Path.Combine(_dir, "auth.dat"));
     }

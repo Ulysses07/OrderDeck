@@ -1,10 +1,10 @@
 using System;
 using System.IO;
 
-namespace LiveDeck.Core;
+namespace OrderDeck.Core;
 
 /// <summary>
-/// Centralised filesystem paths used by LiveDeck. All paths are derived from the user's
+/// Centralised filesystem paths used by OrderDeck. All paths are derived from the user's
 /// Documents folder so they are roaming-friendly and easy to back up.
 /// </summary>
 public static class AppPaths
@@ -12,7 +12,7 @@ public static class AppPaths
     public static string DocumentsRoot { get; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
         "Documents",
-        "LiveDeck");
+        "OrderDeck");
 
     public static string DataFolder => Path.Combine(DocumentsRoot, "data");
     public static string LogsFolder => Path.Combine(DocumentsRoot, "Logs");

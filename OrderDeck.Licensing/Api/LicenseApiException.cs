@@ -1,4 +1,4 @@
-namespace LiveDeck.Licensing.Api;
+namespace OrderDeck.Licensing.Api;
 
 public abstract class LicenseApiException : Exception
 {

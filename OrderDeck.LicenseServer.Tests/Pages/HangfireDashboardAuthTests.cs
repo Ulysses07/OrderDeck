@@ -1,10 +1,10 @@
 using System.Net;
 using FluentAssertions;
-using LiveDeck.LicenseServer.Tests.TestHelpers;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Xunit;
 
-namespace LiveDeck.LicenseServer.Tests.Pages;
+namespace OrderDeck.LicenseServer.Tests.Pages;
 
 public sealed class HangfireDashboardAuthTests : IClassFixture<ApiFactory>
 {

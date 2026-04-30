@@ -1,14 +1,14 @@
 using FluentAssertions;
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Domain;
-using LiveDeck.LicenseServer.Services.Auth;
-using LiveDeck.LicenseServer.Services.Email;
-using LiveDeck.LicenseServer.Tests.TestHelpers;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Email;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
-namespace LiveDeck.LicenseServer.Tests.Services;
+namespace OrderDeck.LicenseServer.Tests.Services;
 
 public sealed class PasswordResetServiceTests : IClassFixture<ApiFactory>
 {

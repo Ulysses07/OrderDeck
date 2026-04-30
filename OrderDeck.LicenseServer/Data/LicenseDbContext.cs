@@ -1,7 +1,7 @@
-using LiveDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Domain;
 using Microsoft.EntityFrameworkCore;
 
-namespace LiveDeck.LicenseServer.Data;
+namespace OrderDeck.LicenseServer.Data;
 
 public sealed class LicenseDbContext : DbContext
 {

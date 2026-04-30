@@ -1,9 +1,9 @@
 using FluentAssertions;
-using LiveDeck.LicenseServer.Services.Email;
+using OrderDeck.LicenseServer.Services.Email;
 using Microsoft.Extensions.Configuration;
 using Xunit;
 
-namespace LiveDeck.LicenseServer.Tests.Services;
+namespace OrderDeck.LicenseServer.Tests.Services;
 
 public class UnsubscribeTokenSignerTests
 {

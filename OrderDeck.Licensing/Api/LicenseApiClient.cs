@@ -2,9 +2,9 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
-using LiveDeck.Licensing.Api.Models;
+using OrderDeck.Licensing.Api.Models;
 
-namespace LiveDeck.Licensing.Api;
+namespace OrderDeck.Licensing.Api;
 
 public sealed class LicenseApiClient
 {

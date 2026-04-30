@@ -1,4 +1,4 @@
-namespace LiveDeck.Core.Sales;
+namespace OrderDeck.Core.Sales;
 
 /// <summary>
 /// One unique <c>(Platform, Username)</c> who entered a giveaway by typing its keyword.

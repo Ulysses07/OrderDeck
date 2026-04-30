@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LiveDeck.Core.Sales;
+namespace OrderDeck.Core.Sales;
 
 /// <summary>
 /// JSON-friendly DTOs raised by <see cref="GiveawayService"/>. Consumed by

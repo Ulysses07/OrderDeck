@@ -1,11 +1,11 @@
 using System.Collections.Generic;
 using System.Runtime.Versioning;
-using LiveDeck.Core.Sales;
-using LiveDeck.Core.Settings;
+using OrderDeck.Core.Sales;
+using OrderDeck.Core.Settings;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace LiveDeck.Labeling;
+namespace OrderDeck.Labeling;
 
 /// <summary>
 /// Sends a batch of labels to the configured printer via Windows printing subsystem.

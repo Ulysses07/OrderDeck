@@ -3,17 +3,17 @@ using System.Linq;
 using System.Threading;
 using System.Windows;
 using System.Windows.Markup;
-using LiveDeck.App.Formatting;
-using LiveDeck.App.Views;
-using LiveDeck.Chat.Ingestors;
-using LiveDeck.Licensing;
-using LiveDeck.Licensing.Services;
-using LiveDeck.Overlay;
+using OrderDeck.App.Formatting;
+using OrderDeck.App.Views;
+using OrderDeck.Chat.Ingestors;
+using OrderDeck.Licensing;
+using OrderDeck.Licensing.Services;
+using OrderDeck.Overlay;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace LiveDeck.App;
+namespace OrderDeck.App;
 
 public partial class App : Application
 {
@@ -22,7 +22,7 @@ public partial class App : Application
     private ChatBridgeIngestor? _ingestor;
     private OverlayHost? _overlay;
     private HeartbeatHostedService? _heartbeat;
-    private LiveDeck.App.Services.IntakeForm.IntakeFormSyncHostedService? _intakeSync;
+    private OrderDeck.App.Services.IntakeForm.IntakeFormSyncHostedService? _intakeSync;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -40,7 +40,7 @@ public partial class App : Application
         Host = new AppHost();
 
         var logger = Host.Services.GetRequiredService<ILogger<App>>();
-        logger.LogInformation("LiveDeck starting up");
+        logger.LogInformation("OrderDeck starting up");
 
         // Phase 4b: license bootstrap before showing main window
         var licenseService = Host.Services.GetRequiredService<LicenseService>();
@@ -79,7 +79,7 @@ public partial class App : Application
 
         // Phase 4f: intake form sync hosted service
         _intakeSync = Host.Services.GetServices<IHostedService>()
-            .OfType<LiveDeck.App.Services.IntakeForm.IntakeFormSyncHostedService>()
+            .OfType<OrderDeck.App.Services.IntakeForm.IntakeFormSyncHostedService>()
             .FirstOrDefault();
         _ = _intakeSync?.StartAsync(CancellationToken.None);
 

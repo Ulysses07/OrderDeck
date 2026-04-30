@@ -1,15 +1,15 @@
 using FluentAssertions;
-using LiveDeck.App.Services.IntakeForm;
-using LiveDeck.Core.Settings;
-using LiveDeck.Core.Storage;
-using LiveDeck.Core.Storage.Repositories;
-using LiveDeck.Core.Time;
-using LiveDeck.Licensing.Api;
-using LiveDeck.Tests.TestHelpers;
+using OrderDeck.App.Services.IntakeForm;
+using OrderDeck.Core.Settings;
+using OrderDeck.Core.Storage;
+using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Core.Time;
+using OrderDeck.Licensing.Api;
+using OrderDeck.Tests.TestHelpers;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
-namespace LiveDeck.Tests.Services.IntakeForm;
+namespace OrderDeck.Tests.Services.IntakeForm;
 
 public sealed class IntakeFormSyncHostedServiceTests
 {

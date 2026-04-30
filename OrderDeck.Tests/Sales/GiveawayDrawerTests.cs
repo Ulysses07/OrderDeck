@@ -1,9 +1,9 @@
 using System.Linq;
 using FluentAssertions;
-using LiveDeck.Core.Sales;
+using OrderDeck.Core.Sales;
 using Xunit;
 
-namespace LiveDeck.Tests.Sales;
+namespace OrderDeck.Tests.Sales;
 
 public class GiveawayDrawerTests
 {

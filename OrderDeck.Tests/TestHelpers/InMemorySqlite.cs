@@ -1,8 +1,8 @@
 using System.Data;
-using LiveDeck.Core.Storage;
+using OrderDeck.Core.Storage;
 using Microsoft.Data.Sqlite;
 
-namespace LiveDeck.Tests.TestHelpers;
+namespace OrderDeck.Tests.TestHelpers;
 
 /// <summary>
 /// Shared in-memory SQLite. Each instance owns one connection that stays open for the

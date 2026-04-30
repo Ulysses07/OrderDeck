@@ -5,11 +5,11 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using LiveDeck.Core.Chat;
+using OrderDeck.Core.Chat;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace LiveDeck.Chat.Bridge;
+namespace OrderDeck.Chat.Bridge;
 
 /// <summary>
 /// Hosts a localhost WebSocket endpoint (`ws://localhost:{port}/extension`) that the browser

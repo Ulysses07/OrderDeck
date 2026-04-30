@@ -1,12 +1,12 @@
-using LiveDeck.Core.Chat;
-using LiveDeck.Licensing.Api;
-using LiveDeck.Licensing.Api.Models;
-using LiveDeck.Licensing.Storage;
-using LiveDeck.Licensing.Trial;
+using OrderDeck.Core.Chat;
+using OrderDeck.Licensing.Api;
+using OrderDeck.Licensing.Api.Models;
+using OrderDeck.Licensing.Storage;
+using OrderDeck.Licensing.Trial;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-namespace LiveDeck.Licensing.Services;
+namespace OrderDeck.Licensing.Services;
 
 /// <summary>
 /// State machine controller. Loads cached auth/license, calls /licenses/validate,

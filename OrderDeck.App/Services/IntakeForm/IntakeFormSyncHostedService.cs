@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace LiveDeck.App.Services.IntakeForm;
+namespace OrderDeck.App.Services.IntakeForm;
 
 /// <summary>
 /// 2-minute PeriodicTimer loop calling IntakeFormSyncService.SyncOnceAsync.

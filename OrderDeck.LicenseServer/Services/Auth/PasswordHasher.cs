@@ -2,7 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Konscious.Security.Cryptography;
 
-namespace LiveDeck.LicenseServer.Services.Auth;
+namespace OrderDeck.LicenseServer.Services.Auth;
 
 /// <summary>
 /// Argon2id password hasher. OWASP 2024 parameters: m=65536 KB, t=4 iterations, p=2 lanes.

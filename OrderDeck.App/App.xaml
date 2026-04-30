@@ -1,7 +1,7 @@
-<Application x:Class="LiveDeck.App.App"
+<Application x:Class="OrderDeck.App.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:converters="clr-namespace:LiveDeck.App.Converters"
+             xmlns:converters="clr-namespace:OrderDeck.App.Converters"
              StartupUri="MainWindow.xaml">
     <Application.Resources>
         <ResourceDictionary>

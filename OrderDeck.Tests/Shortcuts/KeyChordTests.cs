@@ -1,8 +1,8 @@
 using FluentAssertions;
-using LiveDeck.Core.Shortcuts;
+using OrderDeck.Core.Shortcuts;
 using Xunit;
 
-namespace LiveDeck.Tests.Shortcuts;
+namespace OrderDeck.Tests.Shortcuts;
 
 public class KeyChordTests
 {

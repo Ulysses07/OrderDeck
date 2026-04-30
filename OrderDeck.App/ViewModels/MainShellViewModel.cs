@@ -8,19 +8,19 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using LiveDeck.App.Services.IntakeForm;
-using LiveDeck.App.Views;
-using LiveDeck.Core.Chat;
-using LiveDeck.Core.Customers;
-using LiveDeck.Core.Sales;
-using LiveDeck.Core.Sessions;
-using LiveDeck.Core.Storage.Repositories;
-using LiveDeck.Labeling;
-using LiveDeck.Licensing;
-using LiveDeck.Licensing.Services;
+using OrderDeck.App.Services.IntakeForm;
+using OrderDeck.App.Views;
+using OrderDeck.Core.Chat;
+using OrderDeck.Core.Customers;
+using OrderDeck.Core.Sales;
+using OrderDeck.Core.Sessions;
+using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Labeling;
+using OrderDeck.Licensing;
+using OrderDeck.Licensing.Services;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace LiveDeck.App.ViewModels;
+namespace OrderDeck.App.ViewModels;
 
 public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 {
@@ -175,7 +175,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
     private int RemainingTrialDays()
     {
-        if (_licenseService.CurrentTrial is LiveDeck.Licensing.Trial.TrialState.Active a)
+        if (_licenseService.CurrentTrial is OrderDeck.Licensing.Trial.TrialState.Active a)
             return a.RemainingDays;
         return 0;
     }
@@ -210,7 +210,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private async Task OpenIntakeSubmissionsAsync()
     {
         await Task.Yield();
-        var dlg = global::LiveDeck.App.App.Host.Services.GetRequiredService<global::LiveDeck.App.Views.CustomerSearchDialog>();
+        var dlg = global::OrderDeck.App.App.Host.Services.GetRequiredService<global::OrderDeck.App.Views.CustomerSearchDialog>();
         var vm = (CustomerSearchViewModel)dlg.DataContext;
         vm.PlatformFilter = "form";
         vm.RefreshSearch();
@@ -224,7 +224,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private async Task OpenAccountAsync()
     {
         await Task.Yield(); // ensure UI thread
-        var dlg = global::LiveDeck.App.App.Host.Services.GetRequiredService<global::LiveDeck.App.Views.AccountDialog>();
+        var dlg = global::OrderDeck.App.App.Host.Services.GetRequiredService<global::OrderDeck.App.Views.AccountDialog>();
         dlg.Owner = System.Windows.Application.Current?.MainWindow;
         dlg.ShowDialog();
     }

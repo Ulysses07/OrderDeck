@@ -1,7 +1,7 @@
 using System.IO;
 using System.Text.Json;
 
-namespace LiveDeck.Core.Settings;
+namespace OrderDeck.Core.Settings;
 
 /// <summary>Loads and saves <see cref="AppSettings"/> from a JSON file.</summary>
 public sealed class SettingsStore

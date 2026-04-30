@@ -1,10 +1,10 @@
 using System.Threading;
 using System.Threading.Tasks;
-using LiveDeck.Chat.Bridge;
-using LiveDeck.Core.Chat;
+using OrderDeck.Chat.Bridge;
+using OrderDeck.Core.Chat;
 using Microsoft.Extensions.Logging;
 
-namespace LiveDeck.Chat.Ingestors;
+namespace OrderDeck.Chat.Ingestors;
 
 /// <summary>
 /// Platform-agnostic ingestor that starts/stops the <see cref="ExtensionBridgeServer"/>.

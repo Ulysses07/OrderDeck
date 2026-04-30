@@ -1,4 +1,4 @@
-﻿namespace LiveDeck.Tests;
+﻿namespace OrderDeck.Tests;
 
 public class UnitTest1
 {

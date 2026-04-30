@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
-using LiveDeck.Core.Customers;
+using OrderDeck.Core.Customers;
 
-namespace LiveDeck.Tests.Fakes;
+namespace OrderDeck.Tests.Fakes;
 
 /// <summary>Test double — kayıt tutar, optionally throws.</summary>
 public sealed class FakeUrlLauncher : IUrlLauncher

@@ -1,4 +1,4 @@
-namespace LiveDeck.Licensing;
+namespace OrderDeck.Licensing;
 
 public interface IHardwareIdProvider
 {

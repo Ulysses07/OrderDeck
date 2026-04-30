@@ -1,10 +1,10 @@
 using System.ComponentModel;
 using System.Windows;
-using LiveDeck.App.Shortcuts;
-using LiveDeck.App.ViewModels;
+using OrderDeck.App.Shortcuts;
+using OrderDeck.App.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace LiveDeck.App;
+namespace OrderDeck.App;
 
 public partial class MainWindow : Window
 {

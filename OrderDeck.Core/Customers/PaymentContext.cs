@@ -1,6 +1,6 @@
 using System;
 
-namespace LiveDeck.Core.Customers;
+namespace OrderDeck.Core.Customers;
 
 /// <summary>Phase 4g: WhatsApp ödeme isteme mesajı için template input.</summary>
 public sealed record PaymentContext(

@@ -1,10 +1,10 @@
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Domain;
-using LiveDeck.LicenseServer.Services.Email;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Email;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 
-namespace LiveDeck.LicenseServer.Services.Auth;
+namespace OrderDeck.LicenseServer.Services.Auth;
 
 public sealed class EmailConfirmationService
 {

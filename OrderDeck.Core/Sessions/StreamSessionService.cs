@@ -1,9 +1,9 @@
 using System;
 using System.Collections.Generic;
-using LiveDeck.Core.Storage.Repositories;
-using LiveDeck.Core.Time;
+using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Core.Time;
 
-namespace LiveDeck.Core.Sessions;
+namespace OrderDeck.Core.Sessions;
 
 public sealed class StreamSessionService
 {

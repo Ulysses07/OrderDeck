@@ -1,9 +1,9 @@
 using System.Collections.Generic;
 using System.Linq;
 using Dapper;
-using LiveDeck.Core.Sales;
+using OrderDeck.Core.Sales;
 
-namespace LiveDeck.Core.Storage.Repositories;
+namespace OrderDeck.Core.Storage.Repositories;
 
 public sealed class LabelRepository
 {

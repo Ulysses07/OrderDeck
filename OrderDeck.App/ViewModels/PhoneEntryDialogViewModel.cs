@@ -1,10 +1,10 @@
 using System;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using LiveDeck.Core.Customers;
-using LiveDeck.Core.Storage.Repositories;
+using OrderDeck.Core.Customers;
+using OrderDeck.Core.Storage.Repositories;
 
-namespace LiveDeck.App.ViewModels;
+namespace OrderDeck.App.ViewModels;
 
 /// <summary>
 /// Phase 4g: müşterinin telefonu yokken inline collect.

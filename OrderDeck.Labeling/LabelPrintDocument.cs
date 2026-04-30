@@ -4,10 +4,10 @@ using System.Drawing;
 using System.Drawing.Printing;
 using System.Globalization;
 using System.Runtime.Versioning;
-using LiveDeck.Core.Sales;
-using LiveDeck.Core.Settings;
+using OrderDeck.Core.Sales;
+using OrderDeck.Core.Settings;
 
-namespace LiveDeck.Labeling;
+namespace OrderDeck.Labeling;
 
 /// <summary>
 /// Builds a <see cref="PrintDocument"/> that lays out a batch of <see cref="Label"/>s onto
@@ -53,7 +53,7 @@ public static class LabelPrintDocument
     {
         var doc = new PrintDocument
         {
-            DocumentName = "LiveDeck Labels"
+            DocumentName = "OrderDeck Labels"
         };
         if (!string.IsNullOrWhiteSpace(printerName))
             doc.PrinterSettings.PrinterName = printerName;

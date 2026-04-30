@@ -1,6 +1,6 @@
-using LiveDeck.Licensing;
+using OrderDeck.Licensing;
 
-namespace LiveDeck.Licensing.Tests.TestHelpers;
+namespace OrderDeck.Licensing.Tests.TestHelpers;
 
 public sealed class FakeHardwareIdProvider : IHardwareIdProvider
 {

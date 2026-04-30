@@ -1,4 +1,4 @@
-namespace LiveDeck.LicenseServer.Domain;
+namespace OrderDeck.LicenseServer.Domain;
 
 /// <summary>
 /// Single-use password reset token. TTL enforced in PasswordResetService (1h default).

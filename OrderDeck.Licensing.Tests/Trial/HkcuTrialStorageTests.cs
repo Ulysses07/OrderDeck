@@ -1,11 +1,11 @@
 using FluentAssertions;
-using LiveDeck.Licensing;
-using LiveDeck.Licensing.Trial;
+using OrderDeck.Licensing;
+using OrderDeck.Licensing.Trial;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
 
-namespace LiveDeck.Licensing.Tests.Trial;
+namespace OrderDeck.Licensing.Tests.Trial;
 
 public sealed class HkcuTrialStorageTests : IDisposable
 {
@@ -16,7 +16,7 @@ public sealed class HkcuTrialStorageTests : IDisposable
     {
         _opts = new LicensingOptions
         {
-            TrialRegistrySubKey = $"Software\\LiveDeckTests\\Trial-{Guid.NewGuid():N}"
+            TrialRegistrySubKey = $"Software\\OrderDeckTests\\Trial-{Guid.NewGuid():N}"
         };
         _storage = new HkcuTrialStorage(Options.Create(_opts), NullLogger<HkcuTrialStorage>.Instance);
     }
@@ -26,7 +26,7 @@ public sealed class HkcuTrialStorageTests : IDisposable
         try { _storage.Clear(); } catch { }
         try
         {
-            using var parent = Microsoft.Win32.Registry.CurrentUser.OpenSubKey("Software\\LiveDeckTests", writable: true);
+            using var parent = Microsoft.Win32.Registry.CurrentUser.OpenSubKey("Software\\OrderDeckTests", writable: true);
             parent?.DeleteSubKeyTree("Trial-" + _opts.TrialRegistrySubKey.Substring(_opts.TrialRegistrySubKey.LastIndexOf("Trial-") + 6), throwOnMissingSubKey: false);
         }
         catch { }

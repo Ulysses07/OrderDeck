@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LiveDeck.Core.Chat;
+namespace OrderDeck.Core.Chat;
 
 public sealed record ChatMessage(
     string Id,

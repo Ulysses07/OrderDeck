@@ -26,9 +26,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\LiveDeck.Core\LiveDeck.Core.csproj" />
-    <ProjectReference Include="..\LiveDeck.Chat\LiveDeck.Chat.csproj" />
-    <ProjectReference Include="..\LiveDeck.Labeling\LiveDeck.Labeling.csproj" />
-    <ProjectReference Include="..\LiveDeck.App\LiveDeck.App.csproj" />
+    <ProjectReference Include="..\OrderDeck.Core\OrderDeck.Core.csproj" />
+    <ProjectReference Include="..\OrderDeck.Chat\OrderDeck.Chat.csproj" />
+    <ProjectReference Include="..\OrderDeck.Labeling\OrderDeck.Labeling.csproj" />
+    <ProjectReference Include="..\OrderDeck.App\OrderDeck.App.csproj" />
   </ItemGroup>
 </Project>

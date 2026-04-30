@@ -1,14 +1,14 @@
 using System.ComponentModel.DataAnnotations;
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Domain;
-using LiveDeck.LicenseServer.Services.Audit;
-using LiveDeck.LicenseServer.Services.Email;
-using LiveDeck.LicenseServer.Services.Licensing;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Audit;
+using OrderDeck.LicenseServer.Services.Email;
+using OrderDeck.LicenseServer.Services.Licensing;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
 
-namespace LiveDeck.LicenseServer.Pages.Admin.Licenses;
+namespace OrderDeck.LicenseServer.Pages.Admin.Licenses;
 
 public class IssueModel : PageModel
 {

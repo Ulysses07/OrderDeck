@@ -1,10 +1,10 @@
 using System.Linq;
 
-namespace LiveDeck.LicenseServer.Services.IntakeForm;
+namespace OrderDeck.LicenseServer.Services.IntakeForm;
 
 /// <summary>
 /// Phase 4g: TR mobil telefonu E.164 formatına normalize eder.
-/// Port from LiveDeck.Core.Customers.PhoneNormalizer (cross-project shared lib YAGNI).
+/// Port from OrderDeck.Core.Customers.PhoneNormalizer (cross-project shared lib YAGNI).
 /// </summary>
 public static class PhoneNormalizer
 {

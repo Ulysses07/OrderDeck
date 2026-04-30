@@ -1,10 +1,10 @@
 using System.Security.Claims;
-using LiveDeck.LicenseServer.Services.Audit;
+using OrderDeck.LicenseServer.Services.Audit;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 
-namespace LiveDeck.LicenseServer.Pages.Admin;
+namespace OrderDeck.LicenseServer.Pages.Admin;
 
 public class LogoutModel : PageModel
 {

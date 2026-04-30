@@ -1,7 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 
-namespace LiveDeck.App.Views;
+namespace OrderDeck.App.Views;
 
 public partial class AddToBlacklistDialog : Window
 {

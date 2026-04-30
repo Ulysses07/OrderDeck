@@ -1,4 +1,4 @@
-namespace LiveDeck.Core.Sales;
+namespace OrderDeck.Core.Sales;
 
 /// <summary>
 /// A queued or printed label. Created when the user double-clicks a chat message in the

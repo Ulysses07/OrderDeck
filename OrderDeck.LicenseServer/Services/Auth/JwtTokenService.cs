@@ -4,7 +4,7 @@ using System.Text;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 
-namespace LiveDeck.LicenseServer.Services.Auth;
+namespace OrderDeck.LicenseServer.Services.Auth;
 
 public sealed class JwtTokenService
 {

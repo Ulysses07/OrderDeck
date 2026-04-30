@@ -1,4 +1,4 @@
-namespace LiveDeck.Licensing.Api.Models;
+namespace OrderDeck.Licensing.Api.Models;
 
 public sealed record IntakeFormConfigDto(
     string Slug,

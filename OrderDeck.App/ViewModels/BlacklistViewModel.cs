@@ -2,11 +2,11 @@ using System.Collections.ObjectModel;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using LiveDeck.Core.Customers;
-using LiveDeck.Core.Storage.Repositories;
+using OrderDeck.Core.Customers;
+using OrderDeck.Core.Storage.Repositories;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace LiveDeck.App.ViewModels;
+namespace OrderDeck.App.ViewModels;
 
 public sealed partial class BlacklistViewModel : ViewModelBase
 {

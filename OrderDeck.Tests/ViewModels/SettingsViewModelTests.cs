@@ -5,13 +5,13 @@ using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using FluentAssertions;
-using LiveDeck.App.ViewModels;
-using LiveDeck.Core.Settings;
-using LiveDeck.Core.Shortcuts;
-using LiveDeck.Licensing.Api;
+using OrderDeck.App.ViewModels;
+using OrderDeck.Core.Settings;
+using OrderDeck.Core.Shortcuts;
+using OrderDeck.Licensing.Api;
 using Xunit;
 
-namespace LiveDeck.Tests.ViewModels;
+namespace OrderDeck.Tests.ViewModels;
 
 public class SettingsViewModel_PaymentTests : IDisposable
 {

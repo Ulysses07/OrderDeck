@@ -1,8 +1,8 @@
 using System.Windows;
-using LiveDeck.App.ViewModels;
-using LiveDeck.Core.Storage.Repositories;
+using OrderDeck.App.ViewModels;
+using OrderDeck.Core.Storage.Repositories;
 
-namespace LiveDeck.App.Views;
+namespace OrderDeck.App.Views;
 
 public partial class PhoneEntryDialog : Window
 {

@@ -1,6 +1,6 @@
 using Microsoft.Extensions.Logging;
 
-namespace LiveDeck.Licensing.Trial;
+namespace OrderDeck.Licensing.Trial;
 
 /// <summary>
 /// Combines 3 trial state storages with OR-logic read (latest ExpiresAt wins) and

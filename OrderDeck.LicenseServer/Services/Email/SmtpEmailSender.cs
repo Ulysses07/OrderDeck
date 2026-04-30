@@ -3,7 +3,7 @@ using MimeKit;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-namespace LiveDeck.LicenseServer.Services.Email;
+namespace OrderDeck.LicenseServer.Services.Email;
 
 public sealed class SmtpEmailSender : IEmailSender
 {

@@ -1,11 +1,11 @@
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Domain;
-using LiveDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Auth;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 
-namespace LiveDeck.LicenseServer.Controllers.Auth;
+namespace OrderDeck.LicenseServer.Controllers.Auth;
 
 [ApiController]
 [Route("api/v1/auth")]

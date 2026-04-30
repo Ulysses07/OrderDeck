@@ -1,10 +1,10 @@
 using System.Security.Claims;
 using System.Text.Json;
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
 using Microsoft.AspNetCore.Http;
 
-namespace LiveDeck.LicenseServer.Services.Audit;
+namespace OrderDeck.LicenseServer.Services.Audit;
 
 public sealed class AuditService : IAuditService
 {

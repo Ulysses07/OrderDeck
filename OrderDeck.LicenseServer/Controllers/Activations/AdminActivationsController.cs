@@ -1,8 +1,8 @@
-using LiveDeck.LicenseServer.Services.Licensing;
+using OrderDeck.LicenseServer.Services.Licensing;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
-namespace LiveDeck.LicenseServer.Controllers.Activations;
+namespace OrderDeck.LicenseServer.Controllers.Activations;
 
 [ApiController]
 [Route("api/v1/admin/activations")]

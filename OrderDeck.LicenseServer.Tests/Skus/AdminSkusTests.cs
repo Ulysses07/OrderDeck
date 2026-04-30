@@ -2,10 +2,10 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using FluentAssertions;
-using LiveDeck.LicenseServer.Tests.TestHelpers;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
-namespace LiveDeck.LicenseServer.Tests.Skus;
+namespace OrderDeck.LicenseServer.Tests.Skus;
 
 public class AdminSkusTests : IClassFixture<ApiFactory>
 {

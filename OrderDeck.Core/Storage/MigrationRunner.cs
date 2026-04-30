@@ -4,7 +4,7 @@ using System.Linq;
 using System.Reflection;
 using Dapper;
 
-namespace LiveDeck.Core.Storage;
+namespace OrderDeck.Core.Storage;
 
 /// <summary>
 /// Applies embedded `Storage/Migrations/NNN_*.sql` scripts in lexical order, skipping
@@ -13,7 +13,7 @@ namespace LiveDeck.Core.Storage;
 /// </summary>
 public sealed class MigrationRunner
 {
-    private const string MigrationPrefix = "LiveDeck.Core.Storage.Migrations.";
+    private const string MigrationPrefix = "OrderDeck.Core.Storage.Migrations.";
 
     private readonly IDbConnectionFactory _factory;
 

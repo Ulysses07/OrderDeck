@@ -3,7 +3,7 @@ using System.Globalization;
 using System.Windows.Data;
 using System.Windows.Media;
 
-namespace LiveDeck.App.Converters;
+namespace OrderDeck.App.Converters;
 
 /// <summary>true → soft red (rgba 80%); false → Transparent. Used for ListBoxItem backgrounds.</summary>
 public sealed class BlacklistToBrushConverter : IValueConverter

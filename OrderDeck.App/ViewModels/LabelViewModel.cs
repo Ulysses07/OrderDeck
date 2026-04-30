@@ -1,7 +1,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
-using LiveDeck.Core.Sales;
+using OrderDeck.Core.Sales;
 
-namespace LiveDeck.App.ViewModels;
+namespace OrderDeck.App.ViewModels;
 
 /// <summary>
 /// UI-side wrapper around <see cref="Label"/> for the print-queue panel. Exposes

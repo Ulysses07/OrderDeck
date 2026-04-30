@@ -2,10 +2,10 @@ using System.Net.Http.Json;
 using System.Threading.RateLimiting;
 using Hangfire;
 using Hangfire.MemoryStorage;
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Domain;
-using LiveDeck.LicenseServer.Services.Auth;
-using LiveDeck.LicenseServer.Services.Email;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Email;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -18,7 +18,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 
-namespace LiveDeck.LicenseServer.Tests.TestHelpers;
+namespace OrderDeck.LicenseServer.Tests.TestHelpers;
 
 public sealed class ApiFactory : WebApplicationFactory<Program>
 {
@@ -108,7 +108,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     {
         using var scope = Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-        var hasher = scope.ServiceProvider.GetRequiredService<LiveDeck.LicenseServer.Services.Auth.PasswordHasher>();
+        var hasher = scope.ServiceProvider.GetRequiredService<OrderDeck.LicenseServer.Services.Auth.PasswordHasher>();
 
         var existing = await db.AdminUsers.FirstOrDefaultAsync(a => a.Username == username);
         Guid id;
@@ -119,7 +119,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
         else
         {
             id = Guid.NewGuid();
-            db.AdminUsers.Add(new LiveDeck.LicenseServer.Domain.AdminUser
+            db.AdminUsers.Add(new OrderDeck.LicenseServer.Domain.AdminUser
             {
                 Id = id,
                 Username = username,

@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace LiveDeck.Core.Sales;
+namespace OrderDeck.Core.Sales;
 
 /// <summary>
 /// A live giveaway run during a stream. While active, viewers who type the

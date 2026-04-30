@@ -1,9 +1,9 @@
 using System;
 using System.Globalization;
 using System.Windows.Data;
-using LiveDeck.Core.Storage.Repositories;
+using OrderDeck.Core.Storage.Repositories;
 
-namespace LiveDeck.App.Converters;
+namespace OrderDeck.App.Converters;
 
 /// <summary>Maps a CustomerGiveawayRow to a localized status text.
 /// IsWinner → "🏆 Kazandı"; cancelled giveaway → "İptal edildi"; otherwise "Katıldı".</summary>

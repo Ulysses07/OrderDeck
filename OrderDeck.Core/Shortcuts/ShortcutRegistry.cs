@@ -1,8 +1,8 @@
 using System.Collections.Generic;
 using System.Linq;
-using LiveDeck.Core.Settings;
+using OrderDeck.Core.Settings;
 
-namespace LiveDeck.Core.Shortcuts;
+namespace OrderDeck.Core.Shortcuts;
 
 /// <summary>
 /// Komut ↔ kısayol haritasının runtime sahibi. Defaults sabit; UseCustom flag'i true ise

@@ -1,8 +1,8 @@
 using FluentAssertions;
-using LiveDeck.Core.Customers;
+using OrderDeck.Core.Customers;
 using Xunit;
 
-namespace LiveDeck.Tests.Customers;
+namespace OrderDeck.Tests.Customers;
 
 public class PhoneNormalizerTests
 {

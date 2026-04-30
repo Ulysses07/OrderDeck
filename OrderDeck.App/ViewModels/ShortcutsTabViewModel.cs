@@ -4,10 +4,10 @@ using System.Linq;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using LiveDeck.App.Shortcuts;
-using LiveDeck.Core.Shortcuts;
+using OrderDeck.App.Shortcuts;
+using OrderDeck.Core.Shortcuts;
 
-namespace LiveDeck.App.ViewModels;
+namespace OrderDeck.App.ViewModels;
 
 public sealed partial class ShortcutsTabViewModel : ViewModelBase
 {

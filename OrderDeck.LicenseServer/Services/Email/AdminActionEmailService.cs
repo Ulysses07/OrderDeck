@@ -1,4 +1,4 @@
-namespace LiveDeck.LicenseServer.Services.Email;
+namespace OrderDeck.LicenseServer.Services.Email;
 
 /// <summary>
 /// Customer'a admin işlemleri sonrası bilgilendirme emaili gönderir

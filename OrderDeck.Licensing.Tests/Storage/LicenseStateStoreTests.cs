@@ -1,8 +1,8 @@
 using FluentAssertions;
-using LiveDeck.Licensing.Storage;
+using OrderDeck.Licensing.Storage;
 using Xunit;
 
-namespace LiveDeck.Licensing.Tests.Storage;
+namespace OrderDeck.Licensing.Tests.Storage;
 
 public sealed class LicenseStateStoreTests : IDisposable
 {
@@ -11,7 +11,7 @@ public sealed class LicenseStateStoreTests : IDisposable
 
     public LicenseStateStoreTests()
     {
-        _dir = Path.Combine(Path.GetTempPath(), "LiveDeck.Licensing.Tests", Guid.NewGuid().ToString("N"));
+        _dir = Path.Combine(Path.GetTempPath(), "OrderDeck.Licensing.Tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_dir);
         _store = new LicenseStateStore(new EncryptedStore(), Path.Combine(_dir, "license.dat"));
     }

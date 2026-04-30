@@ -2,7 +2,7 @@ using System;
 using System.Globalization;
 using System.Windows.Data;
 
-namespace LiveDeck.App.Converters;
+namespace OrderDeck.App.Converters;
 
 /// <summary>UNIX-seconds long? → "yyyy-MM-dd HH:mm" local string. Null → "".</summary>
 public sealed class UnixToDateConverter : IValueConverter

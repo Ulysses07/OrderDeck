@@ -1,4 +1,4 @@
-namespace LiveDeck.Licensing.Api.Models;
+namespace OrderDeck.Licensing.Api.Models;
 
 public sealed record SlotInfoDto(int Used, int Total, bool ThisDeviceActive);
 

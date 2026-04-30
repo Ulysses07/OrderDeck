@@ -1,8 +1,8 @@
 using FluentAssertions;
-using LiveDeck.Licensing.Trial;
+using OrderDeck.Licensing.Trial;
 using Xunit;
 
-namespace LiveDeck.Licensing.Tests.Trial;
+namespace OrderDeck.Licensing.Tests.Trial;
 
 public class TrialHmacTests
 {

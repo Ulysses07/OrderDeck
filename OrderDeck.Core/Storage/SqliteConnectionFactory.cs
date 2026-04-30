@@ -1,7 +1,7 @@
 using System.Data;
 using Microsoft.Data.Sqlite;
 
-namespace LiveDeck.Core.Storage;
+namespace OrderDeck.Core.Storage;
 
 public sealed class SqliteConnectionFactory : IDbConnectionFactory
 {

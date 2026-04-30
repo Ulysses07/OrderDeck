@@ -1,11 +1,11 @@
-using LiveDeck.Core.Settings;
-using LiveDeck.Core.Storage.Repositories;
-using LiveDeck.Core.Time;
-using LiveDeck.Licensing.Api;
-using LiveDeck.Licensing.Api.Models;
+using OrderDeck.Core.Settings;
+using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Core.Time;
+using OrderDeck.Licensing.Api;
+using OrderDeck.Licensing.Api.Models;
 using Microsoft.Extensions.Logging;
 
-namespace LiveDeck.App.Services.IntakeForm;
+namespace OrderDeck.App.Services.IntakeForm;
 
 /// <summary>
 /// Pulls new IntakeFormSubmission rows from the license server, upserts each

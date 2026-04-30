@@ -23,6 +23,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\LiveDeck.LicenseServer\LiveDeck.LicenseServer.csproj" />
+    <ProjectReference Include="..\OrderDeck.LicenseServer\OrderDeck.LicenseServer.csproj" />
   </ItemGroup>
 </Project>

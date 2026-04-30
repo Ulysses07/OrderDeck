@@ -1,11 +1,11 @@
 using System;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
-using LiveDeck.Core.Sales;
-using LiveDeck.Core.Storage.Repositories;
-using LiveDeck.Core.Time;
+using OrderDeck.Core.Sales;
+using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Core.Time;
 
-namespace LiveDeck.App.ViewModels;
+namespace OrderDeck.App.ViewModels;
 
 /// <summary>
 /// While a giveaway is active, drives the live banner shown in MainShell instead of the

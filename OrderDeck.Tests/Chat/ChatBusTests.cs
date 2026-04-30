@@ -1,10 +1,10 @@
 using System;
 using System.Collections.Generic;
 using FluentAssertions;
-using LiveDeck.Core.Chat;
+using OrderDeck.Core.Chat;
 using Xunit;
 
-namespace LiveDeck.Tests.Chat;
+namespace OrderDeck.Tests.Chat;
 
 public class ChatBusTests
 {

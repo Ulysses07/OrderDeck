@@ -1,12 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using LiveDeck.Core.Chat;
-using LiveDeck.Core.Customers;
-using LiveDeck.Core.Storage.Repositories;
-using LiveDeck.Core.Time;
+using OrderDeck.Core.Chat;
+using OrderDeck.Core.Customers;
+using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Core.Time;
 
-namespace LiveDeck.Core.Sales;
+namespace OrderDeck.Core.Sales;
 
 public sealed class GiveawayService
 {

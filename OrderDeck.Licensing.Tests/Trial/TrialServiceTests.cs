@@ -1,12 +1,12 @@
 using FluentAssertions;
-using LiveDeck.Licensing;
-using LiveDeck.Licensing.Tests.TestHelpers;
-using LiveDeck.Licensing.Trial;
+using OrderDeck.Licensing;
+using OrderDeck.Licensing.Tests.TestHelpers;
+using OrderDeck.Licensing.Trial;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
 
-namespace LiveDeck.Licensing.Tests.Trial;
+namespace OrderDeck.Licensing.Tests.Trial;
 
 public class TrialServiceTests
 {

@@ -2,17 +2,17 @@ using System.Text;
 using System.Threading.RateLimiting;
 using Hangfire;
 using Hangfire.SqlServer;
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Services.Auth;
-using LiveDeck.LicenseServer.Services.Email;
-using LiveDeck.LicenseServer.Services.IntakeForm;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Email;
+using OrderDeck.LicenseServer.Services.IntakeForm;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 
-namespace LiveDeck.LicenseServer;
+namespace OrderDeck.LicenseServer;
 
 public class Program
 {
@@ -32,12 +32,12 @@ public class Program
         builder.Services.AddSingleton<PasswordHasher>();
         builder.Services.AddSingleton<JwtTokenService>();
         builder.Services.AddScoped<EmailConfirmationService>();
-        builder.Services.AddScoped<LiveDeck.LicenseServer.Services.Licensing.LicenseIssuer>();
-        builder.Services.AddScoped<LiveDeck.LicenseServer.Services.Licensing.LicenseValidator>();
-        builder.Services.AddScoped<LiveDeck.LicenseServer.Services.Licensing.ActivationManager>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Licensing.LicenseIssuer>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Licensing.LicenseValidator>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Licensing.ActivationManager>();
         builder.Services.AddHttpContextAccessor();
-        builder.Services.AddScoped<LiveDeck.LicenseServer.Services.Audit.IAuditService,
-                                    LiveDeck.LicenseServer.Services.Audit.AuditService>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Audit.IAuditService,
+                                    OrderDeck.LicenseServer.Services.Audit.AuditService>();
 
         // Email sender selection
         var emailProvider = builder.Configuration["Email:Provider"] ?? "smtp";
@@ -68,7 +68,7 @@ public class Program
                 o.Cookie.HttpOnly = true;
                 o.Cookie.SameSite = SameSiteMode.Lax;
                 o.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
-                o.Cookie.Name = "LiveDeckAdmin";
+                o.Cookie.Name = "OrderDeckAdmin";
             });
 
         builder.Services.AddOptions<JwtBearerOptions>("Bearer-Customer")

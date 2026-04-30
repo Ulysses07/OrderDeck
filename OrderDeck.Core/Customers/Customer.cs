@@ -1,4 +1,4 @@
-namespace LiveDeck.Core.Customers;
+namespace OrderDeck.Core.Customers;
 
 public sealed record Customer(
     string Id,

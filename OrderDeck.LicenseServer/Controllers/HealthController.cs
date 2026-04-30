@@ -1,6 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 
-namespace LiveDeck.LicenseServer.Controllers;
+namespace OrderDeck.LicenseServer.Controllers;
 
 [ApiController]
 [Route("api/v1/[controller]")]

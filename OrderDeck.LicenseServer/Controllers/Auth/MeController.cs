@@ -1,11 +1,11 @@
 using System.Security.Claims;
-using LiveDeck.LicenseServer.Data;
-using LiveDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Services.Auth;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
-namespace LiveDeck.LicenseServer.Controllers.Auth;
+namespace OrderDeck.LicenseServer.Controllers.Auth;
 
 [ApiController]
 [Route("api/v1/me")]

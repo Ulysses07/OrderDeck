@@ -1,10 +1,10 @@
 using System;
 using System.IO;
 using FluentAssertions;
-using LiveDeck.Core.Settings;
+using OrderDeck.Core.Settings;
 using Xunit;
 
-namespace LiveDeck.Tests.Settings;
+namespace OrderDeck.Tests.Settings;
 
 public class SettingsStoreTests
 {

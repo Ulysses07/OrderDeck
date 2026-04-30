@@ -1,8 +1,8 @@
 using System.Windows;
-using LiveDeck.App.Views;
-using LiveDeck.Core.Storage.Repositories;
+using OrderDeck.App.Views;
+using OrderDeck.Core.Storage.Repositories;
 
-namespace LiveDeck.App.Services;
+namespace OrderDeck.App.Services;
 
 public sealed class WpfDialogService : IDialogService
 {

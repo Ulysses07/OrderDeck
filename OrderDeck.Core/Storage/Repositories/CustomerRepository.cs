@@ -2,9 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Dapper;
-using LiveDeck.Core.Customers;
+using OrderDeck.Core.Customers;
 
-namespace LiveDeck.Core.Storage.Repositories;
+namespace OrderDeck.Core.Storage.Repositories;
 
 public sealed class CustomerRepository
 {

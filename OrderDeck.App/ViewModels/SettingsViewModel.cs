@@ -8,13 +8,13 @@ using System.Runtime.Versioning;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using LiveDeck.Core.Sales;
-using LiveDeck.Core.Settings;
-using LiveDeck.Labeling;
+using OrderDeck.Core.Sales;
+using OrderDeck.Core.Settings;
+using OrderDeck.Labeling;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace LiveDeck.App.ViewModels;
+namespace OrderDeck.App.ViewModels;
 
 [SupportedOSPlatform("windows")]
 public sealed partial class SettingsViewModel : ViewModelBase

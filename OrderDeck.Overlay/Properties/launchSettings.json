@@ -1,6 +1,6 @@
 {
   "profiles": {
-    "LiveDeck.Overlay": {
+    "OrderDeck.Overlay": {
       "commandName": "Project",
       "launchBrowser": true,
       "environmentVariables": {

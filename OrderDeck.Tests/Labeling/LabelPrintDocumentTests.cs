@@ -1,9 +1,9 @@
 using FluentAssertions;
-using LiveDeck.Core.Settings;
-using LiveDeck.Labeling;
+using OrderDeck.Core.Settings;
+using OrderDeck.Labeling;
 using Xunit;
 
-namespace LiveDeck.Tests.Labeling;
+namespace OrderDeck.Tests.Labeling;
 
 public class LabelPrintDocumentTests
 {

@@ -1,4 +1,4 @@
-namespace LiveDeck.Core.Time;
+namespace OrderDeck.Core.Time;
 
 public interface IClock
 {
