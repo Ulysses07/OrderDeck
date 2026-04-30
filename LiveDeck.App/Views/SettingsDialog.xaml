@@ -200,6 +200,36 @@
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
+
+            <!-- Ödeme tab -->
+            <TabItem Header="Ödeme">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <GroupBox Header="WhatsApp Ödeme İsteme" Margin="12,12,12,12" Padding="8"
+                              Foreground="White">
+                        <StackPanel>
+                            <Label Content="Mesaj Şablonu" Margin="0,0,0,2" Foreground="White"/>
+                            <TextBox Text="{Binding PaymentTemplate, UpdateSourceTrigger=PropertyChanged}"
+                                     AcceptsReturn="True" TextWrapping="Wrap"
+                                     MinHeight="120" MaxHeight="200"
+                                     VerticalScrollBarVisibility="Auto"
+                                     FontFamily="Consolas" FontSize="12"/>
+                            <TextBlock FontSize="11" Foreground="#FFAAAAAA" Margin="0,2,0,8"
+                                       TextWrapping="Wrap">
+                                Placeholder: {ad} {tutar} {tarih} {iban} {hesap_sahibi} {papara}
+                            </TextBlock>
+
+                            <Label Content="IBAN" Margin="0,4,0,2" Foreground="White"/>
+                            <TextBox Text="{Binding Iban, UpdateSourceTrigger=PropertyChanged}"/>
+
+                            <Label Content="Hesap Sahibi" Margin="0,4,0,2" Foreground="White"/>
+                            <TextBox Text="{Binding AccountHolder, UpdateSourceTrigger=PropertyChanged}"/>
+
+                            <Label Content="Papara/Ziraat Numarası (opsiyonel)" Margin="0,4,0,2" Foreground="White"/>
+                            <TextBox Text="{Binding Papara, UpdateSourceTrigger=PropertyChanged}"/>
+                        </StackPanel>
+                    </GroupBox>
+                </ScrollViewer>
+            </TabItem>
         </TabControl>
 
         <!-- Validation error -->
