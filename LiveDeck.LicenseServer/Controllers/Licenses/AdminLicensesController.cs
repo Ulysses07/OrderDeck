@@ -1,4 +1,5 @@
 using LiveDeck.LicenseServer.Data;
+using LiveDeck.LicenseServer.Services.Email;
 using LiveDeck.LicenseServer.Services.Licensing;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -13,11 +14,13 @@ public sealed class AdminLicensesController : ControllerBase
 {
     private readonly LicenseDbContext _db;
     private readonly LicenseIssuer _issuer;
+    private readonly AdminActionEmailService _adminEmail;
 
-    public AdminLicensesController(LicenseDbContext db, LicenseIssuer issuer)
+    public AdminLicensesController(LicenseDbContext db, LicenseIssuer issuer, AdminActionEmailService adminEmail)
     {
         _db = db;
         _issuer = issuer;
+        _adminEmail = adminEmail;
     }
 
     public sealed record IssueRequest(string CustomerEmail, string SkuCode,
@@ -30,6 +33,8 @@ public sealed class AdminLicensesController : ControllerBase
         {
             var result = await _issuer.IssueAsync(
                 new(req.CustomerEmail, req.SkuCode, req.DurationDaysOverride, req.SlotsOverride), ct);
+            var customerId = await _db.Customers.Where(c => c.Email == req.CustomerEmail).Select(c => c.Id).FirstAsync(ct);
+            await _adminEmail.NotifyLicenseIssuedAsync(customerId, result.LicenseKey, req.SkuCode, result.ExpiresAt, ct);
             return CreatedAtAction(nameof(Get), new { key = result.LicenseKey },
                 new { licenseKey = result.LicenseKey, expiresAt = result.ExpiresAt });
         }
@@ -81,6 +86,7 @@ public sealed class AdminLicensesController : ControllerBase
         l.RevokedAt = DateTimeOffset.UtcNow;
         l.RevokeReason = req.Reason;
         await _db.SaveChangesAsync(ct);
+        await _adminEmail.NotifyLicenseRevokedAsync(l.CustomerId, l.LicenseKey, req.Reason, ct);
         return NoContent();
     }
 
@@ -94,6 +100,7 @@ public sealed class AdminLicensesController : ControllerBase
         if (l is null) return NotFound();
         l.ExpiresAt = l.ExpiresAt.AddDays(req.AdditionalDays);
         await _db.SaveChangesAsync(ct);
+        await _adminEmail.NotifyLicenseExtendedAsync(l.CustomerId, l.LicenseKey, l.ExpiresAt, req.AdditionalDays, ct);
         return Ok(new { newExpiresAt = l.ExpiresAt });
     }
 

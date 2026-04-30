@@ -9,6 +9,7 @@ public sealed class Customer
     public DateTimeOffset? EmailConfirmedAt { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public string? Notes { get; set; }
+    public bool Unsubscribed { get; set; }   // Phase 4e
 
     public ICollection<License> Licenses { get; } = new List<License>();
 }

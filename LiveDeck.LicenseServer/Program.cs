@@ -1,5 +1,7 @@
 using System.Text;
 using System.Threading.RateLimiting;
+using Hangfire;
+using Hangfire.SqlServer;
 using LiveDeck.LicenseServer.Data;
 using LiveDeck.LicenseServer.Services.Auth;
 using LiveDeck.LicenseServer.Services.Email;
@@ -42,6 +44,12 @@ public class Program
             builder.Services.AddSingleton<IEmailSender, DiskEmailSender>();
         else
             builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
+
+        builder.Services.AddSingleton<UnsubscribeTokenSigner>();
+        builder.Services.AddScoped<EmailSendCoordinator>();
+        builder.Services.AddScoped<ReminderJobs>();
+        builder.Services.AddScoped<PasswordResetService>();
+        builder.Services.AddScoped<AdminActionEmailService>();
 
         // JWT auth — two schemes (use IOptions so tests can override Jwt:SecretKey via config)
         builder.Services.AddAuthentication()
@@ -129,12 +137,27 @@ public class Program
         builder.Services.AddCors(opt =>
             opt.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
 
+        builder.Services.AddHangfire(cfg => cfg
+            .UseSimpleAssemblyNameTypeSerializer()
+            .UseRecommendedSerializerSettings()
+            .UseSqlServerStorage(builder.Configuration.GetConnectionString("LicenseDb"),
+                new SqlServerStorageOptions
+                {
+                    CommandBatchMaxTimeout = TimeSpan.FromMinutes(5),
+                    SlidingInvisibilityTimeout = TimeSpan.FromMinutes(5),
+                    QueuePollInterval = TimeSpan.Zero,
+                    UseRecommendedIsolationLevel = true,
+                    DisableGlobalLocks = true
+                }));
+        builder.Services.AddHangfireServer();
+
         builder.Services.AddControllers();
         builder.Services.AddRazorPages(opt =>
         {
             opt.Conventions.AuthorizeFolder("/Admin", "AdminOnly");
             opt.Conventions.AllowAnonymousToPage("/Admin/Login");
             opt.Conventions.AllowAnonymousToPage("/Admin/Logout");
+            opt.Conventions.AllowAnonymousToFolder("/Public");
         });
         builder.Services.AddEndpointsApiExplorer();
         builder.Services.AddSwaggerGen();
@@ -149,6 +172,19 @@ public class Program
             await SeedAdminAsync(db, app.Configuration);
         }
 
+        // Hangfire recurring jobs — production only (testte ApiFactory MemoryStorage kullanır, recurring tetiklenmesin)
+        if (!app.Environment.IsEnvironment("Testing"))
+        {
+            using var scope = app.Services.CreateScope();
+            var manager = scope.ServiceProvider.GetRequiredService<IRecurringJobManager>();
+            var cron = builder.Configuration["EmailReminder:DailyJobCron"] ?? "0 9 * * *";
+            manager.AddOrUpdate<ReminderJobs>("renewal-14d", j => j.SendRenewal14dAsync(CancellationToken.None), cron);
+            manager.AddOrUpdate<ReminderJobs>("renewal-7d",  j => j.SendRenewal7dAsync(CancellationToken.None), cron);
+            manager.AddOrUpdate<ReminderJobs>("renewal-3d",  j => j.SendRenewal3dAsync(CancellationToken.None), cron);
+            manager.AddOrUpdate<ReminderJobs>("renewal-0d",  j => j.SendRenewal0dAsync(CancellationToken.None), cron);
+            manager.AddOrUpdate<ReminderJobs>("expired-1d",  j => j.SendExpired1dAsync(CancellationToken.None), cron);
+        }
+
         if (app.Environment.IsDevelopment())
         {
             app.UseSwagger();
@@ -161,6 +197,10 @@ public class Program
         app.UseRateLimiter();
         app.UseAuthentication();
         app.UseAuthorization();
+        app.UseHangfireDashboard("/hangfire", new DashboardOptions
+        {
+            Authorization = new[] { new HangfireDashboardAuthFilter() }
+        });
         app.MapControllers();
         app.MapRazorPages();
 

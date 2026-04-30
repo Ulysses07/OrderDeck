@@ -14,6 +14,8 @@ public sealed class LicenseDbContext : DbContext
     public DbSet<Activation> Activations => Set<Activation>();
     public DbSet<EmailConfirmationToken> EmailConfirmationTokens => Set<EmailConfirmationToken>();
     public DbSet<AuditLogEntry> AuditLogs => Set<AuditLogEntry>();
+    public DbSet<EmailLog> EmailLogs => Set<EmailLog>();
+    public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -87,6 +89,24 @@ public sealed class LicenseDbContext : DbContext
             b.HasIndex(a => a.OccurredAt);
             b.HasIndex(a => new { a.AdminId, a.OccurredAt });
             b.HasIndex(a => new { a.TargetType, a.TargetId });
+        });
+
+        mb.Entity<EmailLog>(b =>
+        {
+            b.HasKey(e => e.Id);
+            b.Property(e => e.TemplateKey).HasMaxLength(64).IsRequired();
+            b.Property(e => e.ContextKey).HasMaxLength(64);
+            b.Property(e => e.Error).HasMaxLength(2000);
+            b.HasIndex(e => new { e.CustomerId, e.TemplateKey, e.ContextKey });
+            b.HasIndex(e => e.SentAt);
+        });
+
+        mb.Entity<PasswordResetToken>(b =>
+        {
+            b.HasKey(t => t.Id);
+            b.HasOne(t => t.Customer).WithMany()
+                .HasForeignKey(t => t.CustomerId).OnDelete(DeleteBehavior.Cascade);
+            b.HasIndex(t => new { t.CustomerId, t.UsedAt });
         });
 
         // Seed SKUs
