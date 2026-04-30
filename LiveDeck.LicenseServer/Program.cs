@@ -125,6 +125,14 @@ public class Program
                         PermitLimit = 3,
                         Window = TimeSpan.FromMinutes(1)
                     }));
+            opt.AddPolicy("intake-form-submit", ctx =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                    factory: _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = int.TryParse(Environment.GetEnvironmentVariable("LIVEDECK_INTAKE_RATELIMIT_PER_HOUR"), out var n) ? n : 5,
+                        Window = TimeSpan.FromHours(1)
+                    }));
             opt.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
                 RateLimitPartition.GetFixedWindowLimiter(
                     partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
