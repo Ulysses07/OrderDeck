@@ -16,6 +16,8 @@ public sealed class LicenseDbContext : DbContext
     public DbSet<AuditLogEntry> AuditLogs => Set<AuditLogEntry>();
     public DbSet<EmailLog> EmailLogs => Set<EmailLog>();
     public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
+    public DbSet<IntakeFormConfig> IntakeFormConfigs => Set<IntakeFormConfig>();
+    public DbSet<IntakeFormSubmission> IntakeFormSubmissions => Set<IntakeFormSubmission>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -107,6 +109,32 @@ public sealed class LicenseDbContext : DbContext
             b.HasOne(t => t.Customer).WithMany()
                 .HasForeignKey(t => t.CustomerId).OnDelete(DeleteBehavior.Cascade);
             b.HasIndex(t => new { t.CustomerId, t.UsedAt });
+        });
+
+        mb.Entity<IntakeFormConfig>(b =>
+        {
+            b.HasKey(c => c.Id);
+            b.HasOne(c => c.Customer).WithOne()
+                .HasForeignKey<IntakeFormConfig>(c => c.CustomerId)
+                .OnDelete(DeleteBehavior.Cascade);
+            b.Property(c => c.Slug).HasMaxLength(32).IsRequired();
+            b.HasIndex(c => c.Slug).IsUnique();
+            b.Property(c => c.WhatsAppPhone).HasMaxLength(20).IsRequired();
+            b.Property(c => c.CustomTitle).HasMaxLength(100);
+        });
+
+        mb.Entity<IntakeFormSubmission>(b =>
+        {
+            b.HasKey(s => s.Id);
+            b.HasOne(s => s.Config).WithMany()
+                .HasForeignKey(s => s.IntakeFormConfigId)
+                .OnDelete(DeleteBehavior.Cascade);
+            b.Property(s => s.Username).HasMaxLength(64).IsRequired();
+            b.Property(s => s.FullName).HasMaxLength(200).IsRequired();
+            b.Property(s => s.Address).HasMaxLength(500).IsRequired();
+            b.Property(s => s.IpAddress).HasMaxLength(64);
+            b.Property(s => s.UserAgent).HasMaxLength(500);
+            b.HasIndex(s => new { s.IntakeFormConfigId, s.SubmittedAt });
         });
 
         // Seed SKUs
