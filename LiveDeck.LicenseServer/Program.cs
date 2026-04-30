@@ -5,6 +5,7 @@ using Hangfire.SqlServer;
 using LiveDeck.LicenseServer.Data;
 using LiveDeck.LicenseServer.Services.Auth;
 using LiveDeck.LicenseServer.Services.Email;
+using LiveDeck.LicenseServer.Services.IntakeForm;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
@@ -50,6 +51,7 @@ public class Program
         builder.Services.AddScoped<ReminderJobs>();
         builder.Services.AddScoped<PasswordResetService>();
         builder.Services.AddScoped<AdminActionEmailService>();
+        builder.Services.AddScoped<IntakeFormService>();
 
         // JWT auth — two schemes (use IOptions so tests can override Jwt:SecretKey via config)
         builder.Services.AddAuthentication()
