@@ -175,6 +175,9 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<ILogger<IntakeFormSyncService>>()));
         services.AddHostedService<IntakeFormSyncHostedService>();
 
+        // Intake form settings (Phase 4f Task 10)
+        services.AddTransient<ViewModels.IntakeFormSettingsViewModel>();
+
         // Licensing dialogs (Phase 4b)
         services.AddTransient<ViewModels.LoginDialogViewModel>();
         services.AddTransient<Views.LoginDialog>();

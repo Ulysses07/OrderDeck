@@ -49,17 +49,21 @@ public sealed partial class SettingsViewModel : ViewModelBase
     public bool Saved { get; private set; }
 
     public ShortcutsTabViewModel ShortcutsTab { get; }
+    public IntakeFormSettingsViewModel IntakeForm { get; }
 
-    public SettingsViewModel(AppSettings settings, SettingsStore store, ShortcutsTabViewModel shortcutsTab)
+    public SettingsViewModel(AppSettings settings, SettingsStore store, ShortcutsTabViewModel shortcutsTab,
+        IntakeFormSettingsViewModel intakeForm)
     {
         _liveSettings = settings;
         _store = store;
         _originalOverlayPort = settings.OverlayPort;
         ShortcutsTab = shortcutsTab;
+        IntakeForm = intakeForm;
 
         LoadFromSettings();
         LoadInstalledPrinters();
         LoadInstalledFonts();
+        _ = IntakeForm.LoadAsync();
     }
 
     private void LoadFromSettings()
