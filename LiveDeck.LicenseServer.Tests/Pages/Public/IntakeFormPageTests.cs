@@ -114,7 +114,8 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             ["Slug"] = slug,
             ["Input.Username"] = "bilalcanli",
             ["Input.FullName"] = "Bilal Canlı",
-            ["Input.Address"] = "Atatürk Cad. No:12 İstanbul"
+            ["Input.Address"] = "Atatürk Cad. No:12 İstanbul",
+            ["Input.Phone"] = "5551234567"
         });
         var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
 
