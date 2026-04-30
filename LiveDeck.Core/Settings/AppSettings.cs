@@ -22,4 +22,19 @@ public sealed class AppSettings
 
     /// <summary>Phase 4f: last intake form submission cursor (max SubmittedAt synced).</summary>
     public DateTimeOffset? LastIntakeFormSync { get; set; }
+
+    /// <summary>Phase 4g: WhatsApp ödeme isteme yapılandırması.</summary>
+    public PaymentSettings Payment { get; set; } = new();
+}
+
+/// <summary>Phase 4g: WhatsApp ödeme istemleri için Settings bloğu.</summary>
+public sealed class PaymentSettings
+{
+    public string WhatsAppMessageTemplate { get; set; } =
+        "Merhaba {ad}, {tarih} yayınımızdan toplam {tutar} TL ödemeniz bekleniyor.\n\n" +
+        "IBAN: {iban}\nHesap Sahibi: {hesap_sahibi}\nPapara: {papara}\n\nTeşekkürler!";
+
+    public string Iban { get; set; } = "";
+    public string AccountHolder { get; set; } = "";
+    public string Papara { get; set; } = "";
 }
