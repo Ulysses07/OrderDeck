@@ -15,14 +15,16 @@ public sealed class AuthController : ControllerBase
     private readonly PasswordHasher _hasher;
     private readonly EmailConfirmationService _confirm;
     private readonly JwtTokenService _jwt;
+    private readonly PasswordResetService _resetService;
 
     public AuthController(LicenseDbContext db, PasswordHasher hasher,
-        EmailConfirmationService confirm, JwtTokenService jwt)
+        EmailConfirmationService confirm, JwtTokenService jwt, PasswordResetService resetService)
     {
         _db = db;
         _hasher = hasher;
         _confirm = confirm;
         _jwt = jwt;
+        _resetService = resetService;
     }
 
     public sealed record RegisterRequest(string Email, string Name, string Password);
@@ -98,5 +100,31 @@ public sealed class AuthController : ControllerBase
 
         var (token, expiresAt) = _jwt.IssueCustomerToken(customer.Id, customer.Email);
         return Ok(new LoginResponse(token, expiresAt));
+    }
+
+    public sealed record PasswordResetRequestBody(string Email);
+
+    [HttpPost("password-reset-request")]
+    [EnableRateLimiting("auth-register")]
+    public async Task<IActionResult> PasswordResetRequest([FromBody] PasswordResetRequestBody req, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(req.Email)) return StatusCode(202);
+        await _resetService.RequestResetAsync(req.Email, ct);
+        return StatusCode(202);
+    }
+
+    public sealed record PasswordResetCompleteRequest(Guid Token, string NewPassword);
+
+    [HttpPost("password-reset")]
+    [EnableRateLimiting("auth-register")]
+    public async Task<IActionResult> PasswordResetComplete([FromBody] PasswordResetCompleteRequest req, CancellationToken ct)
+    {
+        var result = await _resetService.CompleteResetAsync(req.Token, req.NewPassword, ct);
+        return result switch
+        {
+            PasswordResetResult.Success => NoContent(),
+            PasswordResetResult.PasswordTooShort => Problem(title: "password-too-short", detail: "En az 8 karakter olmalı.", statusCode: 400),
+            _ => Problem(title: "token-invalid", statusCode: 400)
+        };
     }
 }

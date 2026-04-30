@@ -48,6 +48,7 @@ public class Program
         builder.Services.AddSingleton<UnsubscribeTokenSigner>();
         builder.Services.AddScoped<EmailSendCoordinator>();
         builder.Services.AddScoped<ReminderJobs>();
+        builder.Services.AddScoped<PasswordResetService>();
 
         // JWT auth — two schemes (use IOptions so tests can override Jwt:SecretKey via config)
         builder.Services.AddAuthentication()
