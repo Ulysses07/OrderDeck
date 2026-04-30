@@ -20,7 +20,7 @@ public static class SlugValidator
     {
         "admin", "api", "hangfire", "me", "r", "unsubscribe",
         "password-reset", "auth", "login", "logout", "null",
-        "undefined", "app", "assets", "static", "livedeck"
+        "undefined", "app", "assets", "static", "orderdeck"
     };
 
     public static SlugValidationResult Validate(string? slug)

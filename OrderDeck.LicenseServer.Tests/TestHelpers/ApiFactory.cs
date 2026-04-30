@@ -35,7 +35,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             cfg.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["Jwt:SecretKey"] = "test-secret-key-must-be-at-least-32-bytes-long-for-hs256",
-                ["Jwt:Issuer"] = "livedeck-license-server",
+                ["Jwt:Issuer"] = "orderdeck-license-server",
                 ["Email:Provider"] = "disk",
                 ["App:PublicBaseUrl"] = "https://test.local",
             });

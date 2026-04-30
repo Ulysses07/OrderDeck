@@ -96,7 +96,7 @@ public sealed partial class StreamReportViewModel : ViewModelBase
         var dlg = new SaveFileDialog
         {
             Filter = "Excel Workbook|*.xlsx",
-            FileName = $"livedeck-rapor-{DateTime.Now:yyyy-MM-dd-HHmm}.xlsx",
+            FileName = $"orderdeck-rapor-{DateTime.Now:yyyy-MM-dd-HHmm}.xlsx",
             InitialDirectory = AppPaths.ReportsFolder
         };
         if (dlg.ShowDialog() != true) return;

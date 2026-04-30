@@ -18,7 +18,7 @@ public class AppPathsTests
         AppPaths.DatabaseFile
             .Should().Contain("OrderDeck")
             .And.Contain("data")
-            .And.EndWith("livedeck.db");
+            .And.EndWith("orderdeck.db");
     }
 
     [Fact]

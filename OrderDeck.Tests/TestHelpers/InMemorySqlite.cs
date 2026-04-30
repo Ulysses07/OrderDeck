@@ -15,7 +15,7 @@ public sealed class InMemorySqlite : IDbConnectionFactory, System.IDisposable
 
     public InMemorySqlite()
     {
-        var name = $"livedeck-test-{System.Guid.NewGuid():N}";
+        var name = $"orderdeck-test-{System.Guid.NewGuid():N}";
         _connectionString = $"Data Source={name};Mode=Memory;Cache=Shared;Foreign Keys=true";
         _keepAlive = new SqliteConnection(_connectionString);
         _keepAlive.Open();

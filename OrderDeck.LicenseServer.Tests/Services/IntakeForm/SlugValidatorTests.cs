@@ -53,7 +53,7 @@ public class SlugValidatorTests
     [InlineData("auth")]
     [InlineData("login")]
     [InlineData("logout")]
-    [InlineData("livedeck")]
+    [InlineData("orderdeck")]
     public void Validate_returns_Reserved_for_blacklisted_slugs(string slug)
     {
         SlugValidator.Validate(slug).Should().Be(SlugValidationResult.Reserved);

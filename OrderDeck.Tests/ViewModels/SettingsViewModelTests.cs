@@ -19,7 +19,7 @@ public class SettingsViewModel_PaymentTests : IDisposable
 
     public SettingsViewModel_PaymentTests()
     {
-        _path = Path.Combine(Path.GetTempPath(), $"livedeck-svm-{Guid.NewGuid():N}.json");
+        _path = Path.Combine(Path.GetTempPath(), $"orderdeck-svm-{Guid.NewGuid():N}.json");
     }
 
     public void Dispose()

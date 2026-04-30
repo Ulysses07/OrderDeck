@@ -19,7 +19,7 @@ public static class AppPaths
     public static string ReportsFolder => Path.Combine(DocumentsRoot, "Reports");
     public static string BackupsFolder => Path.Combine(DocumentsRoot, "Backups");
 
-    public static string DatabaseFile => Path.Combine(DataFolder, "livedeck.db");
+    public static string DatabaseFile => Path.Combine(DataFolder, "orderdeck.db");
     public static string SettingsFile => Path.Combine(DocumentsRoot, "settings.json");
 
     public static string AuthFile => Path.Combine(DataFolder, "auth.dat");

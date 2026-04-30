@@ -22,7 +22,7 @@ public class HealthCheckTests : IClassFixture<ApiFactory>
         var body = await response.Content.ReadFromJsonAsync<HealthBody>();
         body.Should().NotBeNull();
         body!.status.Should().Be("ok");
-        body.service.Should().Be("livedeck-license-server");
+        body.service.Should().Be("orderdeck-license-server");
     }
 
     private sealed record HealthBody(string status, string service);

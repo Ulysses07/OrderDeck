@@ -12,7 +12,7 @@ public class ShortcutRegistryTests
     private static (ShortcutRegistry Registry, SettingsStore Store, string Path) Fx()
     {
         var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
-            $"livedeck-shortcut-test-{System.Guid.NewGuid():N}.json");
+            $"orderdeck-shortcut-test-{System.Guid.NewGuid():N}.json");
         var store = new SettingsStore(path);
         var registry = new ShortcutRegistry(store);
         return (registry, store, path);

@@ -17,7 +17,7 @@ public class PaymentRequestServiceTests : IDisposable
 
     public PaymentRequestServiceTests()
     {
-        _settingsPath = Path.Combine(Path.GetTempPath(), $"livedeck-pr-{Guid.NewGuid():N}.json");
+        _settingsPath = Path.Combine(Path.GetTempPath(), $"orderdeck-pr-{Guid.NewGuid():N}.json");
         _store = new SettingsStore(_settingsPath);
         _launcher = new FakeUrlLauncher();
     }

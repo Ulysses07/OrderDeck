@@ -38,7 +38,7 @@ public class StreamReportViewModel_OpenWhatsAppTests
         var labels = new LabelRepository(db);
         var giveaways = new GiveawayRepository(db);
         var launcher = new FakeUrlLauncher();
-        var settingsPath = Path.Combine(Path.GetTempPath(), $"livedeck-srvm-{Guid.NewGuid():N}.json");
+        var settingsPath = Path.Combine(Path.GetTempPath(), $"orderdeck-srvm-{Guid.NewGuid():N}.json");
         var settingsStore = new SettingsStore(settingsPath);
         settingsStore.Save(new AppSettings());
         var paymentService = new PaymentRequestService(settingsStore, new WhatsAppMessageBuilder(), launcher);

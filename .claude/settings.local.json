@@ -63,7 +63,10 @@
       "Bash(xargs -I {} rm -rf {})",
       "Bash(ls -d OrderDeck.* OrderDeck.*)",
       "Bash(find . -type d \\\\\\( -name \"obj\" -o -name \"bin\" \\\\\\) -not -path \"./.git/*\" -exec rm -rf {} + echo \"cleaned\")",
-      "Bash(find . -type d \\\\\\( -name \"obj\" -o -name \"bin\" \\\\\\) -not -path \"./.git/*\" -exec rm -rf {} + dotnet build OrderDeck.sln)"
+      "Bash(find . -type d \\\\\\( -name \"obj\" -o -name \"bin\" \\\\\\) -not -path \"./.git/*\" -exec rm -rf {} + dotnet build OrderDeck.sln)",
+      "Bash(grep -rn \"livedeck\\\\|LiveDeck\\\\\\\\\\\\\\\\\" --include=\"*.cs\" --include=\"*.xaml\" --include=\"*.cshtml\" --include=\"*.json\" --include=\"*.md\")",
+      "Bash(grep -rn \"livedeck\\\\|LiveDeck\\\\\\\\\\\\\\\\\" --include=\"*.cs\" --include=\"*.xaml\" --include=\"*.cshtml\" --include=\"*.json\")",
+      "Bash(xargs sed:*)"
     ]
   }
 }

@@ -40,7 +40,7 @@ public class CustomerSearchViewModelTests
         var clock = Mock.Of<IClock>(c => c.UnixNow() == 1L);
         var customerService = new CustomerService(customers, sessions, labels, clock);
         var launcher = new FakeUrlLauncher();
-        var settingsPath = Path.Combine(Path.GetTempPath(), $"livedeck-csvm-{Guid.NewGuid():N}.json");
+        var settingsPath = Path.Combine(Path.GetTempPath(), $"orderdeck-csvm-{Guid.NewGuid():N}.json");
         var settingsStore = new SettingsStore(settingsPath);
         settingsStore.Save(new AppSettings());
         var paymentService = new PaymentRequestService(settingsStore, new WhatsAppMessageBuilder(), launcher);

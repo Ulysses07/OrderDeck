@@ -9,7 +9,7 @@ namespace OrderDeck.Tests.Settings;
 public class SettingsStoreTests
 {
     private string CreateTempPath() =>
-        Path.Combine(Path.GetTempPath(), $"livedeck-test-{System.Guid.NewGuid():N}.json");
+        Path.Combine(Path.GetTempPath(), $"orderdeck-test-{System.Guid.NewGuid():N}.json");
 
     [Fact]
     public void Load_returns_defaults_when_file_missing()
@@ -64,7 +64,7 @@ public class SettingsStore_PaymentTests
     [Fact]
     public void Save_Then_Load_RoundTripsPaymentSettings()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"livedeck-test-{Guid.NewGuid():N}.json");
+        var path = Path.Combine(Path.GetTempPath(), $"orderdeck-test-{Guid.NewGuid():N}.json");
         try
         {
             var store = new SettingsStore(path);
@@ -90,7 +90,7 @@ public class SettingsStore_PaymentTests
     [Fact]
     public void Load_FreshFile_HasDefaultPaymentTemplate()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"livedeck-test-{Guid.NewGuid():N}.json");
+        var path = Path.Combine(Path.GetTempPath(), $"orderdeck-test-{Guid.NewGuid():N}.json");
         try
         {
             var store = new SettingsStore(path);

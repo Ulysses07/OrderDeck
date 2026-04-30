@@ -7,5 +7,5 @@ namespace OrderDeck.LicenseServer.Controllers;
 public sealed class HealthController : ControllerBase
 {
     [HttpGet]
-    public IActionResult Get() => Ok(new { status = "ok", service = "livedeck-license-server" });
+    public IActionResult Get() => Ok(new { status = "ok", service = "orderdeck-license-server" });
 }
