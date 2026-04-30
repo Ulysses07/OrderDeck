@@ -85,12 +85,55 @@ public sealed class LicenseApiClient
     public Task<HeartbeatResponse> HeartbeatAsync(HeartbeatRequest req, CancellationToken ct = default)
         => PostJsonExpectingJsonAsync<HeartbeatRequest, HeartbeatResponse>("/api/v1/licenses/heartbeat", req, ct);
 
+    // ─── Intake Form (Phase 4f) ───────────────────────────────────────
+
+    /// <summary>Returns null when no config is set yet (404 from server).</summary>
+    public async Task<IntakeFormConfigDto?> GetIntakeFormAsync(CancellationToken ct = default)
+    {
+        HttpResponseMessage resp;
+        try { resp = await _http.GetAsync("/api/v1/me/intake-form", ct); }
+        catch (HttpRequestException ex) { throw new LicenseApiNetworkException(ex.Message, ex); }
+        catch (TaskCanceledException ex) when (!ct.IsCancellationRequested) { throw new LicenseApiNetworkException("timeout", ex); }
+
+        using (resp)
+        {
+            if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) return null;
+            if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
+            return await DeserializeAsync<IntakeFormConfigDto>(resp, ct);
+        }
+    }
+
+    public Task<IntakeFormConfigDto> UpsertIntakeFormAsync(IntakeFormUpsertRequest req, CancellationToken ct = default)
+        => PostJsonExpectingJsonAsync<IntakeFormUpsertRequest, IntakeFormConfigDto>(
+            "/api/v1/me/intake-form", req, ct, methodOverride: HttpMethod.Put);
+
+    public async Task<List<IntakeFormSubmissionDto>> GetFormSubmissionsAsync(
+        DateTimeOffset? since, int limit = 50, CancellationToken ct = default)
+    {
+        var qs = since is null
+            ? $"?limit={limit}"
+            : $"?since={Uri.EscapeDataString(since.Value.ToString("O"))}&limit={limit}";
+
+        HttpResponseMessage resp;
+        try { resp = await _http.GetAsync("/api/v1/me/form-submissions" + qs, ct); }
+        catch (HttpRequestException ex) { throw new LicenseApiNetworkException(ex.Message, ex); }
+        catch (TaskCanceledException ex) when (!ct.IsCancellationRequested) { throw new LicenseApiNetworkException("timeout", ex); }
+
+        using (resp)
+        {
+            if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
+            return (await DeserializeAsync<List<IntakeFormSubmissionDto>>(resp, ct)) ?? new();
+        }
+    }
+
     // ─── HTTP helpers ────────────────────────────────────────────────
 
     private async Task<TResp> PostJsonExpectingJsonAsync<TReq, TResp>(
-        string path, TReq body, CancellationToken ct, int[]? successCodes = null)
+        string path, TReq body, CancellationToken ct, int[]? successCodes = null,
+        HttpMethod? methodOverride = null)
     {
-        using var resp = await SendJsonAsync(HttpMethod.Post, path, body, ct);
+        var method = methodOverride ?? HttpMethod.Post;
+        using var resp = await SendJsonAsync(method, path, body, ct);
         var ok = successCodes is null
             ? resp.IsSuccessStatusCode
             : Array.IndexOf(successCodes, (int)resp.StatusCode) >= 0;

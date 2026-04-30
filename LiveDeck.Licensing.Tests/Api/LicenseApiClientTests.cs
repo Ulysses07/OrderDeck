@@ -174,4 +174,53 @@ public class LicenseApiClientTests
         handler.Requests[0].Headers.Authorization!.Scheme.Should().Be("Bearer");
         handler.Requests[0].Headers.Authorization.Parameter.Should().Be("test-token");
     }
+
+    [Fact]
+    public async Task GetIntakeFormAsync_returns_null_on_404()
+    {
+        var (client, _) = BuildClient(_ => FakeHttpMessageHandler.Empty(404));
+
+        var result = await client.GetIntakeFormAsync();
+        result.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetIntakeFormAsync_returns_dto_on_200()
+    {
+        var (client, _) = BuildClient(_ => FakeHttpMessageHandler.Json(200,
+            """{"slug":"burak","whatsAppPhone":"+905551234567","customTitle":"Title","isActive":true,"formUrl":"https://x/r/burak"}"""));
+
+        var result = await client.GetIntakeFormAsync();
+
+        result.Should().NotBeNull();
+        result!.Slug.Should().Be("burak");
+        result.FormUrl.Should().Be("https://x/r/burak");
+    }
+
+    [Fact]
+    public async Task UpsertIntakeFormAsync_uses_PUT_method()
+    {
+        var (client, handler) = BuildClient(_ => FakeHttpMessageHandler.Json(200,
+            """{"slug":"new","whatsAppPhone":"+905551234567","customTitle":null,"isActive":true,"formUrl":"https://x/r/new"}"""));
+
+        await client.UpsertIntakeFormAsync(new IntakeFormUpsertRequest("new", "+905551234567", null, true));
+
+        handler.Requests[0].Method.Method.Should().Be("PUT");
+        handler.Requests[0].RequestUri!.AbsolutePath.Should().Be("/api/v1/me/intake-form");
+    }
+
+    [Fact]
+    public async Task GetFormSubmissionsAsync_returns_list_with_since_query_param()
+    {
+        var (client, handler) = BuildClient(_ => FakeHttpMessageHandler.Json(200,
+            """[{"id":"00000000-0000-0000-0000-000000000001","username":"u","fullName":"n","address":"a","submittedAt":"2026-04-30T12:00:00Z"}]"""));
+
+        var since = new DateTimeOffset(2026, 4, 30, 11, 0, 0, TimeSpan.Zero);
+        var rows = await client.GetFormSubmissionsAsync(since, limit: 25);
+
+        rows.Should().HaveCount(1);
+        rows[0].Username.Should().Be("u");
+        handler.Requests[0].RequestUri!.AbsolutePath.Should().Be("/api/v1/me/form-submissions");
+        handler.Requests[0].RequestUri.Query.Should().Contain("since=").And.Contain("limit=25");
+    }
 }
