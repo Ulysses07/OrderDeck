@@ -1,5 +1,8 @@
+using System;
 using FluentAssertions;
 using LiveDeck.Core.Customers;
+using LiveDeck.Core.Sales;
+using LiveDeck.Core.Sessions;
 using LiveDeck.Core.Storage;
 using LiveDeck.Core.Storage.Repositories;
 using LiveDeck.Core.Time;
@@ -11,14 +14,22 @@ namespace LiveDeck.Tests.Customers;
 
 public class CustomerServiceTests
 {
+    private static CustomerService MakeSvc(InMemorySqlite db, IClock clock,
+        out CustomerRepository customers, out SessionRepository sessions, out LabelRepository labels)
+    {
+        customers = new CustomerRepository(db);
+        sessions = new SessionRepository(db);
+        labels = new LabelRepository(db);
+        return new CustomerService(customers, sessions, labels, clock);
+    }
+
     [Fact]
     public void GetOrCreate_creates_customer_with_zero_aggregates()
     {
         using var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
-        var repo = new CustomerRepository(db);
         var clock = Mock.Of<IClock>(c => c.UnixNow() == 1234L);
-        var svc = new CustomerService(repo, clock);
+        var svc = MakeSvc(db, clock, out _, out _, out _);
 
         var customer = svc.GetOrCreate("instagram", "@ayse_y", "Ayşe", null);
 
@@ -33,9 +44,8 @@ public class CustomerServiceTests
     {
         using var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
-        var repo = new CustomerRepository(db);
         var clock = Mock.Of<IClock>(c => c.UnixNow() == 1234L);
-        var svc = new CustomerService(repo, clock);
+        var svc = MakeSvc(db, clock, out _, out _, out _);
 
         var first  = svc.GetOrCreate("instagram", "@ayse_y", "Ayşe", null);
         var second = svc.GetOrCreate("instagram", "@ayse_y", "Ayşe", null);
@@ -48,9 +58,8 @@ public class CustomerServiceTests
     {
         using var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
-        var repo = new CustomerRepository(db);
         var clock = Mock.Of<IClock>(c => c.UnixNow() == 5000L);
-        var svc = new CustomerService(repo, clock);
+        var svc = MakeSvc(db, clock, out var repo, out _, out _);
         var c = svc.GetOrCreate("instagram", "@a", null, null);
 
         svc.RecordPrintedLabels(c.Id, labelCount: 3, amount: 450m);
@@ -65,9 +74,8 @@ public class CustomerServiceTests
     {
         using var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
-        var repo = new CustomerRepository(db);
         var clock = Mock.Of<IClock>(c => c.UnixNow() == 7000L);
-        var svc = new CustomerService(repo, clock);
+        var svc = MakeSvc(db, clock, out var repo, out _, out _);
         var c = svc.GetOrCreate("instagram", "@bad", null, null);
 
         svc.AddToBlacklist(c.Id, "Ödemedi 3 kez");
@@ -83,9 +91,8 @@ public class CustomerServiceTests
     {
         using var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
-        var repo = new CustomerRepository(db);
         var clock = Mock.Of<IClock>(c => c.UnixNow() == 7000L);
-        var svc = new CustomerService(repo, clock);
+        var svc = MakeSvc(db, clock, out var repo, out _, out _);
         var c = svc.GetOrCreate("instagram", "@bad", null, null);
         svc.AddToBlacklist(c.Id, "test");
 
@@ -102,9 +109,8 @@ public class CustomerServiceTests
     {
         using var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
-        var repo = new CustomerRepository(db);
         var clock = Mock.Of<IClock>(c => c.UnixNow() == 9000L);
-        var svc = new CustomerService(repo, clock);
+        var svc = MakeSvc(db, clock, out _, out _, out _);
 
         var c = svc.EnsureBlacklistedManual("tiktok", "@spammer", "Spam");
 
@@ -120,14 +126,67 @@ public class CustomerServiceTests
     {
         using var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
-        var repo = new CustomerRepository(db);
         var clock = Mock.Of<IClock>(c => c.UnixNow() == 9000L);
-        var svc = new CustomerService(repo, clock);
+        var svc = MakeSvc(db, clock, out _, out _, out _);
         var existing = svc.GetOrCreate("instagram", "@a", null, null);
 
         var blacklisted = svc.EnsureBlacklistedManual("instagram", "@a", "Reason");
 
         blacklisted.Id.Should().Be(existing.Id);
         blacklisted.IsBlacklisted.Should().BeTrue();
+    }
+
+    // --- Phase 4g Task 6: GetLastStreamShoppers ---
+
+    [Fact]
+    public void GetLastStreamShoppers_NoEndedSession_ReturnsEmpty()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var clock = Mock.Of<IClock>(c => c.UnixNow() == 1L);
+        var svc = MakeSvc(db, clock, out _, out _, out _);
+
+        svc.GetLastStreamShoppers().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void GetLastStreamShoppers_HydratesCustomersFromLatestEndedSession()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var clock = Mock.Of<IClock>(c => c.UnixNow() == 1L);
+        var svc = MakeSvc(db, clock, out var customers, out var sessions, out var labels);
+
+        customers.Insert(new Customer("c1", "twitch", "alice", "Alice", null,
+            100, 100, false, null, null, 0, 0m, null, null, "+905551111111"));
+
+        sessions.Insert(new StreamSession("s1", "Live", 100, null, Array.Empty<string>(), null));
+        labels.Insert(new Label("l1", "s1", "c1", "twitch", "alice",
+            "Apple aldım", "APPLE", 50m, AddedAt: 110, PrintedAt: 120));
+        sessions.End("s1", 200);
+
+        var result = svc.GetLastStreamShoppers();
+
+        result.Should().HaveCount(1);
+        result[0].Id.Should().Be("c1");
+        result[0].Phone.Should().Be("+905551111111");
+    }
+
+    [Fact]
+    public void GetLastStreamShoppers_UnprintedLabelsExcluded()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var clock = Mock.Of<IClock>(c => c.UnixNow() == 1L);
+        var svc = MakeSvc(db, clock, out var customers, out var sessions, out var labels);
+
+        customers.Insert(new Customer("c1", "twitch", "bob", "Bob", null,
+            100, 100, false, null, null, 0, 0m, null, null, null));
+        sessions.Insert(new StreamSession("s1", "Live", 100, null, Array.Empty<string>(), null));
+        labels.Insert(new Label("l1", "s1", "c1", "twitch", "bob",
+            "Apple", "APPLE", 50m, AddedAt: 110, PrintedAt: null));
+        sessions.End("s1", 200);
+
+        svc.GetLastStreamShoppers().Should().BeEmpty();
     }
 }

@@ -30,7 +30,7 @@ public class GiveawayServicePreventRewinningCacheTests
             new StreamSession("s1", null, 100, null, new[] { "instagram" }, null));
 
         var customerRepo = new CustomerRepository(db);
-        var customerSvc  = new CustomerService(customerRepo, clock.Object);
+        var customerSvc  = new CustomerService(customerRepo, new SessionRepository(db), new LabelRepository(db), clock.Object);
         var giveawayRepo = new GiveawayRepository(db);
         var drawer       = new GiveawayDrawer();
 

@@ -128,7 +128,7 @@ public class MainShellPrintTests
         var labelRepo    = new LabelRepository(db);
         var giveawayRepo = new GiveawayRepository(db);
 
-        var customerSvc  = new CustomerService(customerRepo, clock.Object);
+        var customerSvc  = new CustomerService(customerRepo, sessionRepo, labelRepo, clock.Object);
         var sessionSvc   = new StreamSessionService(sessionRepo, clock.Object);
         var labelSvc     = new LabelService(labelRepo, customerSvc, clock.Object);
         var drawer       = new GiveawayDrawer();

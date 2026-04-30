@@ -25,8 +25,8 @@ public class LabelServiceTests
             new StreamSession("s1", null, 1000, null, new[] { "instagram" }, null));
 
         var customerRepo = new CustomerRepository(db);
-        var customerSvc = new CustomerService(customerRepo, clock);
         var labelRepo = new LabelRepository(db);
+        var customerSvc = new CustomerService(customerRepo, new SessionRepository(db), labelRepo, clock);
 
         var svc = new LabelService(labelRepo, customerSvc, clock);
         return (svc, labelRepo, customerRepo, db, "s1");
