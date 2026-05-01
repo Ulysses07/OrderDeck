@@ -1,4 +1,6 @@
+using System;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Windows;
@@ -69,6 +71,34 @@ public partial class App : Application
                 Shutdown();
                 return;
             }
+        }
+
+        // Phase 5a — auto-prompt restore if local DB is empty AND cloud has backups
+        try
+        {
+            var dbFile = AppPaths.DatabaseFile;
+            var dbMissingOrTiny = !File.Exists(dbFile) || new FileInfo(dbFile).Length < 10240;
+            if (dbMissingOrTiny)
+            {
+                var restoreService = Host.Services.GetRequiredService<RestoreService>();
+                var available = restoreService.ListAvailableAsync().GetAwaiter().GetResult();
+                if (available.Count > 0)
+                {
+                    var dlg = new Views.RestoreDialog(restoreService, available);
+                    var ok = dlg.ShowDialog();
+                    if (ok == true)
+                    {
+                        MessageBox.Show("Geri yükleme tamamlandı. Uygulama yeniden başlatılacak.",
+                            "OrderDeck", MessageBoxButton.OK, MessageBoxImage.Information);
+                        Shutdown();
+                        return;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Restore auto-prompt failed (non-fatal)");
         }
 
         // Phase 5a — wire stream-end → cloud backup (fire-and-forget)
