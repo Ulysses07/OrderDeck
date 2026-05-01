@@ -46,6 +46,9 @@ public sealed partial class SettingsViewModel : ViewModelBase
     [ObservableProperty] private string _accountHolder = "";
     [ObservableProperty] private string _papara = "";
 
+    // Phase 5c — YouTube Live chat scraper
+    [ObservableProperty] private string _youTubeChannelHandle = "";
+
     [ObservableProperty] private string? _validationError;
 
     /// <summary>True iff Save was called and OverlayPort changed (caller checks for restart prompt).</summary>
@@ -89,6 +92,9 @@ public sealed partial class SettingsViewModel : ViewModelBase
         Iban            = _liveSettings.Payment.Iban;
         AccountHolder   = _liveSettings.Payment.AccountHolder;
         Papara          = _liveSettings.Payment.Papara;
+
+        // Phase 5c — YouTube
+        YouTubeChannelHandle = _liveSettings.YouTubeChannelHandle ?? string.Empty;
     }
 
     private void LoadInstalledPrinters()
@@ -151,6 +157,11 @@ public sealed partial class SettingsViewModel : ViewModelBase
         _liveSettings.Payment.Iban                    = Iban;
         _liveSettings.Payment.AccountHolder           = AccountHolder;
         _liveSettings.Payment.Papara                  = Papara;
+
+        // Phase 5c — YouTube. Empty string → null so the hosted service idles
+        // instead of attempting to resolve "".
+        var trimmedHandle = YouTubeChannelHandle?.Trim();
+        _liveSettings.YouTubeChannelHandle = string.IsNullOrEmpty(trimmedHandle) ? null : trimmedHandle;
 
         _store.Save(_liveSettings);
 

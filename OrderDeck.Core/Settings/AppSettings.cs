@@ -25,6 +25,12 @@ public sealed class AppSettings
 
     /// <summary>Phase 4g: WhatsApp ödeme isteme yapılandırması.</summary>
     public PaymentSettings Payment { get; set; } = new();
+
+    /// <summary>Phase 5c: YouTube Live chat scraper. Empty/null disables the scraper.
+    /// Accepted values: "@handle", "handle", or any URL containing @handle. The
+    /// hosted service resolves the handle to the active live video each time the
+    /// user goes live; offline state is detected and the service idles.</summary>
+    public string? YouTubeChannelHandle { get; set; }
 }
 
 /// <summary>Phase 4g: WhatsApp ödeme istemleri için Settings bloğu.</summary>

@@ -230,6 +230,25 @@
                     </GroupBox>
                 </ScrollViewer>
             </TabItem>
+
+            <!-- YouTube tab — Phase 5c -->
+            <TabItem Header="YouTube">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <GroupBox Header="YouTube Live Chat" Margin="12,12,12,12" Padding="8"
+                              Foreground="White">
+                        <StackPanel>
+                            <Label Content="Kanal Handle (örn. @kullaniciadi)" Margin="0,0,0,2" Foreground="White"/>
+                            <TextBox Text="{Binding YouTubeChannelHandle, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBlock FontSize="11" Foreground="#FFAAAAAA" Margin="0,4,0,0"
+                                       TextWrapping="Wrap">
+                                Kanal handle'ını yaz (@ ile veya @'sız), ya da tam YouTube Live URL'si yapıştır.
+                                OrderDeck yayına başladığında otomatik bağlanır; tarayıcı açık tutmaya gerek yok.
+                                Boş bırakırsan YouTube chat takibi devre dışı kalır.
+                            </TextBlock>
+                        </StackPanel>
+                    </GroupBox>
+                </ScrollViewer>
+            </TabItem>
         </TabControl>
 
         <!-- Validation error -->

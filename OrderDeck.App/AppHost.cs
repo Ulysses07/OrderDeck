@@ -86,6 +86,17 @@ public sealed class AppHost : IDisposable
             trialProbe: sp.GetRequiredService<LicenseService>()));
         services.AddSingleton<ChatBridgeIngestor>();
 
+        // Phase 5c — YouTube Live chat scraper. Hosted service polls
+        // youtube.com/{handle}/live and runs the InnerTube continuation API
+        // when the channel goes live. Idle when AppSettings.YouTubeChannelHandle
+        // is unset; honors trial-mode the same way the extension bridge does.
+        services.AddHostedService(sp =>
+            new OrderDeck.Chat.Ingestors.YouTube.YouTubeChatHostedService(
+                () => sp.GetRequiredService<AppSettings>(),
+                sp.GetRequiredService<IChatBus>(),
+                sp.GetRequiredService<ILoggerFactory>(),
+                trialProbe: sp.GetRequiredService<LicenseService>()));
+
         // Overlay
         services.AddSingleton(sp => new OverlayHost(
             sp.GetRequiredService<IChatBus>(),

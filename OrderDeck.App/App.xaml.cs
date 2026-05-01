@@ -29,6 +29,7 @@ public partial class App : Application
     private OverlayHost? _overlay;
     private HeartbeatHostedService? _heartbeat;
     private OrderDeck.App.Services.IntakeForm.IntakeFormSyncHostedService? _intakeSync;
+    private OrderDeck.Chat.Ingestors.YouTube.YouTubeChatHostedService? _ytChat;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -130,6 +131,13 @@ public partial class App : Application
             .FirstOrDefault();
         _ = _intakeSync?.StartAsync(CancellationToken.None);
 
+        // Phase 5c: YouTube live-chat scraper hosted service. Idle until the
+        // user fills in YouTubeChannelHandle in Settings.
+        _ytChat = Host.Services.GetServices<IHostedService>()
+            .OfType<OrderDeck.Chat.Ingestors.YouTube.YouTubeChatHostedService>()
+            .FirstOrDefault();
+        _ = _ytChat?.StartAsync(CancellationToken.None);
+
         base.OnStartup(e);
     }
 
@@ -137,6 +145,7 @@ public partial class App : Application
     {
         // Same Task.Run wrap as OnStartup — keep StopAsync continuations off the
         // WPF dispatcher so GetResult() doesn't deadlock during shutdown.
+        try { Task.Run(() => _ytChat?.StopAsync(CancellationToken.None) ?? Task.CompletedTask).GetAwaiter().GetResult(); } catch { /* ignore */ }
         try { Task.Run(() => _intakeSync?.StopAsync(CancellationToken.None) ?? Task.CompletedTask).GetAwaiter().GetResult(); } catch { /* ignore */ }
         try { Task.Run(() => _heartbeat?.StopAsync(CancellationToken.None) ?? Task.CompletedTask).GetAwaiter().GetResult(); } catch { /* ignore */ }
         try { Task.Run(() => _ingestor?.StopAsync(CancellationToken.None) ?? Task.CompletedTask).GetAwaiter().GetResult(); } catch { /* ignore */ }
