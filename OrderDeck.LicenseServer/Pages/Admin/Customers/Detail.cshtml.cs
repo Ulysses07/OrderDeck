@@ -24,16 +24,18 @@ public class DetailModel : PageModel
 
     public async Task<IActionResult> OnGetAsync(Guid id, CancellationToken ct)
     {
-        Customer = await _db.Customers.FirstOrDefaultAsync(c => c.Id == id, ct);
+        // Customer + Licenses in a single round-trip. AsNoTracking — render-only path.
+        Customer = await _db.Customers
+            .AsNoTracking()
+            .Include(c => c.Licenses.OrderByDescending(l => l.IssuedAt))
+            .FirstOrDefaultAsync(c => c.Id == id, ct);
         if (Customer is null) return NotFound();
 
-        Licenses = await _db.Licenses
-            .Where(l => l.CustomerId == id)
-            .OrderByDescending(l => l.IssuedAt)
-            .ToListAsync(ct);
+        Licenses = Customer.Licenses.ToList();
 
         var licenseKeys = Licenses.Select(l => l.LicenseKey).ToList();
         AuditEntries = await _db.AuditLogs
+            .AsNoTracking()
             .Where(a => (a.TargetType == "customer" && a.TargetId == id.ToString())
                      || (a.TargetType == "license" && a.TargetId != null && licenseKeys.Contains(a.TargetId)))
             .OrderByDescending(a => a.OccurredAt)

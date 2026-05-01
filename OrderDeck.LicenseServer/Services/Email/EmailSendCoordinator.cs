@@ -79,8 +79,14 @@ public sealed class EmailSendCoordinator
         // Template content üret
         var (subject, html, plain) = templateBuilder(customer, unsubscribeUrl);
 
-        // Send (failure swallow — log + persist)
+        // Send. Persist a row in EmailLogs whether it works or not — that's the
+        // dedup ledger. On transient failures (TimeoutException, IOException,
+        // SmtpProtocolException, etc.) re-throw so Hangfire's AutomaticRetry
+        // schedules another attempt. Permanent failures (e.g. RFC 5321
+        // invalid-mailbox) stay swallowed: a retry won't help, and we don't
+        // want to burn 5 retries × N reminders on a single bad address.
         string? error = null;
+        bool isTransient = false;
         try
         {
             await _sender.SendAsync(customer.Email, customer.Name, subject, html, plain, ct);
@@ -88,10 +94,12 @@ public sealed class EmailSendCoordinator
         catch (Exception ex)
         {
             error = ex.Message;
-            _log.LogWarning(ex, "Email send failed (customer={CustomerId}, template={Template})", customerId, templateKey);
+            isTransient = IsTransientFailure(ex);
+            _log.LogWarning(ex,
+                "Email send failed (customer={CustomerId}, template={Template}, transient={Transient})",
+                customerId, templateKey, isTransient);
         }
 
-        // EmailLog persist (success or failure)
         _db.EmailLogs.Add(new EmailLog
         {
             Id = Guid.NewGuid(),
@@ -103,6 +111,42 @@ public sealed class EmailSendCoordinator
         });
         await _db.SaveChangesAsync(ct);
 
+        if (error is not null && isTransient)
+        {
+            // Re-throw the original exception's message wrapped — Hangfire's
+            // AutomaticRetry on the calling job sees it and re-queues.
+            throw new EmailTransientFailureException(error);
+        }
+
         return error is null;
     }
+
+    /// <summary>Classify the exception as worth retrying. Network / timeout / SMTP
+    /// 4xx (temporary failure) are transient; SMTP 5xx (permanent) and argument
+    /// errors are not. Errs on the side of "transient" — over-retrying a permanent
+    /// error costs us 5 attempts, under-retrying a transient one costs the customer
+    /// a missed reminder.</summary>
+    private static bool IsTransientFailure(Exception ex) => ex switch
+    {
+        TimeoutException                                 => true,
+        OperationCanceledException                       => false,
+        System.IO.IOException                            => true,
+        System.Net.Sockets.SocketException               => true,
+        MailKit.Net.Smtp.SmtpProtocolException           => true,
+        MailKit.ServiceNotConnectedException             => true,
+        MailKit.ServiceNotAuthenticatedException         => false,  // creds wrong → no point retrying
+        MailKit.Net.Smtp.SmtpCommandException smtpCmd
+            when (int)smtpCmd.StatusCode >= 400 && (int)smtpCmd.StatusCode < 500 => true,
+        MailKit.Net.Smtp.SmtpCommandException            => false,  // 5xx permanent
+        ArgumentException                                => false,
+        FormatException                                  => false,
+        _                                                => true
+    };
+}
+
+/// <summary>Internal marker so Hangfire's AutomaticRetry only fires on transient
+/// SMTP failures, not on permanent ones we already logged + dropped.</summary>
+public sealed class EmailTransientFailureException : Exception
+{
+    public EmailTransientFailureException(string message) : base(message) { }
 }

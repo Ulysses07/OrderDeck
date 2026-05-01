@@ -67,6 +67,27 @@ public sealed class MeBackupsController : ControllerBase
         if (!string.Equals(actualSha, sha, StringComparison.OrdinalIgnoreCase))
             return BadRequest(new { error = "SHA256 mismatch — body integrity check failed" });
 
+        // Per-customer storage quota. Retention prunes oldest non-milestones to 5,
+        // but a customer accumulating monthly milestones for years could still drift
+        // past a sane budget. Reject up-front instead of after the encrypted blob
+        // is on disk so we don't waste IO writing something we'd just delete.
+        var quotaMb = _opt.Value.PerCustomerQuotaMb;
+        if (quotaMb > 0)
+        {
+            var existingBytes = await _db.CustomerBackups
+                .Where(b => b.CustomerId == CustomerId)
+                .SumAsync(b => (long?)b.SizeBytes, ct) ?? 0L;
+            var quotaBytes = quotaMb * 1024L * 1024L;
+            // ms.Length is plaintext; encrypted is ms.Length + 28 (nonce+tag). Use
+            // ms.Length as a close-enough estimate — over-counting is fine, we'd
+            // rather reject borderline cases than blow the cap.
+            if (existingBytes + ms.Length > quotaBytes)
+            {
+                return StatusCode(StatusCodes.Status507InsufficientStorage,
+                    new { error = $"Per-customer backup quota exceeded ({quotaMb} MB). Delete older backups via /api/v1/me/backups/{{id}}." });
+            }
+        }
+
         var encrypted = _storage.Encrypt(bytes);
         var blobPath = await _storage.WriteBlobAsync(CustomerId, encrypted, ct);
 

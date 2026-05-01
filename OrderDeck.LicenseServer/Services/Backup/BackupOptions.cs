@@ -6,6 +6,12 @@ public sealed class BackupOptions
     public string StorageRoot { get; set; } = "/app/Backups";
     public int MaxBlobSizeMb { get; set; } = 200;
 
+    /// <summary>Per-customer cap on total stored (encrypted) backup bytes. Counted
+    /// across all rows in CustomerBackups for that customer (active retention
+    /// already prunes to last-5 + monthly milestones, so this is a belt-and-suspenders
+    /// limit against unbounded growth). 0 disables the check.</summary>
+    public long PerCustomerQuotaMb { get; set; } = 5_000;  // 5 GB default
+
     /// <summary>S3-compatible off-host replication. Disabled when
     /// <see cref="S3BackupOptions.Enabled"/> is false (the default) so existing
     /// deployments keep working without provisioning a bucket. Tested against
