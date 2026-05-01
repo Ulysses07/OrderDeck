@@ -18,6 +18,7 @@ public sealed class LicenseDbContext : DbContext
     public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
     public DbSet<IntakeFormConfig> IntakeFormConfigs => Set<IntakeFormConfig>();
     public DbSet<IntakeFormSubmission> IntakeFormSubmissions => Set<IntakeFormSubmission>();
+    public DbSet<CustomerBackup> CustomerBackups => Set<CustomerBackup>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -136,6 +137,22 @@ public sealed class LicenseDbContext : DbContext
             b.Property(s => s.IpAddress).HasMaxLength(64);
             b.Property(s => s.UserAgent).HasMaxLength(500);
             b.HasIndex(s => new { s.IntakeFormConfigId, s.SubmittedAt });
+        });
+
+        mb.Entity<CustomerBackup>(e =>
+        {
+            e.HasKey(b => b.Id);
+            e.Property(b => b.BlobPath).HasMaxLength(500).IsRequired();
+            e.Property(b => b.ChecksumSha256).HasMaxLength(64).IsRequired();
+            e.Property(b => b.UserAgent).HasMaxLength(200);
+            e.Property(b => b.MachineName).HasMaxLength(100);
+            e.HasOne(b => b.Customer)
+                .WithMany()
+                .HasForeignKey(b => b.CustomerId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(b => new { b.CustomerId, b.CreatedAt })
+                .IsDescending(false, true)
+                .HasDatabaseName("IX_CustomerBackups_CustomerId_CreatedAt_DESC");
         });
 
         // Seed SKUs

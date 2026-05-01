@@ -1,0 +1,57 @@
+@page "/admin/customers/{id:guid}/backups/{backupId:guid}/customers"
+@model CustomersModel
+@{
+    ViewData["Title"] = "Yedek — Müşteriler";
+    var p = Model.Page_;
+}
+
+<a asp-page="Summary" asp-route-id="@Model.Customer!.Id" asp-route-backupId="@Model.Backup!.Id">← Özet</a>
+<h3>Müşteriler — Yedek @Model.Backup.CreatedAt.ToString("dd MMM yyyy HH:mm")</h3>
+
+<form method="get" class="mb-3 d-flex gap-2">
+    <input asp-for="Search" name="search" class="form-control" placeholder="Username ara…" />
+    <input type="hidden" name="id" value="@Model.Customer.Id" />
+    <input type="hidden" name="backupId" value="@Model.Backup.Id" />
+    <button type="submit" class="btn btn-primary">Ara</button>
+</form>
+
+@if (Model.Error is not null)
+{
+    <div class="alert alert-danger">@Model.Error</div>
+}
+else if (p is not null)
+{
+    <table class="table table-sm table-striped">
+        <thead><tr>
+            <th>Username</th><th>Platform</th><th>Display Name</th>
+            <th>Address</th><th>Phone</th>
+            <th>Total Amount</th><th>Last Seen</th>
+        </tr></thead>
+        <tbody>
+            @foreach (var r in p.Rows)
+            {
+                <tr>
+                    <td><strong>@Html.Raw(System.Net.WebUtility.HtmlEncode(r.Username))</strong></td>
+                    <td>@Html.Raw(System.Net.WebUtility.HtmlEncode(r.Platform))</td>
+                    <td>@Html.Raw(System.Net.WebUtility.HtmlEncode(r.DisplayName ?? "—"))</td>
+                    <td>@Html.Raw(System.Net.WebUtility.HtmlEncode(r.Address ?? "—"))</td>
+                    <td>@Html.Raw(System.Net.WebUtility.HtmlEncode(r.Phone ?? "—"))</td>
+                    <td class="text-end">@r.TotalAmount.ToString("N2") TL</td>
+                    <td>@DateTimeOffset.FromUnixTimeSeconds(r.LastSeenAt).LocalDateTime.ToString("dd MMM yyyy HH:mm")</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    <nav>
+        <span>Sayfa @p.Page / @p.TotalPages — @p.TotalCount kayıt</span>
+        @if (p.Page > 1)
+        {
+            <a asp-route-page="@(p.Page - 1)" asp-route-search="@Model.Search">‹ Önceki</a>
+        }
+        @if (p.Page < p.TotalPages)
+        {
+            <a asp-route-page="@(p.Page + 1)" asp-route-search="@Model.Search">Sonraki ›</a>
+        }
+    </nav>
+}

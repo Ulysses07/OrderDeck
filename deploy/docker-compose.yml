@@ -46,8 +46,12 @@ services:
       Smtp__FromName: "OrderDeck"
       Admin__InitialUsername: "${ADMIN_USERNAME:-admin}"
       Admin__InitialPasswordHash: "${ADMIN_PASSWORD_HASH}"
+      Backup__MasterKeyHex: "${BACKUP_MASTER_KEY}"
+      Backup__StorageRoot: "/app/Backups"
+      Backup__MaxBlobSizeMb: "200"
     volumes:
       - ./keys:/root/.aspnet/DataProtection-Keys
+      - ./backups:/app/Backups
     networks:
       - web
     expose:

@@ -1,9 +1,12 @@
+using System.Security.Claims;
 using System.Text;
 using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.Authentication;
 using Hangfire;
 using Hangfire.SqlServer;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Backup;
 using OrderDeck.LicenseServer.Services.Email;
 using OrderDeck.LicenseServer.Services.IntakeForm;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -23,6 +26,7 @@ public class Program
         // Options binding
         builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection("Jwt"));
         builder.Services.Configure<SmtpOptions>(builder.Configuration.GetSection("Smtp"));
+        builder.Services.Configure<BackupOptions>(builder.Configuration.GetSection("Backup"));
 
         // DbContext
         builder.Services.AddDbContext<LicenseDbContext>(opt =>
@@ -53,6 +57,9 @@ public class Program
         builder.Services.AddScoped<AdminActionEmailService>();
         builder.Services.AddScoped<IntakeFormService>();
         builder.Services.AddSingleton<WhatsAppLinkBuilder>();
+        builder.Services.AddSingleton<BackupStorageService>();
+        builder.Services.AddScoped<BackupRetentionService>();
+        builder.Services.AddScoped<BackupViewerService>();
 
         // JWT auth — two schemes (use IOptions so tests can override Jwt:SecretKey via config)
         builder.Services.AddAuthentication()
@@ -133,6 +140,27 @@ public class Program
                     {
                         PermitLimit = int.TryParse(Environment.GetEnvironmentVariable("LIVEDECK_INTAKE_RATELIMIT_PER_HOUR"), out var n) ? n : 5,
                         Window = TimeSpan.FromHours(1)
+                    }));
+            opt.AddPolicy("backup-upload", httpContext =>
+                System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+                    partitionKey: httpContext.User.FindFirstValue(System.Security.Claims.ClaimTypes.NameIdentifier)
+                                 ?? httpContext.Connection.RemoteIpAddress?.ToString() ?? "anon",
+                    factory: _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 6,
+                        Window = TimeSpan.FromHours(1),
+                        QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0
+                    }));
+            opt.AddPolicy("backup-delete", httpContext =>
+                System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+                    partitionKey: httpContext.User.FindFirstValue(System.Security.Claims.ClaimTypes.NameIdentifier) ?? "anon",
+                    factory: _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 30,
+                        Window = TimeSpan.FromHours(1),
+                        QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0
                     }));
             opt.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
                 RateLimitPartition.GetFixedWindowLimiter(

@@ -29,7 +29,14 @@ public sealed class StreamSessionService
         return session;
     }
 
-    public void End(string sessionId) => _repo.End(sessionId, _clock.UnixNow());
+    public event EventHandler<SessionEndedEventArgs>? SessionEnded;
+
+    public void End(string sessionId)
+    {
+        var endedAt = _clock.UnixNow();
+        _repo.End(sessionId, endedAt);
+        SessionEnded?.Invoke(this, new SessionEndedEventArgs(sessionId, endedAt));
+    }
 
     public StreamSession? GetActive() => _repo.GetActive();
 }

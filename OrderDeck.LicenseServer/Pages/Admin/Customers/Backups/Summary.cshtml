@@ -1,0 +1,72 @@
+@page "/admin/customers/{id:guid}/backups/{backupId:guid}/summary"
+@model SummaryModel
+@{
+    ViewData["Title"] = "Yedek Özeti";
+    var s = Model.Summary;
+}
+
+<a asp-page="Index" asp-route-id="@Model.Customer!.Id">← Yedekler listesine</a>
+
+<h2>Yedek #@Model.Backup!.Id.ToString()[..8] — @Model.Backup.CreatedAt.ToString("dd MMM yyyy HH:mm")</h2>
+
+<nav class="mb-3">
+    <a class="btn btn-sm btn-outline-primary active"
+       asp-page="Summary" asp-route-id="@Model.Customer.Id" asp-route-backupId="@Model.Backup.Id">Özet</a>
+    <a class="btn btn-sm btn-outline-primary"
+       asp-page="Customers" asp-route-id="@Model.Customer.Id" asp-route-backupId="@Model.Backup.Id">Müşteriler</a>
+    <a class="btn btn-sm btn-outline-primary"
+       asp-page="Sessions" asp-route-id="@Model.Customer.Id" asp-route-backupId="@Model.Backup.Id">Yayınlar</a>
+    <a class="btn btn-sm btn-outline-primary"
+       asp-page="Labels" asp-route-id="@Model.Customer.Id" asp-route-backupId="@Model.Backup.Id">Etiketler</a>
+    <a class="btn btn-sm btn-outline-primary"
+       asp-page="Giveaways" asp-route-id="@Model.Customer.Id" asp-route-backupId="@Model.Backup.Id">Çekilişler</a>
+</nav>
+
+@if (Model.Error is not null)
+{
+    <div class="alert alert-danger">@Model.Error</div>
+}
+else if (s is not null)
+{
+    <div class="row g-3 mb-3">
+        <div class="col-md-3"><div class="card"><div class="card-body">
+            <div class="text-muted small">Toplam Yayın</div>
+            <div class="h3">@s.TotalSessions</div>
+        </div></div></div>
+        <div class="col-md-3"><div class="card"><div class="card-body">
+            <div class="text-muted small">Toplam Etiket</div>
+            <div class="h3">@s.TotalLabels.ToString("N0")</div>
+        </div></div></div>
+        <div class="col-md-3"><div class="card"><div class="card-body">
+            <div class="text-muted small">Tekil Müşteri</div>
+            <div class="h3">@s.TotalUniqueCustomers.ToString("N0")</div>
+        </div></div></div>
+        <div class="col-md-3"><div class="card text-bg-success"><div class="card-body">
+            <div class="small">Toplam Ciro</div>
+            <div class="h3">@s.TotalRevenue.ToString("N2") TL</div>
+        </div></div></div>
+    </div>
+
+    <div class="row g-3 mb-3">
+        <div class="col-md-6"><div class="card"><div class="card-body">
+            <h5 class="card-title">Ortalamalar</h5>
+            <p>Yayın başına: <strong>@s.AvgRevenuePerSession.ToString("N2") TL</strong></p>
+            <p>Müşteri başına: <strong>@s.AvgRevenuePerCustomer.ToString("N2") TL</strong></p>
+        </div></div></div>
+        <div class="col-md-6"><div class="card"><div class="card-body">
+            <h5 class="card-title">En İyiler</h5>
+            @if (s.HighestSession is not null)
+            {
+                <p>En yüksek yayın: <strong>@s.HighestSession.Total.ToString("N2") TL</strong>
+                   @if (s.HighestSession.StartedAt.HasValue)
+                   { <text>(@s.HighestSession.StartedAt.Value.LocalDateTime.ToString("dd MMM yyyy"))</text> }
+                </p>
+            }
+            @if (s.TopCustomer is not null)
+            {
+                <p>En çok harcayan: <strong>@s.TopCustomer.Username</strong> —
+                   @s.TopCustomer.Total.ToString("N2") TL (@s.TopCustomer.LabelCount etiket)</p>
+            }
+        </div></div></div>
+    </div>
+}

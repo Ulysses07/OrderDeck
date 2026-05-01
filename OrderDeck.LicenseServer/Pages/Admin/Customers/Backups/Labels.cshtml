@@ -1,0 +1,48 @@
+@page "/admin/customers/{id:guid}/backups/{backupId:guid}/labels"
+@model LabelsModel
+@{
+    ViewData["Title"] = "Yedek — Etiketler";
+    var p = Model.Page_;
+}
+
+<a asp-page="Summary" asp-route-id="@Model.Customer!.Id" asp-route-backupId="@Model.Backup!.Id">← Özet</a>
+<h3>Etiketler — Yedek @Model.Backup.CreatedAt.ToString("dd MMM yyyy HH:mm")</h3>
+
+<form method="get" class="mb-3">
+    <input asp-for="SessionFilter" name="sessionId" class="form-control d-inline-block" style="width:300px" placeholder="Session ID filtre…" />
+    <input type="hidden" name="id" value="@Model.Customer.Id" />
+    <input type="hidden" name="backupId" value="@Model.Backup.Id" />
+    <button type="submit" class="btn btn-secondary">Filtrele</button>
+</form>
+
+@if (Model.Error is not null)
+{
+    <div class="alert alert-danger">@Model.Error</div>
+}
+else if (p is not null)
+{
+    <table class="table table-sm table-striped">
+        <thead><tr>
+            <th>Session</th><th>Username</th><th>Code</th>
+            <th>Price</th><th>Added</th><th>Printed</th>
+        </tr></thead>
+        <tbody>
+            @foreach (var r in p.Rows)
+            {
+                <tr>
+                    <td>@Html.Raw(System.Net.WebUtility.HtmlEncode(r.SessionId[..Math.Min(8, r.SessionId.Length)]))</td>
+                    <td>@Html.Raw(System.Net.WebUtility.HtmlEncode(r.Username))</td>
+                    <td>@Html.Raw(System.Net.WebUtility.HtmlEncode(r.Code ?? "—"))</td>
+                    <td class="text-end">@r.Price.ToString("N2") TL</td>
+                    <td>@DateTimeOffset.FromUnixTimeSeconds(r.AddedAt).LocalDateTime.ToString("dd MMM HH:mm")</td>
+                    <td>@(r.PrintedAt.HasValue ? DateTimeOffset.FromUnixTimeSeconds(r.PrintedAt.Value).LocalDateTime.ToString("HH:mm") : "—")</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+    <nav>
+        <span>Sayfa @p.Page / @p.TotalPages — @p.TotalCount etiket</span>
+        @if (p.Page > 1) { <a asp-route-page="@(p.Page - 1)" asp-route-sessionId="@Model.SessionFilter">‹ Önceki</a> }
+        @if (p.Page < p.TotalPages) { <a asp-route-page="@(p.Page + 1)" asp-route-sessionId="@Model.SessionFilter">Sonraki ›</a> }
+    </nav>
+}

@@ -16,6 +16,7 @@ using OrderDeck.Core.Time;
 using OrderDeck.Labeling;
 using OrderDeck.Licensing;
 using OrderDeck.Licensing.Api;
+using OrderDeck.Licensing.Backup;
 using OrderDeck.Licensing.Services;
 using OrderDeck.Licensing.Storage;
 using OrderDeck.Licensing.Trial;
@@ -147,6 +148,29 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<LoginService>();
         services.AddSingleton<LicenseService>();
         services.AddHostedService<HeartbeatHostedService>();
+
+        // Phase 5a — cloud backup
+        services.AddTransient<BearerAuthHandler>();
+        services.AddHttpClient<IBackupClient, BackupClient>((sp, http) =>
+        {
+            var opt = sp.GetRequiredService<IOptions<LicensingOptions>>().Value;
+            http.BaseAddress = new Uri(opt.ServerBaseUrl);
+            http.Timeout = TimeSpan.FromSeconds(opt.RequestTimeoutSeconds);
+        }).AddHttpMessageHandler<BearerAuthHandler>();
+        services.AddSingleton<BackupService>(sp =>
+            new BackupService(
+                AppPaths.DatabaseFile,
+                sp.GetRequiredService<IBackupClient>(),
+                sp.GetRequiredService<ILogger<BackupService>>()));
+        services.AddSingleton<RestoreService>(sp =>
+            new RestoreService(
+                AppPaths.DatabaseFile,
+                sp.GetRequiredService<IBackupClient>(),
+                sp.GetRequiredService<ILogger<RestoreService>>()));
+        services.AddHostedService(sp =>
+            new RestoreRecoveryService(
+                AppPaths.DatabaseFile,
+                sp.GetRequiredService<ILogger<RestoreRecoveryService>>()));
 
         // Licensing — Trial (Phase 4c)
         services.AddSingleton<HkcuTrialStorage>();

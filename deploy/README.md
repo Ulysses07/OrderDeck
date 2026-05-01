@@ -49,6 +49,9 @@ SMTP_USESSL=true
 SMTP_USERNAME=
 SMTP_PASSWORD=
 SMTP_FROM=noreply@orderdeckapp.com
+
+# Phase 5a — Cloud backup (set via setup-backup-key.sh)
+BACKUP_MASTER_KEY=GenerateWith_setup-backup-key.sh
 ```
 
 Generate strong values:
@@ -65,6 +68,21 @@ ADMIN_PASSWORD_HASH: see Phase 4a admin bootstrap docs (BCrypt-Net)
 - **Restart license-server only** (after code update): `docker compose up -d --build license-server`
 - **Logs (live)**: `docker compose logs -f license-server`
 - **DB backup**: `docker compose exec sqlserver /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SQL_PASSWORD" -Q "BACKUP DATABASE OrderDeckLicense TO DISK = '/var/opt/mssql/backup/orderdeck-$(date +%F).bak'"`
+
+## Cloud backup setup (Phase 5a)
+
+After initial deploy, bootstrap the AES master key:
+
+```bash
+ssh root@72.62.53.86
+/opt/orderdeck/setup-backup-key.sh
+```
+
+This generates a 64-hex (32-byte) random key, writes it to `/opt/orderdeck/.env`,
+and restarts the license-server. Backups are stored at `/opt/orderdeck/backups/{customerId}/`.
+
+**Rotation warning:** rotating the key makes all existing encrypted backups
+unreadable (no re-encryption flow in v1).
 
 ## DNS
 
