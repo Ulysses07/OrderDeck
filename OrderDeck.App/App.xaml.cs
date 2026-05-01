@@ -3,6 +3,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Markup;
 using OrderDeck.App.Formatting;
@@ -51,11 +52,14 @@ public partial class App : Application
         var logger = Host.Services.GetRequiredService<ILogger<App>>();
         logger.LogInformation("OrderDeck starting up");
 
-        // Phase 4b: license bootstrap before showing main window
+        // Phase 4b: license bootstrap before showing main window.
+        // Wrapped in Task.Run so the await chain runs off the WPF dispatcher —
+        // otherwise GetResult() blocks the UI thread and any continuation that
+        // captured the dispatcher SyncContext would deadlock.
         var licenseService = Host.Services.GetRequiredService<LicenseService>();
         try
         {
-            licenseService.InitializeAsync().GetAwaiter().GetResult();
+            Task.Run(() => licenseService.InitializeAsync()).GetAwaiter().GetResult();
         }
         catch (Exception ex)
         {
@@ -81,7 +85,8 @@ public partial class App : Application
             if (dbMissingOrTiny)
             {
                 var restoreService = Host.Services.GetRequiredService<RestoreService>();
-                var available = restoreService.ListAvailableAsync().GetAwaiter().GetResult();
+                // Same Task.Run wrap — keep async I/O off the WPF dispatcher.
+                var available = Task.Run(() => restoreService.ListAvailableAsync()).GetAwaiter().GetResult();
                 if (available.Count > 0)
                 {
                     var dlg = new Views.RestoreDialog(restoreService, available);
@@ -130,10 +135,12 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
-        try { _intakeSync?.StopAsync(CancellationToken.None).GetAwaiter().GetResult(); } catch { /* ignore */ }
-        try { _heartbeat?.StopAsync(CancellationToken.None).GetAwaiter().GetResult(); } catch { /* ignore */ }
-        try { _ingestor?.StopAsync(CancellationToken.None).GetAwaiter().GetResult(); } catch { /* ignore */ }
-        try { _overlay?.StopAsync().GetAwaiter().GetResult(); } catch { /* ignore */ }
+        // Same Task.Run wrap as OnStartup — keep StopAsync continuations off the
+        // WPF dispatcher so GetResult() doesn't deadlock during shutdown.
+        try { Task.Run(() => _intakeSync?.StopAsync(CancellationToken.None) ?? Task.CompletedTask).GetAwaiter().GetResult(); } catch { /* ignore */ }
+        try { Task.Run(() => _heartbeat?.StopAsync(CancellationToken.None) ?? Task.CompletedTask).GetAwaiter().GetResult(); } catch { /* ignore */ }
+        try { Task.Run(() => _ingestor?.StopAsync(CancellationToken.None) ?? Task.CompletedTask).GetAwaiter().GetResult(); } catch { /* ignore */ }
+        try { Task.Run(() => _overlay?.StopAsync() ?? Task.CompletedTask).GetAwaiter().GetResult(); } catch { /* ignore */ }
         Host.Dispose();
         base.OnExit(e);
     }

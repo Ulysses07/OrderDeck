@@ -249,7 +249,19 @@ public sealed class AppHost : IDisposable
 
     public void Dispose()
     {
-        if (Services is IDisposable disposable) disposable.Dispose();
+        // Modern ServiceProvider only exposes async disposal when any registered
+        // service implements IAsyncDisposable (e.g. ExtensionBridgeServer / Kestrel).
+        // Calling sync Dispose() on it throws InvalidOperationException, so prefer
+        // DisposeAsync and fall back to sync only when permitted.
+        if (Services is IAsyncDisposable asyncDisposable)
+        {
+            System.Threading.Tasks.Task.Run(async () => await asyncDisposable.DisposeAsync())
+                .GetAwaiter().GetResult();
+        }
+        else if (Services is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
         Serilog.Log.CloseAndFlush();
     }
 }
