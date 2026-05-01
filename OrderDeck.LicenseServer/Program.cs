@@ -59,6 +59,7 @@ public class Program
         builder.Services.AddSingleton<WhatsAppLinkBuilder>();
         builder.Services.AddSingleton<BackupStorageService>();
         builder.Services.AddScoped<BackupRetentionService>();
+        builder.Services.AddScoped<BackupViewerService>();
 
         // JWT auth — two schemes (use IOptions so tests can override Jwt:SecretKey via config)
         builder.Services.AddAuthentication()
