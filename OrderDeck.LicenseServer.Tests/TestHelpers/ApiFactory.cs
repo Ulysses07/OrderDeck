@@ -23,8 +23,11 @@ namespace OrderDeck.LicenseServer.Tests.TestHelpers;
 public sealed class ApiFactory : WebApplicationFactory<Program>
 {
     private readonly string _dbName = Guid.NewGuid().ToString();
+    private readonly string _backupRoot = Path.Combine(Path.GetTempPath(), $"orderdeck-backup-{Guid.NewGuid():N}");
 
     public TestEmailSender Email { get; } = new();
+
+    public string BackupRoot => _backupRoot;
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -38,6 +41,9 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
                 ["Jwt:Issuer"] = "orderdeck-license-server",
                 ["Email:Provider"] = "disk",
                 ["App:PublicBaseUrl"] = "https://test.local",
+                ["Backup:MasterKeyHex"] = new string('a', 64),
+                ["Backup:StorageRoot"] = _backupRoot,
+                ["Backup:MaxBlobSizeMb"] = "200",
             });
         });
 
