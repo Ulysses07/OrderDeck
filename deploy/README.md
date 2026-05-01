@@ -102,7 +102,10 @@ This generates a 64-hex (32-byte) random key, writes it to `/opt/orderdeck/.env`
 and restarts the license-server. Backups are stored at `/opt/orderdeck/backups/{customerId}/`.
 
 **Rotation warning:** rotating the key makes all existing encrypted backups
-unreadable (no re-encryption flow in v1).
+unreadable (no re-encryption flow in v1). Key versioning is planned as
+Phase 5b — see `docs/superpowers/specs/2026-05-01-phase-5b-backup-key-versioning-design.md`
+for the migration path. Until that ships, do NOT rotate the key on a
+populated production deployment.
 
 ### Off-host replication (S3-compatible, optional)
 
