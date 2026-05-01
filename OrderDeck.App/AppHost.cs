@@ -162,6 +162,15 @@ public sealed class AppHost : IDisposable
                 AppPaths.DatabaseFile,
                 sp.GetRequiredService<IBackupClient>(),
                 sp.GetRequiredService<ILogger<BackupService>>()));
+        services.AddSingleton<RestoreService>(sp =>
+            new RestoreService(
+                AppPaths.DatabaseFile,
+                sp.GetRequiredService<IBackupClient>(),
+                sp.GetRequiredService<ILogger<RestoreService>>()));
+        services.AddHostedService(sp =>
+            new RestoreRecoveryService(
+                AppPaths.DatabaseFile,
+                sp.GetRequiredService<ILogger<RestoreRecoveryService>>()));
 
         // Licensing — Trial (Phase 4c)
         services.AddSingleton<HkcuTrialStorage>();
