@@ -49,6 +49,16 @@ public sealed class LicenseService : ITrialModeProbe
 
     public AuthRecord? CurrentAuth { get; private set; }
 
+    /// <summary>Re-reads the auth record from disk and pushes the access token onto
+    /// LicenseApiClient. Called by TokenRefresher after rotating the JWT pair so
+    /// any caller of <see cref="CurrentAuth"/> sees the fresh token immediately.</summary>
+    public void ReloadAuthFromStore()
+    {
+        var fresh = _authStore.Load();
+        CurrentAuth = fresh;
+        _api.SetAuthToken(fresh?.Token);
+    }
+
     public LicenseRecord? CurrentLicense { get; private set; }
 
     public event EventHandler<LicenseStatus>? StatusChanged;

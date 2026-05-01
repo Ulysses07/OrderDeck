@@ -147,6 +147,9 @@ public sealed class AppHost : IDisposable
         }).AddStandardResilienceHandler();  // retry on 5xx/network with exp. backoff; no retry on 4xx
         services.AddSingleton<LoginService>();
         services.AddSingleton<LicenseService>();
+        // TokenRefresher must be a singleton so its single-flight gate is shared
+        // across every HTTP path that triggers a 401 (BackupClient, LicenseApiClient).
+        services.AddSingleton<TokenRefresher>();
         services.AddHostedService<HeartbeatHostedService>();
 
         // Phase 5a — cloud backup
@@ -217,6 +220,14 @@ public sealed class AppHost : IDisposable
         services.AddTransient<Views.AccountDialog>();
 
         Services = services.BuildServiceProvider();
+
+        // Wire LicenseApiClient → TokenRefresher.TryRefreshAsync as the on-401
+        // callback. Done post-build because both services participate in a
+        // construction cycle (LicenseApiClient ← TokenRefresher ← LicenseApiClient
+        // via LicenseService) that DI can't resolve directly.
+        var licenseApi = Services.GetRequiredService<LicenseApiClient>();
+        var refresher = Services.GetRequiredService<TokenRefresher>();
+        licenseApi.OnUnauthorized = ct => refresher.TryRefreshAsync(ct);
 
         // Apply migrations once at boot
         Services.GetRequiredService<MigrationRunner>().Run();
