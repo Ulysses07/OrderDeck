@@ -5,8 +5,10 @@ using System.Windows;
 using System.Windows.Markup;
 using OrderDeck.App.Formatting;
 using OrderDeck.App.Views;
+using OrderDeck.App.Services;
 using OrderDeck.Chat.Ingestors;
 using OrderDeck.Core;
+using OrderDeck.Core.Sessions;
 using OrderDeck.Licensing;
 using OrderDeck.Licensing.Services;
 using OrderDeck.Overlay;
@@ -68,6 +70,11 @@ public partial class App : Application
                 return;
             }
         }
+
+        // Phase 5a — wire stream-end → cloud backup (fire-and-forget)
+        var sessionService = Host.Services.GetRequiredService<StreamSessionService>();
+        var backupService = Host.Services.GetRequiredService<BackupService>();
+        sessionService.SessionEnded += (_, _) => backupService.QueueBackup("stream-end");
 
         _overlay  = Host.Services.GetRequiredService<OverlayHost>();
         _ingestor = Host.Services.GetRequiredService<ChatBridgeIngestor>();
