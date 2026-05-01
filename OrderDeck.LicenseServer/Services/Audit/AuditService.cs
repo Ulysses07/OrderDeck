@@ -45,6 +45,12 @@ public sealed class AuditService : IAuditService
     public Task LogLogoutAsync(Guid adminId, string username, string? ipAddress, CancellationToken ct = default) =>
         WriteAsync(adminId, username, AuditEvents.AdminLogout, AuditTargets.Admin, adminId.ToString(), null, ipAddress, ct);
 
+    public Task LogCustomerEventAsync(
+        Guid customerId, string customerEmail,
+        string eventType, string targetType, string? targetId,
+        object? details, string? ipAddress, CancellationToken ct = default) =>
+        WriteAsync(customerId, customerEmail, eventType, targetType, targetId, details, ipAddress, ct);
+
     private async Task WriteAsync(
         Guid adminId, string username,
         string eventType, string targetType, string? targetId,

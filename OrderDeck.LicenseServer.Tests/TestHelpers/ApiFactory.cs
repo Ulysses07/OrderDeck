@@ -87,6 +87,8 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
                     RateLimitPartition.GetNoLimiter(string.Empty));
                 opts.AddPolicy("auth-login", _ =>
                     RateLimitPartition.GetNoLimiter(string.Empty));
+                opts.AddPolicy("auth-refresh", _ =>
+                    RateLimitPartition.GetNoLimiter(string.Empty));
                 opts.AddPolicy("intake-form-submit", _ =>
                     RateLimitPartition.GetNoLimiter(string.Empty));
                 opts.AddPolicy("backup-upload", _ =>

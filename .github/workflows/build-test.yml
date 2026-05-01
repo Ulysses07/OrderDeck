@@ -1,0 +1,69 @@
+name: build-test
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build-test:
+    # WPF projects target net10.0-windows, so the whole solution needs windows-latest.
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          # Pinned by global.json (rollForward latestFeature, allowPrerelease).
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'global.json') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      - name: Restore
+        run: dotnet restore OrderDeck.sln
+
+      - name: Build (Release)
+        run: dotnet build OrderDeck.sln --configuration Release --no-restore --nologo
+
+      - name: Test - OrderDeck.Tests (Core/App)
+        run: >
+          dotnet test OrderDeck.Tests/OrderDeck.Tests.csproj
+          --configuration Release --no-build --no-restore --nologo
+          --logger "console;verbosity=normal"
+          --logger "trx;LogFileName=core-app.trx"
+          --results-directory ${{ github.workspace }}/TestResults
+
+      - name: Test - OrderDeck.Licensing.Tests
+        run: >
+          dotnet test OrderDeck.Licensing.Tests/OrderDeck.Licensing.Tests.csproj
+          --configuration Release --no-build --no-restore --nologo
+          --logger "console;verbosity=normal"
+          --logger "trx;LogFileName=licensing.trx"
+          --results-directory ${{ github.workspace }}/TestResults
+
+      - name: Test - OrderDeck.LicenseServer.Tests
+        run: >
+          dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj
+          --configuration Release --no-build --no-restore --nologo
+          --logger "console;verbosity=normal"
+          --logger "trx;LogFileName=license-server.trx"
+          --results-directory ${{ github.workspace }}/TestResults
+          -- xUnit.ParallelizeAssembly=false
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: ${{ github.workspace }}/TestResults/*.trx
+          if-no-files-found: warn

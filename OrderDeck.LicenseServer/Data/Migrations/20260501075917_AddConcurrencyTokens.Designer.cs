@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using OrderDeck.LicenseServer.Data;
 
@@ -11,9 +12,11 @@ using OrderDeck.LicenseServer.Data;
 namespace OrderDeck.LicenseServer.Data.Migrations
 {
     [DbContext(typeof(LicenseDbContext))]
-    partial class LicenseDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260501075917_AddConcurrencyTokens")]
+    partial class AddConcurrencyTokens
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -452,47 +455,6 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.ToTable("PasswordResetTokens");
                 });
 
-            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.RefreshToken", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<string>("CreatedByIp")
-                        .HasMaxLength(64)
-                        .HasColumnType("nvarchar(64)");
-
-                    b.Property<Guid>("CustomerId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<DateTimeOffset>("ExpiresAt")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<string>("ReplacedByTokenHash")
-                        .HasMaxLength(64)
-                        .HasColumnType("nvarchar(64)");
-
-                    b.Property<DateTimeOffset?>("RevokedAt")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<string>("TokenHash")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("nvarchar(64)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("TokenHash")
-                        .IsUnique();
-
-                    b.HasIndex("CustomerId", "RevokedAt");
-
-                    b.ToTable("RefreshTokens");
-                });
-
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Sku", b =>
                 {
                     b.Property<string>("Code")
@@ -612,17 +574,6 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 });
 
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.PasswordResetToken", b =>
-                {
-                    b.HasOne("OrderDeck.LicenseServer.Domain.Customer", "Customer")
-                        .WithMany()
-                        .HasForeignKey("CustomerId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Customer");
-                });
-
-            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.RefreshToken", b =>
                 {
                     b.HasOne("OrderDeck.LicenseServer.Domain.Customer", "Customer")
                         .WithMany()

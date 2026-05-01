@@ -69,6 +69,26 @@ ADMIN_PASSWORD_HASH: see Phase 4a admin bootstrap docs (BCrypt-Net)
 - **Logs (live)**: `docker compose logs -f license-server`
 - **DB backup**: `docker compose exec sqlserver /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SQL_PASSWORD" -Q "BACKUP DATABASE OrderDeckLicense TO DISK = '/var/opt/mssql/backup/orderdeck-$(date +%F).bak'"`
 
+## EF migration history bootstrap (one-time, before first Migrate() deploy)
+
+The original deploy used `EnsureCreated()` so the DB has all the schema but no
+`__EFMigrationsHistory` table. The app now calls `Database.Migrate()` on
+startup; without the history table EF would try to re-apply every migration
+and fail with "table already exists".
+
+Apply once before the next deploy:
+
+```bash
+scp deploy/bootstrap-migration-history.sql root@72.62.53.86:/tmp/
+ssh root@72.62.53.86
+docker cp /tmp/bootstrap-migration-history.sql orderdeck-sqlserver:/tmp/
+docker exec -i orderdeck-sqlserver /opt/mssql-tools18/bin/sqlcmd \
+  -S localhost -U sa -P "$SQL_PASSWORD" -d OrderDeckLicense -C -No \
+  -i /tmp/bootstrap-migration-history.sql
+```
+
+Idempotent — re-running is a no-op.
+
 ## Cloud backup setup (Phase 5a)
 
 After initial deploy, bootstrap the AES master key:
@@ -83,6 +103,32 @@ and restarts the license-server. Backups are stored at `/opt/orderdeck/backups/{
 
 **Rotation warning:** rotating the key makes all existing encrypted backups
 unreadable (no re-encryption flow in v1).
+
+### Off-host replication (S3-compatible, optional)
+
+By default backups live only under `/opt/orderdeck/backups/` on the VPS.
+A host loss takes everything with it. Enable S3 replication by adding the
+following to `/opt/orderdeck/.env`:
+
+```env
+BACKUP_S3_ENABLED=true
+BACKUP_S3_SERVICE_URL=https://s3.us-west-001.backblazeb2.com   # B2 / AWS / Wasabi / MinIO
+BACKUP_S3_ACCESS_KEY=…
+BACKUP_S3_SECRET_KEY=…
+BACKUP_S3_BUCKET=orderdeck-prod
+BACKUP_S3_PREFIX=orderdeck-backups/
+```
+
+Behavior:
+- Each successful POST `/api/v1/me/backups` triggers a fire-and-forget upload
+  of the encrypted blob to S3 with key `{prefix}{customerId}/{filename}.bin`.
+- BestEffort=true (default in code): S3 errors logged + ignored, customer
+  POST still returns 200. Set `Backup:S3:BestEffort=false` to fail the POST
+  on S3 errors (stronger durability, more end-user latency).
+- Blobs are already AES-256-GCM encrypted before upload; bucket can be
+  public-read with no risk to backup contents (still recommend private).
+- No automatic deletion mirror — local retention prunes the VPS, S3 keeps
+  forever. Configure S3 lifecycle policies separately if needed.
 
 ## DNS
 

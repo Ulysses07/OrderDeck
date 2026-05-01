@@ -20,7 +20,10 @@ public sealed class JwtTokenService
 
     public (string Token, DateTimeOffset ExpiresAt) IssueCustomerToken(Guid customerId, string email)
     {
-        var expiresAt = DateTimeOffset.UtcNow.AddDays(7);
+        var lifetimeMinutes = _options.AccessTokenLifetimeMinutes > 0
+            ? _options.AccessTokenLifetimeMinutes
+            : 15;
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(lifetimeMinutes);
         var token = Build(JwtOptions.CustomerAudience, expiresAt,
             new Claim("sub", customerId.ToString()),
             new Claim("email", email));

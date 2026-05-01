@@ -16,6 +16,13 @@ public sealed class LicenseApiClient
 
     private readonly HttpClient _http;
 
+    /// <summary>Optional callback to refresh the bearer token when a 401 is observed.
+    /// Set by AppHost wiring after both LicenseApiClient and TokenRefresher are
+    /// resolved. Must return the new access token (and have already updated the
+    /// AuthStore), or null if rotation failed terminally — in which case the 401
+    /// propagates to the caller as InvalidCredentialsException.</summary>
+    public Func<CancellationToken, Task<string?>>? OnUnauthorized { get; set; }
+
     public LicenseApiClient(HttpClient http) => _http = http;
 
     public void SetAuthToken(string? token)
@@ -41,6 +48,21 @@ public sealed class LicenseApiClient
     {
         using var resp = await SendJsonAsync(HttpMethod.Post, "/api/v1/auth/resend-confirmation", req, ct);
         if ((int)resp.StatusCode is 202 or 200) return;
+        await ThrowMappedAsync(resp);
+    }
+
+    /// <summary>Anonymous endpoint — exchanges a valid refresh token for a fresh
+    /// access+refresh pair. The old refresh is revoked atomically server-side.
+    /// 401 → InvalidCredentialsException (caller should clear local auth + relogin).</summary>
+    public Task<LoginResponse> RefreshAsync(RefreshRequest req, CancellationToken ct = default)
+        => PostJsonExpectingJsonAsync<RefreshRequest, LoginResponse>("/api/v1/auth/refresh", req, ct);
+
+    /// <summary>Authenticated — revokes the supplied refresh token. Idempotent;
+    /// safe to call from a background "best-effort" path on logout.</summary>
+    public async Task LogoutAsync(LogoutRequest req, CancellationToken ct = default)
+    {
+        using var resp = await SendJsonAsync(HttpMethod.Post, "/api/v1/auth/logout", req, ct);
+        if ((int)resp.StatusCode is 204 or 200) return;
         await ThrowMappedAsync(resp);
     }
 
@@ -143,36 +165,63 @@ public sealed class LicenseApiClient
 
     private async Task<TResp> GetExpectingJsonAsync<TResp>(string path, CancellationToken ct)
     {
-        HttpResponseMessage resp;
-        try { resp = await _http.GetAsync(path, ct); }
-        catch (HttpRequestException ex) { throw new LicenseApiNetworkException(ex.Message, ex); }
-        catch (TaskCanceledException ex) when (!ct.IsCancellationRequested) { throw new LicenseApiNetworkException("timeout", ex); }
-
-        using (resp)
+        var canRefresh = OnUnauthorized is not null && !path.StartsWith("/api/v1/auth/");
+        for (var attempt = 0; ; attempt++)
         {
-            if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
-            return (await DeserializeAsync<TResp>(resp, ct))!;
+            HttpResponseMessage resp;
+            try { resp = await _http.GetAsync(path, ct); }
+            catch (HttpRequestException ex) { throw new LicenseApiNetworkException(ex.Message, ex); }
+            catch (TaskCanceledException ex) when (!ct.IsCancellationRequested) { throw new LicenseApiNetworkException("timeout", ex); }
+
+            if (resp.StatusCode == HttpStatusCode.Unauthorized && attempt == 0 && canRefresh)
+            {
+                resp.Dispose();
+                if (await OnUnauthorized!(ct) is null) continue;  // refresh failed → next attempt 401s deterministically
+                continue;
+            }
+
+            using (resp)
+            {
+                if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
+                return (await DeserializeAsync<TResp>(resp, ct))!;
+            }
         }
     }
 
     private async Task<HttpResponseMessage> SendJsonAsync<TReq>(
         HttpMethod method, string path, TReq body, CancellationToken ct)
     {
-        var req = new HttpRequestMessage(method, path)
+        // Two attempts max: original send → on 401, ask the refresh callback for
+        // a fresh token, rebuild the request (HttpRequestMessage is single-use)
+        // and try once more. Skip the retry path for the auth endpoints
+        // themselves — they SHOULD legitimately return 401 to the caller.
+        var canRefresh = OnUnauthorized is not null && !path.StartsWith("/api/v1/auth/");
+        for (var attempt = 0; ; attempt++)
         {
-            Content = JsonContent.Create(body, options: JsonOpts)
-        };
-        try
-        {
-            return await _http.SendAsync(req, ct);
-        }
-        catch (HttpRequestException ex)
-        {
-            throw new LicenseApiNetworkException(ex.Message, ex);
-        }
-        catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
-        {
-            throw new LicenseApiNetworkException("timeout", ex);
+            var req = new HttpRequestMessage(method, path)
+            {
+                Content = JsonContent.Create(body, options: JsonOpts)
+            };
+            HttpResponseMessage resp;
+            try { resp = await _http.SendAsync(req, ct); }
+            catch (HttpRequestException ex) { throw new LicenseApiNetworkException(ex.Message, ex); }
+            catch (TaskCanceledException ex) when (!ct.IsCancellationRequested) { throw new LicenseApiNetworkException("timeout", ex); }
+
+            if (resp.StatusCode != HttpStatusCode.Unauthorized || attempt > 0 || !canRefresh)
+                return resp;
+
+            resp.Dispose();
+            var refreshed = await OnUnauthorized!(ct);
+            if (refreshed is null)
+            {
+                // Rotation gave up. Re-issue the request once unauthenticated so
+                // the caller observes a deterministic 401 (not a stale resp).
+                req = new HttpRequestMessage(method, path) { Content = JsonContent.Create(body, options: JsonOpts) };
+                try { return await _http.SendAsync(req, ct); }
+                catch (HttpRequestException ex) { throw new LicenseApiNetworkException(ex.Message, ex); }
+                catch (TaskCanceledException ex) when (!ct.IsCancellationRequested) { throw new LicenseApiNetworkException("timeout", ex); }
+            }
+            // SetAuthToken already updated header inside OnUnauthorized; loop to retry.
         }
     }
 

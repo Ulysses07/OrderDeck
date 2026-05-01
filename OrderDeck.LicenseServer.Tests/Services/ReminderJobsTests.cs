@@ -55,7 +55,7 @@ public sealed class ReminderJobsTests : IClassFixture<ApiFactory>
         await jobs.SendRenewal14dAsync(default);
 
         _factory.Email.Sent.Count.Should().BeGreaterThan(sentBefore);
-        _factory.Email.Sent.Should().Contain(e => e.PlainBody.Contains(lic.LicenseKey));
+        _factory.Email.Sent.Should().Contain(e => e.PlainBody.Contains(LicenseKeyMasker.Mask(lic.LicenseKey)));
     }
 
     [Fact]
@@ -67,7 +67,7 @@ public sealed class ReminderJobsTests : IClassFixture<ApiFactory>
 
         await jobs.SendRenewal14dAsync(default);
 
-        _factory.Email.Sent.Should().NotContain(e => e.PlainBody.Contains(lic.LicenseKey));
+        _factory.Email.Sent.Should().NotContain(e => e.PlainBody.Contains(LicenseKeyMasker.Mask(lic.LicenseKey)));
     }
 
     [Fact]
@@ -79,7 +79,7 @@ public sealed class ReminderJobsTests : IClassFixture<ApiFactory>
 
         await jobs.SendRenewal14dAsync(default);
 
-        _factory.Email.Sent.Should().NotContain(e => e.PlainBody.Contains(lic.LicenseKey));
+        _factory.Email.Sent.Should().NotContain(e => e.PlainBody.Contains(LicenseKeyMasker.Mask(lic.LicenseKey)));
     }
 
     [Fact]
@@ -91,7 +91,7 @@ public sealed class ReminderJobsTests : IClassFixture<ApiFactory>
 
         await jobs.SendRenewal14dAsync(default);
 
-        _factory.Email.Sent.Should().NotContain(e => e.PlainBody.Contains(lic.LicenseKey));
+        _factory.Email.Sent.Should().NotContain(e => e.PlainBody.Contains(LicenseKeyMasker.Mask(lic.LicenseKey)));
     }
 
     [Fact]
@@ -102,11 +102,11 @@ public sealed class ReminderJobsTests : IClassFixture<ApiFactory>
         var jobs = scope.ServiceProvider.GetRequiredService<ReminderJobs>();
 
         await jobs.SendRenewal14dAsync(default);
-        var afterFirst = _factory.Email.Sent.Count(e => e.PlainBody.Contains(lic.LicenseKey));
+        var afterFirst = _factory.Email.Sent.Count(e => e.PlainBody.Contains(LicenseKeyMasker.Mask(lic.LicenseKey)));
         afterFirst.Should().Be(1);
 
         await jobs.SendRenewal14dAsync(default);   // 2nd call — dedup
-        var afterSecond = _factory.Email.Sent.Count(e => e.PlainBody.Contains(lic.LicenseKey));
+        var afterSecond = _factory.Email.Sent.Count(e => e.PlainBody.Contains(LicenseKeyMasker.Mask(lic.LicenseKey)));
         afterSecond.Should().Be(1);
     }
 
@@ -119,6 +119,6 @@ public sealed class ReminderJobsTests : IClassFixture<ApiFactory>
 
         await jobs.SendExpired1dAsync(default);
 
-        _factory.Email.Sent.Should().Contain(e => e.PlainBody.Contains(lic.LicenseKey));
+        _factory.Email.Sent.Should().Contain(e => e.PlainBody.Contains(LicenseKeyMasker.Mask(lic.LicenseKey)));
     }
 }

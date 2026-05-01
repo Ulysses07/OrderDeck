@@ -144,9 +144,12 @@ public sealed class AppHost : IDisposable
             var opt = sp.GetRequiredService<IOptions<LicensingOptions>>().Value;
             http.BaseAddress = new Uri(opt.ServerBaseUrl);
             http.Timeout = TimeSpan.FromSeconds(opt.RequestTimeoutSeconds);
-        });
+        }).AddStandardResilienceHandler();  // retry on 5xx/network with exp. backoff; no retry on 4xx
         services.AddSingleton<LoginService>();
         services.AddSingleton<LicenseService>();
+        // TokenRefresher must be a singleton so its single-flight gate is shared
+        // across every HTTP path that triggers a 401 (BackupClient, LicenseApiClient).
+        services.AddSingleton<TokenRefresher>();
         services.AddHostedService<HeartbeatHostedService>();
 
         // Phase 5a — cloud backup
@@ -156,7 +159,8 @@ public sealed class AppHost : IDisposable
             var opt = sp.GetRequiredService<IOptions<LicensingOptions>>().Value;
             http.BaseAddress = new Uri(opt.ServerBaseUrl);
             http.Timeout = TimeSpan.FromSeconds(opt.RequestTimeoutSeconds);
-        }).AddHttpMessageHandler<BearerAuthHandler>();
+        }).AddHttpMessageHandler<BearerAuthHandler>()
+          .AddStandardResilienceHandler();  // same resilience profile for backup uploads
         services.AddSingleton<BackupService>(sp =>
             new BackupService(
                 AppPaths.DatabaseFile,
@@ -217,6 +221,14 @@ public sealed class AppHost : IDisposable
 
         Services = services.BuildServiceProvider();
 
+        // Wire LicenseApiClient → TokenRefresher.TryRefreshAsync as the on-401
+        // callback. Done post-build because both services participate in a
+        // construction cycle (LicenseApiClient ← TokenRefresher ← LicenseApiClient
+        // via LicenseService) that DI can't resolve directly.
+        var licenseApi = Services.GetRequiredService<LicenseApiClient>();
+        var refresher = Services.GetRequiredService<TokenRefresher>();
+        licenseApi.OnUnauthorized = ct => refresher.TryRefreshAsync(ct);
+
         // Apply migrations once at boot
         Services.GetRequiredService<MigrationRunner>().Run();
 
@@ -249,7 +261,19 @@ public sealed class AppHost : IDisposable
 
     public void Dispose()
     {
-        if (Services is IDisposable disposable) disposable.Dispose();
+        // Modern ServiceProvider only exposes async disposal when any registered
+        // service implements IAsyncDisposable (e.g. ExtensionBridgeServer / Kestrel).
+        // Calling sync Dispose() on it throws InvalidOperationException, so prefer
+        // DisposeAsync and fall back to sync only when permitted.
+        if (Services is IAsyncDisposable asyncDisposable)
+        {
+            System.Threading.Tasks.Task.Run(async () => await asyncDisposable.DisposeAsync())
+                .GetAwaiter().GetResult();
+        }
+        else if (Services is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
         Serilog.Log.CloseAndFlush();
     }
 }

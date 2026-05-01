@@ -35,6 +35,7 @@ public class Program
         // Services
         builder.Services.AddSingleton<PasswordHasher>();
         builder.Services.AddSingleton<JwtTokenService>();
+        builder.Services.AddScoped<RefreshTokenService>();
         builder.Services.AddScoped<EmailConfirmationService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Licensing.LicenseIssuer>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Licensing.LicenseValidator>();
@@ -133,6 +134,14 @@ public class Program
                         PermitLimit = 3,
                         Window = TimeSpan.FromMinutes(1)
                     }));
+            opt.AddPolicy("auth-refresh", ctx =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                    factory: _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 30,
+                        Window = TimeSpan.FromMinutes(1)
+                    }));
             opt.AddPolicy("intake-form-submit", ctx =>
                 RateLimitPartition.GetFixedWindowLimiter(
                     partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
@@ -172,9 +181,24 @@ public class Program
                     }));
         });
 
-        // CORS — open for now (4d sıkılaştırılır)
+        // CORS — closed by default. Desktop app + Razor admin + public intake form are
+        // all same-origin / server-to-server, so no browser cross-origin client exists today.
+        // To allow a partner domain later, set Cors:AllowedOrigins (comma-separated) in env.
+        var corsOrigins = (builder.Configuration["Cors:AllowedOrigins"] ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         builder.Services.AddCors(opt =>
-            opt.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
+            opt.AddDefaultPolicy(p =>
+            {
+                if (corsOrigins.Length == 0)
+                {
+                    // No origins configured → deny all cross-origin (don't call WithOrigins("")).
+                    p.SetIsOriginAllowed(_ => false).DisallowCredentials();
+                }
+                else
+                {
+                    p.WithOrigins(corsOrigins).AllowAnyMethod().AllowAnyHeader().AllowCredentials();
+                }
+            }));
 
         builder.Services.AddHangfire(cfg => cfg
             .UseSimpleAssemblyNameTypeSerializer()
@@ -190,6 +214,25 @@ public class Program
                 }));
         builder.Services.AddHangfireServer();
 
+        // S3 off-host backup replication. Disabled-by-default; switch to the
+        // real implementation only when Backup:S3:Enabled=true. The no-op sink
+        // keeps controller code uniform without forcing every prod deployment
+        // to provision a bucket up-front.
+        var s3Enabled = builder.Configuration.GetValue<bool>("Backup:S3:Enabled");
+        if (s3Enabled)
+            builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Backup.IS3BackupSink,
+                                          OrderDeck.LicenseServer.Services.Backup.S3BackupSink>();
+        else
+            builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Backup.IS3BackupSink,
+                                          OrderDeck.LicenseServer.Services.Backup.NoOpS3BackupSink>();
+
+        // Health checks: /healthz (liveness, no DB) and /ready (readiness with DB ping).
+        // Caddy / monitoring polls /healthz every few seconds; deeper checks on /ready.
+        builder.Services.AddHealthChecks()
+            .AddDbContextCheck<LicenseDbContext>(
+                name: "licensedb",
+                tags: new[] { "ready", "db" });
+
         builder.Services.AddControllers();
         builder.Services.AddRazorPages(opt =>
         {
@@ -203,11 +246,17 @@ public class Program
 
         var app = builder.Build();
 
-        // Bootstrap: ensure DB created + seed admin user if config has hash
+        // Bootstrap: apply EF migrations on relational stores (prod SQL Server) or
+        // EnsureCreated on in-memory test stores (UseInMemoryDatabase doesn't support
+        // Migrate). Production must have __EFMigrationsHistory seeded — see
+        // deploy/bootstrap-migration-history.sql for the one-time prod backfill.
         using (var scope = app.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-            db.Database.EnsureCreated();
+            if (db.Database.IsRelational())
+                db.Database.Migrate();
+            else
+                db.Database.EnsureCreated();
             await SeedAdminAsync(db, app.Configuration);
         }
 
@@ -242,6 +291,17 @@ public class Program
         });
         app.MapControllers();
         app.MapRazorPages();
+
+        // Liveness — process up + dispatcher responsive. No deps. Used by orchestrators.
+        app.MapHealthChecks("/healthz", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+        {
+            Predicate = _ => false  // run zero checks → instant 200 if process is alive
+        });
+        // Readiness — DB reachable. Caddy / load balancers can use this to gate traffic.
+        app.MapHealthChecks("/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+        {
+            Predicate = check => check.Tags.Contains("ready")
+        });
 
         app.Run();
     }

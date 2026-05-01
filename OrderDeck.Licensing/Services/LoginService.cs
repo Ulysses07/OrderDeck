@@ -31,7 +31,10 @@ public sealed class LoginService
             Email: me.Email,
             Name: me.Name,
             Token: loginResp.Token,
-            TokenExpiresAt: loginResp.ExpiresAt));
+            TokenExpiresAt: loginResp.ExpiresAt,
+            // Phase 5b — server now returns refresh tokens; old servers leave nulls.
+            RefreshToken: loginResp.RefreshToken,
+            RefreshExpiresAt: loginResp.RefreshExpiresAt));
     }
 
     public Task RegisterAsync(string email, string name, string password, CancellationToken ct = default)
@@ -46,6 +49,17 @@ public sealed class LoginService
 
     public void Logout()
     {
+        // Best-effort revoke server-side. Don't block local clear on network —
+        // user pressed Logout, that must succeed locally even if offline.
+        var auth = _authStore.Load();
+        if (!string.IsNullOrEmpty(auth?.RefreshToken))
+        {
+            _ = Task.Run(async () =>
+            {
+                try { await _api.LogoutAsync(new LogoutRequest(auth.RefreshToken), CancellationToken.None); }
+                catch { /* offline / server down — refresh will expire on its own */ }
+            });
+        }
         _authStore.Clear();
         _api.SetAuthToken(null);
     }

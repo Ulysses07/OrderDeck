@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations;
+
 namespace OrderDeck.LicenseServer.Domain;
 
 public sealed class License
@@ -13,6 +15,15 @@ public sealed class License
     public DateTimeOffset ExpiresAt { get; set; }
     public DateTimeOffset? RevokedAt { get; set; }
     public string? RevokeReason { get; set; }
+
+    /// <summary>Bumped by ActivationManager on every activation lifecycle change so the
+    /// adjacent RowVersion fires a concurrency conflict if two slot-claims race.</summary>
+    public DateTimeOffset? LastActivationAt { get; set; }
+
+    /// <summary>SQL Server rowversion — EF treats it as a concurrency token; UPDATE
+    /// without matching version throws DbUpdateConcurrencyException.</summary>
+    [Timestamp]
+    public byte[] RowVersion { get; set; } = Array.Empty<byte>();
 
     public ICollection<Activation> Activations { get; } = new List<Activation>();
 }
