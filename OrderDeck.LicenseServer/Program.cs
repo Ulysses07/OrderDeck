@@ -1,5 +1,7 @@
+using System.Security.Claims;
 using System.Text;
 using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.Authentication;
 using Hangfire;
 using Hangfire.SqlServer;
 using OrderDeck.LicenseServer.Data;
@@ -137,6 +139,27 @@ public class Program
                     {
                         PermitLimit = int.TryParse(Environment.GetEnvironmentVariable("LIVEDECK_INTAKE_RATELIMIT_PER_HOUR"), out var n) ? n : 5,
                         Window = TimeSpan.FromHours(1)
+                    }));
+            opt.AddPolicy("backup-upload", httpContext =>
+                System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+                    partitionKey: httpContext.User.FindFirstValue(System.Security.Claims.ClaimTypes.NameIdentifier)
+                                 ?? httpContext.Connection.RemoteIpAddress?.ToString() ?? "anon",
+                    factory: _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 6,
+                        Window = TimeSpan.FromHours(1),
+                        QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0
+                    }));
+            opt.AddPolicy("backup-delete", httpContext =>
+                System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+                    partitionKey: httpContext.User.FindFirstValue(System.Security.Claims.ClaimTypes.NameIdentifier) ?? "anon",
+                    factory: _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 30,
+                        Window = TimeSpan.FromHours(1),
+                        QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0
                     }));
             opt.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
                 RateLimitPartition.GetFixedWindowLimiter(

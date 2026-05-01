@@ -89,6 +89,10 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
                     RateLimitPartition.GetNoLimiter(string.Empty));
                 opts.AddPolicy("intake-form-submit", _ =>
                     RateLimitPartition.GetNoLimiter(string.Empty));
+                opts.AddPolicy("backup-upload", _ =>
+                    RateLimitPartition.GetNoLimiter(string.Empty));
+                opts.AddPolicy("backup-delete", _ =>
+                    RateLimitPartition.GetNoLimiter(string.Empty));
                 opts.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(_ =>
                     RateLimitPartition.GetNoLimiter(string.Empty));
             });
