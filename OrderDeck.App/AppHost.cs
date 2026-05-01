@@ -144,7 +144,7 @@ public sealed class AppHost : IDisposable
             var opt = sp.GetRequiredService<IOptions<LicensingOptions>>().Value;
             http.BaseAddress = new Uri(opt.ServerBaseUrl);
             http.Timeout = TimeSpan.FromSeconds(opt.RequestTimeoutSeconds);
-        });
+        }).AddStandardResilienceHandler();  // retry on 5xx/network with exp. backoff; no retry on 4xx
         services.AddSingleton<LoginService>();
         services.AddSingleton<LicenseService>();
         services.AddHostedService<HeartbeatHostedService>();
@@ -156,7 +156,8 @@ public sealed class AppHost : IDisposable
             var opt = sp.GetRequiredService<IOptions<LicensingOptions>>().Value;
             http.BaseAddress = new Uri(opt.ServerBaseUrl);
             http.Timeout = TimeSpan.FromSeconds(opt.RequestTimeoutSeconds);
-        }).AddHttpMessageHandler<BearerAuthHandler>();
+        }).AddHttpMessageHandler<BearerAuthHandler>()
+          .AddStandardResilienceHandler();  // same resilience profile for backup uploads
         services.AddSingleton<BackupService>(sp =>
             new BackupService(
                 AppPaths.DatabaseFile,
