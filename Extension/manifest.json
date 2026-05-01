@@ -1,23 +1,42 @@
 {
   "manifest_version": 3,
   "name": "OrderDeck Chat Bridge",
-  "version": "1.1.0",
-  "description": "Forwards Instagram + TikTok Live chat to OrderDeck",
+  "version": "1.2.0",
+  "description": "Forwards Instagram, TikTok, Facebook, YouTube and Twitch Live chat to OrderDeck",
   "background": { "service_worker": "background.js" },
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.instagram.com/*",
-    "*://*.tiktok.com/*"
+    "*://*.tiktok.com/*",
+    "*://*.facebook.com/*",
+    "*://www.youtube.com/*",
+    "*://*.twitch.tv/*"
   ],
   "content_scripts": [
     {
       "matches": ["*://*.instagram.com/*"],
-      "js": ["content-instagram.js"],
+      "js": ["chat-bridge-core.js", "content-instagram.js"],
       "run_at": "document_idle"
     },
     {
       "matches": ["*://*.tiktok.com/*"],
-      "js": ["content-tiktok.js"],
+      "js": ["chat-bridge-core.js", "content-tiktok.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://*.facebook.com/*"],
+      "js": ["chat-bridge-core.js", "content-facebook.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://www.youtube.com/live_chat*"],
+      "js": ["chat-bridge-core.js", "content-youtube.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    },
+    {
+      "matches": ["*://*.twitch.tv/*"],
+      "js": ["chat-bridge-core.js", "content-twitch.js"],
       "run_at": "document_idle"
     }
   ],
