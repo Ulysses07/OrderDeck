@@ -205,6 +205,13 @@ public class Program
                 }));
         builder.Services.AddHangfireServer();
 
+        // Health checks: /healthz (liveness, no DB) and /ready (readiness with DB ping).
+        // Caddy / monitoring polls /healthz every few seconds; deeper checks on /ready.
+        builder.Services.AddHealthChecks()
+            .AddDbContextCheck<LicenseDbContext>(
+                name: "licensedb",
+                tags: new[] { "ready", "db" });
+
         builder.Services.AddControllers();
         builder.Services.AddRazorPages(opt =>
         {
@@ -263,6 +270,17 @@ public class Program
         });
         app.MapControllers();
         app.MapRazorPages();
+
+        // Liveness — process up + dispatcher responsive. No deps. Used by orchestrators.
+        app.MapHealthChecks("/healthz", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+        {
+            Predicate = _ => false  // run zero checks → instant 200 if process is alive
+        });
+        // Readiness — DB reachable. Caddy / load balancers can use this to gate traffic.
+        app.MapHealthChecks("/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+        {
+            Predicate = check => check.Tags.Contains("ready")
+        });
 
         app.Run();
     }
