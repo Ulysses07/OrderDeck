@@ -22,6 +22,7 @@ public sealed class MeBackupsController : ControllerBase
     private readonly IAuditService _audit;
     private readonly IS3BackupSink _s3;
     private readonly Microsoft.Extensions.Options.IOptions<BackupOptions> _opt;
+    private readonly OrderDeck.LicenseServer.Services.Observability.OrderDeckMetrics _metrics;
     private readonly ILogger<MeBackupsController> _log;
 
     public MeBackupsController(
@@ -31,6 +32,7 @@ public sealed class MeBackupsController : ControllerBase
         IAuditService audit,
         IS3BackupSink s3,
         Microsoft.Extensions.Options.IOptions<BackupOptions> opt,
+        OrderDeck.LicenseServer.Services.Observability.OrderDeckMetrics metrics,
         ILogger<MeBackupsController> log)
     {
         _db = db;
@@ -39,6 +41,7 @@ public sealed class MeBackupsController : ControllerBase
         _audit = audit;
         _s3 = s3;
         _opt = opt;
+        _metrics = metrics;
         _log = log;
     }
 
@@ -106,6 +109,9 @@ public sealed class MeBackupsController : ControllerBase
         };
         _db.CustomerBackups.Add(backup);
         await _db.SaveChangesAsync(ct);
+
+        _metrics.BackupsUploaded.Add(1);
+        _metrics.BackupUploadBytes.Record(encrypted.Length);
 
         await _retention.EnforceAfterInsertAsync(CustomerId, backup.Id, ct);
 

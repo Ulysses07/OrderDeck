@@ -17,5 +17,19 @@
 license.orderdeck.app {
     import security_headers
     encode gzip
+
+    # Block public access to internal observability endpoints (Phase 5e).
+    # /metrics (Prometheus scrape) and the Hangfire dashboard should only be
+    # reachable from a tunnelled SSH session or a private monitoring host.
+    # Add monitoring CIDR(s) to the allowlist when standing up Grafana/Prometheus.
+    @internal_paths path /metrics* /hangfire*
+    @internal_blocked {
+        path /metrics* /hangfire*
+        not remote_ip 127.0.0.1/32 ::1/128
+    }
+    respond @internal_blocked "Not Found" 404 {
+        close
+    }
+
     reverse_proxy license-server:8080
 }

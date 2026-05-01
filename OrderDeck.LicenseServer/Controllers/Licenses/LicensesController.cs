@@ -39,7 +39,10 @@ public sealed class LicensesController : ControllerBase
     }
 
     [HttpPost("activate")]
-    public async Task<IActionResult> Activate([FromBody] ActivateRequest req, CancellationToken ct)
+    public async Task<IActionResult> Activate(
+        [FromBody] ActivateRequest req,
+        [FromServices] OrderDeck.LicenseServer.Services.Observability.OrderDeckMetrics metrics,
+        CancellationToken ct)
     {
         var customerId = GetCustomerId();
         try
@@ -47,10 +50,12 @@ public sealed class LicensesController : ControllerBase
             var act = await _activations.ActivateAsync(
                 req.LicenseKey, customerId, req.HardwareFingerprint, req.MachineName,
                 req.LegacyHardwareFingerprint, ct);
+            metrics.LicensesActivated.Add(1);
             return StatusCode(201, new { activationId = act.Id, expiresAt = act.License?.ExpiresAt });
         }
         catch (ActivationManager.ActivationException ex)
         {
+            metrics.LicenseActivationFailures.Add(1, new KeyValuePair<string, object?>("code", ex.Code));
             return Problem(title: ex.Code, detail: ex.Message, statusCode: 409);
         }
     }

@@ -67,6 +67,11 @@ services:
       Backup__S3__Bucket: "${BACKUP_S3_BUCKET:-}"
       Backup__S3__Prefix: "${BACKUP_S3_PREFIX:-orderdeck-backups/}"
       Cors__AllowedOrigins: "${CORS_ALLOWED_ORIGINS:-}"
+      # OpenTelemetry export. Set OTEL_EXPORTER_OTLP_ENDPOINT in .env to push
+      # traces+metrics to a collector (Grafana Cloud, Honeycomb, Tempo, etc.).
+      # Empty = no push; /metrics scrape endpoint still works regardless.
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
+      OTEL_EXPORTER_OTLP_HEADERS: "${OTEL_EXPORTER_OTLP_HEADERS:-}"
     volumes:
       - ./keys:/root/.aspnet/DataProtection-Keys
       - ./backups:/app/Backups
