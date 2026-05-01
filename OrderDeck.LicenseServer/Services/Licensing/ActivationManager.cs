@@ -20,8 +20,18 @@ public sealed class ActivationManager
         public ActivationException(string code, string message) : base(message) => Code = code;
     }
 
+    public Task<Activation> ActivateAsync(
+        string licenseKey, Guid customerId, string hardwareFingerprint, string? machineName,
+        CancellationToken ct = default)
+        => ActivateAsync(licenseKey, customerId, hardwareFingerprint, machineName, legacyFingerprint: null, ct);
+
+    /// <summary>Phase 5d: callers can pass the legacy (username-based) fingerprint
+    /// alongside the new (SID-based) one. If a row exists for the legacy hash
+    /// we silently migrate it forward — the customer keeps their slot without
+    /// re-activating after a username rename.</summary>
     public async Task<Activation> ActivateAsync(
         string licenseKey, Guid customerId, string hardwareFingerprint, string? machineName,
+        string? legacyFingerprint,
         CancellationToken ct = default)
     {
         // Retry loop guards the slot-allocation race: if two devices try to claim the
@@ -51,6 +61,20 @@ public sealed class ActivationManager
             // Same device already active? Update LastSeenAt — no slot impact, no race.
             var existing = license.Activations
                 .FirstOrDefault(a => a.HardwareFingerprint == hardwareFingerprint && a.DeactivatedAt is null);
+
+            // Phase 5d transition: if the new hash didn't match but the legacy one
+            // does, migrate that row forward to the new fingerprint. This is the
+            // only place we mutate HardwareFingerprint after creation.
+            if (existing is null && !string.IsNullOrEmpty(legacyFingerprint))
+            {
+                existing = license.Activations
+                    .FirstOrDefault(a => a.HardwareFingerprint == legacyFingerprint && a.DeactivatedAt is null);
+                if (existing is not null)
+                {
+                    existing.HardwareFingerprint = hardwareFingerprint;
+                }
+            }
+
             if (existing is not null)
             {
                 existing.LastSeenAt = DateTimeOffset.UtcNow;
@@ -90,18 +114,23 @@ public sealed class ActivationManager
         }
     }
 
-    public async Task<bool> DeactivateAsync(
+    public Task<bool> DeactivateAsync(
         string licenseKey, Guid customerId, string hardwareFingerprint, CancellationToken ct = default)
+        => DeactivateAsync(licenseKey, customerId, hardwareFingerprint, legacyFingerprint: null, ct);
+
+    public async Task<bool> DeactivateAsync(
+        string licenseKey, Guid customerId, string hardwareFingerprint, string? legacyFingerprint,
+        CancellationToken ct = default)
     {
         for (var attempt = 0; ; attempt++)
         {
-            var activation = await _db.Activations
-                .Include(a => a.License)
-                .FirstOrDefaultAsync(a =>
-                    a.License.LicenseKey == licenseKey &&
-                    a.License.CustomerId == customerId &&
-                    a.HardwareFingerprint == hardwareFingerprint &&
-                    a.DeactivatedAt == null, ct);
+            // Phase 5d: accept either fingerprint and migrate the row forward.
+            var activation = await FindActivationAsync(licenseKey, customerId, hardwareFingerprint, ct);
+            if (activation is null && !string.IsNullOrEmpty(legacyFingerprint))
+            {
+                activation = await FindActivationAsync(licenseKey, customerId, legacyFingerprint, ct);
+                if (activation is not null) activation.HardwareFingerprint = hardwareFingerprint;
+            }
 
             if (activation is null) return false;
 
@@ -119,18 +148,22 @@ public sealed class ActivationManager
         }
     }
 
-    public async Task<bool> HeartbeatAsync(
+    public Task<bool> HeartbeatAsync(
         string licenseKey, Guid customerId, string hardwareFingerprint, CancellationToken ct = default)
+        => HeartbeatAsync(licenseKey, customerId, hardwareFingerprint, legacyFingerprint: null, ct);
+
+    public async Task<bool> HeartbeatAsync(
+        string licenseKey, Guid customerId, string hardwareFingerprint, string? legacyFingerprint,
+        CancellationToken ct = default)
     {
         for (var attempt = 0; ; attempt++)
         {
-            var activation = await _db.Activations
-                .Include(a => a.License)
-                .FirstOrDefaultAsync(a =>
-                    a.License.LicenseKey == licenseKey &&
-                    a.License.CustomerId == customerId &&
-                    a.HardwareFingerprint == hardwareFingerprint &&
-                    a.DeactivatedAt == null, ct);
+            var activation = await FindActivationAsync(licenseKey, customerId, hardwareFingerprint, ct);
+            if (activation is null && !string.IsNullOrEmpty(legacyFingerprint))
+            {
+                activation = await FindActivationAsync(licenseKey, customerId, legacyFingerprint, ct);
+                if (activation is not null) activation.HardwareFingerprint = hardwareFingerprint;
+            }
 
             if (activation is null) return false;
 
@@ -144,6 +177,16 @@ public sealed class ActivationManager
             }
         }
     }
+
+    private Task<Activation?> FindActivationAsync(
+        string licenseKey, Guid customerId, string hardwareFingerprint, CancellationToken ct)
+        => _db.Activations
+            .Include(a => a.License)
+            .FirstOrDefaultAsync(a =>
+                a.License.LicenseKey == licenseKey &&
+                a.License.CustomerId == customerId &&
+                a.HardwareFingerprint == hardwareFingerprint &&
+                a.DeactivatedAt == null, ct);
 
     public async Task<bool> ForceDeactivateAsync(Guid activationId, CancellationToken ct = default)
     {

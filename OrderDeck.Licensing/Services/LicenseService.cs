@@ -152,7 +152,7 @@ public sealed class LicenseService : ITrialModeProbe
         try
         {
             var response = await _api.ValidateAsync(
-                new ValidateRequest(license.LicenseKey, _hwId.GetHardwareId()), ct);
+                new ValidateRequest(license.LicenseKey, _hwId.GetHardwareId(), _hwId.GetLegacyHardwareId()), ct);
 
             if (response is null)
             {
@@ -199,9 +199,10 @@ public sealed class LicenseService : ITrialModeProbe
         }
 
         var hwId = _hwId.GetHardwareId();
-        await _api.ActivateAsync(new ActivateRequest(licenseKey, hwId, machineName), ct);
+        var legacyHwId = _hwId.GetLegacyHardwareId();
+        await _api.ActivateAsync(new ActivateRequest(licenseKey, hwId, machineName, legacyHwId), ct);
 
-        var validate = await _api.ValidateAsync(new ValidateRequest(licenseKey, hwId), ct);
+        var validate = await _api.ValidateAsync(new ValidateRequest(licenseKey, hwId, legacyHwId), ct);
         if (validate is null)
         {
             SetStatus(LicenseStatus.NoLicense);

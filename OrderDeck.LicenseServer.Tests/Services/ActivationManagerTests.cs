@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Licensing;
@@ -157,4 +158,66 @@ public class ActivationManagerTests : IClassFixture<ApiFactory>
     }
 
     private sealed record Result(bool Ok, string? Code, Guid? ActivationId);
+
+    // ─── Phase 5d: legacy → new fingerprint migration ──────────────────
+
+    [Fact]
+    public async Task Activate_with_legacy_hash_migrates_existing_row_in_place()
+    {
+        var (customer, license) = await SeedAsync(slots: 1);
+
+        // First activation under legacy fingerprint — pretend the customer was
+        // activated before the SID migration shipped.
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var mgr = scope.ServiceProvider.GetRequiredService<ActivationManager>();
+            await mgr.ActivateAsync(license.LicenseKey, customer.Id, "fp-legacy", "PC");
+        }
+
+        // Now the client upgrades — sends new fingerprint + the legacy one
+        // alongside. Server must migrate the row, NOT consume a second slot.
+        Activation result;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var mgr = scope.ServiceProvider.GetRequiredService<ActivationManager>();
+            result = await mgr.ActivateAsync(
+                license.LicenseKey, customer.Id, "fp-new", machineName: "PC",
+                legacyFingerprint: "fp-legacy");
+        }
+
+        // Slot count still 1 (migrated, not added).
+        using var verifyScope = _factory.Services.CreateScope();
+        var db = verifyScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var active = await db.Activations
+            .Where(a => a.LicenseId == license.Id && a.DeactivatedAt == null)
+            .ToListAsync();
+        active.Should().HaveCount(1);
+        active[0].HardwareFingerprint.Should().Be("fp-new", "row should be migrated forward");
+        active[0].Id.Should().Be(result.Id, "same row, just renamed");
+    }
+
+    [Fact]
+    public async Task Heartbeat_with_legacy_hash_migrates_row_too()
+    {
+        var (customer, license) = await SeedAsync(slots: 1);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var mgr = scope.ServiceProvider.GetRequiredService<ActivationManager>();
+            await mgr.ActivateAsync(license.LicenseKey, customer.Id, "fp-legacy", "PC");
+        }
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var mgr = scope.ServiceProvider.GetRequiredService<ActivationManager>();
+            var ok = await mgr.HeartbeatAsync(
+                license.LicenseKey, customer.Id, hardwareFingerprint: "fp-new",
+                legacyFingerprint: "fp-legacy");
+            ok.Should().BeTrue();
+        }
+
+        using var verifyScope = _factory.Services.CreateScope();
+        var db = verifyScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var row = await db.Activations.FirstAsync(a => a.LicenseId == license.Id && a.DeactivatedAt == null);
+        row.HardwareFingerprint.Should().Be("fp-new");
+    }
 }

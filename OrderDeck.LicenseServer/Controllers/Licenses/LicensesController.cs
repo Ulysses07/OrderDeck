@@ -19,8 +19,8 @@ public sealed class LicensesController : ControllerBase
         _activations = activations;
     }
 
-    public sealed record LicenseHwRequest(string LicenseKey, string HardwareFingerprint);
-    public sealed record ActivateRequest(string LicenseKey, string HardwareFingerprint, string? MachineName);
+    public sealed record LicenseHwRequest(string LicenseKey, string HardwareFingerprint, string? LegacyHardwareFingerprint = null);
+    public sealed record ActivateRequest(string LicenseKey, string HardwareFingerprint, string? MachineName, string? LegacyHardwareFingerprint = null);
 
     [HttpPost("validate")]
     public async Task<IActionResult> Validate([FromBody] LicenseHwRequest req, CancellationToken ct)
@@ -45,7 +45,8 @@ public sealed class LicensesController : ControllerBase
         try
         {
             var act = await _activations.ActivateAsync(
-                req.LicenseKey, customerId, req.HardwareFingerprint, req.MachineName, ct);
+                req.LicenseKey, customerId, req.HardwareFingerprint, req.MachineName,
+                req.LegacyHardwareFingerprint, ct);
             return StatusCode(201, new { activationId = act.Id, expiresAt = act.License?.ExpiresAt });
         }
         catch (ActivationManager.ActivationException ex)
@@ -58,7 +59,8 @@ public sealed class LicensesController : ControllerBase
     public async Task<IActionResult> Deactivate([FromBody] LicenseHwRequest req, CancellationToken ct)
     {
         var customerId = GetCustomerId();
-        var ok = await _activations.DeactivateAsync(req.LicenseKey, customerId, req.HardwareFingerprint, ct);
+        var ok = await _activations.DeactivateAsync(
+            req.LicenseKey, customerId, req.HardwareFingerprint, req.LegacyHardwareFingerprint, ct);
         if (!ok) return NotFound();
         return NoContent();
     }
@@ -67,7 +69,8 @@ public sealed class LicensesController : ControllerBase
     public async Task<IActionResult> Heartbeat([FromBody] LicenseHwRequest req, CancellationToken ct)
     {
         var customerId = GetCustomerId();
-        var ok = await _activations.HeartbeatAsync(req.LicenseKey, customerId, req.HardwareFingerprint, ct);
+        var ok = await _activations.HeartbeatAsync(
+            req.LicenseKey, customerId, req.HardwareFingerprint, req.LegacyHardwareFingerprint, ct);
         if (!ok) return Problem(title: "not-activated", statusCode: 404);
 
         // Return basic status for client offline grace handling (4b will need this).
