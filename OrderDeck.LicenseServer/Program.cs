@@ -214,6 +214,18 @@ public class Program
                 }));
         builder.Services.AddHangfireServer();
 
+        // S3 off-host backup replication. Disabled-by-default; switch to the
+        // real implementation only when Backup:S3:Enabled=true. The no-op sink
+        // keeps controller code uniform without forcing every prod deployment
+        // to provision a bucket up-front.
+        var s3Enabled = builder.Configuration.GetValue<bool>("Backup:S3:Enabled");
+        if (s3Enabled)
+            builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Backup.IS3BackupSink,
+                                          OrderDeck.LicenseServer.Services.Backup.S3BackupSink>();
+        else
+            builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Backup.IS3BackupSink,
+                                          OrderDeck.LicenseServer.Services.Backup.NoOpS3BackupSink>();
+
         // Health checks: /healthz (liveness, no DB) and /ready (readiness with DB ping).
         // Caddy / monitoring polls /healthz every few seconds; deeper checks on /ready.
         builder.Services.AddHealthChecks()

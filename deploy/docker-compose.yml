@@ -54,6 +54,12 @@ services:
       Backup__MasterKeyHex: "${BACKUP_MASTER_KEY}"
       Backup__StorageRoot: "/app/Backups"
       Backup__MaxBlobSizeMb: "200"
+      Backup__S3__Enabled: "${BACKUP_S3_ENABLED:-false}"
+      Backup__S3__ServiceUrl: "${BACKUP_S3_SERVICE_URL:-}"
+      Backup__S3__AccessKey: "${BACKUP_S3_ACCESS_KEY:-}"
+      Backup__S3__SecretKey: "${BACKUP_S3_SECRET_KEY:-}"
+      Backup__S3__Bucket: "${BACKUP_S3_BUCKET:-}"
+      Backup__S3__Prefix: "${BACKUP_S3_PREFIX:-orderdeck-backups/}"
       Cors__AllowedOrigins: "${CORS_ALLOWED_ORIGINS:-}"
     volumes:
       - ./keys:/root/.aspnet/DataProtection-Keys
