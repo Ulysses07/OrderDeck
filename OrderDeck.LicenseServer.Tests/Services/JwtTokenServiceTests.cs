@@ -31,7 +31,9 @@ public class JwtTokenServiceTests
         jwt.Issuer.Should().Be("orderdeck-license-server");
         jwt.Claims.Should().ContainSingle(c => c.Type == "sub" && c.Value == customerId.ToString());
         jwt.Claims.Should().ContainSingle(c => c.Type == "email" && c.Value == "user@example.com");
-        expiresAt.Should().BeCloseTo(DateTimeOffset.UtcNow.AddDays(7), TimeSpan.FromMinutes(1));
+        // Customer access tokens are now short-lived (default 15 minutes); the long-lived
+        // session is held in the rotating refresh-token store, not the JWT itself.
+        expiresAt.Should().BeCloseTo(DateTimeOffset.UtcNow.AddMinutes(15), TimeSpan.FromMinutes(1));
     }
 
     [Fact]

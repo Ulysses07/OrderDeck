@@ -1,6 +1,8 @@
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Audit;
 using OrderDeck.LicenseServer.Services.Auth;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
@@ -16,15 +18,20 @@ public sealed class AuthController : ControllerBase
     private readonly EmailConfirmationService _confirm;
     private readonly JwtTokenService _jwt;
     private readonly PasswordResetService _resetService;
+    private readonly RefreshTokenService _refreshTokens;
+    private readonly IAuditService _audit;
 
     public AuthController(LicenseDbContext db, PasswordHasher hasher,
-        EmailConfirmationService confirm, JwtTokenService jwt, PasswordResetService resetService)
+        EmailConfirmationService confirm, JwtTokenService jwt, PasswordResetService resetService,
+        RefreshTokenService refreshTokens, IAuditService audit)
     {
         _db = db;
         _hasher = hasher;
         _confirm = confirm;
         _jwt = jwt;
         _resetService = resetService;
+        _refreshTokens = refreshTokens;
+        _audit = audit;
     }
 
     public sealed record RegisterRequest(string Email, string Name, string Password);
@@ -85,7 +92,13 @@ public sealed class AuthController : ControllerBase
     }
 
     public sealed record LoginRequest(string Email, string Password);
-    public sealed record LoginResponse(string Token, DateTimeOffset ExpiresAt);
+    public sealed record LoginResponse(
+        string Token,
+        DateTimeOffset ExpiresAt,
+        string RefreshToken,
+        DateTimeOffset RefreshExpiresAt,
+        Guid CustomerId,
+        string Email);
 
     [HttpPost("login")]
     [EnableRateLimiting("auth-login")]
@@ -99,7 +112,65 @@ public sealed class AuthController : ControllerBase
             return Problem(title: "email-not-confirmed", statusCode: 403);
 
         var (token, expiresAt) = _jwt.IssueCustomerToken(customer.Id, customer.Email);
-        return Ok(new LoginResponse(token, expiresAt));
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+        var (refreshRaw, refreshExpiresAt, refreshId) = await _refreshTokens.IssueAsync(customer.Id, ip, ct);
+
+        await _audit.LogCustomerEventAsync(
+            customer.Id, customer.Email,
+            AuditEvents.RefreshTokenIssued, AuditTargets.RefreshToken, refreshId.ToString(),
+            null, ip, ct);
+
+        return Ok(new LoginResponse(token, expiresAt, refreshRaw, refreshExpiresAt, customer.Id, customer.Email));
+    }
+
+    public sealed record RefreshRequest(string RefreshToken);
+
+    [HttpPost("refresh")]
+    [EnableRateLimiting("auth-refresh")]
+    public async Task<IActionResult> Refresh([FromBody] RefreshRequest req, CancellationToken ct)
+    {
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+        try
+        {
+            var result = await _refreshTokens.RotateAsync(req.RefreshToken ?? string.Empty, ip, ct);
+
+            await _audit.LogCustomerEventAsync(
+                result.CustomerId, result.Email,
+                AuditEvents.RefreshTokenRotated, AuditTargets.RefreshToken, result.NewRefreshTokenId.ToString(),
+                null, ip, ct);
+
+            return Ok(new LoginResponse(
+                result.AccessToken, result.AccessExpiresAt,
+                result.RefreshToken, result.RefreshExpiresAt,
+                result.CustomerId, result.Email));
+        }
+        catch (RefreshTokenInvalidException)
+        {
+            return Problem(title: "invalid-refresh-token", statusCode: 401);
+        }
+    }
+
+    public sealed record LogoutRequest(string RefreshToken);
+
+    [HttpPost("logout")]
+    [Authorize(AuthenticationSchemes = "Bearer-Customer")]
+    public async Task<IActionResult> Logout([FromBody] LogoutRequest req, CancellationToken ct)
+    {
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+        var result = await _refreshTokens.RevokeAsync(req.RefreshToken ?? string.Empty, ct);
+        if (result.Revoked)
+        {
+            // Resolve customer email for audit attribution.
+            var email = await _db.Customers
+                .Where(c => c.Id == result.CustomerId)
+                .Select(c => c.Email)
+                .FirstOrDefaultAsync(ct) ?? "(unknown)";
+            await _audit.LogCustomerEventAsync(
+                result.CustomerId, email,
+                AuditEvents.RefreshTokenRevoked, AuditTargets.RefreshToken, result.TokenId.ToString(),
+                null, ip, ct);
+        }
+        return NoContent();
     }
 
     public sealed record PasswordResetRequestBody(string Email);

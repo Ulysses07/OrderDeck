@@ -9,6 +9,9 @@ public static class AuditEvents
     public const string LicenseRevoke = "license.revoke";
     public const string LicenseExtend = "license.extend";
     public const string ActivationForceDeactivate = "activation.force-deactivate";
+    public const string RefreshTokenIssued = "RefreshTokenIssued";
+    public const string RefreshTokenRotated = "RefreshTokenRotated";
+    public const string RefreshTokenRevoked = "RefreshTokenRevoked";
 }
 
 public static class AuditTargets
@@ -17,4 +20,5 @@ public static class AuditTargets
     public const string Customer = "customer";
     public const string License = "license";
     public const string Activation = "activation";
+    public const string RefreshToken = "RefreshToken";
 }

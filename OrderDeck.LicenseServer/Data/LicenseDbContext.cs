@@ -19,6 +19,7 @@ public sealed class LicenseDbContext : DbContext
     public DbSet<IntakeFormConfig> IntakeFormConfigs => Set<IntakeFormConfig>();
     public DbSet<IntakeFormSubmission> IntakeFormSubmissions => Set<IntakeFormSubmission>();
     public DbSet<CustomerBackup> CustomerBackups => Set<CustomerBackup>();
+    public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -153,6 +154,18 @@ public sealed class LicenseDbContext : DbContext
             e.HasIndex(b => new { b.CustomerId, b.CreatedAt })
                 .IsDescending(false, true)
                 .HasDatabaseName("IX_CustomerBackups_CustomerId_CreatedAt_DESC");
+        });
+
+        mb.Entity<RefreshToken>(b =>
+        {
+            b.HasKey(t => t.Id);
+            b.Property(t => t.TokenHash).HasMaxLength(64).IsRequired();
+            b.Property(t => t.ReplacedByTokenHash).HasMaxLength(64);
+            b.Property(t => t.CreatedByIp).HasMaxLength(64);
+            b.HasOne(t => t.Customer).WithMany()
+                .HasForeignKey(t => t.CustomerId).OnDelete(DeleteBehavior.Cascade);
+            b.HasIndex(t => t.TokenHash).IsUnique();
+            b.HasIndex(t => new { t.CustomerId, t.RevokedAt });
         });
 
         // Seed SKUs

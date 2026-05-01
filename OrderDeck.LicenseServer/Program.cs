@@ -35,6 +35,7 @@ public class Program
         // Services
         builder.Services.AddSingleton<PasswordHasher>();
         builder.Services.AddSingleton<JwtTokenService>();
+        builder.Services.AddScoped<RefreshTokenService>();
         builder.Services.AddScoped<EmailConfirmationService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Licensing.LicenseIssuer>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Licensing.LicenseValidator>();
@@ -131,6 +132,14 @@ public class Program
                     factory: _ => new FixedWindowRateLimiterOptions
                     {
                         PermitLimit = 3,
+                        Window = TimeSpan.FromMinutes(1)
+                    }));
+            opt.AddPolicy("auth-refresh", ctx =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                    factory: _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 30,
                         Window = TimeSpan.FromMinutes(1)
                     }));
             opt.AddPolicy("intake-form-submit", ctx =>
