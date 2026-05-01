@@ -1,0 +1,62 @@
+@page "/admin/customers/{id:guid}/backups"
+@model IndexModel
+@{
+    ViewData["Title"] = "Yedekler";
+}
+
+<a asp-page="/Admin/Customers/Detail" asp-route-id="@Model.Customer!.Id">← Müşteri detayına dön</a>
+
+<h2>Yedekler — @Model.Customer.Email</h2>
+
+@{
+    var nonMilestoneCount = Model.Backups.Count(b => !b.IsMonthlyMilestone);
+    var milestoneCount = Model.Backups.Count(b => b.IsMonthlyMilestone);
+}
+<p class="text-muted">@nonMilestoneCount/5 son yedek + @milestoneCount aylık milestone</p>
+
+@if (Model.Backups.Count == 0)
+{
+    <div class="alert alert-info">Bu müşterinin henüz yedeği yok.</div>
+}
+else
+{
+    <table class="table table-hover">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Tarih</th>
+                <th>Boyut</th>
+                <th>Aylık</th>
+                <th>Makine</th>
+                <th>İşlem</th>
+            </tr>
+        </thead>
+        <tbody>
+            @{ var rowNum = Model.Backups.Count; }
+            @foreach (var b in Model.Backups)
+            {
+                <tr>
+                    <td>#@rowNum</td>
+                    <td>@b.CreatedAt.ToString("dd MMM yyyy HH:mm")</td>
+                    <td>@($"{b.SizeBytes / 1024.0 / 1024.0:F1} MB")</td>
+                    <td>@(b.IsMonthlyMilestone ? "✓" : "")</td>
+                    <td>@(b.MachineName ?? "—")</td>
+                    <td>
+                        <a class="btn btn-sm btn-primary"
+                           asp-page="/Admin/Customers/Backups/Summary"
+                           asp-route-id="@Model.Customer.Id"
+                           asp-route-backupId="@b.Id">Görüntüle</a>
+                        <form method="post" class="d-inline"
+                              asp-page-handler="Delete"
+                              asp-route-id="@Model.Customer.Id"
+                              asp-route-backupId="@b.Id"
+                              onsubmit="return confirm('Bu yedek kalıcı olarak silinecek. Emin misin?');">
+                            <button type="submit" class="btn btn-sm btn-danger">Sil</button>
+                        </form>
+                    </td>
+                </tr>
+                rowNum--;
+            }
+        </tbody>
+    </table>
+}
