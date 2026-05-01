@@ -26,4 +26,11 @@ public sealed class CustomerBackup
 
     public string? UserAgent { get; set; }
     public string? MachineName { get; set; }
+
+    /// <summary>Phase 5b: which master key version this blob was encrypted under.
+    /// 0 = pre-Phase-5b unversioned envelope (no version byte on disk).
+    /// >=1 = Phase 5b versioned envelope (first byte is the key version).
+    /// Stored in DB so the right key is selectable on decrypt; without this
+    /// column the server couldn't tell two key generations apart.</summary>
+    public int KeyVersion { get; set; }
 }

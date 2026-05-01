@@ -101,11 +101,34 @@ ssh root@72.62.53.86
 This generates a 64-hex (32-byte) random key, writes it to `/opt/orderdeck/.env`,
 and restarts the license-server. Backups are stored at `/opt/orderdeck/backups/{customerId}/`.
 
-**Rotation warning:** rotating the key makes all existing encrypted backups
-unreadable (no re-encryption flow in v1). Key versioning is planned as
-Phase 5b — see `docs/superpowers/specs/2026-05-01-phase-5b-backup-key-versioning-design.md`
-for the migration path. Until that ships, do NOT rotate the key on a
-populated production deployment.
+**Rotation (Phase 5b — versioned key ring):** Master keys are now a versioned
+ring. Rotating no longer breaks history — old keys stay in the ring and decrypt
+the blobs they originally wrote. To rotate:
+
+1. Generate a fresh 64-hex key (`openssl rand -hex 32`).
+2. Add it to `.env` at the next free version slot, keeping all existing keys
+   in place. For example, going from active=v0 to active=v1:
+
+   ```env
+   # Existing legacy field — leave it; it's the v0 key the historical blobs
+   # were encrypted with. Removing it would brick those blobs.
+   BACKUP_MASTER_KEY=<existing 64-hex>
+
+   # New ring entries
+   BACKUP_MASTERKEYS_1=<new 64-hex>
+   BACKUP_ACTIVEKEYVERSION=1
+   ```
+3. Restart the license-server. From now on every new upload writes a v1
+   envelope; v0 blobs continue to decrypt with the v0 key.
+4. Eventually (when no v0 blobs remain — check via SQL
+   `SELECT KeyVersion, COUNT(*) FROM CustomerBackups GROUP BY KeyVersion;`),
+   you can remove the v0 key from `.env`. Keep ALL versions referenced by
+   any live row.
+
+**Compromise scenario:** if a key version is suspected leaked, bump active
+to a fresh version, then audit + delete affected blobs (they're encrypted
+under the leaked key, retention can't help). Customers will upload fresh
+backups under the new active version.
 
 ### Off-host replication (S3-compatible, optional)
 

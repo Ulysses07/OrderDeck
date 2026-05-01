@@ -14,6 +14,10 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
+using OrderDeck.LicenseServer.Services.Observability;
 
 namespace OrderDeck.LicenseServer;
 
@@ -30,9 +34,19 @@ public class Program
         builder.Services.Configure<OrderDeck.LicenseServer.Services.Audit.AuditRetentionOptions>(
             builder.Configuration.GetSection("Audit:Retention"));
 
-        // DbContext
+        // DbContext (primary — used for all writes + reads when no replica configured).
         builder.Services.AddDbContext<LicenseDbContext>(opt =>
             opt.UseSqlServer(builder.Configuration.GetConnectionString("LicenseDb")));
+
+        // Read-only DbContext for HA-aware deployments. Routes to a SQL Server
+        // AlwaysOn read replica when ConnectionStrings:LicenseDbReadOnly is set,
+        // else falls back to the primary connection string. Read paths
+        // (admin list/detail, customer export) can opt in by injecting
+        // LicenseReadOnlyDbContext instead of LicenseDbContext.
+        var readOnlyConn = builder.Configuration.GetConnectionString("LicenseDbReadOnly")
+                           ?? builder.Configuration.GetConnectionString("LicenseDb");
+        builder.Services.AddDbContext<LicenseReadOnlyDbContext>(opt =>
+            opt.UseSqlServer(readOnlyConn));
 
         // Services
         builder.Services.AddSingleton<PasswordHasher>();
@@ -229,6 +243,37 @@ public class Program
             builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Backup.IS3BackupSink,
                                           OrderDeck.LicenseServer.Services.Backup.NoOpS3BackupSink>();
 
+        // OpenTelemetry: tracing + metrics. Custom OrderDeckMetrics meter is
+        // registered as a singleton so domain code can inject it. AspNetCore +
+        // Http + Runtime instrumentations cover request latency, GC, threadpool,
+        // outbound HTTP for free. Prometheus exporter exposes /metrics; OTLP
+        // exporter pushes to whatever endpoint OTEL_EXPORTER_OTLP_ENDPOINT
+        // points at (env var; absent → no push, /metrics still works).
+        builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Observability.OrderDeckMetrics>();
+        builder.Services.AddOpenTelemetry()
+            .ConfigureResource(r => r.AddService(
+                serviceName: "orderdeck-license-server",
+                serviceVersion: typeof(Program).Assembly.GetName().Version?.ToString() ?? "1.0"))
+            .WithTracing(t => t
+                .AddAspNetCoreInstrumentation(opt =>
+                {
+                    // Don't trace the noisy probes — they 200 in <1ms and would
+                    // dominate the trace volume.
+                    opt.Filter = ctx =>
+                        !ctx.Request.Path.StartsWithSegments("/healthz") &&
+                        !ctx.Request.Path.StartsWithSegments("/ready") &&
+                        !ctx.Request.Path.StartsWithSegments("/metrics");
+                })
+                .AddHttpClientInstrumentation()
+                .AddOtlpExporterIfConfigured(builder.Configuration))
+            .WithMetrics(m => m
+                .AddAspNetCoreInstrumentation()
+                .AddHttpClientInstrumentation()
+                .AddRuntimeInstrumentation()
+                .AddMeter(OrderDeck.LicenseServer.Services.Observability.OrderDeckMetrics.MeterName)
+                .AddPrometheusExporter()
+                .AddOtlpExporterIfConfigured(builder.Configuration));
+
         // Health checks: /healthz (liveness, no DB) and /ready (readiness with DB ping).
         // Caddy / monitoring polls /healthz every few seconds; deeper checks on /ready.
         builder.Services.AddHealthChecks()
@@ -301,6 +346,11 @@ public class Program
         });
         app.MapControllers();
         app.MapRazorPages();
+
+        // Prometheus scrape endpoint at /metrics. Always-on signal regardless of
+        // OTLP push state. Restrict via Caddy if exposing to public internet —
+        // the exporter itself is unauthenticated by design.
+        app.MapPrometheusScrapingEndpoint();
 
         // Liveness — process up + dispatcher responsive. No deps. Used by orchestrators.
         app.MapHealthChecks("/healthz", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions

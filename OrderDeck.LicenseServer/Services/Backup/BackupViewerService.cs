@@ -33,7 +33,7 @@ public sealed class BackupViewerService
             ?? throw new InvalidOperationException($"Backup {backupId} not found");
 
         var encrypted = await _storage.ReadBlobAsync(b.BlobPath, ct);
-        var zipBytes = _storage.Decrypt(encrypted);
+        var zipBytes = _storage.Decrypt(encrypted, b.KeyVersion);
 
         var tempDir = Path.Combine(Path.GetTempPath(), $"orderdeck-view-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempDir);

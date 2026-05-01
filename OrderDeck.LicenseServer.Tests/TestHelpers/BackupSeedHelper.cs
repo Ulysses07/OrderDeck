@@ -32,7 +32,7 @@ public static class BackupSeedHelper
         await db.SaveChangesAsync();
 
         var zipBytes = BuildSampleDbZip();
-        var encrypted = storage.Encrypt(zipBytes);
+        var (encrypted, keyVersion) = storage.Encrypt(zipBytes);
         var path = await storage.WriteBlobAsync(customer.Id, encrypted);
 
         var backup = new CustomerBackup
@@ -43,7 +43,8 @@ public static class BackupSeedHelper
             SizeBytes = encrypted.Length,
             ChecksumSha256 = new string('a', 64),
             CreatedAt = DateTimeOffset.UtcNow,
-            IsMonthlyMilestone = false
+            IsMonthlyMilestone = false,
+            KeyVersion = keyVersion
         };
         db.CustomerBackups.Add(backup);
         await db.SaveChangesAsync();

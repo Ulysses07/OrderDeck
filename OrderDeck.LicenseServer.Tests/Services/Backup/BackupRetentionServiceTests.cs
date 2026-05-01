@@ -43,7 +43,8 @@ public class BackupRetentionServiceTests : IClassFixture<ApiFactory>
         LicenseDbContext db, BackupStorageService storage, Guid customerId, DateTimeOffset createdAt)
     {
         var bytes = await Task.FromResult(new byte[] { 1, 2, 3 });
-        var path = await storage.WriteBlobAsync(customerId, storage.Encrypt(bytes));
+        var (envelope, _) = storage.Encrypt(bytes);
+        var path = await storage.WriteBlobAsync(customerId, envelope);
         var b = new CustomerBackup
         {
             Id = Guid.NewGuid(),

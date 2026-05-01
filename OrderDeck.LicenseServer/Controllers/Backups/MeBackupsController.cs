@@ -22,6 +22,7 @@ public sealed class MeBackupsController : ControllerBase
     private readonly IAuditService _audit;
     private readonly IS3BackupSink _s3;
     private readonly Microsoft.Extensions.Options.IOptions<BackupOptions> _opt;
+    private readonly OrderDeck.LicenseServer.Services.Observability.OrderDeckMetrics _metrics;
     private readonly ILogger<MeBackupsController> _log;
 
     public MeBackupsController(
@@ -31,6 +32,7 @@ public sealed class MeBackupsController : ControllerBase
         IAuditService audit,
         IS3BackupSink s3,
         Microsoft.Extensions.Options.IOptions<BackupOptions> opt,
+        OrderDeck.LicenseServer.Services.Observability.OrderDeckMetrics metrics,
         ILogger<MeBackupsController> log)
     {
         _db = db;
@@ -39,6 +41,7 @@ public sealed class MeBackupsController : ControllerBase
         _audit = audit;
         _s3 = s3;
         _opt = opt;
+        _metrics = metrics;
         _log = log;
     }
 
@@ -88,7 +91,7 @@ public sealed class MeBackupsController : ControllerBase
             }
         }
 
-        var encrypted = _storage.Encrypt(bytes);
+        var (encrypted, keyVersion) = _storage.Encrypt(bytes);
         var blobPath = await _storage.WriteBlobAsync(CustomerId, encrypted, ct);
 
         var backup = new CustomerBackup
@@ -101,10 +104,14 @@ public sealed class MeBackupsController : ControllerBase
             CreatedAt = DateTimeOffset.UtcNow,
             IsMonthlyMilestone = false,
             UserAgent = Request.Headers["User-Agent"].ToString(),
-            MachineName = Request.Headers["X-Machine-Name"].ToString()
+            MachineName = Request.Headers["X-Machine-Name"].ToString(),
+            KeyVersion = keyVersion
         };
         _db.CustomerBackups.Add(backup);
         await _db.SaveChangesAsync(ct);
+
+        _metrics.BackupsUploaded.Add(1);
+        _metrics.BackupUploadBytes.Record(encrypted.Length);
 
         await _retention.EnforceAfterInsertAsync(CustomerId, backup.Id, ct);
 
@@ -166,7 +173,7 @@ public sealed class MeBackupsController : ControllerBase
         if (b is null) return NotFound();
 
         var encrypted = await _storage.ReadBlobAsync(b.BlobPath, ct);
-        var plaintext = _storage.Decrypt(encrypted);
+        var plaintext = _storage.Decrypt(encrypted, b.KeyVersion);
         return File(plaintext, "application/octet-stream", $"orderdeck-backup-{b.CreatedAt:yyyyMMdd-HHmmss}.zip");
     }
 

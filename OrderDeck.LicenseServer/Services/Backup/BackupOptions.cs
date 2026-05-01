@@ -2,7 +2,24 @@ namespace OrderDeck.LicenseServer.Services.Backup;
 
 public sealed class BackupOptions
 {
+    /// <summary>Pre-Phase-5b single static key. Treated as version-0 in the
+    /// new ring when present. New deployments should use <see cref="MasterKeys"/>
+    /// + <see cref="ActiveKeyVersion"/> instead.</summary>
     public string MasterKeyHex { get; set; } = "";
+
+    /// <summary>Phase 5b key ring. Map of versionNumber → 64-hex AES-256 key.
+    /// Version 0 is reserved for the legacy unversioned envelope (rows whose
+    /// CustomerBackup.KeyVersion == 0 — the migration default). Add a new
+    /// version + bump <see cref="ActiveKeyVersion"/> to rotate going forward;
+    /// keep ALL keys ever used in the ring as long as any blob references them.</summary>
+    public Dictionary<int, string> MasterKeys { get; set; } = new();
+
+    /// <summary>Which key version new uploads encrypt under. Must exist in
+    /// <see cref="MasterKeys"/>. Default 0 means "use the legacy MasterKeyHex
+    /// path" — picked so an existing deployment with only MasterKeyHex set
+    /// keeps working bytewise-identically until the operator opts into v1.</summary>
+    public int ActiveKeyVersion { get; set; } = 0;
+
     public string StorageRoot { get; set; } = "/app/Backups";
     public int MaxBlobSizeMb { get; set; } = 200;
 
