@@ -4,6 +4,7 @@ using Hangfire;
 using Hangfire.SqlServer;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Backup;
 using OrderDeck.LicenseServer.Services.Email;
 using OrderDeck.LicenseServer.Services.IntakeForm;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -23,6 +24,7 @@ public class Program
         // Options binding
         builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection("Jwt"));
         builder.Services.Configure<SmtpOptions>(builder.Configuration.GetSection("Smtp"));
+        builder.Services.Configure<BackupOptions>(builder.Configuration.GetSection("Backup"));
 
         // DbContext
         builder.Services.AddDbContext<LicenseDbContext>(opt =>
@@ -53,6 +55,7 @@ public class Program
         builder.Services.AddScoped<AdminActionEmailService>();
         builder.Services.AddScoped<IntakeFormService>();
         builder.Services.AddSingleton<WhatsAppLinkBuilder>();
+        builder.Services.AddSingleton<BackupStorageService>();
 
         // JWT auth — two schemes (use IOptions so tests can override Jwt:SecretKey via config)
         builder.Services.AddAuthentication()
