@@ -172,9 +172,24 @@ public class Program
                     }));
         });
 
-        // CORS — open for now (4d sıkılaştırılır)
+        // CORS — closed by default. Desktop app + Razor admin + public intake form are
+        // all same-origin / server-to-server, so no browser cross-origin client exists today.
+        // To allow a partner domain later, set Cors:AllowedOrigins (comma-separated) in env.
+        var corsOrigins = (builder.Configuration["Cors:AllowedOrigins"] ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         builder.Services.AddCors(opt =>
-            opt.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
+            opt.AddDefaultPolicy(p =>
+            {
+                if (corsOrigins.Length == 0)
+                {
+                    // No origins configured → deny all cross-origin (don't call WithOrigins("")).
+                    p.SetIsOriginAllowed(_ => false).DisallowCredentials();
+                }
+                else
+                {
+                    p.WithOrigins(corsOrigins).AllowAnyMethod().AllowAnyHeader().AllowCredentials();
+                }
+            }));
 
         builder.Services.AddHangfire(cfg => cfg
             .UseSimpleAssemblyNameTypeSerializer()
@@ -203,11 +218,17 @@ public class Program
 
         var app = builder.Build();
 
-        // Bootstrap: ensure DB created + seed admin user if config has hash
+        // Bootstrap: apply EF migrations on relational stores (prod SQL Server) or
+        // EnsureCreated on in-memory test stores (UseInMemoryDatabase doesn't support
+        // Migrate). Production must have __EFMigrationsHistory seeded — see
+        // deploy/bootstrap-migration-history.sql for the one-time prod backfill.
         using (var scope = app.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-            db.Database.EnsureCreated();
+            if (db.Database.IsRelational())
+                db.Database.Migrate();
+            else
+                db.Database.EnsureCreated();
             await SeedAdminAsync(db, app.Configuration);
         }
 

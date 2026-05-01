@@ -92,4 +92,72 @@ public class BackupStorageServiceTests
         act.Should().Throw<InvalidOperationException>()
             .WithMessage("*MasterKeyHex*64*");
     }
+
+    [Fact]
+    public async Task ReadBlob_PathOutsideStorageRoot_Throws()
+    {
+        var (svc, tempRoot) = Make();
+        try
+        {
+            // Try to read a file outside the configured storage root.
+            var outsideFile = Path.Combine(Path.GetTempPath(), $"orderdeck-evil-{Guid.NewGuid():N}.txt");
+            await File.WriteAllBytesAsync(outsideFile, new byte[] { 0xDE, 0xAD });
+            try
+            {
+                Func<Task> act = async () => await svc.ReadBlobAsync(outsideFile);
+                await act.Should().ThrowAsync<UnauthorizedAccessException>();
+            }
+            finally { File.Delete(outsideFile); }
+        }
+        finally { Directory.Delete(tempRoot, recursive: true); }
+    }
+
+    [Fact]
+    public async Task ReadBlob_TraversalViaDotDot_Throws()
+    {
+        var (svc, tempRoot) = Make();
+        try
+        {
+            // tempRoot/customer/.. resolves to tempRoot, but tempRoot/customer/../../../etc/passwd
+            // resolves outside. Real-world: BlobPath in DB tampered to "{StorageRoot}/c/../../etc/passwd".
+            var traversal = Path.Combine(tempRoot, "anycustomer", "..", "..", "outside.bin");
+            Func<Task> act = async () => await svc.ReadBlobAsync(traversal);
+            await act.Should().ThrowAsync<UnauthorizedAccessException>();
+        }
+        finally { Directory.Delete(tempRoot, recursive: true); }
+    }
+
+    [Fact]
+    public void DeleteBlob_PathOutsideStorageRoot_DoesNotDelete()
+    {
+        var (svc, tempRoot) = Make();
+        var outsideFile = Path.Combine(Path.GetTempPath(), $"orderdeck-keep-{Guid.NewGuid():N}.txt");
+        try
+        {
+            File.WriteAllBytes(outsideFile, new byte[] { 1 });
+            // DeleteBlob swallows exceptions internally — verify the target file survives.
+            svc.DeleteBlob(outsideFile);
+            File.Exists(outsideFile).Should().BeTrue("path traversal must be blocked silently");
+        }
+        finally
+        {
+            if (File.Exists(outsideFile)) File.Delete(outsideFile);
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ReadBlob_LegitPathInsideRoot_Succeeds()
+    {
+        var (svc, tempRoot) = Make();
+        try
+        {
+            var customerId = Guid.NewGuid();
+            var path = await svc.WriteBlobAsync(customerId, new byte[] { 9, 9, 9 }, default);
+            // Roundtrip: write returned path is canonical, read must accept it.
+            var read = await svc.ReadBlobAsync(path);
+            read.Should().BeEquivalentTo(new byte[] { 9, 9, 9 });
+        }
+        finally { Directory.Delete(tempRoot, recursive: true); }
+    }
 }

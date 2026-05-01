@@ -75,6 +75,7 @@ public sealed class BackupStorageService
 
     public async Task<byte[]> ReadBlobAsync(string blobPath, CancellationToken ct = default)
     {
+        EnsurePathInsideStorageRoot(blobPath);
         return await File.ReadAllBytesAsync(blobPath, ct);
     }
 
@@ -82,11 +83,35 @@ public sealed class BackupStorageService
     {
         try
         {
+            EnsurePathInsideStorageRoot(blobPath);
             if (File.Exists(blobPath)) File.Delete(blobPath);
         }
         catch (Exception ex)
         {
             _log.LogWarning(ex, "Failed to delete backup blob {Path}", blobPath);
+        }
+    }
+
+    /// <summary>
+    /// Defense-in-depth against path traversal: BlobPath comes from the database, but if
+    /// a row is ever tampered with (DB injection, restore from compromised dump, etc.) we
+    /// must not let an attacker-controlled path escape the configured storage root.
+    /// Throws UnauthorizedAccessException on any escape attempt.
+    /// </summary>
+    private void EnsurePathInsideStorageRoot(string blobPath)
+    {
+        if (string.IsNullOrWhiteSpace(blobPath))
+            throw new ArgumentException("BlobPath must not be empty.", nameof(blobPath));
+
+        var rootFull = Path.GetFullPath(_opt.StorageRoot);
+        if (!rootFull.EndsWith(Path.DirectorySeparatorChar))
+            rootFull += Path.DirectorySeparatorChar;
+
+        var blobFull = Path.GetFullPath(blobPath);
+        if (!blobFull.StartsWith(rootFull, StringComparison.Ordinal))
+        {
+            _log.LogError("Blob path traversal attempt blocked: {Blob} not under {Root}", blobFull, rootFull);
+            throw new UnauthorizedAccessException("Blob path is outside the configured storage root.");
         }
     }
 }

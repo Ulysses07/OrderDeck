@@ -69,6 +69,26 @@ ADMIN_PASSWORD_HASH: see Phase 4a admin bootstrap docs (BCrypt-Net)
 - **Logs (live)**: `docker compose logs -f license-server`
 - **DB backup**: `docker compose exec sqlserver /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SQL_PASSWORD" -Q "BACKUP DATABASE OrderDeckLicense TO DISK = '/var/opt/mssql/backup/orderdeck-$(date +%F).bak'"`
 
+## EF migration history bootstrap (one-time, before first Migrate() deploy)
+
+The original deploy used `EnsureCreated()` so the DB has all the schema but no
+`__EFMigrationsHistory` table. The app now calls `Database.Migrate()` on
+startup; without the history table EF would try to re-apply every migration
+and fail with "table already exists".
+
+Apply once before the next deploy:
+
+```bash
+scp deploy/bootstrap-migration-history.sql root@72.62.53.86:/tmp/
+ssh root@72.62.53.86
+docker cp /tmp/bootstrap-migration-history.sql orderdeck-sqlserver:/tmp/
+docker exec -i orderdeck-sqlserver /opt/mssql-tools18/bin/sqlcmd \
+  -S localhost -U sa -P "$SQL_PASSWORD" -d OrderDeckLicense -C -No \
+  -i /tmp/bootstrap-migration-history.sql
+```
+
+Idempotent — re-running is a no-op.
+
 ## Cloud backup setup (Phase 5a)
 
 After initial deploy, bootstrap the AES master key:
