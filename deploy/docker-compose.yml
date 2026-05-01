@@ -51,7 +51,13 @@ services:
       Smtp__FromName: "OrderDeck"
       Admin__InitialUsername: "${ADMIN_USERNAME:-admin}"
       Admin__InitialPasswordHash: "${ADMIN_PASSWORD_HASH}"
-      Backup__MasterKeyHex: "${BACKUP_MASTER_KEY}"
+      Backup__MasterKeyHex: "${BACKUP_MASTER_KEY:-}"
+      # Phase 5b — key ring. Add ${BACKUP_MASTERKEYS_1}, _2, ... as you rotate.
+      # ASP.NET Core binds Backup__MasterKeys__1 → Dictionary<int,string> entry [1].
+      Backup__MasterKeys__0: "${BACKUP_MASTERKEYS_0:-}"
+      Backup__MasterKeys__1: "${BACKUP_MASTERKEYS_1:-}"
+      Backup__MasterKeys__2: "${BACKUP_MASTERKEYS_2:-}"
+      Backup__ActiveKeyVersion: "${BACKUP_ACTIVEKEYVERSION:-0}"
       Backup__StorageRoot: "/app/Backups"
       Backup__MaxBlobSizeMb: "200"
       Backup__S3__Enabled: "${BACKUP_S3_ENABLED:-false}"

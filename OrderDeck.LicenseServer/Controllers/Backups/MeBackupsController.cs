@@ -88,7 +88,7 @@ public sealed class MeBackupsController : ControllerBase
             }
         }
 
-        var encrypted = _storage.Encrypt(bytes);
+        var (encrypted, keyVersion) = _storage.Encrypt(bytes);
         var blobPath = await _storage.WriteBlobAsync(CustomerId, encrypted, ct);
 
         var backup = new CustomerBackup
@@ -101,7 +101,8 @@ public sealed class MeBackupsController : ControllerBase
             CreatedAt = DateTimeOffset.UtcNow,
             IsMonthlyMilestone = false,
             UserAgent = Request.Headers["User-Agent"].ToString(),
-            MachineName = Request.Headers["X-Machine-Name"].ToString()
+            MachineName = Request.Headers["X-Machine-Name"].ToString(),
+            KeyVersion = keyVersion
         };
         _db.CustomerBackups.Add(backup);
         await _db.SaveChangesAsync(ct);
@@ -166,7 +167,7 @@ public sealed class MeBackupsController : ControllerBase
         if (b is null) return NotFound();
 
         var encrypted = await _storage.ReadBlobAsync(b.BlobPath, ct);
-        var plaintext = _storage.Decrypt(encrypted);
+        var plaintext = _storage.Decrypt(encrypted, b.KeyVersion);
         return File(plaintext, "application/octet-stream", $"orderdeck-backup-{b.CreatedAt:yyyyMMdd-HHmmss}.zip");
     }
 

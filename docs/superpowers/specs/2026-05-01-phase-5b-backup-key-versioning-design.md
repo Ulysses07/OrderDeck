@@ -1,8 +1,8 @@
 # Phase 5b — Backup Master Key Versioning Design
 
-**Status:** Backlog
+**Status:** SHIPPED — code on `fix/remaining-high-gaps`, includes EF migration `AddBackupKeyVersion` and BackupStorageService rewrite. Bootstrap-migration-history.sql does NOT pre-mark this migration; it runs for real on first deploy.
 **Source:** Enterprise audit critical finding #6 (deferred from `fix/critical-security-hardening`)
-**Author:** captured 2026-05-01 after the security-hardening sweep merged as `993cdc9`
+**Author:** captured 2026-05-01 after the security-hardening sweep merged as `993cdc9`; updated when implementation landed.
 
 ---
 

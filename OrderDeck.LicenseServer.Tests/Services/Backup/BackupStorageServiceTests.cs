@@ -29,9 +29,10 @@ public class BackupStorageServiceTests
         try
         {
             var plaintext = Encoding.UTF8.GetBytes("hello world — orderdeck.db payload");
-            var encrypted = svc.Encrypt(plaintext);
+            var (encrypted, version) = svc.Encrypt(plaintext);
             encrypted.Length.Should().BeGreaterThan(plaintext.Length); // nonce + tag overhead
-            var decrypted = svc.Decrypt(encrypted);
+            version.Should().Be(0, "default ApiFactory test config uses MasterKeyHex → v0");
+            var decrypted = svc.Decrypt(encrypted, version);
             decrypted.Should().BeEquivalentTo(plaintext);
         }
         finally { Directory.Delete(tempRoot, recursive: true); }
@@ -44,11 +45,11 @@ public class BackupStorageServiceTests
         try
         {
             var plaintext = Encoding.UTF8.GetBytes("constant");
-            var c1 = svc.Encrypt(plaintext);
-            var c2 = svc.Encrypt(plaintext);
+            var (c1, _) = svc.Encrypt(plaintext);
+            var (c2, _) = svc.Encrypt(plaintext);
             c1.Should().NotBeEquivalentTo(c2);
-            svc.Decrypt(c1).Should().BeEquivalentTo(plaintext);
-            svc.Decrypt(c2).Should().BeEquivalentTo(plaintext);
+            svc.Decrypt(c1, 0).Should().BeEquivalentTo(plaintext);
+            svc.Decrypt(c2, 0).Should().BeEquivalentTo(plaintext);
         }
         finally { Directory.Delete(tempRoot, recursive: true); }
     }
@@ -59,12 +60,147 @@ public class BackupStorageServiceTests
         var (svc, tempRoot) = Make();
         try
         {
-            var encrypted = svc.Encrypt(Encoding.UTF8.GetBytes("secret"));
+            var (encrypted, version) = svc.Encrypt(Encoding.UTF8.GetBytes("secret"));
             encrypted[encrypted.Length - 1] ^= 0xFF;
-            Action act = () => svc.Decrypt(encrypted);
+            Action act = () => svc.Decrypt(encrypted, version);
             act.Should().Throw<System.Security.Cryptography.AuthenticationTagMismatchException>();
         }
         finally { Directory.Delete(tempRoot, recursive: true); }
+    }
+
+    // ─── Phase 5b: key versioning ─────────────────────────────────────
+
+    private static (BackupStorageService svc, string tempRoot) MakeWithRing(
+        Dictionary<int, string> ring, int activeVersion)
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"orderdeck-bs-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        var opts = Options.Create(new BackupOptions
+        {
+            MasterKeyHex = "",  // explicitly NOT using legacy field
+            MasterKeys = ring,
+            ActiveKeyVersion = activeVersion,
+            StorageRoot = tempRoot,
+            MaxBlobSizeMb = 200
+        });
+        return (new BackupStorageService(opts, NullLogger<BackupStorageService>.Instance), tempRoot);
+    }
+
+    [Fact]
+    public void V1_envelope_carries_version_byte_at_position_0()
+    {
+        var ring = new Dictionary<int, string>
+        {
+            [0] = new string('a', 64),
+            [1] = new string('b', 64)
+        };
+        var (svc, tempRoot) = MakeWithRing(ring, activeVersion: 1);
+        try
+        {
+            var (envelope, version) = svc.Encrypt(Encoding.UTF8.GetBytes("hello v1"));
+            version.Should().Be(1);
+            envelope[0].Should().Be(1, "v1 envelope must start with the version byte");
+            // Length: 1 (version) + 12 (nonce) + 16 (tag) + plaintext
+            envelope.Length.Should().Be(1 + 12 + 16 + 8);
+        }
+        finally { Directory.Delete(tempRoot, recursive: true); }
+    }
+
+    [Fact]
+    public void V0_envelope_remains_bytewise_compatible_with_pre_phase_5b_format()
+    {
+        // When ActiveKeyVersion=0 the encrypt path MUST produce the legacy envelope
+        // (no version byte) so an upgraded server can read blobs written by the
+        // previous build and a downgraded server can still read v0 blobs.
+        var ring = new Dictionary<int, string> { [0] = new string('a', 64) };
+        var (svc, tempRoot) = MakeWithRing(ring, activeVersion: 0);
+        try
+        {
+            var (envelope, version) = svc.Encrypt(Encoding.UTF8.GetBytes("legacy"));
+            version.Should().Be(0);
+            // Length: 12 (nonce) + 16 (tag) + plaintext — NO version byte.
+            envelope.Length.Should().Be(12 + 16 + 6);
+        }
+        finally { Directory.Delete(tempRoot, recursive: true); }
+    }
+
+    [Fact]
+    public void Decrypt_picks_correct_key_for_version_in_DB_row()
+    {
+        // Ring with two distinct keys; the wrong-key path must fail to decrypt.
+        var ring = new Dictionary<int, string>
+        {
+            [0] = new string('a', 64),
+            [1] = new string('b', 64)
+        };
+        var (svc, tempRoot) = MakeWithRing(ring, activeVersion: 1);
+        try
+        {
+            var (envelope, version) = svc.Encrypt(Encoding.UTF8.GetBytes("v1 blob"));
+            version.Should().Be(1);
+            // Right key → succeeds
+            svc.Decrypt(envelope, 1).Should().BeEquivalentTo(Encoding.UTF8.GetBytes("v1 blob"));
+        }
+        finally { Directory.Delete(tempRoot, recursive: true); }
+    }
+
+    [Fact]
+    public void Decrypt_with_unknown_key_version_throws()
+    {
+        var ring = new Dictionary<int, string> { [0] = new string('a', 64) };
+        var (svc, tempRoot) = MakeWithRing(ring, activeVersion: 0);
+        try
+        {
+            var (envelope, _) = svc.Encrypt(Encoding.UTF8.GetBytes("v0"));
+            Action act = () => svc.Decrypt(envelope, 99);
+            act.Should().Throw<InvalidOperationException>()
+                .WithMessage("*No master key configured for version 99*");
+        }
+        finally { Directory.Delete(tempRoot, recursive: true); }
+    }
+
+    [Fact]
+    public void Constructor_active_version_not_in_ring_throws()
+    {
+        var ring = new Dictionary<int, string> { [0] = new string('a', 64) };
+        var opts = Options.Create(new BackupOptions
+        {
+            MasterKeys = ring,
+            ActiveKeyVersion = 5,  // not in ring
+            StorageRoot = Path.GetTempPath()
+        });
+        Action act = () => new BackupStorageService(opts, NullLogger<BackupStorageService>.Instance);
+        act.Should().Throw<InvalidOperationException>().WithMessage("*ActiveKeyVersion=5*");
+    }
+
+    [Fact]
+    public void Old_v0_blob_is_decryptable_after_introducing_v1()
+    {
+        // Migration scenario: deployment shipped with key v0 only, customer
+        // has historical blobs. Operator adds v1 + bumps active. The historical
+        // blobs MUST still decrypt with their original v0 key.
+        var ring = new Dictionary<int, string>
+        {
+            [0] = new string('a', 64),
+            [1] = new string('b', 64)
+        };
+        // Phase 1: only v0 exists.
+        var (svc1, root1) = MakeWithRing(new() { [0] = new string('a', 64) }, activeVersion: 0);
+        byte[] historicalEnvelope;
+        try
+        {
+            (historicalEnvelope, _) = svc1.Encrypt(Encoding.UTF8.GetBytes("historic"));
+        }
+        finally { Directory.Delete(root1, recursive: true); }
+
+        // Phase 2: operator adds v1 + bumps active. Old blob still readable.
+        var (svc2, root2) = MakeWithRing(ring, activeVersion: 1);
+        try
+        {
+            var roundTrip = svc2.Decrypt(historicalEnvelope, keyVersion: 0);
+            roundTrip.Should().BeEquivalentTo(Encoding.UTF8.GetBytes("historic"));
+        }
+        finally { Directory.Delete(root2, recursive: true); }
     }
 
     [Fact]
