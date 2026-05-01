@@ -20,7 +20,7 @@ using Microsoft.Extensions.Hosting;
 
 namespace OrderDeck.LicenseServer.Tests.TestHelpers;
 
-public sealed class ApiFactory : WebApplicationFactory<Program>
+public class ApiFactory : WebApplicationFactory<Program>
 {
     private readonly string _dbName = Guid.NewGuid().ToString();
     private readonly string _backupRoot = Path.Combine(Path.GetTempPath(), $"orderdeck-backup-{Guid.NewGuid():N}");
@@ -28,6 +28,10 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     public TestEmailSender Email { get; } = new();
 
     public string BackupRoot => _backupRoot;
+
+    /// <summary>Override in derived test fixture to inject extra in-memory config
+    /// keys (e.g. tighter rate limits, quota caps). Default: no overrides.</summary>
+    protected virtual IDictionary<string, string?> ExtraConfig => new Dictionary<string, string?>();
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -44,7 +48,13 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
                 ["Backup:MasterKeyHex"] = new string('a', 64),
                 ["Backup:StorageRoot"] = _backupRoot,
                 ["Backup:MaxBlobSizeMb"] = "200",
+                // Disable per-customer quota in tests so existing roundtrip
+                // assertions don't accidentally trip on it; quota path tested
+                // separately by setting this to a tiny value in the relevant test.
+                ["Backup:PerCustomerQuotaMb"] = "0",
             });
+            // Per-fixture overrides — applied AFTER defaults so they win.
+            cfg.AddInMemoryCollection(ExtraConfig);
         });
 
         builder.ConfigureServices(services =>

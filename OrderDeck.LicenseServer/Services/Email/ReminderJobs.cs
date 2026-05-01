@@ -32,27 +32,27 @@ public sealed class ReminderJobs
         _log = log;
     }
 
-    [AutomaticRetry(Attempts = 0, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
+    [AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 60, 300, 1800 }, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
     public Task SendRenewal14dAsync(CancellationToken ct) =>
         ScanAndSendRenewalAsync(daysBeforeExpiry: 14, "renewal-14d",
             (c, k, e, p, u) => EmailTemplates.Renewal14d(c, k, e, p, u), ct);
 
-    [AutomaticRetry(Attempts = 0, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
+    [AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 60, 300, 1800 }, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
     public Task SendRenewal7dAsync(CancellationToken ct) =>
         ScanAndSendRenewalAsync(7, "renewal-7d",
             (c, k, e, p, u) => EmailTemplates.Renewal7d(c, k, e, p, u), ct);
 
-    [AutomaticRetry(Attempts = 0, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
+    [AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 60, 300, 1800 }, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
     public Task SendRenewal3dAsync(CancellationToken ct) =>
         ScanAndSendRenewalAsync(3, "renewal-3d",
             (c, k, e, p, u) => EmailTemplates.Renewal3d(c, k, e, p, u), ct);
 
-    [AutomaticRetry(Attempts = 0, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
+    [AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 60, 300, 1800 }, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
     public Task SendRenewal0dAsync(CancellationToken ct) =>
         ScanAndSendRenewalAsync(0, "renewal-0d",
             (c, k, e, p, u) => EmailTemplates.Renewal0d(c, k, e, p, u), ct);
 
-    [AutomaticRetry(Attempts = 0, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
+    [AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 60, 300, 1800 }, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
     public async Task SendExpired1dAsync(CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;

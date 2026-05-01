@@ -105,6 +105,7 @@ public class MainShellPrintTests
     private sealed class StubHardwareIdProvider : IHardwareIdProvider
     {
         public string GetHardwareId() => "test-hw-id";
+        public string? GetLegacyHardwareId() => null;
     }
 
     private sealed class NullTrialStorage : ITrialStorage

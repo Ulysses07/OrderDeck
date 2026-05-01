@@ -27,6 +27,8 @@ public class Program
         builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection("Jwt"));
         builder.Services.Configure<SmtpOptions>(builder.Configuration.GetSection("Smtp"));
         builder.Services.Configure<BackupOptions>(builder.Configuration.GetSection("Backup"));
+        builder.Services.Configure<OrderDeck.LicenseServer.Services.Audit.AuditRetentionOptions>(
+            builder.Configuration.GetSection("Audit:Retention"));
 
         // DbContext
         builder.Services.AddDbContext<LicenseDbContext>(opt =>
@@ -40,6 +42,7 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Licensing.LicenseIssuer>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Licensing.LicenseValidator>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Licensing.ActivationManager>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Audit.AuditRetentionJobs>();
         builder.Services.AddHttpContextAccessor();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Audit.IAuditService,
                                     OrderDeck.LicenseServer.Services.Audit.AuditService>();
@@ -271,6 +274,13 @@ public class Program
             manager.AddOrUpdate<ReminderJobs>("renewal-3d",  j => j.SendRenewal3dAsync(CancellationToken.None), cron);
             manager.AddOrUpdate<ReminderJobs>("renewal-0d",  j => j.SendRenewal0dAsync(CancellationToken.None), cron);
             manager.AddOrUpdate<ReminderJobs>("expired-1d",  j => j.SendExpired1dAsync(CancellationToken.None), cron);
+
+            // Audit log retention — prune rows older than the configured window
+            // once a day. Cron different from email reminders to spread DB load.
+            manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Audit.AuditRetentionJobs>(
+                "audit-retention",
+                j => j.PruneAsync(CancellationToken.None),
+                "30 3 * * *");  // 03:30 UTC daily
         }
 
         if (app.Environment.IsDevelopment())

@@ -12,6 +12,10 @@ public static class AuditEvents
     public const string RefreshTokenIssued = "RefreshTokenIssued";
     public const string RefreshTokenRotated = "RefreshTokenRotated";
     public const string RefreshTokenRevoked = "RefreshTokenRevoked";
+
+    // KVKK / GDPR compliance (Phase 5d)
+    public const string CustomerDataExported = "customer.data-exported";
+    public const string CustomerPurged = "customer.purged";
 }
 
 public static class AuditTargets

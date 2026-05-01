@@ -93,18 +93,34 @@ public class DetailModel : PageModel
 
     private async Task<IActionResult> LoadAsync(string key, CancellationToken ct)
     {
-        License = await _db.Licenses.FirstOrDefaultAsync(l => l.LicenseKey == key, ct);
+        // Single round-trip via Include — Customer + Activations come along with
+        // the License row instead of two follow-up queries. AsNoTracking because
+        // POST handlers do their own tracked load before mutating.
+        License = await _db.Licenses
+            .AsNoTracking()
+            .Include(l => l.Customer)
+            .Include(l => l.Activations.OrderByDescending(a => a.ActivatedAt))
+            .FirstOrDefaultAsync(l => l.LicenseKey == key, ct);
         if (License is null) return NotFound();
-        Customer = await _db.Customers.FirstOrDefaultAsync(c => c.Id == License.CustomerId, ct);
-        Activations = await _db.Activations
-            .Where(a => a.LicenseId == License.Id)
-            .OrderByDescending(a => a.ActivatedAt)
-            .ToListAsync(ct);
+
+        Customer = License.Customer;
+        Activations = License.Activations.ToList();
+
         AuditEntries = await _db.AuditLogs
+            .AsNoTracking()
             .Where(a => a.TargetType == "license" && a.TargetId == key)
             .OrderByDescending(a => a.OccurredAt)
             .Take(20)
             .ToListAsync(ct);
+
+        // POST handlers mutate License.RevokedAt etc., so re-fetch a tracked
+        // instance for those code paths. Detail render path keeps the cheap
+        // no-tracking copy above.
+        if (HttpContext.Request.Method != "GET")
+        {
+            License = await _db.Licenses.FirstAsync(l => l.LicenseKey == key, ct);
+        }
+
         return Page();
     }
 }

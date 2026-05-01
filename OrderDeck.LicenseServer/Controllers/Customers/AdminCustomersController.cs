@@ -1,6 +1,8 @@
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Audit;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Backup;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -14,11 +16,16 @@ public sealed class AdminCustomersController : ControllerBase
 {
     private readonly LicenseDbContext _db;
     private readonly PasswordHasher _hasher;
+    private readonly BackupStorageService _backups;
+    private readonly IAuditService _audit;
 
-    public AdminCustomersController(LicenseDbContext db, PasswordHasher hasher)
+    public AdminCustomersController(LicenseDbContext db, PasswordHasher hasher,
+        BackupStorageService backups, IAuditService audit)
     {
         _db = db;
         _hasher = hasher;
+        _backups = backups;
+        _audit = audit;
     }
 
     [HttpGet]
@@ -101,6 +108,92 @@ public sealed class AdminCustomersController : ControllerBase
             c.EmailConfirmedAt = DateTimeOffset.UtcNow;
             await _db.SaveChangesAsync(ct);
         }
+        return NoContent();
+    }
+
+    public sealed record PurgeRequest(string ConfirmEmail);
+
+    /// <summary>
+    /// KVKK / GDPR right-to-be-forgotten. Deletes the customer's operational
+    /// data (licenses, activations, refresh tokens, intake form submissions,
+    /// email logs, backup blobs + metadata) and anonymises the Customer row
+    /// itself. The Customer row stays — its Id is referenced from AuditLog
+    /// rows that we MUST retain for the configured retention window. Email
+    /// + Name are blanked, PasswordHash is set to a sentinel that no hash
+    /// can ever match, EmailConfirmedAt is cleared.
+    ///
+    /// Caller must echo the customer's current email in the request body to
+    /// guard against fat-finger purges. Audit row is written with the
+    /// pre-purge email so the action remains traceable.
+    /// </summary>
+    [HttpPost("{id:guid}/purge")]
+    public async Task<IActionResult> Purge(Guid id, [FromBody] PurgeRequest req, CancellationToken ct)
+    {
+        var customer = await _db.Customers.FirstOrDefaultAsync(c => c.Id == id, ct);
+        if (customer is null) return NotFound();
+        if (!string.Equals(customer.Email, req.ConfirmEmail, StringComparison.OrdinalIgnoreCase))
+            return Problem(title: "email-mismatch",
+                detail: "Body confirmEmail must match the customer's current email.",
+                statusCode: 400);
+
+        var preEmail = customer.Email;
+
+        // 1. Delete encrypted backup blobs from the filesystem before nuking
+        //    the rows that point to them — otherwise we'd lose the path.
+        var backupRows = await _db.CustomerBackups
+            .Where(b => b.CustomerId == id).ToListAsync(ct);
+        foreach (var b in backupRows) _backups.DeleteBlob(b.BlobPath);
+
+        // 2. Hard-delete dependent rows. FK cascade would handle Activations
+        //    via Licenses, but doing it explicitly keeps the operation
+        //    self-documenting and survives any future cascade changes.
+        var licenseIds = await _db.Licenses.Where(l => l.CustomerId == id)
+            .Select(l => l.Id).ToListAsync(ct);
+        if (licenseIds.Count > 0)
+        {
+            _db.Activations.RemoveRange(_db.Activations.Where(a => licenseIds.Contains(a.LicenseId)));
+            _db.Licenses.RemoveRange(_db.Licenses.Where(l => l.CustomerId == id));
+        }
+        _db.CustomerBackups.RemoveRange(backupRows);
+        _db.EmailLogs.RemoveRange(_db.EmailLogs.Where(e => e.CustomerId == id));
+        _db.RefreshTokens.RemoveRange(_db.RefreshTokens.Where(r => r.CustomerId == id));
+        _db.PasswordResetTokens.RemoveRange(_db.PasswordResetTokens.Where(p => p.CustomerId == id));
+        _db.EmailConfirmationTokens.RemoveRange(_db.EmailConfirmationTokens.Where(t => t.CustomerId == id));
+        // Intake form submissions reference IntakeFormConfig (not Customer directly).
+        // Drop the customer's config + all submissions that fed into it.
+        var configIds = await _db.IntakeFormConfigs
+            .Where(c => c.CustomerId == id)
+            .Select(c => c.Id)
+            .ToListAsync(ct);
+        if (configIds.Count > 0)
+        {
+            _db.IntakeFormSubmissions.RemoveRange(
+                _db.IntakeFormSubmissions.Where(s => configIds.Contains(s.IntakeFormConfigId)));
+            _db.IntakeFormConfigs.RemoveRange(_db.IntakeFormConfigs.Where(c => c.CustomerId == id));
+        }
+
+        // 3. Anonymise the Customer row. Email is moved to a deterministic
+        //    placeholder so AuditLog rows still pivot off the same Id but
+        //    PII is gone. PasswordHash is set to a value no Argon2 hash can
+        //    match (length is invalid for the encoding) so the account can
+        //    never be logged into again.
+        customer.Email = $"purged-{customer.Id:N}@deleted.invalid";
+        customer.Name = "[Deleted]";
+        customer.PasswordHash = "PURGED";
+        customer.EmailConfirmedAt = null;
+        customer.Unsubscribed = true;
+        customer.Notes = null;
+
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.LogAsync(AuditEvents.CustomerPurged, AuditTargets.Customer, id.ToString(),
+            details: new
+            {
+                preEmail,
+                deletedLicenses = licenseIds.Count,
+                deletedBackups = backupRows.Count
+            }, ct: ct);
+
         return NoContent();
     }
 }

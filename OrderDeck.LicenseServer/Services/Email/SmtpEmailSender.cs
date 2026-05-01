@@ -25,9 +25,13 @@ public sealed class SmtpEmailSender : IEmailSender
         msg.Subject = subject;
         msg.Body = new BodyBuilder { HtmlBody = htmlBody, TextBody = plainBody }.ToMessageBody();
 
+        // Failure now propagates: EmailSendCoordinator inspects the exception to
+        // decide retry vs dead-letter, and Hangfire reschedules the job on
+        // transient errors. Previously this swallow turned every SMTP outage
+        // into a silent permanent loss.
+        using var smtp = new SmtpClient();
         try
         {
-            using var smtp = new SmtpClient();
             await smtp.ConnectAsync(_opt.Host, _opt.Port,
                 _opt.UseSsl ? MailKit.Security.SecureSocketOptions.StartTls
                             : MailKit.Security.SecureSocketOptions.None, ct);
@@ -39,7 +43,7 @@ public sealed class SmtpEmailSender : IEmailSender
         catch (Exception ex)
         {
             _log.LogWarning(ex, "SMTP send failed for {Email}", toEmail);
-            // Email failure is not propagated — caller already returned 202 to client.
+            throw;
         }
     }
 }
