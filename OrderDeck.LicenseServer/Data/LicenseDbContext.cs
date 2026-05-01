@@ -3,7 +3,10 @@ using Microsoft.EntityFrameworkCore;
 
 namespace OrderDeck.LicenseServer.Data;
 
-public sealed class LicenseDbContext : DbContext
+// Non-sealed so LicenseReadOnlyDbContext can derive — see the Phase 5e HA work.
+// All other DbContexts in this project should still be sealed; only this one
+// is intentionally extensible.
+public class LicenseDbContext : DbContext
 {
     public LicenseDbContext(DbContextOptions<LicenseDbContext> options) : base(options) { }
 

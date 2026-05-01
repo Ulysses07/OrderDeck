@@ -75,6 +75,20 @@ public class ApiFactory : WebApplicationFactory<Program>
             services.AddDbContext<LicenseDbContext>(opt =>
                 opt.UseInMemoryDatabase(_dbName));
 
+            // Phase 5e: read-only DbContext shares the same in-memory DB in tests
+            // so any code that injects LicenseReadOnlyDbContext sees the seed data
+            // committed via LicenseDbContext. Production split (replica vs primary)
+            // is the operator's concern; tests intentionally collapse both onto one
+            // store.
+            var roOptionsDescriptor = services.SingleOrDefault(d =>
+                d.ServiceType == typeof(DbContextOptions<LicenseReadOnlyDbContext>));
+            if (roOptionsDescriptor is not null) services.Remove(roOptionsDescriptor);
+            var roCtxDescriptor = services.SingleOrDefault(d => d.ServiceType == typeof(LicenseReadOnlyDbContext));
+            if (roCtxDescriptor is not null) services.Remove(roCtxDescriptor);
+            services.RemoveAll<IDbContextOptionsConfiguration<LicenseReadOnlyDbContext>>();
+            services.AddDbContext<LicenseReadOnlyDbContext>(opt =>
+                opt.UseInMemoryDatabase(_dbName));
+
             var emailDescriptor = services.SingleOrDefault(d => d.ServiceType == typeof(IEmailSender));
             if (emailDescriptor is not null) services.Remove(emailDescriptor);
             services.AddSingleton<IEmailSender>(Email);

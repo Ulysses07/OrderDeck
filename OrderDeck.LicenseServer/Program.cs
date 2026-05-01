@@ -34,9 +34,19 @@ public class Program
         builder.Services.Configure<OrderDeck.LicenseServer.Services.Audit.AuditRetentionOptions>(
             builder.Configuration.GetSection("Audit:Retention"));
 
-        // DbContext
+        // DbContext (primary — used for all writes + reads when no replica configured).
         builder.Services.AddDbContext<LicenseDbContext>(opt =>
             opt.UseSqlServer(builder.Configuration.GetConnectionString("LicenseDb")));
+
+        // Read-only DbContext for HA-aware deployments. Routes to a SQL Server
+        // AlwaysOn read replica when ConnectionStrings:LicenseDbReadOnly is set,
+        // else falls back to the primary connection string. Read paths
+        // (admin list/detail, customer export) can opt in by injecting
+        // LicenseReadOnlyDbContext instead of LicenseDbContext.
+        var readOnlyConn = builder.Configuration.GetConnectionString("LicenseDbReadOnly")
+                           ?? builder.Configuration.GetConnectionString("LicenseDb");
+        builder.Services.AddDbContext<LicenseReadOnlyDbContext>(opt =>
+            opt.UseSqlServer(readOnlyConn));
 
         // Services
         builder.Services.AddSingleton<PasswordHasher>();
