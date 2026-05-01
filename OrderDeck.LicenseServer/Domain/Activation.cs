@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations;
+
 namespace OrderDeck.LicenseServer.Domain;
 
 public sealed class Activation
@@ -10,4 +12,9 @@ public sealed class Activation
     public DateTimeOffset ActivatedAt { get; set; }
     public DateTimeOffset LastSeenAt { get; set; }
     public DateTimeOffset? DeactivatedAt { get; set; }
+
+    /// <summary>Concurrency token — protects LastSeenAt / DeactivatedAt from lost
+    /// updates when Heartbeat and Deactivate race.</summary>
+    [Timestamp]
+    public byte[] RowVersion { get; set; } = Array.Empty<byte>();
 }

@@ -48,5 +48,10 @@ IF NOT EXISTS (SELECT 1 FROM [__EFMigrationsHistory] WHERE [MigrationId] = N'202
     INSERT INTO [__EFMigrationsHistory] ([MigrationId], [ProductVersion]) VALUES (N'20260430153414_AddCustomerBackups', @v);
 GO
 
+-- AddConcurrencyTokens: prod DB does NOT yet have these columns. Database.Migrate()
+-- will apply this one for real on the next deploy — do NOT pre-mark it as applied.
+-- (Listed here only as a reminder; intentionally no INSERT.)
+GO
+
 SELECT [MigrationId], [ProductVersion] FROM [__EFMigrationsHistory] ORDER BY [MigrationId];
 GO
