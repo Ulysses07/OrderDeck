@@ -35,7 +35,12 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private readonly LicenseService _licenseService;
     private readonly IntakeFormSyncService _intakeSync;
 
-    private const int MaxChatMessages = 200;
+    // 500 messages = ~30 seconds of scroll-back at the projected 30 msg/sec
+    // peak across IG + TT + FB + YT, ~70 seconds at the realistic 7 msg/sec
+    // average. Matches the ChatBus ring buffer cap so the UI never lags
+    // behind the bus's history; WPF's VirtualizingStackPanel keeps render
+    // cost flat at this size.
+    private const int MaxChatMessages = 500;
 
     public ObservableCollection<ChatMessageViewModel> ChatMessages { get; } = new();
     public ObservableCollection<LabelViewModel>       PrintQueue   { get; } = new();
