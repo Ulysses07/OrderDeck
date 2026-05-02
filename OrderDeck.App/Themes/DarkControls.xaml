@@ -179,13 +179,76 @@
         </Style.Triggers>
     </Style>
 
-    <!-- MenuItem — Settings/help context menus on MainShellView -->
+    <!-- Menu / MenuItem / ContextMenu — context menus from MainShellView,
+         queue row right-click etc. ContextMenu was the "üç nokta menü çok
+         kötü" report: MenuItems were dark but the ContextMenu container
+         itself stayed white. -->
     <Style TargetType="{x:Type Menu}">
         <Setter Property="Background" Value="{StaticResource OD.Bg.Surface}"/>
         <Setter Property="Foreground" Value="{StaticResource OD.Fg.Primary}"/>
     </Style>
-    <Style TargetType="{x:Type MenuItem}">
-        <Setter Property="Background" Value="{StaticResource OD.Bg.Surface}"/>
+    <Style TargetType="{x:Type ContextMenu}">
+        <Setter Property="Background" Value="#FF222222"/>
         <Setter Property="Foreground" Value="{StaticResource OD.Fg.Primary}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource OD.Border.Input}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding" Value="2"/>
+    </Style>
+    <Style TargetType="{x:Type MenuItem}">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{StaticResource OD.Fg.Primary}"/>
+        <Setter Property="Padding" Value="8,4"/>
+        <Style.Triggers>
+            <Trigger Property="IsHighlighted" Value="True">
+                <Setter Property="Background" Value="{StaticResource OD.Selection}"/>
+                <Setter Property="Foreground" Value="White"/>
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Foreground" Value="{StaticResource OD.Fg.Disabled}"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+    <Style TargetType="{x:Type Separator}">
+        <Setter Property="Background" Value="{StaticResource OD.Border.Input}"/>
+        <Setter Property="Margin" Value="4,4"/>
+    </Style>
+
+    <!-- Button — default WPF template renders the OS Aero gradient (light
+         gray) which clashes with the dark dialog background. Setting the
+         basic prop palette here keeps the native template (focus visuals,
+         disabled greying still work) but recolors it for the dark theme.
+         Per-button accent buttons (LoginDialog primary action, etc.) keep
+         their explicit Background and override this. -->
+    <Style TargetType="{x:Type Button}">
+        <Setter Property="Background" Value="{StaticResource OD.Bg.Input}"/>
+        <Setter Property="Foreground" Value="{StaticResource OD.Fg.Primary}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource OD.Border.Input}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding" Value="12,5"/>
+        <Setter Property="MinWidth" Value="72"/>
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{StaticResource OD.Bg.InputHover}"/>
+                <Setter Property="BorderBrush" Value="{StaticResource OD.Border.InputHover}"/>
+            </Trigger>
+            <Trigger Property="IsPressed" Value="True">
+                <Setter Property="Background" Value="{StaticResource OD.Selection}"/>
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Background" Value="{StaticResource OD.Bg.InputDisabled}"/>
+                <Setter Property="Foreground" Value="{StaticResource OD.Fg.Disabled}"/>
+                <Setter Property="BorderBrush" Value="{StaticResource OD.Bg.InputDisabled}"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- ToolTip — system default is pale yellow with black text, jarring
+         against a dark dialog. -->
+    <Style TargetType="{x:Type ToolTip}">
+        <Setter Property="Background" Value="#FF333333"/>
+        <Setter Property="Foreground" Value="{StaticResource OD.Fg.Primary}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource OD.Border.Input}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding" Value="6,3"/>
     </Style>
 </ResourceDictionary>
