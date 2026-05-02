@@ -1,0 +1,83 @@
+name: web-deploy
+
+# Statik marketing sitesinin (orderdeckapp.com) CI deploy akışı.
+# main'e push olduğunda /web altında değişiklik varsa build + rsync deploy.
+# Workflow sadece /web değişiyorsa tetikleniyor — C# değişiklikleri tetiklemiyor.
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'web/**'
+      - '.github/workflows/web-deploy.yml'
+  workflow_dispatch: # elle tetikleyebilmek için
+
+# Aynı anda iki deploy çalışmasın — son push'u tut, eskisini iptal et.
+concurrency:
+  group: web-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (static export)
+        run: npm run build
+
+      - name: Verify build output
+        run: |
+          test -f out/index.html || (echo "out/index.html missing"; exit 1)
+          test -f out/en/index.html || (echo "out/en/index.html missing"; exit 1)
+          test -f out/gizlilik-politikasi/index.html || (echo "TR privacy missing"; exit 1)
+          test -f out/en/privacy-policy/index.html || (echo "EN privacy missing"; exit 1)
+          echo "Build verification passed"
+
+      - name: Setup SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Host key trust-on-first-use; ilk deployment'ta `ssh-keyscan` ile güncellenir.
+          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy via rsync
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          # --delete-after: build'de kaldırılan eski sayfalar VPS'ten de silinsin
+          # ama yeni dosyalar yerleştikten sonra (kısa "no file" pencereyi engeller).
+          rsync -avz --delete-after \
+            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new" \
+            out/ \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/orderdeck/web-out/"
+
+      - name: Smoke test
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          # Caddy file_server klasör değişimini anında görüyor, restart gerekmez.
+          sleep 2
+          curl -fsSI "https://orderdeckapp.com/" | head -1
+          curl -fsSI "https://orderdeckapp.com/en/privacy-policy/" | head -1
+          curl -fsSI "https://orderdeckapp.com/en/terms-of-service/" | head -1

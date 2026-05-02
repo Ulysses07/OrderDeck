@@ -1,0 +1,44 @@
+---
+title: "Spam filtresi: nasıl çalışıyor, nasıl ayarlamalı?"
+description: "OrderDeck'in 5 katmanlı spam filtresini detaylı inceliyoruz: hangi kural ne zaman aktif, false-positive nasıl önlenir."
+date: "2026-04-22"
+author: "OrderDeck Ekibi"
+tags: ["özellik", "rehber", "spam"]
+---
+
+Yayında dakikada 10-20 mesaj akıyorsa, %20-30'u doğrudan satışı etkilemeyen şeyler. OrderDeck'in spam filtresi bu mesajları sen görmeden, ekranını sade tutan basit kurallarla eler.
+
+## 5 kural, 5 farklı sorun
+
+### 1. Kısa mesaj filtresi
+"Ok", "👍", "+1" gibi kısa onaylar yayını yoğunlaştırıyor ama satışa katkı vermiyor. **Minimum mesaj uzunluğu** ayarıyla 2-3 karakter altı mesajlar otomatik filtrelenir.
+
+> **Not:** "evet" ve "yok" gibi kısa Türkçe yanıtların geçmesi gerekiyorsa minimumu 3 karakter olarak bırak.
+
+### 2. Tekrar mesaj filtresi
+Aynı kişi 30 saniye içinde aynı mesajı tekrar attıysa ikincisi düşürülür. Botlu yorum kampanyalarında çok işe yarar.
+
+### 3. Tüm büyük harf filtresi
+"BANA DA AYNISINDAN" tarzı agresif yazımlar dikkat dağıtıcı olabilir. Ancak XL/XXL gibi tek-kelime tüm-büyük yazımlar bilinçli olarak izinli; sadece 4+ karakterli kelimelerde tetikleniyor.
+
+### 4. Link filtresi
+`http://`, `www.`, `.com` ve `.tr` gibi URL kalıpları içeren mesajlar sessizce eleniyor. Mezat yayınında bu mesajların %99'u dış reklam ya da tuzak.
+
+### 5. Engellenen kelime listesi
+Kendi belirlediğin kelimeler (küfür, marka adı, rakip vb.) tam-kelime eşleşmesiyle filtrelenir. "köy" yazılmış bir mesaj "köyüm" kelimesini içermez — bu da false-positive'ten korur.
+
+## Hangi kural standart açık?
+
+Default kurulumda şunlar açık geliyor:
+
+- ✅ Tekrar mesaj filtresi
+- ✅ Link filtresi
+- ⏸️ Kısa mesaj, profanity ve büyük harf filtreleri elle açılır
+
+Sebep: link ve duplicate kuralları false-positive riski neredeyse sıfır olduğu için varsayılan açık. Diğerleri sana göre ince ayar isteyebilir.
+
+## Yayın anında değiştirebilir miyim?
+
+Evet. Ayarlar → Spam filtresi → toggle'ları değiştirir değiştirmez aktif olur. Yayını kapatmana gerek yok.
+
+Spam filtresinin tüm kuralları lisansa dahil — [tek plan, ömür boyu](/fiyatlandirma).
