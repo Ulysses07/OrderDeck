@@ -94,7 +94,16 @@ public sealed class LicenseService : ITrialModeProbe
         CurrentLicense = license;
         if (license is null)
         {
-            // Auth present but no license — check trial fallback (no new trial start for logged-in users)
+            // Auth present but no local license file — common after a fresh install
+            // following an admin-issued license. Probe /me/licenses; if the server
+            // says the customer has an active (non-revoked, non-expired) license
+            // bind it automatically so the user doesn't sit in trial mode while
+            // the admin panel says "lisansı var".
+            var bound = await TryAutoBindLicenseAsync(ct);
+            if (bound) return;
+
+            // Still nothing — fall through to trial fallback. We deliberately do
+            // not auto-START a trial for logged-in users; only honor an existing one.
             var trialState = _trial.GetState();
             if (trialState is TrialState.Active a)
             {
@@ -115,6 +124,50 @@ public sealed class LicenseService : ITrialModeProbe
         }
 
         await RefreshAsync(ct);
+    }
+
+    /// <summary>
+    /// No license.dat on disk → ask the server "does this customer have any
+    /// active license?". If yes, run the same Activate flow we'd run if the
+    /// user manually pasted the key in the Account dialog. Returns true on
+    /// successful bind (caller skips trial fallback).
+    ///
+    /// Picks the latest active (non-revoked, non-expired) license when more
+    /// than one is returned — extremely uncommon but possible if an admin
+    /// issued a renewal before revoking the old one.
+    /// </summary>
+    private async Task<bool> TryAutoBindLicenseAsync(CancellationToken ct)
+    {
+        try
+        {
+            var licenses = await _api.GetMyLicensesAsync(ct);
+            var now = DateTimeOffset.UtcNow;
+            var candidate = licenses
+                .Where(l => l.RevokedAt is null && l.ExpiresAt > now)
+                .OrderByDescending(l => l.ExpiresAt)
+                .FirstOrDefault();
+            if (candidate is null) return false;
+
+            _log.LogInformation(
+                "Auto-binding server-side license {Key} (sku={Sku}, expires={Expires})",
+                candidate.LicenseKey, candidate.SkuCode, candidate.ExpiresAt);
+
+            await ActivateAsync(candidate.LicenseKey, machineName: Environment.MachineName, ct);
+            return CurrentStatus == LicenseStatus.Active;
+        }
+        catch (LicenseApiNetworkException ex)
+        {
+            _log.LogWarning(ex, "Auto-bind skipped — server unreachable");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            // Anything else (slot full, license revoked between fetch and activate,
+            // etc.) → log and fall through to the existing trial-fallback path so
+            // the user still gets a meaningful state on screen.
+            _log.LogWarning(ex, "Auto-bind failed");
+            return false;
+        }
     }
 
     private Task InitializeTrialPathAsync()
