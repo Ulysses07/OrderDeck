@@ -15,6 +15,7 @@ public sealed class LicenseApiClient
     };
 
     private readonly HttpClient _http;
+    private readonly LicenseAuthHandler _authHandler;
 
     /// <summary>Optional callback to refresh the bearer token when a 401 is observed.
     /// Set by AppHost wiring after both LicenseApiClient and TokenRefresher are
@@ -23,14 +24,16 @@ public sealed class LicenseApiClient
     /// propagates to the caller as InvalidCredentialsException.</summary>
     public Func<CancellationToken, Task<string?>>? OnUnauthorized { get; set; }
 
-    public LicenseApiClient(HttpClient http) => _http = http;
-
-    public void SetAuthToken(string? token)
+    public LicenseApiClient(HttpClient http, LicenseAuthHandler authHandler)
     {
-        _http.DefaultRequestHeaders.Authorization = string.IsNullOrEmpty(token)
-            ? null
-            : new AuthenticationHeaderValue("Bearer", token);
+        _http = http;
+        _authHandler = authHandler;
     }
+
+    /// <summary>Updates the bearer token used for all subsequent requests.
+    /// Thread-safe — backed by a volatile field on <see cref="LicenseAuthHandler"/>
+    /// rather than HttpClient.DefaultRequestHeaders (which isn't).</summary>
+    public void SetAuthToken(string? token) => _authHandler.SetToken(token);
 
     // ─── Auth (anonymous) ─────────────────────────────────────────────
 

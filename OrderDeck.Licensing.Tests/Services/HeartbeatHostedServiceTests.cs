@@ -45,7 +45,7 @@ public sealed class HeartbeatHostedServiceTests : IDisposable
                 """{"status":"active","expiresAt":"2027-01-01T00:00:00Z","remainingDays":365,"sku":"STD","slotInfo":{"used":1,"total":1,"thisDeviceActive":true}}""");
         });
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
-        var api = new LicenseApiClient(http);
+        var api = new LicenseApiClient(http, new OrderDeck.Licensing.Api.LicenseAuthHandler());
         var opts = Options.Create(new LicensingOptions { OfflineGraceDays = 14, HeartbeatIntervalHours = 24, TrialDurationDays = 14 });
         var hwId = new FakeHardwareIdProvider();
         var trialStorage = new NullTrialStorage();

@@ -150,12 +150,19 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<EncryptedStore>(), AppPaths.AuthFile));
         services.AddSingleton(sp => new LicenseStateStore(
             sp.GetRequiredService<EncryptedStore>(), AppPaths.LicenseFile));
+        // LicenseAuthHandler is a singleton so SetAuthToken on either the
+        // LicenseApiClient or LoginService points at the same volatile token
+        // field. Without singleton semantics each HttpClientFactory creation
+        // would get a fresh handler with a stale token snapshot.
+        services.AddSingleton<OrderDeck.Licensing.Api.LicenseAuthHandler>();
         services.AddHttpClient<LicenseApiClient>((sp, http) =>
         {
             var opt = sp.GetRequiredService<IOptions<LicensingOptions>>().Value;
             http.BaseAddress = new Uri(opt.ServerBaseUrl);
             http.Timeout = TimeSpan.FromSeconds(opt.RequestTimeoutSeconds);
-        }).AddStandardResilienceHandler();  // retry on 5xx/network with exp. backoff; no retry on 4xx
+        })
+        .AddHttpMessageHandler(sp => sp.GetRequiredService<OrderDeck.Licensing.Api.LicenseAuthHandler>())
+        .AddStandardResilienceHandler();  // retry on 5xx/network with exp. backoff; no retry on 4xx
         services.AddSingleton<LoginService>();
         services.AddSingleton<LicenseService>();
         // TokenRefresher must be a singleton so its single-flight gate is shared

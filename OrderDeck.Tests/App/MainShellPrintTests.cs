@@ -79,7 +79,7 @@ public class MainShellPrintTests
         });
 
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
-        var api = new LicenseApiClient(http);
+        var api = new LicenseApiClient(http, new OrderDeck.Licensing.Api.LicenseAuthHandler());
         var opts = Options.Create(new LicensingOptions { OfflineGraceDays = 14, TrialDurationDays = 14 });
         var hwId = new StubHardwareIdProvider();
         var trialStorage = new NullTrialStorage();
@@ -144,7 +144,7 @@ public class MainShellPrintTests
         var stubHttp = new HttpClient(new FakeHttpMessageHandler(
             _ => new System.Net.Http.HttpResponseMessage(HttpStatusCode.NotFound)))
         { BaseAddress = new Uri("http://localhost/") };
-        var stubApi = new LicenseApiClient(stubHttp);
+        var stubApi = new LicenseApiClient(stubHttp, new OrderDeck.Licensing.Api.LicenseAuthHandler());
         var tempSettings = new AppSettings();
         var tempStore = new SettingsStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json"));
         var intakeSync = new IntakeFormSyncService(

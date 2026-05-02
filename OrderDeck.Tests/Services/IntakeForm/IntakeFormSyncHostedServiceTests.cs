@@ -36,7 +36,7 @@ public sealed class IntakeFormSyncHostedServiceTests
         var store = new SettingsStore(settingsPath);
         var settings = store.Load();
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
-        var api = new LicenseApiClient(http);
+        var api = new LicenseApiClient(http, new OrderDeck.Licensing.Api.LicenseAuthHandler());
         var sync = new IntakeFormSyncService(api, repo, store, settings, new FakeClock(),
             NullLogger<IntakeFormSyncService>.Instance);
         var hosted = new IntakeFormSyncHostedService(sync,
@@ -70,7 +70,7 @@ public sealed class IntakeFormSyncHostedServiceTests
         var store = new SettingsStore(settingsPath);
         var settings = store.Load();
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
-        var api = new LicenseApiClient(http);
+        var api = new LicenseApiClient(http, new OrderDeck.Licensing.Api.LicenseAuthHandler());
         var sync = new IntakeFormSyncService(api, repo, store, settings, new FakeClock(),
             NullLogger<IntakeFormSyncService>.Instance);
         var hosted = new IntakeFormSyncHostedService(sync,

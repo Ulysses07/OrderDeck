@@ -49,7 +49,7 @@ public sealed class LicenseServiceTrialTests : IDisposable
     {
         var handler = new FakeHttpMessageHandler(responder);
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
-        var api = new LicenseApiClient(http);
+        var api = new LicenseApiClient(http, new OrderDeck.Licensing.Api.LicenseAuthHandler());
         var clock = (Func<DateTimeOffset>)(() => now ?? DateTimeOffset.UtcNow);
         var trial = new TrialService(_trialStorage, _hwId, _opts, clock, NullLogger<TrialService>.Instance);
         var svc = new LicenseService(api, _authStore, _licenseStore, _hwId, _opts, trial, NullLogger<LicenseService>.Instance);

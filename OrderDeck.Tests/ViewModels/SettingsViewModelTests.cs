@@ -45,7 +45,7 @@ public class SettingsViewModel_PaymentTests : IDisposable
         var shortcutsTab = new ShortcutsTabViewModel(registry, null!);
 
         var http = new HttpClient(new NotFoundHandler()) { BaseAddress = new Uri("http://localhost/") };
-        var api = new LicenseApiClient(http);
+        var api = new LicenseApiClient(http, new OrderDeck.Licensing.Api.LicenseAuthHandler());
         var intakeForm = new IntakeFormSettingsViewModel(api);
 
         return new SettingsViewModel(settings, store, shortcutsTab, intakeForm);
