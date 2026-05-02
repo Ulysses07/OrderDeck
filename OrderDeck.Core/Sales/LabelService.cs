@@ -50,6 +50,71 @@ public sealed class LabelService
     public IReadOnlyList<Label> GetQueue(string sessionId) =>
         _labels.GetUnprintedBySession(sessionId);
 
+    /// <summary>Soft-cancel: marks labels as cancelled with a reason code (one of the
+    /// preset codes from CancelReasonCodes). Already-cancelled labels are silently
+    /// ignored. Reverses the customer's printed-label aggregates so revenue stays
+    /// correct on the Customer record.</summary>
+    public void Cancel(IReadOnlyList<string> labelIds, string reason)
+    {
+        if (labelIds.Count == 0) return;
+
+        // Adjust customer aggregates BEFORE flipping the flag so we don't double-count
+        // a re-cancellation. Skip rows that are already cancelled.
+        var groupedAmounts = new Dictionary<string, (int Count, decimal Amount)>();
+        var idsToFlip = new List<string>(labelIds.Count);
+        foreach (var id in labelIds)
+        {
+            var lbl = _labels.GetById(id);
+            if (lbl is null || lbl.CancelledAt.HasValue) continue;
+            idsToFlip.Add(id);
+            // Only printed (i.e. revenue-recorded) rows touched the aggregates;
+            // queued-but-cancelled rows never got a printed total to undo.
+            if (lbl.PrintedAt.HasValue)
+            {
+                if (groupedAmounts.TryGetValue(lbl.CustomerId, out var agg))
+                    groupedAmounts[lbl.CustomerId] = (agg.Count + 1, agg.Amount + lbl.Price);
+                else
+                    groupedAmounts[lbl.CustomerId] = (1, lbl.Price);
+            }
+        }
+        if (idsToFlip.Count == 0) return;
+
+        _labels.MarkCancelled(idsToFlip, _clock.UnixNow(), reason);
+
+        // Negative deltas reverse the prior RecordPrintedLabels increments.
+        foreach (var (customerId, agg) in groupedAmounts)
+            _customers.RecordPrintedLabels(customerId, -agg.Count, -agg.Amount);
+    }
+
+    /// <summary>Reverses Cancel — re-applies the printed-label aggregates so
+    /// the customer's revenue total reflects the un-cancelled rows again.</summary>
+    public void Uncancel(IReadOnlyList<string> labelIds)
+    {
+        if (labelIds.Count == 0) return;
+
+        var groupedAmounts = new Dictionary<string, (int Count, decimal Amount)>();
+        var idsToFlip = new List<string>(labelIds.Count);
+        foreach (var id in labelIds)
+        {
+            var lbl = _labels.GetById(id);
+            if (lbl is null || !lbl.CancelledAt.HasValue) continue;
+            idsToFlip.Add(id);
+            if (lbl.PrintedAt.HasValue)
+            {
+                if (groupedAmounts.TryGetValue(lbl.CustomerId, out var agg))
+                    groupedAmounts[lbl.CustomerId] = (agg.Count + 1, agg.Amount + lbl.Price);
+                else
+                    groupedAmounts[lbl.CustomerId] = (1, lbl.Price);
+            }
+        }
+        if (idsToFlip.Count == 0) return;
+
+        _labels.Uncancel(idsToFlip);
+
+        foreach (var (customerId, agg) in groupedAmounts)
+            _customers.RecordPrintedLabels(customerId, agg.Count, agg.Amount);
+    }
+
     /// <summary>
     /// Marks the given labels as printed and increments customer aggregates per-customer.
     /// </summary>
