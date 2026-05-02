@@ -105,6 +105,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         Banner = banner;
         _dispatcher = Dispatcher.CurrentDispatcher;
         _busSubscription = bus.Subscribe(OnChatMessage);
+        EnsureChatFlushTimer();
         _licenseService = licenseService;
         _licenseService.StatusChanged += OnLicenseStatusChanged;
         UpdateLicenseUiFromService();
@@ -128,20 +129,59 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         ReloadQueueFromActiveSession();
     }
 
+    // Background queue of chat messages awaiting a UI flush. Bounded so a
+    // sudden spike (1500 viewers all typing at once) can't blow heap before
+    // the dispatcher gets around to draining; 1000 is ~30 seconds at our
+    // worst projected throughput.
+    private readonly System.Collections.Concurrent.ConcurrentQueue<ChatMessage> _pendingChat = new();
+    private const int PendingChatHardCap = 1000;
+    // 100 ms batch window: at 30 msg/sec we coalesce 3 messages per dispatcher
+    // hop instead of doing 30 individual BeginInvokes per second. Lower than
+    // ~120 ms keeps the chat feeling live; above that the auctioneer notices
+    // the lag before clicks register.
+    private static readonly TimeSpan ChatFlushInterval = TimeSpan.FromMilliseconds(100);
+    private System.Windows.Threading.DispatcherTimer? _chatFlushTimer;
+
     private void OnChatMessage(ChatMessage m)
     {
-        _dispatcher.BeginInvoke(() =>
+        // Hot path: never block the publisher. Just enqueue + drop oldest if
+        // the queue is full (rather than letting it grow unbounded under a
+        // pathological burst).
+        _pendingChat.Enqueue(m);
+        while (_pendingChat.Count > PendingChatHardCap && _pendingChat.TryDequeue(out _)) { }
+    }
+
+    private void EnsureChatFlushTimer()
+    {
+        if (_chatFlushTimer is not null) return;
+        _chatFlushTimer = new System.Windows.Threading.DispatcherTimer(
+            ChatFlushInterval, System.Windows.Threading.DispatcherPriority.Background,
+            (_, _) => DrainPendingChat(), _dispatcher);
+        _chatFlushTimer.Start();
+    }
+
+    private void DrainPendingChat()
+    {
+        if (_pendingChat.IsEmpty) return;
+
+        // Pull everything currently queued; keep new arrivals for the next tick.
+        var batch = new System.Collections.Generic.List<ChatMessage>(_pendingChat.Count);
+        while (_pendingChat.TryDequeue(out var m)) batch.Add(m);
+
+        foreach (var m in batch)
         {
-            // Chat panel + blacklist highlight
             var customer = _customerRepo.FindByPlatformAndUsername(m.Platform, m.Username);
             var blacklisted = customer?.IsBlacklisted ?? false;
             ChatMessages.Add(new ChatMessageViewModel(m, blacklisted));
-            while (ChatMessages.Count > MaxChatMessages) ChatMessages.RemoveAt(0);
 
-            // Forward to active giveaway, if any
+            // Forward to active giveaway. Same per-message work as before;
+            // batching only saves dispatcher overhead, not domain logic.
             if (_activeGiveawayId is not null)
                 _giveaways.AddParticipantFromChat(_activeGiveawayId, m);
-        });
+        }
+
+        // Trim once after the batch instead of once per message.
+        while (ChatMessages.Count > MaxChatMessages) ChatMessages.RemoveAt(0);
     }
 
     private void OnLicenseStatusChanged(object? sender, LicenseStatus status)
@@ -556,6 +596,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
     public void Dispose()
     {
+        _chatFlushTimer?.Stop();
+        _chatFlushTimer = null;
         Banner.Dispose();
         _busSubscription.Dispose();
     }

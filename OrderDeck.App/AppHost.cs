@@ -78,7 +78,12 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<ViewModels.GiveawayBannerViewModel>();
 
         // Chat plumbing
-        services.AddSingleton<IChatBus>(_ => new ChatBus(ringBufferSize: 200));
+        // 500-message ring sized for the heaviest realistic load: ~30 msg/sec
+        // peak across all four platforms (IG + TT + FB + YT) gives ~16 seconds
+        // of scroll-back even at the worst spike, which is enough for the
+        // auctioneer to catch a missed mention. 200 was sized for a single
+        // platform Live and started dropping mid-product-shows.
+        services.AddSingleton<IChatBus>(_ => new ChatBus(ringBufferSize: 500));
         // SpamFilter pulls its rule toggles from the live AppSettings via Func
         // so changes from the Settings dialog take effect immediately without
         // a service restart.
