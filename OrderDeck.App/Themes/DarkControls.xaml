@@ -171,7 +171,36 @@
         </Style.Triggers>
     </Style>
 
-    <!-- ── ComboBox ────────────────────────────────────────────────────── -->
+    <!-- ── ComboBox — full template so the dropdown popup stays dark ────── -->
+    <ControlTemplate x:Key="OD.ComboBoxToggleButtonTemplate" TargetType="{x:Type ToggleButton}">
+        <Border x:Name="Bd"
+                Background="{TemplateBinding Background}"
+                BorderBrush="{TemplateBinding BorderBrush}"
+                BorderThickness="{TemplateBinding BorderThickness}"
+                CornerRadius="4"
+                SnapsToDevicePixels="True">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="20"/>
+                </Grid.ColumnDefinitions>
+                <Path Grid.Column="1"
+                      Data="M 0,0 L 4,4 L 8,0 Z"
+                      Fill="{StaticResource OD.Fg.Secondary}"
+                      HorizontalAlignment="Center"
+                      VerticalAlignment="Center"/>
+            </Grid>
+        </Border>
+        <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource OD.Border.Hover}"/>
+            </Trigger>
+            <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource OD.Border.Focus}"/>
+            </Trigger>
+        </ControlTemplate.Triggers>
+    </ControlTemplate>
+
     <Style TargetType="{x:Type ComboBox}">
         <Setter Property="Background" Value="{StaticResource OD.Bg.Input}"/>
         <Setter Property="Foreground" Value="{StaticResource OD.Fg.Primary}"/>
@@ -179,20 +208,93 @@
         <Setter Property="BorderThickness" Value="1"/>
         <Setter Property="Padding" Value="8,6"/>
         <Setter Property="MinHeight" Value="30"/>
+        <Setter Property="HorizontalContentAlignment" Value="Left"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type ComboBox}">
+                    <Grid>
+                        <ToggleButton x:Name="ToggleButton"
+                                      Background="{TemplateBinding Background}"
+                                      BorderBrush="{TemplateBinding BorderBrush}"
+                                      BorderThickness="{TemplateBinding BorderThickness}"
+                                      Template="{StaticResource OD.ComboBoxToggleButtonTemplate}"
+                                      Focusable="False"
+                                      IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                      ClickMode="Press"/>
+                        <ContentPresenter x:Name="ContentSite"
+                                          IsHitTestVisible="False"
+                                          Content="{TemplateBinding SelectionBoxItem}"
+                                          ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                          ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                          HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                          Margin="{TemplateBinding Padding}"
+                                          TextElement.Foreground="{TemplateBinding Foreground}"/>
+                        <Popup x:Name="Popup"
+                               Placement="Bottom"
+                               IsOpen="{TemplateBinding IsDropDownOpen}"
+                               AllowsTransparency="True"
+                               Focusable="False"
+                               PopupAnimation="Slide">
+                            <Border x:Name="DropDownBorder"
+                                    Background="{StaticResource OD.Bg.Elevated}"
+                                    BorderBrush="{StaticResource OD.Border.Subtle}"
+                                    BorderThickness="1"
+                                    CornerRadius="4"
+                                    SnapsToDevicePixels="True"
+                                    MinWidth="{TemplateBinding ActualWidth}"
+                                    MaxHeight="{TemplateBinding MaxDropDownHeight}"
+                                    Margin="0,4,0,0">
+                                <Border.Effect>
+                                    <DropShadowEffect BlurRadius="14" ShadowDepth="3" Opacity="0.45"
+                                                      Direction="270" Color="Black"/>
+                                </Border.Effect>
+                                <ScrollViewer SnapsToDevicePixels="True">
+                                    <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Contained"/>
+                                </ScrollViewer>
+                            </Border>
+                        </Popup>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Background" Value="{StaticResource OD.Bg.InputDisabled}"/>
+                            <Setter Property="Foreground" Value="{StaticResource OD.Fg.Disabled}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
     <Style TargetType="{x:Type ComboBoxItem}">
         <Setter Property="Background" Value="Transparent"/>
         <Setter Property="Foreground" Value="{StaticResource OD.Fg.Primary}"/>
-        <Setter Property="Padding" Value="8,6"/>
-        <Style.Triggers>
-            <Trigger Property="IsHighlighted" Value="True">
-                <Setter Property="Background" Value="{StaticResource OD.Bg.InputHover}"/>
-            </Trigger>
-            <Trigger Property="IsSelected" Value="True">
-                <Setter Property="Background" Value="{StaticResource OD.Selection}"/>
-                <Setter Property="Foreground" Value="White"/>
-            </Trigger>
-        </Style.Triggers>
+        <Setter Property="Padding" Value="10,6"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type ComboBoxItem}">
+                    <Border x:Name="Bd"
+                            Background="{TemplateBinding Background}"
+                            Padding="{TemplateBinding Padding}"
+                            CornerRadius="3"
+                            Margin="2,1"
+                            SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                          TextElement.Foreground="{TemplateBinding Foreground}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsHighlighted" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource OD.Bg.InputHover}"/>
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource OD.Selection}"/>
+                            <Setter Property="Foreground" Value="White"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
 
     <!-- ── Text containers ─────────────────────────────────────────────── -->
@@ -268,27 +370,84 @@
         </Style.Triggers>
     </Style>
 
-    <!-- ── Tabs ────────────────────────────────────────────────────────── -->
+    <!-- ── Tabs — full template so the content panel stays dark.
+         Default Aero TabControl renders an inner ContentPresenter chrome
+         with SystemColors.WindowBrush (white), which is what made TextBoxes
+         on the "Yazıcı" tab look light-on-light despite the input style
+         being correct. -->
     <Style TargetType="{x:Type TabControl}">
         <Setter Property="Background" Value="{StaticResource OD.Bg.Surface}"/>
         <Setter Property="BorderBrush" Value="{StaticResource OD.Border.Subtle}"/>
-        <Setter Property="BorderThickness" Value="0,0,0,1"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Padding" Value="0"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type TabControl}">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <Border Grid.Row="0"
+                                BorderBrush="{StaticResource OD.Border.Subtle}"
+                                BorderThickness="0,0,0,1">
+                            <TabPanel x:Name="HeaderPanel"
+                                      IsItemsHost="True"
+                                      Panel.ZIndex="1"
+                                      KeyboardNavigation.TabIndex="1"/>
+                        </Border>
+                        <Border Grid.Row="1"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                Padding="{TemplateBinding Padding}"
+                                KeyboardNavigation.TabNavigation="Local"
+                                KeyboardNavigation.DirectionalNavigation="Contained"
+                                KeyboardNavigation.TabIndex="2">
+                            <ContentPresenter ContentSource="SelectedContent"/>
+                        </Border>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
+
     <Style TargetType="{x:Type TabItem}">
         <Setter Property="Background" Value="Transparent"/>
         <Setter Property="Foreground" Value="{StaticResource OD.Fg.Secondary}"/>
         <Setter Property="Padding" Value="14,8"/>
         <Setter Property="Margin" Value="0,0,2,0"/>
-        <Style.Triggers>
-            <Trigger Property="IsMouseOver" Value="True">
-                <Setter Property="Foreground" Value="{StaticResource OD.Fg.Primary}"/>
-            </Trigger>
-            <Trigger Property="IsSelected" Value="True">
-                <Setter Property="Background" Value="{StaticResource OD.Bg.Elevated}"/>
-                <Setter Property="Foreground" Value="{StaticResource OD.Fg.Primary}"/>
-                <Setter Property="FontWeight" Value="SemiBold"/>
-            </Trigger>
-        </Style.Triggers>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type TabItem}">
+                    <Border x:Name="Bd"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="Transparent"
+                            BorderThickness="0,0,0,2"
+                            CornerRadius="4,4,0,0"
+                            SnapsToDevicePixels="True">
+                        <ContentPresenter ContentSource="Header"
+                                          Margin="{TemplateBinding Padding}"
+                                          HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"
+                                          TextElement.Foreground="{TemplateBinding Foreground}"
+                                          TextElement.FontWeight="{TemplateBinding FontWeight}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter Property="Foreground" Value="{StaticResource OD.Fg.Primary}"/>
+                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource OD.Bg.InputHover}"/>
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter Property="Foreground" Value="{StaticResource OD.Fg.Primary}"/>
+                            <Setter Property="FontWeight" Value="SemiBold"/>
+                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource OD.Bg.Elevated}"/>
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource OD.Accent}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
 
     <!-- ── Menus ───────────────────────────────────────────────────────── -->
@@ -304,18 +463,83 @@
         <Setter Property="Padding" Value="4"/>
         <Setter Property="HasDropShadow" Value="True"/>
     </Style>
+    <!-- MenuItem template explicitly drops the icon/check gutter that the
+         default Aero template reserves on the left edge. That gutter was
+         the white vertical strip in the three-dot menu screenshot. We
+         don't currently use icons or checkboxes on menu items; if that
+         changes, restore the InputGestureText / Icon column accordingly. -->
     <Style TargetType="{x:Type MenuItem}">
         <Setter Property="Background" Value="Transparent"/>
         <Setter Property="Foreground" Value="{StaticResource OD.Fg.Primary}"/>
-        <Setter Property="Padding" Value="12,6"/>
-        <Style.Triggers>
-            <Trigger Property="IsHighlighted" Value="True">
-                <Setter Property="Background" Value="{StaticResource OD.Bg.InputHover}"/>
-            </Trigger>
-            <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Foreground" Value="{StaticResource OD.Fg.Disabled}"/>
-            </Trigger>
-        </Style.Triggers>
+        <Setter Property="Padding" Value="14,7"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type MenuItem}">
+                    <Border x:Name="Bd"
+                            Background="{TemplateBinding Background}"
+                            BorderThickness="0"
+                            CornerRadius="3"
+                            Margin="2,1"
+                            SnapsToDevicePixels="True">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <ContentPresenter Grid.Column="0"
+                                              ContentSource="Header"
+                                              Margin="{TemplateBinding Padding}"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True"
+                                              TextElement.Foreground="{TemplateBinding Foreground}"/>
+                            <TextBlock Grid.Column="1"
+                                       Text="{TemplateBinding InputGestureText}"
+                                       Foreground="{StaticResource OD.Fg.Secondary}"
+                                       VerticalAlignment="Center"
+                                       Margin="14,0,12,0"/>
+                            <Path x:Name="SubmenuArrow"
+                                  Grid.Column="2"
+                                  Visibility="Collapsed"
+                                  Data="M 0,0 L 4,4 L 0,8 Z"
+                                  Fill="{StaticResource OD.Fg.Secondary}"
+                                  VerticalAlignment="Center"
+                                  Margin="0,0,8,0"/>
+                            <Popup x:Name="PART_Popup"
+                                   Placement="Right"
+                                   IsOpen="{TemplateBinding IsSubmenuOpen}"
+                                   AllowsTransparency="True"
+                                   Focusable="False"
+                                   PopupAnimation="Fade">
+                                <Border Background="{StaticResource OD.Bg.Elevated}"
+                                        BorderBrush="{StaticResource OD.Border.Subtle}"
+                                        BorderThickness="1"
+                                        CornerRadius="4"
+                                        Padding="4">
+                                    <Border.Effect>
+                                        <DropShadowEffect BlurRadius="14" ShadowDepth="3" Opacity="0.45"
+                                                          Direction="270" Color="Black"/>
+                                    </Border.Effect>
+                                    <StackPanel IsItemsHost="True"
+                                                KeyboardNavigation.DirectionalNavigation="Cycle"/>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="Role" Value="SubmenuHeader">
+                            <Setter TargetName="SubmenuArrow" Property="Visibility" Value="Visible"/>
+                        </Trigger>
+                        <Trigger Property="IsHighlighted" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource OD.Bg.InputHover}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Foreground" Value="{StaticResource OD.Fg.Disabled}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
     <Style TargetType="{x:Type Separator}">
         <Setter Property="Background" Value="{StaticResource OD.Border.Subtle}"/>
