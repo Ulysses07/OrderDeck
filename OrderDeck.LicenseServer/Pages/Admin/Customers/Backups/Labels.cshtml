@@ -3,10 +3,11 @@
 @{
     ViewData["Title"] = "Yedek — Etiketler";
     var p = Model.Page_;
+    var nav = new BackupNavModel(Model.Customer!.Id, Model.Backup!.Id, "Labels");
 }
 
-<a asp-page="Summary" asp-route-id="@Model.Customer!.Id" asp-route-backupId="@Model.Backup!.Id">← Özet</a>
 <h3>Etiketler — Yedek @Model.Backup.CreatedAt.ToString("dd MMM yyyy HH:mm")</h3>
+<partial name="_BackupNav" model="nav" />
 
 <form method="get" class="mb-3">
     <input asp-for="SessionFilter" name="sessionId" class="form-control d-inline-block" style="width:300px" placeholder="Session ID filtre…" />

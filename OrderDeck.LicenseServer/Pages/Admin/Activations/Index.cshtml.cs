@@ -48,9 +48,11 @@ public class IndexModel : PageModel
 
     private async Task<IActionResult> LoadAsync(string licenseKey, CancellationToken ct)
     {
-        License = await _db.Licenses.FirstOrDefaultAsync(l => l.LicenseKey == licenseKey, ct);
+        // Render-only path; the deactivate handler does its own tracked load above.
+        License = await _db.Licenses.AsNoTracking().FirstOrDefaultAsync(l => l.LicenseKey == licenseKey, ct);
         if (License is null) return NotFound();
         Items = await _db.Activations
+            .AsNoTracking()
             .Where(a => a.LicenseId == License.Id)
             .OrderByDescending(a => a.ActivatedAt)
             .ToListAsync(ct);

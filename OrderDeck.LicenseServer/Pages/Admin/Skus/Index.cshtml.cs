@@ -14,6 +14,6 @@ public class IndexModel : PageModel
 
     public async Task OnGetAsync(CancellationToken ct)
     {
-        Items = await _db.Skus.OrderBy(s => s.Code).ToListAsync(ct);
+        Items = await _db.Skus.AsNoTracking().OrderBy(s => s.Code).ToListAsync(ct);
     }
 }

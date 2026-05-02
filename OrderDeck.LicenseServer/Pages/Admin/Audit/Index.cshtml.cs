@@ -40,7 +40,9 @@ public class IndexModel : PageModel
         To = to ?? DateTimeOffset.UtcNow;
         CurrentPage = page < 1 ? 1 : page;
 
+        // Render-only path; AsNoTracking skips change-tracker overhead.
         var query = _db.AuditLogs
+            .AsNoTracking()
             .Where(a => a.OccurredAt >= From && a.OccurredAt <= To);
         if (!string.IsNullOrWhiteSpace(eventType))
             query = query.Where(a => a.EventType == eventType);
