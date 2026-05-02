@@ -93,4 +93,126 @@ public class LabelServiceTests
         customers.FindByPlatformAndUsername("instagram", "@a")!.TotalAmount.Should().Be(100m);
         customers.FindByPlatformAndUsername("instagram", "@b")!.TotalAmount.Should().Be(150m);
     }
+
+    // ── Cancel / Uncancel ─────────────────────────────────────────────
+
+    [Fact]
+    public void Cancel_marks_labels_and_subtracts_revenue_from_customer()
+    {
+        var (svc, labels, customers, db, sid) = Fx();
+        using var _ = db;
+
+        var l1 = svc.Add(sid, Msg("@ayse", "Kapuçino"), 75m, null);
+        var l2 = svc.Add(sid, Msg("@ayse", "Latte"), 90m, null);
+        svc.MarkPrintedAndRecord(new[] { l1.Id, l2.Id });
+
+        var cust = customers.FindByPlatformAndUsername("instagram", "@ayse")!;
+        cust.TotalLabelsPrinted.Should().Be(2);
+        cust.TotalAmount.Should().Be(165m);
+
+        svc.Cancel(new[] { l1.Id }, CancelReasonCodes.Customer);
+
+        var refreshed = customers.GetById(cust.Id)!;
+        refreshed.TotalLabelsPrinted.Should().Be(1);
+        refreshed.TotalAmount.Should().Be(90m);
+
+        // Persisted state on the label.
+        var stored = labels.GetById(l1.Id)!;
+        stored.CancelledAt.Should().NotBeNull();
+        stored.CancelReason.Should().Be(CancelReasonCodes.Customer);
+    }
+
+    [Fact]
+    public void Cancel_excludes_cancelled_rows_from_session_totals()
+    {
+        var (svc, labels, _, db, sid) = Fx();
+        using var _ = db;
+
+        var l1 = svc.Add(sid, Msg("@a", "X"), 100m, null);
+        var l2 = svc.Add(sid, Msg("@b", "Y"), 150m, null);
+        svc.MarkPrintedAndRecord(new[] { l1.Id, l2.Id });
+        svc.Cancel(new[] { l1.Id }, CancelReasonCodes.WrongProduct);
+
+        var totals = labels.GetSessionTotals(sid);
+        totals.PrintedCount.Should().Be(1);
+        totals.TotalAmount.Should().Be(150m);
+        totals.UniqueCustomers.Should().Be(1);
+    }
+
+    [Fact]
+    public void Cancel_already_cancelled_is_noop()
+    {
+        var (svc, labels, customers, db, sid) = Fx();
+        using var _ = db;
+        var l = svc.Add(sid, Msg("@a", "X"), 100m, null);
+        svc.MarkPrintedAndRecord(new[] { l.Id });
+
+        svc.Cancel(new[] { l.Id }, CancelReasonCodes.Customer);
+        svc.Cancel(new[] { l.Id }, CancelReasonCodes.Customer);  // second call: no-op
+
+        // Aggregate must not double-subtract.
+        var cust = customers.FindByPlatformAndUsername("instagram", "@a")!;
+        cust.TotalLabelsPrinted.Should().Be(0);
+        cust.TotalAmount.Should().Be(0m);
+    }
+
+    [Fact]
+    public void Uncancel_restores_revenue_and_clears_flags()
+    {
+        var (svc, labels, customers, db, sid) = Fx();
+        using var _ = db;
+        var l = svc.Add(sid, Msg("@a", "X"), 200m, null);
+        svc.MarkPrintedAndRecord(new[] { l.Id });
+        svc.Cancel(new[] { l.Id }, CancelReasonCodes.Customer);
+
+        svc.Uncancel(new[] { l.Id });
+
+        var stored = labels.GetById(l.Id)!;
+        stored.CancelledAt.Should().BeNull();
+        stored.CancelReason.Should().BeNull();
+
+        var cust = customers.FindByPlatformAndUsername("instagram", "@a")!;
+        cust.TotalLabelsPrinted.Should().Be(1);
+        cust.TotalAmount.Should().Be(200m);
+    }
+
+    [Fact]
+    public void Cancel_unprinted_label_does_not_touch_revenue()
+    {
+        var (svc, labels, customers, db, sid) = Fx();
+        using var _ = db;
+        var l = svc.Add(sid, Msg("@a", "X"), 100m, null);
+        // not printed → aggregates were never incremented
+        svc.Cancel(new[] { l.Id }, CancelReasonCodes.OutOfStock);
+
+        var cust = customers.FindByPlatformAndUsername("instagram", "@a")!;
+        cust.TotalLabelsPrinted.Should().Be(0);
+        cust.TotalAmount.Should().Be(0m);
+
+        labels.GetById(l.Id)!.CancelledAt.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void GetByCustomerAndSession_returns_only_that_sessions_labels_oldest_first()
+    {
+        var (svc, labels, _, db, sid) = Fx();
+        using var _ = db;
+
+        // Seed a second session and a label in it.
+        new SessionRepository(db).Insert(
+            new StreamSession("s2", null, 2000, null, new[] { "instagram" }, null));
+
+        var first = svc.Add("s1", Msg("@a", "Bu yayın"), 50m, null);
+        var older = svc.Add("s1", Msg("@a", "Daha önce bu yayında"), 60m, null);
+        var otherSession = svc.Add("s2", Msg("@a", "Başka yayında"), 70m, null);
+
+        var cust = otherSession.CustomerId;
+        var rows = labels.GetByCustomerAndSession(cust, "s1");
+
+        rows.Should().HaveCount(2);
+        rows.Should().NotContain(r => r.Id == otherSession.Id);
+        // Oldest-first ordering.
+        rows[0].Id.Should().Be(first.Id);
+        rows[1].Id.Should().Be(older.Id);
+    }
 }

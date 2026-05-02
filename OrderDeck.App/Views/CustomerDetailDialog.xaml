@@ -62,8 +62,43 @@
         <TabControl Grid.Row="1" Background="Transparent">
             <TabItem Header="Etiket Geçmişi">
                 <Grid>
-                    <DataGrid ItemsSource="{Binding Labels}" AutoGenerateColumns="False" IsReadOnly="True"
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Section header — flips between "Bu yayındaki etiketler"
+                         (when a stream is active) and "Tüm etiketler" (between
+                         streams). Auctioneer's mid-stream task is correcting
+                         this stream's orders, not auditing history. -->
+                    <TextBlock Grid.Row="0"
+                               Text="{Binding LabelsSectionTitle}"
+                               FontWeight="SemiBold"
+                               Foreground="#FF9E9E9E" FontSize="11"
+                               Margin="0,8,0,4"/>
+
+                    <!-- Action toolbar -->
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
+                        <Button Content="Seçilenleri İptal Et"
+                                Command="{Binding CancelSelectedCommand}"
+                                Padding="12,5" Margin="0,0,8,0"/>
+                        <Button Content="İptali Geri Al"
+                                Command="{Binding UncancelSelectedCommand}"
+                                Padding="12,5"/>
+                        <TextBlock Text="Birden fazla seçmek için Ctrl ile tıkla"
+                                   Foreground="#FF6B6B6B" FontSize="11"
+                                   VerticalAlignment="Center" Margin="12,0,0,0"/>
+                    </StackPanel>
+
+                    <DataGrid Grid.Row="2"
+                              x:Name="LabelsGrid"
+                              ItemsSource="{Binding Labels}"
+                              AutoGenerateColumns="False" IsReadOnly="True"
                               HeadersVisibility="Column"
+                              SelectionMode="Extended"
+                              SelectionUnit="FullRow"
+                              SelectionChanged="OnLabelsSelectionChanged"
                               Background="#FF1A1A1A" Foreground="White"
                               BorderBrush="#FF333333"
                               RowBackground="#FF1A1A1A"
@@ -78,9 +113,41 @@
                                                 Binding="{Binding Price, StringFormat={}{0:N2} TL}"
                                                 Width="100"/>
                             <DataGridCheckBoxColumn Header="Yazdırıldı" Binding="{Binding IsPrinted}" Width="80"/>
+                            <DataGridTemplateColumn Header="Durum" Width="160">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Border CornerRadius="3"
+                                                Padding="6,2"
+                                                Background="#FF7F1D1D"
+                                                Visibility="{Binding IsCancelled, Converter={StaticResource BoolToVisibleConverter}}"
+                                                ToolTip="{Binding CancelReason}">
+                                            <TextBlock Foreground="#FFFCA5A5" FontSize="10" FontWeight="SemiBold">
+                                                <Run Text="İPTAL"/>
+                                                <Run Text=" • "/>
+                                                <Run Text="{Binding CancelReason, Mode=OneWay}"/>
+                                            </TextBlock>
+                                        </Border>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
                         </DataGrid.Columns>
+
+                        <!-- Strike-through + dimmed text on cancelled rows for
+                             a glanceable visual cue. ToolTip shows the full
+                             reason (preset code or "custom:..." text). -->
+                        <DataGrid.RowStyle>
+                            <Style TargetType="DataGridRow">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsCancelled}" Value="True">
+                                        <Setter Property="Foreground" Value="#FF7B7B7B"/>
+                                        <Setter Property="ToolTip" Value="{Binding CancelReason}"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </DataGrid.RowStyle>
                     </DataGrid>
-                    <TextBlock Text="Henüz etiket yok"
+                    <TextBlock Grid.Row="2"
+                               Text="Henüz etiket yok"
                                HorizontalAlignment="Center" VerticalAlignment="Center"
                                Foreground="#FF666666" FontSize="14"
                                Visibility="{Binding Labels.Count, Converter={StaticResource CountToCollapsedConverter}}"/>

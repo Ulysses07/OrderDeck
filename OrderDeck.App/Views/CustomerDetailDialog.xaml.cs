@@ -1,5 +1,7 @@
 using System.Windows;
+using System.Windows.Controls;
 using OrderDeck.App.ViewModels;
+using OrderDeck.Core.Storage.Repositories;
 
 namespace OrderDeck.App.Views;
 
@@ -27,6 +29,19 @@ public partial class CustomerDetailDialog : Window
         }
         ShowDialog();
         return true;
+    }
+
+    /// <summary>DataGrid.SelectedItems is not bindable directly (not a DependencyProperty),
+    /// so we mirror it into the VM's SelectedLabels collection from the code-behind.
+    /// The VM's CancelSelected/UncancelSelected commands re-evaluate CanExecute on
+    /// every change.</summary>
+    private void OnLabelsSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        _vm.SelectedLabels.Clear();
+        foreach (var item in LabelsGrid.SelectedItems)
+        {
+            if (item is CustomerLabelRow row) _vm.SelectedLabels.Add(row);
+        }
     }
 
     private void OnClose(object sender, RoutedEventArgs e)

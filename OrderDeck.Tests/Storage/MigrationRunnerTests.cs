@@ -26,7 +26,7 @@ public class MigrationRunnerTests
         });
 
         var version = conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().Be(7);
+        version.Should().Be(8);
 
         var customerColumns = conn.Query<string>(
             "SELECT name FROM pragma_table_info('Customer')").AsList();
@@ -47,7 +47,7 @@ public class MigrationRunnerTests
 
         using var conn = db.Open();
         var version = conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().Be(7);
+        version.Should().Be(8);
     }
 
     [Fact]
@@ -76,6 +76,6 @@ public class MigrationRunnerTests
         hasPhone.Should().Be(1);
 
         var version = conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().BeGreaterThanOrEqualTo(7);
+        version.Should().BeGreaterThanOrEqualTo(8);
     }
 }

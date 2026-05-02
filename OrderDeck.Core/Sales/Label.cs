@@ -14,4 +14,6 @@ public sealed record Label(
     string? Code,
     decimal Price,
     long AddedAt,
-    long? PrintedAt);
+    long? PrintedAt,
+    long? CancelledAt = null,
+    string? CancelReason = null);

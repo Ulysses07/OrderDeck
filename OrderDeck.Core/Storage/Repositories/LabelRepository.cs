@@ -32,7 +32,7 @@ public sealed class LabelRepository
         using var conn = _factory.Open();
         var row = conn.QueryFirstOrDefault<Row>(
             @"SELECT Id, SessionId, CustomerId, Platform, Username, MessageText, Code,
-                     Price, AddedAt, PrintedAt
+                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason
               FROM Label WHERE Id=@id",
             new { id });
         return row is null ? null : Map(row);
@@ -41,14 +41,32 @@ public sealed class LabelRepository
     public IReadOnlyList<Label> GetUnprintedBySession(string sessionId)
     {
         using var conn = _factory.Open();
+        // Cancelled labels are NOT eligible for re-print — exclude them from the
+        // queue snapshot the same way they're excluded from revenue totals.
         var rows = conn.Query<Row>(
             @"SELECT Id, SessionId, CustomerId, Platform, Username, MessageText, Code,
-                     Price, AddedAt, PrintedAt
+                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason
               FROM Label
-              WHERE SessionId=@sessionId AND PrintedAt IS NULL
+              WHERE SessionId=@sessionId AND PrintedAt IS NULL AND CancelledAt IS NULL
               ORDER BY AddedAt",
             new { sessionId }).ToList();
         return rows.Select(Map).ToList();
+    }
+
+    public void MarkCancelled(IEnumerable<string> ids, long cancelledAt, string reason)
+    {
+        using var conn = _factory.Open();
+        conn.Execute(
+            "UPDATE Label SET CancelledAt=@cancelledAt, CancelReason=@reason WHERE Id IN @ids",
+            new { cancelledAt, reason, ids = ids.ToArray() });
+    }
+
+    public void Uncancel(IEnumerable<string> ids)
+    {
+        using var conn = _factory.Open();
+        conn.Execute(
+            "UPDATE Label SET CancelledAt=NULL, CancelReason=NULL WHERE Id IN @ids",
+            new { ids = ids.ToArray() });
     }
 
     public void MarkPrinted(IEnumerable<string> ids, long printedAt)
@@ -62,13 +80,16 @@ public sealed class LabelRepository
     public SessionTotals GetSessionTotals(string sessionId)
     {
         using var conn = _factory.Open();
+        // Cancelled labels are excluded from revenue + count; the dialog still
+        // surfaces them visually in the customer detail view (with an iptal
+        // badge) so the audit trail isn't lost.
         var row = conn.QueryFirstOrDefault<TotalsRow>(
             @"SELECT
                 COUNT(*)               AS PrintedCount,
                 COALESCE(SUM(Price),0) AS TotalAmount,
                 COUNT(DISTINCT CustomerId) AS UniqueCustomers
               FROM Label
-              WHERE SessionId=@sessionId AND PrintedAt IS NOT NULL",
+              WHERE SessionId=@sessionId AND PrintedAt IS NOT NULL AND CancelledAt IS NULL",
             new { sessionId });
 
         return new SessionTotals(
@@ -87,7 +108,7 @@ public sealed class LabelRepository
                      SUM(l.Price) AS TotalAmount
               FROM Label l
               JOIN Customer c ON c.Id = l.CustomerId
-              WHERE l.SessionId=@sessionId AND l.PrintedAt IS NOT NULL
+              WHERE l.SessionId=@sessionId AND l.PrintedAt IS NOT NULL AND l.CancelledAt IS NULL
               GROUP BY l.CustomerId
               ORDER BY SUM(l.Price) DESC
               LIMIT @limit",
@@ -95,13 +116,41 @@ public sealed class LabelRepository
         return rows.Select(r => new TopCustomer(r.Username, r.Platform, r.LabelCount, r.TotalAmount)).ToList();
     }
 
-    /// <summary>Returns labels for a customer, most recent first. Empty list if none.</summary>
+    /// <summary>Returns the labels a customer added in a specific session, ordered
+    /// oldest-first so the auctioneer sees them in the order they happened during
+    /// the live. Cancelled rows are returned too — UI flags them visually.</summary>
+    public IReadOnlyList<CustomerLabelRow> GetByCustomerAndSession(string customerId, string sessionId)
+    {
+        using var conn = _factory.Open();
+        var rows = conn.Query<(string Id, string SessionId, string MessageText, string? Code,
+                                decimal Price, long AddedAt, long? PrintedAt,
+                                long? CancelledAt, string? CancelReason)>(
+            @"SELECT Id, SessionId, MessageText, Code, Price, AddedAt, PrintedAt,
+                     CancelledAt, CancelReason
+              FROM Label
+              WHERE CustomerId=@customerId AND SessionId=@sessionId
+              ORDER BY AddedAt",
+            new { customerId, sessionId });
+
+        return rows
+            .Select(r => new CustomerLabelRow(
+                r.Id, r.SessionId, r.MessageText, r.Code, r.Price, r.AddedAt,
+                IsPrinted: r.PrintedAt is not null,
+                CancelledAt: r.CancelledAt,
+                CancelReason: r.CancelReason))
+            .ToList();
+    }
+
+    /// <summary>Full lifetime label history (every session). Used by the customer
+    /// detail dialog when there's no active session to scope to.</summary>
     public IReadOnlyList<CustomerLabelRow> GetByCustomer(string customerId)
     {
         using var conn = _factory.Open();
         var rows = conn.Query<(string Id, string SessionId, string MessageText, string? Code,
-                                decimal Price, long AddedAt, long? PrintedAt)>(
-            @"SELECT Id, SessionId, MessageText, Code, Price, AddedAt, PrintedAt
+                                decimal Price, long AddedAt, long? PrintedAt,
+                                long? CancelledAt, string? CancelReason)>(
+            @"SELECT Id, SessionId, MessageText, Code, Price, AddedAt, PrintedAt,
+                     CancelledAt, CancelReason
               FROM Label
               WHERE CustomerId=@customerId
               ORDER BY AddedAt DESC",
@@ -110,13 +159,15 @@ public sealed class LabelRepository
         return rows
             .Select(r => new CustomerLabelRow(
                 r.Id, r.SessionId, r.MessageText, r.Code, r.Price, r.AddedAt,
-                IsPrinted: r.PrintedAt is not null))
+                IsPrinted: r.PrintedAt is not null,
+                CancelledAt: r.CancelledAt,
+                CancelReason: r.CancelReason))
             .ToList();
     }
 
     private static Label Map(Row r) =>
         new(r.Id, r.SessionId, r.CustomerId, r.Platform, r.Username, r.MessageText,
-            r.Code, r.Price, r.AddedAt, r.PrintedAt);
+            r.Code, r.Price, r.AddedAt, r.PrintedAt, r.CancelledAt, r.CancelReason);
 
     private sealed class Row
     {
@@ -130,6 +181,8 @@ public sealed class LabelRepository
         public decimal Price { get; init; }
         public long AddedAt { get; init; }
         public long? PrintedAt { get; init; }
+        public long? CancelledAt { get; init; }
+        public string? CancelReason { get; init; }
     }
 
     private sealed class TotalsRow
@@ -159,4 +212,9 @@ public sealed record CustomerLabelRow(
     string? Code,
     decimal Price,
     long AddedAt,
-    bool IsPrinted);
+    bool IsPrinted,
+    long? CancelledAt = null,
+    string? CancelReason = null)
+{
+    public bool IsCancelled => CancelledAt.HasValue;
+}
