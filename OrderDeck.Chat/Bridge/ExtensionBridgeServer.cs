@@ -29,6 +29,7 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
 
     private readonly IChatBus _bus;
     private readonly ITrialModeProbe? _trialProbe;
+    private readonly SpamFilter? _spamFilter;
     private readonly ILogger<ExtensionBridgeServer> _log;
     private readonly HttpListener _listener = new();
     private CancellationTokenSource? _cts;
@@ -38,10 +39,12 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
 
     public ExtensionBridgeServer(IChatBus bus, int port = 4748,
         ILogger<ExtensionBridgeServer>? log = null,
-        ITrialModeProbe? trialProbe = null)
+        ITrialModeProbe? trialProbe = null,
+        SpamFilter? spamFilter = null)
     {
         _bus = bus;
         _trialProbe = trialProbe;
+        _spamFilter = spamFilter;
         _log = log ?? NullLogger<ExtensionBridgeServer>.Instance;
         Port = port == 0 ? FindFreePort() : port;
         _listener.Prefixes.Add($"http://localhost:{Port}/");
@@ -135,6 +138,23 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
                             "Trial mode: dropping non-Instagram message from platform '{Platform}' by {Username}",
                             msg.Platform, msg.Username);
                         continue;
+                    }
+
+                    // Spam filter — runs AFTER trial mode + payload-shape checks
+                    // because the cheaper rules (length, links) reject lots of
+                    // messages and we don't want to bother evaluating them when
+                    // the message is already going to be dropped for other reasons.
+                    if (_spamFilter is not null)
+                    {
+                        var nowSec = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                        var dropReason = _spamFilter.ShouldDrop(msg.Text, nowSec);
+                        if (dropReason is not null)
+                        {
+                            _log.LogDebug(
+                                "Spam filter dropped message ({Reason}) from {Platform}:{Username}: {Text}",
+                                dropReason, msg.Platform, msg.Username, msg.Text);
+                            continue;
+                        }
                     }
 
                     _bus.Publish(new ChatMessage(

@@ -19,8 +19,17 @@
       <ul id="winners-list"></ul>
     </div>
 
-    <div id="roulette" class="hidden">
-      <div id="roulette-name"></div>
+    <!--
+      Spinning wheel layout:
+      - <canvas> draws the segmented wheel (one slice per participant).
+      - <div id="wheel-arrow"> is the fixed pointer at the top.
+      - <div id="wheel-name"> shows the currently-highlighted participant
+        below the wheel during spin and the final winner once it lands.
+    -->
+    <div id="wheel" class="hidden">
+      <div id="wheel-arrow"></div>
+      <canvas id="wheel-canvas" width="520" height="520"></canvas>
+      <div id="wheel-name"></div>
     </div>
   </div>
 

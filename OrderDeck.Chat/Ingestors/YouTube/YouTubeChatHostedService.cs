@@ -29,6 +29,7 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
     private readonly ILogger<YouTubeChatHostedService> _log;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ITrialModeProbe? _trialProbe;
+    private readonly SpamFilter? _spamFilter;
 
     private CancellationTokenSource? _cts;
     private Task? _runner;
@@ -37,13 +38,15 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
         Func<AppSettings> settingsProvider,
         IChatBus bus,
         ILoggerFactory loggerFactory,
-        ITrialModeProbe? trialProbe = null)
+        ITrialModeProbe? trialProbe = null,
+        SpamFilter? spamFilter = null)
     {
         _settingsProvider = settingsProvider;
         _bus = bus;
         _loggerFactory = loggerFactory;
         _log = loggerFactory.CreateLogger<YouTubeChatHostedService>();
         _trialProbe = trialProbe;
+        _spamFilter = spamFilter;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -100,7 +103,8 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
 
                 _log.LogInformation("[YouTubeChatHostedService] starting scraper for video {VideoId}", videoId);
                 using var scraper = new YouTubeLiveChatScraper(
-                    videoId, _bus, _loggerFactory.CreateLogger<YouTubeLiveChatScraper>());
+                    videoId, _bus, _loggerFactory.CreateLogger<YouTubeLiveChatScraper>(),
+                    _spamFilter);
 
                 try
                 {

@@ -79,11 +79,17 @@ public sealed class AppHost : IDisposable
 
         // Chat plumbing
         services.AddSingleton<IChatBus>(_ => new ChatBus(ringBufferSize: 200));
+        // SpamFilter pulls its rule toggles from the live AppSettings via Func
+        // so changes from the Settings dialog take effect immediately without
+        // a service restart.
+        services.AddSingleton<SpamFilter>(sp =>
+            new SpamFilter(() => sp.GetRequiredService<AppSettings>().SpamFilter));
         services.AddSingleton(sp => new ExtensionBridgeServer(
             sp.GetRequiredService<IChatBus>(),
             port: 4748,
             log: sp.GetRequiredService<ILogger<ExtensionBridgeServer>>(),
-            trialProbe: sp.GetRequiredService<LicenseService>()));
+            trialProbe: sp.GetRequiredService<LicenseService>(),
+            spamFilter: sp.GetRequiredService<SpamFilter>()));
         services.AddSingleton<ChatBridgeIngestor>();
 
         // Phase 5c — YouTube Live chat scraper. Hosted service polls
@@ -95,7 +101,8 @@ public sealed class AppHost : IDisposable
                 () => sp.GetRequiredService<AppSettings>(),
                 sp.GetRequiredService<IChatBus>(),
                 sp.GetRequiredService<ILoggerFactory>(),
-                trialProbe: sp.GetRequiredService<LicenseService>()));
+                trialProbe: sp.GetRequiredService<LicenseService>(),
+                spamFilter: sp.GetRequiredService<SpamFilter>()));
 
         // Overlay
         services.AddSingleton(sp => new OverlayHost(

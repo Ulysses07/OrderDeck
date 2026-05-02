@@ -64,11 +64,15 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
 
     public string Platform => "youtube";
 
-    public YouTubeLiveChatScraper(string videoId, IChatBus bus, ILogger<YouTubeLiveChatScraper> log)
+    private readonly SpamFilter? _spamFilter;
+
+    public YouTubeLiveChatScraper(string videoId, IChatBus bus, ILogger<YouTubeLiveChatScraper> log,
+        SpamFilter? spamFilter = null)
     {
         _videoId = videoId;
         _bus = bus;
         _log = log;
+        _spamFilter = spamFilter;
 
         var handler = new SocketsHttpHandler
         {
@@ -320,6 +324,20 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
             if (badgesJson.Contains("MEMBER"))    badges.Add("member");
         }
         if (isPaid) badges.Add("superchat");
+
+        // Spam filter — apply AFTER dedup + badges resolve so paid super-chats
+        // are never accidentally filtered (rules ignore the badge list, but a
+        // future tuning might whitelist superchat by checking it here).
+        if (_spamFilter is not null && !isPaid)
+        {
+            var dropReason = _spamFilter.ShouldDrop(text, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+            if (dropReason is not null)
+            {
+                _log.LogDebug("[YouTube Scraper] spam filter drop ({Reason}) by {User}: {Text}",
+                    dropReason, displayName, text);
+                return;
+            }
+        }
 
         _bus.Publish(new ChatMessage(
             Id: Guid.NewGuid().ToString("N"),
