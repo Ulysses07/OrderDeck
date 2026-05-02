@@ -1,5 +1,6 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:controls="clr-namespace:OrderDeck.App.Controls">
     <!--
         Modern minimalist dark theme.
 
@@ -463,15 +464,21 @@
         <Setter Property="Padding" Value="4"/>
         <Setter Property="HasDropShadow" Value="True"/>
     </Style>
-    <!-- MenuItem template explicitly drops the icon/check gutter that the
-         default Aero template reserves on the left edge. That gutter was
-         the white vertical strip in the three-dot menu screenshot. We
-         don't currently use icons or checkboxes on menu items; if that
-         changes, restore the InputGestureText / Icon column accordingly. -->
+    <!-- MenuItem template — no icon/check gutter (the white strip that
+         appeared in the three-dot menu earlier) and no extra outer Margin
+         (which combined with the popup's Padding caused the items to
+         clip first 1-2 chars on the left when the popup auto-sized).
+
+         Layout: ContentPresenter for Header in a single column, with
+         left-padding handled by the Border's Padding (NOT the
+         ContentPresenter's Margin) so the popup's measure pass sees the
+         full width including padding and sizes the popup correctly. -->
     <Style TargetType="{x:Type MenuItem}">
         <Setter Property="Background" Value="Transparent"/>
         <Setter Property="Foreground" Value="{StaticResource OD.Fg.Primary}"/>
         <Setter Property="Padding" Value="14,7"/>
+        <Setter Property="HorizontalContentAlignment" Value="Left"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="{x:Type MenuItem}">
@@ -479,7 +486,7 @@
                             Background="{TemplateBinding Background}"
                             BorderThickness="0"
                             CornerRadius="3"
-                            Margin="2,1"
+                            Padding="{TemplateBinding Padding}"
                             SnapsToDevicePixels="True">
                         <Grid>
                             <Grid.ColumnDefinitions>
@@ -489,7 +496,6 @@
                             </Grid.ColumnDefinitions>
                             <ContentPresenter Grid.Column="0"
                                               ContentSource="Header"
-                                              Margin="{TemplateBinding Padding}"
                                               VerticalAlignment="Center"
                                               RecognizesAccessKey="True"
                                               TextElement.Foreground="{TemplateBinding Foreground}"/>
@@ -497,14 +503,14 @@
                                        Text="{TemplateBinding InputGestureText}"
                                        Foreground="{StaticResource OD.Fg.Secondary}"
                                        VerticalAlignment="Center"
-                                       Margin="14,0,12,0"/>
+                                       Margin="14,0,0,0"/>
                             <Path x:Name="SubmenuArrow"
                                   Grid.Column="2"
                                   Visibility="Collapsed"
                                   Data="M 0,0 L 4,4 L 0,8 Z"
                                   Fill="{StaticResource OD.Fg.Secondary}"
                                   VerticalAlignment="Center"
-                                  Margin="0,0,8,0"/>
+                                  Margin="14,0,0,0"/>
                             <Popup x:Name="PART_Popup"
                                    Placement="Right"
                                    IsOpen="{TemplateBinding IsSubmenuOpen}"
@@ -540,6 +546,17 @@
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
+    </Style>
+
+    <!-- Custom controls derived from Button — implicit-style match by type
+         only catches the EXACT type, so derived classes need an explicit
+         style entry. ShortcutCaptureButton lives in OrderDeck.App.Controls
+         and inherits everything from the Button style above. -->
+    <Style TargetType="{x:Type controls:ShortcutCaptureButton}"
+           BasedOn="{StaticResource {x:Type Button}}">
+        <!-- Slightly lighter font + monospace digits so chord text reads cleanly. -->
+        <Setter Property="FontFamily" Value="Consolas, Cascadia Mono, monospace"/>
+        <Setter Property="HorizontalContentAlignment" Value="Center"/>
     </Style>
     <Style TargetType="{x:Type Separator}">
         <Setter Property="Background" Value="{StaticResource OD.Border.Subtle}"/>
