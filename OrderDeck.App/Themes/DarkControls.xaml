@@ -43,6 +43,60 @@
                       BlurRadius="14" ShadowDepth="3" Opacity="0.45"
                       Direction="270" Color="Black"/>
 
+    <!-- ── Color icons ────────────────────────────────────────────────────
+         WPF can't render OpenType color emoji (no COLR/CPAL support in the
+         glyph pipeline) so emoji codepoints always come out monochrome.
+         We compose multi-color icons as DrawingImages instead — vector,
+         scalable, and tinted exactly the way we want without depending on
+         the system's emoji font. -->
+    <DrawingImage x:Key="OD.Icon.Gift">
+        <DrawingImage.Drawing>
+            <DrawingGroup>
+                <!-- Box body -->
+                <GeometryDrawing Brush="#FFEF4444">
+                    <GeometryDrawing.Geometry>
+                        <RectangleGeometry Rect="2,9,16,11" RadiusX="1" RadiusY="1"/>
+                    </GeometryDrawing.Geometry>
+                </GeometryDrawing>
+                <!-- Box lid (slightly darker red, subtle 3D feel) -->
+                <GeometryDrawing Brush="#FFDC2626">
+                    <GeometryDrawing.Geometry>
+                        <RectangleGeometry Rect="1,7,18,3" RadiusX="1" RadiusY="1"/>
+                    </GeometryDrawing.Geometry>
+                </GeometryDrawing>
+                <!-- Vertical ribbon -->
+                <GeometryDrawing Brush="#FFFBBF24">
+                    <GeometryDrawing.Geometry>
+                        <RectangleGeometry Rect="8.5,7,3,13"/>
+                    </GeometryDrawing.Geometry>
+                </GeometryDrawing>
+                <!-- Horizontal ribbon -->
+                <GeometryDrawing Brush="#FFFBBF24">
+                    <GeometryDrawing.Geometry>
+                        <RectangleGeometry Rect="1,8,18,2"/>
+                    </GeometryDrawing.Geometry>
+                </GeometryDrawing>
+                <!-- Bow loops -->
+                <GeometryDrawing Brush="#FFFBBF24">
+                    <GeometryDrawing.Geometry>
+                        <EllipseGeometry Center="6.5,5" RadiusX="3" RadiusY="2.4"/>
+                    </GeometryDrawing.Geometry>
+                </GeometryDrawing>
+                <GeometryDrawing Brush="#FFFBBF24">
+                    <GeometryDrawing.Geometry>
+                        <EllipseGeometry Center="13.5,5" RadiusX="3" RadiusY="2.4"/>
+                    </GeometryDrawing.Geometry>
+                </GeometryDrawing>
+                <!-- Bow knot (slightly brighter accent) -->
+                <GeometryDrawing Brush="#FFFCD34D">
+                    <GeometryDrawing.Geometry>
+                        <EllipseGeometry Center="10,6" RadiusX="1.6" RadiusY="1.4"/>
+                    </GeometryDrawing.Geometry>
+                </GeometryDrawing>
+            </DrawingGroup>
+        </DrawingImage.Drawing>
+    </DrawingImage>
+
     <!-- ── Window — every Window in the app inherits the dark surface +
          primary text. AccountDialog (and any future dialog that forgets
          to set Background/Foreground) was the failure mode: TextBlocks

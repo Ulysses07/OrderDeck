@@ -71,16 +71,19 @@
                       Command="{Binding StartGiveawayCommand}"
                       IsEnabled="{Binding CanStartGiveaway}"
                       Padding="14,6" Margin="8,0,0,0">
-                <!-- Inline TextBlock so the gift glyph and the label can use
-                     different font families. WPF picks one font per Content
-                     string; without splitting them into Runs the gift box
-                     renders as a monochrome outline glyph from Segoe UI's
-                     own emoji subset instead of the color one in
-                     Segoe UI Emoji. -->
-                <TextBlock>
-                    <Run FontFamily="Segoe UI Emoji" Text="🎁"/>
-                    <Run Text=" Çekiliş"/>
-                </TextBlock>
+                <!-- Vector multi-color gift icon — WPF can't render OpenType
+                     color emoji, so the previous 🎁 codepoint always came
+                     out grayscale. The DrawingImage in DarkControls.xaml
+                     renders the box + ribbon + bow as discrete vector shapes
+                     with explicit fill colors, scaling crisply at any DPI. -->
+                <StackPanel Orientation="Horizontal">
+                    <Image Source="{StaticResource OD.Icon.Gift}"
+                           Width="18" Height="18"
+                           VerticalAlignment="Center"
+                           Margin="0,0,8,0"
+                           RenderOptions.BitmapScalingMode="HighQuality"/>
+                    <TextBlock Text="Çekiliş" VerticalAlignment="Center"/>
+                </StackPanel>
             </Button>
 
             <Button   Grid.Column="10" Content="⋮"
@@ -114,13 +117,17 @@
 
             <DockPanel Visibility="{Binding IsGiveawayActive, Converter={StaticResource BoolToVisibleConverter}}"
                        Background="#FF332B00" LastChildFill="False">
-                <TextBlock DockPanel.Dock="Left"
-                           Foreground="#FFFFD166" FontWeight="Bold" FontSize="14"
-                           VerticalAlignment="Center" Margin="8,4,16,4">
-                    <Run FontFamily="Segoe UI Emoji" Text="🎁"/>
-                    <Run Text=" "/>
-                    <Run Text="{Binding Banner.Keyword, Mode=OneWay}"/>
-                </TextBlock>
+                <StackPanel DockPanel.Dock="Left" Orientation="Horizontal"
+                            VerticalAlignment="Center" Margin="8,4,16,4">
+                    <Image Source="{StaticResource OD.Icon.Gift}"
+                           Width="18" Height="18"
+                           VerticalAlignment="Center"
+                           Margin="0,0,8,0"
+                           RenderOptions.BitmapScalingMode="HighQuality"/>
+                    <TextBlock Text="{Binding Banner.Keyword}"
+                               Foreground="#FFFFD166" FontWeight="Bold" FontSize="14"
+                               VerticalAlignment="Center"/>
+                </StackPanel>
                 <TextBlock DockPanel.Dock="Left"
                            Text="{Binding Banner.ParticipantCount, StringFormat={}{0} katılımcı}"
                            Foreground="White" Margin="0,4,16,4"
