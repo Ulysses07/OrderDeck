@@ -66,13 +66,18 @@
     <PackageVersion Include="Serilog.Sinks.File" Version="6.0.0" />
     <PackageVersion Include="Swashbuckle.AspNetCore" Version="7.2.0" />
 
-    <!-- OpenTelemetry — all 1.12.0 (Prometheus exporter still beta) -->
-    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.12.0" />
-    <PackageVersion Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.12.0-beta.1" />
-    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.12.0" />
-    <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.12.0" />
-    <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.12.0" />
-    <PackageVersion Include="OpenTelemetry.Instrumentation.Runtime" Version="1.12.0" />
+    <!-- OpenTelemetry — bumped from 1.12.0 to clear NU1902 advisories on
+         OpenTelemetry.Api / OpenTelemetry.Exporter.OpenTelemetryProtocol
+         (GHSA-g94r-2vxg-569j, GHSA-4625-4j76-fww9). Per-package latest at
+         time of bump differs (Runtime + Http stop at 1.15.1, AspNetCore at
+         1.15.2, Prometheus exporter still beta), so versions aren't all
+         identical — pinned to the latest each component publishes. -->
+    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.15.3" />
+    <PackageVersion Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.15.3-beta.1" />
+    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.15.3" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.15.2" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.15.1" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.Runtime" Version="1.15.1" />
 
     <!-- Test deps -->
     <PackageVersion Include="FluentAssertions" Version="7.0.0" />
