@@ -1,0 +1,25 @@
+@*
+    Phase 5e cleanup — single nav strip shared by every backup-viewer
+    sub-page (Summary / Customers / Sessions / Labels / Giveaways).
+    Previously each .cshtml duplicated this 5-link block; one rename of a
+    tab label meant 5 file edits.
+
+    Caller passes:
+      - customerId : Guid (required)
+      - backupId   : Guid (required)
+      - active     : string ("Summary" | "Customers" | "Sessions" | "Labels" | "Giveaways")
+*@
+@model OrderDeck.LicenseServer.Pages.Admin.Customers.Backups.BackupNavModel
+
+<nav class="mb-3">
+    <a class="btn btn-sm btn-outline-primary @(Model.Active == "Summary" ? "active" : "")"
+       asp-page="Summary"   asp-route-id="@Model.CustomerId" asp-route-backupId="@Model.BackupId">Özet</a>
+    <a class="btn btn-sm btn-outline-primary @(Model.Active == "Customers" ? "active" : "")"
+       asp-page="Customers" asp-route-id="@Model.CustomerId" asp-route-backupId="@Model.BackupId">Müşteriler</a>
+    <a class="btn btn-sm btn-outline-primary @(Model.Active == "Sessions" ? "active" : "")"
+       asp-page="Sessions"  asp-route-id="@Model.CustomerId" asp-route-backupId="@Model.BackupId">Yayınlar</a>
+    <a class="btn btn-sm btn-outline-primary @(Model.Active == "Labels" ? "active" : "")"
+       asp-page="Labels"    asp-route-id="@Model.CustomerId" asp-route-backupId="@Model.BackupId">Etiketler</a>
+    <a class="btn btn-sm btn-outline-primary @(Model.Active == "Giveaways" ? "active" : "")"
+       asp-page="Giveaways" asp-route-id="@Model.CustomerId" asp-route-backupId="@Model.BackupId">Çekilişler</a>
+</nav>

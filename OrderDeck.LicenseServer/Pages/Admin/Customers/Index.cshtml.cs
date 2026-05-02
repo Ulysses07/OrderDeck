@@ -22,7 +22,8 @@ public class IndexModel : PageModel
         Search = search;
         CurrentPage = page < 1 ? 1 : page;
 
-        var query = _db.Customers.AsQueryable();
+        // Render-only path; AsNoTracking skips the change-tracker overhead.
+        var query = _db.Customers.AsNoTracking();
         if (!string.IsNullOrWhiteSpace(search))
             query = query.Where(c => c.Email.Contains(search));
 

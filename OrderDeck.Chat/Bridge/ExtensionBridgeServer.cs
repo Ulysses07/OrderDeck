@@ -19,6 +19,14 @@ namespace OrderDeck.Chat.Bridge;
 /// </summary>
 public sealed class ExtensionBridgeServer : IAsyncDisposable
 {
+    // Static so we don't recreate the options per-message — used to be inside
+    // Handle()'s parse loop, allocating on every chat row.
+    private static readonly JsonSerializerOptions JsonOpts = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true
+    };
+
     private readonly IChatBus _bus;
     private readonly ITrialModeProbe? _trialProbe;
     private readonly ILogger<ExtensionBridgeServer> _log;
@@ -71,7 +79,15 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
             }
 
             var wsContext = await context.AcceptWebSocketAsync(subProtocol: null);
-            _ = Task.Run(() => Handle(wsContext.WebSocket, ct), ct);
+            // Fire-and-forget per-connection handler. ContinueWith logs any
+            // unobserved exception so we don't lose runtime errors silently —
+            // Handle has its own per-frame catch but scheduling/setup errors
+            // would otherwise vanish into the unobserved-task stream.
+            _ = Task.Run(() => Handle(wsContext.WebSocket, ct), ct)
+                .ContinueWith(t => _log.LogError(t.Exception, "Extension WS handler crashed"),
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
         }
     }
 
@@ -108,12 +124,7 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
             try
             {
                 var json = Encoding.UTF8.GetString(ms.GetBuffer(), 0, (int)ms.Length);
-                var msg = JsonSerializer.Deserialize<ExtensionMessage>(json,
-                    new JsonSerializerOptions
-                    {
-                        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-                        PropertyNameCaseInsensitive = true
-                    });
+                var msg = JsonSerializer.Deserialize<ExtensionMessage>(json, JsonOpts);
 
                 if (msg is { Type: "chat", Platform: not null, Username: not null, Text: not null })
                 {

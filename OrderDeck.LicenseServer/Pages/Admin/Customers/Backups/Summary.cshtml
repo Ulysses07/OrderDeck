@@ -3,24 +3,14 @@
 @{
     ViewData["Title"] = "Yedek Özeti";
     var s = Model.Summary;
+    var nav = new BackupNavModel(Model.Customer!.Id, Model.Backup!.Id, "Summary");
 }
 
-<a asp-page="Index" asp-route-id="@Model.Customer!.Id">← Yedekler listesine</a>
+<a asp-page="Index" asp-route-id="@Model.Customer.Id">← Yedekler listesine</a>
 
-<h2>Yedek #@Model.Backup!.Id.ToString()[..8] — @Model.Backup.CreatedAt.ToString("dd MMM yyyy HH:mm")</h2>
+<h2>Yedek #@Model.Backup.Id.ToString()[..8] — @Model.Backup.CreatedAt.ToString("dd MMM yyyy HH:mm")</h2>
 
-<nav class="mb-3">
-    <a class="btn btn-sm btn-outline-primary active"
-       asp-page="Summary" asp-route-id="@Model.Customer.Id" asp-route-backupId="@Model.Backup.Id">Özet</a>
-    <a class="btn btn-sm btn-outline-primary"
-       asp-page="Customers" asp-route-id="@Model.Customer.Id" asp-route-backupId="@Model.Backup.Id">Müşteriler</a>
-    <a class="btn btn-sm btn-outline-primary"
-       asp-page="Sessions" asp-route-id="@Model.Customer.Id" asp-route-backupId="@Model.Backup.Id">Yayınlar</a>
-    <a class="btn btn-sm btn-outline-primary"
-       asp-page="Labels" asp-route-id="@Model.Customer.Id" asp-route-backupId="@Model.Backup.Id">Etiketler</a>
-    <a class="btn btn-sm btn-outline-primary"
-       asp-page="Giveaways" asp-route-id="@Model.Customer.Id" asp-route-backupId="@Model.Backup.Id">Çekilişler</a>
-</nav>
+<partial name="_BackupNav" model="nav" />
 
 @if (Model.Error is not null)
 {

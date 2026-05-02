@@ -3,10 +3,11 @@
 @{
     ViewData["Title"] = "Yedek — Yayınlar";
     var p = Model.Page_;
+    var nav = new BackupNavModel(Model.Customer!.Id, Model.Backup!.Id, "Sessions");
 }
 
-<a asp-page="Summary" asp-route-id="@Model.Customer!.Id" asp-route-backupId="@Model.Backup!.Id">← Özet</a>
 <h3>Yayınlar — Yedek @Model.Backup.CreatedAt.ToString("dd MMM yyyy HH:mm")</h3>
+<partial name="_BackupNav" model="nav" />
 
 @if (Model.Error is not null)
 {

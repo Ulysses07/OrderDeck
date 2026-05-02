@@ -262,19 +262,30 @@ public sealed class AppHost : IDisposable
     private static LicensingOptions BuildLicensingOptions()
     {
         var opt = new LicensingOptions();
-        var envBase = Environment.GetEnvironmentVariable("LIVEDECK_LICENSE_BASE_URL");
+
+        // ORDERDECK_* takes precedence; LIVEDECK_* kept as backward-compat
+        // for the rename (Phase 4b shipped under the LiveDeck name). Drop
+        // the legacy fallback after one renewal cycle when no installs
+        // could plausibly still have the old env vars set.
+        var envBase = ReadEnv("ORDERDECK_LICENSE_BASE_URL", "LIVEDECK_LICENSE_BASE_URL");
         if (!string.IsNullOrWhiteSpace(envBase)) opt.ServerBaseUrl = envBase.Trim();
 
-        var envTrialDays = Environment.GetEnvironmentVariable("LIVEDECK_TRIAL_DURATION_DAYS");
+        var envTrialDays = ReadEnv("ORDERDECK_TRIAL_DURATION_DAYS", "LIVEDECK_TRIAL_DURATION_DAYS");
         if (int.TryParse(envTrialDays, out var d) && d >= 0) opt.TrialDurationDays = d;
 
-        var envTrialPath = Environment.GetEnvironmentVariable("LIVEDECK_TRIAL_PROGRAMDATA_PATH");
+        var envTrialPath = ReadEnv("ORDERDECK_TRIAL_PROGRAMDATA_PATH", "LIVEDECK_TRIAL_PROGRAMDATA_PATH");
         if (!string.IsNullOrWhiteSpace(envTrialPath)) opt.TrialProgramDataPath = envTrialPath.Trim();
 
-        var envTrialKey = Environment.GetEnvironmentVariable("LIVEDECK_TRIAL_REGISTRY_SUBKEY");
+        var envTrialKey = ReadEnv("ORDERDECK_TRIAL_REGISTRY_SUBKEY", "LIVEDECK_TRIAL_REGISTRY_SUBKEY");
         if (!string.IsNullOrWhiteSpace(envTrialKey)) opt.TrialRegistrySubKey = envTrialKey.Trim();
 
         return opt;
+    }
+
+    private static string? ReadEnv(string preferred, string legacyFallback)
+    {
+        var v = Environment.GetEnvironmentVariable(preferred);
+        return !string.IsNullOrWhiteSpace(v) ? v : Environment.GetEnvironmentVariable(legacyFallback);
     }
 
     public void Dispose()

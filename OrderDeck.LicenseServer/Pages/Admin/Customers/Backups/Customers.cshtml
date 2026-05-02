@@ -3,10 +3,11 @@
 @{
     ViewData["Title"] = "Yedek — Müşteriler";
     var p = Model.Page_;
+    var nav = new BackupNavModel(Model.Customer!.Id, Model.Backup!.Id, "Customers");
 }
 
-<a asp-page="Summary" asp-route-id="@Model.Customer!.Id" asp-route-backupId="@Model.Backup!.Id">← Özet</a>
 <h3>Müşteriler — Yedek @Model.Backup.CreatedAt.ToString("dd MMM yyyy HH:mm")</h3>
+<partial name="_BackupNav" model="nav" />
 
 <form method="get" class="mb-3 d-flex gap-2">
     <input asp-for="Search" name="search" class="form-control" placeholder="Username ara…" />

@@ -164,7 +164,10 @@ public class Program
                     partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
                     factory: _ => new FixedWindowRateLimiterOptions
                     {
-                        PermitLimit = int.TryParse(Environment.GetEnvironmentVariable("LIVEDECK_INTAKE_RATELIMIT_PER_HOUR"), out var n) ? n : 5,
+                        PermitLimit = int.TryParse(
+                            Environment.GetEnvironmentVariable("ORDERDECK_INTAKE_RATELIMIT_PER_HOUR")
+                            ?? Environment.GetEnvironmentVariable("LIVEDECK_INTAKE_RATELIMIT_PER_HOUR"),
+                            out var n) ? n : 5,
                         Window = TimeSpan.FromHours(1)
                     }));
             opt.AddPolicy("backup-upload", httpContext =>
