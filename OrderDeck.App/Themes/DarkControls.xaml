@@ -594,6 +594,75 @@
         <Setter Property="Height" Value="1"/>
     </Style>
 
+    <!-- ── ScrollBar — minimalist thin track + thumb. Default Aero is a
+         chunky 17 px wide gray bar with up/down arrow buttons that breaks
+         the dark aesthetic. We render a 10 px transparent track with a
+         rounded thumb in OD.Border.Hover that lifts on hover/drag. -->
+    <Style x:Key="OD.ScrollBar.Thumb" TargetType="{x:Type Thumb}">
+        <Setter Property="OverridesDefaultStyle" Value="True"/>
+        <Setter Property="IsTabStop" Value="False"/>
+        <Setter Property="Focusable" Value="False"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type Thumb}">
+                    <Border x:Name="Bd"
+                            Background="{StaticResource OD.Border.Hover}"
+                            CornerRadius="3"
+                            Margin="2"
+                            SnapsToDevicePixels="True"/>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource OD.Fg.Secondary}"/>
+                        </Trigger>
+                        <Trigger Property="IsDragging" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource OD.Fg.Primary}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="{x:Type ScrollBar}">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Width" Value="10"/>
+        <Setter Property="MinWidth" Value="10"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type ScrollBar}">
+                    <Grid Background="{TemplateBinding Background}">
+                        <Track Name="PART_Track" IsDirectionReversed="True">
+                            <Track.Thumb>
+                                <Thumb Style="{StaticResource OD.ScrollBar.Thumb}"/>
+                            </Track.Thumb>
+                            <!-- Empty page-up/page-down repeat buttons (no visible track-click area). -->
+                            <Track.IncreaseRepeatButton>
+                                <RepeatButton Command="ScrollBar.PageDownCommand"
+                                              Background="Transparent" BorderThickness="0"
+                                              IsTabStop="False" Focusable="False"
+                                              Template="{x:Null}"/>
+                            </Track.IncreaseRepeatButton>
+                            <Track.DecreaseRepeatButton>
+                                <RepeatButton Command="ScrollBar.PageUpCommand"
+                                              Background="Transparent" BorderThickness="0"
+                                              IsTabStop="False" Focusable="False"
+                                              Template="{x:Null}"/>
+                            </Track.DecreaseRepeatButton>
+                        </Track>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <Trigger Property="Orientation" Value="Horizontal">
+                <Setter Property="Width" Value="Auto"/>
+                <Setter Property="MinWidth" Value="0"/>
+                <Setter Property="Height" Value="10"/>
+                <Setter Property="MinHeight" Value="10"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
     <!-- ── ToolTip ─────────────────────────────────────────────────────── -->
     <Style TargetType="{x:Type ToolTip}">
         <Setter Property="Background" Value="{StaticResource OD.Bg.Elevated}"/>
