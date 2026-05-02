@@ -5,6 +5,13 @@
              StartupUri="MainWindow.xaml">
     <Application.Resources>
         <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!-- Implicit dark-theme styles for unstyled TextBox / ComboBox /
+                     Label / GroupBox / DataGrid headers / etc. Closes the
+                     "white text on white background" UI bug across dialogs. -->
+                <ResourceDictionary Source="Themes/DarkControls.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+
             <converters:NullToCollapsedConverter   x:Key="NullToCollapsedConverter"/>
             <converters:UnixToDateConverter        x:Key="UnixToDateConverter"/>
             <converters:BlacklistToBrushConverter  x:Key="BlacklistToBrushConverter"/>
