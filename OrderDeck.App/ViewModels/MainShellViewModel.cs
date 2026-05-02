@@ -234,7 +234,11 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         var session = _sessions.GetActive();
         StreamStatusLabel = session is null
             ? "Yayın aktif değil"
-            : $"Yayın aktif (başlangıç: {DateTimeOffset.FromUnixTimeSeconds(session.StartedAt):HH:mm})";
+            // session.StartedAt is unix seconds (UTC). Format the LocalDateTime
+            // so the user sees the wall-clock time on their machine — formatting
+            // the DateTimeOffset directly would print UTC and the user reported
+            // a 3-hour shift (Europe/Istanbul = UTC+3).
+            : $"Yayın aktif (başlangıç: {DateTimeOffset.FromUnixTimeSeconds(session.StartedAt).LocalDateTime:HH:mm})";
     }
 
     private void UpdateGiveawayCanStart()
