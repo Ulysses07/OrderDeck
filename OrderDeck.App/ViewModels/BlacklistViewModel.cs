@@ -52,9 +52,12 @@ public sealed partial class BlacklistViewModel : ViewModelBase
         {
             Mode = Views.AddToBlacklistDialog.DialogMode.Manual
         };
-        dialog.Owner = Application.Current?.Windows.Count > 0
-            ? Application.Current?.Windows[Application.Current.Windows.Count - 1]
-            : null;
+        // WPF auto-registers a Window in Application.Current.Windows the moment
+        // it's constructed. Picking the *last* window therefore returns `dialog`
+        // itself — and Window.Owner = self throws ArgumentException at ShowDialog.
+        // Walk back skipping the dialog being parented; falls through to
+        // MainWindow when nothing else matches.
+        dialog.Owner = ResolveOwnerWindow(dialog);
         if (dialog.ShowDialog() != true) return;
 
         _customers.EnsureBlacklistedManual(
@@ -69,9 +72,24 @@ public sealed partial class BlacklistViewModel : ViewModelBase
     {
         if (string.IsNullOrEmpty(customerId)) return;
         var dlg = App.Host.Services.GetRequiredService<Views.CustomerDetailDialog>();
-        dlg.Owner = Application.Current?.Windows.Count > 0
-            ? Application.Current?.Windows[Application.Current.Windows.Count - 1]
-            : null;
+        dlg.Owner = ResolveOwnerWindow(dlg);
         dlg.Open(customerId);
+    }
+
+    /// <summary>Returns a sensible Owner window for a modal dialog, EXCLUDING the
+    /// dialog being parented. WPF registers a Window in Application.Current.Windows
+    /// during construction, so naive "last window" picks return the dialog itself,
+    /// which Window.Owner.set rejects with ArgumentException.</summary>
+    private static Window? ResolveOwnerWindow(Window self)
+    {
+        var windows = Application.Current?.Windows;
+        if (windows is null) return null;
+        // Walk most-recent → first, skip self, return the first visible candidate.
+        for (var i = windows.Count - 1; i >= 0; i--)
+        {
+            var w = windows[i];
+            if (!ReferenceEquals(w, self) && w.IsLoaded) return w;
+        }
+        return Application.Current?.MainWindow == self ? null : Application.Current?.MainWindow;
     }
 }
