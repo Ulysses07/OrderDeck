@@ -4,7 +4,11 @@
         Title="OrderDeck — Hesap"
         Width="420" Height="360"
         WindowStartupLocation="CenterScreen"
-        ResizeMode="NoResize">
+        ResizeMode="NoResize"
+        Background="#FF161616"
+        TextElement.Foreground="#FFEDEDED"
+        TextOptions.TextRenderingMode="ClearType"
+        TextOptions.TextFormattingMode="Display">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
     </Window.Resources>
@@ -15,26 +19,29 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" Text="Hesap Bilgileri" FontSize="18" FontWeight="Bold" Margin="0,0,0,16"/>
+        <TextBlock Grid.Row="0" Text="Hesap Bilgileri" FontSize="18" FontWeight="Bold" Margin="0,0,0,16"
+                   Foreground="#FFEDEDED"/>
 
         <StackPanel Grid.Row="1">
             <!-- Account section: email + name -->
             <StackPanel Visibility="{Binding IsAccountSection, Converter={StaticResource BoolToVis}}">
-                <TextBlock Text="E-posta" FontWeight="SemiBold"/>
-                <TextBlock Text="{Binding Email}" Margin="0,0,0,12"/>
+                <TextBlock Text="E-posta" FontWeight="SemiBold" Foreground="#FF9E9E9E" FontSize="11"/>
+                <TextBlock Text="{Binding Email}" Margin="0,2,0,12" Foreground="#FFEDEDED" FontSize="13"/>
 
-                <TextBlock Text="Ad Soyad" FontWeight="SemiBold"/>
-                <TextBlock Text="{Binding Name}" Margin="0,0,0,16"/>
+                <TextBlock Text="Ad Soyad" FontWeight="SemiBold" Foreground="#FF9E9E9E" FontSize="11"/>
+                <TextBlock Text="{Binding Name}" Margin="0,2,0,16" Foreground="#FFEDEDED" FontSize="13"/>
 
                 <Separator Margin="0,4,0,12"/>
             </StackPanel>
 
             <!-- License section -->
             <StackPanel Visibility="{Binding IsLicenseSection, Converter={StaticResource BoolToVis}}">
-                <TextBlock Text="Lisans Anahtarı" FontWeight="SemiBold"/>
-                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                <TextBlock Text="Lisans Anahtarı" FontWeight="SemiBold" Foreground="#FF9E9E9E" FontSize="11"/>
+                <StackPanel Orientation="Horizontal" Margin="0,2,0,8">
                     <TextBlock Text="{Binding DisplayedLicenseKey}"
                                FontFamily="Consolas"
+                               Foreground="#FFEDEDED"
+                               FontSize="13"
                                VerticalAlignment="Center"/>
                     <ToggleButton IsChecked="{Binding IsLicenseKeyVisible, Mode=TwoWay}"
                                   Padding="8,2" Margin="8,0,0,0"
@@ -53,22 +60,22 @@
                     </ToggleButton>
                 </StackPanel>
 
-                <TextBlock Text="SKU" FontWeight="SemiBold"/>
-                <TextBlock Text="{Binding SkuCode}" Margin="0,0,0,8"/>
+                <TextBlock Text="SKU" FontWeight="SemiBold" Foreground="#FF9E9E9E" FontSize="11"/>
+                <TextBlock Text="{Binding SkuCode}" Margin="0,2,0,8" Foreground="#FFEDEDED" FontSize="13"/>
 
-                <TextBlock Text="Bitiş Tarihi" FontWeight="SemiBold"/>
-                <TextBlock Text="{Binding ExpiresAt, StringFormat='{}{0:dd.MM.yyyy}'}" Margin="0,0,0,8"/>
+                <TextBlock Text="Bitiş Tarihi" FontWeight="SemiBold" Foreground="#FF9E9E9E" FontSize="11"/>
+                <TextBlock Text="{Binding ExpiresAt, StringFormat='{}{0:dd.MM.yyyy}'}" Margin="0,2,0,8" Foreground="#FFEDEDED" FontSize="13"/>
             </StackPanel>
 
             <!-- Trial section -->
             <StackPanel Visibility="{Binding IsTrialSection, Converter={StaticResource BoolToVis}}">
-                <TextBlock Text="Deneme Süresi" FontWeight="SemiBold"/>
-                <TextBlock Text="{Binding TrialLine}" Margin="0,0,0,16"/>
+                <TextBlock Text="Deneme Süresi" FontWeight="SemiBold" Foreground="#FF9E9E9E" FontSize="11"/>
+                <TextBlock Text="{Binding TrialLine}" Margin="0,2,0,16" Foreground="#FFEDEDED" FontSize="13"/>
             </StackPanel>
 
             <!-- Status -->
-            <TextBlock Text="Durum" FontWeight="SemiBold"/>
-            <TextBlock Text="{Binding StatusText}" Margin="0,0,0,8"/>
+            <TextBlock Text="Durum" FontWeight="SemiBold" Foreground="#FF9E9E9E" FontSize="11"/>
+            <TextBlock Text="{Binding StatusText}" Margin="0,2,0,8" Foreground="#FFEDEDED" FontSize="13"/>
         </StackPanel>
 
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
