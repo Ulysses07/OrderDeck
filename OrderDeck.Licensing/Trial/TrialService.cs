@@ -37,9 +37,33 @@ public sealed class TrialService
         var currentHw = _hwId.GetHardwareId();
         if (!string.Equals(record.HardwareFingerprint, currentHw, StringComparison.OrdinalIgnoreCase))
         {
-            _log.LogWarning("Trial HW fingerprint mismatch (stored={Stored}, current={Current}) — treating as expired",
-                record.HardwareFingerprint, currentHw);
-            return new TrialState.Expired(record.ExpiresAt);
+            // Phase 5d migration: stored fingerprint may be the pre-SID
+            // username-based hash. If it matches the legacy hash for this
+            // machine, accept the trial AND silently migrate the stored
+            // record to the SID-based hash so subsequent reads stay fast.
+            // Mirrors the server-side ActivationManager legacy fallback.
+            var legacyHw = _hwId.GetLegacyHardwareId();
+            if (legacyHw is not null &&
+                string.Equals(record.HardwareFingerprint, legacyHw, StringComparison.OrdinalIgnoreCase))
+            {
+                _log.LogInformation(
+                    "Trial fingerprint matched legacy hash — migrating stored record to SID-based hash");
+                var migrated = record with { HardwareFingerprint = currentHw };
+                try { _storage.Write(migrated); }
+                catch (Exception ex)
+                {
+                    // Migration failure isn't fatal — fall through to the
+                    // legacy-match acceptance below. Next launch will retry.
+                    _log.LogWarning(ex, "Trial fingerprint migration write failed");
+                }
+                record = migrated;
+            }
+            else
+            {
+                _log.LogWarning("Trial HW fingerprint mismatch (stored={Stored}, current={Current}) — treating as expired",
+                    record.HardwareFingerprint, currentHw);
+                return new TrialState.Expired(record.ExpiresAt);
+            }
         }
 
         var now = _now();

@@ -73,6 +73,42 @@ public class TrialServiceTests
     }
 
     [Fact]
+    public void GetState_accepts_legacy_fingerprint_and_migrates_record_in_place()
+    {
+        // Phase 5d migration: a trial started before the SID-based hash
+        // landed has a username-based fingerprint stored. The current hash
+        // differs but the legacy hash matches — service must honour the
+        // trial AND rewrite the storage to the new hash.
+        var now = new DateTimeOffset(2026, 4, 29, 12, 0, 0, TimeSpan.Zero);
+        var (svc, storage, hw) = Build(now);
+        hw.Id = "new-sid-hash";
+        hw.LegacyId = "old-username-hash";
+        storage.Stored = new TrialRecord(now.AddDays(-3), now.AddDays(11), "old-username-hash", 1);
+
+        var state = svc.GetState();
+
+        state.Should().BeOfType<TrialState.Active>("legacy fingerprint must be accepted");
+        ((TrialState.Active)state).RemainingDays.Should().Be(11);
+        storage.Stored!.HardwareFingerprint.Should().Be("new-sid-hash",
+            "trial record must be silently migrated to the SID-based hash");
+    }
+
+    [Fact]
+    public void GetState_returns_Expired_when_neither_current_nor_legacy_match()
+    {
+        // Different machine entirely: both hashes differ. Stays expired —
+        // legacy fallback is for username-rename only, not for trial cloning.
+        var now = DateTimeOffset.UtcNow;
+        var (svc, storage, hw) = Build(now);
+        hw.Id = "this-machine-sid";
+        hw.LegacyId = "this-machine-legacy";
+        storage.Stored = new TrialRecord(now.AddDays(-3), now.AddDays(11), "OTHER-MACHINE-HASH", 1);
+
+        var state = svc.GetState();
+        state.Should().BeOfType<TrialState.Expired>();
+    }
+
+    [Fact]
     public void StartNewTrial_writes_record_and_returns_Active()
     {
         var now = new DateTimeOffset(2026, 4, 29, 12, 0, 0, TimeSpan.Zero);
