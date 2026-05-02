@@ -67,10 +67,21 @@
             <Button   Grid.Column="8" Content="Yayını Bitir"
                       Command="{Binding EndStreamCommand}"   Padding="14,6"/>
 
-            <Button   Grid.Column="9" Content="🎁 Çekiliş"
+            <Button   Grid.Column="9"
                       Command="{Binding StartGiveawayCommand}"
                       IsEnabled="{Binding CanStartGiveaway}"
-                      Padding="14,6" Margin="8,0,0,0"/>
+                      Padding="14,6" Margin="8,0,0,0">
+                <!-- Inline TextBlock so the gift glyph and the label can use
+                     different font families. WPF picks one font per Content
+                     string; without splitting them into Runs the gift box
+                     renders as a monochrome outline glyph from Segoe UI's
+                     own emoji subset instead of the color one in
+                     Segoe UI Emoji. -->
+                <TextBlock>
+                    <Run FontFamily="Segoe UI Emoji" Text="🎁"/>
+                    <Run Text=" Çekiliş"/>
+                </TextBlock>
+            </Button>
 
             <Button   Grid.Column="10" Content="⋮"
                       x:Name="MenuButton"
@@ -104,9 +115,12 @@
             <DockPanel Visibility="{Binding IsGiveawayActive, Converter={StaticResource BoolToVisibleConverter}}"
                        Background="#FF332B00" LastChildFill="False">
                 <TextBlock DockPanel.Dock="Left"
-                           Text="{Binding Banner.Keyword, StringFormat={}🎁 {0}}"
                            Foreground="#FFFFD166" FontWeight="Bold" FontSize="14"
-                           VerticalAlignment="Center" Margin="8,4,16,4"/>
+                           VerticalAlignment="Center" Margin="8,4,16,4">
+                    <Run FontFamily="Segoe UI Emoji" Text="🎁"/>
+                    <Run Text=" "/>
+                    <Run Text="{Binding Banner.Keyword, Mode=OneWay}"/>
+                </TextBlock>
                 <TextBlock DockPanel.Dock="Left"
                            Text="{Binding Banner.ParticipantCount, StringFormat={}{0} katılımcı}"
                            Foreground="White" Margin="0,4,16,4"

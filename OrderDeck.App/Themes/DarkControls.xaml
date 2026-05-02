@@ -47,10 +47,18 @@
          primary text. AccountDialog (and any future dialog that forgets
          to set Background/Foreground) was the failure mode: TextBlocks
          set to OD.Fg.Primary rendered on Windows 11's light system bg
-         = unreadable. -->
+         = unreadable.
+
+         FontFamily fallback chain: WPF tries each face in order until it
+         finds one that contains the requested codepoint, so Latin chars
+         resolve via "Segoe UI" while emoji codepoints (🎁 / ✨ / 🎉 / etc.)
+         drop through to "Segoe UI Emoji" and render as the Windows 11
+         color glyph instead of the monochrome outline that ships in
+         Segoe UI's own emoji subset. -->
     <Style TargetType="{x:Type Window}">
         <Setter Property="Background" Value="{StaticResource OD.Bg.Window}"/>
         <Setter Property="Foreground" Value="{StaticResource OD.Fg.Primary}"/>
+        <Setter Property="FontFamily" Value="Segoe UI, Segoe UI Emoji"/>
     </Style>
 
     <!-- ── Button — flat, rounded, hover lift ──────────────────────────── -->
