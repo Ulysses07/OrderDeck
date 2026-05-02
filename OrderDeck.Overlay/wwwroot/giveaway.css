@@ -29,21 +29,54 @@ html, body {
 #counter { margin-left: auto; font-size: 16px; opacity: 0.85; }
 #countdown { font-variant-numeric: tabular-nums; font-size: 18px; color: #4dd0ff; }
 
-#roulette {
+/* ── Spinning wheel ──────────────────────────────────────────────────
+   Square canvas hosts the rotating segments; the arrow points to the
+   top of the wheel and stays fixed while the canvas rotates underneath.
+   Wheel name shows the highlighted participant during spin and the
+   winner after it lands. */
+#wheel {
   margin-top: 16px;
-  font-size: 36px; font-weight: 700;
-  text-align: center;
-  padding: 18px;
-  background: linear-gradient(135deg, #ff6b9d, #ffce46);
-  border-radius: 8px;
-  color: #0f1118;
-  text-shadow: 0 1px 0 rgba(255,255,255,0.4);
-  animation: pulse 0.4s ease-in-out infinite alternate;
+  position: relative;
+  width: 260px;
+  height: 260px;
+  margin-left: auto; margin-right: auto;
 }
-
-@keyframes pulse {
-  from { transform: scale(1.0); }
-  to   { transform: scale(1.04); }
+#wheel-canvas {
+  width: 260px;
+  height: 260px;
+  display: block;
+  filter: drop-shadow(0 6px 16px rgba(0, 0, 0, 0.55));
+}
+#wheel-arrow {
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 14px solid transparent;
+  border-right: 14px solid transparent;
+  border-top: 22px solid #ffce46;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.6));
+  z-index: 2;
+}
+#wheel-name {
+  margin-top: 14px;
+  text-align: center;
+  font-size: 24px;
+  font-weight: 700;
+  color: #ffce46;
+  min-height: 30px;
+  letter-spacing: 0.3px;
+}
+#wheel.landed #wheel-name {
+  font-size: 32px;
+  animation: bounce 0.5s ease-out;
+}
+@keyframes bounce {
+  0%   { transform: scale(0.6); opacity: 0; }
+  50%  { transform: scale(1.15); }
+  100% { transform: scale(1.0); opacity: 1; }
 }
 
 #reveal {

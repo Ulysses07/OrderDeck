@@ -49,6 +49,16 @@ public sealed partial class SettingsViewModel : ViewModelBase
     // Phase 5c — YouTube Live chat scraper
     [ObservableProperty] private string _youTubeChannelHandle = "";
 
+    // Phase 5f — Spam / troll filter toggles
+    [ObservableProperty] private bool _spamFilterEnabled = true;
+    [ObservableProperty] private bool _spamDropShortMessages;
+    [ObservableProperty] private int _spamMinMessageLength = 2;
+    [ObservableProperty] private bool _spamDropDuplicates = true;
+    [ObservableProperty] private bool _spamDropAllCaps;
+    [ObservableProperty] private bool _spamDropLinks = true;
+    [ObservableProperty] private bool _spamDropProfanity;
+    [ObservableProperty] private string _spamBlockedWordsText = "";
+
     [ObservableProperty] private string? _validationError;
 
     /// <summary>True iff Save was called and OverlayPort changed (caller checks for restart prompt).</summary>
@@ -95,6 +105,16 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
         // Phase 5c — YouTube
         YouTubeChannelHandle = _liveSettings.YouTubeChannelHandle ?? string.Empty;
+
+        // Phase 5f — Spam filter
+        SpamFilterEnabled       = _liveSettings.SpamFilter.Enabled;
+        SpamDropShortMessages   = _liveSettings.SpamFilter.DropShortMessages;
+        SpamMinMessageLength    = _liveSettings.SpamFilter.MinMessageLength;
+        SpamDropDuplicates      = _liveSettings.SpamFilter.DropDuplicates;
+        SpamDropAllCaps         = _liveSettings.SpamFilter.DropAllCaps;
+        SpamDropLinks           = _liveSettings.SpamFilter.DropLinks;
+        SpamDropProfanity       = _liveSettings.SpamFilter.DropProfanity;
+        SpamBlockedWordsText    = string.Join(", ", _liveSettings.SpamFilter.BlockedWords);
     }
 
     private void LoadInstalledPrinters()
@@ -162,6 +182,22 @@ public sealed partial class SettingsViewModel : ViewModelBase
         // instead of attempting to resolve "".
         var trimmedHandle = YouTubeChannelHandle?.Trim();
         _liveSettings.YouTubeChannelHandle = string.IsNullOrEmpty(trimmedHandle) ? null : trimmedHandle;
+
+        // Phase 5f — Spam filter. The SpamFilter service reads this object on
+        // every message via Func<AppSettings>, so changes take effect the
+        // moment Save runs — no restart needed.
+        _liveSettings.SpamFilter.Enabled            = SpamFilterEnabled;
+        _liveSettings.SpamFilter.DropShortMessages  = SpamDropShortMessages;
+        _liveSettings.SpamFilter.MinMessageLength   = SpamMinMessageLength;
+        _liveSettings.SpamFilter.DropDuplicates     = SpamDropDuplicates;
+        _liveSettings.SpamFilter.DropAllCaps        = SpamDropAllCaps;
+        _liveSettings.SpamFilter.DropLinks          = SpamDropLinks;
+        _liveSettings.SpamFilter.DropProfanity      = SpamDropProfanity;
+        _liveSettings.SpamFilter.BlockedWords       = (SpamBlockedWordsText ?? string.Empty)
+            .Split(new[] { ',', '\n', ';' }, System.StringSplitOptions.RemoveEmptyEntries)
+            .Select(w => w.Trim())
+            .Where(w => w.Length > 0)
+            .ToList();
 
         _store.Save(_liveSettings);
 

@@ -249,6 +249,63 @@
                     </GroupBox>
                 </ScrollViewer>
             </TabItem>
+
+            <!-- Spam tab — Phase 5f -->
+            <TabItem Header="Spam">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="12">
+                        <CheckBox Content="Spam filtresi açık"
+                                  IsChecked="{Binding SpamFilterEnabled}"
+                                  FontWeight="Bold" Margin="0,4,0,12"/>
+
+                        <TextBlock Text="Aşağıdaki kuralları teker teker aç/kapat. Sadece açık kurallar uygulanır; testte kuralı kapatıp tekrar denemekten çekinme."
+                                   TextWrapping="Wrap" FontSize="11"
+                                   Foreground="#FF9E9E9E" Margin="0,0,0,12"/>
+
+                        <CheckBox Content="Çift mesajları engelle (30 sn içinde aynı yazı)"
+                                  IsChecked="{Binding SpamDropDuplicates}"
+                                  Margin="0,4"/>
+
+                        <CheckBox Content="Link içeren mesajları engelle"
+                                  IsChecked="{Binding SpamDropLinks}"
+                                  Margin="0,4"/>
+
+                        <CheckBox Content="Tamamen büyük harfli (BAĞIRMA) mesajları engelle"
+                                  IsChecked="{Binding SpamDropAllCaps}"
+                                  Margin="0,4"/>
+
+                        <CheckBox Content="Çok kısa mesajları engelle"
+                                  IsChecked="{Binding SpamDropShortMessages}"
+                                  Margin="0,4"/>
+                        <Grid Margin="22,2,0,4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="80"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Minimum karakter:"
+                                       VerticalAlignment="Center" Margin="0,0,8,0"
+                                       Foreground="#FF9E9E9E"/>
+                            <TextBox Grid.Column="1"
+                                     Text="{Binding SpamMinMessageLength, UpdateSourceTrigger=PropertyChanged}"
+                                     IsEnabled="{Binding SpamDropShortMessages}"/>
+                        </Grid>
+
+                        <CheckBox Content="Yasaklı kelime içeren mesajları engelle"
+                                  IsChecked="{Binding SpamDropProfanity}"
+                                  Margin="0,8,0,4"/>
+                        <Label Content="Yasaklı kelimeler (virgül ile ayır)"
+                               Margin="22,0,0,2"
+                               Foreground="#FF9E9E9E" FontSize="11"/>
+                        <TextBox Margin="22,0,0,4"
+                                 IsEnabled="{Binding SpamDropProfanity}"
+                                 Text="{Binding SpamBlockedWordsText, UpdateSourceTrigger=PropertyChanged}"
+                                 AcceptsReturn="True" TextWrapping="Wrap"
+                                 MinHeight="60" MaxHeight="120"
+                                 VerticalScrollBarVisibility="Auto"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
         </TabControl>
 
         <!-- Validation error -->

@@ -31,6 +31,10 @@ public sealed class AppSettings
     /// hosted service resolves the handle to the active live video each time the
     /// user goes live; offline state is detected and the service idles.</summary>
     public string? YouTubeChannelHandle { get; set; }
+
+    /// <summary>Spam/troll filter rules applied to inbound chat messages
+    /// before they reach the bus. Disabled rules pass everything through.</summary>
+    public OrderDeck.Core.Chat.SpamFilterSettings SpamFilter { get; set; } = new();
 }
 
 /// <summary>Phase 4g: WhatsApp ödeme istemleri için Settings bloğu.</summary>

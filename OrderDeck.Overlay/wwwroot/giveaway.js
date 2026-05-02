@@ -3,10 +3,21 @@
   const $keyword = document.getElementById('keyword');
   const $counter = document.getElementById('counter');
   const $countdown = document.getElementById('countdown');
-  const $roulette = document.getElementById('roulette');
-  const $rouletteName = document.getElementById('roulette-name');
+  const $wheel = document.getElementById('wheel');
+  const $wheelCanvas = document.getElementById('wheel-canvas');
+  const $wheelName = document.getElementById('wheel-name');
   const $reveal = document.getElementById('reveal');
   const $winnersList = document.getElementById('winners-list');
+
+  // Wheel slice palette — vibrant but harmonised; colours alternate so
+  // adjacent slices are always distinguishable. ~12 hues so 24+ participant
+  // wheels still get colour variety without two same-colour slices touching.
+  const SLICE_COLORS = [
+    '#ef4444', '#f97316', '#f59e0b', '#eab308',
+    '#84cc16', '#22c55e', '#10b981', '#14b8a6',
+    '#06b6d4', '#0ea5e9', '#3b82f6', '#6366f1',
+    '#8b5cf6', '#a855f7', '#d946ef', '#ec4899'
+  ];
 
   let state = {
     giveawayId: null,
@@ -25,9 +36,10 @@
     $keyword.textContent = '';
     $counter.textContent = '0 katılımcı';
     $countdown.textContent = '';
-    $rouletteName.textContent = '';
+    $wheelName.textContent = '';
     $winnersList.innerHTML = '';
-    hide($roulette);
+    $wheel.classList.remove('landed');
+    hide($wheel);
     hide($reveal);
     hide($root);
   }
@@ -75,47 +87,177 @@
     setTimeout(() => { reset(); $root.classList.remove('fade-out'); }, 600);
   }
 
-  function onWinnersDrawn(e) {
+  // ─── Wheel rendering ────────────────────────────────────────────────
+  // Drawn at logical 520×520 then scaled by CSS to 260; the high-res
+  // canvas keeps text crisp on any DPI without a transparent retina hack.
+  function drawWheel(participants, rotation) {
+    const ctx = $wheelCanvas.getContext('2d');
+    const W = $wheelCanvas.width;
+    const cx = W / 2, cy = W / 2;
+    const outerR = W / 2 - 8;
+    const innerR = 36;
+
+    ctx.clearRect(0, 0, W, W);
+    if (participants.length === 0) return;
+
+    const slice = (Math.PI * 2) / participants.length;
+
+    // Slice fills + dividers.
+    for (let i = 0; i < participants.length; i++) {
+      const start = rotation + i * slice - Math.PI / 2;
+      const end = start + slice;
+      const color = SLICE_COLORS[i % SLICE_COLORS.length];
+
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, outerR, start, end);
+      ctx.closePath();
+      ctx.fillStyle = color;
+      ctx.fill();
+
+      ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // Per-slice label text — only when slice is wide enough to read.
+    // Below ~10 px arc length we hide the label to avoid noisy overlap.
+    const labelArcMin = 14 * Math.PI / 180;  // 14°
+    if (slice >= labelArcMin) {
+      ctx.font = 'bold 16px "Segoe UI", system-ui, sans-serif';
+      ctx.fillStyle = '#fff';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+
+      for (let i = 0; i < participants.length; i++) {
+        const angle = rotation + i * slice + slice / 2 - Math.PI / 2;
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(angle);
+        const text = (participants[i].DisplayName || participants[i].Username || '').slice(0, 14);
+        // Outline for legibility on bright fills.
+        ctx.shadowColor = 'rgba(0,0,0,0.65)';
+        ctx.shadowBlur = 4;
+        ctx.fillText(text, outerR - 14, 0);
+        ctx.restore();
+      }
+    }
+
+    // Centre hub.
+    ctx.beginPath();
+    ctx.arc(cx, cy, innerR, 0, Math.PI * 2);
+    ctx.fillStyle = '#0f1118';
+    ctx.fill();
+    ctx.strokeStyle = '#ffce46';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    ctx.font = 'bold 22px "Segoe UI", system-ui, sans-serif';
+    ctx.fillStyle = '#ffce46';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.shadowColor = 'transparent';
+    ctx.fillText('🎁', cx, cy);
+  }
+
+  /**
+   * Returns the rotation (radians) such that the slice at `winnerIndex`
+   * lands under the top arrow. With slice 0 already pointing up at
+   * rotation=0, we negate winnerIndex's centre-of-slice angle. Plus
+   * `extraTurns` full rotations so the spin feels physical, and a small
+   * jitter so the arrow doesn't land exactly on the boundary.
+   */
+  function targetRotation(participantCount, winnerIndex, extraTurns) {
+    const slice = (Math.PI * 2) / participantCount;
+    // -slice/2 puts the arrow at the centre of the slice; jitter ±35 % of slice.
+    const jitter = (Math.random() - 0.5) * slice * 0.7;
+    const baseAngle = -winnerIndex * slice - slice / 2 + jitter;
+    return baseAngle + extraTurns * Math.PI * 2;
+  }
+
+  /**
+   * Spins the wheel once and resolves when it lands. winnerIndex is the
+   * participant in `pool` that should be under the arrow at landing.
+   */
+  function spinOnce(pool, winnerIndex, durationMs) {
+    return new Promise(resolve => {
+      const target = targetRotation(pool.length, winnerIndex, 5 + Math.floor(Math.random() * 3));
+      const start = performance.now();
+      let lastHighlightIdx = -1;
+
+      function frame(now) {
+        const t = Math.min(1, (now - start) / durationMs);
+        // Strong ease-out (cubic) — fast spin then gentle landing.
+        const eased = 1 - Math.pow(1 - t, 3);
+        const rotation = target * eased;
+
+        drawWheel(pool, rotation);
+
+        // Live name under arrow (top of wheel).
+        const slice = (Math.PI * 2) / pool.length;
+        const normalised = ((-rotation - slice / 2) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
+        const idx = Math.floor(normalised / slice) % pool.length;
+        if (idx !== lastHighlightIdx) {
+          const p = pool[idx];
+          $wheelName.textContent = p.DisplayName || p.Username || '';
+          lastHighlightIdx = idx;
+        }
+
+        if (t < 1) {
+          requestAnimationFrame(frame);
+        } else {
+          // Snap final name to the actual winner so the displayed text
+          // matches the awarded participant exactly (rotation jitter
+          // could leave the highlight one slice off).
+          $wheelName.textContent = pool[winnerIndex].DisplayName || pool[winnerIndex].Username || '';
+          $wheel.classList.add('landed');
+          resolve();
+        }
+      }
+      requestAnimationFrame(frame);
+    });
+  }
+
+  async function onWinnersDrawn(e) {
     if (e.GiveawayId !== state.giveawayId) return;
     if (state.countdownTimer) { clearInterval(state.countdownTimer); state.countdownTimer = null; }
 
     const pool = e.AnimationPool || [];
     if (pool.length === 0) {
-      // 0 katılımcı durumu
-      $rouletteName.textContent = 'Henüz katılımcı yok';
-      show($roulette);
+      $wheelName.textContent = 'Henüz katılımcı yok';
+      show($wheel);
       setTimeout(() => { reset(); }, 5000);
       return;
     }
 
-    show($roulette);
-    const totalMs = 4000;
-    const startTime = performance.now();
-    let lastIdx = -1;
+    show($wheel);
+    drawWheel(pool, 0);
 
-    function frame(now) {
-      const t = Math.min(1, (now - startTime) / totalMs);
-      // ease-out: spin fast then slow
-      const eased = 1 - Math.pow(1 - t, 3);
-      const idx = Math.min(pool.length - 1, Math.floor(eased * (pool.length - 1)));
-      if (idx !== lastIdx) {
-        const p = pool[idx];
-        $rouletteName.textContent = p.DisplayName || p.Username;
-        lastIdx = idx;
-      }
-      if (t < 1) {
-        requestAnimationFrame(frame);
-      } else {
-        revealWinners(e.Winners || []);
-      }
+    const winners = e.Winners || [];
+
+    // For each winner, find their index in the pool and spin to land on it.
+    // Multiple winners → sequential spins so each gets the moment-of-reveal.
+    for (let i = 0; i < winners.length; i++) {
+      const w = winners[i];
+      let idx = pool.findIndex(p =>
+        p.Username === w.Username && p.Platform === w.Platform);
+      if (idx < 0) idx = 0;  // shouldn't happen — pool always contains winners
+
+      $wheel.classList.remove('landed');
+      // Slightly faster spins for subsequent winners — keeps energy up.
+      const dur = i === 0 ? 4500 : 2800;
+      await spinOnce(pool, idx, dur);
+      // Brief pause so audience reads the landed name before the next spin.
+      await new Promise(r => setTimeout(r, 900));
     }
-    requestAnimationFrame(frame);
+
+    revealWinners(winners);
   }
 
   function revealWinners(winners) {
-    hide($roulette);
+    hide($wheel);
     $winnersList.innerHTML = '';
-    const PLATFORM_EMOJI = { instagram: '📷', tiktok: '🎵' };
+    const PLATFORM_EMOJI = { instagram: '📷', tiktok: '🎵', facebook: '👥', youtube: '▶️' };
     for (const w of winners) {
       const li = document.createElement('li');
       li.className = 'winner';
