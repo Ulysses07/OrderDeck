@@ -105,10 +105,12 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
                 try
                 {
                     await scraper.StartAsync(ct);
-                    // Block until cancellation OR scraper internally fails.
-                    // The scraper's RunLoopAsync swallows transient errors; only
-                    // unrecoverable issues propagate via StopAsync invocation.
-                    await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                    // Wait for the runner to exit on its own (stream ended +
+                    // 10 min silence heuristic) OR for cancellation. Previously
+                    // this pinned Task.Delay(InfiniteTimeSpan), which kept
+                    // useless 5-second polling alive indefinitely after the
+                    // broadcaster ended their live.
+                    await scraper.Completion.WaitAsync(ct);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
                 catch (Exception ex)

@@ -32,7 +32,7 @@ public sealed class IntakeFormSyncServiceTests
 
         var handler = new FakeHttpMessageHandler(responder);
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
-        var api = new LicenseApiClient(http);
+        var api = new LicenseApiClient(http, new OrderDeck.Licensing.Api.LicenseAuthHandler());
 
         var svc = new IntakeFormSyncService(api, repo, store, settings, new FakeClock(),
             NullLogger<IntakeFormSyncService>.Instance);

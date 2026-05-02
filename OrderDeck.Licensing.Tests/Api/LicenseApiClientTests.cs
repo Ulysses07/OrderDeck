@@ -15,7 +15,7 @@ public class LicenseApiClientTests
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
         if (token is not null)
             http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-        return (new LicenseApiClient(http), handler);
+        return (new LicenseApiClient(http, new OrderDeck.Licensing.Api.LicenseAuthHandler()), handler);
     }
 
     [Fact]
@@ -165,14 +165,42 @@ public class LicenseApiClientTests
     [Fact]
     public async Task SetAuthToken_attaches_bearer_to_subsequent_requests()
     {
-        var (client, handler) = BuildClient(_ => FakeHttpMessageHandler.Json(200,
+        // This test exercises the production 2-arg ctor + LicenseAuthHandler
+        // pipeline directly. The 1-arg BuildClient() helper above creates a
+        // throwaway handler that's NOT chained into the message pipeline —
+        // fine for everything except SetAuthToken assertions, which need the
+        // handler to actually inject headers per request.
+        var fakeInner = new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.Json(200,
             """{"id":"00000000-0000-0000-0000-000000000000","email":"u","name":"n","emailConfirmedAt":null,"createdAt":"2026-01-01T00:00:00Z"}"""));
+        var authHandler = new LicenseAuthHandler { InnerHandler = fakeInner };
+        var http = new HttpClient(authHandler) { BaseAddress = new Uri("https://test.local") };
+        var client = new LicenseApiClient(http, authHandler);
 
         client.SetAuthToken("test-token");
         await client.GetMeAsync();
 
-        handler.Requests[0].Headers.Authorization!.Scheme.Should().Be("Bearer");
-        handler.Requests[0].Headers.Authorization.Parameter.Should().Be("test-token");
+        fakeInner.Requests[0].Headers.Authorization!.Scheme.Should().Be("Bearer");
+        fakeInner.Requests[0].Headers.Authorization.Parameter.Should().Be("test-token");
+    }
+
+    [Fact]
+    public async Task SetAuthToken_with_null_clears_authorization_on_subsequent_requests()
+    {
+        // Logout path: SetAuthToken(null) must drop the header so the next
+        // request is anonymous (used by the LoginService.Logout best-effort revoke).
+        const string customerJson = """{"id":"00000000-0000-0000-0000-000000000000","email":"u","name":"n","emailConfirmedAt":null,"createdAt":"2026-01-01T00:00:00Z"}""";
+        var fakeInner = new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.Json(200, customerJson));
+        var authHandler = new LicenseAuthHandler { InnerHandler = fakeInner };
+        var http = new HttpClient(authHandler) { BaseAddress = new Uri("https://test.local") };
+        var client = new LicenseApiClient(http, authHandler);
+
+        client.SetAuthToken("test-token");
+        await client.GetMeAsync();
+        fakeInner.Requests[0].Headers.Authorization.Should().NotBeNull();
+
+        client.SetAuthToken(null);
+        await client.GetMeAsync();
+        fakeInner.Requests[1].Headers.Authorization.Should().BeNull();
     }
 
     [Fact]

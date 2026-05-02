@@ -34,6 +34,14 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
     private const string FallbackClientVersion = "2.20240101.00.00";
 
     private readonly string _videoId;
+    /// <summary>How long the runner can go without seeing a fresh chat row before
+    /// declaring the stream ended. YouTube doesn't reliably send a "chat closed"
+    /// signal — when a live ends, get_live_chat keeps 200-ing with empty actions.
+    /// 10 minutes of complete silence on a chat that was previously alive is the
+    /// strongest "stream actually ended" heuristic we have without paying for the
+    /// official YouTube Data API.</summary>
+    private static readonly TimeSpan StreamSilenceTimeout = TimeSpan.FromMinutes(10);
+
     private readonly IChatBus _bus;
     private readonly ILogger<YouTubeLiveChatScraper> _log;
     private readonly HttpClient _http;
@@ -45,6 +53,14 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
     private int _pollingMs = 2000;
     private CancellationTokenSource? _cts;
     private Task? _runner;
+    private DateTimeOffset _lastEventAt = DateTimeOffset.UtcNow;
+    private readonly TaskCompletionSource _completionTcs =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Resolves when the runner exits — cancellation, terminal error,
+    /// or detected stream-end via the silence heuristic. Lets the hosted service
+    /// await scraper completion instead of pinning Task.Delay(InfiniteTimeSpan).</summary>
+    public Task Completion => _completionTcs.Task;
 
     public string Platform => "youtube";
 
@@ -140,19 +156,40 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
 
     private async Task RunLoopAsync(CancellationToken ct)
     {
-        while (!ct.IsCancellationRequested)
+        try
         {
-            try
+            while (!ct.IsCancellationRequested)
             {
-                await FetchOnceAsync(ct);
-                await Task.Delay(_pollingMs, ct);
+                try
+                {
+                    await FetchOnceAsync(ct);
+
+                    // Stream-end heuristic: if get_live_chat keeps returning but
+                    // nothing has been Publish()d for StreamSilenceTimeout we
+                    // assume the broadcaster ended their stream. The hosted
+                    // service then re-resolves the channel handle and starts
+                    // fresh when the streamer goes live again.
+                    if (DateTimeOffset.UtcNow - _lastEventAt > StreamSilenceTimeout)
+                    {
+                        _log.LogInformation(
+                            "[YouTube Scraper] no chat activity for {Min} min — assuming stream ended",
+                            StreamSilenceTimeout.TotalMinutes);
+                        break;
+                    }
+
+                    await Task.Delay(_pollingMs, ct);
+                }
+                catch (OperationCanceledException) { break; }
+                catch (Exception ex)
+                {
+                    _log.LogWarning(ex, "[YouTube Scraper] iteration failed; backing off 5s");
+                    try { await Task.Delay(5000, ct); } catch { break; }
+                }
             }
-            catch (OperationCanceledException) { break; }
-            catch (Exception ex)
-            {
-                _log.LogWarning(ex, "[YouTube Scraper] iteration failed; backing off 5s");
-                try { await Task.Delay(5000, ct); } catch { break; }
-            }
+        }
+        finally
+        {
+            _completionTcs.TrySetResult();
         }
     }
 
@@ -268,6 +305,11 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
         }
 
         if (string.IsNullOrEmpty(text) && !isPaid) return;
+
+        // Reset the stream-silence clock. RunLoopAsync uses this to detect
+        // when YouTube quietly stops returning new actions (broadcaster ended
+        // the live) without sending us an explicit close signal.
+        _lastEventAt = DateTimeOffset.UtcNow;
 
         var badges = new List<string>();
         if (renderer.TryGetProperty("authorBadges", out var badgesEl))
