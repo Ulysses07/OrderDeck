@@ -25,7 +25,8 @@ public static class LabelPrintDocument
 
     /// <summary>
     /// Builds the two text lines printed on a label: top = @username (bold), bottom =
-    /// message + price (regular).
+    /// message + price (regular). The Y-marker for backup-promoted labels is drawn
+    /// separately by <see cref="Build"/> (corner badge), not embedded in these lines.
     /// </summary>
     public static IReadOnlyList<Line> BuildLines(string username, string messageText, decimal price)
     {
@@ -96,6 +97,26 @@ public static class LabelPrintDocument
             float msgY = heightHundredths * 0.55f;
             float msgX = (pageWidth - msgSize.Width) / 2;
             e.Graphics.DrawString(lines[1].Text, messageFont, Brushes.Black, msgX, msgY);
+
+            // "Y" badge for backup-promoted labels — small, top-right corner.
+            // Box-stroke + bold "Y" so it's spottable from a metre away on a
+            // 60×40 mm thermal sticker without competing with the username.
+            if (label.IsBackupPromoted)
+            {
+                using var badgeFont = new Font(settings.LabelFontFamily,
+                    settings.LabelUserFontSize * 0.65f, FontStyle.Bold);
+                const string badgeText = "Y";
+                var badgeSize = e.Graphics.MeasureString(badgeText, badgeFont);
+                float padX = 4f, padY = 2f;
+                float boxW = badgeSize.Width + padX * 2;
+                float boxH = badgeSize.Height + padY * 2;
+                float boxX = pageWidth - boxW - 6f;
+                float boxY = 6f;
+                using var boxPen = new Pen(Brushes.Black, 1.5f);
+                e.Graphics.DrawRectangle(boxPen, boxX, boxY, boxW, boxH);
+                e.Graphics.DrawString(badgeText, badgeFont, Brushes.Black,
+                    boxX + padX, boxY + padY);
+            }
 
             index++;
             e.HasMorePages = index < labels.Count;

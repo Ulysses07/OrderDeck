@@ -1,0 +1,92 @@
+<Window x:Class="OrderDeck.App.Views.BackupTransferDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Yedek Müşteriler"
+        Width="640" Height="500"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="CanResizeWithGrip"
+        ShowInTaskbar="False">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0"
+                   x:Name="HeaderTitle"
+                   Text="Yedek müşteriler"
+                   FontSize="16" FontWeight="Bold"
+                   Foreground="#FFEDEDED"/>
+        <TextBlock Grid.Row="1"
+                   x:Name="HeaderSubtitle"
+                   Text="İptal edilen etiket için yedek listesi. Bir kişiyi seçip yeni etiket olarak ekleyebilirsin."
+                   Foreground="#FF9E9E9E"
+                   FontSize="11"
+                   TextWrapping="Wrap"
+                   Margin="0,4,0,12"/>
+
+        <ListView Grid.Row="2"
+                  x:Name="BackupsList"
+                  Background="#FF1A1A1A" Foreground="White"
+                  BorderBrush="#FF333333" BorderThickness="1"
+                  SelectionMode="Single">
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Header="Platform" Width="80">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding PlatformIcon}" FontSize="14"/>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                    <GridViewColumn Header="Kullanıcı" Width="160">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding DisplayName}"
+                                           FontWeight="Bold"
+                                           TextTrimming="CharacterEllipsis"/>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                    <GridViewColumn Header="Mesajı" Width="200">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding MessageText}"
+                                           Foreground="#FFCCCCCC"
+                                           TextTrimming="CharacterEllipsis"/>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                    <GridViewColumn Header="Fiyat" Width="90">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBox Text="{Binding PriceText, UpdateSourceTrigger=PropertyChanged}"
+                                         IsEnabled="{Binding IsActionable}"
+                                         Padding="4,2"
+                                         HorizontalContentAlignment="Right"/>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                    <GridViewColumn Header="" Width="100">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <Button Content="{Binding ActionButtonText}"
+                                        Click="OnPromote"
+                                        IsEnabled="{Binding IsActionable}"
+                                        Padding="8,3"/>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                </GridView>
+            </ListView.View>
+        </ListView>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal"
+                    HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Content="Kapat" Padding="14,7"
+                    Click="OnClose" IsDefault="True" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

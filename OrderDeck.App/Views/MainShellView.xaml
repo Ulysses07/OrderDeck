@@ -101,7 +101,6 @@
                                   Command="{Binding OpenBlacklistCommand}"/>
                         <MenuItem Header="Müşteriler"
                                   Command="{Binding OpenCustomerSearchCommand}"/>
-                        <Separator/>
                         <MenuItem Header="Hesap"
                                   Command="{Binding OpenAccountCommand}"/>
                     </ContextMenu>
@@ -109,11 +108,29 @@
             </Button>
         </Grid>
 
-        <!-- Status row: stream-status text OR giveaway banner -->
+        <!-- Status row: stream-status text OR giveaway banner OR backup-selection banner -->
         <Grid Grid.Row="1" Margin="0,0,0,12">
             <TextBlock Text="{Binding StreamStatusLabel}"
                        Foreground="#FFAAAAAA"
                        Visibility="{Binding IsGiveawayActive, Converter={StaticResource BoolToCollapsedConverter}}"/>
+
+            <!-- Backup-selection mode banner. Sits on top of the regular status text
+                 (highest z-order in the grid), so it visually blocks competing
+                 status while active. Auto-hides when BackupTargetLabel becomes null. -->
+            <DockPanel Background="#FF1E3A5F"
+                       LastChildFill="False"
+                       Visibility="{Binding IsInBackupSelectionMode, Converter={StaticResource BoolToVisibleConverter}}">
+                <TextBlock DockPanel.Dock="Left"
+                           Text="{Binding BackupModeBanner}"
+                           Foreground="#FFE8F2FF" FontWeight="SemiBold"
+                           Margin="12,6,16,6"
+                           VerticalAlignment="Center"/>
+                <Button DockPanel.Dock="Right"
+                        Content="İptal (ESC)"
+                        Command="{Binding CancelBackupSelectionCommand}"
+                        Padding="10,4" Margin="4,2"
+                        Foreground="#FFCCDDFF"/>
+            </DockPanel>
 
             <DockPanel Visibility="{Binding IsGiveawayActive, Converter={StaticResource BoolToVisibleConverter}}"
                        Background="#FF332B00" LastChildFill="False">
@@ -244,6 +261,7 @@
                                     <ColumnDefinition Width="160"/>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="80"/>
+                                    <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Grid.Column="0" Text="{Binding Username}"
                                            FontWeight="Bold" TextTrimming="CharacterEllipsis"/>
@@ -254,6 +272,20 @@
                                            Text="{Binding Price, StringFormat={}{0:N2} TL}"
                                            HorizontalAlignment="Right" FontWeight="Bold"
                                            Foreground="#FFFFD166"/>
+                                <!-- Backup chip: 0 → "Yedek+" CTA, N → "👥 N" badge.
+                                     Click activates backup-selection mode for this label;
+                                     subsequent chat double-click is routed to
+                                     MainShellViewModel.TryAssignChatAsBackup. -->
+                                <Button Grid.Column="3"
+                                        Margin="8,0,0,0"
+                                        Padding="8,2"
+                                        FontSize="11"
+                                        MinWidth="60"
+                                        Content="{Binding BackupCount, Converter={StaticResource BackupChipConverter}}"
+                                        Command="{Binding DataContext.BeginAddBackupCommand,
+                                                          RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                        CommandParameter="{Binding}"
+                                        ToolTip="Yedek müşteri ekle: tıkla, sonra chat'ten birini seç"/>
                             </Grid>
                         </DataTemplate>
                     </ListBox.ItemTemplate>

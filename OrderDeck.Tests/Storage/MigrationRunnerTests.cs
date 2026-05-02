@@ -24,9 +24,12 @@ public class MigrationRunnerTests
             "Customer", "Giveaway", "GiveawayParticipant", "Label",
             "Settings", "StreamSession", "_meta"
         });
+        // Migration 011 dropped the LabelBackup metadata table (backups
+        // are now first-class Labels with IsTentativeBackup=1).
+        tables.Should().NotContain("LabelBackup");
 
         var version = conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().Be(8);
+        version.Should().Be(11);
 
         var customerColumns = conn.Query<string>(
             "SELECT name FROM pragma_table_info('Customer')").AsList();
@@ -47,7 +50,7 @@ public class MigrationRunnerTests
 
         using var conn = db.Open();
         var version = conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().Be(8);
+        version.Should().Be(11);
     }
 
     [Fact]

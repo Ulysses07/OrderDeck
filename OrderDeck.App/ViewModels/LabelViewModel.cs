@@ -14,15 +14,22 @@ public sealed partial class LabelViewModel : ObservableObject
 
     [ObservableProperty] private bool _isCustomerBlacklisted;
 
+    /// <summary>How many backup buyers are attached to this label. Bulk-refreshed
+    /// from <c>LabelService.GetBackupCounts</c> whenever the queue is rebuilt;
+    /// also bumped/decremented in-place when the user adds/removes a single
+    /// backup so the chip badge updates without a full requery.</summary>
+    [ObservableProperty] private int _backupCount;
+
     public string Username    => Label.Username;
     public string MessageText => Label.MessageText;
     public decimal Price      => Label.Price;
     public string Id          => Label.Id;
     public string CustomerId  => Label.CustomerId;
 
-    public LabelViewModel(Label label, bool isCustomerBlacklisted)
+    public LabelViewModel(Label label, bool isCustomerBlacklisted, int backupCount = 0)
     {
         Label = label;
         IsCustomerBlacklisted = isCustomerBlacklisted;
+        BackupCount = backupCount;
     }
 }

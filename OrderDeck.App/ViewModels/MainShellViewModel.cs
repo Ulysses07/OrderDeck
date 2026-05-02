@@ -73,6 +73,28 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
     private string? _activeGiveawayId;
 
+    /// <summary>
+    /// When the user clicks the "Yedek+" chip on a label, this stays set until
+    /// they pick a chat message (or press ESC). The chat double-click handler
+    /// branches on <see cref="IsInBackupSelectionMode"/> to route the click to
+    /// <see cref="AssignChatAsBackup"/> instead of the normal queue-add flow.
+    /// Cleared when assignment completes, ESC is pressed, or focus leaves the
+    /// queue/chat panels for too long.
+    /// </summary>
+    [ObservableProperty] private LabelViewModel? _backupTargetLabel;
+
+    public bool IsInBackupSelectionMode => BackupTargetLabel is not null;
+
+    public string? BackupModeBanner => BackupTargetLabel is null
+        ? null
+        : $"Yedek modu: '{BackupTargetLabel.Username}' etiketi için chat'ten birini seç (ESC iptal)";
+
+    partial void OnBackupTargetLabelChanged(LabelViewModel? value)
+    {
+        OnPropertyChanged(nameof(IsInBackupSelectionMode));
+        OnPropertyChanged(nameof(BackupModeBanner));
+    }
+
     [ObservableProperty] private bool _isLicenseWritable = true;
     [ObservableProperty] private string _licenseStatusText = "";
     [ObservableProperty] private Brush _licenseStatusBrush = Brushes.Gray;
@@ -296,10 +318,18 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         PrintQueue.Clear();
         var session = _sessions.GetActive();
         if (session is null) return;
-        foreach (var l in _labels.GetQueue(session.Id))
+        var labels = _labels.GetQueue(session.Id);
+        // Single round-trip for backup counts so each row's chip badge is
+        // accurate without N+1 queries.
+        var backupCounts = labels.Count == 0
+            ? new System.Collections.Generic.Dictionary<string, int>()
+            : (System.Collections.Generic.IReadOnlyDictionary<string, int>)
+                _labels.GetBackupCounts(labels.Select(l => l.Id));
+        foreach (var l in labels)
         {
             var customer = _customerRepo.GetById(l.CustomerId);
-            PrintQueue.Add(new LabelViewModel(l, customer?.IsBlacklisted ?? false));
+            backupCounts.TryGetValue(l.Id, out var count);
+            PrintQueue.Add(new LabelViewModel(l, customer?.IsBlacklisted ?? false, count));
         }
     }
 
@@ -375,6 +405,62 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         var label = _labels.Add(session.Id, messageVm.Message, price,
             string.IsNullOrWhiteSpace(ActiveCode) ? null : ActiveCode.Trim());
         PrintQueue.Add(new LabelViewModel(label, messageVm.IsSenderBlacklisted));
+    }
+
+    /// <summary>
+    /// Activates backup-selection mode for a label: subsequent chat double-clicks
+    /// will be routed to <see cref="AssignChatAsBackup"/> until ESC or assignment.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanWrite))]
+    private void BeginAddBackup(LabelViewModel? labelVm)
+    {
+        if (labelVm is null) return;
+        BackupTargetLabel = labelVm;
+    }
+
+    [RelayCommand]
+    private void CancelBackupSelection() => BackupTargetLabel = null;
+
+    /// <summary>
+    /// Called from MainShellView's chat-activation handler when in backup mode.
+    /// Returns true when the click was consumed as a backup assignment; the
+    /// caller (View code-behind) should NOT fall through to AddChatToQueue.
+    ///
+    /// Creates a tentative-backup Label that goes straight into the print
+    /// queue with the parent label's price + code; the operator clicks Yazdır
+    /// to physically produce the spare sticker, which carries the Y stamp.
+    /// </summary>
+    public bool TryAssignChatAsBackup(ChatMessageViewModel messageVm)
+    {
+        if (BackupTargetLabel is null) return false;
+
+        var target = BackupTargetLabel;
+        try
+        {
+            var backup = _labels.AddBackup(
+                target.Id,
+                messageVm.Message.Platform,
+                messageVm.Message.Username,
+                messageVm.Message.DisplayName ?? messageVm.Message.Username,
+                messageVm.Message.Text);
+
+            // Reflect the new tentative row in the queue UI (same pattern as
+            // AddChatToQueue) so the operator can hit Yazdır immediately.
+            PrintQueue.Add(new LabelViewModel(backup, messageVm.IsSenderBlacklisted));
+
+            // Bump the parent's chip in-place — avoids a full queue requery.
+            target.BackupCount++;
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Yedek eklenemedi: {ex.Message}",
+                "Hata", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            BackupTargetLabel = null;
+        }
+        return true;
     }
 
     [RelayCommand(CanExecute = nameof(CanWrite))]

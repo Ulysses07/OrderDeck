@@ -13,12 +13,24 @@ public sealed class LabelRepository
     public void Insert(Label l)
     {
         using var conn = _factory.Open();
+        // SQLite stores BOOLs as INTEGER — Dapper handles bool→0/1 conversion,
+        // but we cast explicitly so the parameter type is unambiguous on
+        // callers that pass an anonymous-typed projection.
         conn.Execute(
             @"INSERT INTO Label
-              (Id, SessionId, CustomerId, Platform, Username, MessageText, Code, Price, AddedAt, PrintedAt)
+              (Id, SessionId, CustomerId, Platform, Username, MessageText, Code, Price, AddedAt, PrintedAt,
+               IsBackupPromoted, ParentLabelId, IsTentativeBackup)
               VALUES
-              (@Id, @SessionId, @CustomerId, @Platform, @Username, @MessageText, @Code, @Price, @AddedAt, @PrintedAt)",
-            l);
+              (@Id, @SessionId, @CustomerId, @Platform, @Username, @MessageText, @Code, @Price, @AddedAt, @PrintedAt,
+               @IsBackupPromoted, @ParentLabelId, @IsTentativeBackup)",
+            new
+            {
+                l.Id, l.SessionId, l.CustomerId, l.Platform, l.Username, l.MessageText,
+                l.Code, l.Price, l.AddedAt, l.PrintedAt,
+                IsBackupPromoted = l.IsBackupPromoted ? 1 : 0,
+                l.ParentLabelId,
+                IsTentativeBackup = l.IsTentativeBackup ? 1 : 0
+            });
     }
 
     public void Delete(string id)
@@ -32,7 +44,7 @@ public sealed class LabelRepository
         using var conn = _factory.Open();
         var row = conn.QueryFirstOrDefault<Row>(
             @"SELECT Id, SessionId, CustomerId, Platform, Username, MessageText, Code,
-                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason
+                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup
               FROM Label WHERE Id=@id",
             new { id });
         return row is null ? null : Map(row);
@@ -43,14 +55,65 @@ public sealed class LabelRepository
         using var conn = _factory.Open();
         // Cancelled labels are NOT eligible for re-print — exclude them from the
         // queue snapshot the same way they're excluded from revenue totals.
+        // Tentative backup labels DO appear here on purpose: the operator
+        // wants to print them physically alongside normal queue items so they
+        // can stick the spare sticker on the goods.
         var rows = conn.Query<Row>(
             @"SELECT Id, SessionId, CustomerId, Platform, Username, MessageText, Code,
-                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason
+                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup
               FROM Label
               WHERE SessionId=@sessionId AND PrintedAt IS NULL AND CancelledAt IS NULL
               ORDER BY AddedAt",
             new { sessionId }).ToList();
         return rows.Select(Map).ToList();
+    }
+
+    /// <summary>
+    /// Tentative-backup labels for a given parent — used by the
+    /// BackupTransferDialog after the parent is cancelled, and by the chip
+    /// counter on the queue. Confirmed backups (IsTentativeBackup=0) are NOT
+    /// returned because they're already real labels in their own right.
+    /// </summary>
+    public IReadOnlyList<Label> GetTentativeBackupsByParent(string parentLabelId)
+    {
+        using var conn = _factory.Open();
+        var rows = conn.Query<Row>(
+            @"SELECT Id, SessionId, CustomerId, Platform, Username, MessageText, Code,
+                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup
+              FROM Label
+              WHERE ParentLabelId=@parentLabelId AND IsTentativeBackup = 1 AND CancelledAt IS NULL
+              ORDER BY AddedAt",
+            new { parentLabelId }).ToList();
+        return rows.Select(Map).ToList();
+    }
+
+    /// <summary>One round-trip count of tentative backups grouped by parent —
+    /// drives the chip badge on the queue UI.</summary>
+    public IReadOnlyDictionary<string, int> GetTentativeBackupCounts(IEnumerable<string> parentLabelIds)
+    {
+        var idArray = parentLabelIds.ToArray();
+        if (idArray.Length == 0)
+            return new Dictionary<string, int>();
+
+        using var conn = _factory.Open();
+        var rows = conn.Query<(string ParentLabelId, int Count)>(
+            @"SELECT ParentLabelId, COUNT(*) AS Count
+              FROM Label
+              WHERE ParentLabelId IN @ids AND IsTentativeBackup = 1 AND CancelledAt IS NULL
+              GROUP BY ParentLabelId",
+            new { ids = idArray });
+        return rows.ToDictionary(r => r.ParentLabelId, r => r.Count);
+    }
+
+    /// <summary>Flips IsTentativeBackup→0 for the given label ids. Used when
+    /// the operator confirms a backup after the original buyer cancels.
+    /// Returns the labels affected so callers can update customer aggregates.</summary>
+    public void ConfirmTentativeBackups(IEnumerable<string> labelIds)
+    {
+        using var conn = _factory.Open();
+        conn.Execute(
+            "UPDATE Label SET IsTentativeBackup = 0 WHERE Id IN @ids AND IsTentativeBackup = 1",
+            new { ids = labelIds.ToArray() });
     }
 
     public void MarkCancelled(IEnumerable<string> ids, long cancelledAt, string reason)
@@ -77,19 +140,33 @@ public sealed class LabelRepository
             new { printedAt, ids = ids.ToArray() });
     }
 
+    /// <summary>Updates the Price of a single label. Used by
+    /// <c>LabelService.ConfirmBackup</c> when the operator negotiates a
+    /// different number while promoting a tentative backup.</summary>
+    public void UpdatePrice(string id, decimal price)
+    {
+        using var conn = _factory.Open();
+        conn.Execute("UPDATE Label SET Price=@price WHERE Id=@id", new { id, price });
+    }
+
     public SessionTotals GetSessionTotals(string sessionId)
     {
         using var conn = _factory.Open();
         // Cancelled labels are excluded from revenue + count; the dialog still
         // surfaces them visually in the customer detail view (with an iptal
         // badge) so the audit trail isn't lost.
+        // Tentative backup labels are also excluded — they're physically
+        // printed sticker stand-ins for "if the original cancels", not
+        // realised sales. Only after the operator confirms a backup
+        // (IsTentativeBackup→0) does it count toward revenue.
         var row = conn.QueryFirstOrDefault<TotalsRow>(
             @"SELECT
                 COUNT(*)               AS PrintedCount,
                 COALESCE(SUM(Price),0) AS TotalAmount,
                 COUNT(DISTINCT CustomerId) AS UniqueCustomers
               FROM Label
-              WHERE SessionId=@sessionId AND PrintedAt IS NOT NULL AND CancelledAt IS NULL",
+              WHERE SessionId=@sessionId AND PrintedAt IS NOT NULL
+                AND CancelledAt IS NULL AND IsTentativeBackup = 0",
             new { sessionId });
 
         return new SessionTotals(
@@ -108,7 +185,8 @@ public sealed class LabelRepository
                      SUM(l.Price) AS TotalAmount
               FROM Label l
               JOIN Customer c ON c.Id = l.CustomerId
-              WHERE l.SessionId=@sessionId AND l.PrintedAt IS NOT NULL AND l.CancelledAt IS NULL
+              WHERE l.SessionId=@sessionId AND l.PrintedAt IS NOT NULL
+                AND l.CancelledAt IS NULL AND l.IsTentativeBackup = 0
               GROUP BY l.CustomerId
               ORDER BY SUM(l.Price) DESC
               LIMIT @limit",
@@ -167,7 +245,10 @@ public sealed class LabelRepository
 
     private static Label Map(Row r) =>
         new(r.Id, r.SessionId, r.CustomerId, r.Platform, r.Username, r.MessageText,
-            r.Code, r.Price, r.AddedAt, r.PrintedAt, r.CancelledAt, r.CancelReason);
+            r.Code, r.Price, r.AddedAt, r.PrintedAt, r.CancelledAt, r.CancelReason,
+            IsBackupPromoted: r.IsBackupPromoted != 0,
+            ParentLabelId: r.ParentLabelId,
+            IsTentativeBackup: r.IsTentativeBackup != 0);
 
     private sealed class Row
     {
@@ -183,6 +264,9 @@ public sealed class LabelRepository
         public long? PrintedAt { get; init; }
         public long? CancelledAt { get; init; }
         public string? CancelReason { get; init; }
+        public int IsBackupPromoted { get; init; }
+        public string? ParentLabelId { get; init; }
+        public int IsTentativeBackup { get; init; }
     }
 
     private sealed class TotalsRow

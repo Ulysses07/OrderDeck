@@ -14,6 +14,31 @@ public partial class MainShellView : UserControl
         InitializeComponent();
         DataContext = App.Host.Services.GetRequiredService<MainShellViewModel>();
         Loaded += OnLoaded;
+        // Window-bubbled ESC handler — cancels backup-selection mode without
+        // requiring focus on a particular control. We attach in Loaded so the
+        // ancestor window is materialised.
+        Loaded += AttachWindowEscHandler;
+    }
+
+    private void AttachWindowEscHandler(object sender, RoutedEventArgs e)
+    {
+        var win = Window.GetWindow(this);
+        if (win is null) return;
+        // Use PreviewKeyDown so we get the key before TextBoxes consume it for
+        // their own purposes (typing ESC into a text input still cancels mode,
+        // matching most apps' behaviour).
+        win.PreviewKeyDown -= OnWindowPreviewKeyDown;
+        win.PreviewKeyDown += OnWindowPreviewKeyDown;
+    }
+
+    private void OnWindowPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Escape) return;
+        if (DataContext is not MainShellViewModel vm) return;
+        if (!vm.IsInBackupSelectionMode) return;
+
+        vm.CancelBackupSelectionCommand.Execute(null);
+        e.Handled = true;
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
@@ -36,11 +61,14 @@ public partial class MainShellView : UserControl
 
     private void ChatList_OnDoubleClick(object sender, MouseButtonEventArgs e)
     {
-        if (DataContext is MainShellViewModel vm
-            && ChatList.SelectedItem is ChatMessageViewModel msgVm)
-        {
-            vm.AddChatToQueue(msgVm);
-        }
+        if (DataContext is not MainShellViewModel vm) return;
+        if (ChatList.SelectedItem is not ChatMessageViewModel msgVm) return;
+
+        // Backup-mode short-circuits the queue-add flow: route the chosen chat
+        // user to the active label as a backup, then return to normal.
+        if (vm.TryAssignChatAsBackup(msgVm)) return;
+
+        vm.AddChatToQueue(msgVm);
     }
 
     private void OnMenuClick(object sender, RoutedEventArgs e)
@@ -70,7 +98,9 @@ public partial class MainShellView : UserControl
         if (DataContext is not MainShellViewModel vm) return;
         if (ChatList.SelectedItem is not ChatMessageViewModel msgVm) return;
 
-        vm.AddChatToQueue(msgVm);
+        // Same branching as double-click: backup mode wins.
+        if (!vm.TryAssignChatAsBackup(msgVm))
+            vm.AddChatToQueue(msgVm);
         e.Handled = true;
     }
 }
