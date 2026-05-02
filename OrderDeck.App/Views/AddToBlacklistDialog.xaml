@@ -23,6 +23,8 @@
                    Margin="0,4">
             <ComboBoxItem Content="instagram"/>
             <ComboBoxItem Content="tiktok"/>
+            <ComboBoxItem Content="facebook"/>
+            <ComboBoxItem Content="youtube"/>
         </ComboBox>
 
         <TextBlock Grid.Row="1" Grid.Column="0" Text="Kullanıcı:" Margin="0,8,8,8"/>
