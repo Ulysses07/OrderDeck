@@ -43,6 +43,16 @@
                       BlurRadius="14" ShadowDepth="3" Opacity="0.45"
                       Direction="270" Color="Black"/>
 
+    <!-- ── Window — every Window in the app inherits the dark surface +
+         primary text. AccountDialog (and any future dialog that forgets
+         to set Background/Foreground) was the failure mode: TextBlocks
+         set to OD.Fg.Primary rendered on Windows 11's light system bg
+         = unreadable. -->
+    <Style TargetType="{x:Type Window}">
+        <Setter Property="Background" Value="{StaticResource OD.Bg.Window}"/>
+        <Setter Property="Foreground" Value="{StaticResource OD.Fg.Primary}"/>
+    </Style>
+
     <!-- ── Button — flat, rounded, hover lift ──────────────────────────── -->
     <Style TargetType="{x:Type Button}">
         <Setter Property="Background" Value="{StaticResource OD.Bg.Input}"/>
@@ -456,6 +466,11 @@
         <Setter Property="Background" Value="Transparent"/>
         <Setter Property="Foreground" Value="{StaticResource OD.Fg.Primary}"/>
     </Style>
+    <!-- ContextMenu — full template so the default Aero "icon column"
+         (a 28 px white strip on the left edge that holds checkmark/icon
+         placeholders for every MenuItem) doesn't render. Replaced with
+         a flat StackPanel ItemsHost. The thin white vertical line in the
+         three-dot menu screenshot was that strip. -->
     <Style TargetType="{x:Type ContextMenu}">
         <Setter Property="Background" Value="{StaticResource OD.Bg.Elevated}"/>
         <Setter Property="Foreground" Value="{StaticResource OD.Fg.Primary}"/>
@@ -463,6 +478,21 @@
         <Setter Property="BorderThickness" Value="1"/>
         <Setter Property="Padding" Value="4"/>
         <Setter Property="HasDropShadow" Value="True"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type ContextMenu}">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            Padding="{TemplateBinding Padding}"
+                            CornerRadius="6"
+                            SnapsToDevicePixels="True">
+                        <StackPanel IsItemsHost="True"
+                                    KeyboardNavigation.DirectionalNavigation="Cycle"/>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
     <!-- MenuItem template — no icon/check gutter (the white strip that
          appeared in the three-dot menu earlier) and no extra outer Margin
