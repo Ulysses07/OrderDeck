@@ -1,50 +1,49 @@
 <Project>
   <!--
     Central Package Management — single source of truth for NuGet versions.
-    Closes the audit gap "M.E.* version mismatch (9.0.0 vs 10.0.7)".
 
-    Microsoft.Extensions.* + EF Core all pinned to 9.0.0 because EF Core 9
-    InMemory's `Check.NotEmpty` calls into Microsoft.Extensions.Diagnostics.
-    Abstractions's `AbstractionsStrings.ArgumentIsEmpty`, which was renamed
-    in 10.0.7. Mixing 9 EF + 10 Extensions throws MissingMethodException at
-    runtime in tests. Bumping to EF Core 10 is a separate migration phase.
+    Microsoft.Extensions.* + EF Core all on 10.x. The previous 9.0.0 pin
+    existed because EF Core 9 InMemory's `Check.NotEmpty` called into
+    Microsoft.Extensions.Diagnostics.Abstractions's `AbstractionsStrings.ArgumentIsEmpty`
+    which was renamed in 10.0.7 — mixing 9 EF + 10 Extensions threw
+    MissingMethodException at runtime. EF Core 10 doesn't depend on the
+    renamed method, so the conflict is gone and we can converge.
 
-    OpenTelemetry 1.12.0 ships .NET 9 / .NET 10 dual-target so it works
-    against the 9.0.0 abstractions just fine.
+    OpenTelemetry stays on its own version cadence (each component
+    publishes independently) — see the block below.
   -->
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
-    <!-- Transitive pinning disabled: EF Core 9 ships its own
-         Microsoft.EntityFrameworkCore.Abstractions reference, and pinning the
-         transitive Microsoft.Extensions.Diagnostics.Abstractions to 10.0.7
-         breaks EF Core 9's internal Check.NotEmpty / AbstractionsStrings
-         contract. Until we adopt EF Core 10 we let NuGet do per-graph
-         resolution. -->
-    <CentralPackageTransitivePinningEnabled>false</CentralPackageTransitivePinningEnabled>
+    <!-- Transitive pinning enabled now that EF Core 10 + Extensions 10
+         agree on the abstractions surface. Re-evaluate if a future EF
+         minor diverges again. -->
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- ASP.NET Core / Microsoft.Extensions — unified at 9.0.0 (see header note) -->
-    <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="9.0.0" />
-    <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="9.0.0" />
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="9.0.0" />
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.0" />
-    <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="9.0.0" />
-    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="9.0.0" />
-    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="9.0.0" />
-    <PackageVersion Include="Microsoft.Extensions.Http" Version="9.0.0" />
-    <PackageVersion Include="Microsoft.Extensions.Http.Resilience" Version="9.0.0" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.0" />
-    <PackageVersion Include="Microsoft.Extensions.Options" Version="9.0.0" />
-    <PackageVersion Include="System.Drawing.Common" Version="9.0.0" />
-    <PackageVersion Include="System.Management" Version="9.0.0" />
-    <PackageVersion Include="System.Security.Cryptography.ProtectedData" Version="9.0.0" />
+    <!-- ASP.NET Core / Microsoft.Extensions — unified at 10.0.7 -->
+    <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.7" />
+    <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.7" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.7" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.7" />
+    <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="10.0.7" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.7" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.7" />
+    <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.7" />
+    <PackageVersion Include="Microsoft.Extensions.Http.Resilience" Version="10.1.0" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.7" />
+    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.7" />
+    <PackageVersion Include="System.Drawing.Common" Version="10.0.7" />
+    <PackageVersion Include="System.Management" Version="10.0.7" />
+    <PackageVersion Include="System.Security.Cryptography.ProtectedData" Version="10.0.7" />
 
-    <!-- EF Core — stays at 9.0.0 until we adopt EF 10 (separate phase) -->
-    <PackageVersion Include="Microsoft.Data.Sqlite" Version="9.0.0" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.0" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.InMemory" Version="9.0.0" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="9.0.0" />
+    <!-- EF Core 10 — converged with M.E.* 10.0.7. -->
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.7" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.7" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.7" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.7" />
+    <!-- HealthChecks community package — major version cadence trails Microsoft's
+         own AspNetCore release. 9.0.0 still works fine against EF Core 10. -->
     <PackageVersion Include="AspNetCore.HealthChecks.SqlServer" Version="9.0.0" />
 
     <!-- Domain dependencies -->
