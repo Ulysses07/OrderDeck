@@ -25,6 +25,17 @@ public class Program
 {
     public static async Task Main(string[] args)
     {
+        // CLI tool dispatch — short-circuit before the web host is built.
+        // Lets us invoke maintenance commands inside the running container
+        // (e.g. `docker compose exec license-server dotnet OrderDeck.LicenseServer.dll
+        // restore-verify <blob>`) without spinning up Kestrel + SQL + Hangfire.
+        if (args.Length > 0 && args[0] == "restore-verify")
+        {
+            var exit = await OrderDeck.LicenseServer.Tools.RestoreVerify.RunAsync(args);
+            Environment.Exit(exit);
+            return;
+        }
+
         var builder = WebApplication.CreateBuilder(args);
 
         // Options binding
