@@ -33,4 +33,10 @@ public sealed record Label(
     /// excluded from session revenue and customer aggregates. Flipped to 0 by
     /// <c>LabelService.ConfirmBackup</c> when the operator promotes the
     /// backup after the original buyer cancels.</summary>
-    bool IsTentativeBackup = false);
+    bool IsTentativeBackup = false,
+    /// <summary>Human-readable name shown on the queue row UI. For YouTube,
+    /// <see cref="Username"/> is the opaque channel ID (UCxxx...) used for
+    /// stable customer linking — DisplayName carries the pretty label
+    /// ("Ayşe Yılmaz") that the operator wants to see. Nullable; UI falls
+    /// back to Username when absent.</summary>
+    string? DisplayName = null);

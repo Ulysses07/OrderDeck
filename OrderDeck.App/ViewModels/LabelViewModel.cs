@@ -21,6 +21,15 @@ public sealed partial class LabelViewModel : ObservableObject
     [ObservableProperty] private int _backupCount;
 
     public string Username    => Label.Username;
+
+    /// <summary>Pretty name for the queue row UI. Falls back to <see cref="Username"/>
+    /// when <c>Label.DisplayName</c> is missing — covers legacy rows from
+    /// before migration 012 and platforms whose ingestor doesn't capture a
+    /// separate display name.</summary>
+    public string Display => string.IsNullOrWhiteSpace(Label.DisplayName)
+        ? Label.Username
+        : Label.DisplayName!;
+
     public string MessageText => Label.MessageText;
     public decimal Price      => Label.Price;
     public string Id          => Label.Id;

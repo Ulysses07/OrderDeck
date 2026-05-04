@@ -50,7 +50,8 @@ public sealed class LabelService
             PrintedAt: null,
             IsBackupPromoted: isBackupPromoted,
             ParentLabelId: parentLabelId,
-            IsTentativeBackup: isTentativeBackup);
+            IsTentativeBackup: isTentativeBackup,
+            DisplayName: message.DisplayName);
 
         _labels.Insert(label);
         return label;

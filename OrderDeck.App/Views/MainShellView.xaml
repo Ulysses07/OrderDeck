@@ -206,8 +206,9 @@
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Grid.Column="0" Text="{Binding Platform}"
                                            FontWeight="Bold" Foreground="#FFFFD166"/>
-                                <TextBlock Grid.Column="1" Text="{Binding Username}"
-                                           FontWeight="Bold" TextTrimming="CharacterEllipsis"/>
+                                <TextBlock Grid.Column="1" Text="{Binding Display}"
+                                           FontWeight="Bold" TextTrimming="CharacterEllipsis"
+                                           ToolTip="{Binding Username}"/>
                                 <TextBlock Grid.Column="2" Text="{Binding Text}"
                                            TextWrapping="Wrap"/>
                             </Grid>
@@ -263,8 +264,9 @@
                                     <ColumnDefinition Width="80"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Grid.Column="0" Text="{Binding Username}"
-                                           FontWeight="Bold" TextTrimming="CharacterEllipsis"/>
+                                <TextBlock Grid.Column="0" Text="{Binding Display}"
+                                           FontWeight="Bold" TextTrimming="CharacterEllipsis"
+                                           ToolTip="{Binding Username}"/>
                                 <TextBlock Grid.Column="1" Text="{Binding MessageText}"
                                            TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
                                            Margin="6,0,6,0"/>
