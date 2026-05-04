@@ -45,6 +45,21 @@ public static class LabelPrintDocument
     }
 
     /// <summary>
+    /// Two-letter platform code for the corner stamp on the printed label.
+    /// Thermal printers can render plain ASCII reliably across drivers, so we
+    /// avoid emoji here — the abbreviations carry over from the in-app chat
+    /// header conventions (IG/TT/FB/YT).
+    /// </summary>
+    public static string PlatformAbbreviation(string platform) => platform?.ToLowerInvariant() switch
+    {
+        "instagram" => "IG",
+        "tiktok"    => "TT",
+        "facebook"  => "FB",
+        "youtube"   => "YT",
+        _           => "??",
+    };
+
+    /// <summary>
     /// Builds a fresh <see cref="PrintDocument"/> that, when Print() is called, lays out
     /// the supplied labels one per page.
     /// </summary>
@@ -97,6 +112,26 @@ public static class LabelPrintDocument
             float msgY = heightHundredths * 0.55f;
             float msgX = (pageWidth - msgSize.Width) / 2;
             e.Graphics.DrawString(lines[1].Text, messageFont, Brushes.Black, msgX, msgY);
+
+            // Platform code badge — small, top-LEFT corner. Same visual
+            // language as the Y badge (top-right) so the operator can scan
+            // both corners at a glance: left = where the order came from,
+            // right = whether it's a backup.
+            using (var platformFont = new Font(settings.LabelFontFamily,
+                settings.LabelUserFontSize * 0.65f, FontStyle.Bold))
+            {
+                var platformText = PlatformAbbreviation(label.Platform);
+                var platformSize = e.Graphics.MeasureString(platformText, platformFont);
+                float padX = 4f, padY = 2f;
+                float boxW = platformSize.Width + padX * 2;
+                float boxH = platformSize.Height + padY * 2;
+                float boxX = 6f;
+                float boxY = 6f;
+                using var boxPen = new Pen(Brushes.Black, 1.5f);
+                e.Graphics.DrawRectangle(boxPen, boxX, boxY, boxW, boxH);
+                e.Graphics.DrawString(platformText, platformFont, Brushes.Black,
+                    boxX + padX, boxY + padY);
+            }
 
             // "Y" badge for backup-promoted labels — small, top-right corner.
             // Box-stroke + bold "Y" so it's spottable from a metre away on a

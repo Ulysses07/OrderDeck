@@ -23,6 +23,19 @@ public class LabelPrintDocumentTests
         hundredths.Should().BeInRange(117, 119);
     }
 
+    [Theory]
+    [InlineData("instagram", "IG")]
+    [InlineData("tiktok",    "TT")]
+    [InlineData("facebook",  "FB")]
+    [InlineData("youtube",   "YT")]
+    [InlineData("Instagram", "IG")] // case-insensitive
+    [InlineData("",          "??")]
+    [InlineData("unknown",   "??")]
+    public void PlatformAbbreviation_returns_two_letter_code(string platform, string expected)
+    {
+        LabelPrintDocument.PlatformAbbreviation(platform).Should().Be(expected);
+    }
+
     [Fact]
     public void BuildLines_splits_username_and_message_with_price()
     {
