@@ -1,12 +1,7 @@
 using System;
 using System.IO;
-using System.IO.Compression;
-using System.Linq;
-using System.Security.Cryptography;
 using System.Threading.Tasks;
-using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Services.Backup;
@@ -17,16 +12,16 @@ namespace OrderDeck.LicenseServer.Tools;
 /// In-process restore drill — invoked from <c>Program.Main</c> when the
 /// first CLI argument is <c>restore-verify</c>. The web host never starts.
 ///
-/// <para>Reuses <see cref="BackupStorageService"/> with the exact same
-/// <see cref="BackupOptions"/> the running server uses (env vars are
-/// already in scope inside the container), so a successful drill proves
-/// "the running deployment can decrypt this blob" — not just "this code
-/// path is well-formed".</para>
+/// <para>Reuses <see cref="RestoreDrillCore"/> with a real
+/// <see cref="BackupStorageService"/> built from the same env-driven
+/// <see cref="BackupOptions"/> the running server uses, so a successful
+/// drill proves "the running deployment can decrypt this blob" — not
+/// just "this code path is well-formed".</para>
 ///
-/// <para>Output is structured for shell parsing: every check prints a
-/// single line beginning with <c>[OK]</c> or <c>[FAIL]</c>, and the
-/// process exits 0 only when every check passed. The wrapper script
-/// (deploy/restore-test.sh) treats the exit code as authoritative.</para>
+/// <para>Output is structured for shell parsing: <see cref="RestoreDrillCore.DrillResult.ToReport"/>
+/// emits one line per check (each beginning with <c>[OK]</c> or
+/// <c>[FAIL]</c>) plus a final <c>RESTORE DRILL PASSED/FAILED</c> line.
+/// Process exits 0 only when the drill passed.</para>
 ///
 /// <para><b>Read-only:</b> writes only into a temp directory the caller
 /// supplies (or <c>/tmp/orderdeck-restore-test</c>); never touches the
@@ -62,7 +57,6 @@ public static class RestoreVerify
         }
 
         Directory.CreateDirectory(workDir);
-        var allOk = true;
 
         try
         {
@@ -71,103 +65,21 @@ public static class RestoreVerify
             var config = new ConfigurationBuilder().AddEnvironmentVariables().Build();
             var opts = new BackupOptions();
             config.GetSection("Backup").Bind(opts);
-            // We don't write anywhere under StorageRoot, but BackupStorageService
-            // requires it to exist for its directory check. Point it at the workdir.
+            // We don't write under StorageRoot, but BackupStorageService
+            // requires it to exist for its directory check. Point it at the
+            // workdir so the constructor is happy.
             opts.StorageRoot = workDir;
 
             var svc = new BackupStorageService(
                 Options.Create(opts),
                 NullLogger<BackupStorageService>.Instance);
 
-            // ─── Step 1: read + decrypt ─────────────────────────────────
-            var envelope = await File.ReadAllBytesAsync(blobPath);
-            byte[] plaintext;
-            try
-            {
-                plaintext = svc.Decrypt(envelope, keyVersion);
-                Console.WriteLine($"[OK] Decrypt: {envelope.Length} envelope bytes → {plaintext.Length} plaintext bytes (keyVersion={keyVersion})");
-            }
-            catch (CryptographicException ex)
-            {
-                Console.Error.WriteLine($"[FAIL] Decrypt: AES-GCM auth tag mismatch — wrong key or tampered blob ({ex.Message})");
-                return 4;
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"[FAIL] Decrypt: {ex.GetType().Name}: {ex.Message}");
-                return 4;
-            }
+            var result = await RestoreDrillCore.RunAsync(svc, blobPath, keyVersion, workDir);
 
-            var zipPath = Path.Combine(workDir, "restored.zip");
-            await File.WriteAllBytesAsync(zipPath, plaintext);
+            // Emit the structured report (one [OK]/[FAIL] line per step).
+            Console.WriteLine(result.ToReport());
 
-            // ─── Step 2: ZIP integrity ─────────────────────────────────
-            var extractDir = Path.Combine(workDir, "extracted");
-            if (Directory.Exists(extractDir)) Directory.Delete(extractDir, recursive: true);
-            Directory.CreateDirectory(extractDir);
-
-            try
-            {
-                using var archive = ZipFile.OpenRead(zipPath);
-                var entryCount = archive.Entries.Count;
-                if (entryCount == 0)
-                {
-                    Console.Error.WriteLine("[FAIL] ZIP: archive contains zero entries");
-                    return 5;
-                }
-                ZipFile.ExtractToDirectory(zipPath, extractDir, overwriteFiles: true);
-                Console.WriteLine($"[OK] ZIP integrity: {entryCount} entries extracted to {extractDir}");
-            }
-            catch (InvalidDataException ex)
-            {
-                Console.Error.WriteLine($"[FAIL] ZIP: corrupted archive ({ex.Message})");
-                return 5;
-            }
-
-            // ─── Step 3: SQLite integrity (if a .db file is present) ───
-            var dbFile = Directory.EnumerateFiles(extractDir, "*.db", SearchOption.AllDirectories)
-                .FirstOrDefault();
-            if (dbFile is null)
-            {
-                Console.WriteLine("[WARN] No .db file in archive — skipping SQLite checks");
-            }
-            else
-            {
-                try
-                {
-                    using var conn = new SqliteConnection($"Data Source={dbFile};Mode=ReadOnly;Pooling=false");
-                    conn.Open();
-
-                    using (var cmd = conn.CreateCommand())
-                    {
-                        cmd.CommandText = "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name";
-                        using var reader = cmd.ExecuteReader();
-                        var tables = new System.Collections.Generic.List<string>();
-                        while (reader.Read()) tables.Add(reader.GetString(0));
-                        Console.WriteLine($"[OK] SQLite open: {tables.Count} tables — {string.Join(", ", tables)}");
-                    }
-
-                    using (var cmd = conn.CreateCommand())
-                    {
-                        cmd.CommandText = "PRAGMA integrity_check";
-                        var result = cmd.ExecuteScalar()?.ToString();
-                        if (result == "ok")
-                        {
-                            Console.WriteLine("[OK] SQLite PRAGMA integrity_check: ok");
-                        }
-                        else
-                        {
-                            Console.Error.WriteLine($"[FAIL] SQLite PRAGMA integrity_check: {result}");
-                            allOk = false;
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine($"[FAIL] SQLite open: {ex.GetType().Name}: {ex.Message}");
-                    return 6;
-                }
-            }
+            return result.Passed ? 0 : 1;
         }
         finally
         {
@@ -186,17 +98,6 @@ public static class RestoreVerify
             {
                 Console.Error.WriteLine($"[WARN] Cleanup failed: {ex.Message}");
             }
-        }
-
-        if (allOk)
-        {
-            Console.WriteLine("RESTORE DRILL PASSED");
-            return 0;
-        }
-        else
-        {
-            Console.Error.WriteLine("RESTORE DRILL FAILED");
-            return 1;
         }
     }
 }

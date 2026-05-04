@@ -68,6 +68,7 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Licensing.LicenseValidator>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Licensing.ActivationManager>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Audit.AuditRetentionJobs>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Backup.BackupRestoreDrillJob>();
         builder.Services.AddHttpContextAccessor();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Audit.IAuditService,
                                     OrderDeck.LicenseServer.Services.Audit.AuditService>();
@@ -340,6 +341,15 @@ public class Program
                 "audit-retention",
                 j => j.PruneAsync(CancellationToken.None),
                 "30 3 * * *");  // 03:30 UTC daily
+
+            // Weekly backup-restore drill — proves an actual production blob
+            // round-trips through decrypt + ZIP + SQLite integrity. Failures
+            // email the Admin:AlertEmail address. See
+            // OrderDeck.LicenseServer/Services/Backup/BackupRestoreDrillJob.cs
+            manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Backup.BackupRestoreDrillJob>(
+                "backup-restore-drill",
+                j => j.RunAsync(CancellationToken.None),
+                "30 4 * * MON");  // 04:30 UTC every Monday (~07:30 Türkiye)
         }
 
         if (app.Environment.IsDevelopment())
