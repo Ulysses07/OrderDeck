@@ -221,18 +221,22 @@
                                                         RelativeSource={RelativeSource AncestorType=ContextMenu}}"
                                       CommandParameter="{Binding PlacementTarget.SelectedItem,
                                                                  RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                            <!--
+                              YouTube moderation menu items hidden until OAuth audit
+                              is complete (the Settings → "YouTube'a Bağlan" UI is
+                              also hidden right now). Re-enable in lockstep with the
+                              GroupBox in SettingsDialog.xaml — both surfaces flip
+                              from Collapsed to Visible together so the operator
+                              never sees a moderation menu that has no way to log in.
+                            -->
                             <MenuItem Header="YT'de mesajı sil"
-                                      Visibility="{Binding PlacementTarget.SelectedItem.Message.Platform,
-                                                           RelativeSource={RelativeSource AncestorType=ContextMenu},
-                                                           Converter={StaticResource PlatformIsYouTubeConverter}}"
+                                      Visibility="Collapsed"
                                       Command="{Binding PlacementTarget.DataContext.DeleteYouTubeMessageCommand,
                                                         RelativeSource={RelativeSource AncestorType=ContextMenu}}"
                                       CommandParameter="{Binding PlacementTarget.SelectedItem,
                                                                  RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
                             <MenuItem Header="YT'de kullanıcıyı banla"
-                                      Visibility="{Binding PlacementTarget.SelectedItem.Message.Platform,
-                                                           RelativeSource={RelativeSource AncestorType=ContextMenu},
-                                                           Converter={StaticResource PlatformIsYouTubeConverter}}"
+                                      Visibility="Collapsed"
                                       Command="{Binding PlacementTarget.DataContext.BanYouTubeUserCommand,
                                                         RelativeSource={RelativeSource AncestorType=ContextMenu}}"
                                       CommandParameter="{Binding PlacementTarget.SelectedItem,

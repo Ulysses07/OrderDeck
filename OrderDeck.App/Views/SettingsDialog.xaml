@@ -248,8 +248,18 @@
                             </StackPanel>
                         </GroupBox>
 
+                        <!--
+                          YouTube OAuth moderation (delete + ban) — UI hidden until
+                          Google's OAuth verification is complete. The service code
+                          (YouTubeOAuthService, YouTubeModerationService) plus the
+                          chat-row right-click menu items still ship in the binary,
+                          so the moment we re-enable this GroupBox the moderation
+                          flow works end-to-end with no other changes. Set Visibility
+                          back to "Visible" (or delete the attribute) when ready.
+                        -->
                         <GroupBox Header="YouTube Moderasyon (mesaj sil / kullanıcı banla)"
-                                  Padding="8" Foreground="White" Margin="0,12,0,0">
+                                  Padding="8" Foreground="White" Margin="0,12,0,0"
+                                  Visibility="Collapsed">
                             <StackPanel>
                                 <TextBlock Text="{Binding YouTubeConnectionStatus}"
                                            FontWeight="Bold" Foreground="White"
