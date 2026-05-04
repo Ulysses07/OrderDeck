@@ -76,14 +76,12 @@ public sealed class YouTubeOAuthService
         // popping a browser tab when the caller is just rendering UI state.
         // The exact token shape is owned by Google.Apis.Auth, so we go via
         // the flow instead of typing the JSON ourselves.
-        var settings = _settings();
-        if (string.IsNullOrWhiteSpace(settings.YouTubeOAuthClientId) ||
-            string.IsNullOrWhiteSpace(settings.YouTubeOAuthClientSecret))
+        if (!HasCredentials(_settings(), out var clientId, out var clientSecret))
             return false;
 
         try
         {
-            var flow = BuildFlow(settings);
+            var flow = BuildFlow(clientId, clientSecret);
             var token = await flow.LoadTokenAsync(UserKey, ct).ConfigureAwait(false);
             return token is { RefreshToken.Length: > 0 };
         }
@@ -102,22 +100,20 @@ public sealed class YouTubeOAuthService
     /// </summary>
     public async Task ConnectAsync(CancellationToken ct = default)
     {
-        var settings = _settings();
-        if (string.IsNullOrWhiteSpace(settings.YouTubeOAuthClientId) ||
-            string.IsNullOrWhiteSpace(settings.YouTubeOAuthClientSecret))
+        if (!HasCredentials(_settings(), out var clientId, out var clientSecret))
             throw new InvalidOperationException(
-                "YouTube OAuth Client ID/Secret missing in AppSettings. " +
-                "Drop them into settings.json before connecting.");
+                "YouTube OAuth Client ID/Secret missing. Either build a release " +
+                "with YouTubeOAuthDefaults populated, or drop the values into " +
+                "AppSettings (settings.json) for development.");
 
-        var flow = BuildFlow(settings);
         // GoogleWebAuthorizationBroker wraps an installed-app flow with a
         // local HTTP listener for the redirect; first call without a stored
         // token opens the browser, subsequent calls just return the cached
         // credential.
         var clientSecrets = new ClientSecrets
         {
-            ClientId = settings.YouTubeOAuthClientId,
-            ClientSecret = settings.YouTubeOAuthClientSecret,
+            ClientId = clientId,
+            ClientSecret = clientSecret,
         };
         _credential = await GoogleWebAuthorizationBroker.AuthorizeAsync(
             clientSecrets,
@@ -191,17 +187,38 @@ public sealed class YouTubeOAuthService
         });
     }
 
-    private GoogleAuthorizationCodeFlow BuildFlow(AppSettings settings)
+    private GoogleAuthorizationCodeFlow BuildFlow(string clientId, string clientSecret)
     {
         return new GoogleAuthorizationCodeFlow(new GoogleAuthorizationCodeFlow.Initializer
         {
             ClientSecrets = new ClientSecrets
             {
-                ClientId = settings.YouTubeOAuthClientId,
-                ClientSecret = settings.YouTubeOAuthClientSecret,
+                ClientId = clientId,
+                ClientSecret = clientSecret,
             },
             Scopes = Scopes,
             DataStore = _tokenStore,
         });
+    }
+
+    /// <summary>
+    /// Resolves the client credentials in priority order: explicit
+    /// <see cref="AppSettings"/> overrides win first (useful for QA / running
+    /// against a separate Cloud project), then the compiled-in
+    /// <see cref="YouTubeOAuthDefaults"/> baked in by the build pipeline.
+    /// Returns false if neither path produced a non-empty pair.
+    /// </summary>
+    private static bool HasCredentials(AppSettings settings,
+        out string clientId, out string clientSecret)
+    {
+        clientId = !string.IsNullOrWhiteSpace(settings.YouTubeOAuthClientId)
+            ? settings.YouTubeOAuthClientId!
+            : YouTubeOAuthDefaults.ClientId;
+        clientSecret = !string.IsNullOrWhiteSpace(settings.YouTubeOAuthClientSecret)
+            ? settings.YouTubeOAuthClientSecret!
+            : YouTubeOAuthDefaults.ClientSecret;
+
+        return !string.IsNullOrWhiteSpace(clientId)
+            && !string.IsNullOrWhiteSpace(clientSecret);
     }
 }

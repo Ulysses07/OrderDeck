@@ -10,7 +10,30 @@ moderation flow change so future submissions stay current.
    `OrderDeck` project. Note the Client ID + Client Secret.
 2. **Test YouTube channel:** any account with live-streaming enabled (24-hour
    warm-up if it's brand new).
-3. **`%AppData%\OrderDeck\settings.json`** has the credentials wired in:
+3. **Credentials wired in.** Two options, in priority order:
+
+   ### Option A — production build (Recommended for distribution)
+
+   Edit [`OrderDeck.Chat/YouTube/YouTubeOAuthDefaults.cs`](../../OrderDeck.Chat/YouTube/YouTubeOAuthDefaults.cs)
+   and paste the real values:
+
+   ```csharp
+   public static readonly string ClientId = "1234...apps.googleusercontent.com";
+   public static readonly string ClientSecret = "GOCSPX-...";
+   ```
+
+   Then tell git to ignore your local edits so they never get pushed:
+
+   ```bash
+   git update-index --skip-worktree OrderDeck.Chat/YouTube/YouTubeOAuthDefaults.cs
+   ```
+
+   Build the app — credentials are baked into the shipped binary, end users
+   need zero configuration.
+
+   ### Option B — per-machine override via settings.json
+
+   `%AppData%\OrderDeck\settings.json`:
 
    ```jsonc
    {
@@ -20,7 +43,9 @@ moderation flow change so future submissions stay current.
    }
    ```
 
-   These are read on startup; restart the app after editing.
+   These take priority over the compiled-in defaults — useful for QA against
+   a separate Cloud project, or developer machines that don't want to edit
+   source. Read on startup; restart the app after editing.
 
 ## Recording setup
 
