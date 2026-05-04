@@ -1,30 +1,41 @@
 {
   "manifest_version": 3,
   "name": "OrderDeck Chat Bridge",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Forwards Instagram, TikTok and Facebook Live chat to OrderDeck (YouTube is handled server-side, no browser tab needed)",
   "background": { "service_worker": "background.js" },
-  "permissions": ["storage"],
+  "permissions": ["storage", "alarms"],
   "host_permissions": [
     "*://*.instagram.com/*",
     "*://*.tiktok.com/*",
-    "*://*.facebook.com/*"
+    "*://*.facebook.com/*",
+    "https://license.orderdeckapp.com/*"
   ],
   "content_scripts": [
     {
       "matches": ["*://*.instagram.com/*"],
-      "js": ["chat-bridge-core.js", "content-instagram.js"],
+      "js": ["selector-registry.js", "chat-bridge-core.js", "content-instagram.js"],
       "run_at": "document_idle"
     },
     {
       "matches": ["*://*.tiktok.com/*"],
-      "js": ["chat-bridge-core.js", "content-tiktok.js"],
+      "js": ["selector-registry.js", "chat-bridge-core.js", "content-tiktok.js"],
       "run_at": "document_idle"
     },
     {
       "matches": ["*://*.facebook.com/*"],
-      "js": ["chat-bridge-core.js", "content-facebook.js"],
+      "js": ["selector-registry.js", "chat-bridge-core.js", "content-facebook.js"],
       "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["selectors.bundled.json"],
+      "matches": [
+        "*://*.instagram.com/*",
+        "*://*.tiktok.com/*",
+        "*://*.facebook.com/*"
+      ]
     }
   ],
   "action": { "default_popup": "popup.html" }

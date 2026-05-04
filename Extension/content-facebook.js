@@ -10,42 +10,87 @@
  * sidebar in News Feed vs. /watch live vs. /{user}/videos/{id} live).
  * We treat every facebook.com page as potentially scrapeable; if there
  * are no chat rows, scanForComments() returns empty and nothing flows.
+ *
+ * Selector strings come from OrderDeckSelectors so DOM rotations can be
+ * patched centrally — see selector-registry.js + the license-server endpoint.
  */
 
 (function () {
     'use strict';
 
+    const PLATFORM = 'facebook';
+
+    const HARD_FALLBACK = {
+        primaryContainers: '[aria-label*="yorum" i], [aria-label*="comment" i]',
+        primaryRowItems: 'span[dir="auto"]',
+        secondaryContainers: ['div[role="article"]'],
+        observerTarget: ['[role="complementary"]', '[role="main"]'],
+        validators: {
+            usernameMaxLength: 50,
+            messageMaxLength: 1000,
+            uiTextBlocklist: [
+                'beğen', 'like', 'yanıtla', 'reply', 'paylaş', 'share',
+                'gizle', 'hide', 'bildir', 'report', 'sabitle', 'pin',
+                'yorum yap', 'comment', 'görüntüle', 'view',
+                'canlı', 'live', 'izliyor', 'watching', 'izleyici', 'viewers',
+                'mesaj gönder', 'send message',
+            ],
+            timeStringRegex: /^\d+\s*(dk|sa|gün|sn|m|h|d|s|ay|yıl|min|hr|sec)$/i,
+            urlShapedUsernameDenied: true,
+        },
+    };
+
+    function selOrFallback(dotPath, fallback) {
+        const v = self.OrderDeckSelectors?.get(PLATFORM, dotPath);
+        return (v ?? fallback);
+    }
+
+    function listOrFallback(dotPath, fallback) {
+        const v = self.OrderDeckSelectors?.list(PLATFORM, dotPath);
+        return (v && v.length > 0) ? v : fallback;
+    }
+
     function checkIfLivePage() {
-        // Don't gate by URL — FB Live runs from many different paths and
-        // a strict gate misses real live streams. Letting the scanner run
-        // costs ~one DOM query per 500ms when there are no comments.
-        return true;
+        // FB has no single reliable "live" signal — let the scanner run on
+        // every page; empty results are cheap. Server schema can flip this
+        // back on via isLivePage.alwaysTrue (defaults to true in our bundle).
+        const livePageCfg = self.OrderDeckSelectors?.get(PLATFORM, 'isLivePage');
+        if (!livePageCfg) return true; // bundle not loaded yet — be permissive
+        return livePageCfg.alwaysTrue !== false;
+    }
+
+    function getValidators() {
+        const v = self.OrderDeckSelectors?.validators(PLATFORM);
+        if (!v || !v.uiTextBlocklist) return HARD_FALLBACK.validators;
+        const re = typeof v.timeStringRegex === 'string' && v.timeStringRegex.length > 0
+            ? new RegExp(v.timeStringRegex, 'i')
+            : null;
+        return {
+            usernameMaxLength: v.usernameMaxLength ?? 50,
+            messageMaxLength: v.messageMaxLength ?? 1000,
+            uiTextBlocklist: v.uiTextBlocklist,
+            timeStringRegex: re,
+            urlShapedUsernameDenied: v.urlShapedUsernameDenied !== false,
+        };
     }
 
     function isValidComment(username, message) {
+        const v = getValidators();
         if (!username || !message) return false;
-        if (username.length === 0 || username.length > 50) return false;
-        if (message.length === 0 || message.length > 1000) return false;
+        if (username.length === 0 || username.length > v.usernameMaxLength) return false;
+        if (message.length === 0 || message.length > v.messageMaxLength) return false;
         if (username === message) return false;
 
-        // FB UI strings (TR + EN)
-        const uiTexts = [
-            'beğen', 'like', 'yanıtla', 'reply', 'paylaş', 'share',
-            'gizle', 'hide', 'bildir', 'report', 'sabitle', 'pin',
-            'yorum yap', 'comment', 'görüntüle', 'view',
-            'canlı', 'live', 'izliyor', 'watching', 'izleyici', 'viewers',
-            'mesaj gönder', 'send message'
-        ];
         const userLower = username.toLowerCase();
         const msgLower = message.toLowerCase();
-        if (uiTexts.includes(userLower)) return false;
-        if (uiTexts.includes(msgLower)) return false;
+        if (v.uiTextBlocklist.includes(userLower)) return false;
+        if (v.uiTextBlocklist.includes(msgLower)) return false;
 
-        // Skip pure relative-time strings ("1d", "2sa", "3dk")
-        if (/^\d+\s*(dk|sa|gün|sn|m|h|d|s|ay|yıl|min|hr|sec)$/i.test(message)) return false;
+        if (v.timeStringRegex && v.timeStringRegex.test(message)) return false;
 
-        // Skip URL-shaped usernames
-        if (username.includes('http') || username.includes('www.')) return false;
+        if (v.urlShapedUsernameDenied) {
+            if (username.includes('http') || username.includes('www.')) return false;
+        }
         return true;
     }
 
@@ -61,12 +106,16 @@
         const comments = [];
         const seen = new Set();
 
+        const primaryContainers = selOrFallback(
+            'comments.primaryContainers', HARD_FALLBACK.primaryContainers);
+        const primaryRowItems = selOrFallback(
+            'comments.primaryRowItems', HARD_FALLBACK.primaryRowItems);
+        const secondaryContainers = listOrFallback(
+            'comments.secondaryContainers', HARD_FALLBACK.secondaryContainers);
+
         // Strategy 1 (primary) — aria-label flagged comment containers.
-        // FB tags comment rows with "yorum" (TR) / "comment" (EN) in aria-label.
-        // Inside, the first two span[dir="auto"] are username + message;
-        // any third span is the relative timestamp.
-        document.querySelectorAll('[aria-label*="yorum" i], [aria-label*="comment" i]').forEach(el => {
-            const spans = el.querySelectorAll('span[dir="auto"]');
+        document.querySelectorAll(primaryContainers).forEach(el => {
+            const spans = el.querySelectorAll(primaryRowItems);
             if (spans.length >= 2) {
                 pushIfNew(comments, seen,
                     spans[0]?.textContent?.trim(),
@@ -75,23 +124,23 @@
             }
         });
 
-        // Strategy 2 — div[role="article"] containers (FB wraps each comment
-        // in an article role; aria-label may be absent on some surfaces).
+        // Strategy 2 — div[role="article"] containers.
         if (comments.length === 0) {
-            document.querySelectorAll('div[role="article"]').forEach(article => {
-                const spans = article.querySelectorAll('span[dir="auto"]');
-                if (spans.length >= 2) {
-                    pushIfNew(comments, seen,
-                        spans[0]?.textContent?.trim(),
-                        spans[1]?.textContent?.trim(),
-                        'article');
-                }
-            });
+            for (const sel of secondaryContainers) {
+                document.querySelectorAll(sel).forEach(article => {
+                    const spans = article.querySelectorAll(primaryRowItems);
+                    if (spans.length >= 2) {
+                        pushIfNew(comments, seen,
+                            spans[0]?.textContent?.trim(),
+                            spans[1]?.textContent?.trim(),
+                            sel);
+                    }
+                });
+            }
         }
 
         // Strategy 3 (fallback) — any div whose direct children are 2+
-        // span[dir="auto"] elements. Loose; only fires when the first two
-        // strategies returned nothing.
+        // span[dir="auto"] elements. Pure logic, stays hard-coded.
         if (comments.length === 0) {
             document.querySelectorAll('div').forEach(div => {
                 const childSpans = Array.from(div.children).filter(
@@ -110,14 +159,18 @@
     }
 
     function getObserverTarget() {
-        // Sidebar / dialog hosts the comment thread on most Live UIs.
-        return document.querySelector('[role="complementary"]') ||
-               document.querySelector('[role="main"]') ||
-               document.body;
+        const targets = listOrFallback('observerTarget', HARD_FALLBACK.observerTarget);
+        for (const sel of targets) {
+            try {
+                const el = document.querySelector(sel);
+                if (el) return el;
+            } catch { /* malformed — skip */ }
+        }
+        return document.body;
     }
 
     OrderDeckChatBridge.start({
-        platform: 'facebook',
+        platform: PLATFORM,
         externalIdPrefix: 'fb',
         debugLabel: 'OrderDeck Facebook',
         scanForComments,

@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "publishedAt": "2026-05-04T10:00:00+00:00",
+  "platforms": {
+    "instagram": {
+      "isLivePage": {
+        "urlPatterns": ["/live"],
+        "domSelectors": [
+          "[aria-label*=\"Live\" i]",
+          "[aria-label*=\"Canlı\" i]"
+        ]
+      },
+      "comments": {
+        "primaryContainers": "[aria-label*=\"yorum\" i], [aria-label*=\"comment\" i]",
+        "primaryRowItems": "span[dir=\"auto\"]",
+        "fallbackPattern": "div-2span"
+      },
+      "observerTarget": ["[role=\"main\"]", "section"],
+      "validators": {
+        "usernameMaxLength": 50,
+        "messageMaxLength": 1000,
+        "uiTextBlocklist": [
+          "live", "messages", "share", "like", "comment", "send", "follow",
+          "canlı", "mesajlar", "paylaş", "beğen", "yorum", "gönder", "takip et",
+          "izliyor", "watching", "viewers", "izleyici"
+        ],
+        "timeStringRegex": "^\\d+\\s*(dk|sa|gün|sn|m|h|d|s|ay|yıl|min|hr|sec)$"
+      }
+    },
+    "tiktok": {
+      "isLivePage": {
+        "urlPatterns": ["/live"],
+        "domSelectors": [
+          "[data-e2e=\"chat-list\"]",
+          "[class*=\"ChatList\"]"
+        ]
+      },
+      "comments": {
+        "primaryContainers": "[data-e2e=\"chat-message\"]",
+        "primaryRowItems": "[data-e2e=\"comment-username\"], [data-e2e=\"chat-username\"]",
+        "fallbackPattern": "data-e2e",
+        "secondaryContainers": [
+          "[class*=\"DivCommentItemContainer\"]",
+          "[class*=\"comment-item\"]",
+          "[class*=\"ChatMessage\"]"
+        ],
+        "messageItem": "[data-e2e=\"comment-text\"], [data-e2e=\"chat-text\"]"
+      },
+      "observerTarget": [
+        "[data-e2e=\"chat-list\"]",
+        "[class*=\"ChatList\"]",
+        "[role=\"main\"]"
+      ],
+      "validators": {
+        "usernameMaxLength": 50,
+        "messageMaxLength": 1000,
+        "uiTextBlocklist": [
+          "live", "follow", "share", "gift", "like", "comment", "send",
+          "rose", "viewers", "watching", "joined", "top", "gifts", "chat", "settings"
+        ],
+        "timeStringRegex": null
+      }
+    },
+    "facebook": {
+      "isLivePage": {
+        "urlPatterns": [],
+        "domSelectors": [],
+        "alwaysTrue": true
+      },
+      "comments": {
+        "primaryContainers": "[aria-label*=\"yorum\" i], [aria-label*=\"comment\" i]",
+        "primaryRowItems": "span[dir=\"auto\"]",
+        "fallbackPattern": "article-span-pair",
+        "secondaryContainers": ["div[role=\"article\"]"]
+      },
+      "observerTarget": ["[role=\"complementary\"]", "[role=\"main\"]"],
+      "validators": {
+        "usernameMaxLength": 50,
+        "messageMaxLength": 1000,
+        "uiTextBlocklist": [
+          "beğen", "like", "yanıtla", "reply", "paylaş", "share",
+          "gizle", "hide", "bildir", "report", "sabitle", "pin",
+          "yorum yap", "comment", "görüntüle", "view",
+          "canlı", "live", "izliyor", "watching", "izleyici", "viewers",
+          "mesaj gönder", "send message"
+        ],
+        "timeStringRegex": "^\\d+\\s*(dk|sa|gün|sn|m|h|d|s|ay|yıl|min|hr|sec)$",
+        "urlShapedUsernameDenied": true
+      }
+    }
+  }
+}

@@ -238,6 +238,19 @@ window.OrderDeckChatBridge = (function () {
                     stopPeriodicScan();
                 }
             }).observe(document, { subtree: true, childList: true });
+
+            // Re-arm the MutationObserver whenever the central selector
+            // bundle rotates — the new observer-target selector might point
+            // somewhere different now (e.g. TikTok renamed [data-e2e="chat-list"]).
+            // We only re-arm if we're currently on a live page, otherwise the
+            // tree under document.body is fine and a no-op spares churn.
+            if (self.OrderDeckSelectors?.onUpdate) {
+                self.OrderDeckSelectors.onUpdate(() => {
+                    log('Selector bundle updated; re-arming observer');
+                    isLivePage = adapter.checkIfLivePage();
+                    if (isLivePage) startObserver();
+                });
+            }
         }
 
         // Debug handle on window — devtools-friendly per platform.
