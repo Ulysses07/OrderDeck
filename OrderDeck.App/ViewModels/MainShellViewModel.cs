@@ -10,6 +10,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using OrderDeck.App.Services.IntakeForm;
 using OrderDeck.App.Views;
+using OrderDeck.Chat.YouTube;
 using OrderDeck.Core.Chat;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Sales;
@@ -111,6 +112,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     public IAsyncRelayCommand OpenAccountCommand { get; private set; } = null!;
     public IAsyncRelayCommand OpenIntakeSubmissionsCommand { get; private set; } = null!;
 
+    private readonly YouTubeModerationService? _youTubeModeration;
+
     public MainShellViewModel(
         IChatBus bus,
         LabelService labels,
@@ -121,7 +124,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         GiveawayService giveaways,
         GiveawayBannerViewModel banner,
         LicenseService licenseService,
-        IntakeFormSyncService intakeSync)
+        IntakeFormSyncService intakeSync,
+        YouTubeModerationService? youTubeModeration = null)
     {
         _labels = labels;
         _sessions = sessions;
@@ -129,6 +133,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _customers = customers;
         _customerRepo = customerRepo;
         _giveaways = giveaways;
+        _youTubeModeration = youTubeModeration;
         Banner = banner;
         _dispatcher = Dispatcher.CurrentDispatcher;
         _busSubscription = bus.Subscribe(OnChatMessage);
@@ -582,6 +587,79 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _activeGiveawayId = null;
         IsGiveawayActive = false;
         UpdateGiveawayCanStart();
+    }
+
+    /// <summary>
+    /// Right-click → "YT'de mesajı sil". The chat message id our InnerTube
+    /// scraper stores in <c>ChatMessage.ExternalId</c> is the same one
+    /// YouTube's API expects for <c>liveChatMessages.delete</c>, so we pass
+    /// it through unchanged.
+    /// </summary>
+    [RelayCommand]
+    private async Task DeleteYouTubeMessage(ChatMessageViewModel? msg)
+    {
+        if (msg is null || _youTubeModeration is null) return;
+        if (!string.Equals(msg.Platform, "youtube", StringComparison.OrdinalIgnoreCase)) return;
+
+        var messageId = msg.Message.ExternalId;
+        if (string.IsNullOrEmpty(messageId))
+        {
+            MessageBox.Show(
+                "Bu mesaj YouTube üzerinden gelmedi (orijinal ID yok), silinemez.",
+                "YouTube moderasyon", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        try
+        {
+            await _youTubeModeration.DeleteMessageAsync(messageId).ConfigureAwait(true);
+        }
+        catch (ModerationException ex)
+        {
+            MessageBox.Show(ex.Message, "YouTube moderasyon",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Beklenmeyen hata: {ex.Message}", "YouTube moderasyon",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    /// <summary>
+    /// Right-click → "YT'de kullanıcıyı banla". Username for YouTube messages
+    /// is the channel id (UCxxx...) — the field <c>liveChatBans.insert</c>
+    /// needs as <c>bannedUserChannelId</c>. liveChatId is resolved on demand
+    /// by the moderation service.
+    /// </summary>
+    [RelayCommand]
+    private async Task BanYouTubeUser(ChatMessageViewModel? msg)
+    {
+        if (msg is null || _youTubeModeration is null) return;
+        if (!string.Equals(msg.Platform, "youtube", StringComparison.OrdinalIgnoreCase)) return;
+
+        var displayName = msg.Display;
+        var confirm = MessageBox.Show(
+            $"'{displayName}' kullanıcısı YouTube canlı yayında kalıcı olarak banlansın mı?",
+            "YouTube ban", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.Yes) return;
+
+        try
+        {
+            await _youTubeModeration.BanUserAsync(msg.Username).ConfigureAwait(true);
+            MessageBox.Show($"{displayName} banlandı.", "YouTube moderasyon",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (ModerationException ex)
+        {
+            MessageBox.Show(ex.Message, "YouTube moderasyon",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Beklenmeyen hata: {ex.Message}", "YouTube moderasyon",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     [RelayCommand(CanExecute = nameof(CanWrite))]

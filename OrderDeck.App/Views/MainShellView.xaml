@@ -221,6 +221,22 @@
                                                         RelativeSource={RelativeSource AncestorType=ContextMenu}}"
                                       CommandParameter="{Binding PlacementTarget.SelectedItem,
                                                                  RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                            <MenuItem Header="YT'de mesajı sil"
+                                      Visibility="{Binding PlacementTarget.SelectedItem.Message.Platform,
+                                                           RelativeSource={RelativeSource AncestorType=ContextMenu},
+                                                           Converter={StaticResource PlatformIsYouTubeConverter}}"
+                                      Command="{Binding PlacementTarget.DataContext.DeleteYouTubeMessageCommand,
+                                                        RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                      CommandParameter="{Binding PlacementTarget.SelectedItem,
+                                                                 RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                            <MenuItem Header="YT'de kullanıcıyı banla"
+                                      Visibility="{Binding PlacementTarget.SelectedItem.Message.Platform,
+                                                           RelativeSource={RelativeSource AncestorType=ContextMenu},
+                                                           Converter={StaticResource PlatformIsYouTubeConverter}}"
+                                      Command="{Binding PlacementTarget.DataContext.BanYouTubeUserCommand,
+                                                        RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                      CommandParameter="{Binding PlacementTarget.SelectedItem,
+                                                                 RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
                             <MenuItem Header="Kara Listeye Al…"
                                       Command="{Binding PlacementTarget.DataContext.AddChatSenderToBlacklistCommand,
                                                         RelativeSource={RelativeSource AncestorType=ContextMenu}}"

@@ -32,6 +32,21 @@ public sealed class AppSettings
     /// user goes live; offline state is detected and the service idles.</summary>
     public string? YouTubeChannelHandle { get; set; }
 
+    /// <summary>Phase 5d: YouTube OAuth 2.0 Client ID (Desktop application
+    /// type). Bundled with the installer in production; for development the
+    /// operator drops the value into settings.json by hand. Used by
+    /// <c>YouTubeOAuthService</c> to start the consent flow when the user
+    /// clicks "Connect YouTube" in Settings. Null/empty = moderation features
+    /// disabled (read-only InnerTube scraper still works).</summary>
+    public string? YouTubeOAuthClientId { get; set; }
+
+    /// <summary>OAuth 2.0 Client Secret paired with <see cref="YouTubeOAuthClientId"/>.
+    /// Stored as plain text per Google's desktop-app guidance: a desktop
+    /// secret is not actually secret because it ships in every binary anyway,
+    /// so encryption only adds friction without raising the bar for an
+    /// attacker with file-system access.</summary>
+    public string? YouTubeOAuthClientSecret { get; set; }
+
     /// <summary>Spam/troll filter rules applied to inbound chat messages
     /// before they reach the bus. Disabled rules pass everything through.</summary>
     public OrderDeck.Core.Chat.SpamFilterSettings SpamFilter { get; set; } = new();

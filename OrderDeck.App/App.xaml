@@ -20,6 +20,7 @@
             <converters:CountToVisibleConverter    x:Key="CountToVisibleConverter"/>
             <converters:CountToCollapsedConverter  x:Key="CountToCollapsedConverter"/>
             <converters:BackupChipConverter        x:Key="BackupChipConverter"/>
+            <converters:PlatformIsYouTubeConverter x:Key="PlatformIsYouTubeConverter"/>
             <converters:GiveawayParticipationStatusConverter x:Key="GiveawayParticipationStatusConverter"/>
         </ResourceDictionary>
     </Application.Resources>

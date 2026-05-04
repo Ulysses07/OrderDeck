@@ -66,6 +66,13 @@
     <PackageVersion Include="Serilog.Sinks.File" Version="6.0.0" />
     <PackageVersion Include="Swashbuckle.AspNetCore" Version="7.2.0" />
 
+    <!-- Google APIs — YouTube Data API v3 + OAuth 2.0 desktop flow. Used by
+         OrderDeck.Chat/YouTube/* for the moderation features (delete chat
+         message, ban user). The library bundles its own HttpClient + token
+         refresh handling, so we don't need a custom DelegatingHandler. -->
+    <PackageVersion Include="Google.Apis.YouTube.v3" Version="1.69.0.3742" />
+    <PackageVersion Include="Google.Apis.Auth" Version="1.69.0" />
+
     <!-- OpenTelemetry — bumped from 1.12.0 to clear NU1902 advisories on
          OpenTelemetry.Api / OpenTelemetry.Exporter.OpenTelemetryProtocol
          (GHSA-g94r-2vxg-569j, GHSA-4625-4j76-fww9). Per-package latest at

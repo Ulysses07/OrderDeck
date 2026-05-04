@@ -8,6 +8,7 @@ using System.Runtime.Versioning;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using OrderDeck.Chat.YouTube;
 using OrderDeck.Core.Sales;
 using OrderDeck.Core.Settings;
 using OrderDeck.Labeling;
@@ -49,6 +50,16 @@ public sealed partial class SettingsViewModel : ViewModelBase
     // Phase 5c — YouTube Live chat scraper
     [ObservableProperty] private string _youTubeChannelHandle = "";
 
+    // Phase 5d — YouTube OAuth (moderation)
+    [ObservableProperty] private string _youTubeConnectionStatus = "Bağlı değil";
+    [ObservableProperty] private bool _isYouTubeConnected;
+    [ObservableProperty] private bool _isYouTubeBusy;
+
+    /// <summary>Inverse of <see cref="IsYouTubeBusy"/> for IsEnabled bindings
+    /// on the Connect/Disconnect buttons.</summary>
+    public bool IsYouTubeIdle => !IsYouTubeBusy;
+    partial void OnIsYouTubeBusyChanged(bool value) => OnPropertyChanged(nameof(IsYouTubeIdle));
+
     // Phase 5f — Spam / troll filter toggles
     [ObservableProperty] private bool _spamFilterEnabled = true;
     [ObservableProperty] private bool _spamDropShortMessages;
@@ -70,19 +81,99 @@ public sealed partial class SettingsViewModel : ViewModelBase
     public ShortcutsTabViewModel ShortcutsTab { get; }
     public IntakeFormSettingsViewModel IntakeForm { get; }
 
+    private readonly YouTubeOAuthService? _youTubeOAuth;
+
     public SettingsViewModel(AppSettings settings, SettingsStore store, ShortcutsTabViewModel shortcutsTab,
-        IntakeFormSettingsViewModel intakeForm)
+        IntakeFormSettingsViewModel intakeForm,
+        YouTubeOAuthService? youTubeOAuth = null)
     {
         _liveSettings = settings;
         _store = store;
         _originalOverlayPort = settings.OverlayPort;
         ShortcutsTab = shortcutsTab;
         IntakeForm = intakeForm;
+        _youTubeOAuth = youTubeOAuth;
 
         LoadFromSettings();
         LoadInstalledPrinters();
         LoadInstalledFonts();
         _ = IntakeForm.LoadAsync();
+        _ = RefreshYouTubeConnectionStatusAsync();
+    }
+
+    /// <summary>
+    /// Updates <see cref="YouTubeConnectionStatus"/> + <see cref="IsYouTubeConnected"/>
+    /// from the OAuth service. Called on dialog open and after Connect/Disconnect.
+    /// Swallows errors — settings dialog must never throw on a probe.
+    /// </summary>
+    public async System.Threading.Tasks.Task RefreshYouTubeConnectionStatusAsync()
+    {
+        if (_youTubeOAuth is null)
+        {
+            YouTubeConnectionStatus = "OAuth servisi yapılandırılmamış";
+            IsYouTubeConnected = false;
+            return;
+        }
+
+        try
+        {
+            var connected = await _youTubeOAuth.IsConnectedAsync().ConfigureAwait(true);
+            if (!connected)
+            {
+                YouTubeConnectionStatus = "Bağlı değil";
+                IsYouTubeConnected = false;
+                return;
+            }
+
+            var title = await _youTubeOAuth.GetConnectedChannelTitleAsync().ConfigureAwait(true);
+            YouTubeConnectionStatus = string.IsNullOrEmpty(title)
+                ? "Bağlı"
+                : $"Bağlı: {title}";
+            IsYouTubeConnected = true;
+        }
+        catch (Exception ex)
+        {
+            YouTubeConnectionStatus = $"Durum okunamadı: {ex.Message}";
+            IsYouTubeConnected = false;
+        }
+    }
+
+    [RelayCommand]
+    private async System.Threading.Tasks.Task ConnectYouTube()
+    {
+        if (_youTubeOAuth is null) return;
+        try
+        {
+            IsYouTubeBusy = true;
+            YouTubeConnectionStatus = "Tarayıcıdan onay bekleniyor...";
+            await _youTubeOAuth.ConnectAsync().ConfigureAwait(true);
+            await RefreshYouTubeConnectionStatusAsync().ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            YouTubeConnectionStatus = $"Bağlantı başarısız: {ex.Message}";
+            IsYouTubeConnected = false;
+        }
+        finally
+        {
+            IsYouTubeBusy = false;
+        }
+    }
+
+    [RelayCommand]
+    private async System.Threading.Tasks.Task DisconnectYouTube()
+    {
+        if (_youTubeOAuth is null) return;
+        try
+        {
+            IsYouTubeBusy = true;
+            await _youTubeOAuth.DisconnectAsync().ConfigureAwait(true);
+            await RefreshYouTubeConnectionStatusAsync().ConfigureAwait(true);
+        }
+        finally
+        {
+            IsYouTubeBusy = false;
+        }
     }
 
     private void LoadFromSettings()

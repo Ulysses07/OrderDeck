@@ -109,6 +109,19 @@ public sealed class AppHost : IDisposable
                 trialProbe: sp.GetRequiredService<LicenseService>(),
                 spamFilter: sp.GetRequiredService<SpamFilter>()));
 
+        // Phase 5d — YouTube OAuth + moderation. The data store sits in a
+        // dedicated subfolder so we can wipe it on disconnect without
+        // touching unrelated state.
+        services.AddSingleton<Google.Apis.Util.Store.IDataStore>(_ =>
+            new OrderDeck.Chat.YouTube.EncryptedYouTubeTokenStore(
+                Path.Combine(AppPaths.DataFolder, "youtube-tokens")));
+        services.AddSingleton<OrderDeck.Chat.YouTube.YouTubeOAuthService>(sp =>
+            new OrderDeck.Chat.YouTube.YouTubeOAuthService(
+                () => sp.GetRequiredService<AppSettings>(),
+                sp.GetRequiredService<Google.Apis.Util.Store.IDataStore>(),
+                sp.GetRequiredService<ILogger<OrderDeck.Chat.YouTube.YouTubeOAuthService>>()));
+        services.AddSingleton<OrderDeck.Chat.YouTube.YouTubeModerationService>();
+
         // Overlay
         services.AddSingleton(sp => new OverlayHost(
             sp.GetRequiredService<IChatBus>(),

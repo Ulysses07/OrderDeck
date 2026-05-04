@@ -15,5 +15,12 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <!-- YouTube moderation (delete chat message, ban user) — see
+         OrderDeck.Chat/YouTube/YouTubeModerationService.cs -->
+    <PackageReference Include="Google.Apis.YouTube.v3" />
+    <PackageReference Include="Google.Apis.Auth" />
+    <!-- DPAPI for OAuth refresh-token encryption (Windows-only — same scope
+         as the rest of the WPF host). -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" />
   </ItemGroup>
 </Project>
