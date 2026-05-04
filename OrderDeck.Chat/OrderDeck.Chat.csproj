@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\OrderDeck.Core\OrderDeck.Core.csproj" />
+    <InternalsVisibleTo Include="OrderDeck.Tests" />
   </ItemGroup>
 
   <ItemGroup>

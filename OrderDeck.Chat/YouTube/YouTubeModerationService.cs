@@ -160,8 +160,10 @@ public sealed class YouTubeModerationService
         }
     }
 
-    /// <summary>Maps Google API errors to user-readable Turkish messages.</summary>
-    private static ModerationException MapException(GoogleApiException ex)
+    /// <summary>Maps Google API errors to user-readable Turkish messages.
+    /// Internal so the test suite can verify each branch without spinning
+    /// up the full Google.Apis client + OAuth flow.</summary>
+    internal static ModerationException MapException(GoogleApiException ex)
     {
         return ex.HttpStatusCode switch
         {
