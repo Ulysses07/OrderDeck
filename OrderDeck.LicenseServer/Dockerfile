@@ -1,6 +1,11 @@
 # syntax=docker/dockerfile:1
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
+# Central Package Management (Directory.Packages.props) and the SDK pin
+# (global.json) live at the repo root; csproj has <PackageReference> without
+# versions and would NU1015 without the props file. Both are pulled in
+# before restore so the layer cache is honored when only source changes.
+COPY Directory.Packages.props global.json ./
 COPY ["OrderDeck.LicenseServer/OrderDeck.LicenseServer.csproj", "OrderDeck.LicenseServer/"]
 RUN dotnet restore "OrderDeck.LicenseServer/OrderDeck.LicenseServer.csproj"
 COPY OrderDeck.LicenseServer/ OrderDeck.LicenseServer/
