@@ -1,0 +1,131 @@
+/* animations/falling-names/style.css */
+
+.falling-plugin.hidden { display: none; }
+
+.falling-plugin {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 16px;
+}
+
+/* ── Stage ──────────────────────────────────────────────────────────────────── */
+
+.falling-stage {
+  position: relative;
+  width: 480px;
+  height: 360px;
+  background: linear-gradient(180deg, #1a1a2e 0%, #0f1118 70%);
+  border-radius: 12px;
+  border: 2px solid #1f2937;
+  overflow: hidden;
+}
+
+/* Glowing ground line sits 60px from the bottom. */
+.falling-ground {
+  position: absolute;
+  left: 0; right: 0;
+  bottom: 60px;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 206, 70, 0.6) 20%,
+    rgba(255, 206, 70, 0.6) 80%,
+    transparent 100%
+  );
+  pointer-events: none;
+}
+
+/* Container that holds all spawned regular cards. */
+.falling-spawned {
+  position: absolute;
+  inset: 0;
+}
+
+/* ── Regular falling cards ──────────────────────────────────────────────────── */
+
+.falling-card {
+  position: absolute;
+  top: -40px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  color: #fff;
+  font: bold 14px "Segoe UI", system-ui, sans-serif;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  white-space: nowrap;
+  /* Centre the card on its left% anchor, apply per-card rotation. */
+  transform: translateX(-50%) rotate(var(--rot, 0deg));
+  animation: falling-drop 1500ms cubic-bezier(0.55, 0.06, 0.68, 0.19) forwards;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+/* Drop from above-stage to just above the ground line, with a small bounce. */
+@keyframes falling-drop {
+  0%   { top: -40px; }
+  85%  { top: 280px; }   /* land area — just above the ground line */
+  90%  { top: 268px; }   /* small bounce up */
+  100% { top: 280px; }   /* settle */
+}
+
+/* Slide-off applied after landing: translate sideways + rotate + fade. */
+.falling-card.slide-off {
+  transition: transform 1000ms ease-in, opacity 1000ms ease-in;
+  opacity: 0;
+  transform: translateX(calc(var(--slide-dir, 1) * 320px - 50%))
+             rotate(calc(var(--rot, 0deg) + var(--slide-dir, 1) * 90deg));
+}
+
+/* ── Winner card ────────────────────────────────────────────────────────────── */
+
+/* Wrapper is centered horizontally, starts above stage. */
+.falling-winner {
+  position: absolute;
+  left: 50%;
+  top: -40px;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.falling-winner-card {
+  position: relative;
+  top: 0;
+  padding: 16px 28px;
+  border-radius: 12px;
+  font: bold 22px "Segoe UI", system-ui, sans-serif;
+  border: 3px solid #ffce46;
+  box-shadow: 0 0 24px rgba(255, 206, 70, 0.85);
+  white-space: nowrap;
+  /* 2× slower than regular cards — slow-motion winner entrance. */
+  animation: falling-winner-drop 3000ms cubic-bezier(0.34, 1.4, 0.64, 1) forwards;
+}
+
+@keyframes falling-winner-drop {
+  0%   { top: 0; }
+  100% { top: 240px; }
+}
+
+/* After drop, add perpetual gold pulse. */
+.falling-winner.landed .falling-winner-card {
+  animation: falling-winner-pulse 1.2s ease-in-out infinite;
+  transform: scale(1.05);
+}
+
+@keyframes falling-winner-pulse {
+  0%,
+  100% { box-shadow: 0 0 24px rgba(255, 206, 70, 0.85); }
+  50%  { box-shadow: 0 0 48px rgba(255, 206, 70, 1),
+                     0 0 80px rgba(255, 206, 70, 0.4); }
+}
+
+/* ── Name label ─────────────────────────────────────────────────────────────── */
+
+.falling-name {
+  min-height: 36px;
+  font: bold 28px "Segoe UI", system-ui, sans-serif;
+  color: #ffce46;
+  text-shadow: 0 0 8px rgba(255, 206, 70, 0.5);
+  text-align: center;
+  letter-spacing: 0.02em;
+}

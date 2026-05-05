@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="150" viewBox="0 0 200 150">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a1a2e"/>
+      <stop offset="100%" stop-color="#0f1118"/>
+    </linearGradient>
+    <linearGradient id="ground" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="transparent"/>
+      <stop offset="25%"  stop-color="rgba(255,206,70,0.6)"/>
+      <stop offset="75%"  stop-color="rgba(255,206,70,0.6)"/>
+      <stop offset="100%" stop-color="transparent"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2.5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="200" height="150" fill="url(#bg)" rx="8"/>
+
+  <!-- Falling card 1 — red, top-left area, tilted -->
+  <rect x="18" y="12" width="52" height="20" rx="4" fill="#ef4444" transform="rotate(-8,44,22)"/>
+  <text x="44" y="26" text-anchor="middle" font-family="Segoe UI,sans-serif" font-size="8" font-weight="bold" fill="#fff" transform="rotate(-8,44,22)">Alice</text>
+
+  <!-- Falling card 2 — blue, mid-right, tilted other way -->
+  <rect x="118" y="28" width="56" height="20" rx="4" fill="#3b82f6" transform="rotate(6,146,38)"/>
+  <text x="146" y="42" text-anchor="middle" font-family="Segoe UI,sans-serif" font-size="8" font-weight="bold" fill="#fff" transform="rotate(6,146,38)">Bob123</text>
+
+  <!-- Falling card 3 — green, landing near ground -->
+  <rect x="52" y="68" width="58" height="20" rx="4" fill="#22c55e" transform="rotate(-4,81,78)"/>
+  <text x="81" y="82" text-anchor="middle" font-family="Segoe UI,sans-serif" font-size="8" font-weight="bold" fill="#fff" transform="rotate(-4,81,78)">Charlie</text>
+
+  <!-- Falling card 4 — purple, sliding off left (faded) -->
+  <rect x="4" y="92" width="50" height="18" rx="4" fill="#8b5cf6" opacity="0.45" transform="rotate(-20,29,101)"/>
+  <text x="29" y="104" text-anchor="middle" font-family="Segoe UI,sans-serif" font-size="7" font-weight="bold" fill="#fff" opacity="0.45" transform="rotate(-20,29,101)">Dave</text>
+
+  <!-- Ground line -->
+  <rect x="0" y="110" width="200" height="2" fill="url(#ground)"/>
+
+  <!-- Winner card — gold, centered at bottom -->
+  <rect x="54" y="118" width="92" height="24" rx="6" fill="#fef3c7" stroke="#ffce46" stroke-width="2" filter="url(#glow)"/>
+  <text x="100" y="134" text-anchor="middle" font-family="Segoe UI,sans-serif" font-size="10" font-weight="bold" fill="#1a1a1a">🏆 KAZANANİsim</text>
+
+  <!-- "Düşen" label top-right -->
+  <text x="194" y="14" text-anchor="end" font-family="Segoe UI,sans-serif" font-size="9" font-weight="bold" fill="#ffce46" opacity="0.75">Düşen</text>
+</svg>
