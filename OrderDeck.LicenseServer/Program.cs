@@ -1,7 +1,9 @@
+using System.Globalization;
 using System.Security.Claims;
 using System.Text;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Localization;
 using Hangfire;
 using Hangfire.SqlServer;
 using OrderDeck.LicenseServer.Data;
@@ -360,6 +362,20 @@ public class Program
 
         app.UseHttpsRedirection();
         app.UseStaticFiles();
+
+        // Pin admin UI + API formatting to tr-TR. Razor pages render currency
+        // via ToString("N2") which uses the ambient thread culture; on Linux
+        // containers and en-US CI runners that produces "150.00" instead of
+        // the expected Turkish "150,00". Forcing the request culture here
+        // makes admin output deterministic across hosts.
+        var trTr = new CultureInfo("tr-TR");
+        app.UseRequestLocalization(new RequestLocalizationOptions
+        {
+            DefaultRequestCulture = new RequestCulture(trTr),
+            SupportedCultures = new[] { trTr },
+            SupportedUICultures = new[] { trTr },
+        });
+
         app.UseCors();
         app.UseRateLimiter();
         app.UseAuthentication();
