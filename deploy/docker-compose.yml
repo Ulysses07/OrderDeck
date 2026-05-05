@@ -27,9 +27,10 @@ services:
       start_period: 60s
 
   license-server:
-    build:
-      context: ./app
-      dockerfile: OrderDeck.LicenseServer/Dockerfile
+    # Image is built + pushed by .github/workflows/license-server-deploy.yml on
+    # every successful build-test run for master. Pin a specific revision via
+    # LICENSE_SERVER_TAG=master-<sha> in /opt/orderdeck/.env when rolling back.
+    image: ghcr.io/ulysses07/orderdeck-license-server:${LICENSE_SERVER_TAG:-latest}
     container_name: orderdeck-license
     restart: unless-stopped
     depends_on:
@@ -55,6 +56,9 @@ services:
       Smtp__FromName: "OrderDeck"
       Admin__InitialUsername: "${ADMIN_USERNAME:-admin}"
       Admin__InitialPasswordHash: "${ADMIN_PASSWORD_HASH}"
+      # Recipient for ops alerts (backup restore drill failures, etc.). Empty
+      # means log-only — see BackupRestoreDrillJob and HA-PLAYBOOK §monitoring.
+      Admin__AlertEmail: "${Admin__AlertEmail:-}"
       Backup__MasterKeyHex: "${BACKUP_MASTER_KEY:-}"
       # Phase 5b — key ring. Add ${BACKUP_MASTERKEYS_1}, _2, ... as you rotate.
       # ASP.NET Core binds Backup__MasterKeys__1 → Dictionary<int,string> entry [1].
