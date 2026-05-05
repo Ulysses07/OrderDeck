@@ -144,11 +144,16 @@ These are the parts code can't help with — pure ops hygiene.
    Retention: 3 days local, 30 days remote. Logs:
    `/var/log/orderdeck-sql-backup.log`.
 
-3. **Disk-full monitoring**. Tier-1 standby is useless if the primary's disk
-   fills and SQL silently rejects inserts. Hook `/metrics` to Grafana
-   alerts: `aspnetcore_diagnostics_exceptions_total` ramp + custom alert on
-   `node_filesystem_free_bytes < 1GB` (requires node_exporter). **Status:
-   not yet automated** — UptimeRobot covers HTTP liveness only.
+3. **Disk-full monitoring** — ✅ DONE 2026-05-05. Hourly cron runs
+   [`deploy/scripts/disk-check.sh`](scripts/disk-check.sh): if root
+   filesystem usage crosses 85% it sends a one-shot email to
+   `Admin__AlertEmail` via `msmtp` (reuses the existing Brevo SMTP
+   credentials from `.env`). State file at
+   `/var/lib/orderdeck-disk-alert/active` dedupes — no spam while the
+   condition persists. Recovery (≥5 % below threshold) clears state and
+   sends a single "recovered" mail. Cron `17 * * * *`. Logs:
+   `/var/log/orderdeck-disk-check.log` and `/var/log/msmtp.log`. Lighter
+   than full Grafana/node_exporter; fits the single-VPS scale.
 
 4. **DNS provider with health checks**. Without this, "promote standby" is a
    manual action that takes you long enough that customers notice. Cloudflare
