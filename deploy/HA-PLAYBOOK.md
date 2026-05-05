@@ -127,31 +127,34 @@ replication on AG).
 
 ## Operational gaps to close BEFORE either tier
 
-These are the parts code can't help with — pure ops hygiene:
+These are the parts code can't help with — pure ops hygiene.
 
-1. **DataProtection keys backup**. Currently `./keys` is a local volume on the
-   primary. If the host dies, those keys are lost; password reset tokens and
-   customer JWTs signed by them become unusable. Action: nightly rsync of
-   `/opt/orderdeck/keys/` to off-host storage.
+1. **DataProtection keys backup** — ✅ DONE 2026-05-05. Nightly rsync to
+   Cloudflare R2 via [`deploy/scripts/backup-keys-to-r2.sh`](scripts/backup-keys-to-r2.sh),
+   cron `30 3 * * *`. Target: `s3://orderdeck-prod-backups/keys/`. Logs:
+   `/var/log/orderdeck-keys-backup.log`. Without this, password reset
+   tokens + customer JWTs signed by lost keys would be unrecoverable on
+   host failure.
 
-2. **SQL `.bak` to off-host storage**. The README documents the manual
-   `BACKUP DATABASE` command. Schedule it nightly via cron + push the file
-   to S3:
-   ```cron
-   0 3 * * * docker exec orderdeck-sqlserver /opt/mssql-tools18/bin/sqlcmd \
-     -S localhost -U sa -P "$SQL_PASSWORD" \
-     -Q "BACKUP DATABASE OrderDeckLicense TO DISK = '/var/opt/mssql/backup/orderdeck-$(date +%F).bak'"
-   30 3 * * * aws s3 sync /opt/orderdeck/sql-data/backup/ s3://orderdeck-prod-sqlbackups/ --delete
-   ```
+2. **SQL `.bak` to off-host storage** — ✅ DONE 2026-05-05. Nightly
+   `BACKUP DATABASE` inside the sqlserver container, gzip on host (SQL
+   Express has no native compression), upload to R2 via
+   [`deploy/scripts/backup-sql-to-r2.sh`](scripts/backup-sql-to-r2.sh),
+   cron `0 3 * * *`. Target: `s3://orderdeck-prod-backups/sql-bak/`.
+   Retention: 3 days local, 30 days remote. Logs:
+   `/var/log/orderdeck-sql-backup.log`.
 
 3. **Disk-full monitoring**. Tier-1 standby is useless if the primary's disk
    fills and SQL silently rejects inserts. Hook `/metrics` to Grafana
    alerts: `aspnetcore_diagnostics_exceptions_total` ramp + custom alert on
-   `node_filesystem_free_bytes < 1GB` (requires node_exporter).
+   `node_filesystem_free_bytes < 1GB` (requires node_exporter). **Status:
+   not yet automated** — UptimeRobot covers HTTP liveness only.
 
 4. **DNS provider with health checks**. Without this, "promote standby" is a
    manual action that takes you long enough that customers notice. Cloudflare
    free tier gives 5-min health checks; paid is 30-second. Route53 is 10s.
+   **Status: not yet configured** — single-VPS today, deferred until Tier
+   1 is triggered.
 
 ---
 
