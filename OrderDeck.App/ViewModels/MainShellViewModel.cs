@@ -19,6 +19,7 @@ using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Labeling;
 using OrderDeck.Licensing;
 using OrderDeck.Licensing.Services;
+using OrderDeck.Core.Settings;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace OrderDeck.App.ViewModels;
@@ -35,6 +36,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private readonly IDisposable _busSubscription;
     private readonly LicenseService _licenseService;
     private readonly IntakeFormSyncService _intakeSync;
+    private readonly SettingsStore _settingsStore;
 
     // 500 messages = ~30 seconds of scroll-back at the projected 30 msg/sec
     // peak across IG + TT + FB + YT, ~70 seconds at the realistic 7 msg/sec
@@ -125,6 +127,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         GiveawayBannerViewModel banner,
         LicenseService licenseService,
         IntakeFormSyncService intakeSync,
+        SettingsStore settingsStore,
         YouTubeModerationService? youTubeModeration = null)
     {
         _labels = labels;
@@ -142,6 +145,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _licenseService.StatusChanged += OnLicenseStatusChanged;
         UpdateLicenseUiFromService();
 
+        _settingsStore = settingsStore;
         _intakeSync = intakeSync;
         _intakeSync.SubmissionsSynced += OnIntakeSubmissionsSynced;
 
@@ -548,6 +552,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         if (dlg.ShowDialog() != true) return;
 
         var vm = dlg.ViewModel;
+        var animationId = _settingsStore.Load().GiveawayAnimation.DefaultId;
         var g = _giveaways.Start(
             sessionId: session.Id,
             keyword: vm.Keyword.Trim(),
@@ -555,7 +560,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             winnerCount: vm.WinnerCount,
             platformFilter: vm.SelectedPlatform.Filter,
             preventRewinning: vm.PreventRewinning,
-            animationId: null);
+            animationId: animationId);
 
         _activeGiveawayId = g.Id;
         IsGiveawayActive = true;
