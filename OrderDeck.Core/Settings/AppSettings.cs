@@ -50,6 +50,9 @@ public sealed class AppSettings
     /// <summary>Spam/troll filter rules applied to inbound chat messages
     /// before they reach the bus. Disabled rules pass everything through.</summary>
     public OrderDeck.Core.Chat.SpamFilterSettings SpamFilter { get; set; } = new();
+
+    /// <summary>Giveaway animation settings (wheel plugin, volume, mute).</summary>
+    public GiveawayAnimationSettings GiveawayAnimation { get; set; } = new();
 }
 
 /// <summary>Phase 4g: WhatsApp ödeme istemleri için Settings bloğu.</summary>
@@ -62,4 +65,16 @@ public sealed class PaymentSettings
     public string Iban { get; set; } = "";
     public string AccountHolder { get; set; } = "";
     public string Papara { get; set; } = "";
+}
+
+public sealed class GiveawayAnimationSettings
+{
+    /// <summary>Plugin id from OrderDeck.Overlay/wwwroot/animations/manifest.json.</summary>
+    public string DefaultId { get; set; } = "wheel";
+
+    /// <summary>0.0 - 1.0 master volume. Plugins route audio via AudioController which respects this.</summary>
+    public double Volume { get; set; } = 0.7;
+
+    /// <summary>When true, all plugin audio is silenced regardless of Volume.</summary>
+    public bool MutedMode { get; set; } = false;
 }
