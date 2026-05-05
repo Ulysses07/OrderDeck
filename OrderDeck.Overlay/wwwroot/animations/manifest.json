@@ -7,6 +7,27 @@
       "description": "Klasik dönen çark animasyonu",
       "category": "klasik",
       "thumbnail": "wheel/thumbnail.svg"
+    },
+    {
+      "id": "slot-machine",
+      "name": "Slot Machine",
+      "description": "Kazino tarzı 3-cell dikey reel",
+      "category": "klasik",
+      "thumbnail": "slot-machine/thumbnail.svg"
+    },
+    {
+      "id": "bingo",
+      "name": "Tombala",
+      "description": "Bingo top makinesi tarzı çekim",
+      "category": "klasik",
+      "thumbnail": "bingo/thumbnail.svg"
+    },
+    {
+      "id": "card-draw",
+      "name": "Kart Çekimi",
+      "description": "Şıklı kart destesinden flip ile çekim",
+      "category": "elegant",
+      "thumbnail": "card-draw/thumbnail.svg"
     }
   ]
 }

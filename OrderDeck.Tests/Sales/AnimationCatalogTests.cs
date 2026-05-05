@@ -12,16 +12,21 @@ public class AnimationCatalogTests
         AnimationCatalog.DefaultId.Should().Be("wheel");
     }
 
-    [Fact]
-    public void IsKnown_recognises_wheel()
+    [Theory]
+    [InlineData("wheel")]
+    [InlineData("slot-machine")]
+    [InlineData("bingo")]
+    [InlineData("card-draw")]
+    public void IsKnown_recognises_phase2_ids(string id)
     {
-        AnimationCatalog.IsKnown("wheel").Should().BeTrue();
+        AnimationCatalog.IsKnown(id).Should().BeTrue();
     }
 
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
-    [InlineData("slot-machine")]
+    [InlineData("magic-hat")]   // Phase 3 (not yet shipped)
+    [InlineData("does-not-exist")]
     [InlineData(null)]
     public void IsKnown_rejects_unknown_or_empty(string? id)
     {
