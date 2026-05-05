@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 150" width="200" height="150">
+  <!-- Background -->
+  <rect width="200" height="150" fill="#0f1118" rx="8"/>
+
+  <!-- Hat brim -->
+  <ellipse cx="100" cy="115" rx="52" ry="9" fill="#0a0a0a"/>
+
+  <!-- Hat body -->
+  <rect x="68" y="52" width="64" height="63" rx="3" fill="url(#hatGrad)"/>
+
+  <!-- Hat band (red) -->
+  <rect x="68" y="104" width="64" height="10" fill="#b91c1c"/>
+
+  <!-- Floating name cards around the hat -->
+  <!-- Top-left card -->
+  <rect x="14" y="28" width="44" height="18" rx="9" fill="#6366f1" opacity="0.9"/>
+  <text x="36" y="41" font-family="Segoe UI, system-ui, sans-serif" font-size="9"
+        font-weight="bold" fill="#fff" text-anchor="middle">Ahmet</text>
+
+  <!-- Top-right card -->
+  <rect x="142" y="20" width="44" height="18" rx="9" fill="#10b981" opacity="0.9"/>
+  <text x="164" y="33" font-family="Segoe UI, system-ui, sans-serif" font-size="9"
+        font-weight="bold" fill="#fff" text-anchor="middle">Zeynep</text>
+
+  <!-- Upper-right card -->
+  <rect x="148" y="58" width="38" height="18" rx="9" fill="#f97316" opacity="0.9"/>
+  <text x="167" y="71" font-family="Segoe UI, system-ui, sans-serif" font-size="9"
+        font-weight="bold" fill="#fff" text-anchor="middle">Mert</text>
+
+  <!-- Small sparkle dots near hat top -->
+  <circle cx="94"  cy="46" r="3" fill="#fef3c7" opacity="0.9"/>
+  <circle cx="100" cy="42" r="2" fill="#f59e0b" opacity="0.8"/>
+  <circle cx="107" cy="46" r="3" fill="#fef3c7" opacity="0.9"/>
+
+  <!-- Gradient definition for hat body -->
+  <defs>
+    <linearGradient id="hatGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#1a1a1a"/>
+      <stop offset="100%" stop-color="#050505"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Label -->
+  <text x="100" y="143" font-family="Segoe UI, system-ui, sans-serif" font-size="11"
+        font-weight="bold" fill="#fef3c7" text-anchor="middle" opacity="0.85">Şapka</text>
+</svg>
