@@ -1,0 +1,139 @@
+/* Slot-machine plugin — scoped CSS for the casino-style vertical reel.
+   Palette: dark red frame (#8b0000) + gold accents (#ffce46) on
+   near-black background (#0f1118), matching wheel hub colour. */
+
+.slot-plugin.hidden { display: none; }
+
+/* ── Outer wrapper ────────────────────────────────────────────────────── */
+.slot-plugin {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  margin: 16px auto;
+  width: 360px;
+}
+
+/* ── Frame: horizontal row — [marker] [viewport] [marker] ─────────────── */
+.slot-frame {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #0f1118;
+  border: 3px solid #8b0000;
+  border-radius: 8px;
+  padding: 12px 10px;
+  box-shadow:
+    0 0 0 2px #ffce46,
+    0 8px 24px rgba(0, 0, 0, 0.7);
+}
+
+/* ── Viewport: clips the scrolling strip to 3 cells ─────────────────── */
+.slot-viewport {
+  width: 320px;
+  height: 180px;   /* 3 × 60px cells */
+  overflow: hidden;
+  border-radius: 4px;
+  border: 2px solid #ffce46;
+  position: relative;
+  background: #111827;
+  /* Gradient to fade top/bottom edges for depth */
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    black 18%,
+    black 82%,
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    black 18%,
+    black 82%,
+    transparent 100%
+  );
+}
+
+/* ── Strip: tall vertical column of name cells ───────────────────────── */
+.slot-strip {
+  display: flex;
+  flex-direction: column;
+  will-change: transform;
+}
+
+/* ── Individual name cell ────────────────────────────────────────────── */
+.slot-cell {
+  width: 320px;
+  height: 60px;
+  line-height: 60px;
+  text-align: center;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 18px;
+  font-weight: 600;
+  color: #fff;
+  background: #1f2937;
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 12px;
+  box-sizing: border-box;
+  border-bottom: 1px solid #374151;
+}
+
+/* ── Triangular gold markers — left and right of viewport ─────────────── */
+.slot-marker {
+  width: 0;
+  height: 0;
+  flex-shrink: 0;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.6));
+}
+
+/* Left marker points right (→) */
+.slot-frame .slot-marker:first-child {
+  border-top:    12px solid transparent;
+  border-bottom: 12px solid transparent;
+  border-left:   18px solid #ffce46;
+}
+
+/* Right marker points left (←) */
+.slot-frame .slot-marker:last-child {
+  border-top:    12px solid transparent;
+  border-bottom: 12px solid transparent;
+  border-right:  18px solid #ffce46;
+}
+
+/* ── Winner name display ─────────────────────────────────────────────── */
+.slot-name {
+  text-align: center;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 24px;
+  font-weight: 700;
+  color: #ffce46;
+  min-height: 30px;
+  letter-spacing: 0.3px;
+}
+
+.slot-plugin.landed .slot-name {
+  font-size: 32px;
+  animation: bounce 0.5s ease-out;
+}
+
+/* ── Landed: pulse on the centred winner cell ────────────────────────── */
+.slot-plugin.landed .slot-strip > .center-cell {
+  background: #3b1a00;
+  color: #ffce46;
+  animation: slot-pulse 1s ease-in-out infinite;
+}
+
+@keyframes slot-pulse {
+  0%   { background: #3b1a00; box-shadow: 0 0 0 0 rgba(255, 206, 70, 0.6); }
+  50%  { background: #5c2a00; box-shadow: 0 0 0 6px rgba(255, 206, 70, 0); }
+  100% { background: #3b1a00; box-shadow: 0 0 0 0 rgba(255, 206, 70, 0); }
+}
+
+@keyframes bounce {
+  0%   { transform: scale(0.6); opacity: 0; }
+  50%  { transform: scale(1.15); }
+  100% { transform: scale(1.0); opacity: 1; }
+}
