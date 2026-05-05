@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "animations": [
+    {
+      "id": "wheel",
+      "name": "Çark",
+      "description": "Klasik dönen çark animasyonu",
+      "category": "klasik",
+      "thumbnail": "wheel/thumbnail.svg"
+    }
+  ]
+}
