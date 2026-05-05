@@ -35,6 +35,13 @@ jobs:
       - name: Build (Release)
         run: dotnet build OrderDeck.sln --configuration Release --no-restore --nologo
 
+      # WPF-touching tests (DispatcherTimer in GiveawayBannerViewModelTests,
+      # WPF-only ViewModelBase) attach a Dispatcher to each xUnit
+      # thread-pool thread it runs on. Under default parallel test-collection
+      # execution these dispatchers prevent the test host process from
+      # exiting cleanly after the last test passes, hanging until the
+      # 25-min job timeout. Force serial collection runs and bound the
+      # hang window so any future leak fails fast with a dump.
       - name: Test - OrderDeck.Tests (Core/App)
         run: >
           dotnet test OrderDeck.Tests/OrderDeck.Tests.csproj
@@ -42,6 +49,8 @@ jobs:
           --logger "console;verbosity=normal"
           --logger "trx;LogFileName=core-app.trx"
           --results-directory ${{ github.workspace }}/TestResults
+          --blame-hang-timeout 5m
+          -- xUnit.ParallelizeTestCollections=false
 
       - name: Test - OrderDeck.Licensing.Tests
         run: >
@@ -50,7 +59,11 @@ jobs:
           --logger "console;verbosity=normal"
           --logger "trx;LogFileName=licensing.trx"
           --results-directory ${{ github.workspace }}/TestResults
+          --blame-hang-timeout 5m
 
+      # NOTE: previous flag was `xUnit.ParallelizeAssembly=false` — that's a
+      # no-op when running a single .csproj. The actual switch we want is
+      # `ParallelizeTestCollections=false` (in-assembly serialization).
       - name: Test - OrderDeck.LicenseServer.Tests
         run: >
           dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj
@@ -58,7 +71,8 @@ jobs:
           --logger "console;verbosity=normal"
           --logger "trx;LogFileName=license-server.trx"
           --results-directory ${{ github.workspace }}/TestResults
-          -- xUnit.ParallelizeAssembly=false
+          --blame-hang-timeout 5m
+          -- xUnit.ParallelizeTestCollections=false
 
       - name: Upload test results
         if: always()
