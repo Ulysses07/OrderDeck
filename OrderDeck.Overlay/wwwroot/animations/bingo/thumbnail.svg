@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 150" width="200" height="150">
+  <!-- Background -->
+  <rect width="200" height="150" fill="#1a1a1a" rx="8"/>
+
+  <!-- Hopper circle outline (gold) -->
+  <circle cx="100" cy="62" r="44" fill="rgba(15,17,24,0.85)" stroke="#ffce46" stroke-width="2.5"/>
+
+  <!-- Exit chute triangle -->
+  <polygon points="93,104 107,104 100,114" fill="#ffce46"/>
+
+  <!-- Winner display zone -->
+  <rect x="28" y="118" width="144" height="24" rx="6" fill="rgba(15,17,24,0.7)" stroke="rgba(255,206,70,0.45)" stroke-width="1.2"/>
+
+  <!-- Bouncing balls inside hopper -->
+  <circle cx="88"  cy="52" r="9" fill="#ef4444"/>
+  <circle cx="112" cy="48" r="9" fill="#f97316"/>
+  <circle cx="100" cy="68" r="9" fill="#22c55e"/>
+  <circle cx="82"  cy="72" r="9" fill="#3b82f6"/>
+  <circle cx="116" cy="70" r="9" fill="#a855f7"/>
+  <circle cx="100" cy="44" r="9" fill="#eab308"/>
+
+  <!-- Winner ball in display zone (slightly bigger) -->
+  <circle cx="100" cy="130" r="11" fill="#ef4444"/>
+  <circle cx="96"  cy="126" r="4"  fill="rgba(255,255,255,0.25)"/>
+
+  <!-- Label text -->
+  <text x="100" y="147" font-family="Segoe UI, system-ui, sans-serif" font-size="10" font-weight="bold" fill="#ffce46" text-anchor="middle">Tombala</text>
+</svg>
