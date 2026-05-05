@@ -554,7 +554,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             durationSeconds: vm.SelectedDuration.Seconds,
             winnerCount: vm.WinnerCount,
             platformFilter: vm.SelectedPlatform.Filter,
-            preventRewinning: vm.PreventRewinning);
+            preventRewinning: vm.PreventRewinning,
+            animationId: null);
 
         _activeGiveawayId = g.Id;
         IsGiveawayActive = true;
