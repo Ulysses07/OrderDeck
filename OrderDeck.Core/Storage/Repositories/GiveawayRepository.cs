@@ -17,10 +17,10 @@ public sealed class GiveawayRepository
         conn.Execute(
             @"INSERT INTO Giveaway
               (Id, SessionId, Keyword, DurationSeconds, WinnerCount, PlatformFilter,
-               PreventRewinning, RandomSeed, StartedAt, EndedAt, CancelledAt)
+               PreventRewinning, RandomSeed, StartedAt, EndedAt, CancelledAt, AnimationId)
               VALUES
               (@Id, @SessionId, @Keyword, @DurationSeconds, @WinnerCount, @PlatformFilter,
-               @PreventRewinning, @RandomSeed, @StartedAt, @EndedAt, @CancelledAt)",
+               @PreventRewinning, @RandomSeed, @StartedAt, @EndedAt, @CancelledAt, @AnimationId)",
             new
             {
                 g.Id, g.SessionId, g.Keyword, g.DurationSeconds, g.WinnerCount,
@@ -29,7 +29,7 @@ public sealed class GiveawayRepository
                     : JsonSerializer.Serialize(g.PlatformFilter),
                 PreventRewinning = g.PreventRewinning ? 1 : 0,
                 g.RandomSeed,
-                g.StartedAt, g.EndedAt, g.CancelledAt
+                g.StartedAt, g.EndedAt, g.CancelledAt, g.AnimationId
             });
     }
 
@@ -225,7 +225,7 @@ public sealed class GiveawayRepository
             : JsonSerializer.Deserialize<List<string>>(r.PlatformFilter),
         r.PreventRewinning == 1,
         r.RandomSeed,
-        r.StartedAt, r.EndedAt, r.CancelledAt);
+        r.StartedAt, r.EndedAt, r.CancelledAt, r.AnimationId);
 
     private static GiveawayParticipant MapParticipant(ParticipantRow r) =>
         new(r.Id, r.GiveawayId, r.CustomerId, r.Platform, r.Username, r.EnteredAt, r.IsWinner == 1);
@@ -243,6 +243,7 @@ public sealed class GiveawayRepository
         public long StartedAt { get; init; }
         public long? EndedAt { get; init; }
         public long? CancelledAt { get; init; }
+        public string AnimationId { get; init; } = "wheel";
     }
 
     private sealed class ParticipantRow
