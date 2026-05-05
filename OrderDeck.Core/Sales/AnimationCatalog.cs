@@ -25,6 +25,9 @@ public static class AnimationCatalog
         "slot-machine",
         "bingo",
         "card-draw",
+        "magic-hat",
+        "spotlight-grid",
+        "eliminator",
     };
 
     public static bool IsKnown(string id) =>

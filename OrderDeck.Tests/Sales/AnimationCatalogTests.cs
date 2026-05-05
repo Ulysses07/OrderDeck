@@ -17,7 +17,10 @@ public class AnimationCatalogTests
     [InlineData("slot-machine")]
     [InlineData("bingo")]
     [InlineData("card-draw")]
-    public void IsKnown_recognises_phase2_ids(string id)
+    [InlineData("magic-hat")]
+    [InlineData("spotlight-grid")]
+    [InlineData("eliminator")]
+    public void IsKnown_recognises_shipped_ids(string id)
     {
         AnimationCatalog.IsKnown(id).Should().BeTrue();
     }
@@ -25,7 +28,9 @@ public class AnimationCatalogTests
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
-    [InlineData("magic-hat")]   // Phase 3 (not yet shipped)
+    [InlineData("roulette-strip")]   // not yet shipped
+    [InlineData("falling-names")]    // not yet shipped
+    [InlineData("race")]             // not yet shipped
     [InlineData("does-not-exist")]
     [InlineData(null)]
     public void IsKnown_rejects_unknown_or_empty(string? id)

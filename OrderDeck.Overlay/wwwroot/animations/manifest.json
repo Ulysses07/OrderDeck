@@ -28,6 +28,27 @@
       "description": "Şıklı kart destesinden flip ile çekim",
       "category": "elegant",
       "thumbnail": "card-draw/thumbnail.svg"
+    },
+    {
+      "id": "magic-hat",
+      "name": "Sihirli Şapka",
+      "description": "Şapkadan kazananın çekildiği büyücü gösterisi",
+      "category": "eğlenceli",
+      "thumbnail": "magic-hat/thumbnail.svg"
+    },
+    {
+      "id": "spotlight-grid",
+      "name": "Spot Işığı",
+      "description": "Adların grid'inde zıplayan spot ışığı",
+      "category": "minimal",
+      "thumbnail": "spotlight-grid/thumbnail.svg"
+    },
+    {
+      "id": "eliminator",
+      "name": "Eleme",
+      "description": "Adlar tek tek elenerek son kazanan belirlenir",
+      "category": "dramatik",
+      "thumbnail": "eliminator/thumbnail.svg"
     }
   ]
 }
