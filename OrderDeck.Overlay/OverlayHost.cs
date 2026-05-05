@@ -20,6 +20,13 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace OrderDeck.Overlay;
 
+/// <summary>Snapshot of audio settings captured at broadcast time.</summary>
+/// <remarks>
+/// Kept in the Overlay assembly (not OrderDeck.Core) because it is a
+/// presentation/wire concern, not a domain concept.
+/// </remarks>
+public sealed record GiveawayAudioSnapshot(double Volume, bool Muted);
+
 /// <summary>
 /// Hosts the OBS Browser Source endpoints. Started/stopped by the WPF App.
 ///   * GET  /overlay/chat       → static HTML page bundled via wwwroot
@@ -32,6 +39,7 @@ public sealed class OverlayHost : IAsyncDisposable
     private readonly IChatBus _bus;
     private readonly GiveawayService _giveaway;
     private readonly ILogger<OverlayHost> _log;
+    private readonly Func<GiveawayAudioSnapshot> _audioProvider;
     private WebApplication? _app;
     private readonly ConcurrentDictionary<Guid, WebSocket> _chatClients = new();
     private readonly ConcurrentDictionary<Guid, WebSocket> _giveawayClients = new();
@@ -43,12 +51,18 @@ public sealed class OverlayHost : IAsyncDisposable
 
     public int Port { get; private set; }
 
-    public OverlayHost(IChatBus bus, GiveawayService giveaway, int port = 4747, ILogger<OverlayHost>? log = null)
+    public OverlayHost(
+        IChatBus bus,
+        GiveawayService giveaway,
+        int port = 4747,
+        ILogger<OverlayHost>? log = null,
+        Func<GiveawayAudioSnapshot>? audioProvider = null)
     {
         _bus = bus;
         _giveaway = giveaway;
         _log = log ?? NullLogger<OverlayHost>.Instance;
         Port = port;
+        _audioProvider = audioProvider ?? (() => new GiveawayAudioSnapshot(0.7, false));
     }
 
     public async Task StartAsync()
