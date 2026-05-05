@@ -1,0 +1,60 @@
+.spotlight-plugin.hidden { display: none; }
+
+.spotlight-plugin {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 16px;
+}
+
+.spotlight-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  width: 360px;
+}
+
+.spotlight-cell {
+  background: #1f2937;
+  color: #fff;
+  font: 600 13px "Segoe UI", system-ui, sans-serif;
+  padding: 16px 8px;
+  border-radius: 8px;
+  text-align: center;
+  border: 2px solid transparent;
+  transition: border-color 100ms ease, box-shadow 100ms ease,
+              background 100ms ease, transform 100ms ease;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.spotlight-cell.lit {
+  background: #fef3c7;
+  color: #1a1a1a;
+  border-color: #ffce46;
+  box-shadow: 0 0 16px rgba(255, 206, 70, 0.7);
+  transform: scale(1.04);
+}
+
+.spotlight-cell.won {
+  background: #b45309;
+  color: #fff;
+  border-color: #ffce46;
+  box-shadow: 0 0 12px rgba(255, 206, 70, 0.5);
+  transform: scale(1);
+  animation: spotlight-pulse 1.5s ease-in-out infinite;
+}
+@keyframes spotlight-pulse {
+  0%, 100% { box-shadow: 0 0 12px rgba(255, 206, 70, 0.5); }
+  50%      { box-shadow: 0 0 20px rgba(255, 206, 70, 0.85); }
+}
+
+.spotlight-name {
+  min-height: 32px;
+  font: bold 28px "Segoe UI", system-ui, sans-serif;
+  color: #ffce46;
+  text-shadow: 0 0 8px rgba(255, 206, 70, 0.5);
+  text-align: center;
+}

@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="150" viewBox="0 0 200 150">
+  <!-- Background -->
+  <rect width="200" height="150" fill="#0f1118" rx="6"/>
+
+  <!-- Grid of 12 cells (3 rows × 4 cols), plain dark -->
+  <!-- Row 1 -->
+  <rect x="14" y="18" width="36" height="22" rx="4" fill="#1f2937"/>
+  <rect x="58" y="18" width="36" height="22" rx="4" fill="#1f2937"/>
+  <!-- Highlighted cell (col 3, row 1) -->
+  <rect x="102" y="18" width="36" height="22" rx="4" fill="#fef3c7" stroke="#ffce46" stroke-width="2"/>
+  <rect x="146" y="18" width="36" height="22" rx="4" fill="#1f2937"/>
+
+  <!-- Row 2 -->
+  <rect x="14" y="48" width="36" height="22" rx="4" fill="#1f2937"/>
+  <rect x="58" y="48" width="36" height="22" rx="4" fill="#1f2937"/>
+  <rect x="102" y="48" width="36" height="22" rx="4" fill="#1f2937"/>
+  <rect x="146" y="48" width="36" height="22" rx="4" fill="#1f2937"/>
+
+  <!-- Row 3 -->
+  <rect x="14" y="78" width="36" height="22" rx="4" fill="#1f2937"/>
+  <rect x="58" y="78" width="36" height="22" rx="4" fill="#1f2937"/>
+  <rect x="102" y="78" width="36" height="22" rx="4" fill="#1f2937"/>
+  <rect x="146" y="78" width="36" height="22" rx="4" fill="#1f2937"/>
+
+  <!-- Gold glow filter for highlighted cell -->
+  <defs>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect x="102" y="18" width="36" height="22" rx="4" fill="#fef3c7" stroke="#ffce46" stroke-width="2" filter="url(#glow)"/>
+
+  <!-- "Spot" label -->
+  <text x="100" y="122" font-family="Segoe UI, system-ui, sans-serif" font-size="14"
+        font-weight="700" fill="#ffce46" text-anchor="middle">Spot</text>
+  <text x="100" y="138" font-family="Segoe UI, system-ui, sans-serif" font-size="10"
+        fill="#6b7280" text-anchor="middle">Işığı</text>
+</svg>
