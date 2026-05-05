@@ -1,0 +1,132 @@
+/* Race plugin — scoped CSS for the horizontal lane-based race animation.
+   Palette: dark green track + gold accents (#ffce46) matching finish-line
+   banner and winner highlight, on a near-black background. */
+
+.race-plugin.hidden { display: none; }
+
+/* ── Outer wrapper ─────────────────────────────────────────────────────── */
+.race-plugin {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 16px;
+}
+
+/* ── Track container ───────────────────────────────────────────────────── */
+.race-track {
+  position: relative;
+  width: 600px;
+  background: linear-gradient(180deg, #2c5530, #1a3320);
+  border: 3px solid #1a1a1a;
+  border-radius: 12px;
+  padding: 12px;
+  box-shadow:
+    0 0 0 2px #ffce46,
+    inset 0 0 24px rgba(0, 0, 0, 0.4),
+    0 8px 24px rgba(0, 0, 0, 0.7);
+}
+
+/* ── Lane stack ────────────────────────────────────────────────────────── */
+.race-lanes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+/* ── Single lane ───────────────────────────────────────────────────────── */
+.race-lane {
+  position: relative;
+  height: 32px;
+  background: linear-gradient(90deg, #4a7050 0%, #3a5840 100%);
+  border-radius: 4px;
+  border: 1px dashed rgba(255, 255, 255, 0.15);
+  overflow: hidden;
+}
+
+/* ── Car (coloured rounded rectangle) ─────────────────────────────────── */
+.race-car {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 24px;
+  padding: 0 12px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  font: bold 12px "Segoe UI", system-ui, sans-serif;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  white-space: nowrap;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+  will-change: left;
+  /* min-width so short names still look like a car body */
+  min-width: 48px;
+  justify-content: center;
+}
+
+/* ── Winner state: gold border + pulse glow ───────────────────────────── */
+.race-car.won {
+  border: 2px solid #ffce46;
+  box-shadow:
+    0 0 16px rgba(255, 206, 70, 0.95),
+    0 2px 4px rgba(0, 0, 0, 0.5);
+  animation: race-pulse 0.8s ease-in-out infinite;
+}
+
+@keyframes race-pulse {
+  0%,
+  100% { box-shadow: 0 0 16px rgba(255, 206, 70, 0.95), 0 2px 4px rgba(0, 0, 0, 0.5); }
+  50%  { box-shadow: 0 0 32px rgba(255, 206, 70, 1),    0 2px 4px rgba(0, 0, 0, 0.5); }
+}
+
+/* ── Checkered finish line (vertical bar at 95%) ──────────────────────── */
+.race-finish-line {
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 95%;
+  width: 4px;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      #fff 0,   #fff 8px,
+      #000 8px, #000 16px
+    );
+  z-index: 2;
+}
+
+/* ── "FİNİŞ" banner above the finish line ─────────────────────────────── */
+.race-banner {
+  position: absolute;
+  top: -14px;
+  left: 95%;
+  transform: translateX(-50%);
+  background: #ffce46;
+  color: #1a1a1a;
+  font: bold 11px "Segoe UI", system-ui, sans-serif;
+  padding: 2px 8px;
+  border-radius: 4px;
+  z-index: 3;
+  white-space: nowrap;
+}
+
+/* ── Winner name display ───────────────────────────────────────────────── */
+.race-name {
+  min-height: 36px;
+  font: bold 28px "Segoe UI", system-ui, sans-serif;
+  color: #ffce46;
+  text-shadow:
+    0 0 8px rgba(255, 206, 70, 0.5),
+    0 2px 4px rgba(0, 0, 0, 0.6);
+  text-align: center;
+  animation: race-name-in 0.4s ease-out both;
+}
+
+@keyframes race-name-in {
+  0%   { transform: scale(0.7); opacity: 0; }
+  60%  { transform: scale(1.1); }
+  100% { transform: scale(1.0); opacity: 1; }
+}
