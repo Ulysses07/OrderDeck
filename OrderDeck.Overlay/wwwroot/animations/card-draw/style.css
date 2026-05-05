@@ -1,0 +1,194 @@
+/* animations/card-draw/style.css */
+
+/* ── Root container ────────────────────────────────────────────────────── */
+
+.card-plugin {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  padding: 24px;
+  perspective: 1200px;
+}
+
+.card-plugin.hidden {
+  display: none;
+}
+
+/* ── Deck area (5 stacked card-backs) ──────────────────────────────────── */
+
+.card-deck {
+  position: relative;
+  width: 220px;
+  height: 320px;
+}
+
+/* ── Card base ─────────────────────────────────────────────────────────── */
+
+.card {
+  position: absolute;
+  inset: 0;
+  width: 220px;
+  height: 320px;
+  border: 4px solid #ffce46;
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  /* transition drives both the peel-off movement and the exit slide */
+  transition: transform 600ms cubic-bezier(0.16, 1, 0.3, 1),
+              opacity 300ms ease;
+  transform-style: preserve-3d;
+}
+
+/* ── Card back face ────────────────────────────────────────────────────── */
+
+.card-back {
+  background:
+    repeating-linear-gradient(
+      45deg,
+      #7f1d1d 0,     #7f1d1d 12px,
+      #a31d1d 12px,  #a31d1d 24px
+    ),
+    #7f1d1d;
+}
+
+/* Inner border inset to give the card back extra detail */
+.card-back::before {
+  content: '';
+  position: absolute;
+  inset: 8px;
+  border: 2px solid rgba(255, 206, 70, 0.5);
+  border-radius: 8px;
+  pointer-events: none;
+}
+
+/* ── Shuffle animation ─────────────────────────────────────────────────── */
+
+.card-deck.shuffling .card {
+  animation: card-shuffle 240ms ease-in-out infinite alternate;
+}
+
+@keyframes card-shuffle {
+  0%   { transform: translateY(0)    rotate(0deg); }
+  50%  { transform: translateY(-3px) rotate(-1.2deg); }
+  100% { transform: translateY(2px)  rotate(1.2deg); }
+}
+
+/* ── Peel-off transition ───────────────────────────────────────────────── */
+
+/* Applied by JS before detaching the top card from the deck */
+.card.peeling {
+  transform: translateX(260px) translateY(-4px) rotateZ(-8deg) scale(1.08);
+}
+
+/* ── Stage area (where the card flips) ────────────────────────────────── */
+
+.card-stage {
+  position: relative;
+  width: 220px;
+  height: 320px;
+}
+
+/* The flip host is a transparent wrapper that JS drives with rotateY via
+   requestAnimationFrame; it holds two inner faces. */
+.card-flip-host {
+  position: absolute;
+  inset: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  transform-style: preserve-3d;
+  /* CSS transitions kept for the exit slide only; flip is driven by rAF. */
+  transition: transform 300ms ease, opacity 300ms ease;
+}
+
+/* ── Dual card faces (backface-visibility hidden creates the flip) ──────── */
+
+.card-face {
+  position: absolute;
+  inset: 0;
+  border: 4px solid #ffce46;
+  border-radius: 12px;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+/* Back face (visible at 0°) */
+.card-face-back {
+  background:
+    repeating-linear-gradient(
+      45deg,
+      #7f1d1d 0,     #7f1d1d 12px,
+      #a31d1d 12px,  #a31d1d 24px
+    ),
+    #7f1d1d;
+}
+
+.card-face-back::before {
+  content: '';
+  position: absolute;
+  inset: 8px;
+  border: 2px solid rgba(255, 206, 70, 0.5);
+  border-radius: 8px;
+  pointer-events: none;
+}
+
+/* Front face (rotated 180° so it appears when the card completes its flip) */
+.card-face-front {
+  background: #fffaf0;
+  transform: rotateY(180deg);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+/* ── Card front content ────────────────────────────────────────────────── */
+
+.card-front-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.card-deco {
+  font-size: 28px;
+  color: #ffce46;
+  line-height: 1;
+}
+
+.card-front-name {
+  font: bold 22px/1.3 "Segoe UI", system-ui, sans-serif;
+  color: #1a1a1a;
+  text-align: center;
+  word-break: break-word;
+}
+
+/* ── Exit transition ───────────────────────────────────────────────────── */
+
+/* Applied by JS after the 900 ms inter-winner pause */
+.card-flip-host.exiting {
+  transform: translateY(120px) rotateY(180deg);
+  opacity: 0;
+}
+
+/* ── Winner name label ─────────────────────────────────────────────────── */
+
+.card-name {
+  min-height: 32px;
+  font: bold 28px/1 "Segoe UI", system-ui, sans-serif;
+  color: #ffce46;
+  text-shadow: 0 0 8px rgba(255, 206, 70, 0.5);
+  text-align: center;
+}
+
+/* Fade-in triggered once the card has fully flipped (landed class added by JS) */
+.card-plugin.landed .card-name {
+  animation: card-name-fade-in 0.5s ease-out both;
+}
+
+@keyframes card-name-fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
