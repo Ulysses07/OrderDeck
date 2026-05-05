@@ -49,6 +49,22 @@ public sealed class OverlayHost : IAsyncDisposable
     private Action<GiveawayWinnersDrawnEvent>? _onWinners;
     private Action<GiveawayCancelledEvent>? _onCancelled;
 
+    /// <summary>
+    /// Wire-only payload for the `giveaway.started` JSON event. Mirrors
+    /// <see cref="GiveawayStartedEvent"/> + adds audio fields the overlay
+    /// needs at broadcast time. Audio is presentation, not domain — it
+    /// lives here, not in OrderDeck.Core.
+    /// </summary>
+    private sealed record GiveawayStartedWirePayload(
+        string GiveawayId,
+        string Keyword,
+        int WinnerCount,
+        int DurationSeconds,
+        long StartedAt,
+        string AnimationId,
+        double AudioVolume,
+        bool AudioMuted);
+
     public int Port { get; private set; }
 
     public OverlayHost(
@@ -111,7 +127,14 @@ public sealed class OverlayHost : IAsyncDisposable
 
         _busSub = _bus.Subscribe(BroadcastChatMessage);
 
-        _onStarted = e => BroadcastGiveaway("giveaway.started", e);
+        _onStarted = e =>
+        {
+            var audio = _audioProvider();
+            var wire = new GiveawayStartedWirePayload(
+                e.GiveawayId, e.Keyword, e.WinnerCount, e.DurationSeconds,
+                e.StartedAt, e.AnimationId, audio.Volume, audio.Muted);
+            BroadcastGiveaway("giveaway.started", wire);
+        };
         _onParticipant = e => BroadcastGiveaway("giveaway.participant", e);
         _onWinners = e => BroadcastGiveaway("giveaway.winners.drawn", e);
         _onCancelled = e => BroadcastGiveaway("giveaway.cancelled", e);
@@ -170,8 +193,12 @@ public sealed class OverlayHost : IAsyncDisposable
             var active = _giveaway.Active;
             if (active is not null)
             {
-                var startedEvt = new OverlayEvent("giveaway.started", new GiveawayStartedEvent(
-                    active.Id, active.Keyword, active.WinnerCount, active.DurationSeconds, active.StartedAt, active.AnimationId));
+                var audio = _audioProvider();
+                var startedEvt = new OverlayEvent("giveaway.started",
+                    new GiveawayStartedWirePayload(
+                        active.Id, active.Keyword, active.WinnerCount, active.DurationSeconds,
+                        active.StartedAt, active.AnimationId,
+                        audio.Volume, audio.Muted));
                 await SendJson(ws, startedEvt, ct);
 
                 // Late-joining overlay should also see current participant count, not 0.
