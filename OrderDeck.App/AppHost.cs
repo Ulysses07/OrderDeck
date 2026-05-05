@@ -140,6 +140,11 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<ILogger<LabelPrinter>>()));
         services.AddSingleton<ILabelPrinter>(sp => sp.GetRequiredService<LabelPrinter>());
 
+        // Animation catalog client (Task 20)
+        services.AddSingleton<Services.AnimationCatalogClient>(sp => new Services.AnimationCatalogClient(
+            new System.Net.Http.HttpClient(),
+            sp.GetRequiredService<AppSettings>().OverlayPort));
+
         // ViewModels
         services.AddSingleton<ViewModels.MainShellViewModel>();
         services.AddTransient<ViewModels.StreamReportViewModel>();

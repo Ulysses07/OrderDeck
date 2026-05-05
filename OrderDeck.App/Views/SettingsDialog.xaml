@@ -346,6 +346,32 @@
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
+            <!-- Çekiliş Animasyonu tab — Task 20 -->
+            <TabItem Header="Çekiliş Animasyonu">
+              <Grid Margin="12">
+                <Grid.RowDefinitions>
+                  <RowDefinition Height="*"/>
+                  <RowDefinition Height="Auto"/>
+                  <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <controls:AnimationPickerControl Grid.Row="0"
+                                                 DataContext="{Binding AnimationPicker}"/>
+
+                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,12,0,4">
+                  <TextBlock Text="Ses seviyesi:" Margin="0,4,8,0"/>
+                  <Slider Minimum="0" Maximum="1"
+                          Value="{Binding AnimationVolume, UpdateSourceTrigger=PropertyChanged}"
+                          Width="200" VerticalAlignment="Center"/>
+                  <TextBlock Text="{Binding AnimationVolume, StringFormat={}{0:P0}}"
+                             Margin="8,4,0,0" Width="40"/>
+                </StackPanel>
+
+                <CheckBox Grid.Row="2" Margin="0,8,0,0"
+                          Content="Sessiz mod (tüm animasyonlar sessiz)"
+                          IsChecked="{Binding AnimationMuted}"/>
+              </Grid>
+            </TabItem>
         </TabControl>
 
         <!-- Validation error -->

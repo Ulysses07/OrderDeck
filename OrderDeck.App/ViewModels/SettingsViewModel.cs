@@ -14,6 +14,7 @@ using OrderDeck.Core.Settings;
 using OrderDeck.Labeling;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using OrderDeck.App.Services;
 
 namespace OrderDeck.App.ViewModels;
 
@@ -70,6 +71,11 @@ public sealed partial class SettingsViewModel : ViewModelBase
     [ObservableProperty] private bool _spamDropProfanity;
     [ObservableProperty] private string _spamBlockedWordsText = "";
 
+    // Giveaway animation (Task 20)
+    [ObservableProperty] private AnimationPickerViewModel _animationPicker = new();
+    [ObservableProperty] private double _animationVolume;
+    [ObservableProperty] private bool _animationMuted;
+
     [ObservableProperty] private string? _validationError;
 
     /// <summary>True iff Save was called and OverlayPort changed (caller checks for restart prompt).</summary>
@@ -85,7 +91,8 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
     public SettingsViewModel(AppSettings settings, SettingsStore store, ShortcutsTabViewModel shortcutsTab,
         IntakeFormSettingsViewModel intakeForm,
-        YouTubeOAuthService? youTubeOAuth = null)
+        YouTubeOAuthService? youTubeOAuth = null,
+        AnimationCatalogClient? catalogClient = null)
     {
         _liveSettings = settings;
         _store = store;
@@ -99,6 +106,32 @@ public sealed partial class SettingsViewModel : ViewModelBase
         LoadInstalledFonts();
         _ = IntakeForm.LoadAsync();
         _ = RefreshYouTubeConnectionStatusAsync();
+
+        _animationVolume = settings.GiveawayAnimation.Volume;
+        _animationMuted = settings.GiveawayAnimation.MutedMode;
+        AnimationPicker.SelectedId = settings.GiveawayAnimation.DefaultId;
+
+        if (catalogClient is not null)
+        {
+            _ = LoadCatalogAsync(catalogClient, settings.GiveawayAnimation.DefaultId);
+        }
+    }
+
+    private async System.Threading.Tasks.Task LoadCatalogAsync(AnimationCatalogClient client, string persistedSelection)
+    {
+        try
+        {
+            var entries = await client.LoadAsync();
+            AnimationPicker.LoadAnimations(entries);
+            // After loading, re-apply persisted selection (LoadAnimations may have
+            // reset SelectedId to entries[0].Id if it didn't match the empty/initial bootstrap state).
+            AnimationPicker.SelectedId = persistedSelection;
+        }
+        catch
+        {
+            // Silently fall back to the bootstrap state. Catalog fetch failures
+            // shouldn't break Settings UI; the operator can still save volume/muted.
+        }
     }
 
     /// <summary>
@@ -289,6 +322,11 @@ public sealed partial class SettingsViewModel : ViewModelBase
             .Select(w => w.Trim())
             .Where(w => w.Length > 0)
             .ToList();
+
+        // Giveaway animation (Task 20)
+        _liveSettings.GiveawayAnimation.DefaultId = AnimationPicker.SelectedId;
+        _liveSettings.GiveawayAnimation.Volume    = AnimationVolume;
+        _liveSettings.GiveawayAnimation.MutedMode = AnimationMuted;
 
         _store.Save(_liveSettings);
 
