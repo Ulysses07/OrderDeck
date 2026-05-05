@@ -20,4 +20,5 @@ public sealed record Giveaway(
     string RandomSeed,
     long StartedAt,
     long? EndedAt,
-    long? CancelledAt);
+    long? CancelledAt,
+    string AnimationId);
