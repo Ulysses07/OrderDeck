@@ -1,0 +1,175 @@
+name: license-server-deploy
+
+# License-server CI deploy. Fires after build-test passes on master:
+# build a Linux image (license-server is net10.0, no WPF), push to GHCR
+# with `latest` + immutable `master-<sha>` tags, then update the VPS
+# .env's LICENSE_SERVER_TAG to the new sha and `compose up -d`.
+#
+# Production routing pins to `master-<short-sha>` (immutable). `:latest`
+# is pushed for ergonomic manual ops only — never read by VPS compose
+# in normal operation, so a mutable-tag race cannot revert prod.
+#
+# Out-of-order protection: an ancestry check against the VPS-recorded
+# `.deployed_sha` skips a deploy whose commit is an ancestor of the
+# currently-deployed one. The concurrency block serializes runs but
+# does NOT guarantee chronological commit order — two parallel master
+# pushes can finish their build-test runs in reverse order. The guard
+# catches that case before any image work, so we don't burn runner time
+# or leave a stale `:latest` pointing at older code.
+#
+# Path filtering is implicit: the Dockerfile only copies OrderDeck.LicenseServer/
+# (no ProjectReference to other projects), so commits that don't touch
+# license-server produce a byte-identical image manifest. `docker compose
+# pull` detects the unchanged digest and `up -d` is a no-op — effectively
+# a free fast-path for unrelated master commits.
+#
+# Rollback: edit /opt/orderdeck/.env to point LICENSE_SERVER_TAG at a
+# previous master-<sha> tag and `docker compose up -d license-server`.
+# All sha tags are immutable; image prune retains 72h of history.
+
+on:
+  workflow_run:
+    workflows: ["build-test"]
+    types: [completed]
+    branches: [master, main]
+  workflow_dispatch:
+
+concurrency:
+  group: license-server-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Skip if upstream build-test failed; allow workflow_dispatch unconditionally.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'master')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # workflow_run carries the upstream sha; workflow_dispatch falls back
+          # to the dispatched ref's HEAD.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          # Full history needed for the out-of-order ordering guard
+          # (`git merge-base --is-ancestor`).
+          fetch-depth: 0
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
+          SHORT="${SHA:0:7}"
+          echo "sha=${SHA}" >> $GITHUB_OUTPUT
+          echo "short=${SHORT}" >> $GITHUB_OUTPUT
+          echo "image=ghcr.io/ulysses07/orderdeck-license-server" >> $GITHUB_OUTPUT
+          echo "tag=master-${SHORT}" >> $GITHUB_OUTPUT
+
+      - name: Setup SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Ordering guard (skip ancestor deploys)
+        # Two master commits whose build-test runs finish out of order can
+        # otherwise let the older one win. Deploy is gated on an ancestry
+        # check against the VPS-recorded `.deployed_sha`: if our sha is an
+        # ancestor of the currently-deployed one, this is an out-of-order
+        # tail and we skip — before image work, so we don't waste runner
+        # minutes or leave `:latest` stale.
+        id: ordering
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          NEW_SHA="${{ steps.tags.outputs.sha }}"
+          CURRENT=$(ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            'cat /opt/orderdeck/.deployed_sha 2>/dev/null || true')
+          if [ -n "$CURRENT" ] && [ "$CURRENT" != "$NEW_SHA" ]; then
+            if git merge-base --is-ancestor "$NEW_SHA" "$CURRENT" 2>/dev/null; then
+              echo "::warning::Skipping out-of-order deploy: $NEW_SHA is an ancestor of currently-deployed $CURRENT"
+              echo "skip=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          fi
+          echo "skip=false" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        if: steps.ordering.outputs.skip != 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        if: steps.ordering.outputs.skip != 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        if: steps.ordering.outputs.skip != 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: OrderDeck.LicenseServer/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.tags.outputs.image }}:latest
+            ${{ steps.tags.outputs.image }}:${{ steps.tags.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy to VPS
+        if: steps.ordering.outputs.skip != 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          NEW_TAG: ${{ steps.tags.outputs.tag }}
+          NEW_SHA: ${{ steps.tags.outputs.sha }}
+        run: |
+          # The VPS .env's LICENSE_SERVER_TAG is the source of truth for which
+          # image runs in production. We pin to `master-<short-sha>` (immutable)
+          # rather than `:latest` (mutable, racy under concurrent deploys).
+          # `.deployed_sha` records the full sha so the next workflow run can
+          # do its ancestry check.
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "set -e
+             cd /opt/orderdeck
+             if grep -q '^LICENSE_SERVER_TAG=' .env; then
+               sed -i.bak 's|^LICENSE_SERVER_TAG=.*|LICENSE_SERVER_TAG=${NEW_TAG}|' .env
+             else
+               echo 'LICENSE_SERVER_TAG=${NEW_TAG}' >> .env
+             fi
+             docker compose pull license-server
+             docker compose up -d license-server
+             echo '${NEW_SHA}' > .deployed_sha
+             docker image prune -f --filter 'until=72h' >/dev/null"
+
+      - name: Smoke test
+        if: steps.ordering.outputs.skip != 'true'
+        run: |
+          # license-server start time on this VPS is ~10s cold, longer on EF
+          # migration. Poll up to 60s.
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" -m 5 \
+                   https://license.orderdeckapp.com/healthz || echo "000")
+            if [ "$code" = "200" ]; then
+              echo "Healthy after ${i} attempt(s)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::healthz failed to return 200 within 60s"
+          exit 1
