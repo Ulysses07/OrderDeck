@@ -72,7 +72,8 @@ public sealed class GiveawayService
             RandomSeed: Guid.NewGuid().ToString("N"),
             StartedAt: _clock.UnixNow(),
             EndedAt: null,
-            CancelledAt: null);
+            CancelledAt: null,
+            AnimationId: "wheel");
         _giveaways.Insert(g);
         Active = g;
 

@@ -60,7 +60,7 @@ public class GiveawayBannerViewModelTests
         long? endedAt = null, long? cancelledAt = null)
     {
         var g = new Giveaway(id, SessionId, keyword, durationSeconds, 1,
-                             null, true, "seed", startedAt, endedAt, cancelledAt);
+                             null, true, "seed", startedAt, endedAt, cancelledAt, "wheel");
         h.Repo.Insert(g);
         return g;
     }

@@ -208,7 +208,7 @@ public class CustomerDetailViewModelTests
 
         var giveaway = new Giveaway(
             "g1", "s-active", "kazan", 60, 1, null, true, "seed",
-            StartedAt: 110, EndedAt: 200, CancelledAt: null);
+            StartedAt: 110, EndedAt: 200, CancelledAt: null, AnimationId: "wheel");
         h.Giveaways.Insert(giveaway);
         h.Giveaways.AddParticipant(new GiveawayParticipant(
             "p1", "g1", "c1", "instagram", "alice", 120, IsWinner: true));
