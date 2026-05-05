@@ -20,6 +20,9 @@ public class AnimationCatalogTests
     [InlineData("magic-hat")]
     [InlineData("spotlight-grid")]
     [InlineData("eliminator")]
+    [InlineData("roulette-strip")]
+    [InlineData("falling-names")]
+    [InlineData("race")]
     public void IsKnown_recognises_shipped_ids(string id)
     {
         AnimationCatalog.IsKnown(id).Should().BeTrue();
@@ -28,10 +31,9 @@ public class AnimationCatalogTests
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
-    [InlineData("roulette-strip")]   // not yet shipped
-    [InlineData("falling-names")]    // not yet shipped
-    [InlineData("race")]             // not yet shipped
     [InlineData("does-not-exist")]
+    [InlineData("WHEEL")]            // case-sensitive — uppercase variant rejected
+    [InlineData("wheel ")]            // trailing whitespace not trimmed
     [InlineData(null)]
     public void IsKnown_rejects_unknown_or_empty(string? id)
     {

@@ -8,8 +8,9 @@ namespace OrderDeck.Core.Sales;
 /// the validation in <see cref="GiveawayService.Start"/> uses to reject
 /// unknown ids and fall back to the wheel.
 ///
-/// Phase 1 shipped only "wheel". Phase 2 adds slot-machine, bingo, card-draw.
-/// Phase 3 will add the remaining six.
+/// All 10 animations from the spec are now shipped: wheel, slot-machine,
+/// bingo, card-draw, magic-hat, spotlight-grid, eliminator, roulette-strip,
+/// falling-names, race.
 ///
 /// IMPORTANT: every id added here must have a matching folder under
 /// OrderDeck.Overlay/wwwroot/animations/&lt;id&gt;/ AND a matching entry in
@@ -28,6 +29,9 @@ public static class AnimationCatalog
         "magic-hat",
         "spotlight-grid",
         "eliminator",
+        "roulette-strip",
+        "falling-names",
+        "race",
     };
 
     public static bool IsKnown(string id) =>

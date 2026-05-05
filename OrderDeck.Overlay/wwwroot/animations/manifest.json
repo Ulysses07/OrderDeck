@@ -49,6 +49,27 @@
       "description": "Adlar tek tek elenerek son kazanan belirlenir",
       "category": "dramatik",
       "thumbnail": "eliminator/thumbnail.svg"
+    },
+    {
+      "id": "roulette-strip",
+      "name": "Rulet Şeridi",
+      "description": "Yatay isim şeridi kazino işaretçisinde durur",
+      "category": "klasik",
+      "thumbnail": "roulette-strip/thumbnail.svg"
+    },
+    {
+      "id": "falling-names",
+      "name": "Düşen İsimler",
+      "description": "Tetris gibi yukarıdan düşen isimler — sonuncu kalan kazanır",
+      "category": "eğlenceli",
+      "thumbnail": "falling-names/thumbnail.svg"
+    },
+    {
+      "id": "race",
+      "name": "Yarış",
+      "description": "İsim arabaları finiş çizgisine yarışır",
+      "category": "dramatik",
+      "thumbnail": "race/thumbnail.svg"
     }
   ]
 }
