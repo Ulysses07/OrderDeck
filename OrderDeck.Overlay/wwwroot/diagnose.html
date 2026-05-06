@@ -32,9 +32,10 @@
   <table id="results">
     <thead>
       <tr>
-        <th style="width:160px">Plugin</th>
-        <th style="width:90px">Import</th>
-        <th style="width:90px">Init</th>
+        <th style="width:140px">Plugin</th>
+        <th style="width:80px">Import</th>
+        <th style="width:80px">Init</th>
+        <th style="width:80px">RunFor</th>
         <th>Hata mesaj\u0131 (varsa)</th>
       </tr>
     </thead>
@@ -56,12 +57,33 @@
     const stage = document.getElementById('stage');
     let pass = 0, fail = 0;
 
-    function row(id, importStatus, initStatus, error) {
+    // Mock pool for runFor — 8 fake participants
+    const MOCK_POOL = Array.from({length: 8}, (_, i) => ({
+      Username: `user${i}`,
+      DisplayName: `Test ${i + 1}`,
+      Platform: 'instagram',
+      AvatarUrl: null
+    }));
+
+    /** Race a promise against a timeout. */
+    function withTimeout(promise, ms, label) {
+      return new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error(`${label} timeout (${ms}ms)`)), ms);
+        promise.then(v => { clearTimeout(t); resolve(v); },
+                     e => { clearTimeout(t); reject(e); });
+      });
+    }
+
+    function statusClass(s) {
+      return s === 'ok' ? 'ok' : s === 'skip' ? 'step' : 'fail';
+    }
+    function row(id, importStatus, initStatus, runStatus, error) {
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td><b>${id}</b></td>
-        <td class="${importStatus === 'ok' ? 'ok' : 'fail'}">${importStatus.toUpperCase()}</td>
-        <td class="${initStatus === 'ok' ? 'ok' : initStatus === 'skip' ? 'step' : 'fail'}">${initStatus.toUpperCase()}</td>
+        <td class="${statusClass(importStatus)}">${importStatus.toUpperCase()}</td>
+        <td class="${statusClass(initStatus)}">${initStatus.toUpperCase()}</td>
+        <td class="${statusClass(runStatus)}">${runStatus.toUpperCase()}</td>
         <td class="err">${error ? esc(error) : ''}</td>`;
       tbody.appendChild(tr);
     }
@@ -76,35 +98,53 @@
       try {
         module = await import(`./animations/${id}/index.js`);
       } catch (err) {
-        row(id, 'fail', 'skip', err.stack || String(err));
+        row(id, 'fail', 'skip', 'skip', err.stack || String(err));
         fail++;
         continue;
       }
       const plugin = module && module.default;
       if (!plugin) {
-        row(id, 'fail', 'skip', `default export missing`);
+        row(id, 'fail', 'skip', 'skip', `default export missing`);
         fail++;
         continue;
       }
 
-      // Phase 2 \u2014 init into off-screen container
+      // Phase 2 \u2014 inject plugin's stylesheet (so DOM-based plugins layout correctly)
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = `./animations/${id}/style.css`;
+      document.head.appendChild(link);
+
+      // Phase 3 \u2014 init into off-screen container
       stage.innerHTML = '';
-      const audio = new AudioController(`./animations/${id}/audio/`, 0.7, true);
-      const synth = new SynthController(0.7, true);
+      const audio = new AudioController(`./animations/${id}/audio/`, 0, true);
+      const synth = new SynthController(0, true);
       try {
         await plugin.init(stage, audio, synth);
       } catch (err) {
-        row(id, 'ok', 'fail', err.stack || String(err));
+        row(id, 'ok', 'fail', 'skip', err.stack || String(err));
+        try { link.remove(); } catch {}
         fail++;
         continue;
+      }
+
+      // Phase 4 \u2014 runFor with 8s timeout (animations are 4-5s)
+      const winner = MOCK_POOL[0];
+      let runStatus = 'ok', runErr = '';
+      try {
+        await withTimeout(plugin.runFor([winner], MOCK_POOL), 8000, `${id}.runFor`);
+      } catch (err) {
+        runStatus = 'fail';
+        runErr = err.stack || String(err);
       }
 
       // Cleanup so next plugin gets a clean stage
       try { plugin.reset && plugin.reset(); } catch {}
       try { synth.disposeAll(); } catch {}
+      try { link.remove(); } catch {}
 
-      row(id, 'ok', 'ok', '');
-      pass++;
+      row(id, 'ok', 'ok', runStatus, runErr);
+      if (runStatus === 'ok') pass++; else fail++;
     }
 
     const sum = document.getElementById('summary');
