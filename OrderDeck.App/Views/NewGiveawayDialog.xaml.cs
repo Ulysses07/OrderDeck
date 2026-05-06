@@ -1,5 +1,7 @@
 using System.Windows;
+using OrderDeck.App.Services;
 using OrderDeck.App.ViewModels;
+using OrderDeck.Core.Settings;
 
 namespace OrderDeck.App.Views;
 
@@ -11,6 +13,13 @@ public partial class NewGiveawayDialog : Window
     {
         InitializeComponent();
         ViewModel = new NewGiveawayDialogViewModel();
+        DataContext = ViewModel;
+    }
+
+    public NewGiveawayDialog(AppSettings settings, AnimationCatalogClient? catalogClient = null)
+    {
+        InitializeComponent();
+        ViewModel = new NewGiveawayDialogViewModel(settings, catalogClient);
         DataContext = ViewModel;
     }
 

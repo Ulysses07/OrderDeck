@@ -8,6 +8,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using OrderDeck.App.Services;
 using OrderDeck.App.Services.IntakeForm;
 using OrderDeck.App.Views;
 using OrderDeck.Chat.YouTube;
@@ -37,6 +38,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private readonly LicenseService _licenseService;
     private readonly IntakeFormSyncService _intakeSync;
     private readonly SettingsStore _settingsStore;
+    private readonly AnimationCatalogClient? _animationCatalogClient;
 
     // 500 messages = ~30 seconds of scroll-back at the projected 30 msg/sec
     // peak across IG + TT + FB + YT, ~70 seconds at the realistic 7 msg/sec
@@ -128,7 +130,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         LicenseService licenseService,
         IntakeFormSyncService intakeSync,
         SettingsStore settingsStore,
-        YouTubeModerationService? youTubeModeration = null)
+        YouTubeModerationService? youTubeModeration = null,
+        AnimationCatalogClient? animationCatalogClient = null)
     {
         _labels = labels;
         _sessions = sessions;
@@ -146,6 +149,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         UpdateLicenseUiFromService();
 
         _settingsStore = settingsStore;
+        _animationCatalogClient = animationCatalogClient;
         _intakeSync = intakeSync;
         _intakeSync.SubmissionsSynced += OnIntakeSubmissionsSynced;
 
@@ -548,11 +552,12 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         }
         if (IsGiveawayActive) return;
 
-        var dlg = new NewGiveawayDialog { Owner = Application.Current?.MainWindow };
+        var dlg = new NewGiveawayDialog(_settingsStore.Load(), _animationCatalogClient)
+            { Owner = Application.Current?.MainWindow };
         if (dlg.ShowDialog() != true) return;
 
         var vm = dlg.ViewModel;
-        var animationId = _settingsStore.Load().GiveawayAnimation.DefaultId;
+        var animationId = vm.SelectedAnimationId ?? _settingsStore.Load().GiveawayAnimation.DefaultId;
         var g = _giveaways.Start(
             sessionId: session.Id,
             keyword: vm.Keyword.Trim(),
