@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <title>Animasyon Tan\u0131lama \u2014 OrderDeck</title>
+  <style>
+    body { margin: 0; padding: 24px; background: #0f1118; color: #fff;
+           font: 14px/1.4 "Segoe UI", system-ui, sans-serif; }
+    h1 { color: #ffce46; margin: 0 0 8px; }
+    .desc { color: #888; margin-bottom: 24px; }
+    table { border-collapse: collapse; width: 100%; max-width: 900px; }
+    th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #1f2937; vertical-align: top; }
+    th { background: #1a1a1a; color: #ffce46; }
+    .ok   { color: #22c55e; font-weight: bold; }
+    .fail { color: #ef4444; font-weight: bold; }
+    .err  { font-family: ui-monospace, monospace; font-size: 12px;
+            color: #fca5a5; white-space: pre-wrap; }
+    .step { color: #93c5fd; }
+    #stage { position: fixed; top: -9999px; left: -9999px; }   /* off-screen render area */
+    .summary { margin-top: 16px; padding: 12px 16px; border-radius: 6px; }
+    .summary.green { background: #14532d; }
+    .summary.red   { background: #7f1d1d; }
+  </style>
+</head>
+<body>
+  <h1>\u{1F50D} Animasyon Tan\u0131lama</h1>
+  <p class="desc">
+    10 plugin'i s\u0131rayla import + init eder. Hata varsa as\u0131l mesaj\u0131
+    a\u015fa\u011f\u0131da g\u00f6r\u00fcr\u00fcr\u00fc. Bu sayfay\u0131
+    <code>http://localhost:4747/overlay/diagnose</code> URL'inden a\u00e7.
+  </p>
+  <table id="results">
+    <thead>
+      <tr>
+        <th style="width:160px">Plugin</th>
+        <th style="width:90px">Import</th>
+        <th style="width:90px">Init</th>
+        <th>Hata mesaj\u0131 (varsa)</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+  <div id="summary" class="summary"></div>
+  <div id="stage"></div>
+
+  <script type="module">
+    import { AudioController } from './audio-controller.js';
+    import { SynthController } from './synth-controller.js';
+
+    const PLUGINS = [
+      'wheel', 'slot-machine', 'bingo', 'card-draw',
+      'magic-hat', 'spotlight-grid', 'eliminator',
+      'roulette-strip', 'falling-names', 'race'
+    ];
+    const tbody = document.querySelector('#results tbody');
+    const stage = document.getElementById('stage');
+    let pass = 0, fail = 0;
+
+    function row(id, importStatus, initStatus, error) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><b>${id}</b></td>
+        <td class="${importStatus === 'ok' ? 'ok' : 'fail'}">${importStatus.toUpperCase()}</td>
+        <td class="${initStatus === 'ok' ? 'ok' : initStatus === 'skip' ? 'step' : 'fail'}">${initStatus.toUpperCase()}</td>
+        <td class="err">${error ? esc(error) : ''}</td>`;
+      tbody.appendChild(tr);
+    }
+    function esc(s) {
+      return String(s).replace(/[&<>"']/g, c =>
+        ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    for (const id of PLUGINS) {
+      // Phase 1 \u2014 import
+      let module;
+      try {
+        module = await import(`./animations/${id}/index.js`);
+      } catch (err) {
+        row(id, 'fail', 'skip', err.stack || String(err));
+        fail++;
+        continue;
+      }
+      const plugin = module && module.default;
+      if (!plugin) {
+        row(id, 'fail', 'skip', `default export missing`);
+        fail++;
+        continue;
+      }
+
+      // Phase 2 \u2014 init into off-screen container
+      stage.innerHTML = '';
+      const audio = new AudioController(`./animations/${id}/audio/`, 0.7, true);
+      const synth = new SynthController(0.7, true);
+      try {
+        await plugin.init(stage, audio, synth);
+      } catch (err) {
+        row(id, 'ok', 'fail', err.stack || String(err));
+        fail++;
+        continue;
+      }
+
+      // Cleanup so next plugin gets a clean stage
+      try { plugin.reset && plugin.reset(); } catch {}
+      try { synth.disposeAll(); } catch {}
+
+      row(id, 'ok', 'ok', '');
+      pass++;
+    }
+
+    const sum = document.getElementById('summary');
+    sum.className = `summary ${fail === 0 ? 'green' : 'red'}`;
+    sum.textContent = `Sonu\u00e7: ${pass} / ${PLUGINS.length} ge\u00e7ti, ${fail} fail.`;
+  </script>
+</body>
+</html>

@@ -117,6 +117,16 @@ public sealed class OverlayHost : IAsyncDisposable
             await ctx.Response.SendFileAsync(Path.Combine(wwwroot, "preview.html"));
         });
 
+        // Diagnostic page — imports + inits all 10 plugins, shows pass/fail
+        // table inline. Use when an animation looks broken: open
+        // http://localhost:<port>/overlay/diagnose and see the exact error
+        // for each plugin (no DevTools needed).
+        _app.MapGet("/overlay/diagnose", async (HttpContext ctx) =>
+        {
+            ctx.Response.ContentType = "text/html; charset=utf-8";
+            await ctx.Response.SendFileAsync(Path.Combine(wwwroot, "diagnose.html"));
+        });
+
         _app.Map("/ws/chat", async (HttpContext ctx) =>
         {
             if (!ctx.WebSockets.IsWebSocketRequest) { ctx.Response.StatusCode = 400; return; }
