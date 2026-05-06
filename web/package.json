@@ -16,7 +16,7 @@
     "react-dom": "^19.0.0",
     "lucide-react": "^0.469.0",
     "gray-matter": "^4.0.3",
-    "next-mdx-remote": "^5.0.0"
+    "next-mdx-remote": "^6.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
