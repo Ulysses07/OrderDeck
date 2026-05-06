@@ -111,6 +111,12 @@ public sealed class OverlayHost : IAsyncDisposable
             await ctx.Response.SendFileAsync(Path.Combine(wwwroot, "giveaway.html"));
         });
 
+        _app.MapGet("/overlay/preview", async (HttpContext ctx) =>
+        {
+            ctx.Response.ContentType = "text/html; charset=utf-8";
+            await ctx.Response.SendFileAsync(Path.Combine(wwwroot, "preview.html"));
+        });
+
         _app.Map("/ws/chat", async (HttpContext ctx) =>
         {
             if (!ctx.WebSockets.IsWebSocketRequest) { ctx.Response.StatusCode = 400; return; }

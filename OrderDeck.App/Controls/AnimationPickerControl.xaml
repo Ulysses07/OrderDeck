@@ -37,9 +37,14 @@
                        Margin="0,6,0,2" Foreground="White"/>
             <TextBlock Text="{Binding Description}" FontSize="11"
                        Foreground="#FFB0B0B0" TextWrapping="Wrap"/>
-            <Button Content="Seç" Margin="0,6,0,0"
-                    CommandParameter="{Binding Id}"
-                    Click="SelectButton_Click"/>
+            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+              <Button Content="Seç" Width="60" Margin="0,0,4,0"
+                      CommandParameter="{Binding Id}"
+                      Click="SelectButton_Click"/>
+              <Button Content="Önizle" Width="80"
+                      CommandParameter="{Binding Id}"
+                      Click="PreviewButton_Click"/>
+            </StackPanel>
           </StackPanel>
         </Border>
       </DataTemplate>
