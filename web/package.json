@@ -26,5 +26,8 @@
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.0",
     "next-sitemap": "^4.2.3"
+  },
+  "overrides": {
+    "postcss": "^8.5.10"
   }
 }
