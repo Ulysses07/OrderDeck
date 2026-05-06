@@ -15,6 +15,7 @@
 // then reveals the winner list and spawns confetti (host-owned).
 
 import { AudioController } from './audio-controller.js';
+import { SynthController } from './synth-controller.js';
 
 (() => {
   const $root = document.getElementById('giveaway-root');
@@ -32,7 +33,8 @@ import { AudioController } from './audio-controller.js';
     startedAt: 0,
     countdownTimer: null,
     plugin: null,
-    pluginStyleEl: null
+    pluginStyleEl: null,
+    synth: null
   };
 
   function show(el) { el.classList.remove('hidden'); }
@@ -41,10 +43,11 @@ import { AudioController } from './audio-controller.js';
   function reset() {
     if (state.countdownTimer) { clearInterval(state.countdownTimer); state.countdownTimer = null; }
     if (state.plugin) { try { state.plugin.reset(); } catch {} }
+    if (state.synth) { try { state.synth.disposeAll(); } catch {} }
     if (state.pluginStyleEl) { state.pluginStyleEl.remove(); }
     state = {
       giveawayId: null, keyword: '', durationSeconds: 0, startedAt: 0,
-      countdownTimer: null, plugin: null, pluginStyleEl: null
+      countdownTimer: null, plugin: null, pluginStyleEl: null, synth: null
     };
     $keyword.textContent = '';
     $counter.textContent = '0 katılımcı';
@@ -89,12 +92,16 @@ import { AudioController } from './audio-controller.js';
     state.pluginStyleEl.href = styleUrl;
     document.head.appendChild(state.pluginStyleEl);
 
-    const audio = new AudioController(
-      `./animations/${plugin.id}/audio/`,
-      typeof audioVolume === 'number' ? audioVolume : 0.7,
-      !!audioMuted);
+    const vol = typeof audioVolume === 'number' ? audioVolume : 0.7;
+    const muted = !!audioMuted;
+    const audio = new AudioController(`./animations/${plugin.id}/audio/`, vol, muted);
+    const synth = new SynthController(vol, muted);
+    // Track for cleanup so the AudioContext doesn't leak between giveaways.
+    state.synth = synth;
 
-    await plugin.init($stage, audio);
+    // Plugin contract is now (container, audio, synth). Existing 3-arg plugins
+    // that ignore the synth still work (JS arity is permissive).
+    await plugin.init($stage, audio, synth);
     state.plugin = plugin;
     return plugin;
   }
