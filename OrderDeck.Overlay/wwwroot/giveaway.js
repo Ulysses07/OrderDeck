@@ -85,8 +85,12 @@ import { SynthController } from './synth-controller.js';
     }
     const plugin = module.default;
 
-    // Inject the plugin's optional style.css.
-    const styleUrl = `./animations/${plugin.id}/style.css`;
+    // Inject the plugin's optional style.css. ABSOLUTE path because this
+    // page is served at /overlay/giveaway, so a relative './animations/...'
+    // would resolve to /overlay/animations/... which 404s — that's the bug
+    // that made every DOM-based plugin (8 of 10) silently invisible while
+    // the two canvas-based ones (wheel + bingo) kept working.
+    const styleUrl = `/animations/${plugin.id}/style.css`;
     state.pluginStyleEl = document.createElement('link');
     state.pluginStyleEl.rel = 'stylesheet';
     state.pluginStyleEl.href = styleUrl;
@@ -94,7 +98,7 @@ import { SynthController } from './synth-controller.js';
 
     const vol = typeof audioVolume === 'number' ? audioVolume : 0.7;
     const muted = !!audioMuted;
-    const audio = new AudioController(`./animations/${plugin.id}/audio/`, vol, muted);
+    const audio = new AudioController(`/animations/${plugin.id}/audio/`, vol, muted);
     const synth = new SynthController(vol, muted);
     // Track for cleanup so the AudioContext doesn't leak between giveaways.
     state.synth = synth;

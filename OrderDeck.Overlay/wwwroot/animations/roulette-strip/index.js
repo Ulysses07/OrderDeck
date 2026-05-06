@@ -62,11 +62,12 @@ export default {
 
     for (let i = 0; i < winners.length; i++) {
       const winner = winners[i];
-      const winnerIdx = pool.findIndex(p =>
-        p.Username === winner.Username && p.Platform === winner.Platform);
+      // WYSIWYG: pool tail holds winners in order (server contract).
+      let winnerIdx = pool.length - winners.length + i;
+      if (winnerIdx < 0 || winnerIdx >= pool.length) winnerIdx = pool.length - 1;
       const dur = i === 0 ? 4500 : 2800;
 
-      this._buildStrip(pool, winnerIdx >= 0 ? winnerIdx : 0);
+      this._buildStrip(pool, winnerIdx);
       await this._spin(dur);
 
       if (i < winners.length - 1) {

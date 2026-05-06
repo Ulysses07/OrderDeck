@@ -1,46 +1,56 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 150" width="200" height="150">
-  <!-- Background -->
-  <rect width="200" height="150" fill="#0f1118" rx="8"/>
-
-  <!-- Hat brim -->
-  <ellipse cx="100" cy="115" rx="52" ry="9" fill="#0a0a0a"/>
-
-  <!-- Hat body -->
-  <rect x="68" y="52" width="64" height="63" rx="3" fill="url(#hatGrad)"/>
-
-  <!-- Hat band (red) -->
-  <rect x="68" y="104" width="64" height="10" fill="#b91c1c"/>
-
-  <!-- Floating name cards around the hat -->
-  <!-- Top-left card -->
-  <rect x="14" y="28" width="44" height="18" rx="9" fill="#6366f1" opacity="0.9"/>
-  <text x="36" y="41" font-family="Segoe UI, system-ui, sans-serif" font-size="9"
-        font-weight="bold" fill="#fff" text-anchor="middle">Ahmet</text>
-
-  <!-- Top-right card -->
-  <rect x="142" y="20" width="44" height="18" rx="9" fill="#10b981" opacity="0.9"/>
-  <text x="164" y="33" font-family="Segoe UI, system-ui, sans-serif" font-size="9"
-        font-weight="bold" fill="#fff" text-anchor="middle">Zeynep</text>
-
-  <!-- Upper-right card -->
-  <rect x="148" y="58" width="38" height="18" rx="9" fill="#f97316" opacity="0.9"/>
-  <text x="167" y="71" font-family="Segoe UI, system-ui, sans-serif" font-size="9"
-        font-weight="bold" fill="#fff" text-anchor="middle">Mert</text>
-
-  <!-- Small sparkle dots near hat top -->
-  <circle cx="94"  cy="46" r="3" fill="#fef3c7" opacity="0.9"/>
-  <circle cx="100" cy="42" r="2" fill="#f59e0b" opacity="0.8"/>
-  <circle cx="107" cy="46" r="3" fill="#fef3c7" opacity="0.9"/>
-
-  <!-- Gradient definition for hat body -->
   <defs>
+    <!-- Hat body gradient (dark top → near-black bottom) -->
     <linearGradient id="hatGrad" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%"   stop-color="#1a1a1a"/>
-      <stop offset="100%" stop-color="#050505"/>
+      <stop offset="0%"   stop-color="#2a2a2a"/>
+      <stop offset="100%" stop-color="#0a0a0a"/>
     </linearGradient>
   </defs>
 
-  <!-- Label -->
-  <text x="100" y="143" font-family="Segoe UI, system-ui, sans-serif" font-size="11"
-        font-weight="bold" fill="#fef3c7" text-anchor="middle" opacity="0.85">Şapka</text>
+  <!-- Background -->
+  <rect width="200" height="150" fill="#1a1a1a" rx="8"/>
+
+  <!-- ── Top-hat silhouette (centred, classic magician shape) ── -->
+
+  <!-- Brim (wide ellipse below the body) -->
+  <ellipse cx="100" cy="98" rx="60" ry="9" fill="#0a0a0a"/>
+  <ellipse cx="100" cy="96" rx="60" ry="6" fill="#1c1c1c"/>
+
+  <!-- Body (tall rectangle on top of brim) -->
+  <rect x="72" y="34" width="56" height="62" fill="url(#hatGrad)"
+        stroke="#000" stroke-width="1"/>
+
+  <!-- Red ribbon band -->
+  <rect x="72" y="84" width="56" height="10" fill="#b91c1c"/>
+  <rect x="72" y="92" width="56" height="2"  fill="#7f1d1d"/>
+
+  <!-- Hat top highlight (subtle vertical sheen) -->
+  <rect x="80" y="36" width="3" height="46" fill="#ffffff" fill-opacity="0.08" rx="1"/>
+
+  <!-- ── Magic action: name card flying out of the hat top ── -->
+
+  <!-- Sparkle dots above hat -->
+  <circle cx="92"  cy="22" r="2.5" fill="#fef3c7"/>
+  <circle cx="100" cy="14" r="3"   fill="#ffce46"/>
+  <circle cx="108" cy="22" r="2.5" fill="#fef3c7"/>
+  <circle cx="116" cy="30" r="1.8" fill="#fef3c7" fill-opacity="0.7"/>
+  <circle cx="84"  cy="30" r="1.8" fill="#fef3c7" fill-opacity="0.7"/>
+
+  <!-- Star burst above hat -->
+  <text x="100" y="32" text-anchor="middle" font-family="Segoe UI, system-ui, sans-serif"
+        font-size="14" font-weight="bold" fill="#ffce46">✦</text>
+
+  <!-- Winner name card emerging from hat (gold, in front of body) -->
+  <rect x="60" y="58" width="80" height="22" rx="11" fill="#fef3c7"
+        stroke="#ffce46" stroke-width="2"/>
+  <text x="100" y="74" text-anchor="middle" font-family="Segoe UI, system-ui, sans-serif"
+        font-size="11" font-weight="bold" fill="#1a1a1a">İsim</text>
+
+  <!-- Magic wand crossing in front (bottom-right to upper-left) -->
+  <line x1="148" y1="118" x2="180" y2="142" stroke="#3b1d0f" stroke-width="3" stroke-linecap="round"/>
+  <line x1="180" y1="142" x2="184" y2="146" stroke="#fef3c7" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- ── Label ── -->
+  <text x="100" y="142" text-anchor="middle" font-family="Segoe UI, system-ui, sans-serif"
+        font-size="11" font-weight="bold" fill="#ffce46">Sihirli Şapka</text>
 </svg>

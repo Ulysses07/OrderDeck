@@ -107,8 +107,18 @@ public sealed partial class SettingsViewModel : ViewModelBase
         _ = IntakeForm.LoadAsync();
         _ = RefreshYouTubeConnectionStatusAsync();
 
-        _animationVolume = settings.GiveawayAnimation.Volume;
-        _animationMuted = settings.GiveawayAnimation.MutedMode;
+        // Use the source-generated setters (NOT the backing fields) so
+        // OnPropertyChanged fires — XAML bindings activate AFTER the dialog
+        // shows, but using the property surface keeps the contract clean and
+        // future-proofs against ordering bugs (e.g. if the dialog is reused
+        // or DataContext is swapped at runtime). Defensive sanity floor on
+        // Volume protects users whose settings.json was saved with the
+        // earlier broken UI (slider rendered at 0% before the
+        // UniformGrid-clip fix).
+        AnimationVolume = settings.GiveawayAnimation.Volume <= 0 && !settings.GiveawayAnimation.MutedMode
+            ? 0.7
+            : settings.GiveawayAnimation.Volume;
+        AnimationMuted = settings.GiveawayAnimation.MutedMode;
         AnimationPicker.SelectedId = settings.GiveawayAnimation.DefaultId;
 
         if (catalogClient is not null)

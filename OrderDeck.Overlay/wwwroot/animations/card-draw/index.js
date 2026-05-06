@@ -128,9 +128,16 @@ export default {
 
       top.classList.add('peeling');
 
-      const onEnd = (e) => {
-        // transitionend fires once per property; guard against multiple fires.
-        if (e.propertyName !== 'transform') return;
+      // Defensive: if `transitionend` doesn't fire (e.g. the host's
+      // stylesheet hadn't loaded so `peeling` doesn't change `transform`,
+      // or the browser optimised the no-op transition out), the Promise
+      // would otherwise hang forever and the runFor() chain stalls. Cap
+      // the wait at the CSS transition duration (650ms) + a small safety
+      // margin and force-resolve.
+      let resolved = false;
+      const finish = () => {
+        if (resolved) return;
+        resolved = true;
         top.removeEventListener('transitionend', onEnd);
 
         // Rebuild the element as the flip host.
@@ -154,7 +161,14 @@ export default {
         resolve();
       };
 
+      const onEnd = (e) => {
+        // transitionend fires once per property; guard against multiple fires.
+        if (e.propertyName !== 'transform') return;
+        finish();
+      };
+
       top.addEventListener('transitionend', onEnd);
+      setTimeout(finish, 750);
     });
   },
 

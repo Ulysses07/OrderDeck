@@ -43,9 +43,10 @@ export default {
 
     for (let i = 0; i < winners.length; i++) {
       const winner = winners[i];
-      let winnerIdx = pool.findIndex(p =>
-        p.Username === winner.Username && p.Platform === winner.Platform);
-      if (winnerIdx < 0) winnerIdx = 0;
+      // WYSIWYG: pool tail is guaranteed to hold winners in order (server's
+      // BuildAnimationPool contract). Position-based, no findIndex.
+      let winnerIdx = pool.length - winners.length + i;
+      if (winnerIdx < 0 || winnerIdx >= pool.length) winnerIdx = pool.length - 1;
 
       // Cap visible to 30 for layout sanity.
       const visible = Math.min(pool.length, 30);

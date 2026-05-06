@@ -36,6 +36,25 @@ let activePlugin = null;
 let activeStyleEl = null;
 let activeSynth = null;
 
+/**
+ * Surface error on the page (red banner) so the operator sees it without
+ * opening DevTools. Mirrored to console for debugging.
+ */
+function showError(stage, err) {
+  console.error('[preview]', stage, err);
+  $winner.innerHTML =
+    `<div style="color:#fff;background:#b91c1c;padding:8px 16px;` +
+    `border-radius:6px;font:600 13px monospace;text-align:left;` +
+    `max-width:480px;margin:0 auto;white-space:pre-wrap;">` +
+    `❌ <b>${stage} fail:</b>\n${escapeForHtml(err && err.stack ? err.stack : String(err))}` +
+    `</div>`;
+}
+
+function escapeForHtml(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
 async function loadAndPlay() {
   // Cleanup previous run if any
   if (activePlugin) { try { activePlugin.reset(); } catch {} }
@@ -48,28 +67,55 @@ async function loadAndPlay() {
   try {
     module = await import(`./animations/${animationId}/index.js`);
   } catch (err) {
-    $winner.textContent = `Plugin yüklenemedi: ${animationId}`;
-    console.error(err);
+    showError(`import('./animations/${animationId}/index.js')`, err);
     return;
   }
-  const plugin = module.default;
 
-  // Inject plugin stylesheet
-  activeStyleEl = document.createElement('link');
-  activeStyleEl.rel = 'stylesheet';
-  activeStyleEl.href = `./animations/${plugin.id}/style.css`;
-  document.head.appendChild(activeStyleEl);
+  const plugin = module && module.default;
+  if (!plugin) {
+    showError('module load', new Error(`'${animationId}/index.js' has no default export`));
+    return;
+  }
 
-  const audio = new AudioController(`./animations/${plugin.id}/audio/`, 0.7, false);
-  activeSynth = new SynthController(0.7, false);
+  // Inject plugin stylesheet — ABSOLUTE path so it works regardless of
+  // document URL (this page is served at /overlay/preview, so a relative
+  // './animations/...' would resolve to /overlay/animations/... which 404s).
+  try {
+    activeStyleEl = document.createElement('link');
+    activeStyleEl.rel = 'stylesheet';
+    activeStyleEl.href = `/animations/${plugin.id}/style.css`;
+    document.head.appendChild(activeStyleEl);
+  } catch (err) {
+    showError('stylesheet inject', err);
+    return;
+  }
 
-  await plugin.init($stage, audio, activeSynth);
+  let audio, synth;
+  try {
+    audio = new AudioController(`/animations/${plugin.id}/audio/`, 0.7, false);
+    synth = new SynthController(0.7, false);
+    activeSynth = synth;
+  } catch (err) {
+    showError('audio/synth construct', err);
+    return;
+  }
+
+  try {
+    await plugin.init($stage, audio, synth);
+  } catch (err) {
+    showError(`${plugin.id}.init()`, err);
+    return;
+  }
   activePlugin = plugin;
 
   const pool = mockPool();
   const winner = pool[Math.floor(Math.random() * pool.length)];
-  await plugin.runFor([winner], pool);
-  $winner.textContent = `Kazanan (mock): ${winner.DisplayName}`;
+  try {
+    await plugin.runFor([winner], pool);
+    $winner.textContent = `Kazanan (mock): ${winner.DisplayName}`;
+  } catch (err) {
+    showError(`${plugin.id}.runFor()`, err);
+  }
 }
 
 $replay.addEventListener('click', loadAndPlay);

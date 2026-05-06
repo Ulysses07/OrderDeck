@@ -1,9 +1,11 @@
 using System;
+using System.IO;
 using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
+using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
 
 namespace OrderDeck.App.Services;
@@ -132,12 +134,40 @@ public sealed class AnimationHoverPreviewService : IDisposable
         {
             try
             {
-                // CreationProperties null = use default Edge runtime + per-app user data folder
-                await _webView.EnsureCoreWebView2Async();
+                // Default user-data-folder is the app's exe directory, which
+                // fails when the app is in a read-only location (Program Files,
+                // Windows Store install, or any signed installer drop). Pin
+                // explicitly to %LOCALAPPDATA%\OrderDeck\WebView2 so init
+                // succeeds regardless of where the .exe lives.
+                var userDataFolder = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "OrderDeck", "WebView2");
+                Directory.CreateDirectory(userDataFolder);
+
+                var env = await CoreWebView2Environment.CreateAsync(
+                    browserExecutableFolder: null,
+                    userDataFolder: userDataFolder);
+                await _webView.EnsureCoreWebView2Async(env);
                 _coreInitialized = true;
             }
             catch (Exception ex)
             {
+                // Surface the init failure so it's not invisible. We append
+                // to a small log file in the same user-data folder area so
+                // the operator (or a later debug session) can see why hover
+                // preview gave up. The "Önizle" button keeps working as
+                // fallback regardless.
+                try
+                {
+                    var logDir = Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        "OrderDeck");
+                    Directory.CreateDirectory(logDir);
+                    File.AppendAllText(
+                        Path.Combine(logDir, "webview2-init.log"),
+                        $"[{DateTime.UtcNow:O}] WebView2 init failed: {ex}\n\n");
+                }
+                catch { /* logging is best-effort */ }
                 System.Diagnostics.Debug.WriteLine($"WebView2 init failed: {ex.Message}");
                 _webView = null;   // Fallback: hover preview silently disabled, "Önizle" button still works
             }
