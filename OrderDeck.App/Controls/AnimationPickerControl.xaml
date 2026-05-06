@@ -21,7 +21,9 @@
           DependencyProperty and cannot accept a Binding directly.
         -->
         <Border Margin="6" Padding="6" CornerRadius="6" BorderThickness="2"
-                Background="#FF1F2937">
+                Background="#FF1F2937"
+                MouseEnter="Card_MouseEnter"
+                MouseLeave="Card_MouseLeave">
           <Border.BorderBrush>
             <MultiBinding Converter="{StaticResource EqToBrush}"
                           ConverterParameter="#FFFFCE46|Transparent">

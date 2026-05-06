@@ -85,6 +85,9 @@
     <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.15.1" />
     <PackageVersion Include="OpenTelemetry.Instrumentation.Runtime" Version="1.15.1" />
 
+    <!-- WebView2 — C# wrapper for Edge-based embedded browser; runtime ships with Win10 22H2+ / Win11 -->
+    <PackageVersion Include="Microsoft.Web.WebView2" Version="1.0.2535.41" />
+
     <!-- Test deps -->
     <PackageVersion Include="FluentAssertions" Version="7.0.0" />
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
