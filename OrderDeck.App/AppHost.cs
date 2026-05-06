@@ -127,13 +127,23 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<IChatBus>(),
             sp.GetRequiredService<GiveawayService>(),
             port: sp.GetRequiredService<AppSettings>().OverlayPort,
-            log: sp.GetRequiredService<ILogger<OverlayHost>>()));
+            log: sp.GetRequiredService<ILogger<OverlayHost>>(),
+            audioProvider: () =>
+            {
+                var s = sp.GetRequiredService<SettingsStore>().Load().GiveawayAnimation;
+                return new GiveawayAudioSnapshot(s.Volume, s.MutedMode);
+            }));
 
         // Printing
         services.AddSingleton<LabelPrinter>(sp => new LabelPrinter(
             sp.GetRequiredService<AppSettings>(),
             sp.GetRequiredService<ILogger<LabelPrinter>>()));
         services.AddSingleton<ILabelPrinter>(sp => sp.GetRequiredService<LabelPrinter>());
+
+        // Animation catalog client (Task 20)
+        services.AddSingleton<Services.AnimationCatalogClient>(sp => new Services.AnimationCatalogClient(
+            new System.Net.Http.HttpClient(),
+            sp.GetRequiredService<AppSettings>().OverlayPort));
 
         // ViewModels
         services.AddSingleton<ViewModels.MainShellViewModel>();

@@ -1,0 +1,91 @@
+/* animations/eliminator/style.css */
+
+.elim-plugin.hidden { display: none; }
+
+.elim-plugin {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+}
+
+.elim-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+  width: 400px;
+}
+
+.elim-cell {
+  background: #1f2937;
+  color: #fff;
+  font: 600 12px "Segoe UI", system-ui, sans-serif;
+  padding: 12px 6px;
+  border-radius: 6px;
+  text-align: center;
+  border: 2px solid transparent;
+  transition: opacity 350ms ease, transform 350ms ease,
+              background 200ms ease, border-color 200ms ease;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Red flash + shake when a cell is being eliminated */
+.elim-cell.eliminating {
+  background: #dc2626;
+  border-color: #fecaca;
+  animation: elim-flash 350ms ease-out;
+}
+@keyframes elim-flash {
+  0%   { transform: scale(1); }
+  30%  { transform: scale(1.1) translateX(-3px); }
+  60%  { transform: scale(1.05) translateX(3px); }
+  100% { transform: scale(0.9); }
+}
+
+/* Cell drops away after elimination */
+.elim-cell.dropped {
+  opacity: 0;
+  transform: translateY(40px) scale(0.6);
+  pointer-events: none;
+}
+
+/* Past winners — permanent gold placeholder, can't be re-eliminated */
+.elim-cell.champion {
+  background: #b45309;
+  color: #fff;
+  border-color: #ffce46;
+  box-shadow: 0 0 8px rgba(255, 206, 70, 0.5);
+}
+
+/* The winner — scales up and pulses gold */
+.elim-cell.winner {
+  background: #fef3c7;
+  color: #1a1a1a;
+  border-color: #ffce46;
+  box-shadow: 0 0 24px rgba(255, 206, 70, 0.95);
+  transform: scale(1.15);
+  animation: elim-winner 1s ease-in-out infinite;
+}
+@keyframes elim-winner {
+  0%, 100% { box-shadow: 0 0 24px rgba(255, 206, 70, 0.95); }
+  50%      { box-shadow: 0 0 40px rgba(255, 206, 70, 1); }
+}
+
+/* Live count "N kalan" / "KAZANAN!" */
+.elim-status {
+  font: 600 16px "Segoe UI", system-ui, sans-serif;
+  color: #fef3c7;
+  letter-spacing: 1px;
+}
+
+/* Name of the last eliminated / winner */
+.elim-name {
+  min-height: 32px;
+  font: bold 24px "Segoe UI", system-ui, sans-serif;
+  color: #fef3c7;
+  text-shadow: 0 0 8px rgba(255, 200, 70, 0.6);
+  text-align: center;
+}

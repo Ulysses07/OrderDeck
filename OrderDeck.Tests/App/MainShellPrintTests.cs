@@ -156,7 +156,7 @@ public class MainShellPrintTests
 
         var vm = new MainShellViewModel(
             bus, labelSvc, sessionSvc, printer, customerSvc, customerRepo, giveawaySvc, banner,
-            licenseSvc, intakeSync);
+            licenseSvc, intakeSync, tempStore);
 
         return (vm, printer, db);
     }

@@ -19,20 +19,11 @@
       <ul id="winners-list"></ul>
     </div>
 
-    <!--
-      Spinning wheel layout:
-      - <canvas> draws the segmented wheel (one slice per participant).
-      - <div id="wheel-arrow"> is the fixed pointer at the top.
-      - <div id="wheel-name"> shows the currently-highlighted participant
-        below the wheel during spin and the final winner once it lands.
-    -->
-    <div id="wheel" class="hidden">
-      <div id="wheel-arrow"></div>
-      <canvas id="wheel-canvas" width="520" height="520"></canvas>
-      <div id="wheel-name"></div>
-    </div>
+    <!-- Plugin stage. Each animation renders into this div via its
+         init(container, audio) call from giveaway.js (the host). -->
+    <div id="plugin-stage"></div>
   </div>
 
-  <script src="/giveaway.js"></script>
+  <script type="module" src="/giveaway.js"></script>
 </body>
 </html>

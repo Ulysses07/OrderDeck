@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "animations": [
+    {
+      "id": "wheel",
+      "name": "Çark",
+      "description": "Klasik dönen çark animasyonu",
+      "category": "klasik",
+      "thumbnail": "wheel/thumbnail.svg"
+    },
+    {
+      "id": "slot-machine",
+      "name": "Slot Machine",
+      "description": "Kazino tarzı 3-cell dikey reel",
+      "category": "klasik",
+      "thumbnail": "slot-machine/thumbnail.svg"
+    },
+    {
+      "id": "bingo",
+      "name": "Tombala",
+      "description": "Bingo top makinesi tarzı çekim",
+      "category": "klasik",
+      "thumbnail": "bingo/thumbnail.svg"
+    },
+    {
+      "id": "card-draw",
+      "name": "Kart Çekimi",
+      "description": "Şıklı kart destesinden flip ile çekim",
+      "category": "elegant",
+      "thumbnail": "card-draw/thumbnail.svg"
+    },
+    {
+      "id": "magic-hat",
+      "name": "Sihirli Şapka",
+      "description": "Şapkadan kazananın çekildiği büyücü gösterisi",
+      "category": "eğlenceli",
+      "thumbnail": "magic-hat/thumbnail.svg"
+    },
+    {
+      "id": "spotlight-grid",
+      "name": "Spot Işığı",
+      "description": "Adların grid'inde zıplayan spot ışığı",
+      "category": "minimal",
+      "thumbnail": "spotlight-grid/thumbnail.svg"
+    },
+    {
+      "id": "eliminator",
+      "name": "Eleme",
+      "description": "Adlar tek tek elenerek son kazanan belirlenir",
+      "category": "dramatik",
+      "thumbnail": "eliminator/thumbnail.svg"
+    },
+    {
+      "id": "roulette-strip",
+      "name": "Rulet Şeridi",
+      "description": "Yatay isim şeridi kazino işaretçisinde durur",
+      "category": "klasik",
+      "thumbnail": "roulette-strip/thumbnail.svg"
+    },
+    {
+      "id": "falling-names",
+      "name": "Düşen İsimler",
+      "description": "Tetris gibi yukarıdan düşen isimler — sonuncu kalan kazanır",
+      "category": "eğlenceli",
+      "thumbnail": "falling-names/thumbnail.svg"
+    },
+    {
+      "id": "race",
+      "name": "Yarış",
+      "description": "İsim arabaları finiş çizgisine yarışır",
+      "category": "dramatik",
+      "thumbnail": "race/thumbnail.svg"
+    }
+  ]
+}

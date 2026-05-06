@@ -29,7 +29,8 @@ public class GiveawayRepositoryTests
     private static Giveaway NewGiveaway(string id = "g1", string sessionId = "s1") =>
         new(id, sessionId, "🌹", DurationSeconds: 60, WinnerCount: 1,
             PlatformFilter: null, PreventRewinning: true,
-            RandomSeed: "seed", StartedAt: 200, EndedAt: null, CancelledAt: null);
+            RandomSeed: "seed", StartedAt: 200, EndedAt: null, CancelledAt: null,
+            AnimationId: "wheel");
 
     [Fact]
     public void Insert_then_GetById_returns_giveaway()

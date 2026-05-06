@@ -1,0 +1,151 @@
+/* Roulette-strip plugin — scoped CSS for the CS:GO-style horizontal rulet.
+   Palette: dark #1a1a1a / #0f1118 background, gold (#ffce46) accents,
+   matching slot-machine / wheel colour language. */
+
+.roulette-plugin.hidden { display: none; }
+
+/* ── Outer wrapper ──────────────────────────────────────────────────────── */
+.roulette-plugin {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 16px;
+}
+
+/* ── Frame: contains markers + viewport ────────────────────────────────── */
+.roulette-frame {
+  position: relative;
+  width: 700px;
+  background: linear-gradient(180deg, #1a1a1a, #0f1118);
+  border: 3px solid #ffce46;
+  border-radius: 12px;
+  padding: 16px 0;
+  box-shadow:
+    0 0 16px rgba(255, 206, 70, 0.3),
+    0 8px 24px rgba(0, 0, 0, 0.7);
+}
+
+/* Vertical golden guide line through the exact centre of the viewport */
+.roulette-frame::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 16px;
+  bottom: 16px;
+  width: 2px;
+  background: rgba(255, 206, 70, 0.65);
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 4;
+}
+
+/* ── Viewport: clips the scrolling strip to 5 cells ────────────────────── */
+.roulette-viewport {
+  position: relative;
+  width: 700px;
+  height: 80px;
+  overflow: hidden;
+  /* Fade left/right edges so cells dissolve as they leave the visible window */
+  -webkit-mask-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    #000 12%,
+    #000 88%,
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    #000 12%,
+    #000 88%,
+    transparent 100%
+  );
+}
+
+/* ── Strip: long horizontal row of name cells ───────────────────────────── */
+.roulette-strip {
+  display: flex;
+  height: 100%;
+  will-change: transform;
+}
+
+/* ── Individual name cell ───────────────────────────────────────────────── */
+.roulette-cell {
+  flex: 0 0 140px;
+  height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: bold 14px "Segoe UI", system-ui, sans-serif;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  border-right: 1px solid rgba(0, 0, 0, 0.25);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 8px;
+  box-sizing: border-box;
+}
+
+/* ── Markers — triangular gold arrows above/below the centre line ───────── */
+.roulette-marker-top,
+.roulette-marker-bottom {
+  position: absolute;
+  left: 50%;
+  width: 0;
+  height: 0;
+  border-left: 12px solid transparent;
+  border-right: 12px solid transparent;
+  z-index: 5;
+}
+
+/* Top arrow points downward */
+.roulette-marker-top {
+  top: 4px;
+  transform: translateX(-50%);
+  border-top: 18px solid #ffce46;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.6));
+}
+
+/* Bottom arrow points upward */
+.roulette-marker-bottom {
+  bottom: 4px;
+  transform: translateX(-50%);
+  border-bottom: 18px solid #ffce46;
+  filter: drop-shadow(0 -2px 4px rgba(0, 0, 0, 0.6));
+}
+
+/* ── Winner cell pulse on landing ───────────────────────────────────────── */
+.roulette-cell.center-cell {
+  animation: roulette-pulse 1s ease-in-out infinite;
+}
+
+@keyframes roulette-pulse {
+  0%, 100% { box-shadow: inset 0 0 0 0   rgba(255, 206, 70, 0); }
+  50%      { box-shadow: inset 0 0 0 4px rgba(255, 206, 70, 0.85); }
+}
+
+/* ── Winner name display ────────────────────────────────────────────────── */
+.roulette-name {
+  min-height: 32px;
+  font: bold 28px "Segoe UI", system-ui, sans-serif;
+  color: #ffce46;
+  text-shadow: 0 0 8px rgba(255, 206, 70, 0.5);
+  text-align: center;
+}
+
+/* Bounce-in when the strip lands */
+.roulette-strip.landed ~ .roulette-name,
+.roulette-plugin .roulette-name.landed {
+  animation: roulette-name-bounce 0.5s ease-out;
+}
+
+@keyframes roulette-name-bounce {
+  0%   { transform: scale(0.6); opacity: 0; }
+  55%  { transform: scale(1.18); }
+  100% { transform: scale(1.0); opacity: 1; }
+}
+
+/* Hook selector — kept for future overlay extensions */
+.roulette-strip.landed { /* intentionally empty */ }

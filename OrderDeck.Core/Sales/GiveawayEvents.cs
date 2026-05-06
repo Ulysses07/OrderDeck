@@ -3,16 +3,17 @@ using System.Collections.Generic;
 namespace OrderDeck.Core.Sales;
 
 /// <summary>
-/// JSON-friendly DTOs raised by <see cref="GiveawayService"/>. Consumed by
-/// <c>OverlayHost</c> and broadcast to OBS overlay clients via WebSocket.
-/// Property names are the wire format — JS reads them verbatim.
+/// Domain event fired when a giveaway starts. Note: audio settings are NOT
+/// here — they're added by OverlayHost at broadcast time, since they're a
+/// presentation concern, not a domain event.
 /// </summary>
 public sealed record GiveawayStartedEvent(
     string GiveawayId,
     string Keyword,
     int WinnerCount,
     int DurationSeconds,
-    long StartedAt);
+    long StartedAt,
+    string AnimationId);
 
 public sealed record GiveawayParticipantEvent(
     string GiveawayId,

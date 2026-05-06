@@ -8,6 +8,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using OrderDeck.App.Services;
 using OrderDeck.App.Services.IntakeForm;
 using OrderDeck.App.Views;
 using OrderDeck.Chat.YouTube;
@@ -19,6 +20,7 @@ using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Labeling;
 using OrderDeck.Licensing;
 using OrderDeck.Licensing.Services;
+using OrderDeck.Core.Settings;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace OrderDeck.App.ViewModels;
@@ -35,6 +37,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private readonly IDisposable _busSubscription;
     private readonly LicenseService _licenseService;
     private readonly IntakeFormSyncService _intakeSync;
+    private readonly SettingsStore _settingsStore;
+    private readonly AnimationCatalogClient? _animationCatalogClient;
 
     // 500 messages = ~30 seconds of scroll-back at the projected 30 msg/sec
     // peak across IG + TT + FB + YT, ~70 seconds at the realistic 7 msg/sec
@@ -125,7 +129,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         GiveawayBannerViewModel banner,
         LicenseService licenseService,
         IntakeFormSyncService intakeSync,
-        YouTubeModerationService? youTubeModeration = null)
+        SettingsStore settingsStore,
+        YouTubeModerationService? youTubeModeration = null,
+        AnimationCatalogClient? animationCatalogClient = null)
     {
         _labels = labels;
         _sessions = sessions;
@@ -142,6 +148,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _licenseService.StatusChanged += OnLicenseStatusChanged;
         UpdateLicenseUiFromService();
 
+        _settingsStore = settingsStore;
+        _animationCatalogClient = animationCatalogClient;
         _intakeSync = intakeSync;
         _intakeSync.SubmissionsSynced += OnIntakeSubmissionsSynced;
 
@@ -544,17 +552,20 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         }
         if (IsGiveawayActive) return;
 
-        var dlg = new NewGiveawayDialog { Owner = Application.Current?.MainWindow };
+        var dlg = new NewGiveawayDialog(_settingsStore.Load(), _animationCatalogClient)
+            { Owner = Application.Current?.MainWindow };
         if (dlg.ShowDialog() != true) return;
 
         var vm = dlg.ViewModel;
+        var animationId = vm.SelectedAnimationId ?? _settingsStore.Load().GiveawayAnimation.DefaultId;
         var g = _giveaways.Start(
             sessionId: session.Id,
             keyword: vm.Keyword.Trim(),
             durationSeconds: vm.SelectedDuration.Seconds,
             winnerCount: vm.WinnerCount,
             platformFilter: vm.SelectedPlatform.Filter,
-            preventRewinning: vm.PreventRewinning);
+            preventRewinning: vm.PreventRewinning,
+            animationId: animationId);
 
         _activeGiveawayId = g.Id;
         IsGiveawayActive = true;

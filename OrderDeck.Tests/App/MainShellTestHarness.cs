@@ -94,7 +94,7 @@ internal static class MainShellTestHarness
 
         var vm = new MainShellViewModel(
             bus, labelSvc, sessionSvc, printer, customerSvc, customerRepo, giveawaySvc, banner,
-            licenseSvc, intakeSync);
+            licenseSvc, intakeSync, tempStore);
 
         return new Harness(vm, printer, db, labelSvc, customerRepo, sessionSvc, clock);
     }

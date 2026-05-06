@@ -1,6 +1,8 @@
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
+using OrderDeck.App.Services;
+using OrderDeck.Core.Settings;
 
 namespace OrderDeck.App.ViewModels;
 
@@ -12,8 +14,36 @@ public sealed partial class NewGiveawayDialogViewModel : ViewModelBase
     [ObservableProperty] private PlatformOption _selectedPlatform = new("Tümü", null);
     [ObservableProperty] private bool _preventRewinning = true;
     [ObservableProperty] private string? _validationError;
+    [ObservableProperty] private string? _selectedAnimationId;
+    [ObservableProperty] private IReadOnlyList<AnimationCatalogEntry> _availableAnimations = System.Array.Empty<AnimationCatalogEntry>();
 
     public bool Saved { get; private set; }
+
+    public NewGiveawayDialogViewModel() { }
+
+    public NewGiveawayDialogViewModel(AppSettings settings, AnimationCatalogClient? catalogClient = null)
+    {
+        _selectedAnimationId = settings.GiveawayAnimation.DefaultId;
+
+        if (catalogClient is not null)
+            _ = LoadCatalogAsync(catalogClient, settings.GiveawayAnimation.DefaultId);
+    }
+
+    private async System.Threading.Tasks.Task LoadCatalogAsync(AnimationCatalogClient client, string defaultId)
+    {
+        try
+        {
+            var entries = await client.LoadAsync();
+            AvailableAnimations = entries;
+            // Re-apply default selection after catalog loaded (ensure it's in the list)
+            if (SelectedAnimationId is null)
+                SelectedAnimationId = defaultId;
+        }
+        catch
+        {
+            // Silently ignore — ComboBox stays empty, Start() falls back to settings default
+        }
+    }
 
     public ObservableCollection<DurationOption> DurationOptions { get; } = new()
     {

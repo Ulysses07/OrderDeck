@@ -1,0 +1,54 @@
+/* Wheel plugin — scoped CSS extracted from giveaway.css when the
+   single-style overlay was refactored into the plugin host. */
+
+.wheel-plugin.hidden { display: none; }
+
+/* ── Spinning wheel ──────────────────────────────────────────────────
+   Square canvas hosts the rotating segments; the arrow points to the
+   top of the wheel and stays fixed while the canvas rotates underneath.
+   Wheel name shows the highlighted participant during spin and the
+   winner after it lands. */
+.wheel-plugin {
+  margin-top: 16px;
+  position: relative;
+  width: 260px;
+  height: 260px;
+  margin-left: auto; margin-right: auto;
+}
+.wheel-plugin .wheel-canvas {
+  width: 260px;
+  height: 260px;
+  display: block;
+  filter: drop-shadow(0 6px 16px rgba(0, 0, 0, 0.55));
+}
+.wheel-plugin .wheel-arrow {
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 14px solid transparent;
+  border-right: 14px solid transparent;
+  border-top: 22px solid #ffce46;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.6));
+  z-index: 2;
+}
+.wheel-plugin .wheel-name {
+  margin-top: 14px;
+  text-align: center;
+  font-size: 24px;
+  font-weight: 700;
+  color: #ffce46;
+  min-height: 30px;
+  letter-spacing: 0.3px;
+}
+.wheel-plugin.landed .wheel-name {
+  font-size: 32px;
+  animation: bounce 0.5s ease-out;
+}
+@keyframes bounce {
+  0%   { transform: scale(0.6); opacity: 0; }
+  50%  { transform: scale(1.15); }
+  100% { transform: scale(1.0); opacity: 1; }
+}

@@ -59,8 +59,14 @@ public sealed class GiveawayService
     }
 
     public Giveaway Start(string sessionId, string keyword, int durationSeconds,
-        int winnerCount, IReadOnlyList<string>? platformFilter, bool preventRewinning)
+        int winnerCount, IReadOnlyList<string>? platformFilter, bool preventRewinning,
+        string? animationId = null)
     {
+        // Resolve + validate. Unknown id falls back; empty/null falls back.
+        var resolvedAnimationId = AnimationCatalog.IsKnown(animationId ?? "")
+            ? animationId!
+            : AnimationCatalog.DefaultId;
+
         var g = new Giveaway(
             Id: Guid.NewGuid().ToString("N"),
             SessionId: sessionId,
@@ -72,7 +78,8 @@ public sealed class GiveawayService
             RandomSeed: Guid.NewGuid().ToString("N"),
             StartedAt: _clock.UnixNow(),
             EndedAt: null,
-            CancelledAt: null);
+            CancelledAt: null,
+            AnimationId: resolvedAnimationId);
         _giveaways.Insert(g);
         Active = g;
 
@@ -82,7 +89,7 @@ public sealed class GiveawayService
             : null;
 
         Started?.Invoke(new GiveawayStartedEvent(
-            g.Id, g.Keyword, g.WinnerCount, g.DurationSeconds, g.StartedAt));
+            g.Id, g.Keyword, g.WinnerCount, g.DurationSeconds, g.StartedAt, g.AnimationId));
         return g;
     }
 
