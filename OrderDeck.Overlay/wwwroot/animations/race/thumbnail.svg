@@ -5,13 +5,13 @@
 
   <!-- Lane dividers (4 lanes) -->
   <!-- Lane 1 -->
-  <rect x="12" y="24" width="160" height="18" rx="3" fill="#2c5530" stroke="rgba(255,255,255,0.12)" stroke-width="1" stroke-dasharray="4 3"/>
+  <rect x="12" y="24" width="160" height="18" rx="3" fill="#2c5530" stroke="#ffffff" stroke-opacity="0.12" stroke-width="1" stroke-dasharray="4 3"/>
   <!-- Lane 2 -->
-  <rect x="12" y="46" width="160" height="18" rx="3" fill="#2c5530" stroke="rgba(255,255,255,0.12)" stroke-width="1" stroke-dasharray="4 3"/>
+  <rect x="12" y="46" width="160" height="18" rx="3" fill="#2c5530" stroke="#ffffff" stroke-opacity="0.12" stroke-width="1" stroke-dasharray="4 3"/>
   <!-- Lane 3 -->
-  <rect x="12" y="68" width="160" height="18" rx="3" fill="#2c5530" stroke="rgba(255,255,255,0.12)" stroke-width="1" stroke-dasharray="4 3"/>
+  <rect x="12" y="68" width="160" height="18" rx="3" fill="#2c5530" stroke="#ffffff" stroke-opacity="0.12" stroke-width="1" stroke-dasharray="4 3"/>
   <!-- Lane 4 -->
-  <rect x="12" y="90" width="160" height="18" rx="3" fill="#2c5530" stroke="rgba(255,255,255,0.12)" stroke-width="1" stroke-dasharray="4 3"/>
+  <rect x="12" y="90" width="160" height="18" rx="3" fill="#2c5530" stroke="#ffffff" stroke-opacity="0.12" stroke-width="1" stroke-dasharray="4 3"/>
 
   <!-- Checkered finish line at ~88% -->
   <rect x="154" y="18" width="4" height="98"

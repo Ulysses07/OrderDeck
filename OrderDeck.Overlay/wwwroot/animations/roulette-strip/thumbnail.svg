@@ -34,14 +34,14 @@
         font-size="7" font-weight="bold" fill="#fff">Ece</text>
 
   <!-- Cell separators (subtle dark lines) -->
-  <line x1="46"  y1="30" x2="46"  y2="88" stroke="rgba(0,0,0,0.3)" stroke-width="1"/>
-  <line x1="82"  y1="30" x2="82"  y2="88" stroke="rgba(0,0,0,0.3)" stroke-width="1"/>
-  <line x1="118" y1="30" x2="118" y2="88" stroke="rgba(0,0,0,0.3)" stroke-width="1"/>
-  <line x1="154" y1="30" x2="154" y2="88" stroke="rgba(0,0,0,0.3)" stroke-width="1"/>
+  <line x1="46"  y1="30" x2="46"  y2="88" stroke="#000000" stroke-opacity="0.3" stroke-width="1"/>
+  <line x1="82"  y1="30" x2="82"  y2="88" stroke="#000000" stroke-opacity="0.3" stroke-width="1"/>
+  <line x1="118" y1="30" x2="118" y2="88" stroke="#000000" stroke-opacity="0.3" stroke-width="1"/>
+  <line x1="154" y1="30" x2="154" y2="88" stroke="#000000" stroke-opacity="0.3" stroke-width="1"/>
 
   <!-- Vertical guide line at centre -->
   <line x1="100" y1="30" x2="100" y2="88"
-        stroke="rgba(255,206,70,0.7)" stroke-width="1.5"/>
+        stroke="#ffce46" stroke-opacity="0.7" stroke-width="1.5"/>
 
   <!-- Top triangle marker (pointing down) -->
   <polygon points="100,20 92,30 108,30" fill="#ffce46"
@@ -54,7 +54,7 @@
   <defs>
     <filter id="ds" x="-50%" y="-50%" width="200%" height="200%">
       <feDropShadow dx="0" dy="1" stdDeviation="1.5"
-                    flood-color="rgba(0,0,0,0.55)"/>
+                    flood-color="#000000" flood-opacity="0.55"/>
     </filter>
   </defs>
 
