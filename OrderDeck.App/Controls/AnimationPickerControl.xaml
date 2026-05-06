@@ -6,50 +6,64 @@
   <UserControl.Resources>
     <conv:EqualityToBrushConverter x:Key="EqToBrush"/>
   </UserControl.Resources>
-  <ItemsControl ItemsSource="{Binding Animations}">
-    <ItemsControl.ItemsPanel>
-      <ItemsPanelTemplate>
-        <UniformGrid Columns="3"/>
-      </ItemsPanelTemplate>
-    </ItemsControl.ItemsPanel>
-    <ItemsControl.ItemTemplate>
-      <DataTemplate>
-        <!--
-          Border highlight: gold when this card's Id matches the picker's
-          SelectedId, transparent otherwise. Compared via MultiBinding +
-          EqualityToBrushConverter because DataTrigger.Value is not a
-          DependencyProperty and cannot accept a Binding directly.
-        -->
-        <Border Margin="6" Padding="6" CornerRadius="6" BorderThickness="2"
-                Background="#FF1F2937"
-                MouseEnter="Card_MouseEnter"
-                MouseLeave="Card_MouseLeave">
-          <Border.BorderBrush>
-            <MultiBinding Converter="{StaticResource EqToBrush}"
-                          ConverterParameter="#FFFFCE46|Transparent">
-              <Binding Path="Id"/>
-              <Binding Path="DataContext.SelectedId"
-                       RelativeSource="{RelativeSource AncestorType=UserControl}"/>
-            </MultiBinding>
-          </Border.BorderBrush>
-          <StackPanel>
-            <Image Source="{Binding ThumbnailUri}"
-                   Width="180" Height="120" Stretch="UniformToFill"/>
-            <TextBlock Text="{Binding Name}" FontWeight="Bold"
-                       Margin="0,6,0,2" Foreground="White"/>
-            <TextBlock Text="{Binding Description}" FontSize="11"
-                       Foreground="#FFB0B0B0" TextWrapping="Wrap"/>
-            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
-              <Button Content="Seç" Width="60" Margin="0,0,4,0"
-                      CommandParameter="{Binding Id}"
-                      Click="SelectButton_Click"/>
-              <Button Content="Önizle" Width="80"
-                      CommandParameter="{Binding Id}"
-                      Click="PreviewButton_Click"/>
+  <!--
+    ScrollViewer wrapper: 10+ cards may exceed dialog height. WrapPanel (vs.
+    UniformGrid) lets each card take its natural height; UniformGrid was
+    forcing every cell to a uniform height so 10 cards / 3 cols / 4 rows
+    crushed cards to ~80 px and clipped Image + text + buttons to invisibility.
+  -->
+  <ScrollViewer VerticalScrollBarVisibility="Auto"
+                HorizontalScrollBarVisibility="Disabled">
+    <ItemsControl ItemsSource="{Binding Animations}">
+      <ItemsControl.ItemsPanel>
+        <ItemsPanelTemplate>
+          <WrapPanel Orientation="Horizontal"/>
+        </ItemsPanelTemplate>
+      </ItemsControl.ItemsPanel>
+      <ItemsControl.ItemTemplate>
+        <DataTemplate>
+          <!--
+            Border highlight: gold when this card's Id matches the picker's
+            SelectedId, transparent otherwise. Compared via MultiBinding +
+            EqualityToBrushConverter because DataTrigger.Value is not a
+            DependencyProperty and cannot accept a Binding directly.
+
+            Width pinned so WrapPanel can wrap predictably; Height auto-grows
+            with content. Three cards per row at the Settings-dialog width.
+          -->
+          <Border Width="155" Margin="4" Padding="6" CornerRadius="6" BorderThickness="2"
+                  Background="#FF1F2937"
+                  MouseEnter="Card_MouseEnter"
+                  MouseLeave="Card_MouseLeave">
+            <Border.BorderBrush>
+              <MultiBinding Converter="{StaticResource EqToBrush}"
+                            ConverterParameter="#FFFFCE46|Transparent">
+                <Binding Path="Id"/>
+                <Binding Path="DataContext.SelectedId"
+                         RelativeSource="{RelativeSource AncestorType=UserControl}"/>
+              </MultiBinding>
+            </Border.BorderBrush>
+            <StackPanel>
+              <Image Source="{Binding ThumbnailUri}"
+                     Width="140" Height="90" Stretch="UniformToFill"/>
+              <TextBlock Text="{Binding Name}" FontWeight="Bold"
+                         Margin="0,6,0,2" Foreground="White"
+                         TextTrimming="CharacterEllipsis"/>
+              <TextBlock Text="{Binding Description}" FontSize="11"
+                         Foreground="#FFB0B0B0" TextWrapping="Wrap"
+                         MaxHeight="32" TextTrimming="CharacterEllipsis"/>
+              <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                <Button Content="Seç" Width="60" Margin="0,0,4,0"
+                        CommandParameter="{Binding Id}"
+                        Click="SelectButton_Click"/>
+                <Button Content="Önizle" Width="68"
+                        CommandParameter="{Binding Id}"
+                        Click="PreviewButton_Click"/>
+              </StackPanel>
             </StackPanel>
-          </StackPanel>
-        </Border>
-      </DataTemplate>
-    </ItemsControl.ItemTemplate>
-  </ItemsControl>
+          </Border>
+        </DataTemplate>
+      </ItemsControl.ItemTemplate>
+    </ItemsControl>
+  </ScrollViewer>
 </UserControl>
