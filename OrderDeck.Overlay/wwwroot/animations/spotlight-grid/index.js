@@ -10,14 +10,15 @@ export default {
   thumbnail: './thumbnail.svg',
 
   // Internals (set by init)
-  _container: null, _audio: null, _root: null,
+  _container: null, _audio: null, _synth: null, _root: null,
   _grid: null, _name: null,
   _activeTimers: [],
   _pool: null,
 
-  async init(container, audio) {
+  async init(container, audio, synth) {
     this._container = container;
     this._audio = audio;
+    this._synth = synth || null;
     container.innerHTML = `
       <div class="spotlight-plugin hidden">
         <div class="spotlight-grid"></div>
@@ -115,12 +116,17 @@ export default {
         this._name.textContent = (this._pool[nextIdx].DisplayName ||
                                   this._pool[nextIdx].Username || '');
         lastIdx = nextIdx;
+        if (this._synth) this._synth.tick(900 + (Math.random() - 0.5) * 200);
 
         if (hopIdx < intervals.length - 1) {
           this._activeTimers.push(setTimeout(
             () => doHop(hopIdx + 1), intervals[hopIdx]));
         } else {
           // Final landing: resolve after a short beat.
+          if (this._synth) {
+            this._synth.ding(1320);
+            this._activeTimers.push(setTimeout(() => { if (this._synth) this._synth.fanfare(); }, 200));
+          }
           this._activeTimers.push(setTimeout(resolve, 200));
         }
       };

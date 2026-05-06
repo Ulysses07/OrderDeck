@@ -23,13 +23,14 @@ export default {
   thumbnail: './thumbnail.svg',
 
   // Internals (set by init)
-  _container: null, _audio: null, _root: null,
+  _container: null, _audio: null, _synth: null, _root: null,
   _viewport: null, _strip: null, _name: null,
   _animationFrame: null,
 
-  async init(container, audio) {
+  async init(container, audio, synth) {
     this._container = container;
     this._audio = audio;  // reserved for Phase-2 audio packs; no play() yet
+    this._synth = synth || null;
 
     container.innerHTML = `
       <div class="roulette-plugin hidden">
@@ -137,6 +138,7 @@ export default {
           const cell = this._strip.children[centerCellIdx];
           if (cell) this._name.textContent = cell.textContent;
           lastIdx = centerCellIdx;
+          if (this._synth) this._synth.tick(600);
         }
 
         if (t < 1) {
@@ -151,6 +153,10 @@ export default {
             winnerCell.classList.add('center-cell');
           }
           this._strip.classList.add('landed');
+          if (this._synth) {
+            this._synth.ding(1320);
+            setTimeout(() => { if (this._synth) this._synth.fanfare(); }, 200);
+          }
           resolve();
         }
       };

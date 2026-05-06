@@ -19,13 +19,15 @@ export default {
   // Internals (set by init)
   _container: null,
   _audio: null,
+  _synth: null,
   _canvas: null,
   _name: null,
   _root: null,
 
-  async init(container, audio) {
+  async init(container, audio, synth) {
     this._container = container;
     this._audio = audio;
+    this._synth = synth || null;
     container.innerHTML = `
       <div class="wheel-plugin hidden">
         <div class="wheel-arrow"></div>
@@ -158,6 +160,7 @@ export default {
           const p = pool[idx];
           this._name.textContent = p.DisplayName || p.Username || '';
           lastHighlightIdx = idx;
+          if (this._synth) this._synth.tick(900);
         }
 
         if (t < 1) {
@@ -166,6 +169,10 @@ export default {
           this._name.textContent =
             pool[winnerIndex].DisplayName || pool[winnerIndex].Username || '';
           this._root.classList.add('landed');
+          if (this._synth) {
+            this._synth.ding(1320);
+            setTimeout(() => { if (this._synth) this._synth.fanfare(); }, 200);
+          }
           resolve();
         }
       };

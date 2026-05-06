@@ -21,13 +21,15 @@ export default {
   // Internals (set by init, matches wheel pattern)
   _container: null,
   _audio: null,
+  _synth: null,
   _root: null,
   _strip: null,
   _nameEl: null,
 
-  async init(container, audio) {
+  async init(container, audio, synth) {
     this._container = container;
     this._audio = audio;  // reserved for Phase-2 audio packs; no play() yet
+    this._synth = synth || null;
 
     container.innerHTML = `
       <div class="slot-plugin hidden">
@@ -153,6 +155,7 @@ export default {
           const el = this._strip.children[centreIdx];
           if (el) this._nameEl.textContent = el.textContent;
           lastCentreIdx = centreIdx;
+          if (this._synth) this._synth.tick(700);
         }
 
         if (t < 1) {
@@ -166,6 +169,10 @@ export default {
             this._nameEl.textContent = winnerEl.textContent;
           }
           this._root.classList.add('landed');
+          if (this._synth) {
+            this._synth.ding(1100);
+            setTimeout(() => { if (this._synth) this._synth.fanfare(); }, 200);
+          }
           resolve();
         }
       };

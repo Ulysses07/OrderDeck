@@ -20,13 +20,14 @@ export default {
   category: 'dramatik',
   thumbnail: './thumbnail.svg',
 
-  _container: null, _audio: null, _root: null,
+  _container: null, _audio: null, _synth: null, _root: null,
   _lanes: null, _name: null,
   _animationFrame: null,
 
-  async init(container, audio) {
+  async init(container, audio, synth) {
     this._container = container;
     this._audio = audio;  // reserved for Phase-2 sound pack; no play() yet
+    this._synth = synth || null;
 
     container.innerHTML = `
       <div class="race-plugin hidden">
@@ -163,11 +164,26 @@ export default {
       const loserCaps = cars.map(() => FINISH_LINE_PCT - (3 + Math.random() * 12));
 
       const start = performance.now();
+      // Rev at race start
+      if (this._synth) this._synth.rev();
+      // Track which 25% milestones have already fired (0=25%, 1=50%, 2=75%, 3=100%)
+      const milestonesFired = [false, false, false, false];
 
       const frame = (now) => {
         const t     = Math.min(1, (now - start) / durationMs);
         // Quadratic ease-out: fast start, smooth deceleration into finish.
         const eased = 1 - Math.pow(1 - t, 2);
+
+        // Fire hoofbeat ticks at 25%, 50%, 75%, 100% progress milestones
+        if (this._synth) {
+          const mIdx = Math.floor(t * 4);  // 0–3 over t 0–1
+          for (let m = 0; m <= Math.min(mIdx, 3); m++) {
+            if (!milestonesFired[m]) {
+              milestonesFired[m] = true;
+              this._synth.tick(1500);
+            }
+          }
+        }
 
         for (let i = 0; i < cars.length; i++) {
           let progress;
@@ -188,6 +204,10 @@ export default {
           cars[winnerLaneIdx].style.left = FINISH_LINE_PCT + '%';
           cars[winnerLaneIdx].classList.add('won');
           this._animationFrame = null;
+          if (this._synth) {
+            this._synth.horn();
+            setTimeout(() => { if (this._synth) this._synth.fanfare(); }, 500);
+          }
           resolve();
         }
       };

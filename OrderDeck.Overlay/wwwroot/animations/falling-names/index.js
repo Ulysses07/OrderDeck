@@ -18,13 +18,14 @@ export default {
   category: 'eğlenceli',
   thumbnail: './thumbnail.svg',
 
-  _container: null, _audio: null, _root: null,
+  _container: null, _audio: null, _synth: null, _root: null,
   _stage: null, _spawned: null, _winnerEl: null, _name: null,
   _activeTimers: [],
 
-  async init(container, audio) {
+  async init(container, audio, synth) {
     this._container = container;
     this._audio = audio;
+    this._synth = synth || null;
     container.innerHTML = `
       <div class="falling-plugin hidden">
         <div class="falling-stage">
@@ -101,6 +102,7 @@ export default {
         const p    = pool[spawned % pool.length];
         const card = this._spawnCard(p);
         this._spawned.appendChild(card);
+        if (this._synth) this._synth.whoosh({ from: 1000, to: 400, durationMs: 200, type: 'triangle' });
 
         // Schedule slide-off: ~600ms after the card lands (~1500ms drop → land at 600ms extra).
         this._activeTimers.push(setTimeout(() => {
@@ -145,6 +147,10 @@ export default {
       this._activeTimers.push(setTimeout(() => {
         this._winnerEl.classList.add('landed');
         this._name.textContent = winner.DisplayName || winner.Username || '';
+        if (this._synth) {
+          this._synth.ding(1500);
+          this._activeTimers.push(setTimeout(() => { if (this._synth) this._synth.fanfare(); }, 200));
+        }
       }, 1500));
 
       this._activeTimers.push(setTimeout(resolve, 1500 + durationMs));

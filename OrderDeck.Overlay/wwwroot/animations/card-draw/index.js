@@ -15,6 +15,7 @@ export default {
   // Internals (set by init)
   _container: null,
   _audio: null,
+  _synth: null,
   _root: null,
   _deck: null,
   _stage: null,
@@ -23,9 +24,10 @@ export default {
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
-  async init(container, audio) {
+  async init(container, audio, synth) {
     this._container = container;
     this._audio = audio;  // reserved for Phase-2 audio packs; no play() yet
+    this._synth = synth || null;
 
     container.innerHTML = `
       <div class="card-plugin hidden">
@@ -109,6 +111,7 @@ export default {
    */
   async _shufflePhase(durationMs) {
     this._deck.classList.add('shuffling');
+    if (this._synth) this._synth.flip();
     await new Promise(r => setTimeout(r, durationMs));
     this._deck.classList.remove('shuffling');
   },
@@ -181,6 +184,10 @@ export default {
           this._animationFrame = null;
           card.style.transform = 'rotateY(180deg)';
           card.classList.add('flipped');
+          if (this._synth) {
+            this._synth.flip();
+            setTimeout(() => { if (this._synth) this._synth.fanfare(); }, 600);
+          }
           resolve();
         }
       };

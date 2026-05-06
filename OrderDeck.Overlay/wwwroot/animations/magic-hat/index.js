@@ -17,14 +17,15 @@ export default {
   category: 'eğlenceli',
   thumbnail: './thumbnail.svg',
 
-  _container: null, _audio: null, _root: null,
+  _container: null, _audio: null, _synth: null, _root: null,
   _stage: null, _flyingNames: null, _winner: null,
   _sparkles: null, _name: null, _wand: null,
   _activeTimers: [],
 
-  async init(container, audio) {
+  async init(container, audio, synth) {
     this._container = container;
     this._audio = audio;
+    this._synth = synth || null;
     container.innerHTML = `
       <div class="hat-plugin hidden">
         <div class="hat-stage">
@@ -110,6 +111,7 @@ export default {
         const p    = visible[spawned++];
         const card = this._spawnFlyingCard(p);
         this._flyingNames.appendChild(card);
+        if (this._synth) this._synth.whoosh({ from: 800 + Math.random() * 400, to: 200, durationMs: 250 });
 
         // Trigger the absorb transition on next frame.
         requestAnimationFrame(() => card.classList.add('absorbing'));
@@ -145,8 +147,10 @@ export default {
   async _wandTapPhase() {
     return new Promise(resolve => {
       this._wand.classList.add('tapping');
+      if (this._synth) this._synth.tick(1200);
       this._activeTimers.push(setTimeout(() => {
         this._stage.classList.add('shaken');
+        if (this._synth) this._synth.kick();
         this._activeTimers.push(setTimeout(resolve, 300));
       }, 200));
     });
@@ -160,6 +164,10 @@ export default {
       requestAnimationFrame(() => this._winner.classList.add('rising'));
       this._spawnSparkles(20);
       this._name.textContent = winner.DisplayName || winner.Username || '';
+      if (this._synth) {
+        this._synth.ding(1500);
+        this._activeTimers.push(setTimeout(() => { if (this._synth) this._synth.fanfare(); }, 200));
+      }
       this._activeTimers.push(setTimeout(resolve, durationMs));
     });
   },

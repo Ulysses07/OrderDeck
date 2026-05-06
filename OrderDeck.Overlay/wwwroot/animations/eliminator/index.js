@@ -10,13 +10,14 @@ export default {
   category: 'dramatik',
   thumbnail: './thumbnail.svg',
 
-  _container: null, _audio: null, _root: null,
+  _container: null, _audio: null, _synth: null, _root: null,
   _grid: null, _status: null, _name: null,
   _activeTimers: [],
 
-  async init(container, audio) {
+  async init(container, audio, synth) {
     this._container = container;
     this._audio = audio;
+    this._synth = synth || null;
     container.innerHTML = `
       <div class="elim-plugin hidden">
         <div class="elim-grid"></div>
@@ -109,12 +110,17 @@ export default {
       };
 
       const eliminateNext = () => {
-        if (idx >= total) { resolve(); return; }
+        if (idx >= total) {
+          if (this._synth) this._synth.roll(600);
+          resolve();
+          return;
+        }
         const target = targets[idx];
         const cell = this._grid.querySelector(`[data-idx="${target}"]`);
         if (cell) {
           cell.classList.add('eliminating');
           this._name.textContent = (pool[target].DisplayName || pool[target].Username || '');
+          if (this._synth) this._synth.kick();
           // Drop the cell after the flash animation completes.
           this._activeTimers.push(setTimeout(() => {
             cell.classList.add('dropped');
@@ -136,6 +142,7 @@ export default {
       if (cell) cell.classList.add('winner');
       this._name.textContent = winner.DisplayName || winner.Username || '';
       this._status.textContent = 'KAZANAN!';
+      if (this._synth) this._synth.fanfare();
       this._activeTimers.push(setTimeout(resolve, durationMs));
     });
   }

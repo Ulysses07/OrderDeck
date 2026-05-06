@@ -33,18 +33,21 @@ export default {
   // Internals (set by init)
   _container:      null,
   _audio:          null,
+  _synth:          null,
   _canvas:         null,
   _ctx:            null,
   _name:           null,
   _root:           null,
   _balls:          null,   // array of ball state objects
   _animationFrame: null,   // current rAF id so reset() can cancel
+  _lastPopAt:      0,      // throttle for pop sounds
 
   // ── Lifecycle ────────────────────────────────────────────────────────────
 
-  async init(container, audio) {
+  async init(container, audio, synth) {
     this._container = container;
     this._audio = audio;  // reserved for Phase-2 audio packs; no play() yet
+    this._synth = synth || null;
 
     container.innerHTML = `
       <div class="bingo-plugin hidden">
@@ -164,6 +167,14 @@ export default {
         // Push ball back inside
         b.x = HCX + nx * max;
         b.y = HCY + ny * max;
+        // Throttled pop sound on wall bounce (max 1 per 80ms)
+        if (this._synth) {
+          const now = performance.now();
+          if (now - this._lastPopAt >= 80) {
+            this._lastPopAt = now;
+            this._synth.pop(400 + Math.random() * 300);
+          }
+        }
       }
     }
   },
@@ -338,6 +349,10 @@ export default {
           this._animationFrame = null;
           // Final draw at exact destination with full scale
           this._drawFrame(ballIdx, 1, WINNER_X, WINNER_Y, 1.3);
+          if (this._synth) {
+            this._synth.kick();
+            setTimeout(() => { if (this._synth) this._synth.fanfare(); }, 300);
+          }
           resolve();
         }
       };
