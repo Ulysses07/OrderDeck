@@ -42,9 +42,9 @@ export default {
 
     for (let i = 0; i < winners.length; i++) {
       const winner = winners[i];
-      let winnerIdx = pool.findIndex(p =>
-        p.Username === winner.Username && p.Platform === winner.Platform);
-      if (winnerIdx < 0) winnerIdx = 0;
+      // WYSIWYG: pool tail holds winners in order (server contract).
+      let winnerIdx = pool.length - winners.length + i;
+      if (winnerIdx < 0 || winnerIdx >= pool.length) winnerIdx = pool.length - 1;
       // Cap to visible: if winner not in visible window, fall back to last visible cell.
       const visible = Math.min(pool.length, 24);
       if (winnerIdx >= visible) winnerIdx = visible - 1;

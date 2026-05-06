@@ -52,9 +52,14 @@ export default {
 
     for (let i = 0; i < winners.length; i++) {
       const w = winners[i];
-      let idx = pool.findIndex(p =>
-        p.Username === w.Username && p.Platform === w.Platform);
-      if (idx < 0) idx = 0;
+      // WYSIWYG: server's BuildAnimationPool guarantees winners are appended
+      // to the tail of the pool in order, so the i-th winner's index is
+      // deterministic. Position-based avoids the dispute case where
+      // findIndex could match a duplicate Username earlier in the pool
+      // (or fall back to idx=0 on no-match) and the wheel would then land
+      // on someone other than the recorded winner.
+      let idx = pool.length - winners.length + i;
+      if (idx < 0 || idx >= pool.length) idx = pool.length - 1;
 
       this._root.classList.remove('landed');
       const dur = i === 0 ? 4500 : 2800;

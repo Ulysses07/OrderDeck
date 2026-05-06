@@ -143,17 +143,36 @@ export default {
       card.style.color      = '#1a1a1a';
       this._winnerEl.appendChild(card);
 
-      // After the slow drop animation finishes, add 'landed' for the pulse glow.
-      this._activeTimers.push(setTimeout(() => {
+      // CRITICAL: wait for the drop animation to ACTUALLY finish (animationend),
+      // then lock `top` inline BEFORE swapping to .landed. If we add .landed
+      // while the drop is still running, the new `.falling-winner.landed
+      // .falling-winner-card` rule replaces the drop with the pulse animation
+      // (which doesn't track `top`), the `forwards` state is discarded, and
+      // the static `.falling-winner-card { top: 0 }` snaps the card back to
+      // the top edge of the stage.
+      let onLanded = false;
+      const land = () => {
+        if (onLanded) return;
+        onLanded = true;
+        card.removeEventListener('animationend', onAnimEnd);
+        card.style.top = '240px';   // lock final position before class swap
         this._winnerEl.classList.add('landed');
         this._name.textContent = winner.DisplayName || winner.Username || '';
         if (this._synth) {
           this._synth.ding(1500);
           this._activeTimers.push(setTimeout(() => { if (this._synth) this._synth.fanfare(); }, 200));
         }
-      }, 1500));
-
-      this._activeTimers.push(setTimeout(resolve, 1500 + durationMs));
+        // Hold the landed pose for the requested durationMs, then resolve.
+        this._activeTimers.push(setTimeout(resolve, durationMs));
+      };
+      const onAnimEnd = (e) => {
+        if (e.animationName !== 'falling-winner-drop') return;
+        land();
+      };
+      card.addEventListener('animationend', onAnimEnd);
+      // Defensive: if animationend doesn't fire (stylesheet not loaded, browser
+      // optimised the no-op transition out), force-land at drop duration + margin.
+      this._activeTimers.push(setTimeout(land, 3200));
     });
   }
 };

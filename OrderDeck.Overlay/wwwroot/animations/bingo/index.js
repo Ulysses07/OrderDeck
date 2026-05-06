@@ -76,11 +76,10 @@ export default {
       const winner   = winners[i];
       const dur      = i === 0 ? 3000 : 1800;
 
-      // Find the winner's ball by matching pool entry
-      const winnerIdx = pool.findIndex(p =>
-        p.Username === winner.Username && p.Platform === winner.Platform);
-      const ballIdx = this._balls.findIndex(
-        b => b._poolIdx === (winnerIdx >= 0 ? winnerIdx : 0));
+      // WYSIWYG: pool tail holds winners in order (server contract).
+      let winnerIdx = pool.length - winners.length + i;
+      if (winnerIdx < 0 || winnerIdx >= pool.length) winnerIdx = pool.length - 1;
+      const ballIdx = this._balls.findIndex(b => b._poolIdx === winnerIdx);
 
       this._root.classList.remove('landed');
       await this._chaosPhase(dur);
