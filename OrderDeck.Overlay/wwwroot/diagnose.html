@@ -45,8 +45,13 @@
   <div id="stage"></div>
 
   <script type="module">
-    import { AudioController } from './audio-controller.js';
-    import { SynthController } from './synth-controller.js';
+    // ABSOLUTE paths — this page is served at /overlay/diagnose, so a
+    // relative './audio-controller.js' would resolve to /overlay/audio-
+    // controller.js which 404s. Same root-cause as the bug this page
+    // was originally written to find: relative paths break when the
+    // document URL contains a sub-segment.
+    import { AudioController } from '/audio-controller.js';
+    import { SynthController } from '/synth-controller.js';
 
     const PLUGINS = [
       'wheel', 'slot-machine', 'bingo', 'card-draw',
@@ -96,7 +101,7 @@
       // Phase 1 \u2014 import
       let module;
       try {
-        module = await import(`./animations/${id}/index.js`);
+        module = await import(`/animations/${id}/index.js`);
       } catch (err) {
         row(id, 'fail', 'skip', 'skip', err.stack || String(err));
         fail++;
@@ -112,12 +117,12 @@
       // Phase 2 \u2014 inject plugin's stylesheet (so DOM-based plugins layout correctly)
       const link = document.createElement('link');
       link.rel = 'stylesheet';
-      link.href = `./animations/${id}/style.css`;
+      link.href = `/animations/${id}/style.css`;
       document.head.appendChild(link);
 
       // Phase 3 \u2014 init into off-screen container
       stage.innerHTML = '';
-      const audio = new AudioController(`./animations/${id}/audio/`, 0, true);
+      const audio = new AudioController(`/animations/${id}/audio/`, 0, true);
       const synth = new SynthController(0, true);
       try {
         await plugin.init(stage, audio, synth);

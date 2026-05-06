@@ -77,11 +77,13 @@ async function loadAndPlay() {
     return;
   }
 
-  // Inject plugin stylesheet
+  // Inject plugin stylesheet — ABSOLUTE path so it works regardless of
+  // document URL (this page is served at /overlay/preview, so a relative
+  // './animations/...' would resolve to /overlay/animations/... which 404s).
   try {
     activeStyleEl = document.createElement('link');
     activeStyleEl.rel = 'stylesheet';
-    activeStyleEl.href = `./animations/${plugin.id}/style.css`;
+    activeStyleEl.href = `/animations/${plugin.id}/style.css`;
     document.head.appendChild(activeStyleEl);
   } catch (err) {
     showError('stylesheet inject', err);
@@ -90,7 +92,7 @@ async function loadAndPlay() {
 
   let audio, synth;
   try {
-    audio = new AudioController(`./animations/${plugin.id}/audio/`, 0.7, false);
+    audio = new AudioController(`/animations/${plugin.id}/audio/`, 0.7, false);
     synth = new SynthController(0.7, false);
     activeSynth = synth;
   } catch (err) {
