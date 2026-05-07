@@ -37,10 +37,12 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
     /// <summary>How long the runner can go without seeing a fresh chat row before
     /// declaring the stream ended. YouTube doesn't reliably send a "chat closed"
     /// signal — when a live ends, get_live_chat keeps 200-ing with empty actions.
-    /// 10 minutes of complete silence on a chat that was previously alive is the
-    /// strongest "stream actually ended" heuristic we have without paying for the
-    /// official YouTube Data API.</summary>
-    private static readonly TimeSpan StreamSilenceTimeout = TimeSpan.FromMinutes(10);
+    /// 3 minutes is the trade-off between false positives (chat naturally goes
+    /// quiet during a price negotiation) and recovery latency when the
+    /// broadcaster cycles streams (close → 2nd open should pick up chat without
+    /// a 10-minute dead window). Operators noted that closing/reopening a stream
+    /// left chat dead because the scraper was pinned to the stale video ID.</summary>
+    private static readonly TimeSpan StreamSilenceTimeout = TimeSpan.FromMinutes(3);
 
     private readonly IChatBus _bus;
     private readonly ILogger<YouTubeLiveChatScraper> _log;
@@ -330,7 +332,10 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
         // future tuning might whitelist superchat by checking it here).
         if (_spamFilter is not null && !isPaid)
         {
-            var dropReason = _spamFilter.ShouldDrop(text, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+            var dropReason = _spamFilter.ShouldDrop(
+                text,
+                !string.IsNullOrEmpty(channelId) ? channelId : displayName,
+                DateTimeOffset.UtcNow.ToUnixTimeSeconds());
             if (dropReason is not null)
             {
                 _log.LogDebug("[YouTube Scraper] spam filter drop ({Reason}) by {User}: {Text}",

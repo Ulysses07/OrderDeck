@@ -107,7 +107,8 @@ public sealed class AppHost : IDisposable
                 sp.GetRequiredService<IChatBus>(),
                 sp.GetRequiredService<ILoggerFactory>(),
                 trialProbe: sp.GetRequiredService<LicenseService>(),
-                spamFilter: sp.GetRequiredService<SpamFilter>()));
+                spamFilter: sp.GetRequiredService<SpamFilter>(),
+                sessions: sp.GetRequiredService<StreamSessionService>()));
 
         // Phase 5d — YouTube OAuth + moderation. The data store sits in a
         // dedicated subfolder so we can wipe it on disconnect without
