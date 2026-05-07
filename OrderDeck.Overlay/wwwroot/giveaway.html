@@ -7,16 +7,22 @@
 </head>
 <body>
   <div id="giveaway-root" class="hidden">
-    <div id="header">
-      <span id="emoji">🎁</span>
-      <span id="keyword"></span>
-      <span id="counter">0 katılımcı</span>
-      <span id="countdown"></span>
-    </div>
+    <!-- Glass card pinned top-left: keyword + countdown + reveal panel.
+         Wrapped together so #plugin-stage can fill the rest of the
+         viewport without pushing this card around (transform: scale on
+         the stage doesn't reflow siblings). -->
+    <div id="info-card">
+      <div id="header">
+        <span id="emoji">🎁</span>
+        <span id="keyword"></span>
+        <span id="counter">0 katılımcı</span>
+        <span id="countdown"></span>
+      </div>
 
-    <div id="reveal" class="hidden">
-      <div id="reveal-title">KAZANANLAR</div>
-      <ul id="winners-list"></ul>
+      <div id="reveal" class="hidden">
+        <div id="reveal-title">KAZANANLAR</div>
+        <ul id="winners-list"></ul>
+      </div>
     </div>
 
     <!-- Plugin stage. Each animation renders into this div via its
