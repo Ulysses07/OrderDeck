@@ -24,6 +24,14 @@ public sealed class CustomerService
         _clock = clock;
     }
 
+    /// <summary>Read-only lookup. Returns null if no customer matches —
+    /// caller decides whether to create-or-skip. Used by paths that already
+    /// know the customer should exist (e.g. GiveawayService building the
+    /// animation pool from existing participants) and don't want the
+    /// side-effect of creating a new row.</summary>
+    public Customer? Find(string platform, string username) =>
+        _repo.FindByPlatformAndUsername(platform, username);
+
     public Customer GetOrCreate(string platform, string username,
         string? displayName, string? avatarUrl)
     {
