@@ -23,10 +23,13 @@ public sealed class SpamFilter
 
     private readonly Func<SpamFilterSettings> _settingsProvider;
 
-    // Rolling window of (lowercased text, unix-seconds-received) for the
-    // duplicate-message rule. Bounded — we only need the last few seconds.
-    private readonly LinkedList<(string Text, long ReceivedAt)> _recent = new();
-    private const int RecentWindowSeconds = 30;
+    // Rolling window of (username, lowercased text, unix-seconds-received)
+    // for the duplicate-message rule. Keyed on (Username, Text) so a single
+    // user pasting the same line twice within the window is dropped, but
+    // 50 different viewers all typing the giveaway keyword (the obvious
+    // legitimate case) are not. Bounded — we only need the last few seconds.
+    private readonly LinkedList<(string Username, string Text, long ReceivedAt)> _recent = new();
+    private const int RecentWindowSeconds = 2;
     private const int RecentMaxEntries    = 200;
 
     public SpamFilter(Func<SpamFilterSettings> settingsProvider)
@@ -37,8 +40,11 @@ public sealed class SpamFilter
     /// <summary>Inspects the message; returns null when the message should pass
     /// or a short reason code when it should be dropped. Reason codes are stable
     /// strings the bridge logs at Debug level so the operator can audit which
-    /// rule fired for which message.</summary>
-    public string? ShouldDrop(string text, long unixSecondsNow)
+    /// rule fired for which message. <paramref name="username"/> is the
+    /// platform-side identity used to scope the duplicate-rule window so a
+    /// giveaway keyword typed by 50 different viewers is not all dropped after
+    /// the first.</summary>
+    public string? ShouldDrop(string text, string username, long unixSecondsNow)
     {
         var s = _settingsProvider();
         if (!s.Enabled || string.IsNullOrWhiteSpace(text)) return null;
@@ -57,17 +63,22 @@ public sealed class SpamFilter
         if (s.DropProfanity && ContainsBlockedWord(trimmed, s.BlockedWords))
             return "profanity";
 
-        // Repeat detection. Consult the rolling window AFTER the cheaper rules
-        // so common cases short-circuit before we touch the window.
+        // Repeat detection. Scoped to (Username, Text) over a 2-second
+        // window — same user pastes same line twice → drop; different
+        // users typing the giveaway keyword → all pass. Consult the
+        // rolling window AFTER the cheaper rules so common cases
+        // short-circuit before we touch the window.
         if (s.DropDuplicates)
         {
-            var key = trimmed.ToLowerInvariant();
+            var textKey = trimmed.ToLowerInvariant();
+            var userKey = username ?? string.Empty;
             EvictExpired(unixSecondsNow);
             foreach (var entry in _recent)
             {
-                if (entry.Text == key) return "duplicate";
+                if (entry.Username == userKey && entry.Text == textKey)
+                    return "duplicate";
             }
-            _recent.AddLast((key, unixSecondsNow));
+            _recent.AddLast((userKey, textKey, unixSecondsNow));
             if (_recent.Count > RecentMaxEntries) _recent.RemoveFirst();
         }
 

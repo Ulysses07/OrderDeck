@@ -1,4 +1,5 @@
 using OrderDeck.Core.Chat;
+using OrderDeck.Core.Sessions;
 using OrderDeck.Core.Settings;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -30,16 +31,23 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
     private readonly ILoggerFactory _loggerFactory;
     private readonly ITrialModeProbe? _trialProbe;
     private readonly SpamFilter? _spamFilter;
+    private readonly StreamSessionService? _sessions;
 
     private CancellationTokenSource? _cts;
     private Task? _runner;
+
+    // Per-iteration cancellation source so SessionEnded can stop the
+    // currently-running scraper *now* instead of waiting for the 3-min
+    // silence heuristic. Scoped to one scraper run; recreated each loop.
+    private CancellationTokenSource? _scraperCts;
 
     public YouTubeChatHostedService(
         Func<AppSettings> settingsProvider,
         IChatBus bus,
         ILoggerFactory loggerFactory,
         ITrialModeProbe? trialProbe = null,
-        SpamFilter? spamFilter = null)
+        SpamFilter? spamFilter = null,
+        StreamSessionService? sessions = null)
     {
         _settingsProvider = settingsProvider;
         _bus = bus;
@@ -47,6 +55,18 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
         _log = loggerFactory.CreateLogger<YouTubeChatHostedService>();
         _trialProbe = trialProbe;
         _spamFilter = spamFilter;
+        _sessions = sessions;
+
+        if (_sessions is not null)
+            _sessions.SessionEnded += OnSessionEnded;
+    }
+
+    private void OnSessionEnded(object? sender, SessionEndedEventArgs e)
+    {
+        // "Yayını Bitir" pressed in the WPF shell → cancel the active
+        // scraper immediately so a subsequent "Yayın Başlat" gets a
+        // fresh resolve pass and isn't held up by the silence heuristic.
+        try { _scraperCts?.Cancel(); } catch { /* ignore */ }
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -89,6 +109,19 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
                     continue;
                 }
 
+                // Stream session gate: only scrape while the operator has an
+                // active session ("Yayın Başlat" pressed). When they press
+                // "Yayını Bitir" SessionEnded fires + cancels _scraperCts so
+                // we exit fast; on next loop iteration GetActive() returns
+                // null until the next start. This makes start/stop feel
+                // immediate instead of being held up by the silence
+                // heuristic from the previous broadcast.
+                if (_sessions is not null && _sessions.GetActive() is null)
+                {
+                    await Task.Delay(IdleWhenOffline, ct);
+                    continue;
+                }
+
                 // Direct video URL or bare ID? Use it as-is; resolver only fires for handles.
                 var videoId = YouTubeVideoIdExtractor.TryExtract(handle)
                               ?? await resolver.ResolveAsync(handle, ct);
@@ -106,23 +139,30 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
                     videoId, _bus, _loggerFactory.CreateLogger<YouTubeLiveChatScraper>(),
                     _spamFilter);
 
+                // Per-scraper cancellation: linked to the outer ct (app
+                // shutdown / hosted-service stop) AND cancellable directly
+                // from OnSessionEnded so "Yayını Bitir" stops chat without
+                // waiting for the 3-min silence timer.
+                using var scraperCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                _scraperCts = scraperCts;
+
                 try
                 {
-                    await scraper.StartAsync(ct);
+                    await scraper.StartAsync(scraperCts.Token);
                     // Wait for the runner to exit on its own (stream ended +
-                    // 10 min silence heuristic) OR for cancellation. Previously
-                    // this pinned Task.Delay(InfiniteTimeSpan), which kept
-                    // useless 5-second polling alive indefinitely after the
-                    // broadcaster ended their live.
-                    await scraper.Completion.WaitAsync(ct);
+                    // silence heuristic) OR for cancellation (operator
+                    // pressed Yayını Bitir / app shutdown).
+                    await scraper.Completion.WaitAsync(scraperCts.Token);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
+                catch (OperationCanceledException) { /* SessionEnded — fall through to cleanup */ }
                 catch (Exception ex)
                 {
                     _log.LogWarning(ex, "[YouTubeChatHostedService] scraper crashed; rescheduling");
                 }
                 finally
                 {
+                    _scraperCts = null;
                     try { await scraper.StopAsync(CancellationToken.None); } catch { /* ignore */ }
                 }
 
@@ -140,6 +180,8 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
 
     public void Dispose()
     {
+        if (_sessions is not null)
+            _sessions.SessionEnded -= OnSessionEnded;
         try { _cts?.Cancel(); } catch { }
         _cts?.Dispose();
     }
