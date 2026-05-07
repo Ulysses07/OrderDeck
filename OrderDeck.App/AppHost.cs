@@ -185,18 +185,21 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<EncryptedStore>(), AppPaths.AuthFile));
         services.AddSingleton(sp => new LicenseStateStore(
             sp.GetRequiredService<EncryptedStore>(), AppPaths.LicenseFile));
-        // LicenseAuthHandler is a singleton so SetAuthToken on either the
-        // LicenseApiClient or LoginService points at the same volatile token
-        // field. Without singleton semantics each HttpClientFactory creation
-        // would get a fresh handler with a stale token snapshot.
-        services.AddSingleton<OrderDeck.Licensing.Api.LicenseAuthHandler>();
+        // Token state lives on a singleton LicenseTokenStore so SetAuthToken
+        // on the LicenseApiClient points at the same volatile token field
+        // every transient handler observes. The handler itself is transient
+        // because HttpClientFactory's HttpMessageHandlerBuilder rejects
+        // re-used DelegatingHandler instances ("InnerHandler must be null")
+        // — re-opening the Settings dialog used to crash here.
+        services.AddSingleton<OrderDeck.Licensing.Api.LicenseTokenStore>();
+        services.AddTransient<OrderDeck.Licensing.Api.LicenseAuthHandler>();
         services.AddHttpClient<LicenseApiClient>((sp, http) =>
         {
             var opt = sp.GetRequiredService<IOptions<LicensingOptions>>().Value;
             http.BaseAddress = new Uri(opt.ServerBaseUrl);
             http.Timeout = TimeSpan.FromSeconds(opt.RequestTimeoutSeconds);
         })
-        .AddHttpMessageHandler(sp => sp.GetRequiredService<OrderDeck.Licensing.Api.LicenseAuthHandler>())
+        .AddHttpMessageHandler<OrderDeck.Licensing.Api.LicenseAuthHandler>()
         .AddStandardResilienceHandler();  // retry on 5xx/network with exp. backoff; no retry on 4xx
         services.AddSingleton<LoginService>();
         services.AddSingleton<LicenseService>();

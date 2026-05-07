@@ -30,7 +30,7 @@ public sealed class LoginServiceTests : IDisposable
     {
         var handler = new FakeHttpMessageHandler(responder);
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
-        var api = new LicenseApiClient(http, new OrderDeck.Licensing.Api.LicenseAuthHandler());
+        var api = new LicenseApiClient(http, new OrderDeck.Licensing.Api.LicenseTokenStore());
         return (new LoginService(api, _authStore), handler, api);
     }
 

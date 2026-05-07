@@ -1,5 +1,3 @@
-using System.Net.Http.Headers;
-
 namespace OrderDeck.Licensing.Api;
 
 /// <summary>
@@ -11,32 +9,28 @@ namespace OrderDeck.Licensing.Api;
 /// (logout, token rotation) on the same HttpClient could race and throw
 /// InvalidOperationException("Collection was modified").
 ///
-/// This handler stores the token in a single volatile reference, snapshots it
-/// per request, and writes Authorization onto the per-request HttpRequestMessage.
-/// HttpRequestMessage.Headers is owned by the request, so there's no shared
-/// mutable state on the hot path.
+/// Token state lives on a singleton <see cref="LicenseTokenStore"/>; this
+/// handler is registered as transient so HttpClientFactory can build a
+/// fresh pipeline on every CreateClient call (DelegatingHandler instances
+/// must not be reused across handler chains — that's an explicit invariant
+/// the factory enforces).
 /// </summary>
 public sealed class LicenseAuthHandler : DelegatingHandler
 {
-    // Reference assignment is atomic on the CLR; volatile guarantees freshness
-    // across threads. AuthenticationHeaderValue is immutable so we can hand
-    // out the same instance to multiple in-flight requests safely.
-    private volatile AuthenticationHeaderValue? _authHeader;
+    private readonly LicenseTokenStore _tokenStore;
 
-    public void SetToken(string? token)
+    public LicenseAuthHandler(LicenseTokenStore tokenStore)
     {
-        _authHeader = string.IsNullOrEmpty(token)
-            ? null
-            : new AuthenticationHeaderValue("Bearer", token);
+        _tokenStore = tokenStore;
     }
 
     protected override Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request, CancellationToken cancellationToken)
     {
-        // Snapshot — if the caller rotates the token mid-flight, the request
-        // already in transit keeps its original credential. The next request
-        // picks up the new value.
-        var header = _authHeader;
+        // Snapshot — if the caller rotates the token mid-flight, the
+        // request already in transit keeps its original credential. The
+        // next request picks up the new value.
+        var header = _tokenStore.CurrentHeader;
         if (header is not null)
             request.Headers.Authorization = header;
         return base.SendAsync(request, cancellationToken);

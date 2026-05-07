@@ -15,7 +15,7 @@ public class LicenseApiClientTests
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
         if (token is not null)
             http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-        return (new LicenseApiClient(http, new OrderDeck.Licensing.Api.LicenseAuthHandler()), handler);
+        return (new LicenseApiClient(http, new OrderDeck.Licensing.Api.LicenseTokenStore()), handler);
     }
 
     [Fact]
@@ -172,9 +172,10 @@ public class LicenseApiClientTests
         // handler to actually inject headers per request.
         var fakeInner = new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.Json(200,
             """{"id":"00000000-0000-0000-0000-000000000000","email":"u","name":"n","emailConfirmedAt":null,"createdAt":"2026-01-01T00:00:00Z"}"""));
-        var authHandler = new LicenseAuthHandler { InnerHandler = fakeInner };
+        var tokenStore = new LicenseTokenStore();
+        var authHandler = new LicenseAuthHandler(tokenStore) { InnerHandler = fakeInner };
         var http = new HttpClient(authHandler) { BaseAddress = new Uri("https://test.local") };
-        var client = new LicenseApiClient(http, authHandler);
+        var client = new LicenseApiClient(http, tokenStore);
 
         client.SetAuthToken("test-token");
         await client.GetMeAsync();
@@ -190,9 +191,10 @@ public class LicenseApiClientTests
         // request is anonymous (used by the LoginService.Logout best-effort revoke).
         const string customerJson = """{"id":"00000000-0000-0000-0000-000000000000","email":"u","name":"n","emailConfirmedAt":null,"createdAt":"2026-01-01T00:00:00Z"}""";
         var fakeInner = new FakeHttpMessageHandler(_ => FakeHttpMessageHandler.Json(200, customerJson));
-        var authHandler = new LicenseAuthHandler { InnerHandler = fakeInner };
+        var tokenStore = new LicenseTokenStore();
+        var authHandler = new LicenseAuthHandler(tokenStore) { InnerHandler = fakeInner };
         var http = new HttpClient(authHandler) { BaseAddress = new Uri("https://test.local") };
-        var client = new LicenseApiClient(http, authHandler);
+        var client = new LicenseApiClient(http, tokenStore);
 
         client.SetAuthToken("test-token");
         await client.GetMeAsync();
