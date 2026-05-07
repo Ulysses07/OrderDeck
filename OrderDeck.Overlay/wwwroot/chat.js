@@ -1,7 +1,10 @@
 (function () {
   'use strict';
 
-  const MAX_VISIBLE = 50;
+  // Twitch/YouTube live-chat density: 12-15 visible messages on screen.
+  // 50 was overlay-snappy but visually overwhelming on a 1080p browser
+  // source — operator's content (camera, products) ended up boxed-in.
+  const MAX_VISIBLE = 15;
   const RECONNECT_BASE_MS = 1000;
   const RECONNECT_MAX_MS = 10000;
 

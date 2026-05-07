@@ -17,6 +17,11 @@ html, body {
   padding: 16px;
   display: flex;
   flex-direction: column;
+  /* Pin content to the bottom edge so chat fills upward — first message
+     appears at the bottom, subsequent messages push earlier ones up.
+     Once the column is full, overflow:hidden clips the oldest message
+     off the top while MAX_VISIBLE in chat.js fades + removes it. */
+  justify-content: flex-end;
   gap: 8px;
   max-height: 100vh;
   overflow: hidden;
@@ -32,6 +37,13 @@ html, body {
   align-items: flex-start;
   animation: slide-in 0.25s ease-out;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  /* Cap bubble width so long messages wrap to a second line instead of
+     stretching across the full overlay. Twitch/YouTube convention is
+     a left-aligned narrow column that doesn't crowd the camera /
+     product feed. align-self stops flex from stretching the bubble
+     to the column width. */
+  align-self: flex-start;
+  max-width: 420px;
 }
 
 .chat-message .platform-badge {
