@@ -694,7 +694,24 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     {
         if (_activeGiveawayId is null) return;
 
-        _giveaways.Draw(_activeGiveawayId);
+        try
+        {
+            _giveaways.Draw(_activeGiveawayId);
+        }
+        catch (OrderDeck.Core.Sales.GiveawayHasNoParticipantsException ex)
+        {
+            // Empty draw — used to silently broadcast a winners-empty event,
+            // which animated a blank wheel for ~10s and confused operators
+            // ("did the draw fire?"). Now: explicit MessageBox + leave the
+            // giveaway active so the operator can either wait for entries
+            // or cancel it deliberately.
+            MessageBox.Show(
+                $"'{ex.Keyword}' anahtar kelimesiyle hiç katılımcı yok.\n\n" +
+                "Çekiliş hâlâ açık — biraz daha bekleyebilir veya iptal edebilirsin.",
+                "Çekiliş — Katılımcı Yok",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
         Banner.StopTracking();
         _activeGiveawayId = null;
         IsGiveawayActive = false;

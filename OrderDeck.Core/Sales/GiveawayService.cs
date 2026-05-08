@@ -35,7 +35,17 @@ public sealed class GiveawayService
     /// in <see cref="Draw"/> and <see cref="Cancel"/>. Null when no active giveaway or
     /// when PreventRewinning is off.
     /// </summary>
-    private HashSet<string>? _activePreviousWinners;
+    /// <summary>Cache of previous-winner CustomerIds for the active session,
+    /// populated once at <see cref="Start"/> and read by every chat-thread
+    /// <see cref="AddParticipantFromChat"/> via the prevent-rewinning gate.
+    ///
+    /// volatile because the writer (UI thread, Start/Cancel/Draw) and the
+    /// readers (chat ingestor + bridge background threads) race on the
+    /// reference. The HashSet itself is immutable after construction so
+    /// concurrent Contains() calls are safe — only the reference assignment
+    /// needs a happens-before guarantee, which the volatile read/write
+    /// barriers provide. No lock needed on the hot path.</summary>
+    private volatile HashSet<string>? _activePreviousWinners;
 
     /// <summary>Live participant count for the active giveaway, or 0 when none active.</summary>
     public int GetActiveParticipantCount() =>
@@ -158,8 +168,10 @@ public sealed class GiveawayService
 
     /// <summary>
     /// Picks winners using <see cref="GiveawayDrawer"/> with the giveaway's stored seed,
-    /// marks them in DB, and sets <c>EndedAt = now</c>. Returns the chosen winners
-    /// (empty list if no participants).
+    /// marks them in DB, and sets <c>EndedAt = now</c>. Returns the chosen winners.
+    /// Throws <see cref="GiveawayHasNoParticipantsException"/> if the keyword
+    /// captured nobody — UI catches this to show a Turkish MessageBox instead
+    /// of silently advancing the overlay through an empty animation.
     /// </summary>
     public IReadOnlyList<GiveawayParticipant> Draw(string giveawayId)
     {
@@ -167,6 +179,9 @@ public sealed class GiveawayService
                 ?? throw new InvalidOperationException($"Giveaway {giveawayId} not found");
 
         var participants = _giveaways.GetParticipants(g.Id);
+        if (participants.Count == 0)
+            throw new GiveawayHasNoParticipantsException(g.Keyword);
+
         var winners = _drawer.Pick(participants, g.WinnerCount, g.RandomSeed);
 
         if (winners.Count > 0)

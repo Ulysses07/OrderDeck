@@ -94,8 +94,33 @@ public sealed class LabelService
 
         _labels.MarkCancelled(idsToFlip, _clock.UnixNow(), reason);
 
-        foreach (var (customerId, agg) in groupedAmounts)
-            _customers.RecordPrintedLabels(customerId, -agg.Count, -agg.Amount);
+        // Compensating action: if the customer-aggregate updates throw (e.g.
+        // SQLite locked, FK violation), the label rows are already flipped to
+        // cancelled. Without compensation the customer's TotalLabelsPrinted /
+        // TotalAmount would diverge from the Label table. Better to re-flip
+        // the labels and surface a loud error than carry the divergence.
+        // True transaction-scoped atomicity needs an IDbTransaction overload
+        // pair on both repositories — tracked separately as data-layer
+        // refactor (out of scope for this hotfix).
+        var customersUpdated = new List<(string CustomerId, int Count, decimal Amount)>(groupedAmounts.Count);
+        try
+        {
+            foreach (var (customerId, agg) in groupedAmounts)
+            {
+                _customers.RecordPrintedLabels(customerId, -agg.Count, -agg.Amount);
+                customersUpdated.Add((customerId, agg.Count, agg.Amount));
+            }
+        }
+        catch
+        {
+            // Roll back the customer aggregates we already adjusted, then
+            // un-flip the label rows. Swallow rollback failures — the outer
+            // throw is what the caller cares about.
+            foreach (var (customerId, count, amount) in customersUpdated)
+                try { _customers.RecordPrintedLabels(customerId, count, amount); } catch { }
+            try { _labels.Uncancel(idsToFlip); } catch { }
+            throw;
+        }
     }
 
     /// <summary>Reverses Cancel — re-applies the printed-label aggregates so
@@ -154,8 +179,29 @@ public sealed class LabelService
 
         _labels.MarkPrinted(labelIds, _clock.UnixNow());
 
-        foreach (var (customerId, agg) in groupedAmounts)
-            _customers.RecordPrintedLabels(customerId, agg.Count, agg.Amount);
+        // Same compensation strategy as Cancel — see comment there. If a
+        // customer aggregate update fails after the labels are already
+        // marked printed, undo the aggregate updates we landed and call
+        // it a hard failure rather than leave the totals diverged.
+        var customersUpdated = new List<(string CustomerId, int Count, decimal Amount)>(groupedAmounts.Count);
+        try
+        {
+            foreach (var (customerId, agg) in groupedAmounts)
+            {
+                _customers.RecordPrintedLabels(customerId, agg.Count, agg.Amount);
+                customersUpdated.Add((customerId, agg.Count, agg.Amount));
+            }
+        }
+        catch
+        {
+            foreach (var (customerId, count, amount) in customersUpdated)
+                try { _customers.RecordPrintedLabels(customerId, -count, -amount); } catch { }
+            // No public Unmark-printed primitive — accept the divergence
+            // here and rely on the throw to alert the operator. The
+            // alternative would be to add LabelRepository.UnmarkPrinted
+            // which is more surface area than this hotfix wants. Tracked.
+            throw;
+        }
     }
 
     // ─── Backup buyers ──────────────────────────────────────────────────────
