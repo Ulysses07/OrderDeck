@@ -67,7 +67,10 @@ jobs:
         run: |
           # --delete-after: build'de kaldırılan eski sayfalar VPS'ten de silinsin
           # ama yeni dosyalar yerleştikten sonra (kısa "no file" pencereyi engeller).
-          rsync -avz --delete-after \
+          # --exclude=downloads/: installer .exe'leri build çıktısında değil,
+          # VPS'e elle scp ile yüklenir (~63 MB git'e koymak istemiyoruz).
+          # Caddy config bu klasörü ayrı route ile serve eder; rsync silmesin.
+          rsync -avz --delete-after --exclude='downloads/' \
             -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new" \
             out/ \
             "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/orderdeck/web-out/"

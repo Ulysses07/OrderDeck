@@ -49,10 +49,10 @@ export function Nav({ locale, routeKey }: NavProps) {
         <div className="flex items-center gap-3">
           <LangSwitch currentLocale={locale} routeKey={routeKey} />
           <Link
-            href={path('contact')}
-            className="hidden rounded-md border border-[var(--color-border-strong)] px-3 py-1.5 text-sm text-[var(--color-text)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition-colors sm:inline-block"
+            href={path('download')}
+            className="hidden rounded-md bg-[var(--color-accent)] px-3 py-1.5 text-sm font-semibold text-white hover:bg-[var(--color-accent-hot)] transition-colors sm:inline-block"
           >
-            {m.nav.contact}
+            {m.nav.download}
           </Link>
         </div>
       </nav>

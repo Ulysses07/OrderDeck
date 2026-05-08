@@ -1,10 +1,12 @@
-import type { Locale } from '@/lib/i18n';
+import Link from 'next/link';
+import { ROUTE_MAP, type Locale } from '@/lib/i18n';
 import { tr } from '@/messages/tr';
 import { en } from '@/messages/en';
 import { Download } from 'lucide-react';
 
 export function CtaBanner({ locale }: { locale: Locale }) {
   const m = locale === 'tr' ? tr : en;
+  const downloadPath = ROUTE_MAP.download[locale];
 
   return (
     <section
@@ -22,13 +24,13 @@ export function CtaBanner({ locale }: { locale: Locale }) {
         <p className="mt-3 mx-auto max-w-xl text-base text-[var(--color-text-dim)]">
           {m.cta.subtitle}
         </p>
-        <a
-          href="#download"
+        <Link
+          href={downloadPath}
           className="mt-7 inline-flex items-center gap-2 rounded-lg bg-[var(--color-accent)] px-6 py-3 text-sm font-semibold text-[#ffffff] hover:bg-[var(--color-accent-hot)] transition-colors"
         >
           <Download size={16} aria-hidden />
           {m.cta.button}
-        </a>
+        </Link>
       </div>
     </section>
   );

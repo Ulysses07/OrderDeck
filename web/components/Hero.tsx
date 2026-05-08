@@ -31,13 +31,13 @@ export function Hero({ locale }: { locale: Locale }) {
             {m.hero.subtitle}
           </p>
           <div className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row">
-            <a
-              href="#download"
+            <Link
+              href={path('download')}
               className="inline-flex items-center gap-2 rounded-lg bg-[var(--color-accent)] px-5 py-3 text-sm font-semibold text-[#ffffff] hover:bg-[var(--color-accent-hot)] transition-colors"
             >
               <Download size={16} aria-hidden />
               {m.hero.ctaPrimary}
-            </a>
+            </Link>
             <Link
               href={path('features')}
               className="inline-flex items-center gap-2 rounded-lg border border-[var(--color-border-strong)] px-5 py-3 text-sm font-semibold text-[var(--color-text)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition-colors"
