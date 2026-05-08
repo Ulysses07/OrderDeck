@@ -26,21 +26,23 @@ public sealed class YouTubeLiveResolver : IDisposable
     private readonly HttpClient _http;
     private readonly ILogger<YouTubeLiveResolver> _log;
 
-    public YouTubeLiveResolver(ILogger<YouTubeLiveResolver> log)
+    // Browser-like headers added per-request rather than via DefaultRequestHeaders
+    // so we can be safely handed an HttpClient owned by HttpClientFactory.
+    // (DefaultRequestHeaders aren't thread-safe and are tied to the client
+    // instance lifetime — bad fit for a pooled / shared client.)
+    private const string BrowserUserAgent =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+    /// <summary>Caller owns the HttpClient — pass one from
+    /// IHttpClientFactory.CreateClient() so socket handles are reused
+    /// across resolve attempts and the previous "new HttpClient + own
+    /// SocketsHttpHandler per resolver instance" leak is gone.</summary>
+    public YouTubeLiveResolver(ILogger<YouTubeLiveResolver> log, HttpClient http)
     {
         _log = log;
-        var handler = new SocketsHttpHandler
-        {
-            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
-            ConnectTimeout = TimeSpan.FromSeconds(10),
-            PooledConnectionLifetime = TimeSpan.FromMinutes(5)
-        };
-        _http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
-        // Browser-like headers — YT sometimes serves a stripped JSON-only page to non-browser UAs.
-        _http.DefaultRequestHeaders.Add("User-Agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-        _http.DefaultRequestHeaders.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
-        _http.DefaultRequestHeaders.Add("Accept-Language", "tr-TR,tr;q=0.9,en;q=0.8");
+        _http = http;
+        if (_http.Timeout == TimeSpan.FromSeconds(100)) // factory default — override
+            _http.Timeout = TimeSpan.FromSeconds(15);
     }
 
     /// <summary>Returns the active live video ID for a channel handle, or null if
@@ -55,7 +57,11 @@ public sealed class YouTubeLiveResolver : IDisposable
         var url = $"https://www.youtube.com/@{trimmed}/live";
         try
         {
-            using var resp = await _http.GetAsync(url, ct);
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.UserAgent.ParseAdd(BrowserUserAgent);
+            req.Headers.Accept.ParseAdd("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+            req.Headers.AcceptLanguage.ParseAdd("tr-TR,tr;q=0.9,en;q=0.8");
+            using var resp = await _http.SendAsync(req, ct);
             if (!resp.IsSuccessStatusCode)
             {
                 _log.LogDebug("[YouTubeLiveResolver] {Handle} → HTTP {Status}", trimmed, (int)resp.StatusCode);
@@ -84,5 +90,8 @@ public sealed class YouTubeLiveResolver : IDisposable
         }
     }
 
-    public void Dispose() => _http.Dispose();
+    // HttpClient lifecycle is owned by IHttpClientFactory now — Dispose
+    // here would prematurely tear down the pooled handler chain. Kept as
+    // a no-op so existing callers' `using` statements still compile.
+    public void Dispose() { }
 }
