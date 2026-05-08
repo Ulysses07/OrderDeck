@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Net.Http;
 using OrderDeck.App.Services;
 using OrderDeck.App.Services.IntakeForm;
 using OrderDeck.Chat.Bridge;
@@ -101,13 +102,40 @@ public sealed class AppHost : IDisposable
         // youtube.com/{handle}/live and runs the InnerTube continuation API
         // when the channel goes live. Idle when AppSettings.YouTubeChannelHandle
         // is unset; honors trial-mode the same way the extension bridge does.
+        // Named clients for the YouTube ingestion path. IHttpClientFactory
+        // owns the SocketsHttpHandler pool so the per-scraper-instance leak
+        // (one new HttpClient + handler every time a scraper started/
+        // stopped, never disposed in long streams) is gone.
+        services.AddHttpClient(
+            OrderDeck.Chat.Ingestors.YouTube.YouTubeChatHostedService.ResolverClientName,
+            c => c.Timeout = TimeSpan.FromSeconds(15))
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate,
+                ConnectTimeout = TimeSpan.FromSeconds(10),
+                PooledConnectionLifetime = TimeSpan.FromMinutes(5)
+            });
+        services.AddHttpClient(
+            OrderDeck.Chat.Ingestors.YouTube.YouTubeChatHostedService.ScraperClientName,
+            c => c.Timeout = TimeSpan.FromSeconds(30))
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                PooledConnectionLifetime = TimeSpan.FromMinutes(10),
+                PooledConnectionIdleTimeout = TimeSpan.FromMinutes(5),
+                MaxConnectionsPerServer = 5,
+                ConnectTimeout = TimeSpan.FromSeconds(15),
+                AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate
+            });
+
         services.AddHostedService(sp =>
             new OrderDeck.Chat.Ingestors.YouTube.YouTubeChatHostedService(
                 () => sp.GetRequiredService<AppSettings>(),
                 sp.GetRequiredService<IChatBus>(),
                 sp.GetRequiredService<ILoggerFactory>(),
                 trialProbe: sp.GetRequiredService<LicenseService>(),
-                spamFilter: sp.GetRequiredService<SpamFilter>()));
+                spamFilter: sp.GetRequiredService<SpamFilter>(),
+                sessions: sp.GetRequiredService<StreamSessionService>(),
+                httpFactory: sp.GetRequiredService<IHttpClientFactory>()));
 
         // Phase 5d — YouTube OAuth + moderation. The data store sits in a
         // dedicated subfolder so we can wipe it on disconnect without
@@ -185,18 +213,21 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<EncryptedStore>(), AppPaths.AuthFile));
         services.AddSingleton(sp => new LicenseStateStore(
             sp.GetRequiredService<EncryptedStore>(), AppPaths.LicenseFile));
-        // LicenseAuthHandler is a singleton so SetAuthToken on either the
-        // LicenseApiClient or LoginService points at the same volatile token
-        // field. Without singleton semantics each HttpClientFactory creation
-        // would get a fresh handler with a stale token snapshot.
-        services.AddSingleton<OrderDeck.Licensing.Api.LicenseAuthHandler>();
+        // Token state lives on a singleton LicenseTokenStore so SetAuthToken
+        // on the LicenseApiClient points at the same volatile token field
+        // every transient handler observes. The handler itself is transient
+        // because HttpClientFactory's HttpMessageHandlerBuilder rejects
+        // re-used DelegatingHandler instances ("InnerHandler must be null")
+        // — re-opening the Settings dialog used to crash here.
+        services.AddSingleton<OrderDeck.Licensing.Api.LicenseTokenStore>();
+        services.AddTransient<OrderDeck.Licensing.Api.LicenseAuthHandler>();
         services.AddHttpClient<LicenseApiClient>((sp, http) =>
         {
             var opt = sp.GetRequiredService<IOptions<LicensingOptions>>().Value;
             http.BaseAddress = new Uri(opt.ServerBaseUrl);
             http.Timeout = TimeSpan.FromSeconds(opt.RequestTimeoutSeconds);
         })
-        .AddHttpMessageHandler(sp => sp.GetRequiredService<OrderDeck.Licensing.Api.LicenseAuthHandler>())
+        .AddHttpMessageHandler<OrderDeck.Licensing.Api.LicenseAuthHandler>()
         .AddStandardResilienceHandler();  // retry on 5xx/network with exp. backoff; no retry on 4xx
         services.AddSingleton<LoginService>();
         services.AddSingleton<LicenseService>();

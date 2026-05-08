@@ -12,7 +12,9 @@ public class SmokeTests
         opt.ServerBaseUrl.Should().StartWith("https://");
         opt.RequestTimeoutSeconds.Should().BeGreaterThan(0);
         opt.OfflineGraceDays.Should().Be(14);
-        opt.HeartbeatIntervalHours.Should().Be(24);
+        // Was 24h; lowered to 1h so license expiry / server outage banners
+        // surface within an hour instead of a day.
+        opt.HeartbeatIntervalHours.Should().Be(1);
     }
 
     [Fact]

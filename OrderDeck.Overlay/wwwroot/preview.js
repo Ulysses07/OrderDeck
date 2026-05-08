@@ -108,8 +108,19 @@ async function loadAndPlay() {
   }
   activePlugin = plugin;
 
+  // Server contract (BuildAnimationPool): winners live at the TAIL of the
+  // pool in order. Plugins now use position-based winner index
+  // (pool.length - winners.length + i), so preview/diagnose mock pools must
+  // honour the same layout — otherwise the wheel/strip lands on whoever
+  // happens to be at the tail (e.g. pool[7]) while we display a different
+  // random name as the winner. That is exactly the dispute case the
+  // WYSIWYG fix was meant to prevent, just on the preview side.
   const pool = mockPool();
-  const winner = pool[Math.floor(Math.random() * pool.length)];
+  const winnerIdx = Math.floor(Math.random() * pool.length);
+  const winner = pool[winnerIdx];
+  // Move the chosen winner to the end of the pool to match server layout.
+  pool.splice(winnerIdx, 1);
+  pool.push(winner);
   try {
     await plugin.runFor([winner], pool);
     $winner.textContent = `Kazanan (mock): ${winner.DisplayName}`;

@@ -37,15 +37,24 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
     /// <summary>How long the runner can go without seeing a fresh chat row before
     /// declaring the stream ended. YouTube doesn't reliably send a "chat closed"
     /// signal — when a live ends, get_live_chat keeps 200-ing with empty actions.
-    /// 10 minutes of complete silence on a chat that was previously alive is the
-    /// strongest "stream actually ended" heuristic we have without paying for the
-    /// official YouTube Data API.</summary>
-    private static readonly TimeSpan StreamSilenceTimeout = TimeSpan.FromMinutes(10);
+    /// 3 minutes is the trade-off between false positives (chat naturally goes
+    /// quiet during a price negotiation) and recovery latency when the
+    /// broadcaster cycles streams (close → 2nd open should pick up chat without
+    /// a 10-minute dead window). Operators noted that closing/reopening a stream
+    /// left chat dead because the scraper was pinned to the stale video ID.</summary>
+    private static readonly TimeSpan StreamSilenceTimeout = TimeSpan.FromMinutes(3);
 
     private readonly IChatBus _bus;
     private readonly ILogger<YouTubeLiveChatScraper> _log;
     private readonly HttpClient _http;
-    private readonly HashSet<string> _seenIds = new();
+    // Bounded dedup ring. HashSet alone gave O(1) lookup but the trim
+    // (Skip().ToArray() + Clear() + foreach Add()) was O(n) and allocated
+    // 2500 strings each time we hit the 5000 cap — visible as GC pressure
+    // / chat freezes during long streams. Pairing it with a FIFO queue
+    // makes both insert and eviction O(1).
+    private const int MaxSeenIds = 5000;
+    private readonly HashSet<string> _seenIds = new(MaxSeenIds);
+    private readonly Queue<string> _seenIdsOrder = new(MaxSeenIds);
 
     private string? _apiKey;
     private string? _clientVersion;
@@ -66,27 +75,32 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
 
     private readonly SpamFilter? _spamFilter;
 
+    // Browser headers added per-request now (see AddBrowserHeaders) so the
+    // HttpClient handed in by IHttpClientFactory is safe to share.
+    private const string BrowserUserAgent =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+    /// <summary>HttpClient comes from IHttpClientFactory now — pooled handler,
+    /// no per-instance socket leak. Caller (YouTubeChatHostedService)
+    /// resolves it from the named "youtube-scraper" client which already
+    /// configures the SocketsHttpHandler this class used to own.</summary>
     public YouTubeLiveChatScraper(string videoId, IChatBus bus, ILogger<YouTubeLiveChatScraper> log,
-        SpamFilter? spamFilter = null)
+        HttpClient http, SpamFilter? spamFilter = null)
     {
         _videoId = videoId;
         _bus = bus;
         _log = log;
         _spamFilter = spamFilter;
+        _http = http;
+        if (_http.Timeout == TimeSpan.FromSeconds(100)) // factory default — override
+            _http.Timeout = TimeSpan.FromSeconds(30);
+    }
 
-        var handler = new SocketsHttpHandler
-        {
-            PooledConnectionLifetime = TimeSpan.FromMinutes(10),
-            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(5),
-            MaxConnectionsPerServer = 5,
-            ConnectTimeout = TimeSpan.FromSeconds(15),
-            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
-        };
-        _http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
-        _http.DefaultRequestHeaders.Add("User-Agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-        _http.DefaultRequestHeaders.Add("Accept-Language", "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7");
-        _http.DefaultRequestHeaders.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+    private static void AddBrowserHeaders(HttpRequestMessage req)
+    {
+        req.Headers.UserAgent.ParseAdd(BrowserUserAgent);
+        req.Headers.AcceptLanguage.ParseAdd("tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7");
+        req.Headers.Accept.ParseAdd("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
     }
 
     public async Task StartAsync(CancellationToken ct)
@@ -112,12 +126,15 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
         _continuation = null;
         _apiKey = null;
         _seenIds.Clear();
+        _seenIdsOrder.Clear();
     }
 
     private async Task BootstrapAsync(CancellationToken ct)
     {
         var chatUrl = $"https://www.youtube.com/live_chat?v={_videoId}&is_popout=1";
-        using var resp = await _http.GetAsync(chatUrl, ct);
+        using var bootstrapReq = new HttpRequestMessage(HttpMethod.Get, chatUrl);
+        AddBrowserHeaders(bootstrapReq);
+        using var resp = await _http.SendAsync(bootstrapReq, ct);
         if (!resp.IsSuccessStatusCode)
             throw new InvalidOperationException($"YouTube live_chat HTTP {resp.StatusCode}");
 
@@ -158,6 +175,15 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
             throw new InvalidOperationException("Live chat is not available — stream may not be live or chat is disabled");
     }
 
+    // Rate-limited failure logging: at 2-second polling, a 10-minute
+    // outage was producing 300 LogWarning lines (~10 MB of disk in a
+    // long stream). Now: log the FIRST failure as Warning, suppress
+    // intermediate ones to Debug, then re-log as Warning every 30
+    // failures (= ~5 minutes of consecutive failure) so the operator
+    // sees we're still trying. On recovery, log a single Information
+    // line so the gap is bookended in the file sink.
+    private int _consecutiveFetchFailures;
+
     private async Task RunLoopAsync(CancellationToken ct)
     {
         try
@@ -167,6 +193,14 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
                 try
                 {
                     await FetchOnceAsync(ct);
+
+                    if (_consecutiveFetchFailures > 0)
+                    {
+                        _log.LogInformation(
+                            "[YouTube Scraper] recovered after {Count} failed iterations",
+                            _consecutiveFetchFailures);
+                        _consecutiveFetchFailures = 0;
+                    }
 
                     // Stream-end heuristic: if get_live_chat keeps returning but
                     // nothing has been Publish()d for StreamSilenceTimeout we
@@ -186,7 +220,19 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
                 catch (OperationCanceledException) { break; }
                 catch (Exception ex)
                 {
-                    _log.LogWarning(ex, "[YouTube Scraper] iteration failed; backing off 5s");
+                    _consecutiveFetchFailures++;
+                    if (_consecutiveFetchFailures == 1 || _consecutiveFetchFailures % 30 == 0)
+                    {
+                        _log.LogWarning(ex,
+                            "[YouTube Scraper] iteration failed (consecutive={Count}); backing off 5s",
+                            _consecutiveFetchFailures);
+                    }
+                    else
+                    {
+                        _log.LogDebug(ex,
+                            "[YouTube Scraper] iteration failed (consecutive={Count}); backing off 5s",
+                            _consecutiveFetchFailures);
+                    }
                     try { await Task.Delay(5000, ct); } catch { break; }
                 }
             }
@@ -220,7 +266,9 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
 
         var content = new StringContent(
             JsonSerializer.Serialize(requestBody), System.Text.Encoding.UTF8, "application/json");
-        using var resp = await _http.PostAsync(url, content, ct);
+        using var pollReq = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
+        AddBrowserHeaders(pollReq);
+        using var resp = await _http.SendAsync(pollReq, ct);
         if (!resp.IsSuccessStatusCode)
         {
             _log.LogWarning("[YouTube Scraper] poll HTTP {Status}", (int)resp.StatusCode);
@@ -299,13 +347,13 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
             : $"{channelId}|{ExtractTimestampUsec(renderer)}|{text}";
 
         if (!_seenIds.Add(dedupKey)) return;
-
-        // Trim seen-set so a multi-hour stream doesn't bloat memory.
-        if (_seenIds.Count > 5000)
+        _seenIdsOrder.Enqueue(dedupKey);
+        // O(1) eviction: pop the oldest key from the FIFO order queue and
+        // mirror the removal in the lookup set. Bounded at MaxSeenIds.
+        while (_seenIdsOrder.Count > MaxSeenIds)
         {
-            var keep = _seenIds.Skip(_seenIds.Count - 2500).ToArray();
-            _seenIds.Clear();
-            foreach (var k in keep) _seenIds.Add(k);
+            var evicted = _seenIdsOrder.Dequeue();
+            _seenIds.Remove(evicted);
         }
 
         if (string.IsNullOrEmpty(text) && !isPaid) return;
@@ -330,7 +378,10 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
         // future tuning might whitelist superchat by checking it here).
         if (_spamFilter is not null && !isPaid)
         {
-            var dropReason = _spamFilter.ShouldDrop(text, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+            var dropReason = _spamFilter.ShouldDrop(
+                text,
+                !string.IsNullOrEmpty(channelId) ? channelId : displayName,
+                DateTimeOffset.UtcNow.ToUnixTimeSeconds());
             if (dropReason is not null)
             {
                 _log.LogDebug("[YouTube Scraper] spam filter drop ({Reason}) by {User}: {Text}",
@@ -424,7 +475,9 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
     public void Dispose()
     {
         try { _cts?.Cancel(); } catch { }
-        _http.Dispose();
+        // HttpClient lifecycle is owned by IHttpClientFactory now — Dispose
+        // here would tear down the pooled handler for the next scraper.
         _seenIds.Clear();
+        _seenIdsOrder.Clear();
     }
 }

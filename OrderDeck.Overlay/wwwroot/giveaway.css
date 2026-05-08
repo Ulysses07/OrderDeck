@@ -10,14 +10,57 @@ html, body {
 .hidden { display: none !important; }
 .fade-out { opacity: 0; transition: opacity 0.6s ease-out; }
 
+:root {
+  /* Operator-tunable plugin scale. 1.7 leaves a comfortable margin
+     between the scaled animation and the top-left info card on a
+     1920×1080 viewport while still being big enough to read. Up
+     to ~2 stays crisp on canvas plugins (wheel/bingo render at
+     520×520 native, CSS-display 260×260); beyond ~2 they blur. */
+  --giveaway-scale: 1.7;
+}
+
 #giveaway-root {
-  position: absolute; left: 24px; top: 24px;
+  /* Cover the full OBS browser source viewport without intercepting
+     input. The dark glass card moves to #info-card; #plugin-stage
+     scales up to fill the screen. The .hidden rule above still
+     collapses the entire subtree via display: none. */
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+#info-card {
+  position: absolute;
+  left: 24px; top: 24px;
   min-width: 360px;
+  max-width: calc(100vw - 48px);
   background: rgba(15, 17, 24, 0.85);
   border-radius: 12px;
   padding: 16px 20px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
   backdrop-filter: blur(8px);
+  z-index: 2;
+}
+
+#plugin-stage {
+  /* Flex-centered viewport region, offset 8vh from the top so the
+     scaled animation doesn't visually collide with the top-left
+     info card. transform: scale is composited (no layout reflow)
+     so the scaled plugin does not push #info-card around.
+     transform-origin: center keeps plugins centered regardless of
+     their native dimensions (260×260 wheel, 480×360 falling-names,
+     600×wide race, etc.). */
+  position: absolute;
+  top: 8vh;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: scale(var(--giveaway-scale, 1.7));
+  transform-origin: center center;
+  z-index: 1;
 }
 
 #header {

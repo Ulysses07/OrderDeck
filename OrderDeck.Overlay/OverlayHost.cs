@@ -40,6 +40,19 @@ public sealed class OverlayHost : IAsyncDisposable
     private readonly GiveawayService _giveaway;
     private readonly ILogger<OverlayHost> _log;
     private readonly Func<GiveawayAudioSnapshot> _audioProvider;
+
+    // Wire serialization. The overlay JS clients (chat.js, giveaway.js,
+    // preview.js) all consume camelCase fields — `evt.type`, `evt.data`,
+    // `msg.displayName`, `evt.data.recentMessages`, etc. Without this
+    // option System.Text.Json emits the C# PascalCase property names
+    // (`Type`, `Data`, `DisplayName`) and every JS branch silently
+    // misses, so messages come over the WS but never make it to the DOM.
+    // First reproed on /overlay/chat showing zero messages with a healthy
+    // bus + bridge.
+    private static readonly JsonSerializerOptions WireJson = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
     private WebApplication? _app;
     private readonly ConcurrentDictionary<Guid, WebSocket> _chatClients = new();
     private readonly ConcurrentDictionary<Guid, WebSocket> _giveawayClients = new();
@@ -267,8 +280,14 @@ public sealed class OverlayHost : IAsyncDisposable
         var evt = new OverlayEvent("chat.message",
             new ChatMessageEvent(m.Id, m.Platform, m.Username, m.DisplayName,
                 m.AvatarUrl, m.Text, m.ReceivedAt));
-        var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(evt));
-        foreach (var (_, ws) in _chatClients)
+        var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(evt, WireJson));
+        // Snapshot the value collection before iterating: enumerating a
+        // ConcurrentDictionary is technically allowed but a concurrent
+        // TryRemove (from HandleChatClient.finally on a closing socket)
+        // can yield stale or duplicate entries to the broadcast loop.
+        // Capturing once also frees the broadcast thread to fire SendBytes
+        // without the dictionary's read lock held under load.
+        foreach (var ws in _chatClients.Values.ToArray())
         {
             if (ws.State != WebSocketState.Open) continue;
             _ = SendBytes(ws, bytes, CancellationToken.None);
@@ -277,8 +296,9 @@ public sealed class OverlayHost : IAsyncDisposable
 
     private void BroadcastGiveaway(string type, object data)
     {
-        var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new OverlayEvent(type, data)));
-        foreach (var (_, ws) in _giveawayClients)
+        var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new OverlayEvent(type, data), WireJson));
+        // Same snapshot rationale as BroadcastChatMessage above.
+        foreach (var ws in _giveawayClients.Values.ToArray())
         {
             if (ws.State != WebSocketState.Open) continue;
             _ = SendBytes(ws, bytes, CancellationToken.None);
@@ -287,7 +307,7 @@ public sealed class OverlayHost : IAsyncDisposable
 
     private static async Task SendJson(WebSocket ws, object payload, CancellationToken ct)
     {
-        await SendBytes(ws, Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload)), ct);
+        await SendBytes(ws, Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload, WireJson)), ct);
     }
 
     private static async Task SendBytes(WebSocket ws, byte[] bytes, CancellationToken ct)

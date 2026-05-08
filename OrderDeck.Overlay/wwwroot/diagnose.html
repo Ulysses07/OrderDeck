@@ -134,7 +134,11 @@
       }
 
       // Phase 4 \u2014 runFor with 8s timeout (animations are 4-5s)
-      const winner = MOCK_POOL[0];
+      // Server contract: winners live at the TAIL of the pool. Plugins use
+      // position-based winner index, so the test pool must put the winner
+      // last \u2014 otherwise plugins land on MOCK_POOL[7] while we report
+      // success for MOCK_POOL[0], masking real WYSIWYG regressions.
+      const winner = MOCK_POOL[MOCK_POOL.length - 1];
       let runStatus = 'ok', runErr = '';
       try {
         await withTimeout(plugin.runFor([winner], MOCK_POOL), 8000, `${id}.runFor`);

@@ -204,8 +204,12 @@ public sealed class GiveawayService
     /// <summary>
     /// Builds the OBS roulette animation pool: a shuffled prefix of participants ending
     /// with the actual winners. Capped at 50 entries to keep the overlay snappy.
+    /// DisplayName is looked up per participant from the Customer table so the
+    /// overlay shows the human-readable name rather than the channel ID
+    /// (avatar URL is intentionally not propagated — the animations don't
+    /// render avatars and we want to keep the WS payload small).
     /// </summary>
-    private static IReadOnlyList<GiveawayWinnerDto> BuildAnimationPool(
+    private IReadOnlyList<GiveawayWinnerDto> BuildAnimationPool(
         IReadOnlyList<GiveawayParticipant> participants,
         IReadOnlyList<GiveawayParticipant> winners)
     {
@@ -234,6 +238,18 @@ public sealed class GiveawayService
         return pool;
     }
 
-    private static GiveawayWinnerDto ToWinnerDto(GiveawayParticipant p) =>
-        new(p.Username, DisplayName: null, AvatarUrl: null, p.Platform);
+    /// <summary>Resolves DisplayName from the Customer table so the overlay
+    /// shows e.g. "Ali Yıldız" instead of the YouTube channel ID
+    /// (UCxxxxxx...). Customer is guaranteed to exist at this point because
+    /// AddParticipantFromChat creates one before storing the participant.
+    /// AvatarUrl is intentionally not propagated to the WS payload.</summary>
+    private GiveawayWinnerDto ToWinnerDto(GiveawayParticipant p)
+    {
+        var customer = _customers.Find(p.Platform, p.Username);
+        return new GiveawayWinnerDto(
+            Username: p.Username,
+            DisplayName: customer?.DisplayName,
+            AvatarUrl: null,
+            Platform: p.Platform);
+    }
 }

@@ -147,7 +147,7 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
                     if (_spamFilter is not null)
                     {
                         var nowSec = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-                        var dropReason = _spamFilter.ShouldDrop(msg.Text, nowSec);
+                        var dropReason = _spamFilter.ShouldDrop(msg.Text, msg.Username, nowSec);
                         if (dropReason is not null)
                         {
                             _log.LogDebug(

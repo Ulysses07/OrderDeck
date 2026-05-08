@@ -83,7 +83,7 @@ internal static class MainShellTestHarness
         var stubHttp = new HttpClient(new FakeHttpMessageHandler(
             _ => new HttpResponseMessage(HttpStatusCode.NotFound)))
         { BaseAddress = new Uri("http://localhost/") };
-        var stubApi = new LicenseApiClient(stubHttp, new LicenseAuthHandler());
+        var stubApi = new LicenseApiClient(stubHttp, new LicenseTokenStore());
         var tempSettings = new AppSettings();
         var tempStore = new SettingsStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json"));
         var intakeSync = new IntakeFormSyncService(
@@ -149,7 +149,7 @@ internal static class MainShellTestHarness
         });
 
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
-        var api = new LicenseApiClient(http, new LicenseAuthHandler());
+        var api = new LicenseApiClient(http, new LicenseTokenStore());
         var opts = Options.Create(new LicensingOptions { OfflineGraceDays = 14, TrialDurationDays = 14 });
         var hwId = new StubHardwareIdProvider();
         var trialStorage = new NullTrialStorage();
