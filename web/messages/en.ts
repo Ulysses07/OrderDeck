@@ -178,6 +178,37 @@ export const en: Messages = {
     button: 'Download free',
   },
 
+  downloadPage: {
+    title: 'Download OrderDeck',
+    subtitle:
+      'For Windows 10 (22H2+) and Windows 11. Self-contained installer — no .NET or other runtime install required.',
+    versionLabel: 'Version',
+    sizeLabel: 'Size',
+    releasedLabel: 'Released',
+    downloadButton: 'Download now',
+    smartScreenWarning: {
+      title: 'If you see a SmartScreen warning',
+      body: 'OrderDeck ships unsigned for now (code-signing certificate coming in 2026 Q3). If Windows shows "Windows protected your PC":',
+      step1: 'Click "More info"',
+      step2: 'Click "Run anyway"',
+    },
+    nextSteps: {
+      title: 'After install',
+      step1: 'A first-run setup wizard launches automatically',
+      step2: 'The wizard walks you through license activation, YouTube channel setup, Chrome extension install, and OBS browser source URLs in 6 steps',
+      step3: 'Chrome extension is awaiting Web Store approval; until then the wizard guides you through the sideload flow',
+      docsLink: 'Full setup guide (SETUP.md)',
+    },
+    requirements: {
+      title: 'System requirements',
+      os: 'Windows 10 (22H2 or later) or Windows 11',
+      arch: '64-bit processor (Intel/AMD or ARM64)',
+      disk: '~500 MB free disk space',
+      net: 'Internet connection for license activation',
+      chrome: 'Google Chrome (for livestream chat ingestion)',
+    },
+  },
+
   langSwitch: {
     label: 'Language',
     tr: 'Türkçe',

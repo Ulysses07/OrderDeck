@@ -26,9 +26,29 @@ export const ROUTE_MAP: Record<string, { tr: string; en: string }> = {
   privacy: { tr: '/gizlilik-politikasi/',   en: '/en/privacy-policy/' },
   terms:   { tr: '/kullanim-kosullari/',    en: '/en/terms-of-service/' },
   contact: { tr: '/iletisim/',              en: '/en/contact/' },
+  download:{ tr: '/indir/',                 en: '/en/download/' },
 };
 
 export const SITE_URL = 'https://orderdeckapp.com';
 export const CONTACT_EMAIL = 'support@orderdeckapp.com';
 export const LEGAL_NAME = 'Musa Sevinç';
 export const BRAND = 'OrderDeck';
+
+/**
+ * En son installer release'i. Yeni sürüm yayınlandığında BU SABİT
+ * güncellenir, sonra deploy çalışır → indirme sayfası ve Hero/CTA
+ * butonları otomatik yeni dosyaya işaret eder.
+ *
+ * Asıl .exe dosyası VPS'te `/opt/orderdeck/downloads/` klasöründe duruyor;
+ * Caddy config `https://orderdeckapp.com/downloads/*` path'inden serve
+ * ediyor. Web sitesinin `out/` build çıktısının dışında olduğu için
+ * deploy rsync'inde silinmez (--exclude='downloads' ya da ayrı path).
+ */
+export const LATEST_RELEASE = {
+  version: '0.1.0',
+  filename: 'OrderDeck-0.1.0-setup.exe',
+  sizeMB: 63,
+  releasedAt: '2026-05-08',
+};
+
+export const downloadUrl = () => `/downloads/${LATEST_RELEASE.filename}`;

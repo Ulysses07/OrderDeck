@@ -175,6 +175,37 @@ export const tr = {
     button: 'Ücretsiz İndir',
   },
 
+  downloadPage: {
+    title: 'OrderDeck\'i İndir',
+    subtitle:
+      'Windows 10 (22H2+) ve Windows 11 için. Self-contained installer — ek olarak .NET veya başka bir runtime kurmana gerek yok.',
+    versionLabel: 'Sürüm',
+    sizeLabel: 'Boyut',
+    releasedLabel: 'Yayın tarihi',
+    downloadButton: 'Şimdi İndir',
+    smartScreenWarning: {
+      title: 'SmartScreen uyarısı çıkarsa',
+      body: 'OrderDeck şimdilik kod imzalama sertifikasız dağıtılıyor (2026 Q3\'te eklenecek). Windows "PC\'nizi korudu" uyarısı gösterirse:',
+      step1: '"Daha fazla bilgi" linkine tıkla',
+      step2: '"Yine de çalıştır" butonuna bas',
+    },
+    nextSteps: {
+      title: 'Kurulumdan sonra',
+      step1: 'OrderDeck kurulduktan sonra otomatik olarak ilk açılış sihirbazı başlatır',
+      step2: 'Sihirbaz seni 6 adımda lisans aktivasyonu, YouTube kanal ayarı, Chrome eklentisi kurulumu ve OBS browser source URL\'lerinde yönlendirir',
+      step3: 'Chrome eklentisi mağaza onayını bekliyor; o sırada sihirbaz sideload adımlarını gösterir',
+      docsLink: 'Detaylı kurulum rehberi (SETUP.md)',
+    },
+    requirements: {
+      title: 'Sistem gereksinimleri',
+      os: 'Windows 10 (22H2 veya sonrası) veya Windows 11',
+      arch: '64-bit işlemci (Intel/AMD veya ARM64)',
+      disk: '~500 MB boş disk alanı',
+      net: 'Lisans aktivasyonu için internet bağlantısı',
+      chrome: 'Google Chrome (canlı yayın chat\'i için)',
+    },
+  },
+
   langSwitch: {
     label: 'Dil',
     tr: 'Türkçe',
