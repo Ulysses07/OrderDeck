@@ -119,6 +119,28 @@ public partial class App : Application
             logger.LogWarning(ex, "Restore auto-prompt failed (non-fatal)");
         }
 
+        // First-run setup wizard. Runs once on first launch after install
+        // (or after a settings reset). Operator can skip individual steps
+        // but must reach "Bitir" for HasCompletedFirstRun to flip true,
+        // otherwise the wizard re-prompts on next launch. Closing with X
+        // or "Daha sonra" returns DialogResult=false → app continues
+        // anyway (operator might want to dismiss now and configure later).
+        try
+        {
+            var settingsForFirstRun = Host.Services.GetRequiredService<OrderDeck.Core.Settings.SettingsStore>().Load();
+            if (!settingsForFirstRun.HasCompletedFirstRun)
+            {
+                var wizard = Host.Services.GetRequiredService<Views.FirstRunWizard>();
+                wizard.ShowDialog();
+                // Continue regardless — operator may have skipped, that's fine.
+                // The flag re-prompts next launch only if they didn't reach Finish.
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "First-run wizard failed (non-fatal)");
+        }
+
         // Phase 5a — wire stream-end → cloud backup (fire-and-forget)
         var sessionService = Host.Services.GetRequiredService<StreamSessionService>();
         var backupService = Host.Services.GetRequiredService<BackupService>();

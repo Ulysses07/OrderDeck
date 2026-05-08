@@ -303,6 +303,12 @@ public sealed class AppHost : IDisposable
         services.AddTransient<ViewModels.AccountDialogViewModel>();
         services.AddTransient<Views.AccountDialog>();
 
+        // First-run setup wizard. Both Window + VM transient so a re-run
+        // (operator skipped the first time) gets fresh state instead of
+        // stale step number or cached license status.
+        services.AddTransient<ViewModels.FirstRunWizardViewModel>();
+        services.AddTransient<Views.FirstRunWizard>();
+
         Services = services.BuildServiceProvider();
 
         // Wire LicenseApiClient → TokenRefresher.TryRefreshAsync as the on-401

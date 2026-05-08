@@ -44,3 +44,6 @@ dev.license.json
 
 # Embedded fixtures for Phase 1 testing — keep
 !LiveDeck.Tests/Sales/Fixtures/*.json
+installer/MicrosoftEdgeWebview2Setup.exe
+publish/
+dist/
