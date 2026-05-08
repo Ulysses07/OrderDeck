@@ -91,18 +91,20 @@ public sealed class CustomerService
     /// Phase 4g: en son tamamlanmış yayında alışveriş yapan müşteriler
     /// (printed label'ları olanlar), tutar DESC sıralı. Yayın yoksa empty.
     /// </summary>
+    /// <summary>Cap on shoppers returned. Bigger than any realistic
+    /// single-stream customer count (was uncapped via int.MaxValue, which
+    /// trivially scales — but limits the JOIN buffer + caller list size
+    /// at a known number).</summary>
+    private const int MaxLastStreamShoppers = 500;
+
     public IReadOnlyList<Customer> GetLastStreamShoppers()
     {
         var session = _sessions.GetLatestEnded();
         if (session is null) return Array.Empty<Customer>();
 
-        var top = _labels.GetTopCustomersBySession(session.Id, int.MaxValue);
-        var result = new List<Customer>(top.Count);
-        foreach (var t in top)
-        {
-            var c = _repo.FindByPlatformAndUsername(t.Platform, t.Username);
-            if (c is not null) result.Add(c);
-        }
-        return result;
+        // Was N+1: a TopCustomer-by-session query, then per-row
+        // FindByPlatformAndUsername — ~1000 round-trips on busy sessions.
+        // Now a single JOIN through CustomerRepository.GetTopShoppersForSession.
+        return _repo.GetTopShoppersForSession(session.Id, MaxLastStreamShoppers);
     }
 }

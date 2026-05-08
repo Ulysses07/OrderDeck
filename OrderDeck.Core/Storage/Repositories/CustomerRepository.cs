@@ -42,6 +42,28 @@ public sealed class CustomerRepository
         return row is null ? null : Map(row);
     }
 
+    /// <summary>Returns the top-N shoppers from a session via a single
+    /// JOIN — replaces the previous N+1 pattern in CustomerService where
+    /// each row's Platform/Username was re-queried via FindByPlatformAndUsername.
+    /// On a 1000-customer session that was ~1000 round-trips; this is one.</summary>
+    public IReadOnlyList<Customer> GetTopShoppersForSession(string sessionId, int limit)
+    {
+        using var conn = _factory.Open();
+        var rows = conn.Query<Row>(
+            @"SELECT c.*
+              FROM Customer c
+              JOIN Label l ON l.CustomerId = c.Id
+              WHERE l.SessionId = @sessionId
+                AND l.PrintedAt IS NOT NULL
+                AND l.CancelledAt IS NULL
+                AND l.IsTentativeBackup = 0
+              GROUP BY c.Id
+              ORDER BY SUM(l.Price) DESC
+              LIMIT @limit",
+            new { sessionId, limit });
+        return rows.Select(Map).ToList();
+    }
+
     public Customer? GetById(string id)
     {
         using var conn = _factory.Open();

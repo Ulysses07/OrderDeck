@@ -186,16 +186,22 @@ public class GiveawayServiceTests
     }
 
     [Fact]
-    public void Draw_with_no_participants_returns_empty_and_ends_giveaway()
+    public void Draw_with_no_participants_throws_and_keeps_giveaway_active()
     {
+        // Behaviour change: previously Draw returned an empty list and ended
+        // the giveaway silently, which made the overlay animate a blank
+        // wheel for ~10s. Now Draw throws GiveawayHasNoParticipantsException
+        // so the WPF shell can surface a Turkish "no entries" prompt and
+        // leave the giveaway open for late entrants.
         var (svc, repo, _, db, sid) = Fx();
         using var _2 = db;
         var g = svc.Start(sid, "🌹", 60, 1, null, true);
 
-        var winners = svc.Draw(g.Id);
+        var act = () => svc.Draw(g.Id);
 
-        winners.Should().BeEmpty();
-        repo.GetById(g.Id)!.EndedAt.Should().NotBeNull();
+        act.Should().Throw<OrderDeck.Core.Sales.GiveawayHasNoParticipantsException>()
+           .Which.Keyword.Should().Be("🌹");
+        repo.GetById(g.Id)!.EndedAt.Should().BeNull();
     }
 
     [Fact]
