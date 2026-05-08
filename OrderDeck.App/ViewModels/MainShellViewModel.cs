@@ -104,21 +104,17 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private string _licenseStatusText = "";
     [ObservableProperty] private Brush _licenseStatusBrush = Brushes.Gray;
 
+    /// <summary>Non-null when the heartbeat has failed enough consecutive
+    /// times that the operator should know "license server unreachable".
+    /// Bound by MainShellView.xaml to a yellow banner above the queue.</summary>
+    [ObservableProperty] private string? _serverOfflineBanner;
+
     /// <summary>Non-null when the active license has fewer than 7 days
-    /// remaining. Surfaces as a yellow banner above the queue so the
-    /// operator gets a week's heads-up to renew before the heartbeat
-    /// silently expires the license mid-stream and YouTube chat cuts
-    /// off (trial-mode kicks in for non-Instagram ingestors).</summary>
+    /// remaining. Yellow banner — week's heads-up to renew.</summary>
     [ObservableProperty] private string? _licenseExpiryBanner;
 
-    /// <summary>3-state chat ingestion health for the status bar dot.
-    /// "ok" = at least one message in the last 60s; "idle" = session
-    /// active + handle configured but no traffic for 60s+ (chat slow,
-    /// or scraper disconnected); "off" = no active session OR no
-    /// configured handle (operator hasn't started a stream / connected
-    /// YouTube). Polled by a 5s DispatcherTimer because the existing
-    /// ChatBus is a fire-and-forget pub-sub with no idle/health
-    /// signal of its own.</summary>
+    /// <summary>3-state chat ingestion health dot. "ok" / "idle" / "off".
+    /// Polled by a 5s DispatcherTimer (see UpdateChatHealth).</summary>
     [ObservableProperty] private string _chatHealthState = "off";
     [ObservableProperty] private string _chatHealthTooltip = "Chat takibi kapalı (yayın aktif değil)";
 
@@ -164,7 +160,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         EnsureChatFlushTimer();
         _licenseService = licenseService;
         _licenseService.StatusChanged += OnLicenseStatusChanged;
+        _licenseService.HeartbeatStateChanged += OnHeartbeatStateChanged;
         UpdateLicenseUiFromService();
+        UpdateServerOfflineBanner();
 
         _settingsStore = settingsStore;
         _animationCatalogClient = animationCatalogClient;
@@ -326,6 +324,38 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             return;
         }
         UpdateLicenseUiFromService();
+    }
+
+    private void OnHeartbeatStateChanged(object? sender, EventArgs e)
+    {
+        if (System.Windows.Application.Current?.Dispatcher is { } d && !d.CheckAccess())
+        {
+            d.InvokeAsync(UpdateServerOfflineBanner);
+            return;
+        }
+        UpdateServerOfflineBanner();
+    }
+
+    private void UpdateServerOfflineBanner()
+    {
+        // 2+ consecutive failures = at least one full heartbeat interval (1h
+        // by default) of unreachable. Single transient miss is normal and
+        // not worth alarming the operator about. Status comes through the
+        // existing pipeline anyway (OfflineGrace state).
+        var fails = _licenseService.ConsecutiveHeartbeatFailures;
+        if (fails >= 2)
+        {
+            var lastSuccess = _licenseService.LastHeartbeatSuccessAt is { } s
+                ? s.LocalDateTime.ToString("HH:mm")
+                : "—";
+            ServerOfflineBanner =
+                $"Lisans sunucusu erişilemiyor ({fails}× başarısız, son başarılı kontrol {lastSuccess}). " +
+                "Çevrimdışı çalışma modunda yayına devam edebilirsin; uzun süre devam ederse trial moduna düşersin.";
+        }
+        else
+        {
+            ServerOfflineBanner = null;
+        }
     }
 
     private void UpdateLicenseUiFromService()

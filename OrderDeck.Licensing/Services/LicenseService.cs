@@ -44,6 +44,40 @@ public sealed class LicenseService : ITrialModeProbe
 
     public LicenseStatus CurrentStatus { get; private set; } = LicenseStatus.Initializing;
 
+    // ── Heartbeat health (set by HeartbeatHostedService) ──────────────
+    // Surfaces "license server unreachable" to the WPF UI so the operator
+    // has visible warning during a live. Without this the heartbeat's
+    // LogWarning was the only signal — invisible to non-developers.
+    public DateTimeOffset? LastHeartbeatSuccessAt { get; private set; }
+    public DateTimeOffset? LastHeartbeatAttemptAt { get; private set; }
+    public int ConsecutiveHeartbeatFailures { get; private set; }
+    public string? LastHeartbeatError { get; private set; }
+    public event EventHandler? HeartbeatStateChanged;
+
+    /// <summary>Called by HeartbeatHostedService after a successful
+    /// /licenses/validate round-trip.</summary>
+    public void RecordHeartbeatSuccess()
+    {
+        var now = DateTimeOffset.UtcNow;
+        LastHeartbeatSuccessAt = now;
+        LastHeartbeatAttemptAt = now;
+        ConsecutiveHeartbeatFailures = 0;
+        LastHeartbeatError = null;
+        HeartbeatStateChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>Called by HeartbeatHostedService when /licenses/validate
+    /// throws (network down, TLS fail, etc.). Distinct from license
+    /// validation rejections — those flow through StatusChanged as
+    /// OfflineGrace / OfflineExpired.</summary>
+    public void RecordHeartbeatFailure(Exception error)
+    {
+        LastHeartbeatAttemptAt = DateTimeOffset.UtcNow;
+        ConsecutiveHeartbeatFailures++;
+        LastHeartbeatError = error.GetType().Name + ": " + error.Message;
+        HeartbeatStateChanged?.Invoke(this, EventArgs.Empty);
+    }
+
     /// <inheritdoc cref="ITrialModeProbe.IsTrialMode"/>
     public bool IsTrialMode => CurrentStatus.IsTrialMode();
 
