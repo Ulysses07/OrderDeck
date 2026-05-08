@@ -104,6 +104,24 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private string _licenseStatusText = "";
     [ObservableProperty] private Brush _licenseStatusBrush = Brushes.Gray;
 
+    /// <summary>Non-null when the active license has fewer than 7 days
+    /// remaining. Surfaces as a yellow banner above the queue so the
+    /// operator gets a week's heads-up to renew before the heartbeat
+    /// silently expires the license mid-stream and YouTube chat cuts
+    /// off (trial-mode kicks in for non-Instagram ingestors).</summary>
+    [ObservableProperty] private string? _licenseExpiryBanner;
+
+    /// <summary>3-state chat ingestion health for the status bar dot.
+    /// "ok" = at least one message in the last 60s; "idle" = session
+    /// active + handle configured but no traffic for 60s+ (chat slow,
+    /// or scraper disconnected); "off" = no active session OR no
+    /// configured handle (operator hasn't started a stream / connected
+    /// YouTube). Polled by a 5s DispatcherTimer because the existing
+    /// ChatBus is a fire-and-forget pub-sub with no idle/health
+    /// signal of its own.</summary>
+    [ObservableProperty] private string _chatHealthState = "off";
+    [ObservableProperty] private string _chatHealthTooltip = "Chat takibi kapalı (yayın aktif değil)";
+
     [ObservableProperty] private int _newIntakeSubmissionsCount;
 
     public bool HasNewIntakeSubmissions => NewIntakeSubmissionsCount > 0;
@@ -182,6 +200,15 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private static readonly TimeSpan ChatFlushInterval = TimeSpan.FromMilliseconds(100);
     private System.Windows.Threading.DispatcherTimer? _chatFlushTimer;
 
+    // Chat health surface (status-bar dot). Set on every incoming message;
+    // a 5s timer compares it against the configured handle + active session
+    // to derive the 3-state UI signal. Volatile so the publishing thread
+    // (chat bus subscriber) and the polling timer agree without a lock.
+    private DateTime _lastChatMessageAtUtc = DateTime.MinValue;
+    private static readonly TimeSpan ChatHealthPollInterval = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan ChatHealthIdleThreshold = TimeSpan.FromSeconds(60);
+    private System.Windows.Threading.DispatcherTimer? _chatHealthTimer;
+
     private void OnChatMessage(ChatMessage m)
     {
         // Hot path: never block the publisher. Just enqueue + drop oldest if
@@ -189,6 +216,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         // pathological burst).
         _pendingChat.Enqueue(m);
         while (_pendingChat.Count > PendingChatHardCap && _pendingChat.TryDequeue(out _)) { }
+        _lastChatMessageAtUtc = DateTime.UtcNow;
     }
 
     private void EnsureChatFlushTimer()
@@ -198,6 +226,71 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             ChatFlushInterval, System.Windows.Threading.DispatcherPriority.Background,
             (_, _) => DrainPendingChat(), _dispatcher);
         _chatFlushTimer.Start();
+
+        // Separate timer for the chat-health dot. Cheap (one comparison +
+        // two settings reads every 5s); deliberately not piggy-backing on
+        // ChatFlushTimer because that one fires 10×/sec at Background
+        // priority and we don't need that resolution for a status dot.
+        _chatHealthTimer = new System.Windows.Threading.DispatcherTimer(
+            ChatHealthPollInterval, System.Windows.Threading.DispatcherPriority.Background,
+            (_, _) => UpdateChatHealth(), _dispatcher);
+        _chatHealthTimer.Start();
+        UpdateChatHealth();
+    }
+
+    private void UpdateChatHealth()
+    {
+        bool hasActiveSession;
+        bool hasYouTubeHandle;
+        try
+        {
+            hasActiveSession = _sessions.GetActive() is not null;
+            var settings = _settingsStore.Load();
+            hasYouTubeHandle = !string.IsNullOrWhiteSpace(settings.YouTubeChannelHandle);
+        }
+        catch
+        {
+            // Defensive: test harnesses sometimes wire mock services that
+            // throw on these calls (e.g. SQLite-less builds). Treat as "off"
+            // rather than poisoning the dispatcher with an NRE.
+            ChatHealthState = "off";
+            ChatHealthTooltip = "Chat takibi kapalı";
+            return;
+        }
+        var hasAnyChatSource = hasActiveSession; // bridge ingestor is always on
+
+        // 3-state signal:
+        // off  — operator hasn't started a stream OR has no chat source wired
+        //        (e.g. session active but no YouTube handle and the Chrome
+        //        extension hasn't connected). Gray dot, no alarm.
+        // idle — chat source is supposed to be running but no message has
+        //        arrived in 60s. Yellow dot — could be a quiet moment, could
+        //        be the scraper is wedged.
+        // ok   — at least one message in the last 60s. Green dot.
+        if (!hasAnyChatSource)
+        {
+            ChatHealthState = "off";
+            ChatHealthTooltip = "Chat takibi kapalı (yayın aktif değil)";
+            return;
+        }
+
+        var elapsed = DateTime.UtcNow - _lastChatMessageAtUtc;
+        if (_lastChatMessageAtUtc != DateTime.MinValue && elapsed < ChatHealthIdleThreshold)
+        {
+            var seconds = (int)elapsed.TotalSeconds;
+            ChatHealthState = "ok";
+            ChatHealthTooltip = $"Chat aktif (son mesaj {seconds}sn önce)";
+        }
+        else
+        {
+            ChatHealthState = "idle";
+            var sourceList = hasYouTubeHandle
+                ? "YouTube + eklenti köprüsü"
+                : "eklenti köprüsü";
+            ChatHealthTooltip = _lastChatMessageAtUtc == DateTime.MinValue
+                ? $"Chat takibi açık ({sourceList}) — henüz mesaj yok"
+                : $"Chat takibi açık ({sourceList}) — son mesaj 60sn'den uzun süre önce, scraper takılmış olabilir";
+        }
     }
 
     private void DrainPendingChat()
@@ -251,6 +344,29 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             LicenseStatus.TrialExpired  => ("Deneme süresi doldu — Lisans gerekli", Brushes.Crimson),
             _                           => ("Başlatılıyor", Brushes.Gray)
         };
+        UpdateLicenseExpiryBanner();
+    }
+
+    private void UpdateLicenseExpiryBanner()
+    {
+        // Active license expiring soon → operator needs at least a week to
+        // renew. Trial expiry is already loud (status text + crimson brush)
+        // so we only banner the silent "active but about to flip to
+        // OfflineExpired" case.
+        if (_licenseService.CurrentStatus == LicenseStatus.Active &&
+            _licenseService.CurrentLicense is { } lic &&
+            lic.RemainingDaysAtLastCheck >= 0 &&
+            lic.RemainingDaysAtLastCheck <= 7)
+        {
+            var d = lic.RemainingDaysAtLastCheck;
+            LicenseExpiryBanner = d == 0
+                ? "Lisansın bugün doluyor — yenilemezsen yarın YouTube chat ve premium özellikler kapanacak."
+                : $"Lisansın {d} gün içinde dolacak — yenilemezsen YouTube chat ve premium özellikler kapanacak.";
+        }
+        else
+        {
+            LicenseExpiryBanner = null;
+        }
     }
 
     private int RemainingTrialDays()

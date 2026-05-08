@@ -285,6 +285,23 @@ public sealed partial class SettingsViewModel : ViewModelBase
             LabelMessageFontSize < 6 || LabelMessageFontSize > 72)
         { ValidationError = "Font boyutu 6-72 pt arasında olmalı."; return false; }
 
+        // YouTube channel handle / URL — empty is fine (= disabled), but
+        // a non-empty value that we can't recognise as either an @handle
+        // or a watch URL will silently make the scraper idle forever.
+        // Extract logic mirrors YouTubeChatHostedService line 86-94.
+        var ytTrim = YouTubeChannelHandle?.Trim();
+        if (!string.IsNullOrEmpty(ytTrim))
+        {
+            var looksLikeHandle = ytTrim.StartsWith('@') || !ytTrim.Contains('/');
+            var looksLikeUrl = ytTrim.Contains("youtube.com", System.StringComparison.OrdinalIgnoreCase)
+                            || ytTrim.Contains("youtu.be", System.StringComparison.OrdinalIgnoreCase);
+            if (!looksLikeHandle && !looksLikeUrl)
+            {
+                ValidationError = "YouTube alanı @handle veya tam YouTube URL'si olmalı (örn: @kanaladi veya https://youtube.com/watch?v=...).";
+                return false;
+            }
+        }
+
         ValidationError = null;
         return true;
     }
