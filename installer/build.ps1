@@ -5,7 +5,7 @@
 .DESCRIPTION
   Runs three steps:
     1. dotnet publish OrderDeck.App with the win-x64-installer profile
-       → publish/ at the repo root (~150 MB self-contained).
+       -> publish/ at the repo root (~150 MB self-contained).
     2. Downloads MicrosoftEdgeWebview2Setup.exe (the evergreen bootstrapper)
        from Microsoft's public CDN if not already cached in installer/.
     3. Invokes ISCC.exe (Inno Setup compiler) on installer/orderdeck.iss
@@ -44,7 +44,7 @@ try {
       --nologo
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
   } else {
-    Write-Host "[1/3] dotnet publish — SKIPPED (-SkipPublish)" -ForegroundColor Yellow
+    Write-Host "[1/3] dotnet publish -- SKIPPED (-SkipPublish)" -ForegroundColor Yellow
   }
 
   $bootstrap = Join-Path $repoRoot "installer\MicrosoftEdgeWebview2Setup.exe"
@@ -67,11 +67,12 @@ try {
 
   $output = Join-Path $repoRoot "dist\OrderDeck-$Version-setup.exe"
   if (Test-Path $output) {
-    $size = (Get-Item $output).Length / 1MB
+    $sizeMB = [math]::Round((Get-Item $output).Length / 1MB, 1)
     Write-Host ""
-    Write-Host "✓ Done: $output ($([math]::Round($size,1)) MB)" -ForegroundColor Green
-  } else {
-    Write-Host "⚠ Compile reported success but output not found at $output" -ForegroundColor Yellow
+    Write-Host "Done: $output ($sizeMB MB)" -ForegroundColor Green
+  }
+  else {
+    Write-Host "Warning: compile reported success but output not found at $output" -ForegroundColor Yellow
   }
 }
 finally {
