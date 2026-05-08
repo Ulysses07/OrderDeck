@@ -156,6 +156,15 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _youTubeModeration = youTubeModeration;
         Banner = banner;
         _dispatcher = Dispatcher.CurrentDispatcher;
+        // Wire fields BEFORE starting any timer / event handler — the chat-
+        // flush timer's initial UpdateChatHealth() call reads _settingsStore
+        // and _sessions, so they must be assigned first or the first poll
+        // throws NullReferenceException. (Reproed under debugger 2026-05-08.)
+        _settingsStore = settingsStore;
+        _animationCatalogClient = animationCatalogClient;
+        _intakeSync = intakeSync;
+        _intakeSync.SubmissionsSynced += OnIntakeSubmissionsSynced;
+
         _busSubscription = bus.Subscribe(OnChatMessage);
         EnsureChatFlushTimer();
         _licenseService = licenseService;
@@ -163,11 +172,6 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _licenseService.HeartbeatStateChanged += OnHeartbeatStateChanged;
         UpdateLicenseUiFromService();
         UpdateServerOfflineBanner();
-
-        _settingsStore = settingsStore;
-        _animationCatalogClient = animationCatalogClient;
-        _intakeSync = intakeSync;
-        _intakeSync.SubmissionsSynced += OnIntakeSubmissionsSynced;
 
         Banner.AutoDrawRequested += () => DrawGiveawayNowCommand.Execute(null);
 
