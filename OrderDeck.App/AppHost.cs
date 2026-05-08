@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Net.Http;
 using OrderDeck.App.Services;
 using OrderDeck.App.Services.IntakeForm;
 using OrderDeck.Chat.Bridge;
@@ -101,6 +102,31 @@ public sealed class AppHost : IDisposable
         // youtube.com/{handle}/live and runs the InnerTube continuation API
         // when the channel goes live. Idle when AppSettings.YouTubeChannelHandle
         // is unset; honors trial-mode the same way the extension bridge does.
+        // Named clients for the YouTube ingestion path. IHttpClientFactory
+        // owns the SocketsHttpHandler pool so the per-scraper-instance leak
+        // (one new HttpClient + handler every time a scraper started/
+        // stopped, never disposed in long streams) is gone.
+        services.AddHttpClient(
+            OrderDeck.Chat.Ingestors.YouTube.YouTubeChatHostedService.ResolverClientName,
+            c => c.Timeout = TimeSpan.FromSeconds(15))
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate,
+                ConnectTimeout = TimeSpan.FromSeconds(10),
+                PooledConnectionLifetime = TimeSpan.FromMinutes(5)
+            });
+        services.AddHttpClient(
+            OrderDeck.Chat.Ingestors.YouTube.YouTubeChatHostedService.ScraperClientName,
+            c => c.Timeout = TimeSpan.FromSeconds(30))
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                PooledConnectionLifetime = TimeSpan.FromMinutes(10),
+                PooledConnectionIdleTimeout = TimeSpan.FromMinutes(5),
+                MaxConnectionsPerServer = 5,
+                ConnectTimeout = TimeSpan.FromSeconds(15),
+                AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate
+            });
+
         services.AddHostedService(sp =>
             new OrderDeck.Chat.Ingestors.YouTube.YouTubeChatHostedService(
                 () => sp.GetRequiredService<AppSettings>(),
@@ -108,7 +134,8 @@ public sealed class AppHost : IDisposable
                 sp.GetRequiredService<ILoggerFactory>(),
                 trialProbe: sp.GetRequiredService<LicenseService>(),
                 spamFilter: sp.GetRequiredService<SpamFilter>(),
-                sessions: sp.GetRequiredService<StreamSessionService>()));
+                sessions: sp.GetRequiredService<StreamSessionService>(),
+                httpFactory: sp.GetRequiredService<IHttpClientFactory>()));
 
         // Phase 5d — YouTube OAuth + moderation. The data store sits in a
         // dedicated subfolder so we can wipe it on disconnect without

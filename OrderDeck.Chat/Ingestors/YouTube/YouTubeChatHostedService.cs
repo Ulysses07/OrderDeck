@@ -1,3 +1,4 @@
+using System.Net.Http;
 using OrderDeck.Core.Chat;
 using OrderDeck.Core.Sessions;
 using OrderDeck.Core.Settings;
@@ -32,6 +33,15 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
     private readonly ITrialModeProbe? _trialProbe;
     private readonly SpamFilter? _spamFilter;
     private readonly StreamSessionService? _sessions;
+    private readonly IHttpClientFactory? _httpFactory;
+
+    // Named clients used when _httpFactory is wired. AppHost configures
+    // their handlers (User-Agent / Accept-Language are added per-request
+    // by the resolver/scraper themselves). Consumers fall back to
+    // creating local clients when the factory isn't available (legacy
+    // test paths that built the service without the App's DI tree).
+    public const string ResolverClientName = "youtube-resolver";
+    public const string ScraperClientName  = "youtube-scraper";
 
     private CancellationTokenSource? _cts;
     private Task? _runner;
@@ -47,7 +57,8 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
         ILoggerFactory loggerFactory,
         ITrialModeProbe? trialProbe = null,
         SpamFilter? spamFilter = null,
-        StreamSessionService? sessions = null)
+        StreamSessionService? sessions = null,
+        IHttpClientFactory? httpFactory = null)
     {
         _settingsProvider = settingsProvider;
         _bus = bus;
@@ -56,6 +67,7 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
         _trialProbe = trialProbe;
         _spamFilter = spamFilter;
         _sessions = sessions;
+        _httpFactory = httpFactory;
 
         if (_sessions is not null)
             _sessions.SessionEnded += OnSessionEnded;
@@ -90,7 +102,15 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
 
     private async Task RunAsync(CancellationToken ct)
     {
-        using var resolver = new YouTubeLiveResolver(_loggerFactory.CreateLogger<YouTubeLiveResolver>());
+        // Resolver is single-instance for the hosted service's lifetime —
+        // factory-built client is reused across resolve attempts. Falls
+        // back to a local HttpClient when the factory wasn't supplied
+        // (legacy / test paths). The fallback is the leak we used to
+        // have unconditionally; production now goes through the factory.
+        var resolverHttp = _httpFactory?.CreateClient(ResolverClientName)
+                          ?? new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+        using var resolver = new YouTubeLiveResolver(
+            _loggerFactory.CreateLogger<YouTubeLiveResolver>(), resolverHttp);
 
         while (!ct.IsCancellationRequested)
         {
@@ -135,9 +155,11 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
                 }
 
                 _log.LogInformation("[YouTubeChatHostedService] starting scraper for video {VideoId}", videoId);
+                var scraperHttp = _httpFactory?.CreateClient(ScraperClientName)
+                                  ?? new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
                 using var scraper = new YouTubeLiveChatScraper(
                     videoId, _bus, _loggerFactory.CreateLogger<YouTubeLiveChatScraper>(),
-                    _spamFilter);
+                    scraperHttp, _spamFilter);
 
                 // Per-scraper cancellation: linked to the outer ct (app
                 // shutdown / hosted-service stop) AND cancellable directly

@@ -281,7 +281,13 @@ public sealed class OverlayHost : IAsyncDisposable
             new ChatMessageEvent(m.Id, m.Platform, m.Username, m.DisplayName,
                 m.AvatarUrl, m.Text, m.ReceivedAt));
         var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(evt, WireJson));
-        foreach (var (_, ws) in _chatClients)
+        // Snapshot the value collection before iterating: enumerating a
+        // ConcurrentDictionary is technically allowed but a concurrent
+        // TryRemove (from HandleChatClient.finally on a closing socket)
+        // can yield stale or duplicate entries to the broadcast loop.
+        // Capturing once also frees the broadcast thread to fire SendBytes
+        // without the dictionary's read lock held under load.
+        foreach (var ws in _chatClients.Values.ToArray())
         {
             if (ws.State != WebSocketState.Open) continue;
             _ = SendBytes(ws, bytes, CancellationToken.None);
@@ -291,7 +297,8 @@ public sealed class OverlayHost : IAsyncDisposable
     private void BroadcastGiveaway(string type, object data)
     {
         var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new OverlayEvent(type, data), WireJson));
-        foreach (var (_, ws) in _giveawayClients)
+        // Same snapshot rationale as BroadcastChatMessage above.
+        foreach (var ws in _giveawayClients.Values.ToArray())
         {
             if (ws.State != WebSocketState.Open) continue;
             _ = SendBytes(ws, bytes, CancellationToken.None);
