@@ -53,6 +53,15 @@ public sealed class AppSettings
 
     /// <summary>Giveaway animation settings (wheel plugin, volume, mute).</summary>
     public GiveawayAnimationSettings GiveawayAnimation { get; set; } = new();
+
+    /// <summary>True when the operator has completed the first-run setup
+    /// wizard (license activation, YouTube handle, printer, Chrome extension
+    /// install). Default false → wizard runs once on first launch after
+    /// install. Persisted in settings.json so a clean app restart doesn't
+    /// re-prompt. Pre-installer existing users will see the wizard once on
+    /// their next update — acceptable since they can skip every optional
+    /// step in seconds.</summary>
+    public bool HasCompletedFirstRun { get; set; } = false;
 }
 
 /// <summary>Phase 4g: WhatsApp ödeme istemleri için Settings bloğu.</summary>

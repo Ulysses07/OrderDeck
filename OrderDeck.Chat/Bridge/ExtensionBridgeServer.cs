@@ -35,6 +35,13 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
     private CancellationTokenSource? _cts;
     private Task? _runner;
 
+    // Active WebSocket connection counter — read by GET /_health so the
+    // first-run wizard can confirm the operator's Chrome extension is
+    // installed AND connected. Interlocked so the AcceptLoop publisher
+    // and the /_health request thread agree without a lock.
+    private int _activeWebSocketCount;
+    public int ActiveWebSocketCount => Volatile.Read(ref _activeWebSocketCount);
+
     public int Port { get; private set; }
 
     public ExtensionBridgeServer(IChatBus bus, int port = 4748,
@@ -76,6 +83,16 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
 
             if (!context.Request.IsWebSocketRequest)
             {
+                // GET /_health → JSON status. Used by the first-run wizard's
+                // "Doğrula" button to confirm the Chrome extension is loaded
+                // AND connected to the bridge (the WS handshake is what
+                // actually proves it; HTTP just exposes the counter).
+                if (context.Request.HttpMethod == "GET" &&
+                    context.Request.Url?.AbsolutePath == "/_health")
+                {
+                    HandleHealthRequest(context);
+                    continue;
+                }
                 context.Response.StatusCode = 400;
                 context.Response.Close();
                 continue;
@@ -94,7 +111,49 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
         }
     }
 
+    private void HandleHealthRequest(HttpListenerContext context)
+    {
+        try
+        {
+            var count = ActiveWebSocketCount;
+            var json = JsonSerializer.Serialize(new
+            {
+                connected = count > 0,
+                clientCount = count
+            }, JsonOpts);
+            var payload = Encoding.UTF8.GetBytes(json);
+            context.Response.StatusCode = 200;
+            context.Response.ContentType = "application/json; charset=utf-8";
+            context.Response.ContentLength64 = payload.Length;
+            // Localhost-only so CORS isn't a real risk, but the wizard fetches
+            // from a custom HttpClient so wildcard is fine + saves debugging.
+            context.Response.Headers["Access-Control-Allow-Origin"] = "*";
+            context.Response.OutputStream.Write(payload, 0, payload.Length);
+        }
+        catch (Exception ex)
+        {
+            _log.LogDebug(ex, "Health endpoint write failed");
+        }
+        finally
+        {
+            try { context.Response.Close(); } catch { /* ignore */ }
+        }
+    }
+
     private async Task Handle(WebSocket ws, CancellationToken ct)
+    {
+        Interlocked.Increment(ref _activeWebSocketCount);
+        try
+        {
+            await HandleCore(ws, ct);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _activeWebSocketCount);
+        }
+    }
+
+    private async Task HandleCore(WebSocket ws, CancellationToken ct)
     {
         var buf = new byte[8192];
         var ms = new System.IO.MemoryStream();

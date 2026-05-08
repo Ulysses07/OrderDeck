@@ -1,0 +1,232 @@
+<Window x:Class="OrderDeck.App.Views.FirstRunWizard"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="OrderDeck — Kurulum Sihirbazı"
+        Height="600" Width="780"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="NoResize"
+        ShowInTaskbar="True">
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>   <!-- Header: title + step label -->
+            <RowDefinition Height="*"/>      <!-- Step content -->
+            <RowDefinition Height="Auto"/>   <!-- Footer: nav buttons -->
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <DockPanel Grid.Row="0" Margin="0,0,0,16">
+            <TextBlock DockPanel.Dock="Right"
+                       Text="{Binding StepLabel}"
+                       Foreground="#FFAAAAAA" VerticalAlignment="Bottom"/>
+            <TextBlock Text="🎁 OrderDeck'e Hoş Geldin"
+                       FontSize="22" FontWeight="Bold"
+                       Foreground="#FFFFD166"/>
+        </DockPanel>
+
+        <!-- Step content. Each step is a separate panel; visibility bound
+             to IsStepN booleans on the VM. Single ContentPresenter +
+             DataTemplate selector would be cleaner for n>10 but at 6 steps
+             explicit panels read better. -->
+        <Border Grid.Row="1" Background="#FF222222" CornerRadius="6" Padding="24">
+            <Grid>
+                <!-- Step 1: Welcome -->
+                <StackPanel Visibility="{Binding IsStep1, Converter={StaticResource BoolToVisibleConverter}}">
+                    <TextBlock Text="Kuruluma başlıyoruz" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12"/>
+                    <TextBlock TextWrapping="Wrap" LineHeight="22" Foreground="#FFE0E0E0">
+                        Bu sihirbaz seni 5 adımda OrderDeck'i yayına hazır hale getirir:
+                    </TextBlock>
+                    <StackPanel Margin="0,16,0,0">
+                        <TextBlock Margin="0,4">• <Run Text="Lisans etkinleştirme"/></TextBlock>
+                        <TextBlock Margin="0,4">• <Run Text="YouTube kanal ayarı (opsiyonel)"/></TextBlock>
+                        <TextBlock Margin="0,4">• <Run Text="Yazıcı ayarları (opsiyonel)"/></TextBlock>
+                        <TextBlock Margin="0,4">• <Run Text="Chrome eklentisi kurulumu"/></TextBlock>
+                        <TextBlock Margin="0,4">• <Run Text="Tamam, hazırsın!"/></TextBlock>
+                    </StackPanel>
+                    <TextBlock Margin="0,20,0,0" Foreground="#FFAAAAAA" TextWrapping="Wrap">
+                        Tüm adımlar daha sonra Ayarlar menüsünden de değiştirilebilir. Atlamak istediğin adımları geçebilirsin.
+                    </TextBlock>
+                </StackPanel>
+
+                <!-- Step 2: License -->
+                <StackPanel Visibility="{Binding IsStep2, Converter={StaticResource BoolToVisibleConverter}}">
+                    <TextBlock Text="Lisans" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12"/>
+                    <TextBlock TextWrapping="Wrap" LineHeight="22" Foreground="#FFE0E0E0">
+                        OrderDeck'i kullanmak için lisansı etkinleştir veya 14 günlük denemeyi başlat.
+                    </TextBlock>
+                    <Border Margin="0,20,0,0" Padding="16" Background="#FF1A1A1A" CornerRadius="4">
+                        <DockPanel>
+                            <TextBlock DockPanel.Dock="Left"
+                                       Text="{Binding LicenseStatusText}"
+                                       FontSize="14" FontWeight="SemiBold"
+                                       VerticalAlignment="Center"/>
+                            <Button DockPanel.Dock="Right"
+                                    Content="Lisansı etkinleştir"
+                                    Command="{Binding ActivateLicenseCommand}"
+                                    Padding="14,6"
+                                    Visibility="{Binding IsLicenseActivated, Converter={StaticResource BoolToCollapsedConverter}}"/>
+                            <TextBlock/>
+                        </DockPanel>
+                    </Border>
+                </StackPanel>
+
+                <!-- Step 3: YouTube -->
+                <StackPanel Visibility="{Binding IsStep3, Converter={StaticResource BoolToVisibleConverter}}">
+                    <TextBlock Text="YouTube Kanal Bağlantısı" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12"/>
+                    <TextBlock TextWrapping="Wrap" LineHeight="22" Foreground="#FFE0E0E0">
+                        YouTube canlı yayınlarındaki chat mesajlarını OrderDeck'e çekmek için kanal handle'ını gir. Boş bırakırsan sadece Instagram/TikTok/Facebook için Chrome eklentisi ile çalışır.
+                    </TextBlock>
+                    <TextBlock Margin="0,20,0,4" Foreground="#FFFFD166">Kanal Handle'ı veya URL'si:</TextBlock>
+                    <TextBox Text="{Binding YouTubeHandle, UpdateSourceTrigger=PropertyChanged}"
+                             FontSize="14" Padding="8"/>
+                    <TextBlock Margin="0,4,0,0" FontSize="11" Foreground="#FFAAAAAA">
+                        Örnek: <Run FontWeight="SemiBold">@orderdeck</Run> veya <Run FontWeight="SemiBold">https://youtube.com/@orderdeck</Run>
+                    </TextBlock>
+                </StackPanel>
+
+                <!-- Step 4: Printer -->
+                <StackPanel Visibility="{Binding IsStep4, Converter={StaticResource BoolToVisibleConverter}}">
+                    <TextBlock Text="Yazıcı Ayarları" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12"/>
+                    <TextBlock TextWrapping="Wrap" LineHeight="22" Foreground="#FFE0E0E0">
+                        Etiket yazdırma için kullanacağın yazıcının ayarları Ayarlar → Yazıcı sekmesinden yapılır. Şimdi atlayabilir, sonra ayarlayabilirsin — yayın sırasında ayar dışındaki tüm özellikler çalışır.
+                    </TextBlock>
+                    <Border Margin="0,20,0,0" Padding="16" Background="#FF1A1A1A" CornerRadius="4">
+                        <TextBlock TextWrapping="Wrap" Foreground="#FFAAAAAA">
+                            ⓘ Yazıcı seçimi + etiket boyutu Ayarlar dialog'unda yapılır. Sihirbaz tamamlandıktan sonra üst menüden Ayarlar'ı aç.
+                        </TextBlock>
+                    </Border>
+                </StackPanel>
+
+                <!-- Step 5: Chrome extension -->
+                <ScrollViewer Visibility="{Binding IsStep5, Converter={StaticResource BoolToVisibleConverter}}"
+                              VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <TextBlock Text="Chrome Eklentisi Kurulumu" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12"/>
+                        <TextBlock TextWrapping="Wrap" LineHeight="22" Foreground="#FFE0E0E0">
+                            Instagram / TikTok / Facebook canlı yayın chat'i için Chrome eklentisini kurman gerekiyor. Aşağıdaki adımları sırasıyla uygula:
+                        </TextBlock>
+
+                        <Border Margin="0,16,0,0" Padding="14" Background="#FF1A1A1A" CornerRadius="4">
+                            <StackPanel>
+                                <TextBlock Foreground="#FFFFD166" FontWeight="SemiBold" Margin="0,0,0,8">
+                                    1. Eklenti klasörünü hazırla
+                                </TextBlock>
+                                <DockPanel>
+                                    <Button DockPanel.Dock="Right"
+                                            Content="Klasörü Aç"
+                                            Command="{Binding OpenExtensionFolderCommand}"
+                                            Padding="14,6"/>
+                                    <TextBlock Text="{Binding ExtensionPath}"
+                                               FontFamily="Consolas, monospace"
+                                               FontSize="11" Foreground="#FFAAAAAA"
+                                               TextWrapping="Wrap" VerticalAlignment="Center"
+                                               Margin="0,0,12,0"/>
+                                </DockPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Margin="0,12,0,0" Padding="14" Background="#FF1A1A1A" CornerRadius="4">
+                            <StackPanel>
+                                <TextBlock Foreground="#FFFFD166" FontWeight="SemiBold" Margin="0,0,0,8">
+                                    2. Chrome'da chrome://extensions sayfasını aç
+                                </TextBlock>
+                                <Button Content="Chrome'da Eklentiler Sayfasını Aç"
+                                        Command="{Binding OpenChromeExtensionsPageCommand}"
+                                        HorizontalAlignment="Left" Padding="14,6"/>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Margin="0,12,0,0" Padding="14" Background="#FF1A1A1A" CornerRadius="4">
+                            <StackPanel>
+                                <TextBlock Foreground="#FFFFD166" FontWeight="SemiBold" Margin="0,0,0,8">
+                                    3. Sayfada şu adımları uygula:
+                                </TextBlock>
+                                <TextBlock Margin="0,2"  Foreground="#FFE0E0E0">a) Sağ üstte <Run FontWeight="SemiBold">Geliştirici modu</Run>'nu aç</TextBlock>
+                                <TextBlock Margin="0,2"  Foreground="#FFE0E0E0">b) Sol üstte <Run FontWeight="SemiBold">Paketlenmemiş öğe yükle</Run> butonuna bas</TextBlock>
+                                <TextBlock Margin="0,2"  Foreground="#FFE0E0E0">c) Açılan klasör seçicide adım 1'deki <Run FontWeight="SemiBold">Extension</Run> klasörünü seç</TextBlock>
+                                <TextBlock Margin="0,2"  Foreground="#FFE0E0E0">d) Eklenti listesinde <Run FontWeight="SemiBold">OrderDeck Chat Bridge</Run> görünmeli</TextBlock>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Margin="0,12,0,0" Padding="14" Background="#FF1A1A1A" CornerRadius="4">
+                            <StackPanel>
+                                <TextBlock Foreground="#FFFFD166" FontWeight="SemiBold" Margin="0,0,0,8">
+                                    4. Bağlantıyı doğrula
+                                </TextBlock>
+                                <DockPanel>
+                                    <Button DockPanel.Dock="Right"
+                                            Content="Doğrula"
+                                            Command="{Binding VerifyExtensionAsyncCommand}"
+                                            Padding="14,6"/>
+                                    <TextBlock Text="{Binding ExtensionVerifyResult}"
+                                               TextWrapping="Wrap"
+                                               VerticalAlignment="Center"
+                                               Margin="0,0,12,0">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Foreground" Value="#FFAAAAAA"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsExtensionConnected}" Value="True">
+                                                        <Setter Property="Foreground" Value="#FF4ADE80"/>
+                                                        <Setter Property="FontWeight" Value="SemiBold"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </DockPanel>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <!-- Step 6: Done -->
+                <StackPanel Visibility="{Binding IsStep6, Converter={StaticResource BoolToVisibleConverter}}">
+                    <TextBlock Text="🎉 Hazırsın" FontSize="22" FontWeight="Bold" Foreground="#FF4ADE80" Margin="0,0,0,12"/>
+                    <TextBlock TextWrapping="Wrap" LineHeight="22" Foreground="#FFE0E0E0">
+                        OrderDeck kuruldu ve yayına hazır. Şimdi yapabileceklerin:
+                    </TextBlock>
+                    <StackPanel Margin="0,16,0,0">
+                        <TextBlock Margin="0,4" Foreground="#FFE0E0E0">• Üst menüden <Run FontWeight="SemiBold">Yayın Başlat</Run> butonuna bas</TextBlock>
+                        <TextBlock Margin="0,4" Foreground="#FFE0E0E0">• OBS'de browser source URL'si: <Run FontFamily="Consolas, monospace" FontSize="11" Foreground="#FFFFD166">http://localhost:4747/overlay/chat</Run></TextBlock>
+                        <TextBlock Margin="0,4" Foreground="#FFE0E0E0">• Çekiliş animasyonu: <Run FontFamily="Consolas, monospace" FontSize="11" Foreground="#FFFFD166">http://localhost:4747/overlay/giveaway</Run></TextBlock>
+                        <TextBlock Margin="0,4" Foreground="#FFE0E0E0">• Sorun çıkarsa: Ayarlar → Logları Aç</TextBlock>
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Footer: Back / Skip / Next or Finish -->
+        <DockPanel Grid.Row="2" Margin="0,16,0,0">
+            <Button DockPanel.Dock="Left"
+                    Content="Daha sonra hallederim"
+                    Command="{Binding SkipFirstRunCommand}"
+                    Padding="14,6"
+                    Foreground="#FFAAAAAA"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    Visibility="{Binding IsStep6, Converter={StaticResource BoolToCollapsedConverter}}"/>
+
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <Button Content="Geri"
+                        Command="{Binding BackCommand}"
+                        Padding="14,6" Margin="0,0,8,0"
+                        IsEnabled="{Binding CanGoBack}"/>
+
+                <Button Content="İleri"
+                        Command="{Binding NextCommand}"
+                        Padding="14,6"
+                        Visibility="{Binding IsStep6, Converter={StaticResource BoolToCollapsedConverter}}"
+                        IsDefault="True"/>
+
+                <Button Content="Bitir"
+                        Command="{Binding FinishCommand}"
+                        Padding="20,6"
+                        Background="#FF22C55E" Foreground="White"
+                        Visibility="{Binding IsStep6, Converter={StaticResource BoolToVisibleConverter}}"
+                        IsDefault="True"/>
+            </StackPanel>
+
+            <TextBlock/>
+        </DockPanel>
+    </Grid>
+</Window>
