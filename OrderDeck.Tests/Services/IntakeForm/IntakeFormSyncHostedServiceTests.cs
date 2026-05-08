@@ -19,13 +19,23 @@ public sealed class IntakeFormSyncHostedServiceTests
         public DateTimeOffset Now => DateTimeOffset.FromUnixTimeSeconds(1714521600L);
     }
 
+    // Tests use a deterministic TaskCompletionSource ("twoCallsObserved")
+    // instead of the previous Task.Delay(250). The fixed delay was tight
+    // enough that a slow Windows GitHub runner under resource contention
+    // could trigger only 1 of the ≥2 expected callbacks before cancellation
+    // (CI-only flake reproed on 2026-05-08). Now: each test waits until the
+    // handler has actually fired ≥2 times, with a 5s watchdog timeout that
+    // catches a genuinely-broken hosted service (vs. just a slow runner).
+
     [Fact]
     public async Task Hosted_service_calls_SyncOnceAsync_periodically()
     {
         int callCount = 0;
+        var twoCallsObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var handler = new FakeHttpMessageHandler(_ =>
         {
-            Interlocked.Increment(ref callCount);
+            var c = Interlocked.Increment(ref callCount);
+            if (c >= 2) twoCallsObserved.TrySetResult();
             return FakeHttpMessageHandler.Json(200, "[]");
         });
 
@@ -45,7 +55,9 @@ public sealed class IntakeFormSyncHostedServiceTests
 
         using var cts = new CancellationTokenSource();
         await hosted.StartAsync(cts.Token);
-        await Task.Delay(250);
+        // Wait for the handler to have fired ≥2 times instead of a fixed
+        // delay. 5s watchdog covers slow CI runners under contention.
+        await twoCallsObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
         cts.Cancel();
         try { await hosted.StopAsync(CancellationToken.None); } catch { }
 
@@ -56,9 +68,11 @@ public sealed class IntakeFormSyncHostedServiceTests
     public async Task Hosted_service_continues_after_sync_throws()
     {
         int callCount = 0;
+        var twoCallsObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var handler = new FakeHttpMessageHandler(_ =>
         {
             var c = Interlocked.Increment(ref callCount);
+            if (c >= 2) twoCallsObserved.TrySetResult();
             if (c == 1) throw new HttpRequestException("fail once");
             return FakeHttpMessageHandler.Json(200, "[]");
         });
@@ -79,11 +93,11 @@ public sealed class IntakeFormSyncHostedServiceTests
 
         using var cts = new CancellationTokenSource();
         await hosted.StartAsync(cts.Token);
-        await Task.Delay(250);
+        // İlk call throw, 2. call success — wait for both deterministically.
+        await twoCallsObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
         cts.Cancel();
         try { await hosted.StopAsync(CancellationToken.None); } catch { }
 
-        // İlk call throw, 2. call success — toplam ≥2
         callCount.Should().BeGreaterThanOrEqualTo(2);
     }
 }
