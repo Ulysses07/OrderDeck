@@ -32,19 +32,43 @@
             <TextBox  Grid.Column="4" Text="{Binding ActivePriceText, UpdateSourceTrigger=PropertyChanged}"
                       Padding="6" FontSize="14"/>
 
-            <TextBlock Grid.Column="5"
-                       Text="{Binding LicenseStatusText}"
-                       Foreground="{Binding LicenseStatusBrush}"
-                       FontWeight="SemiBold"
-                       VerticalAlignment="Center"
-                       HorizontalAlignment="Right"
-                       Margin="12,0"
-                       Cursor="Hand"
-                       ToolTip="Hesap detayları için tıkla">
-                <TextBlock.InputBindings>
-                    <MouseBinding MouseAction="LeftClick" Command="{Binding OpenAccountCommand}"/>
-                </TextBlock.InputBindings>
-            </TextBlock>
+            <DockPanel Grid.Column="5" HorizontalAlignment="Right" Margin="12,0"
+                       LastChildFill="False" VerticalAlignment="Center">
+                <!-- Chat ingestion health dot. Green = at least one chat
+                     message in the last 60s; Yellow = configured but
+                     idle (scraper might be stuck); Gray = no active
+                     stream session. Updates every 5s via DispatcherTimer
+                     in MainShellViewModel. -->
+                <Ellipse DockPanel.Dock="Left"
+                         Width="10" Height="10" Margin="0,0,8,0"
+                         VerticalAlignment="Center"
+                         ToolTip="{Binding ChatHealthTooltip}">
+                    <Ellipse.Style>
+                        <Style TargetType="Ellipse">
+                            <Setter Property="Fill" Value="#FF6B7280"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding ChatHealthState}" Value="ok">
+                                    <Setter Property="Fill" Value="#FF22C55E"/>
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding ChatHealthState}" Value="idle">
+                                    <Setter Property="Fill" Value="#FFFBBF24"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Ellipse.Style>
+                </Ellipse>
+                <TextBlock DockPanel.Dock="Left"
+                           Text="{Binding LicenseStatusText}"
+                           Foreground="{Binding LicenseStatusBrush}"
+                           FontWeight="SemiBold"
+                           VerticalAlignment="Center"
+                           Cursor="Hand"
+                           ToolTip="Hesap detayları için tıkla">
+                    <TextBlock.InputBindings>
+                        <MouseBinding MouseAction="LeftClick" Command="{Binding OpenAccountCommand}"/>
+                    </TextBlock.InputBindings>
+                </TextBlock>
+            </DockPanel>
 
             <Border Grid.Column="6"
                     Background="Crimson" CornerRadius="10" Padding="8,3"
@@ -113,6 +137,23 @@
             <TextBlock Text="{Binding StreamStatusLabel}"
                        Foreground="#FFAAAAAA"
                        Visibility="{Binding IsGiveawayActive, Converter={StaticResource BoolToCollapsedConverter}}"/>
+
+            <!-- License-expiring-soon banner. Triggers when an active
+                 license has ≤7 days left. Without this the operator
+                 only saw the small "Lisans aktif — 5 gün" status text
+                 and routinely missed renewal until YouTube cut off
+                 mid-stream. Yellow band so it's hard to miss but not
+                 alarming as a hard error. -->
+            <DockPanel Background="#FF6B4A1A"
+                       LastChildFill="False"
+                       Visibility="{Binding LicenseExpiryBanner, Converter={StaticResource NullToCollapsedConverter}}">
+                <TextBlock DockPanel.Dock="Left"
+                           Text="{Binding LicenseExpiryBanner}"
+                           Foreground="#FFFFE0B0" FontWeight="SemiBold"
+                           Margin="12,6,16,6"
+                           VerticalAlignment="Center"
+                           TextWrapping="Wrap"/>
+            </DockPanel>
 
             <!-- Backup-selection mode banner. Sits on top of the regular status text
                  (highest z-order in the grid), so it visually blocks competing
