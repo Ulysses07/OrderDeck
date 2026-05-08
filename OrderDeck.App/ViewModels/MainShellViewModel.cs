@@ -104,6 +104,15 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private string _licenseStatusText = "";
     [ObservableProperty] private Brush _licenseStatusBrush = Brushes.Gray;
 
+    /// <summary>Non-null when the heartbeat has failed enough consecutive
+    /// times that the operator should know "license server unreachable".
+    /// Bound by MainShellView.xaml to a yellow banner above the queue.
+    /// Null = healthy or single transient failure (don't alarm on a
+    /// flaky packet). Threshold matches the ~5 minute "actually offline"
+    /// heuristic given a 1h heartbeat — but transient failures retry on
+    /// the timer's next tick so 2 consecutive misses ≈ 1h+ outage.</summary>
+    [ObservableProperty] private string? _serverOfflineBanner;
+
     [ObservableProperty] private int _newIntakeSubmissionsCount;
 
     public bool HasNewIntakeSubmissions => NewIntakeSubmissionsCount > 0;
@@ -146,7 +155,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         EnsureChatFlushTimer();
         _licenseService = licenseService;
         _licenseService.StatusChanged += OnLicenseStatusChanged;
+        _licenseService.HeartbeatStateChanged += OnHeartbeatStateChanged;
         UpdateLicenseUiFromService();
+        UpdateServerOfflineBanner();
 
         _settingsStore = settingsStore;
         _animationCatalogClient = animationCatalogClient;
@@ -233,6 +244,38 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             return;
         }
         UpdateLicenseUiFromService();
+    }
+
+    private void OnHeartbeatStateChanged(object? sender, EventArgs e)
+    {
+        if (System.Windows.Application.Current?.Dispatcher is { } d && !d.CheckAccess())
+        {
+            d.InvokeAsync(UpdateServerOfflineBanner);
+            return;
+        }
+        UpdateServerOfflineBanner();
+    }
+
+    private void UpdateServerOfflineBanner()
+    {
+        // 2+ consecutive failures = at least one full heartbeat interval (1h
+        // by default) of unreachable. Single transient miss is normal and
+        // not worth alarming the operator about. Status comes through the
+        // existing pipeline anyway (OfflineGrace state).
+        var fails = _licenseService.ConsecutiveHeartbeatFailures;
+        if (fails >= 2)
+        {
+            var lastSuccess = _licenseService.LastHeartbeatSuccessAt is { } s
+                ? s.LocalDateTime.ToString("HH:mm")
+                : "—";
+            ServerOfflineBanner =
+                $"Lisans sunucusu erişilemiyor ({fails}× başarısız, son başarılı kontrol {lastSuccess}). " +
+                "Çevrimdışı çalışma modunda yayına devam edebilirsin; uzun süre devam ederse trial moduna düşersin.";
+        }
+        else
+        {
+            ServerOfflineBanner = null;
+        }
     }
 
     private void UpdateLicenseUiFromService()

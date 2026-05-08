@@ -39,6 +39,7 @@ public sealed class HeartbeatHostedService : BackgroundService
             try
             {
                 await _licenseService.RefreshAsync(stoppingToken);
+                _licenseService.RecordHeartbeatSuccess();
             }
             catch (OperationCanceledException)
             {
@@ -47,6 +48,7 @@ public sealed class HeartbeatHostedService : BackgroundService
             catch (Exception ex)
             {
                 _log.LogWarning(ex, "Heartbeat refresh failed; will retry next interval");
+                _licenseService.RecordHeartbeatFailure(ex);
             }
         }
     }

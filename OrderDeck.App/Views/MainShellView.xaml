@@ -114,6 +114,22 @@
                        Foreground="#FFAAAAAA"
                        Visibility="{Binding IsGiveawayActive, Converter={StaticResource BoolToCollapsedConverter}}"/>
 
+            <!-- License-server unreachable banner. Highest priority so it
+                 shows over the regular status row when the heartbeat has
+                 failed twice in a row (~1h offline by default). Operator
+                 sees this during a live and can decide whether to keep
+                 broadcasting on offline grace or pause + investigate. -->
+            <DockPanel Background="#FF6B4A1A"
+                       LastChildFill="False"
+                       Visibility="{Binding ServerOfflineBanner, Converter={StaticResource NullToCollapsedConverter}}">
+                <TextBlock DockPanel.Dock="Left"
+                           Text="{Binding ServerOfflineBanner}"
+                           Foreground="#FFFFE0B0" FontWeight="SemiBold"
+                           Margin="12,6,16,6"
+                           VerticalAlignment="Center"
+                           TextWrapping="Wrap"/>
+            </DockPanel>
+
             <!-- Backup-selection mode banner. Sits on top of the regular status text
                  (highest z-order in the grid), so it visually blocks competing
                  status while active. Auto-hides when BackupTargetLabel becomes null. -->
