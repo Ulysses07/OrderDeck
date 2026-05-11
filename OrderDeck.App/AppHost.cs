@@ -67,6 +67,12 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<CustomerRepository>();
         services.AddSingleton<LabelRepository>();
         services.AddSingleton<PaymentRepository>();
+        // Kargo PR C: dekont eşleştirme servisi (LabelRepository + AppSettings.Shipping).
+        // UI entegrasyonu PR D'de (DekontEkleDialog/customer picker + ShipmentDirectiveDialog).
+        services.AddSingleton<OrderDeck.Core.Payments.PaymentMatcherService>(sp =>
+            new OrderDeck.Core.Payments.PaymentMatcherService(
+                sp.GetRequiredService<LabelRepository>(),
+                () => sp.GetRequiredService<AppSettings>()));
 
         // Domain
         services.AddSingleton<StreamSessionService>();

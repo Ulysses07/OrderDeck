@@ -20,10 +20,12 @@ public sealed class PaymentRepository
         conn.Execute(
             @"INSERT INTO Payment
               (Id, PayerName, Amount, PaidAt, ReferansNo, PdfHash, Status,
-               CreatedAt, UpdatedAt, SyncedAt, ApprovedAt, RejectedAt, RejectReason)
+               CreatedAt, UpdatedAt, SyncedAt, ApprovedAt, RejectedAt, RejectReason,
+               ShipmentDirective)
               VALUES
               (@Id, @PayerName, @Amount, @PaidAt, @ReferansNo, @PdfHash, @Status,
-               @CreatedAt, @UpdatedAt, @SyncedAt, @ApprovedAt, @RejectedAt, @RejectReason)",
+               @CreatedAt, @UpdatedAt, @SyncedAt, @ApprovedAt, @RejectedAt, @RejectReason,
+               @ShipmentDirective)",
             new
             {
                 p.Id,
@@ -38,7 +40,8 @@ public sealed class PaymentRepository
                 p.SyncedAt,
                 p.ApprovedAt,
                 p.RejectedAt,
-                p.RejectReason
+                p.RejectReason,
+                ShipmentDirective = p.ShipmentDirective.ToString()
             });
     }
 
@@ -133,7 +136,8 @@ public sealed class PaymentRepository
         r.SyncedAt,
         r.ApprovedAt,
         r.RejectedAt,
-        r.RejectReason);
+        r.RejectReason,
+        System.Enum.Parse<ShipmentDirective>(r.ShipmentDirective));
 
     private sealed class Row
     {
@@ -150,5 +154,6 @@ public sealed class PaymentRepository
         public long? ApprovedAt { get; set; }
         public long? RejectedAt { get; set; }
         public string? RejectReason { get; set; }
+        public string ShipmentDirective { get; set; } = "Normal";
     }
 }
