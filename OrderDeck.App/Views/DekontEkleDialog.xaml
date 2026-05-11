@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:converters="clr-namespace:OrderDeck.App.Converters"
-        Title="Yeni Dekont" Width="460" Height="380"
+        Title="Yeni Dekont" Width="500" Height="500"
         WindowStartupLocation="CenterOwner"
         Background="#FF1A1A1A" Foreground="White">
     <Window.Resources>
@@ -10,6 +10,10 @@
     </Window.Resources>
     <Grid Margin="16">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
@@ -45,14 +49,37 @@
                    Padding="6" Margin="0,4"
                    ToolTip="Banka dekontundaki referans/işlem no"/>
 
-        <TextBlock Grid.Row="4" Grid.ColumnSpan="2"
+        <TextBlock Grid.Row="5" Grid.ColumnSpan="2" Text="Müşteri (opsiyonel — kargo eşleştirme için)"
+                   FontSize="11" Foreground="#FFAAAAAA" Margin="0,16,0,4"/>
+
+        <TextBlock Grid.Row="6" Grid.Column="0" Text="Platform:" Margin="0,8,8,8" VerticalAlignment="Center"/>
+        <ComboBox  Grid.Row="6" Grid.Column="1"
+                   SelectedValue="{Binding CustomerPlatform}"
+                   SelectedValuePath="Content"
+                   Margin="0,4"
+                   ToolTip="Müşterinin yayın platformu — kargo eşleştirme için">
+            <ComboBoxItem Content=""/>
+            <ComboBoxItem Content="instagram"/>
+            <ComboBoxItem Content="tiktok"/>
+            <ComboBoxItem Content="facebook"/>
+            <ComboBoxItem Content="youtube"/>
+            <ComboBoxItem Content="form"/>
+        </ComboBox>
+
+        <TextBlock Grid.Row="7" Grid.Column="0" Text="Kullanıcı adı:" Margin="0,8,8,8" VerticalAlignment="Center"/>
+        <TextBox   Grid.Row="7" Grid.Column="1"
+                   Text="{Binding CustomerUsername, UpdateSourceTrigger=PropertyChanged}"
+                   Padding="6" Margin="0,4"
+                   ToolTip="Müşterinin platformdaki kullanıcı adı (örn: @ayse_y) — bulunursa otomatik eşleştirme yapılır"/>
+
+        <TextBlock Grid.Row="8" Grid.ColumnSpan="2"
                    Text="{Binding ErrorMessage}"
                    Foreground="#FFFF6B6B"
                    TextWrapping="Wrap"
                    Margin="0,12,0,0"
                    Visibility="{Binding ErrorMessage, Converter={StaticResource NullToCollapsed}}"/>
 
-        <StackPanel Grid.Row="6" Grid.ColumnSpan="2" Orientation="Horizontal"
+        <StackPanel Grid.Row="10" Grid.ColumnSpan="2" Orientation="Horizontal"
                     HorizontalAlignment="Right" Margin="0,16,0,0">
             <Button Content="İptal" Click="OnCancel" Padding="14,6" Margin="0,0,8,0" IsCancel="True"/>
             <Button Content="Kaydet"

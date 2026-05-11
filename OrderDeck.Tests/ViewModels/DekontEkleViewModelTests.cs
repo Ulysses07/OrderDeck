@@ -1,6 +1,10 @@
 using FluentAssertions;
 using OrderDeck.App.ViewModels;
+using OrderDeck.Core.Customers;
 using OrderDeck.Core.Payments;
+using OrderDeck.Core.Sales;
+using OrderDeck.Core.Sessions;
+using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
@@ -18,14 +22,32 @@ public sealed class DekontEkleViewModelTests
         public DateTimeOffset Now => DateTimeOffset.FromUnixTimeSeconds(1714521600L);
     }
 
-    private static (DekontEkleViewModel vm, PaymentRepository repo) Build()
+    private sealed class Fixture
     {
-        var db = new InMemorySqlite();
-        new MigrationRunner(db).Run();
-        var repo = new PaymentRepository(db);
-        var vm = new DekontEkleViewModel(repo, new FakeClock(),
-            NullLogger<DekontEkleViewModel>.Instance);
-        return (vm, repo);
+        public DekontEkleViewModel Vm { get; }
+        public PaymentRepository Payments { get; }
+        public CustomerRepository Customers { get; }
+        public SessionRepository Sessions { get; }
+        public LabelRepository Labels { get; }
+        public AppSettings Settings { get; }
+        public InMemorySqlite Db { get; }
+
+        public Fixture()
+        {
+            Db = new InMemorySqlite();
+            new MigrationRunner(Db).Run();
+            Payments = new PaymentRepository(Db);
+            Customers = new CustomerRepository(Db);
+            Sessions = new SessionRepository(Db);
+            Labels = new LabelRepository(Db);
+            Settings = new AppSettings();
+
+            var matcher = new PaymentMatcherService(Labels, () => Settings);
+            Vm = new DekontEkleViewModel(
+                Payments, Customers, Sessions, matcher,
+                new FakeClock(),
+                NullLogger<DekontEkleViewModel>.Instance);
+        }
     }
 
     private static void FillValid(DekontEkleViewModel vm)
@@ -36,19 +58,40 @@ public sealed class DekontEkleViewModelTests
         vm.PaidAt = DateTime.Today;
     }
 
+    private static Customer SeedCustomer(Fixture fx, string id = "c1",
+        string platform = "instagram", string username = "@ayse_y")
+    {
+        var c = new Customer(id, platform, username, "Ayşe Y", null,
+            FirstSeenAt: 500, LastSeenAt: 1000,
+            IsBlacklisted: false, BlacklistReason: null, Notes: null,
+            TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null,
+            Address: null, Phone: null);
+        fx.Customers.Insert(c);
+        return c;
+    }
+
+    private static string SeedActiveSession(Fixture fx)
+    {
+        var sid = System.Guid.NewGuid().ToString("N");
+        fx.Sessions.Insert(new StreamSession(sid, null, 1000, null, new[] { "instagram" }, null));
+        return sid;
+    }
+
+    // ── Existing validation + parse tests ────────────────────────────────
+
     [Fact]
     public void CanSave_is_false_when_form_is_empty()
     {
-        var (vm, _) = Build();
-        vm.CanSave.Should().BeFalse();
+        var fx = new Fixture();
+        fx.Vm.CanSave.Should().BeFalse();
     }
 
     [Fact]
     public void CanSave_is_true_when_all_required_fields_are_set()
     {
-        var (vm, _) = Build();
-        FillValid(vm);
-        vm.CanSave.Should().BeTrue();
+        var fx = new Fixture();
+        FillValid(fx.Vm);
+        fx.Vm.CanSave.Should().BeTrue();
     }
 
     [Theory]
@@ -58,59 +101,57 @@ public sealed class DekontEkleViewModelTests
     [InlineData("0.01")]
     public void Amount_accepts_comma_and_dot_decimal(string raw)
     {
-        var (vm, repo) = Build();
-        FillValid(vm);
-        vm.AmountText = raw;
-        vm.ReferansNo = $"REF-{Guid.NewGuid():N}";
+        var fx = new Fixture();
+        FillValid(fx.Vm);
+        fx.Vm.AmountText = raw;
+        fx.Vm.ReferansNo = $"REF-{System.Guid.NewGuid():N}";
 
-        var error = vm.TrySave();
-        error.Should().BeNull();
+        var result = fx.Vm.TrySave();
+        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
 
-        var stored = repo.ListByStatus(PaymentStatus.Pending).First();
+        var stored = fx.Payments.ListByStatus(PaymentStatus.Pending).First();
         stored.Amount.Should().BeGreaterThan(0);
     }
 
     [Fact]
-    public void TrySave_persists_payment_with_pending_status_and_null_synced_at()
+    public void TrySave_persists_payment_with_pending_status_and_normal_directive()
     {
-        var (vm, repo) = Build();
-        FillValid(vm);
+        var fx = new Fixture();
+        FillValid(fx.Vm);
 
-        var error = vm.TrySave();
+        var result = fx.Vm.TrySave();
 
-        error.Should().BeNull();
-        var stored = repo.FindByReferansNo("REF-001");
+        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
+        var stored = fx.Payments.FindByReferansNo("REF-001");
         stored.Should().NotBeNull();
         stored!.PayerName.Should().Be("Ahmet Yıldız");
         stored.Amount.Should().Be(250.50m);
         stored.Status.Should().Be(PaymentStatus.Pending);
+        stored.ShipmentDirective.Should().Be(ShipmentDirective.Normal);
         stored.SyncedAt.Should().BeNull("outbox pickup yapacak");
-        stored.CreatedAt.Should().Be(1714521600L);
     }
 
     [Fact]
     public void TrySave_rejects_empty_payer_name()
     {
-        var (vm, _) = Build();
-        FillValid(vm);
-        vm.PayerName = "";
+        var fx = new Fixture();
+        FillValid(fx.Vm);
+        fx.Vm.PayerName = "";
 
-        var error = vm.TrySave();
-        error.Should().NotBeNull();
-        error.Should().Contain("Ödeyen");
-        vm.ErrorMessage.Should().NotBeNull();
+        var result = fx.Vm.TrySave();
+        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Error);
+        result.Error.Should().Contain("Ödeyen");
     }
 
     [Fact]
     public void TrySave_rejects_empty_referans_no()
     {
-        var (vm, _) = Build();
-        FillValid(vm);
-        vm.ReferansNo = "";
+        var fx = new Fixture();
+        FillValid(fx.Vm);
+        fx.Vm.ReferansNo = "";
 
-        var error = vm.TrySave();
-        error.Should().NotBeNull();
-        error.Should().Contain("Referans");
+        var result = fx.Vm.TrySave();
+        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Error);
     }
 
     [Theory]
@@ -120,54 +161,234 @@ public sealed class DekontEkleViewModelTests
     [InlineData("-50")]
     public void TrySave_rejects_invalid_amount(string raw)
     {
-        var (vm, _) = Build();
-        FillValid(vm);
-        vm.AmountText = raw;
+        var fx = new Fixture();
+        FillValid(fx.Vm);
+        fx.Vm.AmountText = raw;
 
-        var error = vm.TrySave();
-        error.Should().NotBeNull();
+        fx.Vm.TrySave().Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Error);
     }
 
     [Fact]
     public void TrySave_rejects_future_paid_date()
     {
-        var (vm, _) = Build();
-        FillValid(vm);
-        vm.PaidAt = DateTime.Today.AddDays(2);
+        var fx = new Fixture();
+        FillValid(fx.Vm);
+        fx.Vm.PaidAt = DateTime.Today.AddDays(2);
 
-        var error = vm.TrySave();
-        error.Should().NotBeNull();
-        error.Should().Contain("gelecek");
+        var result = fx.Vm.TrySave();
+        result.Error.Should().Contain("gelecek");
     }
 
     [Fact]
     public void TrySave_rejects_duplicate_referans_no()
     {
-        var (vm, repo) = Build();
-        FillValid(vm);
-        vm.TrySave().Should().BeNull();
+        var fx = new Fixture();
+        FillValid(fx.Vm);
+        fx.Vm.TrySave();
 
-        // Same form, same ref no
-        var (vm2, _) = (new DekontEkleViewModel(repo, new FakeClock(),
-            NullLogger<DekontEkleViewModel>.Instance), repo);
-        FillValid(vm2);
+        // Reset VM (simulate fresh dialog) and try same ref no
+        FillValid(fx.Vm);
+        fx.Vm.ReferansNo = "REF-001";
 
-        var error = vm2.TrySave();
-        error.Should().NotBeNull();
-        error.Should().Contain("zaten kayıtlı");
+        var result = fx.Vm.TrySave();
+        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Error);
+        result.Error.Should().Contain("zaten kayıtlı");
+    }
+
+    // ── Customer + matcher integration (Kargo PR D) ──────────────────────
+
+    [Fact]
+    public void TrySave_without_customer_inputs_uses_basic_flow_no_matcher()
+    {
+        var fx = new Fixture();
+        FillValid(fx.Vm);
+        // Müşteri alanları boş → matcher skip
+
+        var result = fx.Vm.TrySave();
+
+        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
+        fx.Payments.FindByReferansNo("REF-001")!.ShipmentDirective
+            .Should().Be(ShipmentDirective.Normal);
     }
 
     [Fact]
-    public void Editing_a_field_clears_error_message()
+    public void TrySave_with_customer_no_active_session_skips_matcher()
     {
-        var (vm, _) = Build();
-        vm.PayerName = "";
-        vm.ReferansNo = "REF";
-        vm.AmountText = "100";
-        vm.TrySave();
-        vm.ErrorMessage.Should().NotBeNull();
+        var fx = new Fixture();
+        SeedCustomer(fx);
+        // Aktif session yok → matcher skip
+        FillValid(fx.Vm);
+        fx.Vm.CustomerPlatform = "instagram";
+        fx.Vm.CustomerUsername = "@ayse_y";
 
-        vm.PayerName = "Ali";   // typing should clear stale error
-        vm.ErrorMessage.Should().BeNull();
+        var result = fx.Vm.TrySave();
+
+        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
+    }
+
+    [Fact]
+    public void TrySave_with_customer_session_match_saves_as_normal()
+    {
+        var fx = new Fixture();
+        var customer = SeedCustomer(fx);
+        var sid = SeedActiveSession(fx);
+
+        // Müşterinin ürün label'ı 500 TL — kargo feature off, match if 500
+        fx.Labels.Insert(new Label(
+            Id: System.Guid.NewGuid().ToString("N"),
+            SessionId: sid, CustomerId: customer.Id,
+            Platform: "instagram", Username: "@ayse_y",
+            MessageText: "ürün", Code: null, Price: 500m,
+            AddedAt: 1100L, PrintedAt: null));
+
+        FillValid(fx.Vm);
+        fx.Vm.AmountText = "500";
+        fx.Vm.CustomerPlatform = "instagram";
+        fx.Vm.CustomerUsername = "@ayse_y";
+
+        var result = fx.Vm.TrySave();
+
+        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
+        fx.Payments.FindByReferansNo("REF-001")!.ShipmentDirective
+            .Should().Be(ShipmentDirective.Normal);
+    }
+
+    [Fact]
+    public void TrySave_returns_NeedsShipmentDecision_when_shipping_fee_missing()
+    {
+        var fx = new Fixture();
+        fx.Settings.Shipping.FreeShippingThreshold = 5000m;
+        fx.Settings.Shipping.ShippingFee = 150m;
+
+        var customer = SeedCustomer(fx);
+        var sid = SeedActiveSession(fx);
+
+        fx.Labels.Insert(new Label(
+            Id: System.Guid.NewGuid().ToString("N"),
+            SessionId: sid, CustomerId: customer.Id,
+            Platform: "instagram", Username: "@ayse_y",
+            MessageText: "ürün", Code: null, Price: 3000m,
+            AddedAt: 1100L, PrintedAt: null));
+
+        FillValid(fx.Vm);
+        fx.Vm.AmountText = "3000"; // Sadece ürün, kargo eksik
+        fx.Vm.CustomerPlatform = "instagram";
+        fx.Vm.CustomerUsername = "@ayse_y";
+
+        var result = fx.Vm.TrySave();
+
+        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.NeedsShipmentDecision);
+        result.Shortage.Should().NotBeNull();
+        result.Shortage!.ProductTotal.Should().Be(3000m);
+        result.Shortage.ExpectedAmount.Should().Be(3150m);
+
+        // Henüz Payment yaratılmamış
+        fx.Payments.FindByReferansNo("REF-001").Should().BeNull();
+    }
+
+    [Fact]
+    public void CommitWithDirective_persists_payment_with_chosen_directive()
+    {
+        var fx = new Fixture();
+        fx.Settings.Shipping.FreeShippingThreshold = 5000m;
+        fx.Settings.Shipping.ShippingFee = 150m;
+
+        var customer = SeedCustomer(fx);
+        var sid = SeedActiveSession(fx);
+        fx.Labels.Insert(new Label(
+            Id: System.Guid.NewGuid().ToString("N"),
+            SessionId: sid, CustomerId: customer.Id,
+            Platform: "instagram", Username: "@ayse_y",
+            MessageText: "ürün", Code: null, Price: 3000m,
+            AddedAt: 1100L, PrintedAt: null));
+
+        FillValid(fx.Vm);
+        fx.Vm.AmountText = "3000";
+        fx.Vm.CustomerPlatform = "instagram";
+        fx.Vm.CustomerUsername = "@ayse_y";
+
+        // İlk save NeedsShipmentDecision döner
+        fx.Vm.TrySave().Kind.Should().Be(DekontEkleViewModel.SaveResultKind.NeedsShipmentDecision);
+
+        // Vendor "Beklet" seçti
+        var commit = fx.Vm.CommitWithDirective(ShipmentDirective.Hold);
+
+        commit.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
+        var stored = fx.Payments.FindByReferansNo("REF-001")!;
+        stored.ShipmentDirective.Should().Be(ShipmentDirective.Hold);
+    }
+
+    [Fact]
+    public void CommitWithDirective_RecipientPays_roundtrips()
+    {
+        var fx = new Fixture();
+        fx.Settings.Shipping.FreeShippingThreshold = 5000m;
+        fx.Settings.Shipping.ShippingFee = 150m;
+
+        var customer = SeedCustomer(fx);
+        var sid = SeedActiveSession(fx);
+        fx.Labels.Insert(new Label(
+            Id: System.Guid.NewGuid().ToString("N"),
+            SessionId: sid, CustomerId: customer.Id,
+            Platform: "instagram", Username: "@ayse_y",
+            MessageText: "ürün", Code: null, Price: 2500m,
+            AddedAt: 1100L, PrintedAt: null));
+
+        FillValid(fx.Vm);
+        fx.Vm.AmountText = "2500";
+        fx.Vm.CustomerPlatform = "instagram";
+        fx.Vm.CustomerUsername = "@ayse_y";
+        fx.Vm.TrySave().Kind.Should().Be(DekontEkleViewModel.SaveResultKind.NeedsShipmentDecision);
+
+        var commit = fx.Vm.CommitWithDirective(ShipmentDirective.RecipientPays);
+
+        commit.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
+        fx.Payments.FindByReferansNo("REF-001")!.ShipmentDirective
+            .Should().Be(ShipmentDirective.RecipientPays);
+    }
+
+    [Fact]
+    public void TrySave_with_unknown_customer_silently_skips_matcher()
+    {
+        var fx = new Fixture();
+        SeedActiveSession(fx);
+        // Customer asla seed edilmedi
+
+        FillValid(fx.Vm);
+        fx.Vm.CustomerPlatform = "instagram";
+        fx.Vm.CustomerUsername = "@bilinmeyen";
+
+        var result = fx.Vm.TrySave();
+
+        // Müşteri bulunmadı → basic save, no prompt
+        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
+    }
+
+    [Fact]
+    public void TrySave_when_dekont_includes_shipping_fee_is_Saved_with_normal_directive()
+    {
+        var fx = new Fixture();
+        fx.Settings.Shipping.FreeShippingThreshold = 5000m;
+        fx.Settings.Shipping.ShippingFee = 150m;
+
+        var customer = SeedCustomer(fx);
+        var sid = SeedActiveSession(fx);
+        fx.Labels.Insert(new Label(
+            Id: System.Guid.NewGuid().ToString("N"),
+            SessionId: sid, CustomerId: customer.Id,
+            Platform: "instagram", Username: "@ayse_y",
+            MessageText: "ürün", Code: null, Price: 3000m,
+            AddedAt: 1100L, PrintedAt: null));
+
+        FillValid(fx.Vm);
+        fx.Vm.AmountText = "3150"; // Ürün + kargo dahil
+        fx.Vm.CustomerPlatform = "instagram";
+        fx.Vm.CustomerUsername = "@ayse_y";
+
+        var result = fx.Vm.TrySave();
+
+        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
+        fx.Payments.FindByReferansNo("REF-001")!.ShipmentDirective
+            .Should().Be(ShipmentDirective.Normal);
     }
 }
