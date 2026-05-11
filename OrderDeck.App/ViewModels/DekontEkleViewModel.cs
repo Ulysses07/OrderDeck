@@ -41,11 +41,18 @@ public sealed partial class DekontEkleViewModel : ObservableObject
 
     [ObservableProperty] private string? _errorMessage;
 
+    // PDF parse hash (Payment.PdfHash'e CommitInternal'da yazılır — duplicate
+    // dedect için). Operator PDF yüklemediyse null kalır.
+    private string? _pendingPdfHash;
+
+    private readonly PdfDekontParser _pdfParser;
+
     public DekontEkleViewModel(
         PaymentRepository payments,
         CustomerRepository customers,
         SessionRepository sessions,
         PaymentMatcherService matcher,
+        PdfDekontParser pdfParser,
         IClock clock,
         ILogger<DekontEkleViewModel> log)
     {
@@ -53,8 +60,34 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         _customers = customers;
         _sessions = sessions;
         _matcher = matcher;
+        _pdfParser = pdfParser;
         _clock = clock;
         _log = log;
+    }
+
+    /// <summary>PDF Yükle butonu çağırır: PdfDekontParser'la 4 alan + hash
+    /// çıkarılır, form alanlarına best-effort doldurulur. Bulunamayanlar boş
+    /// kalır; operatör elle düzeltir. Çağrı dışsal (dialog code-behind) çünkü
+    /// file dialog WPF tarafında.</summary>
+    public string? TryFillFromPdf(byte[] pdfBytes)
+    {
+        try
+        {
+            var result = _pdfParser.Parse(pdfBytes);
+            if (!string.IsNullOrWhiteSpace(result.PayerName)) PayerName = result.PayerName;
+            if (result.Amount is { } amount) AmountText = amount.ToString("0.##",
+                System.Globalization.CultureInfo.InvariantCulture);
+            if (result.PaidAt is { } paidAt) PaidAt = paidAt;
+            if (!string.IsNullOrWhiteSpace(result.ReferansNo)) ReferansNo = result.ReferansNo;
+            _pendingPdfHash = result.PdfHash;
+            ErrorMessage = null;
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "PDF parse failed");
+            return "PDF okunamadı: " + ex.Message;
+        }
     }
 
     public bool CanSave => Validate() is null;
@@ -150,7 +183,7 @@ public sealed partial class DekontEkleViewModel : ObservableObject
             Amount: amount,
             PaidAt: paidAtUtc.ToUnixTimeSeconds(),
             ReferansNo: refNo,
-            PdfHash: null,
+            PdfHash: _pendingPdfHash,   // PDF parse'tan geldiyse set, yoksa null
             Status: PaymentStatus.Pending,
             CreatedAt: now,
             UpdatedAt: now,
