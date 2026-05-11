@@ -251,4 +251,47 @@ public class CustomerRepositoryTests
         Action act = () => repo.UpdatePhone("nonexistent-id", "+905551234567");
         act.Should().NotThrow();
     }
+
+    // ── Kargo PR F: RecipientPaysActive ─────────────────────────────────
+
+    [Fact]
+    public void Insert_default_RecipientPaysActive_is_false()
+    {
+        var repo = CreateRepository();
+        repo.Insert(NewCustomer());
+
+        var loaded = repo.GetById("c1");
+        loaded!.RecipientPaysActive.Should().BeFalse();
+    }
+
+    [Fact]
+    public void SetRecipientPaysActive_flips_flag_true_then_false()
+    {
+        var repo = CreateRepository();
+        repo.Insert(NewCustomer());
+
+        repo.SetRecipientPaysActive("c1", true);
+        repo.GetById("c1")!.RecipientPaysActive.Should().BeTrue();
+
+        repo.SetRecipientPaysActive("c1", false);
+        repo.GetById("c1")!.RecipientPaysActive.Should().BeFalse();
+    }
+
+    [Fact]
+    public void SetRecipientPaysActive_on_unknown_id_does_not_throw()
+    {
+        var repo = CreateRepository();
+        Action act = () => repo.SetRecipientPaysActive("nonexistent", true);
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Insert_with_RecipientPaysActive_true_persists_flag()
+    {
+        var repo = CreateRepository();
+        var c = NewCustomer() with { RecipientPaysActive = true };
+        repo.Insert(c);
+
+        repo.GetById("c1")!.RecipientPaysActive.Should().BeTrue();
+    }
 }

@@ -61,11 +61,13 @@ public static class LabelPrintDocument
 
     /// <summary>
     /// Builds a fresh <see cref="PrintDocument"/> that, when Print() is called, lays out
-    /// the supplied labels one per page.
+    /// the supplied labels one per page. Kargo PR F: <paramref name="recipientPaysLabelIds"/>
+    /// set'inde olan label'lar etikette "ALICI ÖDEMELİ" kırmızı yazı + kargo ücreti
+    /// (settings.Shipping.ShippingFee, varsa) render eder.
     /// </summary>
     [SupportedOSPlatform("windows")]
     public static PrintDocument Build(IReadOnlyList<Label> labels, AppSettings settings,
-        string? printerName)
+        string? printerName, IReadOnlySet<string>? recipientPaysLabelIds = null)
     {
         var doc = new PrintDocument
         {
@@ -131,6 +133,24 @@ public static class LabelPrintDocument
                 e.Graphics.DrawRectangle(boxPen, boxX, boxY, boxW, boxH);
                 e.Graphics.DrawString(platformText, platformFont, Brushes.Black,
                     boxX + padX, boxY + padY);
+            }
+
+            // Kargo PR F: "ALICI ÖDEMELİ" — bottom-center red strip when this
+            // label's customer is in RecipientPays mode. Vendor depo personeli
+            // etiketi tek bakışta görüp kargo şirketine "alıcıdan tahsil et"
+            // notuyla teslim etmeli.
+            if (recipientPaysLabelIds is not null && recipientPaysLabelIds.Contains(label.Id))
+            {
+                using var rpFont = new Font(settings.LabelFontFamily,
+                    settings.LabelMessageFontSize * 0.95f, FontStyle.Bold);
+                string rpText = "ALICI ÖDEMELİ";
+                if (settings.Shipping.ShippingFee is { } fee && fee > 0)
+                    rpText += $"  {fee:0.##} TL";
+                var rpSize = e.Graphics.MeasureString(rpText, rpFont);
+                float rpY = heightHundredths * 0.82f;
+                float rpX = (pageWidth - rpSize.Width) / 2;
+                using var rpBrush = new SolidBrush(Color.Red);
+                e.Graphics.DrawString(rpText, rpFont, rpBrush, rpX, rpY);
             }
 
             // "Y" badge for backup-promoted labels — small, top-right corner.

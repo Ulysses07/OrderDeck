@@ -667,12 +667,37 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         if (snapshot.Count == 0) return;
 
         var labels = snapshot.Select(vm => vm.Label).ToList();
-        _printer.Print(labels);
+
+        // Kargo PR F: customer'ı RecipientPaysActive olan label'ların id'lerini
+        // toplayıp print pass'a geçir → etikette "ALICI ÖDEMELİ" kırmızı yazı.
+        // Distinct customerId üzerinden 1 lookup query (büyük queue'larda
+        // N+1 önlemi).
+        var recipientPaysIds = ComputeRecipientPaysLabelIds(labels);
+
+        _printer.Print(labels, recipientPaysIds);
         _labels.MarkPrintedAndRecord(labels.Select(l => l.Id).ToList());
 
         // Sadece yazdırılanları kuyruktan kaldır (smart mode'da kalan seçimsizler korunur).
         foreach (var vm in snapshot) PrintQueue.Remove(vm);
         SelectedQueueItems.Clear();
+    }
+
+    /// <summary>Kargo PR F: print'lenecek label'lar arasında müşterisi
+    /// RecipientPaysActive=true olanları seç. CustomerRepository.FindById
+    /// her customerId için bir kez çağrılır (distinct over snapshot).</summary>
+    private System.Collections.Generic.IReadOnlySet<string> ComputeRecipientPaysLabelIds(
+        System.Collections.Generic.IReadOnlyList<OrderDeck.Core.Sales.Label> labels)
+    {
+        var recipientCustomers = new System.Collections.Generic.HashSet<string>();
+        foreach (var customerId in labels.Select(l => l.CustomerId).Distinct())
+        {
+            var c = _customerRepo.GetById(customerId);
+            if (c?.RecipientPaysActive == true) recipientCustomers.Add(customerId);
+        }
+        return labels
+            .Where(l => recipientCustomers.Contains(l.CustomerId))
+            .Select(l => l.Id)
+            .ToHashSet();
     }
 
     [RelayCommand] private void OpenSettings()

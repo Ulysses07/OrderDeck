@@ -18,19 +18,32 @@ public sealed class CustomerRepository
             @"INSERT INTO Customer
               (Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
                IsBlacklisted, BlacklistReason, Notes,
-               TotalLabelsPrinted, TotalAmount, BlacklistedAt, Address, Phone)
+               TotalLabelsPrinted, TotalAmount, BlacklistedAt, Address, Phone,
+               RecipientPaysActive)
               VALUES
               (@Id, @Platform, @Username, @DisplayName, @AvatarUrl, @FirstSeenAt, @LastSeenAt,
                @IsBlacklisted, @BlacklistReason, @Notes,
-               @TotalLabelsPrinted, @TotalAmount, @BlacklistedAt, @Address, @Phone)",
+               @TotalLabelsPrinted, @TotalAmount, @BlacklistedAt, @Address, @Phone,
+               @RecipientPaysActive)",
             new
             {
                 c.Id, c.Platform, c.Username, c.DisplayName, c.AvatarUrl,
                 c.FirstSeenAt, c.LastSeenAt,
                 IsBlacklisted = c.IsBlacklisted ? 1 : 0,
                 c.BlacklistReason, c.Notes,
-                c.TotalLabelsPrinted, c.TotalAmount, c.BlacklistedAt, c.Address, c.Phone
+                c.TotalLabelsPrinted, c.TotalAmount, c.BlacklistedAt, c.Address, c.Phone,
+                RecipientPaysActive = c.RecipientPaysActive ? 1 : 0
             });
+    }
+
+    /// <summary>Kargo PR F: vendor "Alıcı Ödemeli" seçince true,
+    /// sevkıyat tamamlanınca (gelecek future PR) false.</summary>
+    public void SetRecipientPaysActive(string customerId, bool active)
+    {
+        using var conn = _factory.Open();
+        conn.Execute(
+            "UPDATE Customer SET RecipientPaysActive=@active WHERE Id=@customerId",
+            new { customerId, active = active ? 1 : 0 });
     }
 
     public Customer? FindByPlatformAndUsername(string platform, string username)
@@ -143,7 +156,8 @@ public sealed class CustomerRepository
         r.Id, r.Platform, r.Username, r.DisplayName, r.AvatarUrl,
         r.FirstSeenAt, r.LastSeenAt,
         r.IsBlacklisted == 1, r.BlacklistReason, r.Notes,
-        r.TotalLabelsPrinted, r.TotalAmount, r.BlacklistedAt, r.Address, r.Phone);
+        r.TotalLabelsPrinted, r.TotalAmount, r.BlacklistedAt, r.Address, r.Phone,
+        RecipientPaysActive: r.RecipientPaysActive == 1);
 
     private sealed class Row
     {
@@ -162,6 +176,7 @@ public sealed class CustomerRepository
         public long? BlacklistedAt { get; init; }
         public string? Address { get; init; }
         public string? Phone { get; init; }
+        public int RecipientPaysActive { get; init; }
     }
 
     /// <summary>

@@ -25,8 +25,11 @@ public sealed class LabelPrinter : ILabelPrinter
 
     /// <summary>
     /// Prints the given labels in order. No-op if no labels.
+    /// Kargo PR F: <paramref name="recipientPaysLabelIds"/> set'inde olan
+    /// label'lar etikette "ALICI ÖDEMELİ" kırmızı yazı + kargo ücreti
+    /// (settings.Shipping.ShippingFee) render eder.
     /// </summary>
-    public void Print(IReadOnlyList<Label> labels)
+    public void Print(IReadOnlyList<Label> labels, IReadOnlySet<string>? recipientPaysLabelIds = null)
     {
         if (labels.Count == 0)
         {
@@ -34,9 +37,12 @@ public sealed class LabelPrinter : ILabelPrinter
             return;
         }
 
-        using var doc = LabelPrintDocument.Build(labels, _settings, _settings.PrinterName);
-        _log.LogInformation("Printing {Count} label(s) on '{Printer}'",
-            labels.Count, doc.PrinterSettings.PrinterName);
+        using var doc = LabelPrintDocument.Build(labels, _settings, _settings.PrinterName,
+            recipientPaysLabelIds);
+        _log.LogInformation(
+            "Printing {Count} label(s) on '{Printer}' (RecipientPays marks: {MarkCount})",
+            labels.Count, doc.PrinterSettings.PrinterName,
+            recipientPaysLabelIds?.Count ?? 0);
 
         doc.Print();
     }
