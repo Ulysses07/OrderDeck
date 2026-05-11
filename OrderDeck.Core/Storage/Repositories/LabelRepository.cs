@@ -220,6 +220,27 @@ public sealed class LabelRepository
             .ToList();
     }
 
+    /// <summary>
+    /// Kargo PR C (2026-05-11): müşterinin verilen yayındaki ürün satış toplamı.
+    /// Kargo ücreti label'larını (IsShippingFee=1), iptal edilenleri ve henüz
+    /// onaylanmamış backup'ları (IsTentativeBackup=1) dışarda bırakır. Print
+    /// durumuna bakmaz — operatör basmadan önce de toplam doğru olmalı çünkü
+    /// dekont matcher yayın anında bunu kullanır.
+    /// </summary>
+    public decimal GetCustomerSessionLabelTotal(string customerId, string sessionId)
+    {
+        using var conn = _factory.Open();
+        var total = conn.ExecuteScalar<decimal?>(
+            @"SELECT COALESCE(SUM(Price), 0)
+              FROM Label
+              WHERE CustomerId=@customerId AND SessionId=@sessionId
+                AND CancelledAt IS NULL
+                AND IsTentativeBackup = 0
+                AND IsShippingFee = 0",
+            new { customerId, sessionId });
+        return total ?? 0m;
+    }
+
     /// <summary>Full lifetime label history (every session). Used by the customer
     /// detail dialog when there's no active session to scope to.</summary>
     public IReadOnlyList<CustomerLabelRow> GetByCustomer(string customerId)
