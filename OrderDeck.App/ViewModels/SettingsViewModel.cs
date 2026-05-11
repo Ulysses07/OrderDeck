@@ -48,6 +48,12 @@ public sealed partial class SettingsViewModel : ViewModelBase
     [ObservableProperty] private string _accountHolder = "";
     [ObservableProperty] private string _papara = "";
 
+    // Kargo PR A — Shipping threshold + fee. Empty string → "feature off"
+    // user-friendly olur; TryParse'la decimal'a çevriliyor. CommitToSettings'te
+    // empty/0/negative → null (feature kapalı).
+    [ObservableProperty] private string _freeShippingThresholdText = "";
+    [ObservableProperty] private string _shippingFeeText = "";
+
     // Phase 5c — YouTube Live chat scraper
     [ObservableProperty] private string _youTubeChannelHandle = "";
 
@@ -237,6 +243,11 @@ public sealed partial class SettingsViewModel : ViewModelBase
         AccountHolder   = _liveSettings.Payment.AccountHolder;
         Papara          = _liveSettings.Payment.Papara;
 
+        // Kargo PR A — Shipping. Empty string olarak göster eğer ayar null;
+        // operator boş bırakmayı = feature off olarak görür.
+        FreeShippingThresholdText = FormatOptionalDecimal(_liveSettings.Shipping.FreeShippingThreshold);
+        ShippingFeeText           = FormatOptionalDecimal(_liveSettings.Shipping.ShippingFee);
+
         // Phase 5c — YouTube
         YouTubeChannelHandle = _liveSettings.YouTubeChannelHandle ?? string.Empty;
 
@@ -329,6 +340,10 @@ public sealed partial class SettingsViewModel : ViewModelBase
         _liveSettings.Payment.AccountHolder           = AccountHolder;
         _liveSettings.Payment.Papara                  = Papara;
 
+        // Kargo PR A — Shipping. Empty/0/negative → null (feature kapalı).
+        _liveSettings.Shipping.FreeShippingThreshold = ParseOptionalDecimal(FreeShippingThresholdText);
+        _liveSettings.Shipping.ShippingFee           = ParseOptionalDecimal(ShippingFeeText);
+
         // Phase 5c — YouTube. Empty string → null so the hosted service idles
         // instead of attempting to resolve "".
         var trimmedHandle = YouTubeChannelHandle?.Trim();
@@ -400,4 +415,23 @@ public sealed partial class SettingsViewModel : ViewModelBase
                 "Hata", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
+
+    /// <summary>Settings için decimal ↔ string dönüşümü. Türkçe input
+    /// (250,50) ve invariant (250.50) ikisini de kabul eder; depolanan değer
+    /// invariant format. Empty/whitespace/0/negatif → null (feature off).</summary>
+    private static decimal? ParseOptionalDecimal(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        var normalized = raw.Trim().Replace(',', '.');
+        if (!decimal.TryParse(normalized,
+            System.Globalization.NumberStyles.Number,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var value)) return null;
+        return value > 0 ? value : null;
+    }
+
+    private static string FormatOptionalDecimal(decimal? value)
+        => value is null
+            ? string.Empty
+            : value.Value.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
 }

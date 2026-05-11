@@ -204,30 +204,52 @@
             <!-- Ödeme tab -->
             <TabItem Header="Ödeme">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <GroupBox Header="WhatsApp Ödeme İsteme" Margin="12,12,12,12" Padding="8"
-                              Foreground="White">
-                        <StackPanel>
-                            <Label Content="Mesaj Şablonu" Margin="0,0,0,2" Foreground="White"/>
-                            <TextBox Text="{Binding PaymentTemplate, UpdateSourceTrigger=PropertyChanged}"
-                                     AcceptsReturn="True" TextWrapping="Wrap"
-                                     MinHeight="120" MaxHeight="200"
-                                     VerticalScrollBarVisibility="Auto"
-                                     FontFamily="Consolas" FontSize="12"/>
-                            <TextBlock FontSize="11" Foreground="#FFAAAAAA" Margin="0,2,0,8"
-                                       TextWrapping="Wrap">
-                                Placeholder: {ad} {tutar} {tarih} {iban} {hesap_sahibi} {papara}
-                            </TextBlock>
+                    <StackPanel>
+                        <GroupBox Header="WhatsApp Ödeme İsteme" Margin="12,12,12,8" Padding="8"
+                                  Foreground="White">
+                            <StackPanel>
+                                <Label Content="Mesaj Şablonu" Margin="0,0,0,2" Foreground="White"/>
+                                <TextBox Text="{Binding PaymentTemplate, UpdateSourceTrigger=PropertyChanged}"
+                                         AcceptsReturn="True" TextWrapping="Wrap"
+                                         MinHeight="120" MaxHeight="200"
+                                         VerticalScrollBarVisibility="Auto"
+                                         FontFamily="Consolas" FontSize="12"/>
+                                <TextBlock FontSize="11" Foreground="#FFAAAAAA" Margin="0,2,0,8"
+                                           TextWrapping="Wrap">
+                                    Placeholder: {ad} {tutar} {tarih} {iban} {hesap_sahibi} {papara}
+                                </TextBlock>
 
-                            <Label Content="IBAN" Margin="0,4,0,2" Foreground="White"/>
-                            <TextBox Text="{Binding Iban, UpdateSourceTrigger=PropertyChanged}"/>
+                                <Label Content="IBAN" Margin="0,4,0,2" Foreground="White"/>
+                                <TextBox Text="{Binding Iban, UpdateSourceTrigger=PropertyChanged}"/>
 
-                            <Label Content="Hesap Sahibi" Margin="0,4,0,2" Foreground="White"/>
-                            <TextBox Text="{Binding AccountHolder, UpdateSourceTrigger=PropertyChanged}"/>
+                                <Label Content="Hesap Sahibi" Margin="0,4,0,2" Foreground="White"/>
+                                <TextBox Text="{Binding AccountHolder, UpdateSourceTrigger=PropertyChanged}"/>
 
-                            <Label Content="Papara/Ziraat Numarası (opsiyonel)" Margin="0,4,0,2" Foreground="White"/>
-                            <TextBox Text="{Binding Papara, UpdateSourceTrigger=PropertyChanged}"/>
-                        </StackPanel>
-                    </GroupBox>
+                                <Label Content="Papara/Ziraat Numarası (opsiyonel)" Margin="0,4,0,2" Foreground="White"/>
+                                <TextBox Text="{Binding Papara, UpdateSourceTrigger=PropertyChanged}"/>
+                            </StackPanel>
+                        </GroupBox>
+
+                        <GroupBox Header="Kargo" Margin="12,4,12,12" Padding="8" Foreground="White">
+                            <StackPanel>
+                                <Label Content="Ücretsiz Kargo Eşiği (TL)" Margin="0,0,0,2" Foreground="White"/>
+                                <TextBox Text="{Binding FreeShippingThresholdText, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="Bu tutar ve üzeri siparişlerde kargo ücretsiz. Boş bırak veya 0 yaz = kargo özelliği kapalı."/>
+
+                                <Label Content="Sabit Kargo Ücreti (TL)" Margin="0,4,0,2" Foreground="White"/>
+                                <TextBox Text="{Binding ShippingFeeText, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="Eşik altında otomatik eklenecek kargo ücreti. Desi fark etmez."/>
+
+                                <TextBlock FontSize="11" Foreground="#FFAAAAAA" Margin="0,8,0,0"
+                                           TextWrapping="Wrap">
+                                    Örnek: 5000 TL eşik + 150 TL kargo. Müşteri 4.000 TL alırsa
+                                    sipariş kuyruğuna otomatik 150 TL kargo satırı eklenir; 5.000 TL
+                                    veya üzeri alırsa kargo ücretsiz. İki alan da boş/0 ise kargo
+                                    özelliği devre dışı kalır (sonraki sürümle birlikte aktif olur).
+                                </TextBlock>
+                            </StackPanel>
+                        </GroupBox>
+                    </StackPanel>
                 </ScrollViewer>
             </TabItem>
 
