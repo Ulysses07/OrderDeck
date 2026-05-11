@@ -191,19 +191,18 @@ public partial class App : Application
         _overlay  = Host.Services.GetRequiredService<OverlayHost>();
         _ingestor = Host.Services.GetRequiredService<ChatBridgeIngestor>();
 
-        // Awaited (was fire-and-forget) so port-in-use errors surface to the
-        // operator instead of being swallowed silently — pinning a stale
-        // OrderDeck instance to 4747 used to mean OBS overlays returned 404
-        // for 10 minutes of debugging before anyone realized.
+        // OverlayHost.StartAsync now tries the preferred port (4747) then a
+        // fallback range (4757-4760). Only surface an error if every candidate
+        // failed — IOException at this layer means "all candidates exhausted".
         try
         {
             Task.Run(() => _overlay.StartAsync()).GetAwaiter().GetResult();
         }
         catch (Exception ex) when (IsPortInUse(ex))
         {
-            logger.LogError(ex, "Overlay port {Port} already in use", _overlay.Port);
+            logger.LogError(ex, "All overlay port candidates already in use");
             MessageBox.Show(
-                $"Overlay portu ({_overlay.Port}) zaten kullanımda.\n\n" +
+                "Overlay portlarının tümü kullanımda (4747, 4757-4760).\n\n" +
                 "Büyük ihtimalle başka bir OrderDeck çalışıyor. Görev Yöneticisi'nden " +
                 "OrderDeck.App'i kapatıp tekrar dene.\n\n" +
                 $"Detay: {ex.Message}",
@@ -219,6 +218,22 @@ public partial class App : Application
                 "OrderDeck — Başlatma Hatası", MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown();
             return;
+        }
+
+        // One-time info notice when the operator falls back to a non-default
+        // port — they need to update OBS Browser Source URLs accordingly.
+        if (_overlay.FellBackFromPreferredPort)
+        {
+            logger.LogWarning("Overlay running on fallback port {Port} (4747 was busy)", _overlay.Port);
+            MessageBox.Show(
+                $"Overlay portu 4747 başka uygulama kullanıyor; otomatik olarak {_overlay.Port}'e geçildi.\n\n" +
+                "OBS Browser Source URL'lerini güncelle:\n" +
+                $"  http://localhost:{_overlay.Port}/overlay/chat\n" +
+                $"  http://localhost:{_overlay.Port}/overlay/giveaway\n\n" +
+                "Bu durum genelde başka bir OrderDeck instance veya farklı bir uygulama " +
+                "tarafından 4747'nin tutulduğunda olur.",
+                "OrderDeck — Yedek Port Kullanılıyor",
+                MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
         try

@@ -124,7 +124,14 @@ Chat overlay'inde mesajlar görünmeye başladığında her şey çalışıyordu
 3. YouTube handle doğru mu? **Ayarlar → YouTube** sekmesinden kontrol et
 
 ### "Port 4747 zaten kullanımda" hatası
-Başka bir OrderDeck instance açık. Görev Yöneticisi'nden `OrderDeck.App.exe` process'lerini kapat, tekrar başlat.
+OrderDeck artık 4747 boşsa kullanır, başka uygulama tutmuşsa **otomatik olarak 4757-4760 arası bir yedek port'a** geçer. Geçtiğinde "Yedek port kullanılıyor" bilgi mesajı çıkar — OBS Browser Source URL'lerini gösterilen port numarası ile güncelle:
+
+| | URL |
+|---|---|
+| Chat | `http://localhost:<port>/overlay/chat` |
+| Çekiliş | `http://localhost:<port>/overlay/giveaway` |
+
+Eğer 4747 + tüm yedekler (4757-4760) doluysa → Görev Yöneticisi'nden `OrderDeck.App.exe` process'lerini kapat, tekrar başlat.
 
 ### Lisans sunucusu erişilemiyor
 1 saatten uzun sürerse ana ekranda sarı banner çıkar. Çevrimdışı modda 14 gün boyunca yayın yapabilirsin; sürec içinde lisans sunucusuyla bağlantı kurulduğunda otomatik düzelir.
