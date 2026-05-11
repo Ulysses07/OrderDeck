@@ -36,11 +36,13 @@ public sealed class HeartbeatHostedServiceTests : IDisposable
         try { Directory.Delete(_dir, recursive: true); } catch { }
     }
 
-    private (HeartbeatHostedService svc, LicenseService licSvc) Build(TimeSpan interval)
+    private (HeartbeatHostedService svc, LicenseService licSvc) Build(
+        TimeSpan interval, Action? onValidateCall = null)
     {
         var handler = new FakeHttpMessageHandler(_ =>
         {
             Interlocked.Increment(ref _validateCallCount);
+            onValidateCall?.Invoke();
             return FakeHttpMessageHandler.Json(200,
                 """{"status":"active","expiresAt":"2027-01-01T00:00:00Z","remainingDays":365,"sku":"STD","slotInfo":{"used":1,"total":1,"thisDeviceActive":true}}""");
         });
@@ -58,17 +60,36 @@ public sealed class HeartbeatHostedServiceTests : IDisposable
     [Fact]
     public async Task Heartbeat_calls_RefreshAsync_periodically()
     {
-        var (hb, licSvc) = Build(interval: TimeSpan.FromMilliseconds(50));
+        // Deterministic TaskCompletionSource pattern (matches the
+        // IntakeFormSyncHostedServiceTests fix from 2026-05-08, commit b2c8065).
+        // Previous Task.Delay(250) was tight enough that a slow Windows GitHub
+        // runner under contention could only observe 1 of the expected ≥2
+        // additional calls before cancellation (CI-only flake reproed 2026-05-11
+        // on PR #21). Now: wait until handler fires ≥2 additional times after
+        // initialization, with a 5s watchdog catching a genuinely-broken service.
+        var hbCallsObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool initPhaseDone = false;
+        int hbCalls = 0;
+
+        var (hb, licSvc) = Build(
+            interval: TimeSpan.FromMilliseconds(50),
+            onValidateCall: () =>
+            {
+                if (!Volatile.Read(ref initPhaseDone)) return;   // init call, skip
+                if (Interlocked.Increment(ref hbCalls) >= 2)
+                    hbCallsObserved.TrySetResult();
+            });
+
         await licSvc.InitializeAsync();
+        Volatile.Write(ref initPhaseDone, true);
         var initialCount = _validateCallCount;
 
         using var cts = new CancellationTokenSource();
-        var task = hb.StartAsync(cts.Token);
-        await Task.Delay(250);
+        await hb.StartAsync(cts.Token);
+        await hbCallsObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
         cts.Cancel();
         try { await hb.StopAsync(CancellationToken.None); } catch { }
 
-        // After ~250ms with 50ms interval, expect at least 2 additional calls
         (_validateCallCount - initialCount).Should().BeGreaterThanOrEqualTo(2);
     }
 
