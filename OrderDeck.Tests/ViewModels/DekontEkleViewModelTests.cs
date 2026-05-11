@@ -424,6 +424,37 @@ public sealed class DekontEkleViewModelTests
         commit.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
         fx.Payments.FindByReferansNo("REF-001")!.ShipmentDirective
             .Should().Be(ShipmentDirective.RecipientPays);
+
+        // Kargo PR F: RecipientPays seçimi customer flag'ini set etmeli.
+        // Print template bu flag'i okuyup "ALICI ÖDEMELİ" render edecek.
+        fx.Customers.GetById(customer.Id)!.RecipientPaysActive.Should().BeTrue();
+    }
+
+    [Fact]
+    public void CommitWithDirective_Hold_does_not_set_RecipientPaysActive_flag()
+    {
+        // Kargo PR F: Hold seçimi flag'i etkilemez (Hold ≠ RecipientPays).
+        var fx = new Fixture();
+        fx.Settings.Shipping.FreeShippingThreshold = 5000m;
+        fx.Settings.Shipping.ShippingFee = 150m;
+
+        var customer = SeedCustomer(fx);
+        var sid = SeedActiveSession(fx);
+        fx.Labels.Insert(new Label(
+            Id: System.Guid.NewGuid().ToString("N"),
+            SessionId: sid, CustomerId: customer.Id,
+            Platform: "instagram", Username: "@ayse_y",
+            MessageText: "ürün", Code: null, Price: 2500m,
+            AddedAt: 1100L, PrintedAt: null));
+
+        FillValid(fx.Vm);
+        fx.Vm.AmountText = "2500";
+        fx.Vm.CustomerPlatform = "instagram";
+        fx.Vm.CustomerUsername = "@ayse_y";
+        fx.Vm.TrySave();
+        fx.Vm.CommitWithDirective(ShipmentDirective.Hold);
+
+        fx.Customers.GetById(customer.Id)!.RecipientPaysActive.Should().BeFalse();
     }
 
     [Fact]

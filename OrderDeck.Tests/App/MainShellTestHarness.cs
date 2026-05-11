@@ -44,7 +44,12 @@ internal static class MainShellTestHarness
     public sealed class FakeLabelPrinter : ILabelPrinter
     {
         public List<List<Label>> Calls { get; } = new();
-        public void Print(IReadOnlyList<Label> labels) => Calls.Add(labels.ToList());
+        public List<IReadOnlySet<string>?> RecipientPaysCalls { get; } = new();
+        public void Print(IReadOnlyList<Label> labels, IReadOnlySet<string>? recipientPaysLabelIds = null)
+        {
+            Calls.Add(labels.ToList());
+            RecipientPaysCalls.Add(recipientPaysLabelIds);
+        }
     }
 
     public sealed record Harness(

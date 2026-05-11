@@ -163,6 +163,23 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         try
         {
             _payments.Insert(payment);
+
+            // Kargo PR F: RecipientPays seçildiyse müşterinin sticky flag'i set
+            // edilir; print template etikete "ALICI ÖDEMELİ" render edecek.
+            // Resolved customer null ise (operatör müşteri girmediyse) bu nokta
+            // hiç çalışmaz — flag set etmek için CustomerId şart.
+            if (directive == ShipmentDirective.RecipientPays)
+            {
+                var resolved = ResolveCustomer();
+                if (resolved is not null)
+                {
+                    _customers.SetRecipientPaysActive(resolved.Id, true);
+                    _log.LogInformation(
+                        "Customer {Id} RecipientPaysActive=true (kargo bedeli al\u0131c\u0131dan tahsil edilecek)",
+                        resolved.Id);
+                }
+            }
+
             _log.LogInformation(
                 "Dekont eklendi: Id={Id} ref={Ref} tutar={Amount} directive={Directive}",
                 payment.Id, payment.ReferansNo, payment.Amount, directive);
