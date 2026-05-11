@@ -23,6 +23,7 @@ public class LicenseDbContext : DbContext
     public DbSet<IntakeFormSubmission> IntakeFormSubmissions => Set<IntakeFormSubmission>();
     public DbSet<CustomerBackup> CustomerBackups => Set<CustomerBackup>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+    public DbSet<PushDevice> PushDevices => Set<PushDevice>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -169,6 +170,19 @@ public class LicenseDbContext : DbContext
                 .HasForeignKey(t => t.CustomerId).OnDelete(DeleteBehavior.Cascade);
             b.HasIndex(t => t.TokenHash).IsUnique();
             b.HasIndex(t => new { t.CustomerId, t.RevokedAt });
+        });
+
+        mb.Entity<PushDevice>(b =>
+        {
+            b.HasKey(d => d.Id);
+            b.Property(d => d.DeviceId).HasMaxLength(64).IsRequired();
+            b.Property(d => d.Platform).HasMaxLength(16).IsRequired();
+            b.Property(d => d.PushToken).HasMaxLength(512).IsRequired();
+            b.HasOne(d => d.Customer).WithMany()
+                .HasForeignKey(d => d.CustomerId).OnDelete(DeleteBehavior.Cascade);
+            // Same customer + device → upsert (no duplicate per device).
+            b.HasIndex(d => new { d.CustomerId, d.DeviceId }).IsUnique();
+            b.HasIndex(d => d.PushToken);
         });
 
         // Seed SKUs
