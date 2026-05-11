@@ -7,6 +7,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Services.Email;
+using OrderDeck.LicenseServer.Services.Observability;
 
 namespace OrderDeck.LicenseServer.Services.Backup;
 
@@ -122,11 +123,12 @@ public sealed class BackupRestoreDrillJob
         try
         {
             await _email.SendAsync(alertTo, "OrderDeck Admin", subject, html, plain, ct);
-            _log.LogInformation("[Backup Drill] Alert email sent to {Email}", alertTo);
+            // PII: alert recipient masked — KVKK + 3rd-party log retention guard.
+            _log.LogInformation("[Backup Drill] Alert email sent to {Email}", PiiMasker.MaskEmail(alertTo));
         }
         catch (Exception ex)
         {
-            _log.LogError(ex, "[Backup Drill] Failed to send alert email to {Email}", alertTo);
+            _log.LogError(ex, "[Backup Drill] Failed to send alert email to {Email}", PiiMasker.MaskEmail(alertTo));
         }
     }
 }
