@@ -66,6 +66,7 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<SessionRepository>();
         services.AddSingleton<CustomerRepository>();
         services.AddSingleton<LabelRepository>();
+        services.AddSingleton<PaymentRepository>();
 
         // Domain
         services.AddSingleton<StreamSessionService>();
@@ -293,6 +294,18 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<IClock>(),
             sp.GetRequiredService<ILogger<IntakeFormSyncService>>()));
         services.AddHostedService<IntakeFormSyncHostedService>();
+
+        // Payment sync (PR B): WPF outbox push + reverse pull (mobile onay/red)
+        services.AddSingleton<Services.Sync.ICurrentLicenseProvider, Services.Sync.CurrentLicenseProvider>();
+        services.AddSingleton<Services.Sync.PaymentSyncService>(sp => new Services.Sync.PaymentSyncService(
+            sp.GetRequiredService<LicenseApiClient>(),
+            sp.GetRequiredService<PaymentRepository>(),
+            sp.GetRequiredService<SettingsStore>(),
+            sp.GetRequiredService<AppSettings>(),
+            sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
+            sp.GetRequiredService<IClock>(),
+            sp.GetRequiredService<ILogger<Services.Sync.PaymentSyncService>>()));
+        services.AddHostedService<Services.Sync.PaymentSyncHostedService>();
 
         // Intake form settings (Phase 4f Task 10)
         services.AddTransient<ViewModels.IntakeFormSettingsViewModel>();

@@ -67,6 +67,7 @@ public sealed class MeController : ControllerBase
             .OrderByDescending(l => l.IssuedAt)
             .Select(l => new
             {
+                id = l.Id,                  // PR B: WPF needs Id to call /licenses/{id}/payments/sync
                 licenseKey = l.LicenseKey,
                 skuCode = l.SkuCode,
                 expiresAt = l.ExpiresAt,

@@ -151,6 +151,34 @@ public sealed class LicenseApiClient
         }
     }
 
+    // ─── Payment sync (Bearer-Customer) ───────────────────────────────
+
+    /// <summary>WPF outbox push: batch upsert by Payment.Id. Echoes server-side
+    /// status back (mobile arası onay/red bilgisi de gelir). Max 200 item/batch.</summary>
+    public Task<List<SyncedPaymentDto>> SyncPaymentsAsync(
+        Guid licenseId, SyncPaymentsRequest req, CancellationToken ct = default)
+        => PostJsonExpectingJsonAsync<SyncPaymentsRequest, List<SyncedPaymentDto>>(
+            $"/api/v1/licenses/{licenseId}/payments/sync", req, ct);
+
+    /// <summary>Reverse sync: server'da UpdatedAt &gt; since olan payment status'larını çek
+    /// (mobile onay/red sonucu). Cursor WPF tarafında AppSettings.LastPaymentReverseSync'te.</summary>
+    public async Task<List<SyncedPaymentDto>> GetPaymentsSinceAsync(
+        Guid licenseId, DateTimeOffset since, int take = 200, CancellationToken ct = default)
+    {
+        var qs = $"?since={Uri.EscapeDataString(since.ToString("O"))}&take={take}";
+
+        HttpResponseMessage resp;
+        try { resp = await _http.GetAsync($"/api/v1/licenses/{licenseId}/payments/since{qs}", ct); }
+        catch (HttpRequestException ex) { throw new LicenseApiNetworkException(ex.Message, ex); }
+        catch (TaskCanceledException ex) when (!ct.IsCancellationRequested) { throw new LicenseApiNetworkException("timeout", ex); }
+
+        using (resp)
+        {
+            if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
+            return (await DeserializeAsync<List<SyncedPaymentDto>>(resp, ct)) ?? new();
+        }
+    }
+
     // ─── HTTP helpers ────────────────────────────────────────────────
 
     private async Task<TResp> PostJsonExpectingJsonAsync<TReq, TResp>(

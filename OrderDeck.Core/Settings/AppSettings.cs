@@ -23,6 +23,10 @@ public sealed class AppSettings
     /// <summary>Phase 4f: last intake form submission cursor (max SubmittedAt synced).</summary>
     public DateTimeOffset? LastIntakeFormSync { get; set; }
 
+    /// <summary>Payment sync (PR B): server'dan UpdatedAt cursor — bu tarihten
+    /// sonra güncellenen mobile onay/red sonuçlarını çekiyor. İlk run'da null.</summary>
+    public DateTimeOffset? LastPaymentReverseSync { get; set; }
+
     /// <summary>Phase 4g: WhatsApp ödeme isteme yapılandırması.</summary>
     public PaymentSettings Payment { get; set; } = new();
 
