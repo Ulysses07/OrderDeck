@@ -101,9 +101,13 @@ public sealed partial class DekontEkleViewModel : ObservableObject
             return new SaveResult(SaveResultKind.Error, Error: ErrorMessage);
         }
 
-        // Customer + session resolution (her ikisi de varsa matcher çalıştır)
+        // Customer + session resolution (her ikisi de varsa matcher çalıştır).
+        // Operatörlerin %90'ı yayın bittikten sonra dekont giriyor → aktif
+        // yayın yokken matcher devre dışı kalmasın diye son yayına fallback.
+        // (PR F'de cross-session aggregation eklenecek; bu hotfix tek-yayın
+        // senaryolarını kapsar.)
         var customer = ResolveCustomer();
-        var session = _sessions.GetActive();
+        var session = _sessions.GetActive() ?? _sessions.GetLatestEnded();
         var amount = ParseAmount(AmountText)!.Value;
 
         if (customer is not null && session is not null)

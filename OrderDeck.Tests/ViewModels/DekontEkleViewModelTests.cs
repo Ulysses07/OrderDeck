@@ -77,6 +77,14 @@ public sealed class DekontEkleViewModelTests
         return sid;
     }
 
+    private static string SeedEndedSession(Fixture fx, long startedAt = 900, long endedAt = 999)
+    {
+        var sid = System.Guid.NewGuid().ToString("N");
+        fx.Sessions.Insert(new StreamSession(sid, null, startedAt, null, new[] { "instagram" }, null));
+        fx.Sessions.End(sid, endedAt);
+        return sid;
+    }
+
     // ── Existing validation + parse tests ────────────────────────────────
 
     [Fact]
@@ -212,11 +220,11 @@ public sealed class DekontEkleViewModelTests
     }
 
     [Fact]
-    public void TrySave_with_customer_no_active_session_skips_matcher()
+    public void TrySave_with_customer_no_session_at_all_skips_matcher()
     {
         var fx = new Fixture();
         SeedCustomer(fx);
-        // Aktif session yok → matcher skip
+        // Hiçbir session yok (ne aktif ne bitmiş) → matcher skip
         FillValid(fx.Vm);
         fx.Vm.CustomerPlatform = "instagram";
         fx.Vm.CustomerUsername = "@ayse_y";
@@ -224,6 +232,77 @@ public sealed class DekontEkleViewModelTests
         var result = fx.Vm.TrySave();
 
         result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
+    }
+
+    [Fact]
+    public void TrySave_falls_back_to_latest_ended_session_when_no_active()
+    {
+        // %90 dekont yayın bittikten sonra giriliyor → matcher en son
+        // bitmiş yayın üzerinden çalışmalı. Bu hotfix öncesi matcher
+        // sessizce skip ediyordu.
+        var fx = new Fixture();
+        fx.Settings.Shipping.FreeShippingThreshold = 5000m;
+        fx.Settings.Shipping.ShippingFee = 150m;
+        var customer = SeedCustomer(fx);
+        var endedSid = SeedEndedSession(fx);
+
+        // Müşteri bu (artık bitmiş) yayında 3000 TL alım yaptı
+        fx.Labels.Insert(new Label(
+            Id: System.Guid.NewGuid().ToString("N"),
+            SessionId: endedSid, CustomerId: customer.Id,
+            Platform: "instagram", Username: "@ayse_y",
+            MessageText: "ürün", Code: null, Price: 3000m,
+            AddedAt: 950L, PrintedAt: null));
+
+        FillValid(fx.Vm);
+        fx.Vm.AmountText = "3000"; // kargo eksik
+        fx.Vm.CustomerPlatform = "instagram";
+        fx.Vm.CustomerUsername = "@ayse_y";
+
+        var result = fx.Vm.TrySave();
+
+        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.NeedsShipmentDecision,
+            "yayın bittiyse bile en son yayına fallback yapıp matcher çalışmalı");
+        result.Shortage!.ProductTotal.Should().Be(3000m);
+    }
+
+    [Fact]
+    public void TrySave_prefers_active_session_over_ended_when_both_exist()
+    {
+        // Aktif yayın varsa, bitmiş yayınlara fallback gerek yok.
+        var fx = new Fixture();
+        fx.Settings.Shipping.FreeShippingThreshold = 5000m;
+        fx.Settings.Shipping.ShippingFee = 150m;
+        var customer = SeedCustomer(fx);
+        var endedSid = SeedEndedSession(fx);
+        var activeSid = SeedActiveSession(fx);
+
+        // Bitmiş yayında 3000 TL, aktif yayında 500 TL
+        fx.Labels.Insert(new Label(
+            Id: System.Guid.NewGuid().ToString("N"),
+            SessionId: endedSid, CustomerId: customer.Id,
+            Platform: "instagram", Username: "@ayse_y",
+            MessageText: "eski ürün", Code: null, Price: 3000m,
+            AddedAt: 950L, PrintedAt: null));
+        fx.Labels.Insert(new Label(
+            Id: System.Guid.NewGuid().ToString("N"),
+            SessionId: activeSid, CustomerId: customer.Id,
+            Platform: "instagram", Username: "@ayse_y",
+            MessageText: "yeni ürün", Code: null, Price: 500m,
+            AddedAt: 1100L, PrintedAt: null));
+
+        FillValid(fx.Vm);
+        fx.Vm.AmountText = "500"; // sadece aktif yayın tutarı
+        fx.Vm.CustomerPlatform = "instagram";
+        fx.Vm.CustomerUsername = "@ayse_y";
+
+        var result = fx.Vm.TrySave();
+
+        // Aktif yayın seçildiğinde ProductTotal=500 → 500+150=650 expected,
+        // dekont 500 → shortage
+        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.NeedsShipmentDecision);
+        result.Shortage!.ProductTotal.Should().Be(500m,
+            "aktif yayın varken bitmiş yayına bakma");
     }
 
     [Fact]
