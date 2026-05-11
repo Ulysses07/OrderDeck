@@ -37,7 +37,8 @@ public sealed class LicensesPaymentsSyncController : ControllerBase
         decimal Amount,
         DateTimeOffset PaidAt,
         string ReferansNo,
-        string? PdfHash);
+        string? PdfHash,
+        string? ShipmentDirective = null);   // Kargo PR E. null veya "normal" = default.
 
     public sealed record SyncRequest(List<SyncPaymentItem> Payments);
 
@@ -47,7 +48,8 @@ public sealed class LicensesPaymentsSyncController : ControllerBase
         DateTimeOffset? ApprovedAt,
         DateTimeOffset? RejectedAt,
         string? RejectReason,
-        DateTimeOffset UpdatedAt);
+        DateTimeOffset UpdatedAt,
+        string ShipmentDirective);   // Kargo PR E. server-authoritative echo.
 
     /// <summary>
     /// Batch upsert from WPF outbox. Idempotent by Payment.Id (UPSERT). Aynı
@@ -79,16 +81,20 @@ public sealed class LicensesPaymentsSyncController : ControllerBase
 
         foreach (var item in req.Payments)
         {
+            var directive = ParseDirective(item.ShipmentDirective);
+
             if (existing.TryGetValue(item.Id, out var current))
             {
                 // Server-authoritative on status fields. Mutable from client:
-                // PayerName, Amount, PaidAt, PdfHash (PDF re-parse could refine).
+                // PayerName, Amount, PaidAt, PdfHash (PDF re-parse could refine),
+                // ShipmentDirective (vendor changed decision in WPF).
                 // ReferansNo not updated — would break the LicenseId+ReferansNo
                 // unique index if client tries to change it.
                 current.PayerName = item.PayerName;
                 current.Amount = item.Amount;
                 current.PaidAt = item.PaidAt;
                 current.PdfHash = item.PdfHash;
+                current.ShipmentDirective = directive;
                 current.UpdatedAt = now;
             }
             else
@@ -103,6 +109,7 @@ public sealed class LicensesPaymentsSyncController : ControllerBase
                     ReferansNo = item.ReferansNo,
                     PdfHash = item.PdfHash,
                     Status = PaymentStatus.Pending,
+                    ShipmentDirective = directive,
                     CreatedAt = now,
                     UpdatedAt = now
                 });
@@ -119,7 +126,8 @@ public sealed class LicensesPaymentsSyncController : ControllerBase
             .Select(p => new SyncedPaymentDto(
                 p.Id,
                 p.Status.ToString().ToLowerInvariant(),
-                p.ApprovedAt, p.RejectedAt, p.RejectReason, p.UpdatedAt))
+                p.ApprovedAt, p.RejectedAt, p.RejectReason, p.UpdatedAt,
+                p.ShipmentDirective.ToString().ToLowerInvariant()))
             .ToListAsync(ct);
 
         return Ok(echoed);
@@ -150,10 +158,26 @@ public sealed class LicensesPaymentsSyncController : ControllerBase
             .Select(p => new SyncedPaymentDto(
                 p.Id,
                 p.Status.ToString().ToLowerInvariant(),
-                p.ApprovedAt, p.RejectedAt, p.RejectReason, p.UpdatedAt))
+                p.ApprovedAt, p.RejectedAt, p.RejectReason, p.UpdatedAt,
+                p.ShipmentDirective.ToString().ToLowerInvariant()))
             .ToListAsync(ct);
 
         return Ok(rows);
+    }
+
+    /// <summary>Kargo PR E: client'tan gelen directive string'i enum'a parse eder.
+    /// null/empty/invalid → Normal (default). Bilinçli: eski WPF client'ları
+    /// alanı göndermez ama Payment yine de Normal directive ile create edilir.</summary>
+    private static ShipmentDirective ParseDirective(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return ShipmentDirective.Normal;
+        return raw.Trim().ToLowerInvariant() switch
+        {
+            "normal" => ShipmentDirective.Normal,
+            "hold" => ShipmentDirective.Hold,
+            "recipientpays" => ShipmentDirective.RecipientPays,
+            _ => ShipmentDirective.Normal
+        };
     }
 
     private Guid GetCustomerId()
