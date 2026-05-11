@@ -7,7 +7,6 @@
  */
 
 let isConnected = false;
-let checkInterval = null;
 
 // ─── Selector registry refresh ──────────────────────────────────────────
 // The license server hosts the canonical selector bundle at
@@ -21,6 +20,15 @@ const SELECTOR_STORAGE_KEY = '__orderdeck_selectors';
 const SELECTOR_ETAG_KEY = '__orderdeck_selectors_etag';
 const SELECTOR_REFRESH_ALARM = 'orderdeck:selectorRefresh';
 const SELECTOR_REFRESH_PERIOD_MIN = 10;
+
+// Standalone WS probe of localhost:4748 — content scripts also send
+// setConnected on WS state changes, but this probe runs even when no
+// chat tab is open so the badge updates immediately when OrderDeck
+// starts/stops. Must be a chrome.alarms callback, NOT setInterval —
+// MV3 service workers evict after ~30s idle and any setInterval timer
+// silently stops, leaving the badge stale until next user interaction.
+const CONNECTION_CHECK_ALARM = 'orderdeck:connectionCheck';
+const CONNECTION_CHECK_PERIOD_MIN = 1;  // minimum allowed by Chrome 117+
 
 // Update the badge to reflect connection state
 function updateBadge(connected) {
@@ -75,11 +83,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
 });
 
-// Start periodic connection check (every 30 seconds)
+// Start periodic connection check via chrome.alarms (MV3-safe). setInterval
+// would die with the service worker; alarms wake it back up.
 function startPeriodicCheck() {
-    checkConnection();
-    if (checkInterval) clearInterval(checkInterval);
-    checkInterval = setInterval(checkConnection, 30000);
+    checkConnection();   // immediate probe on startup/install
+    if (chrome.alarms) {
+        chrome.alarms.create(CONNECTION_CHECK_ALARM, {
+            periodInMinutes: CONNECTION_CHECK_PERIOD_MIN,
+        });
+    }
 }
 
 /**
@@ -165,6 +177,7 @@ function startSelectorRefresh() {
 if (chrome.alarms) {
     chrome.alarms.onAlarm.addListener((alarm) => {
         if (alarm.name === SELECTOR_REFRESH_ALARM) refreshSelectorsFromServer();
+        if (alarm.name === CONNECTION_CHECK_ALARM) checkConnection();
     });
 }
 
