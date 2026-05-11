@@ -67,6 +67,8 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<CustomerRepository>();
         services.AddSingleton<LabelRepository>();
         services.AddSingleton<PaymentRepository>();
+        // PDF dekont parse: DekontEkleDialog "PDF Yükle" butonu kullanır.
+        services.AddSingleton<OrderDeck.Core.Payments.PdfDekontParser>();
         // Kargo PR C: dekont eşleştirme servisi (LabelRepository + AppSettings.Shipping).
         // UI entegrasyonu PR D'de (DekontEkleDialog/customer picker + ShipmentDirectiveDialog).
         services.AddSingleton<OrderDeck.Core.Payments.PaymentMatcherService>(sp =>

@@ -43,8 +43,9 @@ public sealed class DekontEkleViewModelTests
             Settings = new AppSettings();
 
             var matcher = new PaymentMatcherService(Labels, () => Settings);
+            var pdfParser = new PdfDekontParser();
             Vm = new DekontEkleViewModel(
-                Payments, Customers, Sessions, matcher,
+                Payments, Customers, Sessions, matcher, pdfParser,
                 new FakeClock(),
                 NullLogger<DekontEkleViewModel>.Instance);
         }
