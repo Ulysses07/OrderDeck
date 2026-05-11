@@ -1,0 +1,65 @@
+<Window x:Class="OrderDeck.App.Views.ShipmentDirectiveDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Kargo Ücreti Eksik" Width="480" Height="380"
+        WindowStartupLocation="CenterOwner"
+        Background="#FF1A1A1A" Foreground="White">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" FontSize="14" FontWeight="Bold" Foreground="#FFFFD166"
+                   Text="Müşteri kargo ücretini iletmemiş"/>
+
+        <TextBlock Grid.Row="1" Margin="0,8,0,0" TextWrapping="Wrap"
+                   Foreground="#FFE0E0E0" FontSize="12">
+            Dekont tutarı sadece ürün toplamı kadar; kargo ücreti dekonta dahil değil.
+            Kargo nasıl yönlendirilsin?
+        </TextBlock>
+
+        <Border Grid.Row="2" Margin="0,12,0,0" Padding="12,8"
+                Background="#FF252525" BorderBrush="#FF333333" BorderThickness="1"
+                CornerRadius="6">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition/>
+                    <RowDefinition/>
+                    <RowDefinition/>
+                    <RowDefinition/>
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="Ürün toplamı:" Foreground="#FFAAAAAA"/>
+                <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding ProductTotalText}" FontFamily="Consolas"/>
+
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="Kargo ücreti:" Foreground="#FFAAAAAA"/>
+                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding ShippingFeeText}" FontFamily="Consolas"/>
+
+                <TextBlock Grid.Row="2" Grid.Column="0" Text="Beklenen toplam:" Foreground="#FFAAAAAA"/>
+                <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding ExpectedAmountText}" FontFamily="Consolas" FontWeight="Bold"/>
+
+                <TextBlock Grid.Row="3" Grid.Column="0" Text="Dekontta görülen:" Foreground="#FFAAAAAA" Margin="0,4,0,0"/>
+                <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding DekontAmountText}" FontFamily="Consolas" Margin="0,4,0,0"/>
+            </Grid>
+        </Border>
+
+        <StackPanel Grid.Row="4" Orientation="Horizontal"
+                    HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Content="Vazgeç" Click="OnCancel" Padding="14,8" Margin="0,0,8,0"
+                    IsCancel="True"/>
+            <Button Content="Kargo Beklesin" Click="OnHold" Padding="14,8" Margin="0,0,8,0"
+                    ToolTip="Kargosu depoda bekler; sonraki yayında toplam eşiği geçince kargolanır."/>
+            <Button Content="Alıcı Ödemeli" Click="OnRecipientPays" Padding="14,8"
+                    Background="#FFE07B00" Foreground="White" FontWeight="Bold"
+                    ToolTip="Kargo şirketi alıcıdan tahsil edecek; etikette belirgin işaret olur."/>
+        </StackPanel>
+    </Grid>
+</Window>

@@ -18,8 +18,39 @@ public partial class DekontEkleDialog : Window
 
     private void OnSave(object sender, RoutedEventArgs e)
     {
-        var error = _vm.TrySave();
-        if (error is null) DialogResult = true;
-        // else hata mesajı ErrorMessage binding'i ile UI'da görünür
+        var result = _vm.TrySave();
+        switch (result.Kind)
+        {
+            case DekontEkleViewModel.SaveResultKind.Saved:
+                DialogResult = true;
+                break;
+
+            case DekontEkleViewModel.SaveResultKind.NeedsShipmentDecision:
+                // Kargo PR D: vendor karar versin (Hold / RecipientPays / Vazgeç)
+                var directive = AskShipmentDirective(result.Shortage!);
+                if (directive is null)
+                {
+                    // Vazgeç — dialog açık kalır, vendor formu düzeltebilir
+                    return;
+                }
+                var commit = _vm.CommitWithDirective(directive.Value);
+                if (commit.Kind == DekontEkleViewModel.SaveResultKind.Saved)
+                    DialogResult = true;
+                // commit.Kind == Error: ErrorMessage binding ile UI'da görünür
+                break;
+
+            case DekontEkleViewModel.SaveResultKind.Error:
+                // ErrorMessage VM tarafından set edildi, UI binding zaten gösteriyor
+                break;
+        }
+    }
+
+    private Core.Payments.ShipmentDirective? AskShipmentDirective(
+        Core.Payments.PaymentMatcherService.MatchResult match)
+    {
+        var vm = new ShipmentDirectiveDialogViewModel(match);
+        var dlg = new ShipmentDirectiveDialog(vm) { Owner = this };
+        dlg.ShowDialog();
+        return dlg.Result;
     }
 }
