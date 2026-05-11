@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -80,51 +83,129 @@ public sealed class OverlayHost : IAsyncDisposable
 
     public int Port { get; private set; }
 
+    /// <summary>True when StartAsync had to fall back from the preferred port
+    /// (4747) to an alternate. UI can surface a one-time hint so the operator
+    /// updates OBS Browser Source URLs.</summary>
+    public bool FellBackFromPreferredPort { get; private set; }
+
+    /// <summary>Preferred port + fallbacks tried in order. 4748 dahil edilmez
+    /// (Chrome extension bridge port'u). Default: 4747 then 4757-4760.</summary>
+    private readonly IReadOnlyList<int> _candidatePorts;
+
     public OverlayHost(
         IChatBus bus,
         GiveawayService giveaway,
         int port = 4747,
         ILogger<OverlayHost>? log = null,
-        Func<GiveawayAudioSnapshot>? audioProvider = null)
+        Func<GiveawayAudioSnapshot>? audioProvider = null,
+        IReadOnlyList<int>? fallbackPorts = null)
     {
         _bus = bus;
         _giveaway = giveaway;
         _log = log ?? NullLogger<OverlayHost>.Instance;
         Port = port;
         _audioProvider = audioProvider ?? (() => new GiveawayAudioSnapshot(0.7, false));
+
+        var candidates = new List<int> { port };
+        // Default fallback range: 4757-4760. Skips 4748 (Chrome bridge) and
+        // leaves a buffer above 4750 for future services.
+        candidates.AddRange(fallbackPorts ?? new[] { 4757, 4758, 4759, 4760 });
+        // De-dupe (caller could pass the preferred port in fallbacks list).
+        _candidatePorts = candidates.Distinct().ToList();
     }
 
     public async Task StartAsync()
     {
+        var preferred = _candidatePorts[0];
+        Exception? lastError = null;
+
+        foreach (var candidate in _candidatePorts)
+        {
+            try
+            {
+                _app = BuildAppForPort(candidate);
+                await _app.StartAsync();
+                Port = candidate;
+                FellBackFromPreferredPort = (candidate != preferred);
+                if (FellBackFromPreferredPort)
+                {
+                    _log.LogWarning(
+                        "OverlayHost preferred port {Preferred} unavailable; bound to fallback {Port}. " +
+                        "OBS Browser Source URL'lerini http://localhost:{Port}/overlay/... olarak güncelleyin.",
+                        preferred, candidate, candidate);
+                }
+                else
+                {
+                    _log.LogInformation("OverlayHost listening on http://localhost:{Port}", Port);
+                }
+
+                WireUpEventSubscriptions();
+                return;
+            }
+            catch (Exception ex) when (IsPortInUse(ex))
+            {
+                lastError = ex;
+                if (_app is not null)
+                {
+                    try { await _app.DisposeAsync(); } catch { }
+                    _app = null;
+                }
+                _log.LogDebug("Port {Port} in use, trying next candidate", candidate);
+            }
+        }
+
+        throw new IOException(
+            $"No available port for OverlayHost. Tried: {string.Join(", ", _candidatePorts)}",
+            lastError);
+    }
+
+    /// <summary>Probes if an exception chain indicates "address already in use".
+    /// Mirrors OrderDeck.App.IsPortInUse so this assembly stays self-contained.</summary>
+    private static bool IsPortInUse(Exception ex)
+    {
+        for (var current = ex; current is not null; current = current.InnerException)
+        {
+            if (current is SocketException se && se.SocketErrorCode == SocketError.AddressAlreadyInUse)
+                return true;
+            if (current is IOException io &&
+                (io.Message.Contains("address", StringComparison.OrdinalIgnoreCase) ||
+                 io.Message.Contains("in use", StringComparison.OrdinalIgnoreCase)))
+                return true;
+        }
+        return false;
+    }
+
+    private WebApplication BuildAppForPort(int port)
+    {
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
-        builder.WebHost.UseUrls($"http://localhost:{Port}");
+        builder.WebHost.UseUrls($"http://localhost:{port}");
 
-        _app = builder.Build();
-        _app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(30) });
+        var app = builder.Build();
+        app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(30) });
 
         var wwwroot = Path.Combine(AppContext.BaseDirectory, "wwwroot");
         if (Directory.Exists(wwwroot))
         {
-            _app.UseStaticFiles(new StaticFileOptions
+            app.UseStaticFiles(new StaticFileOptions
             {
                 FileProvider = new PhysicalFileProvider(wwwroot)
             });
         }
 
-        _app.MapGet("/overlay/chat", async (HttpContext ctx) =>
+        app.MapGet("/overlay/chat", async (HttpContext ctx) =>
         {
             ctx.Response.ContentType = "text/html; charset=utf-8";
             await ctx.Response.SendFileAsync(Path.Combine(wwwroot, "chat.html"));
         });
 
-        _app.MapGet("/overlay/giveaway", async (HttpContext ctx) =>
+        app.MapGet("/overlay/giveaway", async (HttpContext ctx) =>
         {
             ctx.Response.ContentType = "text/html; charset=utf-8";
             await ctx.Response.SendFileAsync(Path.Combine(wwwroot, "giveaway.html"));
         });
 
-        _app.MapGet("/overlay/preview", async (HttpContext ctx) =>
+        app.MapGet("/overlay/preview", async (HttpContext ctx) =>
         {
             ctx.Response.ContentType = "text/html; charset=utf-8";
             await ctx.Response.SendFileAsync(Path.Combine(wwwroot, "preview.html"));
@@ -134,26 +215,33 @@ public sealed class OverlayHost : IAsyncDisposable
         // table inline. Use when an animation looks broken: open
         // http://localhost:<port>/overlay/diagnose and see the exact error
         // for each plugin (no DevTools needed).
-        _app.MapGet("/overlay/diagnose", async (HttpContext ctx) =>
+        app.MapGet("/overlay/diagnose", async (HttpContext ctx) =>
         {
             ctx.Response.ContentType = "text/html; charset=utf-8";
             await ctx.Response.SendFileAsync(Path.Combine(wwwroot, "diagnose.html"));
         });
 
-        _app.Map("/ws/chat", async (HttpContext ctx) =>
+        app.Map("/ws/chat", async (HttpContext ctx) =>
         {
             if (!ctx.WebSockets.IsWebSocketRequest) { ctx.Response.StatusCode = 400; return; }
             using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
             await HandleChatClient(ws, ctx.RequestAborted);
         });
 
-        _app.Map("/ws/giveaway", async (HttpContext ctx) =>
+        app.Map("/ws/giveaway", async (HttpContext ctx) =>
         {
             if (!ctx.WebSockets.IsWebSocketRequest) { ctx.Response.StatusCode = 400; return; }
             using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
             await HandleGiveawayClient(ws, ctx.RequestAborted);
         });
 
+        return app;
+    }
+
+    /// <summary>Bus + giveaway event subscriptions. Idempotent — only the
+    /// successfully-bound port runs this once. StopAsync inverts.</summary>
+    private void WireUpEventSubscriptions()
+    {
         _busSub = _bus.Subscribe(BroadcastChatMessage);
 
         _onStarted = e =>
@@ -172,9 +260,6 @@ public sealed class OverlayHost : IAsyncDisposable
         _giveaway.ParticipantAdded += _onParticipant;
         _giveaway.WinnersDrawn += _onWinners;
         _giveaway.Cancelled += _onCancelled;
-
-        await _app.StartAsync();
-        _log.LogInformation("OverlayHost listening on http://localhost:{Port}", Port);
     }
 
     public async Task StopAsync()
