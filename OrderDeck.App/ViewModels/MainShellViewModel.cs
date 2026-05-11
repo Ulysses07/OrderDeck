@@ -129,6 +129,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
     public IAsyncRelayCommand OpenAccountCommand { get; private set; } = null!;
     public IAsyncRelayCommand OpenIntakeSubmissionsCommand { get; private set; } = null!;
+    public IAsyncRelayCommand OpenDekontEkleCommand { get; private set; } = null!;
 
     private readonly YouTubeModerationService? _youTubeModeration;
 
@@ -179,6 +180,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
         OpenAccountCommand = new AsyncRelayCommand(OpenAccountAsync);
         OpenIntakeSubmissionsCommand = new AsyncRelayCommand(OpenIntakeSubmissionsAsync);
+        OpenDekontEkleCommand = new AsyncRelayCommand(OpenDekontEkleAsync);
 
         UpdateStreamStatusLabel();
         UpdateGiveawayCanStart();
@@ -453,6 +455,16 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         var dlg = global::OrderDeck.App.App.Host.Services.GetRequiredService<global::OrderDeck.App.Views.AccountDialog>();
         dlg.Owner = System.Windows.Application.Current?.MainWindow;
         dlg.ShowDialog();
+    }
+
+    private async Task OpenDekontEkleAsync()
+    {
+        await Task.Yield(); // ensure UI thread
+        var dlg = global::OrderDeck.App.App.Host.Services.GetRequiredService<global::OrderDeck.App.Views.DekontEkleDialog>();
+        dlg.Owner = System.Windows.Application.Current?.MainWindow;
+        dlg.ShowDialog();
+        // Payment outbox 30sn içinde sync'ler — UI feedback yok, mobile app
+        // listede otomatik görünür.
     }
 
     private void UpdateStreamStatusLabel()

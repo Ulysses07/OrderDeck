@@ -1,0 +1,65 @@
+<Window x:Class="OrderDeck.App.Views.DekontEkleDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:converters="clr-namespace:OrderDeck.App.Converters"
+        Title="Yeni Dekont" Width="460" Height="380"
+        WindowStartupLocation="CenterOwner"
+        Background="#FF1A1A1A" Foreground="White">
+    <Window.Resources>
+        <converters:NullToCollapsedConverter x:Key="NullToCollapsed"/>
+    </Window.Resources>
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="130"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <TextBlock Grid.Row="0" Grid.Column="0" Text="Ödeyen:" Margin="0,8,8,8" VerticalAlignment="Center"/>
+        <TextBox   Grid.Row="0" Grid.Column="1"
+                   Text="{Binding PayerName, UpdateSourceTrigger=PropertyChanged}"
+                   Padding="6" Margin="0,4"/>
+
+        <TextBlock Grid.Row="1" Grid.Column="0" Text="Tutar (TL):" Margin="0,8,8,8" VerticalAlignment="Center"/>
+        <TextBox   Grid.Row="1" Grid.Column="1"
+                   Text="{Binding AmountText, UpdateSourceTrigger=PropertyChanged}"
+                   Padding="6" Margin="0,4"
+                   ToolTip="Örn: 250,50 veya 250.50"/>
+
+        <TextBlock Grid.Row="2" Grid.Column="0" Text="Ödeme tarihi:" Margin="0,8,8,8" VerticalAlignment="Center"/>
+        <DatePicker Grid.Row="2" Grid.Column="1"
+                    SelectedDate="{Binding PaidAt}"
+                    Margin="0,4"/>
+
+        <TextBlock Grid.Row="3" Grid.Column="0" Text="Referans no:" Margin="0,8,8,8" VerticalAlignment="Center"/>
+        <TextBox   Grid.Row="3" Grid.Column="1"
+                   Text="{Binding ReferansNo, UpdateSourceTrigger=PropertyChanged}"
+                   Padding="6" Margin="0,4"
+                   ToolTip="Banka dekontundaki referans/işlem no"/>
+
+        <TextBlock Grid.Row="4" Grid.ColumnSpan="2"
+                   Text="{Binding ErrorMessage}"
+                   Foreground="#FFFF6B6B"
+                   TextWrapping="Wrap"
+                   Margin="0,12,0,0"
+                   Visibility="{Binding ErrorMessage, Converter={StaticResource NullToCollapsed}}"/>
+
+        <StackPanel Grid.Row="6" Grid.ColumnSpan="2" Orientation="Horizontal"
+                    HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Content="İptal" Click="OnCancel" Padding="14,6" Margin="0,0,8,0" IsCancel="True"/>
+            <Button Content="Kaydet"
+                    Click="OnSave"
+                    Padding="14,6"
+                    IsEnabled="{Binding CanSave}"
+                    IsDefault="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

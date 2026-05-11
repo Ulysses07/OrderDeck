@@ -307,6 +307,10 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<ILogger<Services.Sync.PaymentSyncService>>()));
         services.AddHostedService<Services.Sync.PaymentSyncHostedService>();
 
+        // Manuel dekont ekleme dialog (Payment sync PR C)
+        services.AddTransient<ViewModels.DekontEkleViewModel>();
+        services.AddTransient<Views.DekontEkleDialog>();
+
         // Intake form settings (Phase 4f Task 10)
         services.AddTransient<ViewModels.IntakeFormSettingsViewModel>();
 
