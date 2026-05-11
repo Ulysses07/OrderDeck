@@ -39,4 +39,11 @@ public sealed record Label(
     /// stable customer linking — DisplayName carries the pretty label
     /// ("Ayşe Yılmaz") that the operator wants to see. Nullable; UI falls
     /// back to Username when absent.</summary>
-    string? DisplayName = null);
+    string? DisplayName = null,
+    /// <summary>Kargo PR B (2026-05-11): true ise bu label normal ürün satışı
+    /// değil, müşterinin sipariş toplamı kargo eşiğinin altında kaldığı için
+    /// otomatik veya operatör tarafından eklenen kargo ücreti satırıdır.
+    /// LabelService.AddShippingFee() bayrağı true setler. PR E print
+    /// template + Excel rapor ayrımı yapar; PR C dekont eşleştirme
+    /// hesaplamasında bu label'ları "kargo dahil mi?" check'i için kullanır.</summary>
+    bool IsShippingFee = false);

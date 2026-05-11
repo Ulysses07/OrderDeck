@@ -57,6 +57,41 @@ public sealed class LabelService
         return label;
     }
 
+    /// <summary>
+    /// Kargo PR B (2026-05-11): Müşterinin sipariş toplamı kargo eşiğinin
+    /// altında kaldığında otomatik kargo ücreti satırı ekler. Normal Add()
+    /// gibi customer ekosistemine bağlanır (CustomerService.GetOrCreate yapılmaz
+    /// çünkü customer zaten mevcut — bu helper varolan müşteri için çağrılır).
+    ///
+    /// PR C'de DekontEkleDialog kaydet sonrası matcher service bunu çağıracak;
+    /// şu an public API olarak sadece test edilebilirlik için duruyor.
+    /// </summary>
+    /// <param name="sessionId">Hangi yayında ekleniyor (aktif yayın id'si).</param>
+    /// <param name="customer">Kime kargo eklenecek (lookup'lı çağrıdan gelir).</param>
+    /// <param name="amount">Kargo ücreti (TL) — AppSettings.Shipping.ShippingFee.</param>
+    public Label AddShippingFee(string sessionId, Customers.Customer customer, decimal amount)
+    {
+        var label = new Label(
+            Id: Guid.NewGuid().ToString("N"),
+            SessionId: sessionId,
+            CustomerId: customer.Id,
+            Platform: customer.Platform,
+            Username: customer.Username,
+            MessageText: $"Kargo Ücreti — {amount:0.##} TL",
+            Code: null,
+            Price: amount,
+            AddedAt: _clock.UnixNow(),
+            PrintedAt: null,
+            IsBackupPromoted: false,
+            ParentLabelId: null,
+            IsTentativeBackup: false,
+            DisplayName: customer.DisplayName,
+            IsShippingFee: true);
+
+        _labels.Insert(label);
+        return label;
+    }
+
     public void Delete(string labelId) => _labels.Delete(labelId);
 
     public IReadOnlyList<Label> GetQueue(string sessionId) =>
