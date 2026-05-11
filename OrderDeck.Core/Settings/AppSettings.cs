@@ -30,6 +30,11 @@ public sealed class AppSettings
     /// <summary>Phase 4g: WhatsApp ödeme isteme yapılandırması.</summary>
     public PaymentSettings Payment { get; set; } = new();
 
+    /// <summary>Kargo eşik + ücreti — PR A (2026-05-11). Default null/null
+    /// → feature kapalı, davranış değişmez. PR B'de Label.IsShippingFee
+    /// + otomatik label; PR C'de dekont eşleştirme modal'ı tüketecek.</summary>
+    public ShippingSettings Shipping { get; set; } = new();
+
     /// <summary>Phase 5c: YouTube Live chat scraper. Empty/null disables the scraper.
     /// Accepted values: "@handle", "handle", or any URL containing @handle. The
     /// hosted service resolves the handle to the active live video each time the
@@ -78,6 +83,30 @@ public sealed class PaymentSettings
     public string Iban { get; set; } = "";
     public string AccountHolder { get; set; } = "";
     public string Papara { get; set; } = "";
+}
+
+/// <summary>
+/// Kargo eşik + ücreti — işletme bazlı sabit ayar (yayın bazında değişmez).
+/// Müşteri toplamı <c>FreeShippingThreshold</c>'ı aşarsa ücretsiz kargo;
+/// altında kalırsa <c>ShippingFee</c> kadar kargo satırı eklenir (PR B+ ile
+/// otomatik label oluşturma + dekont eşleştirme).
+///
+/// Her iki alan da null bırakılırsa "kargo feature kapalı" anlamına gelir —
+/// PR B-E henüz yokken default davranış kapalı.
+/// </summary>
+public sealed class ShippingSettings
+{
+    /// <summary>Üzerinde kargo ücretsiz olan minimum sipariş tutarı (TL).
+    /// Null = feature kapalı.</summary>
+    public decimal? FreeShippingThreshold { get; set; }
+
+    /// <summary>Eşik altında uygulanan sabit kargo ücreti (TL).
+    /// Null = feature kapalı.</summary>
+    public decimal? ShippingFee { get; set; }
+
+    /// <summary>İki alan da pozitif değer içeriyor ve feature aktif mi?</summary>
+    public bool IsEnabled =>
+        FreeShippingThreshold is > 0 && ShippingFee is > 0;
 }
 
 public sealed class GiveawayAnimationSettings

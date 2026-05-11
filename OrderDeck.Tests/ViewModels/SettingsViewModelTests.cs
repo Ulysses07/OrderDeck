@@ -91,4 +91,94 @@ public class SettingsViewModel_PaymentTests : IDisposable
         loaded.Payment.AccountHolder.Should().Be("X");
         loaded.Payment.Papara.Should().Be("9");
     }
+
+    // ── Kargo PR A — Shipping settings ──────────────────────────────────
+
+    [Fact]
+    public void Load_displays_shipping_as_empty_when_settings_null()
+    {
+        var store = new SettingsStore(_path);
+        var s = new AppSettings(); // Shipping defaults to null/null
+
+        var sut = CreateVm(s, store);
+
+        sut.FreeShippingThresholdText.Should().BeEmpty();
+        sut.ShippingFeeText.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Load_displays_shipping_values_when_set()
+    {
+        var store = new SettingsStore(_path);
+        var s = new AppSettings();
+        s.Shipping.FreeShippingThreshold = 5000m;
+        s.Shipping.ShippingFee = 150m;
+
+        var sut = CreateVm(s, store);
+
+        sut.FreeShippingThresholdText.Should().Be("5000");
+        sut.ShippingFeeText.Should().Be("150");
+    }
+
+    [Theory]
+    [InlineData("5000", "150", 5000.00, 150.00)]
+    [InlineData("4999,99", "149,50", 4999.99, 149.50)]   // Türkçe virgül
+    [InlineData("4999.99", "149.50", 4999.99, 149.50)]   // Invariant nokta
+    public void Save_persists_shipping_values_parsing_both_decimal_styles(
+        string thresholdText, string feeText, decimal expectedThreshold, decimal expectedFee)
+    {
+        var store = new SettingsStore(_path);
+        var sut = CreateVm(new AppSettings(), store);
+        sut.FreeShippingThresholdText = thresholdText;
+        sut.ShippingFeeText = feeText;
+
+        sut.SaveCommand.Execute(null);
+        sut.Saved.Should().BeTrue();
+
+        var loaded = store.Load();
+        loaded.Shipping.FreeShippingThreshold.Should().Be(expectedThreshold);
+        loaded.Shipping.ShippingFee.Should().Be(expectedFee);
+        loaded.Shipping.IsEnabled.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("", "")]
+    [InlineData("0", "0")]
+    [InlineData("-100", "-50")]
+    [InlineData("abc", "xyz")]
+    public void Save_disables_shipping_when_invalid_or_zero_or_negative(
+        string thresholdText, string feeText)
+    {
+        var store = new SettingsStore(_path);
+        var sut = CreateVm(new AppSettings(), store);
+        sut.FreeShippingThresholdText = thresholdText;
+        sut.ShippingFeeText = feeText;
+
+        sut.SaveCommand.Execute(null);
+        sut.Saved.Should().BeTrue();
+
+        var loaded = store.Load();
+        loaded.Shipping.FreeShippingThreshold.Should().BeNull();
+        loaded.Shipping.ShippingFee.Should().BeNull();
+        loaded.Shipping.IsEnabled.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Save_one_field_only_persists_partial_state()
+    {
+        // Operatör sadece threshold girip fee'yi unutursa: ikisi de
+        // bağımsız parse; IsEnabled false kalır (ShippingSettings.IsEnabled
+        // ikisinin de positive olmasını ister).
+        var store = new SettingsStore(_path);
+        var sut = CreateVm(new AppSettings(), store);
+        sut.FreeShippingThresholdText = "5000";
+        sut.ShippingFeeText = ""; // forgot
+
+        sut.SaveCommand.Execute(null);
+
+        var loaded = store.Load();
+        loaded.Shipping.FreeShippingThreshold.Should().Be(5000m);
+        loaded.Shipping.ShippingFee.Should().BeNull();
+        loaded.Shipping.IsEnabled.Should().BeFalse();
+    }
 }
