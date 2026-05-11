@@ -1,5 +1,6 @@
 using MailKit.Net.Smtp;
 using MimeKit;
+using OrderDeck.LicenseServer.Services.Observability;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -42,7 +43,9 @@ public sealed class SmtpEmailSender : IEmailSender
         }
         catch (Exception ex)
         {
-            _log.LogWarning(ex, "SMTP send failed for {Email}", toEmail);
+            // PII: recipient email masked — KVKK gereği log dosyalarında ham
+            // adres tutulmaz. Pattern hala debug için yeterli (domain TLD görünür).
+            _log.LogWarning(ex, "SMTP send failed for {Email}", PiiMasker.MaskEmail(toEmail));
             throw;
         }
     }
