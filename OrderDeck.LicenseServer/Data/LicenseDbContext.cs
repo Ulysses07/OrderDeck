@@ -24,6 +24,7 @@ public class LicenseDbContext : DbContext
     public DbSet<CustomerBackup> CustomerBackups => Set<CustomerBackup>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<PushDevice> PushDevices => Set<PushDevice>();
+    public DbSet<Payment> Payments => Set<Payment>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -183,6 +184,23 @@ public class LicenseDbContext : DbContext
             // Same customer + device → upsert (no duplicate per device).
             b.HasIndex(d => new { d.CustomerId, d.DeviceId }).IsUnique();
             b.HasIndex(d => d.PushToken);
+        });
+
+        mb.Entity<Payment>(b =>
+        {
+            b.HasKey(p => p.Id);
+            b.Property(p => p.PayerName).HasMaxLength(200).IsRequired();
+            b.Property(p => p.Amount).HasPrecision(18, 2);
+            b.Property(p => p.ReferansNo).HasMaxLength(64).IsRequired();
+            b.Property(p => p.PdfHash).HasMaxLength(64);
+            b.Property(p => p.RejectReason).HasMaxLength(500);
+            b.Property(p => p.Status).HasConversion<int>();
+            b.HasOne(p => p.License).WithMany()
+                .HasForeignKey(p => p.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            // Duplicate dekont protection: same license + same referansNo → reject.
+            b.HasIndex(p => new { p.LicenseId, p.ReferansNo }).IsUnique();
+            // Common query: list pending by license, newest first.
+            b.HasIndex(p => new { p.LicenseId, p.Status, p.CreatedAt });
         });
 
         // Seed SKUs
