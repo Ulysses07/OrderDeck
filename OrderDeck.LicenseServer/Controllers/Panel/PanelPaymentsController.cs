@@ -38,12 +38,18 @@ public sealed class PanelPaymentsController : ControllerBase
         DateTimeOffset CreatedAt,
         DateTimeOffset? ApprovedAt,
         DateTimeOffset? RejectedAt,
-        string? RejectReason);
+        string? RejectReason,
+        string ShipmentDirective);   // Kargo PR E: "normal" | "hold" | "recipientpays"
 
-    /// <summary>GET /api/panel/payments?status=pending|approved|rejected&amp;take=50</summary>
+    /// <summary>
+    /// GET /api/panel/payments?status=pending|approved|rejected&amp;directive=normal|hold|recipientpays&amp;take=50.
+    /// Kargo PR E: directive filtre eklendi. Bekleyen Kargolar tab'ı status=approved&amp;directive=hold,
+    /// Alıcı Ödemeli tab'ı status=approved&amp;directive=recipientpays kullanır.
+    /// </summary>
     [HttpGet]
     public async Task<IActionResult> List(
         [FromQuery] string? status,
+        [FromQuery] string? directive,
         [FromQuery] int take = 50,
         CancellationToken ct = default)
     {
@@ -55,9 +61,16 @@ public sealed class PanelPaymentsController : ControllerBase
 
         if (!string.IsNullOrWhiteSpace(status))
         {
-            if (!TryParseStatus(status, out var parsed))
+            if (!TryParseStatus(status, out var parsedStatus))
                 return Problem(title: "invalid-status", statusCode: 400);
-            query = query.Where(p => p.Status == parsed);
+            query = query.Where(p => p.Status == parsedStatus);
+        }
+
+        if (!string.IsNullOrWhiteSpace(directive))
+        {
+            if (!TryParseDirective(directive, out var parsedDirective))
+                return Problem(title: "invalid-directive", statusCode: 400);
+            query = query.Where(p => p.ShipmentDirective == parsedDirective);
         }
 
         var rows = await query
@@ -66,7 +79,8 @@ public sealed class PanelPaymentsController : ControllerBase
             .Select(p => new PaymentDto(
                 p.Id, p.LicenseId, p.PayerName, p.Amount, p.PaidAt, p.ReferansNo,
                 p.Status.ToString().ToLowerInvariant(),
-                p.CreatedAt, p.ApprovedAt, p.RejectedAt, p.RejectReason))
+                p.CreatedAt, p.ApprovedAt, p.RejectedAt, p.RejectReason,
+                p.ShipmentDirective.ToString().ToLowerInvariant()))
             .ToListAsync(ct);
 
         return Ok(rows);
@@ -128,6 +142,17 @@ public sealed class PanelPaymentsController : ControllerBase
             case "approved": result = PaymentStatus.Approved; return true;
             case "rejected": result = PaymentStatus.Rejected; return true;
             default: result = PaymentStatus.Pending; return false;
+        }
+    }
+
+    private static bool TryParseDirective(string raw, out ShipmentDirective result)
+    {
+        switch (raw.Trim().ToLowerInvariant())
+        {
+            case "normal": result = ShipmentDirective.Normal; return true;
+            case "hold": result = ShipmentDirective.Hold; return true;
+            case "recipientpays": result = ShipmentDirective.RecipientPays; return true;
+            default: result = ShipmentDirective.Normal; return false;
         }
     }
 

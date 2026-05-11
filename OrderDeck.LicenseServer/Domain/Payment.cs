@@ -8,6 +8,20 @@ public enum PaymentStatus
 }
 
 /// <summary>
+/// Kargo PR E: dekont yüklendikten sonra vendor'un (WPF DekontEkleDialog
+/// üzerinden) verdiği kargo yönlendirme kararı. Müşteri ürün toplamını
+/// ödedi ama kargo ücretini eklemediyse Hold veya RecipientPays seçilir.
+/// Mobile Panel bekleyen kargolar / alıcı ödemeli tab'larıyla bu alanı
+/// filtre olarak kullanır.
+/// </summary>
+public enum ShipmentDirective
+{
+    Normal = 0,
+    Hold = 1,
+    RecipientPays = 2
+}
+
+/// <summary>
 /// Customer'ın yayıncıya yaptığı banka transferinin OrderDeck kaydı. PDF
 /// dekont parse sonrası (PR'da yok — sonraki faz) veya WPF App manuel
 /// girişi (yine sonraki faz) ile oluşur. Mobile Panel app burada bekleyenleri
@@ -47,4 +61,8 @@ public sealed class Payment
     public DateTimeOffset? RejectedAt { get; set; }
     public Guid? RejectedByCustomerId { get; set; }
     public string? RejectReason { get; set; }
+
+    /// <summary>Kargo PR E: WPF DekontEkleDialog'dan gelen vendor kararı.
+    /// Default Normal. Hold/RecipientPays mobile Panel'de ayrı liste'de görünür.</summary>
+    public ShipmentDirective ShipmentDirective { get; set; } = ShipmentDirective.Normal;
 }

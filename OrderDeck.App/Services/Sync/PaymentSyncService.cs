@@ -95,7 +95,8 @@ public sealed class PaymentSyncService
             Amount: p.Amount,
             PaidAt: DateTimeOffset.FromUnixTimeSeconds(p.PaidAt),
             ReferansNo: p.ReferansNo,
-            PdfHash: p.PdfHash
+            PdfHash: p.PdfHash,
+            ShipmentDirective: p.ShipmentDirective.ToString().ToLowerInvariant()
         )).ToList();
 
         List<SyncedPaymentDto> echo;

@@ -195,12 +195,15 @@ public class LicenseDbContext : DbContext
             b.Property(p => p.PdfHash).HasMaxLength(64);
             b.Property(p => p.RejectReason).HasMaxLength(500);
             b.Property(p => p.Status).HasConversion<int>();
+            b.Property(p => p.ShipmentDirective).HasConversion<int>();
             b.HasOne(p => p.License).WithMany()
                 .HasForeignKey(p => p.LicenseId).OnDelete(DeleteBehavior.Cascade);
             // Duplicate dekont protection: same license + same referansNo → reject.
             b.HasIndex(p => new { p.LicenseId, p.ReferansNo }).IsUnique();
             // Common query: list pending by license, newest first.
             b.HasIndex(p => new { p.LicenseId, p.Status, p.CreatedAt });
+            // Kargo PR E: mobile Panel "Bekleyen kargolar" / "Alıcı ödemeli" tab filtreleri.
+            b.HasIndex(p => new { p.LicenseId, p.ShipmentDirective, p.Status });
         });
 
         // Seed SKUs

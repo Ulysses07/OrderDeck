@@ -7,7 +7,8 @@ public sealed record SyncPaymentItem(
     decimal Amount,
     DateTimeOffset PaidAt,
     string ReferansNo,
-    string? PdfHash);
+    string? PdfHash,
+    string? ShipmentDirective = null);   // Kargo PR E. "normal" | "hold" | "recipientpays" | null=normal
 
 public sealed record SyncPaymentsRequest(IReadOnlyList<SyncPaymentItem> Payments);
 
@@ -18,4 +19,5 @@ public sealed record SyncedPaymentDto(
     DateTimeOffset? ApprovedAt,
     DateTimeOffset? RejectedAt,
     string? RejectReason,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string ShipmentDirective = "normal");   // Kargo PR E. Default "normal" → eski LicenseServer'lar geriye uyumlu.
