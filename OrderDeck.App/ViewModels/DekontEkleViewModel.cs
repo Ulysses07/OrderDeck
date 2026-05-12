@@ -1,5 +1,6 @@
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Payments;
+using OrderDeck.Core.Sales;
 using OrderDeck.Core.Sessions;
 using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage.Repositories;
@@ -27,6 +28,8 @@ public sealed partial class DekontEkleViewModel : ObservableObject
     private readonly CustomerRepository _customers;
     private readonly SessionRepository _sessions;
     private readonly PaymentMatcherService _matcher;
+    private readonly LabelRepository _labels;
+    private readonly ShipmentService _shipments;
     private readonly IClock _clock;
     private readonly ILogger<DekontEkleViewModel> _log;
 
@@ -54,11 +57,17 @@ public sealed partial class DekontEkleViewModel : ObservableObject
     private readonly PdfDekontParser _pdfParser;
     private readonly AppSettings _settings;
 
+    /// <summary>PR-C/2: dialog code-behind ShipmentThresholdDialog'a
+    /// FreeShippingThreshold geçirmek için VM üzerinden okur.</summary>
+    public AppSettings Settings => _settings;
+
     public DekontEkleViewModel(
         PaymentRepository payments,
         CustomerRepository customers,
         SessionRepository sessions,
         PaymentMatcherService matcher,
+        LabelRepository labels,
+        ShipmentService shipments,
         PdfDekontParser pdfParser,
         AppSettings settings,
         IClock clock,
@@ -68,6 +77,8 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         _customers = customers;
         _sessions = sessions;
         _matcher = matcher;
+        _labels = labels;
+        _shipments = shipments;
         _pdfParser = pdfParser;
         _settings = settings;
         _clock = clock;
@@ -202,7 +213,11 @@ public sealed partial class DekontEkleViewModel : ObservableObject
     public sealed record SaveResult(
         SaveResultKind Kind,
         PaymentMatcherService.MatchResult? Shortage = null,
-        string? Error = null);
+        string? Error = null,
+        // PR-C/2: Save başarılı + kümülatif eşik aşıldıysa dialog code-behind
+        // ShipmentThresholdDialog'u açmalı. Null = eşik aşılmadı veya hook
+        // çalışmadı (müşteri çözülemedi, feature kapalı, vs.).
+        ShipmentDecisionContext? ThresholdContext = null);
 
     public enum SaveResultKind { Saved, NeedsShipmentDecision, Error }
 
@@ -306,13 +321,109 @@ public sealed partial class DekontEkleViewModel : ObservableObject
             _log.LogInformation(
                 "Dekont eklendi: Id={Id} ref={Ref} tutar={Amount} directive={Directive}",
                 payment.Id, payment.ReferansNo, payment.Amount, directive);
-            return new SaveResult(SaveResultKind.Saved);
+
+            // PR-C/2: Kümülatif kargo hook. Vendor "Hold" dediyse Shipment'ı
+            // Held'e aldık ama yine de kümülatif Label'ları attach etmek için
+            // hook'u çağırıyoruz — sonraki yayında threshold kontrol akışı
+            // doğru hesaplasın.
+            var thresholdContext = TryEvaluateShipment(directive);
+            return new SaveResult(SaveResultKind.Saved, ThresholdContext: thresholdContext);
         }
         catch (Exception ex)
         {
             _log.LogWarning(ex, "Dekont kaydedilemedi");
             ErrorMessage = "Kaydetme başarısız: " + ex.Message;
             return new SaveResult(SaveResultKind.Error, Error: ErrorMessage);
+        }
+    }
+
+    /// <summary>
+    /// Payment kaydedildikten sonra kümülatif kargo akışını ilerletir:
+    /// müşterinin açık Shipment'ını bul/oluştur, henüz bağlanmamış Label'ları
+    /// attach et, threshold check yap. Müşteri çözülemezse veya feature
+    /// kapalıysa sessiz çıkar.
+    ///
+    /// Vendor "Hold" seçtiyse Shipment'ı Held'e alır (ApplyDecision); eşik
+    /// aşılsa bile threshold dialog'u açılmaz çünkü vendor zaten beklet
+    /// dedi. Vendor "RecipientPays" seçtiyse Shipment RecipientPays'a alınır
+    /// — yine threshold dialog'u açılmaz (sticky kararı).
+    ///
+    /// Yalnız "Normal" directive + threshold aşılmışsa context döndürülür;
+    /// dialog code-behind <see cref="ShipmentThresholdDialog"/> açar.
+    /// </summary>
+    private ShipmentDecisionContext? TryEvaluateShipment(ShipmentDirective directive)
+    {
+        try
+        {
+            var customer = ResolveCustomer();
+            if (customer is null) return null;
+
+            // 1) Açık (Pending/Held) Shipment bul veya oluştur
+            var shipment = _shipments.GetOrCreateOpenShipment(customer.Id);
+
+            // 2) Müşterinin henüz Shipment'a bağlanmamış aktif Label'larını attach et
+            var unattached = _labels.GetUnattachedByCustomer(customer.Id);
+            if (unattached.Count > 0)
+            {
+                var ids = new System.Collections.Generic.List<string>(unattached.Count);
+                foreach (var l in unattached) ids.Add(l.Id);
+                shipment = _shipments.AttachLabels(shipment.Id, ids);
+            }
+
+            // 3) Directive'e göre Shipment state'i ilerlet (single-source-of-truth)
+            switch (directive)
+            {
+                case ShipmentDirective.Hold:
+                    _shipments.ApplyDecision(shipment.Id, ShipmentDecision.Hold);
+                    return null; // vendor zaten beklet dedi; threshold dialog yok
+                case ShipmentDirective.RecipientPays:
+                    _shipments.ApplyDecision(shipment.Id, ShipmentDecision.RecipientPays);
+                    return null; // sticky sticker akışı; threshold dialog yok
+                case ShipmentDirective.Normal:
+                    break; // default — aşağıdaki threshold check'e düş
+            }
+
+            // 4) Threshold check (Normal directive için)
+            // PR-C/3+: allLabelsPaid hesabı buraya entegre edilecek. Şu an
+            // her zaman true varsayılıyor — operatör onaylama akışında tipik
+            // davranış (payment gerçekleşti, customer total covered demek).
+            var ctx = _shipments.EvaluateAfterPayment(customer.Id, allLabelsPaid: true);
+            if (ctx.ShouldPrompt && ctx.ThresholdReached)
+            {
+                _log.LogInformation(
+                    "Kümülatif eşik aşıldı: Customer={Cid} Shipment={Sid} Total={Total}",
+                    customer.Id, ctx.Shipment!.Id, ctx.Shipment.CumulativeAmount);
+                return ctx;
+            }
+            return null;
+        }
+        catch (Exception ex)
+        {
+            // Hook silent: ana save akışını bozmasın — bir sonraki dekontta
+            // tekrar denenir (Shipment idempotent).
+            _log.LogWarning(ex,
+                "Shipment evaluate hook hata verdi (silent skip); ana save akışı etkilenmedi.");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Dialog code-behind ShipmentThresholdDialog'da vendor karar verdikten
+    /// sonra çağırır. Decision Shipment state'ine uygulanır.
+    /// </summary>
+    public void ApplyShipmentDecision(string shipmentId, ShipmentDecision decision)
+    {
+        try
+        {
+            _shipments.ApplyDecision(shipmentId, decision);
+            _log.LogInformation(
+                "Shipment {Id} → {Decision} (kümülatif kargo modal'ından)",
+                shipmentId, decision);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex,
+                "Shipment {Id} ApplyDecision {Decision} hata verdi", shipmentId, decision);
         }
     }
 
