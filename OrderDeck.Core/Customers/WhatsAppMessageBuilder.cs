@@ -28,6 +28,19 @@ public sealed class WhatsAppMessageBuilder
             .Replace("{kargo}", ctx.ShippingNote);
     }
 
+    /// <summary>
+    /// Kümülatif kargo PR-E (2026-05-12): ücretsiz kargo eşiği aşıldı
+    /// "tebrikler" şablonu için placeholder substitusyonu.
+    /// Placeholder: {ad}, {kumulatif_tutar}, {tarih}.
+    /// </summary>
+    public string BuildShippingWonMessage(string template, string displayName, decimal cumulativeAmount)
+    {
+        return template
+            .Replace("{ad}", displayName)
+            .Replace("{kumulatif_tutar}", cumulativeAmount.ToString("N2", Tr))
+            .Replace("{tarih}", DateTime.Now.ToString("dd MMMM yyyy", Tr));
+    }
+
     /// <summary>"+905551234567" + "Hello" → "https://wa.me/905551234567?text=Hello".</summary>
     public string BuildWaMeLink(string e164Phone, string message)
     {

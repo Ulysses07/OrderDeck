@@ -54,6 +54,9 @@ public sealed partial class SettingsViewModel : ViewModelBase
     [ObservableProperty] private string _freeShippingThresholdText = "";
     [ObservableProperty] private string _shippingFeeText = "";
 
+    // PR-E — Kümülatif kargo "kazandın" WhatsApp şablonu.
+    [ObservableProperty] private string _shippingWonTemplate = "";
+
     // Phase 5c — YouTube Live chat scraper
     [ObservableProperty] private string _youTubeChannelHandle = "";
 
@@ -248,6 +251,9 @@ public sealed partial class SettingsViewModel : ViewModelBase
         FreeShippingThresholdText = FormatOptionalDecimal(_liveSettings.Shipping.FreeShippingThreshold);
         ShippingFeeText           = FormatOptionalDecimal(_liveSettings.Shipping.ShippingFee);
 
+        // PR-E — Kümülatif kargo "kazandın" template.
+        ShippingWonTemplate = _liveSettings.Payment.ShippingWonTemplate;
+
         // Phase 5c — YouTube
         YouTubeChannelHandle = _liveSettings.YouTubeChannelHandle ?? string.Empty;
 
@@ -343,6 +349,9 @@ public sealed partial class SettingsViewModel : ViewModelBase
         // Kargo PR A — Shipping. Empty/0/negative → null (feature kapalı).
         _liveSettings.Shipping.FreeShippingThreshold = ParseOptionalDecimal(FreeShippingThresholdText);
         _liveSettings.Shipping.ShippingFee           = ParseOptionalDecimal(ShippingFeeText);
+
+        // PR-E — Kümülatif kargo "kazandın" template.
+        _liveSettings.Payment.ShippingWonTemplate = ShippingWonTemplate ?? string.Empty;
 
         // Phase 5c — YouTube. Empty string → null so the hosted service idles
         // instead of attempting to resolve "".

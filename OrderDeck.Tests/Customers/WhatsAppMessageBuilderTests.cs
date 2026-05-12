@@ -98,4 +98,34 @@ public class WhatsAppMessageBuilderTests
         var result = _sut.BuildMessage("{ad} - {tutar} TL - {iban}", ctx);
         result.Should().Be("X - 100,00 TL - IBAN");
     }
+
+    // ── PR-E: ShippingWon kazandın template ───────────────────────────────
+
+    [Fact]
+    public void BuildShippingWonMessage_substitutes_placeholders()
+    {
+        var result = _sut.BuildShippingWonMessage(
+            "Merhaba {ad}, {kumulatif_tutar} TL alımınızla ücretsiz kargo kazandınız!",
+            "Ayşe Yılmaz",
+            5300m);
+        result.Should().Be("Merhaba Ayşe Yılmaz, 5.300,00 TL alımınızla ücretsiz kargo kazandınız!");
+    }
+
+    [Fact]
+    public void BuildShippingWonMessage_kumulatif_tutar_uses_turkish_culture()
+    {
+        var result = _sut.BuildShippingWonMessage(
+            "{kumulatif_tutar}", "x", 1234567.89m);
+        // tr-TR: 1.234.567,89
+        result.Should().Be("1.234.567,89");
+    }
+
+    [Fact]
+    public void BuildShippingWonMessage_supports_tarih_placeholder()
+    {
+        var result = _sut.BuildShippingWonMessage("{tarih}", "x", 1m);
+        // İçeriği assert etmek yerine sadece placeholder substitusyonu yapıldığını doğrula
+        result.Should().NotContain("{tarih}");
+        result.Should().NotBeEmpty();
+    }
 }

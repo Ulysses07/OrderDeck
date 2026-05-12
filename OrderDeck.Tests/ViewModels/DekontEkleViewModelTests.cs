@@ -704,6 +704,140 @@ public sealed class DekontEkleViewModelTests
         shipped.ShippedAt.Should().NotBeNull();
     }
 
+    // ── PR-E: ShipNow tetikleyici "kazandın" WhatsApp ────────────────────
+
+    [Fact]
+    public void ApplyShipmentDecision_ShipNow_triggers_kazandin_whatsapp()
+    {
+        // Settings + customer + open shipment with cumulative amount setup.
+        // Then call ApplyShipmentDecision(ShipNow) with a real PaymentRequestService
+        // wired to a FakeUrlLauncher; assert WhatsApp link launched with template.
+        var fx = new Fixture();
+        fx.Settings.Shipping.FreeShippingThreshold = 5000m;
+        fx.Settings.Shipping.ShippingFee = 150m;
+        fx.Settings.Payment.ShippingWonTemplate = "Tebrikler {ad}, {kumulatif_tutar} TL!";
+
+        // Customer + phone (E.164 TR)
+        var customer = new Customer(
+            "c1", "instagram", "@ayse_y", "Ayşe", null,
+            FirstSeenAt: 500, LastSeenAt: 1000,
+            IsBlacklisted: false, BlacklistReason: null, Notes: null,
+            TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null,
+            Address: null, Phone: "+905551234567");
+        fx.Customers.Insert(customer);
+
+        // Eşik aşan label
+        var sid = SeedActiveSession(fx);
+        fx.Labels.Insert(new Label(
+            Id: System.Guid.NewGuid().ToString("N"),
+            SessionId: sid, CustomerId: customer.Id,
+            Platform: "instagram", Username: "@ayse_y",
+            MessageText: "ürün", Code: null, Price: 5300m,
+            AddedAt: 1100L, PrintedAt: null));
+
+        // SettingsStore + PaymentRequestService + FakeLauncher hazırla
+        var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"od-pr-{System.Guid.NewGuid():N}.json");
+        try
+        {
+            var store = new SettingsStore(path);
+            store.Save(fx.Settings);
+            var launcher = new OrderDeck.Tests.Fakes.FakeUrlLauncher();
+            var paymentRequest = new OrderDeck.App.Services.PaymentRequestService(
+                store, new WhatsAppMessageBuilder(), launcher);
+
+            // Custom VM with the wired PaymentRequestService
+            var vm = new DekontEkleViewModel(
+                fx.Payments, fx.Customers, fx.Sessions,
+                new PaymentMatcherService(fx.Labels, () => fx.Settings),
+                fx.Labels, fx.ShipmentSvc,
+                new PdfDekontParser(), fx.Settings,
+                new FakeClock(),
+                NullLogger<DekontEkleViewModel>.Instance,
+                paymentRequest);
+
+            FillValid(vm);
+            vm.AmountText = "5300";
+            vm.CustomerPlatform = "instagram";
+            vm.CustomerUsername = "@ayse_y";
+
+            var result = vm.TrySave();
+            result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
+            result.ThresholdContext.Should().NotBeNull();
+
+            launcher.LaunchedUrls.Should().BeEmpty(); // henüz ShipNow yok
+
+            vm.ApplyShipmentDecision(result.ThresholdContext!.Shipment!.Id,
+                ShipmentDecision.ShipNow);
+
+            launcher.LaunchedUrls.Should().HaveCount(1);
+            launcher.LaunchedUrls[0].Should().StartWith("https://wa.me/905551234567?text=");
+            launcher.LaunchedUrls[0].Should().Contain("Tebrikler%20Ay%C5%9Fe");
+            launcher.LaunchedUrls[0].Should().Contain("5.300%2C00");
+        }
+        finally
+        {
+            if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ApplyShipmentDecision_Hold_does_not_trigger_whatsapp()
+    {
+        var fx = new Fixture();
+        fx.Settings.Shipping.FreeShippingThreshold = 5000m;
+        fx.Settings.Shipping.ShippingFee = 150m;
+        fx.Settings.Payment.ShippingWonTemplate = "Tebrikler!";
+
+        var customer = new Customer(
+            "c1", "instagram", "@ayse_y", "Ayşe", null,
+            FirstSeenAt: 500, LastSeenAt: 1000,
+            IsBlacklisted: false, BlacklistReason: null, Notes: null,
+            TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null,
+            Address: null, Phone: "+905551234567");
+        fx.Customers.Insert(customer);
+
+        var sid = SeedActiveSession(fx);
+        fx.Labels.Insert(new Label(
+            Id: System.Guid.NewGuid().ToString("N"),
+            SessionId: sid, CustomerId: customer.Id,
+            Platform: "instagram", Username: "@ayse_y",
+            MessageText: "ürün", Code: null, Price: 5300m,
+            AddedAt: 1100L, PrintedAt: null));
+
+        var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"od-pr-{System.Guid.NewGuid():N}.json");
+        try
+        {
+            var store = new SettingsStore(path);
+            store.Save(fx.Settings);
+            var launcher = new OrderDeck.Tests.Fakes.FakeUrlLauncher();
+            var paymentRequest = new OrderDeck.App.Services.PaymentRequestService(
+                store, new WhatsAppMessageBuilder(), launcher);
+            var vm = new DekontEkleViewModel(
+                fx.Payments, fx.Customers, fx.Sessions,
+                new PaymentMatcherService(fx.Labels, () => fx.Settings),
+                fx.Labels, fx.ShipmentSvc,
+                new PdfDekontParser(), fx.Settings,
+                new FakeClock(),
+                NullLogger<DekontEkleViewModel>.Instance,
+                paymentRequest);
+
+            FillValid(vm);
+            vm.AmountText = "5300";
+            vm.CustomerPlatform = "instagram";
+            vm.CustomerUsername = "@ayse_y";
+
+            var result = vm.TrySave();
+            vm.ApplyShipmentDecision(result.ThresholdContext!.Shipment!.Id,
+                ShipmentDecision.Hold);
+
+            launcher.LaunchedUrls.Should().BeEmpty(); // Hold seçildi, mesaj yok
+        }
+        finally
+        {
+            if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
+        }
+    }
+
     [Fact]
     public void TrySave_without_customer_skips_shipment_hook()
     {

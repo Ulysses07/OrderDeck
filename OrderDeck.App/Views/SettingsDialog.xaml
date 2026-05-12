@@ -249,6 +249,19 @@
                                     veya üzeri alırsa kargo ücretsiz. İki alan da boş/0 ise kargo
                                     özelliği devre dışı kalır (sonraki sürümle birlikte aktif olur).
                                 </TextBlock>
+
+                                <Label Content="Ücretsiz Kargo Kazandın Mesajı"
+                                       Margin="0,12,0,2" Foreground="White"/>
+                                <TextBox Text="{Binding ShippingWonTemplate, UpdateSourceTrigger=PropertyChanged}"
+                                         AcceptsReturn="True" TextWrapping="Wrap"
+                                         MinHeight="80" MaxHeight="140"
+                                         VerticalScrollBarVisibility="Auto"
+                                         FontFamily="Consolas" FontSize="12"
+                                         ToolTip="Müşteri kümülatif eşiği aştıktan sonra ShipNow seçildiğinde gönderilen WhatsApp mesajı."/>
+                                <TextBlock FontSize="11" Foreground="#FFAAAAAA" Margin="0,2,0,0"
+                                           TextWrapping="Wrap">
+                                    Placeholder: {ad} {kumulatif_tutar} {tarih}. Boş bırakılırsa mesaj atılmaz.
+                                </TextBlock>
                             </StackPanel>
                         </GroupBox>
                     </StackPanel>

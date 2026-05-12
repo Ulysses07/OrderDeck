@@ -74,6 +74,39 @@ public sealed class PaymentRequestService
     }
 
     /// <summary>
+    /// Kümülatif kargo PR-E (2026-05-12): Müşteri ücretsiz kargo eşiğini
+    /// aştığında vendor "Evet kargolansın" dedikten sonra çağrılır. WhatsApp
+    /// linki açar; phone yoksa PhoneRequired döner. Template'i AppSettings'ten
+    /// okur; boşsa Opened ile fail-silent çıkar (mesaj atılmaz).
+    /// </summary>
+    public PaymentRequestResult OpenShippingWonWhatsApp(Customer customer, decimal cumulativeAmount)
+    {
+        if (!PhoneNormalizer.IsValidTr(customer.Phone))
+            return PaymentRequestResult.PhoneRequired;
+
+        var settings = _settingsStore.Load();
+        var template = settings.Payment.ShippingWonTemplate;
+        if (string.IsNullOrWhiteSpace(template))
+            return PaymentRequestResult.Opened; // template kapalı, sessiz geç
+
+        var message = _messageBuilder.BuildShippingWonMessage(
+            template,
+            customer.DisplayName ?? customer.Username,
+            cumulativeAmount);
+        var link = _messageBuilder.BuildWaMeLink(customer.Phone!, message);
+
+        try
+        {
+            _launcher.Launch(link);
+            return PaymentRequestResult.Opened;
+        }
+        catch
+        {
+            return PaymentRequestResult.LaunchFailed;
+        }
+    }
+
+    /// <summary>
     /// Kargo karar matrisi:
     /// <list type="bullet">
     ///   <item>Customer.RecipientPaysActive → "Kargo: alıcı ödemeli" (kargo fee

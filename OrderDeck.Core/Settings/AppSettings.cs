@@ -85,6 +85,18 @@ public sealed class PaymentSettings
     public string Iban { get; set; } = "";
     public string AccountHolder { get; set; } = "";
     public string Papara { get; set; } = "";
+
+    /// <summary>
+    /// Kümülatif kargo PR-E (2026-05-12): Müşteri ücretsiz kargo eşiğini
+    /// aştıktan sonra vendor "Evet, kargolansın" dediğinde gönderilecek
+    /// tebrik mesajı şablonu. Placeholder'lar: {ad}, {kumulatif_tutar}, {tarih}.
+    ///
+    /// Boş bırakılırsa WhatsApp mesajı oluşturulmaz — sessiz akış.
+    /// </summary>
+    public string ShippingWonTemplate { get; set; } =
+        "Merhaba {ad}, toplam {kumulatif_tutar} TL alımınız ile ücretsiz " +
+        "kargo hakkı kazandınız! 🎁 Siparişiniz en kısa sürede kargoya " +
+        "verilecek. Teşekkürler!";
 }
 
 /// <summary>
