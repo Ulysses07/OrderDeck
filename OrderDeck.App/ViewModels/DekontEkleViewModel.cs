@@ -91,11 +91,14 @@ public sealed partial class DekontEkleViewModel : ObservableObject
             _pendingPdfHash = result.PdfHash;
             ErrorMessage = null;
 
-            // Alıcı IBAN check (2026-05-12): müşteri yanlış IBAN'a transfer
-            // yapmış olabilir. Warning olarak göster — Save'i engelleme
-            // (PDF parse hatası, vendor sub-account, manuel doğrulama
-            // edge case'leri için).
-            IbanWarning = CheckIbanMatch(result.RecipientIban);
+            // Alıcı IBAN + isim check (2026-05-12): müşteri yanlış hesaba
+            // transfer yapmış olabilir. Bankalar IBAN + isim kombinasyonunu
+            // doğrular — uyuşmazsa para gelmez. Bu noktada yine warning
+            // (Save'i engelleme — PDF parse hatası, sub-account, manuel
+            // doğrulama edge case'leri için).
+            IbanWarning = CombineWarnings(
+                CheckIbanMatch(result.RecipientIban),
+                CheckRecipientNameMatch(result.RecipientName));
             return null;
         }
         catch (Exception ex)
@@ -137,6 +140,45 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         => string.IsNullOrWhiteSpace(raw)
             ? ""
             : System.Text.RegularExpressions.Regex.Replace(raw, @"\s+", "").ToUpperInvariant();
+
+    private string? CheckRecipientNameMatch(string? pdfRecipientName)
+    {
+        if (string.IsNullOrWhiteSpace(pdfRecipientName)) return null;
+
+        var expected = PdfDekontParser.NormalizeName(_settings.Payment.AccountHolder);
+        if (string.IsNullOrWhiteSpace(expected))
+        {
+            // Vendor henüz Settings'te hesap sahibi tanımlamamış → karşılaştırma yok
+            return null;
+        }
+
+        var actual = PdfDekontParser.NormalizeName(pdfRecipientName);
+
+        // Substring match: PDF alıcı adı vendor isminin SUPERSET'i olabilir
+        // (örn. "ERDEM HAN GIDA Kuveyt Türk Katılım" gibi banka adı ekli).
+        // Vendor adı, PDF içinde geçiyorsa eşleşme sayılır.
+        if (actual.Contains(expected) || expected.Contains(actual))
+        {
+            _log.LogInformation("PDF recipient name matches Settings AccountHolder");
+            return null;
+        }
+
+        _log.LogWarning(
+            "PDF recipient name does NOT match Settings AccountHolder. Expected={Expected}, Actual={Actual}",
+            expected, actual);
+        return $"⚠ DİKKAT: Dekontun alıcı adı sizin hesap sahibi adınızla eşleşmiyor!\n" +
+               $"Dekont alıcı:  {pdfRecipientName}\n" +
+               $"Sizin hesap:   {_settings.Payment.AccountHolder}\n" +
+               $"Banka transfer'i reddetmiş veya para başka hesaba gitmiş olabilir.";
+    }
+
+    private static string? CombineWarnings(string? a, string? b)
+    {
+        if (string.IsNullOrEmpty(a) && string.IsNullOrEmpty(b)) return null;
+        if (string.IsNullOrEmpty(a)) return b;
+        if (string.IsNullOrEmpty(b)) return a;
+        return a + "\n\n" + b;
+    }
 
     public bool CanSave => Validate() is null;
 

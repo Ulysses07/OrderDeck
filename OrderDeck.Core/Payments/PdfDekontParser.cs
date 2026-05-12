@@ -33,7 +33,8 @@ public sealed class PdfDekontParser
         string? ReferansNo,
         string PdfHash,
         string RawText,
-        string? RecipientIban = null);   // 2026-05-12: alıcı IBAN — Settings.Iban ile karşılaştırma için
+        string? RecipientIban = null,    // 2026-05-12: alıcı IBAN — Settings.Iban ile karşılaştırma için
+        string? RecipientName = null);   // 2026-05-12: alıcı adı — Settings.AccountHolder ile karşılaştırma için
 
     public ParseResult Parse(byte[] pdfBytes)
     {
@@ -52,7 +53,8 @@ public sealed class PdfDekontParser
         ReferansNo: ExtractReferansNo(text),
         PdfHash: hash,
         RawText: text,
-        RecipientIban: ExtractRecipientIban(text));
+        RecipientIban: ExtractRecipientIban(text),
+        RecipientName: ExtractRecipientName(text));
 
     private static string ExtractText(byte[] pdfBytes)
     {
@@ -310,6 +312,71 @@ public sealed class PdfDekontParser
     /// genel bankacılık format'ları: "ALICI IBAN: TR...", "Alıcı IBAN: TR...",
     /// "IBAN/Hesap No : TR..." (ALICI section altında).
     /// </summary>
+    /// <summary>
+    /// 2026-05-12: Alıcı adını yakalar. Vendor'un Settings.Payment.AccountHolder
+    /// ile karşılaştırma yaparak müşterinin doğru hesaba transfer ettiğini
+    /// kontrol etmek için. Türk bankaları IBAN + isim kombinasyonunu
+    /// doğrular — uyuşmazsa transfer reddedilir.
+    /// </summary>
+    internal static string? ExtractRecipientName(string text)
+    {
+        var patterns = new[]
+        {
+            // QNB: "ALICI ÜNVANI: ERDEM HAN GIDA   ALICI IBAN: TR..." —
+            // lookahead'a 2. ALICI eklendi yoksa "ERDEM HAN GIDA ALICI"
+            // yapışıyordu (greedy alıyordu kelimeyi capture içine).
+            @"ALICI\s+[ÜüU]NVANI?\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜa-zçğıöşü0-9\.\s]+?)(?=\s*(?:ALICI|IBAN|TR\d{2}|HESAP|KATILIMCI|AÇIKLAMA|EFT|\$))",
+            // Türkiye Finans: "ALICIIsim              : RIDVAN ÖZCAN" sonra IBAN
+            @"ALICI[^A-Za-z]{0,30}?[İıI]sim\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-Za-zÇĞİıÖŞÜçğıöşü0-9\.\s]+?)(?=\s*(?:IBAN|TR\d{2}|HESAP|TC[:\s]|AÇIKLAMA|İŞLEM|TUTAR|\$))",
+            // Inline: "Alıcı : NAME ... IBAN ..."
+            @"Al[ıi]c[ıi]\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜa-zçğıöşü0-9\.\s]+?)(?=\s*(?:IBAN|TR\d{2}|Kuveyt|Ziraat|Garanti|Yap[ıi]|Akbank|İ[şS]\s|QNB|Vak[ıi]f|Halk|Deniz|TEB|Finans|Enpara|Papara|Para\s|Banka|\$))"
+        };
+
+        foreach (var pattern in patterns)
+        {
+            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
+            if (match.Success)
+            {
+                var name = Regex.Replace(match.Groups[1].Value.Trim(), @"\s+", " ");
+                if (name.Length >= 3 && name.Length <= 200) return name;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Türkçe karakter ve culture quirks'lerinden bağımsız case-insensitive
+    /// karşılaştırma için isim/string normalize eder. ToLowerInvariant
+    /// Türkçe 'ı' karakterini olduğu gibi bırakır; manuel mapping ile
+    /// Latin'e çeviriyoruz.
+    /// </summary>
+    public static string NormalizeName(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "";
+        var lower = raw.ToLowerInvariant();
+        var sb = new StringBuilder(lower.Length);
+        foreach (var c in lower)
+        {
+            sb.Append(c switch
+            {
+                'ı' => 'i',
+                'İ' => 'i',
+                'ş' => 's',
+                'Ş' => 's',
+                'ğ' => 'g',
+                'Ğ' => 'g',
+                'ç' => 'c',
+                'Ç' => 'c',
+                'ö' => 'o',
+                'Ö' => 'o',
+                'ü' => 'u',
+                'Ü' => 'u',
+                _ => c
+            });
+        }
+        return Regex.Replace(sb.ToString(), @"\s+", " ").Trim();
+    }
+
     internal static string? ExtractRecipientIban(string text)
     {
         // ALICI section başlangıcından sonraki ilk TR-IBAN'ı yakala.

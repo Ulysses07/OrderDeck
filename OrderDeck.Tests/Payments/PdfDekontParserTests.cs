@@ -226,4 +226,39 @@ Açıklama: Yayın ödemesi
         var result = _parser.ParseFromText(text, FakeHash);
         result.ReferansNo.Should().Be("20260508-99-XOGKX");
     }
+
+    // ── RecipientName (2026-05-12 — IBAN + name match güvenliği) ────────
+
+    [Theory]
+    [InlineData("ALICI ÜNVANI: ERDEM HAN GIDA   ALICI IBAN: TR...", "ERDEM HAN GIDA")]
+    [InlineData("ALICIIsim              : RIDVAN ÖZCANIBAN/Hesap No", "RIDVAN ÖZCAN")]
+    [InlineData("Alıcı : ERDEM HAN GIDA Kuveyt Türk Katılım", "ERDEM HAN GIDA")]
+    public void ExtractRecipientName_recognizes_common_formats(string text, string expected)
+    {
+        var result = _parser.ParseFromText(text, FakeHash);
+        result.RecipientName.Should().Be(expected);
+    }
+
+    [Fact]
+    public void ExtractRecipientName_null_when_no_alici_section()
+    {
+        var text = "Gönderen: Foo IBAN: TR12";
+        var result = _parser.ParseFromText(text, FakeHash);
+        result.RecipientName.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("Erdem Han Gıda", "Erdem Han Gıda", true)]
+    [InlineData("Erdem Han Gıda", "ERDEM HAN GIDA", true)]   // case-insensitive
+    [InlineData("Erdem Han Gıda", "Erdem Han Gida", true)]   // Türkçe ı→i normalize
+    [InlineData("Erdem Han Gıda", "ERDEM HAN GIDA Kuveyt Türk Katılım", true)]   // substring
+    [InlineData("Erdem Han Gıda", "Mehmet Yılmaz", false)]
+    public void NormalizeName_supports_case_and_turkish_compare(
+        string vendor, string pdf, bool expectsMatch)
+    {
+        var v = PdfDekontParser.NormalizeName(vendor);
+        var p = PdfDekontParser.NormalizeName(pdf);
+        var match = !string.IsNullOrEmpty(v) && (p.Contains(v) || v.Contains(p));
+        match.Should().Be(expectsMatch);
+    }
 }
