@@ -1,6 +1,7 @@
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Payments;
 using OrderDeck.Core.Sessions;
+using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -41,11 +42,17 @@ public sealed partial class DekontEkleViewModel : ObservableObject
 
     [ObservableProperty] private string? _errorMessage;
 
+    /// <summary>PDF parse sonrası alıcı IBAN'ı Settings.Payment.Iban ile
+    /// uyuşmazsa burada warning gösterilir (Save'i engellemez — edge case'lerde
+    /// operatör override edebilir, ama görsel uyarı kritik bilgi).</summary>
+    [ObservableProperty] private string? _ibanWarning;
+
     // PDF parse hash (Payment.PdfHash'e CommitInternal'da yazılır — duplicate
     // dedect için). Operator PDF yüklemediyse null kalır.
     private string? _pendingPdfHash;
 
     private readonly PdfDekontParser _pdfParser;
+    private readonly AppSettings _settings;
 
     public DekontEkleViewModel(
         PaymentRepository payments,
@@ -53,6 +60,7 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         SessionRepository sessions,
         PaymentMatcherService matcher,
         PdfDekontParser pdfParser,
+        AppSettings settings,
         IClock clock,
         ILogger<DekontEkleViewModel> log)
     {
@@ -61,6 +69,7 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         _sessions = sessions;
         _matcher = matcher;
         _pdfParser = pdfParser;
+        _settings = settings;
         _clock = clock;
         _log = log;
     }
@@ -81,6 +90,15 @@ public sealed partial class DekontEkleViewModel : ObservableObject
             if (!string.IsNullOrWhiteSpace(result.ReferansNo)) ReferansNo = result.ReferansNo;
             _pendingPdfHash = result.PdfHash;
             ErrorMessage = null;
+
+            // Alıcı IBAN + isim check (2026-05-12): müşteri yanlış hesaba
+            // transfer yapmış olabilir. Bankalar IBAN + isim kombinasyonunu
+            // doğrular — uyuşmazsa para gelmez. Bu noktada yine warning
+            // (Save'i engelleme — PDF parse hatası, sub-account, manuel
+            // doğrulama edge case'leri için).
+            IbanWarning = CombineWarnings(
+                CheckIbanMatch(result.RecipientIban),
+                CheckRecipientNameMatch(result.RecipientName));
             return null;
         }
         catch (Exception ex)
@@ -88,6 +106,78 @@ public sealed partial class DekontEkleViewModel : ObservableObject
             _log.LogWarning(ex, "PDF parse failed");
             return "PDF okunamadı: " + ex.Message;
         }
+    }
+
+    private string? CheckIbanMatch(string? pdfRecipientIban)
+    {
+        if (string.IsNullOrWhiteSpace(pdfRecipientIban)) return null; // parser bulamadı, sessiz geç
+
+        var expected = NormalizeIban(_settings.Payment.Iban);
+        if (string.IsNullOrWhiteSpace(expected))
+        {
+            // Vendor henüz Settings'te IBAN tanımlamamış → karşılaştırma yapma
+            return null;
+        }
+
+        var actual = NormalizeIban(pdfRecipientIban);
+        if (string.Equals(expected, actual, StringComparison.OrdinalIgnoreCase))
+        {
+            // Eşleşti — uyarı yok
+            _log.LogInformation("PDF recipient IBAN matches Settings IBAN");
+            return null;
+        }
+
+        _log.LogWarning(
+            "PDF recipient IBAN does NOT match Settings IBAN. Expected={Expected}, Actual={Actual}",
+            expected, actual);
+        return $"⚠ DİKKAT: Dekontun alıcı IBAN'ı sizin IBAN'ınızla eşleşmiyor!\n" +
+               $"Dekont alıcı:  {actual}\n" +
+               $"Sizin IBAN:    {expected}\n" +
+               $"Para başka bir hesaba gitmiş olabilir — kayıttan önce kontrol edin.";
+    }
+
+    private static string NormalizeIban(string? raw)
+        => string.IsNullOrWhiteSpace(raw)
+            ? ""
+            : System.Text.RegularExpressions.Regex.Replace(raw, @"\s+", "").ToUpperInvariant();
+
+    private string? CheckRecipientNameMatch(string? pdfRecipientName)
+    {
+        if (string.IsNullOrWhiteSpace(pdfRecipientName)) return null;
+
+        var expected = PdfDekontParser.NormalizeName(_settings.Payment.AccountHolder);
+        if (string.IsNullOrWhiteSpace(expected))
+        {
+            // Vendor henüz Settings'te hesap sahibi tanımlamamış → karşılaştırma yok
+            return null;
+        }
+
+        var actual = PdfDekontParser.NormalizeName(pdfRecipientName);
+
+        // Substring match: PDF alıcı adı vendor isminin SUPERSET'i olabilir
+        // (örn. "ERDEM HAN GIDA Kuveyt Türk Katılım" gibi banka adı ekli).
+        // Vendor adı, PDF içinde geçiyorsa eşleşme sayılır.
+        if (actual.Contains(expected) || expected.Contains(actual))
+        {
+            _log.LogInformation("PDF recipient name matches Settings AccountHolder");
+            return null;
+        }
+
+        _log.LogWarning(
+            "PDF recipient name does NOT match Settings AccountHolder. Expected={Expected}, Actual={Actual}",
+            expected, actual);
+        return $"⚠ DİKKAT: Dekontun alıcı adı sizin hesap sahibi adınızla eşleşmiyor!\n" +
+               $"Dekont alıcı:  {pdfRecipientName}\n" +
+               $"Sizin hesap:   {_settings.Payment.AccountHolder}\n" +
+               $"Banka transfer'i reddetmiş veya para başka hesaba gitmiş olabilir.";
+    }
+
+    private static string? CombineWarnings(string? a, string? b)
+    {
+        if (string.IsNullOrEmpty(a) && string.IsNullOrEmpty(b)) return null;
+        if (string.IsNullOrEmpty(a)) return b;
+        if (string.IsNullOrEmpty(b)) return a;
+        return a + "\n\n" + b;
     }
 
     public bool CanSave => Validate() is null;

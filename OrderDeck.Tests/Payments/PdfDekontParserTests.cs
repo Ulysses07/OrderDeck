@@ -171,4 +171,159 @@ Açıklama: Yayın ödemesi
         result.PaidAt.Should().BeNull();
         result.ReferansNo.Should().BeNull();
     }
+
+    // ── Türkiye Finans format (2026-05-12 real-world iterate) ───────────
+
+    [Fact]
+    public void Parse_turkiye_finans_dekont_extracts_all_fields()
+    {
+        // Real PDF text dump: "GÖNDEREN" + "İsim : NAME" 2-step,
+        // dash-alphanumeric referans no, "Düzenleme Tarihi" label,
+        // US-format amount.
+        var text = "Büyük Mükellefler V.D. No:0680063870DEKONTFAST" +
+                   "Düzenleme Tarihi  : 8.05.2026 18:22:00" +
+                   "Referans No       : 20260508-99-XOGKX" +
+                   "GÖNDERENİsim              : HARUN CEYLAN" +
+                   "ALICIİsim              : RIDVAN ÖZCAN" +
+                   "IBAN/Hesap No     : TR480011100000000107020132" +
+                   "İŞLEMTutar             : 24,270.00";
+
+        var result = _parser.ParseFromText(text, FakeHash);
+
+        result.PayerName.Should().Be("HARUN CEYLAN");
+        result.Amount.Should().Be(24270m);
+        result.PaidAt.Should().Be(new DateTime(2026, 5, 8));
+        result.ReferansNo.Should().Be("20260508-99-XOGKX");
+        result.RecipientIban.Should().Be("TR480011100000000107020132");
+    }
+
+    // ── Ziraat format (2026-05-12 real-world iterate) ───────────────────
+
+    [Fact]
+    public void Parse_ziraat_dekont_extracts_all_fields()
+    {
+        // Real Ziraat sample format. Inline "Gönderen : NAME Alan Banka : ..."
+        // ve "Alıcı Hesap : TR..." (IBAN keyword'ü yok).
+        // Referans no "Fast Sorgu No" label'i altında.
+        var text = "İŞLEM TARİHİ:06/02/2024-12:19:17 - F06195VALÖR:06.02.2024" +
+                   "İŞLEM YERİ:ZİRAAT MOBİLHESAPTAN FASTsagolun" +
+                   "Fast Mesaj Kodu : A01 Fast Sorgu No : 2383575454" +
+                   "Gönderen : FUAD HAMOOD" +
+                   "Alan Banka : 0015 - Türkiye Vakıﬂar Bankası T.A.O." +
+                   "Alıcı Hesap : TR380001500158007306339861 " +
+                   "Alıcı : Doha Mokhtar Mohamed Issa Harby" +
+                   "İşlem Tutarı : 1.500,00 TRYKomisyon : 3,97 TRY";
+
+        var result = _parser.ParseFromText(text, FakeHash);
+
+        result.PayerName.Should().Be("FUAD HAMOOD");
+        result.Amount.Should().Be(1500m);
+        result.PaidAt.Should().Be(new DateTime(2024, 2, 6));
+        result.ReferansNo.Should().Be("2383575454");
+        result.RecipientIban.Should().Be("TR380001500158007306339861");
+        result.RecipientName.Should().Be("Doha Mokhtar Mohamed Issa Harby");
+    }
+
+    // ── Vakıfbank format (2026-05-12 real-world iterate) ────────────────
+
+    [Fact]
+    public void Parse_vakifbank_dekont_extracts_all_fields()
+    {
+        // Vakıfbank klasik havale formatı: separator yok, label sonrası direkt
+        // değer continuous text. "GONDEREN ADSOYAD/UNVAN", "ALICI HESAP NO",
+        // "ALICI AD SOYAD/UNVAN", "İŞLEM TUTARI" — hiçbir colon yok.
+        var text = "VAKIFBANKİŞLEM BİLGİLERİİŞLEMHesaptan Havale" +
+                   "İŞLEM TARİHİ10.08.2022 15:29:05" +
+                   "ALICI HESAP NOTR54 0001 5001 5800 73168592 23" +
+                   "ALICI AD SOYAD/UNVANKIRŞEHİR AHİ EVRAN ÜNİVERSİTESİ" +
+                   "GONDEREN HESAP NOTR55 0001 5001 5800 73017241 98" +
+                   "GONDEREN ADSOYAD/UNVANERDAL TÖRE" +
+                   "İŞLEM TUTARI300,00 TLMASRAF TUTARI" +
+                   "İŞLEM NO2022003572846205FİŞ NO";
+
+        var result = _parser.ParseFromText(text, FakeHash);
+
+        result.PayerName.Should().Be("ERDAL TÖRE");
+        result.Amount.Should().Be(300m);
+        result.PaidAt.Should().Be(new DateTime(2022, 8, 10));
+        result.ReferansNo.Should().Be("2022003572846205");
+        result.RecipientIban.Should().Be("TR540001500158007316859223");
+        result.RecipientName.Should().Be("KIRŞEHİR AHİ EVRAN ÜNİVERSİTESİ");
+    }
+
+    [Fact]
+    public void ExtractPayerName_ignores_label_without_colon()
+    {
+        // Vakıfbank "GONDEREN HESAP NOTR55..." — eski loose pattern
+        // ("Gönderen" + whitespace) "HESAP NO"'yu PayerName olarak yutuyordu.
+        // Doğru pattern colon zorunlu, label "ADSOYAD/UNVAN" lookahead'lı.
+        var text = "GONDEREN HESAP NOTR55 0001 5001 5800 73017241 98ALICI";
+        var result = _parser.ParseFromText(text, FakeHash);
+        result.PayerName.Should().BeNull();
+    }
+
+    // ── RecipientIban (2026-05-12) ──────────────────────────────────────
+
+    [Theory]
+    [InlineData("ALICI IBAN: TR830020500009512140100001", "TR830020500009512140100001")]
+    [InlineData("ALICIIsim : X IBAN/Hesap No : TR48 0011 1000 0000 0107 0201 32", "TR480011100000000107020132")]
+    [InlineData("Alıcı : ERDEM HAN GIDA IBAN: TR430011100000000155645255", "TR430011100000000155645255")]
+    public void ExtractRecipientIban_finds_iban_in_alici_section(string text, string expected)
+    {
+        var result = _parser.ParseFromText(text, FakeHash);
+        result.RecipientIban.Should().Be(expected);
+    }
+
+    [Fact]
+    public void ExtractRecipientIban_null_when_only_gonderen_iban_present()
+    {
+        var text = "Gönderen: Foo IBAN: TR12 0011 1000 0000 0107 0201 32";
+        var result = _parser.ParseFromText(text, FakeHash);
+        result.RecipientIban.Should().BeNull();
+    }
+
+    [Fact]
+    public void ExtractReferansNo_dash_alphanumeric_stops_at_next_section()
+    {
+        // Türkiye Finans single-line: "20260508-99-XOGKXGÖNDEREN" — son "G"
+        // (GÖNDEREN başı) yutulmamalı.
+        var text = "Referans No: 20260508-99-XOGKXGÖNDEREN";
+        var result = _parser.ParseFromText(text, FakeHash);
+        result.ReferansNo.Should().Be("20260508-99-XOGKX");
+    }
+
+    // ── RecipientName (2026-05-12 — IBAN + name match güvenliği) ────────
+
+    [Theory]
+    [InlineData("ALICI ÜNVANI: ERDEM HAN GIDA   ALICI IBAN: TR...", "ERDEM HAN GIDA")]
+    [InlineData("ALICIIsim              : RIDVAN ÖZCANIBAN/Hesap No", "RIDVAN ÖZCAN")]
+    [InlineData("Alıcı : ERDEM HAN GIDA Kuveyt Türk Katılım", "ERDEM HAN GIDA")]
+    public void ExtractRecipientName_recognizes_common_formats(string text, string expected)
+    {
+        var result = _parser.ParseFromText(text, FakeHash);
+        result.RecipientName.Should().Be(expected);
+    }
+
+    [Fact]
+    public void ExtractRecipientName_null_when_no_alici_section()
+    {
+        var text = "Gönderen: Foo IBAN: TR12";
+        var result = _parser.ParseFromText(text, FakeHash);
+        result.RecipientName.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("Erdem Han Gıda", "Erdem Han Gıda", true)]
+    [InlineData("Erdem Han Gıda", "ERDEM HAN GIDA", true)]   // case-insensitive
+    [InlineData("Erdem Han Gıda", "Erdem Han Gida", true)]   // Türkçe ı→i normalize
+    [InlineData("Erdem Han Gıda", "ERDEM HAN GIDA Kuveyt Türk Katılım", true)]   // substring
+    [InlineData("Erdem Han Gıda", "Mehmet Yılmaz", false)]
+    public void NormalizeName_supports_case_and_turkish_compare(
+        string vendor, string pdf, bool expectsMatch)
+    {
+        var v = PdfDekontParser.NormalizeName(vendor);
+        var p = PdfDekontParser.NormalizeName(pdf);
+        var match = !string.IsNullOrEmpty(v) && (p.Contains(v) || v.Contains(p));
+        match.Should().Be(expectsMatch);
+    }
 }

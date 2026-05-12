@@ -32,7 +32,9 @@ public sealed class PdfDekontParser
         DateTime? PaidAt,
         string? ReferansNo,
         string PdfHash,
-        string RawText);
+        string RawText,
+        string? RecipientIban = null,    // 2026-05-12: alıcı IBAN — Settings.Iban ile karşılaştırma için
+        string? RecipientName = null);   // 2026-05-12: alıcı adı — Settings.AccountHolder ile karşılaştırma için
 
     public ParseResult Parse(byte[] pdfBytes)
     {
@@ -50,7 +52,9 @@ public sealed class PdfDekontParser
         PaidAt: ExtractPaidAt(text),
         ReferansNo: ExtractReferansNo(text),
         PdfHash: hash,
-        RawText: text);
+        RawText: text,
+        RecipientIban: ExtractRecipientIban(text),
+        RecipientName: ExtractRecipientName(text));
 
     private static string ExtractText(byte[] pdfBytes)
     {
@@ -85,12 +89,22 @@ public sealed class PdfDekontParser
         // TURİZM YAZILIM VE TİCARET").
         var patterns = new[]
         {
+            // Türkiye Finans format: "GÖNDERENİsim              : HARUN CEYLAN"
+            // veya "GÖNDEREN ... İsim : NAME". GÖNDEREN section başlığı sonrası
+            // ilk "İsim" sub-label'ı.
+            @"G[ÖöO]NDEREN[^A-Za-zÇĞİıÖŞÜçğıöşü]{0,40}?[İıI]sim\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-Za-zÇĞİıÖŞÜçğıöşü0-9\.\s/]+?)(?=\s*(?:ALICI|AÇIKLAMA|IBAN|Tutar|Para|Karşı|VKN|Vergi|TC[:\s]|$))",
+            // Ziraat inline: "Gönderen : NAME Alan Banka : ..." veya
+            // "Gönderen : NAME Alıcı Hesap : ..."
+            @"G[öo]nderen\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-Za-zÇĞİıÖŞÜçğıöşü0-9\.\s]+?)(?=\s*(?:Alan\s+Banka|Al[ıi]c[ıi]\s*(?:Hesap|IBAN|[:\-])|IBAN|TR\d{2}|AÇIKLAMA|Hesap|TC[:\s]|Tarih|Tutar|Para|VKN|Sorgu|Fi[şs]|$))",
             @"G[ÖöO]NDEREN\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-Za-zÇĞİıÖŞÜçğıöşü0-9\.\s/]+?)(?=\s*(?:IBAN|TR\d{2}|AÇIKLAMA|ALICI|Hesap|TC[:\s]|Tarih|Tutar|Para|VKN|Sorgu|Fi[şs]|EFT|KATILIMCI|$))",
             @"M[ÜüU][şS]TER[İıI]\s+[ÜüU]NVANI?\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-Za-zÇĞİıÖŞÜçğıöşü0-9\.\s/]+?)(?=\s*(?:IBAN|TR\d{2}|AÇIKLAMA|ALICI|$))",
             @"G[öo]nderen\s*[:\-]\s*([A-Za-zÇĞİıÖŞÜçğıöşü][A-Za-zÇĞİıÖŞÜçğıöşü0-9\.\s/]+?)(?=\s*(?:IBAN|TR\d{2}|AÇIKLAMA|Hesap|TC[:\s]|Tarih|Tutar|Para|VKN|Sorgu|Fi[şs]|$))",
             @"Ad\s+Soyad[ıi]?\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-Za-zÇĞİıÖŞÜçğıöşü0-9\.\s/]+?)(?=\s*(?:IBAN|TR\d{2}|Hesap|TC[:\s]|Tarih|Tutar|$))",
             @"Hesap\s+Sahibi\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-Za-zÇĞİıÖŞÜçğıöşü0-9\.\s/]+?)(?=\s*(?:IBAN|TR\d{2}|TC[:\s]|Tarih|Tutar|$))",
-            @"G[öo]nd(?:eren|erici)[:\s]+([A-Za-zÇĞİıÖŞÜçğıöşü][A-Za-zÇĞİıÖŞÜçğıöşü0-9\.\s/]+?)(?=\s*(?:IBAN|TR\d{2}|AÇIKLAMA|Hesap|TC[:\s]|Tarih|Tutar|$))"
+            // Vakıfbank: "GONDEREN ADSOYAD/UNVANERDAL TÖRE" — separator yok,
+            // label sonrası direkt NAME (continuous text). Ö'süz "GONDEREN"
+            // formu da kabul ediliyor.
+            @"G[OÖ]NDEREN\s+ADSOYAD(?:/UNVAN)?\s*([A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ\.\s]+?)(?=\s*(?:İŞLEM|IBAN|TR\d{2}|GONDEREN|ALICI|TUTAR|MASRAF|Tutar|$))"
         };
 
         foreach (var pattern in patterns)
@@ -126,7 +140,10 @@ public sealed class PdfDekontParser
             @"Miktar\s*[:\-]\s*([\d\.,]+)\s*(?:TL|TRY)?",
             @"\u0130[şs]lem\s+Tutar[ıi]?\s*[:\-]\s*([\d\.,]+)\s*(?:TL|TRY)?",
             @"Gönder(?:ilen|ime)?\s*Tutar[ıi]?\s*[:\-]\s*([\d\.,]+)\s*(?:TL|TRY)?",
-            @"Havale\s*Tutar[ıi]?\s*[:\-]\s*([\d\.,]+)\s*(?:TL|TRY)?"
+            @"Havale\s*Tutar[ıi]?\s*[:\-]\s*([\d\.,]+)\s*(?:TL|TRY)?",
+            // Vakıfbank: "İŞLEM TUTARI300,00 TL" — separator yok, label sonrası
+            // direkt rakam. TL/TRY zorunlu çünkü "İŞLEM NO" + numeric'i yutmamalı.
+            @"\u0130[şS]LEM\s+TUTARI\s*([\d\.,]+)\s*(?:TL|TRY)"
         };
 
         foreach (var pattern in labeledPatterns)
@@ -229,7 +246,32 @@ public sealed class PdfDekontParser
     /// fallback olarak (örn. Garanti'nin "GTI..." prefix'i).</summary>
     internal static string? ExtractReferansNo(string text)
     {
-        // 1. Pass: numeric-only (PDF tek satır olunca "1503468325MÜŞTERİ"
+        // 1. Pass: dash-separated alphanumeric en spesifik (Türkiye Finans:
+        // "20260508-99-XOGKX"). Numeric prefix + en az 1 dash. Numeric-only
+        // pass'tan önce çalıştırılır çünkü dash'siz pattern bu format'ı
+        // numeric kısmıyla yutardı.
+        // Bilinen sonraki bölüm label'larından önce dur — PDF tek satırda
+        // "20260508-99-XOGKXGÖNDEREN" gibi run-on'larda yumuşak boundary.
+        const string RefNoStop = @"(?=G[ÖÖO]NDEREN|ALICI|[İıI]SIM|M[ÜÜU][şS]TER[İıI]|TUTAR|IBAN|AÇIKLAMA|VKN|Vergi|Düzenleme|Tarih|$)";
+        var dashAlphanumericPatterns = new[]
+        {
+            @"Referans\s+(?:No|Numaras[ıi])\s*[:\-]?\s*([A-Z0-9]+(?:\-[A-Z0-9]+){1,4})" + RefNoStop,
+            @"\u0130[şs]lem\s+(?:No|Numaras[ıi])\s*[:\-]?\s*([A-Z0-9]+(?:\-[A-Z0-9]+){1,4})" + RefNoStop,
+            @"Onay\s+(?:No|Kodu|Numaras[ıi])\s*[:\-]?\s*([A-Z0-9]+(?:\-[A-Z0-9]+){1,4})" + RefNoStop
+        };
+
+        foreach (var pattern in dashAlphanumericPatterns)
+        {
+            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
+            if (match.Success)
+            {
+                var value = match.Groups[1].Value.Trim();
+                // En az 1 dash içermeli — pure numeric 2. pass'a düşsün
+                if (value.Length >= 6 && value.Contains('-')) return value;
+            }
+        }
+
+        // 2. Pass: numeric-only (PDF tek satır olunca "1503468325MÜŞTERİ"
         // gibi run-on'larda alfanumerik pattern label'ları yutabiliyor).
         var numericPatterns = new[]
         {
@@ -252,9 +294,7 @@ public sealed class PdfDekontParser
             }
         }
 
-        // 2. Pass: alfanumerik (sadece numeric fail ederse). Word-boundary
-        // ile başlayan label sonrası alfanumerik ref. Çoğunlukla Garanti
-        // gibi prefix'li bankalar.
+        // 3. Pass: alfanumerik prefix (Garanti GTI..., Akbank AKB...).
         var alphanumericPatterns = new[]
         {
             @"Referans\s+(?:No|Numaras[ıi])\s*[:\-]?\s*([A-Z]{2,5}\d{4,28})",
@@ -269,6 +309,122 @@ public sealed class PdfDekontParser
             {
                 var value = match.Groups[1].Value.Trim();
                 if (value.Length >= 6) return value;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// 2026-05-12: Alıcı IBAN'ını yakalar. Vendor'un Settings.Payment.Iban'ı
+    /// ile karşılaştırma yaparak müşterinin yanlış hesaba transfer yapıp
+    /// yapmadığını kontrol etmek için kullanılır. Türkiye Finans, QNB ve
+    /// genel bankacılık format'ları: "ALICI IBAN: TR...", "Alıcı IBAN: TR...",
+    /// "IBAN/Hesap No : TR..." (ALICI section altında).
+    /// </summary>
+    /// <summary>
+    /// 2026-05-12: Alıcı adını yakalar. Vendor'un Settings.Payment.AccountHolder
+    /// ile karşılaştırma yaparak müşterinin doğru hesaba transfer ettiğini
+    /// kontrol etmek için. Türk bankaları IBAN + isim kombinasyonunu
+    /// doğrular — uyuşmazsa transfer reddedilir.
+    /// </summary>
+    internal static string? ExtractRecipientName(string text)
+    {
+        var patterns = new[]
+        {
+            // QNB: "ALICI ÜNVANI: ERDEM HAN GIDA   ALICI IBAN: TR..." —
+            // lookahead'a 2. ALICI eklendi yoksa "ERDEM HAN GIDA ALICI"
+            // yapışıyordu (greedy alıyordu kelimeyi capture içine).
+            @"ALICI\s+[ÜüU]NVANI?\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜa-zçğıöşü0-9\.\s]+?)(?=\s*(?:ALICI|IBAN|TR\d{2}|HESAP|KATILIMCI|AÇIKLAMA|EFT|\$))",
+            // Türkiye Finans: "ALICIIsim              : RIDVAN ÖZCAN" sonra IBAN
+            @"ALICI[^A-Za-z]{0,30}?[İıI]sim\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-Za-zÇĞİıÖŞÜçğıöşü0-9\.\s]+?)(?=\s*(?:IBAN|TR\d{2}|HESAP|TC[:\s]|AÇIKLAMA|İŞLEM|TUTAR|\$))",
+            // Vakıfbank: "ALICI AD SOYAD/UNVANKIRŞEHİR AHİ EVRAN ÜNİVERSİTESİ..."
+            // separator yok, label sonrası direkt uppercase NAME.
+            @"ALICI\s+AD\s+SOYAD(?:/UNVAN)?\s*([A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ\.\s]+?)(?=\s*(?:GONDEREN|G[OÖ]NDEREN|ALICI|İŞLEM|İSLEM|IBAN|TR\d{2}|TUTAR|HESAP|MASRAF|$))",
+            // Inline: "Alıcı : NAME ... IBAN ..." veya Ziraat:
+            // "Alıcı : NAME Alıcı Hesap : ..." / "Alıcı : NAME İşlem Tutarı : ..."
+            // Lookahead'a "Al[ıi]c[ıi]\s+Hesap" + "İşlem|Tutar|Hesap|Komisyon"
+            // eklendi — bunlar Ziraat'in NAME sonrası gelen field label'ları.
+            @"Al[ıi]c[ıi]\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜa-zçğıöşü0-9\.\s]+?)(?=\s*(?:Al[ıi]c[ıi]\s+(?:Hesap|IBAN)|IBAN|TR\d{2}|İ[şs]lem|Tutar|Komisyon|Hesap\s+(?:No|Numaras|Sahibi)|Kuveyt|Ziraat|Garanti|Yap[ıi]|Akbank|İ[şS]\s|QNB|Vak[ıi]f|Halk|Deniz|TEB|Finans|Enpara|Papara|Para\s|Banka|\$))"
+        };
+
+        foreach (var pattern in patterns)
+        {
+            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
+            if (match.Success)
+            {
+                var name = Regex.Replace(match.Groups[1].Value.Trim(), @"\s+", " ");
+                if (name.Length >= 3 && name.Length <= 200) return name;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Türkçe karakter ve culture quirks'lerinden bağımsız case-insensitive
+    /// karşılaştırma için isim/string normalize eder. ToLowerInvariant
+    /// Türkçe 'ı' karakterini olduğu gibi bırakır; manuel mapping ile
+    /// Latin'e çeviriyoruz.
+    /// </summary>
+    public static string NormalizeName(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "";
+        var lower = raw.ToLowerInvariant();
+        var sb = new StringBuilder(lower.Length);
+        foreach (var c in lower)
+        {
+            sb.Append(c switch
+            {
+                'ı' => 'i',
+                'İ' => 'i',
+                'ş' => 's',
+                'Ş' => 's',
+                'ğ' => 'g',
+                'Ğ' => 'g',
+                'ç' => 'c',
+                'Ç' => 'c',
+                'ö' => 'o',
+                'Ö' => 'o',
+                'ü' => 'u',
+                'Ü' => 'u',
+                _ => c
+            });
+        }
+        return Regex.Replace(sb.ToString(), @"\s+", " ").Trim();
+    }
+
+    internal static string? ExtractRecipientIban(string text)
+    {
+        // ALICI section başlangıcından sonraki ilk TR-IBAN'ı yakala.
+        // Lazy `.*?` ile section içindeki text'i atla, IBAN'a kadar git.
+        // Singleline mode gerek değil (text zaten tek satır PDF'lerden gelir).
+        var patterns = new[]
+        {
+            // Türkiye Finans: "ALICI ... IBAN/Hesap No : TR..."
+            // QNB: "ALICI IBAN: TR..."
+            // Generic ALICI section + ilk IBAN
+            @"ALICI.{0,200}?IBAN(?:/Hesap\s*No)?\s*[:\-]\s*(TR\d{2}[\s\d]{20,30})",
+            // Ziraat: "Alıcı Hesap : TR..." (IBAN keyword'ü yok, sadece "Alıcı Hesap").
+            // Bu pattern title-case generic Alıcı'dan ÖNCE çünkü "Alıcı Hesap"
+            // daha spesifik — generic `Al[ıi]c[ıi]\s*[:\-]` Hesap'ı yutmamalı.
+            @"Al[ıi]c[ıi]\s+Hesap\s*[:\-]\s*(TR\d{2}[\s\d]{20,30})",
+            // Vakıfbank: "ALICI HESAP NOTR54 0001 5001 5800 73168592 23" —
+            // separator yok, label sonrası direkt TR-IBAN.
+            @"ALICI\s+HESAP\s+NO\s*(TR\d{2}[\s\d]{20,30})",
+            // Title-case Alıcı + section ile IBAN
+            @"Al[ıi]c[ıi]\s*[:\-].{0,200}?IBAN(?:/Hesap\s*No)?\s*[:\-]\s*(TR\d{2}[\s\d]{20,30})",
+            // Inline "Alıcı : NAME ... IBAN: TR..."
+            @"Al[ıi]c[ıi]\s*[:\-].{0,200}?\b(TR\d{2}[\s\d]{20,30})",
+        };
+
+        foreach (var pattern in patterns)
+        {
+            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
+            if (match.Success)
+            {
+                // Whitespace çıkar, normalize et
+                var iban = System.Text.RegularExpressions.Regex.Replace(
+                    match.Groups[1].Value, @"\s+", "");
+                if (iban.Length == 26) return iban;
             }
         }
         return null;
