@@ -74,15 +74,23 @@ public sealed class PdfDekontParser
 
     /// <summary>Türkçe "Gönderen", "Ad Soyad", "Hesap Sahibi" gibi etiketler
     /// sonrası ad soyad'ı yakalar. Banka format farklarını tolere etmek için
-    /// birkaç desen denenir, ilk eşleşen kullanılır.</summary>
-    private static string? ExtractPayerName(string text)
+    /// birkaç desen denenir, ilk eşleşen kullanılır.
+    /// PDF text'i tek satır olabilir (newline'sız), o yüzden end delimiter
+    /// olarak diğer field label'ları + IBAN/TR##/AÇIKLAMA kullanılır.</summary>
+    internal static string? ExtractPayerName(string text)
     {
+        // PDF tek satır olabilir; end-delimiter olarak bir sonraki alan/keyword
+        // kullanılır. Tüm büyük harf + Türkçe karakterler + 5+ kelime uzun
+        // şirket adları tolere edilir (örn. "EMAR GLOBAL TEKSTİL GIDA İNŞAAT
+        // TURİZM YAZILIM VE TİCARET").
         var patterns = new[]
         {
-            @"G[öo]nderen\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-Za-zÇĞİıÖŞÜçğıöşü\s\.]+?)(?:\s*(?:IBAN|Hesap|TC|TR\d|Tarih|Tutar)|\r?\n)",
-            @"Ad\s+Soyad[ıi]?\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-Za-zÇĞİıÖŞÜçğıöşü\s\.]+?)(?:\s*(?:IBAN|Hesap|TC|TR\d|Tarih|Tutar)|\r?\n)",
-            @"Hesap\s+Sahibi\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-Za-zÇĞİıÖŞÜçğıöşü\s\.]+?)(?:\s*(?:IBAN|TC|TR\d|Tarih|Tutar)|\r?\n)",
-            @"G[öo]nd(?:eren|erici)[:\s]+([A-ZÇĞİÖŞÜ][A-Za-zÇĞİıÖŞÜçğıöşü\s\.]+?)(?:\s*(?:IBAN|Hesap|TC|TR\d|Tarih|Tutar)|\r?\n)"
+            @"G[ÖöO]NDEREN\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-Za-zÇĞİıÖŞÜçğıöşü0-9\.\s/]+?)(?=\s*(?:IBAN|TR\d{2}|AÇIKLAMA|ALICI|Hesap|TC[:\s]|Tarih|Tutar|Para|VKN|Sorgu|Fi[şs]|EFT|KATILIMCI|$))",
+            @"M[ÜüU][şS]TER[İıI]\s+[ÜüU]NVANI?\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-Za-zÇĞİıÖŞÜçğıöşü0-9\.\s/]+?)(?=\s*(?:IBAN|TR\d{2}|AÇIKLAMA|ALICI|$))",
+            @"G[öo]nderen\s*[:\-]\s*([A-Za-zÇĞİıÖŞÜçğıöşü][A-Za-zÇĞİıÖŞÜçğıöşü0-9\.\s/]+?)(?=\s*(?:IBAN|TR\d{2}|AÇIKLAMA|Hesap|TC[:\s]|Tarih|Tutar|Para|VKN|Sorgu|Fi[şs]|$))",
+            @"Ad\s+Soyad[ıi]?\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-Za-zÇĞİıÖŞÜçğıöşü0-9\.\s/]+?)(?=\s*(?:IBAN|TR\d{2}|Hesap|TC[:\s]|Tarih|Tutar|$))",
+            @"Hesap\s+Sahibi\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-Za-zÇĞİıÖŞÜçğıöşü0-9\.\s/]+?)(?=\s*(?:IBAN|TR\d{2}|TC[:\s]|Tarih|Tutar|$))",
+            @"G[öo]nd(?:eren|erici)[:\s]+([A-Za-zÇĞİıÖŞÜçğıöşü][A-Za-zÇĞİıÖŞÜçğıöşü0-9\.\s/]+?)(?=\s*(?:IBAN|TR\d{2}|AÇIKLAMA|Hesap|TC[:\s]|Tarih|Tutar|$))"
         };
 
         foreach (var pattern in patterns)
@@ -91,22 +99,29 @@ public sealed class PdfDekontParser
             if (match.Success)
             {
                 var name = match.Groups[1].Value.Trim();
-                // Süslü filterler: ardışık boşluk, tek harfli noktalama vs.
+                // Trailing kırpılma: bazı PDF'lerde "TİCARET Lİ" gibi
+                // ortadan kesilmiş bir kelime kalır — son 1-2 harfli kelimeyi
+                // korurken " Lİ" / " Ş" trail'lerini atma (anlamlı ekler).
                 name = Regex.Replace(name, @"\s+", " ");
-                if (name.Length >= 3 && name.Length <= 100) return name;
+                if (name.Length >= 3 && name.Length <= 200) return name;
             }
         }
         return null;
     }
 
-    /// <summary>Tutarı "Tutar:" / "Miktar:" / "Tutar (TL):" etiketleri altından
-    /// veya en büyük "X,YY TL" pattern'i olarak çekiyor. Türkçe ondalık
-    /// ayraç virgül + binlik nokta.</summary>
-    private static decimal? ExtractAmount(string text)
+    /// <summary>Tutarı label'lar altından veya en büyük "X.YY TL" pattern'i
+    /// olarak çekiyor. Hem TR format (1.234,56) hem US format (1,234.56)
+    /// kabul edilir — bazı bankalar (örn. QNB) US format kullanıyor.</summary>
+    internal static decimal? ExtractAmount(string text)
     {
-        // Önce explicit label'lar
+        // Explicit label'lar (uppercase variants öncelikli — yeni bankalar
+        // hep all-caps label kullanıyor: "EFT TUTARI", "İŞLEM TUTARI").
         var labeledPatterns = new[]
         {
+            @"EFT\s+TUTAR[IıİiI]\s*[:\-]\s*([\d\.,]+)\s*(?:TL|TRY)?",
+            @"\u0130[şS]LEM\s+TUTAR[IıİiI]\s*[:\-]\s*([\d\.,]+)\s*(?:TL|TRY)?",
+            @"HAVALE\s+TUTAR[IıİiI]\s*[:\-]\s*([\d\.,]+)\s*(?:TL|TRY)?",
+            @"TUTAR\s*\(?\s*(?:TL|TRY)?\s*\)?\s*[:\-]\s*([\d\.,]+)\s*(?:TL|TRY)?",
             @"Tutar\s*\(?\s*(?:TL|TRY)?\s*\)?\s*[:\-]\s*([\d\.,]+)\s*(?:TL|TRY)?",
             @"Miktar\s*[:\-]\s*([\d\.,]+)\s*(?:TL|TRY)?",
             @"\u0130[şs]lem\s+Tutar[ıi]?\s*[:\-]\s*([\d\.,]+)\s*(?:TL|TRY)?",
@@ -120,37 +135,63 @@ public sealed class PdfDekontParser
             if (match.Success)
             {
                 var raw = match.Groups[1].Value;
-                if (TryParseTurkishDecimal(raw, out var amount) && amount > 0) return amount;
+                if (TryParseLocaleDecimal(raw, out var amount) && amount > 0) return amount;
             }
         }
 
-        // Fallback: belge içindeki en büyük "X,YY TL" değeri (genelde tutar).
+        // Fallback: belge içindeki en büyük "X,YY TL" veya "X.YY TL" değeri.
         // Yanlış pozitif riski var (IBAN parçası vb.) ama explicit label
         // bulunamadıysa son çare.
-        var fallback = Regex.Matches(text, @"([\d\.]{1,12},\d{2})\s*(?:TL|TRY)\b")
-            .Select(m => TryParseTurkishDecimal(m.Groups[1].Value, out var d) ? d : 0m)
+        var fallback = Regex.Matches(text,
+                @"([\d][\d\.,]{0,15}[\.,]\d{2})\s*(?:TL|TRY)\b")
+            .Select(m => TryParseLocaleDecimal(m.Groups[1].Value, out var d) ? d : 0m)
             .Where(d => d > 0)
             .OrderByDescending(d => d)
             .FirstOrDefault();
         return fallback > 0 ? fallback : null;
     }
 
-    private static bool TryParseTurkishDecimal(string raw, out decimal value)
+    /// <summary>Hem TR (1.234,56) hem US (1,234.56) format'larını parse eder.
+    /// Heuristik: son ayraç (nokta veya virgül) ondalık kabul edilir, diğeri
+    /// binlik separator olarak çıkarılır.</summary>
+    private static bool TryParseLocaleDecimal(string raw, out decimal value)
     {
-        // "1.234,56" → invariant "1234.56"
-        var normalized = raw.Trim().Replace(".", "").Replace(",", ".");
+        raw = raw.Trim();
+        var lastComma = raw.LastIndexOf(',');
+        var lastDot = raw.LastIndexOf('.');
+
+        string normalized;
+        if (lastComma > lastDot)
+        {
+            // TR: nokta binlik, virgül ondalık → noktayı sil, virgülü noktaya
+            normalized = raw.Replace(".", "").Replace(",", ".");
+        }
+        else if (lastDot > lastComma)
+        {
+            // US: virgül binlik, nokta ondalık → virgülü sil
+            normalized = raw.Replace(",", "");
+        }
+        else
+        {
+            // Hiçbir ayraç yok veya tek bir karakter → olduğu gibi parse dene
+            normalized = raw.Replace(",", ".");
+        }
+
         return decimal.TryParse(normalized, NumberStyles.Number, CultureInfo.InvariantCulture, out value);
     }
 
     /// <summary>Türkçe banka dekontlarında tarih genelde "DD.MM.YYYY HH:MM"
-    /// veya "DD/MM/YYYY" şeklinde. Label varsa o, yoksa en eski tarih.</summary>
-    private static DateTime? ExtractPaidAt(string text)
+    /// veya "DD/MM/YYYY" şeklinde. Label varsa o, yoksa en eski tarih.
+    /// Yıl boundary'si lookahead ile koruluyor (`(?!\d)`) çünkü PDF tek satır
+    /// olunca yıl sonrası başka digit'lar gelir ve `\b` yeterli olmuyor.</summary>
+    internal static DateTime? ExtractPaidAt(string text)
     {
         var labeledPatterns = new[]
         {
-            @"(?:\u0130[şs]lem\s+)?Tarih(?:i)?\s*[:\-]\s*(\d{1,2}[\./]\d{1,2}[\./]\d{2,4})(?:\s+(\d{1,2}:\d{2}(?::\d{2})?))?",
-            @"Valor\s*Tarihi?\s*[:\-]\s*(\d{1,2}[\./]\d{1,2}[\./]\d{2,4})",
-            @"\u0130[şs]lem\s+Zaman[ıi]?\s*[:\-]\s*(\d{1,2}[\./]\d{1,2}[\./]\d{2,4})"
+            @"(?:\u0130[şS]LEM\s+)?TAR[İıI]H[İıI]?\s*[:\-]\s*(\d{1,2}[\./]\d{1,2}[\./]\d{4})",
+            @"(?:\u0130[şs]lem\s+)?Tarih(?:i)?\s*[:\-]\s*(\d{1,2}[\./]\d{1,2}[\./]\d{4})",
+            @"Valor\s*Tarihi?\s*[:\-]\s*(\d{1,2}[\./]\d{1,2}[\./]\d{4})",
+            @"\u0130[şs]lem\s+Zaman[ıi]?\s*[:\-]\s*(\d{1,2}[\./]\d{1,2}[\./]\d{4})"
         };
 
         foreach (var pattern in labeledPatterns)
@@ -162,8 +203,12 @@ public sealed class PdfDekontParser
             }
         }
 
-        // Fallback: belgedeki ilk tarih
-        var anyDate = Regex.Match(text, @"\b(\d{1,2}[\./]\d{1,2}[\./]\d{2,4})\b");
+        // Fallback: belgedeki ilk tarih. Yıl 4-digit fixed (range yerine) ve
+        // word-boundary kaldırıldı. PDF tek satırında "2026404..." gibi
+        // run-on'larda eski `\d{2,4}` + `\b` kombinasyonu fail ediyordu —
+        // greedy backtrack hiçbir yıl tamamlamıyordu çünkü digit→digit
+        // transition'da `\b` yok. Fixed 4-digit non-greedy bunu çözüyor.
+        var anyDate = Regex.Match(text, @"(\d{1,2}[\./]\d{1,2}[\./]\d{4})");
         if (anyDate.Success && TryParseTurkishDate(anyDate.Groups[1].Value, out var fallback))
         {
             return fallback;
@@ -178,20 +223,46 @@ public sealed class PdfDekontParser
             CultureInfo.InvariantCulture, DateTimeStyles.None, out date);
     }
 
-    /// <summary>"Referans No", "İşlem No", "Dekont No" etiketleri altından
-    /// 6-20 karakter arası rakam/harf karışımı.</summary>
-    private static string? ExtractReferansNo(string text)
+    /// <summary>Banka referans no etiketleri — "Referans No", "İşlem No",
+    /// "Dekont No", "Sorgu No", "Fiş No", "Onay No". Türk bankalarının
+    /// büyük çoğunluğunda ref no pure numeric — alfanumerik versiyonu da
+    /// fallback olarak (örn. Garanti'nin "GTI..." prefix'i).</summary>
+    internal static string? ExtractReferansNo(string text)
     {
-        var patterns = new[]
+        // 1. Pass: numeric-only (PDF tek satır olunca "1503468325MÜŞTERİ"
+        // gibi run-on'larda alfanumerik pattern label'ları yutabiliyor).
+        var numericPatterns = new[]
         {
-            @"Referans\s+(?:No|Numaras[ıi])\s*[:\-]?\s*([A-Z0-9\-]{6,32})",
-            @"\u0130[şs]lem\s+(?:No|Numaras[ıi])\s*[:\-]?\s*([A-Z0-9\-]{6,32})",
-            @"Dekont\s+(?:No|Numaras[ıi])\s*[:\-]?\s*([A-Z0-9\-]{6,32})",
-            @"Transfer\s+(?:No|Numaras[ıi])\s*[:\-]?\s*([A-Z0-9\-]{6,32})",
-            @"Onay\s+(?:No|Kodu|Numaras[ıi])\s*[:\-]?\s*([A-Z0-9\-]{6,32})"
+            @"Referans\s+(?:No|Numaras[ıi])\s*[:\-]?\s*(\d{6,32})",
+            @"\u0130[şs]lem\s+(?:No|Numaras[ıi])\s*[:\-]?\s*(\d{6,32})",
+            @"Dekont\s+(?:No|Numaras[ıi])\s*[:\-]?\s*(\d{6,32})",
+            @"Transfer\s+(?:No|Numaras[ıi])\s*[:\-]?\s*(\d{6,32})",
+            @"Onay\s+(?:No|Kodu|Numaras[ıi])\s*[:\-]?\s*(\d{6,32})",
+            @"Sorgu\s+(?:No|Numaras[ıi])\s*[:\-]?\s*(\d{6,32})",
+            @"Fi[şsŞS]\s+(?:No|Numaras[ıi])\s*[:\-]?\s*(\d{6,32})"
         };
 
-        foreach (var pattern in patterns)
+        foreach (var pattern in numericPatterns)
+        {
+            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
+            if (match.Success)
+            {
+                var value = match.Groups[1].Value.Trim();
+                if (value.Length >= 6) return value;
+            }
+        }
+
+        // 2. Pass: alfanumerik (sadece numeric fail ederse). Word-boundary
+        // ile başlayan label sonrası alfanumerik ref. Çoğunlukla Garanti
+        // gibi prefix'li bankalar.
+        var alphanumericPatterns = new[]
+        {
+            @"Referans\s+(?:No|Numaras[ıi])\s*[:\-]?\s*([A-Z]{2,5}\d{4,28})",
+            @"\u0130[şs]lem\s+(?:No|Numaras[ıi])\s*[:\-]?\s*([A-Z]{2,5}\d{4,28})",
+            @"Onay\s+(?:No|Kodu|Numaras[ıi])\s*[:\-]?\s*([A-Z]{2,5}\d{4,28})"
+        };
+
+        foreach (var pattern in alphanumericPatterns)
         {
             var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
             if (match.Success)

@@ -89,12 +89,23 @@ public sealed class PdfDekontParserTests
     // ── ReferansNo parse ────────────────────────────────────────────────
 
     [Theory]
-    [InlineData("Referans No: ABC123XYZ", "ABC123XYZ")]
-    [InlineData("İşlem No: 1234567890", "1234567890")]
-    [InlineData("Dekont No: HVL-9988", "HVL-9988")]
-    [InlineData("Transfer Numarası: 11AA22BB", "11AA22BB")]
+    [InlineData("Referans No: 1234567890", "1234567890")]
+    [InlineData("İşlem No: 9988776655", "9988776655")]
+    [InlineData("Dekont No: 12345678", "12345678")]
     [InlineData("Onay Kodu: 987654", "987654")]
-    public void ExtractReferansNo_recognizes_common_labels(string text, string expected)
+    [InlineData("SORGU NO: 1503468325", "1503468325")]
+    [InlineData("Fiş No: 202605099585819", "202605099585819")]
+    [InlineData("Fiş No :202605099585819", "202605099585819")]   // QNB style (boşluksuz)
+    public void ExtractReferansNo_recognizes_numeric_labels(string text, string expected)
+    {
+        var result = _parser.ParseFromText(text, FakeHash);
+        result.ReferansNo.Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("Referans No: GTI8765432101", "GTI8765432101")]   // Garanti
+    [InlineData("İşlem No: AKB12345678", "AKB12345678")]          // Akbank prefix
+    public void ExtractReferansNo_recognizes_alphanumeric_with_letter_prefix(string text, string expected)
     {
         var result = _parser.ParseFromText(text, FakeHash);
         result.ReferansNo.Should().Be(expected);
@@ -103,8 +114,18 @@ public sealed class PdfDekontParserTests
     [Fact]
     public void ExtractReferansNo_returns_null_when_too_short()
     {
-        var result = _parser.ParseFromText("Referans No: AB", FakeHash);
+        var result = _parser.ParseFromText("Referans No: 12", FakeHash);
         result.ReferansNo.Should().BeNull();
+    }
+
+    [Fact]
+    public void ExtractReferansNo_stops_at_next_label_in_single_line_pdf()
+    {
+        // QNB-style: PDF tek satır, label arasında separator yok.
+        // Numeric-only pattern "1503468325" + "M" (MÜŞTERİ başlangıcı) yutmamalı.
+        var text = "SORGU NO: 1503468325MÜŞTERİ ÜNVANI: ALI";
+        var result = _parser.ParseFromText(text, FakeHash);
+        result.ReferansNo.Should().Be("1503468325");
     }
 
     // ── Integration: realistic Turkish bank receipt mock ────────────────
