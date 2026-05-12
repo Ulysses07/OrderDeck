@@ -156,4 +156,46 @@ public class PaymentRequestServiceTests : IDisposable
         url.Should().Contain("Urun%3A%203.000%2C00");
         url.Should().Contain("Kargo%3A%20150%2C00%20TL");
     }
+
+    // ── PR-E: ShippingWon kazandın WhatsApp ──────────────────────────────
+
+    [Fact]
+    public void OpenShippingWonWhatsApp_PhoneNull_ReturnsPhoneRequired()
+    {
+        var sut = new PaymentRequestService(_store, new WhatsAppMessageBuilder(), _launcher);
+        var result = sut.OpenShippingWonWhatsApp(MakeCustomer(null), 5300m);
+        result.Should().Be(PaymentRequestResult.PhoneRequired);
+        _launcher.LaunchedUrls.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void OpenShippingWonWhatsApp_EmptyTemplate_ReturnsOpenedSilently()
+    {
+        // Template boş bırakılırsa mesaj atılmaz — sessiz çıkış.
+        var settings = new AppSettings();
+        settings.Payment.ShippingWonTemplate = "";
+        _store.Save(settings);
+
+        var sut = new PaymentRequestService(_store, new WhatsAppMessageBuilder(), _launcher);
+        var result = sut.OpenShippingWonWhatsApp(MakeCustomer("+905551234567"), 5300m);
+        result.Should().Be(PaymentRequestResult.Opened);
+        _launcher.LaunchedUrls.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void OpenShippingWonWhatsApp_ValidPhone_LaunchesWaMeUrlWithCumulativeAmount()
+    {
+        var settings = new AppSettings();
+        settings.Payment.ShippingWonTemplate = "Tebrikler {ad}, {kumulatif_tutar} TL aldın!";
+        _store.Save(settings);
+
+        var sut = new PaymentRequestService(_store, new WhatsAppMessageBuilder(), _launcher);
+        var result = sut.OpenShippingWonWhatsApp(MakeCustomer("+905551234567"), 5300m);
+
+        result.Should().Be(PaymentRequestResult.Opened);
+        _launcher.LaunchedUrls.Should().HaveCount(1);
+        _launcher.LaunchedUrls[0].Should().StartWith("https://wa.me/905551234567?text=");
+        _launcher.LaunchedUrls[0].Should().Contain("Tebrikler%20Alice");
+        _launcher.LaunchedUrls[0].Should().Contain("5.300%2C00%20TL");
+    }
 }

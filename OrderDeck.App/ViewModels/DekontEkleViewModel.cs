@@ -30,6 +30,7 @@ public sealed partial class DekontEkleViewModel : ObservableObject
     private readonly PaymentMatcherService _matcher;
     private readonly LabelRepository _labels;
     private readonly ShipmentService _shipments;
+    private readonly OrderDeck.App.Services.PaymentRequestService? _paymentRequest;
     private readonly IClock _clock;
     private readonly ILogger<DekontEkleViewModel> _log;
 
@@ -71,7 +72,8 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         PdfDekontParser pdfParser,
         AppSettings settings,
         IClock clock,
-        ILogger<DekontEkleViewModel> log)
+        ILogger<DekontEkleViewModel> log,
+        OrderDeck.App.Services.PaymentRequestService? paymentRequest = null)
     {
         _payments = payments;
         _customers = customers;
@@ -83,6 +85,7 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         _settings = settings;
         _clock = clock;
         _log = log;
+        _paymentRequest = paymentRequest;
     }
 
     /// <summary>PDF Yükle butonu çağırır: PdfDekontParser'la 4 alan + hash
@@ -410,12 +413,17 @@ public sealed partial class DekontEkleViewModel : ObservableObject
     /// <summary>
     /// Dialog code-behind ShipmentThresholdDialog'da vendor karar verdikten
     /// sonra çağırır. Decision Shipment state'ine uygulanır.
+    ///
+    /// PR-E (2026-05-12): ShipNow seçilirse müşteriye WhatsApp "ücretsiz
+    /// kargo kazandın" mesajı tetiklenir (fail-silent — phone yoksa veya
+    /// template boşsa sessiz geçer).
     /// </summary>
     public void ApplyShipmentDecision(string shipmentId, ShipmentDecision decision)
     {
+        Shipment? updated = null;
         try
         {
-            _shipments.ApplyDecision(shipmentId, decision);
+            updated = _shipments.ApplyDecision(shipmentId, decision);
             _log.LogInformation(
                 "Shipment {Id} → {Decision} (kümülatif kargo modal'ından)",
                 shipmentId, decision);
@@ -424,6 +432,38 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         {
             _log.LogWarning(ex,
                 "Shipment {Id} ApplyDecision {Decision} hata verdi", shipmentId, decision);
+            return;
+        }
+
+        // PR-E: ShipNow → "kazandın" WhatsApp tetikleyici. PaymentRequestService
+        // null ise (test fixture'larda) sessiz geç.
+        if (decision == ShipmentDecision.ShipNow && _paymentRequest is not null && updated is not null)
+        {
+            TriggerShippingWonWhatsApp(updated);
+        }
+    }
+
+    private void TriggerShippingWonWhatsApp(Shipment shipment)
+    {
+        try
+        {
+            var customer = _customers.GetById(shipment.CustomerId);
+            if (customer is null)
+            {
+                _log.LogDebug("Kazandın WhatsApp: Customer {Id} bulunamadı, atlandı.",
+                    shipment.CustomerId);
+                return;
+            }
+            var result = _paymentRequest!.OpenShippingWonWhatsApp(customer, shipment.CumulativeAmount);
+            _log.LogInformation(
+                "Kazandın WhatsApp tetikleyici: Shipment={Sid} Customer={Cid} Tutar={Amt} → {Result}",
+                shipment.Id, shipment.CustomerId, shipment.CumulativeAmount, result);
+        }
+        catch (Exception ex)
+        {
+            // Fail-silent — kullanıcı manuel mesaj atabilir.
+            _log.LogWarning(ex,
+                "Kazandın WhatsApp tetikleyici hata verdi (silent skip).");
         }
     }
 
