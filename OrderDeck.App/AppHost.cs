@@ -76,6 +76,16 @@ public sealed class AppHost : IDisposable
                 sp.GetRequiredService<LabelRepository>(),
                 () => sp.GetRequiredService<AppSettings>()));
 
+        // Kümülatif kargo PR-B/C: Shipment persistence + iş kuralları servisi.
+        // ShipmentService DekontEkleViewModel'a inject edilir; payment onayı
+        // sonrası kümülatif eşik check + threshold modal akışını yönetir.
+        services.AddSingleton<OrderDeck.Core.Storage.Repositories.ShipmentRepository>();
+        services.AddSingleton<OrderDeck.Core.Sales.ShipmentService>(sp =>
+            new OrderDeck.Core.Sales.ShipmentService(
+                sp.GetRequiredService<OrderDeck.Core.Storage.Repositories.ShipmentRepository>(),
+                sp.GetRequiredService<LabelRepository>(),
+                () => sp.GetRequiredService<AppSettings>()));
+
         // Domain
         services.AddSingleton<StreamSessionService>();
         services.AddSingleton<CustomerService>();

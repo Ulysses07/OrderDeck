@@ -57,6 +57,7 @@ public partial class DekontEkleDialog : Window
         switch (result.Kind)
         {
             case DekontEkleViewModel.SaveResultKind.Saved:
+                MaybePromptThreshold(result);
                 DialogResult = true;
                 break;
 
@@ -70,13 +71,42 @@ public partial class DekontEkleDialog : Window
                 }
                 var commit = _vm.CommitWithDirective(directive.Value);
                 if (commit.Kind == DekontEkleViewModel.SaveResultKind.Saved)
+                {
+                    MaybePromptThreshold(commit);
                     DialogResult = true;
+                }
                 // commit.Kind == Error: ErrorMessage binding ile UI'da görünür
                 break;
 
             case DekontEkleViewModel.SaveResultKind.Error:
                 // ErrorMessage VM tarafından set edildi, UI binding zaten gösteriyor
                 break;
+        }
+    }
+
+    /// <summary>
+    /// PR-C/2: Save sonrası VM kümülatif eşik aşıldığını signal'lediyse
+    /// ShipmentThresholdDialog'u aç; vendor "Evet kargolansın" / "Beklemeye
+    /// devam" arasında karar versin. Karar verilince VM.ApplyShipmentDecision
+    /// çağrılır.
+    /// </summary>
+    private void MaybePromptThreshold(DekontEkleViewModel.SaveResult result)
+    {
+        if (result.ThresholdContext is not { Shipment: not null } ctx) return;
+
+        var customerDisplay = !string.IsNullOrWhiteSpace(_vm.CustomerUsername)
+            ? $"{_vm.CustomerPlatform}/{_vm.CustomerUsername}"
+            : _vm.PayerName;
+
+        var threshold = _vm.Settings.Shipping.FreeShippingThreshold ?? 0m;
+
+        var vm = new ShipmentThresholdDialogViewModel(ctx, customerDisplay, threshold);
+        var dlg = new ShipmentThresholdDialog(vm) { Owner = this };
+        dlg.ShowDialog();
+
+        if (dlg.Result is { } decision)
+        {
+            _vm.ApplyShipmentDecision(ctx.Shipment!.Id, decision);
         }
     }
 

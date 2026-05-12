@@ -1,0 +1,58 @@
+<Window x:Class="OrderDeck.App.Views.ShipmentThresholdDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Ücretsiz Kargo Hakkı Kazanıldı" Width="500" Height="320"
+        WindowStartupLocation="CenterOwner"
+        Background="#FF1A1A1A" Foreground="White">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" FontSize="16" FontWeight="Bold" Foreground="#FF66E89E"
+                   Text="🎁 Ücretsiz kargo kazanıldı"/>
+
+        <TextBlock Grid.Row="1" Margin="0,8,0,0" TextWrapping="Wrap"
+                   Foreground="#FFE0E0E0" FontSize="12">
+            <Run Text="Müşteri "/>
+            <Run Text="{Binding CustomerDisplay}" FontWeight="Bold"/>
+            <Run Text=" toplam alımı ile ücretsiz kargo eşiğini aştı. Bekleyen tüm etiketleri tek koliyle kargolansın mı?"/>
+        </TextBlock>
+
+        <Border Grid.Row="2" Margin="0,12,0,0" Padding="12,8"
+                Background="#FF252525" BorderBrush="#FF333333" BorderThickness="1"
+                CornerRadius="6">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition/>
+                    <RowDefinition/>
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="Kümülatif toplam:" Foreground="#FFAAAAAA"/>
+                <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding CumulativeAmountText}"
+                           FontFamily="Consolas" FontWeight="Bold" Foreground="#FF66E89E"/>
+
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="Ücretsiz kargo eşiği:" Foreground="#FFAAAAAA" Margin="0,4,0,0"/>
+                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding ThresholdText}"
+                           FontFamily="Consolas" Margin="0,4,0,0"/>
+            </Grid>
+        </Border>
+
+        <StackPanel Grid.Row="4" Orientation="Horizontal"
+                    HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Content="Beklemeye Devam" Click="OnHold" Padding="14,8" Margin="0,0,8,0"
+                    ToolTip="Kargo bekleyen siparişler arasında kalmaya devam etsin; sonraki dekontta tekrar sorulur."/>
+            <Button Content="Evet, Kargolansın" Click="OnShipNow" Padding="14,8"
+                    Background="#FF2E7D32" Foreground="White" FontWeight="Bold"
+                    ToolTip="Bekleyen tüm etiketler tek kargoda çıksın; müşteriye 'kazandınız' bildirimi gönderilir (PR-E)."/>
+        </StackPanel>
+    </Grid>
+</Window>

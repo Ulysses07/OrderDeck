@@ -29,6 +29,8 @@ public sealed class DekontEkleViewModelTests
         public CustomerRepository Customers { get; }
         public SessionRepository Sessions { get; }
         public LabelRepository Labels { get; }
+        public ShipmentRepository Shipments { get; }
+        public ShipmentService ShipmentSvc { get; }
         public AppSettings Settings { get; }
         public InMemorySqlite Db { get; }
 
@@ -40,12 +42,15 @@ public sealed class DekontEkleViewModelTests
             Customers = new CustomerRepository(Db);
             Sessions = new SessionRepository(Db);
             Labels = new LabelRepository(Db);
+            Shipments = new ShipmentRepository(Db);
             Settings = new AppSettings();
+            ShipmentSvc = new ShipmentService(Shipments, Labels, () => Settings, () => 1_000L);
 
             var matcher = new PaymentMatcherService(Labels, () => Settings);
             var pdfParser = new PdfDekontParser();
             Vm = new DekontEkleViewModel(
-                Payments, Customers, Sessions, matcher, pdfParser, Settings,
+                Payments, Customers, Sessions, matcher, Labels, ShipmentSvc,
+                pdfParser, Settings,
                 new FakeClock(),
                 NullLogger<DekontEkleViewModel>.Instance);
         }
@@ -546,5 +551,175 @@ public sealed class DekontEkleViewModelTests
         result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
         fx.Payments.FindByReferansNo("REF-001")!.ShipmentDirective
             .Should().Be(ShipmentDirective.Normal);
+    }
+
+    // ── PR-C/2: Shipment hook integration tests ──────────────────────────
+
+    [Fact]
+    public void TrySave_attaches_label_to_open_shipment_when_customer_resolved()
+    {
+        var fx = new Fixture();
+        var customer = SeedCustomer(fx);
+        var sid = SeedActiveSession(fx);
+        var labelId = System.Guid.NewGuid().ToString("N");
+        fx.Labels.Insert(new Label(
+            Id: labelId, SessionId: sid, CustomerId: customer.Id,
+            Platform: "instagram", Username: "@ayse_y",
+            MessageText: "ürün", Code: null, Price: 1200m,
+            AddedAt: 1100L, PrintedAt: null));
+
+        FillValid(fx.Vm);
+        fx.Vm.AmountText = "1200";
+        fx.Vm.CustomerPlatform = "instagram";
+        fx.Vm.CustomerUsername = "@ayse_y";
+
+        var result = fx.Vm.TrySave();
+        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
+
+        // Hook açtı + Label'ı attach etti
+        var attachedLabel = fx.Labels.GetById(labelId)!;
+        attachedLabel.ShipmentId.Should().NotBeNullOrEmpty();
+        var shipment = fx.Shipments.GetById(attachedLabel.ShipmentId!)!;
+        shipment.CumulativeAmount.Should().Be(1200m);
+        shipment.Status.Should().Be(ShipmentStatus.Pending);
+    }
+
+    [Fact]
+    public void TrySave_below_threshold_does_not_return_threshold_context()
+    {
+        var fx = new Fixture();
+        fx.Settings.Shipping.FreeShippingThreshold = 5000m;
+        fx.Settings.Shipping.ShippingFee = 150m;
+
+        var customer = SeedCustomer(fx);
+        var sid = SeedActiveSession(fx);
+        fx.Labels.Insert(new Label(
+            Id: System.Guid.NewGuid().ToString("N"),
+            SessionId: sid, CustomerId: customer.Id,
+            Platform: "instagram", Username: "@ayse_y",
+            MessageText: "ürün", Code: null, Price: 1200m,
+            AddedAt: 1100L, PrintedAt: null));
+
+        FillValid(fx.Vm);
+        fx.Vm.AmountText = "1350"; // 1200 ürün + 150 kargo
+        fx.Vm.CustomerPlatform = "instagram";
+        fx.Vm.CustomerUsername = "@ayse_y";
+
+        var result = fx.Vm.TrySave();
+        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
+        result.ThresholdContext.Should().BeNull();
+    }
+
+    [Fact]
+    public void TrySave_at_or_above_threshold_returns_threshold_context()
+    {
+        var fx = new Fixture();
+        fx.Settings.Shipping.FreeShippingThreshold = 5000m;
+        fx.Settings.Shipping.ShippingFee = 150m;
+
+        var customer = SeedCustomer(fx);
+        var sid = SeedActiveSession(fx);
+        fx.Labels.Insert(new Label(
+            Id: System.Guid.NewGuid().ToString("N"),
+            SessionId: sid, CustomerId: customer.Id,
+            Platform: "instagram", Username: "@ayse_y",
+            MessageText: "ürün", Code: null, Price: 5200m,
+            AddedAt: 1100L, PrintedAt: null));
+
+        FillValid(fx.Vm);
+        fx.Vm.AmountText = "5200"; // ücretsiz kargo bölgesi
+        fx.Vm.CustomerPlatform = "instagram";
+        fx.Vm.CustomerUsername = "@ayse_y";
+
+        var result = fx.Vm.TrySave();
+        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
+        result.ThresholdContext.Should().NotBeNull();
+        result.ThresholdContext!.ThresholdReached.Should().BeTrue();
+        result.ThresholdContext.Shipment!.CumulativeAmount.Should().Be(5200m);
+    }
+
+    [Fact]
+    public void CommitWithDirective_Hold_sets_shipment_status_to_held()
+    {
+        var fx = new Fixture();
+        fx.Settings.Shipping.FreeShippingThreshold = 5000m;
+        fx.Settings.Shipping.ShippingFee = 150m;
+
+        var customer = SeedCustomer(fx);
+        var sid = SeedActiveSession(fx);
+        var labelId = System.Guid.NewGuid().ToString("N");
+        fx.Labels.Insert(new Label(
+            Id: labelId, SessionId: sid, CustomerId: customer.Id,
+            Platform: "instagram", Username: "@ayse_y",
+            MessageText: "ürün", Code: null, Price: 1200m,
+            AddedAt: 1100L, PrintedAt: null));
+
+        FillValid(fx.Vm);
+        fx.Vm.AmountText = "1200"; // ürün only, kargo eksik
+        fx.Vm.CustomerPlatform = "instagram";
+        fx.Vm.CustomerUsername = "@ayse_y";
+
+        var initial = fx.Vm.TrySave();
+        initial.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.NeedsShipmentDecision);
+
+        var final = fx.Vm.CommitWithDirective(ShipmentDirective.Hold);
+        final.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
+        final.ThresholdContext.Should().BeNull(); // Hold seçilince modal yok
+
+        var attached = fx.Labels.GetById(labelId)!;
+        attached.ShipmentId.Should().NotBeNull();
+        var shipment = fx.Shipments.GetById(attached.ShipmentId!)!;
+        shipment.Status.Should().Be(ShipmentStatus.Held);
+        shipment.HeldAt.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void ApplyShipmentDecision_ShipNow_marks_shipment_as_shipped()
+    {
+        var fx = new Fixture();
+        fx.Settings.Shipping.FreeShippingThreshold = 5000m;
+        fx.Settings.Shipping.ShippingFee = 150m;
+
+        var customer = SeedCustomer(fx);
+        var sid = SeedActiveSession(fx);
+        fx.Labels.Insert(new Label(
+            Id: System.Guid.NewGuid().ToString("N"),
+            SessionId: sid, CustomerId: customer.Id,
+            Platform: "instagram", Username: "@ayse_y",
+            MessageText: "ürün", Code: null, Price: 5200m,
+            AddedAt: 1100L, PrintedAt: null));
+
+        FillValid(fx.Vm);
+        fx.Vm.AmountText = "5200";
+        fx.Vm.CustomerPlatform = "instagram";
+        fx.Vm.CustomerUsername = "@ayse_y";
+
+        var result = fx.Vm.TrySave();
+        var shipmentId = result.ThresholdContext!.Shipment!.Id;
+
+        fx.Vm.ApplyShipmentDecision(shipmentId, ShipmentDecision.ShipNow);
+
+        var shipped = fx.Shipments.GetById(shipmentId)!;
+        shipped.Status.Should().Be(ShipmentStatus.Shipped);
+        shipped.ShippedAt.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void TrySave_without_customer_skips_shipment_hook()
+    {
+        var fx = new Fixture();
+        fx.Settings.Shipping.FreeShippingThreshold = 5000m;
+        fx.Settings.Shipping.ShippingFee = 150m;
+
+        FillValid(fx.Vm);
+        // Müşteri alanları boş bırakılır
+
+        var result = fx.Vm.TrySave();
+        result.Kind.Should().Be(DekontEkleViewModel.SaveResultKind.Saved);
+        result.ThresholdContext.Should().BeNull();
+
+        // Hiçbir Shipment oluşmamalı
+        var anyShipment = fx.Shipments.GetByStatus(ShipmentStatus.Pending);
+        anyShipment.Should().BeEmpty();
     }
 }

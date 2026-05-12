@@ -242,6 +242,33 @@ public sealed class LabelRepository
         return total ?? 0m;
     }
 
+    /// <summary>
+    /// Kümülatif kargo PR-C/2 (2026-05-12): Bir müşterinin henüz herhangi bir
+    /// Shipment dosyasına bağlanmamış aktif Label'ları. ShipmentService payment
+    /// onayı sonrası bunları açık Shipment'a attach eder.
+    ///
+    /// Filter:
+    /// - ShipmentId IS NULL (henüz Shipment'a bağlanmadı)
+    /// - CancelledAt IS NULL (iptal edilmemiş)
+    /// - IsTentativeBackup = 0 (onaylanmamış backup'lar dahil edilmesin)
+    /// Cross-session: tüm yayınlardaki açık Label'lar.
+    /// </summary>
+    public IReadOnlyList<Label> GetUnattachedByCustomer(string customerId)
+    {
+        using var conn = _factory.Open();
+        var rows = conn.Query<Row>(
+            @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
+                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId
+              FROM Label
+              WHERE CustomerId=@customerId
+                AND ShipmentId IS NULL
+                AND CancelledAt IS NULL
+                AND IsTentativeBackup = 0
+              ORDER BY AddedAt",
+            new { customerId }).ToList();
+        return rows.Select(Map).ToList();
+    }
+
     /// <summary>Full lifetime label history (every session). Used by the customer
     /// detail dialog when there's no active session to scope to.</summary>
     public IReadOnlyList<CustomerLabelRow> GetByCustomer(string customerId)
