@@ -171,4 +171,59 @@ Açıklama: Yayın ödemesi
         result.PaidAt.Should().BeNull();
         result.ReferansNo.Should().BeNull();
     }
+
+    // ── Türkiye Finans format (2026-05-12 real-world iterate) ───────────
+
+    [Fact]
+    public void Parse_turkiye_finans_dekont_extracts_all_fields()
+    {
+        // Real PDF text dump: "GÖNDEREN" + "İsim : NAME" 2-step,
+        // dash-alphanumeric referans no, "Düzenleme Tarihi" label,
+        // US-format amount.
+        var text = "Büyük Mükellefler V.D. No:0680063870DEKONTFAST" +
+                   "Düzenleme Tarihi  : 8.05.2026 18:22:00" +
+                   "Referans No       : 20260508-99-XOGKX" +
+                   "GÖNDERENİsim              : HARUN CEYLAN" +
+                   "ALICIİsim              : RIDVAN ÖZCAN" +
+                   "IBAN/Hesap No     : TR480011100000000107020132" +
+                   "İŞLEMTutar             : 24,270.00";
+
+        var result = _parser.ParseFromText(text, FakeHash);
+
+        result.PayerName.Should().Be("HARUN CEYLAN");
+        result.Amount.Should().Be(24270m);
+        result.PaidAt.Should().Be(new DateTime(2026, 5, 8));
+        result.ReferansNo.Should().Be("20260508-99-XOGKX");
+        result.RecipientIban.Should().Be("TR480011100000000107020132");
+    }
+
+    // ── RecipientIban (2026-05-12) ──────────────────────────────────────
+
+    [Theory]
+    [InlineData("ALICI IBAN: TR830020500009512140100001", "TR830020500009512140100001")]
+    [InlineData("ALICIIsim : X IBAN/Hesap No : TR48 0011 1000 0000 0107 0201 32", "TR480011100000000107020132")]
+    [InlineData("Alıcı : ERDEM HAN GIDA IBAN: TR430011100000000155645255", "TR430011100000000155645255")]
+    public void ExtractRecipientIban_finds_iban_in_alici_section(string text, string expected)
+    {
+        var result = _parser.ParseFromText(text, FakeHash);
+        result.RecipientIban.Should().Be(expected);
+    }
+
+    [Fact]
+    public void ExtractRecipientIban_null_when_only_gonderen_iban_present()
+    {
+        var text = "Gönderen: Foo IBAN: TR12 0011 1000 0000 0107 0201 32";
+        var result = _parser.ParseFromText(text, FakeHash);
+        result.RecipientIban.Should().BeNull();
+    }
+
+    [Fact]
+    public void ExtractReferansNo_dash_alphanumeric_stops_at_next_section()
+    {
+        // Türkiye Finans single-line: "20260508-99-XOGKXGÖNDEREN" — son "G"
+        // (GÖNDEREN başı) yutulmamalı.
+        var text = "Referans No: 20260508-99-XOGKXGÖNDEREN";
+        var result = _parser.ParseFromText(text, FakeHash);
+        result.ReferansNo.Should().Be("20260508-99-XOGKX");
+    }
 }
