@@ -46,4 +46,9 @@ public sealed record Label(
     /// LabelService.AddShippingFee() bayrağı true setler. PR E print
     /// template + Excel rapor ayrımı yapar; PR C dekont eşleştirme
     /// hesaplamasında bu label'ları "kargo dahil mi?" check'i için kullanır.</summary>
-    bool IsShippingFee = false);
+    bool IsShippingFee = false,
+    /// <summary>Kümülatif kargo PR-B (2026-05-12): label hangi açık Shipment
+    /// dosyasına bağlı. Null = henüz hiçbir Shipment'a attach edilmemiş (eski
+    /// satırlar veya PR-C öncesi yeni satırlar). ShipmentService attach
+    /// edince doldurulur, Shipped olunca FK korunur (audit için).</summary>
+    string? ShipmentId = null);
