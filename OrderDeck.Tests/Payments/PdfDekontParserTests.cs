@@ -197,6 +197,33 @@ Açıklama: Yayın ödemesi
         result.RecipientIban.Should().Be("TR480011100000000107020132");
     }
 
+    // ── Ziraat format (2026-05-12 real-world iterate) ───────────────────
+
+    [Fact]
+    public void Parse_ziraat_dekont_extracts_all_fields()
+    {
+        // Real Ziraat sample format. Inline "Gönderen : NAME Alan Banka : ..."
+        // ve "Alıcı Hesap : TR..." (IBAN keyword'ü yok).
+        // Referans no "Fast Sorgu No" label'i altında.
+        var text = "İŞLEM TARİHİ:06/02/2024-12:19:17 - F06195VALÖR:06.02.2024" +
+                   "İŞLEM YERİ:ZİRAAT MOBİLHESAPTAN FASTsagolun" +
+                   "Fast Mesaj Kodu : A01 Fast Sorgu No : 2383575454" +
+                   "Gönderen : FUAD HAMOOD" +
+                   "Alan Banka : 0015 - Türkiye Vakıﬂar Bankası T.A.O." +
+                   "Alıcı Hesap : TR380001500158007306339861 " +
+                   "Alıcı : Doha Mokhtar Mohamed Issa Harby" +
+                   "İşlem Tutarı : 1.500,00 TRYKomisyon : 3,97 TRY";
+
+        var result = _parser.ParseFromText(text, FakeHash);
+
+        result.PayerName.Should().Be("FUAD HAMOOD");
+        result.Amount.Should().Be(1500m);
+        result.PaidAt.Should().Be(new DateTime(2024, 2, 6));
+        result.ReferansNo.Should().Be("2383575454");
+        result.RecipientIban.Should().Be("TR380001500158007306339861");
+        result.RecipientName.Should().Be("Doha Mokhtar Mohamed Issa Harby");
+    }
+
     // ── RecipientIban (2026-05-12) ──────────────────────────────────────
 
     [Theory]
