@@ -101,7 +101,10 @@ public sealed class PdfDekontParser
             @"G[öo]nderen\s*[:\-]\s*([A-Za-zÇĞİıÖŞÜçğıöşü][A-Za-zÇĞİıÖŞÜçğıöşü0-9\.\s/]+?)(?=\s*(?:IBAN|TR\d{2}|AÇIKLAMA|Hesap|TC[:\s]|Tarih|Tutar|Para|VKN|Sorgu|Fi[şs]|$))",
             @"Ad\s+Soyad[ıi]?\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-Za-zÇĞİıÖŞÜçğıöşü0-9\.\s/]+?)(?=\s*(?:IBAN|TR\d{2}|Hesap|TC[:\s]|Tarih|Tutar|$))",
             @"Hesap\s+Sahibi\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-Za-zÇĞİıÖŞÜçğıöşü0-9\.\s/]+?)(?=\s*(?:IBAN|TR\d{2}|TC[:\s]|Tarih|Tutar|$))",
-            @"G[öo]nd(?:eren|erici)[:\s]+([A-Za-zÇĞİıÖŞÜçğıöşü][A-Za-zÇĞİıÖŞÜçğıöşü0-9\.\s/]+?)(?=\s*(?:IBAN|TR\d{2}|AÇIKLAMA|Hesap|TC[:\s]|Tarih|Tutar|$))"
+            // Vakıfbank: "GONDEREN ADSOYAD/UNVANERDAL TÖRE" — separator yok,
+            // label sonrası direkt NAME (continuous text). Ö'süz "GONDEREN"
+            // formu da kabul ediliyor.
+            @"G[OÖ]NDEREN\s+ADSOYAD(?:/UNVAN)?\s*([A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ\.\s]+?)(?=\s*(?:İŞLEM|IBAN|TR\d{2}|GONDEREN|ALICI|TUTAR|MASRAF|Tutar|$))"
         };
 
         foreach (var pattern in patterns)
@@ -137,7 +140,10 @@ public sealed class PdfDekontParser
             @"Miktar\s*[:\-]\s*([\d\.,]+)\s*(?:TL|TRY)?",
             @"\u0130[şs]lem\s+Tutar[ıi]?\s*[:\-]\s*([\d\.,]+)\s*(?:TL|TRY)?",
             @"Gönder(?:ilen|ime)?\s*Tutar[ıi]?\s*[:\-]\s*([\d\.,]+)\s*(?:TL|TRY)?",
-            @"Havale\s*Tutar[ıi]?\s*[:\-]\s*([\d\.,]+)\s*(?:TL|TRY)?"
+            @"Havale\s*Tutar[ıi]?\s*[:\-]\s*([\d\.,]+)\s*(?:TL|TRY)?",
+            // Vakıfbank: "İŞLEM TUTARI300,00 TL" — separator yok, label sonrası
+            // direkt rakam. TL/TRY zorunlu çünkü "İŞLEM NO" + numeric'i yutmamalı.
+            @"\u0130[şS]LEM\s+TUTARI\s*([\d\.,]+)\s*(?:TL|TRY)"
         };
 
         foreach (var pattern in labeledPatterns)
@@ -331,6 +337,9 @@ public sealed class PdfDekontParser
             @"ALICI\s+[ÜüU]NVANI?\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜa-zçğıöşü0-9\.\s]+?)(?=\s*(?:ALICI|IBAN|TR\d{2}|HESAP|KATILIMCI|AÇIKLAMA|EFT|\$))",
             // Türkiye Finans: "ALICIIsim              : RIDVAN ÖZCAN" sonra IBAN
             @"ALICI[^A-Za-z]{0,30}?[İıI]sim\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-Za-zÇĞİıÖŞÜçğıöşü0-9\.\s]+?)(?=\s*(?:IBAN|TR\d{2}|HESAP|TC[:\s]|AÇIKLAMA|İŞLEM|TUTAR|\$))",
+            // Vakıfbank: "ALICI AD SOYAD/UNVANKIRŞEHİR AHİ EVRAN ÜNİVERSİTESİ..."
+            // separator yok, label sonrası direkt uppercase NAME.
+            @"ALICI\s+AD\s+SOYAD(?:/UNVAN)?\s*([A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ\.\s]+?)(?=\s*(?:GONDEREN|G[OÖ]NDEREN|ALICI|İŞLEM|İSLEM|IBAN|TR\d{2}|TUTAR|HESAP|MASRAF|$))",
             // Inline: "Alıcı : NAME ... IBAN ..." veya Ziraat:
             // "Alıcı : NAME Alıcı Hesap : ..." / "Alıcı : NAME İşlem Tutarı : ..."
             // Lookahead'a "Al[ıi]c[ıi]\s+Hesap" + "İşlem|Tutar|Hesap|Komisyon"
@@ -398,6 +407,9 @@ public sealed class PdfDekontParser
             // Bu pattern title-case generic Alıcı'dan ÖNCE çünkü "Alıcı Hesap"
             // daha spesifik — generic `Al[ıi]c[ıi]\s*[:\-]` Hesap'ı yutmamalı.
             @"Al[ıi]c[ıi]\s+Hesap\s*[:\-]\s*(TR\d{2}[\s\d]{20,30})",
+            // Vakıfbank: "ALICI HESAP NOTR54 0001 5001 5800 73168592 23" —
+            // separator yok, label sonrası direkt TR-IBAN.
+            @"ALICI\s+HESAP\s+NO\s*(TR\d{2}[\s\d]{20,30})",
             // Title-case Alıcı + section ile IBAN
             @"Al[ıi]c[ıi]\s*[:\-].{0,200}?IBAN(?:/Hesap\s*No)?\s*[:\-]\s*(TR\d{2}[\s\d]{20,30})",
             // Inline "Alıcı : NAME ... IBAN: TR..."

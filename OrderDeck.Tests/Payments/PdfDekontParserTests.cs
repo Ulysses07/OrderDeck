@@ -224,6 +224,44 @@ Açıklama: Yayın ödemesi
         result.RecipientName.Should().Be("Doha Mokhtar Mohamed Issa Harby");
     }
 
+    // ── Vakıfbank format (2026-05-12 real-world iterate) ────────────────
+
+    [Fact]
+    public void Parse_vakifbank_dekont_extracts_all_fields()
+    {
+        // Vakıfbank klasik havale formatı: separator yok, label sonrası direkt
+        // değer continuous text. "GONDEREN ADSOYAD/UNVAN", "ALICI HESAP NO",
+        // "ALICI AD SOYAD/UNVAN", "İŞLEM TUTARI" — hiçbir colon yok.
+        var text = "VAKIFBANKİŞLEM BİLGİLERİİŞLEMHesaptan Havale" +
+                   "İŞLEM TARİHİ10.08.2022 15:29:05" +
+                   "ALICI HESAP NOTR54 0001 5001 5800 73168592 23" +
+                   "ALICI AD SOYAD/UNVANKIRŞEHİR AHİ EVRAN ÜNİVERSİTESİ" +
+                   "GONDEREN HESAP NOTR55 0001 5001 5800 73017241 98" +
+                   "GONDEREN ADSOYAD/UNVANERDAL TÖRE" +
+                   "İŞLEM TUTARI300,00 TLMASRAF TUTARI" +
+                   "İŞLEM NO2022003572846205FİŞ NO";
+
+        var result = _parser.ParseFromText(text, FakeHash);
+
+        result.PayerName.Should().Be("ERDAL TÖRE");
+        result.Amount.Should().Be(300m);
+        result.PaidAt.Should().Be(new DateTime(2022, 8, 10));
+        result.ReferansNo.Should().Be("2022003572846205");
+        result.RecipientIban.Should().Be("TR540001500158007316859223");
+        result.RecipientName.Should().Be("KIRŞEHİR AHİ EVRAN ÜNİVERSİTESİ");
+    }
+
+    [Fact]
+    public void ExtractPayerName_ignores_label_without_colon()
+    {
+        // Vakıfbank "GONDEREN HESAP NOTR55..." — eski loose pattern
+        // ("Gönderen" + whitespace) "HESAP NO"'yu PayerName olarak yutuyordu.
+        // Doğru pattern colon zorunlu, label "ADSOYAD/UNVAN" lookahead'lı.
+        var text = "GONDEREN HESAP NOTR55 0001 5001 5800 73017241 98ALICI";
+        var result = _parser.ParseFromText(text, FakeHash);
+        result.PayerName.Should().BeNull();
+    }
+
     // ── RecipientIban (2026-05-12) ──────────────────────────────────────
 
     [Theory]
