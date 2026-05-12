@@ -217,6 +217,8 @@
                                 <TextBlock FontSize="11" Foreground="#FFAAAAAA" Margin="0,2,0,8"
                                            TextWrapping="Wrap">
                                     Placeholder: {ad} {tutar} {tarih} {iban} {hesap_sahibi} {papara}
+                                    <LineBreak/>
+                                    Kargo: {urun_toplami} (ürün) · {kargo_ucreti} (sadece sayı) · {kargo} (otomatik açıklama)
                                 </TextBlock>
 
                                 <Label Content="IBAN" Margin="0,4,0,2" Foreground="White"/>
