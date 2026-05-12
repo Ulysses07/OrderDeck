@@ -78,6 +78,8 @@ public sealed class PaymentSettings
 {
     public string WhatsAppMessageTemplate { get; set; } =
         "Merhaba {ad}, {tarih} yayınımızdan toplam {tutar} TL ödemeniz bekleniyor.\n\n" +
+        "Ürün toplamı: {urun_toplami} TL\n" +
+        "{kargo}\n\n" +
         "IBAN: {iban}\nHesap Sahibi: {hesap_sahibi}\nPapara: {papara}\n\nTeşekkürler!";
 
     public string Iban { get; set; } = "";
