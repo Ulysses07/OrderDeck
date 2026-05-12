@@ -1,4 +1,5 @@
 using FluentAssertions;
+using OrderDeck.Core.Sales;
 using OrderDeck.Core.Settings;
 using OrderDeck.Labeling;
 using Xunit;
@@ -62,5 +63,43 @@ public class LabelPrintDocumentTests
     {
         var lines = LabelPrintDocument.BuildLines("@a", "x", 99.50m);
         lines[1].Text.Should().Contain("99.5").And.Contain("TL");
+    }
+
+    // ── ResolveDisplayLabel: YouTube channel ID fix ──────────────────────
+
+    private static Label MakeLabel(string username, string? displayName) =>
+        new(
+            Id: "L1", SessionId: "S1", CustomerId: "C1",
+            Platform: "youtube", Username: username,
+            MessageText: "msg", Code: null, Price: 100m,
+            AddedAt: 1000L, PrintedAt: null,
+            DisplayName: displayName);
+
+    [Fact]
+    public void ResolveDisplayLabel_uses_DisplayName_when_set()
+    {
+        var label = MakeLabel("UCxxx_youtube_channel_id", "Ayşe Yılmaz");
+        LabelPrintDocument.ResolveDisplayLabel(label).Should().Be("Ayşe Yılmaz");
+    }
+
+    [Fact]
+    public void ResolveDisplayLabel_falls_back_to_Username_when_DisplayName_null()
+    {
+        var label = MakeLabel("@ayse_y", displayName: null);
+        LabelPrintDocument.ResolveDisplayLabel(label).Should().Be("@ayse_y");
+    }
+
+    [Fact]
+    public void ResolveDisplayLabel_falls_back_to_Username_when_DisplayName_empty()
+    {
+        var label = MakeLabel("@ayse_y", displayName: "   ");
+        LabelPrintDocument.ResolveDisplayLabel(label).Should().Be("@ayse_y");
+    }
+
+    [Fact]
+    public void ResolveDisplayLabel_trims_DisplayName_whitespace()
+    {
+        var label = MakeLabel("UCxxx", "  Ayşe Yılmaz  ");
+        LabelPrintDocument.ResolveDisplayLabel(label).Should().Be("Ayşe Yılmaz");
     }
 }

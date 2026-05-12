@@ -24,7 +24,7 @@ public static class LabelPrintDocument
     public static int MmToHundredths(int mm) => (int)Math.Round(mm * 100.0 / 25.4);
 
     /// <summary>
-    /// Builds the two text lines printed on a label: top = @username (bold), bottom =
+    /// Builds the two text lines printed on a label: top = display name (bold), bottom =
     /// message + price (regular). The Y-marker for backup-promoted labels is drawn
     /// separately by <see cref="Build"/> (corner badge), not embedded in these lines.
     /// </summary>
@@ -36,6 +36,20 @@ public static class LabelPrintDocument
             new Line(username, IsBold: true),
             new Line($"{messageText}  {formattedPrice} TL", IsBold: false)
         };
+    }
+
+    /// <summary>
+    /// Etikette gösterilecek "kişi adı"nı çözer. YouTube label'larında
+    /// <see cref="Label.Username"/> stabil channel ID (UCxxx...) — operatör
+    /// için anlamsız. <see cref="Label.DisplayName"/> varsa onu kullan;
+    /// yoksa Username'e düş. Bu davranış sticker üzerindeki "isim"in her
+    /// platformda okunabilir olmasını garantiler.
+    /// </summary>
+    public static string ResolveDisplayLabel(Label label)
+    {
+        if (!string.IsNullOrWhiteSpace(label.DisplayName))
+            return label.DisplayName!.Trim();
+        return label.Username ?? string.Empty;
     }
 
     private static string FormatPrice(decimal price)
@@ -94,7 +108,10 @@ public static class LabelPrintDocument
             }
 
             var label = labels[index];
-            var lines = BuildLines(label.Username, label.MessageText, label.Price);
+            // YouTube label'larında Username = stabil channel ID (UCxxx...) —
+            // operatöre anlamsız. DisplayName varsa onu yaz.
+            var displayLabel = ResolveDisplayLabel(label);
+            var lines = BuildLines(displayLabel, label.MessageText, label.Price);
 
             using var userFont = new Font(settings.LabelFontFamily,
                 settings.LabelUserFontSize, FontStyle.Bold);
