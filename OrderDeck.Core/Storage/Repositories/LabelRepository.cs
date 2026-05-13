@@ -19,10 +19,10 @@ public sealed class LabelRepository
         conn.Execute(
             @"INSERT INTO Label
               (Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code, Price, AddedAt, PrintedAt,
-               IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId)
+               IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt)
               VALUES
               (@Id, @SessionId, @CustomerId, @Platform, @Username, @DisplayName, @MessageText, @Code, @Price, @AddedAt, @PrintedAt,
-               @IsBackupPromoted, @ParentLabelId, @IsTentativeBackup, @IsShippingFee, @ShipmentId)",
+               @IsBackupPromoted, @ParentLabelId, @IsTentativeBackup, @IsShippingFee, @ShipmentId, @SyncedAt)",
             new
             {
                 l.Id, l.SessionId, l.CustomerId, l.Platform, l.Username, l.DisplayName, l.MessageText,
@@ -31,7 +31,8 @@ public sealed class LabelRepository
                 l.ParentLabelId,
                 IsTentativeBackup = l.IsTentativeBackup ? 1 : 0,
                 IsShippingFee = l.IsShippingFee ? 1 : 0,
-                l.ShipmentId
+                l.ShipmentId,
+                l.SyncedAt
             });
     }
 
@@ -46,7 +47,7 @@ public sealed class LabelRepository
         using var conn = _factory.Open();
         var row = conn.QueryFirstOrDefault<Row>(
             @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
-                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId
+                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt
               FROM Label WHERE Id=@id",
             new { id });
         return row is null ? null : Map(row);
@@ -62,7 +63,7 @@ public sealed class LabelRepository
         // can stick the spare sticker on the goods.
         var rows = conn.Query<Row>(
             @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
-                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId
+                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt
               FROM Label
               WHERE SessionId=@sessionId AND PrintedAt IS NULL AND CancelledAt IS NULL
               ORDER BY AddedAt",
@@ -81,7 +82,7 @@ public sealed class LabelRepository
         using var conn = _factory.Open();
         var rows = conn.Query<Row>(
             @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
-                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId
+                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt
               FROM Label
               WHERE ParentLabelId=@parentLabelId AND IsTentativeBackup = 1 AND CancelledAt IS NULL
               ORDER BY AddedAt",
@@ -121,8 +122,9 @@ public sealed class LabelRepository
     public void MarkCancelled(IEnumerable<string> ids, long cancelledAt, string reason)
     {
         using var conn = _factory.Open();
+        // State değişikliği → SyncedAt NULL.
         conn.Execute(
-            "UPDATE Label SET CancelledAt=@cancelledAt, CancelReason=@reason WHERE Id IN @ids",
+            "UPDATE Label SET CancelledAt=@cancelledAt, CancelReason=@reason, SyncedAt=NULL WHERE Id IN @ids",
             new { cancelledAt, reason, ids = ids.ToArray() });
     }
 
@@ -130,7 +132,7 @@ public sealed class LabelRepository
     {
         using var conn = _factory.Open();
         conn.Execute(
-            "UPDATE Label SET CancelledAt=NULL, CancelReason=NULL WHERE Id IN @ids",
+            "UPDATE Label SET CancelledAt=NULL, CancelReason=NULL, SyncedAt=NULL WHERE Id IN @ids",
             new { ids = ids.ToArray() });
     }
 
@@ -138,7 +140,7 @@ public sealed class LabelRepository
     {
         using var conn = _factory.Open();
         conn.Execute(
-            "UPDATE Label SET PrintedAt=@printedAt WHERE Id IN @ids",
+            "UPDATE Label SET PrintedAt=@printedAt, SyncedAt=NULL WHERE Id IN @ids",
             new { printedAt, ids = ids.ToArray() });
     }
 
@@ -148,7 +150,33 @@ public sealed class LabelRepository
     public void UpdatePrice(string id, decimal price)
     {
         using var conn = _factory.Open();
-        conn.Execute("UPDATE Label SET Price=@price WHERE Id=@id", new { id, price });
+        conn.Execute("UPDATE Label SET Price=@price, SyncedAt=NULL WHERE Id=@id", new { id, price });
+    }
+
+    /// <summary>
+    /// PR siparis-sync (2026-05-13): henüz LicenseServer'a push edilmemiş
+    /// label'lar. Outbox query.
+    /// </summary>
+    public IReadOnlyList<Label> GetUnsynced(int limit = 100)
+    {
+        using var conn = _factory.Open();
+        var rows = conn.Query<Row>(
+            @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
+                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt
+              FROM Label
+              WHERE SyncedAt IS NULL
+              ORDER BY AddedAt
+              LIMIT @limit",
+            new { limit }).ToList();
+        return rows.Select(Map).ToList();
+    }
+
+    /// <summary>Push başarılı sonrası SyncedAt'i set eder.</summary>
+    public void MarkSynced(string id, long syncedAt)
+    {
+        using var conn = _factory.Open();
+        conn.Execute("UPDATE Label SET SyncedAt=@syncedAt WHERE Id=@id",
+            new { id, syncedAt });
     }
 
     public SessionTotals GetSessionTotals(string sessionId)
@@ -258,7 +286,7 @@ public sealed class LabelRepository
         using var conn = _factory.Open();
         var rows = conn.Query<Row>(
             @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
-                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId
+                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt
               FROM Label
               WHERE CustomerId=@customerId
                 AND ShipmentId IS NULL
@@ -301,7 +329,8 @@ public sealed class LabelRepository
             IsTentativeBackup: r.IsTentativeBackup != 0,
             DisplayName: r.DisplayName,
             IsShippingFee: r.IsShippingFee != 0,
-            ShipmentId: r.ShipmentId);
+            ShipmentId: r.ShipmentId,
+            SyncedAt: r.SyncedAt);
 
     private sealed class Row
     {
@@ -323,6 +352,7 @@ public sealed class LabelRepository
         public int IsTentativeBackup { get; init; }
         public int IsShippingFee { get; init; }
         public string? ShipmentId { get; init; }
+        public long? SyncedAt { get; init; }
     }
 
     private sealed class TotalsRow

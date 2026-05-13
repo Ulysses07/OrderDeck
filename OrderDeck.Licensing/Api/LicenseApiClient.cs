@@ -206,6 +206,18 @@ public sealed class LicenseApiClient
         }
     }
 
+    // ─── Session + Order sync (PR siparis-sync 2026-05-13) ────────────────
+
+    public Task<List<SyncedSessionDto>> SyncSessionsAsync(
+        Guid licenseId, SyncSessionsRequest req, CancellationToken ct = default)
+        => PostJsonExpectingJsonAsync<SyncSessionsRequest, List<SyncedSessionDto>>(
+            $"/api/v1/licenses/{licenseId}/sessions/sync", req, ct);
+
+    public Task<List<SyncedOrderDto>> SyncOrdersAsync(
+        Guid licenseId, SyncOrdersRequest req, CancellationToken ct = default)
+        => PostJsonExpectingJsonAsync<SyncOrdersRequest, List<SyncedOrderDto>>(
+            $"/api/v1/licenses/{licenseId}/orders/sync", req, ct);
+
     // ─── HTTP helpers ────────────────────────────────────────────────
 
     private async Task<TResp> PostJsonExpectingJsonAsync<TReq, TResp>(

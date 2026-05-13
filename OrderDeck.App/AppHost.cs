@@ -336,6 +336,17 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<ILogger<Services.Sync.ShipmentSyncService>>()));
         services.AddHostedService<Services.Sync.ShipmentSyncHostedService>();
 
+        // Session + Order sync (PR siparis-sync 2026-05-13)
+        services.AddSingleton<Services.Sync.SessionOrderSyncService>(sp =>
+            new Services.Sync.SessionOrderSyncService(
+                sp.GetRequiredService<LicenseApiClient>(),
+                sp.GetRequiredService<SessionRepository>(),
+                sp.GetRequiredService<LabelRepository>(),
+                sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
+                sp.GetRequiredService<IClock>(),
+                sp.GetRequiredService<ILogger<Services.Sync.SessionOrderSyncService>>()));
+        services.AddHostedService<Services.Sync.SessionOrderSyncHostedService>();
+
         // UI freeze diagnostic (2026-05-13): her 5 dakikada bir UI thread'in
         // responsive olduğunu log'a yazan heartbeat. Donma anında log'da
         // "UI HEARTBEAT: thread unresponsive" mesajı oluşur — bir sonraki
