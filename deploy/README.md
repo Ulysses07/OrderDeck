@@ -2,9 +2,11 @@
 
 ## Architecture
 - **SQL Server 2022 Express** (Docker) — DB, internal port 1433
-- **OrderDeck.LicenseServer** (.NET 10 ASP.NET Core, Docker) — internal port 8080
+- **OrderDeck.LicenseServer** (.NET 10 ASP.NET Core, Docker) — `ghcr.io/ulysses07/orderdeck-license-server:<tag>` image, internal port 8080
 - **Caddy 2** (Docker) — reverse proxy, ports 80/443, automatic Let's Encrypt TLS
 - All on a private Docker network `web`
+
+License-server build artık CI tarafından (`.github/workflows/`) ghcr.io'a push'lanıyor; VPS `docker compose pull` ile yeni image'i alıp restart eder. Local source tree (`app/`) artık VPS'te gerekmiyor.
 
 ## Layout on VPS
 
@@ -13,24 +15,20 @@
 ├── docker-compose.yml
 ├── Caddyfile
 ├── .env                  # secrets (gitignored, file mode 600)
-├── app/                  # source tree (git checkout or scp tarball)
-│   ├── OrderDeck.LicenseServer/
-│   ├── OrderDeck.Core/
-│   ├── OrderDeck.Licensing/
-│   └── ... (everything Dockerfile needs to build)
+├── web-out/              # marketing site static export (Caddy bind-mount /srv/web)
+│   └── downloads/        # OrderDeck-X.Y.Z-setup.exe public download
 ├── keys/                 # ASP.NET Core DataProtection keys (Docker volume mount)
 ├── sql-data/             # SQL Server data files (Docker volume mount)
+├── backups/              # encrypted customer backup blobs (per-customer dir)
 └── caddy_data            # Docker named volume — Let's Encrypt certs
 ```
 
 ## Initial deploy
 
 1. Provision .env (see template below)
-2. Place app source under ./app
-3. `docker compose up -d --build`
-4. Apply EF migrations from inside the license-server container:
-   `docker compose exec license-server dotnet OrderDeck.LicenseServer.dll --migrate`
-   (or run `dotnet ef database update` against the SQL Server connection string)
+2. `docker compose pull` (ghcr.io'dan image'leri çek)
+3. `docker compose up -d`
+4. EF migrations otomatik uygulanır (license-server `Database.Migrate()` startup'ta çalıştırır; eski deploy için bootstrap-migration-history.sql var — aşağıda)
 
 ## .env template
 
@@ -65,7 +63,10 @@ ADMIN_PASSWORD_HASH: see Phase 4a admin bootstrap docs (BCrypt-Net)
 
 - **Start**: `docker compose up -d`
 - **Stop**: `docker compose down`
-- **Restart license-server only** (after code update): `docker compose up -d --build license-server`
+- **Update license-server** (after code merge to master, CI publishes new image):
+  ```bash
+  cd /opt/orderdeck && docker compose pull license-server && docker compose up -d license-server
+  ```
 - **Logs (live)**: `docker compose logs -f license-server`
 - **DB backup**: `docker compose exec sqlserver /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SQL_PASSWORD" -Q "BACKUP DATABASE OrderDeckLicense TO DISK = '/var/opt/mssql/backup/orderdeck-$(date +%F).bak'"`
 

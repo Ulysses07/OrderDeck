@@ -67,26 +67,23 @@ Yazıcı seçimi + etiket boyutu daha sonra **Ayarlar** menüsünden yapılır. 
 
 ### Adım 5 — Chrome Eklentisi Kurulumu ⭐
 
-Bu en kritik adım. Sihirbazda 4 alt-adım göreceksin:
+OrderDeck eklentisi 2026-05-11 itibarıyla **Chrome Web Store'da yayında** — geliştirici modu gerekmez.
 
-#### 1. Eklenti klasörünü hazırla
-Sihirbazdaki **Klasörü Aç** butonuna bas. Explorer'da `Extension` klasörü açılır. Bu pencereyi açık bırak.
+#### 1. Chrome Web Store'dan yükle
+Sihirbazdaki **Chrome Web Store'da Aç** butonuna bas (veya direkt linke git: [chromewebstore.google.com](https://chromewebstore.google.com/) → "OrderDeck Chat Bridge" ara).
 
-#### 2. Chrome'da `chrome://extensions` sayfasını aç
-Sihirbazdaki **Chrome'da Eklentiler Sayfasını Aç** butonuna bas. Chrome açılır ve doğru sayfaya gider.
+Açılan sayfada **Chrome'a Ekle** butonuna bas → "Eklentiyi Ekle" onayı → eklenti yüklenir.
 
-#### 3. Eklentiyi yükle
-Açılan sayfada:
-
-1. Sağ üstte **Geliştirici modu** anahtarını **Aç** (gri → mavi)
-2. Sol üstte **Paketlenmemiş öğe yükle** butonu çıkar — ona bas
-3. Açılan klasör seçicide **adım 1'de açılan Extension klasörünü** seç → **Klasör Seç**
-4. Eklenti listesinde **OrderDeck Chat Bridge** kartı görünür ✓
-
-#### 4. Bağlantıyı doğrula
+#### 2. Bağlantıyı doğrula
 Sihirbazda **Doğrula** butonuna bas. ~2 saniye içinde sonuç:
-- 🟢 **Eklenti bağlı ✓** → tamam
-- 🟡 **Eklenti henüz bağlanmadı** → Chrome'u açık bıraktığından emin ol, **Doğrula**'ya tekrar bas. Hâlâ kırmızıysa adım 3'ü tekrar yap.
+- 🟢 **Eklenti bağlı ✓** → tamam, sonraki adıma geç
+- 🟡 **Eklenti henüz bağlanmadı** → Chrome'u açık bıraktığından emin ol, **Doğrula**'ya tekrar bas. Hâlâ kırmızıysa Chrome'u tamamen kapat ve yeniden aç.
+
+#### Alternatif: Geliştirici modu kurulum (sadece test/dev)
+Resmî Web Store sürümü dışında geliştirici sürümünü test etmek istiyorsan:
+1. Sihirbazdaki **Klasörü Aç** butonuna bas — `Extension` klasörü açılır
+2. Chrome'da `chrome://extensions` → sağ üstte **Geliştirici modu** aç
+3. **Paketlenmemiş öğe yükle** → `Extension` klasörünü seç
 
 ### Adım 6 — Hazırsın 🎉
 
