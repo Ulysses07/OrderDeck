@@ -33,13 +33,13 @@ namespace OrderDeck.Tests.Stress;
 ///   dotnet test --filter "Category=Stress"
 /// veya `LONG_STRESS=1` env var ile gerçek-zamanlı uzun versiyon.
 ///
-/// ## Simüle edilen aktivite (default profil ~4 saat compressed)
-/// - 200,000 chat mesajı (≈14/sn = çoklu platform yoğun yayın IG+YT+TT)
-/// - 5,000 etiket oluşturma (1 in 40 mesaj)
-/// - 200 print batch (yayın boyunca ortalama 1 dakikada bir)
-/// - 200 dekont (Payment.Insert + matcher)
-/// - 200 Shipment lifecycle (GetOrCreate + AttachLabels + ApplyDecision)
-/// - YT scraper crash döngüsü simülasyonu (backoff exercising)
+/// ## Simüle edilen aktivite (default profil ~4 saat compressed, EXTREME)
+/// - 2,000,000 chat mesajı (≈139/sn = major streamer multi-platform peak)
+/// - 50,000 etiket oluşturma (saniyede ~3.5 etiket — gerçekçi üst sınır)
+/// - 2,000 print batch (yayın boyunca ortalama 7 sn'de bir)
+/// - 2,000 dekont (Payment.Insert + matcher)
+/// - 2,000 Shipment lifecycle (GetOrCreate + AttachLabels + ApplyDecision)
+/// - 1,000 YT scraper crash döngüsü (backoff exercising)
 ///
 /// ## Doğrulamalar
 /// - Memory delta &lt; 200 MB (hard cap; tipik &lt; 50 MB)
@@ -66,24 +66,25 @@ public class LongBroadcastStressTest
         TimeSpan MaxDuration);
 
     private static Profile DefaultProfile() => new(
-        // 4 saatlik çoklu-platform yoğun yayın: 14 mesaj/sn × 14,400 sn = ~200k
-        // (Instagram + YouTube + TikTok aynı ChatBus'a feed eder; toplam çok).
-        ChatMessages: 200_000,
-        Labels: 5_000,
-        PrintBatches: 200,
-        Payments: 200,
-        ShipmentCycles: 200,
-        YtScraperCrashes: 100,
-        MaxDuration: TimeSpan.FromMinutes(5));
+        // 4 saatlik EXTREME multi-platform yayın: 139 mesaj/sn × 14,400 sn = ~2M
+        // (major streamer peak; IG+YT+TT+FB hep aynı ChatBus). 50k etiket =
+        // saniyede 3.5 print-eligible chat. Gerçek üst sınır profil.
+        ChatMessages: 2_000_000,
+        Labels: 50_000,
+        PrintBatches: 2_000,
+        Payments: 2_000,
+        ShipmentCycles: 2_000,
+        YtScraperCrashes: 1_000,
+        MaxDuration: TimeSpan.FromMinutes(20));
 
     private static Profile LongRealtimeProfile() => new(
-        // 4 saat real-time pacing = ~14 mesaj/sn (200k). Manuel uzun test.
-        ChatMessages: 200_000,
-        Labels: 5_000,
+        // 4 saat real-time pacing = ~139 mesaj/sn (2M). Manuel uzun test.
+        ChatMessages: 2_000_000,
+        Labels: 50_000,
         PrintBatches: 240, // 4 saat × 60 dk = 240 dakika; her dakika 1 print
-        Payments: 100,
-        ShipmentCycles: 100,
-        YtScraperCrashes: 50,
+        Payments: 500,
+        ShipmentCycles: 500,
+        YtScraperCrashes: 200,
         MaxDuration: TimeSpan.FromHours(4));
 
     [Fact]
