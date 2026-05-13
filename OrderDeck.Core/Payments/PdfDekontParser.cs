@@ -127,7 +127,7 @@ public sealed class PdfDekontParser
 
         foreach (var pattern in patterns)
         {
-            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
+            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
             if (match.Success)
             {
                 var name = match.Groups[1].Value.Trim();
@@ -174,7 +174,7 @@ public sealed class PdfDekontParser
 
         foreach (var pattern in labeledPatterns)
         {
-            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
+            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
             if (match.Success)
             {
                 var raw = match.Groups[1].Value;
@@ -239,7 +239,7 @@ public sealed class PdfDekontParser
 
         foreach (var pattern in labeledPatterns)
         {
-            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
+            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
             if (match.Success && TryParseTurkishDate(match.Groups[1].Value, out var date))
             {
                 return date;
@@ -288,7 +288,7 @@ public sealed class PdfDekontParser
 
         foreach (var pattern in dashAlphanumericPatterns)
         {
-            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
+            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
             if (match.Success)
             {
                 var value = match.Groups[1].Value.Trim();
@@ -317,7 +317,7 @@ public sealed class PdfDekontParser
 
         foreach (var pattern in numericPatterns)
         {
-            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
+            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
             if (match.Success)
             {
                 var value = match.Groups[1].Value.Trim();
@@ -335,7 +335,7 @@ public sealed class PdfDekontParser
 
         foreach (var pattern in alphanumericPatterns)
         {
-            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
+            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
             if (match.Success)
             {
                 var value = match.Groups[1].Value.Trim();
@@ -394,7 +394,7 @@ public sealed class PdfDekontParser
 
         foreach (var pattern in patterns)
         {
-            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
+            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
             if (match.Success)
             {
                 var name = Regex.Replace(match.Groups[1].Value.Trim(), @"\s+", " ");
@@ -461,8 +461,12 @@ public sealed class PdfDekontParser
             @"G[öo]nderilenIBAN\s*(TR\d{2}[\s\d]{20,30})",
             // Garanti BBVA: "ALACAKLI IBAN : TR48 0011 1000 0000 0107 0201 32"
             @"ALACAKLI\s+IBAN\s*[:\-]\s*(TR\d{2}[\s\d]{20,30})",
-            // Denizbank: "Alıcı IBANTR48 0011 1000 0000 0107 0201 32"
-            @"Al[ıi]c[ıi]\s+IBAN\s*(TR\d{2}[\s\d]{20,30})",
+            // Denizbank + İş Bankası: "Alıcı IBANTR48..." (no colon) veya
+            // "Alıcı IBAN:TR48..." (colon var). Explicit Al[ıi]c[ıi] char class —
+            // RegexOptions.IgnoreCase | RegexOptions.CultureInvariant + Turkish I/ı/İ culture quirk'i etrafında
+            // dolaşmak için (CI invariant culture'da uppercase "ALICI" pattern'i
+            // "Alıcı"ya match etmiyor; lokalde tr-TR'de ediyor).
+            @"Al[ıi]c[ıi]\s+IBAN\s*[:\-]?\s*(TR\d{2}[\s\d]{20,30})",
             // Title-case Alıcı + section ile IBAN
             @"Al[ıi]c[ıi]\s*[:\-].{0,200}?IBAN(?:/Hesap\s*No)?\s*[:\-]\s*(TR\d{2}[\s\d]{20,30})",
             // Inline "Alıcı : NAME ... IBAN: TR..."
@@ -471,7 +475,7 @@ public sealed class PdfDekontParser
 
         foreach (var pattern in patterns)
         {
-            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
+            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
             if (match.Success)
             {
                 // Whitespace çıkar, normalize et
