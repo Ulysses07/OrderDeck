@@ -179,6 +179,33 @@ public sealed class LicenseApiClient
         }
     }
 
+    // ─── Shipment sync (PR-D, 2026-05-13) ─────────────────────────────────
+
+    /// <summary>WPF outbox push: Shipment batch upsert by Id. WPF authoritative
+    /// (mobile mutation yapmıyor). Max 200 item/batch.</summary>
+    public Task<List<SyncedShipmentDto>> SyncShipmentsAsync(
+        Guid licenseId, SyncShipmentsRequest req, CancellationToken ct = default)
+        => PostJsonExpectingJsonAsync<SyncShipmentsRequest, List<SyncedShipmentDto>>(
+            $"/api/v1/licenses/{licenseId}/shipments/sync", req, ct);
+
+    /// <summary>Reverse sync (nadiren kullanılır — WPF authoritative).</summary>
+    public async Task<List<SyncedShipmentDto>> GetShipmentsSinceAsync(
+        Guid licenseId, DateTimeOffset since, int take = 200, CancellationToken ct = default)
+    {
+        var qs = $"?since={Uri.EscapeDataString(since.ToString("O"))}&take={take}";
+
+        HttpResponseMessage resp;
+        try { resp = await _http.GetAsync($"/api/v1/licenses/{licenseId}/shipments/since{qs}", ct); }
+        catch (HttpRequestException ex) { throw new LicenseApiNetworkException(ex.Message, ex); }
+        catch (TaskCanceledException ex) when (!ct.IsCancellationRequested) { throw new LicenseApiNetworkException("timeout", ex); }
+
+        using (resp)
+        {
+            if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
+            return (await DeserializeAsync<List<SyncedShipmentDto>>(resp, ct)) ?? new();
+        }
+    }
+
     // ─── HTTP helpers ────────────────────────────────────────────────
 
     private async Task<TResp> PostJsonExpectingJsonAsync<TReq, TResp>(

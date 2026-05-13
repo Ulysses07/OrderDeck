@@ -21,9 +21,9 @@ public sealed class ShipmentRepository
         using var conn = _factory.Open();
         conn.Execute(
             @"INSERT INTO Shipment
-              (Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount)
+              (Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt)
               VALUES
-              (@Id, @CustomerId, @Status, @CreatedAt, @HeldAt, @ShippedAt, @CumulativeAmount)",
+              (@Id, @CustomerId, @Status, @CreatedAt, @HeldAt, @ShippedAt, @CumulativeAmount, @SyncedAt)",
             new
             {
                 s.Id,
@@ -32,7 +32,8 @@ public sealed class ShipmentRepository
                 s.CreatedAt,
                 s.HeldAt,
                 s.ShippedAt,
-                CumulativeAmount = (double)s.CumulativeAmount
+                CumulativeAmount = (double)s.CumulativeAmount,
+                s.SyncedAt
             });
     }
 
@@ -40,7 +41,7 @@ public sealed class ShipmentRepository
     {
         using var conn = _factory.Open();
         var row = conn.QueryFirstOrDefault<Row>(
-            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount
+            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt
               FROM Shipment WHERE Id=@id",
             new { id });
         return row is null ? null : Map(row);
@@ -54,7 +55,7 @@ public sealed class ShipmentRepository
     {
         using var conn = _factory.Open();
         var row = conn.QueryFirstOrDefault<Row>(
-            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount
+            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt
               FROM Shipment
               WHERE CustomerId=@customerId AND Status IN ('Pending', 'Held')
               ORDER BY CreatedAt DESC
@@ -71,7 +72,7 @@ public sealed class ShipmentRepository
     {
         using var conn = _factory.Open();
         var rows = conn.Query<Row>(
-            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount
+            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt
               FROM Shipment
               WHERE Status=@status
               ORDER BY CreatedAt",
@@ -86,10 +87,13 @@ public sealed class ShipmentRepository
     public void Update(Shipment s)
     {
         using var conn = _factory.Open();
+        // Lokal state değişti → SyncedAt'i NULL'a düşür ki bir sonraki sync
+        // tick'inde tekrar push edilsin (Payment outbox pattern ile aynı).
         conn.Execute(
             @"UPDATE Shipment SET
                 Status=@Status, HeldAt=@HeldAt, ShippedAt=@ShippedAt,
-                CumulativeAmount=@CumulativeAmount
+                CumulativeAmount=@CumulativeAmount,
+                SyncedAt=NULL
               WHERE Id=@Id",
             new
             {
@@ -99,6 +103,32 @@ public sealed class ShipmentRepository
                 s.ShippedAt,
                 CumulativeAmount = (double)s.CumulativeAmount
             });
+    }
+
+    /// <summary>
+    /// PR-D outbox query: henüz LicenseServer'a push edilmemiş Shipment'lar.
+    /// Sync service tick'inde batch alıp push'lar, dönerse MarkSynced.
+    /// </summary>
+    public IReadOnlyList<Shipment> GetUnsynced(int limit = 50)
+    {
+        using var conn = _factory.Open();
+        var rows = conn.Query<Row>(
+            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt
+              FROM Shipment
+              WHERE SyncedAt IS NULL
+              ORDER BY CreatedAt
+              LIMIT @limit",
+            new { limit }).ToList();
+        return rows.Select(Map).ToList();
+    }
+
+    /// <summary>Push başarılı sonrası SyncedAt'i set eder. UpdatedAt local'de
+    /// yok — sync timestamp'i ayrıca tutulur.</summary>
+    public void MarkSynced(string id, long syncedAt)
+    {
+        using var conn = _factory.Open();
+        conn.Execute("UPDATE Shipment SET SyncedAt=@syncedAt WHERE Id=@id",
+            new { id, syncedAt });
     }
 
     /// <summary>
@@ -127,7 +157,8 @@ public sealed class ShipmentRepository
         new(r.Id, r.CustomerId,
             System.Enum.Parse<ShipmentStatus>(r.Status),
             r.CreatedAt, r.HeldAt, r.ShippedAt,
-            (decimal)r.CumulativeAmount);
+            (decimal)r.CumulativeAmount,
+            r.SyncedAt);
 
     private sealed class Row
     {
@@ -138,5 +169,6 @@ public sealed class ShipmentRepository
         public long? HeldAt { get; init; }
         public long? ShippedAt { get; init; }
         public double CumulativeAmount { get; init; }
+        public long? SyncedAt { get; init; }
     }
 }

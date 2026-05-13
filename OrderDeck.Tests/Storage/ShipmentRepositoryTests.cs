@@ -193,4 +193,64 @@ public class ShipmentRepositoryTests
         var label = labels.GetById("l1");
         label!.ShipmentId.Should().Be("sh1");
     }
+
+    // ── PR-D outbox / sync tests ──────────────────────────────────────────
+
+    [Fact]
+    public void GetUnsynced_returns_only_null_SyncedAt_rows()
+    {
+        var (db, repo, _, _, _) = Fx();
+        using var _d = db;
+
+        repo.Insert(NewShipment("sh1"));
+        repo.Insert(NewShipment("sh2") with { SyncedAt = 5000L });
+        repo.Insert(NewShipment("sh3"));
+
+        var unsynced = repo.GetUnsynced();
+        unsynced.Should().HaveCount(2);
+        unsynced.Select(x => x.Id).Should().BeEquivalentTo(new[] { "sh1", "sh3" });
+    }
+
+    [Fact]
+    public void MarkSynced_sets_SyncedAt_timestamp()
+    {
+        var (db, repo, _, _, _) = Fx();
+        using var _d = db;
+
+        repo.Insert(NewShipment());
+        repo.MarkSynced("sh1", syncedAt: 7777L);
+
+        var found = repo.GetById("sh1");
+        found!.SyncedAt.Should().Be(7777L);
+    }
+
+    [Fact]
+    public void Update_resets_SyncedAt_so_next_tick_pushes_again()
+    {
+        // Lokal state değişti → outbox'a tekrar düşmeli (server stale data göstermemeli).
+        var (db, repo, _, _, _) = Fx();
+        using var _d = db;
+
+        repo.Insert(NewShipment());
+        repo.MarkSynced("sh1", syncedAt: 1000L);
+
+        var current = repo.GetById("sh1")!;
+        repo.Update(current with { Status = ShipmentStatus.Held, HeldAt = 2000L });
+
+        var afterUpdate = repo.GetById("sh1")!;
+        afterUpdate.SyncedAt.Should().BeNull("Update SyncedAt'i NULL'a düşürmeli");
+    }
+
+    [Fact]
+    public void GetUnsynced_honors_limit_param()
+    {
+        var (db, repo, _, _, _) = Fx();
+        using var _d = db;
+
+        for (int i = 0; i < 10; i++)
+            repo.Insert(NewShipment($"sh{i}"));
+
+        repo.GetUnsynced(limit: 3).Should().HaveCount(3);
+        repo.GetUnsynced(limit: 100).Should().HaveCount(10);
+    }
 }
