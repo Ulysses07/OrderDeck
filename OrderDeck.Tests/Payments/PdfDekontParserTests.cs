@@ -251,6 +251,115 @@ Açıklama: Yayın ödemesi
         result.RecipientName.Should().Be("KIRŞEHİR AHİ EVRAN ÜNİVERSİTESİ");
     }
 
+    // ── 2026-05-13: 4 yeni banka format'ı (Kuveyt Türk, Garanti, Denizbank, İş Bankası)
+
+    [Fact]
+    public void Parse_kuveyt_turk_continuous_text_extracts_all_fields()
+    {
+        // Kuveyt Türk PDF tek satır + hiçbir boşluk yok. Continuous text
+        // pattern'larıyla yakalanır: GönderenKişi/Alıcı/GönderilenIBAN/Tutar.
+        var text = "KUVEYTTÜRKKATILIMBANKASIVergiNo:6000026814" +
+                   "İşlemTarihi30.03.202614:06SorguNumarası9360608" +
+                   "GönderenKişiV2SPORMALZEMELERİTEKSTİLLİMİTEDŞİRKETİ" +
+                   "AlıcıRıdvanÖzcanGönderilenIBANTR480011100000000107020132" +
+                   "AlıcıBankaQnbBankA.Ş.İşlemYeriMobilŞubeAçıklama" +
+                   "Tutar20.000,00TLYalnızYirmiBinTL";
+        var result = _parser.ParseFromText(text, FakeHash);
+
+        result.PayerName.Should().Be("V2SPORMALZEMELERİTEKSTİLLİMİTEDŞİRKETİ");
+        result.Amount.Should().Be(20000m);
+        result.PaidAt.Should().Be(new DateTime(2026, 3, 30));
+        result.ReferansNo.Should().Be("9360608");
+        result.RecipientIban.Should().Be("TR480011100000000107020132");
+        result.RecipientName.Should().Be("RıdvanÖzcan");
+    }
+
+    [Fact]
+    public void Parse_garanti_bbva_dekont_extracts_all_fields()
+    {
+        // Garanti BBVA: "SAYIN NAME" (PayerName), "ALACAKLI : NAME" (Recipient),
+        // "ALACAKLI IBAN : TR48...", "FAST REF NO : 8794..."
+        var text = "T. Garanti Bankası A.Ş.HESAPTAN FAST" +
+                   "İŞLEM TARİHİ     : 05/05/2026" +
+                   "IBAN:TR44 0006 2000 0920 0006 8833 65" +
+                   "SAYINKUBİLAY ÇİFTÇİİZMİR DENİZ ER EĞİTİM MERKEZİ" +
+                   "FAST REF NO      : 8794000212" +
+                   "ALACAKLI         : RIDVAN ÖZCAN" +
+                   "ALACAKLI IBAN    : TR48 0011 1000 0000 0107 0201 32" +
+                   "MASRAF           :  15,96 TL  Tutar 25.200,00 TL";
+        var result = _parser.ParseFromText(text, FakeHash);
+
+        result.PayerName.Should().Be("KUBİLAY ÇİFTÇİ");
+        result.PaidAt.Should().Be(new DateTime(2026, 5, 5));
+        result.ReferansNo.Should().Be("8794000212");
+        result.RecipientIban.Should().Be("TR480011100000000107020132");
+        result.RecipientName.Should().Be("RIDVAN ÖZCAN");
+    }
+
+    [Fact]
+    public void Parse_denizbank_dekont_extracts_all_fields()
+    {
+        // Denizbank: "Adı SoyadıNAME" (no colon, continuous), "Alıcı Adı SoyadıNAME",
+        // "Alıcı IBANTR48..."
+        var text = "Denizbank A.Ş.Müşteri BilgisiAdı SoyadıLAMİA DİLEK" +
+                   "VKN / TCKN/3773007****IBANTR36 0013 4000 0190 0768 3000 01" +
+                   "İşlem Tarihi01.05.2026 19:31:38" +
+                   "Alıcı Banka0111-QNB BANK A.Ş." +
+                   "Alıcı IBANTR48 0011 1000 0000 0107 0201 32" +
+                   "Alıcı Adı SoyadıRIDVAN ÖZCANTutar10.000,00 TL";
+        var result = _parser.ParseFromText(text, FakeHash);
+
+        result.PayerName.Should().Be("LAMİA DİLEK");
+        result.Amount.Should().Be(10000m);
+        result.PaidAt.Should().Be(new DateTime(2026, 5, 1));
+        result.RecipientIban.Should().Be("TR480011100000000107020132");
+        result.RecipientName.Should().Be("RIDVAN ÖZCAN");
+    }
+
+    [Fact]
+    public void Parse_is_bankasi_bilgi_dekontu_extracts_most_fields()
+    {
+        // İş Bankası "Bilgi Dekontu" format: payerName başlıkta,
+        // RecipientName sadece açıklamada (parse edilmiyor — edge case).
+        var text = "Bilgi DekontuİBRAHİM BARIN BESLEKMüşteri No:515066630" +
+                   "İşlem Zam./Valör:24.04.2026 17:53:41 / 24.04.2026" +
+                   "İşlem Tutarı:20.000,00 TRY" +
+                   "Sorgu Numarası:3327706380" +
+                   "Alıcı Banka:111 - QNB Finansbank A.Ş." +
+                   "Alıcı IBAN:TR48 0011 1000 0000 0107 0201 32";
+        var result = _parser.ParseFromText(text, FakeHash);
+
+        result.PayerName.Should().Be("İBRAHİM BARIN BESLEK");
+        result.Amount.Should().Be(20000m);
+        result.PaidAt.Should().Be(new DateTime(2026, 4, 24));
+        result.ReferansNo.Should().Be("3327706380");
+        result.RecipientIban.Should().Be("TR480011100000000107020132");
+        // RecipientName edge case: sadece açıklamada — parse edilmez.
+    }
+
+    [Fact]
+    public void Parse_vakifbank_fast_new_format_with_slash_unvan()
+    {
+        // Vakıfbank yeni FAST (2026 format): "GÖNDEREN AD SOYAD /UNVAN" ve
+        // "ALICI HESAP NO / IBAN" (slash öncesi/sonrası boşluk var; eski
+        // continuous format "GONDEREN ADSOYAD/UNVAN"dan farklı).
+        var text = "VAKIFBANKİŞLEM BİLGİLERİİŞLEM TÜRÜFAST Giden Anlık Ödeme" +
+                   "İŞLEM TARİHİ10.04.2026 12:52:11" +
+                   "SORGU NO2553031025İŞLEM TUTARI80.000,00 TLMASRAF TUTARI" +
+                   "GÖNDEREN AD SOYAD /UNVAN242 GİYİM TEKSTİLSANAYİ" +
+                   "ALICI AD SOYAD/UNVANEMAR GLOBAL TEKSTİL" +
+                   "ALICI HESAP NO / IBANTR43 0011 1000 0000 01556452 55" +
+                   "İŞLEM NO2026005253222628FİŞ NO";
+        var result = _parser.ParseFromText(text, FakeHash);
+
+        result.PayerName.Should().Contain("242 GİYİM TEKSTİL");
+        result.Amount.Should().Be(80000m);
+        result.PaidAt.Should().Be(new DateTime(2026, 4, 10));
+        result.ReferansNo.Should().Be("2026005253222628");
+        result.RecipientIban.Should().Be("TR430011100000000155645255");
+        result.RecipientName.Should().Contain("EMAR GLOBAL");
+    }
+
     [Fact]
     public void ExtractPayerName_ignores_label_without_colon()
     {
