@@ -26,6 +26,8 @@ public class LicenseDbContext : DbContext
     public DbSet<PushDevice> PushDevices => Set<PushDevice>();
     public DbSet<Payment> Payments => Set<Payment>();
     public DbSet<Shipment> Shipments => Set<Shipment>();
+    public DbSet<StreamSession> StreamSessions => Set<StreamSession>();
+    public DbSet<Order> Orders => Set<Order>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -205,6 +207,44 @@ public class LicenseDbContext : DbContext
             b.HasIndex(p => new { p.LicenseId, p.Status, p.CreatedAt });
             // Kargo PR E: mobile Panel "Bekleyen kargolar" / "Alıcı ödemeli" tab filtreleri.
             b.HasIndex(p => new { p.LicenseId, p.ShipmentDirective, p.Status });
+        });
+
+        // Siparişler (PR siparis-sync 2026-05-13): WPF lokal StreamSession + Label'ların
+        // server replikası, mobile Panel Siparişler ekranı için.
+        mb.Entity<StreamSession>(b =>
+        {
+            b.HasKey(s => s.Id);
+            b.Property(s => s.Title).HasMaxLength(200);
+            b.Property(s => s.Platforms).HasMaxLength(200);
+            b.Property(s => s.Notes).HasMaxLength(2000);
+            b.HasOne(s => s.License).WithMany()
+                .HasForeignKey(s => s.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            // Mobile "yayın listesi" en yeni başta.
+            b.HasIndex(s => new { s.LicenseId, s.StartedAt });
+            b.HasIndex(s => new { s.LicenseId, s.UpdatedAt }); // reverse-sync cursor
+        });
+
+        mb.Entity<Order>(b =>
+        {
+            b.HasKey(o => o.Id);
+            b.Property(o => o.CustomerId).HasMaxLength(64).IsRequired();
+            b.Property(o => o.Platform).HasMaxLength(32).IsRequired();
+            b.Property(o => o.Username).HasMaxLength(200).IsRequired();
+            b.Property(o => o.DisplayName).HasMaxLength(200);
+            b.Property(o => o.MessageText).HasMaxLength(2000).IsRequired();
+            b.Property(o => o.Code).HasMaxLength(64);
+            b.Property(o => o.Price).HasPrecision(18, 2);
+            b.Property(o => o.CancelReason).HasMaxLength(500);
+            b.HasOne(o => o.License).WithMany()
+                .HasForeignKey(o => o.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            b.HasOne(o => o.Session).WithMany()
+                .HasForeignKey(o => o.SessionId).OnDelete(DeleteBehavior.SetNull);
+            // "Belirli yayının siparişleri" sorgusu için.
+            b.HasIndex(o => new { o.LicenseId, o.SessionId, o.AddedAt });
+            // "Müşterinin tüm siparişleri" sorgusu için.
+            b.HasIndex(o => new { o.LicenseId, o.CustomerId });
+            // Reverse-sync cursor.
+            b.HasIndex(o => new { o.LicenseId, o.UpdatedAt });
         });
 
         // Kümülatif kargo PR-D (2026-05-13): WPF lokal Shipment'ların server replikası.
