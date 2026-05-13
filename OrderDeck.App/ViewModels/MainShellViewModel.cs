@@ -157,6 +157,16 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _youTubeModeration = youTubeModeration;
         Banner = banner;
         _dispatcher = Dispatcher.CurrentDispatcher;
+        // _settingsStore must be assigned BEFORE EnsureChatFlushTimer() because
+        // that method calls UpdateChatHealth() synchronously, which reads
+        // _settingsStore. Previously a first-chance NRE leaked here (caught by
+        // UpdateChatHealth's defensive catch) and the chat health dot stuck on
+        // "off" until the next timer tick.
+        _settingsStore = settingsStore;
+        _animationCatalogClient = animationCatalogClient;
+        _intakeSync = intakeSync;
+        _intakeSync.SubmissionsSynced += OnIntakeSubmissionsSynced;
+
         _busSubscription = bus.Subscribe(OnChatMessage);
         EnsureChatFlushTimer();
         _licenseService = licenseService;
@@ -164,11 +174,6 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _licenseService.HeartbeatStateChanged += OnHeartbeatStateChanged;
         UpdateLicenseUiFromService();
         UpdateServerOfflineBanner();
-
-        _settingsStore = settingsStore;
-        _animationCatalogClient = animationCatalogClient;
-        _intakeSync = intakeSync;
-        _intakeSync.SubmissionsSynced += OnIntakeSubmissionsSynced;
 
         Banner.AutoDrawRequested += () => DrawGiveawayNowCommand.Execute(null);
 
