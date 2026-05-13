@@ -25,6 +25,12 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
 {
     private static readonly TimeSpan IdleWhenOffline = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan IdleAfterScraperExit = TimeSpan.FromSeconds(30);
+    // UI freeze fix (2026-05-13): exponential backoff cap. Yayın canlı
+    // değilken scraper her 30 sn crash + restart döngüsünde 42 ardışık
+    // exception storm UI thread'i bombardıman ediyordu. Backoff:
+    // 30s, 1m, 2m, 4m, 5m max — kullanıcı yayını başlatınca veya bir
+    // mesaj gelince counter sıfırlanır.
+    private static readonly TimeSpan MaxBackoff = TimeSpan.FromMinutes(5);
 
     private readonly Func<AppSettings> _settingsProvider;
     private readonly IChatBus _bus;
@@ -112,6 +118,11 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
         using var resolver = new YouTubeLiveResolver(
             _loggerFactory.CreateLogger<YouTubeLiveResolver>(), resolverHttp);
 
+        // Consecutive scraper-crash counter — exponential backoff temeli.
+        // Bootstrap (StartAsync) sırasında crash olursa artar; başarılı
+        // bağlantı veya graceful shutdown (silence heuristic) sonrası sıfırlanır.
+        int consecutiveCrashes = 0;
+
         while (!ct.IsCancellationRequested)
         {
             try
@@ -168,9 +179,12 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
                 using var scraperCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 _scraperCts = scraperCts;
 
+                bool crashed = false;
                 try
                 {
                     await scraper.StartAsync(scraperCts.Token);
+                    // Bağlantı başarılı oldu — backoff counter'ı sıfırla.
+                    consecutiveCrashes = 0;
                     // Wait for the runner to exit on its own (stream ended +
                     // silence heuristic) OR for cancellation (operator
                     // pressed Yayını Bitir / app shutdown).
@@ -180,7 +194,11 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
                 catch (OperationCanceledException) { /* SessionEnded — fall through to cleanup */ }
                 catch (Exception ex)
                 {
-                    _log.LogWarning(ex, "[YouTubeChatHostedService] scraper crashed; rescheduling");
+                    crashed = true;
+                    consecutiveCrashes++;
+                    _log.LogWarning(ex,
+                        "[YouTubeChatHostedService] scraper crashed (#{Count} consecutive); rescheduling",
+                        consecutiveCrashes);
                 }
                 finally
                 {
@@ -189,7 +207,15 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
                 }
 
                 if (!ct.IsCancellationRequested)
-                    await Task.Delay(IdleAfterScraperExit, ct);
+                {
+                    // Bootstrap crash döngüsünde exponential backoff:
+                    // 30s, 1m, 2m, 4m, 5m max. Graceful exit (no crash) ise
+                    // normal 30s idle.
+                    var idle = crashed
+                        ? ComputeBackoff(consecutiveCrashes)
+                        : IdleAfterScraperExit;
+                    await Task.Delay(idle, ct);
+                }
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
@@ -198,6 +224,20 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
                 try { await Task.Delay(IdleAfterScraperExit, ct); } catch { break; }
             }
         }
+    }
+
+    /// <summary>
+    /// Exponential backoff: 30s × 2^(n-1) capped at MaxBackoff (5 min).
+    /// n=1 → 30s, n=2 → 1m, n=3 → 2m, n=4 → 4m, n≥5 → 5m.
+    /// </summary>
+    internal static TimeSpan ComputeBackoff(int consecutiveCrashes)
+    {
+        if (consecutiveCrashes <= 1) return IdleAfterScraperExit;
+        // 2^(n-1) ile çarp — overflow korumalı
+        var exp = Math.Min(consecutiveCrashes - 1, 10);
+        var seconds = IdleAfterScraperExit.TotalSeconds * Math.Pow(2, exp);
+        if (seconds >= MaxBackoff.TotalSeconds) return MaxBackoff;
+        return TimeSpan.FromSeconds(seconds);
     }
 
     public void Dispose()

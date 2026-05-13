@@ -325,6 +325,13 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<ILogger<Services.Sync.PaymentSyncService>>()));
         services.AddHostedService<Services.Sync.PaymentSyncHostedService>();
 
+        // UI freeze diagnostic (2026-05-13): her 5 dakikada bir UI thread'in
+        // responsive olduğunu log'a yazan heartbeat. Donma anında log'da
+        // "UI HEARTBEAT: thread unresponsive" mesajı oluşur — bir sonraki
+        // analizde donma penceresinin tam zamanı belli olur.
+        services.AddSingleton(System.Windows.Threading.Dispatcher.CurrentDispatcher);
+        services.AddHostedService<Services.Diagnostics.UiHeartbeatHostedService>();
+
         // Manuel dekont ekleme dialog (Payment sync PR C)
         services.AddTransient<ViewModels.DekontEkleViewModel>();
         services.AddTransient<Views.DekontEkleDialog>();

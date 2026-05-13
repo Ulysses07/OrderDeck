@@ -44,6 +44,19 @@ public sealed class LabelPrinter : ILabelPrinter
             labels.Count, doc.PrinterSettings.PrinterName,
             recipientPaysLabelIds?.Count ?? 0);
 
+        // UI freeze fix (2026-05-13): süre ölç. Print 10 sn+ sürerse yazıcı
+        // problem yaşıyor olabilir — log'a WARN bırak ki ileri analizde
+        // donmanın printer kaynaklı mı olduğu görülür.
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         doc.Print();
+        sw.Stop();
+        if (sw.Elapsed.TotalSeconds >= 10)
+            _log.LogWarning(
+                "Print slow: {Count} label(s) took {Elapsed:0.0}s on '{Printer}'",
+                labels.Count, sw.Elapsed.TotalSeconds, doc.PrinterSettings.PrinterName);
+        else
+            _log.LogDebug(
+                "Print done: {Count} label(s) in {Elapsed:0.00}s",
+                labels.Count, sw.Elapsed.TotalSeconds);
     }
 }
