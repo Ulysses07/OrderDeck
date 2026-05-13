@@ -165,7 +165,11 @@ public sealed class PdfDekontParser
             // Kuveyt Türk continuous: "Tutar20.000,00TLYalnız..."
             // (Boşluk yok, TL sonrası kelime boundary olmayabilir — pattern
             // bunu \b yerine spesifik suffix lookahead ile çözer.)
-            @"Tutar\s*([\d\.,]+)\s*(?:TL|TRY)(?=Yaln[ıi]z|Yirmi|\s|[A-ZÇĞİÖŞÜ]{2,}|$)"
+            @"Tutar\s*([\d\.,]+)\s*(?:TL|TRY)(?=Yaln[ıi]z|Yirmi|\s|[A-ZÇĞİÖŞÜ]{2,}|$)",
+            // Yapı Kredi e-Dekont FAST: "GİDEN FAST TUTARI :-35000" (negatif
+            // outgoing FAST, decimal yok). - işareti opsiyonel + abs alınır
+            // (caller mantıksal "ödenen tutar" pozitif). Boşluk padding olabilir.
+            @"GİDEN\s+FAST\s+TUTARI\s*:?\s*-?(\d+(?:[\.,]\d+)?)"
         };
 
         foreach (var pattern in labeledPatterns)
@@ -375,12 +379,12 @@ public sealed class PdfDekontParser
             @"ALACAKLI\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ\s]+?)(?=\s*(?:ALACAKLI|IBAN|TR\d{2}|FAST|KOMİSYON|MASRAF|İŞLEM|\$))",
             // Denizbank: "Alıcı Adı SoyadıRIDVAN ÖZCANTutar..."
             @"Al[ıi]c[ıi]\s+Ad[ıi]\s+Soyad[ıi]\s*([A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ\s]+?)(?=\s*(?:Tutar|Masraf|VKN|IBAN|TR\d{2}|İşlem|\$))",
-            // İş Bankası "document.pdf": full text "Alıcı IBAN" sonrası NAME yok,
-            // ama açıklamada "İBRAHİM BARIN BESLEK tarafından aktarılan" var.
-            // Operatör tarafı için: caller'a hangi bankaya transfer edildiyse
-            // genelde "Alıcı IBAN" yetiyor (Recipient name ayrı extract zor).
-            // Şu an pattern eklemiyoruz, gelecekte İş Bankası dekontu daha çok
-            // toplandıkça spesifik ihtimal.
+            // İş Bankası "document.pdf": "Alıcı Isim\Unvan:RIDVAN ÖZCAN"
+            // (backslash separator). Sub-label "Isim\Unvan" İş Bank-spesifik.
+            @"Al[ıi]c[ıi]\s+Isim\\?Unvan\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ\s\.]+?)(?=\s*(?:BSMV|Bilgi|İŞLEM|TUTAR|IBAN|TR\d{2}|\$))",
+            // Yapı Kredi e-Dekont FAST: "ALICI ADI         :EMAR GLOBAL TEKSTİL..."
+            // Boşluk padding + colon. Terminator ALICI TCKN veya AÇIKLAMA.
+            @"ALICI\s+ADI\s*[:\-]\s*([A-ZÇĞİÖŞÜ0-9][A-ZÇĞİÖŞÜ0-9\.\s]+?)(?=\s*(?:ALICI\s+TCKN|ALICI\s+VD|ALICI\s+VKN|AÇIKLAMA|YUKARIDAKİ|İŞLEM|MESAJ|KOLAY|\$))",
             // Inline: "Alıcı : NAME ... IBAN ..." veya Ziraat:
             // "Alıcı : NAME Alıcı Hesap : ..." / "Alıcı : NAME İşlem Tutarı : ..."
             // Lookahead'a "Al[ıi]c[ıi]\s+Hesap" + "İşlem|Tutar|Hesap|Komisyon"

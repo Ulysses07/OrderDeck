@@ -317,16 +317,17 @@ Açıklama: Yayın ödemesi
     }
 
     [Fact]
-    public void Parse_is_bankasi_bilgi_dekontu_extracts_most_fields()
+    public void Parse_is_bankasi_bilgi_dekontu_extracts_all_fields()
     {
-        // İş Bankası "Bilgi Dekontu" format: payerName başlıkta,
-        // RecipientName sadece açıklamada (parse edilmiyor — edge case).
+        // İş Bankası "Bilgi Dekontu" format: "Alıcı Isim\Unvan:NAME" backslash
+        // sub-label.
         var text = "Bilgi DekontuİBRAHİM BARIN BESLEKMüşteri No:515066630" +
                    "İşlem Zam./Valör:24.04.2026 17:53:41 / 24.04.2026" +
                    "İşlem Tutarı:20.000,00 TRY" +
                    "Sorgu Numarası:3327706380" +
                    "Alıcı Banka:111 - QNB Finansbank A.Ş." +
-                   "Alıcı IBAN:TR48 0011 1000 0000 0107 0201 32";
+                   "Alıcı IBAN:TR48 0011 1000 0000 0107 0201 32" +
+                   @"Alıcı Isim\Unvan:RIDVAN ÖZCANBSMV:0,77 TRY";
         var result = _parser.ParseFromText(text, FakeHash);
 
         result.PayerName.Should().Be("İBRAHİM BARIN BESLEK");
@@ -334,7 +335,33 @@ Açıklama: Yayın ödemesi
         result.PaidAt.Should().Be(new DateTime(2026, 4, 24));
         result.ReferansNo.Should().Be("3327706380");
         result.RecipientIban.Should().Be("TR480011100000000107020132");
-        // RecipientName edge case: sadece açıklamada — parse edilmez.
+        result.RecipientName.Should().Be("RIDVAN ÖZCAN");
+    }
+
+    [Fact]
+    public void Parse_yapi_kredi_e_dekont_fast_outgoing_extracts_all_fields()
+    {
+        // Yapı Kredi e-Dekont FAST (giden) — "GİDEN FAST TUTARI :-35000" negatif
+        // outgoing format, decimal yok. PayerName="GÖNDEREN ADI", RecipientName=
+        // "ALICI ADI" boşluk padding'li label'lar. Amount abs alınır (caller için
+        // pozitif tutar).
+        var text = "e-DekontFAST GÖNDERİMİ" +
+                   "İŞLEM TARİHİ:30.04.2026 15:04:56" +
+                   "GİDEN FAST TUTARI :-35000                                            " +
+                   "GÖNDEREN ADI      :NURSEL ATBAŞ                                      " +
+                   "ALICI BANKA       :QNB Bank A.Ş.                                     " +
+                   "SORGU NO                :2854829652                " +
+                   "ALICI HESAP       :TR430011100000000155645255                        " +
+                   "ALICI ADI         :EMAR GLOBAL TEKSTİL GIDA İNŞAAT TURİZM YAZILIM VE TİC.LTD.ŞTİ.                                       " +
+                   "ALICI TCKN/VD/VKN : -";
+        var result = _parser.ParseFromText(text, FakeHash);
+
+        result.PayerName.Should().Be("NURSEL ATBAŞ");
+        result.Amount.Should().Be(35000m); // abs alındı, pozitif
+        result.PaidAt.Should().Be(new DateTime(2026, 4, 30));
+        result.ReferansNo.Should().Be("2854829652");
+        result.RecipientIban.Should().Be("TR430011100000000155645255");
+        result.RecipientName.Should().Contain("EMAR GLOBAL TEKSTİL");
     }
 
     [Fact]
