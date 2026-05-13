@@ -34,12 +34,11 @@ namespace OrderDeck.Tests.Stress;
 /// veya `LONG_STRESS=1` env var ile gerçek-zamanlı uzun versiyon.
 ///
 /// ## Simüle edilen aktivite (default profil ~4 saat compressed)
-/// - 20,000 chat mesajı (≈83/dk = yoğun yayın)
-/// - 500 etiket oluşturma (1 in 40 mesaj)
-/// - 50 print batch (10 etiket/batch ortalama)
-/// - 50 dekont (Payment.Insert + matcher)
-/// - 50 Shipment lifecycle (GetOrCreate + AttachLabels + ApplyDecision)
-/// - Customer-level: blacklist, cancel, backup promote
+/// - 200,000 chat mesajı (≈14/sn = çoklu platform yoğun yayın IG+YT+TT)
+/// - 5,000 etiket oluşturma (1 in 40 mesaj)
+/// - 200 print batch (yayın boyunca ortalama 1 dakikada bir)
+/// - 200 dekont (Payment.Insert + matcher)
+/// - 200 Shipment lifecycle (GetOrCreate + AttachLabels + ApplyDecision)
 /// - YT scraper crash döngüsü simülasyonu (backoff exercising)
 ///
 /// ## Doğrulamalar
@@ -67,23 +66,25 @@ public class LongBroadcastStressTest
         TimeSpan MaxDuration);
 
     private static Profile DefaultProfile() => new(
-        ChatMessages: 20_000,
-        Labels: 500,
-        PrintBatches: 50,
-        Payments: 50,
-        ShipmentCycles: 50,
-        YtScraperCrashes: 60,
-        MaxDuration: TimeSpan.FromMinutes(2));
+        // 4 saatlik çoklu-platform yoğun yayın: 14 mesaj/sn × 14,400 sn = ~200k
+        // (Instagram + YouTube + TikTok aynı ChatBus'a feed eder; toplam çok).
+        ChatMessages: 200_000,
+        Labels: 5_000,
+        PrintBatches: 200,
+        Payments: 200,
+        ShipmentCycles: 200,
+        YtScraperCrashes: 100,
+        MaxDuration: TimeSpan.FromMinutes(5));
 
     private static Profile LongRealtimeProfile() => new(
-        // 2 saat real-time pacing = 5/sn chat (36k mesaj), 5 dk'da bir print, vs.
-        ChatMessages: 36_000,
-        Labels: 800,
-        PrintBatches: 24,
-        Payments: 40,
-        ShipmentCycles: 40,
-        YtScraperCrashes: 30,
-        MaxDuration: TimeSpan.FromHours(2));
+        // 4 saat real-time pacing = ~14 mesaj/sn (200k). Manuel uzun test.
+        ChatMessages: 200_000,
+        Labels: 5_000,
+        PrintBatches: 240, // 4 saat × 60 dk = 240 dakika; her dakika 1 print
+        Payments: 100,
+        ShipmentCycles: 100,
+        YtScraperCrashes: 50,
+        MaxDuration: TimeSpan.FromHours(4));
 
     [Fact]
     public async Task Simulate_long_broadcast_no_leak_no_deadlock_no_perf_degradation()
