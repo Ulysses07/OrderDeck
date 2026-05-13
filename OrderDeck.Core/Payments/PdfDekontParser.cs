@@ -104,12 +104,30 @@ public sealed class PdfDekontParser
             // Vakıfbank: "GONDEREN ADSOYAD/UNVANERDAL TÖRE" — separator yok,
             // label sonrası direkt NAME (continuous text). Ö'süz "GONDEREN"
             // formu da kabul ediliyor.
-            @"G[OÖ]NDEREN\s+ADSOYAD(?:/UNVAN)?\s*([A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ\.\s]+?)(?=\s*(?:İŞLEM|IBAN|TR\d{2}|GONDEREN|ALICI|TUTAR|MASRAF|Tutar|$))"
+            @"G[OÖ]NDEREN\s+ADSOYAD(?:/UNVAN)?\s*([A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ\.\s]+?)(?=\s*(?:İŞLEM|IBAN|TR\d{2}|GONDEREN|ALICI|TUTAR|MASRAF|Tutar|$))",
+            // Vakıfbank FAST yeni format: "GÖNDEREN AD SOYAD /UNVAN242 GİYİM..."
+            // (slash öncesi/sonrası boşluklar). 2026-05-13.
+            @"G[ÖO]NDEREN\s+AD\s+SOYAD\s*/?\s*UNVAN\s*([A-ZÇĞİÖŞÜ0-9][A-ZÇĞİÖŞÜ0-9\.\s]+?)(?=\s*(?:ALICI|İŞLEM|IBAN|TR\d{2}|TUTAR|MASRAF|Tutar|FAST|$))",
+            // Kuveyt Türk continuous text: "GönderenKişiV2SPORMALZEMELERİTEKSTİL...Alıcı"
+            // PDF'te hiç boşluk yok, label sonrası direkt NAME, terminator "Alıcı"
+            // (alıcı bilgisi). Capture büyük/küçük harf karışık + UPPER+Türkçe.
+            @"G[öo]nderenKi[şs]i([A-ZÇĞİÖŞÜ][A-Za-zÇĞİıÖŞÜçğıöşü0-9\.]+?)(?=Al[ıi]c[ıi])",
+            // Garanti BBVA: "SAYINKUBİLAY ÇİFTÇİİZMİR DENİZ..." — "SAYIN" sonrası
+            // NAME, terminator şehir adı veya başka pattern. Sadece UPPER harfler.
+            @"SAYIN\s*([A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ\s]{2,}?)(?=\s*(?:İZMİR|İSTANBUL|ANKARA|ADANA|BURSA|ANTALYA|KONYA|GAZİANTEP|KAYSERİ|MERSİN|DİYARBAKIR|KARABAĞLAR|ÇANKAYA|ALACAKLI|FAST|MAH\.|CAD\.|SOK\.|NO:|KOMİSYON))",
+            // Denizbank: "Adı SoyadıLAMİA DİLEKVKN..." — colon yok, label sonrası
+            // direkt NAME (continuous text). Terminator VKN/TCKN/IBAN.
+            @"Ad[ıi]\s+Soyad[ıi]\s*([A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ\s]+?)(?=\s*(?:VKN|TCKN|IBAN|TR\d{2}|İşlem|Tutar|\$))",
+            // İş Bankası "document.pdf" format: "Bilgi DekontuİBRAHİM BARIN BESLEKMüşteri No"
+            @"Bilgi\s+Dekontu\s*([A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ\s]+?)(?=\s*(?:M[üu][şs]teri|TCKN|VKN|TC\s*Kimlik|İşlem|\$))",
+            // Ziraat e-Dekont FAST: "GÖNDEREN ADI      :NURSEL ATBAŞ"
+            // (Ziraat-spesifik, ID-bazlı yerine ADI label'i).
+            @"G[ÖO]NDEREN\s+ADI\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ\s]+?)(?=\s*(?:ÖDEMENİN|ALICI|İŞLEM|IBAN|TR\d{2}|GÖNDEREN|\$))"
         };
 
         foreach (var pattern in patterns)
         {
-            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
+            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
             if (match.Success)
             {
                 var name = match.Groups[1].Value.Trim();
@@ -143,12 +161,20 @@ public sealed class PdfDekontParser
             @"Havale\s*Tutar[ıi]?\s*[:\-]\s*([\d\.,]+)\s*(?:TL|TRY)?",
             // Vakıfbank: "İŞLEM TUTARI300,00 TL" — separator yok, label sonrası
             // direkt rakam. TL/TRY zorunlu çünkü "İŞLEM NO" + numeric'i yutmamalı.
-            @"\u0130[şS]LEM\s+TUTARI\s*([\d\.,]+)\s*(?:TL|TRY)"
+            @"\u0130[şS]LEM\s+TUTARI\s*([\d\.,]+)\s*(?:TL|TRY)",
+            // Kuveyt Türk continuous: "Tutar20.000,00TLYalnız..."
+            // (Boşluk yok, TL sonrası kelime boundary olmayabilir — pattern
+            // bunu \b yerine spesifik suffix lookahead ile çözer.)
+            @"Tutar\s*([\d\.,]+)\s*(?:TL|TRY)(?=Yaln[ıi]z|Yirmi|\s|[A-ZÇĞİÖŞÜ]{2,}|$)",
+            // Yapı Kredi e-Dekont FAST: "GİDEN FAST TUTARI :-35000" (negatif
+            // outgoing FAST, decimal yok). - işareti opsiyonel + abs alınır
+            // (caller mantıksal "ödenen tutar" pozitif). Boşluk padding olabilir.
+            @"GİDEN\s+FAST\s+TUTARI\s*:?\s*-?(\d+(?:[\.,]\d+)?)"
         };
 
         foreach (var pattern in labeledPatterns)
         {
-            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
+            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
             if (match.Success)
             {
                 var raw = match.Groups[1].Value;
@@ -213,7 +239,7 @@ public sealed class PdfDekontParser
 
         foreach (var pattern in labeledPatterns)
         {
-            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
+            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
             if (match.Success && TryParseTurkishDate(match.Groups[1].Value, out var date))
             {
                 return date;
@@ -262,7 +288,7 @@ public sealed class PdfDekontParser
 
         foreach (var pattern in dashAlphanumericPatterns)
         {
-            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
+            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
             if (match.Success)
             {
                 var value = match.Groups[1].Value.Trim();
@@ -281,12 +307,17 @@ public sealed class PdfDekontParser
             @"Transfer\s+(?:No|Numaras[ıi])\s*[:\-]?\s*(\d{6,32})",
             @"Onay\s+(?:No|Kodu|Numaras[ıi])\s*[:\-]?\s*(\d{6,32})",
             @"Sorgu\s+(?:No|Numaras[ıi])\s*[:\-]?\s*(\d{6,32})",
-            @"Fi[şsŞS]\s+(?:No|Numaras[ıi])\s*[:\-]?\s*(\d{6,32})"
+            @"Fi[şsŞS]\s+(?:No|Numaras[ıi])\s*[:\-]?\s*(\d{6,32})",
+            // Kuveyt Türk continuous: "SorguNumarası9360608İşlemReferansı..."
+            // boşluksuz label + numeric.
+            @"SorguNumaras[ıi]\s*(\d{6,32})",
+            // Garanti BBVA: "FAST REF NO      : 8794000212" (boşluklu)
+            @"FAST\s+REF\s+NO\s*[:\-]?\s*(\d{6,32})"
         };
 
         foreach (var pattern in numericPatterns)
         {
-            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
+            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
             if (match.Success)
             {
                 var value = match.Groups[1].Value.Trim();
@@ -304,7 +335,7 @@ public sealed class PdfDekontParser
 
         foreach (var pattern in alphanumericPatterns)
         {
-            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
+            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
             if (match.Success)
             {
                 var value = match.Groups[1].Value.Trim();
@@ -340,6 +371,20 @@ public sealed class PdfDekontParser
             // Vakıfbank: "ALICI AD SOYAD/UNVANKIRŞEHİR AHİ EVRAN ÜNİVERSİTESİ..."
             // separator yok, label sonrası direkt uppercase NAME.
             @"ALICI\s+AD\s+SOYAD(?:/UNVAN)?\s*([A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ\.\s]+?)(?=\s*(?:GONDEREN|G[OÖ]NDEREN|ALICI|İŞLEM|İSLEM|IBAN|TR\d{2}|TUTAR|HESAP|MASRAF|$))",
+            // Kuveyt Türk continuous: "AlıcıRıdvanÖzcanGönderilenIBAN..."
+            // "Alıcı" sonrası direkt NAME (mixed case + Türkçe), terminator
+            // "Gönderilen" veya "AlıcıBanka" veya benzeri.
+            @"Al[ıi]c[ıi]([A-ZÇĞİÖŞÜ][A-Za-zÇĞİıÖŞÜçğıöşü0-9\.]+?)(?=G[öo]nderilen|Al[ıi]c[ıi]Banka|TR\d{2}|İşlemYeri|Açıklama)",
+            // Garanti BBVA: "ALACAKLI : RIDVAN ÖZCANALACAKLI IBAN : TR48..."
+            @"ALACAKLI\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ\s]+?)(?=\s*(?:ALACAKLI|IBAN|TR\d{2}|FAST|KOMİSYON|MASRAF|İŞLEM|\$))",
+            // Denizbank: "Alıcı Adı SoyadıRIDVAN ÖZCANTutar..."
+            @"Al[ıi]c[ıi]\s+Ad[ıi]\s+Soyad[ıi]\s*([A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ\s]+?)(?=\s*(?:Tutar|Masraf|VKN|IBAN|TR\d{2}|İşlem|\$))",
+            // İş Bankası "document.pdf": "Alıcı Isim\Unvan:RIDVAN ÖZCAN"
+            // (backslash separator). Sub-label "Isim\Unvan" İş Bank-spesifik.
+            @"Al[ıi]c[ıi]\s+Isim\\?Unvan\s*[:\-]\s*([A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ\s\.]+?)(?=\s*(?:BSMV|Bilgi|İŞLEM|TUTAR|IBAN|TR\d{2}|\$))",
+            // Yapı Kredi e-Dekont FAST: "ALICI ADI         :EMAR GLOBAL TEKSTİL..."
+            // Boşluk padding + colon. Terminator ALICI TCKN veya AÇIKLAMA.
+            @"ALICI\s+ADI\s*[:\-]\s*([A-ZÇĞİÖŞÜ0-9][A-ZÇĞİÖŞÜ0-9\.\s]+?)(?=\s*(?:ALICI\s+TCKN|ALICI\s+VD|ALICI\s+VKN|AÇIKLAMA|YUKARIDAKİ|İŞLEM|MESAJ|KOLAY|\$))",
             // Inline: "Alıcı : NAME ... IBAN ..." veya Ziraat:
             // "Alıcı : NAME Alıcı Hesap : ..." / "Alıcı : NAME İşlem Tutarı : ..."
             // Lookahead'a "Al[ıi]c[ıi]\s+Hesap" + "İşlem|Tutar|Hesap|Komisyon"
@@ -349,7 +394,7 @@ public sealed class PdfDekontParser
 
         foreach (var pattern in patterns)
         {
-            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
+            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
             if (match.Success)
             {
                 var name = Regex.Replace(match.Groups[1].Value.Trim(), @"\s+", " ");
@@ -410,6 +455,18 @@ public sealed class PdfDekontParser
             // Vakıfbank: "ALICI HESAP NOTR54 0001 5001 5800 73168592 23" —
             // separator yok, label sonrası direkt TR-IBAN.
             @"ALICI\s+HESAP\s+NO\s*(TR\d{2}[\s\d]{20,30})",
+            // Vakıfbank yeni FAST format (2026-05-13): "ALICI HESAP NO / IBANTR43..."
+            @"ALICI\s+HESAP\s+NO\s*/\s*IBAN\s*(TR\d{2}[\s\d]{20,30})",
+            // Kuveyt Türk continuous: "GönderilenIBANTR480011..."
+            @"G[öo]nderilenIBAN\s*(TR\d{2}[\s\d]{20,30})",
+            // Garanti BBVA: "ALACAKLI IBAN : TR48 0011 1000 0000 0107 0201 32"
+            @"ALACAKLI\s+IBAN\s*[:\-]\s*(TR\d{2}[\s\d]{20,30})",
+            // Denizbank + İş Bankası: "Alıcı IBANTR48..." (no colon) veya
+            // "Alıcı IBAN:TR48..." (colon var). Explicit Al[ıi]c[ıi] char class —
+            // RegexOptions.IgnoreCase | RegexOptions.CultureInvariant + Turkish I/ı/İ culture quirk'i etrafında
+            // dolaşmak için (CI invariant culture'da uppercase "ALICI" pattern'i
+            // "Alıcı"ya match etmiyor; lokalde tr-TR'de ediyor).
+            @"Al[ıi]c[ıi]\s+IBAN\s*[:\-]?\s*(TR\d{2}[\s\d]{20,30})",
             // Title-case Alıcı + section ile IBAN
             @"Al[ıi]c[ıi]\s*[:\-].{0,200}?IBAN(?:/Hesap\s*No)?\s*[:\-]\s*(TR\d{2}[\s\d]{20,30})",
             // Inline "Alıcı : NAME ... IBAN: TR..."
@@ -418,7 +475,7 @@ public sealed class PdfDekontParser
 
         foreach (var pattern in patterns)
         {
-            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase);
+            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
             if (match.Success)
             {
                 // Whitespace çıkar, normalize et
