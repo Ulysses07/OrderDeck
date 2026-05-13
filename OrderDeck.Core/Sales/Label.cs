@@ -51,4 +51,8 @@ public sealed record Label(
     /// dosyasına bağlı. Null = henüz hiçbir Shipment'a attach edilmemiş (eski
     /// satırlar veya PR-C öncesi yeni satırlar). ShipmentService attach
     /// edince doldurulur, Shipped olunca FK korunur (audit için).</summary>
-    string? ShipmentId = null);
+    string? ShipmentId = null,
+    /// <summary>PR siparis-sync (2026-05-13): LicenseServer'a son sync zamanı.
+    /// Null = outbox'ta. State mutation (MarkPrinted/Cancel/UpdatePrice)
+    /// sonrası null'a düşer → bir sonraki tick'te tekrar push.</summary>
+    long? SyncedAt = null);

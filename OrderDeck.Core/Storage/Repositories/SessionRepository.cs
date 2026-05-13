@@ -14,8 +14,8 @@ public sealed class SessionRepository
     {
         using var conn = _factory.Open();
         conn.Execute(
-            @"INSERT INTO StreamSession(Id, Title, StartedAt, EndedAt, Platforms, Notes)
-              VALUES(@Id, @Title, @StartedAt, @EndedAt, @Platforms, @Notes)",
+            @"INSERT INTO StreamSession(Id, Title, StartedAt, EndedAt, Platforms, Notes, SyncedAt)
+              VALUES(@Id, @Title, @StartedAt, @EndedAt, @Platforms, @Notes, @SyncedAt)",
             new
             {
                 session.Id,
@@ -23,22 +23,50 @@ public sealed class SessionRepository
                 session.StartedAt,
                 session.EndedAt,
                 Platforms = JsonSerializer.Serialize(session.Platforms),
-                session.Notes
+                session.Notes,
+                session.SyncedAt
             });
     }
 
     public void End(string id, long endedAt)
     {
         using var conn = _factory.Open();
-        conn.Execute("UPDATE StreamSession SET EndedAt=@endedAt WHERE Id=@id",
+        // State değişikliği → SyncedAt NULL'a düşür ki sonraki tick'te push olsun.
+        conn.Execute(
+            "UPDATE StreamSession SET EndedAt=@endedAt, SyncedAt=NULL WHERE Id=@id",
             new { id, endedAt });
+    }
+
+    /// <summary>
+    /// PR siparis-sync (2026-05-13): henüz LicenseServer'a push edilmemiş
+    /// session'lar. Outbox query.
+    /// </summary>
+    public System.Collections.Generic.IReadOnlyList<StreamSession> GetUnsynced(int limit = 50)
+    {
+        using var conn = _factory.Open();
+        var rows = SqlMapper.Query<Row>(conn,
+            @"SELECT Id, Title, StartedAt, EndedAt, Platforms, Notes, SyncedAt
+              FROM StreamSession
+              WHERE SyncedAt IS NULL
+              ORDER BY StartedAt
+              LIMIT @limit",
+            new { limit }).ToList();
+        return rows.Select(Map).ToList();
+    }
+
+    /// <summary>Push başarılı sonrası SyncedAt'i set eder.</summary>
+    public void MarkSynced(string id, long syncedAt)
+    {
+        using var conn = _factory.Open();
+        conn.Execute("UPDATE StreamSession SET SyncedAt=@syncedAt WHERE Id=@id",
+            new { id, syncedAt });
     }
 
     public StreamSession? GetActive()
     {
         using var conn = _factory.Open();
         var row = conn.QueryFirstOrDefault<Row>(
-            "SELECT Id, Title, StartedAt, EndedAt, Platforms, Notes " +
+            "SELECT Id, Title, StartedAt, EndedAt, Platforms, Notes, SyncedAt " +
             "FROM StreamSession WHERE EndedAt IS NULL ORDER BY StartedAt DESC LIMIT 1");
         return row is null ? null : Map(row);
     }
@@ -47,7 +75,7 @@ public sealed class SessionRepository
     {
         using var conn = _factory.Open();
         var row = conn.QueryFirstOrDefault<Row>(
-            "SELECT Id, Title, StartedAt, EndedAt, Platforms, Notes " +
+            "SELECT Id, Title, StartedAt, EndedAt, Platforms, Notes, SyncedAt " +
             "FROM StreamSession WHERE Id=@id", new { id });
         return row is null ? null : Map(row);
     }
@@ -57,7 +85,7 @@ public sealed class SessionRepository
     {
         using var conn = _factory.Open();
         var row = conn.QueryFirstOrDefault<Row>(
-            @"SELECT Id, Title, StartedAt, EndedAt, Platforms, Notes
+            @"SELECT Id, Title, StartedAt, EndedAt, Platforms, Notes, SyncedAt
               FROM StreamSession
               WHERE EndedAt IS NOT NULL
               ORDER BY EndedAt DESC
@@ -69,7 +97,7 @@ public sealed class SessionRepository
     {
         using var conn = _factory.Open();
         var rows = Dapper.SqlMapper.Query<Row>(conn,
-            @"SELECT Id, Title, StartedAt, EndedAt, Platforms, Notes
+            @"SELECT Id, Title, StartedAt, EndedAt, Platforms, Notes, SyncedAt
               FROM StreamSession
               WHERE EndedAt IS NOT NULL
               ORDER BY StartedAt DESC
@@ -81,7 +109,8 @@ public sealed class SessionRepository
     private static StreamSession Map(Row r) => new(
         r.Id, r.Title, r.StartedAt, r.EndedAt,
         JsonSerializer.Deserialize<string[]>(r.Platforms ?? "[]") ?? System.Array.Empty<string>(),
-        r.Notes);
+        r.Notes,
+        r.SyncedAt);
 
     private sealed class Row
     {
@@ -91,5 +120,6 @@ public sealed class SessionRepository
         public long? EndedAt { get; init; }
         public string? Platforms { get; init; }
         public string? Notes { get; init; }
+        public long? SyncedAt { get; init; }
     }
 }
