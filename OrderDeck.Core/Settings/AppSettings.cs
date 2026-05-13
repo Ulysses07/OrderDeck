@@ -27,6 +27,11 @@ public sealed class AppSettings
     /// sonra güncellenen mobile onay/red sonuçlarını çekiyor. İlk run'da null.</summary>
     public DateTimeOffset? LastPaymentReverseSync { get; set; }
 
+    /// <summary>Shipment sync (PR-D, 2026-05-13): kümülatif kargo reverse-sync
+    /// cursor. WPF authoritative olduğu için pull nadiren çalışır, ama
+    /// cursor advance edilir.</summary>
+    public DateTimeOffset? LastShipmentReverseSync { get; set; }
+
     /// <summary>Phase 4g: WhatsApp ödeme isteme yapılandırması.</summary>
     public PaymentSettings Payment { get; set; } = new();
 

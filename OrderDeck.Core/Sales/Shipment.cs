@@ -18,7 +18,12 @@ public sealed record Shipment(
     long CreatedAt,
     long? HeldAt,
     long? ShippedAt,
-    decimal CumulativeAmount);
+    decimal CumulativeAmount,
+    /// <summary>PR-D (2026-05-13): LicenseServer'a son sync zamanı.
+    /// Null = outbox'ta, henüz push edilmedi. Service push sonrası
+    /// MarkSynced ile doldurur. Local mutation (AttachLabels, ApplyDecision)
+    /// sonra null'a döndürülür → bir sonraki tick'te yeniden push.</summary>
+    long? SyncedAt = null);
 
 /// <summary>
 /// Shipment yaşam döngüsü. Geçişler:

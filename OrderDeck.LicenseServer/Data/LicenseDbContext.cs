@@ -25,6 +25,7 @@ public class LicenseDbContext : DbContext
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<PushDevice> PushDevices => Set<PushDevice>();
     public DbSet<Payment> Payments => Set<Payment>();
+    public DbSet<Shipment> Shipments => Set<Shipment>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -204,6 +205,23 @@ public class LicenseDbContext : DbContext
             b.HasIndex(p => new { p.LicenseId, p.Status, p.CreatedAt });
             // Kargo PR E: mobile Panel "Bekleyen kargolar" / "Alıcı ödemeli" tab filtreleri.
             b.HasIndex(p => new { p.LicenseId, p.ShipmentDirective, p.Status });
+        });
+
+        // Kümülatif kargo PR-D (2026-05-13): WPF lokal Shipment'ların server replikası.
+        mb.Entity<Shipment>(b =>
+        {
+            b.HasKey(s => s.Id);
+            b.Property(s => s.CustomerId).HasMaxLength(64).IsRequired();
+            b.Property(s => s.CumulativeAmount).HasPrecision(18, 2);
+            b.Property(s => s.Status).HasConversion<int>();
+            b.HasOne(s => s.License).WithMany()
+                .HasForeignKey(s => s.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            // Mobile Panel "Bekleyen kargolar" / "Alıcı ödemeli" tab filtreleri.
+            b.HasIndex(s => new { s.LicenseId, s.Status, s.CreatedAt });
+            // Customer detay query (müşterinin tüm kargo dosyaları).
+            b.HasIndex(s => new { s.LicenseId, s.CustomerId });
+            // Reverse sync cursor.
+            b.HasIndex(s => new { s.LicenseId, s.UpdatedAt });
         });
 
         // Seed SKUs
