@@ -2,11 +2,13 @@
 
 İlk yayına alma için adım adım kılavuz. Marketing sitesini canlıya çıkarır, mevcut `license.orderdeckapp.com` akışını bozmaz.
 
-> **Önce localde**: `web/` değişiklikleri commit'lenmiş ve master'a push'lanmış olmalı. VPS `git pull` ile en son hali çekecek.
+> **Güncel durum (2026-05-13)**: Site canlı. `web/` master'a push edildiğinde `.github/workflows/web-deploy.yml` otomatik build + rsync + smoke test yapar. Bu doc **ilk kurulum + sorun giderme** için referans. Rutin deploy'lar manuel adım gerektirmez.
 
 ## 1. VPS IP'sini öğren
 
-Hostinger hPanel → VPS → "Sunucu Bilgileri" / "Server Info" altında **IPv4** adresi yazıyor. Aşağıda `<VPS_IP>` olarak referans veriyorum (örn. `185.x.x.x`).
+Hostinger hPanel → VPS → "Sunucu Bilgileri" / "Server Info" altında **IPv4** adresi yazıyor. Aşağıda `<VPS_IP>` olarak referans veriyorum.
+
+**Mevcut prod VPS**: `72.62.53.86` (Hostinger, Hostname `license`). Bu doc'taki örneklerde `<VPS_IP>` yerine bunu kullanabilirsin.
 
 ```bash
 # Lokalden test:
@@ -85,7 +87,7 @@ cp -r /opt/orderdeck.bak/deploy/backups /opt/orderdeck/deploy/   # backup'lar
 ## 6. web-out klasörünü oluştur
 
 ```bash
-mkdir -p /opt/orderdeck/deploy/web-out
+mkdir -p /opt/orderdeck/web-out
 ```
 
 Bu klasör `docker-compose.yml`'de Caddy container'ına `:/srv/web:ro` olarak bind-mount edilmiş; içine statik HTML kopyalayacağız.
@@ -100,7 +102,7 @@ cd C:/Users/burak/source/repos/LiveDeck
 rsync -avz --delete-after \
   -e "ssh" \
   web/out/ \
-  root@<VPS_IP>:/opt/orderdeck/deploy/web-out/
+  root@<VPS_IP>:/opt/orderdeck/web-out/
 ```
 
 Rsync yoksa (saf Windows PowerShell), alternatif olarak `scp` ile tar paketi gönder:
@@ -113,23 +115,23 @@ scp out.tgz root@<VPS_IP>:/tmp/
 
 # VPS:
 ssh root@<VPS_IP>
-rm -rf /opt/orderdeck/deploy/web-out/*
-tar -xzf /tmp/out.tgz -C /opt/orderdeck/deploy/web-out/
+rm -rf /opt/orderdeck/web-out/*
+tar -xzf /tmp/out.tgz -C /opt/orderdeck/web-out/
 rm /tmp/out.tgz
 ```
 
 Doğrulama (VPS'te):
 ```bash
-ls /opt/orderdeck/deploy/web-out/
+ls /opt/orderdeck/web-out/
 # index.html, en/, blog/, gizlilik-politikasi/, ... görünmeli
-cat /opt/orderdeck/deploy/web-out/index.html | head -20
+cat /opt/orderdeck/web-out/index.html | head -20
 # Next.js'in HTML çıktısı olmalı
 ```
 
 ## 8. Caddy'i yeniden başlat (yeni Caddyfile + bind mount yüklensin)
 
 ```bash
-cd /opt/orderdeck/deploy
+cd /opt/orderdeck
 docker compose up -d caddy --force-recreate
 docker compose logs --tail 50 caddy
 ```
