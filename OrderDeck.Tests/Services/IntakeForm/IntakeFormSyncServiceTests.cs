@@ -110,4 +110,52 @@ public sealed class IntakeFormSyncServiceTests
         var customer = repo.Search("alice", limit: 5).Single(c => c.Platform == "form");
         customer.Phone.Should().Be("+905551111111");
     }
+
+    // ── UI freeze fix #1 (2026-05-13): auth failure flag ──────────────────
+
+    [Fact]
+    public async Task SyncOnceAsync_sets_LastSyncWasAuthFailure_on_401()
+    {
+        var (svc, _, _, _) = Build(_ => FakeHttpMessageHandler.Json(401,
+            "{\"error\":\"invalid_credentials\",\"message\":\"E-posta veya şifre yanlış\"}"));
+
+        await svc.SyncOnceAsync();
+
+        svc.LastSyncWasAuthFailure.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task SyncOnceAsync_clears_LastSyncWasAuthFailure_on_success()
+    {
+        bool firstCall = true;
+        Func<HttpRequestMessage, HttpResponseMessage> responder = _ =>
+        {
+            if (firstCall)
+            {
+                firstCall = false;
+                return FakeHttpMessageHandler.Json(401,
+                    "{\"error\":\"invalid_credentials\",\"message\":\"err\"}");
+            }
+            return FakeHttpMessageHandler.Json(200, "[]");
+        };
+        var (svc, _, _, _) = Build(responder);
+
+        await svc.SyncOnceAsync();
+        svc.LastSyncWasAuthFailure.Should().BeTrue();
+
+        await svc.SyncOnceAsync();
+        svc.LastSyncWasAuthFailure.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SyncOnceAsync_does_not_set_auth_flag_on_network_failure()
+    {
+        // Generic HttpRequestException ≠ auth failure; flag false kalmalı
+        var (svc, _, _, _) = Build(_ => throw new HttpRequestException("dns fail"));
+
+        try { await svc.SyncOnceAsync(); }
+        catch { /* network errors propagate, OK */ }
+
+        svc.LastSyncWasAuthFailure.Should().BeFalse();
+    }
 }

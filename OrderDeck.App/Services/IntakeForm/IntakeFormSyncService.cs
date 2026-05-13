@@ -39,6 +39,13 @@ public sealed class IntakeFormSyncService
         _log = log;
     }
 
+    /// <summary>
+    /// UI freeze fix (2026-05-13): consecutive auth-failure tracking. 25 art arda
+    /// 401 her 2 dk = exception storm UI thread'i etkiliyor. Auth hatasında
+    /// hosted service backoff arttırsın diye flag expose ediyor.
+    /// </summary>
+    public bool LastSyncWasAuthFailure { get; private set; }
+
     public async Task<int> SyncOnceAsync(CancellationToken ct = default)
     {
         var since = _settings.LastIntakeFormSync;
@@ -47,9 +54,20 @@ public sealed class IntakeFormSyncService
         try
         {
             submissions = await _api.GetFormSubmissionsAsync(since, limit: 50, ct);
+            LastSyncWasAuthFailure = false;
+        }
+        catch (InvalidCredentialsException ex)
+        {
+            // Auth token expired — bir sonraki login'e kadar denemek log spam'i
+            // ve exception storm yaratıyor. Hosted service'e flag ile bildir,
+            // backoff aralığını uzatsın.
+            LastSyncWasAuthFailure = true;
+            _log.LogWarning(ex, "Intake form sync auth failed: {Code} (backing off)", ex.Code);
+            return 0;
         }
         catch (LicenseApiException ex)
         {
+            LastSyncWasAuthFailure = false;
             _log.LogWarning(ex, "Intake form sync failed: {Code}", ex.Code);
             return 0;
         }

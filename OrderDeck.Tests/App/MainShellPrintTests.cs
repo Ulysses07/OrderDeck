@@ -181,7 +181,7 @@ public class MainShellPrintTests
     }
 
     [Fact]
-    public void Print_with_no_selection_prints_all_and_empties_queue()
+    public async Task Print_with_no_selection_prints_all_and_empties_queue()
     {
         var (vm, printer, db) = Fx();
         using var _ = db;
@@ -190,7 +190,8 @@ public class MainShellPrintTests
         Enqueue(vm, "@b", 200);
         Enqueue(vm, "@c", 300);
 
-        vm.PrintCommand.Execute(null);
+        // PrintCommand artık async (UI freeze fix 2026-05-13) — ExecuteAsync await edilir.
+        await vm.PrintCommand.ExecuteAsync(null);
 
         printer.Calls.Should().HaveCount(1);
         printer.Calls[0].Should().HaveCount(3);
@@ -199,7 +200,7 @@ public class MainShellPrintTests
     }
 
     [Fact]
-    public void Print_with_partial_selection_prints_selected_only_and_keeps_remainder()
+    public async Task Print_with_partial_selection_prints_selected_only_and_keeps_remainder()
     {
         var (vm, printer, db) = Fx();
         using var _ = db;
@@ -212,7 +213,7 @@ public class MainShellPrintTests
         vm.SelectedQueueItems.Add(vm.PrintQueue[0]);
         vm.SelectedQueueItems.Add(vm.PrintQueue[2]);
 
-        vm.PrintCommand.Execute(null);
+        await vm.PrintCommand.ExecuteAsync(null);
 
         printer.Calls.Should().HaveCount(1);
         printer.Calls[0].Should().HaveCount(2);

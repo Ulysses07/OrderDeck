@@ -525,7 +525,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         ReloadQueueFromActiveSession();
     }
 
-    [RelayCommand(CanExecute = nameof(CanWrite))] private void EndStream()
+    [RelayCommand(CanExecute = nameof(CanWrite))] private async Task EndStream()
     {
         var session = _sessions.GetActive();
         if (session is null) return;
@@ -543,7 +543,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
         if (PrintQueue.Count > 0)
         {
-            try { Print(); }
+            try { await Print(); }
             catch (Exception ex)
             {
                 MessageBox.Show($"Yazdırma sırasında hata oluştu, yine de yayını bitiriyorum:\n{ex.Message}",
@@ -664,7 +664,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     }
 
     [RelayCommand(CanExecute = nameof(CanWrite))]
-    private void Print()
+    private async Task Print()
     {
         var snapshot = SelectedQueueItems.Count > 0
             ? SelectedQueueItems.ToList()
@@ -679,7 +679,26 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         // N+1 önlemi).
         var recipientPaysIds = ComputeRecipientPaysLabelIds(labels);
 
-        _printer.Print(labels, recipientPaysIds);
+        // UI freeze fix (2026-05-13): _printer.Print() System.Drawing.Printing
+        // PrintDocument.Print()'i sync çağırıyor → printer driver/spooler
+        // asılırsa UI thread süresiz block olur. Task.Run ile background'a al.
+        // Süre LabelPrinter kendi log'unda görünür; burada sadece hata
+        // gösteren MessageBox.
+        try
+        {
+            await Task.Run(() => _printer.Print(labels, recipientPaysIds));
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show(
+                $"Etiket yazdırma başarısız: {ex.Message}\n\n" +
+                "Yazıcı bağlantısını kontrol et veya Ayarlar > Yazıcı'dan farklı bir yazıcı seç.",
+                "Yazdırma Hatası",
+                System.Windows.MessageBoxButton.OK,
+                System.Windows.MessageBoxImage.Warning);
+            return;
+        }
+
         _labels.MarkPrintedAndRecord(labels.Select(l => l.Id).ToList());
 
         // Sadece yazdırılanları kuyruktan kaldır (smart mode'da kalan seçimsizler korunur).
