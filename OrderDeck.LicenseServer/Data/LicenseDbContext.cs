@@ -28,6 +28,7 @@ public class LicenseDbContext : DbContext
     public DbSet<Shipment> Shipments => Set<Shipment>();
     public DbSet<StreamSession> StreamSessions => Set<StreamSession>();
     public DbSet<Order> Orders => Set<Order>();
+    public DbSet<OperatorUser> OperatorUsers => Set<OperatorUser>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -245,6 +246,20 @@ public class LicenseDbContext : DbContext
             b.HasIndex(o => new { o.LicenseId, o.CustomerId });
             // Reverse-sync cursor.
             b.HasIndex(o => new { o.LicenseId, o.UpdatedAt });
+        });
+
+        // Multi-operator PR-5 (2026-05-14): yayıncı ekibinin ek üyeleri.
+        mb.Entity<OperatorUser>(b =>
+        {
+            b.HasKey(o => o.Id);
+            b.Property(o => o.Email).HasMaxLength(256).IsRequired();
+            b.Property(o => o.Name).HasMaxLength(200).IsRequired();
+            b.Property(o => o.PasswordHash).HasMaxLength(256).IsRequired();
+            b.Property(o => o.Role).HasMaxLength(16).IsRequired();
+            b.HasOne(o => o.License).WithMany()
+                .HasForeignKey(o => o.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            // Aynı License altında aynı email'den ikinci kayıt olmasın.
+            b.HasIndex(o => new { o.LicenseId, o.Email }).IsUnique();
         });
 
         // Kümülatif kargo PR-D (2026-05-13): WPF lokal Shipment'ların server replikası.
