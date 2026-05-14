@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Push;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -25,10 +26,17 @@ namespace OrderDeck.LicenseServer.Controllers.Licenses;
 public sealed class LicensesPaymentsSyncController : ControllerBase
 {
     private readonly LicenseDbContext _db;
+    private readonly INotificationSender _push;
+    private readonly ILogger<LicensesPaymentsSyncController> _log;
 
-    public LicensesPaymentsSyncController(LicenseDbContext db)
+    public LicensesPaymentsSyncController(
+        LicenseDbContext db,
+        INotificationSender push,
+        ILogger<LicensesPaymentsSyncController> log)
     {
         _db = db;
+        _push = push;
+        _log = log;
     }
 
     public sealed record SyncPaymentItem(
@@ -79,6 +87,8 @@ public sealed class LicensesPaymentsSyncController : ControllerBase
             .Where(p => p.LicenseId == licenseId && ids.Contains(p.Id))
             .ToDictionaryAsync(p => p.Id, ct);
 
+        var newPendingPayments = new List<(string PayerName, decimal Amount)>();
+
         foreach (var item in req.Payments)
         {
             var directive = ParseDirective(item.ShipmentDirective);
@@ -113,10 +123,34 @@ public sealed class LicensesPaymentsSyncController : ControllerBase
                     CreatedAt = now,
                     UpdatedAt = now
                 });
+                newPendingPayments.Add((item.PayerName, item.Amount));
             }
         }
 
         await _db.SaveChangesAsync(ct);
+
+        // Yeni gelen pending dekontlar için fan-out. Push hatası sync'i bozmaz.
+        if (newPendingPayments.Count > 0)
+        {
+            try
+            {
+                var (title, body) = BuildPaymentNotification(newPendingPayments);
+                await _push.SendToCustomerAsync(
+                    customerId, title, body,
+                    new Dictionary<string, string>
+                    {
+                        ["type"] = "payment",
+                        ["licenseId"] = licenseId.ToString(),
+                        ["count"] = newPendingPayments.Count.ToString()
+                    }, ct);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex,
+                    "Push send failed for new payments (license={LicenseId}, count={Count})",
+                    licenseId, newPendingPayments.Count);
+            }
+        }
 
         // Echo server-authoritative status back so the WPF can update its
         // local copy (e.g. picked up an approval that landed between push
@@ -163,6 +197,23 @@ public sealed class LicensesPaymentsSyncController : ControllerBase
             .ToListAsync(ct);
 
         return Ok(rows);
+    }
+
+    /// <summary>
+    /// Push notification metni. Tek dekont → "Ali Veli, 250,00 ₺", çoklu →
+    /// "3 yeni dekont, toplam 750,00 ₺". TR currency formatlı.
+    /// </summary>
+    public static (string Title, string Body) BuildPaymentNotification(
+        IReadOnlyList<(string PayerName, decimal Amount)> items)
+    {
+        var tr = System.Globalization.CultureInfo.GetCultureInfo("tr-TR");
+        if (items.Count == 1)
+        {
+            var p = items[0];
+            return ("Yeni dekont", $"{p.PayerName} — {p.Amount.ToString("N2", tr)} ₺");
+        }
+        var total = items.Sum(p => p.Amount);
+        return ("Yeni dekont", $"{items.Count} yeni dekont, toplam {total.ToString("N2", tr)} ₺");
     }
 
     /// <summary>Kargo PR E: client'tan gelen directive string'i enum'a parse eder.

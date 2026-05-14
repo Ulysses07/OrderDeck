@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Push;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -17,10 +18,17 @@ namespace OrderDeck.LicenseServer.Controllers.Licenses;
 public sealed class LicensesSessionsSyncController : ControllerBase
 {
     private readonly LicenseDbContext _db;
+    private readonly INotificationSender _push;
+    private readonly ILogger<LicensesSessionsSyncController> _log;
 
-    public LicensesSessionsSyncController(LicenseDbContext db)
+    public LicensesSessionsSyncController(
+        LicenseDbContext db,
+        INotificationSender push,
+        ILogger<LicensesSessionsSyncController> log)
     {
         _db = db;
+        _push = push;
+        _log = log;
     }
 
     // ─── Session sync ─────────────────────────────────────────────────
@@ -62,6 +70,8 @@ public sealed class LicensesSessionsSyncController : ControllerBase
             .Where(s => s.LicenseId == licenseId && ids.Contains(s.Id))
             .ToDictionaryAsync(s => s.Id, ct);
 
+        var newLiveSessions = new List<(string? Title, string Platforms)>();
+
         foreach (var item in req.Sessions)
         {
             if (existing.TryGetValue(item.Id, out var current))
@@ -85,10 +95,40 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                     Notes = item.Notes,
                     UpdatedAt = now
                 });
+                // Sadece henüz bitmemiş (canlı) yeni session için notify.
+                if (item.EndedAt is null)
+                    newLiveSessions.Add((item.Title, item.Platforms));
             }
         }
 
         await _db.SaveChangesAsync(ct);
+
+        if (newLiveSessions.Count > 0)
+        {
+            try
+            {
+                foreach (var s in newLiveSessions)
+                {
+                    var title = "Yayın başladı";
+                    var body = string.IsNullOrWhiteSpace(s.Title)
+                        ? $"Platform: {s.Platforms}"
+                        : s.Title!;
+                    await _push.SendToCustomerAsync(
+                        customerId, title, body,
+                        new Dictionary<string, string>
+                        {
+                            ["type"] = "session-started",
+                            ["licenseId"] = licenseId.ToString()
+                        }, ct);
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex,
+                    "Push send failed for new sessions (license={LicenseId}, count={Count})",
+                    licenseId, newLiveSessions.Count);
+            }
+        }
 
         var echoed = await _db.StreamSessions
             .Where(s => s.LicenseId == licenseId && ids.Contains(s.Id))
@@ -151,6 +191,8 @@ public sealed class LicensesSessionsSyncController : ControllerBase
             .Where(o => o.LicenseId == licenseId && ids.Contains(o.Id))
             .ToDictionaryAsync(o => o.Id, ct);
 
+        var newPrintedOrders = new List<decimal>();
+
         foreach (var item in req.Orders)
         {
             if (existing.TryGetValue(item.Id, out var current))
@@ -190,10 +232,42 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                     IsTentativeBackup = item.IsTentativeBackup,
                     UpdatedAt = now
                 });
+                // Sadece basılmış (printed), iptal değil, kargo ücreti değil,
+                // backup değil order'ları gerçek satış olarak say. Chat akışı
+                // üst limit basma operasyonu — sayım yeterli, push'ı spam'lemez.
+                if (item.PrintedAt is not null
+                    && item.CancelledAt is null
+                    && !item.IsShippingFee
+                    && !item.IsTentativeBackup)
+                {
+                    newPrintedOrders.Add(item.Price);
+                }
             }
         }
 
         await _db.SaveChangesAsync(ct);
+
+        if (newPrintedOrders.Count > 0)
+        {
+            try
+            {
+                var (title, body) = BuildOrderNotification(newPrintedOrders);
+                await _push.SendToCustomerAsync(
+                    customerId, title, body,
+                    new Dictionary<string, string>
+                    {
+                        ["type"] = "orders",
+                        ["licenseId"] = licenseId.ToString(),
+                        ["count"] = newPrintedOrders.Count.ToString()
+                    }, ct);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex,
+                    "Push send failed for new orders (license={LicenseId}, count={Count})",
+                    licenseId, newPrintedOrders.Count);
+            }
+        }
 
         var echoed = await _db.Orders
             .Where(o => o.LicenseId == licenseId && ids.Contains(o.Id))
@@ -207,6 +281,19 @@ public sealed class LicensesSessionsSyncController : ControllerBase
             .ToListAsync(ct);
 
         return Ok(echoed);
+    }
+
+    /// <summary>
+    /// Order batch notification metni. Spam'i azaltmak için her zaman
+    /// "N yeni sipariş — X TL" özet formatı kullanılır (tek order olsa bile).
+    /// </summary>
+    public static (string Title, string Body) BuildOrderNotification(
+        IReadOnlyList<decimal> prices)
+    {
+        var tr = System.Globalization.CultureInfo.GetCultureInfo("tr-TR");
+        var total = prices.Sum();
+        return ("Yeni sipariş",
+            $"{prices.Count} yeni sipariş, toplam {total.ToString("N2", tr)} ₺");
     }
 
     private Guid GetCustomerId()
