@@ -93,6 +93,22 @@ public class Program
         builder.Services.AddScoped<BackupRetentionService>();
         builder.Services.AddScoped<BackupViewerService>();
 
+        // Push notifications (PR #51 — 2026-05-14). Stub provider varsayılan;
+        // FCM/APNS impl Faz 2'de eklendiğinde config switch ile aktive edilir.
+        // Provider: appsettings.json "OrderDeck:Push:Provider" = "stub" | "fcm"
+        var pushProvider = builder.Configuration["OrderDeck:Push:Provider"] ?? "stub";
+        if (pushProvider.Equals("stub", StringComparison.OrdinalIgnoreCase))
+        {
+            builder.Services.AddScoped<
+                OrderDeck.LicenseServer.Services.Push.INotificationSender,
+                OrderDeck.LicenseServer.Services.Push.StubNotificationSender>();
+        }
+        else
+        {
+            throw new InvalidOperationException(
+                $"Unsupported push provider: {pushProvider}. Only 'stub' is implemented (Faz 1).");
+        }
+
         // JWT auth — two schemes (use IOptions so tests can override Jwt:SecretKey via config)
         builder.Services.AddAuthentication()
             .AddJwtBearer("Bearer-Customer", _ => { })

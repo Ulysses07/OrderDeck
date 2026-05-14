@@ -6,6 +6,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
 using OrderDeck.LicenseServer.Services.Email;
+using OrderDeck.LicenseServer.Services.Push;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -26,6 +27,8 @@ public class ApiFactory : WebApplicationFactory<Program>
     private readonly string _backupRoot = Path.Combine(Path.GetTempPath(), $"orderdeck-backup-{Guid.NewGuid():N}");
 
     public TestEmailSender Email { get; } = new();
+
+    public RecordingNotificationSender Push { get; } = new();
 
     public string BackupRoot => _backupRoot;
 
@@ -92,6 +95,10 @@ public class ApiFactory : WebApplicationFactory<Program>
             var emailDescriptor = services.SingleOrDefault(d => d.ServiceType == typeof(IEmailSender));
             if (emailDescriptor is not null) services.Remove(emailDescriptor);
             services.AddSingleton<IEmailSender>(Email);
+
+            // Push sender override — RecordingNotificationSender tüm bildirimi yakalar.
+            services.RemoveAll<INotificationSender>();
+            services.AddSingleton<INotificationSender>(Push);
 
             // Hangfire — production SQL Server yerine InMemory storage (test isolation)
             services.AddHangfire(cfg => cfg
