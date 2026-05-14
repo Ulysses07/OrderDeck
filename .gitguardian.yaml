@@ -1,0 +1,12 @@
+# GitGuardian config — secret scanner allowlist.
+#
+# Test projects intentionally contain dummy passwords/credentials for
+# fixture setup (e.g. PostAsJsonAsync invite flows). These are not real
+# secrets; they are generated at runtime or exist only in test scope.
+#
+# We ignore the *.Tests directories entirely — real production secrets
+# must never live there by policy. CI catches any drift via Code Review.
+paths-ignore:
+  - "**/*.Tests/**"
+  - "**/Tests/**"
+  - "**/TestHelpers/**"
