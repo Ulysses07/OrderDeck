@@ -29,6 +29,7 @@ public class LicenseDbContext : DbContext
     public DbSet<StreamSession> StreamSessions => Set<StreamSession>();
     public DbSet<Order> Orders => Set<Order>();
     public DbSet<OperatorUser> OperatorUsers => Set<OperatorUser>();
+    public DbSet<WhatsAppTemplateSettings> WhatsAppTemplateSettings => Set<WhatsAppTemplateSettings>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -249,6 +250,18 @@ public class LicenseDbContext : DbContext
             b.HasIndex(o => new { o.LicenseId, o.CustomerId });
             // Reverse-sync cursor.
             b.HasIndex(o => new { o.LicenseId, o.UpdatedAt });
+        });
+
+        // WhatsApp template sync (PR 2026-05-15): WPF PaymentSettings replikası.
+        mb.Entity<WhatsAppTemplateSettings>(b =>
+        {
+            b.HasKey(s => s.Id);
+            b.Property(s => s.PaymentTemplate).HasMaxLength(2000).IsRequired();
+            b.Property(s => s.ShippingWonTemplate).HasMaxLength(2000).IsRequired();
+            b.HasOne(s => s.License).WithMany()
+                .HasForeignKey(s => s.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            // License başına en fazla bir satır.
+            b.HasIndex(s => s.LicenseId).IsUnique();
         });
 
         // Multi-operator PR-5 (2026-05-14): yayıncı ekibinin ek üyeleri.
