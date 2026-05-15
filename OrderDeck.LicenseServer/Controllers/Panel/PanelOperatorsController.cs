@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Audit;
 using OrderDeck.LicenseServer.Services.Auth;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -22,11 +23,13 @@ public sealed class PanelOperatorsController : ControllerBase
 {
     private readonly LicenseDbContext _db;
     private readonly PasswordHasher _hasher;
+    private readonly IAuditService _audit;
 
-    public PanelOperatorsController(LicenseDbContext db, PasswordHasher hasher)
+    public PanelOperatorsController(LicenseDbContext db, PasswordHasher hasher, IAuditService audit)
     {
         _db = db;
         _hasher = hasher;
+        _audit = audit;
     }
 
     public sealed record InviteRequest(string Email, string Name, string Password);
@@ -82,6 +85,13 @@ public sealed class PanelOperatorsController : ControllerBase
         _db.OperatorUsers.Add(op);
         await _db.SaveChangesAsync(ct);
 
+        // Audit: kim hangi staff'ı ekledi (owner attribution).
+        await _audit.LogCustomerEventAsync(
+            customerId, GetActorEmail(),
+            AuditEvents.OperatorInvited, AuditTargets.Operator, op.Id.ToString(),
+            new { op.Email, op.Name, op.Role, op.LicenseId },
+            HttpContext.Connection.RemoteIpAddress?.ToString(), ct);
+
         return Created($"/api/panel/operators/{op.Id}", ToDto(op));
     }
 
@@ -121,8 +131,21 @@ public sealed class PanelOperatorsController : ControllerBase
 
         _db.OperatorUsers.Remove(op);
         await _db.SaveChangesAsync(ct);
+
+        // Audit: kim hangi staff'ı sildi.
+        await _audit.LogCustomerEventAsync(
+            customerId, GetActorEmail(),
+            AuditEvents.OperatorDeleted, AuditTargets.Operator, op.Id.ToString(),
+            new { op.Email, op.Name, op.Role, op.LicenseId },
+            HttpContext.Connection.RemoteIpAddress?.ToString(), ct);
+
         return NoContent();
     }
+
+    /// <summary>JWT'deki email claim'ini alır; yoksa "(unknown)". Audit
+    /// attribution için kullanılır.</summary>
+    private string GetActorEmail() =>
+        User.FindFirst("email")?.Value ?? "(unknown)";
 
     private static OperatorDto ToDto(OperatorUser o) =>
         new(o.Id, o.LicenseId, o.Email, o.Name, o.Role,
