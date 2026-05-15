@@ -238,8 +238,11 @@ public class LicenseDbContext : DbContext
             b.Property(o => o.CancelReason).HasMaxLength(500);
             b.HasOne(o => o.License).WithMany()
                 .HasForeignKey(o => o.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            // 2026-05-15 fix: SQL Server iki cascade path (Order→License + Order→
+            // Session→License) için "may cause cycles" verir. NoAction'a alındı;
+            // StreamSession silinmediği sürece davranış aynı.
             b.HasOne(o => o.Session).WithMany()
-                .HasForeignKey(o => o.SessionId).OnDelete(DeleteBehavior.SetNull);
+                .HasForeignKey(o => o.SessionId).OnDelete(DeleteBehavior.NoAction);
             // "Belirli yayının siparişleri" sorgusu için.
             b.HasIndex(o => new { o.LicenseId, o.SessionId, o.AddedAt });
             // "Müşterinin tüm siparişleri" sorgusu için.

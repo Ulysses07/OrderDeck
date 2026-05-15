@@ -67,12 +67,17 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         principalTable: "Licenses",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Cascade);
+                    // 2026-05-15: SQL Server iki cascade path'i (Order→License
+                    // doğrudan + Order→Session→License) detect edip "may cause
+                    // cycles" hatası veriyor. Order→Session SET NULL → NoAction
+                    // (app-level: StreamSession silinmiyor, FK NoAction durumda
+                    // restrict gibi davranır; orphan ihtimali yok).
                     table.ForeignKey(
                         name: "FK_Orders_StreamSessions_SessionId",
                         column: x => x.SessionId,
                         principalTable: "StreamSessions",
                         principalColumn: "Id",
-                        onDelete: ReferentialAction.SetNull);
+                        onDelete: ReferentialAction.NoAction);
                 });
 
             migrationBuilder.CreateIndex(
