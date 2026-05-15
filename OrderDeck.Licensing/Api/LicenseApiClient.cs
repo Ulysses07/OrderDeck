@@ -218,6 +218,17 @@ public sealed class LicenseApiClient
         => PostJsonExpectingJsonAsync<SyncOrdersRequest, List<SyncedOrderDto>>(
             $"/api/v1/licenses/{licenseId}/orders/sync", req, ct);
 
+    // ─── WhatsApp template sync (Faz 2, 2026-05-15) ───────────────────────
+
+    /// <summary>PaymentSettings'in WhatsApp template'lerini server'a push'lar.
+    /// Upsert per License (LicenseId unique). Server fire-and-forget güvenilir;
+    /// hata fırlatırsa caller log'lar, kullanıcı akışını bozmaz.</summary>
+    public Task<WhatsAppTemplatesDto> PutWhatsAppTemplatesAsync(
+        Guid licenseId, WhatsAppTemplatesRequest req, CancellationToken ct = default)
+        => PostJsonExpectingJsonAsync<WhatsAppTemplatesRequest, WhatsAppTemplatesDto>(
+            $"/api/v1/licenses/{licenseId}/whatsapp-templates", req, ct,
+            methodOverride: HttpMethod.Put);
+
     // ─── HTTP helpers ────────────────────────────────────────────────
 
     private async Task<TResp> PostJsonExpectingJsonAsync<TReq, TResp>(
