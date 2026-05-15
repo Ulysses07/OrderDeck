@@ -347,6 +347,10 @@ public sealed class AppHost : IDisposable
                 sp.GetRequiredService<ILogger<Services.Sync.SessionOrderSyncService>>()));
         services.AddHostedService<Services.Sync.SessionOrderSyncHostedService>();
 
+        // WhatsApp template push (Faz 2, 2026-05-15): SettingsViewModel.Save
+        // tetiklediğinde server'a PUT'lar. Periyodik değil, on-demand.
+        services.AddSingleton<Services.Sync.WhatsAppTemplateSyncService>();
+
         // UI freeze diagnostic (2026-05-13): her 5 dakikada bir UI thread'in
         // responsive olduğunu log'a yazan heartbeat. Donma anında log'da
         // "UI HEARTBEAT: thread unresponsive" mesajı oluşur — bir sonraki

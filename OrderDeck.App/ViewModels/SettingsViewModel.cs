@@ -97,11 +97,13 @@ public sealed partial class SettingsViewModel : ViewModelBase
     public IntakeFormSettingsViewModel IntakeForm { get; }
 
     private readonly YouTubeOAuthService? _youTubeOAuth;
+    private readonly Services.Sync.WhatsAppTemplateSyncService? _waTemplateSync;
 
     public SettingsViewModel(AppSettings settings, SettingsStore store, ShortcutsTabViewModel shortcutsTab,
         IntakeFormSettingsViewModel intakeForm,
         YouTubeOAuthService? youTubeOAuth = null,
-        AnimationCatalogClient? catalogClient = null)
+        AnimationCatalogClient? catalogClient = null,
+        Services.Sync.WhatsAppTemplateSyncService? waTemplateSync = null)
     {
         _liveSettings = settings;
         _store = store;
@@ -109,6 +111,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
         ShortcutsTab = shortcutsTab;
         IntakeForm = intakeForm;
         _youTubeOAuth = youTubeOAuth;
+        _waTemplateSync = waTemplateSync;
 
         LoadFromSettings();
         LoadInstalledPrinters();
@@ -380,6 +383,13 @@ public sealed partial class SettingsViewModel : ViewModelBase
         _liveSettings.GiveawayAnimation.MutedMode = AnimationMuted;
 
         _store.Save(_liveSettings);
+
+        // Faz 2 (2026-05-15): WhatsApp template'leri server'a push'la (mobile
+        // preview için). Fire-and-forget — sonuç dialog akışını engellemesin.
+        if (_waTemplateSync is not null)
+        {
+            _ = _waTemplateSync.PushFromSettingsAsync(_liveSettings.Payment);
+        }
 
         OverlayPortChanged = (OverlayPort != _originalOverlayPort);
         Saved = true;
