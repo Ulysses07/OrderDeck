@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Auth;
 using OrderDeck.LicenseServer.Services.Push;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -70,7 +71,7 @@ public sealed class LicensesPaymentsSyncController : ControllerBase
         [FromBody] SyncRequest req,
         CancellationToken ct)
     {
-        var customerId = GetCustomerId();
+        var customerId = User.GetTenantCustomerId();
         var ownsLicense = await _db.Licenses
             .AnyAsync(l => l.Id == licenseId && l.CustomerId == customerId, ct);
         if (!ownsLicense) return NotFound();
@@ -178,7 +179,7 @@ public sealed class LicensesPaymentsSyncController : ControllerBase
         [FromQuery] int take = 100,
         CancellationToken ct = default)
     {
-        var customerId = GetCustomerId();
+        var customerId = User.GetTenantCustomerId();
         var ownsLicense = await _db.Licenses
             .AnyAsync(l => l.Id == licenseId && l.CustomerId == customerId, ct);
         if (!ownsLicense) return NotFound();
@@ -231,11 +232,4 @@ public sealed class LicensesPaymentsSyncController : ControllerBase
         };
     }
 
-    private Guid GetCustomerId()
-    {
-        var sub = User.FindFirst("sub")?.Value
-            ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value
-            ?? throw new InvalidOperationException("sub claim missing");
-        return Guid.Parse(sub);
-    }
 }

@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Services.Auth;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -63,7 +64,7 @@ public sealed class PanelCustomersController : ControllerBase
     [HttpGet("{customerId}")]
     public async Task<IActionResult> Get(string customerId, CancellationToken ct)
     {
-        var authCustomerId = GetAuthCustomerId();
+        var authCustomerId = User.GetTenantCustomerId();
 
         // Tenant filter: customer's licenses (1+).
         var licenseIds = await _db.Licenses
@@ -158,11 +159,4 @@ public sealed class PanelCustomersController : ControllerBase
             activeShipments));
     }
 
-    private Guid GetAuthCustomerId()
-    {
-        var sub = User.FindFirst("sub")?.Value
-            ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value
-            ?? throw new InvalidOperationException("sub claim missing");
-        return Guid.Parse(sub);
-    }
 }

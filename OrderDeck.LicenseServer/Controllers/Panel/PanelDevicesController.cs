@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Auth;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -44,7 +45,7 @@ public sealed class PanelDevicesController : ControllerBase
         if (req.DeviceId.Length > 64) return Problem(title: "device-id-too-long", statusCode: 400);
         if (req.PushToken.Length > 512) return Problem(title: "push-token-too-long", statusCode: 400);
 
-        var customerId = GetCustomerId();
+        var customerId = User.GetTenantCustomerId();
         var now = DateTimeOffset.UtcNow;
 
         // Upsert by (CustomerId, DeviceId) — unique index covers this.
@@ -78,7 +79,7 @@ public sealed class PanelDevicesController : ControllerBase
     [HttpDelete("{token}")]
     public async Task<IActionResult> Unregister(string token, CancellationToken ct)
     {
-        var customerId = GetCustomerId();
+        var customerId = User.GetTenantCustomerId();
         var device = await _db.PushDevices
             .FirstOrDefaultAsync(d => d.CustomerId == customerId && d.PushToken == token, ct);
         if (device is null) return NoContent();   // idempotent
@@ -91,7 +92,7 @@ public sealed class PanelDevicesController : ControllerBase
     [HttpGet]
     public async Task<IActionResult> List(CancellationToken ct)
     {
-        var customerId = GetCustomerId();
+        var customerId = User.GetTenantCustomerId();
         var rows = await _db.PushDevices
             .Where(d => d.CustomerId == customerId)
             .OrderByDescending(d => d.LastSeenAt)
@@ -107,11 +108,4 @@ public sealed class PanelDevicesController : ControllerBase
         return Ok(rows);
     }
 
-    private Guid GetCustomerId()
-    {
-        var sub = User.FindFirst("sub")?.Value
-            ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value
-            ?? throw new InvalidOperationException("sub claim missing");
-        return Guid.Parse(sub);
-    }
 }
