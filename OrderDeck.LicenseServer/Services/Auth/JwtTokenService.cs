@@ -25,7 +25,30 @@ public sealed class JwtTokenService
             : 15;
         var expiresAt = DateTimeOffset.UtcNow.AddMinutes(lifetimeMinutes);
         var token = Build(JwtOptions.CustomerAudience, expiresAt,
-            new Claim("sub", customerId.ToString()),
+            new Claim(TenantClaims.Sub, customerId.ToString()),
+            new Claim(TenantClaims.TenantCustomerId, customerId.ToString()),
+            new Claim(TenantClaims.PrincipalType, "customer"),
+            new Claim("email", email));
+        return (token, expiresAt);
+    }
+
+    /// <summary>
+    /// Operator (staff) token. `sub` = operatorId, `tcid` = License sahibinin
+    /// Customer.Id'si. Tenant query'leri tcid'i kullanır → operator owner'ın
+    /// tüm verisini görür ama kimlik kendi audit trail'inde kayıtlı.
+    /// </summary>
+    public (string Token, DateTimeOffset ExpiresAt) IssueOperatorToken(
+        Guid operatorId, Guid tenantCustomerId, string email)
+    {
+        var lifetimeMinutes = _options.AccessTokenLifetimeMinutes > 0
+            ? _options.AccessTokenLifetimeMinutes
+            : 15;
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(lifetimeMinutes);
+        var token = Build(JwtOptions.CustomerAudience, expiresAt,
+            new Claim(TenantClaims.Sub, operatorId.ToString()),
+            new Claim(TenantClaims.TenantCustomerId, tenantCustomerId.ToString()),
+            new Claim(TenantClaims.PrincipalType, "operator"),
+            new Claim(TenantClaims.OperatorId, operatorId.ToString()),
             new Claim("email", email));
         return (token, expiresAt);
     }

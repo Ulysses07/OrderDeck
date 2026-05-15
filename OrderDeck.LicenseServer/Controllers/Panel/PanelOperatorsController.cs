@@ -52,7 +52,12 @@ public sealed class PanelOperatorsController : ControllerBase
             return Problem(title: "weak-password",
                 detail: "Şifre en az 8 karakter olmalı.", statusCode: 400);
 
-        var customerId = GetCustomerId();
+        // PR-5 Faz 2: Invite owner-only. Staff operator yeni operator ekleyemez.
+        if (User.IsOperator())
+            return Problem(title: "owner-only",
+                detail: "Sadece sahip yeni kullanıcı ekleyebilir.", statusCode: 403);
+
+        var customerId = User.GetTenantCustomerId();
         var licenseId = await ResolveLicenseAsync(customerId, ct);
         if (licenseId is null)
             return Problem(title: "no-license",
@@ -83,7 +88,7 @@ public sealed class PanelOperatorsController : ControllerBase
     [HttpGet]
     public async Task<IActionResult> List(CancellationToken ct)
     {
-        var customerId = GetCustomerId();
+        var customerId = User.GetTenantCustomerId();
         var licenseIds = await _db.Licenses
             .Where(l => l.CustomerId == customerId)
             .Select(l => l.Id)
@@ -102,7 +107,12 @@ public sealed class PanelOperatorsController : ControllerBase
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
     {
-        var customerId = GetCustomerId();
+        // PR-5 Faz 2: Delete owner-only.
+        if (User.IsOperator())
+            return Problem(title: "owner-only",
+                detail: "Sadece sahip kullanıcı silebilir.", statusCode: 403);
+
+        var customerId = User.GetTenantCustomerId();
         var op = await _db.OperatorUsers
             .Include(o => o.License)
             .FirstOrDefaultAsync(o => o.Id == id, ct);
@@ -132,11 +142,4 @@ public sealed class PanelOperatorsController : ControllerBase
             .FirstOrDefaultAsync(ct);
     }
 
-    private Guid GetCustomerId()
-    {
-        var sub = User.FindFirst("sub")?.Value
-            ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value
-            ?? throw new InvalidOperationException("sub claim missing");
-        return Guid.Parse(sub);
-    }
 }

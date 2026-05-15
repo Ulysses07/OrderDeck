@@ -123,6 +123,48 @@ public sealed class AuthController : ControllerBase
         return Ok(new LoginResponse(token, expiresAt, refreshRaw, refreshExpiresAt, customer.Id, customer.Email));
     }
 
+    public sealed record OperatorLoginResponse(
+        string Token,
+        DateTimeOffset ExpiresAt,
+        Guid OperatorId,
+        Guid TenantCustomerId,
+        string Email,
+        string Name,
+        string Role);
+
+    /// <summary>
+    /// PR-5 Faz 2 (2026-05-14): staff/operator login.
+    ///
+    /// Customer login'den ayrı tutuldu — operator'lar email confirmation
+    /// akışından geçmez (owner Customer hesabı tarafından invite edilir).
+    /// Refresh token henüz desteklenmiyor; access token süresi 15 min,
+    /// staff client'ı yeniden login yapar.
+    /// </summary>
+    [HttpPost("operator-login")]
+    [EnableRateLimiting("auth-login")]
+    public async Task<IActionResult> OperatorLogin([FromBody] LoginRequest req, CancellationToken ct)
+    {
+        var email = (req.Email ?? string.Empty).Trim().ToLowerInvariant();
+        var op = await _db.OperatorUsers
+            .Include(o => o.License)
+            .FirstOrDefaultAsync(o => o.Email == email && o.RevokedAt == null, ct);
+        if (op is null || !_hasher.Verify(op.PasswordHash, req.Password ?? string.Empty))
+            return Problem(title: "invalid-credentials", statusCode: 401);
+
+        // License revoke / expire kontrol — owner Customer'ın lisansı geçersizse
+        // operator login de reddedilir.
+        var now = DateTimeOffset.UtcNow;
+        if (op.License.RevokedAt is not null || op.License.ExpiresAt <= now)
+            return Problem(title: "license-inactive", statusCode: 403);
+
+        op.LastLoginAt = now;
+        await _db.SaveChangesAsync(ct);
+
+        var (token, expiresAt) = _jwt.IssueOperatorToken(op.Id, op.License.CustomerId, op.Email);
+        return Ok(new OperatorLoginResponse(
+            token, expiresAt, op.Id, op.License.CustomerId, op.Email, op.Name, op.Role));
+    }
+
     public sealed record RefreshRequest(string RefreshToken);
 
     [HttpPost("refresh")]

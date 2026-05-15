@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Services.Auth;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -66,7 +67,7 @@ public sealed class PanelSearchController : ControllerBase
             return Ok(new SearchResultDto(new(), new(), new()));
 
         var term = q.Trim();
-        var customerId = GetAuthCustomerId();
+        var customerId = User.GetTenantCustomerId();
         var licenseIds = await _db.Licenses
             .Where(l => l.CustomerId == customerId)
             .Select(l => l.Id)
@@ -120,11 +121,4 @@ public sealed class PanelSearchController : ControllerBase
         return Ok(new SearchResultDto(customers, orders, payments));
     }
 
-    private Guid GetAuthCustomerId()
-    {
-        var sub = User.FindFirst("sub")?.Value
-            ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value
-            ?? throw new InvalidOperationException("sub claim missing");
-        return Guid.Parse(sub);
-    }
 }

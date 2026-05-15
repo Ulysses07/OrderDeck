@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Auth;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -54,7 +55,7 @@ public sealed class PanelShipmentsController : ControllerBase
         [FromQuery] int take = 50,
         CancellationToken ct = default)
     {
-        var ownerCustomerId = GetCustomerId();
+        var ownerCustomerId = User.GetTenantCustomerId();
         take = Math.Clamp(take, 1, 200);
 
         var query = _db.Shipments
@@ -98,11 +99,4 @@ public sealed class PanelShipmentsController : ControllerBase
         }
     }
 
-    private Guid GetCustomerId()
-    {
-        var sub = User.FindFirst("sub")?.Value
-            ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value
-            ?? throw new InvalidOperationException("sub claim missing");
-        return Guid.Parse(sub);
-    }
 }

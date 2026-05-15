@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Auth;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -53,7 +54,7 @@ public sealed class PanelPaymentsController : ControllerBase
         [FromQuery] int take = 50,
         CancellationToken ct = default)
     {
-        var customerId = GetCustomerId();
+        var customerId = User.GetTenantCustomerId();
         take = Math.Clamp(take, 1, 200);
 
         var query = _db.Payments
@@ -89,7 +90,7 @@ public sealed class PanelPaymentsController : ControllerBase
     [HttpPost("{id:guid}/approve")]
     public async Task<IActionResult> Approve(Guid id, CancellationToken ct)
     {
-        var customerId = GetCustomerId();
+        var customerId = User.GetTenantCustomerId();
         var payment = await _db.Payments
             .Include(p => p.License)
             .FirstOrDefaultAsync(p => p.Id == id && p.License.CustomerId == customerId, ct);
@@ -112,7 +113,7 @@ public sealed class PanelPaymentsController : ControllerBase
     [HttpPost("{id:guid}/reject")]
     public async Task<IActionResult> Reject(Guid id, [FromBody] RejectRequest req, CancellationToken ct)
     {
-        var customerId = GetCustomerId();
+        var customerId = User.GetTenantCustomerId();
         var payment = await _db.Payments
             .Include(p => p.License)
             .FirstOrDefaultAsync(p => p.Id == id && p.License.CustomerId == customerId, ct);
@@ -156,11 +157,4 @@ public sealed class PanelPaymentsController : ControllerBase
         }
     }
 
-    private Guid GetCustomerId()
-    {
-        var sub = User.FindFirst("sub")?.Value
-            ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value
-            ?? throw new InvalidOperationException("sub claim missing");
-        return Guid.Parse(sub);
-    }
 }

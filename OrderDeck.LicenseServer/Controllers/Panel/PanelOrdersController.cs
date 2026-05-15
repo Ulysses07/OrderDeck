@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Services.Auth;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -45,7 +46,7 @@ public sealed class PanelOrdersController : ControllerBase
         [FromQuery] int take = 30,
         CancellationToken ct = default)
     {
-        var customerId = GetCustomerId();
+        var customerId = User.GetTenantCustomerId();
         take = Math.Clamp(take, 1, 100);
 
         // Her yayın için sipariş sayısı + toplam — server-side aggregate
@@ -95,7 +96,7 @@ public sealed class PanelOrdersController : ControllerBase
         [FromQuery] int take = 500,
         CancellationToken ct = default)
     {
-        var customerId = GetCustomerId();
+        var customerId = User.GetTenantCustomerId();
         take = Math.Clamp(take, 1, 2000);
 
         // Session caller'a ait mi kontrol
@@ -118,11 +119,4 @@ public sealed class PanelOrdersController : ControllerBase
         return Ok(rows);
     }
 
-    private Guid GetCustomerId()
-    {
-        var sub = User.FindFirst("sub")?.Value
-            ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value
-            ?? throw new InvalidOperationException("sub claim missing");
-        return Guid.Parse(sub);
-    }
 }
