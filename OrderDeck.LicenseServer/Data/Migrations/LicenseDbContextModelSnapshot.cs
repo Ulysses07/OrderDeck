@@ -958,7 +958,7 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.HasOne("OrderDeck.LicenseServer.Domain.StreamSession", "Session")
                         .WithMany()
                         .HasForeignKey("SessionId")
-                        .OnDelete(DeleteBehavior.SetNull);
+                        .OnDelete(DeleteBehavior.NoAction);
 
                     b.Navigation("License");
 
