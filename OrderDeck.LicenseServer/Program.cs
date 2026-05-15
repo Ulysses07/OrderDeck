@@ -93,9 +93,9 @@ public class Program
         builder.Services.AddScoped<BackupRetentionService>();
         builder.Services.AddScoped<BackupViewerService>();
 
-        // Push notifications (PR #51 — 2026-05-14). Stub provider varsayılan;
-        // FCM/APNS impl Faz 2'de eklendiğinde config switch ile aktive edilir.
-        // Provider: appsettings.json "OrderDeck:Push:Provider" = "stub" | "fcm"
+        // Push notifications. Provider: "stub" (default) veya "fcm".
+        // PR #51 (2026-05-14) — stub log-only fan-out.
+        // PR Push Faz 2 (2026-05-15) — gerçek FCM (FirebaseAdmin SDK).
         var pushProvider = builder.Configuration["OrderDeck:Push:Provider"] ?? "stub";
         if (pushProvider.Equals("stub", StringComparison.OrdinalIgnoreCase))
         {
@@ -103,10 +103,25 @@ public class Program
                 OrderDeck.LicenseServer.Services.Push.INotificationSender,
                 OrderDeck.LicenseServer.Services.Push.StubNotificationSender>();
         }
+        else if (pushProvider.Equals("fcm", StringComparison.OrdinalIgnoreCase))
+        {
+            // Bind options + initialize FirebaseApp singleton fail-fast.
+            var fcmOptions = new OrderDeck.LicenseServer.Services.Push.FcmOptions();
+            builder.Configuration.GetSection("OrderDeck:Push:Fcm").Bind(fcmOptions);
+            builder.Services.AddSingleton(fcmOptions);
+
+            var messaging = OrderDeck.LicenseServer.Services.Push
+                .FcmNotificationSender.InitializeMessaging(fcmOptions);
+            builder.Services.AddSingleton(messaging);
+
+            builder.Services.AddScoped<
+                OrderDeck.LicenseServer.Services.Push.INotificationSender,
+                OrderDeck.LicenseServer.Services.Push.FcmNotificationSender>();
+        }
         else
         {
             throw new InvalidOperationException(
-                $"Unsupported push provider: {pushProvider}. Only 'stub' is implemented (Faz 1).");
+                $"Unsupported push provider: {pushProvider}. Valid values: 'stub', 'fcm'.");
         }
 
         // JWT auth — two schemes (use IOptions so tests can override Jwt:SecretKey via config)

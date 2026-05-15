@@ -52,6 +52,9 @@
     <PackageVersion Include="ClosedXML" Version="0.105.0" />
     <PackageVersion Include="CommunityToolkit.Mvvm" Version="8.4.0" />
     <PackageVersion Include="Dapper" Version="2.1.35" />
+    <!-- Firebase Admin SDK — FCM push notifications (PR-1 Push Faz 2,
+         2026-05-15). Apache 2.0. Service account JSON ile auth. -->
+    <PackageVersion Include="FirebaseAdmin" Version="3.0.1" />
     <PackageVersion Include="Hangfire.AspNetCore" Version="1.8.14" />
     <PackageVersion Include="Hangfire.MemoryStorage" Version="1.8.0" />
     <PackageVersion Include="Hangfire.SqlServer" Version="1.8.14" />
