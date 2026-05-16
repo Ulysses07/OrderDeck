@@ -30,6 +30,7 @@ public class LicenseDbContext : DbContext
     public DbSet<Order> Orders => Set<Order>();
     public DbSet<OperatorUser> OperatorUsers => Set<OperatorUser>();
     public DbSet<WhatsAppTemplateSettings> WhatsAppTemplateSettings => Set<WhatsAppTemplateSettings>();
+    public DbSet<BroadcastPost> BroadcastPosts => Set<BroadcastPost>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -262,6 +263,20 @@ public class LicenseDbContext : DbContext
                 .HasForeignKey(s => s.LicenseId).OnDelete(DeleteBehavior.Cascade);
             // License başına en fazla bir satır.
             b.HasIndex(s => s.LicenseId).IsUnique();
+        });
+
+        mb.Entity<BroadcastPost>(b =>
+        {
+            b.HasKey(p => p.Id);
+            b.Property(p => p.Type).HasConversion<int>();
+            b.Property(p => p.TextBody).HasMaxLength(2000);
+            b.Property(p => p.MediaObjectKey).HasMaxLength(512);
+            b.Property(p => p.MediaContentType).HasMaxLength(64);
+            b.HasOne(p => p.License).WithMany()
+                .HasForeignKey(p => p.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            b.HasIndex(p => new { p.LicenseId, p.CreatedAt })
+                .IsDescending(false, true);
+            b.HasIndex(p => new { p.ExpiresAt, p.IsPinned });
         });
 
         // Multi-operator PR-5 (2026-05-14): yayıncı ekibinin ek üyeleri.
