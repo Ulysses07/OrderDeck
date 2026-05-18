@@ -225,4 +225,207 @@ public class PanelBroadcastPostsControllerTests : IClassFixture<ApiFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         (await ReadTitleAsync(resp)).Should().Be("invalid-content-type");
     }
+
+    [Fact]
+    public async Task List_returns_empty_for_new_customer()
+    {
+        var (client, _) = await SeedAsync();
+        var resp = await client.GetAsync("/api/panel/posts");
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadAsStringAsync();
+        body.Should().Contain("\"posts\":[]");
+    }
+
+    [Fact]
+    public async Task List_returns_pinned_before_recent()
+    {
+        var (client, licenseId) = await SeedAsync();
+
+        // 1 normal + 1 pinned (manuel insert)
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.BroadcastPosts.Add(new BroadcastPost
+            {
+                Id = Guid.NewGuid(), LicenseId = licenseId,
+                Type = BroadcastPostType.Text, TextBody = "old normal",
+                CreatedAt = DateTimeOffset.UtcNow.AddDays(-5),
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(25),
+                IsPinned = false
+            });
+            db.BroadcastPosts.Add(new BroadcastPost
+            {
+                Id = Guid.NewGuid(), LicenseId = licenseId,
+                Type = BroadcastPostType.Text, TextBody = "old pinned",
+                CreatedAt = DateTimeOffset.UtcNow.AddDays(-10),
+                ExpiresAt = DateTimeOffset.MaxValue,
+                IsPinned = true
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.GetAsync("/api/panel/posts");
+        var body = await resp.Content.ReadAsStringAsync();
+        var pinnedIdx = body.IndexOf("old pinned");
+        var normalIdx = body.IndexOf("old normal");
+        pinnedIdx.Should().BeGreaterThan(0).And.BeLessThan(normalIdx);
+    }
+
+    [Fact]
+    public async Task Get_returns_post_for_owner()
+    {
+        var (client, licenseId) = await SeedAsync();
+        Guid postId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var p = new BroadcastPost
+            {
+                Id = Guid.NewGuid(), LicenseId = licenseId,
+                Type = BroadcastPostType.Text, TextBody = "x",
+                CreatedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
+                IsPinned = false
+            };
+            db.BroadcastPosts.Add(p);
+            await db.SaveChangesAsync();
+            postId = p.Id;
+        }
+
+        var resp = await client.GetAsync($"/api/panel/posts/{postId}");
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        doc.RootElement.GetProperty("id").GetGuid().Should().Be(postId);
+        doc.RootElement.GetProperty("textBody").GetString().Should().Be("x");
+    }
+
+    [Fact]
+    public async Task Get_404_for_cross_tenant_post()
+    {
+        var (clientA, licenseA) = await SeedAsync();
+        var (clientB, _) = await SeedAsync();
+
+        Guid postId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var p = new BroadcastPost
+            {
+                Id = Guid.NewGuid(), LicenseId = licenseA,
+                Type = BroadcastPostType.Text, TextBody = "secret",
+                CreatedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
+                IsPinned = false
+            };
+            db.BroadcastPosts.Add(p);
+            await db.SaveChangesAsync();
+            postId = p.Id;
+        }
+
+        var resp = await clientB.GetAsync($"/api/panel/posts/{postId}");
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task List_pagination_does_not_duplicate_pinned()
+    {
+        var (client, licenseId) = await SeedAsync();
+
+        var now = DateTimeOffset.UtcNow;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            // 2 pinned (older CreatedAt) + 5 unpinned (newer CreatedAt) — limit=3 means
+            // page 1 returns [pinned1, pinned2, unpinned-newest], page 2 must NOT show
+            // the pinned posts again (the cursor-filter bug would re-include them).
+            for (int i = 0; i < 2; i++)
+            {
+                db.BroadcastPosts.Add(new BroadcastPost
+                {
+                    Id = Guid.NewGuid(), LicenseId = licenseId,
+                    Type = BroadcastPostType.Text, TextBody = $"pinned-{i}",
+                    CreatedAt = now.AddDays(-10 - i),
+                    ExpiresAt = DateTimeOffset.MaxValue,
+                    IsPinned = true
+                });
+            }
+            for (int i = 0; i < 5; i++)
+            {
+                db.BroadcastPosts.Add(new BroadcastPost
+                {
+                    Id = Guid.NewGuid(), LicenseId = licenseId,
+                    Type = BroadcastPostType.Text, TextBody = $"unpinned-{i}",
+                    CreatedAt = now.AddDays(-i),
+                    ExpiresAt = now.AddDays(20 - i),
+                    IsPinned = false
+                });
+            }
+            await db.SaveChangesAsync();
+        }
+
+        var resp1 = await client.GetAsync("/api/panel/posts?limit=3");
+        resp1.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body1 = await resp1.Content.ReadAsStringAsync();
+        using var doc1 = System.Text.Json.JsonDocument.Parse(body1);
+        var cursor = doc1.RootElement.GetProperty("nextCursor").GetString();
+        cursor.Should().NotBeNullOrEmpty();
+
+        var resp2 = await client.GetAsync($"/api/panel/posts?limit=3&cursor={Uri.EscapeDataString(cursor!)}");
+        var body2 = await resp2.Content.ReadAsStringAsync();
+        using var doc2 = System.Text.Json.JsonDocument.Parse(body2);
+        // Parse JSON instead of substring-match (textBody "pinned-N" collides
+        // with "unpinned-N" as a substring). Any pinned=true on page 2 = bug.
+        foreach (var post in doc2.RootElement.GetProperty("posts").EnumerateArray())
+        {
+            post.GetProperty("isPinned").GetBoolean().Should().BeFalse();
+        }
+    }
+
+    [Fact]
+    public async Task List_pagination_tie_breaker_on_same_timestamp()
+    {
+        var (client, licenseId) = await SeedAsync();
+
+        var sharedTime = DateTimeOffset.UtcNow;
+        var ids = new List<Guid>();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            for (int i = 0; i < 3; i++)
+            {
+                var id = Guid.NewGuid();
+                ids.Add(id);
+                db.BroadcastPosts.Add(new BroadcastPost
+                {
+                    Id = id, LicenseId = licenseId,
+                    Type = BroadcastPostType.Text, TextBody = $"same-tick-{i}",
+                    CreatedAt = sharedTime,
+                    ExpiresAt = sharedTime.AddDays(30),
+                    IsPinned = false
+                });
+            }
+            await db.SaveChangesAsync();
+        }
+
+        var seenIds = new HashSet<Guid>();
+        string? cursor = null;
+        for (int page = 0; page < 5; page++)
+        {
+            var url = cursor is null
+                ? "/api/panel/posts?limit=2"
+                : $"/api/panel/posts?limit=2&cursor={Uri.EscapeDataString(cursor)}";
+            var resp = await client.GetAsync(url);
+            var body = await resp.Content.ReadAsStringAsync();
+            using var doc = System.Text.Json.JsonDocument.Parse(body);
+            foreach (var post in doc.RootElement.GetProperty("posts").EnumerateArray())
+            {
+                seenIds.Add(post.GetProperty("id").GetGuid());
+            }
+            cursor = doc.RootElement.GetProperty("nextCursor").GetString();
+            if (cursor is null) break;
+        }
+        seenIds.Should().Contain(ids);
+    }
 }

@@ -167,6 +167,70 @@ public sealed class PanelBroadcastPostsController : ControllerBase
             p.MediaContentType, p.MediaWidth, p.MediaHeight, p.MediaDurationSec,
             p.CreatedAt, p.ExpiresAt, p.IsPinned);
 
+    public sealed record ListResponse(List<PostDto> Posts, string? NextCursor);
+
+    [HttpGet]
+    public async Task<IActionResult> List([FromQuery] string? cursor, [FromQuery] int limit = 20, CancellationToken ct = default)
+    {
+        if (limit < 1 || limit > 100) limit = 20;
+
+        var customerId = User.GetTenantCustomerId();
+        var licenseIds = await _db.Licenses
+            .Where(l => l.CustomerId == customerId)
+            .Select(l => l.Id)
+            .ToListAsync(ct);
+
+        if (licenseIds.Count == 0) return Ok(new ListResponse(new(), null));
+
+        var query = _db.BroadcastPosts
+            .Where(p => licenseIds.Contains(p.LicenseId) && p.DeletedAt == null);
+
+        // Composite cursor: "{createdAt:O}|{id}". Pinned posts all fit on page 1
+        // (Task 9 enforces max-5-pinned); subsequent pages paginate unpinned only.
+        // Tie-breaker on Id keeps same-tick siblings deterministic across pages.
+        if (!string.IsNullOrWhiteSpace(cursor) && TryParseCursor(cursor, out var cursorAt, out var cursorId))
+        {
+            query = query.Where(p => !p.IsPinned &&
+                (p.CreatedAt < cursorAt || (p.CreatedAt == cursorAt && p.Id.CompareTo(cursorId) < 0)));
+        }
+
+        var rows = await query
+            .OrderByDescending(p => p.IsPinned)
+            .ThenByDescending(p => p.CreatedAt)
+            .ThenByDescending(p => p.Id)
+            .Take(limit + 1)
+            .ToListAsync(ct);
+
+        string? nextCursor = null;
+        if (rows.Count > limit)
+        {
+            var last = rows[limit - 1];
+            nextCursor = $"{last.CreatedAt.ToString("O")}|{last.Id}";
+            rows = rows.Take(limit).ToList();
+        }
+
+        return Ok(new ListResponse(rows.Select(ToDto).ToList(), nextCursor));
+    }
+
+    private static bool TryParseCursor(string cursor, out DateTimeOffset createdAt, out Guid id)
+    {
+        createdAt = default; id = default;
+        var parts = cursor.Split('|', 2);
+        if (parts.Length != 2) return false;
+        return DateTimeOffset.TryParse(parts[0], out createdAt) && Guid.TryParse(parts[1], out id);
+    }
+
+    [HttpGet("{id:guid}")]
+    public async Task<IActionResult> Get(Guid id, CancellationToken ct)
+    {
+        var customerId = User.GetTenantCustomerId();
+        var post = await _db.BroadcastPosts
+            .Where(p => p.Id == id && p.DeletedAt == null && p.License.CustomerId == customerId)
+            .FirstOrDefaultAsync(ct);
+        if (post is null) return NotFound();
+        return Ok(ToDto(post));
+    }
+
     private Task<Guid?> ResolveActiveLicenseAsync(Guid customerId, CancellationToken ct)
         => _db.Licenses
             .Where(l => l.CustomerId == customerId && l.RevokedAt == null
