@@ -113,20 +113,8 @@ public sealed class LicenseApiClient
     // ─── Intake Form (Phase 4f) ───────────────────────────────────────
 
     /// <summary>Returns null when no config is set yet (404 from server).</summary>
-    public async Task<IntakeFormConfigDto?> GetIntakeFormAsync(CancellationToken ct = default)
-    {
-        HttpResponseMessage resp;
-        try { resp = await _http.GetAsync("/api/v1/me/intake-form", ct); }
-        catch (HttpRequestException ex) { throw new LicenseApiNetworkException(ex.Message, ex); }
-        catch (TaskCanceledException ex) when (!ct.IsCancellationRequested) { throw new LicenseApiNetworkException("timeout", ex); }
-
-        using (resp)
-        {
-            if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) return null;
-            if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
-            return await DeserializeAsync<IntakeFormConfigDto>(resp, ct);
-        }
-    }
+    public Task<IntakeFormConfigDto?> GetIntakeFormAsync(CancellationToken ct = default)
+        => GetExpectingJsonOrNullOn404Async<IntakeFormConfigDto>("/api/v1/me/intake-form", ct);
 
     public Task<IntakeFormConfigDto> UpsertIntakeFormAsync(IntakeFormUpsertRequest req, CancellationToken ct = default)
         => PostJsonExpectingJsonAsync<IntakeFormUpsertRequest, IntakeFormConfigDto>(
@@ -138,17 +126,8 @@ public sealed class LicenseApiClient
         var qs = since is null
             ? $"?limit={limit}"
             : $"?since={Uri.EscapeDataString(since.Value.ToString("O"))}&limit={limit}";
-
-        HttpResponseMessage resp;
-        try { resp = await _http.GetAsync("/api/v1/me/form-submissions" + qs, ct); }
-        catch (HttpRequestException ex) { throw new LicenseApiNetworkException(ex.Message, ex); }
-        catch (TaskCanceledException ex) when (!ct.IsCancellationRequested) { throw new LicenseApiNetworkException("timeout", ex); }
-
-        using (resp)
-        {
-            if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
-            return (await DeserializeAsync<List<IntakeFormSubmissionDto>>(resp, ct)) ?? new();
-        }
+        return await GetExpectingJsonAsync<List<IntakeFormSubmissionDto>>(
+            "/api/v1/me/form-submissions" + qs, ct) ?? new();
     }
 
     // ─── Payment sync (Bearer-Customer) ───────────────────────────────
@@ -166,17 +145,8 @@ public sealed class LicenseApiClient
         Guid licenseId, DateTimeOffset since, int take = 200, CancellationToken ct = default)
     {
         var qs = $"?since={Uri.EscapeDataString(since.ToString("O"))}&take={take}";
-
-        HttpResponseMessage resp;
-        try { resp = await _http.GetAsync($"/api/v1/licenses/{licenseId}/payments/since{qs}", ct); }
-        catch (HttpRequestException ex) { throw new LicenseApiNetworkException(ex.Message, ex); }
-        catch (TaskCanceledException ex) when (!ct.IsCancellationRequested) { throw new LicenseApiNetworkException("timeout", ex); }
-
-        using (resp)
-        {
-            if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
-            return (await DeserializeAsync<List<SyncedPaymentDto>>(resp, ct)) ?? new();
-        }
+        return await GetExpectingJsonAsync<List<SyncedPaymentDto>>(
+            $"/api/v1/licenses/{licenseId}/payments/since{qs}", ct) ?? new();
     }
 
     // ─── Shipment sync (PR-D, 2026-05-13) ─────────────────────────────────
@@ -193,17 +163,8 @@ public sealed class LicenseApiClient
         Guid licenseId, DateTimeOffset since, int take = 200, CancellationToken ct = default)
     {
         var qs = $"?since={Uri.EscapeDataString(since.ToString("O"))}&take={take}";
-
-        HttpResponseMessage resp;
-        try { resp = await _http.GetAsync($"/api/v1/licenses/{licenseId}/shipments/since{qs}", ct); }
-        catch (HttpRequestException ex) { throw new LicenseApiNetworkException(ex.Message, ex); }
-        catch (TaskCanceledException ex) when (!ct.IsCancellationRequested) { throw new LicenseApiNetworkException("timeout", ex); }
-
-        using (resp)
-        {
-            if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
-            return (await DeserializeAsync<List<SyncedShipmentDto>>(resp, ct)) ?? new();
-        }
+        return await GetExpectingJsonAsync<List<SyncedShipmentDto>>(
+            $"/api/v1/licenses/{licenseId}/shipments/since{qs}", ct) ?? new();
     }
 
     // ─── Session + Order sync (PR siparis-sync 2026-05-13) ────────────────
@@ -265,6 +226,37 @@ public sealed class LicenseApiClient
             {
                 if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
                 return (await DeserializeAsync<TResp>(resp, ct))!;
+            }
+        }
+    }
+
+    /// <summary>Refresh-aware GET that maps 404 → null. Used by endpoints like
+    /// /me/intake-form where "not configured yet" is a legitimate state, not
+    /// an error. Mirrors <see cref="GetExpectingJsonAsync{TResp}"/> for the
+    /// 401 retry path so previously-bypass endpoints now honor token rotation.</summary>
+    private async Task<TResp?> GetExpectingJsonOrNullOn404Async<TResp>(string path, CancellationToken ct)
+        where TResp : class
+    {
+        var canRefresh = OnUnauthorized is not null && !path.StartsWith("/api/v1/auth/");
+        for (var attempt = 0; ; attempt++)
+        {
+            HttpResponseMessage resp;
+            try { resp = await _http.GetAsync(path, ct); }
+            catch (HttpRequestException ex) { throw new LicenseApiNetworkException(ex.Message, ex); }
+            catch (TaskCanceledException ex) when (!ct.IsCancellationRequested) { throw new LicenseApiNetworkException("timeout", ex); }
+
+            if (resp.StatusCode == HttpStatusCode.Unauthorized && attempt == 0 && canRefresh)
+            {
+                resp.Dispose();
+                if (await OnUnauthorized!(ct) is null) continue;
+                continue;
+            }
+
+            using (resp)
+            {
+                if (resp.StatusCode == HttpStatusCode.NotFound) return null;
+                if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
+                return await DeserializeAsync<TResp>(resp, ct);
             }
         }
     }
