@@ -634,4 +634,143 @@ public class PanelBroadcastPostsControllerTests : IClassFixture<ApiFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         (await ReadTitleAsync(resp)).Should().Be("text-required");
     }
+
+    [Fact]
+    public async Task Pin_sets_IsPinned_and_far_future_expires()
+    {
+        var (client, licenseId) = await SeedAsync();
+        Guid postId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var p = new BroadcastPost
+            {
+                Id = Guid.NewGuid(), LicenseId = licenseId,
+                Type = BroadcastPostType.Text, TextBody = "pin-me",
+                CreatedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
+                IsPinned = false
+            };
+            db.BroadcastPosts.Add(p);
+            await db.SaveChangesAsync();
+            postId = p.Id;
+        }
+
+        var resp = await client.PostAsync($"/api/panel/posts/{postId}/pin", null);
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var scope2 = _factory.Services.CreateScope();
+        var db2 = scope2.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var fetched = await db2.BroadcastPosts.FirstAsync(p => p.Id == postId);
+        fetched.IsPinned.Should().BeTrue();
+        fetched.ExpiresAt.Year.Should().Be(9999);
+    }
+
+    [Fact]
+    public async Task Pin_409_when_limit_exceeded()
+    {
+        var (client, licenseId) = await SeedAsync();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            for (int i = 0; i < 5; i++)
+            {
+                db.BroadcastPosts.Add(new BroadcastPost
+                {
+                    Id = Guid.NewGuid(), LicenseId = licenseId,
+                    Type = BroadcastPostType.Text, TextBody = $"pinned {i}",
+                    CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-i),
+                    ExpiresAt = new DateTimeOffset(9999, 12, 31, 0, 0, 0, TimeSpan.Zero),
+                    IsPinned = true
+                });
+            }
+            await db.SaveChangesAsync();
+        }
+
+        Guid newPostId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var p = new BroadcastPost
+            {
+                Id = Guid.NewGuid(), LicenseId = licenseId,
+                Type = BroadcastPostType.Text, TextBody = "extra",
+                CreatedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
+                IsPinned = false
+            };
+            db.BroadcastPosts.Add(p);
+            await db.SaveChangesAsync();
+            newPostId = p.Id;
+        }
+
+        var resp = await client.PostAsync($"/api/panel/posts/{newPostId}/pin", null);
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+    }
+
+    [Fact]
+    public async Task Unpin_restores_30day_expires()
+    {
+        var (client, licenseId) = await SeedAsync();
+        Guid postId;
+        var createdAt = DateTimeOffset.UtcNow.AddDays(-5);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var p = new BroadcastPost
+            {
+                Id = Guid.NewGuid(), LicenseId = licenseId,
+                Type = BroadcastPostType.Text, TextBody = "x",
+                CreatedAt = createdAt,
+                ExpiresAt = new DateTimeOffset(9999, 12, 31, 0, 0, 0, TimeSpan.Zero),
+                IsPinned = true
+            };
+            db.BroadcastPosts.Add(p);
+            await db.SaveChangesAsync();
+            postId = p.Id;
+        }
+
+        var resp = await client.DeleteAsync($"/api/panel/posts/{postId}/pin");
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var scope2 = _factory.Services.CreateScope();
+        var db2 = scope2.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var fetched = await db2.BroadcastPosts.FirstAsync(p => p.Id == postId);
+        fetched.IsPinned.Should().BeFalse();
+        fetched.ExpiresAt.Should().BeCloseTo(createdAt.AddDays(30), TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
+    public async Task Unpin_gives_at_least_1day_grace_for_old_pinned_post()
+    {
+        var (client, licenseId) = await SeedAsync();
+        Guid postId;
+        var createdAt = DateTimeOffset.UtcNow.AddDays(-45); // older than 30 days
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var p = new BroadcastPost
+            {
+                Id = Guid.NewGuid(), LicenseId = licenseId,
+                Type = BroadcastPostType.Text, TextBody = "long-pinned",
+                CreatedAt = createdAt,
+                ExpiresAt = new DateTimeOffset(9999, 12, 31, 0, 0, 0, TimeSpan.Zero),
+                IsPinned = true
+            };
+            db.BroadcastPosts.Add(p);
+            await db.SaveChangesAsync();
+            postId = p.Id;
+        }
+
+        var resp = await client.DeleteAsync($"/api/panel/posts/{postId}/pin");
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var scope2 = _factory.Services.CreateScope();
+        var db2 = scope2.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var fetched = await db2.BroadcastPosts.FirstAsync(p => p.Id == postId);
+        fetched.IsPinned.Should().BeFalse();
+        // CreatedAt + 30 days is 15 days in the past, so the grace floor kicks in.
+        fetched.ExpiresAt.Should().BeAfter(DateTimeOffset.UtcNow.AddHours(23));
+        fetched.ExpiresAt.Should().BeBefore(DateTimeOffset.UtcNow.AddDays(2));
+    }
 }

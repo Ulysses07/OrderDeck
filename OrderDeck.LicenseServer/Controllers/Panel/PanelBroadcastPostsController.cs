@@ -274,6 +274,56 @@ public sealed class PanelBroadcastPostsController : ControllerBase
         return Ok(new MediaUrlResponse(url, DateTimeOffset.UtcNow.AddMinutes(5)));
     }
 
+    private const int MaxPinnedPerLicense = 5;
+    private static readonly DateTimeOffset PinnedExpiresAt = new(9999, 12, 31, 23, 59, 59, TimeSpan.Zero);
+
+    [HttpPost("{id:guid}/pin")]
+    public async Task<IActionResult> Pin(Guid id, CancellationToken ct)
+    {
+        var customerId = User.GetTenantCustomerId();
+        var post = await _db.BroadcastPosts
+            .Where(p => p.Id == id && p.DeletedAt == null && p.License.CustomerId == customerId)
+            .FirstOrDefaultAsync(ct);
+        if (post is null) return NotFound();
+
+        if (post.IsPinned) return Ok(ToDto(post));
+
+        var pinnedCount = await _db.BroadcastPosts
+            .CountAsync(p => p.LicenseId == post.LicenseId
+                && p.IsPinned && p.DeletedAt == null, ct);
+        if (pinnedCount >= MaxPinnedPerLicense)
+            return Problem(title: "pin-limit-exceeded",
+                detail: $"En fazla {MaxPinnedPerLicense} sabit duyuru.", statusCode: 409);
+
+        post.IsPinned = true;
+        post.ExpiresAt = PinnedExpiresAt;
+        await _db.SaveChangesAsync(ct);
+        return Ok(ToDto(post));
+    }
+
+    [HttpDelete("{id:guid}/pin")]
+    public async Task<IActionResult> Unpin(Guid id, CancellationToken ct)
+    {
+        var customerId = User.GetTenantCustomerId();
+        var post = await _db.BroadcastPosts
+            .Where(p => p.Id == id && p.DeletedAt == null && p.License.CustomerId == customerId)
+            .FirstOrDefaultAsync(ct);
+        if (post is null) return NotFound();
+
+        if (!post.IsPinned) return Ok(ToDto(post));
+
+        post.IsPinned = false;
+        // Grace floor: a long-pinned post (CreatedAt > 30 days ago) whose
+        // restored expiry would land in the past gets at least 1 day of
+        // visibility before Task 11's cleanup sweep. Pin shouldn't extend
+        // lifespan, but instant disappearance on unpin is too harsh UX.
+        var restored = post.CreatedAt.AddDays(30);
+        var minGrace = DateTimeOffset.UtcNow.AddDays(1);
+        post.ExpiresAt = restored > minGrace ? restored : minGrace;
+        await _db.SaveChangesAsync(ct);
+        return Ok(ToDto(post));
+    }
+
     private Task<Guid?> ResolveActiveLicenseAsync(Guid customerId, CancellationToken ct)
         => _db.Licenses
             .Where(l => l.CustomerId == customerId && l.RevokedAt == null
