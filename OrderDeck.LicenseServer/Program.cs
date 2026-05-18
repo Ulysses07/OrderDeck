@@ -71,6 +71,7 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Licensing.ActivationManager>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Audit.AuditRetentionJobs>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Backup.BackupRestoreDrillJob>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.BroadcastPosts.BroadcastPostCleanupJob>();
         builder.Services.AddHttpContextAccessor();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Audit.IAuditService,
                                     OrderDeck.LicenseServer.Services.Audit.AuditService>();
@@ -122,6 +123,30 @@ public class Program
         {
             throw new InvalidOperationException(
                 $"Unsupported push provider: {pushProvider}. Valid values: 'stub', 'fcm'.");
+        }
+
+        // Broadcast media storage — provider seçimi (stub | r2)
+        // Provider: appsettings.json "OrderDeck:BroadcastMedia:Provider" = "stub" | "r2"
+        var bmProvider = builder.Configuration["OrderDeck:BroadcastMedia:Provider"] ?? "stub";
+        if (bmProvider.Equals("stub", StringComparison.OrdinalIgnoreCase))
+        {
+            builder.Services.AddSingleton<
+                OrderDeck.LicenseServer.Services.BroadcastPosts.IBroadcastMediaStorage,
+                OrderDeck.LicenseServer.Services.BroadcastPosts.StubBroadcastMediaStorage>();
+        }
+        else if (bmProvider.Equals("r2", StringComparison.OrdinalIgnoreCase))
+        {
+            var r2Opt = new OrderDeck.LicenseServer.Services.BroadcastPosts.R2Options();
+            builder.Configuration.GetSection("R2").Bind(r2Opt);
+            builder.Services.AddSingleton(r2Opt);
+            builder.Services.AddSingleton<
+                OrderDeck.LicenseServer.Services.BroadcastPosts.IBroadcastMediaStorage,
+                OrderDeck.LicenseServer.Services.BroadcastPosts.R2BroadcastMediaStorage>();
+        }
+        else
+        {
+            throw new InvalidOperationException(
+                $"Unsupported broadcast media provider: {bmProvider}. Valid values: 'stub', 'r2'.");
         }
 
         // JWT auth — two schemes (use IOptions so tests can override Jwt:SecretKey via config)
@@ -383,6 +408,14 @@ public class Program
                 "backup-restore-drill",
                 j => j.RunAsync(CancellationToken.None),
                 "30 4 * * MON");  // 04:30 UTC every Monday (~07:30 Türkiye)
+
+            // Broadcast posts cleanup — soft-delete 30-day-expired non-pinned posts
+            // and best-effort remove their R2 media. Pinned posts have ExpiresAt
+            // sentinel of 9999-12-31 so they're filtered out by the job's query.
+            manager.AddOrUpdate<OrderDeck.LicenseServer.Services.BroadcastPosts.BroadcastPostCleanupJob>(
+                "broadcast-posts-cleanup",
+                j => j.RunAsync(CancellationToken.None),
+                "0 3 * * *");  // 03:00 UTC daily (before audit-retention at 03:30)
         }
 
         if (app.Environment.IsDevelopment())

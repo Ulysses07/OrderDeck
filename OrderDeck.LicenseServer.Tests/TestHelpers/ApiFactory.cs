@@ -30,6 +30,8 @@ public class ApiFactory : WebApplicationFactory<Program>
 
     public RecordingNotificationSender Push { get; } = new();
 
+    public FakeBroadcastMediaStorage BroadcastMedia { get; } = new();
+
     public string BackupRoot => _backupRoot;
 
     /// <summary>Override in derived test fixture to inject extra in-memory config
@@ -99,6 +101,10 @@ public class ApiFactory : WebApplicationFactory<Program>
             // Push sender override — RecordingNotificationSender tüm bildirimi yakalar.
             services.RemoveAll<INotificationSender>();
             services.AddSingleton<INotificationSender>(Push);
+
+            // Broadcast media storage override — FakeBroadcastMediaStorage UploadCalls'ı kaydeder.
+            services.RemoveAll<OrderDeck.LicenseServer.Services.BroadcastPosts.IBroadcastMediaStorage>();
+            services.AddSingleton<OrderDeck.LicenseServer.Services.BroadcastPosts.IBroadcastMediaStorage>(BroadcastMedia);
 
             // Hangfire — production SQL Server yerine InMemory storage (test isolation)
             services.AddHangfire(cfg => cfg
