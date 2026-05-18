@@ -1,4 +1,5 @@
 using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
 using OrderDeck.LicenseServer.Services.BroadcastPosts;
 using Microsoft.AspNetCore.Authorization;
@@ -60,6 +61,111 @@ public sealed class PanelBroadcastPostsController : ControllerBase
 
         return Ok(new UploadUrlResponse(url, objectKey, DateTimeOffset.UtcNow.AddMinutes(10)));
     }
+
+    private const int MaxTextLength = 2000;
+    private const int MaxVideoDurationSec = 45;
+
+    public sealed record CreatePostMediaDto(
+        string ObjectKey, string ContentType, long SizeBytes,
+        int? DurationSec, int Width, int Height);
+
+    public sealed record CreatePostRequest(
+        string Type, string? TextBody, CreatePostMediaDto? Media);
+
+    public sealed record PostDto(
+        Guid Id, string Type, string? TextBody,
+        string? MediaContentType, int? MediaWidth, int? MediaHeight,
+        int? MediaDurationSec, DateTimeOffset CreatedAt,
+        DateTimeOffset ExpiresAt, bool IsPinned);
+
+    [HttpPost]
+    public async Task<IActionResult> Create([FromBody] CreatePostRequest req, CancellationToken ct)
+    {
+        if (req is null) return Problem(title: "missing-body", statusCode: 400);
+
+        var customerId = User.GetTenantCustomerId();
+        var licenseId = await ResolveActiveLicenseAsync(customerId, ct);
+        if (licenseId is null) return Problem(title: "no-active-license", statusCode: 400);
+
+        var type = req.Type?.ToLowerInvariant() switch
+        {
+            "text" => BroadcastPostType.Text,
+            "photo" => BroadcastPostType.Photo,
+            "video" => BroadcastPostType.Video,
+            _ => (BroadcastPostType?)null
+        };
+        if (type is null) return Problem(title: "invalid-type", statusCode: 400);
+
+        var text = req.TextBody?.Trim();
+        if (type == BroadcastPostType.Text && string.IsNullOrWhiteSpace(text))
+            return Problem(title: "text-required", statusCode: 400);
+        if (text is { Length: > MaxTextLength })
+            return Problem(title: "text-too-long", statusCode: 400);
+        if (string.IsNullOrEmpty(text)) text = null;
+
+        BroadcastPost post;
+        if (type == BroadcastPostType.Text)
+        {
+            post = NewPost(licenseId.Value, type.Value, text, null);
+        }
+        else
+        {
+            if (req.Media is null) return Problem(title: "media-required", statusCode: 400);
+
+            if (!req.Media.ObjectKey.StartsWith($"{licenseId.Value}/"))
+                return Problem(title: "invalid-object-key", statusCode: 400);
+
+            if (type == BroadcastPostType.Video &&
+                (req.Media.DurationSec is null or <= 0 or > MaxVideoDurationSec))
+                return Problem(title: "video-duration-out-of-range",
+                    detail: $"Max {MaxVideoDurationSec} seconds.", statusCode: 400);
+
+            var head = await _storage.HeadAsync(req.Media.ObjectKey, ct);
+            if (head is null) return Problem(title: "media-not-uploaded", statusCode: 400);
+
+            var (allowedMime, maxBytes) = type == BroadcastPostType.Photo
+                ? (AllowedPhotoMime, MaxPhotoBytes)
+                : (AllowedVideoMime, MaxVideoBytes);
+            if (!allowedMime.Contains(head.ContentType))
+                return Problem(title: "invalid-content-type", statusCode: 400);
+            if (head.SizeBytes <= 0 || head.SizeBytes > maxBytes)
+                return Problem(title: "size-out-of-range", statusCode: 400);
+
+            var verifiedMedia = req.Media with { ContentType = head.ContentType, SizeBytes = head.SizeBytes };
+            post = NewPost(licenseId.Value, type.Value, text, verifiedMedia);
+        }
+
+        _db.BroadcastPosts.Add(post);
+        await _db.SaveChangesAsync(ct);
+
+        return Created($"/api/panel/posts/{post.Id}", ToDto(post));
+    }
+
+    private static BroadcastPost NewPost(Guid licenseId, BroadcastPostType type, string? text, CreatePostMediaDto? media)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return new BroadcastPost
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = licenseId,
+            Type = type,
+            TextBody = text,
+            MediaObjectKey = media?.ObjectKey,
+            MediaContentType = media?.ContentType,
+            MediaSizeBytes = media?.SizeBytes,
+            MediaDurationSec = media?.DurationSec,
+            MediaWidth = media?.Width,
+            MediaHeight = media?.Height,
+            CreatedAt = now,
+            ExpiresAt = now.AddDays(30),
+            IsPinned = false
+        };
+    }
+
+    private static PostDto ToDto(BroadcastPost p) =>
+        new(p.Id, p.Type.ToString().ToLowerInvariant(), p.TextBody,
+            p.MediaContentType, p.MediaWidth, p.MediaHeight, p.MediaDurationSec,
+            p.CreatedAt, p.ExpiresAt, p.IsPinned);
 
     private Task<Guid?> ResolveActiveLicenseAsync(Guid customerId, CancellationToken ct)
         => _db.Licenses
