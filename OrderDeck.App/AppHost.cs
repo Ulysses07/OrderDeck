@@ -240,7 +240,15 @@ public sealed class AppHost : IDisposable
         // — re-opening the Settings dialog used to crash here.
         services.AddSingleton<OrderDeck.Licensing.Api.LicenseTokenStore>();
         services.AddTransient<OrderDeck.Licensing.Api.LicenseAuthHandler>();
-        services.AddHttpClient<LicenseApiClient>((sp, http) =>
+        // Named client + manual singleton wrap. AddHttpClient<T> would register
+        // LicenseApiClient as transient, which broke the OnUnauthorized hook —
+        // AppHost set it on one instance, but every other sp.GetRequiredService
+        // got a fresh instance with the hook null, so 401s on the validate /
+        // intake / payment-sync paths skipped refresh entirely and surfaced as
+        // InvalidCredentialsException → "lisans bitti" UX even with 350 days
+        // remaining. Singleton + named factory keeps the resilience pool intact
+        // while ensuring the hook is observed by every caller.
+        services.AddHttpClient(nameof(LicenseApiClient), (sp, http) =>
         {
             var opt = sp.GetRequiredService<IOptions<LicensingOptions>>().Value;
             http.BaseAddress = new Uri(opt.ServerBaseUrl);
@@ -248,6 +256,9 @@ public sealed class AppHost : IDisposable
         })
         .AddHttpMessageHandler<OrderDeck.Licensing.Api.LicenseAuthHandler>()
         .AddStandardResilienceHandler();  // retry on 5xx/network with exp. backoff; no retry on 4xx
+        services.AddSingleton<LicenseApiClient>(sp => new LicenseApiClient(
+            sp.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(LicenseApiClient)),
+            sp.GetRequiredService<OrderDeck.Licensing.Api.LicenseTokenStore>()));
         services.AddSingleton<LoginService>();
         services.AddSingleton<LicenseService>();
         // TokenRefresher must be a singleton so its single-flight gate is shared
