@@ -71,6 +71,7 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Licensing.ActivationManager>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Audit.AuditRetentionJobs>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Backup.BackupRestoreDrillJob>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.BroadcastPosts.BroadcastPostCleanupJob>();
         builder.Services.AddHttpContextAccessor();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Audit.IAuditService,
                                     OrderDeck.LicenseServer.Services.Audit.AuditService>();
@@ -383,6 +384,14 @@ public class Program
                 "backup-restore-drill",
                 j => j.RunAsync(CancellationToken.None),
                 "30 4 * * MON");  // 04:30 UTC every Monday (~07:30 Türkiye)
+
+            // Broadcast posts cleanup — soft-delete 30-day-expired non-pinned posts
+            // and best-effort remove their R2 media. Pinned posts have ExpiresAt
+            // sentinel of 9999-12-31 so they're filtered out by the job's query.
+            manager.AddOrUpdate<OrderDeck.LicenseServer.Services.BroadcastPosts.BroadcastPostCleanupJob>(
+                "broadcast-posts-cleanup",
+                j => j.RunAsync(CancellationToken.None),
+                "0 3 * * *");  // 03:00 UTC daily (before audit-retention at 03:30)
         }
 
         if (app.Environment.IsDevelopment())
