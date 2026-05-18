@@ -428,4 +428,64 @@ public class PanelBroadcastPostsControllerTests : IClassFixture<ApiFactory>
         }
         seenIds.Should().Contain(ids);
     }
+
+    [Fact]
+    public async Task GetMediaUrl_returns_download_url_for_photo_post()
+    {
+        var (client, licenseId) = await SeedAsync();
+        var objectKey = $"{licenseId}/media-url-post/media.bin";
+        _factory.BroadcastMedia.Seed(objectKey, 1024, "image/jpeg");
+
+        Guid postId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var p = new BroadcastPost
+            {
+                Id = Guid.NewGuid(), LicenseId = licenseId,
+                Type = BroadcastPostType.Photo,
+                MediaObjectKey = objectKey,
+                MediaContentType = "image/jpeg",
+                MediaSizeBytes = 1024,
+                MediaWidth = 800, MediaHeight = 600,
+                CreatedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
+                IsPinned = false
+            };
+            db.BroadcastPosts.Add(p);
+            await db.SaveChangesAsync();
+            postId = p.Id;
+        }
+
+        var resp = await client.GetAsync($"/api/panel/posts/{postId}/media-url");
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadAsStringAsync();
+        body.Should().Contain("stub.local").And.Contain("get=1");
+    }
+
+    [Fact]
+    public async Task GetMediaUrl_400_for_text_only_post()
+    {
+        var (client, licenseId) = await SeedAsync();
+        Guid postId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var p = new BroadcastPost
+            {
+                Id = Guid.NewGuid(), LicenseId = licenseId,
+                Type = BroadcastPostType.Text, TextBody = "no media here",
+                CreatedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
+                IsPinned = false
+            };
+            db.BroadcastPosts.Add(p);
+            await db.SaveChangesAsync();
+            postId = p.Id;
+        }
+
+        var resp = await client.GetAsync($"/api/panel/posts/{postId}/media-url");
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await ReadTitleAsync(resp)).Should().Be("no-media");
+    }
 }

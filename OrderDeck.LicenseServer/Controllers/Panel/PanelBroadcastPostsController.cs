@@ -231,6 +231,23 @@ public sealed class PanelBroadcastPostsController : ControllerBase
         return Ok(ToDto(post));
     }
 
+    public sealed record MediaUrlResponse(string Url, DateTimeOffset ExpiresAt);
+
+    [HttpGet("{id:guid}/media-url")]
+    public async Task<IActionResult> GetMediaUrl(Guid id, CancellationToken ct)
+    {
+        var customerId = User.GetTenantCustomerId();
+        var post = await _db.BroadcastPosts
+            .Where(p => p.Id == id && p.DeletedAt == null && p.License.CustomerId == customerId)
+            .FirstOrDefaultAsync(ct);
+        if (post is null) return NotFound();
+        if (string.IsNullOrWhiteSpace(post.MediaObjectKey))
+            return Problem(title: "no-media", statusCode: 400);
+
+        var url = await _storage.CreateDownloadUrlAsync(post.MediaObjectKey, ct);
+        return Ok(new MediaUrlResponse(url, DateTimeOffset.UtcNow.AddMinutes(5)));
+    }
+
     private Task<Guid?> ResolveActiveLicenseAsync(Guid customerId, CancellationToken ct)
         => _db.Licenses
             .Where(l => l.CustomerId == customerId && l.RevokedAt == null
