@@ -125,6 +125,30 @@ public class Program
                 $"Unsupported push provider: {pushProvider}. Valid values: 'stub', 'fcm'.");
         }
 
+        // Broadcast media storage — provider seçimi (stub | r2)
+        // Provider: appsettings.json "OrderDeck:BroadcastMedia:Provider" = "stub" | "r2"
+        var bmProvider = builder.Configuration["OrderDeck:BroadcastMedia:Provider"] ?? "stub";
+        if (bmProvider.Equals("stub", StringComparison.OrdinalIgnoreCase))
+        {
+            builder.Services.AddSingleton<
+                OrderDeck.LicenseServer.Services.BroadcastPosts.IBroadcastMediaStorage,
+                OrderDeck.LicenseServer.Services.BroadcastPosts.StubBroadcastMediaStorage>();
+        }
+        else if (bmProvider.Equals("r2", StringComparison.OrdinalIgnoreCase))
+        {
+            var r2Opt = new OrderDeck.LicenseServer.Services.BroadcastPosts.R2Options();
+            builder.Configuration.GetSection("R2").Bind(r2Opt);
+            builder.Services.AddSingleton(r2Opt);
+            builder.Services.AddSingleton<
+                OrderDeck.LicenseServer.Services.BroadcastPosts.IBroadcastMediaStorage,
+                OrderDeck.LicenseServer.Services.BroadcastPosts.R2BroadcastMediaStorage>();
+        }
+        else
+        {
+            throw new InvalidOperationException(
+                $"Unsupported broadcast media provider: {bmProvider}. Valid values: 'stub', 'r2'.");
+        }
+
         // JWT auth — two schemes (use IOptions so tests can override Jwt:SecretKey via config)
         builder.Services.AddAuthentication()
             .AddJwtBearer("Bearer-Customer", _ => { })
