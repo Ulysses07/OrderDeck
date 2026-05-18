@@ -231,6 +231,32 @@ public sealed class PanelBroadcastPostsController : ControllerBase
         return Ok(ToDto(post));
     }
 
+    public sealed record UpdatePostRequest(string? TextBody);
+
+    [HttpPut("{id:guid}")]
+    public async Task<IActionResult> Update(Guid id, [FromBody] UpdatePostRequest req, CancellationToken ct)
+    {
+        if (req is null) return Problem(title: "missing-body", statusCode: 400);
+
+        var customerId = User.GetTenantCustomerId();
+        var post = await _db.BroadcastPosts
+            .Where(p => p.Id == id && p.DeletedAt == null && p.License.CustomerId == customerId)
+            .FirstOrDefaultAsync(ct);
+        if (post is null) return NotFound();
+
+        var text = req.TextBody?.Trim();
+        if (post.Type == BroadcastPostType.Text && string.IsNullOrWhiteSpace(text))
+            return Problem(title: "text-required", statusCode: 400);
+        if (text is { Length: > MaxTextLength })
+            return Problem(title: "text-too-long", statusCode: 400);
+        if (string.IsNullOrEmpty(text)) text = null;
+
+        post.TextBody = text;
+        await _db.SaveChangesAsync(ct);
+
+        return Ok(ToDto(post));
+    }
+
     public sealed record MediaUrlResponse(string Url, DateTimeOffset ExpiresAt);
 
     [HttpGet("{id:guid}/media-url")]

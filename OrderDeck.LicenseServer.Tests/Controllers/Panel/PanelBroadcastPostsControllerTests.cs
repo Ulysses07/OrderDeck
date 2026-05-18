@@ -464,6 +464,62 @@ public class PanelBroadcastPostsControllerTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Update_changes_text_body()
+    {
+        var (client, licenseId) = await SeedAsync();
+        Guid postId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var p = new BroadcastPost
+            {
+                Id = Guid.NewGuid(), LicenseId = licenseId,
+                Type = BroadcastPostType.Text, TextBody = "old",
+                CreatedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
+                IsPinned = false
+            };
+            db.BroadcastPosts.Add(p);
+            await db.SaveChangesAsync();
+            postId = p.Id;
+        }
+
+        var resp = await client.PutAsJsonAsync($"/api/panel/posts/{postId}",
+            new { textBody = "new" });
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadAsStringAsync();
+        body.Should().Contain("new");
+    }
+
+    [Fact]
+    public async Task Update_404_for_cross_tenant()
+    {
+        var (clientA, licenseA) = await SeedAsync();
+        var (clientB, _) = await SeedAsync();
+
+        Guid postId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var p = new BroadcastPost
+            {
+                Id = Guid.NewGuid(), LicenseId = licenseA,
+                Type = BroadcastPostType.Text, TextBody = "secret",
+                CreatedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
+                IsPinned = false
+            };
+            db.BroadcastPosts.Add(p);
+            await db.SaveChangesAsync();
+            postId = p.Id;
+        }
+
+        var resp = await clientB.PutAsJsonAsync($"/api/panel/posts/{postId}",
+            new { textBody = "hijack" });
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
     public async Task GetMediaUrl_400_for_text_only_post()
     {
         var (client, licenseId) = await SeedAsync();
@@ -487,5 +543,95 @@ public class PanelBroadcastPostsControllerTests : IClassFixture<ApiFactory>
         var resp = await client.GetAsync($"/api/panel/posts/{postId}/media-url");
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         (await ReadTitleAsync(resp)).Should().Be("no-media");
+    }
+
+    [Fact]
+    public async Task Update_400_when_text_too_long()
+    {
+        var (client, licenseId) = await SeedAsync();
+        Guid postId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var p = new BroadcastPost
+            {
+                Id = Guid.NewGuid(), LicenseId = licenseId,
+                Type = BroadcastPostType.Text, TextBody = "ok",
+                CreatedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
+                IsPinned = false
+            };
+            db.BroadcastPosts.Add(p);
+            await db.SaveChangesAsync();
+            postId = p.Id;
+        }
+
+        var oversized = new string('x', 2001); // MaxTextLength = 2000
+        var resp = await client.PutAsJsonAsync($"/api/panel/posts/{postId}",
+            new { textBody = oversized });
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await ReadTitleAsync(resp)).Should().Be("text-too-long");
+    }
+
+    [Fact]
+    public async Task Update_clears_caption_on_photo_post()
+    {
+        var (client, licenseId) = await SeedAsync();
+        Guid postId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var p = new BroadcastPost
+            {
+                Id = Guid.NewGuid(), LicenseId = licenseId,
+                Type = BroadcastPostType.Photo,
+                TextBody = "original caption",
+                MediaObjectKey = $"{licenseId}/photo-update/media.bin",
+                MediaContentType = "image/jpeg",
+                CreatedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
+                IsPinned = false
+            };
+            db.BroadcastPosts.Add(p);
+            await db.SaveChangesAsync();
+            postId = p.Id;
+        }
+
+        var resp = await client.PutAsJsonAsync($"/api/panel/posts/{postId}",
+            new { textBody = (string?)null });
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Verify caption normalized to null in DB (consistent with Create's whitespace-to-null rule)
+        using var verifyScope = _factory.Services.CreateScope();
+        var db2 = verifyScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var reloaded = await db2.BroadcastPosts.FindAsync(postId);
+        reloaded!.TextBody.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Update_400_when_text_required_and_body_empty()
+    {
+        var (client, licenseId) = await SeedAsync();
+        Guid postId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var p = new BroadcastPost
+            {
+                Id = Guid.NewGuid(), LicenseId = licenseId,
+                Type = BroadcastPostType.Text, TextBody = "before",
+                CreatedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
+                IsPinned = false
+            };
+            db.BroadcastPosts.Add(p);
+            await db.SaveChangesAsync();
+            postId = p.Id;
+        }
+
+        var resp = await client.PutAsJsonAsync($"/api/panel/posts/{postId}",
+            new { textBody = "   " });
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await ReadTitleAsync(resp)).Should().Be("text-required");
     }
 }
