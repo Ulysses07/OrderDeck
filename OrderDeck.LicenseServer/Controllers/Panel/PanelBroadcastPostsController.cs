@@ -324,6 +324,30 @@ public sealed class PanelBroadcastPostsController : ControllerBase
         return Ok(ToDto(post));
     }
 
+    [HttpDelete("{id:guid}")]
+    public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
+    {
+        var customerId = User.GetTenantCustomerId();
+        var post = await _db.BroadcastPosts
+            .Where(p => p.Id == id && p.DeletedAt == null && p.License.CustomerId == customerId)
+            .FirstOrDefaultAsync(ct);
+        if (post is null) return NotFound();
+
+        post.DeletedAt = DateTimeOffset.UtcNow;
+        await _db.SaveChangesAsync(ct);
+
+        // R2 obj delete — best-effort. Row is already soft-deleted; if R2
+        // throttle or transient outage leaves an orphan, Task 11's cleanup
+        // job is the eventual fallback.
+        if (!string.IsNullOrWhiteSpace(post.MediaObjectKey))
+        {
+            try { await _storage.DeleteAsync(post.MediaObjectKey, ct); }
+            catch { /* swallow */ }
+        }
+
+        return NoContent();
+    }
+
     private Task<Guid?> ResolveActiveLicenseAsync(Guid customerId, CancellationToken ct)
         => _db.Licenses
             .Where(l => l.CustomerId == customerId && l.RevokedAt == null

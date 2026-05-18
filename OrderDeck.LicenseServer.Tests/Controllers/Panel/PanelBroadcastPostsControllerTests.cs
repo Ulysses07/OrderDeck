@@ -773,4 +773,40 @@ public class PanelBroadcastPostsControllerTests : IClassFixture<ApiFactory>
         fetched.ExpiresAt.Should().BeAfter(DateTimeOffset.UtcNow.AddHours(23));
         fetched.ExpiresAt.Should().BeBefore(DateTimeOffset.UtcNow.AddDays(2));
     }
+
+    [Fact]
+    public async Task Delete_soft_deletes_and_removes_media()
+    {
+        var (client, licenseId) = await SeedAsync();
+        var objectKey = $"{licenseId}/del-me/media.bin";
+        _factory.BroadcastMedia.Seed(objectKey, 1024, "image/jpeg");
+
+        Guid postId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var p = new BroadcastPost
+            {
+                Id = Guid.NewGuid(), LicenseId = licenseId,
+                Type = BroadcastPostType.Photo,
+                MediaObjectKey = objectKey, MediaContentType = "image/jpeg",
+                CreatedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
+                IsPinned = false
+            };
+            db.BroadcastPosts.Add(p);
+            await db.SaveChangesAsync();
+            postId = p.Id;
+        }
+
+        var resp = await client.DeleteAsync($"/api/panel/posts/{postId}");
+        resp.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        using var scope2 = _factory.Services.CreateScope();
+        var db2 = scope2.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var fetched = await db2.BroadcastPosts.FirstAsync(p => p.Id == postId);
+        fetched.DeletedAt.Should().NotBeNull();
+
+        (await _factory.BroadcastMedia.HeadAsync(objectKey)).Should().BeNull();
+    }
 }
