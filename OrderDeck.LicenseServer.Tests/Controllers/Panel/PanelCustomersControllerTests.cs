@@ -335,4 +335,74 @@ public class PanelCustomersControllerTests : IClassFixture<ApiFactory>
         customers[0].GetProperty("orderCount").GetInt32().Should().Be(1);
         customers[0].GetProperty("totalSpent").GetDecimal().Should().Be(50m);
     }
+
+    [Fact]
+    public async Task List_sort_by_totalSpent_desc()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var now = DateTimeOffset.UtcNow;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Orders.AddRange(
+                MakeListOrder(licenseId, "low-ig",  "instagram", "@low",  "Low",  100m, now.AddDays(-1)),
+                MakeListOrder(licenseId, "high-ig", "instagram", "@high", "High", 999m, now.AddDays(-5)));
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.GetAsync("/api/panel/customers?sort=totalSpent");
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        var customers = doc.RootElement.GetProperty("customers");
+        customers[0].GetProperty("id").GetString().Should().Be("high-ig");
+        customers[1].GetProperty("id").GetString().Should().Be("low-ig");
+    }
+
+    [Fact]
+    public async Task List_sort_by_orderCount_desc()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var now = DateTimeOffset.UtcNow;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Orders.AddRange(
+                MakeListOrder(licenseId, "frequent-ig", "instagram", "@f", "Frequent", 10m, now.AddDays(-5)),
+                MakeListOrder(licenseId, "frequent-ig", "instagram", "@f", "Frequent", 10m, now.AddDays(-4)),
+                MakeListOrder(licenseId, "frequent-ig", "instagram", "@f", "Frequent", 10m, now.AddDays(-3)),
+                MakeListOrder(licenseId, "rare-ig",     "instagram", "@r", "Rare",     10m, now.AddDays(-1)));
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.GetAsync("/api/panel/customers?sort=orderCount");
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        var customers = doc.RootElement.GetProperty("customers");
+        customers[0].GetProperty("id").GetString().Should().Be("frequent-ig");
+        customers[0].GetProperty("orderCount").GetInt32().Should().Be(3);
+    }
+
+    [Fact]
+    public async Task List_sort_by_name_asc()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var now = DateTimeOffset.UtcNow;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Orders.AddRange(
+                MakeListOrder(licenseId, "zoe-ig",   "instagram", "@zoe",   "Zoe",    10m, now.AddDays(-1)),
+                MakeListOrder(licenseId, "anna-ig",  "instagram", "@anna",  "Anna",   10m, now.AddDays(-2)),
+                MakeListOrder(licenseId, "mike-ig",  "instagram", "@mike",  "Mike",   10m, now.AddDays(-3)));
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.GetAsync("/api/panel/customers?sort=name");
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        var customers = doc.RootElement.GetProperty("customers");
+        customers[0].GetProperty("displayName").GetString().Should().Be("Anna");
+        customers[1].GetProperty("displayName").GetString().Should().Be("Mike");
+        customers[2].GetProperty("displayName").GetString().Should().Be("Zoe");
+    }
 }
