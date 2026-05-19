@@ -504,4 +504,73 @@ public class PanelCustomersControllerTests : IClassFixture<ApiFactory>
         customers[0].GetProperty("id").GetString().Should().Be("loyal-ig");
         customers[0].GetProperty("orderCount").GetInt32().Should().Be(5);
     }
+
+    [Fact]
+    public async Task List_pagination_composite_cursor()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var now = DateTimeOffset.UtcNow;
+
+        // 5 müşteri, her birinin lastOrder farklı tarih
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            for (int i = 0; i < 5; i++)
+            {
+                db.Orders.Add(MakeListOrder(
+                    licenseId, $"cust-{i}-ig", "instagram", $"@c{i}", $"Customer {i}",
+                    10m, now.AddDays(-i)));
+            }
+            await db.SaveChangesAsync();
+        }
+
+        // Page 1: limit=2 → ilk 2 (cust-0, cust-1)
+        var resp1 = await client.GetAsync("/api/panel/customers?limit=2");
+        resp1.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
+        var body1 = await resp1.Content.ReadAsStringAsync();
+        using var doc1 = System.Text.Json.JsonDocument.Parse(body1);
+        var page1 = doc1.RootElement.GetProperty("customers");
+        page1.GetArrayLength().Should().Be(2);
+        page1[0].GetProperty("id").GetString().Should().Be("cust-0-ig");
+        page1[1].GetProperty("id").GetString().Should().Be("cust-1-ig");
+        var cursor = doc1.RootElement.GetProperty("nextCursor").GetString();
+        cursor.Should().NotBeNullOrEmpty();
+
+        // Page 2: cursor ile → cust-2, cust-3
+        var resp2 = await client.GetAsync($"/api/panel/customers?limit=2&cursor={Uri.EscapeDataString(cursor!)}");
+        var body2 = await resp2.Content.ReadAsStringAsync();
+        using var doc2 = System.Text.Json.JsonDocument.Parse(body2);
+        var page2 = doc2.RootElement.GetProperty("customers");
+        page2.GetArrayLength().Should().Be(2);
+        page2[0].GetProperty("id").GetString().Should().Be("cust-2-ig");
+        page2[1].GetProperty("id").GetString().Should().Be("cust-3-ig");
+
+        // Page 1 ile page 2 arasında duplicate olmamalı
+        var page1Ids = new[] { page1[0].GetProperty("id").GetString(), page1[1].GetProperty("id").GetString() };
+        var page2Ids = new[] { page2[0].GetProperty("id").GetString(), page2[1].GetProperty("id").GetString() };
+        page1Ids.Should().NotIntersectWith(page2Ids);
+    }
+
+    [Fact]
+    public async Task List_cross_tenant_returns_empty()
+    {
+        var (clientA, licenseA) = await SeedListAsync();
+        var (clientB, _) = await SeedListAsync();
+        var now = DateTimeOffset.UtcNow;
+
+        // Tenant A'nın müşterisi
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Orders.Add(MakeListOrder(licenseA, "secret-cust", "instagram", "@s", "Secret", 100m, now.AddDays(-1)));
+            await db.SaveChangesAsync();
+        }
+
+        // Tenant B sorgular — A'nın müşterisini görmemeli
+        var resp = await clientB.GetAsync("/api/panel/customers");
+        resp.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        doc.RootElement.GetProperty("customers").GetArrayLength().Should().Be(0);
+    }
 }
