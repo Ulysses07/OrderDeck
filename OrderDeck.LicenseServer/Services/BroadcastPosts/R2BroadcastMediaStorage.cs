@@ -23,7 +23,17 @@ public sealed class R2BroadcastMediaStorage : IBroadcastMediaStorage, IDisposabl
             new AmazonS3Config
             {
                 ServiceURL = _opt.ServiceUrl,
-                ForcePathStyle = true
+                ForcePathStyle = true,
+                // Force SigV4 for pre-signed URLs. Default in this AWSSDK.S3
+                // version emits SigV2-style URLs (AWSAccessKeyId=...&Signature=...)
+                // which Cloudflare R2 rejects on the CORS OPTIONS preflight:
+                // the unsigned preflight gets a 401 before CORS headers are
+                // added, so the browser sees no Access-Control-Allow-Origin
+                // and fails the upload. SigV4 (X-Amz-Algorithm=AWS4-HMAC-SHA256
+                // &X-Amz-Credential=...) is what R2's preflight handler
+                // recognizes as a pre-signed request and returns CORS headers
+                // for, even on the unauthenticated OPTIONS check.
+                SignatureVersion = "4"
             });
     }
 
