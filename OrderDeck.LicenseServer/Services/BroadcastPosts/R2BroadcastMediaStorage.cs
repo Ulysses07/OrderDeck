@@ -1,3 +1,4 @@
+using Amazon;
 using Amazon.S3;
 using Amazon.S3.Model;
 using Microsoft.Extensions.Logging;
@@ -6,6 +7,17 @@ namespace OrderDeck.LicenseServer.Services.BroadcastPosts;
 
 public sealed class R2BroadcastMediaStorage : IBroadcastMediaStorage, IDisposable
 {
+    // Static init: force SigV4 globally. AmazonS3Config.SignatureVersion="4" is
+    // ignored for pre-signed URLs in this SDK version; this static flag is what
+    // actually flips presign output from SigV2 (?AWSAccessKeyId=...&Signature=)
+    // to SigV4 (?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...).
+    // R2 rejects SigV2 preflight (OPTIONS gets 401 without CORS headers); SigV4
+    // preflight returns the expected Access-Control-Allow-Origin.
+    static R2BroadcastMediaStorage()
+    {
+        AWSConfigsS3.UseSignatureVersion4 = true;
+    }
+
     private readonly R2Options _opt;
     private readonly AmazonS3Client _client;
     private readonly ILogger<R2BroadcastMediaStorage> _log;
@@ -24,16 +36,11 @@ public sealed class R2BroadcastMediaStorage : IBroadcastMediaStorage, IDisposabl
             {
                 ServiceURL = _opt.ServiceUrl,
                 ForcePathStyle = true,
-                // Force SigV4 for pre-signed URLs. Default in this AWSSDK.S3
-                // version emits SigV2-style URLs (AWSAccessKeyId=...&Signature=...)
-                // which Cloudflare R2 rejects on the CORS OPTIONS preflight:
-                // the unsigned preflight gets a 401 before CORS headers are
-                // added, so the browser sees no Access-Control-Allow-Origin
-                // and fails the upload. SigV4 (X-Amz-Algorithm=AWS4-HMAC-SHA256
-                // &X-Amz-Credential=...) is what R2's preflight handler
-                // recognizes as a pre-signed request and returns CORS headers
-                // for, even on the unauthenticated OPTIONS check.
-                SignatureVersion = "4"
+                SignatureVersion = "4",
+                // R2 uses "auto" region; AWSSDK derives the signing region from
+                // this. Without it the SigV4 string-to-sign has an empty region
+                // and R2 returns SignatureDoesNotMatch on PUT.
+                AuthenticationRegion = "auto"
             });
     }
 
