@@ -405,4 +405,103 @@ public class PanelCustomersControllerTests : IClassFixture<ApiFactory>
         customers[1].GetProperty("displayName").GetString().Should().Be("Mike");
         customers[2].GetProperty("displayName").GetString().Should().Be("Zoe");
     }
+
+    [Fact]
+    public async Task List_filter_active_within_30_days()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var now = DateTimeOffset.UtcNow;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Orders.AddRange(
+                MakeListOrder(licenseId, "active-ig",   "instagram", "@a", "Active",   10m, now.AddDays(-5)),
+                MakeListOrder(licenseId, "inactive-ig", "instagram", "@i", "Inactive", 10m, now.AddDays(-60)));
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.GetAsync("/api/panel/customers?activeWithinDays=30");
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        var customers = doc.RootElement.GetProperty("customers");
+        customers.GetArrayLength().Should().Be(1);
+        customers[0].GetProperty("id").GetString().Should().Be("active-ig");
+        customers[0].GetProperty("isActive").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task List_filter_platform_multi()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var now = DateTimeOffset.UtcNow;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Orders.AddRange(
+                MakeListOrder(licenseId, "ig-cust", "instagram", "@i", "IG", 10m, now.AddDays(-1)),
+                MakeListOrder(licenseId, "tt-cust", "tiktok",    "@t", "TT", 10m, now.AddDays(-2)),
+                MakeListOrder(licenseId, "fb-cust", "facebook",  "@f", "FB", 10m, now.AddDays(-3)));
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.GetAsync("/api/panel/customers?platforms=instagram,tiktok");
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        var customers = doc.RootElement.GetProperty("customers");
+        customers.GetArrayLength().Should().Be(2);
+        var ids = new[]
+        {
+            customers[0].GetProperty("id").GetString(),
+            customers[1].GetProperty("id").GetString()
+        };
+        ids.Should().Contain("ig-cust").And.Contain("tt-cust");
+        ids.Should().NotContain("fb-cust");
+    }
+
+    [Fact]
+    public async Task List_filter_spent_range()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var now = DateTimeOffset.UtcNow;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Orders.AddRange(
+                MakeListOrder(licenseId, "small-ig",  "instagram", "@s",  "S",  50m,    now.AddDays(-1)),
+                MakeListOrder(licenseId, "medium-ig", "instagram", "@m",  "M",  500m,   now.AddDays(-2)),
+                MakeListOrder(licenseId, "huge-ig",   "instagram", "@h",  "H",  50000m, now.AddDays(-3)));
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.GetAsync("/api/panel/customers?minSpent=100&maxSpent=1000");
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        var customers = doc.RootElement.GetProperty("customers");
+        customers.GetArrayLength().Should().Be(1);
+        customers[0].GetProperty("id").GetString().Should().Be("medium-ig");
+    }
+
+    [Fact]
+    public async Task List_filter_order_count_range()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var now = DateTimeOffset.UtcNow;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            // single: 1 order, loyal: 5 orders
+            db.Orders.Add(MakeListOrder(licenseId, "single-ig", "instagram", "@s", "Single", 10m, now.AddDays(-1)));
+            for (int i = 0; i < 5; i++)
+                db.Orders.Add(MakeListOrder(licenseId, "loyal-ig", "instagram", "@l", "Loyal", 10m, now.AddDays(-i - 2)));
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.GetAsync("/api/panel/customers?minOrders=2");
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        var customers = doc.RootElement.GetProperty("customers");
+        customers.GetArrayLength().Should().Be(1);
+        customers[0].GetProperty("id").GetString().Should().Be("loyal-ig");
+        customers[0].GetProperty("orderCount").GetInt32().Should().Be(5);
+    }
 }
