@@ -109,4 +109,74 @@ public class PanelStatsControllerTests : IClassFixture<ApiFactory>
         doc.RootElement.GetProperty("revenue").GetDecimal().Should().Be(0m);
         doc.RootElement.GetProperty("orderCount").GetInt32().Should().Be(0);
     }
+
+    [Fact]
+    public async Task Stats_today_excludes_cancelled_and_shipping_fees()
+    {
+        var (client, licenseId) = await SeedAsync();
+        var trNow = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(3));
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Orders.AddRange(
+                MakeOrder(licenseId, 100m, trNow.AddHours(-1).UtcDateTime),
+                MakeOrder(licenseId, 500m, trNow.AddHours(-2).UtcDateTime, cancelled: true),
+                MakeOrder(licenseId, 50m,  trNow.AddHours(-3).UtcDateTime, shippingFee: true),
+                MakeOrder(licenseId, 999m, trNow.AddHours(-4).UtcDateTime, tentative: true));
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.GetAsync("/api/panel/stats?range=today");
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+
+        doc.RootElement.GetProperty("revenue").GetDecimal().Should().Be(100m);
+        doc.RootElement.GetProperty("orderCount").GetInt32().Should().Be(1);
+        doc.RootElement.GetProperty("averageOrderValue").GetDecimal().Should().Be(100m);
+    }
+
+    [Fact]
+    public async Task Stats_cancelRate_calculation()
+    {
+        var (client, licenseId) = await SeedAsync();
+        var trNow = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(3));
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            for (int i = 0; i < 8; i++)
+                db.Orders.Add(MakeOrder(licenseId, 100m, trNow.AddHours(-i).UtcDateTime));
+            for (int i = 0; i < 2; i++)
+                db.Orders.Add(MakeOrder(licenseId, 100m, trNow.AddHours(-i - 10).UtcDateTime, cancelled: true));
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.GetAsync("/api/panel/stats?range=today");
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+
+        doc.RootElement.GetProperty("cancelRate").GetDecimal().Should().Be(0.2m);
+    }
+
+    [Fact]
+    public async Task Stats_month_includes_orders_since_first_of_month()
+    {
+        var (client, licenseId) = await SeedAsync();
+        var trNow = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(3));
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var firstOfMonthTr = new DateTimeOffset(trNow.Year, trNow.Month, 1, 12, 0, 0, trNow.Offset);
+            db.Orders.Add(MakeOrder(licenseId, 100m, firstOfMonthTr.UtcDateTime));
+            var prevMonth = firstOfMonthTr.AddMonths(-1);
+            db.Orders.Add(MakeOrder(licenseId, 999m, prevMonth.UtcDateTime));
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.GetAsync("/api/panel/stats?range=month");
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+
+        doc.RootElement.GetProperty("revenue").GetDecimal().Should().Be(100m);
+        doc.RootElement.GetProperty("range").GetString().Should().Be("month");
+    }
 }
