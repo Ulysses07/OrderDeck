@@ -10,6 +10,15 @@ using UglyToad.PdfPig;
 namespace OrderDeck.PdfParsing;
 
 /// <summary>
+/// Abstraction for PDF dekont parsing — allows fakes in tests without a
+/// real PdfPig dependency.
+/// </summary>
+public interface IPdfDekontParser
+{
+    PdfDekontParser.ParseResult Parse(byte[] pdfBytes);
+}
+
+/// <summary>
 /// Banka dekontu PDF'lerinden ödeyen / tutar / referans no / tarih
 /// alanlarını best-effort olarak çıkarır. Operatör DekontEkleDialog'da
 /// formu pre-fill olarak görür, gerekirse düzeltir. Türkiye'deki belli
@@ -22,7 +31,7 @@ namespace OrderDeck.PdfParsing;
 /// PDF bellekten düşer. KVKK için uygun davranış (memory'deki kararla
 /// uyumlu: PDF retention 0, yalnız metadata persist).
 /// </summary>
-public sealed class PdfDekontParser
+public sealed class PdfDekontParser : IPdfDekontParser
 {
     /// <summary>Sonuç. Her alan null olabilir — parser bulamadığında
     /// UI alanı boş bırakır, operatör elle doldurur.</summary>

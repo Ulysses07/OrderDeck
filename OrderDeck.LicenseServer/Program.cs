@@ -64,6 +64,11 @@ public class Program
         // Services
         builder.Services.AddSingleton<PasswordHasher>();
         builder.Services.AddScoped<ShopperRefreshTokenService>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.ShopperPayments.IShopperPaymentRateLimiter,
+            OrderDeck.LicenseServer.Services.ShopperPayments.ShopperPaymentRateLimiter>();
+        builder.Services.AddSingleton<OrderDeck.PdfParsing.IPdfDekontParser,
+            OrderDeck.PdfParsing.PdfDekontParser>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.ShopperPayments.ShopperPaymentSubmissionService>();
         builder.Services.AddSingleton<JwtTokenService>();
         builder.Services.AddScoped<RefreshTokenService>();
         builder.Services.AddScoped<EmailConfirmationService>();
@@ -148,6 +153,21 @@ public class Program
         {
             throw new InvalidOperationException(
                 $"Unsupported broadcast media provider: {bmProvider}. Valid values: 'stub', 'r2'.");
+        }
+
+        // Shopper payment storage — same provider selection as broadcast media (stub | r2)
+        // R2Options already registered as singleton above when bmProvider == "r2".
+        if (bmProvider.Equals("stub", StringComparison.OrdinalIgnoreCase))
+        {
+            builder.Services.AddSingleton<
+                OrderDeck.LicenseServer.Services.ShopperPayments.IShopperPaymentStorage,
+                OrderDeck.LicenseServer.Services.ShopperPayments.StubShopperPaymentStorage>();
+        }
+        else
+        {
+            builder.Services.AddSingleton<
+                OrderDeck.LicenseServer.Services.ShopperPayments.IShopperPaymentStorage,
+                OrderDeck.LicenseServer.Services.ShopperPayments.R2ShopperPaymentStorage>();
         }
 
         // JWT auth — two schemes (use IOptions so tests can override Jwt:SecretKey via config)

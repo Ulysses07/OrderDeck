@@ -10,6 +10,7 @@ public sealed class PaymentSubmissionAudit
     public Guid Id { get; set; }
     public Guid PaymentId { get; set; }
     public Guid ShopperId { get; set; }
+    public Guid LicenseId { get; set; }   // Faz 0b-4: rate limit by license needs this
     public string IpAddress { get; set; } = "";
     public string UserAgent { get; set; } = "";
     public string FraudFlags { get; set; } = "";
