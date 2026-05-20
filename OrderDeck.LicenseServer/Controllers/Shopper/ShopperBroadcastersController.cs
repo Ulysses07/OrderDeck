@@ -117,6 +117,239 @@ public sealed class ShopperBroadcastersController : ControllerBase
         return Ok(new JoinResponse(broadcasters));
     }
 
+    // ── GET /api/v1/shopper/broadcasters/{licenseId}/orders ──────────────────
+
+    public sealed record OrderItem(
+        Guid Id,
+        Guid? SessionId,
+        string? SessionTitle,
+        string Platform,
+        string MessageText,
+        string? Code,
+        decimal Price,
+        DateTimeOffset AddedAt,
+        DateTimeOffset? PrintedAt,
+        DateTimeOffset? CancelledAt,
+        bool IsShippingFee);
+
+    public sealed record OrdersResponse(OrderItem[] Items, string? NextCursor);
+
+    [HttpGet("{licenseId:guid}/orders")]
+    public async Task<IActionResult> GetOrders(
+        Guid licenseId,
+        [FromQuery] string? cursor,
+        [FromQuery] int limit = 50,
+        [FromQuery] string? status = null,
+        CancellationToken ct = default)
+    {
+        limit = Math.Clamp(limit, 1, 100);
+
+        // 1. Parse shopperId from claims
+        var shopperId = GetShopperId();
+        if (shopperId is null) return Unauthorized();
+
+        var shopper = await _db.Shoppers
+            .FirstOrDefaultAsync(s => s.Id == shopperId && s.DeletedAt == null, ct);
+        if (shopper is null) return Unauthorized();
+
+        // 2. Verify active link
+        var link = await _db.ShopperBroadcasterLinks
+            .FirstOrDefaultAsync(l => l.ShopperId == shopperId && l.LicenseId == licenseId && l.LeftAt == null, ct);
+        if (link is null)
+            return Problem(title: "not-linked", statusCode: 403);
+
+        // 3. No WpfCustomerId → no orders mappable yet
+        if (link.WpfCustomerId is null)
+            return Ok(new OrdersResponse(Array.Empty<OrderItem>(), null));
+
+        // 4. Convert WpfCustomerId to N-format string to match Order.CustomerId
+        var wpfCustomerIdString = link.WpfCustomerId.Value.ToString("N");
+
+        // 5. Build query
+        var query = _db.Orders.Where(o => o.LicenseId == licenseId && o.CustomerId == wpfCustomerIdString);
+
+        // 6. Status filter
+        query = status?.ToLowerInvariant() switch
+        {
+            "active" => query.Where(o => o.CancelledAt == null),
+            "cancelled" => query.Where(o => o.CancelledAt != null),
+            _ => query
+        };
+
+        // 7. Parse cursor: composite {AddedAt ticks}|{Id}
+        if (TryDecodeCursor(cursor, out var cursorTicks, out var cursorId))
+        {
+            var cursorTs = new DateTimeOffset(cursorTicks, TimeSpan.Zero);
+            query = query.Where(o =>
+                o.AddedAt < cursorTs ||
+                (o.AddedAt == cursorTs && o.Id.CompareTo(cursorId) < 0));
+        }
+
+        var rows = await query
+            .OrderByDescending(o => o.AddedAt)
+            .ThenByDescending(o => o.Id)
+            .Take(limit + 1)
+            .Select(o => new
+            {
+                o.Id,
+                o.SessionId,
+                SessionTitle = o.Session != null ? o.Session.Title : null,
+                o.Platform,
+                o.MessageText,
+                o.Code,
+                o.Price,
+                o.AddedAt,
+                o.PrintedAt,
+                o.CancelledAt,
+                o.IsShippingFee,
+            })
+            .ToListAsync(ct);
+
+        // 8. Build nextCursor if more pages
+        string? nextCursor = null;
+        if (rows.Count > limit)
+        {
+            rows.RemoveAt(rows.Count - 1);
+            var last = rows[^1];
+            nextCursor = EncodeCursor(last.AddedAt, last.Id);
+        }
+
+        var items = rows.Select(r => new OrderItem(
+            r.Id,
+            r.SessionId,
+            r.SessionTitle,
+            r.Platform,
+            r.MessageText,
+            r.Code,
+            r.Price,
+            r.AddedAt,
+            r.PrintedAt,
+            r.CancelledAt,
+            r.IsShippingFee)).ToArray();
+
+        return Ok(new OrdersResponse(items, nextCursor));
+    }
+
+    // ── GET /api/v1/shopper/broadcasters/{licenseId}/payments ────────────────
+
+    public sealed record PaymentItem(
+        Guid Id,
+        string PayerName,
+        decimal Amount,
+        DateTimeOffset PaidAt,
+        string? ReferansNo,
+        string Status,
+        string? RejectReason,
+        DateTimeOffset CreatedAt,
+        DateTimeOffset? ApprovedAt,
+        DateTimeOffset? RejectedAt);
+
+    public sealed record PaymentsResponse(PaymentItem[] Items, string? NextCursor);
+
+    [HttpGet("{licenseId:guid}/payments")]
+    public async Task<IActionResult> GetPayments(
+        Guid licenseId,
+        [FromQuery] string? cursor,
+        [FromQuery] int limit = 50,
+        [FromQuery] string? status = null,
+        CancellationToken ct = default)
+    {
+        limit = Math.Clamp(limit, 1, 100);
+
+        // 1. Parse shopperId from claims
+        var shopperId = GetShopperId();
+        if (shopperId is null) return Unauthorized();
+
+        var shopper = await _db.Shoppers
+            .FirstOrDefaultAsync(s => s.Id == shopperId && s.DeletedAt == null, ct);
+        if (shopper is null) return Unauthorized();
+
+        // 2. Verify active link
+        var link = await _db.ShopperBroadcasterLinks
+            .FirstOrDefaultAsync(l => l.ShopperId == shopperId && l.LicenseId == licenseId && l.LeftAt == null, ct);
+        if (link is null)
+            return Problem(title: "not-linked", statusCode: 403);
+
+        // 3. Build query: only shopper-uploaded payments
+        var query = _db.Payments.Where(p => p.LicenseId == licenseId && p.ShopperId == shopperId);
+
+        // 4. Status filter
+        query = status?.ToLowerInvariant() switch
+        {
+            "pending" => query.Where(p => p.Status == PaymentStatus.Pending),
+            "approved" => query.Where(p => p.Status == PaymentStatus.Approved),
+            "rejected" => query.Where(p => p.Status == PaymentStatus.Rejected),
+            _ => query
+        };
+
+        // 5. Parse cursor: composite {CreatedAt ticks}|{Id}
+        if (TryDecodeCursor(cursor, out var cursorTicks, out var cursorId))
+        {
+            var cursorTs = new DateTimeOffset(cursorTicks, TimeSpan.Zero);
+            query = query.Where(p =>
+                p.CreatedAt < cursorTs ||
+                (p.CreatedAt == cursorTs && p.Id.CompareTo(cursorId) < 0));
+        }
+
+        var rows = await query
+            .OrderByDescending(p => p.CreatedAt)
+            .ThenByDescending(p => p.Id)
+            .Take(limit + 1)
+            .Select(p => new
+            {
+                p.Id,
+                p.PayerName,
+                p.Amount,
+                p.PaidAt,
+                p.ReferansNo,
+                p.Status,
+                p.RejectReason,
+                p.CreatedAt,
+                p.ApprovedAt,
+                p.RejectedAt,
+            })
+            .ToListAsync(ct);
+
+        // 6. Build nextCursor if more pages
+        string? nextCursor = null;
+        if (rows.Count > limit)
+        {
+            rows.RemoveAt(rows.Count - 1);
+            var last = rows[^1];
+            nextCursor = EncodeCursor(last.CreatedAt, last.Id);
+        }
+
+        var items = rows.Select(r => new PaymentItem(
+            r.Id,
+            r.PayerName,
+            r.Amount,
+            r.PaidAt,
+            r.ReferansNo,
+            r.Status.ToString().ToLowerInvariant(),
+            r.RejectReason,
+            r.CreatedAt,
+            r.ApprovedAt,
+            r.RejectedAt)).ToArray();
+
+        return Ok(new PaymentsResponse(items, nextCursor));
+    }
+
+    // ── Cursor helpers ────────────────────────────────────────────────────────
+
+    private static string EncodeCursor(DateTimeOffset sortValue, Guid id)
+        => $"{sortValue.UtcTicks}|{id:N}";
+
+    private static bool TryDecodeCursor(string? cursor, out long ticks, out Guid id)
+    {
+        ticks = 0;
+        id = Guid.Empty;
+        if (string.IsNullOrEmpty(cursor)) return false;
+        var parts = cursor.Split('|', 2);
+        return parts.Length == 2
+            && long.TryParse(parts[0], out ticks)
+            && Guid.TryParse(parts[1], out id);
+    }
+
     // ── DELETE /api/v1/shopper/broadcasters/{licenseId} ───────────────────────
 
     [HttpDelete("{licenseId:guid}")]
