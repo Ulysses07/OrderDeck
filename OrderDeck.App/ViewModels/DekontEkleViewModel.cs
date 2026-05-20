@@ -1,6 +1,7 @@
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Payments;
 using OrderDeck.Core.Sales;
+using OrderDeck.PdfParsing;
 using OrderDeck.Core.Sessions;
 using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage.Repositories;
