@@ -66,6 +66,9 @@ public class Program
         builder.Services.AddScoped<ShopperRefreshTokenService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.ShopperPayments.IShopperPaymentRateLimiter,
             OrderDeck.LicenseServer.Services.ShopperPayments.ShopperPaymentRateLimiter>();
+        builder.Services.AddSingleton<OrderDeck.PdfParsing.IPdfDekontParser,
+            OrderDeck.PdfParsing.PdfDekontParser>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.ShopperPayments.ShopperPaymentSubmissionService>();
         builder.Services.AddSingleton<JwtTokenService>();
         builder.Services.AddScoped<RefreshTokenService>();
         builder.Services.AddScoped<EmailConfirmationService>();
