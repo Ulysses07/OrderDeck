@@ -31,6 +31,7 @@ public class LicenseDbContext : DbContext
     public DbSet<OperatorUser> OperatorUsers => Set<OperatorUser>();
     public DbSet<WhatsAppTemplateSettings> WhatsAppTemplateSettings => Set<WhatsAppTemplateSettings>();
     public DbSet<BroadcastPost> BroadcastPosts => Set<BroadcastPost>();
+    public DbSet<Shopper> Shoppers => Set<Shopper>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -308,6 +309,18 @@ public class LicenseDbContext : DbContext
             b.HasIndex(s => new { s.LicenseId, s.CustomerId });
             // Reverse sync cursor.
             b.HasIndex(s => new { s.LicenseId, s.UpdatedAt });
+        });
+
+        mb.Entity<Shopper>(b =>
+        {
+            b.HasKey(s => s.Id);
+            b.Property(s => s.FullName).HasMaxLength(200).IsRequired();
+            b.Property(s => s.Phone).HasMaxLength(20).IsRequired();
+            b.HasIndex(s => s.Phone).IsUnique();
+            b.Property(s => s.PasswordHash).HasMaxLength(256).IsRequired();
+            b.Property(s => s.Address).HasMaxLength(500).IsRequired();
+            b.Property(s => s.Email).HasMaxLength(256);
+            b.Property(s => s.Tc).HasMaxLength(11);
         });
 
         // Seed SKUs
