@@ -36,6 +36,8 @@ public class LicenseDbContext : DbContext
     public DbSet<WpfCustomerProjection> WpfCustomerProjections => Set<WpfCustomerProjection>();
     public DbSet<ShopperPushDevice> ShopperPushDevices => Set<ShopperPushDevice>();
     public DbSet<PaymentSubmissionAudit> PaymentSubmissionAudits => Set<PaymentSubmissionAudit>();
+    public DbSet<ShopperRefreshToken> ShopperRefreshTokens => Set<ShopperRefreshToken>();
+    public DbSet<ShopperSupportRequest> ShopperSupportRequests => Set<ShopperSupportRequest>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -388,6 +390,28 @@ public class LicenseDbContext : DbContext
             b.Property(a => a.ParserConfidence).HasMaxLength(16).IsRequired();
             b.HasIndex(a => a.PaymentId);
             b.HasIndex(a => a.CreatedAt);
+        });
+
+        mb.Entity<ShopperRefreshToken>(b =>
+        {
+            b.HasKey(t => t.Id);
+            b.HasOne(t => t.Shopper).WithMany().HasForeignKey(t => t.ShopperId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.Property(t => t.TokenHash).HasMaxLength(64).IsRequired();
+            b.HasIndex(t => t.TokenHash);
+            b.Property(t => t.ReplacedByTokenHash).HasMaxLength(64);
+            b.Property(t => t.CreatedByIp).HasMaxLength(45);
+        });
+
+        mb.Entity<ShopperSupportRequest>(b =>
+        {
+            b.HasKey(r => r.Id);
+            b.HasOne(r => r.Shopper).WithMany().HasForeignKey(r => r.ShopperId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.HasOne(r => r.License).WithMany().HasForeignKey(r => r.LicenseId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.Property(r => r.Kind).HasMaxLength(32).IsRequired();
+            b.HasIndex(r => new { r.LicenseId, r.ResolvedAt, r.CreatedAt });
         });
 
         // Seed SKUs

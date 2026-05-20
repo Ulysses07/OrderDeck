@@ -62,6 +62,24 @@ public sealed class JwtTokenService
         return (token, expiresAt);
     }
 
+    /// <summary>
+    /// Shopper (müşteri app kullanıcısı) token. `sub` = shopperId. `principal=shopper`
+    /// claim'i Bearer-Customer (yayıncı) ve Bearer-Admin'den ayırt eder. `phone`
+    /// claim'i sipariş eşleşme join'lerinde okunabilir.
+    /// </summary>
+    public (string Token, DateTimeOffset ExpiresAt) IssueShopperToken(Guid shopperId, string phone)
+    {
+        var lifetimeMinutes = _options.AccessTokenLifetimeMinutes > 0
+            ? _options.AccessTokenLifetimeMinutes
+            : 30;
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(lifetimeMinutes);
+        var token = Build(JwtOptions.ShopperAudience, expiresAt,
+            new Claim("sub", shopperId.ToString()),
+            new Claim("principal", "shopper"),
+            new Claim("phone", phone));
+        return (token, expiresAt);
+    }
+
     private string Build(string audience, DateTimeOffset expiresAt, params Claim[] claims)
     {
         var jwt = new JwtSecurityToken(

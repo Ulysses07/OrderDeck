@@ -63,6 +63,7 @@ public class Program
 
         // Services
         builder.Services.AddSingleton<PasswordHasher>();
+        builder.Services.AddScoped<ShopperRefreshTokenService>();
         builder.Services.AddSingleton<JwtTokenService>();
         builder.Services.AddScoped<RefreshTokenService>();
         builder.Services.AddScoped<EmailConfirmationService>();
