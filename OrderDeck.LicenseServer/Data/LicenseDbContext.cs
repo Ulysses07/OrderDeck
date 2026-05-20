@@ -34,6 +34,7 @@ public class LicenseDbContext : DbContext
     public DbSet<Shopper> Shoppers => Set<Shopper>();
     public DbSet<ShopperBroadcasterLink> ShopperBroadcasterLinks => Set<ShopperBroadcasterLink>();
     public DbSet<WpfCustomerProjection> WpfCustomerProjections => Set<WpfCustomerProjection>();
+    public DbSet<ShopperPushDevice> ShopperPushDevices => Set<ShopperPushDevice>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -349,6 +350,17 @@ public class LicenseDbContext : DbContext
             b.Property(c => c.Phone).HasMaxLength(20);
             b.Property(c => c.Address).HasMaxLength(500);
             b.HasIndex(c => new { c.LicenseId, c.Platform, c.Username });
+        });
+
+        mb.Entity<ShopperPushDevice>(b =>
+        {
+            b.HasKey(d => d.Id);
+            b.HasOne(d => d.Shopper).WithMany().HasForeignKey(d => d.ShopperId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.Property(d => d.DeviceId).HasMaxLength(64).IsRequired();
+            b.Property(d => d.Platform).HasMaxLength(16).IsRequired();
+            b.Property(d => d.PushToken).HasMaxLength(512).IsRequired();
+            b.HasIndex(d => new { d.ShopperId, d.DeviceId }).IsUnique();
         });
 
         // Seed SKUs
