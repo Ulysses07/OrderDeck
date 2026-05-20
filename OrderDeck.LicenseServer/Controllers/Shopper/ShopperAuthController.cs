@@ -129,9 +129,9 @@ public sealed class ShopperAuthController : ControllerBase
             _db.Shoppers.Add(shopper);
         }
 
-        // 6. Check if ShopperBroadcasterLink already exists
+        // 6. Check if an active ShopperBroadcasterLink already exists
         var existingLink = await _db.ShopperBroadcasterLinks
-            .FirstOrDefaultAsync(l => l.ShopperId == shopper.Id && l.LicenseId == license.Id, ct);
+            .FirstOrDefaultAsync(l => l.ShopperId == shopper.Id && l.LicenseId == license.Id && l.LeftAt == null, ct);
         if (existingLink is not null)
             return Problem(title: "already-linked", statusCode: 409);
 

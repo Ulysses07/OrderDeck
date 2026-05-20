@@ -140,6 +140,28 @@ public sealed class ShopperMeController : ControllerBase
             broadcasters));
     }
 
+    // ── GET /api/v1/shopper/me/broadcasters ──────────────────────────────────
+
+    public sealed record BroadcastersResponse(BroadcasterSummary[] Broadcasters);
+
+    [HttpGet("broadcasters")]
+    public async Task<IActionResult> GetBroadcasters(CancellationToken ct)
+    {
+        var shopperId = GetShopperId();
+        if (shopperId is null) return Unauthorized();
+
+        var shopper = await _db.Shoppers
+            .FirstOrDefaultAsync(s => s.Id == shopperId && s.DeletedAt == null, ct);
+        if (shopper is null) return Unauthorized();
+
+        var broadcasters = await _db.ShopperBroadcasterLinks
+            .Where(l => l.ShopperId == shopperId && l.LeftAt == null)
+            .Select(l => new BroadcasterSummary(l.LicenseId, l.License.Customer.Name, l.Platform, l.Username))
+            .ToArrayAsync(ct);
+
+        return Ok(new BroadcastersResponse(broadcasters));
+    }
+
     // ── DELETE /api/v1/shopper/me ─────────────────────────────────────────────
 
     [HttpDelete]
