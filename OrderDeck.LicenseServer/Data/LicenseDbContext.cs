@@ -394,6 +394,7 @@ public class LicenseDbContext : DbContext
             b.Property(a => a.ParserConfidence).HasMaxLength(16).IsRequired();
             b.HasIndex(a => a.PaymentId);
             b.HasIndex(a => a.CreatedAt);
+            b.HasIndex(a => new { a.LicenseId, a.CreatedAt });   // for license-level rate limit window queries
         });
 
         mb.Entity<ShopperRefreshToken>(b =>

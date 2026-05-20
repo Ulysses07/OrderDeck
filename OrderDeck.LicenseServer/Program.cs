@@ -64,6 +64,8 @@ public class Program
         // Services
         builder.Services.AddSingleton<PasswordHasher>();
         builder.Services.AddScoped<ShopperRefreshTokenService>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.ShopperPayments.IShopperPaymentRateLimiter,
+            OrderDeck.LicenseServer.Services.ShopperPayments.ShopperPaymentRateLimiter>();
         builder.Services.AddSingleton<JwtTokenService>();
         builder.Services.AddScoped<RefreshTokenService>();
         builder.Services.AddScoped<EmailConfirmationService>();
