@@ -13,4 +13,5 @@ public sealed class JwtOptions
 
     public const string CustomerAudience = "orderdeck-customer";
     public const string AdminAudience = "orderdeck-admin";
+    public const string ShopperAudience = "orderdeck-shopper";
 }
