@@ -1,6 +1,6 @@
 using System;
 using FluentAssertions;
-using OrderDeck.Core.Payments;
+using OrderDeck.PdfParsing;
 using Xunit;
 
 namespace OrderDeck.Tests.Payments;

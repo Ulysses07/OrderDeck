@@ -153,6 +153,7 @@ public class Program
         builder.Services.AddAuthentication()
             .AddJwtBearer("Bearer-Customer", _ => { })
             .AddJwtBearer("Bearer-Admin", _ => { })
+            .AddJwtBearer("Bearer-Shopper", _ => { })
             .AddCookie("AdminCookie", o =>
             {
                 o.LoginPath = "/admin/login";
@@ -188,6 +189,20 @@ public class Program
                 {
                     ValidateIssuer = true, ValidIssuer = jwtOpts.Value.Issuer,
                     ValidateAudience = true, ValidAudience = JwtOptions.AdminAudience,
+                    ValidateIssuerSigningKey = true, IssuerSigningKey = key,
+                    ValidateLifetime = true,
+                    ClockSkew = TimeSpan.FromSeconds(30)
+                };
+            });
+
+        builder.Services.AddOptions<JwtBearerOptions>("Bearer-Shopper")
+            .Configure<IOptions<JwtOptions>>((o, jwtOpts) =>
+            {
+                var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOpts.Value.SecretKey));
+                o.TokenValidationParameters = new TokenValidationParameters
+                {
+                    ValidateIssuer = true, ValidIssuer = jwtOpts.Value.Issuer,
+                    ValidateAudience = true, ValidAudience = JwtOptions.ShopperAudience,
                     ValidateIssuerSigningKey = true, IssuerSigningKey = key,
                     ValidateLifetime = true,
                     ClockSkew = TimeSpan.FromSeconds(30)

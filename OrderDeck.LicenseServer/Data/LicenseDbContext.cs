@@ -31,6 +31,11 @@ public class LicenseDbContext : DbContext
     public DbSet<OperatorUser> OperatorUsers => Set<OperatorUser>();
     public DbSet<WhatsAppTemplateSettings> WhatsAppTemplateSettings => Set<WhatsAppTemplateSettings>();
     public DbSet<BroadcastPost> BroadcastPosts => Set<BroadcastPost>();
+    public DbSet<Shopper> Shoppers => Set<Shopper>();
+    public DbSet<ShopperBroadcasterLink> ShopperBroadcasterLinks => Set<ShopperBroadcasterLink>();
+    public DbSet<WpfCustomerProjection> WpfCustomerProjections => Set<WpfCustomerProjection>();
+    public DbSet<ShopperPushDevice> ShopperPushDevices => Set<ShopperPushDevice>();
+    public DbSet<PaymentSubmissionAudit> PaymentSubmissionAudits => Set<PaymentSubmissionAudit>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -69,6 +74,10 @@ public class LicenseDbContext : DbContext
             b.HasOne(l => l.Sku).WithMany()
                 .HasForeignKey(l => l.SkuCode).OnDelete(DeleteBehavior.Restrict);
             b.Property(l => l.RevokeReason).HasMaxLength(500);
+            b.Property(l => l.ShopperCode).HasMaxLength(20);
+            b.HasIndex(l => l.ShopperCode).IsUnique();
+            b.Property(l => l.PaymentIban).HasMaxLength(34);
+            b.Property(l => l.PaymentAccountHolder).HasMaxLength(200);
         });
 
         mb.Entity<Activation>(b =>
@@ -199,6 +208,7 @@ public class LicenseDbContext : DbContext
             b.Property(p => p.Amount).HasPrecision(18, 2);
             b.Property(p => p.ReferansNo).HasMaxLength(64).IsRequired();
             b.Property(p => p.PdfHash).HasMaxLength(64);
+            b.HasIndex(p => p.PdfHash).IsUnique();
             b.Property(p => p.RejectReason).HasMaxLength(500);
             b.Property(p => p.Status).HasConversion<int>();
             b.Property(p => p.ShipmentDirective).HasConversion<int>();
@@ -210,6 +220,16 @@ public class LicenseDbContext : DbContext
             b.HasIndex(p => new { p.LicenseId, p.Status, p.CreatedAt });
             // Kargo PR E: mobile Panel "Bekleyen kargolar" / "Alıcı ödemeli" tab filtreleri.
             b.HasIndex(p => new { p.LicenseId, p.ShipmentDirective, p.Status });
+            // Shopper upload alanları — Faz 0a, 2026-05-20.
+            b.Property(p => p.MediaObjectKey).HasMaxLength(256);
+            b.Property(p => p.MediaContentType).HasMaxLength(128);
+            b.Property(p => p.MetadataHash).HasMaxLength(64);
+            b.HasIndex(p => p.MetadataHash);
+            b.Property(p => p.RecipientIban).HasMaxLength(34);
+            b.Property(p => p.RecipientName).HasMaxLength(200);
+            b.Property(p => p.FraudFlags).HasMaxLength(256).IsRequired();
+            b.Property(p => p.ParserConfidence).HasMaxLength(16).IsRequired();
+            b.HasIndex(p => p.ShopperId);
         });
 
         // Siparişler (PR siparis-sync 2026-05-13): WPF lokal StreamSession + Label'ların
@@ -308,6 +328,66 @@ public class LicenseDbContext : DbContext
             b.HasIndex(s => new { s.LicenseId, s.CustomerId });
             // Reverse sync cursor.
             b.HasIndex(s => new { s.LicenseId, s.UpdatedAt });
+        });
+
+        mb.Entity<Shopper>(b =>
+        {
+            b.HasKey(s => s.Id);
+            b.Property(s => s.FullName).HasMaxLength(200).IsRequired();
+            b.Property(s => s.Phone).HasMaxLength(20).IsRequired();
+            b.HasIndex(s => s.Phone).IsUnique();
+            b.Property(s => s.PasswordHash).HasMaxLength(256).IsRequired();
+            b.Property(s => s.Address).HasMaxLength(500).IsRequired();
+            b.Property(s => s.Email).HasMaxLength(256);
+            b.Property(s => s.Tc).HasMaxLength(11);
+        });
+
+        mb.Entity<ShopperBroadcasterLink>(b =>
+        {
+            b.HasKey(l => l.Id);
+            b.HasOne(l => l.Shopper).WithMany().HasForeignKey(l => l.ShopperId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.HasOne(l => l.License).WithMany().HasForeignKey(l => l.LicenseId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.HasIndex(l => new { l.ShopperId, l.LicenseId }).IsUnique();
+            b.HasIndex(l => new { l.LicenseId, l.JoinedAt });
+            b.Property(l => l.Platform).HasMaxLength(32).IsRequired();
+            b.Property(l => l.Username).HasMaxLength(128).IsRequired();
+        });
+
+        mb.Entity<WpfCustomerProjection>(b =>
+        {
+            b.HasKey(c => c.Id);
+            b.HasOne(c => c.License).WithMany().HasForeignKey(c => c.LicenseId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.Property(c => c.Platform).HasMaxLength(32).IsRequired();
+            b.Property(c => c.Username).HasMaxLength(128).IsRequired();
+            b.Property(c => c.FullName).HasMaxLength(200);
+            b.Property(c => c.Phone).HasMaxLength(20);
+            b.Property(c => c.Address).HasMaxLength(500);
+            b.HasIndex(c => new { c.LicenseId, c.Platform, c.Username });
+        });
+
+        mb.Entity<ShopperPushDevice>(b =>
+        {
+            b.HasKey(d => d.Id);
+            b.HasOne(d => d.Shopper).WithMany().HasForeignKey(d => d.ShopperId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.Property(d => d.DeviceId).HasMaxLength(64).IsRequired();
+            b.Property(d => d.Platform).HasMaxLength(16).IsRequired();
+            b.Property(d => d.PushToken).HasMaxLength(512).IsRequired();
+            b.HasIndex(d => new { d.ShopperId, d.DeviceId }).IsUnique();
+        });
+
+        mb.Entity<PaymentSubmissionAudit>(b =>
+        {
+            b.HasKey(a => a.Id);
+            b.Property(a => a.IpAddress).HasMaxLength(45).IsRequired();
+            b.Property(a => a.UserAgent).HasMaxLength(512).IsRequired();
+            b.Property(a => a.FraudFlags).HasMaxLength(256).IsRequired();
+            b.Property(a => a.ParserConfidence).HasMaxLength(16).IsRequired();
+            b.HasIndex(a => a.PaymentId);
+            b.HasIndex(a => a.CreatedAt);
         });
 
         // Seed SKUs

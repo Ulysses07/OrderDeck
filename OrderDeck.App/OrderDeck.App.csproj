@@ -12,6 +12,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\OrderDeck.Core\OrderDeck.Core.csproj" />
+    <ProjectReference Include="..\OrderDeck.PdfParsing\OrderDeck.PdfParsing.csproj" />
     <ProjectReference Include="..\OrderDeck.Chat\OrderDeck.Chat.csproj" />
     <ProjectReference Include="..\OrderDeck.Overlay\OrderDeck.Overlay.csproj" />
     <ProjectReference Include="..\OrderDeck.Labeling\OrderDeck.Labeling.csproj" />

@@ -21,6 +21,7 @@ using OrderDeck.Licensing.Backup;
 using OrderDeck.Licensing.Services;
 using OrderDeck.Licensing.Storage;
 using OrderDeck.Licensing.Trial;
+using OrderDeck.PdfParsing;
 using OrderDeck.Overlay;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -68,7 +69,7 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<LabelRepository>();
         services.AddSingleton<PaymentRepository>();
         // PDF dekont parse: DekontEkleDialog "PDF Yükle" butonu kullanır.
-        services.AddSingleton<OrderDeck.Core.Payments.PdfDekontParser>();
+        services.AddSingleton<PdfDekontParser>();
         // Kargo PR C: dekont eşleştirme servisi (LabelRepository + AppSettings.Shipping).
         // UI entegrasyonu PR D'de (DekontEkleDialog/customer picker + ShipmentDirectiveDialog).
         services.AddSingleton<OrderDeck.Core.Payments.PaymentMatcherService>(sp =>

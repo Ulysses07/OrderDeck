@@ -7,7 +7,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using UglyToad.PdfPig;
 
-namespace OrderDeck.Core.Payments;
+namespace OrderDeck.PdfParsing;
 
 /// <summary>
 /// Banka dekontu PDF'lerinden ödeyen / tutar / referans no / tarih

@@ -26,4 +26,16 @@ public sealed class License
     public byte[] RowVersion { get; set; } = Array.Empty<byte>();
 
     public ICollection<Activation> Activations { get; } = new List<Activation>();
+
+    // Müşteri (shopper) app entegrasyonu — Faz 0a, 2026-05-20.
+    // ShopperCode: yayıncının müşterilerine paylaştığı davet kodu (lowercase
+    // case-insensitive unique). Düzenleme 7 gün cooldown'a tabi (Faz 0b'de).
+    // PaymentIban / PaymentAccountHolder: WPF Settings sync sonucu — dekont
+    // fraud kontrolünde RecipientIban karşılaştırması için.
+    // ShopperAppEnabled: feature flag — public rollout başlamadan kapalı kalır.
+    public string? ShopperCode { get; set; }
+    public DateTimeOffset? ShopperCodeUpdatedAt { get; set; }
+    public string? PaymentIban { get; set; }
+    public string? PaymentAccountHolder { get; set; }
+    public bool ShopperAppEnabled { get; set; }
 }

@@ -16,6 +16,6 @@
     <PackageReference Include="Microsoft.Data.Sqlite" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
-    <PackageReference Include="PdfPig" />
+    <ProjectReference Include="..\OrderDeck.PdfParsing\OrderDeck.PdfParsing.csproj" />
   </ItemGroup>
 </Project>

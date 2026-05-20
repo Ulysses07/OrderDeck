@@ -33,4 +33,8 @@
     <PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" />
     <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" />
   </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OrderDeck.PdfParsing\OrderDeck.PdfParsing.csproj" />
+  </ItemGroup>
 </Project>

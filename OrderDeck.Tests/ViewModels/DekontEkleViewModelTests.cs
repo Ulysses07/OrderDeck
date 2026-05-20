@@ -3,6 +3,7 @@ using OrderDeck.App.ViewModels;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Payments;
 using OrderDeck.Core.Sales;
+using OrderDeck.PdfParsing;
 using OrderDeck.Core.Sessions;
 using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage;
@@ -496,7 +497,7 @@ public sealed class DekontEkleViewModelTests
         // burada tetiklenmez (TryFillFromPdf byte[] alır, PdfPig açar). Bunun
         // için ParseFromText pathini taklit edip ViewModel.TryFillFromPdf
         // davranışını test edelim — pure parser çıktısı bizim helper'a düşer.
-        var parser = new OrderDeck.Core.Payments.PdfDekontParser();
+        var parser = new OrderDeck.PdfParsing.PdfDekontParser();
         var parsed = parser.ParseFromText(pdfText, "fakehash");
 
         parsed.RecipientIban.Should().Be("TR990099999999999999999999");
@@ -514,7 +515,7 @@ public sealed class DekontEkleViewModelTests
         fx.Settings.Payment.Iban = "TR12 0011 1000 0000 0107 0201 32";
         var pdfText = "ALICI IBAN: TR120011100000000107020132";  // boşluksuz aynı
 
-        var parser = new OrderDeck.Core.Payments.PdfDekontParser();
+        var parser = new OrderDeck.PdfParsing.PdfDekontParser();
         var parsed = parser.ParseFromText(pdfText, "fakehash");
 
         parsed.RecipientIban.Should().Be("TR120011100000000107020132");
