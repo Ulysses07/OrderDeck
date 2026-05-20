@@ -33,6 +33,7 @@ public class LicenseDbContext : DbContext
     public DbSet<BroadcastPost> BroadcastPosts => Set<BroadcastPost>();
     public DbSet<Shopper> Shoppers => Set<Shopper>();
     public DbSet<ShopperBroadcasterLink> ShopperBroadcasterLinks => Set<ShopperBroadcasterLink>();
+    public DbSet<WpfCustomerProjection> WpfCustomerProjections => Set<WpfCustomerProjection>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -335,6 +336,19 @@ public class LicenseDbContext : DbContext
             b.HasIndex(l => new { l.LicenseId, l.JoinedAt });
             b.Property(l => l.Platform).HasMaxLength(32).IsRequired();
             b.Property(l => l.Username).HasMaxLength(128).IsRequired();
+        });
+
+        mb.Entity<WpfCustomerProjection>(b =>
+        {
+            b.HasKey(c => c.Id);
+            b.HasOne(c => c.License).WithMany().HasForeignKey(c => c.LicenseId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.Property(c => c.Platform).HasMaxLength(32).IsRequired();
+            b.Property(c => c.Username).HasMaxLength(128).IsRequired();
+            b.Property(c => c.FullName).HasMaxLength(200);
+            b.Property(c => c.Phone).HasMaxLength(20);
+            b.Property(c => c.Address).HasMaxLength(500);
+            b.HasIndex(c => new { c.LicenseId, c.Platform, c.Username });
         });
 
         // Seed SKUs
