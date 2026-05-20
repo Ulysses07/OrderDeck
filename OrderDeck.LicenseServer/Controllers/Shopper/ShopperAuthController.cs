@@ -242,6 +242,51 @@ public sealed class ShopperAuthController : ControllerBase
             newRefreshRaw, newRefreshExpiresAt));
     }
 
+    // ── ForgotPassword ────────────────────────────────────────────────────────
+
+    public sealed record ForgotPasswordRequest(string Phone);
+
+    [AllowAnonymous]
+    [HttpPost("forgot-password")]
+    public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest req, CancellationToken ct)
+    {
+        // 1. Normalize phone — invalid format → still 202 (no enumeration leak)
+        if (!PhoneNormalizer.TryNormalize(req.Phone, out var phone))
+            return StatusCode(202);
+
+        // 2. Find shopper — not found or soft-deleted → 202 (no DB writes)
+        var shopper = await _db.Shoppers
+            .FirstOrDefaultAsync(s => s.Phone == phone, ct);
+        if (shopper is null || shopper.DeletedAt is not null)
+            return StatusCode(202);
+
+        // 3. Get all active ShopperBroadcasterLink rows (LeftAt == null)
+        var activeLinks = await _db.ShopperBroadcasterLinks
+            .Where(l => l.ShopperId == shopper.Id && l.LeftAt == null)
+            .ToListAsync(ct);
+
+        // 4. For each active link → insert a ShopperSupportRequest row
+        var now = DateTimeOffset.UtcNow;
+        foreach (var link in activeLinks)
+        {
+            _db.ShopperSupportRequests.Add(new ShopperSupportRequest
+            {
+                Id = Guid.NewGuid(),
+                ShopperId = shopper.Id,
+                LicenseId = link.LicenseId,
+                Kind = "forgot-password",
+                CreatedAt = now,
+            });
+        }
+
+        // 5. Save (no-op if no active links)
+        if (activeLinks.Count > 0)
+            await _db.SaveChangesAsync(ct);
+
+        // 6. Always 202
+        return StatusCode(202);
+    }
+
     // ── Shared helper ─────────────────────────────────────────────────────────
 
     private async Task<BroadcasterSummary[]> BuildBroadcastersAsync(Guid shopperId, CancellationToken ct)
