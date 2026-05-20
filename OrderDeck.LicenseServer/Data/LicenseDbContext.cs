@@ -351,7 +351,11 @@ public class LicenseDbContext : DbContext
              .OnDelete(DeleteBehavior.Cascade);
             b.HasOne(l => l.License).WithMany().HasForeignKey(l => l.LicenseId)
              .OnDelete(DeleteBehavior.Cascade);
-            b.HasIndex(l => new { l.ShopperId, l.LicenseId }).IsUnique();
+            // Filtered unique: only one active link per (Shopper, License) pair.
+            // Historical (left) rows are allowed to coexist so re-join creates a new row.
+            b.HasIndex(l => new { l.ShopperId, l.LicenseId })
+             .HasFilter("[LeftAt] IS NULL")
+             .IsUnique();
             b.HasIndex(l => new { l.LicenseId, l.JoinedAt });
             b.Property(l => l.Platform).HasMaxLength(32).IsRequired();
             b.Property(l => l.Username).HasMaxLength(128).IsRequired();
