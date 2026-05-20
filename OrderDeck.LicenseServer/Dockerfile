@@ -6,8 +6,13 @@ WORKDIR /src
 # versions and would NU1015 without the props file. Both are pulled in
 # before restore so the layer cache is honored when only source changes.
 COPY Directory.Packages.props global.json ./
+# OrderDeck.PdfParsing is referenced as a ProjectReference by LicenseServer
+# (Faz 0a, 2026-05-20). Both csproj files must be in place before restore,
+# and both source trees must be copied before publish.
 COPY ["OrderDeck.LicenseServer/OrderDeck.LicenseServer.csproj", "OrderDeck.LicenseServer/"]
+COPY ["OrderDeck.PdfParsing/OrderDeck.PdfParsing.csproj", "OrderDeck.PdfParsing/"]
 RUN dotnet restore "OrderDeck.LicenseServer/OrderDeck.LicenseServer.csproj"
+COPY OrderDeck.PdfParsing/ OrderDeck.PdfParsing/
 COPY OrderDeck.LicenseServer/ OrderDeck.LicenseServer/
 RUN dotnet publish "OrderDeck.LicenseServer/OrderDeck.LicenseServer.csproj" -c Release -o /app/publish --no-restore
 
