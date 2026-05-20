@@ -32,6 +32,7 @@ public class LicenseDbContext : DbContext
     public DbSet<WhatsAppTemplateSettings> WhatsAppTemplateSettings => Set<WhatsAppTemplateSettings>();
     public DbSet<BroadcastPost> BroadcastPosts => Set<BroadcastPost>();
     public DbSet<Shopper> Shoppers => Set<Shopper>();
+    public DbSet<ShopperBroadcasterLink> ShopperBroadcasterLinks => Set<ShopperBroadcasterLink>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -321,6 +322,19 @@ public class LicenseDbContext : DbContext
             b.Property(s => s.Address).HasMaxLength(500).IsRequired();
             b.Property(s => s.Email).HasMaxLength(256);
             b.Property(s => s.Tc).HasMaxLength(11);
+        });
+
+        mb.Entity<ShopperBroadcasterLink>(b =>
+        {
+            b.HasKey(l => l.Id);
+            b.HasOne(l => l.Shopper).WithMany().HasForeignKey(l => l.ShopperId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.HasOne(l => l.License).WithMany().HasForeignKey(l => l.LicenseId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.HasIndex(l => new { l.ShopperId, l.LicenseId }).IsUnique();
+            b.HasIndex(l => new { l.LicenseId, l.JoinedAt });
+            b.Property(l => l.Platform).HasMaxLength(32).IsRequired();
+            b.Property(l => l.Username).HasMaxLength(128).IsRequired();
         });
 
         // Seed SKUs
