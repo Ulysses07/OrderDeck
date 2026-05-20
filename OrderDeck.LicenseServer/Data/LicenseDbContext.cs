@@ -74,6 +74,10 @@ public class LicenseDbContext : DbContext
             b.HasOne(l => l.Sku).WithMany()
                 .HasForeignKey(l => l.SkuCode).OnDelete(DeleteBehavior.Restrict);
             b.Property(l => l.RevokeReason).HasMaxLength(500);
+            b.Property(l => l.ShopperCode).HasMaxLength(20);
+            b.HasIndex(l => l.ShopperCode).IsUnique();
+            b.Property(l => l.PaymentIban).HasMaxLength(34);
+            b.Property(l => l.PaymentAccountHolder).HasMaxLength(200);
         });
 
         mb.Entity<Activation>(b =>
