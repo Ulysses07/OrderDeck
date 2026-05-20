@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -285,6 +286,43 @@ public sealed class ShopperAuthController : ControllerBase
 
         // 6. Always 202
         return StatusCode(202);
+    }
+
+    // ── ChangePassword ────────────────────────────────────────────────────────
+
+    public sealed record ChangePasswordRequest(string CurrentPassword, string NewPassword);
+
+    [HttpPost("change-password")]
+    public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequest req, CancellationToken ct)
+    {
+        // 1. Get shopperId from "sub" claim (JWT middleware may map sub → NameIdentifier)
+        var subClaim = User.FindFirst("sub")?.Value
+            ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (!Guid.TryParse(subClaim, out var shopperId))
+            return Problem(title: "unauthorized", statusCode: 401);
+
+        // 2. Load shopper
+        var shopper = await _db.Shoppers.FirstOrDefaultAsync(s => s.Id == shopperId, ct);
+        if (shopper is null || shopper.DeletedAt is not null)
+            return Problem(title: "unauthorized", statusCode: 401);
+
+        // 3. Verify current password
+        if (!_passwordHasher.Verify(shopper.PasswordHash, req.CurrentPassword))
+            return Problem(title: "wrong-current-password", statusCode: 401);
+
+        // 4. Validate new password strength
+        if (req.NewPassword.Length < 8)
+            return Problem(title: "weak-password", statusCode: 400);
+
+        // 5 & 6. Update password hash and timestamp
+        shopper.PasswordHash = _passwordHasher.Hash(req.NewPassword);
+        shopper.UpdatedAt = DateTimeOffset.UtcNow;
+
+        // 7. Save
+        await _db.SaveChangesAsync(ct);
+
+        // 8. Return 204
+        return NoContent();
     }
 
     // ── Shared helper ─────────────────────────────────────────────────────────
