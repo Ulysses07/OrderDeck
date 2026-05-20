@@ -65,4 +65,16 @@ public sealed class Payment
     /// <summary>Kargo PR E: WPF DekontEkleDialog'dan gelen vendor kararı.
     /// Default Normal. Hold/RecipientPays mobile Panel'de ayrı liste'de görünür.</summary>
     public ShipmentDirective ShipmentDirective { get; set; } = ShipmentDirective.Normal;
+
+    // Müşteri (shopper) app upload alanları — Faz 0a, 2026-05-20.
+    // ShopperId null = legacy WhatsApp akışından gelen dekont.
+    public Guid? ShopperId { get; set; }
+    public string? MediaObjectKey { get; set; }
+    public string? MediaContentType { get; set; }
+    public string? MetadataHash { get; set; }
+    public string? RecipientIban { get; set; }
+    public string? RecipientName { get; set; }
+    public string FraudFlags { get; set; } = "";
+    public string ParserConfidence { get; set; } = "Unknown";
+    public DateTimeOffset? PdfPurgedAt { get; set; }
 }

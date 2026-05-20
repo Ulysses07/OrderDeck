@@ -208,6 +208,7 @@ public class LicenseDbContext : DbContext
             b.Property(p => p.Amount).HasPrecision(18, 2);
             b.Property(p => p.ReferansNo).HasMaxLength(64).IsRequired();
             b.Property(p => p.PdfHash).HasMaxLength(64);
+            b.HasIndex(p => p.PdfHash).IsUnique();
             b.Property(p => p.RejectReason).HasMaxLength(500);
             b.Property(p => p.Status).HasConversion<int>();
             b.Property(p => p.ShipmentDirective).HasConversion<int>();
@@ -219,6 +220,16 @@ public class LicenseDbContext : DbContext
             b.HasIndex(p => new { p.LicenseId, p.Status, p.CreatedAt });
             // Kargo PR E: mobile Panel "Bekleyen kargolar" / "Alıcı ödemeli" tab filtreleri.
             b.HasIndex(p => new { p.LicenseId, p.ShipmentDirective, p.Status });
+            // Shopper upload alanları — Faz 0a, 2026-05-20.
+            b.Property(p => p.MediaObjectKey).HasMaxLength(256);
+            b.Property(p => p.MediaContentType).HasMaxLength(128);
+            b.Property(p => p.MetadataHash).HasMaxLength(64);
+            b.HasIndex(p => p.MetadataHash);
+            b.Property(p => p.RecipientIban).HasMaxLength(34);
+            b.Property(p => p.RecipientName).HasMaxLength(200);
+            b.Property(p => p.FraudFlags).HasMaxLength(256).IsRequired();
+            b.Property(p => p.ParserConfidence).HasMaxLength(16).IsRequired();
+            b.HasIndex(p => p.ShopperId);
         });
 
         // Siparişler (PR siparis-sync 2026-05-13): WPF lokal StreamSession + Label'ların
