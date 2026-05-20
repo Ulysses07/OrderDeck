@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.ShopperPayments;
 
 namespace OrderDeck.LicenseServer.Controllers.Shopper;
 
@@ -17,7 +18,13 @@ namespace OrderDeck.LicenseServer.Controllers.Shopper;
 public sealed class ShopperBroadcastersController : ControllerBase
 {
     private readonly LicenseDbContext _db;
-    public ShopperBroadcastersController(LicenseDbContext db) => _db = db;
+    private readonly ShopperPaymentSubmissionService _paymentService;
+
+    public ShopperBroadcastersController(LicenseDbContext db, ShopperPaymentSubmissionService paymentService)
+    {
+        _db = db;
+        _paymentService = paymentService;
+    }
 
     public sealed record CodeLookupResponse(Guid LicenseId, string DisplayName);
 
@@ -332,6 +339,92 @@ public sealed class ShopperBroadcastersController : ControllerBase
             r.RejectedAt)).ToArray();
 
         return Ok(new PaymentsResponse(items, nextCursor));
+    }
+
+    // ── POST /api/v1/shopper/broadcasters/{licenseId}/payments ───────────────
+
+    public sealed record SubmitResponse(
+        Guid PaymentId,
+        string[] FraudFlags,
+        string ParserConfidence,
+        SubmitParsedMetadata Parsed);
+
+    public sealed record SubmitParsedMetadata(
+        string? PayerName,
+        decimal? Amount,
+        DateTimeOffset? PaidAt,
+        string? ReferansNo,
+        string? RecipientIban,
+        string? RecipientName);
+
+    [HttpPost("{licenseId:guid}/payments")]
+    [RequestSizeLimit(6 * 1024 * 1024)]  // 6 MB to allow 5MB PDF + multipart overhead
+    public async Task<IActionResult> SubmitPayment(
+        Guid licenseId,
+        [FromForm] IFormFile? pdf,
+        [FromForm] decimal? amount,
+        [FromForm] string? payerName,
+        [FromForm] DateTimeOffset? paidAt,
+        [FromForm] string? referansNo,
+        CancellationToken ct)
+    {
+        // 1. Parse shopperId from claims
+        var shopperId = GetShopperId();
+        if (shopperId is null) return Unauthorized();
+
+        // 2. Load shopper; deleted → 401
+        var shopper = await _db.Shoppers
+            .FirstOrDefaultAsync(s => s.Id == shopperId && s.DeletedAt == null, ct);
+        if (shopper is null) return Unauthorized();
+
+        // 3. Find active link
+        var link = await _db.ShopperBroadcasterLinks
+            .FirstOrDefaultAsync(l => l.ShopperId == shopperId && l.LicenseId == licenseId && l.LeftAt == null, ct);
+        if (link is null)
+            return Problem(title: "not-linked", statusCode: 403);
+
+        // 4. PDF presence check
+        if (pdf is null || pdf.Length == 0)
+            return Problem(title: "missing-pdf", statusCode: 400);
+
+        // 5. Size check (5MB)
+        if (pdf.Length > 5 * 1024 * 1024)
+            return Problem(title: "payload-too-large", statusCode: 413);
+
+        // 6. Read PDF bytes
+        using var ms = new MemoryStream();
+        await pdf.CopyToAsync(ms, ct);
+        var bytes = ms.ToArray();
+
+        // 7. IP + User-Agent
+        var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "";
+        var userAgent = Request.Headers.UserAgent.ToString();
+
+        // 8. Delegate to submission service
+        try
+        {
+            var result = await _paymentService.SubmitAsync(
+                new SubmitInput(shopperId.Value, licenseId, bytes, amount, payerName, paidAt, referansNo, ipAddress, userAgent),
+                ct);
+
+            var response = new SubmitResponse(
+                result.PaymentId,
+                result.FraudFlags,
+                result.ParserConfidence,
+                new SubmitParsedMetadata(
+                    result.ParserResult.PayerName,
+                    result.ParserResult.Amount,
+                    result.ParserResult.PaidAt is { } pd ? new DateTimeOffset(pd, TimeSpan.Zero) : null,
+                    result.ParserResult.ReferansNo,
+                    result.ParserResult.RecipientIban,
+                    result.ParserResult.RecipientName));
+
+            return StatusCode(201, response);
+        }
+        catch (SubmitFailureException ex)
+        {
+            return Problem(title: ex.ErrorCode, statusCode: ex.StatusCode, detail: ex.Message);
+        }
     }
 
     // ── Cursor helpers ────────────────────────────────────────────────────────
