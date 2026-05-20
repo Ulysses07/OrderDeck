@@ -35,6 +35,7 @@ public class LicenseDbContext : DbContext
     public DbSet<ShopperBroadcasterLink> ShopperBroadcasterLinks => Set<ShopperBroadcasterLink>();
     public DbSet<WpfCustomerProjection> WpfCustomerProjections => Set<WpfCustomerProjection>();
     public DbSet<ShopperPushDevice> ShopperPushDevices => Set<ShopperPushDevice>();
+    public DbSet<PaymentSubmissionAudit> PaymentSubmissionAudits => Set<PaymentSubmissionAudit>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -361,6 +362,17 @@ public class LicenseDbContext : DbContext
             b.Property(d => d.Platform).HasMaxLength(16).IsRequired();
             b.Property(d => d.PushToken).HasMaxLength(512).IsRequired();
             b.HasIndex(d => new { d.ShopperId, d.DeviceId }).IsUnique();
+        });
+
+        mb.Entity<PaymentSubmissionAudit>(b =>
+        {
+            b.HasKey(a => a.Id);
+            b.Property(a => a.IpAddress).HasMaxLength(45).IsRequired();
+            b.Property(a => a.UserAgent).HasMaxLength(512).IsRequired();
+            b.Property(a => a.FraudFlags).HasMaxLength(256).IsRequired();
+            b.Property(a => a.ParserConfidence).HasMaxLength(16).IsRequired();
+            b.HasIndex(a => a.PaymentId);
+            b.HasIndex(a => a.CreatedAt);
         });
 
         // Seed SKUs
