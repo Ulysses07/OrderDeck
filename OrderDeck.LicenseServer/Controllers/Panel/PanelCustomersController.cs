@@ -123,68 +123,54 @@ public sealed class PanelCustomersController : ControllerBase
         if (licenseIds.Count == 0)
             return Ok(new CustomerListResponse(new List<CustomerListItem>(), null));
 
-        var ordersQuery = _db.Orders.Where(o => licenseIds.Contains(o.LicenseId));
-
         var platformList = platforms?
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(p => p.ToLowerInvariant())
             .ToList();
-        if (platformList is { Count: > 0 })
-            ordersQuery = ordersQuery.Where(o => platformList.Contains(o.Platform.ToLower()));
 
-        // EF Core's InMemory provider (used in integration tests) does NOT
-        // translate complex GroupBy projections with multiple aggregates. For
-        // both consistency and test compatibility we materialize the tenant's
-        // orders into memory (already filtered by license + optional platform)
-        // and run aggregation/sort/cursor logic client-side. Tenant is bounded
-        // by the customer's own license set, so dataset stays small in practice.
-        // Follow-up: two-pass IQueryable refactor for high-volume tenants —
-        // (1) GroupBy(CustomerId).Select(g => new { Sum, Count, MaxAddedAt }),
-        // (2) per shortlisted CustomerId pick latest identity row separately.
-        var tenantOrders = await ordersQuery
-            .Select(o => new
+        // ─── Pass 1: server-side aggregate over real sales ────────────────
+        // Real-sale: printed + not cancelled + not shipping fee + not tentative.
+        // Aggregate'i tek round-trip'te DB'de GroupBy ile çıkar. Ghost customer'lar
+        // (sadece iptal/kargo/tentative satırı olanlar) zaten Where filtresinin
+        // dışında kaldığı için elenir — eski "OrderCount > 0" guard'a gerek yok.
+        var realSalesQuery = _db.Orders.Where(o =>
+            licenseIds.Contains(o.LicenseId)
+            && o.PrintedAt != null
+            && o.CancelledAt == null
+            && !o.IsShippingFee
+            && !o.IsTentativeBackup);
+
+        if (platformList is { Count: > 0 })
+            realSalesQuery = realSalesQuery.Where(o => platformList.Contains(o.Platform.ToLower()));
+
+        var aggregates = await realSalesQuery
+            .GroupBy(o => o.CustomerId)
+            .Select(g => new
             {
-                o.CustomerId,
-                o.Platform,
-                o.Username,
-                o.DisplayName,
-                o.Price,
-                o.AddedAt,
-                o.PrintedAt,
-                o.CancelledAt,
-                o.IsShippingFee,
-                o.IsTentativeBackup,
-                o.UpdatedAt
+                CustomerId = g.Key,
+                OrderCount = g.Count(),
+                TotalSpent = g.Sum(o => o.Price),
+                LastOrderAt = g.Max(o => o.AddedAt)
             })
             .ToListAsync(ct);
 
-        var groupedRows = tenantOrders
-            .GroupBy(o => o.CustomerId)
-            .Select(g =>
-            {
-                var realSales = g.Where(o => o.PrintedAt != null && o.CancelledAt == null
-                                              && !o.IsShippingFee && !o.IsTentativeBackup).ToList();
-                var latest = g.OrderByDescending(o => o.UpdatedAt).First();
-                return new CustomerAggRow(
-                    g.Key,
-                    realSales.Sum(o => o.Price),
-                    realSales.Count,
-                    // Use the latest real-sale date when one exists; otherwise the
-                    // group has only cancelled/tentative orders and is filtered
-                    // out by the OrderCount>0 guard below.
-                    realSales.Count > 0 ? realSales.Max(o => o.AddedAt) : g.Max(o => o.AddedAt),
-                    latest.DisplayName,
-                    latest.Username,
-                    latest.Platform);
-            })
-            // Skip "ghost" customers whose orders are all cancelled / shipping-fee
-            // / tentative — they'd otherwise show OrderCount=0, TotalSpent=0 but a
-            // recent LastOrderAt, sneaking past the activeWithinDays filter.
-            .Where(r => r.OrderCount > 0)
+        // Identity (DisplayName / Username / Platform) Pass 2'de doldurulur.
+        // Numeric sortlar için: filter + sort + cursor + limit → shortlist → identity.
+        // Name sort için: identity'i tüm filtered aggregate'lar için yükle (sıralama
+        // adından önce isim gerekli) → sort + cursor + limit.
+        var aggregateRows = aggregates
+            .Select(a => new CustomerAggRow(
+                a.CustomerId,
+                a.TotalSpent,
+                a.OrderCount,
+                a.LastOrderAt,
+                DisplayName: null,
+                Username: string.Empty,
+                Platform: string.Empty))
             .ToList();
 
-        // Filters (client-side; mirror the same predicates that would run server-side).
-        IEnumerable<CustomerAggRow> filtered = groupedRows;
+        // Filters mirror the same predicates that would run server-side.
+        IEnumerable<CustomerAggRow> filtered = aggregateRows;
         if (activeWithinDays.HasValue)
         {
             var cutoff = DateTimeOffset.UtcNow.AddDays(-activeWithinDays.Value);
@@ -199,8 +185,33 @@ public sealed class PanelCustomersController : ControllerBase
         if (maxOrders.HasValue)
             filtered = filtered.Where(c => c.OrderCount <= maxOrders.Value);
 
+        var filteredList = filtered.ToList();
+
         var (cursorSortRaw, cursorCustomerId) = ParseCursor(cursor);
-        var rows = ApplySortAndCursorClient(filtered.ToList(), sortMode, cursorSortRaw, cursorCustomerId, limit);
+
+        List<CustomerAggRow> rows;
+        if (sortMode == "name")
+        {
+            // ─── Pass 2 (name sort): identity for all filtered customers ──
+            var allIds = filteredList.Select(r => r.CustomerId).ToList();
+            var identities = await LoadLatestIdentitiesAsync(licenseIds, allIds, ct);
+            var withIdentity = filteredList.Select(r =>
+                identities.TryGetValue(r.CustomerId, out var id)
+                    ? r with { DisplayName = id.DisplayName, Username = id.Username, Platform = id.Platform }
+                    : r).ToList();
+            rows = ApplySortAndCursorClient(withIdentity, sortMode, cursorSortRaw, cursorCustomerId, limit);
+        }
+        else
+        {
+            // ─── Numeric sort: shortlist first, identity for shortlist only ──
+            var shortlisted = ApplySortAndCursorClient(filteredList, sortMode, cursorSortRaw, cursorCustomerId, limit);
+            var shortlistIds = shortlisted.Select(r => r.CustomerId).ToList();
+            var identities = await LoadLatestIdentitiesAsync(licenseIds, shortlistIds, ct);
+            rows = shortlisted.Select(r =>
+                identities.TryGetValue(r.CustomerId, out var id)
+                    ? r with { DisplayName = id.DisplayName, Username = id.Username, Platform = id.Platform }
+                    : r).ToList();
+        }
 
         string? nextCursor = null;
         if (rows.Count > limit)
@@ -230,6 +241,34 @@ public sealed class PanelCustomersController : ControllerBase
             r.LastOrderAt > activeCutoff)).ToList();
 
         return Ok(new CustomerListResponse(items, nextCursor));
+    }
+
+    /// <summary>
+    /// Pass 2: Verilen müşteri ID listesi için identity bilgisi
+    /// (DisplayName / Username / Platform) yükler. Her müşteri için en güncel
+    /// UpdatedAt'li sipariş satırını "kimlik kaynağı" olarak seçer. Tek SQL
+    /// round-trip; in-memory grouplama ile her müşteri için tek kayıt çıkar.
+    /// </summary>
+    private async Task<Dictionary<string, (string? DisplayName, string Username, string Platform)>>
+        LoadLatestIdentitiesAsync(List<Guid> licenseIds, List<string> customerIds, CancellationToken ct)
+    {
+        if (customerIds.Count == 0)
+            return new Dictionary<string, (string?, string, string)>();
+
+        var rows = await _db.Orders
+            .Where(o => licenseIds.Contains(o.LicenseId) && customerIds.Contains(o.CustomerId))
+            .Select(o => new { o.CustomerId, o.UpdatedAt, o.DisplayName, o.Username, o.Platform })
+            .ToListAsync(ct);
+
+        return rows
+            .GroupBy(r => r.CustomerId)
+            .ToDictionary(
+                g => g.Key,
+                g =>
+                {
+                    var latest = g.OrderByDescending(r => r.UpdatedAt).First();
+                    return ((string?)latest.DisplayName, latest.Username, latest.Platform);
+                });
     }
 
     private static (string? sortValue, string? customerId) ParseCursor(string? cursor)
