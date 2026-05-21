@@ -111,6 +111,25 @@ public sealed class ShopperBroadcastersController : ControllerBase
         };
         _db.ShopperBroadcasterLinks.Add(link);
 
+        // 7a. Auto-projection: if no existing WpfCustomerProjection matched, create one
+        // so the broadcaster sees the new shopper immediately.
+        if (link.WpfCustomerId is null)
+        {
+            var projectionId = Guid.NewGuid();
+            _db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = projectionId,
+                LicenseId = license.Id,
+                Platform = platformNorm,
+                Username = usernameNorm,
+                FullName = shopper.FullName,
+                Phone = shopper.Phone,
+                Address = shopper.Address,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            link.WpfCustomerId = projectionId;
+        }
+
         // 8. SaveChanges
         await _db.SaveChangesAsync(ct);
 

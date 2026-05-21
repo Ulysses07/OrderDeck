@@ -156,6 +156,27 @@ public sealed class ShopperAuthController : ControllerBase
             JoinedAt = DateTimeOffset.UtcNow,
         };
         _db.ShopperBroadcasterLinks.Add(link);
+
+        // 8a. Auto-projection: if no existing WpfCustomerProjection matched, create one
+        // so the broadcaster sees the new shopper immediately (without waiting for a
+        // WPF → server customer sync). WPF polls /wpf-customers/since to ingest these rows.
+        if (link.WpfCustomerId is null)
+        {
+            var projectionId = Guid.NewGuid();
+            _db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = projectionId,
+                LicenseId = license.Id,
+                Platform = platformNorm,
+                Username = usernameNorm,
+                FullName = shopper.FullName,
+                Phone = shopper.Phone,
+                Address = shopper.Address,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            link.WpfCustomerId = projectionId;
+        }
+
         await _db.SaveChangesAsync(ct);
 
         // 9. & 10. Issue tokens
