@@ -368,6 +368,12 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<Services.Sync.PaymentAccountSyncService>();
         services.AddHostedService<Services.Sync.PaymentAccountSyncHostedService>();
 
+        // WPF customer projection sync (Faz 0c-2): lokal Customer tablosunun
+        // LicenseServer'a delta sync'i. 60 sn cadence, 500'lük batch, watermark
+        // LastCustomerProjectionSyncAt (AppSettings). Shopper app login match için gerekli.
+        services.AddSingleton<Services.Sync.WpfCustomerProjectionSyncService>();
+        services.AddHostedService<Services.Sync.WpfCustomerProjectionSyncHostedService>();
+
         // UI freeze diagnostic (2026-05-13): her 5 dakikada bir UI thread'in
         // responsive olduğunu log'a yazan heartbeat. Donma anında log'da
         // "UI HEARTBEAT: thread unresponsive" mesajı oluşur — bir sonraki

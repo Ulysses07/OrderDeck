@@ -76,6 +76,12 @@ public sealed class AppSettings
     /// their next update — acceptable since they can skip every optional
     /// step in seconds.</summary>
     public bool HasCompletedFirstRun { get; set; } = false;
+
+    /// <summary>Faz 0c-2 (2026-05-21): watermark for delta sync of local Customer records
+    /// to LicenseServer's WpfCustomerProjection. Unix seconds. 0 = never synced.
+    /// Advanced after each successful batch; not advanced on failure so the
+    /// next tick retries from the same position.</summary>
+    public long LastCustomerProjectionSyncAt { get; set; }
 }
 
 /// <summary>Phase 4g: WhatsApp ödeme istemleri için Settings bloğu.</summary>
