@@ -55,7 +55,8 @@ public class ChatBridgeTrialFilterTests
             AvatarUrl: null,
             Text: text,
             ExternalId: null,
-            Timestamp: null));
+            Timestamp: null,
+            Stats: null));
 
         await ws.SendAsync(
             Encoding.UTF8.GetBytes(payload),

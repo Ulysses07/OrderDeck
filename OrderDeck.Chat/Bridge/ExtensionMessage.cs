@@ -12,4 +12,22 @@ public sealed record ExtensionMessage(
     string? AvatarUrl,
     string? Text,
     string? ExternalId,
-    long? Timestamp);
+    long? Timestamp,
+    ExtensionStats? Stats);
+
+/// <summary>
+/// Debug stats payload emitted by the extension every 10 seconds (type: "debug-stats").
+/// All fields are counts/durations for the preceding measurement window.
+/// </summary>
+public sealed record ExtensionStats(
+    int ScanCount,
+    int CommentsObserved,
+    int Deduped,
+    int Sent,
+    int ObserverBursts,
+    int ScanIntervalMs,
+    int DedupeWindowMs,
+    long WindowStart,
+    long WindowEnd,
+    long WindowDurationMs,
+    int DedupeCacheSize);

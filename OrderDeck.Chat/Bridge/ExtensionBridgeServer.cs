@@ -42,6 +42,25 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
     private int _activeWebSocketCount;
     public int ActiveWebSocketCount => Volatile.Read(ref _activeWebSocketCount);
 
+    // Belt-and-suspenders server-side dedupe. The extension already does TTL
+    // dedupe (5s) but reconnects, multiple tabs of the same platform, or the
+    // operator dev-reloading the extension can produce duplicates. Same
+    // (platform, username, text) within 5s is considered already-seen.
+    private static readonly TimeSpan DedupeWindow = TimeSpan.FromSeconds(5);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(string platform, string username, string text), DateTimeOffset> _recentDedupe = new();
+    private long _dedupedCount;
+    public long DedupedCount => Volatile.Read(ref _dedupedCount);
+
+    private void PruneExpiredDedupe()
+    {
+        var cutoff = DateTimeOffset.UtcNow - DedupeWindow;
+        foreach (var kvp in _recentDedupe)
+        {
+            if (kvp.Value < cutoff)
+                _recentDedupe.TryRemove(kvp.Key, out _);
+        }
+    }
+
     public int Port { get; private set; }
 
     public ExtensionBridgeServer(IChatBus bus, int port = 4748,
@@ -77,6 +96,7 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
     {
         while (!ct.IsCancellationRequested)
         {
+            PruneExpiredDedupe();
             HttpListenerContext context;
             try { context = await _listener.GetContextAsync(); }
             catch { return; }
@@ -216,16 +236,47 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
                         }
                     }
 
+                    // Belt-and-suspenders dedupe. Extension already does TTL dedupe (5s) but
+                    // reconnects, multiple tabs of same platform, or operator dev-reloading
+                    // the extension can cause duplicates. Same (platform, user, text) within
+                    // 5s is considered already-seen.
+                    var dedupeKey = (msg.Platform.ToLowerInvariant(), (msg.Username ?? "").ToLowerInvariant(), (msg.Text ?? "").Trim());
+                    var now = DateTimeOffset.UtcNow;
+                    if (_recentDedupe.TryGetValue(dedupeKey, out var lastSeen) && (now - lastSeen) < DedupeWindow)
+                    {
+                        _log.LogDebug(
+                            "Dropping duplicate (within {Window}s): {Platform}:{Username}: {Text}",
+                            DedupeWindow.TotalSeconds, msg.Platform, msg.Username, msg.Text);
+                        Interlocked.Increment(ref _dedupedCount);
+                        continue;
+                    }
+                    _recentDedupe[dedupeKey] = now;
+
                     _bus.Publish(new ChatMessage(
                         Id: Guid.NewGuid().ToString("N"),
                         Platform: msg.Platform,
                         ExternalId: msg.ExternalId,
-                        Username: msg.Username,
+                        Username: msg.Username!,
                         DisplayName: msg.DisplayName,
                         AvatarUrl: msg.AvatarUrl,
-                        Text: msg.Text,
+                        Text: msg.Text!,
                         ReceivedAt: msg.Timestamp ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                         Badges: Array.Empty<string>()));
+                }
+                else if (msg is { Type: "debug-stats", Platform: not null })
+                {
+                    // Extension'dan gelen scan/dedupe sayaçları — diyagnoz için loglanır.
+                    // 10s window: scanCount, commentsObserved, deduped, sent, observerBursts.
+                    _log.LogInformation(
+                        "Extension stats [{Platform}]: scans={Scans} observed={Observed} deduped={Deduped} sent={Sent} bursts={Bursts} cache={Cache} (window {WindowMs}ms)",
+                        msg.Platform,
+                        msg.Stats?.ScanCount ?? 0,
+                        msg.Stats?.CommentsObserved ?? 0,
+                        msg.Stats?.Deduped ?? 0,
+                        msg.Stats?.Sent ?? 0,
+                        msg.Stats?.ObserverBursts ?? 0,
+                        msg.Stats?.DedupeCacheSize ?? 0,
+                        msg.Stats?.WindowDurationMs ?? 0);
                 }
             }
             catch (JsonException ex)
