@@ -60,6 +60,7 @@ window.OrderDeckChatBridge = (function () {
             snapshot.windowDurationMs = snapshot.windowEnd - snapshot.windowStart;
             snapshot.dedupeCacheSize = seenComments.size;
             sendMessage({ type: 'debug-stats', platform: adapter.platform, stats: snapshot });
+            // Operator-visible summary in DevTools console during broadcast.
             log(`📊 stats(${(snapshot.windowDurationMs/1000).toFixed(1)}s): observed=${snapshot.commentsObserved} sent=${snapshot.sent} deduped=${snapshot.deduped} scans=${snapshot.scanCount} bursts=${snapshot.observerBursts} cache=${snapshot.dedupeCacheSize}`);
             stats = freshStats();
         }
