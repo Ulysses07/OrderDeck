@@ -23,11 +23,19 @@ public sealed class PanelBroadcastPostsController : ControllerBase
 
     private readonly LicenseDbContext _db;
     private readonly IBroadcastMediaStorage _storage;
+    private readonly Services.Push.INotificationSender _push;
+    private readonly ILogger<PanelBroadcastPostsController> _log;
 
-    public PanelBroadcastPostsController(LicenseDbContext db, IBroadcastMediaStorage storage)
+    public PanelBroadcastPostsController(
+        LicenseDbContext db,
+        IBroadcastMediaStorage storage,
+        Services.Push.INotificationSender push,
+        ILogger<PanelBroadcastPostsController> log)
     {
         _db = db;
         _storage = storage;
+        _push = push;
+        _log = log;
     }
 
     public sealed record UploadUrlRequest(string Type, long SizeBytes, string ContentType);
@@ -138,8 +146,68 @@ public sealed class PanelBroadcastPostsController : ControllerBase
         _db.BroadcastPosts.Add(post);
         await _db.SaveChangesAsync(ct);
 
+        // Push fan-out (Faz 4c-3): yayıncıya bağlı + broadcast bildirimleri açık
+        // shopper'lara yeni post bildirimi. Best-effort — try/catch içinde,
+        // fail throw etmemeli ve post create response'unu engellememeli.
+        // Sender impls (FCM/Stub) fire-and-forget gönderim için kendi içinde
+        // SendEachAsync paralelizmini kullanır; controller'da await okunabilir
+        // hata akışı ve testten gözlemlenebilirlik için.
+        await FanOutBroadcastPushAsync(licenseId.Value, post, ct);
+
         return Created($"/api/panel/posts/{post.Id}", ToDto(post));
     }
+
+    private async Task FanOutBroadcastPushAsync(Guid licenseId, BroadcastPost post, CancellationToken ct)
+    {
+        try
+        {
+            // Bu license'a bağlı, ayrılmamış, broadcast bildirimi açık shopper'lar.
+            var shopperIds = await _db.ShopperBroadcasterLinks
+                .Where(l => l.LicenseId == licenseId && l.LeftAt == null)
+                .Join(_db.Shoppers,
+                    l => l.ShopperId,
+                    s => s.Id,
+                    (l, s) => new { s.Id, s.DeletedAt, s.NotificationsEnabledBroadcast })
+                .Where(x => x.DeletedAt == null && x.NotificationsEnabledBroadcast)
+                .Select(x => x.Id)
+                .ToListAsync(ct);
+
+            if (shopperIds.Count == 0) return;
+
+            var broadcasterName = await _db.Licenses
+                .Where(l => l.Id == licenseId)
+                .Select(l => l.Customer.Name)
+                .FirstOrDefaultAsync(ct) ?? "Yayıncı";
+
+            var body = post.Type switch
+            {
+                BroadcastPostType.Photo => "Yeni fotoğraf paylaşıldı",
+                BroadcastPostType.Video => "Yeni video paylaşıldı",
+                _ => Truncate(post.TextBody ?? "", 140)
+            };
+
+            await _push.SendToShoppersAsync(
+                shopperIds,
+                title: broadcasterName,
+                body: body,
+                data: new Dictionary<string, string>
+                {
+                    ["type"] = "broadcast-post",
+                    ["postId"] = post.Id.ToString(),
+                    ["licenseId"] = licenseId.ToString(),
+                },
+                ct: ct);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex,
+                "Broadcast push fan-out failed for license={LicenseId} post={PostId}",
+                licenseId, post.Id);
+        }
+    }
+
+    private static string Truncate(string s, int max) =>
+        s.Length <= max ? s : s[..(max - 1)] + "…";
 
     private static BroadcastPost NewPost(Guid licenseId, BroadcastPostType type, string? text, CreatePostMediaDto? media)
     {

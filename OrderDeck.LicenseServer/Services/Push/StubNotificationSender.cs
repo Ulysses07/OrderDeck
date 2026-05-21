@@ -34,4 +34,21 @@ public sealed class StubNotificationSender : INotificationSender
             "Push[STUB] → customer={CustomerId} devices={DeviceCount} title={Title!} body={Body!}",
             customerId, deviceCount, title, body);
     }
+
+    public async Task SendToShoppersAsync(
+        IReadOnlyCollection<Guid> shopperIds,
+        string title,
+        string body,
+        IReadOnlyDictionary<string, string>? data = null,
+        CancellationToken ct = default)
+    {
+        if (shopperIds.Count == 0) return;
+
+        var deviceCount = await _db.ShopperPushDevices
+            .CountAsync(d => shopperIds.Contains(d.ShopperId), ct);
+
+        _log.LogInformation(
+            "Push[STUB] → shoppers={ShopperCount} devices={DeviceCount} title={Title!} body={Body!}",
+            shopperIds.Count, deviceCount, title, body);
+    }
 }

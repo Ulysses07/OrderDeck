@@ -25,4 +25,17 @@ public interface INotificationSender
         string body,
         IReadOnlyDictionary<string, string>? data = null,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Birden fazla shopper'ın tüm kayıtlı device'larına push gönderir.
+    /// Boş liste no-op. Stale token'lar (ShopperPushDevices'ten) sessizce
+    /// drop edilir. Customer (yayıncı) push'undan ayrı bir DB tablosu:
+    /// shopper'lar Bearer-Shopper auth + ayrı device kayıt akışıyla gelir.
+    /// </summary>
+    Task SendToShoppersAsync(
+        IReadOnlyCollection<Guid> shopperIds,
+        string title,
+        string body,
+        IReadOnlyDictionary<string, string>? data = null,
+        CancellationToken ct = default);
 }
