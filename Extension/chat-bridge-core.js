@@ -15,8 +15,16 @@ window.OrderDeckChatBridge = (function () {
     const WS_PORT = 4748;
     const RECONNECT_INTERVAL = 3000;
     const SCAN_INTERVAL = 200;
-    const DEDUPE_WINDOW_MS = 5000;
-    const DEDUPE_CLEANUP_INTERVAL_MS = 30_000;
+    // Session-scoped dedupe: aynı (username, text) yayın boyunca bir kez
+    // gönderilir. Önceki 5sn TTL implementasyonu regressionçü idi — Instagram
+    // bir yorumu DOM'da 5sn'den uzun tuttuğunda extension onu "yeni" sanıp
+    // yeniden gönderiyordu, WPF'te aynı yorum sürekli yenileniyor olarak
+    // beliriyordu (2026-05-22 canlı yayında raporlandı).
+    //
+    // Map boyutu CACHE_LIMIT'e ulaşınca en eski insert edilen hash'ler
+    // FIFO ile atılır (JS Map insertion order'ı korur) — uzun yayında
+    // memory unbounded growth olmaz.
+    const CACHE_LIMIT = 5000;
 
     /**
      * Start the bridge. `adapter` is required and must provide:
@@ -28,12 +36,10 @@ window.OrderDeckChatBridge = (function () {
      *   debugLabel         string  — printed in console (e.g. "OrderDeck Instagram")
      */
     function start(adapter) {
-        // Sliding-window TTL deduplication: hash → expiryTimestamp (ms since epoch).
-        // Same (username, text) is "same message" only if seen within DEDUPE_WINDOW_MS.
-        // After 5s the same text from the same user is treated as a new message
-        // (operator-friendly: customers re-type codes for different products).
-        const seenComments = new Map(); // hash -> expiryTimestamp (ms since epoch)
-        let cleanupTimer = null;
+        // Session-scoped dedupe: same (username, text) sent only once per
+        // live page session. Set insertion order is preserved → when size
+        // exceeds CACHE_LIMIT we evict the oldest hash (FIFO).
+        const seenComments = new Set();
 
         // Debug instrumentation — measured per 10s window, sent to WPF for log analysis.
         const STATS_INTERVAL_MS = 10_000;
@@ -48,7 +54,7 @@ window.OrderDeckChatBridge = (function () {
                 sent: 0,                   // total emitted to WS
                 observerBursts: 0,
                 scanIntervalMs: SCAN_INTERVAL,
-                dedupeWindowMs: DEDUPE_WINDOW_MS,
+                dedupeWindowMs: 0,          // 0 = session-scoped (no TTL)
                 windowStart: Date.now(),
             };
         }
@@ -100,9 +106,6 @@ window.OrderDeckChatBridge = (function () {
 
                     startPeriodicScan();
 
-                    if (cleanupTimer) clearInterval(cleanupTimer);
-                    cleanupTimer = setInterval(pruneExpiredDedupe, DEDUPE_CLEANUP_INTERVAL_MS);
-
                     if (statsTimer) clearInterval(statsTimer);
                     statsTimer = setInterval(flushStats, STATS_INTERVAL_MS);
                 };
@@ -111,7 +114,6 @@ window.OrderDeckChatBridge = (function () {
                     log('WebSocket closed, reconnecting...');
                     isConnected = false;
                     stopPeriodicScan();
-                    if (cleanupTimer) { clearInterval(cleanupTimer); cleanupTimer = null; }
                     if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
                     try { chrome.runtime.sendMessage({ action: 'setConnected', connected: false, platform: adapter.platform }); } catch (e) {}
                     scheduleReconnect();
@@ -172,26 +174,23 @@ window.OrderDeckChatBridge = (function () {
             return hash.toString(36);
         }
 
-        function pruneExpiredDedupe() {
-            const now = Date.now();
-            for (const [hash, expiry] of seenComments) {
-                if (expiry <= now) seenComments.delete(hash);
-            }
-        }
-
         function processComments(comments) {
             stats.scanCount++;
             stats.commentsObserved += comments.length;
 
             comments.forEach(({ username, text, source, displayName, avatarUrl }) => {
                 const hash = createCommentHash(username, text);
-                const now = Date.now();
-                const existing = seenComments.get(hash);
-                if (existing !== undefined && existing > now) {
+                if (seenComments.has(hash)) {
                     stats.deduped++;
                     return;
                 }
-                seenComments.set(hash, now + DEDUPE_WINDOW_MS);
+                // FIFO eviction: when the cache reaches the limit, drop the
+                // oldest entry. Set iteration order is insertion order in JS.
+                if (seenComments.size >= CACHE_LIMIT) {
+                    const oldest = seenComments.values().next().value;
+                    seenComments.delete(oldest);
+                }
+                seenComments.add(hash);
                 stats.sent++;
 
                 const payload = {
