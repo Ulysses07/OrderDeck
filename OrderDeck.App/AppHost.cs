@@ -363,6 +363,17 @@ public sealed class AppHost : IDisposable
         // tetiklediğinde server'a PUT'lar. Periyodik değil, on-demand.
         services.AddSingleton<Services.Sync.WhatsAppTemplateSyncService>();
 
+        // Payment account sync (Faz 0c-2): IBAN + AccountHolder periyodik push.
+        // 5 dakika cadence — değer değişmezse no-op (in-memory cache).
+        services.AddSingleton<Services.Sync.PaymentAccountSyncService>();
+        services.AddHostedService<Services.Sync.PaymentAccountSyncHostedService>();
+
+        // WPF customer projection sync (Faz 0c-2): lokal Customer tablosunun
+        // LicenseServer'a delta sync'i. 60 sn cadence, 500'lük batch, watermark
+        // LastCustomerProjectionSyncAt (AppSettings). Shopper app login match için gerekli.
+        services.AddSingleton<Services.Sync.WpfCustomerProjectionSyncService>();
+        services.AddHostedService<Services.Sync.WpfCustomerProjectionSyncHostedService>();
+
         // UI freeze diagnostic (2026-05-13): her 5 dakikada bir UI thread'in
         // responsive olduğunu log'a yazan heartbeat. Donma anında log'da
         // "UI HEARTBEAT: thread unresponsive" mesajı oluşur — bir sonraki
@@ -376,6 +387,9 @@ public sealed class AppHost : IDisposable
 
         // Intake form settings (Phase 4f Task 10)
         services.AddTransient<ViewModels.IntakeFormSettingsViewModel>();
+
+        // Müşteri App settings (Faz 0c-2)
+        services.AddTransient<ViewModels.ShopperAppSettingsViewModel>();
 
         // Licensing dialogs (Phase 4b)
         services.AddTransient<ViewModels.LoginDialogViewModel>();

@@ -232,4 +232,25 @@ public sealed class CustomerRepository
             "UPDATE Customer SET Phone=@phone WHERE Id=@id",
             new { phone = e164Phone, id = customerId });
     }
+
+    /// <summary>
+    /// Faz 0c-2: WpfCustomerProjection sync için delta query. LastSeenAt > since
+    /// olan customer kayıtlarını döner. <paramref name="max"/> ile batch size sınırı.
+    /// Sonuçlar LastSeenAt ASC sıralı (watermark ilerlemesi deterministic olsun).
+    /// </summary>
+    public IReadOnlyList<Customer> GetUpdatedSince(long sinceUnixSeconds, int max)
+    {
+        using var conn = _factory.Open();
+        var rows = conn.Query<Row>(
+            @"SELECT Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
+                     IsBlacklisted, BlacklistReason, Notes, TotalLabelsPrinted, TotalAmount,
+                     BlacklistedAt, Address, Phone, RecipientPaysActive
+              FROM Customer
+              WHERE LastSeenAt > @since
+              ORDER BY LastSeenAt ASC
+              LIMIT @max",
+            new { since = sinceUnixSeconds, max })
+            .ToList();
+        return rows.Select(Map).ToList();
+    }
 }

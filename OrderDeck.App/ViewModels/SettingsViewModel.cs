@@ -95,12 +95,14 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
     public ShortcutsTabViewModel ShortcutsTab { get; }
     public IntakeFormSettingsViewModel IntakeForm { get; }
+    public ShopperAppSettingsViewModel ShopperApp { get; }
 
     private readonly YouTubeOAuthService? _youTubeOAuth;
     private readonly Services.Sync.WhatsAppTemplateSyncService? _waTemplateSync;
 
     public SettingsViewModel(AppSettings settings, SettingsStore store, ShortcutsTabViewModel shortcutsTab,
         IntakeFormSettingsViewModel intakeForm,
+        ShopperAppSettingsViewModel shopperApp,
         YouTubeOAuthService? youTubeOAuth = null,
         AnimationCatalogClient? catalogClient = null,
         Services.Sync.WhatsAppTemplateSyncService? waTemplateSync = null)
@@ -110,6 +112,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
         _originalOverlayPort = settings.OverlayPort;
         ShortcutsTab = shortcutsTab;
         IntakeForm = intakeForm;
+        ShopperApp = shopperApp;
         _youTubeOAuth = youTubeOAuth;
         _waTemplateSync = waTemplateSync;
 
@@ -117,6 +120,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
         LoadInstalledPrinters();
         LoadInstalledFonts();
         _ = IntakeForm.LoadAsync();
+        _ = ShopperApp.LoadAsync();
         _ = RefreshYouTubeConnectionStatusAsync();
 
         // Use the source-generated setters (NOT the backing fields) so

@@ -47,8 +47,9 @@ public class SettingsViewModel_PaymentTests : IDisposable
         var http = new HttpClient(new NotFoundHandler()) { BaseAddress = new Uri("http://localhost/") };
         var api = new LicenseApiClient(http, new OrderDeck.Licensing.Api.LicenseTokenStore());
         var intakeForm = new IntakeFormSettingsViewModel(api);
+        var shopperApp = new ShopperAppSettingsViewModel(api, Microsoft.Extensions.Logging.Abstractions.NullLogger<ShopperAppSettingsViewModel>.Instance);
 
-        return new SettingsViewModel(settings, store, shortcutsTab, intakeForm);
+        return new SettingsViewModel(settings, store, shortcutsTab, intakeForm, shopperApp);
     }
 
     [Fact]
