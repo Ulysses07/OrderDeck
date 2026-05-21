@@ -12,6 +12,9 @@ public partial class CustomerSearchDialog : Window
     {
         InitializeComponent();
         DataContext = vm;
+        // Initial populate so the operator sees recent customers (including
+        // newly-registered shoppers) without having to type anything.
+        vm.RefreshSearch();
     }
 
     private void ResultsList_OnDoubleClick(object sender, MouseButtonEventArgs e)

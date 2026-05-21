@@ -84,8 +84,13 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(value)) return;
-        var raw = _customers.Search(value.Trim(), limit: 50);
+        // Empty query: show all customers so the operator can discover
+        // newly-registered shoppers (e.g. via the shopper app) who don't
+        // yet have any orders. Previously this returned nothing, leaving
+        // registered customers invisible until someone typed.
+        var raw = string.IsNullOrWhiteSpace(value)
+            ? _customers.GetAll()
+            : _customers.Search(value.Trim(), limit: 50);
         var f = string.IsNullOrEmpty(PlatformFilter)
             ? raw
             : raw.Where(c => c.Platform == PlatformFilter);
