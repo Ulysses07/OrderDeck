@@ -46,6 +46,13 @@ internal sealed class CapturingNotificationSender : INotificationSender
         Sent.Add(new Notification(customerId, title, body, data));
         return Task.CompletedTask;
     }
+
+    public Task SendToShoppersAsync(
+        IReadOnlyCollection<Guid> shopperIds,
+        string title,
+        string body,
+        IReadOnlyDictionary<string, string>? data = null,
+        CancellationToken ct = default) => Task.CompletedTask;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
