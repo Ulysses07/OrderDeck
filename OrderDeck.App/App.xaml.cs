@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -280,6 +281,31 @@ public partial class App : Application
             .OfType<OrderDeck.Chat.Ingestors.YouTube.YouTubeChatHostedService>()
             .FirstOrDefault();
         _ = _ytChat?.StartAsync(CancellationToken.None);
+
+        // Generic startup for all remaining hosted services (sync workers, etc).
+        // AppHost.cs registers a bunch of AddHostedService<>'s but WPF has no IHost
+        // builder to auto-start them. Without this loop they're dead instances.
+        // Skip ones already started by reference equality so we don't double-start
+        // the ones held in fields above.
+        var alreadyStarted = new HashSet<IHostedService>(ReferenceEqualityComparer.Instance);
+        if (_heartbeat is not null) alreadyStarted.Add(_heartbeat);
+        if (_intakeSync is not null) alreadyStarted.Add(_intakeSync);
+        if (_ytChat is not null) alreadyStarted.Add(_ytChat);
+
+        foreach (var svc in Host.Services.GetServices<IHostedService>())
+        {
+            if (alreadyStarted.Contains(svc)) continue;
+            try
+            {
+                _ = svc.StartAsync(CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex,
+                    "Hosted service {Service} failed to start; continuing",
+                    svc.GetType().Name);
+            }
+        }
 
         base.OnStartup(e);
     }
