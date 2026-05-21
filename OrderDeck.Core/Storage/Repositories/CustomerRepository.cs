@@ -136,6 +136,20 @@ public sealed class CustomerRepository
             new { id = customerId, notes = string.IsNullOrWhiteSpace(notes) ? null : notes.Trim() });
     }
 
+    /// <summary>All customers, ordered by LastSeenAt DESC. Used by the customer
+    /// dialog to show a default list when the search box is empty — otherwise the
+    /// operator has no way to discover newly-registered shoppers (which don't yet
+    /// have orders). WPF ListBox virtualizes by default, so a few thousand rows
+    /// remain responsive.</summary>
+    public IReadOnlyList<Customer> GetAll()
+    {
+        using var conn = _factory.Open();
+        var rows = conn.Query<Row>(
+            @"SELECT * FROM Customer
+              ORDER BY LastSeenAt DESC").ToList();
+        return rows.Select(Map).ToList();
+    }
+
     /// <summary>Case-insensitive substring search on Username, ordered by LastSeenAt DESC.</summary>
     public IReadOnlyList<Customer> Search(string usernameContains, int limit = 50)
     {
