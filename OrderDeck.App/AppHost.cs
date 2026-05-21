@@ -374,6 +374,12 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<Services.Sync.WpfCustomerProjectionSyncService>();
         services.AddHostedService<Services.Sync.WpfCustomerProjectionSyncHostedService>();
 
+        // Shopper registration ingest (Faz 0c-3): server'da shopper register/join
+        // sırasında otomatik oluşturulan WpfCustomerProjection kayıtlarını WPF lokal
+        // Customer tablosuna ingest eder. 30 sn cadence, watermark LastShopperIngestAt.
+        services.AddSingleton<Services.Sync.ShopperRegistrationIngestService>();
+        services.AddHostedService<Services.Sync.ShopperRegistrationIngestHostedService>();
+
         // UI freeze diagnostic (2026-05-13): her 5 dakikada bir UI thread'in
         // responsive olduğunu log'a yazan heartbeat. Donma anında log'da
         // "UI HEARTBEAT: thread unresponsive" mesajı oluşur — bir sonraki
