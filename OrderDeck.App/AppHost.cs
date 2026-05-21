@@ -377,6 +377,9 @@ public sealed class AppHost : IDisposable
         // Intake form settings (Phase 4f Task 10)
         services.AddTransient<ViewModels.IntakeFormSettingsViewModel>();
 
+        // Müşteri App settings (Faz 0c-2)
+        services.AddTransient<ViewModels.ShopperAppSettingsViewModel>();
+
         // Licensing dialogs (Phase 4b)
         services.AddTransient<ViewModels.LoginDialogViewModel>();
         services.AddTransient<Views.LoginDialog>();
