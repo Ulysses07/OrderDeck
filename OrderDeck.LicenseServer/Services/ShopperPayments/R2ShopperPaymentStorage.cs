@@ -54,6 +54,14 @@ public sealed class R2ShopperPaymentStorage : IShopperPaymentStorage, IDisposabl
             InputStream = ms,
             ContentType = contentType,
             AutoCloseStream = false,
+            // Cloudflare R2 does NOT support `STREAMING-AWS4-HMAC-SHA256-PAYLOAD`
+            // (chunked streaming signature). The AWS SDK defaults to it for
+            // stream uploads. Switch to UNSIGNED-PAYLOAD so R2 accepts the
+            // request. We're already on HTTPS so the unsigned body isn't a
+            // material security concern (the request itself is still SigV4-
+            // signed via headers).
+            DisablePayloadSigning = true,
+            UseChunkEncoding = false,
         };
         await _s3.PutObjectAsync(req, ct);
         return objectKey;
