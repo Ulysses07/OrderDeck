@@ -363,6 +363,11 @@ public sealed class AppHost : IDisposable
         // tetiklediğinde server'a PUT'lar. Periyodik değil, on-demand.
         services.AddSingleton<Services.Sync.WhatsAppTemplateSyncService>();
 
+        // Payment account sync (Faz 0c-2): IBAN + AccountHolder periyodik push.
+        // 5 dakika cadence — değer değişmezse no-op (in-memory cache).
+        services.AddSingleton<Services.Sync.PaymentAccountSyncService>();
+        services.AddHostedService<Services.Sync.PaymentAccountSyncHostedService>();
+
         // UI freeze diagnostic (2026-05-13): her 5 dakikada bir UI thread'in
         // responsive olduğunu log'a yazan heartbeat. Donma anında log'da
         // "UI HEARTBEAT: thread unresponsive" mesajı oluşur — bir sonraki
