@@ -190,6 +190,53 @@ public sealed class LicenseApiClient
             $"/api/v1/licenses/{licenseId}/whatsapp-templates", req, ct,
             methodOverride: HttpMethod.Put);
 
+    // ─── Shopper-code (Faz 0c-1) ──────────────────────────────────────────
+
+    /// <summary>Returns current shopper-code settings for the authenticated panel user.
+    /// Throws <see cref="HttpRequestException"/> (via 404) when no license is found.</summary>
+    public Task<ShopperCodeResponse> GetShopperCodeAsync(CancellationToken ct = default)
+        => GetExpectingJsonAsync<ShopperCodeResponse>("/api/panel/shopper-code", ct);
+
+    /// <summary>Updates shopper-code. Throws <see cref="ShopperCodeValidationException"/>
+    /// on 400 — <c>ErrorCode</c> is the Problem.Title from server:
+    /// "empty" / "length" / "format" / "reserved" / "profanity" / "cooldown" / "taken".</summary>
+    public async Task<ShopperCodeResponse> SetShopperCodeAsync(string code, CancellationToken ct = default)
+    {
+        using var resp = await SendJsonAsync(HttpMethod.Put, "/api/panel/shopper-code",
+            new SetShopperCodeRequest(code), ct);
+        if (resp.StatusCode == HttpStatusCode.BadRequest)
+        {
+            // ASP.NET Core Problem details JSON: { "title": "<errorCode>", "status": 400, ... }
+            var problem = await DeserializeAsync<ProblemPayload>(resp, ct);
+            throw new ShopperCodeValidationException(problem?.Title ?? "unknown");
+        }
+        if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
+        return (await DeserializeAsync<ShopperCodeResponse>(resp, ct))!;
+    }
+
+    // ─── Payment account (Faz 0c-1) ───────────────────────────────────────
+
+    /// <summary>Upserts IBAN + accountHolder for the given license on server.</summary>
+    public async Task SyncPaymentAccountAsync(
+        Guid licenseId, string? iban, string? accountHolder, CancellationToken ct = default)
+    {
+        using var resp = await SendJsonAsync(HttpMethod.Post,
+            $"/api/v1/licenses/{licenseId}/payment-account",
+            new SetPaymentAccountRequest(iban, accountHolder), ct);
+        if ((int)resp.StatusCode == 204) return;
+        if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
+    }
+
+    // ─── WPF customers bulk sync (Faz 0c-1) ───────────────────────────────
+
+    /// <summary>Batch upsert of WPF customers (all platforms). Returns server-side
+    /// synced count and retroactive shopper-code matches.</summary>
+    public Task<WpfCustomerSyncResponse> SyncWpfCustomersAsync(
+        Guid licenseId, IReadOnlyList<WpfCustomerSyncItem> customers, CancellationToken ct = default)
+        => PostJsonExpectingJsonAsync<WpfCustomerSyncRequest, WpfCustomerSyncResponse>(
+            $"/api/v1/licenses/{licenseId}/wpf-customers/sync",
+            new WpfCustomerSyncRequest(customers), ct);
+
     // ─── HTTP helpers ────────────────────────────────────────────────
 
     private async Task<TResp> PostJsonExpectingJsonAsync<TReq, TResp>(
