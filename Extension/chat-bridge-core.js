@@ -14,8 +14,9 @@ window.OrderDeckChatBridge = (function () {
 
     const WS_PORT = 4748;
     const RECONNECT_INTERVAL = 3000;
-    const SCAN_INTERVAL = 500;
-    const MAX_SEEN_CACHE = 500;
+    const SCAN_INTERVAL = 200;
+    const DEDUPE_WINDOW_MS = 5000;
+    const DEDUPE_CLEANUP_INTERVAL_MS = 30_000;
 
     /**
      * Start the bridge. `adapter` is required and must provide:
@@ -27,11 +28,46 @@ window.OrderDeckChatBridge = (function () {
      *   debugLabel         string  — printed in console (e.g. "OrderDeck Instagram")
      */
     function start(adapter) {
-        const SEEN_COMMENTS = new Set();
+        // Sliding-window TTL deduplication: hash → expiryTimestamp (ms since epoch).
+        // Same (username, text) is "same message" only if seen within DEDUPE_WINDOW_MS.
+        // After 5s the same text from the same user is treated as a new message
+        // (operator-friendly: customers re-type codes for different products).
+        const seenComments = new Map(); // hash -> expiryTimestamp (ms since epoch)
+        let cleanupTimer = null;
+
+        // Debug instrumentation — measured per 10s window, sent to WPF for log analysis.
+        const STATS_INTERVAL_MS = 10_000;
+        let stats = freshStats();
+        let statsTimer = null;
+
+        function freshStats() {
+            return {
+                scanCount: 0,
+                commentsObserved: 0,       // total comments found across all scans this window
+                deduped: 0,                // total dropped as duplicates
+                sent: 0,                   // total emitted to WS
+                observerBursts: 0,
+                scanIntervalMs: SCAN_INTERVAL,
+                dedupeWindowMs: DEDUPE_WINDOW_MS,
+                windowStart: Date.now(),
+            };
+        }
+
+        function flushStats() {
+            if (!isConnected) return;
+            const snapshot = stats;
+            snapshot.windowEnd = Date.now();
+            snapshot.windowDurationMs = snapshot.windowEnd - snapshot.windowStart;
+            snapshot.dedupeCacheSize = seenComments.size;
+            sendMessage({ type: 'debug-stats', platform: adapter.platform, stats: snapshot });
+            log(`📊 stats(${(snapshot.windowDurationMs/1000).toFixed(1)}s): observed=${snapshot.commentsObserved} sent=${snapshot.sent} deduped=${snapshot.deduped} scans=${snapshot.scanCount} bursts=${snapshot.observerBursts} cache=${snapshot.dedupeCacheSize}`);
+            stats = freshStats();
+        }
 
         let ws = null;
         let isConnected = false;
         let observer = null;
+        let observerScanTimer = null;
         let scanTimer = null;
         let reconnectTimer = null;
         let isLivePage = false;
@@ -62,12 +98,20 @@ window.OrderDeckChatBridge = (function () {
                     try { chrome.runtime.sendMessage({ action: 'setConnected', connected: true, platform: adapter.platform }); } catch (e) {}
 
                     startPeriodicScan();
+
+                    if (cleanupTimer) clearInterval(cleanupTimer);
+                    cleanupTimer = setInterval(pruneExpiredDedupe, DEDUPE_CLEANUP_INTERVAL_MS);
+
+                    if (statsTimer) clearInterval(statsTimer);
+                    statsTimer = setInterval(flushStats, STATS_INTERVAL_MS);
                 };
 
                 ws.onclose = () => {
                     log('WebSocket closed, reconnecting...');
                     isConnected = false;
                     stopPeriodicScan();
+                    if (cleanupTimer) { clearInterval(cleanupTimer); cleanupTimer = null; }
+                    if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
                     try { chrome.runtime.sendMessage({ action: 'setConnected', connected: false, platform: adapter.platform }); } catch (e) {}
                     scheduleReconnect();
                 };
@@ -110,7 +154,7 @@ window.OrderDeckChatBridge = (function () {
                         type: 'status',
                         platform: adapter.platform,
                         observing: observer !== null,
-                        commentCount: SEEN_COMMENTS.size,
+                        commentCount: seenComments.size,
                         url: window.location.href
                     });
                     break;
@@ -127,14 +171,27 @@ window.OrderDeckChatBridge = (function () {
             return hash.toString(36);
         }
 
+        function pruneExpiredDedupe() {
+            const now = Date.now();
+            for (const [hash, expiry] of seenComments) {
+                if (expiry <= now) seenComments.delete(hash);
+            }
+        }
+
         function processComments(comments) {
-            let newCount = 0;
+            stats.scanCount++;
+            stats.commentsObserved += comments.length;
 
             comments.forEach(({ username, text, source, displayName, avatarUrl }) => {
                 const hash = createCommentHash(username, text);
-                if (SEEN_COMMENTS.has(hash)) return;
-                SEEN_COMMENTS.add(hash);
-                newCount++;
+                const now = Date.now();
+                const existing = seenComments.get(hash);
+                if (existing !== undefined && existing > now) {
+                    stats.deduped++;
+                    return;
+                }
+                seenComments.set(hash, now + DEDUPE_WINDOW_MS);
+                stats.sent++;
 
                 const payload = {
                     type: 'chat',
@@ -152,15 +209,7 @@ window.OrderDeckChatBridge = (function () {
                 if (!sendMessage(payload)) log('  -> ERROR: WebSocket not connected');
             });
 
-            // LRU-ish eviction so the dedup set doesn't grow without bound during long streams.
-            if (SEEN_COMMENTS.size > MAX_SEEN_CACHE) {
-                const arr = Array.from(SEEN_COMMENTS);
-                arr.splice(0, arr.length - MAX_SEEN_CACHE / 2);
-                SEEN_COMMENTS.clear();
-                arr.forEach(h => SEEN_COMMENTS.add(h));
-            }
-
-            return newCount;
+            return stats.sent;
         }
 
         function safeScan() {
@@ -181,6 +230,7 @@ window.OrderDeckChatBridge = (function () {
 
         function stopPeriodicScan() {
             if (scanTimer) { clearInterval(scanTimer); scanTimer = null; }
+            if (observerScanTimer) { clearTimeout(observerScanTimer); observerScanTimer = null; }
         }
 
         function startObserver() {
@@ -199,12 +249,21 @@ window.OrderDeckChatBridge = (function () {
                     return;
                 }
 
+                let anyAdded = false;
                 for (const m of mutations) {
-                    if (m.addedNodes.length > 0) {
-                        processComments(safeScan());
-                        break;
-                    }
+                    if (m.addedNodes.length > 0) { anyAdded = true; break; }
                 }
+                if (!anyAdded) return;
+
+                stats.observerBursts++;
+                // Debounce: coalesce a burst of mutations into one scan, but ensure each
+                // burst (separated by >= 50ms idle) gets its own scan — vs the previous
+                // implementation that returned after the FIRST mutation event of the burst.
+                if (observerScanTimer) return;
+                observerScanTimer = setTimeout(() => {
+                    observerScanTimer = null;
+                    processComments(safeScan());
+                }, 50);
             });
 
             observer.observe(target, { childList: true, subtree: true });
@@ -231,7 +290,7 @@ window.OrderDeckChatBridge = (function () {
                 log('Page changed:', url);
                 isLivePage = adapter.checkIfLivePage();
                 if (isLivePage) {
-                    SEEN_COMMENTS.clear();
+                    seenComments.clear();
                     connectWebSocket();
                     setTimeout(startPeriodicScan, 2000);
                 } else {
@@ -261,7 +320,7 @@ window.OrderDeckChatBridge = (function () {
             status: () => ({
                 connected: isConnected,
                 wsState: ws?.readyState,
-                seenCount: SEEN_COMMENTS.size,
+                seenCount: seenComments.size,
                 isLive: isLivePage,
                 url: window.location.href,
                 platform: adapter.platform
