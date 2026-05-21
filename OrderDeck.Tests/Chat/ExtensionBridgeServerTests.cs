@@ -90,11 +90,12 @@ public class ExtensionBridgeServerTests
     }
 
     [Fact]
-    public async Task Duplicate_after_5s_passes()
+    public async Task Duplicate_after_5s_still_blocked()
     {
-        // Same (platform, username, text) sent 6s apart — both must arrive.
-        // NOTE: This test sleeps 5.1s intentionally; that's the only reliable
-        // way to cross the TTL window without injecting a TimeProvider dependency.
+        // Regression guard: 5s TTL is GONE (2026-05-22). Same (platform, user,
+        // text) sent 6s apart used to produce a second message, which caused
+        // Instagram comments to perpetually refresh in WPF when the DOM kept
+        // the same comment visible. Session-scoped dedupe now drops the second.
         var bus = new ChatBus(ringBufferSize: 10);
         await using var server = new ExtensionBridgeServer(bus, port: 0);
         await server.StartAsync(CancellationToken.None);
@@ -107,12 +108,12 @@ public class ExtensionBridgeServerTests
             CancellationToken.None);
 
         await SendRaw(ws, SerializeChat("tiktok", "@veli", "RED-L"));
-        await Task.Delay(5_100); // cross the 5s DedupeWindow
+        await Task.Delay(5_100); // would previously have crossed the 5s TTL
         await SendRaw(ws, SerializeChat("tiktok", "@veli", "RED-L"));
         await Task.Delay(200);
 
-        received.Count.Should().Be(2, because: "same message 6s later must be treated as new");
-        server.DedupedCount.Should().Be(0);
+        received.Count.Should().Be(1, because: "session-scoped dedupe drops duplicates regardless of elapsed time");
+        server.DedupedCount.Should().Be(1);
 
         await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
     }

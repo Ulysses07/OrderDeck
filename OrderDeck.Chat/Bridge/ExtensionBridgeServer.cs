@@ -42,23 +42,33 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
     private int _activeWebSocketCount;
     public int ActiveWebSocketCount => Volatile.Read(ref _activeWebSocketCount);
 
-    // Belt-and-suspenders server-side dedupe. The extension already does TTL
-    // dedupe (5s) but reconnects, multiple tabs of the same platform, or the
-    // operator dev-reloading the extension can produce duplicates. Same
-    // (platform, username, text) within 5s is considered already-seen.
-    private static readonly TimeSpan DedupeWindow = TimeSpan.FromSeconds(5);
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<(string platform, string username, string text), DateTimeOffset> _recentDedupe = new();
+    // Belt-and-suspenders server-side dedupe. The extension does session-scoped
+    // dedupe but reconnects, multiple tabs of the same platform, or the operator
+    // dev-reloading the extension can produce duplicates. Same (platform,
+    // username, text) sent only once for the lifetime of this server (FIFO
+    // eviction at SeenLimit to bound memory).
+    //
+    // 2026-05-22: switched from 5s TTL to session-scoped after a live-broadcast
+    // regression where Instagram kept the same comment in the DOM for >5s and
+    // the extension re-sent it on every TTL expiry, producing a perpetually
+    // refreshing duplicate in WPF.
+    private const int SeenLimit = 20_000;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(string platform, string username, string text), byte> _seen = new();
+    private readonly System.Collections.Concurrent.ConcurrentQueue<(string platform, string username, string text)> _seenOrder = new();
     private long _dedupedCount;
     public long DedupedCount => Volatile.Read(ref _dedupedCount);
 
-    private void PruneExpiredDedupe()
+    private bool TryRegisterSeen((string platform, string username, string text) key)
     {
-        var cutoff = DateTimeOffset.UtcNow - DedupeWindow;
-        foreach (var kvp in _recentDedupe)
+        if (!_seen.TryAdd(key, 0)) return false;
+        _seenOrder.Enqueue(key);
+        // FIFO eviction once we exceed the cap. We may briefly overshoot under
+        // concurrency, but bounded growth is what matters.
+        while (_seen.Count > SeenLimit && _seenOrder.TryDequeue(out var oldest))
         {
-            if (kvp.Value < cutoff)
-                _recentDedupe.TryRemove(kvp.Key, out _);
+            _seen.TryRemove(oldest, out _);
         }
+        return true;
     }
 
     public int Port { get; private set; }
@@ -96,7 +106,6 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
     {
         while (!ct.IsCancellationRequested)
         {
-            PruneExpiredDedupe();
             HttpListenerContext context;
             try { context = await _listener.GetContextAsync(); }
             catch { return; }
@@ -236,21 +245,19 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
                         }
                     }
 
-                    // Belt-and-suspenders dedupe. Extension already does TTL dedupe (5s) but
-                    // reconnects, multiple tabs of same platform, or operator dev-reloading
-                    // the extension can cause duplicates. Same (platform, user, text) within
-                    // 5s is considered already-seen.
+                    // Belt-and-suspenders dedupe. Extension does session-scoped dedupe,
+                    // but reconnects, multiple tabs, or operator dev-reloading can still
+                    // produce duplicates. Same (platform, user, text) seen once per
+                    // server lifetime (FIFO eviction at SeenLimit).
                     var dedupeKey = (msg.Platform.ToLowerInvariant(), (msg.Username ?? "").ToLowerInvariant(), (msg.Text ?? "").Trim());
-                    var now = DateTimeOffset.UtcNow;
-                    if (_recentDedupe.TryGetValue(dedupeKey, out var lastSeen) && (now - lastSeen) < DedupeWindow)
+                    if (!TryRegisterSeen(dedupeKey))
                     {
                         _log.LogDebug(
-                            "Dropping duplicate (within {Window}s): {Platform}:{Username}: {Text}",
-                            DedupeWindow.TotalSeconds, msg.Platform, msg.Username, msg.Text);
+                            "Dropping duplicate: {Platform}:{Username}: {Text}",
+                            msg.Platform, msg.Username, msg.Text);
                         Interlocked.Increment(ref _dedupedCount);
                         continue;
                     }
-                    _recentDedupe[dedupeKey] = now;
 
                     _bus.Publish(new ChatMessage(
                         Id: Guid.NewGuid().ToString("N"),
