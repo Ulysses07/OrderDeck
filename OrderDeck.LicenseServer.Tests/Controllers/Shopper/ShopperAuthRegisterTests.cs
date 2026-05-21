@@ -257,4 +257,78 @@ public class ShopperAuthRegisterTests : IClassFixture<ApiFactory>
             .PostAsJsonAsync("/api/v1/shopper/auth/register", req);
         resp2.StatusCode.Should().Be(HttpStatusCode.Conflict);
     }
+
+    // ── T7.9: No existing WpfProjection → auto-creates one + sets WpfCustomerId ─
+
+    [Fact]
+    public async Task Register_without_existing_projection_auto_creates_projection_and_sets_WpfCustomerId()
+    {
+        var (licenseId, code, _) = await SeedLicenseAsync();
+        var phone = UniquePhone();
+        var req = new RegisterRequest(code, "AutoProj User", phone, "Password1!", "Kayseri", "tiktok", "autoprojuser");
+
+        var resp = await _factory.CreateClient()
+            .PostAsJsonAsync("/api/v1/shopper/auth/register", req);
+        resp.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+        // A WpfCustomerProjection must have been created
+        var projection = await db.WpfCustomerProjections
+            .FirstOrDefaultAsync(p => p.LicenseId == licenseId && p.Platform == "tiktok" && p.Username == "autoprojuser");
+        projection.Should().NotBeNull("auto-projection must be created on register when no prior match");
+        projection!.FullName.Should().Be("AutoProj User");
+        projection.Phone.Should().NotBeNull();
+
+        // And the link's WpfCustomerId must point to the new projection
+        var shopper = await db.Shoppers.FirstAsync(s => s.Phone == phone);
+        var link = await db.ShopperBroadcasterLinks
+            .FirstAsync(l => l.ShopperId == shopper.Id && l.LicenseId == licenseId);
+        link.WpfCustomerId.Should().Be(projection.Id);
+    }
+
+    // ── T7.10: Existing WpfProjection → no duplicate created, existing id used ─
+
+    [Fact]
+    public async Task Register_with_existing_projection_does_not_create_duplicate()
+    {
+        var (licenseId, code, _) = await SeedLicenseAsync();
+        var wpfId = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = wpfId,
+                LicenseId = licenseId,
+                Platform = "youtube",
+                Username = "existingprojuser",
+                UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var phone = UniquePhone();
+        var req = new RegisterRequest(code, "ExistProj User", phone, "Password1!", "Trabzon", "youtube", "existingprojuser");
+        var resp = await _factory.CreateClient()
+            .PostAsJsonAsync("/api/v1/shopper/auth/register", req);
+        resp.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        using var scope2 = _factory.Services.CreateScope();
+        var db2 = scope2.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+        // Should NOT have created a second projection
+        var projections = await db2.WpfCustomerProjections
+            .Where(p => p.LicenseId == licenseId && p.Platform == "youtube" && p.Username == "existingprojuser")
+            .ToListAsync();
+        projections.Should().HaveCount(1, "no duplicate projection should be created when one already exists");
+        projections[0].Id.Should().Be(wpfId, "existing projection id must be reused");
+
+        // Link must point to the pre-existing projection
+        var shopper = await db2.Shoppers.FirstAsync(s => s.Phone == phone);
+        var link = await db2.ShopperBroadcasterLinks
+            .FirstAsync(l => l.ShopperId == shopper.Id && l.LicenseId == licenseId);
+        link.WpfCustomerId.Should().Be(wpfId);
+    }
 }

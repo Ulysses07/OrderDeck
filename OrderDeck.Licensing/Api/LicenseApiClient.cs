@@ -237,6 +237,20 @@ public sealed class LicenseApiClient
             $"/api/v1/licenses/{licenseId}/wpf-customers/sync",
             new WpfCustomerSyncRequest(customers), ct);
 
+    // ─── WPF customers pull (Faz 0c-3) ────────────────────────────────────
+
+    /// <summary>Pulls server-created WpfCustomerProjection rows (auto-created on
+    /// shopper register/join) newer than <paramref name="since"/>. WPF ingests
+    /// these as local Customer rows. Cursor is UpdatedAt of the last row received;
+    /// WPF advances its own watermark (AppSettings.LastShopperIngestAt).</summary>
+    public async Task<List<WpfCustomerPullItem>> GetWpfCustomersSinceAsync(
+        Guid licenseId, DateTimeOffset since, int take = 100, CancellationToken ct = default)
+    {
+        var qs = $"?since={Uri.EscapeDataString(since.ToString("O"))}&take={take}";
+        return await GetExpectingJsonAsync<List<WpfCustomerPullItem>>(
+            $"/api/v1/licenses/{licenseId}/wpf-customers/since{qs}", ct) ?? new();
+    }
+
     // ─── HTTP helpers ────────────────────────────────────────────────
 
     private async Task<TResp> PostJsonExpectingJsonAsync<TReq, TResp>(

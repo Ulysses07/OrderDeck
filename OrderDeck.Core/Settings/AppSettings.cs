@@ -82,6 +82,12 @@ public sealed class AppSettings
     /// Advanced after each successful batch; not advanced on failure so the
     /// next tick retries from the same position.</summary>
     public long LastCustomerProjectionSyncAt { get; set; }
+
+    /// <summary>Faz 0c-3 (2026-05-21): watermark for pulling server-created
+    /// WpfCustomerProjection rows (auto-created on shopper register/join) into
+    /// the local Customer table. Unix seconds derived from UpdatedAt of the last
+    /// successfully ingested row. 0 = never pulled.</summary>
+    public long LastShopperIngestAt { get; set; }
 }
 
 /// <summary>Phase 4g: WhatsApp ödeme istemleri için Settings bloğu.</summary>

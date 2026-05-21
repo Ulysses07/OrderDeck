@@ -265,4 +265,83 @@ public class ShopperBroadcastersJoinTests : IClassFixture<ApiFactory>
             new JoinRequest(codeB, "", "user"));
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
+
+    // ── T8: No existing WpfProjection on Join → auto-creates one ────────────
+
+    [Fact]
+    public async Task Join_without_existing_projection_auto_creates_projection_and_sets_WpfCustomerId()
+    {
+        var client = _factory.CreateClient();
+        var (_, codeA, _) = await SeedLicenseAsync();
+        var (licenseIdB, codeB, _) = await SeedLicenseAsync();
+        var (token, shopperId) = await RegisterShopperAsync(client, codeA);
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        var resp = await client.PostAsJsonAsync(
+            "/api/v1/shopper/broadcasters/join",
+            new JoinRequest(codeB, "instagram", "joinautoproj"));
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+        // Auto-projection must exist
+        var projection = await db.WpfCustomerProjections
+            .FirstOrDefaultAsync(p => p.LicenseId == licenseIdB && p.Platform == "instagram" && p.Username == "joinautoproj");
+        projection.Should().NotBeNull("auto-projection must be created on join when no prior match");
+
+        // Link must point to the new projection
+        var link = await db.ShopperBroadcasterLinks
+            .Where(l => l.ShopperId == shopperId && l.LicenseId == licenseIdB && l.LeftAt == null)
+            .FirstOrDefaultAsync();
+        link.Should().NotBeNull();
+        link!.WpfCustomerId.Should().Be(projection!.Id);
+    }
+
+    // ── T9: Existing WpfProjection on Join → no duplicate created ───────────
+
+    [Fact]
+    public async Task Join_with_existing_projection_does_not_create_duplicate()
+    {
+        var client = _factory.CreateClient();
+        var (_, codeA, _) = await SeedLicenseAsync();
+        var (licenseIdB, codeB, _) = await SeedLicenseAsync();
+        var (token, shopperId) = await RegisterShopperAsync(client, codeA);
+
+        var wpfId = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = wpfId,
+                LicenseId = licenseIdB,
+                Platform = "twitch",
+                Username = "joinexistproj",
+                UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        var resp = await client.PostAsJsonAsync(
+            "/api/v1/shopper/broadcasters/join",
+            new JoinRequest(codeB, "twitch", "joinexistproj"));
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var scope2 = _factory.Services.CreateScope();
+        var db2 = scope2.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+        // Should NOT have created a second projection
+        var projections = await db2.WpfCustomerProjections
+            .Where(p => p.LicenseId == licenseIdB && p.Platform == "twitch" && p.Username == "joinexistproj")
+            .ToListAsync();
+        projections.Should().HaveCount(1, "no duplicate projection should be created when one already exists");
+        projections[0].Id.Should().Be(wpfId);
+
+        var link = await db2.ShopperBroadcasterLinks
+            .Where(l => l.ShopperId == shopperId && l.LicenseId == licenseIdB && l.LeftAt == null)
+            .FirstOrDefaultAsync();
+        link!.WpfCustomerId.Should().Be(wpfId);
+    }
 }
