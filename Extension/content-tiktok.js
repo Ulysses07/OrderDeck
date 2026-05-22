@@ -88,12 +88,12 @@
         return true;
     }
 
-    function pushIfNew(list, seen, username, message, source) {
+    function pushIfNew(list, seen, username, message, source, element) {
         if (!isValidComment(username, message)) return;
         const key = `${username}|${message}`;
         if (seen.has(key)) return;
         seen.add(key);
-        list.push({ username: cleanUsername(username), text: message, source });
+        list.push({ username: cleanUsername(username), text: message, source, element });
     }
 
     function scanForComments() {
@@ -111,7 +111,7 @@
         document.querySelectorAll(primaryContainers).forEach(item => {
             const u = item.querySelector(primaryRowItems)?.textContent?.trim();
             const t = item.querySelector(messageItem)?.textContent?.trim();
-            pushIfNew(comments, seen, u, t, 'data-e2e');
+            pushIfNew(comments, seen, u, t, 'data-e2e', item);
         });
 
         // Strategy 2 — class-name suffix selectors.
@@ -125,7 +125,8 @@
                         pushIfNew(comments, seen,
                             spans[0]?.textContent?.trim(),
                             spans[1]?.textContent?.trim(),
-                            sel);
+                            sel,
+                            item);
                     }
                 });
             }
@@ -145,7 +146,8 @@
                         pushIfNew(comments, seen,
                             spans[0]?.textContent?.trim(),
                             spans[1]?.textContent?.trim(),
-                            'chatlist-child');
+                            'chatlist-child',
+                            item);
                     }
                 });
             }

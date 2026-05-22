@@ -42,26 +42,32 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
     private int _activeWebSocketCount;
     public int ActiveWebSocketCount => Volatile.Read(ref _activeWebSocketCount);
 
-    // Belt-and-suspenders server-side dedupe. The extension does session-scoped
-    // dedupe but reconnects, multiple tabs of the same platform, or the operator
-    // dev-reloading the extension can produce duplicates. Same (platform,
-    // username, text) sent only once for the lifetime of this server (FIFO
-    // eviction at SeenLimit to bound memory).
+    // Belt-and-suspenders server-side dedupe. The extension does primary
+    // dedupe via DOM-element identity (WeakSet). Server dedup keys on
+    // externalId — which the extension generates per comment-DOM-node and
+    // is therefore unique per logical comment, including re-buys of the
+    // same code by the same customer (a new DOM node → new externalId →
+    // new order, intentionally).
     //
-    // 2026-05-22: switched from 5s TTL to session-scoped after a live-broadcast
-    // regression where Instagram kept the same comment in the DOM for >5s and
-    // the extension re-sent it on every TTL expiry, producing a perpetually
-    // refreshing duplicate in WPF.
+    // We still catch true duplicates that arise from: reconnects, multiple
+    // tabs of the same platform open to the same broadcast, or operator
+    // dev-reloading the extension within the server's uptime.
+    //
+    // 2026-05-22 (#92): replaced 5s TTL with session-scoped to fix a
+    // regression where IG kept comments in DOM > 5s and TTL expiry caused
+    // re-emit.
+    // 2026-05-22 (#93): switched dedupe key from (platform,user,text) to
+    // externalId so customers can re-buy the same code multiple times.
     private const int SeenLimit = 20_000;
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<(string platform, string username, string text), byte> _seen = new();
-    private readonly System.Collections.Concurrent.ConcurrentQueue<(string platform, string username, string text)> _seenOrder = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _seen = new();
+    private readonly System.Collections.Concurrent.ConcurrentQueue<string> _seenOrder = new();
     private long _dedupedCount;
     public long DedupedCount => Volatile.Read(ref _dedupedCount);
 
-    private bool TryRegisterSeen((string platform, string username, string text) key)
+    private bool TryRegisterSeen(string externalId)
     {
-        if (!_seen.TryAdd(key, 0)) return false;
-        _seenOrder.Enqueue(key);
+        if (!_seen.TryAdd(externalId, 0)) return false;
+        _seenOrder.Enqueue(externalId);
         // FIFO eviction once we exceed the cap. We may briefly overshoot under
         // concurrency, but bounded growth is what matters.
         while (_seen.Count > SeenLimit && _seenOrder.TryDequeue(out var oldest))
@@ -245,16 +251,15 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
                         }
                     }
 
-                    // Belt-and-suspenders dedupe. Extension does session-scoped dedupe,
-                    // but reconnects, multiple tabs, or operator dev-reloading can still
-                    // produce duplicates. Same (platform, user, text) seen once per
-                    // server lifetime (FIFO eviction at SeenLimit).
-                    var dedupeKey = (msg.Platform.ToLowerInvariant(), (msg.Username ?? "").ToLowerInvariant(), (msg.Text ?? "").Trim());
-                    if (!TryRegisterSeen(dedupeKey))
+                    // Belt-and-suspenders dedupe by externalId (extension-generated
+                    // per-comment-node). True dupes (reconnect / multiple tabs / dev
+                    // reload) have the same externalId. Customer re-buying the same
+                    // code generates a new DOM node → new externalId → not a dupe.
+                    if (!string.IsNullOrEmpty(msg.ExternalId) && !TryRegisterSeen(msg.ExternalId))
                     {
                         _log.LogDebug(
-                            "Dropping duplicate: {Platform}:{Username}: {Text}",
-                            msg.Platform, msg.Username, msg.Text);
+                            "Dropping duplicate externalId={ExternalId} {Platform}:{Username}: {Text}",
+                            msg.ExternalId, msg.Platform, msg.Username, msg.Text);
                         Interlocked.Increment(ref _dedupedCount);
                         continue;
                     }

@@ -87,12 +87,20 @@
         return true;
     }
 
-    function pushIfNew(list, seen, username, message, source) {
+    function pushIfNew(list, seen, username, message, source, element) {
         if (!isValidComment(username, message)) return;
         const key = `${username}|${message}`;
         if (seen.has(key)) return;
         seen.add(key);
-        list.push({ username: username.replace('@', ''), text: message, source });
+        list.push({
+            username: username.replace('@', ''),
+            text: message,
+            source,
+            // element: stable per-comment DOM node so the core can dedupe
+            // by identity (WeakSet). Re-typing the same text creates a new
+            // node → counted as a new order (live broadcast multi-buy).
+            element,
+        });
     }
 
     function scanForComments() {
@@ -111,7 +119,8 @@
                 pushIfNew(comments, seen,
                     spans[0]?.textContent?.trim(),
                     spans[1]?.textContent?.trim(),
-                    'aria-label');
+                    'aria-label',
+                    el);
             }
         });
 
@@ -124,18 +133,21 @@
                     pushIfNew(comments, seen,
                         spans[0]?.textContent?.trim(),
                         spans[1]?.textContent?.trim(),
-                        'div-2span');
+                        'div-2span',
+                        div);
                 }
             });
         }
 
-        // Strategy 3 — sibling spans (loose fallback).
+        // Strategy 3 — sibling spans (loose fallback). No stable container
+        // here — two adjacent <span>'s aren't a row in IG's sense. Pass
+        // undefined element so the core falls back to text-hash dedupe.
         if (comments.length === 0) {
             document.querySelectorAll('span').forEach(span => {
                 const text = span.textContent?.trim();
                 const prev = span.previousElementSibling;
                 if (prev?.tagName === 'SPAN' && text) {
-                    pushIfNew(comments, seen, prev.textContent?.trim(), text, 'sibling-span');
+                    pushIfNew(comments, seen, prev.textContent?.trim(), text, 'sibling-span', undefined);
                 }
             });
         }

@@ -94,12 +94,12 @@
         return true;
     }
 
-    function pushIfNew(list, seen, username, message, source) {
+    function pushIfNew(list, seen, username, message, source, element) {
         if (!isValidComment(username, message)) return;
         const key = `${username}|${message}`;
         if (seen.has(key)) return;
         seen.add(key);
-        list.push({ username, text: message, source });
+        list.push({ username, text: message, source, element });
     }
 
     function scanForComments() {
@@ -120,7 +120,8 @@
                 pushIfNew(comments, seen,
                     spans[0]?.textContent?.trim(),
                     spans[1]?.textContent?.trim(),
-                    'aria-label');
+                    'aria-label',
+                    el);
             }
         });
 
@@ -133,7 +134,8 @@
                         pushIfNew(comments, seen,
                             spans[0]?.textContent?.trim(),
                             spans[1]?.textContent?.trim(),
-                            sel);
+                            sel,
+                            article);
                     }
                 });
             }
@@ -150,7 +152,8 @@
                     pushIfNew(comments, seen,
                         childSpans[0]?.textContent?.trim(),
                         childSpans[1]?.textContent?.trim(),
-                        'span-pair');
+                        'span-pair',
+                        div);
                 }
             });
         }
