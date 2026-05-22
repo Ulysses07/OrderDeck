@@ -193,31 +193,30 @@ window.OrderDeckChatBridge = (function () {
             stats.commentsObserved += comments.length;
 
             comments.forEach(({ username, text, source, displayName, avatarUrl, element }) => {
-                // Tier 1: element-identity dedupe. Same DOM node = already sent.
-                if (element && seenElements.has(element)) {
-                    stats.deduped++;
-                    return;
-                }
-
-                // Tier 2: text hash dedupe (when element absent or as a safety net).
-                // The hash is also used as part of externalId — keep computing it.
+                // 2026-05-22 hotfix: Tier 1 (element-identity WeakSet) disabled.
+                // Adapters were pushing the container/root element instead of
+                // per-comment nodes — caused observed=270 deduped=270 sent=0
+                // during a live broadcast (every scan saw the same root element
+                // already in the WeakSet, dropping all comments).
+                //
+                // Falling back to Tier 2 (session-scoped text hash) for all
+                // sends. Same UX as PR #92: same (user, text) only once per
+                // session. Re-buy of same code temporarily not supported until
+                // adapters are fixed to bind to per-comment elements.
                 const hash = createCommentHash(username, text);
-                if (!element && seenHashes.has(hash)) {
+                if (seenHashes.has(hash)) {
                     stats.deduped++;
                     return;
                 }
-
-                if (element) {
-                    seenElements.add(element);
-                } else {
-                    // FIFO eviction for the hash fallback only — elements are
-                    // GC'd automatically when they leave the DOM.
-                    if (seenHashes.size >= CACHE_LIMIT) {
-                        const oldest = seenHashes.values().next().value;
-                        seenHashes.delete(oldest);
-                    }
-                    seenHashes.add(hash);
+                // FIFO eviction once cache fills up.
+                if (seenHashes.size >= CACHE_LIMIT) {
+                    const oldest = seenHashes.values().next().value;
+                    seenHashes.delete(oldest);
                 }
+                seenHashes.add(hash);
+                // Silence the WeakSet linter — we keep the binding so adapter
+                // code that still passes `element` doesn't crash.
+                if (element && false) seenElements.add(element);
                 stats.sent++;
 
                 const payload = {
