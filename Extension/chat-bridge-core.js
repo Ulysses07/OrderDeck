@@ -36,10 +36,23 @@ window.OrderDeckChatBridge = (function () {
      *   debugLabel         string  — printed in console (e.g. "OrderDeck Instagram")
      */
     function start(adapter) {
-        // Session-scoped dedupe: same (username, text) sent only once per
-        // live page session. Set insertion order is preserved → when size
-        // exceeds CACHE_LIMIT we evict the oldest hash (FIFO).
-        const seenComments = new Set();
+        // Two-tier dedupe so the same customer can re-buy the same item
+        // (live broadcaster scenario: "100 alıyorum" twice = two orders):
+        //
+        // Tier 1 — DOM element identity (primary)
+        //   When the adapter returns the actual comment DOM node, we track
+        //   it in a WeakSet. Instagram re-shows comments in the same node
+        //   for ~10 minutes; re-typing creates a new node → new send.
+        //   GC handles cleanup automatically when nodes leave the DOM.
+        //
+        // Tier 2 — (username, text) hash (fallback)
+        //   When the adapter has no element (legacy adapters or the sibling-
+        //   span fallback strategies in IG that can't reliably bind to one
+        //   node), we fall back to session-scoped text dedupe with FIFO
+        //   eviction. Worse UX than tier 1 (no re-buy) but prevents the
+        //   "perpetually refreshing comment" regression.
+        const seenElements = new WeakSet();
+        const seenHashes = new Set();
 
         // Debug instrumentation — measured per 10s window, sent to WPF for log analysis.
         const STATS_INTERVAL_MS = 10_000;
@@ -64,7 +77,8 @@ window.OrderDeckChatBridge = (function () {
             const snapshot = stats;
             snapshot.windowEnd = Date.now();
             snapshot.windowDurationMs = snapshot.windowEnd - snapshot.windowStart;
-            snapshot.dedupeCacheSize = seenComments.size;
+            // WeakSet size'ı introspectable değil — hash fallback cache'i göster.
+            snapshot.dedupeCacheSize = seenHashes.size;
             sendMessage({ type: 'debug-stats', platform: adapter.platform, stats: snapshot });
             // Operator-visible summary in DevTools console during broadcast.
             log(`📊 stats(${(snapshot.windowDurationMs/1000).toFixed(1)}s): observed=${snapshot.commentsObserved} sent=${snapshot.sent} deduped=${snapshot.deduped} scans=${snapshot.scanCount} bursts=${snapshot.observerBursts} cache=${snapshot.dedupeCacheSize}`);
@@ -157,7 +171,7 @@ window.OrderDeckChatBridge = (function () {
                         type: 'status',
                         platform: adapter.platform,
                         observing: observer !== null,
-                        commentCount: seenComments.size,
+                        commentCount: seenHashes.size,
                         url: window.location.href
                     });
                     break;
@@ -178,19 +192,32 @@ window.OrderDeckChatBridge = (function () {
             stats.scanCount++;
             stats.commentsObserved += comments.length;
 
-            comments.forEach(({ username, text, source, displayName, avatarUrl }) => {
-                const hash = createCommentHash(username, text);
-                if (seenComments.has(hash)) {
+            comments.forEach(({ username, text, source, displayName, avatarUrl, element }) => {
+                // Tier 1: element-identity dedupe. Same DOM node = already sent.
+                if (element && seenElements.has(element)) {
                     stats.deduped++;
                     return;
                 }
-                // FIFO eviction: when the cache reaches the limit, drop the
-                // oldest entry. Set iteration order is insertion order in JS.
-                if (seenComments.size >= CACHE_LIMIT) {
-                    const oldest = seenComments.values().next().value;
-                    seenComments.delete(oldest);
+
+                // Tier 2: text hash dedupe (when element absent or as a safety net).
+                // The hash is also used as part of externalId — keep computing it.
+                const hash = createCommentHash(username, text);
+                if (!element && seenHashes.has(hash)) {
+                    stats.deduped++;
+                    return;
                 }
-                seenComments.add(hash);
+
+                if (element) {
+                    seenElements.add(element);
+                } else {
+                    // FIFO eviction for the hash fallback only — elements are
+                    // GC'd automatically when they leave the DOM.
+                    if (seenHashes.size >= CACHE_LIMIT) {
+                        const oldest = seenHashes.values().next().value;
+                        seenHashes.delete(oldest);
+                    }
+                    seenHashes.add(hash);
+                }
                 stats.sent++;
 
                 const payload = {
@@ -290,7 +317,9 @@ window.OrderDeckChatBridge = (function () {
                 log('Page changed:', url);
                 isLivePage = adapter.checkIfLivePage();
                 if (isLivePage) {
-                    seenComments.clear();
+                    seenHashes.clear();
+                    // seenElements (WeakSet) has no clear() — but old DOM is gone
+                    // after navigation so all old refs are GC'd anyway.
                     connectWebSocket();
                     setTimeout(startPeriodicScan, 2000);
                 } else {
@@ -320,7 +349,7 @@ window.OrderDeckChatBridge = (function () {
             status: () => ({
                 connected: isConnected,
                 wsState: ws?.readyState,
-                seenCount: seenComments.size,
+                seenCount: seenHashes.size,
                 isLive: isLivePage,
                 url: window.location.href,
                 platform: adapter.platform

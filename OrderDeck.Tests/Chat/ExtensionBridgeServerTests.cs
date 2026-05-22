@@ -18,7 +18,7 @@ public class ExtensionBridgeServerTests
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static string SerializeChat(string platform, string username, string text,
-        string? displayName = null) =>
+        string? displayName = null, string? externalId = null) =>
         JsonSerializer.Serialize(new ExtensionMessage(
             Type: "chat",
             Platform: platform,
@@ -26,7 +26,7 @@ public class ExtensionBridgeServerTests
             DisplayName: displayName,
             AvatarUrl: null,
             Text: text,
-            ExternalId: null,
+            ExternalId: externalId,
             Timestamp: null,
             Stats: null));
 
@@ -63,10 +63,9 @@ public class ExtensionBridgeServerTests
     // ── Dedupe tests ──────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task Duplicate_within_5s_dropped()
+    public async Task Duplicate_externalId_dropped()
     {
-        // Same (platform, username, text) sent twice in quick succession — bus
-        // must receive exactly 1 message.
+        // Same externalId twice → second is a dupe (reconnect / multi-tab).
         var bus = new ChatBus(ringBufferSize: 10);
         await using var server = new ExtensionBridgeServer(bus, port: 0);
         await server.StartAsync(CancellationToken.None);
@@ -78,24 +77,22 @@ public class ExtensionBridgeServerTests
         await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
             CancellationToken.None);
 
-        await SendRaw(ws, SerializeChat("instagram", "@ali", "AB-25"));
+        await SendRaw(ws, SerializeChat("instagram", "@ali", "AB-25", externalId: "ig-1-abc"));
         await Task.Delay(50);
-        await SendRaw(ws, SerializeChat("instagram", "@ali", "AB-25"));
-        await Task.Delay(200); // give the server time to process both
+        await SendRaw(ws, SerializeChat("instagram", "@ali", "AB-25", externalId: "ig-1-abc"));
+        await Task.Delay(200);
 
-        received.Count.Should().Be(1, because: "second identical message within 5s should be dropped");
+        received.Count.Should().Be(1, because: "same externalId is a duplicate (reconnect / dual-tab)");
         server.DedupedCount.Should().Be(1);
 
         await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
     }
 
     [Fact]
-    public async Task Duplicate_after_5s_still_blocked()
+    public async Task Same_text_different_externalId_both_pass()
     {
-        // Regression guard: 5s TTL is GONE (2026-05-22). Same (platform, user,
-        // text) sent 6s apart used to produce a second message, which caused
-        // Instagram comments to perpetually refresh in WPF when the DOM kept
-        // the same comment visible. Session-scoped dedupe now drops the second.
+        // Customer re-types same code in the live broadcast → extension emits
+        // a new externalId per DOM node → both must reach the bus (= two orders).
         var bus = new ChatBus(ringBufferSize: 10);
         await using var server = new ExtensionBridgeServer(bus, port: 0);
         await server.StartAsync(CancellationToken.None);
@@ -107,22 +104,22 @@ public class ExtensionBridgeServerTests
         await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
             CancellationToken.None);
 
-        await SendRaw(ws, SerializeChat("tiktok", "@veli", "RED-L"));
-        await Task.Delay(5_100); // would previously have crossed the 5s TTL
-        await SendRaw(ws, SerializeChat("tiktok", "@veli", "RED-L"));
+        await SendRaw(ws, SerializeChat("instagram", "@ali", "AB-25", externalId: "ig-1-abc"));
+        await Task.Delay(50);
+        await SendRaw(ws, SerializeChat("instagram", "@ali", "AB-25", externalId: "ig-2-def"));
         await Task.Delay(200);
 
-        received.Count.Should().Be(1, because: "session-scoped dedupe drops duplicates regardless of elapsed time");
-        server.DedupedCount.Should().Be(1);
+        received.Count.Should().Be(2, because: "different externalIds = different DOM nodes = different orders (re-buy)");
+        server.DedupedCount.Should().Be(0);
 
         await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
     }
 
     [Fact]
-    public async Task Case_differences_treated_as_duplicate()
+    public async Task ExternalId_dedupe_time_independent()
     {
-        // Username casing difference — "Ahmet" vs "AHMET" — same payload → 1 msg.
-        // The dedupeKey lowercases both username and platform.
+        // Same externalId resent 5s+ later — still a duplicate (e.g. reconnect
+        // long after first send). Server dedupe is per-server-lifetime, not TTL.
         var bus = new ChatBus(ringBufferSize: 10);
         await using var server = new ExtensionBridgeServer(bus, port: 0);
         await server.StartAsync(CancellationToken.None);
@@ -134,12 +131,12 @@ public class ExtensionBridgeServerTests
         await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
             CancellationToken.None);
 
-        await SendRaw(ws, SerializeChat("Instagram", "Ahmet", "AB-25"));
-        await Task.Delay(50);
-        await SendRaw(ws, SerializeChat("instagram", "AHMET", "AB-25"));
+        await SendRaw(ws, SerializeChat("tiktok", "@veli", "RED-L", externalId: "tt-1-x"));
+        await Task.Delay(5_100);
+        await SendRaw(ws, SerializeChat("tiktok", "@veli", "RED-L", externalId: "tt-1-x"));
         await Task.Delay(200);
 
-        received.Count.Should().Be(1, because: "case-variant username+platform should match dedupeKey");
+        received.Count.Should().Be(1);
         server.DedupedCount.Should().Be(1);
 
         await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
@@ -148,7 +145,7 @@ public class ExtensionBridgeServerTests
     [Fact]
     public async Task Different_users_same_text_both_pass()
     {
-        // "ali: AB-25" and "veli: AB-25" are different keys — both must arrive.
+        // Different externalIds → both messages must reach the bus.
         var bus = new ChatBus(ringBufferSize: 10);
         await using var server = new ExtensionBridgeServer(bus, port: 0);
         await server.StartAsync(CancellationToken.None);
@@ -160,13 +157,40 @@ public class ExtensionBridgeServerTests
         await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
             CancellationToken.None);
 
-        await SendRaw(ws, SerializeChat("instagram", "ali", "AB-25"));
+        await SendRaw(ws, SerializeChat("instagram", "ali", "AB-25", externalId: "ig-1-a"));
         await Task.Delay(50);
-        await SendRaw(ws, SerializeChat("instagram", "veli", "AB-25"));
+        await SendRaw(ws, SerializeChat("instagram", "veli", "AB-25", externalId: "ig-2-b"));
         await Task.Delay(200);
 
-        received.Count.Should().Be(2, because: "different users sending the same code are independent messages");
+        received.Count.Should().Be(2);
         server.DedupedCount.Should().Be(0);
+
+        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Missing_externalId_passes_through()
+    {
+        // Backwards-compat: if a payload arrives without externalId (very old
+        // extension version or test traffic), don't drop it. Server dedupe is
+        // a belt-and-suspenders layer, not a hard requirement.
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(bus, port: 0);
+        await server.StartAsync(CancellationToken.None);
+
+        var received = new System.Collections.Generic.List<ChatMessage>();
+        using var sub = bus.Subscribe(m => { lock (received) received.Add(m); });
+
+        using var ws = new ClientWebSocket();
+        await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
+            CancellationToken.None);
+
+        await SendRaw(ws, SerializeChat("instagram", "@x", "hello", externalId: null));
+        await Task.Delay(50);
+        await SendRaw(ws, SerializeChat("instagram", "@x", "hello", externalId: null));
+        await Task.Delay(200);
+
+        received.Count.Should().Be(2, because: "no externalId → server can't dedupe, both pass");
 
         await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
     }
