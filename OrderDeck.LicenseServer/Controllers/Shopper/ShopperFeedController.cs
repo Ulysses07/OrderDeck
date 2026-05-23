@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.BroadcastPosts;
 using OrderDeck.LicenseServer.Services.Pagination;
 
 namespace OrderDeck.LicenseServer.Controllers.Shopper;
@@ -23,7 +25,12 @@ namespace OrderDeck.LicenseServer.Controllers.Shopper;
 public sealed class ShopperFeedController : ControllerBase
 {
     private readonly LicenseDbContext _db;
-    public ShopperFeedController(LicenseDbContext db) => _db = db;
+    private readonly IBroadcastMediaStorage _storage;
+    public ShopperFeedController(LicenseDbContext db, IBroadcastMediaStorage storage)
+    {
+        _db = db;
+        _storage = storage;
+    }
 
     // ── Response DTOs ─────────────────────────────────────────────────────
 
@@ -156,4 +163,38 @@ public sealed class ShopperFeedController : ControllerBase
         return Ok(new FeedResponse(items, nextCursor));
     }
 
+    // ── GET /api/v1/shopper/feed/{postId}/media-url ───────────────────────
+    //
+    // Shopper'a presigned (kısa-ömürlü) media URL'i döner. Authorization:
+    // shopper bu post'un yayıncısına (License → ShopperBroadcasterLink) aktif
+    // olarak bağlı olmalı; aksi halde 404 (existence leak yok). Panel'deki
+    // /api/panel/posts/{id}/media-url'in shopper-tenancy karşılığı.
+
+    public sealed record MediaUrlResponse(string Url, DateTimeOffset ExpiresAt);
+
+    [HttpGet("{postId:guid}/media-url")]
+    public async Task<IActionResult> GetMediaUrl(Guid postId, CancellationToken ct)
+    {
+        var shopperId = User.GetShopperId();
+        if (shopperId is null) return Unauthorized();
+
+        // Post + yayıncı bağlantı kontrolü tek query'de — shopper bu license'a
+        // aktif olarak bağlı olmadan post'un varlığını sızdırmıyoruz.
+        var post = await _db.BroadcastPosts
+            .Where(p => p.Id == postId
+                && p.DeletedAt == null
+                && _db.ShopperBroadcasterLinks.Any(l =>
+                    l.ShopperId == shopperId.Value
+                    && l.LicenseId == p.LicenseId
+                    && l.LeftAt == null))
+            .Select(p => new { p.MediaObjectKey })
+            .FirstOrDefaultAsync(ct);
+
+        if (post is null) return NotFound();
+        if (string.IsNullOrWhiteSpace(post.MediaObjectKey))
+            return Problem(title: "no-media", statusCode: 400);
+
+        var url = await _storage.CreateDownloadUrlAsync(post.MediaObjectKey, ct);
+        return Ok(new MediaUrlResponse(url, DateTimeOffset.UtcNow.AddMinutes(5)));
+    }
 }
