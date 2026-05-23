@@ -193,6 +193,10 @@ public sealed class LicensesSessionsSyncController : ControllerBase
             .ToDictionaryAsync(o => o.Id, ct);
 
         var newPrintedOrders = new List<decimal>();
+        // (CustomerId-hex, Price) for new printed orders — used after Save to
+        // resolve which shopper to notify (one Order belongs to at most one
+        // shopper, identified via ShopperBroadcasterLink.WpfCustomerId).
+        var newOrdersForShopperPush = new List<(string CustomerIdHex, decimal Price)>();
 
         foreach (var item in req.Orders)
         {
@@ -242,6 +246,8 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                     && !item.IsTentativeBackup)
                 {
                     newPrintedOrders.Add(item.Price);
+                    if (!string.IsNullOrWhiteSpace(item.CustomerId))
+                        newOrdersForShopperPush.Add((item.CustomerId, item.Price));
                 }
             }
         }
@@ -261,6 +267,12 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                         ["licenseId"] = licenseId.ToString(),
                         ["count"] = newPrintedOrders.Count.ToString()
                     }, ct);
+
+                // Shopper push (Faz 4c-3): her shopper'a kendi siparişleri için
+                // bildirim. Customer.Id (hex N format) ↔ ShopperBroadcasterLink
+                // .WpfCustomerId üzerinden eşle. Bildirimi açık + silinmemiş
+                // shopper'lara gönder.
+                await SendShopperOrderPushesAsync(licenseId, newOrdersForShopperPush, ct);
             }
             catch (Exception ex)
             {
@@ -295,6 +307,88 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         var total = prices.Sum();
         return ("Yeni sipariş",
             $"{prices.Count} yeni sipariş, toplam {total.ToString("N2", tr)} ₺");
+    }
+
+    /// <summary>
+    /// Her shopper için kendi yeni siparişlerinin özetini push'lar.
+    /// Order.CustomerId (hex N GUID) ↔ ShopperBroadcasterLink.WpfCustomerId
+    /// üzerinden eşleşir. Yayıncı adı title'da görünür (shopper birden çok
+    /// yayıncı takip ediyor olabilir, hangisinden geldiğini anlasın).
+    /// </summary>
+    private async Task SendShopperOrderPushesAsync(
+        Guid licenseId,
+        IReadOnlyList<(string CustomerIdHex, decimal Price)> newOrders,
+        CancellationToken ct)
+    {
+        if (newOrders.Count == 0) return;
+
+        // Hex-N → Guid; geçersizleri at.
+        var customerGuids = newOrders
+            .Select(o => Guid.TryParseExact(o.CustomerIdHex, "N", out var g)
+                ? (Guid?)g : null)
+            .Where(g => g.HasValue).Select(g => g!.Value)
+            .Distinct().ToList();
+        if (customerGuids.Count == 0) return;
+
+        // (WpfCustomerId → ShopperId) eşleşmeleri — sadece aktif link,
+        // bildirimi açık, silinmemiş shopper'lar.
+        var matches = await _db.ShopperBroadcasterLinks
+            .Where(l => l.LicenseId == licenseId
+                && l.LeftAt == null
+                && l.WpfCustomerId != null
+                && customerGuids.Contains(l.WpfCustomerId!.Value))
+            .Join(_db.Shoppers,
+                l => l.ShopperId,
+                s => s.Id,
+                (l, s) => new
+                {
+                    WpfCustomerId = l.WpfCustomerId!.Value,
+                    ShopperId = s.Id,
+                    s.DeletedAt,
+                    s.NotificationsEnabledOrders
+                })
+            .Where(x => x.DeletedAt == null && x.NotificationsEnabledOrders)
+            .Select(x => new { x.WpfCustomerId, x.ShopperId })
+            .ToListAsync(ct);
+        if (matches.Count == 0) return;
+
+        var broadcasterName = await _db.Licenses
+            .Where(l => l.Id == licenseId)
+            .Select(l => l.Customer.Name)
+            .FirstOrDefaultAsync(ct) ?? "Yayıncı";
+
+        var tr = System.Globalization.CultureInfo.GetCultureInfo("tr-TR");
+
+        // Her shopper için kendi order'larını topla.
+        // Bir WpfCustomerId birden fazla shopper'a bağlı olabilir (aynı
+        // hesap birden fazla cihazda) — her birine ayrı push düşer.
+        foreach (var group in matches.GroupBy(m => m.WpfCustomerId))
+        {
+            var hexId = group.Key.ToString("N");
+            var ordersForThis = newOrders
+                .Where(o => string.Equals(o.CustomerIdHex, hexId, StringComparison.OrdinalIgnoreCase))
+                .Select(o => o.Price)
+                .ToList();
+            if (ordersForThis.Count == 0) continue;
+
+            var total = ordersForThis.Sum();
+            var body = ordersForThis.Count == 1
+                ? $"{total.ToString("N2", tr)} ₺ tutarında yeni siparişin var"
+                : $"{ordersForThis.Count} yeni siparişin var, toplam {total.ToString("N2", tr)} ₺";
+
+            var shopperIds = group.Select(g => g.ShopperId).ToList();
+            await _push.SendToShoppersAsync(
+                shopperIds,
+                title: broadcasterName,
+                body: body,
+                data: new Dictionary<string, string>
+                {
+                    ["type"] = "order",
+                    ["licenseId"] = licenseId.ToString(),
+                    ["count"] = ordersForThis.Count.ToString()
+                },
+                ct: ct);
+        }
     }
 
 }

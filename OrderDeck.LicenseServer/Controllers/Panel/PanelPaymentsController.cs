@@ -2,6 +2,7 @@ using System.Security.Claims;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Push;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -22,10 +23,17 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 public sealed class PanelPaymentsController : ControllerBase
 {
     private readonly LicenseDbContext _db;
+    private readonly INotificationSender _push;
+    private readonly ILogger<PanelPaymentsController> _log;
 
-    public PanelPaymentsController(LicenseDbContext db)
+    public PanelPaymentsController(
+        LicenseDbContext db,
+        INotificationSender push,
+        ILogger<PanelPaymentsController> log)
     {
         _db = db;
+        _push = push;
+        _log = log;
     }
 
     public sealed record PaymentDto(
@@ -105,6 +113,8 @@ public sealed class PanelPaymentsController : ControllerBase
         payment.ApprovedByCustomerId = customerId;
         payment.UpdatedAt = now;
         await _db.SaveChangesAsync(ct);
+
+        await NotifyShopperPaymentDecisionAsync(payment, approved: true, reason: null, ct);
         return NoContent();
     }
 
@@ -132,7 +142,64 @@ public sealed class PanelPaymentsController : ControllerBase
         payment.RejectReason = reason.Length > 0 ? reason : null;
         payment.UpdatedAt = now;
         await _db.SaveChangesAsync(ct);
+
+        await NotifyShopperPaymentDecisionAsync(payment, approved: false,
+            reason: payment.RejectReason, ct);
         return NoContent();
+    }
+
+    /// <summary>
+    /// Yayıncı dekontu onayladıktan / reddettikten sonra shopper'a push.
+    /// ShopperId NULL ise legacy WhatsApp akışından gelen dekont — kimseye
+    /// bildirim yok. NotificationsEnabledPayments kapalıysa skip. Best-effort:
+    /// fail throw etmez, controller response'unu engellemez.
+    /// </summary>
+    private async Task NotifyShopperPaymentDecisionAsync(
+        Payment payment, bool approved, string? reason, CancellationToken ct)
+    {
+        if (payment.ShopperId is null) return;
+
+        try
+        {
+            var shopper = await _db.Shoppers
+                .Where(s => s.Id == payment.ShopperId.Value
+                    && s.DeletedAt == null
+                    && s.NotificationsEnabledPayments)
+                .Select(s => new { s.Id })
+                .FirstOrDefaultAsync(ct);
+            if (shopper is null) return;
+
+            var broadcasterName = await _db.Licenses
+                .Where(l => l.Id == payment.LicenseId)
+                .Select(l => l.Customer.Name)
+                .FirstOrDefaultAsync(ct) ?? "Yayıncı";
+
+            var tr = System.Globalization.CultureInfo.GetCultureInfo("tr-TR");
+            var amount = payment.Amount.ToString("N2", tr);
+            var (title, body) = approved
+                ? (broadcasterName, $"{amount} ₺ dekontun onaylandı")
+                : (broadcasterName,
+                    string.IsNullOrWhiteSpace(reason)
+                        ? $"{amount} ₺ dekontun reddedildi"
+                        : $"{amount} ₺ dekontun reddedildi: {reason}");
+
+            await _push.SendToShoppersAsync(
+                new[] { shopper.Id },
+                title: title,
+                body: body,
+                data: new Dictionary<string, string>
+                {
+                    ["type"] = approved ? "payment-approved" : "payment-rejected",
+                    ["paymentId"] = payment.Id.ToString(),
+                    ["licenseId"] = payment.LicenseId.ToString(),
+                },
+                ct: ct);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex,
+                "Shopper payment decision push failed for payment={PaymentId}", payment.Id);
+        }
     }
 
     private static bool TryParseStatus(string raw, out PaymentStatus result)
