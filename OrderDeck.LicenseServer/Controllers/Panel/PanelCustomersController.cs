@@ -41,7 +41,11 @@ public sealed class PanelCustomersController : ControllerBase
         DateTimeOffset FirstOrderAt,
         DateTimeOffset LastOrderAt,
         List<CustomerRecentOrderDto> RecentOrders,
-        List<CustomerShipmentDto> ActiveShipments);
+        List<CustomerShipmentDto> ActiveShipments,
+        // WpfCustomerProjection.Id (Platform+Username match). Müşteri panel
+        // balance endpoint'ine bunu geçer. Eşleşme yoksa null — bakiye
+        // özelliği bu müşteri için kullanılamaz (henüz shopper app ile bağ kurmamış).
+        Guid? WpfCustomerProjectionId);
 
     public sealed record CustomerRecentOrderDto(
         Guid Id,
@@ -429,6 +433,17 @@ public sealed class PanelCustomersController : ControllerBase
                 s.HeldAt))
             .ToListAsync(ct);
 
+        // WpfCustomerProjection lookup — Platform+Username match. Bakiye
+        // endpoint'i bunun ID'sine ihtiyaç duyuyor. Müşteri shopper app ile
+        // bağ kurmamışsa eşleşme olmayabilir → null.
+        var platformLower = identity.Platform.ToLowerInvariant();
+        var wpfProjectionId = await _db.WpfCustomerProjections
+            .Where(p => licenseIds.Contains(p.LicenseId)
+                && p.Platform == platformLower
+                && p.Username == identity.Username)
+            .Select(p => (Guid?)p.Id)
+            .FirstOrDefaultAsync(ct);
+
         return Ok(new CustomerSummaryDto(
             customerId,
             identity.DisplayName,
@@ -440,7 +455,8 @@ public sealed class PanelCustomersController : ControllerBase
             firstLast.First,
             firstLast.Last,
             recent,
-            activeShipments));
+            activeShipments,
+            wpfProjectionId));
     }
 
 }

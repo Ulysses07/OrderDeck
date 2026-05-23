@@ -38,6 +38,8 @@ public class LicenseDbContext : DbContext
     public DbSet<PaymentSubmissionAudit> PaymentSubmissionAudits => Set<PaymentSubmissionAudit>();
     public DbSet<ShopperRefreshToken> ShopperRefreshTokens => Set<ShopperRefreshToken>();
     public DbSet<ShopperSupportRequest> ShopperSupportRequests => Set<ShopperSupportRequest>();
+    public DbSet<CustomerBalance> CustomerBalances => Set<CustomerBalance>();
+    public DbSet<CustomerBalanceTransaction> CustomerBalanceTransactions => Set<CustomerBalanceTransaction>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -417,6 +419,32 @@ public class LicenseDbContext : DbContext
              .OnDelete(DeleteBehavior.Cascade);
             b.Property(r => r.Kind).HasMaxLength(32).IsRequired();
             b.HasIndex(r => new { r.LicenseId, r.ResolvedAt, r.CreatedAt });
+        });
+
+        mb.Entity<CustomerBalance>(b =>
+        {
+            b.HasKey(c => c.Id);
+            b.HasOne(c => c.License).WithMany().HasForeignKey(c => c.LicenseId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.HasOne(c => c.WpfCustomer).WithMany().HasForeignKey(c => c.WpfCustomerId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.Property(c => c.Balance).HasPrecision(18, 2);
+            b.HasIndex(c => new { c.LicenseId, c.WpfCustomerId }).IsUnique();
+        });
+
+        mb.Entity<CustomerBalanceTransaction>(b =>
+        {
+            b.HasKey(t => t.Id);
+            b.HasOne(t => t.License).WithMany().HasForeignKey(t => t.LicenseId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.HasOne(t => t.WpfCustomer).WithMany().HasForeignKey(t => t.WpfCustomerId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.Property(t => t.Amount).HasPrecision(18, 2);
+            b.Property(t => t.OriginalAmount).HasPrecision(18, 2);
+            b.Property(t => t.ShippingDeducted).HasPrecision(18, 2);
+            b.Property(t => t.Kind).HasMaxLength(32).IsRequired();
+            b.Property(t => t.Reason).HasMaxLength(500);
+            b.HasIndex(t => new { t.LicenseId, t.WpfCustomerId, t.CreatedAt });
         });
 
         // Seed SKUs
