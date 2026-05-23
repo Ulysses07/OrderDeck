@@ -152,6 +152,7 @@ public sealed class ShopperBroadcastersController : ControllerBase
         DateTimeOffset AddedAt,
         DateTimeOffset? PrintedAt,
         DateTimeOffset? CancelledAt,
+        string? CancelReason,
         bool IsShippingFee);
 
     public sealed record OrdersResponse(OrderItem[] Items, string? NextCursor);
@@ -223,6 +224,7 @@ public sealed class ShopperBroadcastersController : ControllerBase
                 o.AddedAt,
                 o.PrintedAt,
                 o.CancelledAt,
+                o.CancelReason,
                 o.IsShippingFee,
             })
             .ToListAsync(ct);
@@ -247,6 +249,7 @@ public sealed class ShopperBroadcastersController : ControllerBase
             r.AddedAt,
             r.PrintedAt,
             r.CancelledAt,
+            r.CancelReason,
             r.IsShippingFee)).ToArray();
 
         return Ok(new OrdersResponse(items, nextCursor));
