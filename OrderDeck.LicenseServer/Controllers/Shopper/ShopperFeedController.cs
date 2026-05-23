@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Services.Pagination;
 
 namespace OrderDeck.LicenseServer.Controllers.Shopper;
 
@@ -93,7 +94,7 @@ public sealed class ShopperFeedController : ControllerBase
             query = query.Where(p => p.LicenseId == licenseId.Value);
 
         // 6. Parse cursor
-        if (TryDecodeCursor(cursor, out var cursorTicks, out var cursorId))
+        if (TickCursor.TryDecode(cursor, out var cursorTicks, out var cursorId))
         {
             var cursorTs = new DateTimeOffset(cursorTicks, TimeSpan.Zero);
             query = query.Where(p =>
@@ -135,7 +136,7 @@ public sealed class ShopperFeedController : ControllerBase
         {
             rows.RemoveAt(rows.Count - 1);
             var last = rows[^1];
-            nextCursor = EncodeCursor(last.CreatedAt, last.Id);
+            nextCursor = TickCursor.Encode(last.CreatedAt, last.Id);
         }
 
         var items = rows.Select(r => new FeedItem(
@@ -155,19 +156,4 @@ public sealed class ShopperFeedController : ControllerBase
         return Ok(new FeedResponse(items, nextCursor));
     }
 
-    // ── Cursor helpers ────────────────────────────────────────────────────
-
-    private static string EncodeCursor(DateTimeOffset sortValue, Guid id)
-        => $"{sortValue.UtcTicks}|{id:N}";
-
-    private static bool TryDecodeCursor(string? cursor, out long ticks, out Guid id)
-    {
-        ticks = 0;
-        id = Guid.Empty;
-        if (string.IsNullOrEmpty(cursor)) return false;
-        var parts = cursor.Split('|', 2);
-        return parts.Length == 2
-            && long.TryParse(parts[0], out ticks)
-            && Guid.TryParse(parts[1], out id);
-    }
 }

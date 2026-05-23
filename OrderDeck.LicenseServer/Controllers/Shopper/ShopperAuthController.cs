@@ -316,10 +316,9 @@ public sealed class ShopperAuthController : ControllerBase
     [HttpPost("change-password")]
     public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequest req, CancellationToken ct)
     {
-        // 1. Get shopperId from "sub" claim (JWT middleware may map sub → NameIdentifier)
-        var subClaim = User.FindFirst("sub")?.Value
-            ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        if (!Guid.TryParse(subClaim, out var shopperId))
+        // 1. Get shopperId from claims (sub or NameIdentifier).
+        var shopperId = User.GetShopperId();
+        if (shopperId is null)
             return Problem(title: "unauthorized", statusCode: 401);
 
         // 2. Load shopper

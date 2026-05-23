@@ -4,6 +4,8 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Pagination;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
 
 namespace OrderDeck.LicenseServer.Controllers.Shopper;
@@ -31,12 +33,6 @@ public sealed class ShopperBroadcastersController : ControllerBase
     public sealed record JoinRequest(string BroadcasterCode, string Platform, string Username);
     public sealed record JoinResponse(BroadcasterSummary[] Broadcasters);
 
-    private Guid? GetShopperId()
-    {
-        var sub = User.FindFirst("sub")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        return Guid.TryParse(sub, out var id) ? id : null;
-    }
-
     [AllowAnonymous]
     [HttpGet("code-lookup")]
     public async Task<IActionResult> CodeLookup([FromQuery] string? code, CancellationToken ct)
@@ -60,7 +56,7 @@ public sealed class ShopperBroadcastersController : ControllerBase
     public async Task<IActionResult> Join([FromBody] JoinRequest req, CancellationToken ct)
     {
         // 1. Parse shopperId from claims
-        var shopperId = GetShopperId();
+        var shopperId = User.GetShopperId();
         if (shopperId is null) return Unauthorized();
 
         // 2. Load shopper
@@ -171,7 +167,7 @@ public sealed class ShopperBroadcastersController : ControllerBase
         limit = Math.Clamp(limit, 1, 100);
 
         // 1. Parse shopperId from claims
-        var shopperId = GetShopperId();
+        var shopperId = User.GetShopperId();
         if (shopperId is null) return Unauthorized();
 
         var shopper = await _db.Shoppers
@@ -203,7 +199,7 @@ public sealed class ShopperBroadcastersController : ControllerBase
         };
 
         // 7. Parse cursor: composite {AddedAt ticks}|{Id}
-        if (TryDecodeCursor(cursor, out var cursorTicks, out var cursorId))
+        if (TickCursor.TryDecode(cursor, out var cursorTicks, out var cursorId))
         {
             var cursorTs = new DateTimeOffset(cursorTicks, TimeSpan.Zero);
             query = query.Where(o =>
@@ -237,7 +233,7 @@ public sealed class ShopperBroadcastersController : ControllerBase
         {
             rows.RemoveAt(rows.Count - 1);
             var last = rows[^1];
-            nextCursor = EncodeCursor(last.AddedAt, last.Id);
+            nextCursor = TickCursor.Encode(last.AddedAt, last.Id);
         }
 
         var items = rows.Select(r => new OrderItem(
@@ -283,7 +279,7 @@ public sealed class ShopperBroadcastersController : ControllerBase
         limit = Math.Clamp(limit, 1, 100);
 
         // 1. Parse shopperId from claims
-        var shopperId = GetShopperId();
+        var shopperId = User.GetShopperId();
         if (shopperId is null) return Unauthorized();
 
         var shopper = await _db.Shoppers
@@ -309,7 +305,7 @@ public sealed class ShopperBroadcastersController : ControllerBase
         };
 
         // 5. Parse cursor: composite {CreatedAt ticks}|{Id}
-        if (TryDecodeCursor(cursor, out var cursorTicks, out var cursorId))
+        if (TickCursor.TryDecode(cursor, out var cursorTicks, out var cursorId))
         {
             var cursorTs = new DateTimeOffset(cursorTicks, TimeSpan.Zero);
             query = query.Where(p =>
@@ -342,7 +338,7 @@ public sealed class ShopperBroadcastersController : ControllerBase
         {
             rows.RemoveAt(rows.Count - 1);
             var last = rows[^1];
-            nextCursor = EncodeCursor(last.CreatedAt, last.Id);
+            nextCursor = TickCursor.Encode(last.CreatedAt, last.Id);
         }
 
         var items = rows.Select(r => new PaymentItem(
@@ -388,7 +384,7 @@ public sealed class ShopperBroadcastersController : ControllerBase
         CancellationToken ct)
     {
         // 1. Parse shopperId from claims
-        var shopperId = GetShopperId();
+        var shopperId = User.GetShopperId();
         if (shopperId is null) return Unauthorized();
 
         // 2. Load shopper; deleted → 401
@@ -446,29 +442,13 @@ public sealed class ShopperBroadcastersController : ControllerBase
         }
     }
 
-    // ── Cursor helpers ────────────────────────────────────────────────────────
-
-    private static string EncodeCursor(DateTimeOffset sortValue, Guid id)
-        => $"{sortValue.UtcTicks}|{id:N}";
-
-    private static bool TryDecodeCursor(string? cursor, out long ticks, out Guid id)
-    {
-        ticks = 0;
-        id = Guid.Empty;
-        if (string.IsNullOrEmpty(cursor)) return false;
-        var parts = cursor.Split('|', 2);
-        return parts.Length == 2
-            && long.TryParse(parts[0], out ticks)
-            && Guid.TryParse(parts[1], out id);
-    }
-
     // ── DELETE /api/v1/shopper/broadcasters/{licenseId} ───────────────────────
 
     [HttpDelete("{licenseId:guid}")]
     public async Task<IActionResult> Leave(Guid licenseId, CancellationToken ct)
     {
         // 1. Parse shopperId from claims
-        var shopperId = GetShopperId();
+        var shopperId = User.GetShopperId();
         if (shopperId is null) return Unauthorized();
 
         // 2. Load shopper

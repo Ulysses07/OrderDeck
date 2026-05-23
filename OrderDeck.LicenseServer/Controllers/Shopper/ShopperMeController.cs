@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Services.Auth;
 
 namespace OrderDeck.LicenseServer.Controllers.Shopper;
 
@@ -37,18 +38,12 @@ public sealed class ShopperMeController : ControllerBase
         string? Tc,
         NotificationPrefs? NotificationPrefs);
 
-    private Guid? GetShopperId()
-    {
-        var sub = User.FindFirst("sub")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        return Guid.TryParse(sub, out var id) ? id : null;
-    }
-
     // ── GET /api/v1/shopper/me ────────────────────────────────────────────────
 
     [HttpGet]
     public async Task<IActionResult> GetMe(CancellationToken ct)
     {
-        var shopperId = GetShopperId();
+        var shopperId = User.GetShopperId();
         if (shopperId is null) return Unauthorized();
 
         var shopper = await _db.Shoppers
@@ -75,7 +70,7 @@ public sealed class ShopperMeController : ControllerBase
     [HttpPatch]
     public async Task<IActionResult> PatchMe([FromBody] PatchMeRequest req, CancellationToken ct)
     {
-        var shopperId = GetShopperId();
+        var shopperId = User.GetShopperId();
         if (shopperId is null) return Unauthorized();
 
         var shopper = await _db.Shoppers
@@ -147,7 +142,7 @@ public sealed class ShopperMeController : ControllerBase
     [HttpGet("broadcasters")]
     public async Task<IActionResult> GetBroadcasters(CancellationToken ct)
     {
-        var shopperId = GetShopperId();
+        var shopperId = User.GetShopperId();
         if (shopperId is null) return Unauthorized();
 
         var shopper = await _db.Shoppers
@@ -167,7 +162,7 @@ public sealed class ShopperMeController : ControllerBase
     [HttpDelete]
     public async Task<IActionResult> DeleteMe(CancellationToken ct)
     {
-        var shopperId = GetShopperId();
+        var shopperId = User.GetShopperId();
         if (shopperId is null) return Unauthorized();
 
         var shopper = await _db.Shoppers
