@@ -42,17 +42,23 @@ public sealed class ShopperAuthController : ControllerBase
     private readonly PasswordHasher _passwordHasher;
     private readonly JwtTokenService _jwt;
     private readonly ShopperRefreshTokenService _refresh;
+    private readonly Services.Push.INotificationSender _push;
+    private readonly ILogger<ShopperAuthController> _log;
 
     public ShopperAuthController(
         LicenseDbContext db,
         PasswordHasher passwordHasher,
         JwtTokenService jwt,
-        ShopperRefreshTokenService refresh)
+        ShopperRefreshTokenService refresh,
+        Services.Push.INotificationSender push,
+        ILogger<ShopperAuthController> log)
     {
         _db = db;
         _passwordHasher = passwordHasher;
         _jwt = jwt;
         _refresh = refresh;
+        _push = push;
+        _log = log;
     }
 
     // ── Register ──────────────────────────────────────────────────────────────
@@ -305,8 +311,54 @@ public sealed class ShopperAuthController : ControllerBase
         if (activeLinks.Count > 0)
             await _db.SaveChangesAsync(ct);
 
-        // 6. Always 202
+        // 6. Push fan-out: bağlı yayıncılara "yeni destek talebi" bildirimi.
+        // Best-effort: fail throw etmez (caller her zaman 202 görür, no
+        // enumeration leak).
+        if (activeLinks.Count > 0)
+        {
+            try
+            {
+                await NotifyBroadcastersOfSupportRequestAsync(
+                    activeLinks.Select(l => l.LicenseId).Distinct().ToList(),
+                    shopper.FullName, ct);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex,
+                    "Support request push fan-out failed for shopper={ShopperId}",
+                    shopper.Id);
+            }
+        }
+
+        // 7. Always 202
         return StatusCode(202);
+    }
+
+    private async Task NotifyBroadcastersOfSupportRequestAsync(
+        IReadOnlyCollection<Guid> licenseIds,
+        string shopperName,
+        CancellationToken ct)
+    {
+        // License → CustomerId (yayıncı) eşle. Her customer'a tek push.
+        var customerIds = await _db.Licenses
+            .Where(l => licenseIds.Contains(l.Id))
+            .Select(l => l.CustomerId)
+            .Distinct()
+            .ToListAsync(ct);
+
+        foreach (var customerId in customerIds)
+        {
+            await _push.SendToCustomerAsync(
+                customerId,
+                title: "Destek talebi",
+                body: $"{shopperName} parolasını sıfırlamak istiyor",
+                data: new Dictionary<string, string>
+                {
+                    ["type"] = "support-request",
+                    ["kind"] = "forgot-password",
+                },
+                ct: ct);
+        }
     }
 
     // ── ChangePassword ────────────────────────────────────────────────────────
