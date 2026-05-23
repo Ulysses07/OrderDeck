@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Auth;
 
 namespace OrderDeck.LicenseServer.Controllers.Shopper;
 
@@ -17,16 +18,10 @@ public sealed class ShopperDevicesController : ControllerBase
 
     public sealed record RegisterRequest(string DeviceId, string Platform, string PushToken);
 
-    private Guid? GetShopperId()
-    {
-        var sub = User.FindFirst("sub")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        return Guid.TryParse(sub, out var id) ? id : null;
-    }
-
     [HttpPost]
     public async Task<IActionResult> Register([FromBody] RegisterRequest req, CancellationToken ct)
     {
-        var shopperId = GetShopperId();
+        var shopperId = User.GetShopperId();
         if (shopperId is null) return Unauthorized();
 
         // Validate shopper exists + not deleted
@@ -70,7 +65,7 @@ public sealed class ShopperDevicesController : ControllerBase
     [HttpDelete("{deviceId}")]
     public async Task<IActionResult> Unregister(string deviceId, CancellationToken ct)
     {
-        var shopperId = GetShopperId();
+        var shopperId = User.GetShopperId();
         if (shopperId is null) return Unauthorized();
 
         var existing = await _db.ShopperPushDevices

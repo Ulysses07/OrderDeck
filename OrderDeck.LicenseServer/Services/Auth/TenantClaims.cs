@@ -60,4 +60,20 @@ public static class TenantClaims
         if (string.IsNullOrEmpty(op)) return null;
         return Guid.Parse(op);
     }
+
+    /// <summary>
+    /// Bearer-Shopper token'ından shopper id'yi çıkarır. JWT middleware `sub`
+    /// claim'ini bazen <see cref="ClaimTypes.NameIdentifier"/>'a map ediyor;
+    /// her ikisi de fallback olarak kontrol edilir. Geçersiz/eksik ise null
+    /// (caller Unauthorized döndürür).
+    ///
+    /// Önceden 4 shopper controller'ında private static helper olarak
+    /// tekrarlıyordu — burada konsolide edildi.
+    /// </summary>
+    public static Guid? GetShopperId(this ClaimsPrincipal principal)
+    {
+        var sub = principal.FindFirst(Sub)?.Value
+            ?? principal.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        return Guid.TryParse(sub, out var id) ? id : null;
+    }
 }
