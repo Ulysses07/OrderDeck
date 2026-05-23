@@ -89,16 +89,21 @@
 
     function pushIfNew(list, seen, username, message, source, element) {
         if (!isValidComment(username, message)) return;
-        const key = `${username}|${message}`;
-        if (seen.has(key)) return;
-        seen.add(key);
+        // Per-scan dedupe must be element-identity, not text. Otherwise the
+        // adapter collapses N DOM nodes carrying the same text down to 1 and
+        // the core's WeakSet only ever sees the first → re-buys lost.
+        if (element) {
+            if (seen.has(element)) return;
+            seen.add(element);
+        } else {
+            const key = `${username}|${message}`;
+            if (seen.has(key)) return;
+            seen.add(key);
+        }
         list.push({
             username: username.replace('@', ''),
             text: message,
             source,
-            // element: stable per-comment DOM node so the core can dedupe
-            // by identity (WeakSet). Re-typing the same text creates a new
-            // node → counted as a new order (live broadcast multi-buy).
             element,
         });
     }

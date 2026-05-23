@@ -90,9 +90,14 @@
 
     function pushIfNew(list, seen, username, message, source, element) {
         if (!isValidComment(username, message)) return;
-        const key = `${username}|${message}`;
-        if (seen.has(key)) return;
-        seen.add(key);
+        if (element) {
+            if (seen.has(element)) return;
+            seen.add(element);
+        } else {
+            const key = `${username}|${message}`;
+            if (seen.has(key)) return;
+            seen.add(key);
+        }
         list.push({ username: cleanUsername(username), text: message, source, element });
     }
 
