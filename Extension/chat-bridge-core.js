@@ -193,30 +193,36 @@ window.OrderDeckChatBridge = (function () {
             stats.commentsObserved += comments.length;
 
             comments.forEach(({ username, text, source, displayName, avatarUrl, element }) => {
-                // 2026-05-22 hotfix: Tier 1 (element-identity WeakSet) disabled.
-                // Adapters were pushing the container/root element instead of
-                // per-comment nodes — caused observed=270 deduped=270 sent=0
-                // during a live broadcast (every scan saw the same root element
-                // already in the WeakSet, dropping all comments).
-                //
-                // Falling back to Tier 2 (session-scoped text hash) for all
-                // sends. Same UX as PR #92: same (user, text) only once per
-                // session. Re-buy of same code temporarily not supported until
-                // adapters are fixed to bind to per-comment elements.
-                const hash = createCommentHash(username, text);
-                if (seenHashes.has(hash)) {
+                // Tier 1 (primary): DOM-element identity. Same node = already sent.
+                // Re-enabled 2026-05-23 now that adapters bind to per-row elements
+                // (PR #95 fixed IG Strategy 1; Strategy 2 div-2span has always
+                // been per-row). Lets customers re-buy the same code in the same
+                // session — re-typing creates a new DOM node, so new send.
+                if (element && seenElements.has(element)) {
                     stats.deduped++;
                     return;
                 }
-                // FIFO eviction once cache fills up.
-                if (seenHashes.size >= CACHE_LIMIT) {
-                    const oldest = seenHashes.values().next().value;
-                    seenHashes.delete(oldest);
+
+                // Tier 2 (fallback): session-scoped text hash. Used only when
+                // the adapter has no per-row element (very rare — IG sibling-span
+                // fallback strategy). Same UX as PR #92: same (user, text) once.
+                const hash = createCommentHash(username, text);
+                if (!element && seenHashes.has(hash)) {
+                    stats.deduped++;
+                    return;
                 }
-                seenHashes.add(hash);
-                // Silence the WeakSet linter — we keep the binding so adapter
-                // code that still passes `element` doesn't crash.
-                if (element && false) seenElements.add(element);
+
+                if (element) {
+                    seenElements.add(element);
+                } else {
+                    // FIFO eviction for the hash fallback only — elements GC
+                    // themselves when they leave the DOM.
+                    if (seenHashes.size >= CACHE_LIMIT) {
+                        const oldest = seenHashes.values().next().value;
+                        seenHashes.delete(oldest);
+                    }
+                    seenHashes.add(hash);
+                }
                 stats.sent++;
 
                 const payload = {
