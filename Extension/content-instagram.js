@@ -112,20 +112,29 @@
         const primaryRowItems = selOrFallback(
             'comments.primaryRowItems', HARD_FALLBACK.primaryRowItems);
 
-        // Strategy 1 — aria-label flagged comment containers.
-        document.querySelectorAll(primaryContainers).forEach(el => {
-            const spans = el.querySelectorAll(primaryRowItems);
-            if (spans.length >= 2) {
-                pushIfNew(comments, seen,
-                    spans[0]?.textContent?.trim(),
-                    spans[1]?.textContent?.trim(),
-                    'aria-label',
-                    el);
-            }
+        // Strategy 1 — iterate every comment ROW inside the aria-label
+        // container. Previously we naively took spans[0]/spans[1] of the
+        // container itself, which only ever picked up the oldest two
+        // comments (the rest of the container's descendants were ignored).
+        // Each row in IG live chat is a <div> with exactly 2 span children
+        // (username, message); find them inside the container.
+        document.querySelectorAll(primaryContainers).forEach(container => {
+            container.querySelectorAll('div').forEach(div => {
+                const spans = Array.from(div.children).filter(el => el.tagName === 'SPAN');
+                if (spans.length === 2) {
+                    pushIfNew(comments, seen,
+                        spans[0]?.textContent?.trim(),
+                        spans[1]?.textContent?.trim(),
+                        'aria-label-row',
+                        div);
+                }
+            });
         });
 
-        // Strategy 2 — divs with exactly 2 child spans (chat row pattern).
-        // This is logic-shaped, not selector-shaped, so it stays hard-coded.
+        // Strategy 2 — divs with exactly 2 child spans (chat row pattern),
+        // searched globally. Only runs if Strategy 1 found nothing — used
+        // when the aria-label container is missing (IG locale variant /
+        // DOM regression).
         if (comments.length === 0) {
             document.querySelectorAll('div').forEach(div => {
                 const spans = Array.from(div.children).filter(el => el.tagName === 'SPAN');
