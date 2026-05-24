@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http;
 using FluentAssertions;
 using Moq;
 using OrderDeck.App.ViewModels;
@@ -10,6 +11,8 @@ using OrderDeck.Core.Sessions;
 using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
+using OrderDeck.Licensing;
+using OrderDeck.Licensing.Api;
 using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
@@ -59,7 +62,12 @@ public class CustomerDetailViewModelTests
         var sessionSvc   = new StreamSessionService(sessionRepo, clock.Object);
         var labelSvc     = new LabelService(labelRepo, customerSvc, clock.Object);
 
-        var vm = new CustomerDetailViewModel(customerRepo, labelRepo, labelSvc, giveawayRepo, sessionSvc);
+        // Test'lerde LicenseApiClient kullanılmıyor — balance section sadece
+        // UI binding. Stub client (her çağrı boş response / no-op) yeterli.
+        // Network call yapmaz çünkü test'ler hiçbir noktada balance reload tetiklemiyor.
+        var stubHttp = new HttpClient(new StubHandler()) { BaseAddress = new Uri("https://stub") };
+        var api = new LicenseApiClient(stubHttp, new LicenseTokenStore());
+        var vm = new CustomerDetailViewModel(customerRepo, labelRepo, labelSvc, giveawayRepo, sessionSvc, api);
         return new Harness(db, customerRepo, labelRepo, labelSvc, giveawayRepo,
                            sessionRepo, sessionSvc, clock, vm);
     }
@@ -364,5 +372,17 @@ public class CustomerDetailViewModelTests
         h.Vm.SelectedLabels.Clear();
         h.Vm.CancelSelectedCommand.CanExecute(null).Should().BeFalse();
         h.Vm.UncancelSelectedCommand.CanExecute(null).Should().BeFalse();
+    }
+
+    /// <summary>Tüm balance HTTP istekleri için sessiz 404 — VM'in
+    /// fire-and-forget balance fetch'i test akışını etkilemesin.</summary>
+    private sealed class StubHandler : HttpMessageHandler
+    {
+        protected override System.Threading.Tasks.Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, System.Threading.CancellationToken cancellationToken)
+        {
+            return System.Threading.Tasks.Task.FromResult(
+                new HttpResponseMessage(System.Net.HttpStatusCode.NotFound));
+        }
     }
 }
