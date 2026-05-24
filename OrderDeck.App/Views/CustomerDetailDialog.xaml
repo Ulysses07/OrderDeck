@@ -179,6 +179,63 @@
                 </Grid>
             </TabItem>
 
+            <TabItem Header="Bakiye">
+                <Grid Margin="0,8,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Üst bant: balance + ekle butonu -->
+                    <Border Grid.Row="0" Background="#FF1B2E1B" Padding="14"
+                            CornerRadius="6" Margin="0,0,0,8">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Text="MEVCUT BAKİYE" Foreground="#FFAAAAAA"
+                                           FontSize="10" FontWeight="SemiBold"/>
+                                <TextBlock Text="{Binding BalanceLabel}"
+                                           Foreground="#FF79D279" FontSize="24"
+                                           FontWeight="Bold"/>
+                            </StackPanel>
+                            <Button Grid.Column="1" Content="+ Bakiye Ekle"
+                                    Command="{Binding AddBalanceCommand}"
+                                    Padding="14,8" VerticalAlignment="Center"
+                                    Background="#FF3B82F6" Foreground="White"
+                                    BorderThickness="0"/>
+                        </Grid>
+                    </Border>
+
+                    <TextBlock Grid.Row="1" Text="{Binding BalanceError}"
+                               Foreground="#FFAAAAAA" FontSize="11"
+                               TextWrapping="Wrap" Margin="0,0,0,8"/>
+
+                    <DataGrid Grid.Row="2" ItemsSource="{Binding BalanceTransactions}"
+                              AutoGenerateColumns="False" IsReadOnly="True"
+                              Background="#FF1A1A1A" Foreground="White"
+                              BorderBrush="#FF333333" HeadersVisibility="Column"
+                              GridLinesVisibility="Horizontal"
+                              HorizontalGridLinesBrush="#FF333333"
+                              RowBackground="#FF1A1A1A"
+                              AlternatingRowBackground="#FF222222">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Tarih" Width="120"
+                                                Binding="{Binding CreatedAtLabel}"/>
+                            <DataGridTextColumn Header="Tip" Width="180"
+                                                Binding="{Binding KindLabel}"/>
+                            <DataGridTextColumn Header="Tutar" Width="100"
+                                                Binding="{Binding AmountLabel}"/>
+                            <DataGridTextColumn Header="Not" Width="*"
+                                                Binding="{Binding Reason}"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </TabItem>
+
             <TabItem Header="Notlar">
                 <Grid Margin="0,8,0,0">
                     <Grid.RowDefinitions>
