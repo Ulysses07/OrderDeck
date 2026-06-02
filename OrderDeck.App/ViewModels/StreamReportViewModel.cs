@@ -165,7 +165,7 @@ public sealed partial class StreamReportViewModel : ViewModelBase
             return;
         }
 
-        var result = _paymentService.OpenWhatsApp(customer, topCustomer.TotalAmount, _currentSessionDate);
+        var result = await _paymentService.OpenWhatsAppAsync(customer, topCustomer.TotalAmount, _currentSessionDate);
 
         if (result == PaymentRequestResult.PhoneRequired)
         {
@@ -174,7 +174,7 @@ public sealed partial class StreamReportViewModel : ViewModelBase
             {
                 var updated = _customers.GetById(customer.Id);
                 if (updated is not null)
-                    _paymentService.OpenWhatsApp(updated, topCustomer.TotalAmount, _currentSessionDate);
+                    await _paymentService.OpenWhatsAppAsync(updated, topCustomer.TotalAmount, _currentSessionDate);
             }
         }
         else if (result == PaymentRequestResult.LaunchFailed)

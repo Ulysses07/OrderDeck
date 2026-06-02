@@ -1,9 +1,13 @@
 using System;
 using System.IO;
+using System.Net.Http;
 using FluentAssertions;
 using OrderDeck.App.Services;
+using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Settings;
+using OrderDeck.Licensing;
+using OrderDeck.Licensing.Api;
 using OrderDeck.Tests.Fakes;
 using Xunit;
 
@@ -22,6 +26,32 @@ public class PaymentRequestServiceTests : IDisposable
         _launcher = new FakeUrlLauncher();
     }
 
+    /// <summary>Tüm balance HTTP istekleri 404 — testler eski sync OpenWhatsApp
+    /// pattern'iyle çalışıyor, async path E3b'ye özel.</summary>
+    private static PaymentRequestService MakeSut(SettingsStore store, FakeUrlLauncher launcher)
+    {
+        var http = new HttpClient(new StubHandler()) { BaseAddress = new Uri("https://stub") };
+        var api = new LicenseApiClient(http, new LicenseTokenStore());
+        var licProv = new StubLicenseProvider();
+        return new PaymentRequestService(store, new WhatsAppMessageBuilder(), launcher,
+            api, licProv);
+    }
+
+    private sealed class StubLicenseProvider : ICurrentLicenseProvider
+    {
+        public string? CurrentLicenseKey => null;
+    }
+
+    private sealed class StubHandler : HttpMessageHandler
+    {
+        protected override System.Threading.Tasks.Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, System.Threading.CancellationToken cancellationToken)
+        {
+            return System.Threading.Tasks.Task.FromResult(
+                new HttpResponseMessage(System.Net.HttpStatusCode.NotFound));
+        }
+    }
+
     public void Dispose()
     {
         if (File.Exists(_settingsPath)) File.Delete(_settingsPath);
@@ -35,7 +65,7 @@ public class PaymentRequestServiceTests : IDisposable
     [Fact]
     public void OpenWhatsApp_PhoneNull_ReturnsPhoneRequired()
     {
-        var sut = new PaymentRequestService(_store, new WhatsAppMessageBuilder(), _launcher);
+        var sut = MakeSut(_store, _launcher);
         var result = sut.OpenWhatsApp(MakeCustomer(null), 100m, new DateTime(2026, 4, 30));
         result.Should().Be(PaymentRequestResult.PhoneRequired);
         _launcher.LaunchedUrls.Should().BeEmpty();
@@ -44,7 +74,7 @@ public class PaymentRequestServiceTests : IDisposable
     [Fact]
     public void OpenWhatsApp_PhoneInvalid_ReturnsPhoneRequired()
     {
-        var sut = new PaymentRequestService(_store, new WhatsAppMessageBuilder(), _launcher);
+        var sut = MakeSut(_store, _launcher);
         var result = sut.OpenWhatsApp(MakeCustomer("not-a-phone"), 100m, new DateTime(2026, 4, 30));
         result.Should().Be(PaymentRequestResult.PhoneRequired);
         _launcher.LaunchedUrls.Should().BeEmpty();
@@ -58,7 +88,7 @@ public class PaymentRequestServiceTests : IDisposable
         settings.Payment.Iban = "TR12";
         _store.Save(settings);
 
-        var sut = new PaymentRequestService(_store, new WhatsAppMessageBuilder(), _launcher);
+        var sut = MakeSut(_store, _launcher);
         var result = sut.OpenWhatsApp(MakeCustomer("+905551234567"), 100m, new DateTime(2026, 4, 30));
 
         result.Should().Be(PaymentRequestResult.Opened);
@@ -71,7 +101,7 @@ public class PaymentRequestServiceTests : IDisposable
     public void OpenWhatsApp_LauncherThrows_ReturnsLaunchFailed()
     {
         _launcher.ThrowOnLaunch = new InvalidOperationException("no handler");
-        var sut = new PaymentRequestService(_store, new WhatsAppMessageBuilder(), _launcher);
+        var sut = MakeSut(_store, _launcher);
         var result = sut.OpenWhatsApp(MakeCustomer("+905551234567"), 100m, new DateTime(2026, 4, 30));
         result.Should().Be(PaymentRequestResult.LaunchFailed);
     }
@@ -146,7 +176,7 @@ public class PaymentRequestServiceTests : IDisposable
             "Toplam: {tutar} Urun: {urun_toplami} {kargo}";
         _store.Save(settings);
 
-        var sut = new PaymentRequestService(_store, new WhatsAppMessageBuilder(), _launcher);
+        var sut = MakeSut(_store, _launcher);
         var result = sut.OpenWhatsApp(MakeCustomer("+905551234567"), 3000m, new DateTime(2026, 4, 30));
 
         result.Should().Be(PaymentRequestResult.Opened);
@@ -162,7 +192,7 @@ public class PaymentRequestServiceTests : IDisposable
     [Fact]
     public void OpenShippingWonWhatsApp_PhoneNull_ReturnsPhoneRequired()
     {
-        var sut = new PaymentRequestService(_store, new WhatsAppMessageBuilder(), _launcher);
+        var sut = MakeSut(_store, _launcher);
         var result = sut.OpenShippingWonWhatsApp(MakeCustomer(null), 5300m);
         result.Should().Be(PaymentRequestResult.PhoneRequired);
         _launcher.LaunchedUrls.Should().BeEmpty();
@@ -176,7 +206,7 @@ public class PaymentRequestServiceTests : IDisposable
         settings.Payment.ShippingWonTemplate = "";
         _store.Save(settings);
 
-        var sut = new PaymentRequestService(_store, new WhatsAppMessageBuilder(), _launcher);
+        var sut = MakeSut(_store, _launcher);
         var result = sut.OpenShippingWonWhatsApp(MakeCustomer("+905551234567"), 5300m);
         result.Should().Be(PaymentRequestResult.Opened);
         _launcher.LaunchedUrls.Should().BeEmpty();
@@ -189,7 +219,7 @@ public class PaymentRequestServiceTests : IDisposable
         settings.Payment.ShippingWonTemplate = "Tebrikler {ad}, {kumulatif_tutar} TL aldın!";
         _store.Save(settings);
 
-        var sut = new PaymentRequestService(_store, new WhatsAppMessageBuilder(), _launcher);
+        var sut = MakeSut(_store, _launcher);
         var result = sut.OpenShippingWonWhatsApp(MakeCustomer("+905551234567"), 5300m);
 
         result.Should().Be(PaymentRequestResult.Opened);

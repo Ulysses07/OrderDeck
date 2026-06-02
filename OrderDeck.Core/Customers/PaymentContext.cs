@@ -15,4 +15,8 @@ public sealed record PaymentContext(
     // Kargo entegrasyon (sona, geriye uyumlu — eski caller'lar default değer alır)
     decimal ProductTotal = 0m,
     decimal? ShippingFee = null,
-    string ShippingNote = "");
+    string ShippingNote = "",
+    // E3b (2026-06): bakiye entegrasyon — TotalAmount artık bakiye DÜŞÜLMÜŞ net
+    // tutardır. AppliedBalance > 0 ise template'de {bakiye} ve {net_tutar} dolu.
+    decimal AppliedBalance = 0m,
+    decimal TotalBeforeBalance = 0m);

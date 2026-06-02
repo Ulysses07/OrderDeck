@@ -1,6 +1,13 @@
 using System;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Linq;
+using Microsoft.Extensions.Logging;
+using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Settings;
+using OrderDeck.Licensing.Api;
+using OrderDeck.Licensing.Api.Models;
 
 namespace OrderDeck.App.Services;
 
@@ -26,15 +33,51 @@ public sealed class PaymentRequestService
     private readonly SettingsStore _settingsStore;
     private readonly WhatsAppMessageBuilder _messageBuilder;
     private readonly IUrlLauncher _launcher;
+    private readonly LicenseApiClient _api;
+    private readonly ICurrentLicenseProvider _currentLicense;
+    private readonly Microsoft.Extensions.Logging.ILogger<PaymentRequestService>? _log;
 
     public PaymentRequestService(
         SettingsStore settingsStore,
         WhatsAppMessageBuilder messageBuilder,
-        IUrlLauncher launcher)
+        IUrlLauncher launcher,
+        LicenseApiClient api,
+        ICurrentLicenseProvider currentLicense,
+        Microsoft.Extensions.Logging.ILogger<PaymentRequestService>? log = null)
     {
         _settingsStore = settingsStore;
         _messageBuilder = messageBuilder;
         _launcher = launcher;
+        _api = api;
+        _currentLicense = currentLicense;
+        _log = log;
+    }
+
+    // License key → Guid LicenseId resolution. Aynı pattern ShopperRegistrationIngest /
+    // WpfCustomerProjectionSync'te de var. Caching: LicenseKey değişene kadar tutar.
+    private Guid? _cachedLicenseId;
+    private string? _cachedLicenseKey;
+
+    private async Task<Guid?> ResolveLicenseIdAsync(CancellationToken ct)
+    {
+        var key = _currentLicense.CurrentLicenseKey;
+        if (string.IsNullOrEmpty(key)) return null;
+        if (_cachedLicenseId is not null && _cachedLicenseKey == key)
+            return _cachedLicenseId;
+        try
+        {
+            var licenses = await _api.GetMyLicensesAsync(ct);
+            var match = licenses.FirstOrDefault(l => l.LicenseKey == key);
+            if (match?.Id is null) return null;
+            _cachedLicenseId = match.Id;
+            _cachedLicenseKey = key;
+            return _cachedLicenseId;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log?.LogDebug(ex, "License id resolve failed for payment request");
+            return null;
+        }
     }
 
     /// <param name="productTotal">Müşterinin ürün label'larının toplamı
@@ -58,6 +101,86 @@ public sealed class PaymentRequestService
             ProductTotal: productTotal,
             ShippingFee: shippingFee,
             ShippingNote: shippingNote);
+
+        var message = _messageBuilder.BuildMessage(settings.Payment.WhatsAppMessageTemplate, ctx);
+        var link = _messageBuilder.BuildWaMeLink(customer.Phone!, message);
+
+        try
+        {
+            _launcher.Launch(link);
+            return PaymentRequestResult.Opened;
+        }
+        catch
+        {
+            return PaymentRequestResult.LaunchFailed;
+        }
+    }
+
+    /// <summary>
+    /// E3b (2026-06): bakiye-aware async versiyon. Müşterinin yayıncı bazlı
+    /// bakiyesi varsa <see cref="LicenseApiClient.ApplyBalanceAsync"/> çağırıp
+    /// ledger'a purchase-deduction kaydı düşer, WhatsApp template'inde
+    /// {bakiye} / {net_tutar} placeholder'ları dolar. Sonra wa.me link açılır.
+    ///
+    /// Bakiye hatası WhatsApp akışını engellemez — apply başarısızsa eski
+    /// davranış (bakiye uygulanmamış) ile mesaj gönderilir. Operatör mobile
+    /// panel'den manuel ekleyebilir.
+    /// </summary>
+    public async Task<PaymentRequestResult> OpenWhatsAppAsync(
+        Customer customer, decimal productTotal, DateTime streamDate, CancellationToken ct = default)
+    {
+        if (!PhoneNormalizer.IsValidTr(customer.Phone))
+            return PaymentRequestResult.PhoneRequired;
+
+        var settings = _settingsStore.Load();
+        var (totalAmount, shippingFee, shippingNote) = ComputeShipping(customer, productTotal, settings);
+
+        // Bakiye uygulaması (best-effort).
+        decimal appliedBalance = 0m;
+        var totalBeforeBalance = totalAmount;
+        if (totalAmount > 0 && Guid.TryParseExact(customer.Id, "N", out var wpfCustomerId))
+        {
+            try
+            {
+                var licenseId = await ResolveLicenseIdAsync(ct);
+                if (licenseId is not null)
+                {
+                    var preview = await _api.GetBalancePreviewAsync(
+                        licenseId.Value, wpfCustomerId, ct);
+                    if (preview.Balance > 0)
+                    {
+                        var amount = Math.Min(preview.Balance, totalAmount);
+                        var apply = await _api.ApplyBalanceAsync(
+                            licenseId.Value,
+                            new CustomerBalanceApplyRequest(
+                                wpfCustomerId, amount, totalAmount),
+                            ct);
+                        appliedBalance = apply.AppliedAmount;
+                        totalAmount -= apply.AppliedAmount;
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _log?.LogWarning(ex,
+                    "Balance apply failed for customer {CustomerId} — sending WhatsApp without deduction",
+                    customer.Id);
+                // Fail-silent → eski davranışla devam
+            }
+        }
+
+        var ctx = new PaymentContext(
+            DisplayName: customer.DisplayName ?? customer.Username,
+            TotalAmount: totalAmount,
+            StreamDate: streamDate,
+            Iban: settings.Payment.Iban,
+            AccountHolder: settings.Payment.AccountHolder,
+            Papara: settings.Payment.Papara,
+            ProductTotal: productTotal,
+            ShippingFee: shippingFee,
+            ShippingNote: shippingNote,
+            AppliedBalance: appliedBalance,
+            TotalBeforeBalance: totalBeforeBalance);
 
         var message = _messageBuilder.BuildMessage(settings.Payment.WhatsAppMessageTemplate, ctx);
         var link = _messageBuilder.BuildWaMeLink(customer.Phone!, message);

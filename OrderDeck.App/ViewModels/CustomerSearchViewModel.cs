@@ -111,7 +111,7 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
             ? DateTimeOffset.FromUnixTimeSeconds(ended).LocalDateTime
             : DateTime.Now;
 
-        var result = _paymentService.OpenWhatsApp(customer, amount, streamDate);
+        var result = await _paymentService.OpenWhatsAppAsync(customer, amount, streamDate);
 
         if (result == PaymentRequestResult.PhoneRequired)
         {
@@ -120,7 +120,7 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
             {
                 var updated = _customers.GetById(customer.Id);
                 if (updated is not null)
-                    _paymentService.OpenWhatsApp(updated, amount, streamDate);
+                    await _paymentService.OpenWhatsAppAsync(updated, amount, streamDate);
             }
         }
         else if (result == PaymentRequestResult.LaunchFailed)
