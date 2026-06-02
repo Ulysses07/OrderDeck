@@ -1,0 +1,68 @@
+<Window x:Class="OrderDeck.App.Views.AddBalanceDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Bakiye Ekle" Height="450" Width="420"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        Background="#1E1E1E" Foreground="White">
+    <Window.Resources>
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Margin" Value="0,8,0,4"/>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Padding" Value="6,4"/>
+            <Setter Property="Background" Value="#2A2A2A"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderBrush" Value="#444"/>
+        </Style>
+    </Window.Resources>
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="{Binding CustomerLabel}"
+                   FontSize="14" FontWeight="Bold" Margin="0,0,0,8"/>
+
+        <!-- Tip seçici -->
+        <StackPanel Grid.Row="1" Orientation="Horizontal">
+            <RadioButton x:Name="RbFull" Content="Hatalı ürün (tam iade)"
+                         IsChecked="True" Margin="0,0,12,0" Foreground="White"
+                         Checked="OnTypeChanged"/>
+            <RadioButton x:Name="RbNet" Content="Müşteri iadesi (kargo düşülür)"
+                         Foreground="White" Checked="OnTypeChanged"/>
+        </StackPanel>
+
+        <TextBlock Grid.Row="2" Text="Sipariş tutarı (TL)"/>
+        <TextBox x:Name="TbAmount" Grid.Row="3" TextChanged="OnAmountChanged"/>
+
+        <TextBlock Grid.Row="4" x:Name="LblShipping" Text="Kargo (TL)" Visibility="Collapsed"/>
+        <TextBox x:Name="TbShipping" Grid.Row="4" Text="100" Margin="0,28,0,0"
+                 Visibility="Collapsed" TextChanged="OnAmountChanged"/>
+
+        <StackPanel Grid.Row="5">
+            <TextBlock Text="Not (opsiyonel)"/>
+            <TextBox x:Name="TbReason"/>
+            <TextBlock x:Name="LblPreview" Margin="0,12,0,0"
+                       Foreground="#79D279" TextWrapping="Wrap"/>
+            <TextBlock x:Name="LblError" Margin="0,4,0,0"
+                       Foreground="#F87171" TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <StackPanel Grid.Row="7" Orientation="Horizontal"
+                    HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button x:Name="BtnSave" Content="Kaydet" Padding="14,6" Margin="0,0,8,0"
+                    Background="#3B82F6" Foreground="White" BorderThickness="0"
+                    Click="OnSave"/>
+            <Button Content="İptal" Padding="14,6" Click="OnCancel"
+                    IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

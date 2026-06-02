@@ -251,6 +251,57 @@ public sealed class LicenseApiClient
             $"/api/v1/licenses/{licenseId}/wpf-customers/since{qs}", ct) ?? new();
     }
 
+    // ─── Customer balance (E1/E3) ────────────────────────────────────
+
+    /// <summary>WPF "Ödeme iste" anlığında müşterinin bakiyesini sorgular.
+    /// Hiç bakiye yoksa 0 dönen response, hata değil.</summary>
+    public async Task<CustomerBalancePreview> GetBalancePreviewAsync(
+        Guid licenseId, Guid wpfCustomerId, CancellationToken ct = default)
+    {
+        var qs = $"?wpfCustomerId={wpfCustomerId:D}";
+        return await GetExpectingJsonAsync<CustomerBalancePreview>(
+            $"/api/v1/licenses/{licenseId}/customer-balance/preview{qs}", ct)
+            ?? new CustomerBalancePreview(wpfCustomerId, 0m, DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>WPF "Ödeme iste" sonrası bakiye düşüşünü commit eder.
+    /// Server min(Amount, balance, productTotal) ile capped uygular.</summary>
+    public async Task<CustomerBalanceApplyResponse> ApplyBalanceAsync(
+        Guid licenseId, CustomerBalanceApplyRequest req, CancellationToken ct = default)
+    {
+        return await PostJsonExpectingJsonAsync<CustomerBalanceApplyRequest, CustomerBalanceApplyResponse>(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply", req, ct);
+    }
+
+    /// <summary>Panel endpoint'i ile customer detay + transaction listesi.
+    /// wpfCustomerId = WPF lokal Customer.Id (hex N format) — sync sırasında
+    /// server'daki WpfCustomerProjection.Id ile aynı tutuluyor.</summary>
+    public async Task<CustomerBalanceDetailsResponse> GetCustomerBalanceAsync(
+        Guid wpfCustomerId, int take = 50, CancellationToken ct = default)
+    {
+        return await GetExpectingJsonAsync<CustomerBalanceDetailsResponse>(
+            $"/api/panel/customers/{wpfCustomerId}/balance?take={take}", ct)
+            ?? new CustomerBalanceDetailsResponse(
+                new CustomerBalanceDto(wpfCustomerId, Guid.Empty, 0m, DateTimeOffset.UtcNow),
+                Array.Empty<CustomerBalanceTransactionDto>());
+    }
+
+    public async Task AddRefundFullAsync(
+        Guid wpfCustomerId, RefundFullRequest req, CancellationToken ct = default)
+    {
+        using var resp = await SendJsonAsync(HttpMethod.Post,
+            $"/api/panel/customers/{wpfCustomerId}/balance/refund-full", req, ct);
+        if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
+    }
+
+    public async Task AddRefundNetAsync(
+        Guid wpfCustomerId, RefundNetRequest req, CancellationToken ct = default)
+    {
+        using var resp = await SendJsonAsync(HttpMethod.Post,
+            $"/api/panel/customers/{wpfCustomerId}/balance/refund-net", req, ct);
+        if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
+    }
+
     // ─── HTTP helpers ────────────────────────────────────────────────
 
     private async Task<TResp> PostJsonExpectingJsonAsync<TReq, TResp>(

@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -9,6 +12,7 @@ using OrderDeck.App.Formatting;
 using OrderDeck.Core.Sales;
 using OrderDeck.Core.Sessions;
 using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Licensing.Api;
 
 namespace OrderDeck.App.ViewModels;
 
@@ -19,6 +23,7 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
     private readonly LabelService _labelService;
     private readonly GiveawayRepository _giveaways;
     private readonly StreamSessionService _sessions;
+    private readonly LicenseApiClient _api;
     private string? _customerId;
 
     [ObservableProperty] private string _username = "";
@@ -46,18 +51,28 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
     public ObservableCollection<CustomerLabelRow>    Labels    { get; } = new();
     public ObservableCollection<CustomerGiveawayRow> Giveaways { get; } = new();
 
+    /// <summary>Müşteri bakiye satırları (server-side ledger).</summary>
+    public ObservableCollection<BalanceTransactionRow> BalanceTransactions { get; } = new();
+
+    [ObservableProperty] private decimal _balanceAmount;
+    [ObservableProperty] private string _balanceLabel = "0,00 TL";
+    [ObservableProperty] private bool _balanceLoaded;
+    [ObservableProperty] private string? _balanceError;
+
     public CustomerDetailViewModel(
         CustomerRepository customers,
         LabelRepository labels,
         LabelService labelService,
         GiveawayRepository giveaways,
-        StreamSessionService sessions)
+        StreamSessionService sessions,
+        LicenseApiClient api)
     {
         _customers = customers;
         _labels = labels;
         _labelService = labelService;
         _giveaways = giveaways;
         _sessions = sessions;
+        _api = api;
 
         SelectedLabels.CollectionChanged += (_, _) =>
         {
@@ -90,7 +105,71 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
         Giveaways.Clear();
         foreach (var g in _giveaways.GetParticipationsByCustomer(customerId)) Giveaways.Add(g);
 
+        // Bakiye fire-and-forget — UI hemen açılır, balance gelince güncellenir.
+        _ = ReloadBalanceAsync();
+
         return true;
+    }
+
+    /// <summary>Customer.Id'yi server projection ID'ye parse eder.
+    /// PR #88 sonrası ingest edilen müşteriler için Id zaten hex N format
+    /// (== WpfCustomerProjection.Id). Eski Customer'lar (shopper app öncesi)
+    /// projection ile eşleşmemiş olabilir — bu durumda parse fail, balance
+    /// section gizli kalır.</summary>
+    private bool TryGetProjectionId(out Guid id)
+    {
+        id = Guid.Empty;
+        if (_customerId is null) return false;
+        return Guid.TryParseExact(_customerId, "N", out id);
+    }
+
+    public async Task ReloadBalanceAsync()
+    {
+        if (!TryGetProjectionId(out var projectionId))
+        {
+            BalanceLoaded = false;
+            BalanceError = "Bu müşteri server eşlemesi olmadığı için bakiye gösterilemiyor.";
+            BalanceTransactions.Clear();
+            return;
+        }
+        try
+        {
+            BalanceError = null;
+            var resp = await _api.GetCustomerBalanceAsync(projectionId, take: 50, CancellationToken.None);
+            BalanceAmount = resp.Balance.Balance;
+            var tr = CultureInfo.GetCultureInfo("tr-TR");
+            BalanceLabel = $"{resp.Balance.Balance.ToString("N2", tr)} TL";
+            BalanceTransactions.Clear();
+            foreach (var t in resp.Transactions)
+                BalanceTransactions.Add(BalanceTransactionRow.FromDto(t));
+            BalanceLoaded = true;
+        }
+        catch (Exception ex)
+        {
+            BalanceError = $"Bakiye yüklenemedi: {ex.Message}";
+            BalanceLoaded = false;
+        }
+    }
+
+    [RelayCommand]
+    private async Task AddBalanceAsync()
+    {
+        if (!TryGetProjectionId(out var projectionId))
+        {
+            MessageBox.Show(
+                "Bu müşteri server eşlemesi olmadığı için bakiye eklenemez. "
+                + "Müşteri Sipariş app'ı üzerinden bağlanınca aktif olur.",
+                "Bakiye", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        var label = DisplayName ?? Username;
+        var dlg = new Views.AddBalanceDialog(_api, projectionId, label)
+        {
+            Owner = Application.Current.Windows.OfType<Window>()
+                .FirstOrDefault(w => w.IsActive && w.IsVisible)
+        };
+        if (dlg.ShowDialog() == true && dlg.Saved)
+            await ReloadBalanceAsync();
     }
 
     /// <summary>Re-reads labels from storage and rebuilds the bound collection.
@@ -207,4 +286,43 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
 
     private bool CanCancelSelected() => SelectedLabels.Any(l => !l.IsCancelled);
     private bool CanUncancelSelected() => SelectedLabels.Any(l => l.IsCancelled);
+}
+
+/// <summary>UI row tipi — server BalanceTransactionDto'sundan map'lenir.</summary>
+public sealed class BalanceTransactionRow
+{
+    public Guid Id { get; init; }
+    public decimal Amount { get; init; }
+    public string Kind { get; init; } = "";
+    public string KindLabel { get; init; } = "";
+    public string AmountLabel { get; init; } = "";
+    public bool IsPositive { get; init; }
+    public string? Reason { get; init; }
+    public string CreatedAtLabel { get; init; } = "";
+
+    public static BalanceTransactionRow FromDto(OrderDeck.Licensing.Api.Models.CustomerBalanceTransactionDto t)
+    {
+        var tr = CultureInfo.GetCultureInfo("tr-TR");
+        return new BalanceTransactionRow
+        {
+            Id = t.Id,
+            Amount = t.Amount,
+            Kind = t.Kind,
+            KindLabel = LabelOf(t.Kind),
+            AmountLabel = (t.Amount > 0 ? "+" : "") + t.Amount.ToString("N2", tr) + " TL",
+            IsPositive = t.Amount > 0,
+            Reason = t.Reason,
+            CreatedAtLabel = t.CreatedAt.LocalDateTime.ToString("dd.MM.yyyy HH:mm", tr),
+        };
+    }
+
+    private static string LabelOf(string kind) => kind switch
+    {
+        "refund-full" => "Hatalı ürün iadesi",
+        "refund-net" => "Müşteri iadesi (kargo düşülmüş)",
+        "purchase-deduction" => "Ödemede kullanıldı",
+        "manual-adjustment" => "Manuel ayar",
+        "reversal" => "İptal edildi",
+        _ => kind,
+    };
 }
