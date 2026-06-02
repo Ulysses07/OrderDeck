@@ -40,6 +40,7 @@ public class LicenseDbContext : DbContext
     public DbSet<ShopperSupportRequest> ShopperSupportRequests => Set<ShopperSupportRequest>();
     public DbSet<CustomerBalance> CustomerBalances => Set<CustomerBalance>();
     public DbSet<CustomerBalanceTransaction> CustomerBalanceTransactions => Set<CustomerBalanceTransaction>();
+    public DbSet<ShopperPasswordResetCode> ShopperPasswordResetCodes => Set<ShopperPasswordResetCode>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -419,6 +420,20 @@ public class LicenseDbContext : DbContext
              .OnDelete(DeleteBehavior.Cascade);
             b.Property(r => r.Kind).HasMaxLength(32).IsRequired();
             b.HasIndex(r => new { r.LicenseId, r.ResolvedAt, r.CreatedAt });
+        });
+
+        mb.Entity<ShopperPasswordResetCode>(b =>
+        {
+            b.HasKey(c => c.Id);
+            // FK→Shopper tek cascade yolu (Shopper kök entity, multiple-path yok).
+            b.HasOne(c => c.Shopper).WithMany().HasForeignKey(c => c.ShopperId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.Property(c => c.CodeHash).HasMaxLength(256).IsRequired();
+            b.Property(c => c.RequestIp).HasMaxLength(45);
+            // Rate-limit / en-son-kod sorguları için.
+            b.HasIndex(c => new { c.ShopperId, c.CreatedAt });
+            // Global günlük tavan sorgusu (CreatedAt >= bugün).
+            b.HasIndex(c => c.CreatedAt);
         });
 
         mb.Entity<CustomerBalance>(b =>
