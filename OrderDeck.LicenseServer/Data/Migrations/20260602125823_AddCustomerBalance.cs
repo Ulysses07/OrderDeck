@@ -34,8 +34,7 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         name: "FK_CustomerBalances_WpfCustomerProjections_WpfCustomerId",
                         column: x => x.WpfCustomerId,
                         principalTable: "WpfCustomerProjections",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Cascade);
+                        principalColumn: "Id");
                 });
 
             migrationBuilder.CreateTable(
@@ -67,8 +66,7 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         name: "FK_CustomerBalanceTransactions_WpfCustomerProjections_WpfCustomerId",
                         column: x => x.WpfCustomerId,
                         principalTable: "WpfCustomerProjections",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Cascade);
+                        principalColumn: "Id");
                 });
 
             migrationBuilder.CreateIndex(

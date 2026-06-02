@@ -78,7 +78,12 @@ jobs:
           mkdir -p ~/.ssh
           echo "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+          # ssh-keyscan non-fatal: bash -e altında host'a ulaşılamadığında
+          # (GitHub runner ↔ VPS arası geçici network) tüm deploy'u patlatıyordu.
+          # Sonraki SSH adımları zaten -o StrictHostKeyChecking=accept-new
+          # kullanıyor (host key'i kendileri ekliyor), known_hosts pre-populate
+          # redundant — başarısızlığı yutmak güvenli.
+          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
 
       - name: Ordering guard (skip ancestor deploys)
         # Two master commits whose build-test runs finish out of order can

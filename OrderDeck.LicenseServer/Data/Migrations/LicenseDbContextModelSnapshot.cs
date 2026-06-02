@@ -1442,7 +1442,7 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.HasOne("OrderDeck.LicenseServer.Domain.WpfCustomerProjection", "WpfCustomer")
                         .WithMany()
                         .HasForeignKey("WpfCustomerId")
-                        .OnDelete(DeleteBehavior.Cascade)
+                        .OnDelete(DeleteBehavior.NoAction)
                         .IsRequired();
 
                     b.Navigation("License");
@@ -1461,7 +1461,7 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.HasOne("OrderDeck.LicenseServer.Domain.WpfCustomerProjection", "WpfCustomer")
                         .WithMany()
                         .HasForeignKey("WpfCustomerId")
-                        .OnDelete(DeleteBehavior.Cascade)
+                        .OnDelete(DeleteBehavior.NoAction)
                         .IsRequired();
 
                     b.Navigation("License");

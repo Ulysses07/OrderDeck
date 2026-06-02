@@ -424,10 +424,15 @@ public class LicenseDbContext : DbContext
         mb.Entity<CustomerBalance>(b =>
         {
             b.HasKey(c => c.Id);
+            // License cascade = primary cleanup path. WpfCustomer FK NoAction —
+            // SQL Server "multiple cascade paths" hatasını önler (WpfCustomerProjection
+            // de License'a cascade, çift yol oluşurdu). License silinince zaten
+            // CustomerBalance bu cascade ile temizlenir; WpfCustomerProjection
+            // tek başına silinmiyor (yalnızca License cascade'iyle).
             b.HasOne(c => c.License).WithMany().HasForeignKey(c => c.LicenseId)
              .OnDelete(DeleteBehavior.Cascade);
             b.HasOne(c => c.WpfCustomer).WithMany().HasForeignKey(c => c.WpfCustomerId)
-             .OnDelete(DeleteBehavior.Cascade);
+             .OnDelete(DeleteBehavior.NoAction);
             b.Property(c => c.Balance).HasPrecision(18, 2);
             b.HasIndex(c => new { c.LicenseId, c.WpfCustomerId }).IsUnique();
         });
@@ -438,7 +443,7 @@ public class LicenseDbContext : DbContext
             b.HasOne(t => t.License).WithMany().HasForeignKey(t => t.LicenseId)
              .OnDelete(DeleteBehavior.Cascade);
             b.HasOne(t => t.WpfCustomer).WithMany().HasForeignKey(t => t.WpfCustomerId)
-             .OnDelete(DeleteBehavior.Cascade);
+             .OnDelete(DeleteBehavior.NoAction);
             b.Property(t => t.Amount).HasPrecision(18, 2);
             b.Property(t => t.OriginalAmount).HasPrecision(18, 2);
             b.Property(t => t.ShippingDeducted).HasPrecision(18, 2);
