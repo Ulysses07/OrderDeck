@@ -12,7 +12,7 @@ using OrderDeck.LicenseServer.Data;
 namespace OrderDeck.LicenseServer.Data.Migrations
 {
     [DbContext(typeof(LicenseDbContext))]
-    [Migration("20260523200752_AddCustomerBalance")]
+    [Migration("20260602125823_AddCustomerBalance")]
     partial class AddCustomerBalance
     {
         /// <inheritdoc />
@@ -1445,7 +1445,7 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.HasOne("OrderDeck.LicenseServer.Domain.WpfCustomerProjection", "WpfCustomer")
                         .WithMany()
                         .HasForeignKey("WpfCustomerId")
-                        .OnDelete(DeleteBehavior.Cascade)
+                        .OnDelete(DeleteBehavior.NoAction)
                         .IsRequired();
 
                     b.Navigation("License");
@@ -1464,7 +1464,7 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.HasOne("OrderDeck.LicenseServer.Domain.WpfCustomerProjection", "WpfCustomer")
                         .WithMany()
                         .HasForeignKey("WpfCustomerId")
-                        .OnDelete(DeleteBehavior.Cascade)
+                        .OnDelete(DeleteBehavior.NoAction)
                         .IsRequired();
 
                     b.Navigation("License");
