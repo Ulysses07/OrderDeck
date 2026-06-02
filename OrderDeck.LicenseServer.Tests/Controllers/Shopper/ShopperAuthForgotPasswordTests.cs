@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -11,23 +12,22 @@ using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Controllers.Shopper;
 
+/// <summary>
+/// forgot-password artık self-service SMS OTP yollar (support request/push YOK);
+/// eski manuel davranış forgot-password/escalate'e taşındı. Bu suite her iki
+/// endpoint'i kapsar.
+/// </summary>
 public class ShopperAuthForgotPasswordTests : IClassFixture<ApiFactory>
 {
     private readonly ApiFactory _factory;
     public ShopperAuthForgotPasswordTests(ApiFactory factory) => _factory = factory;
 
-    // ── DTOs ─────────────────────────────────────────────────────────────────
-
     private sealed record ForgotPasswordRequest(string Phone);
-
-    // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static string UniquePhone() =>
         "+9055" + Random.Shared.Next(10_000_000, 99_999_999).ToString();
 
-    /// <summary>Seeds a Shopper with optional deleted state. Returns (phone, shopperId).</summary>
-    private async Task<(string phone, Guid shopperId)> SeedShopperAsync(
-        bool deleted = false)
+    private async Task<(string phone, Guid shopperId)> SeedShopperAsync(bool deleted = false)
     {
         var phone = UniquePhone();
         using var scope = _factory.Services.CreateScope();
@@ -51,7 +51,6 @@ public class ShopperAuthForgotPasswordTests : IClassFixture<ApiFactory>
         return (phone, id);
     }
 
-    /// <summary>Seeds a License and returns (licenseId).</summary>
     private async Task<Guid> SeedLicenseAsync()
     {
         using var scope = _factory.Services.CreateScope();
@@ -83,7 +82,6 @@ public class ShopperAuthForgotPasswordTests : IClassFixture<ApiFactory>
         return licenseId;
     }
 
-    /// <summary>Adds an active (LeftAt == null) ShopperBroadcasterLink.</summary>
     private async Task SeedActiveLinkAsync(Guid shopperId, Guid licenseId)
     {
         using var scope = _factory.Services.CreateScope();
@@ -101,7 +99,6 @@ public class ShopperAuthForgotPasswordTests : IClassFixture<ApiFactory>
         await db.SaveChangesAsync();
     }
 
-    /// <summary>Adds a left (LeftAt != null) ShopperBroadcasterLink.</summary>
     private async Task SeedLeftLinkAsync(Guid shopperId, Guid licenseId)
     {
         using var scope = _factory.Services.CreateScope();
@@ -119,71 +116,62 @@ public class ShopperAuthForgotPasswordTests : IClassFixture<ApiFactory>
         await db.SaveChangesAsync();
     }
 
-    // ── T10.1: Unknown phone → 202, no DB writes ──────────────────────────────
+    // ── forgot-password: SMS OTP ───────────────────────────────────────────────
 
     [Fact]
-    public async Task ForgotPassword_unknown_phone_returns_202_no_db_writes()
+    public async Task ForgotPassword_unknown_phone_returns_202_no_sms()
     {
         var phone = UniquePhone();
-        var before = DateTimeOffset.UtcNow;
         var resp = await _factory.CreateClient()
             .PostAsJsonAsync("/api/v1/shopper/auth/forgot-password",
                 new ForgotPasswordRequest(phone));
 
         resp.StatusCode.Should().Be(HttpStatusCode.Accepted);
-
-        // The phone doesn't belong to any shopper — verify no support request
-        // was created (scoped by timestamp to avoid parallel-test interference)
-        using var scope = _factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-        // Unknown phone → no shopper → no support request could be linked to a non-existent shopper.
-        // Verify indirectly: total new rows since 'before' should be 0 if only this test ran,
-        // but filter by the fact that no shopper with this phone exists at all.
-        var shopperExists = await db.Shoppers.AnyAsync(s => s.Phone == phone);
-        shopperExists.Should().BeFalse("unknown phone should not create a shopper");
-        // And no support requests created in this test's time window that are not tied to a real shopper
-        var anyNew = await db.ShopperSupportRequests
-            .Where(r => r.CreatedAt >= before)
-            .Join(db.Shoppers.Where(s => s.Phone == phone),
-                r => r.ShopperId, s => s.Id, (r, s) => r)
-            .AnyAsync();
-        anyNew.Should().BeFalse();
+        _factory.Sms.Sent.Should().NotContain(m => m.Phone == phone);
     }
 
-    // ── T10.2: Invalid phone format → 202, no DB writes ──────────────────────
-
     [Fact]
-    public async Task ForgotPassword_invalid_phone_format_returns_202_no_db_writes()
+    public async Task ForgotPassword_invalid_phone_format_returns_202_no_sms()
     {
-        var before = DateTimeOffset.UtcNow;
+        var sentBefore = _factory.Sms.Sent.Count;
         var resp = await _factory.CreateClient()
             .PostAsJsonAsync("/api/v1/shopper/auth/forgot-password",
                 new ForgotPasswordRequest("notaphone"));
 
         resp.StatusCode.Should().Be(HttpStatusCode.Accepted);
-
-        using var scope = _factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-        var any = await db.ShopperSupportRequests
-            .AnyAsync(r => r.CreatedAt >= before);
-        any.Should().BeFalse("no support request should be created for invalid phone");
+        _factory.Sms.Sent.Count.Should().Be(sentBefore, "invalid phone sends no SMS");
     }
 
-    // ── T10.3: Known shopper with 0 active links → 202, no SupportRequest rows ─
+    [Fact]
+    public async Task ForgotPassword_deleted_shopper_returns_202_no_sms()
+    {
+        var (phone, _) = await SeedShopperAsync(deleted: true);
+
+        var resp = await _factory.CreateClient()
+            .PostAsJsonAsync("/api/v1/shopper/auth/forgot-password",
+                new ForgotPasswordRequest(phone));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        _factory.Sms.Sent.Should().NotContain(m => m.Phone == phone);
+    }
 
     [Fact]
-    public async Task ForgotPassword_known_shopper_no_active_links_returns_202_no_support_rows()
+    public async Task ForgotPassword_known_shopper_sends_one_otp_sms_no_support_rows()
     {
         var (phone, shopperId) = await SeedShopperAsync();
-        // No links seeded for this shopper
-
         var before = DateTimeOffset.UtcNow;
+
         var resp = await _factory.CreateClient()
             .PostAsJsonAsync("/api/v1/shopper/auth/forgot-password",
                 new ForgotPasswordRequest(phone));
 
         resp.StatusCode.Should().Be(HttpStatusCode.Accepted);
 
+        var sent = _factory.Sms.Sent.Where(m => m.Phone == phone).ToList();
+        sent.Should().HaveCount(1);
+        Regex.IsMatch(sent[0].Text, @"\d{6}").Should().BeTrue("OTP message contains a 6-digit code");
+
+        // forgot-password artık support request OLUŞTURMAZ (escalate'e taşındı).
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var count = await db.ShopperSupportRequests
@@ -191,10 +179,10 @@ public class ShopperAuthForgotPasswordTests : IClassFixture<ApiFactory>
         count.Should().Be(0);
     }
 
-    // ── T10.4: Known shopper with 2 active links → 202, 2 SupportRequest rows ──
+    // ── forgot-password/escalate: manuel fallback (eski davranış) ───────────────
 
     [Fact]
-    public async Task ForgotPassword_known_shopper_two_active_links_returns_202_two_support_rows()
+    public async Task Escalate_known_shopper_two_active_links_creates_two_support_rows()
     {
         var (phone, shopperId) = await SeedShopperAsync();
         var licenseId1 = await SeedLicenseAsync();
@@ -204,7 +192,7 @@ public class ShopperAuthForgotPasswordTests : IClassFixture<ApiFactory>
 
         var before = DateTimeOffset.UtcNow;
         var resp = await _factory.CreateClient()
-            .PostAsJsonAsync("/api/v1/shopper/auth/forgot-password",
+            .PostAsJsonAsync("/api/v1/shopper/auth/forgot-password/escalate",
                 new ForgotPasswordRequest(phone));
 
         resp.StatusCode.Should().Be(HttpStatusCode.Accepted);
@@ -219,10 +207,8 @@ public class ShopperAuthForgotPasswordTests : IClassFixture<ApiFactory>
         rows.Should().AllSatisfy(r => r.Kind.Should().Be("forgot-password"));
     }
 
-    // ── T10.5: 1 left link + 1 active → 202, only 1 SupportRequest (active) ───
-
     [Fact]
-    public async Task ForgotPassword_one_left_one_active_returns_202_one_support_row()
+    public async Task Escalate_one_left_one_active_creates_one_support_row()
     {
         var (phone, shopperId) = await SeedShopperAsync();
         var licenseIdLeft = await SeedLicenseAsync();
@@ -232,7 +218,7 @@ public class ShopperAuthForgotPasswordTests : IClassFixture<ApiFactory>
 
         var before = DateTimeOffset.UtcNow;
         var resp = await _factory.CreateClient()
-            .PostAsJsonAsync("/api/v1/shopper/auth/forgot-password",
+            .PostAsJsonAsync("/api/v1/shopper/auth/forgot-password/escalate",
                 new ForgotPasswordRequest(phone));
 
         resp.StatusCode.Should().Be(HttpStatusCode.Accepted);
@@ -246,24 +232,45 @@ public class ShopperAuthForgotPasswordTests : IClassFixture<ApiFactory>
         rows[0].LicenseId.Should().Be(licenseIdActive);
     }
 
-    // ── T10.6: Soft-deleted shopper → 202, no DB writes ──────────────────────
-
     [Fact]
-    public async Task ForgotPassword_deleted_shopper_returns_202_no_db_writes()
+    public async Task Escalate_known_shopper_no_active_links_creates_no_rows()
     {
-        var (phone, shopperId) = await SeedShopperAsync(deleted: true);
+        var (phone, shopperId) = await SeedShopperAsync();
 
         var before = DateTimeOffset.UtcNow;
         var resp = await _factory.CreateClient()
-            .PostAsJsonAsync("/api/v1/shopper/auth/forgot-password",
+            .PostAsJsonAsync("/api/v1/shopper/auth/forgot-password/escalate",
                 new ForgotPasswordRequest(phone));
 
         resp.StatusCode.Should().Be(HttpStatusCode.Accepted);
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-        var any = await db.ShopperSupportRequests
-            .AnyAsync(r => r.ShopperId == shopperId && r.CreatedAt >= before);
-        any.Should().BeFalse("deleted shopper should not generate support requests");
+        var count = await db.ShopperSupportRequests
+            .CountAsync(r => r.ShopperId == shopperId && r.CreatedAt >= before);
+        count.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Escalate_unknown_phone_returns_202_no_rows()
+    {
+        var phone = UniquePhone();
+        var before = DateTimeOffset.UtcNow;
+        var resp = await _factory.CreateClient()
+            .PostAsJsonAsync("/api/v1/shopper/auth/forgot-password/escalate",
+                new ForgotPasswordRequest(phone));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var shopperExists = await db.Shoppers.AnyAsync(s => s.Phone == phone);
+        shopperExists.Should().BeFalse();
+        var anyNew = await db.ShopperSupportRequests
+            .Where(r => r.CreatedAt >= before)
+            .Join(db.Shoppers.Where(s => s.Phone == phone),
+                r => r.ShopperId, s => s.Id, (r, s) => r)
+            .AnyAsync();
+        anyNew.Should().BeFalse();
     }
 }

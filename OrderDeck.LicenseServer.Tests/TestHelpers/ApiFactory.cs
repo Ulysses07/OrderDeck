@@ -30,6 +30,8 @@ public class ApiFactory : WebApplicationFactory<Program>
 
     public RecordingNotificationSender Push { get; } = new();
 
+    public RecordingSmsSender Sms { get; } = new();
+
     public FakeBroadcastMediaStorage BroadcastMedia { get; } = new();
 
     public string BackupRoot => _backupRoot;
@@ -101,6 +103,11 @@ public class ApiFactory : WebApplicationFactory<Program>
             // Push sender override — RecordingNotificationSender tüm bildirimi yakalar.
             services.RemoveAll<INotificationSender>();
             services.AddSingleton<INotificationSender>(Push);
+
+            // SMS sender override — RecordingSmsSender gönderilen mesajları yakalar
+            // (gerçek Netgsm çağrısı yok).
+            services.RemoveAll<OrderDeck.LicenseServer.Services.Sms.ISmsSender>();
+            services.AddSingleton<OrderDeck.LicenseServer.Services.Sms.ISmsSender>(Sms);
 
             // Broadcast media storage override — FakeBroadcastMediaStorage UploadCalls'ı kaydeder.
             services.RemoveAll<OrderDeck.LicenseServer.Services.BroadcastPosts.IBroadcastMediaStorage>();

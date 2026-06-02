@@ -43,6 +43,8 @@ public class Program
         // Options binding
         builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection("Jwt"));
         builder.Services.Configure<SmtpOptions>(builder.Configuration.GetSection("Smtp"));
+        builder.Services.Configure<OrderDeck.LicenseServer.Services.Sms.NetgsmOptions>(
+            builder.Configuration.GetSection("Netgsm"));
         builder.Services.Configure<BackupOptions>(builder.Configuration.GetSection("Backup"));
         builder.Services.Configure<OrderDeck.LicenseServer.Services.Audit.AuditRetentionOptions>(
             builder.Configuration.GetSection("Audit:Retention"));
@@ -90,6 +92,17 @@ public class Program
             builder.Services.AddSingleton<IEmailSender, DiskEmailSender>();
         else
             builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
+
+        // SMS sender selection (email pattern'iyle aynı). Dev/test → log,
+        // prod → Netgsm. Netgsm HttpClient ile typed-client olarak bağlanır.
+        var smsProvider = builder.Configuration["Sms:Provider"] ?? "log";
+        if (smsProvider.Equals("netgsm", StringComparison.OrdinalIgnoreCase))
+            builder.Services.AddHttpClient<OrderDeck.LicenseServer.Services.Sms.ISmsSender,
+                OrderDeck.LicenseServer.Services.Sms.NetgsmSmsSender>();
+        else
+            builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Sms.ISmsSender,
+                OrderDeck.LicenseServer.Services.Sms.LogSmsSender>();
+        builder.Services.AddScoped<PasswordResetCodeService>();
 
         builder.Services.AddSingleton<UnsubscribeTokenSigner>();
         builder.Services.AddScoped<EmailSendCoordinator>();

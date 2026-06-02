@@ -43,6 +43,8 @@ public sealed class ShopperAuthController : ControllerBase
     private readonly JwtTokenService _jwt;
     private readonly ShopperRefreshTokenService _refresh;
     private readonly Services.Push.INotificationSender _push;
+    private readonly PasswordResetCodeService _resetCodes;
+    private readonly Services.Sms.ISmsSender _sms;
     private readonly ILogger<ShopperAuthController> _log;
 
     public ShopperAuthController(
@@ -51,6 +53,8 @@ public sealed class ShopperAuthController : ControllerBase
         JwtTokenService jwt,
         ShopperRefreshTokenService refresh,
         Services.Push.INotificationSender push,
+        PasswordResetCodeService resetCodes,
+        Services.Sms.ISmsSender sms,
         ILogger<ShopperAuthController> log)
     {
         _db = db;
@@ -58,6 +62,8 @@ public sealed class ShopperAuthController : ControllerBase
         _jwt = jwt;
         _refresh = refresh;
         _push = push;
+        _resetCodes = resetCodes;
+        _sms = sms;
         _log = log;
     }
 
@@ -278,22 +284,102 @@ public sealed class ShopperAuthController : ControllerBase
     [HttpPost("forgot-password")]
     public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest req, CancellationToken ct)
     {
-        // 1. Normalize phone — invalid format → still 202 (no enumeration leak)
+        // Self-service SMS OTP. Her zaman 202 (no enumeration leak): geçersiz
+        // format / bilinmeyen telefon → sessizce 202, SMS YOK. Yalnızca kayıtlı
+        // + soft-delete olmayan shopper'a SMS gider (anti-abuse: rastgele
+        // numaraya SMS attırılamaz). OTP maliyetini OrderDeck karşılar.
         if (!PhoneNormalizer.TryNormalize(req.Phone, out var phone))
             return StatusCode(202);
 
-        // 2. Find shopper — not found or soft-deleted → 202 (no DB writes)
         var shopper = await _db.Shoppers
             .FirstOrDefaultAsync(s => s.Phone == phone, ct);
         if (shopper is null || shopper.DeletedAt is not null)
             return StatusCode(202);
 
-        // 3. Get all active ShopperBroadcasterLink rows (LeftAt == null)
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+        // Rate-limit + global tavan servis içinde; throttle/cap → null (SMS yok).
+        var code = await _resetCodes.IssueAsync(shopper, ip, ct);
+        if (code is not null)
+        {
+            // GSM-7 güvenli (Türkçe karaktersiz) → tek SMS segmenti.
+            var message = $"OrderDeck dogrulama kodunuz: {code}. Kod 10 dakika gecerli.";
+            try
+            {
+                await _sms.SendAsync(phone!, message, ct);
+            }
+            catch (Exception ex)
+            {
+                // Best-effort: SMS sağlayıcı arızası caller'a sızmaz (yine 202).
+                // Müşteri "kod gelmedi → yayıncıdan yardım iste" (escalate) yapabilir.
+                _log.LogWarning(ex, "Password-reset SMS send failed for shopper={ShopperId}", shopper.Id);
+            }
+        }
+
+        return StatusCode(202);
+    }
+
+    // ── ResetPassword ─────────────────────────────────────────────────────────
+
+    public sealed record ResetPasswordRequest(string Phone, string Code, string NewPassword);
+
+    [AllowAnonymous]
+    [HttpPost("reset-password")]
+    public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequest req, CancellationToken ct)
+    {
+        if (!PhoneNormalizer.TryNormalize(req.Phone, out var phone))
+            return Problem(title: "invalid-code", statusCode: 400);
+
+        var shopper = await _db.Shoppers
+            .FirstOrDefaultAsync(s => s.Phone == phone, ct);
+        if (shopper is null || shopper.DeletedAt is not null)
+            return Problem(title: "invalid-code", statusCode: 400);
+
+        // Parola gücünü kodu tüketmeden önce kontrol et — kullanıcı kısa parola
+        // yazarsa kodu boşa harcamasın.
+        if ((req.NewPassword ?? "").Length < 8)
+            return Problem(title: "weak-password", statusCode: 400);
+
+        // Kod doğrula + tüket (deneme sayacı / expiry / brute-force kilidi serviste).
+        var ok = await _resetCodes.VerifyAndConsumeAsync(shopper.Id, req.Code ?? "", ct);
+        if (!ok)
+            return Problem(title: "invalid-code", statusCode: 400);
+
+        var now = DateTimeOffset.UtcNow;
+        shopper.PasswordHash = _passwordHasher.Hash(req.NewPassword!);
+        shopper.UpdatedAt = now;
+
+        // Aktif refresh token'ları iptal et — eski cihazlar otomatik logout
+        // (panel issue-temp-password ile aynı desen).
+        var refreshes = await _db.ShopperRefreshTokens
+            .Where(t => t.ShopperId == shopper.Id && t.RevokedAt == null)
+            .ToListAsync(ct);
+        foreach (var t in refreshes)
+            t.RevokedAt = now;
+
+        await _db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
+    // ── ForgotPassword/escalate (manuel fallback) ───────────────────────────────
+
+    [AllowAnonymous]
+    [HttpPost("forgot-password/escalate")]
+    public async Task<IActionResult> ForgotPasswordEscalate([FromBody] ForgotPasswordRequest req, CancellationToken ct)
+    {
+        // "SMS gelmedi" fallback'i: eski manuel akış. Bağlı yayıncılara destek
+        // talebi açar + push atar; yayıncı panelden/WPF'ten geçici parola yollar.
+        if (!PhoneNormalizer.TryNormalize(req.Phone, out var phone))
+            return StatusCode(202);
+
+        var shopper = await _db.Shoppers
+            .FirstOrDefaultAsync(s => s.Phone == phone, ct);
+        if (shopper is null || shopper.DeletedAt is not null)
+            return StatusCode(202);
+
         var activeLinks = await _db.ShopperBroadcasterLinks
             .Where(l => l.ShopperId == shopper.Id && l.LeftAt == null)
             .ToListAsync(ct);
 
-        // 4. For each active link → insert a ShopperSupportRequest row
         var now = DateTimeOffset.UtcNow;
         foreach (var link in activeLinks)
         {
@@ -307,13 +393,9 @@ public sealed class ShopperAuthController : ControllerBase
             });
         }
 
-        // 5. Save (no-op if no active links)
         if (activeLinks.Count > 0)
             await _db.SaveChangesAsync(ct);
 
-        // 6. Push fan-out: bağlı yayıncılara "yeni destek talebi" bildirimi.
-        // Best-effort: fail throw etmez (caller her zaman 202 görür, no
-        // enumeration leak).
         if (activeLinks.Count > 0)
         {
             try
@@ -330,7 +412,6 @@ public sealed class ShopperAuthController : ControllerBase
             }
         }
 
-        // 7. Always 202
         return StatusCode(202);
     }
 

@@ -107,7 +107,7 @@ public class ForgotPasswordSupportRequestPushTests : IClassFixture<ApiFactory>
         _factory.Push.Clear();
 
         var resp = await _factory.CreateClient()
-            .PostAsJsonAsync("/api/v1/shopper/auth/forgot-password",
+            .PostAsJsonAsync("/api/v1/shopper/auth/forgot-password/escalate",
                 new ForgotPasswordRequest(phone));
         resp.StatusCode.Should().Be(HttpStatusCode.Accepted);
 
@@ -131,7 +131,7 @@ public class ForgotPasswordSupportRequestPushTests : IClassFixture<ApiFactory>
         _factory.Push.Clear();
 
         var resp = await _factory.CreateClient()
-            .PostAsJsonAsync("/api/v1/shopper/auth/forgot-password",
+            .PostAsJsonAsync("/api/v1/shopper/auth/forgot-password/escalate",
                 new ForgotPasswordRequest(phone));
         resp.StatusCode.Should().Be(HttpStatusCode.Accepted);
 
@@ -147,7 +147,7 @@ public class ForgotPasswordSupportRequestPushTests : IClassFixture<ApiFactory>
         _factory.Push.Clear();
 
         var resp = await _factory.CreateClient()
-            .PostAsJsonAsync("/api/v1/shopper/auth/forgot-password",
+            .PostAsJsonAsync("/api/v1/shopper/auth/forgot-password/escalate",
                 new ForgotPasswordRequest(phone));
         resp.StatusCode.Should().Be(HttpStatusCode.Accepted);
 
@@ -159,7 +159,7 @@ public class ForgotPasswordSupportRequestPushTests : IClassFixture<ApiFactory>
     {
         _factory.Push.Clear();
         var resp = await _factory.CreateClient()
-            .PostAsJsonAsync("/api/v1/shopper/auth/forgot-password",
+            .PostAsJsonAsync("/api/v1/shopper/auth/forgot-password/escalate",
                 new ForgotPasswordRequest("+905555555555"));
         resp.StatusCode.Should().Be(HttpStatusCode.Accepted);
 
