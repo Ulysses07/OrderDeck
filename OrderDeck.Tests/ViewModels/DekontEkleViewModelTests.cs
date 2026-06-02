@@ -744,7 +744,9 @@ public sealed class DekontEkleViewModelTests
             store.Save(fx.Settings);
             var launcher = new OrderDeck.Tests.Fakes.FakeUrlLauncher();
             var paymentRequest = new OrderDeck.App.Services.PaymentRequestService(
-                store, new WhatsAppMessageBuilder(), launcher);
+                store, new WhatsAppMessageBuilder(), launcher,
+                PaymentRequestServiceTestHelpers.StubApiClient(),
+                new PaymentRequestServiceTestHelpers.NullLicenseProvider());
 
             // Custom VM with the wired PaymentRequestService
             var vm = new DekontEkleViewModel(
@@ -812,7 +814,9 @@ public sealed class DekontEkleViewModelTests
             store.Save(fx.Settings);
             var launcher = new OrderDeck.Tests.Fakes.FakeUrlLauncher();
             var paymentRequest = new OrderDeck.App.Services.PaymentRequestService(
-                store, new WhatsAppMessageBuilder(), launcher);
+                store, new WhatsAppMessageBuilder(), launcher,
+                PaymentRequestServiceTestHelpers.StubApiClient(),
+                new PaymentRequestServiceTestHelpers.NullLicenseProvider());
             var vm = new DekontEkleViewModel(
                 fx.Payments, fx.Customers, fx.Sessions,
                 new PaymentMatcherService(fx.Labels, () => fx.Settings),

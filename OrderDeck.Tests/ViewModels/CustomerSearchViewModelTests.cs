@@ -43,7 +43,9 @@ public class CustomerSearchViewModelTests
         var settingsPath = Path.Combine(Path.GetTempPath(), $"orderdeck-csvm-{Guid.NewGuid():N}.json");
         var settingsStore = new SettingsStore(settingsPath);
         settingsStore.Save(new AppSettings());
-        var paymentService = new PaymentRequestService(settingsStore, new WhatsAppMessageBuilder(), launcher);
+        var paymentService = new PaymentRequestService(settingsStore, new WhatsAppMessageBuilder(), launcher,
+            PaymentRequestServiceTestHelpers.StubApiClient(),
+            new PaymentRequestServiceTestHelpers.NullLicenseProvider());
         var dialogs = new FakeDialogService();
         var sut = new CustomerSearchViewModel(customers, customerService, sessions, labels, paymentService, dialogs);
         return (db, customers, sessions, labels, launcher, dialogs, settingsPath, sut);

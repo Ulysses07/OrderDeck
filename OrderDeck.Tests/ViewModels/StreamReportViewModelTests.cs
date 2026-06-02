@@ -41,7 +41,9 @@ public class StreamReportViewModel_OpenWhatsAppTests
         var settingsPath = Path.Combine(Path.GetTempPath(), $"orderdeck-srvm-{Guid.NewGuid():N}.json");
         var settingsStore = new SettingsStore(settingsPath);
         settingsStore.Save(new AppSettings());
-        var paymentService = new PaymentRequestService(settingsStore, new WhatsAppMessageBuilder(), launcher);
+        var paymentService = new PaymentRequestService(settingsStore, new WhatsAppMessageBuilder(), launcher,
+            PaymentRequestServiceTestHelpers.StubApiClient(),
+            new PaymentRequestServiceTestHelpers.NullLicenseProvider());
         var dialogs = new FakeDialogService();
         var sut = new StreamReportViewModel(labels, sessions, giveaways, customers, paymentService, dialogs);
         return (db, customers, sessions, labels, giveaways, launcher, dialogs, settingsPath, sut);

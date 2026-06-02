@@ -15,6 +15,17 @@ public sealed class WhatsAppMessageBuilder
     {
         // Kargo placeholder'ları (2026-05-12): {urun_toplami}, {kargo_ucreti},
         // {kargo}. Eski template'ler bu placeholder'ları içermez — sessiz geçer.
+        //
+        // E3b bakiye placeholder'ları (2026-06):
+        //   {bakiye}      — bu mesajda düşülen bakiye (örn. "100,00")
+        //                   AppliedBalance == 0 ise boş string
+        //   {net_tutar}   — bakiye düşüldükten sonra ödenecek tutar (== TotalAmount)
+        //   {toplam_oncesi}— bakiye düşülmeden önceki toplam (TotalBeforeBalance)
+        // Bu placeholder'lar geriye uyumlu — eski template'lerde yer almıyorsa
+        // sessiz geçer.
+        var bakiyeText = ctx.AppliedBalance > 0
+            ? ctx.AppliedBalance.ToString("N2", Tr)
+            : "";
         return template
             .Replace("{ad}", ctx.DisplayName)
             .Replace("{tutar}", ctx.TotalAmount.ToString("N2", Tr))
@@ -25,7 +36,12 @@ public sealed class WhatsAppMessageBuilder
             .Replace("{urun_toplami}", ctx.ProductTotal.ToString("N2", Tr))
             .Replace("{kargo_ucreti}",
                 ctx.ShippingFee.HasValue ? ctx.ShippingFee.Value.ToString("N2", Tr) : "—")
-            .Replace("{kargo}", ctx.ShippingNote);
+            .Replace("{kargo}", ctx.ShippingNote)
+            .Replace("{bakiye}", bakiyeText)
+            .Replace("{net_tutar}", ctx.TotalAmount.ToString("N2", Tr))
+            .Replace("{toplam_oncesi}",
+                (ctx.TotalBeforeBalance > 0 ? ctx.TotalBeforeBalance : ctx.TotalAmount)
+                .ToString("N2", Tr));
     }
 
     /// <summary>
