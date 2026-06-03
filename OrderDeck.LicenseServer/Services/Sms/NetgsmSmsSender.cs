@@ -30,11 +30,17 @@ public sealed class NetgsmSmsSender : ISmsSender
         // Netgsm 10 haneli (5XXXXXXXXX) bekler; PhoneNormalizer +90XXXXXXXXXX verir.
         var no = ToNetgsmNo(toPhone);
 
-        var payload = new
+        // Resmi Netgsm REST v2: { msgheader, messages:[{msg, no}] }. encoding ve
+        // iysfilter opsiyonel — yalnızca konfigüre edilmişse eklenir.
+        var payload = new Dictionary<string, object?>
         {
-            msgheader = _opt.Header,
-            messages = new[] { new { msg = message, no } },
+            ["msgheader"] = _opt.Header,
+            ["messages"] = new[] { new { msg = message, no } },
         };
+        if (!string.IsNullOrWhiteSpace(_opt.Encoding))
+            payload["encoding"] = _opt.Encoding;
+        if (!string.IsNullOrWhiteSpace(_opt.IysFilter))
+            payload["iysfilter"] = _opt.IysFilter;
         var json = JsonSerializer.Serialize(payload);
 
         using var req = new HttpRequestMessage(HttpMethod.Post,
