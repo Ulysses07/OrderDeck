@@ -219,6 +219,8 @@
                                     Placeholder: {ad} {tutar} {tarih} {iban} {hesap_sahibi} {papara}
                                     <LineBreak/>
                                     Kargo: {urun_toplami} (ürün) · {kargo_ucreti} (sadece sayı) · {kargo} (otomatik açıklama)
+                                    <LineBreak/>
+                                    Bakiye (yalnızca iade kredisi düşüldüğünde dolar): {toplam_oncesi} (bakiye öncesi toplam) · {bakiye} (düşülen tutar) · {net_tutar} (ödenecek tutar)
                                 </TextBlock>
 
                                 <Label Content="IBAN" Margin="0,4,0,2" Foreground="White"/>
