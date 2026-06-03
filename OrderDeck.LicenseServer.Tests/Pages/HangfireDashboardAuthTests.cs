@@ -18,7 +18,7 @@ public sealed class HangfireDashboardAuthTests : IClassFixture<ApiFactory>
         {
             AllowAutoRedirect = false
         });
-        var resp = await client.GetAsync("/hangfire");
+        var resp = await client.GetAsync("/admin/hangfire");
 
         // Hangfire dashboard auth filter false dönerse 401 status döndürür
         resp.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
@@ -28,7 +28,7 @@ public sealed class HangfireDashboardAuthTests : IClassFixture<ApiFactory>
     public async Task Logged_in_admin_can_access_hangfire_dashboard()
     {
         var client = await _factory.CreateLoggedInAdminClientAsync($"admin-{Guid.NewGuid():N}");
-        var resp = await client.GetAsync("/hangfire");
+        var resp = await client.GetAsync("/admin/hangfire");
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var html = await resp.Content.ReadAsStringAsync();
         // Hangfire dashboard ana sayfası "Hangfire" string'i içerir

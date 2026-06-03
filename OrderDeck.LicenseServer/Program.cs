@@ -509,7 +509,9 @@ public class Program
         app.UseRateLimiter();
         app.UseAuthentication();
         app.UseAuthorization();
-        app.UseHangfireDashboard("/hangfire", new DashboardOptions
+        // Dashboard /admin/hangfire altında — Caddy zaten /admin/* proxy'liyor
+        // (admin paneli orada) ve AdminCookie path=/ olduğu için burada da geçerli.
+        app.UseHangfireDashboard("/admin/hangfire", new DashboardOptions
         {
             Authorization = new[] { new HangfireDashboardAuthFilter() }
         });
