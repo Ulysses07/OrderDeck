@@ -97,12 +97,19 @@ public class Program
         // prod → Netgsm. Netgsm HttpClient ile typed-client olarak bağlanır.
         var smsProvider = builder.Configuration["Sms:Provider"] ?? "log";
         if (smsProvider.Equals("netgsm", StringComparison.OrdinalIgnoreCase))
+        {
+            // Timeout: Netgsm asılı kalırsa forgot-password isteğini default
+            // 100sn boyunca bloklamasın (SMS inline await ediliyor).
+            var smsTimeout = builder.Configuration.GetValue("Netgsm:TimeoutSeconds", 10);
             builder.Services.AddHttpClient<OrderDeck.LicenseServer.Services.Sms.ISmsSender,
-                OrderDeck.LicenseServer.Services.Sms.NetgsmSmsSender>();
+                    OrderDeck.LicenseServer.Services.Sms.NetgsmSmsSender>(
+                    c => c.Timeout = TimeSpan.FromSeconds(smsTimeout <= 0 ? 10 : smsTimeout));
+        }
         else
             builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Sms.ISmsSender,
                 OrderDeck.LicenseServer.Services.Sms.LogSmsSender>();
         builder.Services.AddScoped<PasswordResetCodeService>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Auth.PasswordResetCodeCleanupJob>();
 
         builder.Services.AddSingleton<UnsubscribeTokenSigner>();
         builder.Services.AddScoped<EmailSendCoordinator>();
@@ -467,6 +474,13 @@ public class Program
                 "broadcast-posts-cleanup",
                 j => j.RunAsync(CancellationToken.None),
                 "0 3 * * *");  // 03:00 UTC daily (before audit-retention at 03:30)
+
+            // Parola sıfırlama OTP satırları temizliği — kodlar 10dk'da expire
+            // olur; eski satırlar tablo şişmesin diye günlük purge edilir.
+            manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Auth.PasswordResetCodeCleanupJob>(
+                "otp-code-cleanup",
+                j => j.PruneAsync(CancellationToken.None),
+                "45 3 * * *");  // 03:45 UTC daily
         }
 
         if (app.Environment.IsDevelopment())
