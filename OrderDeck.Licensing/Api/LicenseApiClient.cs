@@ -302,6 +302,13 @@ public sealed class LicenseApiClient
         if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
     }
 
+    /// <summary>En son uygulama sürümü + indirme URL'si (anonim). LatestVersion
+    /// null ise güncelleme kontrolü atlanır.</summary>
+    public async Task<AppVersionInfo?> GetLatestAppVersionAsync(CancellationToken ct = default)
+    {
+        return await GetExpectingJsonAsync<AppVersionInfo>("/api/app/version", ct);
+    }
+
     /// <summary>Yayıncının bağlı shopper'larının bekleyen (opsiyonel: geçmiş dahil)
     /// destek taleplerini listeler. Bearer-Customer auth otomatik.</summary>
     public async Task<SupportRequestDto[]> GetSupportRequestsAsync(

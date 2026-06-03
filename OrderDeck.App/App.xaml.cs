@@ -307,6 +307,35 @@ public partial class App : Application
             }
         }
 
+        // In-app güncelleme kontrolü — non-blocking, oturum başına bir kez.
+        // Yeni sürüm varsa kapatılabilir bilgi; "Evet" indirme sayfasını açar.
+        // Best-effort: hata/sürüm yoksa sessiz geç (akışı bozmaz).
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var checker = Host.Services.GetRequiredService<Services.UpdateChecker>();
+                var current = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version
+                              ?? new Version(0, 0);
+                var update = await checker.CheckAsync(current);
+                if (update is null) return;
+                Dispatcher.Invoke(() =>
+                {
+                    var choice = MessageBox.Show(
+                        $"Yeni sürüm mevcut: {update.LatestVersion}\n\nŞimdi indirmek ister misin?",
+                        "OrderDeck — Güncelleme", MessageBoxButton.YesNo, MessageBoxImage.Information);
+                    if (choice == MessageBoxResult.Yes)
+                        Host.Services
+                            .GetRequiredService<OrderDeck.Core.Customers.IUrlLauncher>()
+                            .Launch(update.DownloadUrl);
+                });
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Update check failed (non-fatal)");
+            }
+        });
+
         base.OnStartup(e);
     }
 

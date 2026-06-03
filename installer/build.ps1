@@ -40,6 +40,7 @@ try {
     Write-Host "[1/3] dotnet publish (self-contained win-x64)..." -ForegroundColor Cyan
     dotnet publish OrderDeck.App\OrderDeck.App.csproj `
       -p:PublishProfile=win-x64-installer `
+      -p:Version=$Version `
       -c Release `
       --nologo
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
