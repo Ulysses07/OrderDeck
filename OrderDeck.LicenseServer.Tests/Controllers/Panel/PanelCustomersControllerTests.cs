@@ -573,4 +573,174 @@ public class PanelCustomersControllerTests : IClassFixture<ApiFactory>
         using var doc = System.Text.Json.JsonDocument.Parse(body);
         doc.RootElement.GetProperty("customers").GetArrayLength().Should().Be(0);
     }
+
+    // ─── Siparişsiz kayıtlı shopper'lar (WpfCustomerProjection) ───────────────
+
+    private async Task SeedProjectionAsync(Guid licenseId, Guid id, string fullName,
+        string username, string platform, DateTimeOffset? updatedAt = null)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        db.WpfCustomerProjections.Add(new WpfCustomerProjection
+        {
+            Id = id,
+            LicenseId = licenseId,
+            Platform = platform,
+            Username = username,
+            FullName = fullName,
+            Phone = "+905550000000",
+            Address = "Test addr",
+            UpdatedAt = updatedAt ?? DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+    }
+
+    [Fact]
+    public async Task List_includes_zero_order_registered_shopper()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var pid = Guid.NewGuid();
+        await SeedProjectionAsync(licenseId, pid, "Yeni Musteri", "@yeni", "instagram");
+
+        var resp = await client.GetAsync("/api/panel/customers");
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        var customers = doc.RootElement.GetProperty("customers");
+        customers.GetArrayLength().Should().Be(1);
+        var c = customers[0];
+        c.GetProperty("id").GetString().Should().Be(pid.ToString("N"));
+        c.GetProperty("orderCount").GetInt32().Should().Be(0);
+        c.GetProperty("totalSpent").GetDecimal().Should().Be(0m);
+        c.GetProperty("displayName").GetString().Should().Be("Yeni Musteri");
+        c.GetProperty("isActive").GetBoolean().Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task List_zero_order_sorts_after_real_orders_on_lastOrder()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var now = DateTimeOffset.UtcNow;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Orders.Add(MakeListOrder(licenseId, "buyer-ig", "instagram", "@b", "Buyer", 100m, now.AddDays(-1)));
+            await db.SaveChangesAsync();
+        }
+        // Bugün kayıt olmuş ama hiç sipariş vermemiş → MinValue sentinel sayesinde
+        // yine de dünkü sipariş veren müşteriden SONRA gelmeli.
+        await SeedProjectionAsync(licenseId, Guid.NewGuid(), "Yeni", "@yeni", "instagram", updatedAt: now);
+
+        var resp = await client.GetAsync("/api/panel/customers");
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        var customers = doc.RootElement.GetProperty("customers");
+        customers.GetArrayLength().Should().Be(2);
+        customers[0].GetProperty("id").GetString().Should().Be("buyer-ig");
+        customers[1].GetProperty("orderCount").GetInt32().Should().Be(0);
+    }
+
+    [Fact]
+    public async Task List_activeWithinDays_excludes_zero_order()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var now = DateTimeOffset.UtcNow;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Orders.Add(MakeListOrder(licenseId, "active-ig", "instagram", "@a", "Active", 10m, now.AddDays(-2)));
+            await db.SaveChangesAsync();
+        }
+        await SeedProjectionAsync(licenseId, Guid.NewGuid(), "Yeni", "@yeni", "instagram");
+
+        var resp = await client.GetAsync("/api/panel/customers?activeWithinDays=30");
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        var customers = doc.RootElement.GetProperty("customers");
+        customers.GetArrayLength().Should().Be(1);
+        customers[0].GetProperty("id").GetString().Should().Be("active-ig");
+    }
+
+    [Fact]
+    public async Task List_minOrders_excludes_zero_order()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var now = DateTimeOffset.UtcNow;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Orders.Add(MakeListOrder(licenseId, "buyer-ig", "instagram", "@b", "Buyer", 10m, now.AddDays(-1)));
+            await db.SaveChangesAsync();
+        }
+        await SeedProjectionAsync(licenseId, Guid.NewGuid(), "Yeni", "@yeni", "instagram");
+
+        var resp = await client.GetAsync("/api/panel/customers?minOrders=1");
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        doc.RootElement.GetProperty("customers").GetArrayLength().Should().Be(1);
+    }
+
+    [Fact]
+    public async Task List_name_sort_includes_zero_order_alphabetically()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var now = DateTimeOffset.UtcNow;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Orders.Add(MakeListOrder(licenseId, "mike-ig", "instagram", "@mike", "Mike", 10m, now.AddDays(-1)));
+            await db.SaveChangesAsync();
+        }
+        await SeedProjectionAsync(licenseId, Guid.NewGuid(), "Aaron", "@aaron", "instagram");
+
+        var resp = await client.GetAsync("/api/panel/customers?sort=name");
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        var customers = doc.RootElement.GetProperty("customers");
+        customers.GetArrayLength().Should().Be(2);
+        customers[0].GetProperty("displayName").GetString().Should().Be("Aaron");
+        customers[1].GetProperty("displayName").GetString().Should().Be("Mike");
+    }
+
+    [Fact]
+    public async Task List_dedup_projection_with_orders_not_duplicated()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var now = DateTimeOffset.UtcNow;
+        var pid = Guid.NewGuid();
+        var custId = pid.ToString("N");
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Orders.Add(MakeListOrder(licenseId, custId, "instagram", "@buyer", "Buyer", 100m, now.AddDays(-1)));
+            await db.SaveChangesAsync();
+        }
+        // Aynı müşterinin projeksiyonu da var → çift görünmemeli.
+        await SeedProjectionAsync(licenseId, pid, "Buyer", "@buyer", "instagram");
+
+        var resp = await client.GetAsync("/api/panel/customers");
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        var customers = doc.RootElement.GetProperty("customers");
+        customers.GetArrayLength().Should().Be(1);
+        customers[0].GetProperty("orderCount").GetInt32().Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Get_zero_order_projection_returns_summary()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var pid = Guid.NewGuid();
+        await SeedProjectionAsync(licenseId, pid, "Yeni Musteri", "@yeni", "instagram");
+
+        var resp = await client.GetAsync($"/api/panel/customers/{pid:N}");
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        var root = doc.RootElement;
+        root.GetProperty("orderCount").GetInt32().Should().Be(0);
+        root.GetProperty("totalRevenue").GetDecimal().Should().Be(0m);
+        root.GetProperty("displayName").GetString().Should().Be("Yeni Musteri");
+        root.GetProperty("wpfCustomerProjectionId").GetString().Should().Be(pid.ToString());
+        root.GetProperty("recentOrders").GetArrayLength().Should().Be(0);
+    }
 }
