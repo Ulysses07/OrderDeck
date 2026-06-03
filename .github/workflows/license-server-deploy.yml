@@ -161,19 +161,36 @@ jobs:
           # rather than `:latest` (mutable, racy under concurrent deploys).
           # `.deployed_sha` records the full sha so the next workflow run can
           # do its ancestry check.
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
-            "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "set -e
-             cd /opt/orderdeck
-             if grep -q '^LICENSE_SERVER_TAG=' .env; then
-               sed -i.bak 's|^LICENSE_SERVER_TAG=.*|LICENSE_SERVER_TAG=${NEW_TAG}|' .env
-             else
-               echo 'LICENSE_SERVER_TAG=${NEW_TAG}' >> .env
-             fi
-             docker compose pull license-server
-             docker compose up -d license-server
-             echo '${NEW_SHA}' > .deployed_sha
-             docker image prune -f --filter 'until=72h' >/dev/null"
+          #
+          # Retry: runner→VPS arası geçici SSH connect timeout'u deploy'u
+          # patlatmasın (ordering guard ile aynı flake). Uzaktaki komut
+          # idempotent (sed/echo/docker compose up/prune) → tekrar güvenli.
+          deploy_remote() {
+            ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+              -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
+              "${DEPLOY_USER}@${DEPLOY_HOST}" \
+              "set -e
+               cd /opt/orderdeck
+               if grep -q '^LICENSE_SERVER_TAG=' .env; then
+                 sed -i.bak 's|^LICENSE_SERVER_TAG=.*|LICENSE_SERVER_TAG=${NEW_TAG}|' .env
+               else
+                 echo 'LICENSE_SERVER_TAG=${NEW_TAG}' >> .env
+               fi
+               docker compose pull license-server
+               docker compose up -d license-server
+               echo '${NEW_SHA}' > .deployed_sha
+               docker image prune -f --filter 'until=72h' >/dev/null"
+          }
+          for attempt in 1 2 3; do
+            if deploy_remote; then
+              echo "Deploy succeeded (attempt ${attempt})"
+              exit 0
+            fi
+            echo "::warning::Deploy SSH attempt ${attempt}/3 failed; retrying..."
+            sleep $((attempt * 10))
+          done
+          echo "::error::Deploy failed after 3 attempts"
+          exit 1
 
       - name: Smoke test
         if: steps.ordering.outputs.skip != 'true'
