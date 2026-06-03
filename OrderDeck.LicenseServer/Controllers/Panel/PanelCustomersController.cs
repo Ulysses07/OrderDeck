@@ -173,6 +173,43 @@ public sealed class PanelCustomersController : ControllerBase
                 Platform: string.Empty))
             .ToList();
 
+        // ─── Siparişsiz kayıtlı shopper'ları ekle ─────────────────────────
+        // Shopper app'ten kayıt olunca server otomatik WpfCustomerProjection
+        // oluşturuyor (ShopperAuthController register step 8a). Henüz sipariş
+        // vermemiş bu müşteriler Orders'ta olmadığı için yukarıdaki agregada
+        // çıkmaz → yayıncı yeni müşterisini göremez. Onları zero-order satır
+        // olarak merge ediyoruz. LastOrderAt = MinValue sentinel'i: lastOrder
+        // sort'ta en alta düşer, activeWithinDays/minSpent/minOrders filtreleri
+        // doğal olarak eler. Identity projeksiyondan dolu geldiği için Pass-2
+        // bunlara dokunmaz.
+        var orderedCustomerIds = aggregateRows
+            .Select(a => a.CustomerId)
+            .ToHashSet(StringComparer.Ordinal);
+
+        var projectionsQuery = _db.WpfCustomerProjections
+            .Where(p => licenseIds.Contains(p.LicenseId));
+        if (platformList is { Count: > 0 })
+            projectionsQuery = projectionsQuery.Where(p => platformList.Contains(p.Platform.ToLower()));
+
+        var projections = await projectionsQuery
+            .Select(p => new { p.Id, p.FullName, p.Username, p.Platform, p.UpdatedAt })
+            .ToListAsync(ct);
+
+        foreach (var p in projections)
+        {
+            var idHex = p.Id.ToString("N");
+            if (orderedCustomerIds.Contains(idHex)) continue;   // siparişi var → zaten listede
+            orderedCustomerIds.Add(idHex);                       // aynı projeksiyon iki kez gelmesin
+            aggregateRows.Add(new CustomerAggRow(
+                idHex,
+                TotalSpent: 0m,
+                OrderCount: 0,
+                LastOrderAt: DateTimeOffset.MinValue,
+                DisplayName: p.FullName,
+                Username: p.Username,
+                Platform: p.Platform));
+        }
+
         // Filters mirror the same predicates that would run server-side.
         IEnumerable<CustomerAggRow> filtered = aggregateRows;
         if (activeWithinDays.HasValue)
@@ -368,7 +405,33 @@ public sealed class PanelCustomersController : ControllerBase
             .Where(o => licenseIds.Contains(o.LicenseId) && o.CustomerId == customerId);
 
         var any = await ordersQuery.AnyAsync(ct);
-        if (!any) return NotFound();
+        if (!any)
+        {
+            // Siparişsiz kayıtlı shopper — Orders'ta yok ama projeksiyonu olabilir
+            // (shopper app register). Projeksiyondan zero-order özet kur ki listede
+            // görünen müşteriye tıklayınca 404 olmasın.
+            if (!Guid.TryParseExact(customerId, "N", out var pid))
+                return NotFound();
+            var proj = await _db.WpfCustomerProjections
+                .Where(p => p.Id == pid && licenseIds.Contains(p.LicenseId))
+                .Select(p => new { p.Id, p.FullName, p.Username, p.Platform, p.UpdatedAt })
+                .FirstOrDefaultAsync(ct);
+            if (proj is null) return NotFound();
+
+            return Ok(new CustomerSummaryDto(
+                customerId,
+                proj.FullName,
+                proj.Username,
+                proj.Platform,
+                OrderCount: 0,
+                TotalRevenue: 0m,
+                ActiveShipmentCount: 0,
+                FirstOrderAt: proj.UpdatedAt,
+                LastOrderAt: proj.UpdatedAt,
+                RecentOrders: new List<CustomerRecentOrderDto>(),
+                ActiveShipments: new List<CustomerShipmentDto>(),
+                WpfCustomerProjectionId: proj.Id));
+        }
 
         // Display identity — order satırlarından en güncel (UpdatedAt en yeni)
         // DisplayName + Username + Platform al.
