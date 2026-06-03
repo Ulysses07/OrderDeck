@@ -219,6 +219,7 @@ public sealed class AppHost : IDisposable
         // Phase 4g — payment infrastructure
         services.AddSingleton<WhatsAppMessageBuilder>();
         services.AddSingleton<IUrlLauncher, ProcessUrlLauncher>();
+        services.AddSingleton<Services.UpdateChecker>();
         services.AddSingleton<PaymentRequestService>();
         services.AddSingleton<IDialogService, WpfDialogService>();
 
