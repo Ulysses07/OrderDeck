@@ -98,9 +98,22 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           NEW_SHA="${{ steps.tags.outputs.sha }}"
-          CURRENT=$(ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
-            "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            'cat /opt/orderdeck/.deployed_sha 2>/dev/null || true')
+          # Bu adım sadece bir optimizasyon (out-of-order tail deploy atlama).
+          # GitHub runner → VPS arası geçici SSH timeout'u tüm deploy'u
+          # patlatmamalı: birkaç kez dene, kalıcı başarısızlıkta CURRENT boş
+          # kalır → skip=false ile devam (asıl Deploy adımı zaten SSH gerektirir).
+          CURRENT=""
+          for attempt in 1 2 3; do
+            if CURRENT=$(ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+                 -o ConnectTimeout=15 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 \
+                 "${DEPLOY_USER}@${DEPLOY_HOST}" \
+                 'cat /opt/orderdeck/.deployed_sha 2>/dev/null || true'); then
+              break
+            fi
+            echo "::warning::Ordering guard SSH attempt ${attempt}/3 failed; retrying..."
+            CURRENT=""
+            sleep $((attempt * 5))
+          done
           if [ -n "$CURRENT" ] && [ "$CURRENT" != "$NEW_SHA" ]; then
             if git merge-base --is-ancestor "$NEW_SHA" "$CURRENT" 2>/dev/null; then
               echo "::warning::Skipping out-of-order deploy: $NEW_SHA is an ancestor of currently-deployed $CURRENT"
