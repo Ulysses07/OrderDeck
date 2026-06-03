@@ -11,7 +11,9 @@
 ; - Turkish language pack (Turkish.isl ships with Inno Setup 6).
 ; - WebView2 evergreen detection in [Code]; bootstrapper downloaded by
 ;   build.ps1 and embedded in [Files] → [Run] silent install if missing.
-; - No SetupIconFile yet — uses Inno's default. TODO: design team .ico.
+; - SetupIconFile = OrderDeck marka ikonu (installer\make-icon.ps1 ile
+;   orderdeck-icon.png'den üretilir). Aynı .ico exe'ye de gömülür (csproj
+;   ApplicationIcon → UninstallDisplayIcon o exe'yi gösterir).
 ; - Code signing skipped in Phase 1; Phase 2 will add SignTool.
 
 #ifndef APP_VERSION
@@ -36,6 +38,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 WizardStyle=modern
+SetupIconFile=..\OrderDeck.App\orderdeck.ico
 OutputBaseFilename=OrderDeck-{#APP_VERSION}-setup
 OutputDir=..\dist
 UninstallDisplayIcon={app}\OrderDeck.App.exe
