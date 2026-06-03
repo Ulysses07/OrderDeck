@@ -302,6 +302,29 @@ public sealed class LicenseApiClient
         if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
     }
 
+    /// <summary>Yayıncının bağlı shopper'larının bekleyen (opsiyonel: geçmiş dahil)
+    /// destek taleplerini listeler. Bearer-Customer auth otomatik.</summary>
+    public async Task<SupportRequestDto[]> GetSupportRequestsAsync(
+        bool includeResolved = false, int take = 50, CancellationToken ct = default)
+    {
+        var path = $"/api/panel/support-requests?includeResolved={(includeResolved ? "true" : "false")}&take={take}";
+        return await GetExpectingJsonAsync<SupportRequestDto[]>(path, ct)
+            ?? Array.Empty<SupportRequestDto>();
+    }
+
+    /// <summary>Bir forgot-password talebi için geçici parola üretir; server
+    /// shopper'ın hash'ini günceller + refresh token'larını iptal eder. Plaintext
+    /// parola sadece bu response'ta döner — yayıncı WhatsApp'tan iletir.</summary>
+    public async Task<IssueTempPasswordResponse> IssueTempPasswordAsync(
+        Guid requestId, CancellationToken ct = default)
+    {
+        using var resp = await SendJsonAsync(HttpMethod.Post,
+            $"/api/panel/support-requests/{requestId}/issue-temp-password",
+            new { }, ct);
+        if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
+        return (await DeserializeAsync<IssueTempPasswordResponse>(resp, ct))!;
+    }
+
     // ─── HTTP helpers ────────────────────────────────────────────────
 
     private async Task<TResp> PostJsonExpectingJsonAsync<TReq, TResp>(

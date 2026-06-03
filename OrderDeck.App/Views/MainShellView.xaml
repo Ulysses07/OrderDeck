@@ -125,6 +125,8 @@
                                   Command="{Binding OpenBlacklistCommand}"/>
                         <MenuItem Header="Müşteriler"
                                   Command="{Binding OpenCustomerSearchCommand}"/>
+                        <MenuItem Header="Destek Talepleri"
+                                  Command="{Binding OpenSupportRequestsCommand}"/>
                         <MenuItem Header="Yeni Dekont…"
                                   Command="{Binding OpenDekontEkleCommand}"/>
                         <MenuItem Header="Hesap"

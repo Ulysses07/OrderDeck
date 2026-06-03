@@ -212,6 +212,10 @@ public sealed class AppHost : IDisposable
         services.AddTransient<Views.CustomerDetailDialog>();
         services.AddTransient<Views.CustomerSearchDialog>();
 
+        // Shopper destek talepleri (forgot-password fallback)
+        services.AddTransient<ViewModels.SupportRequestsViewModel>();
+        services.AddTransient<Views.SupportRequestsDialog>();
+
         // Phase 4g — payment infrastructure
         services.AddSingleton<WhatsAppMessageBuilder>();
         services.AddSingleton<IUrlLauncher, ProcessUrlLauncher>();
