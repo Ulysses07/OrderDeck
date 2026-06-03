@@ -747,6 +747,13 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         RefreshHighlights();
     }
 
+    [RelayCommand] private void OpenSupportRequests()
+    {
+        var dlg = App.Host.Services.GetRequiredService<Views.SupportRequestsDialog>();
+        dlg.Owner = Application.Current?.MainWindow;
+        dlg.Open();
+    }
+
     [RelayCommand(CanExecute = nameof(CanWrite))]
     private void StartGiveaway()
     {
