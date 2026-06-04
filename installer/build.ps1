@@ -45,7 +45,7 @@ try {
       --nologo
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
   } else {
-    Write-Host "[1/3] dotnet publish — SKIPPED (-SkipPublish)" -ForegroundColor Yellow
+    Write-Host "[1/3] dotnet publish - SKIPPED (-SkipPublish)" -ForegroundColor Yellow
   }
 
   $bootstrap = Join-Path $repoRoot "installer\MicrosoftEdgeWebview2Setup.exe"
@@ -70,9 +70,9 @@ try {
   if (Test-Path $output) {
     $size = (Get-Item $output).Length / 1MB
     Write-Host ""
-    Write-Host "✓ Done: $output ($([math]::Round($size,1)) MB)" -ForegroundColor Green
+    Write-Host "Done: $output ($([math]::Round($size,1)) MB)" -ForegroundColor Green
   } else {
-    Write-Host "⚠ Compile reported success but output not found at $output" -ForegroundColor Yellow
+    Write-Host "WARNING: Compile reported success but output not found at $output" -ForegroundColor Yellow
   }
 }
 finally {
