@@ -45,10 +45,10 @@ export const BRAND = 'OrderDeck';
  * deploy rsync'inde silinmez (--exclude='downloads' ya da ayrı path).
  */
 export const LATEST_RELEASE = {
-  version: '0.1.0',
-  filename: 'OrderDeck-0.1.0-setup.exe',
-  sizeMB: 63,
-  releasedAt: '2026-05-08',
+  version: '0.2.0',
+  filename: 'OrderDeck-0.2.0-setup.exe',
+  sizeMB: 65,
+  releasedAt: '2026-06-04',
 };
 
 export const downloadUrl = () => `/downloads/${LATEST_RELEASE.filename}`;
