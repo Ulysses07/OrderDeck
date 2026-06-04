@@ -39,10 +39,10 @@ export const BRAND = 'OrderDeck';
  * güncellenir, sonra deploy çalışır → indirme sayfası ve Hero/CTA
  * butonları otomatik yeni dosyaya işaret eder.
  *
- * Asıl .exe dosyası VPS'te `/opt/orderdeck/downloads/` klasöründe duruyor;
- * Caddy config `https://orderdeckapp.com/downloads/*` path'inden serve
- * ediyor. Web sitesinin `out/` build çıktısının dışında olduğu için
- * deploy rsync'inde silinmez (--exclude='downloads' ya da ayrı path).
+ * Asıl .exe dosyası VPS'te `/opt/orderdeck/web-out/downloads/` klasöründe
+ * duruyor (rsync hedefi web-out/, downloads/ exclude'lu → silinmez). Caddy
+ * `https://orderdeckapp.com/downloads/*` path'inden serve ediyor. Yeni sürümde
+ * dosya buraya elle konup eskisi silinir (web-deploy bu klasöre dokunmaz).
  */
 export const LATEST_RELEASE = {
   version: '0.2.0',
