@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "publishedAt": "2026-05-04T10:00:00+00:00",
+  "publishedAt": "2026-06-08T10:00:00+00:00",
   "platforms": {
     "instagram": {
       "isLivePage": {
@@ -37,14 +37,14 @@
       },
       "comments": {
         "primaryContainers": "[data-e2e=\"chat-message\"]",
-        "primaryRowItems": "[data-e2e=\"comment-username\"], [data-e2e=\"chat-username\"]",
+        "primaryRowItems": "[data-e2e=\"message-owner-name\"]",
         "fallbackPattern": "data-e2e",
         "secondaryContainers": [
           "[class*=\"DivCommentItemContainer\"]",
           "[class*=\"comment-item\"]",
           "[class*=\"ChatMessage\"]"
         ],
-        "messageItem": "[data-e2e=\"comment-text\"], [data-e2e=\"chat-text\"]"
+        "messageItem": "[class~=\"break-words\"]"
       },
       "observerTarget": [
         "[data-e2e=\"chat-list\"]",

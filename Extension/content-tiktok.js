@@ -16,8 +16,11 @@
     const HARD_FALLBACK = {
         livePageDom: ['[data-e2e="chat-list"]', '[class*="ChatList"]'],
         primaryContainers: '[data-e2e="chat-message"]',
-        primaryRowItems: '[data-e2e="comment-username"], [data-e2e="chat-username"]',
-        messageItem: '[data-e2e="comment-text"], [data-e2e="chat-text"]',
+        // TikTok rotated child selectors (~2026-06): username moved to
+        // message-owner-name; the message body is a sibling div with the
+        // "break-words" utility class and no data-e2e. See SelectorRegistry.cs.
+        primaryRowItems: '[data-e2e="message-owner-name"]',
+        messageItem: '[class~="break-words"]',
         secondaryContainers: [
             '[class*="DivCommentItemContainer"]',
             '[class*="comment-item"]',
