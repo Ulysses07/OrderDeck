@@ -79,9 +79,16 @@ public static class SelectorRegistry
                     // TikTok rotated its chat DOM (~2026-06): the row no longer
                     // exposes data-e2e on the username/text children. Username is
                     // now [data-e2e="message-owner-name"]; the message body is a
-                    // sibling div carrying the "break-words" utility class (no
-                    // data-e2e). The row container [data-e2e="chat-message"] and
-                    // the level/badge spans (text-ConstTextInverse) are unchanged.
+                    // sibling div carrying the "break-words align-middle" utility
+                    // classes (no data-e2e). The row container
+                    // [data-e2e="chat-message"] and the level/badge spans
+                    // (text-ConstTextInverse) are unchanged.
+                    //
+                    // NOTE: "break-words" alone also matches an OUTER wrapper
+                    // (flex-1 break-words) holding username + badges + text, and
+                    // querySelector returns that ancestor first (pre-order) →
+                    // username gets prepended to the message. "align-middle" pins
+                    // the inner message-only div.
                     PrimaryContainers: "[data-e2e=\"chat-message\"]",
                     PrimaryRowItems: "[data-e2e=\"message-owner-name\"]",
                     FallbackPattern: "data-e2e",
@@ -91,7 +98,7 @@ public static class SelectorRegistry
                         "[class*=\"comment-item\"]",
                         "[class*=\"ChatMessage\"]",
                     },
-                    MessageItem: "[class~=\"break-words\"]"),
+                    MessageItem: "[class~=\"break-words\"][class~=\"align-middle\"]"),
                 ObserverTarget: new[]
                 {
                     "[data-e2e=\"chat-list\"]",

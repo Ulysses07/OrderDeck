@@ -44,7 +44,7 @@
           "[class*=\"comment-item\"]",
           "[class*=\"ChatMessage\"]"
         ],
-        "messageItem": "[class~=\"break-words\"]"
+        "messageItem": "[class~=\"break-words\"][class~=\"align-middle\"]"
       },
       "observerTarget": [
         "[data-e2e=\"chat-list\"]",
