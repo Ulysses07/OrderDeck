@@ -18,9 +18,12 @@
         primaryContainers: '[data-e2e="chat-message"]',
         // TikTok rotated child selectors (~2026-06): username moved to
         // message-owner-name; the message body is a sibling div with the
-        // "break-words" utility class and no data-e2e. See SelectorRegistry.cs.
+        // "break-words align-middle" utility classes and no data-e2e. The
+        // "align-middle" token is required — "break-words" alone also matches an
+        // outer wrapper holding username+badges+text, which querySelector returns
+        // first (pre-order) and prepends the username. See SelectorRegistry.cs.
         primaryRowItems: '[data-e2e="message-owner-name"]',
-        messageItem: '[class~="break-words"]',
+        messageItem: '[class~="break-words"][class~="align-middle"]',
         secondaryContainers: [
             '[class*="DivCommentItemContainer"]',
             '[class*="comment-item"]',
