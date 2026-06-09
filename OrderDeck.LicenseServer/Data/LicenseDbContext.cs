@@ -41,6 +41,10 @@ public class LicenseDbContext : DbContext
     public DbSet<CustomerBalance> CustomerBalances => Set<CustomerBalance>();
     public DbSet<CustomerBalanceTransaction> CustomerBalanceTransactions => Set<CustomerBalanceTransaction>();
     public DbSet<ShopperPasswordResetCode> ShopperPasswordResetCodes => Set<ShopperPasswordResetCode>();
+    public DbSet<LicenseSmsBalance> LicenseSmsBalances => Set<LicenseSmsBalance>();
+    public DbSet<LicenseSmsTransaction> LicenseSmsTransactions => Set<LicenseSmsTransaction>();
+    public DbSet<SmsCampaign> SmsCampaigns => Set<SmsCampaign>();
+    public DbSet<SmsCampaignRecipient> SmsCampaignRecipients => Set<SmsCampaignRecipient>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -465,6 +469,45 @@ public class LicenseDbContext : DbContext
             b.Property(t => t.Kind).HasMaxLength(32).IsRequired();
             b.Property(t => t.Reason).HasMaxLength(500);
             b.HasIndex(t => new { t.LicenseId, t.WpfCustomerId, t.CreatedAt });
+        });
+
+        mb.Entity<LicenseSmsBalance>(b =>
+        {
+            b.HasKey(s => s.Id);
+            b.HasOne(s => s.License).WithMany().HasForeignKey(s => s.LicenseId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.HasIndex(s => s.LicenseId).IsUnique();
+        });
+
+        mb.Entity<LicenseSmsTransaction>(b =>
+        {
+            b.HasKey(t => t.Id);
+            b.HasOne(t => t.License).WithMany().HasForeignKey(t => t.LicenseId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.Property(t => t.Kind).HasMaxLength(32).IsRequired();
+            b.Property(t => t.Reason).HasMaxLength(500);
+            b.HasIndex(t => new { t.LicenseId, t.CreatedAt });
+        });
+
+        mb.Entity<SmsCampaign>(b =>
+        {
+            b.HasKey(c => c.Id);
+            b.HasOne(c => c.License).WithMany().HasForeignKey(c => c.LicenseId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.Property(c => c.MessageBody).HasMaxLength(2000).IsRequired();
+            b.Property(c => c.Status).HasMaxLength(16).IsRequired();
+            b.HasIndex(c => new { c.LicenseId, c.CreatedAt });
+        });
+
+        mb.Entity<SmsCampaignRecipient>(b =>
+        {
+            b.HasKey(r => r.Id);
+            b.HasOne(r => r.Campaign).WithMany().HasForeignKey(r => r.CampaignId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.Property(r => r.Phone).HasMaxLength(20).IsRequired();
+            b.Property(r => r.Status).HasMaxLength(16).IsRequired();
+            b.Property(r => r.Error).HasMaxLength(500);
+            b.HasIndex(r => r.CampaignId);
         });
 
         // Seed SKUs

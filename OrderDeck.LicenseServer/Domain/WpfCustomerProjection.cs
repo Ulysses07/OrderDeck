@@ -16,5 +16,12 @@ public sealed class WpfCustomerProjection
     public string? FullName { get; set; }
     public string? Phone { get; set; }
     public string? Address { get; set; }
+
+    /// <summary>
+    /// Müşterinin toplu SMS izni (yayıncı beyanı). Yalnızca true olanlara
+    /// kampanya SMS'i gönderilir. WPF tarafı sync ile günceller; default false.
+    /// </summary>
+    public bool SmsConsent { get; set; }
+
     public DateTimeOffset UpdatedAt { get; set; }
 }
