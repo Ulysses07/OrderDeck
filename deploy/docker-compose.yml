@@ -54,6 +54,15 @@ services:
       Smtp__Password: "${SMTP_PASSWORD:-}"
       Smtp__FromAddress: "${SMTP_FROM:-noreply@orderdeckapp.com}"
       Smtp__FromName: "OrderDeck"
+      # SMS (shopper parola sıfırlama OTP). Provider boş/log = dev davranışı
+      # (SMS sadece log'a yazılır); "netgsm" = gerçek gönderim. Netgsm__* boşsa
+      # provider netgsm olsa bile gönderim reddedilir — .env'de doldur.
+      Sms__Provider: "${SMS_PROVIDER:-log}"
+      Netgsm__UserCode: "${NETGSM_USERCODE:-}"
+      Netgsm__Password: "${NETGSM_PASSWORD:-}"
+      Netgsm__Header: "${NETGSM_HEADER:-}"
+      # OTP = ticari olmayan bilgilendirme → İYS filtresi "0".
+      Netgsm__IysFilter: "${NETGSM_IYSFILTER:-0}"
       Admin__InitialUsername: "${ADMIN_USERNAME:-admin}"
       Admin__InitialPasswordHash: "${ADMIN_PASSWORD_HASH}"
       # Recipient for ops alerts (backup restore drill failures, etc.). Empty
