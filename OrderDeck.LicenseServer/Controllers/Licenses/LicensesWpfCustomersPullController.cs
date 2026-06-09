@@ -26,7 +26,8 @@ public sealed class LicensesWpfCustomersPullController : ControllerBase
         string? FullName,
         string? Phone,
         string? Address,
-        DateTimeOffset UpdatedAt);
+        DateTimeOffset UpdatedAt,
+        bool SmsConsent);
 
     /// <summary>
     /// since cursor (UpdatedAt). WPF kendi watermark'ını ilerletir.
@@ -53,7 +54,7 @@ public sealed class LicensesWpfCustomersPullController : ControllerBase
             .Select(p => new WpfCustomerPullItem(
                 p.Id, p.Platform, p.Username,
                 p.FullName, p.Phone, p.Address,
-                p.UpdatedAt))
+                p.UpdatedAt, p.SmsConsent))
             .ToListAsync(ct);
 
         return Ok(rows);

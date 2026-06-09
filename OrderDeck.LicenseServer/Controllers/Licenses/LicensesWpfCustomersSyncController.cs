@@ -29,7 +29,8 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
         string? FullName,
         string? Phone,
         string? Address,
-        DateTimeOffset UpdatedAt);
+        DateTimeOffset UpdatedAt,
+        bool SmsConsent = false);
 
     public sealed record SyncRequest(List<SyncItem> Customers);
 
@@ -73,6 +74,7 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
                 current.FullName = item.FullName;
                 current.Phone = item.Phone;
                 current.Address = item.Address;
+                current.SmsConsent = item.SmsConsent;
                 current.UpdatedAt = item.UpdatedAt;
             }
             else
@@ -86,6 +88,7 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
                     FullName = item.FullName,
                     Phone = item.Phone,
                     Address = item.Address,
+                    SmsConsent = item.SmsConsent,
                     UpdatedAt = item.UpdatedAt,
                 });
             }
