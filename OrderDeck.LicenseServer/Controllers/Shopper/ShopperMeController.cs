@@ -29,6 +29,7 @@ public sealed class ShopperMeController : ControllerBase
         string? Email,
         string? Tc,
         NotificationPrefs NotificationPrefs,
+        bool SmsConsent,
         BroadcasterSummary[] Broadcasters);
 
     public sealed record PatchMeRequest(
@@ -36,7 +37,8 @@ public sealed class ShopperMeController : ControllerBase
         string? Address,
         string? Email,
         string? Tc,
-        NotificationPrefs? NotificationPrefs);
+        NotificationPrefs? NotificationPrefs,
+        bool? SmsConsent);
 
     // ── GET /api/v1/shopper/me ────────────────────────────────────────────────
 
@@ -62,6 +64,7 @@ public sealed class ShopperMeController : ControllerBase
                 shopper.NotificationsEnabledBroadcast,
                 shopper.NotificationsEnabledOrders,
                 shopper.NotificationsEnabledPayments),
+            shopper.SmsConsent,
             broadcasters));
     }
 
@@ -117,6 +120,9 @@ public sealed class ShopperMeController : ControllerBase
             shopper.NotificationsEnabledPayments = req.NotificationPrefs.Payments;
         }
 
+        if (req.SmsConsent is not null)
+            shopper.SmsConsent = req.SmsConsent.Value;
+
         shopper.UpdatedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync(ct);
 
@@ -132,6 +138,7 @@ public sealed class ShopperMeController : ControllerBase
                 shopper.NotificationsEnabledBroadcast,
                 shopper.NotificationsEnabledOrders,
                 shopper.NotificationsEnabledPayments),
+            shopper.SmsConsent,
             broadcasters));
     }
 

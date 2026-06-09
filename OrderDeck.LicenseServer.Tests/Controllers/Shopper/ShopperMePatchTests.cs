@@ -48,6 +48,7 @@ public class ShopperMePatchTests : IClassFixture<ApiFactory>
         string? Email,
         string? Tc,
         NotificationPrefsDto NotificationPrefs,
+        bool SmsConsent,
         BroadcasterSummaryDto[] Broadcasters);
 
     private sealed record PatchMeRequest(
@@ -55,7 +56,8 @@ public class ShopperMePatchTests : IClassFixture<ApiFactory>
         string? Address = null,
         string? Email = null,
         string? Tc = null,
-        NotificationPrefsDto? NotificationPrefs = null);
+        NotificationPrefsDto? NotificationPrefs = null,
+        bool? SmsConsent = null);
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -199,6 +201,61 @@ public class ShopperMePatchTests : IClassFixture<ApiFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var body = await resp.Content.ReadFromJsonAsync<MeResponse>();
         body!.Tc.Should().Be("10000000146");
+    }
+
+    // ── SMS consent: kayıtta default true ────────────────────────────────────
+
+    [Fact]
+    public async Task Newly_registered_shopper_has_sms_consent_true()
+    {
+        var client = _factory.CreateClient();
+        var (token, _) = await RegisterShopperAsync(client);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        var body = await client.GetFromJsonAsync<MeResponse>("/api/v1/shopper/me");
+        body!.SmsConsent.Should().BeTrue("kayıtta SMS izni otomatik/zorunlu true");
+    }
+
+    // ── SMS consent: profilden opt-out (kapat) ve tekrar aç ───────────────────
+
+    [Fact]
+    public async Task PatchMe_can_opt_out_and_back_in_of_sms_consent()
+    {
+        var client = _factory.CreateClient();
+        var (token, shopperId) = await RegisterShopperAsync(client);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        // Opt-out
+        var off = await client.PatchAsJsonAsync("/api/v1/shopper/me",
+            new PatchMeRequest(SmsConsent: false));
+        off.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await off.Content.ReadFromJsonAsync<MeResponse>())!.SmsConsent.Should().BeFalse();
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            (await db.Shoppers.FindAsync(shopperId))!.SmsConsent.Should().BeFalse();
+        }
+
+        // Tekrar aç
+        var on = await client.PatchAsJsonAsync("/api/v1/shopper/me",
+            new PatchMeRequest(SmsConsent: true));
+        (await on.Content.ReadFromJsonAsync<MeResponse>())!.SmsConsent.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task PatchMe_without_smsConsent_leaves_it_unchanged()
+    {
+        var client = _factory.CreateClient();
+        var (token, shopperId) = await RegisterShopperAsync(client);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        // SmsConsent gönderilmeyen patch onu değiştirmemeli (default true kalır)
+        await client.PatchAsJsonAsync("/api/v1/shopper/me", new PatchMeRequest(FullName: "X"));
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.Shoppers.FindAsync(shopperId))!.SmsConsent.Should().BeTrue();
     }
 
     // ── T13.6: No auth → 401 ──────────────────────────────────────────────────
