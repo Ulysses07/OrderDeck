@@ -1,0 +1,169 @@
+using Hangfire;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Sms;
+
+namespace OrderDeck.LicenseServer.Controllers.Licenses;
+
+/// <summary>
+/// Yayıncı toplu SMS kampanyaları. Alıcılar server-side çözülür (lisansın
+/// SMS izinli + telefonu olan müşterileri). Kredi = alıcı × mesaj segment.
+/// Oluşturmada kredi rezerve edilir, gönderim Hangfire job'ında arka planda
+/// yapılır; başarısız alıcılar iade edilir.
+/// </summary>
+[ApiController]
+[Route("api/v1/licenses/{licenseId:guid}/sms-campaigns")]
+[Authorize(AuthenticationSchemes = "Bearer-Customer")]
+public sealed class LicensesSmsCampaignsController : ControllerBase
+{
+    private const int MaxMessageLength = 2000;
+
+    private readonly LicenseDbContext _db;
+    private readonly LicenseSmsBalanceService _balance;
+    private readonly IBackgroundJobClient _jobs;
+
+    public LicensesSmsCampaignsController(
+        LicenseDbContext db, LicenseSmsBalanceService balance, IBackgroundJobClient jobs)
+    {
+        _db = db;
+        _balance = balance;
+        _jobs = jobs;
+    }
+
+    private async Task<bool> OwnsLicenseAsync(Guid licenseId, CancellationToken ct)
+    {
+        var callerId = User.GetTenantCustomerId();
+        return await _db.Licenses.AnyAsync(l => l.Id == licenseId && l.CustomerId == callerId, ct);
+    }
+
+    // İzinli + telefonu olan alıcılar.
+    private IQueryable<WpfCustomerProjection> ConsentedRecipients(Guid licenseId) =>
+        _db.WpfCustomerProjections.Where(p =>
+            p.LicenseId == licenseId && p.SmsConsent && p.Phone != null && p.Phone != "");
+
+    public sealed record PreviewRequest(string MessageBody);
+    public sealed record PreviewResponse(
+        int RecipientCount, int SegmentsPerMessage, int TotalCredits,
+        int CreditsRemaining, bool Sufficient);
+
+    [HttpPost("preview")]
+    public async Task<IActionResult> Preview(
+        Guid licenseId, [FromBody] PreviewRequest req, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(req.MessageBody) || req.MessageBody.Length > MaxMessageLength)
+            return Problem(title: "invalid-message", statusCode: 400);
+        if (!await OwnsLicenseAsync(licenseId, ct)) return NotFound();
+
+        var recipientCount = await ConsentedRecipients(licenseId).CountAsync(ct);
+        var segments = SmsSegmentCalculator.Segments(req.MessageBody);
+        var totalCredits = recipientCount * segments;
+        var balance = await _balance.GetAsync(licenseId, ct);
+
+        return Ok(new PreviewResponse(
+            recipientCount, segments, totalCredits,
+            balance.CreditsRemaining, balance.CreditsRemaining >= totalCredits));
+    }
+
+    public sealed record CreateRequest(string MessageBody);
+    public sealed record CreateResponse(Guid CampaignId, int RecipientCount, int TotalCredits);
+
+    [HttpPost]
+    public async Task<IActionResult> Create(
+        Guid licenseId, [FromBody] CreateRequest req, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(req.MessageBody) || req.MessageBody.Length > MaxMessageLength)
+            return Problem(title: "invalid-message", statusCode: 400);
+        if (!await OwnsLicenseAsync(licenseId, ct)) return NotFound();
+
+        var recipients = await ConsentedRecipients(licenseId)
+            .Select(p => new { p.Id, p.Phone })
+            .ToListAsync(ct);
+        if (recipients.Count == 0)
+            return Problem(title: "no-recipients", statusCode: 409,
+                detail: "Bu lisansta SMS izinli ve telefonu olan müşteri yok.");
+
+        var segments = SmsSegmentCalculator.Segments(req.MessageBody);
+        var totalCredits = recipients.Count * segments;
+
+        var balance = await _balance.GetAsync(licenseId, ct);
+        if (balance.CreditsRemaining < totalCredits)
+            return Problem(title: "insufficient-credits", statusCode: 409,
+                detail: $"Gerekli {totalCredits} kredi, mevcut {balance.CreditsRemaining}.");
+
+        var customerId = User.GetTenantCustomerId();
+        var now = DateTimeOffset.UtcNow;
+        var campaignId = Guid.NewGuid();
+
+        var campaign = new SmsCampaign
+        {
+            Id = campaignId,
+            LicenseId = licenseId,
+            MessageBody = req.MessageBody,
+            SegmentsPerMessage = segments,
+            RecipientCount = recipients.Count,
+            ReservedCredits = totalCredits,
+            Status = "pending",
+            CreatedByCustomerId = customerId,
+            CreatedAt = now,
+        };
+        _db.SmsCampaigns.Add(campaign);
+
+        foreach (var r in recipients)
+        {
+            _db.SmsCampaignRecipients.Add(new SmsCampaignRecipient
+            {
+                Id = Guid.NewGuid(),
+                CampaignId = campaignId,
+                WpfCustomerId = r.Id,
+                Phone = r.Phone!,
+                Status = "pending",
+            });
+        }
+
+        // Krediyi rezerve et (aynı transaction'da atomik).
+        await _balance.ApplyAsync(
+            licenseId, -totalCredits, "send-reserve",
+            reason: $"campaign:{campaignId}", createdByCustomerId: customerId, ct);
+
+        await _db.SaveChangesAsync(ct);
+
+        _jobs.Enqueue<SmsCampaignSendJob>(j => j.RunAsync(campaignId, CancellationToken.None));
+
+        return Ok(new CreateResponse(campaignId, recipients.Count, totalCredits));
+    }
+
+    public sealed record StatusResponse(
+        Guid CampaignId, string Status, int RecipientCount,
+        int Sent, int Failed, int Skipped, int CreditsRefunded,
+        DateTimeOffset CreatedAt, DateTimeOffset? CompletedAt);
+
+    [HttpGet("{campaignId:guid}")]
+    public async Task<IActionResult> Status(
+        Guid licenseId, Guid campaignId, CancellationToken ct)
+    {
+        if (!await OwnsLicenseAsync(licenseId, ct)) return NotFound();
+
+        var campaign = await _db.SmsCampaigns
+            .FirstOrDefaultAsync(c => c.Id == campaignId && c.LicenseId == licenseId, ct);
+        if (campaign is null) return NotFound();
+
+        var counts = await _db.SmsCampaignRecipients
+            .Where(r => r.CampaignId == campaignId)
+            .GroupBy(r => r.Status)
+            .Select(g => new { Status = g.Key, Count = g.Count() })
+            .ToListAsync(ct);
+
+        int Count(string s) => counts.FirstOrDefault(c => c.Status == s)?.Count ?? 0;
+        var failed = Count("failed");
+
+        return Ok(new StatusResponse(
+            campaign.Id, campaign.Status, campaign.RecipientCount,
+            Sent: Count("sent"), Failed: failed, Skipped: Count("skipped"),
+            CreditsRefunded: failed * campaign.SegmentsPerMessage,
+            campaign.CreatedAt, campaign.CompletedAt));
+    }
+}

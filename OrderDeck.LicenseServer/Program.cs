@@ -109,6 +109,7 @@ public class Program
             builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Sms.ISmsSender,
                 OrderDeck.LicenseServer.Services.Sms.LogSmsSender>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sms.LicenseSmsBalanceService>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sms.SmsCampaignSendJob>();
         builder.Services.AddScoped<PasswordResetCodeService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Auth.PasswordResetCodeCleanupJob>();
 
@@ -361,7 +362,11 @@ public class Program
                     UseRecommendedIsolationLevel = true,
                     DisableGlobalLocks = true
                 }));
-        builder.Services.AddHangfireServer();
+        // Background server üretimde job'ları işler. Testte (ApiFactory MemoryStorage)
+        // server'ı kaldırıyoruz ki enqueue edilen job'lar otomatik koşmasın —
+        // testler job'ı doğrudan RunAsync ile deterministik çalıştırır.
+        if (!builder.Environment.IsEnvironment("Testing"))
+            builder.Services.AddHangfireServer();
 
         // S3 off-host backup replication. Disabled-by-default; switch to the
         // real implementation only when Backup:S3:Enabled=true. The no-op sink
