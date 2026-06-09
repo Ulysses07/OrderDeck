@@ -21,11 +21,12 @@ public sealed class Shopper
     public bool NotificationsEnabledPayments { get; set; } = true;
 
     /// <summary>
-    /// Ticari/kampanya SMS izni. Kayıtta otomatik true (zorunlu, sözleşmeye
-    /// gömülü); shopper uygulama profilinden iptal edebilir. Yayıncı toplu SMS
-    /// alıcı listesi yalnızca SmsConsent=true shopper'lardan türetilir.
+    /// Ticari/kampanya SMS izni (ticari elektronik ileti onayı). Opt-in: kayıt
+    /// ekranındaki açık onay kutusundan gelir, varsayılan izinsiz (false).
+    /// Shopper uygulama profilinden açıp kapatabilir. Yayıncı toplu SMS alıcı
+    /// listesi yalnızca SmsConsent=true shopper'lardan türetilir.
     /// </summary>
-    public bool SmsConsent { get; set; } = true;
+    public bool SmsConsent { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }

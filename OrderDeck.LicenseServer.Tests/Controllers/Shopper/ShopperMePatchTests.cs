@@ -203,17 +203,17 @@ public class ShopperMePatchTests : IClassFixture<ApiFactory>
         body!.Tc.Should().Be("10000000146");
     }
 
-    // ── SMS consent: kayıtta default true ────────────────────────────────────
+    // ── SMS consent: opt-in (onay kutusu işaretlenmeden kayıt → izin yok) ─────
 
     [Fact]
-    public async Task Newly_registered_shopper_has_sms_consent_true()
+    public async Task Newly_registered_shopper_without_consent_has_sms_consent_false()
     {
         var client = _factory.CreateClient();
         var (token, _) = await RegisterShopperAsync(client);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
         var body = await client.GetFromJsonAsync<MeResponse>("/api/v1/shopper/me");
-        body!.SmsConsent.Should().BeTrue("kayıtta SMS izni otomatik/zorunlu true");
+        body!.SmsConsent.Should().BeFalse("opt-in: onay kutusu işaretlenmeden kayıt → ticari ileti izni yok");
     }
 
     // ── SMS consent: profilden opt-out (kapat) ve tekrar aç ───────────────────
@@ -250,7 +250,8 @@ public class ShopperMePatchTests : IClassFixture<ApiFactory>
         var (token, shopperId) = await RegisterShopperAsync(client);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
-        // SmsConsent gönderilmeyen patch onu değiştirmemeli (default true kalır)
+        // Önce izni aç (opt-in); sonra smsConsent içermeyen patch onu değiştirmemeli.
+        await client.PatchAsJsonAsync("/api/v1/shopper/me", new PatchMeRequest(SmsConsent: true));
         await client.PatchAsJsonAsync("/api/v1/shopper/me", new PatchMeRequest(FullName: "X"));
 
         using var scope = _factory.Services.CreateScope();

@@ -349,8 +349,9 @@ public class LicenseDbContext : DbContext
             b.Property(s => s.Address).HasMaxLength(500).IsRequired();
             b.Property(s => s.Email).HasMaxLength(256);
             b.Property(s => s.Tc).HasMaxLength(11);
-            // Kayıtta otomatik true; mevcut shopper'lar da migration'da true alır.
-            b.Property(s => s.SmsConsent).HasDefaultValue(true);
+            // Opt-in: ticari ileti izni varsayılan kapalı. İzin yalnızca kayıt
+            // ekranındaki açık onay kutusundan (register SmsConsent=true) gelir.
+            b.Property(s => s.SmsConsent).HasDefaultValue(false);
         });
 
         mb.Entity<ShopperBroadcasterLink>(b =>
