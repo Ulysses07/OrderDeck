@@ -78,7 +78,10 @@ public sealed class ShopperAuthController : ControllerBase
         string Platform,
         string Username,
         string? Email,
-        string? Tc);
+        string? Tc,
+        // Ticari/kampanya SMS izni. Opt-in: gönderilmezse izin YOK (false).
+        // İzin yalnızca kayıt ekranındaki açık onay kutusundan true gelir.
+        bool SmsConsent = false);
 
     [AllowAnonymous]
     [HttpPost("register")]
@@ -135,6 +138,7 @@ public sealed class ShopperAuthController : ControllerBase
                 Address = req.Address,
                 Email = req.Email,
                 Tc = req.Tc,
+                SmsConsent = req.SmsConsent,
                 CreatedAt = now,
                 UpdatedAt = now,
             };
