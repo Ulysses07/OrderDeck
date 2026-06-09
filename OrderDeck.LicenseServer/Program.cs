@@ -108,6 +108,7 @@ public class Program
         else
             builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Sms.ISmsSender,
                 OrderDeck.LicenseServer.Services.Sms.LogSmsSender>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sms.LicenseSmsBalanceService>();
         builder.Services.AddScoped<PasswordResetCodeService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Auth.PasswordResetCodeCleanupJob>();
 
