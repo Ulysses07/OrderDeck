@@ -40,10 +40,17 @@ public sealed class LicensesSmsCampaignsController : ControllerBase
         return await _db.Licenses.AnyAsync(l => l.Id == licenseId && l.CustomerId == callerId, ct);
     }
 
-    // İzinli + telefonu olan alıcılar.
-    private IQueryable<WpfCustomerProjection> ConsentedRecipients(Guid licenseId) =>
-        _db.WpfCustomerProjections.Where(p =>
-            p.LicenseId == licenseId && p.SmsConsent && p.Phone != null && p.Phone != "");
+    private sealed record RecipientRow(Guid? WpfCustomerId, string Phone);
+
+    // Alıcılar = bu yayıncıya aktif bağlı + SMS izinli + telefonu olan shopper'lar.
+    // Consent kaynağı Shopper'dır (kayıtta otomatik true, app profilinden iptal);
+    // WPF müşterisi (WpfCustomerProjection) consent taşımaz.
+    private IQueryable<RecipientRow> ConsentedRecipients(Guid licenseId) =>
+        from link in _db.ShopperBroadcasterLinks
+        where link.LicenseId == licenseId && link.LeftAt == null
+        join shopper in _db.Shoppers on link.ShopperId equals shopper.Id
+        where shopper.SmsConsent && shopper.DeletedAt == null && shopper.Phone != ""
+        select new RecipientRow(link.WpfCustomerId, shopper.Phone);
 
     public sealed record PreviewRequest(string MessageBody);
     public sealed record PreviewResponse(
@@ -58,7 +65,8 @@ public sealed class LicensesSmsCampaignsController : ControllerBase
             return Problem(title: "invalid-message", statusCode: 400);
         if (!await OwnsLicenseAsync(licenseId, ct)) return NotFound();
 
-        var recipientCount = await ConsentedRecipients(licenseId).CountAsync(ct);
+        var recipientCount = await ConsentedRecipients(licenseId)
+            .Select(r => r.Phone).Distinct().CountAsync(ct);
         var segments = SmsSegmentCalculator.Segments(req.MessageBody);
         var totalCredits = recipientCount * segments;
         var balance = await _balance.GetAsync(licenseId, ct);
@@ -79,12 +87,15 @@ public sealed class LicensesSmsCampaignsController : ControllerBase
             return Problem(title: "invalid-message", statusCode: 400);
         if (!await OwnsLicenseAsync(licenseId, ct)) return NotFound();
 
-        var recipients = await ConsentedRecipients(licenseId)
-            .Select(p => new { p.Id, p.Phone })
-            .ToListAsync(ct);
+        var rawRecipients = await ConsentedRecipients(licenseId).ToListAsync(ct);
+        // Aynı telefonu tek alıcıya indir (defansif — telefon shopper'da unique).
+        var recipients = rawRecipients
+            .GroupBy(r => r.Phone)
+            .Select(g => g.First())
+            .ToList();
         if (recipients.Count == 0)
             return Problem(title: "no-recipients", statusCode: 409,
-                detail: "Bu lisansta SMS izinli ve telefonu olan müşteri yok.");
+                detail: "Bu lisansta SMS izinli, bağlı ve telefonu olan müşteri yok.");
 
         var segments = SmsSegmentCalculator.Segments(req.MessageBody);
         var totalCredits = recipients.Count * segments;
@@ -118,8 +129,8 @@ public sealed class LicensesSmsCampaignsController : ControllerBase
             {
                 Id = Guid.NewGuid(),
                 CampaignId = campaignId,
-                WpfCustomerId = r.Id,
-                Phone = r.Phone!,
+                WpfCustomerId = r.WpfCustomerId,
+                Phone = r.Phone,
                 Status = "pending",
             });
         }

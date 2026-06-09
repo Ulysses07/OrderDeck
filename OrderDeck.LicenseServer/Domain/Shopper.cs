@@ -20,6 +20,13 @@ public sealed class Shopper
     public bool NotificationsEnabledOrders { get; set; } = true;
     public bool NotificationsEnabledPayments { get; set; } = true;
 
+    /// <summary>
+    /// Ticari/kampanya SMS izni. Kayıtta otomatik true (zorunlu, sözleşmeye
+    /// gömülü); shopper uygulama profilinden iptal edebilir. Yayıncı toplu SMS
+    /// alıcı listesi yalnızca SmsConsent=true shopper'lardan türetilir.
+    /// </summary>
+    public bool SmsConsent { get; set; } = true;
+
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
     public DateTimeOffset? DeletedAt { get; set; }

@@ -16,8 +16,10 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
     private readonly ApiFactory _factory;
     public SmsCampaignTests(ApiFactory factory) => _factory = factory;
 
+    // consenting = SMS izinli + bağlı + telefonlu shopper (alıcı);
+    // nonConsenting = bağlı ama SmsConsent=false shopper (elenmeli).
     private async Task<(HttpClient client, Guid licenseId)> SetupAsync(
-        int consentedWithPhone = 0, int consentedNoPhone = 0, int noConsent = 0, int credits = 0)
+        int consenting = 0, int nonConsenting = 0, int credits = 0)
     {
         var (client, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
         Guid licenseId;
@@ -36,21 +38,33 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
         db.Licenses.Add(license);
         licenseId = license.Id;
 
-        void AddCustomer(bool consent, string? phone)
-            => db.WpfCustomerProjections.Add(new WpfCustomerProjection
+        void AddShopperLink(bool consent)
+        {
+            var shopper = new OrderDeck.LicenseServer.Domain.Shopper
             {
                 Id = Guid.NewGuid(),
+                FullName = "S " + Guid.NewGuid().ToString("N")[..6],
+                Phone = "+90500" + Guid.NewGuid().ToString("N")[..7],
+                PasswordHash = "hash",
+                Address = "addr",
+                SmsConsent = consent,
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            };
+            db.Shoppers.Add(shopper);
+            db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+            {
+                Id = Guid.NewGuid(),
+                ShopperId = shopper.Id,
                 LicenseId = licenseId,
                 Platform = "youtube",
                 Username = "u-" + Guid.NewGuid().ToString("N")[..8],
-                Phone = phone,
-                SmsConsent = consent,
-                UpdatedAt = DateTimeOffset.UtcNow,
+                JoinedAt = DateTimeOffset.UtcNow,
             });
+        }
 
-        for (var i = 0; i < consentedWithPhone; i++) AddCustomer(true, $"+90500{i:D7}");
-        for (var i = 0; i < consentedNoPhone; i++) AddCustomer(true, null);
-        for (var i = 0; i < noConsent; i++) AddCustomer(false, $"+90555{i:D7}");
+        for (var i = 0; i < consenting; i++) AddShopperLink(true);
+        for (var i = 0; i < nonConsenting; i++) AddShopperLink(false);
 
         if (credits > 0)
         {
@@ -79,16 +93,16 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
         DateTimeOffset CreatedAt, DateTimeOffset? CompletedAt);
 
     [Fact]
-    public async Task Preview_counts_only_consented_with_phone()
+    public async Task Preview_counts_only_consenting_linked_shoppers()
     {
         var (client, licenseId) = await SetupAsync(
-            consentedWithPhone: 3, consentedNoPhone: 2, noConsent: 4, credits: 100);
+            consenting: 3, nonConsenting: 6, credits: 100);
 
         var resp = await client.PostAsJsonAsync(
             $"/api/v1/licenses/{licenseId}/sms-campaigns/preview", new { messageBody = "Merhaba" });
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var body = await resp.Content.ReadFromJsonAsync<PreviewResponse>();
-        body!.RecipientCount.Should().Be(3);          // sadece izinli + telefonlu
+        body!.RecipientCount.Should().Be(3);          // sadece izinli + bağlı shopper
         body.SegmentsPerMessage.Should().Be(1);
         body.TotalCredits.Should().Be(3);
         body.CreditsRemaining.Should().Be(100);
@@ -98,7 +112,7 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Preview_turkish_message_uses_ucs2_segments()
     {
-        var (client, licenseId) = await SetupAsync(consentedWithPhone: 2, credits: 100);
+        var (client, licenseId) = await SetupAsync(consenting: 2, credits: 100);
         // 71 Türkçe karakter → 2 segment (UCS-2)
         var msg = new string('ş', 71);
         var resp = await client.PostAsJsonAsync(
@@ -111,7 +125,7 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Create_reserves_credits_and_snapshots_recipients()
     {
-        var (client, licenseId) = await SetupAsync(consentedWithPhone: 5, noConsent: 2, credits: 100);
+        var (client, licenseId) = await SetupAsync(consenting: 5, nonConsenting: 2, credits: 100);
 
         var resp = await client.PostAsJsonAsync(
             $"/api/v1/licenses/{licenseId}/sms-campaigns", new { messageBody = "Kampanya" });
@@ -136,7 +150,7 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Create_insufficient_credits_returns_409()
     {
-        var (client, licenseId) = await SetupAsync(consentedWithPhone: 10, credits: 3);
+        var (client, licenseId) = await SetupAsync(consenting: 10, credits: 3);
         var resp = await client.PostAsJsonAsync(
             $"/api/v1/licenses/{licenseId}/sms-campaigns", new { messageBody = "Selam" });
         resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
@@ -151,7 +165,7 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Create_no_recipients_returns_409()
     {
-        var (client, licenseId) = await SetupAsync(consentedNoPhone: 3, noConsent: 5, credits: 100);
+        var (client, licenseId) = await SetupAsync(nonConsenting: 8, credits: 100);
         var resp = await client.PostAsJsonAsync(
             $"/api/v1/licenses/{licenseId}/sms-campaigns", new { messageBody = "Selam" });
         resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
@@ -160,7 +174,7 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Create_empty_message_returns_400()
     {
-        var (client, licenseId) = await SetupAsync(consentedWithPhone: 2, credits: 100);
+        var (client, licenseId) = await SetupAsync(consenting: 2, credits: 100);
         var resp = await client.PostAsJsonAsync(
             $"/api/v1/licenses/{licenseId}/sms-campaigns", new { messageBody = "   " });
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
@@ -171,7 +185,7 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
     {
         _factory.Sms.Clear();
         _factory.Sms.ThrowOnSend = false;
-        var (client, licenseId) = await SetupAsync(consentedWithPhone: 4, credits: 100);
+        var (client, licenseId) = await SetupAsync(consenting: 4, credits: 100);
 
         var create = await (await client.PostAsJsonAsync(
             $"/api/v1/licenses/{licenseId}/sms-campaigns", new { messageBody = "Indirim!" }))
@@ -205,7 +219,7 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
     public async Task Job_refunds_credits_when_all_sends_fail()
     {
         _factory.Sms.Clear();
-        var (client, licenseId) = await SetupAsync(consentedWithPhone: 4, credits: 100);
+        var (client, licenseId) = await SetupAsync(consenting: 4, credits: 100);
 
         var create = await (await client.PostAsJsonAsync(
             $"/api/v1/licenses/{licenseId}/sms-campaigns", new { messageBody = "Selam" }))
@@ -239,7 +253,7 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
     {
         _factory.Sms.Clear();
         _factory.Sms.ThrowOnSend = false;
-        var (client, licenseId) = await SetupAsync(consentedWithPhone: 2, credits: 100);
+        var (client, licenseId) = await SetupAsync(consenting: 2, credits: 100);
 
         var create = await (await client.PostAsJsonAsync(
             $"/api/v1/licenses/{licenseId}/sms-campaigns", new { messageBody = "Tek sefer" }))
@@ -258,8 +272,8 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Preview_other_license_returns_404()
     {
-        var (clientA, _) = await SetupAsync(consentedWithPhone: 1, credits: 100);
-        var (_, licenseB) = await SetupAsync(consentedWithPhone: 1, credits: 100);
+        var (clientA, _) = await SetupAsync(consenting: 1, credits: 100);
+        var (_, licenseB) = await SetupAsync(consenting: 1, credits: 100);
 
         var resp = await clientA.PostAsJsonAsync(
             $"/api/v1/licenses/{licenseB}/sms-campaigns/preview", new { messageBody = "x" });

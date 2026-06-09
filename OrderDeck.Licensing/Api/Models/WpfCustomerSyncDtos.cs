@@ -8,8 +8,7 @@ public sealed record WpfCustomerSyncItem(
     string? FullName,
     string? Phone,
     string? Address,
-    DateTimeOffset UpdatedAt,
-    bool SmsConsent = false);
+    DateTimeOffset UpdatedAt);
 
 public sealed record WpfCustomerSyncRequest(IReadOnlyList<WpfCustomerSyncItem> Customers);
 
@@ -24,5 +23,4 @@ public sealed record WpfCustomerPullItem(
     string? FullName,
     string? Phone,
     string? Address,
-    DateTimeOffset UpdatedAt,
-    bool SmsConsent = false);
+    DateTimeOffset UpdatedAt);
