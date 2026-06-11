@@ -30,6 +30,21 @@
     </AssemblyAttribute>
   </ItemGroup>
 
+  <!-- Overlay wwwroot'u publish çıktısına dahil et. OrderDeck.Overlay (Web SDK)
+       kendi Content'ine CopyToPublishDirectory verir; ama bu, ProjectReference
+       üzerinden tüketen bu WPF App'in `dotnet publish` çıktısına transitif AKMAZ
+       (yalnızca build/bin'e kopyalanır, publish'te düşer). OverlayHost runtime'da
+       AppContext.BaseDirectory\wwwroot okuduğu için, açık bu kural olmadan
+       installer'da overlay sayfaları (chat/giveaway/preview) eksik kalır.
+       Dosyalar wwwroot\ altına link'lenip hem output hem publish'e taşınır. -->
+  <ItemGroup>
+    <Content Include="..\OrderDeck.Overlay\wwwroot\**\*">
+      <Link>wwwroot\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="ClosedXML" />
     <PackageReference Include="CommunityToolkit.Mvvm" />
