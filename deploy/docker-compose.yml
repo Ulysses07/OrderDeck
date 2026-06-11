@@ -63,6 +63,12 @@ services:
       Netgsm__Header: "${NETGSM_HEADER:-}"
       # OTP = ticari olmayan bilgilendirme → İYS filtresi "0".
       Netgsm__IysFilter: "${NETGSM_IYSFILTER:-0}"
+      # In-app update prompt — UpdateChecker bu iki değeri okuyup mevcut
+      # sürümle karşılaştırır; LatestVersion boşsa kontrol atlanır (yanlış
+      # pozitif yok). Bump akışı: yeni release tag → /opt/orderdeck/.env'e
+      # AppRelease__LatestVersion=X.Y.Z + docker compose up -d --force-recreate.
+      AppRelease__LatestVersion: "${AppRelease__LatestVersion:-}"
+      AppRelease__DownloadUrl: "${AppRelease__DownloadUrl:-https://orderdeckapp.com/indir}"
       Admin__InitialUsername: "${ADMIN_USERNAME:-admin}"
       Admin__InitialPasswordHash: "${ADMIN_PASSWORD_HASH}"
       # Recipient for ops alerts (backup restore drill failures, etc.). Empty
