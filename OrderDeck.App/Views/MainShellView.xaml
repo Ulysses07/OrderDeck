@@ -337,21 +337,37 @@
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
 
-                <!-- LEFT: Live chat -->
-                <Grid Grid.Column="0">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
-                    <TextBlock Grid.Row="0" Text="Canlı Chat" FontSize="16" FontWeight="Bold"
-                               Margin="0,0,0,8"/>
-                    <ListBox  Grid.Row="1"
-                              x:Name="ChatList"
-                              ItemsSource="{Binding ChatMessages}"
-                              MouseDoubleClick="ChatList_OnDoubleClick"
-                              PreviewKeyDown="ChatList_OnPreviewKeyDown"
-                              Background="#FF1A1A1A" Foreground="White"
-                              BorderBrush="#FF333333" BorderThickness="1">
+                <!-- LEFT: Live chat (D2b: panel kartı) -->
+                <Border Grid.Column="0"
+                        Background="{StaticResource OD.Bg.Surface}"
+                        BorderBrush="{StaticResource OD.Border.Subtle}"
+                        BorderThickness="1" CornerRadius="12">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <!-- Panel başlık şeridi -->
+                        <Border Grid.Row="0" Padding="14,11"
+                                BorderBrush="{StaticResource OD.Border.Subtle}"
+                                BorderThickness="0,0,0,1">
+                            <DockPanel LastChildFill="False">
+                                <TextBlock DockPanel.Dock="Left" Text="Canlı Chat"
+                                           FontSize="13.5" FontWeight="Bold"
+                                           VerticalAlignment="Center"/>
+                                <TextBlock DockPanel.Dock="Right" Text="çift tık → kuyruğa ekle"
+                                           FontSize="11"
+                                           Foreground="{StaticResource OD.Fg.Secondary}"
+                                           VerticalAlignment="Center"/>
+                            </DockPanel>
+                        </Border>
+                        <ListBox  Grid.Row="1"
+                                  x:Name="ChatList"
+                                  ItemsSource="{Binding ChatMessages}"
+                                  MouseDoubleClick="ChatList_OnDoubleClick"
+                                  PreviewKeyDown="ChatList_OnPreviewKeyDown"
+                                  Background="Transparent" Foreground="White"
+                                  BorderThickness="0" Padding="4">
                         <ListBox.ItemContainerStyle>
                             <Style TargetType="ListBoxItem">
                                 <Setter Property="Background"
@@ -361,19 +377,54 @@
                         </ListBox.ItemContainerStyle>
                         <ListBox.ItemTemplate>
                             <DataTemplate>
-                                <Grid Margin="0,4">
+                                <Grid Margin="0,3">
                                     <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="80"/>
-                                        <ColumnDefinition Width="160"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="150"/>
                                         <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="0" Text="{Binding Platform}"
-                                               FontWeight="Bold" Foreground="#FFFFD166"/>
+                                    <!-- Platform chip — DataTrigger ile renk+kısaltma
+                                         (instagram/tiktok/youtube/facebook/twitch lowercase id'ler;
+                                         bilinmeyen → nötr elevated chip). Converter/kod yok. -->
+                                    <Border Grid.Column="0" CornerRadius="6"
+                                            Width="30" Height="18" Margin="0,0,10,0"
+                                            HorizontalAlignment="Left" VerticalAlignment="Center">
+                                        <Border.Style>
+                                            <Style TargetType="Border">
+                                                <Setter Property="Background" Value="{StaticResource OD.Bg.Elevated}"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding Platform}" Value="instagram"><Setter Property="Background" Value="#29E1306C"/></DataTrigger>
+                                                    <DataTrigger Binding="{Binding Platform}" Value="tiktok"><Setter Property="Background" Value="#299EE8EE"/></DataTrigger>
+                                                    <DataTrigger Binding="{Binding Platform}" Value="youtube"><Setter Property="Background" Value="#29FF6B6B"/></DataTrigger>
+                                                    <DataTrigger Binding="{Binding Platform}" Value="facebook"><Setter Property="Background" Value="#295B8DEF"/></DataTrigger>
+                                                    <DataTrigger Binding="{Binding Platform}" Value="twitch"><Setter Property="Background" Value="#299146FF"/></DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Border.Style>
+                                        <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                   FontSize="10" FontWeight="Bold" FontFamily="Consolas">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Text" Value="{Binding Platform}"/>
+                                                    <Setter Property="Foreground" Value="{StaticResource OD.Fg.Secondary}"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding Platform}" Value="instagram"><Setter Property="Text" Value="IG"/><Setter Property="Foreground" Value="#FFE1306C"/></DataTrigger>
+                                                        <DataTrigger Binding="{Binding Platform}" Value="tiktok"><Setter Property="Text" Value="TT"/><Setter Property="Foreground" Value="#FF9EE8EE"/></DataTrigger>
+                                                        <DataTrigger Binding="{Binding Platform}" Value="youtube"><Setter Property="Text" Value="YT"/><Setter Property="Foreground" Value="#FFFF6B6B"/></DataTrigger>
+                                                        <DataTrigger Binding="{Binding Platform}" Value="facebook"><Setter Property="Text" Value="FB"/><Setter Property="Foreground" Value="#FF5B8DEF"/></DataTrigger>
+                                                        <DataTrigger Binding="{Binding Platform}" Value="twitch"><Setter Property="Text" Value="TW"/><Setter Property="Foreground" Value="#FF9146FF"/></DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </Border>
                                     <TextBlock Grid.Column="1" Text="{Binding Display}"
-                                               FontWeight="Bold" TextTrimming="CharacterEllipsis"
+                                               FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
+                                               VerticalAlignment="Center"
                                                ToolTip="{Binding Username}"/>
                                     <TextBlock Grid.Column="2" Text="{Binding Text}"
-                                               TextWrapping="Wrap"/>
+                                               TextWrapping="Wrap" VerticalAlignment="Center"
+                                               Foreground="{StaticResource OD.Fg.Primary}"/>
                                 </Grid>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
@@ -411,26 +462,46 @@
                                                                      RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
                             </ContextMenu>
                         </ListBox.ContextMenu>
-                    </ListBox>
-                </Grid>
+                        </ListBox>
+                    </Grid>
+                </Border>
 
-                <!-- RIGHT: Print queue -->
-                <Grid Grid.Column="2">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                        <RowDefinition Height="Auto"/>
-                    </Grid.RowDefinitions>
-                    <TextBlock Grid.Row="0" Text="Yazdırılacak Etiketler" FontSize="16"
-                               FontWeight="Bold" Margin="0,0,0,8"/>
-                    <ListBox Grid.Row="1"
-                             x:Name="QueueList"
-                             ItemsSource="{Binding PrintQueue}"
-                             SelectedItem="{Binding SelectedQueueItem, Mode=TwoWay}"
-                             SelectionMode="Extended"
-                             SelectionChanged="QueueList_OnSelectionChanged"
-                             Background="#FF1A1A1A" Foreground="White"
-                             BorderBrush="#FF333333" BorderThickness="1">
+                <!-- RIGHT: Print queue (D2b: panel kartı) -->
+                <Border Grid.Column="2"
+                        Background="{StaticResource OD.Bg.Surface}"
+                        BorderBrush="{StaticResource OD.Border.Subtle}"
+                        BorderThickness="1" CornerRadius="12">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <!-- Panel başlık şeridi + adet chip'i -->
+                        <Border Grid.Row="0" Padding="14,11"
+                                BorderBrush="{StaticResource OD.Border.Subtle}"
+                                BorderThickness="0,0,0,1">
+                            <DockPanel LastChildFill="False">
+                                <TextBlock DockPanel.Dock="Left" Text="Yazdırılacak Etiketler"
+                                           FontSize="13.5" FontWeight="Bold"
+                                           VerticalAlignment="Center"/>
+                                <Border DockPanel.Dock="Left" CornerRadius="6" Margin="9,0,0,0"
+                                        Padding="7,1" VerticalAlignment="Center"
+                                        Background="#295B8DEF">
+                                    <TextBlock Text="{Binding PrintQueue.Count}"
+                                               FontSize="10.5" FontWeight="Bold"
+                                               Foreground="{StaticResource OD.Accent}"/>
+                                </Border>
+                            </DockPanel>
+                        </Border>
+                        <ListBox Grid.Row="1"
+                                 x:Name="QueueList"
+                                 ItemsSource="{Binding PrintQueue}"
+                                 SelectedItem="{Binding SelectedQueueItem, Mode=TwoWay}"
+                                 SelectionMode="Extended"
+                                 SelectionChanged="QueueList_OnSelectionChanged"
+                                 Background="Transparent" Foreground="White"
+                                 BorderThickness="0" Padding="4">
                         <ListBox.ItemContainerStyle>
                             <Style TargetType="ListBoxItem">
                                 <Setter Property="Background"
@@ -488,21 +559,28 @@
                                                                      RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
                             </ContextMenu>
                         </ListBox.ContextMenu>
-                    </ListBox>
+                        </ListBox>
 
-                    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,12,0,0">
-                        <Button Content="{Binding PrintButtonLabel}"
-                                Command="{Binding PrintCommand}"
-                                Padding="20,8" FontSize="14" FontWeight="Bold"/>
-                        <Button Content="{Binding DeleteButtonLabel}"
-                                Command="{Binding RemoveSelectedFromQueueCommand}"
-                                Padding="14,8" Margin="8,0,0,0"/>
-                        <Button Content="Hepsini Temizle"
-                                Command="{Binding ClearQueueCommand}"
-                                Padding="14,8" Margin="8,0,0,0"
-                                Foreground="#FFFF6666"/>
-                    </StackPanel>
-                </Grid>
+                        <!-- Alt eylem şeridi (üst kenarlıklı) -->
+                        <Border Grid.Row="2" Padding="14,11"
+                                BorderBrush="{StaticResource OD.Border.Subtle}"
+                                BorderThickness="0,1,0,0">
+                            <StackPanel Orientation="Horizontal">
+                                <Button Content="{Binding PrintButtonLabel}"
+                                        Command="{Binding PrintCommand}"
+                                        Padding="20,8" FontSize="14" FontWeight="Bold"
+                                        Background="{StaticResource OD.Accent}" Foreground="White"/>
+                                <Button Content="{Binding DeleteButtonLabel}"
+                                        Command="{Binding RemoveSelectedFromQueueCommand}"
+                                        Padding="14,8" Margin="8,0,0,0"/>
+                                <Button Content="Hepsini Temizle"
+                                        Command="{Binding ClearQueueCommand}"
+                                        Padding="14,8" Margin="8,0,0,0"
+                                        Foreground="#FFFF6666"/>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </Border>
             </Grid>
         </Grid>
     </Grid>
