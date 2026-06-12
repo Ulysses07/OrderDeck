@@ -3,59 +3,111 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="clr-namespace:OrderDeck.App.ViewModels"
         Title="OrderDeck — Giriş"
-        Width="420" Height="480"
+        Width="420" Height="500"
         WindowStartupLocation="CenterScreen"
         ResizeMode="NoResize"
-        ShowInTaskbar="True">
+        ShowInTaskbar="True"
+        Background="{StaticResource OD.Bg.Window}"
+        Foreground="{StaticResource OD.Fg.Primary}">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
     </Window.Resources>
 
-    <Grid Margin="24">
+    <Grid Margin="28">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" Text="OrderDeck" FontSize="22" FontWeight="Bold" Margin="0,0,0,16"/>
+        <!-- Marka kutusu: 52×52 OD logo (accent degrade + gölge) + başlık -->
+        <StackPanel Grid.Row="0" HorizontalAlignment="Center" Margin="0,8,0,24">
+            <Border Width="52" Height="52" CornerRadius="16" HorizontalAlignment="Center">
+                <Border.Background>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                        <GradientStop Color="#FF5B8DEF" Offset="0"/>
+                        <GradientStop Color="#FF4A77D4" Offset="1"/>
+                    </LinearGradientBrush>
+                </Border.Background>
+                <Border.Effect>
+                    <DropShadowEffect Color="#FF5B8DEF" BlurRadius="24" ShadowDepth="0" Opacity="0.5"/>
+                </Border.Effect>
+                <TextBlock Text="OD" Foreground="White" FontWeight="Bold" FontSize="18"
+                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <TextBlock Text="OrderDeck" FontSize="17" FontWeight="Bold"
+                       HorizontalAlignment="Center" Margin="0,12,0,2"/>
+            <TextBlock Text="Yayıncı hesabınla giriş yap" FontSize="12"
+                       Foreground="{StaticResource OD.Fg.Secondary}"
+                       HorizontalAlignment="Center"/>
+        </StackPanel>
 
         <!-- Login mode -->
         <StackPanel Grid.Row="1" Visibility="{Binding IsLoginMode, Converter={StaticResource BoolToVis}}">
-            <TextBlock Text="E-posta" Margin="0,0,0,4"/>
-            <TextBox Text="{Binding Email, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,12"/>
-            <TextBlock Text="Şifre" Margin="0,0,0,4"/>
-            <PasswordBox x:Name="LoginPassword" Margin="0,0,0,12" PasswordChanged="OnLoginPasswordChanged"/>
-            <Button Content="Giriş yap" Command="{Binding SubmitLoginCommand}" Padding="0,8" Margin="0,8,0,0"/>
-            <TextBlock Margin="0,12,0,0">
-                <Hyperlink Command="{Binding SwitchToRegisterCommand}">Hesap oluştur</Hyperlink>
+            <TextBlock Text="E-posta" Margin="0,0,0,4"
+                       Foreground="{StaticResource OD.Fg.Secondary}"/>
+            <Grid Margin="0,0,0,12">
+                <TextBox Text="{Binding Email, UpdateSourceTrigger=PropertyChanged}"
+                         Padding="34,7,8,7"/>
+                <Viewbox Width="16" Height="16" HorizontalAlignment="Left" Margin="10,0,0,0"
+                         IsHitTestVisible="False">
+                    <Path Width="24" Height="24"
+                          Stroke="{StaticResource OD.Fg.Secondary}" StrokeThickness="1.8"
+                          StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                          Data="M3,5 h18 a0,0 0 0 1 0,0 v14 h-18 V5 Z M4,7.5 L12,13 L20,7.5"/>
+                </Viewbox>
+            </Grid>
+            <TextBlock Text="Şifre" Margin="0,0,0,4"
+                       Foreground="{StaticResource OD.Fg.Secondary}"/>
+            <Grid Margin="0,0,0,12">
+                <PasswordBox x:Name="LoginPassword" PasswordChanged="OnLoginPasswordChanged"
+                             Padding="34,7,8,7"/>
+                <Viewbox Width="16" Height="16" HorizontalAlignment="Left" Margin="10,0,0,0"
+                         IsHitTestVisible="False">
+                    <Path Width="24" Height="24"
+                          Stroke="{StaticResource OD.Fg.Secondary}" StrokeThickness="1.8"
+                          StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                          Data="M5,11 h14 v9.5 h-14 V11 Z M8,11 V7.5 a4,4 0 0 1 8,0 V11"/>
+                </Viewbox>
+            </Grid>
+            <Button Content="Giriş yap" Command="{Binding SubmitLoginCommand}"
+                    Padding="0,9" Margin="0,8,0,0"
+                    Background="{StaticResource OD.Accent}" Foreground="White" FontWeight="SemiBold"/>
+            <TextBlock Margin="0,14,0,0" HorizontalAlignment="Center">
+                <Hyperlink Command="{Binding SwitchToRegisterCommand}"
+                           Foreground="{StaticResource OD.Accent}">Hesap oluştur</Hyperlink>
             </TextBlock>
         </StackPanel>
 
         <!-- Register mode -->
         <StackPanel Grid.Row="1" Visibility="{Binding IsRegisterMode, Converter={StaticResource BoolToVis}}">
-            <TextBlock Text="Ad Soyad" Margin="0,0,0,4"/>
-            <TextBox Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,12"/>
-            <TextBlock Text="E-posta" Margin="0,0,0,4"/>
-            <TextBox Text="{Binding Email, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,12"/>
-            <TextBlock Text="Şifre (en az 8 karakter)" Margin="0,0,0,4"/>
-            <PasswordBox x:Name="RegisterPassword" Margin="0,0,0,12" PasswordChanged="OnRegisterPasswordChanged"/>
-            <TextBlock Text="Şifre tekrar" Margin="0,0,0,4"/>
-            <PasswordBox x:Name="RegisterPasswordConfirm" Margin="0,0,0,12" PasswordChanged="OnRegisterPasswordConfirmChanged"/>
-            <Button Content="Kayıt ol" Command="{Binding SubmitRegisterCommand}" Padding="0,8" Margin="0,8,0,0"/>
-            <TextBlock Margin="0,12,0,0">
-                <Hyperlink Command="{Binding SwitchToLoginCommand}">Giriş ekranına dön</Hyperlink>
+            <TextBlock Text="Ad Soyad" Margin="0,0,0,4" Foreground="{StaticResource OD.Fg.Secondary}"/>
+            <TextBox Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,12" Padding="8,7"/>
+            <TextBlock Text="E-posta" Margin="0,0,0,4" Foreground="{StaticResource OD.Fg.Secondary}"/>
+            <TextBox Text="{Binding Email, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,12" Padding="8,7"/>
+            <TextBlock Text="Şifre (en az 8 karakter)" Margin="0,0,0,4" Foreground="{StaticResource OD.Fg.Secondary}"/>
+            <PasswordBox x:Name="RegisterPassword" Margin="0,0,0,12" PasswordChanged="OnRegisterPasswordChanged" Padding="8,7"/>
+            <TextBlock Text="Şifre tekrar" Margin="0,0,0,4" Foreground="{StaticResource OD.Fg.Secondary}"/>
+            <PasswordBox x:Name="RegisterPasswordConfirm" Margin="0,0,0,12" PasswordChanged="OnRegisterPasswordConfirmChanged" Padding="8,7"/>
+            <Button Content="Kayıt ol" Command="{Binding SubmitRegisterCommand}"
+                    Padding="0,9" Margin="0,8,0,0"
+                    Background="{StaticResource OD.Accent}" Foreground="White" FontWeight="SemiBold"/>
+            <TextBlock Margin="0,14,0,0" HorizontalAlignment="Center">
+                <Hyperlink Command="{Binding SwitchToLoginCommand}"
+                           Foreground="{StaticResource OD.Accent}">Giriş ekranına dön</Hyperlink>
             </TextBlock>
         </StackPanel>
 
         <!-- ConfirmPending mode -->
         <StackPanel Grid.Row="1" Visibility="{Binding IsConfirmPendingMode, Converter={StaticResource BoolToVis}}">
-            <TextBlock TextWrapping="Wrap" Margin="0,0,0,16">
+            <TextBlock TextWrapping="Wrap" Margin="0,0,0,16"
+                       Foreground="{StaticResource OD.Fg.Secondary}">
                 E-posta adresine doğrulama linki gönderdik. Linke tıklayıp hesabını aktifleştir, sonra giriş yap.
             </TextBlock>
-            <Button Content="Linki tekrar gönder" Command="{Binding ResendCommand}" Padding="0,6" Margin="0,0,0,12"/>
-            <TextBlock>
-                <Hyperlink Command="{Binding SwitchToLoginCommand}">Giriş ekranına dön</Hyperlink>
+            <Button Content="Linki tekrar gönder" Command="{Binding ResendCommand}" Padding="0,8" Margin="0,0,0,12"/>
+            <TextBlock HorizontalAlignment="Center">
+                <Hyperlink Command="{Binding SwitchToLoginCommand}"
+                           Foreground="{StaticResource OD.Accent}">Giriş ekranına dön</Hyperlink>
             </TextBlock>
         </StackPanel>
 
@@ -64,12 +116,14 @@
             <TextBlock Text="Bu makineye aktive edilecek lisansı seç:" Margin="0,0,0,12"/>
             <ListBox ItemsSource="{Binding Licenses}" SelectedItem="{Binding Selected}" Height="200"
                      DisplayMemberPath="LicenseKey"/>
-            <Button Content="Bu makineye aktive et" Command="{Binding ActivateSelectedCommand}" Padding="0,8" Margin="0,12,0,0"/>
+            <Button Content="Bu makineye aktive et" Command="{Binding ActivateSelectedCommand}"
+                    Padding="0,9" Margin="0,12,0,0"
+                    Background="{StaticResource OD.Accent}" Foreground="White" FontWeight="SemiBold"/>
         </StackPanel>
 
         <!-- Error message + busy -->
         <StackPanel Grid.Row="2" Margin="0,16,0,0">
-            <TextBlock Text="{Binding ErrorMessage}" Foreground="Crimson" TextWrapping="Wrap"
+            <TextBlock Text="{Binding ErrorMessage}" Foreground="#FFF87171" TextWrapping="Wrap"
                        Visibility="{Binding HasError, Converter={StaticResource BoolToVis}}"/>
             <ProgressBar IsIndeterminate="True" Height="2" Margin="0,8,0,0"
                          Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}"/>
