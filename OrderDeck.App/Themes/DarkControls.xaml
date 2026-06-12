@@ -16,27 +16,31 @@
           6 for cards/menus) and padding, so the visual rhythm holds.
     -->
 
-    <!-- ── Palette ──────────────────────────────────────────────────────── -->
-    <SolidColorBrush x:Key="OD.Bg.Window"          Color="#FF161616"/>
-    <SolidColorBrush x:Key="OD.Bg.Surface"         Color="#FF1A1A1A"/>
-    <SolidColorBrush x:Key="OD.Bg.Elevated"        Color="#FF222222"/>
-    <SolidColorBrush x:Key="OD.Bg.Input"           Color="#FF1F1F1F"/>
-    <SolidColorBrush x:Key="OD.Bg.InputHover"      Color="#FF2A2A2A"/>
-    <SolidColorBrush x:Key="OD.Bg.InputPressed"    Color="#FF333333"/>
-    <SolidColorBrush x:Key="OD.Bg.InputDisabled"   Color="#FF1B1B1B"/>
+    <!-- ── Palette (birleşik marka — mobil Panel/Shopper ile aynı aile) ─────
+         Redesign D1 (design_handoff_desktop_redesign). Değerler handoff'un
+         DarkControls tablosundan; eski WPF paleti yorumda. InputDisabled ve
+         Fg.Disabled handoff tablosunda yoktu — yeni mavi-tonlu zemine uysun
+         diye tonsal eşdeğerlerine çekildi (düz gri kalmasınlar). -->
+    <SolidColorBrush x:Key="OD.Bg.Window"          Color="#FF0F1118"/>  <!-- eski #FF161616 -->
+    <SolidColorBrush x:Key="OD.Bg.Surface"         Color="#FF1A1D27"/>  <!-- eski #FF1A1A1A -->
+    <SolidColorBrush x:Key="OD.Bg.Elevated"        Color="#FF242833"/>  <!-- eski #FF222222 -->
+    <SolidColorBrush x:Key="OD.Bg.Input"           Color="#FF1A1D27"/>  <!-- eski #FF1F1F1F -->
+    <SolidColorBrush x:Key="OD.Bg.InputHover"      Color="#FF242833"/>  <!-- eski #FF2A2A2A -->
+    <SolidColorBrush x:Key="OD.Bg.InputPressed"    Color="#FF2D3340"/>  <!-- eski #FF333333 -->
+    <SolidColorBrush x:Key="OD.Bg.InputDisabled"   Color="#FF15171F"/>  <!-- türetildi: window↔surface arası -->
 
-    <SolidColorBrush x:Key="OD.Border.Subtle"      Color="#FF2E2E2E"/>
-    <SolidColorBrush x:Key="OD.Border.Hover"       Color="#FF3A3A3A"/>
-    <SolidColorBrush x:Key="OD.Border.Focus"       Color="#FF3B82F6"/>
+    <SolidColorBrush x:Key="OD.Border.Subtle"      Color="#FF252935"/>  <!-- ~rgba(255,255,255,0.07) opak eşdeğer -->
+    <SolidColorBrush x:Key="OD.Border.Hover"       Color="#FF323845"/>  <!-- eski #FF3A3A3A -->
+    <SolidColorBrush x:Key="OD.Border.Focus"       Color="#FF5B8DEF"/>  <!-- eski #FF3B82F6 -->
 
-    <SolidColorBrush x:Key="OD.Fg.Primary"         Color="#FFEDEDED"/>
-    <SolidColorBrush x:Key="OD.Fg.Secondary"       Color="#FF9E9E9E"/>
-    <SolidColorBrush x:Key="OD.Fg.Disabled"        Color="#FF5A5A5A"/>
+    <SolidColorBrush x:Key="OD.Fg.Primary"         Color="#FFE8EAF0"/>  <!-- eski #FFEDEDED -->
+    <SolidColorBrush x:Key="OD.Fg.Secondary"       Color="#FF8B919E"/>  <!-- eski #FF9E9E9E -->
+    <SolidColorBrush x:Key="OD.Fg.Disabled"        Color="#FF5A5F6B"/>  <!-- türetildi: secondary'den sönük blue-gray -->
 
-    <SolidColorBrush x:Key="OD.Accent"             Color="#FF3B82F6"/>
-    <SolidColorBrush x:Key="OD.Accent.Hover"       Color="#FF4F8EF7"/>
-    <SolidColorBrush x:Key="OD.Accent.Pressed"     Color="#FF2563EB"/>
-    <SolidColorBrush x:Key="OD.Selection"          Color="#FF2A3F5C"/>
+    <SolidColorBrush x:Key="OD.Accent"             Color="#FF5B8DEF"/>  <!-- eski #FF3B82F6 -->
+    <SolidColorBrush x:Key="OD.Accent.Hover"       Color="#FF7BA0F5"/>  <!-- eski #FF4F8EF7 -->
+    <SolidColorBrush x:Key="OD.Accent.Pressed"     Color="#FF4A77D4"/>  <!-- eski #FF2563EB -->
+    <SolidColorBrush x:Key="OD.Selection"          Color="#FF2A3F5C"/>  <!-- aynı kalır -->
 
     <!-- Drop shadow shared across menus and tooltips. -->
     <DropShadowEffect x:Key="OD.Shadow.Soft"
