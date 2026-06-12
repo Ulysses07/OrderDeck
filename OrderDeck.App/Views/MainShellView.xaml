@@ -250,83 +250,87 @@
             </Grid>
 
             <!-- Status/banner row: server offline / license expiry / backup mode /
-                 giveaway. Çıplak StreamStatusLabel header'a taşındı. -->
+                 giveaway. D3: tonlu radius-10 kartlar. Çıplak StreamStatusLabel
+                 header'a taşınmıştı. ARGB tint'ler handoff README'den. -->
             <Grid Grid.Row="2" Margin="0,0,0,12">
                 <!-- License-server unreachable banner (heartbeat failed ≥2×
-                     consecutive). -->
-                <DockPanel Background="#FF6B4A1A"
-                           LastChildFill="False"
-                           Visibility="{Binding ServerOfflineBanner, Converter={StaticResource NullToCollapsedConverter}}">
-                    <TextBlock DockPanel.Dock="Left"
-                               Text="{Binding ServerOfflineBanner}"
+                     consecutive). warning %8 zemin + #E07B00 %40 kenarlık. -->
+                <Border CornerRadius="10" Background="#14FBBF24"
+                        BorderBrush="#66E07B00" BorderThickness="1"
+                        Visibility="{Binding ServerOfflineBanner, Converter={StaticResource NullToCollapsedConverter}}">
+                    <TextBlock Text="{Binding ServerOfflineBanner}"
                                Foreground="#FFFFE0B0" FontWeight="SemiBold"
-                               Margin="12,6,16,6"
+                               Margin="14,9"
                                VerticalAlignment="Center"
                                TextWrapping="Wrap"/>
-                </DockPanel>
+                </Border>
 
                 <!-- License-expiring-soon banner (≤7 days left). -->
-                <DockPanel Background="#FF6B4A1A"
-                           LastChildFill="False"
-                           Visibility="{Binding LicenseExpiryBanner, Converter={StaticResource NullToCollapsedConverter}}">
-                    <TextBlock DockPanel.Dock="Left"
-                               Text="{Binding LicenseExpiryBanner}"
+                <Border CornerRadius="10" Background="#14FBBF24"
+                        BorderBrush="#66E07B00" BorderThickness="1"
+                        Visibility="{Binding LicenseExpiryBanner, Converter={StaticResource NullToCollapsedConverter}}">
+                    <TextBlock Text="{Binding LicenseExpiryBanner}"
                                Foreground="#FFFFE0B0" FontWeight="SemiBold"
-                               Margin="12,6,16,6"
+                               Margin="14,9"
                                VerticalAlignment="Center"
                                TextWrapping="Wrap"/>
-                </DockPanel>
+                </Border>
 
                 <!-- Backup-selection mode banner. Sits on top of competing banners
                      (highest z-order in the grid). Auto-hides when BackupTargetLabel
-                     becomes null. -->
-                <DockPanel Background="#FF1E3A5F"
-                           LastChildFill="False"
-                           Visibility="{Binding IsInBackupSelectionMode, Converter={StaticResource BoolToVisibleConverter}}">
-                    <TextBlock DockPanel.Dock="Left"
-                               Text="{Binding BackupModeBanner}"
-                               Foreground="#FFE8F2FF" FontWeight="SemiBold"
-                               Margin="12,6,16,6"
-                               VerticalAlignment="Center"/>
-                    <Button DockPanel.Dock="Right"
-                            Content="İptal (ESC)"
-                            Command="{Binding CancelBackupSelectionCommand}"
-                            Padding="10,4" Margin="4,2"
-                            Foreground="#FFCCDDFF"/>
-                </DockPanel>
-
-                <DockPanel Visibility="{Binding IsGiveawayActive, Converter={StaticResource BoolToVisibleConverter}}"
-                           Background="#FF332B00" LastChildFill="False">
-                    <StackPanel DockPanel.Dock="Left" Orientation="Horizontal"
-                                VerticalAlignment="Center" Margin="8,4,16,4">
-                        <Image Source="{StaticResource OD.Icon.Gift}"
-                               Width="18" Height="18"
-                               VerticalAlignment="Center"
-                               Margin="0,0,8,0"
-                               RenderOptions.BitmapScalingMode="HighQuality"/>
-                        <TextBlock Text="{Binding Banner.Keyword}"
-                                   Foreground="#FFFFD166" FontWeight="Bold" FontSize="14"
+                     becomes null. accent %10 zemin + %35 kenarlık. -->
+                <Border CornerRadius="10" Background="#1A5B8DEF"
+                        BorderBrush="#595B8DEF" BorderThickness="1"
+                        Visibility="{Binding IsInBackupSelectionMode, Converter={StaticResource BoolToVisibleConverter}}">
+                    <DockPanel LastChildFill="False" Margin="14,7">
+                        <TextBlock DockPanel.Dock="Left"
+                                   Text="{Binding BackupModeBanner}"
+                                   Foreground="#FFE8F2FF" FontWeight="SemiBold"
                                    VerticalAlignment="Center"/>
-                    </StackPanel>
-                    <TextBlock DockPanel.Dock="Left"
-                               Text="{Binding Banner.ParticipantCount, StringFormat={}{0} katılımcı}"
-                               Foreground="White" Margin="0,4,16,4"
-                               VerticalAlignment="Center"/>
-                    <TextBlock DockPanel.Dock="Left"
-                               Text="{Binding Banner.CountdownText}"
-                               Foreground="White" Margin="0,4,16,4"
-                               VerticalAlignment="Center"/>
-                    <Button DockPanel.Dock="Right"
-                            Content="İptal"
-                            Command="{Binding CancelGiveawayCommand}"
-                            Padding="10,4" Margin="4,2"
-                            Foreground="#FFFF6666"/>
-                    <Button DockPanel.Dock="Right"
-                            Content="Şimdi Çek"
-                            Command="{Binding DrawGiveawayNowCommand}"
-                            Padding="10,4" Margin="4,2"
-                            FontWeight="Bold"/>
-                </DockPanel>
+                        <Button DockPanel.Dock="Right"
+                                Content="İptal (ESC)"
+                                Command="{Binding CancelBackupSelectionCommand}"
+                                Padding="10,4" Margin="4,0"
+                                Foreground="#FFCCDDFF"/>
+                    </DockPanel>
+                </Border>
+
+                <!-- Giveaway active. warning %10 zemin + %30 kenarlık. -->
+                <Border CornerRadius="10" Background="#1AFBBF24"
+                        BorderBrush="#4CFBBF24" BorderThickness="1"
+                        Visibility="{Binding IsGiveawayActive, Converter={StaticResource BoolToVisibleConverter}}">
+                    <DockPanel LastChildFill="False" Margin="14,7">
+                        <StackPanel DockPanel.Dock="Left" Orientation="Horizontal"
+                                    VerticalAlignment="Center" Margin="0,0,16,0">
+                            <Image Source="{StaticResource OD.Icon.Gift}"
+                                   Width="18" Height="18"
+                                   VerticalAlignment="Center"
+                                   Margin="0,0,8,0"
+                                   RenderOptions.BitmapScalingMode="HighQuality"/>
+                            <TextBlock Text="{Binding Banner.Keyword}"
+                                       Foreground="#FFFFD166" FontWeight="Bold" FontSize="14"
+                                       VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <TextBlock DockPanel.Dock="Left"
+                                   Text="{Binding Banner.ParticipantCount, StringFormat={}{0} katılımcı}"
+                                   Foreground="White" Margin="0,0,16,0"
+                                   VerticalAlignment="Center"/>
+                        <TextBlock DockPanel.Dock="Left"
+                                   Text="{Binding Banner.CountdownText}"
+                                   Foreground="White" Margin="0,0,16,0"
+                                   VerticalAlignment="Center"/>
+                        <Button DockPanel.Dock="Right"
+                                Content="İptal"
+                                Command="{Binding CancelGiveawayCommand}"
+                                Padding="10,4" Margin="4,0"
+                                Foreground="#FFFF6666"/>
+                        <Button DockPanel.Dock="Right"
+                                Content="Şimdi Çek"
+                                Command="{Binding DrawGiveawayNowCommand}"
+                                Padding="10,4" Margin="4,0"
+                                FontWeight="Bold"/>
+                    </DockPanel>
+                </Border>
             </Grid>
 
             <!-- Two-pane: live chat | print queue (D2a'da AYNEN korundu) -->
