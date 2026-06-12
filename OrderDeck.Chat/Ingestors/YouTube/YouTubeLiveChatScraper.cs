@@ -414,7 +414,7 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
         return true;
     }
 
-    private static string ExtractRunsText(JsonElement renderer, string field)
+    internal static string ExtractRunsText(JsonElement renderer, string field)
     {
         if (!renderer.TryGetProperty(field, out var node)) return string.Empty;
         if (node.TryGetProperty("simpleText", out var simple)) return simple.GetString() ?? string.Empty;
@@ -423,14 +423,37 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
         foreach (var run in runs.EnumerateArray())
         {
             if (run.TryGetProperty("text", out var t)) sb.Append(t.GetString());
-            else if (run.TryGetProperty("emoji", out var emoji) &&
-                     emoji.TryGetProperty("shortcuts", out var shortcuts) &&
-                     shortcuts.GetArrayLength() > 0)
-            {
-                sb.Append(shortcuts[0].GetString());
-            }
+            else if (run.TryGetProperty("emoji", out var emoji))
+                sb.Append(RenderEmoji(emoji));
         }
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// innertube emoji run → görüntülenecek metin. Standart Unicode emoji'lerde
+    /// <c>emojiId</c> gerçek karakteri taşır (😀) → onu basarız. Custom/kanal
+    /// (membership) emojilerinde Unicode karşılığı yoktur (<c>isCustomEmoji:true</c>,
+    /// emojiId opak ID) → text panelde shortcode (<c>:_isim:</c>) fallback'i kalır.
+    /// </summary>
+    private static string RenderEmoji(JsonElement emoji)
+    {
+        var isCustom = emoji.TryGetProperty("isCustomEmoji", out var c) &&
+                       c.ValueKind == JsonValueKind.True;
+
+        if (!isCustom &&
+            emoji.TryGetProperty("emojiId", out var id) &&
+            id.GetString() is { Length: > 0 } unicode)
+        {
+            return unicode;
+        }
+
+        if (emoji.TryGetProperty("shortcuts", out var shortcuts) &&
+            shortcuts.GetArrayLength() > 0)
+        {
+            return shortcuts[0].GetString() ?? string.Empty;
+        }
+
+        return string.Empty;
     }
 
     private static string? ExtractFirstThumbnail(JsonElement renderer, string field)
