@@ -45,10 +45,10 @@ export const BRAND = 'OrderDeck';
  * dosya buraya elle konup eskisi silinir (web-deploy bu klasöre dokunmaz).
  */
 export const LATEST_RELEASE = {
-  version: '0.3.0',
-  filename: 'OrderDeck-0.3.0-setup.exe',
+  version: '0.3.1',
+  filename: 'OrderDeck-0.3.1-setup.exe',
   sizeMB: 65,
-  releasedAt: '2026-06-12',
+  releasedAt: '2026-06-14',
 };
 
 export const downloadUrl = () => `/downloads/${LATEST_RELEASE.filename}`;
