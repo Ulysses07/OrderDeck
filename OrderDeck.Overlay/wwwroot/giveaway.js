@@ -112,39 +112,39 @@ import { SynthController } from './synth-controller.js';
 
   async function onStarted(e) {
     reset();
-    state.giveawayId = e.GiveawayId;
-    state.keyword = e.Keyword;
-    state.durationSeconds = e.DurationSeconds;
-    state.startedAt = e.StartedAt;
-    $keyword.textContent = `"${e.Keyword}"`;
+    state.giveawayId = e.giveawayId;
+    state.keyword = e.keyword;
+    state.durationSeconds = e.durationSeconds;
+    state.startedAt = e.startedAt;
+    $keyword.textContent = `"${e.keyword}"`;
     $counter.textContent = '0 katılımcı';
     show($root);
     startCountdown();
 
-    await loadPlugin(e.AnimationId, e.AudioVolume, e.AudioMuted);
+    await loadPlugin(e.animationId, e.audioVolume, e.audioMuted);
   }
 
   function onParticipant(e) {
-    if (e.GiveawayId !== state.giveawayId) return;
-    $counter.textContent = `${e.TotalCount} katılımcı`;
+    if (e.giveawayId !== state.giveawayId) return;
+    $counter.textContent = `${e.totalCount} katılımcı`;
   }
 
   function onCancelled(e) {
-    if (e.GiveawayId !== state.giveawayId) return;
+    if (e.giveawayId !== state.giveawayId) return;
     $root.classList.add('fade-out');
     setTimeout(() => { reset(); $root.classList.remove('fade-out'); }, 600);
   }
 
   async function onWinnersDrawn(e) {
-    if (e.GiveawayId !== state.giveawayId) return;
+    if (e.giveawayId !== state.giveawayId) return;
     if (state.countdownTimer) { clearInterval(state.countdownTimer); state.countdownTimer = null; }
     if (!state.plugin) {
       console.warn('[giveaway-host] winners drawn before plugin loaded');
       return;
     }
 
-    const pool = e.AnimationPool || [];
-    const winners = e.Winners || [];
+    const pool = e.animationPool || [];
+    const winners = e.winners || [];
 
     await state.plugin.runFor(winners, pool);
     revealWinners(winners);
@@ -157,10 +157,10 @@ import { SynthController } from './synth-controller.js';
     for (const w of winners) {
       const li = document.createElement('li');
       li.className = 'winner';
-      const emoji = PLATFORM_EMOJI[w.Platform] || '💬';
+      const emoji = PLATFORM_EMOJI[w.platform] || '💬';
       li.innerHTML = `
-        <span class="platform-${w.Platform}">${emoji}</span>
-        <span class="name">${escapeHtml(w.DisplayName || w.Username)}</span>`;
+        <span class="platform-${w.platform}">${emoji}</span>
+        <span class="name">${escapeHtml(w.displayName || w.username)}</span>`;
       $winnersList.appendChild(li);
     }
     show($reveal);
@@ -189,11 +189,11 @@ import { SynthController } from './synth-controller.js';
     const ws = new WebSocket(`ws://${location.host}/ws/giveaway`);
     ws.onmessage = (msg) => {
       const evt = JSON.parse(msg.data);
-      switch (evt.Type) {
-        case 'giveaway.started':       onStarted(evt.Data); break;
-        case 'giveaway.participant':   onParticipant(evt.Data); break;
-        case 'giveaway.winners.drawn': onWinnersDrawn(evt.Data); break;
-        case 'giveaway.cancelled':     onCancelled(evt.Data); break;
+      switch (evt.type) {
+        case 'giveaway.started':       onStarted(evt.data); break;
+        case 'giveaway.participant':   onParticipant(evt.data); break;
+        case 'giveaway.winners.drawn': onWinnersDrawn(evt.data); break;
+        case 'giveaway.cancelled':     onCancelled(evt.data); break;
       }
     };
     ws.onclose = () => setTimeout(connect, 1500);
