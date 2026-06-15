@@ -59,7 +59,7 @@
                   RowBackground="#FF1A1A1A"
                   AlternatingRowBackground="#FF222222">
             <DataGrid.Columns>
-                <DataGridTextColumn Header="Kullanıcı" Binding="{Binding Username}"   Width="2*"/>
+                <DataGridTextColumn Header="Kullanıcı" Binding="{Binding Display}"     Width="2*"/>
                 <DataGridTextColumn Header="Platform"  Binding="{Binding Platform}"   Width="*"/>
                 <DataGridTextColumn Header="Etiket"    Binding="{Binding LabelCount}" Width="*"/>
                 <DataGridTextColumn Header="Tutar"
