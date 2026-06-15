@@ -155,6 +155,12 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           NEW_TAG: ${{ steps.tags.outputs.tag }}
           NEW_SHA: ${{ steps.tags.outputs.sha }}
+          # GHCR package PRIVATE — VPS pull için kimlik gerekiyor. Runner'ın
+          # otomatik GITHUB_TOKEN'ı (packages:write yetkili) her run'da taze;
+          # VPS'te bununla login olunca PAT/secret/expire derdi olmadan private
+          # image çekilir. Token run-scoped → deploy sonunda logout edilir.
+          GHCR_ACTOR: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # The VPS .env's LICENSE_SERVER_TAG is the source of truth for which
           # image runs in production. We pin to `master-<short-sha>` (immutable)
@@ -171,6 +177,7 @@ jobs:
               "${DEPLOY_USER}@${DEPLOY_HOST}" \
               "set -e
                cd /opt/orderdeck
+               echo '${GHCR_TOKEN}' | docker login ghcr.io -u '${GHCR_ACTOR}' --password-stdin
                if grep -q '^LICENSE_SERVER_TAG=' .env; then
                  sed -i.bak 's|^LICENSE_SERVER_TAG=.*|LICENSE_SERVER_TAG=${NEW_TAG}|' .env
                else
@@ -179,7 +186,8 @@ jobs:
                docker compose pull license-server
                docker compose up -d license-server
                echo '${NEW_SHA}' > .deployed_sha
-               docker image prune -f --filter 'until=72h' >/dev/null"
+               docker image prune -f --filter 'until=72h' >/dev/null
+               docker logout ghcr.io >/dev/null 2>&1 || true"
           }
           for attempt in 1 2 3; do
             if deploy_remote; then
