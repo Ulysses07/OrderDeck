@@ -93,6 +93,49 @@ public sealed class LicenseService : ITrialModeProbe
         _api.SetAuthToken(fresh?.Token);
     }
 
+    /// <summary>
+    /// Cold-start refresh used by <see cref="InitializeAsync"/> when the cached
+    /// access token has expired. Returns the refreshed record on success.
+    /// On failure returns (null, keepAuth): <c>keepAuth=true</c> means transient
+    /// (offline) — keep auth on disk and retry next launch; <c>keepAuth=false</c>
+    /// means the refresh is impossible/rejected — caller should clear + re-login.
+    /// </summary>
+    private async Task<(AuthRecord? refreshed, bool keepAuth)> TryColdRefreshAsync(
+        AuthRecord auth, CancellationToken ct)
+    {
+        if (auth.RefreshToken is null)
+            return (null, false); // legacy auth.dat (pre-refresh feature) → clear + relogin
+        if (auth.RefreshExpiresAt is { } exp && exp <= DateTimeOffset.UtcNow)
+            return (null, false); // refresh token itself expired → clear + relogin
+
+        try
+        {
+            var fresh = await _api.RefreshAsync(new RefreshRequest(auth.RefreshToken), ct);
+            var updated = auth with
+            {
+                Token = fresh.Token,
+                TokenExpiresAt = fresh.ExpiresAt,
+                RefreshToken = fresh.RefreshToken ?? auth.RefreshToken,
+                RefreshExpiresAt = fresh.RefreshExpiresAt ?? auth.RefreshExpiresAt
+            };
+            _authStore.Save(updated);
+            _log.LogInformation("Cold-start refresh succeeded; session restored without re-login.");
+            return (updated, false);
+        }
+        catch (InvalidCredentialsException)
+        {
+            // Refresh token revoked/expired server-side → clear + relogin.
+            _log.LogInformation("Refresh token rejected at startup; clearing local auth.");
+            return (null, false);
+        }
+        catch (LicenseApiNetworkException ex)
+        {
+            // Offline at launch — don't discard auth; retry on the next launch.
+            _log.LogWarning(ex, "Cold-start refresh failed (network); auth kept.");
+            return (null, true);
+        }
+    }
+
     public LicenseRecord? CurrentLicense { get; private set; }
 
     public event EventHandler<LicenseStatus>? StatusChanged;
@@ -115,10 +158,29 @@ public sealed class LicenseService : ITrialModeProbe
 
         if (auth.TokenExpiresAt <= DateTimeOffset.UtcNow)
         {
-            _log.LogInformation("Saved auth token expired locally; clearing.");
-            _authStore.Clear();
-            await InitializeTrialPathAsync();
-            return;
+            // Access token expired while the app was closed. Before forcing a
+            // re-login, attempt a cold-start refresh — the refresh token is
+            // long-lived, so this keeps the operator signed in across restarts
+            // instead of every launch. (TokenRefresher only covers 401s while
+            // the app is already running.)
+            var (refreshed, keepAuth) = await TryColdRefreshAsync(auth, ct);
+            if (refreshed is null)
+            {
+                if (keepAuth)
+                {
+                    // Transient (offline) — keep auth on disk so the next launch
+                    // can retry; just fall through to trial/offline this session.
+                    _log.LogWarning("Cold-start token refresh unavailable (offline); keeping auth for retry.");
+                }
+                else
+                {
+                    _log.LogInformation("Saved auth token expired and not refreshable; clearing.");
+                    _authStore.Clear();
+                }
+                await InitializeTrialPathAsync();
+                return;
+            }
+            auth = refreshed;
         }
 
         CurrentAuth = auth;
