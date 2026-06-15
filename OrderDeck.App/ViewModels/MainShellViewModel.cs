@@ -756,9 +756,15 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
     [RelayCommand] private void OpenBulkSms()
     {
-        var dlg = App.Host.Services.GetRequiredService<Views.BulkSmsDialog>();
-        dlg.Owner = Application.Current?.MainWindow;
-        dlg.Open();
+        // Toplu SMS UI + server tarafı hazır (PR #145) ama gerçek gönderim Netgsm
+        // İYS onayına bağlı ve henüz açılmadı → kullanıcıya "yakında" göster.
+        // İYS green olunca buradaki gövdeyi aşağıdaki dialog açılışıyla değiştir:
+        //   var dlg = App.Host.Services.GetRequiredService<Views.BulkSmsDialog>();
+        //   dlg.Owner = Application.Current?.MainWindow; dlg.Open();
+        MessageBox.Show(
+            "Toplu SMS özelliği çok yakında kullanıma açılacak.",
+            "Toplu SMS — Yakında",
+            MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     [RelayCommand(CanExecute = nameof(CanWrite))]
