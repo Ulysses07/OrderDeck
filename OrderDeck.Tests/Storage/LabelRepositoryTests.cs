@@ -113,6 +113,48 @@ public class LabelRepositoryTests
     }
 
     [Fact]
+    public void GetTopCustomersBySession_Display_uses_DisplayName_else_Username()
+    {
+        var (db, repo, sid, _) = Fx(); // c1: instagram "@a", DisplayName null
+        using var _2 = db;
+
+        // YouTube müşterisi: Username = channel id, DisplayName = okunur ad.
+        new CustomerRepository(db).Insert(new Customer("cyt", "youtube", "UCchannelid", "Ayşe Kaya", null,
+            100, 100, false, null, null, 0, 0m, BlacklistedAt: null, Address: null, Phone: null));
+        repo.Insert(MakeLabel("l1", sid, "c1", price: 100m, printedAt: 500));
+        repo.Insert(new Label("ly", sid, "cyt", "youtube", "UCchannelid", "kod 5", "5", 300m,
+            AddedAt: 200, PrintedAt: 500));
+
+        var top = repo.GetTopCustomersBySession(sid, int.MaxValue);
+
+        var yt = top.Single(t => t.Username == "UCchannelid");
+        yt.DisplayName.Should().Be("Ayşe Kaya");
+        yt.Display.Should().Be("Ayşe Kaya"); // channel id değil, okunur ad
+
+        var ig = top.Single(t => t.Username == "@a");
+        ig.DisplayName.Should().BeNull();
+        ig.Display.Should().Be("@a"); // DisplayName yoksa Username'e düşer
+    }
+
+    [Fact]
+    public void GetTopCustomersBySession_with_MaxValue_returns_all_buyers_not_just_top10()
+    {
+        var (db, repo, sid, _) = Fx(); // c1 hazır
+        using var _2 = db;
+
+        var customers = new CustomerRepository(db);
+        for (int i = 2; i <= 15; i++)
+            customers.Insert(new Customer($"c{i}", "instagram", $"@u{i}", null, null,
+                100, 100, false, null, null, 0, 0m, BlacklistedAt: null, Address: null, Phone: null));
+        for (int i = 1; i <= 15; i++)
+            repo.Insert(MakeLabel($"l{i}", sid, i == 1 ? "c1" : $"c{i}", price: 10m * i, printedAt: 500));
+
+        var top = repo.GetTopCustomersBySession(sid, int.MaxValue);
+
+        top.Should().HaveCount(15); // top-10 değil, o yayında alan herkes
+    }
+
+    [Fact]
     public void GetByCustomer_returns_labels_ordered_by_recent_for_only_that_customer()
     {
         using var db = new InMemorySqlite();

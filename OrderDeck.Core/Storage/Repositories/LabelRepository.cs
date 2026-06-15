@@ -210,6 +210,7 @@ public sealed class LabelRepository
         using var conn = _factory.Open();
         var rows = conn.Query<TopCustomerRow>(
             @"SELECT c.Username,
+                     c.DisplayName,
                      l.Platform,
                      COUNT(*)   AS LabelCount,
                      SUM(l.Price) AS TotalAmount
@@ -221,7 +222,7 @@ public sealed class LabelRepository
               ORDER BY SUM(l.Price) DESC
               LIMIT @limit",
             new { sessionId, limit }).ToList();
-        return rows.Select(r => new TopCustomer(r.Username, r.Platform, r.LabelCount, r.TotalAmount)).ToList();
+        return rows.Select(r => new TopCustomer(r.Username, r.Platform, r.LabelCount, r.TotalAmount, r.DisplayName)).ToList();
     }
 
     /// <summary>Returns the labels a customer added in a specific session, ordered
@@ -365,6 +366,7 @@ public sealed class LabelRepository
     private sealed class TopCustomerRow
     {
         public string Username { get; init; } = "";
+        public string? DisplayName { get; init; }
         public string Platform { get; init; } = "";
         public int LabelCount { get; init; }
         public decimal TotalAmount { get; init; }
@@ -372,7 +374,17 @@ public sealed class LabelRepository
 }
 
 public sealed record SessionTotals(int PrintedCount, decimal TotalAmount, int UniqueCustomers);
-public sealed record TopCustomer(string Username, string Platform, int LabelCount, decimal TotalAmount);
+
+/// <summary>
+/// Bir yayında ürün alan müşteri (rapor + arama için). <see cref="Username"/> ham
+/// platform kimliği (YouTube'da channel id); insan-okur gösterim için <see
+/// cref="Display"/> kullan — DisplayName varsa onu, yoksa Username'e düşer.
+/// </summary>
+public sealed record TopCustomer(
+    string Username, string Platform, int LabelCount, decimal TotalAmount, string? DisplayName = null)
+{
+    public string Display => string.IsNullOrWhiteSpace(DisplayName) ? Username : DisplayName!;
+}
 
 /// <summary>UI projection of a Label for the customer detail dialog.</summary>
 public sealed record CustomerLabelRow(

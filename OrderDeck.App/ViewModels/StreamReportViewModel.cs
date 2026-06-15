@@ -59,7 +59,9 @@ public sealed partial class StreamReportViewModel : ViewModelBase
         UniqueCustomers = totals.UniqueCustomers;
 
         TopCustomers.Clear();
-        foreach (var c in _labels.GetTopCustomersBySession(sessionId, limit: 10))
+        // Tüm alıcılar (en çok alandan aza). Eskiden limit:10 ile yalnızca ilk 10
+        // gösteriliyordu; rapor o yayında alışveriş yapan herkesi içermeli.
+        foreach (var c in _labels.GetTopCustomersBySession(sessionId, int.MaxValue))
             TopCustomers.Add(c);
 
         Giveaways.Clear();
@@ -131,7 +133,7 @@ public sealed partial class StreamReportViewModel : ViewModelBase
             int row = 10;
             foreach (var c in TopCustomers)
             {
-                ws.Cell(row, 1).Value = c.Username;
+                ws.Cell(row, 1).Value = c.Display;
                 ws.Cell(row, 2).Value = c.Platform;
                 ws.Cell(row, 3).Value = c.LabelCount;
                 ws.Cell(row, 3).Style.NumberFormat.Format = "0";
