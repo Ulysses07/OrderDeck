@@ -371,12 +371,18 @@
                                   MouseDoubleClick="ChatList_OnDoubleClick"
                                   PreviewKeyDown="ChatList_OnPreviewKeyDown"
                                   Background="Transparent" Foreground="White"
-                                  BorderThickness="0" Padding="4">
+                                  BorderThickness="0" Padding="4"
+                                  HorizontalContentAlignment="Stretch"
+                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                         <ListBox.ItemContainerStyle>
                             <Style TargetType="ListBoxItem">
                                 <Setter Property="Background"
                                         Value="{Binding IsSenderBlacklisted,
                                                         Converter={StaticResource BlacklistToBrushConverter}}"/>
+                                <!-- Item'ı liste genişliğine yasla ki mesaj TextBlock'u
+                                     (Wrap) dar pencerede alt satıra geçsin — yoksa item
+                                     içeriğe göre yatayda taşıp kırpılıyordu. -->
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
                             </Style>
                         </ListBox.ItemContainerStyle>
                         <ListBox.ItemTemplate>
