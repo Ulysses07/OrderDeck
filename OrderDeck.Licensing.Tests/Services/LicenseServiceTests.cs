@@ -97,6 +97,84 @@ public sealed class LicenseServiceTests : IDisposable
         _authStore.IsPresent.Should().BeFalse();
     }
 
+    // ─── Initialize: cold-start refresh (expired access + refresh token) ──
+
+    private void SeedAuthWithRefresh(DateTimeOffset accessExp, DateTimeOffset? refreshExp) =>
+        _authStore.Save(new AuthRecord(
+            CustomerId: Guid.NewGuid(),
+            Email: "u@x",
+            Name: "u",
+            Token: "oldtok",
+            TokenExpiresAt: accessExp,
+            RefreshToken: "rt",
+            RefreshExpiresAt: refreshExp));
+
+    [Fact]
+    public async Task Initialize_expired_token_with_valid_refresh_restores_session_without_clearing()
+    {
+        SeedAuthWithRefresh(
+            accessExp: DateTimeOffset.UtcNow.AddDays(-1),
+            refreshExp: DateTimeOffset.UtcNow.AddDays(30));
+        SeedLicense();
+
+        var svc = Build(req =>
+        {
+            if (req.RequestUri!.AbsolutePath.EndsWith("/auth/refresh"))
+                return FakeHttpMessageHandler.Json(200,
+                    """{"token":"newtok","expiresAt":"2099-01-01T00:00:00Z","refreshToken":"rt2","refreshExpiresAt":"2099-02-01T00:00:00Z"}""");
+            // After refresh, the cached license is validated online.
+            return FakeHttpMessageHandler.Json(200,
+                """{"status":"active","expiresAt":"2027-04-29T00:00:00Z","remainingDays":365,"sku":"STD","slotInfo":{"used":1,"total":1,"thisDeviceActive":true}}""");
+        });
+
+        await svc.InitializeAsync();
+
+        _authStore.IsPresent.Should().BeTrue();
+        _authStore.Load()!.Token.Should().Be("newtok");
+        svc.CurrentAuth!.Token.Should().Be("newtok");
+        svc.CurrentStatus.Should().Be(LicenseStatus.Active);
+    }
+
+    [Fact]
+    public async Task Initialize_expired_token_with_rejected_refresh_clears_auth()
+    {
+        SeedAuthWithRefresh(
+            accessExp: DateTimeOffset.UtcNow.AddDays(-1),
+            refreshExp: DateTimeOffset.UtcNow.AddDays(30));
+
+        var svc = Build(req =>
+        {
+            if (req.RequestUri!.AbsolutePath.EndsWith("/auth/refresh"))
+                return FakeHttpMessageHandler.Json(401, """{"detail":"refresh revoked"}""");
+            throw new InvalidOperationException("only refresh expected: " + req.RequestUri);
+        });
+
+        await svc.InitializeAsync();
+
+        _authStore.IsPresent.Should().BeFalse();
+        svc.CurrentStatus.Should().Be(LicenseStatus.TrialActive);
+    }
+
+    [Fact]
+    public async Task Initialize_expired_token_with_offline_refresh_keeps_auth_for_retry()
+    {
+        SeedAuthWithRefresh(
+            accessExp: DateTimeOffset.UtcNow.AddDays(-1),
+            refreshExp: DateTimeOffset.UtcNow.AddDays(30));
+
+        var svc = Build(req =>
+        {
+            if (req.RequestUri!.AbsolutePath.EndsWith("/auth/refresh"))
+                throw new HttpRequestException("network down");
+            throw new InvalidOperationException("only refresh expected: " + req.RequestUri);
+        });
+
+        await svc.InitializeAsync();
+
+        // Offline refresh failure must NOT discard auth — next launch retries.
+        _authStore.IsPresent.Should().BeTrue();
+    }
+
     // ─── Initialize: auth + no license cache ──────────────────────────
 
     [Fact]
