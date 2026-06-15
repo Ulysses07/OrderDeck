@@ -177,4 +177,57 @@ public sealed class LicensesSmsCampaignsController : ControllerBase
             CreditsRefunded: failed * campaign.SegmentsPerMessage,
             campaign.CreatedAt, campaign.CompletedAt));
     }
+
+    public sealed record CampaignListItem(
+        Guid CampaignId, string Status, string MessagePreview, int RecipientCount,
+        int Sent, int Failed, int Skipped, int CreditsRefunded,
+        DateTimeOffset CreatedAt, DateTimeOffset? CompletedAt);
+
+    /// <summary>Yayıncının kampanya geçmişi (en yeni önce). WPF "Toplu SMS"
+    /// ekranındaki geçmiş listesi. Alıcı durum sayıları tek grouped query ile
+    /// çözülür (N+1 yok).</summary>
+    [HttpGet]
+    public async Task<IActionResult> List(
+        Guid licenseId, [FromQuery] int take = 20, CancellationToken ct = default)
+    {
+        if (!await OwnsLicenseAsync(licenseId, ct)) return NotFound();
+
+        take = Math.Clamp(take, 1, 100);
+
+        var campaigns = await _db.SmsCampaigns
+            .Where(c => c.LicenseId == licenseId)
+            .OrderByDescending(c => c.CreatedAt)
+            .Take(take)
+            .ToListAsync(ct);
+
+        if (campaigns.Count == 0)
+            return Ok(Array.Empty<CampaignListItem>());
+
+        var ids = campaigns.Select(c => c.Id).ToList();
+        var counts = await _db.SmsCampaignRecipients
+            .Where(r => ids.Contains(r.CampaignId))
+            .GroupBy(r => new { r.CampaignId, r.Status })
+            .Select(g => new { g.Key.CampaignId, g.Key.Status, Count = g.Count() })
+            .ToListAsync(ct);
+
+        var byCampaign = counts
+            .GroupBy(c => c.CampaignId)
+            .ToDictionary(g => g.Key, g => g.ToDictionary(x => x.Status, x => x.Count));
+
+        var items = campaigns.Select(c =>
+        {
+            var map = byCampaign.TryGetValue(c.Id, out var m) ? m : null;
+            int Count(string s) => map is not null && map.TryGetValue(s, out var n) ? n : 0;
+            var failed = Count("failed");
+            return new CampaignListItem(
+                c.Id, c.Status,
+                MessagePreview: c.MessageBody.Length > 60 ? c.MessageBody[..60] : c.MessageBody,
+                c.RecipientCount,
+                Sent: Count("sent"), Failed: failed, Skipped: Count("skipped"),
+                CreditsRefunded: failed * c.SegmentsPerMessage,
+                c.CreatedAt, c.CompletedAt);
+        }).ToList();
+
+        return Ok(items);
+    }
 }

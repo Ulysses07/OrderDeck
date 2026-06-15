@@ -118,6 +118,18 @@
                                   Data="M6,3 h12 v18 l-3,-1.8 l-3,1.8 l-3,-1.8 L6,21 V3 Z M9.5,8 L14.5,8 M9.5,12 L14.5,12"/>
                         </Viewbox>
                     </Button>
+
+                    <Button Style="{StaticResource RailButton}"
+                            Command="{Binding OpenBulkSmsCommand}"
+                            ToolTip="Toplu SMS">
+                        <Viewbox Width="22" Height="22">
+                            <Path Width="24" Height="24"
+                                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                  StrokeThickness="1.8" StrokeStartLineCap="Round"
+                                  StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                                  Data="M4,5 h16 a1,1 0 0 1 1,1 v9 a1,1 0 0 1 -1,1 H9 l-4,4 v-4 H4 a1,1 0 0 1 -1,-1 V6 a1,1 0 0 1 1,-1 Z M8,10 h8 M8,13 h5"/>
+                        </Viewbox>
+                    </Button>
                 </StackPanel>
 
                 <!-- Alt flyout (eski ⋮ menüsünün kalan komutları). x:Name ve

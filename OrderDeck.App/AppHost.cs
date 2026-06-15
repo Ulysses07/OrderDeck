@@ -216,6 +216,10 @@ public sealed class AppHost : IDisposable
         services.AddTransient<ViewModels.SupportRequestsViewModel>();
         services.AddTransient<Views.SupportRequestsDialog>();
 
+        // Toplu SMS (yayıncı kampanya gönderimi + geçmiş)
+        services.AddTransient<ViewModels.BulkSmsViewModel>();
+        services.AddTransient<Views.BulkSmsDialog>();
+
         // Phase 4g — payment infrastructure
         services.AddSingleton<WhatsAppMessageBuilder>();
         services.AddSingleton<IUrlLauncher, ProcessUrlLauncher>();

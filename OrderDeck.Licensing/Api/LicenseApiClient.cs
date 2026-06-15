@@ -302,6 +302,37 @@ public sealed class LicenseApiClient
         if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
     }
 
+    // ─── Toplu SMS (Bearer-Customer) ──────────────────────────────────
+
+    /// <summary>Yayıncının SMS kredi bakiyesi (salt-okunur; yükleme admin tarafında).</summary>
+    public Task<SmsBalanceResponse> GetSmsBalanceAsync(Guid licenseId, CancellationToken ct = default)
+        => GetExpectingJsonAsync<SmsBalanceResponse>($"/api/v1/licenses/{licenseId}/sms/balance", ct);
+
+    /// <summary>Toplu SMS önizleme — alıcı sayısı, segment ve gerekli kredi.</summary>
+    public Task<SmsPreviewResponse> PreviewSmsCampaignAsync(
+        Guid licenseId, SmsPreviewRequest req, CancellationToken ct = default)
+        => PostJsonExpectingJsonAsync<SmsPreviewRequest, SmsPreviewResponse>(
+            $"/api/v1/licenses/{licenseId}/sms-campaigns/preview", req, ct);
+
+    /// <summary>Kampanya oluşturur: kredi rezerve edilir, gönderim arka planda yapılır.</summary>
+    public Task<SmsCreateResponse> CreateSmsCampaignAsync(
+        Guid licenseId, SmsCreateRequest req, CancellationToken ct = default)
+        => PostJsonExpectingJsonAsync<SmsCreateRequest, SmsCreateResponse>(
+            $"/api/v1/licenses/{licenseId}/sms-campaigns", req, ct);
+
+    /// <summary>Tek kampanyanın gönderim durumu (sent/failed/skipped sayıları).</summary>
+    public Task<SmsCampaignStatusResponse> GetSmsCampaignStatusAsync(
+        Guid licenseId, Guid campaignId, CancellationToken ct = default)
+        => GetExpectingJsonAsync<SmsCampaignStatusResponse>(
+            $"/api/v1/licenses/{licenseId}/sms-campaigns/{campaignId}", ct);
+
+    /// <summary>Kampanya geçmişi (en yeni önce).</summary>
+    public async Task<List<SmsCampaignListItem>> ListSmsCampaignsAsync(
+        Guid licenseId, int take = 20, CancellationToken ct = default)
+        => await GetExpectingJsonAsync<List<SmsCampaignListItem>>(
+            $"/api/v1/licenses/{licenseId}/sms-campaigns?take={take}", ct)
+            ?? new List<SmsCampaignListItem>();
+
     /// <summary>En son uygulama sürümü + indirme URL'si (anonim). LatestVersion
     /// null ise güncelleme kontrolü atlanır.</summary>
     public async Task<AppVersionInfo?> GetLatestAppVersionAsync(CancellationToken ct = default)

@@ -754,6 +754,13 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         dlg.Open();
     }
 
+    [RelayCommand] private void OpenBulkSms()
+    {
+        var dlg = App.Host.Services.GetRequiredService<Views.BulkSmsDialog>();
+        dlg.Owner = Application.Current?.MainWindow;
+        dlg.Open();
+    }
+
     [RelayCommand(CanExecute = nameof(CanWrite))]
     private void StartGiveaway()
     {
