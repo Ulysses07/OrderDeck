@@ -279,4 +279,52 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
             $"/api/v1/licenses/{licenseB}/sms-campaigns/preview", new { messageBody = "x" });
         resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
+
+    private sealed record ListItem(
+        Guid CampaignId, string Status, string MessagePreview, int RecipientCount,
+        int Sent, int Failed, int Skipped, int CreditsRefunded,
+        DateTimeOffset CreatedAt, DateTimeOffset? CompletedAt);
+
+    [Fact]
+    public async Task List_returns_campaigns_newest_first_with_counts()
+    {
+        _factory.Sms.Clear();
+        _factory.Sms.ThrowOnSend = false;
+        var (client, licenseId) = await SetupAsync(consenting: 3, credits: 100);
+
+        // Eski kampanya (gönderilmiş → sent sayıları dolu)
+        var first = await (await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/sms-campaigns", new { messageBody = "Eski kampanya" }))
+            .Content.ReadFromJsonAsync<CreateResponse>();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
+            await job.RunAsync(first!.CampaignId, default);
+        }
+
+        // Yeni kampanya (pending)
+        var second = await (await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/sms-campaigns", new { messageBody = "Yeni kampanya" }))
+            .Content.ReadFromJsonAsync<CreateResponse>();
+
+        var list = await client.GetFromJsonAsync<List<ListItem>>(
+            $"/api/v1/licenses/{licenseId}/sms-campaigns?take=20");
+
+        list.Should().HaveCount(2);
+        list![0].CampaignId.Should().Be(second!.CampaignId);   // en yeni önce
+        list[0].MessagePreview.Should().Be("Yeni kampanya");
+        list[1].CampaignId.Should().Be(first.CampaignId);
+        list[1].Sent.Should().Be(3);
+        list[1].Status.Should().Be("completed");
+    }
+
+    [Fact]
+    public async Task List_other_license_returns_404()
+    {
+        var (clientA, _) = await SetupAsync(consenting: 1, credits: 100);
+        var (_, licenseB) = await SetupAsync(consenting: 1, credits: 100);
+
+        var resp = await clientA.GetAsync($"/api/v1/licenses/{licenseB}/sms-campaigns");
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
 }

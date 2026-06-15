@@ -254,4 +254,88 @@ public class LicenseApiClientTests
         handler.Requests[0].RequestUri!.AbsolutePath.Should().Be("/api/v1/me/form-submissions");
         handler.Requests[0].RequestUri.Query.Should().Contain("since=").And.Contain("limit=25");
     }
+
+    // ─── Toplu SMS ────────────────────────────────────────────────────
+
+    private static readonly Guid SmsLicenseId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+
+    [Fact]
+    public async Task GetSmsBalanceAsync_returns_credits()
+    {
+        var (client, handler) = BuildClient(_ => FakeHttpMessageHandler.Json(200,
+            """{"creditsRemaining":420,"updatedAt":"2026-06-14T10:00:00Z"}"""));
+
+        var resp = await client.GetSmsBalanceAsync(SmsLicenseId);
+
+        resp.CreditsRemaining.Should().Be(420);
+        handler.Requests[0].Method.Method.Should().Be("GET");
+        handler.Requests[0].RequestUri!.AbsolutePath
+            .Should().Be($"/api/v1/licenses/{SmsLicenseId}/sms/balance");
+    }
+
+    [Fact]
+    public async Task PreviewSmsCampaignAsync_posts_body_and_parses_response()
+    {
+        var (client, handler) = BuildClient(_ => FakeHttpMessageHandler.Json(200,
+            """{"recipientCount":12,"segmentsPerMessage":2,"totalCredits":24,"creditsRemaining":100,"sufficient":true}"""));
+
+        var resp = await client.PreviewSmsCampaignAsync(SmsLicenseId, new SmsPreviewRequest("Merhaba"));
+
+        resp.RecipientCount.Should().Be(12);
+        resp.SegmentsPerMessage.Should().Be(2);
+        resp.TotalCredits.Should().Be(24);
+        resp.Sufficient.Should().BeTrue();
+        handler.Requests[0].Method.Method.Should().Be("POST");
+        handler.Requests[0].RequestUri!.AbsolutePath
+            .Should().Be($"/api/v1/licenses/{SmsLicenseId}/sms-campaigns/preview");
+    }
+
+    [Fact]
+    public async Task CreateSmsCampaignAsync_returns_campaign_id()
+    {
+        var campaignId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+        var (client, handler) = BuildClient(_ => FakeHttpMessageHandler.Json(200,
+            $$"""{"campaignId":"{{campaignId}}","recipientCount":5,"totalCredits":5}"""));
+
+        var resp = await client.CreateSmsCampaignAsync(SmsLicenseId, new SmsCreateRequest("Kampanya"));
+
+        resp.CampaignId.Should().Be(campaignId);
+        resp.RecipientCount.Should().Be(5);
+        handler.Requests[0].Method.Method.Should().Be("POST");
+        handler.Requests[0].RequestUri!.AbsolutePath
+            .Should().Be($"/api/v1/licenses/{SmsLicenseId}/sms-campaigns");
+    }
+
+    [Fact]
+    public async Task GetSmsCampaignStatusAsync_parses_counts()
+    {
+        var campaignId = Guid.Parse("33333333-3333-3333-3333-333333333333");
+        var (client, handler) = BuildClient(_ => FakeHttpMessageHandler.Json(200,
+            $$"""{"campaignId":"{{campaignId}}","status":"completed","recipientCount":4,"sent":3,"failed":1,"skipped":0,"creditsRefunded":1,"createdAt":"2026-06-14T10:00:00Z","completedAt":"2026-06-14T10:01:00Z"}"""));
+
+        var resp = await client.GetSmsCampaignStatusAsync(SmsLicenseId, campaignId);
+
+        resp.Status.Should().Be("completed");
+        resp.Sent.Should().Be(3);
+        resp.Failed.Should().Be(1);
+        handler.Requests[0].RequestUri!.AbsolutePath
+            .Should().Be($"/api/v1/licenses/{SmsLicenseId}/sms-campaigns/{campaignId}");
+    }
+
+    [Fact]
+    public async Task ListSmsCampaignsAsync_returns_list_with_take_query()
+    {
+        var (client, handler) = BuildClient(_ => FakeHttpMessageHandler.Json(200,
+            """[{"campaignId":"44444444-4444-4444-4444-444444444444","status":"completed","messagePreview":"Indirim","recipientCount":3,"sent":3,"failed":0,"skipped":0,"creditsRefunded":0,"createdAt":"2026-06-14T10:00:00Z","completedAt":"2026-06-14T10:01:00Z"}]"""));
+
+        var rows = await client.ListSmsCampaignsAsync(SmsLicenseId, take: 20);
+
+        rows.Should().HaveCount(1);
+        rows[0].MessagePreview.Should().Be("Indirim");
+        rows[0].Sent.Should().Be(3);
+        handler.Requests[0].Method.Method.Should().Be("GET");
+        handler.Requests[0].RequestUri!.AbsolutePath
+            .Should().Be($"/api/v1/licenses/{SmsLicenseId}/sms-campaigns");
+        handler.Requests[0].RequestUri.Query.Should().Contain("take=20");
+    }
 }
