@@ -617,7 +617,7 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <TextBlock Foreground="#FCD34D" VerticalAlignment="Center" TextWrapping="Wrap"
-                           Text="Facebook mesajları görünmüyor — Facebook canlı sekmesini bir kez açıp birkaç saniye bekleyin; akış o zaman başlar."/>
+                           Text="Facebook'tan mesaj gelmiyor — yayında izleyici yoksa normaldir. Mesaj bekliyorsan Facebook canlı sekmesini bir kez açıp birkaç saniye bekle."/>
                 <Button Grid.Column="1" Content="✕" Width="28" Height="24" Margin="10,0,0,0"
                         Background="Transparent" Foreground="#FCD34D" BorderThickness="0"
                         ToolTip="Uyarıyı kapat"
