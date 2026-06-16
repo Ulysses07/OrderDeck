@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import '../globals.css';
 import { SITE_URL, BRAND } from '@/lib/i18n';
+import { fontVars } from '@/lib/fonts';
 
 /**
  * TR root layout. Next.js multi-root layout deseni: app/(tr)/layout.tsx ve
@@ -44,7 +45,7 @@ export const metadata: Metadata = {
 
 export default function TrRootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="tr" suppressHydrationWarning>
+    <html lang="tr" suppressHydrationWarning className={fontVars}>
       <body className="bg-[var(--color-bg)] text-[var(--color-text)]">
         {children}
       </body>

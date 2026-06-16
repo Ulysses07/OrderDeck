@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import '../globals.css';
 import { SITE_URL, BRAND } from '@/lib/i18n';
+import { fontVars } from '@/lib/fonts';
 
 /**
  * EN root layout — TR root ile bağımsız. SEO için `lang="en"` ve EN
@@ -43,7 +44,7 @@ export const metadata: Metadata = {
 
 export default function EnRootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" suppressHydrationWarning className={fontVars}>
       <body className="bg-[var(--color-bg)] text-[var(--color-text)]">
         {children}
       </body>
