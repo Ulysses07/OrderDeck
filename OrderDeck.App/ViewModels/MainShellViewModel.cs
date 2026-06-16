@@ -11,6 +11,7 @@ using CommunityToolkit.Mvvm.Input;
 using OrderDeck.App.Services;
 using OrderDeck.App.Services.IntakeForm;
 using OrderDeck.App.Views;
+using OrderDeck.Chat.Bridge;
 using OrderDeck.Chat.YouTube;
 using OrderDeck.Core.Chat;
 using OrderDeck.Core.Customers;
@@ -39,6 +40,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private readonly IntakeFormSyncService _intakeSync;
     private readonly SettingsStore _settingsStore;
     private readonly AnimationCatalogClient? _animationCatalogClient;
+    private readonly ExtensionBridgeServer? _bridge;
 
     // 500 messages = ~30 seconds of scroll-back at the projected 30 msg/sec
     // peak across IG + TT + FB + YT, ~70 seconds at the realistic 7 msg/sec
@@ -121,6 +123,12 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private string _chatHealthState = "off";
     [ObservableProperty] private string _chatHealthTooltip = "Chat takibi kapalı (yayın aktif değil)";
 
+    /// <summary>Facebook lazy-init uyarısı: FB sekmesi açık ve içerik script'i
+    /// tarıyor (scans&gt;0) ama hiç mesaj görmüyor (observed=0) → operatörün FB
+    /// sekmesini bir kez açıp akışı tetiklemesi gerekiyor. UpdateChatHealth
+    /// (5sn timer) tarafından sürülür.</summary>
+    [ObservableProperty] private bool _facebookHintVisible;
+
     [ObservableProperty] private int _newIntakeSubmissionsCount;
 
     public bool HasNewIntakeSubmissions => NewIntakeSubmissionsCount > 0;
@@ -149,7 +157,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         IntakeFormSyncService intakeSync,
         SettingsStore settingsStore,
         YouTubeModerationService? youTubeModeration = null,
-        AnimationCatalogClient? animationCatalogClient = null)
+        AnimationCatalogClient? animationCatalogClient = null,
+        ExtensionBridgeServer? bridge = null)
     {
         _labels = labels;
         _sessions = sessions;
@@ -160,6 +169,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         // Çekiliş kazananları belirlenince otomatik kazanan etiketi bas (ad + kod).
         // Hem manuel (DrawGiveawayNow) hem otomatik (süre dolunca) çekilişi kapsar.
         _giveaways.WinnersDrawn += OnGiveawayWinnersDrawn;
+        _bridge = bridge;
         _youTubeModeration = youTubeModeration;
         Banner = banner;
         _dispatcher = Dispatcher.CurrentDispatcher;
@@ -302,6 +312,66 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
                 ? $"Chat takibi açık ({sourceList}) — henüz mesaj yok"
                 : $"Chat takibi açık ({sourceList}) — son mesaj 60sn'den uzun süre önce, scraper takılmış olabilir";
         }
+
+        UpdateFacebookHint(hasActiveSession);
+    }
+
+    // Facebook lazy-init tespiti: FB içerik script'i tarıyor (scans>0) ama akış
+    // başlamadığı için hiç mesaj görmüyor (observed=0). Bu durumda operatöre
+    // "FB sekmesini bir kez aç" uyarısı gösterilir. Yanlış alarmı önlemek için:
+    // FB bir kez mesaj ürettiyse (_fbEverProduced) bir daha uyarmaz — "primed
+    // ama o an sessiz" durumu normaldir.
+    private static readonly TimeSpan FbStaleThreshold = TimeSpan.FromSeconds(25);
+    private DateTime _fbStaleSinceUtc = DateTime.MinValue;
+    private bool _fbEverProduced;
+    private bool _fbHintDismissed;
+
+    private void UpdateFacebookHint(bool hasActiveSession)
+    {
+        if (_bridge is null || !hasActiveSession)
+        {
+            // Yayın yok / bridge yok → durumu sıfırla.
+            _fbStaleSinceUtc = DateTime.MinValue;
+            _fbEverProduced = false;
+            _fbHintDismissed = false;
+            FacebookHintVisible = false;
+            return;
+        }
+
+        var fb = _bridge.GetLatestStats("facebook");
+        var fresh = fb is not null
+            && (DateTime.UtcNow - fb.At.UtcDateTime) < TimeSpan.FromSeconds(20);
+
+        // FB mesaj üretiyor → primed; bir daha uyarma.
+        if (fresh && (fb!.CommentsObserved > 0 || fb.Sent > 0))
+        {
+            _fbEverProduced = true;
+            _fbStaleSinceUtc = DateTime.MinValue;
+            FacebookHintVisible = false;
+            return;
+        }
+
+        // Lazy-init adayı: taze pencere var, tarıyor ama hiç üretmedi.
+        var stale = fresh && fb!.ScanCount > 0 && !_fbEverProduced;
+        if (stale && !_fbHintDismissed)
+        {
+            if (_fbStaleSinceUtc == DateTime.MinValue) _fbStaleSinceUtc = DateTime.UtcNow;
+            if (DateTime.UtcNow - _fbStaleSinceUtc >= FbStaleThreshold)
+                FacebookHintVisible = true;
+        }
+        else if (!stale)
+        {
+            // FB sekmesi kapalı/stats eski → uyarıyı gizle.
+            _fbStaleSinceUtc = DateTime.MinValue;
+            FacebookHintVisible = false;
+        }
+    }
+
+    [RelayCommand]
+    private void DismissFacebookHint()
+    {
+        _fbHintDismissed = true;
+        FacebookHintVisible = false;
     }
 
     private void DrainPendingChat()
