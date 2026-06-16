@@ -8,26 +8,29 @@
  * Beyaz button text'i düşük kontrast olur, bu yüzden #061829 (deep navy) kullanılıyor.
  */
 @theme {
-  --color-bg: #0a0e18;
-  --color-surface: #131826;
-  --color-surface-2: #1a2030;
-  --color-border: rgba(255, 255, 255, 0.08);
-  --color-border-strong: rgba(255, 255, 255, 0.16);
+  /* 2026-06 rebrand — landing tasarımıyla uyumlu: near-black + kırmızı/amber aksan. */
+  --color-bg: #090A0E;
+  --color-surface: #0F111A;
+  --color-surface-2: #161A26;
+  --color-border: rgba(255, 255, 255, 0.07);
+  --color-border-strong: rgba(255, 255, 255, 0.13);
 
-  --color-text: #e8eaf0;
-  --color-text-dim: #b4bac6;
-  --color-text-mute: #8b91a0;
+  --color-text: #F4F2EC;
+  --color-text-dim: #A6ACBA;
+  --color-text-mute: #868C9C;
 
-  --color-accent: #149CF3;
-  --color-accent-hot: #20C5F7;
-  --color-accent-deep: #0F63F5;
-  --color-accent-ink: #061829;
-  --color-danger: #ef4444;
-  --color-success: #22c55e;
-  --color-info: #3b82f6;
+  --color-accent: #FF4A38;
+  --color-accent-hot: #FF6A5A;
+  --color-accent-deep: #E23A2A;
+  --color-accent-ink: #180603;
+  --color-amber: #FFB23E;
+  --color-danger: #FF4A38;
+  --color-success: #2dd06f;
+  --color-info: #4D8DF6;
 
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
-  --font-mono: ui-monospace, "Cascadia Mono", "Segoe UI Mono", Menlo, Consolas, monospace;
+  --font-sans: var(--font-sans-od), "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-display: var(--font-disp), "Bricolage Grotesque", sans-serif;
+  --font-mono: var(--font-mono-od), "JetBrains Mono", ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
 }
 
 html {
@@ -66,11 +69,11 @@ body {
  * hero başlıkta "OrderDeck" markasını ya da CTA arka planını boyamak için.
  */
 .brand-gradient {
-  background: linear-gradient(135deg, #20C5F7 0%, #149CF3 45%, #0F63F5 100%);
+  background: linear-gradient(135deg, #FF4A38 0%, #FF6A5A 50%, #FFB23E 100%);
 }
 
 .brand-gradient-text {
-  background: linear-gradient(135deg, #20C5F7 0%, #149CF3 45%, #0F63F5 100%);
+  background: linear-gradient(135deg, #FF4A38 0%, #FF6A5A 50%, #FFB23E 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
