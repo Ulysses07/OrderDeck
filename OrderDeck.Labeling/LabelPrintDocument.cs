@@ -28,13 +28,18 @@ public static class LabelPrintDocument
     /// message + price (regular). The Y-marker for backup-promoted labels is drawn
     /// separately by <see cref="Build"/> (corner badge), not embedded in these lines.
     /// </summary>
-    public static IReadOnlyList<Line> BuildLines(string username, string messageText, decimal price)
+    public static IReadOnlyList<Line> BuildLines(string username, string messageText, decimal price,
+        bool isGift = false)
     {
-        var formattedPrice = FormatPrice(price);
+        // Çekiliş kazanan etiketi: fiyat yerine "HEDİYE" (satış değil). Alt satır
+        // = çekiliş kodu (messageText) + HEDİYE. Normal satışta fiyat + TL.
+        var second = isGift
+            ? $"{messageText}  HEDİYE"
+            : $"{messageText}  {FormatPrice(price)} TL";
         return new[]
         {
             new Line(username, IsBold: true),
-            new Line($"{messageText}  {formattedPrice} TL", IsBold: false)
+            new Line(second, IsBold: false)
         };
     }
 
@@ -81,7 +86,8 @@ public static class LabelPrintDocument
     /// </summary>
     [SupportedOSPlatform("windows")]
     public static PrintDocument Build(IReadOnlyList<Label> labels, AppSettings settings,
-        string? printerName, IReadOnlySet<string>? recipientPaysLabelIds = null)
+        string? printerName, IReadOnlySet<string>? recipientPaysLabelIds = null,
+        bool giftMode = false)
     {
         var doc = new PrintDocument
         {
@@ -111,7 +117,7 @@ public static class LabelPrintDocument
             // YouTube label'larında Username = stabil channel ID (UCxxx...) —
             // operatöre anlamsız. DisplayName varsa onu yaz.
             var displayLabel = ResolveDisplayLabel(label);
-            var lines = BuildLines(displayLabel, label.MessageText, label.Price);
+            var lines = BuildLines(displayLabel, label.MessageText, label.Price, giftMode);
 
             using var userFont = new Font(settings.LabelFontFamily,
                 settings.LabelUserFontSize, FontStyle.Bold);

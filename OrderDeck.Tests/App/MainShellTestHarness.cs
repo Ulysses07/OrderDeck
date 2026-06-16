@@ -45,11 +45,13 @@ internal static class MainShellTestHarness
     {
         public List<List<Label>> Calls { get; } = new();
         public List<IReadOnlySet<string>?> RecipientPaysCalls { get; } = new();
+        public List<List<Label>> GiftCalls { get; } = new();
         public void Print(IReadOnlyList<Label> labels, IReadOnlySet<string>? recipientPaysLabelIds = null)
         {
             Calls.Add(labels.ToList());
             RecipientPaysCalls.Add(recipientPaysLabelIds);
         }
+        public void PrintGiftLabels(IReadOnlyList<Label> labels) => GiftCalls.Add(labels.ToList());
     }
 
     public sealed record Harness(
