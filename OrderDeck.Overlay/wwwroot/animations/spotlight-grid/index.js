@@ -75,7 +75,7 @@ export default {
     for (let i = 0; i < visible; i++) {
       const cell = document.createElement('div');
       cell.className = 'spotlight-cell';
-      cell.textContent = (pool[i].DisplayName || pool[i].Username || '').slice(0, 14);
+      cell.textContent = (pool[i].displayName || pool[i].username || '').slice(0, 14);
       this._grid.appendChild(cell);
     }
   },
@@ -113,8 +113,8 @@ export default {
         }
 
         cells[nextIdx].classList.add('lit');
-        this._name.textContent = (this._pool[nextIdx].DisplayName ||
-                                  this._pool[nextIdx].Username || '');
+        this._name.textContent = (this._pool[nextIdx].displayName ||
+                                  this._pool[nextIdx].username || '');
         lastIdx = nextIdx;
         if (this._synth) this._synth.tick(900 + (Math.random() - 0.5) * 200);
 

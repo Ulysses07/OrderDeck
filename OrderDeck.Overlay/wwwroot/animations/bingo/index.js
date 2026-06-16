@@ -122,7 +122,7 @@ export default {
       // Random initial velocity
       const speed = 3 + Math.random() * 2;
       const dir   = Math.random() * Math.PI * 2;
-      const raw   = p.DisplayName || p.Username || '';
+      const raw   = p.displayName || p.username || '';
       this._balls.push({
         x, y,
         vx:       Math.cos(dir) * speed,

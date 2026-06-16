@@ -110,7 +110,7 @@ export default {
           this._activeTimers.push(setTimeout(() => card.remove(), 1000));
         }, 2100));
 
-        this._name.textContent = (p.DisplayName || p.Username || '');
+        this._name.textContent = (p.displayName || p.username || '');
         spawned++;
         this._activeTimers.push(setTimeout(spawnNext, stagger));
       };
@@ -122,7 +122,7 @@ export default {
   _spawnCard(p) {
     const card       = document.createElement('div');
     card.className   = 'falling-card';
-    card.textContent = (p.DisplayName || p.Username || '').slice(0, 14);
+    card.textContent = (p.displayName || p.username || '').slice(0, 14);
     card.style.background = SLICE_COLORS[Math.floor(Math.random() * SLICE_COLORS.length)];
     // Random horizontal position, kept within 10%–90% so cards stay visible.
     card.style.left = (10 + Math.random() * 80) + '%';
@@ -138,7 +138,7 @@ export default {
     return new Promise(resolve => {
       const card       = document.createElement('div');
       card.className   = 'falling-winner-card';
-      card.textContent = (winner.DisplayName || winner.Username || '');
+      card.textContent = (winner.displayName || winner.username || '');
       card.style.background = '#fef3c7';
       card.style.color      = '#1a1a1a';
       this._winnerEl.appendChild(card);
@@ -157,7 +157,7 @@ export default {
         card.removeEventListener('animationend', onAnimEnd);
         card.style.top = '240px';   // lock final position before class swap
         this._winnerEl.classList.add('landed');
-        this._name.textContent = winner.DisplayName || winner.Username || '';
+        this._name.textContent = winner.displayName || winner.username || '';
         if (this._synth) {
           this._synth.ding(1500);
           this._activeTimers.push(setTimeout(() => { if (this._synth) this._synth.fanfare(); }, 200));

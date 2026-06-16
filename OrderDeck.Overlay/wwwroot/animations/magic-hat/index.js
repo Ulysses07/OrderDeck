@@ -128,7 +128,7 @@ export default {
   _spawnFlyingCard(p) {
     const card       = document.createElement('div');
     card.className   = 'hat-flying-card';
-    card.textContent = (p.DisplayName || p.Username || '').slice(0, 14);
+    card.textContent = (p.displayName || p.username || '').slice(0, 14);
     card.style.background = SLICE_COLORS[Math.floor(Math.random() * SLICE_COLORS.length)];
 
     // Random start position outside the hat, in stage coords (percent).
@@ -160,10 +160,10 @@ export default {
 
   async _revealPhase(winner, durationMs) {
     return new Promise(resolve => {
-      this._winner.textContent = winner.DisplayName || winner.Username || '';
+      this._winner.textContent = winner.displayName || winner.username || '';
       requestAnimationFrame(() => this._winner.classList.add('rising'));
       this._spawnSparkles(20);
-      this._name.textContent = winner.DisplayName || winner.Username || '';
+      this._name.textContent = winner.displayName || winner.username || '';
       if (this._synth) {
         this._synth.ding(1500);
         this._activeTimers.push(setTimeout(() => { if (this._synth) this._synth.fanfare(); }, 200));
