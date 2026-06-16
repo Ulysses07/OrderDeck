@@ -59,4 +59,21 @@ public sealed class LabelPrinter : ILabelPrinter
                 "Print done: {Count} label(s) in {Elapsed:0.00}s",
                 labels.Count, sw.Elapsed.TotalSeconds);
     }
+
+    /// <summary>Çekiliş kazanan etiketleri — fiyat yerine "HEDİYE" basılır
+    /// (giftMode). Satış akışından ayrı; ciroya/kuyruğa girmez.</summary>
+    public void PrintGiftLabels(IReadOnlyList<Label> labels)
+    {
+        if (labels.Count == 0)
+        {
+            _log.LogInformation("PrintGiftLabels called with empty batch — no-op");
+            return;
+        }
+
+        using var doc = LabelPrintDocument.Build(labels, _settings, _settings.PrinterName,
+            recipientPaysLabelIds: null, giftMode: true);
+        _log.LogInformation("Printing {Count} gift label(s) on '{Printer}'",
+            labels.Count, doc.PrinterSettings.PrinterName);
+        doc.Print();
+    }
 }

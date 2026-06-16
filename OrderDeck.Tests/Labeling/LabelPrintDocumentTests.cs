@@ -65,6 +65,18 @@ public class LabelPrintDocumentTests
         lines[1].Text.Should().Contain("99.5").And.Contain("TL");
     }
 
+    [Fact]
+    public void BuildLines_gift_mode_shows_keyword_and_HEDIYE_not_price()
+    {
+        // Çekiliş kazanan etiketi: ad + çekiliş kodu (keyword) + "HEDİYE", fiyat YOK.
+        var lines = LabelPrintDocument.BuildLines("Ayşe Yılmaz", "KAZAN", price: 0m, isGift: true);
+
+        lines.Should().HaveCount(2);
+        lines[0].Text.Should().Be("Ayşe Yılmaz");
+        lines[1].Text.Should().Contain("KAZAN").And.Contain("HEDİYE");
+        lines[1].Text.Should().NotContain("TL");
+    }
+
     // ── ResolveDisplayLabel: YouTube channel ID fix ──────────────────────
 
     private static Label MakeLabel(string username, string? displayName) =>

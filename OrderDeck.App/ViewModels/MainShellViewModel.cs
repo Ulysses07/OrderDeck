@@ -77,6 +77,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private LabelViewModel? _selectedQueueItem;
 
     private string? _activeGiveawayId;
+    // Çekiliş kazanan etiketinde basılacak "çekiliş kodu" = başlatırken girilen
+    // keyword. WinnersDrawn event'i keyword taşımadığı için burada tutulur.
+    private string? _activeGiveawayKeyword;
 
     /// <summary>
     /// When the user clicks the "Yedek+" chip on a label, this stays set until
@@ -154,6 +157,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _customers = customers;
         _customerRepo = customerRepo;
         _giveaways = giveaways;
+        // Çekiliş kazananları belirlenince otomatik kazanan etiketi bas (ad + kod).
+        // Hem manuel (DrawGiveawayNow) hem otomatik (süre dolunca) çekilişi kapsar.
+        _giveaways.WinnersDrawn += OnGiveawayWinnersDrawn;
         _youTubeModeration = youTubeModeration;
         Banner = banner;
         _dispatcher = Dispatcher.CurrentDispatcher;
@@ -795,9 +801,39 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             animationId: animationId);
 
         _activeGiveawayId = g.Id;
+        _activeGiveawayKeyword = g.Keyword;
         IsGiveawayActive = true;
         UpdateGiveawayCanStart();
         Banner.StartTracking(g);
+    }
+
+    // Çekiliş çekilince her kazanan için otomatik "kazanan etiketi" basar:
+    // üst satır = kazanan adı, alt satır = çekiliş kodu (keyword) + "HEDİYE".
+    // Satış DEĞİL → LabelService'e kaydedilmez, doğrudan yazıcıya gider
+    // (ciro/kuyruk/sync etkilenmez). Yazdırma UI'yi dondurmasın diye Task.Run.
+    private void OnGiveawayWinnersDrawn(GiveawayWinnersDrawnEvent e)
+    {
+        if (e.Winners.Count == 0) return;
+        var keyword = _activeGiveawayKeyword ?? string.Empty;
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var labels = e.Winners.Select(w => new Label(
+            Id: Guid.NewGuid().ToString("N"),
+            SessionId: string.Empty,
+            CustomerId: string.Empty,
+            Platform: w.Platform,
+            Username: w.Username,
+            MessageText: keyword,
+            Code: null,
+            Price: 0m,
+            AddedAt: now,
+            PrintedAt: now,
+            DisplayName: w.DisplayName)).ToList();
+
+        _ = Task.Run(() =>
+        {
+            try { _printer.PrintGiftLabels(labels); }
+            catch { /* best-effort: yazıcı hatası çekiliş akışını bozmasın */ }
+        });
     }
 
     [RelayCommand(CanExecute = nameof(CanWrite))]

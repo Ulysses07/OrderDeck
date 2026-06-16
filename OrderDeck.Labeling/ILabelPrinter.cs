@@ -13,4 +13,9 @@ public interface ILabelPrinter
     /// hiçbir etikette mark yok (geriye uyumlu çağrılar default davranışı korur).
     /// Caller müşterinin RecipientPaysActive bayrağından bu set'i oluşturur.</param>
     void Print(IReadOnlyList<Label> labels, IReadOnlySet<string>? recipientPaysLabelIds = null);
+
+    /// <summary>Çekiliş kazananları için etiket basar. Normal satış etiketinden
+    /// farkı: fiyat yerine "HEDİYE" yazar (bu etiketler satış değil). İçerik =
+    /// kazanan adı + çekiliş kodu (Label.MessageText). Boş listede no-op.</summary>
+    void PrintGiftLabels(IReadOnlyList<Label> labels);
 }
