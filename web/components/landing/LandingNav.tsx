@@ -1,9 +1,12 @@
 'use client';
 import { useEffect, useState } from 'react';
+import { landingCopy, type LandingLocale } from './copy';
 
 /** Sticky nav — scroll'da (>12px) zemin koyulaşır + alt çizgi belirir. */
-export default function LandingNav() {
+export default function LandingNav({ locale }: { locale: LandingLocale }) {
   const [scrolled, setScrolled] = useState(false);
+  const c = landingCopy[locale].nav;
+  const home = locale === 'tr' ? '/' : '/en/';
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 12);
@@ -15,7 +18,7 @@ export default function LandingNav() {
   return (
     <header className={`nav${scrolled ? ' scrolled' : ''}`} id="nav">
       <div className="nav__inner">
-        <a className="brand" href="#top" aria-label="OrderDeck">
+        <a className="brand" href={home} aria-label="OrderDeck">
           <span className="brand__mark" aria-hidden="true">
             <span className="brand__dot" />
           </span>
@@ -24,16 +27,18 @@ export default function LandingNav() {
           </span>
         </a>
         <nav className="nav__links">
-          <a href="#ozellikler">Özellikler</a>
-          <a href="#cekilis">Çekiliş</a>
-          <a href="#shopper">Mobil</a>
-          <a href="#fiyat">Fiyat</a>
-          <a href="#sss">SSS</a>
+          {c.links.map((l) => (
+            <a href={l.href} key={l.href}>
+              {l.label}
+            </a>
+          ))}
         </nav>
         <div className="nav__actions">
-          <a className="nav__lang" href="/en/">EN</a>
+          <a className="nav__lang" href={c.langHref}>
+            {c.lang}
+          </a>
           <a href="#indir" className="btn btn--primary btn--sm">
-            İndir
+            {c.download}
           </a>
         </div>
       </div>

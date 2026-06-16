@@ -1,26 +1,14 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
+import { landingCopy, type LandingLocale } from './copy';
 
 type Msg = { p: string; u: string; m: string; buy?: boolean; price?: number; item?: string };
 
-const POOL: Msg[] = [
-  { p: 'ig', u: 'ayse34', m: 'aldım 250', buy: true, price: 250, item: 'kırmızı 38' },
-  { p: 'tt', u: 'mehmet_k', m: 'XL var mı?' },
-  { p: 'fb', u: 'fatma.gul', m: 'aldım kırmızı 38', buy: true, price: 180, item: 'kırmızı 38' },
-  { p: 'yt', u: 'ali_eks', m: 'bana da ayır' },
-  { p: 'ig', u: 'zey.no', m: 'çekilişe yazıldım' },
-  { p: 'tt', u: 'derya.b', m: 'fiyat ne kadar' },
-  { p: 'ig', u: 'selin_24', m: 'aldım 320', buy: true, price: 320, item: 'mor triko' },
-  { p: 'fb', u: 'hatice.k', m: 'kargo dahil mi' },
-  { p: 'yt', u: 'burak.t', m: 'aldım 150', buy: true, price: 150, item: 'şal krem' },
-  { p: 'tt', u: 'esra_m', m: 'beden tablosu?' },
-  { p: 'ig', u: 'gul.han', m: 'aldım 410', buy: true, price: 410, item: 'kaban L' },
-  { p: 'fb', u: 'yusuf99', m: 'stok kaldı mı' },
-];
-
 let uid = 0;
 
-export default function StudioPanel() {
+export default function StudioPanel({ locale }: { locale: LandingLocale }) {
+  const c = landingCopy[locale].studio;
+  const POOL = landingCopy[locale].chatPool as readonly Msg[];
   const [clock, setClock] = useState('02:14:09');
   const [viewers, setViewers] = useState('1.284');
   const [rate, setRate] = useState(186);
@@ -107,7 +95,7 @@ export default function StudioPanel() {
           if (st.current.paused) return;
           st.current.viewers += Math.floor(Math.random() * 21) - 8;
           if (st.current.viewers < 900) st.current.viewers = 900;
-          setViewers(st.current.viewers.toLocaleString('tr-TR'));
+          setViewers(st.current.viewers.toLocaleString(locale === 'tr' ? 'tr-TR' : 'en-US'));
           setRate(150 + Math.floor(Math.random() * 90));
         }, 2600),
       );
@@ -122,27 +110,28 @@ export default function StudioPanel() {
       intervals.forEach((id) => clearInterval(id));
       clearTimeout(feedTimer);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
-    <div className="studio reveal" id="nasil" aria-label="OrderDeck canlı yayın paneli (canlandırma)">
+    <div className="studio reveal" id="nasil" aria-label="OrderDeck">
       <div className="studio__bar">
         <div className="studio__dots">
           <i />
           <i />
           <i />
         </div>
-        <span className="studio__file">OrderDeck — yayın #318</span>
+        <span className="studio__file">{c.file}</span>
         <span className="studio__live">
           <i />
-          CANLI <b>{clock}</b>
+          {c.live} <b>{clock}</b>
         </span>
         <span className="studio__viewers">👁 <b>{viewers}</b></span>
         <button
           className="studio__pause"
           onClick={() => setPaused((p) => !p)}
-          aria-label={paused ? 'Animasyonu sürdür' : 'Animasyonu duraklat'}
-          title={paused ? 'Animasyonu sürdür' : 'Animasyonu duraklat'}
+          aria-label={paused ? c.pauseOff : c.pauseOn}
+          title={paused ? c.pauseOff : c.pauseOn}
         >
           {paused ? '▶' : '⏸'}
         </button>
@@ -151,10 +140,8 @@ export default function StudioPanel() {
         {/* CHAT */}
         <div className="panel panel--chat">
           <div className="panel__head">
-            <span>BİRLEŞİK SOHBET</span>
-            <span className="panel__rate">
-              4 platform · <b>{rate}</b>/dk
-            </span>
+            <span>{c.chatHead}</span>
+            <span className="panel__rate">{c.chatRate(rate)}</span>
           </div>
           <div className="chat">
             {rows.map((r) => (
@@ -164,34 +151,32 @@ export default function StudioPanel() {
                 </span>
                 <span className="chat__u">{r.u}</span>
                 <span className="chat__m">{r.m}</span>
-                {r.buy && <span className="chat__tag">F2 → ETİKET</span>}
+                {r.buy && <span className="chat__tag">F2 → {locale === 'tr' ? 'ETİKET' : 'LABEL'}</span>}
               </div>
             ))}
           </div>
-          <div className="chat__filter">
-            spam: link içeren 2 mesaj <b>filtrelendi</b>
-          </div>
+          <div className="chat__filter">{c.filter}</div>
         </div>
         {/* LABEL / PRINTER */}
         <div className="panel panel--label">
           <div className="panel__head">
-            <span>SİPARİŞ → ETİKET</span>
+            <span>{c.labelHead}</span>
           </div>
           <div className="labeler">
             <div className="labeler__form">
               <div className="lf__row">
-                <span>MÜŞTERİ</span>
+                <span>{c.lfUser}</span>
                 <b>{label.u}</b>
               </div>
               <div className="lf__row">
-                <span>MESAJ</span>
+                <span>{c.lfMsg}</span>
                 <b>{label.m}</b>
               </div>
               <div className="lf__price">
                 ₺ <b>{label.price}</b>
               </div>
               <div className="lf__btn">
-                Yazdır <kbd>⏎</kbd>
+                {c.lfBtn} <kbd>⏎</kbd>
               </div>
             </div>
             <div className="printer">
@@ -203,11 +188,11 @@ export default function StudioPanel() {
                 <div className="ticket__msg">{ticket.msg}</div>
                 <div className="ticket__perf" />
                 <div className="ticket__price">
-                  <span>TUTAR</span>
+                  <span>{c.tkAmount}</span>
                   <b>₺{ticket.price}</b>
                 </div>
                 <div className="ticket__bar" />
-                <div className="ticket__foot">{ticket.time} · YAYIN #318</div>
+                <div className="ticket__foot">{ticket.time} · {c.tkFoot}</div>
               </div>
             </div>
           </div>
@@ -215,7 +200,7 @@ export default function StudioPanel() {
         {/* WHEEL */}
         <div className="panel panel--wheel">
           <div className="panel__head">
-            <span>ÇEKİLİŞ</span>
+            <span>{c.wheelHead}</span>
           </div>
           <div className="wheelbox">
             <div className="wheel">
@@ -224,7 +209,7 @@ export default function StudioPanel() {
             <div className="wheel__ptr" />
           </div>
           <div className="wheelbox__meta">
-            <b>{parts}</b> katılımcı
+            <b>{parts}</b> {c.parts}
           </div>
         </div>
       </div>
