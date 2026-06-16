@@ -1,18 +1,14 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
+import { landingCopy, type LandingLocale } from './copy';
 
 type Sample = { plat: string; user: string; item: string; price: number; cargo: boolean; standby: boolean };
 
-const SAMPLES: Sample[] = [
-  { plat: 'IG', user: 'ayse34', item: 'kırmızı triko · 38', price: 250, cargo: false, standby: false },
-  { plat: 'TT', user: 'mehmet_k', item: 'kaban · L', price: 410, cargo: true, standby: false },
-  { plat: 'FB', user: 'selin_24', item: 'mor elbise · M', price: 180, cargo: false, standby: true },
-  { plat: 'YT', user: 'gul.han', item: 'şal · krem', price: 120, cargo: true, standby: false },
-];
-
 let bticketKey = 0;
 
-export default function BigPrinter() {
+export default function BigPrinter({ locale }: { locale: LandingLocale }) {
+  const c = landingCopy[locale].printer;
+  const SAMPLES = landingCopy[locale].printerSamples as readonly Sample[];
   const [ticket, setTicket] = useState<(Sample & { key: number; total: number; time: string }) | null>(null);
   const [status, setStatus] = useState<'idle' | 'printed'>('idle');
   const ref = useRef<HTMLDivElement>(null);
@@ -56,16 +52,16 @@ export default function BigPrinter() {
     <div className="spot__demo reveal">
       <div className="bigprinter" ref={ref}>
         <div className="bigprinter__head">
-          <span className="bp__dot" /> termal yazıcı · hazır
+          <span className="bp__dot" /> {c.head}
           <span className="bp__status" style={{ color: status === 'printed' ? 'var(--red)' : 'var(--amber)' }}>
-            {status === 'printed' ? 'BASILDI' : 'BEKLİYOR'}
+            {status === 'printed' ? c.printed : c.idle}
           </span>
         </div>
         <div className="bigprinter__slot" />
         <div className="bigprinter__feed">
           {ticket && (
             <div className="bticket" key={ticket.key}>
-              <div className="bticket__top">ORDERDECK · YAYIN #318</div>
+              <div className="bticket__top">ORDERDECK · {c.yayin}</div>
               <div className="bticket__perf" />
               <div className="bticket__rw">
                 <span>
@@ -79,28 +75,28 @@ export default function BigPrinter() {
               </div>
               {ticket.standby && (
                 <div className="bticket__rw standby">
-                  <span>YEDEK ALICI</span>
+                  <span>{c.standby}</span>
                   <span className="flag">STANDBY</span>
                 </div>
               )}
               {ticket.cargo && (
                 <div className="bticket__rw">
-                  <span>kargo (eşik altı)</span>
+                  <span>{c.cargo}</span>
                   <span>+₺60</span>
                 </div>
               )}
               <div className="bticket__perf" />
               <div className="bticket__price">
-                <span>TUTAR</span>
+                <span>{c.amount}</span>
                 <b>₺{ticket.total}</b>
               </div>
               <div className="bticket__bar" />
-              <div className="bticket__foot">OrderDeck ile basıldı · {ticket.time}</div>
+              <div className="bticket__foot">{c.foot} · {ticket.time}</div>
             </div>
           )}
         </div>
         <button className="bigprinter__btn" onClick={printBig}>
-          Etiketi bas <kbd>F2</kbd>
+          {c.btn} <kbd>F2</kbd>
         </button>
       </div>
     </div>

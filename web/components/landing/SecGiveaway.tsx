@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
+import { landingCopy, type LandingLocale } from './copy';
 
 const NAMES = [
   '@ayse34',
@@ -15,7 +16,8 @@ const NAMES = [
 ];
 
 /** 04 · Çekiliş bölümü — çark (sol) + kopya/buton (sağ) aynı state'i paylaşır. */
-export default function SecGiveaway() {
+export default function SecGiveaway({ locale }: { locale: LandingLocale }) {
+  const c = landingCopy[locale].giveaway;
   const [winner, setWinner] = useState<string | null>(null);
   const [spinningLabel, setSpinningLabel] = useState(false);
   const wheelRef = useRef<HTMLDivElement>(null);
@@ -72,45 +74,46 @@ export default function SecGiveaway() {
       <div className="wrap cek__grid">
         <div className="cek__stage reveal">
           <div className="obs">
-            <span className="obs__tag">OBS YAYIN KATMANI · CANLI</span>
+            <span className="obs__tag">{c.obsTag}</span>
             <div className="bigwheel-box">
               <div className="bigwheel" ref={wheelRef} />
               <div className="bigwheel__ptr" />
               <div className="bigwheel__center" onClick={spin}>
-                {spinningLabel ? '…' : 'ÇEVİR'}
+                {spinningLabel ? '…' : c.spin}
               </div>
             </div>
             <div className={`obs__winner${winner ? ' has' : ''}`}>
               {winner ? (
                 <>
-                  🏆 kazanan: <b>{winner}</b> · etiketi basıldı
+                  {c.winnerPre}
+                  <b>{winner}</b>
+                  {c.winnerPost}
                 </>
               ) : spinningLabel ? (
-                'çark dönüyor…'
+                c.spinning
               ) : (
-                'kazanan bekleniyor…'
+                c.waiting
               )}
             </div>
           </div>
         </div>
         <div className="cek__copy reveal">
-          <span className="kicker kicker--amber">04 · ÇEKİLİŞ</span>
-          <h2>Çekiliş, izleyicinin gözü önünde döner</h2>
-          <p>
-            Anahtar kelimeyi söyle; yazan herkes otomatik listeye girer. Çark OBS yayın
-            katmanında döner, kazananı binlerce kişi aynı anda görür. İtiraz yok, ekran
-            görüntüsü isteyen yok.
-          </p>
+          <span className="kicker kicker--amber">{c.kicker}</span>
+          <h2>{c.h2}</h2>
+          <p>{c.p}</p>
           <div className="cek__row">
-            <div className="cek__pill">10+ çark &amp; animasyon</div>
-            <div className="cek__pill">mükerrer katılım engeli</div>
+            {c.pills.map((pill) => (
+              <div className="cek__pill" key={pill}>
+                {pill}
+              </div>
+            ))}
           </div>
           <p className="cek__kicker">
-            <b>Kazanan etiketi otomatik basılır.</b> Çekiliş biter bitmez kazananın etiketi
-            yazıcıdan çıkar — ödülü kim aldı, kayıt altında.
+            <b>{c.noteB}</b>
+            {c.note}
           </p>
           <button className="btn btn--amber btn--lg" onClick={spin}>
-            Çarkı çevir
+            {c.btn}
           </button>
         </div>
       </div>
