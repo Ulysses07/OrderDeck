@@ -103,7 +103,7 @@ export default {
       const p    = pool[i % pool.length];
       const cell = document.createElement('div');
       cell.className   = 'roulette-cell';
-      cell.textContent = (p.DisplayName || p.Username || '').slice(0, 14);
+      cell.textContent = (p.displayName || p.username || '').slice(0, 14);
       cell.style.background = SLICE_COLORS[i % SLICE_COLORS.length];
       this._strip.appendChild(cell);
     }

@@ -113,7 +113,7 @@ export default {
         ctx.save();
         ctx.translate(cx, cy);
         ctx.rotate(angle);
-        const text = (participants[i].DisplayName || participants[i].Username || '').slice(0, 14);
+        const text = (participants[i].displayName || participants[i].username || '').slice(0, 14);
         ctx.shadowColor = 'rgba(0,0,0,0.65)';
         ctx.shadowBlur = 4;
         ctx.fillText(text, outerR - 14, 0);
@@ -163,7 +163,7 @@ export default {
         const idx = Math.floor(normalised / slice) % pool.length;
         if (idx !== lastHighlightIdx) {
           const p = pool[idx];
-          this._name.textContent = p.DisplayName || p.Username || '';
+          this._name.textContent = p.displayName || p.username || '';
           lastHighlightIdx = idx;
           if (this._synth) this._synth.tick(900);
         }
@@ -172,7 +172,7 @@ export default {
           requestAnimationFrame(frame);
         } else {
           this._name.textContent =
-            pool[winnerIndex].DisplayName || pool[winnerIndex].Username || '';
+            pool[winnerIndex].displayName || pool[winnerIndex].username || '';
           this._root.classList.add('landed');
           if (this._synth) {
             this._synth.ding(1320);

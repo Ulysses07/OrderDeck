@@ -99,7 +99,7 @@ export default {
     // second-to-last repeat so the deceleration always has room.
     // Target index = last repeat's start + winner's position in shuffled.
     const winnerInShuffle = shuffled.findIndex(
-      p => p.Username === winner.Username && p.Platform === winner.Platform
+      p => p.username === winner.username && p.platform === winner.platform
     );
     const landingIdx = (repeats - 1) * shuffled.length +
                        (winnerInShuffle >= 0 ? winnerInShuffle : 0);
@@ -113,7 +113,7 @@ export default {
       const div = document.createElement('div');
       div.className = 'slot-cell';
       div.dataset.idx = idx;
-      div.textContent = p.DisplayName || p.Username || '';
+      div.textContent = p.displayName || p.username || '';
       this._strip.appendChild(div);
     });
 

@@ -72,7 +72,7 @@ export default {
       await this._racePhase(lanePool, winnerLaneIdx, dur);
 
       // Phase B (finish reveal) is woven into _racePhase's final frame.
-      this._name.textContent = winner.DisplayName || winner.Username || '';
+      this._name.textContent = winner.displayName || winner.username || '';
 
       // Phase C — pause before next winner.
       await new Promise(r => setTimeout(r, 900));
@@ -137,7 +137,7 @@ export default {
 
       const car  = document.createElement('div');
       car.className   = 'race-car';
-      car.textContent = (p.DisplayName || p.Username || '').slice(0, 14);
+      car.textContent = (p.displayName || p.username || '').slice(0, 14);
       car.style.background = SLICE_COLORS[i % SLICE_COLORS.length];
 
       lane.appendChild(car);

@@ -91,7 +91,7 @@ export default {
       const cell = document.createElement('div');
       cell.className = 'elim-cell';
       cell.dataset.idx = String(i);
-      cell.textContent = (pool[i].DisplayName || pool[i].Username || '').slice(0, 14);
+      cell.textContent = (pool[i].displayName || pool[i].username || '').slice(0, 14);
       if (wonIds.has(i)) cell.classList.add('champion');
       this._grid.appendChild(cell);
     }
@@ -120,7 +120,7 @@ export default {
         const cell = this._grid.querySelector(`[data-idx="${target}"]`);
         if (cell) {
           cell.classList.add('eliminating');
-          this._name.textContent = (pool[target].DisplayName || pool[target].Username || '');
+          this._name.textContent = (pool[target].displayName || pool[target].username || '');
           if (this._synth) this._synth.kick();
           // Drop the cell after the flash animation completes.
           this._activeTimers.push(setTimeout(() => {
@@ -141,7 +141,7 @@ export default {
     return new Promise(resolve => {
       const cell = this._grid.querySelector(`[data-idx="${winnerIdx}"]`);
       if (cell) cell.classList.add('winner');
-      this._name.textContent = winner.DisplayName || winner.Username || '';
+      this._name.textContent = winner.displayName || winner.username || '';
       this._status.textContent = 'KAZANAN!';
       if (this._synth) this._synth.fanfare();
       this._activeTimers.push(setTimeout(resolve, durationMs));

@@ -64,7 +64,7 @@ export default {
       await this._peelTopCard();
       await this._flipPhase(winner, isFirst ? 1200 : 800);
 
-      this._name.textContent = winner.DisplayName || winner.Username || '';
+      this._name.textContent = winner.displayName || winner.username || '';
       this._root.classList.add('landed');
 
       await new Promise(r => setTimeout(r, 900));
@@ -182,7 +182,7 @@ export default {
     return new Promise(resolve => {
       const card  = this._stage.firstElementChild;
       const front = card.querySelector('.card-front-name');
-      front.textContent = winner.DisplayName || winner.Username || '';
+      front.textContent = winner.displayName || winner.username || '';
 
       const start = performance.now();
 
