@@ -376,31 +376,6 @@ export default function HomeTr() {
           </div>
         </section>
 
-        {/* ===== GALLERY ===== */}
-        <section className="sec gallery" id="ekranlar">
-          <div className="wrap">
-            <div className="sec__head sec__head--center reveal">
-              <span className="kicker">UYGULAMADAN</span>
-              <h2>Maket değil, gerçek ekranlar</h2>
-              <p>OrderDeck’in kendi arayüzünden kareler.</p>
-            </div>
-            <div className="gallery__grid reveal">
-              <figure className="shot">
-                <div className="shot__slot">Yayın paneli ekran görüntüsü</div>
-                <figcaption>Birleşik yayın paneli</figcaption>
-              </figure>
-              <figure className="shot">
-                <div className="shot__slot">Sipariş / etiket ekranı</div>
-                <figcaption>Sipariş &amp; etiket</figcaption>
-              </figure>
-              <figure className="shot">
-                <div className="shot__slot">Çekiliş / OBS overlay</div>
-                <figcaption>Çekiliş &amp; OBS overlay</figcaption>
-              </figure>
-            </div>
-          </div>
-        </section>
-
         {/* ===== PRICING ===== */}
         <section className="price" id="fiyat">
           <div className="wrap">
