@@ -43,13 +43,6 @@
             </Border>
         </Grid>
 
-        <!-- İYS bilgi şeridi -->
-        <Border Grid.Row="1" Background="#3A2E12" BorderBrush="#A16207" BorderThickness="1"
-                CornerRadius="6" Padding="10" Margin="0,10,0,0">
-            <TextBlock TextWrapping="Wrap" Foreground="#FCD34D" FontSize="12"
-                       Text="Gerçek gönderim, Netgsm İYS onayına bağlıdır. Onay tamamlanana kadar kampanya oluşturulabilir fakat gönderimler başarısız olur ve krediler otomatik iade edilir."/>
-        </Border>
-
         <!-- Mesaj -->
         <StackPanel Grid.Row="2" Margin="0,12,0,0">
             <TextBlock Text="Mesaj" Style="{StaticResource MutedText}" Margin="0,0,0,4"/>
