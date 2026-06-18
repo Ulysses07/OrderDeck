@@ -150,7 +150,7 @@ export const landingCopy = {
       ['Yerel ve gizli', 'Sohbet verileri senin makinende kalır. OrderDeck sunucularına gönderilmez; uygulama kapanınca silinir.', null],
       ['Yedekleme & geri yükleme', 'Veriyi yedekle, geri yükle, lisansı başka makineye taşı. Arıza senin işini durdurmaz.', null],
       ['Otomatik güncelleme', 'Yeni sürümler uygulama içinden gelir. Sen sadece yayına bak.', null],
-      ['Toplu SMS kampanyaları', 'Müşteri listene toplu kampanya. ', 'Çok yakında.'],
+      ['Toplu SMS kampanyaları', 'Müşteri listene tek tıkla toplu SMS kampanyası gönder.', null],
     ],
     pricing: {
       kicker: 'FİYATLANDIRMA',
@@ -373,7 +373,7 @@ export const landingCopy = {
       ['Local and private', 'Chat data stays on your machine. It is never sent to OrderDeck servers; it’s wiped when the app closes.', null],
       ['Backup & restore', 'Back up data, restore it, move your license to another machine. A breakdown won’t stop your work.', null],
       ['Automatic updates', 'New versions arrive from inside the app. You just focus on the stream.', null],
-      ['Bulk SMS campaigns', 'Bulk campaigns to your customer list. ', 'Coming soon.'],
+      ['Bulk SMS campaigns', 'Send bulk SMS campaigns to your customer list in one click.', null],
     ],
     pricing: {
       kicker: 'PRICING',
