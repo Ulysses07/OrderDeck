@@ -2,485 +2,509 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:OrderDeck.App.Controls"
-        Title="Ayarlar" Width="540" Height="580"
+        Title="Ayarlar" Width="980" Height="680" MinWidth="860" MinHeight="560"
         WindowStartupLocation="CenterOwner"
-        Background="#FF1A1A1A" Foreground="White">
+        Background="{StaticResource S.WindowBg}" Foreground="{StaticResource S.Text}"
+        FontFamily="{StaticResource S.Font.Body}">
+    <!-- NOT: Tüm görünüm stilleri SettingsTheme.xaml'den gelir ve YALNIZ bu
+         pencereye scope'ludur (global DarkControls'ü diğer dialog'larda bozmaz).
+         Tüm {Binding} ifadeleri ve code-behind handler'ları eski dialog ile
+         birebir aynıdır — yalnız görünüm yenilendi. -->
     <Window.Resources>
-        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="/Themes/SettingsTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        </ResourceDictionary>
     </Window.Resources>
-    <Grid Margin="16">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-        </Grid.RowDefinitions>
 
-        <TabControl Grid.Row="0" Background="#FF1A1A1A" Foreground="White">
-            <!-- Yazıcı tab -->
-            <TabItem Header="Yazıcı">
-                <Grid Margin="12">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="160"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                    </Grid.RowDefinitions>
+    <DockPanel>
+        <!-- Header -->
+        <Border DockPanel.Dock="Top" Background="{StaticResource S.WindowBg}"
+                BorderBrush="{StaticResource S.Line}" BorderThickness="0,0,0,1"
+                Padding="30,16">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock Text="OrderDeck" FontFamily="{StaticResource S.Font.Display}"
+                           FontSize="20" FontWeight="Bold" Foreground="{StaticResource S.Text}"/>
+                <Border Width="1" Background="{StaticResource S.Line2}" Margin="14,2,14,2"/>
+                <TextBlock Text="Ayarlar" FontSize="14" Foreground="{StaticResource S.Dim}"
+                           VerticalAlignment="Center"/>
+            </StackPanel>
+        </Border>
 
-                    <TextBlock Grid.Row="0" Grid.Column="0" Text="Yazıcı:" Margin="0,8,8,8"/>
-                    <ComboBox  Grid.Row="0" Grid.Column="1"
-                               ItemsSource="{Binding AvailablePrinters}"
-                               SelectedItem="{Binding SelectedPrinter, UpdateSourceTrigger=PropertyChanged}"
-                               Margin="0,4"/>
-
-                    <TextBlock Grid.Row="1" Grid.Column="0" Text="Etiket genişliği (mm):" Margin="0,8,8,8"/>
-                    <TextBox   Grid.Row="1" Grid.Column="1"
-                               Text="{Binding LabelWidthMm, UpdateSourceTrigger=PropertyChanged}"
-                               Padding="6" Margin="0,4"/>
-
-                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Etiket yüksekliği (mm):" Margin="0,8,8,8"/>
-                    <TextBox   Grid.Row="2" Grid.Column="1"
-                               Text="{Binding LabelHeightMm, UpdateSourceTrigger=PropertyChanged}"
-                               Padding="6" Margin="0,4"/>
-
-                    <TextBlock Grid.Row="3" Grid.Column="0" Text="Etiket aralığı (mm):" Margin="0,8,8,8"/>
-                    <TextBox   Grid.Row="3" Grid.Column="1"
-                               Text="{Binding LabelGapMm, UpdateSourceTrigger=PropertyChanged}"
-                               Padding="6" Margin="0,4"/>
-
-                    <TextBlock Grid.Row="4" Grid.Column="0" Text="Yazı tipi:" Margin="0,8,8,8"/>
-                    <ComboBox  Grid.Row="4" Grid.Column="1"
-                               ItemsSource="{Binding AvailableFonts}"
-                               SelectedItem="{Binding LabelFontFamily, UpdateSourceTrigger=PropertyChanged}"
-                               Margin="0,4"/>
-
-                    <TextBlock Grid.Row="5" Grid.Column="0" Text="Kullanıcı font (pt):" Margin="0,8,8,8"/>
-                    <TextBox   Grid.Row="5" Grid.Column="1"
-                               Text="{Binding LabelUserFontSize, UpdateSourceTrigger=PropertyChanged}"
-                               Padding="6" Margin="0,4"/>
-
-                    <TextBlock Grid.Row="6" Grid.Column="0" Text="Mesaj font (pt):" Margin="0,8,8,8"/>
-                    <TextBox   Grid.Row="6" Grid.Column="1"
-                               Text="{Binding LabelMessageFontSize, UpdateSourceTrigger=PropertyChanged}"
-                               Padding="6" Margin="0,4"/>
-
-                    <Button    Grid.Row="7" Grid.Column="1"
-                               Content="Test Etiketi Bas"
-                               Command="{Binding TestPrintCommand}"
-                               Padding="14,6" Margin="0,16,0,0"
-                               HorizontalAlignment="Left"/>
-                </Grid>
-            </TabItem>
-
-            <!-- OBS tab -->
-            <TabItem Header="OBS">
-                <Grid Margin="12">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="160"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                    </Grid.RowDefinitions>
-
-                    <TextBlock Grid.Row="0" Grid.Column="0" Text="Overlay portu:" Margin="0,8,8,8"/>
-                    <TextBox   Grid.Row="0" Grid.Column="1"
-                               Text="{Binding OverlayPort, UpdateSourceTrigger=PropertyChanged}"
-                               Padding="6" Margin="0,4"/>
-
-                    <TextBlock Grid.Row="1" Grid.Column="1"
-                               Text="Port değişikliği için uygulamayı yeniden başlatman gerekir."
-                               Foreground="#FFAAAAAA" FontStyle="Italic"
-                               Margin="0,4,0,12" TextWrapping="Wrap"/>
-
-                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Chat teması:" Margin="0,8,8,8"/>
-                    <ComboBox  Grid.Row="2" Grid.Column="1"
-                               ItemsSource="{Binding AvailableThemes}"
-                               SelectedItem="{Binding ChatTheme, UpdateSourceTrigger=PropertyChanged}"
-                               Margin="0,4"/>
-                </Grid>
-            </TabItem>
-
-            <!-- Kısayollar tab -->
-            <TabItem Header="Kısayollar">
-                <DockPanel Margin="12">
-                    <CheckBox DockPanel.Dock="Top"
-                              Content="Özel kısayolları kullan"
-                              IsChecked="{Binding ShortcutsTab.UseCustom}"
-                              Foreground="White"
-                              Margin="0,0,0,8"/>
-
-                    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,12,0,0">
-                        <Button Content="Kaydet"
-                                Command="{Binding ShortcutsTab.SaveCommand}"
-                                Padding="12,6" FontWeight="Bold"/>
-                        <Button Content="Varsayılana Sıfırla"
-                                Command="{Binding ShortcutsTab.ResetToDefaultsCommand}"
-                                Padding="12,6" Margin="8,0,0,0"
-                                Foreground="#FFFF6666"/>
-                    </StackPanel>
-
-                    <ScrollViewer VerticalScrollBarVisibility="Auto">
-                        <ItemsControl ItemsSource="{Binding ShortcutsTab.Rows}">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <Grid Margin="0,4">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="200"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Grid.Column="0" Text="{Binding DisplayName}"
-                                                   VerticalAlignment="Center"
-                                                   Foreground="White"/>
-                                        <controls:ShortcutCaptureButton Grid.Column="1"
-                                            Chord="{Binding Chord, Mode=TwoWay}"
-                                            IsEnabled="{Binding DataContext.ShortcutsTab.UseCustom,
-                                                                 RelativeSource={RelativeSource AncestorType=Window}}"
-                                            Padding="8,4"/>
-                                    </Grid>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                    </ScrollViewer>
-                </DockPanel>
-            </TabItem>
-
-            <!-- Form Linki tab -->
-            <TabItem Header="Form Linki" DataContext="{Binding IntakeForm}">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel Margin="16">
-                        <TextBlock Text="Müşteri Bilgi Formu" FontWeight="Bold" FontSize="16" Margin="0,0,0,8"/>
-                        <TextBlock Text="Müşterilerin form doldurup WhatsApp'tan size mesaj göndermesi için kalıcı bir link."
-                                   Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,16"/>
-
-                        <Label Content="Slug (URL'in son parçası)"/>
-                        <TextBox Text="{Binding Slug, UpdateSourceTrigger=PropertyChanged}"
-                                 ToolTip="Sadece küçük harf, rakam, tire. 3-32 karakter."/>
-                        <TextBlock Text="Örnek: 'burakstreamer' → https://license.orderdeckapp.com/r/burakstreamer"
-                                   Foreground="Gray" FontSize="11" Margin="0,2,0,0"/>
-
-                        <Label Content="WhatsApp telefon (E.164 formatı)" Margin="0,12,0,0"/>
-                        <TextBox Text="{Binding WhatsAppPhone, UpdateSourceTrigger=PropertyChanged}"/>
-                        <TextBlock Text="Örnek: +905551234567 (başında + ve ülke kodu olmalı)"
-                                   Foreground="Gray" FontSize="11" Margin="0,2,0,0"/>
-
-                        <Label Content="Form başlığı (opsiyonel)" Margin="0,12,0,0"/>
-                        <TextBox Text="{Binding CustomTitle, UpdateSourceTrigger=PropertyChanged}"
-                                 ToolTip="Form sayfasının üstünde görünür. Boş bırakılırsa 'Bilgi Gönder'."/>
-
-                        <CheckBox Content="Form aktif (kapatırsan link 410 Gone döner)"
-                                  IsChecked="{Binding IsActive}" Margin="0,12,0,0"/>
-
-                        <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
-                            <Button Content="Kaydet" Command="{Binding SaveCommand}" Padding="20,8" MinWidth="100"/>
-                            <Button Content="Linki Kopyala" Command="{Binding CopyLinkCommand}"
-                                    Padding="20,8" MinWidth="120" Margin="8,0,0,0"/>
-                        </StackPanel>
-
-                        <Border BorderBrush="LightGray" BorderThickness="1" Padding="8" Margin="0,16,0,0"
-                                Visibility="{Binding HasFormUrl, Converter={StaticResource BoolToVis}}">
-                            <StackPanel>
-                                <TextBlock Text="Linkin:" Foreground="Gray" FontSize="11"/>
-                                <TextBlock Text="{Binding FormUrl}" FontFamily="Consolas"
-                                           TextWrapping="Wrap" Foreground="DodgerBlue"/>
-                            </StackPanel>
-                        </Border>
-
-                        <TextBlock Text="{Binding StatusMessage}" Foreground="{Binding StatusBrush}"
-                                   Margin="0,12,0,0" TextWrapping="Wrap"/>
-                    </StackPanel>
-                </ScrollViewer>
-            </TabItem>
-
-            <!-- Ödeme tab -->
-            <TabItem Header="Ödeme">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel>
-                        <GroupBox Header="WhatsApp Ödeme İsteme" Margin="12,12,12,8" Padding="8"
-                                  Foreground="White">
-                            <StackPanel>
-                                <Label Content="Mesaj Şablonu" Margin="0,0,0,2" Foreground="White"/>
-                                <TextBox Text="{Binding PaymentTemplate, UpdateSourceTrigger=PropertyChanged}"
-                                         AcceptsReturn="True" TextWrapping="Wrap"
-                                         MinHeight="120" MaxHeight="200"
-                                         VerticalScrollBarVisibility="Auto"
-                                         FontFamily="Consolas" FontSize="12"/>
-                                <TextBlock FontSize="11" Foreground="#FFAAAAAA" Margin="0,2,0,8"
-                                           TextWrapping="Wrap">
-                                    Placeholder: {ad} {tutar} {tarih} {iban} {hesap_sahibi} {papara}
-                                    <LineBreak/>
-                                    Kargo: {urun_toplami} (ürün) · {kargo_ucreti} (sadece sayı) · {kargo} (otomatik açıklama)
-                                    <LineBreak/>
-                                    Bakiye (yalnızca iade kredisi düşüldüğünde dolar): {toplam_oncesi} (bakiye öncesi toplam) · {bakiye} (düşülen tutar) · {net_tutar} (ödenecek tutar)
-                                </TextBlock>
-
-                                <Label Content="IBAN" Margin="0,4,0,2" Foreground="White"/>
-                                <TextBox Text="{Binding Iban, UpdateSourceTrigger=PropertyChanged}"/>
-
-                                <Label Content="Hesap Sahibi" Margin="0,4,0,2" Foreground="White"/>
-                                <TextBox Text="{Binding AccountHolder, UpdateSourceTrigger=PropertyChanged}"/>
-
-                                <Label Content="Papara/Ziraat Numarası (opsiyonel)" Margin="0,4,0,2" Foreground="White"/>
-                                <TextBox Text="{Binding Papara, UpdateSourceTrigger=PropertyChanged}"/>
-                            </StackPanel>
-                        </GroupBox>
-
-                        <GroupBox Header="Kargo" Margin="12,4,12,12" Padding="8" Foreground="White">
-                            <StackPanel>
-                                <Label Content="Ücretsiz Kargo Eşiği (TL)" Margin="0,0,0,2" Foreground="White"/>
-                                <TextBox Text="{Binding FreeShippingThresholdText, UpdateSourceTrigger=PropertyChanged}"
-                                         ToolTip="Bu tutar ve üzeri siparişlerde kargo ücretsiz. Boş bırak veya 0 yaz = kargo özelliği kapalı."/>
-
-                                <Label Content="Sabit Kargo Ücreti (TL)" Margin="0,4,0,2" Foreground="White"/>
-                                <TextBox Text="{Binding ShippingFeeText, UpdateSourceTrigger=PropertyChanged}"
-                                         ToolTip="Eşik altında otomatik eklenecek kargo ücreti. Desi fark etmez."/>
-
-                                <TextBlock FontSize="11" Foreground="#FFAAAAAA" Margin="0,8,0,0"
-                                           TextWrapping="Wrap">
-                                    Örnek: 5000 TL eşik + 150 TL kargo. Müşteri 4.000 TL alırsa
-                                    sipariş kuyruğuna otomatik 150 TL kargo satırı eklenir; 5.000 TL
-                                    veya üzeri alırsa kargo ücretsiz. İki alan da boş/0 ise kargo
-                                    özelliği devre dışı kalır (sonraki sürümle birlikte aktif olur).
-                                </TextBlock>
-
-                                <Label Content="Ücretsiz Kargo Kazandın Mesajı"
-                                       Margin="0,12,0,2" Foreground="White"/>
-                                <TextBox Text="{Binding ShippingWonTemplate, UpdateSourceTrigger=PropertyChanged}"
-                                         AcceptsReturn="True" TextWrapping="Wrap"
-                                         MinHeight="80" MaxHeight="140"
-                                         VerticalScrollBarVisibility="Auto"
-                                         FontFamily="Consolas" FontSize="12"
-                                         ToolTip="Müşteri kümülatif eşiği aştıktan sonra ShipNow seçildiğinde gönderilen WhatsApp mesajı."/>
-                                <TextBlock FontSize="11" Foreground="#FFAAAAAA" Margin="0,2,0,0"
-                                           TextWrapping="Wrap">
-                                    Placeholder: {ad} {kumulatif_tutar} {tarih}. Boş bırakılırsa mesaj atılmaz.
-                                </TextBlock>
-                            </StackPanel>
-                        </GroupBox>
-                    </StackPanel>
-                </ScrollViewer>
-            </TabItem>
-
-            <!-- YouTube tab — Phase 5c (read) + Phase 5d (moderation) -->
-            <TabItem Header="YouTube">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel Margin="12,12,12,12">
-                        <GroupBox Header="YouTube Live Chat" Padding="8" Foreground="White">
-                            <StackPanel>
-                                <Label Content="Kanal Handle (örn. @kullaniciadi)" Margin="0,0,0,2" Foreground="White"/>
-                                <TextBox Text="{Binding YouTubeChannelHandle, UpdateSourceTrigger=PropertyChanged}"/>
-                                <TextBlock FontSize="11" Foreground="#FFAAAAAA" Margin="0,4,0,0"
-                                           TextWrapping="Wrap">
-                                    Kanal handle'ını yaz (@ ile veya @'sız), ya da tam YouTube Live URL'si yapıştır.
-                                    OrderDeck yayına başladığında otomatik bağlanır; tarayıcı açık tutmaya gerek yok.
-                                    Boş bırakırsan YouTube chat takibi devre dışı kalır.
-                                </TextBlock>
-                            </StackPanel>
-                        </GroupBox>
-
-                        <!--
-                          YouTube OAuth moderation (delete + ban) — UI hidden until
-                          Google's OAuth verification is complete. The service code
-                          (YouTubeOAuthService, YouTubeModerationService) plus the
-                          chat-row right-click menu items still ship in the binary,
-                          so the moment we re-enable this GroupBox the moderation
-                          flow works end-to-end with no other changes. Set Visibility
-                          back to "Visible" (or delete the attribute) when ready.
-                        -->
-                        <GroupBox Header="YouTube Moderasyon (mesaj sil / kullanıcı banla)"
-                                  Padding="8" Foreground="White" Margin="0,12,0,0"
-                                  Visibility="Collapsed">
-                            <StackPanel>
-                                <TextBlock Text="{Binding YouTubeConnectionStatus}"
-                                           FontWeight="Bold" Foreground="White"
-                                           Margin="0,0,0,8" TextWrapping="Wrap"/>
-
-                                <StackPanel Orientation="Horizontal">
-                                    <Button Content="YouTube'a Bağlan"
-                                            Command="{Binding ConnectYouTubeCommand}"
-                                            IsEnabled="{Binding IsYouTubeIdle}"
-                                            Padding="14,7" Margin="0,0,8,0"/>
-                                    <Button Content="Bağlantıyı Kaldır"
-                                            Command="{Binding DisconnectYouTubeCommand}"
-                                            IsEnabled="{Binding IsYouTubeConnected}"
-                                            Padding="14,7"/>
-                                </StackPanel>
-
-                                <TextBlock FontSize="11" Foreground="#FFAAAAAA" Margin="0,12,0,0"
-                                           TextWrapping="Wrap">
-                                    Bağlandıktan sonra yayın anında chat'te bir mesaja sağ tıklayıp
-                                    "YT'de mesajı sil" veya "YT'de kullanıcıyı banla" diyebilirsin —
-                                    işlem doğrudan YouTube'a gönderilir. İzin scope'ları: youtube,
-                                    youtube.force-ssl. Refresh token bilgisayarında DPAPI ile şifreli
-                                    saklanır, OrderDeck sunucularına gönderilmez.
-                                </TextBlock>
-                            </StackPanel>
-                        </GroupBox>
-                    </StackPanel>
-                </ScrollViewer>
-            </TabItem>
-
-            <!-- Spam tab — Phase 5f -->
-            <TabItem Header="Spam">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel Margin="12">
-                        <CheckBox Content="Spam filtresi açık"
-                                  IsChecked="{Binding SpamFilterEnabled}"
-                                  FontWeight="Bold" Margin="0,4,0,12"/>
-
-                        <TextBlock Text="Aşağıdaki kuralları teker teker aç/kapat. Sadece açık kurallar uygulanır; testte kuralı kapatıp tekrar denemekten çekinme."
-                                   TextWrapping="Wrap" FontSize="11"
-                                   Foreground="#FF9E9E9E" Margin="0,0,0,12"/>
-
-                        <CheckBox Content="Çift mesajları engelle (30 sn içinde aynı yazı)"
-                                  IsChecked="{Binding SpamDropDuplicates}"
-                                  Margin="0,4"/>
-
-                        <CheckBox Content="Link içeren mesajları engelle"
-                                  IsChecked="{Binding SpamDropLinks}"
-                                  Margin="0,4"/>
-
-                        <CheckBox Content="Tamamen büyük harfli (BAĞIRMA) mesajları engelle"
-                                  IsChecked="{Binding SpamDropAllCaps}"
-                                  Margin="0,4"/>
-
-                        <CheckBox Content="Çok kısa mesajları engelle"
-                                  IsChecked="{Binding SpamDropShortMessages}"
-                                  Margin="0,4"/>
-                        <Grid Margin="22,2,0,4">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="80"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Minimum karakter:"
-                                       VerticalAlignment="Center" Margin="0,0,8,0"
-                                       Foreground="#FF9E9E9E"/>
-                            <TextBox Grid.Column="1"
-                                     Text="{Binding SpamMinMessageLength, UpdateSourceTrigger=PropertyChanged}"
-                                     IsEnabled="{Binding SpamDropShortMessages}"/>
-                        </Grid>
-
-                        <CheckBox Content="Yasaklı kelime içeren mesajları engelle"
-                                  IsChecked="{Binding SpamDropProfanity}"
-                                  Margin="0,8,0,4"/>
-                        <Label Content="Yasaklı kelimeler (virgül ile ayır)"
-                               Margin="22,0,0,2"
-                               Foreground="#FF9E9E9E" FontSize="11"/>
-                        <TextBox Margin="22,0,0,4"
-                                 IsEnabled="{Binding SpamDropProfanity}"
-                                 Text="{Binding SpamBlockedWordsText, UpdateSourceTrigger=PropertyChanged}"
-                                 AcceptsReturn="True" TextWrapping="Wrap"
-                                 MinHeight="60" MaxHeight="120"
-                                 VerticalScrollBarVisibility="Auto"/>
-                    </StackPanel>
-                </ScrollViewer>
-            </TabItem>
-            <!-- Çekiliş Animasyonu tab — Task 20 -->
-            <TabItem Header="Çekiliş Animasyonu">
-              <Grid Margin="12">
-                <Grid.RowDefinitions>
-                  <RowDefinition Height="*"/>
-                  <RowDefinition Height="Auto"/>
-                  <RowDefinition Height="Auto"/>
-                </Grid.RowDefinitions>
-
-                <controls:AnimationPickerControl Grid.Row="0"
-                                                 DataContext="{Binding AnimationPicker}"/>
-
-                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,12,0,4">
-                  <TextBlock Text="Ses seviyesi:" Margin="0,4,8,0"/>
-                  <Slider Minimum="0" Maximum="1"
-                          Value="{Binding AnimationVolume, UpdateSourceTrigger=PropertyChanged}"
-                          Width="200" VerticalAlignment="Center"/>
-                  <TextBlock Text="{Binding AnimationVolume, StringFormat={}{0:P0}}"
-                             Margin="8,4,0,0" Width="40"/>
+        <!-- Footer -->
+        <Border DockPanel.Dock="Bottom" Background="{StaticResource S.WindowBg}"
+                BorderBrush="{StaticResource S.Line}" BorderThickness="0,1,0,0"
+                Padding="30,14">
+            <DockPanel>
+                <Button DockPanel.Dock="Left" Content="Logları Aç" Click="OnOpenLogs"
+                        ToolTip="Serilog log dosyalarının olduğu klasörü Explorer'da açar"/>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <TextBlock Text="{Binding ValidationError}" Foreground="{StaticResource S.Red}"
+                               VerticalAlignment="Center" Margin="0,0,16,0" TextWrapping="Wrap"
+                               MaxWidth="360"
+                               Visibility="{Binding ValidationError, Converter={StaticResource NullToCollapsedConverter}}"/>
+                    <Button Content="İptal" Click="OnCancel" IsCancel="True" Margin="0,0,8,0"/>
+                    <Button Content="Kaydet" Click="OnSave" IsDefault="True"
+                            Style="{StaticResource S.PrimaryButton}"/>
                 </StackPanel>
+            </DockPanel>
+        </Border>
 
-                <CheckBox Grid.Row="2" Margin="0,8,0,0"
-                          Content="Sessiz mod (tüm animasyonlar sessiz)"
-                          IsChecked="{Binding AnimationMuted}"/>
-              </Grid>
+        <!-- Sidebar + içerik -->
+        <TabControl>
+            <!-- ═══ Yazıcı ═══ -->
+            <TabItem Header="Yazıcı">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource S.PaneTitle}" Text="Yazıcı &amp; Çıktı"/>
+                    <TextBlock Style="{StaticResource S.PaneDesc}"
+                               Text="Termal etiket yazıcısı ve etiket ölçüleri."
+                               Margin="0,4,0,18"/>
+
+                    <Border Style="{StaticResource S.Card}">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource S.CardTitle}" Text="Etiket Yazıcısı" Margin="0,0,0,14"/>
+                            <StackPanel Margin="0,0,0,14">
+                                <TextBlock Style="{StaticResource S.FieldLabel}" Text="Yazıcı"/>
+                                <ComboBox ItemsSource="{Binding AvailablePrinters}"
+                                          SelectedItem="{Binding SelectedPrinter, UpdateSourceTrigger=PropertyChanged}"/>
+                            </StackPanel>
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource S.FieldLabel}" Text="Yazı tipi"/>
+                                <ComboBox ItemsSource="{Binding AvailableFonts}"
+                                          SelectedItem="{Binding LabelFontFamily, UpdateSourceTrigger=PropertyChanged}"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource S.Card}">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource S.CardTitle}" Text="Etiket Ölçüleri" Margin="0,0,0,14"/>
+                            <UniformGrid Columns="2">
+                                <StackPanel Margin="0,0,10,14">
+                                    <TextBlock Style="{StaticResource S.FieldLabel}" Text="Etiket genişliği"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                        <TextBox Grid.Column="0" Text="{Binding LabelWidthMm, UpdateSourceTrigger=PropertyChanged}"/>
+                                        <TextBlock Grid.Column="1" Style="{StaticResource S.Suffix}" Text="mm" Margin="10,0,0,0"/>
+                                    </Grid>
+                                </StackPanel>
+                                <StackPanel Margin="10,0,0,14">
+                                    <TextBlock Style="{StaticResource S.FieldLabel}" Text="Etiket yüksekliği"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                        <TextBox Grid.Column="0" Text="{Binding LabelHeightMm, UpdateSourceTrigger=PropertyChanged}"/>
+                                        <TextBlock Grid.Column="1" Style="{StaticResource S.Suffix}" Text="mm" Margin="10,0,0,0"/>
+                                    </Grid>
+                                </StackPanel>
+                                <StackPanel Margin="0,0,10,0">
+                                    <TextBlock Style="{StaticResource S.FieldLabel}" Text="Etiket aralığı"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                        <TextBox Grid.Column="0" Text="{Binding LabelGapMm, UpdateSourceTrigger=PropertyChanged}"/>
+                                        <TextBlock Grid.Column="1" Style="{StaticResource S.Suffix}" Text="mm" Margin="10,0,0,0"/>
+                                    </Grid>
+                                </StackPanel>
+                                <StackPanel/>
+                                <StackPanel Margin="0,0,10,0">
+                                    <TextBlock Style="{StaticResource S.FieldLabel}" Text="Kullanıcı font"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                        <TextBox Grid.Column="0" Text="{Binding LabelUserFontSize, UpdateSourceTrigger=PropertyChanged}"/>
+                                        <TextBlock Grid.Column="1" Style="{StaticResource S.Suffix}" Text="pt" Margin="10,0,0,0"/>
+                                    </Grid>
+                                </StackPanel>
+                                <StackPanel Margin="10,0,0,0">
+                                    <TextBlock Style="{StaticResource S.FieldLabel}" Text="Mesaj font"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                        <TextBox Grid.Column="0" Text="{Binding LabelMessageFontSize, UpdateSourceTrigger=PropertyChanged}"/>
+                                        <TextBlock Grid.Column="1" Style="{StaticResource S.Suffix}" Text="pt" Margin="10,0,0,0"/>
+                                    </Grid>
+                                </StackPanel>
+                            </UniformGrid>
+                            <Button Content="Test Etiketi Bas" Command="{Binding TestPrintCommand}"
+                                    HorizontalAlignment="Left" Margin="0,4,0,0"/>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
             </TabItem>
 
-            <!-- Müşteri App tab — Faz 0c-2 -->
+            <!-- ═══ OBS Overlay ═══ -->
+            <TabItem Header="OBS Overlay">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource S.PaneTitle}" Text="OBS Overlay"/>
+                    <TextBlock Style="{StaticResource S.PaneDesc}"
+                               Text="OBS Browser Source için chat overlay ayarları."
+                               Margin="0,4,0,18"/>
+                    <Border Style="{StaticResource S.Card}">
+                        <StackPanel>
+                            <StackPanel Margin="0,0,0,14">
+                                <TextBlock Style="{StaticResource S.FieldLabel}" Text="Overlay portu"/>
+                                <TextBox Text="{Binding OverlayPort, UpdateSourceTrigger=PropertyChanged}"
+                                         FontFamily="{StaticResource S.Font.Mono}" MaxWidth="200" HorizontalAlignment="Left"/>
+                                <Border Background="{StaticResource S.RedSoft}" CornerRadius="9" Padding="12,8" Margin="0,10,0,0"
+                                        HorizontalAlignment="Left">
+                                    <TextBlock Text="Port değişikliği için uygulamayı yeniden başlatman gerekir."
+                                               Foreground="{StaticResource S.Amber}" FontSize="12" TextWrapping="Wrap"/>
+                                </Border>
+                            </StackPanel>
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource S.FieldLabel}" Text="Chat teması"/>
+                                <ComboBox ItemsSource="{Binding AvailableThemes}"
+                                          SelectedItem="{Binding ChatTheme, UpdateSourceTrigger=PropertyChanged}"
+                                          MaxWidth="280" HorizontalAlignment="Left"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </TabItem>
+
+            <!-- ═══ YouTube ═══ -->
+            <TabItem Header="YouTube">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource S.PaneTitle}" Text="YouTube"/>
+                    <TextBlock Style="{StaticResource S.PaneDesc}"
+                               Text="YouTube canlı yayın sohbetini OrderDeck'e bağla."
+                               Margin="0,4,0,18"/>
+                    <Border Style="{StaticResource S.Card}">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource S.CardTitle}" Text="YouTube Live Chat" Margin="0,0,0,14"/>
+                            <TextBlock Style="{StaticResource S.FieldLabel}" Text="Kanal Handle (örn. @kullaniciadi)"/>
+                            <TextBox Text="{Binding YouTubeChannelHandle, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBlock Style="{StaticResource S.Hint}">
+                                Kanal handle'ını yaz (@ ile veya @'sız), ya da tam YouTube Live URL'si yapıştır.
+                                OrderDeck yayına başladığında otomatik bağlanır; tarayıcı açık tutmaya gerek yok.
+                                Boş bırakırsan YouTube chat takibi devre dışı kalır.
+                            </TextBlock>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Moderasyon UI: Google OAuth doğrulaması tamamlanana kadar gizli.
+                         Servis kodu (YouTubeOAuthService/YouTubeModerationService) ve
+                         chat sağ-tık menüsü binary'de; Visibility="Visible" yapınca uçtan
+                         uca çalışır. Binding'ler korunur. -->
+                    <Border Style="{StaticResource S.Card}" Visibility="Collapsed">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource S.CardTitle}" Text="YouTube Moderasyon (mesaj sil / kullanıcı banla)" Margin="0,0,0,14"/>
+                            <TextBlock Text="{Binding YouTubeConnectionStatus}" FontWeight="Bold"
+                                       Foreground="{StaticResource S.Text}" Margin="0,0,0,10" TextWrapping="Wrap"/>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Content="YouTube'a Bağlan" Command="{Binding ConnectYouTubeCommand}"
+                                        IsEnabled="{Binding IsYouTubeIdle}" Margin="0,0,8,0"/>
+                                <Button Content="Bağlantıyı Kaldır" Command="{Binding DisconnectYouTubeCommand}"
+                                        IsEnabled="{Binding IsYouTubeConnected}"/>
+                            </StackPanel>
+                            <TextBlock Style="{StaticResource S.Hint}">
+                                Bağlandıktan sonra yayın anında chat'te bir mesaja sağ tıklayıp
+                                "YT'de mesajı sil" veya "YT'de kullanıcıyı banla" diyebilirsin.
+                                Refresh token bilgisayarında DPAPI ile şifreli saklanır.
+                            </TextBlock>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </TabItem>
+
+            <!-- ═══ Çekiliş Animasyonu ═══ -->
+            <TabItem Header="Çekiliş Animasyonu">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource S.PaneTitle}" Text="Çekiliş Animasyonu"/>
+                    <TextBlock Style="{StaticResource S.PaneDesc}"
+                               Text="Çekiliş çarkı/animasyonu ve ses ayarları."
+                               Margin="0,4,0,18"/>
+                    <Border Style="{StaticResource S.Card}">
+                        <controls:AnimationPickerControl DataContext="{Binding AnimationPicker}"/>
+                    </Border>
+                    <Border Style="{StaticResource S.Card}">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource S.CardTitle}" Text="Ses" Margin="0,0,0,14"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+                                <TextBlock Text="Ses seviyesi" Style="{StaticResource S.FieldLabel}"
+                                           VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                <Slider Minimum="0" Maximum="1"
+                                        Value="{Binding AnimationVolume, UpdateSourceTrigger=PropertyChanged}"
+                                        Width="240" VerticalAlignment="Center"/>
+                                <TextBlock Text="{Binding AnimationVolume, StringFormat={}{0:P0}}"
+                                           FontFamily="{StaticResource S.Font.Mono}" Foreground="{StaticResource S.Dim}"
+                                           VerticalAlignment="Center" Margin="12,0,0,0" Width="46"/>
+                            </StackPanel>
+                            <CheckBox Content="Sessiz mod (tüm animasyonlar sessiz)"
+                                      IsChecked="{Binding AnimationMuted}"/>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </TabItem>
+
+            <!-- ═══ Ödeme & Kargo ═══ -->
+            <TabItem Header="Ödeme &amp; Kargo">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource S.PaneTitle}" Text="Ödeme &amp; Kargo"/>
+                    <TextBlock Style="{StaticResource S.PaneDesc}"
+                               Text="WhatsApp ödeme mesajı, banka bilgileri ve kargo eşiği."
+                               Margin="0,4,0,18"/>
+
+                    <Border Style="{StaticResource S.Card}">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource S.CardTitle}" Text="WhatsApp Ödeme İsteme" Margin="0,0,0,14"/>
+                            <TextBlock Style="{StaticResource S.FieldLabel}" Text="Mesaj Şablonu"/>
+                            <TextBox Text="{Binding PaymentTemplate, UpdateSourceTrigger=PropertyChanged}"
+                                     AcceptsReturn="True" TextWrapping="Wrap" MinHeight="120" MaxHeight="200"
+                                     VerticalContentAlignment="Top"
+                                     VerticalScrollBarVisibility="Auto"
+                                     FontFamily="{StaticResource S.Font.Mono}" FontSize="12.5"/>
+                            <TextBlock Style="{StaticResource S.Hint}">
+                                Placeholder: {ad} {tutar} {tarih} {iban} {hesap_sahibi} {papara}
+                                <LineBreak/>
+                                Kargo: {urun_toplami} · {kargo_ucreti} · {kargo}
+                                <LineBreak/>
+                                Bakiye: {toplam_oncesi} · {bakiye} · {net_tutar}
+                            </TextBlock>
+
+                            <StackPanel Margin="0,14,0,0">
+                                <TextBlock Style="{StaticResource S.FieldLabel}" Text="IBAN"/>
+                                <TextBox Text="{Binding Iban, UpdateSourceTrigger=PropertyChanged}"
+                                         FontFamily="{StaticResource S.Font.Mono}"/>
+                            </StackPanel>
+                            <StackPanel Margin="0,12,0,0">
+                                <TextBlock Style="{StaticResource S.FieldLabel}" Text="Hesap Sahibi"/>
+                                <TextBox Text="{Binding AccountHolder, UpdateSourceTrigger=PropertyChanged}"/>
+                            </StackPanel>
+                            <StackPanel Margin="0,12,0,0">
+                                <TextBlock Style="{StaticResource S.FieldLabel}" Text="Papara/Ziraat Numarası (opsiyonel)"/>
+                                <TextBox Text="{Binding Papara, UpdateSourceTrigger=PropertyChanged}"
+                                         FontFamily="{StaticResource S.Font.Mono}"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource S.Card}">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource S.CardTitle}" Text="Kargo" Margin="0,0,0,14"/>
+                            <UniformGrid Columns="2">
+                                <StackPanel Margin="0,0,10,0">
+                                    <TextBlock Style="{StaticResource S.FieldLabel}" Text="Ücretsiz Kargo Eşiği"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                        <TextBox Grid.Column="0" Text="{Binding FreeShippingThresholdText, UpdateSourceTrigger=PropertyChanged}"
+                                                 ToolTip="Bu tutar ve üzeri siparişlerde kargo ücretsiz. Boş bırak veya 0 yaz = kargo özelliği kapalı."/>
+                                        <TextBlock Grid.Column="1" Style="{StaticResource S.Suffix}" Text="₺" Margin="10,0,0,0"/>
+                                    </Grid>
+                                </StackPanel>
+                                <StackPanel Margin="10,0,0,0">
+                                    <TextBlock Style="{StaticResource S.FieldLabel}" Text="Sabit Kargo Ücreti"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                        <TextBox Grid.Column="0" Text="{Binding ShippingFeeText, UpdateSourceTrigger=PropertyChanged}"
+                                                 ToolTip="Eşik altında otomatik eklenecek kargo ücreti. Desi fark etmez."/>
+                                        <TextBlock Grid.Column="1" Style="{StaticResource S.Suffix}" Text="₺" Margin="10,0,0,0"/>
+                                    </Grid>
+                                </StackPanel>
+                            </UniformGrid>
+                            <TextBlock Style="{StaticResource S.Hint}">
+                                Örnek: 5000 ₺ eşik + 150 ₺ kargo. Müşteri 4.000 ₺ alırsa sipariş kuyruğuna
+                                otomatik 150 ₺ kargo satırı eklenir; 5.000 ₺ ve üzeri alırsa kargo ücretsiz.
+                                İki alan da boş/0 ise kargo özelliği devre dışıdır.
+                            </TextBlock>
+                            <StackPanel Margin="0,14,0,0">
+                                <TextBlock Style="{StaticResource S.FieldLabel}" Text="Ücretsiz Kargo Kazandın Mesajı"/>
+                                <TextBox Text="{Binding ShippingWonTemplate, UpdateSourceTrigger=PropertyChanged}"
+                                         AcceptsReturn="True" TextWrapping="Wrap" MinHeight="80" MaxHeight="140"
+                                         VerticalContentAlignment="Top" VerticalScrollBarVisibility="Auto"
+                                         FontFamily="{StaticResource S.Font.Mono}" FontSize="12.5"
+                                         ToolTip="Müşteri kümülatif eşiği aştıktan sonra ShipNow seçildiğinde gönderilen WhatsApp mesajı."/>
+                                <TextBlock Style="{StaticResource S.Hint}"
+                                           Text="Placeholder: {ad} {kumulatif_tutar} {tarih}. Boş bırakılırsa mesaj atılmaz."/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </TabItem>
+
+            <!-- ═══ Spam Filtresi ═══ -->
+            <TabItem Header="Spam Filtresi">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource S.PaneTitle}" Text="Spam Filtresi"/>
+                    <TextBlock Style="{StaticResource S.PaneDesc}"
+                               Text="Sohbete düşmeden önce uygulanan kurallar. Sadece açık kurallar uygulanır."
+                               Margin="0,4,0,18"/>
+
+                    <Border Style="{StaticResource S.Card}">
+                        <StackPanel>
+                            <CheckBox Content="Spam filtresi açık" IsChecked="{Binding SpamFilterEnabled}"
+                                      FontWeight="SemiBold"/>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource S.Card}">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource S.CardTitle}" Text="Kurallar" Margin="0,0,0,14"/>
+                            <CheckBox Content="Çift mesajları engelle (30 sn içinde aynı yazı)"
+                                      IsChecked="{Binding SpamDropDuplicates}" Margin="0,0,0,12"/>
+                            <CheckBox Content="Link içeren mesajları engelle"
+                                      IsChecked="{Binding SpamDropLinks}" Margin="0,0,0,12"/>
+                            <CheckBox Content="Tamamen büyük harfli (BAĞIRMA) mesajları engelle"
+                                      IsChecked="{Binding SpamDropAllCaps}" Margin="0,0,0,12"/>
+                            <CheckBox Content="Çok kısa mesajları engelle"
+                                      IsChecked="{Binding SpamDropShortMessages}" Margin="0,0,0,4"/>
+                            <StackPanel Orientation="Horizontal" Margin="54,0,0,12">
+                                <TextBlock Text="Minimum karakter" Style="{StaticResource S.FieldLabel}"
+                                           VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                <TextBox Width="80"
+                                         Text="{Binding SpamMinMessageLength, UpdateSourceTrigger=PropertyChanged}"
+                                         IsEnabled="{Binding SpamDropShortMessages}"/>
+                            </StackPanel>
+                            <CheckBox Content="Yasaklı kelime içeren mesajları engelle"
+                                      IsChecked="{Binding SpamDropProfanity}" Margin="0,0,0,8"/>
+                            <StackPanel Margin="54,0,0,0">
+                                <TextBlock Style="{StaticResource S.FieldLabel}" Text="Yasaklı kelimeler (virgül ile ayır)"/>
+                                <TextBox IsEnabled="{Binding SpamDropProfanity}"
+                                         Text="{Binding SpamBlockedWordsText, UpdateSourceTrigger=PropertyChanged}"
+                                         AcceptsReturn="True" TextWrapping="Wrap" MinHeight="60" MaxHeight="120"
+                                         VerticalContentAlignment="Top" VerticalScrollBarVisibility="Auto"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </TabItem>
+
+            <!-- ═══ Form Linki ═══ -->
+            <TabItem Header="Form Linki" DataContext="{Binding IntakeForm}">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource S.PaneTitle}" Text="Müşteri Bilgi Formu"/>
+                    <TextBlock Style="{StaticResource S.PaneDesc}"
+                               Text="Müşterilerin form doldurup WhatsApp'tan sana mesaj göndermesi için kalıcı bir link."
+                               Margin="0,4,0,18"/>
+                    <Border Style="{StaticResource S.Card}">
+                        <StackPanel>
+                            <StackPanel Margin="0,0,0,12">
+                                <TextBlock Style="{StaticResource S.FieldLabel}" Text="Slug (URL'in son parçası)"/>
+                                <TextBox Text="{Binding Slug, UpdateSourceTrigger=PropertyChanged}"
+                                         FontFamily="{StaticResource S.Font.Mono}"
+                                         ToolTip="Sadece küçük harf, rakam, tire. 3-32 karakter."/>
+                                <TextBlock Style="{StaticResource S.Hint}"
+                                           Text="Örnek: 'burakstreamer' → https://license.orderdeckapp.com/r/burakstreamer"/>
+                            </StackPanel>
+                            <StackPanel Margin="0,0,0,12">
+                                <TextBlock Style="{StaticResource S.FieldLabel}" Text="WhatsApp telefon (E.164 formatı)"/>
+                                <TextBox Text="{Binding WhatsAppPhone, UpdateSourceTrigger=PropertyChanged}"
+                                         FontFamily="{StaticResource S.Font.Mono}"/>
+                                <TextBlock Style="{StaticResource S.Hint}" Text="Örnek: +905551234567 (başında + ve ülke kodu olmalı)"/>
+                            </StackPanel>
+                            <StackPanel Margin="0,0,0,12">
+                                <TextBlock Style="{StaticResource S.FieldLabel}" Text="Form başlığı (opsiyonel)"/>
+                                <TextBox Text="{Binding CustomTitle, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="Form sayfasının üstünde görünür. Boş bırakılırsa 'Bilgi Gönder'."/>
+                            </StackPanel>
+                            <CheckBox Content="Form aktif (kapatırsan link 410 Gone döner)"
+                                      IsChecked="{Binding IsActive}" Margin="0,0,0,4"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
+                                <Button Content="Kaydet" Command="{Binding SaveCommand}"
+                                        Style="{StaticResource S.PrimaryButton}" MinWidth="100"/>
+                                <Button Content="Linki Kopyala" Command="{Binding CopyLinkCommand}"
+                                        MinWidth="120" Margin="8,0,0,0"/>
+                            </StackPanel>
+                            <Border Background="{StaticResource S.Field}" BorderBrush="{StaticResource S.Line2}"
+                                    BorderThickness="1" CornerRadius="9" Padding="12" Margin="0,16,0,0"
+                                    Visibility="{Binding HasFormUrl, Converter={StaticResource BoolToVis}}">
+                                <StackPanel>
+                                    <TextBlock Text="Linkin" Style="{StaticResource S.FieldLabel}"/>
+                                    <TextBlock Text="{Binding FormUrl}" FontFamily="{StaticResource S.Font.Mono}"
+                                               TextWrapping="Wrap" Foreground="{StaticResource S.Amber}"/>
+                                </StackPanel>
+                            </Border>
+                            <TextBlock Text="{Binding StatusMessage}" Foreground="{Binding StatusBrush}"
+                                       Margin="0,12,0,0" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </TabItem>
+
+            <!-- ═══ Müşteri App ═══ -->
             <TabItem Header="Müşteri App" DataContext="{Binding ShopperApp}">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel Margin="16">
-                        <TextBlock TextWrapping="Wrap" Margin="0,0,0,12">
-                            Müşterilerine paylaşacağın "yayıncı kodu". Müşteri app'ten bu kodu girip seni takip etmeye başlar.
-                        </TextBlock>
+                <StackPanel>
+                    <TextBlock Style="{StaticResource S.PaneTitle}" Text="Müşteri Uygulaması"/>
+                    <TextBlock Style="{StaticResource S.PaneDesc}"
+                               Text="Müşterilerine paylaşacağın yayıncı kodu. Müşteri app'ten bu kodu girip seni takip eder."
+                               Margin="0,4,0,18"/>
+                    <Border Style="{StaticResource S.Card}">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource S.FieldLabel}" Text="Yayıncı kodu"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBox Grid.Column="0"
+                                         Text="{Binding CodeInput, UpdateSourceTrigger=PropertyChanged}"
+                                         MaxLength="20" IsEnabled="{Binding CanEditCode}"
+                                         CharacterCasing="Lower" FontFamily="{StaticResource S.Font.Mono}"
+                                         ToolTip="3-20 karakter, küçük harf ve rakam (örn. royal, mezat42)"/>
+                                <Button Grid.Column="1" Margin="8,0,0,0" Content="Kaydet"
+                                        IsEnabled="{Binding CanEditCode}" Command="{Binding SaveCommand}"
+                                        Style="{StaticResource S.PrimaryButton}"/>
+                            </Grid>
 
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBox Grid.Column="0"
-                                     Text="{Binding CodeInput, UpdateSourceTrigger=PropertyChanged}"
-                                     MaxLength="20"
-                                     IsEnabled="{Binding CanEditCode}"
-                                     CharacterCasing="Lower"
-                                     ToolTip="3-20 karakter, küçük harf ve rakam (örn. royal, mezat42)"/>
-                            <Button Grid.Column="1" Margin="8,0,0,0" Padding="12,4"
-                                    Content="Kaydet"
-                                    IsEnabled="{Binding CanEditCode}"
-                                    Command="{Binding SaveCommand}"/>
-                        </Grid>
+                            <TextBlock Foreground="{StaticResource S.Red}" Margin="0,10,0,0"
+                                       Text="{Binding ErrorMessage}" TextWrapping="Wrap"
+                                       Visibility="{Binding ErrorMessage, Converter={StaticResource NullToCollapsedConverter}}"/>
+                            <TextBlock Foreground="{StaticResource S.Green}" Margin="0,10,0,0"
+                                       Text="{Binding StatusMessage}" TextWrapping="Wrap"
+                                       Visibility="{Binding StatusMessage, Converter={StaticResource NullToCollapsedConverter}}"/>
+                            <TextBlock Foreground="{StaticResource S.Dim}" Margin="0,10,0,0"
+                                       Text="{Binding CooldownMessage}" TextWrapping="Wrap"
+                                       Visibility="{Binding CooldownMessage, Converter={StaticResource NullToCollapsedConverter}}"/>
 
-                        <TextBlock Foreground="DarkRed" Margin="0,0,0,8"
-                                   Text="{Binding ErrorMessage}"
-                                   Visibility="{Binding ErrorMessage, Converter={StaticResource NullToCollapsedConverter}}"/>
+                            <TextBlock Style="{StaticResource S.CardTitle}" Text="Kurallar" Margin="0,18,0,8"/>
+                            <TextBlock Style="{StaticResource S.Hint}" Margin="0,0,0,4" Text="• 3-20 karakter, sadece a-z ve 0-9"/>
+                            <TextBlock Style="{StaticResource S.Hint}" Margin="0,0,0,4" Text="• Bir kere belirlenince 7 gün boyunca değiştirilemez"/>
+                            <TextBlock Style="{StaticResource S.Hint}" Margin="0,0,0,4" Text="• Bu kod sistemde tektir — başka yayıncı kullanıyorsa farklı bir kod seç"/>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </TabItem>
 
-                        <TextBlock Foreground="ForestGreen" Margin="0,0,0,8"
-                                   Text="{Binding StatusMessage}"
-                                   Visibility="{Binding StatusMessage, Converter={StaticResource NullToCollapsedConverter}}"/>
-
-                        <TextBlock Foreground="Gray" Margin="0,0,0,8"
-                                   Text="{Binding CooldownMessage}"
-                                   Visibility="{Binding CooldownMessage, Converter={StaticResource NullToCollapsedConverter}}"/>
-
-                        <TextBlock Margin="0,16,0,4" FontWeight="SemiBold">Kurallar</TextBlock>
-                        <TextBlock TextWrapping="Wrap" Foreground="Gray" Margin="0,0,0,4">
-                            • 3-20 karakter, sadece a-z ve 0-9
-                        </TextBlock>
-                        <TextBlock TextWrapping="Wrap" Foreground="Gray" Margin="0,0,0,4">
-                            • Bir kere belirlenince 7 gün boyunca değiştirilemez
-                        </TextBlock>
-                        <TextBlock TextWrapping="Wrap" Foreground="Gray" Margin="0,0,0,4">
-                            • Bu kod sistemde tektir — başka yayıncı kullanıyorsa farklı bir kod seç
-                        </TextBlock>
-                    </StackPanel>
-                </ScrollViewer>
+            <!-- ═══ Kısayollar ═══ -->
+            <TabItem Header="Kısayollar">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource S.PaneTitle}" Text="Kısayollar"/>
+                    <TextBlock Style="{StaticResource S.PaneDesc}"
+                               Text="Klavye kısayollarını özelleştir."
+                               Margin="0,4,0,18"/>
+                    <Border Style="{StaticResource S.Card}">
+                        <StackPanel>
+                            <CheckBox Content="Özel kısayolları kullan"
+                                      IsChecked="{Binding ShortcutsTab.UseCustom}" Margin="0,0,0,14"/>
+                            <ItemsControl ItemsSource="{Binding ShortcutsTab.Rows}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="0,5">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="220"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="{Binding DisplayName}"
+                                                       VerticalAlignment="Center"
+                                                       Foreground="{StaticResource S.Text}"/>
+                                            <controls:ShortcutCaptureButton Grid.Column="1"
+                                                Chord="{Binding Chord, Mode=TwoWay}"
+                                                IsEnabled="{Binding DataContext.ShortcutsTab.UseCustom,
+                                                                     RelativeSource={RelativeSource AncestorType=Window}}"
+                                                Padding="10,6"/>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
+                                <Button Content="Kaydet" Command="{Binding ShortcutsTab.SaveCommand}"
+                                        Style="{StaticResource S.PrimaryButton}"/>
+                                <Button Content="Varsayılana Sıfırla" Command="{Binding ShortcutsTab.ResetToDefaultsCommand}"
+                                        Style="{StaticResource S.DangerButton}" Margin="8,0,0,0"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
             </TabItem>
         </TabControl>
-
-        <!-- Validation error -->
-        <TextBlock Grid.Row="1" Text="{Binding ValidationError}"
-                   Foreground="#FFFF6666" Margin="0,8,0,0"
-                   Visibility="{Binding ValidationError, Converter={StaticResource NullToCollapsedConverter}}"/>
-
-        <!-- Buttons -->
-        <DockPanel Grid.Row="2" Margin="0,16,0,0">
-            <!-- Open the Serilog file-sink folder. Operators normally don't
-                 know AppData paths and reaching the logs after a crash
-                 used to require typing %APPDATA% into Explorer manually. -->
-            <Button DockPanel.Dock="Left" Content="Logları Aç"
-                    Click="OnOpenLogs" Padding="14,6"
-                    ToolTip="Serilog log dosyalarının olduğu klasörü Explorer'da açar"/>
-            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
-                <Button Content="İptal" Click="OnCancel" Padding="14,6" Margin="0,0,8,0" IsCancel="True"/>
-                <Button Content="Kaydet" Click="OnSave"  Padding="14,6" IsDefault="True"/>
-            </StackPanel>
-        </DockPanel>
-    </Grid>
+    </DockPanel>
 </Window>

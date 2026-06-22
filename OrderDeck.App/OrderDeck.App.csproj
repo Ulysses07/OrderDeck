@@ -45,6 +45,12 @@
     </Content>
   </ItemGroup>
 
+  <!-- Marka fontları (Ayarlar penceresi) — WPF Resource olarak gömülür,
+       pack URI ile referans: /Fonts/#Bricolage Grotesque 14pt, #JetBrains Mono -->
+  <ItemGroup>
+    <Resource Include="Fonts\*.ttf" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="ClosedXML" />
     <PackageReference Include="CommunityToolkit.Mvvm" />
