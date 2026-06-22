@@ -23,6 +23,14 @@ public partial class NewGiveawayDialog : Window
         DataContext = ViewModel;
     }
 
+    // Kazanan sayısı stepper'ı — VM'e komut eklemeden, ObservableProperty
+    // setter'ı üzerinden 1-50 aralığında ayarlar (Validate ile aynı sınır).
+    private void OnWinnerInc(object sender, RoutedEventArgs e) =>
+        ViewModel.WinnerCount = System.Math.Min(50, ViewModel.WinnerCount + 1);
+
+    private void OnWinnerDec(object sender, RoutedEventArgs e) =>
+        ViewModel.WinnerCount = System.Math.Max(1, ViewModel.WinnerCount - 1);
+
     private void OnCancel(object sender, RoutedEventArgs e)
     {
         DialogResult = false;
