@@ -15,4 +15,8 @@
   <ItemGroup>
     <PackageReference Include="System.Drawing.Common" />
   </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="OrderDeck.Tests" />
+  </ItemGroup>
 </Project>

@@ -64,6 +64,44 @@ public static class LabelPrintDocument
     }
 
     /// <summary>
+    /// Alt satırı kurar: fiyatı (veya HEDİYE) sabit tutar, mesajı kalan
+    /// genişliğe "…" ile sığdırır → "mesaj…  250 TL". Sonuç <paramref
+    /// name="maxWidth"/> içinde kalır, böylece fiyat asla kesilmez. Test
+    /// edilebilir olması için internal (saf, çizim yapmaz).
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    internal static string BuildFittedSecondLine(Graphics g, string? messageText, decimal price,
+        bool isGift, Font font, float maxWidth)
+    {
+        string priceText = isGift ? "HEDİYE" : $"{FormatPrice(price)} TL";
+        const string sep = "  ";
+        float priceW = g.MeasureString(priceText, font).Width;
+        float sepW = g.MeasureString(sep, font).Width;
+        float maxMsgW = Math.Max(0f, maxWidth - priceW - sepW);
+        string msgFit = TruncateToWidth(g, messageText ?? string.Empty, font, maxMsgW);
+        return msgFit.Length == 0 ? priceText : msgFit + sep + priceText;
+    }
+
+    /// <summary>
+    /// Mesajı <paramref name="maxWidth"/> (1/100-inch) genişliğine sığacak
+    /// şekilde sondan "…" ile kısaltır. Sığıyorsa olduğu gibi döner; hiç
+    /// sığmıyorsa "" döner. Etikette fiyat ve kullanıcı adının ASLA
+    /// kesilmemesi için yalnız mesaj bu yardımcıyla daraltılır.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    private static string TruncateToWidth(Graphics g, string text, Font font, float maxWidth)
+    {
+        if (string.IsNullOrEmpty(text) || maxWidth <= 0f) return string.Empty;
+        if (g.MeasureString(text, font).Width <= maxWidth) return text;
+
+        const string ellipsis = "…";
+        var s = text;
+        while (s.Length > 0 && g.MeasureString(s + ellipsis, font).Width > maxWidth)
+            s = s.Substring(0, s.Length - 1);
+        return s.Length == 0 ? string.Empty : s + ellipsis;
+    }
+
+    /// <summary>
     /// Two-letter platform code for the corner stamp on the printed label.
     /// Thermal printers can render plain ASCII reliably across drivers, so we
     /// avoid emoji here — the abbreviations carry over from the in-app chat
@@ -132,11 +170,19 @@ public static class LabelPrintDocument
             float userX = (pageWidth - userSize.Width) / 2;
             e.Graphics.DrawString(lines[0].Text, userFont, Brushes.Black, userX, userY);
 
-            // Message line — bottom half, centered horizontally
-            var msgSize = e.Graphics.MeasureString(lines[1].Text, messageFont);
+            // Message line — bottom half, centered horizontally.
+            // KURAL: kullanıcı adı (üst satır) ve fiyat ASLA kesilmemeli; mesaj
+            // uzunsa "…" ile kısalabilir. Eskiden "{mesaj} {fiyat}" tek string
+            // ortalanıyordu ve uzun mesajda fiyat sağdan taşıp kesiliyordu.
+            const float sideMargin = 8f;
+            float maxLineW = pageWidth - sideMargin * 2;
+            string secondLine = BuildFittedSecondLine(
+                e.Graphics!, label.MessageText, label.Price, giftMode, messageFont, maxLineW);
+
+            var msgSize = e.Graphics.MeasureString(secondLine, messageFont);
             float msgY = heightHundredths * 0.55f;
-            float msgX = (pageWidth - msgSize.Width) / 2;
-            e.Graphics.DrawString(lines[1].Text, messageFont, Brushes.Black, msgX, msgY);
+            float msgX = Math.Max(sideMargin, (pageWidth - msgSize.Width) / 2);
+            e.Graphics.DrawString(secondLine, messageFont, Brushes.Black, msgX, msgY);
 
             // Platform code badge — small, top-LEFT corner. Same visual
             // language as the Y badge (top-right) so the operator can scan
