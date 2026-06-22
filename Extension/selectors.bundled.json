@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "publishedAt": "2026-06-08T10:00:00+00:00",
+  "publishedAt": "2026-06-22T10:00:00+00:00",
   "platforms": {
     "instagram": {
       "isLivePage": {
@@ -25,6 +25,13 @@
           "izliyor", "watching", "viewers", "izleyici"
         ],
         "timeStringRegex": "^\\d+\\s*(dk|sa|gün|sn|m|h|d|s|ay|yıl|min|hr|sec)$"
+      },
+      "viewers": {
+        "selectors": [
+          "a[href$=\"/live_viewers/\"]",
+          "span[aria-label*=\"izley\" i]",
+          "span[aria-label*=\"watch\" i]"
+        ]
       }
     },
     "tiktok": {
@@ -59,6 +66,13 @@
           "rose", "viewers", "watching", "joined", "top", "gifts", "chat", "settings"
         ],
         "timeStringRegex": null
+      },
+      "viewers": {
+        "selectors": [
+          "[data-e2e=\"live-room-stats\"]",
+          "[data-e2e=\"live-viewer-count\"]",
+          "[class*=\"ViewerCount\"]"
+        ]
       }
     },
     "facebook": {
@@ -86,6 +100,13 @@
         ],
         "timeStringRegex": "^\\d+\\s*(dk|sa|gün|sn|m|h|d|s|ay|yıl|min|hr|sec)$",
         "urlShapedUsernameDenied": true
+      },
+      "viewers": {
+        "selectors": [
+          "[aria-label*=\"izley\" i]",
+          "[aria-label*=\"watching\" i]",
+          "[aria-label*=\"viewer\" i]"
+        ]
       }
     }
   }

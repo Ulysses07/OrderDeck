@@ -62,6 +62,7 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
     private int _pollingMs = 2000;
     private CancellationTokenSource? _cts;
     private Task? _runner;
+    private Task? _viewerRunner;
     private DateTimeOffset _lastEventAt = DateTimeOffset.UtcNow;
     private readonly TaskCompletionSource _completionTcs =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -74,6 +75,9 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
     public string Platform => "youtube";
 
     private readonly SpamFilter? _spamFilter;
+    private readonly ViewerCountTracker? _viewers;
+    // İzleyici sayısı polling aralığı. Sohbetten bağımsız, sabit hafif döngü.
+    private static readonly TimeSpan ViewerPollInterval = TimeSpan.FromSeconds(8);
 
     // Browser headers added per-request now (see AddBrowserHeaders) so the
     // HttpClient handed in by IHttpClientFactory is safe to share.
@@ -85,12 +89,13 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
     /// resolves it from the named "youtube-scraper" client which already
     /// configures the SocketsHttpHandler this class used to own.</summary>
     public YouTubeLiveChatScraper(string videoId, IChatBus bus, ILogger<YouTubeLiveChatScraper> log,
-        HttpClient http, SpamFilter? spamFilter = null)
+        HttpClient http, SpamFilter? spamFilter = null, ViewerCountTracker? viewers = null)
     {
         _videoId = videoId;
         _bus = bus;
         _log = log;
         _spamFilter = spamFilter;
+        _viewers = viewers;
         _http = http;
         if (_http.Timeout == TimeSpan.FromSeconds(100)) // factory default — override
             _http.Timeout = TimeSpan.FromSeconds(30);
@@ -112,6 +117,137 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
         _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var loopCt = _cts.Token;
         _runner = Task.Run(() => RunLoopAsync(loopCt), loopCt);
+        // İzleyici sayısı, sohbetten bağımsız hafif bir döngüde toplanır.
+        if (_viewers is not null)
+            _viewerRunner = Task.Run(() => ViewerLoopAsync(loopCt), loopCt);
+    }
+
+    /// <summary>innertube updated_metadata ucundan canlı "izliyor" sayısını
+    /// periyodik çeker. Sohbet polling'inden ayrı; aynı apiKey/clientVersion/
+    /// videoId'yi kullanır. Hata toleranslı — bir tur patlarsa bir sonraki
+    /// turda yeniden dener, sohbet akışını etkilemez.</summary>
+    private async Task ViewerLoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                var n = await FetchViewerCountAsync(ct);
+                if (n is not null) _viewers!.Report("youtube", n.Value);
+            }
+            catch (OperationCanceledException) { break; }
+            catch (Exception ex)
+            {
+                _log.LogDebug(ex, "[YouTube Scraper] viewer count fetch failed");
+            }
+            try { await Task.Delay(ViewerPollInterval, ct); }
+            catch (OperationCanceledException) { break; }
+        }
+    }
+
+    private async Task<int?> FetchViewerCountAsync(CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(_apiKey)) return null;
+
+        var url = $"https://www.youtube.com/youtubei/v1/updated_metadata?key={_apiKey}";
+        var requestBody = new
+        {
+            context = new
+            {
+                client = new
+                {
+                    clientName = "WEB",
+                    clientVersion = _clientVersion,
+                    hl = "tr",
+                    gl = "TR",
+                    timeZone = "Europe/Istanbul"
+                }
+            },
+            videoId = _videoId
+        };
+
+        var content = new StringContent(
+            JsonSerializer.Serialize(requestBody), System.Text.Encoding.UTF8, "application/json");
+        using var req = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
+        AddBrowserHeaders(req);
+        using var resp = await _http.SendAsync(req, ct);
+        if (!resp.IsSuccessStatusCode) return null;
+        var json = await resp.Content.ReadAsStringAsync(ct);
+        return ParseConcurrentViewers(json);
+    }
+
+    /// <summary>updated_metadata yanıtından canlı izleyici sayısını çıkarır.
+    /// videoViewCountRenderer.viewCount(runs/simpleText) → yoksa
+    /// originalViewCount; rakam-dışı her şeyi ("1.234 izliyor",
+    /// "1,234 watching now") süzer. Bulamazsa null.</summary>
+    internal static int? ParseConcurrentViewers(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var renderer = FindFirstObjectWithKey(doc.RootElement, "videoViewCountRenderer");
+            if (renderer is null) return null;
+            var r = renderer.Value;
+
+            if (r.TryGetProperty("viewCount", out var vc))
+            {
+                var text = ExtractRunsOrSimple(vc);
+                var n = DigitsToInt(text);
+                if (n is not null) return n;
+            }
+            if (r.TryGetProperty("originalViewCount", out var ovc) &&
+                ovc.ValueKind == JsonValueKind.String)
+            {
+                return DigitsToInt(ovc.GetString());
+            }
+            return null;
+        }
+        catch (JsonException) { return null; }
+    }
+
+    private static string ExtractRunsOrSimple(JsonElement node)
+    {
+        if (node.TryGetProperty("simpleText", out var s)) return s.GetString() ?? string.Empty;
+        if (node.TryGetProperty("runs", out var runs) && runs.ValueKind == JsonValueKind.Array)
+        {
+            var sb = new System.Text.StringBuilder();
+            foreach (var run in runs.EnumerateArray())
+                if (run.TryGetProperty("text", out var t)) sb.Append(t.GetString());
+            return sb.ToString();
+        }
+        return string.Empty;
+    }
+
+    private static int? DigitsToInt(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return null;
+        var sb = new System.Text.StringBuilder(text.Length);
+        foreach (var ch in text) if (ch >= '0' && ch <= '9') sb.Append(ch);
+        if (sb.Length == 0) return null;
+        return long.TryParse(sb.ToString(), out var v) && v <= int.MaxValue ? (int)v : null;
+    }
+
+    private static JsonElement? FindFirstObjectWithKey(JsonElement element, string key)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            if (element.TryGetProperty(key, out var found) && found.ValueKind == JsonValueKind.Object)
+                return found;
+            foreach (var prop in element.EnumerateObject())
+            {
+                var r = FindFirstObjectWithKey(prop.Value, key);
+                if (r is not null) return r;
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                var r = FindFirstObjectWithKey(item, key);
+                if (r is not null) return r;
+            }
+        }
+        return null;
     }
 
     public async Task StopAsync(CancellationToken ct)
@@ -122,6 +258,12 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
             try { await _runner.WaitAsync(ct); }
             catch (OperationCanceledException) { /* expected */ }
             catch (Exception ex) { _log.LogDebug(ex, "[YouTube Scraper] runner stop swallowed"); }
+        }
+        if (_viewerRunner is not null)
+        {
+            try { await _viewerRunner.WaitAsync(ct); }
+            catch (OperationCanceledException) { /* expected */ }
+            catch (Exception ex) { _log.LogDebug(ex, "[YouTube Scraper] viewer runner stop swallowed"); }
         }
         _continuation = null;
         _apiKey = null;

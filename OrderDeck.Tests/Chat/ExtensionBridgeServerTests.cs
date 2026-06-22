@@ -237,4 +237,36 @@ public class ExtensionBridgeServerTests
 
         await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
     }
+
+    [Fact]
+    public async Task Viewers_message_updates_tracker_not_bus()
+    {
+        // A "viewers" payload feeds the ViewerCountTracker and must NOT produce
+        // a ChatMessage on the bus.
+        var bus = new ChatBus(ringBufferSize: 10);
+        var viewers = new ViewerCountTracker();
+        await using var server = new ExtensionBridgeServer(bus, port: 0, viewers: viewers);
+        await server.StartAsync(CancellationToken.None);
+
+        var publishCount = 0;
+        using var sub = bus.Subscribe(_ => Interlocked.Increment(ref publishCount));
+
+        using var ws = new ClientWebSocket();
+        await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
+            CancellationToken.None);
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            type = "viewers",
+            platform = "instagram",
+            count = 412
+        });
+        await SendRaw(ws, payload);
+        await Task.Delay(200);
+
+        viewers.GetSnapshot(TimeSpan.FromMinutes(1)).Total.Should().Be(412);
+        publishCount.Should().Be(0, because: "viewers must not be forwarded to the chat bus");
+
+        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
 }

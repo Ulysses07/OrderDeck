@@ -180,12 +180,30 @@
         return document.body;
     }
 
+    function scanViewerCount() {
+        const sels = listOrFallback('viewers.selectors', [
+            'a[href$="/live_viewers/"]',
+            'span[aria-label*="izley" i]',
+            'span[aria-label*="watch" i]',
+        ]);
+        for (const sel of sels) {
+            try {
+                const el = document.querySelector(sel);
+                if (!el) continue;
+                const n = OrderDeckChatBridge.parseViewerCount(el.textContent);
+                if (n != null) return n;
+            } catch { /* malformed selector — skip */ }
+        }
+        return null;
+    }
+
     OrderDeckChatBridge.start({
         platform: PLATFORM,
         externalIdPrefix: 'ig',
         debugLabel: 'OrderDeck Instagram',
         scanForComments,
         checkIfLivePage,
-        getObserverTarget
+        getObserverTarget,
+        scanViewerCount
     });
 })();

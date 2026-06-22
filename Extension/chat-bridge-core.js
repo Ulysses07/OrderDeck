@@ -12,9 +12,38 @@
 window.OrderDeckChatBridge = (function () {
     'use strict';
 
+    /**
+     * Platform izleyici-sayısı metnini ("1.234 izliyor", "1,2 B", "12 bin",
+     * "523 watching") tam sayıya çevirir. TR ve EN biçimlerini, binlik
+     * ayraçlarını ve kısaltma çarpanlarını (B/bin/K = ×1000, M/Mn = ×1e6)
+     * destekler. Çözemezse null.
+     */
+    function parseViewerCount(text) {
+        if (!text) return null;
+        const t = String(text).toLowerCase().replace(/\u00a0/g, ' ').trim();
+        const m = t.match(/(\d[\d.,]*)\s*(mn|bin|m|k|b)?/);
+        if (!m) return null;
+        const numRaw = m[1];
+        const suffix = m[2];
+        let mult = 1;
+        if (suffix === 'k' || suffix === 'b' || suffix === 'bin') mult = 1000;
+        else if (suffix === 'm' || suffix === 'mn') mult = 1000000;
+        if (mult > 1) {
+            // Çarpanlı biçim ondalıklıdır: "1,2" / "1.2" → 1.2
+            const val = parseFloat(numRaw.replace(',', '.'));
+            return isNaN(val) ? null : Math.round(val * mult);
+        }
+        // Çarpansız: tam sayı, binlik ayraçlarını (. , boşluk) at.
+        const digits = numRaw.replace(/[.,\s]/g, '');
+        const n = parseInt(digits, 10);
+        return isNaN(n) ? null : n;
+    }
+
     const WS_PORT = 4748;
     const RECONNECT_INTERVAL = 3000;
     const SCAN_INTERVAL = 200;
+    // İzleyici sayısı sohbetten çok daha yavaş değişir — ayrı, seyrek döngü.
+    const VIEWER_INTERVAL = 5000;
     // Session-scoped dedupe: aynı (username, text) yayın boyunca bir kez
     // gönderilir. Önceki 5sn TTL implementasyonu regressionçü idi — Instagram
     // bir yorumu DOM'da 5sn'den uzun tuttuğunda extension onu "yeni" sanıp
@@ -58,6 +87,20 @@ window.OrderDeckChatBridge = (function () {
         const STATS_INTERVAL_MS = 10_000;
         let stats = freshStats();
         let statsTimer = null;
+        let viewerTimer = null;
+
+        // İzleyici sayısını oku ve köprüye yolla. Adaptör scanViewerCount
+        // sağlamıyorsa (eski adaptör) sessizce atlar.
+        function pollViewers() {
+            if (!isConnected || !isLivePage) return;
+            if (typeof adapter.scanViewerCount !== 'function') return;
+            let count;
+            try { count = adapter.scanViewerCount(); }
+            catch (e) { return; }
+            if (typeof count === 'number' && count >= 0) {
+                sendMessage({ type: 'viewers', platform: adapter.platform, count });
+            }
+        }
 
         function freshStats() {
             return {
@@ -122,6 +165,10 @@ window.OrderDeckChatBridge = (function () {
 
                     if (statsTimer) clearInterval(statsTimer);
                     statsTimer = setInterval(flushStats, STATS_INTERVAL_MS);
+
+                    if (viewerTimer) clearInterval(viewerTimer);
+                    viewerTimer = setInterval(pollViewers, VIEWER_INTERVAL);
+                    pollViewers();
                 };
 
                 ws.onclose = () => {
@@ -129,6 +176,7 @@ window.OrderDeckChatBridge = (function () {
                     isConnected = false;
                     stopPeriodicScan();
                     if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+                    if (viewerTimer) { clearInterval(viewerTimer); viewerTimer = null; }
                     try { chrome.runtime.sendMessage({ action: 'setConnected', connected: false, platform: adapter.platform }); } catch (e) {}
                     scheduleReconnect();
                 };
@@ -388,5 +436,5 @@ window.OrderDeckChatBridge = (function () {
         log('Script loaded ✓');
     }
 
-    return { start };
+    return { start, parseViewerCount };
 })();

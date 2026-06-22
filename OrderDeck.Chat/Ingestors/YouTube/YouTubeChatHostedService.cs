@@ -40,6 +40,7 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
     private readonly SpamFilter? _spamFilter;
     private readonly StreamSessionService? _sessions;
     private readonly IHttpClientFactory? _httpFactory;
+    private readonly ViewerCountTracker? _viewers;
 
     // Named clients used when _httpFactory is wired. AppHost configures
     // their handlers (User-Agent / Accept-Language are added per-request
@@ -64,7 +65,8 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
         ITrialModeProbe? trialProbe = null,
         SpamFilter? spamFilter = null,
         StreamSessionService? sessions = null,
-        IHttpClientFactory? httpFactory = null)
+        IHttpClientFactory? httpFactory = null,
+        ViewerCountTracker? viewers = null)
     {
         _settingsProvider = settingsProvider;
         _bus = bus;
@@ -74,6 +76,7 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
         _spamFilter = spamFilter;
         _sessions = sessions;
         _httpFactory = httpFactory;
+        _viewers = viewers;
 
         if (_sessions is not null)
             _sessions.SessionEnded += OnSessionEnded;
@@ -170,7 +173,7 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
                                   ?? new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
                 using var scraper = new YouTubeLiveChatScraper(
                     videoId, _bus, _loggerFactory.CreateLogger<YouTubeLiveChatScraper>(),
-                    scraperHttp, _spamFilter);
+                    scraperHttp, _spamFilter, _viewers);
 
                 // Per-scraper cancellation: linked to the outer ct (app
                 // shutdown / hosted-service stop) AND cancellable directly

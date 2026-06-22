@@ -178,6 +178,23 @@
         return document.body;
     }
 
+    function scanViewerCount() {
+        const sels = listOrFallback('viewers.selectors', [
+            '[data-e2e="live-room-stats"]',
+            '[data-e2e="live-viewer-count"]',
+            '[class*="ViewerCount"]',
+        ]);
+        for (const sel of sels) {
+            try {
+                const el = document.querySelector(sel);
+                if (!el) continue;
+                const n = OrderDeckChatBridge.parseViewerCount(el.textContent);
+                if (n != null) return n;
+            } catch { /* malformed selector — skip */ }
+        }
+        return null;
+    }
+
     OrderDeckChatBridge.start({
         platform: PLATFORM,
         externalIdPrefix: 'tt',
@@ -185,6 +202,7 @@
         scanForComments,
         checkIfLivePage,
         getObserverTarget,
+        scanViewerCount,
         getStreamerHandle: extractStreamerHandle
     });
 })();
