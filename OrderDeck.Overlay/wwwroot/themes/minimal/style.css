@@ -47,15 +47,24 @@ html, body {
 }
 
 .chat-message .platform-badge {
-  width: 18px;
-  height: 18px;
-  border-radius: 4px;
   flex-shrink: 0;
-  margin-top: 2px;
+  align-self: flex-start;
+  margin-top: 1px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.5;
+  letter-spacing: 0.2px;
+  color: #fff;
+  white-space: nowrap;
 }
 .chat-message .platform-badge.instagram {
   background: linear-gradient(45deg, #f09433, #e6683c, #dc2743, #cc2366, #bc1888);
 }
+.chat-message .platform-badge.tiktok   { background: #fe2c55; }
+.chat-message .platform-badge.facebook { background: #1877f2; }
+.chat-message .platform-badge.youtube  { background: #ff0000; }
 
 .chat-message .body { flex: 1; min-width: 0; }
 .chat-message .username { font-weight: 700; font-size: 14px; color: #ffd166; }

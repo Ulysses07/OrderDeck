@@ -22,7 +22,9 @@
       try {
         const evt = JSON.parse(e.data);
         if (evt.type === 'chat.snapshot') {
-          (evt.data.recentMessages || []).forEach(appendMessage);
+          // Reconnect'te sunucu ring buffer'ın tamamını (500'e kadar) gönderebilir;
+          // ekranda sadece son MAX_VISIBLE görünür, fazlasını render etmeye gerek yok.
+          (evt.data.recentMessages || []).slice(-MAX_VISIBLE).forEach(appendMessage);
         } else if (evt.type === 'chat.message') {
           appendMessage(evt.data);
         }
@@ -41,6 +43,16 @@
     setTimeout(connect, backoff);
   }
 
+  function platformLabel(p) {
+    switch ((p || '').toLowerCase()) {
+      case 'instagram': return 'Instagram';
+      case 'tiktok': return 'TikTok';
+      case 'facebook': return 'Facebook';
+      case 'youtube': return 'YouTube';
+      default: return p || '';
+    }
+  }
+
   function appendMessage(msg) {
     const el = document.createElement('div');
     el.className = 'chat-message';
@@ -48,6 +60,7 @@
 
     const badge = document.createElement('div');
     badge.className = `platform-badge ${msg.platform}`;
+    badge.textContent = platformLabel(msg.platform);
     el.appendChild(badge);
 
     const body = document.createElement('div');
@@ -66,14 +79,17 @@
     el.appendChild(body);
     container.appendChild(el);
 
-    while (container.childElementCount > MAX_VISIBLE) {
-      const oldest = container.firstElementChild;
-      if (oldest) {
-        oldest.classList.add('fade-out');
-        setTimeout(() => oldest.remove(), 400);
-      } else {
-        break;
-      }
+    // Kapasite aşımını kaldır. ÖNEMLİ: remove() 400ms ertelendiği için
+    // childElementCount döngü içinde anında düşmez; bu yüzden `while
+    // (count > MAX)` SONSUZ DÖNGÜYE girip thread'i kilitliyordu (overlay
+    // donması). Sabit sayıdaki en eski elemanları işleyen sınırlı bir
+    // for döngüsü kullan — her zaman sonlanır.
+    const overflow = container.childElementCount - MAX_VISIBLE;
+    for (let i = 0; i < overflow; i++) {
+      const child = container.children[i];
+      if (!child || child.classList.contains('fade-out')) continue;
+      child.classList.add('fade-out');
+      setTimeout(() => child.remove(), 400);
     }
 
     el.scrollIntoView({ block: 'end' });
