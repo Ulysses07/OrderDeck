@@ -4,8 +4,7 @@
         xmlns:controls="clr-namespace:OrderDeck.App.Controls"
         Title="Ayarlar" Width="980" Height="680" MinWidth="860" MinHeight="560"
         WindowStartupLocation="CenterOwner"
-        Background="{StaticResource S.WindowBg}" Foreground="{StaticResource S.Text}"
-        FontFamily="{StaticResource S.Font.Body}">
+        Background="#101219" Foreground="#F1F0EC" FontFamily="Segoe UI">
     <!-- NOT: Tüm görünüm stilleri SettingsTheme.xaml'den gelir ve YALNIZ bu
          pencereye scope'ludur (global DarkControls'ü diğer dialog'larda bozmaz).
          Tüm {Binding} ifadeleri ve code-behind handler'ları eski dialog ile
