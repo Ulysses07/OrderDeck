@@ -194,7 +194,6 @@ export const tr = {
       step1: 'OrderDeck kurulduktan sonra otomatik olarak ilk açılış sihirbazı başlatır',
       step2: 'Sihirbaz seni 6 adımda lisans aktivasyonu, YouTube kanal ayarı, Chrome eklentisi kurulumu ve OBS browser source URL\'lerinde yönlendirir',
       step3: 'Chrome eklentisi mağaza onayını bekliyor; o sırada sihirbaz sideload adımlarını gösterir',
-      docsLink: 'Detaylı kurulum rehberi (SETUP.md)',
     },
     requirements: {
       title: 'Sistem gereksinimleri',

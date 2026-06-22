@@ -197,7 +197,6 @@ export const en: Messages = {
       step1: 'A first-run setup wizard launches automatically',
       step2: 'The wizard walks you through license activation, YouTube channel setup, Chrome extension install, and OBS browser source URLs in 6 steps',
       step3: 'Chrome extension is awaiting Web Store approval; until then the wizard guides you through the sideload flow',
-      docsLink: 'Full setup guide (SETUP.md)',
     },
     requirements: {
       title: 'System requirements',
