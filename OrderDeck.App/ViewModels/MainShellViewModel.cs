@@ -41,6 +41,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private readonly SettingsStore _settingsStore;
     private readonly AnimationCatalogClient? _animationCatalogClient;
     private readonly ExtensionBridgeServer? _bridge;
+    private readonly ViewerCountTracker? _viewers;
 
     // 500 messages = ~30 seconds of scroll-back at the projected 30 msg/sec
     // peak across IG + TT + FB + YT, ~70 seconds at the realistic 7 msg/sec
@@ -123,6 +124,12 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private string _chatHealthState = "off";
     [ObservableProperty] private string _chatHealthTooltip = "Chat takibi kapalı (yayın aktif değil)";
 
+    // Canlı izleyici sayısı göstergesi (üst bar). Tüm platformların taze
+    // sayılarının toplamı; tooltip platform kırılımını gösterir.
+    [ObservableProperty] private string _viewerCountText = "0";
+    [ObservableProperty] private string _viewerCountTooltip = "";
+    [ObservableProperty] private bool _viewerCountVisible;
+
     /// <summary>Facebook lazy-init uyarısı: FB sekmesi açık ve içerik script'i
     /// tarıyor (scans&gt;0) ama hiç mesaj görmüyor (observed=0) → operatörün FB
     /// sekmesini bir kez açıp akışı tetiklemesi gerekiyor. UpdateChatHealth
@@ -158,7 +165,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         SettingsStore settingsStore,
         YouTubeModerationService? youTubeModeration = null,
         AnimationCatalogClient? animationCatalogClient = null,
-        ExtensionBridgeServer? bridge = null)
+        ExtensionBridgeServer? bridge = null,
+        ViewerCountTracker? viewers = null)
     {
         _labels = labels;
         _sessions = sessions;
@@ -170,6 +178,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         // Hem manuel (DrawGiveawayNow) hem otomatik (süre dolunca) çekilişi kapsar.
         _giveaways.WinnersDrawn += OnGiveawayWinnersDrawn;
         _bridge = bridge;
+        _viewers = viewers;
         _youTubeModeration = youTubeModeration;
         Banner = banner;
         _dispatcher = Dispatcher.CurrentDispatcher;
@@ -259,8 +268,47 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         UpdateChatHealth();
     }
 
+    // İzleyici sayısı "tazelik" penceresi — bir platform bu süre içinde rapor
+    // etmediyse toplamdan düşer (sekme kapandı / scraper takıldı).
+    private static readonly TimeSpan ViewerFreshness = TimeSpan.FromSeconds(30);
+    private static readonly System.Globalization.CultureInfo TrCulture =
+        System.Globalization.CultureInfo.GetCultureInfo("tr-TR");
+
+    private static string PlatformDisplayName(string p) => p.ToLowerInvariant() switch
+    {
+        "instagram" => "Instagram",
+        "tiktok" => "TikTok",
+        "facebook" => "Facebook",
+        "youtube" => "YouTube",
+        _ => p,
+    };
+
+    private void UpdateViewerCount()
+    {
+        if (_viewers is null) { ViewerCountVisible = false; return; }
+        bool hasActiveSession;
+        try { hasActiveSession = _sessions.GetActive() is not null; }
+        catch { ViewerCountVisible = false; return; }
+
+        var snap = _viewers.GetSnapshot(ViewerFreshness);
+        if (!hasActiveSession || snap.Total <= 0) { ViewerCountVisible = false; return; }
+
+        ViewerCountText = snap.Total.ToString("N0", TrCulture);
+        var sb = new System.Text.StringBuilder();
+        foreach (var p in snap.PerPlatform)
+        {
+            if (sb.Length > 0) sb.Append("  ·  ");
+            sb.Append(PlatformDisplayName(p.Platform)).Append(' ')
+              .Append(p.Count.ToString("N0", TrCulture));
+        }
+        ViewerCountTooltip = sb.ToString();
+        ViewerCountVisible = true;
+    }
+
     private void UpdateChatHealth()
     {
+        UpdateViewerCount();
+
         bool hasActiveSession;
         bool hasYouTubeHandle;
         try
@@ -638,6 +686,10 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         }
 
         _sessions.End(session.Id);
+        // İzleyici sayıları yayına özeldir — bir sonraki yayında eski rakam
+        // kalmasın diye sıfırla; gösterge de hemen gizlenir.
+        _viewers?.Clear();
+        ViewerCountVisible = false;
         UpdateStreamStatusLabel();
         UpdateGiveawayCanStart();
 

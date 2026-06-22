@@ -177,12 +177,32 @@
         return document.body;
     }
 
+    function scanViewerCount() {
+        const sels = listOrFallback('viewers.selectors', [
+            '[aria-label*="izley" i]',
+            '[aria-label*="watching" i]',
+            '[aria-label*="viewer" i]',
+        ]);
+        for (const sel of sels) {
+            try {
+                // FB sayfasında birden çok eşleşme olabilir; ilk sayı verebileni al.
+                for (const el of document.querySelectorAll(sel)) {
+                    const n = OrderDeckChatBridge.parseViewerCount(
+                        el.getAttribute('aria-label') || el.textContent);
+                    if (n != null) return n;
+                }
+            } catch { /* malformed selector — skip */ }
+        }
+        return null;
+    }
+
     OrderDeckChatBridge.start({
         platform: PLATFORM,
         externalIdPrefix: 'fb',
         debugLabel: 'OrderDeck Facebook',
         scanForComments,
         checkIfLivePage,
-        getObserverTarget
+        getObserverTarget,
+        scanViewerCount
     });
 })();

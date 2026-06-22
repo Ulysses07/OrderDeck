@@ -110,12 +110,16 @@ public sealed class AppHost : IDisposable
         // a service restart.
         services.AddSingleton<SpamFilter>(sp =>
             new SpamFilter(() => sp.GetRequiredService<AppSettings>().SpamFilter));
+        // Tüm platformların canlı izleyici sayısını toplayan tek nokta;
+        // köprü (IG/TT/FB) ve YouTube scraper yazar, WPF üst barı okur.
+        services.AddSingleton<ViewerCountTracker>();
         services.AddSingleton(sp => new ExtensionBridgeServer(
             sp.GetRequiredService<IChatBus>(),
             port: 4748,
             log: sp.GetRequiredService<ILogger<ExtensionBridgeServer>>(),
             trialProbe: sp.GetRequiredService<LicenseService>(),
-            spamFilter: sp.GetRequiredService<SpamFilter>()));
+            spamFilter: sp.GetRequiredService<SpamFilter>(),
+            viewers: sp.GetRequiredService<ViewerCountTracker>()));
         services.AddSingleton<ChatBridgeIngestor>();
 
         // Phase 5c — YouTube Live chat scraper. Hosted service polls
@@ -155,7 +159,8 @@ public sealed class AppHost : IDisposable
                 trialProbe: sp.GetRequiredService<LicenseService>(),
                 spamFilter: sp.GetRequiredService<SpamFilter>(),
                 sessions: sp.GetRequiredService<StreamSessionService>(),
-                httpFactory: sp.GetRequiredService<IHttpClientFactory>()));
+                httpFactory: sp.GetRequiredService<IHttpClientFactory>(),
+                viewers: sp.GetRequiredService<ViewerCountTracker>()));
 
         // Phase 5d — YouTube OAuth + moderation. The data store sits in a
         // dedicated subfolder so we can wipe it on disconnect without

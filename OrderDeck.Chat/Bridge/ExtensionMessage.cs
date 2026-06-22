@@ -13,7 +13,8 @@ public sealed record ExtensionMessage(
     string? Text,
     string? ExternalId,
     long? Timestamp,
-    ExtensionStats? Stats);
+    ExtensionStats? Stats,
+    int? Count = null);
 
 /// <summary>
 /// Debug stats payload emitted by the extension every 10 seconds (type: "debug-stats").

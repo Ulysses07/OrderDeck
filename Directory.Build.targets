@@ -1,0 +1,17 @@
+<Project>
+  <!--
+    csproj'lardan SONRA import edilir; bu yüzden her projenin kendi
+    WarningsNotAsErrors değerine (ör. CS1591) ekleme yaparız — props'ta
+    yapsaydık csproj onu ezerdi.
+
+    NU1903 — SQLitePCLRaw.lib.e_sqlite3 (≤2.1.11), Microsoft.Data.Sqlite
+    üzerinden transitif gelir. Advisory GHSA-2m69-gcr7-jv3q (SQLite <3.50.2).
+    2026-06 itibarıyla SQLitePCLRaw'ın YAMALI sürümü YOK. TreatWarningsAsErrors
+    nedeniyle CI restore bu audit uyarısında patlıyordu. Yamalı sürüm çıkana
+    dek uyarı görünür kalsın ama build'i kırmasın.
+    TODO: SQLitePCLRaw yamalı sürüme geçince bu satırı kaldır.
+  -->
+  <PropertyGroup>
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1903</WarningsNotAsErrors>
+  </PropertyGroup>
+</Project>

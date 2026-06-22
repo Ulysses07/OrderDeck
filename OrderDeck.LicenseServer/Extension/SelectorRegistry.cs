@@ -40,7 +40,7 @@ public static class SelectorRegistry
     /// </summary>
     public static readonly SelectorBundle Current = new(
         SchemaVersion: 1,
-        PublishedAt: new DateTimeOffset(2026, 6, 8, 10, 0, 0, TimeSpan.Zero),
+        PublishedAt: new DateTimeOffset(2026, 6, 22, 10, 0, 0, TimeSpan.Zero),
         Platforms: new Dictionary<string, PlatformSelectors>
         {
             ["instagram"] = new(
@@ -65,7 +65,14 @@ public static class SelectorRegistry
                         "canlı", "mesajlar", "paylaş", "beğen", "yorum", "gönder", "takip et",
                         "izliyor", "watching", "viewers", "izleyici",
                     },
-                    TimeStringRegex: @"^\d+\s*(dk|sa|gün|sn|m|h|d|s|ay|yıl|min|hr|sec)$")),
+                    TimeStringRegex: @"^\d+\s*(dk|sa|gün|sn|m|h|d|s|ay|yıl|min|hr|sec)$"),
+                // İzleyici sayısı — ilk turda en iyi tahmin; canlı yayında doğrulanacak.
+                Viewers: new ViewerSelectors(new[]
+                {
+                    "a[href$=\"/live_viewers/\"]",
+                    "span[aria-label*=\"izley\" i]",
+                    "span[aria-label*=\"watch\" i]",
+                })),
 
             ["tiktok"] = new(
                 IsLivePage: new IsLivePageSelectors(
@@ -113,7 +120,14 @@ public static class SelectorRegistry
                         "live", "follow", "share", "gift", "like", "comment", "send",
                         "rose", "viewers", "watching", "joined", "top", "gifts", "chat", "settings",
                     },
-                    TimeStringRegex: null)),
+                    TimeStringRegex: null),
+                // İzleyici sayısı — ilk turda en iyi tahmin; canlı yayında doğrulanacak.
+                Viewers: new ViewerSelectors(new[]
+                {
+                    "[data-e2e=\"live-room-stats\"]",
+                    "[data-e2e=\"live-viewer-count\"]",
+                    "[class*=\"ViewerCount\"]",
+                })),
 
             ["facebook"] = new(
                 IsLivePage: new IsLivePageSelectors(
@@ -141,7 +155,14 @@ public static class SelectorRegistry
                         "mesaj gönder", "send message",
                     },
                     TimeStringRegex: @"^\d+\s*(dk|sa|gün|sn|m|h|d|s|ay|yıl|min|hr|sec)$",
-                    UrlShapedUsernameDenied: true)),
+                    UrlShapedUsernameDenied: true),
+                // İzleyici sayısı — ilk turda en iyi tahmin; canlı yayında doğrulanacak.
+                Viewers: new ViewerSelectors(new[]
+                {
+                    "[aria-label*=\"izley\" i]",
+                    "[aria-label*=\"watching\" i]",
+                    "[aria-label*=\"viewer\" i]",
+                })),
         });
 
     private static readonly JsonSerializerOptions JsonOpts = new()
@@ -186,7 +207,15 @@ public sealed record PlatformSelectors(
     IsLivePageSelectors IsLivePage,
     CommentSelectors Comments,
     IReadOnlyList<string> ObserverTarget,
-    ValidatorSettings Validators);
+    ValidatorSettings Validators,
+    ViewerSelectors? Viewers = null);
+
+// Canlı izleyici sayısı kutucuğunun selector'ları. Opsiyonel (eski şema null);
+// content script ilk eşleşeni dener, metni rakama çevirir. DigitsRegex bugün
+// kullanılmıyor (parse JS tarafında) ama ileride sunucudan ayarlanabilsin diye var.
+public sealed record ViewerSelectors(
+    IReadOnlyList<string> Selectors,
+    string? DigitsRegex = null);
 
 public sealed record IsLivePageSelectors(
     IReadOnlyList<string> UrlPatterns,

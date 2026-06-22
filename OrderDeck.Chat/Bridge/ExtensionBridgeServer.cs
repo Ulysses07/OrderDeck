@@ -30,6 +30,7 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
     private readonly IChatBus _bus;
     private readonly ITrialModeProbe? _trialProbe;
     private readonly SpamFilter? _spamFilter;
+    private readonly ViewerCountTracker? _viewers;
     private readonly ILogger<ExtensionBridgeServer> _log;
     private readonly HttpListener _listener = new();
     private CancellationTokenSource? _cts;
@@ -96,11 +97,13 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
     public ExtensionBridgeServer(IChatBus bus, int port = 4748,
         ILogger<ExtensionBridgeServer>? log = null,
         ITrialModeProbe? trialProbe = null,
-        SpamFilter? spamFilter = null)
+        SpamFilter? spamFilter = null,
+        ViewerCountTracker? viewers = null)
     {
         _bus = bus;
         _trialProbe = trialProbe;
         _spamFilter = spamFilter;
+        _viewers = viewers;
         _log = log ?? NullLogger<ExtensionBridgeServer>.Instance;
         Port = port == 0 ? FindFreePort() : port;
         _listener.Prefixes.Add($"http://localhost:{Port}/");
@@ -310,6 +313,13 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
                         msg.Stats?.CommentsObserved ?? 0,
                         msg.Stats?.Sent ?? 0,
                         DateTimeOffset.UtcNow);
+                }
+                else if (msg is { Type: "viewers", Platform: not null, Count: not null })
+                {
+                    // Canlı izleyici sayısı — content script periyodik gönderir.
+                    // Tek toplayıcıya yazılır; WPF üst barda platform başına + toplam okur.
+                    _viewers?.Report(msg.Platform, msg.Count.Value);
+                    _log.LogDebug("Viewer count [{Platform}]: {Count}", msg.Platform, msg.Count.Value);
                 }
             }
             catch (JsonException ex)
