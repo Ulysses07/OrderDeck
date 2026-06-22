@@ -87,6 +87,51 @@ public class LabelPrintDocumentTests
             AddedAt: 1000L, PrintedAt: null,
             DisplayName: displayName);
 
+    // ── BuildFittedSecondLine: uzun mesajda fiyat ASLA kesilmez ──────────
+    // Gerçek Graphics ile ölçer; sonuç verilen genişlikte kalır, fiyat tam.
+
+    [Fact]
+    public void BuildFittedSecondLine_long_message_truncates_but_keeps_price()
+    {
+        using var bmp = new System.Drawing.Bitmap(10, 10);
+        using var g = System.Drawing.Graphics.FromImage(bmp);
+        using var font = new System.Drawing.Font("Arial", 12f);
+        const float maxWidth = 150f;
+        var longMsg = "çok uzun bir aldım mesajı kırmızı kazak XL beden acele lütfen";
+
+        var line = LabelPrintDocument.BuildFittedSecondLine(g, longMsg, 250m, isGift: false, font, maxWidth);
+
+        line.Should().EndWith("250 TL");                 // fiyat kesilmedi
+        line.Should().Contain("…");                       // mesaj kısaldı
+        g.MeasureString(line, font).Width.Should().BeLessThanOrEqualTo(maxWidth + 8f);
+    }
+
+    [Fact]
+    public void BuildFittedSecondLine_short_message_kept_whole_with_price()
+    {
+        using var bmp = new System.Drawing.Bitmap(10, 10);
+        using var g = System.Drawing.Graphics.FromImage(bmp);
+        using var font = new System.Drawing.Font("Arial", 12f);
+
+        var line = LabelPrintDocument.BuildFittedSecondLine(g, "kısa", 100m, isGift: false, font, 600f);
+
+        line.Should().Be("kısa  100 TL");
+        line.Should().NotContain("…");
+    }
+
+    [Fact]
+    public void BuildFittedSecondLine_gift_mode_ends_with_HEDIYE_no_TL()
+    {
+        using var bmp = new System.Drawing.Bitmap(10, 10);
+        using var g = System.Drawing.Graphics.FromImage(bmp);
+        using var font = new System.Drawing.Font("Arial", 12f);
+
+        var line = LabelPrintDocument.BuildFittedSecondLine(g, "KAZAN", 0m, isGift: true, font, 600f);
+
+        line.Should().EndWith("HEDİYE");
+        line.Should().NotContain("TL");
+    }
+
     [Fact]
     public void ResolveDisplayLabel_uses_DisplayName_when_set()
     {
