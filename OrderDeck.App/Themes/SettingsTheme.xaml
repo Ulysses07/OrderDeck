@@ -29,6 +29,13 @@
     <SolidColorBrush x:Key="S.Amber"    Color="#FFB23E"/>
     <SolidColorBrush x:Key="S.Green"    Color="#33D17A"/>
 
+    <!-- Aksan (pencere bazında override edilebilir; varsayılan kırmızı).
+         Çekiliş dialogu bunları amber'e set eder. Stiller DynamicResource ile
+         bağlanır ki dış pencere override'ı geçerli olsun. -->
+    <SolidColorBrush x:Key="S.Accent"     Color="#FF4A38"/>
+    <SolidColorBrush x:Key="S.AccentSoft" Color="#24FF4A38"/>
+    <SolidColorBrush x:Key="S.AccentHover" Color="#FF6552"/>
+
     <!-- ── Tipografi yardımcı stilleri ───────────────────────────────────── -->
     <Style x:Key="S.PaneTitle" TargetType="TextBlock">
         <Setter Property="FontFamily" Value="{StaticResource S.Font.Display}"/>
@@ -121,7 +128,7 @@
                             <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource S.Dim2}"/>
                         </Trigger>
                         <Trigger Property="IsKeyboardFocused" Value="True">
-                            <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource S.Red}"/>
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource S.Accent}"/>
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter TargetName="Bd" Property="Background" Value="{StaticResource S.Bg}"/>
@@ -133,7 +140,7 @@
         </Setter>
     </Style>
 
-    <!-- ── Implicit: ComboBox (kırmızı odak, koyu popup) ─────────────────── -->
+    <!-- ── Implicit: ComboBox (aksan odak, koyu popup) ───────────────────── -->
     <ControlTemplate x:Key="S.ComboToggle" TargetType="ToggleButton">
         <Border x:Name="Bd" Background="{TemplateBinding Background}"
                 BorderBrush="{TemplateBinding BorderBrush}"
@@ -153,7 +160,7 @@
                 <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource S.Dim2}"/>
             </Trigger>
             <Trigger Property="IsChecked" Value="True">
-                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource S.Red}"/>
+                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource S.Accent}"/>
             </Trigger>
         </ControlTemplate.Triggers>
     </ControlTemplate>
@@ -221,10 +228,10 @@
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsHighlighted" Value="True">
-                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource S.RedSoft}"/>
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource S.AccentSoft}"/>
                         </Trigger>
                         <Trigger Property="IsSelected" Value="True">
-                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource S.RedSoft}"/>
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource S.AccentSoft}"/>
                             <Setter Property="Foreground" Value="{StaticResource S.Text}"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
@@ -263,8 +270,8 @@
                     </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsChecked" Value="True">
-                            <Setter TargetName="track" Property="Background" Value="{StaticResource S.Red}"/>
-                            <Setter TargetName="track" Property="BorderBrush" Value="{StaticResource S.Red}"/>
+                            <Setter TargetName="track" Property="Background" Value="{DynamicResource S.Accent}"/>
+                            <Setter TargetName="track" Property="BorderBrush" Value="{DynamicResource S.Accent}"/>
                             <Setter TargetName="thumb" Property="Background" Value="White"/>
                             <Setter TargetName="thumb" Property="HorizontalAlignment" Value="Right"/>
                             <Setter TargetName="thumb" Property="Margin" Value="0,0,2,0"/>
@@ -319,9 +326,9 @@
 
     <!-- Primary: kırmızı dolu -->
     <Style x:Key="S.PrimaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-        <Setter Property="Background" Value="{StaticResource S.Red}"/>
+        <Setter Property="Background" Value="{DynamicResource S.Accent}"/>
         <Setter Property="Foreground" Value="White"/>
-        <Setter Property="BorderBrush" Value="{StaticResource S.Red}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource S.Accent}"/>
         <Setter Property="FontWeight" Value="SemiBold"/>
         <Setter Property="Template">
             <Setter.Value>
@@ -334,7 +341,7 @@
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Bd" Property="Background" Value="#FF6552"/>
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource S.AccentHover}"/>
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter Property="Opacity" Value="0.45"/>
@@ -406,8 +413,8 @@
                             <Setter Property="Foreground" Value="{StaticResource S.Text}"/>
                         </Trigger>
                         <Trigger Property="IsSelected" Value="True">
-                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource S.RedSoft}"/>
-                            <Setter TargetName="Strip" Property="Background" Value="{StaticResource S.Red}"/>
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource S.AccentSoft}"/>
+                            <Setter TargetName="Strip" Property="Background" Value="{DynamicResource S.Accent}"/>
                             <Setter Property="Foreground" Value="{StaticResource S.Text}"/>
                             <Setter Property="FontWeight" Value="SemiBold"/>
                         </Trigger>
