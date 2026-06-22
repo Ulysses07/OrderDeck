@@ -79,16 +79,6 @@ export default function DownloadTr() {
             <li>{m.nextSteps.step2}</li>
             <li>{m.nextSteps.step3}</li>
           </ol>
-          <p className="mt-4 text-sm">
-            <a
-              href="https://github.com/Ulysses07/OrderDeck/blob/master/SETUP.md"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-[var(--color-accent)] hover:underline"
-            >
-              {m.nextSteps.docsLink} →
-            </a>
-          </p>
         </section>
 
         {/* System requirements */}
