@@ -44,6 +44,12 @@ window.OrderDeckChatBridge = (function () {
     const SCAN_INTERVAL = 200;
     // İzleyici sayısı sohbetten çok daha yavaş değişir — ayrı, seyrek döngü.
     const VIEWER_INTERVAL = 5000;
+    // Observer-driven tarama için minimum aralık. MutationObserver arka planda
+    // THROTTLE EDİLMEZ (setInterval/setTimeout edilir) — bu yüzden DOM mutasyonu
+    // gelir gelmez anında tararız; ama churn'lü sayfalarda (FB) CPU'yu sınırlamak
+    // için ardışık taramalar arasında en az bu kadar boşluk bırakırız. Periyodik
+    // tarama yedek olarak kalır.
+    const MIN_SCAN_GAP = 180;
     // Session-scoped dedupe: aynı (username, text) yayın boyunca bir kez
     // gönderilir. Önceki 5sn TTL implementasyonu regressionçü idi — Instagram
     // bir yorumu DOM'da 5sn'den uzun tuttuğunda extension onu "yeni" sanıp
@@ -88,6 +94,7 @@ window.OrderDeckChatBridge = (function () {
         let stats = freshStats();
         let statsTimer = null;
         let viewerTimer = null;
+        let lastScanAt = 0;   // maybeScanNow() rate-limit damgası
 
         // İzleyici sayısını oku ve köprüye yolla. Adaptör scanViewerCount
         // sağlamıyorsa (eski adaptör) sessizce atlar.
@@ -297,6 +304,28 @@ window.OrderDeckChatBridge = (function () {
             catch (e) { logError('Adapter scan error:', e); return []; }
         }
 
+        // Rate-limit'li tarama tetikleyici. Yeterli süre geçtiyse ANINDA tarar
+        // (senkron — throttle'lı timer beklemez, arka planda da çalışır). Aksi
+        // halde kalan süre için bir "trailing" tarama planlar (best-effort; arka
+        // planda bu timer throttle olur ama bir sonraki mutasyon / periyodik
+        // tarama onu yakalar). Hem observer hem periyodik tarama bunu kullanır →
+        // tek rate-limit, çift tarama yok.
+        function maybeScanNow() {
+            const now = Date.now();
+            const since = now - lastScanAt;
+            if (since >= MIN_SCAN_GAP) {
+                lastScanAt = now;
+                processComments(safeScan());
+                return;
+            }
+            if (observerScanTimer) return;
+            observerScanTimer = setTimeout(() => {
+                observerScanTimer = null;
+                lastScanAt = Date.now();
+                processComments(safeScan());
+            }, MIN_SCAN_GAP - since);
+        }
+
         function startPeriodicScan() {
             if (scanTimer) clearInterval(scanTimer);
             log(`Periodic scan started (${SCAN_INTERVAL}ms)`);
@@ -304,8 +333,12 @@ window.OrderDeckChatBridge = (function () {
             const initial = safeScan();
             log(`Initial scan: ${initial.length} comment(s)`);
             processComments(initial);
+            lastScanAt = Date.now();
 
-            scanTimer = setInterval(() => processComments(safeScan()), SCAN_INTERVAL);
+            // Periyodik tarama artık yedek/taban: maybeScanNow rate-limit'i
+            // paylaşır. Ön planda ~SCAN_INTERVAL'de bir; arka planda throttle
+            // olur ama asıl akış observer-anında taramadan gelir.
+            scanTimer = setInterval(maybeScanNow, SCAN_INTERVAL);
         }
 
         function stopPeriodicScan() {
@@ -336,14 +369,12 @@ window.OrderDeckChatBridge = (function () {
                 if (!anyAdded) return;
 
                 stats.observerBursts++;
-                // Debounce: coalesce a burst of mutations into one scan, but ensure each
-                // burst (separated by >= 50ms idle) gets its own scan — vs the previous
-                // implementation that returned after the FIRST mutation event of the burst.
-                if (observerScanTimer) return;
-                observerScanTimer = setTimeout(() => {
-                    observerScanTimer = null;
-                    processComments(safeScan());
-                }, 50);
+                // ANINDA tara (rate-limit'li). MutationObserver geri çağrıları
+                // arka planda throttle EDİLMEZ; bu yüzden FB sekmesi gizli/mute
+                // olsa bile yeni yorum DOM'a basılır basılmaz, throttle'lı timer
+                // beklemeden çekeriz. Eski 50ms setTimeout debounce'u arka planda
+                // dakikada 1'e düşüyordu (toplu düşme sorununun kaynağı).
+                maybeScanNow();
             });
 
             observer.observe(target, { childList: true, subtree: true });
