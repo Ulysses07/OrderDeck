@@ -290,31 +290,167 @@ public sealed class YouTubeLiveChatScraper : IChatIngestor, IDisposable
         var versionMatch = ClientVersion.Match(html);
         _clientVersion = versionMatch.Success ? versionMatch.Groups[1].Value : FallbackClientVersion;
 
-        var contMatch = ContinuationField.Match(html);
-        if (contMatch.Success)
-        {
-            _continuation = contMatch.Groups[1].Value;
-        }
-        else
-        {
-            // Deep search through ytInitialData JSON for any "continuation" key.
-            var ytData = Regex.Match(html, @"ytInitialData\s*=\s*(\{.+?\});\s*</script>", RegexOptions.Singleline);
-            if (ytData.Success)
-            {
-                try
-                {
-                    using var doc = JsonDocument.Parse(ytData.Groups[1].Value);
-                    _continuation = FindFirstByKey(doc.RootElement, "continuation");
-                }
-                catch (Exception ex)
-                {
-                    _log.LogWarning(ex, "[YouTube Scraper] ytInitialData parse failed");
-                }
-            }
-        }
+        // Prefer the "Canlı sohbet" (Live chat = all messages) view over the
+        // default "Popüler sohbet mesajları" (Top chat). Top chat algorithmically
+        // hides duplicate / spam-like rows — in a mezat where many viewers type
+        // the same "aldım" / product code, those repeats ARE the orders the
+        // operator must see, so Top chat silently drops sales. The Live-chat
+        // continuation surfaces them all. Falls back to the legacy first
+        // continuation when the view selector can't be parsed, so bootstrap
+        // never breaks on a layout change.
+        var (continuation, viewName) = SelectChatContinuation(html);
+        _continuation = continuation;
 
         if (string.IsNullOrEmpty(_continuation))
             throw new InvalidOperationException("Live chat is not available — stream may not be live or chat is disabled");
+
+        _log.LogInformation("[YouTube Scraper] sohbet görünümü: {View}", viewName ?? "(bilinmiyor)");
+    }
+
+    /// <summary>Bootstrap HTML'inden takip edilecek continuation'ı seçer.
+    /// Öncelik "Canlı sohbet" (tüm mesajlar) görünümü; bulunamazsa eski davranışa
+    /// (ilk continuation = "Popüler sohbet"/Top chat) düşer. İkinci değer hangi
+    /// görünüme bağlandığımızı (log/teşhis için) verir. Saf statik — birim
+    /// test bir live_chat HTML/JSON parçasıyla doğrudan çağırabilsin diye.</summary>
+    internal static (string? continuation, string? view) SelectChatContinuation(string html)
+    {
+        var yt = ExtractYtInitialData(html);
+        if (yt is { } root)
+        {
+            if (TryFindSubMenuItems(root, out var items))
+            {
+                // Top chat varsayılan olarak "selected". Canlı sohbet'i başlığında
+                // "Canlı"/"Live" geçenden ya da seçili-olmayan ilk öğeden alırız;
+                // dil bağımsız kalsın diye temel ölçüt "seçili değil".
+                string? fallbackCont = null, fallbackView = null;
+                foreach (var item in items)
+                {
+                    var cont = GetReloadContinuation(item);
+                    if (string.IsNullOrEmpty(cont)) continue;
+                    var title = item.TryGetProperty("title", out var t) ? t.GetString() : null;
+                    var selected = item.TryGetProperty("selected", out var s)
+                                   && s.ValueKind == JsonValueKind.True;
+                    var looksLive = title is not null &&
+                        (title.Contains("Canlı", StringComparison.OrdinalIgnoreCase) ||
+                         title.Contains("Live", StringComparison.OrdinalIgnoreCase));
+                    if (looksLive)
+                        return (cont, title);
+                    if (!selected && fallbackCont is null)
+                    {
+                        fallbackCont = cont;
+                        fallbackView = title;
+                    }
+                }
+                if (fallbackCont is not null)
+                    return (fallbackCont, fallbackView);
+            }
+
+            // viewSelector yoksa: JSON'dan ilk continuation'ı derin ara (eski yol).
+            var deep = FindFirstByKey(root, "continuation");
+            if (!string.IsNullOrEmpty(deep))
+                return (deep, "(varsayılan)");
+        }
+
+        // En son çare: ham HTML'de ilk continuation regex'i (eski davranış).
+        var m = ContinuationField.Match(html);
+        return m.Success ? (m.Groups[1].Value, "(varsayılan)") : (null, null);
+    }
+
+    /// <summary>live_chat sayfasındaki ytInitialData objesini ayıklar. Popout
+    /// sayfası <c>window["ytInitialData"] = {...}</c> kullanıyor; klasik
+    /// <c>ytInitialData = {...}</c> da denenir. Dengeli süslü-parantez taraması
+    /// kullanır (regex string kaçışlarında patlıyordu).</summary>
+    private static JsonElement? ExtractYtInitialData(string html)
+    {
+        foreach (var marker in new[] { "window[\"ytInitialData\"]", "ytInitialData =" })
+        {
+            var json = ExtractJsonAfter(html, marker);
+            if (json is null) continue;
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                return doc.RootElement.Clone();
+            }
+            catch { /* sıradaki marker'ı dene */ }
+        }
+        return null;
+    }
+
+    /// <summary>marker'dan sonraki ilk '{' ile başlayan dengeli JSON objesini
+    /// döndürür (string içi '{'/'}' ve kaçışlar sayılmaz).</summary>
+    private static string? ExtractJsonAfter(string html, string marker)
+    {
+        var start = html.IndexOf(marker, StringComparison.Ordinal);
+        if (start < 0) return null;
+        start = html.IndexOf('{', start);
+        if (start < 0) return null;
+        int depth = 0;
+        bool inStr = false, esc = false;
+        for (int j = start; j < html.Length; j++)
+        {
+            char ch = html[j];
+            if (inStr)
+            {
+                if (esc) esc = false;
+                else if (ch == '\\') esc = true;
+                else if (ch == '"') inStr = false;
+            }
+            else if (ch == '"') inStr = true;
+            else if (ch == '{') depth++;
+            else if (ch == '}')
+            {
+                depth--;
+                if (depth == 0) return html.Substring(start, j - start + 1);
+            }
+        }
+        return null;
+    }
+
+    /// <summary>viewSelector'ın subMenuItems dizisini (Top/Canlı sohbet seçenekleri)
+    /// bulur.</summary>
+    private static bool TryFindSubMenuItems(JsonElement root, out List<JsonElement> items)
+    {
+        items = new List<JsonElement>();
+        var sub = FindFirstValueByKey(root, "sortFilterSubMenuRenderer");
+        if (sub is { } s && s.TryGetProperty("subMenuItems", out var arr)
+            && arr.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var it in arr.EnumerateArray()) items.Add(it);
+        }
+        return items.Count > 0;
+    }
+
+    private static string? GetReloadContinuation(JsonElement subMenuItem)
+    {
+        if (subMenuItem.TryGetProperty("continuation", out var cont)
+            && cont.TryGetProperty("reloadContinuationData", out var rel)
+            && rel.TryGetProperty("continuation", out var token))
+            return token.GetString();
+        return null;
+    }
+
+    /// <summary>Adı <paramref name="key"/> olan ilk property'nin DEĞERİNİ DFS ile bulur.</summary>
+    private static JsonElement? FindFirstValueByKey(JsonElement node, string key)
+    {
+        switch (node.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var p in node.EnumerateObject())
+                {
+                    if (p.NameEquals(key)) return p.Value;
+                    var r = FindFirstValueByKey(p.Value, key);
+                    if (r is not null) return r;
+                }
+                break;
+            case JsonValueKind.Array:
+                foreach (var e in node.EnumerateArray())
+                {
+                    var r = FindFirstValueByKey(e, key);
+                    if (r is not null) return r;
+                }
+                break;
+        }
+        return null;
     }
 
     // Rate-limited failure logging: at 2-second polling, a 10-minute
