@@ -3,9 +3,12 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 # Central Package Management (Directory.Packages.props) and the SDK pin
 # (global.json) live at the repo root; csproj has <PackageReference> without
-# versions and would NU1015 without the props file. Both are pulled in
-# before restore so the layer cache is honored when only source changes.
-COPY Directory.Packages.props global.json ./
+# versions and would NU1015 without the props file. Directory.Build.targets
+# carries the NU1903 suppression (WarningsNotAsErrors) for the unpatched
+# SQLitePCLRaw advisory — without it `dotnet restore` fails here even though
+# local/CI builds (which see the file) pass. All pulled in before restore so
+# the layer cache is honored when only source changes.
+COPY Directory.Packages.props Directory.Build.targets global.json ./
 # OrderDeck.PdfParsing is referenced as a ProjectReference by LicenseServer
 # (Faz 0a, 2026-05-20). Both csproj files must be in place before restore,
 # and both source trees must be copied before publish.
