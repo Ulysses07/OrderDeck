@@ -130,6 +130,15 @@ public sealed class YouTubeChatHostedService : IHostedService, IDisposable
         {
             try
             {
+                // Faz 2 feature-flag gate: OfficialApi modunda scraper boşta durur;
+                // sohbeti YouTubeOfficialChatHostedService (gRPC streamList) çeker.
+                // Varsayılan Scraper olduğu için mevcut davranış değişmez.
+                if (_settingsProvider().YouTubeIngestMode == OrderDeck.Core.Chat.YouTubeIngestMode.OfficialApi)
+                {
+                    await Task.Delay(IdleWhenOffline, ct);
+                    continue;
+                }
+
                 if (_trialProbe?.IsTrialMode == true)
                 {
                     await Task.Delay(IdleWhenOffline, ct);

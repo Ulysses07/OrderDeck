@@ -1,0 +1,59 @@
+// Minimal subset of YouTube's official stream_list.proto (package youtube.api.v3).
+// Field NUMBERS are verbatim from Google's "Streaming Live Chat" guide so wire
+// decoding is correct. Fields we don't read are omitted — protobuf skips unknown
+// fields, so real responses still decode for text + super chat messages.
+//
+// Generated C# lands in OrderDeck.Chat.Ingestors.YouTube.Grpc (see option below).
+syntax = "proto2";
+
+package youtube.api.v3;
+
+option csharp_namespace = "OrderDeck.Chat.Ingestors.YouTube.Grpc";
+
+service V3DataLiveChatMessageService {
+  rpc StreamList(LiveChatMessageListRequest)
+      returns (stream LiveChatMessageListResponse) {}
+}
+
+message LiveChatMessageListRequest {
+  optional string live_chat_id = 1;
+  optional string hl = 2;
+  optional uint32 profile_image_size = 3;
+  optional uint32 max_results = 98;
+  optional string page_token = 99;
+  repeated string part = 100;
+}
+
+message LiveChatMessageListResponse {
+  optional string offline_at = 2;
+  optional string next_page_token = 100602;
+  repeated LiveChatMessage items = 1007;
+}
+
+message LiveChatMessage {
+  optional string id = 101;
+  optional LiveChatMessageSnippet snippet = 2;
+  optional LiveChatMessageAuthorDetails author_details = 3;
+}
+
+message LiveChatMessageAuthorDetails {
+  optional string channel_id = 10101;
+  optional string display_name = 103;
+  optional string profile_image_url = 104;
+  optional bool is_chat_owner = 5;
+  optional bool is_chat_moderator = 7;
+  optional bool is_chat_sponsor = 6;
+}
+
+message LiveChatTextMessageDetails {
+  optional string message_text = 1;
+}
+
+// On the wire, oneof members and enums encode like plain fields, so declaring
+// these as regular optionals (type as int32) decodes correctly.
+message LiveChatMessageSnippet {
+  optional int32 type = 1;
+  optional string published_at = 4;
+  optional string display_message = 16;
+  optional LiveChatTextMessageDetails text_message_details = 19;
+}

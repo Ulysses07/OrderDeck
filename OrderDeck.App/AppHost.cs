@@ -162,6 +162,22 @@ public sealed class AppHost : IDisposable
                 httpFactory: sp.GetRequiredService<IHttpClientFactory>(),
                 viewers: sp.GetRequiredService<ViewerCountTracker>()));
 
+        // Faz 2 — resmi gRPC streamList ingestor. Feature-flag arkasında:
+        // yalnız AppSettings.YouTubeIngestMode=OfficialApi iken çalışır, aksi
+        // halde boşta durur (scraper'a yol verir). Varsayılan Scraper olduğu
+        // için bu kayıt mevcut davranışı değiştirmez. Aynı named HttpClient'ları
+        // (resolver/scraper) paylaşır.
+        services.AddHostedService(sp =>
+            new OrderDeck.Chat.Ingestors.YouTube.YouTubeOfficialChatHostedService(
+                () => sp.GetRequiredService<AppSettings>(),
+                sp.GetRequiredService<IChatBus>(),
+                sp.GetRequiredService<ILoggerFactory>(),
+                trialProbe: sp.GetRequiredService<LicenseService>(),
+                spamFilter: sp.GetRequiredService<SpamFilter>(),
+                sessions: sp.GetRequiredService<StreamSessionService>(),
+                httpFactory: sp.GetRequiredService<IHttpClientFactory>(),
+                viewers: sp.GetRequiredService<ViewerCountTracker>()));
+
         // Phase 5d — YouTube OAuth + moderation. The data store sits in a
         // dedicated subfolder so we can wipe it on disconnect without
         // touching unrelated state.

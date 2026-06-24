@@ -24,5 +24,13 @@
     <!-- DPAPI for OAuth refresh-token encryption (Windows-only — same scope
          as the rest of the WPF host). -->
     <PackageReference Include="System.Security.Cryptography.ProtectedData" />
+    <!-- Faz 2: resmi gRPC streamList ingestor. Grpc.Tools build-time codegen. -->
+    <PackageReference Include="Google.Protobuf" />
+    <PackageReference Include="Grpc.Net.Client" />
+    <PackageReference Include="Grpc.Tools" PrivateAssets="All" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Protobuf Include="Ingestors\YouTube\Proto\stream_list.proto" GrpcServices="Client" />
   </ItemGroup>
 </Project>
