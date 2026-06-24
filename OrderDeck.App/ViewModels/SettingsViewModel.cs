@@ -60,6 +60,11 @@ public sealed partial class SettingsViewModel : ViewModelBase
     // Phase 5c — YouTube Live chat scraper
     [ObservableProperty] private string _youTubeChannelHandle = "";
 
+    // Faz 2 — resmi YouTube API (gRPC streamList) ile chat çekme. Açıkken
+    // scraper chat'i kapanır, official ingestor devreye girer (API key gerekir).
+    [ObservableProperty] private bool _useOfficialYouTubeApi;
+    [ObservableProperty] private string _youTubeApiKey = "";
+
     // Phase 5d — YouTube OAuth (moderation)
     [ObservableProperty] private string _youTubeConnectionStatus = "Bağlı değil";
     [ObservableProperty] private bool _isYouTubeConnected;
@@ -263,6 +268,8 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
         // Phase 5c — YouTube
         YouTubeChannelHandle = _liveSettings.YouTubeChannelHandle ?? string.Empty;
+        UseOfficialYouTubeApi = _liveSettings.YouTubeIngestMode == OrderDeck.Core.Chat.YouTubeIngestMode.OfficialApi;
+        YouTubeApiKey = _liveSettings.YouTubeApiKey ?? string.Empty;
 
         // Phase 5f — Spam filter
         SpamFilterEnabled       = _liveSettings.SpamFilter.Enabled;
@@ -364,6 +371,13 @@ public sealed partial class SettingsViewModel : ViewModelBase
         // instead of attempting to resolve "".
         var trimmedHandle = YouTubeChannelHandle?.Trim();
         _liveSettings.YouTubeChannelHandle = string.IsNullOrEmpty(trimmedHandle) ? null : trimmedHandle;
+
+        // Faz 2 — resmi API modu + key. Boş key → null.
+        _liveSettings.YouTubeIngestMode = UseOfficialYouTubeApi
+            ? OrderDeck.Core.Chat.YouTubeIngestMode.OfficialApi
+            : OrderDeck.Core.Chat.YouTubeIngestMode.Scraper;
+        var trimmedApiKey = YouTubeApiKey?.Trim();
+        _liveSettings.YouTubeApiKey = string.IsNullOrEmpty(trimmedApiKey) ? null : trimmedApiKey;
 
         // Phase 5f — Spam filter. The SpamFilter service reads this object on
         // every message via Func<AppSettings>, so changes take effect the

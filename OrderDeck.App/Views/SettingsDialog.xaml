@@ -180,6 +180,21 @@
                         </StackPanel>
                     </Border>
 
+                    <!-- Faz 2 — resmi YouTube API (gRPC streamList) ile chat çekme. -->
+                    <Border Style="{StaticResource S.Card}">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource S.CardTitle}" Text="Resmi YouTube API (chat)" Margin="0,0,0,14"/>
+                            <CheckBox Content="Resmi API ile chat çek (eksiksiz — Top chat filtresi yok)"
+                                      IsChecked="{Binding UseOfficialYouTubeApi}"/>
+                            <TextBlock Style="{StaticResource S.FieldLabel}" Text="YouTube Data API Key (AIza...)" Margin="0,12,0,0"/>
+                            <TextBox Text="{Binding YouTubeApiKey, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBlock Style="{StaticResource S.Hint}">
+                                Açıkken sohbet resmi gRPC streamList'ten gelir (scraper chat'i kapanır; izleyici sayısı yine çekilir).
+                                Google Cloud projenden bir API key gir. Günlük kota tüketir. Kapalıyken klasik scraper kullanılır.
+                            </TextBlock>
+                        </StackPanel>
+                    </Border>
+
                     <!-- Moderasyon UI: Google OAuth doğrulaması tamamlanana kadar gizli.
                          Servis kodu (YouTubeOAuthService/YouTubeModerationService) ve
                          chat sağ-tık menüsü binary'de; Visibility="Visible" yapınca uçtan

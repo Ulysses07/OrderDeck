@@ -78,6 +78,13 @@
     <PackageVersion Include="Google.Apis.YouTube.v3" Version="1.69.0.3742" />
     <PackageVersion Include="Google.Apis.Auth" Version="1.69.0" />
 
+    <!-- Faz 2: resmi YouTube gRPC liveChatMessages.streamList (push) ingestor.
+         stream_list.proto Grpc.Tools ile derlenir; client stub + Google.Protobuf
+         runtime. Sürümler PoC'de (YtStreamPoc) doğrulandı. -->
+    <PackageVersion Include="Google.Protobuf" Version="3.28.3" />
+    <PackageVersion Include="Grpc.Net.Client" Version="2.66.0" />
+    <PackageVersion Include="Grpc.Tools" Version="2.66.0" />
+
     <!-- OpenTelemetry — bumped from 1.12.0 to clear NU1902 advisories on
          OpenTelemetry.Api / OpenTelemetry.Exporter.OpenTelemetryProtocol
          (GHSA-g94r-2vxg-569j, GHSA-4625-4j76-fww9). Per-package latest at

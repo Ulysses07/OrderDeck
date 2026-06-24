@@ -61,6 +61,20 @@ public sealed class AppSettings
     /// attacker with file-system access.</summary>
     public string? YouTubeOAuthClientSecret { get; set; }
 
+    /// <summary>Faz 2 feature-flag: YouTube canlı sohbet çekme yöntemi.
+    /// Varsayılan <see cref="OrderDeck.Core.Chat.YouTubeIngestMode.Scraper"/>
+    /// (mevcut InnerTube scraper). <c>OfficialApi</c> = resmi gRPC streamList
+    /// (kota tüketir, <see cref="YouTubeApiKey"/> gerekir). Official ingestor
+    /// tam doğrulanıp yayınlanana kadar Scraper kalır.</summary>
+    public OrderDeck.Core.Chat.YouTubeIngestMode YouTubeIngestMode { get; set; }
+        = OrderDeck.Core.Chat.YouTubeIngestMode.Scraper;
+
+    /// <summary>Resmi YouTube Data API anahtarı (AIza...). Yalnız
+    /// <see cref="YouTubeIngestMode"/> = OfficialApi iken kullanılır
+    /// (streamList + videos.list). Boşsa official ingestor çalışmaz, uyarı
+    /// loglar. PoC: public canlı sohbet okumak için API key yeterli, OAuth gerekmez.</summary>
+    public string? YouTubeApiKey { get; set; }
+
     /// <summary>Spam/troll filter rules applied to inbound chat messages
     /// before they reach the bus. Disabled rules pass everything through.</summary>
     public OrderDeck.Core.Chat.SpamFilterSettings SpamFilter { get; set; } = new();
