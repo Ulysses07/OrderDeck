@@ -423,7 +423,7 @@
                                             <Style TargetType="Border">
                                                 <Setter Property="Background" Value="{StaticResource OD.Bg.Elevated}"/>
                                                 <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding Platform}" Value="instagram"><Setter Property="Background" Value="#29E1306C"/></DataTrigger>
+                                                    <DataTrigger Binding="{Binding Platform}" Value="instagram"><Setter Property="Background" Value="#2922C55E"/></DataTrigger>
                                                     <DataTrigger Binding="{Binding Platform}" Value="tiktok"><Setter Property="Background" Value="#299EE8EE"/></DataTrigger>
                                                     <DataTrigger Binding="{Binding Platform}" Value="youtube"><Setter Property="Background" Value="#29FF6B6B"/></DataTrigger>
                                                     <DataTrigger Binding="{Binding Platform}" Value="facebook"><Setter Property="Background" Value="#295B8DEF"/></DataTrigger>
@@ -438,7 +438,7 @@
                                                     <Setter Property="Text" Value="{Binding Platform}"/>
                                                     <Setter Property="Foreground" Value="{StaticResource OD.Fg.Secondary}"/>
                                                     <Style.Triggers>
-                                                        <DataTrigger Binding="{Binding Platform}" Value="instagram"><Setter Property="Text" Value="IG"/><Setter Property="Foreground" Value="#FFE1306C"/></DataTrigger>
+                                                        <DataTrigger Binding="{Binding Platform}" Value="instagram"><Setter Property="Text" Value="IG"/><Setter Property="Foreground" Value="#FF22C55E"/></DataTrigger>
                                                         <DataTrigger Binding="{Binding Platform}" Value="tiktok"><Setter Property="Text" Value="TT"/><Setter Property="Foreground" Value="#FF9EE8EE"/></DataTrigger>
                                                         <DataTrigger Binding="{Binding Platform}" Value="youtube"><Setter Property="Text" Value="YT"/><Setter Property="Foreground" Value="#FFFF6B6B"/></DataTrigger>
                                                         <DataTrigger Binding="{Binding Platform}" Value="facebook"><Setter Property="Text" Value="FB"/><Setter Property="Foreground" Value="#FF5B8DEF"/></DataTrigger>
