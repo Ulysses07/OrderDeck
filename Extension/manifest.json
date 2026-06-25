@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "OrderDeck Chat Bridge",
-  "version": "1.4.11",
+  "version": "1.4.12",
   "description": "Forwards Instagram, TikTok and Facebook Live chat to OrderDeck (YouTube is handled server-side, no browser tab needed)",
   "background": { "service_worker": "background.js" },
   "permissions": ["storage", "alarms"],
@@ -12,6 +12,12 @@
     "https://license.orderdeckapp.com/*"
   ],
   "content_scripts": [
+    {
+      "matches": ["*://*.facebook.com/*"],
+      "js": ["fb-visibility-keepalive.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
     {
       "matches": ["*://*.instagram.com/*"],
       "js": ["selector-registry.js", "chat-bridge-core.js", "content-instagram.js"],
