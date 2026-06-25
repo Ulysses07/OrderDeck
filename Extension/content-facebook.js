@@ -196,13 +196,23 @@
         return null;
     }
 
-    OrderDeckChatBridge.start({
-        platform: PLATFORM,
-        externalIdPrefix: 'fb',
-        debugLabel: 'OrderDeck Facebook',
-        scanForComments,
-        checkIfLivePage,
-        getObserverTarget,
-        scanViewerCount
+    // User can disable the DOM scraper from the extension popup when they
+    // rely on the OrderDeck WPF Graph API ingest instead — keeps the two
+    // ingest paths from emitting duplicate messages. Default true preserves
+    // legacy behavior for users without Graph API tokens.
+    chrome.storage.local.get({ fbScraperEnabled: true }, (cfg) => {
+        if (!cfg.fbScraperEnabled) {
+            console.log('[OrderDeck Facebook] scraper disabled via popup toggle');
+            return;
+        }
+        OrderDeckChatBridge.start({
+            platform: PLATFORM,
+            externalIdPrefix: 'fb',
+            debugLabel: 'OrderDeck Facebook',
+            scanForComments,
+            checkIfLivePage,
+            getObserverTarget,
+            scanViewerCount
+        });
     });
 })();

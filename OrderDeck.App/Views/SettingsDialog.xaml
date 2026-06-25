@@ -220,6 +220,33 @@
                 </StackPanel>
             </TabItem>
 
+            <!-- ═══ Facebook ═══ -->
+            <TabItem Header="Facebook">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource S.PaneTitle}" Text="Facebook"/>
+                    <TextBlock Style="{StaticResource S.PaneDesc}"
+                               Text="Facebook Page'ini bağla — canlı yayın yorumları gerçek zamanlı çekilir, moderasyon (sil/banla) menüsü açılır."
+                               Margin="0,4,0,18"/>
+                    <Border Style="{StaticResource S.Card}">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource S.CardTitle}" Text="Facebook Live (Page bağla)" Margin="0,0,0,14"/>
+                            <TextBlock Text="{Binding FacebookConnectionStatus}" FontWeight="Bold"
+                                       Foreground="{StaticResource S.Text}" Margin="0,0,0,10" TextWrapping="Wrap"/>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Content="Facebook'a Bağlan" Command="{Binding ConnectFacebookCommand}"
+                                        IsEnabled="{Binding IsFacebookIdle}" Margin="0,0,8,0"/>
+                                <Button Content="Bağlantıyı Kaldır" Command="{Binding DisconnectFacebookCommand}"
+                                        IsEnabled="{Binding IsFacebookConnected}"/>
+                            </StackPanel>
+                            <TextBlock Style="{StaticResource S.Hint}">
+                                Bağlandıktan sonra Page canlı yayın açtığında yorumlar otomatik olarak akmaya başlar — polling yok, anlık push.
+                                Page access token bilgisayarında DPAPI ile şifreli saklanır. Birden fazla Page'in varsa bağlanırken seçim sorulur.
+                            </TextBlock>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </TabItem>
+
             <!-- ═══ Çekiliş Animasyonu ═══ -->
             <TabItem Header="Çekiliş Animasyonu">
                 <StackPanel>

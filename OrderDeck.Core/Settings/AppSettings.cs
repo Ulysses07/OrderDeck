@@ -75,6 +75,28 @@ public sealed class AppSettings
     /// loglar. PoC: public canlı sohbet okumak için API key yeterli, OAuth gerekmez.</summary>
     public string? YouTubeApiKey { get; set; }
 
+    /// <summary>Facebook Graph API: operatorün bağladığı Page ID. OAuth
+    /// sonrasında <c>FacebookOAuthService</c> doldurur (kullanıcı Page seçimini
+    /// yaptıktan sonra). Null = Facebook canlı yorum/moderasyon kapalı.</summary>
+    public string? FacebookPageId { get; set; }
+
+    /// <summary>Facebook App ID. Production'da
+    /// <c>FacebookOAuthDefaults.AppId</c>'ye düşer; QA/dev için ayrı bir
+    /// Meta App ile test ederken bu alandan override edilir.</summary>
+    public string? FacebookAppId { get; set; }
+
+    /// <summary>Facebook App Secret. Production'da <c>FacebookOAuthDefaults</c>
+    /// içinde sabitli; dev override için bu alan kullanılır. Desktop OAuth
+    /// kullanımında binary'de zaten yer aldığı için "secret" kelimesi yanıltıcı —
+    /// asıl korunan refresh token + Page access token (DPAPI ile şifrelenir).</summary>
+    public string? FacebookAppSecret { get; set; }
+
+    /// <summary>Facebook Login for Business config ID. OAuth dialog URL'inde
+    /// <c>config_id={ID}</c> olarak gider; "Manage everything on your Page" use
+    /// case'inde tanımladığımız permission setini operatöre seçimsiz olarak
+    /// uygular.</summary>
+    public string? FacebookLoginConfigId { get; set; }
+
     /// <summary>Spam/troll filter rules applied to inbound chat messages
     /// before they reach the bus. Disabled rules pass everything through.</summary>
     public OrderDeck.Core.Chat.SpamFilterSettings SpamFilter { get; set; } = new();
