@@ -8,6 +8,7 @@ using System.Runtime.Versioning;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using OrderDeck.Chat.Facebook;
 using OrderDeck.Chat.YouTube;
 using OrderDeck.Core.Sales;
 using OrderDeck.Core.Settings;
@@ -75,6 +76,15 @@ public sealed partial class SettingsViewModel : ViewModelBase
     public bool IsYouTubeIdle => !IsYouTubeBusy;
     partial void OnIsYouTubeBusyChanged(bool value) => OnPropertyChanged(nameof(IsYouTubeIdle));
 
+    // Facebook Graph API (2026-06-25). Same UX as YouTube: Connect button
+    // pops the browser, status text shows "Bağlı: <Page>" when ready.
+    [ObservableProperty] private string _facebookConnectionStatus = "Bağlı değil";
+    [ObservableProperty] private bool _isFacebookConnected;
+    [ObservableProperty] private bool _isFacebookBusy;
+    public bool IsFacebookIdle => !IsFacebookBusy && !IsFacebookConnected;
+    partial void OnIsFacebookBusyChanged(bool value) => OnPropertyChanged(nameof(IsFacebookIdle));
+    partial void OnIsFacebookConnectedChanged(bool value) => OnPropertyChanged(nameof(IsFacebookIdle));
+
     // Phase 5f — Spam / troll filter toggles
     [ObservableProperty] private bool _spamFilterEnabled = true;
     [ObservableProperty] private bool _spamDropShortMessages;
@@ -103,12 +113,14 @@ public sealed partial class SettingsViewModel : ViewModelBase
     public ShopperAppSettingsViewModel ShopperApp { get; }
 
     private readonly YouTubeOAuthService? _youTubeOAuth;
+    private readonly FacebookOAuthService? _facebookOAuth;
     private readonly Services.Sync.WhatsAppTemplateSyncService? _waTemplateSync;
 
     public SettingsViewModel(AppSettings settings, SettingsStore store, ShortcutsTabViewModel shortcutsTab,
         IntakeFormSettingsViewModel intakeForm,
         ShopperAppSettingsViewModel shopperApp,
         YouTubeOAuthService? youTubeOAuth = null,
+        FacebookOAuthService? facebookOAuth = null,
         AnimationCatalogClient? catalogClient = null,
         Services.Sync.WhatsAppTemplateSyncService? waTemplateSync = null)
     {
@@ -119,6 +131,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
         IntakeForm = intakeForm;
         ShopperApp = shopperApp;
         _youTubeOAuth = youTubeOAuth;
+        _facebookOAuth = facebookOAuth;
         _waTemplateSync = waTemplateSync;
 
         LoadFromSettings();
@@ -127,6 +140,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
         _ = IntakeForm.LoadAsync();
         _ = ShopperApp.LoadAsync();
         _ = RefreshYouTubeConnectionStatusAsync();
+        _ = RefreshFacebookConnectionStatusAsync();
 
         // Use the source-generated setters (NOT the backing fields) so
         // OnPropertyChanged fires — XAML bindings activate AFTER the dialog
@@ -237,6 +251,100 @@ public sealed partial class SettingsViewModel : ViewModelBase
         finally
         {
             IsYouTubeBusy = false;
+        }
+    }
+
+    /// <summary>
+    /// Mirrors <see cref="RefreshYouTubeConnectionStatusAsync"/> for the
+    /// Facebook OAuth. Reads the cached page-name from the encrypted token
+    /// bundle on disk — no Graph API hit, so it's safe to call on every
+    /// dialog open.
+    /// </summary>
+    public async System.Threading.Tasks.Task RefreshFacebookConnectionStatusAsync()
+    {
+        if (_facebookOAuth is null)
+        {
+            FacebookConnectionStatus = "OAuth servisi yapılandırılmamış";
+            IsFacebookConnected = false;
+            return;
+        }
+
+        try
+        {
+            var name = await _facebookOAuth.GetConnectedPageNameAsync().ConfigureAwait(true);
+            if (string.IsNullOrEmpty(name))
+            {
+                FacebookConnectionStatus = "Bağlı değil";
+                IsFacebookConnected = false;
+                return;
+            }
+            FacebookConnectionStatus = $"Bağlı: {name}";
+            IsFacebookConnected = true;
+        }
+        catch (Exception ex)
+        {
+            FacebookConnectionStatus = $"Durum okunamadı: {ex.Message}";
+            IsFacebookConnected = false;
+        }
+    }
+
+    [RelayCommand]
+    private async System.Threading.Tasks.Task ConnectFacebook()
+    {
+        if (_facebookOAuth is null) return;
+        try
+        {
+            IsFacebookBusy = true;
+            FacebookConnectionStatus = "Tarayıcıdan onay bekleniyor...";
+
+            // Page picker callback: only invoked when the operator manages >1
+            // Page. Runs on the UI thread because it pops a modal dialog.
+            await _facebookOAuth.ConnectAsync(async (candidates, ct) =>
+            {
+                FacebookPageCandidate? chosen = null;
+                await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    var dlg = new Views.FacebookPagePickerDialog(candidates)
+                    {
+                        Owner = System.Windows.Application.Current.MainWindow,
+                    };
+                    if (dlg.ShowDialog() == true)
+                        chosen = dlg.Selected;
+                });
+                return chosen;
+            }).ConfigureAwait(true);
+
+            await RefreshFacebookConnectionStatusAsync().ConfigureAwait(true);
+        }
+        catch (OperationCanceledException)
+        {
+            FacebookConnectionStatus = "Bağlantı iptal edildi.";
+            IsFacebookConnected = false;
+        }
+        catch (Exception ex)
+        {
+            FacebookConnectionStatus = $"Bağlantı başarısız: {ex.Message}";
+            IsFacebookConnected = false;
+        }
+        finally
+        {
+            IsFacebookBusy = false;
+        }
+    }
+
+    [RelayCommand]
+    private async System.Threading.Tasks.Task DisconnectFacebook()
+    {
+        if (_facebookOAuth is null) return;
+        try
+        {
+            IsFacebookBusy = true;
+            await _facebookOAuth.DisconnectAsync().ConfigureAwait(true);
+            await RefreshFacebookConnectionStatusAsync().ConfigureAwait(true);
+        }
+        finally
+        {
+            IsFacebookBusy = false;
         }
     }
 

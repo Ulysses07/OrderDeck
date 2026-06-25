@@ -191,6 +191,63 @@ public sealed class AppHost : IDisposable
                 sp.GetRequiredService<ILogger<OrderDeck.Chat.YouTube.YouTubeOAuthService>>()));
         services.AddSingleton<OrderDeck.Chat.YouTube.YouTubeModerationService>();
 
+        // Facebook Live (2026-06-25). Mirrors the YouTube setup but:
+        //  - Token store is typed (single DPAPI blob, no IDataStore indirection)
+        //    because we own the OAuth flow end-to-end.
+        //  - Ingest path is SSE on streaming-graph.facebook.com (push, not polling)
+        //    so the "stream" named client gets InfiniteTimeSpan at use-site.
+        services.AddHttpClient(
+            OrderDeck.Chat.Ingestors.Facebook.FacebookChatHostedService.ResolverClientName,
+            c => c.Timeout = TimeSpan.FromSeconds(15))
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate,
+                ConnectTimeout = TimeSpan.FromSeconds(10),
+                PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+            });
+        services.AddHttpClient(
+            OrderDeck.Chat.Ingestors.Facebook.FacebookChatHostedService.StreamClientName,
+            c =>
+            {
+                // Long-lived SSE — the hosted service further overrides this
+                // to InfiniteTimeSpan on the resolved instance.
+                c.Timeout = TimeSpan.FromMinutes(10);
+            })
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                PooledConnectionLifetime = TimeSpan.FromMinutes(15),
+                PooledConnectionIdleTimeout = TimeSpan.FromMinutes(10),
+                ConnectTimeout = TimeSpan.FromSeconds(15),
+                AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate,
+            });
+        services.AddSingleton<OrderDeck.Chat.Facebook.EncryptedFacebookTokenStore>(_ =>
+            new OrderDeck.Chat.Facebook.EncryptedFacebookTokenStore(
+                Path.Combine(AppPaths.DataFolder, "facebook-tokens")));
+        // OAuth service: its own HttpClient (not pooled) because the OAuth +
+        // page-listing calls are bursty and short-lived; reusing a 10-minute
+        // pooled client buys nothing.
+        services.AddSingleton<OrderDeck.Chat.Facebook.FacebookOAuthService>(sp =>
+            new OrderDeck.Chat.Facebook.FacebookOAuthService(
+                () => sp.GetRequiredService<AppSettings>(),
+                sp.GetRequiredService<OrderDeck.Chat.Facebook.EncryptedFacebookTokenStore>(),
+                new HttpClient { Timeout = TimeSpan.FromSeconds(30) },
+                sp.GetRequiredService<ILogger<OrderDeck.Chat.Facebook.FacebookOAuthService>>()));
+        services.AddSingleton<OrderDeck.Chat.Facebook.FacebookModerationService>(sp =>
+            new OrderDeck.Chat.Facebook.FacebookModerationService(
+                sp.GetRequiredService<OrderDeck.Chat.Facebook.FacebookOAuthService>(),
+                new HttpClient { Timeout = TimeSpan.FromSeconds(15) },
+                sp.GetRequiredService<ILogger<OrderDeck.Chat.Facebook.FacebookModerationService>>()));
+        services.AddHostedService(sp =>
+            new OrderDeck.Chat.Ingestors.Facebook.FacebookChatHostedService(
+                () => sp.GetRequiredService<AppSettings>(),
+                sp.GetRequiredService<OrderDeck.Chat.Facebook.FacebookOAuthService>(),
+                sp.GetRequiredService<IChatBus>(),
+                sp.GetRequiredService<ILoggerFactory>(),
+                trialProbe: sp.GetRequiredService<LicenseService>(),
+                spamFilter: sp.GetRequiredService<SpamFilter>(),
+                sessions: sp.GetRequiredService<StreamSessionService>(),
+                httpFactory: sp.GetRequiredService<IHttpClientFactory>()));
+
         // Overlay
         services.AddSingleton(sp => new OverlayHost(
             sp.GetRequiredService<IChatBus>(),
