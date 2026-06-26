@@ -26,9 +26,14 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
     private readonly LicenseApiClient _api;
     private string? _customerId;
 
-    [ObservableProperty] private string _username = "";
+    [ObservableProperty][NotifyPropertyChangedFor(nameof(Display))] private string _username = "";
     [ObservableProperty] private string _platform = "";
-    [ObservableProperty] private string? _displayName;
+    [ObservableProperty][NotifyPropertyChangedFor(nameof(Display))] private string? _displayName;
+
+    /// <summary>Gösterilecek ad: DisplayName varsa o, yoksa Username'e düşer.
+    /// YouTube'da Username = channelId (kalıcı kimlik) ama operatöre okunabilir
+    /// ad (DisplayName, ör. @handle) gösterilir.</summary>
+    public string Display => string.IsNullOrWhiteSpace(DisplayName) ? Username : DisplayName!;
     [ObservableProperty] private string _firstSeenLabel = "";
     [ObservableProperty] private string _lastSeenLabel  = "";
     [ObservableProperty] private int    _totalLabelsPrinted;

@@ -34,7 +34,7 @@
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="{Binding Username}" FontWeight="Bold"
+                            <TextBlock Grid.Column="0" Text="{Binding Display}" FontWeight="Bold"
                                        Foreground="#FFFFD166"/>
                             <TextBlock Grid.Column="1" Text="{Binding Platform}" Foreground="#FFAAAAAA"/>
                             <TextBlock Grid.Column="2"
