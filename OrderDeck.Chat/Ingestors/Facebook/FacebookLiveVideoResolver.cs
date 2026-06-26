@@ -42,8 +42,11 @@ public sealed class FacebookLiveVideoResolver
     public async Task<string?> ResolveAsync(
         string pageId, string pageAccessToken, CancellationToken ct)
     {
+        // Graph API only accepts the canonical "LIVE" status here — older docs
+        // and some community posts mention "LIVE_NOW" but that's rejected with
+        // (#100) Param broadcast_status[1] must be one of {...}.
         var url = $"{GraphBase}/{System.Uri.EscapeDataString(pageId)}/live_videos" +
-                  $"?broadcast_status=%5B%22LIVE%22%2C%22LIVE_NOW%22%5D" +
+                  $"?broadcast_status=%5B%22LIVE%22%5D" +
                   $"&fields=id,status" +
                   $"&access_token={System.Uri.EscapeDataString(pageAccessToken)}";
 
