@@ -25,6 +25,7 @@ export const ROUTE_MAP: Record<string, { tr: string; en: string }> = {
   blog:    { tr: '/blog/',                  en: '/en/blog/' },
   privacy: { tr: '/gizlilik-politikasi/',   en: '/en/privacy-policy/' },
   terms:   { tr: '/kullanim-kosullari/',    en: '/en/terms-of-service/' },
+  dataDeletion: { tr: '/veri-silme/',       en: '/en/data-deletion/' },
   contact: { tr: '/iletisim/',              en: '/en/contact/' },
   download:{ tr: '/indir/',                 en: '/en/download/' },
 };
