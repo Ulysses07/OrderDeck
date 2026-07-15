@@ -102,6 +102,13 @@ export default function TermsEn() {
         apply to your use of them. {BRAND} makes no guarantee of uninterrupted
         availability of those third-party services.
       </p>
+      <p>
+        {BRAND} uses YouTube API Services. By using {BRAND}, you agree to be bound by the{' '}
+        <strong>YouTube Terms of Service</strong>{' '}
+        (<a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener noreferrer">
+          https://www.youtube.com/t/terms
+        </a>).
+      </p>
 
       <h2>6. Warranty disclaimer</h2>
       <p>

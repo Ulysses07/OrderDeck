@@ -84,6 +84,13 @@ export default function PrivacyEn() {
           https://myaccount.google.com/permissions
         </a>.
       </p>
+      <p>
+        {BRAND} uses YouTube API Services. Google&apos;s processing of user data is governed
+        by the <strong>Google Privacy Policy</strong>{' '}
+        (<a href="https://policies.google.com/privacy" target="_blank" rel="noreferrer">
+          http://www.google.com/policies/privacy
+        </a>).
+      </p>
 
       <h2>3. Browser extension (Instagram, TikTok, Facebook)</h2>
       <p>
