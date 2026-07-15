@@ -83,6 +83,13 @@ export default function PrivacyTr() {
         </a>{' '}
         adresinden izni iptal edebilir.
       </p>
+      <p>
+        {BRAND} YouTube Data API Hizmetleri&apos;ni kullanır. Google&apos;ın kullanıcı verilerini
+        işlemesi, <strong>Google Gizlilik Politikası&apos;na</strong>{' '}
+        (<a href="https://policies.google.com/privacy" target="_blank" rel="noreferrer">
+          http://www.google.com/policies/privacy
+        </a>) tabidir.
+      </p>
 
       <h2>3. Tarayıcı eklentisi (Instagram, TikTok, Facebook)</h2>
       <p>

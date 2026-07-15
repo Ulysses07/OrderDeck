@@ -97,6 +97,13 @@ export default function TermsTr() {
         ortamları. Bu hizmetlerin kendi koşulları ve gizlilik politikaları geçerlidir.
         {BRAND}, bu hizmetlerin kesintisiz çalışacağını garanti etmez.
       </p>
+      <p>
+        {BRAND} YouTube Data API Hizmetleri&apos;ni kullanır. {BRAND}&apos;i kullanarak
+        <strong> YouTube Hizmet Şartları&apos;na</strong>{' '}
+        (<a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener noreferrer">
+          https://www.youtube.com/t/terms
+        </a>) bağlı olmayı kabul etmiş olursunuz.
+      </p>
 
       <h2>6. Garanti reddi</h2>
       <p>
