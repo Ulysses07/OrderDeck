@@ -39,4 +39,33 @@ public sealed class WhatsAppLinkBuilder
         // Return wa.me link
         return $"https://wa.me/{normalizedPhone}?text={encodedMessage}";
     }
+
+    /// <summary>
+    /// Multi-platform overload. Draft lists each provided platform username,
+    /// then Ad Soyad + Adres (+ optional Telefon). Email and TCKN are
+    /// intentionally excluded from the WhatsApp draft (form-only fields).
+    /// </summary>
+    public string Build(
+        string e164Phone,
+        string? youTubeUsername, string? instagramUsername,
+        string? facebookUsername, string? tikTokUsername,
+        string fullName, string address, string? phoneFromCustomer)
+    {
+        var normalizedPhone = e164Phone
+            .Replace("+", string.Empty)
+            .Replace(" ", string.Empty)
+            .Replace("-", string.Empty);
+
+        var lines = new List<string>();
+        if (!string.IsNullOrWhiteSpace(youTubeUsername)) lines.Add($"YouTube: {youTubeUsername.Trim()}");
+        if (!string.IsNullOrWhiteSpace(instagramUsername)) lines.Add($"Instagram: {instagramUsername.Trim()}");
+        if (!string.IsNullOrWhiteSpace(facebookUsername)) lines.Add($"Facebook: {facebookUsername.Trim()}");
+        if (!string.IsNullOrWhiteSpace(tikTokUsername)) lines.Add($"TikTok: {tikTokUsername.Trim()}");
+        lines.Add($"Ad Soyad: {fullName}");
+        lines.Add($"Adres: {address}");
+        if (!string.IsNullOrWhiteSpace(phoneFromCustomer)) lines.Add($"Telefon: {phoneFromCustomer}");
+
+        var encodedMessage = Uri.EscapeDataString(string.Join("\n", lines));
+        return $"https://wa.me/{normalizedPhone}?text={encodedMessage}";
+    }
 }

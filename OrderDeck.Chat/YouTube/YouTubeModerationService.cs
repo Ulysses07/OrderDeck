@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Linq;
 using System.Net;
 using System.Runtime.Versioning;
@@ -16,10 +17,11 @@ namespace OrderDeck.Chat.YouTube;
 /// <list type="bullet">
 ///   <item><see cref="DeleteMessageAsync"/> — wraps <c>liveChatMessages.delete</c>.</item>
 ///   <item><see cref="BanUserAsync"/> — wraps <c>liveChatBans.insert</c>.</item>
+///   <item><see cref="UnbanUserAsync"/> — wraps <c>liveChatBans.delete</c>.</item>
 /// </list>
 ///
 /// Both endpoints need the operator's own active broadcast's
-/// <c>liveChatId</c>; we resolve that via <c>liveBroadcasts.list?mine=true</c>
+/// <c>liveChatId</c>; we resolve that via <c>liveBroadcasts.list?broadcastStatus=active</c>
 /// and cache for 60 seconds (a single broadcast lives for hours, no point
 /// burning quota on every action).
 ///
@@ -41,6 +43,13 @@ public sealed class YouTubeModerationService
     private string? _cachedLiveChatId;
     private DateTimeOffset _cachedLiveChatIdExpiresAt;
     private readonly SemaphoreSlim _liveChatIdLock = new(1, 1);
+
+    // liveChatBans.insert returns a ban id that is the ONLY handle for
+    // liveChatBans.delete (YouTube has no liveChatBans.list). Cache
+    // channel→banId for the session so an accidental ban can be undone.
+    // Lost on restart — stale bans must be lifted from YouTube Studio.
+    private readonly ConcurrentDictionary<string, string> _banIdsByChannel =
+        new(StringComparer.Ordinal);
 
     public YouTubeModerationService(
         YouTubeOAuthService oauth,
@@ -69,9 +78,12 @@ public sealed class YouTubeModerationService
                 return _cachedLiveChatId;
 
             using var youtube = await _oauth.CreateAuthorizedServiceAsync(ct).ConfigureAwait(false);
+            // NOTE: broadcastStatus and mine are mutually exclusive filters —
+            // sending both yields 400 "Incompatible parameters: mine,
+            // broadcastStatus". broadcastStatus=active already scopes to the
+            // authenticated user's own broadcasts, so mine is redundant.
             var req = youtube.LiveBroadcasts.List("snippet");
             req.BroadcastStatus = LiveBroadcastsResource.ListRequest.BroadcastStatusEnum.Active;
-            req.Mine = true;
 
             LiveBroadcastListResponse resp;
             try
@@ -151,7 +163,9 @@ public sealed class YouTubeModerationService
         try
         {
             using var youtube = await _oauth.CreateAuthorizedServiceAsync(ct).ConfigureAwait(false);
-            await youtube.LiveChatBans.Insert(ban, "snippet").ExecuteAsync(ct).ConfigureAwait(false);
+            var created = await youtube.LiveChatBans.Insert(ban, "snippet").ExecuteAsync(ct).ConfigureAwait(false);
+            if (!string.IsNullOrEmpty(created?.Id))
+                _banIdsByChannel[channelId] = created.Id;
             _log.LogInformation("YouTube live chat user banned: {ChannelId}", channelId);
         }
         catch (GoogleApiException ex)
@@ -159,6 +173,41 @@ public sealed class YouTubeModerationService
             throw MapException(ex);
         }
     }
+
+    /// <summary>
+    /// Lifts a ban applied earlier in this session. <c>liveChatBans.delete</c>
+    /// needs the ban id returned by the original insert (there is no
+    /// liveChatBans.list), so this only works for bans placed since the app
+    /// started — otherwise it throws a friendly message pointing to Studio.
+    /// </summary>
+    public async Task UnbanUserAsync(string channelId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(channelId))
+            throw new ArgumentException("Kullanıcı kanal kimliği boş olamaz.", nameof(channelId));
+
+        if (!_banIdsByChannel.TryGetValue(channelId, out var banId) || string.IsNullOrEmpty(banId))
+            throw new ModerationException(
+                "Bu kullanıcının ban kaydı bulunamadı (bu oturumda banlanmamış olabilir). " +
+                "Banı YouTube Studio → canlı sohbetten kaldırabilirsin.");
+
+        try
+        {
+            using var youtube = await _oauth.CreateAuthorizedServiceAsync(ct).ConfigureAwait(false);
+            await youtube.LiveChatBans.Delete(banId).ExecuteAsync(ct).ConfigureAwait(false);
+            _banIdsByChannel.TryRemove(channelId, out _);
+            _log.LogInformation("YouTube live chat user unbanned: {ChannelId}", channelId);
+        }
+        catch (GoogleApiException ex)
+        {
+            throw MapException(ex);
+        }
+    }
+
+    /// <summary>True if this session banned the given channel and still holds
+    /// the ban id needed to lift it. Lets the UI show "remove ban" only when
+    /// it can actually work.</summary>
+    public bool IsBannedThisSession(string channelId) =>
+        !string.IsNullOrEmpty(channelId) && _banIdsByChannel.ContainsKey(channelId);
 
     /// <summary>Maps Google API errors to user-readable Turkish messages.
     /// Internal so the test suite can verify each branch without spinning

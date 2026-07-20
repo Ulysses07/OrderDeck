@@ -294,4 +294,59 @@ public class CustomerRepositoryTests
 
         repo.GetById("c1")!.RecipientPaysActive.Should().BeTrue();
     }
+
+    [Fact]
+    public void UpsertPersonFromIntake_creates_row_per_platform_sharing_one_group()
+    {
+        var repo = CreateRepository();
+
+        var groupId = repo.UpsertPersonFromIntake(
+            new[] { ("instagram", "@sibel_s"), ("youtube", "sibelgelibolu"), ("tiktok", "sibel.tt") },
+            fullName: "Sibel S", address: "İstanbul", phone: "+905551112233",
+            email: "sibel@example.com", tckn: "12345678901",
+            whatsAppConsent: true, smsConsent: false, nowUnix: 5000);
+
+        groupId.Should().NotBeNullOrEmpty();
+
+        // Handle normalize: baştaki '@' atılır.
+        var ig = repo.FindByPlatformAndUsername("instagram", "sibel_s");
+        var yt = repo.FindByPlatformAndUsername("youtube", "sibelgelibolu");
+        var tt = repo.FindByPlatformAndUsername("tiktok", "sibel.tt");
+
+        ig.Should().NotBeNull();
+        yt.Should().NotBeNull();
+        tt.Should().NotBeNull();
+
+        // Hepsi aynı grupta.
+        ig!.GroupId.Should().Be(groupId);
+        yt!.GroupId.Should().Be(groupId);
+        tt!.GroupId.Should().Be(groupId);
+
+        // İletişim/izin bilgisi tüm satırlara yazıldı; DisplayName Ad Soyad'a set edildi.
+        ig.Email.Should().Be("sibel@example.com");
+        ig.Tckn.Should().Be("12345678901");
+        ig.Address.Should().Be("İstanbul");
+        ig.WhatsAppConsent.Should().BeTrue();
+        ig.SmsConsent.Should().BeFalse();
+        ig.DisplayName.Should().Be("Sibel S");
+    }
+
+    [Fact]
+    public void UpsertPersonFromIntake_reuses_existing_group_when_identity_already_grouped()
+    {
+        var repo = CreateRepository();
+
+        // İlk kayıt: Instagram + YouTube tek grupta.
+        var g1 = repo.UpsertPersonFromIntake(
+            new[] { ("instagram", "sibel_s"), ("youtube", "sibelgelibolu") },
+            "Sibel S", "İstanbul", null, null, null, false, false, 5000);
+
+        // İkinci kayıt: aynı Instagram + yeni Facebook → grup yeniden kullanılmalı (merge).
+        var g2 = repo.UpsertPersonFromIntake(
+            new[] { ("instagram", "sibel_s"), ("facebook", "sibel.fb") },
+            "Sibel S", "İstanbul", null, null, null, false, false, 6000);
+
+        g2.Should().Be(g1);
+        repo.FindByPlatformAndUsername("facebook", "sibel.fb")!.GroupId.Should().Be(g1);
+    }
 }

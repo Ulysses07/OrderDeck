@@ -33,9 +33,19 @@ public class IntakeFormModel : PageModel
 
     public sealed class IntakeFormInput
     {
-        [Required(ErrorMessage = "Kullanıcı adı gerekli")]
+        // Çoklu-platform kullanıcı adları — her biri opsiyonel, en az 1 zorunlu
+        // (OnPostSubmitAsync içinde doğrulanır).
         [StringLength(64, ErrorMessage = "En fazla 64 karakter")]
-        public string Username { get; set; } = "";
+        public string? YouTubeUsername { get; set; }
+
+        [StringLength(64, ErrorMessage = "En fazla 64 karakter")]
+        public string? InstagramUsername { get; set; }
+
+        [StringLength(64, ErrorMessage = "En fazla 64 karakter")]
+        public string? FacebookUsername { get; set; }
+
+        [StringLength(64, ErrorMessage = "En fazla 64 karakter")]
+        public string? TikTokUsername { get; set; }
 
         [Required(ErrorMessage = "Ad Soyad gerekli")]
         [StringLength(200, ErrorMessage = "En fazla 200 karakter")]
@@ -45,9 +55,22 @@ public class IntakeFormModel : PageModel
         [StringLength(500, ErrorMessage = "En fazla 500 karakter")]
         public string Address { get; set; } = "";
 
+        [Required(ErrorMessage = "E-posta gerekli")]
+        [EmailAddress(ErrorMessage = "Geçerli bir e-posta girin")]
+        [StringLength(200, ErrorMessage = "En fazla 200 karakter")]
+        public string Email { get; set; } = "";
+
+        // Opsiyonel — fatura için. Doluysa 11 hane olmalı (boşsa geçerli).
+        [RegularExpression(@"^\d{11}$", ErrorMessage = "TC Kimlik No 11 haneli olmalı")]
+        public string? Tckn { get; set; }
+
         [Required(ErrorMessage = "WhatsApp numarası zorunlu.")]
         [StringLength(20)]
         public string Phone { get; set; } = "";
+
+        // Mesaj izinleri (onay kutuları)
+        public bool WhatsAppConsent { get; set; }
+        public bool SmsConsent { get; set; }
     }
 
     public async Task<IActionResult> OnGetAsync(CancellationToken ct)
@@ -72,6 +95,18 @@ public class IntakeFormModel : PageModel
         Config = await _service.GetActiveBySlugAsync(Slug, ct);
         if (Config is null) return StatusCode(StatusCodes.Status410Gone);
 
+        // En az bir platform kullanıcı adı zorunlu.
+        var yt = Trim(Input.YouTubeUsername);
+        var ig = Trim(Input.InstagramUsername);
+        var fb = Trim(Input.FacebookUsername);
+        var tt = Trim(Input.TikTokUsername);
+        if (yt is null && ig is null && fb is null && tt is null)
+        {
+            ModelState.AddModelError(
+                "Input.InstagramUsername",
+                "En az bir platform kullanıcı adı girin (Instagram, YouTube, Facebook veya TikTok).");
+        }
+
         if (!ModelState.IsValid) return Page();
 
         // Phase 4g — normalize TR phone to E.164
@@ -84,22 +119,35 @@ public class IntakeFormModel : PageModel
             return Page();
         }
 
+        // Eski WPF sync'i için legacy Username = ilk dolu platform adı.
+        var legacyUsername = yt ?? ig ?? fb ?? tt ?? "";
+
         await _service.SaveSubmissionAsync(
             Config.Id,
-            Input.Username.Trim(),
-            Input.FullName.Trim(),
-            Input.Address.Trim(),
-            normalizedPhone,
-            HttpContext.Connection.RemoteIpAddress?.ToString(),
-            Request.Headers.UserAgent.ToString(),
-            ct);
+            youTubeUsername: yt, instagramUsername: ig,
+            facebookUsername: fb, tikTokUsername: tt,
+            legacyUsername: legacyUsername,
+            fullName: Input.FullName.Trim(),
+            address: Input.Address.Trim(),
+            phone: normalizedPhone,
+            email: Input.Email.Trim(),
+            tckn: Trim(Input.Tckn),
+            whatsAppConsent: Input.WhatsAppConsent,
+            smsConsent: Input.SmsConsent,
+            ipAddress: HttpContext.Connection.RemoteIpAddress?.ToString(),
+            userAgent: Request.Headers.UserAgent.ToString(),
+            ct: ct);
 
         var url = _linkBuilder.Build(
             Config.WhatsAppPhone,
-            Input.Username.Trim(),
+            yt, ig, fb, tt,
             Input.FullName.Trim(),
             Input.Address.Trim(),
             normalizedPhone);
         return Redirect(url);
     }
+
+    /// <summary>Trims and normalizes empty/whitespace input to null.</summary>
+    private static string? Trim(string? s)
+        => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
 }

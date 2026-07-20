@@ -178,7 +178,16 @@ public sealed class GiveawayService
         var g = _giveaways.GetById(giveawayId)
                 ?? throw new InvalidOperationException($"Giveaway {giveawayId} not found");
 
-        var participants = _giveaways.GetParticipants(g.Id);
+        var allParticipants = _giveaways.GetParticipants(g.Id);
+        if (allParticipants.Count == 0)
+            throw new GiveawayHasNoParticipantsException(g.Keyword);
+
+        // Çekim anı kara-liste süzgeci: bir katılımcı çekilişe GİRDİKTEN sonra
+        // (grup yayılımı dahil) kara listeye alınmış olabilir; giriş süzgeci bunu
+        // yakalayamaz. Kazananları seçmeden önce güncel kara-liste durumuna göre ele.
+        var participants = allParticipants
+            .Where(p => _customers.Find(p.Platform, p.Username)?.IsBlacklisted != true)
+            .ToList();
         if (participants.Count == 0)
             throw new GiveawayHasNoParticipantsException(g.Keyword);
 

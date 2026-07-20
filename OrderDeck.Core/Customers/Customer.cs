@@ -20,7 +20,15 @@ public sealed record Customer(
     // Print template etikete "ALICI ÖDEMELİ" kırmızı yazı render eder.
     // Sticky flag — vendor müşterinin sevkıyatı bitince Customer detail
     // dialog'tan (gelecek) veya direkt SQL ile clear eder. MVP compromise.
-    bool RecipientPaysActive = false)
+    bool RecipientPaysActive = false,
+    // Intake form çoklu-platform (2026-07-20): aynı kişinin farklı platform
+    // satırlarını bağlayan grup kimliği. Null = gruplanmamış (tekil kimlik).
+    // Kara liste/çekiliş grup-bazlı kontrol için kullanılır.
+    string? GroupId = null,
+    string? Email = null,
+    string? Tckn = null,
+    bool WhatsAppConsent = false,
+    bool SmsConsent = false)
 {
     /// <summary>Operatöre gösterilecek ad: DisplayName varsa o, yoksa Username'e
     /// düşer. YouTube'da Username = channelId (kalıcı kimlik); listede okunabilir

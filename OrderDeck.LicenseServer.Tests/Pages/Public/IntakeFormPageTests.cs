@@ -68,7 +68,8 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var html = await resp.Content.ReadAsStringAsync();
-        html.Should().Contain("Kullanıcı adı");
+        html.Should().Contain("Instagram");
+        html.Should().Contain("E-posta");
         html.Should().Contain("Tamamla");
     }
 
@@ -112,8 +113,9 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
         {
             ["__RequestVerificationToken"] = antiForgery,
             ["Slug"] = slug,
-            ["Input.Username"] = "bilalcanli",
+            ["Input.InstagramUsername"] = "bilalcanli",
             ["Input.FullName"] = "Bilal Canlı",
+            ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12 İstanbul",
             ["Input.Phone"] = "5551234567"
         });
@@ -167,7 +169,7 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task Post_submit_with_missing_username_returns_400()
+    public async Task Post_submit_with_no_platform_username_returns_page_with_error()
     {
         var (slug, _) = await SeedConfigAsync();
         var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
@@ -178,19 +180,21 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
         var getResp = await client.GetAsync($"/r/{slug}");
         var antiForgery = AdminLoginHelper.ExtractAntiForgeryToken(await getResp.Content.ReadAsStringAsync());
 
+        // All platform usernames empty → "at least one" validation error.
         var form = new FormUrlEncodedContent(new Dictionary<string, string>
         {
             ["__RequestVerificationToken"] = antiForgery,
             ["Slug"] = slug,
-            ["Input.Username"] = "",
             ["Input.FullName"] = "Bilal",
-            ["Input.Address"] = "Adres"
+            ["Input.Email"] = "bilal@example.com",
+            ["Input.Address"] = "Adres",
+            ["Input.Phone"] = "5551234567"
         });
         var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
 
         // ModelState invalid → return Page() (200 with errors), Razor convention
         postResp.StatusCode.Should().Be(HttpStatusCode.OK);
         var html = System.Net.WebUtility.HtmlDecode(await postResp.Content.ReadAsStringAsync());
-        html.Should().Contain("Kullanıcı adı gerekli");
+        html.Should().Contain("En az bir platform");
     }
 }

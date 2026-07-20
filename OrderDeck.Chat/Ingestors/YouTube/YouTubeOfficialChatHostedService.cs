@@ -1,4 +1,5 @@
 using System.Net.Http;
+using OrderDeck.Chat.YouTube;
 using OrderDeck.Core.Chat;
 using OrderDeck.Core.Sessions;
 using OrderDeck.Core.Settings;
@@ -121,12 +122,16 @@ public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposab
                     continue;
                 }
 
-                var apiKey = settings.YouTubeApiKey;
+                // Çözümleme sırası: AppSettings override (QA/ayrı proje) →
+                // binary'ye gömülü YouTubeApiDefaults.ApiKey (normal kurulum).
+                var apiKey = !string.IsNullOrWhiteSpace(settings.YouTubeApiKey)
+                    ? settings.YouTubeApiKey
+                    : YouTubeApiDefaults.ApiKey;
                 if (string.IsNullOrWhiteSpace(apiKey))
                 {
                     if (!_warnedNoKey)
                     {
-                        _log.LogWarning("[YouTube Official] YouTubeApiKey boş — official ingestor çalışamaz. Ayarlardan API key gir ya da IngestMode=Scraper yap.");
+                        _log.LogWarning("[YouTube Official] YouTube API key yok (ne ayarda ne gömülü default'ta) — official ingestor çalışamaz. IngestMode=Scraper kalsın ya da release'e key gömülsün.");
                         _warnedNoKey = true;
                     }
                     await Task.Delay(IdleWhenOffline, ct);

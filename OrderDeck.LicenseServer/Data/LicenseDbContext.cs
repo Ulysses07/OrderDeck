@@ -161,9 +161,15 @@ public class LicenseDbContext : DbContext
                 .HasForeignKey(s => s.IntakeFormConfigId)
                 .OnDelete(DeleteBehavior.Cascade);
             b.Property(s => s.Username).HasMaxLength(64).IsRequired();
+            b.Property(s => s.YouTubeUsername).HasMaxLength(64);
+            b.Property(s => s.InstagramUsername).HasMaxLength(64);
+            b.Property(s => s.FacebookUsername).HasMaxLength(64);
+            b.Property(s => s.TikTokUsername).HasMaxLength(64);
             b.Property(s => s.FullName).HasMaxLength(200).IsRequired();
             b.Property(s => s.Address).HasMaxLength(500).IsRequired();
             b.Property(s => s.Phone).HasMaxLength(20);
+            b.Property(s => s.Email).HasMaxLength(200);
+            b.Property(s => s.Tckn).HasMaxLength(11);
             b.Property(s => s.IpAddress).HasMaxLength(64);
             b.Property(s => s.UserAgent).HasMaxLength(500);
             b.HasIndex(s => new { s.IntakeFormConfigId, s.SubmittedAt });

@@ -63,8 +63,9 @@ public sealed class IntakeFormPhoneTests : IClassFixture<ApiFactory>
         {
             ["__RequestVerificationToken"] = token,
             ["Slug"] = slug,
-            ["Input.Username"] = "bilalcanli",
+            ["Input.InstagramUsername"] = "bilalcanli",
             ["Input.FullName"] = "Bilal Canlı",
+            ["Input.Email"] = "bilal@example.com",
             ["Input.Address"] = "Atatürk Cad. No:12 İstanbul"
         };
         if (phone is not null) dict["Input.Phone"] = phone;

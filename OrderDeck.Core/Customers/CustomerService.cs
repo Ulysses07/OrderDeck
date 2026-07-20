@@ -36,7 +36,8 @@ public sealed class CustomerService
         string? displayName, string? avatarUrl)
     {
         var existing = _repo.FindByPlatformAndUsername(platform, username);
-        if (existing is not null) return existing;
+        if (existing is not null)
+            return MaybeAdoptYouTube(existing, platform, displayName) ?? existing;
 
         var now = _clock.UnixNow();
         var customer = new Customer(
@@ -56,7 +57,34 @@ public sealed class CustomerService
             Address: null,
             Phone: null);
         _repo.Insert(customer);
-        return customer;
+        return MaybeAdoptYouTube(customer, platform, displayName) ?? customer;
+    }
+
+    /// <summary>
+    /// YouTube channelId satırını, intake formda @handle ile bildirilen kişinin
+    /// grubuna adopte eder (chat DisplayName = @handle eşleşmesi, case-insensitive).
+    /// Zaten gruplu ya da YouTube olmayan satırlarda no-op. Grup kara listedeyse
+    /// satır da kara listeye alınır. Adopte edilirse güncel kaydı döner, yoksa null.
+    /// </summary>
+    private Customer? MaybeAdoptYouTube(Customer row, string platform, string? displayName)
+    {
+        if (!string.Equals(platform, "youtube", StringComparison.OrdinalIgnoreCase)) return null;
+        if (!string.IsNullOrEmpty(row.GroupId)) return null;
+        if (string.IsNullOrWhiteSpace(displayName)) return null;
+
+        var handle = displayName.Trim().TrimStart('@').Trim();
+        if (handle.Length == 0) return null;
+
+        var declared = _repo.FindGroupedYouTubeByHandle(handle);
+        if (declared?.GroupId is not { Length: > 0 } groupId) return null;
+        if (string.Equals(declared.Id, row.Id, StringComparison.Ordinal)) return null;
+
+        _repo.SetGroupId(row.Id, groupId);
+        if (_repo.IsGroupBlacklisted(groupId))
+            _repo.UpdateBlacklist(row.Id, isBlacklisted: true,
+                declared.BlacklistReason, declared.BlacklistedAt ?? _clock.UnixNow());
+
+        return _repo.GetById(row.Id);
     }
 
     public void RecordPrintedLabels(string customerId, int labelCount, decimal amount)
@@ -64,16 +92,26 @@ public sealed class CustomerService
         _repo.IncrementLabelStats(customerId, labelCount, amount, _clock.UnixNow());
     }
 
-    /// <summary>Marks the customer as blacklisted with optional reason.</summary>
+    /// <summary>Marks the customer as blacklisted with optional reason. If the
+    /// customer belongs to a person-group (linked platform identities), the whole
+    /// group is blacklisted so they cannot slip through on another platform.</summary>
     public void AddToBlacklist(string customerId, string? reason)
     {
-        _repo.UpdateBlacklist(customerId, isBlacklisted: true, reason, blacklistedAt: _clock.UnixNow());
+        var at = _clock.UnixNow();
+        _repo.UpdateBlacklist(customerId, isBlacklisted: true, reason, blacklistedAt: at);
+        var c = _repo.GetById(customerId);
+        if (c?.GroupId is { Length: > 0 } groupId)
+            _repo.SetGroupBlacklist(groupId, isBlacklisted: true, reason, at);
     }
 
-    /// <summary>Clears the blacklist flag, reason, and timestamp.</summary>
+    /// <summary>Clears the blacklist flag, reason, and timestamp. Propagates to
+    /// the whole person-group if the customer is linked.</summary>
     public void RemoveFromBlacklist(string customerId)
     {
         _repo.UpdateBlacklist(customerId, isBlacklisted: false, reason: null, blacklistedAt: null);
+        var c = _repo.GetById(customerId);
+        if (c?.GroupId is { Length: > 0 } groupId)
+            _repo.SetGroupBlacklist(groupId, isBlacklisted: false, reason: null, blacklistedAt: null);
     }
 
     /// <summary>

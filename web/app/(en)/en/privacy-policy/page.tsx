@@ -7,7 +7,7 @@ export const metadata: Metadata = {
   description: `How ${BRAND} handles personal data — scope, retention, sharing, user rights.`,
 };
 
-const EFFECTIVE_DATE = '2026-05-02';
+const EFFECTIVE_DATE = '2026-07-20';
 
 export default function PrivacyEn() {
   return (
@@ -48,6 +48,27 @@ export default function PrivacyEn() {
         <li><strong>Discarded entirely</strong> when the application closes</li>
         <li><strong>Never sent to {BRAND} servers</strong> and never shared with third parties</li>
       </ul>
+
+      <h3>1.3. Buyer information collected via the registration form</h3>
+      <p>
+        Broadcasters may create a personal registration link (web form) to handle their
+        viewers&apos; order, shipping, and invoicing. Information collected from buyers who
+        fill out this form:
+      </p>
+      <ul>
+        <li>Platform usernames (Instagram, YouTube, Facebook, TikTok — as declared by the buyer)</li>
+        <li>Full name, email, phone (WhatsApp) number, and shipping address</li>
+        <li>Optional Turkish national ID (T.C. Kimlik No) for invoicing (only if the buyer chooses to provide it)</li>
+        <li>Explicit consent to receive informational messages via WhatsApp and/or SMS (checkboxes)</li>
+      </ul>
+      <p>
+        This data is processed solely for the relevant broadcaster&apos;s order, shipping,
+        and invoicing purposes; it is never shared or sold to third parties for marketing.
+        Messages are only sent through channels the buyer has explicitly consented to, and
+        the buyer may withdraw consent at any time. The broadcaster who created the form is
+        the data controller for this information; {BRAND} hosts it on the broadcaster&apos;s
+        behalf and delivers it to the broadcaster&apos;s application.
+      </p>
 
       <h2>2. YouTube API usage</h2>
       <p>
@@ -114,6 +135,7 @@ export default function PrivacyEn() {
       <h2>5. Data retention</h2>
       <ul>
         <li>Account data (email, license): until the account is deleted</li>
+        <li>Buyer information from the registration form: until deleted by the relevant broadcaster</li>
         <li>Server access logs: 30 days</li>
         <li>Security logs: 90 days</li>
         <li>Live-stream chat messages: only while the application is open</li>
