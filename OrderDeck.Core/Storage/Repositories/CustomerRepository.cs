@@ -19,12 +19,12 @@ public sealed class CustomerRepository
               (Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
                IsBlacklisted, BlacklistReason, Notes,
                TotalLabelsPrinted, TotalAmount, BlacklistedAt, Address, Phone,
-               RecipientPaysActive)
+               RecipientPaysActive, GroupId, Email, Tckn, WhatsAppConsent, SmsConsent)
               VALUES
               (@Id, @Platform, @Username, @DisplayName, @AvatarUrl, @FirstSeenAt, @LastSeenAt,
                @IsBlacklisted, @BlacklistReason, @Notes,
                @TotalLabelsPrinted, @TotalAmount, @BlacklistedAt, @Address, @Phone,
-               @RecipientPaysActive)",
+               @RecipientPaysActive, @GroupId, @Email, @Tckn, @WhatsAppConsent, @SmsConsent)",
             new
             {
                 c.Id, c.Platform, c.Username, c.DisplayName, c.AvatarUrl,
@@ -32,7 +32,10 @@ public sealed class CustomerRepository
                 IsBlacklisted = c.IsBlacklisted ? 1 : 0,
                 c.BlacklistReason, c.Notes,
                 c.TotalLabelsPrinted, c.TotalAmount, c.BlacklistedAt, c.Address, c.Phone,
-                RecipientPaysActive = c.RecipientPaysActive ? 1 : 0
+                RecipientPaysActive = c.RecipientPaysActive ? 1 : 0,
+                c.GroupId, c.Email, c.Tckn,
+                WhatsAppConsent = c.WhatsAppConsent ? 1 : 0,
+                SmsConsent = c.SmsConsent ? 1 : 0
             });
     }
 
@@ -116,6 +119,54 @@ public sealed class CustomerRepository
             });
     }
 
+    /// <summary>True if any customer in the group is blacklisted.</summary>
+    public bool IsGroupBlacklisted(string groupId)
+    {
+        using var conn = _factory.Open();
+        return conn.ExecuteScalar<long>(
+            "SELECT COUNT(*) FROM Customer WHERE GroupId = @groupId AND IsBlacklisted = 1",
+            new { groupId }) > 0;
+    }
+
+    /// <summary>Sets/clears the blacklist flag for EVERY customer in the group.
+    /// Used so blacklisting one identity blacklists the whole linked person.</summary>
+    public void SetGroupBlacklist(string groupId, bool isBlacklisted, string? reason, long? blacklistedAt)
+    {
+        using var conn = _factory.Open();
+        conn.Execute(
+            @"UPDATE Customer
+              SET IsBlacklisted = @flag, BlacklistReason = @reason, BlacklistedAt = @blacklistedAt
+              WHERE GroupId = @groupId",
+            new { groupId, flag = isBlacklisted ? 1 : 0, reason, blacklistedAt });
+    }
+
+    /// <summary>Assigns a customer to a group (YouTube channelId adoption).</summary>
+    public void SetGroupId(string customerId, string groupId)
+    {
+        using var conn = _factory.Open();
+        conn.Execute("UPDATE Customer SET GroupId = @groupId WHERE Id = @id",
+            new { groupId, id = customerId });
+    }
+
+    /// <summary>
+    /// Finds a grouped YouTube customer whose Username matches the given handle
+    /// (case-insensitive). Used to adopt a chat channelId row into the person's
+    /// group: the intake form stores a youtube row keyed by @handle, while chat
+    /// messages arrive keyed by channelId — this bridges them via the handle
+    /// (chat DisplayName). Returns null if no grouped handle row exists.
+    /// </summary>
+    public Customer? FindGroupedYouTubeByHandle(string handle)
+    {
+        using var conn = _factory.Open();
+        var row = conn.QueryFirstOrDefault<Row>(
+            @"SELECT * FROM Customer
+              WHERE Platform = 'youtube' AND GroupId IS NOT NULL
+                AND LOWER(Username) = LOWER(@handle)
+              LIMIT 1",
+            new { handle });
+        return row is null ? null : Map(row);
+    }
+
     /// <summary>Returns all currently-blacklisted customers, newest first.</summary>
     public IReadOnlyList<Customer> GetBlacklisted()
     {
@@ -171,7 +222,12 @@ public sealed class CustomerRepository
         r.FirstSeenAt, r.LastSeenAt,
         r.IsBlacklisted == 1, r.BlacklistReason, r.Notes,
         r.TotalLabelsPrinted, r.TotalAmount, r.BlacklistedAt, r.Address, r.Phone,
-        RecipientPaysActive: r.RecipientPaysActive == 1);
+        RecipientPaysActive: r.RecipientPaysActive == 1,
+        GroupId: r.GroupId,
+        Email: r.Email,
+        Tckn: r.Tckn,
+        WhatsAppConsent: r.WhatsAppConsent == 1,
+        SmsConsent: r.SmsConsent == 1);
 
     private sealed class Row
     {
@@ -191,6 +247,11 @@ public sealed class CustomerRepository
         public string? Address { get; init; }
         public string? Phone { get; init; }
         public int RecipientPaysActive { get; init; }
+        public string? GroupId { get; init; }
+        public string? Email { get; init; }
+        public string? Tckn { get; init; }
+        public int WhatsAppConsent { get; init; }
+        public int SmsConsent { get; init; }
     }
 
     /// <summary>
@@ -236,6 +297,88 @@ public sealed class CustomerRepository
 
         return new Customer(id, platform, username, fullName, null, nowUnix, nowUnix,
             false, null, null, 0, 0m, null, address, phone);
+    }
+
+    /// <summary>
+    /// Intake form çoklu-platform upsert. Kişinin bildirdiği her platform kimliği
+    /// için bir Customer satırı oluşturur/günceller ve hepsini tek bir
+    /// <c>GroupId</c> ile bağlar. Kimliklerden biri zaten bir gruba aitse o grup
+    /// yeniden kullanılır (kimlikler tek kişide birleşir), yoksa yeni grup üretilir.
+    /// Handle normalize: trim + baştaki '@' atılır. IG/TikTok/FB'de Username = chat
+    /// handle olduğundan chat satırıyla doğal birleşir; YouTube form satırı @handle
+    /// ile durur (channelId adopsiyonu Faz 3'te). İletişim/izin bilgisi tüm satırlara
+    /// yazılır; DisplayName boşsa Ad Soyad'a set edilir. Grup id'yi döner.
+    /// </summary>
+    public string UpsertPersonFromIntake(
+        IReadOnlyList<(string Platform, string Username)> identities,
+        string fullName, string address, string? phone,
+        string? email, string? tckn, bool whatsAppConsent, bool smsConsent,
+        long nowUnix)
+    {
+        // Normalize + boşları ele.
+        var norm = new List<(string Platform, string Username)>();
+        foreach (var (p, u) in identities)
+        {
+            var handle = (u ?? "").Trim().TrimStart('@').Trim();
+            if (handle.Length > 0) norm.Add((p, handle));
+        }
+        if (norm.Count == 0) throw new ArgumentException("En az bir kimlik gerekli", nameof(identities));
+
+        using var conn = _factory.Open();
+
+        // Grup id çözümle: kimliklerden biri zaten gruplanmışsa onu kullan.
+        string? groupId = null;
+        foreach (var (p, u) in norm)
+        {
+            var existing = conn.QueryFirstOrDefault<Row>(
+                "SELECT * FROM Customer WHERE Platform=@p AND Username=@u", new { p, u });
+            if (existing?.GroupId is { Length: > 0 } g) { groupId = g; break; }
+        }
+        groupId ??= Guid.NewGuid().ToString("N");
+
+        foreach (var (p, u) in norm)
+        {
+            var existing = conn.QueryFirstOrDefault<Row>(
+                "SELECT * FROM Customer WHERE Platform=@p AND Username=@u", new { p, u });
+            if (existing is not null)
+            {
+                conn.Execute(
+                    @"UPDATE Customer SET
+                        GroupId = @groupId,
+                        Address = @address, Phone = @phone, Email = @email, Tckn = @tckn,
+                        WhatsAppConsent = @wa, SmsConsent = @sms, LastSeenAt = @now,
+                        DisplayName = COALESCE(NULLIF(DisplayName, ''), @fullName)
+                      WHERE Id = @id",
+                    new
+                    {
+                        groupId, address, phone, email, tckn,
+                        wa = whatsAppConsent ? 1 : 0, sms = smsConsent ? 1 : 0,
+                        now = nowUnix, fullName, id = existing.Id
+                    });
+            }
+            else
+            {
+                conn.Execute(
+                    @"INSERT INTO Customer
+                      (Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
+                       IsBlacklisted, BlacklistReason, Notes, TotalLabelsPrinted, TotalAmount,
+                       BlacklistedAt, Address, Phone, RecipientPaysActive,
+                       GroupId, Email, Tckn, WhatsAppConsent, SmsConsent)
+                      VALUES
+                      (@id, @p, @u, @fullName, NULL, @now, @now,
+                       0, NULL, NULL, 0, 0,
+                       NULL, @address, @phone, 0,
+                       @groupId, @email, @tckn, @wa, @sms)",
+                    new
+                    {
+                        id = Guid.NewGuid().ToString("N"), p, u, fullName, now = nowUnix,
+                        address, phone, groupId, email, tckn,
+                        wa = whatsAppConsent ? 1 : 0, sms = smsConsent ? 1 : 0
+                    });
+            }
+        }
+
+        return groupId;
     }
 
     /// <summary>Phase 4g: WhatsApp E.164 telefonu güncelle. Geçersiz id no-op.</summary>

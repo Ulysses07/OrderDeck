@@ -84,24 +84,50 @@ public sealed class IntakeFormService
     }
 
     // Phase 4f overload kept for backwards compatibility with existing tests.
-    // Task 18 will migrate callers to pass `phone` explicitly.
     public Task<IntakeFormSubmission> SaveSubmissionAsync(
         Guid configId, string username, string fullName, string address,
         string? ipAddress, string? userAgent, CancellationToken ct = default)
         => SaveSubmissionAsync(configId, username, fullName, address, null, ipAddress, userAgent, ct);
 
-    public async Task<IntakeFormSubmission> SaveSubmissionAsync(
+    // Phase 4g overload — delegates to the full multi-platform overload.
+    public Task<IntakeFormSubmission> SaveSubmissionAsync(
         Guid configId, string username, string fullName, string address,
         string? phone, string? ipAddress, string? userAgent, CancellationToken ct = default)
+        => SaveSubmissionAsync(
+            configId,
+            youTubeUsername: null, instagramUsername: null,
+            facebookUsername: null, tikTokUsername: null,
+            legacyUsername: username, fullName: fullName, address: address, phone: phone,
+            email: null, tckn: null, whatsAppConsent: false, smsConsent: false,
+            ipAddress: ipAddress, userAgent: userAgent, ct: ct);
+
+    /// <summary>Multi-platform gönderim: platform kullanıcı adları + email/TC +
+    /// mesaj izinleri. <paramref name="legacyUsername"/> eski WPF sync'i için
+    /// ilk dolu platform adına set edilir.</summary>
+    public async Task<IntakeFormSubmission> SaveSubmissionAsync(
+        Guid configId,
+        string? youTubeUsername, string? instagramUsername,
+        string? facebookUsername, string? tikTokUsername,
+        string legacyUsername, string fullName, string address, string? phone,
+        string? email, string? tckn, bool whatsAppConsent, bool smsConsent,
+        string? ipAddress, string? userAgent, CancellationToken ct = default)
     {
         var sub = new IntakeFormSubmission
         {
             Id = Guid.NewGuid(),
             IntakeFormConfigId = configId,
-            Username = username,
+            Username = legacyUsername,
+            YouTubeUsername = youTubeUsername,
+            InstagramUsername = instagramUsername,
+            FacebookUsername = facebookUsername,
+            TikTokUsername = tikTokUsername,
             FullName = fullName,
             Address = address,
             Phone = phone,
+            Email = email,
+            Tckn = tckn,
+            WhatsAppConsent = whatsAppConsent,
+            SmsConsent = smsConsent,
             SubmittedAt = DateTimeOffset.UtcNow,
             IpAddress = ipAddress,
             UserAgent = userAgent

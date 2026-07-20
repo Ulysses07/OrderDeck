@@ -18,16 +18,47 @@
     <form method="post" asp-page-handler="Submit" autocomplete="off">
         <input type="hidden" asp-for="Slug" />
 
+        <p class="text-muted small mb-3">
+            İzlediğiniz platformlardaki kullanıcı adlarınızı girin (en az bir tane).
+            Birden fazla platformdan izliyorsanız hepsini yazabilirsiniz.
+        </p>
+
         <div class="mb-3">
-            <label asp-for="Input.Username" class="form-label">Kullanıcı adı (Instagram/TikTok)</label>
-            <input asp-for="Input.Username" class="form-control form-control-lg" maxlength="64" autofocus />
-            <span asp-validation-for="Input.Username" class="text-danger"></span>
+            <label asp-for="Input.InstagramUsername" class="form-label">Instagram kullanıcı adı</label>
+            <input asp-for="Input.InstagramUsername" class="form-control form-control-lg" maxlength="64" autofocus />
+            <span asp-validation-for="Input.InstagramUsername" class="text-danger"></span>
         </div>
+
+        <div class="mb-3">
+            <label asp-for="Input.YouTubeUsername" class="form-label">YouTube kullanıcı adı</label>
+            <input asp-for="Input.YouTubeUsername" class="form-control form-control-lg" maxlength="64" />
+            <span asp-validation-for="Input.YouTubeUsername" class="text-danger"></span>
+        </div>
+
+        <div class="mb-3">
+            <label asp-for="Input.FacebookUsername" class="form-label">Facebook kullanıcı adı</label>
+            <input asp-for="Input.FacebookUsername" class="form-control form-control-lg" maxlength="64" />
+            <span asp-validation-for="Input.FacebookUsername" class="text-danger"></span>
+        </div>
+
+        <div class="mb-3">
+            <label asp-for="Input.TikTokUsername" class="form-label">TikTok kullanıcı adı</label>
+            <input asp-for="Input.TikTokUsername" class="form-control form-control-lg" maxlength="64" />
+            <span asp-validation-for="Input.TikTokUsername" class="text-danger"></span>
+        </div>
+
+        <hr class="my-4" />
 
         <div class="mb-3">
             <label asp-for="Input.FullName" class="form-label">Ad Soyad</label>
             <input asp-for="Input.FullName" class="form-control form-control-lg" maxlength="200" />
             <span asp-validation-for="Input.FullName" class="text-danger"></span>
+        </div>
+
+        <div class="mb-3">
+            <label asp-for="Input.Email" class="form-label">E-posta <span class="text-danger">*</span></label>
+            <input asp-for="Input.Email" type="email" class="form-control form-control-lg" maxlength="200" />
+            <span asp-validation-for="Input.Email" class="text-danger"></span>
         </div>
 
         <div class="mb-3">
@@ -43,6 +74,33 @@
             <div class="form-text">+90 otomatik eklenecek. 10 haneli mobil numarayı girin.</div>
             <span asp-validation-for="Input.Phone" class="text-danger"></span>
         </div>
+
+        <div class="mb-3">
+            <label asp-for="Input.Tckn" class="form-label">TC Kimlik No <span class="text-muted">(opsiyonel — fatura için)</span></label>
+            <input asp-for="Input.Tckn" type="text" inputmode="numeric" class="form-control form-control-lg"
+                   maxlength="11" placeholder="11 haneli" />
+            <span asp-validation-for="Input.Tckn" class="text-danger"></span>
+        </div>
+
+        <div class="form-check mb-2">
+            <input asp-for="Input.WhatsAppConsent" class="form-check-input" type="checkbox" />
+            <label asp-for="Input.WhatsAppConsent" class="form-check-label">
+                WhatsApp üzerinden bilgilendirme/kampanya mesajı almayı kabul ediyorum.
+            </label>
+        </div>
+
+        <div class="form-check mb-3">
+            <input asp-for="Input.SmsConsent" class="form-check-input" type="checkbox" />
+            <label asp-for="Input.SmsConsent" class="form-check-label">
+                SMS üzerinden bilgilendirme/kampanya mesajı almayı kabul ediyorum.
+            </label>
+        </div>
+
+        <p class="text-muted" style="font-size: 0.8rem;">
+            Gönderdiğiniz bilgiler yalnızca sipariş, kargo ve fatura işlemleriniz için
+            yayıncı tarafından kullanılır. Verileriniz üçüncü kişilerle pazarlama amacıyla
+            paylaşılmaz. İzin verdiğiniz kanallardan iletişim kurulabilir.
+        </p>
 
         <input type="text" name="website" tabindex="-1" autocomplete="off"
                style="position:absolute;left:-9999px;display:none" />

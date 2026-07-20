@@ -79,12 +79,34 @@ public sealed class IntakeFormSyncService
 
         foreach (var sub in submissions.OrderBy(s => s.SubmittedAt))
         {
-            _customers.UpsertFromIntakeForm(
-                sub.Username,
-                sub.FullName,
-                sub.Address,
-                sub.Phone,
-                nowUnix);
+            // Bildirilen platform kimliklerini topla (çoklu-platform).
+            var identities = new List<(string Platform, string Username)>();
+            void Add(string platform, string? handle)
+            {
+                if (!string.IsNullOrWhiteSpace(handle))
+                    identities.Add((platform, handle!));
+            }
+            Add("youtube", sub.YouTubeUsername);
+            Add("instagram", sub.InstagramUsername);
+            Add("facebook", sub.FacebookUsername);
+            Add("tiktok", sub.TikTokUsername);
+
+            if (identities.Count > 0)
+            {
+                _customers.UpsertPersonFromIntake(
+                    identities,
+                    sub.FullName, sub.Address, sub.Phone,
+                    sub.Email, sub.Tckn, sub.WhatsAppConsent, sub.SmsConsent,
+                    nowUnix);
+            }
+            else
+            {
+                // Eski sunucudan gelen (platform alanları olmayan) gönderim —
+                // legacy tek-satır davranışına düş.
+                _customers.UpsertFromIntakeForm(
+                    sub.Username, sub.FullName, sub.Address, sub.Phone, nowUnix);
+            }
+
             if (sub.SubmittedAt > newCursor) newCursor = sub.SubmittedAt;
         }
 

@@ -7,7 +7,7 @@ export const metadata: Metadata = {
   description: `${BRAND} kişisel verileri nasıl işliyor — kapsam, saklama, paylaşım, kullanıcı hakları.`,
 };
 
-const EFFECTIVE_DATE = '2026-05-02';
+const EFFECTIVE_DATE = '2026-07-20';
 
 export default function PrivacyTr() {
   return (
@@ -50,6 +50,27 @@ export default function PrivacyTr() {
         <li>Uygulama kapatıldığında <strong>tamamen silinir</strong></li>
         <li><strong>{BRAND} sunucularına gönderilmez</strong>, üçüncü kişilerle paylaşılmaz</li>
       </ul>
+
+      <h3>1.3. Kayıt formu ile toplanan alıcı bilgileri</h3>
+      <p>
+        Yayıncılar, izleyicilerinin sipariş, kargo ve fatura işlemleri için kişisel bir
+        kayıt linki (web formu) oluşturabilir. Bu formu dolduran alıcılardan toplanan
+        bilgiler:
+      </p>
+      <ul>
+        <li>Platform kullanıcı adları (Instagram, YouTube, Facebook, TikTok — alıcının bildirdiği)</li>
+        <li>Ad soyad, e-posta, telefon (WhatsApp) numarası ve kargo adresi</li>
+        <li>Fatura için opsiyonel T.C. Kimlik Numarası (yalnızca alıcı girmek isterse)</li>
+        <li>WhatsApp ve/veya SMS ile bilgilendirme mesajı almaya dair açık rıza (onay kutuları)</li>
+      </ul>
+      <p>
+        Bu veriler yalnızca ilgili yayıncının sipariş, kargo ve fatura süreçleri için
+        işlenir; üçüncü kişilerle pazarlama amacıyla paylaşılmaz veya satılmaz. Mesaj
+        gönderimi yalnızca alıcının açıkça onay verdiği kanallardan yapılır; alıcı bu
+        onayı dilediği an geri çekebilir. Bu verilerin veri sorumlusu, formu oluşturan
+        yayıncıdır; {BRAND} verileri yayıncı adına barındırır ve yayıncının uygulamasına
+        iletir.
+      </p>
 
       <h2>2. YouTube API kullanımı</h2>
       <p>
@@ -112,6 +133,7 @@ export default function PrivacyTr() {
       <h2>5. Veri saklama süreleri</h2>
       <ul>
         <li>Hesap verileri (e-posta, lisans): hesap silinene kadar</li>
+        <li>Kayıt formu ile toplanan alıcı bilgileri: ilgili yayıncı silene kadar</li>
         <li>Sunucu erişim logları: 30 gün</li>
         <li>Güvenlik kayıtları: 90 gün</li>
         <li>Canlı yayın chat mesajları: yalnızca uygulama açık kaldığı sürece</li>

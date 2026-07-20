@@ -19,4 +19,12 @@ public sealed record IntakeFormSubmissionDto(
     string FullName,
     string Address,
     string? Phone,
-    DateTimeOffset SubmittedAt);
+    DateTimeOffset SubmittedAt,
+    string? YouTubeUsername = null,
+    string? InstagramUsername = null,
+    string? FacebookUsername = null,
+    string? TikTokUsername = null,
+    string? Email = null,
+    string? Tckn = null,
+    bool WhatsAppConsent = false,
+    bool SmsConsent = false);

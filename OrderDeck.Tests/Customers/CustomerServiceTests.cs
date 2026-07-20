@@ -189,4 +189,54 @@ public class CustomerServiceTests
 
         svc.GetLastStreamShoppers().Should().BeEmpty();
     }
+
+    [Fact]
+    public void Blacklisting_one_grouped_identity_blacklists_the_whole_group()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var clock = Mock.Of<IClock>(c => c.UnixNow() == 1000L);
+        var svc = MakeSvc(db, clock, out var customers, out _, out _);
+
+        // Kişi iki platformda kayıtlı (tek grup).
+        customers.UpsertPersonFromIntake(
+            new[] { ("instagram", "sibel_ig"), ("facebook", "sibel_fb") },
+            "Sibel", "İstanbul", null, null, null, false, false, 1000);
+
+        // Instagram kimliğinden kara listeye al → grup yayılımı.
+        var ig = customers.FindByPlatformAndUsername("instagram", "sibel_ig")!;
+        svc.AddToBlacklist(ig.Id, "spam");
+
+        // Diğer platform da kara listede olmalı (çapraz-platform açığı kapandı).
+        customers.FindByPlatformAndUsername("facebook", "sibel_fb")!.IsBlacklisted.Should().BeTrue();
+
+        // Grup un-blacklist → hepsi temizlenir.
+        svc.RemoveFromBlacklist(ig.Id);
+        customers.FindByPlatformAndUsername("facebook", "sibel_fb")!.IsBlacklisted.Should().BeFalse();
+    }
+
+    [Fact]
+    public void YouTube_chat_channelId_is_adopted_into_group_and_inherits_blacklist()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var clock = Mock.Of<IClock>(c => c.UnixNow() == 1000L);
+        var svc = MakeSvc(db, clock, out var customers, out _, out _);
+
+        // Form: kişi Instagram + YouTube @handle bildirdi (grup).
+        customers.UpsertPersonFromIntake(
+            new[] { ("instagram", "sibel_ig"), ("youtube", "SibelGelibolu") },
+            "Sibel", "İstanbul", null, null, null, false, false, 1000);
+
+        // Instagram'dan kara listeye al → tüm grup.
+        var ig = customers.FindByPlatformAndUsername("instagram", "sibel_ig")!;
+        svc.AddToBlacklist(ig.Id, "spam");
+
+        // YouTube chat mesajı channelId ile gelir, DisplayName = @handle (farklı case).
+        var yt = svc.GetOrCreate("youtube", "UCabc123channel", "@sibelgelibolu", null);
+
+        // channelId satırı gruba adopte edildi ve kara listeyi devraldı.
+        yt.GroupId.Should().NotBeNullOrEmpty();
+        yt.IsBlacklisted.Should().BeTrue();
+    }
 }
