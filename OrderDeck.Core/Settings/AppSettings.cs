@@ -97,6 +97,15 @@ public sealed class AppSettings
     /// uygular.</summary>
     public string? FacebookLoginConfigId { get; set; }
 
+    /// <summary>Feature-flag: Instagram canlı yorum çekme yöntemi. Varsayılan
+    /// <see cref="OrderDeck.Core.Chat.InstagramIngestMode.Scraper"/> (extension).
+    /// <c>OfficialApi</c> = resmi Graph API (bağlı FB Page üzerinden IG business
+    /// account → live_media → comments polling, read-only). Official açıkken
+    /// bridge'in IG mesajları düşürülür (çift-post önleme). IG business hesabı
+    /// bağlı FB Page üzerinden erişildiği için ayrı OAuth/token gerekmez.</summary>
+    public OrderDeck.Core.Chat.InstagramIngestMode InstagramIngestMode { get; set; }
+        = OrderDeck.Core.Chat.InstagramIngestMode.Scraper;
+
     /// <summary>Spam/troll filter rules applied to inbound chat messages
     /// before they reach the bus. Disabled rules pass everything through.</summary>
     public OrderDeck.Core.Chat.SpamFilterSettings SpamFilter { get; set; } = new();
