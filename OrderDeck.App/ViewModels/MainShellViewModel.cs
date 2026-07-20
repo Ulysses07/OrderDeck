@@ -1080,6 +1080,41 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         }
     }
 
+    /// <summary>
+    /// Right-click → "YT: Banı kaldır". Lifts a ban placed earlier this
+    /// session (liveChatBans.delete). Only works while the ban id is still
+    /// cached; otherwise the service surfaces a friendly message.
+    /// </summary>
+    [RelayCommand]
+    private async Task UnbanYouTubeUser(ChatMessageViewModel? msg)
+    {
+        if (msg is null || _youTubeModeration is null) return;
+        if (!string.Equals(msg.Platform, "youtube", StringComparison.OrdinalIgnoreCase)) return;
+
+        var displayName = msg.Display;
+        var confirm = MessageBox.Show(
+            $"'{displayName}' kullanıcısının YouTube banı kaldırılsın mı?",
+            "YouTube ban kaldır", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.Yes) return;
+
+        try
+        {
+            await _youTubeModeration.UnbanUserAsync(msg.Username).ConfigureAwait(true);
+            MessageBox.Show($"{displayName} kullanıcısının banı kaldırıldı.", "YouTube moderasyon",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (ModerationException ex)
+        {
+            MessageBox.Show(ex.Message, "YouTube moderasyon",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Beklenmeyen hata: {ex.Message}", "YouTube moderasyon",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
     [RelayCommand(CanExecute = nameof(CanWrite))]
     private void AddChatSenderToBlacklist(ChatMessageViewModel? msg)
     {

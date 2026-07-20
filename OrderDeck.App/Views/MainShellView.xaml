@@ -417,7 +417,7 @@
                                          (instagram/tiktok/youtube/facebook/twitch lowercase id'ler;
                                          bilinmeyen → nötr elevated chip). Converter/kod yok. -->
                                     <Border Grid.Column="0" CornerRadius="6"
-                                            Width="30" Height="18" Margin="0,0,10,0"
+                                            MinWidth="30" Height="18" Padding="6,0" Margin="0,0,10,0"
                                             HorizontalAlignment="Left" VerticalAlignment="Center">
                                         <Border.Style>
                                             <Style TargetType="Border">
@@ -425,7 +425,7 @@
                                                 <Style.Triggers>
                                                     <DataTrigger Binding="{Binding Platform}" Value="instagram"><Setter Property="Background" Value="#2922C55E"/></DataTrigger>
                                                     <DataTrigger Binding="{Binding Platform}" Value="tiktok"><Setter Property="Background" Value="#299EE8EE"/></DataTrigger>
-                                                    <DataTrigger Binding="{Binding Platform}" Value="youtube"><Setter Property="Background" Value="#29FF6B6B"/></DataTrigger>
+                                                    <!-- YouTube: nötr chip (marka kırmızısı/logo kullanılmaz — YouTube branding guidelines). -->
                                                     <DataTrigger Binding="{Binding Platform}" Value="facebook"><Setter Property="Background" Value="#295B8DEF"/></DataTrigger>
                                                     <DataTrigger Binding="{Binding Platform}" Value="twitch"><Setter Property="Background" Value="#299146FF"/></DataTrigger>
                                                 </Style.Triggers>
@@ -440,7 +440,8 @@
                                                     <Style.Triggers>
                                                         <DataTrigger Binding="{Binding Platform}" Value="instagram"><Setter Property="Text" Value="IG"/><Setter Property="Foreground" Value="#FF22C55E"/></DataTrigger>
                                                         <DataTrigger Binding="{Binding Platform}" Value="tiktok"><Setter Property="Text" Value="TT"/><Setter Property="Foreground" Value="#FF9EE8EE"/></DataTrigger>
-                                                        <DataTrigger Binding="{Binding Platform}" Value="youtube"><Setter Property="Text" Value="YT"/><Setter Property="Foreground" Value="#FFFF6B6B"/></DataTrigger>
+                                                        <!-- YouTube: tam ad + nötr renk (YT kısaltması ve marka kırmızısı kullanılmaz). -->
+                                                        <DataTrigger Binding="{Binding Platform}" Value="youtube"><Setter Property="Text" Value="YouTube"/></DataTrigger>
                                                         <DataTrigger Binding="{Binding Platform}" Value="facebook"><Setter Property="Text" Value="FB"/><Setter Property="Foreground" Value="#FF5B8DEF"/></DataTrigger>
                                                         <DataTrigger Binding="{Binding Platform}" Value="twitch"><Setter Property="Text" Value="TW"/><Setter Property="Foreground" Value="#FF9146FF"/></DataTrigger>
                                                     </Style.Triggers>
@@ -466,22 +467,23 @@
                                           CommandParameter="{Binding PlacementTarget.SelectedItem,
                                                                      RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
                                 <!--
-                                  YouTube moderation menu items hidden until OAuth audit
-                                  is complete (the Settings → "YouTube'a Bağlan" UI is
-                                  also hidden right now). Re-enable in lockstep with the
-                                  GroupBox in SettingsDialog.xaml — both surfaces flip
-                                  from Collapsed to Visible together so the operator
-                                  never sees a moderation menu that has no way to log in.
+                                  YouTube moderation menu items. OAuth audit kaydı için
+                                  açıldı (Settings → "YouTube'a Bağlan" kartıyla lockstep).
+                                  Kullanıcı YouTube'a bağlı değilse komutlar no-op/uyarı
+                                  verir; consent + audit ile birlikte kalıcı kullanılır.
                                 -->
                                 <MenuItem Header="YT'de mesajı sil"
-                                          Visibility="Collapsed"
                                           Command="{Binding PlacementTarget.DataContext.DeleteYouTubeMessageCommand,
                                                             RelativeSource={RelativeSource AncestorType=ContextMenu}}"
                                           CommandParameter="{Binding PlacementTarget.SelectedItem,
                                                                      RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
                                 <MenuItem Header="YT'de kullanıcıyı banla"
-                                          Visibility="Collapsed"
                                           Command="{Binding PlacementTarget.DataContext.BanYouTubeUserCommand,
+                                                            RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                          CommandParameter="{Binding PlacementTarget.SelectedItem,
+                                                                     RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                <MenuItem Header="YT'de banı kaldır"
+                                          Command="{Binding PlacementTarget.DataContext.UnbanYouTubeUserCommand,
                                                             RelativeSource={RelativeSource AncestorType=ContextMenu}}"
                                           CommandParameter="{Binding PlacementTarget.SelectedItem,
                                                                      RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>

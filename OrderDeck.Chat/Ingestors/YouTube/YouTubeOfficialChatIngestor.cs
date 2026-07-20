@@ -92,7 +92,10 @@ public sealed class YouTubeOfficialChatIngestor : IChatIngestor, IDisposable
             try
             {
                 var n = await FetchConcurrentViewersAsync(ct).ConfigureAwait(false);
-                if (n is not null) _viewers!.Report("youtube", n.Value);
+                if (n is not null)
+                {
+                    _viewers!.Report("youtube", n.Value);
+                }
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
