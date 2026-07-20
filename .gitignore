@@ -47,3 +47,13 @@ dev.license.json
 installer/MicrosoftEdgeWebview2Setup.exe
 publish/
 dist/
+
+# Chrome extension build artifacts + signing key (NEVER commit the .pem key)
+*.pem
+*.crx
+orderdeck-chat-bridge-*.zip
+orderdeck-chat-bridge-*/
+
+# Claude Code local/tooling state
+.claude/settings.local.json
+.claude/worktrees/
