@@ -156,7 +156,7 @@ public sealed class FacebookChatHostedService : IHostedService, IDisposable
                 }
 
                 _log.LogInformation(
-                    "[FacebookChatHostedService] opening SSE stream for video {VideoId}", videoId);
+                    "[FacebookChatHostedService] opening comment poller for video {VideoId}", videoId);
 
                 // streaming-graph endpoint expects a long-lived connection —
                 // never let the named-client default timeout (typically

@@ -12,8 +12,9 @@ namespace OrderDeck.Chat.Ingestors.Facebook;
 
 /// <summary>
 /// Resolves the currently-LIVE video id for a connected Page. The Live
-/// Comments streaming endpoint is keyed by <c>{live_video_id}</c>, so the
-/// hosted service has to look it up before opening the SSE stream.
+/// Comments streaming endpoint is keyed by the underlying <c>{video_id}</c>
+/// (NOT the LiveVideo id — the two differ), so the hosted service has to
+/// look it up before opening the SSE stream.
 ///
 /// <para>This is the only polling element of the Facebook ingestor —
 /// 60 seconds is plenty because a live broadcast lasts hours and the
@@ -47,7 +48,7 @@ public sealed class FacebookLiveVideoResolver
         // (#100) Param broadcast_status[1] must be one of {...}.
         var url = $"{GraphBase}/{System.Uri.EscapeDataString(pageId)}/live_videos" +
                   $"?broadcast_status=%5B%22LIVE%22%5D" +
-                  $"&fields=id,status" +
+                  $"&fields=id,status,video{{id}}" +
                   $"&access_token={System.Uri.EscapeDataString(pageAccessToken)}";
 
         try
@@ -71,8 +72,14 @@ public sealed class FacebookLiveVideoResolver
             {
                 foreach (var v in parsed.Data)
                 {
-                    if (!string.IsNullOrEmpty(v.Id) && IsLive(v.Status))
-                        return v.Id;
+                    if (!IsLive(v.Status)) continue;
+                    // live_comments is keyed by the VIDEO id, not the LiveVideo
+                    // id — feeding the LiveVideo id to the SSE endpoint yields a
+                    // 400. Prefer video.id; fall back to the LiveVideo id only if
+                    // the subfield is unexpectedly absent.
+                    var videoId = v.Video?.Id ?? v.Id;
+                    if (!string.IsNullOrEmpty(videoId))
+                        return videoId;
                 }
             }
             return null;
@@ -99,5 +106,11 @@ public sealed class FacebookLiveVideoResolver
     {
         [JsonPropertyName("id")] public string? Id { get; set; }
         [JsonPropertyName("status")] public string? Status { get; set; }
+        [JsonPropertyName("video")] public VideoRef? Video { get; set; }
+    }
+
+    private sealed class VideoRef
+    {
+        [JsonPropertyName("id")] public string? Id { get; set; }
     }
 }
