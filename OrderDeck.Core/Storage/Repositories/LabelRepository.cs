@@ -205,6 +205,31 @@ public sealed class LabelRepository
             row?.UniqueCustomers ?? 0);
     }
 
+    /// <summary>
+    /// Yayın raporu için platform kırılımı: platform başına basılmış etiket
+    /// adedi, ciro ve tekil müşteri. Filtre kuralları GetSessionTotals ile
+    /// birebir aynı (iptal + tentative backup hariç) — iki sorgunun toplamları
+    /// tutmalı; kuralı birinde değiştirirsen diğerini de güncelle.
+    /// Ciro'ya göre azalan sıralı döner (rapor tablosu doğrudan bind eder).
+    /// </summary>
+    public IReadOnlyList<PlatformBreakdown> GetPlatformBreakdownBySession(string sessionId)
+    {
+        using var conn = _factory.Open();
+        return conn.Query<PlatformBreakdownRow>(
+            @"SELECT Platform,
+                     COUNT(*)                   AS LabelCount,
+                     COALESCE(SUM(Price),0)     AS TotalAmount,
+                     COUNT(DISTINCT CustomerId) AS UniqueCustomers
+              FROM Label
+              WHERE SessionId=@sessionId AND PrintedAt IS NOT NULL
+                AND CancelledAt IS NULL AND IsTentativeBackup = 0
+              GROUP BY Platform
+              ORDER BY SUM(Price) DESC",
+            new { sessionId })
+            .Select(r => new PlatformBreakdown(r.Platform, r.LabelCount, r.TotalAmount, r.UniqueCustomers))
+            .ToList();
+    }
+
     public IReadOnlyList<TopCustomer> GetTopCustomersBySession(string sessionId, int limit = 10)
     {
         using var conn = _factory.Open();
@@ -371,9 +396,35 @@ public sealed class LabelRepository
         public int LabelCount { get; init; }
         public decimal TotalAmount { get; init; }
     }
+
+    private sealed class PlatformBreakdownRow
+    {
+        public string Platform { get; init; } = "";
+        public int LabelCount { get; init; }
+        public decimal TotalAmount { get; init; }
+        public int UniqueCustomers { get; init; }
+    }
 }
 
 public sealed record SessionTotals(int PrintedCount, decimal TotalAmount, int UniqueCustomers);
+
+/// <summary>
+/// Yayın raporundaki platform kırılımı satırı (IG/TikTok/FB/YT başına
+/// adet + ciro + tekil müşteri). <see cref="DisplayName"/> UI/Excel için
+/// Türkçe platform adı üretir; bilinmeyen platform ham haliyle döner.
+/// </summary>
+public sealed record PlatformBreakdown(
+    string Platform, int LabelCount, decimal TotalAmount, int UniqueCustomers)
+{
+    public string DisplayName => Platform.ToLowerInvariant() switch
+    {
+        "instagram" => "Instagram",
+        "tiktok"    => "TikTok",
+        "facebook"  => "Facebook",
+        "youtube"   => "YouTube",
+        _           => Platform
+    };
+}
 
 /// <summary>
 /// Bir yayında ürün alan müşteri (rapor + arama için). <see cref="Username"/> ham

@@ -27,8 +27,14 @@ public sealed partial class StreamReportViewModel : ViewModelBase
     [ObservableProperty] private decimal _totalAmount;
     [ObservableProperty] private int    _uniqueCustomers;
 
-    public ObservableCollection<TopCustomer>     TopCustomers { get; } = new();
-    public ObservableCollection<GiveawaySummary> Giveaways    { get; } = new();
+    public ObservableCollection<TopCustomer>       TopCustomers      { get; } = new();
+    public ObservableCollection<GiveawaySummary>   Giveaways         { get; } = new();
+    public ObservableCollection<PlatformBreakdown> PlatformBreakdown { get; } = new();
+
+    /// <summary>Tek platformda yayın yapılıyorsa kırılım tablosu gürültü —
+    /// UI yalnızca 2+ platform varken gösterir. Excel'e her durumda yazılır
+    /// (arşivde platformun kaydı kalsın diye).</summary>
+    public bool HasMultiplePlatforms => PlatformBreakdown.Count > 1;
 
     private string? _sessionId;
     private DateTime _currentSessionDate;
@@ -67,6 +73,11 @@ public sealed partial class StreamReportViewModel : ViewModelBase
         Giveaways.Clear();
         foreach (var g in _giveaways.ListSummariesBySession(sessionId))
             Giveaways.Add(g);
+
+        PlatformBreakdown.Clear();
+        foreach (var p in _labels.GetPlatformBreakdownBySession(sessionId))
+            PlatformBreakdown.Add(p);
+        OnPropertyChanged(nameof(HasMultiplePlatforms));
 
         var session = _sessions.GetById(sessionId);
         _currentSessionDate = session?.EndedAt is long ended
@@ -121,16 +132,44 @@ public sealed partial class StreamReportViewModel : ViewModelBase
             ws.Cell(6, 1).Value = "Tekil müşteri"; ws.Cell(6, 2).Value = UniqueCustomers;
             ws.Cell(6, 2).Style.NumberFormat.Format = "0";
 
-            ws.Cell(8, 1).Value = "En çok alan müşteriler";
-            ws.Cell(8, 1).Style.Font.Bold = true;
+            // Platform kırılımı — özet bloğu ile müşteri listesi arasında.
+            // Satır numaraları buradan itibaren dinamik (kırılım satır sayısı
+            // platforma göre değişir), o yüzden sabit Cell(9,..) yerine row.
+            int row = 8;
+            ws.Cell(row, 1).Value = "Platform kırılımı";
+            ws.Cell(row, 1).Style.Font.Bold = true;
+            row++;
 
-            ws.Cell(9, 1).Value = "Kullanıcı";
-            ws.Cell(9, 2).Value = "Platform";
-            ws.Cell(9, 3).Value = "Etiket";
-            ws.Cell(9, 4).Value = "Tutar (TL)";
-            ws.Range(9, 1, 9, 4).Style.Font.Bold = true;
+            ws.Cell(row, 1).Value = "Platform";
+            ws.Cell(row, 2).Value = "Etiket";
+            ws.Cell(row, 3).Value = "Tutar (TL)";
+            ws.Cell(row, 4).Value = "Tekil müşteri";
+            ws.Range(row, 1, row, 4).Style.Font.Bold = true;
+            row++;
 
-            int row = 10;
+            foreach (var p in PlatformBreakdown)
+            {
+                ws.Cell(row, 1).Value = p.DisplayName;
+                ws.Cell(row, 2).Value = p.LabelCount;
+                ws.Cell(row, 2).Style.NumberFormat.Format = "0";
+                ws.Cell(row, 3).Value = p.TotalAmount;
+                ws.Cell(row, 3).Style.NumberFormat.Format = "#,##0.00 \"TL\"";
+                ws.Cell(row, 4).Value = p.UniqueCustomers;
+                ws.Cell(row, 4).Style.NumberFormat.Format = "0";
+                row++;
+            }
+            row++; // boş ayraç satırı
+
+            ws.Cell(row, 1).Value = "En çok alan müşteriler";
+            ws.Cell(row, 1).Style.Font.Bold = true;
+            row++;
+
+            ws.Cell(row, 1).Value = "Kullanıcı";
+            ws.Cell(row, 2).Value = "Platform";
+            ws.Cell(row, 3).Value = "Etiket";
+            ws.Cell(row, 4).Value = "Tutar (TL)";
+            ws.Range(row, 1, row, 4).Style.Font.Bold = true;
+            row++;
             foreach (var c in TopCustomers)
             {
                 ws.Cell(row, 1).Value = c.Display;

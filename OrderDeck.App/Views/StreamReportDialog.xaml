@@ -4,8 +4,12 @@
         Title="Yayın Raporu" Width="600" Height="680"
         WindowStartupLocation="CenterOwner"
         Background="#FF1A1A1A" Foreground="White">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVisibleConverter"/>
+    </Window.Resources>
     <Grid Margin="24">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
@@ -45,10 +49,40 @@
             <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding UniqueCustomers}" FontWeight="Bold"/>
         </Grid>
 
-        <TextBlock Grid.Row="2" Text="En çok alan müşteriler" FontSize="16" FontWeight="Bold"
+        <!-- Platform kırılımı: tek platformlu yayında gürültü olmasın diye
+             yalnızca 2+ platform varken görünür (Excel'de her zaman var). -->
+        <StackPanel Grid.Row="2" Margin="0,0,0,16"
+                    Visibility="{Binding HasMultiplePlatforms, Converter={StaticResource BoolToVisibleConverter}}">
+            <TextBlock Text="Platform kırılımı" FontSize="16" FontWeight="Bold" Margin="0,0,0,8"/>
+            <ItemsControl ItemsSource="{Binding PlatformBreakdown}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Grid Margin="8,2,0,2">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="120"/>
+                                <ColumnDefinition Width="110"/>
+                                <ColumnDefinition Width="140"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="{Binding DisplayName}" FontWeight="Bold"/>
+                            <TextBlock Grid.Column="1" Foreground="#FFAAAAAA">
+                                <Run Text="{Binding LabelCount, Mode=OneWay}"/><Run Text=" etiket"/>
+                            </TextBlock>
+                            <TextBlock Grid.Column="2" Foreground="#FFFFD166"
+                                       Text="{Binding TotalAmount, StringFormat={}{0:N2} TL}"/>
+                            <TextBlock Grid.Column="3" Foreground="#FFAAAAAA">
+                                <Run Text="{Binding UniqueCustomers, Mode=OneWay}"/><Run Text=" müşteri"/>
+                            </TextBlock>
+                        </Grid>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </StackPanel>
+
+        <TextBlock Grid.Row="3" Text="En çok alan müşteriler" FontSize="16" FontWeight="Bold"
                    Margin="0,0,0,8"/>
 
-        <DataGrid Grid.Row="3"
+        <DataGrid Grid.Row="4"
                   ItemsSource="{Binding TopCustomers}"
                   AutoGenerateColumns="False"
                   IsReadOnly="True"
@@ -83,12 +117,12 @@
         </DataGrid>
 
         <!-- Giveaway summary section: shown only when at least one giveaway ran -->
-        <StackPanel Grid.Row="4" Margin="0,16,0,0"
+        <StackPanel Grid.Row="5" Margin="0,16,0,0"
                     Visibility="{Binding Giveaways.Count, Converter={StaticResource CountToVisibleConverter}}">
             <TextBlock Text="🎁 Çekilişler" FontSize="16" FontWeight="Bold" Margin="0,0,0,8"/>
         </StackPanel>
 
-        <ItemsControl Grid.Row="5"
+        <ItemsControl Grid.Row="6"
                       ItemsSource="{Binding Giveaways}"
                       Margin="0,0,0,8">
             <ItemsControl.ItemTemplate>
@@ -107,7 +141,7 @@
             </ItemsControl.ItemTemplate>
         </ItemsControl>
 
-        <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+        <StackPanel Grid.Row="7" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
             <Button Content="Excel'e Aktar" Command="{Binding ExportToExcelCommand}" Padding="14,6"/>
             <Button Content="Kapat"          Click="OnClose" Padding="14,6" Margin="8,0,0,0"
                     IsCancel="True" IsDefault="True"/>
