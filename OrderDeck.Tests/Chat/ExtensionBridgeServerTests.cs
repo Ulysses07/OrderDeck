@@ -239,6 +239,38 @@ public class ExtensionBridgeServerTests
     }
 
     [Fact]
+    public async Task Watchdog_message_logged_not_published()
+    {
+        // "watchdog" (stall kurtarma: nudge/reload) olayı ChatBus'a düşmemeli;
+        // sadece loglanır. Eski payload alanlarıyla da çakışmamalı.
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(bus, port: 0);
+        await server.StartAsync(CancellationToken.None);
+
+        var publishCount = 0;
+        using var sub = bus.Subscribe(_ => Interlocked.Increment(ref publishCount));
+
+        using var ws = new ClientWebSocket();
+        await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
+            CancellationToken.None);
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            type = "watchdog",
+            platform = "instagram",
+            action = "reload",
+            sinceSendMs = 372_000L,
+            rows = 245
+        });
+        await SendRaw(ws, payload);
+        await Task.Delay(200);
+
+        publishCount.Should().Be(0, because: "watchdog events must not be forwarded to the chat bus");
+
+        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
+
+    [Fact]
     public async Task Viewers_message_updates_tracker_not_bus()
     {
         // A "viewers" payload feeds the ViewerCountTracker and must NOT produce
