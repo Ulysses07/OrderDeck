@@ -35,6 +35,35 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
 
+      # Gömülü YouTube kimlik bilgilerini build-time enjekte et. Repo'da bu
+      # değerler BOŞ (YouTubeOAuthDefaults/YouTubeApiDefaults skip-worktree ile
+      # yalnız lokalde dolu). CI runner repo'yu checkout ettiği için boş gelir;
+      # burada GitHub Actions secret'larından yazılır ki dağıtılan installer
+      # YouTube moderasyon (OAuth) + resmi API key ile out-of-box çalışsın.
+      # Enjeksiyon yalnız runner'ın geçici checkout'unda — repo değişmez.
+      - name: Inject YouTube credentials
+        shell: pwsh
+        env:
+          YT_OAUTH_CLIENT_ID: ${{ secrets.YT_OAUTH_CLIENT_ID }}
+          YT_OAUTH_CLIENT_SECRET: ${{ secrets.YT_OAUTH_CLIENT_SECRET }}
+          YT_API_KEY: ${{ secrets.YT_API_KEY }}
+        run: |
+          $oauth = 'OrderDeck.Chat/YouTube/YouTubeOAuthDefaults.cs'
+          $c = Get-Content $oauth -Raw
+          $c = $c.Replace('public static readonly string ClientId = "";', 'public static readonly string ClientId = "' + $env:YT_OAUTH_CLIENT_ID + '";')
+          $c = $c.Replace('public static readonly string ClientSecret = "";', 'public static readonly string ClientSecret = "' + $env:YT_OAUTH_CLIENT_SECRET + '";')
+          Set-Content $oauth $c -NoNewline
+
+          $api = 'OrderDeck.Chat/YouTube/YouTubeApiDefaults.cs'
+          $a = Get-Content $api -Raw
+          $a = $a.Replace('public static readonly string ApiKey = "";', 'public static readonly string ApiKey = "' + $env:YT_API_KEY + '";')
+          Set-Content $api $a -NoNewline
+
+          # Doğrulama: boş kalırsa (secret eksik) build'i patlat.
+          if ((Get-Content $oauth -Raw).Contains('ClientId = "";')) { throw 'YT_OAUTH_CLIENT_ID enjekte edilemedi (secret eksik?)' }
+          if ((Get-Content $api -Raw).Contains('ApiKey = "";')) { throw 'YT_API_KEY enjekte edilemedi (secret eksik?)' }
+          Write-Host 'YouTube credentials injected.'
+
       - name: Build installer
         shell: pwsh
         run: installer\build.ps1 -Version ${{ steps.ver.outputs.version }}
