@@ -314,6 +314,16 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
                         msg.Stats?.Sent ?? 0,
                         DateTimeOffset.UtcNow);
                 }
+                else if (msg is { Type: "watchdog", Platform: not null })
+                {
+                    // Extension'ın stall kurtarma olayı (IG donması — 2026-07-15).
+                    // action=nudge: chat scroll dürtüldü; action=reload: sekme
+                    // otomatik yenilendi. Warning seviyesi: sahada ne sıklıkta
+                    // tetiklendiğini log taramasıyla görmek için.
+                    _log.LogWarning(
+                        "Extension watchdog [{Platform}]: action={Action} sinceSendMs={SinceSendMs} rows={Rows}",
+                        msg.Platform, msg.Action ?? "?", msg.SinceSendMs ?? 0, msg.Rows ?? 0);
+                }
                 else if (msg is { Type: "viewers", Platform: not null, Count: not null })
                 {
                     // Canlı izleyici sayısı — content script periyodik gönderir.

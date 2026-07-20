@@ -82,6 +82,11 @@
         if (username.includes('\n')) return false;
         if (username === message) return false;
 
+        // IG kullanıcı adları yalnızca [a-z0-9._] olabilir (boşluk/büyük harf
+        // yok). UI çöplerini eler — 2026-07-16: "AyarlarDaha fazla" / Meta
+        // footer'ı div-2span'e yakalanıp sahte chat mesajı olarak gitmişti.
+        if (!/^@?[a-z0-9._]+$/.test(username)) return false;
+
         if (v.uiTextBlocklist.includes(username.toLowerCase())) return false;
         if (v.timeStringRegex && v.timeStringRegex.test(message)) return false;
         return true;
@@ -197,6 +202,26 @@
         return null;
     }
 
+    /**
+     * Stall kurtarma 1. kademe: yorum container'ının scroll edilebilir
+     * atasını bulup dibe indir. IG bazen "takip modu"ndan çıkıp yeni yorum
+     * render'ını kesiyor; scroll'u dibe almak takibi yeniden tetikleyebilir.
+     * (2. kademe — sayfa yenileme — core'daki watchdog'da.)
+     */
+    function nudgeStalledChat() {
+        const containerSel = selOrFallback(
+            'comments.primaryContainers', HARD_FALLBACK.primaryContainers);
+        document.querySelectorAll(containerSel).forEach(container => {
+            let el = container;
+            for (let i = 0; el && i < 6; i++) {
+                if (el.scrollHeight > el.clientHeight + 10) {
+                    el.scrollTop = el.scrollHeight;
+                }
+                el = el.parentElement;
+            }
+        });
+    }
+
     OrderDeckChatBridge.start({
         platform: PLATFORM,
         externalIdPrefix: 'ig',
@@ -204,6 +229,12 @@
         scanForComments,
         checkIfLivePage,
         getObserverTarget,
-        scanViewerCount
+        scanViewerCount,
+        // IG web'i uzun oturumda yorum render'ını donduruyor (2026-07 logları);
+        // tek bilinen çare sayfa yenileme → otomatik kurtarma açık.
+        stallRecovery: {
+            nudge: nudgeStalledChat,
+            allowReload: true
+        }
     });
 })();

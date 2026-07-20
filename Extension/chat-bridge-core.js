@@ -61,6 +61,23 @@ window.OrderDeckChatBridge = (function () {
     // memory unbounded growth olmaz.
     const CACHE_LIMIT = 5000;
 
+    // ── Stall watchdog (Instagram donması, 2026-07-15 logları) ──────────────
+    // Instagram'ın web sayfası (hem /live izleyici hem yayıncı ekranı) uzun
+    // oturumda (~30-45dk, liste binlerce satıra şişince) DOM'a yeni yorum
+    // basmayı tamamen kesiyor: scans akıyor, observed sabitleniyor, sent=0.
+    // IG UI'ında da yorumlar donuyor — yani kaynak IG render'ı; tek çare
+    // operatörün elle yaptığı sayfa yenileme. Watchdog bunu otomatikleştirir:
+    // canlı sayfada, DOM'da yeterli satır varken STALL_AFTER_MS boyunca tek
+    // mesaj gönderilememişse önce adapter.stallRecovery.nudge() (chat'i dibe
+    // scroll et), NUDGE_GRACE_MS içinde düzelmezse location.reload().
+    const WATCHDOG_INTERVAL = 30_000;
+    const STALL_AFTER_MS = 2 * 60_000;   // 2dk sessizlik = şüpheli (yoğun mezat akışında sessizlik olmuyor); yanlış alarm önce sadece scroll nudge yer
+    const STALL_MIN_ROWS = 30;           // idle/boş sayfada tetiklenmesin
+    const NUDGE_GRACE_MS = 60_000;
+    const RELOAD_COOLDOWN_MS = 10 * 60_000; // reload döngüsü emniyeti
+    const RELOAD_FLAG_KEY = '__orderdeck_watchdog_reload';
+    const RELOAD_AT_KEY = '__orderdeck_watchdog_reload_at';
+
     /**
      * Start the bridge. `adapter` is required and must provide:
      *   platform           string  — short id sent to server ("instagram", "tiktok", "facebook", "youtube", "twitch")
@@ -95,6 +112,21 @@ window.OrderDeckChatBridge = (function () {
         let statsTimer = null;
         let viewerTimer = null;
         let lastScanAt = 0;   // maybeScanNow() rate-limit damgası
+
+        // Watchdog durumu
+        let watchdogTimer = null;
+        let lastSentAt = 0;          // son başarılı emit (bağlantıda sıfırlanır)
+        let lastObservedRows = 0;    // son taramada görülen satır sayısı
+        let nudgedAt = 0;            // 0 = nudge denenmedi
+        // Watchdog reload'ı sonrası ilk taramadaki satırlar zaten WPF'e gitmişti;
+        // yeniden gönderme, sadece "görüldü" işaretle (duplicate seli önlenir).
+        let suppressNextScanSends = false;
+        try {
+            if (sessionStorage.getItem(RELOAD_FLAG_KEY) === '1') {
+                sessionStorage.removeItem(RELOAD_FLAG_KEY);
+                suppressNextScanSends = true;
+            }
+        } catch (e) { /* sessionStorage erişilemezse duplicate koruması atlanır */ }
 
         // İzleyici sayısını oku ve köprüye yolla. Adaptör scanViewerCount
         // sağlamıyorsa (eski adaptör) sessizce atlar.
@@ -176,6 +208,13 @@ window.OrderDeckChatBridge = (function () {
                     if (viewerTimer) clearInterval(viewerTimer);
                     viewerTimer = setInterval(pollViewers, VIEWER_INTERVAL);
                     pollViewers();
+
+                    // Watchdog: bağlantı kurulunca saat sıfırlanır — bağlantı
+                    // öncesi sessizlik "stall" sayılmaz.
+                    lastSentAt = Date.now();
+                    nudgedAt = 0;
+                    if (watchdogTimer) clearInterval(watchdogTimer);
+                    watchdogTimer = setInterval(watchdogTick, WATCHDOG_INTERVAL);
                 };
 
                 ws.onclose = () => {
@@ -184,6 +223,8 @@ window.OrderDeckChatBridge = (function () {
                     stopPeriodicScan();
                     if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
                     if (viewerTimer) { clearInterval(viewerTimer); viewerTimer = null; }
+                    if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+                    nudgedAt = 0;
                     try { chrome.runtime.sendMessage({ action: 'setConnected', connected: false, platform: adapter.platform }); } catch (e) {}
                     scheduleReconnect();
                 };
@@ -246,6 +287,14 @@ window.OrderDeckChatBridge = (function () {
         function processComments(comments) {
             stats.scanCount++;
             stats.commentsObserved += comments.length;
+            lastObservedRows = comments.length;
+
+            // Watchdog reload'ı sonrası ilk tarama: satırları gönderme, işaretle.
+            const suppress = suppressNextScanSends;
+            if (suppress && comments.length > 0) {
+                suppressNextScanSends = false;
+                log(`Watchdog reload recovery: ${comments.length} mevcut satır gönderilmeden işaretlendi`);
+            }
 
             comments.forEach(({ username, text, source, displayName, avatarUrl, element }) => {
                 // Tier 1 (primary): DOM-element identity. Same node = already sent.
@@ -278,7 +327,14 @@ window.OrderDeckChatBridge = (function () {
                     }
                     seenHashes.add(hash);
                 }
+
+                if (suppress) {
+                    // Reload öncesi zaten gönderilmişti — sayaçlara "deduped" yaz.
+                    stats.deduped++;
+                    return;
+                }
                 stats.sent++;
+                lastSentAt = Date.now();
 
                 const payload = {
                     type: 'chat',
@@ -346,6 +402,52 @@ window.OrderDeckChatBridge = (function () {
             if (observerScanTimer) { clearTimeout(observerScanTimer); observerScanTimer = null; }
         }
 
+        // ── Stall watchdog ───────────────────────────────────────────────────
+        // adapter.stallRecovery: { nudge?: () => void, allowReload?: boolean }
+        // sağlayan platformlarda (şimdilik Instagram) aktif.
+        function watchdogTick() {
+            if (!adapter.stallRecovery) return;
+            if (!isConnected || !isLivePage) { nudgedAt = 0; return; }
+
+            // Az satır = sayfa boş/idle; sessizlik normaldir.
+            if (lastObservedRows < STALL_MIN_ROWS) { nudgedAt = 0; return; }
+
+            const sinceSend = Date.now() - (lastSentAt || 0);
+            if (lastSentAt === 0 || sinceSend < STALL_AFTER_MS) { nudgedAt = 0; return; }
+
+            if (nudgedAt === 0) {
+                nudgedAt = Date.now();
+                logError(`Watchdog: akış durdu (${Math.round(sinceSend / 1000)}sn'dir gönderim yok, ` +
+                    `DOM'da ${lastObservedRows} satır) — chat scroll dürtülüyor`);
+                sendMessage({
+                    type: 'watchdog', platform: adapter.platform,
+                    action: 'nudge', sinceSendMs: sinceSend, rows: lastObservedRows
+                });
+                try { adapter.stallRecovery.nudge?.(); } catch (e) { logError('Watchdog nudge error:', e); }
+                return;
+            }
+
+            if (Date.now() - nudgedAt < NUDGE_GRACE_MS) return;
+            if (adapter.stallRecovery.allowReload !== true) return;
+
+            // Reload döngüsü emniyeti: en fazla RELOAD_COOLDOWN_MS'de bir.
+            let lastReloadAt = 0;
+            try { lastReloadAt = Number(sessionStorage.getItem(RELOAD_AT_KEY) || 0); } catch (e) {}
+            if (Date.now() - lastReloadAt < RELOAD_COOLDOWN_MS) return;
+
+            logError(`Watchdog: nudge işe yaramadı — sayfa yenileniyor ` +
+                `(${Math.round(sinceSend / 1000)}sn'dir gönderim yok)`);
+            sendMessage({
+                type: 'watchdog', platform: adapter.platform,
+                action: 'reload', sinceSendMs: sinceSend, rows: lastObservedRows
+            });
+            try {
+                sessionStorage.setItem(RELOAD_FLAG_KEY, '1');
+                sessionStorage.setItem(RELOAD_AT_KEY, String(Date.now()));
+            } catch (e) {}
+            location.reload();
+        }
+
         function startObserver() {
             if (observer) observer.disconnect();
 
@@ -383,7 +485,12 @@ window.OrderDeckChatBridge = (function () {
 
         function init() {
             log('=========================================');
-            log(`${adapter.debugLabel} bridge`);
+            // Sürüm damgası (2026-07-16): Chrome'un eski/yanlış kopyayı
+            // çalıştırdığını ancak log metinlerinden anlayabiliyorduk.
+            // Artık build doğrulaması tek satır: konsolda v1.4.13 görünmeli.
+            let extVersion = '?';
+            try { extVersion = chrome.runtime.getManifest().version; } catch { }
+            log(`${adapter.debugLabel} bridge v${extVersion}`);
             log('URL:', window.location.href);
             isLivePage = adapter.checkIfLivePage();
             log('Live page:', isLivePage ? 'YES' : 'No (watching)');
@@ -411,6 +518,21 @@ window.OrderDeckChatBridge = (function () {
                 }
             }).observe(document, { subtree: true, childList: true });
 
+            // Canlı algılama emniyet poll'u (2026-07-16). IG yayıncı modal'ı
+            // <main> DIŞINDA render oluyor ve açılınca URL değişmiyor — yani
+            // yukarıdaki iki tetik de (main-observer mutasyonu, URL değişimi)
+            // onu kaçırabiliyor. Belirti: F5 sonrası "Live page: No (watching)"
+            // durumunda takılma. Watchdog'un otomatik reload'ı da bu yarışa
+            // yakalanabileceği için poll şart: 3sn'de bir ucuz re-check.
+            setInterval(() => {
+                if (isLivePage) return;
+                if (!adapter.checkIfLivePage()) return;
+                isLivePage = true;
+                log('Live page detected (poll)');
+                connectWebSocket();
+                setTimeout(startPeriodicScan, 2000);
+            }, 3000);
+
             // Re-arm the MutationObserver whenever the central selector
             // bundle rotates — the new observer-target selector might point
             // somewhere different now (e.g. TikTok renamed [data-e2e="chat-list"]).
@@ -436,7 +558,13 @@ window.OrderDeckChatBridge = (function () {
                 seenCount: seenHashes.size,
                 isLive: isLivePage,
                 url: window.location.href,
-                platform: adapter.platform
+                platform: adapter.platform,
+                watchdog: {
+                    enabled: !!adapter.stallRecovery,
+                    lastSentAgoMs: lastSentAt ? Date.now() - lastSentAt : null,
+                    lastObservedRows,
+                    nudgedAt: nudgedAt || null
+                }
             }),
             forceSend: () => {
                 const comments = safeScan();

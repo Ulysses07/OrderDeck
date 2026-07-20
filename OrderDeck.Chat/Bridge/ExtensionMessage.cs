@@ -14,7 +14,11 @@ public sealed record ExtensionMessage(
     string? ExternalId,
     long? Timestamp,
     ExtensionStats? Stats,
-    int? Count = null);
+    int? Count = null,
+    // type: "watchdog" — extension'ın stall kurtarma olayları (nudge/reload).
+    string? Action = null,
+    long? SinceSendMs = null,
+    int? Rows = null);
 
 /// <summary>
 /// Debug stats payload emitted by the extension every 10 seconds (type: "debug-stats").
