@@ -36,6 +36,19 @@ public sealed partial class IntakeFormSettingsViewModel : ObservableObject
     public ICommand SaveCommand { get; }
     public ICommand CopyLinkCommand { get; }
 
+    // CommunityToolkit RelayCommand CommandManager.RequerySuggested'e abone olmaz;
+    // CanExecute'i etkileyen state değişince komutları elle bilgilendirmek şart.
+    // Aksi halde açılışta LoadAsync IsBusy'yi true→false yaptığında Kaydet butonu
+    // kilitli kalıyordu (CanExecute yeniden değerlendirilmiyordu).
+    partial void OnIsBusyChanged(bool value)
+        => (SaveCommand as IRelayCommand)?.NotifyCanExecuteChanged();
+
+    partial void OnFormUrlChanged(string value)
+    {
+        OnPropertyChanged(nameof(HasFormUrl));
+        (CopyLinkCommand as IRelayCommand)?.NotifyCanExecuteChanged();
+    }
+
     public async Task LoadAsync()
     {
         IsBusy = true;
