@@ -69,6 +69,9 @@ services:
       # AppRelease__LatestVersion=X.Y.Z + docker compose up -d --force-recreate.
       AppRelease__LatestVersion: "${AppRelease__LatestVersion:-}"
       AppRelease__DownloadUrl: "${AppRelease__DownloadUrl:-https://orderdeckapp.com/indir}"
+      # Intake formu YouTube handle doğrulama (channels.list?forHandle). Boşsa
+      # form doğrulamayı sessizce atlar (yumuşak degrade). VPS .env: YouTube__ApiKey.
+      YouTube__ApiKey: "${YouTube__ApiKey:-}"
       Admin__InitialUsername: "${ADMIN_USERNAME:-admin}"
       Admin__InitialPasswordHash: "${ADMIN_PASSWORD_HASH}"
       # Recipient for ops alerts (backup restore drill failures, etc.). Empty

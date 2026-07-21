@@ -300,6 +300,15 @@ public class Program
                             out var n) ? n : 5,
                         Window = TimeSpan.FromHours(1)
                     }));
+            // Public YouTube handle doğrulama (intake formu) — IP başına dakikada 30.
+            opt.AddPolicy("youtube-verify", ctx =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                    factory: _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 30,
+                        Window = TimeSpan.FromMinutes(1)
+                    }));
             opt.AddPolicy("backup-upload", httpContext =>
                 System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
                     partitionKey: httpContext.User.FindFirstValue(System.Security.Claims.ClaimTypes.NameIdentifier)
@@ -419,6 +428,8 @@ public class Program
                 tags: new[] { "ready", "db" });
 
         builder.Services.AddControllers();
+        builder.Services.AddMemoryCache(); // YouTube handle doğrulama cache'i için
+        builder.Services.AddHttpClient();  // YouTubeVerifyController için IHttpClientFactory
         builder.Services.AddRazorPages(opt =>
         {
             opt.Conventions.AuthorizeFolder("/Admin", "AdminOnly");

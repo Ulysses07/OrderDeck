@@ -10,105 +10,244 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>@ViewData["Title"]</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" />
+    <style>
+        :root {
+            --od-red: #e11900;
+            --od-red-dark: #b91400;
+            --od-amber: #f59e0b;
+            --od-ink: #18181b;
+            --od-muted: #6b7280;
+            --od-line: #e5e7eb;
+            --od-bg: #f4f4f5;
+            --od-ok: #16a34a;
+            --od-warn: #d97706;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0; background: var(--od-bg); color: var(--od-ink);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            -webkit-font-smoothing: antialiased; line-height: 1.5;
+        }
+        .wrap { max-width: 480px; margin: 0 auto; padding: 20px 16px 48px; }
+        .brand { display:flex; align-items:center; gap:8px; font-weight:800; letter-spacing:-.02em;
+                 color:var(--od-red); font-size:18px; margin-bottom:18px; }
+        .brand .dot { width:10px; height:10px; border-radius:50%; background:var(--od-red); }
+        .card { background:#fff; border:1px solid var(--od-line); border-radius:16px;
+                box-shadow:0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.05); padding:22px; }
+        h1 { font-size:22px; font-weight:800; margin:0 0 4px; letter-spacing:-.02em; }
+        .sub { color:var(--od-muted); font-size:14px; margin:0 0 18px; }
+        .section-label { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.04em;
+                         color:var(--od-muted); margin:18px 0 10px; }
+        .field { margin-bottom:14px; }
+        label.lbl { display:block; font-size:13.5px; font-weight:600; margin-bottom:6px; }
+        .req { color:var(--od-red); }
+        .opt { color:var(--od-muted); font-weight:400; }
+        input.inp, textarea.inp {
+            width:100%; padding:11px 12px; font-size:16px; color:var(--od-ink);
+            border:1.5px solid var(--od-line); border-radius:10px; background:#fff; outline:none;
+            transition:border-color .15s, box-shadow .15s; font-family:inherit;
+        }
+        input.inp:focus, textarea.inp:focus { border-color:var(--od-red); box-shadow:0 0 0 3px rgba(225,25,0,.12); }
+        input.inp.invalid, textarea.inp.invalid { border-color:var(--od-red); }
+        textarea.inp { resize:vertical; min-height:74px; }
+        .with-prefix { position:relative; }
+        .with-prefix .pfx { position:absolute; left:12px; top:50%; transform:translateY(-50%);
+                            color:var(--od-muted); font-size:16px; pointer-events:none; }
+        .with-prefix input.inp { padding-left:26px; }
+        .hint { font-size:12px; color:var(--od-muted); margin-top:5px; }
+        .err { font-size:12.5px; color:var(--od-red); margin-top:5px; min-height:1px; }
+        .yt-status { font-size:13px; margin-top:6px; display:flex; align-items:center; gap:8px; min-height:20px; }
+        .yt-status img { width:22px; height:22px; border-radius:50%; }
+        .yt-ok { color:var(--od-ok); font-weight:600; }
+        .yt-warn { color:var(--od-warn); font-weight:600; }
+        .yt-checking { color:var(--od-muted); }
+        .spinner { width:14px; height:14px; border:2px solid var(--od-line); border-top-color:var(--od-muted);
+                   border-radius:50%; animation:spin .7s linear infinite; }
+        @@keyframes spin { to { transform:rotate(360deg); } }
+        hr.div { border:0; border-top:1px solid var(--od-line); margin:20px 0; }
+        .check { display:flex; align-items:flex-start; gap:10px; margin-bottom:10px; font-size:13.5px; color:var(--od-ink); }
+        .check input { width:18px; height:18px; margin-top:1px; accent-color:var(--od-red); flex:0 0 auto; }
+        .kvkk { font-size:11.5px; color:var(--od-muted); margin:14px 0 4px; }
+        .btn { width:100%; padding:14px; font-size:16px; font-weight:700; color:#fff; background:var(--od-red);
+               border:0; border-radius:12px; cursor:pointer; margin-top:16px;
+               transition:background .15s, transform .05s; }
+        .btn:hover { background:var(--od-red-dark); }
+        .btn:active { transform:translateY(1px); }
+        .platform-ico { display:inline-block; width:16px; text-align:center; margin-right:5px; }
+        .hidden-hp { position:absolute; left:-9999px; display:none; }
+    </style>
 </head>
-<body class="bg-light">
-<main class="container py-4" style="max-width: 480px;">
-    <h2 class="mb-4">@(Model.Config!.CustomTitle ?? "Bilgi Gönder")</h2>
-    <form method="post" asp-page-handler="Submit" autocomplete="off">
-        <input type="hidden" asp-for="Slug" />
+<body>
+<div class="wrap">
+    <div class="brand"><span class="dot"></span> OrderDeck</div>
+    <div class="card">
+        <h1>@(Model.Config!.CustomTitle ?? "Bilgi Gönder")</h1>
+        <p class="sub">Bilgilerini gir, tamamla — WhatsApp'tan yayıncıya iletilsin.</p>
 
-        <p class="text-muted small mb-3">
-            İzlediğiniz platformlardaki kullanıcı adlarınızı girin (en az bir tane).
-            Birden fazla platformdan izliyorsanız hepsini yazabilirsiniz.
-        </p>
+        <form id="intakeForm" method="post" asp-page-handler="Submit" autocomplete="off">
+            <input type="hidden" asp-for="Slug" />
 
-        <div class="mb-3">
-            <label asp-for="Input.InstagramUsername" class="form-label">Instagram kullanıcı adı</label>
-            <input asp-for="Input.InstagramUsername" class="form-control form-control-lg" maxlength="64" autofocus />
-            <span asp-validation-for="Input.InstagramUsername" class="text-danger"></span>
-        </div>
+            <div class="section-label">Kullanıcı adların (en az bir tane)</div>
 
-        <div class="mb-3">
-            <label asp-for="Input.YouTubeUsername" class="form-label">YouTube kullanıcı adı</label>
-            <input asp-for="Input.YouTubeUsername" class="form-control form-control-lg" maxlength="64" />
-            <span asp-validation-for="Input.YouTubeUsername" class="text-danger"></span>
-        </div>
+            <div class="field">
+                <label class="lbl" asp-for="Input.InstagramUsername"><span class="platform-ico">📷</span>Instagram</label>
+                <div class="with-prefix">
+                    <span class="pfx">@@</span>
+                    <input class="inp uname" asp-for="Input.InstagramUsername" maxlength="64"
+                           inputmode="text" placeholder="kullaniciadi" />
+                </div>
+                <span class="err" asp-validation-for="Input.InstagramUsername"></span>
+            </div>
 
-        <div class="mb-3">
-            <label asp-for="Input.FacebookUsername" class="form-label">Facebook kullanıcı adı</label>
-            <input asp-for="Input.FacebookUsername" class="form-control form-control-lg" maxlength="64" />
-            <span asp-validation-for="Input.FacebookUsername" class="text-danger"></span>
-        </div>
+            <div class="field">
+                <label class="lbl" asp-for="Input.YouTubeUsername"><span class="platform-ico">📺</span>YouTube</label>
+                <div class="with-prefix">
+                    <span class="pfx">@@</span>
+                    <input class="inp uname" id="ytUser" asp-for="Input.YouTubeUsername" maxlength="64"
+                           inputmode="text" placeholder="kanalhandle" />
+                </div>
+                <div class="yt-status" id="ytStatus"></div>
+                <span class="err" asp-validation-for="Input.YouTubeUsername"></span>
+            </div>
 
-        <div class="mb-3">
-            <label asp-for="Input.TikTokUsername" class="form-label">TikTok kullanıcı adı</label>
-            <input asp-for="Input.TikTokUsername" class="form-control form-control-lg" maxlength="64" />
-            <span asp-validation-for="Input.TikTokUsername" class="text-danger"></span>
-        </div>
+            <div class="field">
+                <label class="lbl" asp-for="Input.FacebookUsername"><span class="platform-ico">👥</span>Facebook</label>
+                <input class="inp uname" asp-for="Input.FacebookUsername" maxlength="64" placeholder="kullanıcı adı" />
+                <span class="err" asp-validation-for="Input.FacebookUsername"></span>
+            </div>
 
-        <hr class="my-4" />
+            <div class="field">
+                <label class="lbl" asp-for="Input.TikTokUsername"><span class="platform-ico">🎵</span>TikTok</label>
+                <div class="with-prefix">
+                    <span class="pfx">@@</span>
+                    <input class="inp uname" asp-for="Input.TikTokUsername" maxlength="64" placeholder="kullaniciadi" />
+                </div>
+                <span class="err" asp-validation-for="Input.TikTokUsername"></span>
+            </div>
+            <div class="err" id="unameErr"></div>
 
-        <div class="mb-3">
-            <label asp-for="Input.FullName" class="form-label">Ad Soyad</label>
-            <input asp-for="Input.FullName" class="form-control form-control-lg" maxlength="200" />
-            <span asp-validation-for="Input.FullName" class="text-danger"></span>
-        </div>
+            <hr class="div" />
+            <div class="section-label">İletişim & teslimat</div>
 
-        <div class="mb-3">
-            <label asp-for="Input.Email" class="form-label">E-posta <span class="text-danger">*</span></label>
-            <input asp-for="Input.Email" type="email" class="form-control form-control-lg" maxlength="200" />
-            <span asp-validation-for="Input.Email" class="text-danger"></span>
-        </div>
+            <div class="field">
+                <label class="lbl" asp-for="Input.FullName">Ad Soyad <span class="req">*</span></label>
+                <input class="inp" asp-for="Input.FullName" maxlength="200" required placeholder="Adınız Soyadınız" />
+                <span class="err" asp-validation-for="Input.FullName"></span>
+            </div>
 
-        <div class="mb-3">
-            <label asp-for="Input.Address" class="form-label">Kargo Adresi</label>
-            <textarea asp-for="Input.Address" class="form-control" rows="3" maxlength="500"></textarea>
-            <span asp-validation-for="Input.Address" class="text-danger"></span>
-        </div>
+            <div class="field">
+                <label class="lbl" asp-for="Input.Email">E-posta <span class="req">*</span></label>
+                <input class="inp" asp-for="Input.Email" type="email" maxlength="200" required placeholder="ornek@@eposta.com" />
+                <span class="err" asp-validation-for="Input.Email"></span>
+            </div>
 
-        <div class="mb-3">
-            <label asp-for="Input.Phone" class="form-label">WhatsApp Numarası <span class="text-danger">*</span></label>
-            <input asp-for="Input.Phone" type="tel" class="form-control form-control-lg"
-                   placeholder="555 123 45 67" maxlength="20" />
-            <div class="form-text">+90 otomatik eklenecek. 10 haneli mobil numarayı girin.</div>
-            <span asp-validation-for="Input.Phone" class="text-danger"></span>
-        </div>
+            <div class="field">
+                <label class="lbl" asp-for="Input.Address">Kargo Adresi <span class="req">*</span></label>
+                <textarea class="inp" asp-for="Input.Address" rows="3" maxlength="500" required
+                          placeholder="Mahalle, cadde, no, ilçe/il"></textarea>
+                <span class="err" asp-validation-for="Input.Address"></span>
+            </div>
 
-        <div class="mb-3">
-            <label asp-for="Input.Tckn" class="form-label">TC Kimlik No <span class="text-muted">(opsiyonel — fatura için)</span></label>
-            <input asp-for="Input.Tckn" type="text" inputmode="numeric" class="form-control form-control-lg"
-                   maxlength="11" placeholder="11 haneli" />
-            <span asp-validation-for="Input.Tckn" class="text-danger"></span>
-        </div>
+            <div class="field">
+                <label class="lbl" asp-for="Input.Phone">WhatsApp Numarası <span class="req">*</span></label>
+                <input class="inp" asp-for="Input.Phone" type="tel" maxlength="20" required
+                       placeholder="555 123 45 67" inputmode="tel" />
+                <div class="hint">Başında +90 otomatik eklenecek. 10 haneli mobil numaranı gir.</div>
+                <span class="err" asp-validation-for="Input.Phone"></span>
+            </div>
 
-        <div class="form-check mb-2">
-            <input asp-for="Input.WhatsAppConsent" class="form-check-input" type="checkbox" />
-            <label asp-for="Input.WhatsAppConsent" class="form-check-label">
-                WhatsApp üzerinden bilgilendirme/kampanya mesajı almayı kabul ediyorum.
+            <div class="field">
+                <label class="lbl" asp-for="Input.Tckn">TC Kimlik No <span class="opt">(opsiyonel — fatura için)</span></label>
+                <input class="inp" asp-for="Input.Tckn" type="text" inputmode="numeric" maxlength="11" placeholder="11 haneli" />
+                <span class="err" asp-validation-for="Input.Tckn"></span>
+            </div>
+
+            <label class="check">
+                <input asp-for="Input.WhatsAppConsent" type="checkbox" />
+                <span>WhatsApp üzerinden bilgilendirme/kampanya mesajı almayı kabul ediyorum.</span>
             </label>
-        </div>
-
-        <div class="form-check mb-3">
-            <input asp-for="Input.SmsConsent" class="form-check-input" type="checkbox" />
-            <label asp-for="Input.SmsConsent" class="form-check-label">
-                SMS üzerinden bilgilendirme/kampanya mesajı almayı kabul ediyorum.
+            <label class="check">
+                <input asp-for="Input.SmsConsent" type="checkbox" />
+                <span>SMS üzerinden bilgilendirme/kampanya mesajı almayı kabul ediyorum.</span>
             </label>
-        </div>
 
-        <p class="text-muted" style="font-size: 0.8rem;">
-            Gönderdiğiniz bilgiler yalnızca sipariş, kargo ve fatura işlemleriniz için
-            yayıncı tarafından kullanılır. Verileriniz üçüncü kişilerle pazarlama amacıyla
-            paylaşılmaz. İzin verdiğiniz kanallardan iletişim kurulabilir.
-        </p>
+            <p class="kvkk">
+                Gönderdiğin bilgiler yalnızca sipariş, kargo ve fatura işlemlerin için yayıncı tarafından
+                kullanılır. Üçüncü kişilerle pazarlama amacıyla paylaşılmaz. İzin verdiğin kanallardan iletişim kurulabilir.
+            </p>
 
-        <input type="text" name="website" tabindex="-1" autocomplete="off"
-               style="position:absolute;left:-9999px;display:none" />
+            <input type="text" name="website" tabindex="-1" autocomplete="off" class="hidden-hp" />
 
-        <button type="submit" class="btn btn-success btn-lg w-100">
-            Tamamla ve WhatsApp'tan Gönder
-        </button>
-    </form>
-</main>
+            <button type="submit" class="btn">Tamamla ve WhatsApp'tan Gönder</button>
+        </form>
+    </div>
+</div>
+
+<script>
+(function () {
+    // (a) Kullanici adi normalize: bastaki at-isaretini + bosluklari temizle
+    // (chat'teki halle eslessin, gruplama saglam olsun).
+    var AT = '\u0040'; // U+0040 at-isareti; Razor literal parse etmesin diye kod ile
+    function normalizeHandle(v) {
+        v = (v || '').trim();
+        while (v.charAt(0) === AT) v = v.slice(1);
+        return v.replace(/\s+/g, '');
+    }
+    document.querySelectorAll('.uname').forEach(function (el) {
+        el.addEventListener('blur', function () { el.value = normalizeHandle(el.value); });
+    });
+
+    // (b) YouTube handle doğrulama — blur'da debounced, channels.list?forHandle (1 kota birimi).
+    var yt = document.getElementById('ytUser');
+    var ytStatus = document.getElementById('ytStatus');
+    var ytTimer = null, lastChecked = null;
+
+    function setStatus(html) { ytStatus.innerHTML = html; }
+    function esc(s) { return (s || '').replace(/[&<>"]/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+    function verifyYouTube() {
+        var h = normalizeHandle(yt.value);
+        yt.value = h;
+        if (h.length === 0) { setStatus(''); lastChecked = null; return; }
+        if (h === lastChecked) return;
+        lastChecked = h;
+        setStatus('<span class="spinner"></span><span class="yt-checking">kontrol ediliyor…</span>');
+        fetch('/api/public/verify/youtube?handle=' + encodeURIComponent(h))
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                if (normalizeHandle(yt.value) !== h) return; // kullanıcı değiştirdi
+                if (!d || d.available === false) { setStatus(''); return; }
+                if (d.exists) {
+                    var img = d.thumbnail ? '<img src="' + esc(d.thumbnail) + '" alt="">' : '';
+                    setStatus(img + '<span class="yt-ok">✓ ' + esc(d.title || 'Kanal bulundu') + '</span>');
+                } else {
+                    setStatus('<span class="yt-warn">⚠ Bu kullanıcı adına ait kanal bulunamadı — doğru yazdığından emin ol</span>');
+                }
+            })
+            .catch(function () { setStatus(''); });
+    }
+    if (yt) {
+        yt.addEventListener('blur', function () { clearTimeout(ytTimer); ytTimer = setTimeout(verifyYouTube, 200); });
+        yt.addEventListener('input', function () { clearTimeout(ytTimer); ytTimer = setTimeout(verifyYouTube, 700); });
+    }
+
+    // En az bir platform kullanıcı adı zorunlu (client-side ön kontrol).
+    var form = document.getElementById('intakeForm');
+    var unameErr = document.getElementById('unameErr');
+    form.addEventListener('submit', function (e) {
+        var anyUser = Array.prototype.some.call(document.querySelectorAll('.uname'), function (el) {
+            return normalizeHandle(el.value).length > 0;
+        });
+        if (!anyUser) {
+            e.preventDefault();
+            unameErr.textContent = 'En az bir platform kullanıcı adı gir (Instagram, YouTube, Facebook veya TikTok).';
+            document.querySelector('.uname').focus();
+            return;
+        }
+        unameErr.textContent = '';
+    });
+})();
+</script>
 </body>
 </html>
