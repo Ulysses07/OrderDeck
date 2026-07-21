@@ -44,7 +44,7 @@ public sealed class IntakeFormController : ControllerBase
         var cfg = await _service.GetByCustomerAsync(customerId, ct);
         if (cfg is null) return NotFound();
         return Ok(new IntakeFormBody(cfg.Slug, cfg.WhatsAppPhone, cfg.CustomTitle, cfg.IsActive,
-            $"{_publicBaseUrl}/r/{cfg.Slug}"));
+            $"{_publicBaseUrl}/musteri-kayit/{cfg.Slug}"));
     }
 
     [HttpPut("api/v1/me/intake-form")]
@@ -66,7 +66,7 @@ public sealed class IntakeFormController : ControllerBase
                 customerId, slug, phone, req.CustomTitle?.Trim(),
                 req.IsActive ?? true, ct);
             return Ok(new IntakeFormBody(cfg.Slug, cfg.WhatsAppPhone, cfg.CustomTitle, cfg.IsActive,
-                $"{_publicBaseUrl}/r/{cfg.Slug}"));
+                $"{_publicBaseUrl}/musteri-kayit/{cfg.Slug}"));
         }
         catch (IntakeFormService.SlugAlreadyTakenException)
         {

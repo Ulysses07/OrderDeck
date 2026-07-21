@@ -46,7 +46,7 @@ services:
       ConnectionStrings__LicenseDbReadOnly: "${SQL_READ_REPLICA_CONN:-}"
       Jwt__SecretKey: "${JWT_SECRET}"
       Jwt__Issuer: "orderdeck-license-server"
-      App__PublicBaseUrl: "https://license.orderdeckapp.com"
+      App__PublicBaseUrl: "https://orderdeckapp.com"
       Smtp__Host: "${SMTP_HOST:-smtp.example.com}"
       Smtp__Port: "${SMTP_PORT:-587}"
       Smtp__UseSsl: "${SMTP_USESSL:-true}"
