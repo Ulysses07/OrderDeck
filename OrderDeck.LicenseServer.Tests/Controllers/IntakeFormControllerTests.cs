@@ -80,7 +80,7 @@ public sealed class IntakeFormControllerTests : IClassFixture<ApiFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var body = await resp.Content.ReadFromJsonAsync<IntakeFormBody>();
         body!.slug.Should().Be(slug);
-        body.formUrl.Should().EndWith($"/r/{slug}");
+        body.formUrl.Should().EndWith($"/musteri-kayit/{slug}");
     }
 
     [Fact]

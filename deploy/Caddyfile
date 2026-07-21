@@ -51,20 +51,32 @@ orderdeckapp.com {
 
     # Brotli'i enable etmek için xcaddy build gerekiyor — şimdilik gzip+zstd yeterli.
 
-    # Statik dosyalara uzun cache; HTML sayfalara kısa (deploy sonrası anında güncellenmesi için).
-    @static path *.css *.js *.svg *.png *.jpg *.jpeg *.webp *.woff2 *.ico
-    header @static Cache-Control "public, max-age=31536000, immutable"
+    # ─── Müşteri kayıt formu ───────────────────────────────────────────────
+    # Form license-server'daki Razor sayfası (DB config + submission + YouTube
+    # verify API gerektirir), ama müşteriye license.* yerine güvenilir ana domain
+    # gösterilsin diye buradan proxy'lenir: orderdeckapp.com/musteri-kayit/{slug}.
+    handle /musteri-kayit/* {
+        reverse_proxy license-server:8080
+    }
+    handle /api/public/verify/* {
+        reverse_proxy license-server:8080
+    }
 
-    @html path *.html /
-    header @html Cache-Control "public, max-age=300, must-revalidate"
+    # ─── Statik marketing sitesi ───────────────────────────────────────────
+    handle {
+        # Statik dosyalara uzun cache; HTML sayfalara kısa (deploy sonrası anında güncellensin).
+        @static path *.css *.js *.svg *.png *.jpg *.jpeg *.webp *.woff2 *.ico
+        header @static Cache-Control "public, max-age=31536000, immutable"
 
-    # Trailing slash davranışı: Next.js trailingSlash:true ile her route bir
-    # klasör + index.html üretiyor; file_server bunu doğal olarak handle ediyor.
-    root * /srv/web
-    file_server {
-        # Klasik 404 sayfasını Next.js'in oluşturduğu out/404.html ile değiştir.
-        # (Next App Router not-found.tsx → 404.html üretiyor.)
-        precompressed gzip
+        @html path *.html /
+        header @html Cache-Control "public, max-age=300, must-revalidate"
+
+        # Trailing slash davranışı: Next.js trailingSlash:true ile her route bir
+        # klasör + index.html üretiyor; file_server bunu doğal olarak handle ediyor.
+        root * /srv/web
+        file_server {
+            precompressed gzip
+        }
     }
 
     # 404 fallback — yoksa default Caddy 404'ü çıksın, /404/ gibi rotaları kırma.

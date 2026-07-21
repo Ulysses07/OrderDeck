@@ -436,6 +436,8 @@ public class Program
             opt.Conventions.AllowAnonymousToPage("/Admin/Login");
             opt.Conventions.AllowAnonymousToPage("/Admin/Logout");
             opt.Conventions.AllowAnonymousToFolder("/Public");
+            // Eski /r/{slug} linkleri çalışmaya devam etsin (yeni URL /musteri-kayit/{slug}).
+            opt.Conventions.AddPageRoute("/Public/IntakeForm", "/r/{slug}");
         });
         builder.Services.AddEndpointsApiExplorer();
         builder.Services.AddSwaggerGen();

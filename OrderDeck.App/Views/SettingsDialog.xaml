@@ -422,7 +422,7 @@
                                          FontFamily="{StaticResource S.Font.Mono}"
                                          ToolTip="Sadece küçük harf, rakam, tire. 3-32 karakter."/>
                                 <TextBlock Style="{StaticResource S.Hint}"
-                                           Text="Örnek: 'burakstreamer' → https://license.orderdeckapp.com/r/burakstreamer"/>
+                                           Text="Örnek: 'burakstreamer' → https://orderdeckapp.com/musteri-kayit/burakstreamer"/>
                             </StackPanel>
                             <StackPanel Margin="0,0,0,12">
                                 <TextBlock Style="{StaticResource S.FieldLabel}" Text="WhatsApp telefon (E.164 formatı)"/>
