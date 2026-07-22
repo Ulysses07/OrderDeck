@@ -301,7 +301,7 @@ public class CustomerRepositoryTests
         var repo = CreateRepository();
 
         var groupId = repo.UpsertPersonFromIntake(
-            new[] { ("instagram", "@sibel_s"), ("youtube", "sibelgelibolu"), ("tiktok", "sibel.tt") },
+            new (string, string, string?)[] { ("instagram", "@sibel_s", null), ("youtube", "sibelgelibolu", null), ("tiktok", "sibel.tt", null) },
             fullName: "Sibel S", address: "İstanbul", phone: "+905551112233",
             email: "sibel@example.com", tckn: "12345678901",
             whatsAppConsent: true, smsConsent: false, nowUnix: 5000);
@@ -338,15 +338,64 @@ public class CustomerRepositoryTests
 
         // İlk kayıt: Instagram + YouTube tek grupta.
         var g1 = repo.UpsertPersonFromIntake(
-            new[] { ("instagram", "sibel_s"), ("youtube", "sibelgelibolu") },
+            new (string, string, string?)[] { ("instagram", "sibel_s", null), ("youtube", "sibelgelibolu", null) },
             "Sibel S", "İstanbul", null, null, null, false, false, 5000);
 
         // İkinci kayıt: aynı Instagram + yeni Facebook → grup yeniden kullanılmalı (merge).
         var g2 = repo.UpsertPersonFromIntake(
-            new[] { ("instagram", "sibel_s"), ("facebook", "sibel.fb") },
+            new (string, string, string?)[] { ("instagram", "sibel_s", null), ("facebook", "sibel.fb", null) },
             "Sibel S", "İstanbul", null, null, null, false, false, 6000);
 
         g2.Should().Be(g1);
         repo.FindByPlatformAndUsername("facebook", "sibel.fb")!.GroupId.Should().Be(g1);
+    }
+
+    [Fact]
+    public void UpsertPersonFromIntake_merges_into_existing_shopper_row_case_insensitive()
+    {
+        var repo = CreateRepository();
+
+        // Alışverişten otomatik kaydedilmiş numarasız müşteri (chat casing farklı).
+        repo.Insert(new Customer("shop1", "instagram", "SibelVIP", "SibelVIP", null,
+            100, 100, false, null, null, 3, 250m, null, null, null));
+
+        // Form: aynı kişi küçük harfle kaydoluyor.
+        repo.UpsertPersonFromIntake(
+            new (string, string, string?)[] { ("instagram", "sibelvip", null) },
+            "Sibel Yılmaz", "İzmir", "+905551112233", null, null, true, false, 5000);
+
+        // AYRI satır AÇILMAMALI — mevcut satır güncellenmeli (geçmiş korunur).
+        var all = repo.GetAll().Where(c => c.Platform == "instagram").ToList();
+        all.Should().HaveCount(1);
+        var c = all[0];
+        c.Id.Should().Be("shop1");
+        c.Phone.Should().Be("+905551112233");
+        c.Address.Should().Be("İzmir");
+        c.TotalAmount.Should().Be(250m);          // alışveriş geçmişi korundu
+        c.GroupId.Should().NotBeNullOrEmpty();
+    }
+
+    [Fact]
+    public void UpsertPersonFromIntake_youtube_merges_into_channelId_row_via_handle()
+    {
+        var repo = CreateRepository();
+
+        // Chat'ten kaydedilmiş YouTube müşterisi: Username=channelId, DisplayName=@handle.
+        repo.Insert(new Customer("yt1", "youtube", "UCabc123channel", "@sibelgelibolu", null,
+            100, 100, false, null, null, 2, 180m, null, null, null));
+
+        // Form: müşteri @handle'ını yazıyor (channelId'yi bilmez).
+        repo.UpsertPersonFromIntake(
+            new (string, string, string?)[] { ("youtube", "SibelGelibolu", null) },   // farklı casing + @ yok
+            "Sibel G", "Ankara", "+905559998877", null, null, false, true, 5000);
+
+        // channelId satırına birleşmeli, AYRI (youtube, handle) satırı açılmamalı.
+        var yts = repo.GetAll().Where(c => c.Platform == "youtube").ToList();
+        yts.Should().HaveCount(1);
+        var c = yts[0];
+        c.Id.Should().Be("yt1");
+        c.Username.Should().Be("UCabc123channel");  // channelId korundu (chat eşleşmesi sürsün)
+        c.Phone.Should().Be("+905559998877");
+        c.TotalAmount.Should().Be(180m);            // geçmiş korundu
     }
 }

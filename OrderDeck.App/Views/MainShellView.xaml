@@ -206,20 +206,30 @@
                         </TextBlock.InputBindings>
                     </TextBlock>
 
-                    <Border Background="Crimson" CornerRadius="10" Padding="8,3"
-                            Cursor="Hand" Margin="0,0,8,0"
-                            VerticalAlignment="Center"
+                    <!-- Zil: Button (Border.InputBindings LeftClick WPF'te güvenilir
+                         tetiklenmiyordu; Button native Command + hit-test verir). -->
+                    <Button Command="{Binding OpenIntakeSubmissionsCommand}"
+                            Cursor="Hand" Margin="0,0,8,0" VerticalAlignment="Center"
                             Visibility="{Binding HasNewIntakeSubmissions, Converter={StaticResource BoolToVisibleConverter}}"
                             ToolTip="Yeni form başvurularını görüntülemek için tıkla">
-                        <Border.InputBindings>
-                            <MouseBinding MouseAction="LeftClick" Command="{Binding OpenIntakeSubmissionsCommand}"/>
-                        </Border.InputBindings>
+                        <Button.Template>
+                            <ControlTemplate TargetType="Button">
+                                <Border x:Name="bg" Background="Crimson" CornerRadius="10" Padding="8,3">
+                                    <ContentPresenter VerticalAlignment="Center"/>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="bg" Property="Background" Value="#C41230"/>
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Button.Template>
                         <TextBlock Foreground="White" FontSize="11" FontWeight="Bold">
                             <Run Text="🔔"/>
                             <Run Text="{Binding NewIntakeSubmissionsCount, Mode=OneWay}"/>
                             <Run Text="yeni başvuru"/>
                         </TextBlock>
-                    </Border>
+                    </Button>
 
                     <Button Content="Yayın Başlat"
                             Command="{Binding StartStreamCommand}" Padding="14,6" Margin="0,0,8,0"/>

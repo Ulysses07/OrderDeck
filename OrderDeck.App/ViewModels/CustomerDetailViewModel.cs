@@ -43,6 +43,20 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
     [ObservableProperty] private string _blacklistedAtLabel = "";
     [ObservableProperty] private string _notesEdit = "";
 
+    // Kayıt formu / iletişim bilgileri (form doldurulduysa dolu; chat-only müşteride boş).
+    [ObservableProperty][NotifyPropertyChangedFor(nameof(HasContactInfo))] private string? _fullName;
+    [ObservableProperty][NotifyPropertyChangedFor(nameof(HasContactInfo))] private string? _phone;
+    [ObservableProperty][NotifyPropertyChangedFor(nameof(HasContactInfo))] private string? _email;
+    [ObservableProperty][NotifyPropertyChangedFor(nameof(HasContactInfo))] private string? _address;
+    [ObservableProperty][NotifyPropertyChangedFor(nameof(HasContactInfo))] private string? _tckn;
+
+    /// <summary>Form üzerinden en az bir iletişim alanı toplandıysa true —
+    /// detay dialog'unda "İletişim" bölümünü göstermek için.</summary>
+    public bool HasContactInfo =>
+        !string.IsNullOrWhiteSpace(Phone) || !string.IsNullOrWhiteSpace(Email) ||
+        !string.IsNullOrWhiteSpace(Address) || !string.IsNullOrWhiteSpace(FullName) ||
+        !string.IsNullOrWhiteSpace(Tckn);
+
     /// <summary>Header for the labels section. Reflects whether we're scoped to
     /// the active stream session (most common path) or the full lifetime
     /// history (when no stream is running).</summary>
@@ -104,6 +118,14 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
         BlacklistReason = c.BlacklistReason;
         BlacklistedAtLabel = c.BlacklistedAt is long t ? TrFormats.DateTime(t) : "";
         NotesEdit = c.Notes ?? "";
+
+        // Form / iletişim alanları. FullName = form'daki Ad Soyad; DisplayName
+        // ile aynı olabilir ama form'da net etiketle gösterelim.
+        FullName = c.DisplayName;
+        Phone = c.Phone;
+        Email = c.Email;
+        Address = c.Address;
+        Tckn = c.Tckn;
 
         ReloadLabels();
 

@@ -80,13 +80,20 @@ public sealed class IntakeFormSyncService
         foreach (var sub in submissions.OrderBy(s => s.SubmittedAt))
         {
             // Bildirilen platform kimliklerini topla (çoklu-platform).
-            var identities = new List<(string Platform, string Username)>();
-            void Add(string platform, string? handle)
+            var identities = new List<(string Platform, string Username, string? PreferredDisplayName)>();
+            void Add(string platform, string? username, string? display = null)
             {
-                if (!string.IsNullOrWhiteSpace(handle))
-                    identities.Add((platform, handle!));
+                if (!string.IsNullOrWhiteSpace(username))
+                    identities.Add((platform, username!, display));
             }
-            Add("youtube", sub.YouTubeUsername);
+            // YouTube: doğrulama channelId çektiyse Username=channelId → chat kaydıyla
+            // (youtube, channelId) BİREBİR eşleşir. Ama UI'da channelId ASLA görünmesin
+            // diye @handle'ı PreferredDisplayName olarak taşırız (DisplayName=@handle).
+            // channelId yoksa handle'a düş (repository DisplayName ile köprüler).
+            if (!string.IsNullOrWhiteSpace(sub.YouTubeChannelId))
+                Add("youtube", sub.YouTubeChannelId, sub.YouTubeUsername);
+            else
+                Add("youtube", sub.YouTubeUsername);
             Add("instagram", sub.InstagramUsername);
             Add("facebook", sub.FacebookUsername);
             Add("tiktok", sub.TikTokUsername);

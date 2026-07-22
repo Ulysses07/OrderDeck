@@ -111,6 +111,27 @@ public sealed class IntakeFormSyncServiceTests
         customer.Phone.Should().Be("+905551111111");
     }
 
+    [Fact]
+    public async Task SyncOnceAsync_youtube_channelId_merges_into_existing_chat_customer()
+    {
+        // Chat'ten kaydedilmiş YouTube müşterisi: Username=channelId.
+        var (svc, repo, _, _) = Build(_ => FakeHttpMessageHandler.Json(200,
+            """[{"id":"00000000-0000-0000-0000-000000000001","username":"UCabc123","fullName":"Sibel G","address":"Ankara","phone":"+905559998877","submittedAt":"2026-04-30T12:00:00Z","youTubeUsername":"sibelg","youTubeChannelId":"UCabc123"}]"""));
+        repo.Insert(new OrderDeck.Core.Customers.Customer(
+            "yt1", "youtube", "UCabc123", "@sibelg", null,
+            100, 100, false, null, null, 2, 180m, null, null, null));
+
+        var count = await svc.SyncOnceAsync();
+
+        count.Should().Be(1);
+        // channelId ile birebir eşleşti → AYRI satır açılmadı, geçmiş korundu.
+        var yts = repo.GetAll().Where(c => c.Platform == "youtube").ToList();
+        yts.Should().HaveCount(1);
+        yts[0].Id.Should().Be("yt1");
+        yts[0].Phone.Should().Be("+905559998877");
+        yts[0].TotalAmount.Should().Be(180m);
+    }
+
     // ── UI freeze fix #1 (2026-05-13): auth failure flag ──────────────────
 
     [Fact]

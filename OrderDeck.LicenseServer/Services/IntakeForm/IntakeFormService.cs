@@ -110,7 +110,8 @@ public sealed class IntakeFormService
         string? facebookUsername, string? tikTokUsername,
         string legacyUsername, string fullName, string address, string? phone,
         string? email, string? tckn, bool whatsAppConsent, bool smsConsent,
-        string? ipAddress, string? userAgent, CancellationToken ct = default)
+        string? ipAddress, string? userAgent, CancellationToken ct = default,
+        string? youTubeChannelId = null)
     {
         var sub = new IntakeFormSubmission
         {
@@ -121,6 +122,7 @@ public sealed class IntakeFormService
             InstagramUsername = instagramUsername,
             FacebookUsername = facebookUsername,
             TikTokUsername = tikTokUsername,
+            YouTubeChannelId = youTubeChannelId,
             FullName = fullName,
             Address = address,
             Phone = phone,

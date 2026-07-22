@@ -310,17 +310,19 @@ public sealed class CustomerRepository
     /// yazılır; DisplayName boşsa Ad Soyad'a set edilir. Grup id'yi döner.
     /// </summary>
     public string UpsertPersonFromIntake(
-        IReadOnlyList<(string Platform, string Username)> identities,
+        IReadOnlyList<(string Platform, string Username, string? PreferredDisplayName)> identities,
         string fullName, string address, string? phone,
         string? email, string? tckn, bool whatsAppConsent, bool smsConsent,
         long nowUnix)
     {
-        // Normalize + boşları ele.
-        var norm = new List<(string Platform, string Username)>();
-        foreach (var (p, u) in identities)
+        // Normalize + boşları ele. PreferredDisplayName: YouTube'da channelId
+        // Username olduğunda operatöre @handle gösterilsin diye taşınır (UI asla
+        // channelId göstermez).
+        var norm = new List<(string Platform, string Username, string? Display)>();
+        foreach (var (p, u, disp) in identities)
         {
             var handle = (u ?? "").Trim().TrimStart('@').Trim();
-            if (handle.Length > 0) norm.Add((p, handle));
+            if (handle.Length > 0) norm.Add((p, handle, string.IsNullOrWhiteSpace(disp) ? null : disp!.Trim()));
         }
         if (norm.Count == 0) throw new ArgumentException("En az bir kimlik gerekli", nameof(identities));
 
@@ -328,18 +330,19 @@ public sealed class CustomerRepository
 
         // Grup id çözümle: kimliklerden biri zaten gruplanmışsa onu kullan.
         string? groupId = null;
-        foreach (var (p, u) in norm)
+        foreach (var (p, u, _) in norm)
         {
-            var existing = conn.QueryFirstOrDefault<Row>(
-                "SELECT * FROM Customer WHERE Platform=@p AND Username=@u", new { p, u });
+            var existing = FindExistingForIntake(conn, p, u);
             if (existing?.GroupId is { Length: > 0 } g) { groupId = g; break; }
         }
         groupId ??= Guid.NewGuid().ToString("N");
 
-        foreach (var (p, u) in norm)
+        foreach (var (p, u, disp) in norm)
         {
-            var existing = conn.QueryFirstOrDefault<Row>(
-                "SELECT * FROM Customer WHERE Platform=@p AND Username=@u", new { p, u });
+            // Gösterilecek ad: YouTube'da channelId Username olduğunda @handle (disp);
+            // diğerlerinde Ad Soyad. UI asla channelId göstermesin diye önemli.
+            var displayForRow = disp ?? fullName;
+            var existing = FindExistingForIntake(conn, p, u);
             if (existing is not null)
             {
                 conn.Execute(
@@ -347,13 +350,13 @@ public sealed class CustomerRepository
                         GroupId = @groupId,
                         Address = @address, Phone = @phone, Email = @email, Tckn = @tckn,
                         WhatsAppConsent = @wa, SmsConsent = @sms, LastSeenAt = @now,
-                        DisplayName = COALESCE(NULLIF(DisplayName, ''), @fullName)
+                        DisplayName = COALESCE(NULLIF(DisplayName, ''), @displayForRow)
                       WHERE Id = @id",
                     new
                     {
                         groupId, address, phone, email, tckn,
                         wa = whatsAppConsent ? 1 : 0, sms = smsConsent ? 1 : 0,
-                        now = nowUnix, fullName, id = existing.Id
+                        now = nowUnix, displayForRow, id = existing.Id
                     });
             }
             else
@@ -365,13 +368,13 @@ public sealed class CustomerRepository
                        BlacklistedAt, Address, Phone, RecipientPaysActive,
                        GroupId, Email, Tckn, WhatsAppConsent, SmsConsent)
                       VALUES
-                      (@id, @p, @u, @fullName, NULL, @now, @now,
+                      (@id, @p, @u, @displayForRow, NULL, @now, @now,
                        0, NULL, NULL, 0, 0,
                        NULL, @address, @phone, 0,
                        @groupId, @email, @tckn, @wa, @sms)",
                     new
                     {
-                        id = Guid.NewGuid().ToString("N"), p, u, fullName, now = nowUnix,
+                        id = Guid.NewGuid().ToString("N"), p, u, displayForRow, now = nowUnix,
                         address, phone, groupId, email, tckn,
                         wa = whatsAppConsent ? 1 : 0, sms = smsConsent ? 1 : 0
                     });
@@ -379,6 +382,42 @@ public sealed class CustomerRepository
         }
 
         return groupId;
+    }
+
+    /// <summary>
+    /// Intake form kimliğini mevcut bir Customer satırıyla eşleştirir; böylece
+    /// alışveriş geçmişi olan (numarasız otomatik kaydedilmiş) müşteri, formu
+    /// doldurduğunda AYRI satır açmaz, mevcut satırı güncelleriz.
+    /// <list type="number">
+    ///   <item>Önce <c>(Platform, Username)</c> birebir — büyük/küçük harf
+    ///   duyarsız (COLLATE NOCASE) → IG/TikTok/FB'de handle chat'le birebir aynı.</item>
+    ///   <item>YouTube özel: chat satırının Username'i channelId (UCxxx), form ise
+    ///   @handle verir → doğrudan tutmaz. Bu satırların <c>DisplayName</c>'i @handle
+    ///   tuttuğu için handle'ı DisplayName ile eşleştirip channelId satırını buluruz
+    ///   (Username=channelId korunur, gelecekteki chat de eşleşmeye devam eder).</item>
+    /// </list>
+    /// Eşleşme yoksa null döner → çağıran yeni satır açar (regresyon yok).
+    /// </summary>
+    private static Row? FindExistingForIntake(System.Data.IDbConnection conn, string platform, string handle)
+    {
+        // 1) (Platform, Username) birebir — harf duyarsız.
+        var exact = conn.QueryFirstOrDefault<Row>(
+            "SELECT * FROM Customer WHERE Platform=@platform AND Username=@handle COLLATE NOCASE",
+            new { platform, handle });
+        if (exact is not null) return exact;
+
+        // 2) YouTube: chat satırı channelId ile; @handle DisplayName'de saklı.
+        if (string.Equals(platform, "youtube", StringComparison.OrdinalIgnoreCase))
+        {
+            return conn.QueryFirstOrDefault<Row>(
+                @"SELECT * FROM Customer
+                  WHERE Platform='youtube'
+                    AND LTRIM(DisplayName, '@') = @handle COLLATE NOCASE
+                  LIMIT 1",
+                new { handle });
+        }
+
+        return null;
     }
 
     /// <summary>Phase 4g: WhatsApp E.164 telefonu güncelle. Geçersiz id no-op.</summary>

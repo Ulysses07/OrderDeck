@@ -165,6 +165,7 @@ public class LicenseDbContext : DbContext
             b.Property(s => s.InstagramUsername).HasMaxLength(64);
             b.Property(s => s.FacebookUsername).HasMaxLength(64);
             b.Property(s => s.TikTokUsername).HasMaxLength(64);
+            b.Property(s => s.YouTubeChannelId).HasMaxLength(48);
             b.Property(s => s.FullName).HasMaxLength(200).IsRequired();
             b.Property(s => s.Address).HasMaxLength(500).IsRequired();
             b.Property(s => s.Phone).HasMaxLength(20);

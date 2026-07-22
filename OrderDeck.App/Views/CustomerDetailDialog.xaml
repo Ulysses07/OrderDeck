@@ -56,8 +56,69 @@
             </Grid>
         </Border>
 
-        <!-- Tabs -->
+        <!-- İletişim bilgileri (kayıt formundan) — seçilebilir + kopyalanabilir.
+             Read-only TextBox: TextBlock seçilemediği için TextBox kullanıldı. -->
         <TabControl Grid.Row="1" Background="Transparent">
+            <TabItem Header="İletişim"
+                     Visibility="{Binding HasContactInfo, Converter={StaticResource BoolToVisibleConverter}}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,8,0,0">
+                    <StackPanel>
+                        <StackPanel.Resources>
+                            <Style TargetType="TextBox">
+                                <Setter Property="IsReadOnly" Value="True"/>
+                                <Setter Property="Background" Value="#FF222222"/>
+                                <Setter Property="Foreground" Value="White"/>
+                                <Setter Property="BorderBrush" Value="#FF333333"/>
+                                <Setter Property="Padding" Value="8,6"/>
+                                <Setter Property="FontSize" Value="14"/>
+                                <Setter Property="Margin" Value="0,0,0,10"/>
+                                <Setter Property="TextWrapping" Value="Wrap"/>
+                                <Setter Property="ContextMenu">
+                                    <Setter.Value>
+                                        <ContextMenu>
+                                            <MenuItem Command="ApplicationCommands.Copy" Header="Kopyala"/>
+                                            <MenuItem Command="ApplicationCommands.SelectAll" Header="Tümünü Seç"/>
+                                        </ContextMenu>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                            <Style TargetType="TextBlock" x:Key="FieldLabel">
+                                <Setter Property="Foreground" Value="#FFAAAAAA"/>
+                                <Setter Property="FontSize" Value="11"/>
+                                <Setter Property="FontWeight" Value="SemiBold"/>
+                                <Setter Property="Margin" Value="0,0,0,3"/>
+                            </Style>
+                        </StackPanel.Resources>
+
+                        <TextBlock Text="AD SOYAD" Style="{StaticResource FieldLabel}"
+                                   Visibility="{Binding FullName, Converter={StaticResource NullToCollapsedConverter}}"/>
+                        <TextBox Text="{Binding FullName, Mode=OneWay}"
+                                 Visibility="{Binding FullName, Converter={StaticResource NullToCollapsedConverter}}"/>
+
+                        <TextBlock Text="TELEFON (WHATSAPP)" Style="{StaticResource FieldLabel}"
+                                   Visibility="{Binding Phone, Converter={StaticResource NullToCollapsedConverter}}"/>
+                        <TextBox Text="{Binding Phone, Mode=OneWay}"
+                                 Visibility="{Binding Phone, Converter={StaticResource NullToCollapsedConverter}}"/>
+
+                        <TextBlock Text="E-POSTA" Style="{StaticResource FieldLabel}"
+                                   Visibility="{Binding Email, Converter={StaticResource NullToCollapsedConverter}}"/>
+                        <TextBox Text="{Binding Email, Mode=OneWay}"
+                                 Visibility="{Binding Email, Converter={StaticResource NullToCollapsedConverter}}"/>
+
+                        <TextBlock Text="ADRES" Style="{StaticResource FieldLabel}"
+                                   Visibility="{Binding Address, Converter={StaticResource NullToCollapsedConverter}}"/>
+                        <TextBox Text="{Binding Address, Mode=OneWay}" MinHeight="60"
+                                 AcceptsReturn="True" VerticalScrollBarVisibility="Auto"
+                                 Visibility="{Binding Address, Converter={StaticResource NullToCollapsedConverter}}"/>
+
+                        <TextBlock Text="TC KİMLİK NO" Style="{StaticResource FieldLabel}"
+                                   Visibility="{Binding Tckn, Converter={StaticResource NullToCollapsedConverter}}"/>
+                        <TextBox Text="{Binding Tckn, Mode=OneWay}"
+                                 Visibility="{Binding Tckn, Converter={StaticResource NullToCollapsedConverter}}"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
             <TabItem Header="Etiket Geçmişi">
                 <Grid>
                     <Grid.RowDefinitions>
