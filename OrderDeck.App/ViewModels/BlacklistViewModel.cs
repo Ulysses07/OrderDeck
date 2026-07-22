@@ -37,7 +37,7 @@ public sealed partial class BlacklistViewModel : ViewModelBase
     {
         if (Selected is null) return;
         var confirm = MessageBox.Show(
-            $"{Selected.Username} kara listeden çıkarılacak. Emin misin?",
+            $"{Selected.Display} kara listeden çıkarılacak. Emin misin?",
             "Onayla", MessageBoxButton.YesNo, MessageBoxImage.Question);
         if (confirm != MessageBoxResult.Yes) return;
 

@@ -35,7 +35,7 @@ public sealed class IntakeFormController : ControllerBase
     public sealed record SubmissionBody(
         Guid Id, string Username, string FullName, string Address, string? Phone, DateTimeOffset SubmittedAt,
         string? YouTubeUsername, string? InstagramUsername, string? FacebookUsername, string? TikTokUsername,
-        string? Email, string? Tckn, bool WhatsAppConsent, bool SmsConsent);
+        string? Email, string? Tckn, bool WhatsAppConsent, bool SmsConsent, string? YouTubeChannelId);
 
     [HttpGet("api/v1/me/intake-form")]
     public async Task<IActionResult> GetMine(CancellationToken ct)
@@ -87,7 +87,7 @@ public sealed class IntakeFormController : ControllerBase
         return Ok(rows.Select(s => new SubmissionBody(
             s.Id, s.Username, s.FullName, s.Address, s.Phone, s.SubmittedAt,
             s.YouTubeUsername, s.InstagramUsername, s.FacebookUsername, s.TikTokUsername,
-            s.Email, s.Tckn, s.WhatsAppConsent, s.SmsConsent)));
+            s.Email, s.Tckn, s.WhatsAppConsent, s.SmsConsent, s.YouTubeChannelId)));
     }
 
     private Guid GetCustomerId()

@@ -32,7 +32,7 @@
                   AlternatingRowBackground="#FF222222">
             <DataGrid.Columns>
                 <DataGridTextColumn Header="Platform"  Binding="{Binding Platform}"        Width="*"/>
-                <DataGridTextColumn Header="Kullanıcı" Binding="{Binding Username}"        Width="2*"/>
+                <DataGridTextColumn Header="Kullanıcı" Binding="{Binding Display}"         Width="2*"/>
                 <DataGridTextColumn Header="Sebep"     Binding="{Binding BlacklistReason}" Width="3*"/>
                 <DataGridTextColumn Header="Tarih"
                                     Binding="{Binding BlacklistedAt, Converter={StaticResource UnixToDateConverter}}"

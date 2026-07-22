@@ -107,6 +107,7 @@
                            inputmode="text" placeholder="kanalhandle" />
                 </div>
                 <div class="yt-status" id="ytStatus"></div>
+                <input type="hidden" asp-for="Input.YouTubeChannelId" id="ytChannelId" />
                 <span class="err" asp-validation-for="Input.YouTubeUsername"></span>
             </div>
 
@@ -200,6 +201,7 @@
     // (b) YouTube handle doğrulama — blur'da debounced, channels.list?forHandle (1 kota birimi).
     var yt = document.getElementById('ytUser');
     var ytStatus = document.getElementById('ytStatus');
+    var ytChannelId = document.getElementById('ytChannelId');
     var ytTimer = null, lastChecked = null;
 
     function setStatus(html) { ytStatus.innerHTML = html; }
@@ -209,6 +211,7 @@
     function verifyYouTube() {
         var h = normalizeHandle(yt.value);
         yt.value = h;
+        if (ytChannelId) ytChannelId.value = ''; // handle değişti → eski channelId geçersiz
         if (h.length === 0) { setStatus(''); lastChecked = null; return; }
         if (h === lastChecked) return;
         lastChecked = h;
@@ -219,6 +222,8 @@
                 if (normalizeHandle(yt.value) !== h) return; // kullanıcı değiştirdi
                 if (!d || d.available === false) { setStatus(''); return; }
                 if (d.exists) {
+                    // channelId'yi sakla → WPF'te chat kaydıyla birebir eşleşme.
+                    if (ytChannelId) ytChannelId.value = d.channelId || '';
                     var img = d.thumbnail ? '<img src="' + esc(d.thumbnail) + '" alt="">' : '';
                     setStatus(img + '<span class="yt-ok">✓ ' + esc(d.title || 'Kanal bulundu') + '</span>');
                 } else {

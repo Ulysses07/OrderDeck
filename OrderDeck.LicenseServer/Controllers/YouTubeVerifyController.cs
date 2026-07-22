@@ -34,18 +34,18 @@ public sealed class YouTubeVerifyController : ControllerBase
         _apiKey = config["YouTube:ApiKey"];
     }
 
-    public sealed record VerifyResult(bool Available, bool Exists, string? Title, string? Thumbnail);
+    public sealed record VerifyResult(bool Available, bool Exists, string? Title, string? Thumbnail, string? ChannelId);
 
     [HttpGet("api/public/verify/youtube")]
     [EnableRateLimiting("youtube-verify")]
     public async Task<IActionResult> Verify([FromQuery] string? handle, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(_apiKey))
-            return Ok(new VerifyResult(Available: false, Exists: false, null, null));
+            return Ok(new VerifyResult(Available: false, Exists: false, null, null, null));
 
         var h = (handle ?? "").Trim().TrimStart('@').Trim().ToLowerInvariant();
         if (h.Length == 0 || h.Length > 64)
-            return Ok(new VerifyResult(Available: true, Exists: false, null, null));
+            return Ok(new VerifyResult(Available: true, Exists: false, null, null, null));
 
         if (_cache.TryGetValue("ytv:" + h, out VerifyResult? cached) && cached is not null)
             return Ok(cached);
@@ -56,12 +56,12 @@ public sealed class YouTubeVerifyController : ControllerBase
             var client = _httpFactory.CreateClient();
             client.Timeout = TimeSpan.FromSeconds(8);
             var url = "https://www.googleapis.com/youtube/v3/channels" +
-                      $"?part=snippet&forHandle={Uri.EscapeDataString(h)}&key={_apiKey}";
+                      $"?part=id,snippet&forHandle={Uri.EscapeDataString(h)}&key={_apiKey}";
             using var resp = await client.GetAsync(url, ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
             {
                 // API hatası/kota → doğrulamayı atlat (form yine gönderilebilsin).
-                return Ok(new VerifyResult(Available: false, Exists: false, null, null));
+                return Ok(new VerifyResult(Available: false, Exists: false, null, null, null));
             }
 
             await using var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
@@ -70,6 +70,9 @@ public sealed class YouTubeVerifyController : ControllerBase
             if (doc.RootElement.TryGetProperty("items", out var items) &&
                 items.ValueKind == JsonValueKind.Array && items.GetArrayLength() > 0)
             {
+                // channels.list?forHandle → items[0].id = kanalın channelId'si (UCxxx).
+                // Bunu forma saklayıp WPF'te chat kaydıyla BİREBİR eşleştirmek için döneriz.
+                var channelId = items[0].TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
                 var snippet = items[0].GetProperty("snippet");
                 var title = snippet.TryGetProperty("title", out var t) ? t.GetString() : null;
                 string? thumb = null;
@@ -77,18 +80,18 @@ public sealed class YouTubeVerifyController : ControllerBase
                     th.TryGetProperty("default", out var def) &&
                     def.TryGetProperty("url", out var u))
                     thumb = u.GetString();
-                result = new VerifyResult(Available: true, Exists: true, title, thumb);
+                result = new VerifyResult(Available: true, Exists: true, title, thumb, channelId);
             }
             else
             {
-                result = new VerifyResult(Available: true, Exists: false, null, null);
+                result = new VerifyResult(Available: true, Exists: false, null, null, null);
             }
         }
         catch (OperationCanceledException) { throw; }
         catch
         {
             // Ağ/parse hatası → doğrulamayı atlat.
-            return Ok(new VerifyResult(Available: false, Exists: false, null, null));
+            return Ok(new VerifyResult(Available: false, Exists: false, null, null, null));
         }
 
         _cache.Set("ytv:" + h, result, CacheTtl);

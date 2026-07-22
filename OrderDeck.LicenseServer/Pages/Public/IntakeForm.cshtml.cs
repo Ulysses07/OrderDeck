@@ -47,6 +47,10 @@ public class IntakeFormModel : PageModel
         [StringLength(64, ErrorMessage = "En fazla 64 karakter")]
         public string? TikTokUsername { get; set; }
 
+        // JS doğrulaması başarılıysa doldurulan gizli alan (channels.list'ten).
+        [StringLength(48)]
+        public string? YouTubeChannelId { get; set; }
+
         [Required(ErrorMessage = "Ad Soyad gerekli")]
         [StringLength(200, ErrorMessage = "En fazla 200 karakter")]
         public string FullName { get; set; } = "";
@@ -136,7 +140,8 @@ public class IntakeFormModel : PageModel
             smsConsent: Input.SmsConsent,
             ipAddress: HttpContext.Connection.RemoteIpAddress?.ToString(),
             userAgent: Request.Headers.UserAgent.ToString(),
-            ct: ct);
+            ct: ct,
+            youTubeChannelId: Trim(Input.YouTubeChannelId));
 
         var url = _linkBuilder.Build(
             Config.WhatsAppPhone,

@@ -23,6 +23,21 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
     [ObservableProperty] private string _query = "";
     [ObservableProperty] private string? _platformFilter;
     [ObservableProperty] private bool _lastStreamShoppersOnly;
+    [ObservableProperty] private bool _registeredOnly;
+
+    /// <summary>Platform süzgeci seçenekleri (UI ComboBox). Value boş = tümü;
+    /// "form" = kayıt formundan gelenler. Display kullanıcıya gösterilir.</summary>
+    public IReadOnlyList<PlatformOption> PlatformOptions { get; } = new[]
+    {
+        new PlatformOption("Tüm platformlar", ""),
+        new PlatformOption("Kayıt formu", "form"),
+        new PlatformOption("Instagram", "instagram"),
+        new PlatformOption("YouTube", "youtube"),
+        new PlatformOption("Facebook", "facebook"),
+        new PlatformOption("TikTok", "tiktok"),
+    };
+
+    public sealed record PlatformOption(string Display, string Value);
 
     public ObservableCollection<Customer> Results { get; } = new();
     private readonly Dictionary<string, decimal> _streamAmounts = new();
@@ -46,6 +61,7 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
     partial void OnQueryChanged(string value) => ApplySearch(value);
     partial void OnPlatformFilterChanged(string? value) => RefreshSearch();
     partial void OnLastStreamShoppersOnlyChanged(bool value) => RefreshSearch();
+    partial void OnRegisteredOnlyChanged(bool value) => RefreshSearch();
 
     /// <summary>Phase 4f: external trigger to re-run search after PlatformFilter changes.</summary>
     public void RefreshSearch() => ApplySearch(Query);
@@ -79,6 +95,8 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
             }
             if (!string.IsNullOrEmpty(PlatformFilter))
                 filtered = filtered.Where(c => c.Platform == PlatformFilter);
+            if (RegisteredOnly)
+                filtered = filtered.Where(c => !string.IsNullOrWhiteSpace(c.Phone));
 
             foreach (var c in filtered) Results.Add(c);
             return;
@@ -91,9 +109,11 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
         var raw = string.IsNullOrWhiteSpace(value)
             ? _customers.GetAll()
             : _customers.Search(value.Trim(), limit: 50);
-        var f = string.IsNullOrEmpty(PlatformFilter)
+        IEnumerable<Customer> f = string.IsNullOrEmpty(PlatformFilter)
             ? raw
             : raw.Where(c => c.Platform == PlatformFilter);
+        if (RegisteredOnly)
+            f = f.Where(c => !string.IsNullOrWhiteSpace(c.Phone));
         foreach (var c in f) Results.Add(c);
     }
 

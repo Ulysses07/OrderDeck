@@ -22,6 +22,11 @@ public sealed class IntakeFormSubmission
     public string? FacebookUsername { get; set; }
     public string? TikTokUsername { get; set; }
 
+    /// <summary>YouTube handle doğrulanınca channels.list'ten çekilen channelId
+    /// (UCxxx). Chat müşteri kaydı da channelId ile tutulduğundan, WPF bunu
+    /// birebir eşleştirme için kullanır (handle→DisplayName tahmininden kesin).</summary>
+    public string? YouTubeChannelId { get; set; }
+
     public string FullName { get; set; } = "";
     public string Address { get; set; } = "";
     public string? Phone { get; set; }   // Phase 4g — E.164 format

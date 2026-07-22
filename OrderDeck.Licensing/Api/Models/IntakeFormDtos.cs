@@ -27,4 +27,5 @@ public sealed record IntakeFormSubmissionDto(
     string? Email = null,
     string? Tckn = null,
     bool WhatsAppConsent = false,
-    bool SmsConsent = false);
+    bool SmsConsent = false,
+    string? YouTubeChannelId = null);
