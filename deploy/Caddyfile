@@ -55,6 +55,11 @@ orderdeckapp.com {
     # Form license-server'daki Razor sayfası (DB config + submission + YouTube
     # verify API gerektirir), ama müşteriye license.* yerine güvenilir ana domain
     # gösterilsin diye buradan proxy'lenir: orderdeckapp.com/musteri-kayit/{slug}.
+    # Eski /r/{slug} linkleri (WPF <0.4.3 ya da önceden paylaşılmış) de proxy'lenir
+    # ki ana domainde 404 vermesin (license-server legacy route ile handle eder).
+    handle /r/* {
+        reverse_proxy license-server:8080
+    }
     handle /musteri-kayit/* {
         reverse_proxy license-server:8080
     }
