@@ -6,18 +6,58 @@ name: release
 # oradan delta güncelleme alır. Setup.exe ayrıca GitHub Release'e de eklenir.
 #
 # Kullanım: git tag v1.2.3 && git push origin v1.2.3
-# Delta: pack öncesi mevcut feed'deki .nupkg'ler indirilir → vpk delta üretir.
+#
+# Neden 3 job: WPF + vpk WINDOWS runner ister; ama windows runner VPS'e SSH
+# atamıyor (bağlantı timeout — web-deploy gibi UBUNTU runner erişebiliyor).
+# O yüzden VPS I/O (feed indir/yükle) ubuntu job'larında, build windows'ta.
+#   feed-baseline (ubuntu) → build (windows) → publish (ubuntu)
 
 on:
   push:
     tags: ["v*"]
 
 permissions:
-  contents: write # GitHub Release oluşturmak/asset yüklemek için
+  contents: write
 
 jobs:
-  build-release:
-    # WPF (net10.0-windows) + vpk → Windows runner şart.
+  # ── 1) Delta için mevcut feed'i (nupkg + manifest) indir, artifact yap ──
+  feed-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Setup SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Pull existing feed
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          mkdir -p baseline
+          FEED=/opt/orderdeck/web-out/downloads/velopack
+          # İlk release'te dizin boş/olmayabilir → hataları yut (yalnız full üretilir).
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:${FEED}/*.nupkg" baseline/ 2>/dev/null || echo "no prev nupkgs (first release)"
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:${FEED}/releases.win.json" baseline/ 2>/dev/null || echo "no prev manifest"
+          ls -la baseline || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: feed-baseline
+          path: baseline/
+          if-no-files-found: ignore
+          retention-days: 1
+
+  # ── 2) Windows: publish + vpk pack (delta baseline varsa kullanır) ──
+  build:
+    needs: feed-baseline
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
@@ -33,9 +73,7 @@ jobs:
         shell: bash
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      # Gömülü YouTube kimlik bilgilerini build-time enjekte et. Repo'da BOŞ
-      # (skip-worktree ile yalnız lokalde dolu); CI'da secret'lardan yazılır ki
-      # dağıtılan build YouTube moderasyon (OAuth) + resmi API key ile çalışsın.
+      # Gömülü YouTube kimlik bilgilerini build-time enjekte et (repo'da BOŞ).
       - name: Inject YouTube credentials
         shell: pwsh
         env:
@@ -58,8 +96,42 @@ jobs:
           if ((Get-Content $api -Raw).Contains('ApiKey = "";')) { throw 'YT_API_KEY enjekte edilemedi (secret eksik?)' }
           Write-Host 'YouTube credentials injected.'
 
-      - name: Setup SSH
+      # Delta baseline'ı Releases/ altına al (vpk buradan delta üretir).
+      - uses: actions/download-artifact@v4
+        with:
+          name: feed-baseline
+          path: Releases
+        continue-on-error: true
+
+      - name: Build Velopack release
+        shell: pwsh
+        run: installer\build.ps1 -Version ${{ steps.ver.outputs.version }}
+
+      # Portable.zip feed'e gerekmiyor (~97 MB) — artifact'e koyma.
+      - name: Trim artifact
         shell: bash
+        run: rm -f Releases/*Portable*.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-out
+          path: Releases/
+          retention-days: 1
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+
+  # ── 3) Ubuntu: feed'i VPS'e yükle + GitHub Release'e Setup.exe ──
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-out
+          path: Releases
+
+      - name: Setup SSH
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
         run: |
@@ -68,36 +140,12 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-      # Delta için mevcut feed'deki .nupkg + manifest'i indir. İlk Velopack
-      # release'inde dizin boş/olmayabilir → hata yut (yalnız full üretilir).
-      - name: Pull existing feed (for delta)
-        shell: bash
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-        run: |
-          mkdir -p Releases
-          FEED=/opt/orderdeck/web-out/downloads/velopack
-          SSH="ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new"
-          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
-            "${DEPLOY_USER}@${DEPLOY_HOST}:${FEED}/*.nupkg" Releases/ 2>/dev/null || echo "no prev nupkgs (first release)"
-          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
-            "${DEPLOY_USER}@${DEPLOY_HOST}:${FEED}/releases.win.json" Releases/ 2>/dev/null || echo "no prev manifest"
-
-      - name: Build Velopack release
-        shell: pwsh
-        run: installer\build.ps1 -Version ${{ steps.ver.outputs.version }}
-
-      # Feed'e yükle: Portable.zip'i eleme (feed'e gerekmiyor, ~97 MB). Setup.exe
-      # de feed'de dursun ki /indir sabit URL'den (OrderDeck-win-Setup.exe) linkleyebilsin.
       - name: Upload feed to VPS
-        shell: bash
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           FEED=/opt/orderdeck/web-out/downloads/velopack
-          rm -f Releases/*Portable*.zip
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
             "${DEPLOY_USER}@${DEPLOY_HOST}" "mkdir -p ${FEED}"
           scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
@@ -106,7 +154,7 @@ jobs:
       - name: Create GitHub Release + upload Setup.exe
         uses: softprops/action-gh-release@v2
         with:
-          name: OrderDeck ${{ steps.ver.outputs.version }}
+          name: OrderDeck ${{ needs.build.outputs.version }}
           tag_name: ${{ github.ref_name }}
           files: Releases/OrderDeck-win-Setup.exe
           draft: false
