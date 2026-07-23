@@ -19,12 +19,12 @@ public sealed class CustomerRepository
               (Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
                IsBlacklisted, BlacklistReason, Notes,
                TotalLabelsPrinted, TotalAmount, BlacklistedAt, Address, Phone,
-               RecipientPaysActive, GroupId, Email, Tckn, WhatsAppConsent, SmsConsent)
+               RecipientPaysActive, GroupId, Email, Tckn, WhatsAppConsent, SmsConsent, FullName)
               VALUES
               (@Id, @Platform, @Username, @DisplayName, @AvatarUrl, @FirstSeenAt, @LastSeenAt,
                @IsBlacklisted, @BlacklistReason, @Notes,
                @TotalLabelsPrinted, @TotalAmount, @BlacklistedAt, @Address, @Phone,
-               @RecipientPaysActive, @GroupId, @Email, @Tckn, @WhatsAppConsent, @SmsConsent)",
+               @RecipientPaysActive, @GroupId, @Email, @Tckn, @WhatsAppConsent, @SmsConsent, @FullName)",
             new
             {
                 c.Id, c.Platform, c.Username, c.DisplayName, c.AvatarUrl,
@@ -35,7 +35,8 @@ public sealed class CustomerRepository
                 RecipientPaysActive = c.RecipientPaysActive ? 1 : 0,
                 c.GroupId, c.Email, c.Tckn,
                 WhatsAppConsent = c.WhatsAppConsent ? 1 : 0,
-                SmsConsent = c.SmsConsent ? 1 : 0
+                SmsConsent = c.SmsConsent ? 1 : 0,
+                c.FullName
             });
     }
 
@@ -203,6 +204,18 @@ public sealed class CustomerRepository
         return groupId;
     }
 
+    /// <summary>Bir grubun tüm üye satırlarını döner (platform bazında). Detay
+    /// penceresinde kişinin bağlı tüm platform kimliklerini göstermek için.</summary>
+    public IReadOnlyList<Customer> GetGroupMembers(string groupId)
+    {
+        if (string.IsNullOrWhiteSpace(groupId)) return System.Array.Empty<Customer>();
+        using var conn = _factory.Open();
+        var rows = conn.Query<Row>(
+            "SELECT * FROM Customer WHERE GroupId = @groupId ORDER BY Platform",
+            new { groupId }).ToList();
+        return rows.Select(Map).ToList();
+    }
+
     /// <summary>Bir grubun tüm üyelerini gruptan ayırır (GroupId = NULL). Yanlış
     /// birleştirmeyi geri almak için. Kara liste durumuna dokunmaz.</summary>
     public void UnmergeGroup(string groupId)
@@ -292,7 +305,8 @@ public sealed class CustomerRepository
         Email: r.Email,
         Tckn: r.Tckn,
         WhatsAppConsent: r.WhatsAppConsent == 1,
-        SmsConsent: r.SmsConsent == 1);
+        SmsConsent: r.SmsConsent == 1,
+        FullName: r.FullName);
 
     private sealed class Row
     {
@@ -317,6 +331,7 @@ public sealed class CustomerRepository
         public string? Tckn { get; init; }
         public int WhatsAppConsent { get; init; }
         public int SmsConsent { get; init; }
+        public string? FullName { get; init; }
     }
 
     /// <summary>
@@ -391,6 +406,10 @@ public sealed class CustomerRepository
         }
         if (norm.Count == 0) throw new ArgumentException("En az bir kimlik gerekli", nameof(identities));
 
+        // Gerçek Ad Soyad'ı ayrı kolona yaz (boşsa null). DisplayName fallback'ı
+        // aşağıda ayrıca korunur (chat takma adı ezilmesin diye).
+        var fullNameValue = string.IsNullOrWhiteSpace(fullName) ? null : fullName.Trim();
+
         using var conn = _factory.Open();
 
         // Grup id çözümle: kimliklerden biri zaten gruplanmışsa onu kullan.
@@ -415,13 +434,14 @@ public sealed class CustomerRepository
                         GroupId = @groupId,
                         Address = @address, Phone = @phone, Email = @email, Tckn = @tckn,
                         WhatsAppConsent = @wa, SmsConsent = @sms, LastSeenAt = @now,
-                        DisplayName = COALESCE(NULLIF(DisplayName, ''), @displayForRow)
+                        DisplayName = COALESCE(NULLIF(DisplayName, ''), @displayForRow),
+                        FullName = @fullName
                       WHERE Id = @id",
                     new
                     {
                         groupId, address, phone, email, tckn,
                         wa = whatsAppConsent ? 1 : 0, sms = smsConsent ? 1 : 0,
-                        now = nowUnix, displayForRow, id = existing.Id
+                        now = nowUnix, displayForRow, fullName = fullNameValue, id = existing.Id
                     });
             }
             else
@@ -431,17 +451,17 @@ public sealed class CustomerRepository
                       (Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
                        IsBlacklisted, BlacklistReason, Notes, TotalLabelsPrinted, TotalAmount,
                        BlacklistedAt, Address, Phone, RecipientPaysActive,
-                       GroupId, Email, Tckn, WhatsAppConsent, SmsConsent)
+                       GroupId, Email, Tckn, WhatsAppConsent, SmsConsent, FullName)
                       VALUES
                       (@id, @p, @u, @displayForRow, NULL, @now, @now,
                        0, NULL, NULL, 0, 0,
                        NULL, @address, @phone, 0,
-                       @groupId, @email, @tckn, @wa, @sms)",
+                       @groupId, @email, @tckn, @wa, @sms, @fullName)",
                     new
                     {
                         id = Guid.NewGuid().ToString("N"), p, u, displayForRow, now = nowUnix,
                         address, phone, groupId, email, tckn,
-                        wa = whatsAppConsent ? 1 : 0, sms = smsConsent ? 1 : 0
+                        wa = whatsAppConsent ? 1 : 0, sms = smsConsent ? 1 : 0, fullName = fullNameValue
                     });
             }
         }

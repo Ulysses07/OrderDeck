@@ -466,4 +466,37 @@ public class CustomerRepositoryTests
         repo.GetById("a")!.GroupId.Should().BeNull();
         repo.GetById("b")!.GroupId.Should().BeNull();
     }
+
+    [Fact]
+    public void GetGroupMembers_returns_all_rows_in_group_only()
+    {
+        var repo = CreateRepository();
+        repo.Insert(new Customer("a", "instagram", "u1", "U1", null, 1, 1, false, null, null, 0, 0m, null, null, null, GroupId: "g1"));
+        repo.Insert(new Customer("b", "youtube", "UCx", "@handle", null, 1, 1, false, null, null, 0, 0m, null, null, null, GroupId: "g1"));
+        repo.Insert(new Customer("c", "tiktok", "u3", "U3", null, 1, 1, false, null, null, 0, 0m, null, null, null));
+
+        var members = repo.GetGroupMembers("g1");
+
+        members.Should().HaveCount(2);
+        members.Select(m => m.Platform).Should().BeEquivalentTo(new[] { "instagram", "youtube" });
+    }
+
+    [Fact]
+    public void UpsertPersonFromIntake_stores_real_fullname_without_overwriting_chat_displayname()
+    {
+        var repo = CreateRepository();
+        // Chat'ten gelmiş IG satırı: DisplayName = IG takma adı (gerçek isim değil).
+        repo.Insert(new Customer("ig1", "instagram", "musaa.sevinc", "musaa.sevinc", null,
+            100, 100, false, null, null, 0, 0m, null, null, null));
+
+        // Form: gerçek Ad Soyad farklı.
+        repo.UpsertPersonFromIntake(
+            new (string, string, string?)[] { ("instagram", "musaa.sevinc", null) },
+            "Musa Sevinç", "Adres", "+905076313815", "e@x.com", null, true, true, 5000);
+
+        var c = repo.GetById("ig1")!;
+        c.DisplayName.Should().Be("musaa.sevinc"); // chat takma adı korundu (chat eşleşmesi sürsün)
+        c.FullName.Should().Be("Musa Sevinç");     // gerçek isim ayrı kolonda saklandı
+        c.Phone.Should().Be("+905076313815");
+    }
 }

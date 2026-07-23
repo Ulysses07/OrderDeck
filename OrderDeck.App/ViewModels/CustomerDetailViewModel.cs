@@ -26,14 +26,22 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
     private readonly LicenseApiClient _api;
     private string? _customerId;
 
-    [ObservableProperty][NotifyPropertyChangedFor(nameof(Display))] private string _username = "";
+    [ObservableProperty][NotifyPropertyChangedFor(nameof(Display))][NotifyPropertyChangedFor(nameof(HeaderName))] private string _username = "";
     [ObservableProperty] private string _platform = "";
-    [ObservableProperty][NotifyPropertyChangedFor(nameof(Display))] private string? _displayName;
+    [ObservableProperty][NotifyPropertyChangedFor(nameof(Display))][NotifyPropertyChangedFor(nameof(HeaderName))] private string? _displayName;
 
     /// <summary>Gösterilecek ad: DisplayName varsa o, yoksa Username'e düşer.
     /// YouTube'da Username = channelId (kalıcı kimlik) ama operatöre okunabilir
     /// ad (DisplayName, ör. @handle) gösterilir.</summary>
     public string Display => string.IsNullOrWhiteSpace(DisplayName) ? Username : DisplayName!;
+
+    /// <summary>Başlıkta gösterilecek ad: kayıt formundaki gerçek Ad Soyad varsa o,
+    /// yoksa platform takma adına (Display) düşer.</summary>
+    public string HeaderName => string.IsNullOrWhiteSpace(FullName) ? Display : FullName!;
+
+    /// <summary>Kişinin bağlı tüm platform kimlikleri ("Instagram: nick",
+    /// "YouTube: @handle"). Birleşik müşteride birden çok satır olur.</summary>
+    public ObservableCollection<string> Identities { get; } = new();
     [ObservableProperty] private string _firstSeenLabel = "";
     [ObservableProperty] private string _lastSeenLabel  = "";
     [ObservableProperty] private int    _totalLabelsPrinted;
@@ -44,7 +52,7 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
     [ObservableProperty] private string _notesEdit = "";
 
     // Kayıt formu / iletişim bilgileri (form doldurulduysa dolu; chat-only müşteride boş).
-    [ObservableProperty][NotifyPropertyChangedFor(nameof(HasContactInfo))] private string? _fullName;
+    [ObservableProperty][NotifyPropertyChangedFor(nameof(HasContactInfo))][NotifyPropertyChangedFor(nameof(HeaderName))] private string? _fullName;
     [ObservableProperty][NotifyPropertyChangedFor(nameof(HasContactInfo))] private string? _phone;
     [ObservableProperty][NotifyPropertyChangedFor(nameof(HasContactInfo))] private string? _email;
     [ObservableProperty][NotifyPropertyChangedFor(nameof(HasContactInfo))] private string? _address;
@@ -119,13 +127,22 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
         BlacklistedAtLabel = c.BlacklistedAt is long t ? TrFormats.DateTime(t) : "";
         NotesEdit = c.Notes ?? "";
 
-        // Form / iletişim alanları. FullName = form'daki Ad Soyad; DisplayName
-        // ile aynı olabilir ama form'da net etiketle gösterelim.
-        FullName = c.DisplayName;
+        // Form / iletişim alanları. FullName = kayıt formundaki gerçek Ad Soyad
+        // (ayrı kolon); yoksa platform takma adına (DisplayName) düşer.
+        FullName = c.FullName ?? c.DisplayName;
         Phone = c.Phone;
         Email = c.Email;
         Address = c.Address;
         Tckn = c.Tckn;
+
+        // Bağlı tüm platform kimlikleri: birleşik müşteride grubun tüm satırları,
+        // tekilde sadece bu satır. YouTube'da Display = @handle (kanal adı) gösterilir.
+        Identities.Clear();
+        var members = !string.IsNullOrWhiteSpace(c.GroupId)
+            ? _customers.GetGroupMembers(c.GroupId!)
+            : new[] { c };
+        foreach (var m in members)
+            Identities.Add($"{PlatformLabel(m.Platform)}: {m.Display}");
 
         ReloadLabels();
 
@@ -313,6 +330,17 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
 
     private bool CanCancelSelected() => SelectedLabels.Any(l => !l.IsCancelled);
     private bool CanUncancelSelected() => SelectedLabels.Any(l => l.IsCancelled);
+
+    /// <summary>Platform kodunu okunabilir etikete çevirir (instagram → Instagram).</summary>
+    private static string PlatformLabel(string platform) => platform?.ToLowerInvariant() switch
+    {
+        "instagram" => "Instagram",
+        "youtube" => "YouTube",
+        "facebook" => "Facebook",
+        "tiktok" => "TikTok",
+        "twitch" => "Twitch",
+        _ => string.IsNullOrWhiteSpace(platform) ? "—" : platform,
+    };
 }
 
 /// <summary>UI row tipi — server BalanceTransactionDto'sundan map'lenir.</summary>
