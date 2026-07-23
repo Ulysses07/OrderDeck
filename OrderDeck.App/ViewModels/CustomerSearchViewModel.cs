@@ -25,12 +25,25 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
     [ObservableProperty] private bool _lastStreamShoppersOnly;
     [ObservableProperty] private bool _registeredOnly;
 
-    /// <summary>Platform süzgeci seçenekleri (UI ComboBox). Value boş = tümü;
-    /// "form" = kayıt formundan gelenler. Display kullanıcıya gösterilir.</summary>
+    // Üst bant sayaçları (filtreden bağımsız, tüm DB'den).
+    [ObservableProperty] private int _totalCount;
+    [ObservableProperty] private int _registeredCount;
+    /// <summary>Bu yayında (uygulama açıkken) forma gelen yeni kayıt sayısı —
+    /// zil'e basıldığında MainShell'den geçirilir.</summary>
+    [ObservableProperty] private bool _hasNewThisSession;
+    [ObservableProperty][NotifyPropertyChangedFor(nameof(HasNewThisSession))] private int _newThisSessionCount;
+
+    partial void OnNewThisSessionCountChanged(int value) => HasNewThisSession = value > 0;
+
+    /// <summary>Görünen sonuç sayısı (aktif filtreye göre).</summary>
+    public int ResultCount => Results.Count;
+
+    /// <summary>Platform süzgeci seçenekleri (UI ComboBox). Value boş = tümü.
+    /// Not: form kayıtları artık gerçek platform satırları (Platform="form" yok);
+    /// "kayıt olan" için RegisteredOnly filtresi kullanılır.</summary>
     public IReadOnlyList<PlatformOption> PlatformOptions { get; } = new[]
     {
         new PlatformOption("Tüm platformlar", ""),
-        new PlatformOption("Kayıt formu", "form"),
         new PlatformOption("Instagram", "instagram"),
         new PlatformOption("YouTube", "youtube"),
         new PlatformOption("Facebook", "facebook"),
@@ -58,13 +71,20 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
         _dialogService = dialogService;
     }
 
-    partial void OnQueryChanged(string value) => ApplySearch(value);
+    partial void OnQueryChanged(string value) => RefreshSearch();
     partial void OnPlatformFilterChanged(string? value) => RefreshSearch();
     partial void OnLastStreamShoppersOnlyChanged(bool value) => RefreshSearch();
     partial void OnRegisteredOnlyChanged(bool value) => RefreshSearch();
 
     /// <summary>Phase 4f: external trigger to re-run search after PlatformFilter changes.</summary>
-    public void RefreshSearch() => ApplySearch(Query);
+    public void RefreshSearch()
+    {
+        // Üst bant sayaçları (filtreden bağımsız).
+        TotalCount = _customers.CountAll();
+        RegisteredCount = _customers.CountRegistered();
+        ApplySearch(Query);
+        OnPropertyChanged(nameof(ResultCount));
+    }
 
     private void ApplySearch(string value)
     {

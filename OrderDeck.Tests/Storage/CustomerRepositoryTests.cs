@@ -398,4 +398,17 @@ public class CustomerRepositoryTests
         c.Phone.Should().Be("+905559998877");
         c.TotalAmount.Should().Be(180m);            // geçmiş korundu
     }
+
+    [Fact]
+    public void CountAll_and_CountRegistered_reflect_phone_presence()
+    {
+        var repo = CreateRepository();
+        // 2 chat-only (telefonsuz) + 1 kayıtlı (telefonlu)
+        repo.Insert(new Customer("a", "instagram", "u1", "U1", null, 1, 1, false, null, null, 0, 0m, null, null, null));
+        repo.Insert(new Customer("b", "youtube", "UCx", "@u2", null, 1, 1, false, null, null, 0, 0m, null, null, null));
+        repo.Insert(new Customer("c", "instagram", "u3", "U3", null, 1, 1, false, null, null, 0, 0m, null, "Adres", "+905551112233"));
+
+        repo.CountAll().Should().Be(3);
+        repo.CountRegistered().Should().Be(1);
+    }
 }
