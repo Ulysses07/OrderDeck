@@ -411,4 +411,59 @@ public class CustomerRepositoryTests
         repo.CountAll().Should().Be(3);
         repo.CountRegistered().Should().Be(1);
     }
+
+    [Fact]
+    public void MergeIntoGroup_assigns_shared_group_to_ungrouped_customers()
+    {
+        var repo = CreateRepository();
+        repo.Insert(new Customer("a", "instagram", "u1", "U1", null, 1, 1, false, null, null, 0, 0m, null, null, null));
+        repo.Insert(new Customer("b", "youtube", "UCx", "@u2", null, 1, 1, false, null, null, 0, 0m, null, null, null));
+
+        var groupId = repo.MergeIntoGroup(new[] { "a", "b" });
+
+        groupId.Should().NotBeNullOrWhiteSpace();
+        repo.GetById("a")!.GroupId.Should().Be(groupId);
+        repo.GetById("b")!.GroupId.Should().Be(groupId);
+    }
+
+    [Fact]
+    public void MergeIntoGroup_preserves_existing_group_and_pulls_all_members()
+    {
+        var repo = CreateRepository();
+        // "a" ve "b" zaten g1 grubunda; "c" gru+psuz. c'yi a ile birleştirince
+        // hepsi g1'e toplanmalı (b dahil, geride üye kalmamalı).
+        repo.Insert(new Customer("a", "instagram", "u1", "U1", null, 1, 1, false, null, null, 0, 0m, null, null, null, GroupId: "g1"));
+        repo.Insert(new Customer("b", "youtube", "UCx", "@u2", null, 1, 1, false, null, null, 0, 0m, null, null, null, GroupId: "g1"));
+        repo.Insert(new Customer("c", "tiktok", "u3", "U3", null, 1, 1, false, null, null, 0, 0m, null, null, null));
+
+        var groupId = repo.MergeIntoGroup(new[] { "a", "c" });
+
+        groupId.Should().Be("g1");
+        repo.GetById("a")!.GroupId.Should().Be("g1");
+        repo.GetById("b")!.GroupId.Should().Be("g1");
+        repo.GetById("c")!.GroupId.Should().Be("g1");
+    }
+
+    [Fact]
+    public void MergeIntoGroup_throws_when_fewer_than_two()
+    {
+        var repo = CreateRepository();
+        repo.Insert(new Customer("a", "instagram", "u1", "U1", null, 1, 1, false, null, null, 0, 0m, null, null, null));
+
+        var act = () => repo.MergeIntoGroup(new[] { "a" });
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void UnmergeGroup_clears_group_for_all_members()
+    {
+        var repo = CreateRepository();
+        repo.Insert(new Customer("a", "instagram", "u1", "U1", null, 1, 1, false, null, null, 0, 0m, null, null, null, GroupId: "g1"));
+        repo.Insert(new Customer("b", "youtube", "UCx", "@u2", null, 1, 1, false, null, null, 0, 0m, null, null, null, GroupId: "g1"));
+
+        repo.UnmergeGroup("g1");
+
+        repo.GetById("a")!.GroupId.Should().BeNull();
+        repo.GetById("b")!.GroupId.Should().BeNull();
+    }
 }

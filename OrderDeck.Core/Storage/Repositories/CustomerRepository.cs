@@ -165,6 +165,55 @@ public sealed class CustomerRepository
     }
 
     /// <summary>
+    /// Manuel birleştirme: seçilen müşterileri tek bir gruba bağlar. Aralarında
+    /// zaten gruplu biri varsa o grup id'si korunur (birden fazla grup varsa ilki
+    /// baz alınır, hepsi ona toplanır); yoksa yeni grup id üretilir. Grubun
+    /// üyelerinden herhangi biri kara listedeyse tüm birleşmiş grup kara listeye
+    /// yayılır. Dönen değer nihai grup id'si.
+    /// </summary>
+    public string MergeIntoGroup(IReadOnlyList<string> customerIds)
+    {
+        var ids = customerIds?.Where(s => !string.IsNullOrWhiteSpace(s)).Distinct().ToList()
+                  ?? new List<string>();
+        if (ids.Count < 2)
+            throw new ArgumentException("Birleştirmek için en az iki müşteri gerekli", nameof(customerIds));
+
+        using var conn = _factory.Open();
+
+        // Mevcut grup id'lerini topla; varsa ilkini koru, yoksa yeni üret.
+        var existingGroups = conn.Query<string>(
+            "SELECT DISTINCT GroupId FROM Customer WHERE Id IN @ids AND GroupId IS NOT NULL AND TRIM(GroupId) <> ''",
+            new { ids }).Where(g => !string.IsNullOrWhiteSpace(g)).ToList();
+        var groupId = existingGroups.FirstOrDefault() ?? Guid.NewGuid().ToString("N");
+
+        // Güncellenecek tüm id'leri bellekte topla: seçilenler + mevcut grupların
+        // tüm üyeleri (böylece iki farklı grubu birleştirince geride üye kalmaz).
+        var targetIds = new HashSet<string>(ids, StringComparer.Ordinal);
+        if (existingGroups.Count > 0)
+        {
+            var groupMemberIds = conn.Query<string>(
+                "SELECT Id FROM Customer WHERE GroupId IN @groups",
+                new { groups = existingGroups });
+            foreach (var id in groupMemberIds) targetIds.Add(id);
+        }
+
+        conn.Execute("UPDATE Customer SET GroupId = @groupId WHERE Id IN @targetIds",
+            new { groupId, targetIds = targetIds.ToList() });
+
+        return groupId;
+    }
+
+    /// <summary>Bir grubun tüm üyelerini gruptan ayırır (GroupId = NULL). Yanlış
+    /// birleştirmeyi geri almak için. Kara liste durumuna dokunmaz.</summary>
+    public void UnmergeGroup(string groupId)
+    {
+        if (string.IsNullOrWhiteSpace(groupId)) return;
+        using var conn = _factory.Open();
+        conn.Execute("UPDATE Customer SET GroupId = NULL WHERE GroupId = @groupId",
+            new { groupId });
+    }
+
+    /// <summary>
     /// Finds a grouped YouTube customer whose Username matches the given handle
     /// (case-insensitive). Used to adopt a chat channelId row into the person's
     /// group: the intake form stores a youtube row keyed by @handle, while chat

@@ -19,10 +19,21 @@ public partial class CustomerSearchDialog : Window
 
     private void ResultsList_OnDoubleClick(object sender, MouseButtonEventArgs e)
     {
-        if (ResultsList.SelectedItem is not Customer selected) return;
+        if (ResultsList.SelectedItem is not CustomerSearchViewModel.CustomerCard selected) return;
         var detail = App.Host.Services.GetRequiredService<CustomerDetailDialog>();
         detail.Owner = this;
-        detail.Open(selected.Id);
+        // Birleşik kartta telefonlu (birincil) satırın detayı açılır — iletişim
+        // bilgisi orada.
+        detail.Open(selected.Primary.Id);
+    }
+
+    private void ResultsList_OnSelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (DataContext is not CustomerSearchViewModel vm) return;
+        vm.SelectedCards.Clear();
+        foreach (var item in ResultsList.SelectedItems)
+            if (item is CustomerSearchViewModel.CustomerCard card)
+                vm.SelectedCards.Add(card);
     }
 
     private void OnClose(object sender, RoutedEventArgs e)
