@@ -105,6 +105,8 @@
         <Grid Grid.Row="2" Margin="10,0,10,0">
             <ListBox x:Name="ResultsList"
                      ItemsSource="{Binding Results}"
+                     SelectionMode="Extended"
+                     SelectionChanged="ResultsList_OnSelectionChanged"
                      MouseDoubleClick="ResultsList_OnDoubleClick"
                      Background="Transparent" Foreground="White" BorderThickness="0"
                      ScrollViewer.HorizontalScrollBarVisibility="Disabled"
@@ -153,8 +155,26 @@
                                             Visibility="{Binding Phone, Converter={StaticResource NullToCollapsedConverter}}">
                                         <TextBlock Text="✓ Kayıtlı" Foreground="#FF79D279" FontSize="10" FontWeight="SemiBold"/>
                                     </Border>
-                                    <TextBlock Text="{Binding Platform}" Foreground="#FF888888" FontSize="11"
-                                               VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                    <!-- Platform rozetleri: grup ise birden çok -->
+                                    <ItemsControl ItemsSource="{Binding Platforms}" VerticalAlignment="Center" Margin="6,0,0,0">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <StackPanel Orientation="Horizontal"/>
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Background="#FF2A2A2A" CornerRadius="4" Padding="6,1" Margin="2,0,0,0">
+                                                    <TextBlock Text="{Binding}" Foreground="#FFBFBFBF" FontSize="10"/>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                    <Border Background="#FF1D2C3A" CornerRadius="4" Padding="5,1" Margin="6,0,0,0"
+                                            VerticalAlignment="Center"
+                                            Visibility="{Binding IsGroup, Converter={StaticResource BoolToVisibleConverter}}">
+                                        <TextBlock Text="🔗 Birleşik" Foreground="#FF6FB4FF" FontSize="10" FontWeight="SemiBold"/>
+                                    </Border>
                                 </StackPanel>
 
                                 <!-- Satır 2: telefon + email (varsa) -->
@@ -178,15 +198,23 @@
                                 </TextBlock>
                             </StackPanel>
 
-                            <Button Grid.Column="1"
-                                    Content="📱 Öde"
-                                    ToolTip="WhatsApp'tan ödeme iste"
-                                    Command="{Binding DataContext.OpenWhatsAppCommand,
-                                             RelativeSource={RelativeSource AncestorType=Window}}"
-                                    CommandParameter="{Binding}"
-                                    Background="#FF25D366" Foreground="White"
-                                    BorderThickness="0" Padding="10,6"
-                                    VerticalAlignment="Center" Cursor="Hand"/>
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                <Button Content="📱 Öde"
+                                        ToolTip="WhatsApp'tan ödeme iste"
+                                        Command="{Binding DataContext.OpenWhatsAppCommand,
+                                                 RelativeSource={RelativeSource AncestorType=Window}}"
+                                        CommandParameter="{Binding}"
+                                        Background="#FF25D366" Foreground="White"
+                                        BorderThickness="0" Padding="10,6" Cursor="Hand"/>
+                                <Button Content="🔗 Ayır"
+                                        ToolTip="Bu birleşik müşteriyi tekil satırlara ayır"
+                                        Command="{Binding DataContext.UnmergeGroupCommand,
+                                                 RelativeSource={RelativeSource AncestorType=Window}}"
+                                        CommandParameter="{Binding}"
+                                        Background="#FF2A2A2A" Foreground="#FFBFBFBF"
+                                        BorderThickness="0" Padding="10,4" Margin="0,5,0,0" Cursor="Hand"
+                                        Visibility="{Binding IsGroup, Converter={StaticResource BoolToVisibleConverter}}"/>
+                            </StackPanel>
                         </Grid>
                     </DataTemplate>
                 </ListBox.ItemTemplate>
@@ -203,8 +231,23 @@
         <!-- ═══ Alt ═══ -->
         <Border Grid.Row="3" Background="#FF1A1A1A" Padding="18,12"
                 BorderBrush="#FF2A2A2A" BorderThickness="0,1,0,0">
-            <Button Content="Kapat" Click="OnClose" Padding="18,7"
-                    HorizontalAlignment="Right" IsCancel="True" IsDefault="True"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" VerticalAlignment="Center"
+                           Foreground="#FF888888" FontSize="11"
+                           Text="Aynı kişiyi birleştirmek için Ctrl ile 2+ kart seçin"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <Button Content="🔗 Seçilenleri Birleştir"
+                            Command="{Binding MergeSelectedCommand}"
+                            Background="#FF2F6FBF" Foreground="White"
+                            BorderThickness="0" Padding="14,7" Margin="0,0,10,0" Cursor="Hand"/>
+                    <Button Content="Kapat" Click="OnClose" Padding="18,7"
+                            IsCancel="True" IsDefault="True"/>
+                </StackPanel>
+            </Grid>
         </Border>
     </Grid>
 </Window>

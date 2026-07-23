@@ -68,7 +68,7 @@ public class CustomerSearchViewModelTests
             sut.LastStreamShoppersOnly = true;
 
             sut.Results.Should().HaveCount(1);
-            sut.Results[0].Username.Should().Be("alice");
+            sut.Results[0].Primary.Username.Should().Be("alice");
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
@@ -89,7 +89,8 @@ public class CustomerSearchViewModelTests
 
             dialogs.PhoneEntryResult = id => { customers.UpdatePhone(id, "+905551111111"); return true; };
 
-            await sut.OpenWhatsAppCommand.ExecuteAsync(alice);
+            sut.RefreshSearch();
+            await sut.OpenWhatsAppCommand.ExecuteAsync(sut.Results[0]);
 
             dialogs.PhoneEntryShownFor.Should().ContainSingle().Which.Should().Be("c1");
             launcher.LaunchedUrls.Should().HaveCount(1);
@@ -111,7 +112,8 @@ public class CustomerSearchViewModelTests
             labels.Insert(new Label("l1", "s1", "c1", "twitch", "alice", "Apple", null, 50m, 110, 120));
             sessions.End("s1", 200);
 
-            await sut.OpenWhatsAppCommand.ExecuteAsync(alice);
+            sut.RefreshSearch();
+            await sut.OpenWhatsAppCommand.ExecuteAsync(sut.Results[0]);
 
             dialogs.PhoneEntryShownFor.Should().BeEmpty();
             launcher.LaunchedUrls.Should().HaveCount(1);

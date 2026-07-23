@@ -122,6 +122,12 @@ public sealed class AppSettings
     /// step in seconds.</summary>
     public bool HasCompletedFirstRun { get; set; } = false;
 
+    /// <summary>Tek seferlik: eski müşteri satırlarındaki boş FullName'i sunucudaki
+    /// form kayıtlarındaki gerçek Ad Soyad ile doldurma tamamlandı mı. FullName
+    /// kolonu (migration 022) öncesi kaydolanlar için geriye dönük düzeltme; bir
+    /// kez çalışır (LastSeenAt/DisplayName'e dokunmadan sadece boş FullName'i yazar).</summary>
+    public bool FullNameBackfillDone { get; set; } = false;
+
     /// <summary>Faz 0c-2 (2026-05-21): watermark for delta sync of local Customer records
     /// to LicenseServer's WpfCustomerProjection. Unix seconds. 0 = never synced.
     /// Advanced after each successful batch; not advanced on failure so the

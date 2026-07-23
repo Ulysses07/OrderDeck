@@ -20,10 +20,23 @@
                 </Grid.ColumnDefinitions>
 
                 <StackPanel Grid.Column="0">
-                    <TextBlock Text="{Binding Display}" FontSize="22" FontWeight="Bold"
+                    <TextBlock Text="{Binding HeaderName}" FontSize="22" FontWeight="Bold"
                                Foreground="#FFFFD166"/>
-                    <TextBlock Text="{Binding Platform}" FontSize="14" Foreground="#FFAAAAAA"
-                               Margin="0,2,0,0"/>
+                    <!-- Bağlı tüm platform kimlikleri (birleşik müşteride birden çok) -->
+                    <ItemsControl ItemsSource="{Binding Identities}" Margin="0,4,0,0">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel Orientation="Horizontal"/>
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="#FF2A2A2A" CornerRadius="4" Padding="7,2" Margin="0,0,6,4">
+                                    <TextBlock Text="{Binding}" Foreground="#FFCFCFCF" FontSize="12"/>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
                     <TextBlock Margin="0,8,0,0">
                         <Run Text="İlk görülme:"      Foreground="#FFAAAAAA"/>
                         <Run Text="{Binding FirstSeenLabel, Mode=OneWay}"/>

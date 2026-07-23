@@ -411,4 +411,162 @@ public class CustomerRepositoryTests
         repo.CountAll().Should().Be(3);
         repo.CountRegistered().Should().Be(1);
     }
+
+    [Fact]
+    public void MergeIntoGroup_assigns_shared_group_to_ungrouped_customers()
+    {
+        var repo = CreateRepository();
+        repo.Insert(new Customer("a", "instagram", "u1", "U1", null, 1, 1, false, null, null, 0, 0m, null, null, null));
+        repo.Insert(new Customer("b", "youtube", "UCx", "@u2", null, 1, 1, false, null, null, 0, 0m, null, null, null));
+
+        var groupId = repo.MergeIntoGroup(new[] { "a", "b" });
+
+        groupId.Should().NotBeNullOrWhiteSpace();
+        repo.GetById("a")!.GroupId.Should().Be(groupId);
+        repo.GetById("b")!.GroupId.Should().Be(groupId);
+    }
+
+    [Fact]
+    public void MergeIntoGroup_preserves_existing_group_and_pulls_all_members()
+    {
+        var repo = CreateRepository();
+        // "a" ve "b" zaten g1 grubunda; "c" gru+psuz. c'yi a ile birleştirince
+        // hepsi g1'e toplanmalı (b dahil, geride üye kalmamalı).
+        repo.Insert(new Customer("a", "instagram", "u1", "U1", null, 1, 1, false, null, null, 0, 0m, null, null, null, GroupId: "g1"));
+        repo.Insert(new Customer("b", "youtube", "UCx", "@u2", null, 1, 1, false, null, null, 0, 0m, null, null, null, GroupId: "g1"));
+        repo.Insert(new Customer("c", "tiktok", "u3", "U3", null, 1, 1, false, null, null, 0, 0m, null, null, null));
+
+        var groupId = repo.MergeIntoGroup(new[] { "a", "c" });
+
+        groupId.Should().Be("g1");
+        repo.GetById("a")!.GroupId.Should().Be("g1");
+        repo.GetById("b")!.GroupId.Should().Be("g1");
+        repo.GetById("c")!.GroupId.Should().Be("g1");
+    }
+
+    [Fact]
+    public void MergeIntoGroup_throws_when_fewer_than_two()
+    {
+        var repo = CreateRepository();
+        repo.Insert(new Customer("a", "instagram", "u1", "U1", null, 1, 1, false, null, null, 0, 0m, null, null, null));
+
+        var act = () => repo.MergeIntoGroup(new[] { "a" });
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void UnmergeGroup_clears_group_for_all_members()
+    {
+        var repo = CreateRepository();
+        repo.Insert(new Customer("a", "instagram", "u1", "U1", null, 1, 1, false, null, null, 0, 0m, null, null, null, GroupId: "g1"));
+        repo.Insert(new Customer("b", "youtube", "UCx", "@u2", null, 1, 1, false, null, null, 0, 0m, null, null, null, GroupId: "g1"));
+
+        repo.UnmergeGroup("g1");
+
+        repo.GetById("a")!.GroupId.Should().BeNull();
+        repo.GetById("b")!.GroupId.Should().BeNull();
+    }
+
+    [Fact]
+    public void GetGroupMembers_returns_all_rows_in_group_only()
+    {
+        var repo = CreateRepository();
+        repo.Insert(new Customer("a", "instagram", "u1", "U1", null, 1, 1, false, null, null, 0, 0m, null, null, null, GroupId: "g1"));
+        repo.Insert(new Customer("b", "youtube", "UCx", "@handle", null, 1, 1, false, null, null, 0, 0m, null, null, null, GroupId: "g1"));
+        repo.Insert(new Customer("c", "tiktok", "u3", "U3", null, 1, 1, false, null, null, 0, 0m, null, null, null));
+
+        var members = repo.GetGroupMembers("g1");
+
+        members.Should().HaveCount(2);
+        members.Select(m => m.Platform).Should().BeEquivalentTo(new[] { "instagram", "youtube" });
+    }
+
+    [Fact]
+    public void BackfillFullNameForIdentities_fills_empty_fullname_across_group_only()
+    {
+        var repo = CreateRepository();
+        // Grup: IG (chat takma adlı, FullName boş) + YouTube. FullName ikisinde de boş.
+        repo.Insert(new Customer("ig1", "instagram", "musaa.sevinc", "musaa.sevinc", null,
+            100, 100, false, null, null, 0, 0m, null, null, null, GroupId: "g1"));
+        repo.Insert(new Customer("yt1", "youtube", "UCabc", "@musa", null,
+            100, 100, false, null, null, 0, 0m, null, null, null, GroupId: "g1"));
+
+        var updated = repo.BackfillFullNameForIdentities(
+            new[] { ("instagram", "musaa.sevinc") }, "Musa Sevinç");
+
+        updated.Should().Be(2); // eşleşen satırın tüm grubu
+        repo.GetById("ig1")!.FullName.Should().Be("Musa Sevinç");
+        repo.GetById("yt1")!.FullName.Should().Be("Musa Sevinç");
+        repo.GetById("ig1")!.DisplayName.Should().Be("musaa.sevinc"); // dokunulmadı
+    }
+
+    [Fact]
+    public void BackfillFullNameForIdentities_does_not_overwrite_existing_fullname()
+    {
+        var repo = CreateRepository();
+        repo.Insert(new Customer("ig1", "instagram", "u", "u", null,
+            100, 100, false, null, null, 0, 0m, null, null, null, FullName: "Zaten Var"));
+
+        var updated = repo.BackfillFullNameForIdentities(
+            new[] { ("instagram", "u") }, "Yeni İsim");
+
+        updated.Should().Be(0);
+        repo.GetById("ig1")!.FullName.Should().Be("Zaten Var");
+    }
+
+    [Fact]
+    public void UpsertPersonFromIntake_links_by_phone_when_usernames_differ()
+    {
+        var repo = CreateRepository();
+        // Önceden IG'den kaydolmuş, telefonlu, gruplu müşteri.
+        repo.Insert(new Customer("ig1", "instagram", "ayse", "Ayşe Y", null,
+            1, 1, false, null, null, 0, 0m, null, "Adr", "+905551112233", GroupId: "g1"));
+
+        // Aynı kişi FB'den FARKLI kullanıcı adıyla ama AYNI telefonla kaydoluyor.
+        var groupId = repo.UpsertPersonFromIntake(
+            new (string, string, string?)[] { ("facebook", "ayse.fb", null) },
+            "Ayşe Yılmaz", "Adr", "+905551112233", null, null, false, true, 5000);
+
+        groupId.Should().Be("g1"); // mevcut grup telefonla bulundu, korundu
+        repo.GetById("ig1")!.GroupId.Should().Be("g1");
+        var members = repo.GetGroupMembers("g1");
+        members.Select(m => m.Platform).Should().Contain(new[] { "instagram", "facebook" });
+    }
+
+    [Fact]
+    public void UpsertPersonFromIntake_phone_merge_propagates_blacklist()
+    {
+        var repo = CreateRepository();
+        // Kara listeli, telefonlu, tekil (grupsuz) mevcut müşteri.
+        repo.Insert(new Customer("bad1", "instagram", "kotu", "Kötü", null,
+            1, 1, true, "dolandırıcı", null, 0, 0m, 999, "Adr", "+905550001122"));
+
+        // Aynı telefonla FB'den yeni kayıt → aynı gruba çekilir + kara liste yayılır.
+        var groupId = repo.UpsertPersonFromIntake(
+            new (string, string, string?)[] { ("facebook", "kotu.fb", null) },
+            "Kötü Kişi", "Adr", "+905550001122", null, null, false, true, 5000);
+
+        var members = repo.GetGroupMembers(groupId);
+        members.Should().HaveCount(2);
+        members.Should().OnlyContain(m => m.IsBlacklisted);
+    }
+
+    [Fact]
+    public void UpsertPersonFromIntake_stores_real_fullname_without_overwriting_chat_displayname()
+    {
+        var repo = CreateRepository();
+        // Chat'ten gelmiş IG satırı: DisplayName = IG takma adı (gerçek isim değil).
+        repo.Insert(new Customer("ig1", "instagram", "musaa.sevinc", "musaa.sevinc", null,
+            100, 100, false, null, null, 0, 0m, null, null, null));
+
+        // Form: gerçek Ad Soyad farklı.
+        repo.UpsertPersonFromIntake(
+            new (string, string, string?)[] { ("instagram", "musaa.sevinc", null) },
+            "Musa Sevinç", "Adres", "+905076313815", "e@x.com", null, true, true, 5000);
+
+        var c = repo.GetById("ig1")!;
+        c.DisplayName.Should().Be("musaa.sevinc"); // chat takma adı korundu (chat eşleşmesi sürsün)
+        c.FullName.Should().Be("Musa Sevinç");     // gerçek isim ayrı kolonda saklandı
+        c.Phone.Should().Be("+905076313815");
+    }
 }

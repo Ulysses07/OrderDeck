@@ -28,7 +28,10 @@ public sealed record Customer(
     string? Email = null,
     string? Tckn = null,
     bool WhatsAppConsent = false,
-    bool SmsConsent = false)
+    bool SmsConsent = false,
+    // Kayıt formundaki gerçek Ad Soyad. DisplayName'den ayrı: chat satırlarında
+    // DisplayName platform takma adıdır; bu alan formun verdiği gerçek ismi tutar.
+    string? FullName = null)
 {
     /// <summary>Operatöre gösterilecek ad: DisplayName varsa o, yoksa Username'e
     /// düşer. YouTube'da Username = channelId (kalıcı kimlik); listede okunabilir

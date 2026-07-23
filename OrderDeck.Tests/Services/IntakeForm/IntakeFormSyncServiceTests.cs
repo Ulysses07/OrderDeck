@@ -132,6 +132,39 @@ public sealed class IntakeFormSyncServiceTests
         yts[0].TotalAmount.Should().Be(180m);
     }
 
+    // ── FullName backfill (tek seferlik geriye-dönük düzeltme) ────────────
+
+    [Fact]
+    public async Task BackfillFullNamesOnceAsync_fills_missing_fullname_from_server()
+    {
+        var (svc, repo, settings, _) = Build(_ => FakeHttpMessageHandler.Json(200,
+            """[{"id":"00000000-0000-0000-0000-000000000001","username":"musaa.sevinc","fullName":"Musa Sevinç","address":"Adr","submittedAt":"2026-04-30T12:00:00Z","instagramUsername":"musaa.sevinc"}]"""));
+        // Chat'ten gelmiş IG satırı: DisplayName = takma ad, FullName boş.
+        repo.Insert(new OrderDeck.Core.Customers.Customer(
+            "ig1", "instagram", "musaa.sevinc", "musaa.sevinc", null,
+            100, 100, false, null, null, 0, 0m, null, null, null));
+
+        var updated = await svc.BackfillFullNamesOnceAsync();
+
+        updated.Should().Be(1);
+        repo.GetById("ig1")!.FullName.Should().Be("Musa Sevinç");
+        repo.GetById("ig1")!.DisplayName.Should().Be("musaa.sevinc"); // dokunulmadı
+        settings.FullNameBackfillDone.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task BackfillFullNamesOnceAsync_is_noop_when_already_done()
+    {
+        bool called = false;
+        var (svc, _, settings, _) = Build(_ => { called = true; return FakeHttpMessageHandler.Json(200, "[]"); });
+        settings.FullNameBackfillDone = true;
+
+        var updated = await svc.BackfillFullNamesOnceAsync();
+
+        updated.Should().Be(0);
+        called.Should().BeFalse(); // sunucuya gitmedi
+    }
+
     // ── UI freeze fix #1 (2026-05-13): auth failure flag ──────────────────
 
     [Fact]
