@@ -140,6 +140,22 @@ public sealed class CustomerRepository
             new { groupId, flag = isBlacklisted ? 1 : 0, reason, blacklistedAt });
     }
 
+    /// <summary>Toplam müşteri sayısı (tüm platformlar).</summary>
+    public int CountAll()
+    {
+        using var conn = _factory.Open();
+        return conn.ExecuteScalar<int>("SELECT COUNT(*) FROM Customer");
+    }
+
+    /// <summary>Kayıtlı müşteri sayısı = form doldurup telefon bırakanlar
+    /// (chat-only müşterilerin telefonu yoktur).</summary>
+    public int CountRegistered()
+    {
+        using var conn = _factory.Open();
+        return conn.ExecuteScalar<int>(
+            "SELECT COUNT(*) FROM Customer WHERE Phone IS NOT NULL AND TRIM(Phone) <> ''");
+    }
+
     /// <summary>Assigns a customer to a group (YouTube channelId adoption).</summary>
     public void SetGroupId(string customerId, string groupId)
     {

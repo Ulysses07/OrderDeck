@@ -579,7 +579,10 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         await Task.Yield();
         var dlg = global::OrderDeck.App.App.Host.Services.GetRequiredService<global::OrderDeck.App.Views.CustomerSearchDialog>();
         var vm = (CustomerSearchViewModel)dlg.DataContext;
-        vm.PlatformFilter = "form";
+        // Form kayıtları artık Platform="form" değil (çoklu-platform gerçek satırlar);
+        // "kayıt olan müşteri" = telefonu/adresi olan → RegisteredOnly ile göster.
+        vm.NewThisSessionCount = NewIntakeSubmissionsCount;
+        vm.RegisteredOnly = true;
         vm.RefreshSearch();
 
         dlg.Owner = System.Windows.Application.Current?.MainWindow;
