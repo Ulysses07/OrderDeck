@@ -389,13 +389,83 @@
     </Style>
 
     <!-- ── Toggles ─────────────────────────────────────────────────────── -->
+    <!-- CheckBox — tam template. Önceden yalnız Background set ediliyordu; default
+         Aero template koyu Background ile çakışıp checkmark'ı normal state'te
+         gizliyordu (IsChecked doğru ama tik görünmüyordu). Artık tik IsChecked'e
+         bağlı, her zaman doğru render eder. -->
     <Style TargetType="{x:Type CheckBox}">
         <Setter Property="Foreground" Value="{StaticResource OD.Fg.Primary}"/>
-        <Setter Property="Background" Value="{StaticResource OD.Bg.Input}"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type CheckBox}">
+                    <StackPanel Orientation="Horizontal" Background="Transparent">
+                        <Border x:Name="box" Width="18" Height="18" CornerRadius="4"
+                                Background="{StaticResource OD.Bg.Input}"
+                                BorderBrush="{StaticResource OD.Border.Subtle}" BorderThickness="1.5"
+                                VerticalAlignment="Center" SnapsToDevicePixels="True">
+                            <Path x:Name="check" Stretch="Uniform" Margin="3,4,3,4"
+                                  Data="M0,5 L4,9 L11,0" Stroke="White" StrokeThickness="2"
+                                  StrokeEndLineCap="Round" StrokeStartLineCap="Round"
+                                  StrokeLineJoin="Round" Visibility="Collapsed"/>
+                        </Border>
+                        <ContentPresenter x:Name="content" Margin="8,0,0,0" VerticalAlignment="Center"
+                                          RecognizesAccessKey="True"/>
+                    </StackPanel>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="box"   Property="Background"  Value="{StaticResource OD.Accent}"/>
+                            <Setter TargetName="box"   Property="BorderBrush" Value="{StaticResource OD.Accent}"/>
+                            <Setter TargetName="check" Property="Visibility"  Value="Visible"/>
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="{x:Null}">
+                            <Setter TargetName="box"   Property="Background"  Value="{StaticResource OD.Accent}"/>
+                            <Setter TargetName="box"   Property="BorderBrush" Value="{StaticResource OD.Accent}"/>
+                        </Trigger>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="box" Property="BorderBrush" Value="{StaticResource OD.Accent.Hover}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.5"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
+
     <Style TargetType="{x:Type RadioButton}">
         <Setter Property="Foreground" Value="{StaticResource OD.Fg.Primary}"/>
-        <Setter Property="Background" Value="{StaticResource OD.Bg.Input}"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type RadioButton}">
+                    <StackPanel Orientation="Horizontal" Background="Transparent">
+                        <Grid Width="18" Height="18" VerticalAlignment="Center">
+                            <Ellipse x:Name="outer" Fill="{StaticResource OD.Bg.Input}"
+                                     Stroke="{StaticResource OD.Border.Subtle}" StrokeThickness="1.5"/>
+                            <Ellipse x:Name="dot" Width="8" Height="8" Fill="White" Visibility="Collapsed"/>
+                        </Grid>
+                        <ContentPresenter Margin="8,0,0,0" VerticalAlignment="Center" RecognizesAccessKey="True"/>
+                    </StackPanel>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="outer" Property="Fill"   Value="{StaticResource OD.Accent}"/>
+                            <Setter TargetName="outer" Property="Stroke" Value="{StaticResource OD.Accent}"/>
+                            <Setter TargetName="dot"   Property="Visibility" Value="Visible"/>
+                        </Trigger>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="outer" Property="Stroke" Value="{StaticResource OD.Accent.Hover}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.5"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
 
     <!-- ── DataGrid ────────────────────────────────────────────────────── -->
