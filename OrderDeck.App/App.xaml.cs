@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -10,6 +11,8 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Markup;
 using System.Windows.Threading;
+using Microsoft.Win32;
+using Velopack;
 using OrderDeck.App.Formatting;
 using OrderDeck.App.Views;
 using OrderDeck.App.Services;
@@ -27,6 +30,28 @@ namespace OrderDeck.App;
 
 public partial class App : Application
 {
+    /// <summary>Velopack feed (delta/otomatik güncelleme). Statik dosya host'u:
+    /// Setup.exe + full/delta .nupkg + releases.win.json burada durur (Caddy serve).</summary>
+    public const string VelopackFeedUrl = "https://orderdeckapp.com/downloads/velopack";
+
+    /// <summary>
+    /// Özel WPF entry point. VelopackApp.Build().Run() install/update/uninstall
+    /// hook'larını WPF'ten ÖNCE işler ve gerektiğinde hızlıca çıkar (WPF yükü
+    /// yüklenmeden). Normal açılışta no-op'tur, sonra WPF uygulaması başlar.
+    /// WithFirstRun: ilk kurulumda WebView2 evergreen runtime yoksa sessiz kurar.
+    /// </summary>
+    [STAThread]
+    public static void Main(string[] args)
+    {
+        VelopackApp.Build()
+            .OnAfterInstallFastCallback(_ => TryInstallWebView2())
+            .Run();
+
+        var app = new App();
+        app.InitializeComponent();
+        app.Run();
+    }
+
     public static AppHost Host { get; private set; } = null!;
 
     private ChatBridgeIngestor? _ingestor;
@@ -307,36 +332,74 @@ public partial class App : Application
             }
         }
 
-        // In-app güncelleme kontrolü — non-blocking, oturum başına bir kez.
-        // Yeni sürüm varsa kapatılabilir bilgi; "Evet" indirme sayfasını açar.
-        // Best-effort: hata/sürüm yoksa sessiz geç (akışı bozmaz).
+        // Otomatik güncelleme (Velopack) — non-blocking. Feed'den delta iner,
+        // kullanıcı onaylayınca yeniden başlatıp uygular. Sadece Velopack ile
+        // kurulmuş sürümde çalışır (dev/dev-run'da IsInstalled=false → no-op).
+        // Best-effort: hata → sessiz geç, akışı bozma.
         _ = Task.Run(async () =>
         {
             try
             {
-                var checker = Host.Services.GetRequiredService<Services.UpdateChecker>();
-                var current = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version
-                              ?? new Version(0, 0);
-                var update = await checker.CheckAsync(current);
-                if (update is null) return;
+                var mgr = new UpdateManager(VelopackFeedUrl);
+                if (!mgr.IsInstalled) return;
+
+                var newVersion = await mgr.CheckForUpdatesAsync();
+                if (newVersion is null) return;
+
+                await mgr.DownloadUpdatesAsync(newVersion);
+
                 Dispatcher.Invoke(() =>
                 {
+                    var ver = newVersion.TargetFullRelease.Version;
                     var choice = MessageBox.Show(
-                        $"Yeni sürüm mevcut: {update.LatestVersion}\n\nŞimdi indirmek ister misin?",
+                        $"Yeni sürüm hazır: {ver}\n\nŞimdi yeniden başlatıp güncellensin mi?\n"
+                        + "(Hayır dersen bir sonraki açılışta uygulanır.)",
                         "OrderDeck — Güncelleme", MessageBoxButton.YesNo, MessageBoxImage.Information);
                     if (choice == MessageBoxResult.Yes)
-                        Host.Services
-                            .GetRequiredService<OrderDeck.Core.Customers.IUrlLauncher>()
-                            .Launch(update.DownloadUrl);
+                        mgr.ApplyUpdatesAndRestart(newVersion);
                 });
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Update check failed (non-fatal)");
+                logger.LogWarning(ex, "Velopack update check failed (non-fatal)");
             }
         });
 
         base.OnStartup(e);
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // WebView2 evergreen runtime — Velopack ilk kurulumda çağırır
+    // (Inno Setup'ın [Run] bootstrapper adımının karşılığı). Win10 22H2 /
+    // Win11 önyüklü gelir; eski makineler için sessiz kurulum fallback'i.
+    // ──────────────────────────────────────────────────────────────────
+
+    private static void TryInstallWebView2()
+    {
+        try
+        {
+            if (IsWebView2Installed()) return;
+            var bootstrap = Path.Combine(AppContext.BaseDirectory, "MicrosoftEdgeWebview2Setup.exe");
+            if (!File.Exists(bootstrap)) return;
+            var psi = new ProcessStartInfo(bootstrap, "/silent /install") { UseShellExecute = false };
+            Process.Start(psi)?.WaitForExit();
+        }
+        catch { /* best-effort; app WebView2 yokken yine de açılmayı dener */ }
+    }
+
+    private static bool IsWebView2Installed()
+    {
+        // EdgeUpdate client key (system HKLM + per-user HKCU). pv boş/0.0.0.0 = yok.
+        const string clients = @"Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
+        return HasPv(Registry.LocalMachine, @"SOFTWARE\WOW6432Node\" + clients)
+            || HasPv(Registry.CurrentUser, @"Software\" + clients);
+    }
+
+    private static bool HasPv(RegistryKey root, string subKey)
+    {
+        using var key = root.OpenSubKey(subKey);
+        var pv = key?.GetValue("pv") as string;
+        return !string.IsNullOrEmpty(pv) && pv != "0.0.0.0";
     }
 
     // ──────────────────────────────────────────────────────────────────

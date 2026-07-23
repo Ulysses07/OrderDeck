@@ -13,7 +13,19 @@
     <UseWPF>true</UseWPF>
     <!-- OrderDeck.App.exe gömülü ikonu (installer\make-icon.ps1 ile üretilir). -->
     <ApplicationIcon>orderdeck.ico</ApplicationIcon>
+    <!-- Velopack: özel [STAThread] Main entry point. App.xaml aşağıda
+         ApplicationDefinition yerine Page olarak derlenir; Main'i biz yazıp
+         VelopackApp.Build().Run()'ı WPF'ten ÖNCE çağırıyoruz (install/update
+         hook'ları hızlı çalışıp çıkmalı, WPF yükünden kaçınmalı). -->
+    <StartupObject>OrderDeck.App.App</StartupObject>
   </PropertyGroup>
+
+  <!-- App.xaml'i ApplicationDefinition (otomatik Main üretir) yerine Page
+       yap ki kendi Main'imiz StartupObject olarak geçerli olsun. -->
+  <ItemGroup>
+    <ApplicationDefinition Remove="App.xaml" />
+    <Page Include="App.xaml" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\OrderDeck.Core\OrderDeck.Core.csproj" />
@@ -64,5 +76,6 @@
     <PackageReference Include="Serilog.Sinks.File" />
     <PackageReference Include="Microsoft.Web.WebView2" />
     <PackageReference Include="SharpVectors.Reloaded" />
+    <PackageReference Include="Velopack" />
   </ItemGroup>
 </Project>
