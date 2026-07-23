@@ -40,16 +40,17 @@ export const BRAND = 'OrderDeck';
  * güncellenir, sonra deploy çalışır → indirme sayfası ve Hero/CTA
  * butonları otomatik yeni dosyaya işaret eder.
  *
- * Asıl .exe dosyası VPS'te `/opt/orderdeck/web-out/downloads/` klasöründe
- * duruyor (rsync hedefi web-out/, downloads/ exclude'lu → silinmez). Caddy
- * `https://orderdeckapp.com/downloads/*` path'inden serve ediyor. Yeni sürümde
- * dosya buraya elle konup eskisi silinir (web-deploy bu klasöre dokunmaz).
+ * 0.5.0+ Velopack: indirilen Setup.exe VPS'te
+ * `/opt/orderdeck/web-out/downloads/velopack/OrderDeck-win-Setup.exe`
+ * (release.yml `vpk pack` çıktısını buraya koyar). İlk kurulumdan sonra
+ * uygulama kendini otomatik günceller (delta) — kullanıcı bir daha buraya
+ * gelmez. rsync `downloads/` exclude'lu; Caddy `/downloads/*`'ı serve eder.
  */
 export const LATEST_RELEASE = {
-  version: '0.4.4',
-  filename: 'OrderDeck-0.4.4-setup.exe',
-  sizeMB: 66,
+  version: '0.5.0',
+  filename: 'OrderDeck-win-Setup.exe',
+  sizeMB: 102,
   releasedAt: '2026-07-23',
 };
 
-export const downloadUrl = () => `/downloads/${LATEST_RELEASE.filename}`;
+export const downloadUrl = () => `/downloads/velopack/${LATEST_RELEASE.filename}`;
