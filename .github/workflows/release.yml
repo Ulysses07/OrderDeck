@@ -1,11 +1,12 @@
 name: release
 
-# Sürüm tag'i (vX.Y.Z) push'lanınca Windows installer'ı üretir ve GitHub
-# Release'e ekler. installer/build.ps1 (publish + WebView2 + Inno Setup) elle
-# çalıştırılıyordu; bu workflow onu otomatikleştirir.
+# Sürüm tag'i (vX.Y.Z) push'lanınca Velopack release'ini üretir: Setup.exe +
+# full/delta .nupkg + releases.win.json feed manifesti. Çıktı VPS'teki statik
+# feed dizinine (orderdeckapp.com/downloads/velopack) yüklenir; kurulu app
+# oradan delta güncelleme alır. Setup.exe ayrıca GitHub Release'e de eklenir.
 #
 # Kullanım: git tag v1.2.3 && git push origin v1.2.3
-# Çıktı: dist/OrderDeck-1.2.3-setup.exe → Release asset.
+# Delta: pack öncesi mevcut feed'deki .nupkg'ler indirilir → vpk delta üretir.
 
 on:
   push:
@@ -15,10 +16,10 @@ permissions:
   contents: write # GitHub Release oluşturmak/asset yüklemek için
 
 jobs:
-  build-installer:
-    # WPF + Inno Setup → Windows runner şart.
+  build-release:
+    # WPF (net10.0-windows) + vpk → Windows runner şart.
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
@@ -32,15 +33,9 @@ jobs:
         shell: bash
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Install Inno Setup
-        run: choco install innosetup -y --no-progress
-
-      # Gömülü YouTube kimlik bilgilerini build-time enjekte et. Repo'da bu
-      # değerler BOŞ (YouTubeOAuthDefaults/YouTubeApiDefaults skip-worktree ile
-      # yalnız lokalde dolu). CI runner repo'yu checkout ettiği için boş gelir;
-      # burada GitHub Actions secret'larından yazılır ki dağıtılan installer
-      # YouTube moderasyon (OAuth) + resmi API key ile out-of-box çalışsın.
-      # Enjeksiyon yalnız runner'ın geçici checkout'unda — repo değişmez.
+      # Gömülü YouTube kimlik bilgilerini build-time enjekte et. Repo'da BOŞ
+      # (skip-worktree ile yalnız lokalde dolu); CI'da secret'lardan yazılır ki
+      # dağıtılan build YouTube moderasyon (OAuth) + resmi API key ile çalışsın.
       - name: Inject YouTube credentials
         shell: pwsh
         env:
@@ -59,21 +54,61 @@ jobs:
           $a = $a.Replace('public static readonly string ApiKey = "";', 'public static readonly string ApiKey = "' + $env:YT_API_KEY + '";')
           Set-Content $api $a -NoNewline
 
-          # Doğrulama: boş kalırsa (secret eksik) build'i patlat.
           if ((Get-Content $oauth -Raw).Contains('ClientId = "";')) { throw 'YT_OAUTH_CLIENT_ID enjekte edilemedi (secret eksik?)' }
           if ((Get-Content $api -Raw).Contains('ApiKey = "";')) { throw 'YT_API_KEY enjekte edilemedi (secret eksik?)' }
           Write-Host 'YouTube credentials injected.'
 
-      - name: Build installer
+      - name: Setup SSH
+        shell: bash
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      # Delta için mevcut feed'deki .nupkg + manifest'i indir. İlk Velopack
+      # release'inde dizin boş/olmayabilir → hata yut (yalnız full üretilir).
+      - name: Pull existing feed (for delta)
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          mkdir -p Releases
+          FEED=/opt/orderdeck/web-out/downloads/velopack
+          SSH="ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new"
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:${FEED}/*.nupkg" Releases/ 2>/dev/null || echo "no prev nupkgs (first release)"
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:${FEED}/releases.win.json" Releases/ 2>/dev/null || echo "no prev manifest"
+
+      - name: Build Velopack release
         shell: pwsh
         run: installer\build.ps1 -Version ${{ steps.ver.outputs.version }}
 
-      - name: Create GitHub Release + upload installer
+      # Feed'e yükle: Portable.zip'i eleme (feed'e gerekmiyor, ~97 MB). Setup.exe
+      # de feed'de dursun ki /indir sabit URL'den (OrderDeck-win-Setup.exe) linkleyebilsin.
+      - name: Upload feed to VPS
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          FEED=/opt/orderdeck/web-out/downloads/velopack
+          rm -f Releases/*Portable*.zip
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" "mkdir -p ${FEED}"
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            Releases/* "${DEPLOY_USER}@${DEPLOY_HOST}:${FEED}/"
+
+      - name: Create GitHub Release + upload Setup.exe
         uses: softprops/action-gh-release@v2
         with:
           name: OrderDeck ${{ steps.ver.outputs.version }}
           tag_name: ${{ github.ref_name }}
-          files: dist/OrderDeck-${{ steps.ver.outputs.version }}-setup.exe
+          files: Releases/OrderDeck-win-Setup.exe
           draft: false
           prerelease: false
           generate_release_notes: true

@@ -109,6 +109,10 @@
          takes a Uri (http supported) and produces a DrawingImage. -->
     <PackageVersion Include="SharpVectors.Reloaded" Version="1.8.5" />
 
+    <!-- Otomatik güncelleme (delta): WPF entry point'te VelopackApp.Build().Run()
+         + UpdateManager feed'i okur. vpk CLI sürümü BUNUNLA aynı olmalı (release.yml). -->
+    <PackageVersion Include="Velopack" Version="1.2.0" />
+
     <!-- Test deps -->
     <PackageVersion Include="FluentAssertions" Version="7.0.0" />
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />

@@ -47,6 +47,7 @@ dev.license.json
 installer/MicrosoftEdgeWebview2Setup.exe
 publish/
 dist/
+Releases/
 
 # Chrome extension build artifacts + signing key (NEVER commit the .pem key)
 *.pem
