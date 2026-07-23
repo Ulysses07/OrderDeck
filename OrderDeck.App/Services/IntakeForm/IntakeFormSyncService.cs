@@ -46,6 +46,70 @@ public sealed class IntakeFormSyncService
     /// </summary>
     public bool LastSyncWasAuthFailure { get; private set; }
 
+    /// <summary>
+    /// Tek seferlik geriye-dönük düzeltme: FullName kolonu (migration 022) öncesi
+    /// kaydolan müşterilerde gerçek Ad Soyad yerelde saklanmamıştı (chat takma adı
+    /// korunuyordu). Sunucudaki TÜM form kayıtlarını (cursor'dan bağımsız, baştan)
+    /// gezip her birinin gerçek Ad Soyad'ını eşleşen müşteri satırlarına yazar —
+    /// yalnızca boş FullName'lere, LastSeenAt/DisplayName'e dokunmadan. Bir kez
+    /// çalışır (AppSettings.FullNameBackfillDone), sonra no-op.
+    /// </summary>
+    public async Task<int> BackfillFullNamesOnceAsync(CancellationToken ct = default)
+    {
+        if (_settings.FullNameBackfillDone) return 0;
+
+        int totalUpdated = 0;
+        DateTimeOffset? since = null;
+        // Sayfalama: server SubmittedAt > since döner; son sayfa < limit olunca dur.
+        // Güvenlik tavanı: kilitlenmesin diye makul bir sayfa limiti.
+        for (var page = 0; page < 500 && !ct.IsCancellationRequested; page++)
+        {
+            List<IntakeFormSubmissionDto> submissions;
+            try
+            {
+                submissions = await _api.GetFormSubmissionsAsync(since, limit: 100, ct);
+            }
+            catch (LicenseApiException ex)
+            {
+                _log.LogWarning(ex, "FullName backfill fetch failed: {Code} (will retry next launch)", ex.Code);
+                return totalUpdated; // flag'i işaretleme → sonraki açılışta tekrar dener
+            }
+
+            if (submissions.Count == 0) break;
+
+            foreach (var sub in submissions)
+            {
+                var identities = new List<(string Platform, string Username)>();
+                void Add(string platform, string? username)
+                {
+                    if (!string.IsNullOrWhiteSpace(username))
+                        identities.Add((platform, username!));
+                }
+                // channelId varsa onunla, yoksa handle ile (repository ikisini de eşler).
+                if (!string.IsNullOrWhiteSpace(sub.YouTubeChannelId))
+                    Add("youtube", sub.YouTubeChannelId);
+                else
+                    Add("youtube", sub.YouTubeUsername);
+                Add("instagram", sub.InstagramUsername);
+                Add("facebook", sub.FacebookUsername);
+                Add("tiktok", sub.TikTokUsername);
+
+                if (identities.Count > 0 && !string.IsNullOrWhiteSpace(sub.FullName))
+                    totalUpdated += _customers.BackfillFullNameForIdentities(identities, sub.FullName);
+
+                if (sub.SubmittedAt > (since ?? DateTimeOffset.MinValue))
+                    since = sub.SubmittedAt;
+            }
+
+            if (submissions.Count < 100) break; // son sayfa
+        }
+
+        _settings.FullNameBackfillDone = true;
+        _settingsStore.Save(_settings);
+        _log.LogInformation("FullName backfill complete: {Count} row(s) updated", totalUpdated);
+        return totalUpdated;
+    }
+
     public async Task<int> SyncOnceAsync(CancellationToken ct = default)
     {
         var since = _settings.LastIntakeFormSync;

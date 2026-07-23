@@ -204,6 +204,47 @@ public sealed class CustomerRepository
         return groupId;
     }
 
+    /// <summary>
+    /// Tek seferlik geriye-dönük düzeltme: verilen form kimliklerine karşılık gelen
+    /// müşteri satırlarını bulur ve <b>yalnızca boş</b> FullName'lere gerçek Ad
+    /// Soyad'ı yazar. Eşleşen satır grupluysa tüm grup üyelerine yayılır (aynı kişi).
+    /// LastSeenAt / DisplayName / Phone gibi alanlara <b>dokunmaz</b> — sadece
+    /// FullName. Dönen: güncellenen satır sayısı.
+    /// </summary>
+    public int BackfillFullNameForIdentities(
+        IReadOnlyList<(string Platform, string Username)> identities, string fullName)
+    {
+        var value = string.IsNullOrWhiteSpace(fullName) ? null : fullName.Trim();
+        if (value is null) return 0;
+
+        using var conn = _factory.Open();
+
+        var groupIds = new HashSet<string>(StringComparer.Ordinal);
+        var soloIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (p, u) in identities)
+        {
+            var handle = (u ?? "").Trim().TrimStart('@').Trim();
+            if (handle.Length == 0) continue;
+            var row = FindExistingForIntake(conn, p, handle);
+            if (row is null) continue;
+            if (!string.IsNullOrWhiteSpace(row.GroupId)) groupIds.Add(row.GroupId!);
+            else soloIds.Add(row.Id);
+        }
+
+        int updated = 0;
+        if (groupIds.Count > 0)
+            updated += conn.Execute(
+                @"UPDATE Customer SET FullName = @value
+                  WHERE GroupId IN @groups AND (FullName IS NULL OR TRIM(FullName) = '')",
+                new { value, groups = groupIds.ToList() });
+        if (soloIds.Count > 0)
+            updated += conn.Execute(
+                @"UPDATE Customer SET FullName = @value
+                  WHERE Id IN @ids AND (FullName IS NULL OR TRIM(FullName) = '')",
+                new { value, ids = soloIds.ToList() });
+        return updated;
+    }
+
     /// <summary>Bir grubun tüm üye satırlarını döner (platform bazında). Detay
     /// penceresinde kişinin bağlı tüm platform kimliklerini göstermek için.</summary>
     public IReadOnlyList<Customer> GetGroupMembers(string groupId)

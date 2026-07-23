@@ -42,6 +42,21 @@ public sealed class IntakeFormSyncHostedService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Tek seferlik: eski müşterilerde boş FullName'i sunucudaki form verisinden
+        // doldur (migration 022 öncesi kayıtlar). Bir kez çalışır, sonra no-op.
+        try
+        {
+            await _syncService.BackfillFullNamesOnceAsync(stoppingToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "FullName backfill failed; will retry next launch");
+        }
+
         // PeriodicTimer ile değil, dinamik aralıklı Task.Delay kullanıyoruz
         // çünkü auth-failure sonrası aralık 2 dk yerine 15 dk olmalı.
         while (!stoppingToken.IsCancellationRequested)

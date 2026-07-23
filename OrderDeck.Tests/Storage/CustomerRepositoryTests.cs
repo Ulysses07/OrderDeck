@@ -482,6 +482,39 @@ public class CustomerRepositoryTests
     }
 
     [Fact]
+    public void BackfillFullNameForIdentities_fills_empty_fullname_across_group_only()
+    {
+        var repo = CreateRepository();
+        // Grup: IG (chat takma adlı, FullName boş) + YouTube. FullName ikisinde de boş.
+        repo.Insert(new Customer("ig1", "instagram", "musaa.sevinc", "musaa.sevinc", null,
+            100, 100, false, null, null, 0, 0m, null, null, null, GroupId: "g1"));
+        repo.Insert(new Customer("yt1", "youtube", "UCabc", "@musa", null,
+            100, 100, false, null, null, 0, 0m, null, null, null, GroupId: "g1"));
+
+        var updated = repo.BackfillFullNameForIdentities(
+            new[] { ("instagram", "musaa.sevinc") }, "Musa Sevinç");
+
+        updated.Should().Be(2); // eşleşen satırın tüm grubu
+        repo.GetById("ig1")!.FullName.Should().Be("Musa Sevinç");
+        repo.GetById("yt1")!.FullName.Should().Be("Musa Sevinç");
+        repo.GetById("ig1")!.DisplayName.Should().Be("musaa.sevinc"); // dokunulmadı
+    }
+
+    [Fact]
+    public void BackfillFullNameForIdentities_does_not_overwrite_existing_fullname()
+    {
+        var repo = CreateRepository();
+        repo.Insert(new Customer("ig1", "instagram", "u", "u", null,
+            100, 100, false, null, null, 0, 0m, null, null, null, FullName: "Zaten Var"));
+
+        var updated = repo.BackfillFullNameForIdentities(
+            new[] { ("instagram", "u") }, "Yeni İsim");
+
+        updated.Should().Be(0);
+        repo.GetById("ig1")!.FullName.Should().Be("Zaten Var");
+    }
+
+    [Fact]
     public void UpsertPersonFromIntake_stores_real_fullname_without_overwriting_chat_displayname()
     {
         var repo = CreateRepository();
