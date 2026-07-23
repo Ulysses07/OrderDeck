@@ -201,6 +201,8 @@ public sealed class CustomerRepository
         conn.Execute("UPDATE Customer SET GroupId = @groupId WHERE Id IN @targetIds",
             new { groupId, targetIds = targetIds.ToList() });
 
+        PropagateGroupBlacklist(conn, groupId, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
         return groupId;
     }
 
@@ -450,6 +452,7 @@ public sealed class CustomerRepository
         // Gerçek Ad Soyad'ı ayrı kolona yaz (boşsa null). DisplayName fallback'ı
         // aşağıda ayrıca korunur (chat takma adı ezilmesin diye).
         var fullNameValue = string.IsNullOrWhiteSpace(fullName) ? null : fullName.Trim();
+        var phoneValue = string.IsNullOrWhiteSpace(phone) ? null : phone.Trim();
 
         using var conn = _factory.Open();
 
@@ -459,6 +462,17 @@ public sealed class CustomerRepository
         {
             var existing = FindExistingForIntake(conn, p, u);
             if (existing?.GroupId is { Length: > 0 } g) { groupId = g; break; }
+        }
+        // Telefon-bazlı: kimlikler eşleşmese bile aynı telefonlu mevcut bir grup
+        // varsa onu kullan (aynı kişi başka platformdan tekrar kaydolduğunda).
+        if (groupId is null && phoneValue is not null)
+        {
+            var byPhone = conn.QueryFirstOrDefault<string>(
+                @"SELECT GroupId FROM Customer
+                  WHERE Phone = @phoneValue AND GroupId IS NOT NULL AND TRIM(GroupId) <> ''
+                  LIMIT 1",
+                new { phoneValue });
+            if (!string.IsNullOrWhiteSpace(byPhone)) groupId = byPhone;
         }
         groupId ??= Guid.NewGuid().ToString("N");
 
@@ -507,7 +521,49 @@ public sealed class CustomerRepository
             }
         }
 
+        // Telefon-bazlı otomatik birleştirme: aynı telefona sahip mevcut TÜM
+        // müşterileri (ve ait oldukları grupların kalan üyelerini) bu gruba çek.
+        // Böylece aynı kişi farklı platformdan ayrı ayrı kaydolmuşsa tek kart olur.
+        if (phoneValue is not null)
+        {
+            var otherGroups = conn.Query<string>(
+                @"SELECT DISTINCT GroupId FROM Customer
+                  WHERE Phone = @phoneValue AND GroupId IS NOT NULL
+                    AND TRIM(GroupId) <> '' AND GroupId <> @groupId",
+                new { phoneValue, groupId })
+                .Where(g => !string.IsNullOrWhiteSpace(g)).ToList();
+
+            conn.Execute(
+                @"UPDATE Customer SET GroupId = @groupId
+                  WHERE Phone = @phoneValue AND (GroupId IS NULL OR GroupId <> @groupId)",
+                new { groupId, phoneValue });
+
+            if (otherGroups.Count > 0)
+                conn.Execute(
+                    "UPDATE Customer SET GroupId = @groupId WHERE GroupId IN @otherGroups",
+                    new { groupId, otherGroups });
+
+            PropagateGroupBlacklist(conn, groupId, nowUnix);
+        }
+
         return groupId;
+    }
+
+    /// <summary>Grupta kara listede en az bir üye varsa, o üyenin sebep/tarihiyle
+    /// tüm grubu kara listeye alır (birleştirme kara liste kaçışını kapatsın diye).
+    /// Verilen açık bağlantıyı kullanır.</summary>
+    private static void PropagateGroupBlacklist(System.Data.IDbConnection conn, string groupId, long fallbackAt)
+    {
+        var b = conn.QueryFirstOrDefault<Row>(
+            @"SELECT * FROM Customer
+              WHERE GroupId = @groupId AND IsBlacklisted = 1
+              ORDER BY COALESCE(BlacklistedAt, 0) DESC LIMIT 1",
+            new { groupId });
+        if (b is null) return;
+        conn.Execute(
+            @"UPDATE Customer SET IsBlacklisted = 1, BlacklistReason = @reason, BlacklistedAt = @at
+              WHERE GroupId = @groupId AND IsBlacklisted = 0",
+            new { groupId, reason = b.BlacklistReason, at = b.BlacklistedAt ?? fallbackAt });
     }
 
     /// <summary>

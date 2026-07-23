@@ -515,6 +515,43 @@ public class CustomerRepositoryTests
     }
 
     [Fact]
+    public void UpsertPersonFromIntake_links_by_phone_when_usernames_differ()
+    {
+        var repo = CreateRepository();
+        // Önceden IG'den kaydolmuş, telefonlu, gruplu müşteri.
+        repo.Insert(new Customer("ig1", "instagram", "ayse", "Ayşe Y", null,
+            1, 1, false, null, null, 0, 0m, null, "Adr", "+905551112233", GroupId: "g1"));
+
+        // Aynı kişi FB'den FARKLI kullanıcı adıyla ama AYNI telefonla kaydoluyor.
+        var groupId = repo.UpsertPersonFromIntake(
+            new (string, string, string?)[] { ("facebook", "ayse.fb", null) },
+            "Ayşe Yılmaz", "Adr", "+905551112233", null, null, false, true, 5000);
+
+        groupId.Should().Be("g1"); // mevcut grup telefonla bulundu, korundu
+        repo.GetById("ig1")!.GroupId.Should().Be("g1");
+        var members = repo.GetGroupMembers("g1");
+        members.Select(m => m.Platform).Should().Contain(new[] { "instagram", "facebook" });
+    }
+
+    [Fact]
+    public void UpsertPersonFromIntake_phone_merge_propagates_blacklist()
+    {
+        var repo = CreateRepository();
+        // Kara listeli, telefonlu, tekil (grupsuz) mevcut müşteri.
+        repo.Insert(new Customer("bad1", "instagram", "kotu", "Kötü", null,
+            1, 1, true, "dolandırıcı", null, 0, 0m, 999, "Adr", "+905550001122"));
+
+        // Aynı telefonla FB'den yeni kayıt → aynı gruba çekilir + kara liste yayılır.
+        var groupId = repo.UpsertPersonFromIntake(
+            new (string, string, string?)[] { ("facebook", "kotu.fb", null) },
+            "Kötü Kişi", "Adr", "+905550001122", null, null, false, true, 5000);
+
+        var members = repo.GetGroupMembers(groupId);
+        members.Should().HaveCount(2);
+        members.Should().OnlyContain(m => m.IsBlacklisted);
+    }
+
+    [Fact]
     public void UpsertPersonFromIntake_stores_real_fullname_without_overwriting_chat_displayname()
     {
         var repo = CreateRepository();
