@@ -60,6 +60,8 @@ jobs:
           # Full history needed for the out-of-order ordering guard
           # (`git merge-base --is-ancestor`).
           fetch-depth: 0
+          # Yalnız okuma git işlemleri; token'ı git config'te saklama.
+          persist-credentials: false
 
       - name: Compute image tags
         id: tags
