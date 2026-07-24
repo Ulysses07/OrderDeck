@@ -16,8 +16,9 @@ on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
+# Varsayılan olarak hiçbir izin verme; her job yalnız ihtiyacı olanı ister
+# (en az ayrıcalık). GitHub Release yazımı yalnız 'publish' job'ında gerekli.
+permissions: {}
 
 jobs:
   # ── 1) Delta için mevcut feed'i (nupkg + manifest) indir, artifact yap ──
@@ -62,6 +63,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
@@ -125,6 +128,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write # GitHub Release oluşturmak için (yalnız bu job)
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -152,7 +157,8 @@ jobs:
             Releases/* "${DEPLOY_USER}@${DEPLOY_HOST}:${FEED}/"
 
       - name: Create GitHub Release + upload Setup.exe
-        uses: softprops/action-gh-release@v2
+        # Tedarik zinciri: 3. parti action commit SHA'sına pinli (tag mutable).
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           name: OrderDeck ${{ needs.build.outputs.version }}
           tag_name: ${{ github.ref_name }}
