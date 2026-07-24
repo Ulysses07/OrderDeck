@@ -1,9 +1,13 @@
+# YEREL GELİŞTİRME compose'u. Secret'lar .env'den okunur (bkz. .env.example);
+# repo'da hardcoded parola YOK. Prod bunu KULLANMAZ — prod deploy/docker-compose.yml
+# + VPS /opt/orderdeck/.env kullanır.
+#   Kullanım:  cp .env.example .env  &&  docker compose up
 services:
   sqlserver:
     image: mcr.microsoft.com/mssql/server:2022-latest
     environment:
       ACCEPT_EULA: "Y"
-      MSSQL_SA_PASSWORD: "Strong!Pass123"
+      MSSQL_SA_PASSWORD: "${MSSQL_SA_PASSWORD:?.env dosyasinda ayarla (bkz. .env.example)}"
     ports:
       - "1433:1433"
     volumes:
@@ -12,11 +16,11 @@ services:
   license-server:
     build:
       context: .
-      dockerfile: LiveDeck.LicenseServer/Dockerfile
+      dockerfile: OrderDeck.LicenseServer/Dockerfile
     environment:
-      ConnectionStrings__LicenseDb: "Server=sqlserver;Database=LiveDeckLicense;User=sa;Password=Strong!Pass123;TrustServerCertificate=true;"
-      Jwt__SecretKey: "change-me-in-production-at-least-32-chars-long-secret"
-      Jwt__Issuer: "livedeck-license-server"
+      ConnectionStrings__LicenseDb: "Server=sqlserver;Database=OrderDeckLicense;User=sa;Password=${MSSQL_SA_PASSWORD:?.env dosyasinda ayarla};TrustServerCertificate=true;"
+      Jwt__SecretKey: "${JWT_SECRET:?.env dosyasinda ayarla (bkz. .env.example)}"
+      Jwt__Issuer: "orderdeck-license-server"
       Email__Provider: "disk"
       App__PublicBaseUrl: "http://localhost:8080"
     ports:

@@ -58,3 +58,8 @@ orderdeck-chat-bridge-*/
 # Claude Code local/tooling state
 .claude/settings.local.json
 .claude/worktrees/
+
+# Yerel geliştirme secret'ları (kök docker-compose.yml bunları okur).
+# .env.example commit'lenir; gerçek .env asla.
+.env
+!.env.example
