@@ -74,7 +74,12 @@ public static class RestoreDrillCore
         byte[] plaintext;
         try
         {
-            envelope = await File.ReadAllBytesAsync(blobPath, ct);
+            // Path-traversal savunması: doğrudan File.ReadAllBytesAsync yerine
+            // BackupStorageService.ReadBlobAsync kullan — o EnsurePathInsideStorageRoot
+            // ile blobPath'i yapılandırılmış storage root'una hapseder ('..' ve
+            // root-dışı mutlak yolları reddeder). Drill root dışındaki keyfi bir
+            // dosyayı asla okumamalı.
+            envelope = await storage.ReadBlobAsync(blobPath, ct);
         }
         catch (Exception ex)
         {

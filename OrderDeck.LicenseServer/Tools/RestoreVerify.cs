@@ -65,10 +65,17 @@ public static class RestoreVerify
             var config = new ConfigurationBuilder().AddEnvironmentVariables().Build();
             var opts = new BackupOptions();
             config.GetSection("Backup").Bind(opts);
-            // We don't write under StorageRoot, but BackupStorageService
-            // requires it to exist for its directory check. Point it at the
-            // workdir so the constructor is happy.
-            opts.StorageRoot = workDir;
+            // StorageRoot GERÇEK backup kökü olmalı (Backup__StorageRoot env):
+            // drill artık blob'u BackupStorageService.ReadBlobAsync üzerinden okur
+            // ve o, kök dışı yolları reddeder (path-traversal savunması). Yani
+            // verify edilecek blob yapılandırılmış backup kökünün altında olmalı.
+            // (Extraction ayrı 'workDir'de yapılır; kök yalnız doğrulama içindir.)
+            if (string.IsNullOrWhiteSpace(opts.StorageRoot))
+            {
+                Console.Error.WriteLine(
+                    "[FAIL] Backup__StorageRoot yapılandırılmamış; blob doğrulanamaz.");
+                return 4;
+            }
 
             var svc = new BackupStorageService(
                 Options.Create(opts),
