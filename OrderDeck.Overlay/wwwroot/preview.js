@@ -46,7 +46,7 @@ function showError(stage, err) {
     `<div style="color:#fff;background:#b91c1c;padding:8px 16px;` +
     `border-radius:6px;font:600 13px monospace;text-align:left;` +
     `max-width:480px;margin:0 auto;white-space:pre-wrap;">` +
-    `❌ <b>${stage} fail:</b>\n${escapeForHtml(err && err.stack ? err.stack : String(err))}` +
+    `❌ <b>${escapeForHtml(stage)} fail:</b>\n${escapeForHtml(err && err.stack ? err.stack : String(err))}` +
     `</div>`;
 }
 

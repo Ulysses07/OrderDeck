@@ -48,6 +48,15 @@ export function getAllPosts(locale: Locale): Post[] {
 }
 
 export function getPostBySlug(locale: Locale, slug: string): Post | null {
+  // Path-traversal / file-inclusion savunması: slug + locale doğrudan dosya
+  // yoluna giriyor. Yalnız güvenli karakterlere izin ver (harf/rakam/tire) ve
+  // locale'i bilinen değerlerle sınırla — '..' veya '/' ile içerik dizininin
+  // dışına çıkılmasını engeller. (Şu an build-time'da bilinen slug'larla
+  // çağrılıyor; ama ileride SSR/runtime'a kayarsa da güvenli kalsın.)
+  if (!/^[a-z0-9-]+$/i.test(slug) || (locale !== 'tr' && locale !== 'en')) {
+    return null;
+  }
+
   const file = path.join(process.cwd(), 'content', 'blog', locale, `${slug}.mdx`);
   if (!fs.existsSync(file)) return null;
   const raw = fs.readFileSync(file, 'utf8');
