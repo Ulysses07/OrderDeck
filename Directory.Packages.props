@@ -48,23 +48,23 @@
 
     <!-- Domain dependencies -->
     <PackageVersion Include="AWSSDK.S3" Version="3.7.405.6" />
-    <PackageVersion Include="AngleSharp" Version="1.1.2" />
+    <PackageVersion Include="AngleSharp" Version="1.5.2" />
     <PackageVersion Include="ClosedXML" Version="0.105.0" />
     <PackageVersion Include="CommunityToolkit.Mvvm" Version="8.4.0" />
     <PackageVersion Include="Dapper" Version="2.1.35" />
     <!-- Firebase Admin SDK — FCM push notifications (PR-1 Push Faz 2,
          2026-05-15). Apache 2.0. Service account JSON ile auth. -->
     <PackageVersion Include="FirebaseAdmin" Version="3.0.1" />
-    <PackageVersion Include="Hangfire.AspNetCore" Version="1.8.14" />
-    <PackageVersion Include="Hangfire.MemoryStorage" Version="1.8.0" />
-    <PackageVersion Include="Hangfire.SqlServer" Version="1.8.14" />
+    <PackageVersion Include="Hangfire.AspNetCore" Version="1.8.24" />
+    <PackageVersion Include="Hangfire.MemoryStorage" Version="1.8.1.2" />
+    <PackageVersion Include="Hangfire.SqlServer" Version="1.8.24" />
     <PackageVersion Include="Konscious.Security.Cryptography.Argon2" Version="1.3.1" />
     <PackageVersion Include="MailKit" Version="4.16.0" />
     <PackageVersion Include="Microsoft.Xaml.Behaviors.Wpf" Version="1.1.135" />
     <PackageVersion Include="Newtonsoft.Json" Version="13.0.3" />
     <!-- PDF parsing for dekont auto-fill (PdfDekontParser). Apache 2.0, ~1MB,
          offline only — PDF içerikleri sunucuya gitmez (KVKK). -->
-    <PackageVersion Include="PdfPig" Version="0.1.10" />
+    <PackageVersion Include="PdfPig" Version="0.1.15" />
     <PackageVersion Include="Serilog" Version="4.2.0" />
     <PackageVersion Include="Serilog.Extensions.Logging" Version="9.0.0" />
     <PackageVersion Include="Serilog.Sinks.Console" Version="6.0.0" />
