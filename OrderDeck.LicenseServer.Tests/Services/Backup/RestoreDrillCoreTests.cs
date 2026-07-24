@@ -157,6 +157,33 @@ public class RestoreDrillCoreTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsync_rejects_blob_outside_storage_root()
+    {
+        var svc = BuildService(); // StorageRoot = _root
+        // Kök DIŞINDA, gerçekten var olan bir dosya.
+        var outsideDir = Path.Combine(Path.GetTempPath(),
+            "orderdeck-outside-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+        var outsideBlob = Path.Combine(outsideDir, "evil.bin");
+        await File.WriteAllBytesAsync(outsideBlob, new byte[] { 1, 2, 3 });
+        var workdir = Path.Combine(_root, "drill");
+        Directory.CreateDirectory(workdir);
+        try
+        {
+            var result = await RestoreDrillCore.RunAsync(svc, outsideBlob, keyVersion: 0, workdir);
+
+            result.Passed.Should().BeFalse();
+            result.Steps.Should().Contain(s => s.Name == "Read blob" && !s.Ok);
+            // Kök-dışı yol decrypt'e ULAŞMADAN reddedilmeli.
+            result.Steps.Should().NotContain(s => s.Name == "Decrypt");
+        }
+        finally
+        {
+            try { Directory.Delete(outsideDir, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    [Fact]
     public void FindLatestBlob_returns_newest_across_subdirs()
     {
         var storageRoot = Path.Combine(_root, "store");

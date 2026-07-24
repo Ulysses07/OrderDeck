@@ -36,6 +36,10 @@ public class RestoreVerifyTests : IDisposable
         // and in this test.
         Environment.SetEnvironmentVariable("Backup__MasterKeyHex", _testKey);
         Environment.SetEnvironmentVariable("Backup__ActiveKeyVersion", "0");
+        // Blob'lar _workdir/blobs altında oluşturuluyor; drill artık ReadBlobAsync
+        // ile kök-dışı yolları reddettiği için StorageRoot'u _workdir'e ayarla
+        // (blob onun altında → doğrulama geçer).
+        Environment.SetEnvironmentVariable("Backup__StorageRoot", _workdir);
     }
 
     public void Dispose()
@@ -44,6 +48,7 @@ public class RestoreVerifyTests : IDisposable
         catch { /* best effort */ }
         Environment.SetEnvironmentVariable("Backup__MasterKeyHex", null);
         Environment.SetEnvironmentVariable("Backup__ActiveKeyVersion", null);
+        Environment.SetEnvironmentVariable("Backup__StorageRoot", null);
     }
 
     [Fact]
@@ -96,6 +101,30 @@ public class RestoreVerifyTests : IDisposable
     {
         var rc = await RestoreVerify.RunAsync(new[] { "restore-verify" });
         rc.Should().NotBe(0);
+    }
+
+    [Fact]
+    public async Task Run_rejects_blob_outside_storage_root()
+    {
+        // Kök (Backup__StorageRoot=_workdir) DIŞINDA var olan bir dosya:
+        // drill ReadBlobAsync ile okuduğu için path-traversal savunması reddeder.
+        var outsideDir = Path.Combine(Path.GetTempPath(),
+            "orderdeck-outside-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+        var outsideBlob = Path.Combine(outsideDir, "evil.bin");
+        await File.WriteAllBytesAsync(outsideBlob, new byte[] { 1, 2, 3 });
+        try
+        {
+            var rc = await RestoreVerify.RunAsync(new[]
+            {
+                "restore-verify", outsideBlob, "0", $"--workdir={Path.Combine(_workdir, "drill")}"
+            });
+            rc.Should().NotBe(0, "kök dışındaki bir yol path-traversal savunmasıyla reddedilmeli");
+        }
+        finally
+        {
+            try { Directory.Delete(outsideDir, recursive: true); } catch { /* best effort */ }
+        }
     }
 
     /// <summary>
