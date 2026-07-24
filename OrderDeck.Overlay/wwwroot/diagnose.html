@@ -85,10 +85,10 @@
     function row(id, importStatus, initStatus, runStatus, error) {
       const tr = document.createElement('tr');
       tr.innerHTML = `
-        <td><b>${id}</b></td>
-        <td class="${statusClass(importStatus)}">${importStatus.toUpperCase()}</td>
-        <td class="${statusClass(initStatus)}">${initStatus.toUpperCase()}</td>
-        <td class="${statusClass(runStatus)}">${runStatus.toUpperCase()}</td>
+        <td><b>${esc(id)}</b></td>
+        <td class="${statusClass(importStatus)}">${esc(importStatus.toUpperCase())}</td>
+        <td class="${statusClass(initStatus)}">${esc(initStatus.toUpperCase())}</td>
+        <td class="${statusClass(runStatus)}">${esc(runStatus.toUpperCase())}</td>
         <td class="err">${error ? esc(error) : ''}</td>`;
       tbody.appendChild(tr);
     }

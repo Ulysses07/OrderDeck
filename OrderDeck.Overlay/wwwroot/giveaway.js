@@ -159,7 +159,7 @@ import { SynthController } from './synth-controller.js';
       li.className = 'winner';
       const emoji = PLATFORM_EMOJI[w.platform] || '💬';
       li.innerHTML = `
-        <span class="platform-${w.platform}">${emoji}</span>
+        <span class="platform-${escapeHtml(w.platform)}">${emoji}</span>
         <span class="name">${escapeHtml(w.displayName || w.username)}</span>`;
       $winnersList.appendChild(li);
     }
