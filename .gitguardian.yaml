@@ -6,7 +6,11 @@
 #
 # We ignore the *.Tests directories entirely — real production secrets
 # must never live there by policy. CI catches any drift via Code Review.
+#
+# .env.example: yalnız placeholder değerler içeren örnek şablon (gerçek .env
+# gitignore'lu). Placeholder'lar gerçek secret değil; scanner'da allowlist'lenir.
 paths-ignore:
   - "**/*.Tests/**"
   - "**/Tests/**"
   - "**/TestHelpers/**"
+  - ".env.example"
