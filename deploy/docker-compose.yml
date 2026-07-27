@@ -93,6 +93,26 @@ services:
       Backup__S3__Bucket: "${BACKUP_S3_BUCKET:-}"
       Backup__S3__Prefix: "${BACKUP_S3_PREFIX:-orderdeck-backups/}"
       Cors__AllowedOrigins: "${CORS_ALLOWED_ORIGINS:-}"
+      # Push (PR #56, 2026-05-15) — FCM. Sağlayıcıyı "stub" yaparsan gerçek
+      # bildirim gitmez. JSON anahtar dosyası host'tan read-only mount edilir
+      # (aşağıdaki volumes), repoda tutulmaz.
+      OrderDeck__Push__Provider: "${OrderDeck__Push__Provider:-fcm}"
+      OrderDeck__Push__Fcm__ServiceAccountJsonPath: "/etc/orderdeck/firebase-service-account.json"
+      # Broadcast posts (Spec 2, 2026-05-19) — Cloudflare R2 medya deposu.
+      # Provider "stub" = bellekte tut (dev); R2__* dolu değilse stub'da kal.
+      OrderDeck__BroadcastMedia__Provider: "${OrderDeck__BroadcastMedia__Provider:-stub}"
+      R2__AccountId: "${R2__AccountId:-}"
+      R2__AccessKeyId: "${R2__AccessKeyId:-}"
+      R2__SecretAccessKey: "${R2__SecretAccessKey:-}"
+      R2__BucketName: "${R2__BucketName:-}"
+      # WhatsApp Cloud API (2026-07-27). AppSecret webhook imzasını
+      # (X-Hub-Signature-256), VerifyToken Meta'nın abonelik doğrulamasını
+      # karşılar — ikisi de boşsa webhook her isteği 403 ile reddeder.
+      # Provider "cloud" giden Graph çağrılarını açar; gelen mesaj yolu
+      # provider'dan bağımsız çalışır.
+      OrderDeck__WhatsApp__Provider: "${OrderDeck__WhatsApp__Provider:-log}"
+      OrderDeck__WhatsApp__AppSecret: "${OrderDeck__WhatsApp__AppSecret:-}"
+      OrderDeck__WhatsApp__VerifyToken: "${OrderDeck__WhatsApp__VerifyToken:-}"
       # OpenTelemetry export. Set OTEL_EXPORTER_OTLP_ENDPOINT in .env to push
       # traces+metrics to a collector (Grafana Cloud, Honeycomb, Tempo, etc.).
       # Empty = no push; /metrics scrape endpoint still works regardless.
@@ -101,6 +121,8 @@ services:
     volumes:
       - ./keys:/root/.aspnet/DataProtection-Keys
       - ./backups:/app/Backups
+      # FCM servis hesabı anahtarı — host'ta duruyor, imaja girmiyor.
+      - /etc/orderdeck/firebase-service-account.json:/etc/orderdeck/firebase-service-account.json:ro
     networks:
       - web
     expose:
