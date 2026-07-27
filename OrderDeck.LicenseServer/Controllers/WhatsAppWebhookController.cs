@@ -55,13 +55,13 @@ public sealed class WhatsAppWebhookController : ControllerBase
         if (string.IsNullOrWhiteSpace(_opt.VerifyToken))
         {
             _log.LogWarning("WhatsApp webhook doğrulaması istendi ama VerifyToken yapılandırılmamış.");
-            return Forbid();
+            return StatusCode(StatusCodes.Status403Forbidden);
         }
 
         if (mode != "subscribe" || !FixedTimeEquals(verifyToken, _opt.VerifyToken))
         {
             _log.LogWarning("WhatsApp webhook doğrulaması reddedildi (mode={Mode}).", mode);
-            return Forbid();
+            return StatusCode(StatusCodes.Status403Forbidden);
         }
 
         return Content(challenge ?? string.Empty, "text/plain");
@@ -83,7 +83,7 @@ public sealed class WhatsAppWebhookController : ControllerBase
         if (!WhatsAppSignatureValidator.IsValid(signature, rawBody, _opt.AppSecret))
         {
             _log.LogWarning("WhatsApp webhook imzası geçersiz — istek reddedildi.");
-            return Forbid();
+            return StatusCode(StatusCodes.Status403Forbidden);
         }
 
         if (rawBody.Length > 0)

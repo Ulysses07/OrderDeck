@@ -15,8 +15,9 @@ namespace OrderDeck.LicenseServer.Services.WhatsApp;
 public sealed class WhatsAppOptions
 {
     /// <summary>Graph API sürümü (Meta eski sürümleri ~2 yıl sonra deprecate eder → pinli).
-    /// 2026-07 itibarıyla güncel: v24.0.</summary>
-    public string GraphApiVersion { get; set; } = "v24.0";
+    /// 2026-07-27 itibarıyla en yeni: v25.0 (v26.0 henüz yok — Graph 400 döndürüyor).
+    /// Webhook alanları da Meta tarafında v25.0'a abone; ikisini aynı sürümde tutuyoruz.</summary>
+    public string GraphApiVersion { get; set; } = "v25.0";
 
     /// <summary>Webhook GET doğrulaması: Meta'nın gönderdiği <c>hub.verify_token</c>
     /// bununla eşleşmeli. Kendi belirlediğin rastgele string.</summary>
