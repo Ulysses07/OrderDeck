@@ -12,6 +12,7 @@ using OrderDeck.App.Services;
 using OrderDeck.App.Services.IntakeForm;
 using OrderDeck.App.Views;
 using OrderDeck.Chat.Bridge;
+using OrderDeck.Chat.Facebook;
 using OrderDeck.Chat.YouTube;
 using OrderDeck.Core.Chat;
 using OrderDeck.Core.Customers;
@@ -150,6 +151,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     public IAsyncRelayCommand OpenDekontEkleCommand { get; private set; } = null!;
 
     private readonly YouTubeModerationService? _youTubeModeration;
+    private readonly FacebookModerationService? _facebookModeration;
 
     public MainShellViewModel(
         IChatBus bus,
@@ -166,7 +168,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         YouTubeModerationService? youTubeModeration = null,
         AnimationCatalogClient? animationCatalogClient = null,
         ExtensionBridgeServer? bridge = null,
-        ViewerCountTracker? viewers = null)
+        ViewerCountTracker? viewers = null,
+        FacebookModerationService? facebookModeration = null)
     {
         _labels = labels;
         _sessions = sessions;
@@ -180,6 +183,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _bridge = bridge;
         _viewers = viewers;
         _youTubeModeration = youTubeModeration;
+        _facebookModeration = facebookModeration;
         Banner = banner;
         _dispatcher = Dispatcher.CurrentDispatcher;
         // _settingsStore must be assigned BEFORE EnsureChatFlushTimer() because
@@ -1123,6 +1127,139 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         catch (Exception ex)
         {
             MessageBox.Show($"Beklenmeyen hata: {ex.Message}", "YouTube moderasyon",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    /// <summary>
+    /// Right-click → "FB'de yorumu sil". The Facebook ingestor stores the
+    /// Graph comment id in <c>ChatMessage.ExternalId</c>, which is exactly what
+    /// <c>DELETE /{comment-id}</c> expects, so it passes through unchanged.
+    /// </summary>
+    [RelayCommand]
+    private async Task DeleteFacebookComment(ChatMessageViewModel? msg)
+    {
+        if (msg is null || _facebookModeration is null) return;
+        if (!string.Equals(msg.Platform, "facebook", StringComparison.OrdinalIgnoreCase)) return;
+
+        var commentId = msg.Message.ExternalId;
+        if (string.IsNullOrEmpty(commentId))
+        {
+            MessageBox.Show(
+                "Bu mesaj Facebook üzerinden gelmedi (orijinal yorum kimliği yok), silinemez.",
+                "Facebook moderasyon", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            $"'{msg.Display}' kullanıcısının yorumu Facebook'tan silinsin mi?",
+            "Facebook moderasyon", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.Yes) return;
+
+        try
+        {
+            await _facebookModeration.DeleteCommentAsync(commentId).ConfigureAwait(true);
+            MessageBox.Show("Yorum silindi.", "Facebook moderasyon",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (ModerationException ex)
+        {
+            MessageBox.Show(ex.Message, "Facebook moderasyon",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Beklenmeyen hata: {ex.Message}", "Facebook moderasyon",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    /// <summary>
+    /// Right-click → "FB'de kullanıcıyı banla". Username for Facebook messages
+    /// is the page-scoped id from <c>from.id</c>, which
+    /// <c>POST /{page-id}/blocked</c> takes as <c>psid</c>. Note the ban covers
+    /// the whole Page, not just the current live — that's the only granularity
+    /// Meta exposes, so the confirmation says so explicitly.
+    /// </summary>
+    [RelayCommand]
+    private async Task BanFacebookUser(ChatMessageViewModel? msg)
+    {
+        if (msg is null || _facebookModeration is null) return;
+        if (!string.Equals(msg.Platform, "facebook", StringComparison.OrdinalIgnoreCase)) return;
+
+        if (string.IsNullOrEmpty(msg.Username))
+        {
+            MessageBox.Show(
+                "Bu mesajda Facebook kullanıcı kimliği yok, banlanamaz.",
+                "Facebook ban", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var displayName = msg.Display;
+        var confirm = MessageBox.Show(
+            $"'{displayName}' kullanıcısı Page'den kalıcı olarak banlansın mı? " +
+            "Ban yalnızca bu yayını değil, Page'in tüm içeriğini kapsar.",
+            "Facebook ban", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.Yes) return;
+
+        try
+        {
+            await _facebookModeration.BanUserAsync(msg.Username).ConfigureAwait(true);
+            MessageBox.Show($"{displayName} banlandı.", "Facebook moderasyon",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (ModerationException ex)
+        {
+            MessageBox.Show(ex.Message, "Facebook moderasyon",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Beklenmeyen hata: {ex.Message}", "Facebook moderasyon",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    /// <summary>
+    /// Right-click → "FB'de banı kaldır". Recovery path for a mis-click on the
+    /// ban command. Facebook needs only the PSID to lift a block, so — unlike
+    /// the YouTube equivalent — this keeps working after a restart and can be
+    /// invoked from any surviving message by that user.
+    /// </summary>
+    [RelayCommand]
+    private async Task UnbanFacebookUser(ChatMessageViewModel? msg)
+    {
+        if (msg is null || _facebookModeration is null) return;
+        if (!string.Equals(msg.Platform, "facebook", StringComparison.OrdinalIgnoreCase)) return;
+
+        if (string.IsNullOrEmpty(msg.Username))
+        {
+            MessageBox.Show(
+                "Bu mesajda Facebook kullanıcı kimliği yok, banlanamaz.",
+                "Facebook ban kaldır", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var displayName = msg.Display;
+        var confirm = MessageBox.Show(
+            $"'{displayName}' kullanıcısının Page banı kaldırılsın mı?",
+            "Facebook ban kaldır", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.Yes) return;
+
+        try
+        {
+            await _facebookModeration.UnbanUserAsync(msg.Username).ConfigureAwait(true);
+            MessageBox.Show($"{displayName} kullanıcısının banı kaldırıldı.", "Facebook moderasyon",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (ModerationException ex)
+        {
+            MessageBox.Show(ex.Message, "Facebook moderasyon",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Beklenmeyen hata: {ex.Message}", "Facebook moderasyon",
                 MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }

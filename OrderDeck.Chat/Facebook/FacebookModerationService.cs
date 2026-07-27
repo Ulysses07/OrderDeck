@@ -90,6 +90,29 @@ public sealed class FacebookModerationService
         _log.LogInformation("Facebook user blocked from page: {UserId}", userId);
     }
 
+    /// <summary>
+    /// Lifts a ban placed by <see cref="BanUserAsync"/> —
+    /// <c>DELETE /{page-id}/blocked?psid=...</c>. Unlike YouTube there's no
+    /// server-side ban id to remember: the PSID alone identifies the block, so
+    /// this still works after an app restart and from any message that user
+    /// ever posted.
+    /// </summary>
+    public async Task UnbanUserAsync(string userId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(userId))
+            throw new ArgumentException("Kullanıcı kimliği boş olamaz.", nameof(userId));
+
+        var creds = await RequireCredsAsync(ct).ConfigureAwait(false);
+        var url = $"{GraphBase}/{Uri.EscapeDataString(creds.PageId)}/blocked" +
+                  $"?psid={Uri.EscapeDataString(userId)}" +
+                  $"&access_token={Uri.EscapeDataString(creds.PageAccessToken)}";
+
+        using var resp = await _http.DeleteAsync(url, ct).ConfigureAwait(false);
+        await EnsureSuccessOrThrowAsync(resp, ct).ConfigureAwait(false);
+
+        _log.LogInformation("Facebook user unblocked from page: {UserId}", userId);
+    }
+
     private async Task<(string PageId, string PageAccessToken)> RequireCredsAsync(CancellationToken ct)
     {
         var creds = await _oauth.GetPageCredentialsAsync(ct).ConfigureAwait(false);

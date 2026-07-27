@@ -475,17 +475,63 @@
                                           Command="{Binding PlacementTarget.DataContext.DeleteYouTubeMessageCommand,
                                                             RelativeSource={RelativeSource AncestorType=ContextMenu}}"
                                           CommandParameter="{Binding PlacementTarget.SelectedItem,
-                                                                     RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                                                     RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                          Visibility="{Binding PlacementTarget.SelectedItem.IsYouTube,
+                                                               RelativeSource={RelativeSource AncestorType=ContextMenu},
+                                                               Converter={StaticResource BoolToVisibleConverter},
+                                                               FallbackValue=Collapsed}"/>
                                 <MenuItem Header="YouTube'da kullanıcıyı banla"
                                           Command="{Binding PlacementTarget.DataContext.BanYouTubeUserCommand,
                                                             RelativeSource={RelativeSource AncestorType=ContextMenu}}"
                                           CommandParameter="{Binding PlacementTarget.SelectedItem,
-                                                                     RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                                                     RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                          Visibility="{Binding PlacementTarget.SelectedItem.IsYouTube,
+                                                               RelativeSource={RelativeSource AncestorType=ContextMenu},
+                                                               Converter={StaticResource BoolToVisibleConverter},
+                                                               FallbackValue=Collapsed}"/>
                                 <MenuItem Header="YouTube'da banı kaldır"
                                           Command="{Binding PlacementTarget.DataContext.UnbanYouTubeUserCommand,
                                                             RelativeSource={RelativeSource AncestorType=ContextMenu}}"
                                           CommandParameter="{Binding PlacementTarget.SelectedItem,
-                                                                     RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                                                     RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                          Visibility="{Binding PlacementTarget.SelectedItem.IsYouTube,
+                                                               RelativeSource={RelativeSource AncestorType=ContextMenu},
+                                                               Converter={StaticResource BoolToVisibleConverter},
+                                                               FallbackValue=Collapsed}"/>
+                                <!--
+                                  Facebook moderation. Mirrors the YouTube pair above:
+                                  ExternalId is the Graph comment id, Username is the
+                                  page-scoped user id, so FacebookModerationService takes
+                                  both through unchanged. Requires a connected Page
+                                  (Settings → Facebook) — otherwise the commands warn.
+                                -->
+                                <MenuItem Header="Facebook'ta yorumu sil"
+                                          Command="{Binding PlacementTarget.DataContext.DeleteFacebookCommentCommand,
+                                                            RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                          CommandParameter="{Binding PlacementTarget.SelectedItem,
+                                                                     RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                          Visibility="{Binding PlacementTarget.SelectedItem.IsFacebook,
+                                                               RelativeSource={RelativeSource AncestorType=ContextMenu},
+                                                               Converter={StaticResource BoolToVisibleConverter},
+                                                               FallbackValue=Collapsed}"/>
+                                <MenuItem Header="Facebook'ta kullanıcıyı banla"
+                                          Command="{Binding PlacementTarget.DataContext.BanFacebookUserCommand,
+                                                            RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                          CommandParameter="{Binding PlacementTarget.SelectedItem,
+                                                                     RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                          Visibility="{Binding PlacementTarget.SelectedItem.IsFacebook,
+                                                               RelativeSource={RelativeSource AncestorType=ContextMenu},
+                                                               Converter={StaticResource BoolToVisibleConverter},
+                                                               FallbackValue=Collapsed}"/>
+                                <MenuItem Header="Facebook'ta banı kaldır"
+                                          Command="{Binding PlacementTarget.DataContext.UnbanFacebookUserCommand,
+                                                            RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                          CommandParameter="{Binding PlacementTarget.SelectedItem,
+                                                                     RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                          Visibility="{Binding PlacementTarget.SelectedItem.IsFacebook,
+                                                               RelativeSource={RelativeSource AncestorType=ContextMenu},
+                                                               Converter={StaticResource BoolToVisibleConverter},
+                                                               FallbackValue=Collapsed}"/>
                                 <MenuItem Header="Kara Listeye Al…"
                                           Command="{Binding PlacementTarget.DataContext.AddChatSenderToBlacklistCommand,
                                                             RelativeSource={RelativeSource AncestorType=ContextMenu}}"
