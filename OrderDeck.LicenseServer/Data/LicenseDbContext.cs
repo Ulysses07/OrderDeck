@@ -45,6 +45,9 @@ public class LicenseDbContext : DbContext
     public DbSet<LicenseSmsTransaction> LicenseSmsTransactions => Set<LicenseSmsTransaction>();
     public DbSet<SmsCampaign> SmsCampaigns => Set<SmsCampaign>();
     public DbSet<SmsCampaignRecipient> SmsCampaignRecipients => Set<SmsCampaignRecipient>();
+    public DbSet<WhatsAppAccount> WhatsAppAccounts => Set<WhatsAppAccount>();
+    public DbSet<WaConversation> WaConversations => Set<WaConversation>();
+    public DbSet<WaMessage> WaMessages => Set<WaMessage>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -518,6 +521,58 @@ public class LicenseDbContext : DbContext
             b.Property(r => r.Status).HasMaxLength(16).IsRequired();
             b.Property(r => r.Error).HasMaxLength(500);
             b.HasIndex(r => r.CampaignId);
+        });
+
+        mb.Entity<WhatsAppAccount>(b =>
+        {
+            b.HasKey(a => a.Id);
+            b.HasOne(a => a.License).WithMany().HasForeignKey(a => a.LicenseId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.Property(a => a.WabaId).HasMaxLength(64).IsRequired();
+            b.Property(a => a.PhoneNumberId).HasMaxLength(64).IsRequired();
+            b.Property(a => a.DisplayPhoneNumber).HasMaxLength(20).IsRequired();
+            b.Property(a => a.VerifiedName).HasMaxLength(200);
+            b.Property(a => a.AccessTokenProtected).HasMaxLength(4000).IsRequired();
+            b.Property(a => a.Status).HasMaxLength(16).IsRequired();
+            b.Property(a => a.LastError).HasMaxLength(500);
+            // Webhook yönlendirmesi bu alandan tenant bulur → global unique.
+            b.HasIndex(a => a.PhoneNumberId).IsUnique();
+            b.HasIndex(a => a.LicenseId);
+        });
+
+        mb.Entity<WaConversation>(b =>
+        {
+            b.HasKey(c => c.Id);
+            b.HasOne(c => c.License).WithMany().HasForeignKey(c => c.LicenseId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.Property(c => c.CustomerPhone).HasMaxLength(20).IsRequired();
+            b.Property(c => c.ProfileName).HasMaxLength(200);
+            b.Property(c => c.PhoneNumberId).HasMaxLength(64).IsRequired();
+            b.Property(c => c.Status).HasMaxLength(16).IsRequired();
+            b.HasIndex(c => new { c.LicenseId, c.CustomerPhone }).IsUnique();
+            b.HasIndex(c => new { c.LicenseId, c.LastMessageAt });
+        });
+
+        mb.Entity<WaMessage>(b =>
+        {
+            b.HasKey(m => m.Id);
+            b.HasOne(m => m.Conversation).WithMany().HasForeignKey(m => m.ConversationId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.Property(m => m.WamId).HasMaxLength(128).IsRequired();
+            b.Property(m => m.Direction).HasMaxLength(8).IsRequired();
+            b.Property(m => m.Origin).HasMaxLength(16);
+            b.Property(m => m.Type).HasMaxLength(24).IsRequired();
+            b.Property(m => m.Body).HasMaxLength(8000);
+            b.Property(m => m.MediaR2Key).HasMaxLength(500);
+            b.Property(m => m.MediaMimeType).HasMaxLength(120);
+            b.Property(m => m.TemplateName).HasMaxLength(200);
+            b.Property(m => m.Status).HasMaxLength(16).IsRequired();
+            b.Property(m => m.ErrorCode).HasMaxLength(32);
+            b.Property(m => m.ErrorMessage).HasMaxLength(1000);
+            // Webhook "at least once" teslim eder → tekrar gelen olay yazılamaz.
+            b.HasIndex(m => m.WamId).IsUnique();
+            b.HasIndex(m => new { m.ConversationId, m.Timestamp });
+            b.HasIndex(m => new { m.LicenseId, m.Timestamp });
         });
 
         // Seed SKUs

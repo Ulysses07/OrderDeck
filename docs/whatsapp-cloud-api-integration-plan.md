@@ -259,9 +259,15 @@ Meta Cloud API  ──webhook POST──►  LicenseServer /api/whatsapp/webhook
 6. **Meta hesabı:** **Business Verification + Tech Provider onaylı** → onboarding
    sürtünmesi düşük. Tech Provider olması ileride **çok-tenant** (başka
    yayıncıların numaralarını Embedded Signup ile bağlama, reseller) kapısını açar.
-7. **Çok-tenant:** mimari **tenant-aware** kurulur (WABA/tenant kolonu), ama
-   davranış önce **tek-numara** (tam multi-tenant onboarding sonraya). Düşük
-   maliyetli hedge.
+7. **Çok-tenant BİRİNCİL (ürün gereği):** Her yayıncı kendi WhatsApp numarasını
+   **Embedded Signup**'la bağlar. **App Review gerekmiyor** — `whatsapp_business_messaging`
+   Advanced Access'i **Tech Provider onayıyla zaten alınmış** (App Review, Tech
+   Provider olmanın ön koşulu). Mimari baştan **tenant-aware** (her tenant: WABA
+   Id + Phone Number ID + kendi token/PNID; secret'lar tenant başına şifreli
+   saklanır). **Kendi numaran = ilk tenant** (uçtan test için).
+   - Ödeme modeli: Tech Provider'da her tenant kendi ödeme yöntemini Meta'ya
+     girer (kredi hattı yok). İleride "sen faturalandır" istersen Solution
+     Partner yükseltmesi — ayrı ticari adım, engel değil.
 
 ### Sıralamanın etkileri (outbound-first)
 - **Template'ler erken gerekir:** pencere-dışı gönderim için ödeme/kargo utility
@@ -291,7 +297,9 @@ Meta Cloud API  ──webhook POST──►  LicenseServer /api/whatsapp/webhook
 - [ ] `IWhatsAppSender` + `CloudApiWhatsAppSender` + `LogWhatsAppSender`
 - [ ] Veri modeli (`WaConversation`/`WaMessage`) + EF migration
 - [ ] Payload parser (tüm türler + echo + status)
-- [ ] Media indir→R2
+- [x] Media indir→R2 — `WhatsAppMediaDownloader` + `IWhatsAppMediaStore`
+      (R2 / in-memory). İndirme inbound job içinde **senkron**: Meta'nın medya
+      URL'i 5 dk sonra ölüyor. Hata/limit aşımı mesajı düşürmez, metadata kalır.
 - [ ] Testler
 - [ ] Deploy + VPS `.env` + Meta webhook kaydı
 

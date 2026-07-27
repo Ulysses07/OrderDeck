@@ -120,6 +120,35 @@ public class Program
         builder.Services.AddScoped<AdminActionEmailService>();
         builder.Services.AddScoped<IntakeFormService>();
         builder.Services.AddSingleton<WhatsAppLinkBuilder>();
+
+        // WhatsApp Cloud API — SMS/Push pattern'iyle aynı. Dev/test → log
+        // (gerçek çağrı yok), prod → cloud (Graph API, typed HttpClient).
+        // Tenant-aware: gönderim kimlikleri çağrı başına WhatsAppSendContext'ten.
+        builder.Services.Configure<OrderDeck.LicenseServer.Services.WhatsApp.WhatsAppOptions>(
+            builder.Configuration.GetSection("OrderDeck:WhatsApp"));
+        var waProvider = builder.Configuration["OrderDeck:WhatsApp:Provider"] ?? "log";
+        if (waProvider.Equals("cloud", StringComparison.OrdinalIgnoreCase))
+        {
+            var waTimeout = builder.Configuration.GetValue("OrderDeck:WhatsApp:TimeoutSeconds", 15);
+            builder.Services.AddHttpClient<OrderDeck.LicenseServer.Services.WhatsApp.IWhatsAppSender,
+                    OrderDeck.LicenseServer.Services.WhatsApp.CloudApiWhatsAppSender>(
+                    c => c.Timeout = TimeSpan.FromSeconds(waTimeout <= 0 ? 15 : waTimeout));
+        }
+        else
+            builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.WhatsApp.IWhatsAppSender,
+                OrderDeck.LicenseServer.Services.WhatsApp.LogWhatsAppSender>();
+
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.WhatsApp.WhatsAppAccountService>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.WhatsApp.WhatsAppMessagingService>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.WhatsApp.WhatsAppInboundJob>();
+
+        // Medya indirici sağlayıcıdan bağımsız kayıtlı: log modunda da inbound
+        // job onu ister, gerçek token olmadığı için Graph çağrısı uyarı loglayıp
+        // boş döner (mesaj yine kaydedilir). Timeout sender'la aynı.
+        var waMediaTimeout = builder.Configuration.GetValue("OrderDeck:WhatsApp:TimeoutSeconds", 15);
+        builder.Services.AddHttpClient<OrderDeck.LicenseServer.Services.WhatsApp.WhatsAppMediaDownloader>(
+            c => c.Timeout = TimeSpan.FromSeconds(waMediaTimeout <= 0 ? 15 : waMediaTimeout));
+
         builder.Services.AddSingleton<BackupStorageService>();
         builder.Services.AddScoped<BackupRetentionService>();
         builder.Services.AddScoped<BackupViewerService>();
@@ -192,6 +221,20 @@ public class Program
             builder.Services.AddSingleton<
                 OrderDeck.LicenseServer.Services.ShopperPayments.IShopperPaymentStorage,
                 OrderDeck.LicenseServer.Services.ShopperPayments.R2ShopperPaymentStorage>();
+        }
+
+        // WhatsApp medyası aynı bucket'ı paylaşır ("wa/" öneki) → aynı provider seçimi.
+        if (bmProvider.Equals("stub", StringComparison.OrdinalIgnoreCase))
+        {
+            builder.Services.AddSingleton<
+                OrderDeck.LicenseServer.Services.WhatsApp.IWhatsAppMediaStore,
+                OrderDeck.LicenseServer.Services.WhatsApp.InMemoryWhatsAppMediaStore>();
+        }
+        else
+        {
+            builder.Services.AddSingleton<
+                OrderDeck.LicenseServer.Services.WhatsApp.IWhatsAppMediaStore,
+                OrderDeck.LicenseServer.Services.WhatsApp.R2WhatsAppMediaStore>();
         }
 
         // JWT auth — two schemes (use IOptions so tests can override Jwt:SecretKey via config)
