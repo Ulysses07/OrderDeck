@@ -165,6 +165,18 @@ public sealed class PaymentSettings
         "Merhaba {ad}, toplam {kumulatif_tutar} TL alımınız ile ücretsiz " +
         "kargo hakkı kazandınız! 🎁 Siparişiniz en kısa sürede kargoya " +
         "verilecek. Teşekkürler!";
+
+    /// <summary>
+    /// true → ödeme hatırlatma mesajı WhatsApp Cloud API ile doğrudan gönderilir
+    /// (operatör "gönder"e basmaz). false → mevcut davranış: wa.me linki açılır.
+    ///
+    /// Varsayılan kapalı: gerçek numara Coexistence ile bağlanana kadar Cloud
+    /// API'nin 24 saat penceresi çoğu müşteride kapalı olacağı için otomatik
+    /// gönderim zaten wa.me'ye düşer; bayrağı kapalı tutmak bu gereksiz turu da
+    /// önler. settings.json'dan açılır — tek yayıncılı geçiş dönemi için ayar
+    /// ekranına gerek yok.
+    /// </summary>
+    public bool UseCloudApi { get; set; } = false;
 }
 
 /// <summary>

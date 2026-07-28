@@ -15,7 +15,11 @@ public enum PaymentRequestResult
 {
     Opened,
     PhoneRequired,
-    LaunchFailed
+    LaunchFailed,
+
+    /// <summary>Mesaj WhatsApp Cloud API ile doğrudan gönderildi — operatörün
+    /// gönder tuşuna basmasına gerek yok, wa.me penceresi açılmadı.</summary>
+    Sent
 }
 
 /// <summary>
@@ -183,6 +187,16 @@ public sealed class PaymentRequestService
             TotalBeforeBalance: totalBeforeBalance);
 
         var message = _messageBuilder.BuildMessage(settings.Payment.WhatsAppMessageTemplate, ctx);
+
+        // Cloud API açıksa doğrudan gönder. Başarısızsa (pencere kapalı, hesap
+        // yok, ağ hatası) sessizce wa.me'ye düşeriz — yayıncı elle gönderir,
+        // yani en kötü ihtimalde eski davranış.
+        if (settings.Payment.UseCloudApi
+            && await TrySendViaCloudApiAsync(customer.Phone!, message, "wpf-payment", ct))
+        {
+            return PaymentRequestResult.Sent;
+        }
+
         var link = _messageBuilder.BuildWaMeLink(customer.Phone!, message);
 
         try
@@ -226,6 +240,42 @@ public sealed class PaymentRequestService
         catch
         {
             return PaymentRequestResult.LaunchFailed;
+        }
+    }
+
+    /// <summary>
+    /// Mesajı Cloud API ile göndermeyi dener. true = gönderildi.
+    /// false = çağıran wa.me'ye düşmeli (hesap bağlı değil, 24s pencere kapalı,
+    /// lisans çözülemedi ya da ağ hatası).
+    ///
+    /// Hiçbir durumda istisna fırlatmaz: ödeme isteme akışı, opsiyonel bir
+    /// gönderim yolunun hatasıyla durmamalı.
+    /// </summary>
+    private async Task<bool> TrySendViaCloudApiAsync(
+        string phone, string message, string origin, CancellationToken ct)
+    {
+        try
+        {
+            var licenseId = await ResolveLicenseIdAsync(ct);
+            if (licenseId is null) return false;
+
+            var resp = await _api.SendWhatsAppTextAsync(
+                licenseId.Value, new WhatsAppSendRequest(phone, message, origin), ct);
+
+            if (!resp.Ok)
+            {
+                _log?.LogInformation(
+                    "WhatsApp Cloud API gönderimi yapılamadı ({Code}) — wa.me'ye düşülüyor",
+                    resp.ErrorCode);
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log?.LogWarning(ex, "WhatsApp Cloud API gönderimi hata verdi — wa.me'ye düşülüyor");
+            return false;
         }
     }
 

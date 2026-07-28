@@ -1,6 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Net;
 using System.Net.Http;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using FluentAssertions;
 using OrderDeck.App.Services;
 using OrderDeck.App.Services.Sync;
@@ -50,6 +55,75 @@ public class PaymentRequestServiceTests : IDisposable
             return System.Threading.Tasks.Task.FromResult(
                 new HttpResponseMessage(System.Net.HttpStatusCode.NotFound));
         }
+    }
+
+    /// <summary>Cloud API yolunu sürebilmek için iki uca cevap veren handler:
+    /// /api/v1/me/licenses (lisans id çözümü) ve .../whatsapp/send (gönderim).
+    /// Diğer her şey 404 — bakiye uçları dahil, o yol testte kullanılmıyor.</summary>
+    private sealed class WhatsAppStubHandler : HttpMessageHandler
+    {
+        public static readonly Guid LicenseId = Guid.Parse("11111111-2222-3333-4444-555555555555");
+        public const string LicenseKey = "LDK-TEST-KEY";
+
+        public List<string> SentBodies { get; } = new();
+
+        /// <summary>Gönderim ucunun döneceği gövde. Varsayılan: başarılı.</summary>
+        public string SendResponseJson { get; set; } =
+            """{"ok":true,"errorCode":null,"errorMessage":null,"messageId":"66666666-7777-8888-9999-000000000000"}""";
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri!.AbsolutePath;
+
+            if (path == "/api/v1/me/licenses")
+            {
+                return Json($$"""
+                    [{"licenseKey":"{{LicenseKey}}","skuCode":"STD",
+                      "expiresAt":"2030-01-01T00:00:00+00:00","revokedAt":null,
+                      "id":"{{LicenseId}}"}]
+                    """);
+            }
+
+            if (path.EndsWith("/whatsapp/send", StringComparison.Ordinal))
+            {
+                SentBodies.Add(await request.Content!.ReadAsStringAsync(cancellationToken));
+                return Json(SendResponseJson);
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }
+
+        private static HttpResponseMessage Json(string body) => new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json")
+        };
+    }
+
+    private sealed class FixedLicenseProvider : ICurrentLicenseProvider
+    {
+        public string? CurrentLicenseKey => WhatsAppStubHandler.LicenseKey;
+    }
+
+    private static (PaymentRequestService Sut, WhatsAppStubHandler Handler) MakeCloudSut(
+        SettingsStore store, FakeUrlLauncher launcher)
+    {
+        var handler = new WhatsAppStubHandler();
+        var http = new HttpClient(handler) { BaseAddress = new Uri("https://stub") };
+        var api = new LicenseApiClient(http, new LicenseTokenStore());
+        var sut = new PaymentRequestService(store, new WhatsAppMessageBuilder(), launcher,
+            api, new FixedLicenseProvider());
+        return (sut, handler);
+    }
+
+    /// <summary>Cloud API açık, sade şablonlu bir ayar dosyası yazar.
+    /// (Dosya hiç yazılmazsa SettingsStore varsayılanı döner → UseCloudApi false.)</summary>
+    private void EnableCloudApi()
+    {
+        var settings = new AppSettings();
+        settings.Payment.WhatsAppMessageTemplate = "Ödeme: {tutar} TL";
+        settings.Payment.UseCloudApi = true;
+        _store.Save(settings);
     }
 
     public void Dispose()
@@ -227,5 +301,52 @@ public class PaymentRequestServiceTests : IDisposable
         _launcher.LaunchedUrls[0].Should().StartWith("https://wa.me/905551234567?text=");
         _launcher.LaunchedUrls[0].Should().Contain("Tebrikler%20Alice");
         _launcher.LaunchedUrls[0].Should().Contain("5.300%2C00%20TL");
+    }
+
+    // ── WhatsApp Cloud API ile doğrudan gönderim (2026-07-28) ────────────
+
+    [Fact]
+    public async Task OpenWhatsAppAsync_CloudApiEnabled_SendsWithoutLaunchingWaMe()
+    {
+        EnableCloudApi();
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+
+        var result = await sut.OpenWhatsAppAsync(
+            MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28));
+
+        result.Should().Be(PaymentRequestResult.Sent);
+        _launcher.LaunchedUrls.Should().BeEmpty();
+        handler.SentBodies.Should().ContainSingle();
+        handler.SentBodies[0].Should().Contain("\"origin\":\"wpf-payment\"");
+        handler.SentBodies[0].Should().Contain("250");
+    }
+
+    [Fact]
+    public async Task OpenWhatsAppAsync_CloudApiReportsWindowClosed_FallsBackToWaMe()
+    {
+        EnableCloudApi();
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.SendResponseJson =
+            """{"ok":false,"errorCode":"window_closed","errorMessage":"kapalı","messageId":null}""";
+
+        var result = await sut.OpenWhatsAppAsync(
+            MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28));
+
+        result.Should().Be(PaymentRequestResult.Opened);
+        _launcher.LaunchedUrls.Should().ContainSingle()
+            .Which.Should().StartWith("https://wa.me/");
+    }
+
+    [Fact]
+    public async Task OpenWhatsAppAsync_CloudApiDisabled_LaunchesWaMeAsBefore()
+    {
+        var (sut, handler) = MakeCloudSut(_store, _launcher);   // UseCloudApi varsayılan false
+
+        var result = await sut.OpenWhatsAppAsync(
+            MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28));
+
+        result.Should().Be(PaymentRequestResult.Opened);
+        handler.SentBodies.Should().BeEmpty();
+        _launcher.LaunchedUrls.Should().ContainSingle();
     }
 }
