@@ -231,6 +231,16 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
         return await db.WaMessages.CountAsync(m => m.LicenseId == licenseId);
     }
 
+    /// <summary>Lisansın tek rezervasyon satırını HER SEFERİNDE taze bir scope'tan
+    /// okur: amaç kalıcılaşmış hâli görmek, isteğin DbContext'inde takip edilen
+    /// örneği değil. <c>Single</c> aynı zamanda "tek satır" iddiasını da taşır.</summary>
+    private async Task<WaSendAttempt> SingleAttemptAsync(Guid licenseId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        return await db.WaSendAttempts.AsNoTracking().SingleAsync(a => a.LicenseId == licenseId);
+    }
+
     /// <summary>Graph'a çıkmadan doğrudan rezervasyon satırı yazar.</summary>
     private async Task SeedAttemptAsync(Guid licenseId, Guid key, DateTimeOffset createdAt)
     {
@@ -385,11 +395,30 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
         first.Ok.Should().BeFalse();
         first.ErrorCode.Should().Be("window_closed");
 
+        // Sonucun rezervasyon satırına işlendiği an. Testin taşıyıcı iddiası
+        // bunun DEĞİŞMEMESİ: aşağıdaki gövde ve mesaj-sayısı kontrolleri tek
+        // başına hiçbir şey kanıtlamıyor, çünkü pencere hâlâ kapalı olduğu için
+        // GERÇEK bir ikinci deneme de birebir aynı window_closed gövdesini döner
+        // ve yine 0 mesaj yazar. Tekrar-oynatmayı yeniden-denemeden ayıran tek
+        // iz bu damga: ikinci kez Graph yoluna girilseydi sonuç aynı satıra daha
+        // yeni bir CompletedAt ile üzerine yazılırdı.
+        var afterFirst = await SingleAttemptAsync(licenseId);
+        afterFirst.Status.Should().Be("done");
+        afterFirst.Ok.Should().BeFalse();
+        afterFirst.ErrorCode.Should().Be("window_closed");
+        afterFirst.CompletedAt.Should().NotBeNull();
+        var completedAt = afterFirst.CompletedAt!.Value;
+
         // Hata da tekrar oynatılır — sessizce yeniden denenmez.
         var second = (await (await client.PostAsJsonAsync(Url(licenseId), body))
             .Content.ReadFromJsonAsync<SendResponse>())!;
         second.Should().BeEquivalentTo(first);
 
         (await CountMessagesAsync(licenseId)).Should().Be(0);
+
+        // Hâlâ tek rezervasyon satırı ve damga ilk çağrıdaki an olarak duruyor.
+        var afterSecond = await SingleAttemptAsync(licenseId);
+        afterSecond.Status.Should().Be("done");
+        afterSecond.CompletedAt.Should().Be(completedAt);
     }
 }
