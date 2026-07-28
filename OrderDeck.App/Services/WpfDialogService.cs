@@ -21,4 +21,7 @@ public sealed class WpfDialogService : IDialogService
 
     public void ShowError(string message)
         => MessageBox.Show(message, "Hata", MessageBoxButton.OK, MessageBoxImage.Error);
+
+    public void ShowInfo(string message)
+        => MessageBox.Show(message, "Bilgi", MessageBoxButton.OK, MessageBoxImage.Information);
 }

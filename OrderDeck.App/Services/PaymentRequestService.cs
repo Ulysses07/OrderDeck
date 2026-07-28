@@ -19,7 +19,19 @@ public enum PaymentRequestResult
 
     /// <summary>Mesaj WhatsApp Cloud API ile doğrudan gönderildi — operatörün
     /// gönder tuşuna basmasına gerek yok, wa.me penceresi açılmadı.</summary>
-    Sent
+    Sent,
+
+    /// <summary>Sunucu aynı gönderimin hâlâ işlendiğini söyledi (<c>in_progress</c>)
+    /// — sonuç BİLİNMİYOR.
+    ///
+    /// <para>Neden <see cref="Sent"/> değil: bu cevap, ilk denemenin yarıda
+    /// kesildiği (deploy sırasında sunucu yeniden başladı, bağlantı koptu, proxy
+    /// 502) durumda da geliyor. Orada rezervasyon bilerek pending bırakılır ve
+    /// müşteriye HİÇBİR ŞEY gitmemiştir. "Gönderildi" demek operatöre yalan
+    /// söylemek olur; wa.me'yi de açmıyoruz çünkü gönderim gerçekten uçuştaysa
+    /// ikinci bir faturalı kopya gider. Doğru davranış: operatörü uyarıp
+    /// doğrulamaya yönlendirmek.</para></summary>
+    SendPending
 }
 
 /// <summary>
@@ -196,10 +208,15 @@ public sealed class PaymentRequestService
         // Cloud API açıksa doğrudan gönder. Başarısızsa (pencere kapalı, hesap
         // yok, ağ hatası) sessizce wa.me'ye düşeriz — yayıncı elle gönderir,
         // yani en kötü ihtimalde eski davranış.
-        if (settings.Payment.UseCloudApi
-            && await TrySendViaCloudApiAsync(customer.Phone!, message, "wpf-payment", ct))
+        if (settings.Payment.UseCloudApi)
         {
-            return PaymentRequestResult.Sent;
+            switch (await TrySendViaCloudApiAsync(customer.Phone!, message, "wpf-payment", ct))
+            {
+                case CloudSendOutcome.Sent:
+                    return PaymentRequestResult.Sent;
+                case CloudSendOutcome.Pending:
+                    return PaymentRequestResult.SendPending;
+            }
         }
 
         var link = _messageBuilder.BuildWaMeLink(customer.Phone!, message);
@@ -248,16 +265,30 @@ public sealed class PaymentRequestService
         }
     }
 
+    /// <summary>Cloud API denemesinin üç ayrı sonucu. bool yetmiyor: "gönderildi"
+    /// ile "sonucu bilmiyoruz" ikisi de wa.me'yi açtırmıyor ama operatöre
+    /// söylenecek şey taban tabana zıt.</summary>
+    private enum CloudSendOutcome
+    {
+        /// <summary>Sunucu gönderimi onayladı.</summary>
+        Sent,
+
+        /// <summary>Çağıran wa.me'ye düşmeli (hesap bağlı değil, pencere kapalı,
+        /// lisans çözülemedi, ağ hatası).</summary>
+        FallBack,
+
+        /// <summary>Aynı gönderim sunucuda hâlâ işleniyor — sonuç bilinmiyor.</summary>
+        Pending
+    }
+
     /// <summary>
-    /// Mesajı Cloud API ile göndermeyi dener. true = gönderildi.
-    /// false = çağıran wa.me'ye düşmeli (hesap bağlı değil, 24s pencere kapalı,
-    /// lisans çözülemedi ya da ağ hatası).
+    /// Mesajı Cloud API ile göndermeyi dener.
     ///
     /// Yalnızca çağıranın açıkça iptal ettiği durum (ct iptal edilmişse)
     /// dışarı sızar; diğer tüm hatalar — HTTP zaman aşımı dahil — yutulur:
     /// ödeme isteme akışı, opsiyonel bir gönderim yolunun hatasıyla durmamalı.
     /// </summary>
-    private async Task<bool> TrySendViaCloudApiAsync(
+    private async Task<CloudSendOutcome> TrySendViaCloudApiAsync(
         string phone, string message, string origin, CancellationToken ct)
     {
         // Çağrı başına yeni anahtar: dayanıklılık katmanı bu POST'u yeniden
@@ -267,7 +298,7 @@ public sealed class PaymentRequestService
         try
         {
             var licenseId = await ResolveLicenseIdAsync(ct);
-            if (licenseId is null) return false;
+            if (licenseId is null) return CloudSendOutcome.FallBack;
 
             var resp = await _api.SendWhatsAppTextAsync(
                 licenseId.Value,
@@ -277,21 +308,22 @@ public sealed class PaymentRequestService
             {
                 if (resp.ErrorCode == WhatsAppSendErrorCodes.InProgress)
                 {
-                    // Gönderim gerçekten uçuşta; wa.me açmak operatörü ikinci bir
-                    // kopya yollamaya davet eder — gönderildi say ve geri düşme.
+                    // wa.me açmak operatörü ikinci bir kopya yollamaya davet eder;
+                    // ama "gönderildi" demek de yalan olur — sunucu sadece
+                    // "bilmiyorum" diyor. Kararı operatöre bırakıyoruz.
                     _log?.LogWarning(
-                        "Aynı WhatsApp gönderimi hâlâ işleniyor — çift mesajı önlemek için wa.me açılmıyor (key={Key})",
+                        "Aynı WhatsApp gönderimi hâlâ işleniyor — sonuç bilinmiyor, wa.me açılmıyor (key={Key})",
                         idempotencyKey);
-                    return true;
+                    return CloudSendOutcome.Pending;
                 }
 
                 _log?.LogInformation(
                     "WhatsApp Cloud API gönderimi yapılamadı ({Code}) — wa.me'ye düşülüyor (key={Key})",
                     resp.ErrorCode, idempotencyKey);
-                return false;
+                return CloudSendOutcome.FallBack;
             }
 
-            return true;
+            return CloudSendOutcome.Sent;
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -301,13 +333,13 @@ public sealed class PaymentRequestService
             // gönderim sunucu tarafında izlenebilsin.
             _log?.LogWarning(
                 "WhatsApp Cloud API zaman aşımı — wa.me'ye düşülüyor (key={Key})", idempotencyKey);
-            return false;
+            return CloudSendOutcome.FallBack;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _log?.LogWarning(ex,
                 "WhatsApp Cloud API gönderimi hata verdi — wa.me'ye düşülüyor (key={Key})", idempotencyKey);
-            return false;
+            return CloudSendOutcome.FallBack;
         }
     }
 

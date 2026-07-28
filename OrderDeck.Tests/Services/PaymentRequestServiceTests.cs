@@ -442,10 +442,15 @@ public class PaymentRequestServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task OpenWhatsAppAsync_CloudApiReportsInProgress_DoesNotLaunchWaMe()
+    public async Task OpenWhatsAppAsync_CloudApiReportsInProgress_ReturnsSendPendingWithoutLaunching()
     {
-        // Gönderim gerçekten uçuşta: wa.me açmak operatörü ikinci bir kopya
-        // yollamaya davet eder.
+        // in_progress "sonucu bilmiyorum" demek, "gönderildi" DEĞİL: ilk deneme
+        // yarıda kesilmişse (deploy sırasında sunucu yeniden başladı, bağlantı
+        // koptu, proxy 502) rezervasyon bilerek pending bırakılır ve müşteriye
+        // hiçbir şey gitmemiştir — saniyeler sonraki yeniden-deneme yine de
+        // in_progress alır. Burada Sent dönmek operatöre SESSİZ bir yalan söyler,
+        // çünkü ViewModel'ler Sent için hiçbir şey göstermiyor. wa.me de
+        // açılmıyor: gönderim gerçekten uçuştaysa ikinci faturalı kopya gider.
         EnableCloudApi();
         var (sut, handler) = MakeCloudSut(_store, _launcher);
         handler.SendResponseJson =
@@ -454,7 +459,7 @@ public class PaymentRequestServiceTests : IDisposable
         var result = await sut.OpenWhatsAppAsync(
             MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28));
 
-        result.Should().Be(PaymentRequestResult.Sent);
+        result.Should().Be(PaymentRequestResult.SendPending);
         _launcher.LaunchedUrls.Should().BeEmpty();
     }
 

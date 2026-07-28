@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using OrderDeck.LicenseServer.Controllers.Licenses;
@@ -508,6 +509,49 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Successful_send_whose_result_write_fails_still_reports_ok()
+    {
+        // Mesaj GİTTİ ama sonucu rezervasyon satırına yazamadık. Eskiden bu da
+        // "server_error" damgalanıp 500 ile dışarı veriliyordu; WPF'in dayanıklılık
+        // katmanı yeniden deniyor, o hatayı oynatıyor, WPF wa.me'ye düşüyor ve
+        // operatör AYNI müşteriye ikinci faturalı mesajı yolluyordu — bu özelliğin
+        // önlemek için var olduğu şeyin ta kendisi.
+        using var factory = new FailingResultWriteApiFactory();
+        var (client, licenseId) = await SeedAsync(factory);
+        await ConnectAccountAsync(licenseId, factory);
+        await OpenServiceWindowAsync(licenseId, "905551110011", factory);
+
+        var key = Guid.NewGuid();
+        var body = new
+        {
+            toPhone = "905551110011", text = "yazımı patlayan gönderim",
+            origin = "wpf-payment", idempotencyKey = key,
+        };
+
+        var resp = await client.PostAsJsonAsync(Url(licenseId), body);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var sendBody = (await resp.Content.ReadFromJsonAsync<SendResponse>())!;
+        sendBody.Ok.Should().BeTrue();
+        sendBody.ErrorCode.Should().BeNull();
+
+        // Gönderim gerçekten oldu — mesaj satırı ortada.
+        (await CountMessagesAsync(licenseId, factory)).Should().Be(1);
+
+        // Rezervasyon başarı olarak kapandı (damga en-iyi-çaba ile ikinci kez
+        // denenir); hiçbir koşulda server_error olmamalı.
+        var row = await SingleAttemptAsync(licenseId, factory);
+        row.ErrorCode.Should().NotBe(LicensesWhatsAppSendController.ErrServerError);
+        row.Ok.Should().BeTrue();
+
+        // Ve yeniden-deneme başarıyı oynatır, yeni mesaj YAZMAZ.
+        var retry = await client.PostAsJsonAsync(Url(licenseId), body);
+        retry.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await retry.Content.ReadFromJsonAsync<SendResponse>())!.Ok.Should().BeTrue();
+        (await CountMessagesAsync(licenseId, factory)).Should().Be(1);
+    }
+
+    [Fact]
     public void In_progress_error_code_literal_is_pinned()
     {
         // Aynı değer WPF tarafında OrderDeck.Licensing'de DUPLİKE duruyor
@@ -544,5 +588,51 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
                 services.AddSingleton<IWhatsAppSender>(new ThrowingWhatsAppSender());
             });
         }
+    }
+
+    /// <summary>Gönderim BAŞARILI olduktan sonraki sonuç yazımını bir kez
+    /// patlatır. "Bir kez": ikinci (en-iyi-çaba) damga geçsin ki testin asıl
+    /// iddiası — satırın gerçek sonuçla kapandığı — görülebilsin.
+    ///
+    /// <para>Rezervasyonun ilk yazımı (Status="pending") ve mesaj yazımı
+    /// etkilenmez; yalnızca "done" olarak işaretlenmiş bir <see cref="WaSendAttempt"/>
+    /// taşıyan kaydetme hedef alınır.</para></summary>
+    private sealed class FailOnceOnResultWriteInterceptor : SaveChangesInterceptor
+    {
+        private bool _fired;
+
+        public override InterceptionResult<int> SavingChanges(
+            DbContextEventData eventData, InterceptionResult<int> result)
+        {
+            Guard(eventData);
+            return base.SavingChanges(eventData, result);
+        }
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            Guard(eventData);
+            return base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
+
+        private void Guard(DbContextEventData eventData)
+        {
+            if (_fired || eventData.Context is null) return;
+            var isResultWrite = eventData.Context.ChangeTracker.Entries<WaSendAttempt>()
+                .Any(e => e.State == EntityState.Modified && e.Entity.Status == "done");
+            if (!isResultWrite) return;
+            _fired = true;
+            throw new InvalidOperationException("Test: sonuç yazımı patladı.");
+        }
+    }
+
+    /// <summary>Sonuç yazımını patlatan interceptor'ı DbContext seçeneklerine
+    /// takar. (DI'ya <c>IInterceptor</c> olarak kaydetmek yetmiyor — denendi,
+    /// interceptor hiç çağrılmadı ve test sessizce yeşil kalıyordu.)</summary>
+    private sealed class FailingResultWriteApiFactory : ApiFactory
+    {
+        protected override void ConfigureDbContextOptions(DbContextOptionsBuilder opt) =>
+            opt.AddInterceptors(new FailOnceOnResultWriteInterceptor());
     }
 }

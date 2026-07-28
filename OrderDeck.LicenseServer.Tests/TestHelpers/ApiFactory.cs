@@ -40,6 +40,12 @@ public class ApiFactory : WebApplicationFactory<Program>
     /// keys (e.g. tighter rate limits, quota caps). Default: no overrides.</summary>
     protected virtual IDictionary<string, string?> ExtraConfig => new Dictionary<string, string?>();
 
+    /// <summary>Override in derived test fixture to add DbContext-level options
+    /// (e.g. a fault-injecting <c>SaveChanges</c> interceptor). Runs on the same
+    /// options builder as the InMemory provider swap, so the shared DB name is
+    /// preserved. Default: no extra options.</summary>
+    protected virtual void ConfigureDbContextOptions(DbContextOptionsBuilder opt) { }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
@@ -80,7 +86,10 @@ public class ApiFactory : WebApplicationFactory<Program>
             if (ctxDescriptor is not null) services.Remove(ctxDescriptor);
 
             services.AddDbContext<LicenseDbContext>(opt =>
-                opt.UseInMemoryDatabase(_dbName));
+            {
+                opt.UseInMemoryDatabase(_dbName);
+                ConfigureDbContextOptions(opt);
+            });
 
             // Phase 5e: read-only DbContext shares the same in-memory DB in tests
             // so any code that injects LicenseReadOnlyDbContext sees the seed data

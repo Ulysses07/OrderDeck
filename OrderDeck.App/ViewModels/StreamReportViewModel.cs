@@ -222,6 +222,14 @@ public sealed partial class StreamReportViewModel : ViewModelBase
         {
             _dialogService.ShowError("WhatsApp açılamadı. WhatsApp Desktop kurulu mu?");
         }
+        else if (result == PaymentRequestResult.SendPending)
+        {
+            // Sunucu "aynı gönderim işleniyor" dedi: mesaj gitmiş de olabilir,
+            // hiç gitmemiş de. Sessiz kalırsak operatör gittiğini varsayar;
+            // otomatik wa.me açarsak çift mesaj riski var. Kararı ona bırakıyoruz.
+            _dialogService.ShowInfo(
+                "Gönderim işleniyor — WhatsApp'ta ulaştığını doğrulayın, aksi halde tekrar deneyin.");
+        }
 
         await Task.CompletedTask;
     }

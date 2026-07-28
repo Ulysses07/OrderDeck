@@ -50,6 +50,23 @@ public sealed class WhatsAppMessagingService
     /// <summary>24s pencere kapalı — serbest metin yerine template gerekiyor.</summary>
     public const string ErrWindowClosed = "window_closed";
 
+    /// <summary>Graph çağrısının KENDİ bütçesi — çağıranın token'ı buraya
+    /// geçmiyor.
+    ///
+    /// <para><b>Neden:</b> WPF'in HttpClient timeout'u 10 sn ve ASP.NET Core
+    /// istemci koptuğunda <c>RequestAborted</c>'ı iptal ediyor. O token'ı Graph
+    /// POST'una taşırsak çağrı bilinmeyen bir noktada kesilir: Meta mesajı çoktan
+    /// kabul edip faturalamış olabilir, biz hiç <c>WaMessage</c> yazmayız. Sonucu
+    /// "bilinemez" yapan asıl kaynak buydu. Kendi bütçesiyle çağrı ya biter ya
+    /// da kendi şartlarıyla düşer — her iki halde de sonuç kaydedilebilir.</para>
+    ///
+    /// <para>Gönderenin kendi HTTP timeout'u (<c>OrderDeck:WhatsApp:TimeoutSeconds</c>,
+    /// varsayılan 15 sn — bkz. Program.cs) normalde önce dolar ve yapısal bir
+    /// <c>network</c> hatası döner; buradaki bütçe onun üstünde duran son
+    /// emniyet kemeri, iki timeout birbiriyle yarışmasın diye bilerek daha
+    /// gevşek.</para></summary>
+    private static readonly TimeSpan GraphCallBudget = TimeSpan.FromSeconds(30);
+
     /// <summary>
     /// Serbest-metin (service) mesajı. Pencere kapalıysa Graph'a gitmez,
     /// <see cref="ErrWindowClosed"/> döner.
@@ -75,7 +92,10 @@ public sealed class WhatsAppMessagingService
                 "24 saatlik yanıt penceresi kapalı — onaylı şablon (template) gönderilmeli.");
         }
 
-        var result = await _sender.SendTextAsync(ctx, phone, text, ct);
+        // ct BİLEREK geçilmiyor: bkz. GraphCallBudget. İstemcinin kopması,
+        // Meta'nın kabul edip etmediğini bilemediğimiz bir gönderim bırakmamalı.
+        using var sendCts = new CancellationTokenSource(GraphCallBudget);
+        var result = await _sender.SendTextAsync(ctx, phone, text, sendCts.Token);
         var msg = PersistOutbound(convo, licenseId, "text", text, null, origin, result, now);
         // Graph çağrısı DÖNDÜKTEN sonra kayıt iptal edilebilir olmamalı: istemcinin
         // zaman aşımı HttpContext.RequestAborted'ı tetikliyor ve ct'yi buraya
@@ -107,10 +127,17 @@ public sealed class WhatsAppMessagingService
         var now = DateTimeOffset.UtcNow;
         var convo = await GetOrCreateConversationAsync(licenseId, phone, ctx.PhoneNumberId, null, now, ct);
 
-        var result = await _sender.SendTemplateAsync(ctx, phone, template, ct);
+        // Serbest metinle aynı gerekçe (bkz. GraphCallBudget): template gönderimi
+        // business-initiated ve ÜCRETLİ, yarıda kesilmesi daha da pahalı.
+        using var sendCts = new CancellationTokenSource(GraphCallBudget);
+        var result = await _sender.SendTemplateAsync(ctx, phone, template, sendCts.Token);
         var body = template.BodyParams.Count == 0 ? null : string.Join(" | ", template.BodyParams);
         var msg = PersistOutbound(convo, licenseId, "template", body, template.Name, origin, result, now);
-        await _db.SaveChangesAsync(ct);
+        // Gönderim bittikten sonra kayıt iptal edilebilir olamaz — Graph'a kendi
+        // bütçesiyle çıkmanın tek anlamı sonucun HER ZAMAN yazılabilmesi. ct
+        // burada kalsaydı kopan istemci, faturalanmış ama izi olmayan bir mesaj
+        // bırakırdı (SendTextAsync ile aynı gerekçe).
+        await _db.SaveChangesAsync(CancellationToken.None);
 
         if (!result.Ok)
             _log.LogWarning("WhatsApp template '{Name}' gönderilemedi (license={License}, code={Code}): {Msg}",

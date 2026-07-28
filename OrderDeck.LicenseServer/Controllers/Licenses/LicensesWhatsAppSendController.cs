@@ -31,11 +31,15 @@ namespace OrderDeck.LicenseServer.Controllers.Licenses;
 /// Anahtar gönderilmezse (alan hiç yoksa) eski davranış (her istek yeni
 /// gönderim) sürer; boş Guid ise istek 400 ile reddedilir.</para>
 ///
-/// <para><b>in_progress asla "çöktük" demez.</b> Rezervasyon ile sonuç yazımı
-/// arasında beklenmedik bir hata olursa satır <c>done</c>/<c>server_error</c>
-/// olarak damgalanır — yoksa saniyeler sonra gelen yeniden-deneme in_progress
-/// alır, WPF "gönderildi" der ve müşteriye hiçbir şey gitmez. Bu, özelliğin
-/// amacının tam tersi olurdu.</para>
+/// <para><b>in_progress asla "çöktük" demez.</b> <b>Gönderim</b> beklenmedik bir
+/// hatayla patlarsa satır <c>done</c>/<c>server_error</c> olarak damgalanır —
+/// yoksa saniyeler sonra gelen yeniden-deneme in_progress alır, WPF sanki
+/// gitmiş gibi davranır ve müşteriye hiçbir şey ulaşmaz.</para>
+///
+/// <para><b>Ama "yazamadım" da "gönderemedim" demez.</b> Gönderim başarılıysa ve
+/// yalnız sonuç yazımı düşerse satır server_error damgalanmaz ve yanıt yine
+/// 200/ok döner: aksi halde tekrar isteği bir hatayı oynatır, WPF wa.me'ye düşer
+/// ve operatör aynı müşteriye ikinci faturalı mesajı yollar.</para>
 /// </summary>
 [ApiController]
 [Route("api/v1/licenses/{licenseId:guid}/whatsapp/send")]
@@ -192,12 +196,34 @@ public sealed class LicensesWhatsAppSendController : ControllerBase
             }
         }
 
+        // GÖNDERİM ile SONUÇ YAZIMI ayrı try'larda: ikisi tek blokta olduğunda
+        // gönderim başarılı olup yalnız yazım patladığında da "server_error"
+        // damgalanıyordu. Yeniden-deneme o hatayı oynatır, WPF wa.me'ye düşer ve
+        // operatör AYNI müşteriye ikinci faturalı mesajı yollar — bu özelliğin
+        // önlemek için var olduğu şeyin ta kendisi.
         WhatsAppMessagingService.SendOutcome outcome;
         try
         {
             outcome = await _messaging.SendTextAsync(licenseId, req.ToPhone, req.Text, origin, ct);
+        }
+        catch (Exception ex) when (attempt is not null &&
+                                   !(ex is OperationCanceledException && ct.IsCancellationRequested))
+        {
+            // Rezervasyon "pending" kalırsa saniyeler sonra gelen yeniden-deneme
+            // in_progress alır ve WPF "gönderildi" der — oysa hiçbir şey gitmedi.
+            // in_progress "gerçekten uçuşta" demek zorunda, "çöktük" demek değil.
+            // (Gerçek iptalde satır bilerek pending bırakılır: orada in_progress
+            // dürüst bir cevap, iki dakika sonra da bayat sayılıp devralınır.)
+            await TryStampAsync(attempt.Id, ServerErrorOutcome);
+            _log.LogError(ex,
+                "WhatsApp gönderimi hata verdi (key={Key}, license={LicenseId}) — rezervasyon hata olarak damgalandı",
+                attempt.Id, licenseId);
+            throw;
+        }
 
-            if (attempt is not null)
+        if (attempt is not null)
+        {
+            try
             {
                 attempt.Status = StatusDone;
                 attempt.Ok = outcome.Ok;
@@ -211,20 +237,20 @@ public sealed class LicensesWhatsAppSendController : ControllerBase
                 // ulaşmış) mesaj DB'de hiç görünmez. Bilerek CancellationToken.None.
                 await _db.SaveChangesAsync(CancellationToken.None);
             }
-        }
-        catch (Exception ex) when (attempt is not null &&
-                                   !(ex is OperationCanceledException && ct.IsCancellationRequested))
-        {
-            // Rezervasyon "pending" kalırsa saniyeler sonra gelen yeniden-deneme
-            // in_progress alır ve WPF "gönderildi" der — oysa hiçbir şey gitmedi.
-            // in_progress "gerçekten uçuşta" demek zorunda, "çöktük" demek değil.
-            // (Gerçek iptalde satır bilerek pending bırakılır: orada in_progress
-            // dürüst bir cevap, iki dakika sonra da bayat sayılıp devralınır.)
-            await TryStampServerErrorAsync(attempt.Id);
-            _log.LogError(ex,
-                "WhatsApp gönderimi hata verdi (key={Key}, license={LicenseId}) — rezervasyon hata olarak damgalandı",
-                attempt.Id, licenseId);
-            throw;
+            catch (Exception ex)
+            {
+                // Mesaj GİTTİ; sonucu yazamamak bunu başarısızlığa çeviremez.
+                // Damgayı temiz bir izleyiciyle bir kez daha deniyoruz (tekrar
+                // isteği gerçek sonucu oynatabilsin), ama başarısız olsa bile
+                // yanıt 200/ok olarak çıkar — 500 dönmek yeniden-denemeyi ve
+                // ardından çift gönderimi davet ederdi. Damga hiç yazılamazsa
+                // satır pending kalır ve tekrar in_progress alır; WPF bunu artık
+                // "gönderildi" değil "doğrula" olarak gösteriyor.
+                _log.LogError(ex,
+                    "WhatsApp gönderim sonucu yazılamadı (key={Key}, license={LicenseId}, ok={Ok}) — gönderim yapıldı, yanıt başarı olarak dönüyor",
+                    attempt.Id, licenseId, outcome.Ok);
+                await TryStampAsync(attempt.Id, outcome);
+            }
         }
 
         // Gönderilemedi ≠ istek hatalı: sebep (window_closed / no_account / Meta
@@ -250,9 +276,17 @@ public sealed class LicensesWhatsAppSendController : ControllerBase
         }
     }
 
-    /// <summary>Rezervasyonu "sonuç: hata" olarak kapatır. Damgalama başarısız
-    /// olsa bile asıl hatayı gölgelememeli — bu yüzden kendi içinde yutulur.</summary>
-    private async Task TryStampServerErrorAsync(Guid key)
+    /// <summary>Gönderim yolu patladığında yazılan sonuç. Genel metin saklanıyor,
+    /// istisnanın kendisi DEĞİL: bu alan tekrar isteğine aynen geri oynatılıyor,
+    /// yani istemciye çıkıyor. Ham exception metni sunucu/şema gibi iç detay
+    /// taşıyabilir; teşhis için gereken her şey zaten LogError'da duruyor.</summary>
+    private static readonly WhatsAppMessagingService.SendOutcome ServerErrorOutcome =
+        new(false, ErrServerError, "Gönderim sırasında sunucu hatası oluştu.", null);
+
+    /// <summary>Rezervasyonu verilen sonuçla kapatır. Damgalama başarısız olsa
+    /// bile çağıranı gölgelememeli (asıl hata ya da başarılı gönderim) — bu
+    /// yüzden kendi içinde yutulur.</summary>
+    private async Task TryStampAsync(Guid key, WhatsAppMessagingService.SendOutcome outcome)
     {
         try
         {
@@ -263,13 +297,10 @@ public sealed class LicensesWhatsAppSendController : ControllerBase
             var row = await _db.WaSendAttempts.FirstOrDefaultAsync(a => a.Id == key, CancellationToken.None);
             if (row is null) return;
             row.Status = StatusDone;
-            row.Ok = false;
-            row.ErrorCode = ErrServerError;
-            // Genel metin saklanıyor, istisnanın kendisi DEĞİL: bu alan tekrar
-            // isteğine aynen geri oynatılıyor, yani istemciye çıkıyor. Ham
-            // exception metni sunucu/şema gibi iç detay taşıyabilir. Teşhis için
-            // gereken her şey zaten çağıran taraftaki LogError'da duruyor.
-            row.ErrorMessage = "Gönderim sırasında sunucu hatası oluştu.";
+            row.Ok = outcome.Ok;
+            row.ErrorCode = Truncate(outcome.ErrorCode, MaxErrorCodeLength);
+            row.ErrorMessage = Truncate(outcome.ErrorMessage, MaxErrorMessageLength);
+            row.MessageId = outcome.MessageId;
             row.CompletedAt = DateTimeOffset.UtcNow;
             // İstek iptal edilmiş olsa bile damga yazılmalı; yoksa satır pending
             // kalır ve tekrar in_progress alır.
@@ -278,7 +309,7 @@ public sealed class LicensesWhatsAppSendController : ControllerBase
         catch (Exception stampEx)
         {
             _log.LogError(stampEx,
-                "WhatsApp rezervasyonu hata olarak damgalanamadı (key={Key}) — satır pending kalabilir", key);
+                "WhatsApp rezervasyonu damgalanamadı (key={Key}) — satır pending kalabilir", key);
         }
     }
 
