@@ -265,11 +265,23 @@ public sealed class PaymentRequestService
             var licenseId = await ResolveLicenseIdAsync(ct);
             if (licenseId is null) return false;
 
+            // Çağrı başına yeni anahtar: dayanıklılık katmanı bu POST'u yeniden
+            // denerse gövde (dolayısıyla anahtar) aynı kalır ve sunucu tekrarı eler.
             var resp = await _api.SendWhatsAppTextAsync(
-                licenseId.Value, new WhatsAppSendRequest(phone, message, origin), ct);
+                licenseId.Value,
+                new WhatsAppSendRequest(phone, message, origin, Guid.NewGuid()), ct);
 
             if (!resp.Ok)
             {
+                if (resp.ErrorCode == WhatsAppSendErrorCodes.InProgress)
+                {
+                    // Gönderim gerçekten uçuşta; wa.me açmak operatörü ikinci bir
+                    // kopya yollamaya davet eder — gönderildi say ve geri düşme.
+                    _log?.LogWarning(
+                        "Aynı WhatsApp gönderimi hâlâ işleniyor — çift mesajı önlemek için wa.me açılmıyor");
+                    return true;
+                }
+
                 _log?.LogInformation(
                     "WhatsApp Cloud API gönderimi yapılamadı ({Code}) — wa.me'ye düşülüyor",
                     resp.ErrorCode);

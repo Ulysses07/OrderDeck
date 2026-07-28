@@ -217,4 +217,179 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
         (await anon.PostAsJsonAsync(Url(licenseId), new { toPhone = "905559998877", text = "x" }))
             .StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
+
+    // ── Idempotency (2026-07-28) ─────────────────────────────────────────
+    // WPF'in HttpClient dayanıklılık katmanı 5xx/ağ hatasında POST'u da
+    // yeniden deniyor. Gönderim faturalı ve gerçek müşteriye gidiyor →
+    // aynı anahtarla gelen tekrar yeni mesaj YAZMAMALI.
+
+    /// <summary>Verilen lisansa yazılmış giden mesaj sayısı.</summary>
+    private async Task<int> CountMessagesAsync(Guid licenseId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        return await db.WaMessages.CountAsync(m => m.LicenseId == licenseId);
+    }
+
+    /// <summary>Graph'a çıkmadan doğrudan rezervasyon satırı yazar.</summary>
+    private async Task SeedAttemptAsync(Guid licenseId, Guid key, DateTimeOffset createdAt)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        db.WaSendAttempts.Add(new WaSendAttempt
+        {
+            Id = key,
+            LicenseId = licenseId,
+            Status = "pending",
+            CreatedAt = createdAt,
+        });
+        await db.SaveChangesAsync();
+    }
+
+    [Fact]
+    public async Task Same_idempotency_key_sends_only_once()
+    {
+        var (client, licenseId) = await SeedAsync();
+        await ConnectAccountAsync(licenseId);
+        await OpenServiceWindowAsync(licenseId, "905551110001");
+
+        var key = Guid.NewGuid();
+        var body = new
+        {
+            toPhone = "905551110001", text = "Ödemeniz bekleniyor.",
+            origin = "wpf-payment", idempotencyKey = key,
+        };
+
+        var first = await client.PostAsJsonAsync(Url(licenseId), body);
+        first.StatusCode.Should().Be(HttpStatusCode.OK);
+        var firstBody = (await first.Content.ReadFromJsonAsync<SendResponse>())!;
+        firstBody.Ok.Should().BeTrue();
+
+        var second = await client.PostAsJsonAsync(Url(licenseId), body);
+        second.StatusCode.Should().Be(HttpStatusCode.OK);
+        var secondBody = (await second.Content.ReadFromJsonAsync<SendResponse>())!;
+        secondBody.Should().BeEquivalentTo(firstBody);
+
+        (await CountMessagesAsync(licenseId)).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Different_idempotency_keys_send_twice()
+    {
+        var (client, licenseId) = await SeedAsync();
+        await ConnectAccountAsync(licenseId);
+        await OpenServiceWindowAsync(licenseId, "905551110002");
+
+        for (var i = 0; i < 2; i++)
+        {
+            var resp = await client.PostAsJsonAsync(Url(licenseId), new
+            {
+                toPhone = "905551110002", text = $"mesaj {i}",
+                idempotencyKey = Guid.NewGuid(),
+            });
+            resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        }
+
+        (await CountMessagesAsync(licenseId)).Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Omitting_idempotency_key_sends_every_time()
+    {
+        var (client, licenseId) = await SeedAsync();
+        await ConnectAccountAsync(licenseId);
+        await OpenServiceWindowAsync(licenseId, "905551110003");
+
+        var body = new { toPhone = "905551110003", text = "anahtarsız" };
+        (await client.PostAsJsonAsync(Url(licenseId), body)).StatusCode.Should().Be(HttpStatusCode.OK);
+        (await client.PostAsJsonAsync(Url(licenseId), body)).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        (await CountMessagesAsync(licenseId)).Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Reports_in_progress_when_reservation_is_unfinished()
+    {
+        var (client, licenseId) = await SeedAsync();
+        await ConnectAccountAsync(licenseId);
+        await OpenServiceWindowAsync(licenseId, "905551110004");
+
+        var key = Guid.NewGuid();
+        await SeedAttemptAsync(licenseId, key, DateTimeOffset.UtcNow);
+
+        var resp = await client.PostAsJsonAsync(Url(licenseId), new
+        {
+            toPhone = "905551110004", text = "tekrar", idempotencyKey = key,
+        });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = (await resp.Content.ReadFromJsonAsync<SendResponse>())!;
+        body.Ok.Should().BeFalse();
+        body.ErrorCode.Should().Be("in_progress");
+        (await CountMessagesAsync(licenseId)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Stale_reservation_is_taken_over()
+    {
+        var (client, licenseId) = await SeedAsync();
+        await ConnectAccountAsync(licenseId);
+        await OpenServiceWindowAsync(licenseId, "905551110005");
+
+        // 5 dakikalık "pending" → istek yarıda kalmış sayılır, devralınır.
+        var key = Guid.NewGuid();
+        await SeedAttemptAsync(licenseId, key, DateTimeOffset.UtcNow.AddMinutes(-5));
+
+        var resp = await client.PostAsJsonAsync(Url(licenseId), new
+        {
+            toPhone = "905551110005", text = "devralındı", idempotencyKey = key,
+        });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await resp.Content.ReadFromJsonAsync<SendResponse>())!.Ok.Should().BeTrue();
+        (await CountMessagesAsync(licenseId)).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Idempotency_key_belonging_to_another_license_returns_404()
+    {
+        var (_, otherLicenseId) = await SeedAsync();
+        var (client, licenseId) = await SeedAsync();
+        await ConnectAccountAsync(licenseId);
+        await OpenServiceWindowAsync(licenseId, "905551110006");
+
+        var key = Guid.NewGuid();
+        await SeedAttemptAsync(otherLicenseId, key, DateTimeOffset.UtcNow);
+
+        var resp = await client.PostAsJsonAsync(Url(licenseId), new
+        {
+            toPhone = "905551110006", text = "başkasının anahtarı", idempotencyKey = key,
+        });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await CountMessagesAsync(licenseId)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Replays_failure_outcome_for_same_key()
+    {
+        var (client, licenseId) = await SeedAsync();
+        await ConnectAccountAsync(licenseId);
+        // Pencere açılmıyor → ilk çağrı window_closed döner.
+
+        var key = Guid.NewGuid();
+        var body = new { toPhone = "905551110007", text = "kapalı pencere", idempotencyKey = key };
+
+        var first = (await (await client.PostAsJsonAsync(Url(licenseId), body))
+            .Content.ReadFromJsonAsync<SendResponse>())!;
+        first.Ok.Should().BeFalse();
+        first.ErrorCode.Should().Be("window_closed");
+
+        // Hata da tekrar oynatılır — sessizce yeniden denenmez.
+        var second = (await (await client.PostAsJsonAsync(Url(licenseId), body))
+            .Content.ReadFromJsonAsync<SendResponse>())!;
+        second.Should().BeEquivalentTo(first);
+
+        (await CountMessagesAsync(licenseId)).Should().Be(0);
+    }
 }

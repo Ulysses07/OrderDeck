@@ -4,6 +4,7 @@ using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using FluentAssertions;
@@ -408,6 +409,41 @@ public class PaymentRequestServiceTests : IDisposable
         handler.SentBodies.Should().BeEmpty();
         _launcher.LaunchedUrls.Should().ContainSingle()
             .Which.Should().StartWith("https://wa.me/");
+    }
+
+    [Fact]
+    public async Task OpenWhatsAppAsync_CloudApiEnabled_SendsIdempotencyKey()
+    {
+        // Dayanıklılık katmanı POST'u yeniden denerse gövde aynen tekrar gider;
+        // anahtar sunucunun tekrarı elemesi için gövdede olmak zorunda.
+        EnableCloudApi();
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+
+        await sut.OpenWhatsAppAsync(
+            MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28));
+
+        handler.SentBodies.Should().ContainSingle();
+        using var body = JsonDocument.Parse(handler.SentBodies[0]);
+        var raw = body.RootElement.GetProperty("idempotencyKey").GetString();
+        Guid.TryParse(raw, out var key).Should().BeTrue();
+        key.Should().NotBe(Guid.Empty);
+    }
+
+    [Fact]
+    public async Task OpenWhatsAppAsync_CloudApiReportsInProgress_DoesNotLaunchWaMe()
+    {
+        // Gönderim gerçekten uçuşta: wa.me açmak operatörü ikinci bir kopya
+        // yollamaya davet eder.
+        EnableCloudApi();
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.SendResponseJson =
+            """{"ok":false,"errorCode":"in_progress","errorMessage":"işleniyor","messageId":null}""";
+
+        var result = await sut.OpenWhatsAppAsync(
+            MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28));
+
+        result.Should().Be(PaymentRequestResult.Sent);
+        _launcher.LaunchedUrls.Should().BeEmpty();
     }
 
     [Fact]
