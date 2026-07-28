@@ -28,7 +28,9 @@ public class StreamReportViewModel_OpenWhatsAppTests
         FakeDialogService dialogs,
         string settingsPath,
         StreamReportViewModel sut
-    ) Setup()
+    // cloudApiInProgress: true ise Cloud API açık ve sunucu her gönderime
+    // "in_progress" diyor — sonucu bilinmeyen gönderim senaryosu.
+    ) Setup(bool cloudApiInProgress = false)
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
@@ -40,10 +42,16 @@ public class StreamReportViewModel_OpenWhatsAppTests
         var launcher = new FakeUrlLauncher();
         var settingsPath = Path.Combine(Path.GetTempPath(), $"orderdeck-srvm-{Guid.NewGuid():N}.json");
         var settingsStore = new SettingsStore(settingsPath);
-        settingsStore.Save(new AppSettings());
+        var settings = new AppSettings();
+        settings.Payment.UseCloudApi = cloudApiInProgress;
+        settingsStore.Save(settings);
+        var (api, licenseProvider) = cloudApiInProgress
+            ? PaymentRequestServiceTestHelpers.InProgressCloudApiClient()
+            : (PaymentRequestServiceTestHelpers.StubApiClient(),
+               (OrderDeck.App.Services.Sync.ICurrentLicenseProvider)
+                   new PaymentRequestServiceTestHelpers.NullLicenseProvider());
         var paymentService = new PaymentRequestService(settingsStore, new WhatsAppMessageBuilder(), launcher,
-            PaymentRequestServiceTestHelpers.StubApiClient(),
-            new PaymentRequestServiceTestHelpers.NullLicenseProvider());
+            api, licenseProvider);
         var dialogs = new FakeDialogService();
         var sut = new StreamReportViewModel(labels, sessions, giveaways, customers, paymentService, dialogs);
         return (db, customers, sessions, labels, giveaways, launcher, dialogs, settingsPath, sut);
@@ -98,6 +106,38 @@ public class StreamReportViewModel_OpenWhatsAppTests
             await sut.OpenWhatsAppCommand.ExecuteAsync(sut.TopCustomers[0]);
 
             dialogs.PhoneEntryShownFor.Should().ContainSingle().Which.Should().Be("c1");
+        }
+        finally
+        {
+            if (File.Exists(settingsPath)) File.Delete(settingsPath);
+        }
+    }
+
+    [Fact]
+    public async Task OpenWhatsApp_SendPending_WarnsOperatorInsteadOfSilentSuccess()
+    {
+        // İkinci gönderim yolu, aynı tuzak: in_progress "Sent"e eşlenirse VM
+        // hiçbir dal çalıştırmaz — ne wa.me, ne mesaj. Operatör mesajın gittiğini
+        // sanar, oysa sunucu sadece "bilmiyorum" demiştir.
+        var (db, customers, sessions, labels, _, launcher, dialogs, settingsPath, sut) =
+            Setup(cloudApiInProgress: true);
+        using var _db = db;
+        try
+        {
+            customers.Insert(new Customer("c1", "twitch", "alice", "Alice", null,
+                100, 100, false, null, null, 0, 0m, null, null, "+905551111111"));
+            sessions.Insert(new StreamSession("s1", "Live", 100, null, Array.Empty<string>(), null));
+            labels.Insert(new Label("l1", "s1", "c1", "twitch", "alice", "Apple", null, 75m, 110, 120));
+            sessions.End("s1", 200);
+
+            sut.Load("s1");
+
+            await sut.OpenWhatsAppCommand.ExecuteAsync(sut.TopCustomers[0]);
+
+            launcher.LaunchedUrls.Should().BeEmpty();
+            dialogs.InfosShown.Should().ContainSingle()
+                .Which.Should().Contain("doğrulayın");
+            dialogs.ErrorsShown.Should().BeEmpty();
         }
         finally
         {

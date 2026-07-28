@@ -220,6 +220,103 @@ public sealed class WhatsAppMessagingServiceTests
             .ErrorCode.Should().Be("empty_body");
         sender.Texts.Should().BeEmpty();
     }
+
+    /// <summary>Gönderim tam sürerken çağıranın token'ını iptal eder ve kendi
+    /// aldığı token'ın da iptal edilip edilmediğine bakar.</summary>
+    private sealed class CallerCancellingSender : IWhatsAppSender
+    {
+        public CancellationTokenSource? CallerCts { get; set; }
+        public bool SawCancelledToken { get; private set; }
+
+        private Task<WhatsAppSendResult> Send(CancellationToken ct)
+        {
+            // İstemci tam bu anda koptu → ASP.NET Core RequestAborted'ı iptal eder.
+            CallerCts!.Cancel();
+            SawCancelledToken = ct.IsCancellationRequested;
+            // Çağıranın token'ı taşınıyorsa Graph POST'u burada yarıda kesilir:
+            // Meta mesajı çoktan kabul etmiş (faturalamış) olabilir, biz hiç
+            // WaMessage yazmayız.
+            ct.ThrowIfCancellationRequested();
+            return Task.FromResult(WhatsAppSendResult.Success("wamid.NOTCANCELLED"));
+        }
+
+        public Task<WhatsAppSendResult> SendTextAsync(
+            WhatsAppSendContext ctx, string to, string text, CancellationToken ct = default) => Send(ct);
+
+        public Task<WhatsAppSendResult> SendTemplateAsync(
+            WhatsAppSendContext ctx, string to, WhatsAppTemplate tpl, CancellationToken ct = default) => Send(ct);
+    }
+
+    private static (LicenseDbContext Db, WhatsAppMessagingService Svc, Guid LicenseId) BuildWithSender(
+        IWhatsAppSender sender)
+    {
+        var db = new LicenseDbContext(new DbContextOptionsBuilder<LicenseDbContext>()
+            .UseInMemoryDatabase($"wa-{Guid.NewGuid():N}").Options);
+        var licenseId = Guid.NewGuid();
+        var accounts = new WhatsAppAccountService(
+            db, new EphemeralDataProtectionProvider(), Options.Create(new WhatsAppOptions()));
+        db.WhatsAppAccounts.Add(new WhatsAppAccount
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = licenseId,
+            WabaId = "waba-1",
+            PhoneNumberId = "pnid-1",
+            DisplayPhoneNumber = "+905550000000",
+            AccessTokenProtected = accounts.ProtectToken("secret-token"),
+            Status = "active",
+            ConnectedAt = DateTimeOffset.UtcNow,
+        });
+        db.SaveChanges();
+        var svc = new WhatsAppMessagingService(
+            db, sender, accounts, NullLogger<WhatsAppMessagingService>.Instance);
+        return (db, svc, licenseId);
+    }
+
+    [Fact]
+    public async Task SendText_does_not_hand_the_callers_token_to_graph()
+    {
+        // İstemci koptuğunda (WPF'in 10 sn'lik HttpClient timeout'u →
+        // RequestAborted) Graph POST'u bilinmeyen bir noktada kesiliyordu: Meta
+        // mesajı kabul edip faturalamış olabilir ve elimizde hiç kayıt kalmaz.
+        // "Sonucu bilemiyoruz" hâllerinin kök nedeni buydu — çağrının kendi
+        // bütçesi olmalı, çağıranın iptali onu etkilememeli.
+        var sender = new CallerCancellingSender();
+        var (db, svc, licenseId) = BuildWithSender(sender);
+        using var _db = db;
+        SeedConversation(db, licenseId, "905321234567", DateTimeOffset.UtcNow.AddMinutes(-5));
+
+        using var callerCts = new CancellationTokenSource();
+        sender.CallerCts = callerCts;
+
+        var result = await svc.SendTextAsync(
+            licenseId, "905321234567", "merhaba", "panel", callerCts.Token);
+
+        sender.SawCancelledToken.Should().BeFalse();
+        result.Ok.Should().BeTrue();
+        // Sonuç kaydedilebilir kaldı — asıl kazanç bu.
+        db.WaMessages.Single().WamId.Should().Be("wamid.NOTCANCELLED");
+    }
+
+    [Fact]
+    public async Task SendTemplate_does_not_hand_the_callers_token_to_graph()
+    {
+        // Template gönderimi business-initiated ve ÜCRETLİ; yarıda kesilmesi
+        // serbest metinden de pahalı.
+        var sender = new CallerCancellingSender();
+        var (db, svc, licenseId) = BuildWithSender(sender);
+        using var _db = db;
+
+        using var callerCts = new CancellationTokenSource();
+        sender.CallerCts = callerCts;
+
+        var result = await svc.SendTemplateAsync(
+            licenseId, "905321234567",
+            new WhatsAppTemplate("odeme_hatirlatma", "tr", Array.Empty<string>()),
+            "panel", callerCts.Token);
+
+        sender.SawCancelledToken.Should().BeFalse();
+        result.Ok.Should().BeTrue();
+    }
 }
 
 public sealed class WhatsAppAccountServiceTests

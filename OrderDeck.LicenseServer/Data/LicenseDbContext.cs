@@ -48,6 +48,7 @@ public class LicenseDbContext : DbContext
     public DbSet<WhatsAppAccount> WhatsAppAccounts => Set<WhatsAppAccount>();
     public DbSet<WaConversation> WaConversations => Set<WaConversation>();
     public DbSet<WaMessage> WaMessages => Set<WaMessage>();
+    public DbSet<WaSendAttempt> WaSendAttempts => Set<WaSendAttempt>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -573,6 +574,17 @@ public class LicenseDbContext : DbContext
             b.HasIndex(m => m.WamId).IsUnique();
             b.HasIndex(m => new { m.ConversationId, m.Timestamp });
             b.HasIndex(m => new { m.LicenseId, m.Timestamp });
+        });
+
+        mb.Entity<WaSendAttempt>(b =>
+        {
+            b.HasKey(a => a.Id);
+            b.HasOne(a => a.License).WithMany().HasForeignKey(a => a.LicenseId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.Property(a => a.Status).HasMaxLength(16).IsRequired();
+            b.Property(a => a.ErrorCode).HasMaxLength(32);
+            b.Property(a => a.ErrorMessage).HasMaxLength(1000);
+            b.HasIndex(a => a.StartedAt);
         });
 
         // Seed SKUs

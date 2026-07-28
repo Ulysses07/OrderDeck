@@ -333,6 +333,17 @@ public sealed class LicenseApiClient
             $"/api/v1/licenses/{licenseId}/sms-campaigns?take={take}", ct)
             ?? new List<SmsCampaignListItem>();
 
+    // ─── WhatsApp tek mesaj (Bearer-Customer) ─────────────────────────
+
+    /// <summary>Yayıncının kendi lisansından tek WhatsApp metin mesajı gönderir.
+    /// Gönderilemediğinde de 200 döner — sonucu <see cref="WhatsAppSendResponse.Ok"/>
+    /// ve <see cref="WhatsAppSendResponse.ErrorCode"/> taşır, çağıran buna göre
+    /// wa.me'ye düşer.</summary>
+    public Task<WhatsAppSendResponse> SendWhatsAppTextAsync(
+        Guid licenseId, WhatsAppSendRequest req, CancellationToken ct = default)
+        => PostJsonExpectingJsonAsync<WhatsAppSendRequest, WhatsAppSendResponse>(
+            $"/api/v1/licenses/{licenseId}/whatsapp/send", req, ct);
+
     /// <summary>En son uygulama sürümü + indirme URL'si (anonim). LatestVersion
     /// null ise güncelleme kontrolü atlanır.</summary>
     public async Task<AppVersionInfo?> GetLatestAppVersionAsync(CancellationToken ct = default)

@@ -8,6 +8,7 @@ public sealed class FakeDialogService : IDialogService
 {
     public List<string> PhoneEntryShownFor { get; } = new();
     public List<string> ErrorsShown { get; } = new();
+    public List<string> InfosShown { get; } = new();
     public Func<string, bool> PhoneEntryResult { get; set; } = _ => false;
 
     public bool ShowPhoneEntryDialog(string customerId)
@@ -17,4 +18,6 @@ public sealed class FakeDialogService : IDialogService
     }
 
     public void ShowError(string message) => ErrorsShown.Add(message);
+
+    public void ShowInfo(string message) => InfosShown.Add(message);
 }

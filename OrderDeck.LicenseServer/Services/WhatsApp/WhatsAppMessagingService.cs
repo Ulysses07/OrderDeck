@@ -50,6 +50,23 @@ public sealed class WhatsAppMessagingService
     /// <summary>24s pencere kapalı — serbest metin yerine template gerekiyor.</summary>
     public const string ErrWindowClosed = "window_closed";
 
+    /// <summary>Graph çağrısının KENDİ bütçesi — çağıranın token'ı buraya
+    /// geçmiyor.
+    ///
+    /// <para><b>Neden:</b> WPF'in HttpClient timeout'u 10 sn ve ASP.NET Core
+    /// istemci koptuğunda <c>RequestAborted</c>'ı iptal ediyor. O token'ı Graph
+    /// POST'una taşırsak çağrı bilinmeyen bir noktada kesilir: Meta mesajı çoktan
+    /// kabul edip faturalamış olabilir, biz hiç <c>WaMessage</c> yazmayız. Sonucu
+    /// "bilinemez" yapan asıl kaynak buydu. Kendi bütçesiyle çağrı ya biter ya
+    /// da kendi şartlarıyla düşer — her iki halde de sonuç kaydedilebilir.</para>
+    ///
+    /// <para>Gönderenin kendi HTTP timeout'u (<c>OrderDeck:WhatsApp:TimeoutSeconds</c>,
+    /// varsayılan 15 sn — bkz. Program.cs) normalde önce dolar ve yapısal bir
+    /// <c>network</c> hatası döner; buradaki bütçe onun üstünde duran son
+    /// emniyet kemeri, iki timeout birbiriyle yarışmasın diye bilerek daha
+    /// gevşek.</para></summary>
+    private static readonly TimeSpan GraphCallBudget = TimeSpan.FromSeconds(30);
+
     /// <summary>
     /// Serbest-metin (service) mesajı. Pencere kapalıysa Graph'a gitmez,
     /// <see cref="ErrWindowClosed"/> döner.
@@ -75,9 +92,16 @@ public sealed class WhatsAppMessagingService
                 "24 saatlik yanıt penceresi kapalı — onaylı şablon (template) gönderilmeli.");
         }
 
-        var result = await _sender.SendTextAsync(ctx, phone, text, ct);
+        // ct BİLEREK geçilmiyor: bkz. GraphCallBudget. İstemcinin kopması,
+        // Meta'nın kabul edip etmediğini bilemediğimiz bir gönderim bırakmamalı.
+        using var sendCts = new CancellationTokenSource(GraphCallBudget);
+        var result = await _sender.SendTextAsync(ctx, phone, text, sendCts.Token);
         var msg = PersistOutbound(convo, licenseId, "text", text, null, origin, result, now);
-        await _db.SaveChangesAsync(ct);
+        // Graph çağrısı DÖNDÜKTEN sonra kayıt iptal edilebilir olmamalı: istemcinin
+        // zaman aşımı HttpContext.RequestAborted'ı tetikliyor ve ct'yi buraya
+        // geçirirsek Meta'nın kabul ettiği — yani faturalanmış, müşteriye ulaşmış —
+        // mesaj DB'de hiç görünmez. Bilerek CancellationToken.None.
+        await _db.SaveChangesAsync(CancellationToken.None);
 
         if (!result.Ok)
             _log.LogWarning("WhatsApp text gönderilemedi (license={License}, code={Code}): {Msg}",
@@ -103,10 +127,17 @@ public sealed class WhatsAppMessagingService
         var now = DateTimeOffset.UtcNow;
         var convo = await GetOrCreateConversationAsync(licenseId, phone, ctx.PhoneNumberId, null, now, ct);
 
-        var result = await _sender.SendTemplateAsync(ctx, phone, template, ct);
+        // Serbest metinle aynı gerekçe (bkz. GraphCallBudget): template gönderimi
+        // business-initiated ve ÜCRETLİ, yarıda kesilmesi daha da pahalı.
+        using var sendCts = new CancellationTokenSource(GraphCallBudget);
+        var result = await _sender.SendTemplateAsync(ctx, phone, template, sendCts.Token);
         var body = template.BodyParams.Count == 0 ? null : string.Join(" | ", template.BodyParams);
         var msg = PersistOutbound(convo, licenseId, "template", body, template.Name, origin, result, now);
-        await _db.SaveChangesAsync(ct);
+        // Gönderim bittikten sonra kayıt iptal edilebilir olamaz — Graph'a kendi
+        // bütçesiyle çıkmanın tek anlamı sonucun HER ZAMAN yazılabilmesi. ct
+        // burada kalsaydı kopan istemci, faturalanmış ama izi olmayan bir mesaj
+        // bırakırdı (SendTextAsync ile aynı gerekçe).
+        await _db.SaveChangesAsync(CancellationToken.None);
 
         if (!result.Ok)
             _log.LogWarning("WhatsApp template '{Name}' gönderilemedi (license={License}, code={Code}): {Msg}",
@@ -145,6 +176,24 @@ public sealed class WhatsAppMessagingService
         return convo;
     }
 
+    // WaMessage kolon sınırları (bkz. LicenseDbContext). Buraya yazdığımız
+    // değerlerin bir kısmı DIŞARIDAN geliyor — Meta'nın hata gövdesi, wamid,
+    // çağıranın verdiği origin/template adı — ve hiçbir üst sınır garantisi yok.
+    private const int MaxWamIdLength = 128;
+    private const int MaxOriginLength = 16;
+    private const int MaxBodyLength = 8000;
+    private const int MaxTemplateNameLength = 200;
+    private const int MaxErrorCodeLength = 32;
+    private const int MaxErrorMessageLength = 1000;
+
+    /// <summary>Kolon sınırına keser. EF InMemory <c>HasMaxLength</c>'i yok sayar,
+    /// yani aşırı uzun değer testte hiç görünmez ve yalnız prod'da SQL 8152 olarak
+    /// patlar. Burada patlamak sadece "kayıt yazılamadı" demek değil: gönderim
+    /// zaten yapılmış olur, dolayısıyla faturalı mesaj izsiz kalır ve idempotency
+    /// rezervasyonu pending'e çakılır.</summary>
+    private static string? Truncate(string? s, int max) =>
+        s is null || s.Length <= max ? s : s[..max];
+
     private WaMessage PersistOutbound(
         WaConversation convo, Guid licenseId, string type, string? body,
         string? templateName, string origin, WhatsAppSendResult result, DateTimeOffset now)
@@ -157,16 +206,16 @@ public sealed class WhatsAppMessagingService
             LicenseId = licenseId,
             // Başarısız gönderimde Meta id yok → unique index'i bozmayan yerel anahtar.
             WamId = result.Ok && !string.IsNullOrEmpty(result.MessageId)
-                ? result.MessageId!
+                ? Truncate(result.MessageId, MaxWamIdLength)!
                 : "local:" + Guid.NewGuid().ToString("N"),
             Direction = "out",
-            Origin = origin,
+            Origin = Truncate(origin, MaxOriginLength),
             Type = type,
-            Body = body,
-            TemplateName = templateName,
+            Body = Truncate(body, MaxBodyLength),
+            TemplateName = Truncate(templateName, MaxTemplateNameLength),
             Status = result.Ok ? "sent" : "failed",
-            ErrorCode = result.ErrorCode,
-            ErrorMessage = result.ErrorMessage,
+            ErrorCode = Truncate(result.ErrorCode, MaxErrorCodeLength),
+            ErrorMessage = Truncate(result.ErrorMessage, MaxErrorMessageLength),
             Timestamp = now,
             CreatedAt = now,
         };
