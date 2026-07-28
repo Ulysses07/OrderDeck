@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
@@ -44,6 +45,10 @@ namespace OrderDeck.LicenseServer.Controllers.Licenses;
 [ApiController]
 [Route("api/v1/licenses/{licenseId:guid}/whatsapp/send")]
 [Authorize(AuthenticationSchemes = "Bearer-Customer")]
+// Her istek faturalanabilir bir mesaj demek; idempotency aynı tıkın tekrarını
+// eliyor ama farklı anahtarlarla dönen bir döngüyü elemiyor. Limit müşteri
+// başına (bkz. Program.cs "whatsapp-send").
+[EnableRateLimiting("whatsapp-send")]
 public sealed class LicensesWhatsAppSendController : ControllerBase
 {
     /// <summary>WhatsApp metin gövdesi 4096 karakter; daha uzun istek Graph'a
