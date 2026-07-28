@@ -71,6 +71,17 @@ public class PaymentRequestServiceTests : IDisposable
         public string SendResponseJson { get; set; } =
             """{"ok":true,"errorCode":null,"errorMessage":null,"messageId":"66666666-7777-8888-9999-000000000000"}""";
 
+        /// <summary>Gönderim ucunun HTTP durum kodu. Varsayılan: 200.</summary>
+        public HttpStatusCode SendStatusCode { get; set; } = HttpStatusCode.OK;
+
+        /// <summary>true ise gönderim ucu, iptal edilmemiş bir token'la gelen
+        /// zaman aşımını taklit eder: OperationCanceledException fırlatır.
+        /// (HttpClient kendi timeout'unda TaskCanceledException fırlatır, o da
+        /// bu tipten türer — ama LicenseApiClient TaskCanceledException'ı
+        /// LicenseApiNetworkException'a çeviriyor. Servis katmanındaki filtreyi
+        /// sınamak için türetilmemiş temel tipi kullanıyoruz.)</summary>
+        public bool ThrowTimeoutOnSend { get; set; }
+
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -87,17 +98,19 @@ public class PaymentRequestServiceTests : IDisposable
 
             if (path.EndsWith("/whatsapp/send", StringComparison.Ordinal))
             {
+                if (ThrowTimeoutOnSend) throw new OperationCanceledException("timeout");
                 SentBodies.Add(await request.Content!.ReadAsStringAsync(cancellationToken));
-                return Json(SendResponseJson);
+                return Json(SendResponseJson, SendStatusCode);
             }
 
             return new HttpResponseMessage(HttpStatusCode.NotFound);
         }
 
-        private static HttpResponseMessage Json(string body) => new(HttpStatusCode.OK)
-        {
-            Content = new StringContent(body, Encoding.UTF8, "application/json")
-        };
+        private static HttpResponseMessage Json(string body, HttpStatusCode status = HttpStatusCode.OK)
+            => new(status)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            };
     }
 
     private sealed class FixedLicenseProvider : ICurrentLicenseProvider
@@ -106,13 +119,13 @@ public class PaymentRequestServiceTests : IDisposable
     }
 
     private static (PaymentRequestService Sut, WhatsAppStubHandler Handler) MakeCloudSut(
-        SettingsStore store, FakeUrlLauncher launcher)
+        SettingsStore store, FakeUrlLauncher launcher, ICurrentLicenseProvider? licenseProvider = null)
     {
         var handler = new WhatsAppStubHandler();
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://stub") };
         var api = new LicenseApiClient(http, new LicenseTokenStore());
         var sut = new PaymentRequestService(store, new WhatsAppMessageBuilder(), launcher,
-            api, new FixedLicenseProvider());
+            api, licenseProvider ?? new FixedLicenseProvider());
         return (sut, handler);
     }
 
@@ -318,7 +331,9 @@ public class PaymentRequestServiceTests : IDisposable
         _launcher.LaunchedUrls.Should().BeEmpty();
         handler.SentBodies.Should().ContainSingle();
         handler.SentBodies[0].Should().Contain("\"origin\":\"wpf-payment\"");
-        handler.SentBodies[0].Should().Contain("250");
+        // "Ödeme: {tutar} TL" → tr-TR "N2" ile "Ödeme: 250,00 TL". System.Text.Json
+        // varsayılan encoder'ı ASCII dışını kaçırır: "Ö" → \u00D6.
+        handler.SentBodies[0].Should().Contain(@"\u00D6deme: 250,00 TL");
     }
 
     [Fact]
@@ -333,6 +348,60 @@ public class PaymentRequestServiceTests : IDisposable
             MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28));
 
         result.Should().Be(PaymentRequestResult.Opened);
+        _launcher.LaunchedUrls.Should().ContainSingle()
+            .Which.Should().StartWith("https://wa.me/");
+    }
+
+    [Fact]
+    public async Task OpenWhatsAppAsync_CloudApiReturnsServerError_FallsBackToWaMe()
+    {
+        EnableCloudApi();
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.SendStatusCode = HttpStatusCode.InternalServerError;
+
+        var result = await sut.OpenWhatsAppAsync(
+            MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28));
+
+        result.Should().Be(PaymentRequestResult.Opened);
+        _launcher.LaunchedUrls.Should().ContainSingle()
+            .Which.Should().StartWith("https://wa.me/");
+    }
+
+    [Fact]
+    public async Task OpenWhatsAppAsync_CloudApiTimesOut_FallsBackToWaMe()
+    {
+        // Regresyon testi: HttpClient zaman aşımında TaskCanceledException fırlatır
+        // ve o da OperationCanceledException'dan TÜRER. "ex is not
+        // OperationCanceledException" filtresi bu tipi yakalamadığı için zaman
+        // aşımı geri düşüş yolunu tamamen atlayıp global hata dialoguna gidiyordu:
+        // ne mesaj gider ne wa.me açılır. Doğru ölçüt tip değil, token'ın kendisi.
+        // ct verilmiyor (default) — prod'daki iki çağrı yeri de böyle, yani
+        // ct.IsCancellationRequested false. İleride biri catch'i sadeleştirirse
+        // bu test patlamalı.
+        EnableCloudApi();
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.ThrowTimeoutOnSend = true;
+
+        var result = await sut.OpenWhatsAppAsync(
+            MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28));
+
+        result.Should().Be(PaymentRequestResult.Opened);
+        _launcher.LaunchedUrls.Should().ContainSingle()
+            .Which.Should().StartWith("https://wa.me/");
+    }
+
+    [Fact]
+    public async Task OpenWhatsAppAsync_LicenseUnresolvable_FallsBackToWaMeWithoutSending()
+    {
+        EnableCloudApi();
+        // CurrentLicenseKey null → ResolveLicenseIdAsync null döner, POST hiç atılmaz.
+        var (sut, handler) = MakeCloudSut(_store, _launcher, new StubLicenseProvider());
+
+        var result = await sut.OpenWhatsAppAsync(
+            MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28));
+
+        result.Should().Be(PaymentRequestResult.Opened);
+        handler.SentBodies.Should().BeEmpty();
         _launcher.LaunchedUrls.Should().ContainSingle()
             .Which.Should().StartWith("https://wa.me/");
     }

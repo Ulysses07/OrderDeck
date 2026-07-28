@@ -77,6 +77,11 @@ public sealed class PaymentRequestService
             _cachedLicenseKey = key;
             return _cachedLicenseId;
         }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            _log?.LogDebug("Lisans id çözümü zaman aşımına uğradı");
+            return null;
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _log?.LogDebug(ex, "License id resolve failed for payment request");
@@ -248,8 +253,9 @@ public sealed class PaymentRequestService
     /// false = çağıran wa.me'ye düşmeli (hesap bağlı değil, 24s pencere kapalı,
     /// lisans çözülemedi ya da ağ hatası).
     ///
-    /// Hiçbir durumda istisna fırlatmaz: ödeme isteme akışı, opsiyonel bir
-    /// gönderim yolunun hatasıyla durmamalı.
+    /// Yalnızca çağıranın açıkça iptal ettiği durum (ct iptal edilmişse)
+    /// dışarı sızar; diğer tüm hatalar — HTTP zaman aşımı dahil — yutulur:
+    /// ödeme isteme akışı, opsiyonel bir gönderim yolunun hatasıyla durmamalı.
     /// </summary>
     private async Task<bool> TrySendViaCloudApiAsync(
         string phone, string message, string origin, CancellationToken ct)
@@ -271,6 +277,11 @@ public sealed class PaymentRequestService
             }
 
             return true;
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            _log?.LogWarning("WhatsApp Cloud API zaman aşımı — wa.me'ye düşülüyor");
+            return false;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
