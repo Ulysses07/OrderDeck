@@ -27,8 +27,13 @@ namespace OrderDeck.LicenseServer.Controllers.Licenses;
 public sealed class LicensesWhatsAppSendController : ControllerBase
 {
     /// <summary>WhatsApp metin gövdesi 4096 karakter; daha uzun istek Graph'a
-    /// çıkmadan burada kesilir.</summary>
+    /// çıkmadan 400 ile reddedilir.</summary>
     private const int MaxTextLength = 4096;
+
+    /// <summary><c>WaMessage.Origin</c> kolonunun uzunluğunu birebir yansıtır
+    /// (bkz. <see cref="LicenseDbContext"/>); daha uzun değer SaveChanges'te
+    /// truncation hatası verir.</summary>
+    private const int MaxOriginLength = 16;
 
     private readonly LicenseDbContext _db;
     private readonly WhatsAppMessagingService _messaging;
@@ -48,8 +53,7 @@ public sealed class LicensesWhatsAppSendController : ControllerBase
     public async Task<IActionResult> Send(
         Guid licenseId, [FromBody] SendRequest req, CancellationToken ct)
     {
-        var toPhone = req?.ToPhone ?? "";
-        if (req is null || WaPhone.Canonical(toPhone).Length == 0)
+        if (WaPhone.Canonical(req.ToPhone).Length == 0)
             return Problem(title: "invalid-phone", statusCode: 400, detail: "Geçerli bir numara gerekli.");
         if (string.IsNullOrWhiteSpace(req.Text))
             return Problem(title: "empty-body", statusCode: 400, detail: "Mesaj boş olamaz.");
@@ -63,9 +67,9 @@ public sealed class LicensesWhatsAppSendController : ControllerBase
         if (!ownsLicense) return NotFound();
 
         var origin = string.IsNullOrWhiteSpace(req.Origin) ? "wpf" : req.Origin.Trim();
-        if (origin.Length > 32) origin = origin[..32];
+        if (origin.Length > MaxOriginLength) origin = origin[..MaxOriginLength];
 
-        var outcome = await _messaging.SendTextAsync(licenseId, toPhone, req.Text, origin, ct);
+        var outcome = await _messaging.SendTextAsync(licenseId, req.ToPhone, req.Text, origin, ct);
 
         // Gönderilemedi ≠ istek hatalı: sebep (window_closed / no_account / Meta
         // hata kodu) gövdede taşınır. WPF wa.me'ye düşme kararını buna bakarak

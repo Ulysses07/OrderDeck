@@ -114,6 +114,26 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Defaults_origin_to_wpf_when_omitted()
+    {
+        var (client, licenseId) = await SeedAsync();
+        await ConnectAccountAsync(licenseId);
+        await OpenServiceWindowAsync(licenseId, "905551112244");
+
+        // origin alanı hiç gönderilmiyor → sunucu "wpf" yazmalı.
+        var resp = await client.PostAsJsonAsync(
+            Url(licenseId),
+            new { toPhone = "+90 555 111 22 44", text = "Merhaba." });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var msg = await db.WaMessages.SingleAsync(m => m.LicenseId == licenseId);
+        msg.Origin.Should().Be("wpf");
+    }
+
+    [Fact]
     public async Task Reports_window_closed_with_200()
     {
         var (client, licenseId) = await SeedAsync();
@@ -173,6 +193,19 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
             Url(licenseId), new { toPhone = "905559998877", text = new string('x', 4097) });
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Accepts_text_exactly_at_limit()
+    {
+        var (client, licenseId) = await SeedAsync();
+
+        var resp = await client.PostAsJsonAsync(
+            Url(licenseId), new { toPhone = "905559998877", text = new string('x', 4096) });
+
+        // Hesap bağlı olmadığı için gövde no_account döner; buradaki mesele
+        // sınır değerin doğrulamadan geçmesi, o yüzden HTTP durumuna bakıyoruz.
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
     [Fact]
