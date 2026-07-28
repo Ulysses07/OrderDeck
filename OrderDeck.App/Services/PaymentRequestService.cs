@@ -171,10 +171,13 @@ public sealed class PaymentRequestService
                     if (preview.Balance > 0)
                     {
                         var amount = Math.Min(preview.Balance, totalAmount);
+                        // Çağrı başına yeni anahtar — WhatsApp gönderimiyle aynı
+                        // gerekçe: dayanıklılık katmanı 5xx/ağ hatasında bu POST'u
+                        // da yeniden deniyor ve burası gerçek para düşüyor.
                         var apply = await _api.ApplyBalanceAsync(
                             licenseId.Value,
                             new CustomerBalanceApplyRequest(
-                                wpfCustomerId, amount, totalAmount),
+                                wpfCustomerId, amount, totalAmount, Guid.NewGuid()),
                             ct);
                         appliedBalance = apply.AppliedAmount;
                         totalAmount -= apply.AppliedAmount;

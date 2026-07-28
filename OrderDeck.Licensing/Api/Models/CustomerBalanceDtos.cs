@@ -6,10 +6,15 @@ public sealed record CustomerBalancePreview(
     decimal Balance,
     DateTimeOffset UpdatedAt);
 
+/// <summary>Bakiye düşüm isteği. <paramref name="IdempotencyKey"/> çağrı başına
+/// bir kez üretilir: dayanıklılık katmanı bu POST'u yeniden denediğinde gövde
+/// (dolayısıyla anahtar) aynı kalır ve sunucu bakiyeyi ikinci kez düşürmez.
+/// Anahtar aynı zamanda oluşan ledger satırının kimliğidir.</summary>
 public sealed record CustomerBalanceApplyRequest(
     Guid WpfCustomerId,
     decimal Amount,
-    decimal ProductTotal);
+    decimal ProductTotal,
+    Guid? IdempotencyKey = null);
 
 public sealed record CustomerBalanceApplyResponse(
     Guid TransactionId,

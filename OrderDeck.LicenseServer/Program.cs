@@ -112,6 +112,7 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sms.SmsCampaignSendJob>();
         builder.Services.AddScoped<PasswordResetCodeService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Auth.PasswordResetCodeCleanupJob>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.WhatsApp.WaSendAttemptCleanupJob>();
 
         builder.Services.AddSingleton<UnsubscribeTokenSigner>();
         builder.Services.AddScoped<EmailSendCoordinator>();
@@ -373,6 +374,24 @@ public class Program
                         QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst,
                         QueueLimit = 0
                     }));
+            // WhatsApp gönderimi — her istek Meta'da faturalanabilir bir mesaj
+            // demek, yani buradaki kaçak doğrudan para kaybı. Bölüm anahtarı IP
+            // DEĞİL çağıran müşteri: yayıncılar NAT arkasından aynı IP'yi
+            // paylaşabilir ve birinin döngüsü diğerini kilitlememeli.
+            // Limit bilerek cömert — operatör yayın sonrası onlarca müşteriye
+            // elle hatırlatma gönderiyor; amaç normal kullanımı kesmek değil,
+            // kontrolden çıkmış bir döngüyü sınırlamak.
+            opt.AddPolicy("whatsapp-send", ctx =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    partitionKey: ctx.User.FindFirstValue(ClaimTypes.NameIdentifier)
+                                  ?? ctx.Connection.RemoteIpAddress?.ToString() ?? "anon",
+                    factory: _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 300,
+                        Window = TimeSpan.FromHours(1),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0
+                    }));
             opt.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
                 RateLimitPartition.GetFixedWindowLimiter(
                     partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
@@ -543,6 +562,14 @@ public class Program
                 "otp-code-cleanup",
                 j => j.PruneAsync(CancellationToken.None),
                 "45 3 * * *");  // 03:45 UTC daily
+
+            // WhatsApp gönderim rezervasyonları — idempotency penceresi dakikalarla
+            // ölçülüyor, satırlar yalnız teşhis için saklanıyor. Süresi dolanlar
+            // günlük temizlenmezse tablo sınırsız büyür.
+            manager.AddOrUpdate<OrderDeck.LicenseServer.Services.WhatsApp.WaSendAttemptCleanupJob>(
+                "wa-send-attempt-cleanup",
+                j => j.PruneAsync(CancellationToken.None),
+                "0 4 * * *");  // 04:00 UTC daily
         }
 
         if (app.Environment.IsDevelopment())

@@ -131,23 +131,27 @@ public class ApiFactory : WebApplicationFactory<Program>
             // Disable rate limiting in tests — remove all IConfigureOptions<RateLimiterOptions>
             // registrations (added by AddRateLimiter in Program.cs) and register a fresh
             // unlimited configuration so auth tests don't get 429.
+            //
+            // DİKKAT: bu liste Program.cs'teki politika adlarını ELLE yansıtıyor ve
+            // eksiği sessiz kalmıyor — [EnableRateLimiting("x")] taşıyan bir ucun
+            // karşılığı burada yoksa istek 429 değil 500 oluyor ("no such policy
+            // exists") ve o ucun BÜTÜN testleri düşüyor. Program.cs'e yeni politika
+            // eklerken buraya da ekle.
             services.RemoveAll<Microsoft.Extensions.Options.IConfigureOptions<RateLimiterOptions>>();
             services.RemoveAll<Microsoft.Extensions.Options.IPostConfigureOptions<RateLimiterOptions>>();
             services.AddRateLimiter(opts =>
             {
                 opts.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-                opts.AddPolicy("auth-register", _ =>
-                    RateLimitPartition.GetNoLimiter(string.Empty));
-                opts.AddPolicy("auth-login", _ =>
-                    RateLimitPartition.GetNoLimiter(string.Empty));
-                opts.AddPolicy("auth-refresh", _ =>
-                    RateLimitPartition.GetNoLimiter(string.Empty));
-                opts.AddPolicy("intake-form-submit", _ =>
-                    RateLimitPartition.GetNoLimiter(string.Empty));
-                opts.AddPolicy("backup-upload", _ =>
-                    RateLimitPartition.GetNoLimiter(string.Empty));
-                opts.AddPolicy("backup-delete", _ =>
-                    RateLimitPartition.GetNoLimiter(string.Empty));
+                foreach (var policy in new[]
+                {
+                    "auth-register", "auth-login", "auth-refresh",
+                    "intake-form-submit", "youtube-verify",
+                    "backup-upload", "backup-delete",
+                    "whatsapp-send",
+                })
+                {
+                    opts.AddPolicy(policy, _ => RateLimitPartition.GetNoLimiter(string.Empty));
+                }
                 opts.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(_ =>
                     RateLimitPartition.GetNoLimiter(string.Empty));
             });
