@@ -370,12 +370,16 @@ public class PaymentRequestServiceTests : IDisposable
     [Fact]
     public async Task OpenWhatsAppAsync_CloudApiTimesOut_FallsBackToWaMe()
     {
-        // Regresyon testi: HttpClient zaman aşımında TaskCanceledException fırlatır
-        // ve o da OperationCanceledException'dan TÜRER. "ex is not
-        // OperationCanceledException" filtresi bu tipi yakalamadığı için zaman
-        // aşımı geri düşüş yolunu tamamen atlayıp global hata dialoguna gidiyordu:
-        // ne mesaj gider ne wa.me açılır. Doğru ölçüt tip değil, token'ın kendisi.
-        // ct verilmiyor (default) — prod'daki iki çağrı yeri de böyle, yani
+        // Sözleşme testi (canlı bir hata düzeltmesi DEĞİL): HttpClient zaman
+        // aşımında TaskCanceledException fırlatır ve o da
+        // OperationCanceledException'dan TÜRER — yani "ex is not
+        // OperationCanceledException" filtresi bu tipi yakalamaz. Pratikte
+        // LicenseApiClient zaman aşımını bir katman altta
+        // LicenseApiNetworkException'a çevirdiği için wa.me geri düşüşü zaten
+        // bozuk değildi; buradaki catch derinlemesine savunma. Test, çıplak bir
+        // OperationCanceledException fırlatarak (LicenseApiClient'ın soğurmadığı
+        // tek şekil) filtrenin token'a bakmasını garantiye alır. ct verilmiyor
+        // (default) — prod'daki iki çağrı yeri de böyle, yani
         // ct.IsCancellationRequested false. İleride biri catch'i sadeleştirirse
         // bu test patlamalı.
         EnableCloudApi();
