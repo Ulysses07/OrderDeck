@@ -220,7 +220,7 @@ public sealed class LicensesWhatsAppSendController : ControllerBase
             // in_progress "gerçekten uçuşta" demek zorunda, "çöktük" demek değil.
             // (Gerçek iptalde satır bilerek pending bırakılır: orada in_progress
             // dürüst bir cevap, iki dakika sonra da bayat sayılıp devralınır.)
-            await TryStampServerErrorAsync(attempt.Id, ex);
+            await TryStampServerErrorAsync(attempt.Id);
             _log.LogError(ex,
                 "WhatsApp gönderimi hata verdi (key={Key}, license={LicenseId}) — rezervasyon hata olarak damgalandı",
                 attempt.Id, licenseId);
@@ -252,7 +252,7 @@ public sealed class LicensesWhatsAppSendController : ControllerBase
 
     /// <summary>Rezervasyonu "sonuç: hata" olarak kapatır. Damgalama başarısız
     /// olsa bile asıl hatayı gölgelememeli — bu yüzden kendi içinde yutulur.</summary>
-    private async Task TryStampServerErrorAsync(Guid key, Exception cause)
+    private async Task TryStampServerErrorAsync(Guid key)
     {
         try
         {
@@ -265,11 +265,11 @@ public sealed class LicensesWhatsAppSendController : ControllerBase
             row.Status = StatusDone;
             row.Ok = false;
             row.ErrorCode = ErrServerError;
-            // Hatanın kendisi saklanıyor: tekrar isteği bunu aynen geri oynatacak
-            // ve "müşteriye mesaj gitmedi" şikâyetinde loga bakmadan da sebep
-            // görülebilecek. Kolon sınırına kesiliyor — asıl patlama sebebi zaten
-            // sığmayan bir metin olabilir, damgalama da aynı hataya düşmemeli.
-            row.ErrorMessage = Truncate(cause.Message, MaxErrorMessageLength);
+            // Genel metin saklanıyor, istisnanın kendisi DEĞİL: bu alan tekrar
+            // isteğine aynen geri oynatılıyor, yani istemciye çıkıyor. Ham
+            // exception metni sunucu/şema gibi iç detay taşıyabilir. Teşhis için
+            // gereken her şey zaten çağıran taraftaki LogError'da duruyor.
+            row.ErrorMessage = "Gönderim sırasında sunucu hatası oluştu.";
             row.CompletedAt = DateTimeOffset.UtcNow;
             // İstek iptal edilmiş olsa bile damga yazılmalı; yoksa satır pending
             // kalır ve tekrar in_progress alır.
