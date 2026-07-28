@@ -137,4 +137,113 @@ public class LicensesCustomerBalanceApplyControllerTests : IClassFixture<ApiFact
             new { WpfCustomerId = wpfCustomerId, Amount = 0m, ProductTotal = 100m });
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
+
+    // ── Idempotency ─────────────────────────────────────────────────────────
+    // WPF'in HttpClient dayanıklılık katmanı 5xx/ağ hatasında POST'u yeniden
+    // deniyor. Koruma olmadan operatörün tek tıkı müşterinin bakiyesini iki kez
+    // düşürür ve ledger'a iki düşüm satırı yazar — sessiz para kaybı.
+
+    [Fact]
+    public async Task Apply_same_key_twice_deducts_once()
+    {
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        var key = Guid.NewGuid();
+        var body = new { WpfCustomerId = wpfCustomerId, Amount = 200m, ProductTotal = 2100m, IdempotencyKey = key };
+
+        var first = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply", body);
+        var second = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply", body);
+
+        first.StatusCode.Should().Be(HttpStatusCode.OK);
+        second.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var b1 = await first.Content.ReadFromJsonAsync<ApplyResponse>();
+        var b2 = await second.Content.ReadFromJsonAsync<ApplyResponse>();
+        b1!.AppliedAmount.Should().Be(200m);
+        // Tekrar isteği İLK sonucun aynısını oynatmalı; "0 düştü" demek de
+        // yanlış olurdu — WPF bu tutarı mesaja yazıyor.
+        b2!.AppliedAmount.Should().Be(200m);
+        b2.TransactionId.Should().Be(b1.TransactionId);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        db.CustomerBalances
+            .Single(b => b.LicenseId == licenseId && b.WpfCustomerId == wpfCustomerId)
+            .Balance.Should().Be(300m);
+        db.CustomerBalanceTransactions
+            .Count(t => t.LicenseId == licenseId && t.Kind == "purchase-deduction")
+            .Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Apply_uses_idempotency_key_as_transaction_id()
+    {
+        // Anahtarın ledger satırının PK'sı OLMASI tasarımın kendisi: ayrı bir
+        // rezervasyon tablosuna gerek bırakmayan şey bu. Kayarsa idempotency
+        // sessizce kapanır, o yüzden ayrıca sabitleniyor.
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(100m);
+        var key = Guid.NewGuid();
+
+        var resp = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = 50m, ProductTotal = 500m, IdempotencyKey = key });
+
+        var body = await resp.Content.ReadFromJsonAsync<ApplyResponse>();
+        body!.TransactionId.Should().Be(key);
+    }
+
+    [Fact]
+    public async Task Apply_without_key_keeps_old_behaviour()
+    {
+        // Alanı hiç göndermemek eski davranış: her istek yeni düşüm. Eski WPF
+        // sürümleri bu yolda kalıyor, sessizce reddedilmemeli.
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        var body = new { WpfCustomerId = wpfCustomerId, Amount = 100m, ProductTotal = 2100m };
+
+        await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/customer-balance/apply", body);
+        await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/customer-balance/apply", body);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        db.CustomerBalances
+            .Single(b => b.LicenseId == licenseId && b.WpfCustomerId == wpfCustomerId)
+            .Balance.Should().Be(300m);
+    }
+
+    [Fact]
+    public async Task Apply_empty_key_returns_400()
+    {
+        // Boş Guid "anahtar yok" DEĞİL: bozuk anahtar üreten bir istemcide
+        // idempotency sessizce kapanır ve çift düşüm serbest kalır.
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(100m);
+
+        var resp = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = 50m, ProductTotal = 500m, IdempotencyKey = Guid.Empty });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Apply_key_belonging_to_another_row_returns_404()
+    {
+        // Anahtar başka bir kaydın kimliğiyse çağıran onu ne görmeli ne de
+        // üzerine yazabilmeli. Ayrıca ele alınmasa PK ihlali 500'e dönerdi.
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(100m);
+
+        Guid foreignTxId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            foreignTxId = db.CustomerBalanceTransactions
+                .First(t => t.LicenseId == licenseId).Id;   // kurulumdaki refund-full satırı
+        }
+
+        var resp = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = 50m, ProductTotal = 500m, IdempotencyKey = foreignTxId });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
 }

@@ -59,15 +59,21 @@ public class PaymentRequestServiceTests : IDisposable
         }
     }
 
-    /// <summary>Cloud API yolunu sürebilmek için iki uca cevap veren handler:
-    /// /api/v1/me/licenses (lisans id çözümü) ve .../whatsapp/send (gönderim).
-    /// Diğer her şey 404 — bakiye uçları dahil, o yol testte kullanılmıyor.</summary>
+    /// <summary>Cloud API yolunu sürebilmek için uçlara cevap veren handler:
+    /// /api/v1/me/licenses (lisans id çözümü), .../whatsapp/send (gönderim) ve
+    /// .../customer-balance/{preview,apply} (bakiye düşümü). Diğer her şey 404.</summary>
     private sealed class WhatsAppStubHandler : HttpMessageHandler
     {
         public static readonly Guid LicenseId = Guid.Parse("11111111-2222-3333-4444-555555555555");
         public const string LicenseKey = "LDK-TEST-KEY";
 
         public List<string> SentBodies { get; } = new();
+
+        /// <summary>Bakiye düşüm ucuna gelen gövdeler (idempotency anahtarı burada).</summary>
+        public List<string> AppliedBalanceBodies { get; } = new();
+
+        /// <summary>Preview ucunun döneceği bakiye. 0 → apply hiç çağrılmaz.</summary>
+        public decimal PreviewBalance { get; set; }
 
         /// <summary>Gönderim ucunun döneceği gövde. Varsayılan: başarılı.</summary>
         public string SendResponseJson { get; set; } =
@@ -103,6 +109,23 @@ public class PaymentRequestServiceTests : IDisposable
                 if (ThrowTimeoutOnSend) throw new OperationCanceledException("timeout");
                 SentBodies.Add(await request.Content!.ReadAsStringAsync(cancellationToken));
                 return Json(SendResponseJson, SendStatusCode);
+            }
+
+            if (path.EndsWith("/customer-balance/preview", StringComparison.Ordinal))
+            {
+                return Json($$"""
+                    {"wpfCustomerId":"{{Guid.Empty}}","balance":{{PreviewBalance.ToString(System.Globalization.CultureInfo.InvariantCulture)}},
+                     "updatedAt":"2030-01-01T00:00:00+00:00"}
+                    """);
+            }
+
+            if (path.EndsWith("/customer-balance/apply", StringComparison.Ordinal))
+            {
+                AppliedBalanceBodies.Add(await request.Content!.ReadAsStringAsync(cancellationToken));
+                return Json($$"""
+                    {"transactionId":"{{Guid.NewGuid()}}","appliedAmount":{{PreviewBalance.ToString(System.Globalization.CultureInfo.InvariantCulture)}},
+                     "remainingBalance":0}
+                    """);
             }
 
             return new HttpResponseMessage(HttpStatusCode.NotFound);
@@ -146,8 +169,12 @@ public class PaymentRequestServiceTests : IDisposable
         if (File.Exists(_settingsPath)) File.Delete(_settingsPath);
     }
 
-    private static Customer MakeCustomer(string? phone, bool recipientPaysActive = false) =>
-        new("c1", "twitch", "alice", "Alice", null, 100, 100,
+    /// <summary><paramref name="id"/> yalnızca bakiye yolu için anlamlı: servis
+    /// Customer.Id'yi "N" formatında Guid olarak ayrıştırabilirse bakiye uçlarını
+    /// çağırıyor, aksi halde (varsayılan "c1") o yolu tümden atlıyor.</summary>
+    private static Customer MakeCustomer(
+        string? phone, bool recipientPaysActive = false, string id = "c1") =>
+        new(id, "twitch", "alice", "Alice", null, 100, 100,
             false, null, null, 0, 0m, null, null, phone,
             RecipientPaysActive: recipientPaysActive);
 
@@ -425,6 +452,27 @@ public class PaymentRequestServiceTests : IDisposable
 
         handler.SentBodies.Should().ContainSingle();
         using var body = JsonDocument.Parse(handler.SentBodies[0]);
+        var raw = body.RootElement.GetProperty("idempotencyKey").GetString();
+        Guid.TryParse(raw, out var key).Should().BeTrue();
+        key.Should().NotBe(Guid.Empty);
+    }
+
+    [Fact]
+    public async Task OpenWhatsAppAsync_BalanceApplied_SendsIdempotencyKey()
+    {
+        // Bakiye düşümü GERÇEK para: dayanıklılık katmanı bu POST'u da 5xx/ağ
+        // hatasında yeniden deniyor. Anahtar gövdede olmazsa aynı tık müşterinin
+        // bakiyesini iki kez düşürür ve ledger'a iki satır yazar.
+        EnableCloudApi();
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+
+        await sut.OpenWhatsAppAsync(
+            MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N")),
+            250m, new DateTime(2026, 7, 28));
+
+        handler.AppliedBalanceBodies.Should().ContainSingle();
+        using var body = JsonDocument.Parse(handler.AppliedBalanceBodies[0]);
         var raw = body.RootElement.GetProperty("idempotencyKey").GetString();
         Guid.TryParse(raw, out var key).Should().BeTrue();
         key.Should().NotBe(Guid.Empty);
