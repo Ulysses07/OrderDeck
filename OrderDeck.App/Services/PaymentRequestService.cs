@@ -260,16 +260,18 @@ public sealed class PaymentRequestService
     private async Task<bool> TrySendViaCloudApiAsync(
         string phone, string message, string origin, CancellationToken ct)
     {
+        // Çağrı başına yeni anahtar: dayanıklılık katmanı bu POST'u yeniden
+        // denerse gövde (dolayısıyla anahtar) aynı kalır ve sunucu tekrarı eler.
+        // try'ın DIŞINDA duruyor ki zaman aşımı kaydında da yer alsın.
+        var idempotencyKey = Guid.NewGuid();
         try
         {
             var licenseId = await ResolveLicenseIdAsync(ct);
             if (licenseId is null) return false;
 
-            // Çağrı başına yeni anahtar: dayanıklılık katmanı bu POST'u yeniden
-            // denerse gövde (dolayısıyla anahtar) aynı kalır ve sunucu tekrarı eler.
             var resp = await _api.SendWhatsAppTextAsync(
                 licenseId.Value,
-                new WhatsAppSendRequest(phone, message, origin, Guid.NewGuid()), ct);
+                new WhatsAppSendRequest(phone, message, origin, idempotencyKey), ct);
 
             if (!resp.Ok)
             {
@@ -278,13 +280,14 @@ public sealed class PaymentRequestService
                     // Gönderim gerçekten uçuşta; wa.me açmak operatörü ikinci bir
                     // kopya yollamaya davet eder — gönderildi say ve geri düşme.
                     _log?.LogWarning(
-                        "Aynı WhatsApp gönderimi hâlâ işleniyor — çift mesajı önlemek için wa.me açılmıyor");
+                        "Aynı WhatsApp gönderimi hâlâ işleniyor — çift mesajı önlemek için wa.me açılmıyor (key={Key})",
+                        idempotencyKey);
                     return true;
                 }
 
                 _log?.LogInformation(
-                    "WhatsApp Cloud API gönderimi yapılamadı ({Code}) — wa.me'ye düşülüyor",
-                    resp.ErrorCode);
+                    "WhatsApp Cloud API gönderimi yapılamadı ({Code}) — wa.me'ye düşülüyor (key={Key})",
+                    resp.ErrorCode, idempotencyKey);
                 return false;
             }
 
@@ -292,12 +295,18 @@ public sealed class PaymentRequestService
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            _log?.LogWarning("WhatsApp Cloud API zaman aşımı — wa.me'ye düşülüyor");
+            // Zaman aşımında sunucunun mesajı gönderip göndermediğini bilmiyoruz;
+            // wa.me açılıyor, yani operatör elle ikinci bir kopya yollayabilir.
+            // Anahtarı loga yazıyoruz ki "müşteriye iki mesaj gitti" şikâyetinde
+            // gönderim sunucu tarafında izlenebilsin.
+            _log?.LogWarning(
+                "WhatsApp Cloud API zaman aşımı — wa.me'ye düşülüyor (key={Key})", idempotencyKey);
             return false;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _log?.LogWarning(ex, "WhatsApp Cloud API gönderimi hata verdi — wa.me'ye düşülüyor");
+            _log?.LogWarning(ex,
+                "WhatsApp Cloud API gönderimi hata verdi — wa.me'ye düşülüyor (key={Key})", idempotencyKey);
             return false;
         }
     }

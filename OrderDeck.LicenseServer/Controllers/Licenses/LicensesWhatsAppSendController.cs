@@ -28,7 +28,14 @@ namespace OrderDeck.LicenseServer.Controllers.Licenses;
 /// döner. İlk gönderim hâlâ uçuştaysa <c>in_progress</c> döner. Bu, WPF'in
 /// HttpClient dayanıklılık katmanının 5xx/ağ hatasında POST'u yeniden
 /// denemesine karşı koruma: gönderim gerçek para ve gerçek müşteri demek.
-/// Anahtar gönderilmezse eski davranış (her istek yeni gönderim) sürer.</para>
+/// Anahtar gönderilmezse (alan hiç yoksa) eski davranış (her istek yeni
+/// gönderim) sürer; boş Guid ise istek 400 ile reddedilir.</para>
+///
+/// <para><b>in_progress asla "çöktük" demez.</b> Rezervasyon ile sonuç yazımı
+/// arasında beklenmedik bir hata olursa satır <c>done</c>/<c>server_error</c>
+/// olarak damgalanır — yoksa saniyeler sonra gelen yeniden-deneme in_progress
+/// alır, WPF "gönderildi" der ve müşteriye hiçbir şey gitmez. Bu, özelliğin
+/// amacının tam tersi olurdu.</para>
 /// </summary>
 [ApiController]
 [Route("api/v1/licenses/{licenseId:guid}/whatsapp/send")]
@@ -44,8 +51,21 @@ public sealed class LicensesWhatsAppSendController : ControllerBase
     /// truncation hatası verir.</summary>
     private const int MaxOriginLength = 16;
 
+    /// <summary><c>WaSendAttempt.ErrorCode</c> kolonunun uzunluğunu birebir
+    /// yansıtır (bkz. <see cref="LicenseDbContext"/>).</summary>
+    private const int MaxErrorCodeLength = 32;
+
+    /// <summary><c>WaSendAttempt.ErrorMessage</c> kolonunun uzunluğunu birebir
+    /// yansıtır (bkz. <see cref="LicenseDbContext"/>). Meta'nın hata gövdesi
+    /// bundan uzun gelebiliyor.</summary>
+    private const int MaxErrorMessageLength = 1000;
+
     /// <summary>Aynı anahtarla gelen gönderim hâlâ uçuşta.</summary>
     public const string ErrInProgress = "in_progress";
+
+    /// <summary>Gönderim sırasında beklenmedik sunucu hatası oluştu — sonuç
+    /// bilinmiyor ama "uçuşta" da değil.</summary>
+    public const string ErrServerError = "server_error";
 
     private const string StatusPending = "pending";
     private const string StatusDone = "done";
@@ -56,11 +76,16 @@ public sealed class LicensesWhatsAppSendController : ControllerBase
 
     private readonly LicenseDbContext _db;
     private readonly WhatsAppMessagingService _messaging;
+    private readonly ILogger<LicensesWhatsAppSendController> _log;
 
-    public LicensesWhatsAppSendController(LicenseDbContext db, WhatsAppMessagingService messaging)
+    public LicensesWhatsAppSendController(
+        LicenseDbContext db,
+        WhatsAppMessagingService messaging,
+        ILogger<LicensesWhatsAppSendController> log)
     {
         _db = db;
         _messaging = messaging;
+        _log = log;
     }
 
     public sealed record SendRequest(string ToPhone, string Text, string? Origin, Guid? IdempotencyKey);
@@ -88,20 +113,45 @@ public sealed class LicensesWhatsAppSendController : ControllerBase
         var origin = string.IsNullOrWhiteSpace(req.Origin) ? "wpf" : req.Origin.Trim();
         if (origin.Length > MaxOriginLength) origin = origin[..MaxOriginLength];
 
+        // Boş Guid "anahtar yok" demek DEĞİL: istemci bozuk bir anahtar üretmişse
+        // idempotency sessizce kapanır ve para yolunda çift gönderim serbest kalır.
+        // Alanı hiç göndermemek (null) eski davranışı korur, Guid.Empty reddedilir.
+        if (req.IdempotencyKey == Guid.Empty)
+        {
+            return Problem(title: "invalid-idempotency-key", statusCode: 400,
+                detail: "Idempotency anahtarı boş Guid olamaz.");
+        }
+
         // Rezervasyon Graph çağrısından ÖNCE yazılır: ilk deneme hâlâ uçuştayken
         // gelen bir tekrar da böylece tanınır.
         WaSendAttempt? attempt = null;
-        if (req.IdempotencyKey is { } key && key != Guid.Empty)
+        if (req.IdempotencyKey is { } key)
         {
             var existing = await _db.WaSendAttempts.FirstOrDefaultAsync(a => a.Id == key, ct);
+            var isNewReservation = existing is null;
             if (existing is not null)
             {
                 // Anahtar başka lisansa aitse bu çağıran onu görmemeli.
-                if (existing.LicenseId != licenseId) return NotFound();
+                if (existing.LicenseId != licenseId)
+                {
+                    _log.LogWarning(
+                        "WhatsApp idempotency anahtarı başka lisansa ait (key={Key}, license={LicenseId})",
+                        key, licenseId);
+                    return NotFound();
+                }
+
                 var replay = ReplayIfKnown(existing);
-                if (replay is not null) return Ok(replay);
-                // Terk edilmiş rezervasyon → devral.
-                existing.CreatedAt = DateTimeOffset.UtcNow;
+                if (replay is not null)
+                {
+                    LogReplay(replay, key, licenseId);
+                    return Ok(replay);
+                }
+
+                // Terk edilmiş rezervasyon → devral (yeni denemenin başlangıcı).
+                _log.LogWarning(
+                    "Bayat WhatsApp rezervasyonu devralındı (key={Key}, license={LicenseId}, önceki başlangıç={StartedAt:o})",
+                    key, licenseId, existing.StartedAt);
+                existing.StartedAt = DateTimeOffset.UtcNow;
                 attempt = existing;
             }
             else
@@ -111,37 +161,70 @@ public sealed class LicensesWhatsAppSendController : ControllerBase
                     Id = key,
                     LicenseId = licenseId,
                     Status = StatusPending,
-                    CreatedAt = DateTimeOffset.UtcNow,
+                    StartedAt = DateTimeOffset.UtcNow,
                 };
                 _db.WaSendAttempts.Add(attempt);
+                _log.LogInformation(
+                    "WhatsApp gönderimi rezerve edildi (key={Key}, license={LicenseId})", key, licenseId);
             }
 
             try
             {
                 await _db.SaveChangesAsync(ct);
             }
-            catch (DbUpdateException)
+            catch (DbUpdateException) when (isNewReservation)
             {
-                // Yarış: iki istek aynı anda rezerve etmeye çalıştı. Kazananın satırını oku.
+                // Yalnız EKLEME çakışması in_progress'e dönüşebilir: devralma yolu
+                // UPDATE'tir, orada DbUpdateException "başkası kazandı" değil gerçek
+                // bir DB hatasıdır ve in_progress diye yutulursa WPF "gönderildi"
+                // der, oysa hiçbir şey gitmemiştir.
                 _db.ChangeTracker.Clear();
-                var winner = await _db.WaSendAttempts.FirstOrDefaultAsync(a => a.Id == key, ct);
-                if (winner is null) throw;
-                return Ok(ReplayIfKnown(winner)
-                    ?? new SendResponse(false, ErrInProgress, "Aynı gönderim hâlâ işleniyor.", null));
+                var winner = await _db.WaSendAttempts.AsNoTracking()
+                    .FirstOrDefaultAsync(a => a.Id == key, ct);
+                var winnerReplay = winner is null ? null : ReplayIfKnown(winner);
+                // Ortada gerçek bir kazanan yoksa (satır yok ya da o da bayat)
+                // yarış hikâyesi tutmuyor → hatayı sakla, 500 ile dışarı ver.
+                if (winnerReplay is null) throw;
+                _log.LogWarning(
+                    "WhatsApp rezervasyon yarışı: anahtarı başka istek kazandı (key={Key}, license={LicenseId})",
+                    key, licenseId);
+                return Ok(winnerReplay);
             }
         }
 
-        var outcome = await _messaging.SendTextAsync(licenseId, req.ToPhone, req.Text, origin, ct);
-
-        if (attempt is not null)
+        WhatsAppMessagingService.SendOutcome outcome;
+        try
         {
-            attempt.Status = StatusDone;
-            attempt.Ok = outcome.Ok;
-            attempt.ErrorCode = Truncate(outcome.ErrorCode, 32);
-            attempt.ErrorMessage = Truncate(outcome.ErrorMessage, 1000);
-            attempt.MessageId = outcome.MessageId;
-            attempt.CompletedAt = DateTimeOffset.UtcNow;
-            await _db.SaveChangesAsync(ct);
+            outcome = await _messaging.SendTextAsync(licenseId, req.ToPhone, req.Text, origin, ct);
+
+            if (attempt is not null)
+            {
+                attempt.Status = StatusDone;
+                attempt.Ok = outcome.Ok;
+                attempt.ErrorCode = Truncate(outcome.ErrorCode, MaxErrorCodeLength);
+                attempt.ErrorMessage = Truncate(outcome.ErrorMessage, MaxErrorMessageLength);
+                attempt.MessageId = outcome.MessageId;
+                attempt.CompletedAt = DateTimeOffset.UtcNow;
+                // Graph çağrısı DÖNDÜKTEN sonra iptal edilebilir kayıt olmaz:
+                // istemcinin zaman aşımı RequestAborted'ı tetikliyor ve ct'yi
+                // buraya geçirirsek Meta'nın kabul ettiği (faturalanmış, müşteriye
+                // ulaşmış) mesaj DB'de hiç görünmez. Bilerek CancellationToken.None.
+                await _db.SaveChangesAsync(CancellationToken.None);
+            }
+        }
+        catch (Exception ex) when (attempt is not null &&
+                                   !(ex is OperationCanceledException && ct.IsCancellationRequested))
+        {
+            // Rezervasyon "pending" kalırsa saniyeler sonra gelen yeniden-deneme
+            // in_progress alır ve WPF "gönderildi" der — oysa hiçbir şey gitmedi.
+            // in_progress "gerçekten uçuşta" demek zorunda, "çöktük" demek değil.
+            // (Gerçek iptalde satır bilerek pending bırakılır: orada in_progress
+            // dürüst bir cevap, iki dakika sonra da bayat sayılıp devralınır.)
+            await TryStampServerErrorAsync(attempt.Id, ex);
+            _log.LogError(ex,
+                "WhatsApp gönderimi hata verdi (key={Key}, license={LicenseId}) — rezervasyon hata olarak damgalandı",
+                attempt.Id, licenseId);
+            throw;
         }
 
         // Gönderilemedi ≠ istek hatalı: sebep (window_closed / no_account / Meta
@@ -151,12 +234,60 @@ public sealed class LicensesWhatsAppSendController : ControllerBase
             outcome.Ok, outcome.ErrorCode, outcome.ErrorMessage, outcome.MessageId));
     }
 
+    private void LogReplay(SendResponse replay, Guid key, Guid licenseId)
+    {
+        if (replay.ErrorCode == ErrInProgress)
+        {
+            _log.LogWarning(
+                "Aynı anahtarla gelen WhatsApp gönderimi hâlâ uçuşta (key={Key}, license={LicenseId})",
+                key, licenseId);
+        }
+        else
+        {
+            _log.LogInformation(
+                "WhatsApp gönderim sonucu tekrar oynatıldı (key={Key}, license={LicenseId}, ok={Ok}, code={Code})",
+                key, licenseId, replay.Ok, replay.ErrorCode);
+        }
+    }
+
+    /// <summary>Rezervasyonu "sonuç: hata" olarak kapatır. Damgalama başarısız
+    /// olsa bile asıl hatayı gölgelememeli — bu yüzden kendi içinde yutulur.</summary>
+    private async Task TryStampServerErrorAsync(Guid key, Exception cause)
+    {
+        try
+        {
+            // Patlayan SaveChanges'in izlediği yarım kalmış değişiklikler (ör. çok
+            // uzun ErrorMessage taşıyan WaMessage) hâlâ takipte; temizlemezsek
+            // damgalama da aynı hatayla düşer.
+            _db.ChangeTracker.Clear();
+            var row = await _db.WaSendAttempts.FirstOrDefaultAsync(a => a.Id == key, CancellationToken.None);
+            if (row is null) return;
+            row.Status = StatusDone;
+            row.Ok = false;
+            row.ErrorCode = ErrServerError;
+            // Hatanın kendisi saklanıyor: tekrar isteği bunu aynen geri oynatacak
+            // ve "müşteriye mesaj gitmedi" şikâyetinde loga bakmadan da sebep
+            // görülebilecek. Kolon sınırına kesiliyor — asıl patlama sebebi zaten
+            // sığmayan bir metin olabilir, damgalama da aynı hataya düşmemeli.
+            row.ErrorMessage = Truncate(cause.Message, MaxErrorMessageLength);
+            row.CompletedAt = DateTimeOffset.UtcNow;
+            // İstek iptal edilmiş olsa bile damga yazılmalı; yoksa satır pending
+            // kalır ve tekrar in_progress alır.
+            await _db.SaveChangesAsync(CancellationToken.None);
+        }
+        catch (Exception stampEx)
+        {
+            _log.LogError(stampEx,
+                "WhatsApp rezervasyonu hata olarak damgalanamadı (key={Key}) — satır pending kalabilir", key);
+        }
+    }
+
     /// <summary>Bilinen bir sonuç varsa onu, hâlâ uçuşta ise in_progress döner;
     /// terk edilmiş (bayat) rezervasyon için null döner → çağıran devralır.</summary>
     private SendResponse? ReplayIfKnown(WaSendAttempt a) =>
         a.Status == StatusDone
             ? new SendResponse(a.Ok ?? false, a.ErrorCode, a.ErrorMessage, a.MessageId)
-            : DateTimeOffset.UtcNow - a.CreatedAt < StalePendingAfter
+            : DateTimeOffset.UtcNow - a.StartedAt < StalePendingAfter
                 ? new SendResponse(false, ErrInProgress, "Aynı gönderim hâlâ işleniyor.", null)
                 : null;
 

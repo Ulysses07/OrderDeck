@@ -584,7 +584,7 @@ public class LicenseDbContext : DbContext
             b.Property(a => a.Status).HasMaxLength(16).IsRequired();
             b.Property(a => a.ErrorCode).HasMaxLength(32);
             b.Property(a => a.ErrorMessage).HasMaxLength(1000);
-            b.HasIndex(a => a.CreatedAt);
+            b.HasIndex(a => a.StartedAt);
         });
 
         // Seed SKUs

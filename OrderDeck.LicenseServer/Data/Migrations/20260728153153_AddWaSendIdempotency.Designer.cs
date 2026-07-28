@@ -12,7 +12,7 @@ using OrderDeck.LicenseServer.Data;
 namespace OrderDeck.LicenseServer.Data.Migrations
 {
     [DbContext(typeof(LicenseDbContext))]
-    [Migration("20260728145123_AddWaSendIdempotency")]
+    [Migration("20260728153153_AddWaSendIdempotency")]
     partial class AddWaSendIdempotency
     {
         /// <inheritdoc />
@@ -1694,9 +1694,6 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<DateTimeOffset?>("CompletedAt")
                         .HasColumnType("datetimeoffset");
 
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("datetimeoffset");
-
                     b.Property<string>("ErrorCode")
                         .HasMaxLength(32)
                         .HasColumnType("nvarchar(32)");
@@ -1714,6 +1711,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<bool?>("Ok")
                         .HasColumnType("bit");
 
+                    b.Property<DateTimeOffset>("StartedAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(16)
@@ -1721,9 +1721,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("CreatedAt");
-
                     b.HasIndex("LicenseId");
+
+                    b.HasIndex("StartedAt");
 
                     b.ToTable("WaSendAttempts");
                 });

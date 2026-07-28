@@ -1,8 +1,11 @@
 using System.Net;
 using System.Net.Http.Json;
 using FluentAssertions;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using OrderDeck.LicenseServer.Controllers.Licenses;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.WhatsApp;
@@ -28,12 +31,15 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
 
     private static string Url(Guid licenseId) => $"/api/v1/licenses/{licenseId}/whatsapp/send";
 
-    /// <summary>Doğrulanmış müşteri + ona ait lisans.</summary>
-    private async Task<(HttpClient Client, Guid LicenseId)> SeedAsync()
+    /// <summary>Doğrulanmış müşteri + ona ait lisans. <paramref name="factory"/>
+    /// yalnızca sender'ı değiştiren testlerde verilir; varsayılan paylaşılan
+    /// fixture'dır.</summary>
+    private async Task<(HttpClient Client, Guid LicenseId)> SeedAsync(ApiFactory? factory = null)
     {
-        var (client, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
+        factory ??= _factory;
+        var (client, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(factory);
 
-        using var scope = _factory.Services.CreateScope();
+        using var scope = factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var license = new License
         {
@@ -51,9 +57,9 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>Admin ucuna gitmeden doğrudan DB'ye aktif hesap satırı yazar.</summary>
-    private async Task ConnectAccountAsync(Guid licenseId)
+    private async Task ConnectAccountAsync(Guid licenseId, ApiFactory? factory = null)
     {
-        using var scope = _factory.Services.CreateScope();
+        using var scope = (factory ?? _factory).Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var accounts = scope.ServiceProvider.GetRequiredService<WhatsAppAccountService>();
         db.WhatsAppAccounts.Add(new WhatsAppAccount
@@ -71,9 +77,9 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>24s pencereyi açmak için müşteriden gelmiş bir mesaj gerekiyor.</summary>
-    private async Task OpenServiceWindowAsync(Guid licenseId, string phone)
+    private async Task OpenServiceWindowAsync(Guid licenseId, string phone, ApiFactory? factory = null)
     {
-        using var scope = _factory.Services.CreateScope();
+        using var scope = (factory ?? _factory).Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         db.WaConversations.Add(new WaConversation
         {
@@ -224,9 +230,9 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
     // aynı anahtarla gelen tekrar yeni mesaj YAZMAMALI.
 
     /// <summary>Verilen lisansa yazılmış giden mesaj sayısı.</summary>
-    private async Task<int> CountMessagesAsync(Guid licenseId)
+    private async Task<int> CountMessagesAsync(Guid licenseId, ApiFactory? factory = null)
     {
-        using var scope = _factory.Services.CreateScope();
+        using var scope = (factory ?? _factory).Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         return await db.WaMessages.CountAsync(m => m.LicenseId == licenseId);
     }
@@ -234,15 +240,15 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
     /// <summary>Lisansın tek rezervasyon satırını HER SEFERİNDE taze bir scope'tan
     /// okur: amaç kalıcılaşmış hâli görmek, isteğin DbContext'inde takip edilen
     /// örneği değil. <c>Single</c> aynı zamanda "tek satır" iddiasını da taşır.</summary>
-    private async Task<WaSendAttempt> SingleAttemptAsync(Guid licenseId)
+    private async Task<WaSendAttempt> SingleAttemptAsync(Guid licenseId, ApiFactory? factory = null)
     {
-        using var scope = _factory.Services.CreateScope();
+        using var scope = (factory ?? _factory).Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         return await db.WaSendAttempts.AsNoTracking().SingleAsync(a => a.LicenseId == licenseId);
     }
 
     /// <summary>Graph'a çıkmadan doğrudan rezervasyon satırı yazar.</summary>
-    private async Task SeedAttemptAsync(Guid licenseId, Guid key, DateTimeOffset createdAt)
+    private async Task SeedAttemptAsync(Guid licenseId, Guid key, DateTimeOffset startedAt)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -251,7 +257,7 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
             Id = key,
             LicenseId = licenseId,
             Status = "pending",
-            CreatedAt = createdAt,
+            StartedAt = startedAt,
         });
         await db.SaveChangesAsync();
     }
@@ -348,7 +354,8 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
 
         // 5 dakikalık "pending" → istek yarıda kalmış sayılır, devralınır.
         var key = Guid.NewGuid();
-        await SeedAttemptAsync(licenseId, key, DateTimeOffset.UtcNow.AddMinutes(-5));
+        var staleAt = DateTimeOffset.UtcNow.AddMinutes(-5);
+        await SeedAttemptAsync(licenseId, key, staleAt);
 
         var resp = await client.PostAsJsonAsync(Url(licenseId), new
         {
@@ -358,6 +365,18 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         (await resp.Content.ReadFromJsonAsync<SendResponse>())!.Ok.Should().BeTrue();
         (await CountMessagesAsync(licenseId)).Should().Be(1);
+
+        // Devralınan satır KAPANMIŞ olmalı. Yukarıdaki üç iddia sonuç yazımı
+        // tamamen silinse bile geçiyordu (mesaj yine yazılır, gövde yine Ok);
+        // satır "pending" kalsaydı hemen ardından gelen yeniden-deneme
+        // in_progress alır, WPF "gönderildi" der ve ikinci mesaj hiç gitmezdi.
+        var row = await SingleAttemptAsync(licenseId);
+        row.Status.Should().Be("done");
+        row.Ok.Should().BeTrue();
+        row.CompletedAt.Should().NotBeNull();
+        row.MessageId.Should().NotBeNull();
+        // StartedAt devralmada tazelenir — adı da bunu söylüyor (CreatedAt değil).
+        row.StartedAt.Should().BeAfter(staleAt);
     }
 
     [Fact]
@@ -420,5 +439,110 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
         var afterSecond = await SingleAttemptAsync(licenseId);
         afterSecond.Status.Should().Be("done");
         afterSecond.CompletedAt.Should().Be(completedAt);
+    }
+
+    [Fact]
+    public async Task Empty_idempotency_key_is_rejected()
+    {
+        var (client, licenseId) = await SeedAsync();
+        await ConnectAccountAsync(licenseId);
+        await OpenServiceWindowAsync(licenseId, "905551110008");
+
+        // Boş Guid'i "anahtar verilmemiş" saymak, para yolunda idempotency'yi
+        // SESSİZCE kapatmak demek. Bozuk anahtar reddedilmeli.
+        var resp = await client.PostAsJsonAsync(Url(licenseId), new
+        {
+            toPhone = "905551110008", text = "boş anahtar", idempotencyKey = Guid.Empty,
+        });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await CountMessagesAsync(licenseId)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Omitting_idempotency_key_still_sends()
+    {
+        // Guid.Empty reddi, alanı hiç göndermeyen eski istemcileri kırmamalı.
+        var (client, licenseId) = await SeedAsync();
+        await ConnectAccountAsync(licenseId);
+        await OpenServiceWindowAsync(licenseId, "905551110009");
+
+        var resp = await client.PostAsJsonAsync(
+            Url(licenseId), new { toPhone = "905551110009", text = "anahtarsız" });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await resp.Content.ReadFromJsonAsync<SendResponse>())!.Ok.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Send_failure_stamps_reservation_so_retry_replays_the_error()
+    {
+        // Rezervasyon ile sonuç yazımı arasında beklenmedik bir hata (prod'da
+        // örneği: Meta'nın uzun hata gövdesi nvarchar(1000)'e sığmayınca SQL 8152)
+        // satırı "pending" bırakırsa, saniyeler sonra gelen yeniden-deneme
+        // in_progress alır ve WPF "gönderildi" der — oysa mesaj hiç gitmedi.
+        using var factory = new ThrowingSenderApiFactory();
+        var (client, licenseId) = await SeedAsync(factory);
+        await ConnectAccountAsync(licenseId, factory);
+        await OpenServiceWindowAsync(licenseId, "905551110010", factory);
+
+        var key = Guid.NewGuid();
+        var body = new { toPhone = "905551110010", text = "patlayan gönderim", idempotencyKey = key };
+
+        // Hata bilerek dışarı sızıyor (500) — istemci yeniden denesin diye.
+        await Assert.ThrowsAnyAsync<Exception>(() => client.PostAsJsonAsync(Url(licenseId), body));
+
+        var row = await SingleAttemptAsync(licenseId, factory);
+        row.Status.Should().Be("done");
+        row.Ok.Should().BeFalse();
+        row.ErrorCode.Should().Be("server_error");
+        row.CompletedAt.Should().NotBeNull();
+
+        // Ve tekrar isteği artık in_progress değil, HATAYI oynatıyor → WPF wa.me'ye düşer.
+        var retry = await client.PostAsJsonAsync(Url(licenseId), body);
+        retry.StatusCode.Should().Be(HttpStatusCode.OK);
+        var retryBody = (await retry.Content.ReadFromJsonAsync<SendResponse>())!;
+        retryBody.Ok.Should().BeFalse();
+        retryBody.ErrorCode.Should().Be("server_error");
+        retryBody.ErrorCode.Should().NotBe(LicensesWhatsAppSendController.ErrInProgress);
+    }
+
+    [Fact]
+    public void In_progress_error_code_literal_is_pinned()
+    {
+        // Aynı değer WPF tarafında OrderDeck.Licensing'de DUPLİKE duruyor
+        // (LicenseServer o projeye referans vermiyor, tek kaynak yapılamıyor).
+        // İkisi sessizce ayrışırsa WPF in_progress'i tanımaz, wa.me açar ve
+        // operatör uçuştaki gönderimin üstüne ikinci bir kopya yollar.
+        LicensesWhatsAppSendController.ErrInProgress.Should().Be("in_progress");
+    }
+
+    /// <summary>Gönderim yolunu iptal OLMAYAN bir hatayla patlatır.</summary>
+    private sealed class ThrowingWhatsAppSender : IWhatsAppSender
+    {
+        public Task<WhatsAppSendResult> SendTextAsync(
+            WhatsAppSendContext ctx, string toPhoneE164, string text, CancellationToken ct = default) =>
+            throw new InvalidOperationException("Test: gönderim yolu patladı.");
+
+        public Task<WhatsAppSendResult> SendTemplateAsync(
+            WhatsAppSendContext ctx, string toPhoneE164, WhatsAppTemplate template,
+            CancellationToken ct = default) =>
+            throw new InvalidOperationException("Test: gönderim yolu patladı.");
+    }
+
+    /// <summary>Paylaşılan fixture'ın <c>LogWhatsAppSender</c>'ı yerine fırlatan
+    /// sender koyar. Ayrı bir factory: kendi InMemory DB'si var, diğer testleri
+    /// etkilemiyor.</summary>
+    private sealed class ThrowingSenderApiFactory : ApiFactory
+    {
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            base.ConfigureWebHost(builder);
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IWhatsAppSender>();
+                services.AddSingleton<IWhatsAppSender>(new ThrowingWhatsAppSender());
+            });
+        }
     }
 }

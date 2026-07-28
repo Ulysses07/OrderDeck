@@ -22,7 +22,7 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     ErrorCode = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: true),
                     ErrorMessage = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: true),
                     MessageId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
-                    CreatedAt = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    StartedAt = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
                     CompletedAt = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true)
                 },
                 constraints: table =>
@@ -37,14 +37,14 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 });
 
             migrationBuilder.CreateIndex(
-                name: "IX_WaSendAttempts_CreatedAt",
-                table: "WaSendAttempts",
-                column: "CreatedAt");
-
-            migrationBuilder.CreateIndex(
                 name: "IX_WaSendAttempts_LicenseId",
                 table: "WaSendAttempts",
                 column: "LicenseId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_WaSendAttempts_StartedAt",
+                table: "WaSendAttempts",
+                column: "StartedAt");
         }
 
         /// <inheritdoc />

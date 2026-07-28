@@ -14,6 +14,7 @@ using OrderDeck.Core.Customers;
 using OrderDeck.Core.Settings;
 using OrderDeck.Licensing;
 using OrderDeck.Licensing.Api;
+using OrderDeck.Licensing.Api.Models;
 using OrderDeck.Tests.Fakes;
 using Xunit;
 
@@ -427,6 +428,17 @@ public class PaymentRequestServiceTests : IDisposable
         var raw = body.RootElement.GetProperty("idempotencyKey").GetString();
         Guid.TryParse(raw, out var key).Should().BeTrue();
         key.Should().NotBe(Guid.Empty);
+    }
+
+    [Fact]
+    public void InProgressErrorCode_LiteralIsPinned()
+    {
+        // Sunucudaki karşılığı LicensesWhatsAppSendController.ErrInProgress —
+        // LicenseServer bu projeye referans vermediği için değer DUPLİKE duruyor.
+        // İkisi sessizce ayrışırsa WPF in_progress'i tanımaz, wa.me açar ve
+        // operatör uçuştaki gönderimin üstüne ikinci bir kopya yollar. Aynı
+        // iddia sunucu tarafında da var (LicensesWhatsAppSendTests).
+        WhatsAppSendErrorCodes.InProgress.Should().Be("in_progress");
     }
 
     [Fact]

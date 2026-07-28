@@ -33,8 +33,10 @@ public sealed class WaSendAttempt
     /// isteğe birebir aynı yanıtı dönebilmek için saklanır.</summary>
     public Guid? MessageId { get; set; }
 
-    /// <summary>Rezervasyonun yazıldığı an. Bayat "pending" tespiti bununla yapılır.</summary>
-    public DateTimeOffset CreatedAt { get; set; }
+    /// <summary>Denemenin BAŞLADIĞI an. Bayat "pending" tespiti bununla yapılır.
+    /// Terk edilmiş bir rezervasyon devralınınca üzerine yazılır — yani "satırın
+    /// oluşturulma anı" değil, "şu an uçuşta olan denemenin başlangıcı".</summary>
+    public DateTimeOffset StartedAt { get; set; }
 
     public DateTimeOffset? CompletedAt { get; set; }
 }
