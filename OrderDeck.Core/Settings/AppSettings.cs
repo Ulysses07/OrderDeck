@@ -177,6 +177,26 @@ public sealed class PaymentSettings
     /// ekranına gerek yok.
     /// </summary>
     public bool UseCloudApi { get; set; } = false;
+
+    /// <summary>
+    /// 24 saatlik pencere KAPALIYKEN gönderilecek, Meta'da onaylı şablonun adı.
+    /// Serbest metin o durumda Meta tarafından reddediliyor; prodda pencere
+    /// çoğu zaman kapalı olacağı için gerçek gönderim yolu budur.
+    ///
+    /// Boş bırakılırsa şablon yolu tümden kapanır ve eski davranış (wa.me)
+    /// sürer — onaylanmamış bir şablon adıyla denemek her seferinde Meta'dan
+    /// hata almak demek.
+    ///
+    /// Şablon gövdesi <see cref="Customers.WhatsAppMessageBuilder.BuildPaymentTemplateParams"/>
+    /// ile birebir sıralı olmak zorunda: {{1}} ad, {{2}} tarih, {{3}} ürün
+    /// toplamı, {{4}} kargo, {{5}} ödenecek tutar, {{6}} IBAN, {{7}} hesap
+    /// sahibi.
+    /// </summary>
+    public string CloudTemplateName { get; set; } = "odeme_hatirlatma";
+
+    /// <summary>Şablonun Meta'daki dil kodu (Türkçe = <c>tr</c>). Yanlış kod
+    /// "template does not exist" hatası verir — şablon dil bazında kayıtlı.</summary>
+    public string CloudTemplateLanguage { get; set; } = "tr";
 }
 
 /// <summary>

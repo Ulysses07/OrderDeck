@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
+using System.Text;
 
 namespace OrderDeck.Core.Customers;
 
@@ -42,6 +44,65 @@ public sealed class WhatsAppMessageBuilder
             .Replace("{toplam_oncesi}",
                 (ctx.TotalBeforeBalance > 0 ? ctx.TotalBeforeBalance : ctx.TotalAmount)
                 .ToString("N2", Tr));
+    }
+
+    /// <summary>
+    /// Aynı <see cref="PaymentContext"/>'ten onaylı Meta şablonunun gövde
+    /// parametrelerini üretir. Sıra ŞABLONA BAĞLI ve değiştirilemez:
+    /// <c>{{1}}</c> ad, <c>{{2}}</c> tarih, <c>{{3}}</c> ürün toplamı,
+    /// <c>{{4}}</c> kargo, <c>{{5}}</c> ödenecek tutar, <c>{{6}}</c> IBAN,
+    /// <c>{{7}}</c> hesap sahibi. Meta'da onaylı gövdeyi değiştirmeden burayı
+    /// değiştirmek, müşteriye yanlış alanları yanlış etiketlerle gösterir.
+    ///
+    /// <para><b>Eksik değer varsa null döner.</b> Meta boş parametreyi kabul
+    /// etmiyor; IBAN'ı ya da hesap sahibi girilmemiş bir yayıncıda şablonu
+    /// denemek her gönderimde hata almak demek. null = "şablon yolu yok",
+    /// çağıran eski <c>wa.me</c> davranışına düşer.</para>
+    ///
+    /// <para>Tek istisna kargo notu: kargo özelliği kapalıyken meşru olarak boş
+    /// geliyor (<c>ComputeShipping</c>), o yüzden orada tire konur. Aksi hâlde
+    /// kargoyu kullanmayan yayıncı şablon yolunu hiç göremezdi.</para>
+    /// </summary>
+    public IReadOnlyList<string>? BuildPaymentTemplateParams(PaymentContext ctx)
+    {
+        var shipping = Sanitize(ctx.ShippingNote);
+        var values = new[]
+        {
+            Sanitize(ctx.DisplayName),
+            Sanitize(ctx.StreamDate.ToString("dd MMMM yyyy", Tr)),
+            Sanitize(ctx.ProductTotal.ToString("N2", Tr)),
+            shipping.Length == 0 ? "—" : shipping,
+            Sanitize(ctx.TotalAmount.ToString("N2", Tr)),
+            Sanitize(ctx.Iban),
+            Sanitize(ctx.AccountHolder),
+        };
+
+        return Array.Exists(values, v => v.Length == 0) ? null : values;
+    }
+
+    /// <summary>Şablon parametresi satır sonu, sekme ya da 4'ten fazla ardışık
+    /// boşluk taşıyamaz — Meta isteği reddeder. Değerlerin bir kısmı sohbetten
+    /// gelen kullanıcı adı olduğu için bunu varsayamayız.</summary>
+    private static string Sanitize(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "";
+
+        var sb = new StringBuilder(value.Length);
+        var pendingSpace = false;
+        foreach (var ch in value)
+        {
+            if (char.IsWhiteSpace(ch))
+            {
+                pendingSpace = true;
+                continue;
+            }
+
+            if (pendingSpace && sb.Length > 0) sb.Append(' ');
+            pendingSpace = false;
+            sb.Append(ch);
+        }
+
+        return sb.ToString();
     }
 
     /// <summary>

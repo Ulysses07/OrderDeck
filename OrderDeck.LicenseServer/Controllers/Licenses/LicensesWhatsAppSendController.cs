@@ -18,10 +18,14 @@ namespace OrderDeck.LicenseServer.Controllers.Licenses;
 /// taşır ve yalnız kendi lisansına gönderebilmelidir. Sahiplik kontrolü burada,
 /// tek yerde.</para>
 ///
-/// <para><b>Yalnız serbest metin.</b> 24 saatlik pencere kapalıysa Graph'a
-/// çıkılmaz, gövdede <c>window_closed</c> döner ve WPF eski <c>wa.me</c>
-/// davranışına düşer. Onaylı şablon gönderimi (pencereden bağımsız) otomatik
-/// hatırlatma merdiveniyle birlikte gelecek.</para>
+/// <para><b>Metin mi şablon mu — kararı sunucu verir.</b> İstek gövdesinde
+/// <c>template</c> varsa 24 saatlik pencere açıkken serbest metin (ücretsiz
+/// servis mesajı), kapalıyken onaylı şablon gider. Karar burada çünkü pencere
+/// durumu burada tutuluyor ve iki yol <b>tek idempotency anahtarı</b> altında
+/// kalıyor; istemci önce metni deneyip sonra ayrı bir istekle şablona düşseydi
+/// bir yeniden-deneme aynı müşteriye ikisini birden gönderebilirdi.
+/// <c>template</c> yoksa eski davranış sürer: <c>window_closed</c> döner ve WPF
+/// <c>wa.me</c>'ye düşer.</para>
 ///
 /// <para><b>Idempotency sözleşmesi:</b> istemci gövdede bir
 /// <c>idempotencyKey</c> gönderirse, aynı anahtarla gelen ikinci istek yeni
@@ -69,6 +73,19 @@ public sealed class LicensesWhatsAppSendController : ControllerBase
     /// bundan uzun gelebiliyor.</summary>
     private const int MaxErrorMessageLength = 1000;
 
+    /// <summary><c>WaMessage.TemplateName</c> kolonunun uzunluğunu birebir
+    /// yansıtır (bkz. <see cref="LicenseDbContext"/>). Daha uzun ad sessizce
+    /// kesilir ve panelde hangi şablonun gittiği okunamaz hale gelir.</summary>
+    private const int MaxTemplateNameLength = 200;
+
+    /// <summary>Meta'nın şablon gövdesi sınırı; tek parametre bunu tek başına
+    /// aşıyorsa istek zaten Graph'ta reddedilir.</summary>
+    private const int MaxTemplateParamLength = 1024;
+
+    /// <summary>Onaylı şablonlarda bu kadar değişken olmuyor; üstü kötüye
+    /// kullanım sayılır ve <c>WaMessage.Body</c>'yi şişirir.</summary>
+    private const int MaxTemplateParamCount = 20;
+
     /// <summary>Aynı anahtarla gelen gönderim hâlâ uçuşta.</summary>
     public const string ErrInProgress = "in_progress";
 
@@ -97,7 +114,15 @@ public sealed class LicensesWhatsAppSendController : ControllerBase
         _log = log;
     }
 
-    public sealed record SendRequest(string ToPhone, string Text, string? Origin, Guid? IdempotencyKey);
+    public sealed record SendRequest(
+        string ToPhone, string Text, string? Origin, Guid? IdempotencyKey,
+        TemplateRef? Template = null);
+
+    /// <summary>Pencere kapalıyken gönderilecek onaylı şablon.
+    /// <see cref="BodyParams"/> sırası şablon gövdesindeki <c>{{1}}</c>,
+    /// <c>{{2}}</c>… ile birebir eşleşir.</summary>
+    public sealed record TemplateRef(
+        string Name, string LanguageCode, IReadOnlyList<string> BodyParams);
 
     public sealed record SendResponse(
         bool Ok, string? ErrorCode, string? ErrorMessage, Guid? MessageId);
@@ -113,6 +138,9 @@ public sealed class LicensesWhatsAppSendController : ControllerBase
         if (req.Text.Length > MaxTextLength)
             return Problem(title: "text-too-long", statusCode: 400,
                 detail: $"Mesaj en fazla {MaxTextLength} karakter olabilir.");
+
+        if (req.Template is { } t && ValidateTemplate(t) is { } templateError)
+            return Problem(title: "invalid-template", statusCode: 400, detail: templateError);
 
         var customerId = User.GetTenantCustomerId();
         var ownsLicense = await _db.Licenses
@@ -209,7 +237,11 @@ public sealed class LicensesWhatsAppSendController : ControllerBase
         WhatsAppMessagingService.SendOutcome outcome;
         try
         {
-            outcome = await _messaging.SendTextAsync(licenseId, req.ToPhone, req.Text, origin, ct);
+            var fallback = req.Template is { } tpl
+                ? new WhatsAppTemplate(tpl.Name, tpl.LanguageCode, tpl.BodyParams)
+                : null;
+            outcome = await _messaging.SendWithFallbackAsync(
+                licenseId, req.ToPhone, req.Text, fallback, origin, ct);
         }
         catch (Exception ex) when (attempt is not null &&
                                    !(ex is OperationCanceledException && ct.IsCancellationRequested))
@@ -263,6 +295,38 @@ public sealed class LicensesWhatsAppSendController : ControllerBase
         // verdiği için tek bir okuma yolu olması şart.
         return Ok(new SendResponse(
             outcome.Ok, outcome.ErrorCode, outcome.ErrorMessage, outcome.MessageId));
+    }
+
+    /// <summary>Şablonu Graph'a çıkmadan doğrular; hata varsa açıklamayı döner.
+    ///
+    /// <para>Bunlar keyfi katılıklar değil, Meta'nın reddettiği şeyler: boş
+    /// parametre ve satır sonu/sekme taşıyan parametre gönderim hatası verir.
+    /// Burada 400 dönmek doğru davranış — istemci hiçbir koşulda çalışmayacak
+    /// bir gövde göndermiş demektir ve WPF bunu yakalayıp <c>wa.me</c>'ye
+    /// düşüyor. Eksik IBAN gibi durumlarda şablonu <b>hiç göndermemek</b>
+    /// istemcinin işi (bkz. WhatsAppMessageBuilder.BuildPaymentTemplateParams).</para></summary>
+    private static string? ValidateTemplate(TemplateRef t)
+    {
+        if (string.IsNullOrWhiteSpace(t.Name)) return "Şablon adı boş olamaz.";
+        if (t.Name.Length > MaxTemplateNameLength)
+            return $"Şablon adı en fazla {MaxTemplateNameLength} karakter olabilir.";
+        if (string.IsNullOrWhiteSpace(t.LanguageCode)) return "Şablon dil kodu boş olamaz.";
+        if (t.BodyParams is null) return "Şablon parametreleri eksik.";
+        if (t.BodyParams.Count > MaxTemplateParamCount)
+            return $"Şablon en fazla {MaxTemplateParamCount} parametre alabilir.";
+
+        for (var i = 0; i < t.BodyParams.Count; i++)
+        {
+            var p = t.BodyParams[i];
+            if (string.IsNullOrWhiteSpace(p))
+                return $"Şablon parametresi {i + 1} boş olamaz.";
+            if (p.Length > MaxTemplateParamLength)
+                return $"Şablon parametresi {i + 1} en fazla {MaxTemplateParamLength} karakter olabilir.";
+            if (p.Contains('\n') || p.Contains('\r') || p.Contains('\t'))
+                return $"Şablon parametresi {i + 1} satır sonu ya da sekme içeremez.";
+        }
+
+        return null;
     }
 
     private void LogReplay(SendResponse replay, Guid key, Guid licenseId)
