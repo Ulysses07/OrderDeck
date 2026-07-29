@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Text;
@@ -156,12 +157,23 @@ public class PaymentRequestServiceTests : IDisposable
 
     /// <summary>Cloud API açık, sade şablonlu bir ayar dosyası yazar.
     /// (Dosya hiç yazılmazsa SettingsStore varsayılanı döner → UseCloudApi false.)</summary>
-    private void EnableCloudApi()
+    /// <param name="configure">Şablon yolunu (IBAN/hesap sahibi/şablon adı)
+    /// değiştiren testler için. Varsayılan ayarlarda IBAN boş olduğundan
+    /// şablon gövdeye HİÇ eklenmez — eski testlerin beklentisi budur.</param>
+    private void EnableCloudApi(Action<AppSettings>? configure = null)
     {
         var settings = new AppSettings();
         settings.Payment.WhatsAppMessageTemplate = "Ödeme: {tutar} TL";
         settings.Payment.UseCloudApi = true;
+        configure?.Invoke(settings);
         _store.Save(settings);
+    }
+
+    /// <summary>Şablon yolunun açılması için gereken asgari ayar.</summary>
+    private static void WithPaymentDetails(AppSettings s)
+    {
+        s.Payment.Iban = "TR12 0006 4000 0011";
+        s.Payment.AccountHolder = "Burak S";
     }
 
     public void Dispose()
@@ -509,6 +521,80 @@ public class PaymentRequestServiceTests : IDisposable
 
         result.Should().Be(PaymentRequestResult.SendPending);
         _launcher.LaunchedUrls.Should().BeEmpty();
+    }
+
+    // ── Pencere kapalıyken şablona düşme (2026-07-29) ───────────────────
+
+    /// <summary>Gönderim gövdesindeki <c>template</c> alanı; yoksa null.</summary>
+    private static JsonElement? SentTemplate(string body)
+    {
+        using var doc = JsonDocument.Parse(body);
+        return doc.RootElement.TryGetProperty("template", out var t) && t.ValueKind != JsonValueKind.Null
+            ? t.Clone()
+            : null;
+    }
+
+    [Fact]
+    public async Task OpenWhatsAppAsync_PaymentDetailsPresent_SendsTemplateAlongsideText()
+    {
+        // Prodda 24s pencere çoğunlukla kapalı → gerçek gönderim yolu şablon.
+        // Kararı sunucu veriyor, biz her iki gövdeyi de tek istekte yolluyoruz.
+        EnableCloudApi(WithPaymentDetails);
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+
+        await sut.OpenWhatsAppAsync(
+            MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28));
+
+        handler.SentBodies.Should().ContainSingle();
+        var template = SentTemplate(handler.SentBodies[0]);
+        template.Should().NotBeNull();
+        template!.Value.GetProperty("name").GetString().Should().Be("odeme_hatirlatma");
+        template.Value.GetProperty("languageCode").GetString().Should().Be("tr");
+
+        // 7 parametre: onaylı gövdedeki {{1}}..{{7}} ile birebir.
+        var parameters = template.Value.GetProperty("bodyParams").EnumerateArray()
+            .Select(p => p.GetString()).ToList();
+        parameters.Should().HaveCount(7);
+        parameters[0].Should().Be("Alice");
+        parameters[5].Should().Be("TR12 0006 4000 0011");
+        parameters[6].Should().Be("Burak S");
+        parameters.Should().OnlyContain(
+            p => !string.IsNullOrEmpty(p), "Meta boş parametreyi reddediyor");
+    }
+
+    [Fact]
+    public async Task OpenWhatsAppAsync_MissingIban_OmitsTemplate()
+    {
+        // IBAN girilmemişse şablon parametrelerinden biri boş kalır; Meta bunu
+        // her seferinde reddeder. Denemek yerine hiç göndermiyoruz → sunucu
+        // window_closed döner, eski wa.me davranışı sürer.
+        EnableCloudApi(s => s.Payment.AccountHolder = "Burak S");
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+
+        await sut.OpenWhatsAppAsync(
+            MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28));
+
+        handler.SentBodies.Should().ContainSingle();
+        SentTemplate(handler.SentBodies[0]).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task OpenWhatsAppAsync_BlankTemplateName_OmitsTemplate()
+    {
+        // Ayar boşaltılarak şablon yolu tümden kapatılabiliyor: şablon henüz
+        // Meta'da onaylanmadıysa her gönderim hata alırdı.
+        EnableCloudApi(s =>
+        {
+            WithPaymentDetails(s);
+            s.Payment.CloudTemplateName = "";
+        });
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+
+        await sut.OpenWhatsAppAsync(
+            MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28));
+
+        handler.SentBodies.Should().ContainSingle();
+        SentTemplate(handler.SentBodies[0]).Should().BeNull();
     }
 
     [Fact]

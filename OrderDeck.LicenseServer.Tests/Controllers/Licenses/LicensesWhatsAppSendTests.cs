@@ -551,6 +551,87 @@ public class LicensesWhatsAppSendTests : IClassFixture<ApiFactory>
         (await CountMessagesAsync(licenseId, factory)).Should().Be(1);
     }
 
+    // ── Şablona düşme (2026-07-29) ───────────────────────────────────────
+    // Prodda 24s pencere ÇOĞUNLUKLA kapalı; gerçek gönderim yolu onaylı şablon.
+    // İstek gövdesindeki template opsiyonel: verilmezse eski window_closed
+    // davranışı sürer.
+
+    [Fact]
+    public async Task Falls_back_to_template_when_window_closed()
+    {
+        var (client, licenseId) = await SeedAsync();
+        await ConnectAccountAsync(licenseId);
+        // Pencere açılmıyor — gelen mesaj yok.
+
+        var resp = await client.PostAsJsonAsync(Url(licenseId), new
+        {
+            toPhone = "905551110020",
+            text = "Merhaba Ayşe, ödemeniz bekleniyor.",
+            origin = "wpf-payment",
+            idempotencyKey = Guid.NewGuid(),
+            template = new
+            {
+                name = "odeme_hatirlatma",
+                languageCode = "tr",
+                bodyParams = new[] { "Ayşe", "28 Temmuz 2026", "250,00" },
+            },
+        });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await resp.Content.ReadFromJsonAsync<SendResponse>())!.Ok.Should().BeTrue();
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var msg = await db.WaMessages.SingleAsync(m => m.LicenseId == licenseId);
+        msg.Type.Should().Be("template");
+        msg.TemplateName.Should().Be("odeme_hatirlatma");
+        // Serbest metin GİTMEDİ: onaylanmamış gövde kapalı pencerede reddedilir.
+        msg.Body.Should().NotBe("Merhaba Ayşe, ödemeniz bekleniyor.");
+    }
+
+    [Fact]
+    public async Task Template_and_text_share_one_idempotency_key()
+    {
+        // Şablon yolunun kendi anahtarı olsaydı, dayanıklılık katmanının
+        // yeniden denemesi aynı müşteriye ikinci faturalı şablonu yollardı.
+        var (client, licenseId) = await SeedAsync();
+        await ConnectAccountAsync(licenseId);
+
+        var body = new
+        {
+            toPhone = "905551110021", text = "metin", origin = "wpf-payment",
+            idempotencyKey = Guid.NewGuid(),
+            template = new { name = "odeme_hatirlatma", languageCode = "tr", bodyParams = new[] { "Ayşe" } },
+        };
+
+        (await client.PostAsJsonAsync(Url(licenseId), body)).StatusCode.Should().Be(HttpStatusCode.OK);
+        (await client.PostAsJsonAsync(Url(licenseId), body)).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        (await CountMessagesAsync(licenseId)).Should().Be(1);
+    }
+
+    [Theory]
+    // Meta'nın kendi reddettikleri — isteği hiç yollamadan burada kesiyoruz.
+    [InlineData("", "tr", new[] { "Ayşe" })]           // şablon adı boş
+    [InlineData("odeme_hatirlatma", "", new[] { "Ayşe" })] // dil kodu boş
+    [InlineData("odeme_hatirlatma", "tr", new[] { "" })]   // boş parametre
+    [InlineData("odeme_hatirlatma", "tr", new[] { "Ayşe\nYılmaz" })] // satır sonu
+    [InlineData("odeme_hatirlatma", "tr", new[] { "Ayşe\tYılmaz" })] // sekme
+    public async Task Rejects_invalid_template(string name, string language, string[] bodyParams)
+    {
+        var (client, licenseId) = await SeedAsync();
+        await ConnectAccountAsync(licenseId);
+
+        var resp = await client.PostAsJsonAsync(Url(licenseId), new
+        {
+            toPhone = "905551110022", text = "metin",
+            template = new { name, languageCode = language, bodyParams },
+        });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await CountMessagesAsync(licenseId)).Should().Be(0);
+    }
+
     [Fact]
     public void In_progress_error_code_literal_is_pinned()
     {

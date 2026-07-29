@@ -128,4 +128,65 @@ public class WhatsAppMessageBuilderTests
         result.Should().NotContain("{tarih}");
         result.Should().NotBeEmpty();
     }
+
+    // ── Meta şablon parametreleri (2026-07-29) ────────────────────────────
+
+    private static PaymentContext FullContext(
+        string name = "Ayşe Yılmaz", string? iban = "TR12 0006 4000 0011",
+        string? holder = "Burak S", string shippingNote = "Ücretsiz kargo") =>
+        new(name, 450m, new DateTime(2026, 7, 28), iban, holder, null,
+            ProductTotal: 450m, ShippingFee: null, ShippingNote: shippingNote);
+
+    [Fact]
+    public void BuildPaymentTemplateParams_matches_approved_body_order()
+    {
+        // Sıra Meta'da onaylı gövdeye kilitli: {{1}} ad, {{2}} tarih,
+        // {{3}} ürün toplamı, {{4}} kargo, {{5}} tutar, {{6}} IBAN, {{7}} sahip.
+        // Burada kayma olursa müşteri IBAN'ın yerinde tarihi görür.
+        var result = _sut.BuildPaymentTemplateParams(FullContext());
+
+        result.Should().Equal(
+            "Ayşe Yılmaz", "28 Temmuz 2026", "450,00", "Ücretsiz kargo",
+            "450,00", "TR12 0006 4000 0011", "Burak S");
+    }
+
+    [Theory]
+    [InlineData(null, "Burak S")]
+    [InlineData("", "Burak S")]
+    [InlineData("TR12", null)]
+    [InlineData("TR12", "   ")]
+    public void BuildPaymentTemplateParams_null_when_payment_details_missing(
+        string? iban, string? holder)
+    {
+        // Meta boş parametreyi reddediyor → şablonu hiç denememek gerekiyor.
+        _sut.BuildPaymentTemplateParams(FullContext(iban: iban, holder: holder))
+            .Should().BeNull();
+    }
+
+    [Fact]
+    public void BuildPaymentTemplateParams_uses_dash_when_shipping_note_empty()
+    {
+        // Kargo özelliği kapalı → not boş gelir. Bu meşru bir durum; şablon
+        // yolunu tümden kapatmamalı.
+        var result = _sut.BuildPaymentTemplateParams(FullContext(shippingNote: ""));
+
+        result.Should().NotBeNull();
+        result![3].Should().Be("—");
+    }
+
+    [Fact]
+    public void BuildPaymentTemplateParams_strips_newlines_and_tabs()
+    {
+        // Ad sohbetten geliyor; satır sonu/sekme taşıyan parametreyi Meta reddeder.
+        var result = _sut.BuildPaymentTemplateParams(FullContext(name: "Ayşe\n\tYılmaz  Kaya"));
+
+        result.Should().NotBeNull();
+        result![0].Should().Be("Ayşe Yılmaz Kaya");
+    }
+
+    [Fact]
+    public void BuildPaymentTemplateParams_null_when_name_is_blank()
+    {
+        _sut.BuildPaymentTemplateParams(FullContext(name: "  ")).Should().BeNull();
+    }
 }

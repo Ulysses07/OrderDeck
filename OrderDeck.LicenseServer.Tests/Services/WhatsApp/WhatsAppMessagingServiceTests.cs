@@ -209,6 +209,87 @@ public sealed class WhatsAppMessagingServiceTests
         convo.PhoneNumberId.Should().Be("pnid-1");
     }
 
+    // ── Pencere kapalıyken şablona düşme ──
+
+    [Fact]
+    public async Task SendWithFallback_uses_template_when_window_closed()
+    {
+        // Prodda asıl yol bu: müşteri son 24 saatte yazmadıysa serbest metin
+        // Meta tarafından reddediliyor, gönderim ancak onaylı şablonla olur.
+        var (db, svc, sender, licenseId) = Build();
+        SeedConversation(db, licenseId, "905321234567", DateTimeOffset.UtcNow.AddDays(-3));
+        var tpl = new WhatsAppTemplate("odeme_hatirlatma", "tr", new[] { "Ayşe", "250,00" });
+
+        var result = await svc.SendWithFallbackAsync(
+            licenseId, "905321234567", "serbest metin", tpl, "wpf-payment", default);
+
+        result.Ok.Should().BeTrue();
+        sender.Texts.Should().BeEmpty();
+        sender.Templates.Should().ContainSingle();
+        sender.Templates[0].Tpl.Name.Should().Be("odeme_hatirlatma");
+
+        var msg = db.WaMessages.Single();
+        msg.Type.Should().Be("template");
+        msg.TemplateName.Should().Be("odeme_hatirlatma");
+        // Onaylı gövde Meta'da; burada yalnız hangi değerlerle gittiği duruyor.
+        msg.Body.Should().Be("Ayşe | 250,00");
+    }
+
+    [Fact]
+    public async Task SendWithFallback_prefers_free_text_while_window_is_open()
+    {
+        // Pencere açıkken serbest metin ÜCRETSİZ servis mesajı; şablona düşmek
+        // gereksiz yere para harcamak olurdu.
+        var (db, svc, sender, licenseId) = Build();
+        SeedConversation(db, licenseId, "905321234567", DateTimeOffset.UtcNow.AddHours(-2));
+        var tpl = new WhatsAppTemplate("odeme_hatirlatma", "tr", new[] { "Ayşe" });
+
+        var result = await svc.SendWithFallbackAsync(
+            licenseId, "905321234567", "serbest metin", tpl, "wpf-payment", default);
+
+        result.Ok.Should().BeTrue();
+        sender.Templates.Should().BeEmpty();
+        sender.Texts.Should().ContainSingle();
+        db.WaMessages.Single().Type.Should().Be("text");
+    }
+
+    [Fact]
+    public async Task SendWithFallback_without_template_keeps_window_closed_behaviour()
+    {
+        // Şablon göndermeyen eski WPF sürümleri eski cevabı almalı — yoksa
+        // wa.me'ye düşemez ve müşteriye hiçbir şey ulaşmaz.
+        var (db, svc, sender, licenseId) = Build();
+        SeedConversation(db, licenseId, "905321234567", DateTimeOffset.UtcNow.AddDays(-3));
+
+        var result = await svc.SendWithFallbackAsync(
+            licenseId, "905321234567", "serbest metin", null, "wpf-payment", default);
+
+        result.ErrorCode.Should().Be(WhatsAppMessagingService.ErrWindowClosed);
+        sender.Texts.Should().BeEmpty();
+        sender.Templates.Should().BeEmpty();
+        db.WaMessages.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task SendWithFallback_creates_exactly_one_conversation_for_a_new_phone()
+    {
+        // Hiç yazışmamış bir numarada pencere kapalıdır ve sohbet satırı da
+        // yoktur. Karar "önce SendTextAsync dene, window_closed görürsen
+        // SendTemplateAsync çağır" diye kurulsaydı sohbet İKİ KEZ çözülürdü:
+        // ilk çağrının kaydedilmemiş Add'i ikinci çağrının DB sorgusunda
+        // görünmez ve aynı (lisans, numara) için ikinci satır eklenirdi.
+        var (db, svc, sender, licenseId) = Build();
+        var tpl = new WhatsAppTemplate("odeme_hatirlatma", "tr", new[] { "Ayşe" });
+
+        var result = await svc.SendWithFallbackAsync(
+            licenseId, "+90 532 999 88 77", "serbest metin", tpl, "wpf-payment", default);
+
+        result.Ok.Should().BeTrue();
+        sender.Templates.Should().ContainSingle();
+        db.WaConversations.Should().ContainSingle()
+            .Which.CustomerPhone.Should().Be("905329998877");
+    }
+
     [Fact]
     public async Task SendText_rejects_blank_phone_and_body()
     {

@@ -213,7 +213,8 @@ public sealed class PaymentRequestService
         // yani en kötü ihtimalde eski davranış.
         if (settings.Payment.UseCloudApi)
         {
-            switch (await TrySendViaCloudApiAsync(customer.Phone!, message, "wpf-payment", ct))
+            switch (await TrySendViaCloudApiAsync(
+                customer.Phone!, message, BuildTemplateRef(settings, ctx), "wpf-payment", ct))
             {
                 case CloudSendOutcome.Sent:
                     return PaymentRequestResult.Sent;
@@ -285,6 +286,37 @@ public sealed class PaymentRequestService
     }
 
     /// <summary>
+    /// Pencere kapalıyken kullanılacak onaylı şablonu hazırlar; hazırlanamıyorsa
+    /// null döner ve sunucu eski davranışa (<c>window_closed</c> → wa.me) düşer.
+    ///
+    /// <para>Prodda 24 saatlik pencere çoğu müşteride KAPALI olacağı için asıl
+    /// gönderim yolu burasıdır — serbest metin yalnız müşteri son 24 saatte
+    /// yazmışsa geçerli.</para>
+    ///
+    /// <para>Şablon adı boşsa yol bilerek kapalıdır: Meta'da onaylanmamış bir ad
+    /// göndermek her denemede hata almak demek. Parametrelerden biri (ör. IBAN
+    /// ya da hesap sahibi girilmemişse) boşsa da null döner — Meta boş parametre
+    /// kabul etmiyor.</para>
+    /// </summary>
+    private WhatsAppTemplateRef? BuildTemplateRef(AppSettings settings, PaymentContext ctx)
+    {
+        var name = settings.Payment.CloudTemplateName;
+        var language = settings.Payment.CloudTemplateLanguage;
+        if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(language))
+            return null;
+
+        var parameters = _messageBuilder.BuildPaymentTemplateParams(ctx);
+        if (parameters is null)
+        {
+            _log?.LogInformation(
+                "WhatsApp şablonu atlandı: gövde parametrelerinden biri boş (IBAN/hesap sahibi girili mi?)");
+            return null;
+        }
+
+        return new WhatsAppTemplateRef(name.Trim(), language.Trim(), parameters);
+    }
+
+    /// <summary>
     /// Mesajı Cloud API ile göndermeyi dener.
     ///
     /// Yalnızca çağıranın açıkça iptal ettiği durum (ct iptal edilmişse)
@@ -292,7 +324,8 @@ public sealed class PaymentRequestService
     /// ödeme isteme akışı, opsiyonel bir gönderim yolunun hatasıyla durmamalı.
     /// </summary>
     private async Task<CloudSendOutcome> TrySendViaCloudApiAsync(
-        string phone, string message, string origin, CancellationToken ct)
+        string phone, string message, WhatsAppTemplateRef? template,
+        string origin, CancellationToken ct)
     {
         // Çağrı başına yeni anahtar: dayanıklılık katmanı bu POST'u yeniden
         // denerse gövde (dolayısıyla anahtar) aynı kalır ve sunucu tekrarı eler.
@@ -305,7 +338,7 @@ public sealed class PaymentRequestService
 
             var resp = await _api.SendWhatsAppTextAsync(
                 licenseId.Value,
-                new WhatsAppSendRequest(phone, message, origin, idempotencyKey), ct);
+                new WhatsAppSendRequest(phone, message, origin, idempotencyKey, template), ct);
 
             if (!resp.Ok)
             {

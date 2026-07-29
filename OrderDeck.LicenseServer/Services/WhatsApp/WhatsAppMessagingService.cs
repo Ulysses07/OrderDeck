@@ -71,8 +71,26 @@ public sealed class WhatsAppMessagingService
     /// Serbest-metin (service) mesajı. Pencere kapalıysa Graph'a gitmez,
     /// <see cref="ErrWindowClosed"/> döner.
     /// </summary>
-    public async Task<SendOutcome> SendTextAsync(
+    public Task<SendOutcome> SendTextAsync(
         Guid licenseId, string toPhone, string text, string origin, CancellationToken ct)
+        => SendWithFallbackAsync(licenseId, toPhone, text, null, origin, ct);
+
+    /// <summary>
+    /// Pencere AÇIKSA serbest metin, KAPALIYSA <paramref name="fallback"/> şablonu
+    /// gönderir. <paramref name="fallback"/> null ise kapalı pencerede
+    /// <see cref="ErrWindowClosed"/> döner (eski davranış).
+    ///
+    /// <para><b>Neden tek metot:</b> önce <c>SendTextAsync</c> deneyip
+    /// <c>window_closed</c> görünce <c>SendTemplateAsync</c> çağırmak, sohbeti
+    /// İKİ KEZ çözerdi. Kapalı pencerede hiçbir şey kaydedilmediği için ilk
+    /// çağrının <c>Add</c>'lediği <see cref="WaConversation"/> izleyicide
+    /// kaydedilmemiş kalır; ikinci çağrının DB sorgusu onu göremez ve aynı
+    /// (lisans, numara) için ikinci bir satır eklenir. Pencere kararı ve sohbet
+    /// çözümü aynı yerde kalmak zorunda.</para>
+    /// </summary>
+    public async Task<SendOutcome> SendWithFallbackAsync(
+        Guid licenseId, string toPhone, string text, WhatsAppTemplate? fallback,
+        string origin, CancellationToken ct)
     {
         var phone = WaPhone.Canonical(toPhone);
         if (phone.Length == 0) return SendOutcome.Fail("bad_phone", "Geçersiz telefon numarası.");
@@ -84,8 +102,9 @@ public sealed class WhatsAppMessagingService
 
         var now = DateTimeOffset.UtcNow;
         var convo = await GetOrCreateConversationAsync(licenseId, phone, ctx.PhoneNumberId, null, now, ct);
+        var windowOpen = WhatsAppServiceWindow.IsOpen(convo.LastInboundAt, now);
 
-        if (!WhatsAppServiceWindow.IsOpen(convo.LastInboundAt, now))
+        if (!windowOpen && fallback is null)
         {
             return SendOutcome.Fail(
                 ErrWindowClosed,
@@ -95,8 +114,21 @@ public sealed class WhatsAppMessagingService
         // ct BİLEREK geçilmiyor: bkz. GraphCallBudget. İstemcinin kopması,
         // Meta'nın kabul edip etmediğini bilemediğimiz bir gönderim bırakmamalı.
         using var sendCts = new CancellationTokenSource(GraphCallBudget);
-        var result = await _sender.SendTextAsync(ctx, phone, text, sendCts.Token);
-        var msg = PersistOutbound(convo, licenseId, "text", text, null, origin, result, now);
+
+        WhatsAppSendResult result;
+        WaMessage msg;
+        if (windowOpen)
+        {
+            result = await _sender.SendTextAsync(ctx, phone, text, sendCts.Token);
+            msg = PersistOutbound(convo, licenseId, "text", text, null, origin, result, now);
+        }
+        else
+        {
+            result = await _sender.SendTemplateAsync(ctx, phone, fallback!, sendCts.Token);
+            msg = PersistOutbound(convo, licenseId, "template",
+                TemplateBody(fallback!), fallback!.Name, origin, result, now);
+        }
+
         // Graph çağrısı DÖNDÜKTEN sonra kayıt iptal edilebilir olmamalı: istemcinin
         // zaman aşımı HttpContext.RequestAborted'ı tetikliyor ve ct'yi buraya
         // geçirirsek Meta'nın kabul ettiği — yani faturalanmış, müşteriye ulaşmış —
@@ -104,8 +136,9 @@ public sealed class WhatsAppMessagingService
         await _db.SaveChangesAsync(CancellationToken.None);
 
         if (!result.Ok)
-            _log.LogWarning("WhatsApp text gönderilemedi (license={License}, code={Code}): {Msg}",
-                licenseId, result.ErrorCode, result.ErrorMessage);
+            _log.LogWarning(
+                "WhatsApp {Type} gönderilemedi (license={License}, code={Code}): {Msg}",
+                windowOpen ? "text" : "template", licenseId, result.ErrorCode, result.ErrorMessage);
 
         return new SendOutcome(result.Ok, result.ErrorCode, result.ErrorMessage, msg.Id);
     }
@@ -131,8 +164,8 @@ public sealed class WhatsAppMessagingService
         // business-initiated ve ÜCRETLİ, yarıda kesilmesi daha da pahalı.
         using var sendCts = new CancellationTokenSource(GraphCallBudget);
         var result = await _sender.SendTemplateAsync(ctx, phone, template, sendCts.Token);
-        var body = template.BodyParams.Count == 0 ? null : string.Join(" | ", template.BodyParams);
-        var msg = PersistOutbound(convo, licenseId, "template", body, template.Name, origin, result, now);
+        var msg = PersistOutbound(convo, licenseId, "template",
+            TemplateBody(template), template.Name, origin, result, now);
         // Gönderim bittikten sonra kayıt iptal edilebilir olamaz — Graph'a kendi
         // bütçesiyle çıkmanın tek anlamı sonucun HER ZAMAN yazılabilmesi. ct
         // burada kalsaydı kopan istemci, faturalanmış ama izi olmayan bir mesaj
@@ -145,6 +178,12 @@ public sealed class WhatsAppMessagingService
 
         return new SendOutcome(result.Ok, result.ErrorCode, result.ErrorMessage, msg.Id);
     }
+
+    /// <summary>Şablon gönderiminde <c>WaMessage.Body</c>'ye yazılan iz: onaylı
+    /// gövde Meta'da durduğu için burada yalnız parametreler saklanır, panelde
+    /// "hangi değerlerle gitti" sorusunu bu cevaplıyor.</summary>
+    private static string? TemplateBody(WhatsAppTemplate template) =>
+        template.BodyParams.Count == 0 ? null : string.Join(" | ", template.BodyParams);
 
     /// <summary>Sohbeti bulur, yoksa oluşturur. Yeni satır <c>SaveChanges</c> ile birlikte yazılır.</summary>
     public async Task<WaConversation> GetOrCreateConversationAsync(
