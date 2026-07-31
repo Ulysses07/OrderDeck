@@ -148,6 +148,8 @@ services:
       # /opt/orderdeck/web-out altına kopyalandıktan sonra Caddy file_server
       # bu klasörü servis ediyor. Read-only mount → container içinden değiştirilemez.
       - ./web-out:/srv/web:ro
+      # EMAR GLOBAL kurumsal sitesi (emarglobal.com) — ayrı repodan rsync'lenir.
+      - ./emar-out:/srv/emar:ro
       - caddy_data:/data
       - caddy_config:/config
     networks:
