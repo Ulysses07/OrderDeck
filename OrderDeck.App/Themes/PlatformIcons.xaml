@@ -1,0 +1,125 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+                    xmlns:po="http://schemas.microsoft.com/winfx/2006/xaml/presentation/options"
+                    mc:Ignorable="po">
+  <!--
+    Platform marka ikonları — sohbet listesindeki kaynak rozeti.
+
+    NEDEN: Eskiden rozet "YT / IG / TT / FB" kısaltması + marka rengine yakın bir
+    tint kullanıyordu. Google, YouTube için bu kullanıma itiraz etti (kısaltma +
+    marka kırmızısı = izinsiz marka kullanımı). Diğer platformların kuralları da
+    aynı yönde. Çözüm: her platformun KENDİ resmi ikonunu, resmi renginde,
+    değiştirmeden göstermek.
+
+    KAYNAK KÜNYESİ — hepsi birinci-el, üreticinin kendi marka paketinden:
+
+      YouTube   https://developers.google.com/static/site-assets/logo-youtube.svg
+                Resmi SVG; path verisi birebir XAML'e taşındı (vektör).
+      Instagram Meta marka paketi "IG_brand_asset_pack_2023.zip" →
+                01 Static Glyph / 01 Gradient Glyph / Instagram_Glyph_Gradient.png
+      Facebook  Meta marka paketi "Facebook-Brand-Asset-Pack.zip" →
+                Logo / Primary Logo / Facebook_Logo_Primary.png
+      TikTok    developers.tiktok.com resmi logo paketi "logo-pack.zip" →
+                TikTok Logo Pack / TikTok – Icons / TikTok_Icon_Black_Circle.png
+
+    Meta ve TikTok paketlerindeki vektör dosyaları XAML'e uygun değil (Instagram
+    degrade glifi 10 MB'lık mesh gradient, TikTok ikonu yalnız .ai) — bu yüzden
+    üçü Assets/Brand altında PNG olarak gömülü. PNG'lere yapılan TEK işlem
+    orantılı küçültme (128×128, Lanczos). Renk, oran, biçim, kırpma: hiçbiri
+    değiştirilmedi.
+
+    YOUTUBE ICON KULLANIM KOŞULLARI — Branding Guidelines'a göre Icon şu üç koşul
+    birlikte sağlandığında kullanılır ve bizde üçü de sağlanıyor: (1) uygulama
+    birden çok kaynaktan içerik topluyor, (2) içerikler iç içe listelendiği için
+    her satırın kaynağı ayrı işaretlenmeli, (3) yer kısıtı tam logoyu imkânsız
+    kılıyor.
+      * Link zorunluluğu YOK: guidelines'taki "must link back to YouTube"
+        cümleleri istisnasız "logo" için yazılmış; "YouTube Icon" bölümünün
+        gereksinim listesinde link şartı geçmiyor. Bu yüzden rozet tıklanabilir
+        DEĞİL.
+      * Renk DEĞİŞTİRİLEMEZ (renk değişikliğine izin verilen tek varlık
+        "Developed with YouTube" logosudur) → kırmızı/beyaz aynen korunuyor.
+      * Minimum yükseklik 20 dp → rozet 20 px. Bu yüzden ikonu küçültmeyin;
+        eski 18 px'lik chip minimumun altındaydı.
+
+    Hiçbirinin şekli, oranı veya rengi değiştirilmemeli. Yeni platform eklerken
+    kısaltma yazmayın; üreticinin resmi varlığını indirip ekleyin.
+  -->
+
+  <!-- ===================== YouTube ===================== -->
+  <DrawingImage x:Key="OD.PlatformIcon.YouTube" po:Freeze="True">
+    <DrawingImage.Drawing>
+      <DrawingGroup>
+        <!-- Şeffaf çerçeve: DrawingImage'ın sınırlarını viewBox'a sabitler,
+             böylece ikonlar birbirine göre optik olarak aynı boyda durur. -->
+        <GeometryDrawing Brush="Transparent" Geometry="M0,0 H158 V110 H0 Z"/>
+        <GeometryDrawing Brush="#FFFF0000"
+                         Geometry="F1 M154.4,17.5c-1.8-6.7-7.1-12-13.9-13.8C128.2,0.5,79,0.5,79,0.5s-48.3-0.2-60.6,3c-6.8,1.8-13.3,7.3-15.1,14C0,29.7,0.3,55,0.3,55S0,80.3,3.3,92.5c1.8,6.7,8.4,12.2,15.1,14c12.3,3.3,60.6,3,60.6,3s48.3,0.2,60.6-3c6.8-1.8,13.1-7.3,14.9-14c3.3-12.1,3.3-37.5,3.3-37.5S157.7,29.7,154.4,17.5z"/>
+        <GeometryDrawing Brush="#FFFFFFFF"
+                         Geometry="F1 M63.9,79.2 L103.2,55 L63.9,30.8 Z"/>
+      </DrawingGroup>
+    </DrawingImage.Drawing>
+  </DrawingImage>
+
+  <!-- ===================== Instagram ===================== -->
+  <BitmapImage x:Key="OD.PlatformIcon.Instagram" po:Freeze="True"
+               UriSource="pack://application:,,,/OrderDeck.App;component/Assets/Brand/instagram-glyph-gradient.png"/>
+
+  <!-- ===================== TikTok ===================== -->
+  <!-- Resmi ikonun zemini siyah daire; koyu arayüzde daire eriyip yalnız renkli
+       nota görünüyor — ikon üreticinin verdiği hâliyle, dokunulmadan duruyor. -->
+  <BitmapImage x:Key="OD.PlatformIcon.TikTok" po:Freeze="True"
+               UriSource="pack://application:,,,/OrderDeck.App;component/Assets/Brand/tiktok-icon-circle.png"/>
+
+  <!-- ===================== Facebook ===================== -->
+  <BitmapImage x:Key="OD.PlatformIcon.Facebook" po:Freeze="True"
+               UriSource="pack://application:,,,/OrderDeck.App;component/Assets/Brand/facebook-logo-primary.png"/>
+
+  <!--
+    Rozet şablonları. ContentControl.ContentTemplate ile seçiliyor (bkz.
+    MainShellView.xaml sohbet listesi). İkonlar tıklanabilir değil — sadece
+    kaynak atfı. Yükseklik 20 px: YouTube Icon'un dijital minimumu.
+  -->
+  <Style x:Key="OD.PlatformIcon.ImageStyle" TargetType="Image">
+    <Setter Property="Height" Value="20"/>
+    <Setter Property="Stretch" Value="Uniform"/>
+    <Setter Property="HorizontalAlignment" Value="Center"/>
+    <Setter Property="VerticalAlignment" Value="Center"/>
+    <Setter Property="RenderOptions.BitmapScalingMode" Value="HighQuality"/>
+    <!-- IsHitTestVisible=False: rozet pasif bir atıf işareti; tıklama sohbet
+         satırının kendisine gitsin (çift tık = müşteri detayı). -->
+    <Setter Property="IsHitTestVisible" Value="False"/>
+  </Style>
+
+  <DataTemplate x:Key="OD.PlatformChip.YouTube">
+    <Image Style="{StaticResource OD.PlatformIcon.ImageStyle}"
+           Source="{StaticResource OD.PlatformIcon.YouTube}" ToolTip="YouTube"/>
+  </DataTemplate>
+  <DataTemplate x:Key="OD.PlatformChip.Instagram">
+    <Image Style="{StaticResource OD.PlatformIcon.ImageStyle}"
+           Source="{StaticResource OD.PlatformIcon.Instagram}" ToolTip="Instagram"/>
+  </DataTemplate>
+  <DataTemplate x:Key="OD.PlatformChip.TikTok">
+    <Image Style="{StaticResource OD.PlatformIcon.ImageStyle}"
+           Source="{StaticResource OD.PlatformIcon.TikTok}" ToolTip="TikTok"/>
+  </DataTemplate>
+  <DataTemplate x:Key="OD.PlatformChip.Facebook">
+    <Image Style="{StaticResource OD.PlatformIcon.ImageStyle}"
+           Source="{StaticResource OD.PlatformIcon.Facebook}" ToolTip="Facebook"/>
+  </DataTemplate>
+
+  <!-- Bilinmeyen platform (ör. yeni bir köprü kaynağı): ikon yok, nötr metin.
+       Marka rengi/kısaltması uydurulmaz. -->
+  <DataTemplate x:Key="OD.PlatformChip.Unknown">
+    <!-- DynamicResource: bu sözlük DarkControls.xaml'den ayrı merge edildiği
+         için kardeş sözlükteki fırçalar parse anında StaticResource ile
+         çözülemez. -->
+    <Border CornerRadius="6" Background="{DynamicResource OD.Bg.Elevated}"
+            Padding="6,1" HorizontalAlignment="Center" VerticalAlignment="Center">
+      <TextBlock Text="{Binding Platform}" FontSize="10" FontWeight="Bold"
+                 FontFamily="Consolas" TextTrimming="CharacterEllipsis"
+                 Foreground="{DynamicResource OD.Fg.Secondary}"/>
+    </Border>
+  </DataTemplate>
+</ResourceDictionary>

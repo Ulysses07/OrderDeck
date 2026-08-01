@@ -7,7 +7,7 @@ namespace OrderDeck.App.Converters;
 
 /// <summary>
 /// platform string → Visibility. Used to hide the YouTube-specific moderation
-/// menu items ("YT'de mesajı sil", "YT'de kullanıcıyı banla") on chat rows
+/// menu items ("YouTube'da mesajı sil", "YouTube'da kullanıcıyı banla") on chat rows
 /// from other platforms (IG, TikTok, Facebook). One-way only.
 /// </summary>
 public sealed class PlatformIsYouTubeConverter : IValueConverter

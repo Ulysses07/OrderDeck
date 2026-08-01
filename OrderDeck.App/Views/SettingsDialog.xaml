@@ -201,7 +201,7 @@
                             </StackPanel>
                             <TextBlock Style="{StaticResource S.Hint}">
                                 Bağlandıktan sonra yayın anında chat'te bir mesaja sağ tıklayıp
-                                "YT'de mesajı sil" veya "YT'de kullanıcıyı banla" diyebilirsin.
+                                "YouTube'da mesajı sil" veya "YouTube'da kullanıcıyı banla" diyebilirsin.
                                 Refresh token bilgisayarında DPAPI ile şifreli saklanır.
                             </TextBlock>
                         </StackPanel>

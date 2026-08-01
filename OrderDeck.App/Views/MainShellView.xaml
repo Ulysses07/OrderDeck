@@ -423,42 +423,28 @@
                                         <ColumnDefinition Width="150"/>
                                         <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
-                                    <!-- Platform chip — DataTrigger ile renk+kısaltma
-                                         (instagram/tiktok/youtube/facebook/twitch lowercase id'ler;
-                                         bilinmeyen → nötr elevated chip). Converter/kod yok. -->
-                                    <Border Grid.Column="0" CornerRadius="6"
-                                            MinWidth="30" Height="18" Padding="6,0" Margin="0,0,10,0"
-                                            HorizontalAlignment="Left" VerticalAlignment="Center">
-                                        <Border.Style>
-                                            <Style TargetType="Border">
-                                                <Setter Property="Background" Value="{StaticResource OD.Bg.Elevated}"/>
+                                    <!-- Platform rozeti — her platformun RESMİ marka ikonu
+                                         (youtube/instagram/tiktok/facebook lowercase id'ler;
+                                         bilinmeyen → nötr metin chip). İkonlar ve kullanım
+                                         gerekçeleri Themes/PlatformIcons.xaml'de.
+                                         Rozet tıklanabilir değil, yalnızca kaynak atfıdır.
+                                         Genişlik 32: YouTube ikonu 158:110 oranında olduğu için
+                                         20 px yükseklikte ~29 px yer kaplıyor (diğerleri kare). -->
+                                    <ContentControl Grid.Column="0" Content="{Binding}"
+                                                    Width="32" Height="20" Margin="0,0,10,0"
+                                                    HorizontalAlignment="Left" VerticalAlignment="Center">
+                                        <ContentControl.Style>
+                                            <Style TargetType="ContentControl">
+                                                <Setter Property="ContentTemplate" Value="{StaticResource OD.PlatformChip.Unknown}"/>
                                                 <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding Platform}" Value="instagram"><Setter Property="Background" Value="#2922C55E"/></DataTrigger>
-                                                    <DataTrigger Binding="{Binding Platform}" Value="tiktok"><Setter Property="Background" Value="#299EE8EE"/></DataTrigger>
-                                                    <!-- YouTube: nötr chip (marka kırmızısı/logo kullanılmaz — YouTube branding guidelines). -->
-                                                    <DataTrigger Binding="{Binding Platform}" Value="facebook"><Setter Property="Background" Value="#295B8DEF"/></DataTrigger>
-                                                    <DataTrigger Binding="{Binding Platform}" Value="twitch"><Setter Property="Background" Value="#299146FF"/></DataTrigger>
+                                                    <DataTrigger Binding="{Binding Platform}" Value="youtube"><Setter Property="ContentTemplate" Value="{StaticResource OD.PlatformChip.YouTube}"/></DataTrigger>
+                                                    <DataTrigger Binding="{Binding Platform}" Value="instagram"><Setter Property="ContentTemplate" Value="{StaticResource OD.PlatformChip.Instagram}"/></DataTrigger>
+                                                    <DataTrigger Binding="{Binding Platform}" Value="tiktok"><Setter Property="ContentTemplate" Value="{StaticResource OD.PlatformChip.TikTok}"/></DataTrigger>
+                                                    <DataTrigger Binding="{Binding Platform}" Value="facebook"><Setter Property="ContentTemplate" Value="{StaticResource OD.PlatformChip.Facebook}"/></DataTrigger>
                                                 </Style.Triggers>
                                             </Style>
-                                        </Border.Style>
-                                        <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center"
-                                                   FontSize="10" FontWeight="Bold" FontFamily="Consolas">
-                                            <TextBlock.Style>
-                                                <Style TargetType="TextBlock">
-                                                    <Setter Property="Text" Value="{Binding Platform}"/>
-                                                    <Setter Property="Foreground" Value="{StaticResource OD.Fg.Secondary}"/>
-                                                    <Style.Triggers>
-                                                        <DataTrigger Binding="{Binding Platform}" Value="instagram"><Setter Property="Text" Value="IG"/><Setter Property="Foreground" Value="#FF22C55E"/></DataTrigger>
-                                                        <DataTrigger Binding="{Binding Platform}" Value="tiktok"><Setter Property="Text" Value="TT"/><Setter Property="Foreground" Value="#FF9EE8EE"/></DataTrigger>
-                                                        <!-- YouTube: tam ad + nötr renk (YT kısaltması ve marka kırmızısı kullanılmaz). -->
-                                                        <DataTrigger Binding="{Binding Platform}" Value="youtube"><Setter Property="Text" Value="YouTube"/></DataTrigger>
-                                                        <DataTrigger Binding="{Binding Platform}" Value="facebook"><Setter Property="Text" Value="FB"/><Setter Property="Foreground" Value="#FF5B8DEF"/></DataTrigger>
-                                                        <DataTrigger Binding="{Binding Platform}" Value="twitch"><Setter Property="Text" Value="TW"/><Setter Property="Foreground" Value="#FF9146FF"/></DataTrigger>
-                                                    </Style.Triggers>
-                                                </Style>
-                                            </TextBlock.Style>
-                                        </TextBlock>
-                                    </Border>
+                                        </ContentControl.Style>
+                                    </ContentControl>
                                     <TextBlock Grid.Column="1" Text="{Binding Display}"
                                                FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
                                                VerticalAlignment="Center"
@@ -482,17 +468,17 @@
                                   Kullanıcı YouTube'a bağlı değilse komutlar no-op/uyarı
                                   verir; consent + audit ile birlikte kalıcı kullanılır.
                                 -->
-                                <MenuItem Header="YT'de mesajı sil"
+                                <MenuItem Header="YouTube'da mesajı sil"
                                           Command="{Binding PlacementTarget.DataContext.DeleteYouTubeMessageCommand,
                                                             RelativeSource={RelativeSource AncestorType=ContextMenu}}"
                                           CommandParameter="{Binding PlacementTarget.SelectedItem,
                                                                      RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
-                                <MenuItem Header="YT'de kullanıcıyı banla"
+                                <MenuItem Header="YouTube'da kullanıcıyı banla"
                                           Command="{Binding PlacementTarget.DataContext.BanYouTubeUserCommand,
                                                             RelativeSource={RelativeSource AncestorType=ContextMenu}}"
                                           CommandParameter="{Binding PlacementTarget.SelectedItem,
                                                                      RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
-                                <MenuItem Header="YT'de banı kaldır"
+                                <MenuItem Header="YouTube'da banı kaldır"
                                           Command="{Binding PlacementTarget.DataContext.UnbanYouTubeUserCommand,
                                                             RelativeSource={RelativeSource AncestorType=ContextMenu}}"
                                           CommandParameter="{Binding PlacementTarget.SelectedItem,

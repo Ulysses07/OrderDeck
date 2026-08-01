@@ -63,6 +63,13 @@
     <Resource Include="Fonts\*.ttf" />
   </ItemGroup>
 
+  <!-- Platform marka ikonları (sohbet listesi rozetleri) — üreticilerin resmi
+       marka paketlerinden alınmış, YALNIZCA ölçeklenmiş (renk/oran/biçim
+       değiştirilmedi). Kaynak künyesi: Themes/PlatformIcons.xaml dosya başı. -->
+  <ItemGroup>
+    <Resource Include="Assets\Brand\*.png" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="ClosedXML" />
     <PackageReference Include="CommunityToolkit.Mvvm" />
