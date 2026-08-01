@@ -61,11 +61,6 @@ public sealed partial class SettingsViewModel : ViewModelBase
     // Phase 5c — YouTube Live chat scraper
     [ObservableProperty] private string _youTubeChannelHandle = "";
 
-    // Faz 2 — resmi YouTube API (gRPC streamList) ile chat çekme. Açıkken
-    // scraper chat'i kapanır, official ingestor devreye girer. API anahtarı
-    // binary'ye gömülü (YouTubeApiDefaults) — kullanıcıdan istenmez.
-    [ObservableProperty] private bool _useOfficialYouTubeApi;
-
     // Phase 5d — YouTube OAuth (moderation)
     [ObservableProperty] private string _youTubeConnectionStatus = "Bağlı değil";
     [ObservableProperty] private bool _isYouTubeConnected;
@@ -376,7 +371,6 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
         // Phase 5c — YouTube
         YouTubeChannelHandle = _liveSettings.YouTubeChannelHandle ?? string.Empty;
-        UseOfficialYouTubeApi = _liveSettings.YouTubeIngestMode == OrderDeck.Core.Chat.YouTubeIngestMode.OfficialApi;
 
         // Phase 5f — Spam filter
         SpamFilterEnabled       = _liveSettings.SpamFilter.Enabled;
@@ -425,8 +419,8 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
         // YouTube channel handle / URL — empty is fine (= disabled), but
         // a non-empty value that we can't recognise as either an @handle
-        // or a watch URL will silently make the scraper idle forever.
-        // Extract logic mirrors YouTubeChatHostedService line 86-94.
+        // or a watch URL will silently make the ingestor idle forever.
+        // Extract logic mirrors YouTubeVideoIdExtractor.TryExtract.
         var ytTrim = YouTubeChannelHandle?.Trim();
         if (!string.IsNullOrEmpty(ytTrim))
         {
@@ -478,12 +472,6 @@ public sealed partial class SettingsViewModel : ViewModelBase
         // instead of attempting to resolve "".
         var trimmedHandle = YouTubeChannelHandle?.Trim();
         _liveSettings.YouTubeChannelHandle = string.IsNullOrEmpty(trimmedHandle) ? null : trimmedHandle;
-
-        // Faz 2 — resmi API modu. Anahtar binary'ye gömülü (YouTubeApiDefaults);
-        // AppSettings.YouTubeApiKey yalnız opsiyonel override, UI'dan yönetilmez.
-        _liveSettings.YouTubeIngestMode = UseOfficialYouTubeApi
-            ? OrderDeck.Core.Chat.YouTubeIngestMode.OfficialApi
-            : OrderDeck.Core.Chat.YouTubeIngestMode.Scraper;
 
         // Phase 5f — Spam filter. The SpamFilter service reads this object on
         // every message via Func<AppSettings>, so changes take effect the

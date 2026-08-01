@@ -62,7 +62,7 @@ public class LongBroadcastStressTest
         int PrintBatches,
         int Payments,
         int ShipmentCycles,
-        int YtScraperCrashes,
+        int YtIngestorCrashes,
         TimeSpan MaxDuration);
 
     private static Profile DefaultProfile() => new(
@@ -73,7 +73,7 @@ public class LongBroadcastStressTest
         PrintBatches: 200,
         Payments: 200,
         ShipmentCycles: 200,
-        YtScraperCrashes: 100,
+        YtIngestorCrashes: 100,
         MaxDuration: TimeSpan.FromMinutes(5));
 
     private static Profile LongRealtimeProfile() => new(
@@ -83,7 +83,7 @@ public class LongBroadcastStressTest
         PrintBatches: 240, // 4 saat × 60 dk = 240 dakika; her dakika 1 print
         Payments: 100,
         ShipmentCycles: 100,
-        YtScraperCrashes: 50,
+        YtIngestorCrashes: 50,
         MaxDuration: TimeSpan.FromHours(4));
 
     [Fact]
@@ -129,7 +129,7 @@ public class LongBroadcastStressTest
         var exceptions = new ConcurrentBag<Exception>();
         long chatPublished = 0, chatHandled = 0, labelsAdded = 0,
              paymentsInserted = 0, prints = 0, shipmentDecisions = 0,
-             scraperBackoffSamples = 0;
+             ingestorBackoffSamples = 0;
 
         // Subscriber simulating UI thread chat consumer (light work)
         using var sub = bus.Subscribe(_ => Interlocked.Increment(ref chatHandled));
@@ -267,23 +267,23 @@ public class LongBroadcastStressTest
             catch (OperationCanceledException) { /* timeout */ }
         }, ct);
 
-        // YT scraper backoff simulator — exercise ComputeBackoff under load
-        var scraperSim = Task.Run(() =>
+        // YT ingestor backoff simulator — exercise ComputeBackoff under load
+        var ingestorSim = Task.Run(() =>
         {
             try
             {
-                for (int crashes = 1; crashes <= profile.YtScraperCrashes && !ct.IsCancellationRequested; crashes++)
+                for (int crashes = 1; crashes <= profile.YtIngestorCrashes && !ct.IsCancellationRequested; crashes++)
                 {
-                    var backoff = OrderDeck.Chat.Ingestors.YouTube.YouTubeChatHostedService
+                    var backoff = OrderDeck.Chat.Ingestors.YouTube.YouTubeOfficialChatHostedService
                         .ComputeBackoff(crashes);
                     backoff.Should().BePositive();
-                    Interlocked.Increment(ref scraperBackoffSamples);
+                    Interlocked.Increment(ref ingestorBackoffSamples);
                 }
             }
             catch (Exception ex) { exceptions.Add(ex); }
         }, ct);
 
-        await Task.WhenAll(publisher, scraperSim);
+        await Task.WhenAll(publisher, ingestorSim);
         sw.Stop();
 
         // Drain time for chat handler to catch up
@@ -303,7 +303,7 @@ public class LongBroadcastStressTest
         _output.WriteLine($"Prints:         {prints}");
         _output.WriteLine($"Payments:       {paymentsInserted}");
         _output.WriteLine($"Shipments:      {shipmentDecisions}");
-        _output.WriteLine($"Scraper backoff samples: {scraperBackoffSamples}");
+        _output.WriteLine($"Ingestor backoff samples: {ingestorBackoffSamples}");
         _output.WriteLine($"Exceptions: {exceptions.Count}");
         foreach (var ex in exceptions.Take(5))
             _output.WriteLine($"  - {ex.GetType().Name}: {ex.Message}");

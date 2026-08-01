@@ -177,18 +177,9 @@
                                 OrderDeck yayına başladığında otomatik bağlanır; tarayıcı açık tutmaya gerek yok.
                                 Boş bırakırsan YouTube chat takibi devre dışı kalır.
                             </TextBlock>
-                        </StackPanel>
-                    </Border>
-
-                    <!-- Faz 2 — resmi YouTube API (gRPC streamList) ile chat çekme. -->
-                    <Border Style="{StaticResource S.Card}">
-                        <StackPanel>
-                            <TextBlock Style="{StaticResource S.CardTitle}" Text="Resmi YouTube API (chat)" Margin="0,0,0,14"/>
-                            <CheckBox Content="Resmi API ile chat çek (eksiksiz — Top chat filtresi yok)"
-                                      IsChecked="{Binding UseOfficialYouTubeApi}"/>
-                            <TextBlock Style="{StaticResource S.Hint}" Margin="0,12,0,0">
-                                Açıkken sohbet resmi gRPC streamList'ten gelir (scraper chat'i kapanır; izleyici sayısı yine çekilir).
-                                API anahtarı uygulamayla birlikte gelir. Günlük kota tüketir. Kapalıyken klasik scraper kullanılır.
+                            <TextBlock Style="{StaticResource S.Hint}" Margin="0,8,0,0">
+                                Handle yazarsan aktif yayını bulmak için aşağıdan YouTube hesabını bağlaman gerekir.
+                                Tam yayın URL'si yapıştırırsan bağlantı gerekmez. Sohbet resmi YouTube API'sinden gelir.
                             </TextBlock>
                         </StackPanel>
                     </Border>

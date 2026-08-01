@@ -122,25 +122,14 @@ public sealed class AppHost : IDisposable
             viewers: sp.GetRequiredService<ViewerCountTracker>()));
         services.AddSingleton<ChatBridgeIngestor>();
 
-        // Phase 5c — YouTube Live chat scraper. Hosted service polls
-        // youtube.com/{handle}/live and runs the InnerTube continuation API
-        // when the channel goes live. Idle when AppSettings.YouTubeChannelHandle
-        // is unset; honors trial-mode the same way the extension bridge does.
-        // Named clients for the YouTube ingestion path. IHttpClientFactory
-        // owns the SocketsHttpHandler pool so the per-scraper-instance leak
-        // (one new HttpClient + handler every time a scraper started/
-        // stopped, never disposed in long streams) is gone.
+        // Phase 5c — YouTube canlı sohbet. Tek yol: resmi gRPC streamList
+        // ingestor'ı (InnerTube scraper'ı ve /live sayfasını kazıyan resolver
+        // 2026-08-01'de kota 760k/gün onaylanınca kaldırıldı). Idle when
+        // AppSettings.YouTubeChannelHandle is unset; honors trial-mode the same
+        // way the extension bridge does. Named client IHttpClientFactory'de:
+        // handler havuzunu o sahiplenir, uzun yayınlarda soket sızıntısı olmaz.
         services.AddHttpClient(
-            OrderDeck.Chat.Ingestors.YouTube.YouTubeChatHostedService.ResolverClientName,
-            c => c.Timeout = TimeSpan.FromSeconds(15))
-            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
-            {
-                AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate,
-                ConnectTimeout = TimeSpan.FromSeconds(10),
-                PooledConnectionLifetime = TimeSpan.FromMinutes(5)
-            });
-        services.AddHttpClient(
-            OrderDeck.Chat.Ingestors.YouTube.YouTubeChatHostedService.ScraperClientName,
+            OrderDeck.Chat.Ingestors.YouTube.YouTubeOfficialChatHostedService.HttpClientName,
             c => c.Timeout = TimeSpan.FromSeconds(30))
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
             {
@@ -151,22 +140,9 @@ public sealed class AppHost : IDisposable
                 AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate
             });
 
-        services.AddHostedService(sp =>
-            new OrderDeck.Chat.Ingestors.YouTube.YouTubeChatHostedService(
-                () => sp.GetRequiredService<AppSettings>(),
-                sp.GetRequiredService<IChatBus>(),
-                sp.GetRequiredService<ILoggerFactory>(),
-                trialProbe: sp.GetRequiredService<LicenseService>(),
-                spamFilter: sp.GetRequiredService<SpamFilter>(),
-                sessions: sp.GetRequiredService<StreamSessionService>(),
-                httpFactory: sp.GetRequiredService<IHttpClientFactory>(),
-                viewers: sp.GetRequiredService<ViewerCountTracker>()));
-
-        // Faz 2 — resmi gRPC streamList ingestor. Feature-flag arkasında:
-        // yalnız AppSettings.YouTubeIngestMode=OfficialApi iken çalışır, aksi
-        // halde boşta durur (scraper'a yol verir). Varsayılan Scraper olduğu
-        // için bu kayıt mevcut davranışı değiştirmez. Aynı named HttpClient'ları
-        // (resolver/scraper) paylaşır.
+        // Handle → aktif yayın çözümlemesi liveBroadcasts.list ile yapılır ve
+        // OAuth ister; delegate olarak geçiliyor ki OrderDeck.Chat'in platform
+        // -agnostik hosted service'i Windows-only moderation service'e bağlanmasın.
         services.AddHostedService(sp =>
             new OrderDeck.Chat.Ingestors.YouTube.YouTubeOfficialChatHostedService(
                 () => sp.GetRequiredService<AppSettings>(),
@@ -176,7 +152,10 @@ public sealed class AppHost : IDisposable
                 spamFilter: sp.GetRequiredService<SpamFilter>(),
                 sessions: sp.GetRequiredService<StreamSessionService>(),
                 httpFactory: sp.GetRequiredService<IHttpClientFactory>(),
-                viewers: sp.GetRequiredService<ViewerCountTracker>()));
+                viewers: sp.GetRequiredService<ViewerCountTracker>(),
+                activeBroadcastResolver: ct => sp
+                    .GetRequiredService<OrderDeck.Chat.YouTube.YouTubeModerationService>()
+                    .GetActiveBroadcastAsync(ct)));
 
         // Phase 5d — YouTube OAuth + moderation. The data store sits in a
         // dedicated subfolder so we can wipe it on disconnect without

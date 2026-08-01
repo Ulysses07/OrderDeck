@@ -51,10 +51,13 @@ public sealed class YouTubeOfficialChatIngestor : IChatIngestor, IDisposable
     /// hosted service bunu await edip yeniden resolve eder.</summary>
     public Task Completion => _completion.Task;
 
+    /// <param name="liveChatId">Biliniyorsa (liveBroadcasts.list zaten dönüyor)
+    /// geçilir ve videos.list ile ikinci bir çözümleme yapılmaz — 1 birim tasarruf.</param>
     public YouTubeOfficialChatIngestor(
         string videoId, string apiKey, IChatBus bus,
         ILogger<YouTubeOfficialChatIngestor> log, HttpClient http,
-        SpamFilter? spamFilter = null, ViewerCountTracker? viewers = null)
+        SpamFilter? spamFilter = null, ViewerCountTracker? viewers = null,
+        string? liveChatId = null)
     {
         _videoId = videoId;
         _apiKey = apiKey;
@@ -63,11 +66,12 @@ public sealed class YouTubeOfficialChatIngestor : IChatIngestor, IDisposable
         _http = http;
         _spamFilter = spamFilter;
         _viewers = viewers;
+        _liveChatId = string.IsNullOrWhiteSpace(liveChatId) ? null : liveChatId;
     }
 
     public async Task StartAsync(CancellationToken ct)
     {
-        _liveChatId = await ResolveLiveChatIdAsync(ct).ConfigureAwait(false);
+        _liveChatId ??= await ResolveLiveChatIdAsync(ct).ConfigureAwait(false);
         if (string.IsNullOrEmpty(_liveChatId))
             throw new InvalidOperationException(
                 "activeLiveChatId yok — yayın canlı değil ya da chat kapalı");

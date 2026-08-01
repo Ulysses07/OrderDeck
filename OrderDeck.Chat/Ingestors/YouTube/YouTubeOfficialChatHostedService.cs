@@ -9,17 +9,25 @@ using Microsoft.Extensions.Logging;
 namespace OrderDeck.Chat.Ingestors.YouTube;
 
 /// <summary>
-/// Faz 2: resmi gRPC <c>liveChatMessages.streamList</c> ingestor'ının lifecycle'ı.
-/// Yalnız <see cref="AppSettings.YouTubeIngestMode"/> = OfficialApi iken çalışır;
-/// aksi halde boşta durur (scraper'a yol verir). Böylece iki yol asla aynı anda
-/// yayın yapmaz ve geçiş tek ayarla, scraper'a dokunmadan olur.
+/// YouTube canlı sohbetinin TEK yolu: resmi gRPC <c>liveChatMessages.streamList</c>
+/// ingestor'ının lifecycle'ı. (2026-08-01'de kota 760k/gün onaylanınca ToS'a aykırı
+/// InnerTube scraper'ı ve /live sayfasını kazıyan resolver kaldırıldı.)
 ///
-/// Dış döngü scraper hosted service ile aynı kalıpta: trial gate → handle →
-/// session gate → handle'ı videoId'ye çöz → ingestor başlat → Completion'ı bekle
-/// → idle. Reconnect'i ingestor kendi içinde yönetir (streamList page_token).
+/// Dış döngü: trial gate → handle → session gate → yayın çözümle → ingestor başlat
+/// → Completion'ı bekle → idle. Reconnect'i ingestor kendi içinde yönetir
+/// (streamList page_token).
+///
+/// Çözümleme sırası: ayardaki metin doğrudan video URL'si/id'si ise
+/// <see cref="YouTubeVideoIdExtractor"/> (OAuth gerekmez), değilse
+/// <see cref="_activeBroadcastResolver"/> → <c>liveBroadcasts.list?broadcastStatus=active</c>
+/// (OAuth ŞART; tek çağrıda hem videoId hem liveChatId döner).
 /// </summary>
 public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposable
 {
+    /// <summary>Named HttpClient: gRPC dışı REST çağrıları (videos.list —
+    /// liveChatId çözümleme + izleyici sayısı).</summary>
+    public const string HttpClientName = "youtube-official";
+
     private static readonly TimeSpan IdleWhenOffline = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan IdleAfterExit = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan MaxBackoff = TimeSpan.FromMinutes(5);
@@ -33,6 +41,10 @@ public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposab
     private readonly StreamSessionService? _sessions;
     private readonly IHttpClientFactory? _httpFactory;
     private readonly ViewerCountTracker? _viewers;
+    // Delegate, tip değil: gerçek uygulama YouTubeModerationService (Windows-only,
+    // [SupportedOSPlatform]) — doğrudan bağımlılık o kısıtı bu platform-agnostik
+    // servise yayardı.
+    private readonly Func<CancellationToken, Task<(string VideoId, string LiveChatId)>>? _activeBroadcastResolver;
 
     private CancellationTokenSource? _cts;
     private Task? _runner;
@@ -47,7 +59,8 @@ public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposab
         SpamFilter? spamFilter = null,
         StreamSessionService? sessions = null,
         IHttpClientFactory? httpFactory = null,
-        ViewerCountTracker? viewers = null)
+        ViewerCountTracker? viewers = null,
+        Func<CancellationToken, Task<(string VideoId, string LiveChatId)>>? activeBroadcastResolver = null)
     {
         _settingsProvider = settingsProvider;
         _bus = bus;
@@ -58,6 +71,7 @@ public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposab
         _sessions = sessions;
         _httpFactory = httpFactory;
         _viewers = viewers;
+        _activeBroadcastResolver = activeBroadcastResolver;
 
         if (_sessions is not null)
             _sessions.SessionEnded += OnSessionEnded;
@@ -89,11 +103,6 @@ public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposab
 
     private async Task RunAsync(CancellationToken ct)
     {
-        var resolverHttp = _httpFactory?.CreateClient(YouTubeChatHostedService.ResolverClientName)
-                           ?? new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
-        using var resolver = new YouTubeLiveResolver(
-            _loggerFactory.CreateLogger<YouTubeLiveResolver>(), resolverHttp);
-
         int consecutiveCrashes = 0;
 
         while (!ct.IsCancellationRequested)
@@ -101,13 +110,6 @@ public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposab
             try
             {
                 var settings = _settingsProvider();
-
-                // Feature-flag gate: yalnız OfficialApi modunda çalış.
-                if (settings.YouTubeIngestMode != OrderDeck.Core.Chat.YouTubeIngestMode.OfficialApi)
-                {
-                    await Task.Delay(IdleWhenOffline, ct);
-                    continue;
-                }
 
                 if (_trialProbe?.IsTrialMode == true)
                 {
@@ -131,7 +133,7 @@ public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposab
                 {
                     if (!_warnedNoKey)
                     {
-                        _log.LogWarning("[YouTube Official] YouTube API key yok (ne ayarda ne gömülü default'ta) — official ingestor çalışamaz. IngestMode=Scraper kalsın ya da release'e key gömülsün.");
+                        _log.LogWarning("[YouTube Official] YouTube API key yok (ne ayarda ne gömülü default'ta) — sohbet çekilemez. Release'e key gömülmeli ya da ayarlardan girilmeli.");
                         _warnedNoKey = true;
                     }
                     await Task.Delay(IdleWhenOffline, ct);
@@ -139,15 +141,38 @@ public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposab
                 }
                 _warnedNoKey = false;
 
-                // Stream session gate (scraper ile aynı): yalnız aktif yayında çek.
+                // Stream session gate: yalnız aktif yayında çek.
                 if (_sessions is not null && _sessions.GetActive() is null)
                 {
                     await Task.Delay(IdleWhenOffline, ct);
                     continue;
                 }
 
-                var videoId = YouTubeVideoIdExtractor.TryExtract(handle)
-                              ?? await resolver.ResolveAsync(handle, ct);
+                // Ayarda tam video URL'si/id'si varsa OAuth'a hiç gerek yok.
+                // Handle yazılıysa resmi uçtan çözülür (OAuth şart).
+                var videoId = YouTubeVideoIdExtractor.TryExtract(handle);
+                string? liveChatId = null;
+                if (videoId is null)
+                {
+                    if (_activeBroadcastResolver is null)
+                    {
+                        await Task.Delay(IdleWhenOffline, ct);
+                        continue;
+                    }
+                    try
+                    {
+                        (videoId, liveChatId) = await _activeBroadcastResolver(ct);
+                    }
+                    catch (OperationCanceledException) { break; }
+                    catch (Exception ex)
+                    {
+                        // Yayın yok / OAuth bağlı değil → Türkçe mesajla bekle.
+                        _log.LogInformation("[YouTube Official] aktif yayın çözümlenemedi: {Reason}", ex.Message);
+                        await Task.Delay(IdleWhenOffline, ct);
+                        continue;
+                    }
+                }
+
                 if (string.IsNullOrEmpty(videoId))
                 {
                     await Task.Delay(IdleWhenOffline, ct);
@@ -155,12 +180,12 @@ public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposab
                 }
 
                 _log.LogInformation("[YouTube Official] ingestor başlatılıyor, video {VideoId}", videoId);
-                var ingestHttp = _httpFactory?.CreateClient(YouTubeChatHostedService.ScraperClientName)
+                var ingestHttp = _httpFactory?.CreateClient(HttpClientName)
                                  ?? new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
                 using var ingestor = new YouTubeOfficialChatIngestor(
                     videoId, apiKey, _bus,
                     _loggerFactory.CreateLogger<YouTubeOfficialChatIngestor>(),
-                    ingestHttp, _spamFilter, _viewers);
+                    ingestHttp, _spamFilter, _viewers, liveChatId);
 
                 using var ingestorCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 _ingestorCts = ingestorCts;
@@ -202,7 +227,7 @@ public sealed class YouTubeOfficialChatHostedService : IHostedService, IDisposab
         }
     }
 
-    /// <summary>Exponential backoff: 30s × 2^(n-1) capped at 5 min (scraper ile aynı).</summary>
+    /// <summary>Exponential backoff: 30s × 2^(n-1) capped at 5 min.</summary>
     internal static TimeSpan ComputeBackoff(int consecutiveCrashes)
     {
         if (consecutiveCrashes <= 1) return IdleAfterExit;
