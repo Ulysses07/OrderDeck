@@ -1011,7 +1011,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     }
 
     /// <summary>
-    /// Right-click → "YT'de mesajı sil". The chat message id our official
+    /// Right-click → "YouTube'da mesajı sil". The chat message id our official
     /// ingestor stores in <c>ChatMessage.ExternalId</c> is the same one
     /// YouTube's API expects for <c>liveChatMessages.delete</c>, so we pass
     /// it through unchanged.
@@ -1048,7 +1048,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     }
 
     /// <summary>
-    /// Right-click → "YT'de kullanıcıyı banla". Username for YouTube messages
+    /// Right-click → "YouTube'da kullanıcıyı banla". Username for YouTube messages
     /// is the channel id (UCxxx...) — the field <c>liveChatBans.insert</c>
     /// needs as <c>bannedUserChannelId</c>. liveChatId is resolved on demand
     /// by the moderation service.

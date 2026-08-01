@@ -10,6 +10,10 @@
                      Label / GroupBox / DataGrid headers / etc. Closes the
                      "white text on white background" UI bug across dialogs. -->
                 <ResourceDictionary Source="Themes/DarkControls.xaml"/>
+                <!-- Sohbet listesindeki platform rozetleri: her platformun
+                     resmi marka ikonu. Marka rehberleri kısaltma + marka
+                     rengi taklidine izin vermiyor (bkz. dosya başı notu). -->
+                <ResourceDictionary Source="Themes/PlatformIcons.xaml"/>
             </ResourceDictionary.MergedDictionaries>
 
             <converters:NullToCollapsedConverter   x:Key="NullToCollapsedConverter"/>
