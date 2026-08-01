@@ -61,6 +61,10 @@ jobs:
     needs: feed-baseline
     runs-on: windows-latest
     timeout-minutes: 40
+    # Repo private: checkout'un GITHUB_TOKEN'ı contents:read olmadan
+    # "Repository not found" ile patlar (workflow düzeyi permissions: {}).
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
