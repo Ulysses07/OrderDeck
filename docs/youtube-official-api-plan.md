@@ -1,5 +1,23 @@
 # YouTube Resmi API'ye Geçiş Planı (chat ingestion → streamList)
 
+> **KAPANIŞ NOTU (2026-08-01) — bu plan tamamlandı, aşağısı tarihsel kayıttır.**
+> Google kota artışını onayladı (**760.000 birim/gün**). Ölçülen maliyet
+> streamList = 5 birim/çağrı, 3.5 saatlik gerçek yayın ≈ 6.000 birim → scraper'ı
+> tutmanın kota gerekçesi kalmadı. Bunun üzerine **iki scraping kod yolu da
+> kaldırıldı**: `YouTubeLiveChatScraper` (InnerTube) ve `YouTubeLiveResolver`
+> (kanalın /live sayfasını sahte User-Agent'la kazıyıp videoId çıkaran
+> çözümleyici). `AppSettings.YouTubeIngestMode` feature-flag'i de silindi —
+> tek yol resmi API.
+>
+> Handle → aktif yayın çözümlemesi artık
+> `YouTubeModerationService.GetActiveBroadcastAsync()` ile
+> `liveBroadcasts.list?broadcastStatus=active` üzerinden (tek çağrıda videoId +
+> liveChatId, **OAuth gerektirir**). Ayarda tam video URL'si/id'si varsa
+> `YouTubeVideoIdExtractor` devreye girer ve OAuth gerekmez.
+>
+> **Fallback yok:** streamList tek yol. Sorun çıkarsa belgeli
+> `liveChatMessages.list` yedeği ayrı bir iş olarak değerlendirilecek.
+
 **Durum:** Planlandı, henüz uygulanmadı. Bugün canlı sohbet **scraper** ile
 çalışıyor (PR #165 — "Canlı sohbet" görünümü). Bu doküman, scraper'ı resmi
 YouTube Data/Live Streaming API ile değiştirme planıdır.

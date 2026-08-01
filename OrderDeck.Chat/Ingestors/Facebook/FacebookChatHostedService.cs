@@ -14,7 +14,7 @@ namespace OrderDeck.Chat.Ingestors.Facebook;
 
 /// <summary>
 /// Owns the lifecycle of the Facebook Live comments ingestor. Mirrors
-/// <see cref="OrderDeck.Chat.Ingestors.YouTube.YouTubeChatHostedService"/>
+/// <see cref="OrderDeck.Chat.Ingestors.YouTube.YouTubeOfficialChatHostedService"/>
 /// in shape but the inner work is "resolve current live video id → open
 /// SSE stream → wait for it to end" rather than "poll continuation tokens".
 ///

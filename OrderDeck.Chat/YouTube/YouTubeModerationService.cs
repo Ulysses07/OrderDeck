@@ -41,6 +41,7 @@ public sealed class YouTubeModerationService
     private readonly ILogger<YouTubeModerationService> _log;
 
     private string? _cachedLiveChatId;
+    private string? _cachedVideoId;
     private DateTimeOffset _cachedLiveChatIdExpiresAt;
     private readonly SemaphoreSlim _liveChatIdLock = new(1, 1);
 
@@ -65,17 +66,32 @@ public sealed class YouTubeModerationService
     /// message if no broadcast is live or the user isn't authorised.
     /// </summary>
     public async Task<string> GetActiveLiveChatIdAsync(CancellationToken ct = default)
+        => (await GetActiveBroadcastAsync(ct).ConfigureAwait(false)).LiveChatId;
+
+    /// <summary>
+    /// Resolves (and caches) the operator's currently-active broadcast. Returns
+    /// both the video id (a <c>liveBroadcast</c>'s id IS the video id) and the
+    /// liveChatId — the single <c>liveBroadcasts.list</c> call carries both, so
+    /// the chat ingestor gets its target without a second lookup and without
+    /// scraping the channel's /live page.
+    /// Throws <see cref="ModerationException"/> with a friendly message if no
+    /// broadcast is live or the user isn't authorised.
+    /// </summary>
+    public async Task<(string VideoId, string LiveChatId)> GetActiveBroadcastAsync(
+        CancellationToken ct = default)
     {
-        if (_cachedLiveChatId is not null && DateTimeOffset.UtcNow < _cachedLiveChatIdExpiresAt)
-            return _cachedLiveChatId;
+        if (_cachedLiveChatId is not null && _cachedVideoId is not null
+            && DateTimeOffset.UtcNow < _cachedLiveChatIdExpiresAt)
+            return (_cachedVideoId, _cachedLiveChatId);
 
         await _liveChatIdLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             // Double-check under the lock — an earlier concurrent call may
             // have populated the cache while we were waiting.
-            if (_cachedLiveChatId is not null && DateTimeOffset.UtcNow < _cachedLiveChatIdExpiresAt)
-                return _cachedLiveChatId;
+            if (_cachedLiveChatId is not null && _cachedVideoId is not null
+                && DateTimeOffset.UtcNow < _cachedLiveChatIdExpiresAt)
+                return (_cachedVideoId, _cachedLiveChatId);
 
             using var youtube = await _oauth.CreateAuthorizedServiceAsync(ct).ConfigureAwait(false);
             // NOTE: broadcastStatus and mine are mutually exclusive filters —
@@ -95,17 +111,17 @@ public sealed class YouTubeModerationService
                 throw MapException(ex);
             }
 
-            var liveChatId = resp?.Items?
-                .Select(i => i.Snippet?.LiveChatId)
-                .FirstOrDefault(s => !string.IsNullOrEmpty(s));
+            var broadcast = resp?.Items?.FirstOrDefault(i =>
+                !string.IsNullOrEmpty(i.Id) && !string.IsNullOrEmpty(i.Snippet?.LiveChatId));
 
-            if (string.IsNullOrEmpty(liveChatId))
+            if (broadcast is null)
                 throw new ModerationException(
                     "Aktif YouTube yayını bulunamadı. Önce YouTube Studio'dan canlı yayını başlat.");
 
-            _cachedLiveChatId = liveChatId;
+            _cachedVideoId = broadcast.Id;
+            _cachedLiveChatId = broadcast.Snippet!.LiveChatId;
             _cachedLiveChatIdExpiresAt = DateTimeOffset.UtcNow + LiveChatIdTtl;
-            return liveChatId;
+            return (_cachedVideoId, _cachedLiveChatId);
         }
         finally
         {
@@ -115,7 +131,7 @@ public sealed class YouTubeModerationService
 
     /// <summary>
     /// Deletes a single chat message by its YouTube message id. The message
-    /// id is exactly what the InnerTube scraper stores in
+    /// id is exactly what the official chat ingestor stores in
     /// <c>ChatMessage.ExternalId</c>, so callers pass that through unchanged.
     /// </summary>
     public async Task DeleteMessageAsync(string messageId, CancellationToken ct = default)
@@ -138,7 +154,7 @@ public sealed class YouTubeModerationService
     /// <summary>
     /// Bans (permanently) a user from the operator's active live chat. The
     /// liveChatId is fetched on demand from the cached resolver; the channel
-    /// id is what the InnerTube scraper stores in <c>ChatMessage.Username</c>.
+    /// id is what the official chat ingestor stores in <c>ChatMessage.Username</c>.
     /// </summary>
     public async Task BanUserAsync(string channelId, CancellationToken ct = default)
     {

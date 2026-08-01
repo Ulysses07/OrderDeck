@@ -50,8 +50,10 @@ public sealed class AppSettings
     /// type). Bundled with the installer in production; for development the
     /// operator drops the value into settings.json by hand. Used by
     /// <c>YouTubeOAuthService</c> to start the consent flow when the user
-    /// clicks "Connect YouTube" in Settings. Null/empty = moderation features
-    /// disabled (read-only InnerTube scraper still works).</summary>
+    /// clicks "Connect YouTube" in Settings. Null/empty = moderation disabled
+    /// AND handle→aktif yayın çözümlemesi (liveBroadcasts.list) yapılamaz; bu
+    /// durumda sohbet ancak <see cref="YouTubeChannelHandle"/> alanına tam video
+    /// URL'si/id'si yazılırsa çekilir.</summary>
     public string? YouTubeOAuthClientId { get; set; }
 
     /// <summary>OAuth 2.0 Client Secret paired with <see cref="YouTubeOAuthClientId"/>.
@@ -61,18 +63,11 @@ public sealed class AppSettings
     /// attacker with file-system access.</summary>
     public string? YouTubeOAuthClientSecret { get; set; }
 
-    /// <summary>Faz 2 feature-flag: YouTube canlı sohbet çekme yöntemi.
-    /// Varsayılan <see cref="OrderDeck.Core.Chat.YouTubeIngestMode.Scraper"/>
-    /// (mevcut InnerTube scraper). <c>OfficialApi</c> = resmi gRPC streamList
-    /// (kota tüketir, <see cref="YouTubeApiKey"/> gerekir). Official ingestor
-    /// tam doğrulanıp yayınlanana kadar Scraper kalır.</summary>
-    public OrderDeck.Core.Chat.YouTubeIngestMode YouTubeIngestMode { get; set; }
-        = OrderDeck.Core.Chat.YouTubeIngestMode.Scraper;
-
-    /// <summary>Resmi YouTube Data API anahtarı (AIza...). Yalnız
-    /// <see cref="YouTubeIngestMode"/> = OfficialApi iken kullanılır
-    /// (streamList + videos.list). Boşsa official ingestor çalışmaz, uyarı
-    /// loglar. PoC: public canlı sohbet okumak için API key yeterli, OAuth gerekmez.</summary>
+    /// <summary>Resmi YouTube Data API anahtarı (AIza...) — canlı sohbetin tek
+    /// yolu olan gRPC streamList + videos.list bunu kullanır. Normalde binary'ye
+    /// gömülü <c>YouTubeApiDefaults.ApiKey</c> geçerlidir; bu alan yalnız
+    /// opsiyonel override (QA/ayrı Cloud projesi). İkisi de boşsa sohbet
+    /// çekilemez, uyarı loglanır.</summary>
     public string? YouTubeApiKey { get; set; }
 
     /// <summary>Facebook Graph API: operatorün bağladığı Page ID. OAuth

@@ -1011,8 +1011,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     }
 
     /// <summary>
-    /// Right-click → "YT'de mesajı sil". The chat message id our InnerTube
-    /// scraper stores in <c>ChatMessage.ExternalId</c> is the same one
+    /// Right-click → "YT'de mesajı sil". The chat message id our official
+    /// ingestor stores in <c>ChatMessage.ExternalId</c> is the same one
     /// YouTube's API expects for <c>liveChatMessages.delete</c>, so we pass
     /// it through unchanged.
     /// </summary>

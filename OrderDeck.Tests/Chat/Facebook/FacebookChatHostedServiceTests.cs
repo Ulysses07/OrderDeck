@@ -7,7 +7,7 @@ namespace OrderDeck.Tests.Chat.Facebook;
 
 /// <summary>
 /// Locks down the bootstrap-crash exponential backoff. Same shape as
-/// <see cref="OrderDeck.Chat.Ingestors.YouTube.YouTubeChatHostedService"/>'s
+/// <see cref="OrderDeck.Chat.Ingestors.YouTube.YouTubeOfficialChatHostedService"/>'s
 /// — keeps reconnect cadence consistent across platforms so operators
 /// don't see one ingestor recover much faster than the other.
 /// </summary>
