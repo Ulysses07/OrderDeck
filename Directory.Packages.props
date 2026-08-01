@@ -21,85 +21,98 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- ASP.NET Core / Microsoft.Extensions — unified at 10.0.7 -->
-    <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.7" />
-    <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.7" />
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.7" />
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.7" />
-    <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="10.0.7" />
-    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.7" />
-    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.7" />
-    <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.7" />
-    <PackageVersion Include="Microsoft.Extensions.Http.Resilience" Version="10.1.0" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.7" />
-    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.7" />
-    <PackageVersion Include="System.Drawing.Common" Version="10.0.7" />
-    <PackageVersion Include="System.Management" Version="10.0.7" />
-    <PackageVersion Include="System.Security.Cryptography.ProtectedData" Version="10.0.7" />
+    <!-- ASP.NET Core / Microsoft.Extensions — unified at 10.0.10 -->
+    <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.10" />
+    <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.10" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.10" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.10" />
+    <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="10.0.10" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.10" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.10" />
+    <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.10" />
+    <PackageVersion Include="Microsoft.Extensions.Http.Resilience" Version="10.8.0" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10" />
+    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.10" />
+    <PackageVersion Include="System.Drawing.Common" Version="10.0.10" />
+    <PackageVersion Include="System.Management" Version="10.0.10" />
+    <PackageVersion Include="System.Security.Cryptography.ProtectedData" Version="10.0.10" />
 
-    <!-- EF Core 10 — converged with M.E.* 10.0.7. -->
-    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.7" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.7" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.7" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.7" />
+    <!-- EF Core 10 — converged with M.E.* 10.0.10. -->
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.10" />
+    <!-- GÜVENLİK (CVE-2025-6965, GHSA-2m69-gcr7-jv3q, High/CVSS 7.2):
+         Microsoft.Data.Sqlite 10.0.x — 10.0.10 dahil — hâlâ
+         SQLitePCLRaw 2.1.11'e bağımlı; o da SQLite < 3.50.2 native
+         derlemesini taşıyor (bellek bozulması). 2.1.x hattında yama yok.
+         lib.e_sqlite3 sadece native ikiliyi taşır (yönetilen API yüzeyi
+         yok), bu yüzden 3.50.3'e transitive pin uyumluluğu bozmadan
+         SQLite 3.50.2+ getiriyor. Microsoft.Data.Sqlite düzeltilmiş
+         bağımlılıkla çıkınca bu satır SİLİNMELİ. -->
+    <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.50.3" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.10" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.10" />
     <!-- HealthChecks community package — major version cadence trails Microsoft's
          own AspNetCore release. 9.0.0 still works fine against EF Core 10. -->
     <PackageVersion Include="AspNetCore.HealthChecks.SqlServer" Version="9.0.0" />
 
     <!-- Domain dependencies -->
-    <PackageVersion Include="AWSSDK.S3" Version="3.7.405.6" />
-    <PackageVersion Include="AngleSharp" Version="1.5.2" />
-    <PackageVersion Include="ClosedXML" Version="0.105.0" />
-    <PackageVersion Include="CommunityToolkit.Mvvm" Version="8.4.0" />
-    <PackageVersion Include="Dapper" Version="2.1.35" />
+    <PackageVersion Include="AWSSDK.S3" Version="4.0.101.6" />
+    <PackageVersion Include="AngleSharp" Version="1.7.0" />
+    <PackageVersion Include="ClosedXML" Version="0.105.1" />
+    <PackageVersion Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <PackageVersion Include="Dapper" Version="2.1.79" />
     <!-- Firebase Admin SDK — FCM push notifications (PR-1 Push Faz 2,
-         2026-05-15). Apache 2.0. Service account JSON ile auth. -->
+         2026-05-15). Apache 2.0. Service account JSON ile auth.
+         3.0.1'DE KİLİTLİ: 3.5+ `Message.Token`'ı deprecate edip `Message.Fid`
+         (Firebase Installation ID) istiyor. Token hâlâ çalışıyor ama CS0618
+         bizim TreatWarningsAsErrors ayarımızda derlemeyi kırıyor. Fid'e geçmek
+         mobil istemcinin FID kaydetmesini gerektiriyor (OrderDeck-Shopper
+         repo'su) → ayrı iş. O migrasyon yapılınca burası yükseltilebilir. -->
     <PackageVersion Include="FirebaseAdmin" Version="3.0.1" />
     <PackageVersion Include="Hangfire.AspNetCore" Version="1.8.24" />
     <PackageVersion Include="Hangfire.MemoryStorage" Version="1.8.1.2" />
     <PackageVersion Include="Hangfire.SqlServer" Version="1.8.24" />
     <PackageVersion Include="Konscious.Security.Cryptography.Argon2" Version="1.3.1" />
-    <PackageVersion Include="MailKit" Version="4.16.0" />
-    <PackageVersion Include="Microsoft.Xaml.Behaviors.Wpf" Version="1.1.135" />
-    <PackageVersion Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageVersion Include="MailKit" Version="4.17.0" />
+    <PackageVersion Include="Microsoft.Xaml.Behaviors.Wpf" Version="1.1.142" />
+    <PackageVersion Include="Newtonsoft.Json" Version="13.0.4" />
     <!-- PDF parsing for dekont auto-fill (PdfDekontParser). Apache 2.0, ~1MB,
          offline only — PDF içerikleri sunucuya gitmez (KVKK). -->
     <PackageVersion Include="PdfPig" Version="0.1.15" />
-    <PackageVersion Include="Serilog" Version="4.2.0" />
-    <PackageVersion Include="Serilog.Extensions.Logging" Version="9.0.0" />
-    <PackageVersion Include="Serilog.Sinks.Console" Version="6.0.0" />
-    <PackageVersion Include="Serilog.Sinks.File" Version="6.0.0" />
-    <PackageVersion Include="Swashbuckle.AspNetCore" Version="7.2.0" />
+    <PackageVersion Include="Serilog" Version="4.4.0" />
+    <PackageVersion Include="Serilog.Extensions.Logging" Version="10.0.0" />
+    <PackageVersion Include="Serilog.Sinks.Console" Version="6.1.1" />
+    <PackageVersion Include="Serilog.Sinks.File" Version="7.0.0" />
+    <PackageVersion Include="Swashbuckle.AspNetCore" Version="10.2.3" />
 
     <!-- Google APIs — YouTube Data API v3 + OAuth 2.0 desktop flow. Used by
          OrderDeck.Chat/YouTube/* for the moderation features (delete chat
          message, ban user). The library bundles its own HttpClient + token
          refresh handling, so we don't need a custom DelegatingHandler. -->
-    <PackageVersion Include="Google.Apis.YouTube.v3" Version="1.69.0.3742" />
-    <PackageVersion Include="Google.Apis.Auth" Version="1.69.0" />
+    <PackageVersion Include="Google.Apis.YouTube.v3" Version="1.75.0.4207" />
+    <PackageVersion Include="Google.Apis.Auth" Version="1.75.0" />
 
     <!-- Faz 2: resmi YouTube gRPC liveChatMessages.streamList (push) ingestor.
          stream_list.proto Grpc.Tools ile derlenir; client stub + Google.Protobuf
          runtime. Sürümler PoC'de (YtStreamPoc) doğrulandı. -->
-    <PackageVersion Include="Google.Protobuf" Version="3.28.3" />
-    <PackageVersion Include="Grpc.Net.Client" Version="2.66.0" />
-    <PackageVersion Include="Grpc.Tools" Version="2.66.0" />
+    <PackageVersion Include="Google.Protobuf" Version="3.35.1" />
+    <PackageVersion Include="Grpc.Net.Client" Version="2.80.0" />
+    <PackageVersion Include="Grpc.Tools" Version="2.83.0" />
 
     <!-- OpenTelemetry — bumped from 1.12.0 to clear NU1902 advisories on
          OpenTelemetry.Api / OpenTelemetry.Exporter.OpenTelemetryProtocol
-         (GHSA-g94r-2vxg-569j, GHSA-4625-4j76-fww9). Per-package latest at
-         time of bump differs (Runtime + Http stop at 1.15.1, AspNetCore at
-         1.15.2, Prometheus exporter still beta), so versions aren't all
-         identical — pinned to the latest each component publishes. -->
-    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.15.3" />
-    <PackageVersion Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.15.3-beta.1" />
-    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.15.3" />
-    <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.15.2" />
-    <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.15.1" />
-    <PackageVersion Include="OpenTelemetry.Instrumentation.Runtime" Version="1.15.1" />
+         (GHSA-g94r-2vxg-569j, GHSA-4625-4j76-fww9). 1.17.0'da tüm
+         bileşenler aynı sürüme yakınsadı; Prometheus exporter hâlâ yalnız
+         beta yayınlıyor (upstream'de stable yok). -->
+    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.17.0" />
+    <PackageVersion Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.17.0-beta.1" />
+    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.17.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.17.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.17.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.Runtime" Version="1.17.0" />
 
     <!-- WebView2 — C# wrapper for Edge-based embedded browser; runtime ships with Win10 22H2+ / Win11 -->
-    <PackageVersion Include="Microsoft.Web.WebView2" Version="1.0.2535.41" />
+    <PackageVersion Include="Microsoft.Web.WebView2" Version="1.0.4078.44" />
 
     <!-- SharpVectors — WPF SVG rendering. WPF's built-in Image control only
          understands raster formats (BMP/PNG/JPG/GIF/TIFF), so animation
@@ -114,11 +127,15 @@
     <PackageVersion Include="Velopack" Version="1.2.0" />
 
     <!-- Test deps -->
-    <PackageVersion Include="FluentAssertions" Version="7.0.0" />
-    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <!-- LİSANS: FluentAssertions 8.x, Xceed Community License'a geçti —
+         ticari kullanım ücretli (geliştirici başına yıllık). 7.x Apache-2.0
+         kalmaya devam ediyor ve kritik düzeltmeleri alıyor. OrderDeck ticari
+         bir ürün olduğu için 7.x hattında KALIYORUZ; 8'e çıkmayın. -->
+    <PackageVersion Include="FluentAssertions" Version="7.2.2" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
     <PackageVersion Include="Moq" Version="4.20.72" />
-    <PackageVersion Include="coverlet.collector" Version="6.0.4" />
+    <PackageVersion Include="coverlet.collector" Version="10.0.1" />
     <PackageVersion Include="xunit" Version="2.9.3" />
-    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
   </ItemGroup>
 </Project>

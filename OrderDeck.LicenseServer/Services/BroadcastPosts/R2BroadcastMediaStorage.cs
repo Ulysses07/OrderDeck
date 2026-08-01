@@ -1,4 +1,4 @@
-using Amazon;
+using Amazon.Runtime;
 using Amazon.S3;
 using Amazon.S3.Model;
 using Microsoft.Extensions.Logging;
@@ -7,17 +7,11 @@ namespace OrderDeck.LicenseServer.Services.BroadcastPosts;
 
 public sealed class R2BroadcastMediaStorage : IBroadcastMediaStorage, IDisposable
 {
-    // Static init: force SigV4 globally. AmazonS3Config.SignatureVersion="4" is
-    // ignored for pre-signed URLs in this SDK version; this static flag is what
-    // actually flips presign output from SigV2 (?AWSAccessKeyId=...&Signature=)
-    // to SigV4 (?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...).
-    // R2 rejects SigV2 preflight (OPTIONS gets 401 without CORS headers); SigV4
-    // preflight returns the expected Access-Control-Allow-Origin.
-    static R2BroadcastMediaStorage()
-    {
-        AWSConfigsS3.UseSignatureVersion4 = true;
-    }
-
+    // SigV4 notu: AWSSDK v3'te presign çıktısını SigV2'den SigV4'e çevirmek için
+    // `AWSConfigsS3.UseSignatureVersion4` static flag'i şarttı (R2 SigV2 preflight'ı
+    // 401'liyor, CORS başlığı dönmüyordu). AWSSDK **v4** her zaman SigV4 imzalıyor
+    // ve hem o flag'i hem `AmazonS3Config.SignatureVersion`'ı kaldırdı — bu yüzden
+    // static ctor artık yok. Davranış aynı, ayar gereksiz.
     private readonly R2Options _opt;
     private readonly AmazonS3Client _client;
     private readonly ILogger<R2BroadcastMediaStorage> _log;
@@ -36,11 +30,17 @@ public sealed class R2BroadcastMediaStorage : IBroadcastMediaStorage, IDisposabl
             {
                 ServiceURL = _opt.ServiceUrl,
                 ForcePathStyle = true,
-                SignatureVersion = "4",
                 // R2 uses "auto" region; AWSSDK derives the signing region from
                 // this. Without it the SigV4 string-to-sign has an empty region
                 // and R2 returns SignatureDoesNotMatch on PUT.
-                AuthenticationRegion = "auto"
+                AuthenticationRegion = "auto",
+                // AWSSDK v4 varsayılanı WHEN_SUPPORTED: her PUT'a
+                // x-amz-checksum-crc32 ekliyor. R2 CRC32'yi desteklemiyor
+                // ("Header 'x-amz-checksum-algorithm' with value 'CRC32' not
+                // implemented") ve presign edilen URL'e de bu başlık imzaya
+                // giriyor. WHEN_REQUIRED = v3'teki davranış.
+                RequestChecksumCalculation = RequestChecksumCalculation.WHEN_REQUIRED,
+                ResponseChecksumValidation = ResponseChecksumValidation.WHEN_REQUIRED,
             });
     }
 
