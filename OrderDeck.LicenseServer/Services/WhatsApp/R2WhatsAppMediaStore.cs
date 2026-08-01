@@ -11,19 +11,16 @@ namespace OrderDeck.LicenseServer.Services.WhatsApp;
 /// <b>aynı bucket</b>'ı paylaşır; ayrım nesne anahtarındaki <c>wa/</c> önekiyle
 /// yapılır (bkz. <see cref="WhatsAppMediaDownloader"/>).
 ///
-/// <para><b>R2 tuzakları</b> (mevcut iki depoda da aynısı geçerli):
-/// pre-signed URL'lerin SigV4 olması için statik <c>UseSignatureVersion4</c>
-/// bayrağı şart — config property'si tek başına yetmiyor. Ayrıca R2
+/// <para><b>R2 tuzakları</b> (mevcut iki depoda da aynısı geçerli): R2
 /// <c>STREAMING-AWS4-HMAC-SHA256-PAYLOAD</c> desteklemediği için
-/// <c>DisablePayloadSigning</c> + <c>UseChunkEncoding=false</c> gerekiyor.</para>
+/// <c>DisablePayloadSigning</c> + <c>UseChunkEncoding=false</c> gerekiyor,
+/// ve CRC32 checksum'ı desteklemediği için AWSSDK v4'ün
+/// <c>RequestChecksumCalculation</c> varsayılanı WHEN_REQUIRED'a çekiliyor.
+/// (SigV4 için gereken statik <c>UseSignatureVersion4</c> bayrağı AWSSDK v4'te
+/// kaldırıldı — v4 zaten her zaman SigV4 imzalıyor.)</para>
 /// </summary>
 public sealed class R2WhatsAppMediaStore : IWhatsAppMediaStore, IDisposable
 {
-    static R2WhatsAppMediaStore()
-    {
-        AWSConfigsS3.UseSignatureVersion4 = true;
-    }
-
     private readonly R2Options _opt;
     private readonly AmazonS3Client _s3;
 
@@ -40,8 +37,9 @@ public sealed class R2WhatsAppMediaStore : IWhatsAppMediaStore, IDisposable
             {
                 ServiceURL = _opt.ServiceUrl,
                 ForcePathStyle = true,
-                SignatureVersion = "4",
                 AuthenticationRegion = "auto",
+                RequestChecksumCalculation = RequestChecksumCalculation.WHEN_REQUIRED,
+                ResponseChecksumValidation = ResponseChecksumValidation.WHEN_REQUIRED,
             });
     }
 

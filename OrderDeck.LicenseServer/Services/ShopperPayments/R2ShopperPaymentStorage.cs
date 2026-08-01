@@ -14,15 +14,9 @@ namespace OrderDeck.LicenseServer.Services.ShopperPayments;
 /// </summary>
 public sealed class R2ShopperPaymentStorage : IShopperPaymentStorage, IDisposable
 {
-    // Static init: force SigV4 globally. AmazonS3Config.SignatureVersion="4" is
-    // ignored for pre-signed URLs in this SDK version; this static flag is what
-    // actually flips presign output from SigV2 to SigV4.
-    // R2 rejects SigV2 with SignatureDoesNotMatch.
-    static R2ShopperPaymentStorage()
-    {
-        AWSConfigsS3.UseSignatureVersion4 = true;
-    }
-
+    // AWSSDK v4 her zaman SigV4 imzalıyor; v3'te gereken statik
+    // `AWSConfigsS3.UseSignatureVersion4` bayrağı ve
+    // `AmazonS3Config.SignatureVersion` property'si SDK'dan kaldırıldı.
     private readonly R2Options _opt;
     private readonly AmazonS3Client _s3;
 
@@ -39,8 +33,11 @@ public sealed class R2ShopperPaymentStorage : IShopperPaymentStorage, IDisposabl
             {
                 ServiceURL = _opt.ServiceUrl,
                 ForcePathStyle = true,
-                SignatureVersion = "4",
                 AuthenticationRegion = "auto",
+                // R2 CRC32 checksum'ı desteklemiyor; AWSSDK v4 varsayılanı
+                // WHEN_SUPPORTED bunu her PUT'a ekliyor → WHEN_REQUIRED.
+                RequestChecksumCalculation = RequestChecksumCalculation.WHEN_REQUIRED,
+                ResponseChecksumValidation = ResponseChecksumValidation.WHEN_REQUIRED,
             });
     }
 

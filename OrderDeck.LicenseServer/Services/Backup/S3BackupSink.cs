@@ -1,3 +1,4 @@
+using Amazon.Runtime;
 using Amazon.S3;
 using Amazon.S3.Model;
 using Microsoft.Extensions.Logging;
@@ -41,7 +42,12 @@ public sealed class S3BackupSink : IS3BackupSink, IDisposable
             {
                 ServiceURL = _opt.ServiceUrl,
                 ForcePathStyle = true,         // MinIO + B2 + most S3-clones require this
-                UseHttp = _opt.ServiceUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                UseHttp = _opt.ServiceUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase),
+                // AWSSDK v4 varsayılan olarak her PUT'a x-amz-checksum-crc32
+                // ekliyor; S3-klonlarının çoğu (B2, R2, eski MinIO) bunu
+                // "not implemented" ile reddediyor → v3 davranışına dön.
+                RequestChecksumCalculation = RequestChecksumCalculation.WHEN_REQUIRED,
+                ResponseChecksumValidation = ResponseChecksumValidation.WHEN_REQUIRED,
             });
     }
 

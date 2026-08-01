@@ -250,9 +250,14 @@ public sealed class FcmNotificationSender : INotificationSender
         var existing = FirebaseApp.GetInstance(AppName);
         if (existing is null)
         {
+            // Google.Apis.Auth 1.7x'te GoogleCredential.FromFile deprecate edildi
+            // (dosya içeriğine göre kör tip seçimi güvenlik riski sayılıyor);
+            // beklediğimiz tipi açıkça yazıyoruz — FCM her zaman service account.
             FirebaseApp.Create(new AppOptions
             {
-                Credential = GoogleCredential.FromFile(options.ServiceAccountJsonPath)
+                Credential = CredentialFactory
+                    .FromFile<ServiceAccountCredential>(options.ServiceAccountJsonPath)
+                    .ToGoogleCredential()
             }, AppName);
         }
 
