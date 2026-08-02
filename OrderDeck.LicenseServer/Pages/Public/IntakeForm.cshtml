@@ -186,16 +186,76 @@
 
 <script>
 (function () {
-    // (a) Kullanici adi normalize: bastaki at-isaretini + bosluklari temizle
+    // (a) Kullanici adi normalize: bastaki at-isaretini + DIS bosluklari temizle
     // (chat'teki halle eslessin, gruplama saglam olsun).
+    // IC bosluk bilerek KORUNUR: "Musa Sevinc" sessizce "MusaSevinc"e donusurse
+    // kullanici hatasini goremez, ustelik var olmayan ama gecerli gorunen bir
+    // kullanici adi uretilir. Boslugu birakip asagidaki kural kontrolune
+    // yakalatiyoruz. Sunucu tarafi ayni kurali HandleValidator ile uyguluyor.
     var AT = '\u0040'; // U+0040 at-isareti; Razor literal parse etmesin diye kod ile
     function normalizeHandle(v) {
         v = (v || '').trim();
-        while (v.charAt(0) === AT) v = v.slice(1);
-        return v.replace(/\s+/g, '');
+        while (v.charAt(0) === AT) v = v.slice(1).replace(/^\s+/, '');
+        return v.trim();
     }
+
+    // Platform kurallari — sunucudaki HandleValidator ile ayni.
+    // facebook YOK: canli yorumlarda gelen sey kullanici adi degil GORUNEN AD
+    // ("Musa Sevinc"), oraya handle kurali koymak eslesmeyi kirar.
+    var RULES = {
+        InstagramUsername: { name: 'Instagram', min: 1, max: 30, re: /^[A-Za-z0-9._]+$/,
+                             extras: 'nokta ve alt \u00e7izgi',
+                             edge: '.', edgeMsg: 'nokta' },
+        TikTokUsername:    { name: 'TikTok', min: 2, max: 24, re: /^[A-Za-z0-9._]+$/,
+                             extras: 'nokta ve alt \u00e7izgi',
+                             edge: '._', edgeMsg: 'nokta veya alt \u00e7izgi' },
+        YouTubeUsername:   { name: 'YouTube', min: 3, max: 30, re: /^[A-Za-z0-9._-]+$/,
+                             extras: 'nokta, tire ve alt \u00e7izgi',
+                             edge: '._-', edgeMsg: 'nokta, tire veya alt \u00e7izgi' }
+    };
+
+    function ruleFor(el) {
+        var n = el.getAttribute('name') || '';           // "Input.InstagramUsername"
+        return RULES[n.split('.').pop()] || null;
+    }
+
+    function handleError(el, h) {
+        var r = ruleFor(el);
+        if (!r || h.length === 0) return '';
+        if (h.indexOf(' ') >= 0)
+            return 'Kullan\u0131c\u0131 ad\u0131nda bo\u015fluk olamaz. Ad soyad de\u011fil, '
+                 + 'profilindeki \u0040 ile ba\u015flayan kullan\u0131c\u0131 ad\u0131n\u0131 yaz.';
+        if (h.indexOf(AT) >= 0 || h.indexOf('/') >= 0 || h.indexOf(':') >= 0)
+            return 'Buraya sadece kullan\u0131c\u0131 ad\u0131n\u0131 yaz \u2014 e-posta ya da '
+                 + 'profil ba\u011flant\u0131s\u0131 de\u011fil.';
+        if (h.length < r.min)
+            return r.name + ' kullan\u0131c\u0131 ad\u0131 en az ' + r.min + ' karakter olmal\u0131.';
+        if (h.length > r.max)
+            return r.name + ' kullan\u0131c\u0131 ad\u0131 en fazla ' + r.max + ' karakter olabilir.';
+        if (!r.re.test(h))
+            return 'Kullan\u0131c\u0131 ad\u0131nda yaln\u0131zca \u0130ngilizce harf, rakam, '
+                 + r.extras + ' kullan\u0131labilir (\u00e7, \u011f, \u0131, \u00f6, \u015f, '
+                 + '\u00fc gibi T\u00fcrk\u00e7e harfler olmaz).';
+        if (r.edge.indexOf(h.charAt(0)) >= 0 || r.edge.indexOf(h.charAt(h.length - 1)) >= 0)
+            return r.name + ' kullan\u0131c\u0131 ad\u0131 ' + r.edgeMsg
+                 + ' ile ba\u015flayamaz/bitemez.';
+        if (r.name === 'Instagram' && h.indexOf('..') >= 0)
+            return 'Instagram kullan\u0131c\u0131 ad\u0131nda art arda iki nokta olamaz.';
+        return '';
+    }
+
+    function showError(el, msg) {
+        var box = el.closest('.field').querySelector('.err');
+        if (box) box.textContent = msg;
+        return msg === '';
+    }
+
     document.querySelectorAll('.uname').forEach(function (el) {
-        el.addEventListener('blur', function () { el.value = normalizeHandle(el.value); });
+        el.addEventListener('blur', function () {
+            el.value = normalizeHandle(el.value);
+            showError(el, handleError(el, el.value));
+        });
+        el.addEventListener('input', function () { showError(el, ''); });
     });
 
     // (b) YouTube handle doğrulama — blur'da debounced, channels.list?forHandle (1 kota birimi).
@@ -241,8 +301,14 @@
     var form = document.getElementById('intakeForm');
     var unameErr = document.getElementById('unameErr');
     form.addEventListener('submit', function (e) {
-        var anyUser = Array.prototype.some.call(document.querySelectorAll('.uname'), function (el) {
-            return normalizeHandle(el.value).length > 0;
+        var fields = Array.prototype.slice.call(document.querySelectorAll('.uname'));
+        var anyUser = false, firstBad = null;
+        fields.forEach(function (el) {
+            el.value = normalizeHandle(el.value);
+            if (el.value.length > 0) anyUser = true;
+            var msg = handleError(el, el.value);
+            showError(el, msg);
+            if (msg && !firstBad) firstBad = el;
         });
         if (!anyUser) {
             e.preventDefault();
@@ -251,6 +317,8 @@
             return;
         }
         unameErr.textContent = '';
+        // Kurala uymayan kayıt sohbetle eşleşemez → gönderimi durdur.
+        if (firstBad) { e.preventDefault(); firstBad.focus(); }
     });
 })();
 </script>
