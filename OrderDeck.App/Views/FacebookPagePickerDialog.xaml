@@ -1,7 +1,13 @@
+<!-- Arka plan/ön plan BURADA verilmek zorunda: DarkControls'taki
+     `Style TargetType="{x:Type Window}"` bu pencereye UYGULANMAZ, çünkü WPF
+     örtük stil aramasını nesnenin TAM tipiyle yapar. Verilmezse arka plan
+     varsayılan BEYAZ kalır, metinler tema gereği açık renktir → okunmaz. -->
 <Window x:Class="OrderDeck.App.Views.FacebookPagePickerDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Facebook Page Seç"
+        Background="{DynamicResource OD.Bg.Window}"
+        Foreground="{DynamicResource OD.Fg.Primary}"
         Height="320" Width="420"
         WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize"
