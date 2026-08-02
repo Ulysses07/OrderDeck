@@ -47,10 +47,10 @@ export const BRAND = 'OrderDeck';
  * gelmez. rsync `downloads/` exclude'lu; Caddy `/downloads/*`'ı serve eder.
  */
 export const LATEST_RELEASE = {
-  version: '0.6.0',
+  version: '0.6.1',
   filename: 'OrderDeck-win-Setup.exe',
   sizeMB: 102,
-  releasedAt: '2026-08-01',
+  releasedAt: '2026-08-02',
 };
 
 export const downloadUrl = () => `/downloads/velopack/${LATEST_RELEASE.filename}`;
