@@ -99,11 +99,27 @@ public class IntakeFormModel : PageModel
         Config = await _service.GetActiveBySlugAsync(Slug, ct);
         if (Config is null) return StatusCode(StatusCodes.Status410Gone);
 
+        // Kullanıcı adları: baştaki @ + dış boşluk temizlenir, sonra her
+        // platformun kendi kurallarına göre doğrulanır. Kurala uymayan kayıt
+        // sohbetteki kişiyle eşleşemeyeceği için kabul edilmez.
+        var yt = HandleValidator.Normalize(Input.YouTubeUsername);
+        var ig = HandleValidator.Normalize(Input.InstagramUsername);
+        var fb = HandleValidator.Normalize(Input.FacebookUsername);
+        var tt = HandleValidator.Normalize(Input.TikTokUsername);
+
+        // Temizlenmiş hâli forma geri yaz — hata varsa kullanıcı düzelteceği
+        // metni görsün, geçerliyse gönderilen değerle kaydedilen aynı olsun.
+        Input.YouTubeUsername = yt;
+        Input.InstagramUsername = ig;
+        Input.FacebookUsername = fb;
+        Input.TikTokUsername = tt;
+
+        AddHandleError("Input.YouTubeUsername", HandleValidator.YouTube, yt);
+        AddHandleError("Input.InstagramUsername", HandleValidator.Instagram, ig);
+        AddHandleError("Input.FacebookUsername", HandleValidator.Facebook, fb);
+        AddHandleError("Input.TikTokUsername", HandleValidator.TikTok, tt);
+
         // En az bir platform kullanıcı adı zorunlu.
-        var yt = Trim(Input.YouTubeUsername);
-        var ig = Trim(Input.InstagramUsername);
-        var fb = Trim(Input.FacebookUsername);
-        var tt = Trim(Input.TikTokUsername);
         if (yt is null && ig is null && fb is null && tt is null)
         {
             ModelState.AddModelError(
@@ -150,6 +166,12 @@ public class IntakeFormModel : PageModel
             Input.Address.Trim(),
             normalizedPhone);
         return Redirect(url);
+    }
+
+    private void AddHandleError(string key, string platform, string? handle)
+    {
+        var error = HandleValidator.Validate(platform, handle);
+        if (error is not null) ModelState.AddModelError(key, error);
     }
 
     /// <summary>Trims and normalizes empty/whitespace input to null.</summary>
