@@ -35,19 +35,54 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
 
+      # v0.6.0'da bu adım sessizce düştü: iki scp de TCP timeout'una girdi (her
+      # biri ~133 sn), stderr `2>/dev/null` ile yutuldu ve `|| echo` "first
+      # release" diyerek job'ı yeşil bıraktı. Sonuç: baseline yok → delta yok →
+      # 0.5.0 kullanıcıları 102 MB'ın tamamını indirdi. Artık "feed boş" ile
+      # "bağlanamadım" ayrı ele alınıyor: önce ucuz bir ssh ile listeleniyor
+      # (3 deneme), bağlantı kurulamazsa release DURUYOR.
       - name: Pull existing feed
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
+          set -uo pipefail
           mkdir -p baseline
           FEED=/opt/orderdeck/web-out/downloads/velopack
-          # İlk release'te dizin boş/olmayabilir → hataları yut (yalnız full üretilir).
-          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
-            "${DEPLOY_USER}@${DEPLOY_HOST}:${FEED}/*.nupkg" baseline/ 2>/dev/null || echo "no prev nupkgs (first release)"
-          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
-            "${DEPLOY_USER}@${DEPLOY_HOST}:${FEED}/releases.win.json" baseline/ 2>/dev/null || echo "no prev manifest"
-          ls -la baseline || true
+          SSHOPTS="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
+
+          ok=0
+          for i in 1 2 3; do
+            # `|| true` uzaktaki ls'in "dosya yok" çıkışını yutar; ssh'ın KENDİ
+            # çıkış kodu (bağlantı hatası) korunur.
+            if LIST=$(ssh $SSHOPTS "${DEPLOY_USER}@${DEPLOY_HOST}" \
+                        "ls -1t ${FEED}/*.nupkg 2>/dev/null || true"); then
+              ok=1; break
+            fi
+            echo "::warning::VPS feed'i listelenemedi (deneme $i/3)"
+            sleep $((i * 20))
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::VPS'e bağlanılamadı — delta üretilemez, release durduruldu. Re-run deneyin."
+            exit 1
+          fi
+
+          if [ -z "$LIST" ]; then
+            echo "::notice::Feed'de önceki sürüm yok — yalnız full paket üretilecek (ilk release)."
+            exit 0
+          fi
+
+          # Delta yalnız önceki sürüm(ler)e göre üretiliyor; en yeni 2 full paket
+          # yeter. `ls -1t` mtime'a göre sıralar — isim sıralaması 0.10.0'ı
+          # 0.5.0'ın önüne atardı.
+          for f in $(echo "$LIST" | head -n 2); do
+            echo "Baseline indiriliyor: $f"
+            scp $SSHOPTS "${DEPLOY_USER}@${DEPLOY_HOST}:$f" baseline/ \
+              || { echo "::error::$f indirilemedi"; exit 1; }
+          done
+          scp $SSHOPTS "${DEPLOY_USER}@${DEPLOY_HOST}:${FEED}/releases.win.json" baseline/ \
+            || echo "::warning::releases.win.json yok (manifest olmadan da delta üretilebilir)"
+          ls -la baseline
 
       - uses: actions/upload-artifact@v4
         with:
@@ -110,9 +145,31 @@ jobs:
           path: Releases
         continue-on-error: true
 
+      # İlk release'te baseline yoktur (delta beklenmez); varsa delta ZORUNLU.
+      - name: Baseline durumu
+        id: baseline
+        shell: bash
+        run: |
+          n=$(ls Releases/*.nupkg 2>/dev/null | wc -l)
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+          if [ "$n" -eq 0 ]; then
+            echo "::warning::Baseline yok — delta üretilmeyecek, herkes tam paketi indirir."
+          else
+            echo "Baseline paket sayısı: $n"
+          fi
+
       - name: Build Velopack release
         shell: pwsh
         run: installer\build.ps1 -Version ${{ steps.ver.outputs.version }}
+
+      # Sessiz bozulmaya karşı son bariyer: baseline vardıysa delta da çıkmalı.
+      - name: Delta üretildi mi
+        if: steps.baseline.outputs.count != '0'
+        shell: bash
+        run: |
+          ls Releases/*delta*.nupkg >/dev/null 2>&1 \
+            || { echo "::error::Baseline vardı ama delta paketi üretilmedi."; exit 1; }
+          ls -la Releases/*delta*.nupkg
 
       # Portable.zip feed'e gerekmiyor (~97 MB) — artifact'e koyma.
       - name: Trim artifact
