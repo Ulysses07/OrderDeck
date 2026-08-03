@@ -167,6 +167,37 @@ public class CustomerDetailViewModelTests
             "the bound TextBox cannot show a null — VM normalizes to empty string");
     }
 
+    // ─── Kimlik rozetleri ────────────────────────────────────────────────────
+
+    [Fact]
+    public void Identity_badge_shows_the_platform_username_not_the_persons_name()
+    {
+        // Kayıt formundan gelen müşteride DisplayName = Ad Soyad (arama listesi
+        // için). Rozet bunu gösterirse operatör Instagram kullanıcı adını hiç
+        // göremez — "Instagram: Ayşe Önal" gibi.
+        var h = Build();
+        SeedCustomer(h, id: "c1", platform: "instagram",
+                     username: "alminays.design", displayName: "Ayşe Önal");
+
+        h.Vm.Load("c1").Should().BeTrue();
+
+        h.Vm.Identities.Should().ContainSingle()
+            .Which.Should().Be("Instagram: alminays.design");
+    }
+
+    [Fact]
+    public void YouTube_identity_badge_shows_the_handle_because_username_is_a_channel_id()
+    {
+        var h = Build();
+        SeedCustomer(h, id: "c1", platform: "youtube",
+                     username: "UCabc123", displayName: "@ayseonal");
+
+        h.Vm.Load("c1").Should().BeTrue();
+
+        h.Vm.Identities.Should().ContainSingle()
+            .Which.Should().Be("YouTube: @ayseonal");
+    }
+
     // ─── Section title (active session vs lifetime) ──────────────────────────
 
     [Fact]

@@ -9,6 +9,7 @@ using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using OrderDeck.App.Formatting;
+using OrderDeck.Core.Customers;
 using OrderDeck.Core.Sales;
 using OrderDeck.Core.Sessions;
 using OrderDeck.Core.Storage.Repositories;
@@ -136,13 +137,13 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
         Tckn = c.Tckn;
 
         // Bağlı tüm platform kimlikleri: birleşik müşteride grubun tüm satırları,
-        // tekilde sadece bu satır. YouTube'da Display = @handle (kanal adı) gösterilir.
+        // tekilde sadece bu satır.
         Identities.Clear();
         var members = !string.IsNullOrWhiteSpace(c.GroupId)
             ? _customers.GetGroupMembers(c.GroupId!)
             : new[] { c };
         foreach (var m in members)
-            Identities.Add($"{PlatformLabel(m.Platform)}: {m.Display}");
+            Identities.Add($"{PlatformLabel(m.Platform)}: {IdentityHandle(m)}");
 
         ReloadLabels();
 
@@ -330,6 +331,17 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
 
     private bool CanCancelSelected() => SelectedLabels.Any(l => !l.IsCancelled);
     private bool CanUncancelSelected() => SelectedLabels.Any(l => l.IsCancelled);
+
+    /// <summary>
+    /// Kimlik rozetinde gösterilecek kullanıcı adı. Kayıt formundan gelen
+    /// müşterilerde <c>DisplayName</c>'e Ad Soyad yazılıyor (arama listesinde
+    /// isim görünsün diye), o yüzden rozette <c>Display</c> kullanılamaz —
+    /// "Instagram: Ayşe Önal" gibi, handle'ı hiç göstermeyen bir satır çıkar.
+    /// YouTube istisna: orada <c>Username</c> = channelId, okunabilir @handle
+    /// <c>DisplayName</c>'de durur.
+    /// </summary>
+    private static string IdentityHandle(Customer c) =>
+        c.Platform?.ToLowerInvariant() == "youtube" ? c.Display : c.Username;
 
     /// <summary>Platform kodunu okunabilir etikete çevirir (instagram → Instagram).</summary>
     private static string PlatformLabel(string platform) => platform?.ToLowerInvariant() switch

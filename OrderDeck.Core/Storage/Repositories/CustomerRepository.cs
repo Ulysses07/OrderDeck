@@ -324,20 +324,19 @@ public sealed class CustomerRepository
         return rows.Select(Map).ToList();
     }
 
-    /// <summary>Case-insensitive substring search on Username, ordered by LastSeenAt DESC.</summary>
-    public IReadOnlyList<Customer> Search(string usernameContains, int limit = 50)
+    /// <summary>Kullanıcı adı VEYA isim araması (Username + DisplayName + FullName),
+    /// LastSeenAt DESC sıralı. Eşleştirme <see cref="CustomerSearch.Matches"/>'ta:
+    /// Türkçe harflere duyarlı olması gerektiği için SQL'de değil bellekte yapılır
+    /// (SQLite <c>LOWER()</c> yalnız ASCII'yi küçültür).</summary>
+    public IReadOnlyList<Customer> Search(string query, int limit = 50)
     {
-        if (string.IsNullOrWhiteSpace(usernameContains))
+        if (string.IsNullOrWhiteSpace(query))
             return System.Array.Empty<Customer>();
 
-        using var conn = _factory.Open();
-        var rows = conn.Query<Row>(
-            @"SELECT * FROM Customer
-              WHERE LOWER(Username) LIKE LOWER(@q)
-              ORDER BY LastSeenAt DESC
-              LIMIT @limit",
-            new { q = "%" + usernameContains + "%", limit }).ToList();
-        return rows.Select(Map).ToList();
+        return GetAll()
+            .Where(c => CustomerSearch.Matches(c, query))
+            .Take(limit)
+            .ToList();
     }
 
     private static Customer Map(Row r) => new(
