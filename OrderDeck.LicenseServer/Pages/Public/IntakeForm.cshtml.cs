@@ -59,13 +59,16 @@ public class IntakeFormModel : PageModel
         [StringLength(500, ErrorMessage = "En fazla 500 karakter")]
         public string Address { get; set; } = "";
 
+        // Biçim doğrulaması OnPostSubmitAsync içinde EmailValidator ile yapılır:
+        // [EmailAddress] gerçek veride 500 kaydın sıfırını reddediyor ve alan adı
+        // yazım hatalarını ("gmail.con") hiç görmüyor.
         [Required(ErrorMessage = "E-posta gerekli")]
-        [EmailAddress(ErrorMessage = "Geçerli bir e-posta girin")]
         [StringLength(200, ErrorMessage = "En fazla 200 karakter")]
         public string Email { get; set; } = "";
 
-        // Opsiyonel — fatura için. Doluysa 11 hane olmalı (boşsa geçerli).
-        [RegularExpression(@"^\d{11}$", ErrorMessage = "TC Kimlik No 11 haneli olmalı")]
+        // Opsiyonel — fatura için. Doğrulaması OnPostSubmitAsync içinde
+        // TcknValidator ile yapılır: ^\d{11}$ tek başına yetmiyor, gerçek veride
+        // 162 numaranın 9'u bu kalıptan geçtiği hâlde kontrol basamağı tutmuyor.
         public string? Tckn { get; set; }
 
         [Required(ErrorMessage = "WhatsApp numarası zorunlu.")]
@@ -118,6 +121,20 @@ public class IntakeFormModel : PageModel
         AddHandleError("Input.InstagramUsername", HandleValidator.Instagram, ig);
         AddHandleError("Input.FacebookUsername", HandleValidator.Facebook, fb);
         AddHandleError("Input.TikTokUsername", HandleValidator.TikTok, tt);
+
+        // E-posta: dış boşluk + alan adı normalize edilir, sonra biçim ve
+        // yaygın alan adı yazım hatası kontrolü. Hatalıysa kayıt oluşmaz.
+        Input.Email = EmailValidator.Normalize(Input.Email) ?? "";
+        var emailError = EmailValidator.Validate(Input.Email);
+        if (emailError is not null)
+            ModelState.AddModelError("Input.Email", emailError);
+
+        // TCKN opsiyonel ama girildiyse resmî kontrol basamağından geçmeli —
+        // hatalı numara e-Fatura sayfasında entegratörde reddedilir.
+        Input.Tckn = TcknValidator.Normalize(Input.Tckn);
+        var tcknError = TcknValidator.Validate(Input.Tckn);
+        if (tcknError is not null)
+            ModelState.AddModelError("Input.Tckn", tcknError);
 
         // En az bir platform kullanıcı adı zorunlu.
         if (yt is null && ig is null && fb is null && tt is null)
