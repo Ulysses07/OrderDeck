@@ -253,12 +253,14 @@ public sealed class AppHost : IDisposable
         // ViewModels
         services.AddSingleton<ViewModels.MainShellViewModel>();
         services.AddTransient<ViewModels.StreamReportViewModel>();
+        services.AddTransient<ViewModels.PeriodReportViewModel>();
         services.AddTransient<ViewModels.SettingsViewModel>();
         services.AddTransient<ViewModels.StreamHistoryViewModel>();
         services.AddTransient<ViewModels.BlacklistViewModel>();
 
         // Dialogs (transient — fresh instance per open)
         services.AddTransient<Views.StreamReportDialog>();
+        services.AddTransient<Views.PeriodReportDialog>();
         services.AddTransient<Views.SettingsDialog>();
         services.AddTransient<Views.StreamHistoryDialog>();
         services.AddTransient<Views.BlacklistDialog>();

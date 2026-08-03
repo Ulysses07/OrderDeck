@@ -276,6 +276,60 @@ public sealed class LabelRepository
     }
 
     /// <summary>
+    /// Dönem raporu: verilen tarih aralığında BASILAN siparişlerin platform
+    /// hesabı + GÜN bazında özeti. Ciro tanımı yayın raporuyla birebir aynı —
+    /// basılmış, iptal edilmemiş, onaylanmamış backup olmayan satırlar.
+    /// Kargo ücreti satırları toplama DAHİLDİR (muhasebe tek tutar istiyor).
+    ///
+    /// Gün kırılımı e-Fatura zorunluluğu: fatura günlük kesiliyor, aynı kişinin
+    /// farklı günlerdeki alımları ayrı faturalar. Gün YEREL takvim gününe göre
+    /// (<c>'localtime'</c>) hesaplanır — operatör hangi günü gördüyse o.
+    ///
+    /// Aralık [fromUnix, toUnix) — üst sınır dışarda, çağıran ayın ilk gününü
+    /// verir. Zaman ekseni <c>PrintedAt</c>: sipariş kesinleştiği anda sayılır.
+    ///
+    /// Kişi bazına indirgeme burada YAPILMAZ; <see cref="PeriodReportBuilder"/>
+    /// yapar (GroupId ile mükerrer kişi birleştirme).
+    /// </summary>
+    public IReadOnlyList<PeriodAccountRow> GetPeriodAccountRows(long fromUnix, long toUnix)
+    {
+        using var conn = _factory.Open();
+        // Pozitif-parametreli record yerine DTO: SQLite aggregate kolonlarının
+        // (COUNT/SUM) bildirilen tipi yok, Dapper ctor eşleştirmesinde byte[]'e
+        // düşüyor. Property set'i tip dönüşümünü yapar — repo'nun diğer
+        // rapor sorguları da bu kalıbı kullanıyor.
+        var rows = conn.Query<PeriodAccountDto>(
+            @"SELECT c.Id            AS CustomerId,
+                     c.GroupId       AS GroupId,
+                     l.Platform      AS Platform,
+                     c.Username      AS Username,
+                     c.DisplayName   AS DisplayName,
+                     c.FullName      AS FullName,
+                     c.Tckn          AS Tckn,
+                     c.Phone         AS Phone,
+                     c.Address       AS Address,
+                     c.Email         AS Email,
+                     c.LastSeenAt    AS LastSeenAt,
+                     date(l.PrintedAt, 'unixepoch', 'localtime') AS Day,
+                     MAX(l.PrintedAt) AS LastPrintedAt,
+                     COUNT(*)        AS OrderCount,
+                     SUM(l.Price)    AS TotalAmount
+              FROM Label l
+              JOIN Customer c ON c.Id = l.CustomerId
+              WHERE l.PrintedAt >= @fromUnix AND l.PrintedAt < @toUnix
+                AND l.CancelledAt IS NULL
+                AND l.IsTentativeBackup = 0
+              GROUP BY l.CustomerId, l.Platform, date(l.PrintedAt, 'unixepoch', 'localtime')
+              ORDER BY SUM(l.Price) DESC",
+            new { fromUnix, toUnix }).ToList();
+
+        return rows.Select(r => new PeriodAccountRow(
+            r.CustomerId, r.GroupId, r.Platform, r.Username, r.DisplayName,
+            r.FullName, r.Tckn, r.Phone, r.Address, r.Email, r.LastSeenAt,
+            r.Day, r.LastPrintedAt, r.OrderCount, r.TotalAmount)).ToList();
+    }
+
+    /// <summary>
     /// Kargo PR C (2026-05-11): müşterinin verilen yayındaki ürün satış toplamı.
     /// Kargo ücreti label'larını (IsShippingFee=1), iptal edilenleri ve henüz
     /// onaylanmamış backup'ları (IsTentativeBackup=1) dışarda bırakır. Print
@@ -394,6 +448,25 @@ public sealed class LabelRepository
         public string? DisplayName { get; init; }
         public string Platform { get; init; } = "";
         public int LabelCount { get; init; }
+        public decimal TotalAmount { get; init; }
+    }
+
+    private sealed class PeriodAccountDto
+    {
+        public string CustomerId { get; init; } = "";
+        public string? GroupId { get; init; }
+        public string Platform { get; init; } = "";
+        public string Username { get; init; } = "";
+        public string? DisplayName { get; init; }
+        public string? FullName { get; init; }
+        public string? Tckn { get; init; }
+        public string? Phone { get; init; }
+        public string? Address { get; init; }
+        public string? Email { get; init; }
+        public long LastSeenAt { get; init; }
+        public string Day { get; init; } = "";
+        public long LastPrintedAt { get; init; }
+        public int OrderCount { get; init; }
         public decimal TotalAmount { get; init; }
     }
 
