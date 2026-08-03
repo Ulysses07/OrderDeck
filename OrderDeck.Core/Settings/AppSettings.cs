@@ -134,6 +134,40 @@ public sealed class AppSettings
     /// the local Customer table. Unix seconds derived from UpdatedAt of the last
     /// successfully ingested row. 0 = never pulled.</summary>
     public long LastShopperIngestAt { get; set; }
+
+    /// <summary>Dönem raporunun e-Fatura sayfası için sabitler + fatura no sayacı.</summary>
+    public EInvoiceSettings EInvoice { get; set; } = new();
+}
+
+/// <summary>
+/// e-Arşiv toplu yükleme şablonunun her faturada aynı olan alanları ve
+/// numara sayacı. Değerler muhasebenin kullandığı örnek dosyadan alındı;
+/// yayıncıya göre değiştiği için ayar olarak tutuluyor.
+/// </summary>
+public sealed class EInvoiceSettings
+{
+    /// <summary>Fatura numarası öneki, ör. <c>RMK</c>. Boşsa numara üretilmez,
+    /// sütun boş gider (entegratör kendi verir).</summary>
+    public string NumberPrefix { get; set; } = "";
+
+    /// <summary>Bir sonraki fatura numarasının sayı kısmı, ör.
+    /// <c>2026000000602</c>. Dışa aktarım sonrası kullanılan son numaranın
+    /// bir fazlasına ilerletilir; operatör dialogda düzeltebilir.</summary>
+    public long NextNumber { get; set; }
+
+    /// <summary>Numaranın sayı kısmının sıfır dolgulu uzunluğu. Örnekte
+    /// <c>RMK</c> + 12 hane.</summary>
+    public int NumberDigits { get; set; } = 12;
+
+    /// <summary>Şablondaki "Mal/Hizmet Adı" — tüm satırlarda aynı tek kalem.</summary>
+    public string ItemName { get; set; } = "MUHTELİF TEKSTİL ÜRÜNLERİ";
+
+    /// <summary>KDV oranı (%). Tutar zaten KDV dahil yazılıyor.</summary>
+    public decimal VatRate { get; set; } = 10;
+
+    /// <summary>TCKN bilinmeyen alıcılar için yazılacak değer. Örnek dosyada
+    /// tüm satırlarda bu kullanılmış. Boş bırakılırsa hücre boş gider.</summary>
+    public string DefaultTckn { get; set; } = "11111111111";
 }
 
 /// <summary>Phase 4g: WhatsApp ödeme istemleri için Settings bloğu.</summary>

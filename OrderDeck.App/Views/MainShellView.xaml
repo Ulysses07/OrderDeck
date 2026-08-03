@@ -143,6 +143,9 @@
                         ToolTip="Diğer">
                     <Button.ContextMenu>
                         <ContextMenu x:Name="MainMenu" Placement="Right">
+                            <MenuItem Header="Dönem Raporu…"
+                                      Command="{Binding OpenPeriodReportCommand}"/>
+                            <Separator/>
                             <MenuItem Header="Ayarlar"
                                       Command="{Binding OpenSettingsCommand}"/>
                             <MenuItem Header="Destek Talepleri"

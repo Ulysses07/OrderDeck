@@ -880,6 +880,15 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         dlg.ShowDialog();
     }
 
+    /// <summary>Dönem raporu: tek yayına değil takvim aralığına bakan,
+    /// muhasebeye fatura listesi çıkaran ayrı pencere.</summary>
+    [RelayCommand] private void OpenPeriodReport()
+    {
+        var dlg = App.Host.Services.GetRequiredService<PeriodReportDialog>();
+        dlg.Owner = Application.Current?.MainWindow;
+        dlg.ShowDialog();
+    }
+
     [RelayCommand] private void OpenBlacklist()
     {
         var dlg = App.Host.Services.GetRequiredService<BlacklistDialog>();
