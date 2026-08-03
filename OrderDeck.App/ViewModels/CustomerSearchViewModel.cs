@@ -143,9 +143,7 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
             if (!string.IsNullOrWhiteSpace(value))
             {
                 var q = value.Trim();
-                filtered = filtered.Where(c =>
-                    c.Username.Contains(q, StringComparison.OrdinalIgnoreCase) ||
-                    (c.DisplayName?.Contains(q, StringComparison.OrdinalIgnoreCase) ?? false));
+                filtered = filtered.Where(c => CustomerSearch.Matches(c, q));
             }
             if (!string.IsNullOrEmpty(PlatformFilter))
                 filtered = filtered.Where(c => c.Platform == PlatformFilter);

@@ -168,6 +168,71 @@ public class CustomerRepositoryTests
         repo.Search("ali", limit: 1).Should().HaveCount(1);
     }
 
+    /// <summary>Operatör kartta gördüğü ismi yazıyor; isim Username'de değil
+    /// DisplayName (chat takma adı) ya da FullName (kayıt formu) kolonunda
+    /// duruyor. Arama yalnız Username'e bakarsa müşteri "yok" görünür.</summary>
+    [Fact]
+    public void Search_finds_customers_by_display_name_and_full_name()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+
+        repo.Insert(new Customer("c-1", "instagram", "blldlkrt", "Bilal Delikurt", null,
+            100, 200, false, null, null, 0, 0m, null, null, null));
+        repo.Insert(new Customer("c-2", "instagram", "ayse_o", null, null,
+            100, 300, false, null, null, 0, 0m, null, null, null,
+            FullName: "Ayşe Önal"));
+
+        repo.Search("Bilal Delikurt", limit: 50).Select(c => c.Id).Should().Equal("c-1");
+        repo.Search("Ayşe Önal", limit: 50).Select(c => c.Id).Should().Equal("c-2");
+        // Kullanıcı adıyla arama bozulmamalı.
+        repo.Search("blldlkrt", limit: 50).Select(c => c.Id).Should().Equal("c-1");
+    }
+
+    [Fact]
+    public void Search_is_turkish_case_insensitive_and_word_order_agnostic()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+
+        repo.Insert(new Customer("c-1", "instagram", "u1", "Şeyma Işık", null,
+            100, 200, false, null, null, 0, 0m, null, null, null));
+
+        // SQLite LOWER() yalnız ASCII küçültür → "şeyma" eskiden eşleşmiyordu.
+        repo.Search("şeyma", limit: 50).Select(c => c.Id).Should().Equal("c-1");
+        // Türkçe i ailesi: "ışık" / "isik" değil ama "IŞIK" aynı harf sayılmalı.
+        repo.Search("IŞIK", limit: 50).Select(c => c.Id).Should().Equal("c-1");
+        // Sözcük sırası ve fazladan boşluk sonucu değiştirmemeli.
+        repo.Search("ışık   şeyma", limit: 50).Select(c => c.Id).Should().Equal("c-1");
+        repo.Search("şeyma kaya", limit: 50).Should().BeEmpty();
+    }
+
+    /// <summary>Operatör numarayı kayıttakinden farklı biçimde yazıyor
+    /// ("0555 111 22 33" ↔ "+905551112233"); iki taraf da rakamlara
+    /// indirgenmezse hiçbir zaman eşleşmez.</summary>
+    [Fact]
+    public void Search_finds_customers_by_phone_in_any_format()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+
+        repo.Insert(new Customer("c-1", "instagram", "u1", "Bilal Delikurt", null,
+            100, 200, false, null, null, 0, 0m, null, null, "+905551112233"));
+        repo.Insert(new Customer("c-2", "instagram", "u2", "Veli", null,
+            100, 300, false, null, null, 0, 0m, null, null, "+905559998877"));
+
+        repo.Search("+905551112233", limit: 50).Select(c => c.Id).Should().Equal("c-1");
+        repo.Search("0555 111 22 33", limit: 50).Select(c => c.Id).Should().Equal("c-1");
+        repo.Search("5551112233", limit: 50).Select(c => c.Id).Should().Equal("c-1");
+        // Numaranın son parçası da yeter (operatör sadece sonunu hatırlıyor).
+        repo.Search("1122", limit: 50).Select(c => c.Id).Should().Equal("c-1");
+        // Çok kısa girdi tüm listeyi getirmemeli.
+        repo.Search("55", limit: 50).Should().BeEmpty();
+    }
+
     [Fact]
     public void UpsertFromIntakeForm_creates_new_customer_with_form_platform()
     {
