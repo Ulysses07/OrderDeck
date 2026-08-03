@@ -66,8 +66,9 @@ public class IntakeFormModel : PageModel
         [StringLength(200, ErrorMessage = "En fazla 200 karakter")]
         public string Email { get; set; } = "";
 
-        // Opsiyonel — fatura için. Doluysa 11 hane olmalı (boşsa geçerli).
-        [RegularExpression(@"^\d{11}$", ErrorMessage = "TC Kimlik No 11 haneli olmalı")]
+        // Opsiyonel — fatura için. Doğrulaması OnPostSubmitAsync içinde
+        // TcknValidator ile yapılır: ^\d{11}$ tek başına yetmiyor, gerçek veride
+        // 162 numaranın 9'u bu kalıptan geçtiği hâlde kontrol basamağı tutmuyor.
         public string? Tckn { get; set; }
 
         [Required(ErrorMessage = "WhatsApp numarası zorunlu.")]
@@ -127,6 +128,13 @@ public class IntakeFormModel : PageModel
         var emailError = EmailValidator.Validate(Input.Email);
         if (emailError is not null)
             ModelState.AddModelError("Input.Email", emailError);
+
+        // TCKN opsiyonel ama girildiyse resmî kontrol basamağından geçmeli —
+        // hatalı numara e-Fatura sayfasında entegratörde reddedilir.
+        Input.Tckn = TcknValidator.Normalize(Input.Tckn);
+        var tcknError = TcknValidator.Validate(Input.Tckn);
+        if (tcknError is not null)
+            ModelState.AddModelError("Input.Tckn", tcknError);
 
         // En az bir platform kullanıcı adı zorunlu.
         if (yt is null && ig is null && fb is null && tt is null)

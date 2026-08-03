@@ -372,6 +372,33 @@
         email.addEventListener('input', function () { showError(email, ''); });
     }
 
+    // (d) TCKN — opsiyonel, ama girildiyse resmi kontrol basamagi tutmali.
+    // ^\d{11}$ yetmiyor: gercek veride 162 numaranin 9'u bu kaliptan geciyor
+    // ama gecersiz. Hatali numara e-Faturayi entegratorde reddettirir.
+    function tcknError(v) {
+        if (v.length === 0) return '';
+        if (!/^[0-9]{11}$/.test(v)) return 'TC Kimlik No 11 rakamdan olu\u015fmal\u0131.';
+        if (v.charAt(0) === '0') return 'TC Kimlik No 0 ile ba\u015flayamaz.';
+        var d = [], i;
+        for (i = 0; i < 11; i++) d[i] = v.charCodeAt(i) - 48;
+        var odd = d[0] + d[2] + d[4] + d[6] + d[8];
+        var even = d[1] + d[3] + d[5] + d[7];
+        var bad = 'TC Kimlik No ge\u00e7ersiz. Kimli\u011findeki numaray\u0131 kontrol et.';
+        if (d[9] !== ((odd * 7 - even) % 10 + 10) % 10) return bad;
+        var sum = 0;
+        for (i = 0; i < 10; i++) sum += d[i];
+        return d[10] === sum % 10 ? '' : bad;
+    }
+
+    var tckn = document.getElementById('Input_Tckn');
+    if (tckn) {
+        tckn.addEventListener('blur', function () {
+            tckn.value = (tckn.value || '').trim();
+            showError(tckn, tcknError(tckn.value));
+        });
+        tckn.addEventListener('input', function () { showError(tckn, ''); });
+    }
+
     // En az bir platform kullanıcı adı zorunlu (client-side ön kontrol).
     var form = document.getElementById('intakeForm');
     var unameErr = document.getElementById('unameErr');
@@ -400,6 +427,14 @@
             var eMsg = emailError(email.value);
             showError(email, eMsg);
             if (eMsg) { bad.push(labelOf(email)); if (!firstBad) firstBad = email; }
+        }
+
+        // TCKN bos birakilabilir; doluysa gecerli olmali.
+        if (tckn) {
+            tckn.value = (tckn.value || '').trim();
+            var tMsg = tcknError(tckn.value);
+            showError(tckn, tMsg);
+            if (tMsg) { bad.push('TC Kimlik No'); if (!firstBad) firstBad = tckn; }
         }
 
         if (!anyUser) {
