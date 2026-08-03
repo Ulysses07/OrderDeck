@@ -59,8 +59,10 @@ public class IntakeFormModel : PageModel
         [StringLength(500, ErrorMessage = "En fazla 500 karakter")]
         public string Address { get; set; } = "";
 
+        // Biçim doğrulaması OnPostSubmitAsync içinde EmailValidator ile yapılır:
+        // [EmailAddress] gerçek veride 500 kaydın sıfırını reddediyor ve alan adı
+        // yazım hatalarını ("gmail.con") hiç görmüyor.
         [Required(ErrorMessage = "E-posta gerekli")]
-        [EmailAddress(ErrorMessage = "Geçerli bir e-posta girin")]
         [StringLength(200, ErrorMessage = "En fazla 200 karakter")]
         public string Email { get; set; } = "";
 
@@ -118,6 +120,13 @@ public class IntakeFormModel : PageModel
         AddHandleError("Input.InstagramUsername", HandleValidator.Instagram, ig);
         AddHandleError("Input.FacebookUsername", HandleValidator.Facebook, fb);
         AddHandleError("Input.TikTokUsername", HandleValidator.TikTok, tt);
+
+        // E-posta: dış boşluk + alan adı normalize edilir, sonra biçim ve
+        // yaygın alan adı yazım hatası kontrolü. Hatalıysa kayıt oluşmaz.
+        Input.Email = EmailValidator.Normalize(Input.Email) ?? "";
+        var emailError = EmailValidator.Validate(Input.Email);
+        if (emailError is not null)
+            ModelState.AddModelError("Input.Email", emailError);
 
         // En az bir platform kullanıcı adı zorunlu.
         if (yt is null && ig is null && fb is null && tt is null)

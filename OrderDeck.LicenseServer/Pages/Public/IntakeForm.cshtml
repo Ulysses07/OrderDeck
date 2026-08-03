@@ -179,6 +179,7 @@
 
             <input type="text" name="website" tabindex="-1" autocomplete="off" class="hidden-hp" />
 
+            <div class="err" id="formErr"></div>
             <button type="submit" class="btn">Tamamla ve WhatsApp'tan Gönder</button>
         </form>
     </div>
@@ -297,28 +298,128 @@
         yt.addEventListener('input', function () { clearTimeout(ytTimer); ytTimer = setTimeout(verifyYouTube, 700); });
     }
 
+    // (c) E-posta — sunucudaki EmailValidator ile ayni kural.
+    // Yalniz bicim yetmiyor: gercek veride asil hata "gmail.con" / "gml.com"
+    // gibi alan adi yanlislari ve bunlar her regex'ten geciyor.
+    var EMAIL_RE = new RegExp('^[A-Za-z0-9._%+\\-]+' + AT +
+        '[A-Za-z0-9]([A-Za-z0-9\\-]*[A-Za-z0-9])?' +
+        '(\\.[A-Za-z0-9]([A-Za-z0-9\\-]*[A-Za-z0-9])?)*\\.[A-Za-z]{2,}$');
+    var TR_CHARS = /[\u00e7\u011f\u0131\u00f6\u015f\u00fc\u00c7\u011e\u0130\u00d6\u015e\u00dc]/;
+
+    var POPULAR = ['gmail.com', 'googlemail.com', 'hotmail.com', 'outlook.com',
+        'yahoo.com', 'icloud.com', 'yandex.com', 'windowslive.com',
+        'hotmail.com.tr', 'yahoo.com.tr', 'outlook.com.tr', 'yandex.com.tr'];
+
+    var KNOWN_GOOD = ['gmail.com', 'googlemail.com', 'hotmail.com', 'hotmail.com.tr',
+        'hotmail.co.uk', 'hotmail.de', 'hotmail.fr', 'outlook.com', 'outlook.com.tr',
+        'live.com', 'msn.com', 'windowslive.com', 'yahoo.com', 'yahoo.com.tr',
+        'yahoo.co.uk', 'yahoo.de', 'yahoo.fr', 'ymail.com', 'rocketmail.com',
+        'icloud.com', 'me.com', 'mac.com', 'yandex.com', 'yandex.com.tr',
+        'yandex.ru', 'mail.ru', 'mail.com', 'email.com', 'ttmail.com', 'mynet.com',
+        'superonline.com', 'turk.net', 'protonmail.com', 'proton.me', 'aol.com',
+        'gmx.com', 'gmx.de', 'gmx.net', 'web.de'];
+
+    function distance(a, b) {
+        var prev = [], cur = [], i, j;
+        for (j = 0; j <= b.length; j++) prev[j] = j;
+        for (i = 1; i <= a.length; i++) {
+            cur[0] = i;
+            for (j = 1; j <= b.length; j++) {
+                var cost = a.charAt(i - 1) === b.charAt(j - 1) ? 0 : 1;
+                cur[j] = Math.min(cur[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+            }
+            var t = prev; prev = cur; cur = t;
+        }
+        return prev[b.length];
+    }
+
+    function suggestDomain(d) {
+        if (KNOWN_GOOD.indexOf(d) >= 0 || d.length < 5) return null;
+        for (var i = 0; i < POPULAR.length; i++) {
+            var k = POPULAR[i];
+            if (Math.abs(k.length - d.length) > 2) continue;
+            if (distance(d, k) <= 2) return k;
+        }
+        return null;
+    }
+
+    function normalizeEmail(v) {
+        v = (v || '').trim();
+        var at = v.lastIndexOf(AT);
+        return at < 0 ? v : v.slice(0, at + 1) + v.slice(at + 1).toLowerCase();
+    }
+
+    function emailError(v) {
+        if (v.length === 0) return 'E-posta gerekli.';
+        if (TR_CHARS.test(v))
+            return 'E-posta adresinde T\u00fcrk\u00e7e karakter (\u00e7, \u011f, \u0131, '
+                 + '\u00f6, \u015f, \u00fc) olamaz.';
+        if (v.indexOf(' ') >= 0) return 'E-posta adresinde bo\u015fluk olamaz.';
+        if (!EMAIL_RE.test(v))
+            return 'Ge\u00e7erli bir e-posta adresi girin (\u00f6rnek: adiniz' + AT + 'gmail.com).';
+        var d = v.slice(v.lastIndexOf(AT) + 1);
+        var s = suggestDomain(d);
+        return s ? 'E-posta adresindeki "' + d + '" hatal\u0131 g\u00f6r\u00fcn\u00fcyor. "'
+                 + s + '" mi olacakt\u0131?' : '';
+    }
+
+    var email = document.getElementById('Input_Email');
+    if (email) {
+        email.addEventListener('blur', function () {
+            email.value = normalizeEmail(email.value);
+            if (email.value.length > 0) showError(email, emailError(email.value));
+        });
+        email.addEventListener('input', function () { showError(email, ''); });
+    }
+
     // En az bir platform kullanıcı adı zorunlu (client-side ön kontrol).
     var form = document.getElementById('intakeForm');
     var unameErr = document.getElementById('unameErr');
+    var formErr = document.getElementById('formErr');
+
+    // Ozet uyarida gosterilecek alan adi — etiketten okunur ("Ad Soyad *" → "Ad Soyad").
+    function labelOf(el) {
+        var lbl = el.closest('.field').querySelector('.lbl');
+        return lbl ? lbl.textContent.replace(/[*]/g, '').trim() : 'Alan';
+    }
+
     form.addEventListener('submit', function (e) {
         var fields = Array.prototype.slice.call(document.querySelectorAll('.uname'));
-        var anyUser = false, firstBad = null;
+        var anyUser = false, firstBad = null, bad = [];
         fields.forEach(function (el) {
             el.value = normalizeHandle(el.value);
             if (el.value.length > 0) anyUser = true;
             var msg = handleError(el, el.value);
             showError(el, msg);
-            if (msg && !firstBad) firstBad = el;
+            if (msg) { bad.push(labelOf(el)); if (!firstBad) firstBad = el; }
         });
+
+        // E-posta hatali olan kayitla iletisim kurulamaz → gonderimi durdur.
+        if (email) {
+            email.value = normalizeEmail(email.value);
+            var eMsg = emailError(email.value);
+            showError(email, eMsg);
+            if (eMsg) { bad.push(labelOf(email)); if (!firstBad) firstBad = email; }
+        }
+
         if (!anyUser) {
             e.preventDefault();
             unameErr.textContent = 'En az bir platform kullanıcı adı gir (Instagram, YouTube, Facebook veya TikTok).';
+            formErr.textContent = 'Formu tamamlayamadık: en az bir platform kullanıcı adı gerekli.';
             document.querySelector('.uname').focus();
             return;
         }
         unameErr.textContent = '';
+
         // Kurala uymayan kayıt sohbetle eşleşemez → gönderimi durdur.
-        if (firstBad) { e.preventDefault(); firstBad.focus(); }
+        if (firstBad) {
+            e.preventDefault();
+            formErr.textContent = 'Şu alanlar hatalı: ' + bad.join(', ')
+                                + '. Düzeltip tekrar dene.';
+            firstBad.focus();
+            return;
+        }
+        formErr.textContent = '';
     });
 })();
 </script>
