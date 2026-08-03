@@ -23,6 +23,8 @@ public sealed record PeriodAccountRow(
     string? Tckn,
     string? Phone,
     string? Address,
+    string? City,
+    string? District,
     string? Email,
     long LastSeenAt,
     /// <summary>Yerel takvim günü, <c>yyyy-MM-dd</c>. Fatura gününü belirler.</summary>
@@ -45,6 +47,8 @@ public sealed record PeriodCustomerRow(
     string? Tckn,
     string? Phone,
     string? Address,
+    string? City,
+    string? District,
     string? Email,
     string Accounts,
     string DisplayLabel,
@@ -54,14 +58,29 @@ public sealed record PeriodCustomerRow(
     decimal TotalAmount)
 {
     /// <summary>
-    /// Fatura kesilebilir mi? Tek şart Ad Soyad. Muhasebenin kullandığı
-    /// e-Arşiv şablonunda adres/telefon/e-posta sütunları boş bırakılıyor,
-    /// TCKN de bilinmiyorsa <c>11111111111</c> ile dolduruluyor — dolayısıyla
+    /// Fatura kesilebilir mi? Tek şart Ad Soyad. Adres/e-posta sütunları
+    /// şablona yazılıyor ama boş olmaları yüklemeyi engellemiyor; TCKN de
+    /// bilinmiyorsa <c>11111111111</c> ile dolduruluyor — dolayısıyla
     /// eksik olan tek şey isim olabilir.
     /// </summary>
     public bool HasInvoiceInfo => !string.IsNullOrWhiteSpace(FullName);
 
     public string InvoiceStatusLabel => HasInvoiceInfo ? "Tam" : "Eksik";
+
+    /// <summary>Ekranda gösterilecek tek satırlık adres: "Moda Cad. 5, Kadıköy/İstanbul".
+    /// Excel'e il/ilçe ayrı sütunlarda gidiyor ama operatör adresi bütün görmeli.
+    /// İl/ilçesi olmayan eski kayıtlarda yalnız serbest metin döner.</summary>
+    public string AddressLine
+    {
+        get
+        {
+            var street = Address?.Trim() ?? "";
+            var region = string.Join('/', new[] { District?.Trim(), City?.Trim() }
+                .Where(s => !string.IsNullOrEmpty(s)));
+            if (region.Length == 0) return street;
+            return street.Length == 0 ? region : $"{street}, {region}";
+        }
+    }
 }
 
 /// <summary>
@@ -75,7 +94,13 @@ public sealed record PeriodInvoiceRow(
     string FullName,
     string? Tckn,
     int OrderCount,
-    decimal TotalAmount)
+    decimal TotalAmount,
+    /// <summary>Adresin serbest metin kısmı — şablonun "Alıcı Sokak" sütunu.
+    /// 2026-08-03 öncesi kayıtlarda tüm adres burada, il/ilçe boş.</summary>
+    string? Address = null,
+    string? City = null,
+    string? District = null,
+    string? Email = null)
 {
     /// <summary>Şablonda ad ve soyad ayrı sütun; elimizde tek alan var.
     /// Kural: SON kelime soyad, öncesi ad. Tek kelimelik isimde soyad boş.</summary>
@@ -164,6 +189,8 @@ public static class PeriodReportBuilder
             Tckn:         pick(r => r.Tckn),
             Phone:        pick(r => r.Phone),
             Address:      pick(r => r.Address),
+            City:         pick(r => r.City),
+            District:     pick(r => r.District),
             Email:        pick(r => r.Email),
             Accounts:     string.Join(", ", accounts),
             DisplayLabel: fullName
@@ -177,7 +204,8 @@ public static class PeriodReportBuilder
 
     private static PeriodInvoiceRow? BuildInvoice(IGrouping<(string Person, string Day), PeriodAccountRow> g)
     {
-        var fullName = PickerFor(g)(r => r.FullName);
+        var pick = PickerFor(g);
+        var fullName = pick(r => r.FullName);
         if (string.IsNullOrWhiteSpace(fullName)) return null;
 
         // Fatura saati: o gün basılan son etiketin anı — satış o an tamamlanmış
@@ -189,8 +217,12 @@ public static class PeriodReportBuilder
             Day:         g.Key.Day,
             IssuedAt:    DateTimeOffset.FromUnixTimeSeconds(lastPrinted).ToLocalTime(),
             FullName:    fullName,
-            Tckn:        PickerFor(g)(r => r.Tckn),
+            Tckn:        pick(r => r.Tckn),
             OrderCount:  g.Sum(r => r.OrderCount),
-            TotalAmount: g.Sum(r => r.TotalAmount));
+            TotalAmount: g.Sum(r => r.TotalAmount),
+            Address:     pick(r => r.Address),
+            City:        pick(r => r.City),
+            District:    pick(r => r.District),
+            Email:       pick(r => r.Email));
     }
 }

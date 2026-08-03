@@ -28,7 +28,20 @@ public sealed class IntakeFormSubmission
     public string? YouTubeChannelId { get; set; }
 
     public string FullName { get; set; } = "";
+
+    /// <summary>Adresin serbest metin kısmı — mahalle/cadde/sokak/no.
+    /// İl ve ilçe ayrı kolonlarda. Bu ayrım e-Fatura toplu yükleme şablonu
+    /// "Alıcı Şehir"/"Alıcı İlçe"/"Alıcı Sokak" kolonlarını ayrı istediği için
+    /// var. 2026-08 öncesi kayıtlarda tüm adres bu alanda, City/District null.</summary>
     public string Address { get; set; } = "";
+
+    /// <summary>İl — <see cref="Services.IntakeForm.TurkeyRegions"/> listesinden.
+    /// Eski kayıtlarda null.</summary>
+    public string? City { get; set; }
+
+    /// <summary>İlçe — seçilen ilin ilçe listesinden. Eski kayıtlarda null.</summary>
+    public string? District { get; set; }
+
     public string? Phone { get; set; }   // Phase 4g — E.164 format
 
     /// <summary>Formda zorunlu. DB'de nullable (eski satırlar null).</summary>

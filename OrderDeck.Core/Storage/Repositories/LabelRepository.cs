@@ -308,6 +308,8 @@ public sealed class LabelRepository
                      c.Tckn          AS Tckn,
                      c.Phone         AS Phone,
                      c.Address       AS Address,
+                     c.City          AS City,
+                     c.District      AS District,
                      c.Email         AS Email,
                      c.LastSeenAt    AS LastSeenAt,
                      date(l.PrintedAt, 'unixepoch', 'localtime') AS Day,
@@ -325,8 +327,8 @@ public sealed class LabelRepository
 
         return rows.Select(r => new PeriodAccountRow(
             r.CustomerId, r.GroupId, r.Platform, r.Username, r.DisplayName,
-            r.FullName, r.Tckn, r.Phone, r.Address, r.Email, r.LastSeenAt,
-            r.Day, r.LastPrintedAt, r.OrderCount, r.TotalAmount)).ToList();
+            r.FullName, r.Tckn, r.Phone, r.Address, r.City, r.District, r.Email,
+            r.LastSeenAt, r.Day, r.LastPrintedAt, r.OrderCount, r.TotalAmount)).ToList();
     }
 
     /// <summary>
@@ -462,6 +464,8 @@ public sealed class LabelRepository
         public string? Tckn { get; init; }
         public string? Phone { get; init; }
         public string? Address { get; init; }
+        public string? City { get; init; }
+        public string? District { get; init; }
         public string? Email { get; init; }
         public long LastSeenAt { get; init; }
         public string Day { get; init; } = "";

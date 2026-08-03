@@ -29,7 +29,7 @@ public class MigrationRunnerTests
         tables.Should().NotContain("LabelBackup");
 
         var version = conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().Be(22);
+        version.Should().Be(23);
 
         // Migration 018 added the Shipment table for kümülatif kargo dosyası.
         tables.Should().Contain("Shipment");
@@ -53,7 +53,7 @@ public class MigrationRunnerTests
 
         using var conn = db.Open();
         var version = conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().Be(22);
+        version.Should().Be(23);
     }
 
     [Fact]
@@ -83,5 +83,18 @@ public class MigrationRunnerTests
 
         var version = conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
         version.Should().BeGreaterThanOrEqualTo(8);
+    }
+
+    [Fact]
+    public void Migration_023_adds_City_and_District_to_Customer()
+    {
+        using var db = new InMemorySqlite();
+        var runner = new MigrationRunner(db);
+        runner.Run();
+
+        using var conn = db.Open();
+        var columns = conn.Query<string>(
+            "SELECT name FROM pragma_table_info('Customer')").AsList();
+        columns.Should().Contain(new[] { "City", "District" });
     }
 }

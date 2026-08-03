@@ -31,7 +31,12 @@ public sealed record Customer(
     bool SmsConsent = false,
     // Kayıt formundaki gerçek Ad Soyad. DisplayName'den ayrı: chat satırlarında
     // DisplayName platform takma adıdır; bu alan formun verdiği gerçek ismi tutar.
-    string? FullName = null)
+    string? FullName = null,
+    // Adresin il/ilçe parçaları (2026-08-03). e-Fatura şablonu ayrı kolon
+    // istiyor, Address ise yalnız kalanı (mahalle/cadde/no) tutuyor.
+    // Bu tarihten önceki kayıtlarda null; tüm adres Address'te.
+    string? City = null,
+    string? District = null)
 {
     /// <summary>Operatöre gösterilecek ad: DisplayName varsa o, yoksa Username'e
     /// düşer. YouTube'da Username = channelId (kalıcı kimlik); listede okunabilir

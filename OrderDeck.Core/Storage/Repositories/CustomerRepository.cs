@@ -19,12 +19,14 @@ public sealed class CustomerRepository
               (Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
                IsBlacklisted, BlacklistReason, Notes,
                TotalLabelsPrinted, TotalAmount, BlacklistedAt, Address, Phone,
-               RecipientPaysActive, GroupId, Email, Tckn, WhatsAppConsent, SmsConsent, FullName)
+               RecipientPaysActive, GroupId, Email, Tckn, WhatsAppConsent, SmsConsent, FullName,
+               City, District)
               VALUES
               (@Id, @Platform, @Username, @DisplayName, @AvatarUrl, @FirstSeenAt, @LastSeenAt,
                @IsBlacklisted, @BlacklistReason, @Notes,
                @TotalLabelsPrinted, @TotalAmount, @BlacklistedAt, @Address, @Phone,
-               @RecipientPaysActive, @GroupId, @Email, @Tckn, @WhatsAppConsent, @SmsConsent, @FullName)",
+               @RecipientPaysActive, @GroupId, @Email, @Tckn, @WhatsAppConsent, @SmsConsent, @FullName,
+               @City, @District)",
             new
             {
                 c.Id, c.Platform, c.Username, c.DisplayName, c.AvatarUrl,
@@ -36,7 +38,7 @@ public sealed class CustomerRepository
                 c.GroupId, c.Email, c.Tckn,
                 WhatsAppConsent = c.WhatsAppConsent ? 1 : 0,
                 SmsConsent = c.SmsConsent ? 1 : 0,
-                c.FullName
+                c.FullName, c.City, c.District
             });
     }
 
@@ -349,7 +351,9 @@ public sealed class CustomerRepository
         Tckn: r.Tckn,
         WhatsAppConsent: r.WhatsAppConsent == 1,
         SmsConsent: r.SmsConsent == 1,
-        FullName: r.FullName);
+        FullName: r.FullName,
+        City: r.City,
+        District: r.District);
 
     private sealed class Row
     {
@@ -375,6 +379,8 @@ public sealed class CustomerRepository
         public int WhatsAppConsent { get; init; }
         public int SmsConsent { get; init; }
         public string? FullName { get; init; }
+        public string? City { get; init; }
+        public string? District { get; init; }
     }
 
     /// <summary>
@@ -436,7 +442,7 @@ public sealed class CustomerRepository
         IReadOnlyList<(string Platform, string Username, string? PreferredDisplayName)> identities,
         string fullName, string address, string? phone,
         string? email, string? tckn, bool whatsAppConsent, bool smsConsent,
-        long nowUnix)
+        long nowUnix, string? city = null, string? district = null)
     {
         // Normalize + boşları ele. PreferredDisplayName: YouTube'da channelId
         // Username olduğunda operatöre @handle gösterilsin diye taşınır (UI asla
@@ -453,6 +459,9 @@ public sealed class CustomerRepository
         // aşağıda ayrıca korunur (chat takma adı ezilmesin diye).
         var fullNameValue = string.IsNullOrWhiteSpace(fullName) ? null : fullName.Trim();
         var phoneValue = string.IsNullOrWhiteSpace(phone) ? null : phone.Trim();
+        // İl/ilçe 2026-08-03'ten sonraki formlardan gelir; eski gönderimlerde boş.
+        var cityValue = string.IsNullOrWhiteSpace(city) ? null : city.Trim();
+        var districtValue = string.IsNullOrWhiteSpace(district) ? null : district.Trim();
 
         using var conn = _factory.Open();
 
@@ -487,14 +496,15 @@ public sealed class CustomerRepository
                 conn.Execute(
                     @"UPDATE Customer SET
                         GroupId = @groupId,
-                        Address = @address, Phone = @phone, Email = @email, Tckn = @tckn,
+                        Address = @address, City = @city, District = @district,
+                        Phone = @phone, Email = @email, Tckn = @tckn,
                         WhatsAppConsent = @wa, SmsConsent = @sms, LastSeenAt = @now,
                         DisplayName = COALESCE(NULLIF(DisplayName, ''), @displayForRow),
                         FullName = @fullName
                       WHERE Id = @id",
                     new
                     {
-                        groupId, address, phone, email, tckn,
+                        groupId, address, city = cityValue, district = districtValue, phone, email, tckn,
                         wa = whatsAppConsent ? 1 : 0, sms = smsConsent ? 1 : 0,
                         now = nowUnix, displayForRow, fullName = fullNameValue, id = existing.Id
                     });
@@ -506,16 +516,18 @@ public sealed class CustomerRepository
                       (Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
                        IsBlacklisted, BlacklistReason, Notes, TotalLabelsPrinted, TotalAmount,
                        BlacklistedAt, Address, Phone, RecipientPaysActive,
-                       GroupId, Email, Tckn, WhatsAppConsent, SmsConsent, FullName)
+                       GroupId, Email, Tckn, WhatsAppConsent, SmsConsent, FullName,
+                       City, District)
                       VALUES
                       (@id, @p, @u, @displayForRow, NULL, @now, @now,
                        0, NULL, NULL, 0, 0,
                        NULL, @address, @phone, 0,
-                       @groupId, @email, @tckn, @wa, @sms, @fullName)",
+                       @groupId, @email, @tckn, @wa, @sms, @fullName,
+                       @city, @district)",
                     new
                     {
                         id = Guid.NewGuid().ToString("N"), p, u, displayForRow, now = nowUnix,
-                        address, phone, groupId, email, tckn,
+                        address, city = cityValue, district = districtValue, phone, groupId, email, tckn,
                         wa = whatsAppConsent ? 1 : 0, sms = smsConsent ? 1 : 0, fullName = fullNameValue
                     });
             }

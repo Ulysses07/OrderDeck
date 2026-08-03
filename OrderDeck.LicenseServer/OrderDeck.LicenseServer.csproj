@@ -35,6 +35,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Kayıt formundaki il/ilçe listesi — TurkeyRegions gömülü kaynaktan okur. -->
+    <EmbeddedResource Include="Services\IntakeForm\Data\IlIlce.json" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\OrderDeck.PdfParsing\OrderDeck.PdfParsing.csproj" />
   </ItemGroup>
 </Project>
