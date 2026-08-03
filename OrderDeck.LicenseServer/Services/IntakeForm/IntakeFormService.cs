@@ -111,7 +111,8 @@ public sealed class IntakeFormService
         string legacyUsername, string fullName, string address, string? phone,
         string? email, string? tckn, bool whatsAppConsent, bool smsConsent,
         string? ipAddress, string? userAgent, CancellationToken ct = default,
-        string? youTubeChannelId = null)
+        string? youTubeChannelId = null,
+        string? city = null, string? district = null)
     {
         var sub = new IntakeFormSubmission
         {
@@ -125,6 +126,8 @@ public sealed class IntakeFormService
             YouTubeChannelId = youTubeChannelId,
             FullName = fullName,
             Address = address,
+            City = city,
+            District = district,
             Phone = phone,
             Email = email,
             Tckn = tckn,

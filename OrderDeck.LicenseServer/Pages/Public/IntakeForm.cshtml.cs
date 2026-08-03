@@ -55,6 +55,17 @@ public class IntakeFormModel : PageModel
         [StringLength(200, ErrorMessage = "En fazla 200 karakter")]
         public string FullName { get; set; } = "";
 
+        // İl ve ilçe ayrı seçilir; kalan (mahalle/cadde/sokak/no) serbest metin.
+        // Ayrım e-Fatura toplu yükleme şablonundan geliyor: "Alıcı Şehir",
+        // "Alıcı İlçe" ve "Alıcı Sokak" ayrı kolonlar ve entegratör bunları
+        // serbest metinden çıkaramıyor. Değerler TurkeyRegions listesine karşı
+        // sunucuda da doğrulanır (JS kapalıysa da).
+        [Required(ErrorMessage = "İl seçin")]
+        public string City { get; set; } = "";
+
+        [Required(ErrorMessage = "İlçe seçin")]
+        public string District { get; set; } = "";
+
         [Required(ErrorMessage = "Adres gerekli")]
         [StringLength(500, ErrorMessage = "En fazla 500 karakter")]
         public string Address { get; set; } = "";
@@ -136,6 +147,28 @@ public class IntakeFormModel : PageModel
         if (tcknError is not null)
             ModelState.AddModelError("Input.Tckn", tcknError);
 
+        // İl/ilçe listeden gelmeli — elle uydurulan değer faturada reddedilir.
+        var matchedCity = TurkeyRegions.MatchCity(Input.City);
+        if (matchedCity is null)
+        {
+            if (!string.IsNullOrWhiteSpace(Input.City))
+                ModelState.AddModelError("Input.City", "Listeden bir il seçin.");
+        }
+        else
+        {
+            Input.City = matchedCity;
+            var matchedDistrict = TurkeyRegions.MatchDistrict(matchedCity, Input.District);
+            if (matchedDistrict is null)
+            {
+                if (!string.IsNullOrWhiteSpace(Input.District))
+                    ModelState.AddModelError("Input.District", $"{matchedCity} iline ait bir ilçe seçin.");
+            }
+            else
+            {
+                Input.District = matchedDistrict;
+            }
+        }
+
         // En az bir platform kullanıcı adı zorunlu.
         if (yt is null && ig is null && fb is null && tt is null)
         {
@@ -174,14 +207,18 @@ public class IntakeFormModel : PageModel
             ipAddress: HttpContext.Connection.RemoteIpAddress?.ToString(),
             userAgent: Request.Headers.UserAgent.ToString(),
             ct: ct,
-            youTubeChannelId: Trim(Input.YouTubeChannelId));
+            youTubeChannelId: Trim(Input.YouTubeChannelId),
+            city: Input.City,
+            district: Input.District);
 
         var url = _linkBuilder.Build(
             Config.WhatsAppPhone,
             yt, ig, fb, tt,
             Input.FullName.Trim(),
             Input.Address.Trim(),
-            normalizedPhone);
+            normalizedPhone,
+            Input.City,
+            Input.District);
         return Redirect(url);
     }
 

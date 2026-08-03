@@ -42,14 +42,20 @@
         label.lbl { display:block; font-size:13.5px; font-weight:600; margin-bottom:6px; }
         .req { color:var(--od-red); }
         .opt { color:var(--od-muted); font-weight:400; }
-        input.inp, textarea.inp {
+        input.inp, textarea.inp, select.inp {
             width:100%; padding:11px 12px; font-size:16px; color:var(--od-ink);
             border:1.5px solid var(--od-line); border-radius:10px; background:#fff; outline:none;
             transition:border-color .15s, box-shadow .15s; font-family:inherit;
         }
-        input.inp:focus, textarea.inp:focus { border-color:var(--od-red); box-shadow:0 0 0 3px rgba(225,25,0,.12); }
-        input.inp.invalid, textarea.inp.invalid { border-color:var(--od-red); }
+        input.inp:focus, textarea.inp:focus, select.inp:focus { border-color:var(--od-red); box-shadow:0 0 0 3px rgba(225,25,0,.12); }
+        input.inp.invalid, textarea.inp.invalid, select.inp.invalid { border-color:var(--od-red); }
         textarea.inp { resize:vertical; min-height:74px; }
+        select.inp { appearance:none; -webkit-appearance:none; height:46px; cursor:pointer;
+                     background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='%236b7280'%3E%3Cpath d='M4.5 6.5 8 10l3.5-3.5z'/%3E%3C/svg%3E");
+                     background-repeat:no-repeat; background-position:right 10px center; background-size:16px;
+                     padding-right:32px; }
+        select.inp:disabled { background-color:#f9fafb; color:var(--od-muted); cursor:not-allowed; }
+        .row2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
         .with-prefix { position:relative; }
         .with-prefix .pfx { position:absolute; left:12px; top:50%; transform:translateY(-50%);
                             color:var(--od-muted); font-size:16px; pointer-events:none; }
@@ -142,10 +148,45 @@
                 <span class="err" asp-validation-for="Input.Email"></span>
             </div>
 
+            <div class="row2">
+                <div class="field">
+                    <label class="lbl" asp-for="Input.City">İl <span class="req">*</span></label>
+                    <select class="inp" asp-for="Input.City" id="citySel" required>
+                        <option value="">Seçin</option>
+                        @foreach (var c in TurkeyRegions.Cities)
+                        {
+                            <option value="@c">@c</option>
+                        }
+                    </select>
+                    <span class="err" asp-validation-for="Input.City"></span>
+                </div>
+
+                <div class="field">
+                    <label class="lbl" asp-for="Input.District">İlçe <span class="req">*</span></label>
+                    @* Tüm ilçeler ile göre optgroup'lanmış olarak basılır: JS bunu
+                       okuyup seçilen ile göre daraltıyor, JS kapalıysa liste uzun
+                       ama form yine çalışıyor. Ayrı bir JSON isteği/gömmesi yok. *@
+                    <select class="inp" asp-for="Input.District" id="districtSel" required>
+                        <option value="">Seçin</option>
+                        @foreach (var c in TurkeyRegions.Cities)
+                        {
+                            <optgroup label="@c">
+                                @foreach (var d in TurkeyRegions.Districts[c])
+                                {
+                                    <option value="@d">@d</option>
+                                }
+                            </optgroup>
+                        }
+                    </select>
+                    <span class="err" asp-validation-for="Input.District"></span>
+                </div>
+            </div>
+
             <div class="field">
                 <label class="lbl" asp-for="Input.Address">Kargo Adresi <span class="req">*</span></label>
                 <textarea class="inp" asp-for="Input.Address" rows="3" maxlength="500" required
-                          placeholder="Mahalle, cadde, no, ilçe/il"></textarea>
+                          placeholder="Mahalle, cadde, sokak, bina/daire no"></textarea>
+                <div class="hint">İl ve ilçeyi yukarıdan seçtin — buraya sadece kalanını yaz.</div>
                 <span class="err" asp-validation-for="Input.Address"></span>
             </div>
 
@@ -399,6 +440,45 @@
         tckn.addEventListener('input', function () { showError(tckn, ''); });
     }
 
+    // (e) Il/ilce bagimli liste. Ilce select'i sunucudan TUM ilcelerle
+    // optgroup'lanmis geliyor; burada onu il -> ilce haritasina cevirip
+    // secilen ile gore daraltiyoruz. JS kapaliysa liste uzun kalir ama
+    // form calismaya devam eder (sunucu ikilinin tutarliligini dogruluyor).
+    var citySel = document.getElementById('citySel');
+    var districtSel = document.getElementById('districtSel');
+    var ILCE = {};
+    Array.prototype.forEach.call(districtSel.querySelectorAll('optgroup'), function (g) {
+        ILCE[g.label] = Array.prototype.map.call(g.querySelectorAll('option'), function (o) {
+            return o.value;
+        });
+    });
+
+    function fillDistricts(city, keep) {
+        var list = ILCE[city] || [];
+        districtSel.innerHTML = '';
+        var ph = document.createElement('option');
+        ph.value = '';
+        ph.textContent = list.length ? 'Se\u00e7in' : '\u00d6nce il se\u00e7in';
+        districtSel.appendChild(ph);
+        list.forEach(function (d) {
+            var o = document.createElement('option');
+            o.value = d;
+            o.textContent = d;
+            if (d === keep) o.selected = true;
+            districtSel.appendChild(o);
+        });
+        districtSel.disabled = list.length === 0;
+    }
+
+    // Ilk yuklemede: sunucu dogrulamasi formu geri dondurduyse secimler korunur.
+    fillDistricts(citySel.value, districtSel.value);
+    citySel.addEventListener('change', function () {
+        fillDistricts(citySel.value, '');
+        showError(citySel, '');
+        showError(districtSel, '');
+    });
+    districtSel.addEventListener('change', function () { showError(districtSel, ''); });
+
     // En az bir platform kullanıcı adı zorunlu (client-side ön kontrol).
     var form = document.getElementById('intakeForm');
     var unameErr = document.getElementById('unameErr');
@@ -427,6 +507,17 @@
             var eMsg = emailError(email.value);
             showError(email, eMsg);
             if (eMsg) { bad.push(labelOf(email)); if (!firstBad) firstBad = email; }
+        }
+
+        // Il/ilce faturada ayri kolon → ikisi de secilmeli.
+        if (!citySel.value) {
+            showError(citySel, '\u0130l se\u00e7in.');
+            bad.push(labelOf(citySel));
+            if (!firstBad) firstBad = citySel;
+        } else if (!districtSel.value) {
+            showError(districtSel, '\u0130l\u00e7e se\u00e7in.');
+            bad.push(labelOf(districtSel));
+            if (!firstBad) firstBad = districtSel;
         }
 
         // TCKN bos birakilabilir; doluysa gecerli olmali.

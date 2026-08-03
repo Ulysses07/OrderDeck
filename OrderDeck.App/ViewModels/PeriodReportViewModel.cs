@@ -159,9 +159,9 @@ public sealed partial class PeriodReportViewModel : ViewModelBase
     /// <summary>
     /// Muhasebenin entegratöre yüklediği e-Arşiv şablonu. Sütun sırası ve
     /// başlıkları BİREBİR sabit — şablon sütun adına göre okunuyor, sıra veya
-    /// yazım değişirse yükleme reddedilir. Doldurulmayan sütunlar (adres,
-    /// telefon, e-posta, irsaliye, ÖTV vs.) örnekte de boş; başlıkları yine de
-    /// yazılıyor ki dosya şablonla aynı şekle sahip olsun.
+    /// yazım değişirse yükleme reddedilir. Doldurulmayan sütunlar (telefon,
+    /// irsaliye, ÖTV vs.) örnekte de boş; başlıkları yine de yazılıyor ki
+    /// dosya şablonla aynı şekle sahip olsun.
     /// </summary>
     private void WriteInvoiceSheet(IXLWorksheet ws, long? startNumber)
     {
@@ -203,6 +203,12 @@ public sealed partial class PeriodReportViewModel : ViewModelBase
             ws.Cell(row, EInvoiceTemplate.BuyerFirstName).Value = inv.FirstName;
             ws.Cell(row, EInvoiceTemplate.BuyerLastName).Value = inv.LastName;
             ws.Cell(row, EInvoiceTemplate.BuyerCountry).Value = "TÜRKİYE";
+            // İl/ilçe yalnız 2026-08-03 sonrası kayıt formundan gelir; eski
+            // müşterilerde boş kalır ve tüm adres "Alıcı Sokak"a yazılır.
+            ws.Cell(row, EInvoiceTemplate.BuyerCity).Value = inv.City ?? "";
+            ws.Cell(row, EInvoiceTemplate.BuyerDistrict).Value = inv.District ?? "";
+            ws.Cell(row, EInvoiceTemplate.BuyerStreet).Value = inv.Address ?? "";
+            ws.Cell(row, EInvoiceTemplate.BuyerEmail).Value = inv.Email ?? "";
             ws.Cell(row, EInvoiceTemplate.DeliveryType).Value = "ELEKTRONİK";
 
             ws.Cell(row, EInvoiceTemplate.ItemName).Value = ItemName;
@@ -233,7 +239,7 @@ public sealed partial class PeriodReportViewModel : ViewModelBase
         int row = 7;
         string[] headers =
         {
-            "#", "Ad Soyad", "TCKN", "Telefon", "Adres", "E-posta",
+            "#", "Ad Soyad", "TCKN", "Telefon", "Adres", "İl", "İlçe", "E-posta",
             "Platform / Kullanıcı", "Alışveriş Günü", "Sipariş Adedi",
             "Toplam Tutar (TL)", "Fatura Bilgisi"
         };
@@ -254,13 +260,15 @@ public sealed partial class PeriodReportViewModel : ViewModelBase
             ws.Cell(row, 4).Value = p.Phone ?? "";
             ws.Cell(row, 4).Style.NumberFormat.Format = "@";
             ws.Cell(row, 5).Value = p.Address ?? "";
-            ws.Cell(row, 6).Value = p.Email ?? "";
-            ws.Cell(row, 7).Value = p.Accounts;
-            ws.Cell(row, 8).Value = p.DayCount;
-            ws.Cell(row, 9).Value = p.OrderCount;
-            ws.Cell(row, 10).Value = p.TotalAmount;
-            ws.Cell(row, 10).Style.NumberFormat.Format = "#,##0.00";
-            ws.Cell(row, 11).Value = p.InvoiceStatusLabel;
+            ws.Cell(row, 6).Value = p.City ?? "";
+            ws.Cell(row, 7).Value = p.District ?? "";
+            ws.Cell(row, 8).Value = p.Email ?? "";
+            ws.Cell(row, 9).Value = p.Accounts;
+            ws.Cell(row, 10).Value = p.DayCount;
+            ws.Cell(row, 11).Value = p.OrderCount;
+            ws.Cell(row, 12).Value = p.TotalAmount;
+            ws.Cell(row, 12).Style.NumberFormat.Format = "#,##0.00";
+            ws.Cell(row, 13).Value = p.InvoiceStatusLabel;
             row++;
         }
 
@@ -305,6 +313,13 @@ internal static class EInvoiceTemplate
     public const int BuyerFirstName = 25;
     public const int BuyerLastName = 26;
     public const int BuyerCountry = 27;
+    public const int BuyerCity = 28;
+    public const int BuyerDistrict = 29;
+    /// <summary>"Alıcı Sokak" — adresin il/ilçe dışında kalan tüm kısmı
+    /// (mahalle/cadde/no). Şablonda ayrıca Bina/Kapı No sütunları var ama
+    /// kayıt formu bunları ayrı sormuyor, hepsi bu sütuna yazılıyor.</summary>
+    public const int BuyerStreet = 30;
+    public const int BuyerEmail = 33;
     public const int DeliveryType = 45;
     public const int ItemName = 53;
     public const int Quantity = 54;

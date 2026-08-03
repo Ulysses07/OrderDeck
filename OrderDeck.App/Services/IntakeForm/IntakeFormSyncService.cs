@@ -168,7 +168,7 @@ public sealed class IntakeFormSyncService
                     identities,
                     sub.FullName, sub.Address, sub.Phone,
                     sub.Email, sub.Tckn, sub.WhatsAppConsent, sub.SmsConsent,
-                    nowUnix);
+                    nowUnix, sub.City, sub.District);
             }
             else
             {

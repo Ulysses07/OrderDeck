@@ -95,7 +95,7 @@
                 <DataGridTextColumn Header="Ad Soyad" Binding="{Binding DisplayLabel}" Width="1.6*"/>
                 <DataGridTextColumn Header="TCKN"     Binding="{Binding Tckn}"        Width="*"/>
                 <DataGridTextColumn Header="Telefon"  Binding="{Binding Phone}"       Width="*"/>
-                <DataGridTextColumn Header="Adres"    Binding="{Binding Address}"     Width="2*"/>
+                <DataGridTextColumn Header="Adres"    Binding="{Binding AddressLine}" Width="2*"/>
                 <DataGridTextColumn Header="Hesaplar" Binding="{Binding Accounts}"    Width="1.6*"/>
                 <DataGridTextColumn Header="Gün"      Binding="{Binding DayCount}"    Width="50"/>
                 <DataGridTextColumn Header="Sipariş"  Binding="{Binding OrderCount}"  Width="70"/>

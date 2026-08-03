@@ -40,6 +40,17 @@ public sealed class WhatsAppLinkBuilder
         return $"https://wa.me/{normalizedPhone}?text={encodedMessage}";
     }
 
+    /// <summary>Adresin okunabilir tek satır hâli: "Mahalle Cad. No:5, Kadıköy/İstanbul".
+    /// İl/ilçe boşsa (eski kayıt) yalnız serbest metin döner.</summary>
+    public static string FormatAddress(string address, string? city, string? district)
+    {
+        var street = address.Trim();
+        var region = string.Join('/', new[] { district?.Trim(), city?.Trim() }
+            .Where(s => !string.IsNullOrEmpty(s)));
+        if (region.Length == 0) return street;
+        return street.Length == 0 ? region : $"{street}, {region}";
+    }
+
     /// <summary>
     /// Multi-platform overload. Draft lists each provided platform username,
     /// then Ad Soyad + Adres (+ optional Telefon). Email and TCKN are
@@ -49,7 +60,8 @@ public sealed class WhatsAppLinkBuilder
         string e164Phone,
         string? youTubeUsername, string? instagramUsername,
         string? facebookUsername, string? tikTokUsername,
-        string fullName, string address, string? phoneFromCustomer)
+        string fullName, string address, string? phoneFromCustomer,
+        string? city = null, string? district = null)
     {
         var normalizedPhone = e164Phone
             .Replace("+", string.Empty)
@@ -62,7 +74,7 @@ public sealed class WhatsAppLinkBuilder
         if (!string.IsNullOrWhiteSpace(facebookUsername)) lines.Add($"Facebook: {facebookUsername.Trim()}");
         if (!string.IsNullOrWhiteSpace(tikTokUsername)) lines.Add($"TikTok: {tikTokUsername.Trim()}");
         lines.Add($"Ad Soyad: {fullName}");
-        lines.Add($"Adres: {address}");
+        lines.Add($"Adres: {FormatAddress(address, city, district)}");
         if (!string.IsNullOrWhiteSpace(phoneFromCustomer)) lines.Add($"Telefon: {phoneFromCustomer}");
 
         var encodedMessage = Uri.EscapeDataString(string.Join("\n", lines));

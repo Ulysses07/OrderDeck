@@ -30,12 +30,14 @@ public class LabelRepositoryPeriodTests
     private static Customer Cust(
         string id, string platform = "instagram", string username = "@a",
         string? fullName = null, string? phone = null, string? address = null,
-        string? groupId = null, string? tckn = null, long lastSeenAt = 100) =>
+        string? groupId = null, string? tckn = null, long lastSeenAt = 100,
+        string? city = null, string? district = null) =>
         new(id, platform, username, DisplayName: null, AvatarUrl: null,
             FirstSeenAt: 100, LastSeenAt: lastSeenAt, IsBlacklisted: false,
             BlacklistReason: null, Notes: null, TotalLabelsPrinted: 0, TotalAmount: 0m,
             BlacklistedAt: null, Address: address, Phone: phone,
-            GroupId: groupId, Tckn: tckn, FullName: fullName);
+            GroupId: groupId, Tckn: tckn, FullName: fullName,
+            City: city, District: district);
 
     private static Label Lbl(
         string id, string customerId, decimal price, long? printedAt,
@@ -107,7 +109,8 @@ public class LabelRepositoryPeriodTests
         var (db, labels, customers) = Fx();
         using var _ = db;
         customers.Insert(Cust("c1", fullName: "Ayşe Yılmaz", phone: "+905551112233",
-            address: "Moda Cad. 5", tckn: "12345678901"));
+            address: "Moda Cad. 5", tckn: "12345678901",
+            city: "İstanbul", district: "Kadıköy"));
         labels.Insert(Lbl("l1", "c1", 100m, printedAt: 1_500));
 
         var row = labels.GetPeriodAccountRows(From, To).Single();
@@ -116,6 +119,9 @@ public class LabelRepositoryPeriodTests
         row.Phone.Should().Be("+905551112233");
         row.Address.Should().Be("Moda Cad. 5");
         row.Tckn.Should().Be("12345678901");
+        // e-Fatura şablonu il/ilçeyi ayrı sütunda istiyor.
+        row.City.Should().Be("İstanbul");
+        row.District.Should().Be("Kadıköy");
     }
 
     [Fact]

@@ -66,7 +66,9 @@ public sealed class IntakeFormPhoneTests : IClassFixture<ApiFactory>
             ["Input.InstagramUsername"] = "bilalcanli",
             ["Input.FullName"] = "Bilal Canlı",
             ["Input.Email"] = "bilal@example.com",
-            ["Input.Address"] = "Atatürk Cad. No:12 İstanbul"
+            ["Input.Address"] = "Atatürk Cad. No:12",
+            ["Input.City"] = "İstanbul",
+            ["Input.District"] = "Kadıköy"
         };
         if (phone is not null) dict["Input.Phone"] = phone;
         return new FormUrlEncodedContent(dict);

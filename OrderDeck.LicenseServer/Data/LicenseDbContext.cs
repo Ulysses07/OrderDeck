@@ -172,6 +172,8 @@ public class LicenseDbContext : DbContext
             b.Property(s => s.YouTubeChannelId).HasMaxLength(48);
             b.Property(s => s.FullName).HasMaxLength(200).IsRequired();
             b.Property(s => s.Address).HasMaxLength(500).IsRequired();
+            b.Property(s => s.City).HasMaxLength(50);
+            b.Property(s => s.District).HasMaxLength(50);
             b.Property(s => s.Phone).HasMaxLength(20);
             b.Property(s => s.Email).HasMaxLength(200);
             b.Property(s => s.Tckn).HasMaxLength(11);

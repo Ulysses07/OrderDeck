@@ -116,7 +116,9 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             ["Input.InstagramUsername"] = "bilalcanli",
             ["Input.FullName"] = "Bilal Canlı",
             ["Input.Email"] = "bilal@example.com",
-            ["Input.Address"] = "Atatürk Cad. No:12 İstanbul",
+            ["Input.Address"] = "Atatürk Cad. No:12",
+            ["Input.City"] = "İstanbul",
+            ["Input.District"] = "Kadıköy",
             ["Input.Phone"] = "5551234567"
         });
         var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
@@ -131,6 +133,9 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             .Where(s => s.Config.CustomerId == customerId && s.Username == "bilalcanli")
             .FirstOrDefaultAsync();
         sub.Should().NotBeNull();
+        sub!.City.Should().Be("İstanbul");
+        sub.District.Should().Be("Kadıköy");
+        sub.Address.Should().Be("Atatürk Cad. No:12");
     }
 
     [Fact]

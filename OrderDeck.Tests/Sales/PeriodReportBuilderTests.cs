@@ -16,9 +16,11 @@ public class PeriodReportBuilderTests
         string? address = null, string? email = null, string? tckn = null,
         string? displayName = null, long lastSeenAt = 100,
         string day = "2026-07-01", long lastPrintedAt = 1_782_000_000,
-        int orderCount = 1, decimal totalAmount = 100m) =>
+        int orderCount = 1, decimal totalAmount = 100m,
+        string? city = null, string? district = null) =>
         new(customerId, groupId, platform, username, displayName, fullName, tckn,
-            phone, address, email, lastSeenAt, day, lastPrintedAt, orderCount, totalAmount);
+            phone, address, city, district, email, lastSeenAt, day, lastPrintedAt,
+            orderCount, totalAmount);
 
     [Fact]
     public void Accounts_sharing_a_group_collapse_into_one_person()
@@ -141,6 +143,30 @@ public class PeriodReportBuilderTests
         invoices[0].TotalAmount.Should().Be(500m);
         // Fatura saati o günün SON etiketinden gelir.
         invoices[0].IssuedAt.Should().Be(DateTimeOffset.FromUnixTimeSeconds(5_000).ToLocalTime());
+    }
+
+    /// <summary>Adres alanları e-Fatura şablonunun ayrı sütunlarına yazılıyor;
+    /// en güncel hesaptan taşınmazlarsa fatura adressiz gider.</summary>
+    [Fact]
+    public void Invoice_carries_address_parts_from_the_most_recent_account()
+    {
+        var invoices = PeriodReportBuilder.BuildInvoices(new[]
+        {
+            // Eski hesap: adres yok, kimlik bilgisi eksik.
+            Row("c1", "instagram", "ayse", groupId: "g1", fullName: "Ayşe Yılmaz",
+                lastSeenAt: 100, day: "2026-07-03"),
+            // Yeni hesap: kayıt formundan gelen tam adres.
+            Row("c2", "youtube", "UCxx", groupId: "g1", fullName: "Ayşe Yılmaz",
+                lastSeenAt: 900, day: "2026-07-03",
+                address: "Moda Cad. 5", city: "İstanbul", district: "Kadıköy",
+                email: "ayse@example.com"),
+        });
+
+        invoices.Should().ContainSingle();
+        invoices[0].Address.Should().Be("Moda Cad. 5");
+        invoices[0].City.Should().Be("İstanbul");
+        invoices[0].District.Should().Be("Kadıköy");
+        invoices[0].Email.Should().Be("ayse@example.com");
     }
 
     [Fact]

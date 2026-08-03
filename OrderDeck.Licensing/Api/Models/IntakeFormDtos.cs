@@ -28,4 +28,6 @@ public sealed record IntakeFormSubmissionDto(
     string? Tckn = null,
     bool WhatsAppConsent = false,
     bool SmsConsent = false,
-    string? YouTubeChannelId = null);
+    string? YouTubeChannelId = null,
+    string? City = null,
+    string? District = null);
