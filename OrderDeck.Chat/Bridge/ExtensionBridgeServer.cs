@@ -78,20 +78,6 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
         return true;
     }
 
-    /// <summary>Bir platformun content script'inden gelen son debug-stats
-    /// penceresinin özeti. WPF UI bunu "Facebook tarıyor ama hiçbir şey görmüyor"
-    /// (lazy-init) durumunu yakalayıp operatöre "FB sekmesini bir kez aç" uyarısı
-    /// göstermek için okur.</summary>
-    public sealed record PlatformStatsSnapshot(
-        int ScanCount, int CommentsObserved, int Sent, DateTimeOffset At);
-
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, PlatformStatsSnapshot> _lastStats = new();
-
-    /// <summary>Bir platform ("facebook" vb.) için en son raporlanan stats
-    /// penceresi; henüz yoksa null.</summary>
-    public PlatformStatsSnapshot? GetLatestStats(string platform) =>
-        _lastStats.TryGetValue(platform, out var s) ? s : null;
-
     public int Port { get; private set; }
 
     public ExtensionBridgeServer(IChatBus bus, int port = 4748,
@@ -306,13 +292,6 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
                         msg.Stats?.ObserverBursts ?? 0,
                         msg.Stats?.DedupeCacheSize ?? 0,
                         msg.Stats?.WindowDurationMs ?? 0);
-
-                    // Son pencereyi sakla — WPF "FB tarıyor ama observed=0" uyarısı için.
-                    _lastStats[msg.Platform] = new PlatformStatsSnapshot(
-                        msg.Stats?.ScanCount ?? 0,
-                        msg.Stats?.CommentsObserved ?? 0,
-                        msg.Stats?.Sent ?? 0,
-                        DateTimeOffset.UtcNow);
                 }
                 else if (msg is { Type: "watchdog", Platform: not null })
                 {

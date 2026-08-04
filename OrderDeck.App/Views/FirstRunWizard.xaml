@@ -79,7 +79,7 @@
                 <StackPanel Visibility="{Binding IsStep3, Converter={StaticResource BoolToVisibleConverter}}">
                     <TextBlock Text="YouTube Kanal Bağlantısı" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12"/>
                     <TextBlock TextWrapping="Wrap" LineHeight="22" Foreground="#FFE0E0E0">
-                        YouTube canlı yayınlarındaki chat mesajlarını OrderDeck'e çekmek için kanal handle'ını gir. Boş bırakırsan sadece Instagram/TikTok/Facebook için Chrome eklentisi ile çalışır.
+                        YouTube canlı yayınlarındaki chat mesajlarını OrderDeck'e çekmek için kanal handle'ını gir. Boş bırakırsan sadece Instagram/TikTok için Chrome eklentisi ile çalışır.
                     </TextBlock>
                     <TextBlock Margin="0,20,0,4" Foreground="#FFFFD166">Kanal Handle'ı veya URL'si:</TextBlock>
                     <TextBox Text="{Binding YouTubeHandle, UpdateSourceTrigger=PropertyChanged}"
@@ -108,7 +108,7 @@
                     <StackPanel>
                         <TextBlock Text="Chrome Eklentisi Kurulumu" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12"/>
                         <TextBlock TextWrapping="Wrap" LineHeight="22" Foreground="#FFE0E0E0">
-                            Instagram / TikTok / Facebook canlı yayın chat'i için Chrome eklentisini kurman gerekiyor. Aşağıdaki adımları sırasıyla uygula:
+                            Instagram / TikTok canlı yayın chat'i için Chrome eklentisini kurman gerekiyor. (YouTube ve Facebook eklenti olmadan, doğrudan OrderDeck'ten çalışır.) Aşağıdaki adımları sırasıyla uygula:
                         </TextBlock>
 
                         <Border Margin="0,16,0,0" Padding="14" Background="#FF1A1A1A" CornerRadius="4">
