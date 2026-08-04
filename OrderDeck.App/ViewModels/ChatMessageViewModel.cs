@@ -18,6 +18,14 @@ public sealed partial class ChatMessageViewModel : ObservableObject
     public string Text     => Message.Text;
     public string Display  => Message.DisplayName ?? Message.Username;
 
+    /// <summary>
+    /// Drives which moderation items the chat context menu shows. A message
+    /// only ever belongs to one platform, so showing the YouTube and Facebook
+    /// blocks at the same time just gives the operator dead entries.
+    /// </summary>
+    public bool IsYouTube => string.Equals(Platform, "youtube", System.StringComparison.OrdinalIgnoreCase);
+    public bool IsFacebook => string.Equals(Platform, "facebook", System.StringComparison.OrdinalIgnoreCase);
+
     public ChatMessageViewModel(ChatMessage message, bool isSenderBlacklisted)
     {
         Message = message;

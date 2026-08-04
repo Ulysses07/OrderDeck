@@ -42,17 +42,26 @@ namespace OrderDeck.Chat.Facebook;
 public sealed class FacebookOAuthService
 {
     /// <summary>
-    /// Loopback callback prefix. Hard-coded because Meta enforces an exact-match
-    /// redirect URI in live mode; development mode accepts any
-    /// <c>http://localhost*</c> URI so we don't need to register it during
-    /// dev. If this ever changes, update the App Settings → Facebook Login for
-    /// Business → "Valid OAuth Redirect URIs" entry on the Meta dashboard.
+    /// Loopback callback prefix — the local <see cref="HttpListener"/> that
+    /// actually receives the authorization code.
     /// Port 4849 is intentionally distinct from 4747 (overlay) and 4748
     /// (extension bridge) to avoid clashing with running hosted services.
     /// </summary>
     public const string LoopbackPrefix = "http://localhost:4849/facebook/callback/";
 
-    private const string RedirectUri = "http://localhost:4849/facebook/callback";
+    /// <summary>
+    /// The redirect URI registered with Meta. It is NOT the loopback address:
+    /// Meta refuses to save a localhost entry under "Valid OAuth Redirect URIs"
+    /// ("http://localhost redirects are automatically allowed while in
+    /// development mode only"), so a Live-mode app cannot use one. Instead
+    /// orderdeckapp.com/facebook/callback is a Caddy rule that 302s straight
+    /// back to <see cref="LoopbackPrefix"/> with the query string intact —
+    /// see deploy/Caddyfile. Nothing is stored server-side.
+    ///
+    /// Strict Mode requires an exact match, and the same value must be sent on
+    /// both the authorize call and the code→token exchange, hence one constant.
+    /// </summary>
+    private const string RedirectUri = "https://orderdeckapp.com/facebook/callback";
 
     private static readonly string GraphBase =
         $"https://graph.facebook.com/{FacebookOAuthDefaults.GraphApiVersion}";
