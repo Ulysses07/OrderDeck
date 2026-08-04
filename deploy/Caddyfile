@@ -67,6 +67,17 @@ orderdeckapp.com {
         reverse_proxy license-server:8080
     }
 
+    # ─── Facebook OAuth dönüş adresi ───────────────────────────────────────
+    # Meta, Live mode'daki uygulamalara localhost redirect URI'si kaydettirmiyor
+    # ("http://localhost redirects are automatically allowed while in development
+    # mode only"). WPF'in OAuth dinleyicisi ise localhost:4849'da. Araya HTTPS bir
+    # adres koyuyoruz: Meta buraya döner, Caddy `code` + `state`'i olduğu gibi
+    # masaüstündeki dinleyiciye 302'ler. Hiçbir şey saklanmıyor — bu sitede `log`
+    # direktifi yok, dolayısıyla `code` erişim log'una da düşmüyor.
+    handle /facebook/callback {
+        redir http://localhost:4849/facebook/callback?{query} 302
+    }
+
     # ─── Statik marketing sitesi ───────────────────────────────────────────
     handle {
         # Statik dosyalara uzun cache; HTML sayfalara kısa (deploy sonrası anında güncellensin).
