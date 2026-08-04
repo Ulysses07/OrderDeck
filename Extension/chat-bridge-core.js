@@ -80,8 +80,8 @@ window.OrderDeckChatBridge = (function () {
 
     /**
      * Start the bridge. `adapter` is required and must provide:
-     *   platform           string  — short id sent to server ("instagram", "tiktok", "facebook", "youtube", "twitch")
-     *   externalIdPrefix   string  — short prefix for synthetic message ids ("ig", "tt", "fb", "yt", "tw")
+     *   platform           string  — short id sent to server ("instagram", "tiktok")
+     *   externalIdPrefix   string  — short prefix for synthetic message ids ("ig", "tt")
      *   scanForComments    () => Array<{username, text, source?, displayName?, avatarUrl?}>
      *   checkIfLivePage    () => boolean
      *   getObserverTarget  () => Element | null  — root that gets MutationObserver
@@ -472,7 +472,7 @@ window.OrderDeckChatBridge = (function () {
 
                 stats.observerBursts++;
                 // ANINDA tara (rate-limit'li). MutationObserver geri çağrıları
-                // arka planda throttle EDİLMEZ; bu yüzden FB sekmesi gizli/mute
+                // arka planda throttle EDİLMEZ; bu yüzden sekme gizli/mute
                 // olsa bile yeni yorum DOM'a basılır basılmaz, throttle'lı timer
                 // beklemeden çekeriz. Eski 50ms setTimeout debounce'u arka planda
                 // dakikada 1'e düşüyordu (toplu düşme sorununun kaynağı).

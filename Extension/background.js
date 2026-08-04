@@ -144,7 +144,6 @@ async function refreshSelectorsFromServer() {
                 url: [
                     '*://*.instagram.com/*',
                     '*://*.tiktok.com/*',
-                    '*://*.facebook.com/*',
                 ],
             });
             for (const t of tabs) {

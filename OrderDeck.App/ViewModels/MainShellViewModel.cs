@@ -131,12 +131,6 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private string _viewerCountTooltip = "";
     [ObservableProperty] private bool _viewerCountVisible;
 
-    /// <summary>Facebook lazy-init uyarısı: FB sekmesi açık ve içerik script'i
-    /// tarıyor (scans&gt;0) ama hiç mesaj görmüyor (observed=0) → operatörün FB
-    /// sekmesini bir kez açıp akışı tetiklemesi gerekiyor. UpdateChatHealth
-    /// (5sn timer) tarafından sürülür.</summary>
-    [ObservableProperty] private bool _facebookHintVisible;
-
     [ObservableProperty] private int _newIntakeSubmissionsCount;
 
     public bool HasNewIntakeSubmissions => NewIntakeSubmissionsCount > 0;
@@ -364,76 +358,6 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
                 ? $"Chat takibi açık ({sourceList}) — henüz mesaj yok"
                 : $"Chat takibi açık ({sourceList}) — son mesaj 60sn'den uzun süre önce, scraper takılmış olabilir";
         }
-
-        UpdateFacebookHint(hasActiveSession);
-    }
-
-    // Facebook akış uyarısı — TEK SEFERLİK + kendiliğinden kaybolan, yumuşak.
-    // FB içerik script'i tarıyor (scans>0) ama hiç mesaj görmedi (observed=0).
-    // Bu ya lazy-init'tir (sekme bir kez açılmalı) ya da yayında izleyici yoktur
-    // (tamamen normal). Telemetri ikisini AYIRAMADIĞI için uyarı iddialı değil:
-    // yayın başında bir kez (~25sn stale sonra) gösterilir, ~25sn sonra kendi
-    // kaybolur ve oturumda bir daha çıkmaz. FB bir kez mesaj üretirse hiç çıkmaz.
-    private static readonly TimeSpan FbStaleThreshold = TimeSpan.FromSeconds(25);
-    private static readonly TimeSpan FbHintAutoHide = TimeSpan.FromSeconds(25);
-    private DateTime _fbStaleSinceUtc = DateTime.MinValue;
-    private DateTime _fbHintShownAtUtc = DateTime.MinValue;
-    private bool _fbEverProduced;
-    private bool _fbHintShownThisSession;
-
-    private void UpdateFacebookHint(bool hasActiveSession)
-    {
-        if (_bridge is null || !hasActiveSession)
-        {
-            // Yayın yok / bridge yok → oturum durumunu sıfırla.
-            _fbStaleSinceUtc = DateTime.MinValue;
-            _fbHintShownAtUtc = DateTime.MinValue;
-            _fbEverProduced = false;
-            _fbHintShownThisSession = false;
-            FacebookHintVisible = false;
-            return;
-        }
-
-        // Görünür notu süresi dolunca kapat (tek seferlik nazik hatırlatma).
-        if (FacebookHintVisible && DateTime.UtcNow - _fbHintShownAtUtc >= FbHintAutoHide)
-            FacebookHintVisible = false;
-
-        var fb = _bridge.GetLatestStats("facebook");
-        var fresh = fb is not null
-            && (DateTime.UtcNow - fb.At.UtcDateTime) < TimeSpan.FromSeconds(20);
-
-        // FB mesaj üretiyor → primed; notu tamamen kapat.
-        if (fresh && (fb!.CommentsObserved > 0 || fb.Sent > 0))
-        {
-            _fbEverProduced = true;
-            _fbStaleSinceUtc = DateTime.MinValue;
-            FacebookHintVisible = false;
-            return;
-        }
-
-        // Tarıyor ama hiç üretmedi → aday. Oturumda zaten gösterildiyse tekrar etme.
-        var stale = fresh && fb!.ScanCount > 0 && !_fbEverProduced;
-        if (stale && !_fbHintShownThisSession)
-        {
-            if (_fbStaleSinceUtc == DateTime.MinValue) _fbStaleSinceUtc = DateTime.UtcNow;
-            if (DateTime.UtcNow - _fbStaleSinceUtc >= FbStaleThreshold)
-            {
-                FacebookHintVisible = true;
-                _fbHintShownAtUtc = DateTime.UtcNow;
-                _fbHintShownThisSession = true;   // oturumda bir daha gösterme
-            }
-        }
-        else if (!stale)
-        {
-            _fbStaleSinceUtc = DateTime.MinValue;
-        }
-    }
-
-    [RelayCommand]
-    private void DismissFacebookHint()
-    {
-        _fbHintShownThisSession = true;   // elle kapatıldı → tekrar gösterme
-        FacebookHintVisible = false;
     }
 
     private void DrainPendingChat()

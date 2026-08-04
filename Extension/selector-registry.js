@@ -4,7 +4,7 @@
  * Content scripts no longer hard-code DOM selectors. They ask this module:
  *
  *     OrderDeckSelectors.get('instagram', 'comments.primaryContainers')
- *     OrderDeckSelectors.list('facebook', 'observerTarget')
+ *     OrderDeckSelectors.list('tiktok', 'observerTarget')
  *     OrderDeckSelectors.validators('tiktok')
  *
  * The bundle resolution order (highest priority first):
