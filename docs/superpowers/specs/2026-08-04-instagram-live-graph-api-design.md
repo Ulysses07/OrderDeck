@@ -68,19 +68,63 @@ Hepsi **Advanced Access** gerektiriyor:
 | `instagram_manage_comments` | Yorumları **ve `username` alanını** okumak |
 | `pages_show_list` | Sayfa listesi |
 | `pages_read_engagement` | Sayfa ↔ IG hesabı bağı |
+| `ads_read` | **Koşullu** — aşağıya bakınız |
 
 **Kritik:** 27 Ağustos 2024'ten beri profesyonel hesap yorumlarında
 `username` alanını okumak `instagram_manage_comments` istiyor.
 `instagram_basic` tek başına yetmez — yorumu yazanın adı olmadan chat
 anlamsız.
 
+### `ads_read` koşulu (açık risk)
+
+Hem `live_media` hem `{ig-media-id}/comments` referans sayfaları şu koşullu
+maddeyi taşıyor:
+
+> *"If the app user was granted a role via the Business Manager on the Page
+> connected to the targeted IG User, you will also need one of:
+> `ads_management`, `ads_read`."*
+
+Bu madde **güncel** (yeni birleşik `/instagram-platform/reference/` ağacında
+da var, eski sayfalarda kalmış bir artık değil) ve yalnızca "Facebook Login"
+varyantı için geçerli.
+
+**Bizi neden ilgilendiriyor:** kullanıcılarımızın hepsi Instagram reklamı
+veriyor, yani Sayfa ve IG hesapları Business Manager içinde. Rollerinin BM
+üzerinden verilmiş olması çok muhtemel → madde tetiklenir.
+
+İki hafifletici unsur:
+- **`ads_read` yeterli**, `ads_management` gerekmiyor. Meta her yerde "one of"
+  diyor. `ads_read` salt-okunur ve çok daha hafif bir izin.
+- `GET /{page-id}?fields=instagram_business_account` çağrısı bu maddeden
+  **etkilenmiyor** — yani hesap çözümlemesi temiz, sorun çıkarsa yorum
+  okumada çıkar.
+
+**Belirsiz kalan:** "BM üzerinden rol verilmiş" tam olarak neyi kapsıyor?
+Klasik Sayfa yöneticisi ama Sayfa bir Business Portfolio'ya bağlıysa madde
+tetikleniyor mu — Meta hiçbir yerde tanımlamıyor. Forumlarda pratikte
+gerekip gerekmediğine dair kullanılabilir rapor bulunamadı.
+
+**Çözüm: ölçümle kapat.** Pilotta gerçek bir satıcının BM yönetimindeki
+Sayfası ile `ads_read` OLMADAN `live_media` + `comments` çağrısı yapılır.
+Çalışıyorsa izin listesine hiç eklenmez; 200/10 hatası dönerse `ads_read`
+App Review'a dahil edilir. Bu tek test tüm soruyu çözer ve App Review
+başvurusundan **önce** yapılmalı.
+
 `pages_manage_metadata` **gerekmiyor** (sadece webhook için). Hesabın public
 olması şartı da **sadece webhook** için. Yani polling yolu, App Review'da
 reddedilen izne hiç dokunmuyor.
 
-**App Review notu:** Meta'nın "private app" istisnası var — dışarıdan test
-edilemeyen uygulamalar yalnızca `instagram_basic` + `instagram_manage_comments`
-için onay isteyebiliyor. Masaüstü uygulamamız bu tarife uyuyor.
+**App Review notu — ÖNCEKİ İDDİA GERİ ÇEKİLDİ.** Bu dokümanın ilk halinde
+"dışarıdan test edilemeyen uygulamalar için 'private app' istisnası var"
+yazıyordu. **Doğrulanamadı.** Meta'nın güncel App Review dokümantasyonunda
+böyle bir muafiyet bulunamadı; ekran kaydı sayfasında da istisna yok. Aksine:
+*"Your app must be publicly available or you must provide instructions on how
+to access it."*
+
+Dolayısıyla normal süreci planlıyoruz: **her izni fiilen kullanan arayüzü
+gösteren ekran kaydı**. Bu, `pages_manage_metadata` reddinden çıkan dersle
+birebir aynı (o izin "kullanan arayüz göremedik" gerekçesiyle reddedilmişti) —
+IG yorumlarının uygulamada aktığı gerçek bir yayın kaydı çekilecek.
 
 ### İzinlerin kodda olmadığı tuzağı
 
@@ -290,6 +334,9 @@ xUnit, ağ erişimi yok:
 
 Tahmin bırakmıyoruz; şunlar gerçek yayında ölçülecek:
 
+0. **`ads_read` gerekiyor mu?** BM yönetimindeki gerçek bir Sayfa ile,
+   `ads_read` olmadan `live_media` + `comments` çağrısı. Çalışıyorsa izin
+   listesine eklenmez. **App Review'dan önce yapılmalı.**
 1. `comments.limit(50)` yazınca gerçekten kaç yorum dönüyor — 50 mi, 25 mi?
 2. `X-App-Usage` **ve** `X-Business-Use-Case-Usage` başlıklarının ikisi de
    loglanır → app seviyesi limit gerçekten devrede mi?
@@ -309,12 +356,14 @@ Tahmin bırakmıyoruz; şunlar gerçek yayında ölçülecek:
 1. Kod yazılır, testler geçer, `InstagramIngestMode` varsayılan `Scraper`
    kalır → kullanıcı davranışı **değişmez**.
 2. Meta panelinde `config_id` yapılandırmasına IG izinleri eklenir.
-3. Pilot yayın: geliştirici hesabıyla `OfficialApi` açılıp yukarıdaki 5
-   ölçüm yapılır. (App'in kendi yönetici/geliştirici hesabıyla, Advanced
-   Access beklenmeden test edilebilmesi gerekiyor — pilot öncesi
-   doğrulanacak.)
-4. App Review'a `instagram_basic` + `instagram_manage_comments` için
-   başvurulur ("private app" istisnasıyla).
+3. Pilot yayın: geliştirici hesabıyla `OfficialApi` açılıp aşağıdaki
+   ölçümler yapılır. **Standard Access yeterli** — Meta belgeli: *"Permissions
+   with Standard Access can only be requested from app users who have a role
+   on the requesting app"*, ve bu erişim seviyesi Live/Development modundan
+   bağımsız. App zaten Live olduğu halde yönetici/geliştirici kendi hesabıyla
+   test edebilir.
+4. Pilot sonucuna göre izin listesi kesinleşir (`ads_read` gerekli mi?),
+   ekran kaydı çekilir ve App Review'a başvurulur.
 5. **Onay geldikten sonra** varsayılan `OfficialApi`'ye çevrilir ve
    kullanıcılara yeniden bağlanma uyarısı gösterilir. Onaya kadar herkes
    extension ile devam eder.
