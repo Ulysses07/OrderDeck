@@ -53,11 +53,15 @@ public sealed class InstagramPermissionProbe
         {
             using var resp = await _http.GetAsync(url, ct).ConfigureAwait(false);
             var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            // 400 + code 190 (token süresi dolmuş) da geçerli bir cevap: izin yok.
-            if (!resp.IsSuccessStatusCode && body.Contains("\"error\"", StringComparison.Ordinal))
-                return HasInstagramPermissions(body);
             if (!resp.IsSuccessStatusCode)
             {
+                // Yalnız token/izin hataları kesin cevaptır ("izin yok").
+                // Kota veya geçici 5xx'te null döneriz; yoksa ortada sorun
+                // yokken operatöre "yeniden bağlan" uyarısı gösteririz.
+                var kind = InstagramGraphError.Classify((int)resp.StatusCode, body);
+                if (kind is InstagramErrorKind.TokenExpired or InstagramErrorKind.PermissionDenied)
+                    return false;
+
                 _log.LogDebug("[InstagramPermissionProbe] {Status}", (int)resp.StatusCode);
                 return null;
             }
@@ -104,6 +108,11 @@ public sealed class InstagramPermissionProbe
         }
         catch (JsonException)
         {
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            // GetString(), alan string değilse fırlatır (JsonException değil).
             return false;
         }
     }
