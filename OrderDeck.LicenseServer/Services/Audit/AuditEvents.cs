@@ -8,6 +8,7 @@ public static class AuditEvents
     public const string LicenseIssue = "license.issue";
     public const string LicenseRevoke = "license.revoke";
     public const string LicenseExtend = "license.extend";
+    public const string LicenseSlotsChange = "license.slots-change";
     public const string ActivationForceDeactivate = "activation.force-deactivate";
     public const string RefreshTokenIssued = "RefreshTokenIssued";
     public const string RefreshTokenRotated = "RefreshTokenRotated";

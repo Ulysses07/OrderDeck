@@ -113,6 +113,53 @@ public class AdminLicensesTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task ChangeSlots_updates_activation_slots()
+    {
+        var client = await AdminClientAsync();
+        var email = $"s-{Guid.NewGuid():N}@x.com";
+        await CreateCustomerAsync(client, email);
+        var issueResp = await client.PostAsJsonAsync("/api/v1/admin/licenses", new
+        {
+            customerEmail = email, skuCode = "STD"   // STD varsayılanı 1 slot
+        });
+        var issued = await issueResp.Content.ReadFromJsonAsync<IssueBody>();
+
+        var resp = await client.PostAsJsonAsync(
+            $"/api/v1/admin/licenses/{issued!.licenseKey}/slots", new { slots = 3 });
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var getResp = await client.GetAsync($"/api/v1/admin/licenses/{issued.licenseKey}");
+        var json = await getResp.Content.ReadAsStringAsync();
+        json.Should().Contain("\"activationSlots\":3");
+    }
+
+    [Fact]
+    public async Task ChangeSlots_out_of_range_returns_400()
+    {
+        var client = await AdminClientAsync();
+        var email = $"s2-{Guid.NewGuid():N}@x.com";
+        await CreateCustomerAsync(client, email);
+        var issueResp = await client.PostAsJsonAsync("/api/v1/admin/licenses", new
+        {
+            customerEmail = email, skuCode = "STD"
+        });
+        var issued = await issueResp.Content.ReadFromJsonAsync<IssueBody>();
+
+        var resp = await client.PostAsJsonAsync(
+            $"/api/v1/admin/licenses/{issued!.licenseKey}/slots", new { slots = 0 });
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task ChangeSlots_unknown_key_returns_404()
+    {
+        var client = await AdminClientAsync();
+        var resp = await client.PostAsJsonAsync(
+            "/api/v1/admin/licenses/LDK-NOPE/slots", new { slots = 2 });
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
     public async Task List_returns_issued_licenses()
     {
         var client = await AdminClientAsync();
