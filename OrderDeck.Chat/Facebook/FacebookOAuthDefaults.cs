@@ -30,8 +30,11 @@ namespace OrderDeck.Chat.Facebook;
 internal static class FacebookOAuthDefaults
 {
     /// <summary>Meta App ID — Business type, created 2026-06-24 under
-    /// "Emar Global Tekstil Gıda İnşaat Turizm Yazılım ve TİC. LTD. Şti".</summary>
-    public static readonly string AppId = "26296352503396523";
+    /// "Emar Global Tekstil Gıda İnşaat Turizm Yazılım ve TİC. LTD. Şti".
+    /// Doğrulama: <c>GET https://graph.facebook.com/3939617702835404</c>
+    /// → <c>{"category":"Business","name":"OrderDeck","link":"https://www.orderdeckapp.com/"}</c>
+    /// (public uç, token gerektirmez — değiştirmeden önce yeni ID'yi böyle teyit et).</summary>
+    public static readonly string AppId = "3939617702835404";
 
     /// <summary>Meta App Secret. Populated on the production build machine
     /// before installer build, kept empty in source control so cloned repos
