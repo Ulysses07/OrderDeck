@@ -1366,7 +1366,7 @@ public class InstagramLiveCommentsPollerTests
 
         await poller.Completion.WaitAsync(TimeSpan.FromSeconds(5));
 
-        poller.FatalReason.Should().Contain("izin");
+        poller.FatalReason.Should().Contain("izni");
     }
 
     [Fact]
@@ -1383,7 +1383,7 @@ public class InstagramLiveCommentsPollerTests
 
         await poller.Completion.WaitAsync(TimeSpan.FromSeconds(5));
 
-        poller.FatalReason.Should().Contain("izin");
+        poller.FatalReason.Should().Contain("izni");
     }
 
     private static async Task WaitUntil(Func<bool> predicate, TimeSpan timeout)
