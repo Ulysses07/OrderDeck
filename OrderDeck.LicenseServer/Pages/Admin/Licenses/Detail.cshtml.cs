@@ -33,6 +33,9 @@ public class DetailModel : PageModel
     [BindProperty]
     public ExtendInput ExtendForm { get; set; } = new();
 
+    [BindProperty]
+    public SlotsInput SlotsForm { get; set; } = new();
+
     public sealed class RevokeInput
     {
         [StringLength(500)]
@@ -45,9 +48,17 @@ public class DetailModel : PageModel
         public int AdditionalDays { get; set; } = 30;
     }
 
+    public sealed class SlotsInput
+    {
+        [Range(1, 100)]
+        public int Slots { get; set; } = 1;
+    }
+
     public async Task<IActionResult> OnGetAsync(string key, CancellationToken ct)
     {
-        return await LoadAsync(key, ct);
+        var result = await LoadAsync(key, ct);
+        if (License is not null) SlotsForm.Slots = License.ActivationSlots;
+        return result;
     }
 
     public async Task<IActionResult> OnPostRevokeAsync(string key, CancellationToken ct)
@@ -88,6 +99,46 @@ public class DetailModel : PageModel
         await _adminEmail.NotifyLicenseExtendedAsync(License!.CustomerId, key, License.ExpiresAt, ExtendForm.AdditionalDays, ct);
 
         TempData["Success"] = $"Lisans {ExtendForm.AdditionalDays} gün uzatıldı.";
+        return RedirectToPage("./Detail", new { key });
+    }
+
+    /// <summary>
+    /// Cihaz slotu sayısını değiştirir. Aktif aktivasyon sayısının altına
+    /// inilemez — inilirse lisans taahhüt fazlası kalır: mevcut cihazlar
+    /// düşmez ama slot boşalana kadar hiçbir yeni makine giremez ve sebebi
+    /// panelde görünmez. Önce ilgili cihazın aktivasyonu iptal edilmeli.
+    /// </summary>
+    public async Task<IActionResult> OnPostSlotsAsync(string key, CancellationToken ct)
+    {
+        var loadResult = await LoadAsync(key, ct);
+        if (License is null) return loadResult;
+        if (SlotsForm.Slots < 1 || SlotsForm.Slots > 100)
+        {
+            ModelState.AddModelError($"{nameof(SlotsForm)}.{nameof(SlotsForm.Slots)}", "1-100 arası slot");
+            return Page();
+        }
+
+        var activeCount = Activations.Count(a => a.DeactivatedAt is null);
+        if (SlotsForm.Slots < activeCount)
+        {
+            ModelState.AddModelError($"{nameof(SlotsForm)}.{nameof(SlotsForm.Slots)}",
+                $"{activeCount} aktif cihaz var; önce aktivasyon iptal et");
+            return Page();
+        }
+
+        var old = License.ActivationSlots;
+        if (old == SlotsForm.Slots)
+        {
+            TempData["Success"] = "Slot zaten bu değerde.";
+            return RedirectToPage("./Detail", new { key });
+        }
+
+        License.ActivationSlots = SlotsForm.Slots;
+        await _db.SaveChangesAsync(ct);
+        await _audit.LogAsync(AuditEvents.LicenseSlotsChange, AuditTargets.License, key,
+            new { from = old, to = SlotsForm.Slots }, ct);
+
+        TempData["Success"] = $"Slot {old} → {SlotsForm.Slots} olarak güncellendi.";
         return RedirectToPage("./Detail", new { key });
     }
 

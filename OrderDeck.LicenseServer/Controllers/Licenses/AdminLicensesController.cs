@@ -1,4 +1,5 @@
 using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Services.Audit;
 using OrderDeck.LicenseServer.Services.Email;
 using OrderDeck.LicenseServer.Services.Licensing;
 using Microsoft.AspNetCore.Authorization;
@@ -15,12 +16,15 @@ public sealed class AdminLicensesController : ControllerBase
     private readonly LicenseDbContext _db;
     private readonly LicenseIssuer _issuer;
     private readonly AdminActionEmailService _adminEmail;
+    private readonly IAuditService _audit;
 
-    public AdminLicensesController(LicenseDbContext db, LicenseIssuer issuer, AdminActionEmailService adminEmail)
+    public AdminLicensesController(LicenseDbContext db, LicenseIssuer issuer,
+        AdminActionEmailService adminEmail, IAuditService audit)
     {
         _db = db;
         _issuer = issuer;
         _adminEmail = adminEmail;
+        _audit = audit;
     }
 
     public sealed record IssueRequest(string CustomerEmail, string SkuCode,
@@ -102,6 +106,43 @@ public sealed class AdminLicensesController : ControllerBase
         await _db.SaveChangesAsync(ct);
         await _adminEmail.NotifyLicenseExtendedAsync(l.CustomerId, l.LicenseKey, l.ExpiresAt, req.AdditionalDays, ct);
         return Ok(new { newExpiresAt = l.ExpiresAt });
+    }
+
+    public sealed record SlotsRequest(int Slots);
+
+    /// <summary>
+    /// Var olan lisansın cihaz slotu sayısını değiştirir. Slot şimdiye kadar
+    /// yalnız ihraç anında belirlenebiliyordu; müşteri ikinci makine isteyince
+    /// tek çare yeni lisans üretmekti (anahtar değişiyor, sunucudaki müşteri
+    /// projeksiyonu yeni lisansa taşınıyordu).
+    ///
+    /// <para>Aktif aktivasyon sayısının altına indirilemez: aksi halde lisans
+    /// taahhüt fazlası kalır — kimse düşmez, ama slot boşalana kadar hiçbir
+    /// yeni makine giremez ve sebebi panelden görünmez. Önce ilgili cihazın
+    /// aktivasyonunu iptal etmek gerekiyor.</para>
+    /// </summary>
+    [HttpPost("{key}/slots")]
+    public async Task<IActionResult> ChangeSlots(string key, [FromBody] SlotsRequest req, CancellationToken ct)
+    {
+        if (req.Slots is < 1 or > 100)
+            return Problem(title: "invalid-slots", detail: "1-100 arası olmalı", statusCode: 400);
+
+        var l = await _db.Licenses
+            .Include(x => x.Activations)
+            .FirstOrDefaultAsync(x => x.LicenseKey == key, ct);
+        if (l is null) return NotFound();
+
+        var activeCount = l.Activations.Count(a => a.DeactivatedAt is null);
+        if (req.Slots < activeCount)
+            return Problem(title: "slots-below-active",
+                detail: $"{activeCount} aktif cihaz var; önce aktivasyon iptal et", statusCode: 409);
+
+        var old = l.ActivationSlots;
+        l.ActivationSlots = req.Slots;
+        await _db.SaveChangesAsync(ct);
+        await _audit.LogAsync(AuditEvents.LicenseSlotsChange, AuditTargets.License, key,
+            new { from = old, to = req.Slots }, ct);
+        return Ok(new { activationSlots = l.ActivationSlots });
     }
 
     [HttpGet]

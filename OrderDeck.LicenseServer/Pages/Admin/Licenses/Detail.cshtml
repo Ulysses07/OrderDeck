@@ -49,6 +49,17 @@
                 <span asp-validation-for="ExtendForm.AdditionalDays" class="text-danger"></span>
             </form>
 
+            <h5>Cihaz Slotu</h5>
+            <form method="post" asp-page-handler="Slots" asp-route-key="@Model.License.LicenseKey" class="mb-4">
+                <div class="input-group" style="max-width: 300px;">
+                    <input asp-for="SlotsForm.Slots" type="number" min="1" max="100" class="form-control" />
+                    <span class="input-group-text">cihaz</span>
+                    <button type="submit" class="btn btn-primary">Kaydet</button>
+                </div>
+                <span asp-validation-for="SlotsForm.Slots" class="text-danger"></span>
+                <div class="form-text">Aktif aktivasyon sayısının altına inemez.</div>
+            </form>
+
             <h5>İptal</h5>
             <form method="post" asp-page-handler="Revoke" asp-route-key="@Model.License.LicenseKey">
                 <div class="mb-2">
