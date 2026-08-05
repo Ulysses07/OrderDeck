@@ -410,3 +410,10 @@ Tahmin bırakmıyoruz; şunlar gerçek yayında ölçülecek:
 - [Paging / results](https://developers.facebook.com/docs/graph-api/results)
 - [Comment moderation](https://developers.facebook.com/docs/instagram-platform/comment-moderation/)
 - [Instagram webhooks](https://developers.facebook.com/docs/instagram-platform/webhooks/)
+
+## Uygulama durumu
+
+Kod planı: `docs/superpowers/plans/2026-08-05-instagram-live-graph-api.md`
+(12 task, TDD). Varsayılan `Scraper` — resmi yol Ayarlar'dan opt-in.
+App Review başvurusunda bu anahtar ekran kaydıyla gösterilecek (Meta
+test edemediği izni onaylamıyor).
