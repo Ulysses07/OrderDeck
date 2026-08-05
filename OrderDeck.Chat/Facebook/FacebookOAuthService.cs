@@ -121,6 +121,19 @@ public sealed class FacebookOAuthService
     }
 
     /// <summary>
+    /// Returns the stored long-lived <b>user</b> access token, or null if not
+    /// connected. Only needed for user-scoped edges such as
+    /// <c>GET /me/permissions</c> — Page-scoped calls must keep using
+    /// <see cref="GetPageCredentialsAsync"/>, since with a Page token
+    /// <c>/me</c> resolves to the Page and returns the wrong answer.
+    /// </summary>
+    public async Task<string?> GetUserAccessTokenAsync(CancellationToken ct = default)
+    {
+        if (!await IsConnectedAsync(ct).ConfigureAwait(false)) return null;
+        return _bundle!.UserAccessToken;
+    }
+
+    /// <summary>
     /// Starts the OAuth dance. <paramref name="pagePicker"/> is invoked when
     /// the operator has more than one Page; it gets the candidate list and
     /// should return the user's choice (or null to abort). If they have
