@@ -80,6 +80,17 @@ public sealed partial class SettingsViewModel : ViewModelBase
     partial void OnIsFacebookBusyChanged(bool value) => OnPropertyChanged(nameof(IsFacebookIdle));
     partial void OnIsFacebookConnectedChanged(bool value) => OnPropertyChanged(nameof(IsFacebookIdle));
 
+    // Instagram resmi Graph API (2026-08-05). Ayrı bir OAuth yok — IG erişimi
+    // bağlı Facebook Sayfa'sı üzerinden gidiyor. Bu yüzden burada yalnız
+    // anahtar + durum var, "Bağlan" butonu yok.
+    [ObservableProperty] private bool _useOfficialInstagramApi;
+    [ObservableProperty] private string _instagramAccountStatus = "Kontrol ediliyor...";
+
+    /// <summary>Bağlı Facebook oturumunda IG izinleri yoksa true — kullanıcı
+    /// IG izinleri yapılandırmaya eklenmeden önce bağlanmış demektir ve
+    /// yeniden bağlanmadan resmi API sessizce boş döner.</summary>
+    [ObservableProperty] private bool _instagramNeedsReconnect;
+
     // Phase 5f — Spam / troll filter toggles
     [ObservableProperty] private bool _spamFilterEnabled = true;
     [ObservableProperty] private bool _spamDropShortMessages;
@@ -110,6 +121,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
     private readonly YouTubeOAuthService? _youTubeOAuth;
     private readonly FacebookOAuthService? _facebookOAuth;
     private readonly Services.Sync.WhatsAppTemplateSyncService? _waTemplateSync;
+    private readonly System.Net.Http.IHttpClientFactory? _httpFactory;
 
     public SettingsViewModel(AppSettings settings, SettingsStore store, ShortcutsTabViewModel shortcutsTab,
         IntakeFormSettingsViewModel intakeForm,
@@ -117,7 +129,8 @@ public sealed partial class SettingsViewModel : ViewModelBase
         YouTubeOAuthService? youTubeOAuth = null,
         FacebookOAuthService? facebookOAuth = null,
         AnimationCatalogClient? catalogClient = null,
-        Services.Sync.WhatsAppTemplateSyncService? waTemplateSync = null)
+        Services.Sync.WhatsAppTemplateSyncService? waTemplateSync = null,
+        System.Net.Http.IHttpClientFactory? httpFactory = null)
     {
         _liveSettings = settings;
         _store = store;
@@ -128,6 +141,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
         _youTubeOAuth = youTubeOAuth;
         _facebookOAuth = facebookOAuth;
         _waTemplateSync = waTemplateSync;
+        _httpFactory = httpFactory;
 
         LoadFromSettings();
         LoadInstalledPrinters();
@@ -136,6 +150,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
         _ = ShopperApp.LoadAsync();
         _ = RefreshYouTubeConnectionStatusAsync();
         _ = RefreshFacebookConnectionStatusAsync();
+        _ = RefreshInstagramStatusAsync();
 
         // Use the source-generated setters (NOT the backing fields) so
         // OnPropertyChanged fires — XAML bindings activate AFTER the dialog
@@ -283,6 +298,65 @@ public sealed partial class SettingsViewModel : ViewModelBase
         }
     }
 
+    /// <summary>
+    /// IG durumunu iki soruyla belirler: (1) bağlı Sayfa'ya bir IG profesyonel
+    /// hesabı bağlı mı, (2) oturumda IG izinleri var mı. İkisi de Graph'a birer
+    /// istek — dialog açılışında bir kez çalışır, yayın sırasında değil.
+    /// </summary>
+    public async System.Threading.Tasks.Task RefreshInstagramStatusAsync()
+    {
+        if (_facebookOAuth is null)
+        {
+            InstagramAccountStatus = "Önce Facebook'a bağlan.";
+            InstagramNeedsReconnect = false;
+            return;
+        }
+
+        try
+        {
+            var creds = await _facebookOAuth.GetPageCredentialsAsync().ConfigureAwait(true);
+            if (creds is null)
+            {
+                InstagramAccountStatus = "Önce Facebook'a bağlan.";
+                InstagramNeedsReconnect = false;
+                return;
+            }
+
+            var http = _httpFactory?.CreateClient(
+                           OrderDeck.Chat.Ingestors.Instagram.InstagramChatHostedService.HttpClientName)
+                       ?? new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+
+            // İzin kontrolü kullanıcı token'ı ister (Sayfa token'ıyla /me Sayfa olur).
+            var userToken = await _facebookOAuth.GetUserAccessTokenAsync().ConfigureAwait(true);
+            if (!string.IsNullOrEmpty(userToken))
+            {
+                var probe = new OrderDeck.Chat.Ingestors.Instagram.InstagramPermissionProbe(
+                    http, Microsoft.Extensions.Logging.Abstractions
+                        .NullLogger<OrderDeck.Chat.Ingestors.Instagram.InstagramPermissionProbe>.Instance);
+                // null = bilinmiyor (ağ hatası) → uyarı gösterme, yanlış alarm olmasın.
+                InstagramNeedsReconnect =
+                    await probe.HasInstagramPermissionsAsync(userToken!).ConfigureAwait(true) == false;
+            }
+
+            var resolver = new OrderDeck.Chat.Ingestors.Instagram.InstagramAccountResolver(
+                http, Microsoft.Extensions.Logging.Abstractions
+                    .NullLogger<OrderDeck.Chat.Ingestors.Instagram.InstagramAccountResolver>.Instance);
+            var account = await resolver.ResolveAsync(
+                creds.Value.PageId, creds.Value.PageAccessToken,
+                System.Threading.CancellationToken.None).ConfigureAwait(true);
+
+            // InstagramAccount bir record struct → nullable erişim .Value ile.
+            InstagramAccountStatus = account is null
+                ? "Bu Sayfa'ya bağlı Instagram profesyonel hesabı yok."
+                : $"Bağlı Instagram hesabı: @{account.Value.Username ?? account.Value.IgUserId}";
+        }
+        catch (Exception ex)
+        {
+            InstagramAccountStatus = $"Durum okunamadı: {ex.Message}";
+            InstagramNeedsReconnect = false;
+        }
+    }
+
     [RelayCommand]
     private async System.Threading.Tasks.Task ConnectFacebook()
     {
@@ -371,6 +445,10 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
         // Phase 5c — YouTube
         YouTubeChannelHandle = _liveSettings.YouTubeChannelHandle ?? string.Empty;
+
+        // Instagram — resmi Graph API opt-in.
+        UseOfficialInstagramApi =
+            _liveSettings.InstagramIngestMode == OrderDeck.Core.Chat.InstagramIngestMode.OfficialApi;
 
         // Phase 5f — Spam filter
         SpamFilterEnabled       = _liveSettings.SpamFilter.Enabled;
@@ -472,6 +550,12 @@ public sealed partial class SettingsViewModel : ViewModelBase
         // instead of attempting to resolve "".
         var trimmedHandle = YouTubeChannelHandle?.Trim();
         _liveSettings.YouTubeChannelHandle = string.IsNullOrEmpty(trimmedHandle) ? null : trimmedHandle;
+
+        // Instagram. Köprü bu değeri Func ile her mesajda okuyor, hosted service
+        // döngü başında — Kaydet'e basar basmaz etkili, yeniden başlatma yok.
+        _liveSettings.InstagramIngestMode = UseOfficialInstagramApi
+            ? OrderDeck.Core.Chat.InstagramIngestMode.OfficialApi
+            : OrderDeck.Core.Chat.InstagramIngestMode.Scraper;
 
         // Phase 5f — Spam filter. The SpamFilter service reads this object on
         // every message via Func<AppSettings>, so changes take effect the

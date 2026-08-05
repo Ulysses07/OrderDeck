@@ -233,6 +233,27 @@
                             </TextBlock>
                         </StackPanel>
                     </Border>
+
+                    <Border Style="{StaticResource S.Card}">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource S.CardTitle}" Text="Instagram canlı yorumlar" Margin="0,0,0,14"/>
+                            <TextBlock Text="{Binding InstagramAccountStatus}"
+                                       Foreground="{StaticResource S.Text}" Margin="0,0,0,10" TextWrapping="Wrap"/>
+                            <TextBlock Margin="0,0,0,10" TextWrapping="Wrap"
+                                       Foreground="{StaticResource S.Amber}"
+                                       Visibility="{Binding InstagramNeedsReconnect, Converter={StaticResource BoolToVis}}"
+                                       Text="Instagram yorumları için Facebook bağlantını yenilemen gerekiyor — yukarıdaki 'Bağlantıyı Kaldır' + 'Facebook'a Bağlan' adımını uygula."/>
+                            <CheckBox Content="Instagram yorumlarını resmi API'den al (deneysel)"
+                                      IsChecked="{Binding UseOfficialInstagramApi}"
+                                      FontWeight="SemiBold" Margin="0,0,0,8"/>
+                            <TextBlock Style="{StaticResource S.Hint}">
+                                Kapalıyken yorumlar Chrome eklentisinden gelir (bugünkü davranış). Açtığında yorumlar
+                                doğrudan Instagram'ın resmi API'sinden okunur — tarayıcı sekmesi açık olmasına gerek kalmaz.
+                                Instagram canlı yayında yorum silme/gizleme desteklemediği için resmi yolda sağ-tık
+                                moderasyon menüsü çıkmaz. Meta onayı tamamlanana kadar varsayılan kapalıdır.
+                            </TextBlock>
+                        </StackPanel>
+                    </Border>
                 </StackPanel>
             </TabItem>
 
