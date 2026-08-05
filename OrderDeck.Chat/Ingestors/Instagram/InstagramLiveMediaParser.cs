@@ -48,6 +48,13 @@ public static class InstagramLiveMediaParser
         {
             return null;
         }
+        catch (InvalidOperationException)
+        {
+            // GetString() beklediği alan string değilse (ör. sayısal `id`)
+            // fırlatır. Burası güvenilmeyen gövdenin sınırı — çökmek yerine
+            // "ayrıştırılamadı" diyoruz.
+            return null;
+        }
     }
 
     /// <summary>Alan yoksa null (izin/hata sinyali), varsa liste (boş olabilir).</summary>

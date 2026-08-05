@@ -26,6 +26,15 @@ public class InstagramLiveMediaParserTests
     }
 
     [Fact]
+    public void Wrongly_typed_field_returns_null_instead_of_throwing()
+    {
+        // Geçerli JSON ama `id` string değil → GetString() fırlatır.
+        // Ayrıştırıcı güvenilmeyen gövdenin sınırı; çökmemeli.
+        InstagramLiveMediaParser.Parse("{\"data\":[{\"id\":17895695668004550}]}")
+            .Should().BeNull();
+    }
+
+    [Fact]
     public void Parses_media_id_and_comments()
     {
         const string json = """
