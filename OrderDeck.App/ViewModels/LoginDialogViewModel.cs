@@ -48,12 +48,33 @@ public sealed partial class LoginDialogViewModel : ObservableObject
     [ObservableProperty] private System.Collections.ObjectModel.ObservableCollection<LicenseSummary> _licenses = new();
     [ObservableProperty] private LicenseSummary? _selected;
 
-    public ICommand SubmitLoginCommand { get; }
-    public ICommand SubmitRegisterCommand { get; }
-    public ICommand ResendCommand { get; }
-    public ICommand ActivateSelectedCommand { get; }
+    public IRelayCommand SubmitLoginCommand { get; }
+    public IRelayCommand SubmitRegisterCommand { get; }
+    public IRelayCommand ResendCommand { get; }
+    public IRelayCommand ActivateSelectedCommand { get; }
     public ICommand SwitchToRegisterCommand { get; }
     public ICommand SwitchToLoginCommand { get; }
+
+    /// <summary>
+    /// <c>AsyncRelayCommand</c>, WPF'in <c>CommandManager.RequerySuggested</c>
+    /// mekanizmasına bağlanmaz — <c>CanExecute</c> yalnız burada elle
+    /// bildirildiğinde yeniden değerlendirilir. Bildirim olmadan "Bu makineye
+    /// aktive et" butonu, pencere açılırken <c>Selected</c> null olduğu için
+    /// devre dışı hesaplanıyor ve öyle kalıyordu: tıklanamıyor, devre dışı
+    /// olduğu için Tab sırasına da girmiyordu.
+    /// </summary>
+    private void RefreshCommandStates()
+    {
+        SubmitLoginCommand.NotifyCanExecuteChanged();
+        SubmitRegisterCommand.NotifyCanExecuteChanged();
+        ResendCommand.NotifyCanExecuteChanged();
+        ActivateSelectedCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnIsBusyChanged(bool value) => RefreshCommandStates();
+
+    partial void OnSelectedChanged(LicenseSummary? value) =>
+        ActivateSelectedCommand.NotifyCanExecuteChanged();
 
     /// <summary>Set when the dialog should close successfully — caller reads CurrentStatus.</summary>
     public event EventHandler? RequestClose;
