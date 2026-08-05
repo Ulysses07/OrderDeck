@@ -301,4 +301,82 @@ public class ExtensionBridgeServerTests
 
         await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
     }
+
+    // ── Official-API bastırma ────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Official_mode_drops_extension_instagram_messages()
+    {
+        // OfficialApi açıkken IG yorumları Graph poller'dan geliyor. Extension
+        // aynı yorumu farklı bir externalId ile gönderirse dedupe yakalayamaz
+        // (DOM-üretimi id vs. gerçek yorum id'si) → operatör çift sipariş görür.
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(
+            bus, port: 0, isInstagramOfficial: () => true);
+        await server.StartAsync(CancellationToken.None);
+
+        var received = new System.Collections.Generic.List<ChatMessage>();
+        using var sub = bus.Subscribe(m => { lock (received) received.Add(m); });
+
+        using var ws = new ClientWebSocket();
+        await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
+            CancellationToken.None);
+
+        await SendRaw(ws, SerializeChat("instagram", "@ali", "AB-25", externalId: "ig-1-abc"));
+        await Task.Delay(200);
+
+        lock (received) received.Should().BeEmpty();
+
+        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Official_mode_does_not_affect_other_platforms()
+    {
+        // Bastırma yalnız Instagram'a özgü. TikTok hâlâ extension'dan geliyor.
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(
+            bus, port: 0, isInstagramOfficial: () => true);
+        await server.StartAsync(CancellationToken.None);
+
+        var received = new TaskCompletionSource<ChatMessage>();
+        using var sub = bus.Subscribe(m => received.TrySetResult(m));
+
+        using var ws = new ClientWebSocket();
+        await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
+            CancellationToken.None);
+
+        await SendRaw(ws, SerializeChat("tiktok", "@mehmet", "KIRMIZI M", externalId: "tt-1"));
+
+        var msg = await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        msg.Platform.Should().Be("tiktok");
+
+        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Scraper_mode_still_forwards_instagram()
+    {
+        // Bayrak false → eski davranış aynen. Varsayılan (bayrak hiç verilmemiş)
+        // da bu olmalı; "Forwards_chat_message_from_extension_to_ChatBus" testi
+        // varsayılanı zaten kilitliyor.
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(
+            bus, port: 0, isInstagramOfficial: () => false);
+        await server.StartAsync(CancellationToken.None);
+
+        var received = new TaskCompletionSource<ChatMessage>();
+        using var sub = bus.Subscribe(m => received.TrySetResult(m));
+
+        using var ws = new ClientWebSocket();
+        await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
+            CancellationToken.None);
+
+        await SendRaw(ws, SerializeChat("instagram", "@ayse_y", "MAVI XL", externalId: "ig-9"));
+
+        var msg = await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        msg.Platform.Should().Be("instagram");
+
+        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
 }
