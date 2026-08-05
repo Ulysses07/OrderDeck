@@ -119,7 +119,12 @@ public sealed class AppHost : IDisposable
             log: sp.GetRequiredService<ILogger<ExtensionBridgeServer>>(),
             trialProbe: sp.GetRequiredService<LicenseService>(),
             spamFilter: sp.GetRequiredService<SpamFilter>(),
-            viewers: sp.GetRequiredService<ViewerCountTracker>()));
+            viewers: sp.GetRequiredService<ViewerCountTracker>(),
+            // Resmi API açıkken extension'ın IG yorumları düşer; aynı yorum
+            // Graph poller'dan geliyor ve iki yolun externalId'leri ayrık.
+            isInstagramOfficial: () =>
+                sp.GetRequiredService<AppSettings>().InstagramIngestMode
+                    == InstagramIngestMode.OfficialApi));
         services.AddSingleton<ChatBridgeIngestor>();
 
         // Phase 5c — YouTube canlı sohbet. Tek yol: resmi gRPC streamList
@@ -199,6 +204,24 @@ public sealed class AppHost : IDisposable
                 ConnectTimeout = TimeSpan.FromSeconds(15),
                 AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate,
             });
+
+        // Instagram canlı yorum polling'i (2026-08-05). Facebook'un SSE'sinden
+        // farklı: saniyede ~1 kısa istek. Bu yüzden ayrı named client — bağlantı
+        // havuzu sıcak kalsın, her poll'da yeni TCP el sıkışması olmasın.
+        services.AddHttpClient(
+            OrderDeck.Chat.Ingestors.Instagram.InstagramChatHostedService.HttpClientName,
+            c => c.Timeout = TimeSpan.FromSeconds(15))
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate,
+                ConnectTimeout = TimeSpan.FromSeconds(10),
+                // Poll aralığı 1sn; havuzu 10 dakika açık tut ki her istekte
+                // yeniden bağlanmayalım.
+                PooledConnectionLifetime = TimeSpan.FromMinutes(10),
+                PooledConnectionIdleTimeout = TimeSpan.FromMinutes(5),
+                MaxConnectionsPerServer = 4,
+            });
+
         services.AddSingleton<OrderDeck.Chat.Facebook.EncryptedFacebookTokenStore>(_ =>
             new OrderDeck.Chat.Facebook.EncryptedFacebookTokenStore(
                 Path.Combine(AppPaths.DataFolder, "facebook-tokens")));
@@ -218,6 +241,21 @@ public sealed class AppHost : IDisposable
                 sp.GetRequiredService<ILogger<OrderDeck.Chat.Facebook.FacebookModerationService>>()));
         services.AddHostedService(sp =>
             new OrderDeck.Chat.Ingestors.Facebook.FacebookChatHostedService(
+                () => sp.GetRequiredService<AppSettings>(),
+                sp.GetRequiredService<OrderDeck.Chat.Facebook.FacebookOAuthService>(),
+                sp.GetRequiredService<IChatBus>(),
+                sp.GetRequiredService<ILoggerFactory>(),
+                trialProbe: sp.GetRequiredService<LicenseService>(),
+                spamFilter: sp.GetRequiredService<SpamFilter>(),
+                sessions: sp.GetRequiredService<StreamSessionService>(),
+                httpFactory: sp.GetRequiredService<IHttpClientFactory>()));
+
+        // Instagram canlı yorumları — resmi Graph API. Facebook OAuth
+        // servisini paylaşıyor (IG erişimi Sayfa token'ı üzerinden gidiyor;
+        // ayrı bir IG oturumu yok). Varsayılan olarak uykuda:
+        // AppSettings.InstagramIngestMode == Scraper iken hiçbir çağrı yapmaz.
+        services.AddHostedService(sp =>
+            new OrderDeck.Chat.Ingestors.Instagram.InstagramChatHostedService(
                 () => sp.GetRequiredService<AppSettings>(),
                 sp.GetRequiredService<OrderDeck.Chat.Facebook.FacebookOAuthService>(),
                 sp.GetRequiredService<IChatBus>(),
