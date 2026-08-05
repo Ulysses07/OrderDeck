@@ -355,6 +355,36 @@ public class ExtensionBridgeServerTests
     }
 
     [Fact]
+    public async Task Trial_mode_keeps_extension_instagram_even_when_official_is_on()
+    {
+        // InstagramChatHostedService trial modda hiç çalışmıyor. Burada da
+        // bastırırsak trial kullanıcısının tek platformu tamamen kararır.
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(
+            bus, port: 0, trialProbe: new TrialProbeStub(true), isInstagramOfficial: () => true);
+        await server.StartAsync(CancellationToken.None);
+
+        var received = new TaskCompletionSource<ChatMessage>();
+        using var sub = bus.Subscribe(m => received.TrySetResult(m));
+
+        using var ws = new ClientWebSocket();
+        await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
+            CancellationToken.None);
+
+        await SendRaw(ws, SerializeChat("instagram", "@ayse_y", "MAVI XL", externalId: "ig-7"));
+
+        var msg = await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        msg.Platform.Should().Be("instagram");
+
+        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
+
+    private sealed class TrialProbeStub(bool isTrialMode) : OrderDeck.Core.Chat.ITrialModeProbe
+    {
+        public bool IsTrialMode { get; } = isTrialMode;
+    }
+
+    [Fact]
     public async Task Scraper_mode_still_forwards_instagram()
     {
         // Bayrak false → eski davranış aynen. Varsayılan (bayrak hiç verilmemiş)

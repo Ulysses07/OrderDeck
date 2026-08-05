@@ -250,9 +250,11 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
                 if (msg is { Type: "chat", Platform: not null, Username: not null, Text: not null })
                 {
                     // Instagram resmi API'deyken extension kopyası düşer.
-                    // Trial kapısından önce: trial modda da çift yayın istemiyoruz.
+                    // Trial modda bastırma YOK: InstagramChatHostedService trial'da
+                    // hiç çalışmıyor, burada da düşürürsek IG tamamen kararır.
                     if (string.Equals(msg.Platform, "instagram", StringComparison.OrdinalIgnoreCase) &&
-                        _isInstagramOfficial?.Invoke() == true)
+                        _isInstagramOfficial?.Invoke() == true &&
+                        _trialProbe?.IsTrialMode != true)
                     {
                         _log.LogDebug(
                             "Instagram OfficialApi mode: dropping extension message from {Username}",

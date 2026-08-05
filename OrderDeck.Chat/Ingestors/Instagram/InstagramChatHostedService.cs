@@ -35,6 +35,10 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
     private static readonly TimeSpan IdleAfterFatal = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan MaxBackoff = TimeSpan.FromMinutes(5);
 
+    /// <summary>Poller çalışırken ayarın hâlâ <c>OfficialApi</c> olup olmadığını
+    /// yoklama aralığı. Bkz. <see cref="WaitForPollerAsync"/>.</summary>
+    private static readonly TimeSpan ModeWatchInterval = TimeSpan.FromSeconds(5);
+
     public const string HttpClientName = "instagram-graph";
 
     private readonly Func<AppSettings> _settingsProvider;
@@ -178,7 +182,7 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
                 {
                     await poller.StartAsync(pollerCts.Token);
                     consecutiveCrashes = 0;
-                    await poller.Completion.WaitAsync(pollerCts.Token);
+                    await WaitForPollerAsync(poller, pollerCts);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
                 catch (OperationCanceledException) { /* SessionEnded — devam */ }
@@ -219,6 +223,40 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
                 try { await Task.Delay(IdleAfterPollerExit, ct); } catch { break; }
             }
         }
+    }
+
+    /// <summary>
+    /// Poller bitene kadar bekler, ama arada ayarı yoklar.
+    ///
+    /// <para><b>Neden:</b> köprüdeki extension bastırması her mesajda
+    /// değerlendiriliyor, yani operatör resmi modu <b>yayın ortasında</b>
+    /// kapattığı anda extension yorumları yeniden akmaya başlar. Poller
+    /// yalnız döngü başında ayara baksaydı yayın sonuna kadar çalışmaya
+    /// devam eder ve her yorum iki kez düşerdi — bu tasarımın önlemek için
+    /// var olduğu senaryonun ta kendisi.</para>
+    /// </summary>
+    private async Task WaitForPollerAsync(
+        InstagramLiveCommentsPoller poller, CancellationTokenSource pollerCts)
+    {
+        while (!poller.Completion.IsCompleted)
+        {
+            pollerCts.Token.ThrowIfCancellationRequested();
+
+            var tick = Task.Delay(ModeWatchInterval, pollerCts.Token);
+            var finished = await Task.WhenAny(poller.Completion, tick).ConfigureAwait(false);
+            if (finished == poller.Completion) break;
+
+            if (_settingsProvider().InstagramIngestMode != InstagramIngestMode.OfficialApi)
+            {
+                _log.LogInformation(
+                    "[InstagramChatHostedService] official mode turned off — stopping poller");
+                pollerCts.Cancel();
+                break;
+            }
+        }
+
+        // Hatayı yüzeye çıkar (iptalde OperationCanceledException fırlatır).
+        await poller.Completion.ConfigureAwait(false);
     }
 
     /// <summary>30s × 2^(n-1), 5dk tavan. Facebook/YouTube ile aynı eğri.</summary>
