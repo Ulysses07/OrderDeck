@@ -137,6 +137,27 @@ Meta panelinde yapılandırma değişikliği.**
 Herkesin yeniden bağlanması gerekiyor. `GET /{user-id}/permissions` ile
 kontrol edilip uygulamada uyarı gösterilecek.
 
+### Panelde yapıldı — ampirik bulgular (2026-08-05)
+
+Mevcut Facebook Login for Business yapılandırmasına IG izinleri eklendi
+(`instagram_basic` + `instagram_manage_comments`; nihai set: `business_management`,
+`instagram_basic`, `instagram_manage_comments`, `pages_manage_engagement`,
+`pages_read_engagement`, `pages_read_user_content`, `pages_show_list`).
+Ayrı yapılandırma **açılmadı** — Meta'nın kendi "Instagram API with Facebook
+Login" kurulum dokümanı IG ve Pages izinlerini tek akışta topluyor, ayrıca
+App Review izin+app düzeyinde işlediği için ikinci yapılandırma hiçbir avantaj
+sağlamıyor.
+
+Meta'nın hiçbir yerde belgelemediği, panelde ölçülerek doğrulanan iki şey:
+
+| Soru | Sonuç |
+|---|---|
+| Yayında olan yapılandırmayı düzenleyince `config_id` değişiyor mu? | **Hayır.** `1699947754625407` aynı kaldı → kod/ayar değişikliği gerekmedi. |
+| "Users will be required to give this app every permission you select" — IG hesabı bağlı olmayan Sayfa'da login kırılıyor mu? | **Hayır.** İzin ekranında IG izinleri görünüyor, seçilecek IG hesabı çıkmıyor, akış normal tamamlanıyor. FB-only yayıncılar etkilenmiyor. |
+
+**Hâlâ açık:** IG hesabı Sayfa'ya bağlandıktan sonra `GET /me/permissions`
+çıktısında IG izinleri `granted` mı — bakılmadı.
+
 ## Mimari
 
 Facebook sınıflarının aynası, moderasyon hariç:
