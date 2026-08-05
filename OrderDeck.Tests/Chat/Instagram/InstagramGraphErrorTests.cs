@@ -95,6 +95,18 @@ public class InstagramGraphErrorTests
     }
 
     [Fact]
+    public void Fractional_estimated_time_is_rounded_up()
+    {
+        // Meta bu alanı kesirli de yazabiliyor; atlanırsa kota aşımında
+        // hiç beklemeden tekrar denenir.
+        const string header =
+            "{\"app\":[{\"type\":\"instagram\",\"estimated_time_to_regain_access\":12.4}]}";
+
+        InstagramGraphError.TryGetRetryAfter(header, out var wait).Should().BeTrue();
+        wait.Should().Be(TimeSpan.FromMinutes(13));
+    }
+
+    [Fact]
     public void Zero_estimated_time_means_no_wait_required()
     {
         const string header =

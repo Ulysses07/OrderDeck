@@ -36,6 +36,11 @@ public static class InstagramGraphError
     /// <see cref="InstagramErrorKind.Transient"/> döner — bilinmeyende
     /// oturumu öldürmüyoruz.
     /// </summary>
+    /// <param name="httpStatus">Bilerek kullanılmıyor: Graph hataları HTTP 400
+    /// altında da 190/200/613 gibi ayrı anlamlar taşıyor, tek doğru sinyal
+    /// gövdedeki <c>error.code</c>. İmzada duruyor ki çağıran taraf statüyü
+    /// elinde tutmaya devam etsin ve ileride gövdesiz (5xx) ayrımı gerekirse
+    /// çağıranlar değişmesin.</param>
     public static InstagramErrorKind Classify(int httpStatus, string? body)
     {
         int? code = null, subcode = null;
@@ -90,11 +95,15 @@ public static class InstagramGraphError
                 foreach (var bucket in appEntry.Value.EnumerateArray())
                 {
                     if (bucket.ValueKind != JsonValueKind.Object) continue;
+                    // TryGetDouble: Meta bu alanı bazen `12.0` gibi kesirli
+                    // yazıyor; TryGetInt32 onu sessizce atlar ve kota
+                    // aşımında backoff hiç uygulanmaz. Yukarı yuvarlıyoruz.
                     if (bucket.TryGetProperty("estimated_time_to_regain_access", out var e) &&
-                        e.TryGetInt32(out var minutes) &&
-                        minutes > maxMinutes)
+                        e.ValueKind == JsonValueKind.Number &&
+                        e.TryGetDouble(out var raw))
                     {
-                        maxMinutes = minutes;
+                        int minutes = (int)Math.Ceiling(raw);
+                        if (minutes > maxMinutes) maxMinutes = minutes;
                     }
                 }
             }
