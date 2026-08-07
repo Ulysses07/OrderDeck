@@ -247,10 +247,10 @@
                                       IsChecked="{Binding UseOfficialInstagramApi}"
                                       FontWeight="SemiBold" Margin="0,0,0,8"/>
                             <TextBlock Style="{StaticResource S.Hint}">
-                                Kapalıyken yorumlar Chrome eklentisinden gelir (bugünkü davranış). Açtığında yorumlar
-                                doğrudan Instagram'ın resmi API'sinden okunur — tarayıcı sekmesi açık olmasına gerek kalmaz.
-                                Instagram canlı yayında yorum silme/gizleme desteklemediği için resmi yolda sağ-tık
-                                moderasyon menüsü çıkmaz. Meta onayı tamamlanana kadar varsayılan kapalıdır.
+                                Kapalıyken yorumlar tarayıcı eklentisinden gelir; yayın sayfasının bir sekmede açık
+                                kalması gerekir. Açtığında yorumlar doğrudan Instagram'ın resmi API'sinden okunur,
+                                tarayıcı sekmesi gerekmez. Instagram canlı yayında yorum silme/gizleme desteklemediği
+                                için resmi yolda sağ-tık moderasyon menüsü çıkmaz.
                             </TextBlock>
                         </StackPanel>
                     </Border>
