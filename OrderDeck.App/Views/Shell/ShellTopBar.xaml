@@ -4,7 +4,9 @@
     <Border Height="{StaticResource OD.Layout.TopbarHeight}"
             BorderBrush="{StaticResource OD.Brush.Border}"
             BorderThickness="0,0,0,1">
-        <DockPanel LastChildFill="False" Margin="{StaticResource OD.Pad.4}">
+        <!-- Dikey margin YOK: 56px bar, içindeki OD.Button.Primary 46px.
+             Simetrik OD.Pad.* verilirse buton alttan kırpılır. -->
+        <DockPanel LastChildFill="False" Margin="{StaticResource OD.Pad.X5}">
 
             <!-- SOL: durum + süre + saat -->
             <TextBlock DockPanel.Dock="Left" Text="{Binding StreamStatusLabel}"
@@ -29,7 +31,7 @@
                     Command="{Binding StartGiveawayCommand}"
                     IsEnabled="{Binding CanStartGiveaway}"
                     Style="{StaticResource OD.Button.Ghost}"
-                    Margin="{StaticResource OD.Pad.2}">
+                    Margin="{StaticResource OD.Pad.X2}">
                 <StackPanel Orientation="Horizontal">
                     <Image Source="{StaticResource OD.Icon.Gift}"
                            Width="{StaticResource OD.Icon.Sm}"
@@ -44,19 +46,19 @@
             <Button DockPanel.Dock="Right" Content="Yayını Bitir"
                     Command="{Binding EndStreamCommand}"
                     Style="{StaticResource OD.Button.Ghost}"
-                    Margin="{StaticResource OD.Pad.2}"/>
+                    Margin="{StaticResource OD.Pad.X2}"/>
 
             <Button DockPanel.Dock="Right" Content="Yayın Başlat"
                     Command="{Binding StartStreamCommand}"
                     Style="{StaticResource OD.Button.Primary}"
-                    Margin="{StaticResource OD.Pad.2}"/>
+                    Margin="{StaticResource OD.Pad.X2}"/>
 
             <!-- Zil. Button kalıyor: Border.InputBindings LeftClick WPF'te
                  güvenilir tetiklenmiyordu (mevcut yorum). -->
             <Button DockPanel.Dock="Right"
                     Command="{Binding OpenIntakeSubmissionsCommand}"
                     Style="{StaticResource OD.Button.Ghost}"
-                    Margin="{StaticResource OD.Pad.2}"
+                    Margin="{StaticResource OD.Pad.X2}"
                     Visibility="{Binding HasNewIntakeSubmissions,
                                  Converter={StaticResource BoolToVisibleConverter}}"
                     ToolTip="Yeni form başvurularını görüntülemek için tıkla">

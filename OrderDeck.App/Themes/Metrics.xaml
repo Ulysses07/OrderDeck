@@ -57,6 +57,12 @@
   <Thickness x:Key="OD.Pad.Top6"    Left="0" Top="20" Right="0" Bottom="0"/>
   <Thickness x:Key="OD.Pad.Bottom3" Left="0" Top="0"  Right="0" Bottom="8"/>
 
+  <!-- Yatay-yalnız boşluklar. Yüksekliği sabit şeritlerde (üst bar 56px,
+       içindeki birincil buton 46px) dikey margin içeriği kırpar; kırpma
+       exception atmadığı için ancak ekranda fark edilir. -->
+  <Thickness x:Key="OD.Pad.X2" Left="4"  Top="0" Right="4"  Bottom="0"/>
+  <Thickness x:Key="OD.Pad.X5" Left="16" Top="0" Right="16" Bottom="0"/>
+
   <!-- Köşe yarıçapı: 5 basamak -->
   <CornerRadius x:Key="OD.Radius.Xs">4</CornerRadius>     <!-- çip, kod parçacığı -->
   <CornerRadius x:Key="OD.Radius.Sm">6</CornerRadius>     <!-- input, küçük buton -->
