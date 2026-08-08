@@ -36,6 +36,7 @@ view değişikliği.
 |---|---|
 | `OrderDeck.App/Fonts/IBMPlexSans-{Regular,Medium,SemiBold}.ttf` | gövde fontu (yeni) |
 | `OrderDeck.App/Fonts/JetBrainsMono-Medium.ttf` | mono 500 ağırlığı (yeni) |
+| `OrderDeck.App/Fonts/OFL-{IBMPlexSans,JetBrainsMono,BricolageGrotesque}.txt` | OFL lisans metinleri (yeni) |
 | `OrderDeck.App/Themes/Colors.xaml` | 16 `SolidColorBrush` |
 | `OrderDeck.App/Themes/Metrics.xaml` | font ailesi + boyut, boşluk, dolgu, yarıçap, ikon ölçüsü, düzen sabitleri |
 | `OrderDeck.App/Themes/Motion.xaml` | 3 `Duration` + 2 easing |
@@ -79,8 +80,8 @@ Kaynaklar (ikisi de birinci-el, ikisi de OFL — gömme serbest):
 
 | Font | Kaynak |
 |---|---|
-| IBM Plex Sans | `github.com/IBM/plex` sürüm paketi → `IBM-Plex-Sans/fonts/complete/ttf/` |
-| JetBrains Mono | `github.com/JetBrains/JetBrainsMono` sürüm paketi → `fonts/ttf/` |
+| IBM Plex Sans | `github.com/IBM/plex` sürüm paketi `@ibm/plex-sans@1.1.0` → `ibm-plex-sans/fonts/complete/ttf/` |
+| JetBrains Mono | `github.com/JetBrains/JetBrainsMono` sürüm paketi `v2.304` → `fonts/ttf/` |
 
 Gereken tam dosyalar: `IBMPlexSans-Regular.ttf` (400), `IBMPlexSans-Medium.ttf`
 (500), `IBMPlexSans-SemiBold.ttf` (600), `JetBrainsMono-Medium.ttf` (500).
@@ -88,6 +89,20 @@ Bricolage Grotesque yalnız 700 ağırlığında kullanılıyor, `-Bold.ttf` zat
 
 Dosyaları `OrderDeck.App/Fonts/` altına yukarıdaki adlarla koyun. Ad değişirse
 Görev 3'teki `FontFamily` pack URI'lerini de değiştirmek gerekir.
+
+**Sürüm karışımı — bilinçli:** repodaki `JetBrainsMono-Regular/Bold.ttf`
+v2.211, eklenen Medium v2.304. Mevcut ikisini değiştirmek Faz 0'ın "hiçbir
+şey görsel olarak değişmemeli" ölçütünü bozardı; Medium ise bu fazda hiçbir
+yerde kullanılmıyor. WPF üçünü tek `JetBrains Mono` ailesinde topluyor
+(ölçüldü: 400/500/700). Faz 1'de 500 ağırlığı gerçekten kullanılınca 400/700
+ile yan yana bakılıp gerekirse sürüm birleştirilir.
+
+**Lisans dosyaları da eklenir.** OFL, font yazılımının her kopyasının lisans
+metniyle birlikte dağıtılmasını şart koşuyor; repoda bugün hiç lisans dosyası
+yok (Bricolage Grotesque için de eksik). `Fonts/` altına üç dosya konur:
+`OFL-IBMPlexSans.txt`, `OFL-JetBrainsMono.txt`, `OFL-BricolageGrotesque.txt`.
+Bunlar `.txt` olduğu için `csproj`'un `Fonts\*.ttf` kuralına takılmaz, derleme
+çıktısına girmez — kaynak ağacında dururlar.
 
 - [ ] **Adım 3: Derlemenin fontları kaynak olarak aldığını doğrula**
 
@@ -100,15 +115,16 @@ Beklenen: 0 hata. `TreatWarningsAsErrors` açık olduğu için 0 uyarı da gerek
 - [ ] **Adım 4: Commit**
 
 ```bash
-git add OrderDeck.App/Fonts/IBMPlexSans-Regular.ttf \
-        OrderDeck.App/Fonts/IBMPlexSans-Medium.ttf \
-        OrderDeck.App/Fonts/IBMPlexSans-SemiBold.ttf \
-        OrderDeck.App/Fonts/JetBrainsMono-Medium.ttf
+git add OrderDeck.App/Fonts/
 git commit -m "$(cat <<'EOF'
 feat(theme): IBM Plex Sans ve JetBrains Mono Medium fontlarını göm
 
 Tasarım sisteminin gövde fontu IBM Plex Sans; bugüne kadar yalnız Bricolage
 Grotesque ve JetBrains Mono gömülüydü, gövde metni Segoe UI'a düşüyordu.
+
+OFL lisans metinleri de ekleniyor — lisans, font yazılımının her kopyasının
+lisansla birlikte dağıtılmasını şart koşuyor; repoda hiç yoktu (mevcut
+Bricolage Grotesque için de eksikti).
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
 EOF
@@ -434,9 +450,26 @@ public class ThemeMetricsTests
         Assert.Null(error);
     }
 
+    /// <summary>
+    /// Her ailenin BEKLENEN AĞIRLIKLARI sunduğunu doğrular.
+    ///
+    /// NEDEN sadece "çözülüyor mu" yetmiyor: IBM Plex Sans'ın Medium ve
+    /// SemiBold dosyalarında eski aile adı (name ID 1) "IBM Plex Sans Medm" /
+    /// "IBM Plex Sans SmBld"; tek aileye ancak tipografik aile adı (ID 16)
+    /// üzerinden katılıyorlar. WPF bunu doğru yapıyor (ölçüldü), ama font
+    /// dosyalarından biri eksik kalırsa aile yine ÇÖZÜLÜR — yalnız o ağırlık
+    /// sessizce en yakınına düşer. Ağırlık listesi bunu yakalar.
+    /// </summary>
     [Fact]
-    public void Font_families_resolve_to_embedded_faces()
+    public void Font_families_expose_expected_weights()
     {
+        var expectedWeights = new Dictionary<string, int[]>
+        {
+            ["OD.Font.Sans"]    = [400, 500, 600],
+            ["OD.Font.Mono"]    = [400, 500, 700],
+            ["OD.Font.Display"] = [400, 700],
+        };
+
         var error = ThemeTestHost.Run(dict =>
         {
             foreach (var (key, face) in Fonts)
@@ -444,8 +477,13 @@ public class ThemeMetricsTests
                 var family = Assert.IsType<FontFamily>(dict[key]);
                 // Gömülü font pack URI ile gelir; Source "…/Fonts/#Yüz Adı".
                 Assert.Contains("#" + face, family.Source);
-                // Yüz gerçekten çözülebiliyor mu (dosya eksikse boş döner).
-                Assert.NotEmpty(family.GetTypefaces());
+
+                var weights = family.GetTypefaces()
+                    .Where(t => t.Style == FontStyles.Normal)
+                    .Select(t => t.Weight.ToOpenTypeWeight())
+                    .Distinct().Order().ToArray();
+
+                Assert.Equal(expectedWeights[key], weights);
             }
         }, "Metrics.xaml");
 
