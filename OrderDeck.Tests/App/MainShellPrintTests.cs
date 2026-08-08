@@ -23,6 +23,7 @@ using OrderDeck.Licensing.Api;
 using OrderDeck.Licensing.Services;
 using OrderDeck.Licensing.Storage;
 using OrderDeck.Licensing.Trial;
+using OrderDeck.Tests.Fakes;
 using OrderDeck.Tests.TestHelpers;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -171,7 +172,8 @@ public class MainShellPrintTests
         var vm = new MainShellViewModel(
             bus, labelSvc, sessionSvc, printer, customerSvc, customerRepo,
             labelRepo, clock.Object, productCard,
-            giveawaySvc, banner, licenseSvc, intakeSync, tempStore);
+            giveawaySvc, banner, licenseSvc, intakeSync, tempStore,
+            new FakeDialogService());
 
         return (vm, printer, db);
     }

@@ -1,5 +1,13 @@
 namespace OrderDeck.App.Services;
 
+/// <summary>Bildirimin tonu. WPF'te MessageBoxImage'a eşlenir.</summary>
+public enum DialogSeverity
+{
+    Info,
+    Warning,
+    Error,
+}
+
 public interface IDialogService
 {
     bool ShowPhoneEntryDialog(string customerId);
@@ -9,4 +17,13 @@ public interface IDialogService
     /// ikonu "Hata" olarak sabit; belirsiz bir durumu (ör. gönderim işleniyor,
     /// sonuç bilinmiyor) onunla göstermek operatöre yanlış bilgi verir.</summary>
     void ShowInfo(string message);
+
+    /// <summary>Başlığı çağıran belirleyen bildirim. <see cref="ShowInfo"/> ve
+    /// <see cref="ShowError"/> başlığı sabitler; kabuk her uyarıyı kendi
+    /// bağlamıyla ("Yayın aktif", "Geçersiz fiyat", ...) adlandırıyor.</summary>
+    void Show(string message, string title, DialogSeverity severity = DialogSeverity.Info);
+
+    /// <summary>Evet/Hayır onayı; Evet ise true. Sahte uygulama varsayılan
+    /// olarak false döner — testte yanlışlıkla yıkıcı bir dala girilmesin.</summary>
+    bool Confirm(string message, string title);
 }

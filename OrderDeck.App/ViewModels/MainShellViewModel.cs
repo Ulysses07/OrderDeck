@@ -45,6 +45,14 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private readonly LicenseService _licenseService;
     private readonly IntakeFormSyncService _intakeSync;
     private readonly SettingsStore _settingsStore;
+
+    /// <summary>
+    /// Operatöre gösterilen uyarı/onay kutuları. Doğrudan
+    /// <c>MessageBox.Show</c> ÇAĞIRMA: modal kutu testte gerçekten açılıp
+    /// koşuyu kilitliyor ve kendi mesaj döngüsünde alakasız dispatcher
+    /// işlerini pompalayarak rastgele hatalar üretiyordu.
+    /// </summary>
+    private readonly IDialogService _dialogs;
     private readonly AnimationCatalogClient? _animationCatalogClient;
     private readonly ExtensionBridgeServer? _bridge;
     private readonly ViewerCountTracker? _viewers;
@@ -336,12 +344,14 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         LicenseService licenseService,
         IntakeFormSyncService intakeSync,
         SettingsStore settingsStore,
+        IDialogService dialogs,
         YouTubeModerationService? youTubeModeration = null,
         AnimationCatalogClient? animationCatalogClient = null,
         ExtensionBridgeServer? bridge = null,
         ViewerCountTracker? viewers = null,
         FacebookModerationService? facebookModeration = null)
     {
+        _dialogs = dialogs;
         _labels = labels;
         _sessions = sessions;
         _printer = printer;
@@ -778,8 +788,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     {
         if (_sessions.GetActive() is not null)
         {
-            MessageBox.Show("Zaten aktif bir yayın var. Önce mevcut yayını bitir.",
-                "Yayın aktif", MessageBoxButton.OK, MessageBoxImage.Information);
+            _dialogs.Show("Zaten aktif bir yayın var. Önce mevcut yayını bitir.",
+                "Yayın aktif");
             return;
         }
         _sessions.Start("Yeni Yayın", new[] { "instagram", "tiktok" });
@@ -795,22 +805,21 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
         if (IsGiveawayActive)
         {
-            MessageBox.Show("Aktif çekiliş var. Önce çekilişi tamamla veya iptal et.",
-                "Çekiliş aktif", MessageBoxButton.OK, MessageBoxImage.Warning);
+            _dialogs.Show("Aktif çekiliş var. Önce çekilişi tamamla veya iptal et.",
+                "Çekiliş aktif", DialogSeverity.Warning);
             return;
         }
 
-        var confirm = MessageBox.Show("Yayını bitirmek istediğinden emin misin?",
-            "Yayını Bitir", MessageBoxButton.YesNo, MessageBoxImage.Question);
-        if (confirm != MessageBoxResult.Yes) return;
+        if (!_dialogs.Confirm("Yayını bitirmek istediğinden emin misin?", "Yayını Bitir"))
+            return;
 
         if (PrintQueue.Count > 0)
         {
             try { await Print(); }
             catch (Exception ex)
             {
-                MessageBox.Show($"Yazdırma sırasında hata oluştu, yine de yayını bitiriyorum:\n{ex.Message}",
-                    "Yazdırma hatası", MessageBoxButton.OK, MessageBoxImage.Warning);
+                _dialogs.Show($"Yazdırma sırasında hata oluştu, yine de yayını bitiriyorum:\n{ex.Message}",
+                    "Yazdırma hatası", DialogSeverity.Warning);
             }
         }
 
@@ -833,15 +842,14 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         var session = _sessions.GetActive();
         if (session is null)
         {
-            MessageBox.Show("Önce yayın başlat.",
-                "Aktif yayın yok", MessageBoxButton.OK, MessageBoxImage.Information);
+            _dialogs.Show("Önce yayın başlat.", "Aktif yayın yok");
             return;
         }
 
         if (!TryParsePrice(ActivePriceText, out var price))
         {
-            MessageBox.Show("Geçerli bir fiyat gir (örn: 100 veya 99.50).",
-                "Geçersiz fiyat", MessageBoxButton.OK, MessageBoxImage.Warning);
+            _dialogs.Show("Geçerli bir fiyat gir (örn: 100 veya 99.50).",
+                "Geçersiz fiyat", DialogSeverity.Warning);
             return;
         }
 
@@ -896,8 +904,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"Yedek eklenemedi: {ex.Message}",
-                "Hata", MessageBoxButton.OK, MessageBoxImage.Warning);
+            _dialogs.Show($"Yedek eklenemedi: {ex.Message}",
+                "Hata", DialogSeverity.Warning);
         }
         finally
         {
@@ -922,9 +930,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private void ClearQueue()
     {
         if (PrintQueue.Count == 0) return;
-        var confirm = MessageBox.Show($"Kuyruktaki {PrintQueue.Count} etiket silinecek. Emin misin?",
-            "Hepsini Temizle", MessageBoxButton.YesNo, MessageBoxImage.Question);
-        if (confirm != MessageBoxResult.Yes) return;
+        if (!_dialogs.Confirm($"Kuyruktaki {PrintQueue.Count} etiket silinecek. Emin misin?",
+            "Hepsini Temizle")) return;
 
         foreach (var item in PrintQueue.ToList()) _labels.Delete(item.Id);
         PrintQueue.Clear();
@@ -950,19 +957,17 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         // PrintDocument.Print()'i sync çağırıyor → printer driver/spooler
         // asılırsa UI thread süresiz block olur. Task.Run ile background'a al.
         // Süre LabelPrinter kendi log'unda görünür; burada sadece hata
-        // gösteren MessageBox.
+        // gösteren uyarı.
         try
         {
             await Task.Run(() => _printer.Print(labels, recipientPaysIds));
         }
         catch (Exception ex)
         {
-            System.Windows.MessageBox.Show(
+            _dialogs.Show(
                 $"Etiket yazdırma başarısız: {ex.Message}\n\n" +
                 "Yazıcı bağlantısını kontrol et veya Ayarlar > Yazıcı'dan farklı bir yazıcı seç.",
-                "Yazdırma Hatası",
-                System.Windows.MessageBoxButton.OK,
-                System.Windows.MessageBoxImage.Warning);
+                "Yazdırma Hatası", DialogSeverity.Warning);
             return;
         }
 
@@ -1044,8 +1049,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         var session = _sessions.GetActive();
         if (session is null)
         {
-            MessageBox.Show("Önce yayın başlat.", "Aktif yayın yok",
-                MessageBoxButton.OK, MessageBoxImage.Information);
+            _dialogs.Show("Önce yayın başlat.", "Aktif yayın yok");
             return;
         }
         if (IsGiveawayActive) return;
@@ -1114,14 +1118,13 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         {
             // Empty draw — used to silently broadcast a winners-empty event,
             // which animated a blank wheel for ~10s and confused operators
-            // ("did the draw fire?"). Now: explicit MessageBox + leave the
+            // ("did the draw fire?"). Now: explicit notice + leave the
             // giveaway active so the operator can either wait for entries
             // or cancel it deliberately.
-            MessageBox.Show(
+            _dialogs.Show(
                 $"'{ex.Keyword}' anahtar kelimesiyle hiç katılımcı yok.\n\n" +
                 "Çekiliş hâlâ açık — biraz daha bekleyebilir veya iptal edebilirsin.",
-                "Çekiliş — Katılımcı Yok",
-                MessageBoxButton.OK, MessageBoxImage.Information);
+                "Çekiliş — Katılımcı Yok");
             return;
         }
         Banner.StopTracking();
@@ -1134,9 +1137,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private void CancelGiveaway()
     {
         if (_activeGiveawayId is null) return;
-        var confirm = MessageBox.Show("Çekiliş iptal edilecek. Emin misin?",
-            "Çekilişi İptal", MessageBoxButton.YesNo, MessageBoxImage.Question);
-        if (confirm != MessageBoxResult.Yes) return;
+        if (!_dialogs.Confirm("Çekiliş iptal edilecek. Emin misin?",
+            "Çekilişi İptal")) return;
 
         _giveaways.Cancel(_activeGiveawayId);
         Banner.StopTracking();
@@ -1160,9 +1162,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         var messageId = msg.Message.ExternalId;
         if (string.IsNullOrEmpty(messageId))
         {
-            MessageBox.Show(
+            _dialogs.Show(
                 "Bu mesaj YouTube üzerinden gelmedi (orijinal ID yok), silinemez.",
-                "YouTube moderasyon", MessageBoxButton.OK, MessageBoxImage.Information);
+                "YouTube moderasyon");
             return;
         }
 
@@ -1172,13 +1174,11 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         }
         catch (ModerationException ex)
         {
-            MessageBox.Show(ex.Message, "YouTube moderasyon",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            _dialogs.Show(ex.Message, "YouTube moderasyon", DialogSeverity.Warning);
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"Beklenmeyen hata: {ex.Message}", "YouTube moderasyon",
-                MessageBoxButton.OK, MessageBoxImage.Error);
+            _dialogs.Show($"Beklenmeyen hata: {ex.Message}", "YouTube moderasyon", DialogSeverity.Error);
         }
     }
 
@@ -1195,26 +1195,22 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         if (!string.Equals(msg.Platform, "youtube", StringComparison.OrdinalIgnoreCase)) return;
 
         var displayName = msg.Display;
-        var confirm = MessageBox.Show(
+        if (!_dialogs.Confirm(
             $"'{displayName}' kullanıcısı YouTube canlı yayında kalıcı olarak banlansın mı?",
-            "YouTube ban", MessageBoxButton.YesNo, MessageBoxImage.Question);
-        if (confirm != MessageBoxResult.Yes) return;
+            "YouTube ban")) return;
 
         try
         {
             await _youTubeModeration.BanUserAsync(msg.Username).ConfigureAwait(true);
-            MessageBox.Show($"{displayName} banlandı.", "YouTube moderasyon",
-                MessageBoxButton.OK, MessageBoxImage.Information);
+            _dialogs.Show($"{displayName} banlandı.", "YouTube moderasyon");
         }
         catch (ModerationException ex)
         {
-            MessageBox.Show(ex.Message, "YouTube moderasyon",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            _dialogs.Show(ex.Message, "YouTube moderasyon", DialogSeverity.Warning);
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"Beklenmeyen hata: {ex.Message}", "YouTube moderasyon",
-                MessageBoxButton.OK, MessageBoxImage.Error);
+            _dialogs.Show($"Beklenmeyen hata: {ex.Message}", "YouTube moderasyon", DialogSeverity.Error);
         }
     }
 
@@ -1230,26 +1226,22 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         if (!string.Equals(msg.Platform, "youtube", StringComparison.OrdinalIgnoreCase)) return;
 
         var displayName = msg.Display;
-        var confirm = MessageBox.Show(
+        if (!_dialogs.Confirm(
             $"'{displayName}' kullanıcısının YouTube banı kaldırılsın mı?",
-            "YouTube ban kaldır", MessageBoxButton.YesNo, MessageBoxImage.Question);
-        if (confirm != MessageBoxResult.Yes) return;
+            "YouTube ban kaldır")) return;
 
         try
         {
             await _youTubeModeration.UnbanUserAsync(msg.Username).ConfigureAwait(true);
-            MessageBox.Show($"{displayName} kullanıcısının banı kaldırıldı.", "YouTube moderasyon",
-                MessageBoxButton.OK, MessageBoxImage.Information);
+            _dialogs.Show($"{displayName} kullanıcısının banı kaldırıldı.", "YouTube moderasyon");
         }
         catch (ModerationException ex)
         {
-            MessageBox.Show(ex.Message, "YouTube moderasyon",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            _dialogs.Show(ex.Message, "YouTube moderasyon", DialogSeverity.Warning);
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"Beklenmeyen hata: {ex.Message}", "YouTube moderasyon",
-                MessageBoxButton.OK, MessageBoxImage.Error);
+            _dialogs.Show($"Beklenmeyen hata: {ex.Message}", "YouTube moderasyon", DialogSeverity.Error);
         }
     }
 
@@ -1267,32 +1259,28 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         var commentId = msg.Message.ExternalId;
         if (string.IsNullOrEmpty(commentId))
         {
-            MessageBox.Show(
+            _dialogs.Show(
                 "Bu mesaj Facebook üzerinden gelmedi (orijinal yorum kimliği yok), silinemez.",
-                "Facebook moderasyon", MessageBoxButton.OK, MessageBoxImage.Information);
+                "Facebook moderasyon");
             return;
         }
 
-        var confirm = MessageBox.Show(
+        if (!_dialogs.Confirm(
             $"'{msg.Display}' kullanıcısının yorumu Facebook'tan silinsin mi?",
-            "Facebook moderasyon", MessageBoxButton.YesNo, MessageBoxImage.Question);
-        if (confirm != MessageBoxResult.Yes) return;
+            "Facebook moderasyon")) return;
 
         try
         {
             await _facebookModeration.DeleteCommentAsync(commentId).ConfigureAwait(true);
-            MessageBox.Show("Yorum silindi.", "Facebook moderasyon",
-                MessageBoxButton.OK, MessageBoxImage.Information);
+            _dialogs.Show("Yorum silindi.", "Facebook moderasyon");
         }
         catch (ModerationException ex)
         {
-            MessageBox.Show(ex.Message, "Facebook moderasyon",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            _dialogs.Show(ex.Message, "Facebook moderasyon", DialogSeverity.Warning);
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"Beklenmeyen hata: {ex.Message}", "Facebook moderasyon",
-                MessageBoxButton.OK, MessageBoxImage.Error);
+            _dialogs.Show($"Beklenmeyen hata: {ex.Message}", "Facebook moderasyon", DialogSeverity.Error);
         }
     }
 
@@ -1311,34 +1299,30 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
         if (string.IsNullOrEmpty(msg.Username))
         {
-            MessageBox.Show(
+            _dialogs.Show(
                 "Bu mesajda Facebook kullanıcı kimliği yok, banlanamaz.",
-                "Facebook ban", MessageBoxButton.OK, MessageBoxImage.Information);
+                "Facebook ban");
             return;
         }
 
         var displayName = msg.Display;
-        var confirm = MessageBox.Show(
+        if (!_dialogs.Confirm(
             $"'{displayName}' kullanıcısı Page'den kalıcı olarak banlansın mı? " +
             "Ban yalnızca bu yayını değil, Page'in tüm içeriğini kapsar.",
-            "Facebook ban", MessageBoxButton.YesNo, MessageBoxImage.Question);
-        if (confirm != MessageBoxResult.Yes) return;
+            "Facebook ban")) return;
 
         try
         {
             await _facebookModeration.BanUserAsync(msg.Username).ConfigureAwait(true);
-            MessageBox.Show($"{displayName} banlandı.", "Facebook moderasyon",
-                MessageBoxButton.OK, MessageBoxImage.Information);
+            _dialogs.Show($"{displayName} banlandı.", "Facebook moderasyon");
         }
         catch (ModerationException ex)
         {
-            MessageBox.Show(ex.Message, "Facebook moderasyon",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            _dialogs.Show(ex.Message, "Facebook moderasyon", DialogSeverity.Warning);
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"Beklenmeyen hata: {ex.Message}", "Facebook moderasyon",
-                MessageBoxButton.OK, MessageBoxImage.Error);
+            _dialogs.Show($"Beklenmeyen hata: {ex.Message}", "Facebook moderasyon", DialogSeverity.Error);
         }
     }
 
@@ -1356,33 +1340,29 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
         if (string.IsNullOrEmpty(msg.Username))
         {
-            MessageBox.Show(
+            _dialogs.Show(
                 "Bu mesajda Facebook kullanıcı kimliği yok, banlanamaz.",
-                "Facebook ban kaldır", MessageBoxButton.OK, MessageBoxImage.Information);
+                "Facebook ban kaldır");
             return;
         }
 
         var displayName = msg.Display;
-        var confirm = MessageBox.Show(
+        if (!_dialogs.Confirm(
             $"'{displayName}' kullanıcısının Page banı kaldırılsın mı?",
-            "Facebook ban kaldır", MessageBoxButton.YesNo, MessageBoxImage.Question);
-        if (confirm != MessageBoxResult.Yes) return;
+            "Facebook ban kaldır")) return;
 
         try
         {
             await _facebookModeration.UnbanUserAsync(msg.Username).ConfigureAwait(true);
-            MessageBox.Show($"{displayName} kullanıcısının banı kaldırıldı.", "Facebook moderasyon",
-                MessageBoxButton.OK, MessageBoxImage.Information);
+            _dialogs.Show($"{displayName} kullanıcısının banı kaldırıldı.", "Facebook moderasyon");
         }
         catch (ModerationException ex)
         {
-            MessageBox.Show(ex.Message, "Facebook moderasyon",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            _dialogs.Show(ex.Message, "Facebook moderasyon", DialogSeverity.Warning);
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"Beklenmeyen hata: {ex.Message}", "Facebook moderasyon",
-                MessageBoxButton.OK, MessageBoxImage.Error);
+            _dialogs.Show($"Beklenmeyen hata: {ex.Message}", "Facebook moderasyon", DialogSeverity.Error);
         }
     }
 
@@ -1427,8 +1407,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         var customer = _customerRepo.FindByPlatformAndUsername(msg.Platform, msg.Username);
         if (customer is null)
         {
-            MessageBox.Show("Bu kullanıcı henüz kayıtlı değil.", "Müşteri yok",
-                MessageBoxButton.OK, MessageBoxImage.Information);
+            _dialogs.Show("Bu kullanıcı henüz kayıtlı değil.", "Müşteri yok");
             return;
         }
         ShowCustomerDetail(customer.Id);
