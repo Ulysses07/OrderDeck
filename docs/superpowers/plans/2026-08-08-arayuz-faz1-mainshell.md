@@ -2608,7 +2608,7 @@ satırlara dönüşür, kalanlar alttaki "⋯" taşma menüsünde durur.
             </StackPanel>
 
             <!-- ── Navigasyon ──────────────────────────────────────────── -->
-            <StackPanel Grid.Row="1" Margin="{StaticResource OD.Pad.Top5}">
+            <StackPanel Grid.Row="1" Margin="{StaticResource OD.Pad.Top6}">
                 <Button Style="{StaticResource NavButton}"
                         Command="{Binding OpenStreamHistoryCommand}" ToolTip="Yayın Geçmişi">
                     <TextBlock Text="Yayın Geçmişi"/>
@@ -2683,7 +2683,7 @@ satırlara dönüşür, kalanlar alttaki "⋯" taşma menüsünde durur.
                 <TextBlock Text="{Binding PrinterStatusText}"
                            FontSize="{StaticResource OD.Font.F1}"
                            TextTrimming="CharacterEllipsis"
-                           Margin="{StaticResource OD.Pad.Top4}">
+                           Margin="{StaticResource OD.Pad.Top5}">
                     <TextBlock.Style>
                         <Style TargetType="TextBlock">
                             <Setter Property="Foreground" Value="{StaticResource OD.Brush.Amber}"/>
@@ -2702,7 +2702,7 @@ satırlara dönüşür, kalanlar alttaki "⋯" taşma menüsünde durur.
                     x:Name="MenuButton"
                     Click="OnMenuClick"
                     Style="{StaticResource NavButton}"
-                    Margin="{StaticResource OD.Pad.Top4}"
+                    Margin="{StaticResource OD.Pad.Top5}"
                     ToolTip="Diğer">
                 <TextBlock Text="⋯  Diğer"/>
                 <Button.ContextMenu>
@@ -2720,7 +2720,7 @@ satırlara dönüşür, kalanlar alttaki "⋯" taşma menüsünde durur.
 </UserControl>
 ```
 
-**Tek yönlü boşluk tokenları.** Yukarıdaki XAML `OD.Pad.Top4`, `OD.Pad.Top5` ve
+**Tek yönlü boşluk tokenları.** Yukarıdaki XAML `OD.Pad.Top5`, `OD.Pad.Top6` ve
 `OD.Pad.Bottom3` kullanıyor. WPF'te `Margin="0,{StaticResource X},0,0"`
 **geçersizdir** — `Thickness` içine markup extension gömülemez, tam
 `Thickness` tokenı gerekir. `Themes/Metrics.xaml`'a `OD.Pad.*` bloğunun
@@ -2728,17 +2728,18 @@ ardına ekle:
 
 ```xml
   <!-- Tek yönlü boşluklar. Simetrik OD.Pad.* yetmediği yerlerde; sayı
-       XAML'a değil buraya yazılsın diye token. Değerler OD.Space.* ile
-       aynı ölçekte (3=8, 4=16, 5=20). -->
-  <Thickness x:Key="OD.Pad.Top4"    Left="0" Top="16" Right="0" Bottom="0"/>
-  <Thickness x:Key="OD.Pad.Top5"    Left="0" Top="20" Right="0" Bottom="0"/>
+       XAML'a değil buraya yazılsın diye token.
+       Basamak numarası simetrik kardeşiyle AYNI değeri gösterir:
+       Top5 = OD.Pad.5 = OD.Space.5 = 16. -->
+  <Thickness x:Key="OD.Pad.Top5"    Left="0" Top="16" Right="0" Bottom="0"/>
+  <Thickness x:Key="OD.Pad.Top6"    Left="0" Top="20" Right="0" Bottom="0"/>
   <Thickness x:Key="OD.Pad.Bottom3" Left="0" Top="0"  Right="0" Bottom="8"/>
 ```
 
 Yukarıdaki `ShellSidebar.xaml`'da şu dört yeri bu tokenlarla yaz:
-navigasyon `StackPanel` → `Margin="{StaticResource OD.Pad.Top5}"`;
+navigasyon `StackPanel` → `Margin="{StaticResource OD.Pad.Top6}"`;
 "BAĞLANTILAR" başlığı → `Margin="{StaticResource OD.Pad.Bottom3}"`;
-yazıcı satırı ve taşma butonu → `Margin="{StaticResource OD.Pad.Top4}"`.
+yazıcı satırı ve taşma butonu → `Margin="{StaticResource OD.Pad.Top5}"`.
 
 - [ ] **Adım 2: Kod-arkasını yaz**
 
@@ -3446,7 +3447,7 @@ Kod hiç girilmemişse (`Code` boş) kart tamamen boş bir ipucu gösterir.
                            RenderOptions.BitmapScalingMode="HighQuality"/>
                 </Border>
 
-                <DockPanel LastChildFill="False" Margin="{StaticResource OD.Pad.Top4}">
+                <DockPanel LastChildFill="False" Margin="{StaticResource OD.Pad.Top5}">
                     <TextBlock DockPanel.Dock="Left" Text="{Binding Code}"
                                Style="{StaticResource OD.Text.Mono}"/>
                     <Button DockPanel.Dock="Right" Content="Düzenle"
@@ -3460,7 +3461,7 @@ Kod hiç girilmemişse (`Code` boş) kart tamamen boş bir ipucu gösterir.
                            Foreground="{StaticResource OD.Brush.Text}"/>
 
                 <TextBlock Text="BEDEN STOĞU" Style="{StaticResource OD.Text.Micro}"
-                           Margin="{StaticResource OD.Pad.Top4}"/>
+                           Margin="{StaticResource OD.Pad.Top5}"/>
                 <ItemsControl ItemsSource="{Binding Sizes}"
                               ItemTemplate="{StaticResource SizeTile}">
                     <ItemsControl.ItemsPanel>
@@ -3479,7 +3480,7 @@ Kod hiç girilmemişse (`Code` boş) kart tamamen boş bir ipucu gösterir.
                          Style="{StaticResource OD.TextBox}"/>
 
                 <TextBlock Text="BEDENLER (virgülle)" Style="{StaticResource OD.Text.Micro}"
-                           Margin="{StaticResource OD.Pad.Top4}"/>
+                           Margin="{StaticResource OD.Pad.Top5}"/>
                 <DockPanel LastChildFill="True">
                     <Button DockPanel.Dock="Right" Content="Uygula"
                             Style="{StaticResource OD.Button.Ghost}"
@@ -3490,7 +3491,7 @@ Kod hiç girilmemişse (`Code` boş) kart tamamen boş bir ipucu gösterir.
 
                 <ItemsControl ItemsSource="{Binding Sizes}"
                               ItemTemplate="{StaticResource SizeTile}"
-                              Margin="{StaticResource OD.Pad.Top4}">
+                              Margin="{StaticResource OD.Pad.Top5}">
                     <ItemsControl.ItemsPanel>
                         <ItemsPanelTemplate>
                             <UniformGrid Columns="4"/>
@@ -3498,7 +3499,7 @@ Kod hiç girilmemişse (`Code` boş) kart tamamen boş bir ipucu gösterir.
                     </ItemsControl.ItemsPanel>
                 </ItemsControl>
 
-                <StackPanel Orientation="Horizontal" Margin="{StaticResource OD.Pad.Top4}">
+                <StackPanel Orientation="Horizontal" Margin="{StaticResource OD.Pad.Top5}">
                     <Button Content="Fotoğraf Seç…" Style="{StaticResource OD.Button.Ghost}"
                             Click="PickPhoto_OnClick"/>
                     <Button Content="Kaydet" Style="{StaticResource OD.Button.Primary}"
@@ -3804,7 +3805,7 @@ bağlanmadı) ya da `XamlParseException`.
                     </Grid.RowDefinitions>
                     <shell:ProductCard      Grid.Row="0"/>
                     <shell:PrintQueuePanel  Grid.Row="1"
-                                            Margin="{StaticResource OD.Pad.Top4}"/>
+                                            Margin="{StaticResource OD.Pad.Top5}"/>
                 </Grid>
             </Grid>
         </Grid>

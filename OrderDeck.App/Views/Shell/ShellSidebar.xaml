@@ -79,7 +79,7 @@
             </StackPanel>
 
             <!-- Navigasyon -->
-            <StackPanel Grid.Row="1" Margin="{StaticResource OD.Pad.Top5}">
+            <StackPanel Grid.Row="1" Margin="{StaticResource OD.Pad.Top6}">
                 <Button Style="{StaticResource NavButton}"
                         Command="{Binding OpenStreamHistoryCommand}" ToolTip="Yayın Geçmişi">
                     <TextBlock Text="Yayın Geçmişi"/>
@@ -154,7 +154,7 @@
                 <TextBlock Text="{Binding PrinterStatusText}"
                            FontSize="{StaticResource OD.Font.F1}"
                            TextTrimming="CharacterEllipsis"
-                           Margin="{StaticResource OD.Pad.Top4}">
+                           Margin="{StaticResource OD.Pad.Top5}">
                     <TextBlock.Style>
                         <Style TargetType="TextBlock">
                             <Setter Property="Foreground" Value="{StaticResource OD.Brush.Amber}"/>
@@ -173,7 +173,7 @@
                     x:Name="MenuButton"
                     Click="OnMenuClick"
                     Style="{StaticResource NavButton}"
-                    Margin="{StaticResource OD.Pad.Top4}"
+                    Margin="{StaticResource OD.Pad.Top5}"
                     ToolTip="Diğer">
                 <TextBlock Text="⋯  Diğer"/>
                 <Button.ContextMenu>

@@ -49,11 +49,12 @@
        değil buraya yazılsın diye token. WPF'te Margin="0,{StaticResource X},0,0"
        geçersiz — Thickness içine markup extension gömülemez, tam Thickness
        tokenı gerekir.
-       DİKKAT: Top4/Top5 değerleri aynı numaralı OD.Pad.* ile EŞLEŞMEZ
-       (OD.Pad.4=12 iken OD.Pad.Top4=16). Faz 1 planından gelen değerler
-       korundu; ölçek karşılıkları OD.Space.5=16 ve OD.Space.6=20'dir. -->
-  <Thickness x:Key="OD.Pad.Top4"    Left="0" Top="16" Right="0" Bottom="0"/>
-  <Thickness x:Key="OD.Pad.Top5"    Left="0" Top="20" Right="0" Bottom="0"/>
+       Basamak numarası simetrik kardeşiyle AYNI değeri gösterir:
+       Top5 = OD.Pad.5 = OD.Space.5 = 16. Numara/değer eşleşmesi bozulursa
+       token okunurluğunu kaybeder — yeni bir tek yönlü token eklerken
+       değeri OD.Space.* ölçeğinden seç. -->
+  <Thickness x:Key="OD.Pad.Top5"    Left="0" Top="16" Right="0" Bottom="0"/>
+  <Thickness x:Key="OD.Pad.Top6"    Left="0" Top="20" Right="0" Bottom="0"/>
   <Thickness x:Key="OD.Pad.Bottom3" Left="0" Top="0"  Right="0" Bottom="8"/>
 
   <!-- Köşe yarıçapı: 5 basamak -->
