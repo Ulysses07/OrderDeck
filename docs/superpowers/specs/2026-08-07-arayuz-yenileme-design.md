@@ -301,7 +301,8 @@ Sınırlar dar tutuldu:
   göçten etkilenmediği için ileride yeniden üretilmesi gerekmiyor.
 - **Şema (migration 024):** `Product(Code PK, Name, PhotoPath, UpdatedAt)` ve
   `ProductSize(Code, Size PK, Quantity, SortOrder)`. Fotoğraf
-  `%AppData%/OrderDeck/products/` altında dosya; yolu tabloda tutulur.
+  `%LOCALAPPDATA%\OrderDeck\products\` altında dosya; tabloda **yalnız dosya
+  adı** tutulur (mutlak yol değil — profil taşınırsa kayıt bozulmasın).
 - **Fiyat alanı YOK.** Karttaki fiyat, hero'daki aktif fiyat girişinin aynısı;
   yeni alan icat edilmiyor.
 - **Grid yalnız gösterir.** Etiket kuyruğa girince stok **düşmez**; `Label`'a
