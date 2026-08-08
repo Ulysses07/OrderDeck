@@ -27,12 +27,15 @@
         <Setter Property="FontSize"   Value="{StaticResource OD.Font.F2}"/>
         <Setter Property="FontWeight" Value="SemiBold"/>
         <Setter Property="Cursor"     Value="Hand"/>
+        <!-- Yalnız yatay: Height sabit 46, simetrik dolgu içeriği kırpardı. -->
+        <Setter Property="Padding"    Value="{StaticResource OD.Pad.X5}"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
                     <Border x:Name="Bd"
                             Background="{TemplateBinding Background}"
                             CornerRadius="{StaticResource OD.Radius.Md}"
+                            Padding="{TemplateBinding Padding}"
                             RenderTransformOrigin="0.5,0.5">
                         <ContentPresenter HorizontalAlignment="Center"
                                           VerticalAlignment="Center"/>
