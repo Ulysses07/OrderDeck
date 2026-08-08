@@ -16,7 +16,7 @@ namespace OrderDeck.Tests.App;
 public class ThemeMergeTests
 {
     private static readonly string[] NewDictionaries =
-        ["Colors.xaml", "Metrics.xaml", "Motion.xaml", "Controls.xaml"];
+        ["Colors.xaml", "Metrics.xaml", "Motion.xaml", "Icons.xaml", "Controls.xaml"];
 
     // GiveawayTheme.xaml listede YOK: SettingsTheme'i "/Themes/SettingsTheme.xaml"
     // ile merge ediyor; baştaki "/" WPF'te uygulama köküne (giriş assembly'sine)
@@ -59,6 +59,7 @@ public class ThemeMergeTests
             Assert.NotNull(app.Resources["OD.Brush.Accent"]);
             Assert.NotNull(app.Resources["OD.Font.F2"]);
             Assert.NotNull(app.Resources["OD.Dur.Base"]);
+            Assert.NotNull(app.Resources["OD.Path.History"]);
 
             // Eski sözlükler hâlâ çözülüyor (regresyon).
             Assert.NotNull(app.Resources["OD.Bg.Window"]);

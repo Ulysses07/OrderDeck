@@ -93,35 +93,35 @@
                 <Button Style="{StaticResource NavButton}"
                         Command="{Binding OpenStreamHistoryCommand}" ToolTip="Yayın Geçmişi">
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="🕘"/>
+                        <Path Data="{StaticResource OD.Path.History}" Style="{StaticResource OD.IconPath}"/>
                         <TextBlock Text="Yayın Geçmişi" Style="{StaticResource NavLabel}"/>
                     </StackPanel>
                 </Button>
                 <Button Style="{StaticResource NavButton}"
                         Command="{Binding OpenCustomerSearchCommand}" ToolTip="Müşteriler">
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="👥"/>
+                        <Path Data="{StaticResource OD.Path.Customers}" Style="{StaticResource OD.IconPath}"/>
                         <TextBlock Text="Müşteriler" Style="{StaticResource NavLabel}"/>
                     </StackPanel>
                 </Button>
                 <Button Style="{StaticResource NavButton}"
                         Command="{Binding OpenBlacklistCommand}" ToolTip="Kara Liste">
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="🚫"/>
+                        <Path Data="{StaticResource OD.Path.Blacklist}" Style="{StaticResource OD.IconPath}"/>
                         <TextBlock Text="Kara Liste" Style="{StaticResource NavLabel}"/>
                     </StackPanel>
                 </Button>
                 <Button Style="{StaticResource NavButton}"
                         Command="{Binding OpenDekontEkleCommand}" ToolTip="Yeni Dekont">
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="🧾"/>
+                        <Path Data="{StaticResource OD.Path.Receipt}" Style="{StaticResource OD.IconPath}"/>
                         <TextBlock Text="Yeni Dekont" Style="{StaticResource NavLabel}"/>
                     </StackPanel>
                 </Button>
                 <Button Style="{StaticResource NavButton}"
                         Command="{Binding OpenBulkSmsCommand}" ToolTip="Toplu SMS">
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="✉"/>
+                        <Path Data="{StaticResource OD.Path.Message}" Style="{StaticResource OD.IconPath}"/>
                         <TextBlock Text="Toplu SMS" Style="{StaticResource NavLabel}"/>
                     </StackPanel>
                 </Button>
@@ -201,7 +201,7 @@
                     Margin="{StaticResource OD.Pad.Top5}"
                     ToolTip="Diğer">
                 <StackPanel Orientation="Horizontal">
-                    <TextBlock Text="⋯"/>
+                    <Path Data="{StaticResource OD.Path.More}" Style="{StaticResource OD.IconPath}"/>
                     <TextBlock Text="Diğer" Style="{StaticResource NavLabel}"/>
                 </StackPanel>
                 <Button.ContextMenu>

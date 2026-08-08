@@ -12,6 +12,10 @@
                 <ResourceDictionary Source="Themes/Colors.xaml"/>
                 <ResourceDictionary Source="Themes/Metrics.xaml"/>
                 <ResourceDictionary Source="Themes/Motion.xaml"/>
+                <!-- Tek renkli arayüz ikonları. OD.Icon.* ölçülerine bağımlı →
+                     Metrics'ten sonra. Emoji yerine Path: spec §10 "emoji
+                     ikon 0". -->
+                <ResourceDictionary Source="Themes/Icons.xaml"/>
                 <!-- Bileşen stilleri: token'lara BAĞIMLI, bu yüzden üç token
                      sözlüğünden SONRA merge edilmeli. -->
                 <ResourceDictionary Source="Themes/Controls.xaml"/>

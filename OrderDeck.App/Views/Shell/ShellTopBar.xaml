@@ -71,12 +71,23 @@
                     Visibility="{Binding HasNewIntakeSubmissions,
                                  Converter={StaticResource BoolToVisibleConverter}}"
                     ToolTip="Yeni form başvurularını görüntülemek için tıkla">
-                <TextBlock Foreground="{StaticResource OD.Brush.Accent}"
-                           FontSize="{StaticResource OD.Font.F1}">
-                    <Run Text="🔔"/>
-                    <Run Text="{Binding NewIntakeSubmissionsCount, Mode=OneWay}"/>
-                    <Run Text="yeni başvuru"/>
-                </TextBlock>
+                <StackPanel Orientation="Horizontal">
+                    <!-- Fill burada AÇIKÇA veriliyor: OD.IconPath ata Button'ın
+                         Foreground'unu okur, o da Ghost stilinin soluk tonu.
+                         Zil vurgu rengiyle bakılsın diye ezildi. -->
+                    <Path Data="{StaticResource OD.Path.Bell}"
+                          Style="{StaticResource OD.IconPath}"
+                          Width="{StaticResource OD.Icon.Sm}"
+                          Height="{StaticResource OD.Icon.Sm}"
+                          Fill="{StaticResource OD.Brush.Accent}"/>
+                    <TextBlock Foreground="{StaticResource OD.Brush.Accent}"
+                               FontSize="{StaticResource OD.Font.F1}"
+                               VerticalAlignment="Center"
+                               Margin="{StaticResource OD.Pad.2}">
+                        <Run Text="{Binding NewIntakeSubmissionsCount, Mode=OneWay}"/>
+                        <Run Text="yeni başvuru"/>
+                    </TextBlock>
+                </StackPanel>
             </Button>
 
             <TextBlock DockPanel.Dock="Right"
@@ -116,7 +127,11 @@
                         Visibility="{Binding ViewerCountVisible,
                                      Converter={StaticResource BoolToVisibleConverter}}"
                         ToolTip="{Binding ViewerCountTooltip}">
-                <TextBlock Text="👁" VerticalAlignment="Center"/>
+                <!-- Ata Button yok (bu bir StackPanel) → OD.IconPath'in
+                     Foreground bağı boş döner, Fill elle veriliyor. -->
+                <Path Data="{StaticResource OD.Path.Eye}"
+                      Style="{StaticResource OD.IconPath}"
+                      Fill="{StaticResource OD.Brush.TextDim}"/>
                 <TextBlock Text="{Binding ViewerCountText}"
                            Style="{StaticResource OD.Text.Mono}"
                            VerticalAlignment="Center"

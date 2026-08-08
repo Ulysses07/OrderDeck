@@ -5,8 +5,8 @@ using System.Windows.Data;
 namespace OrderDeck.App.Converters;
 
 /// <summary>
-/// Renders the queued-label chip text: 0 → "Yedek+" (call-to-action), N → "👥 N"
-/// (count badge). Used by the QueueList row template; one-way only.
+/// Renders the queued-label chip text: 0 → "Yedek+" (call-to-action), N → "Yedek N"
+/// (count badge). Emoji KULLANILMIYOR (spec §10: emoji ikon 0). Used by the QueueList row template; one-way only.
 /// </summary>
 public sealed class BackupChipConverter : IValueConverter
 {
@@ -18,7 +18,7 @@ public sealed class BackupChipConverter : IValueConverter
             long l => (int)l,
             _ => 0,
         };
-        return count <= 0 ? "Yedek+" : $"👥 {count}";
+        return count <= 0 ? "Yedek+" : $"Yedek {count}";
     }
 
     public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
