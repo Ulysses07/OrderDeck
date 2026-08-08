@@ -1,0 +1,148 @@
+<UserControl x:Class="OrderDeck.App.Views.Shell.PrintQueuePanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Border Style="{StaticResource OD.Panel}">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <!-- ── Başlık şeridi: ad + adet hapı ───────────────────────────── -->
+            <Border Grid.Row="0" Padding="{StaticResource OD.Pad.4}"
+                    BorderBrush="{StaticResource OD.Brush.Border}"
+                    BorderThickness="0,0,0,1">
+                <DockPanel LastChildFill="False">
+                    <TextBlock DockPanel.Dock="Left" Text="Yazdırılacak Etiketler"
+                               VerticalAlignment="Center"
+                               FontFamily="{StaticResource OD.Font.Display}"
+                               FontSize="{StaticResource OD.Font.F2}"
+                               Foreground="{StaticResource OD.Brush.Text}"/>
+                    <!-- Hapın margin'i YATAY-YALNIZ (OD.Pad.X2): simetrik
+                         OD.Pad.3 kullanılsa hap kendi 8px dolgusunun üstüne
+                         8px dikey margin alır, başlık şeridi ~16px uzardı.
+                         Aynı gerekçe ShellTopBar'da da yazılı. -->
+                    <Border DockPanel.Dock="Left" Style="{StaticResource OD.CountPill}"
+                            Margin="{StaticResource OD.Pad.X2}"
+                            VerticalAlignment="Center">
+                        <TextBlock Text="{Binding PrintQueue.Count}"
+                                   Style="{StaticResource OD.Text.Mono}"
+                                   FontSize="{StaticResource OD.Font.F0}"/>
+                    </Border>
+                </DockPanel>
+            </Border>
+
+            <!-- ── Kuyruk listesi ──────────────────────────────────────────
+                 ItemContainerStyle / ItemTemplate / ContextMenu
+                 MainShellView.xaml:574-640'tan BİREBİR taşındı; bağlamalar,
+                 dönüştürücüler ve komutlar değişmedi. İzin verilen tek
+                 düzenleme kolon genişlikleri + fiyatın mono yazı tipi
+                 (aşağıdaki yorumlara bak). -->
+            <ListBox Grid.Row="1"
+                     x:Name="QueueList"
+                     ItemsSource="{Binding PrintQueue}"
+                     SelectedItem="{Binding SelectedQueueItem, Mode=TwoWay}"
+                     SelectionMode="Extended"
+                     SelectionChanged="QueueList_OnSelectionChanged"
+                     Background="Transparent"
+                     Foreground="{StaticResource OD.Brush.Text}"
+                     BorderThickness="0"
+                     Padding="{StaticResource OD.Pad.2}"
+                     MinHeight="{StaticResource OD.Layout.QueueMinHeight}">
+                <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem">
+                        <Setter Property="Background"
+                                Value="{Binding IsCustomerBlacklisted,
+                                                Converter={StaticResource BlacklistToBrushConverter}}"/>
+                    </Style>
+                </ListBox.ItemContainerStyle>
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <Grid Margin="0,4">
+                            <Grid.ColumnDefinitions>
+                                <!-- Ad kolonu: OD.Layout.ChatUserMaxWidth'e sabit.
+                                     ColumnDefinition.Width GridLength ister, token
+                                     ise sys:Double — bu yüzden Width="Auto" +
+                                     MinWidth/MaxWidth deseni (G12 ChatPanel ile
+                                     aynı). Min=Max, çünkü her satır kendi Grid'i;
+                                     Auto bırakılsaydı satırlar arasında mesaj
+                                     kolonunun hizası kayardı. -->
+                                <ColumnDefinition Width="Auto"
+                                                  MinWidth="{StaticResource OD.Layout.ChatUserMaxWidth}"
+                                                  MaxWidth="{StaticResource OD.Layout.ChatUserMaxWidth}"/>
+                                <ColumnDefinition Width="*"/>
+                                <!-- Fiyat: Auto. Mono rakam sabit genişlikli
+                                     olduğu için kolon satırdan satıra zıplamaz,
+                                     sabit 80px'e gerek kalmıyor. -->
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="{Binding Display}"
+                                       FontWeight="Bold" TextTrimming="CharacterEllipsis"
+                                       ToolTip="{Binding Username}"/>
+                            <TextBlock Grid.Column="1" Text="{Binding MessageText}"
+                                       TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                                       Margin="6,0,6,0"/>
+                            <TextBlock Grid.Column="2"
+                                       Text="{Binding Price, StringFormat={}{0:N2} TL}"
+                                       Style="{StaticResource OD.Text.Mono}"
+                                       HorizontalAlignment="Right" FontWeight="Bold"
+                                       Foreground="{StaticResource OD.Brush.Amber}"/>
+                            <!-- Backup chip: 0 → "Yedek+" CTA, N → "👥 N" badge.
+                                 Click activates backup-selection mode for this label;
+                                 subsequent chat double-click is routed to
+                                 MainShellViewModel.TryAssignChatAsBackup.
+                                 Mockup'ta karşılığı yok ama ÇALIŞAN bir özellik —
+                                 zincir (BackupChipConverter + BeginAddBackupCommand)
+                                 olduğu gibi korunuyor. -->
+                            <Button Grid.Column="3"
+                                    Margin="8,0,0,0"
+                                    Padding="8,2"
+                                    FontSize="{StaticResource OD.Font.F0}"
+                                    MinWidth="60"
+                                    Content="{Binding BackupCount, Converter={StaticResource BackupChipConverter}}"
+                                    Command="{Binding DataContext.BeginAddBackupCommand,
+                                                      RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                    CommandParameter="{Binding}"
+                                    ToolTip="Yedek müşteri ekle: tıkla, sonra chat'ten birini seç"/>
+                        </Grid>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+                <ListBox.ContextMenu>
+                    <ContextMenu>
+                        <MenuItem Header="Müşteri Detayı"
+                                  Command="{Binding PlacementTarget.DataContext.OpenCustomerDetailFromQueueCommand,
+                                                    RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                  CommandParameter="{Binding PlacementTarget.SelectedItem,
+                                                             RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                        <MenuItem Header="Kara Listeye Al…"
+                                  Command="{Binding PlacementTarget.DataContext.AddQueueRowToBlacklistCommand,
+                                                    RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                  CommandParameter="{Binding PlacementTarget.SelectedItem,
+                                                             RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                    </ContextMenu>
+                </ListBox.ContextMenu>
+            </ListBox>
+
+            <!-- ── Alt eylem şeridi ────────────────────────────────────────── -->
+            <Border Grid.Row="2" Padding="{StaticResource OD.Pad.4}"
+                    BorderBrush="{StaticResource OD.Brush.Border}"
+                    BorderThickness="0,1,0,0">
+                <StackPanel Orientation="Horizontal">
+                    <Button Content="{Binding PrintButtonLabel}"
+                            Command="{Binding PrintCommand}"
+                            Style="{StaticResource OD.Button.Primary}"/>
+                    <Button Content="{Binding DeleteButtonLabel}"
+                            Command="{Binding RemoveSelectedFromQueueCommand}"
+                            Style="{StaticResource OD.Button.Ghost}"
+                            Margin="{StaticResource OD.Pad.2}"/>
+                    <Button Content="Hepsini Temizle"
+                            Command="{Binding ClearQueueCommand}"
+                            Style="{StaticResource OD.Button.Ghost}"
+                            Foreground="{StaticResource OD.Brush.Accent}"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Border>
+</UserControl>
