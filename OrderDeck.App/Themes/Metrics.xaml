@@ -79,8 +79,11 @@
   <!-- Düzen sabitleri -->
   <sys:Double x:Key="OD.Layout.SideWidth">224</sys:Double>      <!-- sol kenar çubuğu -->
   <sys:Double x:Key="OD.Layout.SideWidthMin">64</sys:Double>    <!-- ikon modu (<1360px) -->
-  <sys:Double x:Key="OD.Layout.RightWidth">344</sys:Double>     <!-- sağ panel -->
-  <sys:Double x:Key="OD.Layout.DrawerWidth">344</sys:Double>    <!-- çekmece (sağ paneli örter) -->
+  <!-- Sağ panel 344 değil 400 (2026-08-08): kod ve fiyat kutuları üstteki
+       şeritten buraya indi, 64px'lik kod yazısı 344'te nefes alamıyordu.
+       Sohbetin daralması da istenen sonuçtu. -->
+  <sys:Double x:Key="OD.Layout.RightWidth">400</sys:Double>     <!-- sağ panel -->
+  <sys:Double x:Key="OD.Layout.DrawerWidth">400</sys:Double>    <!-- çekmece (sağ paneli örter) -->
   <sys:Double x:Key="OD.Layout.TopbarHeight">56</sys:Double>
   <sys:Double x:Key="OD.Layout.ButtonHeight">46</sys:Double>    <!-- birincil buton -->
   <sys:Double x:Key="OD.Layout.ContentMaxWidth">1760</sys:Double> <!-- fazlası ortalanır -->
