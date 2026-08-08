@@ -22,16 +22,13 @@
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>   <!-- üst bar -->
                 <RowDefinition Height="Auto"/>   <!-- şeritler -->
-                <RowDefinition Height="Auto"/>   <!-- hero -->
                 <RowDefinition Height="*"/>      <!-- sohbet | sağ sütun -->
             </Grid.RowDefinitions>
 
-            <shell:ShellTopBar      Grid.Row="0"/>
-            <shell:ShellBanners     Grid.Row="1" Margin="{StaticResource OD.Pad.4}"/>
-            <shell:ActiveProductBar Grid.Row="2" x:Name="ProductBar"
-                                    Margin="{StaticResource OD.Pad.4}"/>
+            <shell:ShellTopBar  Grid.Row="0"/>
+            <shell:ShellBanners Grid.Row="1" Margin="{StaticResource OD.Pad.4}"/>
 
-            <Grid Grid.Row="3" Margin="{StaticResource OD.Pad.4}">
+            <Grid Grid.Row="2" Margin="{StaticResource OD.Pad.4}">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
@@ -40,16 +37,22 @@
                 <shell:ChatPanel Grid.Column="0"/>
 
                 <!-- Sağ sütun sabit genişlik: sohbetin genişliği ekran
-                     daralınca değişmesin (spec §6 — feda edilen kuyruk). -->
+                     daralınca değişmesin (spec §6 — feda edilen kuyruk).
+                     Yerleşim kararı 2026-08-08: kod ve fiyat eskiden üstte
+                     tam genişlikte bir şeritti; buraya indi. Sohbet hem o
+                     yüksekliği kazandı hem de sütun genişleyince daraldı. -->
                 <Grid Grid.Column="1" Width="{StaticResource OD.Layout.RightWidth}"
                       Margin="{StaticResource OD.Pad.4}">
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>   <!-- kod + fiyat -->
+                        <RowDefinition Height="Auto"/>   <!-- ürün kartı -->
+                        <RowDefinition Height="*"/>      <!-- yazdırılacak etiketler -->
                     </Grid.RowDefinitions>
-                    <shell:ProductCard     Grid.Row="0"/>
-                    <shell:PrintQueuePanel Grid.Row="1"
-                                           Margin="{StaticResource OD.Pad.Top5}"/>
+                    <shell:ActiveProductBar Grid.Row="0" x:Name="ProductBar"/>
+                    <shell:ProductCard      Grid.Row="1"
+                                            Margin="{StaticResource OD.Pad.Top5}"/>
+                    <shell:PrintQueuePanel  Grid.Row="2"
+                                            Margin="{StaticResource OD.Pad.Top5}"/>
                 </Grid>
             </Grid>
         </Grid>

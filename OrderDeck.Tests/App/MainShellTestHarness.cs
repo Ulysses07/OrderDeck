@@ -22,6 +22,7 @@ using OrderDeck.Licensing.Api;
 using OrderDeck.Licensing.Services;
 using OrderDeck.Licensing.Storage;
 using OrderDeck.Licensing.Trial;
+using OrderDeck.Tests.Fakes;
 using OrderDeck.Tests.TestHelpers;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -62,7 +63,8 @@ internal static class MainShellTestHarness
         LabelService Labels,
         CustomerRepository CustomerRepo,
         StreamSessionService Sessions,
-        Mock<IClock> Clock);
+        Mock<IClock> Clock,
+        FakeDialogService Dialogs);
 
     public static Harness Build()
     {
@@ -106,12 +108,18 @@ internal static class MainShellTestHarness
             new ProductPhotoStore(Path.Combine(Path.GetTempPath(), "od-test-" + Guid.NewGuid().ToString("N"))),
             clock.Object);
 
+        // Sahte diyalog servisi ŞART: gerçek WpfDialogService modal bir
+        // MessageBox açar, koşuyu kilitler ve kendi mesaj döngüsünde alakasız
+        // dispatcher işlerini pompalayarak rastgele hatalar üretir.
+        // Confirm varsayılanı false — test yıkıcı bir dala kazara girmesin.
+        var dialogs = new FakeDialogService();
+
         var vm = new MainShellViewModel(
             bus, labelSvc, sessionSvc, printer, customerSvc, customerRepo,
             labelRepo, clock.Object, productCard,
-            giveawaySvc, banner, licenseSvc, intakeSync, tempStore);
+            giveawaySvc, banner, licenseSvc, intakeSync, tempStore, dialogs);
 
-        return new Harness(vm, printer, db, labelSvc, customerRepo, sessionSvc, clock);
+        return new Harness(vm, printer, db, labelSvc, customerRepo, sessionSvc, clock, dialogs);
     }
 
     public static ChatMessageViewModel ChatVm(string username, string text,

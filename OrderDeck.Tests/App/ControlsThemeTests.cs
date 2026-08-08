@@ -31,11 +31,10 @@ public class ControlsThemeTests
         "OD.Layout.ProductImageHeight",     // 142 / kısa modda 56
         "OD.Layout.ProductImageHeightShort",
         "OD.Layout.QueueMinHeight",         // 64
-        "OD.Layout.ChatTimeColumn",         // 40
         "OD.Layout.ChatBadgeColumn",        // 28
         "OD.Layout.ChatUserMaxWidth",       // 132
-        "OD.Layout.QueueNoColumn",          // 44
-        "OD.Layout.CodeFontShort"           // 44 (F5=64'ün kısa-mod karşılığı)
+        "OD.Layout.CodeFont",               // 44
+        "OD.Layout.CodeFontShort"           // 32 (kısa-mod karşılığı)
     ];
 
     [Fact]

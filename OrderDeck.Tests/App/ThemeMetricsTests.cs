@@ -26,10 +26,11 @@ public class ThemeMetricsTests
 
         ("OD.Layout.SideWidth",       224),
         ("OD.Layout.SideWidthMin",     64),
-        ("OD.Layout.RightWidth",      344),
-        ("OD.Layout.DrawerWidth",     344),
+        ("OD.Layout.RightWidth",      400),
+        ("OD.Layout.DrawerWidth",     400),
         ("OD.Layout.TopbarHeight",     56),
         ("OD.Layout.ButtonHeight",     46),
+        ("OD.Layout.StreamButtonWidth",132),
         ("OD.Layout.ContentMaxWidth",1760),
         ("OD.Layout.AppMinWidth",     960),
         ("OD.Layout.AppMinHeight",    720),

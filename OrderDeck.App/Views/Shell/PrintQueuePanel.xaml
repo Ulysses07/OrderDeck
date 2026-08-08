@@ -89,7 +89,7 @@
                                        Style="{StaticResource OD.Text.Mono}"
                                        HorizontalAlignment="Right" FontWeight="Bold"
                                        Foreground="{StaticResource OD.Brush.Amber}"/>
-                            <!-- Backup chip: 0 → "Yedek+" CTA, N → "👥 N" badge.
+                            <!-- Backup chip: 0 → "Yedek+" CTA, N → "Yedek N" badge.
                                  Click activates backup-selection mode for this label;
                                  subsequent chat double-click is routed to
                                  MainShellViewModel.TryAssignChatAsBackup.

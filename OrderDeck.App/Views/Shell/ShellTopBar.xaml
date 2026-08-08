@@ -5,123 +5,217 @@
             BorderBrush="{StaticResource OD.Brush.Border}"
             BorderThickness="0,0,0,1">
         <!-- Dikey margin YOK: 56px bar, içindeki OD.Button.Primary 46px.
-             Simetrik OD.Pad.* verilirse buton alttan kırpılır. -->
-        <DockPanel LastChildFill="False" Margin="{StaticResource OD.Pad.X5}">
+             Simetrik OD.Pad.* verilirse buton alttan kırpılır.
+
+             DockPanel DEĞİL Grid: sayaçlar buraya taşınınca (2026-08-08)
+             dar pencerede yer yetmeme ihtimali doğdu. DockPanel'de sola
+             dock edilenler yeri önce kapar ve sağdaki "Yayını Bitir"
+             butonu sıfır genişliğe düşerdi. Grid'de orta sütun yıldız:
+             yer kalmayınca ÖNCE sayaçlar kırpılır, eylemler yerinde
+             kalır. -->
+        <Grid Margin="{StaticResource OD.Pad.X5}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>   <!-- durum + süre + saat -->
+                <ColumnDefinition Width="*"/>      <!-- sayaçlar (feda edilir) -->
+                <ColumnDefinition Width="Auto"/>   <!-- eylemler -->
+            </Grid.ColumnDefinitions>
 
             <!-- SOL: durum + süre + saat -->
-            <TextBlock DockPanel.Dock="Left" Text="{Binding StreamStatusLabel}"
-                       VerticalAlignment="Center"
-                       FontFamily="{StaticResource OD.Font.Display}"
-                       FontSize="{StaticResource OD.Font.F2}"
-                       Foreground="{StaticResource OD.Brush.Text}"
-                       Visibility="{Binding IsGiveawayActive,
-                                    Converter={StaticResource BoolToCollapsedConverter}}"/>
-
-            <TextBlock DockPanel.Dock="Left" Text="{Binding StreamDurationText}"
-                       Style="{StaticResource OD.Text.Mono}"
-                       VerticalAlignment="Center"
-                       Margin="{StaticResource OD.Pad.4}"/>
-
-            <TextBlock DockPanel.Dock="Left" Text="{Binding ClockText}"
-                       Style="{StaticResource OD.Text.Mono}"
-                       VerticalAlignment="Center"/>
-
-            <!-- SAĞ: eylemler (ters sırada dock edilir) -->
-            <Button DockPanel.Dock="Right"
-                    Command="{Binding StartGiveawayCommand}"
-                    IsEnabled="{Binding CanStartGiveaway}"
-                    Style="{StaticResource OD.Button.Ghost}"
-                    Margin="{StaticResource OD.Pad.X2}">
-                <StackPanel Orientation="Horizontal">
-                    <Image Source="{StaticResource OD.Icon.Gift}"
-                           Width="{StaticResource OD.Icon.Sm}"
-                           Height="{StaticResource OD.Icon.Sm}"
+            <StackPanel Grid.Column="0" Orientation="Horizontal"
+                        VerticalAlignment="Center">
+                <TextBlock Text="{Binding StreamStatusLabel}"
                            VerticalAlignment="Center"
-                           RenderOptions.BitmapScalingMode="HighQuality"/>
-                    <TextBlock Text="Çekiliş" VerticalAlignment="Center"
-                               Margin="{StaticResource OD.Pad.2}"/>
-                </StackPanel>
-            </Button>
+                           FontFamily="{StaticResource OD.Font.Display}"
+                           FontSize="{StaticResource OD.Font.F2}"
+                           Foreground="{StaticResource OD.Brush.Text}"
+                           Visibility="{Binding IsGiveawayActive,
+                                        Converter={StaticResource BoolToCollapsedConverter}}"/>
 
-            <!-- TEK yayın butonu: kapalıyken başlatır, açıkken bitirir.
-                 Content ve Command yalnız Setter'dan gelir — aynı özellik
-                 hem öznitelik hem Setter olursa yerel değer tetikleyiciyi
-                 ezer ve buton hiç değişmez. -->
-            <Button DockPanel.Dock="Right" Margin="{StaticResource OD.Pad.X2}">
-                <Button.Style>
-                    <Style TargetType="Button" BasedOn="{StaticResource OD.Button.Primary}">
-                        <Setter Property="Content" Value="Yayın Başlat"/>
-                        <Setter Property="Command" Value="{Binding StartStreamCommand}"/>
-                        <Style.Triggers>
-                            <DataTrigger Binding="{Binding IsStreamActive}" Value="True">
-                                <Setter Property="Content" Value="Yayını Bitir"/>
-                                <Setter Property="Command" Value="{Binding EndStreamCommand}"/>
-                            </DataTrigger>
-                        </Style.Triggers>
-                    </Style>
-                </Button.Style>
-            </Button>
-
-            <!-- Zil. Button kalıyor: Border.InputBindings LeftClick WPF'te
-                 güvenilir tetiklenmiyordu (mevcut yorum). -->
-            <Button DockPanel.Dock="Right"
-                    Command="{Binding OpenIntakeSubmissionsCommand}"
-                    Style="{StaticResource OD.Button.Ghost}"
-                    Margin="{StaticResource OD.Pad.X2}"
-                    Visibility="{Binding HasNewIntakeSubmissions,
-                                 Converter={StaticResource BoolToVisibleConverter}}"
-                    ToolTip="Yeni form başvurularını görüntülemek için tıkla">
-                <TextBlock Foreground="{StaticResource OD.Brush.Accent}"
-                           FontSize="{StaticResource OD.Font.F1}">
-                    <Run Text="🔔"/>
-                    <Run Text="{Binding NewIntakeSubmissionsCount, Mode=OneWay}"/>
-                    <Run Text="yeni başvuru"/>
-                </TextBlock>
-            </Button>
-
-            <TextBlock DockPanel.Dock="Right"
-                       Text="{Binding LicenseStatusText}"
-                       Foreground="{Binding LicenseStatusBrush}"
-                       VerticalAlignment="Center" Cursor="Hand"
-                       Margin="{StaticResource OD.Pad.3}"
-                       ToolTip="Hesap detayları için tıkla">
-                <TextBlock.InputBindings>
-                    <MouseBinding MouseAction="LeftClick" Command="{Binding OpenAccountCommand}"/>
-                </TextBlock.InputBindings>
-            </TextBlock>
-
-            <!-- Chat sağlık noktası — üç durum (off/idle/ok) aynen. -->
-            <Ellipse DockPanel.Dock="Right" Width="10" Height="10"
-                     VerticalAlignment="Center"
-                     Margin="{StaticResource OD.Pad.2}"
-                     ToolTip="{Binding ChatHealthTooltip}">
-                <Ellipse.Style>
-                    <Style TargetType="Ellipse">
-                        <Setter Property="Fill" Value="{StaticResource OD.Brush.TextMute}"/>
-                        <Style.Triggers>
-                            <DataTrigger Binding="{Binding ChatHealthState}" Value="ok">
-                                <Setter Property="Fill" Value="{StaticResource OD.Brush.Success}"/>
-                            </DataTrigger>
-                            <DataTrigger Binding="{Binding ChatHealthState}" Value="idle">
-                                <Setter Property="Fill" Value="{StaticResource OD.Brush.Amber}"/>
-                            </DataTrigger>
-                        </Style.Triggers>
-                    </Style>
-                </Ellipse.Style>
-            </Ellipse>
-
-            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
-                        VerticalAlignment="Center"
-                        Margin="{StaticResource OD.Pad.3}"
-                        Visibility="{Binding ViewerCountVisible,
-                                     Converter={StaticResource BoolToVisibleConverter}}"
-                        ToolTip="{Binding ViewerCountTooltip}">
-                <TextBlock Text="👁" VerticalAlignment="Center"/>
-                <TextBlock Text="{Binding ViewerCountText}"
+                <TextBlock Text="{Binding StreamDurationText}"
                            Style="{StaticResource OD.Text.Mono}"
                            VerticalAlignment="Center"
-                           Margin="{StaticResource OD.Pad.2}"/>
+                           Margin="{StaticResource OD.Pad.4}"/>
+
+                <TextBlock Text="{Binding ClockText}"
+                           Style="{StaticResource OD.Text.Mono}"
+                           VerticalAlignment="Center"/>
             </StackPanel>
-        </DockPanel>
+
+            <!-- ORTA: dört sayaç. Eskiden ürün şeridindeydi; şerit kalkınca
+                 (kod+fiyat sağ sütuna indi) buraya taşındılar. Şeritteki
+                 iki satırlık blok yerine tek satır: 56px bara sığsın. -->
+            <StackPanel Grid.Column="1" Orientation="Horizontal"
+                        VerticalAlignment="Center"
+                        Margin="{StaticResource OD.Pad.X5}"
+                        ClipToBounds="True">
+                <StackPanel.Resources>
+                    <Style x:Key="StatLabel" TargetType="TextBlock"
+                           BasedOn="{StaticResource OD.Text.Micro}">
+                        <Setter Property="VerticalAlignment" Value="Center"/>
+                    </Style>
+                    <Style x:Key="StatValue" TargetType="TextBlock"
+                           BasedOn="{StaticResource OD.Text.Mono}">
+                        <Setter Property="FontSize" Value="{StaticResource OD.Font.F2}"/>
+                        <Setter Property="VerticalAlignment" Value="Center"/>
+                        <Setter Property="Margin" Value="{StaticResource OD.Pad.2}"/>
+                    </Style>
+                </StackPanel.Resources>
+
+                <TextBlock Text="BU ÜRÜN" Style="{StaticResource StatLabel}"/>
+                <TextBlock Text="{Binding ProductOrderCount}"
+                           Style="{StaticResource StatValue}"/>
+
+                <TextBlock Text="YAYIN" Style="{StaticResource StatLabel}"
+                           Margin="{StaticResource OD.Pad.X2}"/>
+                <TextBlock Text="{Binding SessionLabelCount}"
+                           Style="{StaticResource StatValue}"/>
+
+                <StackPanel Orientation="Horizontal" Cursor="Hand"
+                            Margin="{StaticResource OD.Pad.X2}"
+                            ToolTip="Ciroyu gizle/göster (ekran paylaşımı için)">
+                    <StackPanel.InputBindings>
+                        <MouseBinding MouseAction="LeftClick"
+                                      Command="{Binding ToggleRevenueMaskCommand}"/>
+                    </StackPanel.InputBindings>
+                    <TextBlock Text="CİRO" Style="{StaticResource StatLabel}"/>
+                    <TextBlock Text="{Binding SessionRevenueText}"
+                               Style="{StaticResource StatValue}"/>
+                </StackPanel>
+
+                <TextBlock Text="KUYRUKTA" Style="{StaticResource StatLabel}"
+                           Margin="{StaticResource OD.Pad.X2}"/>
+                <TextBlock Text="{Binding QueueCount}"
+                           Style="{StaticResource StatValue}"/>
+            </StackPanel>
+
+            <!-- SAĞ: eylemler. Soldan sağa okunur (eski DockPanel'de ters
+                 sırada yazılıyordu); görsel dizilim aynı. -->
+            <StackPanel Grid.Column="2" Orientation="Horizontal"
+                        VerticalAlignment="Center">
+
+                <StackPanel Orientation="Horizontal"
+                            VerticalAlignment="Center"
+                            Margin="{StaticResource OD.Pad.3}"
+                            Visibility="{Binding ViewerCountVisible,
+                                         Converter={StaticResource BoolToVisibleConverter}}"
+                            ToolTip="{Binding ViewerCountTooltip}">
+                    <!-- Ata Button yok (bu bir StackPanel) → OD.IconPath'in
+                         Foreground bağı boş döner, Fill elle veriliyor. -->
+                    <Path Data="{StaticResource OD.Path.Eye}"
+                          Style="{StaticResource OD.IconPath}"
+                          Fill="{StaticResource OD.Brush.TextDim}"/>
+                    <TextBlock Text="{Binding ViewerCountText}"
+                               Style="{StaticResource OD.Text.Mono}"
+                               VerticalAlignment="Center"
+                               Margin="{StaticResource OD.Pad.2}"/>
+                </StackPanel>
+
+                <!-- Chat sağlık noktası — üç durum (off/idle/ok) aynen. -->
+                <Ellipse Width="10" Height="10"
+                         VerticalAlignment="Center"
+                         Margin="{StaticResource OD.Pad.2}"
+                         ToolTip="{Binding ChatHealthTooltip}">
+                    <Ellipse.Style>
+                        <Style TargetType="Ellipse">
+                            <Setter Property="Fill" Value="{StaticResource OD.Brush.TextMute}"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding ChatHealthState}" Value="ok">
+                                    <Setter Property="Fill" Value="{StaticResource OD.Brush.Success}"/>
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding ChatHealthState}" Value="idle">
+                                    <Setter Property="Fill" Value="{StaticResource OD.Brush.Amber}"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Ellipse.Style>
+                </Ellipse>
+
+                <TextBlock Text="{Binding LicenseStatusText}"
+                           Foreground="{Binding LicenseStatusBrush}"
+                           VerticalAlignment="Center" Cursor="Hand"
+                           Margin="{StaticResource OD.Pad.3}"
+                           ToolTip="Hesap detayları için tıkla">
+                    <TextBlock.InputBindings>
+                        <MouseBinding MouseAction="LeftClick" Command="{Binding OpenAccountCommand}"/>
+                    </TextBlock.InputBindings>
+                </TextBlock>
+
+                <!-- Zil. Button kalıyor: Border.InputBindings LeftClick WPF'te
+                     güvenilir tetiklenmiyordu (mevcut yorum). -->
+                <Button Command="{Binding OpenIntakeSubmissionsCommand}"
+                        Style="{StaticResource OD.Button.Ghost}"
+                        Margin="{StaticResource OD.Pad.X2}"
+                        Visibility="{Binding HasNewIntakeSubmissions,
+                                     Converter={StaticResource BoolToVisibleConverter}}"
+                        ToolTip="Yeni form başvurularını görüntülemek için tıkla">
+                    <StackPanel Orientation="Horizontal">
+                        <!-- Fill burada AÇIKÇA veriliyor: OD.IconPath ata Button'ın
+                             Foreground'unu okur, o da Ghost stilinin soluk tonu.
+                             Zil vurgu rengiyle bakılsın diye ezildi. -->
+                        <Path Data="{StaticResource OD.Path.Bell}"
+                              Style="{StaticResource OD.IconPath}"
+                              Width="{StaticResource OD.Icon.Sm}"
+                              Height="{StaticResource OD.Icon.Sm}"
+                              Fill="{StaticResource OD.Brush.Accent}"/>
+                        <TextBlock Foreground="{StaticResource OD.Brush.Accent}"
+                                   FontSize="{StaticResource OD.Font.F1}"
+                                   VerticalAlignment="Center"
+                                   Margin="{StaticResource OD.Pad.2}">
+                            <Run Text="{Binding NewIntakeSubmissionsCount, Mode=OneWay}"/>
+                            <Run Text="yeni başvuru"/>
+                        </TextBlock>
+                    </StackPanel>
+                </Button>
+
+                <!-- TEK yayın butonu: kapalıyken başlatır, açıkken bitirir.
+                     Content, Command ve renkler yalnız Setter'dan gelir — aynı
+                     özellik hem öznitelik hem Setter olursa yerel değer
+                     tetikleyiciyi ezer ve buton hiç değişmez.
+
+                     Renk: başlatmak olumlu eylem → Success; bitirmek yıkıcı →
+                     Accent (Colors.xaml'deki "danger ayrı renk değil, Accent'in
+                     kendisi" kuralı). Yeşil üstünde beyaz metin ~2.2:1 kalıyor,
+                     o yüzden yazı koyu (Bg, ~9.5:1); kırmızıda OnAccent.
+                     Genişlik sabit: iki durum aynı boyda olsun. -->
+                <Button Margin="{StaticResource OD.Pad.X2}"
+                        Width="{StaticResource OD.Layout.StreamButtonWidth}">
+                    <Button.Style>
+                        <Style TargetType="Button" BasedOn="{StaticResource OD.Button.Primary}">
+                            <Setter Property="Content" Value="Yayın Başlat"/>
+                            <Setter Property="Command" Value="{Binding StartStreamCommand}"/>
+                            <Setter Property="Background"
+                                    Value="{StaticResource OD.Brush.Success}"/>
+                            <Setter Property="Foreground"
+                                    Value="{StaticResource OD.Brush.Bg}"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsStreamActive}" Value="True">
+                                    <Setter Property="Content" Value="Yayını Bitir"/>
+                                    <Setter Property="Command" Value="{Binding EndStreamCommand}"/>
+                                    <Setter Property="Background"
+                                            Value="{StaticResource OD.Brush.Accent}"/>
+                                    <Setter Property="Foreground"
+                                            Value="{StaticResource OD.Brush.OnAccent}"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Button.Style>
+                </Button>
+
+                <Button Command="{Binding StartGiveawayCommand}"
+                        IsEnabled="{Binding CanStartGiveaway}"
+                        Style="{StaticResource OD.Button.Ghost}"
+                        Margin="{StaticResource OD.Pad.X2}">
+                    <StackPanel Orientation="Horizontal">
+                        <Image Source="{StaticResource OD.Icon.Gift}"
+                               Width="{StaticResource OD.Icon.Sm}"
+                               Height="{StaticResource OD.Icon.Sm}"
+                               VerticalAlignment="Center"
+                               RenderOptions.BitmapScalingMode="HighQuality"/>
+                        <TextBlock Text="Çekiliş" VerticalAlignment="Center"
+                                   Margin="{StaticResource OD.Pad.2}"/>
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+        </Grid>
     </Border>
 </UserControl>

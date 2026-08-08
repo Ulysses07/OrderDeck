@@ -79,10 +79,19 @@
   <!-- Düzen sabitleri -->
   <sys:Double x:Key="OD.Layout.SideWidth">224</sys:Double>      <!-- sol kenar çubuğu -->
   <sys:Double x:Key="OD.Layout.SideWidthMin">64</sys:Double>    <!-- ikon modu (<1360px) -->
-  <sys:Double x:Key="OD.Layout.RightWidth">344</sys:Double>     <!-- sağ panel -->
-  <sys:Double x:Key="OD.Layout.DrawerWidth">344</sys:Double>    <!-- çekmece (sağ paneli örter) -->
+  <!-- Sağ panel 344 değil 400 (2026-08-08): kod ve fiyat kutuları üstteki
+       şeritten buraya indi, 64px'lik kod yazısı 344'te nefes alamıyordu.
+       Sohbetin daralması da istenen sonuçtu. -->
+  <sys:Double x:Key="OD.Layout.RightWidth">400</sys:Double>     <!-- sağ panel -->
+  <sys:Double x:Key="OD.Layout.DrawerWidth">400</sys:Double>    <!-- çekmece (sağ paneli örter) -->
   <sys:Double x:Key="OD.Layout.TopbarHeight">56</sys:Double>
   <sys:Double x:Key="OD.Layout.ButtonHeight">46</sys:Double>    <!-- birincil buton -->
+  <!-- Yayın butonu iki durumda iki farklı metin taşıyor ("Yayın Başlat" /
+       "Yayını Bitir"). İçeriğe göre ölçülürse buton durum değişince
+       genişliğini oynatır ve yanındaki Çekiliş butonunu kaydırır; sabit
+       genişlik ikisini de aynı boyda tutar. 132 = uzun metnin ölçülen
+       genişliği (~120) + nefes payı. -->
+  <sys:Double x:Key="OD.Layout.StreamButtonWidth">132</sys:Double>
   <sys:Double x:Key="OD.Layout.ContentMaxWidth">1760</sys:Double> <!-- fazlası ortalanır -->
   <!-- Pencerenin asgari ölçüsü (MainWindow.MinWidth/MinHeight).
        1280 değil 960: 1920'lik ekranda yarım pencere tam 960 ve operatör
@@ -90,6 +99,12 @@
        kenar çubuğunu ikon rayına indiriyor, 960'ta yerleşim taşmadan sığar. -->
   <sys:Double x:Key="OD.Layout.AppMinWidth">960</sys:Double>
   <sys:Double x:Key="OD.Layout.AppMinHeight">720</sys:Double>
+  <!-- Açılış ölçüsü. 1280x800 DEĞİL: o ölçü hem 1360 hem 850 kırılımının
+       altında kalıyor, yani uygulama her açılışta indirgenmiş yerleşimle
+       (ikon rayı + kısa ürün görseli + küçük kod yazısı) başlıyordu.
+       İndirgeme dar ekranın çaresi olmalı, varsayılan hâl değil. -->
+  <sys:Double x:Key="OD.Layout.AppStartWidth">1440</sys:Double>
+  <sys:Double x:Key="OD.Layout.AppStartHeight">900</sys:Double>
 
   <!-- Faz 1'e özgü ölçüler. Mockup'ta CSS değişkeni olarak duruyorlar
        (h-pimg, h-q-min, w-col-*, w-user); WPF'te sabit sayı yazmamak
@@ -101,12 +116,15 @@
        @media (max-height:849px) altında h-pimg 56px. -->
   <sys:Double x:Key="OD.Layout.ProductImageHeightShort">56</sys:Double>
   <sys:Double x:Key="OD.Layout.QueueMinHeight">64</sys:Double>
-  <sys:Double x:Key="OD.Layout.ChatTimeColumn">40</sys:Double>
   <sys:Double x:Key="OD.Layout.ChatBadgeColumn">28</sys:Double>
   <sys:Double x:Key="OD.Layout.ChatUserMaxWidth">132</sys:Double>
-  <sys:Double x:Key="OD.Layout.QueueNoColumn">44</sys:Double>
-  <!-- Spec §7: alçak pencerede aktif ürün kodu F5 (64) yerine 44px.
+  <!-- Aktif ürün kodunun yazı boyu; alçak pencerede (<850px) küçüğü.
        Font ölçeğine (F0..F5) yeni basamak eklemiyoruz — bu, tek bir
-       kontrolün duyarlı ölçüsü, tipografi basamağı değil. -->
-  <sys:Double x:Key="OD.Layout.CodeFontShort">44</sys:Double>
+       kontrolün duyarlı ölçüsü, tipografi basamağı değil.
+       Spec §7 bunları 64/44 diyordu; kod ve fiyat üstteki tam genişlik
+       şeritten sağ sütuna inince (2026-08-08) o boy gereksiz yer
+       kaplıyordu, 44/32'ye indirildi. Kazanılan yükseklik doğrudan
+       yazdırılacak etiketler listesine gitti. -->
+  <sys:Double x:Key="OD.Layout.CodeFont">44</sys:Double>
+  <sys:Double x:Key="OD.Layout.CodeFontShort">32</sys:Double>
 </ResourceDictionary>
