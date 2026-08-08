@@ -70,6 +70,8 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<PaymentRepository>();
         // Arayüz Faz 1: ürün kartı (ad/fotoğraf/beden adetleri) yalnız yerel SQLite.
         services.AddSingleton<ProductRepository>();
+        // Ürün fotoğrafı deposu — kapsamı %LOCALAPPDATA%\OrderDeck\products.
+        services.AddSingleton<ProductPhotoStore>();
         // PDF dekont parse: DekontEkleDialog "PDF Yükle" butonu kullanır.
         services.AddSingleton<PdfDekontParser>();
         // Kargo PR C: dekont eşleştirme servisi (LabelRepository + AppSettings.Shipping).
