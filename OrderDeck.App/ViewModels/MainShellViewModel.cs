@@ -1,9 +1,11 @@
 using System;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Globalization;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Data;
 using System.Windows.Media;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -19,6 +21,7 @@ using OrderDeck.Core.Customers;
 using OrderDeck.Core.Sales;
 using OrderDeck.Core.Sessions;
 using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Core.Time;
 using OrderDeck.Labeling;
 using OrderDeck.Licensing;
 using OrderDeck.Licensing.Services;
@@ -34,6 +37,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private readonly ILabelPrinter _printer;
     private readonly CustomerService _customers;
     private readonly CustomerRepository _customerRepo;
+    private readonly LabelRepository _labelRepo;
+    private readonly IClock _clock;
     private readonly GiveawayService _giveaways;
     private readonly Dispatcher _dispatcher;
     private readonly IDisposable _busSubscription;
@@ -52,6 +57,14 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private const int MaxChatMessages = 500;
 
     public ObservableCollection<ChatMessageViewModel> ChatMessages { get; } = new();
+
+    /// <summary>
+    /// Sohbet listesinin bağlandığı görünüm. Ayrı bir "filtrelenmiş
+    /// koleksiyon" tutmuyoruz — ekleme/kırpma mantığı ChatMessages'ta
+    /// olduğu gibi kalsın, filtre yalnız sunum katmanında olsun diye.
+    /// </summary>
+    public ICollectionView ChatView { get; }
+
     public ObservableCollection<LabelViewModel>       PrintQueue   { get; } = new();
 
     /// <summary>Multi-select kuyrukta seçili etiketler. Code-behind QueueList.SelectionChanged
@@ -74,8 +87,169 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     public GiveawayBannerViewModel Banner { get; }
 
     [ObservableProperty] private string _activeCode = "";
+
+    /// <summary>Sağ paneldeki ürün kartı. Hero'daki kod her değişince yüklenir.</summary>
+    public ProductCardViewModel ProductCard { get; }
+
+    /// <summary>
+    /// Kenar çubuğu alt bilgisindeki bağlantı noktaları. Sabit dört satır —
+    /// eksik platform "bağlı değil" olarak görünür, listeden düşmez.
+    /// </summary>
+    public ObservableCollection<PlatformConnectionViewModel> Connections { get; } =
+        new(new[]
+        {
+            new PlatformConnectionViewModel("youtube"),
+            new PlatformConnectionViewModel("instagram"),
+            new PlatformConnectionViewModel("tiktok"),
+            new PlatformConnectionViewModel("facebook"),
+        });
+
+    [ObservableProperty] private string _printerStatusText = "Yazıcı seçilmedi";
+    [ObservableProperty] private bool _isPrinterConfigured;
+
+    /// <summary>
+    /// Yeni veri katmanı YOK: ViewerCountTracker zaten platform başına
+    /// yapılandırılmış kayıt tutuyor, taze kayıt = bağlı.
+    /// </summary>
+    public void RefreshConnections()
+    {
+        var snap = _viewers?.GetSnapshot(TimeSpan.FromSeconds(90));
+        foreach (var c in Connections)
+        {
+            var row = snap?.PerPlatform
+                .FirstOrDefault(p => string.Equals(p.Platform, c.Platform, StringComparison.OrdinalIgnoreCase));
+            c.IsConnected = row is not null;
+            c.ViewerCount = row?.Count ?? 0;
+        }
+    }
+
+    /// <summary>
+    /// Yazıcı satırı. Yazıcının GERÇEKTEN hazır olup olmadığını sormuyoruz —
+    /// spooler sorgusu ayrı bir iş; burada yalnız "seçilmiş mi" var.
+    /// </summary>
+    public void RefreshPrinterStatus(string? printerName)
+    {
+        IsPrinterConfigured = !string.IsNullOrWhiteSpace(printerName);
+        PrinterStatusText = IsPrinterConfigured ? printerName!.Trim() : "Yazıcı seçilmedi";
+    }
+
+    /// <summary>
+    /// Duyarlı yerleşim. Mockup'ın 1360px kırılımı: altında kenar çubuğu
+    /// ikon moduna düşer. Pencere boyutunu view bildirir (SizeChanged).
+    /// </summary>
+    [ObservableProperty] private bool _isCompact;
+
+    /// <summary>Mockup'ın 850px yükseklik kırılımı: ürün fotoğrafı kısalır.</summary>
+    [ObservableProperty] private bool _isShort;
+
+    [ObservableProperty] private int _productOrderCount;
+    [ObservableProperty] private int _sessionLabelCount;
+    [ObservableProperty] private int _queueCount;
+    [ObservableProperty] private string _streamDurationText = "";
+    [ObservableProperty] private string _clockText = "";
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SessionRevenueText))]
+    private decimal _sessionRevenue;
+
+    /// <summary>
+    /// Ciro maskesi. Operatör yayında ekranını paylaşabiliyor; ciro
+    /// izleyiciye görünmemeli. Yalnız görüntüyü değiştirir — SessionRevenue
+    /// gerçek değeri tutmaya devam eder.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SessionRevenueText))]
+    private bool _isRevenueMasked;
+
+    public string SessionRevenueText => IsRevenueMasked
+        ? "₺ ••••"
+        : SessionRevenue.ToString("C0", CultureInfo.GetCultureInfo("tr-TR"));
+
+    [RelayCommand] private void ToggleRevenueMask() => IsRevenueMasked = !IsRevenueMasked;
+
+    [ObservableProperty] private string _chatSearchText = "";
+    [ObservableProperty] private bool _onlyActiveCode;
+
+    partial void OnChatSearchTextChanged(string value) => ChatView.Refresh();
+    partial void OnOnlyActiveCodeChanged(bool value) => ChatView.Refresh();
+
+    private bool ChatFilter(object item)
+    {
+        if (item is not ChatMessageViewModel m) return false;
+
+        // "Yalnız aktif kod" — kod boşken filtreyi uygulamıyoruz, yoksa
+        // sohbet tamamen boşalır ve operatör panel bozuldu sanır.
+        if (OnlyActiveCode && !string.IsNullOrWhiteSpace(ActiveCode) &&
+            m.Text?.Contains(ActiveCode.Trim(), StringComparison.OrdinalIgnoreCase) != true)
+            return false;
+
+        if (string.IsNullOrWhiteSpace(ChatSearchText)) return true;
+
+        var q = ChatSearchText.Trim();
+        return m.Username?.Contains(q, StringComparison.OrdinalIgnoreCase) == true
+            || m.Text?.Contains(q, StringComparison.OrdinalIgnoreCase) == true;
+    }
+
+    partial void OnActiveCodeChanged(string value)
+    {
+        ProductCard.Load(value);
+        RefreshHeroStats();
+        ChatView.Refresh();
+    }
+
+    private DispatcherTimer? _heroTimer;
+
+    private void EnsureHeroTimer()
+    {
+        if (_heroTimer is not null) return;
+        // 1 sn: yayın süresi ve duvar saati saniye çözünürlüğünde. Sayaç
+        // sorguları da burada tazeleniyor ki dışarıdan (senkron, iptal)
+        // gelen değişiklikler de yakalansın.
+        _heroTimer = new DispatcherTimer(
+            TimeSpan.FromSeconds(1), DispatcherPriority.Background,
+            (_, _) => RefreshHeroStats(), _dispatcher);
+        _heroTimer.Start();
+    }
+
+    /// <summary>
+    /// Hero'daki dört sayaç + süre/saat. Test'ten de çağrılabilsin diye
+    /// public — zamanlayıcıyı beklemeden doğrulanabiliyor.
+    /// </summary>
+    public void RefreshHeroStats()
+    {
+        QueueCount = PrintQueue.Count;
+        ClockText = DateTime.Now.ToString("HH:mm");
+
+        var session = _sessions.GetActive();
+        if (session is null)
+        {
+            ProductOrderCount = 0;
+            SessionLabelCount = 0;
+            SessionRevenue = 0m;
+            StreamDurationText = "";
+            return;
+        }
+
+        var elapsed = TimeSpan.FromSeconds(Math.Max(0, _clock.UnixNow() - session.StartedAt));
+        StreamDurationText = $"{(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
+
+        var totals = _labelRepo.GetSessionTotals(session.Id);
+        SessionLabelCount = totals.PrintedCount;
+        SessionRevenue = totals.TotalAmount;
+
+        ProductOrderCount = string.IsNullOrWhiteSpace(ActiveCode)
+            ? 0
+            : _labelRepo.CountSessionLabelsByCode(session.Id, ActiveCode.Trim());
+    }
+
     [ObservableProperty] private string _activePriceText = "0";
     [ObservableProperty] private string _streamStatusLabel = "Yayın aktif değil";
+    /// <summary>
+    /// Üst bardaki tek yayın butonu bunu okur: kapalıyken "Yayın Başlat",
+    /// açıkken "Yayını Bitir". <see cref="UpdateStreamStatusLabel"/> ile
+    /// birlikte güncellenir — iki ayrı yerden set edilmesin.
+    /// </summary>
+    [ObservableProperty] private bool _isStreamActive;
     [ObservableProperty] private bool _isGiveawayActive;
     [ObservableProperty] private bool _canStartGiveaway;
     [ObservableProperty] private LabelViewModel? _selectedQueueItem;
@@ -154,6 +328,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         ILabelPrinter printer,
         CustomerService customers,
         CustomerRepository customerRepo,
+        LabelRepository labelRepo,
+        IClock clock,
+        ProductCardViewModel productCard,
         GiveawayService giveaways,
         GiveawayBannerViewModel banner,
         LicenseService licenseService,
@@ -170,6 +347,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _printer = printer;
         _customers = customers;
         _customerRepo = customerRepo;
+        _labelRepo = labelRepo;
+        _clock = clock;
+        ProductCard = productCard;
         _giveaways = giveaways;
         // Çekiliş kazananları belirlenince otomatik kazanan etiketi bas (ad + kod).
         // Hem manuel (DrawGiveawayNow) hem otomatik (süre dolunca) çekilişi kapsar.
@@ -189,6 +369,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _animationCatalogClient = animationCatalogClient;
         _intakeSync = intakeSync;
         _intakeSync.SubmissionsSynced += OnIntakeSubmissionsSynced;
+
+        ChatView = CollectionViewSource.GetDefaultView(ChatMessages);
+        ChatView.Filter = ChatFilter;
 
         _busSubscription = bus.Subscribe(OnChatMessage);
         EnsureChatFlushTimer();
@@ -213,6 +396,12 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         UpdateStreamStatusLabel();
         UpdateGiveawayCanStart();
         ReloadQueueFromActiveSession();
+
+        // Kuyruk her değiştiğinde (ekleme, silme, iptal, yazdırma) hero
+        // sayaçları tazelenir — tek yerden, çağrı noktalarını serpiştirmeden.
+        PrintQueue.CollectionChanged += (_, _) => RefreshHeroStats();
+        EnsureHeroTimer();
+        RefreshHeroStats();
     }
 
     // Background queue of chat messages awaiting a UI flush. Bounded so a
@@ -309,11 +498,13 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
         bool hasActiveSession;
         bool hasYouTubeHandle;
+        string? printerName;
         try
         {
             hasActiveSession = _sessions.GetActive() is not null;
             var settings = _settingsStore.Load();
             hasYouTubeHandle = !string.IsNullOrWhiteSpace(settings.YouTubeChannelHandle);
+            printerName = settings.PrinterName;
         }
         catch
         {
@@ -324,6 +515,12 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             ChatHealthTooltip = "Chat takibi kapalı";
             return;
         }
+
+        // 5 sn'lik nabız: SettingsStore.Load() önbeleksiz (her çağrıda disk
+        // okuması) — bu yüzden 1 sn'lik hero zamanlayıcısına DEĞİL buraya bindi.
+        RefreshConnections();
+        RefreshPrinterStatus(printerName);
+
         var hasAnyChatSource = hasActiveSession; // bridge ingestor is always on
 
         // 3-state signal:
@@ -540,6 +737,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private void UpdateStreamStatusLabel()
     {
         var session = _sessions.GetActive();
+        IsStreamActive = session is not null;
         StreamStatusLabel = session is null
             ? "Yayın aktif değil"
             // session.StartedAt is unix seconds (UTC). Format the LocalDateTime
@@ -1293,6 +1491,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     {
         _chatFlushTimer?.Stop();
         _chatFlushTimer = null;
+        _heroTimer?.Stop();
+        _heroTimer = null;
         Banner.Dispose();
         _busSubscription.Dispose();
     }

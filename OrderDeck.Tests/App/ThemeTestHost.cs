@@ -44,9 +44,20 @@ internal static class ThemeTestHost
                 // önce koşarsa Application.Current'ın tipini o belirler.
                 // Kilit: xUnit koleksiyonları paralel koşuyor, iki thread aynı
                 // anda "Current is null" görüp ikinci Application'ı yaratmasın.
+                // InitializeComponent'i BURADA, örneği yaratan thread'de ve aynı
+                // kilit altında çağırıyoruz: App.xaml'in merged dictionary'leri
+                // (OD.* token'ları) olmadan view örneklemek her StaticResource'ta
+                // XamlParseException atar. Application bir DispatcherObject —
+                // onu başka bir thread'den yüklemeye kalkmak (her [Fact] kendi STA
+                // thread'ini açtığı için kaçınılmaz olurdu) InvalidOperationException
+                // riski taşır. Bir kere, doğru thread'de.
                 lock (AppGate)
                 {
-                    if (Application.Current is null) new OrderDeck.App.App();
+                    if (Application.Current is null)
+                    {
+                        var app = new OrderDeck.App.App();
+                        app.InitializeComponent();
+                    }
                 }
 
                 body();

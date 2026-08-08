@@ -9,11 +9,14 @@ namespace OrderDeck.Tests.App;
 /// NEDEN: WPF merge'de aynı anahtar iki kez tanımlanırsa SESSİZCE sonuncusu
 /// kazanır — hata vermez. Yeni sistem eskisiyle bir süre yan yana yaşayacağı
 /// için, çakışmanın fark edilmeden davranış değiştirmesi gerçek bir risk.
+///
+/// App.xaml'i artık ThemeTestHost yüklüyor (Application örneğiyle aynı
+/// thread'de, bir kere); bu dosya yalnızca sonucu doğrular.
 /// </summary>
 public class ThemeMergeTests
 {
     private static readonly string[] NewDictionaries =
-        ["Colors.xaml", "Metrics.xaml", "Motion.xaml"];
+        ["Colors.xaml", "Metrics.xaml", "Motion.xaml", "Controls.xaml"];
 
     // GiveawayTheme.xaml listede YOK: SettingsTheme'i "/Themes/SettingsTheme.xaml"
     // ile merge ediyor; baştaki "/" WPF'te uygulama köküne (giriş assembly'sine)
@@ -46,13 +49,11 @@ public class ThemeMergeTests
     {
         var error = RunOnSta(() =>
         {
-            // App.xaml kökü <Application>; iki argümanlı LoadComponent onu
-            // var olan örneğe yükler (WPF'in ürettiği InitializeComponent de
-            // aynısını yapar). RunOnSta örneği zaten oluşturdu — ikincisini
-            // yaratmak "Cannot create more than one Application" atar.
+            // App.xaml'i RunOnSta zaten örneği yaratan thread'de yükledi
+            // (InitializeComponent). Burada ikinci kez LoadComponent çağırmak
+            // hem gereksiz hem de başka bir thread'den Application'a dokunmak
+            // demekti — sadece sonucu doğruluyoruz.
             var app = Application.Current!;
-            Application.LoadComponent(
-                app, new Uri("/OrderDeck.App;component/App.xaml", UriKind.Relative));
 
             // Her yeni sözlükten bir temsilci anahtar.
             Assert.NotNull(app.Resources["OD.Brush.Accent"]);

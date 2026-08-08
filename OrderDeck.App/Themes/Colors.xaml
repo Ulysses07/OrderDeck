@@ -41,4 +41,15 @@
 
   <!-- Accent zemin üstündeki metin -->
   <SolidColorBrush x:Key="OD.Brush.OnAccent"     Color="#FFFFFF"   po:Freeze="True"/>
+
+  <!-- Bildirim şeritlerinin tonlu zeminleri. Sabit hex XAML'a yazılmasın diye
+       token; renk + alfa değerleri MainShellView'daki şeritlerden BİREBİR
+       taşındı (görüntü değişmesin). Uyarı tonu paletteki Amber'den değil,
+       şeridin kendi sarısından geliyor — o yüzden ayrı token. -->
+  <SolidColorBrush x:Key="OD.Brush.AmberTint"             Color="#14FBBF24" po:Freeze="True"/>
+  <SolidColorBrush x:Key="OD.Brush.AmberTintBorder"       Color="#66E07B00" po:Freeze="True"/>
+  <SolidColorBrush x:Key="OD.Brush.AmberTintStrong"       Color="#1AFBBF24" po:Freeze="True"/>
+  <SolidColorBrush x:Key="OD.Brush.AmberTintStrongBorder" Color="#4CFBBF24" po:Freeze="True"/>
+  <SolidColorBrush x:Key="OD.Brush.InfoTint"              Color="#1A5B8DEF" po:Freeze="True"/>
+  <SolidColorBrush x:Key="OD.Brush.InfoTintBorder"        Color="#595B8DEF" po:Freeze="True"/>
 </ResourceDictionary>

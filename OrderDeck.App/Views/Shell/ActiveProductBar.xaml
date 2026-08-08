@@ -1,0 +1,98 @@
+<UserControl x:Class="OrderDeck.App.Views.Shell.ActiveProductBar"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <UserControl.Resources>
+        <!-- İstatistik bloğu: üstte mikro etiket, altta mono sayı. -->
+        <Style x:Key="StatValue" TargetType="TextBlock"
+               BasedOn="{StaticResource OD.Text.Mono}">
+            <Setter Property="FontSize" Value="{StaticResource OD.Font.F3}"/>
+            <Setter Property="Foreground" Value="{StaticResource OD.Brush.Text}"/>
+        </Style>
+    </UserControl.Resources>
+
+    <Border Style="{StaticResource OD.Panel}" Padding="{StaticResource OD.Pad.5}">
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>   <!-- kod -->
+                <ColumnDefinition Width="Auto"/>   <!-- fiyat -->
+                <ColumnDefinition Width="*"/>      <!-- ürün adı -->
+                <ColumnDefinition Width="Auto"/>   <!-- 4 sayaç -->
+            </Grid.ColumnDefinitions>
+
+            <!-- ÜRÜN KODU -->
+            <StackPanel Grid.Column="0">
+                <TextBlock Text="ÜRÜN KODU" Style="{StaticResource OD.Text.Micro}"/>
+                <TextBox x:Name="CodeBox" MaxLength="6"
+                         Text="{Binding ActiveCode, UpdateSourceTrigger=PropertyChanged}"
+                         CharacterCasing="Upper"
+                         FontFamily="{StaticResource OD.Font.Display}"
+                         MinWidth="180">
+                    <TextBox.Style>
+                        <Style TargetType="TextBox"
+                               BasedOn="{StaticResource OD.TextBox}">
+                            <Setter Property="FontSize"
+                                    Value="{StaticResource OD.Font.F5}"/>
+                            <Style.Triggers>
+                                <!-- Spec §7: yükseklik < 850px → 64 yerine 44.
+                                     Düz {Binding}: bu kontrolün DataContext'i
+                                     zaten MainShellViewModel. Pencere üzerinden
+                                     GİTME — MainWindow'un DataContext'i yok
+                                     (VM MainShellView'da kuruluyor), o zincir
+                                     sessizce hiç tetiklenmez. -->
+                                <DataTrigger Binding="{Binding IsShort}" Value="True">
+                                    <Setter Property="FontSize"
+                                            Value="{StaticResource OD.Layout.CodeFontShort}"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBox.Style>
+                </TextBox>
+            </StackPanel>
+
+            <!-- FİYAT -->
+            <StackPanel Grid.Column="1" Margin="{StaticResource OD.Pad.5}">
+                <TextBlock Text="FİYAT" Style="{StaticResource OD.Text.Micro}"/>
+                <TextBox Text="{Binding ActivePriceText, UpdateSourceTrigger=PropertyChanged}"
+                         Style="{StaticResource OD.TextBox}"
+                         FontFamily="{StaticResource OD.Font.Mono}"
+                         FontSize="{StaticResource OD.Font.F4}"
+                         MinWidth="120"/>
+            </StackPanel>
+
+            <!-- ÜRÜN ADI (ürün kartından okunur; yeni alan değil) -->
+            <StackPanel Grid.Column="2" VerticalAlignment="Bottom"
+                        Margin="{StaticResource OD.Pad.5}">
+                <TextBlock Text="{Binding ProductCard.Name}"
+                           FontFamily="{StaticResource OD.Font.Display}"
+                           FontSize="{StaticResource OD.Font.F3}"
+                           Foreground="{StaticResource OD.Brush.Text}"
+                           TextTrimming="CharacterEllipsis"/>
+            </StackPanel>
+
+            <!-- DÖRT SAYAÇ -->
+            <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                <StackPanel Margin="{StaticResource OD.Pad.4}">
+                    <TextBlock Text="BU ÜRÜNDEN" Style="{StaticResource OD.Text.Micro}"/>
+                    <TextBlock Text="{Binding ProductOrderCount}" Style="{StaticResource StatValue}"/>
+                </StackPanel>
+                <StackPanel Margin="{StaticResource OD.Pad.4}">
+                    <TextBlock Text="YAYIN TOPLAMI" Style="{StaticResource OD.Text.Micro}"/>
+                    <TextBlock Text="{Binding SessionLabelCount}" Style="{StaticResource StatValue}"/>
+                </StackPanel>
+                <StackPanel Margin="{StaticResource OD.Pad.4}" Cursor="Hand"
+                            ToolTip="Ciroyu gizle/göster (ekran paylaşımı için)">
+                    <StackPanel.InputBindings>
+                        <MouseBinding MouseAction="LeftClick"
+                                      Command="{Binding ToggleRevenueMaskCommand}"/>
+                    </StackPanel.InputBindings>
+                    <TextBlock Text="YAYIN CİROSU" Style="{StaticResource OD.Text.Micro}"/>
+                    <TextBlock Text="{Binding SessionRevenueText}" Style="{StaticResource StatValue}"/>
+                </StackPanel>
+                <StackPanel Margin="{StaticResource OD.Pad.4}">
+                    <TextBlock Text="KUYRUKTA" Style="{StaticResource OD.Text.Micro}"/>
+                    <TextBlock Text="{Binding QueueCount}" Style="{StaticResource StatValue}"/>
+                </StackPanel>
+            </StackPanel>
+        </Grid>
+    </Border>
+</UserControl>

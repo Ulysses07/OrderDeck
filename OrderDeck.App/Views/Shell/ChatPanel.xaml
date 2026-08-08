@@ -1,0 +1,206 @@
+<UserControl x:Class="OrderDeck.App.Views.Shell.ChatPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Border Style="{StaticResource OD.Panel}">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- ── Başlık şeridi: ad + arama + "Sadece {kod}" çipi ───────── -->
+            <Border Grid.Row="0" Padding="{StaticResource OD.Pad.4}"
+                    BorderBrush="{StaticResource OD.Brush.Border}"
+                    BorderThickness="0,0,0,1">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Column="0" Text="Canlı Sohbet"
+                               VerticalAlignment="Center"
+                               FontFamily="{StaticResource OD.Font.Display}"
+                               FontSize="{StaticResource OD.Font.F2}"
+                               Foreground="{StaticResource OD.Brush.Text}"/>
+
+                    <TextBox Grid.Column="1"
+                             Style="{StaticResource OD.TextBox}"
+                             Margin="{StaticResource OD.Pad.3}"
+                             Text="{Binding ChatSearchText, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="Kullanıcı adı veya mesaj içinde ara"/>
+
+                    <!-- Çip yalnız aktif kod varken anlamlı; kod yokken
+                         gizlenir ki operatör etkisiz bir düğmeye basmasın.
+                         ActiveCode boşken null değil "" — NullToCollapsedConverter
+                         boş/whitespace dizgiyi de Collapsed'a çeviriyor. -->
+                    <ToggleButton Grid.Column="2"
+                                  Style="{StaticResource OD.Chip}"
+                                  IsChecked="{Binding OnlyActiveCode}"
+                                  Visibility="{Binding ActiveCode,
+                                               Converter={StaticResource NullToCollapsedConverter}}"
+                                  Content="{Binding ActiveCode}"
+                                  ContentStringFormat="Sadece {0}"/>
+                </Grid>
+            </Border>
+
+            <!-- ── Liste ────────────────────────────────────────────────── -->
+            <ListBox Grid.Row="1"
+                     x:Name="ChatList"
+                     ItemsSource="{Binding ChatView}"
+                     MouseDoubleClick="ChatList_OnDoubleClick"
+                     PreviewKeyDown="ChatList_OnPreviewKeyDown"
+                     Background="Transparent"
+                     Foreground="{StaticResource OD.Brush.Text}"
+                     BorderThickness="0"
+                     Padding="{StaticResource OD.Pad.2}"
+                     HorizontalContentAlignment="Stretch"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem">
+                        <Setter Property="Background"
+                                Value="{Binding IsSenderBlacklisted,
+                                                Converter={StaticResource BlacklistToBrushConverter}}"/>
+                        <!-- Item'ı liste genişliğine yasla ki mesaj TextBlock'u
+                             (Wrap) dar pencerede alt satıra geçsin — yoksa item
+                             içeriğe göre yatayda taşıp kırpılıyordu. -->
+                        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                    </Style>
+                </ListBox.ItemContainerStyle>
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <Grid Margin="0,3">
+                            <Grid.ColumnDefinitions>
+                                <!-- Rozet kolonu: taban ölçü OD.Layout.ChatBadgeColumn.
+                                     Width yerine MinWidth çünkü (a) ColumnDefinition.Width
+                                     GridLength ister, token sys:Double; (b) YouTube ikonu
+                                     158:110 oranında ve 20 dp minimumun altına inemez —
+                                     28 px'e sabitlenirse ikon 19,5 px'e küçülürdü. -->
+                                <ColumnDefinition Width="Auto"
+                                                  MinWidth="{StaticResource OD.Layout.ChatBadgeColumn}"/>
+                                <!-- Ad kolonu: OD.Layout.ChatUserMaxWidth'e sabit.
+                                     Min=Max, çünkü her satır kendi Grid'i — Auto olsaydı
+                                     satırlar arası mesaj kolonu hizası kayardı. -->
+                                <ColumnDefinition Width="Auto"
+                                                  MinWidth="{StaticResource OD.Layout.ChatUserMaxWidth}"
+                                                  MaxWidth="{StaticResource OD.Layout.ChatUserMaxWidth}"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <!-- Platform rozeti — her platformun RESMİ marka ikonu
+                                 (youtube/instagram/tiktok/facebook lowercase id'ler;
+                                 bilinmeyen → nötr metin chip). İkonlar ve kullanım
+                                 gerekçeleri Themes/PlatformIcons.xaml'de.
+                                 Rozet tıklanabilir değil, yalnızca kaynak atfıdır.
+                                 Genişlik 32: YouTube ikonu 158:110 oranında olduğu için
+                                 20 px yükseklikte ~29 px yer kaplıyor (diğerleri kare). -->
+                            <ContentControl Grid.Column="0" Content="{Binding}"
+                                            Width="32" Height="20" Margin="0,0,10,0"
+                                            HorizontalAlignment="Left" VerticalAlignment="Center">
+                                <ContentControl.Style>
+                                    <Style TargetType="ContentControl">
+                                        <Setter Property="ContentTemplate" Value="{StaticResource OD.PlatformChip.Unknown}"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Platform}" Value="youtube"><Setter Property="ContentTemplate" Value="{StaticResource OD.PlatformChip.YouTube}"/></DataTrigger>
+                                            <DataTrigger Binding="{Binding Platform}" Value="instagram"><Setter Property="ContentTemplate" Value="{StaticResource OD.PlatformChip.Instagram}"/></DataTrigger>
+                                            <DataTrigger Binding="{Binding Platform}" Value="tiktok"><Setter Property="ContentTemplate" Value="{StaticResource OD.PlatformChip.TikTok}"/></DataTrigger>
+                                            <DataTrigger Binding="{Binding Platform}" Value="facebook"><Setter Property="ContentTemplate" Value="{StaticResource OD.PlatformChip.Facebook}"/></DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ContentControl.Style>
+                            </ContentControl>
+                            <TextBlock Grid.Column="1" Text="{Binding Display}"
+                                       FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
+                                       VerticalAlignment="Center"
+                                       ToolTip="{Binding Username}"/>
+                            <TextBlock Grid.Column="2" Text="{Binding Text}"
+                                       TextWrapping="Wrap" VerticalAlignment="Center"
+                                       Foreground="{StaticResource OD.Brush.Text}"/>
+                        </Grid>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+                <ListBox.ContextMenu>
+                    <ContextMenu>
+                        <MenuItem Header="Müşteri Detayı"
+                                  Command="{Binding PlacementTarget.DataContext.OpenCustomerDetailFromChatCommand,
+                                                    RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                  CommandParameter="{Binding PlacementTarget.SelectedItem,
+                                                             RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                        <!--
+                          YouTube moderation menu items. OAuth audit kaydı için
+                          açıldı (Settings → "YouTube'a Bağlan" kartıyla lockstep).
+                          Kullanıcı YouTube'a bağlı değilse komutlar no-op/uyarı
+                          verir; consent + audit ile birlikte kalıcı kullanılır.
+                        -->
+                        <MenuItem Header="YouTube'da mesajı sil"
+                                  Command="{Binding PlacementTarget.DataContext.DeleteYouTubeMessageCommand,
+                                                    RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                  CommandParameter="{Binding PlacementTarget.SelectedItem,
+                                                             RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                  Visibility="{Binding PlacementTarget.SelectedItem.IsYouTube,
+                                                       RelativeSource={RelativeSource AncestorType=ContextMenu},
+                                                       Converter={StaticResource BoolToVisibleConverter},
+                                                       FallbackValue=Collapsed}"/>
+                        <MenuItem Header="YouTube'da kullanıcıyı banla"
+                                  Command="{Binding PlacementTarget.DataContext.BanYouTubeUserCommand,
+                                                    RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                  CommandParameter="{Binding PlacementTarget.SelectedItem,
+                                                             RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                  Visibility="{Binding PlacementTarget.SelectedItem.IsYouTube,
+                                                       RelativeSource={RelativeSource AncestorType=ContextMenu},
+                                                       Converter={StaticResource BoolToVisibleConverter},
+                                                       FallbackValue=Collapsed}"/>
+                        <MenuItem Header="YouTube'da banı kaldır"
+                                  Command="{Binding PlacementTarget.DataContext.UnbanYouTubeUserCommand,
+                                                    RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                  CommandParameter="{Binding PlacementTarget.SelectedItem,
+                                                             RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                  Visibility="{Binding PlacementTarget.SelectedItem.IsYouTube,
+                                                       RelativeSource={RelativeSource AncestorType=ContextMenu},
+                                                       Converter={StaticResource BoolToVisibleConverter},
+                                                       FallbackValue=Collapsed}"/>
+                        <!--
+                          Facebook moderation. Mirrors the YouTube pair above:
+                          ExternalId is the Graph comment id, Username is the
+                          page-scoped user id, so FacebookModerationService takes
+                          both through unchanged. Requires a connected Page
+                          (Settings → Facebook) — otherwise the commands warn.
+                        -->
+                        <MenuItem Header="Facebook'ta yorumu sil"
+                                  Command="{Binding PlacementTarget.DataContext.DeleteFacebookCommentCommand,
+                                                    RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                  CommandParameter="{Binding PlacementTarget.SelectedItem,
+                                                             RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                  Visibility="{Binding PlacementTarget.SelectedItem.IsFacebook,
+                                                       RelativeSource={RelativeSource AncestorType=ContextMenu},
+                                                       Converter={StaticResource BoolToVisibleConverter},
+                                                       FallbackValue=Collapsed}"/>
+                        <MenuItem Header="Facebook'ta kullanıcıyı banla"
+                                  Command="{Binding PlacementTarget.DataContext.BanFacebookUserCommand,
+                                                    RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                  CommandParameter="{Binding PlacementTarget.SelectedItem,
+                                                             RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                  Visibility="{Binding PlacementTarget.SelectedItem.IsFacebook,
+                                                       RelativeSource={RelativeSource AncestorType=ContextMenu},
+                                                       Converter={StaticResource BoolToVisibleConverter},
+                                                       FallbackValue=Collapsed}"/>
+                        <MenuItem Header="Facebook'ta banı kaldır"
+                                  Command="{Binding PlacementTarget.DataContext.UnbanFacebookUserCommand,
+                                                    RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                  CommandParameter="{Binding PlacementTarget.SelectedItem,
+                                                             RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                  Visibility="{Binding PlacementTarget.SelectedItem.IsFacebook,
+                                                       RelativeSource={RelativeSource AncestorType=ContextMenu},
+                                                       Converter={StaticResource BoolToVisibleConverter},
+                                                       FallbackValue=Collapsed}"/>
+                        <MenuItem Header="Kara Listeye Al…"
+                                  Command="{Binding PlacementTarget.DataContext.AddChatSenderToBlacklistCommand,
+                                                    RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                  CommandParameter="{Binding PlacementTarget.SelectedItem,
+                                                             RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                    </ContextMenu>
+                </ListBox.ContextMenu>
+            </ListBox>
+        </Grid>
+    </Border>
+</UserControl>

@@ -5,6 +5,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Text;
+using OrderDeck.App.Services;
 using OrderDeck.App.Services.IntakeForm;
 using OrderDeck.App.ViewModels;
 using OrderDeck.Core.Chat;
@@ -99,9 +100,16 @@ internal static class MainShellTestHarness
 
         sessionSvc.Start("Test", new[] { "instagram" });
 
+        var productRepo = new ProductRepository(db);
+        var productCard = new ProductCardViewModel(
+            productRepo,
+            new ProductPhotoStore(Path.Combine(Path.GetTempPath(), "od-test-" + Guid.NewGuid().ToString("N"))),
+            clock.Object);
+
         var vm = new MainShellViewModel(
-            bus, labelSvc, sessionSvc, printer, customerSvc, customerRepo, giveawaySvc, banner,
-            licenseSvc, intakeSync, tempStore);
+            bus, labelSvc, sessionSvc, printer, customerSvc, customerRepo,
+            labelRepo, clock.Object, productCard,
+            giveawaySvc, banner, licenseSvc, intakeSync, tempStore);
 
         return new Harness(vm, printer, db, labelSvc, customerRepo, sessionSvc, clock);
     }

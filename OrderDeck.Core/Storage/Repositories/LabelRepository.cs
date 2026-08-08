@@ -206,6 +206,34 @@ public sealed class LabelRepository
     }
 
     /// <summary>
+    /// Bir yayında belirli ürün kodundan kaç sipariş alındığı. Hero'daki
+    /// "BU ÜRÜNDEN" sayacı.
+    ///
+    /// GetSessionTotals'tan iki farkı var, ikisi de bilinçli:
+    ///  * PrintedAt filtresi YOK — operatör siparişi kuyruğa düştüğü anda
+    ///    saymak istiyor, yazdırmayı beklemek sayacı geciktirirdi.
+    ///  * Kod eşleşmesi harf duyarsız; hero girişi büyük harfe zorluyor ama
+    ///    eski satırlar karışık olabilir.
+    /// İptal ve onaylanmamış yedek dışlaması ise AYNI — iki sayaç birbirini
+    /// tutmalı.
+    /// </summary>
+    public int CountSessionLabelsByCode(string sessionId, string code)
+    {
+        using var conn = _factory.Open();
+        return conn.ExecuteScalar<int>(
+            """
+            SELECT COUNT(*)
+            FROM Label
+            WHERE SessionId = @sessionId
+              AND Code IS NOT NULL
+              AND Code = @code COLLATE NOCASE
+              AND CancelledAt IS NULL
+              AND IsTentativeBackup = 0
+            """,
+            new { sessionId, code });
+    }
+
+    /// <summary>
     /// Yayın raporu için platform kırılımı: platform başına basılmış etiket
     /// adedi, ciro ve tekil müşteri. Filtre kuralları GetSessionTotals ile
     /// birebir aynı (iptal + tentative backup hariç) — iki sorgunun toplamları

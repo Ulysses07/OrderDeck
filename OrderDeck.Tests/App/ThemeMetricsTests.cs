@@ -31,7 +31,7 @@ public class ThemeMetricsTests
         ("OD.Layout.TopbarHeight",     56),
         ("OD.Layout.ButtonHeight",     46),
         ("OD.Layout.ContentMaxWidth",1760),
-        ("OD.Layout.AppMinWidth",    1280),
+        ("OD.Layout.AppMinWidth",     960),
         ("OD.Layout.AppMinHeight",    720),
     ];
 

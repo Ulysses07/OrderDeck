@@ -1,0 +1,39 @@
+using System.Windows.Controls;
+using OrderDeck.App.Views;
+using OrderDeck.App.Views.Shell;
+
+namespace OrderDeck.Tests.App;
+
+/// <summary>
+/// MainShellView'ün XAML'ı ÇÖZÜLEBİLİYOR mu? XAML hataları derlemede değil
+/// çalışma anında XamlParseException olarak patlar — bu test o riski CI'ya
+/// çeker. Faz 1'in en pahalı hatası "uygulama hiç açılmıyor" olurdu.
+///
+/// Tek [Fact]: her Fact kendi STA thread'ini açıyor, sekiz kontrolü tek
+/// thread'de örneklemek hem hızlı hem de "süreç başına tek Application"
+/// kuralına en az dokunan yol.
+/// </summary>
+public class MainShellViewCompositionTests
+{
+    [Fact]
+    public void Shell_controls_and_main_shell_resolve()
+    {
+        var error = ThemeTestHost.RunOnSta(() =>
+        {
+            // Önce parçalar: biri patlarsa hata mesajı doğrudan onu gösterir.
+            Assert.IsType<UserControl>(new ShellSidebar(), exactMatch: false);
+            Assert.IsType<UserControl>(new ShellTopBar(), exactMatch: false);
+            Assert.IsType<UserControl>(new ShellBanners(), exactMatch: false);
+            Assert.IsType<UserControl>(new ActiveProductBar(), exactMatch: false);
+            Assert.IsType<UserControl>(new ChatPanel(), exactMatch: false);
+            Assert.IsType<UserControl>(new ProductCard(), exactMatch: false);
+            Assert.IsType<UserControl>(new PrintQueuePanel(), exactMatch: false);
+
+            // Sonra kompozisyon kökü: yedi parçayı da kendi ağacında kurar.
+            var shell = new MainShellView();
+            Assert.NotNull(shell.Content);
+        });
+
+        Assert.Null(error);
+    }
+}

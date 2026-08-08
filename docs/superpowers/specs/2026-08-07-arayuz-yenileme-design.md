@@ -284,6 +284,38 @@ tüketildikleri fazda yazılır (çoğu Faz 1'de). Hiç kullanılmayan 13 `Style
 şerit, bildirim şeridi, aktif ürün şeridi, sohbet, sağ panel, yazdır yuvası.
 Değerin çoğu burada — yayın sırasında bakılan tek ekran.
 
+### 9.1 Faz 1'in veri katmanı istisnası (karar 2026-08-08)
+
+Mockup'ın sağ panelindeki ürün kartı, uygulamada karşılığı **olmayan** üç şey
+gösteriyor: ürün adı, ürün fotoğrafı, beden başına stok. Kalan her alan mevcut
+veriden geliyor (yayın istatistikleri `LabelRepository.GetSessionTotals()` ile
+zaten var; süre / saat / sıra numarası ucuz türetme).
+
+Kullanıcı kararı: kart **gerçek veriyle** çalışacak — boş kabuk çizilmeyecek.
+Bu, §11'in "veri katmanı kapsam dışı" kuralını yalnız bu üç alan için deler.
+Sınırlar dar tutuldu:
+
+- **Yalnız WPF-yerel SQLite.** Sunucuda tablo yok, senkron yok, R2 yok. Sebep:
+  PostgreSQL göçü UI bitmeden başlamayacak (kullanıcı kararı, 2026-08-08) ve
+  stok spec'i satır 246 *"WPF'in yerel SQLite'ı etkilenmiyor"* diyor — bu dilim
+  göçten etkilenmediği için ileride yeniden üretilmesi gerekmiyor.
+- **Şema (migration 024):** `Product(Code PK, Name, PhotoPath, UpdatedAt)` ve
+  `ProductSize(Code, Size PK, Quantity, SortOrder)`. Fotoğraf
+  `%LOCALAPPDATA%\OrderDeck\products\` altında dosya; tabloda **yalnız dosya
+  adı** tutulur (mutlak yol değil — profil taşınırsa kayıt bozulmasın).
+- **Fiyat alanı YOK.** Karttaki fiyat, hero'daki aktif fiyat girişinin aynısı;
+  yeni alan icat edilmiyor.
+- **Grid yalnız gösterir.** Etiket kuyruğa girince stok **düşmez**; `Label`'a
+  beden alanı eklenmez, sohbet mesajından beden ayıklanmaz. Adetleri operatör
+  kartta satır-içi düzenler. Otomatik düşüş stok projesine kalıyor.
+- Kart, kayıt yoksa satır-içi "ürünü tanımla" moduna düşer (ad, fotoğraf, beden
+  seti + adetler). Pop-up yok — §6 kararı burada da geçerli.
+
+Stok projesine kalanlar: sunucu tabloları, çoklu varyant ekseni (renk),
+hareket tabanlı defter, barkod/Code128, R2, panel stok giriş ekranı, maliyet,
+arşivleme, WhatsApp bildirimi. Bu dilimdeki düz `Quantity` alanı, stok projesi
+geldiğinde hareket defterine dönüşecek.
+
 **Faz 2 — çekmece altyapısı + 10 çekmece view'ı.** `Window` kökleri
 `UserControl`'e çevrilir, çekmece host'u shell'e eklenir.
 
@@ -310,7 +342,9 @@ bağlanır.
 - `web/` ve shopper mobil uygulaması — bu doküman yalnız masaüstünü kapsıyor.
 - Chrome eklentisi arayüzü.
 - İş mantığı, ViewModel davranışı, veri katmanı. Bu yenileme **yalnız sunum
-  katmanı**; hiçbir özellik eklenmiyor veya kaldırılmıyor.
+  katmanı**; hiçbir özellik eklenmiyor veya kaldırılmıyor. **Tek istisna:**
+  Faz 1'in ürün kartı — bkz. §9.1. Kapsamı orada dar sınırlarla yazılı.
 - Karanlık/aydınlık tema seçeneği — tek tema (koyu) var, öyle kalıyor.
-- PostgreSQL göçü ve stok sistemi — ayrı spec'ler, sıralaması ayrıca
-  kararlaştırılacak.
+- PostgreSQL göçü ve stok sistemi — ayrı spec'ler. **Sıralama kararlaştırıldı
+  (2026-08-08):** ikisi de bu yenilemenin tüm fazları bitmeden başlamayacak.
+  Faz 1'in §9.1 dilimi bu kuralı bozmuyor, çünkü sunucuya hiç dokunmuyor.

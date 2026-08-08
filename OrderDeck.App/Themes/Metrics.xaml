@@ -45,6 +45,24 @@
   <Thickness x:Key="OD.Pad.6">20</Thickness>
   <Thickness x:Key="OD.Pad.7">24</Thickness>
 
+  <!-- Tek yönlü boşluklar. Simetrik OD.Pad.* yetmediği yerlerde; sayı XAML'a
+       değil buraya yazılsın diye token. WPF'te Margin="0,{StaticResource X},0,0"
+       geçersiz — Thickness içine markup extension gömülemez, tam Thickness
+       tokenı gerekir.
+       Basamak numarası simetrik kardeşiyle AYNI değeri gösterir:
+       Top5 = OD.Pad.5 = OD.Space.5 = 16. Numara/değer eşleşmesi bozulursa
+       token okunurluğunu kaybeder — yeni bir tek yönlü token eklerken
+       değeri OD.Space.* ölçeğinden seç. -->
+  <Thickness x:Key="OD.Pad.Top5"    Left="0" Top="16" Right="0" Bottom="0"/>
+  <Thickness x:Key="OD.Pad.Top6"    Left="0" Top="20" Right="0" Bottom="0"/>
+  <Thickness x:Key="OD.Pad.Bottom3" Left="0" Top="0"  Right="0" Bottom="8"/>
+
+  <!-- Yatay-yalnız boşluklar. Yüksekliği sabit şeritlerde (üst bar 56px,
+       içindeki birincil buton 46px) dikey margin içeriği kırpar; kırpma
+       exception atmadığı için ancak ekranda fark edilir. -->
+  <Thickness x:Key="OD.Pad.X2" Left="4"  Top="0" Right="4"  Bottom="0"/>
+  <Thickness x:Key="OD.Pad.X5" Left="16" Top="0" Right="16" Bottom="0"/>
+
   <!-- Köşe yarıçapı: 5 basamak -->
   <CornerRadius x:Key="OD.Radius.Xs">4</CornerRadius>     <!-- çip, kod parçacığı -->
   <CornerRadius x:Key="OD.Radius.Sm">6</CornerRadius>     <!-- input, küçük buton -->
@@ -66,6 +84,29 @@
   <sys:Double x:Key="OD.Layout.TopbarHeight">56</sys:Double>
   <sys:Double x:Key="OD.Layout.ButtonHeight">46</sys:Double>    <!-- birincil buton -->
   <sys:Double x:Key="OD.Layout.ContentMaxWidth">1760</sys:Double> <!-- fazlası ortalanır -->
-  <sys:Double x:Key="OD.Layout.AppMinWidth">1280</sys:Double>
+  <!-- Pencerenin asgari ölçüsü (MainWindow.MinWidth/MinHeight).
+       1280 değil 960: 1920'lik ekranda yarım pencere tam 960 ve operatör
+       uygulamayı yayın/tarayıcı yanına böyle koyuyor. 1360 kırılımı zaten
+       kenar çubuğunu ikon rayına indiriyor, 960'ta yerleşim taşmadan sığar. -->
+  <sys:Double x:Key="OD.Layout.AppMinWidth">960</sys:Double>
   <sys:Double x:Key="OD.Layout.AppMinHeight">720</sys:Double>
+
+  <!-- Faz 1'e özgü ölçüler. Mockup'ta CSS değişkeni olarak duruyorlar
+       (h-pimg, h-q-min, w-col-*, w-user); WPF'te sabit sayı yazmamak
+       için token'a çevrildiler.
+       NOT: CSS değişken adlarını iki tireli hâliyle yazma — XML yorumu
+       içinde iki ardışık tire yasak (MC3000). -->
+  <sys:Double x:Key="OD.Layout.ProductImageHeight">142</sys:Double>
+  <!-- Alçak pencerede (<850px) ürün görseli kısalır: mockup
+       @media (max-height:849px) altında h-pimg 56px. -->
+  <sys:Double x:Key="OD.Layout.ProductImageHeightShort">56</sys:Double>
+  <sys:Double x:Key="OD.Layout.QueueMinHeight">64</sys:Double>
+  <sys:Double x:Key="OD.Layout.ChatTimeColumn">40</sys:Double>
+  <sys:Double x:Key="OD.Layout.ChatBadgeColumn">28</sys:Double>
+  <sys:Double x:Key="OD.Layout.ChatUserMaxWidth">132</sys:Double>
+  <sys:Double x:Key="OD.Layout.QueueNoColumn">44</sys:Double>
+  <!-- Spec §7: alçak pencerede aktif ürün kodu F5 (64) yerine 44px.
+       Font ölçeğine (F0..F5) yeni basamak eklemiyoruz — bu, tek bir
+       kontrolün duyarlı ölçüsü, tipografi basamağı değil. -->
+  <sys:Double x:Key="OD.Layout.CodeFontShort">44</sys:Double>
 </ResourceDictionary>
