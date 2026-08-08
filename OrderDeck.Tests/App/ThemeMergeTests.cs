@@ -13,7 +13,7 @@ namespace OrderDeck.Tests.App;
 public class ThemeMergeTests
 {
     private static readonly string[] NewDictionaries =
-        ["Colors.xaml", "Metrics.xaml", "Motion.xaml"];
+        ["Colors.xaml", "Metrics.xaml", "Motion.xaml", "Controls.xaml"];
 
     // GiveawayTheme.xaml listede YOK: SettingsTheme'i "/Themes/SettingsTheme.xaml"
     // ile merge ediyor; baştaki "/" WPF'te uygulama köküne (giriş assembly'sine)

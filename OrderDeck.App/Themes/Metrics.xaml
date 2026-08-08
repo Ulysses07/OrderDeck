@@ -68,4 +68,23 @@
   <sys:Double x:Key="OD.Layout.ContentMaxWidth">1760</sys:Double> <!-- fazlası ortalanır -->
   <sys:Double x:Key="OD.Layout.AppMinWidth">1280</sys:Double>
   <sys:Double x:Key="OD.Layout.AppMinHeight">720</sys:Double>
+
+  <!-- Faz 1'e özgü ölçüler. Mockup'ta CSS değişkeni olarak duruyorlar
+       (h-pimg, h-q-min, w-col-*, w-user); WPF'te sabit sayı yazmamak
+       için token'a çevrildiler.
+       NOT: CSS değişken adlarını iki tireli hâliyle yazma — XML yorumu
+       içinde iki ardışık tire yasak (MC3000). -->
+  <sys:Double x:Key="OD.Layout.ProductImageHeight">142</sys:Double>
+  <!-- Alçak pencerede (<850px) ürün görseli kısalır: mockup
+       @media (max-height:849px) altında h-pimg 56px. -->
+  <sys:Double x:Key="OD.Layout.ProductImageHeightShort">56</sys:Double>
+  <sys:Double x:Key="OD.Layout.QueueMinHeight">64</sys:Double>
+  <sys:Double x:Key="OD.Layout.ChatTimeColumn">40</sys:Double>
+  <sys:Double x:Key="OD.Layout.ChatBadgeColumn">28</sys:Double>
+  <sys:Double x:Key="OD.Layout.ChatUserMaxWidth">132</sys:Double>
+  <sys:Double x:Key="OD.Layout.QueueNoColumn">44</sys:Double>
+  <!-- Spec §7: alçak pencerede aktif ürün kodu F5 (64) yerine 44px.
+       Font ölçeğine (F0..F5) yeni basamak eklemiyoruz — bu, tek bir
+       kontrolün duyarlı ölçüsü, tipografi basamağı değil. -->
+  <sys:Double x:Key="OD.Layout.CodeFontShort">44</sys:Double>
 </ResourceDictionary>

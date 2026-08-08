@@ -12,6 +12,9 @@
                 <ResourceDictionary Source="Themes/Colors.xaml"/>
                 <ResourceDictionary Source="Themes/Metrics.xaml"/>
                 <ResourceDictionary Source="Themes/Motion.xaml"/>
+                <!-- Bileşen stilleri: token'lara BAĞIMLI, bu yüzden üç token
+                     sözlüğünden SONRA merge edilmeli. -->
+                <ResourceDictionary Source="Themes/Controls.xaml"/>
 
                 <!-- Implicit dark-theme styles for unstyled TextBox / ComboBox /
                      Label / GroupBox / DataGrid headers / etc. Closes the
