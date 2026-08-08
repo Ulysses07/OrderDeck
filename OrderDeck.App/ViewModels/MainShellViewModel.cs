@@ -1,9 +1,11 @@
 using System;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Globalization;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Data;
 using System.Windows.Media;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -55,6 +57,14 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private const int MaxChatMessages = 500;
 
     public ObservableCollection<ChatMessageViewModel> ChatMessages { get; } = new();
+
+    /// <summary>
+    /// Sohbet listesinin bağlandığı görünüm. Ayrı bir "filtrelenmiş
+    /// koleksiyon" tutmuyoruz — ekleme/kırpma mantığı ChatMessages'ta
+    /// olduğu gibi kalsın, filtre yalnız sunum katmanında olsun diye.
+    /// </summary>
+    public ICollectionView ChatView { get; }
+
     public ObservableCollection<LabelViewModel>       PrintQueue   { get; } = new();
 
     /// <summary>Multi-select kuyrukta seçili etiketler. Code-behind QueueList.SelectionChanged
@@ -106,10 +116,34 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
     [RelayCommand] private void ToggleRevenueMask() => IsRevenueMasked = !IsRevenueMasked;
 
+    [ObservableProperty] private string _chatSearchText = "";
+    [ObservableProperty] private bool _onlyActiveCode;
+
+    partial void OnChatSearchTextChanged(string value) => ChatView.Refresh();
+    partial void OnOnlyActiveCodeChanged(bool value) => ChatView.Refresh();
+
+    private bool ChatFilter(object item)
+    {
+        if (item is not ChatMessageViewModel m) return false;
+
+        // "Yalnız aktif kod" — kod boşken filtreyi uygulamıyoruz, yoksa
+        // sohbet tamamen boşalır ve operatör panel bozuldu sanır.
+        if (OnlyActiveCode && !string.IsNullOrWhiteSpace(ActiveCode) &&
+            m.Text?.Contains(ActiveCode.Trim(), StringComparison.OrdinalIgnoreCase) != true)
+            return false;
+
+        if (string.IsNullOrWhiteSpace(ChatSearchText)) return true;
+
+        var q = ChatSearchText.Trim();
+        return m.Username?.Contains(q, StringComparison.OrdinalIgnoreCase) == true
+            || m.Text?.Contains(q, StringComparison.OrdinalIgnoreCase) == true;
+    }
+
     partial void OnActiveCodeChanged(string value)
     {
         ProductCard.Load(value);
         RefreshHeroStats();
+        ChatView.Refresh();
     }
 
     private DispatcherTimer? _heroTimer;
@@ -278,6 +312,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _animationCatalogClient = animationCatalogClient;
         _intakeSync = intakeSync;
         _intakeSync.SubmissionsSynced += OnIntakeSubmissionsSynced;
+
+        ChatView = CollectionViewSource.GetDefaultView(ChatMessages);
+        ChatView.Filter = ChatFilter;
 
         _busSubscription = bus.Subscribe(OnChatMessage);
         EnsureChatFlushTimer();
