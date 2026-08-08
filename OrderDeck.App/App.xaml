@@ -6,9 +6,18 @@
     <Application.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
+                <!-- Tasarım sistemi token katmanı. Sabit renk/ölçü/süre YALNIZ
+                     bu üç dosyada tanımlanır; view'lar StaticResource ile bağlar.
+                     Spec: docs/superpowers/specs/2026-08-07-arayuz-yenileme-design.md -->
+                <ResourceDictionary Source="Themes/Colors.xaml"/>
+                <ResourceDictionary Source="Themes/Metrics.xaml"/>
+                <ResourceDictionary Source="Themes/Motion.xaml"/>
+
                 <!-- Implicit dark-theme styles for unstyled TextBox / ComboBox /
                      Label / GroupBox / DataGrid headers / etc. Closes the
-                     "white text on white background" UI bug across dialogs. -->
+                     "white text on white background" UI bug across dialogs.
+                     Token katmanına devrediliyor: view'lar Faz 1-3'te
+                     dönüştükçe küçülecek, Faz 4'te silinecek. -->
                 <ResourceDictionary Source="Themes/DarkControls.xaml"/>
                 <!-- Sohbet listesindeki platform rozetleri: her platformun
                      resmi marka ikonu. Marka rehberleri kısaltma + marka
