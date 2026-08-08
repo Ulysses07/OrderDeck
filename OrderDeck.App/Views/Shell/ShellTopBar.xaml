@@ -1,0 +1,116 @@
+<UserControl x:Class="OrderDeck.App.Views.Shell.ShellTopBar"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Border Height="{StaticResource OD.Layout.TopbarHeight}"
+            BorderBrush="{StaticResource OD.Brush.Border}"
+            BorderThickness="0,0,0,1">
+        <DockPanel LastChildFill="False" Margin="{StaticResource OD.Pad.4}">
+
+            <!-- SOL: durum + süre + saat -->
+            <TextBlock DockPanel.Dock="Left" Text="{Binding StreamStatusLabel}"
+                       VerticalAlignment="Center"
+                       FontFamily="{StaticResource OD.Font.Display}"
+                       FontSize="{StaticResource OD.Font.F2}"
+                       Foreground="{StaticResource OD.Brush.Text}"
+                       Visibility="{Binding IsGiveawayActive,
+                                    Converter={StaticResource BoolToCollapsedConverter}}"/>
+
+            <TextBlock DockPanel.Dock="Left" Text="{Binding StreamDurationText}"
+                       Style="{StaticResource OD.Text.Mono}"
+                       VerticalAlignment="Center"
+                       Margin="{StaticResource OD.Pad.4}"/>
+
+            <TextBlock DockPanel.Dock="Left" Text="{Binding ClockText}"
+                       Style="{StaticResource OD.Text.Mono}"
+                       VerticalAlignment="Center"/>
+
+            <!-- SAĞ: eylemler (ters sırada dock edilir) -->
+            <Button DockPanel.Dock="Right"
+                    Command="{Binding StartGiveawayCommand}"
+                    IsEnabled="{Binding CanStartGiveaway}"
+                    Style="{StaticResource OD.Button.Ghost}"
+                    Margin="{StaticResource OD.Pad.2}">
+                <StackPanel Orientation="Horizontal">
+                    <Image Source="{StaticResource OD.Icon.Gift}"
+                           Width="{StaticResource OD.Icon.Sm}"
+                           Height="{StaticResource OD.Icon.Sm}"
+                           VerticalAlignment="Center"
+                           RenderOptions.BitmapScalingMode="HighQuality"/>
+                    <TextBlock Text="Çekiliş" VerticalAlignment="Center"
+                               Margin="{StaticResource OD.Pad.2}"/>
+                </StackPanel>
+            </Button>
+
+            <Button DockPanel.Dock="Right" Content="Yayını Bitir"
+                    Command="{Binding EndStreamCommand}"
+                    Style="{StaticResource OD.Button.Ghost}"
+                    Margin="{StaticResource OD.Pad.2}"/>
+
+            <Button DockPanel.Dock="Right" Content="Yayın Başlat"
+                    Command="{Binding StartStreamCommand}"
+                    Style="{StaticResource OD.Button.Primary}"
+                    Margin="{StaticResource OD.Pad.2}"/>
+
+            <!-- Zil. Button kalıyor: Border.InputBindings LeftClick WPF'te
+                 güvenilir tetiklenmiyordu (mevcut yorum). -->
+            <Button DockPanel.Dock="Right"
+                    Command="{Binding OpenIntakeSubmissionsCommand}"
+                    Style="{StaticResource OD.Button.Ghost}"
+                    Margin="{StaticResource OD.Pad.2}"
+                    Visibility="{Binding HasNewIntakeSubmissions,
+                                 Converter={StaticResource BoolToVisibleConverter}}"
+                    ToolTip="Yeni form başvurularını görüntülemek için tıkla">
+                <TextBlock Foreground="{StaticResource OD.Brush.Accent}"
+                           FontSize="{StaticResource OD.Font.F1}">
+                    <Run Text="🔔"/>
+                    <Run Text="{Binding NewIntakeSubmissionsCount, Mode=OneWay}"/>
+                    <Run Text="yeni başvuru"/>
+                </TextBlock>
+            </Button>
+
+            <TextBlock DockPanel.Dock="Right"
+                       Text="{Binding LicenseStatusText}"
+                       Foreground="{Binding LicenseStatusBrush}"
+                       VerticalAlignment="Center" Cursor="Hand"
+                       Margin="{StaticResource OD.Pad.3}"
+                       ToolTip="Hesap detayları için tıkla">
+                <TextBlock.InputBindings>
+                    <MouseBinding MouseAction="LeftClick" Command="{Binding OpenAccountCommand}"/>
+                </TextBlock.InputBindings>
+            </TextBlock>
+
+            <!-- Chat sağlık noktası — üç durum (off/idle/ok) aynen. -->
+            <Ellipse DockPanel.Dock="Right" Width="10" Height="10"
+                     VerticalAlignment="Center"
+                     Margin="{StaticResource OD.Pad.2}"
+                     ToolTip="{Binding ChatHealthTooltip}">
+                <Ellipse.Style>
+                    <Style TargetType="Ellipse">
+                        <Setter Property="Fill" Value="{StaticResource OD.Brush.TextMute}"/>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding ChatHealthState}" Value="ok">
+                                <Setter Property="Fill" Value="{StaticResource OD.Brush.Success}"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding ChatHealthState}" Value="idle">
+                                <Setter Property="Fill" Value="{StaticResource OD.Brush.Amber}"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Ellipse.Style>
+            </Ellipse>
+
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
+                        VerticalAlignment="Center"
+                        Margin="{StaticResource OD.Pad.3}"
+                        Visibility="{Binding ViewerCountVisible,
+                                     Converter={StaticResource BoolToVisibleConverter}}"
+                        ToolTip="{Binding ViewerCountTooltip}">
+                <TextBlock Text="👁" VerticalAlignment="Center"/>
+                <TextBlock Text="{Binding ViewerCountText}"
+                           Style="{StaticResource OD.Text.Mono}"
+                           VerticalAlignment="Center"
+                           Margin="{StaticResource OD.Pad.2}"/>
+            </StackPanel>
+        </DockPanel>
+    </Border>
+</UserControl>

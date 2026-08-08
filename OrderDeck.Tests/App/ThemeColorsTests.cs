@@ -31,6 +31,13 @@ public class ThemeColorsTests
         ("OD.Brush.Success",      "#FF2DD06F"),
         ("OD.Brush.Info",         "#FF4D8DF6"),
         ("OD.Brush.OnAccent",     "#FFFFFFFF"),
+        // Bildirim şeridi tonları: MainShellView'daki ARGB değerleri birebir.
+        ("OD.Brush.AmberTint",             "#14FBBF24"),
+        ("OD.Brush.AmberTintBorder",       "#66E07B00"),
+        ("OD.Brush.AmberTintStrong",       "#1AFBBF24"),
+        ("OD.Brush.AmberTintStrongBorder", "#4CFBBF24"),
+        ("OD.Brush.InfoTint",              "#1A5B8DEF"),
+        ("OD.Brush.InfoTintBorder",        "#595B8DEF"),
     ];
 
     [Fact]
