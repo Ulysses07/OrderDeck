@@ -1,0 +1,191 @@
+<UserControl x:Class="OrderDeck.App.Views.Shell.ShellSidebar"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <UserControl.Resources>
+        <!-- Nav satırı: ikon + etiket. Dar modda (IsCompact) etiket gizlenir,
+             kontrol 64px'e iner — mockup'taki .side.icon davranışı. -->
+        <Style x:Key="NavButton" TargetType="Button">
+            <Setter Property="Height" Value="{StaticResource OD.Layout.ButtonHeight}"/>
+            <Setter Property="Margin" Value="0,1"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Foreground" Value="{StaticResource OD.Brush.TextDim}"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                CornerRadius="{StaticResource OD.Radius.Md}"
+                                Padding="{StaticResource OD.Pad.3}">
+                            <ContentPresenter VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background"
+                                        Value="{StaticResource OD.Brush.Surface2}"/>
+                                <Setter Property="Foreground"
+                                        Value="{StaticResource OD.Brush.Text}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </UserControl.Resources>
+
+    <Border Background="{StaticResource OD.Brush.Surface}"
+            BorderBrush="{StaticResource OD.Brush.Border}"
+            BorderThickness="0,0,1,0">
+        <Border.Style>
+            <Style TargetType="Border">
+                <Setter Property="Width" Value="{StaticResource OD.Layout.SideWidth}"/>
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsCompact}" Value="True">
+                        <Setter Property="Width" Value="{StaticResource OD.Layout.SideWidthMin}"/>
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+        </Border.Style>
+
+        <Grid Margin="{StaticResource OD.Pad.3}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>   <!-- logo -->
+                <RowDefinition Height="*"/>      <!-- nav -->
+                <RowDefinition Height="Auto"/>   <!-- bağlantılar + yazıcı -->
+                <RowDefinition Height="Auto"/>   <!-- taşma menüsü -->
+            </Grid.RowDefinitions>
+
+            <!-- Logo -->
+            <StackPanel Grid.Row="0" Orientation="Horizontal"
+                        Margin="{StaticResource OD.Pad.2}">
+                <Border Width="{StaticResource OD.Icon.Lg}"
+                        Height="{StaticResource OD.Icon.Lg}"
+                        CornerRadius="{StaticResource OD.Radius.Md}"
+                        Background="{StaticResource OD.Brush.Accent}">
+                    <TextBlock Text="OD"
+                               Foreground="{StaticResource OD.Brush.OnAccent}"
+                               FontFamily="{StaticResource OD.Font.Display}"
+                               FontSize="{StaticResource OD.Font.F1}"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+                <TextBlock Text="OrderDeck" VerticalAlignment="Center"
+                           Margin="{StaticResource OD.Pad.3}"
+                           FontFamily="{StaticResource OD.Font.Display}"
+                           FontSize="{StaticResource OD.Font.F2}"
+                           Foreground="{StaticResource OD.Brush.Text}"
+                           Visibility="{Binding IsCompact,
+                                        Converter={StaticResource BoolToCollapsedConverter}}"/>
+            </StackPanel>
+
+            <!-- Navigasyon -->
+            <StackPanel Grid.Row="1" Margin="{StaticResource OD.Pad.Top5}">
+                <Button Style="{StaticResource NavButton}"
+                        Command="{Binding OpenStreamHistoryCommand}" ToolTip="Yayın Geçmişi">
+                    <TextBlock Text="Yayın Geçmişi"/>
+                </Button>
+                <Button Style="{StaticResource NavButton}"
+                        Command="{Binding OpenCustomerSearchCommand}" ToolTip="Müşteriler">
+                    <TextBlock Text="Müşteriler"/>
+                </Button>
+                <Button Style="{StaticResource NavButton}"
+                        Command="{Binding OpenBlacklistCommand}" ToolTip="Kara Liste">
+                    <TextBlock Text="Kara Liste"/>
+                </Button>
+                <Button Style="{StaticResource NavButton}"
+                        Command="{Binding OpenDekontEkleCommand}" ToolTip="Yeni Dekont">
+                    <TextBlock Text="Yeni Dekont"/>
+                </Button>
+                <Button Style="{StaticResource NavButton}"
+                        Command="{Binding OpenBulkSmsCommand}" ToolTip="Toplu SMS">
+                    <TextBlock Text="Toplu SMS"/>
+                </Button>
+            </StackPanel>
+
+            <!-- BAĞLANTILAR + yazıcı -->
+            <StackPanel Grid.Row="2" Margin="{StaticResource OD.Pad.2}"
+                        Visibility="{Binding IsCompact,
+                                     Converter={StaticResource BoolToCollapsedConverter}}">
+                <TextBlock Text="BAĞLANTILAR" Style="{StaticResource OD.Text.Micro}"
+                           Margin="{StaticResource OD.Pad.Bottom3}"/>
+
+                <ItemsControl ItemsSource="{Binding Connections}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Margin="0,2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <!-- Nokta: bağlıysa yeşil, değilse soluk.
+                                     Marka rengi KULLANILMIYOR (Google itirazı). -->
+                                <Ellipse Grid.Column="0" Width="8" Height="8"
+                                         VerticalAlignment="Center"
+                                         Margin="{StaticResource OD.Pad.2}">
+                                    <Ellipse.Style>
+                                        <Style TargetType="Ellipse">
+                                            <Setter Property="Fill" Value="{StaticResource OD.Brush.TextMute}"/>
+                                            <Setter Property="Opacity" Value="0.45"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsConnected}" Value="True">
+                                                    <Setter Property="Fill" Value="{StaticResource OD.Brush.Success}"/>
+                                                    <Setter Property="Opacity" Value="1"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Ellipse.Style>
+                                </Ellipse>
+                                <TextBlock Grid.Column="1" Text="{Binding DisplayName}"
+                                           FontSize="{StaticResource OD.Font.F1}"
+                                           Foreground="{StaticResource OD.Brush.TextDim}"
+                                           VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="2" Text="{Binding ViewerCount}"
+                                           Style="{StaticResource OD.Text.Mono}"
+                                           VerticalAlignment="Center"
+                                           Visibility="{Binding IsConnected,
+                                                        Converter={StaticResource BoolToVisibleConverter}}"/>
+                            </Grid>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <!-- Yazıcı satırı. "Hazır mı" SORULMUYOR — yalnız seçili mi. -->
+                <TextBlock Text="{Binding PrinterStatusText}"
+                           FontSize="{StaticResource OD.Font.F1}"
+                           TextTrimming="CharacterEllipsis"
+                           Margin="{StaticResource OD.Pad.Top4}">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Foreground" Value="{StaticResource OD.Brush.Amber}"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsPrinterConfigured}" Value="True">
+                                    <Setter Property="Foreground" Value="{StaticResource OD.Brush.TextDim}"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+            </StackPanel>
+
+            <!-- Taşma menüsü (x:Name ve handler MainShellView'dan aynen) -->
+            <Button Grid.Row="3"
+                    x:Name="MenuButton"
+                    Click="OnMenuClick"
+                    Style="{StaticResource NavButton}"
+                    Margin="{StaticResource OD.Pad.Top4}"
+                    ToolTip="Diğer">
+                <TextBlock Text="⋯  Diğer"/>
+                <Button.ContextMenu>
+                    <ContextMenu x:Name="MainMenu" Placement="Right">
+                        <MenuItem Header="Dönem Raporu…" Command="{Binding OpenPeriodReportCommand}"/>
+                        <Separator/>
+                        <MenuItem Header="Ayarlar" Command="{Binding OpenSettingsCommand}"/>
+                        <MenuItem Header="Destek Talepleri" Command="{Binding OpenSupportRequestsCommand}"/>
+                        <MenuItem Header="Hesap" Command="{Binding OpenAccountCommand}"/>
+                    </ContextMenu>
+                </Button.ContextMenu>
+            </Button>
+        </Grid>
+    </Border>
+</UserControl>

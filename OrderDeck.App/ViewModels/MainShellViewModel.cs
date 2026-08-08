@@ -133,6 +133,15 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         PrinterStatusText = IsPrinterConfigured ? printerName!.Trim() : "Yazıcı seçilmedi";
     }
 
+    /// <summary>
+    /// Duyarlı yerleşim. Mockup'ın 1360px kırılımı: altında kenar çubuğu
+    /// ikon moduna düşer. Pencere boyutunu view bildirir (SizeChanged).
+    /// </summary>
+    [ObservableProperty] private bool _isCompact;
+
+    /// <summary>Mockup'ın 850px yükseklik kırılımı: ürün fotoğrafı kısalır.</summary>
+    [ObservableProperty] private bool _isShort;
+
     [ObservableProperty] private int _productOrderCount;
     [ObservableProperty] private int _sessionLabelCount;
     [ObservableProperty] private int _queueCount;
