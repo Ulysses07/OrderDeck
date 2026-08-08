@@ -222,11 +222,13 @@ sonuna:
 
 ```xml
     <!-- Faz 1'e özgü ölçüler. Mockup'ta CSS değişkeni olarak duruyorlar
-         (--h-pimg, --h-q-min, --w-col-*, --w-user); WPF'te sabit sayı
-         yazmamak için token'a çevrildiler. -->
+         (h-pimg, h-q-min, w-col-*, w-user); WPF'te sabit sayı yazmamak
+         için token'a çevrildiler.
+         NOT: CSS değişken adlarını iki tireli hâliyle yazma — XML yorumu
+         içinde iki ardışık tire yasak (MC3000). -->
     <sys:Double x:Key="OD.Layout.ProductImageHeight">142</sys:Double>
-    <!-- Alçak pencerede (<850px) ürün görseli kısalır: mockup @media
-         (max-height:849px) --h-pimg:56px. -->
+    <!-- Alçak pencerede (<850px) ürün görseli kısalır: mockup
+         @media (max-height:849px) altında h-pimg 56px. -->
     <sys:Double x:Key="OD.Layout.ProductImageHeightShort">56</sys:Double>
     <sys:Double x:Key="OD.Layout.QueueMinHeight">64</sys:Double>
     <sys:Double x:Key="OD.Layout.ChatTimeColumn">40</sys:Double>
@@ -283,9 +285,6 @@ sonuna:
                             Background="{TemplateBinding Background}"
                             CornerRadius="{StaticResource OD.Radius.Md}"
                             RenderTransformOrigin="0.5,0.5">
-                        <Border.RenderTransform>
-                            <TranslateTransform x:Name="Lift"/>
-                        </Border.RenderTransform>
                         <ContentPresenter HorizontalAlignment="Center"
                                           VerticalAlignment="Center"/>
                     </Border>
@@ -293,7 +292,17 @@ sonuna:
                         <Trigger Property="IsMouseOver" Value="True">
                             <Setter TargetName="Bd" Property="Background"
                                     Value="{StaticResource OD.Brush.AccentHot}"/>
-                            <Setter TargetName="Lift" Property="Y" Value="-1"/>
+                            <!-- 1px yukarı kalkma. Transform'a x:Name verip
+                                 TargetName ile Y'yi kurcalamak MC4111 verir:
+                                 tetikleyici yalnız şablonun eleman ağacındaki
+                                 adlara erişir, RenderTransform içindeki nesneye
+                                 değil. Bu yüzden transform'un TAMAMI Border'a
+                                 tetikleyiciden set ediliyor. -->
+                            <Setter TargetName="Bd" Property="RenderTransform">
+                                <Setter.Value>
+                                    <TranslateTransform Y="-1"/>
+                                </Setter.Value>
+                            </Setter>
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter TargetName="Bd" Property="Opacity" Value="0.45"/>
