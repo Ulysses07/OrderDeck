@@ -1,4 +1,3 @@
-using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -12,7 +11,11 @@ public partial class MainShellView : UserControl
     public MainShellView()
     {
         InitializeComponent();
-        DataContext = App.Host.Services.GetRequiredService<MainShellViewModel>();
+        // App.Host yalnız uygulama açılışında kurulur; kompozisyon testi bu
+        // kontrolü DI olmadan örnekliyor (amaç XAML'ın çözülebildiğini
+        // kanıtlamak). Üretimde App.Host her zaman dolu — davranış değişmez.
+        if (App.Host is not null)
+            DataContext = App.Host.Services.GetRequiredService<MainShellViewModel>();
         Loaded += OnLoaded;
         // Window-bubbled ESC handler — cancels backup-selection mode without
         // requiring focus on a particular control. We attach in Loaded so the
@@ -33,12 +36,36 @@ public partial class MainShellView : UserControl
 
     private void OnWindowPreviewKeyDown(object sender, KeyEventArgs e)
     {
+        // Ctrl+K → ürün kodu kutusuna odaklan. ESC kontrolünden ÖNCE olmalı:
+        // aşağıdaki erken dönüş Escape dışındaki her tuşu eler.
+        if (e.Key == Key.K && (Keyboard.Modifiers & ModifierKeys.Control) != 0)
+        {
+            ProductBar.FocusCode();
+            e.Handled = true;
+            return;
+        }
+
         if (e.Key != Key.Escape) return;
         if (DataContext is not MainShellViewModel vm) return;
         if (!vm.IsInBackupSelectionMode) return;
 
         vm.CancelBackupSelectionCommand.Execute(null);
         e.Handled = true;
+    }
+
+    /// <summary>
+    /// Mockup'ın iki kırılımı. WPF'te medya sorgusu yok; pencere boyutunu
+    /// ViewModel'e bayrak olarak bildiriyoruz ki stiller DataTrigger ile
+    /// tepki versin. Eşikler mockup'taki @media değerleriyle birebir.
+    /// </summary>
+    private const double CompactWidth = 1360;
+    private const double ShortHeight = 850;
+
+    private void OnSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (DataContext is not MainShellViewModel vm) return;
+        vm.IsCompact = e.NewSize.Width < CompactWidth;
+        vm.IsShort = e.NewSize.Height < ShortHeight;
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
@@ -57,50 +84,5 @@ public partial class MainShellView : UserControl
             // Flag'i hemen düş — bir sonraki Loaded'da göstermesin
             licenseService.AcknowledgeTrialStartBanner();
         }
-    }
-
-    private void ChatList_OnDoubleClick(object sender, MouseButtonEventArgs e)
-    {
-        if (DataContext is not MainShellViewModel vm) return;
-        if (ChatList.SelectedItem is not ChatMessageViewModel msgVm) return;
-
-        // Backup-mode short-circuits the queue-add flow: route the chosen chat
-        // user to the active label as a backup, then return to normal.
-        if (vm.TryAssignChatAsBackup(msgVm)) return;
-
-        vm.AddChatToQueue(msgVm);
-    }
-
-    private void OnMenuClick(object sender, RoutedEventArgs e)
-    {
-        if (MenuButton.ContextMenu is { } cm)
-        {
-            cm.PlacementTarget = MenuButton;
-            cm.IsOpen = true;
-        }
-    }
-
-    private void QueueList_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (DataContext is not MainShellViewModel vm) return;
-
-        foreach (var added in e.AddedItems.OfType<LabelViewModel>())
-            if (!vm.SelectedQueueItems.Contains(added))
-                vm.SelectedQueueItems.Add(added);
-
-        foreach (var removed in e.RemovedItems.OfType<LabelViewModel>())
-            vm.SelectedQueueItems.Remove(removed);
-    }
-
-    private void ChatList_OnPreviewKeyDown(object sender, KeyEventArgs e)
-    {
-        if (e.Key != Key.Enter) return;
-        if (DataContext is not MainShellViewModel vm) return;
-        if (ChatList.SelectedItem is not ChatMessageViewModel msgVm) return;
-
-        // Same branching as double-click: backup mode wins.
-        if (!vm.TryAssignChatAsBackup(msgVm))
-            vm.AddChatToQueue(msgVm);
-        e.Handled = true;
     }
 }
