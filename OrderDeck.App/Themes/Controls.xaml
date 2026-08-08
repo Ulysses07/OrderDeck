@@ -35,15 +35,49 @@
                     <Border x:Name="Bd"
                             Background="{TemplateBinding Background}"
                             CornerRadius="{StaticResource OD.Radius.Md}"
-                            Padding="{TemplateBinding Padding}"
                             RenderTransformOrigin="0.5,0.5">
-                        <ContentPresenter HorizontalAlignment="Center"
-                                          VerticalAlignment="Center"/>
+                        <Grid>
+                            <!-- Hover örtüsü. Eskiden hover'da arka plan sabit
+                                 AccentHot'a çevriliyordu; bu stil artık tek
+                                 renkli değil (yayın butonu kapalıyken yeşil,
+                                 açıkken kırmızı). Şablon içindeki TargetName
+                                 setter'ı dışarıdaki Style/DataTrigger'dan
+                                 EZİLEMEZ — o yüzden hover rengi şablondan
+                                 çıkarıldı. Yarı saydam beyaz örtü altındaki
+                                 rengi bilmeden aydınlatır.
+                                 Padding buradan ContentPresenter'a taşındı:
+                                 örtü butonun tamamını kaplasın. -->
+                            <Border x:Name="Veil" Opacity="0"
+                                    Background="{StaticResource OD.Brush.OnAccent}"
+                                    CornerRadius="{StaticResource OD.Radius.Md}"/>
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              Margin="{TemplateBinding Padding}">
+                                <ContentPresenter.Resources>
+                                    <!-- DarkControls.xaml'de örtük bir TextBlock
+                                         stili var ve Foreground'u sabitliyor.
+                                         Örtük stil MİRAS ALINAN değeri yener, yani
+                                         ContentPresenter'ın metin için ürettiği
+                                         TextBlock butonun Foreground'unu HİÇ
+                                         görmüyordu — OnAccent setter'ı ölü değerdi,
+                                         kırmızı zeminde fark edilmemişti. Yeşil
+                                         zeminde açık yazı 2.2:1'e düşünce çıktı.
+                                         Stil ContentPresenter'ın KENDİ sözlüğünde
+                                         olmalı: ControlTemplate.Resources'a
+                                         konursa üretilen TextBlock oraya bakmıyor
+                                         (ölçüldü), uygulama sözlüğünü buluyor. -->
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground"
+                                                Value="{Binding Foreground,
+                                                        RelativeSource={RelativeSource AncestorType=Button}}"/>
+                                    </Style>
+                                </ContentPresenter.Resources>
+                            </ContentPresenter>
+                        </Grid>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Bd" Property="Background"
-                                    Value="{StaticResource OD.Brush.AccentHot}"/>
+                            <Setter TargetName="Veil" Property="Opacity" Value="0.14"/>
                             <!-- 1px yukarı kalkma. Transform'a x:Name verip
                                  TargetName ile Y'yi kurcalamak MC4111 verir:
                                  tetikleyici yalnız şablonun eleman ağacındaki

@@ -86,6 +86,12 @@
   <sys:Double x:Key="OD.Layout.DrawerWidth">400</sys:Double>    <!-- çekmece (sağ paneli örter) -->
   <sys:Double x:Key="OD.Layout.TopbarHeight">56</sys:Double>
   <sys:Double x:Key="OD.Layout.ButtonHeight">46</sys:Double>    <!-- birincil buton -->
+  <!-- Yayın butonu iki durumda iki farklı metin taşıyor ("Yayın Başlat" /
+       "Yayını Bitir"). İçeriğe göre ölçülürse buton durum değişince
+       genişliğini oynatır ve yanındaki Çekiliş butonunu kaydırır; sabit
+       genişlik ikisini de aynı boyda tutar. 132 = uzun metnin ölçülen
+       genişliği (~120) + nefes payı. -->
+  <sys:Double x:Key="OD.Layout.StreamButtonWidth">132</sys:Double>
   <sys:Double x:Key="OD.Layout.ContentMaxWidth">1760</sys:Double> <!-- fazlası ortalanır -->
   <!-- Pencerenin asgari ölçüsü (MainWindow.MinWidth/MinHeight).
        1280 değil 960: 1920'lik ekranda yarım pencere tam 960 ve operatör
@@ -108,8 +114,13 @@
   <sys:Double x:Key="OD.Layout.ChatBadgeColumn">28</sys:Double>
   <sys:Double x:Key="OD.Layout.ChatUserMaxWidth">132</sys:Double>
   <sys:Double x:Key="OD.Layout.QueueNoColumn">44</sys:Double>
-  <!-- Spec §7: alçak pencerede aktif ürün kodu F5 (64) yerine 44px.
+  <!-- Aktif ürün kodunun yazı boyu; alçak pencerede (<850px) küçüğü.
        Font ölçeğine (F0..F5) yeni basamak eklemiyoruz — bu, tek bir
-       kontrolün duyarlı ölçüsü, tipografi basamağı değil. -->
-  <sys:Double x:Key="OD.Layout.CodeFontShort">44</sys:Double>
+       kontrolün duyarlı ölçüsü, tipografi basamağı değil.
+       Spec §7 bunları 64/44 diyordu; kod ve fiyat üstteki tam genişlik
+       şeritten sağ sütuna inince (2026-08-08) o boy gereksiz yer
+       kaplıyordu, 44/32'ye indirildi. Kazanılan yükseklik doğrudan
+       yazdırılacak etiketler listesine gitti. -->
+  <sys:Double x:Key="OD.Layout.CodeFont">44</sys:Double>
+  <sys:Double x:Key="OD.Layout.CodeFontShort">32</sys:Double>
 </ResourceDictionary>

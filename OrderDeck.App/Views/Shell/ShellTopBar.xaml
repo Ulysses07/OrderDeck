@@ -168,18 +168,33 @@
                 </Button>
 
                 <!-- TEK yayın butonu: kapalıyken başlatır, açıkken bitirir.
-                     Content ve Command yalnız Setter'dan gelir — aynı özellik
-                     hem öznitelik hem Setter olursa yerel değer tetikleyiciyi
-                     ezer ve buton hiç değişmez. -->
-                <Button Margin="{StaticResource OD.Pad.X2}">
+                     Content, Command ve renkler yalnız Setter'dan gelir — aynı
+                     özellik hem öznitelik hem Setter olursa yerel değer
+                     tetikleyiciyi ezer ve buton hiç değişmez.
+
+                     Renk: başlatmak olumlu eylem → Success; bitirmek yıkıcı →
+                     Accent (Colors.xaml'deki "danger ayrı renk değil, Accent'in
+                     kendisi" kuralı). Yeşil üstünde beyaz metin ~2.2:1 kalıyor,
+                     o yüzden yazı koyu (Bg, ~9.5:1); kırmızıda OnAccent.
+                     Genişlik sabit: iki durum aynı boyda olsun. -->
+                <Button Margin="{StaticResource OD.Pad.X2}"
+                        Width="{StaticResource OD.Layout.StreamButtonWidth}">
                     <Button.Style>
                         <Style TargetType="Button" BasedOn="{StaticResource OD.Button.Primary}">
                             <Setter Property="Content" Value="Yayın Başlat"/>
                             <Setter Property="Command" Value="{Binding StartStreamCommand}"/>
+                            <Setter Property="Background"
+                                    Value="{StaticResource OD.Brush.Success}"/>
+                            <Setter Property="Foreground"
+                                    Value="{StaticResource OD.Brush.Bg}"/>
                             <Style.Triggers>
                                 <DataTrigger Binding="{Binding IsStreamActive}" Value="True">
                                     <Setter Property="Content" Value="Yayını Bitir"/>
                                     <Setter Property="Command" Value="{Binding EndStreamCommand}"/>
+                                    <Setter Property="Background"
+                                            Value="{StaticResource OD.Brush.Accent}"/>
+                                    <Setter Property="Foreground"
+                                            Value="{StaticResource OD.Brush.OnAccent}"/>
                                 </DataTrigger>
                             </Style.Triggers>
                         </Style>

@@ -19,9 +19,9 @@
                     <Style TargetType="TextBox"
                            BasedOn="{StaticResource OD.TextBox}">
                         <Setter Property="FontSize"
-                                Value="{StaticResource OD.Font.F5}"/>
+                                Value="{StaticResource OD.Layout.CodeFont}"/>
                         <Style.Triggers>
-                            <!-- Spec §7: yükseklik < 850px → 64 yerine 44.
+                            <!-- Spec §7: yükseklik < 850px → 44 yerine 32.
                                  Düz {Binding}: bu kontrolün DataContext'i
                                  zaten MainShellViewModel. Pencere üzerinden
                                  GİTME — MainWindow'un DataContext'i yok
@@ -42,7 +42,7 @@
             <TextBox Text="{Binding ActivePriceText, UpdateSourceTrigger=PropertyChanged}"
                      Style="{StaticResource OD.TextBox}"
                      FontFamily="{StaticResource OD.Font.Mono}"
-                     FontSize="{StaticResource OD.Font.F4}"/>
+                     FontSize="{StaticResource OD.Font.F3}"/>
         </StackPanel>
     </Border>
 </UserControl>
