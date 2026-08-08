@@ -404,11 +404,16 @@ public class ThemeMetricsTests
         ("OD.Radius.Lg", 10), ("OD.Radius.Full", 999),
     ];
 
+    // NOT: aile adları ölçüldü (PowerShell Fonts.GetFontFamilies probe'u,
+    // repo'daki gerçek .ttf'ler üzerinde). Bricolage'ın gerçek aile adı
+    // "Bricolage Grotesque 14pt"; kısaltılmış "Bricolage Grotesque" kısmi
+    // eşleşme olup sentezlenmiş yüzleri de (900) çekiyor. Mevcut
+    // SettingsTheme.xaml:11 zaten doğru adı kullanıyor.
     private static readonly (string Key, string Face)[] Fonts =
     [
         ("OD.Font.Sans",    "IBM Plex Sans"),
         ("OD.Font.Mono",    "JetBrains Mono"),
-        ("OD.Font.Display", "Bricolage Grotesque"),
+        ("OD.Font.Display", "Bricolage Grotesque 14pt"),
     ];
 
     [Fact]
@@ -520,7 +525,9 @@ Beklenen: FAIL — `Metrics.xaml` yok.
        Sans 400/500/600, Mono 400/500/700, Display yalnız 700 kullanılıyor. -->
   <FontFamily x:Key="OD.Font.Sans">pack://application:,,,/OrderDeck.App;component/Fonts/#IBM Plex Sans</FontFamily>
   <FontFamily x:Key="OD.Font.Mono">pack://application:,,,/OrderDeck.App;component/Fonts/#JetBrains Mono</FontFamily>
-  <FontFamily x:Key="OD.Font.Display">pack://application:,,,/OrderDeck.App;component/Fonts/#Bricolage Grotesque</FontFamily>
+  <!-- Aile adı "Bricolage Grotesque 14pt" — kısaltılmış hâli kısmi eşleşme
+       yapıp sentezlenmiş ağırlık ekliyor. SettingsTheme.xaml:11 ile aynı. -->
+  <FontFamily x:Key="OD.Font.Display">pack://application:,,,/OrderDeck.App;component/Fonts/#Bricolage Grotesque 14pt</FontFamily>
 
   <!-- Tip ölçeği: 6 basamak -->
   <sys:Double x:Key="OD.Font.F0">11</sys:Double>    <!-- mikro etiket, rozet, saat -->

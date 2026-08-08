@@ -1,0 +1,71 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=System.Runtime">
+  <!--
+    OrderDeck ölçü tokenları.
+
+    Bu dosyanın dışında sabit sayı KULLANILMAZ. Uygulamada bugün 18 farklı
+    FontSize var; ölçek altı basamağa indi ve orada kalması bu sözlüğün tek
+    kaynak olmasına bağlı. Yeni bir değer gerekiyorsa önce buraya eklenir.
+  -->
+
+  <!-- Font aileleri. Gömülü .ttf'ler pack URI ile: klasör + "#" + yüz adı.
+       Sans 400/500/600, Mono 400/500/700, Display yalnız 700 kullanılıyor. -->
+  <FontFamily x:Key="OD.Font.Sans">pack://application:,,,/OrderDeck.App;component/Fonts/#IBM Plex Sans</FontFamily>
+  <FontFamily x:Key="OD.Font.Mono">pack://application:,,,/OrderDeck.App;component/Fonts/#JetBrains Mono</FontFamily>
+  <!-- Aile adı "Bricolage Grotesque 14pt" — ölçüldü; kısaltılmış hâli kısmi
+       eşleşme yapıp sentezlenmiş bir ağırlık (900) daha ekliyor.
+       SettingsTheme.xaml:11 zaten bu adı kullanıyor. -->
+  <FontFamily x:Key="OD.Font.Display">pack://application:,,,/OrderDeck.App;component/Fonts/#Bricolage Grotesque 14pt</FontFamily>
+
+  <!-- Tip ölçeği: 6 basamak -->
+  <sys:Double x:Key="OD.Font.F0">11</sys:Double>    <!-- mikro etiket, rozet, saat -->
+  <sys:Double x:Key="OD.Font.F1">12.5</sys:Double>  <!-- ikincil metin, kullanıcı adı -->
+  <sys:Double x:Key="OD.Font.F2">14</sys:Double>    <!-- GÖVDE (varsayılan) -->
+  <sys:Double x:Key="OD.Font.F3">20</sys:Double>    <!-- panel başlığı, ürün adı -->
+  <sys:Double x:Key="OD.Font.F4">32</sys:Double>    <!-- istatistik değeri, fiyat -->
+  <sys:Double x:Key="OD.Font.F5">64</sys:Double>    <!-- aktif ürün kodu (tek yer) -->
+
+  <!-- Boşluk ölçeği: 7 basamak -->
+  <sys:Double x:Key="OD.Space.1">2</sys:Double>   <!-- kıl payı: liste satırları arası -->
+  <sys:Double x:Key="OD.Space.2">4</sys:Double>   <!-- çok dar: rozet içi dikey dolgu -->
+  <sys:Double x:Key="OD.Space.3">8</sys:Double>   <!-- dar: satır içi, ikon-metin arası -->
+  <sys:Double x:Key="OD.Space.4">12</sys:Double>  <!-- panel içi standart -->
+  <sys:Double x:Key="OD.Space.5">16</sys:Double>  <!-- blok arası, başlık dolgusu -->
+  <sys:Double x:Key="OD.Space.6">20</sys:Double>  <!-- geniş: kenar çubuğu yan dolgu -->
+  <sys:Double x:Key="OD.Space.7">24</sys:Double>  <!-- en geniş: hero yan dolgu -->
+
+  <!-- Aynı ölçeğin Thickness hali. WPF'te CSS 'gap' karşılığı yok; boşluk
+       Margin/Padding ile verilir, o yüzden her basamağın iki biçimi var. -->
+  <Thickness x:Key="OD.Pad.1">2</Thickness>
+  <Thickness x:Key="OD.Pad.2">4</Thickness>
+  <Thickness x:Key="OD.Pad.3">8</Thickness>
+  <Thickness x:Key="OD.Pad.4">12</Thickness>
+  <Thickness x:Key="OD.Pad.5">16</Thickness>
+  <Thickness x:Key="OD.Pad.6">20</Thickness>
+  <Thickness x:Key="OD.Pad.7">24</Thickness>
+
+  <!-- Köşe yarıçapı: 5 basamak -->
+  <CornerRadius x:Key="OD.Radius.Xs">4</CornerRadius>     <!-- çip, kod parçacığı -->
+  <CornerRadius x:Key="OD.Radius.Sm">6</CornerRadius>     <!-- input, küçük buton -->
+  <CornerRadius x:Key="OD.Radius.Md">8</CornerRadius>     <!-- satır, buton, banner -->
+  <CornerRadius x:Key="OD.Radius.Lg">10</CornerRadius>    <!-- panel, kart -->
+  <CornerRadius x:Key="OD.Radius.Full">999</CornerRadius> <!-- hap -->
+
+  <!-- İkon ölçüsü: 4 basamak (Path/Viewbox kenar uzunluğu) -->
+  <sys:Double x:Key="OD.Icon.Sm">14</sys:Double>
+  <sys:Double x:Key="OD.Icon.Md">16</sys:Double>
+  <sys:Double x:Key="OD.Icon.Lg">20</sys:Double>
+  <sys:Double x:Key="OD.Icon.Xl">26</sys:Double>
+
+  <!-- Düzen sabitleri -->
+  <sys:Double x:Key="OD.Layout.SideWidth">224</sys:Double>      <!-- sol kenar çubuğu -->
+  <sys:Double x:Key="OD.Layout.SideWidthMin">64</sys:Double>    <!-- ikon modu (<1360px) -->
+  <sys:Double x:Key="OD.Layout.RightWidth">344</sys:Double>     <!-- sağ panel -->
+  <sys:Double x:Key="OD.Layout.DrawerWidth">344</sys:Double>    <!-- çekmece (sağ paneli örter) -->
+  <sys:Double x:Key="OD.Layout.TopbarHeight">56</sys:Double>
+  <sys:Double x:Key="OD.Layout.ButtonHeight">46</sys:Double>    <!-- birincil buton -->
+  <sys:Double x:Key="OD.Layout.ContentMaxWidth">1760</sys:Double> <!-- fazlası ortalanır -->
+  <sys:Double x:Key="OD.Layout.AppMinWidth">1280</sys:Double>
+  <sys:Double x:Key="OD.Layout.AppMinHeight">720</sys:Double>
+</ResourceDictionary>
