@@ -28,7 +28,7 @@ public class ProductCardViewModelTests
     }
 
     [Fact]
-    public void Load_unknown_code_enters_edit_mode_with_empty_fields()
+    public void Load_unknown_code_offers_definition_without_opening_the_form()
     {
         var (vm, _) = Make();
 
@@ -36,10 +36,25 @@ public class ProductCardViewModelTests
 
         vm.Code.Should().Be("A100");
         vm.HasProduct.Should().BeFalse();
-        // Pop-up yok (spec §6) — kart kendi içinde tanımlama moduna düşer.
-        vm.IsEditing.Should().BeTrue();
+        // Form KENDİLİĞİNDEN açılmaz: kod kutusuna "A100" yazılırken "A",
+        // "A1", "A10" da tanınmayan kodlardır — form her tuşta açılıp
+        // kapanırdı. Kart yalnız "tanımlı değil" der.
+        vm.IsUnknown.Should().BeTrue();
+        vm.IsEditing.Should().BeFalse();
         vm.Name.Should().BeEmpty();
         vm.Sizes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void BeginEdit_opens_the_form_for_an_unknown_code()
+    {
+        var (vm, _) = Make();
+        vm.Load("A100");
+
+        vm.BeginEditCommand.Execute(null);
+
+        vm.IsEditing.Should().BeTrue();
+        vm.IsUnknown.Should().BeFalse();
     }
 
     [Fact]

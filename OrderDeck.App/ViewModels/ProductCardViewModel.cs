@@ -15,7 +15,10 @@ namespace OrderDeck.App.ViewModels;
 /// Sağ paneldeki ürün kartı: fotoğraf, ad, beden stoğu.
 ///
 /// Hero'daki kod kutusu her değiştiğinde <see cref="Load"/> çağrılır. Kod
-/// tanınmıyorsa kart satır-içi TANIMLAMA moduna düşer — pop-up açılmaz
+/// tanınmıyorsa form KENDİLİĞİNDEN AÇILMAZ; kart yalnız "bu kod tanımlı değil"
+/// der ve tanımlamayı operatörün açık isteğine bırakır (<see cref="BeginEdit"/>).
+/// Sebep: kod kutusuna yazarken her ara tuş vuruşu tanınmayan bir koddur, form
+/// her harfte açılıp kapanırdı. Açıldığında da satır-içi açılır — pop-up yok
 /// (spec §6: hiçbir şey pop-up değil).
 ///
 /// Kartta FİYAT ALANI YOK: karttaki fiyat hero'daki aktif fiyat girişinin
@@ -39,6 +42,12 @@ public sealed partial class ProductCardViewModel : ObservableObject
     [ObservableProperty] private string _code = "";
     [ObservableProperty] private bool _hasProduct;
     [ObservableProperty] private bool _isEditing;
+
+    /// <summary>
+    /// Kod girildi ama katalogda yok. Kart bu durumda "tanımlı değil" der;
+    /// tanımlama formunu açan tek şey <see cref="BeginEdit"/>'tir.
+    /// </summary>
+    [ObservableProperty] private bool _isUnknown;
 
     /// <summary>Beden seti düzenleme kutusu: "S, M, L, XL".</summary>
     [ObservableProperty] private string _sizesText = "";
@@ -65,12 +74,18 @@ public sealed partial class ProductCardViewModel : ObservableObject
         var trimmed = (code ?? "").Trim();
         Code = trimmed;
 
-        if (trimmed.Length == 0) { Reset(hasProduct: false, editing: false); return; }
+        if (trimmed.Length == 0)
+        {
+            Reset(hasProduct: false, editing: false);
+            IsUnknown = false;
+            return;
+        }
 
         var product = _repo.Get(trimmed);
         if (product is null)
         {
-            Reset(hasProduct: false, editing: true);
+            Reset(hasProduct: false, editing: false);
+            IsUnknown = true;
             return;
         }
 
@@ -79,6 +94,7 @@ public sealed partial class ProductCardViewModel : ObservableObject
         LoadSizes(_repo.GetSizes(trimmed));
         HasProduct = true;
         IsEditing = false;
+        IsUnknown = false;
     }
 
     /// <summary>
@@ -115,6 +131,7 @@ public sealed partial class ProductCardViewModel : ObservableObject
     {
         SizesText = string.Join(", ", Sizes.Select(s => s.Size));
         IsEditing = true;
+        IsUnknown = false;
     }
 
     private bool CanSave() => Code.Length > 0 && !string.IsNullOrWhiteSpace(Name);
@@ -130,6 +147,7 @@ public sealed partial class ProductCardViewModel : ObservableObject
 
         HasProduct = true;
         IsEditing = false;
+        IsUnknown = false;
     }
 
     /// <summary>Düzenlemeyi at, diskteki hâle dön.</summary>

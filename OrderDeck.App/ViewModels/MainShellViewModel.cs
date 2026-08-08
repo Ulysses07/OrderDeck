@@ -244,6 +244,12 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
     [ObservableProperty] private string _activePriceText = "0";
     [ObservableProperty] private string _streamStatusLabel = "Yayın aktif değil";
+    /// <summary>
+    /// Üst bardaki tek yayın butonu bunu okur: kapalıyken "Yayın Başlat",
+    /// açıkken "Yayını Bitir". <see cref="UpdateStreamStatusLabel"/> ile
+    /// birlikte güncellenir — iki ayrı yerden set edilmesin.
+    /// </summary>
+    [ObservableProperty] private bool _isStreamActive;
     [ObservableProperty] private bool _isGiveawayActive;
     [ObservableProperty] private bool _canStartGiveaway;
     [ObservableProperty] private LabelViewModel? _selectedQueueItem;
@@ -731,6 +737,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private void UpdateStreamStatusLabel()
     {
         var session = _sessions.GetActive();
+        IsStreamActive = session is not null;
         StreamStatusLabel = session is null
             ? "Yayın aktif değil"
             // session.StartedAt is unix seconds (UTC). Format the LocalDateTime

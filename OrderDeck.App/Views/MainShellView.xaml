@@ -2,9 +2,11 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:shell="clr-namespace:OrderDeck.App.Views.Shell"
-             MinWidth="{StaticResource OD.Layout.AppMinWidth}"
-             MinHeight="{StaticResource OD.Layout.AppMinHeight}"
              SizeChanged="OnSizeChanged">
+    <!-- MinWidth/MinHeight BURADA DEĞİL, MainWindow'da. İçeriğe asgari ölçü
+         vermek pencereyi büyütmez; yalnız içerik pencereden taşar ve sağ sütun
+         ekran dışında kalır (kullanıcı raporu: yarım ekranda uygulama
+         kullanılamıyordu). Asgari ölçü pencerenin işidir. -->
     <!-- Faz 1 kompozisyon kökü. Eski 664 satırlık gövde Görev 9-14'te yedi
          UserControl'e bölündü (Views/Shell/); burada yalnızca yerleşim var.
          Ana ızgara: sol kenar | içerik. -->

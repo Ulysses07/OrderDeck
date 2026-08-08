@@ -43,15 +43,24 @@
                 </StackPanel>
             </Button>
 
-            <Button DockPanel.Dock="Right" Content="Yayını Bitir"
-                    Command="{Binding EndStreamCommand}"
-                    Style="{StaticResource OD.Button.Ghost}"
-                    Margin="{StaticResource OD.Pad.X2}"/>
-
-            <Button DockPanel.Dock="Right" Content="Yayın Başlat"
-                    Command="{Binding StartStreamCommand}"
-                    Style="{StaticResource OD.Button.Primary}"
-                    Margin="{StaticResource OD.Pad.X2}"/>
+            <!-- TEK yayın butonu: kapalıyken başlatır, açıkken bitirir.
+                 Content ve Command yalnız Setter'dan gelir — aynı özellik
+                 hem öznitelik hem Setter olursa yerel değer tetikleyiciyi
+                 ezer ve buton hiç değişmez. -->
+            <Button DockPanel.Dock="Right" Margin="{StaticResource OD.Pad.X2}">
+                <Button.Style>
+                    <Style TargetType="Button" BasedOn="{StaticResource OD.Button.Primary}">
+                        <Setter Property="Content" Value="Yayın Başlat"/>
+                        <Setter Property="Command" Value="{Binding StartStreamCommand}"/>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsStreamActive}" Value="True">
+                                <Setter Property="Content" Value="Yayını Bitir"/>
+                                <Setter Property="Command" Value="{Binding EndStreamCommand}"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Button.Style>
+            </Button>
 
             <!-- Zil. Button kalıyor: Border.InputBindings LeftClick WPF'te
                  güvenilir tetiklenmiyordu (mevcut yorum). -->

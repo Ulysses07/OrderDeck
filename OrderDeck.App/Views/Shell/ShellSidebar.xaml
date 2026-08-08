@@ -32,6 +32,16 @@
                 </Setter.Value>
             </Setter>
         </Style>
+
+        <!-- Nav etiketi. 64px'lik ikon rayında metin sığmaz — dar modda
+             gizlenir, geriye yalnız glif + ToolTip kalır. -->
+        <Style x:Key="NavLabel" TargetType="TextBlock">
+            <Setter Property="Margin" Value="{StaticResource OD.Pad.3}"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Visibility"
+                    Value="{Binding IsCompact,
+                            Converter={StaticResource BoolToCollapsedConverter}}"/>
+        </Style>
     </UserControl.Resources>
 
     <Border Background="{StaticResource OD.Brush.Surface}"
@@ -82,23 +92,38 @@
             <StackPanel Grid.Row="1" Margin="{StaticResource OD.Pad.Top6}">
                 <Button Style="{StaticResource NavButton}"
                         Command="{Binding OpenStreamHistoryCommand}" ToolTip="Yayın Geçmişi">
-                    <TextBlock Text="Yayın Geçmişi"/>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="🕘"/>
+                        <TextBlock Text="Yayın Geçmişi" Style="{StaticResource NavLabel}"/>
+                    </StackPanel>
                 </Button>
                 <Button Style="{StaticResource NavButton}"
                         Command="{Binding OpenCustomerSearchCommand}" ToolTip="Müşteriler">
-                    <TextBlock Text="Müşteriler"/>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="👥"/>
+                        <TextBlock Text="Müşteriler" Style="{StaticResource NavLabel}"/>
+                    </StackPanel>
                 </Button>
                 <Button Style="{StaticResource NavButton}"
                         Command="{Binding OpenBlacklistCommand}" ToolTip="Kara Liste">
-                    <TextBlock Text="Kara Liste"/>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="🚫"/>
+                        <TextBlock Text="Kara Liste" Style="{StaticResource NavLabel}"/>
+                    </StackPanel>
                 </Button>
                 <Button Style="{StaticResource NavButton}"
                         Command="{Binding OpenDekontEkleCommand}" ToolTip="Yeni Dekont">
-                    <TextBlock Text="Yeni Dekont"/>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="🧾"/>
+                        <TextBlock Text="Yeni Dekont" Style="{StaticResource NavLabel}"/>
+                    </StackPanel>
                 </Button>
                 <Button Style="{StaticResource NavButton}"
                         Command="{Binding OpenBulkSmsCommand}" ToolTip="Toplu SMS">
-                    <TextBlock Text="Toplu SMS"/>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="✉"/>
+                        <TextBlock Text="Toplu SMS" Style="{StaticResource NavLabel}"/>
+                    </StackPanel>
                 </Button>
             </StackPanel>
 
@@ -175,7 +200,10 @@
                     Style="{StaticResource NavButton}"
                     Margin="{StaticResource OD.Pad.Top5}"
                     ToolTip="Diğer">
-                <TextBlock Text="⋯  Diğer"/>
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="⋯"/>
+                    <TextBlock Text="Diğer" Style="{StaticResource NavLabel}"/>
+                </StackPanel>
                 <Button.ContextMenu>
                     <ContextMenu x:Name="MainMenu" Placement="Right">
                         <MenuItem Header="Dönem Raporu…" Command="{Binding OpenPeriodReportCommand}"/>

@@ -68,6 +68,25 @@
                 </TextBlock.Style>
             </TextBlock>
 
+            <!-- ── D: kod tanımlı değil ─────────────────────────────────── -->
+            <!-- Form KENDİLİĞİNDEN açılmaz (VM'deki gerekçe): kod yazılırken
+                 her ara tuş vuruşu tanınmayan bir koddur. Tanımlamayı
+                 operatör başlatır. -->
+            <StackPanel VerticalAlignment="Center"
+                        Visibility="{Binding IsUnknown,
+                                     Converter={StaticResource BoolToVisibleConverter}}">
+                <TextBlock Style="{StaticResource OD.Text.Micro}"
+                           HorizontalAlignment="Center">
+                    <Run Text="{Binding Code, Mode=OneWay}"/>
+                    <Run Text="tanımlı değil"/>
+                </TextBlock>
+                <Button Content="Ürün Tanımla"
+                        Style="{StaticResource OD.Button.Primary}"
+                        Command="{Binding BeginEditCommand}"
+                        HorizontalAlignment="Center"
+                        Margin="{StaticResource OD.Pad.Top5}"/>
+            </StackPanel>
+
             <!-- ── B: görüntüleme ───────────────────────────────────────── -->
             <!-- Görünürlük TEK BAŞINA HasProduct'a bağlanamaz: BeginEdit
                  IsEditing'i true yaparken HasProduct'ı true BIRAKIR, o yüzden

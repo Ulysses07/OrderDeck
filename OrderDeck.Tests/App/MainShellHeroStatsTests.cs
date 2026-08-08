@@ -93,8 +93,10 @@ public class MainShellHeroStatsTests
         h.Vm.ActiveCode = "A100";
 
         h.Vm.ProductCard.Code.Should().Be("A100");
-        // Kod tanınmıyor → kart satır-içi tanımlama moduna düşer (pop-up yok).
-        h.Vm.ProductCard.IsEditing.Should().BeTrue();
+        // Kod tanınmıyor → kart "tanımlı değil" der; form operatörün açık
+        // isteğiyle açılır (yazarken her tuşta açılıp kapanmasın).
+        h.Vm.ProductCard.IsUnknown.Should().BeTrue();
+        h.Vm.ProductCard.IsEditing.Should().BeFalse();
     }
 
     [Fact]

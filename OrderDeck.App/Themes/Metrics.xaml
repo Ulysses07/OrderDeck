@@ -84,7 +84,11 @@
   <sys:Double x:Key="OD.Layout.TopbarHeight">56</sys:Double>
   <sys:Double x:Key="OD.Layout.ButtonHeight">46</sys:Double>    <!-- birincil buton -->
   <sys:Double x:Key="OD.Layout.ContentMaxWidth">1760</sys:Double> <!-- fazlası ortalanır -->
-  <sys:Double x:Key="OD.Layout.AppMinWidth">1280</sys:Double>
+  <!-- Pencerenin asgari ölçüsü (MainWindow.MinWidth/MinHeight).
+       1280 değil 960: 1920'lik ekranda yarım pencere tam 960 ve operatör
+       uygulamayı yayın/tarayıcı yanına böyle koyuyor. 1360 kırılımı zaten
+       kenar çubuğunu ikon rayına indiriyor, 960'ta yerleşim taşmadan sığar. -->
+  <sys:Double x:Key="OD.Layout.AppMinWidth">960</sys:Double>
   <sys:Double x:Key="OD.Layout.AppMinHeight">720</sys:Double>
 
   <!-- Faz 1'e özgü ölçüler. Mockup'ta CSS değişkeni olarak duruyorlar
