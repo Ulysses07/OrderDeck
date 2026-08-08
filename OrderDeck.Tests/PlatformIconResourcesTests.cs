@@ -21,44 +21,26 @@ public class PlatformIconResourcesTests
     [Fact]
     public void All_platform_icons_load_and_have_geometry()
     {
-        string? error = null;
-
-        // WPF kaynak sözlüğü STA + kayıtlı "pack:" şeması istiyor.
-        var thread = new Thread(() =>
+        // Ortak düzenek: STA thread + "pack:" şeması + süreç başına tek
+        // Application. Kendi thread'ini kurmak, Application.Current'ı yanlış
+        // tiple yaratıp App.xaml testini düşürüyordu.
+        var error = OrderDeck.Tests.App.ThemeTestHost.Run(dict =>
         {
-            try
+            foreach (var name in Platforms)
             {
-                _ = typeof(OrderDeck.App.App);                        // App assembly'sini yükle
-                _ = System.IO.Packaging.PackUriHelper.UriSchemePack;  // "pack:" şemasını kaydet
-                if (Application.Current is null) new Application();
-
-                var dict = new ResourceDictionary
-                {
-                    Source = new Uri(
-                        "pack://application:,,,/OrderDeck.App;component/Themes/PlatformIcons.xaml")
-                };
-
-                foreach (var name in Platforms)
-                {
-                    // YouTube vektör (DrawingImage), diğerleri gömülü PNG
-                    // (BitmapImage) — ikisi de ImageSource; ortak sözleşme
-                    // "çözülebiliyor ve boyutu var".
-                    var image = Assert.IsAssignableFrom<ImageSource>(
-                        dict["OD.PlatformIcon." + name]);
-                    Assert.True(image.Width > 0 && image.Height > 0, name);
-                    // Rozet şablonu da çözülebilmeli (MainShellView bunları
-                    // StaticResource ile bağlıyor).
-                    Assert.IsType<DataTemplate>(dict["OD.PlatformChip." + name]);
-                }
-
-                Assert.IsType<DataTemplate>(dict["OD.PlatformChip.Unknown"]);
+                // YouTube vektör (DrawingImage), diğerleri gömülü PNG
+                // (BitmapImage) — ikisi de ImageSource; ortak sözleşme
+                // "çözülebiliyor ve boyutu var".
+                var image = Assert.IsAssignableFrom<ImageSource>(
+                    dict["OD.PlatformIcon." + name]);
+                Assert.True(image.Width > 0 && image.Height > 0, name);
+                // Rozet şablonu da çözülebilmeli (MainShellView bunları
+                // StaticResource ile bağlıyor).
+                Assert.IsType<DataTemplate>(dict["OD.PlatformChip." + name]);
             }
-            catch (Exception ex) { error = ex.ToString(); }
-        });
 
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        thread.Join();
+            Assert.IsType<DataTemplate>(dict["OD.PlatformChip.Unknown"]);
+        }, "PlatformIcons.xaml");
 
         Assert.Null(error);
     }

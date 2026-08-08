@@ -1,0 +1,901 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OrderDeck — Canlı Yayın</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&family=Bricolage+Grotesque:wght@700&display=swap" rel="stylesheet">
+<style>
+:root{
+  /* renk */
+  --bg:#0A0B12; --surface:#101320; --surface-2:#161A28;
+  --border:rgba(255,255,255,.08);
+  --text:#F5F3EE; --text-dim:#A9B0C0; --text-mute:#798194;
+  --accent:#FF4A38; --accent-hot:#FF7A5E; --amber:#FFB23E; --success:#2DD06F; --info:#4D8DF6;
+  --yt:#FF0033; --ig:#E1306C; --tt:#25F4EE; --fb:#1877F2;
+  --sans:'IBM Plex Sans',system-ui,sans-serif; --mono:'JetBrains Mono',monospace;
+  /* tip ölçeği: 6 basamak */
+  --f0:11px; --f1:12.5px; --f2:14px; --f3:20px; --f4:32px; --f5:64px;
+  /* boşluk ölçeği: 7 basamak */
+  --sp-1:2px;  /* --sp-1: 2px  — kıl payı: liste satırları arası */
+  --sp-2:4px;  /* --sp-2: 4px  — çok dar: rozet içi dikey dolgu, mikro kaymalar */
+  --sp-3:8px;  /* --sp-3: 8px  — dar: çip/satır içi boşluk, ikon-metin arası */
+  --sp-4:12px; /* --sp-4: 12px — panel içi standart boşluk, içerik gap */
+  --sp-5:16px; /* --sp-5: 16px — blok arası, panel başlık dolgusu */
+  --sp-6:20px; /* --sp-6: 20px — geniş: kenar çubuğu/üst şerit yan dolgusu */
+  --sp-7:24px; /* --sp-7: 24px — en geniş: hero yan dolgu, istatistik arası */
+  /* köşe yarıçapı: 5 basamak */
+  --r-xs:4px;   /* çip, kbd, kod parçacığı */
+  --r-sm:6px;   /* input, küçük buton */
+  --r-md:8px;   /* satır, buton, banner */
+  --r-lg:10px;  /* panel, kart, kod kutusu */
+  --r-full:999px; /* hap: rozet, CANLI, sayaç */
+  /* süre: 3 basamak + easing */
+  --dur-fast:.15s;  /* hover/odak geçişleri */
+  --dur-base:.35s;  /* giriş-çıkış animasyonları (mesaj, kuyruk, banner) */
+  --dur-slow:.85s;  /* vurgu: yeşil flaş, onay nabzı */
+  --ease-out:cubic-bezier(.2,.8,.3,1);
+  --ease-spring:cubic-bezier(.34,1.56,.64,1);
+  /* sabit ölçüler */
+  --w-side:224px;      /* sol kenar çubuğu */
+  --w-side-min:64px;   /* kenar çubuğu ikon modu (<1360px) */
+  --w-right:344px;     /* sağ panel */
+  --h-topbar:56px;     /* üst şerit */
+  --w-content-max:1760px; /* içerik üst sınırı, fazlası ortalanır */
+  --w-app-min:1280px; --h-app-min:720px; /* pencere alt sınırı */
+  --h-btn:46px;        /* birincil buton yüksekliği */
+  --h-pimg:142px;      /* ürün görseli (kompakt modda 56px) */
+  --h-q-min:64px;      /* kompakt modda kuyruk min yüksekliği */
+  --w-col-time:40px; --w-col-badge:28px; /* sohbet grid sütunları */
+  --w-col-no:44px;     /* kuyruk sıra no sütunu */
+  --w-user:132px;      /* sohbette kullanıcı adı üst sınırı */
+  --w-pop:172px;       /* rozet açılır kutusu min genişlik */
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--bg)}
+body{
+  font-family:var(--sans); font-size:var(--f2); color:var(--text);
+  letter-spacing:.2px; line-height:1.45;
+  min-height:100vh; overflow:auto;
+}
+a{color:var(--info);text-decoration:none} a:hover{color:var(--accent-hot)}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;letter-spacing:inherit}
+input{font:inherit;color:inherit;letter-spacing:inherit}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+::-webkit-scrollbar{width:var(--sp-3);height:var(--sp-3)}
+::-webkit-scrollbar-thumb{background:var(--surface-2);border-radius:var(--r-xs);border:2px solid var(--surface)}
+::-webkit-scrollbar-track{background:transparent}
+::selection{background:rgba(255,74,56,.30)}
+
+.app{
+  width:100%;height:100vh;min-width:var(--w-app-min);min-height:var(--h-app-min);
+  display:grid;grid-template-columns:var(--w-side) 1fr;grid-template-rows:minmax(0,1fr);
+  background:var(--bg);overflow:hidden;
+}
+
+/* ---------- Sol kenar ---------- */
+.side{background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column}
+.logo{
+  height:var(--h-topbar);display:flex;align-items:center;padding:0 var(--sp-6);border-bottom:1px solid var(--border);
+  font-family:'Bricolage Grotesque',var(--sans);font-size:var(--f3);font-weight:700;letter-spacing:-.2px;
+}
+.logo em{font-style:normal;color:var(--accent)}
+.lg-min{display:none}
+.nav{padding:var(--sp-4) var(--sp-3);display:flex;flex-direction:column;gap:var(--sp-1)}
+.nav button{
+  display:flex;align-items:center;gap:var(--sp-4);width:100%;padding:var(--sp-3) var(--sp-4);border-radius:var(--r-md);
+  color:var(--text-dim);font-size:var(--f2);font-weight:500;position:relative;text-align:left;
+  transition:background var(--dur-fast),color var(--dur-fast);
+}
+.nav button:hover{background:var(--surface-2);color:var(--text)}
+.nav button.on{background:var(--surface-2);color:var(--text)}
+.nav button.on::before{content:"";position:absolute;left:0;top:var(--sp-3);bottom:var(--sp-3);width:3px;border-radius:var(--r-xs);background:var(--accent)}
+.nav svg{width:17px;height:17px;flex:none}
+.badge{
+  margin-left:auto;min-width:22px;padding:1px var(--sp-3);border-radius:var(--r-full);text-align:center;
+  background:var(--accent);color:#fff;font-family:var(--mono);font-variant-numeric:tabular-nums;
+  font-size:var(--f0);font-weight:700;line-height:1.6;
+}
+.badge.zero{display:none}
+.side-foot{margin-top:auto;border-top:1px solid var(--border);padding:var(--sp-5) var(--sp-6);display:flex;flex-direction:column;gap:var(--sp-4)}
+.sf-label{font-size:var(--f0);font-weight:600;letter-spacing:.09em;color:var(--text-mute)}
+.conns{display:flex;flex-direction:column;gap:var(--sp-3)}
+.conn{display:flex;align-items:center;gap:var(--sp-3);font-size:var(--f1);color:var(--text-dim)}
+.conn .st{margin-left:auto;color:var(--text-mute);font-size:var(--f0)}
+.dot{width:7px;height:7px;border-radius:var(--r-full);flex:none}
+.dot.ok{background:var(--success)} .dot.amb{background:var(--amber)} .dot.mut{background:var(--text-mute)}
+.printer{display:flex;align-items:center;gap:var(--sp-3);font-size:var(--f1);color:var(--text-dim);padding-top:var(--sp-4);border-top:1px solid var(--border)}
+.printer svg{width:15px;height:15px;color:var(--text-mute);flex:none}
+
+/* ---------- Üst şerit ---------- */
+.main{display:grid;grid-template-rows:var(--h-topbar) auto auto minmax(0,1fr);min-width:0;min-height:0}
+.topbar{display:flex;border-bottom:1px solid var(--border);background:var(--bg)}
+.topbar-in{
+  flex:1;display:flex;align-items:center;gap:var(--sp-5);min-width:0;
+  padding:0 var(--sp-6);max-width:var(--w-content-max);margin-inline:auto;
+}
+.live{
+  display:inline-flex;align-items:center;gap:var(--sp-3);background:var(--accent);color:#fff;
+  padding:var(--sp-2) var(--sp-4);border-radius:var(--r-full);font-size:var(--f0);font-weight:700;letter-spacing:.12em;flex:none;
+}
+.live i{width:7px;height:7px;border-radius:var(--r-full);background:#fff;animation:pulse 1.5s ease-out infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,255,255,.55);opacity:1}70%{box-shadow:0 0 0 var(--sp-3) rgba(255,255,255,0)}100%{box-shadow:0 0 0 0 rgba(255,255,255,0);opacity:.85}}
+.timer{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:var(--f2);font-weight:700;flex:none}
+.timer-label{font-size:var(--f0);color:var(--text-mute);letter-spacing:.08em;font-weight:600;flex:none}
+.vchips{margin-left:auto;display:flex;gap:var(--sp-3);min-width:0}
+.vchip{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-2) var(--sp-4);border-radius:var(--r-sm);font-size:var(--f0);font-weight:600;letter-spacing:.07em;flex:none}
+.vchip b{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:var(--f2);font-weight:500;color:var(--text)}
+.vc-yt{background:rgba(255,0,51,.10);color:var(--yt)}
+.vc-ig{background:rgba(225,48,108,.12);color:var(--ig)}
+.vc-tt{background:rgba(37,244,238,.09);color:var(--tt)}
+.vc-fb{background:rgba(24,119,242,.13);color:var(--fb)}
+.vc-more{background:var(--surface-2);border:1px solid var(--border);color:var(--text-dim);position:relative;cursor:default}
+.vpop{
+  position:absolute;top:calc(100% + var(--sp-2));right:0;display:none;flex-direction:column;gap:var(--sp-3);
+  background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-md);padding:var(--sp-4);
+  min-width:var(--w-pop);box-shadow:0 var(--sp-4) var(--sp-7) rgba(0,0,0,.5);z-index:20;
+}
+.vc-more:hover .vpop{display:flex}
+.vp-row{display:flex;align-items:center;gap:var(--sp-3);font-size:var(--f0);font-weight:600;letter-spacing:.07em;white-space:nowrap}
+.vp-row b{margin-left:auto;font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:var(--f1);font-weight:500;color:var(--text)}
+
+/* ---------- Bildirim şeridi ---------- */
+.banners{display:none}
+.banners.has{
+  display:flex;flex-direction:column;gap:var(--sp-3);
+  margin:var(--sp-4) auto 0;width:calc(100% - 2*var(--sp-4));max-width:calc(var(--w-content-max) - 2*var(--sp-4));
+}
+.banner{display:flex;align-items:center;gap:var(--sp-4);padding:var(--sp-3) var(--sp-4);border-radius:var(--r-md);border:1px solid transparent;font-size:var(--f1);color:var(--text);animation:msgIn var(--dur-base) var(--ease-out)}
+.banner>svg{width:15px;height:15px;flex:none}
+.banner .num{font-family:var(--mono);font-variant-numeric:tabular-nums;font-weight:500}
+.b-amb{background:rgba(255,178,62,.09);border-color:rgba(255,178,62,.30)}.b-amb>svg{color:var(--amber)}
+.b-info{background:rgba(77,141,246,.09);border-color:rgba(77,141,246,.30)}.b-info>svg{color:var(--info)}
+.b-acc{background:rgba(255,74,56,.09);border-color:rgba(255,74,56,.30)}.b-acc>svg{color:var(--accent)}
+.b-text{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.b-act{font-size:var(--f1);font-weight:600;text-decoration:underline;text-underline-offset:var(--sp-1);padding:var(--sp-1) var(--sp-2);transition:transform var(--dur-fast) var(--ease-spring)}
+.b-act:hover{transform:translateY(-1px)}
+.b-amb .b-act{color:var(--amber)}.b-info .b-act{color:var(--info)}.b-acc .b-act{color:var(--accent-hot)}
+.b-x{color:var(--text-mute);padding:var(--sp-1);border-radius:var(--r-xs);display:flex}
+.b-x:hover{color:var(--text)}
+.b-x svg{width:12px;height:12px}
+.b-more{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-2) var(--sp-4);border-radius:var(--r-md);border:1px dashed var(--border);background:var(--surface);color:var(--text-dim);font-size:var(--f0);font-weight:600;letter-spacing:.05em;transition:color var(--dur-fast)}
+.b-more:hover{color:var(--text)}
+.banner.bye{opacity:0;transform:translateY(calc(-1*var(--sp-2)));transition:opacity var(--dur-fast),transform var(--dur-fast)}
+
+/* ---------- Aktif ürün şeridi ---------- */
+.hero{
+  margin:var(--sp-4) auto 0;width:calc(100% - 2*var(--sp-4));max-width:calc(var(--w-content-max) - 2*var(--sp-4));
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);
+  display:flex;align-items:center;gap:var(--sp-7);padding:var(--sp-6) var(--sp-7);
+}
+.micro{font-size:var(--f0);font-weight:600;letter-spacing:.11em;color:var(--text-mute)}
+.hero-left{display:flex;flex-direction:column;gap:var(--sp-3);min-width:0}
+.hero-row{display:flex;align-items:center;gap:var(--sp-6)}
+.code-box{
+  font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:var(--f5);font-weight:700;line-height:1;
+  padding:var(--sp-3) var(--sp-6) var(--sp-4);background:var(--surface-2);border:1px solid rgba(255,74,56,.38);border-radius:var(--r-lg);
+  display:flex;cursor:text;transition:border-color var(--dur-fast),box-shadow var(--dur-fast);
+}
+.code-box input{
+  background:none;border:0;outline:0;font:inherit;color:inherit;padding:0;width:3ch;
+  text-transform:uppercase;
+}
+.code-box input::placeholder{color:var(--text-mute);opacity:.5}
+.code-box:focus-within{border-color:var(--accent);box-shadow:0 0 0 var(--sp-1) rgba(255,74,56,.18)}
+.code-box.ok{animation:okPulse var(--dur-slow) var(--ease-out)}
+@keyframes okPulse{0%{border-color:var(--success);box-shadow:0 0 0 var(--sp-3) rgba(45,208,111,.22)}100%{box-shadow:0 0 0 0 rgba(45,208,111,0)}}
+.hero-meta{display:flex;flex-direction:column;gap:var(--sp-1);min-width:0}
+.price{display:flex;align-items:baseline;gap:var(--sp-2);font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:var(--f4);font-weight:700;line-height:1.15;cursor:text}
+.price span{font-size:var(--f3);font-weight:500;color:var(--text-dim)}
+.price input{background:none;border:0;outline:0;font:inherit;color:inherit;padding:0 0 1px;width:3.4ch;border-bottom:1px dashed rgba(255,255,255,.18);transition:border-color var(--dur-fast)}
+.price input::placeholder{color:var(--text-mute);opacity:.5}
+.price:focus-within input{border-bottom:1px solid var(--accent)}
+.price.err{animation:shake var(--dur-base) var(--ease-out)}
+.price.err input{border-bottom:2px solid var(--accent);color:var(--accent-hot)}
+@keyframes shake{25%{transform:translateX(calc(-1*var(--sp-2)))}75%{transform:translateX(var(--sp-2))}}
+.hero-hint{display:none;align-self:center;font-size:var(--f2);color:var(--text-mute)}
+.hero.idle .hero-hint{display:flex;align-items:center;gap:var(--sp-3)}
+.hero.idle .pname{visibility:hidden}
+.hero.idle .code-box:not(:focus-within){border-color:var(--border)}
+.hero.idle .code-box,.hero.idle .price{opacity:.65}
+.hero.idle .hero-stats{opacity:.35}
+.kbd-dim{font-family:var(--mono);font-size:var(--f0);font-weight:500;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-xs);padding:1px var(--sp-3);line-height:1.5;color:var(--text-mute)}
+.pname{font-size:var(--f3);color:var(--text-dim);font-weight:500;white-space:nowrap}
+.hero-stats{margin-left:auto;display:flex;align-items:stretch}
+.stat{position:relative;display:flex;flex-direction:column;gap:var(--sp-2);padding:var(--sp-1) var(--sp-7);border-left:1px solid var(--border)}
+.stat .val{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:var(--f4);font-weight:500;line-height:1.1}
+.stat .sub{font-size:var(--f0);color:var(--text-mute)}
+.eye{position:absolute;top:0;right:var(--sp-4);color:var(--text-mute);opacity:0;padding:var(--sp-1);border-radius:var(--r-xs);transition:opacity var(--dur-fast),color var(--dur-fast);display:flex}
+.eye svg{width:14px;height:14px}
+.stat:hover .eye{opacity:1}
+.eye:hover{color:var(--text)}
+.val.money{color:var(--success)}
+.val.masked{color:var(--text-mute);letter-spacing:.05em}
+.val.warn{color:var(--amber)}
+.flash{animation:flashG var(--dur-slow) var(--ease-out)}
+@keyframes flashG{0%,30%{color:var(--success)}100%{}}
+
+/* ---------- İçerik ---------- */
+.content{
+  display:grid;grid-template-columns:1fr var(--w-right);gap:var(--sp-4);padding:var(--sp-4);min-height:0;
+  width:100%;max-width:var(--w-content-max);margin-inline:auto;
+}
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);display:flex;flex-direction:column;min-height:0}
+
+/* Sohbet */
+.chat-head{display:flex;gap:var(--sp-3);align-items:center;padding:var(--sp-4);border-bottom:1px solid var(--border)}
+.search{
+  flex:1;display:flex;align-items:center;gap:var(--sp-3);background:var(--surface-2);border:1px solid var(--border);
+  border-radius:var(--r-sm);padding:var(--sp-3) var(--sp-4);transition:border-color var(--dur-fast);
+}
+.search:focus-within{border-color:var(--info)}
+.search svg{width:14px;height:14px;color:var(--text-mute);flex:none}
+.search input{background:none;border:0;outline:0;width:100%;font-size:var(--f1);color:var(--text)}
+.search input::placeholder{color:var(--text-mute)}
+.chip{
+  padding:var(--sp-3) var(--sp-4);border-radius:var(--r-sm);border:1px solid var(--border);background:var(--surface-2);
+  font-size:var(--f1);font-weight:500;color:var(--text-dim);transition:all var(--dur-fast) var(--ease-spring);
+}
+.chip:hover{color:var(--text);transform:translateY(-1px)}
+.chip.on{background:rgba(255,74,56,.13);border-color:rgba(255,74,56,.45);color:var(--accent-hot)}
+.chat-body{position:relative;flex:1;min-height:0}
+.feed{position:absolute;inset:0;overflow-y:auto;padding:var(--sp-3);display:flex;flex-direction:column;gap:var(--sp-1)}
+.msg{
+  display:grid;grid-template-columns:var(--w-col-time) var(--w-col-badge) auto 1fr auto;gap:var(--sp-3);align-items:baseline;
+  padding:var(--sp-3) var(--sp-4);border-radius:var(--r-md);border:1px solid transparent;
+  animation:msgIn var(--dur-base) var(--ease-out);
+}
+@keyframes msgIn{from{opacity:0;transform:translateY(var(--sp-4))}to{opacity:1;transform:none}}
+.noanim{animation:none !important}
+.msg.hit{background:rgba(255,74,56,.09);border-color:rgba(255,74,56,.22)}
+.mt{font-size:var(--f0);color:var(--text-mute)}
+.pb{font-family:var(--mono);font-size:var(--f0);font-weight:700;text-align:center;border-radius:var(--r-xs);padding:1px 0;line-height:1.5;align-self:center}
+.pb-yt{background:rgba(255,0,51,.12);color:var(--yt)}
+.pb-ig{background:rgba(225,48,108,.14);color:var(--ig)}
+.pb-tt{background:rgba(37,244,238,.10);color:var(--tt)}
+.pb-fb{background:rgba(24,119,242,.15);color:var(--fb)}
+.mu{font-size:var(--f1);font-weight:600;color:var(--text-dim);max-width:var(--w-user);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.msg.hit .mu{color:var(--text)}
+.mm{font-size:var(--f2);color:var(--text);min-width:0;overflow-wrap:anywhere}
+.msg:not(.hit) .mm{color:var(--text-dim)}
+.codechip{
+  font-family:var(--mono);font-weight:700;color:var(--accent-hot);
+  background:rgba(255,74,56,.16);padding:0 var(--sp-3);border-radius:var(--r-xs);
+}
+.mtag{justify-self:end;align-self:center;font-size:var(--f0);font-weight:700;white-space:nowrap}
+.t-ok{color:var(--success)} .t-amb{color:var(--amber)} .t-mut{color:var(--text-mute);font-weight:500}
+.pill{
+  position:absolute;left:50%;bottom:var(--sp-4);transform:translateX(-50%) translateY(var(--sp-2));opacity:0;pointer-events:none;
+  display:flex;align-items:center;gap:var(--sp-3);background:var(--surface-2);border:1px solid var(--info);
+  color:var(--info);font-size:var(--f1);font-weight:600;padding:var(--sp-3) var(--sp-5);border-radius:var(--r-full);
+  transition:all var(--dur-fast);box-shadow:0 var(--sp-3) var(--sp-6) rgba(0,0,0,.45);
+}
+.pill.show{opacity:1;transform:translateX(-50%);pointer-events:auto}
+.pill svg{width:13px;height:13px}
+
+/* Sağ panel */
+.right{display:flex;flex-direction:column;gap:var(--sp-4);min-height:0}
+.pcard{flex:none}
+.pimg{
+  height:var(--h-pimg);border-radius:var(--r-lg) var(--r-lg) 0 0;position:relative;
+  background:
+    radial-gradient(130% 100% at 18% 0%,rgba(255,178,62,.07),transparent 55%),
+    repeating-linear-gradient(115deg,rgba(255,255,255,.025) 0 3px,transparent 3px 8px),
+    linear-gradient(155deg,rgba(255,255,255,.06),rgba(255,255,255,0) 60%),var(--surface-2);
+  display:grid;place-items:center;color:var(--text-mute);
+}
+.pimg svg{width:26px;height:26px;opacity:.6}
+.pbody{padding:var(--sp-4) var(--sp-5) var(--sp-5);display:flex;flex-direction:column;gap:var(--sp-4)}
+.prow{display:flex;align-items:baseline;gap:var(--sp-4)}
+.pcode{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:var(--f3);font-weight:700}
+.pprice{margin-left:auto;font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:var(--f3);font-weight:500}
+.pdesc{font-size:var(--f2);color:var(--text-dim);margin-top:calc(-1*var(--sp-3))}
+.sizes{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--sp-3)}
+.size{
+  display:flex;align-items:center;justify-content:space-between;padding:var(--sp-3) var(--sp-4);
+  background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-sm);transition:opacity var(--dur-base);
+}
+.size b{font-size:var(--f1);font-weight:600;color:var(--text-dim)}
+.size .cnt{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:var(--f2);font-weight:500}
+.size .cnt.low{color:var(--amber)}
+.size.out{opacity:.38}
+.size.out b{text-decoration:line-through}
+
+/* Kuyruk */
+.queue{flex:1;min-height:0}
+.q-head{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-4) var(--sp-5);border-bottom:1px solid var(--border)}
+.q-count{
+  font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:var(--f0);font-weight:700;
+  background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-full);padding:1px var(--sp-3);color:var(--text-dim);
+}
+.q-clear{
+  margin-left:auto;display:flex;align-items:center;gap:var(--sp-2);font-size:var(--f0);font-weight:500;
+  color:var(--text-mute);padding:var(--sp-2) var(--sp-3);border-radius:var(--r-sm);transition:color var(--dur-fast);
+}
+.q-clear:hover{color:var(--accent)}
+.q-clear svg{width:12px;height:12px}
+.qlist{flex:1;min-height:0;overflow-y:auto;padding:var(--sp-3);display:flex;flex-direction:column;gap:var(--sp-1)}
+.qrow{
+  display:grid;grid-template-columns:var(--w-col-no) 1fr auto;gap:var(--sp-4);align-items:center;
+  padding:var(--sp-3) var(--sp-4);border-radius:var(--r-md);border:1px solid transparent;
+  animation:msgIn var(--dur-base) var(--ease-out);transition:opacity var(--dur-base),transform var(--dur-base);
+}
+.qrow:first-child{background:var(--surface-2);border-color:var(--border)}
+.qrow.leaving{opacity:0;transform:translateX(var(--sp-5))}
+.qno{font-size:var(--f1);font-weight:700;color:var(--text-mute)}
+.qrow:first-child .qno{color:var(--accent-hot)}
+.qn{font-size:var(--f2);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.qa{font-size:var(--f1);color:var(--text-dim)}
+.q-empty{display:none;padding:var(--sp-6) var(--sp-5);text-align:center;color:var(--text-mute);font-size:var(--f1)}
+.q-empty.show{display:block}
+
+/* Yazdır */
+.print-dock{flex:none;padding:var(--sp-4);border-top:1px solid var(--border);display:flex;flex-direction:column;gap:var(--sp-3)}
+.btn-print{
+  display:flex;align-items:center;justify-content:center;gap:var(--sp-4);height:var(--h-btn);border-radius:var(--r-md);
+  background:var(--accent);color:#fff;font-size:var(--f2);font-weight:600;
+  transition:background var(--dur-fast),transform var(--dur-fast) var(--ease-spring),box-shadow var(--dur-fast);
+}
+.btn-print:hover{background:var(--accent-hot);transform:translateY(-1px);box-shadow:0 var(--sp-3) var(--sp-6) rgba(255,74,56,.28)}
+.btn-print:active{transform:translateY(0);box-shadow:none}
+.btn-print.done{background:var(--success);color:#06240F}
+.btn-print svg{width:16px;height:16px}
+.kbd{
+  font-family:var(--mono);font-size:var(--f0);font-weight:700;background:rgba(0,0,0,.28);
+  border:1px solid rgba(255,255,255,.22);border-radius:var(--r-xs);padding:1px var(--sp-3);line-height:1.5;
+}
+.btn-print.done .kbd{border-color:rgba(6,36,15,.3);background:rgba(6,36,15,.14)}
+.next-line{display:flex;justify-content:center;gap:var(--sp-2);font-size:var(--f0);color:var(--text-mute)}
+.next-line b{font-family:var(--mono);font-variant-numeric:tabular-nums;font-weight:500;color:var(--text-dim)}
+
+/* Alçak pencere: sıkışma modu */
+@media (max-height:849px){
+  :root{--h-pimg:56px;--f5:44px}
+  .pbody{padding:var(--sp-3) var(--sp-5);gap:var(--sp-3)}
+  .queue{min-height:var(--h-q-min)}
+  .right{gap:var(--sp-3)}
+  .print-dock{padding:var(--sp-3) var(--sp-4)}
+  .next-line{display:none}
+  .content,.hero{gap:var(--sp-5)}
+  .hero{padding:var(--sp-4) var(--sp-7)}
+}
+
+/* Dar pencere: kenar çubuğu ikon modu */
+@media (max-width:1359px){
+  .app{grid-template-columns:var(--w-side-min) 1fr}
+  .logo{justify-content:center;padding:0}
+  .lg-full{display:none}
+  .lg-min{display:block}
+  .nav{padding:var(--sp-4) var(--sp-3)}
+  .nav button{justify-content:center;padding:var(--sp-4) 0}
+  .nav .nav-label{display:none}
+  .nav .badge{position:absolute;top:var(--sp-1);right:var(--sp-2);margin:0;min-width:17px;padding:0 var(--sp-2)}
+  .sf-label,.conn .cname,.conn .st,#printer-text{display:none}
+  .conns{flex-direction:row;justify-content:center;gap:var(--sp-3)}
+  .side-foot{padding:var(--sp-4) var(--sp-3) var(--sp-5);gap:var(--sp-3)}
+  .printer{justify-content:center;padding-top:var(--sp-4)}
+}
+
+/* Çok dar: süre etiketi gizlenir */
+@media (max-width:1179px){
+  .timer-label{display:none}
+}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms !important;animation-iteration-count:1 !important;transition-duration:.01ms !important}
+}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="side">
+    <div class="logo"><span class="lg-full">OrderDeck<em>.</em></span><span class="lg-min">O<em>.</em></span></div>
+    <nav class="nav">
+      <button class="on">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 19.1a10 10 0 0 1 0-14.2"/><path d="M7.8 16.2a6 6 0 0 1 0-8.4"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8a6 6 0 0 1 0 8.4"/><path d="M19.1 4.9a10 10 0 0 1 0 14.2"/></svg>
+        <span class="nav-label">Yayın</span>
+      </button>
+      <button>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><polyline points="3.29 7 12 12 20.71 7"/><line x1="12" y1="22" x2="12" y2="12"/></svg>
+        <span class="nav-label">Siparişler</span> <span class="badge zero" id="b-orders">0</span>
+      </button>
+      <button>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        <span class="nav-label">Müşteriler</span>
+      </button>
+      <button>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/></svg>
+        <span class="nav-label">Etiketler</span>
+      </button>
+      <button>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>
+        <span class="nav-label">Raporlar</span>
+      </button>
+      <button>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+        <span class="nav-label">Ayarlar</span>
+      </button>
+    </nav>
+    <div class="side-foot">
+      <div>
+        <div class="sf-label" style="margin-bottom:var(--sp-3)">BAĞLANTILAR</div>
+        <div class="conns">
+          <div class="conn"><span class="dot ok"></span><span class="cname">YouTube</span><span class="st">bağlı</span></div>
+          <div class="conn"><span class="dot ok"></span><span class="cname">Instagram</span><span class="st">bağlı</span></div>
+          <div class="conn"><span class="dot ok"></span><span class="cname">TikTok</span><span class="st">bağlı</span></div>
+          <div class="conn"><span class="dot ok"></span><span class="cname">Facebook</span><span class="st">bağlı</span></div>
+        </div>
+      </div>
+      <div class="printer">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+        <span class="dot ok" id="printer-dot"></span>
+        <span id="printer-text">Zebra ZD420 · Hazır</span>
+      </div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div class="topbar-in" id="topbar-in">
+        <span class="live"><i></i>CANLI</span>
+        <span class="timer mono" id="timer">01:24:07</span>
+        <span class="timer-label">YAYIN SÜRESİ</span>
+        <div class="vchips" id="vchips">
+          <span class="vchip vc-yt" id="chip-yt">YOUTUBE <b id="v-yt">612</b></span>
+          <span class="vchip vc-ig" id="chip-ig">INSTAGRAM <b id="v-ig">431</b></span>
+          <span class="vchip vc-tt" id="chip-tt">TIKTOK <b id="v-tt">200</b></span>
+          <span class="vchip vc-fb" id="chip-fb">FACEBOOK <b id="v-fb">97</b></span>
+          <span class="vchip vc-more" id="v-more" style="display:none"><b class="mono" id="v-more-n">+0</b>
+            <span class="vpop" id="vpop"></span>
+          </span>
+        </div>
+      </div>
+    </header>
+
+    <div class="banners" id="banners"></div>
+
+    <section class="hero" id="hero">
+      <div class="hero-left">
+        <div class="micro">AKTİF ÜRÜN <span class="kbd-dim">Ctrl K</span></div>
+        <div class="hero-row">
+          <label class="code-box" id="code-box"><input id="in-code" maxlength="6" value="A12" placeholder="A12" autocomplete="off" spellcheck="false" aria-label="Ürün kodu"></label>
+          <div class="hero-meta">
+            <label class="price" id="price-box"><input id="in-price" maxlength="5" value="450" placeholder="450" inputmode="numeric" autocomplete="off" aria-label="Fiyat"><span>₺</span></label>
+            <div class="pname" id="pname">Krem Triko Kazak</div>
+          </div>
+          <div class="hero-hint" id="hero-hint">Kodu yaz, <span class="kbd-dim">Enter</span>'a bas</div>
+        </div>
+      </div>
+      <div class="hero-stats">
+        <div class="stat"><div class="micro">BU ÜRÜNDEN</div><div class="val" id="c-product">14</div><div class="sub">sipariş</div></div>
+        <div class="stat"><div class="micro">YAYIN TOPLAMI</div><div class="val" id="c-units">87</div><div class="sub">adet</div></div>
+        <div class="stat"><div class="micro">YAYIN CİROSU</div><div class="val money" id="c-revenue">38.150 ₺</div><div class="sub">bu yayında</div>
+          <button class="eye" id="btn-eye" title="Ciroyu gizle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg></button>
+        </div>
+        <div class="stat"><div class="micro">KUYRUKTA</div><div class="val" id="c-queue">5</div><div class="sub">etiket bekliyor</div></div>
+      </div>
+    </section>
+
+    <div class="content">
+
+      <section class="panel">
+        <div class="chat-head">
+          <label class="search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input id="search" type="text" placeholder="Sohbette ara — kullanıcı veya mesaj" autocomplete="off">
+          </label>
+          <button class="chip" id="chip-code">Sadece A12</button>
+        </div>
+        <div class="chat-body">
+          <div class="feed" id="feed"></div>
+          <button class="pill" id="pill">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            <span id="pill-text">3 yeni mesaj</span>
+          </button>
+        </div>
+      </section>
+
+      <aside class="right">
+        <div class="panel pcard">
+          <div class="pimg">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
+          </div>
+          <div class="pbody">
+            <div class="prow">
+              <span class="pcode" id="pcode">A12</span>
+              <span class="pprice" id="pprice">450 ₺</span>
+            </div>
+            <div class="pdesc" id="pdesc">Krem Triko Kazak</div>
+            <div>
+              <div class="micro" style="margin-bottom:var(--sp-3)">BEDEN STOĞU</div>
+              <div class="sizes">
+                <div class="size" data-size="S"><b>S</b><span class="cnt">6</span></div>
+                <div class="size" data-size="M"><b>M</b><span class="cnt">9</span></div>
+                <div class="size" data-size="L"><b>L</b><span class="cnt">5</span></div>
+                <div class="size" data-size="XL"><b>XL</b><span class="cnt">3</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel queue">
+          <div class="q-head">
+            <span class="micro">YAZDIRMA KUYRUĞU</span>
+            <span class="q-count" id="q-count">5</span>
+            <button class="q-clear" id="btn-clear">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              Temizle
+            </button>
+          </div>
+          <div class="qlist" id="qlist"></div>
+          <div class="q-empty" id="q-empty">Kuyruk boş — tüm etiketler yazdırıldı</div>
+        </div>
+
+        <div class="print-dock">
+          <button class="btn-print" id="btn-print">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+            <span id="btn-label">Yazdır ve Kargola</span>
+            <span class="kbd">F9</span>
+          </button>
+          <div class="next-line">Sırada: <b id="next-info">#33 Merve Gül</b></div>
+        </div>
+      </aside>
+
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+var $=function(s){return document.querySelector(s)};
+var feed=$('#feed'),qlist=$('#qlist'),search=$('#search'),chip=$('#chip-code'),pill=$('#pill');
+var fmt=function(n){return n.toLocaleString('tr-TR')};
+var PB={yt:'YT',ig:'IG',tt:'TT',fb:'FB'};
+
+/* [kullanıcı adı, platform, gerçek ad] */
+var USERS=[
+ ['mervegul23','ig','Merve Gül'],['ayse_kdz','yt','Ayşe Kandaz'],['selin.ktn','ig','Selin Kutan'],
+ ['fatmanur_07','tt','Fatma Nur Sarı'],['zeynp__','tt','Zeynep Ateş'],['Hatice Y.','fb','Hatice Yıldız'],
+ ['elifce.34','ig','Elif Çelik'],['buse_krt','yt','Buse Kurt'],['nazlicnn','ig','Nazlı Can'],
+ ['gamzeyilmazz','tt','Gamze Yılmaz'],['tugba.aksy','yt','Tuğba Aksoy'],['iremnur_5','ig','İrem Nur Demir'],
+ ['kubra.gnc','fb','Kübra Genç'],['dilara.bnn','ig','Dilara Benan'],['sevalk','yt','Seval Kaya'],
+ ['meryem_cc','tt','Meryem Coşkun'],['esra.dgn','ig','Esra Doğan'],['pelinsu_a','tt','Pelinsu Acar']
+];
+var CHAT=['beden var mı','M beden var mı','kargo ne zaman gelir','çok güzelmiş','rengi harika duruyor',
+ 'fiyat ne kadar','hangi kumaş bu','iade var mı','az önce aldım teşekkürler','yeni ürünler ne zaman',
+ 'L bedeni kaldı mı','canlıda indirim olacak mı','dün aldığım bugün geldi bayıldım','kombin önerisi var mı',
+ 'üzerindeki mi gelen','başka renk var mı'];
+var CODETPL=['{C}','{C}','{C}','{C} alabilir miyim','{C} bende','{C} M beden','{C} lütfen','{C} yazdım aldım mı'];
+
+var elapsed=5047, orderNo=37, queue=[], counters={prod:14,units:87,rev:38150};
+var ACTIVE=true, CODE='A12', PRICE=450, revMasked=false;
+var stocks={S:6,M:9,L:5,XL:3}, lastOrder={}, missed=0, restocking=false;
+
+/* ---- süre ---- */
+function fmtTime(s){var h=('0'+Math.floor(s/3600)).slice(-2),m=('0'+Math.floor(s%3600/60)).slice(-2),x=('0'+s%60).slice(-2);return h+':'+m+':'+x}
+setInterval(function(){elapsed++;$('#timer').textContent=fmtTime(elapsed)},1000);
+
+/* ---- izleyiciler ---- */
+var viewers={yt:612,ig:431,tt:200,fb:97};
+Object.keys(viewers).forEach(function(k,i){
+  setInterval(function(){
+    viewers[k]=Math.max(40,viewers[k]+Math.floor(Math.random()*11)-4);
+    $('#v-'+k).textContent=fmt(viewers[k]);
+    queueChips();
+  },2400+i*820);
+});
+
+/* ---- platform rozetleri: sığmayanı "+N"de topla (ResizeObserver) ---- */
+var PLATS=['yt','ig','tt','fb'];
+var PNAME={yt:'YOUTUBE',ig:'INSTAGRAM',tt:'TIKTOK',fb:'FACEBOOK'};
+var PCOL={yt:'--yt',ig:'--ig',tt:'--tt',fb:'--fb'};
+var topIn=$('#topbar-in'),vmore=$('#v-more'),vpop=$('#vpop');
+var chipQueued=false;
+function layoutChips(){
+  chipQueued=false;
+  PLATS.forEach(function(k){$('#chip-'+k).style.display='flex'});
+  vmore.style.display='none';
+  if(topIn.scrollWidth<=topIn.clientWidth)return;
+  var order=PLATS.slice().sort(function(a,b){return viewers[a]-viewers[b]});
+  var hidden=[];
+  vmore.style.display='flex';
+  for(var i=0;i<order.length-1;i++){
+    if(topIn.scrollWidth<=topIn.clientWidth)break;
+    $('#chip-'+order[i]).style.display='none';
+    hidden.push(order[i]);
+    $('#v-more-n').textContent='+'+hidden.length;
+  }
+  vpop.innerHTML=hidden.map(function(k){
+    return '<span class="vp-row" style="color:var('+PCOL[k]+')">'+PNAME[k]+' <b>'+fmt(viewers[k])+'</b></span>';
+  }).join('');
+}
+function queueChips(){if(!chipQueued){chipQueued=true;requestAnimationFrame(layoutChips)}}
+new ResizeObserver(queueChips).observe(topIn);
+queueChips();
+
+function flash(el){el.classList.remove('flash');void el.offsetWidth;el.classList.add('flash')}
+function hm(offMin){var d=new Date(Date.now()-(offMin||0)*60000);return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2)}
+
+/* ---- sayaçlar / kuyruk arayüzü ---- */
+function updCounters(doFlash){
+  $('#c-product').textContent=counters.prod;
+  $('#c-units').textContent=counters.units;
+  var rv=$('#c-revenue');
+  rv.textContent=revMasked?'•••• ₺':fmt(counters.rev)+' ₺';
+  rv.classList.toggle('masked',revMasked);
+  if(doFlash){flash($('#c-product'));flash($('#c-units'));if(!revMasked)flash(rv)}
+}
+function updQueueUI(doFlash){
+  var n=queue.length,b=$('#b-orders'),cq=$('#c-queue');
+  $('#q-count').textContent=n; cq.textContent=n;
+  cq.classList.toggle('warn',n>8);
+  b.textContent=n; b.classList.toggle('zero',n===0);
+  $('#q-empty').classList.toggle('show',n===0);
+  $('#next-info').textContent=n?('#'+queue[0].no+' '+queue[0].name):'kuyruk boş';
+  if(doFlash)flash(cq);
+}
+
+/* ---- stok ---- */
+function renderStocks(){
+  document.querySelectorAll('.size').forEach(function(el){
+    var k=el.dataset.size,v=stocks[k],c=el.querySelector('.cnt');
+    c.textContent=v; c.classList.toggle('low',v===1); el.classList.toggle('out',v===0);
+  });
+}
+function takeStock(){
+  var keys=Object.keys(stocks).filter(function(k){return stocks[k]>0});
+  if(!keys.length)return false;
+  stocks[keys[Math.floor(Math.random()*keys.length)]]--;
+  renderStocks();
+  if(!Object.keys(stocks).some(function(k){return stocks[k]>0})&&!restocking){
+    restocking=true;
+    setTimeout(function(){stocks={S:6,M:9,L:5,XL:3};renderStocks();restocking=false},5000); /* demo: raftan yeni koli */
+  }
+  return true;
+}
+
+/* ---- filtre ---- */
+var q='',onlyCode=false;
+function applyRow(r){
+  var ok=(!q||r.textContent.toLowerCase().indexOf(q)>-1)&&(!onlyCode||r.dataset.hit==='1');
+  r.style.display=ok?'':'none';
+}
+function applyFilter(){feed.querySelectorAll('.msg').forEach(applyRow);feed.scrollTop=feed.scrollHeight}
+search.addEventListener('input',function(e){q=e.target.value.trim().toLowerCase();applyFilter()});
+chip.addEventListener('click',function(){onlyCode=!onlyCode;chip.classList.toggle('on',onlyCode);applyFilter()});
+
+/* ---- sohbet ---- */
+function addChat(o){
+  var hit=ACTIVE&&o.text.toUpperCase().indexOf(CODE)>-1;
+  var row=document.createElement('div');
+  row.className='msg'+(hit?' hit':'')+(o.noanim?' noanim':'');
+  row.dataset.hit=hit?'1':'0';
+  var body=hit?o.text.replace(new RegExp(CODE,'gi'),'<span class="codechip">'+CODE+'</span>'):o.text;
+  row.innerHTML='<span class="mt mono">'+(o.time||hm())+'</span>'+
+    '<span class="pb pb-'+o.plat+'">'+PB[o.plat]+'</span>'+
+    '<span class="mu">'+o.user+'</span>'+
+    '<span class="mm">'+body+'</span>'+
+    (o.tag?'<span class="mtag mono '+o.tagCls+'">'+o.tag+'</span>':'');
+  var nearBottom=feed.scrollHeight-feed.scrollTop-feed.clientHeight<70;
+  applyRow(row);
+  feed.appendChild(row);
+  while(feed.children.length>70)feed.firstChild.remove();
+  if(nearBottom||o.noanim){feed.scrollTop=feed.scrollHeight}
+  else{missed++;$('#pill-text').textContent=missed+' yeni mesaj';pill.classList.add('show')}
+}
+feed.addEventListener('scroll',function(){
+  if(feed.scrollHeight-feed.scrollTop-feed.clientHeight<70){missed=0;pill.classList.remove('show')}
+});
+pill.addEventListener('click',function(){feed.scrollTop=feed.scrollHeight;missed=0;pill.classList.remove('show')});
+
+/* ---- sipariş ---- */
+function placeOrder(name){
+  orderNo++;
+  counters.prod++;counters.units++;counters.rev+=PRICE;
+  takeStock();
+  queue.push({no:orderNo,name:name,amt:PRICE});
+  var r=document.createElement('div');
+  r.className='qrow';
+  r.innerHTML='<span class="qno mono">#'+orderNo+'</span><span class="qn">'+name+'</span><span class="qa mono">'+fmt(PRICE)+' ₺</span>';
+  qlist.appendChild(r);
+  qlist.scrollTop=qlist.scrollHeight;
+  updCounters(true);updQueueUI(true);
+  return orderNo;
+}
+
+/* ---- mesaj akışı (~1.3 sn) ---- */
+function tickMsg(){
+  var u=USERS[Math.floor(Math.random()*USERS.length)];
+  var isCode=ACTIVE&&Math.random()<0.34, text,tag='',tagCls='';
+  if(isCode){
+    text=CODETPL[Math.floor(Math.random()*CODETPL.length)].replace('{C}',CODE);
+    var hasStock=Object.keys(stocks).some(function(k){return stocks[k]>0});
+    if(!hasStock){tag='tükendi';tagCls='t-amb'}
+    else if(Date.now()-(lastOrder[u[0]]||0)<30000){tag='sırada';tagCls='t-mut'}
+    else{lastOrder[u[0]]=Date.now();tag='Sipariş #'+placeOrder(u[2]);tagCls='t-ok'}
+  }else{
+    text=CHAT[Math.floor(Math.random()*CHAT.length)];
+  }
+  addChat({user:u[0],plat:u[1],text:text,tag:tag,tagCls:tagCls});
+  setTimeout(tickMsg,900+Math.random()*800);
+}
+
+/* ---- yazdırma ---- */
+function printerMsg(text,cls){
+  var d=$('#printer-dot');d.className='dot '+cls;$('#printer-text').textContent=text;
+}
+var printBusy=false;
+function doPrint(){
+  if(!queue.length){printerMsg('Kuyruk boş','amb');setTimeout(function(){printerMsg('Zebra ZD420 · Hazır','ok')},1200);return}
+  var o=queue.shift();
+  var row=qlist.querySelector('.qrow:not(.leaving)');
+  if(row){row.classList.add('leaving');setTimeout(function(){row.remove()},360)}
+  updQueueUI(false);
+  printerMsg('Yazdırılıyor · #'+o.no,'amb');
+  setTimeout(function(){printerMsg('Zebra ZD420 · Hazır','ok')},900);
+  var btn=$('#btn-print');
+  btn.classList.add('done');$('#btn-label').textContent='#'+o.no+' yazdırıldı';
+  clearTimeout(printBusy);
+  printBusy=setTimeout(function(){btn.classList.remove('done');$('#btn-label').textContent='Yazdır ve Kargola'},1100);
+}
+$('#btn-print').addEventListener('click',doPrint);
+document.addEventListener('keydown',function(e){if(e.key==='F9'){e.preventDefault();doPrint()}});
+$('#btn-clear').addEventListener('click',function(){
+  queue=[];
+  qlist.querySelectorAll('.qrow').forEach(function(r){r.classList.add('leaving')});
+  setTimeout(function(){qlist.innerHTML=''},360);
+  updQueueUI(false);
+});
+/* operatör ara ara basıyor: kuyruk taşarsa kendiliğinden azalt */
+setInterval(function(){if(queue.length>7)doPrint()},9000);
+
+/* ---- ciro maskesi ---- */
+var EYE='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
+var EYEOFF='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.4 10.4 0 0 1 12 5c6.5 0 10 7 10 7a13.2 13.2 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.5 13.5 0 0 0 2 12s3.5 7 10 7a9.7 9.7 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg>';
+$('#btn-eye').addEventListener('click',function(){
+  revMasked=!revMasked;
+  this.innerHTML=revMasked?EYEOFF:EYE;
+  this.title=revMasked?'Ciroyu göster':'Ciroyu gizle';
+  updCounters(false);
+});
+
+/* ---- aktif ürün girişi ---- */
+var hero=$('#hero'),inCode=$('#in-code'),inPrice=$('#in-price');
+function fitCode(){inCode.style.width=Math.max(3,inCode.value.length||3)+'ch'}
+function fitPrice(){inPrice.style.width=Math.max(3.4,(inPrice.value.length||3)+.4)+'ch'}
+inCode.addEventListener('input',function(){
+  inCode.value=inCode.value.toUpperCase().replace(/[^A-Z0-9]/g,'');
+  fitCode();
+  if(!inCode.value&&ACTIVE){ACTIVE=false;hero.classList.add('idle')}
+});
+inPrice.addEventListener('input',function(){
+  inPrice.value=inPrice.value.replace(/[^0-9]/g,'');
+  fitPrice();
+  $('#price-box').classList.remove('err');
+});
+function activateProduct(){
+  var code=inCode.value.trim(),p=parseInt(inPrice.value,10);
+  if(!code){hero.classList.add('idle');inCode.focus();return}
+  if(!p){var pb=$('#price-box');pb.classList.remove('err');void pb.offsetWidth;pb.classList.add('err');inPrice.focus();return}
+  CODE=code;PRICE=p;ACTIVE=true;
+  hero.classList.remove('idle');
+  counters.prod=0;lastOrder={};
+  stocks={S:6,M:9,L:5,XL:3};renderStocks();
+  var nm=CODE==='A12'?'Krem Triko Kazak':'—';
+  $('#pname').textContent=nm;$('#pdesc').textContent=nm;
+  $('#pcode').textContent=CODE;$('#pprice').textContent=fmt(PRICE)+' ₺';
+  chip.textContent='Sadece '+CODE;
+  updCounters(false);flash($('#c-product'));
+  var cb=$('#code-box');cb.classList.remove('ok');void cb.offsetWidth;cb.classList.add('ok');
+  inPrice.blur();inCode.blur();
+}
+[inCode,inPrice].forEach(function(el){
+  el.addEventListener('keydown',function(e){
+    if(e.key==='Enter'){e.preventDefault();activateProduct()}
+    else if(e.key==='Escape'){el.blur()}
+  });
+});
+document.addEventListener('keydown',function(e){
+  if(e.ctrlKey&&(e.key==='k'||e.key==='K')){e.preventDefault();inCode.focus();inCode.select()}
+});
+fitCode();fitPrice();
+
+/* ---- bildirim şeridi ---- */
+var WARN='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>';
+var INFOI='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>';
+var GIFT='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="4"/><path d="M12 8v13"/><path d="M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7"/><path d="M7.5 8a2.5 2.5 0 0 1 0-5C11 3 12 8 12 8s1-5 4.5-5a2.5 2.5 0 0 1 0 5"/></svg>';
+var XI='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+var raffle={t:192,n:47};
+var BANNERS=[
+  {id:'srv',type:'amb',icon:WARN,text:'Sunucu bağlantısı yok — siparişler yerel kaydediliyor'},
+  {id:'lic',type:'amb',icon:WARN,text:'Lisansınız <span class="num">6</span> gün sonra doluyor',act:'Yenile'},
+  {id:'raf',type:'acc',icon:GIFT,text:'',act:'Bitir'}
+];
+var bExp=false, bbox=$('#banners');
+function raffleText(){return 'Çekiliş açık: <span class="num">'+Math.floor(raffle.t/60)+' dk '+(raffle.t%60)+' sn</span> kaldı · <span class="num">'+raffle.n+'</span> katılımcı'}
+function bannersRender(){
+  bbox.innerHTML='';
+  bbox.classList.toggle('has',BANNERS.length>0);
+  if(!BANNERS.length)return;
+  var vis=bExp?BANNERS:BANNERS.slice(0,2);
+  vis.forEach(function(b){
+    var d=document.createElement('div');
+    d.className='banner b-'+b.type;d.dataset.bid=b.id;
+    d.innerHTML=b.icon+'<span class="b-text">'+(b.id==='raf'?raffleText():b.text)+'</span>'+
+      (b.act?'<button class="b-act" data-act="'+b.id+'">'+b.act+'</button>':'')+
+      '<button class="b-x" data-x="'+b.id+'" title="Kapat">'+XI+'</button>';
+    bbox.appendChild(d);
+  });
+  var hidden=BANNERS.length-vis.length;
+  if(hidden>0){
+    var m=document.createElement('button');m.className='b-more';
+    m.textContent='+'+hidden+' bildirim daha — göster';
+    m.addEventListener('click',function(){bExp=true;bannersRender()});
+    bbox.appendChild(m);
+  }else if(bExp&&BANNERS.length>2){
+    var m2=document.createElement('button');m2.className='b-more';
+    m2.textContent='Daralt';
+    m2.addEventListener('click',function(){bExp=false;bannersRender()});
+    bbox.appendChild(m2);
+  }
+}
+function bannerDismiss(id){
+  var el=bbox.querySelector('[data-bid="'+id+'"]');
+  BANNERS=BANNERS.filter(function(b){return b.id!==id});
+  if(el){el.classList.add('bye');setTimeout(bannersRender,160)}else bannersRender();
+}
+bbox.addEventListener('click',function(e){
+  var x=e.target.closest('[data-x]'),a=e.target.closest('[data-act]');
+  if(x)bannerDismiss(x.dataset.x);
+  else if(a)bannerDismiss(a.dataset.act);
+});
+setInterval(function(){
+  if(!BANNERS.some(function(b){return b.id==='raf'}))return;
+  raffle.t--;if(Math.random()<.25)raffle.n++;
+  if(raffle.t<=0){bannerDismiss('raf');return}
+  var t=bbox.querySelector('[data-bid="raf"] .b-text');
+  if(t)t.innerHTML=raffleText();
+},1000);
+setTimeout(function(){
+  BANNERS.push({id:'bak',type:'info',icon:INFOI,text:'Yedek mod aktif — sohbet eklentiden geliyor'});
+  bannersRender();
+},15000);
+bannersRender();
+
+/* ---- başlangıç durumu ---- */
+[[33,'Merve Gül'],[34,'Ayşe Kandaz'],[35,'Selin Kutan'],[36,'Zeynep Ateş'],[37,'Hatice Yıldız']].forEach(function(s){
+  queue.push({no:s[0],name:s[1],amt:450});
+  qlist.insertAdjacentHTML('beforeend','<div class="qrow noanim"><span class="qno mono">#'+s[0]+'</span><span class="qn">'+s[1]+'</span><span class="qa mono">450 ₺</span></div>');
+});
+['mervegul23','ayse_kdz','selin.ktn','zeynp__','Hatice Y.'].forEach(function(h){lastOrder[h]=Date.now()-20000});
+
+[
+ ['buse_krt','yt','üzerindeki mi gelen',9,'',''],
+ ['elifce.34','ig','çok güzelmiş',8,'',''],
+ ['mervegul23','ig','A12',8,'Sipariş #33','t-ok'],
+ ['nazlicnn','ig','beden var mı',7,'',''],
+ ['ayse_kdz','yt','A12 alabilir miyim',6,'Sipariş #34','t-ok'],
+ ['gamzeyilmazz','tt','kargo ne zaman gelir',5,'',''],
+ ['selin.ktn','ig','A12',4,'Sipariş #35','t-ok'],
+ ['tugba.aksy','yt','fiyat ne kadar',4,'',''],
+ ['zeynp__','tt','A12 M beden',3,'Sipariş #36','t-ok'],
+ ['kubra.gnc','fb','dün aldığım bugün geldi bayıldım',2,'',''],
+ ['Hatice Y.','fb','A12 lütfen',1,'Sipariş #37','t-ok'],
+ ['zeynp__','tt','A12 yazdım aldım mı',1,'sırada','t-mut'],
+ ['iremnur_5','ig','rengi harika duruyor',0,'',''],
+ ['sevalk','yt','L bedeni kaldı mı',0,'','']
+].forEach(function(m){
+  addChat({user:m[0],plat:m[1],text:m[2],time:hm(m[3]),tag:m[4],tagCls:m[5],noanim:true});
+});
+
+updCounters(false);updQueueUI(false);renderStocks();
+feed.scrollTop=feed.scrollHeight;
+setTimeout(tickMsg,1200);
+})();
+</script>
+</body>
+</html>
