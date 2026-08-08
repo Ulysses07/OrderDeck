@@ -121,9 +121,27 @@ olacağı için ölçeğe indirildi.)
 | `EaseOut` | `CubicEase / EaseOut` | genel |
 | `EaseSpring` | `BackEase / EaseOut, Amplitude 0.3` | buton, çip, geri bildirim |
 
-**Sabit ölçüler:** `WSide 224` / `WSideMin 64` (ikon modu) · `WRight 344` ·
-`WDrawer 344` · `HTopbar 56` · `WContentMax 1760` · `WAppMin 1280` ·
-`HAppMin 720` · `HBtn 46`.
+**Sabit ölçüler:** `WSide 224` / `WSideMin 64` (ikon modu) · `WRight 400` ·
+`WDrawer 400` · `HTopbar 56` · `WContentMax 1760` · `WAppMin 960` ·
+`HAppMin 720` · `WAppStart 1440` · `HAppStart 900` · `HBtn 46` ·
+`WStreamBtn 132`.
+
+Faz 1'de düzeltilenler (2026-08-08, hepsi gerekçesiyle `Metrics.xaml`'de):
+
+- `WRight`/`WDrawer` 344 → **400**: kod ve fiyat kutuları üstteki tam genişlik
+  şeritten sağ sütuna indi, 344'te nefes almıyorlardı.
+- `WAppMin` 1280 → **960**: 1920'lik ekranda yarım pencere tam 960 ve operatör
+  uygulamayı yayın/tarayıcı yanına böyle koyuyor.
+- **`WAppStart`/`HAppStart` yeni.** Pencere `1280x800` açılıyordu — hem 1360
+  hem 850 kırılımının altında, yani uygulama **her açılışta** indirgenmiş
+  yerleşimle başlıyordu. İndirgeme dar ekranın çaresi olmalı, varsayılan hâl
+  değil.
+- **`WStreamBtn` yeni.** Yayın butonu iki durumda iki farklı metin taşıyor;
+  içeriğe göre ölçülünce durum değişince genişliğini oynatıp yanındaki butonu
+  kaydırıyordu.
+
+Silinen ölü token'lar: `ChatTimeColumn`, `QueueNoColumn` — hiçbir view
+tüketmedi. Kullanılmayan token, kullanılmayan `Style` ile aynı borç (§9).
 
 ## 5. Bileşen envanteri
 
@@ -133,7 +151,7 @@ olacağı için ölçeğe indirildi.)
 |---|---|---|
 | 1 | Buton | birincil (dolu `Accent`, `HBtn`) · ikincil (`Surface2` + kenarlık) · hayalet (yalnız metin) · bağlantı-eylem (altı çizili) |
 | 2 | Nav öğesi | pasif · aktif (sol `Accent` şeridi) · sayaçlı · ikon modu |
-| 3 | Input | arama (ikon + odakta `Info` kenarlık) · kod kutusu (mono `F5` + odak halkası) · fiyat (altı kesikli çizgi, hatada sarsıntı) |
+| 3 | Input | arama (ikon + odakta `Info` kenarlık) · kod kutusu (mono `F5` + odak halkası) · fiyat (altı kesikli çizgi, hatada sarsıntı) · **ipucu metni: `Tag` dolu olan her kutu placeholder kazanır** |
 | 4 | Panel | gövde · başlık satırı (alt kenarlıklı) · sabit alt yuva |
 | 5 | Rozet & hap | sayaç (dolu `Accent`) · platform (resmi ikon, `PlatformIcons.xaml`'den; kısaltma ve renkli zemin yok) · durum noktası (`Success`/`Amber`/`TextMute`) · sayı hapı · klavye tuşu |
 | 6 | Banner | `Amber` / `Info` / `Accent` tonları + "+N daha" kesikli toplama satırı |

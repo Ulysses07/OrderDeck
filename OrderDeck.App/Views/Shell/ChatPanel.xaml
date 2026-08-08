@@ -29,6 +29,7 @@
                              Style="{StaticResource OD.TextBox}"
                              Margin="{StaticResource OD.Pad.3}"
                              Text="{Binding ChatSearchText, UpdateSourceTrigger=PropertyChanged}"
+                             Tag="Kullanıcı veya mesaj ara…"
                              ToolTip="Kullanıcı adı veya mesaj içinde ara"/>
 
                     <!-- Çip yalnız aktif kod varken anlamlı; kod yokken

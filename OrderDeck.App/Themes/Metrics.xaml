@@ -99,6 +99,12 @@
        kenar çubuğunu ikon rayına indiriyor, 960'ta yerleşim taşmadan sığar. -->
   <sys:Double x:Key="OD.Layout.AppMinWidth">960</sys:Double>
   <sys:Double x:Key="OD.Layout.AppMinHeight">720</sys:Double>
+  <!-- Açılış ölçüsü. 1280x800 DEĞİL: o ölçü hem 1360 hem 850 kırılımının
+       altında kalıyor, yani uygulama her açılışta indirgenmiş yerleşimle
+       (ikon rayı + kısa ürün görseli + küçük kod yazısı) başlıyordu.
+       İndirgeme dar ekranın çaresi olmalı, varsayılan hâl değil. -->
+  <sys:Double x:Key="OD.Layout.AppStartWidth">1440</sys:Double>
+  <sys:Double x:Key="OD.Layout.AppStartHeight">900</sys:Double>
 
   <!-- Faz 1'e özgü ölçüler. Mockup'ta CSS değişkeni olarak duruyorlar
        (h-pimg, h-q-min, w-col-*, w-user); WPF'te sabit sayı yazmamak
@@ -110,10 +116,8 @@
        @media (max-height:849px) altında h-pimg 56px. -->
   <sys:Double x:Key="OD.Layout.ProductImageHeightShort">56</sys:Double>
   <sys:Double x:Key="OD.Layout.QueueMinHeight">64</sys:Double>
-  <sys:Double x:Key="OD.Layout.ChatTimeColumn">40</sys:Double>
   <sys:Double x:Key="OD.Layout.ChatBadgeColumn">28</sys:Double>
   <sys:Double x:Key="OD.Layout.ChatUserMaxWidth">132</sys:Double>
-  <sys:Double x:Key="OD.Layout.QueueNoColumn">44</sys:Double>
   <!-- Aktif ürün kodunun yazı boyu; alçak pencerede (<850px) küçüğü.
        Font ölçeğine (F0..F5) yeni basamak eklemiyoruz — bu, tek bir
        kontrolün duyarlı ölçüsü, tipografi basamağı değil.

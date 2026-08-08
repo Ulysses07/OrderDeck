@@ -194,16 +194,42 @@
                             BorderBrush="{TemplateBinding BorderBrush}"
                             BorderThickness="{TemplateBinding BorderThickness}"
                             CornerRadius="{StaticResource OD.Radius.Sm}">
-                        <!-- PART_ContentHost adı zorunlu: TextBox metni
-                             buraya yerleştirir, adı değişirse kutu boş görünür. -->
-                        <ScrollViewer x:Name="PART_ContentHost"
-                                      Margin="{TemplateBinding Padding}"
-                                      VerticalAlignment="Center"/>
+                        <Grid>
+                            <!-- PART_ContentHost adı zorunlu: TextBox metni
+                                 buraya yerleştirir, adı değişirse kutu boş görünür. -->
+                            <ScrollViewer x:Name="PART_ContentHost"
+                                          Margin="{TemplateBinding Padding}"
+                                          VerticalAlignment="Center"/>
+                            <!-- İpucu metni Tag'den okunur: Tag="Ara…" yazan her
+                                 kutu placeholder kazanır, ek kod gerekmez.
+                                 WPF'in yerleşik placeholder'ı yok; alternatif her
+                                 kutunun yanına elle bir TextBlock + DataTrigger
+                                 koymaktı (CustomerSearchDialog'da öyle yapılmış).
+                                 Şablona alındı ki Faz 2'nin çekmecelerindeki
+                                 onlarca giriş kutusu bunu tekrarlamasın.
+                                 IsHitTestVisible=False: tıklama alttaki kutuya
+                                 geçsin, ipucu fareyi yutmasın. -->
+                            <TextBlock x:Name="Hint"
+                                       Text="{TemplateBinding Tag}"
+                                       Margin="{TemplateBinding Padding}"
+                                       VerticalAlignment="Center"
+                                       IsHitTestVisible="False"
+                                       Visibility="Collapsed"
+                                       FontFamily="{TemplateBinding FontFamily}"
+                                       FontSize="{TemplateBinding FontSize}"
+                                       Foreground="{StaticResource OD.Brush.TextMute}"/>
+                        </Grid>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsKeyboardFocusWithin" Value="True">
                             <Setter TargetName="Root" Property="BorderBrush"
                                     Value="{StaticResource OD.Brush.Accent}"/>
+                        </Trigger>
+                        <!-- Odakta da görünür kalır; yazı girilince kaybolur.
+                             Odakta gizlemek, boş kutuya tıklayan operatörün
+                             ne yazacağını tam o anda unutturur. -->
+                        <Trigger Property="Text" Value="">
+                            <Setter TargetName="Hint" Property="Visibility" Value="Visible"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
