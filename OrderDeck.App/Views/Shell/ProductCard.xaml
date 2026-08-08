@@ -97,9 +97,13 @@
                             <Setter Property="Height"
                                     Value="{StaticResource OD.Layout.ProductImageHeight}"/>
                             <Style.Triggers>
-                                <!-- 850px altı: fotoğraf kısalır, ızgara ekranda kalır. -->
+                                <!-- 850px altı: fotoğraf kısalır, ızgara ekranda kalır.
+                                     Ata UserControl = bu ProductCard; DataContext'i
+                                     MainShellViewModel (ProductCard'a inen bağ alttaki
+                                     Border'da, kökte değil). Pencereye çıkma —
+                                     MainWindow'un DataContext'i yok. -->
                                 <DataTrigger Binding="{Binding DataContext.IsShort,
-                                             RelativeSource={RelativeSource AncestorType=Window}}"
+                                             RelativeSource={RelativeSource AncestorType=UserControl}}"
                                              Value="True">
                                     <Setter Property="Height"
                                             Value="{StaticResource OD.Layout.ProductImageHeightShort}"/>

@@ -33,10 +33,13 @@
                             <Setter Property="FontSize"
                                     Value="{StaticResource OD.Font.F5}"/>
                             <Style.Triggers>
-                                <!-- Spec §7: yükseklik < 850px → 64 yerine 44. -->
-                                <DataTrigger Binding="{Binding DataContext.IsShort,
-                                             RelativeSource={RelativeSource AncestorType=Window}}"
-                                             Value="True">
+                                <!-- Spec §7: yükseklik < 850px → 64 yerine 44.
+                                     Düz {Binding}: bu kontrolün DataContext'i
+                                     zaten MainShellViewModel. Pencere üzerinden
+                                     GİTME — MainWindow'un DataContext'i yok
+                                     (VM MainShellView'da kuruluyor), o zincir
+                                     sessizce hiç tetiklenmez. -->
+                                <DataTrigger Binding="{Binding IsShort}" Value="True">
                                     <Setter Property="FontSize"
                                             Value="{StaticResource OD.Layout.CodeFontShort}"/>
                                 </DataTrigger>
