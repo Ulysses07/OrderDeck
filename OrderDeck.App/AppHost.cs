@@ -293,6 +293,7 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<AppSettings>().OverlayPort));
 
         // ViewModels
+        services.AddSingleton<ViewModels.ProductCardViewModel>();
         services.AddSingleton<ViewModels.MainShellViewModel>();
         services.AddTransient<ViewModels.StreamReportViewModel>();
         services.AddTransient<ViewModels.PeriodReportViewModel>();

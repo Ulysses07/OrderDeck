@@ -19,6 +19,7 @@ using OrderDeck.Core.Customers;
 using OrderDeck.Core.Sales;
 using OrderDeck.Core.Sessions;
 using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Core.Time;
 using OrderDeck.Labeling;
 using OrderDeck.Licensing;
 using OrderDeck.Licensing.Services;
@@ -34,6 +35,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private readonly ILabelPrinter _printer;
     private readonly CustomerService _customers;
     private readonly CustomerRepository _customerRepo;
+    private readonly LabelRepository _labelRepo;
+    private readonly IClock _clock;
     private readonly GiveawayService _giveaways;
     private readonly Dispatcher _dispatcher;
     private readonly IDisposable _busSubscription;
@@ -74,6 +77,86 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     public GiveawayBannerViewModel Banner { get; }
 
     [ObservableProperty] private string _activeCode = "";
+
+    /// <summary>Sağ paneldeki ürün kartı. Hero'daki kod her değişince yüklenir.</summary>
+    public ProductCardViewModel ProductCard { get; }
+
+    [ObservableProperty] private int _productOrderCount;
+    [ObservableProperty] private int _sessionLabelCount;
+    [ObservableProperty] private int _queueCount;
+    [ObservableProperty] private string _streamDurationText = "";
+    [ObservableProperty] private string _clockText = "";
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SessionRevenueText))]
+    private decimal _sessionRevenue;
+
+    /// <summary>
+    /// Ciro maskesi. Operatör yayında ekranını paylaşabiliyor; ciro
+    /// izleyiciye görünmemeli. Yalnız görüntüyü değiştirir — SessionRevenue
+    /// gerçek değeri tutmaya devam eder.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SessionRevenueText))]
+    private bool _isRevenueMasked;
+
+    public string SessionRevenueText => IsRevenueMasked
+        ? "₺ ••••"
+        : SessionRevenue.ToString("C0", CultureInfo.GetCultureInfo("tr-TR"));
+
+    [RelayCommand] private void ToggleRevenueMask() => IsRevenueMasked = !IsRevenueMasked;
+
+    partial void OnActiveCodeChanged(string value)
+    {
+        ProductCard.Load(value);
+        RefreshHeroStats();
+    }
+
+    private DispatcherTimer? _heroTimer;
+
+    private void EnsureHeroTimer()
+    {
+        if (_heroTimer is not null) return;
+        // 1 sn: yayın süresi ve duvar saati saniye çözünürlüğünde. Sayaç
+        // sorguları da burada tazeleniyor ki dışarıdan (senkron, iptal)
+        // gelen değişiklikler de yakalansın.
+        _heroTimer = new DispatcherTimer(
+            TimeSpan.FromSeconds(1), DispatcherPriority.Background,
+            (_, _) => RefreshHeroStats(), _dispatcher);
+        _heroTimer.Start();
+    }
+
+    /// <summary>
+    /// Hero'daki dört sayaç + süre/saat. Test'ten de çağrılabilsin diye
+    /// public — zamanlayıcıyı beklemeden doğrulanabiliyor.
+    /// </summary>
+    public void RefreshHeroStats()
+    {
+        QueueCount = PrintQueue.Count;
+        ClockText = DateTime.Now.ToString("HH:mm");
+
+        var session = _sessions.GetActive();
+        if (session is null)
+        {
+            ProductOrderCount = 0;
+            SessionLabelCount = 0;
+            SessionRevenue = 0m;
+            StreamDurationText = "";
+            return;
+        }
+
+        var elapsed = TimeSpan.FromSeconds(Math.Max(0, _clock.UnixNow() - session.StartedAt));
+        StreamDurationText = $"{(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
+
+        var totals = _labelRepo.GetSessionTotals(session.Id);
+        SessionLabelCount = totals.PrintedCount;
+        SessionRevenue = totals.TotalAmount;
+
+        ProductOrderCount = string.IsNullOrWhiteSpace(ActiveCode)
+            ? 0
+            : _labelRepo.CountSessionLabelsByCode(session.Id, ActiveCode.Trim());
+    }
+
     [ObservableProperty] private string _activePriceText = "0";
     [ObservableProperty] private string _streamStatusLabel = "Yayın aktif değil";
     [ObservableProperty] private bool _isGiveawayActive;
@@ -154,6 +237,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         ILabelPrinter printer,
         CustomerService customers,
         CustomerRepository customerRepo,
+        LabelRepository labelRepo,
+        IClock clock,
+        ProductCardViewModel productCard,
         GiveawayService giveaways,
         GiveawayBannerViewModel banner,
         LicenseService licenseService,
@@ -170,6 +256,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         _printer = printer;
         _customers = customers;
         _customerRepo = customerRepo;
+        _labelRepo = labelRepo;
+        _clock = clock;
+        ProductCard = productCard;
         _giveaways = giveaways;
         // Çekiliş kazananları belirlenince otomatik kazanan etiketi bas (ad + kod).
         // Hem manuel (DrawGiveawayNow) hem otomatik (süre dolunca) çekilişi kapsar.
@@ -213,6 +302,12 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         UpdateStreamStatusLabel();
         UpdateGiveawayCanStart();
         ReloadQueueFromActiveSession();
+
+        // Kuyruk her değiştiğinde (ekleme, silme, iptal, yazdırma) hero
+        // sayaçları tazelenir — tek yerden, çağrı noktalarını serpiştirmeden.
+        PrintQueue.CollectionChanged += (_, _) => RefreshHeroStats();
+        EnsureHeroTimer();
+        RefreshHeroStats();
     }
 
     // Background queue of chat messages awaiting a UI flush. Bounded so a
@@ -1293,6 +1388,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     {
         _chatFlushTimer?.Stop();
         _chatFlushTimer = null;
+        _heroTimer?.Stop();
+        _heroTimer = null;
         Banner.Dispose();
         _busSubscription.Dispose();
     }
