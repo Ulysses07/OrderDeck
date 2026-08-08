@@ -91,6 +91,48 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     /// <summary>Sağ paneldeki ürün kartı. Hero'daki kod her değişince yüklenir.</summary>
     public ProductCardViewModel ProductCard { get; }
 
+    /// <summary>
+    /// Kenar çubuğu alt bilgisindeki bağlantı noktaları. Sabit dört satır —
+    /// eksik platform "bağlı değil" olarak görünür, listeden düşmez.
+    /// </summary>
+    public ObservableCollection<PlatformConnectionViewModel> Connections { get; } =
+        new(new[]
+        {
+            new PlatformConnectionViewModel("youtube"),
+            new PlatformConnectionViewModel("instagram"),
+            new PlatformConnectionViewModel("tiktok"),
+            new PlatformConnectionViewModel("facebook"),
+        });
+
+    [ObservableProperty] private string _printerStatusText = "Yazıcı seçilmedi";
+    [ObservableProperty] private bool _isPrinterConfigured;
+
+    /// <summary>
+    /// Yeni veri katmanı YOK: ViewerCountTracker zaten platform başına
+    /// yapılandırılmış kayıt tutuyor, taze kayıt = bağlı.
+    /// </summary>
+    public void RefreshConnections()
+    {
+        var snap = _viewers?.GetSnapshot(TimeSpan.FromSeconds(90));
+        foreach (var c in Connections)
+        {
+            var row = snap?.PerPlatform
+                .FirstOrDefault(p => string.Equals(p.Platform, c.Platform, StringComparison.OrdinalIgnoreCase));
+            c.IsConnected = row is not null;
+            c.ViewerCount = row?.Count ?? 0;
+        }
+    }
+
+    /// <summary>
+    /// Yazıcı satırı. Yazıcının GERÇEKTEN hazır olup olmadığını sormuyoruz —
+    /// spooler sorgusu ayrı bir iş; burada yalnız "seçilmiş mi" var.
+    /// </summary>
+    public void RefreshPrinterStatus(string? printerName)
+    {
+        IsPrinterConfigured = !string.IsNullOrWhiteSpace(printerName);
+        PrinterStatusText = IsPrinterConfigured ? printerName!.Trim() : "Yazıcı seçilmedi";
+    }
+
     [ObservableProperty] private int _productOrderCount;
     [ObservableProperty] private int _sessionLabelCount;
     [ObservableProperty] private int _queueCount;
@@ -441,11 +483,13 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
         bool hasActiveSession;
         bool hasYouTubeHandle;
+        string? printerName;
         try
         {
             hasActiveSession = _sessions.GetActive() is not null;
             var settings = _settingsStore.Load();
             hasYouTubeHandle = !string.IsNullOrWhiteSpace(settings.YouTubeChannelHandle);
+            printerName = settings.PrinterName;
         }
         catch
         {
@@ -456,6 +500,12 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             ChatHealthTooltip = "Chat takibi kapalı";
             return;
         }
+
+        // 5 sn'lik nabız: SettingsStore.Load() önbeleksiz (her çağrıda disk
+        // okuması) — bu yüzden 1 sn'lik hero zamanlayıcısına DEĞİL buraya bindi.
+        RefreshConnections();
+        RefreshPrinterStatus(printerName);
+
         var hasAnyChatSource = hasActiveSession; // bridge ingestor is always on
 
         // 3-state signal:
