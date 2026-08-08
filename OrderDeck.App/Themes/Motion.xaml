@@ -1,0 +1,19 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <!--
+    OrderDeck hareket tokenları. Üç süre, iki easing — başkası yok.
+
+    CSS karşılıkları (referans mockup: docs/design/yayin-ekrani-referans.html):
+      cubic-bezier(.2,.8,.3,1)     -> OD.Ease.Out    (CubicEase/EaseOut)
+      cubic-bezier(.34,1.56,.64,1) -> OD.Ease.Spring (BackEase/EaseOut, A=0.3)
+
+    prefers-reduced-motion karşılığı: Storyboard'ları çalıştırmadan önce
+    SystemParameters.ClientAreaAnimation kontrol edilir; false ise atlanır.
+  -->
+  <Duration x:Key="OD.Dur.Fast">0:0:0.15</Duration>  <!-- hover, odak geçişi -->
+  <Duration x:Key="OD.Dur.Base">0:0:0.35</Duration>  <!-- giriş-çıkış: mesaj, kuyruk, banner, çekmece -->
+  <Duration x:Key="OD.Dur.Slow">0:0:0.85</Duration>  <!-- vurgu: yeşil flaş, onay nabzı -->
+
+  <CubicEase x:Key="OD.Ease.Out"    EasingMode="EaseOut"/>
+  <BackEase  x:Key="OD.Ease.Spring" EasingMode="EaseOut" Amplitude="0.3"/>
+</ResourceDictionary>
