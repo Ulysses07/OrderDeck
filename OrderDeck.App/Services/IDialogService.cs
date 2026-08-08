@@ -26,4 +26,19 @@ public interface IDialogService
     /// <summary>Evet/Hayır onayı; Evet ise true. Sahte uygulama varsayılan
     /// olarak false döner — testte yanlışlıkla yıkıcı bir dala girilmesin.</summary>
     bool Confirm(string message, string title);
+
+    // ── Çekmece karşılıkları (Faz 2) ────────────────────────────────────
+    // Yukarıdaki beş metot MessageBox açıyor; spec §6 "hiçbir şey pop-up
+    // değil" diyor. Aşağıdakiler aynı işi kabuğun içindeki çekmecede yapar.
+    // İkisi bir süre YAN YANA duracak: 26 çağrı yerini tek seferde çevirmek
+    // ViewModel'lerin akışını da async'e taşımak demek, o Faz 2b'nin işi.
+    // Dönüşüm bitince senkron beşli silinecek.
+
+    /// <summary>Evet/Vazgeç onayı, çekmecede. <see cref="Confirm"/> ile aynı
+    /// sözleşme: Evet ise true, ESC/Vazgeç ise false.</summary>
+    Task<bool> ConfirmAsync(string message, string title);
+
+    /// <summary>Tek düğmeli bildirim, çekmecede. <see cref="Show"/>'un
+    /// karşılığı; önem şeridin rengine dönüşür.</summary>
+    Task ShowAsync(string message, string title, DialogSeverity severity = DialogSeverity.Info);
 }

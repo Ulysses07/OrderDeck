@@ -54,6 +54,14 @@
                     <shell:PrintQueuePanel  Grid.Row="2"
                                             Margin="{StaticResource OD.Pad.Top5}"/>
                 </Grid>
+
+                <!-- Çekmece katmanı sağ sütunun ÜSTÜNE gelir: aynı hücre,
+                     aynı margin, aynı genişlik. Kardeşinden SONRA yazılı
+                     olması z-düzenini veriyor. Sohbet (sütun 0) hiç
+                     etkilenmez — spec §6.2. -->
+                <shell:DrawerHost Grid.Column="1"
+                                  Width="{StaticResource OD.Layout.RightWidth}"
+                                  Margin="{StaticResource OD.Pad.4}"/>
             </Grid>
         </Grid>
     </Grid>

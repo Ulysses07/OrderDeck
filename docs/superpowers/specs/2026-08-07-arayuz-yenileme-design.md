@@ -187,15 +187,30 @@ Sağdan kayar, **sohbet solda görünür kalır**. Yayın sırasında açılan h
 
 **Davranış:**
 
-- Genişlik `WDrawer` (344px) — sağ panelle aynı. Sağdan kayarak açılır
+- Genişlik `WDrawer` (400px) — sağ panelle aynı. Sağdan kayarak açılır
   (`DurBase`, `EaseOut`).
 - **Sağ panelin üstünü örter.** Sohbet genişliği hiç değişmez; feda edilen
   ürün kartı ve kuyruk listesi olur.
-- **Alttaki yazdır yuvası yerinde kalır** (`HBtn` + "Sırada: #33 Merve Gül"
-  satırı). Çekmece açıkken bile birincil eylem ve sıradaki müşteri görünür.
 - `Esc` kapatır. Açılışta odak çekmecenin ilk girdisine gider, kapanışta
   çağıran öğeye döner. `Tab` çekmece içinde döner.
-- Aynı anda tek çekmece açık olur; ikincisi açılırsa birincinin yerini alır.
+
+**Faz 2a düzeltmeleri (2026-08-08, altyapı yazılırken ölçüldü):**
+
+- ~~Aynı anda tek çekmece açık olur; ikincisi açılırsa birincinin yerini
+  alır.~~ **Yanlış.** Bugünkü diyaloglar İÇ İÇE açılıyor, üç seviyeye kadar:
+  `DekontEkleDialog → ShipmentDirectiveDialog → ShipmentThresholdDialog` ve
+  `CustomerSearchDialog → CustomerDetailDialog`. Tek yuva bu zinciri ifade
+  edemez, host bir **yığın** tutuyor (`DrawerStack`). Alttakiler solar
+  (Opacity .35) ve tıklama almaz; üstteki kapanınca geri döner.
+- **Çekmece modal değil.** Tam ekran bir perde denendi ve ekran görüntüsüyle
+  bakıldı: sohbeti okunmaz hâle getiriyordu. Katman yalnız sağ sütunu örtüyor,
+  kabuğun geri kalanı tıklanabilir kalıyor. Bilinçli ödünç — yayın sırasında
+  operatörün sohbetten kopmaması, yanlışlıkla arkaya tıklama riskinden ağır
+  basıyor.
+- **AÇIK MADDE:** "Alttaki yazdır yuvası yerinde kalır" maddesi HENÜZ
+  karşılanmıyor. Yazdır düğmesi `PrintQueuePanel`'in içinde ve çekmece sağ
+  sütunun tamamını örtüyor. Yuvayı ayırmak panelin bölünmesini gerektiriyor —
+  Faz 2b'de, ilk gerçek çekmece dönüşümünde ele alınacak.
 
 ```
 ┌────────┬──────────────────────┬───────────────┐
@@ -335,7 +350,20 @@ arşivleme, WhatsApp bildirimi. Bu dilimdeki düz `Quantity` alanı, stok projes
 geldiğinde hareket defterine dönüşecek.
 
 **Faz 2 — çekmece altyapısı + 10 çekmece view'ı.** `Window` kökleri
-`UserControl`'e çevrilir, çekmece host'u shell'e eklenir.
+`UserControl`'e çevrilir, çekmece host'u shell'e eklenir. İkiye bölündü
+(karar 2026-08-08, kullanıcı): önce altyapı, sonra view dönüşümü.
+
+- **Faz 2a — altyapı.** `Drawer` / `DrawerStack` / `IDrawerService`,
+  `DrawerHost`, `MessageDrawer` (MessageBox'ın çekmece karşılığı),
+  `IDialogService`'e `ConfirmAsync` + `ShowAsync`. Hiçbir view dönüşmez,
+  uygulama birebir aynı çalışır.
+- **Faz 2b — view dönüşümü.** Kolaydan zora üç grup: (1) ViewModel'i olmayan
+  dördü — `PhoneEntryDialog`, `FacebookPagePickerDialog`,
+  `AddToBlacklistDialog`, `CancelLabelDialog`; (2) `AddBalanceDialog`,
+  `ShipmentDirectiveDialog`, `NewGiveawayDialog`; (3) iç içe olanlar —
+  `CustomerSearchDialog` + `CustomerDetailDialog`, `DekontEkleDialog`.
+  Grup 3'te `DekontEkleDialog`'un zincir mantığı code-behind'dan
+  ViewModel'e taşınacak.
 
 **Faz 3 — sayfa navigasyonu + 12 sayfa view'ı.** Sol nav gerçek navigasyona
 bağlanır.
@@ -359,9 +387,16 @@ bağlanır.
 
 - `web/` ve shopper mobil uygulaması — bu doküman yalnız masaüstünü kapsıyor.
 - Chrome eklentisi arayüzü.
-- İş mantığı, ViewModel davranışı, veri katmanı. Bu yenileme **yalnız sunum
-  katmanı**; hiçbir özellik eklenmiyor veya kaldırılmıyor. **Tek istisna:**
-  Faz 1'in ürün kartı — bkz. §9.1. Kapsamı orada dar sınırlarla yazılı.
+- İş mantığı, veri katmanı. Bu yenileme **yalnız sunum katmanı**; hiçbir
+  özellik eklenmiyor veya kaldırılmıyor. **İki istisna:**
+  1. Faz 1'in ürün kartı — bkz. §9.1. Kapsamı orada dar sınırlarla yazılı.
+  2. **ViewModel davranışı, Faz 2b'de kaçınılmaz.** `ShowDialog()` BLOKLAYAN
+     bir çağrı ve `bool?` döndürüyor; çekmece bloklamaz. 26 çağrı yerinin
+     14'ü dönüş değerine göre dallanıyor. Akışı `await` edilebilir hâle
+     getirmek ViewModel'lere dokunmak demek — özellikle
+     `CustomerDetailViewModel.CancelSelected()`,
+     `MainShellViewModel.StartGiveaway()` ve `EndStream()`. Değişen şey
+     KONTROL AKIŞI; iş kuralları aynı kalıyor.
 - Karanlık/aydınlık tema seçeneği — tek tema (koyu) var, öyle kalıyor.
 - PostgreSQL göçü ve stok sistemi — ayrı spec'ler. **Sıralama kararlaştırıldı
   (2026-08-08):** ikisi de bu yenilemenin tüm fazları bitmeden başlamayacak.

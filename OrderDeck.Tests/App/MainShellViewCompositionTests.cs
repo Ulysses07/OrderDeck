@@ -1,5 +1,7 @@
 using System.Windows.Controls;
+using OrderDeck.App.Services.Drawers;
 using OrderDeck.App.Views;
+using OrderDeck.App.Views.Drawers;
 using OrderDeck.App.Views.Shell;
 
 namespace OrderDeck.Tests.App;
@@ -28,8 +30,16 @@ public class MainShellViewCompositionTests
             Assert.IsType<UserControl>(new ChatPanel(), exactMatch: false);
             Assert.IsType<UserControl>(new ProductCard(), exactMatch: false);
             Assert.IsType<UserControl>(new PrintQueuePanel(), exactMatch: false);
+            Assert.IsType<UserControl>(new DrawerHost(), exactMatch: false);
 
-            // Sonra kompozisyon kökü: yedi parçayı da kendi ağacında kurar.
+            // MessageDrawer yalnız yığın üzerinden kurulabiliyor (Drawer'ın
+            // ctor'u internal). Aynı zamanda altyapının uçtan duman testi:
+            // fabrika → çekmece → içerik zinciri gerçekten kuruluyor mu?
+            var stack = new DrawerStack();
+            stack.ShowAsync("Onay", d => MessageDrawer.ForConfirm(d, "Emin misin?"));
+            Assert.IsType<MessageDrawer>(stack.Top!.Content);
+
+            // Sonra kompozisyon kökü: sekiz parçayı da kendi ağacında kurar.
             var shell = new MainShellView();
             Assert.NotNull(shell.Content);
         });

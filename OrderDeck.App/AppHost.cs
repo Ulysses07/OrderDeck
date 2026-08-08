@@ -328,6 +328,13 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<PaymentRequestService>();
         services.AddSingleton<IDialogService, WpfDialogService>();
 
+        // Faz 2 — çekmece altyapısı. TEK örnek iki rolde: DrawerHost'un
+        // bağlandığı yığın ve ViewModel'lere verilen servis. İki ayrı kayıt
+        // olsaydı host boş bir yığına bakardı.
+        services.AddSingleton<Services.Drawers.DrawerStack>();
+        services.AddSingleton<Services.Drawers.IDrawerService>(
+            sp => sp.GetRequiredService<Services.Drawers.DrawerStack>());
+
         // Shortcuts (Phase 3b-1)
         services.AddSingleton<OrderDeck.Core.Shortcuts.ShortcutRegistry>();
         services.AddSingleton<OrderDeck.App.Shortcuts.ShortcutBinder>();

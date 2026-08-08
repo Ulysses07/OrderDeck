@@ -1,0 +1,77 @@
+<UserControl x:Class="OrderDeck.App.Views.Shell.DrawerHost"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Çekmece katmanı. YALNIZ sağ sütunu örter — spec §6.2: sohbet solda
+         görünür kalır ve genişliği hiç değişmez. Tam ekran bir perde
+         (denendi, ekran görüntüsüyle bakıldı) yayın sırasında sohbeti
+         okunmaz hâle getiriyordu; feda edilen ürün kartı ve kuyruk olur.
+         Bunun bedeli: çekmece açıkken kabuğun geri kalanı tıklanabilir
+         kalıyor, yani çekmece MODAL DEĞİL. Bilinçli — operatör çekmece
+         açıkken sohbete bakmaya devam edebilmeli.
+
+         Açık çekmece yokken Collapsed: ölçüm bile yapmaz, altındaki sağ
+         sütun tıklamayı normal alır.
+         DataContext'i DrawerStack; MainShellViewModel DEĞİL. -->
+    <ItemsControl ItemsSource="{Binding Items}"
+                  Width="{StaticResource OD.Layout.DrawerWidth}"
+                  Visibility="{Binding IsOpen, Converter={StaticResource BoolToVisibleConverter}}">
+        <!-- Çekmeceler üst üste: ItemsPanel Grid olduğu için hepsi aynı
+             hücreye çizilir, sonuncusu en üstte kalır. İç içe çekmece gerçek
+             bir ihtiyaç — DekontEkle → KargoYönergesi → KargoEşiği bugün üç
+             seviye derinleşiyor. -->
+        <ItemsControl.ItemsPanel>
+            <ItemsPanelTemplate>
+                <Grid/>
+            </ItemsPanelTemplate>
+        </ItemsControl.ItemsPanel>
+
+        <ItemsControl.ItemTemplate>
+            <DataTemplate>
+                <Border x:Name="Panel"
+                        Loaded="OnDrawerLoaded"
+                        Style="{StaticResource OD.Panel}"
+                        Background="{StaticResource OD.Brush.Surface}">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <!-- Başlık şeridi: ad + kapat -->
+                        <Border Grid.Row="0"
+                                Padding="{StaticResource OD.Pad.4}"
+                                BorderBrush="{StaticResource OD.Brush.Border}"
+                                BorderThickness="0,0,0,1">
+                            <DockPanel>
+                                <Button DockPanel.Dock="Right"
+                                        Style="{StaticResource OD.Button.Ghost}"
+                                        Padding="{StaticResource OD.Pad.3}"
+                                        Click="OnCloseClick"
+                                        ToolTip="Kapat (ESC)">
+                                    <Path Style="{StaticResource OD.IconPath}"
+                                          Data="{StaticResource OD.Path.Close}"/>
+                                </Button>
+                                <TextBlock Text="{Binding Title}"
+                                           VerticalAlignment="Center"
+                                           FontFamily="{StaticResource OD.Font.Display}"
+                                           FontSize="{StaticResource OD.Font.F3}"
+                                           Foreground="{StaticResource OD.Brush.Text}"/>
+                            </DockPanel>
+                        </Border>
+
+                        <ContentPresenter Grid.Row="1" Content="{Binding Content}"/>
+                    </Grid>
+                </Border>
+
+                <DataTemplate.Triggers>
+                    <!-- Alttaki çekmeceler: solar ve tıklama almaz. Üstteki
+                         kapanınca kendiliğinden geri döner. -->
+                    <DataTrigger Binding="{Binding IsTop}" Value="False">
+                        <Setter TargetName="Panel" Property="Opacity" Value="0.35"/>
+                        <Setter TargetName="Panel" Property="IsHitTestVisible" Value="False"/>
+                    </DataTrigger>
+                </DataTemplate.Triggers>
+            </DataTemplate>
+        </ItemsControl.ItemTemplate>
+    </ItemsControl>
+</UserControl>
