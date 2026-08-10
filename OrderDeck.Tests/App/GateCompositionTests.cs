@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using OrderDeck.App.Services.Gates;
 using OrderDeck.App.Startup;
 using OrderDeck.App.Views;
@@ -224,10 +225,52 @@ public class GateCompositionTests
             // çözümlemesi. Ek olarak üç yollu sonucun varsayılanını doğruluyoruz:
             // hiç düğmeye basılmadan kapanan gate Exit'te kalmalı.
             var recoveryPending = gates.ShowAsync(g => SessionRecoveryGate.Create(g, session: null));
-            var recoveryGate = Assert.IsType<SessionRecoveryGate>(gates.Top!.Content);
-            Assert.Equal(SessionRecoveryChoice.Exit, recoveryGate.Choice);
-            gates.Top.Close(true);
+            ThemeTestHost.Pump();
+            var recovery = Assert.IsType<SessionRecoveryGate>(root.GateContent.Content);
+            Assert.Equal(Visibility.Visible, root.GateHost.Visibility);
+            Assert.Equal(SessionRecoveryChoice.Exit, recovery.Choice);
+
+            // session=null dalının metinleri: başlıksız oturum ve tarih yok.
+            Assert.Equal("Adsız yayın", recovery.SessionTitle.Text);
+            Assert.Equal("—", recovery.SessionStarted.Text);
+
+            gates.Top!.Close(true);
             Assert.True(recoveryPending.IsCompleted);
+
+            // Düğme yolları: Click işleyicilerinin Choice'u kurduğunu ve gate'in
+            // dönüş değerini doğruluyoruz. Yerleşim elle tetikleniyor — ÖLÇÜLDÜ:
+            // Measure/Arrange olmadan görsel ağaçta 0 Button gerçekleşiyor,
+            // sonrasında 3. Her yol kendi ShowAsync örneğini istiyor: gate
+            // kapanınca yığından düşüyor.
+            var endPending = gates.ShowAsync(g => SessionRecoveryGate.Create(g, session: null));
+            ThemeTestHost.Pump();
+            var endGate = Assert.IsType<SessionRecoveryGate>(root.GateContent.Content);
+            endGate.Measure(new Size(1200, 900));
+            endGate.Arrange(new Rect(0, 0, 1200, 900));
+            ThemeTestHost.Pump();
+
+            endGate.EndSessionButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            ThemeTestHost.Pump();
+            Assert.Equal(SessionRecoveryChoice.EndSession, endGate.Choice);
+            Assert.True(endPending.IsCompleted);
+            // "Yayını bitir" Exit değil → gate onaylı kapanıyor.
+            Assert.True(endPending.Result);
+            Assert.False(gates.IsOpen);
+
+            // "Çıkış" tek başına false döndüren yol; Choice ile bool'un
+            // ayrışmadığını gösteren ikinci ölçüm.
+            var exitPending = gates.ShowAsync(g => SessionRecoveryGate.Create(g, session: null));
+            ThemeTestHost.Pump();
+            var exitGate = Assert.IsType<SessionRecoveryGate>(root.GateContent.Content);
+            exitGate.Measure(new Size(1200, 900));
+            exitGate.Arrange(new Rect(0, 0, 1200, 900));
+            ThemeTestHost.Pump();
+
+            exitGate.ExitButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            ThemeTestHost.Pump();
+            Assert.Equal(SessionRecoveryChoice.Exit, exitGate.Choice);
+            Assert.True(exitPending.IsCompleted);
+            Assert.False(exitPending.Result);
 
             // Yığın boşaldı: katman tekrar kapalı.
             ThemeTestHost.Pump();

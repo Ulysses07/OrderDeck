@@ -1,7 +1,6 @@
-using System;
-using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
+using OrderDeck.App.Formatting;
 using OrderDeck.App.Services.Gates;
 using OrderDeck.App.Startup;
 using OrderDeck.Core.Sessions;
@@ -20,7 +19,11 @@ public partial class SessionRecoveryGate : UserControl
 
     /// <summary>Operatörün kararı. Seçim yapılmadan kapanırsa
     /// <see cref="SessionRecoveryChoice.Exit"/> kalır — yarım bir shell'e
-    /// düşmektense açılmamak daha güvenli.</summary>
+    /// düşmektense açılmamak daha güvenli.
+    ///
+    /// <see cref="AppGate.Close(bool)"/>'a verilen bool yalnız "Exit mi
+    /// değil mi" ayrımını taşır; kararın TEK KAYNAĞI bu özelliktir — çağıran
+    /// taraf bool'a değil <see cref="Choice"/>'a bakmalı.</summary>
     public SessionRecoveryChoice Choice { get; private set; } = SessionRecoveryChoice.Exit;
 
     private SessionRecoveryGate(AppGate gate, StreamSession? session)
@@ -33,14 +36,12 @@ public partial class SessionRecoveryGate : UserControl
             : session!.Title;
 
         // BİLİNÇLİ DEĞİŞİKLİK: App.xaml.cs'teki MessageBox "dd MMM HH:mm"
-        // (kısaltılmış ay) kullanıyordu, çünkü metin başlık satırına
-        // sıkışıyordu. Gate'te sütun genişliği var, tam ay adı okunuyor.
+        // yazıyordu — yılsız. Aylar önce çökmüş bir oturumda "10 Ağustos
+        // 23:00" belirsiz; TrFormats.DateTimeLong ("d MMMM yyyy HH:mm") yılı
+        // da veriyor ve paylaşılan tr-TR kültürünü kullanıyor.
         SessionStarted.Text = session is null
             ? "—"
-            : "Başlangıç: " + DateTimeOffset
-                .FromUnixTimeSeconds(session.StartedAt)
-                .LocalDateTime
-                .ToString("dd MMMM HH:mm", new CultureInfo("tr-TR"));
+            : "Başlangıç: " + TrFormats.DateTimeLong(session.StartedAt);
     }
 
     /// <summary>session null geçilebiliyor: GateCompositionTests ekranı
@@ -56,6 +57,11 @@ public partial class SessionRecoveryGate : UserControl
 
     private void Decide(SessionRecoveryChoice choice)
     {
+        // AppGate.Close idempotent ama Choice değil: kapandıktan sonra gelen
+        // ikinci bir tıklama Choice'u değiştirir, gate'in sonucu ise ilk
+        // kararda donmuş olur — ikisi ayrışırdı. Kapıyı burada da kapatıyoruz.
+        if (_gate.Completion.IsCompleted) return;
+
         Choice = choice;
         _gate.Close(choice != SessionRecoveryChoice.Exit);
     }

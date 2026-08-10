@@ -12,10 +12,14 @@
          Metinler kod-arkasında dolduruluyor (tarih biçimi + opsiyonel
          başlık), bu yüzden bağlama yok.
 
-         Kart kabuğu YOK (diğer gate'lerdeki OD.Card sarmalayıcısının aksine):
+         Kart kabuğu YOK (sihirbazın OD.Card sarmalayıcısının aksine):
          içerik zaten kısa, tek OD.Panel kutusu gate zemininden ayrışıyor —
          OD.Panel = OD.Brush.Surface (#0F111A), GateHost = OD.Brush.Bg
-         (#090A0E). -->
+         (#090A0E).
+
+         ESC BİLİNÇLİ OLARAK BAĞLANMADI: hiçbir düğmede IsCancel yok. Esc'in
+         sessizce Exit'e düşmesi uygulamayı kapatırdı; çıkış açık bir tıklama
+         olsun. Kardeş gate'ler de Esc yakalamıyor. -->
     <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"
                 Width="{StaticResource OD.Layout.GateColumn}">
         <gates:GateBrand/>
@@ -28,8 +32,12 @@
                 Padding="{StaticResource OD.Pad.5}"
                 Margin="{StaticResource OD.Pad.Top5}">
             <StackPanel>
+                <!-- Başlık operatör girdisi, uzunluğu serbest; OD.Text.Section
+                     ne sarma ne kırpma taşıyor. Kırpma seçildi (sarma değil):
+                     kutunun yüksekliği başlığın uzunluğuyla oynamasın. -->
                 <TextBlock x:Name="SessionTitle"
-                           Style="{StaticResource OD.Text.Section}"/>
+                           Style="{StaticResource OD.Text.Section}"
+                           TextTrimming="CharacterEllipsis"/>
                 <TextBlock x:Name="SessionStarted"
                            Style="{StaticResource OD.Text.Hint}"
                            Margin="0"/>
@@ -40,16 +48,19 @@
                    Margin="{StaticResource OD.Pad.Top5}"
                    Text="Uygulama önceki açılışta kapanmadan sonlandı. Bu oturuma devam edebilir ya da kapatıp temiz başlayabilirsin."/>
 
-        <Button Content="Devam et"
+        <Button x:Name="ContinueButton"
+                Content="Devam et"
                 Style="{StaticResource OD.Button.Primary}"
                 Margin="{StaticResource OD.Pad.Top5}"
                 IsDefault="True"
                 Click="OnContinue"/>
-        <Button Content="Yayını bitir"
+        <Button x:Name="EndSessionButton"
+                Content="Yayını bitir"
                 Style="{StaticResource OD.Button.Secondary}"
                 Margin="{StaticResource OD.Pad.Top3}"
                 Click="OnEndSession"/>
-        <Button Content="Çıkış"
+        <Button x:Name="ExitButton"
+                Content="Çıkış"
                 Style="{StaticResource OD.Button.Ghost}"
                 HorizontalAlignment="Center"
                 Margin="{StaticResource OD.Pad.Top4}"
