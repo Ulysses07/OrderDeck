@@ -9,9 +9,12 @@ namespace OrderDeck.App.Views.Gates;
 /// İlk açılış sihirbazı — tam ekran gate.
 ///
 /// Gate <c>true</c> ile kapanırsa sihirbaz BİTİRİLDİ, <c>false</c> ile
-/// kapanırsa atlandı. Ayrımı VM'in <see cref="FirstRunWizardViewModel.IsStep6"/>
-/// bayrağından okuyoruz: hem "Bitir" hem "Daha sonra hallederim" aynı
-/// <c>RequestClose</c> olayını yükseltiyor, tek ayırt edici o.
+/// kapanırsa atlandı. Hem "Bitir" hem "Daha sonra hallederim" aynı
+/// <c>RequestClose</c> olayını yükselttiği için ayrımı VM'in
+/// <see cref="FirstRunWizardViewModel.IsStep6"/> bayrağından okuyoruz —
+/// "Bitir" yalnız son adımda görünür. (Kalıcı ayrım da var: "Bitir"
+/// <c>AppSettings.HasCompletedFirstRun</c>'ı true'ya çeviriyor. Onu okumak
+/// ayarları yeniden yüklemek demek olurdu, view'ın elindeki bayrak yeterli.)
 ///
 /// <paramref name="vm"/> null olabiliyor: kompozisyon testi bu view'ı
 /// servissiz çiziyor (ölçtüğü şey kaynak çözümlemesi).

@@ -159,8 +159,54 @@ public class GateCompositionTests
             // yüklenirken ayrıştırılıyor.)
             var wizardPending = gates.ShowAsync(g => FirstRunGate.Create(g, vm: null));
             ThemeTestHost.Pump();
-            Assert.IsType<FirstRunGate>(root.GateContent.Content);
+            var wizard = Assert.IsType<FirstRunGate>(root.GateContent.Content);
             Assert.Equal(Visibility.Visible, root.GateHost.Visibility);
+
+            // Adım görünürlüğü: altı panel aynı Grid hücresinde üst üste duruyor,
+            // yani "doğru adım açık" iddiasını ancak görünürlükler taşıyor.
+            // vm=null iken altısı da Collapsed kalır (binding boşa düşüyor),
+            // o yüzden RestoreGate'teki gibi küçük bir sahte DataContext.
+            var stepPanels = new Dictionary<int, UIElement>
+            {
+                [1] = wizard.Step1Panel,
+                [2] = wizard.Step2Panel,
+                [3] = wizard.Step3Panel,
+                [4] = wizard.Step4Panel,
+                [5] = wizard.Step5Panel,
+                [6] = wizard.Step6Panel
+            };
+
+            // İlk adım: "Geri" kapalı, "İleri" görünür, "Bitir" gizli.
+            wizard.DataContext = new FirstRunGateStub { IsStep1 = true, CanGoBack = false };
+            ThemeTestHost.Pump();
+            // Yerleşim elle tetikleniyor: gate hiçbir pencerede değil.
+            wizard.Measure(new Size(1200, 900));
+            wizard.Arrange(new Rect(0, 0, 1200, 900));
+            ThemeTestHost.Pump();
+
+            foreach (var (step, panel) in stepPanels)
+            {
+                Assert.Equal(step == 1 ? Visibility.Visible : Visibility.Collapsed, panel.Visibility);
+            }
+            Assert.False(wizard.BackButton.IsEnabled);
+            Assert.Equal(Visibility.Visible, wizard.NextButton.Visibility);
+            Assert.Equal(Visibility.Collapsed, wizard.FinishButton.Visibility);
+
+            // 5. adım (tek ScrollViewer'lı panel): "Geri" artık açık, gezinme
+            // düğmelerinin dalı hâlâ "İleri".
+            wizard.DataContext = new FirstRunGateStub { IsStep5 = true, CanGoBack = true };
+            ThemeTestHost.Pump();
+            wizard.Measure(new Size(1200, 900));
+            wizard.Arrange(new Rect(0, 0, 1200, 900));
+            ThemeTestHost.Pump();
+
+            foreach (var (step, panel) in stepPanels)
+            {
+                Assert.Equal(step == 5 ? Visibility.Visible : Visibility.Collapsed, panel.Visibility);
+            }
+            Assert.True(wizard.BackButton.IsEnabled);
+            Assert.Equal(Visibility.Visible, wizard.NextButton.Visibility);
+            Assert.Equal(Visibility.Collapsed, wizard.FinishButton.Visibility);
 
             // true = "Bitir" ile kapanış; gate'in dönüş değeri buradan geçiyor.
             gates.Top!.Close(true);
@@ -185,5 +231,23 @@ public class GateCompositionTests
         public bool RestoreCompleted { get; init; }
         public IReadOnlyList<BackupMetadata> AvailableBackups { get; init; } = [];
         public string? StatusMessage { get; init; }
+    }
+
+    /// <summary>
+    /// FirstRunGate'in adım görünürlüğü + gezinme düğmeleri için asgari
+    /// DataContext. Gerçek <c>FirstRunWizardViewModel</c> lisans servisi,
+    /// ayar deposu ve HttpClient istiyor; bu test yalnız hangi panelin açık
+    /// olduğunu ölçüyor. PropertyChanged yok: adım değiştirmek için taze bir
+    /// örnek atanıyor.
+    /// </summary>
+    private sealed class FirstRunGateStub
+    {
+        public bool IsStep1 { get; init; }
+        public bool IsStep2 { get; init; }
+        public bool IsStep3 { get; init; }
+        public bool IsStep4 { get; init; }
+        public bool IsStep5 { get; init; }
+        public bool IsStep6 { get; init; }
+        public bool CanGoBack { get; init; }
     }
 }

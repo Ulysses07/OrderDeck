@@ -16,7 +16,8 @@ namespace OrderDeck.App.ViewModels;
 /// <summary>
 /// Five-step setup wizard shown once on first launch after install:
 ///   1. Welcome
-///   2. License activation (skipped if license already Active)
+///   2. License activation (step is always shown; only the "activate"
+///      button hides when the license is already Active/Trial/OfflineGrace)
 ///   3. YouTube channel handle (optional)
 ///   4. Printer settings (optional, link to Settings dialog)
 ///   5. Chrome extension install (sideload guide + verify button)
