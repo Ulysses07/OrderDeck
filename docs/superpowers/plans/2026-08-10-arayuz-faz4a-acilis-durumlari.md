@@ -3161,7 +3161,32 @@ değiştir:
     }
 ```
 
-- [ ] **Step 7: Eski pencereleri sil**
+- [ ] **Step 7: Shell'in Window kısayollarını gate açıkken sustur**
+
+Task 3'ün gözden geçirmesinde çıktı: `AppRootView` gate açıkken
+`ShellHost.IsEnabled`'ı `false` yapıyor, ama
+[MainShellView.xaml.cs:26-35](OrderDeck.App/Views/MainShellView.xaml.cs#L26)
+`PreviewKeyDown`'ı **Window'a** bağlıyor. Window devre dışı olmadığı için
+handler gate açıkken de ateşliyor: ESC arkadaki çekmeceyi kapatır, Ctrl+K
+görünmeyen ürün kodu kutusuna odaklanmaya çalışır. Bu yalnız çalışırken
+(hesap değiştirme) mümkün — açılışta shell zaten kurulu değil.
+
+`OnWindowPreviewKeyDown`'ın en başına, mevcut `App.Host` servis-bulucu
+kalıbıyla aynı hizada bir erken dönüş ekle:
+
+```csharp
+    private void OnWindowPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        // Gate açıkken shell'in kısayolları susar. ShellHost.IsEnabled=false
+        // yalnız odak/tıklamayı keser; bu handler Window'a bağlı olduğu için
+        // ondan etkilenmiyor — ESC arkadaki çekmeceyi kapatırdı.
+        if (App.Host?.Services.GetRequiredService<Services.Gates.AppGateStack>().IsOpen == true)
+            return;
+
+        // Ctrl+K → ürün kodu kutusuna odaklan. ESC kontrolünden ÖNCE olmalı:
+```
+
+- [ ] **Step 8: Eski pencereleri sil**
 
 ```bash
 git rm OrderDeck.App/Views/LoginDialog.xaml OrderDeck.App/Views/LoginDialog.xaml.cs \
@@ -3169,7 +3194,7 @@ git rm OrderDeck.App/Views/LoginDialog.xaml OrderDeck.App/Views/LoginDialog.xaml
        OrderDeck.App/Views/FirstRunWizard.xaml OrderDeck.App/Views/FirstRunWizard.xaml.cs
 ```
 
-- [ ] **Step 8: Kalan atıf var mı, doğrula**
+- [ ] **Step 9: Kalan atıf var mı, doğrula**
 
 ```bash
 grep -rn "LoginDialog\b\|RestoreDialog\b\|FirstRunWizard\b" --include=*.cs --include=*.xaml OrderDeck.App OrderDeck.Tests
@@ -3179,12 +3204,12 @@ Beklenen: yalnızca `LoginDialogViewModel`, `RestoreDialogViewModel`,
 `FirstRunWizardViewModel` eşleşmeleri. (ViewModel adlarındaki "Dialog"
 tarihsel; yeniden adlandırma bu fazın işi değil.)
 
-- [ ] **Step 9: Derle**
+- [ ] **Step 10: Derle**
 
 Çalıştır: `dotnet build OrderDeck.App/OrderDeck.App.csproj`
 Beklenen: 0 hata.
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
 git add OrderDeck.App/Startup OrderDeck.App/MainWindow.xaml OrderDeck.App/MainWindow.xaml.cs OrderDeck.App/AppHost.cs OrderDeck.App/App.xaml.cs OrderDeck.App/ViewModels/AccountDialogViewModel.cs
