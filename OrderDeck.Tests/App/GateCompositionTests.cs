@@ -56,12 +56,18 @@ public class GateCompositionTests
             Assert.Equal(Visibility.Collapsed, root.GateHost.Visibility);
             Assert.True(root.ShellHost.IsEnabled);
 
-            // BootGate gate katmanına gerçekten oturuyor mu?
+            // BootGate'i örneklemek ThemeTestHost altında tüm StaticResource
+            // anahtarlarını çözüyor; hangi anahtar eksikse burada XamlParseException
+            // atar — kaynak doğrulamasının asıl değeri bu.
+            // Pump() ile binding kuyruğu boşaltıp katmanın görünürlüğünü ve
+            // içeriğini GateHost/GateContent üzerinden doğruluyoruz.
             var pending = gates.ShowAsync(_ => new BootGate());
-            Assert.IsType<BootGate>(gates.Top!.Content);
+            ThemeTestHost.Pump();
             Assert.True(gates.IsOpen);
+            Assert.IsType<BootGate>(root.GateContent.Content);
+            Assert.Equal(Visibility.Visible, root.GateHost.Visibility);
 
-            gates.Top.Close(false);
+            gates.Top!.Close(false);
             Assert.False(gates.IsOpen);
             Assert.True(pending.IsCompleted);
         });

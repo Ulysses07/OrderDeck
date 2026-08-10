@@ -58,8 +58,8 @@
   <Thickness x:Key="OD.Pad.Top6"    Left="0" Top="20" Right="0" Bottom="0"/>
   <Thickness x:Key="OD.Pad.Top7"    Left="0" Top="24" Right="0" Bottom="0"/>
   <Thickness x:Key="OD.Pad.Bottom2" Left="0" Top="0"  Right="0" Bottom="4"/>
-  <Thickness x:Key="OD.Pad.Bottom4" Left="0" Top="0"  Right="0" Bottom="12"/>
   <Thickness x:Key="OD.Pad.Bottom3" Left="0" Top="0"  Right="0" Bottom="8"/>
+  <Thickness x:Key="OD.Pad.Bottom4" Left="0" Top="0"  Right="0" Bottom="12"/>
   <Thickness x:Key="OD.Pad.Bottom5" Left="0" Top="0"  Right="0" Bottom="16"/>
   <Thickness x:Key="OD.Pad.Left4"   Left="12" Top="0" Right="0" Bottom="0"/>
 
@@ -70,7 +70,10 @@
   <Thickness x:Key="OD.Pad.X5" Left="16" Top="0" Right="16" Bottom="0"/>
 
   <!-- Sol kenarında ikon taşıyan input: sol dolgu ikona yer açıyor.
-       (Giriş ekranındaki e-posta ve şifre kutuları.) -->
+       (Giriş ekranındaki e-posta ve şifre kutuları.)
+       34 = LoginDialog'daki ikon solundan: Margin="10" + Viewbox 16px + 8px boşluk.
+       LoginGate ileride o 10px'i bir padding token'ına çekerse bu 34 yeniden
+       hesaplanmalı — token'ı doğrudan güncellemeden bırakma. -->
   <Thickness x:Key="OD.Pad.InputWithIcon" Left="34" Top="8" Right="12" Bottom="8"/>
 
   <!-- Köşe yarıçapı: 5 basamak -->

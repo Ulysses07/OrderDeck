@@ -1,7 +1,11 @@
 <UserControl x:Class="OrderDeck.App.Views.Gates.GateBrand"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-    <!-- Sol raydaki marka işaretinin büyütülmüş hâli (ShellSidebar.xaml).
+    <!-- Gate'lerin kendi marka işareti. Sol raydaki rozeti yankılıyor,
+         ama birebir ölçeklemiyor: rozet OD.Icon.Lg (20px) + OD.Radius.Md (8),
+         bu işaret 48px + OD.Radius.Lg (10). Rozet ~2.4x büyüyor, köşe yarıçapı
+         yalnız 1.25x — işaret orantısal olarak daha kare durur. Bu fark
+         kasıtlı; Faz 4a el açılışında gerçek ekranda değerlendirilecek.
          Beş gate de bunu kullanıyor; kopyalanmasın diye kendi UserControl'ü.
          Vektör logo varlığı YOK — Assets/Brand yalnız üçüncü taraf platform
          ikonlarını taşıyor, orderdeck.ico da pencere ikonu. -->
