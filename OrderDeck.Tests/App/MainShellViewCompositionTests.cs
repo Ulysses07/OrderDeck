@@ -118,10 +118,12 @@ public class MainShellViewCompositionTests
                         new ShortcutRegistry(new SettingsStore(TempSettingsPath()))));
             Assert.IsType<ShortcutHelpPage>(pages.Top!.Content);
 
-            // StreamReportPage ve AccountPage burada YOK. İlkinin fabrikası
-            // altı gerçek bağımlılık + bir rapor yüklemesi istiyor, ikincisi
-            // lisans/oturum servislerine (ağ + DPAPI) bağlı — ikisini de
-            // kurmak bu duman testini entegrasyon testine çevirirdi.
+            // StreamReportPage, AccountPage ve SettingsPage burada YOK.
+            // İlkinin fabrikası altı gerçek bağımlılık + bir rapor yüklemesi
+            // istiyor, ikincisi lisans/oturum servislerine (ağ + DPAPI) bağlı,
+            // üçüncüsünün ViewModel'i ctor'unda dört ağ çağrısı başlatıyor
+            // (intake form, shopper kodu, YouTube/Facebook bağlantı durumu) —
+            // üçünü de kurmak bu duman testini entegrasyon testine çevirirdi.
             // XAML'leri ayrı gözden geçirildi, davranışları kendi
             // ViewModel testlerinde.
 

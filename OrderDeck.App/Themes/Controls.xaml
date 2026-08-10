@@ -791,4 +791,385 @@
         <Setter Property="CellStyle"         Value="{StaticResource OD.DataGrid.Cell}"/>
         <Setter Property="RowStyle"          Value="{StaticResource OD.DataGrid.Row}"/>
     </Style>
+
+    <!-- ══ Form dili (Faz 3b) ═════════════════════════════════════════════
+         Ayarlar sayfası tek başına 60+ alan taşıyor; pencere sürümünde bu
+         dil SettingsTheme.xaml'de, YALNIZ o pencereye scope'lu olarak
+         duruyordu (434 satır, ayrı bir renk sözlüğüyle). Sayfaya inince
+         scope numarası gereksiz kaldı ve stiller buraya, tek palete
+         bağlanarak taşındı; SettingsTheme silindi.
+
+         Aşağıdaki beş metin stili spec §10'un "benzersiz FontSize ≤ 6"
+         kuralının pratikteki karşılığı: form metninin beş rolü var
+         (bölme başlığı, kart başlığı, alan etiketi, ipucu, birim eki) ve
+         her biri ölçekten bir basamak seçiyor, yeni basamak açmıyor. -->
+
+    <!-- Form kartı. OD.Panel yüzeyin kendisi (kenarlık + yuvarlatma);
+         kart ayrıca iç dolgu ve alt boşluk taşıyor. Ayrı stil, çünkü
+         panel yerleşim tarafından ölçülen bir yüzey (sohbet, kuyruk),
+         kart ise akış içinde alt alta dizilen bir blok. -->
+    <Style x:Key="OD.Card" TargetType="Border" BasedOn="{StaticResource OD.Panel}">
+        <Setter Property="Padding" Value="{StaticResource OD.Pad.6}"/>
+        <Setter Property="Margin"  Value="{StaticResource OD.Pad.Bottom5}"/>
+    </Style>
+
+    <!-- Bölme başlığı: "Yazıcı & Çıktı". Sayfa başlığı DEĞİL — onu
+         PageHost'un şeridi gösteriyor. -->
+    <Style x:Key="OD.Text.Title" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource OD.Font.Display}"/>
+        <Setter Property="FontSize"   Value="{StaticResource OD.Font.F3}"/>
+        <Setter Property="FontWeight" Value="Bold"/>
+        <Setter Property="Foreground" Value="{StaticResource OD.Brush.Text}"/>
+    </Style>
+
+    <!-- Kart başlığı: "Etiket Ölçüleri". -->
+    <Style x:Key="OD.Text.Section" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource OD.Font.Sans}"/>
+        <Setter Property="FontSize"   Value="{StaticResource OD.Font.F2}"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Foreground" Value="{StaticResource OD.Brush.Text}"/>
+        <Setter Property="Margin"     Value="{StaticResource OD.Pad.Bottom3}"/>
+    </Style>
+
+    <!-- Alan etiketi: girdi kutusunun üstündeki ad. -->
+    <Style x:Key="OD.Text.Label" TargetType="TextBlock">
+        <Setter Property="FontFamily"    Value="{StaticResource OD.Font.Sans}"/>
+        <Setter Property="FontSize"      Value="{StaticResource OD.Font.F1}"/>
+        <Setter Property="Foreground"    Value="{StaticResource OD.Brush.TextDim}"/>
+        <Setter Property="TextWrapping"  Value="Wrap"/>
+        <Setter Property="Margin"        Value="{StaticResource OD.Pad.Bottom3}"/>
+    </Style>
+
+    <!-- İpucu: alanın altındaki açıklama. TextMute, çünkü etiketten de
+         geride durmalı — okunması gereken sıra ad → değer → açıklama. -->
+    <Style x:Key="OD.Text.Hint" TargetType="TextBlock">
+        <Setter Property="FontFamily"   Value="{StaticResource OD.Font.Sans}"/>
+        <Setter Property="FontSize"     Value="{StaticResource OD.Font.F0}"/>
+        <Setter Property="Foreground"   Value="{StaticResource OD.Brush.TextMute}"/>
+        <Setter Property="TextWrapping" Value="Wrap"/>
+        <Setter Property="Margin"       Value="{StaticResource OD.Pad.Top3}"/>
+    </Style>
+
+    <!-- Birim eki: kutunun sağındaki mm / pt / ₺. Mono, çünkü yanındaki
+         sayıyla aynı satıra oturuyor ve orantılı yazıda hizası kayıyor. -->
+    <Style x:Key="OD.Text.Suffix" TargetType="TextBlock"
+           BasedOn="{StaticResource OD.Text.Mono}">
+        <Setter Property="FontSize"          Value="{StaticResource OD.Font.F1}"/>
+        <Setter Property="Foreground"        Value="{StaticResource OD.Brush.TextMute}"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
+        <Setter Property="Margin"            Value="{StaticResource OD.Pad.X2}"/>
+    </Style>
+
+    <!-- ══ Açılır liste ═══════════════════════════════════════════════════
+         Üç yerde: yazıcı seçimi, etiket yazı tipi, sohbet teması.
+         Şablon baştan yazılıyor çünkü WPF'in yerleşik ComboBox'ı açılır
+         listesini sistem renkleriyle çiziyor; koyu zeminde beyaz bir
+         panel açılıyordu. -->
+    <ControlTemplate x:Key="OD.ComboBox.Toggle" TargetType="ToggleButton">
+        <Border x:Name="Bd"
+                Background="{TemplateBinding Background}"
+                BorderBrush="{TemplateBinding BorderBrush}"
+                BorderThickness="{TemplateBinding BorderThickness}"
+                CornerRadius="{StaticResource OD.Radius.Sm}">
+            <Path Data="{StaticResource OD.Path.ChevronDown}"
+                  Width="{StaticResource OD.Icon.Sm}"
+                  Height="{StaticResource OD.Icon.Sm}"
+                  Stretch="Uniform"
+                  Fill="{StaticResource OD.Brush.TextMute}"
+                  HorizontalAlignment="Right"
+                  VerticalAlignment="Center"
+                  Margin="{StaticResource OD.Pad.4}"/>
+        </Border>
+        <ControlTemplate.Triggers>
+            <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="Bd" Property="BorderBrush"
+                        Value="{StaticResource OD.Brush.Accent}"/>
+            </Trigger>
+        </ControlTemplate.Triggers>
+    </ControlTemplate>
+
+    <Style x:Key="OD.ComboBoxItem" TargetType="ComboBoxItem">
+        <Setter Property="FontFamily" Value="{StaticResource OD.Font.Sans}"/>
+        <Setter Property="FontSize"   Value="{StaticResource OD.Font.F2}"/>
+        <Setter Property="Foreground" Value="{StaticResource OD.Brush.Text}"/>
+        <Setter Property="Padding"    Value="{StaticResource OD.Pad.3}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ComboBoxItem">
+                    <Border x:Name="Bd" Background="Transparent"
+                            Padding="{TemplateBinding Padding}"
+                            CornerRadius="{StaticResource OD.Radius.Xs}"
+                            Margin="{StaticResource OD.Pad.1}">
+                        <ContentPresenter
+                            TextElement.Foreground="{TemplateBinding Foreground}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <!-- Klavyeyle gezinme (IsHighlighted) ile seçili olan
+                             AYNI görünüyor: listede tek bir vurgu olsun,
+                             operatör hangisinin seçileceğini tek yerden görsün. -->
+                        <Trigger Property="IsHighlighted" Value="True">
+                            <Setter TargetName="Bd" Property="Background"
+                                    Value="{StaticResource OD.Brush.Surface2}"/>
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Bd" Property="Background"
+                                    Value="{StaticResource OD.Brush.Surface2}"/>
+                            <Setter Property="Foreground"
+                                    Value="{StaticResource OD.Brush.AccentHot}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="OD.ComboBox" TargetType="ComboBox">
+        <Setter Property="Background"      Value="{StaticResource OD.Brush.Surface2}"/>
+        <Setter Property="Foreground"      Value="{StaticResource OD.Brush.Text}"/>
+        <Setter Property="BorderBrush"     Value="{StaticResource OD.Brush.Border}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding"         Value="{StaticResource OD.Pad.4}"/>
+        <Setter Property="FontFamily"      Value="{StaticResource OD.Font.Sans}"/>
+        <Setter Property="FontSize"        Value="{StaticResource OD.Font.F2}"/>
+        <Setter Property="ItemContainerStyle" Value="{StaticResource OD.ComboBoxItem}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ComboBox">
+                    <Grid>
+                        <ToggleButton Background="{TemplateBinding Background}"
+                                      BorderBrush="{TemplateBinding BorderBrush}"
+                                      BorderThickness="{TemplateBinding BorderThickness}"
+                                      Template="{StaticResource OD.ComboBox.Toggle}"
+                                      Focusable="False" ClickMode="Press"
+                                      IsChecked="{Binding IsDropDownOpen, Mode=TwoWay,
+                                                  RelativeSource={RelativeSource TemplatedParent}}"/>
+                        <!-- Seçili öğe düğmenin ÜSTÜNE çiziliyor ve tıklamayı
+                             yutmuyor; tersi olsaydı metne tıklamak listeyi
+                             açmazdı. -->
+                        <ContentPresenter IsHitTestVisible="False"
+                                          Content="{TemplateBinding SelectionBoxItem}"
+                                          ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                          Margin="{TemplateBinding Padding}"
+                                          HorizontalAlignment="Left"
+                                          VerticalAlignment="Center"
+                                          TextElement.Foreground="{TemplateBinding Foreground}"/>
+                        <Popup Placement="Bottom" AllowsTransparency="True"
+                               Focusable="False" PopupAnimation="Slide"
+                               IsOpen="{TemplateBinding IsDropDownOpen}">
+                            <Border Background="{StaticResource OD.Brush.Surface2}"
+                                    BorderBrush="{StaticResource OD.Brush.BorderStrong}"
+                                    BorderThickness="1"
+                                    CornerRadius="{StaticResource OD.Radius.Sm}"
+                                    Margin="{StaticResource OD.Pad.Top3}"
+                                    MaxHeight="{TemplateBinding MaxDropDownHeight}"
+                                    MinWidth="{Binding ActualWidth,
+                                              RelativeSource={RelativeSource TemplatedParent}}">
+                                <ScrollViewer>
+                                    <StackPanel IsItemsHost="True"
+                                                KeyboardNavigation.DirectionalNavigation="Contained"/>
+                                </ScrollViewer>
+                            </Border>
+                        </Popup>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.45"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ══ Anahtar ════════════════════════════════════════════════════════
+         CheckBox ama kutucuk değil: ayarlarda 12 açık/kapalı alan var ve
+         hepsi "şu an açık mı?" sorusuna cevap veriyor. Anahtar bunu
+         uzaktan da okutuyor, kutucuk okutmuyor. -->
+    <Style x:Key="OD.Toggle" TargetType="CheckBox">
+        <Setter Property="FontFamily" Value="{StaticResource OD.Font.Sans}"/>
+        <Setter Property="FontSize"   Value="{StaticResource OD.Font.F2}"/>
+        <Setter Property="Foreground" Value="{StaticResource OD.Brush.Text}"/>
+        <Setter Property="Cursor"     Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="CheckBox">
+                    <!-- Zemin Transparent: şeffaf Grid tıklama almaz,
+                         yalnız ray ve yazı tıklanabilir olurdu. -->
+                    <Grid Background="Transparent">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Border x:Name="Track"
+                                Width="{StaticResource OD.Layout.ToggleWidth}"
+                                Height="{StaticResource OD.Layout.ToggleHeight}"
+                                CornerRadius="{StaticResource OD.Radius.Full}"
+                                Background="{StaticResource OD.Brush.Surface2}"
+                                BorderBrush="{StaticResource OD.Brush.BorderStrong}"
+                                BorderThickness="1"
+                                VerticalAlignment="Center">
+                            <Border x:Name="Thumb"
+                                    Width="{StaticResource OD.Layout.ToggleThumb}"
+                                    Height="{StaticResource OD.Layout.ToggleThumb}"
+                                    CornerRadius="{StaticResource OD.Radius.Full}"
+                                    Background="{StaticResource OD.Brush.TextMute}"
+                                    HorizontalAlignment="Left"
+                                    Margin="{StaticResource OD.Pad.1}"/>
+                        </Border>
+                        <ContentPresenter Grid.Column="1"
+                                          Margin="{StaticResource OD.Pad.Left4}"
+                                          VerticalAlignment="Center"
+                                          RecognizesAccessKey="True"
+                                          TextElement.Foreground="{TemplateBinding Foreground}"/>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Track" Property="Background"
+                                    Value="{StaticResource OD.Brush.Accent}"/>
+                            <Setter TargetName="Track" Property="BorderBrush"
+                                    Value="{StaticResource OD.Brush.Accent}"/>
+                            <Setter TargetName="Thumb" Property="Background"
+                                    Value="{StaticResource OD.Brush.OnAccent}"/>
+                            <Setter TargetName="Thumb" Property="HorizontalAlignment"
+                                    Value="Right"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.45"/>
+                            <Setter Property="Cursor"  Value="Arrow"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ══ Kaydırgaç ══════════════════════════════════════════════════════
+         Tek tüketici: çekiliş animasyonu ses seviyesi. DarkControls'te
+         Slider HİÇ yoktu — koyu sayfanın ortasında sistem temasının açık
+         gri rayı çıkıyordu. Pencere sürümünde de öyleydi (SettingsTheme
+         de yazmamış), yani dönüşümle görünür olan eski bir açık. -->
+    <Style x:Key="OD.Slider" TargetType="Slider">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Slider">
+                    <Grid VerticalAlignment="Center">
+                        <Border Height="{StaticResource OD.Layout.SliderTrack}"
+                                CornerRadius="{StaticResource OD.Radius.Full}"
+                                Background="{StaticResource OD.Brush.Surface2}"
+                                BorderBrush="{StaticResource OD.Brush.Border}"
+                                BorderThickness="1"/>
+                        <!-- Track adı zorunlu: Slider topuzun konumunu bu
+                             parçadan hesaplıyor, adı değişirse topuz sabit kalır. -->
+                        <Track x:Name="PART_Track">
+                            <Track.Thumb>
+                                <Thumb>
+                                    <Thumb.Template>
+                                        <ControlTemplate TargetType="Thumb">
+                                            <Ellipse Width="{StaticResource OD.Layout.SliderThumb}"
+                                                     Height="{StaticResource OD.Layout.SliderThumb}"
+                                                     Fill="{StaticResource OD.Brush.Accent}"/>
+                                        </ControlTemplate>
+                                    </Thumb.Template>
+                                </Thumb>
+                            </Track.Thumb>
+                            <!-- Yineleme düğmeleri şeffaf ama VAR: raya
+                                 tıklayınca değer o yöne adımlıyor. -->
+                            <Track.DecreaseRepeatButton>
+                                <RepeatButton Command="Slider.DecreaseLarge"
+                                              Background="Transparent"
+                                              BorderThickness="0" Focusable="False"/>
+                            </Track.DecreaseRepeatButton>
+                            <Track.IncreaseRepeatButton>
+                                <RepeatButton Command="Slider.IncreaseLarge"
+                                              Background="Transparent"
+                                              BorderThickness="0" Focusable="False"/>
+                            </Track.IncreaseRepeatButton>
+                        </Track>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ══ Bölme rayı ═════════════════════════════════════════════════════
+         Ayarların on sekmesi. TabControl kalıyor çünkü seçili bölmeyi
+         hangi ContentPresenter'ın göstereceğini WPF zaten çözüyor; şablon
+         yalnız yatay şerit yerine sol ray çiziyor.
+
+         Ray genişliği kabuğun kenar çubuğuyla AYNI token: sayfa kenar
+         çubuğunun üstünü örtüyor, iki ray farklı genişlikte olsaydı sayfa
+         açılırken sol kenar kayardı. -->
+    <Style x:Key="OD.Nav.Tabs" TargetType="TabControl">
+        <Setter Property="Background"      Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TabControl">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Grid.Column="0"
+                                Width="{StaticResource OD.Layout.SideWidth}"
+                                Background="{StaticResource OD.Brush.Surface}"
+                                BorderBrush="{StaticResource OD.Brush.Border}"
+                                BorderThickness="0,0,1,0">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                          Padding="{StaticResource OD.Pad.4}">
+                                <StackPanel IsItemsHost="True"/>
+                            </ScrollViewer>
+                        </Border>
+                        <ScrollViewer Grid.Column="1"
+                                      VerticalScrollBarVisibility="Auto"
+                                      Padding="{StaticResource OD.Pad.7}">
+                            <ContentPresenter ContentSource="SelectedContent"/>
+                        </ScrollViewer>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="OD.Nav.Tab" TargetType="TabItem">
+        <Setter Property="FontFamily" Value="{StaticResource OD.Font.Sans}"/>
+        <Setter Property="FontSize"   Value="{StaticResource OD.Font.F2}"/>
+        <Setter Property="Foreground" Value="{StaticResource OD.Brush.TextDim}"/>
+        <Setter Property="Cursor"     Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TabItem">
+                    <Border x:Name="Bd" Background="Transparent"
+                            CornerRadius="{StaticResource OD.Radius.Md}"
+                            Margin="{StaticResource OD.Pad.1}"
+                            Padding="{StaticResource OD.Pad.4}">
+                        <ContentPresenter ContentSource="Header"
+                                          VerticalAlignment="Center"
+                                          TextElement.Foreground="{TemplateBinding Foreground}"
+                                          TextElement.FontWeight="{TemplateBinding FontWeight}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background"
+                                    Value="{StaticResource OD.Brush.Surface2}"/>
+                            <Setter Property="Foreground"
+                                    Value="{StaticResource OD.Brush.Text}"/>
+                        </Trigger>
+                        <!-- Seçili öğe kenar çubuğunun nav satırıyla aynı
+                             dili konuşuyor: dolu aksan zemin + OnAccent yazı.
+                             Şerit + sönük zemin denemesi (pencere sürümü)
+                             dar rayda seçiliyi hover'dan ayırmıyordu. -->
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Bd" Property="Background"
+                                    Value="{StaticResource OD.Brush.Accent}"/>
+                            <Setter Property="Foreground"
+                                    Value="{StaticResource OD.Brush.OnAccent}"/>
+                            <Setter Property="FontWeight" Value="SemiBold"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
 </ResourceDictionary>

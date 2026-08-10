@@ -301,11 +301,9 @@ public sealed class AppHost : IDisposable
         services.AddTransient<ViewModels.StreamHistoryViewModel>();
         services.AddTransient<ViewModels.BlacklistViewModel>();
 
-        // Dialogs (transient — fresh instance per open).
-        // Rapor/geçmiş/kara liste pencereleri Faz 3'te sayfaya dönüştü;
-        // sayfalar DI'dan ÇÖZÜLMÜYOR (fabrika + yukarıdaki ViewModel kaydı
-        // yeterli), o yüzden buradan düştüler.
-        services.AddTransient<Views.SettingsDialog>();
+        // Rapor/geçmiş/kara liste/ayarlar pencereleri Faz 3'te sayfaya
+        // dönüştü; sayfalar DI'dan ÇÖZÜLMÜYOR (fabrika + yukarıdaki ViewModel
+        // kaydı yeterli), o yüzden buradan düştüler.
 
         // Customer center (Phase 3a)
         services.AddTransient<ViewModels.CustomerDetailViewModel>();

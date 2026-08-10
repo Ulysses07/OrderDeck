@@ -1036,11 +1036,12 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             .ToHashSet();
     }
 
-    [RelayCommand] private void OpenSettings()
+    [RelayCommand] private async Task OpenSettingsAsync()
     {
-        var dlg = App.Host.Services.GetRequiredService<SettingsDialog>();
-        dlg.Owner = Application.Current?.MainWindow;
-        dlg.ShowDialog();
+        if (_pages is null) return;   // yalnız testte
+        var vm = App.Host.Services.GetRequiredService<SettingsViewModel>();
+        await _pages.ShowAsync("settings", "Ayarlar",
+            p => Views.Pages.SettingsPage.Create(p, vm));
         RefreshHighlights();
     }
 

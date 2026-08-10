@@ -21,9 +21,11 @@ public class ThemeMergeTests
     // GiveawayTheme.xaml eskiden burada bir istisnaydı (kendi içinde
     // SettingsTheme'i "/" ile merge ettiği için test sürecinde tek başına
     // yüklenemiyordu). Faz 2b'de tek tüketicisi NewGiveawayDialog çekmeceye
-    // dönüşünce sözlük de silindi; istisna kalmadı.
+    // dönüşünce sözlük de silindi; istisna kalmadı. SettingsTheme.xaml de
+    // Faz 3b'de gitti: tek tüketicisi olan Ayarlar penceresi sayfaya inince
+    // "yalnız bu pencerede geçerli stil" numarasına gerek kalmadı.
     private static readonly string[] ExistingDictionaries =
-        ["DarkControls.xaml", "PlatformIcons.xaml", "SettingsTheme.xaml"];
+        ["DarkControls.xaml", "PlatformIcons.xaml"];
 
     [Fact]
     public void New_dictionaries_do_not_collide_with_existing_ones()
