@@ -1,0 +1,27 @@
+<UserControl x:Class="OrderDeck.App.Views.AppRootView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Uygulamanın kökü. İki katman, tek Grid hücresi.
+
+         NEDEN SHELL BAŞTAN KURULMUYOR: geri yükleme durumu VERİTABANI YOKKEN
+         koşuyor (App.xaml.cs'teki dbMissingOrTiny kontrolü). O anda
+         MainShellViewModel kurulamaz — Dapper sorguları boş dosyaya çarpar.
+         Bu yüzden gate'ler shell'in üstüne bindirilen bir katman DEĞİL;
+         ShellHost gate'ler geçilene kadar gerçekten BOŞ kalıyor.
+
+         Çalışırken (hesap değiştirme) ise tersi geçerli: shell zaten kurulu,
+         GateHost onun ÜSTÜNE doluyor. Shell unload olmadığı için yayın
+         sürerken sohbet paneli, sayaçlar ve çekmece yığını yerinde kalıyor. -->
+    <Grid>
+        <ContentControl x:Name="ShellHost"/>
+
+        <!-- Border, ContentControl DEĞİL: ContentControl'ün varsayılan şablonu
+             çıplak bir ContentPresenter, Background'u ÇİZMEZ. Opak zemin ve
+             tıklama engelleme (modallik) Border'dan geliyor. -->
+        <Border x:Name="GateHost"
+                Background="{StaticResource OD.Brush.Bg}"
+                Visibility="{Binding IsOpen, Converter={StaticResource BoolToVisibleConverter}}">
+            <ContentPresenter Content="{Binding Top.Content}"/>
+        </Border>
+    </Grid>
+</UserControl>
