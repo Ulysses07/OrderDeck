@@ -1,3 +1,4 @@
+using System.Windows;
 using System.Windows.Controls;
 using OrderDeck.App.Services.Gates;
 using OrderDeck.App.Views;
@@ -22,12 +23,29 @@ public class GateCompositionTests
             var gates = new AppGateStack();
             var root = new AppRootView(gates);
 
-            // Gate yokken katman kapalı, shell yuvası boş.
+            // Binding'ler DataBind önceliğinde dispatcher kuyruğuna giriyor;
+            // Pump() ile boşaltıyoruz ki ilk değerlendirme tamamlansın.
+            ThemeTestHost.Pump();
+
+            // Gate yokken katman Collapsed ve shell yuvası boş.
+            Assert.Equal(Visibility.Collapsed, root.GateHost.Visibility);
             Assert.False(root.IsShellMounted);
 
             // Shell yuvası doldurulabiliyor.
             root.MountShell(new Border());
             Assert.True(root.IsShellMounted);
+
+            // Gate açılınca: katman görünür, içerik doğru nesne,
+            // ShellHost Tab navigasyonuna kapalı.
+            var content = new Border();
+            _ = gates.ShowAsync(_ => content);
+
+            // ShowAsync → PropertyChanged → binding kuyruğa girdi; Pump() boşaltır.
+            ThemeTestHost.Pump();
+
+            Assert.Equal(Visibility.Visible, root.GateHost.Visibility);
+            Assert.Same(content, root.GateContent.Content);
+            Assert.False(root.ShellHost.IsEnabled);
         });
         Assert.Null(error);
     }

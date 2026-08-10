@@ -17,11 +17,13 @@
 
         <!-- Border, ContentControl DEĞİL: ContentControl'ün varsayılan şablonu
              çıplak bir ContentPresenter, Background'u ÇİZMEZ. Opak zemin ve
-             tıklama engelleme (modallik) Border'dan geliyor. -->
+             fare tıklama engeli Border'dan geliyor.
+             Klavye modalliği code-behind'dan: gate açıkken ShellHost.IsEnabled
+             false yapılıyor, devre dışı alt ağaç Tab navigasyonuna kapalı. -->
         <Border x:Name="GateHost"
                 Background="{StaticResource OD.Brush.Bg}"
                 Visibility="{Binding IsOpen, Converter={StaticResource BoolToVisibleConverter}}">
-            <ContentPresenter Content="{Binding Top.Content}"/>
+            <ContentControl x:Name="GateContent" Content="{Binding Top.Content}"/>
         </Border>
     </Grid>
 </UserControl>
