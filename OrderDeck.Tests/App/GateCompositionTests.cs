@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using OrderDeck.App.Services.Gates;
+using OrderDeck.App.Startup;
 using OrderDeck.App.Views;
 using OrderDeck.App.Views.Gates;
 using OrderDeck.Licensing.Backup;
@@ -218,7 +219,18 @@ public class GateCompositionTests
             ThemeTestHost.Pump();
             Assert.True(wizardPending.IsCompleted);
 
+            // SessionRecoveryGate: session=null ile de çizilebilmeli — metinleri
+            // kod-arkası dolduruyor, bağlama yok, yani ölçülen şey yine kaynak
+            // çözümlemesi. Ek olarak üç yollu sonucun varsayılanını doğruluyoruz:
+            // hiç düğmeye basılmadan kapanan gate Exit'te kalmalı.
+            var recoveryPending = gates.ShowAsync(g => SessionRecoveryGate.Create(g, session: null));
+            var recoveryGate = Assert.IsType<SessionRecoveryGate>(gates.Top!.Content);
+            Assert.Equal(SessionRecoveryChoice.Exit, recoveryGate.Choice);
+            gates.Top.Close(true);
+            Assert.True(recoveryPending.IsCompleted);
+
             // Yığın boşaldı: katman tekrar kapalı.
+            ThemeTestHost.Pump();
             Assert.False(gates.IsOpen);
             Assert.Equal(Visibility.Collapsed, root.GateHost.Visibility);
         });
