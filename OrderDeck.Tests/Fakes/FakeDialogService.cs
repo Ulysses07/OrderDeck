@@ -21,10 +21,10 @@ public sealed class FakeDialogService : IDialogService
     /// yıkıcı bir dala (yayını bitir, kuyruğu temizle, ban) girmesin.</summary>
     public Func<string, bool> ConfirmResult { get; set; } = _ => false;
 
-    public bool ShowPhoneEntryDialog(string customerId)
+    public Task<bool> ShowPhoneEntryAsync(string customerId)
     {
         PhoneEntryShownFor.Add(customerId);
-        return PhoneEntryResult(customerId);
+        return Task.FromResult(PhoneEntryResult(customerId));
     }
 
     public void ShowError(string message) => ErrorsShown.Add(message);

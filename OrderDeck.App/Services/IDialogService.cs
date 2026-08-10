@@ -10,7 +10,11 @@ public enum DialogSeverity
 
 public interface IDialogService
 {
-    bool ShowPhoneEntryDialog(string customerId);
+    /// <summary>Telefon giriş çekmecesini açar; kaydedildiyse true. Faz 3'te
+    /// modal pencereden çekmeceye geçti, bu yüzden async — iki çağrı yeri de
+    /// zaten async bir komutun içindeydi.</summary>
+    Task<bool> ShowPhoneEntryAsync(string customerId);
+
     void ShowError(string message);
 
     /// <summary>Hata OLMAYAN bilgilendirme. <see cref="ShowError"/> başlığı ve

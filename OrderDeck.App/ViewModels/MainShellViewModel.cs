@@ -1438,36 +1438,33 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     }
 
     [RelayCommand(CanExecute = nameof(CanWrite))]
-    private void AddChatSenderToBlacklist(ChatMessageViewModel? msg)
+    private async Task AddChatSenderToBlacklistAsync(ChatMessageViewModel? msg)
     {
         if (msg is null) return;
-        var dlg = new AddToBlacklistDialog
-        {
-            Mode = AddToBlacklistDialog.DialogMode.Prefilled,
-            UsernameText = msg.Username,
-            PlatformText = msg.Platform
-        };
-        dlg.Owner = Application.Current?.MainWindow;
-        if (dlg.ShowDialog() != true) return;
-
-        _customers.EnsureBlacklistedManual(msg.Platform, msg.Username, dlg.ReasonText);
-        RefreshHighlights();
+        await BlacklistPrefilledAsync(msg.Platform, msg.Username);
     }
 
     [RelayCommand(CanExecute = nameof(CanWrite))]
-    private void AddQueueRowToBlacklist(LabelViewModel? row)
+    private async Task AddQueueRowToBlacklistAsync(LabelViewModel? row)
     {
         if (row is null) return;
-        var dlg = new AddToBlacklistDialog
-        {
-            Mode = AddToBlacklistDialog.DialogMode.Prefilled,
-            UsernameText = row.Username,
-            PlatformText = row.Label.Platform
-        };
-        dlg.Owner = Application.Current?.MainWindow;
-        if (dlg.ShowDialog() != true) return;
+        await BlacklistPrefilledAsync(row.Label.Platform, row.Username);
+    }
 
-        _customers.EnsureBlacklistedManual(row.Label.Platform, row.Username, dlg.ReasonText);
+    /// <summary>Kimliği hazır gelen (sohbet/kuyruk satırı) kara liste akışı:
+    /// sebep çekmecede sorulur, onaylanırsa kayıt işaretlenir.</summary>
+    private async Task BlacklistPrefilledAsync(string platform, string username)
+    {
+        if (_drawers is null) return;   // yalnız testte; bkz. alanın notu
+
+        Views.Drawers.AddToBlacklistDrawer? view = null;
+        var ok = await _drawers.ShowAsync("Kara Listeye Al",
+            d => view = Views.Drawers.AddToBlacklistDrawer.Create(
+                d, Views.Drawers.AddToBlacklistDrawer.DrawerMode.Prefilled,
+                platform, username));
+        if (!ok) return;
+
+        _customers.EnsureBlacklistedManual(platform, username, view!.ReasonText);
         RefreshHighlights();
     }
 

@@ -124,6 +124,25 @@ public class MainShellViewCompositionTests
                 d => AddBalanceDrawer.Create(d, BuildLicenseApi(), Guid.NewGuid(), "Alice"));
             Assert.IsType<AddBalanceDrawer>(balance.Top!.Content);
 
+            // Faz 3d/3'ün üçlüsü. Birbirinin üstüne binmiyorlar, ayrı
+            // yığınlar: amaç sıralama değil, her XAML'in çözülebildiğini
+            // görmek.
+            var phone = new DrawerStack();
+            phone.ShowAsync("WhatsApp Numarası Gerekli",
+                d => PhoneEntryDrawer.Create(d, BuildCustomerRepository(), "c1"));
+            Assert.IsType<PhoneEntryDrawer>(phone.Top!.Content);
+
+            var blacklistDrawer = new DrawerStack();
+            blacklistDrawer.ShowAsync("Kara Listeye Al",
+                d => AddToBlacklistDrawer.Create(
+                    d, AddToBlacklistDrawer.DrawerMode.Prefilled, "instagram", "alice"));
+            Assert.IsType<AddToBlacklistDrawer>(blacklistDrawer.Top!.Content);
+
+            var pagePicker = new DrawerStack();
+            pagePicker.ShowAsync("Facebook Sayfası Seç",
+                d => FacebookPagePickerDrawer.Create(d, BuildPageCandidates()));
+            Assert.IsType<FacebookPagePickerDrawer>(pagePicker.Top!.Content);
+
             // Faz 3 sayfaları. Çekmecelerle aynı gerekçe: XAML hatası
             // derlemede değil açılışta patlar. Sayfa fabrikaları Page
             // istemediği için (AccountPage hariç) doğrudan çağrılıyorlar,
@@ -221,6 +240,22 @@ public class MainShellViewCompositionTests
             new StreamSessionService(sessions, clock),
             BuildLicenseApi());
     }
+
+    private static CustomerRepository BuildCustomerRepository()
+    {
+        var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        return new CustomerRepository(db);
+    }
+
+    /// <summary>Sayfa seçici yalnız BİRDEN FAZLA sayfa varken açılıyor; iki
+    /// aday veriyoruz ki liste şablonu gerçekten çizilsin.</summary>
+    private static IReadOnlyList<OrderDeck.Chat.Facebook.FacebookPageCandidate> BuildPageCandidates()
+        => new[]
+        {
+            new OrderDeck.Chat.Facebook.FacebookPageCandidate("p1", "Emar Mezat"),
+            new OrderDeck.Chat.Facebook.FacebookPageCandidate("p2", "Emar Outlet"),
+        };
 
     private static StreamHistoryViewModel BuildStreamHistoryViewModel()
     {

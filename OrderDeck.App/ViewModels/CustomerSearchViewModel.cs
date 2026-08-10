@@ -239,7 +239,7 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
 
         if (result == PaymentRequestResult.PhoneRequired)
         {
-            var saved = _dialogService.ShowPhoneEntryDialog(customer.Id);
+            var saved = await _dialogService.ShowPhoneEntryAsync(customer.Id);
             if (saved)
             {
                 var updated = _customers.GetById(customer.Id);

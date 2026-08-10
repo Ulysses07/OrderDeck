@@ -17,14 +17,9 @@ public sealed class WpfDialogService : IDialogService
         _drawers = drawers;
     }
 
-    public bool ShowPhoneEntryDialog(string customerId)
-    {
-        var dlg = new PhoneEntryDialog(_customers, customerId)
-        {
-            Owner = Application.Current.MainWindow
-        };
-        return dlg.ShowDialog() == true;
-    }
+    public Task<bool> ShowPhoneEntryAsync(string customerId)
+        => _drawers.ShowAsync("WhatsApp Numarası Gerekli",
+            d => PhoneEntryDrawer.Create(d, _customers, customerId));
 
     public void ShowError(string message)
         => MessageBox.Show(message, "Hata", MessageBoxButton.OK, MessageBoxImage.Error);
