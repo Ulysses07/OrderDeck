@@ -39,4 +39,15 @@ public sealed class FakeDialogService : IDialogService
         Confirmations.Add((title, message));
         return ConfirmResult(title);
     }
+
+    // Çekmece karşılıkları AYNI listelere yazar: bir çağrı yeri senkrondan
+    // async'e geçtiğinde testinin assert'ini değiştirmek gerekmesin.
+    public Task<bool> ConfirmAsync(string message, string title)
+        => Task.FromResult(Confirm(message, title));
+
+    public Task ShowAsync(string message, string title, DialogSeverity severity = DialogSeverity.Info)
+    {
+        Show(message, title, severity);
+        return Task.CompletedTask;
+    }
 }

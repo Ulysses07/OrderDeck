@@ -1,5 +1,7 @@
 using System.Windows;
+using OrderDeck.App.Services.Drawers;
 using OrderDeck.App.Views;
+using OrderDeck.App.Views.Drawers;
 using OrderDeck.Core.Storage.Repositories;
 
 namespace OrderDeck.App.Services;
@@ -7,8 +9,13 @@ namespace OrderDeck.App.Services;
 public sealed class WpfDialogService : IDialogService
 {
     private readonly CustomerRepository _customers;
+    private readonly IDrawerService _drawers;
 
-    public WpfDialogService(CustomerRepository customers) => _customers = customers;
+    public WpfDialogService(CustomerRepository customers, IDrawerService drawers)
+    {
+        _customers = customers;
+        _drawers = drawers;
+    }
 
     public bool ShowPhoneEntryDialog(string customerId)
     {
@@ -33,6 +40,12 @@ public sealed class WpfDialogService : IDialogService
     public bool Confirm(string message, string title)
         => MessageBox.Show(message, title, MessageBoxButton.YesNo, MessageBoxImage.Question)
            == MessageBoxResult.Yes;
+
+    public Task<bool> ConfirmAsync(string message, string title)
+        => _drawers.ShowAsync(title, d => MessageDrawer.ForConfirm(d, message));
+
+    public Task ShowAsync(string message, string title, DialogSeverity severity = DialogSeverity.Info)
+        => _drawers.ShowAsync(title, d => MessageDrawer.ForNotice(d, message, severity));
 
     private static MessageBoxImage Icon(DialogSeverity severity) => severity switch
     {

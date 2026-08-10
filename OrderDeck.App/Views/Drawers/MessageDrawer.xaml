@@ -1,0 +1,44 @@
+<UserControl x:Class="OrderDeck.App.Views.Drawers.MessageDrawer"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- MessageBox'ın çekmece karşılığı: bildirim ve onay. Kabuktaki sekiz
+         onay ile onlarca bildirim bunu kullanacak (Faz 2b), o yüzden tek
+         gövde. -->
+    <!-- Üste yaslı: düğmeler mesajın hemen altında dursun. Çekmece tam boy
+         olduğu için satırlardan biri "*" yapılsaydı "Evet" ekranın en
+         dibinde, mesajdan 700px uzakta kalırdı (ölçüldü). -->
+    <Grid Margin="{StaticResource OD.Pad.5}" VerticalAlignment="Top">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Önem şeridi. MessageBoxImage'ın (Error/Warning/Info) yerini alır;
+             rengi kod tarafında paletten atanıyor. İkon yok: spec §10 ölçümü
+             "emoji ikon 0" ve üç durum için üç yeni geometri açmak, rengin
+             zaten söylediği şeyi tekrar etmek olurdu. -->
+        <Border x:Name="Stripe" Grid.Row="0" Height="3"
+                CornerRadius="{StaticResource OD.Radius.Full}"
+                Margin="{StaticResource OD.Pad.Bottom3}"/>
+
+        <TextBlock x:Name="MessageText" Grid.Row="1"
+                   TextWrapping="Wrap"
+                   FontFamily="{StaticResource OD.Font.Sans}"
+                   FontSize="{StaticResource OD.Font.F2}"
+                   Foreground="{StaticResource OD.Brush.Text}"/>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Margin="{StaticResource OD.Pad.Top5}">
+            <Button x:Name="CancelButton"
+                    Style="{StaticResource OD.Button.Ghost}"
+                    Margin="{StaticResource OD.Pad.X2}"
+                    Click="OnCancel"/>
+            <Button x:Name="ConfirmButton"
+                    Style="{StaticResource OD.Button.Primary}"
+                    Margin="{StaticResource OD.Pad.X2}"
+                    Click="OnConfirm"/>
+        </StackPanel>
+    </Grid>
+</UserControl>

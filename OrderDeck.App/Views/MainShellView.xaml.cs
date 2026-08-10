@@ -46,6 +46,17 @@ public partial class MainShellView : UserControl
         }
 
         if (e.Key != Key.Escape) return;
+
+        // ESC önce EN ÜSTTEKİ çekmeceyi kapatır. Yedek seçim modundan çıkış
+        // ancak çekmece yokken devreye girer: operatörün ESC'ye bastığında
+        // kastettiği şey her zaman ekranın en üstündeki katmandır.
+        if (App.Host is not null
+            && App.Host.Services.GetRequiredService<Services.Drawers.DrawerStack>().CloseTop())
+        {
+            e.Handled = true;
+            return;
+        }
+
         if (DataContext is not MainShellViewModel vm) return;
         if (!vm.IsInBackupSelectionMode) return;
 
