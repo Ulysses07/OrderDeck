@@ -4,8 +4,9 @@
     <!-- Gate'lerin kendi marka işareti. Sol raydaki rozeti yankılıyor,
          ama birebir ölçeklemiyor: rozet OD.Icon.Lg (20px) + OD.Radius.Md (8),
          bu işaret 48px + OD.Radius.Lg (10). Rozet ~2.4x büyüyor, köşe yarıçapı
-         yalnız 1.25x — işaret orantısal olarak daha kare durur. Bu fark
-         kasıtlı; Faz 4a el açılışında gerçek ekranda değerlendirilecek.
+         yalnız 1.25x — işaret orantısal olarak daha kare durur. Bu bir tasarım
+         tercihi DEĞİL, yarıçap ölçeğinin Lg'de bitmesinin sonucu; Faz 4a'nın
+         el ile açılış turunda gerçek ekranda karara bağlanacak.
          Beş gate de bunu kullanıyor; kopyalanmasın diye kendi UserControl'ü.
          Vektör logo varlığı YOK — Assets/Brand yalnız üçüncü taraf platform
          ikonlarını taşıyor, orderdeck.ico da pencere ikonu. -->

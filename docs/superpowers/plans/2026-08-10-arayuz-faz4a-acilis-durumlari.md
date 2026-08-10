@@ -3292,6 +3292,17 @@ Dört senaryo, hepsi `dotnet run --project OrderDeck.App` ile:
    ve sayaçlar kaldığı yerde** — shell hiç sökülmedi. (Bu fazın asıl
    sınavı; sayfa/pencere yaklaşımı bunu veremiyordu.)
 
+Bu turda ayrıca **iki açık ölçü kararı** ekranda karara bağlanacak (Task 4
+gözden geçirmesinden kaldı, kod yorumlarında da yazıyor):
+
+- `GateBrand` rozeti 20→48px büyürken köşe yarıçapı `Md`→`Lg` (8→10)
+  kalıyor; ölçek `Lg`'de bittiği için işaret raydakinden orantısal olarak
+  daha kare duruyor. Tam ekranda rahatsız ediyorsa çözüm yeni bir
+  `OD.Radius.Xl` basamağı.
+- `BootGate`'in "Hazırlanıyor…" satırı `OD.Text.Hint` (F0 = 11px). Tam
+  ekranda 48px'lik markanın altında küçük kalıyorsa `OD.Text.Section`'a
+  çıkar — ama beş gate'in tamamında birlikte değiştir, tek ekranda değil.
+
 - [ ] **Step 6: Faz 4b'ye devir notu**
 
 `DarkControls.xaml` bu fazda YERİNDE KALIYOR: `PasswordBox`, `ListBox`,
