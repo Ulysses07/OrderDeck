@@ -3327,7 +3327,16 @@ yorumlarında da yazıyor):
   ekranda Tab'ın nereye düştüğüne bak, rahatsız ediciyse durum geçişinde
   odağı yeniden taşı.
 
-Bunların yanında **ekranda değil, kodu okuyarak** kapatılacak iki madde:
+Bunların yanında **ekranda değil, kodu okuyarak** kapatılacak maddeler:
+
+- Spec §4.5 yayın özetinde "başlangıç zamanı, **etiket sayısı**" istiyor;
+  `SessionRecoveryGate` yalnız başlangıç zamanı + başlık gösteriyor. Sebep
+  veri modeli: `StreamSession` (`OrderDeck.Core/Sessions/StreamSession.cs:5`)
+  etiket sayısı taşımıyor ve `StreamSessionService`'te sayacak bir uç yok
+  (`Start` / `End` / `GetActive` — hepsi bu). Eklemek açılış gate'ine yeni bir
+  DB sorgusu ve yeni bir servis bağımlılığı sokardı; Faz 4a'nın "akış birebir
+  aynı kalır" kuralına (spec §5) aykırı. Bilinçli düşürüldü — özetin yetip
+  yetmediği gerçek ekranda görülecek, gerekiyorsa ayrı bir iş olarak açılacak.
 
 - `LoginGate.xaml:15`, `LoginGate.xaml.cs` ve `RestoreGate.xaml.cs`'deki
   ileriye dönük yorumlar (`StartupFlow`, `IStartupEnvironment.RequestRestart`)
