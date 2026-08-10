@@ -5,8 +5,9 @@ using Microsoft.Extensions.Logging;
 namespace OrderDeck.App.Startup;
 
 /// <summary>
-/// Açılış sırası. Bugün <c>App.OnStartup</c> içinde düz akış hâlinde duran
-/// ve hiç test edilemeyen mantığın tamamı burada.
+/// Açılış sırası. Eskiden <c>App.OnStartup</c> içinde düz akış hâlinde duran
+/// ve hiç test edilemeyen mantığın tamamı burada; <c>App.OnStartup</c> artık
+/// yalnızca pencereyi açıp <see cref="RunAsync"/>'i tetikliyor.
 ///
 /// SIRA DEĞİŞMEDİ: lisans → giriş → geri yükleme → sihirbaz → oturum
 /// kurtarma → arka plan servisleri. Tek eklenen son adım
@@ -67,10 +68,11 @@ public sealed class StartupFlow
                     // Yazılan DB'nin süreç boyunca açık tutulan bağlantılarla
                     // tutarlı olmasının tek yolu yeniden başlamak.
                     //
-                    // BİLİNÇLİ DAVRANIŞ DEĞİŞİKLİĞİ (Faz 4a tasarımı §5): bugün
-                    // burada MessageBox + Shutdown() var, yani kullanıcı uygulamayı
+                    // BİLİNÇLİ DAVRANIŞ DEĞİŞİKLİĞİ (Faz 4a tasarımı §5): eskiden
+                    // burada MessageBox + Shutdown() vardı, yani kullanıcı uygulamayı
                     // elle açıyordu; MessageBox zaten kalkmak zorunda olduğu için
-                    // yerine otomatik yeniden başlatma kondu.
+                    // yerine otomatik yeniden başlatma kondu. Yeni süreç kalkmazsa
+                    // RequestRestart yine de açıklama gösteriyor.
                     _env.RequestRestart();
                     return;
                 }

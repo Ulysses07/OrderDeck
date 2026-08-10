@@ -94,8 +94,8 @@
                 </ListBox.ItemTemplate>
             </ListBox>
 
-            <!-- Mesaj yokken satır tamamen kalkıyor (RestoreDialog.xaml:36 ile
-                 aynı davranış): dış grid VerticalAlignment="Center" ve bütün
+            <!-- Mesaj yokken satır tamamen kalkıyor (silinen RestoreDialog'da
+                 da öyleydi): dış grid VerticalAlignment="Center" ve bütün
                  satırlar Auto olduğu için boş bir satır + Top4 margin formu
                  kalıcı olarak yukarı kaydırırdı. -->
             <TextBlock Grid.Row="2" Text="{Binding StatusMessage}"

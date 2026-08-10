@@ -25,8 +25,8 @@ public interface IStartupEnvironment
     /// <c>ExpiredOnline</c>, <c>TrialActive</c>… hepsi true döner; giriş gate'i
     /// yalnızca hiç lisans yokken açılmalı. <c>== Active</c> yazan bir
     /// gerçekleme, sunucuya ulaşamayan her operatörü açılışta giriş ekranına
-    /// hapseder. Bugünkü karşılığı <c>App.xaml.cs:126</c>'daki
-    /// <c>CurrentStatus == LicenseStatus.NoLicense</c> kontrolüdür.
+    /// hapseder. Tek gerçeklemesi <c>WpfStartupEnvironment.HasLicense</c>,
+    /// yani <c>CurrentStatus != LicenseStatus.NoLicense</c>.
     /// </summary>
     bool HasLicense { get; }
 

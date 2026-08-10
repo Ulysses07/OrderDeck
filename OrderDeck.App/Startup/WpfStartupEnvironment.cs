@@ -70,8 +70,7 @@ public sealed class WpfStartupEnvironment : IStartupEnvironment
         // arka plan servisleri kalkmadan ÖNCE çağırıyor ve
         // StreamSessionService.End() olayı senkron yükseltiyor
         // (OrderDeck.Core/Sessions/StreamSessionService.cs:34-39). Kablolama
-        // daha geç bir noktada olsaydı o yoldaki yedek sessizce düşerdi —
-        // bugün App.xaml.cs:188-191 de kurtarma bloğundan ÖNCE bağlıyor.
+        // daha geç bir noktada olsaydı o yoldaki yedek sessizce düşerdi.
         _sessions.SessionEnded += (_, _) => _backups.QueueBackup("stream-end");
     }
 
@@ -217,8 +216,45 @@ public sealed class WpfStartupEnvironment : IStartupEnvironment
         // Kısayollar eskiden MainWindow.Loaded'da bağlanıyordu; pencere artık
         // shell'den ÖNCE açıldığı için o an kısayolların hedefi yok.
         var window = Window.GetWindow(_root);
-        if (window is not null)
-            _services.GetRequiredService<ShortcutBinder>().Apply(window);
+        if (window is null)
+        {
+            _log.LogWarning(
+                "Shell mounted but AppRootView has no ancestor Window; shortcuts NOT bound");
+            return;
+        }
+
+        var binder = _services.GetRequiredService<ShortcutBinder>();
+        binder.Apply(window);
+        SilenceShortcutsWhileGateIsOpen(
+            window, _services.GetRequiredService<Services.Gates.AppGateStack>(), binder.Apply);
+    }
+
+    /// <summary>
+    /// Gate açıkken <see cref="Window.InputBindings"/> boşaltılır, kapanınca
+    /// <paramref name="apply"/> ile yeniden kurulur.
+    ///
+    /// NEDEN KOLEKSİYONU BOŞALTMAK: KeyBinding'ler Window'un üzerinde duruyor,
+    /// yani AppRootView'un <c>ShellHost.IsEnabled=false</c>'u onlara ulaşmıyor.
+    /// Çalışma anında hesap değiştirmek için açılan LoginGate'in üstünden
+    /// Ctrl+Shift+S/E yayın başlatıp bitirebilir, Ctrl+G çekiliş açabilir,
+    /// F2-F5 arkada sayfa yığabilirdi.
+    ///
+    /// <c>e.Handled=true</c> ile çözülemez: shell'in tuş dinleyicisi Window'a
+    /// PreviewKeyDown (tünelleme) ile bağlı, orada işaretlemek gate'in kendi
+    /// metin kutularına tuş gitmesini de keser.
+    ///
+    /// Yeniden kurmak güvenli: <see cref="ShortcutBinder"/> durumsuz, her
+    /// <c>Apply</c> koleksiyonu temizleyip registry'den yeniden inşa ediyor.
+    /// </summary>
+    internal static void SilenceShortcutsWhileGateIsOpen(
+        Window window, Services.Gates.AppGateStack gates, Action<Window> apply)
+    {
+        gates.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName is not nameof(Services.Gates.AppGateStack.IsOpen)) return;
+            if (gates.IsOpen) window.InputBindings.Clear();
+            else apply(window);
+        };
     }
 
     public void RequestShutdown() => Application.Current.Shutdown();
@@ -229,17 +265,34 @@ public sealed class WpfStartupEnvironment : IStartupEnvironment
         // tutulan SQLite bağlantılarıyla tutarlı olmasının tek yolu yeni
         // süreç. Eskiden operatör uygulamayı ELLE açmak zorundaydı.
         var exe = Environment.ProcessPath;
+        var relaunched = false;
         if (exe is not null)
         {
             try
             {
                 Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true });
+                relaunched = true;
             }
             catch (Exception ex)
             {
                 _log.LogWarning(ex, "Restart could not be launched; closing only");
             }
         }
+
+        // Yeni süreç kalkmadıysa SÖYLE: bu satıra gelen operatör "Yeniden
+        // Başlat"a basmış ve uygulamanın geri gelmesini bekliyor. Sessiz
+        // kapanış, geri yükleme başarısız olmuş gibi görünür.
+        if (!relaunched)
+        {
+            _log.LogWarning("Restart unavailable (ProcessPath={Exe}); manual relaunch needed", exe);
+            MessageBox.Show(
+                "Yedek geri yüklendi, ama OrderDeck kendini yeniden başlatamadı.\n\n" +
+                "Uygulama şimdi kapanıyor; geri yüklenen verilerle çalışmak için " +
+                "OrderDeck'i elle tekrar aç.",
+                "OrderDeck — Yeniden Başlatılamadı",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+
         Application.Current.Shutdown();
     }
 

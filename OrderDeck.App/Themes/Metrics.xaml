@@ -72,8 +72,8 @@
 
   <!-- Sol kenarında ikon taşıyan input: sol dolgu ikona yer açıyor.
        (Giriş ekranındaki e-posta ve şifre kutuları.)
-       34 = LoginDialog'daki ikon solundan: Margin="10" + Viewbox 16px + 8px boşluk.
-       LoginGate ileride o 10px'i bir padding token'ına çekerse bu 34 yeniden
+       34 = LoginGate'teki ikon yerleşiminden: OD.Pad.Left4 (12px) +
+       OD.Icon.Md (16px) + 6px boşluk. O iki token değişirse bu 34 yeniden
        hesaplanmalı — token'ı doğrudan güncellemeden bırakma. -->
   <Thickness x:Key="OD.Pad.InputWithIcon" Left="34" Top="8" Right="12" Bottom="8"/>
 

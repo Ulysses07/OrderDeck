@@ -244,9 +244,10 @@ public sealed partial class FirstRunWizardViewModel : ObservableObject
     private void SkipFirstRun()
     {
         // "Daha sonra" — operator skipped without completing. Do NOT set
-        // HasCompletedFirstRun so the wizard runs again next launch. They
-        // can still close the dialog (DialogResult will be false in the
-        // window code-behind, App.OnStartup checks for that and bails).
+        // HasCompletedFirstRun so the wizard runs again next launch.
+        // RequestClose kapatır; Faz 4a'dan beri karşılığı FirstRunGate'in
+        // gate.Close() çağrısı, sonucu okuyan kimse yok — StartupFlow
+        // ShowFirstRunAsync'in dönüşüne bakmadan sonraki adıma geçiyor.
         RequestClose?.Invoke(this, EventArgs.Empty);
     }
 }

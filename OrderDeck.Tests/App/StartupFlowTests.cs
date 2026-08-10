@@ -52,9 +52,10 @@ public class StartupFlowTests
         // Bu testin TEK işi sıra. Bayrak iddiaları blokların yerini
         // değiştirmeyi yakalamıyordu: sihirbaz bloğu geri yükleme bloğunun
         // önüne alındığında diğer testlerin hepsi yeşil kalıyor.
-        // Beklenen dizi App.xaml.cs'teki eski düz akıştan alındı:
-        // lisans (112-134) → geri yükleme (136-163) → sihirbaz (165-186) →
-        // oturum kurtarma (194-231) → arka plan servisleri → shell.
+        // Beklenen dizi App.xaml.cs'teki eski düz akıştan alındı (o kod
+        // a428bd2'de silindi; sıranın tek kaydı artık burası):
+        // lisans → geri yükleme → sihirbaz → oturum kurtarma →
+        // arka plan servisleri → shell.
         var gates = new FakeStartupGates
         {
             RestoreResult = RestoreOutcome.Skipped,

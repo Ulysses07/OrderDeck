@@ -43,8 +43,8 @@ public partial class AppRootView : UserControl
     }
 
     /// <summary>Shell kuruldu mu? MainWindow.OnClosing bunu soruyor: gate
-    /// aşamasındayken MainShellViewModel'i DI'dan çekmek onu KURAR ve
-    /// veritabanı henüz yokken patlar.</summary>
+    /// aşamasındayken MainShellViewModel'i DI'dan çekmek onu gereksiz yere
+    /// KURAR.</summary>
     public bool IsShellMounted => ShellHost.Content is not null;
 
     /// <summary>Gate'ler geçildikten sonra bir kez çağrılır.</summary>

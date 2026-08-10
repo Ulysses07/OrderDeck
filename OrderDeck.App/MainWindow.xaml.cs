@@ -40,8 +40,10 @@ public partial class MainWindow : Window
     protected override void OnClosing(CancelEventArgs e)
     {
         // Shell kurulmadan kapatılıyorsa (gate ekranındayız) MainShellViewModel'i
-        // ÇÖZME: geri yükleme durumunda veritabanı henüz yok, çözmek çökme
-        // demek. Pencere gate'lerden önce açıldığı için bu yol gerçek.
+        // ÇÖZME: singleton olduğu için GetService onu KURAR — repo/servis
+        // zinciri ayağa kalkar, üstelik sorulan şeyin (aktif çekiliş) cevabı
+        // shell yokken zaten hep false. Pencere gate'lerden önce açıldığı için
+        // bu yol gerçek: operatör giriş ekranında X'e basabiliyor.
         var root = RootHost.Content as Views.AppRootView;
         if (root is null || !root.IsShellMounted)
         {

@@ -3,9 +3,14 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <!-- Uygulamanın kökü. İki katman, tek Grid hücresi.
 
-         NEDEN SHELL BAŞTAN KURULMUYOR: geri yükleme durumu VERİTABANI YOKKEN
-         koşuyor (App.xaml.cs'teki dbMissingOrTiny kontrolü). O anda
-         MainShellViewModel kurulamaz — Dapper sorguları boş dosyaya çarpar.
+         NEDEN SHELL BAŞTAN KURULMUYOR: açılış gate'leri (lisans, geri yükleme,
+         sihirbaz, oturum kurtarma) shell'e hiç dokunmuyor, ikisi aynı anda da
+         ekranda olamaz. MainShellView'i baştan kurmak MainShellViewModel'i de
+         kurardı: 22 servis bağımlılığı ve ctor'da kurulan çekiliş / intake /
+         lisans olay abonelikleri, operatör daha giriş bile yapmamışken. Üstelik
+         geri yükleme dalı DB dosyasını değiştiriyor — shell'i ondan sonra
+         kurmak "açık Dapper bağlantısı eski dosyayı mı tutuyor" sorusunu
+         tümden ortadan kaldırıyor.
          Bu yüzden gate'ler shell'in üstüne bindirilen bir katman DEĞİL;
          ShellHost gate'ler geçilene kadar gerçekten BOŞ kalıyor.
 
