@@ -66,7 +66,7 @@ public class ShellPrintSlotLayoutTests
             // Çekmece gerçekten materyalize oldu mu? Pump olmadan ItemsSource
             // null kalıyor ve aşağıdaki ölçümler "kapalı çekmece" ölçerdi.
             var items = FindChild<ItemsControl>(host)!;
-            Assert.Equal(1, items.Items.Count);
+            Assert.Single(items.Items);
 
             var slot = FindChild<PrintSlot>(shell)!;
 
