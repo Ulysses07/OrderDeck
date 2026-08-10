@@ -107,11 +107,17 @@ public sealed partial class FirstRunWizardViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void ActivateLicense()
+    private async Task ActivateLicenseAsync()
     {
-        // Reuse the existing LoginDialog (already wired with all auth flows).
-        var loginDlg = _services.GetRequiredService<Views.LoginDialog>();
-        loginDlg.ShowDialog();
+        // Faz 4a: LoginDialog penceresi yok. Aynı LoginGate ekranı sihirbazın
+        // ÜSTÜNE yığılıyor; kapanınca yığın operatörü bıraktığı adıma geri
+        // bırakıyor (AppGateStack yığın olduğu için — spec §4.4).
+        //
+        // isStartupGate:false → çıkış düğmesi "Çıkış" değil "Vazgeç";
+        // vazgeçmek uygulamayı kapatmıyor, sihirbaza dönüyor.
+        var gates = _services.GetRequiredService<Services.Gates.IAppGateService>();
+        var loginVm = _services.GetRequiredService<LoginDialogViewModel>();
+        await gates.ShowAsync(g => Views.Gates.LoginGate.Create(g, loginVm, isStartupGate: false));
         UpdateLicenseStepStatus();
     }
 

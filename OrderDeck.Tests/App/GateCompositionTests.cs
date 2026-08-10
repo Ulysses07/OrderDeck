@@ -149,6 +149,25 @@ public class GateCompositionTests
             gates.Top!.Close(false);
             ThemeTestHost.Pump();
             Assert.True(restorePending.IsCompleted);
+
+            // FirstRunGate de servissiz çiziliyor. Bu view'da DataTemplate ya da
+            // ItemsControl YOK — altı adım panelinin tamamı doğrudan görsel
+            // ağaçta duruyor, hepsinin anahtarları InitializeComponent()
+            // sırasında çözülüyor. Yani yukarıdaki ertelenmiş-akış kör noktası
+            // burada oluşmuyor; sahte DataContext gerekmiyor. (5. adımdaki
+            // satır içi Style + DataTrigger de ertelenmiş değil, BAML
+            // yüklenirken ayrıştırılıyor.)
+            var wizardPending = gates.ShowAsync(g => FirstRunGate.Create(g, vm: null));
+            ThemeTestHost.Pump();
+            Assert.IsType<FirstRunGate>(root.GateContent.Content);
+            Assert.Equal(Visibility.Visible, root.GateHost.Visibility);
+
+            // true = "Bitir" ile kapanış; gate'in dönüş değeri buradan geçiyor.
+            gates.Top!.Close(true);
+            ThemeTestHost.Pump();
+            Assert.True(wizardPending.IsCompleted);
+
+            // Yığın boşaldı: katman tekrar kapalı.
             Assert.False(gates.IsOpen);
             Assert.Equal(Visibility.Collapsed, root.GateHost.Visibility);
         });

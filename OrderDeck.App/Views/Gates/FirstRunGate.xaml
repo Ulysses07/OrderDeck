@@ -1,0 +1,250 @@
+<UserControl x:Class="OrderDeck.App.Views.Gates.FirstRunGate"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:gates="clr-namespace:OrderDeck.App.Views.Gates">
+    <!-- FirstRunWizard.xaml'in (780x600, ResizeMode=NoResize Window) gate
+         karşılığı.
+
+         O pencerenin başındaki "Background/Foreground BURADA verilmek zorunda"
+         notu ARTIK GEÇERSİZ: örtük Window stilinin türetilmiş tipe
+         uygulanmaması sorunu pencere kalmayınca ortadan kalktı — zemini
+         GateHost Border'ı veriyor. Bu yüzden pencerenin Background ve
+         Foreground satırlarının karşılığı yok.
+
+         Altı adım ve VM bağlamaları aynen korundu. Düşenler: üç emoji
+         (başlıktaki hediye, 6. adımdaki kutlama, 4. adımdaki daire içi bilgi
+         işareti — spec §10 ikon kümesinin dışındalar) ve 39 sabit hex değeri
+         (7 ayrı renk: #FFE0E0E0, #FFFFD166, #FFAAAAAA, #FF1A1A1A, #FF4ADE80,
+         #FF22C55E, #FF222222).
+
+         Değişen metinler — hepsi pencereye özgü, artık yanlış olan yer
+         tarifleri: "Ayarlar menüsü/dialog'u" → "Ayarlar sayfası",
+         "üst menüden" → "üst şeritten" (ShellTopBar), "üst menüden Ayarlar'ı
+         aç" → "sol raydan Ayarlar'ı aç" (ShellSidebar). Başlıktaki
+         "OrderDeck'e Hoş Geldin" yerini GateBrand alıyor.
+
+         Genişlik 760 (GateColumnWide): 5. adımın kurulum rehberi 440'a
+         sığmıyor. -->
+    <Grid Width="{StaticResource OD.Layout.GateColumnWide}"
+          HorizontalAlignment="Center"
+          Margin="{StaticResource OD.Pad.7}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>   <!-- marka + adım etiketi -->
+            <RowDefinition Height="*"/>      <!-- adım içeriği -->
+            <RowDefinition Height="Auto"/>   <!-- gezinme -->
+        </Grid.RowDefinitions>
+
+        <DockPanel Grid.Row="0" Margin="{StaticResource OD.Pad.Bottom5}">
+            <TextBlock DockPanel.Dock="Right"
+                       Text="{Binding StepLabel}"
+                       Style="{StaticResource OD.Text.Hint}"
+                       VerticalAlignment="Bottom"/>
+            <gates:GateBrand/>
+        </DockPanel>
+
+        <Border Grid.Row="1" Style="{StaticResource OD.Card}">
+            <Grid>
+                <!-- Adım 1: Hoş geldin -->
+                <StackPanel Visibility="{Binding IsStep1, Converter={StaticResource BoolToVisibleConverter}}">
+                    <TextBlock Text="Kuruluma başlıyoruz" Style="{StaticResource OD.Text.Section}"/>
+                    <TextBlock Style="{StaticResource OD.Text.Label}"
+                               Text="Bu sihirbaz seni 5 adımda OrderDeck'i yayına hazır hale getirir:"/>
+                    <StackPanel Margin="{StaticResource OD.Pad.Top5}">
+                        <TextBlock Style="{StaticResource OD.Text.Label}" Text="• Lisans etkinleştirme"/>
+                        <TextBlock Style="{StaticResource OD.Text.Label}" Text="• YouTube kanal ayarı (opsiyonel)"/>
+                        <TextBlock Style="{StaticResource OD.Text.Label}" Text="• Yazıcı ayarları (opsiyonel)"/>
+                        <TextBlock Style="{StaticResource OD.Text.Label}" Text="• Chrome eklentisi kurulumu"/>
+                        <TextBlock Style="{StaticResource OD.Text.Label}" Text="• Tamam, hazırsın!"/>
+                    </StackPanel>
+                    <TextBlock Style="{StaticResource OD.Text.Hint}"
+                               Margin="{StaticResource OD.Pad.Top5}"
+                               Text="Tüm adımlar daha sonra Ayarlar sayfasından da değiştirilebilir. Atlamak istediğin adımları geçebilirsin."/>
+                </StackPanel>
+
+                <!-- Adım 2: Lisans -->
+                <StackPanel Visibility="{Binding IsStep2, Converter={StaticResource BoolToVisibleConverter}}">
+                    <TextBlock Text="Lisans" Style="{StaticResource OD.Text.Section}"/>
+                    <TextBlock Style="{StaticResource OD.Text.Label}"
+                               Text="OrderDeck'i kullanmak için lisansı etkinleştir veya 14 günlük denemeyi başlat."/>
+                    <Border Style="{StaticResource OD.Panel}"
+                            Padding="{StaticResource OD.Pad.5}"
+                            Margin="{StaticResource OD.Pad.Top5}">
+                        <DockPanel>
+                            <!-- Düğme ÖNCE: DockPanel'de son çocuk kalan alanı
+                                 doldurur, durum metni sağa taşmasın diye. -->
+                            <Button DockPanel.Dock="Right"
+                                    Content="Lisansı etkinleştir"
+                                    Command="{Binding ActivateLicenseCommand}"
+                                    Style="{StaticResource OD.Button.Primary}"
+                                    Visibility="{Binding IsLicenseActivated, Converter={StaticResource BoolToCollapsedConverter}}"/>
+                            <TextBlock Text="{Binding LicenseStatusText}"
+                                       Style="{StaticResource OD.Text.Section}"
+                                       Margin="0"
+                                       VerticalAlignment="Center"/>
+                        </DockPanel>
+                    </Border>
+                </StackPanel>
+
+                <!-- Adım 3: YouTube -->
+                <StackPanel Visibility="{Binding IsStep3, Converter={StaticResource BoolToVisibleConverter}}">
+                    <TextBlock Text="YouTube Kanal Bağlantısı" Style="{StaticResource OD.Text.Section}"/>
+                    <TextBlock Style="{StaticResource OD.Text.Label}"
+                               Text="YouTube canlı yayınlarındaki chat mesajlarını OrderDeck'e çekmek için kanal handle'ını gir. Boş bırakırsan sadece Instagram/TikTok için Chrome eklentisi ile çalışır."/>
+                    <TextBlock Text="Kanal handle'ı veya URL'si"
+                               Style="{StaticResource OD.Text.Label}"
+                               Margin="{StaticResource OD.Pad.Top5}"/>
+                    <TextBox Text="{Binding YouTubeHandle, UpdateSourceTrigger=PropertyChanged}"
+                             Style="{StaticResource OD.TextBox}"/>
+                    <TextBlock Style="{StaticResource OD.Text.Hint}"
+                               Text="Örnek: @orderdeck veya https://youtube.com/@orderdeck"/>
+                </StackPanel>
+
+                <!-- Adım 4: Yazıcı -->
+                <StackPanel Visibility="{Binding IsStep4, Converter={StaticResource BoolToVisibleConverter}}">
+                    <TextBlock Text="Yazıcı Ayarları" Style="{StaticResource OD.Text.Section}"/>
+                    <TextBlock Style="{StaticResource OD.Text.Label}"
+                               Text="Etiket yazdırma için kullanacağın yazıcının ayarları Ayarlar → Yazıcı sekmesinden yapılır. Şimdi atlayabilir, sonra ayarlayabilirsin — yayın sırasında ayar dışındaki tüm özellikler çalışır."/>
+                    <Border Style="{StaticResource OD.Panel}"
+                            Padding="{StaticResource OD.Pad.5}"
+                            Margin="{StaticResource OD.Pad.Top5}">
+                        <TextBlock Style="{StaticResource OD.Text.Hint}"
+                                   Margin="0"
+                                   Text="Yazıcı seçimi ve etiket boyutu Ayarlar sayfasında yapılır. Sihirbaz bittikten sonra sol raydan Ayarlar'ı aç."/>
+                    </Border>
+                </StackPanel>
+
+                <!-- Adım 5: Chrome eklentisi -->
+                <ScrollViewer Visibility="{Binding IsStep5, Converter={StaticResource BoolToVisibleConverter}}"
+                              VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <TextBlock Text="Chrome Eklentisi Kurulumu" Style="{StaticResource OD.Text.Section}"/>
+                        <TextBlock Style="{StaticResource OD.Text.Label}"
+                                   Text="Instagram / TikTok canlı yayın chat'i için Chrome eklentisini kurman gerekiyor. (YouTube ve Facebook eklenti olmadan, doğrudan OrderDeck'ten çalışır.) Aşağıdaki adımları sırasıyla uygula:"/>
+
+                        <Border Style="{StaticResource OD.Panel}"
+                                Padding="{StaticResource OD.Pad.5}"
+                                Margin="{StaticResource OD.Pad.Top5}">
+                            <StackPanel>
+                                <TextBlock Text="1. Eklenti klasörünü hazırla"
+                                           Style="{StaticResource OD.Text.Section}"/>
+                                <DockPanel>
+                                    <Button DockPanel.Dock="Right"
+                                            Content="Klasörü Aç"
+                                            Command="{Binding OpenExtensionFolderCommand}"
+                                            Style="{StaticResource OD.Button.Secondary}"/>
+                                    <TextBlock Text="{Binding ExtensionPath}"
+                                               Style="{StaticResource OD.Text.Mono}"
+                                               TextWrapping="Wrap"
+                                               VerticalAlignment="Center"/>
+                                </DockPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource OD.Panel}"
+                                Padding="{StaticResource OD.Pad.5}"
+                                Margin="{StaticResource OD.Pad.Top4}">
+                            <StackPanel>
+                                <TextBlock Text="2. Chrome'da chrome://extensions sayfasını aç"
+                                           Style="{StaticResource OD.Text.Section}"/>
+                                <Button Content="Chrome'da Eklentiler Sayfasını Aç"
+                                        Command="{Binding OpenChromeExtensionsPageCommand}"
+                                        Style="{StaticResource OD.Button.Secondary}"
+                                        HorizontalAlignment="Left"/>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource OD.Panel}"
+                                Padding="{StaticResource OD.Pad.5}"
+                                Margin="{StaticResource OD.Pad.Top4}">
+                            <StackPanel>
+                                <TextBlock Text="3. Sayfada şu adımları uygula"
+                                           Style="{StaticResource OD.Text.Section}"/>
+                                <TextBlock Style="{StaticResource OD.Text.Label}" Text="a) Sağ üstte Geliştirici modu'nu aç"/>
+                                <TextBlock Style="{StaticResource OD.Text.Label}" Text="b) Sol üstte Paketlenmemiş öğe yükle butonuna bas"/>
+                                <TextBlock Style="{StaticResource OD.Text.Label}" Text="c) Açılan klasör seçicide adım 1'deki Extension klasörünü seç"/>
+                                <TextBlock Style="{StaticResource OD.Text.Label}" Text="d) Eklenti listesinde OrderDeck Chat Bridge görünmeli"/>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource OD.Panel}"
+                                Padding="{StaticResource OD.Pad.5}"
+                                Margin="{StaticResource OD.Pad.Top4}">
+                            <StackPanel>
+                                <TextBlock Text="4. Bağlantıyı doğrula"
+                                           Style="{StaticResource OD.Text.Section}"/>
+                                <DockPanel>
+                                    <Button DockPanel.Dock="Right"
+                                            Content="Doğrula"
+                                            Command="{Binding VerifyExtensionAsyncCommand}"
+                                            Style="{StaticResource OD.Button.Secondary}"/>
+                                    <TextBlock Text="{Binding ExtensionVerifyResult}"
+                                               TextWrapping="Wrap"
+                                               VerticalAlignment="Center">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock" BasedOn="{StaticResource OD.Text.Hint}">
+                                                <Setter Property="Margin" Value="0"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsExtensionConnected}" Value="True">
+                                                        <Setter Property="Foreground" Value="{StaticResource OD.Brush.Success}"/>
+                                                        <Setter Property="FontWeight" Value="SemiBold"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </DockPanel>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <!-- Adım 6: Bitti -->
+                <StackPanel Visibility="{Binding IsStep6, Converter={StaticResource BoolToVisibleConverter}}">
+                    <TextBlock Text="Hazırsın"
+                               Style="{StaticResource OD.Text.Title}"
+                               Foreground="{StaticResource OD.Brush.Success}"
+                               Margin="{StaticResource OD.Pad.Bottom4}"/>
+                    <TextBlock Style="{StaticResource OD.Text.Label}"
+                               Text="OrderDeck kuruldu ve yayına hazır. Şimdi yapabileceklerin:"/>
+                    <StackPanel Margin="{StaticResource OD.Pad.Top5}">
+                        <TextBlock Style="{StaticResource OD.Text.Label}" Text="• Üst şeritten Yayın Başlat düğmesine bas"/>
+                        <TextBlock Style="{StaticResource OD.Text.Label}" Text="• OBS'de browser source URL'si:"/>
+                        <TextBlock Style="{StaticResource OD.Text.Mono}" Text="http://localhost:4747/overlay/chat"/>
+                        <TextBlock Style="{StaticResource OD.Text.Label}" Text="• Çekiliş animasyonu:"/>
+                        <TextBlock Style="{StaticResource OD.Text.Mono}" Text="http://localhost:4747/overlay/giveaway"/>
+                        <TextBlock Style="{StaticResource OD.Text.Label}" Text="• Sorun çıkarsa: Ayarlar → Logları Aç"/>
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <DockPanel Grid.Row="2" Margin="{StaticResource OD.Pad.Top5}">
+            <Button DockPanel.Dock="Left"
+                    Content="Daha sonra hallederim"
+                    Command="{Binding SkipFirstRunCommand}"
+                    Style="{StaticResource OD.Button.Ghost}"
+                    Visibility="{Binding IsStep6, Converter={StaticResource BoolToCollapsedConverter}}"/>
+
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <Button Content="Geri"
+                        Command="{Binding BackCommand}"
+                        Style="{StaticResource OD.Button.Secondary}"
+                        IsEnabled="{Binding CanGoBack}"/>
+                <Button Content="İleri"
+                        Command="{Binding NextCommand}"
+                        Style="{StaticResource OD.Button.Primary}"
+                        Margin="{StaticResource OD.Pad.Left4}"
+                        Visibility="{Binding IsStep6, Converter={StaticResource BoolToCollapsedConverter}}"
+                        IsDefault="True"/>
+                <Button Content="Bitir"
+                        Command="{Binding FinishCommand}"
+                        Style="{StaticResource OD.Button.Primary}"
+                        Margin="{StaticResource OD.Pad.Left4}"
+                        Visibility="{Binding IsStep6, Converter={StaticResource BoolToVisibleConverter}}"
+                        IsDefault="True"/>
+            </StackPanel>
+
+            <TextBlock/>
+        </DockPanel>
+    </Grid>
+</UserControl>
