@@ -1,8 +1,11 @@
+using System.Net.Http;
 using System.Windows.Controls;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.App.Services.Drawers;
 using OrderDeck.App.Services.Pages;
+using OrderDeck.App.Services.Sync;
 using OrderDeck.App.ViewModels;
+using OrderDeck.Licensing.Api;
 using OrderDeck.App.Views;
 using OrderDeck.App.Views.Drawers;
 using OrderDeck.App.Views.Pages;
@@ -118,6 +121,17 @@ public class MainShellViewCompositionTests
                         new ShortcutRegistry(new SettingsStore(TempSettingsPath()))));
             Assert.IsType<ShortcutHelpPage>(pages.Top!.Content);
 
+            // Faz 3c'nin iki sayfası. ViewModel'leri lisans sunucusu
+            // istemcisine bağlı ama ctor'ları SALT ATAMA — yükleme ayrı bir
+            // LoadAsync() ve onu burada çağırmıyoruz, yani ağa çıkılmıyor.
+            pages.ShowAsync("support-requests", "Destek Talepleri",
+                _ => SupportRequestsPage.Create(BuildSupportRequestsViewModel()));
+            Assert.IsType<SupportRequestsPage>(pages.Top!.Content);
+
+            pages.ShowAsync("bulk-sms", "Toplu SMS",
+                _ => BulkSmsPage.Create(BuildBulkSmsViewModel()));
+            Assert.IsType<BulkSmsPage>(pages.Top!.Content);
+
             // StreamReportPage, AccountPage ve SettingsPage burada YOK.
             // İlkinin fabrikası altı gerçek bağımlılık + bir rapor yüklemesi
             // istiyor, ikincisi lisans/oturum servislerine (ağ + DPAPI) bağlı,
@@ -160,6 +174,24 @@ public class MainShellViewCompositionTests
         var path = TempSettingsPath();
         return new PeriodReportViewModel(
             new LabelRepository(db), new AppSettings(), new SettingsStore(path));
+    }
+
+    private static SupportRequestsViewModel BuildSupportRequestsViewModel()
+        => new(BuildLicenseApi(), new WhatsAppMessageBuilder(), new ProcessUrlLauncher());
+
+    private static BulkSmsViewModel BuildBulkSmsViewModel()
+        => new(BuildLicenseApi(), new StubLicenseProvider());
+
+    /// <summary>Gerçek istemci ama HİÇ istek atılmıyor: iki sayfanın da
+    /// yükleme çağrısı ayrı bir <c>LoadAsync()</c> ve bu test onu çağırmıyor.
+    /// Yine de BaseAddress veriliyor — istemci onsuz kurulmuş sayılmaz.</summary>
+    private static LicenseApiClient BuildLicenseApi()
+        => new(new HttpClient { BaseAddress = new Uri("http://localhost/") },
+               new LicenseTokenStore());
+
+    private sealed class StubLicenseProvider : ICurrentLicenseProvider
+    {
+        public string? CurrentLicenseKey => null;
     }
 
     /// <summary>Ayar dosyası testte diske yazılmıyor, ama SettingsStore bir

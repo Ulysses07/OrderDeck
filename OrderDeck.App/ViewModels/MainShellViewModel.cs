@@ -1076,19 +1076,26 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         RefreshHighlights();
     }
 
-    [RelayCommand] private void OpenSupportRequests()
+    // Bu iki sayfada yükleme AÇMADAN ÖNCE başlıyor. Pencere sürümünde
+    // görünümün kendi Open() metodu yapıyordu ("yükle, sonra ShowDialog");
+    // sayfada o metot yok, çünkü açma sorumluluğu görünümde değil burada.
+    [RelayCommand] private async Task OpenSupportRequestsAsync()
     {
-        var dlg = App.Host.Services.GetRequiredService<Views.SupportRequestsDialog>();
-        dlg.Owner = Application.Current?.MainWindow;
-        dlg.Open();
+        if (_pages is null) return;   // yalnız testte
+        var vm = App.Host.Services.GetRequiredService<SupportRequestsViewModel>();
+        _ = vm.LoadAsync();
+        await _pages.ShowAsync("support-requests", "Destek Talepleri",
+            _ => Views.Pages.SupportRequestsPage.Create(vm));
     }
 
-    [RelayCommand] private void OpenBulkSms()
+    [RelayCommand] private async Task OpenBulkSmsAsync()
     {
         // İYS onayı tamamlandı (2026-06-16, test SMS code 00) → toplu SMS açık.
-        var dlg = App.Host.Services.GetRequiredService<Views.BulkSmsDialog>();
-        dlg.Owner = Application.Current?.MainWindow;
-        dlg.Open();
+        if (_pages is null) return;   // yalnız testte
+        var vm = App.Host.Services.GetRequiredService<BulkSmsViewModel>();
+        _ = vm.LoadAsync();
+        await _pages.ShowAsync("bulk-sms", "Toplu SMS",
+            _ => Views.Pages.BulkSmsPage.Create(vm));
     }
 
     // Faz 2b: modal pencere yerine çekmece (spec §6). Komut async oldu —
