@@ -80,7 +80,10 @@ public class GateShortcutSilencingTests
             Assert.True(outer.IsCompleted);
             Assert.True(inner.IsCompleted);
 
-            window.Close();
+            // window.Close() BİLEREK yok: varsayılan ShutdownMode
+            // OnLastWindowClose ve bu süreçteki tek pencere bu — kapatmak
+            // Application'ı kapanış yoluna sokar. Gösterilmemiş bir pencere
+            // zaten kaynak tutmuyor, süreç xUnit bitince ölüyor.
         });
         Assert.Null(error);
     }

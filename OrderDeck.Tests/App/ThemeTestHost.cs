@@ -51,6 +51,18 @@ internal static class ThemeTestHost
                 // onu başka bir thread'den yüklemeye kalkmak (her [Fact] kendi STA
                 // thread'ini açtığı için kaçınılmaz olurdu) InvalidOperationException
                 // riski taşır. Bir kere, doğru thread'de.
+                //
+                // Kilit gövdeyi de kapsıyor: Application.Current.Resources
+                // (App.xaml'in birleştirilmiş sözlükleri) SÜREÇ BAŞINA TEK ve
+                // paylaşılan, ResourceDictionary ise thread-safe DEĞİL. xUnit
+                // koleksiyonları paralel koşarken iki STA thread'i aynı anda
+                // XAML yüklediğinde arama sessizce boş dönüyor ve
+                // "'OD.Pad.5' adlı kaynak bulunamıyor" gibi XamlParseException
+                // atıyor. Ölçüldü: 10 koşuda 3 kırmızı, her seferinde BAŞKA
+                // test (MainShellViewComposition / GateComposition /
+                // DrawerHostLayout / ShellPrintSlotLayout) — bu yüzden uzun
+                // süre "flaky test" gibi göründü, oysa yarış hep aynı yerde.
+                // Serileştirme bedeli ölçüldü: 153 WPF testi ~1 sn.
                 lock (AppGate)
                 {
                     if (Application.Current is null)
@@ -58,9 +70,9 @@ internal static class ThemeTestHost
                         var app = new OrderDeck.App.App();
                         app.InitializeComponent();
                     }
-                }
 
-                body();
+                    body();
+                }
             }
             catch (Exception ex) { error = ex.ToString(); }
         });
