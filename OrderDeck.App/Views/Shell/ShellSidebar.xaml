@@ -170,7 +170,7 @@
                         <TextBlock Text="Yeni Dekont" Style="{StaticResource NavLabel}"/>
                     </StackPanel>
                 </Button>
-                <Button Style="{StaticResource NavButton}"
+                <Button Style="{StaticResource NavButton}" Tag="bulk-sms"
                         Command="{Binding OpenBulkSmsCommand}" ToolTip="Toplu SMS">
                     <StackPanel Style="{StaticResource NavRow}">
                         <Path Data="{StaticResource OD.Path.Message}" Style="{StaticResource OD.IconPath}"/>

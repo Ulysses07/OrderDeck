@@ -313,11 +313,9 @@ public sealed class AppHost : IDisposable
 
         // Shopper destek talepleri (forgot-password fallback)
         services.AddTransient<ViewModels.SupportRequestsViewModel>();
-        services.AddTransient<Views.SupportRequestsDialog>();
 
         // Toplu SMS (yayıncı kampanya gönderimi + geçmiş)
         services.AddTransient<ViewModels.BulkSmsViewModel>();
-        services.AddTransient<Views.BulkSmsDialog>();
 
         // Phase 4g — payment infrastructure
         services.AddSingleton<WhatsAppMessageBuilder>();

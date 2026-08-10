@@ -1,0 +1,133 @@
+<UserControl x:Class="OrderDeck.App.Views.Pages.SupportRequestsPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Destek talepleri (eski SupportRequestsDialog penceresi, 480x560).
+
+         Pencere sürümünden iki şey düştü, Faz 3'ün diğer sayfalarıyla aynı
+         gerekçeyle: kendi "Destek Talepleri" başlığı (PageHost'un şeridi
+         zaten yazıyor) ve "Kapat" düğmesi (geri oku ve ESC aynı işi
+         yapıyor).
+
+         Yerel Window.Resources sözlüğü de gitti: "MutedText" ile
+         "BoolToVis" uygulama genelinde zaten var (OD.Text.Hint ve
+         BoolToVisibleConverter), örtük TextBlock stili ise beyaz metni
+         elle boyamak içindi — palet bunu kendisi yapıyor. -->
+    <DockPanel Margin="{StaticResource OD.Pad.7}">
+
+        <!-- Araç şeridi. Başlık gittiği için sola anahtar, sağa Yenile. -->
+        <DockPanel DockPanel.Dock="Top">
+            <Button DockPanel.Dock="Right" Content="Yenile"
+                    Style="{StaticResource OD.Button.Secondary}"
+                    Command="{Binding RefreshCommand}"/>
+            <CheckBox x:Name="ChkResolved" Content="Geçmiş dahil"
+                      Style="{StaticResource OD.Toggle}"
+                      VerticalAlignment="Center"
+                      IsChecked="{Binding IncludeResolved, Mode=OneWay}"
+                      Checked="OnIncludeResolvedChanged"
+                      Unchecked="OnIncludeResolvedChanged"/>
+        </DockPanel>
+
+        <!-- Durum satırı -->
+        <StackPanel DockPanel.Dock="Top" Margin="{StaticResource OD.Pad.Top5}">
+            <TextBlock Text="Yükleniyor…"
+                       Style="{StaticResource OD.Text.Hint}"
+                       Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibleConverter}}"/>
+            <TextBlock Text="Bekleyen destek talebi yok."
+                       Style="{StaticResource OD.Text.Hint}"
+                       Visibility="{Binding IsEmpty, Converter={StaticResource BoolToVisibleConverter}}"/>
+            <TextBlock Text="{Binding ErrorMessage}"
+                       Style="{StaticResource OD.Text.Hint}"
+                       Foreground="{StaticResource OD.Brush.AccentHot}"
+                       Visibility="{Binding ErrorMessage, Converter={StaticResource NullToCollapsedConverter}}"/>
+        </StackPanel>
+
+        <ScrollViewer VerticalScrollBarVisibility="Auto"
+                      Margin="{StaticResource OD.Pad.Top5}">
+            <ItemsControl ItemsSource="{Binding Items}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border Style="{StaticResource OD.Card}">
+                            <StackPanel>
+                                <DockPanel>
+                                    <!-- Sağdaki iki öğe önce dock ediliyor:
+                                         DockPanel'de son çocuk kalan yeri
+                                         doldurur, ad/telefon bloğu o olmalı
+                                         ki uzun ad düğmeyi itmesin. -->
+                                    <Button DockPanel.Dock="Right"
+                                            Content="Geçici parola üret"
+                                            Style="{StaticResource OD.Button.Primary}"
+                                            VerticalAlignment="Top"
+                                            Visibility="{Binding CanIssue, Converter={StaticResource BoolToVisibleConverter}}"
+                                            Command="{Binding DataContext.IssueTempPasswordCommand,
+                                                      RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                            CommandParameter="{Binding}"/>
+
+                                    <TextBlock DockPanel.Dock="Right" Text="Tamamlandı"
+                                               Style="{StaticResource OD.Text.Hint}"
+                                               Foreground="{StaticResource OD.Brush.Success}"
+                                               VerticalAlignment="Top"
+                                               Visibility="{Binding ShowResolvedLabel, Converter={StaticResource BoolToVisibleConverter}}"/>
+
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding ShopperName}"
+                                                   Style="{StaticResource OD.Text.Section}"/>
+                                        <TextBlock Text="{Binding ShopperPhone}"
+                                                   Style="{StaticResource OD.Text.Hint}"/>
+                                        <TextBlock Style="{StaticResource OD.Text.Hint}">
+                                            <Run Text="{Binding CreatedAtLabel, Mode=OneWay}"/>
+                                            <Run Text=" · "/>
+                                            <Run Text="{Binding KindLabel, Mode=OneWay}"/>
+                                        </TextBlock>
+                                    </StackPanel>
+                                </DockPanel>
+
+                                <!-- Üretilen geçici parola paneli -->
+                                <Border Background="{StaticResource OD.Brush.Surface2}"
+                                        CornerRadius="{StaticResource OD.Radius.Md}"
+                                        Padding="{StaticResource OD.Pad.5}"
+                                        Margin="{StaticResource OD.Pad.Top5}"
+                                        Visibility="{Binding HasTempPassword, Converter={StaticResource BoolToVisibleConverter}}">
+                                    <StackPanel>
+                                        <TextBlock Text="Geçici parola"
+                                                   Style="{StaticResource OD.Text.Hint}"/>
+                                        <!-- Mono: operatör bu parolayı ekrandan
+                                             okuyup telefona yazıyor, 0/O ve 1/l
+                                             ayrışmalı. -->
+                                        <TextBlock Text="{Binding TempPassword}"
+                                                   Style="{StaticResource OD.Text.Mono}"
+                                                   FontSize="{StaticResource OD.Font.F3}"
+                                                   FontWeight="Bold"
+                                                   Margin="{StaticResource OD.Pad.Top3}"/>
+                                        <StackPanel Orientation="Horizontal"
+                                                    Margin="{StaticResource OD.Pad.Top5}">
+                                            <!-- Yeşil zemin: WhatsApp'a giden tek
+                                                 eylem, birincil mavi ile karışmasın.
+                                                 OD.Button.Primary şablonu zemini
+                                                 TemplateBinding'le alıyor, o yüzden
+                                                 stil değil YALNIZ renk değişiyor. -->
+                                            <Button Content="WhatsApp ile gönder"
+                                                    Style="{StaticResource OD.Button.Primary}"
+                                                    Background="{StaticResource OD.Brush.Success}"
+                                                    Command="{Binding DataContext.SendWhatsAppCommand,
+                                                              RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                    CommandParameter="{Binding}"/>
+                                            <Button Content="Kopyala"
+                                                    Style="{StaticResource OD.Button.Secondary}"
+                                                    Margin="{StaticResource OD.Pad.X2}"
+                                                    Click="OnCopyPassword"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+
+                                <TextBlock Text="{Binding RowError}"
+                                           Style="{StaticResource OD.Text.Hint}"
+                                           Foreground="{StaticResource OD.Brush.AccentHot}"
+                                           Visibility="{Binding RowError, Converter={StaticResource NullToCollapsedConverter}}"/>
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+    </DockPanel>
+</UserControl>

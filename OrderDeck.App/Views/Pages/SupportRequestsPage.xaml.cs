@@ -1,30 +1,31 @@
 using System.Windows;
+using System.Windows.Controls;
 using OrderDeck.App.ViewModels;
 
-namespace OrderDeck.App.Views;
+namespace OrderDeck.App.Views.Pages;
 
 /// <summary>
 /// Yayıncı paneli — shopper destek talepleri (forgot-password fallback).
 /// Mobil DestekTalepleriScreen'in WPF karşılığı. DataContext =
-/// SupportRequestsViewModel (DI). Açılışta listeyi yükler.
+/// SupportRequestsViewModel.
+///
+/// Pencere sürümündeki <c>Open()</c> metodu DÜŞTÜ: listeyi yükleyip
+/// <c>ShowDialog()</c> çağırıyordu, yani açma sorumluluğu görünümdeydi.
+/// Sayfayı açan artık <c>MainShellViewModel</c>; yükleme de orada, sayfa
+/// kurulmadan önce başlıyor.
 /// </summary>
-public partial class SupportRequestsDialog : Window
+public partial class SupportRequestsPage : UserControl
 {
     private readonly SupportRequestsViewModel _vm;
 
-    public SupportRequestsDialog(SupportRequestsViewModel vm)
+    private SupportRequestsPage(SupportRequestsViewModel vm)
     {
         InitializeComponent();
         _vm = vm;
         DataContext = vm;
     }
 
-    /// <summary>Listeyi yükler ve dialog'u modal açar.</summary>
-    public void Open()
-    {
-        _ = _vm.LoadAsync();
-        ShowDialog();
-    }
+    public static SupportRequestsPage Create(SupportRequestsViewModel vm) => new(vm);
 
     private async void OnIncludeResolvedChanged(object sender, RoutedEventArgs e)
     {
@@ -45,11 +46,5 @@ public partial class SupportRequestsDialog : Window
             try { Clipboard.SetText(row.TempPassword); }
             catch { /* clipboard erişilemezse kullanıcı elle kopyalar */ }
         }
-    }
-
-    private void OnClose(object sender, RoutedEventArgs e)
-    {
-        DialogResult = false;
-        Close();
     }
 }

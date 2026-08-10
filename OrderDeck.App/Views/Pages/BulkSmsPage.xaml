@@ -1,0 +1,121 @@
+<UserControl x:Class="OrderDeck.App.Views.Pages.BulkSmsPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Toplu SMS (eski BulkSmsDialog penceresi, 520x640).
+
+         Kardeşi SupportRequestsPage ile aynı üç düşüş: kendi başlığı,
+         yerel Window.Resources sözlüğü ve pencere ölçüleri. "Kapat"
+         düğmesi bu pencerede zaten yoktu (yalnız ESC'i vardı), geri oku
+         onun yerini alıyor.
+
+         DÜZELTME: durum mesajı satırı pencere sürümünde HİÇ görünmüyordu —
+         string olan StatusMessage bir BooleanToVisibilityConverter'a
+         bağlıydı, bool olmayan her değer Collapsed dönüyor. Doğru dönüştürücü
+         (NullToCollapsedConverter) bağlandı; "3 alıcıya gönderildi" gibi
+         mesajlar artık gerçekten çıkıyor. -->
+    <DockPanel Margin="{StaticResource OD.Pad.7}">
+
+        <!-- Kredi rozeti. Başlık gittiği için tek başına sağa yaslı. -->
+        <Border DockPanel.Dock="Top"
+                Background="{StaticResource OD.Brush.Surface2}"
+                CornerRadius="{StaticResource OD.Radius.Md}"
+                Padding="{StaticResource OD.Pad.3}"
+                HorizontalAlignment="Right">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Text="Kredi: " Style="{StaticResource OD.Text.Hint}"
+                           VerticalAlignment="Center"/>
+                <TextBlock Text="{Binding CreditsRemaining}"
+                           Style="{StaticResource OD.Text.Mono}"
+                           FontWeight="Bold" VerticalAlignment="Center"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Mesaj -->
+        <StackPanel DockPanel.Dock="Top" Margin="{StaticResource OD.Pad.Top5}">
+            <TextBlock Text="Mesaj" Style="{StaticResource OD.Text.Label}"/>
+            <TextBox Text="{Binding MessageBody, UpdateSourceTrigger=PropertyChanged}"
+                     Style="{StaticResource OD.TextBox}"
+                     MaxLength="2000" AcceptsReturn="True" TextWrapping="Wrap"
+                     MinHeight="90" MaxHeight="160"
+                     VerticalScrollBarVisibility="Auto"/>
+            <TextBlock Style="{StaticResource OD.Text.Hint}" HorizontalAlignment="Right">
+                <Run Text="{Binding CharCount, Mode=OneWay}"/><Run Text=" / 2000 karakter"/>
+            </TextBlock>
+        </StackPanel>
+
+        <!-- Aksiyonlar + önizleme özeti -->
+        <DockPanel DockPanel.Dock="Top" Margin="{StaticResource OD.Pad.Top4}">
+            <Button DockPanel.Dock="Right" Content="Gönder"
+                    Style="{StaticResource OD.Button.Primary}"
+                    Command="{Binding SendCommand}"/>
+            <Button DockPanel.Dock="Right" Content="Önizle"
+                    Style="{StaticResource OD.Button.Secondary}"
+                    Margin="{StaticResource OD.Pad.X2}"
+                    Command="{Binding PreviewCommand}"/>
+
+            <TextBlock VerticalAlignment="Center"
+                       Visibility="{Binding PreviewDone, Converter={StaticResource BoolToVisibleConverter}}">
+                <Run Text="{Binding RecipientCount, Mode=OneWay}"/><Run Text=" alıcı · "/>
+                <Run Text="{Binding Segments, Mode=OneWay}"/><Run Text=" segment · "/>
+                <Run Text="{Binding TotalCredits, Mode=OneWay}"/><Run Text=" kredi"/>
+            </TextBlock>
+        </DockPanel>
+
+        <!-- Durum / hata -->
+        <StackPanel DockPanel.Dock="Top" Margin="{StaticResource OD.Pad.Top4}">
+            <TextBlock Text="{Binding StatusMessage}"
+                       Style="{StaticResource OD.Text.Hint}"
+                       Visibility="{Binding StatusMessage, Converter={StaticResource NullToCollapsedConverter}}"/>
+            <TextBlock Text="{Binding ErrorMessage}"
+                       Style="{StaticResource OD.Text.Hint}"
+                       Foreground="{StaticResource OD.Brush.AccentHot}"
+                       Visibility="{Binding ErrorMessage, Converter={StaticResource NullToCollapsedConverter}}"/>
+        </StackPanel>
+
+        <!-- Geçmiş -->
+        <DockPanel Margin="{StaticResource OD.Pad.Top6}">
+            <DockPanel DockPanel.Dock="Top">
+                <Button DockPanel.Dock="Right" Content="Yenile"
+                        Style="{StaticResource OD.Button.Secondary}"
+                        Command="{Binding RefreshHistoryCommand}"/>
+                <TextBlock Text="Kampanya geçmişi"
+                           Style="{StaticResource OD.Text.Section}"
+                           VerticalAlignment="Center"/>
+            </DockPanel>
+
+            <TextBlock DockPanel.Dock="Top" Text="Henüz kampanya yok."
+                       Style="{StaticResource OD.Text.Hint}"
+                       Visibility="{Binding IsHistoryEmpty, Converter={StaticResource BoolToVisibleConverter}}"/>
+
+            <ScrollViewer VerticalScrollBarVisibility="Auto"
+                          Margin="{StaticResource OD.Pad.Top5}">
+                <ItemsControl ItemsSource="{Binding History}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border Style="{StaticResource OD.Card}">
+                                <StackPanel>
+                                    <DockPanel>
+                                        <TextBlock DockPanel.Dock="Right"
+                                                   Text="{Binding StatusText}"
+                                                   Style="{StaticResource OD.Text.Hint}"
+                                                   Margin="{StaticResource OD.Pad.Left4}"/>
+                                        <!-- Son çocuk kalan yeri doldurur:
+                                             uzun önizleme metni durum etiketini
+                                             itmesin diye "…" ile kırpılıyor. -->
+                                        <TextBlock Text="{Binding MessagePreview}"
+                                                   Style="{StaticResource OD.Text.Section}"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                    </DockPanel>
+                                    <TextBlock Text="{Binding CountsLabel}"
+                                               Style="{StaticResource OD.Text.Hint}"/>
+                                    <TextBlock Text="{Binding CreatedAtLabel}"
+                                               Style="{StaticResource OD.Text.Hint}"/>
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+        </DockPanel>
+    </DockPanel>
+</UserControl>
