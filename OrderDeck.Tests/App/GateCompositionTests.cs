@@ -70,6 +70,15 @@ public class GateCompositionTests
             gates.Top!.Close(false);
             Assert.False(gates.IsOpen);
             Assert.True(pending.IsCompleted);
+
+            // LoginGate DataContext'siz de çizilebilmeli: bu testin ölçtüğü şey
+            // kaynak çözümlemesi. StaticResource anahtarlarından biri yanlışsa
+            // XamlParseException atar; binding'ler sessizce boş kalır.
+            var loginPending = gates.ShowAsync(g => LoginGate.Create(g, vm: null, isStartupGate: true));
+            ThemeTestHost.Pump();
+            Assert.IsType<LoginGate>(root.GateContent.Content);
+            gates.Top!.Close(false);
+            Assert.True(loginPending.IsCompleted);
         });
         Assert.Null(error);
     }
