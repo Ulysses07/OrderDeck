@@ -156,7 +156,9 @@ public class GateCompositionTests
             // sırasında çözülüyor. Yani yukarıdaki ertelenmiş-akış kör noktası
             // burada oluşmuyor; sahte DataContext gerekmiyor. (5. adımdaki
             // satır içi Style + DataTrigger de ertelenmiş değil, BAML
-            // yüklenirken ayrıştırılıyor.)
+            // yüklenirken ayrıştırılıyor.) Kaynak çözümlemesi için sahte
+            // DataContext gerekmiyor; adım görünürlüğü için gerekiyor — sebebi
+            // hemen aşağıda.
             var wizardPending = gates.ShowAsync(g => FirstRunGate.Create(g, vm: null));
             ThemeTestHost.Pump();
             var wizard = Assert.IsType<FirstRunGate>(root.GateContent.Content);
@@ -164,8 +166,11 @@ public class GateCompositionTests
 
             // Adım görünürlüğü: altı panel aynı Grid hücresinde üst üste duruyor,
             // yani "doğru adım açık" iddiasını ancak görünürlükler taşıyor.
-            // vm=null iken altısı da Collapsed kalır (binding boşa düşüyor),
-            // o yüzden RestoreGate'teki gibi küçük bir sahte DataContext.
+            // vm=null iken binding değer üretemiyor ve Visibility DP'nin
+            // varsayılanına, yani Visible'a düşüyor — ÖLÇÜLDÜ: altı panelin
+            // altısı da Visible, üst üste yığılı. Yani "hangi adım açık"
+            // sorusunun cevabı ancak RestoreGate'teki gibi küçük bir sahte
+            // DataContext ile ölçülebiliyor.
             var stepPanels = new Dictionary<int, UIElement>
             {
                 [1] = wizard.Step1Panel,
