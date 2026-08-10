@@ -1,0 +1,27 @@
+<UserControl x:Class="OrderDeck.App.Views.Gates.GateBrand"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Sol raydaki marka işaretinin büyütülmüş hâli (ShellSidebar.xaml).
+         Beş gate de bunu kullanıyor; kopyalanmasın diye kendi UserControl'ü.
+         Vektör logo varlığı YOK — Assets/Brand yalnız üçüncü taraf platform
+         ikonlarını taşıyor, orderdeck.ico da pencere ikonu. -->
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+        <Border Width="{StaticResource OD.Layout.GateBrandMark}"
+                Height="{StaticResource OD.Layout.GateBrandMark}"
+                CornerRadius="{StaticResource OD.Radius.Lg}"
+                Background="{StaticResource OD.Brush.Accent}">
+            <TextBlock Text="OD"
+                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                       FontFamily="{StaticResource OD.Font.Display}"
+                       FontSize="{StaticResource OD.Font.F3}"
+                       FontWeight="Bold"
+                       Foreground="{StaticResource OD.Brush.OnAccent}"/>
+        </Border>
+        <TextBlock Text="OrderDeck"
+                   VerticalAlignment="Center"
+                   Margin="{StaticResource OD.Pad.Left4}"
+                   FontFamily="{StaticResource OD.Font.Display}"
+                   FontSize="{StaticResource OD.Font.F3}"
+                   Foreground="{StaticResource OD.Brush.Text}"/>
+    </StackPanel>
+</UserControl>
