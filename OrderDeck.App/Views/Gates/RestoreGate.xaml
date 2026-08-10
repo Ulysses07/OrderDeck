@@ -115,12 +115,29 @@
                         Style="{StaticResource OD.Button.Secondary}"
                         Margin="{StaticResource OD.Pad.Top3}"/>
                 <!-- VM'in SkipCommand'ı BİLEREK kullanılmıyor: kapanma kararı
-                     gate'in, VM'in değil (bkz. code-behind). -->
+                     gate'in, VM'in değil (bkz. code-behind).
+
+                     Geri yükleme SÜRERKEN kapalı: gate kapanınca StartupFlow
+                     shell'i kurar, RestoreInternalAsync ise arka planda aynı
+                     DB dosyasını yazmaya devam eder. Silinen RestoreDialog'da
+                     da böyleydi ama o kod yolu üretimde hiç koşmadı
+                     (IsDatabaseMissingOrTiny hep false dönüyordu); ölçüm
+                     BootDatabaseState'e taşınınca yarış ilk kez gerçek oldu. -->
                 <Button Content="Atla, yeni başlat"
-                        Style="{StaticResource OD.Button.Ghost}"
                         HorizontalAlignment="Center"
                         Margin="{StaticResource OD.Pad.Top4}"
-                        Click="OnSkip"/>
+                        Click="OnSkip">
+                    <Button.Style>
+                        <Style TargetType="Button"
+                               BasedOn="{StaticResource OD.Button.Ghost}">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsBusy}" Value="True">
+                                    <Setter Property="IsEnabled" Value="False"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Button.Style>
+                </Button>
             </StackPanel>
         </Grid>
 

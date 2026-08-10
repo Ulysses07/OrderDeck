@@ -126,8 +126,10 @@ public class BootDatabaseStateTests
     [Fact]
     public void AppHost_yakalanmis_durumu_tek_ornek_olarak_veriyor()
     {
-        // Kayıt örnek olarak yapılmalı; tembel bir fabrika değeri
-        // migration'dan sonra ölçerdi.
+        // Bu test yalnız TEKİLLİĞİ ölçüyor: her çözümleme aynı örneği verir,
+        // yani ölçüm bir kez yapılıp saklanır. Ölçümün migration'dan ÖNCE
+        // yapıldığını bu test GÖSTEREMEZ (tembel bir fabrika da aynı örneği
+        // döndürürdü) — sıranın kanıtı Bos_sema_esigin_ustunde_kaliyor.
         using var host = new global::OrderDeck.App.AppHost();
 
         var first = host.Services.GetRequiredService<BootDatabaseState>();

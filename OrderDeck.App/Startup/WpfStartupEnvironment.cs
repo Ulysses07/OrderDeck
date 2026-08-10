@@ -223,13 +223,15 @@ public sealed class WpfStartupEnvironment : IStartupEnvironment
 
         // Kısayollar eskiden MainWindow.Loaded'da bağlanıyordu; pencere artık
         // shell'den ÖNCE açıldığı için o an kısayolların hedefi yok.
-        var window = Window.GetWindow(_root);
-        if (window is null)
-        {
-            _log.LogWarning(
-                "Shell mounted but AppRootView has no ancestor Window; shortcuts NOT bound");
-            return;
-        }
+        // Sessizce dönmüyoruz: bu dala düşmek Ctrl+Shift+S/E, Ctrl+G ve F2-F5'in
+        // tamamının ölü doğması demek ve ekranda hiçbir izi olmaz — operatör
+        // kısayolun çalışmadığını ancak canlı yayında fark eder. Üretimde
+        // ulaşılamaz (App.OnStartup kökü MainWindow'a koyup Show() ediyor),
+        // bu yüzden ulaşılırsa varsayım bozulmuş demektir; RunStartupAsync'in
+        // catch'i hatayı gösterip kapatır.
+        var window = Window.GetWindow(_root) ?? Application.Current?.MainWindow
+            ?? throw new InvalidOperationException(
+                "Shell kuruldu ama AppRootView bir Window'un içinde değil; kısayollar bağlanamaz.");
 
         var binder = _services.GetRequiredService<ShortcutBinder>();
         binder.Apply(window);

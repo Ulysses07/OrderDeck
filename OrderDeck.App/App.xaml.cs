@@ -129,9 +129,10 @@ public partial class App : Application
 
         // AÇILIŞ SIRASI TERSİNE DÖNDÜ (Faz 4a). Pencere artık İLK açılıyor;
         // lisans/geri yükleme/sihirbaz kontrolleri onun içinde tam ekran
-        // gate olarak koşuyor. Eskiden üç ShowDialog() pencereden önce
-        // gelirdi ve operatör görev çubuğunda ikonsuz, alt+tab'de bulunamayan
-        // pencerelerle uğraşırdı.
+        // gate olarak koşuyor. Eskiden üç ShowDialog() ana pencereden önce
+        // gelirdi: her biri kendi z-order'ında ayrı bir üst pencereydi ve
+        // shell hiç kurulmadığı için hesap değiştirme gibi çalışma anı
+        // ekranları da altındaki her şeyi söküyordu.
         var root = Host.Services.GetRequiredService<Views.AppRootView>();
         var main = new MainWindow(root);
         MainWindow = main;

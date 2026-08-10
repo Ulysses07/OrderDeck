@@ -10,6 +10,10 @@ namespace OrderDeck.App.Startup;
 /// Açılış sırasının UI tarafı. StartupFlow bu arayüzün ardında ne
 /// olduğunu bilmez; üretimde <c>WpfStartupGates</c> gate yığınına basar,
 /// testte sahte bir kayıt tutucu.
+///
+/// Yalnız açılışa ait DEĞİL: <see cref="ShowLoginAsync"/> çalışma anında da
+/// çağrılıyor (hesap değiştirme — <c>AccountDialogViewModel</c>), o yüzden
+/// <c>isStartupGate</c> parametresi var.
 /// </summary>
 public interface IStartupGates
 {
