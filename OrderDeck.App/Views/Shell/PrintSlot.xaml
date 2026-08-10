@@ -1,0 +1,24 @@
+<!-- Yazdır yuvası. PrintQueuePanel'in alt eylem şeridiydi; spec §6.2'nin
+     "alttaki yazdır yuvası yerinde kalır" maddesi için ayrı bir kontrole
+     çıkarıldı. Çekmece katmanı sağ sütunun ÜST satırını örtüyor, bu yuva
+     alttaki satırda duruyor — yani çekmece açıkken de yazdırılabiliyor.
+     Şeridin içeriği taşınırken DEĞİŞMEDİ; bağlamalar ve komutlar aynı. -->
+<UserControl x:Class="OrderDeck.App.Views.Shell.PrintSlot"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Border Style="{StaticResource OD.Panel}" Padding="{StaticResource OD.Pad.4}">
+        <StackPanel Orientation="Horizontal">
+            <Button Content="{Binding PrintButtonLabel}"
+                    Command="{Binding PrintCommand}"
+                    Style="{StaticResource OD.Button.Primary}"/>
+            <Button Content="{Binding DeleteButtonLabel}"
+                    Command="{Binding RemoveSelectedFromQueueCommand}"
+                    Style="{StaticResource OD.Button.Ghost}"
+                    Margin="{StaticResource OD.Pad.2}"/>
+            <Button Content="Hepsini Temizle"
+                    Command="{Binding ClearQueueCommand}"
+                    Style="{StaticResource OD.Button.Ghost}"
+                    Foreground="{StaticResource OD.Brush.Accent}"/>
+        </StackPanel>
+    </Border>
+</UserControl>
