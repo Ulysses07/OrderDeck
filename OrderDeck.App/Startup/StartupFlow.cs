@@ -69,10 +69,15 @@ public sealed class StartupFlow
                     // tutarlı olmasının tek yolu yeniden başlamak.
                     //
                     // BİLİNÇLİ DAVRANIŞ DEĞİŞİKLİĞİ (Faz 4a tasarımı §5): eskiden
-                    // burada MessageBox + Shutdown() vardı, yani kullanıcı uygulamayı
-                    // elle açıyordu; MessageBox zaten kalkmak zorunda olduğu için
-                    // yerine otomatik yeniden başlatma kondu. Yeni süreç kalkmazsa
-                    // RequestRestart yine de açıklama gösteriyor.
+                    // burada MessageBox + Shutdown() vardı, yani tasarım gereği
+                    // uygulamayı elle açmak gerekiyordu; MessageBox zaten kalkmak
+                    // zorunda olduğu için yerine otomatik yeniden başlatma kondu.
+                    // Yeni süreç kalkmazsa RequestRestart yine de açıklama gösteriyor.
+                    //
+                    // Bu blok üretimde bugüne kadar HİÇ koşmadı: koşulu veren
+                    // IsDatabaseMissingOrTiny dosyaya migration'dan sonra baktığı
+                    // için hep false dönüyordu. Ölçüm artık açılışın en başında
+                    // yapılıyor (BootDatabaseState).
                     _env.RequestRestart();
                     return;
                 }

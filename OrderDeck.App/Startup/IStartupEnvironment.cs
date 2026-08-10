@@ -30,7 +30,14 @@ public interface IStartupEnvironment
     /// </summary>
     bool HasLicense { get; }
 
-    /// <summary>Yerel DB yok ya da 10 KB'ın altında (boş şema).</summary>
+    /// <summary>
+    /// Uygulama açılırken, migration KOŞMADAN ÖNCE yerel DB yok muydu ya da
+    /// 10 KB'ın altında mıydı. "Yeni bilgisayar / silinmiş disk" durumu
+    /// budur; akış bunu görünce bulut yedeğini öneriyor.
+    ///
+    /// Zamanlama sözleşmenin parçası: gerçekleme dosyaya bu metot çağrıldığı
+    /// anda bakamaz, o an şema çoktan kurulmuş olur.
+    /// </summary>
     bool IsDatabaseMissingOrTiny();
 
     Task<IReadOnlyList<BackupMetadata>> ListBackupsAsync();

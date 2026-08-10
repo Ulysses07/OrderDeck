@@ -14,7 +14,6 @@ using Microsoft.Extensions.Logging;
 using OrderDeck.App.Services;
 using OrderDeck.App.Shortcuts;
 using OrderDeck.Chat.Ingestors;
-using OrderDeck.Core;
 using OrderDeck.Core.Sessions;
 using OrderDeck.Core.Settings;
 using OrderDeck.Licensing;
@@ -37,6 +36,7 @@ public sealed class WpfStartupEnvironment : IStartupEnvironment
     private readonly SettingsStore _settings;
     private readonly StreamSessionService _sessions;
     private readonly BackupService _backups;
+    private readonly BootDatabaseState _bootDb;
     private readonly Views.AppRootView _root;
     private readonly IServiceProvider _services;
     private readonly ILogger<WpfStartupEnvironment> _log;
@@ -52,6 +52,7 @@ public sealed class WpfStartupEnvironment : IStartupEnvironment
         SettingsStore settings,
         StreamSessionService sessions,
         BackupService backups,
+        BootDatabaseState bootDb,
         Views.AppRootView root,
         IServiceProvider services,
         ILogger<WpfStartupEnvironment> log)
@@ -61,6 +62,7 @@ public sealed class WpfStartupEnvironment : IStartupEnvironment
         _settings = settings;
         _sessions = sessions;
         _backups = backups;
+        _bootDb = bootDb;
         _root = root;
         _services = services;
         _log = log;
@@ -81,11 +83,17 @@ public sealed class WpfStartupEnvironment : IStartupEnvironment
 
     public bool HasLicense => _license.CurrentStatus != LicenseStatus.NoLicense;
 
-    public bool IsDatabaseMissingOrTiny()
-    {
-        var dbFile = AppPaths.DatabaseFile;
-        return !File.Exists(dbFile) || new FileInfo(dbFile).Length < 10240;
-    }
+    /// <summary>
+    /// DOSYAYA BAKMIYOR, bilerek. Bu metot eskiden
+    /// <c>AppPaths.DatabaseFile</c>'ı stat'liyordu ve hiçbir zaman true
+    /// dönmedi: <c>AppHost</c> ctor'u bu sınıftan da akıştan da önce koşuyor
+    /// ve sonunda <c>MigrationRunner.Run()</c> dosyayı yaratıp şemayı
+    /// kuruyor, boş şema bile 10 KB eşiğinin çok üstünde kalıyor. Yani
+    /// "bilgisayarını değiştiren operatöre bulut yedeğini öner" yolu ölü
+    /// koddu. Ölçüm artık <see cref="BootDatabaseState.Capture"/> ile
+    /// migration'dan önce yapılıyor; burası o yakalanmış cevabı okuyor.
+    /// </summary>
+    public bool IsDatabaseMissingOrTiny() => _bootDb.IsMissingOrTiny;
 
     public async Task<IReadOnlyList<BackupMetadata>> ListBackupsAsync() =>
         await _restore.ListAvailableAsync();
@@ -263,7 +271,12 @@ public sealed class WpfStartupEnvironment : IStartupEnvironment
     {
         // Geri yükleme yeni bir DB dosyası yazıyor; süreç boyunca açık
         // tutulan SQLite bağlantılarıyla tutarlı olmasının tek yolu yeni
-        // süreç. Eskiden operatör uygulamayı ELLE açmak zorundaydı.
+        // süreç. Faz 4a'ya kadar burada MessageBox + Shutdown() vardı, yani
+        // tasarım gereği operatör uygulamayı elle açacaktı — ama pratikte
+        // buraya hiç gelinmiyordu: geri yükleme koşulu migration'dan SONRA
+        // ölçüldüğü için her zaman false dönüyordu (bkz.
+        // IsDatabaseMissingOrTiny). Koşul düzeltildi; bu metot ilk kez
+        // gerçekten koşabilir hâlde.
         var exe = Environment.ProcessPath;
         var relaunched = false;
         if (exe is not null)

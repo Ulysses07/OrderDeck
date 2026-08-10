@@ -41,6 +41,15 @@ public sealed class AppHost : IDisposable
     {
         AppPaths.EnsureDirectoriesExist();
 
+        // İLK İŞ — veritabanının açılış durumunu ölç. Bu ctor'un sonundaki
+        // MigrationRunner.Run() dosyayı yaratıp şemayı kuruyor, yani bu
+        // satırdan sonra "DB yok mu" sorusunun cevabı kalıcı olarak hayır
+        // oluyor. Açılış akışı (StartupFlow) ctor'dan SONRA koştuğu için
+        // ölçümü kendisi yapamaz; bulut yedeği önerisi bu yakalanmış
+        // gerçeğe bakıyor. Gerekçenin tamamı BootDatabaseState'te.
+        // Buranın üstünde yalnızca klasör yaratma var, DB'ye dokunmuyor.
+        var bootDatabaseState = Startup.BootDatabaseState.Capture(AppPaths.DatabaseFile);
+
         _serilog = new LoggerConfiguration()
             .MinimumLevel.Information()
             .Enrich.FromLogContext()
@@ -62,6 +71,9 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<IClock, SystemClock>();
 
         // Storage
+        // Örnek olarak kaydediliyor (fabrika DEĞİL): değeri ctor'un başında
+        // ölçüldü, tembel bir fabrika onu migration'dan sonra ölçerdi.
+        services.AddSingleton(bootDatabaseState);
         services.AddSingleton<IDbConnectionFactory>(_ => new SqliteConnectionFactory(AppPaths.DatabaseFile));
         services.AddSingleton<MigrationRunner>();
         services.AddSingleton<SessionRepository>();
