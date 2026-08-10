@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using OrderDeck.App.Services.Gates;
 using OrderDeck.App.Views;
 using OrderDeck.App.Views.Gates;
+using OrderDeck.Licensing.Backup;
 
 namespace OrderDeck.Tests.App;
 
@@ -95,17 +96,75 @@ public class GateCompositionTests
             gates.Top!.Close(false);
             Assert.True(switchPending.IsCompleted);
 
-            // RestoreGate de servissiz çiziliyor; iki durumu (seçim /
-            // tamamlandı) tek view'da taşıdığı için her iki dalın kaynakları
-            // da burada çözülüyor.
+            // RestoreGate de servissiz çiziliyor. MEKANİZMA: StaticResource
+            // anahtarları InitializeComponent() sırasında (BAML yüklenirken)
+            // çözülüyor — Visibility'den bağımsız, yani iki durumun (seçim /
+            // tamamlandı) gövdesindeki anahtarlar DataContext olmasa da
+            // doğrulanıyor. AMA bir DataTemplate'in gövdesi ertelenmiş bir
+            // akış: ancak bir öğe gerçekleştiğinde ayrıştırılıyor. vm=null
+            // iken AvailableBackups boş kalıyor, ListBox sıfır öğe üretiyor
+            // ve öğe şablonundaki anahtarlar HİÇ doğrulanmıyor (ölçüldü:
+            // şablonun içindeki bir anahtarı bozmak testi yeşil bırakıyor,
+            // dışındaki bir anahtarı bozmak XamlParseException atıyor).
+            // Bu yüzden aşağıda view'a küçük bir sahte DataContext veriliyor.
+            // NOT: LoginGate'in lisans listesindeki DataTemplate (OD.Text.Mono)
+            // aynı kör noktada — o dosyaya bu turda dokunulmuyor.
             var restorePending = gates.ShowAsync(g => RestoreGate.Create(g, vm: null));
             ThemeTestHost.Pump();
-            Assert.IsType<RestoreGate>(root.GateContent.Content);
+            var restore = Assert.IsType<RestoreGate>(root.GateContent.Content);
             Assert.Equal(Visibility.Visible, root.GateHost.Visibility);
 
+            // Seçim durumu: bir yedek besleyip öğe şablonunu gerçekleştiriyoruz.
+            // IsMonthlyMilestone=true, "Aylık" çipinin dalı da ayrıştırılsın.
+            restore.DataContext = new RestoreGateStub
+            {
+                RestoreCompleted = false,
+                AvailableBackups =
+                [
+                    new BackupMetadata(Guid.NewGuid(), 1024, DateTimeOffset.Now, true, "TEZGAH-01")
+                ]
+            };
+            ThemeTestHost.Pump();
+            // Kapsayıcı üretimi ölçüm sırasında oluyor; gate hiçbir pencerede
+            // olmadığı için yerleşimi elle tetiklemek gerekiyor.
+            restore.Measure(new Size(1200, 900));
+            restore.Arrange(new Rect(0, 0, 1200, 900));
+            ThemeTestHost.Pump();
+
+            Assert.Equal(Visibility.Visible, restore.SelectionState.Visibility);
+            Assert.Equal(Visibility.Collapsed, restore.CompletedState.Visibility);
+            Assert.NotNull(restore.BackupList.ItemContainerGenerator.ContainerFromIndex(0));
+
+            // Tamamlandı durumu: taze bir stub atamak PropertyChanged
+            // gerektirmiyor, DataContext'in kendisi değişiyor.
+            restore.DataContext = new RestoreGateStub { RestoreCompleted = true };
+            ThemeTestHost.Pump();
+            restore.Measure(new Size(1200, 900));
+            restore.Arrange(new Rect(0, 0, 1200, 900));
+            ThemeTestHost.Pump();
+
+            Assert.Equal(Visibility.Collapsed, restore.SelectionState.Visibility);
+            Assert.Equal(Visibility.Visible, restore.CompletedState.Visibility);
+
             gates.Top!.Close(false);
+            ThemeTestHost.Pump();
             Assert.True(restorePending.IsCompleted);
+            Assert.False(gates.IsOpen);
+            Assert.Equal(Visibility.Collapsed, root.GateHost.Visibility);
         });
         Assert.Null(error);
+    }
+
+    /// <summary>
+    /// RestoreGate'in iki görünürlük binding'inin ihtiyacı olan asgari
+    /// DataContext. Gerçek <c>RestoreDialogViewModel</c> servis istiyor;
+    /// bu test kaynak/şablon çözümlemesini ölçtüğü için o kadarı gereksiz.
+    /// PropertyChanged yok: durum değiştirmek için taze bir örnek atanıyor.
+    /// </summary>
+    private sealed class RestoreGateStub
+    {
+        public bool RestoreCompleted { get; init; }
+        public IReadOnlyList<BackupMetadata> AvailableBackups { get; init; } = [];
+        public string? StatusMessage { get; init; }
     }
 }

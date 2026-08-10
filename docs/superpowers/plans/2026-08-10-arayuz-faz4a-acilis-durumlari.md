@@ -3292,8 +3292,9 @@ Dört senaryo, hepsi `dotnet run --project OrderDeck.App` ile:
    ve sayaçlar kaldığı yerde** — shell hiç sökülmedi. (Bu fazın asıl
    sınavı; sayfa/pencere yaklaşımı bunu veremiyordu.)
 
-Bu turda ayrıca **beş açık karar** ekranda karara bağlanacak (Task 4 ve
-Task 5 gözden geçirmelerinden kaldı; ilk üçü kod yorumlarında da yazıyor):
+Bu turda ayrıca aşağıdaki **açık kararlar** ekranda karara bağlanacak
+(Task 4, Task 5 ve Task 8 gözden geçirmelerinden kaldı; ilk üçü kod
+yorumlarında da yazıyor):
 
 - `GateBrand` rozeti 20→48px büyürken köşe yarıçapı `Md`→`Lg` (8→10)
   kalıyor; ölçek `Lg`'de bittiği için işaret raydakinden orantısal olarak
@@ -3312,11 +3313,31 @@ Task 5 gözden geçirmelerinden kaldı; ilk üçü kod yorumlarında da yazıyor
   satırları `Auto` ve dış grid `VerticalAlignment="Center"`, dolayısıyla
   hata satırı açılınca üstteki alanlar yukarı zıplıyor. Gerçek ekranda
   rahatsız ediciyse hata satırına sabit yükseklik verilecek.
+  `RestoreGate`'in `StatusMessage` satırı da artık aynı şekilde davranıyor
+  (mesaj yokken `NullToCollapsedConverter` ile kalkıyor, gelince form
+  kayıyor) — aynı sınıf bir ekran kararı, ikisine birlikte bak.
 - Kayıt modunda Enter tuşu ölü: "Kayıt ol" düğmesinde `IsDefault` yok.
   **Bu bir gerileme değil** — eski `LoginDialog.xaml`'de de yoktu (tek
   `IsDefault` lisans aktivasyon düğmesindeydi, `LoginDialog.xaml:131`);
   gate girişe ayrıca `IsDefault` ekleyerek zaten iyileştirdi. Kayıt moduna
   da eklenecek mi, bilinçli bir UX kararı olarak burada verilecek.
+- `RestoreGate` "tamamlandı" durumuna geçtiğinde odak, collapse olan
+  düğmede kalıyor: `AppRootView` odağı yalnız gate AÇILIRKEN taşıyor,
+  durum geçişinde taşımıyor. Enter yolu `IsDefault` ile çözüldü; gerçek
+  ekranda Tab'ın nereye düştüğüne bak, rahatsız ediciyse durum geçişinde
+  odağı yeniden taşı.
+
+Bunların yanında **ekranda değil, kodu okuyarak** kapatılacak iki madde:
+
+- `LoginGate.xaml:15`, `LoginGate.xaml.cs` ve `RestoreGate.xaml.cs`'deki
+  ileriye dönük yorumlar (`StartupFlow`, `IStartupEnvironment.RequestRestart`)
+  Task 9 ve Task 10 bittikten sonra yeniden okunacak — plandan sapıldıysa
+  bu cümleler yalana döner.
+- "Atla, yeni başlat" geri yükleme sürerken tıklanabilir: gate kapanır,
+  `RestoreInternalAsync` arka planda DB'yi yazmaya devam eder, `StartupFlow`
+  `Skipped` alıp shell'i o dosyanın üstüne kurar. Eski pencerede de böyleydi
+  (gerileme değil), ama artık tek yol bu ekran — Task 9/10 akışı otururken
+  kapatılacak mı, karar verilecek.
 
 - [ ] **Step 6: Faz 4b'ye devir notu**
 

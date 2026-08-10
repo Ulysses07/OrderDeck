@@ -7,7 +7,7 @@
          örtük stil araması TAM tiple yapıldığı için RestoreDialog'a
          uygulanmıyordu → zemin beyaz kalıyordu.)
 
-         Değişenler: 📅 emojisi "Aylık" çipe döndü (spec §10: emoji ikon 0),
+         Değişenler: takvim emojisi "Aylık" çipe döndü (spec §10: emoji ikon 0),
          #25D366 / DarkBlue / Gray token'a döndü.
 
          "Tamamlandı" durumu YENİ: eskiden pencere DialogResult=true ile
@@ -17,7 +17,8 @@
           Width="{StaticResource OD.Layout.GateColumn}">
 
         <!-- ── Seçim durumu ───────────────────────────────────────────── -->
-        <Grid Visibility="{Binding RestoreCompleted, Converter={StaticResource BoolToCollapsedConverter}}">
+        <Grid x:Name="SelectionState"
+              Visibility="{Binding RestoreCompleted, Converter={StaticResource BoolToCollapsedConverter}}">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
@@ -34,7 +35,7 @@
                            Text="Bu bilgisayarda veri bulunamadı. Buluttaki yedeklerden birini geri yükleyebilirsin."/>
             </StackPanel>
 
-            <ListBox Grid.Row="1"
+            <ListBox x:Name="BackupList" Grid.Row="1"
                      MaxHeight="{StaticResource OD.Layout.GateListMaxHeight}"
                      Margin="{StaticResource OD.Pad.Top7}"
                      ItemsSource="{Binding AvailableBackups}"
@@ -51,34 +52,58 @@
                                            FontSize="{StaticResource OD.Font.F2}"
                                            FontWeight="Bold"
                                            Foreground="{StaticResource OD.Brush.Text}"/>
-                                <!-- Eski 📅 emojisinin yerine metin çip -->
+                                <!-- Eski takvim işaretinin yerine metin çip.
+                                     Dolgu OD.Pad.2 (dört yandan 4): OD.Pad.X2
+                                     yatay-yalnız bir MARGIN token'ı, dolgu
+                                     olarak kullanılınca 11px etiket 1px'lik
+                                     kenarlığa dikey boşluksuz yapışıyordu.
+                                     Çip emsali OD.CountPill de dört yanlı
+                                     dolgu kullanıyor. -->
                                 <Border Margin="{StaticResource OD.Pad.Left4}"
-                                        Padding="{StaticResource OD.Pad.X2}"
+                                        Padding="{StaticResource OD.Pad.2}"
                                         CornerRadius="{StaticResource OD.Radius.Xs}"
                                         Background="{StaticResource OD.Brush.AmberTint}"
                                         BorderBrush="{StaticResource OD.Brush.AmberTintBorder}"
                                         BorderThickness="1"
                                         VerticalAlignment="Center"
                                         Visibility="{Binding IsMonthlyMilestone, Converter={StaticResource BoolToVisibleConverter}}">
-                                    <TextBlock Text="Aylık" Style="{StaticResource OD.Text.Micro}"/>
+                                    <!-- OD.Text.Micro'nun kendi rengi gri
+                                         (OD.Brush.TextMute); amber zeminli her
+                                         yüzey (ShellBanners, SettingsPage,
+                                         DekontEkleDrawer) amber metinle
+                                         eşleşiyor, çip de öyle olsun. -->
+                                    <TextBlock Text="Aylık" Style="{StaticResource OD.Text.Micro}"
+                                               Foreground="{StaticResource OD.Brush.Amber}"/>
                                 </Border>
                             </StackPanel>
                             <TextBlock Style="{StaticResource OD.Text.Hint}"
                                        Margin="{StaticResource OD.Pad.Top3}">
                                 <Run Text="{Binding SizeBytes, StringFormat='{}{0:N0} bayt', Mode=OneWay}"/>
-                                <Run Text="·"/>
-                                <Run Text="{Binding MachineName, Mode=OneWay}"/>
+                                <!-- Ayraç makine adının StringFormat'ına gömülü,
+                                     null'ı da TargetNullValue siliyor: MachineName
+                                     null olabiliyor ve WPF StringFormat'ı null
+                                     değere DE uyguluyor (ölçüldü: yalnız
+                                     StringFormat ile sonuç "· " kalıyordu).
+                                     TargetNullValue önce devreye girip boş metin
+                                     verdiği için ayraç makine adıyla birlikte
+                                     kayboluyor — yoksa "… bayt ·" görünürdü. -->
+                                <Run Text="{Binding MachineName, StringFormat='· {0}', TargetNullValue='', Mode=OneWay}"/>
                             </TextBlock>
                         </StackPanel>
                     </DataTemplate>
                 </ListBox.ItemTemplate>
             </ListBox>
 
+            <!-- Mesaj yokken satır tamamen kalkıyor (RestoreDialog.xaml:36 ile
+                 aynı davranış): dış grid VerticalAlignment="Center" ve bütün
+                 satırlar Auto olduğu için boş bir satır + Top4 margin formu
+                 kalıcı olarak yukarı kaydırırdı. -->
             <TextBlock Grid.Row="2" Text="{Binding StatusMessage}"
                        Style="{StaticResource OD.Text.Hint}"
                        Foreground="{StaticResource OD.Brush.Info}"
                        TextWrapping="Wrap"
-                       Margin="{StaticResource OD.Pad.Top4}"/>
+                       Margin="{StaticResource OD.Pad.Top4}"
+                       Visibility="{Binding StatusMessage, Converter={StaticResource NullToCollapsedConverter}}"/>
 
             <StackPanel Grid.Row="3" Margin="{StaticResource OD.Pad.Top6}">
                 <Button Content="En son yedeği kullan"
@@ -100,7 +125,8 @@
         </Grid>
 
         <!-- ── Tamamlandı durumu ──────────────────────────────────────── -->
-        <StackPanel Visibility="{Binding RestoreCompleted, Converter={StaticResource BoolToVisibleConverter}}">
+        <StackPanel x:Name="CompletedState"
+                    Visibility="{Binding RestoreCompleted, Converter={StaticResource BoolToVisibleConverter}}">
             <gates:GateBrand/>
             <TextBlock Text="Geri yükleme tamamlandı"
                        HorizontalAlignment="Center"
@@ -112,9 +138,16 @@
                        TextAlignment="Center" TextWrapping="Wrap"
                        Margin="{StaticResource OD.Pad.Top3}"
                        Text="Verilerin yerine kondu. OrderDeck'in yeniden başlaması gerekiyor."/>
+            <!-- IsDefault ikinci kez: bu view'da iki IsDefault düğme var ama
+                 çakışmıyorlar — AccessKeyManager adayları IsVisible/IsEnabled
+                 süzüyor, iki dal da birbirini dışlıyor (biri Visible'ken
+                 diğeri Collapsed). Gerekli, çünkü AppRootView odağı yalnız
+                 gate AÇILIRKEN taşıyor; "tamamlandı" durumuna geçiş sonradan
+                 olduğu için bu düğmenin başka klavye yolu kalmıyor. -->
             <Button Content="Yeniden Başlat"
                     Style="{StaticResource OD.Button.Primary}"
                     Margin="{StaticResource OD.Pad.Top6}"
+                    IsDefault="True"
                     Click="OnRestart"/>
         </StackPanel>
     </Grid>
