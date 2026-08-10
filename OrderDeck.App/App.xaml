@@ -42,6 +42,7 @@
             <converters:BackupChipConverter        x:Key="BackupChipConverter"/>
             <converters:PlatformIsYouTubeConverter x:Key="PlatformIsYouTubeConverter"/>
             <converters:GiveawayParticipationStatusConverter x:Key="GiveawayParticipationStatusConverter"/>
+            <converters:EqualsConverter            x:Key="EqualsConverter"/>
         </ResourceDictionary>
     </Application.Resources>
 </Application>

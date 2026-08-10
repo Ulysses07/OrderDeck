@@ -1,10 +1,13 @@
 using System.Windows.Controls;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.App.Services.Drawers;
+using OrderDeck.App.Services.Pages;
 using OrderDeck.App.ViewModels;
 using OrderDeck.App.Views;
 using OrderDeck.App.Views.Drawers;
+using OrderDeck.App.Views.Pages;
 using OrderDeck.App.Views.Shell;
+using OrderDeck.Core.Shortcuts;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Payments;
 using OrderDeck.Core.Sales;
@@ -48,6 +51,7 @@ public class MainShellViewCompositionTests
             Assert.IsType<UserControl>(new PrintQueuePanel(), exactMatch: false);
             Assert.IsType<UserControl>(new PrintSlot(), exactMatch: false);
             Assert.IsType<UserControl>(new DrawerHost(), exactMatch: false);
+            Assert.IsType<UserControl>(new PageHost(), exactMatch: false);
 
             // MessageDrawer yalnız yığın üzerinden kurulabiliyor (Drawer'ın
             // ctor'u internal). Aynı zamanda altyapının uçtan duman testi:
@@ -91,13 +95,78 @@ public class MainShellViewCompositionTests
                                 ctx, "instagram/@ayse_y", 500m)));
             Assert.IsType<ShipmentThresholdDrawer>(dekont.Top!.Content);
 
-            // Sonra kompozisyon kökü: sekiz parçayı da kendi ağacında kurar.
+            // Faz 3 sayfaları. Çekmecelerle aynı gerekçe: XAML hatası
+            // derlemede değil açılışta patlar. Sayfa fabrikaları Page
+            // istemediği için (AccountPage hariç) doğrudan çağrılıyorlar,
+            // ama yığın üzerinden kurulmaları uçtan duman testi de oluyor.
+            var pages = new PageStack();
+
+            pages.ShowAsync("blacklist", "Kara Liste",
+                _ => BlacklistPage.Create(BuildBlacklistViewModel()));
+            Assert.IsType<BlacklistPage>(pages.Top!.Content);
+
+            pages.ShowAsync("history", "Yayın Geçmişi",
+                _ => StreamHistoryPage.Create(BuildStreamHistoryViewModel()));
+            Assert.IsType<StreamHistoryPage>(pages.Top!.Content);
+
+            pages.ShowAsync("period-report", "Dönem Raporu",
+                _ => PeriodReportPage.Create(BuildPeriodReportViewModel()));
+            Assert.IsType<PeriodReportPage>(pages.Top!.Content);
+
+            pages.ShowAsync("shortcuts", "Kısayollar",
+                _ => ShortcutHelpPage.Create(
+                        new ShortcutRegistry(new SettingsStore(TempSettingsPath()))));
+            Assert.IsType<ShortcutHelpPage>(pages.Top!.Content);
+
+            // StreamReportPage ve AccountPage burada YOK. İlkinin fabrikası
+            // altı gerçek bağımlılık + bir rapor yüklemesi istiyor, ikincisi
+            // lisans/oturum servislerine (ağ + DPAPI) bağlı — ikisini de
+            // kurmak bu duman testini entegrasyon testine çevirirdi.
+            // XAML'leri ayrı gözden geçirildi, davranışları kendi
+            // ViewModel testlerinde.
+
+            // Sonra kompozisyon kökü: dokuz parçayı da kendi ağacında kurar.
             var shell = new MainShellView();
             Assert.NotNull(shell.Content);
         });
 
         Assert.Null(error);
     }
+
+    private static BlacklistViewModel BuildBlacklistViewModel()
+    {
+        var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var customers = new CustomerRepository(db);
+        var clock = new SystemClock();
+        return new BlacklistViewModel(
+            customers,
+            new CustomerService(customers, new SessionRepository(db), new LabelRepository(db), clock));
+    }
+
+    private static StreamHistoryViewModel BuildStreamHistoryViewModel()
+    {
+        var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        return new StreamHistoryViewModel(new SessionRepository(db), new LabelRepository(db));
+    }
+
+    private static PeriodReportViewModel BuildPeriodReportViewModel()
+    {
+        var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var path = TempSettingsPath();
+        return new PeriodReportViewModel(
+            new LabelRepository(db), new AppSettings(), new SettingsStore(path));
+    }
+
+    /// <summary>Ayar dosyası testte diske yazılmıyor, ama SettingsStore bir
+    /// yol istiyor; her çağrı kendi geçici yolunu alsın ki testler
+    /// birbirinin dosyasını okumasın.</summary>
+    private static string TempSettingsPath()
+        => System.IO.Path.Combine(
+               System.IO.Path.GetTempPath(),
+               $"orderdeck-composition-{Guid.NewGuid():N}.json");
 
     /// <summary>Dekont formu on bir bağımlılık istiyor; hepsi gerçek ama
     /// bellekte. Çekmece açılırken hiçbiri kullanılmıyor — burada sınanan

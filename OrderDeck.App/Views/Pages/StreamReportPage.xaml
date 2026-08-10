@@ -1,0 +1,151 @@
+<UserControl x:Class="OrderDeck.App.Views.Pages.StreamReportPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- StreamReportDialog'un (600x680 Window) sayfa karşılığı — spec §6.1.
+         İki yerden açılıyor: yayın geçmişinden çift tıkla (yığında ikinci
+         sayfa) ve yayın bitince kendiliğinden (yığında tek sayfa).
+
+         Pencerede yerel bir BooleanToVisibilityConverter tanımlıydı;
+         App.xaml aynı anahtarı zaten sağlıyor, yereli silindi.
+         📱 ve 🎁 emojileri düştü (spec §10 "emoji ikon 0"); ikisinin de
+         Icons.xaml'de karşılığı yok, metne çevrildiler. -->
+    <Grid Margin="{StaticResource OD.Pad.7}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Özet dörtlüsü: yayının tek bakışta okunan karnesi. -->
+        <UniformGrid Grid.Row="0" Rows="1" Columns="4"
+                     Margin="{StaticResource OD.Pad.Bottom3}">
+            <StackPanel>
+                <TextBlock Text="SÜRE" Style="{StaticResource OD.Text.Micro}"/>
+                <TextBlock Text="{Binding DurationLabel}"
+                           Style="{StaticResource OD.Text.Mono}"
+                           FontSize="{StaticResource OD.Font.F3}"/>
+            </StackPanel>
+            <StackPanel>
+                <TextBlock Text="TOPLAM ETİKET" Style="{StaticResource OD.Text.Micro}"/>
+                <TextBlock Text="{Binding TotalLabels}"
+                           Style="{StaticResource OD.Text.Mono}"
+                           FontSize="{StaticResource OD.Font.F3}"/>
+            </StackPanel>
+            <StackPanel>
+                <TextBlock Text="TOPLAM CİRO" Style="{StaticResource OD.Text.Micro}"/>
+                <TextBlock Text="{Binding TotalAmount, StringFormat={}{0:N2} TL}"
+                           Style="{StaticResource OD.Text.Mono}"
+                           FontSize="{StaticResource OD.Font.F3}"
+                           Foreground="{StaticResource OD.Brush.Amber}"/>
+            </StackPanel>
+            <StackPanel>
+                <TextBlock Text="TEKİL MÜŞTERİ" Style="{StaticResource OD.Text.Micro}"/>
+                <TextBlock Text="{Binding UniqueCustomers}"
+                           Style="{StaticResource OD.Text.Mono}"
+                           FontSize="{StaticResource OD.Font.F3}"/>
+            </StackPanel>
+        </UniformGrid>
+
+        <!-- Platform kırılımı: tek platformlu yayında gürültü olmasın diye
+             yalnızca 2+ platform varken görünür (Excel'de her zaman var). -->
+        <StackPanel Grid.Row="1" Margin="{StaticResource OD.Pad.Top5}"
+                    Visibility="{Binding HasMultiplePlatforms, Converter={StaticResource BoolToVisibleConverter}}">
+            <TextBlock Text="PLATFORM KIRILIMI" Style="{StaticResource OD.Text.Micro}"/>
+            <ItemsControl ItemsSource="{Binding PlatformBreakdown}"
+                          Margin="{StaticResource OD.Pad.Top3}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Grid Margin="{StaticResource OD.Pad.1}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="140"/>
+                                <ColumnDefinition Width="120"/>
+                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="{Binding DisplayName}"
+                                       FontWeight="SemiBold"/>
+                            <TextBlock Grid.Column="1" Foreground="{StaticResource OD.Brush.TextDim}">
+                                <Run Text="{Binding LabelCount, Mode=OneWay}"/><Run Text=" etiket"/>
+                            </TextBlock>
+                            <TextBlock Grid.Column="2"
+                                       Foreground="{StaticResource OD.Brush.Amber}"
+                                       Text="{Binding TotalAmount, StringFormat={}{0:N2} TL}"/>
+                            <TextBlock Grid.Column="3" Foreground="{StaticResource OD.Brush.TextDim}">
+                                <Run Text="{Binding UniqueCustomers, Mode=OneWay}"/><Run Text=" müşteri"/>
+                            </TextBlock>
+                        </Grid>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </StackPanel>
+
+        <TextBlock Grid.Row="2" Text="EN ÇOK ALAN MÜŞTERİLER"
+                   Style="{StaticResource OD.Text.Micro}"
+                   Margin="{StaticResource OD.Pad.Top5}"/>
+
+        <DataGrid Grid.Row="3"
+                  Style="{StaticResource OD.DataGrid}"
+                  Margin="{StaticResource OD.Pad.Top3}"
+                  ItemsSource="{Binding TopCustomers}">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Kullanıcı" Binding="{Binding Display}"     Width="2*"/>
+                <DataGridTextColumn Header="Platform"  Binding="{Binding Platform}"   Width="*"/>
+                <DataGridTextColumn Header="Etiket"    Binding="{Binding LabelCount}" Width="*"/>
+                <DataGridTextColumn Header="Tutar"
+                                    Binding="{Binding TotalAmount, StringFormat={}{0:N2} TL}"
+                                    Width="*"/>
+                <DataGridTemplateColumn Header="Ödeme" Width="110">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <Button Content="WhatsApp"
+                                    Style="{StaticResource OD.Button.Ghost}"
+                                    Foreground="{StaticResource OD.Brush.Success}"
+                                    ToolTip="WhatsApp'tan ödeme iste"
+                                    Command="{Binding DataContext.OpenWhatsAppCommand,
+                                              RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                    CommandParameter="{Binding}"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <!-- Çekiliş özeti: yalnızca en az bir çekiliş döndüyse. -->
+        <TextBlock Grid.Row="4" Text="ÇEKİLİŞLER"
+                   Style="{StaticResource OD.Text.Micro}"
+                   Margin="{StaticResource OD.Pad.Top5}"
+                   Visibility="{Binding Giveaways.Count, Converter={StaticResource CountToVisibleConverter}}"/>
+
+        <ItemsControl Grid.Row="5" ItemsSource="{Binding Giveaways}"
+                      Margin="{StaticResource OD.Pad.Top3}">
+            <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                    <TextBlock Margin="{StaticResource OD.Pad.1}">
+                        <Run Text="#"
+                             FontFamily="{StaticResource OD.Font.Mono}"
+                             Foreground="{StaticResource OD.Brush.Amber}"/><Run
+                             Text="{Binding Keyword, Mode=OneWay}" FontWeight="Bold"
+                             Foreground="{StaticResource OD.Brush.Amber}"/>
+                        <Run Text=" · "/>
+                        <Run Text="{Binding ParticipantCount, Mode=OneWay}"/>
+                        <Run Text=" katılımcı · "/>
+                        <Run Text="{Binding WinnerCount, Mode=OneWay}"/>
+                        <Run Text=" kazanan"/>
+                    </TextBlock>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+
+        <StackPanel Grid.Row="6" Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Margin="{StaticResource OD.Pad.Top5}">
+            <Button Content="Excel'e Aktar"
+                    Style="{StaticResource OD.Button.Primary}"
+                    Command="{Binding ExportToExcelCommand}"/>
+        </StackPanel>
+    </Grid>
+</UserControl>

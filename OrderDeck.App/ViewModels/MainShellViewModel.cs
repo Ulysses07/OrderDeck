@@ -61,6 +61,18 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     /// </summary>
     private readonly Services.Drawers.IDrawerService? _drawers;
 
+    /// <summary>
+    /// Sayfa yığını (spec §6.1). Çekmece gibi opsiyonel ve aynı gerekçeyle:
+    /// kabuk ViewModel'i testlerde sayfasız kuruluyor. Üretimde DI her zaman
+    /// doldurur.
+    /// </summary>
+    private readonly Services.Pages.IPageService? _pages;
+
+    /// <summary>Sol nav'ın vurgu için bağlandığı yığın
+    /// (<c>{Binding Pages.CurrentKey}</c>). ViewModel'de aynalanmıyor —
+    /// yığın zaten INotifyPropertyChanged yayınlıyor.</summary>
+    public Services.Pages.IPageService? Pages => _pages;
+
     private readonly AnimationCatalogClient? _animationCatalogClient;
     private readonly ExtensionBridgeServer? _bridge;
     private readonly ViewerCountTracker? _viewers;
@@ -358,10 +370,12 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         ExtensionBridgeServer? bridge = null,
         ViewerCountTracker? viewers = null,
         FacebookModerationService? facebookModeration = null,
-        Services.Drawers.IDrawerService? drawers = null)
+        Services.Drawers.IDrawerService? drawers = null,
+        Services.Pages.IPageService? pages = null)
     {
         _dialogs = dialogs;
         _drawers = drawers;
+        _pages = pages;
         _labels = labels;
         _sessions = sessions;
         _printer = printer;
@@ -738,10 +752,15 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
     private async Task OpenAccountAsync()
     {
-        await Task.Yield(); // ensure UI thread
-        var dlg = global::OrderDeck.App.App.Host.Services.GetRequiredService<global::OrderDeck.App.Views.AccountDialog>();
-        dlg.Owner = System.Windows.Application.Current?.MainWindow;
-        dlg.ShowDialog();
+        if (_pages is null) return;   // yalnız testte; bkz. alanın notu
+
+        var vm = global::OrderDeck.App.App.Host.Services
+            .GetRequiredService<AccountDialogViewModel>();
+
+        // Sayfa fabrikaya Page'i geçiyor: ViewModel'in RequestClose'u
+        // (çıkış yap / giriş penceresi kapandı) sayfayı kendisi kapatabilsin.
+        await _pages.ShowAsync("account", "Hesap",
+            p => Views.Pages.AccountPage.Create(p, vm));
     }
 
     private async Task OpenDekontEkleAsync()
@@ -846,10 +865,16 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         UpdateStreamStatusLabel();
         UpdateGiveawayCanStart();
 
-        var dialog = App.Host.Services.GetRequiredService<StreamReportDialog>();
-        dialog.LoadReport(session.Id);
-        dialog.Owner = Application.Current?.MainWindow;
-        dialog.ShowDialog();
+        // Yayın bitince rapor kendiliğinden açılır. Sayfa await EDİLMİYOR:
+        // burası yayını bitiren akışın sonu, rapor kapanınca yapılacak iş
+        // yok. Beklemek "Yayını Bitir" komutunu rapor kapanana kadar açık
+        // tutardı.
+        if (_pages is not null)
+        {
+            var reportVm = App.Host.Services.GetRequiredService<StreamReportViewModel>();
+            _ = _pages.ShowAsync("stream-report", "Yayın Raporu",
+                _ => Views.Pages.StreamReportPage.Create(reportVm, session.Id));
+        }
     }
 
     public void AddChatToQueue(ChatMessageViewModel messageVm)
@@ -1019,27 +1044,34 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         RefreshHighlights();
     }
 
-    [RelayCommand] private void OpenStreamHistory()
+    // Aşağıdaki üç komut Faz 3'te pencereden sayfaya geçti. Toolkit
+    // "Async" ekini attığı için üretilen komut adları DEĞİŞMEDİ
+    // (OpenStreamHistoryCommand …) — ShellSidebar bağlamaları ve
+    // ShortcutBinder eşlemeleri olduğu gibi çalışıyor.
+    [RelayCommand] private async Task OpenStreamHistoryAsync()
     {
-        var dlg = App.Host.Services.GetRequiredService<StreamHistoryDialog>();
-        dlg.Owner = Application.Current?.MainWindow;
-        dlg.ShowDialog();
+        if (_pages is null) return;   // yalnız testte
+        var vm = App.Host.Services.GetRequiredService<StreamHistoryViewModel>();
+        await _pages.ShowAsync("history", "Yayın Geçmişi",
+            _ => Views.Pages.StreamHistoryPage.Create(vm));
     }
 
     /// <summary>Dönem raporu: tek yayına değil takvim aralığına bakan,
-    /// muhasebeye fatura listesi çıkaran ayrı pencere.</summary>
-    [RelayCommand] private void OpenPeriodReport()
+    /// muhasebeye fatura listesi çıkaran ayrı sayfa.</summary>
+    [RelayCommand] private async Task OpenPeriodReportAsync()
     {
-        var dlg = App.Host.Services.GetRequiredService<PeriodReportDialog>();
-        dlg.Owner = Application.Current?.MainWindow;
-        dlg.ShowDialog();
+        if (_pages is null) return;   // yalnız testte
+        var vm = App.Host.Services.GetRequiredService<PeriodReportViewModel>();
+        await _pages.ShowAsync("period-report", "Dönem Raporu",
+            _ => Views.Pages.PeriodReportPage.Create(vm));
     }
 
-    [RelayCommand] private void OpenBlacklist()
+    [RelayCommand] private async Task OpenBlacklistAsync()
     {
-        var dlg = App.Host.Services.GetRequiredService<BlacklistDialog>();
-        dlg.Owner = Application.Current?.MainWindow;
-        dlg.ShowDialog();
+        if (_pages is null) return;   // yalnız testte
+        var vm = App.Host.Services.GetRequiredService<BlacklistViewModel>();
+        await _pages.ShowAsync("blacklist", "Kara Liste",
+            _ => Views.Pages.BlacklistPage.Create(vm));
         RefreshHighlights();
     }
 
@@ -1459,11 +1491,12 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private void DeleteSelectedFromQueueViaShortcut() => RemoveSelectedFromQueue();
 
     [RelayCommand]
-    private void OpenShortcutHelp()
+    private async Task OpenShortcutHelpAsync()
     {
-        var dlg = App.Host.Services.GetRequiredService<Views.ShortcutHelpDialog>();
-        dlg.Owner = Application.Current?.MainWindow;
-        dlg.ShowDialog();
+        if (_pages is null) return;   // yalnız testte
+        var registry = App.Host.Services.GetRequiredService<OrderDeck.Core.Shortcuts.ShortcutRegistry>();
+        await _pages.ShowAsync("shortcuts", "Kısayollar",
+            _ => Views.Pages.ShortcutHelpPage.Create(registry));
     }
 
     private static void ShowCustomerDetail(string customerId)

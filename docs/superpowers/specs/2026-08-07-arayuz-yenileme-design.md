@@ -167,14 +167,34 @@ tüketmedi. Kullanılmayan token, kullanılmayan `Style` ile aynı borç (§9).
 
 **Hiçbir şey pop-up olarak açılmayacak.** Bugünkü 24 `Window`, üç kalıba dağılır:
 
-### 6.1 Sayfa (12 view)
+### 6.1 Sayfa (10 view)
 
-Sol nav'dan gidilir, tüm içerik alanını kaplar. Yayın dışında bakılan şeyler:
+Sol nav'dan gidilir, **üst bar hariç** tüm içerik alanını kaplar. Yayın
+dışında bakılan şeyler:
 
 `SettingsDialog` · `BlacklistDialog` · `StreamHistoryDialog` ·
 `StreamReportDialog` · `PeriodReportDialog` · `SupportRequestsDialog` ·
-`AccountDialog` · `BackupTransferDialog` · `RestoreDialog` · `BulkSmsDialog` ·
-`ShipmentThresholdDialog` · `ShortcutHelpDialog`
+`AccountDialog` · `BackupTransferDialog` · `BulkSmsDialog` ·
+`ShortcutHelpDialog`
+
+**Faz 3 düzeltmeleri (2026-08-10, plan yazılırken ölçüldü):**
+
+- ~~12 view~~ → **10.** `ShipmentThresholdDialog` Faz 2b'de **çekmece** oldu
+  (§6.2 zincirinin üçüncü seviyesi, #244). `RestoreDialog` ise kabuk daha
+  doğmadan çalışıyor (`App.xaml.cs:131` — veritabanı boşsa açılışta sorar)
+  ve `DialogResult`'ını gerçekten tüketen **tek** görünüm; sayfa olamaz →
+  §6.4'e, Faz 4'e taşındı.
+- ~~"Tüm içerik alanını kaplar."~~ **Üst bar açıkta kalır.** Yayın sırasında
+  Ayarlar'a giren operatör *Yayını Bitir* düğmesini ve izleyici sayısını
+  kaybetmemeli — bugünkü modal pencere kaybettiriyor, sayfa bu yönüyle
+  düzeltme.
+- **Sayfa yığını var** (`PageStack`, çekmece yığınının kardeşi).
+  `StreamHistory → StreamReport` bugün iç içe modal; yığın olmasa rapordan
+  listeye dönüş yolu kalmazdı. Çekmecenin aksine alttaki sayfalar çizilmez
+  ve sonuç sözleşmesi yok (`Task`, `Task<bool>` değil) — hiçbir çağıran
+  sonucu okumuyor, tek tek ölçüldü.
+- Uygulama planı:
+  `docs/superpowers/plans/2026-08-10-arayuz-faz3-sayfa-navigasyonu.md`
 
 ### 6.2 Çekmece (10 view)
 
@@ -230,11 +250,16 @@ Sağdan kayar, **sohbet solda görünür kalır**. Yayın sırasında açılan h
 soruya dönüşür ("Sil → Emin misin? Evet · Vazgeç"), `Esc` veya odak kaybı
 iptal eder.
 
-### 6.4 Shell öncesi (2 view)
+### 6.4 Shell öncesi (3 view)
 
-`LoginDialog` ve `FirstRunWizard` shell henüz yokken çalışır. Bunlar ayrı
-pencere değil, **aynı pencerenin tam-ekran durumu** olur. Böylece uygulamada
-gerçekten tek `Window` kalır.
+`LoginDialog`, `RestoreDialog` ve `FirstRunWizard` shell henüz yokken
+çalışır. Bunlar ayrı pencere değil, **aynı pencerenin tam-ekran durumu**
+olur. Böylece uygulamada gerçekten tek `Window` kalır.
+
+`RestoreDialog` buraya 2026-08-10'da §6.1'den taşındı: `App.xaml.cs:131`'de,
+veritabanı boş ve bulutta yedek varsa açılıyor; `DialogResult == true`
+uygulamayı yeniden başlatıyor. Hem kabuktan önce çalışması hem de sonucunu
+gerçekten tüketen tek görünüm olması, onu sayfa olmaktan çıkarıyor.
 
 ## 7. Duyarlı davranış
 
@@ -425,11 +450,17 @@ geldiğinde hareket defterine dönüşecek.
   `AddToBlacklistDialog`'un shell'den açılan iki çağrısı da onunla birlikte
   bekliyor: sınıf tek, iki yol aynı anda dönüşmeli.
 
-**Faz 3 — sayfa navigasyonu + 12 sayfa view'ı.** Sol nav gerçek navigasyona
-bağlanır.
+**Faz 3 — sayfa navigasyonu + 10 sayfa view'ı.** Sol nav gerçek navigasyona
+bağlanır. Dört PR'a bölündü: (a) `PageStack`/`PageHost` altyapısı + altı
+kolay sayfa, (b) `SettingsDialog` + `SettingsTheme.xaml`'in ölümü,
+(c) destek talepleri + toplu SMS, (d) Faz 2b'nin kalan çekmeceleri +
+`BackupTransferPage` — sonuncusu zorunlu olarak en sonda, çünkü yedek
+aktarma penceresini açan `CustomerDetailDialog` önce çekmeceye dönmeli.
+Plan: `docs/superpowers/plans/2026-08-10-arayuz-faz3-sayfa-navigasyonu.md`
 
-**Faz 4 — `LoginDialog` + `FirstRunWizard`.** Tam-ekran shell durumlarına
-çevrilir; son iki `Window` kökü kalkar.
+**Faz 4 — `LoginDialog` + `RestoreDialog` + `FirstRunWizard`.** Tam-ekran
+shell durumlarına çevrilir; son `Window` kökleri kalkar, `DarkControls.xaml`
+silinir.
 
 ## 10. Doğrulama
 

@@ -76,6 +76,13 @@
                                      Margin="{StaticResource OD.Pad.Top5}"/>
                 </Grid>
             </Grid>
+
+            <!-- Sayfa katmanı (Faz 3): satır 1-2'yi örter, ÜST BAR AÇIKTA
+                 KALIR. Sayfadayken de yayın başlatılıp bitirilebilsin diye —
+                 bugünkü modal pencerenin kaybettirdiği şey buydu.
+                 Kardeşlerinden SONRA yazılı olması z-düzenini veriyor
+                 (DrawerHost'ta da kullanılan kalıp). -->
+            <shell:PageHost Grid.Row="1" Grid.RowSpan="2"/>
         </Grid>
     </Grid>
 </UserControl>

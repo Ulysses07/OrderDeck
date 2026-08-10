@@ -301,12 +301,11 @@ public sealed class AppHost : IDisposable
         services.AddTransient<ViewModels.StreamHistoryViewModel>();
         services.AddTransient<ViewModels.BlacklistViewModel>();
 
-        // Dialogs (transient — fresh instance per open)
-        services.AddTransient<Views.StreamReportDialog>();
-        services.AddTransient<Views.PeriodReportDialog>();
+        // Dialogs (transient — fresh instance per open).
+        // Rapor/geçmiş/kara liste pencereleri Faz 3'te sayfaya dönüştü;
+        // sayfalar DI'dan ÇÖZÜLMÜYOR (fabrika + yukarıdaki ViewModel kaydı
+        // yeterli), o yüzden buradan düştüler.
         services.AddTransient<Views.SettingsDialog>();
-        services.AddTransient<Views.StreamHistoryDialog>();
-        services.AddTransient<Views.BlacklistDialog>();
 
         // Customer center (Phase 3a)
         services.AddTransient<ViewModels.CustomerDetailViewModel>();
@@ -335,11 +334,17 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<Services.Drawers.IDrawerService>(
             sp => sp.GetRequiredService<Services.Drawers.DrawerStack>());
 
+        // Faz 3 — sayfa altyapısı. Aynı "tek örnek iki rolde" kuralı geçerli:
+        // PageHost'un bağlandığı yığın ile ViewModel'lere verilen servis aynı
+        // nesne olmalı.
+        services.AddSingleton<Services.Pages.PageStack>();
+        services.AddSingleton<Services.Pages.IPageService>(
+            sp => sp.GetRequiredService<Services.Pages.PageStack>());
+
         // Shortcuts (Phase 3b-1)
         services.AddSingleton<OrderDeck.Core.Shortcuts.ShortcutRegistry>();
         services.AddSingleton<OrderDeck.App.Shortcuts.ShortcutBinder>();
         services.AddTransient<ViewModels.ShortcutsTabViewModel>();
-        services.AddTransient<Views.ShortcutHelpDialog>();
 
         // Licensing (Phase 4b)
         var licensingOptions = BuildLicensingOptions();
@@ -518,7 +523,6 @@ public sealed class AppHost : IDisposable
         services.AddTransient<ViewModels.LoginDialogViewModel>();
         services.AddTransient<Views.LoginDialog>();
         services.AddTransient<ViewModels.AccountDialogViewModel>();
-        services.AddTransient<Views.AccountDialog>();
 
         // First-run setup wizard. Both Window + VM transient so a re-run
         // (operator skipped the first time) gets fresh state instead of
