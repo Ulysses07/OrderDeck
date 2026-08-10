@@ -1,0 +1,64 @@
+<UserControl x:Class="OrderDeck.App.Views.Pages.BlacklistPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- BlacklistDialog'un (700x500 Window) sayfa karşılığı — spec §6.1.
+         Bağlanan ViewModel aynı; değişen kabuk, paleti ve iki eksik.
+
+         1. "Kara Liste" BAŞLIĞI YOK: PageHost'un şeridi zaten yazıyor.
+         2. "Kapat" DÜĞMESİ YOK: sayfanın çıkışı geri okudur (ESC de aynı
+            şeyi yapar). İki çıkış sunmak ikisinin farklı iş yaptığını
+            sandırır — PageHost'taki aynı gerekçe. -->
+    <Grid Margin="{StaticResource OD.Pad.7}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0"
+                   Style="{StaticResource OD.Text.Micro}"
+                   Margin="{StaticResource OD.Pad.Bottom3}"
+                   Text="{Binding TotalCount, StringFormat=TOPLAM {0} KULLANICI}"/>
+
+        <DataGrid Grid.Row="1"
+                  Style="{StaticResource OD.DataGrid}"
+                  ItemsSource="{Binding Items}"
+                  SelectedItem="{Binding Selected}">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Platform"  Binding="{Binding Platform}"        Width="*"/>
+                <DataGridTextColumn Header="Kullanıcı" Binding="{Binding Display}"         Width="2*"/>
+                <DataGridTextColumn Header="Sebep"     Binding="{Binding BlacklistReason}" Width="3*"/>
+                <DataGridTextColumn Header="Tarih"
+                                    Binding="{Binding BlacklistedAt, Converter={StaticResource UnixToDateConverter}}"
+                                    Width="2*"/>
+                <DataGridTemplateColumn Header="" Width="44">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <!-- Ata artık Window değil UserControl: en yakın
+                                 UserControl bu sayfanın kendisi (PageHost bir
+                                 üstte, arama oraya çıkmıyor). -->
+                            <Button Content="…"
+                                    Style="{StaticResource OD.Button.Ghost}"
+                                    ToolTip="Müşteri kartını aç"
+                                    Command="{Binding DataContext.OpenCustomerDetailCommand,
+                                                      RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                    CommandParameter="{Binding Id}"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal"
+                    Margin="{StaticResource OD.Pad.Top5}">
+            <Button Content="Manuel Ekle"
+                    Style="{StaticResource OD.Button.Secondary}"
+                    Command="{Binding AddManualCommand}"/>
+            <Button Content="Kara Listeden Çıkar"
+                    Style="{StaticResource OD.Button.Ghost}"
+                    Margin="{StaticResource OD.Pad.X2}"
+                    Foreground="{StaticResource OD.Brush.AccentHot}"
+                    Command="{Binding RemoveSelectedCommand}"/>
+        </StackPanel>
+    </Grid>
+</UserControl>

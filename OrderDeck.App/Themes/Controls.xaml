@@ -709,4 +709,86 @@
         <Setter Property="CornerRadius" Value="{StaticResource OD.Radius.Full}"/>
         <Setter Property="Padding"      Value="{StaticResource OD.Pad.3}"/>
     </Style>
+
+    <!-- ══ Veri ızgarası (Faz 3) ═════════════════════════════════════════
+         Dört sayfa tüketiyor: Kara Liste, Yayın Geçmişi, Yayın Raporu,
+         Dönem Raporu. Spec §9 gereği stil ancak şimdi yazıldı.
+
+         DarkControls'taki örtük DataGrid* stilleri eski token setine
+         (OD.Bg.*, OD.Fg.*) bağlı; buradakiler yeni palete bağlı ve
+         x:Key'li, yani sayfalar dönüştükçe eskisi kendiliğinden
+         kullanımdan düşüyor (Faz 4'te DarkControls silinecek).
+
+         Zebra şerit YOK. Pencere sürümünde AlternatingRowBackground
+         vardı; satır zeminini hem zebra hem de üzerine-gelme durumu
+         yazmak istiyor, ikisi aynı özelliğe oturuyor. Seçim + üzerine
+         gelme okunaklılık için zebradan daha değerli, o yüzden zebra
+         düştü. -->
+    <Style x:Key="OD.DataGrid.Header" TargetType="DataGridColumnHeader">
+        <Setter Property="Background"  Value="{StaticResource OD.Brush.Surface2}"/>
+        <Setter Property="Foreground"  Value="{StaticResource OD.Brush.TextMute}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource OD.Brush.Border}"/>
+        <Setter Property="BorderThickness" Value="0,0,0,1"/>
+        <Setter Property="Padding"     Value="{StaticResource OD.Pad.3}"/>
+        <Setter Property="FontFamily"  Value="{StaticResource OD.Font.Sans}"/>
+        <Setter Property="FontSize"    Value="{StaticResource OD.Font.F0}"/>
+        <Setter Property="FontWeight"  Value="SemiBold"/>
+        <Setter Property="HorizontalContentAlignment" Value="Left"/>
+    </Style>
+
+    <Style x:Key="OD.DataGrid.Cell" TargetType="DataGridCell">
+        <Setter Property="Background"  Value="Transparent"/>
+        <Setter Property="Foreground"  Value="{StaticResource OD.Brush.Text}"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Padding"     Value="{StaticResource OD.Pad.3}"/>
+        <Setter Property="FontFamily"  Value="{StaticResource OD.Font.Sans}"/>
+        <Setter Property="FontSize"    Value="{StaticResource OD.Font.F1}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <!-- Varsayılan şablon odakta bir kenarlık çiziyor ve
+                     dolguyu yok sayıyor; ikisi de burada elde. -->
+                <ControlTemplate TargetType="DataGridCell">
+                    <Border Background="{TemplateBinding Background}"
+                            Padding="{TemplateBinding Padding}"
+                            SnapsToDevicePixels="True">
+                        <ContentPresenter VerticalAlignment="Center"/>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <Trigger Property="IsSelected" Value="True">
+                <Setter Property="Background" Value="{StaticResource OD.Brush.Accent}"/>
+                <Setter Property="Foreground" Value="{StaticResource OD.Brush.OnAccent}"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="OD.DataGrid.Row" TargetType="DataGridRow">
+        <Setter Property="Background" Value="Transparent"/>
+        <Style.Triggers>
+            <!-- Seçim hücrede boyanıyor; burada yalnız üzerine gelme var.
+                 Sıra önemli: seçili satırda da IsMouseOver doğru olur,
+                 ama hücrenin kendi zemini bu satır zeminini örttüğü için
+                 çakışma görünmüyor. -->
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{StaticResource OD.Brush.Surface2}"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="OD.DataGrid" TargetType="DataGrid">
+        <Setter Property="Background"      Value="{StaticResource OD.Brush.Surface}"/>
+        <Setter Property="BorderBrush"     Value="{StaticResource OD.Brush.Border}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="RowBackground"   Value="Transparent"/>
+        <Setter Property="GridLinesVisibility" Value="None"/>
+        <Setter Property="HeadersVisibility"   Value="Column"/>
+        <Setter Property="AutoGenerateColumns" Value="False"/>
+        <Setter Property="IsReadOnly"          Value="True"/>
+        <Setter Property="SelectionUnit"       Value="FullRow"/>
+        <Setter Property="ColumnHeaderStyle" Value="{StaticResource OD.DataGrid.Header}"/>
+        <Setter Property="CellStyle"         Value="{StaticResource OD.DataGrid.Cell}"/>
+        <Setter Property="RowStyle"          Value="{StaticResource OD.DataGrid.Row}"/>
+    </Style>
 </ResourceDictionary>

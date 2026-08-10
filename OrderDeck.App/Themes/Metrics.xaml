@@ -53,6 +53,7 @@
        Top5 = OD.Pad.5 = OD.Space.5 = 16. Numara/değer eşleşmesi bozulursa
        token okunurluğunu kaybeder — yeni bir tek yönlü token eklerken
        değeri OD.Space.* ölçeğinden seç. -->
+  <Thickness x:Key="OD.Pad.Top3"    Left="0" Top="8"  Right="0" Bottom="0"/>
   <Thickness x:Key="OD.Pad.Top5"    Left="0" Top="16" Right="0" Bottom="0"/>
   <Thickness x:Key="OD.Pad.Top6"    Left="0" Top="20" Right="0" Bottom="0"/>
   <Thickness x:Key="OD.Pad.Bottom3" Left="0" Top="0"  Right="0" Bottom="8"/>

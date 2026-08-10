@@ -1,0 +1,24 @@
+<UserControl x:Class="OrderDeck.App.Views.Pages.StreamHistoryPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- StreamHistoryDialog'un (780x540 Window) sayfa karşılığı — spec §6.1.
+         Satıra çift tıklayınca rapor AÇILIR; pencere sürümünde bu iç içe bir
+         ShowDialog'du, artık yığına ikinci bir sayfa biniyor ve geri oku
+         rapordan buraya döndürüyor. Geri yığınının tek gerçek tüketicisi. -->
+    <Grid Margin="{StaticResource OD.Pad.7}">
+        <DataGrid x:Name="HistoryGrid"
+                  Style="{StaticResource OD.DataGrid}"
+                  ItemsSource="{Binding Sessions}"
+                  MouseDoubleClick="OnRowDoubleClick">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Tarih"    Binding="{Binding StartedLabel}" Width="2*"/>
+                <DataGridTextColumn Header="Süre"     Binding="{Binding Duration}"     Width="*"/>
+                <DataGridTextColumn Header="Etiket"   Binding="{Binding LabelCount}"   Width="*"/>
+                <DataGridTextColumn Header="Ciro"
+                                    Binding="{Binding TotalAmount, StringFormat={}{0:N2} TL}"
+                                    Width="*"/>
+                <DataGridTextColumn Header="Platform" Binding="{Binding Platforms}"    Width="2*"/>
+            </DataGrid.Columns>
+        </DataGrid>
+    </Grid>
+</UserControl>

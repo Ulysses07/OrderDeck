@@ -1,0 +1,64 @@
+<UserControl x:Class="OrderDeck.App.Views.Shell.PageHost"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Sayfa katmanı (spec §6.1). Çekmeceden üç farkı var:
+
+         1. KAPLADIĞI ALAN: satır 1-2, yani şeritler + sohbet/sağ sütun.
+            Üst bar açıkta kalır — yayın sırasında Ayarlar'a giren operatör
+            "Yayını Bitir" düğmesini ve izleyici sayısını kaybetmemeli.
+            Bugünkü modal pencere kaybettiriyor; sayfa bu yönüyle düzeltme.
+         2. ALTTAKİLER ÇİZİLMEZ: üstteki sayfa zaten tam örtüyor. Bu yüzden
+            ItemsControl değil ContentControl — iki sayfayı üst üste ölçmek
+            boşuna yerleşim maliyeti olurdu.
+         3. MODAL: altındaki her şeyi örtüyor. Çekmece bilinçli olarak modal
+            DEĞİL (sohbet okunur kalsın diye); sayfa yayın dışında bakılan
+            bir şey, orada böyle bir ödünç gerekmiyor.
+
+         Zemin OD.Brush.Bg, Surface değil: sayfa kabuğun üstünde duran bir
+         panel değil, ekranın kendisi.
+
+         Açık sayfa yokken Collapsed: ölçüm bile yapmaz, altındaki kabuk
+         tıklamayı normal alır.
+         DataContext'i PageStack; MainShellViewModel DEĞİL. -->
+    <Border x:Name="Root"
+            Background="{StaticResource OD.Brush.Bg}"
+            Visibility="{Binding IsOpen, Converter={StaticResource BoolToVisibleConverter}}">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>   <!-- geri + başlık -->
+                <RowDefinition Height="*"/>      <!-- içerik -->
+            </Grid.RowDefinitions>
+
+            <!-- Başlık şeridi. TEK "geri" düğmesi, iki anlam: yığında tek
+                 sayfa varsa kabuğa döner, iki sayfa varsa altındakine.
+                 Ayrı bir "kapat" eklenmedi — operatöre iki farklı çıkış
+                 sunmak, ikisinin farklı şey yaptığını sandırır. -->
+            <Border Grid.Row="0"
+                    Padding="{StaticResource OD.Pad.4}"
+                    BorderBrush="{StaticResource OD.Brush.Border}"
+                    BorderThickness="0,0,0,1">
+                <StackPanel Orientation="Horizontal">
+                    <Button Style="{StaticResource OD.Button.Ghost}"
+                            Padding="{StaticResource OD.Pad.3}"
+                            Click="OnBackClick"
+                            ToolTip="Geri (ESC)">
+                        <Path Style="{StaticResource OD.IconPath}"
+                              Data="{StaticResource OD.Path.ChevronLeft}"/>
+                    </Button>
+                    <TextBlock Text="{Binding Top.Title}"
+                               VerticalAlignment="Center"
+                               Margin="{StaticResource OD.Pad.3}"
+                               FontFamily="{StaticResource OD.Font.Display}"
+                               FontSize="{StaticResource OD.Font.F3}"
+                               Foreground="{StaticResource OD.Brush.Text}"/>
+                </StackPanel>
+            </Border>
+
+            <!-- x:Name yerleşim testinin tutamağı: görsel ağaçta bu yuvadan
+                 ÖNCE gelen bir ContentControl daha var (geri düğmesi), tip
+                 araması yanlışını bulur. -->
+            <ContentControl x:Name="PageContent" Grid.Row="1"
+                            Content="{Binding Top.Content}"/>
+        </Grid>
+    </Border>
+</UserControl>

@@ -8,7 +8,12 @@
             <Setter Property="Height" Value="{StaticResource OD.Layout.ButtonHeight}"/>
             <Setter Property="Margin" Value="0,1"/>
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="BorderThickness" Value="0"/>
+            <!-- Sol kenarlık HER ZAMAN 2px, varsayılan fırçası saydam.
+                 Seçimde yalnız fırça değişiyor: kalınlığı tetikleyicide
+                 vermek içeriği 2px kaydırır ve nav satırları sayfa
+                 değiştikçe zıplar. -->
+            <Setter Property="BorderThickness" Value="2,0,0,0"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Foreground" Value="{StaticResource OD.Brush.TextDim}"/>
             <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
@@ -17,6 +22,8 @@
                     <ControlTemplate TargetType="Button">
                         <Border x:Name="Bd" Background="{TemplateBinding Background}"
                                 CornerRadius="{StaticResource OD.Radius.Md}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
                                 Padding="{StaticResource OD.Pad.3}">
                             <ContentPresenter VerticalAlignment="Center"/>
                         </Border>
@@ -31,6 +38,37 @@
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+            <Style.Triggers>
+                <!-- Seçili sayfa (Faz 3). Düğmenin Tag'i sayfanın anahtarı;
+                     açık sayfanınkiyle eşleşince satır vurgulanır.
+
+                     Tetikleyici ControlTemplate'te DEĞİL Style'da: şablon
+                     tetikleyicisinin DataTrigger bağlamasında "Self"in neyi
+                     gösterdiği belirsiz. Style'da tartışmasız düğmenin
+                     kendisi. Bunun bedeli TargetName kullanamamak, o yüzden
+                     Bd'nin kenarlığı TemplateBinding üzerinden düğmeden
+                     besleniyor.
+
+                     Neden MultiBinding: DataTrigger.Value bir
+                     DependencyProperty değil, oraya Binding konamıyor —
+                     karşılaştırma converter'a taşındı.
+
+                     Vurgu hover'dan AYRIŞIYOR: ikisi de Surface2 zemin
+                     kullanıyor ama seçimde sol kenarda accent şerit var.
+                     Hover geçici, seçim kalıcı; göz ikisini karıştırmamalı. -->
+                <DataTrigger Value="True">
+                    <DataTrigger.Binding>
+                        <MultiBinding Converter="{StaticResource EqualsConverter}">
+                            <Binding Path="Tag" RelativeSource="{RelativeSource Self}"/>
+                            <Binding Path="DataContext.Pages.CurrentKey"
+                                     RelativeSource="{RelativeSource AncestorType=UserControl}"/>
+                        </MultiBinding>
+                    </DataTrigger.Binding>
+                    <Setter Property="Background" Value="{StaticResource OD.Brush.Surface2}"/>
+                    <Setter Property="BorderBrush" Value="{StaticResource OD.Brush.Accent}"/>
+                    <Setter Property="Foreground" Value="{StaticResource OD.Brush.Text}"/>
+                </DataTrigger>
+            </Style.Triggers>
         </Style>
 
         <!-- Nav satırının içeriği. Geniş modda sola yaslı akar (ikon + etiket).
@@ -100,9 +138,11 @@
                                         Converter={StaticResource BoolToCollapsedConverter}}"/>
             </StackPanel>
 
-            <!-- Navigasyon -->
+            <!-- Navigasyon. Tag = sayfa anahtarı (Faz 3 vurgusu). Çekmece
+                 açan satırların (Müşteriler, Yeni Dekont) Tag'i YOK: çekmece
+                 sayfa değil, nav'da "buradasın" demek yanlış olurdu. -->
             <StackPanel Grid.Row="1" Margin="{StaticResource OD.Pad.Top6}">
-                <Button Style="{StaticResource NavButton}"
+                <Button Style="{StaticResource NavButton}" Tag="history"
                         Command="{Binding OpenStreamHistoryCommand}" ToolTip="Yayın Geçmişi">
                     <StackPanel Style="{StaticResource NavRow}">
                         <Path Data="{StaticResource OD.Path.History}" Style="{StaticResource OD.IconPath}"/>
@@ -116,7 +156,7 @@
                         <TextBlock Text="Müşteriler" Style="{StaticResource NavLabel}"/>
                     </StackPanel>
                 </Button>
-                <Button Style="{StaticResource NavButton}"
+                <Button Style="{StaticResource NavButton}" Tag="blacklist"
                         Command="{Binding OpenBlacklistCommand}" ToolTip="Kara Liste">
                     <StackPanel Style="{StaticResource NavRow}">
                         <Path Data="{StaticResource OD.Path.Blacklist}" Style="{StaticResource OD.IconPath}"/>

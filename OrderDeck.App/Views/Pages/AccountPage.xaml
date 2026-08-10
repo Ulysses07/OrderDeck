@@ -1,0 +1,98 @@
+<UserControl x:Class="OrderDeck.App.Views.Pages.AccountPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- AccountDialog'un (420x500 Window) sayfa karşılığı — spec §6.1.
+         Pencerede yerel bir BooleanToVisibilityConverter "BoolToVis" adıyla
+         tanımlıydı; App.xaml'in BoolToVisibleConverter'ı ile değiştirildi.
+
+         420px pencere genişliği artık yok, sayfa tüm içerik alanını
+         kaplıyor. Metin blokları okunabilirlik için 520px'e sınırlandı:
+         iki kelimelik değerleri 1400px'e yaymak okumayı zorlaştırır. -->
+    <Grid Margin="{StaticResource OD.Pad.7}"
+          MaxWidth="520" HorizontalAlignment="Left">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled">
+            <StackPanel>
+                <!-- Hesap bölümü: e-posta + ad -->
+                <StackPanel Visibility="{Binding IsAccountSection, Converter={StaticResource BoolToVisibleConverter}}">
+                    <TextBlock Text="E-POSTA" Style="{StaticResource OD.Text.Micro}"/>
+                    <TextBlock Text="{Binding Email}"
+                               Margin="{StaticResource OD.Pad.Bottom3}"/>
+
+                    <TextBlock Text="AD SOYAD" Style="{StaticResource OD.Text.Micro}"/>
+                    <TextBlock Text="{Binding Name}"
+                               Margin="{StaticResource OD.Pad.Bottom3}"/>
+                </StackPanel>
+
+                <!-- Lisans bölümü -->
+                <StackPanel Visibility="{Binding IsLicenseSection, Converter={StaticResource BoolToVisibleConverter}}">
+                    <TextBlock Text="LİSANS ANAHTARI" Style="{StaticResource OD.Text.Micro}"/>
+                    <StackPanel Orientation="Horizontal"
+                                Margin="{StaticResource OD.Pad.Bottom3}">
+                        <TextBlock Text="{Binding DisplayedLicenseKey}"
+                                   Style="{StaticResource OD.Text.Mono}"
+                                   VerticalAlignment="Center"/>
+                        <ToggleButton IsChecked="{Binding IsLicenseKeyVisible, Mode=TwoWay}"
+                                      Margin="{StaticResource OD.Pad.X2}"
+                                      VerticalAlignment="Center"
+                                      ToolTip="Lisans anahtarını göster/gizle">
+                            <!-- Metni durumla değiştiren tetikleyici pencere
+                                 sürümünden aynen geldi; tek fark artık
+                                 OD.Chip'i temel alması. -->
+                            <ToggleButton.Style>
+                                <Style TargetType="ToggleButton" BasedOn="{StaticResource OD.Chip}">
+                                    <Setter Property="Content" Value="Göster"/>
+                                    <Style.Triggers>
+                                        <Trigger Property="IsChecked" Value="True">
+                                            <Setter Property="Content" Value="Gizle"/>
+                                        </Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </ToggleButton.Style>
+                        </ToggleButton>
+                    </StackPanel>
+
+                    <TextBlock Text="SKU" Style="{StaticResource OD.Text.Micro}"/>
+                    <TextBlock Text="{Binding SkuCode}"
+                               Margin="{StaticResource OD.Pad.Bottom3}"/>
+
+                    <TextBlock Text="BİTİŞ TARİHİ" Style="{StaticResource OD.Text.Micro}"/>
+                    <TextBlock Text="{Binding ExpiresAt, StringFormat='{}{0:dd.MM.yyyy}'}"
+                               Margin="{StaticResource OD.Pad.Bottom3}"/>
+                </StackPanel>
+
+                <!-- Deneme bölümü -->
+                <StackPanel Visibility="{Binding IsTrialSection, Converter={StaticResource BoolToVisibleConverter}}">
+                    <TextBlock Text="DENEME SÜRESİ" Style="{StaticResource OD.Text.Micro}"/>
+                    <TextBlock Text="{Binding TrialLine}"
+                               Margin="{StaticResource OD.Pad.Bottom3}"/>
+                </StackPanel>
+
+                <TextBlock Text="DURUM" Style="{StaticResource OD.Text.Micro}"/>
+                <TextBlock Text="{Binding StatusText}"/>
+            </StackPanel>
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="1" Orientation="Horizontal"
+                    Margin="{StaticResource OD.Pad.Top5}">
+            <Button Content="Hesap oluştur / Giriş yap"
+                    Style="{StaticResource OD.Button.Primary}"
+                    Command="{Binding OpenLoginCommand}"
+                    Visibility="{Binding IsOpenLoginAvailable, Converter={StaticResource BoolToVisibleConverter}}"/>
+            <Button Content="Tekrar bağlan"
+                    Style="{StaticResource OD.Button.Secondary}"
+                    Margin="{StaticResource OD.Pad.X2}"
+                    Command="{Binding ReconnectCommand}"
+                    Visibility="{Binding IsReconnectAvailable, Converter={StaticResource BoolToVisibleConverter}}"/>
+            <Button Content="Çıkış yap"
+                    Style="{StaticResource OD.Button.Ghost}"
+                    Command="{Binding LogoutCommand}"
+                    Visibility="{Binding IsLogoutAvailable, Converter={StaticResource BoolToVisibleConverter}}"/>
+        </StackPanel>
+    </Grid>
+</UserControl>

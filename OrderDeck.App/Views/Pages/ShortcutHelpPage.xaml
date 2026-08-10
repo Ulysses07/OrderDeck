@@ -1,0 +1,31 @@
+<UserControl x:Class="OrderDeck.App.Views.Pages.ShortcutHelpPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- ShortcutHelpDialog'un (420x440 Window) sayfa karşılığı — spec §6.1.
+         Kullanıcının kararı: bu da sayfa olsun, "küçük diye pop-up kalsın"
+         istisnası açılmasın (spec §6 "hiçbir şey pop-up değil").
+
+         Liste 520px'e sınırlı: kısayol adı ile tuş takımı arasındaki boşluk
+         tam ekranda göz taramasını zorlaştırır. -->
+    <Grid Margin="{StaticResource OD.Pad.7}"
+          MaxWidth="520" HorizontalAlignment="Left">
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <ItemsControl ItemsSource="{Binding Items}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Grid Margin="{StaticResource OD.Pad.1}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="{Binding DisplayName}"/>
+                            <TextBlock Grid.Column="1" Text="{Binding ChordText}"
+                                       Style="{StaticResource OD.Text.Mono}"
+                                       Foreground="{StaticResource OD.Brush.Amber}"/>
+                        </Grid>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+    </Grid>
+</UserControl>
