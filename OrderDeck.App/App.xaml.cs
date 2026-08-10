@@ -47,10 +47,25 @@ public partial class App : Application
             .OnAfterInstallFastCallback(_ => TryInstallWebView2())
             .Run();
 
+        _startedFromEntryPoint = true;
+
         var app = new App();
         app.InitializeComponent();
         app.Run();
     }
+
+    /// <summary>
+    /// Uygulama GERÇEKTEN buradan mı başlatıldı? Tema testleri App'i yalnız
+    /// App.xaml'in kaynak sözlüğü için örnekliyor (Application süreç başına
+    /// tek olduğu ve BAML kökü bu tipi istediği için başka türlüsü mümkün
+    /// değil) ve hiç <c>Run()</c> çağırmıyor. Ama bir test dispatcher
+    /// kuyruğunu pompalarsa (ThemeTestHost.Pump) WPF'in bekleyen açılış işi
+    /// koşuyor ve <see cref="OnStartup"/> tetikleniyor: lisans sunucusuna
+    /// gerçek istekler, hosted service'ler, modal sihirbaz. CI'da bu 3
+    /// dakikalık kilitlenmeye ve test host çökmesine yol açtı — hangi WPF
+    /// testinin App'i ilk yarattığına bağlı olduğu için flaky'ydi.
+    /// </summary>
+    private static bool _startedFromEntryPoint;
 
     public static AppHost Host { get; private set; } = null!;
 
@@ -61,6 +76,10 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        // Gerçek giriş noktasından gelinmediyse hiçbir şey başlatılmaz;
+        // gerekçe _startedFromEntryPoint'in üstünde.
+        if (!_startedFromEntryPoint) return;
+
         // Wire global exception handlers FIRST so they catch any crash that
         // happens during the rest of OnStartup (e.g. corrupt settings file
         // throwing during AppHost construction). Operator's mid-stream WPF
@@ -357,6 +376,16 @@ public partial class App : Application
         });
 
         base.OnStartup(e);
+
+        // Ana pencere artık AÇIKÇA kuruluyor. Eskiden App.xaml'deki
+        // StartupUri yapıyordu ama WPF onu OnStartup'tan SONRA işliyor —
+        // yani yukarıdaki kısa devre pencereyi engelleyemiyor, AppHost
+        // kurulmamışken bir MainWindow doğuyor ve Loaded'da patlıyordu.
+        // Davranış aynı: pencere yine OnStartup'ın en sonunda açılıyor,
+        // erken çıkışların hepsi zaten Shutdown() ile dönüyor.
+        var main = new MainWindow();
+        MainWindow = main;
+        main.Show();
     }
 
     // ──────────────────────────────────────────────────────────────────
