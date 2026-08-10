@@ -381,9 +381,33 @@ geldiğinde hareket defterine dönüşecek.
   kaldırıldı, canlı önizleme 250px'ten 120px'e indi ve animasyon seçicinin
   altına taşındı. Alanlar öneme göre sıralandı — form çekmeceye tam
   sığmıyor, kaydırma çizgisinin altında kalanlar önizleme ve "önceki
-  kazananlar"; (2) `CustomerDetailDialog` + çocukları;
-  (3) `CustomerSearchDialog` + `PhoneEntryDialog`; (4) `DekontEkleDialog` +
-  çocukları — zincir mantığı code-behind'dan ViewModel'e taşınarak.
+  kazananlar"; (2) ~~`DekontEkleDialog` + çocukları~~ **bitti (2026-08-10)**
+  — sıra takas edildi, gerekçe aşağıda. Üç pencere birden `DekontEkleDrawer`
+  / `ShipmentDirectiveDrawer` / `ShipmentThresholdDrawer` oldu; yığının üç
+  seviyesi ilk kez gerçekten kullanılıyor. Zincir (`TrySave` → kargo
+  yönergesi → `CommitWithDirective` → kargo eşiği) code-behind'dan
+  `DekontEkleViewModel.SaveAsync`'e taşındı; `ShipmentThresholdDialog`'un
+  code-behind'ındaki `Result` alanı ViewModel'e (`ChosenDecision`) indi, iki
+  alt çekmece artık kardeşiyle aynı sözleşmeyi kullanıyor. 520px iki sütun
+  400px tek sütuna inerken etiketler alanların üstüne alındı (GiveawayDrawer
+  kalıbı); IBAN uyarısı, onu üreten PDF kartının hemen altına taşındı.
+  **Yeni token: `OD.Button.Secondary`** — iki soru çekmecesinde dikey dizilen
+  ikinci düğme Ghost'la yazılınca düğme gibi okunmuyordu (Ghost içeriği sola
+  yaslıyor, nav öğesi kalıbı). **Açık kalan:** `DatePicker` hâlâ temasız,
+  koyu formun ortasında beyaz duruyor — pencere sürümünde de öyleydi,
+  `DarkControls.xaml`'de `DatePicker`/`Calendar` stili hiç yok; **(3)**
+  `CustomerDetailDialog` + çocukları; (4) `CustomerSearchDialog` +
+  `PhoneEntryDialog`.
+
+  **(2) ile (4) neden takas edildi (2026-08-10, ölçümle):** yukarıdaki ağaç
+  eksikmiş. `CustomerDetailDialog`'un shell dışında iki çağrı yeri daha var
+  (`CustomerSearchDialog` code-behind'ı ve `BlacklistViewModel`),
+  `PhoneEntryDialog`'un da iki (`CustomerSearchViewModel` ve
+  `StreamReportViewModel`). İkisinin de bir bacağı Faz 3'te sayfaya dönecek
+  bir konteynerin içinde — bugün dönüştürülürse çekmece o modal pencerenin
+  arkasında açılır. Yani (2) ve (3) aslında **Faz 3'e bağlı**, (4) ise
+  tertemiz: tek shell çağrısı, çocuklarını kendi code-behind'ından açıyor.
+
   `FacebookPagePickerDialog` (SettingsDialog'un içinde) ve
   `AddToBlacklistDialog`'un manuel yolu (BlacklistDialog'un içinde) **Faz
   3'e bağlı** — konteynerleri sayfa olmadan dönüştürülemez.

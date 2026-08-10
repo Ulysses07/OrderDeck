@@ -100,6 +100,64 @@
         </Setter>
     </Style>
 
+    <!-- İkincil eylem: birincilin YANINDAKİ gerçek seçenek ("Kargo Beklesin",
+         "Beklemeye Devam"). Faz 2b'de ölçümle doğdu — o iki çekmecede dikey
+         dizilen ikinci düğme Ghost'la yazılmıştı ve düğme gibi görünmüyordu:
+         Ghost çerçevesiz ve içeriği SOLA yaslı (nav öğesi kalıbı), tam
+         genişlikte kullanılınca liste satırı gibi okunuyor.
+
+         Birincilden farkı yalnız zemin: aynı yükseklik, aynı yazı ölçüsü,
+         ortalanmış içerik, dolgu yerine 1px çerçeve. Böylece iki düğme yan
+         yana ya da alt alta aynı ağırlıkta duruyor, hiyerarşiyi renk
+         söylüyor. -->
+    <Style x:Key="OD.Button.Secondary" TargetType="Button">
+        <Setter Property="Height"     Value="{StaticResource OD.Layout.ButtonHeight}"/>
+        <Setter Property="Foreground" Value="{StaticResource OD.Brush.Text}"/>
+        <Setter Property="FontFamily" Value="{StaticResource OD.Font.Sans}"/>
+        <Setter Property="FontSize"   Value="{StaticResource OD.Font.F2}"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Cursor"     Value="Hand"/>
+        <Setter Property="Padding"    Value="{StaticResource OD.Pad.X5}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="Transparent"
+                            BorderBrush="{StaticResource OD.Brush.BorderStrong}"
+                            BorderThickness="1"
+                            CornerRadius="{StaticResource OD.Radius.Md}">
+                        <ContentPresenter HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"
+                                          Margin="{TemplateBinding Padding}">
+                            <ContentPresenter.Resources>
+                                <!-- Birincildeki tuzağın aynısı: DarkControls'ün
+                                     örtük TextBlock stili miras alınan Foreground'u
+                                     yener, yani yukarıdaki setter içerik metnine
+                                     hiç ulaşmaz. Ölçüldü — düğme yazısı sönük
+                                     çıkıyordu. Sözlük ContentPresenter'ın KENDİsinde
+                                     olmalı. -->
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground"
+                                            Value="{Binding Foreground,
+                                                    RelativeSource={RelativeSource AncestorType=Button}}"/>
+                                </Style>
+                            </ContentPresenter.Resources>
+                        </ContentPresenter>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background"
+                                    Value="{StaticResource OD.Brush.Surface2}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="Bd" Property="Opacity" Value="0.45"/>
+                            <Setter Property="Cursor" Value="Arrow"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <!-- Arka planı olmayan buton: nav öğeleri, "Temizle", ikon butonları. -->
     <Style x:Key="OD.Button.Ghost" TargetType="Button">
         <Setter Property="Foreground" Value="{StaticResource OD.Brush.TextDim}"/>

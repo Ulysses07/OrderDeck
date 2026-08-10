@@ -32,4 +32,10 @@ public sealed class ShipmentThresholdDialogViewModel
 
     public string ThresholdText =>
         FreeShippingThreshold.ToString("N2", CultureInfo.GetCultureInfo("tr-TR")) + " TL";
+
+    /// <summary>Vendor kararı — çekmece code-behind'ı set eder. Faz 2b'de
+    /// pencerenin code-behind'ından buraya taşındı: zinciri süren
+    /// <see cref="DekontEkleViewModel"/> view örneğini görmüyor, kararı
+    /// ViewModel üzerinden okuyor. null = karar verilmeden kapandı (ESC).</summary>
+    public ShipmentDecision? ChosenDecision { get; set; }
 }

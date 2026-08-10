@@ -746,10 +746,15 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
     private async Task OpenDekontEkleAsync()
     {
-        await Task.Yield(); // ensure UI thread
-        var dlg = global::OrderDeck.App.App.Host.Services.GetRequiredService<global::OrderDeck.App.Views.DekontEkleDialog>();
-        dlg.Owner = System.Windows.Application.Current?.MainWindow;
-        dlg.ShowDialog();
+        if (_drawers is null) return;   // yalnız testte; bkz. alanın notu
+
+        // Form ViewModel'i DI'dan geliyor (11 bağımlılığı var); kaydetme
+        // zincirini kendisi yürütüyor, kabuğun sonucu okumasına gerek yok.
+        var vm = global::OrderDeck.App.App.Host.Services
+            .GetRequiredService<DekontEkleViewModel>();
+
+        await _drawers.ShowAsync("Yeni Dekont",
+            d => new Views.Drawers.DekontEkleDrawer(d, vm));
         // Payment outbox 30sn içinde sync'ler — UI feedback yok, mobile app
         // listede otomatik görünür.
     }

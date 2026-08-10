@@ -20,8 +20,15 @@ namespace OrderDeck.App.ViewModels;
 /// Kargo PR D (2026-05-11): Müşteri seçimi + matcher entegrasyonu eklendi.
 /// Vendor Platform+Username doldurursa ve aktif yayın varsa, dekont
 /// tutarı müşterinin ürün toplamı + kargo eşiğiyle karşılaştırılır.
-/// Kargo ücreti eksikse <c>SaveResult.NeedsShipmentDecision</c> dönülür —
-/// dialog code-behind ShipmentDirectiveDialog ile vendor'a sorar.
+/// Kargo ücreti eksikse <c>SaveResult.NeedsShipmentDecision</c> dönülür.
+///
+/// Faz 2b (2026-08-10): iki soruyu soran ZİNCİR buraya taşındı. Eskiden
+/// <c>DekontEkleDialog</c> code-behind'ında duruyordu; pencereler çekmeceye
+/// dönüşünce (spec §6) sahibi kalmadı. <see cref="SaveAsync"/> artık
+/// <c>TrySave</c> → kargo yönergesi → <c>CommitWithDirective</c> → kargo
+/// eşiği sırasını kendi yürütüyor, view yalnız "kapandı mı" cevabını alıyor.
+/// Alt çekmeceleri <see cref="Services.Drawers.IDrawerService"/> üzerinden
+/// açar; servis verilmezse (test fixture'ları) sorular atlanır.
 /// </summary>
 public sealed partial class DekontEkleViewModel : ObservableObject
 {
@@ -58,10 +65,7 @@ public sealed partial class DekontEkleViewModel : ObservableObject
 
     private readonly PdfDekontParser _pdfParser;
     private readonly AppSettings _settings;
-
-    /// <summary>PR-C/2: dialog code-behind ShipmentThresholdDialog'a
-    /// FreeShippingThreshold geçirmek için VM üzerinden okur.</summary>
-    public AppSettings Settings => _settings;
+    private readonly Services.Drawers.IDrawerService? _drawers;
 
     public DekontEkleViewModel(
         PaymentRepository payments,
@@ -74,7 +78,8 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         AppSettings settings,
         IClock clock,
         ILogger<DekontEkleViewModel> log,
-        OrderDeck.App.Services.PaymentRequestService? paymentRequest = null)
+        OrderDeck.App.Services.PaymentRequestService? paymentRequest = null,
+        Services.Drawers.IDrawerService? drawers = null)
     {
         _payments = payments;
         _customers = customers;
@@ -87,12 +92,13 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         _clock = clock;
         _log = log;
         _paymentRequest = paymentRequest;
+        _drawers = drawers;
     }
 
     /// <summary>PDF Yükle butonu çağırır: PdfDekontParser'la 4 alan + hash
     /// çıkarılır, form alanlarına best-effort doldurulur. Bulunamayanlar boş
-    /// kalır; operatör elle düzeltir. Çağrı dışsal (dialog code-behind) çünkü
-    /// file dialog WPF tarafında.</summary>
+    /// kalır; operatör elle düzeltir. Çağrı dışsal (çekmece code-behind) çünkü
+    /// dosya seçici WPF tarafında.</summary>
     public string? TryFillFromPdf(byte[] pdfBytes)
     {
         try
@@ -207,26 +213,83 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         ErrorMessage = null;
     }
 
-    /// <summary>Outcome of the first save attempt. View code-behind reacts:
+    /// <summary>İlk kaydetme denemesinin sonucu. <see cref="SaveAsync"/> buna
+    /// göre dallanır:
     /// <list type="bullet">
-    ///   <item><c>Saved</c>: dialog closes successful.</item>
-    ///   <item><c>NeedsShipmentDecision</c>: open ShipmentDirectiveDialog with
-    ///   <c>Shortage</c>, then call <see cref="CommitWithDirective"/>.</item>
-    ///   <item><c>Error</c>: stay in dialog, show <c>Error</c>.</item>
-    /// </list></summary>
+    ///   <item><c>Saved</c>: çekmece başarıyla kapanır.</item>
+    ///   <item><c>NeedsShipmentDecision</c>: <c>Shortage</c> ile kargo
+    ///   yönergesi çekmecesi açılır, sonra <see cref="CommitWithDirective"/>.</item>
+    ///   <item><c>Error</c>: çekmece açık kalır, <c>Error</c> gösterilir.</item>
+    /// </list>
+    /// Tip hâlâ <c>public</c>: testler bu üç ilkeli doğrudan çağırıyor.</summary>
     public sealed record SaveResult(
         SaveResultKind Kind,
         PaymentMatcherService.MatchResult? Shortage = null,
         string? Error = null,
-        // PR-C/2: Save başarılı + kümülatif eşik aşıldıysa dialog code-behind
-        // ShipmentThresholdDialog'u açmalı. Null = eşik aşılmadı veya hook
-        // çalışmadı (müşteri çözülemedi, feature kapalı, vs.).
+        // PR-C/2: Save başarılı + kümülatif eşik aşıldıysa kargo eşiği
+        // çekmecesi açılmalı. Null = eşik aşılmadı veya hook çalışmadı
+        // (müşteri çözülemedi, feature kapalı, vs.).
         ShipmentDecisionContext? ThresholdContext = null);
 
     public enum SaveResultKind { Saved, NeedsShipmentDecision, Error }
 
-    /// <summary>Initial save attempt: validate + duplicate check + matcher.
-    /// Caller (dialog code-behind) inspects SaveResultKind.</summary>
+    /// <summary>
+    /// Kaydetme zincirinin tamamı — çekmecenin "Kaydet" düğmesi yalnız bunu
+    /// çağırır. <c>true</c>: kayıt tamam, çekmece kapansın. <c>false</c>:
+    /// doğrulama hatası (<see cref="ErrorMessage"/> bağlı) ya da operatör
+    /// kargo yönergesinden vazgeçti — form açık kalsın, düzeltilebilsin.
+    ///
+    /// Faz 2b'de <c>DekontEkleDialog.OnSave</c>'in switch'inden birebir
+    /// taşındı; sıra ve dallanma aynı.
+    /// </summary>
+    public async Task<bool> SaveAsync()
+    {
+        var result = TrySave();
+
+        if (result.Kind == SaveResultKind.NeedsShipmentDecision)
+        {
+            var directive = await AskShipmentDirectiveAsync(result.Shortage!);
+            if (directive is null) return false;
+            result = CommitWithDirective(directive.Value);
+        }
+
+        if (result.Kind != SaveResultKind.Saved) return false;
+
+        await MaybePromptThresholdAsync(result);
+        return true;
+    }
+
+    private async Task<ShipmentDirective?> AskShipmentDirectiveAsync(
+        PaymentMatcherService.MatchResult match)
+    {
+        if (_drawers is null) return null;
+        var vm = new ShipmentDirectiveDialogViewModel(match);
+        await _drawers.ShowAsync("Kargo Ücreti Eksik",
+            d => new Views.Drawers.ShipmentDirectiveDrawer(d, vm));
+        return vm.ChosenDirective;
+    }
+
+    private async Task MaybePromptThresholdAsync(SaveResult result)
+    {
+        if (result.ThresholdContext is not { Shipment: not null } ctx) return;
+        if (_drawers is null) return;
+
+        var customerDisplay = !string.IsNullOrWhiteSpace(CustomerUsername)
+            ? $"{CustomerPlatform}/{CustomerUsername}"
+            : PayerName;
+
+        var vm = new ShipmentThresholdDialogViewModel(
+            ctx, customerDisplay, _settings.Shipping.FreeShippingThreshold ?? 0m);
+
+        await _drawers.ShowAsync("Ücretsiz Kargo Hakkı",
+            d => new Views.Drawers.ShipmentThresholdDrawer(d, vm));
+
+        if (vm.ChosenDecision is { } decision)
+            ApplyShipmentDecision(ctx.Shipment!.Id, decision);
+    }
+
+    /// <summary>İlk kaydetme denemesi: doğrulama + duplicate kontrolü +
+    /// matcher. Dallanmayı <see cref="SaveAsync"/> yapar.</summary>
     public SaveResult TrySave()
     {
         var validationError = Validate();
@@ -272,8 +335,8 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         return CommitInternal(ShipmentDirective.Normal);
     }
 
-    /// <summary>Called by dialog code-behind after vendor picked a directive
-    /// via ShipmentDirectiveDialog. Persists Payment with the chosen directive.</summary>
+    /// <summary>Operatör kargo yönergesi çekmecesinde seçim yaptıktan sonra
+    /// çağrılır. Payment'ı seçilen directive ile kalıcılaştırır.</summary>
     public SaveResult CommitWithDirective(ShipmentDirective directive)
     {
         return CommitInternal(directive);
@@ -348,12 +411,12 @@ public sealed partial class DekontEkleViewModel : ObservableObject
     /// kapalıysa sessiz çıkar.
     ///
     /// Vendor "Hold" seçtiyse Shipment'ı Held'e alır (ApplyDecision); eşik
-    /// aşılsa bile threshold dialog'u açılmaz çünkü vendor zaten beklet
-    /// dedi. Vendor "RecipientPays" seçtiyse Shipment RecipientPays'a alınır
-    /// — yine threshold dialog'u açılmaz (sticky kararı).
+    /// aşılsa bile eşik sorusu sorulmaz çünkü vendor zaten beklet dedi.
+    /// Vendor "RecipientPays" seçtiyse Shipment RecipientPays'a alınır —
+    /// yine sorulmaz (sticky kararı).
     ///
     /// Yalnız "Normal" directive + threshold aşılmışsa context döndürülür;
-    /// dialog code-behind <see cref="ShipmentThresholdDialog"/> açar.
+    /// <see cref="SaveAsync"/> kargo eşiği çekmecesini açar.
     /// </summary>
     private ShipmentDecisionContext? TryEvaluateShipment(ShipmentDirective directive)
     {
@@ -412,8 +475,8 @@ public sealed partial class DekontEkleViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Dialog code-behind ShipmentThresholdDialog'da vendor karar verdikten
-    /// sonra çağırır. Decision Shipment state'ine uygulanır.
+    /// Vendor kargo eşiği çekmecesinde karar verdikten sonra çağrılır.
+    /// Decision Shipment state'ine uygulanır.
     ///
     /// PR-E (2026-05-12): ShipNow seçilirse müşteriye WhatsApp "ücretsiz
     /// kargo kazandın" mesajı tetiklenir (fail-silent — phone yoksa veya
@@ -426,7 +489,7 @@ public sealed partial class DekontEkleViewModel : ObservableObject
         {
             updated = _shipments.ApplyDecision(shipmentId, decision);
             _log.LogInformation(
-                "Shipment {Id} → {Decision} (kümülatif kargo modal'ından)",
+                "Shipment {Id} → {Decision} (kümülatif kargo çekmecesinden)",
                 shipmentId, decision);
         }
         catch (Exception ex)
