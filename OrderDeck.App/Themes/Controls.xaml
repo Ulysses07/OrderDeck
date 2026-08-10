@@ -1178,4 +1178,65 @@
             </Setter.Value>
         </Setter>
     </Style>
+
+    <!-- Belirsiz ilerleme çubuğu (BootGate "Hazırlanıyor", LoginGate "meşgul").
+         Varsayılan Aero şablonu YEŞİL çizer ve kapalı paletin dışında kalır;
+         ayrıca DarkControls'te de örtük karşılığı yok. Determinate mod da
+         çalışsın diye PART_Indicator korunuyor, ama bugün yalnız
+         IsIndeterminate kullanılıyor.
+
+         Belirsiz animasyon: dar bir parlak blok rayın soluna girip sağından
+         çıkıyor. TranslateTransform üzerinden, Width'e dokunmadan — layout
+         her karede yeniden ölçülmesin. -->
+    <Style x:Key="OD.ProgressBar" TargetType="ProgressBar">
+        <Setter Property="Height" Value="{StaticResource OD.Layout.ProgressHeight}"/>
+        <Setter Property="Background" Value="{StaticResource OD.Brush.Surface2}"/>
+        <Setter Property="Foreground" Value="{StaticResource OD.Brush.Accent}"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ProgressBar">
+                    <Border x:Name="Track"
+                            Background="{TemplateBinding Background}"
+                            CornerRadius="{StaticResource OD.Radius.Full}"
+                            ClipToBounds="True">
+                        <Grid>
+                            <Rectangle x:Name="PART_Track" Fill="Transparent"/>
+                            <Rectangle x:Name="PART_Indicator"
+                                       HorizontalAlignment="Left"
+                                       Fill="{TemplateBinding Foreground}"/>
+                            <Rectangle x:Name="Pulse"
+                                       Width="80"
+                                       HorizontalAlignment="Left"
+                                       Visibility="Collapsed"
+                                       Fill="{TemplateBinding Foreground}">
+                                <Rectangle.RenderTransform>
+                                    <TranslateTransform x:Name="PulseShift" X="-80"/>
+                                </Rectangle.RenderTransform>
+                            </Rectangle>
+                        </Grid>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsIndeterminate" Value="True">
+                            <Setter TargetName="PART_Indicator" Property="Visibility" Value="Collapsed"/>
+                            <Setter TargetName="Pulse" Property="Visibility" Value="Visible"/>
+                            <Trigger.EnterActions>
+                                <BeginStoryboard x:Name="PulseLoop">
+                                    <Storyboard RepeatBehavior="Forever">
+                                        <DoubleAnimation Storyboard.TargetName="PulseShift"
+                                                         Storyboard.TargetProperty="X"
+                                                         From="-80" To="440"
+                                                         Duration="0:0:1.2"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <StopStoryboard BeginStoryboardName="PulseLoop"/>
+                            </Trigger.ExitActions>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
 </ResourceDictionary>

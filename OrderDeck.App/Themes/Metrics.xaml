@@ -89,6 +89,7 @@
   <sys:Double x:Key="OD.Layout.DrawerWidth">400</sys:Double>    <!-- çekmece (sağ paneli örter) -->
   <sys:Double x:Key="OD.Layout.TopbarHeight">56</sys:Double>
   <sys:Double x:Key="OD.Layout.ButtonHeight">46</sys:Double>    <!-- birincil buton -->
+  <sys:Double x:Key="OD.Layout.ProgressHeight">3</sys:Double> <!-- belirsiz ilerleme çubuğu -->
   <!-- Yayın butonu iki durumda iki farklı metin taşıyor ("Yayın Başlat" /
        "Yayını Bitir"). İçeriğe göre ölçülürse buton durum değişince
        genişliğini oynatır ve yanındaki Çekiliş butonunu kaydırır; sabit
