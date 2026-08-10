@@ -98,6 +98,14 @@ public class MainShellViewCompositionTests
                                 ctx, "instagram/@ayse_y", 500m)));
             Assert.IsType<ShipmentThresholdDrawer>(dekont.Top!.Content);
 
+            // Müşteri arama (Faz 3d). Kendi kapatma düğmesi olmadığı için
+            // fabrikası Drawer istemiyor, ama yığın üzerinden kuruluyor:
+            // gerçek çağrı yolu bu.
+            var search = new DrawerStack();
+            search.ShowAsync("Müşteriler",
+                _ => CustomerSearchDrawer.Create(BuildCustomerSearchViewModel()));
+            Assert.IsType<CustomerSearchDrawer>(search.Top!.Content);
+
             // Faz 3 sayfaları. Çekmecelerle aynı gerekçe: XAML hatası
             // derlemede değil açılışta patlar. Sayfa fabrikaları Page
             // istemediği için (AccountPage hariç) doğrudan çağrılıyorlar,
@@ -158,6 +166,23 @@ public class MainShellViewCompositionTests
         return new BlacklistViewModel(
             customers,
             new CustomerService(customers, new SessionRepository(db), new LabelRepository(db), clock));
+    }
+
+    /// <summary>Ödeme servisi ve diyalog servisi VERİLMİYOR: ikisi de yalnız
+    /// "Öde" düğmesine basılınca kullanılıyor, bu test hiçbir komut
+    /// tetiklemiyor. Gerçeklerini kurmak testi ağa ve DPAPI'ye bağlardı.</summary>
+    private static CustomerSearchViewModel BuildCustomerSearchViewModel()
+    {
+        var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var customers = new CustomerRepository(db);
+        var sessions = new SessionRepository(db);
+        var labels = new LabelRepository(db);
+        return new CustomerSearchViewModel(
+            customers,
+            new CustomerService(customers, sessions, labels, new SystemClock()),
+            sessions, labels,
+            paymentService: null!, dialogService: null!);
     }
 
     private static StreamHistoryViewModel BuildStreamHistoryViewModel()

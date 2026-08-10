@@ -735,17 +735,21 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
     private async Task OpenIntakeSubmissionsAsync()
     {
-        await Task.Yield();
-        var dlg = global::OrderDeck.App.App.Host.Services.GetRequiredService<global::OrderDeck.App.Views.CustomerSearchDialog>();
-        var vm = (CustomerSearchViewModel)dlg.DataContext;
+        if (_drawers is null) return;   // yalnız testte; bkz. alanın notu
+
+        var vm = global::OrderDeck.App.App.Host.Services
+            .GetRequiredService<CustomerSearchViewModel>();
         // Form kayıtları artık Platform="form" değil (çoklu-platform gerçek satırlar);
         // "kayıt olan müşteri" = telefonu/adresi olan → RegisteredOnly ile göster.
         vm.NewThisSessionCount = NewIntakeSubmissionsCount;
         vm.RegisteredOnly = true;
+        // Yükleme burada, view'da değil: aynı çekmece iki ayrı ön filtreyle
+        // açılıyor (bu ve OpenCustomerSearch), view kendi verisini yükleseydi
+        // filtreler birbirini ezerdi.
         vm.RefreshSearch();
 
-        dlg.Owner = System.Windows.Application.Current?.MainWindow;
-        dlg.ShowDialog();
+        await _drawers.ShowAsync("Müşteriler",
+            _ => Views.Drawers.CustomerSearchDrawer.Create(vm));
 
         NewIntakeSubmissionsCount = 0;
     }
@@ -1488,11 +1492,14 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     }
 
     [RelayCommand]
-    private void OpenCustomerSearch()
+    private async Task OpenCustomerSearchAsync()
     {
-        var dlg = App.Host.Services.GetRequiredService<Views.CustomerSearchDialog>();
-        dlg.Owner = Application.Current?.MainWindow;
-        dlg.ShowDialog();
+        if (_drawers is null) return;   // yalnız testte; bkz. alanın notu
+
+        var vm = App.Host.Services.GetRequiredService<CustomerSearchViewModel>();
+        vm.RefreshSearch();
+        await _drawers.ShowAsync("Müşteriler",
+            _ => Views.Drawers.CustomerSearchDrawer.Create(vm));
     }
 
     [RelayCommand(CanExecute = nameof(CanWrite))]
