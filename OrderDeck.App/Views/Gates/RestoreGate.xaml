@@ -1,0 +1,121 @@
+<UserControl x:Class="OrderDeck.App.Views.Gates.RestoreGate"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:gates="clr-namespace:OrderDeck.App.Views.Gates">
+    <!-- RestoreDialog.xaml'in gate karşılığı. (O pencere Background'ı HİÇ
+         vermiyordu; DarkControls'teki `Style TargetType="{x:Type Window}"` de
+         örtük stil araması TAM tiple yapıldığı için RestoreDialog'a
+         uygulanmıyordu → zemin beyaz kalıyordu.)
+
+         Değişenler: 📅 emojisi "Aylık" çipe döndü (spec §10: emoji ikon 0),
+         #25D366 / DarkBlue / Gray token'a döndü.
+
+         "Tamamlandı" durumu YENİ: eskiden pencere DialogResult=true ile
+         kapanıyor, App.xaml.cs MessageBox gösterip Shutdown() çağırıyordu —
+         yani operatörün uygulamayı elle yeniden açması gerekiyordu. -->
+    <Grid HorizontalAlignment="Center" VerticalAlignment="Center"
+          Width="{StaticResource OD.Layout.GateColumn}">
+
+        <!-- ── Seçim durumu ───────────────────────────────────────────── -->
+        <Grid Visibility="{Binding RestoreCompleted, Converter={StaticResource BoolToCollapsedConverter}}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <StackPanel Grid.Row="0">
+                <gates:GateBrand/>
+                <TextBlock Style="{StaticResource OD.Text.Hint}"
+                           TextWrapping="Wrap"
+                           TextAlignment="Center"
+                           Margin="{StaticResource OD.Pad.Top3}"
+                           Text="Bu bilgisayarda veri bulunamadı. Buluttaki yedeklerden birini geri yükleyebilirsin."/>
+            </StackPanel>
+
+            <ListBox Grid.Row="1"
+                     MaxHeight="{StaticResource OD.Layout.GateListMaxHeight}"
+                     Margin="{StaticResource OD.Pad.Top7}"
+                     ItemsSource="{Binding AvailableBackups}"
+                     SelectedItem="{Binding SelectedBackup}"
+                     Background="Transparent" BorderThickness="0"
+                     HorizontalContentAlignment="Stretch"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Margin="{StaticResource OD.Pad.2}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="{Binding CreatedAt, StringFormat='{}{0:dd MMM yyyy HH:mm}'}"
+                                           FontFamily="{StaticResource OD.Font.Sans}"
+                                           FontSize="{StaticResource OD.Font.F2}"
+                                           FontWeight="Bold"
+                                           Foreground="{StaticResource OD.Brush.Text}"/>
+                                <!-- Eski 📅 emojisinin yerine metin çip -->
+                                <Border Margin="{StaticResource OD.Pad.Left4}"
+                                        Padding="{StaticResource OD.Pad.X2}"
+                                        CornerRadius="{StaticResource OD.Radius.Xs}"
+                                        Background="{StaticResource OD.Brush.AmberTint}"
+                                        BorderBrush="{StaticResource OD.Brush.AmberTintBorder}"
+                                        BorderThickness="1"
+                                        VerticalAlignment="Center"
+                                        Visibility="{Binding IsMonthlyMilestone, Converter={StaticResource BoolToVisibleConverter}}">
+                                    <TextBlock Text="Aylık" Style="{StaticResource OD.Text.Micro}"/>
+                                </Border>
+                            </StackPanel>
+                            <TextBlock Style="{StaticResource OD.Text.Hint}"
+                                       Margin="{StaticResource OD.Pad.Top3}">
+                                <Run Text="{Binding SizeBytes, StringFormat='{}{0:N0} bayt', Mode=OneWay}"/>
+                                <Run Text="·"/>
+                                <Run Text="{Binding MachineName, Mode=OneWay}"/>
+                            </TextBlock>
+                        </StackPanel>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+
+            <TextBlock Grid.Row="2" Text="{Binding StatusMessage}"
+                       Style="{StaticResource OD.Text.Hint}"
+                       Foreground="{StaticResource OD.Brush.Info}"
+                       TextWrapping="Wrap"
+                       Margin="{StaticResource OD.Pad.Top4}"/>
+
+            <StackPanel Grid.Row="3" Margin="{StaticResource OD.Pad.Top6}">
+                <Button Content="En son yedeği kullan"
+                        Command="{Binding RestoreLatestCommand}"
+                        Style="{StaticResource OD.Button.Primary}"
+                        IsDefault="True"/>
+                <Button Content="Seçileni geri yükle"
+                        Command="{Binding RestoreSelectedCommand}"
+                        Style="{StaticResource OD.Button.Secondary}"
+                        Margin="{StaticResource OD.Pad.Top3}"/>
+                <!-- VM'in SkipCommand'ı BİLEREK kullanılmıyor: kapanma kararı
+                     gate'in, VM'in değil (bkz. code-behind). -->
+                <Button Content="Atla, yeni başlat"
+                        Style="{StaticResource OD.Button.Ghost}"
+                        HorizontalAlignment="Center"
+                        Margin="{StaticResource OD.Pad.Top4}"
+                        Click="OnSkip"/>
+            </StackPanel>
+        </Grid>
+
+        <!-- ── Tamamlandı durumu ──────────────────────────────────────── -->
+        <StackPanel Visibility="{Binding RestoreCompleted, Converter={StaticResource BoolToVisibleConverter}}">
+            <gates:GateBrand/>
+            <TextBlock Text="Geri yükleme tamamlandı"
+                       HorizontalAlignment="Center"
+                       Margin="{StaticResource OD.Pad.Top7}"
+                       FontFamily="{StaticResource OD.Font.Display}"
+                       FontSize="{StaticResource OD.Font.F3}"
+                       Foreground="{StaticResource OD.Brush.Success}"/>
+            <TextBlock Style="{StaticResource OD.Text.Hint}"
+                       TextAlignment="Center" TextWrapping="Wrap"
+                       Margin="{StaticResource OD.Pad.Top3}"
+                       Text="Verilerin yerine kondu. OrderDeck'in yeniden başlaması gerekiyor."/>
+            <Button Content="Yeniden Başlat"
+                    Style="{StaticResource OD.Button.Primary}"
+                    Margin="{StaticResource OD.Pad.Top6}"
+                    Click="OnRestart"/>
+        </StackPanel>
+    </Grid>
+</UserControl>

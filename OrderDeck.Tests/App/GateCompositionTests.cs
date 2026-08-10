@@ -94,6 +94,17 @@ public class GateCompositionTests
 
             gates.Top!.Close(false);
             Assert.True(switchPending.IsCompleted);
+
+            // RestoreGate de servissiz çiziliyor; iki durumu (seçim /
+            // tamamlandı) tek view'da taşıdığı için her iki dalın kaynakları
+            // da burada çözülüyor.
+            var restorePending = gates.ShowAsync(g => RestoreGate.Create(g, vm: null));
+            ThemeTestHost.Pump();
+            Assert.IsType<RestoreGate>(root.GateContent.Content);
+            Assert.Equal(Visibility.Visible, root.GateHost.Visibility);
+
+            gates.Top!.Close(false);
+            Assert.True(restorePending.IsCompleted);
         });
         Assert.Null(error);
     }
