@@ -2793,6 +2793,15 @@ public sealed class WpfStartupEnvironment : IStartupEnvironment
         _root = root;
         _services = services;
         _log = log;
+
+        // Yayın bitti → bulut yedeği (fire-and-forget). BURADA, ctor'da:
+        // akış oturum kurtarmada "Yayını bitir" seçilirse EndSession'ı
+        // arka plan servisleri kalkmadan ÖNCE çağırıyor ve
+        // StreamSessionService.End() olayı senkron yükseltiyor
+        // (OrderDeck.Core/Sessions/StreamSessionService.cs:34-39). Kablolama
+        // daha geç bir noktada olsaydı o yoldaki yedek sessizce düşerdi —
+        // bugün App.xaml.cs:188-191 de kurtarma bloğundan ÖNCE bağlıyor.
+        _sessions.SessionEnded += (_, _) => _backups.QueueBackup("stream-end");
     }
 
     // Task.Run sarmalayıcısı DÜŞTÜ: eskiden GetAwaiter().GetResult() UI
@@ -2819,11 +2828,6 @@ public sealed class WpfStartupEnvironment : IStartupEnvironment
 
     public async Task<bool> StartBackgroundServicesAsync()
     {
-        // Yayın bitti → bulut yedeği (fire-and-forget). Shell kurulmadan
-        // önce bağlanıyor; SessionEnded yalnız shell'den yükselebildiği
-        // için burası en geç nokta.
-        _sessions.SessionEnded += (_, _) => _backups.QueueBackup("stream-end");
-
         _overlay = _services.GetRequiredService<OverlayHost>();
         _ingestor = _services.GetRequiredService<ChatBridgeIngestor>();
 
