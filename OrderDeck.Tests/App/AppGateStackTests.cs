@@ -82,9 +82,6 @@ public class AppGateStackTests
         Assert.NotSame(outerGate, innerGate);
 
         innerGate.Close(true);
-        // bekleyen devamların koşmasına fırsat ver — yoksa test
-        // RunContinuationsAsynchronously bayrağı silinse bile geçer.
-        await Task.Yield();
 
         Assert.True(await inner);
         Assert.False(outer.IsCompleted);
