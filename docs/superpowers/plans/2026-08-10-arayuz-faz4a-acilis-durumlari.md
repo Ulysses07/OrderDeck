@@ -3292,8 +3292,8 @@ Dört senaryo, hepsi `dotnet run --project OrderDeck.App` ile:
    ve sayaçlar kaldığı yerde** — shell hiç sökülmedi. (Bu fazın asıl
    sınavı; sayfa/pencere yaklaşımı bunu veremiyordu.)
 
-Bu turda ayrıca **iki açık ölçü kararı** ekranda karara bağlanacak (Task 4
-gözden geçirmesinden kaldı, kod yorumlarında da yazıyor):
+Bu turda ayrıca **beş açık karar** ekranda karara bağlanacak (Task 4 ve
+Task 5 gözden geçirmelerinden kaldı; ilk üçü kod yorumlarında da yazıyor):
 
 - `GateBrand` rozeti 20→48px büyürken köşe yarıçapı `Md`→`Lg` (8→10)
   kalıyor; ölçek `Lg`'de bittiği için işaret raydakinden orantısal olarak
@@ -3302,6 +3302,21 @@ gözden geçirmesinden kaldı, kod yorumlarında da yazıyor):
 - `BootGate`'in "Hazırlanıyor…" satırı `OD.Text.Hint` (F0 = 11px). Tam
   ekranda 48px'lik markanın altında küçük kalıyorsa `OD.Text.Section`'a
   çıkar — ama beş gate'in tamamında birlikte değiştir, tek ekranda değil.
+- `LoginGate`'in şifre kutuları örtük `DarkControls.xaml` stilinde: hemen
+  üstteki e-posta kutusuyla yan yana zemin (`OD.Bg.Input` ↔ Surface2) ve
+  yuvarlatma farkı var, odak kenarlığı da kırmızı yerine **mavi**
+  (`OD.Border.Focus`). Gerçek ekranda ne kadar göze battığını ölç. Çözüm
+  yeri Faz 4b (`DarkControls.xaml` silinirken tokenize `PasswordBox`),
+  burada değil — bu tur sadece ne kadar acil olduğunu belirlemek için.
+- `LoginGate`'te hata mesajı belirdiğinde form kayıyor: gate'in bütün
+  satırları `Auto` ve dış grid `VerticalAlignment="Center"`, dolayısıyla
+  hata satırı açılınca üstteki alanlar yukarı zıplıyor. Gerçek ekranda
+  rahatsız ediciyse hata satırına sabit yükseklik verilecek.
+- Kayıt modunda Enter tuşu ölü: "Kayıt ol" düğmesinde `IsDefault` yok.
+  **Bu bir gerileme değil** — eski `LoginDialog.xaml`'de de yoktu (tek
+  `IsDefault` lisans aktivasyon düğmesindeydi, `LoginDialog.xaml:131`);
+  gate girişe ayrıca `IsDefault` ekleyerek zaten iyileştirdi. Kayıt moduna
+  da eklenecek mi, bilinçli bir UX kararı olarak burada verilecek.
 
 - [ ] **Step 6: Faz 4b'ye devir notu**
 

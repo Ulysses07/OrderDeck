@@ -76,9 +76,24 @@ public class GateCompositionTests
             // XamlParseException atar; binding'ler sessizce boş kalır.
             var loginPending = gates.ShowAsync(g => LoginGate.Create(g, vm: null, isStartupGate: true));
             ThemeTestHost.Pump();
-            Assert.IsType<LoginGate>(root.GateContent.Content);
+            var startupLogin = Assert.IsType<LoginGate>(root.GateContent.Content);
+
+            // isStartupGate view'daki tek dal: açılışta iptal uygulamadan
+            // çıkmak demek, o yüzden düğme "Çıkış" diyor.
+            Assert.Equal("Çıkış", startupLogin.ExitButton.Content);
+
             gates.Top!.Close(false);
             Assert.True(loginPending.IsCompleted);
+
+            // Aynı view çalışırken açıldığında shell altta duruyor: iptal
+            // sadece bu ekranı kapatıyor, düğme bu yüzden "Vazgeç".
+            var switchPending = gates.ShowAsync(g => LoginGate.Create(g, vm: null, isStartupGate: false));
+            ThemeTestHost.Pump();
+            var switchLogin = Assert.IsType<LoginGate>(root.GateContent.Content);
+            Assert.Equal("Vazgeç", switchLogin.ExitButton.Content);
+
+            gates.Top!.Close(false);
+            Assert.True(switchPending.IsCompleted);
         });
         Assert.Null(error);
     }

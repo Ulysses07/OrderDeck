@@ -39,13 +39,17 @@ public partial class LoginGate : UserControl
     public static LoginGate Create(AppGate gate, LoginDialogViewModel? vm, bool isStartupGate)
         => new(gate, vm, isStartupGate);
 
-    private void OnRequestClose(object? sender, EventArgs e)
+    private void OnRequestClose(object? sender, EventArgs e) => Close(true);
+
+    // OnExit XAML'den bağlı (Click="OnExit").
+    private void OnExit(object sender, RoutedEventArgs e) => Close(false);
+
+    // Her iki kapanış yolu aynı temizliği yapsın diye tek yerde toplandı.
+    private void Close(bool confirmed)
     {
         if (_vm is not null) _vm.RequestClose -= OnRequestClose;
-        _gate.Close(true);
+        _gate.Close(confirmed);
     }
-
-    private void OnExit(object sender, RoutedEventArgs e) => _gate.Close(false);
 
     private void OnLoginPasswordChanged(object sender, RoutedEventArgs e)
     {

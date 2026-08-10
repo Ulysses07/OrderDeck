@@ -4,9 +4,10 @@
              xmlns:gates="clr-namespace:OrderDeck.App.Views.Gates">
     <!-- LoginDialog.xaml'in (420x500 Window) gate karşılığı.
 
-         Dört mod aynen taşındı; LoginDialogViewModel'e dokunulmadı. Sınıf
-         adındaki "Dialog" tarihsel — yeniden adlandırmak dört dosyaya yayılırdı
-         ve bu fazın işi değil.
+         Dört mod ve LoginDialogViewModel aynı; değişen sunum — stiller,
+         yerleşim ve lisans listesinin yükseklik stratejisi tokenlara taşındı.
+         Sınıf adındaki "Dialog" tarihsel — yeniden adlandırmak dört dosyaya
+         yayılırdı ve bu fazın işi değil.
 
          İKİ BARINDIRMA, TEK VIEW: aynı ekran hem açılışta (ShellHost boşken)
          hem çalışırken (hesap değiştirme, shell altta) kullanılıyor. Tek fark
@@ -48,6 +49,17 @@
                 </Viewbox>
             </Grid>
 
+            <!-- PasswordBox'ın henüz tokenize edilmiş bir karşılığı yok; bu
+                 ekrandaki üç kutu (aşağıdaki ve Kayıt modundaki ikisi) Faz 4b'ye
+                 kadar DarkControls.xaml'ın örtük stiline yaslanıyor. Görünür
+                 sonucu şu: hemen üstteki e-posta kutusu OD.TextBox — Surface2
+                 zemin, OD.Radius.Sm yuvarlatma, odakta KIRMIZI OD.Brush.Accent
+                 kenarlık. Şifre kutusu ise farklı zemin (OD.Bg.Input), kendi
+                 şablonu olmadığı için yuvarlatılmamış köşe ve odakta MAVİ
+                 OD.Border.Focus kenarlığı alıyor; yan yana duran iki alan bu
+                 yüzden eşleşmiyor. Buraya ayrı bir stil yazmak işi ikiye
+                 bölerdi: DarkControls.xaml Faz 4b'de silinirken tokenize
+                 PasswordBox'la birlikte tek yerden çözülecek. -->
             <TextBlock Text="Şifre" Style="{StaticResource OD.Text.Label}"
                        Margin="{StaticResource OD.Pad.Bottom2}"/>
             <Grid Margin="{StaticResource OD.Pad.Bottom4}">
@@ -86,6 +98,8 @@
             <TextBox Style="{StaticResource OD.TextBox}" Margin="{StaticResource OD.Pad.Bottom4}"
                      Text="{Binding Email, UpdateSourceTrigger=PropertyChanged}"/>
 
+            <!-- Aşağıdaki iki kutu da örtük DarkControls.xaml stilinde; aynı
+                 gerekçe Giriş modundaki şifre alanının üstünde yazıyor. -->
             <TextBlock Text="Şifre (en az 8 karakter)" Style="{StaticResource OD.Text.Label}"
                        Margin="{StaticResource OD.Pad.Bottom2}"/>
             <PasswordBox x:Name="RegisterPassword" Margin="{StaticResource OD.Pad.Bottom4}"
@@ -121,10 +135,13 @@
         </StackPanel>
 
         <!-- ── Lisans seçimi ──────────────────────────────────────────────
-             Pencerede liste sabit yükseklikliydi ve "aktive et" düğmesini
-             500px'lik NoResize pencerenin dışına itiyordu (eski dosyadaki
-             uzun not). Tam ekranda o kısıt yok: liste kaydırıcıya bağlandı,
-             düğme her zaman görünür.
+             Pencerede sorun dar tavandı: 500px'lik NoResize pencerede liste
+             taşınca "aktive et" düğmesi alt kenarın dışında kalıyordu. Eski
+             dosya bunu Height="*" satır + MinHeight="80" liste ile çözmüştü —
+             liste kalan alanı alıyor, düğme yerinde kalıyordu. Tam ekran
+             gate'te öyle bir tavan yok, "kalan alan" da anlamsız: liste
+             MaxHeight (OD.Layout.GateListMaxHeight) ile sınırlanıp taşarsa
+             kaydırıcıya bırakılıyor, düğme yine her zaman görünür.
 
              ListBox/ListBoxItem'ın henüz tokenize edilmiş bir karşılığı yok;
              bu tek kullanım Faz 4b'ye kadar DarkControls.xaml'ın örtük stiline
