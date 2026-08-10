@@ -1,0 +1,49 @@
+<UserControl x:Class="OrderDeck.App.Views.Drawers.PhoneEntryDrawer"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- PhoneEntryDialog'un (400px Window) çekmece karşılığı — spec §6.2.
+         WhatsApp ödeme isteği akışında telefon eksikse araya giriyor.
+
+         Pencereden farklar:
+         · Başlık ("WhatsApp Numarası Gerekli") DÜŞTÜ — şerit veriyor.
+         · Yeşil #25D366 hardcoded rengi DÜŞTÜ (spec §10: hex 0). Buton
+           OD.Button.Primary; kanal rengi paletin dışında kalıyordu.
+         · "İptal" KALDI: bu bir onay çekmecesi, ESC'nin görünür karşılığı
+           lazım (CancelLabelDrawer ile aynı kalıp). -->
+    <StackPanel Margin="{StaticResource OD.Pad.5}" VerticalAlignment="Top">
+        <TextBlock Text="Bu müşterinin WhatsApp numarası kayıtlı değil. Lütfen girin:"
+                   TextWrapping="Wrap"
+                   Style="{StaticResource OD.Text.Label}"/>
+
+        <TextBox x:Name="PhoneBox"
+                 Style="{StaticResource OD.TextBox}"
+                 Margin="{StaticResource OD.Pad.Top4}"
+                 Text="{Binding PhoneInput, UpdateSourceTrigger=PropertyChanged}"
+                 Tag="555 123 45 67"
+                 MaxLength="20"/>
+
+        <TextBlock Text="+90 otomatik eklenecek. Örn: 555 123 45 67"
+                   Style="{StaticResource OD.Text.Hint}"
+                   Margin="{StaticResource OD.Pad.Top3}"/>
+
+        <TextBlock Text="{Binding ValidationError}"
+                   Style="{StaticResource OD.Text.Hint}"
+                   Foreground="{StaticResource OD.Brush.Accent}"
+                   TextWrapping="Wrap"
+                   Margin="{StaticResource OD.Pad.Top3}"
+                   Visibility="{Binding ValidationError,
+                                Converter={StaticResource NullToCollapsedConverter}}"/>
+
+        <Button Content="Kaydet ve Aç"
+                Style="{StaticResource OD.Button.Primary}"
+                Margin="{StaticResource OD.Pad.Top5}"
+                IsDefault="True"
+                Command="{Binding SaveCommand}"/>
+
+        <Button Content="İptal"
+                Style="{StaticResource OD.Button.Ghost}"
+                HorizontalContentAlignment="Center"
+                Margin="{StaticResource OD.Pad.Top4}"
+                Click="OnCancel"/>
+    </StackPanel>
+</UserControl>

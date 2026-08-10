@@ -46,50 +46,39 @@ public sealed partial class BlacklistViewModel : ViewModelBase
     }
 
     [RelayCommand]
-    private void AddManual()
+    private async Task AddManualAsync()
     {
-        var dialog = new Views.AddToBlacklistDialog
-        {
-            Mode = Views.AddToBlacklistDialog.DialogMode.Manual
-        };
-        // WPF auto-registers a Window in Application.Current.Windows the moment
-        // it's constructed. Picking the *last* window therefore returns `dialog`
-        // itself — and Window.Owner = self throws ArgumentException at ShowDialog.
-        // Walk back skipping the dialog being parented; falls through to
-        // MainWindow when nothing else matches.
-        dialog.Owner = ResolveOwnerWindow(dialog);
-        if (dialog.ShowDialog() != true) return;
+        var drawers = App.Host.Services.GetRequiredService<Services.Drawers.IDrawerService>();
+
+        Views.Drawers.AddToBlacklistDrawer? view = null;
+        var ok = await drawers.ShowAsync("Kara Listeye Al",
+            d => view = Views.Drawers.AddToBlacklistDrawer.Create(
+                d, Views.Drawers.AddToBlacklistDrawer.DrawerMode.Manual));
+        if (!ok) return;
 
         _customers.EnsureBlacklistedManual(
-            dialog.PlatformText ?? "instagram",
-            dialog.UsernameText ?? "",
-            dialog.ReasonText);
+            view!.PlatformText, view.UsernameText, view.ReasonText);
         Reload();
     }
 
+    /// <summary>Müşteri detay çekmecesini açar. Yükleme burada, view'da değil
+    /// (Faz 3 kuralı). Servisler App.Host'tan çözülüyor — bu ViewModel'in
+    /// ctor'u sayfa listesi için kurulmuş, çekmece bağımlılığı taşımıyor.</summary>
     [RelayCommand]
-    private void OpenCustomerDetail(string? customerId)
+    private async Task OpenCustomerDetailAsync(string? customerId)
     {
         if (string.IsNullOrEmpty(customerId)) return;
-        var dlg = App.Host.Services.GetRequiredService<Views.CustomerDetailDialog>();
-        dlg.Owner = ResolveOwnerWindow(dlg);
-        dlg.Open(customerId);
-    }
 
-    /// <summary>Returns a sensible Owner window for a modal dialog, EXCLUDING the
-    /// dialog being parented. WPF registers a Window in Application.Current.Windows
-    /// during construction, so naive "last window" picks return the dialog itself,
-    /// which Window.Owner.set rejects with ArgumentException.</summary>
-    private static Window? ResolveOwnerWindow(Window self)
-    {
-        var windows = Application.Current?.Windows;
-        if (windows is null) return null;
-        // Walk most-recent → first, skip self, return the first visible candidate.
-        for (var i = windows.Count - 1; i >= 0; i--)
+        var services = App.Host.Services;
+        var vm = services.GetRequiredService<CustomerDetailViewModel>();
+        if (!vm.Load(customerId))
         {
-            var w = windows[i];
-            if (!ReferenceEquals(w, self) && w.IsLoaded) return w;
+            MessageBox.Show("Müşteri kaydı bulunamadı.", "Müşteri Detayı",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
         }
-        return Application.Current?.MainWindow == self ? null : Application.Current?.MainWindow;
+        await services.GetRequiredService<Services.Drawers.IDrawerService>()
+            .ShowAsync("Müşteri Detayı",
+                _ => Views.Drawers.CustomerDetailDrawer.Create(vm));
     }
 }

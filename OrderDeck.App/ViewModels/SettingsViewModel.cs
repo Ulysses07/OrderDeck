@@ -123,6 +123,10 @@ public sealed partial class SettingsViewModel : ViewModelBase
     private readonly Services.Sync.WhatsAppTemplateSyncService? _waTemplateSync;
     private readonly System.Net.Http.IHttpClientFactory? _httpFactory;
 
+    /// <summary>Facebook sayfa seçim çekmecesi için. Testte verilmiyor —
+    /// oradaki senaryolar OAuth bağlama komutunu tetiklemiyor.</summary>
+    private readonly Services.Drawers.IDrawerService? _drawers;
+
     public SettingsViewModel(AppSettings settings, SettingsStore store, ShortcutsTabViewModel shortcutsTab,
         IntakeFormSettingsViewModel intakeForm,
         ShopperAppSettingsViewModel shopperApp,
@@ -130,8 +134,10 @@ public sealed partial class SettingsViewModel : ViewModelBase
         FacebookOAuthService? facebookOAuth = null,
         AnimationCatalogClient? catalogClient = null,
         Services.Sync.WhatsAppTemplateSyncService? waTemplateSync = null,
-        System.Net.Http.IHttpClientFactory? httpFactory = null)
+        System.Net.Http.IHttpClientFactory? httpFactory = null,
+        Services.Drawers.IDrawerService? drawers = null)
     {
+        _drawers = drawers;
         _liveSettings = settings;
         _store = store;
         _originalOverlayPort = settings.OverlayPort;
@@ -367,19 +373,22 @@ public sealed partial class SettingsViewModel : ViewModelBase
             FacebookConnectionStatus = "Tarayıcıdan onay bekleniyor...";
 
             // Page picker callback: only invoked when the operator manages >1
-            // Page. Runs on the UI thread because it pops a modal dialog.
+            // Page. OAuth dinleyicisinin thread'inden gelebiliyor, o yüzden
+            // Dispatcher üzerinden UI'ya geçiyoruz. Faz 3: modal pencere
+            // yerine çekmece — InvokeAsync artık Task döndüren bir lambda
+            // aldığı için .Task.Unwrap() ile çekmecenin KAPANMASI bekleniyor;
+            // düz await sadece lambda'nın BAŞLAMASINI beklerdi.
             await _facebookOAuth.ConnectAsync(async (candidates, ct) =>
             {
                 FacebookPageCandidate? chosen = null;
-                await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+                await System.Windows.Application.Current.Dispatcher.InvokeAsync(async () =>
                 {
-                    var dlg = new Views.FacebookPagePickerDialog(candidates)
-                    {
-                        Owner = System.Windows.Application.Current.MainWindow,
-                    };
-                    if (dlg.ShowDialog() == true)
-                        chosen = dlg.Selected;
-                });
+                    if (_drawers is null) return;
+                    Views.Drawers.FacebookPagePickerDrawer? view = null;
+                    var ok = await _drawers.ShowAsync("Facebook Sayfası Seç",
+                        d => view = Views.Drawers.FacebookPagePickerDrawer.Create(d, candidates));
+                    if (ok) chosen = view!.Selected;
+                }).Task.Unwrap().ConfigureAwait(true);
                 return chosen;
             }).ConfigureAwait(true);
 

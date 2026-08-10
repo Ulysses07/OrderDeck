@@ -25,9 +25,9 @@ namespace OrderDeck.Tests.ViewModels;
 /// switch, notes persistence, and the CanCancel/CanUncancel selection
 /// predicates that drive the cancel/uncancel buttons.
 ///
-/// The Cancel/Uncancel commands themselves open <c>Views.CancelLabelDialog</c>
-/// / <c>Views.BackupTransferDialog</c> synchronously and need
-/// <c>Application.Current</c>; those paths stay covered by manual smoke +
+/// The Cancel/Uncancel commands themselves open <c>Views.Drawers.CancelLabelDrawer</c>
+/// / <c>Views.Drawers.BackupTransferDrawer</c> and need a drawer service (not given
+/// here, so they return early); those paths stay covered by manual smoke +
 /// the integration of <see cref="LabelService.Cancel"/> /
 /// <see cref="LabelService.Uncancel"/> which are exercised in
 /// <see cref="LabelServiceTests"/>-style core tests.

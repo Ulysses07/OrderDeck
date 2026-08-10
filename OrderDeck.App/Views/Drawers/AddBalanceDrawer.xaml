@@ -1,0 +1,84 @@
+<UserControl x:Class="OrderDeck.App.Views.Drawers.AddBalanceDrawer"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- AddBalanceDialog'un (420x450 Window) çekmece karşılığı — spec §6.2.
+         Müşteri detayının üstüne ikinci seviye olarak açılıyor.
+
+         Pencereden farklar:
+         · Başlık DÜŞTÜ; müşteri adı içerikte KALDI, çünkü şeritteki başlık
+           sabit ("Bakiye Ekle") ve kime bakiye yazıldığı kritik bilgi.
+         · İki tip seçeneği yan yana değil ALT ALTA: "Müşteri iadesi (kargo
+           düşülür)" 400px'e yan yana sığmıyor.
+         · Kargo alanı pencerede aynı satıra üst üste bindirilmişti
+           (Grid.Row=4 + Margin hilesi); burada kendi satırında. -->
+    <Grid Margin="{StaticResource OD.Pad.5}" VerticalAlignment="Top">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Grid.Resources>
+            <Style x:Key="Kind" TargetType="RadioButton"
+                   BasedOn="{StaticResource OD.Chip}">
+                <Setter Property="HorizontalContentAlignment" Value="Left"/>
+                <Setter Property="Margin" Value="{StaticResource OD.Pad.Top3}"/>
+            </Style>
+        </Grid.Resources>
+
+        <TextBlock Grid.Row="0" Text="{Binding CustomerLabel}"
+                   Style="{StaticResource OD.Text.Section}"
+                   TextTrimming="CharacterEllipsis"/>
+
+        <StackPanel Grid.Row="1" Margin="{StaticResource OD.Pad.Top4}">
+            <RadioButton x:Name="RbFull" GroupName="Kind"
+                         Style="{StaticResource Kind}"
+                         Content="Hatalı ürün (tam iade)" IsChecked="True"
+                         Checked="OnTypeChanged"/>
+            <RadioButton x:Name="RbNet" GroupName="Kind"
+                         Style="{StaticResource Kind}"
+                         Content="Müşteri iadesi (kargo düşülür)"
+                         Checked="OnTypeChanged"/>
+        </StackPanel>
+
+        <StackPanel Grid.Row="2" Margin="{StaticResource OD.Pad.Top5}">
+            <TextBlock Text="SİPARİŞ TUTARI (TL)" Style="{StaticResource OD.Text.Micro}"/>
+            <TextBox x:Name="TbAmount" Style="{StaticResource OD.TextBox}"
+                     Margin="{StaticResource OD.Pad.Top3}"
+                     TextChanged="OnAmountChanged"/>
+        </StackPanel>
+
+        <StackPanel Grid.Row="3" x:Name="ShippingBlock" Visibility="Collapsed"
+                    Margin="{StaticResource OD.Pad.Top4}">
+            <TextBlock Text="KARGO (TL)" Style="{StaticResource OD.Text.Micro}"/>
+            <TextBox x:Name="TbShipping" Style="{StaticResource OD.TextBox}"
+                     Margin="{StaticResource OD.Pad.Top3}"
+                     Text="100" TextChanged="OnAmountChanged"/>
+        </StackPanel>
+
+        <StackPanel Grid.Row="4" Margin="{StaticResource OD.Pad.Top4}">
+            <TextBlock Text="NOT (OPSİYONEL)" Style="{StaticResource OD.Text.Micro}"/>
+            <TextBox x:Name="TbReason" Style="{StaticResource OD.TextBox}"
+                     Margin="{StaticResource OD.Pad.Top3}"/>
+            <TextBlock x:Name="LblPreview" Style="{StaticResource OD.Text.Hint}"
+                       Foreground="{StaticResource OD.Brush.Success}"
+                       TextWrapping="Wrap"/>
+            <TextBlock x:Name="LblError" Style="{StaticResource OD.Text.Hint}"
+                       Foreground="{StaticResource OD.Brush.Accent}"
+                       TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <StackPanel Grid.Row="5" Margin="{StaticResource OD.Pad.Top5}">
+            <Button x:Name="BtnSave" Content="Kaydet"
+                    Style="{StaticResource OD.Button.Primary}"
+                    Click="OnSave"/>
+            <Button Content="Vazgeç"
+                    Style="{StaticResource OD.Button.Ghost}"
+                    HorizontalContentAlignment="Center"
+                    Margin="{StaticResource OD.Pad.Top4}"
+                    Click="OnCancel"/>
+        </StackPanel>
+    </Grid>
+</UserControl>

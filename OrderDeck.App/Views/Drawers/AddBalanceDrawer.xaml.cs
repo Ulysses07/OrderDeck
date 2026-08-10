@@ -1,49 +1,59 @@
 using System;
 using System.Globalization;
 using System.Threading;
-using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using OrderDeck.App.Services.Drawers;
 using OrderDeck.Licensing.Api;
 using OrderDeck.Licensing.Api.Models;
 
-namespace OrderDeck.App.Views;
+namespace OrderDeck.App.Views.Drawers;
 
 /// <summary>
-/// Yayıncı müşteriye iade/refund bakiyesi tanımlar. İki tip:
+/// AddBalanceDialog'un çekmece hâli. Yayıncı müşteriye iade bakiyesi tanımlar:
 ///   - Hatalı ürün (full): tam tutar bakiyeye eklenir
 ///   - Müşteri iadesi (net): tutar − kargo bakiyeye eklenir
+///
+/// Kayıt başarılıysa çekmece <c>Close(true)</c> ile kapanır; çağıran ayrıca
+/// <see cref="Saved"/>'i okuyabilir (pencere sürümünün sözleşmesi korundu).
 /// </summary>
-public partial class AddBalanceDialog : Window
+public partial class AddBalanceDrawer : UserControl
 {
+    private readonly Drawer _drawer;
     private readonly LicenseApiClient _api;
     private readonly Guid _wpfCustomerId;
     private bool _saving;
 
-    /// <summary>Caller dialog kapandıktan sonra bakiye listesini tazelemek için kontrol eder.</summary>
+    /// <summary>Çağıran, kapanış sonrası bakiye listesini tazelemek için okur.</summary>
     public bool Saved { get; private set; }
 
-    public AddBalanceDialog(LicenseApiClient api, Guid wpfCustomerId, string customerLabel)
+    private AddBalanceDrawer(Drawer drawer, LicenseApiClient api,
+                             Guid wpfCustomerId, string customerLabel)
     {
         InitializeComponent();
+        _drawer = drawer;
         _api = api;
         _wpfCustomerId = wpfCustomerId;
         DataContext = new { CustomerLabel = customerLabel };
         UpdatePreview();
     }
 
+    public static AddBalanceDrawer Create(Drawer drawer, LicenseApiClient api,
+                                          Guid wpfCustomerId, string customerLabel)
+        => new(drawer, api, wpfCustomerId, customerLabel);
+
     private void OnTypeChanged(object sender, RoutedEventArgs e)
     {
-        if (LblShipping is null || TbShipping is null) return;
-        var net = RbNet?.IsChecked == true;
-        LblShipping.Visibility = net ? Visibility.Visible : Visibility.Collapsed;
-        TbShipping.Visibility = net ? Visibility.Visible : Visibility.Collapsed;
+        if (ShippingBlock is null) return;
+        ShippingBlock.Visibility = RbNet?.IsChecked == true
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         UpdatePreview();
     }
 
     private void OnAmountChanged(object sender, TextChangedEventArgs e) => UpdatePreview();
 
-    private bool TryParseDecimal(string text, out decimal value)
+    private static bool TryParseDecimal(string? text, out decimal value)
     {
         value = 0m;
         if (string.IsNullOrWhiteSpace(text)) return false;
@@ -60,9 +70,11 @@ public partial class AddBalanceDialog : Window
         if (!TryParseDecimal(TbAmount.Text, out var amount) || amount <= 0)
             return;
 
+        var tr = CultureInfo.GetCultureInfo("tr-TR");
+
         if (RbFull.IsChecked == true)
         {
-            LblPreview.Text = $"Müşteriye {amount.ToString("N2", CultureInfo.GetCultureInfo("tr-TR"))} TL bakiye eklenecek.";
+            LblPreview.Text = $"Müşteriye {amount.ToString("N2", tr)} TL bakiye eklenecek.";
             return;
         }
 
@@ -73,7 +85,6 @@ public partial class AddBalanceDialog : Window
         }
 
         var net = amount - shipping;
-        var tr = CultureInfo.GetCultureInfo("tr-TR");
         LblPreview.Text = $"Müşteriye {net.ToString("N2", tr)} TL eklenecek "
             + $"({amount.ToString("N2", tr)} − {shipping.ToString("N2", tr)} kargo).";
     }
@@ -113,8 +124,7 @@ public partial class AddBalanceDialog : Window
                     CancellationToken.None);
             }
             Saved = true;
-            DialogResult = true;
-            Close();
+            _drawer.Close(true);
         }
         catch (Exception ex)
         {
@@ -134,9 +144,5 @@ public partial class AddBalanceDialog : Window
         return t.Length > 500 ? t[..500] : t;
     }
 
-    private void OnCancel(object sender, RoutedEventArgs e)
-    {
-        DialogResult = false;
-        Close();
-    }
+    private void OnCancel(object sender, RoutedEventArgs e) => _drawer.Close(false);
 }

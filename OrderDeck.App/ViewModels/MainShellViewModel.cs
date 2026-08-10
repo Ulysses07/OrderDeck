@@ -735,17 +735,21 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
     private async Task OpenIntakeSubmissionsAsync()
     {
-        await Task.Yield();
-        var dlg = global::OrderDeck.App.App.Host.Services.GetRequiredService<global::OrderDeck.App.Views.CustomerSearchDialog>();
-        var vm = (CustomerSearchViewModel)dlg.DataContext;
+        if (_drawers is null) return;   // yalnız testte; bkz. alanın notu
+
+        var vm = global::OrderDeck.App.App.Host.Services
+            .GetRequiredService<CustomerSearchViewModel>();
         // Form kayıtları artık Platform="form" değil (çoklu-platform gerçek satırlar);
         // "kayıt olan müşteri" = telefonu/adresi olan → RegisteredOnly ile göster.
         vm.NewThisSessionCount = NewIntakeSubmissionsCount;
         vm.RegisteredOnly = true;
+        // Yükleme burada, view'da değil: aynı çekmece iki ayrı ön filtreyle
+        // açılıyor (bu ve OpenCustomerSearch), view kendi verisini yükleseydi
+        // filtreler birbirini ezerdi.
         vm.RefreshSearch();
 
-        dlg.Owner = System.Windows.Application.Current?.MainWindow;
-        dlg.ShowDialog();
+        await _drawers.ShowAsync("Müşteriler",
+            _ => Views.Drawers.CustomerSearchDrawer.Create(vm));
 
         NewIntakeSubmissionsCount = 0;
     }
@@ -1434,41 +1438,38 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     }
 
     [RelayCommand(CanExecute = nameof(CanWrite))]
-    private void AddChatSenderToBlacklist(ChatMessageViewModel? msg)
+    private async Task AddChatSenderToBlacklistAsync(ChatMessageViewModel? msg)
     {
         if (msg is null) return;
-        var dlg = new AddToBlacklistDialog
-        {
-            Mode = AddToBlacklistDialog.DialogMode.Prefilled,
-            UsernameText = msg.Username,
-            PlatformText = msg.Platform
-        };
-        dlg.Owner = Application.Current?.MainWindow;
-        if (dlg.ShowDialog() != true) return;
-
-        _customers.EnsureBlacklistedManual(msg.Platform, msg.Username, dlg.ReasonText);
-        RefreshHighlights();
+        await BlacklistPrefilledAsync(msg.Platform, msg.Username);
     }
 
     [RelayCommand(CanExecute = nameof(CanWrite))]
-    private void AddQueueRowToBlacklist(LabelViewModel? row)
+    private async Task AddQueueRowToBlacklistAsync(LabelViewModel? row)
     {
         if (row is null) return;
-        var dlg = new AddToBlacklistDialog
-        {
-            Mode = AddToBlacklistDialog.DialogMode.Prefilled,
-            UsernameText = row.Username,
-            PlatformText = row.Label.Platform
-        };
-        dlg.Owner = Application.Current?.MainWindow;
-        if (dlg.ShowDialog() != true) return;
+        await BlacklistPrefilledAsync(row.Label.Platform, row.Username);
+    }
 
-        _customers.EnsureBlacklistedManual(row.Label.Platform, row.Username, dlg.ReasonText);
+    /// <summary>Kimliği hazır gelen (sohbet/kuyruk satırı) kara liste akışı:
+    /// sebep çekmecede sorulur, onaylanırsa kayıt işaretlenir.</summary>
+    private async Task BlacklistPrefilledAsync(string platform, string username)
+    {
+        if (_drawers is null) return;   // yalnız testte; bkz. alanın notu
+
+        Views.Drawers.AddToBlacklistDrawer? view = null;
+        var ok = await _drawers.ShowAsync("Kara Listeye Al",
+            d => view = Views.Drawers.AddToBlacklistDrawer.Create(
+                d, Views.Drawers.AddToBlacklistDrawer.DrawerMode.Prefilled,
+                platform, username));
+        if (!ok) return;
+
+        _customers.EnsureBlacklistedManual(platform, username, view!.ReasonText);
         RefreshHighlights();
     }
 
     [RelayCommand]
-    private void OpenCustomerDetailFromChat(ChatMessageViewModel? msg)
+    private async Task OpenCustomerDetailFromChatAsync(ChatMessageViewModel? msg)
     {
         if (msg is null) return;
         var customer = _customerRepo.FindByPlatformAndUsername(msg.Platform, msg.Username);
@@ -1477,22 +1478,25 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             _dialogs.Show("Bu kullanıcı henüz kayıtlı değil.", "Müşteri yok");
             return;
         }
-        ShowCustomerDetail(customer.Id);
+        await ShowCustomerDetailAsync(customer.Id);
     }
 
     [RelayCommand]
-    private void OpenCustomerDetailFromQueue(LabelViewModel? row)
+    private async Task OpenCustomerDetailFromQueueAsync(LabelViewModel? row)
     {
         if (row is null) return;
-        ShowCustomerDetail(row.CustomerId);
+        await ShowCustomerDetailAsync(row.CustomerId);
     }
 
     [RelayCommand]
-    private void OpenCustomerSearch()
+    private async Task OpenCustomerSearchAsync()
     {
-        var dlg = App.Host.Services.GetRequiredService<Views.CustomerSearchDialog>();
-        dlg.Owner = Application.Current?.MainWindow;
-        dlg.ShowDialog();
+        if (_drawers is null) return;   // yalnız testte; bkz. alanın notu
+
+        var vm = App.Host.Services.GetRequiredService<CustomerSearchViewModel>();
+        vm.RefreshSearch();
+        await _drawers.ShowAsync("Müşteriler",
+            _ => Views.Drawers.CustomerSearchDrawer.Create(vm));
     }
 
     [RelayCommand(CanExecute = nameof(CanWrite))]
@@ -1507,11 +1511,20 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             _ => Views.Pages.ShortcutHelpPage.Create(registry));
     }
 
-    private static void ShowCustomerDetail(string customerId)
+    /// <summary>Müşteri detay çekmecesini açar. Yükleme BURADA, view'da değil
+    /// (Faz 3 kuralı); müşteri bulunamazsa çekmece hiç açılmıyor.</summary>
+    private async Task ShowCustomerDetailAsync(string customerId)
     {
-        var dlg = App.Host.Services.GetRequiredService<Views.CustomerDetailDialog>();
-        dlg.Owner = Application.Current?.MainWindow;
-        dlg.Open(customerId);
+        if (_drawers is null) return;   // yalnız testte; bkz. alanın notu
+
+        var vm = App.Host.Services.GetRequiredService<CustomerDetailViewModel>();
+        if (!vm.Load(customerId))
+        {
+            _dialogs.Show("Müşteri kaydı bulunamadı.", "Müşteri Detayı");
+            return;
+        }
+        await _drawers.ShowAsync("Müşteri Detayı",
+            _ => Views.Drawers.CustomerDetailDrawer.Create(vm));
     }
 
     private void RefreshHighlights()

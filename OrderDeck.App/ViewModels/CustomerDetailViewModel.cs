@@ -9,6 +9,7 @@ using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using OrderDeck.App.Formatting;
+using OrderDeck.App.Services.Drawers;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Sales;
 using OrderDeck.Core.Sessions;
@@ -25,6 +26,12 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
     private readonly GiveawayRepository _giveaways;
     private readonly StreamSessionService _sessions;
     private readonly LicenseApiClient _api;
+
+    /// <summary>Çekmece açmanın tek yolu (spec §6). Testte verilmiyor — oradaki
+    /// senaryolar hiçbir çekmece açan komutu tetiklemiyor, null kalması
+    /// komutları sessizce erken döndürüyor.</summary>
+    private readonly IDrawerService? _drawers;
+
     private string? _customerId;
 
     [ObservableProperty][NotifyPropertyChangedFor(nameof(Display))][NotifyPropertyChangedFor(nameof(HeaderName))] private string _username = "";
@@ -93,7 +100,8 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
         LabelService labelService,
         GiveawayRepository giveaways,
         StreamSessionService sessions,
-        LicenseApiClient api)
+        LicenseApiClient api,
+        IDrawerService? drawers = null)
     {
         _customers = customers;
         _labels = labels;
@@ -101,6 +109,7 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
         _giveaways = giveaways;
         _sessions = sessions;
         _api = api;
+        _drawers = drawers;
 
         SelectedLabels.CollectionChanged += (_, _) =>
         {
@@ -207,13 +216,14 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
                 "Bakiye", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
+        if (_drawers is null) return;   // yalnız testte; bkz. alanın notu
+
         var label = DisplayName ?? Username;
-        var dlg = new Views.AddBalanceDialog(_api, projectionId, label)
-        {
-            Owner = Application.Current.Windows.OfType<Window>()
-                .FirstOrDefault(w => w.IsActive && w.IsVisible)
-        };
-        if (dlg.ShowDialog() == true && dlg.Saved)
+        Views.Drawers.AddBalanceDrawer? view = null;
+        var ok = await _drawers.ShowAsync("Bakiye Ekle",
+            d => view = Views.Drawers.AddBalanceDrawer.Create(d, _api, projectionId, label));
+
+        if (ok && view!.Saved)
             await ReloadBalanceAsync();
     }
 
@@ -262,21 +272,26 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
         }
     }
 
-    /// <summary>Sebep dialog'unu açar; onaylanırsa seçili (henüz iptal edilmemiş)
-    /// satırları soft-cancel'lar ve listeyi tazeler.</summary>
+    /// <summary>Sebep çekmecesini açar; onaylanırsa seçili (henüz iptal edilmemiş)
+    /// satırları soft-cancel'lar ve listeyi tazeler.
+    ///
+    /// Faz 3'te senkron olmaktan çıktı: çekmece bloklamıyor, kapanışı await
+    /// ediliyor. Üretilen komut adı değişmedi (toolkit "Async" ekini atıyor),
+    /// XAML bağlaması aynı kaldı.</summary>
     [RelayCommand(CanExecute = nameof(CanCancelSelected))]
-    private void CancelSelected()
+    private async Task CancelSelectedAsync()
     {
+        if (_drawers is null) return;   // yalnız testte; bkz. alanın notu
+
         var targets = SelectedLabels.Where(l => !l.IsCancelled).Select(l => l.Id).ToList();
         if (targets.Count == 0) return;
 
-        var dlg = new Views.CancelLabelDialog
-        {
-            Owner = Application.Current.Windows.OfType<Window>()
-                .FirstOrDefault(w => w.IsActive && w.IsVisible)
-        };
-        if (dlg.ShowDialog() != true) return;
-        var reason = dlg.SelectedReasonCode;
+        Views.Drawers.CancelLabelDrawer? view = null;
+        var ok = await _drawers.ShowAsync("Etiket İptali",
+            d => view = Views.Drawers.CancelLabelDrawer.Create(d));
+        if (!ok) return;
+
+        var reason = view!.SelectedReasonCode;
         if (string.IsNullOrEmpty(reason)) return;
 
         try
@@ -285,9 +300,11 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
             ReloadLabels();
 
             // For each cancelled label that has backups, surface the transfer
-            // dialog so the operator can promote a backup to a new label.
-            // Multi-select cancels open multiple dialogs sequentially — rare in
-            // practice, common cancel is one row at a time.
+            // drawer so the operator can promote a backup to a new label.
+            // Multi-select cancels open the drawer sequentially — her biri
+            // kapanmadan sıradaki açılmıyor, çünkü await yığının üstündeki
+            // çekmecenin kapanmasını bekliyor. Pratikte nadir: olağan iptal
+            // tek satır.
             foreach (var labelId in targets)
             {
                 var backups = _labelService.GetBackups(labelId);
@@ -296,13 +313,10 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
                 var parent = _labels.GetById(labelId);
                 if (parent is null) continue;
 
-                var dialog = new Views.BackupTransferDialog(_labelService)
-                {
-                    Owner = Application.Current.Windows.OfType<Window>()
-                        .FirstOrDefault(w => w.IsActive && w.IsVisible)
-                };
-                dialog.Load(parent, backups);
-                dialog.ShowDialog();
+                await _drawers.ShowAsync(
+                    $"'{parent.Username}' yedekleri ({backups.Count})",
+                    d => Views.Drawers.BackupTransferDrawer.Create(
+                        d, _labelService, parent, backups));
             }
         }
         catch (Exception ex)

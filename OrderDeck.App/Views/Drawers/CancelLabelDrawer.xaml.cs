@@ -1,18 +1,29 @@
 using System.Windows;
+using System.Windows.Controls;
+using OrderDeck.App.Services.Drawers;
 using OrderDeck.Core.Sales;
 
-namespace OrderDeck.App.Views;
+namespace OrderDeck.App.Views.Drawers;
 
-public partial class CancelLabelDialog : Window
+/// <summary>
+/// CancelLabelDialog'un çekmece hâli. Sonuç <see cref="SelectedReasonCode"/>'da
+/// duruyor; çekmece sonuç taşımadığı için (bkz. <see cref="Drawer"/> notu)
+/// çağıran fabrikadan dönen örneği tutup okur.
+/// </summary>
+public partial class CancelLabelDrawer : UserControl
 {
-    public CancelLabelDialog()
+    private readonly Drawer _drawer;
+
+    private CancelLabelDrawer(Drawer drawer)
     {
         InitializeComponent();
+        _drawer = drawer;
     }
 
-    /// <summary>The chosen reason code (one of CancelReasonCodes.* or
-    /// "custom:..." with the operator's free text). Set on Confirm; null on
-    /// cancel.</summary>
+    public static CancelLabelDrawer Create(Drawer drawer) => new(drawer);
+
+    /// <summary>Seçilen sebep kodu (CancelReasonCodes.* ya da operatörün yazdığı
+    /// metinle "custom:..."). Onayda dolar, iptalde null kalır.</summary>
     public string? SelectedReasonCode { get; private set; }
 
     private void OnConfirm(object sender, RoutedEventArgs e)
@@ -38,13 +49,8 @@ public partial class CancelLabelDialog : Window
         else
             SelectedReasonCode = CancelReasonCodes.Customer;
 
-        DialogResult = true;
-        Close();
+        _drawer.Close(true);
     }
 
-    private void OnCancel(object sender, RoutedEventArgs e)
-    {
-        DialogResult = false;
-        Close();
-    }
+    private void OnCancel(object sender, RoutedEventArgs e) => _drawer.Close(false);
 }

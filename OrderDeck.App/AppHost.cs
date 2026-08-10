@@ -308,8 +308,9 @@ public sealed class AppHost : IDisposable
         // Customer center (Phase 3a)
         services.AddTransient<ViewModels.CustomerDetailViewModel>();
         services.AddTransient<ViewModels.CustomerSearchViewModel>();
-        services.AddTransient<Views.CustomerDetailDialog>();
-        services.AddTransient<Views.CustomerSearchDialog>();
+        // CustomerSearchDialog / CustomerDetailDialog Faz 3'te çekmeceye döndü;
+        // çekmeceler DI'dan ÇÖZÜLMÜYOR (fabrika + yukarıdaki ViewModel kaydı
+        // yeterli).
 
         // Shopper destek talepleri (forgot-password fallback)
         services.AddTransient<ViewModels.SupportRequestsViewModel>();

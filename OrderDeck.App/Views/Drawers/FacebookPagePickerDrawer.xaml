@@ -1,0 +1,78 @@
+<UserControl x:Class="OrderDeck.App.Views.Drawers.FacebookPagePickerDrawer"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- FacebookPagePickerDialog'un (420x320 Window) çekmece karşılığı —
+         spec §6.2. Yalnız birden fazla Page yöneten hesaplarda açılıyor;
+         tek Page'li kurulumda OAuth servisi kendisi seçiyor.
+
+         Pencereden farklar:
+         · Başlık ("Facebook Page Seç") DÜŞTÜ — şerit veriyor.
+         · Düz ListBox yerine kart listesi: 400px'te tek satırlık isimler
+           kaybolmasın, dokunma hedefi büyüsün.
+         · "İptal" KALDI: seçim çekmecesi, ESC'nin görünür karşılığı lazım. -->
+    <UserControl.Resources>
+        <Style x:Key="PageItem" TargetType="ListBoxItem">
+            <Setter Property="Padding" Value="{StaticResource OD.Pad.4}"/>
+            <Setter Property="Margin"  Value="{StaticResource OD.Pad.Bottom3}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="Bd"
+                                Background="{StaticResource OD.Brush.Surface2}"
+                                BorderBrush="{StaticResource OD.Brush.Border}"
+                                BorderThickness="1"
+                                CornerRadius="{StaticResource OD.Radius.Sm}"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="BorderBrush"
+                                        Value="{StaticResource OD.Brush.BorderStrong}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="BorderBrush"
+                                        Value="{StaticResource OD.Brush.Accent}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </UserControl.Resources>
+
+    <StackPanel Margin="{StaticResource OD.Pad.5}" VerticalAlignment="Top">
+        <TextBlock TextWrapping="Wrap"
+                   Style="{StaticResource OD.Text.Label}"
+                   Text="Bu hesabın yönetebildiği birden fazla Facebook sayfası var. OrderDeck'in canlı yorumları çekeceği sayfayı seç:"/>
+
+        <ListBox x:Name="PagesList"
+                 Background="Transparent"
+                 BorderThickness="0"
+                 Margin="{StaticResource OD.Pad.Top4}"
+                 MaxHeight="360"
+                 HorizontalContentAlignment="Stretch"
+                 ItemContainerStyle="{StaticResource PageItem}"
+                 SelectionMode="Single"
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <TextBlock Text="{Binding Name}" TextWrapping="Wrap"
+                               Foreground="{StaticResource OD.Brush.Text}"/>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+
+        <Button Content="Seç"
+                Style="{StaticResource OD.Button.Primary}"
+                Margin="{StaticResource OD.Pad.Top5}"
+                IsDefault="True"
+                Click="OnAccept"/>
+
+        <Button Content="İptal"
+                Style="{StaticResource OD.Button.Ghost}"
+                HorizontalContentAlignment="Center"
+                Margin="{StaticResource OD.Pad.Top4}"
+                Click="OnCancel"/>
+    </StackPanel>
+</UserControl>

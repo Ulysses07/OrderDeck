@@ -98,6 +98,59 @@ public class MainShellViewCompositionTests
                                 ctx, "instagram/@ayse_y", 500m)));
             Assert.IsType<ShipmentThresholdDrawer>(dekont.Top!.Content);
 
+            // Müşteri arama (Faz 3d). Kendi kapatma düğmesi olmadığı için
+            // fabrikası Drawer istemiyor, ama yığın üzerinden kuruluyor:
+            // gerçek çağrı yolu bu.
+            var search = new DrawerStack();
+            search.ShowAsync("Müşteriler",
+                _ => CustomerSearchDrawer.Create(BuildCustomerSearchViewModel()));
+            Assert.IsType<CustomerSearchDrawer>(search.Top!.Content);
+
+            // Müşteri detay zinciri (Faz 3d): arama → detay → iptal sebebi.
+            // Aynı yığına biniyorlar, gerçek çağrı yolu bu. Detay çekmecesi
+            // veri YÜKLEMİYOR (Load'u çağıran taraf yapar), o yüzden boş
+            // ViewModel'le kuruluyor — sınanan XAML'in çözülmesi.
+            search.ShowAsync("Müşteri Detayı",
+                _ => CustomerDetailDrawer.Create(BuildCustomerDetailViewModel()));
+            Assert.IsType<CustomerDetailDrawer>(search.Top!.Content);
+
+            search.ShowAsync("Etiket İptali", d => CancelLabelDrawer.Create(d));
+            Assert.IsType<CancelLabelDrawer>(search.Top!.Content);
+
+            // Bakiye çekmecesi ayrı yığında: detay zincirinin kardeşi, aynı
+            // anda ikisi birden açılmıyor.
+            var balance = new DrawerStack();
+            balance.ShowAsync("Bakiye Ekle",
+                d => AddBalanceDrawer.Create(d, BuildLicenseApi(), Guid.NewGuid(), "Alice"));
+            Assert.IsType<AddBalanceDrawer>(balance.Top!.Content);
+
+            // Faz 3d/3'ün üçlüsü. Birbirinin üstüne binmiyorlar, ayrı
+            // yığınlar: amaç sıralama değil, her XAML'in çözülebildiğini
+            // görmek.
+            var phone = new DrawerStack();
+            phone.ShowAsync("WhatsApp Numarası Gerekli",
+                d => PhoneEntryDrawer.Create(d, BuildCustomerRepository(), "c1"));
+            Assert.IsType<PhoneEntryDrawer>(phone.Top!.Content);
+
+            var blacklistDrawer = new DrawerStack();
+            blacklistDrawer.ShowAsync("Kara Listeye Al",
+                d => AddToBlacklistDrawer.Create(
+                    d, AddToBlacklistDrawer.DrawerMode.Prefilled, "instagram", "alice"));
+            Assert.IsType<AddToBlacklistDrawer>(blacklistDrawer.Top!.Content);
+
+            var pagePicker = new DrawerStack();
+            pagePicker.ShowAsync("Facebook Sayfası Seç",
+                d => FacebookPagePickerDrawer.Create(d, BuildPageCandidates()));
+            Assert.IsType<FacebookPagePickerDrawer>(pagePicker.Top!.Content);
+
+            // Faz 3d/4: yedek devri. Gerçekte iptal çekmecesinin üstüne
+            // biniyor; burada tek başına, iki yedekle kuruluyor ki kart
+            // şablonu (platform ikonu + fiyat + onay) gerçekten çizilsin.
+            var backups = new DrawerStack();
+            backups.ShowAsync("'alice' yedekleri (2)",
+                d => BuildBackupTransferDrawer(d));
+            Assert.IsType<BackupTransferDrawer>(backups.Top!.Content);
+
             // Faz 3 sayfaları. Çekmecelerle aynı gerekçe: XAML hatası
             // derlemede değil açılışta patlar. Sayfa fabrikaları Page
             // istemediği için (AccountPage hariç) doğrudan çağrılıyorlar,
@@ -159,6 +212,89 @@ public class MainShellViewCompositionTests
             customers,
             new CustomerService(customers, new SessionRepository(db), new LabelRepository(db), clock));
     }
+
+    /// <summary>Ödeme servisi ve diyalog servisi VERİLMİYOR: ikisi de yalnız
+    /// "Öde" düğmesine basılınca kullanılıyor, bu test hiçbir komut
+    /// tetiklemiyor. Gerçeklerini kurmak testi ağa ve DPAPI'ye bağlardı.</summary>
+    private static CustomerSearchViewModel BuildCustomerSearchViewModel()
+    {
+        var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var customers = new CustomerRepository(db);
+        var sessions = new SessionRepository(db);
+        var labels = new LabelRepository(db);
+        return new CustomerSearchViewModel(
+            customers,
+            new CustomerService(customers, sessions, labels, new SystemClock()),
+            sessions, labels,
+            paymentService: null!, dialogService: null!);
+    }
+
+    /// <summary>Çekmece servisi VERİLMİYOR (varsayılan null): bakiye ekleme ve
+    /// etiket iptali komutları bu testte tetiklenmiyor, ikisi de null görünce
+    /// erken dönüyor.</summary>
+    private static CustomerDetailViewModel BuildCustomerDetailViewModel()
+    {
+        var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var customers = new CustomerRepository(db);
+        var sessions = new SessionRepository(db);
+        var labels = new LabelRepository(db);
+        var clock = new SystemClock();
+        return new CustomerDetailViewModel(
+            customers, labels,
+            new LabelService(labels, new CustomerService(customers, sessions, labels, clock), clock),
+            new GiveawayRepository(db),
+            new StreamSessionService(sessions, clock),
+            BuildLicenseApi());
+    }
+
+    /// <summary>Yedek devri çekmecesi: iptal edilen ana etiket + iki yedek.
+    /// Kayıtlar veritabanına yazılmıyor — çekmece listeyi çağırandan hazır
+    /// alıyor, burada sınanan yalnız kart şablonunun çözülmesi.</summary>
+    private static BackupTransferDrawer BuildBackupTransferDrawer(Drawer drawer)
+    {
+        var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var labels = new LabelRepository(db);
+        var sessions = new SessionRepository(db);
+        var customers = new CustomerRepository(db);
+        var clock = new SystemClock();
+        var service = new LabelService(
+            labels, new CustomerService(customers, sessions, labels, clock), clock);
+
+        var parent = MakeLabel("l1", "instagram", "alice", "ALC-1", 250m);
+        var backups = new[]
+        {
+            MakeLabel("l2", "tiktok", "ayse_y", "ALC-1", 250m, isBackup: true),
+            MakeLabel("l3", "youtube", "mehmet", "ALC-1", 275m, isBackup: true),
+        };
+        return BackupTransferDrawer.Create(drawer, service, parent, backups);
+    }
+
+    private static OrderDeck.Core.Sales.Label MakeLabel(
+        string id, string platform, string username, string code, decimal price,
+        bool isBackup = false)
+        => new(id, "s1", "c1", platform, username, $"{code} alıyorum", code,
+               price, 1_754_300_000, PrintedAt: null,
+               ParentLabelId: isBackup ? "l1" : null,
+               IsTentativeBackup: isBackup);
+
+    private static CustomerRepository BuildCustomerRepository()
+    {
+        var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        return new CustomerRepository(db);
+    }
+
+    /// <summary>Sayfa seçici yalnız BİRDEN FAZLA sayfa varken açılıyor; iki
+    /// aday veriyoruz ki liste şablonu gerçekten çizilsin.</summary>
+    private static IReadOnlyList<OrderDeck.Chat.Facebook.FacebookPageCandidate> BuildPageCandidates()
+        => new[]
+        {
+            new OrderDeck.Chat.Facebook.FacebookPageCandidate("p1", "Emar Mezat"),
+            new OrderDeck.Chat.Facebook.FacebookPageCandidate("p2", "Emar Outlet"),
+        };
 
     private static StreamHistoryViewModel BuildStreamHistoryViewModel()
     {
