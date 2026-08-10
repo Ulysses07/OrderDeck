@@ -116,7 +116,7 @@ public class StartupFlowTests
         Assert.True(gates.LoginShown);
         // Açılış yolunda giriş HER ZAMAN gate modunda açılır; isStartupGate:false
         // yalnız çalışma anındaki hesap değiştirme içindir.
-        Assert.Equal(true, gates.LoginIsStartupGate);
+        Assert.True(gates.LoginIsStartupGate);
         Assert.True(env.ShutdownRequested);
         Assert.False(env.ShellMounted);
     }
@@ -250,6 +250,10 @@ public class StartupFlowTests
 
         await Build(gates, env).RunAsync();
 
+        // Gate'in try/finally sözleşmesi: iş patlasa da açılış ekranı
+        // kapanır. Kapanmasaydı çevrimdışı makine "Hazırlanıyor…"da asılı
+        // kalırdı — arkadaki shell'e bir daha ulaşılamazdı.
+        Assert.True(gates.BootClosed);
         Assert.True(env.ShellMounted);
     }
 
@@ -317,6 +321,7 @@ public class StartupFlowTests
         public List<string> Calls { get; } = new();
 
         public int BootCount;
+        public bool BootClosed;
         public bool LoginShown, RestoreShown, FirstRunShown, RecoveryShown;
         public bool? LoginIsStartupGate;
 
@@ -330,10 +335,12 @@ public class StartupFlowTests
         {
             BootCount++;
             Calls.Add("gate.boot");
-            // Üretim gerçeklemesi gibi: iş ne yaparsa yapsın gate kapanır,
-            // hata olduğu gibi yukarı çıkar.
+            // Üretim gerçeklemesinin ZORUNLU kalıbı (bkz. IStartupGates
+            // sözleşmesi): iş ne yaparsa yapsın gate kapanır, hata olduğu
+            // gibi yukarı çıkar. Kapanış işaretleniyor ki lisans hatası
+            // testi "iş patladı ama gate kapandı"yı iddia edebilsin.
             try { await work(); }
-            finally { /* gate kapandı */ }
+            finally { BootClosed = true; }
         }
 
         public Task<bool> ShowLoginAsync(bool isStartupGate)
