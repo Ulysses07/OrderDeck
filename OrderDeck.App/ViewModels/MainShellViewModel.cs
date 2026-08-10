@@ -53,6 +53,14 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     /// işlerini pompalayarak rastgele hatalar üretiyordu.
     /// </summary>
     private readonly IDialogService _dialogs;
+
+    /// <summary>
+    /// Çekmece yığını (spec §6). Opsiyonel: kabuk ViewModel'i testlerde
+    /// çekmecesiz kuruluyor ve çekmece açan tek akış (çekiliş) orada
+    /// koşmuyor. Üretimde DI her zaman doldurur.
+    /// </summary>
+    private readonly Services.Drawers.IDrawerService? _drawers;
+
     private readonly AnimationCatalogClient? _animationCatalogClient;
     private readonly ExtensionBridgeServer? _bridge;
     private readonly ViewerCountTracker? _viewers;
@@ -349,9 +357,11 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         AnimationCatalogClient? animationCatalogClient = null,
         ExtensionBridgeServer? bridge = null,
         ViewerCountTracker? viewers = null,
-        FacebookModerationService? facebookModeration = null)
+        FacebookModerationService? facebookModeration = null,
+        Services.Drawers.IDrawerService? drawers = null)
     {
         _dialogs = dialogs;
+        _drawers = drawers;
         _labels = labels;
         _sessions = sessions;
         _printer = printer;
@@ -1043,22 +1053,34 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         dlg.Open();
     }
 
+    // Faz 2b: modal pencere yerine çekmece (spec §6). Komut async oldu —
+    // çekmece BLOKLAMAZ, kapanışı beklenir. Üretilen komut adı değişmiyor
+    // (toolkit "Async" ekini atıyor), yani ShellTopBar ve ShortcutBinder'daki
+    // StartGiveawayCommand bağları olduğu gibi kaldı.
     [RelayCommand(CanExecute = nameof(CanWrite))]
-    private void StartGiveaway()
+    private async Task StartGiveawayAsync()
     {
         var session = _sessions.GetActive();
         if (session is null)
         {
-            _dialogs.Show("Önce yayın başlat.", "Aktif yayın yok");
+            await _dialogs.ShowAsync("Önce yayın başlat.", "Aktif yayın yok");
             return;
         }
         if (IsGiveawayActive) return;
+        if (_drawers is null) return;   // yalnız testte; bkz. alanın notu
 
-        var dlg = new NewGiveawayDialog(_settingsStore.Load(), _animationCatalogClient)
-            { Owner = Application.Current?.MainWindow };
-        if (dlg.ShowDialog() != true) return;
+        // Form örneğini dışarıda tutuyoruz: sonuç eskiden dlg.ViewModel'den
+        // okunuyordu, çekmecede karşılığı bu. Çekmece sonucu taşımıyor,
+        // yalnız "onaylandı mı" bilgisini veriyor.
+        Views.Drawers.GiveawayDrawer? form = null;
+        var confirmed = await _drawers.ShowAsync(
+            "Yeni Çekiliş",
+            d => form = Views.Drawers.GiveawayDrawer.Create(
+                            d, _settingsStore.Load(), _animationCatalogClient));
 
-        var vm = dlg.ViewModel;
+        if (!confirmed || form is null) return;
+
+        var vm = form.ViewModel;
         var animationId = vm.SelectedAnimationId ?? _settingsStore.Load().GiveawayAnimation.DefaultId;
         var g = _giveaways.Start(
             sessionId: session.Id,

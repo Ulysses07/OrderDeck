@@ -3,6 +3,7 @@ using OrderDeck.App.Services.Drawers;
 using OrderDeck.App.Views;
 using OrderDeck.App.Views.Drawers;
 using OrderDeck.App.Views.Shell;
+using OrderDeck.Core.Settings;
 
 namespace OrderDeck.Tests.App;
 
@@ -39,6 +40,14 @@ public class MainShellViewCompositionTests
             var stack = new DrawerStack();
             stack.ShowAsync("Onay", d => MessageDrawer.ForConfirm(d, "Emin misin?"));
             Assert.IsType<MessageDrawer>(stack.Top!.Content);
+
+            // Çekiliş çekmecesi (Faz 2b) de aynı yoldan kuruluyor. Katalog
+            // istemcisi VERİLMİYOR: test ağa çıkmasın, animasyon listesi boş
+            // kalsın — burada sınanan, XAML'in çözülmesi.
+            var giveaway = new DrawerStack();
+            giveaway.ShowAsync("Yeni Çekiliş",
+                d => GiveawayDrawer.Create(d, new AppSettings()));
+            Assert.IsType<GiveawayDrawer>(giveaway.Top!.Content);
 
             // Sonra kompozisyon kökü: sekiz parçayı da kendi ağacında kurar.
             var shell = new MainShellView();

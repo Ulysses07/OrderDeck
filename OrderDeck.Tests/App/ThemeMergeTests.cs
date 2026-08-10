@@ -18,11 +18,10 @@ public class ThemeMergeTests
     private static readonly string[] NewDictionaries =
         ["Colors.xaml", "Metrics.xaml", "Motion.xaml", "Icons.xaml", "Controls.xaml"];
 
-    // GiveawayTheme.xaml listede YOK: SettingsTheme'i "/Themes/SettingsTheme.xaml"
-    // ile merge ediyor; baştaki "/" WPF'te uygulama köküne (giriş assembly'sine)
-    // çözülür, test sürecinde giriş assembly'si testhost olduğu için tek başına
-    // yüklenemiyor. Kapsam kaybı yok: tanımladığı altı anahtarın hepsi "S." önekli
-    // ve SettingsTheme zaten listede.
+    // GiveawayTheme.xaml eskiden burada bir istisnaydı (kendi içinde
+    // SettingsTheme'i "/" ile merge ettiği için test sürecinde tek başına
+    // yüklenemiyordu). Faz 2b'de tek tüketicisi NewGiveawayDialog çekmeceye
+    // dönüşünce sözlük de silindi; istisna kalmadı.
     private static readonly string[] ExistingDictionaries =
         ["DarkControls.xaml", "PlatformIcons.xaml", "SettingsTheme.xaml"];
 

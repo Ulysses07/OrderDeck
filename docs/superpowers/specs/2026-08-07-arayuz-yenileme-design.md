@@ -374,7 +374,14 @@ geldiğinde hareket defterine dönüşecek.
   shell → CustomerSearchDialog → PhoneEntry
   ```
 
-  Sıra: (1) `NewGiveawayDialog`; (2) `CustomerDetailDialog` + çocukları;
+  Sıra: (1) ~~`NewGiveawayDialog`~~ **bitti (2026-08-10)** — `GiveawayDrawer`
+  oldu, `NewGiveawayDialog` ve ona özel `GiveawayTheme.xaml` silindi,
+  `StartGiveaway` komutu `async`'e döndü. 900px iki sütun 400px tek sütuna
+  inerken: çipler ComboBox'a çevrildi, özet panosu (formun kopyasıydı)
+  kaldırıldı, canlı önizleme 250px'ten 120px'e indi ve animasyon seçicinin
+  altına taşındı. Alanlar öneme göre sıralandı — form çekmeceye tam
+  sığmıyor, kaydırma çizgisinin altında kalanlar önizleme ve "önceki
+  kazananlar"; (2) `CustomerDetailDialog` + çocukları;
   (3) `CustomerSearchDialog` + `PhoneEntryDialog`; (4) `DekontEkleDialog` +
   çocukları — zincir mantığı code-behind'dan ViewModel'e taşınarak.
   `FacebookPagePickerDialog` (SettingsDialog'un içinde) ve
