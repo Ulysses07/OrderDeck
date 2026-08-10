@@ -84,7 +84,7 @@ public sealed class StartupFlow
         // ── İlk açılış sihirbazı ──────────────────────────────────────
         try
         {
-            if (!_env.HasCompletedFirstRun)
+            if (!_env.HasCompletedFirstRun())
                 await _gates.ShowFirstRunAsync();
         }
         catch (Exception ex)

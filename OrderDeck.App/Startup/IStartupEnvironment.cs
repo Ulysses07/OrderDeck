@@ -17,7 +17,17 @@ public interface IStartupEnvironment
 {
     Task InitializeLicenseAsync();
 
-    /// <summary>Lisans başlatıldıktan SONRA okunur.</summary>
+    /// <summary>
+    /// Lisans başlatıldıktan SONRA okunur.
+    ///
+    /// ANLAMI: <c>LicenseStatus != NoLicense</c> — yani "aktif lisans" DEĞİL,
+    /// "bu makinede bir lisans var". <c>OfflineGrace</c>, <c>OfflineExpired</c>,
+    /// <c>ExpiredOnline</c>, <c>TrialActive</c>… hepsi true döner; giriş gate'i
+    /// yalnızca hiç lisans yokken açılmalı. <c>== Active</c> yazan bir
+    /// gerçekleme, sunucuya ulaşamayan her operatörü açılışta giriş ekranına
+    /// hapseder. Bugünkü karşılığı <c>App.xaml.cs:126</c>'daki
+    /// <c>CurrentStatus == LicenseStatus.NoLicense</c> kontrolüdür.
+    /// </summary>
     bool HasLicense { get; }
 
     /// <summary>Yerel DB yok ya da 10 KB'ın altında (boş şema).</summary>
@@ -25,16 +35,29 @@ public interface IStartupEnvironment
 
     Task<IReadOnlyList<BackupMetadata>> ListBackupsAsync();
 
-    bool HasCompletedFirstRun { get; }
+    /// <summary>
+    /// İlk açılış sihirbazı daha önce sonuna kadar götürüldü mü. Property
+    /// değil metot: gerçeklemesi ayarları diskten okuyor
+    /// (<c>SettingsStore.Load()</c> → <c>File.ReadAllText</c>), yani ucuz bir
+    /// alan erişimi gibi görünmemeli — <see cref="IsDatabaseMissingOrTiny"/>
+    /// ile aynı gerekçe.
+    /// </summary>
+    bool HasCompletedFirstRun();
 
     StreamSession? GetActiveSession();
 
     void EndSession(string sessionId);
 
     /// <summary>
-    /// Overlay + köprü + hosted service'leri başlatır. false = ölümcül
-    /// hata (port çakışması); kapatmayı uygulama KENDİ yapar, akışın işi
-    /// yalnızca shell'i kurmamaktır.
+    /// Overlay + köprü + hosted service'leri başlatır. false = ölümcül hata
+    /// (port çakışması).
+    ///
+    /// SÖZLEŞME — uygulayan sınıf <c>false</c> döndürmeden ÖNCE hatayı
+    /// kullanıcıya göstermek ve <see cref="RequestShutdown"/> çağırmak
+    /// ZORUNDA. Akış <c>false</c> görünce sessizce döner: ne mesaj gösterir
+    /// ne kapatma ister, shell'i kurmadan başka hiçbir iz bırakmaz. NEDEN
+    /// burada: her başarısızlığın kendine ait açıklaması var (hangi port,
+    /// hangi servis) ve o metni yalnızca gerçekleme biliyor.
     /// </summary>
     Task<bool> StartBackgroundServicesAsync();
 

@@ -2427,7 +2427,12 @@ public interface IStartupEnvironment
 {
     Task InitializeLicenseAsync();
 
-    /// <summary>Lisans başlatıldıktan SONRA okunur.</summary>
+    /// <summary>
+    /// Lisans başlatıldıktan SONRA okunur.
+    ///
+    /// ANLAMI: <c>LicenseStatus != NoLicense</c> — "aktif lisans" DEĞİL.
+    /// <c>== Active</c> yazma; OfflineGrace da lisanslı sayılır.
+    /// </summary>
     bool HasLicense { get; }
 
     /// <summary>Yerel DB yok ya da 10 KB'ın altında (boş şema).</summary>
@@ -2435,16 +2440,21 @@ public interface IStartupEnvironment
 
     Task<IReadOnlyList<BackupMetadata>> ListBackupsAsync();
 
-    bool HasCompletedFirstRun { get; }
+    /// <summary>
+    /// Property değil metot: gerçeklemesi ayarları diskten okuyor
+    /// (<c>SettingsStore.Load()</c> → <c>File.ReadAllText</c>).
+    /// </summary>
+    bool HasCompletedFirstRun();
 
     StreamSession? GetActiveSession();
 
     void EndSession(string sessionId);
 
     /// <summary>
-    /// Overlay + köprü + hosted service'leri başlatır. false = ölümcül
-    /// hata (port çakışması); kapatmayı uygulama KENDİ yapar, akışın işi
-    /// yalnızca shell'i kurmamaktır.
+    /// Overlay + köprü + hosted service'leri başlatır. false = ölümcül hata
+    /// (port çakışması). Gerçekleme <c>false</c> döndürmeden ÖNCE hatayı
+    /// göstermek ve <c>RequestShutdown()</c> çağırmak ZORUNDA; akış
+    /// <c>false</c> görünce sessizce döner.
     /// </summary>
     Task<bool> StartBackgroundServicesAsync();
 
@@ -2544,7 +2554,7 @@ public sealed class StartupFlow
         // ── İlk açılış sihirbazı ──────────────────────────────────────
         try
         {
-            if (!_env.HasCompletedFirstRun)
+            if (!_env.HasCompletedFirstRun())
                 await _gates.ShowFirstRunAsync();
         }
         catch (Exception ex)
@@ -2820,7 +2830,7 @@ public sealed class WpfStartupEnvironment : IStartupEnvironment
     public async Task<IReadOnlyList<BackupMetadata>> ListBackupsAsync() =>
         await _restore.ListAvailableAsync();
 
-    public bool HasCompletedFirstRun => _settings.Load().HasCompletedFirstRun;
+    public bool HasCompletedFirstRun() => _settings.Load().HasCompletedFirstRun;
 
     public StreamSession? GetActiveSession() => _sessions.GetActive();
 

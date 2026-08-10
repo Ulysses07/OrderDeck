@@ -15,8 +15,16 @@ public interface IStartupGates
 {
     /// <summary>
     /// Açılış ekranını gösterir, <paramref name="work"/> bitene kadar
-    /// bekler, sonra ekranı kapatır. İşin fırlattığı hata AYNEN yukarı
-    /// çıkar — gate kapandıktan sonra.
+    /// bekler, sonra ekranı kapatır.
+    ///
+    /// SÖZLEŞME — uygulayan sınıf <paramref name="work"/>'ü
+    /// <c>try/finally</c> içinde çağırmak ZORUNDA: gate <c>finally</c>de
+    /// kapanır, işin fırlattığı hata AYNEN ondan sonra yukarı çıkar.
+    /// NEDEN: akış lisans hatasını yutup devam ediyor (çevrimdışı makinede
+    /// uygulama yine de açılmalı). <c>try/finally</c> olmadan yazılan bir
+    /// gerçekleme derlenir ve akışın testlerini de geçer, ama internetsiz
+    /// makinede açılış ekranı ekranda kilitli kalır — arkasındaki shell'e
+    /// bir daha ulaşılamaz.
     ///
     /// <c>Func&lt;Task&gt;</c>, <c>Task</c> değil: iş ekran görünmeden
     /// başlamasın.
