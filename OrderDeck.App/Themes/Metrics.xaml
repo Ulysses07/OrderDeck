@@ -14,8 +14,7 @@
   <FontFamily x:Key="OD.Font.Sans">pack://application:,,,/OrderDeck.App;component/Fonts/#IBM Plex Sans</FontFamily>
   <FontFamily x:Key="OD.Font.Mono">pack://application:,,,/OrderDeck.App;component/Fonts/#JetBrains Mono</FontFamily>
   <!-- Aile adı "Bricolage Grotesque 14pt" — ölçüldü; kısaltılmış hâli kısmi
-       eşleşme yapıp sentezlenmiş bir ağırlık (900) daha ekliyor.
-       SettingsTheme.xaml:11 zaten bu adı kullanıyor. -->
+       eşleşme yapıp sentezlenmiş bir ağırlık (900) daha ekliyor. -->
   <FontFamily x:Key="OD.Font.Display">pack://application:,,,/OrderDeck.App;component/Fonts/#Bricolage Grotesque 14pt</FontFamily>
 
   <!-- Tip ölçeği: 6 basamak -->
@@ -54,9 +53,12 @@
        token okunurluğunu kaybeder — yeni bir tek yönlü token eklerken
        değeri OD.Space.* ölçeğinden seç. -->
   <Thickness x:Key="OD.Pad.Top3"    Left="0" Top="8"  Right="0" Bottom="0"/>
+  <Thickness x:Key="OD.Pad.Top4"    Left="0" Top="12" Right="0" Bottom="0"/>
   <Thickness x:Key="OD.Pad.Top5"    Left="0" Top="16" Right="0" Bottom="0"/>
   <Thickness x:Key="OD.Pad.Top6"    Left="0" Top="20" Right="0" Bottom="0"/>
   <Thickness x:Key="OD.Pad.Bottom3" Left="0" Top="0"  Right="0" Bottom="8"/>
+  <Thickness x:Key="OD.Pad.Bottom5" Left="0" Top="0"  Right="0" Bottom="16"/>
+  <Thickness x:Key="OD.Pad.Left4"   Left="12" Top="0" Right="0" Bottom="0"/>
 
   <!-- Yatay-yalnız boşluklar. Yüksekliği sabit şeritlerde (üst bar 56px,
        içindeki birincil buton 46px) dikey margin içeriği kırpar; kırpma
@@ -97,6 +99,19 @@
   <!-- Takvim gün hücresi (OD.DatePicker). Kare ve sabit: 7 sütun içeriğe göre
        ölçülürse "1" ile "30" farklı genişlik alır ve haftalar hizasız çıkar. -->
   <sys:Double x:Key="OD.Layout.CalendarCell">32</sys:Double>
+
+  <!-- Anahtar düğme (OD.Toggle). Ray ile topuz ayrı token: topuz raydan
+       2 (OD.Space.1) küçük olmalı, ikisi tek sayıdan türetilemez.
+       Köşe yarıçapı token değil OD.Radius.Full — 999 her iki ölçüde de
+       yarım daireye kırpılıyor. -->
+  <sys:Double x:Key="OD.Layout.ToggleWidth">40</sys:Double>
+  <sys:Double x:Key="OD.Layout.ToggleHeight">24</sys:Double>
+  <sys:Double x:Key="OD.Layout.ToggleThumb">18</sys:Double>
+
+  <!-- Kaydırgaç (OD.Slider, çekiliş ses seviyesi). Ray ince, topuz ray
+       yüksekliğini aştığı için ikisi ayrı ölçü. -->
+  <sys:Double x:Key="OD.Layout.SliderTrack">4</sys:Double>
+  <sys:Double x:Key="OD.Layout.SliderThumb">16</sys:Double>
   <!-- Pencerenin asgari ölçüsü (MainWindow.MinWidth/MinHeight).
        1280 değil 960: 1920'lik ekranda yarım pencere tam 960 ve operatör
        uygulamayı yayın/tarayıcı yanına böyle koyuyor. 1360 kırılımı zaten

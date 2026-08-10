@@ -474,6 +474,24 @@ silinir.
 - Faz 4 sonunda ölçüm tekrarı: benzersiz `FontSize` ≤ 6, sabit hex renk 0,
   emoji ikon 0, `Window` kökü 1.
 
+### Ara ölçüm — Faz 3b sonu (2026-08-10)
+
+Ayarlar penceresi tek başına sayaçların en büyük tek kalemiydi (561 satır
+XAML + 434 satırlık `SettingsTheme.xaml`), o yüzden §1'in tablosu bu PR'dan
+sonra tekrar ölçüldü:
+
+| Bulgu | §1 (başlangıç) | Faz 3b sonu |
+|---|---|---|
+| Farklı `FontSize` değeri | 18 | 12 |
+| Sabit hex renk kullanımı / benzersiz | 342 / 120 | 230 / 106 |
+| `Window` kökü | 25 | 14 |
+
+Kalan 14 `Window` kökünün 10'u Faz 2b/3c/3d'de (müşteri merkezi, destek
+talepleri, toplu SMS, yedek aktarma), 3'ü Faz 4'te (`LoginDialog`,
+`RestoreDialog`, `FirstRunWizard`), sonuncusu `MainWindow` — o kalıyor.
+Sabit hex'lerin büyük kısmı hâlâ `DarkControls.xaml` ve dönüşmemiş
+pencerelerde; ikisi de aynı fazlarda düşüyor.
+
 ## 11. Kapsam dışı
 
 - `web/` ve shopper mobil uygulaması — bu doküman yalnız masaüstünü kapsıyor.

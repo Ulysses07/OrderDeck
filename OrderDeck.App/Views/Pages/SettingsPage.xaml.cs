@@ -2,33 +2,50 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
+using System.Windows.Controls;
 using OrderDeck.App.ViewModels;
 using OrderDeck.Core;
-using Microsoft.Extensions.DependencyInjection;
 
-namespace OrderDeck.App.Views;
+// System.Windows.Controls.Page ile ad çakışması var (bu dosya ikisini de
+// görüyor). Takma ad, çakışmayı using yönergesinde bir kez çözüp gövdeyi
+// tam nitelikli isimlerden kurtarıyor.
+using ShellPage = OrderDeck.App.Services.Pages.Page;
 
-public partial class SettingsDialog : Window
+namespace OrderDeck.App.Views.Pages;
+
+/// <summary>
+/// Ayarlar sayfası (eski <c>SettingsDialog</c> penceresi).
+///
+/// Pencere sürümünden iki davranış düştü:
+/// <list type="bullet">
+///   <item><c>OnCancel</c> — geri oku (ve ESC) zaten kaydetmeden çıkıyor.</item>
+///   <item><c>DialogResult</c> — kimse okumuyordu, kapanış tek başına yeter.</item>
+/// </list>
+///
+/// ViewModel'i DI'dan burada ÇEKMİYOR (pencere sürümü
+/// <c>App.Host.Services.GetRequiredService</c> diyordu): sayfayı açan taraf
+/// zaten servis sağlayıcısına erişiyor, örneği fabrikaya veriyor.
+/// </summary>
+public partial class SettingsPage : UserControl
 {
+    private readonly ShellPage _page;
     private readonly SettingsViewModel _vm;
 
-    public SettingsDialog()
+    private SettingsPage(ShellPage page, SettingsViewModel vm)
     {
         InitializeComponent();
-        _vm = App.Host.Services.GetRequiredService<SettingsViewModel>();
-        DataContext = _vm;
+        _page = page;
+        _vm = vm;
+        DataContext = vm;
     }
 
-    private void OnCancel(object sender, RoutedEventArgs e)
-    {
-        DialogResult = false;
-        Close();
-    }
+    public static SettingsPage Create(ShellPage page, SettingsViewModel vm)
+        => new(page, vm);
 
     private void OnSave(object sender, RoutedEventArgs e)
     {
         _vm.SaveCommand.Execute(null);
-        if (!_vm.Saved) return;   // validation failed, dialog stays open
+        if (!_vm.Saved) return;   // doğrulama düştü, sayfa açık kalıyor
 
         if (_vm.OverlayPortChanged)
         {
@@ -38,8 +55,7 @@ public partial class SettingsDialog : Window
                 MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
-        DialogResult = true;
-        Close();
+        _page.Close();
     }
 
     /// <summary>Opens %LOCALAPPDATA%/OrderDeck/logs in Explorer so the
