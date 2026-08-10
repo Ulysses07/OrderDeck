@@ -72,10 +72,10 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<ProductRepository>();
         // Ürün fotoğrafı deposu — kapsamı %LOCALAPPDATA%\OrderDeck\products.
         services.AddSingleton<ProductPhotoStore>();
-        // PDF dekont parse: DekontEkleDialog "PDF Yükle" butonu kullanır.
+        // PDF dekont parse: DekontEkleDrawer "PDF Yükle" butonu kullanır.
         services.AddSingleton<PdfDekontParser>();
         // Kargo PR C: dekont eşleştirme servisi (LabelRepository + AppSettings.Shipping).
-        // UI entegrasyonu PR D'de (DekontEkleDialog/customer picker + ShipmentDirectiveDialog).
+        // UI entegrasyonu PR D'de (dekont formu/customer picker + kargo yönergesi).
         services.AddSingleton<OrderDeck.Core.Payments.PaymentMatcherService>(sp =>
             new OrderDeck.Core.Payments.PaymentMatcherService(
                 sp.GetRequiredService<LabelRepository>(),
@@ -83,7 +83,7 @@ public sealed class AppHost : IDisposable
 
         // Kümülatif kargo PR-B/C: Shipment persistence + iş kuralları servisi.
         // ShipmentService DekontEkleViewModel'a inject edilir; payment onayı
-        // sonrası kümülatif eşik check + threshold modal akışını yönetir.
+        // sonrası kümülatif eşik check + eşik çekmecesi akışını yönetir.
         services.AddSingleton<OrderDeck.Core.Storage.Repositories.ShipmentRepository>();
         services.AddSingleton<OrderDeck.Core.Sales.ShipmentService>(sp =>
             new OrderDeck.Core.Sales.ShipmentService(
@@ -504,9 +504,9 @@ public sealed class AppHost : IDisposable
         services.AddSingleton(System.Windows.Threading.Dispatcher.CurrentDispatcher);
         services.AddHostedService<Services.Diagnostics.UiHeartbeatHostedService>();
 
-        // Manuel dekont ekleme dialog (Payment sync PR C)
+        // Manuel dekont ekleme formu (Payment sync PR C). Faz 2b'de çekmeceye
+        // döndü: view kaydı yok, kabuk çekmeceyi ViewModel'le kendi kuruyor.
         services.AddTransient<ViewModels.DekontEkleViewModel>();
-        services.AddTransient<Views.DekontEkleDialog>();
 
         // Intake form settings (Phase 4f Task 10)
         services.AddTransient<ViewModels.IntakeFormSettingsViewModel>();

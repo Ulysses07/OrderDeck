@@ -1,0 +1,145 @@
+<UserControl x:Class="OrderDeck.App.Views.Drawers.GiveawayDrawer"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+             Loaded="OnLoaded" Unloaded="OnUnloaded">
+    <!-- NewGiveawayDialog'un (900x620 Window) çekmece karşılığı — spec §6
+         "hiçbir şey pop-up değil". Bağlanan ViewModel ve doğrulama AYNI
+         kaldı; değişen yalnızca kabuk ve yerleşim.
+
+         900px iki sütundan 400px tek sütuna inerken üç karar verildi:
+
+         1. Süre ve platform ESKİDEN çip listesiydi. Çipler yatay yer ister;
+            400px'te "1 dakika (60sn)" tek başına satırın yarısını yiyor ve
+            liste üç satıra bölünüyordu. ComboBox'a çevrildi — uygulamanın
+            koyu teması ComboBox'ı zaten biçimliyor, yeni stil açmak
+            gerekmedi. Çekiliş yayında sık değil, seyrek açılan bir form:
+            tek tık yerine iki tık kabul edilebilir bir bedel.
+         2. Sağdaki ÖZET panosu (anahtar/süre/kazanan/platform/animasyon)
+            SİLİNDİ. İki sütunluyken formu karşı sütundan tekrar etmek
+            anlamlıydı; tek sütunda özet, hemen üstündeki alanların
+            birebir kopyası olurdu.
+         3. Canlı önizleme KALDI ama forma alt alta geçti ve daha küçük
+            ölçekleniyor (bkz. code-behind'daki ZoomFactor gerekçesi). -->
+    <Grid Margin="{StaticResource OD.Pad.5}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <!-- Anahtar kelime. "#" eskiden TextBox'ın ÜSTÜNE bindirilip
+                     metin sola dolgu ile itiliyordu; burada ayrı bir öğe —
+                     aynı görüntü, sihirli dolgu değeri olmadan. -->
+                <TextBlock Text="ANAHTAR KELİME" Style="{StaticResource OD.Text.Micro}"/>
+                <DockPanel LastChildFill="True">
+                    <TextBlock DockPanel.Dock="Left" Text="#"
+                               VerticalAlignment="Center"
+                               Margin="{StaticResource OD.Pad.X2}"
+                               FontFamily="{StaticResource OD.Font.Mono}"
+                               FontSize="{StaticResource OD.Font.F3}"
+                               Foreground="{StaticResource OD.Brush.Amber}"/>
+                    <TextBox Text="{Binding Keyword, UpdateSourceTrigger=PropertyChanged}"
+                             Style="{StaticResource OD.TextBox}"
+                             FontFamily="{StaticResource OD.Font.Mono}"/>
+                </DockPanel>
+
+                <TextBlock Text="SÜRE" Style="{StaticResource OD.Text.Micro}"
+                           Margin="{StaticResource OD.Pad.Top5}"/>
+                <ComboBox ItemsSource="{Binding DurationOptions}"
+                          SelectedItem="{Binding SelectedDuration}"
+                          DisplayMemberPath="Label"/>
+
+                <TextBlock Text="KAZANAN SAYISI" Style="{StaticResource OD.Text.Micro}"
+                           Margin="{StaticResource OD.Pad.Top5}"/>
+                <DockPanel LastChildFill="True">
+                    <!-- Adım düğmeleri VM'e komut eklemeden setter üzerinden
+                         çalışıyor; sınır (1-50) Validate ile aynı. -->
+                    <Button DockPanel.Dock="Left" Content="−"
+                            Style="{StaticResource OD.Button.Ghost}"
+                            Click="OnWinnerDec"/>
+                    <Button DockPanel.Dock="Right" Content="+"
+                            Style="{StaticResource OD.Button.Ghost}"
+                            Click="OnWinnerInc"/>
+                    <TextBox Text="{Binding WinnerCount, UpdateSourceTrigger=PropertyChanged}"
+                             Style="{StaticResource OD.TextBox}"
+                             Margin="{StaticResource OD.Pad.X2}"
+                             HorizontalContentAlignment="Center"
+                             FontFamily="{StaticResource OD.Font.Mono}"/>
+                </DockPanel>
+
+                <TextBlock Text="PLATFORM FİLTRESİ" Style="{StaticResource OD.Text.Micro}"
+                           Margin="{StaticResource OD.Pad.Top5}"/>
+                <ComboBox ItemsSource="{Binding PlatformOptions}"
+                          SelectedItem="{Binding SelectedPlatform}"
+                          DisplayMemberPath="Label"/>
+
+                <!-- Alan sırası ÖNEME göre, mockup'taki sıraya göre değil.
+                     Ölçüldü: form 400px çekmecede ~620px, kullanılabilir yer
+                     ~470px — yani bir şey kaydırma çizgisinin altında kalmak
+                     zorunda. Altta kalanlar animasyon önizlemesi ve
+                     varsayılanı nadiren değişen "önceki kazananlar" kutusu;
+                     anahtar kelime / süre / kazanan / platform ilk ekranda.
+                     Eylem düğmeleri kaydırma dışında, hep görünür. -->
+                <TextBlock Text="ANİMASYON" Style="{StaticResource OD.Text.Micro}"
+                           Margin="{StaticResource OD.Pad.Top5}"/>
+                <ComboBox x:Name="AnimCombo"
+                          ItemsSource="{Binding AvailableAnimations}"
+                          SelectedValuePath="Id" DisplayMemberPath="Name"
+                          SelectedValue="{Binding SelectedAnimationId,
+                                          UpdateSourceTrigger=PropertyChanged}"
+                          SelectionChanged="OnAnimSelectionChanged"/>
+
+                <!-- Önizleme, önizlediği seçicinin hemen altında. -->
+                <Border Height="120"
+                        Margin="{StaticResource OD.Pad.Top5}"
+                        Background="{StaticResource OD.Brush.Surface2}"
+                        BorderBrush="{StaticResource OD.Brush.Border}"
+                        BorderThickness="1"
+                        CornerRadius="{StaticResource OD.Radius.Md}"
+                        ClipToBounds="True">
+                    <Grid>
+                        <wv2:WebView2 x:Name="PreviewWeb"/>
+                        <!-- WebView2/Edge çalışma zamanı yoksa ya da animasyon
+                             seçilmediyse görünen metin. -->
+                        <TextBlock x:Name="PreviewFallback"
+                                   Text="Önizleme için bir animasyon seç"
+                                   Style="{StaticResource OD.Text.Micro}"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   TextWrapping="Wrap" TextAlignment="Center"
+                                   Margin="{StaticResource OD.Pad.4}"/>
+                    </Grid>
+                </Border>
+                <TextBlock Style="{StaticResource OD.Text.Micro}"
+                           TextWrapping="Wrap"
+                           Text="Gerçek çekiliş OBS yayın katmanında döner."/>
+
+                <CheckBox Content="Önceki kazananları dahil etme"
+                          IsChecked="{Binding PreventRewinning}"
+                          Margin="{StaticResource OD.Pad.Top5}"/>
+                <TextBlock Style="{StaticResource OD.Text.Micro}"
+                           TextWrapping="Wrap"
+                           Text="Açıkken, bu yayında daha önce kazananlar tekrar çekilişe girmez."/>
+
+            </StackPanel>
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="1" Margin="{StaticResource OD.Pad.Top5}">
+            <TextBlock Text="{Binding ValidationError}" TextWrapping="Wrap"
+                       FontFamily="{StaticResource OD.Font.Sans}"
+                       FontSize="{StaticResource OD.Font.F1}"
+                       Foreground="{StaticResource OD.Brush.Accent}"
+                       Visibility="{Binding ValidationError,
+                                    Converter={StaticResource NullToCollapsedConverter}}"/>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                        Margin="{StaticResource OD.Pad.Top5}">
+                <Button Content="İptal" Style="{StaticResource OD.Button.Ghost}"
+                        Margin="{StaticResource OD.Pad.X2}" Click="OnCancel"/>
+                <Button Content="Çekilişi Başlat" Style="{StaticResource OD.Button.Primary}"
+                        Margin="{StaticResource OD.Pad.X2}" Click="OnStart"/>
+            </StackPanel>
+        </StackPanel>
+    </Grid>
+</UserControl>

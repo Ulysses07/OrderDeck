@@ -100,6 +100,64 @@
         </Setter>
     </Style>
 
+    <!-- İkincil eylem: birincilin YANINDAKİ gerçek seçenek ("Kargo Beklesin",
+         "Beklemeye Devam"). Faz 2b'de ölçümle doğdu — o iki çekmecede dikey
+         dizilen ikinci düğme Ghost'la yazılmıştı ve düğme gibi görünmüyordu:
+         Ghost çerçevesiz ve içeriği SOLA yaslı (nav öğesi kalıbı), tam
+         genişlikte kullanılınca liste satırı gibi okunuyor.
+
+         Birincilden farkı yalnız zemin: aynı yükseklik, aynı yazı ölçüsü,
+         ortalanmış içerik, dolgu yerine 1px çerçeve. Böylece iki düğme yan
+         yana ya da alt alta aynı ağırlıkta duruyor, hiyerarşiyi renk
+         söylüyor. -->
+    <Style x:Key="OD.Button.Secondary" TargetType="Button">
+        <Setter Property="Height"     Value="{StaticResource OD.Layout.ButtonHeight}"/>
+        <Setter Property="Foreground" Value="{StaticResource OD.Brush.Text}"/>
+        <Setter Property="FontFamily" Value="{StaticResource OD.Font.Sans}"/>
+        <Setter Property="FontSize"   Value="{StaticResource OD.Font.F2}"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Cursor"     Value="Hand"/>
+        <Setter Property="Padding"    Value="{StaticResource OD.Pad.X5}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="Transparent"
+                            BorderBrush="{StaticResource OD.Brush.BorderStrong}"
+                            BorderThickness="1"
+                            CornerRadius="{StaticResource OD.Radius.Md}">
+                        <ContentPresenter HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"
+                                          Margin="{TemplateBinding Padding}">
+                            <ContentPresenter.Resources>
+                                <!-- Birincildeki tuzağın aynısı: DarkControls'ün
+                                     örtük TextBlock stili miras alınan Foreground'u
+                                     yener, yani yukarıdaki setter içerik metnine
+                                     hiç ulaşmaz. Ölçüldü — düğme yazısı sönük
+                                     çıkıyordu. Sözlük ContentPresenter'ın KENDİsinde
+                                     olmalı. -->
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground"
+                                            Value="{Binding Foreground,
+                                                    RelativeSource={RelativeSource AncestorType=Button}}"/>
+                                </Style>
+                            </ContentPresenter.Resources>
+                        </ContentPresenter>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background"
+                                    Value="{StaticResource OD.Brush.Surface2}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="Bd" Property="Opacity" Value="0.45"/>
+                            <Setter Property="Cursor" Value="Arrow"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <!-- Arka planı olmayan buton: nav öğeleri, "Temizle", ikon butonları. -->
     <Style x:Key="OD.Button.Ghost" TargetType="Button">
         <Setter Property="Foreground" Value="{StaticResource OD.Brush.TextDim}"/>
@@ -230,6 +288,396 @@
                              ne yazacağını tam o anda unutturur. -->
                         <Trigger Property="Text" Value="">
                             <Setter TargetName="Hint" Property="Visibility" Value="Visible"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ══ Tarih seçici ═══════════════════════════════════════════════════
+         Faz 2b (2026-08-10), DekontEkleDrawer'ın "ÖDEME TARİHİ" alanı için.
+         DarkControls.xaml uygulamadaki ~20 yerleşik kontrolü karartıyor ama
+         DatePicker ile Calendar o listede HİÇ yoktu: koyu formun ortasında
+         bembeyaz bir kutu ve açık renkli bir takvim çıkıyordu. Pencere
+         sürümünde de öyleydi — yani regresyon değil, dönüşümle görünür hale
+         gelen eski bir açık.
+
+         Beş stil gerekiyor, çünkü WPF'in tarih seçicisi beş ayrı kontrolden
+         kurulu: DatePicker (kutu + düğme + popup), içindeki DatePickerTextBox,
+         popup'a KODLA yerleştirilen Calendar (o yüzden şablondan değil
+         CalendarStyle özelliğinden veriliyor), takvimin gövdesi CalendarItem
+         ve hücreler CalendarDayButton (gün) / CalendarButton (ay-yıl).
+
+         Yalnız gereken şablonlar ve renkler yazıldı. WPF'te açık stil tema
+         stilini komple değiştirmez, yalnız YAZDIĞI özelliklerde yener; bu
+         yüzden Calendar'ın kendi ControlTemplate'ine dokunulmadı — hücre
+         yerleşimini varsayılan tema kurmaya devam ediyor. -->
+
+    <Style x:Key="OD.CalendarDayButton" TargetType="CalendarDayButton">
+        <Setter Property="FontFamily" Value="{StaticResource OD.Font.Sans}"/>
+        <Setter Property="FontSize"   Value="{StaticResource OD.Font.F1}"/>
+        <Setter Property="Foreground" Value="{StaticResource OD.Brush.Text}"/>
+        <Setter Property="Width"      Value="{StaticResource OD.Layout.CalendarCell}"/>
+        <Setter Property="Height"     Value="{StaticResource OD.Layout.CalendarCell}"/>
+        <Setter Property="Cursor"     Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="CalendarDayButton">
+                    <Border x:Name="Bd"
+                            Background="Transparent"
+                            BorderBrush="Transparent"
+                            BorderThickness="1"
+                            Margin="{StaticResource OD.Pad.1}"
+                            CornerRadius="{StaticResource OD.Radius.Xs}">
+                        <ContentPresenter HorizontalAlignment="Center"
+                                          VerticalAlignment="Center">
+                            <ContentPresenter.Resources>
+                                <!-- Düğme stillerindeki tuzağın aynısı: DarkControls'ün
+                                     örtük TextBlock stili miras alınan Foreground'u
+                                     yener, yani seçili günün yazısı OnAccent'e hiç
+                                     dönmezdi. -->
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground"
+                                            Value="{Binding Foreground,
+                                                    RelativeSource={RelativeSource AncestorType=CalendarDayButton}}"/>
+                                </Style>
+                            </ContentPresenter.Resources>
+                        </ContentPresenter>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <!-- Komşu ayların taşan günleri: görünür ama sönük. -->
+                        <Trigger Property="IsInactive" Value="True">
+                            <Setter Property="Foreground" Value="{StaticResource OD.Brush.TextMute}"/>
+                        </Trigger>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background"
+                                    Value="{StaticResource OD.Brush.Surface2}"/>
+                        </Trigger>
+                        <!-- Bugün yalnız çerçeveyle işaretli; dolgu seçime ayrıldı,
+                             ikisi aynı anda doluysa hangisi seçili anlaşılmıyor. -->
+                        <Trigger Property="IsToday" Value="True">
+                            <Setter TargetName="Bd" Property="BorderBrush"
+                                    Value="{StaticResource OD.Brush.Accent}"/>
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Bd" Property="Background"
+                                    Value="{StaticResource OD.Brush.Accent}"/>
+                            <Setter TargetName="Bd" Property="BorderBrush"
+                                    Value="{StaticResource OD.Brush.Accent}"/>
+                            <Setter Property="Foreground" Value="{StaticResource OD.Brush.OnAccent}"/>
+                        </Trigger>
+                        <Trigger Property="IsBlackedOut" Value="True">
+                            <Setter TargetName="Bd" Property="Opacity" Value="0.35"/>
+                            <Setter Property="Cursor" Value="Arrow"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Ay ve yıl hücreleri: başlığa tıklanınca açılan iki üst görünüm.
+         Gün hücresiyle aynı dil, yalnız kare değil (içerik "Oca".."Ara"). -->
+    <Style x:Key="OD.CalendarButton" TargetType="CalendarButton">
+        <Setter Property="FontFamily" Value="{StaticResource OD.Font.Sans}"/>
+        <Setter Property="FontSize"   Value="{StaticResource OD.Font.F1}"/>
+        <Setter Property="Foreground" Value="{StaticResource OD.Brush.Text}"/>
+        <Setter Property="MinHeight"  Value="{StaticResource OD.Layout.CalendarCell}"/>
+        <Setter Property="Cursor"     Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="CalendarButton">
+                    <Border x:Name="Bd"
+                            Background="Transparent"
+                            BorderBrush="Transparent"
+                            BorderThickness="1"
+                            Margin="{StaticResource OD.Pad.1}"
+                            Padding="{StaticResource OD.Pad.2}"
+                            CornerRadius="{StaticResource OD.Radius.Xs}">
+                        <ContentPresenter HorizontalAlignment="Center"
+                                          VerticalAlignment="Center">
+                            <ContentPresenter.Resources>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground"
+                                            Value="{Binding Foreground,
+                                                    RelativeSource={RelativeSource AncestorType=CalendarButton}}"/>
+                                </Style>
+                            </ContentPresenter.Resources>
+                        </ContentPresenter>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsInactive" Value="True">
+                            <Setter Property="Foreground" Value="{StaticResource OD.Brush.TextMute}"/>
+                        </Trigger>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background"
+                                    Value="{StaticResource OD.Brush.Surface2}"/>
+                        </Trigger>
+                        <!-- CalendarButton'da IsSelected YOK (ölçüldü, MC4109).
+                             Karşılığı HasSelectedDays: seçili tarihi İÇEREN ay/yıl
+                             hücresi — burada aranan vurgu zaten bu. -->
+                        <Trigger Property="HasSelectedDays" Value="True">
+                            <Setter TargetName="Bd" Property="Background"
+                                    Value="{StaticResource OD.Brush.Accent}"/>
+                            <Setter Property="Foreground" Value="{StaticResource OD.Brush.OnAccent}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Takvimin gövdesi: başlık şeridi + gün ızgarası + ay/yıl ızgarası.
+         PART_* adları ZORUNLU — CalendarItem hücreleri koddan bu ızgaralara
+         yerleştiriyor, ad değişirse takvim boş açılır. Sütun/satır sayıları da
+         sabit: ay görünümü 7x7 (ilk satır gün adları), yıl görünümü 4x3. -->
+    <Style x:Key="OD.CalendarItem" TargetType="CalendarItem">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="CalendarItem">
+                    <ControlTemplate.Resources>
+                        <!-- Gün adı başlıkları. Anahtar x:Static olmak ZORUNDA:
+                             CalendarItem bu şablonu adıyla değil, yalnız bu
+                             ComponentResourceKey ile ve yalnız kendi
+                             Template.Resources'ında arıyor. -->
+                        <DataTemplate x:Key="{x:Static CalendarItem.DayTitleTemplateResourceKey}">
+                            <TextBlock Text="{Binding}"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       Margin="{StaticResource OD.Pad.2}"
+                                       FontFamily="{StaticResource OD.Font.Sans}"
+                                       FontSize="{StaticResource OD.Font.F0}"
+                                       FontWeight="SemiBold"
+                                       Foreground="{StaticResource OD.Brush.TextMute}"/>
+                        </DataTemplate>
+                        <!-- Başlık şeridinin üç düğmesi (önceki / ay-yıl / sonraki).
+                             Örtük stil: şablon içinde kaldığı için yalnız bu üçünü
+                             yakalıyor, DarkControls'ün genel Button stilini burada
+                             yeniyor. -->
+                        <Style TargetType="Button">
+                            <Setter Property="Background" Value="Transparent"/>
+                            <Setter Property="Foreground" Value="{StaticResource OD.Brush.TextDim}"/>
+                            <Setter Property="FontFamily" Value="{StaticResource OD.Font.Sans}"/>
+                            <Setter Property="FontSize"   Value="{StaticResource OD.Font.F1}"/>
+                            <Setter Property="FontWeight" Value="SemiBold"/>
+                            <Setter Property="Cursor"     Value="Hand"/>
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="Button">
+                                        <Border x:Name="Bd" Background="Transparent"
+                                                Padding="{StaticResource OD.Pad.3}"
+                                                CornerRadius="{StaticResource OD.Radius.Xs}">
+                                            <ContentPresenter HorizontalAlignment="Center"
+                                                              VerticalAlignment="Center">
+                                                <ContentPresenter.Resources>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Foreground"
+                                                                Value="{Binding Foreground,
+                                                                        RelativeSource={RelativeSource AncestorType=Button}}"/>
+                                                    </Style>
+                                                </ContentPresenter.Resources>
+                                            </ContentPresenter>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Bd" Property="Background"
+                                                        Value="{StaticResource OD.Brush.Surface2}"/>
+                                                <Setter Property="Foreground"
+                                                        Value="{StaticResource OD.Brush.Text}"/>
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </ControlTemplate.Resources>
+
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{StaticResource OD.Radius.Md}"
+                            Padding="{StaticResource OD.Pad.3}">
+                        <Grid x:Name="PART_Root">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <Grid Grid.Row="0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Button x:Name="PART_PreviousButton" Grid.Column="0">
+                                    <Path Data="{StaticResource OD.Path.ChevronLeft}"
+                                          Style="{StaticResource OD.IconPath}"
+                                          Width="{StaticResource OD.Icon.Sm}"
+                                          Height="{StaticResource OD.Icon.Sm}"/>
+                                </Button>
+                                <Button x:Name="PART_HeaderButton" Grid.Column="1"
+                                        Foreground="{StaticResource OD.Brush.Text}"/>
+                                <Button x:Name="PART_NextButton" Grid.Column="2">
+                                    <Path Data="{StaticResource OD.Path.ChevronRight}"
+                                          Style="{StaticResource OD.IconPath}"
+                                          Width="{StaticResource OD.Icon.Sm}"
+                                          Height="{StaticResource OD.Icon.Sm}"/>
+                                </Button>
+                            </Grid>
+
+                            <Grid x:Name="PART_MonthView" Grid.Row="1" Visibility="Visible">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition/><ColumnDefinition/><ColumnDefinition/>
+                                    <ColumnDefinition/><ColumnDefinition/><ColumnDefinition/>
+                                    <ColumnDefinition/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition/><RowDefinition/><RowDefinition/>
+                                    <RowDefinition/><RowDefinition/><RowDefinition/>
+                                </Grid.RowDefinitions>
+                            </Grid>
+
+                            <Grid x:Name="PART_YearView" Grid.Row="1" Visibility="Hidden">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition/><ColumnDefinition/>
+                                    <ColumnDefinition/><ColumnDefinition/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition/><RowDefinition/><RowDefinition/>
+                                </Grid.RowDefinitions>
+                            </Grid>
+                        </Grid>
+                    </Border>
+
+                    <ControlTemplate.Triggers>
+                        <!-- Görünüm değişimi şablonun işi: CalendarItem iki ızgarayı da
+                             doldurur ama hangisinin görüneceğini söylemez. -->
+                        <DataTrigger Value="Year"
+                                     Binding="{Binding DisplayMode,
+                                               RelativeSource={RelativeSource AncestorType=Calendar}}">
+                            <Setter TargetName="PART_MonthView" Property="Visibility" Value="Hidden"/>
+                            <Setter TargetName="PART_YearView"  Property="Visibility" Value="Visible"/>
+                        </DataTrigger>
+                        <DataTrigger Value="Decade"
+                                     Binding="{Binding DisplayMode,
+                                               RelativeSource={RelativeSource AncestorType=Calendar}}">
+                            <Setter TargetName="PART_MonthView" Property="Visibility" Value="Hidden"/>
+                            <Setter TargetName="PART_YearView"  Property="Visibility" Value="Visible"/>
+                        </DataTrigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Takvimin kendisi. Şablon yazılmıyor; zemin/kenarlık buradan verilince
+         varsayılan şablon bunları CalendarItem'a TemplateBinding ile geçiriyor. -->
+    <Style x:Key="OD.Calendar" TargetType="Calendar">
+        <Setter Property="Background"      Value="{StaticResource OD.Brush.Surface}"/>
+        <Setter Property="BorderBrush"     Value="{StaticResource OD.Brush.BorderStrong}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Foreground"      Value="{StaticResource OD.Brush.Text}"/>
+        <Setter Property="CalendarItemStyle"      Value="{StaticResource OD.CalendarItem}"/>
+        <Setter Property="CalendarDayButtonStyle" Value="{StaticResource OD.CalendarDayButton}"/>
+        <Setter Property="CalendarButtonStyle"    Value="{StaticResource OD.CalendarButton}"/>
+    </Style>
+
+    <!-- Tarih alanı. OD.TextBox ile aynı kutu (Surface2 zemin, Sm yarıçap,
+         odakta Accent kenarlık); farkı sağdaki takvim düğmesi. -->
+    <Style x:Key="OD.DatePicker" TargetType="DatePicker">
+        <Setter Property="Background"      Value="{StaticResource OD.Brush.Surface2}"/>
+        <Setter Property="BorderBrush"     Value="{StaticResource OD.Brush.Border}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Foreground"      Value="{StaticResource OD.Brush.Text}"/>
+        <Setter Property="FontFamily"      Value="{StaticResource OD.Font.Sans}"/>
+        <Setter Property="FontSize"        Value="{StaticResource OD.Font.F2}"/>
+        <Setter Property="CalendarStyle"   Value="{StaticResource OD.Calendar}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="DatePicker">
+                    <ControlTemplate.Resources>
+                        <!-- Yazı kutusu kendi çerçevesini çizmiyor: çerçeve dıştaki
+                             Root'un, kutu onun içinde saydam duruyor.
+                             PART_Watermark BİLEREK yok — varsayılan şablonda ipucu
+                             metnini ("Tarih seçin") görünür/gizli yapan şey görsel
+                             durumlar; onları yazmadan eklenirse ipucu seçili tarihin
+                             ÜSTÜNE binip kalıyor. Kontrolün kodu null'a dayanıklı. -->
+                        <Style TargetType="DatePickerTextBox">
+                            <Setter Property="Background"      Value="Transparent"/>
+                            <Setter Property="BorderThickness" Value="0"/>
+                            <Setter Property="Padding"         Value="{StaticResource OD.Pad.4}"/>
+                            <Setter Property="CaretBrush"      Value="{StaticResource OD.Brush.Text}"/>
+                            <Setter Property="SelectionBrush"  Value="{StaticResource OD.Brush.Accent}"/>
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="DatePickerTextBox">
+                                        <!-- PART_ContentHost adı zorunlu (bkz. OD.TextBox). -->
+                                        <Decorator x:Name="PART_ContentHost"
+                                                   Margin="{TemplateBinding Padding}"
+                                                   VerticalAlignment="Center"/>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </ControlTemplate.Resources>
+
+                    <Border x:Name="Root"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{StaticResource OD.Radius.Sm}">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <DatePickerTextBox x:Name="PART_TextBox" Grid.Column="0"
+                                               Focusable="{TemplateBinding Focusable}"
+                                               Foreground="{TemplateBinding Foreground}"
+                                               FontFamily="{TemplateBinding FontFamily}"
+                                               FontSize="{TemplateBinding FontSize}"/>
+
+                            <Button x:Name="PART_Button" Grid.Column="1"
+                                    Focusable="False" Cursor="Hand"
+                                    Foreground="{StaticResource OD.Brush.TextDim}"
+                                    ToolTip="Takvimi aç">
+                                <Button.Template>
+                                    <ControlTemplate TargetType="Button">
+                                        <Border x:Name="Bd" Background="Transparent"
+                                                Padding="{StaticResource OD.Pad.3}">
+                                            <Path Data="{StaticResource OD.Path.Calendar}"
+                                                  Style="{StaticResource OD.IconPath}"/>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter Property="Foreground"
+                                                        Value="{StaticResource OD.Brush.Text}"/>
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Button.Template>
+                            </Button>
+
+                            <!-- Takvim buraya KODLA konuyor (DatePicker popup'ın
+                                 Child'ını kendisi atıyor), o yüzden içi boş. -->
+                            <Popup x:Name="PART_Popup"
+                                   Placement="Bottom"
+                                   PlacementTarget="{Binding ElementName=Root}"
+                                   StaysOpen="False"
+                                   AllowsTransparency="True"/>
+                        </Grid>
+                    </Border>
+
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                            <Setter TargetName="Root" Property="BorderBrush"
+                                    Value="{StaticResource OD.Brush.Accent}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="Root" Property="Opacity" Value="0.45"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>

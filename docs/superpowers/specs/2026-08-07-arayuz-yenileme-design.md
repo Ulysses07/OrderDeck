@@ -374,9 +374,51 @@ geldiğinde hareket defterine dönüşecek.
   shell → CustomerSearchDialog → PhoneEntry
   ```
 
-  Sıra: (1) `NewGiveawayDialog`; (2) `CustomerDetailDialog` + çocukları;
-  (3) `CustomerSearchDialog` + `PhoneEntryDialog`; (4) `DekontEkleDialog` +
-  çocukları — zincir mantığı code-behind'dan ViewModel'e taşınarak.
+  Sıra: (1) ~~`NewGiveawayDialog`~~ **bitti (2026-08-10)** — `GiveawayDrawer`
+  oldu, `NewGiveawayDialog` ve ona özel `GiveawayTheme.xaml` silindi,
+  `StartGiveaway` komutu `async`'e döndü. 900px iki sütun 400px tek sütuna
+  inerken: çipler ComboBox'a çevrildi, özet panosu (formun kopyasıydı)
+  kaldırıldı, canlı önizleme 250px'ten 120px'e indi ve animasyon seçicinin
+  altına taşındı. Alanlar öneme göre sıralandı — form çekmeceye tam
+  sığmıyor, kaydırma çizgisinin altında kalanlar önizleme ve "önceki
+  kazananlar"; (2) ~~`DekontEkleDialog` + çocukları~~ **bitti (2026-08-10)**
+  — sıra takas edildi, gerekçe aşağıda. Üç pencere birden `DekontEkleDrawer`
+  / `ShipmentDirectiveDrawer` / `ShipmentThresholdDrawer` oldu; yığının üç
+  seviyesi ilk kez gerçekten kullanılıyor. Zincir (`TrySave` → kargo
+  yönergesi → `CommitWithDirective` → kargo eşiği) code-behind'dan
+  `DekontEkleViewModel.SaveAsync`'e taşındı; `ShipmentThresholdDialog`'un
+  code-behind'ındaki `Result` alanı ViewModel'e (`ChosenDecision`) indi, iki
+  alt çekmece artık kardeşiyle aynı sözleşmeyi kullanıyor. 520px iki sütun
+  400px tek sütuna inerken etiketler alanların üstüne alındı (GiveawayDrawer
+  kalıbı); IBAN uyarısı, onu üreten PDF kartının hemen altına taşındı.
+  **Yeni token: `OD.Button.Secondary`** — iki soru çekmecesinde dikey dizilen
+  ikinci düğme Ghost'la yazılınca düğme gibi okunmuyordu (Ghost içeriği sola
+  yaslıyor, nav öğesi kalıbı). **İkinci yeni token: `OD.DatePicker`** —
+  "ÖDEME TARİHİ" alanı temasızdı (beyaz kutu, açık renkli takvim);
+  `DarkControls.xaml` ~20 yerleşik kontrolü karartıyor ama `DatePicker` ile
+  `Calendar` o listede hiç yoktu. Pencere sürümünde de öyleydi, yani
+  regresyon değil dönüşümle görünür olan eski bir açık. WPF'in tarih seçicisi
+  beş kontrolden kurulu, o yüzden beş stil yazıldı (`OD.DatePicker`,
+  `OD.Calendar`, `OD.CalendarItem`, `OD.CalendarDayButton`,
+  `OD.CalendarButton`) + üç ikon (`OD.Path.Calendar`, `ChevronLeft/Right`) +
+  `OD.Layout.CalendarCell`. Şablonlar `PART_*` adlarına ve ızgara ölçülerine
+  bağlı, yanlışları da İSTİSNA ATMIYOR — takvim sessizce boş açılıyor. Bu
+  yüzden `DatePickerThemeTests` gün ve ay ızgaralarının gerçekten dolduğunu
+  sayıyor. `PeriodReportDialog`'daki iki `DatePicker` bilerek dışarıda:
+  stiller anahtarlı, o pencere Faz 3'te dönüşünce bağlanacak (spec §9);
+  **(3)**
+  `CustomerDetailDialog` + çocukları; (4) `CustomerSearchDialog` +
+  `PhoneEntryDialog`.
+
+  **(2) ile (4) neden takas edildi (2026-08-10, ölçümle):** yukarıdaki ağaç
+  eksikmiş. `CustomerDetailDialog`'un shell dışında iki çağrı yeri daha var
+  (`CustomerSearchDialog` code-behind'ı ve `BlacklistViewModel`),
+  `PhoneEntryDialog`'un da iki (`CustomerSearchViewModel` ve
+  `StreamReportViewModel`). İkisinin de bir bacağı Faz 3'te sayfaya dönecek
+  bir konteynerin içinde — bugün dönüştürülürse çekmece o modal pencerenin
+  arkasında açılır. Yani (2) ve (3) aslında **Faz 3'e bağlı**, (4) ise
+  tertemiz: tek shell çağrısı, çocuklarını kendi code-behind'ından açıyor.
+
   `FacebookPagePickerDialog` (SettingsDialog'un içinde) ve
   `AddToBlacklistDialog`'un manuel yolu (BlacklistDialog'un içinde) **Faz
   3'e bağlı** — konteynerleri sayfa olmadan dönüştürülemez.
