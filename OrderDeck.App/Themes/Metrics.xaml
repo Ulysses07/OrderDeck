@@ -93,6 +93,9 @@
        genişliği (~120) + nefes payı. -->
   <sys:Double x:Key="OD.Layout.StreamButtonWidth">132</sys:Double>
   <sys:Double x:Key="OD.Layout.ContentMaxWidth">1760</sys:Double> <!-- fazlası ortalanır -->
+  <!-- Takvim gün hücresi (OD.DatePicker). Kare ve sabit: 7 sütun içeriğe göre
+       ölçülürse "1" ile "30" farklı genişlik alır ve haftalar hizasız çıkar. -->
+  <sys:Double x:Key="OD.Layout.CalendarCell">32</sys:Double>
   <!-- Pencerenin asgari ölçüsü (MainWindow.MinWidth/MinHeight).
        1280 değil 960: 1920'lik ekranda yarım pencere tam 960 ve operatör
        uygulamayı yayın/tarayıcı yanına böyle koyuyor. 1360 kırılımı zaten

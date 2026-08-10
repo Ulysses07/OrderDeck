@@ -18,6 +18,7 @@ public class IconGeometryTests
         "OD.Path.History", "OD.Path.Customers", "OD.Path.Blacklist",
         "OD.Path.Receipt", "OD.Path.Message", "OD.Path.Bell",
         "OD.Path.Eye", "OD.Path.More", "OD.Path.Close",
+        "OD.Path.Calendar", "OD.Path.ChevronLeft", "OD.Path.ChevronRight",
     ];
 
     [Fact]

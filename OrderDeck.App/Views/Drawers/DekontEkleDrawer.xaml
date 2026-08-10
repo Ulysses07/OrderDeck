@@ -94,7 +94,8 @@
 
                 <TextBlock Text="ÖDEME TARİHİ" Style="{StaticResource OD.Text.Micro}"
                            Margin="{StaticResource OD.Pad.Top5}"/>
-                <DatePicker SelectedDate="{Binding PaidAt}"/>
+                <DatePicker SelectedDate="{Binding PaidAt}"
+                            Style="{StaticResource OD.DatePicker}"/>
 
                 <TextBlock Text="REFERANS NO" Style="{StaticResource OD.Text.Micro}"
                            Margin="{StaticResource OD.Pad.Top5}"/>

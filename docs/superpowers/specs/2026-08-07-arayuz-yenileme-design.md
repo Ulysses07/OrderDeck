@@ -393,9 +393,20 @@ geldiğinde hareket defterine dönüşecek.
   kalıbı); IBAN uyarısı, onu üreten PDF kartının hemen altına taşındı.
   **Yeni token: `OD.Button.Secondary`** — iki soru çekmecesinde dikey dizilen
   ikinci düğme Ghost'la yazılınca düğme gibi okunmuyordu (Ghost içeriği sola
-  yaslıyor, nav öğesi kalıbı). **Açık kalan:** `DatePicker` hâlâ temasız,
-  koyu formun ortasında beyaz duruyor — pencere sürümünde de öyleydi,
-  `DarkControls.xaml`'de `DatePicker`/`Calendar` stili hiç yok; **(3)**
+  yaslıyor, nav öğesi kalıbı). **İkinci yeni token: `OD.DatePicker`** —
+  "ÖDEME TARİHİ" alanı temasızdı (beyaz kutu, açık renkli takvim);
+  `DarkControls.xaml` ~20 yerleşik kontrolü karartıyor ama `DatePicker` ile
+  `Calendar` o listede hiç yoktu. Pencere sürümünde de öyleydi, yani
+  regresyon değil dönüşümle görünür olan eski bir açık. WPF'in tarih seçicisi
+  beş kontrolden kurulu, o yüzden beş stil yazıldı (`OD.DatePicker`,
+  `OD.Calendar`, `OD.CalendarItem`, `OD.CalendarDayButton`,
+  `OD.CalendarButton`) + üç ikon (`OD.Path.Calendar`, `ChevronLeft/Right`) +
+  `OD.Layout.CalendarCell`. Şablonlar `PART_*` adlarına ve ızgara ölçülerine
+  bağlı, yanlışları da İSTİSNA ATMIYOR — takvim sessizce boş açılıyor. Bu
+  yüzden `DatePickerThemeTests` gün ve ay ızgaralarının gerçekten dolduğunu
+  sayıyor. `PeriodReportDialog`'daki iki `DatePicker` bilerek dışarıda:
+  stiller anahtarlı, o pencere Faz 3'te dönüşünce bağlanacak (spec §9);
+  **(3)**
   `CustomerDetailDialog` + çocukları; (4) `CustomerSearchDialog` +
   `PhoneEntryDialog`.
 
