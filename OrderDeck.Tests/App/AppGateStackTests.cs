@@ -82,24 +82,31 @@ public class AppGateStackTests
         Assert.NotSame(outerGate, innerGate);
 
         innerGate.Close(true);
+        // bekleyen devamların koşmasına fırsat ver — yoksa test
+        // RunContinuationsAsynchronously bayrağı silinse bile geçer.
+        await Task.Yield();
 
         Assert.True(await inner);
         Assert.False(outer.IsCompleted);
         Assert.Same(outerGate, stack.Top);
     }
 
-    [Fact]
-    public async Task Closing_a_lower_gate_cancels_the_ones_it_opened()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Closing_a_lower_gate_cancels_the_ones_it_opened(bool confirmed)
     {
         var stack = new AppGateStack();
         var outer = stack.ShowAsync(Content);
         var outerGate = stack.Top!;
         var inner = stack.ShowAsync(Content);
 
-        outerGate.Close(true);
+        outerGate.Close(confirmed);
 
+        // İç gate iptal edildi (false): kendi sonucu ne olursa olsun confirmed değil.
         Assert.False(await inner);
-        Assert.True(await outer);
+        // Dış gate kendi sonucunu koruyor — her iki yönde de doğrulanmalı.
+        Assert.Equal(confirmed, await outer);
         Assert.Empty(stack.Items);
     }
 }
