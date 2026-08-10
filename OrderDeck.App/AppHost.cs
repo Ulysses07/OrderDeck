@@ -518,14 +518,28 @@ public sealed class AppHost : IDisposable
 
         // Licensing dialogs (Phase 4b)
         services.AddTransient<ViewModels.LoginDialogViewModel>();
-        services.AddTransient<Views.LoginDialog>();
         services.AddTransient<ViewModels.AccountDialogViewModel>();
 
-        // First-run setup wizard. Both Window + VM transient so a re-run
-        // (operator skipped the first time) gets fresh state instead of
-        // stale step number or cached license status.
+        // First-run setup wizard. VM transient so a re-run (operator skipped
+        // the first time) gets fresh state instead of stale step number or
+        // cached license status.
         services.AddTransient<ViewModels.FirstRunWizardViewModel>();
-        services.AddTransient<Views.FirstRunWizard>();
+
+        // Faz 4a: tam-ekran açılış durumları. Yığın TEK örnek — hem
+        // IAppGateService olarak enjekte ediliyor hem de AppRootView'daki
+        // GateHost'un DataContext'i.
+        services.AddSingleton<Services.Gates.AppGateStack>();
+        services.AddSingleton<Services.Gates.IAppGateService>(
+            sp => sp.GetRequiredService<Services.Gates.AppGateStack>());
+        services.AddSingleton<Views.AppRootView>();
+
+        services.AddSingleton<Startup.IStartupGates, Startup.WpfStartupGates>();
+        // WpfStartupEnvironment iki kayıtla giriyor: App.OnExit
+        // StopBackgroundServices() için somut tipe ihtiyaç duyuyor.
+        services.AddSingleton<Startup.WpfStartupEnvironment>();
+        services.AddSingleton<Startup.IStartupEnvironment>(
+            sp => sp.GetRequiredService<Startup.WpfStartupEnvironment>());
+        services.AddSingleton<Startup.StartupFlow>();
 
         Services = services.BuildServiceProvider();
 

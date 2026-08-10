@@ -32,7 +32,7 @@ public sealed partial class AccountDialogViewModel : ObservableObject
 
         LogoutCommand = new RelayCommand(Logout);
         ReconnectCommand = new AsyncRelayCommand(ReconnectAsync);
-        OpenLoginCommand = new RelayCommand(OpenLogin);
+        OpenLoginCommand = new AsyncRelayCommand(OpenLoginAsync);
     }
 
     [ObservableProperty] private string _email = "";
@@ -93,13 +93,15 @@ public sealed partial class AccountDialogViewModel : ObservableObject
         };
     }
 
-    private void OpenLogin()
+    private async Task OpenLoginAsync()
     {
-        var dlg = global::OrderDeck.App.App.Host.Services
-            .GetRequiredService<global::OrderDeck.App.Views.LoginDialog>();
-        var owner = System.Windows.Application.Current.MainWindow;
-        if (owner is not null) dlg.Owner = owner;
-        dlg.ShowDialog();
+        // Faz 4a: hesap sayfasından giriş de aynı tam-ekran LoginGate.
+        // Owner ayarı gerekmiyor (pencere yok) ve KRİTİK olarak shell
+        // sökülmüyor: yayın sürerken hesap değiştirilirse sohbet paneli,
+        // sayaçlar ve açık çekmeceler yerinde kalıyor.
+        var gates = global::OrderDeck.App.App.Host.Services
+            .GetRequiredService<global::OrderDeck.App.Startup.IStartupGates>();
+        await gates.ShowLoginAsync(isStartupGate: false);
         // After login completes, refresh account dialog state — easier just to close
         RequestClose?.Invoke(this, EventArgs.Empty);
     }

@@ -36,6 +36,12 @@ public partial class MainShellView : UserControl
 
     private void OnWindowPreviewKeyDown(object sender, KeyEventArgs e)
     {
+        // Gate açıkken shell'in kısayolları susar. ShellHost.IsEnabled=false
+        // yalnız odak/tıklamayı keser; bu handler Window'a bağlı olduğu için
+        // ondan etkilenmiyor — ESC arkadaki çekmeceyi kapatırdı.
+        if (App.Host?.Services.GetRequiredService<Services.Gates.AppGateStack>().IsOpen == true)
+            return;
+
         // Ctrl+K → ürün kodu kutusuna odaklan. ESC kontrolünden ÖNCE olmalı:
         // aşağıdaki erken dönüş Escape dışındaki her tuşu eler.
         if (e.Key == Key.K && (Keyboard.Modifiers & ModifierKeys.Control) != 0)

@@ -1,11 +1,7 @@
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
-using System.Linq;
-using System.Net;
-using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -14,16 +10,8 @@ using System.Windows.Threading;
 using Microsoft.Win32;
 using Velopack;
 using OrderDeck.App.Formatting;
-using OrderDeck.App.Views;
-using OrderDeck.App.Services;
-using OrderDeck.Chat.Ingestors;
 using OrderDeck.Core;
-using OrderDeck.Core.Sessions;
-using OrderDeck.Licensing;
-using OrderDeck.Licensing.Services;
-using OrderDeck.Overlay;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace OrderDeck.App;
@@ -69,11 +57,6 @@ public partial class App : Application
 
     public static AppHost Host { get; private set; } = null!;
 
-    private ChatBridgeIngestor? _ingestor;
-    private OverlayHost? _overlay;
-    private HeartbeatHostedService? _heartbeat;
-    private OrderDeck.App.Services.IntakeForm.IntakeFormSyncHostedService? _intakeSync;
-
     protected override void OnStartup(StartupEventArgs e)
     {
         // Gerçek giriş noktasından gelinmediyse hiçbir şey başlatılmaz;
@@ -108,239 +91,6 @@ public partial class App : Application
 
         var logger = Host.Services.GetRequiredService<ILogger<App>>();
         logger.LogInformation("OrderDeck starting up");
-
-        // Phase 4b: license bootstrap before showing main window.
-        // Wrapped in Task.Run so the await chain runs off the WPF dispatcher —
-        // otherwise GetResult() blocks the UI thread and any continuation that
-        // captured the dispatcher SyncContext would deadlock.
-        var licenseService = Host.Services.GetRequiredService<LicenseService>();
-        try
-        {
-            Task.Run(() => licenseService.InitializeAsync()).GetAwaiter().GetResult();
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "License initialization failed");
-        }
-
-        if (licenseService.CurrentStatus == LicenseStatus.NoLicense)
-        {
-            var loginDlg = Host.Services.GetRequiredService<LoginDialog>();
-            var ok = loginDlg.ShowDialog();
-            if (ok != true)
-            {
-                Shutdown();
-                return;
-            }
-        }
-
-        // Phase 5a — auto-prompt restore if local DB is empty AND cloud has backups
-        try
-        {
-            var dbFile = AppPaths.DatabaseFile;
-            var dbMissingOrTiny = !File.Exists(dbFile) || new FileInfo(dbFile).Length < 10240;
-            if (dbMissingOrTiny)
-            {
-                var restoreService = Host.Services.GetRequiredService<RestoreService>();
-                // Same Task.Run wrap — keep async I/O off the WPF dispatcher.
-                var available = Task.Run(() => restoreService.ListAvailableAsync()).GetAwaiter().GetResult();
-                if (available.Count > 0)
-                {
-                    var dlg = new Views.RestoreDialog(restoreService, available);
-                    var ok = dlg.ShowDialog();
-                    if (ok == true)
-                    {
-                        MessageBox.Show("Geri yükleme tamamlandı. Uygulama yeniden başlatılacak.",
-                            "OrderDeck", MessageBoxButton.OK, MessageBoxImage.Information);
-                        Shutdown();
-                        return;
-                    }
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Restore auto-prompt failed (non-fatal)");
-        }
-
-        // First-run setup wizard. Runs once on first launch after install
-        // (or after a settings reset). Operator can skip individual steps
-        // but must reach "Bitir" for HasCompletedFirstRun to flip true,
-        // otherwise the wizard re-prompts on next launch. Closing with X
-        // or "Daha sonra" returns DialogResult=false → app continues
-        // anyway (operator might want to dismiss now and configure later).
-        try
-        {
-            var settingsForFirstRun = Host.Services.GetRequiredService<OrderDeck.Core.Settings.SettingsStore>().Load();
-            if (!settingsForFirstRun.HasCompletedFirstRun)
-            {
-                var wizard = Host.Services.GetRequiredService<Views.FirstRunWizard>();
-                wizard.ShowDialog();
-                // Continue regardless — operator may have skipped, that's fine.
-                // The flag re-prompts next launch only if they didn't reach Finish.
-            }
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "First-run wizard failed (non-fatal)");
-        }
-
-        // Phase 5a — wire stream-end → cloud backup (fire-and-forget)
-        var sessionService = Host.Services.GetRequiredService<StreamSessionService>();
-        var backupService = Host.Services.GetRequiredService<BackupService>();
-        sessionService.SessionEnded += (_, _) => backupService.QueueBackup("stream-end");
-
-        // Stream session recovery — if the previous run crashed mid-broadcast
-        // (or the operator closed the app without ending the session), the
-        // StreamSession row is still active in DB. Without this prompt the
-        // operator would silently start a fresh session on top of orphaned
-        // data and the active giveaway / queue state would never resume.
-        try
-        {
-            var activeSession = sessionService.GetActive();
-            if (activeSession is not null)
-            {
-                var startedLocal = DateTimeOffset.FromUnixTimeSeconds(activeSession.StartedAt)
-                    .LocalDateTime.ToString("dd MMM HH:mm", tr);
-                var titleLine = string.IsNullOrWhiteSpace(activeSession.Title)
-                    ? string.Empty
-                    : $"Başlık: {activeSession.Title}\n";
-                var msg = "Önceki yayın bitirilmemiş gözüküyor:\n\n" +
-                          $"Başlangıç: {startedLocal}\n" +
-                          titleLine +
-                          "\nDevam ettir mi yoksa bitirip yeni yayına başla?\n\n" +
-                          "Evet  = devam et (önceki katılımcılar/sipariş kuyruğu yüklenir)\n" +
-                          "Hayır = önceki yayını kapat (rapor için DB'de kalır)\n" +
-                          "İptal = uygulamayı kapat";
-                var choice = MessageBox.Show(msg, "OrderDeck — Yayın Kurtarma",
-                    MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
-                if (choice == MessageBoxResult.Cancel)
-                {
-                    Shutdown();
-                    return;
-                }
-                if (choice == MessageBoxResult.No)
-                {
-                    sessionService.End(activeSession.Id);
-                }
-                // Yes = leave active; MainShellViewModel.ReloadQueueFromActiveSession
-                // picks it up.
-            }
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Session recovery prompt failed (non-fatal)");
-        }
-
-        _overlay  = Host.Services.GetRequiredService<OverlayHost>();
-        _ingestor = Host.Services.GetRequiredService<ChatBridgeIngestor>();
-
-        // OverlayHost.StartAsync now tries the preferred port (4747) then a
-        // fallback range (4757-4760). Only surface an error if every candidate
-        // failed — IOException at this layer means "all candidates exhausted".
-        try
-        {
-            Task.Run(() => _overlay.StartAsync()).GetAwaiter().GetResult();
-        }
-        catch (Exception ex) when (IsPortInUse(ex))
-        {
-            logger.LogError(ex, "All overlay port candidates already in use");
-            MessageBox.Show(
-                "Overlay portlarının tümü kullanımda (4747, 4757-4760).\n\n" +
-                "Büyük ihtimalle başka bir OrderDeck çalışıyor. Görev Yöneticisi'nden " +
-                "OrderDeck.App'i kapatıp tekrar dene.\n\n" +
-                $"Detay: {ex.Message}",
-                "OrderDeck — Port Çakışması", MessageBoxButton.OK, MessageBoxImage.Error);
-            Shutdown();
-            return;
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Overlay startup failed");
-            MessageBox.Show(
-                $"Overlay başlatılamadı:\n\n{ex.Message}\n\nUygulama kapatılıyor.",
-                "OrderDeck — Başlatma Hatası", MessageBoxButton.OK, MessageBoxImage.Error);
-            Shutdown();
-            return;
-        }
-
-        // One-time info notice when the operator falls back to a non-default
-        // port — they need to update OBS Browser Source URLs accordingly.
-        if (_overlay.FellBackFromPreferredPort)
-        {
-            logger.LogWarning("Overlay running on fallback port {Port} (4747 was busy)", _overlay.Port);
-            MessageBox.Show(
-                $"Overlay portu 4747 başka uygulama kullanıyor; otomatik olarak {_overlay.Port}'e geçildi.\n\n" +
-                "OBS Browser Source URL'lerini güncelle:\n" +
-                $"  http://localhost:{_overlay.Port}/overlay/chat\n" +
-                $"  http://localhost:{_overlay.Port}/overlay/giveaway\n\n" +
-                "Bu durum genelde başka bir OrderDeck instance veya farklı bir uygulama " +
-                "tarafından 4747'nin tutulduğunda olur.",
-                "OrderDeck — Yedek Port Kullanılıyor",
-                MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-
-        try
-        {
-            Task.Run(() => _ingestor.StartAsync(CancellationToken.None)).GetAwaiter().GetResult();
-        }
-        catch (Exception ex) when (IsPortInUse(ex))
-        {
-            logger.LogError(ex, "Bridge port 4748 already in use");
-            MessageBox.Show(
-                "Chrome eklenti köprüsü portu (4748) zaten kullanımda.\n\n" +
-                "Büyük ihtimalle başka bir OrderDeck çalışıyor. Görev Yöneticisi'nden " +
-                "kapatıp tekrar dene.\n\n" +
-                $"Detay: {ex.Message}",
-                "OrderDeck — Port Çakışması", MessageBoxButton.OK, MessageBoxImage.Error);
-            Shutdown();
-            return;
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Bridge startup failed");
-            MessageBox.Show(
-                $"Chrome eklenti köprüsü başlatılamadı:\n\n{ex.Message}\n\n" +
-                "Uygulama açık kalıyor — Instagram/TikTok chat çalışmayacak.",
-                "OrderDeck — Köprü Hatası", MessageBoxButton.OK, MessageBoxImage.Warning);
-            // Continue without bridge — YouTube + manual flows still work.
-        }
-
-        // Heartbeat manual lifecycle (no IHost builder)
-        _heartbeat = Host.Services.GetServices<IHostedService>()
-            .OfType<HeartbeatHostedService>()
-            .FirstOrDefault();
-        _ = _heartbeat?.StartAsync(CancellationToken.None);
-
-        // Phase 4f: intake form sync hosted service
-        _intakeSync = Host.Services.GetServices<IHostedService>()
-            .OfType<OrderDeck.App.Services.IntakeForm.IntakeFormSyncHostedService>()
-            .FirstOrDefault();
-        _ = _intakeSync?.StartAsync(CancellationToken.None);
-
-        // Generic startup for all remaining hosted services (sync workers, etc).
-        // AppHost.cs registers a bunch of AddHostedService<>'s but WPF has no IHost
-        // builder to auto-start them. Without this loop they're dead instances.
-        // Skip ones already started by reference equality so we don't double-start
-        // the ones held in fields above.
-        var alreadyStarted = new HashSet<IHostedService>(ReferenceEqualityComparer.Instance);
-        if (_heartbeat is not null) alreadyStarted.Add(_heartbeat);
-        if (_intakeSync is not null) alreadyStarted.Add(_intakeSync);
-
-        foreach (var svc in Host.Services.GetServices<IHostedService>())
-        {
-            if (alreadyStarted.Contains(svc)) continue;
-            try
-            {
-                _ = svc.StartAsync(CancellationToken.None);
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex,
-                    "Hosted service {Service} failed to start; continuing",
-                    svc.GetType().Name);
-            }
-        }
 
         // Otomatik güncelleme (Velopack) — non-blocking. Feed'den delta iner,
         // kullanıcı onaylayınca yeniden başlatıp uygular. Sadece Velopack ile
@@ -377,15 +127,37 @@ public partial class App : Application
 
         base.OnStartup(e);
 
-        // Ana pencere artık AÇIKÇA kuruluyor. Eskiden App.xaml'deki
-        // StartupUri yapıyordu ama WPF onu OnStartup'tan SONRA işliyor —
-        // yani yukarıdaki kısa devre pencereyi engelleyemiyor, AppHost
-        // kurulmamışken bir MainWindow doğuyor ve Loaded'da patlıyordu.
-        // Davranış aynı: pencere yine OnStartup'ın en sonunda açılıyor,
-        // erken çıkışların hepsi zaten Shutdown() ile dönüyor.
-        var main = new MainWindow();
+        // AÇILIŞ SIRASI TERSİNE DÖNDÜ (Faz 4a). Pencere artık İLK açılıyor;
+        // lisans/geri yükleme/sihirbaz kontrolleri onun içinde tam ekran
+        // gate olarak koşuyor. Eskiden üç ShowDialog() pencereden önce
+        // gelirdi ve operatör görev çubuğunda ikonsuz, alt+tab'de bulunamayan
+        // pencerelerle uğraşırdı.
+        var root = Host.Services.GetRequiredService<Views.AppRootView>();
+        var main = new MainWindow(root);
         MainWindow = main;
         main.Show();
+
+        // Bilerek await EDİLMİYOR: OnStartup'ın dönmesi gerekiyor ki
+        // dispatcher mesaj döngüsü koşsun ve gate'ler çizilsin.
+        _ = RunStartupAsync(logger);
+    }
+
+    private static async Task RunStartupAsync(ILogger<App> logger)
+    {
+        try
+        {
+            await Host.Services.GetRequiredService<Startup.StartupFlow>().RunAsync();
+        }
+        catch (Exception ex)
+        {
+            // Buraya düşmek akışın kendi try/catch'lerinin kaçırdığı bir
+            // hata demek; sessizce boş gate ekranında kalmaktansa söyle.
+            logger.LogError(ex, "Startup flow failed");
+            MessageBox.Show(
+                $"OrderDeck açılamadı:\n\n{ex.Message}",
+                "OrderDeck — Başlatma Hatası", MessageBoxButton.OK, MessageBoxImage.Error);
+            Current.Shutdown();
+        }
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -465,36 +237,12 @@ public partial class App : Application
         e.SetObserved();
     }
 
-    /// <summary>Maps the messy collection of "port already bound" exception
-    /// shapes Kestrel/HttpListener can throw into a single boolean. Kestrel
-    /// wraps the underlying SocketException in IOException; HttpListener
-    /// throws HttpListenerException with HRESULT 0x80004005.</summary>
-    private static bool IsPortInUse(Exception ex)
-    {
-        for (var current = ex; current is not null; current = current.InnerException)
-        {
-            if (current is SocketException se && se.SocketErrorCode == SocketError.AddressAlreadyInUse)
-                return true;
-            if (current is HttpListenerException hle &&
-                (hle.ErrorCode == 32 || hle.ErrorCode == 183 || hle.ErrorCode == unchecked((int)0x80004005)))
-                return true;
-            if (current is IOException io &&
-                (io.Message.Contains("address", StringComparison.OrdinalIgnoreCase) ||
-                 io.Message.Contains("in use", StringComparison.OrdinalIgnoreCase) ||
-                 io.Message.Contains("conflicts", StringComparison.OrdinalIgnoreCase)))
-                return true;
-        }
-        return false;
-    }
-
     protected override void OnExit(ExitEventArgs e)
     {
-        // Same Task.Run wrap as OnStartup — keep StopAsync continuations off the
-        // WPF dispatcher so GetResult() doesn't deadlock during shutdown.
-        try { Task.Run(() => _intakeSync?.StopAsync(CancellationToken.None) ?? Task.CompletedTask).GetAwaiter().GetResult(); } catch { /* ignore */ }
-        try { Task.Run(() => _heartbeat?.StopAsync(CancellationToken.None) ?? Task.CompletedTask).GetAwaiter().GetResult(); } catch { /* ignore */ }
-        try { Task.Run(() => _ingestor?.StopAsync(CancellationToken.None) ?? Task.CompletedTask).GetAwaiter().GetResult(); } catch { /* ignore */ }
-        try { Task.Run(() => _overlay?.StopAsync() ?? Task.CompletedTask).GetAwaiter().GetResult(); } catch { /* ignore */ }
+        // Arka plan servislerini başlatan sınıf durdurmayı da yapıyor
+        // (Faz 4a); Task.Run sarmalayıcıları oraya taşındı.
+        Host.Services.GetRequiredService<Startup.WpfStartupEnvironment>()
+            .StopBackgroundServices();
         Host.Dispose();
         base.OnExit(e);
     }
