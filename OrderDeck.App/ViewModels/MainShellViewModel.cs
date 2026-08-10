@@ -1472,7 +1472,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     }
 
     [RelayCommand]
-    private void OpenCustomerDetailFromChat(ChatMessageViewModel? msg)
+    private async Task OpenCustomerDetailFromChatAsync(ChatMessageViewModel? msg)
     {
         if (msg is null) return;
         var customer = _customerRepo.FindByPlatformAndUsername(msg.Platform, msg.Username);
@@ -1481,14 +1481,14 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             _dialogs.Show("Bu kullanıcı henüz kayıtlı değil.", "Müşteri yok");
             return;
         }
-        ShowCustomerDetail(customer.Id);
+        await ShowCustomerDetailAsync(customer.Id);
     }
 
     [RelayCommand]
-    private void OpenCustomerDetailFromQueue(LabelViewModel? row)
+    private async Task OpenCustomerDetailFromQueueAsync(LabelViewModel? row)
     {
         if (row is null) return;
-        ShowCustomerDetail(row.CustomerId);
+        await ShowCustomerDetailAsync(row.CustomerId);
     }
 
     [RelayCommand]
@@ -1514,11 +1514,20 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             _ => Views.Pages.ShortcutHelpPage.Create(registry));
     }
 
-    private static void ShowCustomerDetail(string customerId)
+    /// <summary>Müşteri detay çekmecesini açar. Yükleme BURADA, view'da değil
+    /// (Faz 3 kuralı); müşteri bulunamazsa çekmece hiç açılmıyor.</summary>
+    private async Task ShowCustomerDetailAsync(string customerId)
     {
-        var dlg = App.Host.Services.GetRequiredService<Views.CustomerDetailDialog>();
-        dlg.Owner = Application.Current?.MainWindow;
-        dlg.Open(customerId);
+        if (_drawers is null) return;   // yalnız testte; bkz. alanın notu
+
+        var vm = App.Host.Services.GetRequiredService<CustomerDetailViewModel>();
+        if (!vm.Load(customerId))
+        {
+            _dialogs.Show("Müşteri kaydı bulunamadı.", "Müşteri Detayı");
+            return;
+        }
+        await _drawers.ShowAsync("Müşteri Detayı",
+            _ => Views.Drawers.CustomerDetailDrawer.Create(vm));
     }
 
     private void RefreshHighlights()

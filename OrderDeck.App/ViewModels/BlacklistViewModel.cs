@@ -67,13 +67,25 @@ public sealed partial class BlacklistViewModel : ViewModelBase
         Reload();
     }
 
+    /// <summary>Müşteri detay çekmecesini açar. Yükleme burada, view'da değil
+    /// (Faz 3 kuralı). Servisler App.Host'tan çözülüyor — bu ViewModel'in
+    /// ctor'u sayfa listesi için kurulmuş, çekmece bağımlılığı taşımıyor.</summary>
     [RelayCommand]
-    private void OpenCustomerDetail(string? customerId)
+    private async Task OpenCustomerDetailAsync(string? customerId)
     {
         if (string.IsNullOrEmpty(customerId)) return;
-        var dlg = App.Host.Services.GetRequiredService<Views.CustomerDetailDialog>();
-        dlg.Owner = ResolveOwnerWindow(dlg);
-        dlg.Open(customerId);
+
+        var services = App.Host.Services;
+        var vm = services.GetRequiredService<CustomerDetailViewModel>();
+        if (!vm.Load(customerId))
+        {
+            MessageBox.Show("Müşteri kaydı bulunamadı.", "Müşteri Detayı",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        await services.GetRequiredService<Services.Drawers.IDrawerService>()
+            .ShowAsync("Müşteri Detayı",
+                _ => Views.Drawers.CustomerDetailDrawer.Create(vm));
     }
 
     /// <summary>Returns a sensible Owner window for a modal dialog, EXCLUDING the

@@ -244,6 +244,12 @@
         <Setter Property="CaretBrush"      Value="{StaticResource OD.Brush.Text}"/>
         <Setter Property="FontFamily"      Value="{StaticResource OD.Font.Sans}"/>
         <Setter Property="FontSize"        Value="{StaticResource OD.Font.F2}"/>
+        <!-- Varsayılan Center: tek satırlık kutular (çoğunluk) dikeyde ortalı
+             kalsın. Çok satırlı kutu VerticalContentAlignment="Top" diyerek
+             metni üste çekebilsin diye şablon bu değeri OKUYOR, sabitlemiyor —
+             sabit Center yüzünden not alanı metni kutunun ortasında asılı
+             kalıyordu. -->
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="TextBox">
@@ -257,7 +263,7 @@
                                  buraya yerleştirir, adı değişirse kutu boş görünür. -->
                             <ScrollViewer x:Name="PART_ContentHost"
                                           Margin="{TemplateBinding Padding}"
-                                          VerticalAlignment="Center"/>
+                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
                             <!-- İpucu metni Tag'den okunur: Tag="Ara…" yazan her
                                  kutu placeholder kazanır, ek kod gerekmez.
                                  WPF'in yerleşik placeholder'ı yok; alternatif her
@@ -270,7 +276,7 @@
                             <TextBlock x:Name="Hint"
                                        Text="{TemplateBinding Tag}"
                                        Margin="{TemplateBinding Padding}"
-                                       VerticalAlignment="Center"
+                                       VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
                                        IsHitTestVisible="False"
                                        Visibility="Collapsed"
                                        FontFamily="{TemplateBinding FontFamily}"

@@ -27,14 +27,18 @@ public partial class CustomerSearchDrawer : UserControl
     public static CustomerSearchDrawer Create(CustomerSearchViewModel vm) => new(vm);
 
     /// <summary>Karta çift tıklama müşteri detayını AYNI yığında üstüne açar
-    /// (spec §6.2: arama → detay iki seviyelik zincir).</summary>
-    private void ResultsList_OnDoubleClick(object sender, MouseButtonEventArgs e)
+    /// (spec §6.2: arama → detay iki seviyelik zincir). Yükleme burada, detay
+    /// view'ının içinde değil — Faz 3 kuralı.</summary>
+    private async void ResultsList_OnDoubleClick(object sender, MouseButtonEventArgs e)
     {
         if (ResultsList.SelectedItem is not CustomerSearchViewModel.CustomerCard selected) return;
 
-        var detail = App.Host.Services.GetRequiredService<CustomerDetailDialog>();
-        detail.Owner = System.Windows.Application.Current?.MainWindow;
-        detail.Open(selected.Primary.Id);
+        var services = App.Host.Services;
+        var vm = services.GetRequiredService<CustomerDetailViewModel>();
+        if (!vm.Load(selected.Primary.Id)) return;
+
+        await services.GetRequiredService<IDrawerService>()
+            .ShowAsync("Müşteri Detayı", _ => CustomerDetailDrawer.Create(vm));
     }
 
     /// <summary>ListBox.SelectedItems bağlanabilir değil (DependencyProperty

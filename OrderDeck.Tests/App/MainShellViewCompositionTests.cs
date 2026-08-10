@@ -106,6 +106,24 @@ public class MainShellViewCompositionTests
                 _ => CustomerSearchDrawer.Create(BuildCustomerSearchViewModel()));
             Assert.IsType<CustomerSearchDrawer>(search.Top!.Content);
 
+            // Müşteri detay zinciri (Faz 3d): arama → detay → iptal sebebi.
+            // Aynı yığına biniyorlar, gerçek çağrı yolu bu. Detay çekmecesi
+            // veri YÜKLEMİYOR (Load'u çağıran taraf yapar), o yüzden boş
+            // ViewModel'le kuruluyor — sınanan XAML'in çözülmesi.
+            search.ShowAsync("Müşteri Detayı",
+                _ => CustomerDetailDrawer.Create(BuildCustomerDetailViewModel()));
+            Assert.IsType<CustomerDetailDrawer>(search.Top!.Content);
+
+            search.ShowAsync("Etiket İptali", d => CancelLabelDrawer.Create(d));
+            Assert.IsType<CancelLabelDrawer>(search.Top!.Content);
+
+            // Bakiye çekmecesi ayrı yığında: detay zincirinin kardeşi, aynı
+            // anda ikisi birden açılmıyor.
+            var balance = new DrawerStack();
+            balance.ShowAsync("Bakiye Ekle",
+                d => AddBalanceDrawer.Create(d, BuildLicenseApi(), Guid.NewGuid(), "Alice"));
+            Assert.IsType<AddBalanceDrawer>(balance.Top!.Content);
+
             // Faz 3 sayfaları. Çekmecelerle aynı gerekçe: XAML hatası
             // derlemede değil açılışta patlar. Sayfa fabrikaları Page
             // istemediği için (AccountPage hariç) doğrudan çağrılıyorlar,
@@ -183,6 +201,25 @@ public class MainShellViewCompositionTests
             new CustomerService(customers, sessions, labels, new SystemClock()),
             sessions, labels,
             paymentService: null!, dialogService: null!);
+    }
+
+    /// <summary>Çekmece servisi VERİLMİYOR (varsayılan null): bakiye ekleme ve
+    /// etiket iptali komutları bu testte tetiklenmiyor, ikisi de null görünce
+    /// erken dönüyor.</summary>
+    private static CustomerDetailViewModel BuildCustomerDetailViewModel()
+    {
+        var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var customers = new CustomerRepository(db);
+        var sessions = new SessionRepository(db);
+        var labels = new LabelRepository(db);
+        var clock = new SystemClock();
+        return new CustomerDetailViewModel(
+            customers, labels,
+            new LabelService(labels, new CustomerService(customers, sessions, labels, clock), clock),
+            new GiveawayRepository(db),
+            new StreamSessionService(sessions, clock),
+            BuildLicenseApi());
     }
 
     private static StreamHistoryViewModel BuildStreamHistoryViewModel()
