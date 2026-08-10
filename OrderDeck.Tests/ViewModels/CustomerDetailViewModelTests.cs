@@ -26,7 +26,7 @@ namespace OrderDeck.Tests.ViewModels;
 /// predicates that drive the cancel/uncancel buttons.
 ///
 /// The Cancel/Uncancel commands themselves open <c>Views.Drawers.CancelLabelDrawer</c>
-/// / <c>Views.BackupTransferDialog</c> and need a drawer service (not given
+/// / <c>Views.Drawers.BackupTransferDrawer</c> and need a drawer service (not given
 /// here, so they return early); those paths stay covered by manual smoke +
 /// the integration of <see cref="LabelService.Cancel"/> /
 /// <see cref="LabelService.Uncancel"/> which are exercised in

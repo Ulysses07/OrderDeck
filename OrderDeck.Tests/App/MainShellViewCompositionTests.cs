@@ -143,6 +143,14 @@ public class MainShellViewCompositionTests
                 d => FacebookPagePickerDrawer.Create(d, BuildPageCandidates()));
             Assert.IsType<FacebookPagePickerDrawer>(pagePicker.Top!.Content);
 
+            // Faz 3d/4: yedek devri. Gerçekte iptal çekmecesinin üstüne
+            // biniyor; burada tek başına, iki yedekle kuruluyor ki kart
+            // şablonu (platform ikonu + fiyat + onay) gerçekten çizilsin.
+            var backups = new DrawerStack();
+            backups.ShowAsync("'alice' yedekleri (2)",
+                d => BuildBackupTransferDrawer(d));
+            Assert.IsType<BackupTransferDrawer>(backups.Top!.Content);
+
             // Faz 3 sayfaları. Çekmecelerle aynı gerekçe: XAML hatası
             // derlemede değil açılışta patlar. Sayfa fabrikaları Page
             // istemediği için (AccountPage hariç) doğrudan çağrılıyorlar,
@@ -240,6 +248,37 @@ public class MainShellViewCompositionTests
             new StreamSessionService(sessions, clock),
             BuildLicenseApi());
     }
+
+    /// <summary>Yedek devri çekmecesi: iptal edilen ana etiket + iki yedek.
+    /// Kayıtlar veritabanına yazılmıyor — çekmece listeyi çağırandan hazır
+    /// alıyor, burada sınanan yalnız kart şablonunun çözülmesi.</summary>
+    private static BackupTransferDrawer BuildBackupTransferDrawer(Drawer drawer)
+    {
+        var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var labels = new LabelRepository(db);
+        var sessions = new SessionRepository(db);
+        var customers = new CustomerRepository(db);
+        var clock = new SystemClock();
+        var service = new LabelService(
+            labels, new CustomerService(customers, sessions, labels, clock), clock);
+
+        var parent = MakeLabel("l1", "instagram", "alice", "ALC-1", 250m);
+        var backups = new[]
+        {
+            MakeLabel("l2", "tiktok", "ayse_y", "ALC-1", 250m, isBackup: true),
+            MakeLabel("l3", "youtube", "mehmet", "ALC-1", 275m, isBackup: true),
+        };
+        return BackupTransferDrawer.Create(drawer, service, parent, backups);
+    }
+
+    private static OrderDeck.Core.Sales.Label MakeLabel(
+        string id, string platform, string username, string code, decimal price,
+        bool isBackup = false)
+        => new(id, "s1", "c1", platform, username, $"{code} alıyorum", code,
+               price, 1_754_300_000, PrintedAt: null,
+               ParentLabelId: isBackup ? "l1" : null,
+               IsTentativeBackup: isBackup);
 
     private static CustomerRepository BuildCustomerRepository()
     {

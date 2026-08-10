@@ -300,14 +300,11 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
             ReloadLabels();
 
             // For each cancelled label that has backups, surface the transfer
-            // dialog so the operator can promote a backup to a new label.
-            // Multi-select cancels open multiple dialogs sequentially — rare in
-            // practice, common cancel is one row at a time.
-            //
-            // Hâlâ modal PENCERE: BackupTransfer Faz 3'ün son adımında
-            // dönüştürülecek. Artık güvenli, çünkü onu açan taraf (müşteri
-            // detayı) modal olmaktan çıktı — modal pencerenin İÇİNDEN sayfa
-            // açma tuzağına düşmüyoruz.
+            // drawer so the operator can promote a backup to a new label.
+            // Multi-select cancels open the drawer sequentially — her biri
+            // kapanmadan sıradaki açılmıyor, çünkü await yığının üstündeki
+            // çekmecenin kapanmasını bekliyor. Pratikte nadir: olağan iptal
+            // tek satır.
             foreach (var labelId in targets)
             {
                 var backups = _labelService.GetBackups(labelId);
@@ -316,13 +313,10 @@ public sealed partial class CustomerDetailViewModel : ViewModelBase
                 var parent = _labels.GetById(labelId);
                 if (parent is null) continue;
 
-                var dialog = new Views.BackupTransferDialog(_labelService)
-                {
-                    Owner = Application.Current.Windows.OfType<Window>()
-                        .FirstOrDefault(w => w.IsActive && w.IsVisible)
-                };
-                dialog.Load(parent, backups);
-                dialog.ShowDialog();
+                await _drawers.ShowAsync(
+                    $"'{parent.Username}' yedekleri ({backups.Count})",
+                    d => Views.Drawers.BackupTransferDrawer.Create(
+                        d, _labelService, parent, backups));
             }
         }
         catch (Exception ex)
