@@ -44,24 +44,37 @@
                 <Grid Grid.Column="1" Width="{StaticResource OD.Layout.RightWidth}"
                       Margin="{StaticResource OD.Pad.4}">
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>   <!-- kod + fiyat -->
-                        <RowDefinition Height="Auto"/>   <!-- ürün kartı -->
-                        <RowDefinition Height="*"/>      <!-- yazdırılacak etiketler -->
+                        <!-- Çekmecenin örttüğü alan. Üst satırın "*" olması
+                             şart: yuva Auto olduğu için artan yer buraya
+                             gider, yani çekmece boyu ekranla birlikte
+                             büyür. -->
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>   <!-- yazdır yuvası -->
                     </Grid.RowDefinitions>
-                    <shell:ActiveProductBar Grid.Row="0" x:Name="ProductBar"/>
-                    <shell:ProductCard      Grid.Row="1"
-                                            Margin="{StaticResource OD.Pad.Top5}"/>
-                    <shell:PrintQueuePanel  Grid.Row="2"
-                                            Margin="{StaticResource OD.Pad.Top5}"/>
-                </Grid>
 
-                <!-- Çekmece katmanı sağ sütunun ÜSTÜNE gelir: aynı hücre,
-                     aynı margin, aynı genişlik. Kardeşinden SONRA yazılı
-                     olması z-düzenini veriyor. Sohbet (sütun 0) hiç
-                     etkilenmez — spec §6.2. -->
-                <shell:DrawerHost Grid.Column="1"
-                                  Width="{StaticResource OD.Layout.RightWidth}"
-                                  Margin="{StaticResource OD.Pad.4}"/>
+                    <Grid Grid.Row="0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>   <!-- kod + fiyat -->
+                            <RowDefinition Height="Auto"/>   <!-- ürün kartı -->
+                            <RowDefinition Height="*"/>      <!-- yazdırılacak etiketler -->
+                        </Grid.RowDefinitions>
+                        <shell:ActiveProductBar Grid.Row="0" x:Name="ProductBar"/>
+                        <shell:ProductCard      Grid.Row="1"
+                                                Margin="{StaticResource OD.Pad.Top5}"/>
+                        <shell:PrintQueuePanel  Grid.Row="2"
+                                                Margin="{StaticResource OD.Pad.Top5}"/>
+                    </Grid>
+
+                    <!-- Çekmece katmanı YALNIZ üst satırı örter. Yazdır yuvası
+                         alt satırda kalıyor, yani çekmece açıkken de etiket
+                         basılabiliyor — spec §6.2'nin açık maddesi buydu.
+                         Kardeşinden SONRA yazılı olması z-düzenini veriyor.
+                         Sohbet (sütun 0) hiç etkilenmez. -->
+                    <shell:DrawerHost Grid.Row="0"/>
+
+                    <shell:PrintSlot Grid.Row="1"
+                                     Margin="{StaticResource OD.Pad.Top5}"/>
+                </Grid>
             </Grid>
         </Grid>
     </Grid>

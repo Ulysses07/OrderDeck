@@ -71,4 +71,16 @@ internal static class ThemeTestHost
 
         return error;
     }
+
+    /// <summary>
+    /// Bekleyen dispatcher işlerini boşaltır. Gerekçe ölçümle bulundu: bir
+    /// öğenin <c>DataContext</c>'i yerleşimden SONRA atanınca binding
+    /// güncellemesi kuyruğa giriyor, <c>UpdateLayout()</c> onu boşaltmıyor.
+    /// Sonuç sessiz: <c>ItemsControl</c> ölçülü ve görünür oluyor ama
+    /// <c>ItemsSource</c> null kalıyor, yani test hiçbir şeyi doğrulamadan
+    /// geçiyor. Uygulamada dispatcher zaten dönüyor, sorun teste özgü.
+    /// </summary>
+    internal static void Pump()
+        => System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(
+            () => { }, System.Windows.Threading.DispatcherPriority.Loaded);
 }

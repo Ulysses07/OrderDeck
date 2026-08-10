@@ -30,6 +30,7 @@ public class MainShellViewCompositionTests
             Assert.IsType<UserControl>(new ChatPanel(), exactMatch: false);
             Assert.IsType<UserControl>(new ProductCard(), exactMatch: false);
             Assert.IsType<UserControl>(new PrintQueuePanel(), exactMatch: false);
+            Assert.IsType<UserControl>(new PrintSlot(), exactMatch: false);
             Assert.IsType<UserControl>(new DrawerHost(), exactMatch: false);
 
             // MessageDrawer yalnız yığın üzerinden kurulabiliyor (Drawer'ın

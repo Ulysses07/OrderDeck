@@ -3,10 +3,12 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <Border Style="{StaticResource OD.Panel}">
         <Grid>
+            <!-- Eskiden üçüncü bir satır daha vardı: Yazdır/Sil/Temizle şeridi.
+                 PrintSlot'a taşındı, çünkü çekmece bu paneli örtüyor ve
+                 yazdırma çekmece açıkken de erişilebilir kalmalı (spec §6.2). -->
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
-                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
             <!-- ── Başlık şeridi: ad + adet hapı ───────────────────────────── -->
@@ -124,25 +126,6 @@
                     </ContextMenu>
                 </ListBox.ContextMenu>
             </ListBox>
-
-            <!-- ── Alt eylem şeridi ────────────────────────────────────────── -->
-            <Border Grid.Row="2" Padding="{StaticResource OD.Pad.4}"
-                    BorderBrush="{StaticResource OD.Brush.Border}"
-                    BorderThickness="0,1,0,0">
-                <StackPanel Orientation="Horizontal">
-                    <Button Content="{Binding PrintButtonLabel}"
-                            Command="{Binding PrintCommand}"
-                            Style="{StaticResource OD.Button.Primary}"/>
-                    <Button Content="{Binding DeleteButtonLabel}"
-                            Command="{Binding RemoveSelectedFromQueueCommand}"
-                            Style="{StaticResource OD.Button.Ghost}"
-                            Margin="{StaticResource OD.Pad.2}"/>
-                    <Button Content="Hepsini Temizle"
-                            Command="{Binding ClearQueueCommand}"
-                            Style="{StaticResource OD.Button.Ghost}"
-                            Foreground="{StaticResource OD.Brush.Accent}"/>
-                </StackPanel>
-            </Border>
         </Grid>
     </Border>
 </UserControl>

@@ -207,10 +207,11 @@ Sağdan kayar, **sohbet solda görünür kalır**. Yayın sırasında açılan h
   kabuğun geri kalanı tıklanabilir kalıyor. Bilinçli ödünç — yayın sırasında
   operatörün sohbetten kopmaması, yanlışlıkla arkaya tıklama riskinden ağır
   basıyor.
-- **AÇIK MADDE:** "Alttaki yazdır yuvası yerinde kalır" maddesi HENÜZ
-  karşılanmıyor. Yazdır düğmesi `PrintQueuePanel`'in içinde ve çekmece sağ
-  sütunun tamamını örtüyor. Yuvayı ayırmak panelin bölünmesini gerektiriyor —
-  Faz 2b'de, ilk gerçek çekmece dönüşümünde ele alınacak.
+- ~~**AÇIK MADDE:** "Alttaki yazdır yuvası yerinde kalır" maddesi HENÜZ
+  karşılanmıyor.~~ **Kapandı (2026-08-10).** Yazdır/Sil/Temizle şeridi
+  `PrintQueuePanel`'den çıkıp `PrintSlot`'a taşındı. Sağ sütun iki satır:
+  üstte çekmecenin örttüğü alan, altta yuva. Şeridin içeriği taşınırken
+  değişmedi.
 
 ```
 ┌────────┬──────────────────────┬───────────────┐
@@ -357,13 +358,30 @@ geldiğinde hareket defterine dönüşecek.
   `DrawerHost`, `MessageDrawer` (MessageBox'ın çekmece karşılığı),
   `IDialogService`'e `ConfirmAsync` + `ShowAsync`. Hiçbir view dönüşmez,
   uygulama birebir aynı çalışır.
-- **Faz 2b — view dönüşümü.** Kolaydan zora üç grup: (1) ViewModel'i olmayan
-  dördü — `PhoneEntryDialog`, `FacebookPagePickerDialog`,
-  `AddToBlacklistDialog`, `CancelLabelDialog`; (2) `AddBalanceDialog`,
-  `ShipmentDirectiveDialog`, `NewGiveawayDialog`; (3) iç içe olanlar —
-  `CustomerSearchDialog` + `CustomerDetailDialog`, `DekontEkleDialog`.
-  Grup 3'te `DekontEkleDialog`'un zincir mantığı code-behind'dan
-  ViewModel'e taşınacak.
+- **Faz 2b — view dönüşümü.** ~~Kolaydan zora üç grup: (1) ViewModel'i
+  olmayan dördü…~~ **Gruplama değişti (2026-08-10, ölçümle).** Çekmeceyi
+  ancak shell'e erişebilen kod açabilir: `DrawerHost` shell'in içinde.
+  "ViewModel'i olmayan dört diyalog"un hiçbiri shell'den açılmıyor; hepsi
+  hâlâ `Window` olan bir konteynerin içindeki ViewModel'lerden açılıyor.
+  Çekmece o modal pencerenin ARKASINDA kalır, operatör ulaşamaz, `await`
+  hiç dönmez. Yani dönüşüm kolaydan zora değil **dıştan içe** gitmek
+  zorunda. Ölçülen bağımlılık ağacı:
+
+  ```
+  shell → NewGiveawayDialog                    (çocuğu yok, tek çağrı yeri)
+  shell → DekontEkleDialog     → ShipmentDirective, ShipmentThreshold
+  shell → CustomerDetailDialog → AddBalance, CancelLabel, BackupTransfer
+  shell → CustomerSearchDialog → PhoneEntry
+  ```
+
+  Sıra: (1) `NewGiveawayDialog`; (2) `CustomerDetailDialog` + çocukları;
+  (3) `CustomerSearchDialog` + `PhoneEntryDialog`; (4) `DekontEkleDialog` +
+  çocukları — zincir mantığı code-behind'dan ViewModel'e taşınarak.
+  `FacebookPagePickerDialog` (SettingsDialog'un içinde) ve
+  `AddToBlacklistDialog`'un manuel yolu (BlacklistDialog'un içinde) **Faz
+  3'e bağlı** — konteynerleri sayfa olmadan dönüştürülemez.
+  `AddToBlacklistDialog`'un shell'den açılan iki çağrısı da onunla birlikte
+  bekliyor: sınıf tek, iki yol aynı anda dönüşmeli.
 
 **Faz 3 — sayfa navigasyonu + 12 sayfa view'ı.** Sol nav gerçek navigasyona
 bağlanır.
