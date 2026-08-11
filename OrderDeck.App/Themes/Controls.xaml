@@ -53,27 +53,7 @@
                                     CornerRadius="{StaticResource OD.Radius.Md}"/>
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
-                                              Margin="{TemplateBinding Padding}">
-                                <ContentPresenter.Resources>
-                                    <!-- DarkControls.xaml'de örtük bir TextBlock
-                                         stili var ve Foreground'u sabitliyor.
-                                         Örtük stil MİRAS ALINAN değeri yener, yani
-                                         ContentPresenter'ın metin için ürettiği
-                                         TextBlock butonun Foreground'unu HİÇ
-                                         görmüyordu — OnAccent setter'ı ölü değerdi,
-                                         kırmızı zeminde fark edilmemişti. Yeşil
-                                         zeminde açık yazı 2.2:1'e düşünce çıktı.
-                                         Stil ContentPresenter'ın KENDİ sözlüğünde
-                                         olmalı: ControlTemplate.Resources'a
-                                         konursa üretilen TextBlock oraya bakmıyor
-                                         (ölçüldü), uygulama sözlüğünü buluyor. -->
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="Foreground"
-                                                Value="{Binding Foreground,
-                                                        RelativeSource={RelativeSource AncestorType=Button}}"/>
-                                    </Style>
-                                </ContentPresenter.Resources>
-                            </ContentPresenter>
+                                              Margin="{TemplateBinding Padding}"/>
                         </Grid>
                     </Border>
                     <ControlTemplate.Triggers>
@@ -128,21 +108,7 @@
                             CornerRadius="{StaticResource OD.Radius.Md}">
                         <ContentPresenter HorizontalAlignment="Center"
                                           VerticalAlignment="Center"
-                                          Margin="{TemplateBinding Padding}">
-                            <ContentPresenter.Resources>
-                                <!-- Birincildeki tuzağın aynısı: DarkControls'ün
-                                     örtük TextBlock stili miras alınan Foreground'u
-                                     yener, yani yukarıdaki setter içerik metnine
-                                     hiç ulaşmaz. Ölçüldü — düğme yazısı sönük
-                                     çıkıyordu. Sözlük ContentPresenter'ın KENDİsinde
-                                     olmalı. -->
-                                <Style TargetType="TextBlock">
-                                    <Setter Property="Foreground"
-                                            Value="{Binding Foreground,
-                                                    RelativeSource={RelativeSource AncestorType=Button}}"/>
-                                </Style>
-                            </ContentPresenter.Resources>
-                        </ContentPresenter>
+                                          Margin="{TemplateBinding Padding}"/>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
@@ -338,19 +304,7 @@
                             Margin="{StaticResource OD.Pad.1}"
                             CornerRadius="{StaticResource OD.Radius.Xs}">
                         <ContentPresenter HorizontalAlignment="Center"
-                                          VerticalAlignment="Center">
-                            <ContentPresenter.Resources>
-                                <!-- Düğme stillerindeki tuzağın aynısı: DarkControls'ün
-                                     örtük TextBlock stili miras alınan Foreground'u
-                                     yener, yani seçili günün yazısı OnAccent'e hiç
-                                     dönmezdi. -->
-                                <Style TargetType="TextBlock">
-                                    <Setter Property="Foreground"
-                                            Value="{Binding Foreground,
-                                                    RelativeSource={RelativeSource AncestorType=CalendarDayButton}}"/>
-                                </Style>
-                            </ContentPresenter.Resources>
-                        </ContentPresenter>
+                                          VerticalAlignment="Center"/>
                     </Border>
                     <ControlTemplate.Triggers>
                         <!-- Komşu ayların taşan günleri: görünür ama sönük. -->
@@ -403,15 +357,7 @@
                             Padding="{StaticResource OD.Pad.2}"
                             CornerRadius="{StaticResource OD.Radius.Xs}">
                         <ContentPresenter HorizontalAlignment="Center"
-                                          VerticalAlignment="Center">
-                            <ContentPresenter.Resources>
-                                <Style TargetType="TextBlock">
-                                    <Setter Property="Foreground"
-                                            Value="{Binding Foreground,
-                                                    RelativeSource={RelativeSource AncestorType=CalendarButton}}"/>
-                                </Style>
-                            </ContentPresenter.Resources>
-                        </ContentPresenter>
+                                          VerticalAlignment="Center"/>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsInactive" Value="True">
@@ -476,15 +422,7 @@
                                                 Padding="{StaticResource OD.Pad.3}"
                                                 CornerRadius="{StaticResource OD.Radius.Xs}">
                                             <ContentPresenter HorizontalAlignment="Center"
-                                                              VerticalAlignment="Center">
-                                                <ContentPresenter.Resources>
-                                                    <Style TargetType="TextBlock">
-                                                        <Setter Property="Foreground"
-                                                                Value="{Binding Foreground,
-                                                                        RelativeSource={RelativeSource AncestorType=Button}}"/>
-                                                    </Style>
-                                                </ContentPresenter.Resources>
-                                            </ContentPresenter>
+                                                              VerticalAlignment="Center"/>
                                         </Border>
                                         <ControlTemplate.Triggers>
                                             <Trigger Property="IsMouseOver" Value="True">
