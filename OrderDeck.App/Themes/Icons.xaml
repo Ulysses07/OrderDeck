@@ -7,10 +7,10 @@
     ayrıca WPF'te renkli çizilemiyor (COLR/CPAL desteği yok), boyutu font
     ailesine göre oynuyor ve Windows sürümüne göre şekil değiştiriyor.
 
-    Neden DrawingImage değil: DarkControls.xaml'daki OD.Icon.Gift gibi ÇOK
-    RENKLİ ikonlar DrawingImage olmalı. Bunlar tek renkli — Path olarak
-    çizilip Fill'i ana kontrolün Foreground'ından alırlarsa hover/disabled
-    durumlarında kendiliğinden doğru renge geçerler.
+    Neden DrawingImage değil: OD.Icon.Gift gibi ÇOK RENKLİ ikonlar
+    DrawingImage olmalı (dosyanın sonunda). Aşağıdakiler tek renkli — Path
+    olarak çizilip Fill'i ana kontrolün Foreground'ından alırlarsa
+    hover/disabled durumlarında kendiliğinden doğru renge geçerler.
 
     Hepsi 24x24 kutuya çizilidir. Kullanım: bir Path'in Data'sına bağla,
     Width/Height'ı OD.Icon.* ölçeğinden ver ve Stretch="Uniform" bırak.
@@ -124,4 +124,58 @@
             Value="{Binding Foreground,
                     RelativeSource={RelativeSource AncestorType=Button}}"/>
   </Style>
+
+  <!-- ── Çok renkli ikon ────────────────────────────────────────────────
+       WPF renkli emoji çizemiyor (glyph hattında COLR/CPAL desteği yok), bu
+       yüzden çok renkli ikonlar DrawingImage olarak besteleniyor: vektör,
+       ölçeklenebilir ve sistemin emoji fontuna bağlı değil.
+       Kutu kırmızıları palete bağlı (Accent / AccentDeep); kurdelenin iki
+       kademe sarısı 3D hissi için elde kalıyor. -->
+  <DrawingImage x:Key="OD.Icon.Gift">
+    <DrawingImage.Drawing>
+      <DrawingGroup>
+        <!-- Kutu gövdesi -->
+        <GeometryDrawing Brush="#FF4A38">
+          <GeometryDrawing.Geometry>
+            <RectangleGeometry Rect="2,9,16,11" RadiusX="1" RadiusY="1"/>
+          </GeometryDrawing.Geometry>
+        </GeometryDrawing>
+        <!-- Kapak -->
+        <GeometryDrawing Brush="#E23A2A">
+          <GeometryDrawing.Geometry>
+            <RectangleGeometry Rect="1,7,18,3" RadiusX="1" RadiusY="1"/>
+          </GeometryDrawing.Geometry>
+        </GeometryDrawing>
+        <!-- Dikey kurdele -->
+        <GeometryDrawing Brush="#FFFBBF24">
+          <GeometryDrawing.Geometry>
+            <RectangleGeometry Rect="8.5,7,3,13"/>
+          </GeometryDrawing.Geometry>
+        </GeometryDrawing>
+        <!-- Yatay kurdele -->
+        <GeometryDrawing Brush="#FFFBBF24">
+          <GeometryDrawing.Geometry>
+            <RectangleGeometry Rect="1,8,18,2"/>
+          </GeometryDrawing.Geometry>
+        </GeometryDrawing>
+        <!-- Fiyonk halkaları -->
+        <GeometryDrawing Brush="#FFFBBF24">
+          <GeometryDrawing.Geometry>
+            <EllipseGeometry Center="6.5,5" RadiusX="3" RadiusY="2.4"/>
+          </GeometryDrawing.Geometry>
+        </GeometryDrawing>
+        <GeometryDrawing Brush="#FFFBBF24">
+          <GeometryDrawing.Geometry>
+            <EllipseGeometry Center="13.5,5" RadiusX="3" RadiusY="2.4"/>
+          </GeometryDrawing.Geometry>
+        </GeometryDrawing>
+        <!-- Fiyonk düğümü -->
+        <GeometryDrawing Brush="#FFFCD34D">
+          <GeometryDrawing.Geometry>
+            <EllipseGeometry Center="10,6" RadiusX="1.6" RadiusY="1.4"/>
+          </GeometryDrawing.Geometry>
+        </GeometryDrawing>
+      </DrawingGroup>
+    </DrawingImage.Drawing>
+  </DrawingImage>
 </ResourceDictionary>
