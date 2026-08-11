@@ -8,7 +8,10 @@ namespace OrderDeck.App.ViewModels;
 
 public sealed partial class NewGiveawayDialogViewModel : ViewModelBase
 {
-    [ObservableProperty] private string _keyword = "🌹";
+    // Boş açılır: eski varsayılan 🌹 idi, ama mono yazı tipinde emoji tofu
+    // kutusu olarak çiziliyordu ve yayıncı her seferinde silmek zorundaydı.
+    // Validate() zaten 1-32 karakter istiyor, yani alan gerçekten zorunlu.
+    [ObservableProperty] private string _keyword = "";
     [ObservableProperty] private DurationOption _selectedDuration = new("1 dakika (60sn)", 60);
     [ObservableProperty] private int _winnerCount = 1;
     [ObservableProperty] private PlatformOption _selectedPlatform = new("Tümü", null);
