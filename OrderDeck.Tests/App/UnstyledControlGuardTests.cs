@@ -26,6 +26,7 @@ public class UnstyledControlGuardTests
     [
         "Button", "TextBox", "PasswordBox", "CheckBox", "RadioButton",
         "ComboBox", "ListBox", "TabControl", "DataGrid", "Label", "GroupBox",
+        "DatePicker", "Slider", "ProgressBar", "ToggleButton",
         "controls:ShortcutCaptureButton",
     ];
 
@@ -54,7 +55,7 @@ public class UnstyledControlGuardTests
 
                     var selfClosing = m.Groups[2].Value == "/";
                     if (!selfClosing &&
-                        xaml[(m.Index + m.Length)..].TrimStart()
+                        SkipTrivia(xaml[(m.Index + m.Length)..])
                             .StartsWith("<" + name + ".Style", StringComparison.Ordinal))
                         continue;
 
@@ -69,6 +70,24 @@ public class UnstyledControlGuardTests
             string.Join(Environment.NewLine, offenders));
     }
 
+    /// <summary>
+    /// Baştaki boşlukları ve XML yorumlarını atlar. Gerekçe: kontrolün ilk
+    /// çocuğu olan <c>&lt;X.Style&gt;</c>'ın önünde çoğu zaman o stili
+    /// açıklayan bir yorum duruyor.
+    /// </summary>
+    private static string SkipTrivia(string s)
+    {
+        while (true)
+        {
+            s = s.TrimStart();
+            if (!s.StartsWith("<!--", StringComparison.Ordinal)) return s;
+
+            var end = s.IndexOf("-->", StringComparison.Ordinal);
+            if (end < 0) return s;
+            s = s[(end + 3)..];
+        }
+    }
+
     /// <summary>Nitelik değerinin içindeki &gt; karakterini yutmasın diye tırnak farkındalıklı.</summary>
     private static Regex ElementTag(string name)
         => new("<" + Regex.Escape(name) + "(?![\\w.:])((?:\"[^\"]*\"|[^<>])*?)(/?)>",
@@ -80,12 +99,22 @@ public class UnstyledControlGuardTests
     private static readonly Regex TargetTypeAttr =
         new("TargetType\\s*=\\s*\"(?:\\{x:Type\\s+)?([\\w:]+)\\}?\"");
 
+    /// <summary>
+    /// Bir <c>*.Resources</c> bloğunun gövdesi. YALNIZ burası taranır: tek bir
+    /// kontrolün içine yazılan <c>&lt;Button.Style&gt;&lt;Style …&gt;</c> da
+    /// x:Key'siz bir Style'dır, ama o kontrolden başkasını kapsamaz — Resources
+    /// ayrımı yapılmazsa bekçi o tipi TÜM dosya için muaf sayar.
+    /// </summary>
+    private static readonly Regex ResourcesBlock =
+        new("<([\\w:]+)\\.Resources\\s*>(.*?)</\\1\\.Resources\\s*>", RegexOptions.Singleline);
+
     /// <summary>Dosyanın kendi Resources'ında tanımlı, x:Key'siz (= örtük) stillerin hedef tipleri.</summary>
     private static HashSet<string> LocalImplicitTargets(string xaml)
     {
         var set = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (Match m in StyleTag.Matches(xaml))
+        foreach (Match block in ResourcesBlock.Matches(xaml))
+        foreach (Match m in StyleTag.Matches(block.Groups[2].Value))
         {
             var attrs = m.Groups[1].Value;
             if (attrs.Contains("x:Key", StringComparison.Ordinal)) continue;

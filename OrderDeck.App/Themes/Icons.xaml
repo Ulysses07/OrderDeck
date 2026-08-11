@@ -135,13 +135,13 @@
     <DrawingImage.Drawing>
       <DrawingGroup>
         <!-- Kutu gövdesi -->
-        <GeometryDrawing Brush="#FF4A38">
+        <GeometryDrawing Brush="{StaticResource OD.Brush.Accent}">
           <GeometryDrawing.Geometry>
             <RectangleGeometry Rect="2,9,16,11" RadiusX="1" RadiusY="1"/>
           </GeometryDrawing.Geometry>
         </GeometryDrawing>
         <!-- Kapak -->
-        <GeometryDrawing Brush="#E23A2A">
+        <GeometryDrawing Brush="{StaticResource OD.Brush.AccentDeep}">
           <GeometryDrawing.Geometry>
             <RectangleGeometry Rect="1,7,18,3" RadiusX="1" RadiusY="1"/>
           </GeometryDrawing.Geometry>
