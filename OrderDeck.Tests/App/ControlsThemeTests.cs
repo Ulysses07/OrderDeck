@@ -15,15 +15,11 @@ public class ControlsThemeTests
 {
     private static readonly string[] StyleKeys =
     [
-        "OD.Panel",           // kart/panel yüzeyi
-        "OD.Button.Primary",  // yazdır
-        "OD.Button.Ghost",    // nav, kuyruk temizle
-        "OD.Chip",            // "Sadece A12" (basılı hâli kendi IsChecked
-                              //  tetikleyicisinde — ayrı anahtar yok)
-        "OD.TextBox",         // kod, fiyat, sohbet arama, ürün adı, adet
-        "OD.Text.Micro",      // "AKTİF ÜRÜN", "BEDEN STOĞU"
-        "OD.Text.Mono",       // sayısal değerler (tabular)
-        "OD.CountPill"        // kuyruk sayacı
+        "OD.Panel", "OD.Button.Primary", "OD.Button.Ghost", "OD.Chip",
+        "OD.TextBox", "OD.Text.Micro", "OD.Text.Mono", "OD.CountPill",
+        // Faz 4b: DarkControls'un örtük stillerinin keyed karşılıkları.
+        "OD.ListBoxItem", "OD.ListBox", "OD.PasswordBox", "OD.CheckBox",
+        "OD.ShortcutCapture"
     ];
 
     private static readonly string[] Faz1Metrics =
