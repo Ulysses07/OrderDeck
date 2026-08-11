@@ -98,4 +98,4 @@ Privacy sayfasında istenen şu maddeler **mutlaka** olmalı (silme!):
 
 ## Tasarım sistemi
 
-Renkler `app/globals.css`'te `@theme` bloğunda tanımlı. Desktop app `OrderDeck.App/Themes/DarkControls.xaml`'daki paletle uyumlu (marka tutarlılığı). Yeni renk eklerken oradan da senkronize tut.
+Renkler `app/globals.css`'te `@theme` bloğunda tanımlı. Desktop app `OrderDeck.App/Themes/Colors.xaml`'daki paletle uyumlu (marka tutarlılığı). Yeni renk eklerken oradan da senkronize tut.

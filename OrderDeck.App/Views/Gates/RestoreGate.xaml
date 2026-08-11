@@ -36,6 +36,7 @@
             </StackPanel>
 
             <ListBox x:Name="BackupList" Grid.Row="1"
+                     Style="{StaticResource OD.ListBox}"
                      MaxHeight="{StaticResource OD.Layout.GateListMaxHeight}"
                      Margin="{StaticResource OD.Pad.Top7}"
                      ItemsSource="{Binding AvailableBackups}"

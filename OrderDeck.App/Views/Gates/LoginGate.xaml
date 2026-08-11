@@ -49,21 +49,12 @@
                 </Viewbox>
             </Grid>
 
-            <!-- PasswordBox'ın henüz tokenize edilmiş bir karşılığı yok; bu
-                 ekrandaki üç kutu (aşağıdaki ve Kayıt modundaki ikisi) Faz 4b'ye
-                 kadar DarkControls.xaml'ın örtük stiline yaslanıyor. Görünür
-                 sonucu şu: hemen üstteki e-posta kutusu OD.TextBox — Surface2
-                 zemin, OD.Radius.Sm yuvarlatma, odakta KIRMIZI OD.Brush.Accent
-                 kenarlık. Şifre kutusu ise farklı zemin (OD.Bg.Input), kendi
-                 şablonu olmadığı için yuvarlatılmamış köşe ve odakta MAVİ
-                 OD.Border.Focus kenarlığı alıyor; yan yana duran iki alan bu
-                 yüzden eşleşmiyor. Buraya ayrı bir stil yazmak işi ikiye
-                 bölerdi: DarkControls.xaml Faz 4b'de silinirken tokenize
-                 PasswordBox'la birlikte tek yerden çözülecek. -->
             <TextBlock Text="Şifre" Style="{StaticResource OD.Text.Label}"
                        Margin="{StaticResource OD.Pad.Bottom2}"/>
             <Grid Margin="{StaticResource OD.Pad.Bottom4}">
-                <PasswordBox x:Name="LoginPassword" PasswordChanged="OnLoginPasswordChanged"
+                <PasswordBox x:Name="LoginPassword"
+                             Style="{StaticResource OD.PasswordBox}"
+                             PasswordChanged="OnLoginPasswordChanged"
                              Padding="{StaticResource OD.Pad.InputWithIcon}"/>
                 <Viewbox Width="{StaticResource OD.Icon.Md}" Height="{StaticResource OD.Icon.Md}"
                          HorizontalAlignment="Left" Margin="{StaticResource OD.Pad.Left4}"
@@ -98,16 +89,18 @@
             <TextBox Style="{StaticResource OD.TextBox}" Margin="{StaticResource OD.Pad.Bottom4}"
                      Text="{Binding Email, UpdateSourceTrigger=PropertyChanged}"/>
 
-            <!-- Aşağıdaki iki kutu da örtük DarkControls.xaml stilinde; aynı
-                 gerekçe Giriş modundaki şifre alanının üstünde yazıyor. -->
             <TextBlock Text="Şifre (en az 8 karakter)" Style="{StaticResource OD.Text.Label}"
                        Margin="{StaticResource OD.Pad.Bottom2}"/>
-            <PasswordBox x:Name="RegisterPassword" Margin="{StaticResource OD.Pad.Bottom4}"
+            <PasswordBox x:Name="RegisterPassword"
+                         Style="{StaticResource OD.PasswordBox}"
+                         Margin="{StaticResource OD.Pad.Bottom4}"
                          PasswordChanged="OnRegisterPasswordChanged"/>
 
             <TextBlock Text="Şifre tekrar" Style="{StaticResource OD.Text.Label}"
                        Margin="{StaticResource OD.Pad.Bottom2}"/>
-            <PasswordBox x:Name="RegisterPasswordConfirm" Margin="{StaticResource OD.Pad.Bottom4}"
+            <PasswordBox x:Name="RegisterPasswordConfirm"
+                         Style="{StaticResource OD.PasswordBox}"
+                         Margin="{StaticResource OD.Pad.Bottom4}"
                          PasswordChanged="OnRegisterPasswordConfirmChanged"/>
 
             <Button Content="Kayıt ol" Command="{Binding SubmitRegisterCommand}"
@@ -143,10 +136,9 @@
              MaxHeight (OD.Layout.GateListMaxHeight) ile sınırlanıp taşarsa
              kaydırıcıya bırakılıyor, düğme yine her zaman görünür.
 
-             ListBox/ListBoxItem'ın henüz tokenize edilmiş bir karşılığı yok;
-             bu tek kullanım Faz 4b'ye kadar DarkControls.xaml'ın örtük stiline
-             yaslanıyor. Background="Transparent" BorderThickness="0" kasıtlı:
-             örtük stilin kendi çerçevesi gate zemininde bir kutu gibi okunuyordu. -->
+             Liste Faz 4b'de keyed OD.ListBox'a bağlandı; o stil zaten şeffaf
+             ve çerçevesiz, çünkü eski örtük stilin kendi çerçevesi gate
+             zemininde bir kutu gibi okunuyordu. -->
         <Grid Grid.Row="1" Margin="{StaticResource OD.Pad.Top7}"
               Visibility="{Binding IsLicenseSelectionMode, Converter={StaticResource BoolToVisibleConverter}}">
             <Grid.RowDefinitions>
@@ -160,10 +152,10 @@
                        Margin="{StaticResource OD.Pad.Bottom4}"/>
 
             <ListBox Grid.Row="1"
+                     Style="{StaticResource OD.ListBox}"
                      MaxHeight="{StaticResource OD.Layout.GateListMaxHeight}"
                      ItemsSource="{Binding Licenses}"
                      SelectedItem="{Binding Selected}"
-                     Background="Transparent" BorderThickness="0"
                      ScrollViewer.VerticalScrollBarVisibility="Auto">
                 <ListBox.ItemTemplate>
                     <DataTemplate>

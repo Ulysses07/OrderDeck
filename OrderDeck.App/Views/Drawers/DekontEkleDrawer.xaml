@@ -30,6 +30,7 @@
                      doldurduğu için en üstte. Kesikli değil düz kenarlık —
                      çekmecede sürükle-bırak yok, tıklanacak bir kart. -->
                 <Button Click="OnPickPdf"
+                        Style="{StaticResource OD.Button.Ghost}"
                         HorizontalAlignment="Stretch"
                         Background="Transparent" BorderThickness="0"
                         Cursor="Hand"
@@ -116,7 +117,8 @@
 
                 <TextBlock Text="PLATFORM" Style="{StaticResource OD.Text.Micro}"
                            Margin="{StaticResource OD.Pad.Top5}"/>
-                <ComboBox SelectedValue="{Binding CustomerPlatform}"
+                <ComboBox Style="{StaticResource OD.ComboBox}"
+                          SelectedValue="{Binding CustomerPlatform}"
                           SelectedValuePath="Content"
                           ToolTip="Müşterinin yayın platformu — kargo eşleştirme için">
                     <ComboBoxItem Content=""/>

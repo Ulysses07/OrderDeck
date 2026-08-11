@@ -112,14 +112,14 @@
   <!-- Bilinmeyen platform (ör. yeni bir köprü kaynağı): ikon yok, nötr metin.
        Marka rengi/kısaltması uydurulmaz. -->
   <DataTemplate x:Key="OD.PlatformChip.Unknown">
-    <!-- DynamicResource: bu sözlük DarkControls.xaml'den ayrı merge edildiği
-         için kardeş sözlükteki fırçalar parse anında StaticResource ile
+    <!-- DynamicResource: bu sözlük Base.xaml'den ayrı merge edildiği için
+         kardeş sözlükteki fırçalar parse anında StaticResource ile
          çözülemez. -->
-    <Border CornerRadius="6" Background="{DynamicResource OD.Bg.Elevated}"
+    <Border CornerRadius="6" Background="{DynamicResource OD.Brush.Surface2}"
             Padding="6,1" HorizontalAlignment="Center" VerticalAlignment="Center">
       <TextBlock Text="{Binding Platform}" FontSize="10" FontWeight="Bold"
                  FontFamily="Consolas" TextTrimming="CharacterEllipsis"
-                 Foreground="{DynamicResource OD.Fg.Secondary}"/>
+                 Foreground="{DynamicResource OD.Brush.TextDim}"/>
     </Border>
   </DataTemplate>
 </ResourceDictionary>

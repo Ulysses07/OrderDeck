@@ -16,7 +16,8 @@ namespace OrderDeck.Tests.App;
 public class ThemeMergeTests
 {
     private static readonly string[] NewDictionaries =
-        ["Colors.xaml", "Metrics.xaml", "Motion.xaml", "Icons.xaml", "Controls.xaml"];
+        ["Colors.xaml", "Metrics.xaml", "Motion.xaml", "Icons.xaml",
+         "Base.xaml", "Controls.xaml"];
 
     // GiveawayTheme.xaml eskiden burada bir istisnaydı (kendi içinde
     // SettingsTheme'i "/" ile merge ettiği için test sürecinde tek başına
@@ -24,8 +25,9 @@ public class ThemeMergeTests
     // dönüşünce sözlük de silindi; istisna kalmadı. SettingsTheme.xaml de
     // Faz 3b'de gitti: tek tüketicisi olan Ayarlar penceresi sayfaya inince
     // "yalnız bu pencerede geçerli stil" numarasına gerek kalmadı.
+    // DarkControls.xaml Faz 4b'de silindi; yerini NewDictionaries'e taşınan Base.xaml aldı.
     private static readonly string[] ExistingDictionaries =
-        ["DarkControls.xaml", "PlatformIcons.xaml"];
+        ["PlatformIcons.xaml"];
 
     [Fact]
     public void New_dictionaries_do_not_collide_with_existing_ones()
@@ -63,8 +65,11 @@ public class ThemeMergeTests
             Assert.NotNull(app.Resources["OD.Path.History"]);
 
             // Eski sözlükler hâlâ çözülüyor (regresyon).
-            Assert.NotNull(app.Resources["OD.Bg.Window"]);
             Assert.NotNull(app.Resources["OD.PlatformIcon.YouTube"]);
+
+            // Base.xaml yüklendi: ToolTip örtük stili mevcutsa sözlük çalışıyor demektir.
+            Assert.IsType<Style>(
+                Application.Current.Resources[typeof(System.Windows.Controls.ToolTip)]);
         });
 
         Assert.Null(error);

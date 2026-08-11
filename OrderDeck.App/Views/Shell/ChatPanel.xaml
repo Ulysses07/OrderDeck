@@ -49,6 +49,7 @@
             <!-- ── Liste ────────────────────────────────────────────────── -->
             <ListBox Grid.Row="1"
                      x:Name="ChatList"
+                     Style="{StaticResource OD.ListBox}"
                      ItemsSource="{Binding ChatView}"
                      MouseDoubleClick="ChatList_OnDoubleClick"
                      PreviewKeyDown="ChatList_OnPreviewKeyDown"

@@ -43,6 +43,7 @@
                  (aşağıdaki yorumlara bak). -->
             <ListBox Grid.Row="1"
                      x:Name="QueueList"
+                     Style="{StaticResource OD.ListBox}"
                      ItemsSource="{Binding PrintQueue}"
                      SelectedItem="{Binding SelectedQueueItem, Mode=TwoWay}"
                      SelectionMode="Extended"
@@ -101,6 +102,7 @@
                             <Button Grid.Column="3"
                                     Margin="8,0,0,0"
                                     Padding="8,2"
+                                    Style="{StaticResource OD.Button.Secondary}"
                                     FontSize="{StaticResource OD.Font.F0}"
                                     MinWidth="60"
                                     Content="{Binding BackupCount, Converter={StaticResource BackupChipConverter}}"

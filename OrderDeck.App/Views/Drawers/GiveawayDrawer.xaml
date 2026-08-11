@@ -47,7 +47,8 @@
 
                 <TextBlock Text="SÜRE" Style="{StaticResource OD.Text.Micro}"
                            Margin="{StaticResource OD.Pad.Top5}"/>
-                <ComboBox ItemsSource="{Binding DurationOptions}"
+                <ComboBox Style="{StaticResource OD.ComboBox}"
+                          ItemsSource="{Binding DurationOptions}"
                           SelectedItem="{Binding SelectedDuration}"
                           DisplayMemberPath="Label"/>
 
@@ -71,7 +72,8 @@
 
                 <TextBlock Text="PLATFORM FİLTRESİ" Style="{StaticResource OD.Text.Micro}"
                            Margin="{StaticResource OD.Pad.Top5}"/>
-                <ComboBox ItemsSource="{Binding PlatformOptions}"
+                <ComboBox Style="{StaticResource OD.ComboBox}"
+                          ItemsSource="{Binding PlatformOptions}"
                           SelectedItem="{Binding SelectedPlatform}"
                           DisplayMemberPath="Label"/>
 
@@ -85,6 +87,7 @@
                 <TextBlock Text="ANİMASYON" Style="{StaticResource OD.Text.Micro}"
                            Margin="{StaticResource OD.Pad.Top5}"/>
                 <ComboBox x:Name="AnimCombo"
+                          Style="{StaticResource OD.ComboBox}"
                           ItemsSource="{Binding AvailableAnimations}"
                           SelectedValuePath="Id" DisplayMemberPath="Name"
                           SelectedValue="{Binding SelectedAnimationId,
@@ -117,6 +120,7 @@
                            Text="Gerçek çekiliş OBS yayın katmanında döner."/>
 
                 <CheckBox Content="Önceki kazananları dahil etme"
+                          Style="{StaticResource OD.CheckBox}"
                           IsChecked="{Binding PreventRewinning}"
                           Margin="{StaticResource OD.Pad.Top5}"/>
                 <TextBlock Style="{StaticResource OD.Text.Micro}"

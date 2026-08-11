@@ -15,16 +15,14 @@
                      Metrics'ten sonra. Emoji yerine Path: spec §10 "emoji
                      ikon 0". -->
                 <ResourceDictionary Source="Themes/Icons.xaml"/>
-                <!-- Bileşen stilleri: token'lara BAĞIMLI, bu yüzden üç token
-                     sözlüğünden SONRA merge edilmeli. -->
+                <!-- XAML'den erişilemeyen kontrollerin örtük stilleri
+                     (ScrollBar, ToolTip, ContextMenu, MenuItem, Separator,
+                     Window). Token'lara bağımlı → onlardan SONRA. -->
+                <ResourceDictionary Source="Themes/Base.xaml"/>
+                <!-- Bileşen stilleri: token'lara BAĞIMLI, bu yüzden token
+                     sözlüklerinden SONRA merge edilmeli. Base'ten de sonra:
+                     keyed stiller örtük olanı yenebilsin. -->
                 <ResourceDictionary Source="Themes/Controls.xaml"/>
-
-                <!-- Implicit dark-theme styles for unstyled TextBox / ComboBox /
-                     Label / GroupBox / DataGrid headers / etc. Closes the
-                     "white text on white background" UI bug across dialogs.
-                     Token katmanına devrediliyor: view'lar Faz 1-3'te
-                     dönüştükçe küçülecek, Faz 4'te silinecek. -->
-                <ResourceDictionary Source="Themes/DarkControls.xaml"/>
                 <!-- Sohbet listesindeki platform rozetleri: her platformun
                      resmi marka ikonu. Marka rehberleri kısaltma + marka
                      rengi taklidine izin vermiyor (bkz. dosya başı notu). -->
