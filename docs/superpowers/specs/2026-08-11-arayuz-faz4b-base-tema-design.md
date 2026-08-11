@@ -46,10 +46,18 @@ taranarak (özellik-eleman etiketleri hariç tutularak) bulundu:
 | `DataGrid` | 4 | 4 | 0 | 0 |
 | **Toplam stilsiz** | | | **128** | |
 
-Bu 128'in yalnız **16'sı** iş çıkarıyor (dökümü aşağıda): 72 `TextBlock`
+Bu 128'in yalnız bir avucu iş çıkarıyor (dökümü aşağıda): 72 `TextBlock`
 mirasla çözülüyor, 21'i (`MenuItem`/`ContextMenu`/`Separator`) örtük kalıyor,
 15'i (`ComboBoxItem` + `TabItem`) ebeveyninin `ItemContainerStyle`
 setter'ından geliyor, 4'ü görünümün kendi yerel örtük stiliyle kapsanıyor.
+
+> Düzeltme (plan yazımında yeniden ölçüldü): yukarıdaki tarama yalnız
+> `OrderDeck.App/Views/**` altını gördüğü ve nitelik değerinin içindeki `>`
+> karakterinde eleman eşleşmesini kaçırdığı için eksikti. Tüm `OrderDeck.App`
+> (Themes hariç) tarandığında **iş çıkaran kullanım 20**: `Button` 4
+> (`Controls/AnimationPickerControl.xaml` `Views/` dışında kalmıştı),
+> `ListBox` 6 (`FacebookPagePickerDrawer` kaçmıştı) ve
+> `controls:ShortcutCaptureButton` 1. Geçerli döküm aşağıdaki tablodur.
 
 `DarkControls.xaml`'in 17 renk token'ına **dışarıdan yalnız 2 atıf** var
 (`PlatformIcons.xaml:118,122`); ayrıca `OD.Icon.Gift` 2 yerde
@@ -179,18 +187,27 @@ bilinenler"). İkisi de kalıcı ayar değil, o an yapılacak işlemin seçeneğ
 `OD.Toggle` kendi notunda (Controls.xaml:991) "ayarlardaki 12 açık/kapalı alan"
 için tanımlı — anahtar burada anlamı yanlış verir. `OD.Toggle` ayarlarda kalır.
 
-**Açık stil bağlanacak 16 kullanım.** Ölçümün ham "128 stilsiz" sayısı iki
+**Açık stil bağlanacak 20 kullanım.** Ölçümün ham "128 stilsiz" sayısı iki
 mekanizmayı görmüyor: (a) görünümün kendi `Resources`'ında tanımlı **yerel
 örtük stil**, (b) ebeveynin **`ItemContainerStyle`** setter'ı. İkisi düşülünce
 gerçek iş şu:
 
 | Kontrol | Adet | Bağlanacağı stil | Yer |
 |---|---:|---|---|
-| `ListBox` | 5 | `OD.ListBox` (yeni) | `CustomerSearchDrawer` 136, `LoginGate` 162, `RestoreGate` 38, `ChatPanel` 50, `PrintQueuePanel` 44 |
+| `ListBox` | 6 | `OD.ListBox` (yeni) | `CustomerSearchDrawer` 136, `FacebookPagePickerDrawer` 49, `LoginGate` 162, `RestoreGate` 38, `ChatPanel` 50, `PrintQueuePanel` 44 |
 | `ComboBox` | 4 | `OD.ComboBox` (var) | `DekontEkleDrawer` 119, `GiveawayDrawer` 50, 74, 87 |
+| `Button` | 4 | `OD.Button.*` (var) | `AnimationPickerControl` 72, 75, `DekontEkleDrawer` 32, `PrintQueuePanel` 101 |
 | `PasswordBox` | 3 | `OD.PasswordBox` (yeni) | `LoginGate` 66, 105, 110 |
 | `CheckBox` | 2 | `OD.CheckBox` (yeni) | `GiveawayDrawer` 119, `PeriodReportPage` 45 |
-| `Button` | 2 | `OD.Button.*` (var) | `DekontEkleDrawer` 32, `PrintQueuePanel` 101 |
+| `controls:ShortcutCaptureButton` | 1 | `OD.ShortcutCapture` (yeni) | `SettingsPage` 657 |
+
+`OD.ShortcutCapture` yeni bir gereksinim: `DarkControls.xaml:721`'deki stil
+`BasedOn="{StaticResource {x:Type Button}}"` ile silinecek örtük `Button`
+stiline yaslanıyor. Yerine `Controls.xaml`'de
+`TargetType="controls:ShortcutCaptureButton"`,
+`BasedOn="{StaticResource OD.Button.Secondary}"`, tek fark
+`FontFamily="{StaticResource OD.Font.Mono}"` olan keyed bir stil gelir ve
+kullanım yerinde açıkça bağlanır.
 
 **İş istemeyenler ve nedenleri:**
 
@@ -230,21 +247,28 @@ Not: `RestoreGate` 131'de yerel örtük `Button` stili var — Faz 4a'da eklenen
 
 ### Risk A — stil bağlanmamış (ölçülebilir)
 
-1. **Yeni kalıcı bekçi testi.** `Views/` altındaki her `.xaml` taranır;
-   izlenen kontrol tiplerinden (`ListBox`, `PasswordBox`, `CheckBox`,
-   `ComboBox`, `TabItem`, `TextBox`, `Button`) stilsiz bir kullanım kalırsa
-   test kırmızı. Muafiyet listesi `Base.xaml`'in içeriğiyle **aynı gerekçeyi**
-   taşır (`TextBlock`, `MenuItem`, `ContextMenu`, `Separator`). Tek seferlik
-   bir kontrol değil, kalıcı bekçi: ileride eklenen stilsiz bir kontrolü de
-   yakalar.
+1. **Yeni kalıcı bekçi testi.** `OrderDeck.App` altındaki her `.xaml`
+   (`Themes/` ve `App.xaml` hariç) taranır; izlenen kontrol tiplerinden
+   (`Button`, `TextBox`, `PasswordBox`, `CheckBox`, `RadioButton`, `ComboBox`,
+   `ListBox`, `TabControl`, `DataGrid`, `Label`, `GroupBox`,
+   `controls:ShortcutCaptureButton`) stilsiz bir kullanım kalırsa test
+   kırmızı. Tek seferlik bir kontrol değil, kalıcı bekçi: ileride eklenen
+   stilsiz bir kontrolü de yakalar.
 
-   **"Stilli" sayılmanın üç yolu var, testin üçünü de bilmesi şart** — yoksa
-   bugünün kodunda bile yanlış kırmızı verir:
-   1. Öğenin kendi `Style=` özniteliği (veya `<X.Style>` eleman sözdizimi).
+   **"Stilli" sayılmanın üç yolu var, testin üçünü de hesaba katması şart** —
+   yoksa bugünün kodunda bile yanlış kırmızı verir:
+   1. Öğenin kendi `Style=` özniteliği (veya `<X.Style>` eleman sözdizimi)
+      → test doğrudan bakar.
    2. Aynı dosyada tanımlı **yerel örtük stil** (`<Style TargetType="X">`,
-      `x:Key` yok) — 5 yerde kullanılıyor.
-   3. Ebeveynin **`ItemContainerStyle`** setter'ı — `TabItem` ve
-      `ComboBoxItem` bugün tamamen buradan geliyor.
+      `x:Key` yok) — 5 yerde kullanılıyor → test dosyanın tamamını okuyup
+      muaf tutar.
+   3. Ebeveynin **`ItemContainerStyle`** setter'ı — `TabItem`,
+      `ComboBoxItem`, `ListBoxItem`, `MenuItem` bugün tamamen buradan
+      geliyor → bu **kapsayıcı öğe tipleri izleme listesine hiç alınmaz**.
+      Ebeveyn-çocuk ilişkisini metin taramasıyla çözmek kırılgan olurdu;
+      stilleri meşru olarak dışarıdan geldiği için listede yerleri yok.
+      `TextBlock` de aynı şekilde dışarıda: `Foreground` miras alınan bir
+      özellik ve `MainWindow.xaml:10` onu veriyor.
    Dosya düzeyinde granülerlik yeter: bir görünüm kendi `TextBox`'larını
    bilerek yerel stille biçimlendiriyorsa, aradığımız hata o değil.
 2. **`ThemeMergeTests.cs:28` güncellenir** — `ExistingDictionaries`
