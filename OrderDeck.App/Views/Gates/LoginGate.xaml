@@ -136,10 +136,9 @@
              MaxHeight (OD.Layout.GateListMaxHeight) ile sınırlanıp taşarsa
              kaydırıcıya bırakılıyor, düğme yine her zaman görünür.
 
-             ListBox/ListBoxItem'ın henüz tokenize edilmiş bir karşılığı yok;
-             bu tek kullanım Faz 4b'ye kadar DarkControls.xaml'ın örtük stiline
-             yaslanıyor. Background="Transparent" BorderThickness="0" kasıtlı:
-             örtük stilin kendi çerçevesi gate zemininde bir kutu gibi okunuyordu. -->
+             Liste Faz 4b'de keyed OD.ListBox'a bağlandı; o stil zaten şeffaf
+             ve çerçevesiz, çünkü eski örtük stilin kendi çerçevesi gate
+             zemininde bir kutu gibi okunuyordu. -->
         <Grid Grid.Row="1" Margin="{StaticResource OD.Pad.Top7}"
               Visibility="{Binding IsLicenseSelectionMode, Converter={StaticResource BoolToVisibleConverter}}">
             <Grid.RowDefinitions>
@@ -157,7 +156,6 @@
                      MaxHeight="{StaticResource OD.Layout.GateListMaxHeight}"
                      ItemsSource="{Binding Licenses}"
                      SelectedItem="{Binding Selected}"
-                     Background="Transparent" BorderThickness="0"
                      ScrollViewer.VerticalScrollBarVisibility="Auto">
                 <ListBox.ItemTemplate>
                     <DataTemplate>

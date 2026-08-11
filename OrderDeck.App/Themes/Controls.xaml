@@ -270,8 +270,8 @@
 
     <!-- ══ Tarih seçici ═══════════════════════════════════════════════════
          Faz 2b (2026-08-10), DekontEkleDrawer'ın "ÖDEME TARİHİ" alanı için.
-         DarkControls.xaml uygulamadaki ~20 yerleşik kontrolü karartıyor ama
-         DatePicker ile Calendar o listede HİÇ yoktu: koyu formun ortasında
+         O tarihte yerleşik kontrolleri karartan eski tema sözlüğünde
+         DatePicker ile Calendar HİÇ yoktu: koyu formun ortasında
          bembeyaz bir kutu ve açık renkli bir takvim çıkıyordu. Pencere
          sürümünde de öyleydi — yani regresyon değil, dönüşümle görünür hale
          gelen eski bir açık.
@@ -406,8 +406,8 @@
                         </DataTemplate>
                         <!-- Başlık şeridinin üç düğmesi (önceki / ay-yıl / sonraki).
                              Örtük stil: şablon içinde kaldığı için yalnız bu üçünü
-                             yakalıyor, DarkControls'ün genel Button stilini burada
-                             yeniyor. -->
+                             yakalıyor. Calendar bu düğmeleri kodla üretiyor,
+                             yani kullanım yerinde Style= yazılamıyor. -->
                         <Style TargetType="Button">
                             <Setter Property="Background" Value="Transparent"/>
                             <Setter Property="Foreground" Value="{StaticResource OD.Brush.TextDim}"/>
@@ -659,10 +659,8 @@
          Dört sayfa tüketiyor: Kara Liste, Yayın Geçmişi, Yayın Raporu,
          Dönem Raporu. Spec §9 gereği stil ancak şimdi yazıldı.
 
-         DarkControls'taki örtük DataGrid* stilleri eski token setine
-         (OD.Bg.*, OD.Fg.*) bağlı; buradakiler yeni palete bağlı ve
-         x:Key'li, yani sayfalar dönüştükçe eskisi kendiliğinden
-         kullanımdan düşüyor (Faz 4'te DarkControls silinecek).
+         Örtük değil x:Key'li: ızgarayı kullanan her sayfa stili açıkça
+         bağlıyor (Faz 4b'de eski örtük DataGrid* stilleri silindi).
 
          Zebra şerit YOK. Pencere sürümünde AlternatingRowBackground
          vardı; satır zeminini hem zebra hem de üzerine-gelme durumu
@@ -990,8 +988,8 @@
     </Style>
 
     <!-- ══ Kaydırgaç ══════════════════════════════════════════════════════
-         Tek tüketici: çekiliş animasyonu ses seviyesi. DarkControls'te
-         Slider HİÇ yoktu — koyu sayfanın ortasında sistem temasının açık
+         Tek tüketici: çekiliş animasyonu ses seviyesi. Eski tema
+         sözlüğünde Slider HİÇ yoktu — koyu sayfanın ortasında sistem temasının açık
          gri rayı çıkıyordu. Pencere sürümünde de öyleydi (SettingsTheme
          de yazmamış), yani dönüşümle görünür olan eski bir açık. -->
     <Style x:Key="OD.Slider" TargetType="Slider">
@@ -1119,8 +1117,7 @@
     </Style>
 
     <!-- Belirsiz ilerleme çubuğu (BootGate "Hazırlanıyor", LoginGate "meşgul").
-         Varsayılan Aero şablonu YEŞİL çizer ve kapalı paletin dışında kalır;
-         ayrıca DarkControls'te de örtük karşılığı yok.
+         Varsayılan Aero şablonu YEŞİL çizer ve kapalı paletin dışında kalır.
 
          Bu çubuk YALNIZ belirsiz (IsIndeterminate) modu destekler; determinate
          yol kasıtlı olarak uygulanmadı — PART_Indicator'a genişlik verecek bir
@@ -1176,7 +1173,7 @@
         </Setter>
     </Style>
 
-    <!-- ══ Faz 4b — DarkControls'un örtük stillerinin keyed karşılıkları ═══
+    <!-- ══ Faz 4b — silinen örtük stillerin keyed karşılıkları ═════════════
          Örtük DEĞİL keyed: kullanım yerinde açıkça bağlanıyorlar ki yeni bir
          liste/girdi eklendiğinde tek görünüme çakılmasın. Bekçi:
          OrderDeck.Tests/App/UnstyledControlGuardTests.cs -->
