@@ -75,4 +75,28 @@ public class ControlsThemeTests
 
         Assert.Null(error);
     }
+
+    [Fact]
+    public void Controls_defines_the_progress_bar_style()
+    {
+        // BootGate ve LoginGate belirsiz çubuk kullanıyor. Anahtar yoksa
+        // Windows'un varsayılan YEŞİL Aero çubuğu çizilir — kapalı palet dışı.
+        var error = ThemeTestHost.Run(dict =>
+        {
+            var style = Assert.IsType<Style>(dict["OD.ProgressBar"]);
+            Assert.Equal(typeof(System.Windows.Controls.ProgressBar), style.TargetType);
+        }, "Controls.xaml");
+
+        Assert.Null(error);
+    }
+
+    [Fact]
+    public void Metrics_defines_the_progress_height()
+    {
+        var error = ThemeTestHost.Run(
+            dict => Assert.True(Assert.IsType<double>(dict["OD.Layout.ProgressHeight"]) > 0),
+            "Metrics.xaml");
+
+        Assert.Null(error);
+    }
 }

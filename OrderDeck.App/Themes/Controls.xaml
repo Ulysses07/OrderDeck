@@ -1178,4 +1178,62 @@
             </Setter.Value>
         </Setter>
     </Style>
+
+    <!-- Belirsiz ilerleme çubuğu (BootGate "Hazırlanıyor", LoginGate "meşgul").
+         Varsayılan Aero şablonu YEŞİL çizer ve kapalı paletin dışında kalır;
+         ayrıca DarkControls'te de örtük karşılığı yok.
+
+         Bu çubuk YALNIZ belirsiz (IsIndeterminate) modu destekler; determinate
+         yol kasıtlı olarak uygulanmadı — PART_Indicator'a genişlik verecek bir
+         mekanizma şablona eklenmedi, yarım bırakılmış bir yol taşımak yerine
+         açıkça çıkarıldı.
+
+         Animasyon genişlikten bağımsızdır: Pulse tam genişlikte bir dikdörtgen,
+         ScaleTransform ile beşte birine küçültülmüş. RenderTransformOrigin
+         göreli (0-1) uzayda tanımlandığından origin'i -0.25→1.25 arasında
+         canlandırmak, sütun kaç piksel olursa olsun bloğu soldan çıkıp sağa
+         kaydırıyor — piksel sabiti yok. -->
+    <Style x:Key="OD.ProgressBar" TargetType="ProgressBar">
+        <Setter Property="Height" Value="{StaticResource OD.Layout.ProgressHeight}"/>
+        <Setter Property="Background" Value="{StaticResource OD.Brush.Surface2}"/>
+        <Setter Property="Foreground" Value="{StaticResource OD.Brush.Accent}"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ProgressBar">
+                    <Border x:Name="Track"
+                            Background="{TemplateBinding Background}"
+                            CornerRadius="{StaticResource OD.Radius.Full}"
+                            ClipToBounds="True">
+                        <Rectangle x:Name="Pulse"
+                                   Visibility="Collapsed"
+                                   Fill="{TemplateBinding Foreground}"
+                                   RenderTransformOrigin="-0.25,0.5">
+                            <Rectangle.RenderTransform>
+                                <ScaleTransform ScaleX="0.2"/>
+                            </Rectangle.RenderTransform>
+                        </Rectangle>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsIndeterminate" Value="True">
+                            <Setter TargetName="Pulse" Property="Visibility" Value="Visible"/>
+                            <Trigger.EnterActions>
+                                <BeginStoryboard x:Name="PulseLoop">
+                                    <Storyboard RepeatBehavior="Forever">
+                                        <PointAnimation Storyboard.TargetName="Pulse"
+                                                        Storyboard.TargetProperty="RenderTransformOrigin"
+                                                        From="-0.25,0.5" To="1.25,0.5"
+                                                        Duration="0:0:1.2"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <StopStoryboard BeginStoryboardName="PulseLoop"/>
+                            </Trigger.ExitActions>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
 </ResourceDictionary>

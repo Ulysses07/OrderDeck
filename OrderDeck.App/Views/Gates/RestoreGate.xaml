@@ -1,0 +1,171 @@
+<UserControl x:Class="OrderDeck.App.Views.Gates.RestoreGate"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:gates="clr-namespace:OrderDeck.App.Views.Gates">
+    <!-- RestoreDialog.xaml'in gate karşılığı. (O pencere Background'ı HİÇ
+         vermiyordu; DarkControls'teki `Style TargetType="{x:Type Window}"` de
+         örtük stil araması TAM tiple yapıldığı için RestoreDialog'a
+         uygulanmıyordu → zemin beyaz kalıyordu.)
+
+         Değişenler: takvim emojisi "Aylık" çipe döndü (spec §10: emoji ikon 0),
+         #25D366 / DarkBlue / Gray token'a döndü.
+
+         "Tamamlandı" durumu YENİ: eskiden pencere DialogResult=true ile
+         kapanıyor, App.xaml.cs MessageBox gösterip Shutdown() çağırıyordu —
+         yani operatörün uygulamayı elle yeniden açması gerekiyordu. -->
+    <Grid HorizontalAlignment="Center" VerticalAlignment="Center"
+          Width="{StaticResource OD.Layout.GateColumn}">
+
+        <!-- ── Seçim durumu ───────────────────────────────────────────── -->
+        <Grid x:Name="SelectionState"
+              Visibility="{Binding RestoreCompleted, Converter={StaticResource BoolToCollapsedConverter}}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <StackPanel Grid.Row="0">
+                <gates:GateBrand/>
+                <TextBlock Style="{StaticResource OD.Text.Hint}"
+                           TextWrapping="Wrap"
+                           TextAlignment="Center"
+                           Margin="{StaticResource OD.Pad.Top3}"
+                           Text="Bu bilgisayarda veri bulunamadı. Buluttaki yedeklerden birini geri yükleyebilirsin."/>
+            </StackPanel>
+
+            <ListBox x:Name="BackupList" Grid.Row="1"
+                     MaxHeight="{StaticResource OD.Layout.GateListMaxHeight}"
+                     Margin="{StaticResource OD.Pad.Top7}"
+                     ItemsSource="{Binding AvailableBackups}"
+                     SelectedItem="{Binding SelectedBackup}"
+                     Background="Transparent" BorderThickness="0"
+                     HorizontalContentAlignment="Stretch"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Margin="{StaticResource OD.Pad.2}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="{Binding CreatedAt, StringFormat='{}{0:dd MMM yyyy HH:mm}'}"
+                                           FontFamily="{StaticResource OD.Font.Sans}"
+                                           FontSize="{StaticResource OD.Font.F2}"
+                                           FontWeight="Bold"
+                                           Foreground="{StaticResource OD.Brush.Text}"/>
+                                <!-- Eski takvim işaretinin yerine metin çip.
+                                     Dolgu OD.Pad.2 (dört yandan 4): OD.Pad.X2
+                                     yatay-yalnız bir MARGIN token'ı, dolgu
+                                     olarak kullanılınca 11px etiket 1px'lik
+                                     kenarlığa dikey boşluksuz yapışıyordu.
+                                     Çip emsali OD.CountPill de dört yanlı
+                                     dolgu kullanıyor. -->
+                                <Border Margin="{StaticResource OD.Pad.Left4}"
+                                        Padding="{StaticResource OD.Pad.2}"
+                                        CornerRadius="{StaticResource OD.Radius.Xs}"
+                                        Background="{StaticResource OD.Brush.AmberTint}"
+                                        BorderBrush="{StaticResource OD.Brush.AmberTintBorder}"
+                                        BorderThickness="1"
+                                        VerticalAlignment="Center"
+                                        Visibility="{Binding IsMonthlyMilestone, Converter={StaticResource BoolToVisibleConverter}}">
+                                    <!-- OD.Text.Micro'nun kendi rengi gri
+                                         (OD.Brush.TextMute); amber zeminli her
+                                         yüzey (ShellBanners, SettingsPage,
+                                         DekontEkleDrawer) amber metinle
+                                         eşleşiyor, çip de öyle olsun. -->
+                                    <TextBlock Text="Aylık" Style="{StaticResource OD.Text.Micro}"
+                                               Foreground="{StaticResource OD.Brush.Amber}"/>
+                                </Border>
+                            </StackPanel>
+                            <TextBlock Style="{StaticResource OD.Text.Hint}"
+                                       Margin="{StaticResource OD.Pad.Top3}">
+                                <Run Text="{Binding SizeBytes, StringFormat='{}{0:N0} bayt', Mode=OneWay}"/>
+                                <!-- Ayraç makine adının StringFormat'ına gömülü,
+                                     null'ı da TargetNullValue siliyor: MachineName
+                                     null olabiliyor ve WPF StringFormat'ı null
+                                     değere DE uyguluyor (ölçüldü: yalnız
+                                     StringFormat ile sonuç "· " kalıyordu).
+                                     TargetNullValue önce devreye girip boş metin
+                                     verdiği için ayraç makine adıyla birlikte
+                                     kayboluyor — yoksa "… bayt ·" görünürdü. -->
+                                <Run Text="{Binding MachineName, StringFormat='· {0}', TargetNullValue='', Mode=OneWay}"/>
+                            </TextBlock>
+                        </StackPanel>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+
+            <!-- Mesaj yokken satır tamamen kalkıyor (silinen RestoreDialog'da
+                 da öyleydi): dış grid VerticalAlignment="Center" ve bütün
+                 satırlar Auto olduğu için boş bir satır + Top4 margin formu
+                 kalıcı olarak yukarı kaydırırdı. -->
+            <TextBlock Grid.Row="2" Text="{Binding StatusMessage}"
+                       Style="{StaticResource OD.Text.Hint}"
+                       Foreground="{StaticResource OD.Brush.Info}"
+                       TextWrapping="Wrap"
+                       Margin="{StaticResource OD.Pad.Top4}"
+                       Visibility="{Binding StatusMessage, Converter={StaticResource NullToCollapsedConverter}}"/>
+
+            <StackPanel Grid.Row="3" Margin="{StaticResource OD.Pad.Top6}">
+                <Button Content="En son yedeği kullan"
+                        Command="{Binding RestoreLatestCommand}"
+                        Style="{StaticResource OD.Button.Primary}"
+                        IsDefault="True"/>
+                <Button Content="Seçileni geri yükle"
+                        Command="{Binding RestoreSelectedCommand}"
+                        Style="{StaticResource OD.Button.Secondary}"
+                        Margin="{StaticResource OD.Pad.Top3}"/>
+                <!-- VM'in SkipCommand'ı BİLEREK kullanılmıyor: kapanma kararı
+                     gate'in, VM'in değil (bkz. code-behind).
+
+                     Geri yükleme SÜRERKEN kapalı: gate kapanınca StartupFlow
+                     shell'i kurar, RestoreInternalAsync ise arka planda aynı
+                     DB dosyasını yazmaya devam eder. Silinen RestoreDialog'da
+                     da böyleydi ama o kod yolu üretimde hiç koşmadı
+                     (IsDatabaseMissingOrTiny hep false dönüyordu); ölçüm
+                     BootDatabaseState'e taşınınca yarış ilk kez gerçek oldu. -->
+                <Button Content="Atla, yeni başlat"
+                        HorizontalAlignment="Center"
+                        Margin="{StaticResource OD.Pad.Top4}"
+                        Click="OnSkip">
+                    <Button.Style>
+                        <Style TargetType="Button"
+                               BasedOn="{StaticResource OD.Button.Ghost}">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsBusy}" Value="True">
+                                    <Setter Property="IsEnabled" Value="False"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Button.Style>
+                </Button>
+            </StackPanel>
+        </Grid>
+
+        <!-- ── Tamamlandı durumu ──────────────────────────────────────── -->
+        <StackPanel x:Name="CompletedState"
+                    Visibility="{Binding RestoreCompleted, Converter={StaticResource BoolToVisibleConverter}}">
+            <gates:GateBrand/>
+            <TextBlock Text="Geri yükleme tamamlandı"
+                       HorizontalAlignment="Center"
+                       Margin="{StaticResource OD.Pad.Top7}"
+                       FontFamily="{StaticResource OD.Font.Display}"
+                       FontSize="{StaticResource OD.Font.F3}"
+                       Foreground="{StaticResource OD.Brush.Success}"/>
+            <TextBlock Style="{StaticResource OD.Text.Hint}"
+                       TextAlignment="Center" TextWrapping="Wrap"
+                       Margin="{StaticResource OD.Pad.Top3}"
+                       Text="Verilerin yerine kondu. OrderDeck'in yeniden başlaması gerekiyor."/>
+            <!-- IsDefault ikinci kez: bu view'da iki IsDefault düğme var ama
+                 çakışmıyorlar — AccessKeyManager adayları IsVisible/IsEnabled
+                 süzüyor, iki dal da birbirini dışlıyor (biri Visible'ken
+                 diğeri Collapsed). Gerekli, çünkü AppRootView odağı yalnız
+                 gate AÇILIRKEN taşıyor; "tamamlandı" durumuna geçiş sonradan
+                 olduğu için bu düğmenin başka klavye yolu kalmıyor. -->
+            <Button Content="Yeniden Başlat"
+                    Style="{StaticResource OD.Button.Primary}"
+                    Margin="{StaticResource OD.Pad.Top6}"
+                    IsDefault="True"
+                    Click="OnRestart"/>
+        </StackPanel>
+    </Grid>
+</UserControl>

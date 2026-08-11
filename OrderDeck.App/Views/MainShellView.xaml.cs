@@ -36,6 +36,20 @@ public partial class MainShellView : UserControl
 
     private void OnWindowPreviewKeyDown(object sender, KeyEventArgs e)
     {
+        // Gate açıkken bu handler'ın gördüğü kısayollar (ESC, Ctrl+K) susar.
+        // ShellHost.IsEnabled=false yalnız odak/tıklamayı keser; handler
+        // Window'a bağlı olduğu için ondan etkilenmiyor — ESC arkadaki
+        // çekmeceyi kapatırdı.
+        //
+        // Window.InputBindings'teki KeyBinding'ler (F-tuşları, Ctrl+Shift+E…)
+        // BU ERKEN DÖNÜŞTEN etkilenmiyor: aşağıdaki kod yalnız kendi işini
+        // atlıyor, KeyBinding eşleşmesi bu handler'dan sonra ayrıca koşuyor.
+        // e.Handled=true onları keserdi ama gate'in kendi metin kutularına
+        // tuş gitmesini de keserdi — bu yüzden susturma koleksiyonu boşaltarak
+        // yapılıyor: WpfStartupEnvironment.SilenceShortcutsWhileGateIsOpen.
+        if (App.Host?.Services.GetRequiredService<Services.Gates.AppGateStack>().IsOpen == true)
+            return;
+
         // Ctrl+K → ürün kodu kutusuna odaklan. ESC kontrolünden ÖNCE olmalı:
         // aşağıdaki erken dönüş Escape dışındaki her tuşu eler.
         if (e.Key == Key.K && (Keyboard.Modifiers & ModifierKeys.Control) != 0)

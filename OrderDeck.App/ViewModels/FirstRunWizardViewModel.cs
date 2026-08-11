@@ -16,7 +16,8 @@ namespace OrderDeck.App.ViewModels;
 /// <summary>
 /// Five-step setup wizard shown once on first launch after install:
 ///   1. Welcome
-///   2. License activation (skipped if license already Active)
+///   2. License activation (step is always shown; only the "activate"
+///      button hides when the license is already Active/Trial/OfflineGrace)
 ///   3. YouTube channel handle (optional)
 ///   4. Printer settings (optional, link to Settings dialog)
 ///   5. Chrome extension install (sideload guide + verify button)
@@ -107,11 +108,17 @@ public sealed partial class FirstRunWizardViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void ActivateLicense()
+    private async Task ActivateLicenseAsync()
     {
-        // Reuse the existing LoginDialog (already wired with all auth flows).
-        var loginDlg = _services.GetRequiredService<Views.LoginDialog>();
-        loginDlg.ShowDialog();
+        // Faz 4a: LoginDialog penceresi yok. Aynı LoginGate ekranı sihirbazın
+        // ÜSTÜNE yığılıyor; kapanınca yığın operatörü bıraktığı adıma geri
+        // bırakıyor (AppGateStack yığın olduğu için — spec §4.4).
+        //
+        // isStartupGate:false → çıkış düğmesi "Çıkış" değil "Vazgeç";
+        // vazgeçmek uygulamayı kapatmıyor, sihirbaza dönüyor.
+        var gates = _services.GetRequiredService<Services.Gates.IAppGateService>();
+        var loginVm = _services.GetRequiredService<LoginDialogViewModel>();
+        await gates.ShowAsync(g => Views.Gates.LoginGate.Create(g, loginVm, isStartupGate: false));
         UpdateLicenseStepStatus();
     }
 
@@ -237,9 +244,10 @@ public sealed partial class FirstRunWizardViewModel : ObservableObject
     private void SkipFirstRun()
     {
         // "Daha sonra" — operator skipped without completing. Do NOT set
-        // HasCompletedFirstRun so the wizard runs again next launch. They
-        // can still close the dialog (DialogResult will be false in the
-        // window code-behind, App.OnStartup checks for that and bails).
+        // HasCompletedFirstRun so the wizard runs again next launch.
+        // RequestClose kapatır; Faz 4a'dan beri karşılığı FirstRunGate'in
+        // gate.Close() çağrısı, sonucu okuyan kimse yok — StartupFlow
+        // ShowFirstRunAsync'in dönüşüne bakmadan sonraki adıma geçiyor.
         RequestClose?.Invoke(this, EventArgs.Empty);
     }
 }

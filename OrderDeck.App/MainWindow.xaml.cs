@@ -2,7 +2,6 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
-using OrderDeck.App.Shortcuts;
 using OrderDeck.App.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -21,10 +20,10 @@ public partial class MainWindow : Window
     private static extern int DwmSetWindowAttribute(
         IntPtr hwnd, int attr, ref int value, int size);
 
-    public MainWindow()
+    public MainWindow(Views.AppRootView root)
     {
         InitializeComponent();
-        Loaded += OnLoaded;
+        RootHost.Content = root;
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -38,14 +37,20 @@ public partial class MainWindow : Window
         DwmSetWindowAttribute(hwnd, DwmwaUseImmersiveDarkMode, ref on, sizeof(int));
     }
 
-    private void OnLoaded(object sender, RoutedEventArgs e)
-    {
-        var binder = App.Host.Services.GetRequiredService<ShortcutBinder>();
-        binder.Apply(this);
-    }
-
     protected override void OnClosing(CancelEventArgs e)
     {
+        // Shell kurulmadan kapatılıyorsa (gate ekranındayız) MainShellViewModel'i
+        // ÇÖZME: singleton olduğu için GetService onu KURAR — repo/servis
+        // zinciri ayağa kalkar, üstelik sorulan şeyin (aktif çekiliş) cevabı
+        // shell yokken zaten hep false. Pencere gate'lerden önce açıldığı için
+        // bu yol gerçek: operatör giriş ekranında X'e basabiliyor.
+        var root = RootHost.Content as Views.AppRootView;
+        if (root is null || !root.IsShellMounted)
+        {
+            base.OnClosing(e);
+            return;
+        }
+
         // If a giveaway is active, refuse the close and tell the user to finish/cancel it
         // first — the regular EndStream path has the same gate.
         var vm = App.Host.Services.GetService<MainShellViewModel>();

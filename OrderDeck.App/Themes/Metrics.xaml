@@ -56,15 +56,26 @@
   <Thickness x:Key="OD.Pad.Top4"    Left="0" Top="12" Right="0" Bottom="0"/>
   <Thickness x:Key="OD.Pad.Top5"    Left="0" Top="16" Right="0" Bottom="0"/>
   <Thickness x:Key="OD.Pad.Top6"    Left="0" Top="20" Right="0" Bottom="0"/>
+  <Thickness x:Key="OD.Pad.Top7"    Left="0" Top="24" Right="0" Bottom="0"/>
+  <Thickness x:Key="OD.Pad.Bottom2" Left="0" Top="0"  Right="0" Bottom="4"/>
   <Thickness x:Key="OD.Pad.Bottom3" Left="0" Top="0"  Right="0" Bottom="8"/>
+  <Thickness x:Key="OD.Pad.Bottom4" Left="0" Top="0"  Right="0" Bottom="12"/>
   <Thickness x:Key="OD.Pad.Bottom5" Left="0" Top="0"  Right="0" Bottom="16"/>
   <Thickness x:Key="OD.Pad.Left4"   Left="12" Top="0" Right="0" Bottom="0"/>
+  <Thickness x:Key="OD.Pad.Right4"  Left="0" Top="0"  Right="12" Bottom="0"/>
 
   <!-- Yatay-yalnız boşluklar. Yüksekliği sabit şeritlerde (üst bar 56px,
        içindeki birincil buton 46px) dikey margin içeriği kırpar; kırpma
        exception atmadığı için ancak ekranda fark edilir. -->
   <Thickness x:Key="OD.Pad.X2" Left="4"  Top="0" Right="4"  Bottom="0"/>
   <Thickness x:Key="OD.Pad.X5" Left="16" Top="0" Right="16" Bottom="0"/>
+
+  <!-- Sol kenarında ikon taşıyan input: sol dolgu ikona yer açıyor.
+       (Giriş ekranındaki e-posta ve şifre kutuları.)
+       34 = LoginGate'teki ikon yerleşiminden: OD.Pad.Left4 (12px) +
+       OD.Icon.Md (16px) + 6px boşluk. O iki token değişirse bu 34 yeniden
+       hesaplanmalı — token'ı doğrudan güncellemeden bırakma. -->
+  <Thickness x:Key="OD.Pad.InputWithIcon" Left="34" Top="8" Right="12" Bottom="8"/>
 
   <!-- Köşe yarıçapı: 5 basamak -->
   <CornerRadius x:Key="OD.Radius.Xs">4</CornerRadius>     <!-- çip, kod parçacığı -->
@@ -89,6 +100,7 @@
   <sys:Double x:Key="OD.Layout.DrawerWidth">400</sys:Double>    <!-- çekmece (sağ paneli örter) -->
   <sys:Double x:Key="OD.Layout.TopbarHeight">56</sys:Double>
   <sys:Double x:Key="OD.Layout.ButtonHeight">46</sys:Double>    <!-- birincil buton -->
+  <sys:Double x:Key="OD.Layout.ProgressHeight">3</sys:Double> <!-- belirsiz ilerleme çubuğu -->
   <!-- Yayın butonu iki durumda iki farklı metin taşıyor ("Yayın Başlat" /
        "Yayını Bitir"). İçeriğe göre ölçülürse buton durum değişince
        genişliğini oynatır ve yanındaki Çekiliş butonunu kaydırır; sabit
@@ -124,6 +136,15 @@
        İndirgeme dar ekranın çaresi olmalı, varsayılan hâl değil. -->
   <sys:Double x:Key="OD.Layout.AppStartWidth">1440</sys:Double>
   <sys:Double x:Key="OD.Layout.AppStartHeight">900</sys:Double>
+
+  <!-- Açılış durumları (gate'ler): tam ekranda ortalanan tek sütun.
+       440 seçildi çünkü bugünkü giriş penceresinin iç genişliği 420-2*28=364
+       idi ve dar geliyordu; 440 aynı hissi verip lisans listesine nefes
+       bırakıyor. Sihirbaz daha geniş, kendi ölçüsü var. -->
+  <sys:Double x:Key="OD.Layout.GateColumn">440</sys:Double>
+  <sys:Double x:Key="OD.Layout.GateColumnWide">760</sys:Double>  <!-- sihirbaz -->
+  <sys:Double x:Key="OD.Layout.GateBrandMark">48</sys:Double>
+  <sys:Double x:Key="OD.Layout.GateListMaxHeight">260</sys:Double>
 
   <!-- Faz 1'e özgü ölçüler. Mockup'ta CSS değişkeni olarak duruyorlar
        (h-pimg, h-q-min, w-col-*, w-user); WPF'te sabit sayı yazmamak

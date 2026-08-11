@@ -1,0 +1,313 @@
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using OrderDeck.App.Services.Gates;
+using OrderDeck.App.Startup;
+using OrderDeck.App.Views;
+using OrderDeck.App.Views.Gates;
+using OrderDeck.Licensing.Backup;
+
+namespace OrderDeck.Tests.App;
+
+/// <summary>
+/// Gate katmanı gerçekten çiziliyor mu? (Faz 3'teki
+/// MainShellViewCompositionTests kalıbı.)
+///
+/// NEDEN TEK [Fact]: her Fact kendi STA thread'ini açıyor. Hepsini tek
+/// thread'de kurmak hem hızlı hem de "process başına tek Application"
+/// kuralını en az zorlayan yol.
+/// </summary>
+public class GateCompositionTests
+{
+    [Fact]
+    public void Gate_layer_composes()
+    {
+        var error = ThemeTestHost.RunOnSta(() =>
+        {
+            var gates = new AppGateStack();
+            var root = new AppRootView(gates);
+
+            // Binding'ler DataBind önceliğinde dispatcher kuyruğuna giriyor;
+            // Pump() ile boşaltıyoruz ki ilk değerlendirme tamamlansın.
+            ThemeTestHost.Pump();
+
+            // Gate yokken katman Collapsed ve shell yuvası boş.
+            Assert.Equal(Visibility.Collapsed, root.GateHost.Visibility);
+            Assert.False(root.IsShellMounted);
+
+            // Shell yuvası doldurulabiliyor.
+            root.MountShell(new Border());
+            Assert.True(root.IsShellMounted);
+
+            // Gate açılınca: katman görünür, içerik doğru nesne,
+            // ShellHost Tab navigasyonuna kapalı.
+            var content = new Border();
+            _ = gates.ShowAsync(_ => content);
+
+            // ShowAsync → PropertyChanged → binding kuyruğa girdi; Pump() boşaltır.
+            ThemeTestHost.Pump();
+
+            Assert.Equal(Visibility.Visible, root.GateHost.Visibility);
+            Assert.Same(content, root.GateContent.Content);
+            Assert.False(root.ShellHost.IsEnabled);
+
+            // Açık Border gate'ini kapat; yığın temizlendikten sonra
+            // BootGate bloğu boş bir yığından başlasın.
+            gates.Top!.Close(false);
+            ThemeTestHost.Pump();
+            Assert.False(gates.IsOpen);
+            Assert.Equal(Visibility.Collapsed, root.GateHost.Visibility);
+            Assert.True(root.ShellHost.IsEnabled);
+
+            // BootGate'i örneklemek ThemeTestHost altında tüm StaticResource
+            // anahtarlarını çözüyor; hangi anahtar eksikse burada XamlParseException
+            // atar — kaynak doğrulamasının asıl değeri bu.
+            // Pump() ile binding kuyruğu boşaltıp katmanın görünürlüğünü ve
+            // içeriğini GateHost/GateContent üzerinden doğruluyoruz.
+            var pending = gates.ShowAsync(_ => new BootGate());
+            ThemeTestHost.Pump();
+            Assert.True(gates.IsOpen);
+            Assert.IsType<BootGate>(root.GateContent.Content);
+            Assert.Equal(Visibility.Visible, root.GateHost.Visibility);
+
+            gates.Top!.Close(false);
+            Assert.False(gates.IsOpen);
+            Assert.True(pending.IsCompleted);
+
+            // LoginGate DataContext'siz de çizilebilmeli: bu testin ölçtüğü şey
+            // kaynak çözümlemesi. StaticResource anahtarlarından biri yanlışsa
+            // XamlParseException atar; binding'ler sessizce boş kalır.
+            var loginPending = gates.ShowAsync(g => LoginGate.Create(g, vm: null, isStartupGate: true));
+            ThemeTestHost.Pump();
+            var startupLogin = Assert.IsType<LoginGate>(root.GateContent.Content);
+
+            // isStartupGate view'daki tek dal: açılışta iptal uygulamadan
+            // çıkmak demek, o yüzden düğme "Çıkış" diyor.
+            Assert.Equal("Çıkış", startupLogin.ExitButton.Content);
+
+            gates.Top!.Close(false);
+            Assert.True(loginPending.IsCompleted);
+
+            // Aynı view çalışırken açıldığında shell altta duruyor: iptal
+            // sadece bu ekranı kapatıyor, düğme bu yüzden "Vazgeç".
+            var switchPending = gates.ShowAsync(g => LoginGate.Create(g, vm: null, isStartupGate: false));
+            ThemeTestHost.Pump();
+            var switchLogin = Assert.IsType<LoginGate>(root.GateContent.Content);
+            Assert.Equal("Vazgeç", switchLogin.ExitButton.Content);
+
+            gates.Top!.Close(false);
+            Assert.True(switchPending.IsCompleted);
+
+            // RestoreGate de servissiz çiziliyor. MEKANİZMA: StaticResource
+            // anahtarları InitializeComponent() sırasında (BAML yüklenirken)
+            // çözülüyor — Visibility'den bağımsız, yani iki durumun (seçim /
+            // tamamlandı) gövdesindeki anahtarlar DataContext olmasa da
+            // doğrulanıyor. AMA bir DataTemplate'in gövdesi ertelenmiş bir
+            // akış: ancak bir öğe gerçekleştiğinde ayrıştırılıyor. vm=null
+            // iken AvailableBackups boş kalıyor, ListBox sıfır öğe üretiyor
+            // ve öğe şablonundaki anahtarlar HİÇ doğrulanmıyor (ölçüldü:
+            // şablonun içindeki bir anahtarı bozmak testi yeşil bırakıyor,
+            // dışındaki bir anahtarı bozmak XamlParseException atıyor).
+            // Bu yüzden aşağıda view'a küçük bir sahte DataContext veriliyor.
+            // NOT: LoginGate'in lisans listesindeki DataTemplate (OD.Text.Mono)
+            // aynı kör noktada — o dosyaya bu turda dokunulmuyor.
+            var restorePending = gates.ShowAsync(g => RestoreGate.Create(g, vm: null));
+            ThemeTestHost.Pump();
+            var restore = Assert.IsType<RestoreGate>(root.GateContent.Content);
+            Assert.Equal(Visibility.Visible, root.GateHost.Visibility);
+
+            // Seçim durumu: bir yedek besleyip öğe şablonunu gerçekleştiriyoruz.
+            // IsMonthlyMilestone=true, "Aylık" çipinin dalı da ayrıştırılsın.
+            restore.DataContext = new RestoreGateStub
+            {
+                RestoreCompleted = false,
+                AvailableBackups =
+                [
+                    new BackupMetadata(Guid.NewGuid(), 1024, DateTimeOffset.Now, true, "TEZGAH-01")
+                ]
+            };
+            ThemeTestHost.Pump();
+            // Kapsayıcı üretimi ölçüm sırasında oluyor; gate hiçbir pencerede
+            // olmadığı için yerleşimi elle tetiklemek gerekiyor.
+            restore.Measure(new Size(1200, 900));
+            restore.Arrange(new Rect(0, 0, 1200, 900));
+            ThemeTestHost.Pump();
+
+            Assert.Equal(Visibility.Visible, restore.SelectionState.Visibility);
+            Assert.Equal(Visibility.Collapsed, restore.CompletedState.Visibility);
+            Assert.NotNull(restore.BackupList.ItemContainerGenerator.ContainerFromIndex(0));
+
+            // Tamamlandı durumu: taze bir stub atamak PropertyChanged
+            // gerektirmiyor, DataContext'in kendisi değişiyor.
+            restore.DataContext = new RestoreGateStub { RestoreCompleted = true };
+            ThemeTestHost.Pump();
+            restore.Measure(new Size(1200, 900));
+            restore.Arrange(new Rect(0, 0, 1200, 900));
+            ThemeTestHost.Pump();
+
+            Assert.Equal(Visibility.Collapsed, restore.SelectionState.Visibility);
+            Assert.Equal(Visibility.Visible, restore.CompletedState.Visibility);
+
+            gates.Top!.Close(false);
+            ThemeTestHost.Pump();
+            Assert.True(restorePending.IsCompleted);
+
+            // FirstRunGate de servissiz çiziliyor. Bu view'da DataTemplate ya da
+            // ItemsControl YOK — altı adım panelinin tamamı doğrudan görsel
+            // ağaçta duruyor, hepsinin anahtarları InitializeComponent()
+            // sırasında çözülüyor. Yani yukarıdaki ertelenmiş-akış kör noktası
+            // burada oluşmuyor; sahte DataContext gerekmiyor. (5. adımdaki
+            // satır içi Style + DataTrigger de ertelenmiş değil, BAML
+            // yüklenirken ayrıştırılıyor.) Kaynak çözümlemesi için sahte
+            // DataContext gerekmiyor; adım görünürlüğü için gerekiyor — sebebi
+            // hemen aşağıda.
+            var wizardPending = gates.ShowAsync(g => FirstRunGate.Create(g, vm: null));
+            ThemeTestHost.Pump();
+            var wizard = Assert.IsType<FirstRunGate>(root.GateContent.Content);
+            Assert.Equal(Visibility.Visible, root.GateHost.Visibility);
+
+            // Adım görünürlüğü: altı panel aynı Grid hücresinde üst üste duruyor,
+            // yani "doğru adım açık" iddiasını ancak görünürlükler taşıyor.
+            // vm=null iken binding değer üretemiyor ve Visibility DP'nin
+            // varsayılanına, yani Visible'a düşüyor — ÖLÇÜLDÜ: altı panelin
+            // altısı da Visible, üst üste yığılı. Yani "hangi adım açık"
+            // sorusunun cevabı ancak RestoreGate'teki gibi küçük bir sahte
+            // DataContext ile ölçülebiliyor.
+            var stepPanels = new Dictionary<int, UIElement>
+            {
+                [1] = wizard.Step1Panel,
+                [2] = wizard.Step2Panel,
+                [3] = wizard.Step3Panel,
+                [4] = wizard.Step4Panel,
+                [5] = wizard.Step5Panel,
+                [6] = wizard.Step6Panel
+            };
+
+            // İlk adım: "Geri" kapalı, "İleri" görünür, "Bitir" gizli.
+            wizard.DataContext = new FirstRunGateStub { IsStep1 = true, CanGoBack = false };
+            ThemeTestHost.Pump();
+            // Yerleşim elle tetikleniyor: gate hiçbir pencerede değil.
+            wizard.Measure(new Size(1200, 900));
+            wizard.Arrange(new Rect(0, 0, 1200, 900));
+            ThemeTestHost.Pump();
+
+            foreach (var (step, panel) in stepPanels)
+            {
+                Assert.Equal(step == 1 ? Visibility.Visible : Visibility.Collapsed, panel.Visibility);
+            }
+            Assert.False(wizard.BackButton.IsEnabled);
+            Assert.Equal(Visibility.Visible, wizard.NextButton.Visibility);
+            Assert.Equal(Visibility.Collapsed, wizard.FinishButton.Visibility);
+
+            // 5. adım (tek ScrollViewer'lı panel): "Geri" artık açık, gezinme
+            // düğmelerinin dalı hâlâ "İleri".
+            wizard.DataContext = new FirstRunGateStub { IsStep5 = true, CanGoBack = true };
+            ThemeTestHost.Pump();
+            wizard.Measure(new Size(1200, 900));
+            wizard.Arrange(new Rect(0, 0, 1200, 900));
+            ThemeTestHost.Pump();
+
+            foreach (var (step, panel) in stepPanels)
+            {
+                Assert.Equal(step == 5 ? Visibility.Visible : Visibility.Collapsed, panel.Visibility);
+            }
+            Assert.True(wizard.BackButton.IsEnabled);
+            Assert.Equal(Visibility.Visible, wizard.NextButton.Visibility);
+            Assert.Equal(Visibility.Collapsed, wizard.FinishButton.Visibility);
+
+            // true = "Bitir" ile kapanış; gate'in dönüş değeri buradan geçiyor.
+            gates.Top!.Close(true);
+            ThemeTestHost.Pump();
+            Assert.True(wizardPending.IsCompleted);
+
+            // SessionRecoveryGate: session=null ile de çizilebilmeli — metinleri
+            // kod-arkası dolduruyor, bağlama yok, yani ölçülen şey yine kaynak
+            // çözümlemesi. Ek olarak üç yollu sonucun varsayılanını doğruluyoruz:
+            // hiç düğmeye basılmadan kapanan gate Exit'te kalmalı.
+            var recoveryPending = gates.ShowAsync(g => SessionRecoveryGate.Create(g, session: null));
+            ThemeTestHost.Pump();
+            var recovery = Assert.IsType<SessionRecoveryGate>(root.GateContent.Content);
+            Assert.Equal(Visibility.Visible, root.GateHost.Visibility);
+            Assert.Equal(SessionRecoveryChoice.Exit, recovery.Choice);
+
+            // session=null dalının metinleri: başlıksız oturum ve tarih yok.
+            Assert.Equal("Adsız yayın", recovery.SessionTitle.Text);
+            Assert.Equal("—", recovery.SessionStarted.Text);
+
+            gates.Top!.Close(true);
+            Assert.True(recoveryPending.IsCompleted);
+
+            // Düğme yolları: Click işleyicilerinin Choice'u kurduğunu ve gate'in
+            // dönüş değerini doğruluyoruz. Yerleşim elle tetikleniyor — ÖLÇÜLDÜ:
+            // Measure/Arrange olmadan görsel ağaçta 0 Button gerçekleşiyor,
+            // sonrasında 3. Her yol kendi ShowAsync örneğini istiyor: gate
+            // kapanınca yığından düşüyor.
+            var endPending = gates.ShowAsync(g => SessionRecoveryGate.Create(g, session: null));
+            ThemeTestHost.Pump();
+            var endGate = Assert.IsType<SessionRecoveryGate>(root.GateContent.Content);
+            endGate.Measure(new Size(1200, 900));
+            endGate.Arrange(new Rect(0, 0, 1200, 900));
+            ThemeTestHost.Pump();
+
+            endGate.EndSessionButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            ThemeTestHost.Pump();
+            Assert.Equal(SessionRecoveryChoice.EndSession, endGate.Choice);
+            Assert.True(endPending.IsCompleted);
+            // "Yayını bitir" Exit değil → gate onaylı kapanıyor.
+            Assert.True(endPending.Result);
+            Assert.False(gates.IsOpen);
+
+            // "Çıkış" tek başına false döndüren yol; Choice ile bool'un
+            // ayrışmadığını gösteren ikinci ölçüm.
+            var exitPending = gates.ShowAsync(g => SessionRecoveryGate.Create(g, session: null));
+            ThemeTestHost.Pump();
+            var exitGate = Assert.IsType<SessionRecoveryGate>(root.GateContent.Content);
+            exitGate.Measure(new Size(1200, 900));
+            exitGate.Arrange(new Rect(0, 0, 1200, 900));
+            ThemeTestHost.Pump();
+
+            exitGate.ExitButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            ThemeTestHost.Pump();
+            Assert.Equal(SessionRecoveryChoice.Exit, exitGate.Choice);
+            Assert.True(exitPending.IsCompleted);
+            Assert.False(exitPending.Result);
+
+            // Yığın boşaldı: katman tekrar kapalı.
+            ThemeTestHost.Pump();
+            Assert.False(gates.IsOpen);
+            Assert.Equal(Visibility.Collapsed, root.GateHost.Visibility);
+        });
+        Assert.Null(error);
+    }
+
+    /// <summary>
+    /// RestoreGate'in iki görünürlük binding'inin ihtiyacı olan asgari
+    /// DataContext. Gerçek <c>RestoreDialogViewModel</c> servis istiyor;
+    /// bu test kaynak/şablon çözümlemesini ölçtüğü için o kadarı gereksiz.
+    /// PropertyChanged yok: durum değiştirmek için taze bir örnek atanıyor.
+    /// </summary>
+    private sealed class RestoreGateStub
+    {
+        public bool RestoreCompleted { get; init; }
+        public IReadOnlyList<BackupMetadata> AvailableBackups { get; init; } = [];
+        public string? StatusMessage { get; init; }
+    }
+
+    /// <summary>
+    /// FirstRunGate'in adım görünürlüğü + gezinme düğmeleri için asgari
+    /// DataContext. Gerçek <c>FirstRunWizardViewModel</c> lisans servisi,
+    /// ayar deposu ve HttpClient istiyor; bu test yalnız hangi panelin açık
+    /// olduğunu ölçüyor. PropertyChanged yok: adım değiştirmek için taze bir
+    /// örnek atanıyor.
+    /// </summary>
+    private sealed class FirstRunGateStub
+    {
+        public bool IsStep1 { get; init; }
+        public bool IsStep2 { get; init; }
+        public bool IsStep3 { get; init; }
+        public bool IsStep4 { get; init; }
+        public bool IsStep5 { get; init; }
+        public bool IsStep6 { get; init; }
+        public bool CanGoBack { get; init; }
+    }
+}

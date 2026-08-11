@@ -1,0 +1,69 @@
+<UserControl x:Class="OrderDeck.App.Views.Gates.SessionRecoveryGate"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:gates="clr-namespace:OrderDeck.App.Views.Gates">
+    <!-- Bugünkü MessageBox(YesNoCancel)'ın karşılığı.
+
+         NEDEN GATE: MessageBox'ta düğmeler "Evet / Hayır / İptal" yazıyor,
+         hangisinin yayını bitirdiği başlıktaki uzun metinden çıkarılmak
+         zorunda. Burada üçü de eylemin adını taşıyor ve oturumun ne zaman
+         başladığı görünüyor.
+
+         Metinler kod-arkasında dolduruluyor (tarih biçimi + opsiyonel
+         başlık), bu yüzden bağlama yok.
+
+         Kart kabuğu YOK (sihirbazın OD.Card sarmalayıcısının aksine):
+         içerik zaten kısa, tek OD.Panel kutusu gate zemininden ayrışıyor —
+         OD.Panel = OD.Brush.Surface (#0F111A), GateHost = OD.Brush.Bg
+         (#090A0E).
+
+         ESC BİLİNÇLİ OLARAK BAĞLANMADI: hiçbir düğmede IsCancel yok. Esc'in
+         sessizce Exit'e düşmesi uygulamayı kapatırdı; çıkış açık bir tıklama
+         olsun. Kardeş gate'ler de Esc yakalamıyor. -->
+    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"
+                Width="{StaticResource OD.Layout.GateColumn}">
+        <gates:GateBrand/>
+
+        <TextBlock Text="Yarım kalmış yayın var"
+                   Style="{StaticResource OD.Text.Title}"
+                   Margin="{StaticResource OD.Pad.Top7}"/>
+
+        <Border Style="{StaticResource OD.Panel}"
+                Padding="{StaticResource OD.Pad.5}"
+                Margin="{StaticResource OD.Pad.Top5}">
+            <StackPanel>
+                <!-- Başlık operatör girdisi, uzunluğu serbest; OD.Text.Section
+                     ne sarma ne kırpma taşıyor. Kırpma seçildi (sarma değil):
+                     kutunun yüksekliği başlığın uzunluğuyla oynamasın. -->
+                <TextBlock x:Name="SessionTitle"
+                           Style="{StaticResource OD.Text.Section}"
+                           TextTrimming="CharacterEllipsis"/>
+                <TextBlock x:Name="SessionStarted"
+                           Style="{StaticResource OD.Text.Hint}"
+                           Margin="0"/>
+            </StackPanel>
+        </Border>
+
+        <TextBlock Style="{StaticResource OD.Text.Label}"
+                   Margin="{StaticResource OD.Pad.Top5}"
+                   Text="Uygulama önceki açılışta kapanmadan sonlandı. Bu oturuma devam edebilir ya da kapatıp temiz başlayabilirsin."/>
+
+        <Button x:Name="ContinueButton"
+                Content="Devam et"
+                Style="{StaticResource OD.Button.Primary}"
+                Margin="{StaticResource OD.Pad.Top5}"
+                IsDefault="True"
+                Click="OnContinue"/>
+        <Button x:Name="EndSessionButton"
+                Content="Yayını bitir"
+                Style="{StaticResource OD.Button.Secondary}"
+                Margin="{StaticResource OD.Pad.Top3}"
+                Click="OnEndSession"/>
+        <Button x:Name="ExitButton"
+                Content="Çıkış"
+                Style="{StaticResource OD.Button.Ghost}"
+                HorizontalAlignment="Center"
+                Margin="{StaticResource OD.Pad.Top4}"
+                Click="OnExit"/>
+    </StackPanel>
+</UserControl>

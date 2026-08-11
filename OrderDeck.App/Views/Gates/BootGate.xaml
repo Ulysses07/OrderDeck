@@ -1,0 +1,23 @@
+<UserControl x:Class="OrderDeck.App.Views.Gates.BootGate"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:gates="clr-namespace:OrderDeck.App.Views.Gates">
+    <!-- Lisans kontrolü koşarken görünen ekran. BUGÜN BU ARALIKTA HİÇBİR ŞEY
+         YOK: pencere daha açılmadığı için operatör birkaç saniye boş masaüstüne
+         bakıyor ve uygulamanın açılıp açılmadığını bilmiyor.
+
+         Çıkış düğmesi yok — kendiliğinden geçer (spec §3.2 tablosu). -->
+    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"
+                Width="{StaticResource OD.Layout.GateColumn}">
+        <gates:GateBrand/>
+
+        <ProgressBar Style="{StaticResource OD.ProgressBar}"
+                     IsIndeterminate="True"
+                     Margin="{StaticResource OD.Pad.Top7}"/>
+
+        <TextBlock Text="Hazırlanıyor…"
+                   Style="{StaticResource OD.Text.Hint}"
+                   HorizontalAlignment="Center"
+                   Margin="{StaticResource OD.Pad.Top4}"/>
+    </StackPanel>
+</UserControl>
