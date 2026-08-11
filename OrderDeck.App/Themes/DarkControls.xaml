@@ -64,13 +64,13 @@
         <DrawingImage.Drawing>
             <DrawingGroup>
                 <!-- Box body -->
-                <GeometryDrawing Brush="#FFEF4444">
+                <GeometryDrawing Brush="#FF4A38">
                     <GeometryDrawing.Geometry>
                         <RectangleGeometry Rect="2,9,16,11" RadiusX="1" RadiusY="1"/>
                     </GeometryDrawing.Geometry>
                 </GeometryDrawing>
                 <!-- Box lid (slightly darker red, subtle 3D feel) -->
-                <GeometryDrawing Brush="#FFDC2626">
+                <GeometryDrawing Brush="#E23A2A">
                     <GeometryDrawing.Geometry>
                         <RectangleGeometry Rect="1,7,18,3" RadiusX="1" RadiusY="1"/>
                     </GeometryDrawing.Geometry>
