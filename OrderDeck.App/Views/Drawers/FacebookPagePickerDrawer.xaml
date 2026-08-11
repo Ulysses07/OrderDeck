@@ -47,6 +47,7 @@
                    Text="Bu hesabın yönetebildiği birden fazla Facebook sayfası var. OrderDeck'in canlı yorumları çekeceği sayfayı seç:"/>
 
         <ListBox x:Name="PagesList"
+                 Style="{StaticResource OD.ListBox}"
                  Background="Transparent"
                  BorderThickness="0"
                  Margin="{StaticResource OD.Pad.Top4}"

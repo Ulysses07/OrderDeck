@@ -43,6 +43,7 @@
                     Command="{Binding LoadCommand}"/>
 
             <CheckBox Content="Yalnızca adı bilinenler"
+                      Style="{StaticResource OD.CheckBox}"
                       IsChecked="{Binding OnlyInvoiceReady}"
                       VerticalAlignment="Center"/>
         </StackPanel>

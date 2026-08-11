@@ -655,6 +655,7 @@
                                                  sessizce kopardı ve düğmeler hep açık
                                                  kalırdı. -->
                                             <controls:ShortcutCaptureButton
+                                                Style="{StaticResource OD.ShortcutCapture}"
                                                 DockPanel.Dock="Right" Width="220"
                                                 Chord="{Binding Chord, Mode=TwoWay}"
                                                 IsEnabled="{Binding DataContext.ShortcutsTab.UseCustom,

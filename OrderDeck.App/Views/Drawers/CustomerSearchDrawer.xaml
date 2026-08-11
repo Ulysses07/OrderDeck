@@ -134,6 +134,7 @@
         <!-- ═══ Liste ═══ -->
         <Grid Grid.Row="2" Margin="{StaticResource OD.Pad.Top4}">
             <ListBox x:Name="ResultsList"
+                     Style="{StaticResource OD.ListBox}"
                      ItemsSource="{Binding Results}"
                      SelectionMode="Extended"
                      SelectionChanged="ResultsList_OnSelectionChanged"
