@@ -3724,7 +3724,10 @@ public class StockStaffScopeTests : IClassFixture<ApiFactory>
         var owner = await SeedOwnerAsync();
         var stock = await OperatorClientAsync(owner, "stock");
 
-        var resp = await stock.GetAsync("/api/panel/orders");
+        // Sipariş listesi PanelOrdersController'da oturum altında duruyor
+        // ("/api/panel/orders" diye bir uç yok). Kapı action'dan önce çalıştığı
+        // için oturumun gerçekten var olması gerekmiyor.
+        var resp = await stock.GetAsync($"/api/panel/sessions/{Guid.NewGuid()}/orders");
 
         resp.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
