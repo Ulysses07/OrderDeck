@@ -113,6 +113,7 @@ public class CatalogModelTests : IClassFixture<ApiFactory>
             (typeof(Category), nameof(Category.Path), CatalogLimits.CategoryPath),
             (typeof(Product), nameof(Product.Code), CatalogLimits.ProductCode),
             (typeof(Product), nameof(Product.Name), CatalogLimits.ProductName),
+            (typeof(Product), nameof(Product.NameSearch), CatalogLimits.NameSearch),
             (typeof(Product), nameof(Product.Axis1Name), CatalogLimits.AxisName),
             (typeof(Product), nameof(Product.Axis2Name), CatalogLimits.AxisName),
             (typeof(Product), nameof(Product.PhotoObjectKey), CatalogLimits.PhotoObjectKey),
@@ -146,6 +147,45 @@ public class CatalogModelTests : IClassFixture<ApiFactory>
         var longestPath = 1 + (33 * CatalogLimits.CategoryMaxDepth);
 
         longestPath.Should().BeLessThanOrEqualTo(CatalogLimits.CategoryPath);
+    }
+
+    /// <summary>
+    /// Bekçi: <c>NameSearch</c> türetilmiş bir kolon ve türetme controller'da
+    /// DEĞİL, <c>SaveChanges</c> zincirinde yapılıyor. Bu test controller'a hiç
+    /// uğramadan doğrudan DbContext üstünden yazıyor — yani kuralı atlayan bir
+    /// yazma yolu (içe aktarma, senkron işi, toplu düzenleme) eklendiğinde bile
+    /// kolonun doğru dolduğunu gösteriyor.
+    /// </summary>
+    [Fact]
+    public async Task NameSearch_is_derived_on_insert_and_refreshed_on_update()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+        var license = NewLicense();
+        db.Licenses.Add(license);
+
+        var product = new Product
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = license.Id,
+            Code = "NS1",
+            Name = "  Kırmızı  Tişört ",
+            DefaultPrice = 100m,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+        db.Products.Add(product);
+        await db.SaveChangesAsync();
+
+        product.NameSearch.Should().Be("KIRMIZI TISORT");
+
+        product.Name = "Mavi Gömlek";
+        await db.SaveChangesAsync();
+
+        product.NameSearch.Should().Be("MAVI GOMLEK",
+            "girdi değişince türetilmiş kolon bayat kalırsa arama sessizce "
+            + "yanlış sonuç döner");
     }
 
     [Fact]

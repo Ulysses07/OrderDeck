@@ -121,19 +121,29 @@ public sealed class PanelProductsController : ControllerBase
                 return Problem(title: "category-not-found",
                     detail: "Kategori bulunamadı.", statusCode: 400);
 
-            var subtree = await _db.Categories
-                .Where(c => c.LicenseId == licenseId.Value && c.Path.StartsWith(path))
-                .Select(c => c.Id)
-                .ToListAsync(ct);
-
-            query = query.Where(p => p.CategoryId != null && subtree.Contains(p.CategoryId.Value));
+            // Alt ağaç filtresi TEK ifadede kalıyor: alt kategori id'lerini
+            // istemciye çekip geri `IN (@p0, @p1, …)` olarak göndermek hem
+            // fazladan bir gidiş-dönüş, hem de SQL Server'ın 2100 parametre
+            // sınırına çarpma riski — derin bir ağaçta sorgu tamamen patlardı.
+            query = query.Where(p => _db.Categories.Any(c =>
+                c.Id == p.CategoryId
+                && c.LicenseId == licenseId.Value
+                && c.Path.StartsWith(path)));
         }
 
         if (!string.IsNullOrWhiteSpace(q))
         {
-            var needle = q.Trim();
-            var codeNeedle = needle.ToUpperInvariant();
-            query = query.Where(p => p.Name.Contains(needle) || p.Code.Contains(codeNeedle));
+            // Aranan iğne de saklanan değer de AYNI normalleştiriciden geçiyor →
+            // eşleşme veritabanının collation'ından bağımsız (SQL Server duyarsız,
+            // PostgreSQL duyarlı; göçte davranış değişmesin).
+            //
+            // Kod için ayrı bir iğne gerekmiyor: `Code` zaten ASCII büyük harf
+            // üretiliyor (NextCode / AxisCodeDeriver), normalleştirilmiş iğne de
+            // büyük harf.
+            var needle = SearchNormalizer.Normalize(q);
+            if (needle.Length > 0)
+                query = query.Where(
+                    p => p.NameSearch.Contains(needle) || p.Code.Contains(needle));
         }
 
         var total = await query.CountAsync(ct);

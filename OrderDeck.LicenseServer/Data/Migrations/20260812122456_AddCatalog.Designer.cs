@@ -12,7 +12,7 @@ using OrderDeck.LicenseServer.Data;
 namespace OrderDeck.LicenseServer.Data.Migrations
 {
     [DbContext(typeof(LicenseDbContext))]
-    [Migration("20260812094144_AddCatalog")]
+    [Migration("20260812122456_AddCatalog")]
     partial class AddCatalog
     {
         /// <inheritdoc />
@@ -1105,6 +1105,11 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("NameSearch")
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");

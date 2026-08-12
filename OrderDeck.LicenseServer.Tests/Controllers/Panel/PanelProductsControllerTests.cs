@@ -408,6 +408,55 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         byCode!.Items.Should().ContainSingle(p => p.Id == pantolon.Id);
     }
 
+    /// <summary>
+    /// Alt ağaç filtresi tek bir ilişkilendirilmiş alt sorguya indi (id listesini
+    /// istemciye çekip <c>IN (...)</c> göndermek yerine). Kiracı sınırı bu
+    /// dönüşümde kaybolmamalı: başka lisansın ürünü hiçbir koşulda sızmamalı.
+    /// </summary>
+    [Fact]
+    public async Task List_never_leaks_another_tenants_products_through_the_subtree_filter()
+    {
+        var (clientA, _) = await SeedAsync();
+        var erkek = await CreateCategoryAsync(clientA, "Erkek");
+        var tisort = await CreateCategoryAsync(clientA, "Tişört", erkek.Id);
+        var mine = await CreateProductAsync(clientA, "A alt ürünü", categoryId: tisort.Id);
+
+        var (clientB, _) = await SeedAsync();
+        var theirs = await CreateProductAsync(
+            clientB, "B ürünü",
+            categoryId: (await CreateCategoryAsync(clientB, "Erkek")).Id);
+
+        var page = await clientA.GetFromJsonAsync<ProductPage>(
+            $"/api/panel/products?categoryId={erkek.Id}");
+
+        page!.Items.Should().ContainSingle(p => p.Id == mine.Id,
+            "alt kategorideki ürün üst kategori filtresiyle gelmeli");
+        page.Items.Should().NotContain(p => p.Id == theirs.Id);
+        page.Total.Should().Be(1);
+    }
+
+    /// <summary>
+    /// Arama artık veritabanı collation'ına değil, saklanan türetilmiş kolona
+    /// dayanıyor: kullanıcının nasıl yazdığı (büyük/küçük harf, Türkçe harf)
+    /// sonucu değiştirmemeli. PostgreSQL göçünde bu davranış aynı kalır.
+    /// </summary>
+    [Theory]
+    [InlineData("tisort")]
+    [InlineData("TİŞÖRT")]
+    [InlineData("kirmizi")]
+    [InlineData("  Kırmızı Tişört  ")]
+    public async Task List_search_is_case_and_turkish_letter_insensitive(string typed)
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Kırmızı Tişört");
+
+        var page = await client.GetFromJsonAsync<ProductPage>(
+            "/api/panel/products?q=" + Uri.EscapeDataString(typed));
+
+        page!.Items.Should().ContainSingle(p => p.Id == product.Id,
+            "'{0}' araması ürünü bulmalı", typed);
+    }
+
     [Fact]
     public async Task List_reports_the_variant_count()
     {

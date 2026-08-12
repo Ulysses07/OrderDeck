@@ -50,17 +50,14 @@ public static class AxisCodeDeriver
         return sb.ToString();
     }
 
-    private static char? Map(char c) => c switch
+    /// <summary>
+    /// Önce katla, sonra süz. Katlama tablosu <see cref="TurkishAscii"/>'de —
+    /// arama normalleştirmesi de aynı tabloyu okuyor, kopyalansa ayrışırdı.
+    /// Katlanamayan ASCII-dışı karakter (örn. "É") süzgeçte düşer.
+    /// </summary>
+    private static char? Map(char c)
     {
-        'Ç' => 'C',
-        'Ğ' => 'G',
-        'İ' => 'I',   // U+0130: ToUpperInvariant bunu korur
-        '\u0131' => 'I', // ı: ToUpperInvariant U+0131'i küçük bırakır
-        'Ö' => 'O',
-        'Ş' => 'S',
-        'Ü' => 'U',
-        >= 'A' and <= 'Z' => c,
-        >= '0' and <= '9' => c,
-        _ => null,
-    };
+        var folded = TurkishAscii.Fold(c);
+        return folded is (>= 'A' and <= 'Z') or (>= '0' and <= '9') ? folded : null;
+    }
 }

@@ -36,6 +36,19 @@ public sealed class Product
 
     public string Name { get; set; } = string.Empty;
 
+    /// <summary>
+    /// <b>Türetilmiş</b> arama kolonu; tek kaynağı
+    /// <c>SearchNormalizer.Normalize(Name)</c>. Elle atanmaz —
+    /// <c>LicenseDbContext.SaveChanges</c> her kayıtta yeniden hesaplar.
+    ///
+    /// Neden var: <c>Name</c> üstünden arama, büyük/küçük harf duyarlılığını
+    /// veritabanının collation'ına bırakır (SQL Server duyarsız, PostgreSQL
+    /// duyarlı) — yani göç günü arama sessizce bozulurdu. Arama bu kolonun
+    /// üstünden koşuyor ve iğne de aynı fonksiyondan geçiyor, böylece davranış
+    /// veritabanından bağımsız.
+    /// </summary>
+    public string NameSearch { get; set; } = string.Empty;
+
     /// <summary>Yayında değiştirilebilen VARSAYILAN fiyat; siparişe o anki fiyat damgalanır.</summary>
     public decimal DefaultPrice { get; set; }
 

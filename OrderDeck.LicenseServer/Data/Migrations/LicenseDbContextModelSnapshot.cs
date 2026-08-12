@@ -1106,6 +1106,11 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<string>("NameSearch")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
                     b.Property<string>("PhotoContentType")
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");

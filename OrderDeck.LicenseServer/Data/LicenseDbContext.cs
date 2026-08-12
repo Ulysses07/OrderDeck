@@ -1,4 +1,5 @@
-using OrderDeck.LicenseServer.Domain;
+﻿using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Catalog;
 using Microsoft.EntityFrameworkCore;
 
 namespace OrderDeck.LicenseServer.Data;
@@ -52,6 +53,44 @@ public class LicenseDbContext : DbContext
     public DbSet<Category> Categories => Set<Category>();
     public DbSet<Product> Products => Set<Product>();
     public DbSet<ProductVariant> ProductVariants => Set<ProductVariant>();
+
+    /// <summary>
+    /// Türetilmiş kolonların tazelendiği <b>tek</b> nokta.
+    ///
+    /// Neden controller'da değil burada: <c>Product.NameSearch</c> türetilmiş bir
+    /// değer, girdisi <c>Name</c>. Girdi değiştiğinde yeniden hesaplanmazsa kolon
+    /// bayatlar ve arama sessizce YANLIŞ sonuç döner — patlamaz, sadece yanlış
+    /// cevap verir; bu da en geç fark edilen hata sınıfı. Controller'da elle
+    /// atansaydı bugün var olmayan bir yazma yolu (içe aktarma, WPF senkronu,
+    /// ileride bir toplu düzenleme ucu) kuralı sessizce atlardı. Buradan
+    /// geçmeyen yazma yolu yok.
+    /// </summary>
+    private void SyncDerivedColumns()
+    {
+        foreach (var entry in ChangeTracker.Entries<Product>())
+        {
+            if (entry.State is not (EntityState.Added or EntityState.Modified)) continue;
+
+            entry.Entity.NameSearch = SearchNormalizer.Normalize(entry.Entity.Name);
+        }
+    }
+
+    // DİKKAT — parametresiz SaveChanges() ve SaveChangesAsync(ct) aşırı yüklemeleri
+    // BİLEREK override edilmedi: EF'te ikisi de burada override edilen
+    // (bool acceptAllChangesOnSuccess, …) sürümüne yönleniyor. Yani asıl zincir
+    // bu ikisi; dördünü birden override etmek aynı işi iki kez yaptırırdı.
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        SyncDerivedColumns();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    public override Task<int> SaveChangesAsync(
+        bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    {
+        SyncDerivedColumns();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -614,6 +653,11 @@ public class LicenseDbContext : DbContext
             b.HasKey(p => p.Id);
             b.Property(p => p.Code).HasMaxLength(CatalogLimits.ProductCode).IsRequired();
             b.Property(p => p.Name).HasMaxLength(CatalogLimits.ProductName).IsRequired();
+            // NameSearch'e BİLEREK indeks konmuyor: arama `Contains` yapıyor,
+            // yani SQL'de `LIKE '%…%'` — önden joker olduğu için hiçbir B-tree
+            // indeksi taranamaz. İşe yaramayan indeks yalnız yazma maliyeti ve
+            // disk getirir. Gerçek çözüm tam metin arama; Faz 1a kapsamı dışı.
+            b.Property(p => p.NameSearch).HasMaxLength(CatalogLimits.NameSearch).IsRequired();
             b.Property(p => p.DefaultPrice).HasPrecision(18, 2);
             b.Property(p => p.Cost).HasPrecision(18, 2);
             b.Property(p => p.Axis1Name).HasMaxLength(CatalogLimits.AxisName);

@@ -30,6 +30,12 @@ public static class CatalogLimits
 
     public const int ProductCode = 32;
     public const int ProductName = 200;
+
+    /// <summary>
+    /// Türetilmiş: <c>Normalize(Name)</c>. Katlama 1:1, boşluk sıkıştırma
+    /// yalnız kısaltır — yani <c>Name</c>'i asla aşamaz.
+    /// </summary>
+    public const int NameSearch = ProductName;
     public const int AxisName = 40;
     public const int PhotoObjectKey = 512;
     public const int PhotoContentType = 100;

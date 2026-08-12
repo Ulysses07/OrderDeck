@@ -51,6 +51,7 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     CategoryId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
                     Code = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
                     Name = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
+                    NameSearch = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
                     DefaultPrice = table.Column<decimal>(type: "decimal(18,2)", precision: 18, scale: 2, nullable: false),
                     Cost = table.Column<decimal>(type: "decimal(18,2)", precision: 18, scale: 2, nullable: true),
                     Axis1Name = table.Column<string>(type: "nvarchar(40)", maxLength: 40, nullable: true),
