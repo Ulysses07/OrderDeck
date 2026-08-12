@@ -45,6 +45,13 @@ public static class CatalogLimits
     public const int AxisName = 40;
     public const int PhotoObjectKey = 512;
     public const int PhotoContentType = 100;
+
+    /// <summary>
+    /// Ürün başına azami fotoğraf. 4: ürün kartında tek sırada sığıyor, R2
+    /// maliyetini ve yükleme süresini öngörülebilir tutuyor. Sınır sunucuda
+    /// zorlanır — panel yalnız butonu gizler.
+    /// </summary>
+    public const int MaxProductPhotos = 4;
     public const int AxisValue = 60;
     public const int AxisCode = 8;
 

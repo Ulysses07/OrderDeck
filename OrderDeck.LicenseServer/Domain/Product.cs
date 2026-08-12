@@ -80,5 +80,8 @@ public sealed class Product
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
 
+    /// <summary>Galeri. Kapak = en küçük <c>SortOrder</c>.</summary>
+    public List<ProductPhoto> Photos { get; set; } = new();
+
     public List<ProductVariant> Variants { get; set; } = new();
 }

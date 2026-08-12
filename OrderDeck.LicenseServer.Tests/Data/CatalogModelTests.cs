@@ -119,6 +119,8 @@ public class CatalogModelTests : IClassFixture<ApiFactory>
             (typeof(Product), nameof(Product.ShelfLocation), CatalogLimits.ShelfLocation),
             (typeof(Product), nameof(Product.PhotoObjectKey), CatalogLimits.PhotoObjectKey),
             (typeof(Product), nameof(Product.PhotoContentType), CatalogLimits.PhotoContentType),
+            (typeof(ProductPhoto), nameof(ProductPhoto.ObjectKey), CatalogLimits.PhotoObjectKey),
+            (typeof(ProductPhoto), nameof(ProductPhoto.ContentType), CatalogLimits.PhotoContentType),
             (typeof(ProductVariant), nameof(ProductVariant.Axis1Value), CatalogLimits.AxisValue),
             (typeof(ProductVariant), nameof(ProductVariant.Axis2Value), CatalogLimits.AxisValue),
             (typeof(ProductVariant), nameof(ProductVariant.Axis1Code), CatalogLimits.AxisCode),
@@ -187,6 +189,43 @@ public class CatalogModelTests : IClassFixture<ApiFactory>
         product.NameSearch.Should().Be("MAVI GOMLEK",
             "girdi değişince türetilmiş kolon bayat kalırsa arama sessizce "
             + "yanlış sonuç döner");
+    }
+
+    [Fact]
+    public async Task Product_photos_round_trip_and_cover_is_the_lowest_sort_order()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+        var license = NewLicense();
+        db.Licenses.Add(license);
+
+        var product = new Product
+        {
+            Id = Guid.NewGuid(), LicenseId = license.Id, Code = "PH1",
+            Name = "Fotoğraflı", DefaultPrice = 10m,
+            CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
+        };
+        db.Products.Add(product);
+
+        foreach (var sort in new[] { 2, 0, 1 })
+            db.ProductPhotos.Add(new ProductPhoto
+            {
+                Id = Guid.NewGuid(), LicenseId = license.Id, ProductId = product.Id,
+                ObjectKey = $"{license.Id:N}/products/{product.Id:N}/{sort}.img",
+                ContentType = "image/jpeg", SizeBytes = 1024, SortOrder = sort,
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+
+        await db.SaveChangesAsync();
+
+        var loaded = await db.Products
+            .Include(p => p.Photos)
+            .FirstAsync(p => p.Id == product.Id);
+
+        loaded.Photos.Should().HaveCount(3);
+        loaded.Photos.OrderBy(p => p.SortOrder).First().ObjectKey
+            .Should().EndWith("0.img", "kapak = en küçük SortOrder");
     }
 
     [Fact]

@@ -53,6 +53,7 @@ public class LicenseDbContext : DbContext
     public DbSet<Category> Categories => Set<Category>();
     public DbSet<Product> Products => Set<Product>();
     public DbSet<ProductVariant> ProductVariants => Set<ProductVariant>();
+    public DbSet<ProductPhoto> ProductPhotos => Set<ProductPhoto>();
 
     /// <summary>
     /// Türetilmiş kolonların tazelendiği <b>tek</b> nokta.
@@ -689,6 +690,19 @@ public class LicenseDbContext : DbContext
                 .HasForeignKey(v => v.ProductId).OnDelete(DeleteBehavior.Cascade);
             b.HasIndex(v => new { v.ProductId, v.VariantCode }).IsUnique();
             b.HasIndex(v => new { v.LicenseId, v.VariantCode });
+        });
+
+        mb.Entity<ProductPhoto>(b =>
+        {
+            b.HasKey(p => p.Id);
+            b.Property(p => p.ObjectKey).HasMaxLength(CatalogLimits.PhotoObjectKey).IsRequired();
+            b.Property(p => p.ContentType).HasMaxLength(CatalogLimits.PhotoContentType).IsRequired();
+            b.HasOne(p => p.Product).WithMany(pr => pr.Photos)
+                .HasForeignKey(p => p.ProductId).OnDelete(DeleteBehavior.Cascade);
+            b.HasIndex(p => new { p.ProductId, p.SortOrder });
+            // Yetim temizleme işi kovadaki anahtarı DB'de arıyor; anahtarın
+            // benzersizliği o karşılaştırmanın ön şartı.
+            b.HasIndex(p => p.ObjectKey).IsUnique();
         });
 
         // Seed SKUs
