@@ -265,7 +265,8 @@ public static class AxisCodeDeriver
     {
         'Ç' => 'C',
         'Ğ' => 'G',
-        'İ' => 'I',
+        'İ' => 'I',      // U+0130: ToUpperInvariant bunu korur
+        '\u0131' => 'I', // ı: ToUpperInvariant U+0131'i küçük bırakır
         'Ö' => 'O',
         'Ş' => 'S',
         'Ü' => 'U',
@@ -276,8 +277,10 @@ public static class AxisCodeDeriver
 }
 ```
 
-> Not: `'ı'.ToUpperInvariant()` zaten `'I'` verir, `'i'` de `'I'` verir — ayrı
-> eşleme gerekmez. `'İ'` (U+0130) invariant'ta kendisi kalır, o yüzden listede.
+> Not (uygulamada ölçüldü, 2026-08-12): `char.ToUpperInvariant('ı')` .NET 10'da
+> `'I'` **vermiyor**, U+0131 olarak kalıyor — bu yüzden noktasız ı'nın kendi
+> `Map` girişi var. `'i'` ise sorunsuz `'I'` oluyor. `'İ'` (U+0130) invariant'ta
+> kendisi kalır, o da listede.
 
 - [ ] **Step 4: Yeşili doğrula**
 
