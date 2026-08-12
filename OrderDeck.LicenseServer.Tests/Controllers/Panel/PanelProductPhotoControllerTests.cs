@@ -341,5 +341,80 @@ public class PanelProductPhotoControllerTests : IClassFixture<ApiFactory>
 
         list!.Should().ContainSingle().Which.Id.Should().Be(second.Id);
         list[0].SortOrder.Should().Be(0, "silinen kapağın yerini bir sonraki almalı");
+        list[0].Url.Should().NotBeNullOrWhiteSpace("listede indirme URL'i de dönmeli");
+
+        // Yalnız satıra bakan bir test, R2 silmesi düştüğünde hiçbir şey
+        // söylemez — ürün fotoğrafsız görünür, kova faturası ödenmeye devam
+        // eder. Simetrik olarak kalan fotoğrafın nesnesi silinmemeli.
+        _factory.BroadcastMedia.DeleteCalls.Should().Contain(first.ObjectKey);
+        (await _factory.BroadcastMedia.HeadAsync(first.ObjectKey)).Should().BeNull();
+        (await _factory.BroadcastMedia.HeadAsync(second.ObjectKey)).Should().NotBeNull();
+    }
+
+    /// <summary>
+    /// Okuma yolu kiracıya kapalı: başka lisansın ürününün galerisi
+    /// listelenemez. Kural 404 — 403 "böyle bir ürün var" diye haber vermek
+    /// olurdu.
+    /// </summary>
+    [Fact]
+    public async Task List_404_for_another_tenants_product()
+    {
+        var clientA = await SeedAsync();
+        var product = await CreateProductAsync(clientA);
+        await AddPhotoAsync(clientA, product.Id);
+        var clientB = await SeedAsync();
+
+        var resp = await clientB.GetAsync($"/api/panel/products/{product.Id}/photos");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    /// <summary>
+    /// 404 dönüp yine de silmiş olmak, yalnız durum koduna bakan bir testin
+    /// gözünden kaçar; bu yüzden fotoğrafın sahibinin gözünden hâlâ DURDUĞU da
+    /// doğrulanıyor — hem satır hem kovadaki nesne.
+    /// </summary>
+    [Fact]
+    public async Task Delete_404_for_another_tenants_product()
+    {
+        var clientA = await SeedAsync();
+        var product = await CreateProductAsync(clientA);
+        var photo = await AddPhotoAsync(clientA, product.Id);
+        var clientB = await SeedAsync();
+
+        var resp = await clientB.DeleteAsync(
+            $"/api/panel/products/{product.Id}/photos/{photo.Id}");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        var list = await clientA.GetFromJsonAsync<List<PhotoDto>>(
+            $"/api/panel/products/{product.Id}/photos");
+        list!.Should().ContainSingle().Which.Id.Should().Be(photo.Id);
+        _factory.BroadcastMedia.DeleteCalls.Should().NotContain(photo.ObjectKey);
+        (await _factory.BroadcastMedia.HeadAsync(photo.ObjectKey)).Should().NotBeNull();
+    }
+
+    /// <summary>
+    /// Sıralama da yazma yolu: başka kiracı kapağı değiştiremez.
+    /// </summary>
+    [Fact]
+    public async Task Reorder_404_for_another_tenants_product()
+    {
+        var clientA = await SeedAsync();
+        var product = await CreateProductAsync(clientA);
+        var first = await AddPhotoAsync(clientA, product.Id);
+        var second = await AddPhotoAsync(clientA, product.Id);
+        var clientB = await SeedAsync();
+
+        var resp = await clientB.PutAsJsonAsync(
+            $"/api/panel/products/{product.Id}/photos/order",
+            new { ids = new[] { second.Id, first.Id } });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        var list = await clientA.GetFromJsonAsync<List<PhotoDto>>(
+            $"/api/panel/products/{product.Id}/photos");
+        // Kapak başka kiracının isteğiyle değişmemeli.
+        list!.Select(p => p.Id).Should().Equal(first.Id, second.Id);
     }
 }
