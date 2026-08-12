@@ -45,6 +45,7 @@ public sealed class PanelProductsController : ControllerBase
         Guid? CategoryId,
         decimal DefaultPrice,
         decimal? Cost,
+        [MaxLength(CatalogLimits.ShelfLocation)] string? ShelfLocation,
         [MaxLength(CatalogLimits.AxisName)] string? Axis1Name,
         AxisRole? Axis1Role,
         [MaxLength(CatalogLimits.AxisName)] string? Axis2Name,
@@ -67,6 +68,7 @@ public sealed class PanelProductsController : ControllerBase
         string Name,
         decimal DefaultPrice,
         decimal? Cost,
+        string? ShelfLocation,
         string? Axis1Name,
         AxisRole? Axis1Role,
         string? Axis2Name,
@@ -82,6 +84,7 @@ public sealed class PanelProductsController : ControllerBase
         Guid? CategoryId,
         string Code,
         string Name,
+        string? ShelfLocation,
         decimal DefaultPrice,
         bool IsArchived,
         string? PhotoObjectKey,
@@ -173,7 +176,7 @@ public sealed class PanelProductsController : ControllerBase
             .Skip(skip)
             .Take(size)
             .Select(p => new ProductRowDto(
-                p.Id, p.CategoryId, p.Code, p.Name, p.DefaultPrice, p.IsArchived,
+                p.Id, p.CategoryId, p.Code, p.Name, p.ShelfLocation, p.DefaultPrice, p.IsArchived,
                 p.PhotoObjectKey, p.Variants.Count, p.UpdatedAt))
             .ToListAsync(ct);
 
@@ -248,6 +251,7 @@ public sealed class PanelProductsController : ControllerBase
             // Update'teki gibi bir korumaya gerek yok: doğrulama geçtiyse stok
             // rolünde req.Cost zaten null ve yeni kartın maliyeti doğal olarak boş.
             Cost = req.Cost,
+            ShelfLocation = Trim(req.ShelfLocation),
             Axis1Name = Trim(req.Axis1Name),
             Axis1Role = Trim(req.Axis1Name) is null ? null : req.Axis1Role,
             Axis2Name = Trim(req.Axis2Name),
@@ -364,6 +368,7 @@ public sealed class PanelProductsController : ControllerBase
         // record'da "null gönderildi" ile "alan hiç gönderilmedi" ayırt edilemez.
         // Bu rolde alan hiç dokunulmadan bırakılıyor.
         product.Cost = HidesCost ? product.Cost : req.Cost;
+        product.ShelfLocation = Trim(req.ShelfLocation);
         product.Axis1Name = newAxis1;
         product.Axis1Role = newRole1;
         product.Axis2Name = newAxis2;
@@ -561,6 +566,7 @@ public sealed class PanelProductsController : ControllerBase
     private ProductDto ToDto(Product p) => new(
         p.Id, p.CategoryId, p.Code, p.Name, p.DefaultPrice,
         HidesCost ? null : p.Cost,
+        p.ShelfLocation,
         p.Axis1Name, p.Axis1Role, p.Axis2Name, p.Axis2Role,
         p.PhotoObjectKey, p.IsArchived, p.CreatedAt, p.UpdatedAt,
         p.Variants

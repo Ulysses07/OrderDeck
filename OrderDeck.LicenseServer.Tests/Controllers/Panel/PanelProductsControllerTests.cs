@@ -24,6 +24,7 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
     private sealed record ProductDto(
         Guid Id, Guid? CategoryId, string Code, string Name,
         decimal DefaultPrice, decimal? Cost,
+        string? ShelfLocation,
         string? Axis1Name, int? Axis1Role,
         string? Axis2Name, int? Axis2Role,
         bool IsArchived, List<VariantDto> Variants);
@@ -980,5 +981,43 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         var dto = await client.GetFromJsonAsync<NextCodeDto>("/api/panel/products/next-code");
 
         dto!.Code.Should().Be("A2");
+    }
+
+    [Fact]
+    public async Task Shelf_location_is_saved_trimmed_and_blank_becomes_null()
+    {
+        var (client, _) = await SeedAsync();
+
+        var created = await client.PostAsJsonAsync("/api/panel/products", new
+        {
+            name = "Raflı Ürün", defaultPrice = 10m, shelfLocation = "  A-3 / 2  ",
+        });
+        created.StatusCode.Should().Be(HttpStatusCode.Created);
+        var dto = (await created.Content.ReadFromJsonAsync<ProductDto>())!;
+
+        dto.ShelfLocation.Should().Be("A-3 / 2");
+
+        var cleared = await client.PutAsJsonAsync($"/api/panel/products/{dto.Id}", new
+        {
+            name = "Raflı Ürün", defaultPrice = 10m, shelfLocation = "   ",
+        });
+        cleared.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await cleared.Content.ReadFromJsonAsync<ProductDto>())!
+            .ShelfLocation.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Shelf_location_longer_than_the_column_is_rejected()
+    {
+        var (client, _) = await SeedAsync();
+
+        var resp = await client.PostAsJsonAsync("/api/panel/products", new
+        {
+            name = "Uzun Raf", defaultPrice = 10m,
+            shelfLocation = new string('R', CatalogLimits.ShelfLocation + 1),
+        });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await HasValidationErrorAsync(resp, "ShelfLocation")).Should().BeTrue();
     }
 }

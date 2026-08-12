@@ -32,6 +32,12 @@ public static class CatalogLimits
     public const int ProductName = 200;
 
     /// <summary>
+    /// Raf/konum etiketi — serbest metin ("A-3 / 2", "Depo arka raf").
+    /// 40 karakter: rozet olarak ürün ızgarasında tek satırda görünmeli.
+    /// </summary>
+    public const int ShelfLocation = 40;
+
+    /// <summary>
     /// Türetilmiş: <c>Normalize(Name)</c>. Katlama 1:1, boşluk sıkıştırma
     /// yalnız kısaltır — yani <c>Name</c>'i asla aşamaz.
     /// </summary>

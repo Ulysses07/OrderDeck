@@ -55,6 +55,12 @@ public sealed class Product
     /// <summary>Maliyet — ürün bazlı kâr için. Kullanıcı 1a'da kartta istedi.</summary>
     public decimal? Cost { get; set; }
 
+    /// <summary>
+    /// Raf/konum. <b>Ürün düzeyinde</b>, varyant düzeyinde değil: aynı ürünün
+    /// tüm varyantları pratikte aynı yerde duruyor. Boş bırakılabilir.
+    /// </summary>
+    public string? ShelfLocation { get; set; }
+
     public string? Axis1Name { get; set; }
     public AxisRole? Axis1Role { get; set; }
     public string? Axis2Name { get; set; }

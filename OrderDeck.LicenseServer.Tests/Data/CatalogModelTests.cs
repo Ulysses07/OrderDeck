@@ -116,6 +116,7 @@ public class CatalogModelTests : IClassFixture<ApiFactory>
             (typeof(Product), nameof(Product.NameSearch), CatalogLimits.NameSearch),
             (typeof(Product), nameof(Product.Axis1Name), CatalogLimits.AxisName),
             (typeof(Product), nameof(Product.Axis2Name), CatalogLimits.AxisName),
+            (typeof(Product), nameof(Product.ShelfLocation), CatalogLimits.ShelfLocation),
             (typeof(Product), nameof(Product.PhotoObjectKey), CatalogLimits.PhotoObjectKey),
             (typeof(Product), nameof(Product.PhotoContentType), CatalogLimits.PhotoContentType),
             (typeof(ProductVariant), nameof(ProductVariant.Axis1Value), CatalogLimits.AxisValue),

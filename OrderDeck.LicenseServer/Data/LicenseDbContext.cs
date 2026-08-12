@@ -653,6 +653,7 @@ public class LicenseDbContext : DbContext
             b.HasKey(p => p.Id);
             b.Property(p => p.Code).HasMaxLength(CatalogLimits.ProductCode).IsRequired();
             b.Property(p => p.Name).HasMaxLength(CatalogLimits.ProductName).IsRequired();
+            b.Property(p => p.ShelfLocation).HasMaxLength(CatalogLimits.ShelfLocation);
             // NameSearch'e BİLEREK indeks konmuyor: arama `Contains` yapıyor,
             // yani SQL'de `LIKE '%…%'` — önden joker olduğu için hiçbir B-tree
             // indeksi taranamaz. İşe yaramayan indeks yalnız yazma maliyeti ve
