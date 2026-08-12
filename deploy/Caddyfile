@@ -105,33 +105,41 @@ orderdeckapp.com {
 
 # ─── OrderDeck Panel (panel.orderdeckapp.com) ───────────────────────────────
 # Ayrı repo (OrderDeck-Mobile) → Vite bundle → CI rsync ile
-# /opt/orderdeck/panel-out → /srv/panel bind-mount. emarglobal.com kalıbının
-# aynısı, TEK farkla: 404 → /404.html DEĞİL, /index.html.
+# /opt/orderdeck/panel-out → /srv/panel bind-mount.
 #
-# Sebep: panel bir SPA. Kullanıcı /katalog/urun/<guid> adresini yenilediğinde
-# diskte o yolda dosya yok; Caddy 404 verirse uygulama hiç açılmaz. index.html'e
-# yeniden yazmak React Router'ın rotayı çözmesini sağlıyor.
+# emarglobal.com'dan ayrılıyor: orası statik sayfa kümesi, burası bir SPA.
+# Kullanıcı /katalog/urun/<guid> adresini yenilediğinde diskte o yolda dosya
+# yok; sunucunun index.html'i 200 ile vermesi gerekiyor ki React Router rotayı
+# çözebilsin.
 panel.orderdeckapp.com {
     import security_headers
     encode gzip zstd
 
-    @static path *.css *.js *.svg *.png *.jpg *.jpeg *.webp *.woff2 *.ico
-    header @static Cache-Control "public, max-age=31536000, immutable"
-
-    # index.html ASLA uzun cache'lenmez: hash'li varlıklara işaret eden tek
-    # dosya o. Cache'lenirse kullanıcı yeni sürüme hiç geçemez.
-    @html path *.html /
-    header @html Cache-Control "no-cache"
-
     root * /srv/panel
-    file_server {
-        precompressed gzip
+
+    # Vite hash'li varlıkların hepsini /assets/ altına koyuyor. Burada eksik
+    # bir dosya GERÇEKTEN 404 olmalı — index.html'e düşürülürse tarayıcı JS
+    # beklerken HTML alır ve hata "Unexpected token '<'" diye görünür, asıl
+    # sebebi (eksik/bozuk dosya) gizler.
+    handle /assets/* {
+        header Cache-Control "public, max-age=31536000, immutable"
+        file_server {
+            precompressed gzip
+        }
     }
 
-    handle_errors {
-        @404 expression {http.error.status_code} == 404
-        rewrite @404 /index.html
-        file_server
+    # SPA rotaları. `handle_errors` + `rewrite` kalıbı KULLANILMIYOR: gövdeyi
+    # doğru verse de durum kodunu 404 bırakıyor, yani her derin bağlantı bozuk
+    # sayfa gibi raporlanıyor. `try_files` index.html'i 200 ile döndürür.
+    #
+    # Cache-Control burada no-cache: index.html hash'li varlıklara işaret eden
+    # tek dosya; cache'lenirse kullanıcı yeni sürüme hiç geçemez.
+    handle {
+        header Cache-Control "no-cache"
+        try_files {path} /index.html
+        file_server {
+            precompressed gzip
+        }
     }
 }
 
