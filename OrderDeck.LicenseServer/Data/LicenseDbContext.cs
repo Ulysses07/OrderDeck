@@ -53,6 +53,7 @@ public class LicenseDbContext : DbContext
     public DbSet<Category> Categories => Set<Category>();
     public DbSet<Product> Products => Set<Product>();
     public DbSet<ProductVariant> ProductVariants => Set<ProductVariant>();
+    public DbSet<ProductPhoto> ProductPhotos => Set<ProductPhoto>();
 
     /// <summary>
     /// Türetilmiş kolonların tazelendiği <b>tek</b> nokta.
@@ -653,6 +654,7 @@ public class LicenseDbContext : DbContext
             b.HasKey(p => p.Id);
             b.Property(p => p.Code).HasMaxLength(CatalogLimits.ProductCode).IsRequired();
             b.Property(p => p.Name).HasMaxLength(CatalogLimits.ProductName).IsRequired();
+            b.Property(p => p.ShelfLocation).HasMaxLength(CatalogLimits.ShelfLocation);
             // NameSearch'e BİLEREK indeks konmuyor: arama `Contains` yapıyor,
             // yani SQL'de `LIKE '%…%'` — önden joker olduğu için hiçbir B-tree
             // indeksi taranamaz. İşe yaramayan indeks yalnız yazma maliyeti ve
@@ -664,8 +666,6 @@ public class LicenseDbContext : DbContext
             b.Property(p => p.Axis2Name).HasMaxLength(CatalogLimits.AxisName);
             b.Property(p => p.Axis1Role).HasConversion<int>();
             b.Property(p => p.Axis2Role).HasConversion<int>();
-            b.Property(p => p.PhotoObjectKey).HasMaxLength(CatalogLimits.PhotoObjectKey);
-            b.Property(p => p.PhotoContentType).HasMaxLength(CatalogLimits.PhotoContentType);
             b.HasOne(p => p.License).WithMany()
                 .HasForeignKey(p => p.LicenseId).OnDelete(DeleteBehavior.Cascade);
             b.HasOne(p => p.Category).WithMany()
@@ -688,6 +688,19 @@ public class LicenseDbContext : DbContext
                 .HasForeignKey(v => v.ProductId).OnDelete(DeleteBehavior.Cascade);
             b.HasIndex(v => new { v.ProductId, v.VariantCode }).IsUnique();
             b.HasIndex(v => new { v.LicenseId, v.VariantCode });
+        });
+
+        mb.Entity<ProductPhoto>(b =>
+        {
+            b.HasKey(p => p.Id);
+            b.Property(p => p.ObjectKey).HasMaxLength(CatalogLimits.PhotoObjectKey).IsRequired();
+            b.Property(p => p.ContentType).HasMaxLength(CatalogLimits.PhotoContentType).IsRequired();
+            b.HasOne(p => p.Product).WithMany(pr => pr.Photos)
+                .HasForeignKey(p => p.ProductId).OnDelete(DeleteBehavior.Cascade);
+            b.HasIndex(p => new { p.ProductId, p.SortOrder });
+            // Yetim temizleme işi kovadaki anahtarı DB'de arıyor; anahtarın
+            // benzersizliği o karşılaştırmanın ön şartı.
+            b.HasIndex(p => p.ObjectKey).IsUnique();
         });
 
         // Seed SKUs

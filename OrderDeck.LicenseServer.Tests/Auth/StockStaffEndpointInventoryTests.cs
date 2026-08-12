@@ -39,18 +39,21 @@ public class StockStaffEndpointInventoryTests
 
         "PanelProductsController.List",
         "PanelProductsController.NextCode",
+        "PanelProductsController.AxisValues",
         "PanelProductsController.Get",
         "PanelProductsController.Create",
         "PanelProductsController.Update",
         "PanelProductsController.Delete",
 
         "PanelProductVariantsController.Create",
+        "PanelProductVariantsController.CreateBulk",
         "PanelProductVariantsController.Update",
         "PanelProductVariantsController.Delete",
 
         "PanelProductPhotoController.CreateUploadUrl",
         "PanelProductPhotoController.Attach",
-        "PanelProductPhotoController.GetUrl",
+        "PanelProductPhotoController.List",
+        "PanelProductPhotoController.Reorder",
         "PanelProductPhotoController.Delete",
     ];
 

@@ -32,6 +32,12 @@ public static class CatalogLimits
     public const int ProductName = 200;
 
     /// <summary>
+    /// Raf/konum etiketi — serbest metin ("A-3 / 2", "Depo arka raf").
+    /// 40 karakter: rozet olarak ürün ızgarasında tek satırda görünmeli.
+    /// </summary>
+    public const int ShelfLocation = 40;
+
+    /// <summary>
     /// Türetilmiş: <c>Normalize(Name)</c>. Katlama 1:1, boşluk sıkıştırma
     /// yalnız kısaltır — yani <c>Name</c>'i asla aşamaz.
     /// </summary>
@@ -39,6 +45,13 @@ public static class CatalogLimits
     public const int AxisName = 40;
     public const int PhotoObjectKey = 512;
     public const int PhotoContentType = 100;
+
+    /// <summary>
+    /// Ürün başına azami fotoğraf. 4: ürün kartında tek sırada sığıyor, R2
+    /// maliyetini ve yükleme süresini öngörülebilir tutuyor. Sınır sunucuda
+    /// zorlanır — panel yalnız butonu gizler.
+    /// </summary>
+    public const int MaxProductPhotos = 4;
     public const int AxisValue = 60;
     public const int AxisCode = 8;
 
@@ -50,6 +63,14 @@ public static class CatalogLimits
     /// Bu yüzden ayrıca çalışma zamanı kontrolü yok.
     /// </summary>
     public const int VariantCode = 64;
+
+    /// <summary>
+    /// Tek toplu istekte yazılabilecek azami varyant. Gerçek ihtiyaç 12–20
+    /// (3 renk × 4 beden); 200, elle kurulan uç senaryolara bile fazlasıyla
+    /// yeterken tek isteğin veritabanını kilitleyerek kötüye kullanılmasını
+    /// engelliyor.
+    /// </summary>
+    public const int MaxBulkVariants = 200;
 
     public const int Barcode = 64;
 

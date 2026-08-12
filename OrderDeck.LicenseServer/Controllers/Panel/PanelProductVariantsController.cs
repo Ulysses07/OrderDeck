@@ -102,6 +102,109 @@ public sealed class PanelProductVariantsController : ControllerBase
             $"/api/panel/products/{product.Id}/variants/{variant.Id}", ToDto(variant));
     }
 
+    public sealed record BulkRequest(List<VariantRequest> Items);
+    public sealed record BulkResultDto(
+        IReadOnlyList<PanelProductsController.VariantDto> Variants);
+
+    /// <summary>
+    /// Varyant üreteci 12–20 satır birden çıkarıyor. Bunları tek tek POST etmek,
+    /// ortada bir hata olursa <b>yarım kurulmuş ürün</b> bırakır; kullanıcı
+    /// tekrar denediğinde ilk yazılanlar çakışır ve o noktadan sonrası elle
+    /// temizlik olur. Bu uç ya hepsini yazar ya hiçbirini.
+    ///
+    /// <b>Atomikliği nasıl sağlıyor:</b> açık bir <c>BeginTransaction</c> YOK.
+    /// Bütün doğrulama ve çakışma kontrolü hiçbir şey yazmadan önce bitiyor,
+    /// sonra tek bir <c>SaveChangesAsync</c> çağrılıyor — EF onu zaten tek
+    /// işlemde gönderiyor. Açık işlem açmak testleri de bozardı: EF InMemory
+    /// işlem desteklemiyor, <c>BeginTransaction</c> orada uyarı/istisna üretir.
+    /// </summary>
+    [AllowStockStaff]
+    [HttpPost("bulk")]
+    public async Task<IActionResult> CreateBulk(
+        Guid productId, [FromBody] BulkRequest req, CancellationToken ct)
+    {
+        var licenseId = await ResolveActiveLicenseAsync(ct);
+        if (licenseId is null) return Problem(title: "no-active-license", statusCode: 400);
+
+        var product = await LoadProductAsync(productId, licenseId.Value, ct);
+        if (product is null) return NotFound();
+
+        var items = req.Items ?? [];
+        if (items.Count == 0)
+            return Problem(title: "empty-batch",
+                detail: "Yazılacak varyant yok.", statusCode: 400);
+        if (items.Count > CatalogLimits.MaxBulkVariants)
+            return Problem(title: "batch-too-large",
+                detail: $"Tek seferde en çok {CatalogLimits.MaxBulkVariants} varyant "
+                      + "yazılabilir.", statusCode: 400);
+
+        // 1) Hepsini doğrula. Tek satır bile geçmezse hiçbir şey yazılmaz.
+        var built = new List<Segments>(items.Count);
+        foreach (var item in items)
+        {
+            var segments = BuildSegments(product, item, out var error);
+            if (error is not null) return error;
+            built.Add(segments);
+        }
+
+        // 2) Parti İÇİ tekrar. Veritabanına sormadan yakalanır: üreteç aynı
+        //    kombinasyonu iki kez üretmiş ya da iki farklı yazım aynı koda
+        //    düşmüş olabilir ("Siyah" / "siyah"). Bu kontrol olmasaydı hata
+        //    ancak benzersiz indeksten dönerdi — yani prod'da 500 olarak.
+        for (var i = 0; i < built.Count; i++)
+        for (var j = i + 1; j < built.Count; j++)
+            if (string.Equals(built[i].VariantCode, built[j].VariantCode,
+                    StringComparison.Ordinal))
+                return Problem(title: "duplicate-in-batch",
+                    detail: $"'{Describe(built[j].Axis1Value, built[j].Axis2Value)}' "
+                          + $"listede birden fazla kez var ({built[j].VariantCode}).",
+                    statusCode: 409);
+
+        // 3) Var olanlarla çakışma — tekil uçla aynı kural, aynı metot.
+        foreach (var segments in built)
+        {
+            var conflict = await VariantCodeTakenAsync(product.Id, segments, null, ct);
+            if (conflict is not null) return conflict;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var variants = built.Zip(items, (segments, item) => new ProductVariant
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = product.LicenseId,
+            ProductId = product.Id,
+            Axis1Value = segments.Axis1Value,
+            Axis1Code = segments.Axis1Code,
+            Axis2Value = segments.Axis2Value,
+            Axis2Code = segments.Axis2Code,
+            VariantCode = segments.VariantCode,
+            IsActive = item.IsActive,
+            CreatedAt = now,
+            UpdatedAt = now,
+        }).ToList();
+
+        _db.ProductVariants.AddRange(variants);
+        product.UpdatedAt = now;
+
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException)
+        {
+            // Create'teki yarışın aynısı (gerekçe orada). Tek fark: hangi satırın
+            // çakıştığını bilmiyoruz, hepsini yeniden soruyoruz.
+            foreach (var segments in built)
+            {
+                var raced = await VariantCodeTakenAsync(product.Id, segments, null, ct);
+                if (raced is not null) return raced;
+            }
+            throw;
+        }
+
+        return Ok(new BulkResultDto(variants.Select(ToDto).ToList()));
+    }
+
     [AllowStockStaff]
     [HttpPut("{id:guid}")]
     public async Task<IActionResult> Update(

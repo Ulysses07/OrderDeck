@@ -10,14 +10,18 @@ using OrderDeck.LicenseServer.Services.BroadcastPosts;
 namespace OrderDeck.LicenseServer.Controllers.Panel;
 
 /// <summary>
-/// Ürün fotoğrafı (Faz 1a). İki adımlı presigned yükleme: baytlar panelden
-/// doğrudan R2'ye gider, sunucu yalnız anahtarı doğrular ve kaydeder.
+/// Ürün fotoğraf galerisi (Faz 1a). İki adımlı presigned yükleme: baytlar
+/// panelden doğrudan R2'ye gider, sunucu yalnız anahtarı doğrular ve
+/// <see cref="ProductPhoto"/> satırı yazar.
+///
+/// Kapak = en küçük <see cref="ProductPhoto.SortOrder"/>. Ayrı IsCover alanı
+/// bilerek yok: iki doğruluk kaynağı er geç ayrışır.
 ///
 /// Sunucu baytları görmediği için <b>küçültme yapamaz</b>; panel yüklemeden
 /// önce küçültür, sunucu sınırı uygular.
 /// </summary>
 [ApiController]
-[Route("api/panel/products/{productId:guid}/photo")]
+[Route("api/panel/products/{productId:guid}/photos")]
 [Authorize(AuthenticationSchemes = "Bearer-Customer")]
 public sealed class PanelProductPhotoController : ControllerBase
 {
@@ -45,16 +49,18 @@ public sealed class PanelProductPhotoController : ControllerBase
     // Attribute PARAMETREYE yazılır, [property:] hedefiyle değil — MVC record'un
     // birincil kurucusunu okuyor.
     //
-    // PhotoContentType'a karşılık gelen bir DTO alanı yok: o değer istemciden
-    // değil R2'nin HeadAsync yanıtından geliyor ve zaten izin listesindeki üç
-    // MIME türünden biri olmak zorunda.
+    // ContentType istemciden değil R2'nin HeadAsync yanıtından geliyor ve zaten
+    // izin listesindeki üç MIME türünden biri olmak zorunda.
     public sealed record AttachRequest(
         [MaxLength(CatalogLimits.PhotoObjectKey)] string ObjectKey,
         int? Width,
         int? Height);
+
+    public sealed record ReorderRequest(List<Guid> Ids);
+
     public sealed record PhotoDto(
-        string ObjectKey, string ContentType, long SizeBytes, int? Width, int? Height);
-    public sealed record PhotoUrlDto(string Url);
+        Guid Id, string ObjectKey, string ContentType, long SizeBytes,
+        int? Width, int? Height, int SortOrder, string Url);
 
     [AllowStockStaff]
     [HttpPost("upload-url")]
@@ -72,6 +78,12 @@ public sealed class PanelProductPhotoController : ControllerBase
             return Problem(title: "file-too-large",
                 detail: "Fotoğraf en çok 5 MB olabilir.", statusCode: 400);
 
+        var count = await _db.ProductPhotos.CountAsync(p => p.ProductId == productId, ct);
+        if (count >= CatalogLimits.MaxProductPhotos)
+            return Problem(title: "photo-limit-reached",
+                detail: $"Bir ürüne en çok {CatalogLimits.MaxProductPhotos} fotoğraf "
+                      + "eklenebilir.", statusCode: 409);
+
         var objectKey = Prefix(licenseId.Value, productId) + Guid.NewGuid().ToString("N") + ".img";
         var url = await _storage.CreateUploadUrlAsync(objectKey, req.ContentType, req.SizeBytes, ct);
 
@@ -79,7 +91,7 @@ public sealed class PanelProductPhotoController : ControllerBase
     }
 
     [AllowStockStaff]
-    [HttpPut]
+    [HttpPost]
     public async Task<IActionResult> Attach(
         Guid productId, [FromBody] AttachRequest req, CancellationToken ct)
     {
@@ -104,39 +116,51 @@ public sealed class PanelProductPhotoController : ControllerBase
             return Problem(title: "file-too-large",
                 detail: "Fotoğraf en çok 5 MB olabilir.", statusCode: 400);
 
-        var previousKey = product.PhotoObjectKey;
+        var existing = await _db.ProductPhotos
+            .Where(p => p.ProductId == productId)
+            .OrderBy(p => p.SortOrder)
+            .ToListAsync(ct);
 
-        product.PhotoObjectKey = key;
-        product.PhotoContentType = info.ContentType;
-        product.PhotoSizeBytes = info.SizeBytes;
-        product.PhotoWidth = req.Width;
-        product.PhotoHeight = req.Height;
+        if (existing.Count >= CatalogLimits.MaxProductPhotos)
+        {
+            // Yükleme URL'i alındıktan sonra başka bir sekme sınırı doldurmuş:
+            // yeni nesne artık yetim, hemen sil. Beklemek de olurdu (temizlik
+            // işi 24 saat sonra alırdı) ama sebebi burada kesin biliyoruz.
+            await _storage.DeleteAsync(key, ct);
+            return Problem(title: "photo-limit-reached",
+                detail: $"Bir ürüne en çok {CatalogLimits.MaxProductPhotos} fotoğraf "
+                      + "eklenebilir.", statusCode: 409);
+        }
+
+        if (existing.Exists(p => string.Equals(p.ObjectKey, key, StringComparison.Ordinal)))
+            return Problem(title: "photo-already-attached",
+                detail: "Bu fotoğraf zaten ekli.", statusCode: 409);
+
+        var photo = new ProductPhoto
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = licenseId.Value,
+            ProductId = productId,
+            ObjectKey = key,
+            ContentType = info.ContentType,
+            SizeBytes = info.SizeBytes,
+            Width = req.Width,
+            Height = req.Height,
+            SortOrder = existing.Count,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        _db.ProductPhotos.Add(photo);
         product.UpdatedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync(ct);
 
-        if (previousKey is not null && previousKey != key)
-            await _storage.DeleteAsync(previousKey, ct);
-
-        return Ok(new PhotoDto(key, info.ContentType, info.SizeBytes, req.Width, req.Height));
+        return Created(
+            $"/api/panel/products/{productId}/photos/{photo.Id}",
+            await ToDtoAsync(photo, ct));
     }
 
     [AllowStockStaff]
-    [HttpGet("url")]
-    public async Task<IActionResult> GetUrl(Guid productId, CancellationToken ct)
-    {
-        var licenseId = await ResolveActiveLicenseAsync(ct);
-        if (licenseId is null) return Problem(title: "no-active-license", statusCode: 400);
-
-        var product = await FindAsync(productId, licenseId.Value, ct);
-        if (product?.PhotoObjectKey is null) return NotFound();
-
-        var url = await _storage.CreateDownloadUrlAsync(product.PhotoObjectKey, ct);
-        return Ok(new PhotoUrlDto(url));
-    }
-
-    [AllowStockStaff]
-    [HttpDelete]
-    public async Task<IActionResult> Delete(Guid productId, CancellationToken ct)
+    [HttpGet]
+    public async Task<IActionResult> List(Guid productId, CancellationToken ct)
     {
         var licenseId = await ResolveActiveLicenseAsync(ct);
         if (licenseId is null) return Problem(title: "no-active-license", statusCode: 400);
@@ -144,20 +168,97 @@ public sealed class PanelProductPhotoController : ControllerBase
         var product = await FindAsync(productId, licenseId.Value, ct);
         if (product is null) return NotFound();
 
-        var key = product.PhotoObjectKey;
-        if (key is null) return NoContent();
+        var photos = await _db.ProductPhotos.AsNoTracking()
+            .Where(p => p.ProductId == productId)
+            .OrderBy(p => p.SortOrder)
+            .ToListAsync(ct);
 
-        product.PhotoObjectKey = null;
-        product.PhotoContentType = null;
-        product.PhotoSizeBytes = null;
-        product.PhotoWidth = null;
-        product.PhotoHeight = null;
+        var dtos = new List<PhotoDto>(photos.Count);
+        foreach (var photo in photos) dtos.Add(await ToDtoAsync(photo, ct));
+        return Ok(dtos);
+    }
+
+    /// <summary>
+    /// Sıralamayı baştan yazar; <b>ilk id kapak olur</b>. Gelen liste ürünün
+    /// bütün fotoğraflarını tam olarak bir kez içermek zorunda — eksik liste
+    /// kabul edilseydi listede olmayan fotoğrafın sırası belirsiz kalır ve kapak
+    /// kullanıcının görmediği bir kurala göre değişirdi.
+    /// </summary>
+    [AllowStockStaff]
+    [HttpPut("order")]
+    public async Task<IActionResult> Reorder(
+        Guid productId, [FromBody] ReorderRequest req, CancellationToken ct)
+    {
+        var licenseId = await ResolveActiveLicenseAsync(ct);
+        if (licenseId is null) return Problem(title: "no-active-license", statusCode: 400);
+
+        var product = await FindAsync(productId, licenseId.Value, ct);
+        if (product is null) return NotFound();
+
+        var photos = await _db.ProductPhotos
+            .Where(p => p.ProductId == productId)
+            .ToListAsync(ct);
+
+        var ids = req.Ids ?? [];
+        if (ids.Count != photos.Count
+            || ids.Distinct().Count() != ids.Count
+            || ids.Exists(id => photos.TrueForAll(p => p.Id != id)))
+            return Problem(title: "photo-order-mismatch",
+                detail: "Sıralama listesi ürünün fotoğraflarıyla birebir eşleşmeli.",
+                statusCode: 400);
+
+        for (var i = 0; i < ids.Count; i++)
+            photos.First(p => p.Id == ids[i]).SortOrder = i;
+
         product.UpdatedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync(ct);
 
-        await _storage.DeleteAsync(key, ct);
+        var dtos = new List<PhotoDto>(photos.Count);
+        foreach (var photo in photos.OrderBy(p => p.SortOrder))
+            dtos.Add(await ToDtoAsync(photo, ct));
+        return Ok(dtos);
+    }
+
+    [AllowStockStaff]
+    [HttpDelete("{id:guid}")]
+    public async Task<IActionResult> Delete(Guid productId, Guid id, CancellationToken ct)
+    {
+        var licenseId = await ResolveActiveLicenseAsync(ct);
+        if (licenseId is null) return Problem(title: "no-active-license", statusCode: 400);
+
+        var product = await FindAsync(productId, licenseId.Value, ct);
+        if (product is null) return NotFound();
+
+        var photos = await _db.ProductPhotos
+            .Where(p => p.ProductId == productId)
+            .OrderBy(p => p.SortOrder)
+            .ToListAsync(ct);
+
+        var photo = photos.FirstOrDefault(p => p.Id == id);
+        if (photo is null) return NotFound();
+
+        _db.ProductPhotos.Remove(photo);
+        photos.Remove(photo);
+
+        // Boşluk kapatılıyor: 0,2,3 gibi bir dizi kapak kuralını bozmaz ama
+        // sonraki eklemenin SortOrder'ı (= kalan sayı) mevcut bir satırla
+        // çakışırdı.
+        for (var i = 0; i < photos.Count; i++) photos[i].SortOrder = i;
+
+        product.UpdatedAt = DateTimeOffset.UtcNow;
+
+        // DB önce, R2 sonra: ters sırada olsa ve commit düşse, kayıt var olmayan
+        // bir nesneye işaret ederdi. Bu sırada en kötü ihtimal yetim nesne, onu
+        // da ProductPhotoOrphanCleanupJob topluyor.
+        await _db.SaveChangesAsync(ct);
+        await _storage.DeleteAsync(photo.ObjectKey, ct);
+
         return NoContent();
     }
+
+    private async Task<PhotoDto> ToDtoAsync(ProductPhoto p, CancellationToken ct)
+        => new(p.Id, p.ObjectKey, p.ContentType, p.SizeBytes, p.Width, p.Height,
+            p.SortOrder, await _storage.CreateDownloadUrlAsync(p.ObjectKey, ct));
 
     private static string Prefix(Guid licenseId, Guid productId)
         => $"{licenseId:N}/products/{productId:N}/";

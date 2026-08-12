@@ -21,16 +21,22 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         string? Axis2Value, string? Axis2Code,
         string VariantCode, string? Barcode, bool IsActive);
 
+    private sealed record PhotoRow(
+        Guid Id, string ObjectKey, string ContentType, long SizeBytes,
+        int? Width, int? Height, int SortOrder, string Url);
+
     private sealed record ProductDto(
         Guid Id, Guid? CategoryId, string Code, string Name,
         decimal DefaultPrice, decimal? Cost,
+        string? ShelfLocation,
         string? Axis1Name, int? Axis1Role,
         string? Axis2Name, int? Axis2Role,
+        List<PhotoRow> Photos,
         bool IsArchived, List<VariantDto> Variants);
 
     private sealed record ProductRow(
         Guid Id, Guid? CategoryId, string Code, string Name,
-        decimal DefaultPrice, bool IsArchived, int VariantCount);
+        decimal DefaultPrice, bool IsArchived, string? CoverUrl, int VariantCount);
 
     private sealed record ProductPage(List<ProductRow> Items, int Total);
 
@@ -926,7 +932,7 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
     private async Task<string> AttachPhotoAsync(HttpClient client, Guid productId)
     {
         var upload = await client.PostAsJsonAsync(
-            $"/api/panel/products/{productId}/photo/upload-url",
+            $"/api/panel/products/{productId}/photos/upload-url",
             new { contentType = "image/jpeg", sizeBytes = 120_000 });
         upload.StatusCode.Should().Be(HttpStatusCode.OK);
         var key = (await upload.Content
@@ -934,10 +940,10 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
 
         _factory.BroadcastMedia.Seed(key, 120_000, "image/jpeg");
 
-        var attach = await client.PutAsJsonAsync(
-            $"/api/panel/products/{productId}/photo",
+        var attach = await client.PostAsJsonAsync(
+            $"/api/panel/products/{productId}/photos",
             new { objectKey = key, width = 800, height = 800 });
-        attach.StatusCode.Should().Be(HttpStatusCode.OK);
+        attach.StatusCode.Should().Be(HttpStatusCode.Created);
         return key;
     }
 
@@ -980,5 +986,148 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         var dto = await client.GetFromJsonAsync<NextCodeDto>("/api/panel/products/next-code");
 
         dto!.Code.Should().Be("A2");
+    }
+
+    [Fact]
+    public async Task Shelf_location_is_saved_trimmed_and_blank_becomes_null()
+    {
+        var (client, _) = await SeedAsync();
+
+        var created = await client.PostAsJsonAsync("/api/panel/products", new
+        {
+            name = "Raflı Ürün", defaultPrice = 10m, shelfLocation = "  A-3 / 2  ",
+        });
+        created.StatusCode.Should().Be(HttpStatusCode.Created);
+        var dto = (await created.Content.ReadFromJsonAsync<ProductDto>())!;
+
+        dto.ShelfLocation.Should().Be("A-3 / 2");
+
+        var cleared = await client.PutAsJsonAsync($"/api/panel/products/{dto.Id}", new
+        {
+            name = "Raflı Ürün", defaultPrice = 10m, shelfLocation = "   ",
+        });
+        cleared.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await cleared.Content.ReadFromJsonAsync<ProductDto>())!
+            .ShelfLocation.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Shelf_location_longer_than_the_column_is_rejected()
+    {
+        var (client, _) = await SeedAsync();
+
+        var resp = await client.PostAsJsonAsync("/api/panel/products", new
+        {
+            name = "Uzun Raf", defaultPrice = 10m,
+            shelfLocation = new string('R', CatalogLimits.ShelfLocation + 1),
+        });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await HasValidationErrorAsync(resp, "ShelfLocation")).Should().BeTrue();
+    }
+
+    private sealed record AxisValues(string Name, List<string> Values);
+
+    [Fact]
+    public async Task Axis_values_returns_distinct_values_used_under_the_same_axis_name()
+    {
+        var (client, _) = await SeedAsync();
+
+        var tisort = await CreateProductAsync(client, "Tişört", "AV1",
+            axis1Name: "Renk", axis1Role: 1, axis2Name: "Beden", axis2Role: 2);
+        foreach (var (renk, beden) in new[] { ("Siyah", "M"), ("Beyaz", "L") })
+            (await client.PostAsJsonAsync($"/api/panel/products/{tisort.Id}/variants",
+                new { axis1Value = renk, axis2Value = beden, isActive = true }))
+                .StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var gomlek = await CreateProductAsync(client, "Gömlek", "AV2",
+            axis1Name: "Beden", axis1Role: 2);
+        (await client.PostAsJsonAsync($"/api/panel/products/{gomlek.Id}/variants",
+            new { axis1Value = "XL", isActive = true }))
+            .StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var resp = await client.GetFromJsonAsync<AxisValues>(
+            "/api/panel/products/axis-values?name=Beden");
+
+        resp!.Values.Should().BeEquivalentTo(new[] { "M", "L", "XL" },
+            "eksen adı hangi slotta olursa olsun değerler tek listede toplanmalı");
+    }
+
+    [Fact]
+    public async Task Axis_values_needs_a_name()
+    {
+        var (client, _) = await SeedAsync();
+
+        var resp = await client.GetAsync("/api/panel/products/axis-values?name=  ");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await TitleAsync(resp)).Should().Be("missing-axis-name");
+    }
+
+    /// <summary>
+    /// Öneriler kiracı sınırını aşmamalı. Eksen adları jenerik ("Beden"), yani
+    /// iki lisansın aynı adı kullanması kural değil istisna değil — sızıntı
+    /// olsaydı bir mağaza diğerinin beden/renk listesini görürdü.
+    /// </summary>
+    [Fact]
+    public async Task Axis_values_never_leaks_another_tenants_values()
+    {
+        var (clientA, _) = await SeedAsync();
+        var mine = await CreateProductAsync(clientA, "Tişört", "AV3",
+            axis1Name: "Beden", axis1Role: 2);
+        (await clientA.PostAsJsonAsync($"/api/panel/products/{mine.Id}/variants",
+            new { axis1Value = "M", isActive = true }))
+            .StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var (clientB, _) = await SeedAsync();
+        var theirs = await CreateProductAsync(clientB, "Gömlek", "AV4",
+            axis1Name: "Beden", axis1Role: 2);
+        (await clientB.PostAsJsonAsync($"/api/panel/products/{theirs.Id}/variants",
+            new { axis1Value = "XXL", isActive = true }))
+            .StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var resp = await clientA.GetFromJsonAsync<AxisValues>(
+            "/api/panel/products/axis-values?name=Beden");
+
+        resp!.Values.Should().BeEquivalentTo(new[] { "M" });
+    }
+
+    [Fact]
+    public async Task Product_without_photos_has_no_cover_and_an_empty_gallery()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Kapaksız", "K1");
+
+        var page = await client.GetFromJsonAsync<ProductPage>("/api/panel/products");
+        page!.Items.Single(i => i.Id == product.Id).CoverUrl.Should().BeNull();
+
+        var detail = await client.GetFromJsonAsync<ProductDto>(
+            $"/api/panel/products/{product.Id}");
+        detail!.Photos.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Product_with_photos_has_cover_url_in_list_and_sorted_gallery_in_detail()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Fotoğraflı galeri", "GR1");
+
+        // İki fotoğraf ekle — AttachPhotoAsync her seferinde yeni bir anahtar üretir.
+        var key0 = await AttachPhotoAsync(client, product.Id);
+        var key1 = await AttachPhotoAsync(client, product.Id);
+
+        // Liste satırında CoverUrl dolu olmalı (SortOrder = 0 olan fotoğrafın URL'si).
+        var page = await client.GetFromJsonAsync<ProductPage>("/api/panel/products");
+        var row = page!.Items.Single(i => i.Id == product.Id);
+        row.CoverUrl.Should().NotBeNullOrEmpty("kapak URL'si dolu olmalı");
+
+        // Detayda Photos listesi iki eleman, SortOrder 0 ve 1 sırasıyla.
+        var detail = await client.GetFromJsonAsync<ProductDto>(
+            $"/api/panel/products/{product.Id}");
+        detail!.Photos.Should().HaveCount(2);
+        detail.Photos[0].SortOrder.Should().Be(0);
+        detail.Photos[1].SortOrder.Should().Be(1);
+        detail.Photos[0].Url.Should().NotBeNullOrEmpty();
+        detail.Photos[1].Url.Should().NotBeNullOrEmpty();
     }
 }

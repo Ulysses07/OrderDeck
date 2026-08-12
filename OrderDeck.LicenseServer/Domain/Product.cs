@@ -55,17 +55,16 @@ public sealed class Product
     /// <summary>Maliyet — ürün bazlı kâr için. Kullanıcı 1a'da kartta istedi.</summary>
     public decimal? Cost { get; set; }
 
+    /// <summary>
+    /// Raf/konum. <b>Ürün düzeyinde</b>, varyant düzeyinde değil: aynı ürünün
+    /// tüm varyantları pratikte aynı yerde duruyor. Boş bırakılabilir.
+    /// </summary>
+    public string? ShelfLocation { get; set; }
+
     public string? Axis1Name { get; set; }
     public AxisRole? Axis1Role { get; set; }
     public string? Axis2Name { get; set; }
     public AxisRole? Axis2Role { get; set; }
-
-    // Fotoğraf — BroadcastPost deseniyle birebir (R2, presigned URL).
-    public string? PhotoObjectKey { get; set; }
-    public string? PhotoContentType { get; set; }
-    public long? PhotoSizeBytes { get; set; }
-    public int? PhotoWidth { get; set; }
-    public int? PhotoHeight { get; set; }
 
     /// <summary>Faz 1c'de Hangfire işi dolduracak; 1a'da yalnız liste filtresi okur.</summary>
     public bool IsArchived { get; set; }
@@ -73,6 +72,9 @@ public sealed class Product
 
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
+
+    /// <summary>Galeri. Kapak = en küçük <c>SortOrder</c>.</summary>
+    public List<ProductPhoto> Photos { get; set; } = new();
 
     public List<ProductVariant> Variants { get; set; } = new();
 }

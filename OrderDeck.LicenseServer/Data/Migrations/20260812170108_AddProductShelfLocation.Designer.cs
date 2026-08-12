@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using OrderDeck.LicenseServer.Data;
 
@@ -11,9 +12,11 @@ using OrderDeck.LicenseServer.Data;
 namespace OrderDeck.LicenseServer.Data.Migrations
 {
     [DbContext(typeof(LicenseDbContext))]
-    partial class LicenseDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260812170108_AddProductShelfLocation")]
+    partial class AddProductShelfLocation
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1111,6 +1114,23 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<string>("PhotoContentType")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int?>("PhotoHeight")
+                        .HasColumnType("int");
+
+                    b.Property<string>("PhotoObjectKey")
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)");
+
+                    b.Property<long?>("PhotoSizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<int?>("PhotoWidth")
+                        .HasColumnType("int");
+
                     b.Property<string>("ShelfLocation")
                         .HasMaxLength(40)
                         .HasColumnType("nvarchar(40)");
@@ -1128,53 +1148,6 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.HasIndex("LicenseId", "IsArchived", "UpdatedAt");
 
                     b.ToTable("Products");
-                });
-
-            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.ProductPhoto", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("ContentType")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<int?>("Height")
-                        .HasColumnType("int");
-
-                    b.Property<Guid>("LicenseId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("ObjectKey")
-                        .IsRequired()
-                        .HasMaxLength(512)
-                        .HasColumnType("nvarchar(512)");
-
-                    b.Property<Guid>("ProductId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<long>("SizeBytes")
-                        .HasColumnType("bigint");
-
-                    b.Property<int>("SortOrder")
-                        .HasColumnType("int");
-
-                    b.Property<int?>("Width")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ObjectKey")
-                        .IsUnique();
-
-                    b.HasIndex("ProductId", "SortOrder");
-
-                    b.ToTable("ProductPhotos");
                 });
 
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.ProductVariant", b =>
@@ -2319,17 +2292,6 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Navigation("License");
                 });
 
-            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.ProductPhoto", b =>
-                {
-                    b.HasOne("OrderDeck.LicenseServer.Domain.Product", "Product")
-                        .WithMany("Photos")
-                        .HasForeignKey("ProductId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Product");
-                });
-
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.ProductVariant", b =>
                 {
                     b.HasOne("OrderDeck.LicenseServer.Domain.Product", "Product")
@@ -2556,8 +2518,6 @@ namespace OrderDeck.LicenseServer.Data.Migrations
 
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Product", b =>
                 {
-                    b.Navigation("Photos");
-
                     b.Navigation("Variants");
                 });
 #pragma warning restore 612, 618
