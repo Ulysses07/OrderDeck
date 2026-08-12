@@ -595,8 +595,10 @@ public class LicenseDbContext : DbContext
         mb.Entity<Category>(b =>
         {
             b.HasKey(c => c.Id);
-            b.Property(c => c.Name).HasMaxLength(120).IsRequired();
-            b.Property(c => c.Path).HasMaxLength(512).IsRequired();
+            // Uzunluklar CatalogLimits'ten: aynı sabitleri istek DTO'ları da
+            // okuyor, böylece doğrulama ile şema ayrışamıyor.
+            b.Property(c => c.Name).HasMaxLength(CatalogLimits.CategoryName).IsRequired();
+            b.Property(c => c.Path).HasMaxLength(CatalogLimits.CategoryPath).IsRequired();
             b.HasOne(c => c.License).WithMany()
                 .HasForeignKey(c => c.LicenseId).OnDelete(DeleteBehavior.Cascade);
             // Restrict: alt kategorisi olan kategori silinemesin, controller 409
@@ -610,16 +612,16 @@ public class LicenseDbContext : DbContext
         mb.Entity<Product>(b =>
         {
             b.HasKey(p => p.Id);
-            b.Property(p => p.Code).HasMaxLength(32).IsRequired();
-            b.Property(p => p.Name).HasMaxLength(200).IsRequired();
+            b.Property(p => p.Code).HasMaxLength(CatalogLimits.ProductCode).IsRequired();
+            b.Property(p => p.Name).HasMaxLength(CatalogLimits.ProductName).IsRequired();
             b.Property(p => p.DefaultPrice).HasPrecision(18, 2);
             b.Property(p => p.Cost).HasPrecision(18, 2);
-            b.Property(p => p.Axis1Name).HasMaxLength(40);
-            b.Property(p => p.Axis2Name).HasMaxLength(40);
+            b.Property(p => p.Axis1Name).HasMaxLength(CatalogLimits.AxisName);
+            b.Property(p => p.Axis2Name).HasMaxLength(CatalogLimits.AxisName);
             b.Property(p => p.Axis1Role).HasConversion<int>();
             b.Property(p => p.Axis2Role).HasConversion<int>();
-            b.Property(p => p.PhotoObjectKey).HasMaxLength(512);
-            b.Property(p => p.PhotoContentType).HasMaxLength(100);
+            b.Property(p => p.PhotoObjectKey).HasMaxLength(CatalogLimits.PhotoObjectKey);
+            b.Property(p => p.PhotoContentType).HasMaxLength(CatalogLimits.PhotoContentType);
             b.HasOne(p => p.License).WithMany()
                 .HasForeignKey(p => p.LicenseId).OnDelete(DeleteBehavior.Cascade);
             b.HasOne(p => p.Category).WithMany()
@@ -632,12 +634,12 @@ public class LicenseDbContext : DbContext
         mb.Entity<ProductVariant>(b =>
         {
             b.HasKey(v => v.Id);
-            b.Property(v => v.Axis1Value).HasMaxLength(60);
-            b.Property(v => v.Axis2Value).HasMaxLength(60);
-            b.Property(v => v.Axis1Code).HasMaxLength(8);
-            b.Property(v => v.Axis2Code).HasMaxLength(8);
-            b.Property(v => v.VariantCode).HasMaxLength(64).IsRequired();
-            b.Property(v => v.Barcode).HasMaxLength(64);
+            b.Property(v => v.Axis1Value).HasMaxLength(CatalogLimits.AxisValue);
+            b.Property(v => v.Axis2Value).HasMaxLength(CatalogLimits.AxisValue);
+            b.Property(v => v.Axis1Code).HasMaxLength(CatalogLimits.AxisCode);
+            b.Property(v => v.Axis2Code).HasMaxLength(CatalogLimits.AxisCode);
+            b.Property(v => v.VariantCode).HasMaxLength(CatalogLimits.VariantCode).IsRequired();
+            b.Property(v => v.Barcode).HasMaxLength(CatalogLimits.Barcode);
             b.HasOne(v => v.Product).WithMany(p => p.Variants)
                 .HasForeignKey(v => v.ProductId).OnDelete(DeleteBehavior.Cascade);
             b.HasIndex(v => new { v.ProductId, v.VariantCode }).IsUnique();

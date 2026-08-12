@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -9,11 +10,15 @@ using OrderDeck.LicenseServer.Services.Catalog;
 namespace OrderDeck.LicenseServer.Controllers.Panel;
 
 /// <summary>
-/// Kategori ağacı (Faz 1a). Sınırsız derinlik; ürün ağacın herhangi bir
-/// seviyesine bağlanabilir.
+/// Kategori ağacı (Faz 1a). Ürün ağacın herhangi bir seviyesine bağlanabilir.
 ///
 /// Yol id tabanlı tutulduğu için alt ağaç sorgusu tek <c>StartsWith</c>;
 /// recursive CTE yok.
+///
+/// Derinlik <see cref="CatalogLimits.CategoryMaxDepth"/> seviye ile sınırlı:
+/// <c>Path</c> seviye başına 33 karakter büyüyor ve kolon
+/// <c>nvarchar(512)</c> — kolonu büyütmek de serbest değil, çünkü
+/// <c>(LicenseId, Path)</c> indeks anahtarının parçası.
 /// </summary>
 [ApiController]
 [Route("api/panel/categories")]
@@ -25,8 +30,20 @@ public sealed class PanelCategoriesController : ControllerBase
 
     public PanelCategoriesController(LicenseDbContext db) => _db = db;
 
-    public sealed record CreateRequest(string Name, Guid? ParentCategoryId, int SortOrder);
-    public sealed record UpdateRequest(string Name, int SortOrder, bool IsActive);
+    // DİKKAT — positional record'da doğrulama attribute'u PARAMETREYE yazılır,
+    // [property:] hedefiyle DEĞİL. MVC record'un birincil kurucusunu okuyor;
+    // metadata property'ye taşınırsa çalışma zamanında istisna atıyor
+    // ("validation metadata must be associated with the constructor parameter").
+    public sealed record CreateRequest(
+        [MaxLength(CatalogLimits.CategoryName)] string Name,
+        Guid? ParentCategoryId,
+        int SortOrder);
+
+    public sealed record UpdateRequest(
+        [MaxLength(CatalogLimits.CategoryName)] string Name,
+        int SortOrder,
+        bool IsActive);
+
     public sealed record MoveRequest(Guid? ParentCategoryId);
 
     public sealed record CategoryDto(
@@ -73,6 +90,9 @@ public sealed class PanelCategoriesController : ControllerBase
             if (parentPath is null)
                 return Problem(title: "parent-not-found",
                     detail: "Üst kategori bulunamadı.", statusCode: 400);
+
+            if (CategoryPathService.Levels(parentPath) + 1 > CatalogLimits.CategoryMaxDepth)
+                return TooDeep();
         }
 
         var now = DateTimeOffset.UtcNow;
@@ -155,6 +175,14 @@ public sealed class PanelCategoriesController : ControllerBase
             .Where(c => c.LicenseId == licenseId.Value && c.Path.StartsWith(oldPrefix))
             .ToListAsync(ct);
 
+        // Taşıma alt ağacın TAMAMINI derinleştirir; bu yüzden ölçüt taşınan
+        // düğüm değil, EN DERİN torunu. Yalnız düğümün kendisine bakan bir
+        // kontrol, tavana oturan bir dalın altındaki yaprakları kaçırırdı.
+        var deepestBelow = subtree.Max(n => CategoryPathService.Levels(n.Path))
+                           - CategoryPathService.Levels(oldPrefix);
+        if (CategoryPathService.Levels(newPrefix) + deepestBelow > CatalogLimits.CategoryMaxDepth)
+            return TooDeep();
+
         var now = DateTimeOffset.UtcNow;
         foreach (var node in subtree)
         {
@@ -192,6 +220,11 @@ public sealed class PanelCategoriesController : ControllerBase
         await _db.SaveChangesAsync(ct);
         return NoContent();
     }
+
+    private IActionResult TooDeep()
+        => Problem(title: "category-too-deep",
+            detail: $"Kategori ağacı en çok {CatalogLimits.CategoryMaxDepth} "
+                  + "seviye olabilir.", statusCode: 400);
 
     private Task<Category?> FindAsync(Guid id, Guid licenseId, CancellationToken ct)
         => _db.Categories.FirstOrDefaultAsync(

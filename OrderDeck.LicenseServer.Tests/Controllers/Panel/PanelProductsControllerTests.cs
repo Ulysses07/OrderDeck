@@ -48,6 +48,20 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         return doc.RootElement.TryGetProperty("title", out var t) ? t.GetString() : null;
     }
 
+    /// <summary>
+    /// <c>[MaxLength]</c> ihlalini [ApiController] standart
+    /// <c>ValidationProblemDetails</c> ile döner — <c>Problem(title: "…")</c>
+    /// slug'ıyla değil. Bu yüzden başlık yerine <c>errors</c> sözlüğüne bakılır.
+    /// </summary>
+    private static async Task<bool> HasValidationErrorAsync(
+        HttpResponseMessage resp, string field)
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(
+            await resp.Content.ReadAsStringAsync());
+        return doc.RootElement.TryGetProperty("errors", out var errors)
+               && errors.TryGetProperty(field, out _);
+    }
+
     private async Task<(HttpClient client, Guid licenseId)> SeedAsync()
     {
         var (client, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
@@ -201,6 +215,85 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         (await TitleAsync(resp)).Should().Be("missing-name");
+    }
+
+    /// <summary>
+    /// Kolonlar sınırlı (<c>Name</c> 200, <c>Code</c> 32, eksen adı 40); sınır
+    /// DTO'da duyurulmazsa taşan girdi prod'da kesme hatasına, yani 500'e düşer.
+    /// InMemory bunu göremediği için sınır sunucu tarafında kapatılmalı.
+    /// </summary>
+    [Theory]
+    [InlineData("Name")]
+    [InlineData("Code")]
+    [InlineData("Axis1Name")]
+    [InlineData("Axis2Name")]
+    public async Task Create_400_when_a_field_exceeds_its_column_limit(string field)
+    {
+        var (client, _) = await SeedAsync();
+
+        var resp = await PostProductAsync(client,
+            name: field == "Name" ? new string('A', CatalogLimits.ProductName + 1) : "Uzun alan",
+            code: field == "Code" ? new string('A', CatalogLimits.ProductCode + 1) : null,
+            axis1Name: field is "Axis1Name" or "Axis2Name"
+                ? new string('A', CatalogLimits.AxisName + 1) : null,
+            axis1Role: field is "Axis1Name" or "Axis2Name" ? 1 : null,
+            axis2Name: field == "Axis2Name"
+                ? new string('B', CatalogLimits.AxisName + 1) : null,
+            axis2Role: field == "Axis2Name" ? 2 : null);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await HasValidationErrorAsync(resp, field)).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Update_400_when_the_name_exceeds_its_column_limit()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Kısa ad");
+
+        var resp = await client.PutAsJsonAsync($"/api/panel/products/{product.Id}", new
+        {
+            name = new string('A', CatalogLimits.ProductName + 1),
+            code = product.Code,
+            categoryId = (Guid?)null,
+            defaultPrice = product.DefaultPrice,
+            cost = (decimal?)null,
+            axis1Name = (string?)null, axis1Role = (int?)null,
+            axis2Name = (string?)null, axis2Role = (int?)null,
+        });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await HasValidationErrorAsync(resp, "Name")).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// <c>page * pageSize</c> int aritmetiğinde taşıyordu: 2147483647 negatif
+    /// bir atlamaya dönüşüp <c>OFFSET -N ROWS</c> üretiyor, SQL Server hata
+    /// veriyordu. Atlama hiçbir girdide negatif olmamalı.
+    /// </summary>
+    [Fact]
+    public async Task List_does_not_overflow_on_an_absurd_page_number()
+    {
+        var (client, _) = await SeedAsync();
+        await CreateProductAsync(client, "Tek ürün");
+
+        var page = await client.GetFromJsonAsync<ProductPage>(
+            $"/api/panel/products?page={int.MaxValue}&pageSize=50");
+
+        page!.Items.Should().BeEmpty();
+        page.Total.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task List_treats_a_negative_page_as_the_first_page()
+    {
+        var (client, _) = await SeedAsync();
+        await CreateProductAsync(client, "Tek ürün");
+
+        var page = await client.GetFromJsonAsync<ProductPage>(
+            $"/api/panel/products?page={int.MinValue}&pageSize=50");
+
+        page!.Items.Should().ContainSingle();
     }
 
     [Fact]

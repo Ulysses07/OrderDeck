@@ -16,6 +16,17 @@ public static class CategoryPathService
         => (parentPath ?? RootPath) + id.ToString("N") + "/";
 
     /// <summary>
+    /// Yoldaki seviye sayısı: kök <c>"/"</c> için 0, kök kategori
+    /// (<c>/a/</c>) için 1, <c>/a/b/</c> için 2.
+    ///
+    /// Derinlik tavanı buradan ölçülüyor: yol seviye başına 33 karakter
+    /// büyüyor ve <c>Path</c> kolonu sınırlı
+    /// (<see cref="OrderDeck.LicenseServer.Domain.CatalogLimits.CategoryMaxDepth"/>).
+    /// </summary>
+    public static int Levels(string path)
+        => path.Count(ch => ch == '/') - 1;
+
+    /// <summary>
     /// Bir kategori kendi alt ağacına taşınamaz. Yeni ebeveynin yolu, taşınan
     /// kategorinin yoluyla başlıyorsa bu bir döngüdür (kategorinin kendisi de
     /// dahil — kendi altına taşımak da yasak).

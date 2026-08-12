@@ -34,6 +34,20 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
         return doc.RootElement.TryGetProperty("title", out var t) ? t.GetString() : null;
     }
 
+    /// <summary>
+    /// <c>[MaxLength]</c> ihlalini [ApiController] standart
+    /// <c>ValidationProblemDetails</c> ile döner — <c>Problem(title: "…")</c>
+    /// slug'ıyla değil. Bu yüzden başlık yerine <c>errors</c> sözlüğüne bakılır.
+    /// </summary>
+    private static async Task<bool> HasValidationErrorAsync(
+        HttpResponseMessage resp, string field)
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(
+            await resp.Content.ReadAsStringAsync());
+        return doc.RootElement.TryGetProperty("errors", out var errors)
+               && errors.TryGetProperty(field, out _);
+    }
+
     private async Task<HttpClient> SeedAsync()
     {
         var (client, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
@@ -191,6 +205,31 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         (await TitleAsync(resp)).Should().Be("invalid-axis-code");
+    }
+
+    /// <summary>
+    /// Görünen eksen değeri serbest metin ama kolon <c>nvarchar(60)</c>;
+    /// sınır DTO'da duyurulmazsa taşan girdi prod'da 500 oluyor.
+    /// (Kod parçası ayrı bir konu: onu <c>AxisCodeDeriver</c> zaten 4 karaktere
+    /// kısaltıyor, yani 8'lik kolon yapı gereği taşmıyor.)
+    /// </summary>
+    [Theory]
+    [InlineData("Axis1Value")]
+    [InlineData("Axis2Value")]
+    public async Task Create_400_when_an_axis_value_exceeds_the_column_limit(string field)
+    {
+        var client = await SeedAsync();
+        var product = await CreateProductAsync(client,
+            axis1Name: "Renk", axis1Role: 2, axis2Name: "Beden", axis2Role: 1);
+
+        var resp = await PostVariantAsync(client, product.Id,
+            axis1Value: field == "Axis1Value"
+                ? new string('A', CatalogLimits.AxisValue + 1) : "Siyah",
+            axis2Value: field == "Axis2Value"
+                ? new string('B', CatalogLimits.AxisValue + 1) : "M");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await HasValidationErrorAsync(resp, field)).Should().BeTrue();
     }
 
     [Fact]

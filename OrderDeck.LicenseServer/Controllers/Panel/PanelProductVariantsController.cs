@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -28,11 +29,18 @@ public sealed class PanelProductVariantsController : ControllerBase
 
     public PanelProductVariantsController(LicenseDbContext db) => _db = db;
 
+    // DİKKAT — positional record'da doğrulama attribute'u PARAMETREYE yazılır,
+    // [property:] hedefiyle DEĞİL. MVC record'un birincil kurucusunu okuyor;
+    // metadata property'ye taşınırsa çalışma zamanında istisna atıyor.
+    //
+    // Kod parçalarını ayrıca AxisCodeDeriver 4 karaktere kısaltıyor; buradaki
+    // sınır kolonun kendisi (8). VariantCode istemciden GELMEZ, bu üçünden
+    // türetilir ve yapı gereği 64'e sığar (bkz. CatalogLimits.VariantCode).
     public sealed record VariantRequest(
-        string? Axis1Value,
-        string? Axis1Code,
-        string? Axis2Value,
-        string? Axis2Code,
+        [MaxLength(CatalogLimits.AxisValue)] string? Axis1Value,
+        [MaxLength(CatalogLimits.AxisCode)] string? Axis1Code,
+        [MaxLength(CatalogLimits.AxisValue)] string? Axis2Value,
+        [MaxLength(CatalogLimits.AxisCode)] string? Axis2Code,
         bool IsActive);
 
     [HttpPost]

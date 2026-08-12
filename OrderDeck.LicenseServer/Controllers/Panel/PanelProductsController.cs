@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -29,15 +30,19 @@ public sealed class PanelProductsController : ControllerBase
 
     public PanelProductsController(LicenseDbContext db) => _db = db;
 
+    // DİKKAT — positional record'da doğrulama attribute'u PARAMETREYE yazılır,
+    // [property:] hedefiyle DEĞİL. MVC record'un birincil kurucusunu okuyor;
+    // metadata property'ye taşınırsa çalışma zamanında istisna atıyor
+    // ("validation metadata must be associated with the constructor parameter").
     public sealed record UpsertRequest(
-        string Name,
-        string? Code,
+        [MaxLength(CatalogLimits.ProductName)] string Name,
+        [MaxLength(CatalogLimits.ProductCode)] string? Code,
         Guid? CategoryId,
         decimal DefaultPrice,
         decimal? Cost,
-        string? Axis1Name,
+        [MaxLength(CatalogLimits.AxisName)] string? Axis1Name,
         AxisRole? Axis1Role,
-        string? Axis2Name,
+        [MaxLength(CatalogLimits.AxisName)] string? Axis2Name,
         AxisRole? Axis2Role);
 
     public sealed record VariantDto(
@@ -128,7 +133,12 @@ public sealed class PanelProductsController : ControllerBase
         var total = await query.CountAsync(ct);
 
         var size = pageSize <= 0 ? DefaultPageSize : Math.Min(pageSize, MaxPageSize);
-        var skip = Math.Max(page - 1, 0) * size;
+
+        // Hesap long'da yapılıyor: int aritmetiğinde ?page=2147483647 taşıp
+        // NEGATİF bir atlamaya dönüşüyordu → "OFFSET -N ROWS" → SQL hatası, 500.
+        // Bozuk pageSize gibi bozuk page de reddedilmeyip KIRPILIYOR; uç nokta
+        // tek bir davranışta kalsın diye 400 tercih edilmedi.
+        var skip = (int)Math.Clamp(((long)page - 1) * size, 0, int.MaxValue);
 
         var rows = await query
             .OrderBy(p => p.Code)

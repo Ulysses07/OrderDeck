@@ -1,8 +1,12 @@
 namespace OrderDeck.LicenseServer.Domain;
 
 /// <summary>
-/// Sınırsız derinlikte kategori ağacı (örn. Erkek &gt; Üst Giyim &gt; Tişört).
-/// Ürün ağacın herhangi bir seviyesine bağlanabilir; yaprak olma zorunluluğu yok.
+/// Kategori ağacı (örn. Erkek &gt; Üst Giyim &gt; Tişört). Ürün ağacın herhangi
+/// bir seviyesine bağlanabilir; yaprak olma zorunluluğu yok.
+///
+/// Derinlik <see cref="CatalogLimits.CategoryMaxDepth"/> seviye ile sınırlı —
+/// "sınırsız" DEĞİL: <see cref="Path"/> seviye başına 33 karakter büyüyor ve
+/// kolon 512 karakter.
 /// </summary>
 public sealed class Category
 {

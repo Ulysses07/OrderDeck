@@ -26,6 +26,20 @@ public class PanelCategoriesControllerTests : IClassFixture<ApiFactory>
         return doc.RootElement.TryGetProperty("title", out var t) ? t.GetString() : null;
     }
 
+    /// <summary>
+    /// <c>[MaxLength]</c> ihlalini [ApiController] standart
+    /// <c>ValidationProblemDetails</c> ile döner — <c>Problem(title: "…")</c>
+    /// slug'ıyla değil. Bu yüzden başlık yerine <c>errors</c> sözlüğüne bakılır.
+    /// </summary>
+    private static async Task<bool> HasValidationErrorAsync(
+        HttpResponseMessage resp, string field)
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(
+            await resp.Content.ReadAsStringAsync());
+        return doc.RootElement.TryGetProperty("errors", out var errors)
+               && errors.TryGetProperty(field, out _);
+    }
+
     private async Task<(HttpClient client, Guid licenseId)> SeedAsync()
     {
         var (client, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
@@ -116,6 +130,120 @@ public class PanelCategoriesControllerTests : IClassFixture<ApiFactory>
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         (await TitleAsync(resp)).Should().Be("missing-name");
+    }
+
+    /// <summary>
+    /// Kolon <c>nvarchar(120)</c>. Sınır DTO'da <c>[MaxLength]</c> ile
+    /// duyurulmazsa istek prod'da kesme hatasına, yani 500'e düşer.
+    /// </summary>
+    [Fact]
+    public async Task Create_400_when_the_name_exceeds_the_column_limit()
+    {
+        var (client, _) = await SeedAsync();
+
+        var resp = await client.PostAsJsonAsync("/api/panel/categories",
+            new
+            {
+                name = new string('A', CatalogLimits.CategoryName + 1),
+                parentCategoryId = (Guid?)null,
+                sortOrder = 0,
+            });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await HasValidationErrorAsync(resp, "Name")).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Update_400_when_the_name_exceeds_the_column_limit()
+    {
+        var (client, _) = await SeedAsync();
+        var erkek = await CreateAsync(client, "Erkek");
+
+        var resp = await client.PutAsJsonAsync($"/api/panel/categories/{erkek.Id}",
+            new
+            {
+                name = new string('A', CatalogLimits.CategoryName + 1),
+                sortOrder = 0,
+                isActive = true,
+            });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await HasValidationErrorAsync(resp, "Name")).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// <c>Path</c> seviye başına 33 karakter büyüyor ve kolon 512 —
+    /// yani derinlik kapatılmazsa ağaç sessizce kolonu taşırır.
+    /// </summary>
+    [Fact]
+    public async Task Create_400_when_the_tree_would_get_too_deep()
+    {
+        var (client, _) = await SeedAsync();
+
+        CategoryDto? parent = null;
+        for (var level = 1; level <= CatalogLimits.CategoryMaxDepth; level++)
+            parent = await CreateAsync(client, $"Seviye {level}", parent?.Id);
+
+        parent!.Path.Length.Should().BeLessThanOrEqualTo(CatalogLimits.CategoryPath);
+
+        var resp = await client.PostAsJsonAsync("/api/panel/categories",
+            new { name = "Bir fazla", parentCategoryId = parent.Id, sortOrder = 0 });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await TitleAsync(resp)).Should().Be("category-too-deep");
+    }
+
+    /// <summary>
+    /// Taşıma tek düğümü değil ALT AĞACIN tamamını derinleştirir; kontrol
+    /// taşınan düğümün değil, en derin torununun yoluna bakmalı.
+    /// </summary>
+    [Fact]
+    public async Task Move_400_when_the_deepest_descendant_would_get_too_deep()
+    {
+        var (client, _) = await SeedAsync();
+
+        // Kökte 3 seviyelik küçük bir alt ağaç…
+        var dal = await CreateAsync(client, "Dal");
+        var orta = await CreateAsync(client, "Orta", dal.Id);
+        await CreateAsync(client, "Yaprak", orta.Id);
+
+        // …ve tavanın bir eksiğine kadar giden ayrı bir zincir. "Dal" oraya
+        // taşınınca TAM tavana oturur; taşan yalnız torunlarıdır.
+        CategoryDto? derin = null;
+        for (var level = 1; level <= CatalogLimits.CategoryMaxDepth - 1; level++)
+            derin = await CreateAsync(client, $"Zincir {level}", derin?.Id);
+
+        // Yalnız taşınan düğüme bakan bir kontrol bunu KAÇIRIR.
+        var resp = await client.PutAsJsonAsync($"/api/panel/categories/{dal.Id}/parent",
+            new { parentCategoryId = derin!.Id });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await TitleAsync(resp)).Should().Be("category-too-deep");
+    }
+
+    /// <summary>Tavanın tam sınırındaki taşıma reddedilmemeli.</summary>
+    [Fact]
+    public async Task Move_is_allowed_when_the_subtree_lands_exactly_on_the_limit()
+    {
+        var (client, _) = await SeedAsync();
+
+        var dal = await CreateAsync(client, "Dal");
+        var yaprak = await CreateAsync(client, "Yaprak", dal.Id);
+
+        // Zincir öyle seçiliyor ki taşınan 2 seviyelik alt ağaç tam tavana otursun.
+        CategoryDto? hedef = null;
+        for (var level = 1; level <= CatalogLimits.CategoryMaxDepth - 2; level++)
+            hedef = await CreateAsync(client, $"Zincir {level}", hedef?.Id);
+
+        var resp = await client.PutAsJsonAsync($"/api/panel/categories/{dal.Id}/parent",
+            new { parentCategoryId = hedef!.Id });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var rows = await client.GetFromJsonAsync<List<CategoryDto>>("/api/panel/categories");
+        var movedYaprak = rows!.Single(r => r.Id == yaprak.Id);
+        movedYaprak.Depth.Should().Be(CatalogLimits.CategoryMaxDepth - 1);
+        movedYaprak.Path.Length.Should().BeLessThanOrEqualTo(CatalogLimits.CategoryPath);
     }
 
     [Fact]

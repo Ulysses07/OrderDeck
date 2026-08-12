@@ -32,6 +32,20 @@ public class PanelProductPhotoControllerTests : IClassFixture<ApiFactory>
         return doc.RootElement.TryGetProperty("title", out var t) ? t.GetString() : null;
     }
 
+    /// <summary>
+    /// <c>[MaxLength]</c> ihlalini [ApiController] standart
+    /// <c>ValidationProblemDetails</c> ile döner — <c>Problem(title: "…")</c>
+    /// slug'ıyla değil. Bu yüzden başlık yerine <c>errors</c> sözlüğüne bakılır.
+    /// </summary>
+    private static async Task<bool> HasValidationErrorAsync(
+        HttpResponseMessage resp, string field)
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(
+            await resp.Content.ReadAsStringAsync());
+        return doc.RootElement.TryGetProperty("errors", out var errors)
+               && errors.TryGetProperty(field, out _);
+    }
+
     private async Task<HttpClient> SeedAsync()
     {
         var (client, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
@@ -180,6 +194,28 @@ public class PanelProductPhotoControllerTests : IClassFixture<ApiFactory>
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         (await TitleAsync(resp)).Should().Be("invalid-object-key");
+    }
+
+    /// <summary>
+    /// Anahtarı sunucu üretiyor (~111 karakter) ama Attach İSTEMCİDEN gelen
+    /// anahtarı yazıyor; önek kontrolünden sonrası serbest. Kolon
+    /// <c>nvarchar(512)</c> olduğu için uzun anahtar prod'da kesme hatası
+    /// demek — sınır DTO'da kapatılmalı.
+    /// </summary>
+    [Fact]
+    public async Task Attach_400_when_the_object_key_exceeds_the_column_limit()
+    {
+        var client = await SeedAsync();
+        var product = await CreateProductAsync(client);
+        var upload = await UploadUrlAsync(client, product.Id);
+        var prefix = (await upload.Content.ReadFromJsonAsync<UploadUrlDto>())!.ObjectKey;
+        var longKey = prefix + new string('x', CatalogLimits.PhotoObjectKey);
+        SimulateUpload(longKey);
+
+        var resp = await AttachAsync(client, product.Id, longKey);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await HasValidationErrorAsync(resp, "ObjectKey")).Should().BeTrue();
     }
 
     [Fact]

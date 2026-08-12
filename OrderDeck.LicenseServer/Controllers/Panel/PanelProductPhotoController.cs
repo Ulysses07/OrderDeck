@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -37,7 +38,21 @@ public sealed class PanelProductPhotoController : ControllerBase
 
     public sealed record UploadUrlRequest(string ContentType, long SizeBytes);
     public sealed record UploadUrlDto(string ObjectKey, string UploadUrl);
-    public sealed record AttachRequest(string ObjectKey, int? Width, int? Height);
+
+    // Anahtarı sunucu üretiyor (~111 karakter) ama YAZILAN, istemcinin geri
+    // gönderdiği anahtar; önek kontrolünden sonrası serbest uzunlukta. Kolon
+    // 512 olduğu için sınır burada kapatılıyor.
+    //
+    // Attribute PARAMETREYE yazılır, [property:] hedefiyle değil — MVC record'un
+    // birincil kurucusunu okuyor.
+    //
+    // PhotoContentType'a karşılık gelen bir DTO alanı yok: o değer istemciden
+    // değil R2'nin HeadAsync yanıtından geliyor ve zaten izin listesindeki üç
+    // MIME türünden biri olmak zorunda.
+    public sealed record AttachRequest(
+        [MaxLength(CatalogLimits.PhotoObjectKey)] string ObjectKey,
+        int? Width,
+        int? Height);
     public sealed record PhotoDto(
         string ObjectKey, string ContentType, long SizeBytes, int? Width, int? Height);
     public sealed record PhotoUrlDto(string Url);
