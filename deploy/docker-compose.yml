@@ -150,6 +150,9 @@ services:
       - ./web-out:/srv/web:ro
       # EMAR GLOBAL kurumsal sitesi (emarglobal.com) — ayrı repodan rsync'lenir.
       - ./emar-out:/srv/emar:ro
+      # OrderDeck Panel web sürümü (panel.orderdeckapp.com) — Mobile deposundan
+      # CI ile rsync'lenir.
+      - ./panel-out:/srv/panel:ro
       - caddy_data:/data
       - caddy_config:/config
     networks:
