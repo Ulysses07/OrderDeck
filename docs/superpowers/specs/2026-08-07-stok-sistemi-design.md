@@ -335,6 +335,14 @@ fiyatı geçmiş siparişleri etkilemez.
   basıyoruz.
 - **Okuma iki yerde:** stok girişi (eleman malı stoğa alırken) ve yayın (ürün
   okutulunca kod/fiyat/satıcı ekseni otomatik dolar).
+- **Yük donar, kod donmaz** (Faz 1a'da ortaya çıktı, 1c'yi bağlar). `VariantCode`
+  türetilmiş bir değer: ürün kodu elle değiştirilebildiği için (`A1` → `B7`)
+  varyant kodları da yenileniyor. Barkot yükü varyant kodudur, ama **basım
+  anındaki hâli** `ProductVariant.Barcode`'a kopyalanıp bir daha değişmez ve
+  okutma **`Barcode` üzerinden** çözümlenir, `VariantCode` üzerinden değil.
+  Aksi hâlde ürün kodunu değiştiren yayıncı rafa yapıştırılmış bütün etiketleri
+  sessizce geçersiz kılar. `Barcode` bu yüzden 1c'de kendi indeksini ister
+  (1a'da indeks `(LicenseId, VariantCode)` üzerinde).
 
 ## Etiket basma — panelden PDF, termal yazıcı
 
