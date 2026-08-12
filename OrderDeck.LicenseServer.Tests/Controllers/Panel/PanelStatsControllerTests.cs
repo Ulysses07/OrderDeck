@@ -64,11 +64,21 @@ public class PanelStatsControllerTests : IClassFixture<ApiFactory>
         var trNow = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(3));
         var todayStart = new DateTimeOffset(
             trNow.Year, trNow.Month, trNow.Day, 0, 0, 0, trNow.Offset);
-        // 1 dakika buffer — UTC clock skew için.
-        var availableMin = Math.Max(1, (int)(trNow - todayStart).TotalMinutes - 1);
-        var step = Math.Max(1, availableMin / (count + 1));
+
+        // Adım DAKİKA cinsinden hesaplanmamalı. `Math.Max(1, ...)` yüzünden
+        // gün başına yakın koşuda adım 1 dakikaya sabitleniyor ve `count`
+        // damga penceresi taşırıyordu: TR 00:06'da 10 damga 10 dakika geriye
+        // yayılıp son dördü düne düşüyor, "today" filtresi onları saymıyordu.
+        // (2026-08-12 CI: cancelRate 0.2 yerine 0 geldi.)
+        //
+        // Pencerenin kesrini kullanınca taşma tanım gereği imkânsız: en uzak
+        // damga count/(count+1) × pencere kadar geride, yani hep gün içinde.
+        var available = trNow - todayStart - TimeSpan.FromSeconds(1); // skew payı
+        if (available < TimeSpan.Zero) available = TimeSpan.Zero;
+        var step = available / (count + 1);
+
         return Enumerable.Range(1, count)
-            .Select(i => trNow.AddMinutes(-i * step))
+            .Select(i => trNow - step * i)
             .ToList();
     }
 
