@@ -198,6 +198,63 @@ public sealed class PanelProductsController : ControllerBase
         return Ok(new NextCodeDto(CatalogCodeSequence.Next(codes)));
     }
 
+    public sealed record AxisValuesDto(string Name, IReadOnlyList<string> Values);
+
+    private const int MaxAxisValueSuggestions = 100;
+
+    /// <summary>
+    /// Aynı lisansta bu eksen adı altında daha önce kullanılmış değerler.
+    /// Eksen değerleri ürüne özel tutuluyor; bu uç olmadan her yeni üründe
+    /// S/M/L/XL yeniden yazılmak zorunda.
+    ///
+    /// <b>Öneridir, zorlayıcı değil.</b> Eksen adı eşleşmesi tam eşitlik:
+    /// harf duyarlılığı veritabanının collation'ına kalıyor (SQL Server
+    /// duyarsız, PostgreSQL duyarlı olacak). Bu bilinçli — eşleşmeyen ad
+    /// yalnız <i>daha az öneri</i> demek, yanlış veri demek değil. Bunun için
+    /// ayrı bir normalleştirilmiş kolon açmak, kazandığından fazlasına mal
+    /// olurdu.
+    /// </summary>
+    [AllowStockStaff]
+    [HttpGet("axis-values")]
+    public async Task<IActionResult> AxisValues(
+        [FromQuery] string? name, CancellationToken ct)
+    {
+        var licenseId = await ResolveActiveLicenseAsync(ct);
+        if (licenseId is null) return Problem(title: "no-active-license", statusCode: 400);
+
+        var axisName = (name ?? string.Empty).Trim();
+        if (axisName.Length == 0)
+            return Problem(title: "missing-axis-name",
+                detail: "Eksen adı gerekli.", statusCode: 400);
+
+        var fromAxis1 = await _db.ProductVariants.AsNoTracking()
+            .Where(v => v.LicenseId == licenseId
+                        && v.Axis1Value != null
+                        && v.Product.Axis1Name == axisName)
+            .Select(v => v.Axis1Value!)
+            .Distinct()
+            .ToListAsync(ct);
+
+        var fromAxis2 = await _db.ProductVariants.AsNoTracking()
+            .Where(v => v.LicenseId == licenseId
+                        && v.Axis2Value != null
+                        && v.Product.Axis2Name == axisName)
+            .Select(v => v.Axis2Value!)
+            .Distinct()
+            .ToListAsync(ct);
+
+        // Son tekilleştirme bellekte: "Siyah" ile "siyah" kullanıcı için aynı
+        // öneri. Ölçüt arama ile ORTAK normalleştirici, kopyası yazılmıyor.
+        var values = fromAxis1.Concat(fromAxis2)
+            .GroupBy(SearchNormalizer.Normalize, StringComparer.Ordinal)
+            .Select(g => g.First())
+            .OrderBy(v => v, StringComparer.OrdinalIgnoreCase)
+            .Take(MaxAxisValueSuggestions)
+            .ToList();
+
+        return Ok(new AxisValuesDto(axisName, values));
+    }
+
     [AllowStockStaff]
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)

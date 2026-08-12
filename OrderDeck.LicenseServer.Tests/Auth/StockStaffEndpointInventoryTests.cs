@@ -39,6 +39,7 @@ public class StockStaffEndpointInventoryTests
 
         "PanelProductsController.List",
         "PanelProductsController.NextCode",
+        "PanelProductsController.AxisValues",
         "PanelProductsController.Get",
         "PanelProductsController.Create",
         "PanelProductsController.Update",

@@ -1020,4 +1020,42 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         (await HasValidationErrorAsync(resp, "ShelfLocation")).Should().BeTrue();
     }
+
+    private sealed record AxisValues(string Name, List<string> Values);
+
+    [Fact]
+    public async Task Axis_values_returns_distinct_values_used_under_the_same_axis_name()
+    {
+        var (client, _) = await SeedAsync();
+
+        var tisort = await CreateProductAsync(client, "Tişört", "AV1",
+            axis1Name: "Renk", axis1Role: 1, axis2Name: "Beden", axis2Role: 2);
+        foreach (var (renk, beden) in new[] { ("Siyah", "M"), ("Beyaz", "L") })
+            (await client.PostAsJsonAsync($"/api/panel/products/{tisort.Id}/variants",
+                new { axis1Value = renk, axis2Value = beden, isActive = true }))
+                .StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var gomlek = await CreateProductAsync(client, "Gömlek", "AV2",
+            axis1Name: "Beden", axis1Role: 2);
+        (await client.PostAsJsonAsync($"/api/panel/products/{gomlek.Id}/variants",
+            new { axis1Value = "XL", isActive = true }))
+            .StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var resp = await client.GetFromJsonAsync<AxisValues>(
+            "/api/panel/products/axis-values?name=Beden");
+
+        resp!.Values.Should().BeEquivalentTo(new[] { "M", "L", "XL" },
+            "eksen adı hangi slotta olursa olsun değerler tek listede toplanmalı");
+    }
+
+    [Fact]
+    public async Task Axis_values_needs_a_name()
+    {
+        var (client, _) = await SeedAsync();
+
+        var resp = await client.GetAsync("/api/panel/products/axis-values?name=  ");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await TitleAsync(resp)).Should().Be("missing-axis-name");
+    }
 }
