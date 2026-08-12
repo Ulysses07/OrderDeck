@@ -19,6 +19,7 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 [ApiController]
 [Route("api/panel/products")]
 [Authorize(AuthenticationSchemes = "Bearer-Customer")]
+[AllowStockStaff]
 public sealed class PanelProductsController : ControllerBase
 {
     private const int DefaultPageSize = 50;

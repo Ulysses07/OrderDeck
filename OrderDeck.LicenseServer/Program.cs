@@ -489,7 +489,8 @@ public class Program
                 name: "licensedb",
                 tags: new[] { "ready", "db" });
 
-        builder.Services.AddControllers();
+        builder.Services.AddControllers(opt =>
+            opt.Filters.Add<OrderDeck.LicenseServer.Services.Auth.StockStaffScopeFilter>());
         builder.Services.AddMemoryCache(); // YouTube handle doğrulama cache'i için
         builder.Services.AddHttpClient();  // YouTubeVerifyController için IHttpClientFactory
         builder.Services.AddRazorPages(opt =>

@@ -18,6 +18,7 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 [ApiController]
 [Route("api/panel/categories")]
 [Authorize(AuthenticationSchemes = "Bearer-Customer")]
+[AllowStockStaff]
 public sealed class PanelCategoriesController : ControllerBase
 {
     private readonly LicenseDbContext _db;

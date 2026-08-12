@@ -38,7 +38,7 @@ public sealed class JwtTokenService
     /// tüm verisini görür ama kimlik kendi audit trail'inde kayıtlı.
     /// </summary>
     public (string Token, DateTimeOffset ExpiresAt) IssueOperatorToken(
-        Guid operatorId, Guid tenantCustomerId, string email)
+        Guid operatorId, Guid tenantCustomerId, string email, string role)
     {
         var lifetimeMinutes = _options.AccessTokenLifetimeMinutes > 0
             ? _options.AccessTokenLifetimeMinutes
@@ -49,6 +49,7 @@ public sealed class JwtTokenService
             new Claim(TenantClaims.TenantCustomerId, tenantCustomerId.ToString()),
             new Claim(TenantClaims.PrincipalType, "operator"),
             new Claim(TenantClaims.OperatorId, operatorId.ToString()),
+            new Claim(TenantClaims.OperatorRole, role),
             new Claim("email", email));
         return (token, expiresAt);
     }

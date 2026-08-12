@@ -32,7 +32,7 @@ public sealed class PanelOperatorsController : ControllerBase
         _audit = audit;
     }
 
-    public sealed record InviteRequest(string Email, string Name, string Password);
+    public sealed record InviteRequest(string Email, string Name, string Password, string? Role);
     public sealed record OperatorDto(
         Guid Id,
         Guid LicenseId,
@@ -54,6 +54,14 @@ public sealed class PanelOperatorsController : ControllerBase
         if (req.Password.Length < 8)
             return Problem(title: "weak-password",
                 detail: "Şifre en az 8 karakter olmalı.", statusCode: 400);
+
+        var role = string.IsNullOrWhiteSpace(req.Role)
+            ? OperatorRoles.Staff
+            : req.Role.Trim().ToLowerInvariant();
+
+        if (!OperatorRoles.IsAssignable(role))
+            return Problem(title: "invalid-role",
+                detail: "Rol yalnız 'staff' ya da 'stock' olabilir.", statusCode: 400);
 
         // PR-5 Faz 2: Invite owner-only. Staff operator yeni operator ekleyemez.
         if (User.IsOperator())
@@ -79,7 +87,7 @@ public sealed class PanelOperatorsController : ControllerBase
             Email = req.Email.Trim().ToLowerInvariant(),
             Name = req.Name.Trim(),
             PasswordHash = _hasher.Hash(req.Password),
-            Role = "staff",
+            Role = role,
             CreatedAt = DateTimeOffset.UtcNow
         };
         _db.OperatorUsers.Add(op);

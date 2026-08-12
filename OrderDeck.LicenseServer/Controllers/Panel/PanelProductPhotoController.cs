@@ -18,6 +18,7 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 [ApiController]
 [Route("api/panel/products/{productId:guid}/photo")]
 [Authorize(AuthenticationSchemes = "Bearer-Customer")]
+[AllowStockStaff]
 public sealed class PanelProductPhotoController : ControllerBase
 {
     private const long MaxSizeBytes = 5 * 1024 * 1024;

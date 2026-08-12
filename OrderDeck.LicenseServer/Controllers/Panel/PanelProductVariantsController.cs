@@ -16,6 +16,7 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 [ApiController]
 [Route("api/panel/products/{productId:guid}/variants")]
 [Authorize(AuthenticationSchemes = "Bearer-Customer")]
+[AllowStockStaff]
 public sealed class PanelProductVariantsController : ControllerBase
 {
     private readonly LicenseDbContext _db;
