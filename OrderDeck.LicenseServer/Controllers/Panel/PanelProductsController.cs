@@ -230,11 +230,10 @@ public sealed class PanelProductsController : ControllerBase
                 .ToListAsync(ct);
             code = CatalogCodeSequence.Next(codes);
         }
-        else if (await _db.Products.AnyAsync(
-                     p => p.LicenseId == licenseId.Value && p.Code == code, ct))
+        else
         {
-            return Problem(title: "duplicate-code",
-                detail: $"'{code}' kodu zaten kullanılıyor.", statusCode: 409);
+            var taken = await CodeTakenAsync(licenseId.Value, code, excludeId: null, ct);
+            if (taken is not null) return taken;
         }
 
         var now = DateTimeOffset.UtcNow;
@@ -262,7 +261,29 @@ public sealed class PanelProductsController : ControllerBase
         if (product.Axis1Name is null)
             _db.ProductVariants.Add(BuildAutoVariant(product, now));
 
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException)
+        {
+            // Yarış: ön kontrolden sonra başka bir istek aynı kodu aldı. En sık
+            // hâli otomatik kod — kod boş bırakılınca sıradaki numara üretiliyor
+            // ve çift tıklama iki isteğe AYNI numarayı veriyor.
+            //
+            // Sebebi SQL hata numarasından (2601/2627) ayıklamıyoruz: sağlayıcıya
+            // bağımlı olur ve PostgreSQL göçünde sessizce çürür. Tekrar SORMAK
+            // hem sağlayıcıdan bağımsız hem kesin.
+            //
+            // Yeniden deneme (kodu tazeleyip tekrar kaydetme) BİLEREK yapılmadı:
+            // istisna sonrası entity'leri detach edip yeniden kurmak gerekirdi ve
+            // o yol EF InMemory'de hiç çalışmaz (benzersiz indeks zorlanmıyor) —
+            // yani hiç test edilemeyen bir kurtarma kodu eklerdik.
+            var raced = await CodeTakenAsync(licenseId.Value, code, product.Id, ct);
+            if (raced is not null) return raced;
+            throw; // Benzersizlik değilse (örn. eşzamanlı silinen kategorinin FK'sı)
+                   // yutma — bilinmeyen veri hatası 500 olarak görünmeli.
+        }
 
         var saved = await LoadAsync(product.Id, licenseId.Value, ct);
         return CreatedAtAction(nameof(Get), new { id = product.Id }, ToDto(saved!));
@@ -287,11 +308,10 @@ public sealed class PanelProductsController : ControllerBase
 
         var code = NormalizeCode(req.Code);
         if (code.Length == 0) code = product.Code;
-        if (code != product.Code && await _db.Products.AnyAsync(
-                p => p.LicenseId == licenseId.Value && p.Code == code, ct))
+        if (code != product.Code)
         {
-            return Problem(title: "duplicate-code",
-                detail: $"'{code}' kodu zaten kullanılıyor.", statusCode: 409);
+            var taken = await CodeTakenAsync(licenseId.Value, code, product.Id, ct);
+            if (taken is not null) return taken;
         }
 
         var newAxis1 = Trim(req.Axis1Name);
@@ -364,7 +384,19 @@ public sealed class PanelProductsController : ControllerBase
 
         SyncVariantCodes(product, now);
 
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException)
+        {
+            // Create'teki yarışın aynısı (gerekçe orada); kendi satırı çakışma
+            // sayılmasın diye dışlanıyor.
+            var raced = await CodeTakenAsync(licenseId.Value, code, product.Id, ct);
+            if (raced is not null) return raced;
+            throw;
+        }
+
         return Ok(ToDto(product));
     }
 
@@ -435,6 +467,33 @@ public sealed class PanelProductsController : ControllerBase
                 detail: "İki eksene aynı rol verilemez.", statusCode: 400);
 
         return null;
+    }
+
+    /// <summary>
+    /// Kod bu lisansta başkası tarafından tutuluyorsa 409 döner, yoksa null.
+    ///
+    /// Hem <c>SaveChanges</c> ÖNCESİ ön kontrol hem SONRASI yarış sınıflandırması
+    /// buradan geçiyor: iki ayrı kopya olsaydı biri değişip öbürü kalır, aynı
+    /// çakışma isteğin zamanlamasına göre 409 ya da 500 olurdu. Kural
+    /// atlanamayacağı TEK noktada.
+    ///
+    /// Sorgu <c>AsNoTracking</c>: <see cref="DbUpdateException"/> sonrası context
+    /// kirli, başarısız kayıt hâlâ <c>Added</c> durumunda takip ediliyor; izlenen
+    /// sorgu kimlik çözümlemesiyle o kaydı geri getirip yanlış cevap verebilir.
+    /// </summary>
+    private async Task<IActionResult?> CodeTakenAsync(
+        Guid licenseId, string code, Guid? excludeId, CancellationToken ct)
+    {
+        var taken = await _db.Products
+            .AsNoTracking()
+            .AnyAsync(p => p.LicenseId == licenseId
+                           && p.Code == code
+                           && (excludeId == null || p.Id != excludeId), ct);
+
+        return taken
+            ? Problem(title: "duplicate-code",
+                detail: $"'{code}' kodu zaten kullanılıyor.", statusCode: 409)
+            : null;
     }
 
     private async Task<IActionResult?> ValidateCategoryAsync(

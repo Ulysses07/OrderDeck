@@ -34,6 +34,14 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
         return doc.RootElement.TryGetProperty("title", out var t) ? t.GetString() : null;
     }
 
+    private static async Task<string?> DetailAsync(HttpResponseMessage resp)
+    {
+        var json = await resp.Content.ReadAsStringAsync();
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        return doc.RootElement.TryGetProperty("detail", out var d) ? d.GetString() : null;
+    }
+
     /// <summary>
     /// <c>[MaxLength]</c> ihlalini [ApiController] standart
     /// <c>ValidationProblemDetails</c> ile döner — <c>Problem(title: "…")</c>
@@ -232,15 +240,99 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
         (await HasValidationErrorAsync(resp, field)).Should().BeTrue();
     }
 
+    /// <summary>
+    /// Aynı değerin farklı yazımı GERÇEK tekrardır: kullanıcı açısından
+    /// "kırmızı" ile "Kırmızı" aynı varyant. Mesaj da kodu değil DEĞERİ anmalı —
+    /// kullanıcı kartta kodu değil değeri görüyor.
+    /// </summary>
     [Fact]
-    public async Task Create_409_on_a_duplicate_variant_code()
+    public async Task Create_409_duplicate_variant_when_the_same_value_is_re_added_in_another_casing()
     {
         var client = await SeedAsync();
         var product = await CreateProductAsync(client);
-        (await PostVariantAsync(client, product.Id, axis1Value: "Siyah"))
+        (await PostVariantAsync(client, product.Id, axis1Value: "Kırmızı"))
             .StatusCode.Should().Be(HttpStatusCode.Created);
 
-        var resp = await PostVariantAsync(client, product.Id, axis1Value: "Siyahımsı");
+        var resp = await PostVariantAsync(client, product.Id, axis1Value: "kırmızı");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await TitleAsync(resp)).Should().Be("duplicate-variant");
+        (await DetailAsync(resp)).Should().Contain("kırmızı");
+    }
+
+    /// <summary>
+    /// Değerler farklı ama türetilen 4 karakterlik kod aynı: kullanıcı iki AYRI
+    /// varyant istiyor ve hakkı da var. "Zaten var" demek onu yanlış yönlendirir
+    /// — kartta öyle bir değer yok. Ayrı slug + çareyi söyleyen mesaj şart.
+    /// </summary>
+    [Fact]
+    public async Task Create_409_variant_code_collision_when_a_different_value_derives_the_same_code()
+    {
+        var client = await SeedAsync();
+        var product = await CreateProductAsync(client);
+        (await PostVariantAsync(client, product.Id, axis1Value: "Kırmızı"))
+            .StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var resp = await PostVariantAsync(client, product.Id, axis1Value: "Kırmızılı");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await TitleAsync(resp)).Should().Be("variant-code-collision");
+        var detail = await DetailAsync(resp);
+        detail.Should().Contain("Kırmızılı");
+        detail.Should().Contain("'Kırmızı'");
+        detail.Should().Contain("eksen kodunu elle");
+    }
+
+    /// <summary>Çakışmanın çaresi işlemeli: eksen kodu elle verilince iki satır yan yana yaşar.</summary>
+    [Fact]
+    public async Task Create_201_when_the_colliding_value_carries_a_manual_axis_code()
+    {
+        var client = await SeedAsync();
+        var product = await CreateProductAsync(client);
+        (await PostVariantAsync(client, product.Id, axis1Value: "Kırmızı"))
+            .StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var resp = await PostVariantAsync(client, product.Id,
+            axis1Value: "Kırmızılı", axis1Code: "KRMZ");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Created);
+        var after = await client.GetFromJsonAsync<ProductDto>($"/api/panel/products/{product.Id}");
+        after!.Variants.Select(v => v.VariantCode).Should().BeEquivalentTo(
+            new[] { $"{product.Code}-KIRM", $"{product.Code}-KRMZ" });
+    }
+
+    /// <summary>İkinci eksende doğan çakışma da aynı sınıflandırmadan geçmeli.</summary>
+    [Fact]
+    public async Task Create_409_variant_code_collision_on_the_second_axis()
+    {
+        var client = await SeedAsync();
+        var product = await CreateProductAsync(client,
+            axis1Name: "Renk", axis1Role: 2, axis2Name: "Beden", axis2Role: 1);
+        (await PostVariantAsync(client, product.Id, axis1Value: "Siyah", axis2Value: "Küçük"))
+            .StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var resp = await PostVariantAsync(client, product.Id,
+            axis1Value: "Siyah", axis2Value: "Küçükçe");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await TitleAsync(resp)).Should().Be("variant-code-collision");
+        var detail = await DetailAsync(resp);
+        detail.Should().Contain("Siyah / Küçükçe");
+        detail.Should().Contain("'Siyah / Küçük'");
+    }
+
+    /// <summary>İki eksenli üründe gerçek tekrar da doğru slug'ı almalı.</summary>
+    [Fact]
+    public async Task Create_409_duplicate_variant_on_a_two_axis_product()
+    {
+        var client = await SeedAsync();
+        var product = await CreateProductAsync(client,
+            axis1Name: "Renk", axis1Role: 2, axis2Name: "Beden", axis2Role: 1);
+        (await PostVariantAsync(client, product.Id, axis1Value: "Siyah", axis2Value: "Küçük"))
+            .StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var resp = await PostVariantAsync(client, product.Id,
+            axis1Value: "siyah", axis2Value: "küçük");
 
         resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
         (await TitleAsync(resp)).Should().Be("duplicate-variant");
@@ -321,6 +413,57 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
 
         resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
         (await TitleAsync(resp)).Should().Be("duplicate-variant");
+    }
+
+    /// <summary>
+    /// Güncelleme yolu da ayrımı yapmalı: kardeşin koduna DÜŞEN ama değeri
+    /// farklı olan satır "zaten var" değil, çakışmadır.
+    /// </summary>
+    [Fact]
+    public async Task Update_409_variant_code_collision_when_the_new_value_derives_a_siblings_code()
+    {
+        var client = await SeedAsync();
+        var product = await CreateProductAsync(client);
+        await PostVariantAsync(client, product.Id, axis1Value: "Kırmızı");
+        var mavi = (await (await PostVariantAsync(client, product.Id, axis1Value: "Mavi"))
+            .Content.ReadFromJsonAsync<VariantDto>())!;
+
+        var resp = await client.PutAsJsonAsync(
+            $"/api/panel/products/{product.Id}/variants/{mavi.Id}",
+            new
+            {
+                axis1Value = "Kırmızılı", axis1Code = (string?)null,
+                axis2Value = (string?)null, axis2Code = (string?)null,
+                isActive = true,
+            });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await TitleAsync(resp)).Should().Be("variant-code-collision");
+        (await DetailAsync(resp)).Should().Contain("eksen kodunu elle");
+    }
+
+    /// <summary>
+    /// Satır kendi değerleriyle kaydedilince kendi kendiyle çakışmamalı —
+    /// yoksa sadece <c>IsActive</c>'i değiştiren kaydetme 409 yerdi.
+    /// </summary>
+    [Fact]
+    public async Task Update_200_when_the_row_is_saved_with_its_own_values()
+    {
+        var client = await SeedAsync();
+        var product = await CreateProductAsync(client);
+        var created = (await (await PostVariantAsync(client, product.Id, axis1Value: "Kırmızı"))
+            .Content.ReadFromJsonAsync<VariantDto>())!;
+
+        var resp = await client.PutAsJsonAsync(
+            $"/api/panel/products/{product.Id}/variants/{created.Id}",
+            new
+            {
+                axis1Value = "Kırmızı", axis1Code = (string?)null,
+                axis2Value = (string?)null, axis2Code = (string?)null,
+                isActive = false,
+            });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
     [Fact]

@@ -504,6 +504,35 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Update_409_when_the_code_is_taken_by_a_sibling()
+    {
+        var (client, _) = await SeedAsync();
+        await CreateProductAsync(client, "Birinci", code: "K1");
+        var second = await CreateProductAsync(client, "İkinci", code: "K2");
+
+        var resp = await PutProductAsync(client, second, code: "k1");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await TitleAsync(resp)).Should().Be("duplicate-code");
+    }
+
+    /// <summary>
+    /// Kart kendi koduyla kaydedilince kendi kendiyle çakışmamalı — benzersizlik
+    /// kontrolü kendi satırını dışlamazsa her sıradan güncelleme 409 yerdi.
+    /// </summary>
+    [Fact]
+    public async Task Update_200_when_the_product_keeps_its_own_code()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Kendi kodu", code: "K9");
+
+        var resp = await PutProductAsync(client, product, code: "K9");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await resp.Content.ReadFromJsonAsync<ProductDto>())!.Code.Should().Be("K9");
+    }
+
+    [Fact]
     public async Task Update_rewrites_the_auto_variant_code_when_the_product_code_changes()
     {
         var (client, _) = await SeedAsync();

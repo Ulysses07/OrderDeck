@@ -56,8 +56,8 @@ public sealed class PanelProductVariantsController : ControllerBase
         var built = BuildSegments(product, req, out var error);
         if (error is not null) return error;
 
-        if (product.Variants.Any(v => v.VariantCode == built.VariantCode))
-            return Duplicate(built.VariantCode);
+        var conflict = await VariantCodeTakenAsync(product.Id, built, excludeId: null, ct);
+        if (conflict is not null) return conflict;
 
         var now = DateTimeOffset.UtcNow;
         var variant = new ProductVariant
@@ -76,7 +76,27 @@ public sealed class PanelProductVariantsController : ControllerBase
         };
         _db.ProductVariants.Add(variant);
         product.UpdatedAt = now;
-        await _db.SaveChangesAsync(ct);
+
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException)
+        {
+            // Yarış: ön kontrolden sonra başka bir istek aynı kodu aldı (panelde
+            // çift tıklama ya da iki sekme yeter). Sebebi SQL hata numarasından
+            // ayıklamıyoruz — sağlayıcıya bağımlı olur, PostgreSQL göçünde
+            // sessizce çürür; tekrar SORMAK hem bağımsız hem kesin.
+            //
+            // DİKKAT — bu üç satır uçtan uca test EDİLEMEZ: EF InMemory benzersiz
+            // indeksi zorlamadığı için istisna testte hiç atılmıyor. Kararın
+            // kendisi bu yüzden burada değil, iki yolun da çağırdığı
+            // VariantCodeTakenAsync'te duruyor; testler onu ön kontrol
+            // üzerinden geçiyor ve burası yalnız tesisat kalıyor.
+            var raced = await VariantCodeTakenAsync(product.Id, built, variant.Id, ct);
+            if (raced is not null) return raced;
+            throw; // Benzersizlik değilse yutma — bilinmeyen veri hatası 500 olmalı.
+        }
 
         return Created(
             $"/api/panel/products/{product.Id}/variants/{variant.Id}", ToDto(variant));
@@ -99,8 +119,8 @@ public sealed class PanelProductVariantsController : ControllerBase
         var built = BuildSegments(product, req, out var error);
         if (error is not null) return error;
 
-        if (product.Variants.Any(v => v.Id != id && v.VariantCode == built.VariantCode))
-            return Duplicate(built.VariantCode);
+        var conflict = await VariantCodeTakenAsync(product.Id, built, id, ct);
+        if (conflict is not null) return conflict;
 
         var now = DateTimeOffset.UtcNow;
         variant.Axis1Value = built.Axis1Value;
@@ -111,7 +131,19 @@ public sealed class PanelProductVariantsController : ControllerBase
         variant.IsActive = req.IsActive;
         variant.UpdatedAt = now;
         product.UpdatedAt = now;
-        await _db.SaveChangesAsync(ct);
+
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException)
+        {
+            // Create'teki yarışın aynısı (gerekçe orada); kendi satırı çakışma
+            // sayılmasın diye dışlanıyor.
+            var raced = await VariantCodeTakenAsync(product.Id, built, id, ct);
+            if (raced is not null) return raced;
+            throw;
+        }
 
         return Ok(ToDto(variant));
     }
@@ -188,9 +220,82 @@ public sealed class PanelProductVariantsController : ControllerBase
         return new Segments(axis1Value, axis1Code, axis2Value, axis2Code, variantCode);
     }
 
-    private IActionResult Duplicate(string variantCode)
-        => Problem(title: "duplicate-variant",
-            detail: $"'{variantCode}' varyantı bu üründe zaten var.", statusCode: 409);
+    /// <summary>
+    /// Kurulan kod bu üründe başka bir satırca tutuluyorsa uygun 409'u döndürür,
+    /// yoksa null. İki bambaşka sebep tek slug'a düşmesin diye çakışan satırın
+    /// KODUNA değil DEĞERLERİNE bakılır:
+    /// <list type="bullet">
+    /// <item>değerler aynı → gerçek tekrar (<c>duplicate-variant</c>); satır
+    /// zaten var, yapılacak bir şey yok.</item>
+    /// <item>değerler farklı → kod çakışması (<c>variant-code-collision</c>);
+    /// "Kırmızı" ile "Kırmızılı" ikisi de KIRM'e düşüyor. Kullanıcı iki AYRI
+    /// varyant istiyor ve hakkı da var — "zaten var" demek onu yanlış
+    /// yönlendirir, çünkü kartta öyle bir değer görmüyor. Çare eksen kodunu
+    /// elle girmek; mesaj bunu söylemeli.</item>
+    /// </list>
+    ///
+    /// Hem <c>SaveChanges</c> ÖNCESİ ön kontrol hem SONRASI yarış sınıflandırması
+    /// buradan geçiyor: iki ayrı kopya olsaydı biri değişip öbürü kalır, aynı
+    /// çakışma isteğin zamanlamasına göre farklı cevap alırdı.
+    ///
+    /// Sorgu <c>AsNoTracking</c>: <see cref="DbUpdateException"/> sonrası context
+    /// kirli, başarısız kayıt hâlâ <c>Added</c> durumunda takip ediliyor; izlenen
+    /// sorgu kimlik çözümlemesiyle o kaydı geri getirip yanlış cevap verebilir.
+    /// </summary>
+    private async Task<IActionResult?> VariantCodeTakenAsync(
+        Guid productId, Segments built, Guid? excludeId, CancellationToken ct)
+    {
+        var variantCode = built.VariantCode;
+
+        var clash = await _db.ProductVariants
+            .AsNoTracking()
+            .Where(v => v.ProductId == productId
+                        && v.VariantCode == variantCode
+                        && (excludeId == null || v.Id != excludeId))
+            .Select(v => new { v.Axis1Value, v.Axis2Value })
+            .FirstOrDefaultAsync(ct);
+
+        if (clash is null) return null;
+
+        var incoming = Describe(built.Axis1Value, built.Axis2Value);
+
+        if (SameValues(clash.Axis1Value, clash.Axis2Value, built))
+            return Problem(title: "duplicate-variant",
+                detail: $"'{incoming}' varyantı bu üründe zaten var.", statusCode: 409);
+
+        return Problem(title: "variant-code-collision",
+            detail: $"'{incoming}' ile mevcut "
+                  + $"'{Describe(clash.Axis1Value, clash.Axis2Value)}' aynı koda "
+                  + $"({variantCode}) düşüyor. Ayırmak için eksen kodunu elle gir.",
+            statusCode: 409);
+    }
+
+    /// <summary>
+    /// Varyantın kimliği eksen DEĞERLERİ; kıyas normalleştirilmiş biçimde yapılır
+    /// çünkü "kırmızı" ile "Kırmızı" kullanıcı açısından aynı varyant — farklı
+    /// yazım gerçek tekrardır, kod çakışması değil.
+    ///
+    /// Normalleştirici arama ile ORTAK (<see cref="SearchNormalizer"/>): kopyası
+    /// yazılsaydı iki tanım zamanla ayrışırdı.
+    /// </summary>
+    private static bool SameValues(string? axis1Value, string? axis2Value, Segments built)
+        => string.Equals(
+               SearchNormalizer.Normalize(axis1Value),
+               SearchNormalizer.Normalize(built.Axis1Value),
+               StringComparison.Ordinal)
+           && string.Equals(
+               SearchNormalizer.Normalize(axis2Value),
+               SearchNormalizer.Normalize(built.Axis2Value),
+               StringComparison.Ordinal);
+
+    /// <summary>
+    /// Mesajlarda değer kodla değil, kullanıcının kartta GÖRDÜĞÜ hâliyle anılır;
+    /// iki eksende "Siyah / M".
+    /// </summary>
+    private static string Describe(string? axis1Value, string? axis2Value)
+        => axis2Value is null
+            ? axis1Value ?? string.Empty
+            : $"{axis1Value} / {axis2Value}";
 
     private static string ResolveCode(string? supplied, string displayValue)
     {
