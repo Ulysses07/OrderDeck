@@ -1,4 +1,4 @@
-﻿using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Catalog;
 using Microsoft.EntityFrameworkCore;
 
