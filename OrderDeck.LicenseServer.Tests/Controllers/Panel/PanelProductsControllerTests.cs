@@ -1058,4 +1058,32 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         (await TitleAsync(resp)).Should().Be("missing-axis-name");
     }
+
+    /// <summary>
+    /// Öneriler kiracı sınırını aşmamalı. Eksen adları jenerik ("Beden"), yani
+    /// iki lisansın aynı adı kullanması kural değil istisna değil — sızıntı
+    /// olsaydı bir mağaza diğerinin beden/renk listesini görürdü.
+    /// </summary>
+    [Fact]
+    public async Task Axis_values_never_leaks_another_tenants_values()
+    {
+        var (clientA, _) = await SeedAsync();
+        var mine = await CreateProductAsync(clientA, "Tişört", "AV3",
+            axis1Name: "Beden", axis1Role: 2);
+        (await clientA.PostAsJsonAsync($"/api/panel/products/{mine.Id}/variants",
+            new { axis1Value = "M", isActive = true }))
+            .StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var (clientB, _) = await SeedAsync();
+        var theirs = await CreateProductAsync(clientB, "Gömlek", "AV4",
+            axis1Name: "Beden", axis1Role: 2);
+        (await clientB.PostAsJsonAsync($"/api/panel/products/{theirs.Id}/variants",
+            new { axis1Value = "XXL", isActive = true }))
+            .StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var resp = await clientA.GetFromJsonAsync<AxisValues>(
+            "/api/panel/products/axis-values?name=Beden");
+
+        resp!.Values.Should().BeEquivalentTo(new[] { "M" });
+    }
 }
