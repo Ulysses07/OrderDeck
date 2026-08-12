@@ -66,13 +66,6 @@ public sealed class Product
     public string? Axis2Name { get; set; }
     public AxisRole? Axis2Role { get; set; }
 
-    // Fotoğraf — BroadcastPost deseniyle birebir (R2, presigned URL).
-    public string? PhotoObjectKey { get; set; }
-    public string? PhotoContentType { get; set; }
-    public long? PhotoSizeBytes { get; set; }
-    public int? PhotoWidth { get; set; }
-    public int? PhotoHeight { get; set; }
-
     /// <summary>Faz 1c'de Hangfire işi dolduracak; 1a'da yalnız liste filtresi okur.</summary>
     public bool IsArchived { get; set; }
     public DateTimeOffset? ArchivedAt { get; set; }

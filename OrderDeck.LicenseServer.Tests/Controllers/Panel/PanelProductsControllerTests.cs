@@ -21,17 +21,22 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         string? Axis2Value, string? Axis2Code,
         string VariantCode, string? Barcode, bool IsActive);
 
+    private sealed record PhotoRow(
+        Guid Id, string ObjectKey, string ContentType, long SizeBytes,
+        int? Width, int? Height, int SortOrder, string Url);
+
     private sealed record ProductDto(
         Guid Id, Guid? CategoryId, string Code, string Name,
         decimal DefaultPrice, decimal? Cost,
         string? ShelfLocation,
         string? Axis1Name, int? Axis1Role,
         string? Axis2Name, int? Axis2Role,
+        List<PhotoRow> Photos,
         bool IsArchived, List<VariantDto> Variants);
 
     private sealed record ProductRow(
         Guid Id, Guid? CategoryId, string Code, string Name,
-        decimal DefaultPrice, bool IsArchived, int VariantCount);
+        decimal DefaultPrice, bool IsArchived, string? CoverUrl, int VariantCount);
 
     private sealed record ProductPage(List<ProductRow> Items, int Total);
 
@@ -1085,5 +1090,44 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
             "/api/panel/products/axis-values?name=Beden");
 
         resp!.Values.Should().BeEquivalentTo(new[] { "M" });
+    }
+
+    [Fact]
+    public async Task Product_without_photos_has_no_cover_and_an_empty_gallery()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Kapaksız", "K1");
+
+        var page = await client.GetFromJsonAsync<ProductPage>("/api/panel/products");
+        page!.Items.Single(i => i.Id == product.Id).CoverUrl.Should().BeNull();
+
+        var detail = await client.GetFromJsonAsync<ProductDto>(
+            $"/api/panel/products/{product.Id}");
+        detail!.Photos.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Product_with_photos_has_cover_url_in_list_and_sorted_gallery_in_detail()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Fotoğraflı galeri", "GR1");
+
+        // İki fotoğraf ekle — AttachPhotoAsync her seferinde yeni bir anahtar üretir.
+        var key0 = await AttachPhotoAsync(client, product.Id);
+        var key1 = await AttachPhotoAsync(client, product.Id);
+
+        // Liste satırında CoverUrl dolu olmalı (SortOrder = 0 olan fotoğrafın URL'si).
+        var page = await client.GetFromJsonAsync<ProductPage>("/api/panel/products");
+        var row = page!.Items.Single(i => i.Id == product.Id);
+        row.CoverUrl.Should().NotBeNullOrEmpty("kapak URL'si dolu olmalı");
+
+        // Detayda Photos listesi iki eleman, SortOrder 0 ve 1 sırasıyla.
+        var detail = await client.GetFromJsonAsync<ProductDto>(
+            $"/api/panel/products/{product.Id}");
+        detail!.Photos.Should().HaveCount(2);
+        detail.Photos[0].SortOrder.Should().Be(0);
+        detail.Photos[1].SortOrder.Should().Be(1);
+        detail.Photos[0].Url.Should().NotBeNullOrEmpty();
+        detail.Photos[1].Url.Should().NotBeNullOrEmpty();
     }
 }

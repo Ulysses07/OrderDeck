@@ -73,7 +73,7 @@ public sealed class PanelProductsController : ControllerBase
         AxisRole? Axis1Role,
         string? Axis2Name,
         AxisRole? Axis2Role,
-        string? PhotoObjectKey,
+        IReadOnlyList<PanelProductPhotoController.PhotoDto> Photos,
         bool IsArchived,
         DateTimeOffset CreatedAt,
         DateTimeOffset UpdatedAt,
@@ -87,7 +87,7 @@ public sealed class PanelProductsController : ControllerBase
         string? ShelfLocation,
         decimal DefaultPrice,
         bool IsArchived,
-        string? PhotoObjectKey,
+        string? CoverUrl,
         int VariantCount,
         DateTimeOffset UpdatedAt);
 
@@ -177,10 +177,38 @@ public sealed class PanelProductsController : ControllerBase
             .Take(size)
             .Select(p => new ProductRowDto(
                 p.Id, p.CategoryId, p.Code, p.Name, p.ShelfLocation, p.DefaultPrice, p.IsArchived,
-                p.PhotoObjectKey, p.Variants.Count, p.UpdatedAt))
+                null /* CoverUrl — aşağıda doldurulacak */, p.Variants.Count, p.UpdatedAt))
             .ToListAsync(ct);
 
-        return Ok(new ProductPageDto(rows, total));
+        // Sayfadaki ürünlerin kapakları TEK sorguda çekiliyor; ürün başına sorgu
+        // (N+1) atılmıyor. Presigned URL üretimi ağ çağrısı değil, yerel HMAC
+        // imzalama — 50 satır için maliyeti ihmal edilebilir. Bu yüzden panele
+        // anahtar değil, doğrudan kullanılabilir URL dönüyoruz ve panel ikinci
+        // tur istek atmıyor.
+        //
+        // GroupBy + First() SQL Server'a çevrilemeyebilir; bu yüzden belleğe alıp
+        // gruplamak tercih edildi. Sayfa başına en fazla 50×4 = 200 satır; bu
+        // ölçekte bellek gruplaması N+1 sorgusundan çok daha ucuz.
+        var ids = rows.Select(r => r.Id).ToList();
+        var coverKeys = (await _db.ProductPhotos.AsNoTracking()
+            .Where(p => ids.Contains(p.ProductId))
+            .Select(p => new { p.ProductId, p.ObjectKey, p.SortOrder })
+            .ToListAsync(ct))
+            .GroupBy(p => p.ProductId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.OrderBy(p => p.SortOrder).First().ObjectKey);
+
+        var items = new List<ProductRowDto>(rows.Count);
+        foreach (var row in rows)
+        {
+            var coverUrl = coverKeys.TryGetValue(row.Id, out var key)
+                ? await _storage.CreateDownloadUrlAsync(key, ct)
+                : null;
+            items.Add(row with { CoverUrl = coverUrl });
+        }
+
+        return Ok(new ProductPageDto(items, total));
     }
 
     [AllowStockStaff]
@@ -265,7 +293,7 @@ public sealed class PanelProductsController : ControllerBase
         var product = await LoadAsync(id, licenseId.Value, ct);
         if (product is null) return NotFound();
 
-        return Ok(ToDto(product));
+        return Ok(await ToDtoAsync(product, ct));
     }
 
     [AllowStockStaff]
@@ -347,7 +375,7 @@ public sealed class PanelProductsController : ControllerBase
         }
 
         var saved = await LoadAsync(product.Id, licenseId.Value, ct);
-        return CreatedAtAction(nameof(Get), new { id = product.Id }, ToDto(saved!));
+        return CreatedAtAction(nameof(Get), new { id = product.Id }, await ToDtoAsync(saved!, ct));
     }
 
     [AllowStockStaff]
@@ -459,7 +487,7 @@ public sealed class PanelProductsController : ControllerBase
             throw;
         }
 
-        return Ok(ToDto(product));
+        return Ok(await ToDtoAsync(product, ct));
     }
 
     [AllowStockStaff]
@@ -471,8 +499,6 @@ public sealed class PanelProductsController : ControllerBase
 
         var product = await LoadAsync(id, licenseId.Value, ct);
         if (product is null) return NotFound();
-
-        var photoKey = product.PhotoObjectKey;
 
         // Galeri fotoğraflarının anahtarlarını DB commit öncesinde toplayıyoruz
         // — commit sonrası satırlar gider, anahtara erişemeyiz.
@@ -495,9 +521,6 @@ public sealed class PanelProductsController : ControllerBase
         // (presigned yükleme yapılıp Attach edilmeyen dosyalar) ve lisans
         // cascade'iyle giden ürünler buradan geçmez. Kovayı listeleyen
         // mutabakat işi o yüzden var.
-        if (!string.IsNullOrWhiteSpace(photoKey))
-            await _storage.DeleteAsync(photoKey, ct);
-
         foreach (var key in galleryKeys)
             await _storage.DeleteAsync(key, ct);
 
@@ -630,18 +653,33 @@ public sealed class PanelProductsController : ControllerBase
     /// eklenen dördüncü çağrıda unutulurdu — kural atlanamayacağı tek noktada.
     /// Metot bu yüzden static değil: rol <c>User</c>'dan okunuyor.
     /// </summary>
-    private ProductDto ToDto(Product p) => new(
-        p.Id, p.CategoryId, p.Code, p.Name, p.DefaultPrice,
-        HidesCost ? null : p.Cost,
-        p.ShelfLocation,
-        p.Axis1Name, p.Axis1Role, p.Axis2Name, p.Axis2Role,
-        p.PhotoObjectKey, p.IsArchived, p.CreatedAt, p.UpdatedAt,
-        p.Variants
-            .OrderBy(v => v.VariantCode, StringComparer.Ordinal)
-            .Select(v => new VariantDto(
-                v.Id, v.Axis1Value, v.Axis1Code, v.Axis2Value, v.Axis2Code,
-                v.VariantCode, v.Barcode, v.IsActive))
-            .ToList());
+    private async Task<ProductDto> ToDtoAsync(Product p, CancellationToken ct)
+    {
+        var photos = await _db.ProductPhotos.AsNoTracking()
+            .Where(x => x.ProductId == p.Id)
+            .OrderBy(x => x.SortOrder)
+            .ToListAsync(ct);
+
+        var photoDtos = new List<PanelProductPhotoController.PhotoDto>(photos.Count);
+        foreach (var photo in photos)
+            photoDtos.Add(new PanelProductPhotoController.PhotoDto(
+                photo.Id, photo.ObjectKey, photo.ContentType, photo.SizeBytes,
+                photo.Width, photo.Height, photo.SortOrder,
+                await _storage.CreateDownloadUrlAsync(photo.ObjectKey, ct)));
+
+        return new ProductDto(
+            p.Id, p.CategoryId, p.Code, p.Name, p.DefaultPrice,
+            HidesCost ? null : p.Cost,
+            p.ShelfLocation,
+            p.Axis1Name, p.Axis1Role, p.Axis2Name, p.Axis2Role,
+            photoDtos, p.IsArchived, p.CreatedAt, p.UpdatedAt,
+            p.Variants
+                .OrderBy(v => v.VariantCode, StringComparer.Ordinal)
+                .Select(v => new VariantDto(
+                    v.Id, v.Axis1Value, v.Axis1Code, v.Axis2Value, v.Axis2Code,
+                    v.VariantCode, v.Barcode, v.IsActive))
+                .ToList());
+    }
 
     private Task<Guid?> ResolveActiveLicenseAsync(CancellationToken ct)
     {

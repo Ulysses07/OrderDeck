@@ -666,8 +666,6 @@ public class LicenseDbContext : DbContext
             b.Property(p => p.Axis2Name).HasMaxLength(CatalogLimits.AxisName);
             b.Property(p => p.Axis1Role).HasConversion<int>();
             b.Property(p => p.Axis2Role).HasConversion<int>();
-            b.Property(p => p.PhotoObjectKey).HasMaxLength(CatalogLimits.PhotoObjectKey);
-            b.Property(p => p.PhotoContentType).HasMaxLength(CatalogLimits.PhotoContentType);
             b.HasOne(p => p.License).WithMany()
                 .HasForeignKey(p => p.LicenseId).OnDelete(DeleteBehavior.Cascade);
             b.HasOne(p => p.Category).WithMany()
