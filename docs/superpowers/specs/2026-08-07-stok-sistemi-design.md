@@ -70,10 +70,20 @@ edilemez.
 
 # Veri modeli
 
-## Kategori — sınırsız derinlik, ürün tek kategoride
+## Kategori — 12 seviyeye kadar derinlik, ürün tek kategoride
 
 Kullanıcının ERP alışkanlığı: `Erkek > Üst Giyim > Tişört`. Üç veya daha fazla
 seviye gerekiyor.
+
+> **Düzeltme (2026-08-12):** bu bölüm önce "sınırsız derinlik" diyordu; bu iddia
+> baştan beri yanlıştı. `Path` seviye başına 33 karakter büyüyor
+> (`{guid:N}` + `/`) ve kolon `nvarchar(512)` — 16. seviye 529 karakter eder,
+> SQL Server keser ve API 500 döner. Kolonu genişletmek de çıkış yolu değil:
+> `Path`, `(LicenseId, Path)` indeksinin anahtarında ve SQL Server'ın
+> kümelenmemiş indeks anahtarı 1700 bayt ile sınırlı — `nvarchar(512)` zaten
+> 1024 bayt. Bu yüzden tavan **12 seviye** (`1 + 33*12 = 397`, sınırın rahatça
+> içinde) ve API hem oluşturmada hem taşımada `category-too-deep` / 400 döner.
+> Tek kaynak: `Domain/CatalogLimits.CategoryMaxDepth`.
 
 - `Category`: `Id`, `LicenseId`, `ParentCategoryId` (nullable, kendine referans),
   `Name`, `Path`, `SortOrder`, `IsActive`
@@ -85,6 +95,8 @@ seviye gerekiyor.
   sessizce değişirdi.
 - Kategori taşınırsa alt ağacın `Path` değerleri toplu güncellenir.
 - **Döngü koruması zorunlu:** bir kategori kendi alt ağacına taşınamaz.
+- **Derinlik koruması zorunlu:** taşımada ölçüt taşınan düğüm değil, alt ağacın
+  **en derin torunu** — taşıma bütün alt ağacı bir anda derinleştirir.
 - Ürün ağacın **herhangi bir seviyesine** bağlanabilir; yaprak olma zorunluluğu
   yok. Filtreleme her zaman alt ağacı kapsar.
 - Ürün **tek** kategoride bulunur (çoklu kategori/etiket modeli reddedildi —
