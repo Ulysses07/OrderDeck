@@ -207,6 +207,37 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
         (await TitleAsync(resp)).Should().Be("duplicate-variant");
     }
 
+    /// <summary>
+    /// Ürün kodu değişince eski varyant kodu bayatlarsa, aynı eksen değeri
+    /// ikinci kez eklendiğinde çakışma yakalanamaz ve tek üründe iki özdeş
+    /// Axis1Value oluşurdu. Kod türetildiği için çakışma yakalanmalı.
+    /// </summary>
+    [Fact]
+    public async Task Create_409_when_the_same_value_is_re_added_after_a_product_code_change()
+    {
+        var client = await SeedAsync();
+        var product = await CreateProductAsync(client);
+        (await PostVariantAsync(client, product.Id, axis1Value: "Siyah"))
+            .StatusCode.Should().Be(HttpStatusCode.Created);
+
+        (await client.PutAsJsonAsync($"/api/panel/products/{product.Id}", new
+        {
+            name = product.Name, code = "D3", categoryId = (Guid?)null,
+            defaultPrice = product.DefaultPrice, cost = (decimal?)null,
+            axis1Name = "Renk", axis1Role = 2,
+            axis2Name = (string?)null, axis2Role = (int?)null,
+        })).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var resp = await PostVariantAsync(client, product.Id, axis1Value: "Siyah");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await TitleAsync(resp)).Should().Be("duplicate-variant");
+
+        var after = await client.GetFromJsonAsync<ProductDto>($"/api/panel/products/{product.Id}");
+        after!.Variants.Should().ContainSingle();
+        after.Variants[0].VariantCode.Should().Be("D3-SIYA");
+    }
+
     [Fact]
     public async Task Update_recomputes_the_variant_code()
     {

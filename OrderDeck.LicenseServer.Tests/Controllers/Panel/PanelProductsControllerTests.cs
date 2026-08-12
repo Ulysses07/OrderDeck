@@ -1,9 +1,11 @@
 using System.Net;
 using System.Net.Http.Json;
 using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Catalog;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
@@ -93,6 +95,56 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
             null, axis1Name, axis1Role, axis2Name, axis2Role);
         resp.StatusCode.Should().Be(HttpStatusCode.Created);
         return (await resp.Content.ReadFromJsonAsync<ProductDto>())!;
+    }
+
+    private static Task<HttpResponseMessage> PutProductAsync(
+        HttpClient client, ProductDto product, string? code = null,
+        string? axis1Name = null, int? axis1Role = null,
+        string? axis2Name = null, int? axis2Role = null)
+        => client.PutAsJsonAsync($"/api/panel/products/{product.Id}", new
+        {
+            name = product.Name,
+            code = code ?? product.Code,
+            categoryId = product.CategoryId,
+            defaultPrice = product.DefaultPrice,
+            cost = product.Cost,
+            axis1Name, axis1Role, axis2Name, axis2Role,
+        });
+
+    private static async Task<VariantDto> PostVariantAsync(
+        HttpClient client, Guid productId,
+        string? axis1Value = null, string? axis2Value = null)
+    {
+        var resp = await client.PostAsJsonAsync(
+            $"/api/panel/products/{productId}/variants",
+            new
+            {
+                axis1Value, axis1Code = (string?)null,
+                axis2Value, axis2Code = (string?)null, isActive = true,
+            });
+        resp.StatusCode.Should().Be(HttpStatusCode.Created);
+        return (await resp.Content.ReadFromJsonAsync<VariantDto>())!;
+    }
+
+    /// <summary>
+    /// Değişmez kural: bir üründeki HER varyantın kodu, güncel ürün kodu ile o
+    /// varyantın eksen kod parçalarından üretilene birebir eşit olmalı — hangi
+    /// uç noktanın yazdığı fark etmez. Yeni bir yazma yolu türetmeyi unutursa
+    /// bu doğrulama düşer.
+    /// </summary>
+    private void AssertVariantCodesAreDerived(Guid productId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var product = db.Products.Include(p => p.Variants).Single(p => p.Id == productId);
+
+        foreach (var variant in product.Variants)
+        {
+            variant.VariantCode.Should().Be(
+                VariantCodeBuilder.Build(product.Code, variant.Axis1Code, variant.Axis2Code),
+                "'{0}' varyantının kodu güncel ürün kodundan türetilmiş olmalı",
+                variant.Id);
+        }
     }
 
     [Fact]
@@ -327,6 +379,100 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         var dto = (await resp.Content.ReadFromJsonAsync<ProductDto>())!;
         dto.Code.Should().Be("B7");
         dto.Variants.Single().VariantCode.Should().Be("B7");
+    }
+
+    [Fact]
+    public async Task Update_rewrites_the_variant_codes_of_an_axis_product_when_the_code_changes()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Renkli",
+            axis1Name: "Renk", axis1Role: 2);
+        await PostVariantAsync(client, product.Id, axis1Value: "Siyah");
+
+        var resp = await PutProductAsync(client, product, code: "B7",
+            axis1Name: "Renk", axis1Role: 2);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var dto = (await resp.Content.ReadFromJsonAsync<ProductDto>())!;
+        dto.Code.Should().Be("B7");
+        dto.Variants.Single().VariantCode.Should().Be("B7-SIYA");
+        AssertVariantCodesAreDerived(product.Id);
+    }
+
+    [Fact]
+    public async Task Update_never_touches_the_barcode_when_the_product_code_changes()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Barkotlu",
+            axis1Name: "Renk", axis1Role: 2);
+        var variant = await PostVariantAsync(client, product.Id, axis1Value: "Siyah");
+
+        // Faz 1c'yi taklit et: rafta duran etiket zaten basılmış.
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.ProductVariants.Single(v => v.Id == variant.Id).Barcode = "8690000000017";
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await PutProductAsync(client, product, code: "C4",
+            axis1Name: "Renk", axis1Role: 2);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var dto = (await resp.Content.ReadFromJsonAsync<ProductDto>())!;
+        dto.Variants.Single().VariantCode.Should().Be("C4-SIYA");
+        dto.Variants.Single().Barcode.Should().Be("8690000000017");
+    }
+
+    [Fact]
+    public async Task Variant_codes_stay_derived_across_the_whole_product_lifecycle()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Çok eksenli",
+            axis1Name: "Renk", axis1Role: 2, axis2Name: "Beden", axis2Role: 1);
+
+        var siyah = await PostVariantAsync(client, product.Id, "Siyah", "38");
+        var beyaz = await PostVariantAsync(client, product.Id, "Beyaz", "40");
+        AssertVariantCodesAreDerived(product.Id);
+
+        // 1) Ürün kodu değişti — iki varyant da yenilenmeli.
+        (await PutProductAsync(client, product, code: "Z9",
+            axis1Name: "Renk", axis1Role: 2, axis2Name: "Beden", axis2Role: 1))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        AssertVariantCodesAreDerived(product.Id);
+
+        var afterRename = await client.GetFromJsonAsync<ProductDto>(
+            $"/api/panel/products/{product.Id}");
+        afterRename!.Variants.Select(v => v.VariantCode)
+            .Should().BeEquivalentTo(["Z9-SIYA-38", "Z9-BEYA-40"]);
+
+        // 2) Varyantın kendi eksen değeri değişti.
+        (await client.PutAsJsonAsync(
+            $"/api/panel/products/{product.Id}/variants/{beyaz.Id}",
+            new
+            {
+                axis1Value = "Mavi", axis1Code = (string?)null,
+                axis2Value = "42", axis2Code = (string?)null, isActive = true,
+            })).StatusCode.Should().Be(HttpStatusCode.OK);
+        AssertVariantCodesAreDerived(product.Id);
+
+        // 3) Eksenler kapandı — geriye tek otomatik varyant kalır.
+        foreach (var id in new[] { siyah.Id, beyaz.Id })
+            (await client.DeleteAsync($"/api/panel/products/{product.Id}/variants/{id}"))
+                .StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        (await PutProductAsync(client, afterRename, code: "Z9"))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        AssertVariantCodesAreDerived(product.Id);
+
+        // 4) Eksensiz ürünün kodu bir kez daha değişti.
+        (await PutProductAsync(client, afterRename, code: "Z8"))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        AssertVariantCodesAreDerived(product.Id);
+
+        var final = await client.GetFromJsonAsync<ProductDto>(
+            $"/api/panel/products/{product.Id}");
+        final!.Variants.Single().VariantCode.Should().Be("Z8");
     }
 
     [Fact]

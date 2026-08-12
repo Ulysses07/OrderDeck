@@ -280,21 +280,16 @@ public sealed class PanelProductsController : ControllerBase
         product.Axis2Role = newAxis2 is null ? null : req.Axis2Role;
         product.UpdatedAt = now;
 
-        if (product.Axis1Name is null)
+        // Eksensiz ürün her zaman tek bir otomatik varyant taşır (eksen yeni
+        // kapatıldıysa satır az önce silinmiş olabilir).
+        if (product.Axis1Name is null && product.Variants.Count == 0)
         {
-            var auto = product.Variants.FirstOrDefault();
-            if (auto is null)
-            {
-                var created = BuildAutoVariant(product, now);
-                _db.ProductVariants.Add(created);
-                product.Variants.Add(created);
-            }
-            else
-            {
-                auto.VariantCode = product.Code;
-                auto.UpdatedAt = now;
-            }
+            var created = BuildAutoVariant(product, now);
+            _db.ProductVariants.Add(created);
+            product.Variants.Add(created);
         }
+
+        SyncVariantCodes(product, now);
 
         await _db.SaveChangesAsync(ct);
         return Ok(ToDto(product));
@@ -362,11 +357,32 @@ public sealed class PanelProductsController : ControllerBase
         Id = Guid.NewGuid(),
         LicenseId = product.LicenseId,
         ProductId = product.Id,
-        VariantCode = product.Code,
+        VariantCode = VariantCodeBuilder.Build(product.Code, null, null),
         IsActive = true,
         CreatedAt = now,
         UpdatedAt = now,
     };
+
+    /// <summary>
+    /// <c>VariantCode</c> türetilmiş bir değer ve türetmenin sahibi ürün kartı:
+    /// ürün kodu değiştiğinde bayat kalmasın diye TÜM varyantlar yeniden
+    /// hesaplanır (eksensiz otomatik satır da bunun sıradan bir hâli).
+    ///
+    /// <c>Barcode</c>'a bilerek dokunulmaz — o ayrı ve değişmez fiziksel kimlik;
+    /// ürün adı/kodu değişse de rafta duran etiket geçerli kalmalı.
+    /// </summary>
+    private static void SyncVariantCodes(Product product, DateTimeOffset now)
+    {
+        foreach (var variant in product.Variants)
+        {
+            var code = VariantCodeBuilder.Build(
+                product.Code, variant.Axis1Code, variant.Axis2Code);
+            if (variant.VariantCode == code) continue;
+
+            variant.VariantCode = code;
+            variant.UpdatedAt = now;
+        }
+    }
 
     private Task<Product?> LoadAsync(Guid id, Guid licenseId, CancellationToken ct)
         => _db.Products

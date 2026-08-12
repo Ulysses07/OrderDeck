@@ -25,10 +25,26 @@ public sealed class ProductVariant
     public string? Axis2Value { get; set; }
     public string? Axis2Code { get; set; }
 
-    /// <summary>Ürün kodu + eksen kod parçaları, "-" ile birleşik (A12-SIYA-M).</summary>
+    /// <summary>
+    /// Ürün kodu + eksen kod parçaları, "-" ile birleşik (A12-SIYA-M).
+    ///
+    /// <b>Türetilmiş</b> bir değer: tek kurucusu
+    /// <c>Services.Catalog.VariantCodeBuilder</c>. Girdilerinden biri
+    /// (<c>Product.Code</c>, <see cref="Axis1Code"/>, <see cref="Axis2Code"/>)
+    /// değişince yeniden hesaplanır — yani zaman içinde DEĞİŞİR.
+    /// İnsana gösterilen etikettir, kimlik değildir; kimlik
+    /// <see cref="Barcode"/>'dur.
+    /// </summary>
     public string VariantCode { get; set; } = string.Empty;
 
-    /// <summary>Faz 1c'de doldurulur (Code128). 1a'da her zaman null.</summary>
+    /// <summary>
+    /// Faz 1c'de doldurulur (Code128). 1a'da her zaman null.
+    ///
+    /// Fiziksel kimlik ve <b>değişmez</b>: bir kez basılıp ürüne yapıştırıldıktan
+    /// sonra ürün kodu değişse bile aynı kalır. Bu yüzden barkot yükü olarak
+    /// <see cref="VariantCode"/> BASILMAMALI — o değer yeniden türetilir ve
+    /// raftaki etiketi geçersiz kılar.
+    /// </summary>
     public string? Barcode { get; set; }
 
     public bool IsActive { get; set; } = true;

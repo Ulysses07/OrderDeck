@@ -10,8 +10,12 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 
 /// <summary>
 /// Ürün varyantları (Faz 1a). Varyant kodu <c>ÜRÜNKODU-EKSEN1[-EKSEN2]</c>
-/// biçiminde ve yalnız ASCII harf/rakam taşır — Faz 1c'de Code128 barkot bu
-/// koddan basılacak, Code128 Türkçe harf kabul etmiyor.
+/// biçiminde ve yalnız ASCII harf/rakam taşır — Faz 1c'nin barkot alfabesi
+/// Code128 ve Code128 Türkçe harf kabul etmiyor.
+///
+/// Kodu tek bir yer kurar: <see cref="VariantCodeBuilder"/>. Kod türetilmiş bir
+/// etikettir, kimlik değil — kimlik <c>ProductVariant.Barcode</c>'dur ve ürün
+/// kodu değişse bile aynı kalır (barkot yükü olarak VariantCode basılmamalı).
 /// </summary>
 [ApiController]
 [Route("api/panel/products/{productId:guid}/variants")]
@@ -168,9 +172,7 @@ public sealed class PanelProductVariantsController : ControllerBase
             return default;
         }
 
-        var variantCode = axis2Code is null
-            ? $"{product.Code}-{axis1Code}"
-            : $"{product.Code}-{axis1Code}-{axis2Code}";
+        var variantCode = VariantCodeBuilder.Build(product.Code, axis1Code, axis2Code);
 
         return new Segments(axis1Value, axis1Code, axis2Value, axis2Code, variantCode);
     }
