@@ -233,6 +233,13 @@ public class PanelProductPhotoControllerTests : IClassFixture<ApiFactory>
         (await TitleAsync(resp)).Should().Be("unsupported-media-type");
     }
 
+    /// <summary>
+    /// Yer değiştirme yalnız DB alanını taşımaz, ESKİ nesneyi de kovadan siler.
+    /// Bu iddia olmazsa <c>Attach</c>'teki silme satırı düşse bile süit yeşil
+    /// kalır ve her fotoğraf değişimi R2'de para yakan bir yetim bırakır.
+    /// Simetrik olarak YENİ anahtar silinmemeli — yanlış sıradaki bir silme
+    /// az önce yüklenen fotoğrafı yok ederdi.
+    /// </summary>
     [Fact]
     public async Task Attaching_a_second_photo_replaces_the_first()
     {
@@ -253,6 +260,15 @@ public class PanelProductPhotoControllerTests : IClassFixture<ApiFactory>
         second.Should().NotBe(first);
         var dto = (await resp.Content.ReadFromJsonAsync<PhotoDto>())!;
         dto.ObjectKey.Should().Be(second);
+
+        // Depo fixture ile paylaşıldığı için mutlak sayıya değil, bu iki
+        // anahtarın kendisine bakılıyor.
+        _factory.BroadcastMedia.DeleteCalls.Should().Contain(first,
+            "eski nesne kovada yetim kalmamalı");
+        _factory.BroadcastMedia.DeleteCalls.Should().NotContain(second,
+            "yeni nesne silinmemeli");
+        (await _factory.BroadcastMedia.HeadAsync(first)).Should().BeNull();
+        (await _factory.BroadcastMedia.HeadAsync(second)).Should().NotBeNull();
     }
 
     [Fact]
@@ -282,6 +298,11 @@ public class PanelProductPhotoControllerTests : IClassFixture<ApiFactory>
         dto!.Url.Should().NotBeNullOrWhiteSpace();
     }
 
+    /// <summary>
+    /// Fotoğrafı kaldırmak DB alanlarını boşaltmakla bitmiyor: nesnenin kendisi
+    /// de kovadan gitmeli. Yalnız alanlara bakan bir test, R2 silmesi düştüğünde
+    /// hiçbir şey söylemez — ürün fotoğrafsız görünür, fatura ödenmeye devam eder.
+    /// </summary>
     [Fact]
     public async Task Delete_clears_the_photo_fields()
     {
@@ -297,5 +318,75 @@ public class PanelProductPhotoControllerTests : IClassFixture<ApiFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.NoContent);
         var after = await client.GetFromJsonAsync<ProductDto>($"/api/panel/products/{product.Id}");
         after!.PhotoObjectKey.Should().BeNull();
+        _factory.BroadcastMedia.DeleteCalls.Should().Contain(key);
+        (await _factory.BroadcastMedia.HeadAsync(key)).Should().BeNull();
+    }
+
+    /// <summary>
+    /// Yazma yolu da okuma yolu kadar kapalı olmalı: başka kiracının ürününe
+    /// fotoğraf iliştirilemez. Kural 404 — 403 dönmek "böyle bir ürün var" diye
+    /// haber vermek olurdu.
+    /// </summary>
+    [Fact]
+    public async Task Attach_404_for_another_tenants_product()
+    {
+        var clientA = await SeedAsync();
+        var product = await CreateProductAsync(clientA);
+        var key = (await (await UploadUrlAsync(clientA, product.Id))
+            .Content.ReadFromJsonAsync<UploadUrlDto>())!.ObjectKey;
+        SimulateUpload(key);
+        var clientB = await SeedAsync();
+
+        var resp = await AttachAsync(clientB, product.Id, key);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        // Sahibinin kartı el değmemiş kalmalı.
+        var after = await clientA.GetFromJsonAsync<ProductDto>(
+            $"/api/panel/products/{product.Id}");
+        after!.PhotoObjectKey.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Photo_url_404_for_another_tenants_product()
+    {
+        var clientA = await SeedAsync();
+        var product = await CreateProductAsync(clientA);
+        var key = (await (await UploadUrlAsync(clientA, product.Id))
+            .Content.ReadFromJsonAsync<UploadUrlDto>())!.ObjectKey;
+        SimulateUpload(key);
+        await AttachAsync(clientA, product.Id, key);
+        var clientB = await SeedAsync();
+
+        var resp = await clientB.GetAsync($"/api/panel/products/{product.Id}/photo/url");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    /// <summary>
+    /// 404 dönüp yine de silmiş olmak, yalnız durum koduna bakan bir testin
+    /// gözünden kaçar; bu yüzden nesnenin sahibinin gözünden hâlâ DURDUĞU da
+    /// doğrulanıyor — hem DB alanı hem kovadaki nesne.
+    /// </summary>
+    [Fact]
+    public async Task Delete_404_for_another_tenants_product()
+    {
+        var clientA = await SeedAsync();
+        var product = await CreateProductAsync(clientA);
+        var key = (await (await UploadUrlAsync(clientA, product.Id))
+            .Content.ReadFromJsonAsync<UploadUrlDto>())!.ObjectKey;
+        SimulateUpload(key);
+        await AttachAsync(clientA, product.Id, key);
+        var clientB = await SeedAsync();
+
+        var resp = await clientB.DeleteAsync($"/api/panel/products/{product.Id}/photo");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        var after = await clientA.GetFromJsonAsync<ProductDto>(
+            $"/api/panel/products/{product.Id}");
+        after!.PhotoObjectKey.Should().Be(key);
+        _factory.BroadcastMedia.DeleteCalls.Should().NotContain(key);
+        (await _factory.BroadcastMedia.HeadAsync(key)).Should().NotBeNull();
     }
 }

@@ -466,6 +466,60 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
+    /// <summary>
+    /// Kiracı sınırı oluşturmada olduğu gibi GÜNCELLEMEDE de geçerli. Kural 404
+    /// (403 değil): başka kiracının ürünü bizim için var olmamalı.
+    /// </summary>
+    [Fact]
+    public async Task Update_404_for_another_tenants_product()
+    {
+        var clientA = await SeedAsync();
+        var product = await CreateProductAsync(clientA);
+        var variant = (await (await PostVariantAsync(clientA, product.Id, axis1Value: "Siyah"))
+            .Content.ReadFromJsonAsync<VariantDto>())!;
+        var clientB = await SeedAsync();
+
+        var resp = await clientB.PutAsJsonAsync(
+            $"/api/panel/products/{product.Id}/variants/{variant.Id}",
+            new
+            {
+                axis1Value = "Beyaz", axis1Code = (string?)null,
+                axis2Value = (string?)null, axis2Code = (string?)null,
+                isActive = false,
+            });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        // 404 dönüp yine de yazmış olmak yalnız duruma bakan bir testten kaçar.
+        var after = await clientA.GetFromJsonAsync<ProductDto>(
+            $"/api/panel/products/{product.Id}");
+        after!.Variants.Single().Axis1Value.Should().Be("Siyah");
+        after.Variants.Single().IsActive.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// Silmede 404 tek başına yetmez: satır sahibinin gözünden HÂLÂ DURUYOR
+    /// olmalı. 404 dönüp yine de silen bir uç, yalnız durum kodu kontrol eden
+    /// bir testin gözünden kaçar.
+    /// </summary>
+    [Fact]
+    public async Task Delete_404_for_another_tenants_product()
+    {
+        var clientA = await SeedAsync();
+        var product = await CreateProductAsync(clientA);
+        var variant = (await (await PostVariantAsync(clientA, product.Id, axis1Value: "Siyah"))
+            .Content.ReadFromJsonAsync<VariantDto>())!;
+        var clientB = await SeedAsync();
+
+        var resp = await clientB.DeleteAsync(
+            $"/api/panel/products/{product.Id}/variants/{variant.Id}");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        var after = await clientA.GetFromJsonAsync<ProductDto>(
+            $"/api/panel/products/{product.Id}");
+        after!.Variants.Should().ContainSingle(v => v.Id == variant.Id);
+    }
+
     [Fact]
     public async Task Delete_removes_the_variant()
     {

@@ -480,6 +480,57 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
+    /// <summary>
+    /// Kiracı sınırı okumada olduğu gibi YAZMADA da geçerli. Kural 404 (403
+    /// değil): başka kiracının kaydı bizim için var olmamalı, varlığını durum
+    /// koduyla ele vermek sızıntıdır.
+    /// </summary>
+    [Fact]
+    public async Task Update_404_for_another_tenants_product()
+    {
+        var (clientA, _) = await SeedAsync();
+        var product = await CreateProductAsync(clientA, "A ürünü");
+        var (clientB, _) = await SeedAsync();
+
+        var resp = await clientB.PutAsJsonAsync($"/api/panel/products/{product.Id}", new
+        {
+            name = "B ele geçirdi", code = product.Code, categoryId = (Guid?)null,
+            defaultPrice = 999m, cost = (decimal?)null,
+            axis1Name = (string?)null, axis1Role = (int?)null,
+            axis2Name = (string?)null, axis2Role = (int?)null,
+        });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        // 404 dönüp yine de yazmış olmak yalnız duruma bakan bir testten kaçar.
+        var after = await clientA.GetFromJsonAsync<ProductDto>(
+            $"/api/panel/products/{product.Id}");
+        after!.Name.Should().Be("A ürünü");
+        after.DefaultPrice.Should().Be(100m);
+    }
+
+    /// <summary>
+    /// Silmede 404 tek başına yetmez: kayıt sahibinin gözünden HÂLÂ DURUYOR
+    /// olmalı. 404 dönüp yine de silen bir uç, yalnız durum kodu kontrol eden
+    /// bir testin gözünden kaçar.
+    /// </summary>
+    [Fact]
+    public async Task Delete_404_for_another_tenants_product()
+    {
+        var (clientA, _) = await SeedAsync();
+        var product = await CreateProductAsync(clientA, "Silinemeyecek");
+        var (clientB, _) = await SeedAsync();
+
+        var resp = await clientB.DeleteAsync($"/api/panel/products/{product.Id}");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await clientA.GetAsync($"/api/panel/products/{product.Id}"))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        db.Products.Any(p => p.Id == product.Id).Should().BeTrue();
+    }
+
     [Fact]
     public async Task Update_renames_and_moves_the_product()
     {

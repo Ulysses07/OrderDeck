@@ -367,6 +367,11 @@ public class PanelCategoriesControllerTests : IClassFixture<ApiFactory>
         rows!.Should().NotContain(r => r.Id == bos.Id);
     }
 
+    /// <summary>
+    /// Silmede 404 tek başına yetmez: kayıt sahibinin gözünden HÂLÂ DURUYOR
+    /// olmalı. 404 dönüp yine de silen bir uç, yalnız durum kodu kontrol eden
+    /// bir testin gözünden kaçar.
+    /// </summary>
     [Fact]
     public async Task Another_tenants_category_is_invisible_not_forbidden()
     {
@@ -377,5 +382,54 @@ public class PanelCategoriesControllerTests : IClassFixture<ApiFactory>
         var resp = await clientB.DeleteAsync($"/api/panel/categories/{erkek.Id}");
 
         resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        var rows = await clientA.GetFromJsonAsync<List<CategoryDto>>("/api/panel/categories");
+        rows!.Should().ContainSingle(r => r.Id == erkek.Id);
+    }
+
+    /// <summary>
+    /// Kiracı sınırı silmede olduğu gibi YENİDEN ADLANDIRMADA da geçerli.
+    /// Kural 404 (403 değil): başka kiracının kaydı bizim için var olmamalı,
+    /// varlığını durum koduyla ele vermek sızıntıdır.
+    /// </summary>
+    [Fact]
+    public async Task Update_404_for_another_tenants_category()
+    {
+        var (clientA, _) = await SeedAsync();
+        var erkek = await CreateAsync(clientA, "Erkek");
+
+        var (clientB, _) = await SeedAsync();
+        var resp = await clientB.PutAsJsonAsync($"/api/panel/categories/{erkek.Id}",
+            new { name = "B ele geçirdi", sortOrder = 9, isActive = false });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        var rows = await clientA.GetFromJsonAsync<List<CategoryDto>>("/api/panel/categories");
+        var after = rows!.Single(r => r.Id == erkek.Id);
+        after.Name.Should().Be("Erkek");
+        after.IsActive.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// Taşıma alt ağacın tamamının yolunu yeniden yazan en yıkıcı yazma yolu;
+    /// kiracı sınırı burada da 404 ile kapanmalı ve ağaç yerinde kalmalı.
+    /// </summary>
+    [Fact]
+    public async Task Move_404_for_another_tenants_category()
+    {
+        var (clientA, _) = await SeedAsync();
+        var erkek = await CreateAsync(clientA, "Erkek");
+
+        var (clientB, _) = await SeedAsync();
+        var hedef = await CreateAsync(clientB, "B kökü");
+        var resp = await clientB.PutAsJsonAsync($"/api/panel/categories/{erkek.Id}/parent",
+            new { parentCategoryId = hedef.Id });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        var rows = await clientA.GetFromJsonAsync<List<CategoryDto>>("/api/panel/categories");
+        var after = rows!.Single(r => r.Id == erkek.Id);
+        after.ParentCategoryId.Should().BeNull();
+        after.Path.Should().Be(erkek.Path);
     }
 }

@@ -1,10 +1,16 @@
+using System.IdentityModel.Tokens.Jwt;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Security.Claims;
+using System.Text;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.Tokens;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Auth;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
@@ -54,7 +60,9 @@ public class StockStaffScopeTests : IClassFixture<ApiFactory>
         return doc.RootElement.TryGetProperty("title", out var t) ? t.GetString() : null;
     }
 
-    private async Task<HttpClient> SeedOwnerAsync()
+    private async Task<HttpClient> SeedOwnerAsync() => (await SeedOwnerWithIdAsync()).Client;
+
+    private async Task<(HttpClient Client, Guid CustomerId)> SeedOwnerWithIdAsync()
     {
         var (client, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
         using var scope = _factory.Services.CreateScope();
@@ -68,7 +76,7 @@ public class StockStaffScopeTests : IClassFixture<ApiFactory>
             ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
         });
         await db.SaveChangesAsync();
-        return client;
+        return (client, customerId);
     }
 
     private static Task<HttpResponseMessage> InviteAsync(
@@ -99,6 +107,58 @@ public class StockStaffScopeTests : IClassFixture<ApiFactory>
 
         anon.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", body.Token);
         return anon;
+    }
+
+    /// <summary>
+    /// Faz 1a ÖNCESİ üretilmiş bir operatör token'ını birebir taklit eder: claim
+    /// listesi <c>JwtTokenService.IssueOperatorToken</c> ile aynı, yalnız
+    /// <c>oprole</c> YOK. Token üretim imzalayıcısının anahtarı/issuer'ı/
+    /// audience'ı ile kuruluyor; başka yolu yok — servis bugün rolü her zaman
+    /// ekliyor, yani bu şekli yalnız elle kurabiliriz.
+    /// </summary>
+    private async Task<HttpClient> LegacyOperatorClientWithoutRoleClaimAsync(
+        HttpClient ownerClient, Guid tenantCustomerId)
+    {
+        var email = $"op-{Guid.NewGuid():N}@example.com";
+        var invite = await ownerClient.PostAsJsonAsync("/api/panel/operators", new
+        {
+            email, name = "Eski operatör",
+            password = "pwd-" + Guid.NewGuid().ToString("N"),
+            role = OperatorRoles.Staff,
+        });
+        invite.StatusCode.Should().Be(HttpStatusCode.Created);
+        var operatorId = (await invite.Content.ReadFromJsonAsync<OperatorDto>())!.Id;
+
+        using var scope = _factory.Services.CreateScope();
+        var options = scope.ServiceProvider.GetRequiredService<IOptions<JwtOptions>>().Value;
+        var signing = new SigningCredentials(
+            new SymmetricSecurityKey(Encoding.UTF8.GetBytes(options.SecretKey)),
+            SecurityAlgorithms.HmacSha256);
+
+        var jwt = new JwtSecurityToken(
+            issuer: options.Issuer,
+            audience: JwtOptions.CustomerAudience,
+            claims:
+            [
+                new Claim(TenantClaims.Sub, operatorId.ToString()),
+                new Claim(TenantClaims.TenantCustomerId, tenantCustomerId.ToString()),
+                new Claim(TenantClaims.PrincipalType, "operator"),
+                new Claim(TenantClaims.OperatorId, operatorId.ToString()),
+                new Claim("email", email),
+            ],
+            notBefore: DateTime.UtcNow,
+            expires: DateTime.UtcNow.AddMinutes(15),
+            signingCredentials: signing);
+        var token = new JwtSecurityTokenHandler().WriteToken(jwt);
+
+        // Güvenlik ağı: claim adı yarın değişirse test sessizce anlamsızlaşmasın.
+        new JwtSecurityTokenHandler().ReadJwtToken(token).Claims
+            .Should().NotContain(c => c.Type == TenantClaims.OperatorRole,
+                "testin bütün anlamı rolsüz token");
+
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        return client;
     }
 
     [Fact]
@@ -184,6 +244,30 @@ public class StockStaffScopeTests : IClassFixture<ApiFactory>
         var resp = await stock.GetAsync($"/api/panel/sessions/{Guid.NewGuid()}/orders");
 
         resp.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        // 403 birçok sebepten dönebilir; testin DOĞRU sebebi doğrulaması lazım.
+        (await TitleAsync(resp)).Should().Be("stock-staff-forbidden");
+    }
+
+    /// <summary>
+    /// Geriye dönük uyumluluk: <c>oprole</c> claim'i Faz 1a ile geldi, yani
+    /// sahadaki her ESKİ operatör token'ı onu taşımıyor. Doğru davranış, rol
+    /// yokken eski <c>staff</c> davranışını sürdürmek — kapı yalnız "stock"
+    /// değerine tepki verir. Kapı yarın "rol yoksa kapat" diye çevrilirse
+    /// sahadaki bütün eski token'lar sessizce kilitlenir; bu test o değişikliği
+    /// süit yeşilken geçmeye bırakmaz.
+    /// </summary>
+    [Fact]
+    public async Task Operator_token_without_the_role_claim_keeps_full_access()
+    {
+        var (owner, customerId) = await SeedOwnerWithIdAsync();
+        var legacy = await LegacyOperatorClientWithoutRoleClaimAsync(owner, customerId);
+
+        // Stok kısıtına takılan uç (işaretsiz) ve açık uç — ikisi de 200 olmalı.
+        var customers = await legacy.GetAsync("/api/panel/customers");
+        var products = await legacy.GetAsync("/api/panel/products");
+
+        customers.StatusCode.Should().Be(HttpStatusCode.OK);
+        products.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
     [Fact]
