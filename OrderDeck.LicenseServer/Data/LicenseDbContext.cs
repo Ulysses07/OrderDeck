@@ -49,6 +49,9 @@ public class LicenseDbContext : DbContext
     public DbSet<WaConversation> WaConversations => Set<WaConversation>();
     public DbSet<WaMessage> WaMessages => Set<WaMessage>();
     public DbSet<WaSendAttempt> WaSendAttempts => Set<WaSendAttempt>();
+    public DbSet<Category> Categories => Set<Category>();
+    public DbSet<Product> Products => Set<Product>();
+    public DbSet<ProductVariant> ProductVariants => Set<ProductVariant>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -587,6 +590,58 @@ public class LicenseDbContext : DbContext
             b.Property(a => a.ErrorCode).HasMaxLength(32);
             b.Property(a => a.ErrorMessage).HasMaxLength(1000);
             b.HasIndex(a => a.StartedAt);
+        });
+
+        mb.Entity<Category>(b =>
+        {
+            b.HasKey(c => c.Id);
+            b.Property(c => c.Name).HasMaxLength(120).IsRequired();
+            b.Property(c => c.Path).HasMaxLength(512).IsRequired();
+            b.HasOne(c => c.License).WithMany()
+                .HasForeignKey(c => c.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            // Restrict: alt kategorisi olan kategori silinemesin, controller 409
+            // dönsün. Cascade olsaydı tek DELETE koca ağacı sessizce uçururdu.
+            b.HasOne(c => c.ParentCategory).WithMany()
+                .HasForeignKey(c => c.ParentCategoryId).OnDelete(DeleteBehavior.Restrict);
+            b.HasIndex(c => new { c.LicenseId, c.Path });
+            b.HasIndex(c => new { c.LicenseId, c.ParentCategoryId, c.SortOrder });
+        });
+
+        mb.Entity<Product>(b =>
+        {
+            b.HasKey(p => p.Id);
+            b.Property(p => p.Code).HasMaxLength(32).IsRequired();
+            b.Property(p => p.Name).HasMaxLength(200).IsRequired();
+            b.Property(p => p.DefaultPrice).HasPrecision(18, 2);
+            b.Property(p => p.Cost).HasPrecision(18, 2);
+            b.Property(p => p.Axis1Name).HasMaxLength(40);
+            b.Property(p => p.Axis2Name).HasMaxLength(40);
+            b.Property(p => p.Axis1Role).HasConversion<int>();
+            b.Property(p => p.Axis2Role).HasConversion<int>();
+            b.Property(p => p.PhotoObjectKey).HasMaxLength(512);
+            b.Property(p => p.PhotoContentType).HasMaxLength(100);
+            b.HasOne(p => p.License).WithMany()
+                .HasForeignKey(p => p.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            b.HasOne(p => p.Category).WithMany()
+                .HasForeignKey(p => p.CategoryId).OnDelete(DeleteBehavior.Restrict);
+            // Ürün kodu LİSANS BAŞINA benzersiz — her yayıncının kendi A1'i olur.
+            b.HasIndex(p => new { p.LicenseId, p.Code }).IsUnique();
+            b.HasIndex(p => new { p.LicenseId, p.IsArchived, p.UpdatedAt });
+        });
+
+        mb.Entity<ProductVariant>(b =>
+        {
+            b.HasKey(v => v.Id);
+            b.Property(v => v.Axis1Value).HasMaxLength(60);
+            b.Property(v => v.Axis2Value).HasMaxLength(60);
+            b.Property(v => v.Axis1Code).HasMaxLength(8);
+            b.Property(v => v.Axis2Code).HasMaxLength(8);
+            b.Property(v => v.VariantCode).HasMaxLength(64).IsRequired();
+            b.Property(v => v.Barcode).HasMaxLength(64);
+            b.HasOne(v => v.Product).WithMany(p => p.Variants)
+                .HasForeignKey(v => v.ProductId).OnDelete(DeleteBehavior.Cascade);
+            b.HasIndex(v => new { v.ProductId, v.VariantCode }).IsUnique();
+            b.HasIndex(v => new { v.LicenseId, v.VariantCode });
         });
 
         // Seed SKUs
