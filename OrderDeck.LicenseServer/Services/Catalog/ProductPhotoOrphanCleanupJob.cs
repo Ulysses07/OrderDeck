@@ -14,7 +14,8 @@ namespace OrderDeck.LicenseServer.Services.Catalog;
 /// <item>Presigned URL alınıp baytlar yüklenir, sonra Attach <b>hiç</b> çağrılmaz
 /// (kullanıcı dialogu iptal eder). Anahtar veritabanına HİÇ yazılmadığı için
 /// DB'yi okuyarak bulunması imkânsızdır — tek yol kovayı listelemektir.</item>
-/// <item>Ürün silinir. Uç nokta artık nesneyi de siliyor ama...</item>
+/// <item>Galeriden fotoğraf çıkarılır ya da ürün silinir. Uçlar artık nesneyi
+/// de siliyor ama...</item>
 /// <item>...lisans cascade'iyle giden ürünler o uçtan geçmez.</item>
 /// <item>Commit ile silme arasında süreç ölürse nesne yetim kalır.</item>
 /// </list>
@@ -88,9 +89,9 @@ public sealed class ProductPhotoOrphanCleanupJob
         var listed = await _storage.ListAsync(prefix, ct);
         if (listed.Count == 0) return 0;
 
-        var referenced = (await _db.Products
-                .Where(p => p.LicenseId == licenseId && p.PhotoObjectKey != null)
-                .Select(p => p.PhotoObjectKey!)
+        var referenced = (await _db.ProductPhotos
+                .Where(p => p.LicenseId == licenseId)
+                .Select(p => p.ObjectKey)
                 .ToListAsync(ct))
             .ToHashSet(StringComparer.Ordinal);
 

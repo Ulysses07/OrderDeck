@@ -46,7 +46,7 @@ public class ProductPhotoOrphanCleanupJobTests : IClassFixture<ApiFactory>
         return license.Id;
     }
 
-    private async Task<Guid> CreateProductAsync(Guid licenseId, string? photoObjectKey)
+    private async Task<Guid> CreateProductAsync(Guid licenseId)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -56,12 +56,24 @@ public class ProductPhotoOrphanCleanupJobTests : IClassFixture<ApiFactory>
             Id = Guid.NewGuid(), LicenseId = licenseId,
             Code = "A" + Guid.NewGuid().ToString("N")[..6].ToUpperInvariant(),
             Name = "Yetim testi", DefaultPrice = 10m,
-            PhotoObjectKey = photoObjectKey,
             CreatedAt = now, UpdatedAt = now,
         };
         db.Products.Add(product);
         await db.SaveChangesAsync();
         return product.Id;
+    }
+
+    private async Task AddPhotoRowAsync(Guid licenseId, Guid productId, string key)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        db.ProductPhotos.Add(new ProductPhoto
+        {
+            Id = Guid.NewGuid(), LicenseId = licenseId, ProductId = productId,
+            ObjectKey = key, ContentType = "image/jpeg", SizeBytes = 1024,
+            SortOrder = 0, CreatedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
     }
 
     private static string PhotoKey(Guid licenseId, Guid productId)
@@ -81,7 +93,7 @@ public class ProductPhotoOrphanCleanupJobTests : IClassFixture<ApiFactory>
     public async Task RunAsync_deletes_an_aged_key_that_no_product_references()
     {
         var licenseId = await CreateLicenseAsync();
-        var productId = await CreateProductAsync(licenseId, photoObjectKey: null);
+        var productId = await CreateProductAsync(licenseId);
         var orphan = PhotoKey(licenseId, productId);
         _factory.BroadcastMedia.Seed(orphan, 1024, "image/jpeg", Old);
 
@@ -93,32 +105,18 @@ public class ProductPhotoOrphanCleanupJobTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task RunAsync_keeps_a_key_that_a_product_still_references()
+    public async Task RunAsync_keeps_a_key_that_a_gallery_row_still_references()
     {
         var licenseId = await CreateLicenseAsync();
-        var productId = Guid.NewGuid();
-        var live = $"{licenseId:N}/products/{productId:N}/{Guid.NewGuid():N}.img";
+        var productId = await CreateProductAsync(licenseId);
+        var live = PhotoKey(licenseId, productId);
         _factory.BroadcastMedia.Seed(live, 1024, "image/jpeg", Old);
-
-        using (var scope = _factory.Services.CreateScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-            var now = DateTimeOffset.UtcNow;
-            db.Products.Add(new Product
-            {
-                Id = productId, LicenseId = licenseId,
-                Code = "LIVE" + Guid.NewGuid().ToString("N")[..4].ToUpperInvariant(),
-                Name = "Canlı fotoğraf", DefaultPrice = 10m,
-                PhotoObjectKey = live,
-                CreatedAt = now, UpdatedAt = now,
-            });
-            await db.SaveChangesAsync();
-        }
+        await AddPhotoRowAsync(licenseId, productId, live);
 
         await RunJobAsync();
 
         (await _factory.BroadcastMedia.HeadAsync(live)).Should().NotBeNull(
-            "bir ürünün PhotoObjectKey'i olan nesneye asla dokunulmamalı");
+            "galeride satırı olan nesne ödemsiz süreden eski olsa da yaşamalı");
         _factory.BroadcastMedia.DeleteCalls.Should().NotContain(live);
     }
 
@@ -131,7 +129,7 @@ public class ProductPhotoOrphanCleanupJobTests : IClassFixture<ApiFactory>
     public async Task RunAsync_keeps_a_fresh_orphan_inside_the_grace_period()
     {
         var licenseId = await CreateLicenseAsync();
-        var productId = await CreateProductAsync(licenseId, photoObjectKey: null);
+        var productId = await CreateProductAsync(licenseId);
         var fresh = PhotoKey(licenseId, productId);
         _factory.BroadcastMedia.Seed(fresh, 1024, "image/jpeg",
             DateTimeOffset.UtcNow.AddMinutes(-5));
@@ -152,7 +150,7 @@ public class ProductPhotoOrphanCleanupJobTests : IClassFixture<ApiFactory>
     public async Task RunAsync_ignores_objects_outside_the_products_prefix()
     {
         var licenseId = await CreateLicenseAsync();
-        await CreateProductAsync(licenseId, photoObjectKey: null);
+        await CreateProductAsync(licenseId);
         var postMedia = $"{licenseId:N}/posts/{Guid.NewGuid():N}.bin";
         _factory.BroadcastMedia.Seed(postMedia, 2048, "image/jpeg", Old);
 
