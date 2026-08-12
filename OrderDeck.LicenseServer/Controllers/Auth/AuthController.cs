@@ -160,7 +160,8 @@ public sealed class AuthController : ControllerBase
         op.LastLoginAt = now;
         await _db.SaveChangesAsync(ct);
 
-        var (token, expiresAt) = _jwt.IssueOperatorToken(op.Id, op.License.CustomerId, op.Email);
+        var (token, expiresAt) = _jwt.IssueOperatorToken(
+            op.Id, op.License.CustomerId, op.Email, op.Role);
         return Ok(new OperatorLoginResponse(
             token, expiresAt, op.Id, op.License.CustomerId, op.Email, op.Name, op.Role));
     }

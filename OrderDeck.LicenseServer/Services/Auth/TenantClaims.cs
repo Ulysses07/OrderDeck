@@ -27,6 +27,10 @@ public static class TenantClaims
     /// <summary>op: OperatorUser.Id, operator token'larında set edilir.</summary>
     public const string OperatorId = "op";
 
+    /// <summary>oprole: operatörün rolü ("staff" | "stock"). Customer token'larında yok.
+    /// Ad bilerek "role" değil — JWT handler "role"ü ClaimTypes.Role'e eşliyor.</summary>
+    public const string OperatorRole = "oprole";
+
     /// <summary>
     /// JWT'den tenant customer id'yi çıkarır. Yeni `tcid` claim'i varsa onu,
     /// yoksa `sub`'a düşer (legacy customer token).
@@ -50,6 +54,14 @@ public static class TenantClaims
     /// </summary>
     public static bool IsOperator(this ClaimsPrincipal principal) =>
         principal.FindFirst(PrincipalType)?.Value == "operator";
+
+    /// <summary>
+    /// Operatörün rolü. Customer token'larında ve rolsüz eski operator
+    /// token'larında null döner — kapı yalnız "stock" değerine tepki verdiği
+    /// için eski token'lar davranış değiştirmez.
+    /// </summary>
+    public static string? GetOperatorRole(this ClaimsPrincipal principal)
+        => principal.FindFirst(OperatorRole)?.Value;
 
     /// <summary>
     /// Operator id (varsa). Customer token'larında null.

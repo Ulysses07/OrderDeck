@@ -82,6 +82,53 @@ public sealed class R2BroadcastMediaStorage : IBroadcastMediaStorage, IDisposabl
         }
     }
 
+    /// <summary>
+    /// Önek altındaki tüm anahtarları döner. S3/R2 tek yanıtta en çok 1000 anahtar
+    /// veriyor; <c>IsTruncated</c> doğru olduğu sürece <c>ContinuationToken</c> ile
+    /// devam edilir. Sayfalama atlanırsa 1000'inci anahtardan sonrası GÖRÜNMEZ olur
+    /// ve mutabakat işi yetimleri sessizce kaçırır.
+    ///
+    /// İstisna bilerek YUTULMUYOR (DeleteAsync'in aksine): eksik bir liste
+    /// "yetim yok" gibi görünür, çağıran iş hatayı lisans başına yakalayıp
+    /// loglayabilsin diye yukarı bırakılıyor.
+    /// </summary>
+    public async Task<IReadOnlyList<MediaObjectListing>> ListAsync(
+        string prefix, CancellationToken ct = default)
+    {
+        var results = new List<MediaObjectListing>();
+        string? token = null;
+
+        do
+        {
+            var resp = await _client.ListObjectsV2Async(new ListObjectsV2Request
+            {
+                BucketName = _opt.BucketName,
+                Prefix = prefix,
+                ContinuationToken = token,
+            }, ct);
+
+            foreach (var o in resp.S3Objects ?? [])
+                results.Add(new MediaObjectListing(o.Key, ToUtc(o.LastModified)));
+
+            token = resp.IsTruncated == true ? resp.NextContinuationToken : null;
+        }
+        while (token is not null);
+
+        return results;
+    }
+
+    /// <summary>
+    /// S3 zaman damgası UTC'dir ama SDK <c>DateTime.Kind</c>'ı Unspecified
+    /// bırakabiliyor; doğrudan DateTimeOffset'e çevirmek sunucunun YEREL saat
+    /// farkını uygular ve ödemsiz süre kıyasını saatlerce kaydırır. Kind
+    /// açıkça UTC'ye sabitleniyor. Damga yoksa "şimdi" varsayılır — bilinmeyen
+    /// yaş en taze kabul edilir, yani nesne silinmez (güvenli taraf).
+    /// </summary>
+    private static DateTimeOffset ToUtc(DateTime? value)
+        => value is null
+            ? DateTimeOffset.UtcNow
+            : new DateTimeOffset(DateTime.SpecifyKind(value.Value, DateTimeKind.Utc));
+
     public async Task DeleteAsync(string objectKey, CancellationToken ct = default)
     {
         try

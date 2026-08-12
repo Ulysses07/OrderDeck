@@ -82,6 +82,7 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Audit.AuditRetentionJobs>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Backup.BackupRestoreDrillJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.BroadcastPosts.BroadcastPostCleanupJob>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Catalog.ProductPhotoOrphanCleanupJob>();
         builder.Services.AddHttpContextAccessor();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Audit.IAuditService,
                                     OrderDeck.LicenseServer.Services.Audit.AuditService>();
@@ -489,7 +490,8 @@ public class Program
                 name: "licensedb",
                 tags: new[] { "ready", "db" });
 
-        builder.Services.AddControllers();
+        builder.Services.AddControllers(opt =>
+            opt.Filters.Add<OrderDeck.LicenseServer.Services.Auth.StockStaffScopeFilter>());
         builder.Services.AddMemoryCache(); // YouTube handle doğrulama cache'i için
         builder.Services.AddHttpClient();  // YouTubeVerifyController için IHttpClientFactory
         builder.Services.AddRazorPages(opt =>
@@ -570,6 +572,16 @@ public class Program
                 "wa-send-attempt-cleanup",
                 j => j.PruneAsync(CancellationToken.None),
                 "0 4 * * *");  // 04:00 UTC daily
+
+            // Ürün fotoğrafı mutabakatı — R2'de kalmış yetim nesneleri süpürür.
+            // Ürün silme ucundaki inline silme yetmiyor: Attach edilmeden yüklenen
+            // dosyalar DB'ye hiç yazılmıyor, lisans cascade'i o uçtan geçmiyor.
+            // Yetim ancak kova listelenerek bulunabilir. 24 saatlik ödemsiz süre
+            // henüz iliştirilmemiş yüklemeleri koruyor.
+            manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Catalog.ProductPhotoOrphanCleanupJob>(
+                "product-photo-orphan-cleanup",
+                j => j.RunAsync(CancellationToken.None),
+                "15 4 * * *");  // 04:15 UTC daily
         }
 
         if (app.Environment.IsDevelopment())

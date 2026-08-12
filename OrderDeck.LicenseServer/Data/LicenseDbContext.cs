@@ -1,4 +1,5 @@
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Catalog;
 using Microsoft.EntityFrameworkCore;
 
 namespace OrderDeck.LicenseServer.Data;
@@ -49,6 +50,47 @@ public class LicenseDbContext : DbContext
     public DbSet<WaConversation> WaConversations => Set<WaConversation>();
     public DbSet<WaMessage> WaMessages => Set<WaMessage>();
     public DbSet<WaSendAttempt> WaSendAttempts => Set<WaSendAttempt>();
+    public DbSet<Category> Categories => Set<Category>();
+    public DbSet<Product> Products => Set<Product>();
+    public DbSet<ProductVariant> ProductVariants => Set<ProductVariant>();
+
+    /// <summary>
+    /// Türetilmiş kolonların tazelendiği <b>tek</b> nokta.
+    ///
+    /// Neden controller'da değil burada: <c>Product.NameSearch</c> türetilmiş bir
+    /// değer, girdisi <c>Name</c>. Girdi değiştiğinde yeniden hesaplanmazsa kolon
+    /// bayatlar ve arama sessizce YANLIŞ sonuç döner — patlamaz, sadece yanlış
+    /// cevap verir; bu da en geç fark edilen hata sınıfı. Controller'da elle
+    /// atansaydı bugün var olmayan bir yazma yolu (içe aktarma, WPF senkronu,
+    /// ileride bir toplu düzenleme ucu) kuralı sessizce atlardı. Buradan
+    /// geçmeyen yazma yolu yok.
+    /// </summary>
+    private void SyncDerivedColumns()
+    {
+        foreach (var entry in ChangeTracker.Entries<Product>())
+        {
+            if (entry.State is not (EntityState.Added or EntityState.Modified)) continue;
+
+            entry.Entity.NameSearch = SearchNormalizer.Normalize(entry.Entity.Name);
+        }
+    }
+
+    // DİKKAT — parametresiz SaveChanges() ve SaveChangesAsync(ct) aşırı yüklemeleri
+    // BİLEREK override edilmedi: EF'te ikisi de burada override edilen
+    // (bool acceptAllChangesOnSuccess, …) sürümüne yönleniyor. Yani asıl zincir
+    // bu ikisi; dördünü birden override etmek aynı işi iki kez yaptırırdı.
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        SyncDerivedColumns();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    public override Task<int> SaveChangesAsync(
+        bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    {
+        SyncDerivedColumns();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -587,6 +629,65 @@ public class LicenseDbContext : DbContext
             b.Property(a => a.ErrorCode).HasMaxLength(32);
             b.Property(a => a.ErrorMessage).HasMaxLength(1000);
             b.HasIndex(a => a.StartedAt);
+        });
+
+        mb.Entity<Category>(b =>
+        {
+            b.HasKey(c => c.Id);
+            // Uzunluklar CatalogLimits'ten: aynı sabitleri istek DTO'ları da
+            // okuyor, böylece doğrulama ile şema ayrışamıyor.
+            b.Property(c => c.Name).HasMaxLength(CatalogLimits.CategoryName).IsRequired();
+            b.Property(c => c.Path).HasMaxLength(CatalogLimits.CategoryPath).IsRequired();
+            b.HasOne(c => c.License).WithMany()
+                .HasForeignKey(c => c.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            // Restrict: alt kategorisi olan kategori silinemesin, controller 409
+            // dönsün. Cascade olsaydı tek DELETE koca ağacı sessizce uçururdu.
+            b.HasOne(c => c.ParentCategory).WithMany()
+                .HasForeignKey(c => c.ParentCategoryId).OnDelete(DeleteBehavior.Restrict);
+            b.HasIndex(c => new { c.LicenseId, c.Path });
+            b.HasIndex(c => new { c.LicenseId, c.ParentCategoryId, c.SortOrder });
+        });
+
+        mb.Entity<Product>(b =>
+        {
+            b.HasKey(p => p.Id);
+            b.Property(p => p.Code).HasMaxLength(CatalogLimits.ProductCode).IsRequired();
+            b.Property(p => p.Name).HasMaxLength(CatalogLimits.ProductName).IsRequired();
+            // NameSearch'e BİLEREK indeks konmuyor: arama `Contains` yapıyor,
+            // yani SQL'de `LIKE '%…%'` — önden joker olduğu için hiçbir B-tree
+            // indeksi taranamaz. İşe yaramayan indeks yalnız yazma maliyeti ve
+            // disk getirir. Gerçek çözüm tam metin arama; Faz 1a kapsamı dışı.
+            b.Property(p => p.NameSearch).HasMaxLength(CatalogLimits.NameSearch).IsRequired();
+            b.Property(p => p.DefaultPrice).HasPrecision(18, 2);
+            b.Property(p => p.Cost).HasPrecision(18, 2);
+            b.Property(p => p.Axis1Name).HasMaxLength(CatalogLimits.AxisName);
+            b.Property(p => p.Axis2Name).HasMaxLength(CatalogLimits.AxisName);
+            b.Property(p => p.Axis1Role).HasConversion<int>();
+            b.Property(p => p.Axis2Role).HasConversion<int>();
+            b.Property(p => p.PhotoObjectKey).HasMaxLength(CatalogLimits.PhotoObjectKey);
+            b.Property(p => p.PhotoContentType).HasMaxLength(CatalogLimits.PhotoContentType);
+            b.HasOne(p => p.License).WithMany()
+                .HasForeignKey(p => p.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            b.HasOne(p => p.Category).WithMany()
+                .HasForeignKey(p => p.CategoryId).OnDelete(DeleteBehavior.Restrict);
+            // Ürün kodu LİSANS BAŞINA benzersiz — her yayıncının kendi A1'i olur.
+            b.HasIndex(p => new { p.LicenseId, p.Code }).IsUnique();
+            b.HasIndex(p => new { p.LicenseId, p.IsArchived, p.UpdatedAt });
+        });
+
+        mb.Entity<ProductVariant>(b =>
+        {
+            b.HasKey(v => v.Id);
+            b.Property(v => v.Axis1Value).HasMaxLength(CatalogLimits.AxisValue);
+            b.Property(v => v.Axis2Value).HasMaxLength(CatalogLimits.AxisValue);
+            b.Property(v => v.Axis1Code).HasMaxLength(CatalogLimits.AxisCode);
+            b.Property(v => v.Axis2Code).HasMaxLength(CatalogLimits.AxisCode);
+            b.Property(v => v.VariantCode).HasMaxLength(CatalogLimits.VariantCode).IsRequired();
+            b.Property(v => v.Barcode).HasMaxLength(CatalogLimits.Barcode);
+            b.HasOne(v => v.Product).WithMany(p => p.Variants)
+                .HasForeignKey(v => v.ProductId).OnDelete(DeleteBehavior.Cascade);
+            b.HasIndex(v => new { v.ProductId, v.VariantCode }).IsUnique();
+            b.HasIndex(v => new { v.LicenseId, v.VariantCode });
         });
 
         // Seed SKUs
