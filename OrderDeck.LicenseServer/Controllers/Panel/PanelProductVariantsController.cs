@@ -13,9 +13,10 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 /// biçiminde ve yalnız ASCII harf/rakam taşır — Faz 1c'nin barkot alfabesi
 /// Code128 ve Code128 Türkçe harf kabul etmiyor.
 ///
-/// Kodu tek bir yer kurar: <see cref="VariantCodeBuilder"/>. Kod türetilmiş bir
-/// etikettir, kimlik değil — kimlik <c>ProductVariant.Barcode</c>'dur ve ürün
-/// kodu değişse bile aynı kalır (barkot yükü olarak VariantCode basılmamalı).
+/// Kodu tek bir yer kurar: <see cref="VariantCodeBuilder"/>. Kod türetilmiştir ve
+/// ürün kodu değişince yenilenir; Faz 1c'de barkot yükü basım anında
+/// <c>ProductVariant.Barcode</c>'a kopyalanıp dondurulur, okutma oradan
+/// çözümlenir — yoksa yeniden adlandırma basılmış etiketleri geçersiz kılar.
 /// </summary>
 [ApiController]
 [Route("api/panel/products/{productId:guid}/variants")]

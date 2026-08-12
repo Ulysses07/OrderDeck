@@ -10,11 +10,11 @@ namespace OrderDeck.LicenseServer.Services.Catalog;
 /// Bu yüzden kodu kuran her yazma yolu buradan geçmeli, kimse elle
 /// birleştirmemeli.
 ///
-/// DİKKAT — bu kod <b>barkot değildir</b>.
-/// <see cref="OrderDeck.LicenseServer.Domain.ProductVariant.Barcode"/> ayrı ve
-/// değişmez bir fiziksel kimlik (Faz 1c): ürün kodu değişince VariantCode
-/// yenilenir, ama rafta duran ürüne yapıştırılmış etiket geçerli kalmalı.
-/// Faz 1c'de barkot yükü olarak VariantCode basılmamalı.
+/// DİKKAT — bu değer <b>zaman içinde değişir</b>, barkodun kendisi değildir.
+/// Spec'e göre Code128 yükü varyant kodudur, ama basım anında
+/// <see cref="OrderDeck.LicenseServer.Domain.ProductVariant.Barcode"/> alanına
+/// <b>kopyalanıp donar</b> — ürün kodu sonradan değişse de rafa yapıştırılmış
+/// etiket geçerli kalsın diye. Faz 1c'de okutma Barcode'dan çözümlenmeli.
 /// </summary>
 public static class VariantCodeBuilder
 {

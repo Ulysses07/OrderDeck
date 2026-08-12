@@ -40,10 +40,15 @@ public sealed class ProductVariant
     /// <summary>
     /// Faz 1c'de doldurulur (Code128). 1a'da her zaman null.
     ///
-    /// Fiziksel kimlik ve <b>değişmez</b>: bir kez basılıp ürüne yapıştırıldıktan
-    /// sonra ürün kodu değişse bile aynı kalır. Bu yüzden barkot yükü olarak
-    /// <see cref="VariantCode"/> BASILMAMALI — o değer yeniden türetilir ve
-    /// raftaki etiketi geçersiz kılar.
+    /// Fiziksel kimlik ve <b>değişmez</b>. Spec'e göre yük, varyant kodunun
+    /// kendisidir — ama <b>basım anındaki</b> hâlinin kopyası olarak buraya
+    /// yazılır ve bir daha değişmez. Gerekçe: <see cref="VariantCode"/>
+    /// türetilmiş ve ürün kodu değişince yenileniyor; yük her seferinde yeniden
+    /// türetilseydi rafta duran ürüne yapıştırılmış etiket geçersiz olurdu.
+    ///
+    /// Faz 1c sonucu: okutma <b>bu alandan</b> çözümlenmeli
+    /// (<see cref="VariantCode"/> üzerinden değil) ve bu alan kendi indeksini
+    /// ister.
     /// </summary>
     public string? Barcode { get; set; }
 
