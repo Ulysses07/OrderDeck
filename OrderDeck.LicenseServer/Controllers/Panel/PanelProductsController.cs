@@ -252,16 +252,37 @@ public sealed class PanelProductsController : ControllerBase
 
         var newAxis1 = Trim(req.Axis1Name);
         var newAxis2 = Trim(req.Axis2Name);
-        var toggled = (product.Axis1Name is null) != (newAxis1 is null)
-                   || (product.Axis2Name is null) != (newAxis2 is null);
 
-        if (toggled)
+        // Rol, adı boş olan eksende null'lanır. Bu normalleştirme hem aşağıdaki
+        // atamayı hem de kıyaslamayı besliyor — tek kaynaktan; ikisi ayrışırsa
+        // hiçbir şeyi değiştirmeyen bir kaydetme "değişti" görünüp 409'a düşer.
+        var newRole1 = newAxis1 is null ? null : req.Axis1Role;
+        var newRole2 = newAxis2 is null ? null : req.Axis2Role;
+
+        // Eksen KİMLİĞİ = (ad, rol) ikilisi; varyant değerleri eksene konumla bağlı,
+        // referansla değil. Bu yüzden kural bilerek katı: dört alandan herhangi biri
+        // değişirse, değerli varyant varken tümü reddedilir.
+        //
+        // Daha dar bir kural (yalnız takas + rol değişimi engelle, yeniden adlandırmaya
+        // izin ver) BİLEREK seçilmedi: yazım düzeltme ("Renkk"→"Renk") ile anlam
+        // değiştirme ("Renk"→"Beden") string olarak AYIRT EDİLEMEZ; ayırmayı deneyen
+        // her kural sezgiseldir ve vaka eklendikçe çürür. Bedeli de yok — kapı yalnız
+        // değerli varyant varken kapanır, kart yeni açıkken yeniden adlandırma bedava.
+        var axisIdentityChanged =
+            !string.Equals(product.Axis1Name, newAxis1, StringComparison.Ordinal)
+            || !string.Equals(product.Axis2Name, newAxis2, StringComparison.Ordinal)
+            || product.Axis1Role != newRole1
+            || product.Axis2Role != newRole2;
+
+        if (axisIdentityChanged)
         {
             var hasValued = product.Variants.Any(
                 v => v.Axis1Value is not null || v.Axis2Value is not null);
             if (hasValued)
                 return Problem(title: "axis-in-use",
-                    detail: "Eksen açılıp kapatılmadan önce varyantları silmelisin.",
+                    detail: "Eksenin adı ya da rolü, dolu varyantlar dururken "
+                          + "değiştirilemez (eksen açıp kapatmak da dahil). "
+                          + "Önce varyantları silmelisin.",
                     statusCode: 409);
 
             _db.ProductVariants.RemoveRange(product.Variants.ToList());
@@ -275,18 +296,21 @@ public sealed class PanelProductsController : ControllerBase
         product.DefaultPrice = req.DefaultPrice;
         product.Cost = req.Cost;
         product.Axis1Name = newAxis1;
-        product.Axis1Role = newAxis1 is null ? null : req.Axis1Role;
+        product.Axis1Role = newRole1;
         product.Axis2Name = newAxis2;
-        product.Axis2Role = newAxis2 is null ? null : req.Axis2Role;
+        product.Axis2Role = newRole2;
         product.UpdatedAt = now;
 
         // Eksensiz ürün her zaman tek bir otomatik varyant taşır (eksen yeni
         // kapatıldıysa satır az önce silinmiş olabilir).
         if (product.Axis1Name is null && product.Variants.Count == 0)
         {
+            // Önce navigasyona, sonra DbSet'e: EF'in fixup'ı koleksiyonda zaten varsa
+            // bir daha eklemez. Ters sırada aynı satır listeye İKİ kez giriyor ve
+            // yanıt DTO'su varyantı çift gösteriyordu (DB'de tek satır vardı).
             var created = BuildAutoVariant(product, now);
-            _db.ProductVariants.Add(created);
             product.Variants.Add(created);
+            _db.ProductVariants.Add(created);
         }
 
         SyncVariantCodes(product, now);

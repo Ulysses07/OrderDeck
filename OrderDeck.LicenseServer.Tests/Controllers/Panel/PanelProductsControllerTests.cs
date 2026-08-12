@@ -530,6 +530,159 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Update_409_when_an_axis_is_renamed_while_valued_variants_exist()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Renkli",
+            axis1Name: "Renk", axis1Role: 2);
+        await PostVariantAsync(client, product.Id, axis1Value: "Siyah");
+
+        var resp = await PutProductAsync(client, product,
+            axis1Name: "Beden", axis1Role: 2);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await TitleAsync(resp)).Should().Be("axis-in-use");
+
+        var after = await client.GetFromJsonAsync<ProductDto>(
+            $"/api/panel/products/{product.Id}");
+        after!.Axis1Name.Should().Be("Renk");
+        after.Variants.Single().Axis1Value.Should().Be("Siyah");
+    }
+
+    [Fact]
+    public async Task Update_409_when_the_two_axes_are_swapped_while_valued_variants_exist()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Çift eksenli",
+            axis1Name: "Renk", axis1Role: 2, axis2Name: "Beden", axis2Role: 1);
+        await PostVariantAsync(client, product.Id, axis1Value: "Siyah", axis2Value: "38");
+
+        var resp = await PutProductAsync(client, product,
+            axis1Name: "Beden", axis1Role: 1, axis2Name: "Renk", axis2Role: 2);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await TitleAsync(resp)).Should().Be("axis-in-use");
+
+        var after = await client.GetFromJsonAsync<ProductDto>(
+            $"/api/panel/products/{product.Id}");
+        after!.Axis1Name.Should().Be("Renk");
+        after.Axis2Name.Should().Be("Beden");
+    }
+
+    [Fact]
+    public async Task Update_409_when_an_axis_role_changes_while_valued_variants_exist()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Rol değişimi",
+            axis1Name: "Renk", axis1Role: 2);
+        await PostVariantAsync(client, product.Id, axis1Value: "Siyah");
+
+        var resp = await PutProductAsync(client, product,
+            axis1Name: "Renk", axis1Role: 1);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await TitleAsync(resp)).Should().Be("axis-in-use");
+
+        var after = await client.GetFromJsonAsync<ProductDto>(
+            $"/api/panel/products/{product.Id}");
+        after!.Axis1Role.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Update_renames_the_axis_when_no_variant_carries_a_value()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Yeni kart",
+            axis1Name: "Renkk", axis1Role: 2);
+
+        var resp = await PutProductAsync(client, product,
+            axis1Name: "Renk", axis1Role: 2);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var dto = (await resp.Content.ReadFromJsonAsync<ProductDto>())!;
+        dto.Axis1Name.Should().Be("Renk");
+        dto.Variants.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Update_swaps_the_axes_when_no_variant_carries_a_value()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Ters kurulmuş",
+            axis1Name: "Renk", axis1Role: 2, axis2Name: "Beden", axis2Role: 1);
+
+        var resp = await PutProductAsync(client, product,
+            axis1Name: "Beden", axis1Role: 1, axis2Name: "Renk", axis2Role: 2);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var dto = (await resp.Content.ReadFromJsonAsync<ProductDto>())!;
+        dto.Axis1Name.Should().Be("Beden");
+        dto.Axis1Role.Should().Be(1);
+        dto.Axis2Name.Should().Be("Renk");
+        dto.Axis2Role.Should().Be(2);
+        dto.Variants.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Update_changes_the_axis_role_when_no_variant_carries_a_value()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Rol düzeltme",
+            axis1Name: "Renk", axis1Role: 2);
+
+        var resp = await PutProductAsync(client, product,
+            axis1Name: "Renk", axis1Role: 1);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var dto = (await resp.Content.ReadFromJsonAsync<ProductDto>())!;
+        dto.Axis1Role.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Update_rebuilds_the_auto_variant_when_the_axis_is_switched_off_unused()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Eksen kapanıyor",
+            axis1Name: "Renk", axis1Role: 2);
+
+        var resp = await PutProductAsync(client, product);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var dto = (await resp.Content.ReadFromJsonAsync<ProductDto>())!;
+        dto.Axis1Name.Should().BeNull();
+        dto.Axis1Role.Should().BeNull();
+        dto.Variants.Single().VariantCode.Should().Be(dto.Code);
+        dto.Variants.Single().Axis1Value.Should().BeNull();
+        AssertVariantCodesAreDerived(product.Id);
+    }
+
+    /// <summary>
+    /// Katı kuralın taşıdığı asıl risk: aynı eksen adlarını geri gönderen sıradan
+    /// bir kaydetme (ad/fiyat düzeltme) yanlışlıkla 409'a düşerse gerçek
+    /// kullanıcılar anında çarpar. Boşluk kırpma sonrası da no-op sayılmalı.
+    /// </summary>
+    [Fact]
+    public async Task Update_with_an_unchanged_axis_payload_keeps_the_valued_variants()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Değişmeyen eksen",
+            axis1Name: "Renk", axis1Role: 2, axis2Name: "Beden", axis2Role: 1);
+        var variant = await PostVariantAsync(client, product.Id, "Siyah", "38");
+
+        var resp = await PutProductAsync(client, product,
+            axis1Name: "  Renk ", axis1Role: 2, axis2Name: "Beden ", axis2Role: 1);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var dto = (await resp.Content.ReadFromJsonAsync<ProductDto>())!;
+        dto.Axis1Name.Should().Be("Renk");
+        dto.Axis2Name.Should().Be("Beden");
+        dto.Variants.Single().Id.Should().Be(variant.Id);
+        dto.Variants.Single().Axis1Value.Should().Be("Siyah");
+        dto.Variants.Single().Axis2Value.Should().Be("38");
+        AssertVariantCodesAreDerived(product.Id);
+    }
+
+    [Fact]
     public async Task Delete_removes_the_product_and_its_variants()
     {
         var (client, _) = await SeedAsync();
