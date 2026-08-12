@@ -60,6 +60,14 @@ public static class CatalogLimits
     public const int Barcode = 64;
 
     /// <summary>
+    /// Tek toplu istekte yazılabilecek azami varyant. Gerçek ihtiyaç 12–20
+    /// (3 renk × 4 beden); 200, elle kurulan uç senaryolara bile fazlasıyla
+    /// yeterken tek isteğin veritabanını kilitleyerek kötüye kullanılmasını
+    /// engelliyor.
+    /// </summary>
+    public const int MaxBulkVariants = 200;
+
+    /// <summary>
     /// Kategori ağacının azami seviye sayısı (kök = 1).
     ///
     /// Neden gerekli: <c>Path</c> seviye başına 33 karakter büyüyor

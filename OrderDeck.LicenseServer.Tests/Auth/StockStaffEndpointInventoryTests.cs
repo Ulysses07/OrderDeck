@@ -45,6 +45,7 @@ public class StockStaffEndpointInventoryTests
         "PanelProductsController.Delete",
 
         "PanelProductVariantsController.Create",
+        "PanelProductVariantsController.CreateBulk",
         "PanelProductVariantsController.Update",
         "PanelProductVariantsController.Delete",
 
