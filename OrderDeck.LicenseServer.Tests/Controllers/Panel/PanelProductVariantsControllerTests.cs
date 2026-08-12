@@ -56,21 +56,22 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
                && errors.TryGetProperty(field, out _);
     }
 
-    private async Task<(HttpClient Client, Guid CustomerId)> SeedAsync()
+    private async Task<(HttpClient Client, Guid licenseId)> SeedAsync()
     {
         var (client, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-        db.Licenses.Add(new License
+        var license = new License
         {
             Id = Guid.NewGuid(), CustomerId = customerId,
             LicenseKey = "LDK-VARI-" + Guid.NewGuid().ToString("N"),
             SkuCode = "STD", ActivationSlots = 1,
             IssuedAt = DateTimeOffset.UtcNow,
             ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
-        });
+        };
+        db.Licenses.Add(license);
         await db.SaveChangesAsync();
-        return (client, customerId);
+        return (client, license.Id);
     }
 
     private static async Task<ProductDto> CreateProductAsync(
