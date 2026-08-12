@@ -52,7 +52,8 @@ public class StockStaffEndpointInventoryTests
 
         "PanelProductPhotoController.CreateUploadUrl",
         "PanelProductPhotoController.Attach",
-        "PanelProductPhotoController.GetUrl",
+        "PanelProductPhotoController.List",
+        "PanelProductPhotoController.Reorder",
         "PanelProductPhotoController.Delete",
     ];
 

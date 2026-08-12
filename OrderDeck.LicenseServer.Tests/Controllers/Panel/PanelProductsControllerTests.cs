@@ -927,7 +927,7 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
     private async Task<string> AttachPhotoAsync(HttpClient client, Guid productId)
     {
         var upload = await client.PostAsJsonAsync(
-            $"/api/panel/products/{productId}/photo/upload-url",
+            $"/api/panel/products/{productId}/photos/upload-url",
             new { contentType = "image/jpeg", sizeBytes = 120_000 });
         upload.StatusCode.Should().Be(HttpStatusCode.OK);
         var key = (await upload.Content
@@ -935,10 +935,10 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
 
         _factory.BroadcastMedia.Seed(key, 120_000, "image/jpeg");
 
-        var attach = await client.PutAsJsonAsync(
-            $"/api/panel/products/{productId}/photo",
+        var attach = await client.PostAsJsonAsync(
+            $"/api/panel/products/{productId}/photos",
             new { objectKey = key, width = 800, height = 800 });
-        attach.StatusCode.Should().Be(HttpStatusCode.OK);
+        attach.StatusCode.Should().Be(HttpStatusCode.Created);
         return key;
     }
 

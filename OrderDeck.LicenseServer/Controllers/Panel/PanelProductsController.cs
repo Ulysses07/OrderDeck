@@ -474,6 +474,13 @@ public sealed class PanelProductsController : ControllerBase
 
         var photoKey = product.PhotoObjectKey;
 
+        // Galeri fotoğraflarının anahtarlarını DB commit öncesinde toplayıyoruz
+        // — commit sonrası satırlar gider, anahtara erişemeyiz.
+        var galleryKeys = await _db.ProductPhotos
+            .Where(p => p.ProductId == product.Id)
+            .Select(p => p.ObjectKey)
+            .ToListAsync(ct);
+
         _db.ProductVariants.RemoveRange(product.Variants);
         _db.Products.Remove(product);
         await _db.SaveChangesAsync(ct);
@@ -490,6 +497,9 @@ public sealed class PanelProductsController : ControllerBase
         // mutabakat işi o yüzden var.
         if (!string.IsNullOrWhiteSpace(photoKey))
             await _storage.DeleteAsync(photoKey, ct);
+
+        foreach (var key in galleryKeys)
+            await _storage.DeleteAsync(key, ct);
 
         return NoContent();
     }

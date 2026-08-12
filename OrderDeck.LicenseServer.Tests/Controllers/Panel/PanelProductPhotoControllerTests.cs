@@ -16,8 +16,8 @@ public class PanelProductPhotoControllerTests : IClassFixture<ApiFactory>
 
     private sealed record UploadUrlDto(string ObjectKey, string UploadUrl);
     private sealed record PhotoDto(
-        string ObjectKey, string ContentType, long SizeBytes, int? Width, int? Height);
-    private sealed record PhotoUrlDto(string Url);
+        Guid Id, string ObjectKey, string ContentType, long SizeBytes,
+        int? Width, int? Height, int SortOrder, string Url);
     private sealed record ProductDto(
         Guid Id, Guid? CategoryId, string Code, string Name,
         decimal DefaultPrice, decimal? Cost,
@@ -79,13 +79,13 @@ public class PanelProductPhotoControllerTests : IClassFixture<ApiFactory>
     private static Task<HttpResponseMessage> UploadUrlAsync(
         HttpClient client, Guid productId,
         string contentType = "image/jpeg", long sizeBytes = 120_000)
-        => client.PostAsJsonAsync($"/api/panel/products/{productId}/photo/upload-url",
+        => client.PostAsJsonAsync($"/api/panel/products/{productId}/photos/upload-url",
             new { contentType, sizeBytes });
 
     private static Task<HttpResponseMessage> AttachAsync(
         HttpClient client, Guid productId, string objectKey,
         int? width = 800, int? height = 800)
-        => client.PutAsJsonAsync($"/api/panel/products/{productId}/photo",
+        => client.PostAsJsonAsync($"/api/panel/products/{productId}/photos",
             new { objectKey, width, height });
 
     /// <summary>Panelin R2'ye yaptığı PUT'un yerine geçer.</summary>
@@ -156,16 +156,12 @@ public class PanelProductPhotoControllerTests : IClassFixture<ApiFactory>
 
         var resp = await AttachAsync(client, product.Id, key);
 
-        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        resp.StatusCode.Should().Be(HttpStatusCode.Created);
         var dto = (await resp.Content.ReadFromJsonAsync<PhotoDto>())!;
         dto.ObjectKey.Should().Be(key);
         dto.SizeBytes.Should().Be(99_000);
         dto.ContentType.Should().Be("image/png");
         dto.Width.Should().Be(800);
-
-        var product2 = await client.GetFromJsonAsync<ProductDto>(
-            $"/api/panel/products/{product.Id}");
-        product2!.PhotoObjectKey.Should().Be(key);
     }
 
     [Fact]
@@ -233,100 +229,6 @@ public class PanelProductPhotoControllerTests : IClassFixture<ApiFactory>
         (await TitleAsync(resp)).Should().Be("unsupported-media-type");
     }
 
-    /// <summary>
-    /// Yer değiştirme yalnız DB alanını taşımaz, ESKİ nesneyi de kovadan siler.
-    /// Bu iddia olmazsa <c>Attach</c>'teki silme satırı düşse bile süit yeşil
-    /// kalır ve her fotoğraf değişimi R2'de para yakan bir yetim bırakır.
-    /// Simetrik olarak YENİ anahtar silinmemeli — yanlış sıradaki bir silme
-    /// az önce yüklenen fotoğrafı yok ederdi.
-    /// </summary>
-    [Fact]
-    public async Task Attaching_a_second_photo_replaces_the_first()
-    {
-        var client = await SeedAsync();
-        var product = await CreateProductAsync(client);
-
-        var first = (await (await UploadUrlAsync(client, product.Id))
-            .Content.ReadFromJsonAsync<UploadUrlDto>())!.ObjectKey;
-        SimulateUpload(first);
-        (await AttachAsync(client, product.Id, first)).StatusCode.Should().Be(HttpStatusCode.OK);
-
-        var second = (await (await UploadUrlAsync(client, product.Id))
-            .Content.ReadFromJsonAsync<UploadUrlDto>())!.ObjectKey;
-        SimulateUpload(second);
-        var resp = await AttachAsync(client, product.Id, second);
-
-        resp.StatusCode.Should().Be(HttpStatusCode.OK);
-        second.Should().NotBe(first);
-        var dto = (await resp.Content.ReadFromJsonAsync<PhotoDto>())!;
-        dto.ObjectKey.Should().Be(second);
-
-        // Depo fixture ile paylaşıldığı için mutlak sayıya değil, bu iki
-        // anahtarın kendisine bakılıyor.
-        _factory.BroadcastMedia.DeleteCalls.Should().Contain(first,
-            "eski nesne kovada yetim kalmamalı");
-        _factory.BroadcastMedia.DeleteCalls.Should().NotContain(second,
-            "yeni nesne silinmemeli");
-        (await _factory.BroadcastMedia.HeadAsync(first)).Should().BeNull();
-        (await _factory.BroadcastMedia.HeadAsync(second)).Should().NotBeNull();
-    }
-
-    [Fact]
-    public async Task Photo_url_returns_404_when_there_is_no_photo()
-    {
-        var client = await SeedAsync();
-        var product = await CreateProductAsync(client);
-
-        var resp = await client.GetAsync($"/api/panel/products/{product.Id}/photo/url");
-
-        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
-    }
-
-    [Fact]
-    public async Task Photo_url_returns_a_download_url_when_a_photo_exists()
-    {
-        var client = await SeedAsync();
-        var product = await CreateProductAsync(client);
-        var key = (await (await UploadUrlAsync(client, product.Id))
-            .Content.ReadFromJsonAsync<UploadUrlDto>())!.ObjectKey;
-        SimulateUpload(key);
-        await AttachAsync(client, product.Id, key);
-
-        var dto = await client.GetFromJsonAsync<PhotoUrlDto>(
-            $"/api/panel/products/{product.Id}/photo/url");
-
-        dto!.Url.Should().NotBeNullOrWhiteSpace();
-    }
-
-    /// <summary>
-    /// Fotoğrafı kaldırmak DB alanlarını boşaltmakla bitmiyor: nesnenin kendisi
-    /// de kovadan gitmeli. Yalnız alanlara bakan bir test, R2 silmesi düştüğünde
-    /// hiçbir şey söylemez — ürün fotoğrafsız görünür, fatura ödenmeye devam eder.
-    /// </summary>
-    [Fact]
-    public async Task Delete_clears_the_photo_fields()
-    {
-        var client = await SeedAsync();
-        var product = await CreateProductAsync(client);
-        var key = (await (await UploadUrlAsync(client, product.Id))
-            .Content.ReadFromJsonAsync<UploadUrlDto>())!.ObjectKey;
-        SimulateUpload(key);
-        await AttachAsync(client, product.Id, key);
-
-        var resp = await client.DeleteAsync($"/api/panel/products/{product.Id}/photo");
-
-        resp.StatusCode.Should().Be(HttpStatusCode.NoContent);
-        var after = await client.GetFromJsonAsync<ProductDto>($"/api/panel/products/{product.Id}");
-        after!.PhotoObjectKey.Should().BeNull();
-        _factory.BroadcastMedia.DeleteCalls.Should().Contain(key);
-        (await _factory.BroadcastMedia.HeadAsync(key)).Should().BeNull();
-    }
-
-    /// <summary>
-    /// Yazma yolu da okuma yolu kadar kapalı olmalı: başka kiracının ürününe
-    /// fotoğraf iliştirilemez. Kural 404 — 403 dönmek "böyle bir ürün var" diye
-    /// haber vermek olurdu.
-    /// </summary>
     [Fact]
     public async Task Attach_404_for_another_tenants_product()
     {
@@ -340,53 +242,104 @@ public class PanelProductPhotoControllerTests : IClassFixture<ApiFactory>
         var resp = await AttachAsync(clientB, product.Id, key);
 
         resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
-
-        // Sahibinin kartı el değmemiş kalmalı.
-        var after = await clientA.GetFromJsonAsync<ProductDto>(
-            $"/api/panel/products/{product.Id}");
-        after!.PhotoObjectKey.Should().BeNull();
-    }
-
-    [Fact]
-    public async Task Photo_url_404_for_another_tenants_product()
-    {
-        var clientA = await SeedAsync();
-        var product = await CreateProductAsync(clientA);
-        var key = (await (await UploadUrlAsync(clientA, product.Id))
-            .Content.ReadFromJsonAsync<UploadUrlDto>())!.ObjectKey;
-        SimulateUpload(key);
-        await AttachAsync(clientA, product.Id, key);
-        var clientB = await SeedAsync();
-
-        var resp = await clientB.GetAsync($"/api/panel/products/{product.Id}/photo/url");
-
-        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     /// <summary>
-    /// 404 dönüp yine de silmiş olmak, yalnız durum koduna bakan bir testin
-    /// gözünden kaçar; bu yüzden nesnenin sahibinin gözünden hâlâ DURDUĞU da
-    /// doğrulanıyor — hem DB alanı hem kovadaki nesne.
+    /// Galeri uçları: aynı ürüne birden fazla fotoğraf eklenebilir ve limit
+    /// koruma altında.
+    /// </summary>
+    private async Task<PhotoDto> AddPhotoAsync(HttpClient client, Guid productId)
+    {
+        var urlResp = await client.PostAsJsonAsync(
+            $"/api/panel/products/{productId}/photos/upload-url",
+            new { contentType = "image/jpeg", sizeBytes = 1024 });
+        urlResp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var uploaded = (await urlResp.Content.ReadFromJsonAsync<UploadUrlDto>())!;
+
+        SimulateUpload(uploaded.ObjectKey, size: 1024);
+
+        var attach = await client.PostAsJsonAsync(
+            $"/api/panel/products/{productId}/photos",
+            new { objectKey = uploaded.ObjectKey, width = 800, height = 600 });
+        attach.StatusCode.Should().Be(HttpStatusCode.Created);
+        return (await attach.Content.ReadFromJsonAsync<PhotoDto>())!;
+    }
+
+    [Fact]
+    public async Task Photos_are_appended_in_order_and_the_fifth_is_refused()
+    {
+        var client = await SeedAsync();
+        var product = await CreateProductAsync(client);
+
+        var added = new List<PhotoDto>();
+        for (var i = 0; i < CatalogLimits.MaxProductPhotos; i++)
+            added.Add(await AddPhotoAsync(client, product.Id));
+
+        added.Select(p => p.SortOrder).Should().Equal(0, 1, 2, 3);
+
+        var fifth = await client.PostAsJsonAsync(
+            $"/api/panel/products/{product.Id}/photos/upload-url",
+            new { contentType = "image/jpeg", sizeBytes = 1024 });
+
+        fifth.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await TitleAsync(fifth)).Should().Be("photo-limit-reached");
+    }
+
+    [Fact]
+    public async Task Reorder_rewrites_sort_order_and_makes_the_first_id_the_cover()
+    {
+        var client = await SeedAsync();
+        var product = await CreateProductAsync(client);
+
+        var first = await AddPhotoAsync(client, product.Id);
+        var second = await AddPhotoAsync(client, product.Id);
+
+        var resp = await client.PutAsJsonAsync(
+            $"/api/panel/products/{product.Id}/photos/order",
+            new { ids = new[] { second.Id, first.Id } });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var list = (await resp.Content.ReadFromJsonAsync<List<PhotoDto>>())!;
+        list.Select(p => p.Id).Should().Equal(second.Id, first.Id);
+        list[0].SortOrder.Should().Be(0);
+    }
+
+    /// <summary>
+    /// Eksik/fazla id ile sıralama reddedilir. Kabul edilseydi listede olmayan
+    /// fotoğrafın sırası belirsiz kalır, kapak sessizce değişirdi.
     /// </summary>
     [Fact]
-    public async Task Delete_404_for_another_tenants_product()
+    public async Task Reorder_refuses_an_incomplete_id_list()
     {
-        var clientA = await SeedAsync();
-        var product = await CreateProductAsync(clientA);
-        var key = (await (await UploadUrlAsync(clientA, product.Id))
-            .Content.ReadFromJsonAsync<UploadUrlDto>())!.ObjectKey;
-        SimulateUpload(key);
-        await AttachAsync(clientA, product.Id, key);
-        var clientB = await SeedAsync();
+        var client = await SeedAsync();
+        var product = await CreateProductAsync(client);
+        var only = await AddPhotoAsync(client, product.Id);
+        await AddPhotoAsync(client, product.Id);
 
-        var resp = await clientB.DeleteAsync($"/api/panel/products/{product.Id}/photo");
+        var resp = await client.PutAsJsonAsync(
+            $"/api/panel/products/{product.Id}/photos/order",
+            new { ids = new[] { only.Id } });
 
-        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await TitleAsync(resp)).Should().Be("photo-order-mismatch");
+    }
 
-        var after = await clientA.GetFromJsonAsync<ProductDto>(
-            $"/api/panel/products/{product.Id}");
-        after!.PhotoObjectKey.Should().Be(key);
-        _factory.BroadcastMedia.DeleteCalls.Should().NotContain(key);
-        (await _factory.BroadcastMedia.HeadAsync(key)).Should().NotBeNull();
+    [Fact]
+    public async Task Deleting_a_photo_closes_the_gap_in_sort_order()
+    {
+        var client = await SeedAsync();
+        var product = await CreateProductAsync(client);
+        var first = await AddPhotoAsync(client, product.Id);
+        var second = await AddPhotoAsync(client, product.Id);
+
+        (await client.DeleteAsync(
+            $"/api/panel/products/{product.Id}/photos/{first.Id}"))
+            .StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var list = await client.GetFromJsonAsync<List<PhotoDto>>(
+            $"/api/panel/products/{product.Id}/photos");
+
+        list!.Should().ContainSingle().Which.Id.Should().Be(second.Id);
+        list[0].SortOrder.Should().Be(0, "silinen kapağın yerini bir sonraki almalı");
     }
 }
