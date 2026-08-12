@@ -57,8 +57,6 @@ public static class CatalogLimits
     /// </summary>
     public const int VariantCode = 64;
 
-    public const int Barcode = 64;
-
     /// <summary>
     /// Tek toplu istekte yazılabilecek azami varyant. Gerçek ihtiyaç 12–20
     /// (3 renk × 4 beden); 200, elle kurulan uç senaryolara bile fazlasıyla
@@ -66,6 +64,8 @@ public static class CatalogLimits
     /// engelliyor.
     /// </summary>
     public const int MaxBulkVariants = 200;
+
+    public const int Barcode = 64;
 
     /// <summary>
     /// Kategori ağacının azami seviye sayısı (kök = 1).
