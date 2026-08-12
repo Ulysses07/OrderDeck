@@ -23,7 +23,6 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 [ApiController]
 [Route("api/panel/categories")]
 [Authorize(AuthenticationSchemes = "Bearer-Customer")]
-[AllowStockStaff]
 public sealed class PanelCategoriesController : ControllerBase
 {
     private readonly LicenseDbContext _db;
@@ -55,6 +54,7 @@ public sealed class PanelCategoriesController : ControllerBase
         int SortOrder,
         bool IsActive);
 
+    [AllowStockStaff]
     [HttpGet]
     public async Task<IActionResult> List(CancellationToken ct)
     {
@@ -69,6 +69,7 @@ public sealed class PanelCategoriesController : ControllerBase
         return Ok(rows.Select(ToDto));
     }
 
+    [AllowStockStaff]
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] CreateRequest req, CancellationToken ct)
     {
@@ -115,6 +116,7 @@ public sealed class PanelCategoriesController : ControllerBase
         return Created($"/api/panel/categories/{category.Id}", ToDto(category));
     }
 
+    [AllowStockStaff]
     [HttpPut("{id:guid}")]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateRequest req, CancellationToken ct)
     {
@@ -141,6 +143,7 @@ public sealed class PanelCategoriesController : ControllerBase
     /// Kategoriyi başka bir ebeveynin altına (ya da köke) taşır ve ALT AĞACIN
     /// TAMAMININ yolunu yeniden yazar. Kendi alt ağacına taşıma reddedilir.
     /// </summary>
+    [AllowStockStaff]
     [HttpPut("{id:guid}/parent")]
     public async Task<IActionResult> Move(Guid id, [FromBody] MoveRequest req, CancellationToken ct)
     {
@@ -196,6 +199,7 @@ public sealed class PanelCategoriesController : ControllerBase
         return Ok(ToDto(category));
     }
 
+    [AllowStockStaff]
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
     {

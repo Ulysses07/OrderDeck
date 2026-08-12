@@ -19,7 +19,6 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 [ApiController]
 [Route("api/panel/products/{productId:guid}/photo")]
 [Authorize(AuthenticationSchemes = "Bearer-Customer")]
-[AllowStockStaff]
 public sealed class PanelProductPhotoController : ControllerBase
 {
     private const long MaxSizeBytes = 5 * 1024 * 1024;
@@ -57,6 +56,7 @@ public sealed class PanelProductPhotoController : ControllerBase
         string ObjectKey, string ContentType, long SizeBytes, int? Width, int? Height);
     public sealed record PhotoUrlDto(string Url);
 
+    [AllowStockStaff]
     [HttpPost("upload-url")]
     public async Task<IActionResult> CreateUploadUrl(
         Guid productId, [FromBody] UploadUrlRequest req, CancellationToken ct)
@@ -78,6 +78,7 @@ public sealed class PanelProductPhotoController : ControllerBase
         return Ok(new UploadUrlDto(objectKey, url));
     }
 
+    [AllowStockStaff]
     [HttpPut]
     public async Task<IActionResult> Attach(
         Guid productId, [FromBody] AttachRequest req, CancellationToken ct)
@@ -119,6 +120,7 @@ public sealed class PanelProductPhotoController : ControllerBase
         return Ok(new PhotoDto(key, info.ContentType, info.SizeBytes, req.Width, req.Height));
     }
 
+    [AllowStockStaff]
     [HttpGet("url")]
     public async Task<IActionResult> GetUrl(Guid productId, CancellationToken ct)
     {
@@ -132,6 +134,7 @@ public sealed class PanelProductPhotoController : ControllerBase
         return Ok(new PhotoUrlDto(url));
     }
 
+    [AllowStockStaff]
     [HttpDelete]
     public async Task<IActionResult> Delete(Guid productId, CancellationToken ct)
     {

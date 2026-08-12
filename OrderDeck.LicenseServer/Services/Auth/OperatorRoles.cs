@@ -17,8 +17,13 @@ public static class OperatorRoles
 
 /// <summary>
 /// Bu uç <c>stock</c> rolündeki operatöre açık. İşaretlenmemiş her uç kapalıdır
-/// (<see cref="StockStaffScopeFilter"/>). Controller ya da action seviyesinde
-/// kullanılabilir.
+/// (<see cref="StockStaffScopeFilter"/>).
+///
+/// YALNIZ action seviyesinde kullanılabilir; sınıf hedefi bilerek kaldırıldı.
+/// Sınıfa yazılan bir izin, o controller'a yarın eklenen action'ı da — kimse
+/// bir şey yazmadan, kimse farkına varmadan — açar; yani "varsayılan olarak
+/// her uç kapalı" kuralı sınıf granülaritesinde delinir. Bunu bir teste değil
+/// derleyiciye bağlamak tek güvenli hâl: sınıfa yazan derlenemez.
 /// </summary>
-[AttributeUsage(AttributeTargets.Class | AttributeTargets.Method, AllowMultiple = false)]
+[AttributeUsage(AttributeTargets.Method, AllowMultiple = false)]
 public sealed class AllowStockStaffAttribute : Attribute;

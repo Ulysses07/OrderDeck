@@ -22,7 +22,6 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 [ApiController]
 [Route("api/panel/products/{productId:guid}/variants")]
 [Authorize(AuthenticationSchemes = "Bearer-Customer")]
-[AllowStockStaff]
 public sealed class PanelProductVariantsController : ControllerBase
 {
     private readonly LicenseDbContext _db;
@@ -43,6 +42,7 @@ public sealed class PanelProductVariantsController : ControllerBase
         [MaxLength(CatalogLimits.AxisCode)] string? Axis2Code,
         bool IsActive);
 
+    [AllowStockStaff]
     [HttpPost]
     public async Task<IActionResult> Create(
         Guid productId, [FromBody] VariantRequest req, CancellationToken ct)
@@ -82,6 +82,7 @@ public sealed class PanelProductVariantsController : ControllerBase
             $"/api/panel/products/{product.Id}/variants/{variant.Id}", ToDto(variant));
     }
 
+    [AllowStockStaff]
     [HttpPut("{id:guid}")]
     public async Task<IActionResult> Update(
         Guid productId, Guid id, [FromBody] VariantRequest req, CancellationToken ct)
@@ -115,6 +116,7 @@ public sealed class PanelProductVariantsController : ControllerBase
         return Ok(ToDto(variant));
     }
 
+    [AllowStockStaff]
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(
         Guid productId, Guid id, CancellationToken ct)

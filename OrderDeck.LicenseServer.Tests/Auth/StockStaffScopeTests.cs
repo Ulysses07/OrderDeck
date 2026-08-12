@@ -27,6 +27,25 @@ public class StockStaffScopeTests : IClassFixture<ApiFactory>
         string Token, DateTimeOffset ExpiresAt, Guid OperatorId, Guid TenantCustomerId,
         string Email, string Name, string Role);
 
+    /// <summary>
+    /// Ürün yanıtının yalnız bu testleri ilgilendiren dilimi; gerisi okunmuyor.
+    /// <c>Name</c> bilerek burada: maskenin ucu KAPATMADIĞINI, sadece tek alanı
+    /// boşalttığını aynı yanıtta göstermek için.
+    /// </summary>
+    private sealed record ProductCostView(Guid Id, string Name, decimal? Cost);
+
+    private static Task<HttpResponseMessage> CreateProductAsync(
+        HttpClient client, string name, decimal? cost)
+        => client.PostAsJsonAsync("/api/panel/products",
+            new { name, defaultPrice = 250m, cost });
+
+    private static async Task<ProductCostView> ReadProductAsync(HttpClient client, Guid id)
+    {
+        var resp = await client.GetAsync($"/api/panel/products/{id}");
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        return (await resp.Content.ReadFromJsonAsync<ProductCostView>())!;
+    }
+
     private static async Task<string?> TitleAsync(HttpResponseMessage resp)
     {
         var json = await resp.Content.ReadAsStringAsync();
@@ -186,5 +205,71 @@ public class StockStaffScopeTests : IClassFixture<ApiFactory>
         var resp = await owner.GetAsync("/api/panel/customers");
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task Stock_operator_reads_the_product_but_not_its_cost()
+    {
+        var owner = await SeedOwnerAsync();
+        var stock = await OperatorClientAsync(owner, "stock");
+
+        var created = await CreateProductAsync(owner, "Maliyetli ürün", cost: 100m);
+        created.StatusCode.Should().Be(HttpStatusCode.Created);
+        var id = (await created.Content.ReadFromJsonAsync<ProductCostView>())!.Id;
+
+        var stockView = await ReadProductAsync(stock, id);
+        var ownerView = await ReadProductAsync(owner, id);
+
+        // Uç açık — kart okunuyor; yalnız maliyet alanı boş dönüyor.
+        stockView.Name.Should().Be("Maliyetli ürün");
+        stockView.Cost.Should().BeNull();
+        ownerView.Cost.Should().Be(100m);
+    }
+
+    [Fact]
+    public async Task Staff_operator_still_reads_the_cost()
+    {
+        var owner = await SeedOwnerAsync();
+        var staff = await OperatorClientAsync(owner, "staff");
+
+        var created = await CreateProductAsync(owner, "Staff görür", cost: 100m);
+        var id = (await created.Content.ReadFromJsonAsync<ProductCostView>())!.Id;
+
+        var staffView = await ReadProductAsync(staff, id);
+
+        staffView.Cost.Should().Be(100m);
+    }
+
+    [Fact]
+    public async Task Stock_operator_cannot_write_a_cost()
+    {
+        var owner = await SeedOwnerAsync();
+        var stock = await OperatorClientAsync(owner, "stock");
+
+        var resp = await CreateProductAsync(stock, "Maliyet yazmaya kalkış", cost: 100m);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        // "stock-staff-forbidden" değil: uç açık, yasak olan yalnız bu alan.
+        (await TitleAsync(resp)).Should().Be("cost-forbidden");
+    }
+
+    [Fact]
+    public async Task Stock_operator_round_trip_does_not_wipe_the_cost()
+    {
+        var owner = await SeedOwnerAsync();
+        var stock = await OperatorClientAsync(owner, "stock");
+
+        var created = await CreateProductAsync(owner, "Adı düzeltilecek", cost: 100m);
+        var id = (await created.Content.ReadFromJsonAsync<ProductCostView>())!.Id;
+
+        // Stok elemanı maliyeti göremediği için gövdeye null koyup geri gönderir;
+        // bu "sil" demek DEĞİL.
+        var put = await stock.PutAsJsonAsync($"/api/panel/products/{id}",
+            new { name = "Adı düzeltildi", defaultPrice = 250m, cost = (decimal?)null });
+        put.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var ownerView = await ReadProductAsync(owner, id);
+        ownerView.Name.Should().Be("Adı düzeltildi");
+        ownerView.Cost.Should().Be(100m);
     }
 }

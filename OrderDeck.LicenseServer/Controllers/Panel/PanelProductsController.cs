@@ -21,7 +21,6 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 [ApiController]
 [Route("api/panel/products")]
 [Authorize(AuthenticationSchemes = "Bearer-Customer")]
-[AllowStockStaff]
 public sealed class PanelProductsController : ControllerBase
 {
     private const int DefaultPageSize = 50;
@@ -93,6 +92,19 @@ public sealed class PanelProductsController : ControllerBase
 
     public sealed record NextCodeDto(string Code);
 
+    /// <summary>
+    /// Stok elemanı maliyeti ne görür ne yazar (spec: "ciro bilgilerini
+    /// göremez" — alış maliyeti kârın ta kendisi). Kart sahibi (Customer
+    /// token) ve <c>staff</c> operatörü etkilenmez.
+    ///
+    /// Maskelenen alan için AYRI bir DTO tipi bilerek yapılmadı: sözleşme ikiye
+    /// bölünürse panel aynı ucun iki şeklini bilmek zorunda kalır. Tek şekli
+    /// koruyup alanı <c>null</c> döndürmek hem istemciyi hem OpenAPI'yi sade
+    /// tutuyor.
+    /// </summary>
+    private bool HidesCost => User.GetOperatorRole() == OperatorRoles.Stock;
+
+    [AllowStockStaff]
     [HttpGet]
     public async Task<IActionResult> List(
         [FromQuery] Guid? categoryId,
@@ -168,6 +180,7 @@ public sealed class PanelProductsController : ControllerBase
         return Ok(new ProductPageDto(rows, total));
     }
 
+    [AllowStockStaff]
     [HttpGet("next-code")]
     public async Task<IActionResult> NextCode(CancellationToken ct)
     {
@@ -182,6 +195,7 @@ public sealed class PanelProductsController : ControllerBase
         return Ok(new NextCodeDto(CatalogCodeSequence.Next(codes)));
     }
 
+    [AllowStockStaff]
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
@@ -194,6 +208,7 @@ public sealed class PanelProductsController : ControllerBase
         return Ok(ToDto(product));
     }
 
+    [AllowStockStaff]
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] UpsertRequest req, CancellationToken ct)
     {
@@ -231,6 +246,8 @@ public sealed class PanelProductsController : ControllerBase
             Code = code,
             Name = req.Name.Trim(),
             DefaultPrice = req.DefaultPrice,
+            // Update'teki gibi bir korumaya gerek yok: doğrulama geçtiyse stok
+            // rolünde req.Cost zaten null ve yeni kartın maliyeti doğal olarak boş.
             Cost = req.Cost,
             Axis1Name = Trim(req.Axis1Name),
             Axis1Role = Trim(req.Axis1Name) is null ? null : req.Axis1Role,
@@ -251,6 +268,7 @@ public sealed class PanelProductsController : ControllerBase
         return CreatedAtAction(nameof(Get), new { id = product.Id }, ToDto(saved!));
     }
 
+    [AllowStockStaff]
     [HttpPut("{id:guid}")]
     public async Task<IActionResult> Update(
         Guid id, [FromBody] UpsertRequest req, CancellationToken ct)
@@ -320,7 +338,12 @@ public sealed class PanelProductsController : ControllerBase
         product.Code = code;
         product.Name = req.Name.Trim();
         product.DefaultPrice = req.DefaultPrice;
-        product.Cost = req.Cost;
+        // Stok elemanı maliyeti göremediği için gövdeye de koyamaz; gelen null'ı
+        // "sil" diye okumak, sadece adını düzelten bir tur-gidiş-dönüşte gerçek
+        // maliyeti sessizce siler. Doğrulama bunu yakalayamaz — positional
+        // record'da "null gönderildi" ile "alan hiç gönderilmedi" ayırt edilemez.
+        // Bu rolde alan hiç dokunulmadan bırakılıyor.
+        product.Cost = HidesCost ? product.Cost : req.Cost;
         product.Axis1Name = newAxis1;
         product.Axis1Role = newRole1;
         product.Axis2Name = newAxis2;
@@ -345,6 +368,7 @@ public sealed class PanelProductsController : ControllerBase
         return Ok(ToDto(product));
     }
 
+    [AllowStockStaff]
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
     {
@@ -385,6 +409,14 @@ public sealed class PanelProductsController : ControllerBase
         if (req.DefaultPrice < 0 || req.Cost < 0)
             return Problem(title: "invalid-price",
                 detail: "Fiyat ve maliyet negatif olamaz.", statusCode: 400);
+
+        // Slug bilerek "stock-staff-forbidden"dan ayrı: o "bu uç tamamen kapalı"
+        // demek, bu ise "uç açık ama şu alan yasak". Panel ikisini ayrı ele
+        // alabilmeli (biri sayfayı gizler, öbürü tek girdiyi).
+        if (HidesCost && req.Cost is not null)
+            return Problem(title: "cost-forbidden",
+                detail: "Stok elemanı maliyet bilgisini göremez ve değiştiremez.",
+                statusCode: 403);
 
         var axis1 = Trim(req.Axis1Name);
         var axis2 = Trim(req.Axis2Name);
@@ -461,8 +493,15 @@ public sealed class PanelProductsController : ControllerBase
     private static string? Trim(string? value)
         => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
-    private static ProductDto ToDto(Product p) => new(
-        p.Id, p.CategoryId, p.Code, p.Name, p.DefaultPrice, p.Cost,
+    /// <summary>
+    /// <see cref="ProductDto"/> YALNIZ burada kuruluyor; maliyet maskesi de o
+    /// yüzden burada. Çağrı yerine (Get/Create/Update) yazılan bir maske, yarın
+    /// eklenen dördüncü çağrıda unutulurdu — kural atlanamayacağı tek noktada.
+    /// Metot bu yüzden static değil: rol <c>User</c>'dan okunuyor.
+    /// </summary>
+    private ProductDto ToDto(Product p) => new(
+        p.Id, p.CategoryId, p.Code, p.Name, p.DefaultPrice,
+        HidesCost ? null : p.Cost,
         p.Axis1Name, p.Axis1Role, p.Axis2Name, p.Axis2Role,
         p.PhotoObjectKey, p.IsArchived, p.CreatedAt, p.UpdatedAt,
         p.Variants
