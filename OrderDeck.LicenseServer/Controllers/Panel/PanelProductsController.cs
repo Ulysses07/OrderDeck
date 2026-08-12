@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.BroadcastPosts;
 using OrderDeck.LicenseServer.Services.Catalog;
 
 namespace OrderDeck.LicenseServer.Controllers.Panel;
@@ -27,8 +28,13 @@ public sealed class PanelProductsController : ControllerBase
     private const int MaxPageSize = 200;
 
     private readonly LicenseDbContext _db;
+    private readonly IBroadcastMediaStorage _storage;
 
-    public PanelProductsController(LicenseDbContext db) => _db = db;
+    public PanelProductsController(LicenseDbContext db, IBroadcastMediaStorage storage)
+    {
+        _db = db;
+        _storage = storage;
+    }
 
     // DİKKAT — positional record'da doğrulama attribute'u PARAMETREYE yazılır,
     // [property:] hedefiyle DEĞİL. MVC record'un birincil kurucusunu okuyor;
@@ -338,9 +344,25 @@ public sealed class PanelProductsController : ControllerBase
         var product = await LoadAsync(id, licenseId.Value, ct);
         if (product is null) return NotFound();
 
+        var photoKey = product.PhotoObjectKey;
+
         _db.ProductVariants.RemoveRange(product.Variants);
         _db.Products.Remove(product);
         await _db.SaveChangesAsync(ct);
+
+        // Sıra kasıtlı: ÖNCE DB commit, SONRA R2 silme. Tersi olsaydı commit
+        // başarısız olduğunda hâlâ duran ürünün fotoğrafı silinmiş olurdu —
+        // yani kurtarılamaz veri kaybı. Bu sırayla en kötü hâl, ikisi arasında
+        // süreç ölürse kovada kalan bir yetim nesne; onu da gecelik
+        // ProductPhotoOrphanCleanupJob süpürüyor.
+        //
+        // Bu inline silme tek başına YETMEZ: DB'ye hiç yazılmamış anahtarlar
+        // (presigned yükleme yapılıp Attach edilmeyen dosyalar) ve lisans
+        // cascade'iyle giden ürünler buradan geçmez. Kovayı listeleyen
+        // mutabakat işi o yüzden var.
+        if (!string.IsNullOrWhiteSpace(photoKey))
+            await _storage.DeleteAsync(photoKey, ct);
+
         return NoContent();
     }
 

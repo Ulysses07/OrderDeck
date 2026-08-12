@@ -790,6 +790,58 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         db.ProductVariants.Any(v => v.ProductId == product.Id).Should().BeFalse();
     }
 
+    /// <summary>
+    /// Fotoğraf iliştirir: panelin R2'ye yaptığı PUT'un yerine depo seed'i geçer,
+    /// sonra gerçek Attach ucu çağrılır. Anahtarı döner.
+    /// </summary>
+    private async Task<string> AttachPhotoAsync(HttpClient client, Guid productId)
+    {
+        var upload = await client.PostAsJsonAsync(
+            $"/api/panel/products/{productId}/photo/upload-url",
+            new { contentType = "image/jpeg", sizeBytes = 120_000 });
+        upload.StatusCode.Should().Be(HttpStatusCode.OK);
+        var key = (await upload.Content
+            .ReadFromJsonAsync<UploadUrlDto>())!.ObjectKey;
+
+        _factory.BroadcastMedia.Seed(key, 120_000, "image/jpeg");
+
+        var attach = await client.PutAsJsonAsync(
+            $"/api/panel/products/{productId}/photo",
+            new { objectKey = key, width = 800, height = 800 });
+        attach.StatusCode.Should().Be(HttpStatusCode.OK);
+        return key;
+    }
+
+    private sealed record UploadUrlDto(string ObjectKey, string UploadUrl);
+
+    [Fact]
+    public async Task Delete_also_removes_the_photo_object_from_storage()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Fotoğraflı silinecek");
+        var key = await AttachPhotoAsync(client, product.Id);
+
+        var resp = await client.DeleteAsync($"/api/panel/products/{product.Id}");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        _factory.BroadcastMedia.DeleteCalls.Should().Contain(key);
+        (await _factory.BroadcastMedia.HeadAsync(key)).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Delete_does_not_touch_storage_when_the_product_has_no_photo()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Fotoğrafsız silinecek");
+        var before = _factory.BroadcastMedia.DeleteCalls.Count;
+
+        var resp = await client.DeleteAsync($"/api/panel/products/{product.Id}");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        _factory.BroadcastMedia.DeleteCalls.Count.Should().Be(before,
+            "fotoğrafsız üründe depoya hiç silme çağrısı gitmemeli");
+    }
+
     [Fact]
     public async Task Next_code_endpoint_returns_the_next_free_code()
     {
