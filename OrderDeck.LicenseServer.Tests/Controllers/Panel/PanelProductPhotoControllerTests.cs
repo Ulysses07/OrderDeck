@@ -18,14 +18,11 @@ public class PanelProductPhotoControllerTests : IClassFixture<ApiFactory>
     private sealed record PhotoDto(
         Guid Id, string ObjectKey, string ContentType, long SizeBytes,
         int? Width, int? Height, int SortOrder, string Url);
-    private sealed record PhotoRow(
-        Guid Id, string ObjectKey, string ContentType, long SizeBytes,
-        int? Width, int? Height, int SortOrder, string Url);
     private sealed record ProductDto(
         Guid Id, Guid? CategoryId, string Code, string Name,
         decimal DefaultPrice, decimal? Cost,
         string? Axis1Name, int? Axis1Role, string? Axis2Name, int? Axis2Role,
-        List<PhotoRow> Photos, bool IsArchived);
+        List<PhotoDto> Photos, bool IsArchived);
 
     private static async Task<string?> TitleAsync(HttpResponseMessage resp)
     {
