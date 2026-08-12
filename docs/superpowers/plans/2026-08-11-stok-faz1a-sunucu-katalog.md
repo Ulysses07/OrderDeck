@@ -3990,7 +3990,10 @@ git commit -m "feat(katalog): stok elemani rolu ve varsayilan-kapali yetki kapis
 
 5. **Migration üretimi tekrarlanabilir:**
 
-   Run: `dotnet ef migrations has-pending-model-changes --project OrderDeck.LicenseServer --startup-project OrderDeck.LicenseServer`
+   Run: `dotnet ef migrations has-pending-model-changes --project OrderDeck.LicenseServer --startup-project OrderDeck.LicenseServer --context LicenseDbContext`
+
+   (`--context` şart: projede birden fazla `DbContext` var, yoksa araç
+   "More than one DbContext was found" deyip duruyor.)
 
    Beklenen: "No changes have been made to the model since the last migration."
 
