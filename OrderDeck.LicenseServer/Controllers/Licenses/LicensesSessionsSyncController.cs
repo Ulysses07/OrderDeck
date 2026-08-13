@@ -20,15 +20,18 @@ public sealed class LicensesSessionsSyncController : ControllerBase
 {
     private readonly LicenseDbContext _db;
     private readonly INotificationSender _push;
+    private readonly Services.Stock.StockLedgerWriter _ledger;
     private readonly ILogger<LicensesSessionsSyncController> _log;
 
     public LicensesSessionsSyncController(
         LicenseDbContext db,
         INotificationSender push,
+        Services.Stock.StockLedgerWriter ledger,
         ILogger<LicensesSessionsSyncController> log)
     {
         _db = db;
         _push = push;
+        _ledger = ledger;
         _log = log;
     }
 
@@ -261,6 +264,22 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 }
             }
         }
+
+        // Defter, siparişlerle AYNI SaveChanges'te yazılır: "sipariş kaydedildi
+        // ama stok düşmedi" ara durumu hiç oluşmasın.
+        await _ledger.ApplyAsync(
+            licenseId,
+            req.Orders.Select(o => new Services.Stock.LedgerOrderInput(
+                new Services.Stock.LedgerOrderState(
+                    o.Id,
+                    o.ProductId,
+                    o.ProductVariantId,
+                    o.IsShippingFee,
+                    o.CancelledAt is not null,
+                    o.IsTentativeBackup),
+                o.AddedAt)).ToList(),
+            now,
+            ct);
 
         await _db.SaveChangesAsync(ct);
 
