@@ -74,6 +74,22 @@ public class CatalogPhotoCacheTests : IDisposable
     }
 
     [Fact]
+    public void Prune_sweeps_leftover_temp_files()
+    {
+        var cache = new CatalogPhotoCache(_root);
+        cache.Save("a/kalan.img", [1]);
+        // Yazma sırasında çökmüş bir tur böyle bir artık bırakır: canlı
+        // listede karşılığı olamaz, temizlikte düşmeli.
+        var stray = Path.Combine(_root, "deadbeef.img.tmp");
+        File.WriteAllBytes(stray, [7]);
+
+        cache.Prune(["a/kalan.img"]);
+
+        File.Exists(stray).Should().BeFalse();
+        cache.Has("a/kalan.img").Should().BeTrue();
+    }
+
+    [Fact]
     public void Prune_is_a_no_op_when_the_cache_folder_was_never_created()
     {
         var cache = new CatalogPhotoCache(_root);

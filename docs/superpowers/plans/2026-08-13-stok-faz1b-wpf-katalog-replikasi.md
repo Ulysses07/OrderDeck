@@ -1470,8 +1470,8 @@ git commit -m "feat(katalog): katalog çekme istemci metotları"
 - [x] **Step 1: Testleri yaz (başarısız olacak)**
 
 `OrderDeck.Tests/App/CatalogPhotoCacheTests.cs` (uygulanan hâli — plandaki üç
-teste iki tane eklendi: `Save`'in atomik yerine koyması ve klasör hiç
-oluşmamışken `Prune`'un sessiz kalması):
+teste üç tane eklendi: `Save`'in atomik yerine koyması, `Prune`'un geçici
+artıkları süpürmesi ve klasör hiç oluşmamışken `Prune`'un sessiz kalması):
 
 ```csharp
 using System;
@@ -1547,6 +1547,22 @@ public class CatalogPhotoCacheTests : IDisposable
 
         cache.Has("a/kalan.img").Should().BeTrue();
         cache.Has("a/giden.img").Should().BeFalse();
+    }
+
+    [Fact]
+    public void Prune_sweeps_leftover_temp_files()
+    {
+        var cache = new CatalogPhotoCache(_root);
+        cache.Save("a/kalan.img", [1]);
+        // Yazma sırasında çökmüş bir tur böyle bir artık bırakır: canlı
+        // listede karşılığı olamaz, temizlikte düşmeli.
+        var stray = Path.Combine(_root, "deadbeef.img.tmp");
+        File.WriteAllBytes(stray, [7]);
+
+        cache.Prune(["a/kalan.img"]);
+
+        File.Exists(stray).Should().BeFalse();
+        cache.Has("a/kalan.img").Should().BeTrue();
     }
 
     [Fact]
@@ -1695,8 +1711,9 @@ public sealed class CatalogPhotoCache
 dotnet test OrderDeck.Tests/OrderDeck.Tests.csproj \
   --filter "FullyQualifiedName~CatalogPhotoCacheTests"
 ```
-Beklenen: PASS (eklenen iki testle 5/5).
-Gerçekleşen: PASS 5/5.
+Beklenen: PASS (eklenen üç testle 6/6).
+Gerçekleşen: PASS 6/6. `*.img*` deseni mutasyonla (`*.img`) doğrulandı:
+`Prune_sweeps_leftover_temp_files` kırmızıya döndü, yani test gerçekten sınıyor.
 
 - [x] **Step 5: Commit**
 
