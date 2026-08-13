@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.App.Services;
 using OrderDeck.App.Services.Sync;
@@ -64,6 +65,27 @@ public sealed class CatalogSyncServiceTests
         public HttpClient CreateClient(string name) => _create(name);
     }
 
+    /// <summary>Kayıt seviyesini sınamak için; arka plan turları da yazdığından kilitli.</summary>
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        private readonly List<(LogLevel Level, string Message)> _entries = new();
+
+        public IReadOnlyList<(LogLevel Level, string Message)> Entries
+        {
+            get { lock (_entries) return _entries.ToList(); }
+        }
+
+        IDisposable? ILogger.BeginScope<TState>(TState state) => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            lock (_entries) _entries.Add((logLevel, formatter(state, exception)));
+        }
+    }
+
     private static readonly Guid TestLicenseId = Guid.Parse("aaaabbbb-cccc-dddd-eeee-ffffaaaabbbb");
     private const string TestLicenseKey = "CATALOG-TEST-KEY";
 
@@ -88,9 +110,17 @@ public sealed class CatalogSyncServiceTests
         private int _requestCount;
         private int _nextCode = 1;
 
+        private readonly RecordingLogger<CatalogSyncService> _log = new();
+
         public CatalogSyncService Service { get; }
         public CatalogReplicaRepository Repo { get; }
         public CatalogPhotoCache Photos { get; }
+
+        /// <summary>Servisin yazdığı kayıtlar (seviye + biçimlenmiş metin).</summary>
+        public IReadOnlyList<(LogLevel Level, string Message)> Logs => _log.Entries;
+
+        /// <summary>Kategori ucu 200 döner ama gövde JSON değildir (bozuk yanıt).</summary>
+        public bool CorruptCategoriesBody { get; set; }
 
         /// <summary>Ürün uçlarına giden <c>after</c> değerleri, sırasıyla.</summary>
         public List<Guid?> RequestedAfterCursors { get; } = new();
@@ -203,8 +233,7 @@ public sealed class CatalogSyncServiceTests
             _license.CurrentLicenseKey = TestLicenseKey;
 
             Service = new CatalogSyncService(
-                api, Repo, Photos, factory, _license,
-                NullLogger<CatalogSyncService>.Instance);
+                api, Repo, Photos, factory, _license, _log);
         }
 
         private CatalogProductPullItem MakeProduct(bool withPhoto)
@@ -261,6 +290,10 @@ public sealed class CatalogSyncServiceTests
             if (path.Contains("/catalog/categories"))
             {
                 OnCategoriesRequest?.Invoke();
+                // 200 + JSON olmayan gövde: LicenseApiClient bunu bilerek
+                // LicenseApiUnknownException'a çeviriyor ("katalog boş" DEĞİL).
+                if (CorruptCategoriesBody)
+                    return FakeHttpMessageHandler.Json(200, "<html>hata sayfasi</html>");
                 return FakeHttpMessageHandler.Json(200, JsonSerializer.Serialize(_categories));
             }
 
@@ -603,6 +636,35 @@ public sealed class CatalogSyncServiceTests
         var act = async () => await harness.Service.SyncOnceAsync(cts.Token);
 
         await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    // ── Kayıt seviyesi: bozuk gövde ayrı bir arıza ────────────────────────────
+
+    /// <summary>
+    /// 401, ağ kopması ve bozuk gövde tek satırda birbirine karışırsa üçü de
+    /// aynı görünür — oysa ilk ikisi bir sonraki turda kendini onarır, bozuk
+    /// gövde onarmaz: sunucu şeması ya da araya giren bir katman bozulmuştur
+    /// ve replika sessizce bayatlar. <c>LicenseApiClient</c> bu durumu bilerek
+    /// gürültülü yapıyor ("bu 'katalog boş' demek DEĞİLDİR"); senkron da onu
+    /// Warning yığınında kaybetmemeli.
+    /// </summary>
+    [Fact]
+    public async Task A_malformed_body_is_logged_louder_than_an_ordinary_failure()
+    {
+        using var corrupt = Harness.WithProductPages([1]);
+        corrupt.CorruptCategoriesBody = true;
+
+        (await corrupt.Service.SyncOnceAsync(CancellationToken.None)).Should().Be(0);
+        corrupt.Logs.Should().Contain(e => e.Level == LogLevel.Error,
+            "bozuk gövde kendini onarmayan bir arıza");
+
+        using var networkFailure = Harness.WithProductPages([2, 1]);
+        networkFailure.FailProductPage(index: 1);
+
+        (await networkFailure.Service.SyncOnceAsync(CancellationToken.None)).Should().Be(0);
+        networkFailure.Logs.Should().NotContain(e => e.Level == LogLevel.Error,
+            "sıradan bir 5xx bir sonraki turda kendini onarır; Error değil Warning");
+        networkFailure.Logs.Should().Contain(e => e.Level == LogLevel.Warning);
     }
 
     // ── Eşzamanlılık kapısı ───────────────────────────────────────────────────

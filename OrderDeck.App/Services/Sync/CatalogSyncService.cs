@@ -180,13 +180,19 @@ public sealed class CatalogSyncService
                 pulled.Count, categories.Count);
             return pulled.Count;
         }
-        catch (LicenseApiUnknownException ex) when (!ct.IsCancellationRequested)
+        // 2xx SÜZGECİ şart: LicenseApiUnknownException iki ayrı şeyi taşıyor —
+        // (a) eşlenmemiş bir HTTP durumu (5xx gibi), (b) BAŞARILI bir yanıtın
+        // çözümlenemeyen gövdesi. Yalnız (b) yükseltiliyor; (a)'yı da Error
+        // yapmak, sunucu birkaç dakika 500 verdiğinde günlüğü boşuna kırmızıya
+        // boyardı — o durum bir sonraki turda kendini onarır.
+        catch (LicenseApiUnknownException ex)
+            when (!ct.IsCancellationRequested && ex.StatusCode is >= 200 and < 300)
         {
-            // Gövde bozuk/çözümlenemedi. LicenseApiClient bunu bilerek gürültülü
-            // yapıyor ("bu 'katalog boş' demek DEĞİLDİR"): 401 ya da ağ kopması
-            // kendini bir sonraki turda onarır, bozuk gövde onarmaz — sunucu
-            // şeması ya da araya giren bir katman (proxy hata sayfası, WAF)
-            // bozulmuştur ve replika sessizce bayatlar. Warning yığınında
+            // Sunucu "tamam" dedi ama gövdeyi anlamadık: LicenseApiClient bunu
+            // bilerek gürültülü yapıyor ("bu 'katalog boş' demek DEĞİLDİR").
+            // 401 ya da ağ kopması bir sonraki turda kendini onarır, bu onarmaz
+            // — sunucu şeması ya da araya giren bir katman (proxy hata sayfası,
+            // WAF) bozulmuştur ve replika sessizce bayatlar. Warning yığınında
             // kaybolmasın diye Error.
             _log.LogError(ex,
                 "Katalog senkronu BOZUK GÖVDE nedeniyle düştü; replika bayat kalıyor "
