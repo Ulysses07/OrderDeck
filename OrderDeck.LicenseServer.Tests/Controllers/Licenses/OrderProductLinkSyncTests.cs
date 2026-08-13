@@ -142,4 +142,51 @@ public class OrderProductLinkSyncTests : IClassFixture<ApiFactory>
         var saved = await db.Orders.SingleAsync(o => o.Id == orderId);
         saved.ProductVariantId.Should().Be(variantId);
     }
+
+    /// <summary>
+    /// ProductId = null İKİ ayrı şey demek olabilir: "operatör ürünü
+    /// belirleyemedi" (meşru) ve "bu istemci katalog diye bir şey bilmiyor".
+    /// İkisi ayırt edilmezse, güncellenmemiş bir WPF aynı siparişi tekrar
+    /// gönderdiğinde mutabakat "artık stok etkisi yok" diye okur ve daha önce
+    /// yazılmış satış hareketini +1 ile GERİ SARAR.
+    /// </summary>
+    [Fact]
+    public async Task Catalog_unaware_client_does_not_unwind_the_stock_movement()
+    {
+        var (client, licenseId, productId, variantId) = await SeedAsync();
+        var orderId = Guid.NewGuid();
+
+        // 1) Güncel istemci: katalog kimlikleriyle gönderiyor → -1 hareket.
+        (await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/orders/sync",
+            new
+            {
+                orders = new[] { OrderPayload(orderId, productId, variantId) },
+                catalogAware = true,
+            })).EnsureSuccessStatusCode();
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            (await db.StockMovements.CountAsync(m => m.OrderId == orderId))
+                .Should().Be(1, "güncel istemcinin satışı deftere girmeli");
+        }
+
+        // 2) Güncellenmemiş istemci: catalogAware alanını hiç göndermiyor.
+        (await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/orders/sync",
+            new { orders = new[] { OrderPayload(orderId, null, null) } }))
+            .EnsureSuccessStatusCode();
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var rows = await db.StockMovements
+                .Where(m => m.OrderId == orderId)
+                .ToListAsync();
+
+            rows.Should().HaveCount(1, "eski istemcinin paketi deftere hiç girmemeli");
+            rows.Sum(m => m.Quantity).Should().Be(-1);
+        }
+    }
 }
