@@ -45,31 +45,82 @@ public class CatalogReplicaRepositoryTests
     }
 
     [Fact]
+    public void Replace_wipes_variants_and_categories_that_the_server_no_longer_reports()
+    {
+        var repo = Make(out _);
+
+        // İlk tur: ürün + varyant + kategori hepsi dolu.
+        repo.Replace(
+            [Product("p1", "A1")],
+            [new CatalogVariant("v1", "p1", null, null, null, null, "A1", null, true, 0)],
+            [new CatalogCategory("c1", null, "Erkek", "/c1/", 0, true)]);
+
+        // İkinci tur: sunucu ürünü bildiriyor ama varyant ve kategori listesi boş.
+        repo.Replace([Product("p1", "A1")], [], []);
+
+        repo.GetVariants("p1").Should().BeEmpty();
+        repo.GetCategories().Should().BeEmpty();
+    }
+
+    [Fact]
     public void GetVariants_returns_only_that_products_variants_in_sort_order()
     {
         var repo = Make(out _);
         repo.Replace(
             [Product("p1", "A1"), Product("p2", "A2")],
             [
-                new CatalogVariant("v2", "p1", "Kırmızı", "KIRM", "M", "M", "A1-KIRM-M", null, true, 1),
-                new CatalogVariant("v1", "p1", "Kırmızı", "KIRM", "S", "S", "A1-KIRM-S", null, true, 0),
-                new CatalogVariant("v9", "p2", null, null, null, null, "A2", null, true, 0),
+                // "z-first" alfabetik olarak "a-second"'dan sonra gelir ama
+                // SortOrder 0 ile önde olmalı — ORDER BY SortOrder'ı test eder.
+                new CatalogVariant("z-first",  "p1", "Kırmızı", "KIRM", "S", "S", "A1-KIRM-S", null, true,  0),
+                new CatalogVariant("a-second", "p1", "Kırmızı", "KIRM", "M", "M", "A1-KIRM-M", null, false, 1),
+                new CatalogVariant("v9",       "p2", null, null, null, null, "A2", null, true, 0),
             ],
             []);
 
         var variants = repo.GetVariants("p1");
 
-        variants.Select(v => v.Id).Should().Equal("v1", "v2");
+        // Sıra SortOrder'a göre: z-first önce, a-second sonra.
+        variants.Select(v => v.Id).Should().Equal("z-first", "a-second");
+        // IsActive doğru yuvarlak-turlanmalı.
+        variants[0].IsActive.Should().BeTrue();
+        variants[1].IsActive.Should().BeFalse();
     }
 
     [Fact]
     public void Replace_round_trips_categories()
     {
         var repo = Make(out _);
-        repo.Replace([], [], [new CatalogCategory("c1", null, "Erkek", "/c1/", 0, true)]);
+        // INSERT sırası PATH sırasının TERSİ — ORDER BY Path yoksa c2 önce gelir.
+        repo.Replace(
+            [],
+            [],
+            [
+                new CatalogCategory("c2",   null, "Kadın",        "/c2/",     2, false),
+                new CatalogCategory("c1a",  "c1", "Gömlek",      "/c1/c1a/", 1, true),
+                new CatalogCategory("c1",   null, "Erkek",       "/c1/",     0, true),
+            ]);
 
-        repo.GetCategories().Should().ContainSingle()
-            .Which.Name.Should().Be("Erkek");
+        var cats = repo.GetCategories();
+
+        // ORDER BY Path: /c1/ < /c1/c1a/ < /c2/
+        cats.Select(c => c.Id).Should().Equal("c1", "c1a", "c2");
+
+        // Tüm alanlar yuvarlak-turlanmalı.
+        var erkek = cats.Single(c => c.Id == "c1");
+        erkek.Name.Should().Be("Erkek");
+        erkek.Path.Should().Be("/c1/");
+        erkek.SortOrder.Should().Be(0);
+        erkek.ParentCategoryId.Should().BeNull();
+        erkek.IsActive.Should().BeTrue();
+
+        var gomlek = cats.Single(c => c.Id == "c1a");
+        gomlek.ParentCategoryId.Should().Be("c1");
+        gomlek.IsActive.Should().BeTrue();
+
+        // IsActive false olan kategori doğru okunmalı.
+        var kadin = cats.Single(c => c.Id == "c2");
+        kadin.IsActive.Should().BeFalse();
+        kadin.SortOrder.Should().Be(2);
     }
 
     [Fact]
@@ -78,11 +129,29 @@ public class CatalogReplicaRepositoryTests
         var repo = Make(out _);
         repo.Replace(
             [
-                Product("p1", "A1") with { CoverPhotoKey = "lic/products/p1/k.img" },
-                Product("p2", "A2"),
+                // Aynı anahtar iki ayrı üründe — DISTINCT olmadan iki kez dönerdi.
+                Product("p1", "A1") with { CoverPhotoKey = "lic/products/shared/k.img" },
+                Product("p2", "A2") with { CoverPhotoKey = "lic/products/shared/k.img" },
+                // Fotoğrafsız ürün listede olmamalı.
+                Product("p3", "A3"),
             ],
             [], []);
 
-        repo.CoverPhotoKeys().Should().Equal("lic/products/p1/k.img");
+        var keys = repo.CoverPhotoKeys();
+
+        // Aynı anahtar tam olarak bir kez dönmeli.
+        keys.Should().Equal("lic/products/shared/k.img");
+    }
+
+    [Fact]
+    public void FindByCode_round_trips_default_price()
+    {
+        var repo = Make(out _);
+        var product = Product("p1", "A1") with { DefaultPrice = 199.95m };
+        repo.Replace([product], [], []);
+
+        var found = repo.FindByCode("A1");
+
+        found!.DefaultPrice.Should().Be(199.95m);
     }
 }

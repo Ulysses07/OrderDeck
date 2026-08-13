@@ -47,6 +47,9 @@ CREATE TABLE CatalogProduct (
 -- araması yapmalı. Katalog lisans başına yüzler mertebesinde olduğu için
 -- tam tarama felaket değil, ama tercih bilinçli olsun; LIKE '%...%' yazan
 -- biri sessizce tam tarama yapar.
+-- NOT: "güzel elbise" gibi çok kelimeli kodlar tek token eşitliğiyle
+-- bulunamaz; çok kelimeli adayları da kapsayan eşleştirme stratejisi
+-- sonraki planda kararlaştırılacak.
 CREATE INDEX IX_CatalogProduct_CodeNormalized ON CatalogProduct(CodeNormalized);
 
 -- FK YOK, bilerek: SqliteConnectionFactory ve InMemorySqlite ikisi de

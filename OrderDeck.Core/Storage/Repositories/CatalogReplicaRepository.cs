@@ -35,6 +35,11 @@ public sealed class CatalogReplicaRepository
         conn.Execute("DELETE FROM CatalogProduct", transaction: tx);
         conn.Execute("DELETE FROM CatalogCategory", transaction: tx);
 
+        // DefaultPrice decimal olarak doğrudan bağlanıyor (ShipmentRepository'deki
+        // gibi ara (double) cast'i YOK). Microsoft.Data.Sqlite decimal'i invariant
+        // kültürde TEXT olarak bağlar; kolonun REAL affinity'si bunu sayıya çevirir.
+        // Çift dönüşüm (decimal→double→REAL) yuvarlama hatası üretebileceğinden bu
+        // yaklaşım bilinçli olarak ShipmentRepository'den farklı tutuluyor.
         if (products.Count > 0)
             conn.Execute(
                 """
@@ -91,6 +96,8 @@ public sealed class CatalogReplicaRepository
     ///
     /// <c>LIMIT 1</c> savunma amaçlı: indeks unique değil (bkz. göç 025), yani
     /// beklenmedik bir çakışmada arama patlamak yerine ilk satırı verir.
+    /// İkincil <c>Id</c> anahtarı, aynı Code'u taşıyan iki satırın sırasını
+    /// deterministik yapar.
     /// </summary>
     public CatalogProduct? FindByCode(string? code)
     {
@@ -100,7 +107,7 @@ public sealed class CatalogReplicaRepository
         using var conn = _factory.Open();
         return conn.Query<ProductRow>(
             $"SELECT {ProductColumns} FROM CatalogProduct WHERE CodeNormalized = @needle "
-          + "ORDER BY Code LIMIT 1",
+          + "ORDER BY Code, Id LIMIT 1",
             new { needle })
             .Select(Map).FirstOrDefault();
     }
@@ -141,7 +148,7 @@ public sealed class CatalogReplicaRepository
     {
         using var conn = _factory.Open();
         return conn.Query<string>(
-            "SELECT CoverPhotoKey FROM CatalogProduct "
+            "SELECT DISTINCT CoverPhotoKey FROM CatalogProduct "
           + "WHERE CoverPhotoKey IS NOT NULL AND CoverPhotoKey <> '' ORDER BY CoverPhotoKey")
             .ToList();
     }
