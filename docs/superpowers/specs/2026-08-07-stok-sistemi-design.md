@@ -644,5 +644,39 @@ geçme seçeneği açık kalır. WPF'in yerel SQLite'ı etkilenmiyor.
       ekranında) — ertelendi, Faz 1a'yı bloke etmiyor.
 - [ ] **Yedek teklifinde yarış durumu**: onay geldiğinde ürün başkasına gitmişse
       kullanıcıya ne dönülecek? (Faz 2'de tanımlanacak.)
-- [ ] **WPF yerel replikanın sınırı**: çok büyük kataloglarda yalnız aktif
+- [x] **WPF yerel replikanın sınırı**: çok büyük kataloglarda yalnız aktif
       ürünlerin yerelde tutulması gerekebilir. Faz 1b planında ölçülmeli.
+      — kapandı: arşivliler çekilmiyor, stok tarafı bakiye satırı (Faz 1b).
+
+---
+
+## Faz 1b sunucu ayağı — kapanış notu (2026-08-13)
+
+Uygulanan kararlar:
+
+- Defter `StockMovement` tablosunda; **bakiye hiçbir yerde saklanmıyor**.
+- Sipariş senkronu deftere **mutabakatla** yazıyor (`StockLedgerReconciler`),
+  olay ekleyerek değil. Gerekçe: WPF aynı siparişi iptal / iptal geri alma /
+  basım / fiyat düzeltme durumlarında yeniden gönderiyor.
+- `Order.ProductId` / `ProductVariantId` **FK değil**; `StockMovement`'ınkiler FK
+  (Restrict) ve hareketi olan ürün/varyant 409 ile korunuyor.
+- `StockMovement.OccurredAt` iş zamanı (geçmişe dönük olabilir),
+  `CreatedAt` sunucu yazma anı — **çekme imleci `CreatedAt` üstünde** ve
+  eşitlikleri kırmak için `Id` ile bileşik.
+- WPF katalog çekmesi **tam anlık görüntü** (silmeler artımlı imleçte görünmez).
+  Stok çekmesi **artımlı imleçli ama gövdesi bakiye**: WPF'e ham defter satırı
+  inmiyor, değişen anahtarların o anki mutlak bakiyesi iniyor — istemci upsert
+  eder, toplamaz.
+- **Stok takibi için açma/kapama anahtarı YOK** (kullanıcı kararı, 2026-08-13).
+  Ürün kartı olmayan satış zaten hareket üretmiyor; negatif bakiye uyarı, engel
+  değil. Yani stok tutmayan yayıncı hiçbir şey yapmadan satmaya devam ediyor.
+
+**Kapanan açık konu — "WPF yerel replikanın sınırı" (Faz 1b'de ölçülecekti):**
+çekme ucu **arşivlenmiş ürünleri hiç göndermiyor** (`LicensesWpfCatalogPullController`),
+yani yerel replika aktif katalog kadar büyür — yayıncı büyüdükçe değil. Ayrıca
+stok tarafında WPF'e ham defter değil ürün/varyant başına **tek bakiye satırı**
+iniyor; yerel tablo satış sayısıyla değil katalog boyutuyla ölçekleniyor. Ek bir
+"yalnız aktifleri tut" kuralına gerek kalmadı.
+
+Kapsam dışı bırakılanlar: barkod üretimi/okutma (Faz 1c), WPF yerel replika ve
+eşleştirme (ayrı plan), panel stok ekranları (OrderDeck-Mobile deposu).

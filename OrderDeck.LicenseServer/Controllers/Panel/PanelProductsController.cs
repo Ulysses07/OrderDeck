@@ -501,6 +501,20 @@ public sealed class PanelProductsController : ControllerBase
         var product = await LoadAsync(id, licenseId.Value, ct);
         if (product is null) return NotFound();
 
+        // Restrict FK zaten silmeyi engelliyor; buradaki kontrol kullanıcıya
+        // 500 yerine Türkçe bir açıklama vermek için. Defteri olan ürün
+        // silinemez — silinseydi geçmiş satışların dayanağı kaybolurdu.
+        //
+        // Kontrolün yeri kasıtlı: sahiplik doğrulandıktan SONRA. Önce olsaydı
+        // başka lisansın ürününde hareket olup olmadığı 409/404 farkından
+        // sızardı.
+        var hasMovements = await _db.StockMovements
+            .AnyAsync(m => m.ProductId == id, ct);
+        if (hasMovements)
+            return Problem(title: "product-has-stock-movements",
+                detail: "Bu ürünün stok hareketleri var; silinemez. Arşivleyebilirsiniz.",
+                statusCode: 409);
+
         // Galeri fotoğraflarının anahtarlarını DB commit öncesinde toplayıyoruz
         // — commit sonrası satırlar gider, anahtara erişemeyiz.
         var galleryKeys = await _db.ProductPhotos
