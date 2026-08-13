@@ -2597,7 +2597,7 @@ Genişletilmiş tur ve üretimi öldüren hata **Step 9**'da.
 - [x] **Step 9: Gözden geçirme turu — üretimi öldüren hata + eşlemenin çivilenmesi**
 
 Commit'ler: **`8c383d9`** (kod + eşleme/ritim testleri), **`c6f5adb`**
-(bozuk gövde kayıt seviyesi), **`<STEP9SHA>`** (bu bölüm + `AppHost.cs`
+(bozuk gövde kayıt seviyesi), **`57f08c3`** (bu bölüm + `AppHost.cs`
 yorumu).
 
 **Üretimi öldüren hata.** `HttpClient`'ın zaman aşımı
