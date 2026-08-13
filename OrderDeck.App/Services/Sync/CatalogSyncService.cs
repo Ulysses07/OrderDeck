@@ -44,6 +44,17 @@ public sealed class CatalogSyncService
     private readonly ICurrentLicenseProvider _licenseProvider;
     private readonly ILogger<CatalogSyncService> _log;
 
+    /// <summary>
+    /// Tek turlu kapı (bkz. <see cref="SyncOnceAsync"/>). Servis singleton ve
+    /// <c>SyncOnceAsync</c> public olduğu için "aynı iş parçacığında, sırayla"
+    /// sözü tek başına bir YORUM; mekanizması bu.
+    /// </summary>
+    private readonly SemaphoreSlim _gate = new(1, 1);
+
+    // Yalnız kapının içinde okunup yazılıyor (SyncOnceAsync → SyncCoreAsync).
+    // Kilit olmasaydı iki tur bu ikiliyi yarı yazılmış hâlde görebilirdi:
+    // yeni Key + eski Id, yani BAŞKA bir lisansın katalogu. SemaphoreSlim'in
+    // al/bırak çifti aynı zamanda gereken bellek engelini de kuruyor.
     private Guid? _cachedLicenseId;
     private string? _cachedLicenseKey;
 
@@ -63,8 +74,35 @@ public sealed class CatalogSyncService
         _log = log;
     }
 
-    /// <summary>Yazılan ürün sayısı; senkron yapılamadıysa 0.</summary>
+    /// <summary>
+    /// Yazılan ürün sayısı; senkron yapılamadıysa 0.
+    ///
+    /// <b>Tek turlu kapı.</b> Bir tur sürerken gelen ikinci çağrı kuyruğa
+    /// ALINMAZ, anında 0 döner. İki neden:
+    /// <list type="number">
+    /// <item>Eşzamanlı istek gereksiz iş: süren tur zaten AYNI tam anlık
+    /// görüntüyü çekiyor. Kuyruğa almak iki tam çekmeyi arka arkaya koştururdu
+    /// — sunucuya iki kat yük, sonuç aynı.</item>
+    /// <item><see cref="CatalogPhotoCache"/> iş parçacığı güvenli değil:
+    /// <c>Prune</c>'un koruma kümesinde yalnız <c>{özet}.img</c> adları var,
+    /// süren bir <c>Save</c>'in <c>.tmp</c> dosyası yok. Paralel iki tur,
+    /// temizliği indirmenin üstüne sürer ve <c>File.Move</c>'u
+    /// <see cref="System.IO.FileNotFoundException"/> ile düşürür.</item>
+    /// </list>
+    /// </summary>
     public async Task<int> SyncOnceAsync(CancellationToken ct)
+    {
+        if (!await _gate.WaitAsync(TimeSpan.Zero, ct))
+        {
+            _log.LogDebug("Katalog senkronu zaten sürüyor; bu çağrı atlandı");
+            return 0;
+        }
+
+        try { return await SyncCoreAsync(ct); }
+        finally { _gate.Release(); }
+    }
+
+    private async Task<int> SyncCoreAsync(CancellationToken ct)
     {
         var licenseKey = _licenseProvider.CurrentLicenseKey;
         if (string.IsNullOrEmpty(licenseKey)) return 0;
@@ -106,8 +144,19 @@ public sealed class CatalogSyncService
                 // Tavana çarptık: elimizdeki liste yarım. Yazmak, tavandan sonraki
                 // bütün ürünleri silinmiş saymak olurdu — ağın yarıda kopmasından
                 // farkı yok, aynı şekilde davranıyoruz.
+                //
+                // Kayıt iki AYRI arızayı ayırt edilebilir yapmalı, çünkü çareleri
+                // zıt: (a) katalog gerçekten tavanı aştı → MaxPages artırılmalı,
+                // (b) sunucu imleci ilerletmiyor (aynı sayfayı tekrar döndürüyor)
+                // → sunucu tarafı hata, MaxPages'i artırmak yalnız arızayı büyütür.
+                // Ayrımı çekilen satır sayısı veriyor; son imleç de sunucu
+                // tarafında sorguyu birebir tekrarlamayı sağlıyor.
                 _log.LogWarning(
-                    "Katalog senkronu {MaxPages} sayfada bitmedi; yarım liste yazılmadı", MaxPages);
+                    "Katalog senkronu {MaxPages} sayfada bitmedi ({PageSize} satır/sayfa); "
+                  + "{Rows} satır çekildi, son imleç {Cursor}. Yarım liste YAZILMADI. "
+                  + "Satır sayısı tavana (MaxPages×PageSize) yakınsa katalog gerçekten büyümüştür; "
+                  + "çok daha küçükse sunucu imleci ilerletmiyor demektir.",
+                    MaxPages, PageSize, pulled.Count, after);
                 return 0;
             }
 
@@ -119,7 +168,8 @@ public sealed class CatalogSyncService
                 pulled.SelectMany(ToVariants).ToList(),
                 categories.Select(ToCategory).ToList());
 
-            // Save ve Prune AYNI iş parçacığında, sırayla: CatalogPhotoCache
+            // Save ve Prune AYNI iş parçacığında, sırayla — ve turlar arası
+            // örtüşme SyncOnceAsync'teki kapıyla engelleniyor: CatalogPhotoCache
             // iş parçacığı güvenli değil, paralel koşarlarsa temizlik sürmekte
             // olan indirmenin .tmp dosyasını siler.
             await DownloadMissingPhotosAsync(pulled, ct);
@@ -130,7 +180,26 @@ public sealed class CatalogSyncService
                 pulled.Count, categories.Count);
             return pulled.Count;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (LicenseApiUnknownException ex) when (!ct.IsCancellationRequested)
+        {
+            // Gövde bozuk/çözümlenemedi. LicenseApiClient bunu bilerek gürültülü
+            // yapıyor ("bu 'katalog boş' demek DEĞİLDİR"): 401 ya da ağ kopması
+            // kendini bir sonraki turda onarır, bozuk gövde onarmaz — sunucu
+            // şeması ya da araya giren bir katman (proxy hata sayfası, WAF)
+            // bozulmuştur ve replika sessizce bayatlar. Warning yığınında
+            // kaybolmasın diye Error.
+            _log.LogError(ex,
+                "Katalog senkronu BOZUK GÖVDE nedeniyle düştü; replika bayat kalıyor "
+              + "(bu 'katalog boş' demek değildir)");
+            return 0;
+        }
+        // Filtre "iptal değilse" DEĞİL, "token iptal edilmediyse": HttpClient'ın
+        // zaman aşımı TaskCanceledException olarak çıkıyor ve o da bir
+        // OperationCanceledException. Tür bakan bir filtre onu dışarı kaçırır,
+        // CatalogSyncHostedService de kaçanı kapanma işareti sayıp döngüden
+        // çıkardı — uygulama yeniden başlayana kadar bir daha hiç senkron olmaz,
+        // üstelik hiçbir yerde hata görünmez.
+        catch (Exception ex) when (!ct.IsCancellationRequested)
         {
             _log.LogWarning(ex, "Katalog senkronu başarısız; replika olduğu gibi bırakıldı");
             return 0;
@@ -140,7 +209,18 @@ public sealed class CatalogSyncService
     private async Task DownloadMissingPhotosAsync(
         IReadOnlyList<CatalogProductPullItem> pulled, CancellationToken ct)
     {
-        // İmzalı adres 5 dakika geçerli — indirme çekmenin hemen ardında.
+        // İmzalı adres 5 dakika geçerli, ama indirmeler BURADA başlıyor: bütün
+        // ürün sayfaları, kategori isteği ve Replace işleminden SONRA, üstelik
+        // sırayla. Soğuk önbellekte büyük bir katalogda ilk sayfaların imzası
+        // sırası gelmeden dolabilir; R2 403 döner ve aşağıdaki catch onu
+        // LogDebug'a yutar.
+        //
+        // Bilerek düzeltmiyoruz, çünkü durum kendi kendini onarıyor: bir sonraki
+        // turda önbellekte olan anahtarlar Has ile atlandığı için kuyruk her
+        // turda kısalıyor, kuyruğun sonu her turda daha erken başlıyor ve
+        // önbellek birkaç tur içinde yakınsıyor. Paralel ya da sayfa-başına
+        // indirmeye geçmek YASAK — CatalogPhotoCache iş parçacığı güvenli değil.
+        //
         // Kimliksiz istemci ŞART: LicenseApiClient'ın istemcisi her isteğe
         // Authorization ekliyor ve presigned bir R2 adresine fazladan başlık
         // göndermek isteği bozar.
@@ -148,9 +228,13 @@ public sealed class CatalogSyncService
 
         foreach (var p in pulled)
         {
-            // Boşluktan ibaret anahtar Save'i fırlatır (Has onu asla göremez,
-            // Prune canlı sayar → her turda yeniden indirilen ölümsüz yetim).
-            // Bu yüzden Length kontrolü değil IsNullOrWhiteSpace.
+            // Boşluktan ibaret anahtar Save'i fırlatır (ArgumentException) ve
+            // tek bir bozuk satır bütün indirme turunu düşürürdü. "Ölümsüz
+            // yetim" gerekçesi ARTIK GEÇERLİ DEĞİL: Task 6'dan beri Prune boş
+            // anahtarları kendi eliyor (CatalogPhotoCache.Prune) ve
+            // CoverPhotoKeys() zaten SQL'de <> '' süzüyor. Geriye kalan tek
+            // sebep Save'in fırlatması — o yüzden Length değil,
+            // Save ile aynı ölçüt: IsNullOrWhiteSpace.
             if (string.IsNullOrWhiteSpace(p.CoverPhotoKey)) continue;
 
             // URL'in null gelmesi MEŞRU: sunucu R2 imzalama hatasını yutup
@@ -165,7 +249,15 @@ public sealed class CatalogSyncService
             {
                 _photos.Save(key, await http.GetByteArrayAsync(p.CoverPhotoUrl, ct));
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            // "İptal değilse" DEĞİL, "token iptal edilmediyse": HttpClient'ın
+            // zaman aşımı TaskCanceledException, yani bir
+            // OperationCanceledException. Türe bakan filtre onu yakalamaz;
+            // istisna SyncOnceAsync'ten kaçar ve CatalogSyncHostedService
+            // kaçanı KAPANMA sanıp döngüyü bitirir — tek bir fotoğrafın zaman
+            // aşımı, uygulama yeniden başlayana kadar katalog senkronunu
+            // tamamen öldürür. Aynı tuzağı LicenseApiClient de kapatıyor
+            // (GetExpectingJsonAsync: TaskCanceledException → LicenseApiNetworkException).
+            catch (Exception ex) when (!ct.IsCancellationRequested)
             {
                 // Tek fotoğrafın düşmesi katalogu düşürmez: kart placeholder
                 // gösterir, bir sonraki turda taze bir imzayla yeniden denenir.
@@ -174,6 +266,11 @@ public sealed class CatalogSyncService
         }
     }
 
+    // NOT: p.NameSearch tel modelinde geliyor ama replikada karşılığı YOK ve
+    // bilerek düşürülüyor — yerel eşleştirme ürün ADI üzerinden değil KOD
+    // üzerinden yapılıyor (CodeNormalized), sohbete yazılan şey ürün kodu.
+    // Ada göre arama istenirse iş göç + kolon işidir (bkz. 025_catalog_replica.sql),
+    // burada sessizce eklenecek bir alan değil.
     private static CatalogProduct ToProduct(CatalogProductPullItem p) => new(
         p.Id.ToString("N"),
         p.CategoryId?.ToString("N"),
@@ -224,6 +321,13 @@ public sealed class CatalogSyncService
             _cachedLicenseKey = licenseKey;
             return _cachedLicenseId;
         }
+        // Buradaki filtre bilerek TÜRE bakıyor (yukarıdaki ikisi token'a):
+        // tek çağrı LicenseApiClient'tan geçiyor ve orası zaman aşımını zaten
+        // LicenseApiNetworkException'a çeviriyor (LicenseApiClient:
+        // "catch (TaskCanceledException) when (!ct.IsCancellationRequested)"),
+        // yani buraya ulaşan bir OperationCanceledException ancak GERÇEK iptal
+        // olabilir. Yine de yeni bir çağrı eklenirse önce bu satır gözden
+        // geçirilmeli.
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _log.LogDebug(ex, "Katalog senkronu için lisans çözümlenemedi");
