@@ -1467,17 +1467,25 @@ git commit -m "feat(katalog): katalog çekme istemci metotları"
 - Create: `OrderDeck.App/Services/CatalogPhotoCache.cs`
 - Test: `OrderDeck.Tests/App/CatalogPhotoCacheTests.cs`
 
-- [ ] **Step 1: Testleri yaz (başarısız olacak)**
+- [x] **Step 1: Testleri yaz (başarısız olacak)**
 
-`OrderDeck.Tests/App/CatalogPhotoCacheTests.cs`:
+`OrderDeck.Tests/App/CatalogPhotoCacheTests.cs` (uygulanan hâli — plandaki üç
+teste iki tane eklendi: `Save`'in atomik yerine koyması ve klasör hiç
+oluşmamışken `Prune`'un sessiz kalması):
 
 ```csharp
+using System;
+using System.IO;
 using FluentAssertions;
 using OrderDeck.App.Services;
 using Xunit;
 
 namespace OrderDeck.Tests.App;
 
+/// <summary>
+/// Katalog kapak fotoğrafı önbelleğinin dosya sözleşmesi. WPF'e dokunmuyor
+/// (Application singleton'ı gerekmez) — düz sınıf testi.
+/// </summary>
 public class CatalogPhotoCacheTests : IDisposable
 {
     private readonly string _root =
@@ -1492,6 +1500,7 @@ public class CatalogPhotoCacheTests : IDisposable
     public void Save_then_resolve_round_trips_a_key_with_slashes()
     {
         var cache = new CatalogPhotoCache(_root);
+        // Gerçek R2 nesne anahtarı eğik çizgi içerir; doğrudan dosya adı olamaz.
         const string key = "abc/products/def/kapak.img";
 
         cache.Has(key).Should().BeFalse();
@@ -1507,9 +1516,24 @@ public class CatalogPhotoCacheTests : IDisposable
     {
         var cache = new CatalogPhotoCache(_root);
 
+        // Anahtar yoksa/boşsa kart placeholder'a düşmeli, patlamamalı.
         cache.ResolveAbsolute(null).Should().BeNull();
         cache.ResolveAbsolute("").Should().BeNull();
         cache.ResolveAbsolute("hic/olmayan.img").Should().BeNull();
+    }
+
+    [Fact]
+    public void Save_overwrites_previous_bytes_for_the_same_key()
+    {
+        var cache = new CatalogPhotoCache(_root);
+        const string key = "abc/products/def/kapak.img";
+
+        cache.Save(key, [1, 2, 3, 4]);
+        cache.Save(key, [9]);
+
+        // Kısalan içerik eskisinin kuyruğunu bırakmamalı — yerine koyma
+        // atomik olduğu için dosya ya tamamen eski ya tamamen yeni.
+        File.ReadAllBytes(cache.ResolveAbsolute(key)!).Should().Equal(9);
     }
 
     [Fact]
@@ -1524,20 +1548,42 @@ public class CatalogPhotoCacheTests : IDisposable
         cache.Has("a/kalan.img").Should().BeTrue();
         cache.Has("a/giden.img").Should().BeFalse();
     }
+
+    [Fact]
+    public void Prune_is_a_no_op_when_the_cache_folder_was_never_created()
+    {
+        var cache = new CatalogPhotoCache(_root);
+
+        // İlk açılışta senkron turu Save'den önce Prune çağırabilir.
+        var act = () => cache.Prune(["a/kalan.img"]);
+
+        act.Should().NotThrow();
+    }
 }
 ```
 
-- [ ] **Step 2: Koştur, başarısız olduğunu gör**
+- [x] **Step 2: Koştur, başarısız olduğunu gör**
 
 ```bash
 dotnet test OrderDeck.Tests/OrderDeck.Tests.csproj \
   --filter "FullyQualifiedName~CatalogPhotoCacheTests"
 ```
 Beklenen: FAIL — `CatalogPhotoCache` tipi yok.
+Gerçekleşen: FAIL, CS0246 `'CatalogPhotoCache' türü ... bulunamadı`.
 
-- [ ] **Step 3: Önbelleği yaz**
+- [x] **Step 3: Önbelleği yaz**
 
-`OrderDeck.App/Services/CatalogPhotoCache.cs`:
+`OrderDeck.App/Services/CatalogPhotoCache.cs` (uygulanan hâli; plandan üç sapma
+— gerekçeler kodun içindeki yorumlarda):
+
+1. `Save` doğrudan `File.WriteAllBytes` yerine **geçici dosya + `File.Move(overwrite)`**
+   kullanıyor. Yarım kalan bir yazma, `Has()`'in sonsuza kadar "var" sayacağı
+   bozuk dosya bırakırdı; anahtar değişmediği için kimse yeniden indirmezdi.
+2. `Prune` deseni `*.img` değil `*.img*` — böylece çökme sonrası kalan
+   `.img.tmp` artıkları da temizleniyor (canlı listede olmaları imkânsız).
+3. `Prune`'un `catch`'ine `UnauthorizedAccessException` eklendi: Windows'ta
+   kilitli/salt-okunur dosya `IOException` yerine bunu fırlatabiliyor ve
+   temizlik hatası tüm senkron turunu düşürmemeli.
 
 ```csharp
 using System;
@@ -1564,6 +1610,9 @@ namespace OrderDeck.App.Services;
 /// </summary>
 public sealed class CatalogPhotoCache
 {
+    private const string Extension = ".img";
+    private const string TempExtension = ".tmp";
+
     private readonly string _root;
 
     /// <param name="root">
@@ -1578,10 +1627,27 @@ public sealed class CatalogPhotoCache
 
     public bool Has(string? objectKey) => ResolveAbsolute(objectKey) is not null;
 
+    /// <summary>
+    /// Baytları anahtarın dosyasına yazar.
+    ///
+    /// NEDEN önce geçici dosya: doğrudan yazarken çöken/kesilen bir indirme
+    /// yarım dosya bırakır ve <see cref="Has"/> onu sonsuza kadar "var" sayar
+    /// — anahtar değişmediği için de kimse yeniden indirmez. Geçiciye yazıp
+    /// <see cref="File.Move(string, string, bool)"/> ile yerine koyunca dosya
+    /// ya tamamen eski ya tamamen yeni olur. Geçici dosya <em>aynı klasörde</em>
+    /// duruyor: farklı bölümler arası taşıma atomik değildir.
+    /// </summary>
     public void Save(string objectKey, byte[] bytes)
     {
         Directory.CreateDirectory(_root);
-        File.WriteAllBytes(Path.Combine(_root, FileNameFor(objectKey)), bytes);
+
+        var fileName = FileNameFor(objectKey);
+        // Geçici ad anahtar başına sabit: yarım kalan denemeler birikmez,
+        // sonraki tur aynı dosyanın üstüne yazar.
+        var temp = Path.Combine(_root, fileName + TempExtension);
+
+        File.WriteAllBytes(temp, bytes);
+        File.Move(temp, Path.Combine(_root, fileName), overwrite: true);
     }
 
     /// <summary>Önbellekteki dosyanın tam yolu; yoksa null (view placeholder gösterir).</summary>
@@ -1601,31 +1667,38 @@ public sealed class CatalogPhotoCache
         if (!Directory.Exists(_root)) return;
 
         var keep = liveKeys.Select(FileNameFor).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var file in Directory.EnumerateFiles(_root, "*.img").ToList())
+        // Desen hem ".img" hem de yarım kalmış ".img.tmp" dosyalarını yakalar;
+        // geçiciler hiçbir zaman canlı listede olmadığı için hepsi düşer.
+        foreach (var file in Directory.EnumerateFiles(_root, "*" + Extension + "*").ToList())
         {
             if (keep.Contains(Path.GetFileName(file))) continue;
             // Dosya kilitliyse (Image hâlâ bağlı) atla: temizlik bir sonraki
             // turda yeniden denenir, önbellek tutarlılığı bundan etkilenmez.
-            try { File.Delete(file); } catch (IOException) { }
+            // Windows'ta kilit IOException yerine UnauthorizedAccessException
+            // olarak da yüzeye çıkabiliyor; ikisi de turu düşürmemeli.
+            try { File.Delete(file); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
         }
     }
 
     private static string FileNameFor(string objectKey)
         => Convert.ToHexString(
                SHA256.HashData(Encoding.UTF8.GetBytes(objectKey))).ToLowerInvariant()
-           + ".img";
+           + Extension;
 }
 ```
 
-- [ ] **Step 4: Koştur, geçtiğini gör**
+- [x] **Step 4: Koştur, geçtiğini gör**
 
 ```bash
 dotnet test OrderDeck.Tests/OrderDeck.Tests.csproj \
   --filter "FullyQualifiedName~CatalogPhotoCacheTests"
 ```
-Beklenen: PASS (3/3).
+Beklenen: PASS (eklenen iki testle 5/5).
+Gerçekleşen: PASS 5/5.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add OrderDeck.App/Services/CatalogPhotoCache.cs \
