@@ -440,13 +440,41 @@ Expected: 0 failed.
 Run: `dotnet build OrderDeck.sln --configuration Release --nologo`
 Expected: `Build succeeded`, 0 error.
 
-- [ ] **Step 4: Mevcut prod verisini gözden geçir (deploy SONRASI, elle)**
+- [ ] **Step 4: Mevcut prod verisini süpür (deploy SONRASI, elle) — ATLANAMAZ**
 
-Katlama yalnız **yazma anında** uygulanıyor; deploy'dan önce kaydedilmiş kodlar olduğu gibi kalır. Katalog sahada neredeyse boş olduğu için bu bir göç değil, bir **kontrol**:
+Katlama yalnız **yazma anında** uygulanıyor; deploy'dan önce kaydedilmiş kodlar
+olduğu gibi kalır. Faz 1a kataloğu 2026-08-12'den beri canlı, yani eski satır
+**olabilir** — "sahada boş" varsayımına güvenme, sorguyla bak.
 
-`panel.orderdeckapp.com` → Ürünler listesi. Kodunda Türkçe harf (`ç ğ ı İ ö ş ü`) ya da küçük harf içeren ürün varsa, o ürünü aç ve kodu **değiştirmeden Kaydet** — yazma yolu kodu kanonik hâline indirir.
+Prod DB'de (`orderdeck-sqlserver`) çalıştır:
 
-Bu adım atlanırsa hata sessizdir: WPF `GUZEL ELBISE` arar, veritabanında `GÜZEL ELBİSE` durur, eşleşme olmaz.
+```sql
+SELECT Id, LicenseId, Code, Name
+FROM Products
+WHERE Code COLLATE Latin1_General_BIN2
+      LIKE N'%[abcdefghijklmnopqrstuvwxyzçğıöşüÇĞİÖŞÜ]%'
+   OR Code <> LTRIM(RTRIM(Code))
+   OR Code LIKE N'%  %'
+ORDER BY LicenseId, Code;
+```
+
+`BIN2` collation şart: varsayılan `CI_AS` altında `LIKE '%[a-z]%'` büyük harfleri
+de yakalar ve sorgu her satırı döndürür.
+
+Dönen her satır için panelde ürünü aç, kodu **değiştirmeden Kaydet** — yazma yolu
+kodu kanonik hâline indirir. Sorgu boş dönene kadar tekrarla.
+
+**Atlanırsa iki ayrı sessiz hata çıkar:**
+
+1. **Arama tutmaz.** WPF `GUZEL ELBISE` arar, veritabanında `GÜZEL ELBİSE` durur.
+   Eşleşme olmaz, hata da olmaz.
+2. **Operatör kilitlenir.** Benzersizlik indeksi `(LicenseId, Code)` ve prod
+   collation aksan-duyarlı → eski `IŞıK 1` ile yeni `ISIK 1` **yan yana durabilir**;
+   indeks bunları farklı görür. Ama eski satır ilk kez düzenlendiğinde kodu
+   katlamadan geçer, `ISIK 1`'e iner ve yenisiyle çarpışır: `409 duplicate-code`.
+   Operatör o üründe hiçbir değişikliği kaydedemez; biri elle yeniden
+   adlandırılana kadar takılı kalır. Süpürme ne kadar gecikirse çakışma ihtimali
+   o kadar artar.
 
 - [ ] **Step 5: Uçtan doğrulama (deploy sonrası)**
 
