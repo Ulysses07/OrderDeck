@@ -87,3 +87,42 @@ jobs:
           name: test-results
           path: ${{ github.workspace }}/TestResults/*.trx
           if-no-files-found: warn
+
+  # Sunucu imajını PR'da DERLER, push ETMEZ.
+  #
+  # Neden ayrı bir iş: yukarıdaki build-test çözümün tamamını Windows'ta derliyor
+  # ve Docker'a özel hiçbir şeyi sınamıyor. İmaj eskiden yalnız master'a push'ta
+  # derleniyordu, yani Docker'a özgü her kırılma ilk kez PROD DEPLOY'unda ortaya
+  # çıkıyordu — 2026-08-13'te tam bu oldu (PR #258 yeni bir ProjectReference
+  # ekledi, Dockerfile'ın COPY listesi geri kaldı, restore projeyi sessizce atladı,
+  # publish CS0234 ile patladı ve sunucu bir sürüm geride kaldı).
+  #
+  # Dockerfile artık `COPY . .` yaptığı için proje-grafiği ayrışması imkânsız
+  # (bkz. #259); bu iş geriye kalanı yakalıyor: temel imaj sürümü, eksik native
+  # bağımlılık, runtime katmanı hataları, .dockerignore'un yanlışlıkla gerekli bir
+  # şeyi elemesi.
+  #
+  # Deploy iş akışı bu workflow'un SONUCUNA bağlı (workflow_run + conclusion ==
+  # success), dolayısıyla bu iş kırmızıysa deploy da tetiklenmez.
+  docker-build:
+    # Linux imajı; build-test'in windows-latest'ında derlenemez.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image (push yok)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: OrderDeck.LicenseServer/Dockerfile
+          push: false
+          # Deploy iş akışıyla aynı gha önbelleğini okur; oradaki katmanlar
+          # burada da işe yarar. mode=max ile YAZMIYOR: doğrulama koşusu
+          # deploy'un önbelleğini kirletmesin.
+          cache-from: type=gha
