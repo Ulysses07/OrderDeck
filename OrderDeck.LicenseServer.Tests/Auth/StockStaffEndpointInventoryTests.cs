@@ -55,6 +55,11 @@ public class StockStaffEndpointInventoryTests
         "PanelProductPhotoController.List",
         "PanelProductPhotoController.Reorder",
         "PanelProductPhotoController.Delete",
+
+        "PanelStockController.Balances",
+        "PanelStockController.Movements",
+        "PanelStockController.CreateEntry",
+        "PanelStockController.CreateCount",
     ];
 
     private static string[] DiscoverOpenEndpoints() =>
