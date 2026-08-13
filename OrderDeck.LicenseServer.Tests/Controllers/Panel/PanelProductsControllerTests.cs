@@ -212,6 +212,76 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         (await TitleAsync(resp)).Should().Be("duplicate-code");
     }
 
+    /// <summary>
+    /// "Işık 1" → ToUpperInvariant "IŞıK 1" üretir: ı (U+0131) küçük kalır,
+    /// Ş yerinde durur. Kod bir kimlik ve izleyici yorumu ona karşı
+    /// eşleştirilecek — Türkçe klavyesi olmayan biri "isik 1" yazdığında da
+    /// aynı ürüne düşmeli.
+    /// </summary>
+    [Fact]
+    public async Task Create_folds_turkish_letters_in_the_code()
+    {
+        var (client, _) = await SeedAsync();
+
+        var product = await CreateProductAsync(client, "Işıklı Elbise", code: "  Işık 1 ");
+
+        product.Code.Should().Be("ISIK 1");
+    }
+
+    [Fact]
+    public async Task Create_409_when_the_code_only_differs_by_turkish_letters()
+    {
+        var (client, _) = await SeedAsync();
+        await CreateProductAsync(client, "Şık Elbise", code: "ŞIK1");
+
+        // "sik1" katlandığında "SIK1"; "ŞIK1" de "SIK1". İzleyici ikisini
+        // ayırt edemez, o yüzden bir arada var olamazlar.
+        var resp = await PostProductAsync(client, "Sıkı Elbise", code: "sik1");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await TitleAsync(resp)).Should().Be("duplicate-code");
+    }
+
+    /// <summary>
+    /// Çok kelimeli Türkçe kod sahadaki gerçek kullanım ("güzel elbise").
+    /// Panel araması iğneyi SearchNormalizer'dan geçiriyor; saklanan kod da
+    /// aynı normalleştiriciden geçmezse arama sessizce boş döner.
+    /// </summary>
+    [Fact]
+    public async Task List_finds_a_multiword_turkish_code_typed_without_turkish_letters()
+    {
+        var (client, _) = await SeedAsync();
+        await CreateProductAsync(client, "Elbise", code: "güzel elbise");
+
+        var page = await client.GetFromJsonAsync<ProductPage>(
+            "/api/panel/products?q=guzel%20elbise&page=1&pageSize=20");
+
+        page!.Items.Should().ContainSingle()
+            .Which.Code.Should().Be("GUZEL ELBISE");
+    }
+
+    /// <summary>
+    /// Update da NormalizeCode'dan geçiyor ve kod değiştiğinde SyncVariantCodes
+    /// her varyantın VariantCode'unu yeniden türetiyor. Barkod yükü ASCII
+    /// olmak zorunda; Türkçe harfli ürün kodu katlanmazsa barkod bozulur.
+    /// </summary>
+    [Fact]
+    public async Task Update_folds_turkish_letters_and_rederives_variant_codes()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Şık Elbise", code: "SIK1",
+            axis1Name: "Renk", axis1Role: 2);
+        await PostVariantAsync(client, product.Id, axis1Value: "Siyah");
+
+        var resp = await PutProductAsync(client, product, code: "  şık elbise  ",
+            axis1Name: "Renk", axis1Role: 2);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var dto = (await resp.Content.ReadFromJsonAsync<ProductDto>())!;
+        dto.Code.Should().Be("SIK ELBISE");
+        AssertVariantCodesAreDerived(product.Id);
+    }
+
     [Fact]
     public async Task Create_400_on_empty_name()
     {

@@ -38,7 +38,15 @@ public sealed record SyncOrderItem(
     System.Guid? ProductId = null,
     System.Guid? ProductVariantId = null);
 
-public sealed record SyncOrdersRequest(System.Collections.Generic.IReadOnlyList<SyncOrderItem> Orders);
+/// <param name="CatalogAware">
+/// Bu istemcinin <c>SyncOrderItem.ProductId</c>/<c>ProductVariantId</c>
+/// alanlarını doldurabildiğini bildirir. Sunucu bayrağı yoksa o paket için
+/// stok mutabakatını hiç çalıştırmaz. WPF katalog replikasını kurana kadar
+/// varsayılan false kalıyor — Faz 1b WPF planında true'ya çevrilecek.
+/// </param>
+public sealed record SyncOrdersRequest(
+    System.Collections.Generic.IReadOnlyList<SyncOrderItem> Orders,
+    bool CatalogAware = false);
 
 public sealed record SyncedOrderDto(
     System.Guid Id, System.Guid? SessionId, string CustomerId,

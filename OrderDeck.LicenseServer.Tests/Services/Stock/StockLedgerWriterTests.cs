@@ -85,8 +85,13 @@ public class StockLedgerWriterTests : IClassFixture<ApiFactory>
         productVariantId = variantId
     };
 
+    // Bu dosyadaki testlerin tamamı KATALOG BİLEN istemciyi taklit ediyor
+    // (paketlerinde ürün/varyant kimliği var), o yüzden bayrak açık gidiyor;
+    // sunucu bayrak yoksa o paket için mutabakatı hiç çalıştırmıyor.
     private Task<HttpResponseMessage> SyncAsync(Seed s, params object[] orders)
-        => s.Client.PostAsJsonAsync($"/api/v1/licenses/{s.LicenseId}/orders/sync", new { orders });
+        => s.Client.PostAsJsonAsync(
+            $"/api/v1/licenses/{s.LicenseId}/orders/sync",
+            new { orders, catalogAware = true });
 
     private async Task<List<StockMovement>> MovementsAsync(Guid licenseId)
     {

@@ -153,9 +153,9 @@ public sealed class PanelProductsController : ControllerBase
             // eşleşme veritabanının collation'ından bağımsız (SQL Server duyarsız,
             // PostgreSQL duyarlı; göçte davranış değişmesin).
             //
-            // Kod için ayrı bir iğne gerekmiyor: `Code` zaten ASCII büyük harf
-            // üretiliyor (NextCode / AxisCodeDeriver), normalleştirilmiş iğne de
-            // büyük harf.
+            // Kod için ayrı bir iğne gerekmiyor çünkü `Code` de yazma anında aynı
+            // normalleştiriciden geçiyor (NormalizeCode). Kod elle yazılabiliyor ve
+            // sahada "güzel elbise" gibi çok kelimeli Türkçe ifadeler oluyor.
             var needle = SearchNormalizer.Normalize(q);
             if (needle.Length > 0)
                 query = query.Where(
@@ -679,8 +679,33 @@ public sealed class PanelProductsController : ControllerBase
             .Include(p => p.Variants)
             .FirstOrDefaultAsync(p => p.Id == id && p.LicenseId == licenseId, ct);
 
+    /// <summary>
+    /// Kodun kanonik hâli. Kod bir <b>kimlik</b>: sistem onu ham saklamıyor,
+    /// yazma anında tek bir biçime indirgiyor (bugün de öyle — "  a5 " → "A5").
+    ///
+    /// <c>ToUpperInvariant</c> TEK BAŞINA yetmiyor: Türkçe'de <c>ı</c>'yı küçük
+    /// bırakır, <c>İ</c>'yi korur. Ürün adında kullanılan normalleştiricinin
+    /// aynısı kullanılıyor ki üç mevcut tüketici de aynı kuralı paylaşsın —
+    /// benzersizlik, panel araması ve <c>VariantCodeBuilder</c> üstünden barkod
+    /// yükü.
+    ///
+    /// <b>Faz 1b zorunluluğu:</b> WPF katalog istemcisi indiğinde, izleyici
+    /// yorumuyla ürün kodunu eşleştiren kod (<c>MainShellViewModel.ChatFilter</c>
+    /// şu an <c>OrdinalIgnoreCase</c> kullanıyor) da bu normalleştiriciden
+    /// geçirilmeli; aksi hâlde Türkçe harfli kodlar sessizce eşleşmez.
+    ///
+    /// Yan etki bilinçli: "ŞIK1" ile "SIK1" aynı koda iner, bir arada var
+    /// olamaz. İzleyici ikisini zaten ayırt edemezdi.
+    ///
+    /// <b>Kalan açık:</b> bu KATLAMA, süzme değil. <c>TurkishAscii</c> yalnız
+    /// yedi Türkçe harfi eşliyor; <c>Â Î Û É</c> gibi başkaları kodda hayatta
+    /// kalır ve Code128 yükünü hâlâ bozabilir (<c>AxisCodeDeriver</c> eksen
+    /// tarafında bunları eliyor, kod tarafında elenmiyor). Kapatmak koda
+    /// karakter kısıtı getirmek demek — konuşuldu ve reddedildi; kısıt gerekirse
+    /// ayrı bir karar olarak ele alınmalı.
+    /// </summary>
     private static string NormalizeCode(string? code)
-        => (code ?? string.Empty).Trim().ToUpperInvariant();
+        => SearchNormalizer.Normalize(code);
 
     private static string? Trim(string? value)
         => string.IsNullOrWhiteSpace(value) ? null : value.Trim();

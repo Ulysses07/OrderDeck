@@ -168,7 +168,18 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         Guid? ProductId = null,
         Guid? ProductVariantId = null);
 
-    public sealed record SyncOrdersRequest(List<SyncOrderItem> Orders);
+    /// <param name="CatalogAware">
+    /// İstemcinin katalog kimliklerini (<c>ProductId</c>/<c>ProductVariantId</c>)
+    /// doldurabildiğini bildirir. VARSAYILAN false, çünkü güncellenmemiş WPF
+    /// sürümleri bu alanı hiç göndermez ve göndermemeleri hata değil.
+    ///
+    /// Bayrak olmadan <c>ProductId = null</c> iki ayrı durumu birbirine karıştırır:
+    /// "operatör ürünü belirleyemedi" (meşru — hareket yazılmaz) ile "bu istemci
+    /// katalog bilmiyor". İkincisinde sunucu deftere HİÇ dokunmamalı; aksi hâlde
+    /// StockLedgerReconciler'ın "istenmeyen anahtarı sıfırla" dalı daha önce
+    /// yazılmış satışı geri sarar ve stok sessizce şişer.
+    /// </param>
+    public sealed record SyncOrdersRequest(List<SyncOrderItem> Orders, bool CatalogAware = false);
 
     public sealed record SyncedOrderDto(
         Guid Id, Guid? SessionId, string CustomerId,
@@ -273,31 +284,38 @@ public sealed class LicensesSessionsSyncController : ControllerBase
             }
         }
 
-        // Defter, siparişlerle AYNI SaveChanges'te yazılır: "sipariş kaydedildi
-        // ama stok düşmedi" ara durumu hiç oluşmasın.
-        //
-        // Defter satırlarının damgası WPF çekme imlecinin sütunu (CreatedAt), bu
-        // yüzden yukarıdaki `now` yerine burada TAZE okunuyor: okuma ile commit
-        // arasındaki pencere ne kadar darsa imlecin gerisine düşme riski o kadar
-        // küçülür. Asıl güvence yine de çekme ucundaki kararlılık ufku; bu sadece
-        // ikinci katman. Sipariş alanları `now`'u kullanmaya devam ediyor —
-        // onların damgası imleç sütunu değil.
-        var ledgerNow = DateTimeOffset.UtcNow;
+        // Katalog bilmeyen istemcinin paketi deftere HİÇ girmez: siparişler her
+        // zamanki gibi kaydediliyor, yalnız mutabakat atlanıyor. Ayrım şart,
+        // çünkü mutabakat "gönderilmeyen anahtar = artık geçersiz" varsayıyor
+        // ve bu varsayım yalnız katalog bilen istemci için doğru.
+        if (req.CatalogAware)
+        {
+            // Defter, siparişlerle AYNI SaveChanges'te yazılır: "sipariş kaydedildi
+            // ama stok düşmedi" ara durumu hiç oluşmasın.
+            //
+            // Defter satırlarının damgası WPF çekme imlecinin sütunu (CreatedAt), bu
+            // yüzden yukarıdaki `now` yerine burada TAZE okunuyor: okuma ile commit
+            // arasındaki pencere ne kadar darsa imlecin gerisine düşme riski o kadar
+            // küçülür. Asıl güvence yine de çekme ucundaki kararlılık ufku; bu sadece
+            // ikinci katman. Sipariş alanları `now`'u kullanmaya devam ediyor —
+            // onların damgası imleç sütunu değil.
+            var ledgerNow = DateTimeOffset.UtcNow;
 
-        await _ledger.ApplyAsync(
-            licenseId,
-            orders.Select(o => new Services.Stock.LedgerOrderInput(
-                new Services.Stock.LedgerOrderState(
-                    o.Id,
-                    o.ProductId,
-                    o.ProductVariantId,
-                    o.IsShippingFee,
-                    o.CancelledAt is not null,
-                    o.IsTentativeBackup),
-                o.AddedAt,
-                o.CancelledAt)).ToList(),
-            ledgerNow,
-            ct);
+            await _ledger.ApplyAsync(
+                licenseId,
+                orders.Select(o => new Services.Stock.LedgerOrderInput(
+                    new Services.Stock.LedgerOrderState(
+                        o.Id,
+                        o.ProductId,
+                        o.ProductVariantId,
+                        o.IsShippingFee,
+                        o.CancelledAt is not null,
+                        o.IsTentativeBackup),
+                    o.AddedAt,
+                    o.CancelledAt)).ToList(),
+                ledgerNow,
+                ct);
+        }
 
         await _db.SaveChangesAsync(ct);
 
