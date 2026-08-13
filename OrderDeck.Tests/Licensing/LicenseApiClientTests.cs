@@ -193,4 +193,63 @@ public sealed class LicenseApiClientTests
         result.Synced.Should().Be(3);
         result.RetroactiveMatches.Should().Be(1);
     }
+
+    // ─── Katalog çekme (Stok Faz 1b) ───────────────────────────────────────
+
+    [Fact]
+    public async Task GetCatalogProductsAsync_passes_the_keyset_cursor()
+    {
+        HttpRequestMessage? seen = null;
+        var client = BuildClient(req =>
+        {
+            seen = req;
+            return FakeHttpMessageHandler.Json(200, """
+                [{ "id":"11111111-1111-1111-1111-111111111111",
+                   "code":"A1", "name":"Elbise", "nameSearch":"ELBISE",
+                   "defaultPrice":199.90, "updatedAt":"2026-08-13T10:00:00Z",
+                   "coverPhotoKey":"lic/products/p/k.img",
+                   "coverPhotoUrl":"https://r2.local/k.img?sig=1",
+                   "variants":[] }]
+                """);
+        });
+
+        var licenseId = Guid.NewGuid();
+        var after = Guid.Parse("22222222-2222-2222-2222-222222222222");
+
+        var rows = await client.GetCatalogProductsAsync(licenseId, after, take: 200);
+
+        seen!.RequestUri!.PathAndQuery.Should().Be(
+            $"/api/v1/licenses/{licenseId}/catalog/products?after={after}&take=200");
+        rows.Should().ContainSingle();
+        rows[0].CoverPhotoKey.Should().Be("lic/products/p/k.img");
+    }
+
+    [Fact]
+    public async Task GetCatalogProductsAsync_omits_the_cursor_on_the_first_page()
+    {
+        HttpRequestMessage? seen = null;
+        var client = BuildClient(req => { seen = req; return FakeHttpMessageHandler.Json(200, "[]"); });
+
+        var licenseId = Guid.NewGuid();
+        await client.GetCatalogProductsAsync(licenseId, after: null, take: 200);
+
+        seen!.RequestUri!.PathAndQuery.Should().Be(
+            $"/api/v1/licenses/{licenseId}/catalog/products?take=200");
+    }
+
+    [Fact]
+    public async Task GetCatalogCategoriesAsync_parses_the_tree()
+    {
+        var client = BuildClient(_ => FakeHttpMessageHandler.Json(200, """
+            [{ "id":"33333333-3333-3333-3333-333333333333",
+               "parentCategoryId":null, "name":"Erkek",
+               "path":"/33/", "sortOrder":0, "isActive":true }]
+            """));
+
+        var rows = await client.GetCatalogCategoriesAsync(Guid.NewGuid());
+
+        rows.Should().ContainSingle();
+        rows[0].Name.Should().Be("Erkek");
+        rows[0].ParentCategoryId.Should().BeNull();
+    }
 }

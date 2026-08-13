@@ -251,6 +251,29 @@ public sealed class LicenseApiClient
             $"/api/v1/licenses/{licenseId}/wpf-customers/since{qs}", ct) ?? new();
     }
 
+    // ─── WPF katalog replikası (Stok Faz 1b) ──────────────────────────────
+
+    /// <summary>
+    /// Kataloğun bir sayfasını çeker. <b>Tam anlık görüntü</b> —
+    /// <paramref name="after"/> bir DEĞİŞİM imleci değil, birincil anahtar
+    /// üstünde keyset sayfalama imleci. Çağıran, boş sayfa gelene kadar son
+    /// ürünün <c>Id</c>'siyle döngüye devam eder ve ancak tamamı geldiğinde
+    /// replikayı baştan yazar.
+    /// </summary>
+    public async Task<List<CatalogProductPullItem>> GetCatalogProductsAsync(
+        Guid licenseId, Guid? after, int take = 200, CancellationToken ct = default)
+    {
+        var qs = after is null ? $"?take={take}" : $"?after={after}&take={take}";
+        return await GetExpectingJsonAsync<List<CatalogProductPullItem>>(
+            $"/api/v1/licenses/{licenseId}/catalog/products{qs}", ct) ?? new();
+    }
+
+    /// <summary>Kategori ağacının tamamı; sayfalama yok (derinlik sınırlı).</summary>
+    public async Task<List<CatalogCategoryPullItem>> GetCatalogCategoriesAsync(
+        Guid licenseId, CancellationToken ct = default)
+        => await GetExpectingJsonAsync<List<CatalogCategoryPullItem>>(
+            $"/api/v1/licenses/{licenseId}/catalog/categories", ct) ?? new();
+
     // ─── Customer balance (E1/E3) ────────────────────────────────────
 
     /// <summary>WPF "Ödeme iste" anlığında müşterinin bakiyesini sorgular.
