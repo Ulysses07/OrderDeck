@@ -1,232 +1,108 @@
 using System.IO;
-using System.Linq;
 using FluentAssertions;
-using Moq;
 using OrderDeck.App.Services;
 using OrderDeck.App.ViewModels;
 using OrderDeck.Core.Catalog;
 using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
-using OrderDeck.Core.Time;
+using OrderDeck.Shared.Text;
 using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.Tests.App;
 
+/// <summary>
+/// Ürün kartı artık SALT OKUR: kaynağı sunucu kataloğunun yerel replikası.
+/// Tanımlama/düzenleme/fotoğraf seçme akışları kaldırıldı (katalogun sahibi
+/// panel), o yüzden buradaki testler yalnız Load'un dört durumunu sınıyor.
+/// </summary>
 public class ProductCardViewModelTests
 {
-    private static (ProductCardViewModel Vm, ProductRepository Repo) Make()
+    private static (ProductCardViewModel Vm, CatalogReplicaRepository Repo, string Root) Make()
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
-        var repo = new ProductRepository(db);
-        var photos = new ProductPhotoStore(
-            Path.Combine(Path.GetTempPath(), "od-card-" + System.Guid.NewGuid().ToString("N")));
-        var clock = new Mock<IClock>();
-        clock.Setup(c => c.UnixNow()).Returns(2000L);
-        return (new ProductCardViewModel(repo, photos, clock.Object), repo);
+        var repo = new CatalogReplicaRepository(db);
+        var root = Path.Combine(Path.GetTempPath(), "od-test-" + Guid.NewGuid().ToString("N"));
+        return (new ProductCardViewModel(repo, new CatalogPhotoCache(root)), repo, root);
     }
 
+    private static CatalogProduct Product(
+        string id, string code, string name = "Elbise", string? coverKey = null)
+        => new(id, null, code, SearchNormalizer.Normalize(code), name,
+               199.90m, null, "Renk", 1, "Beden", 2, coverKey, 1_700_000_000);
+
     [Fact]
-    public void Load_unknown_code_offers_definition_without_opening_the_form()
+    public void Empty_code_shows_neither_product_nor_unknown()
     {
-        var (vm, _) = Make();
+        var (vm, _, _) = Make();
 
-        vm.Load("A100");
+        vm.Load("   ");
 
-        vm.Code.Should().Be("A100");
+        vm.Code.Should().BeEmpty();
         vm.HasProduct.Should().BeFalse();
-        // Form KENDİLİĞİNDEN açılmaz: kod kutusuna "A100" yazılırken "A",
-        // "A1", "A10" da tanınmayan kodlardır — form her tuşta açılıp
-        // kapanırdı. Kart yalnız "tanımlı değil" der.
-        vm.IsUnknown.Should().BeTrue();
-        vm.IsEditing.Should().BeFalse();
-        vm.Name.Should().BeEmpty();
-        vm.Sizes.Should().BeEmpty();
-    }
-
-    [Fact]
-    public void BeginEdit_opens_the_form_for_an_unknown_code()
-    {
-        var (vm, _) = Make();
-        vm.Load("A100");
-
-        vm.BeginEditCommand.Execute(null);
-
-        vm.IsEditing.Should().BeTrue();
         vm.IsUnknown.Should().BeFalse();
+        vm.Variants.Should().BeEmpty();
     }
 
     [Fact]
-    public void Load_known_code_shows_saved_product()
+    public void Unknown_code_is_reported_without_clearing_the_typed_code()
     {
-        var (vm, repo) = Make();
-        repo.Save(new Product("A100", "Kırmızı Elbise", "a100.jpg", 0),
-            new[] { new ProductSize("A100", "S", 3, 0), new ProductSize("A100", "M", 0, 1) });
+        var (vm, _, _) = Make();
 
-        vm.Load("A100");
+        vm.Load("A7");
 
-        vm.HasProduct.Should().BeTrue();
-        vm.IsEditing.Should().BeFalse();
-        vm.Name.Should().Be("Kırmızı Elbise");
-        vm.Sizes.Select(s => s.Size).Should().Equal("S", "M");
-        vm.Sizes[0].Quantity.Should().Be(3);
-    }
-
-    [Fact]
-    public void Load_blank_code_clears_the_card()
-    {
-        var (vm, repo) = Make();
-        repo.Save(new Product("A100", "Kırmızı Elbise", null, 0), new[] { new ProductSize("A100", "S", 3, 0) });
-        vm.Load("A100");
-
-        vm.Load("");
-
-        // Hero'daki kod kutusu boşaltıldığında kart eski ürünü göstermeye
-        // devam ederse operatör yanlış stoğa bakar.
+        // Kod ekranda kalmalı: operatör neyi yazdığını görsün.
+        vm.Code.Should().Be("A7");
         vm.HasProduct.Should().BeFalse();
-        vm.IsEditing.Should().BeFalse();
-        vm.Sizes.Should().BeEmpty();
+        vm.IsUnknown.Should().BeTrue();
     }
 
     [Fact]
-    public void ApplySizesText_creates_tiles_in_written_order()
+    public void Known_code_loads_name_and_active_variants()
     {
-        var (vm, _) = Make();
-        vm.Load("A100");
+        var (vm, repo, _) = Make();
+        repo.Replace(
+            [Product("p1", "GUZEL ELBISE", "Güzel Elbise")],
+            [
+                new CatalogVariant("v1", "p1", "Kırmızı", "KIRM", "M", "M",
+                                   "GUZEL ELBISE-KIRM-M", null, true, 0),
+                new CatalogVariant("v2", "p1", "Kırmızı", "KIRM", "L", "L",
+                                   "GUZEL ELBISE-KIRM-L", null, false, 1),
+            ],
+            []);
 
-        vm.SizesText = "S, M, L, XL";
-        vm.ApplySizesText();
+        vm.Load("güzel elbise");
 
-        vm.Sizes.Select(s => s.Size).Should().Equal("S", "M", "L", "XL");
-        vm.Sizes.Select(s => s.SortOrder).Should().Equal(0, 1, 2, 3);
-        vm.Sizes.Should().OnlyContain(s => s.Quantity == 0);
-    }
-
-    [Fact]
-    public void ApplySizesText_keeps_quantities_of_surviving_sizes()
-    {
-        var (vm, _) = Make();
-        vm.Load("A100");
-        vm.SizesText = "S,M";
-        vm.ApplySizesText();
-        vm.Sizes[1].Quantity = 7;   // M = 7
-
-        vm.SizesText = "M,L";
-        vm.ApplySizesText();
-
-        // Operatör beden setini düzeltirken hayatta kalan bedenin adedini
-        // yeniden yazmak zorunda kalmamalı.
-        vm.Sizes.Select(s => s.Size).Should().Equal("M", "L");
-        vm.Sizes[0].Quantity.Should().Be(7);
-    }
-
-    [Fact]
-    public void ApplySizesText_drops_duplicates_and_blanks()
-    {
-        var (vm, _) = Make();
-        vm.Load("A100");
-
-        vm.SizesText = "S, , s ,M,,M";
-        vm.ApplySizesText();
-
-        // Beden Product tablosunda PK'nın parçası — çift satır INSERT'te
-        // patlar; burada eleriz.
-        vm.Sizes.Select(s => s.Size).Should().Equal("S", "M");
-    }
-
-    [Fact]
-    public void Save_persists_product_and_leaves_edit_mode()
-    {
-        var (vm, repo) = Make();
-        vm.Load("A100");
-        vm.Name = "Kırmızı Elbise";
-        vm.SizesText = "S,M";
-        vm.ApplySizesText();
-        vm.Sizes[0].Quantity = 4;
-
-        vm.SaveCommand.Execute(null);
-
-        vm.IsEditing.Should().BeFalse();
         vm.HasProduct.Should().BeTrue();
-        repo.Get("A100")!.Name.Should().Be("Kırmızı Elbise");
-        repo.Get("A100")!.UpdatedAt.Should().Be(2000);   // IClock, unix SANİYE
-        repo.GetSizes("A100").Single(s => s.Size == "S").Quantity.Should().Be(4);
+        vm.IsUnknown.Should().BeFalse();
+        vm.Name.Should().Be("Güzel Elbise");
+        // Pasif varyant gösterilmez: operatör satamayacağı bir kırılımı görmesin.
+        vm.Variants.Should().ContainSingle().Which.Display.Should().Be("Kırmızı · M");
     }
 
     [Fact]
-    public void Save_is_blocked_while_name_is_blank()
+    public void Photo_path_is_null_until_the_cover_file_is_cached()
     {
-        var (vm, repo) = Make();
-        vm.Load("A100");
-        vm.SizesText = "S";
-        vm.ApplySizesText();
+        var (vm, repo, root) = Make();
+        var photos = new CatalogPhotoCache(root);
+        repo.Replace([Product("p1", "A1", coverKey: "lic/p1/kapak.img")], [], []);
 
-        vm.SaveCommand.CanExecute(null).Should().BeFalse();
+        vm.Load("A1");
+        vm.PhotoAbsolutePath.Should().BeNull();
 
-        vm.Name = "Kırmızı Elbise";
-        vm.SaveCommand.CanExecute(null).Should().BeTrue();
-    }
-
-    [Fact]
-    public void CancelEdit_restores_the_saved_state()
-    {
-        var (vm, repo) = Make();
-        repo.Save(new Product("A100", "Kırmızı Elbise", null, 0),
-            new[] { new ProductSize("A100", "S", 3, 0) });
-        vm.Load("A100");
-        vm.BeginEditCommand.Execute(null);
-        vm.Name = "Bozuk isim";
-        vm.SizesText = "XXL";
-        vm.ApplySizesText();
-
-        vm.CancelEditCommand.Execute(null);
-
-        vm.Name.Should().Be("Kırmızı Elbise");
-        vm.Sizes.Select(s => s.Size).Should().Equal("S");
-        vm.IsEditing.Should().BeFalse();
-    }
-
-    [Fact]
-    public void SetPhoto_copies_the_file_and_exposes_absolute_path()
-    {
-        var (vm, _) = Make();
-        vm.Load("A100");
-        var src = Path.Combine(Path.GetTempPath(), System.Guid.NewGuid().ToString("N") + ".png");
-        File.WriteAllBytes(src, new byte[] { 1 });
-
-        vm.SetPhoto(src);
-
-        vm.PhotoPath.Should().Be("a100.png");
+        // Senkron fotoğrafı indirdikten sonra aynı kod yeniden okunduğunda yol dolar.
+        photos.Save("lic/p1/kapak.img", [1, 2, 3]);
+        vm.Load("A1");
         vm.PhotoAbsolutePath.Should().NotBeNull();
-        File.Exists(vm.PhotoAbsolutePath!).Should().BeTrue();
-        File.Delete(src);
-    }
-
-    [Theory]
-    [InlineData(0, false, true)]
-    [InlineData(1, true, false)]
-    [InlineData(2, true, false)]
-    [InlineData(3, false, false)]
-    public void Size_tile_low_and_out_flags(int qty, bool low, bool outOfStock)
-    {
-        var tile = new ProductSizeViewModel("M", qty, 0);
-
-        // Mockup: .cnt.low amber, .size.out soluk + üstü çizili.
-        tile.IsLow.Should().Be(low);
-        tile.IsOutOfStock.Should().Be(outOfStock);
     }
 
     [Fact]
-    public void Size_tile_flags_react_to_quantity_edits()
+    public void Variant_without_axis_values_falls_back_to_its_code()
     {
-        var tile = new ProductSizeViewModel("M", 5, 0);
+        var vm = new CatalogVariantViewModel(
+            new CatalogVariant("v1", "p1", null, null, null, null, "A1", null, true, 0));
 
-        tile.Quantity = 0;
-
-        // Adet kartta satır-içi düzenleniyor; rozetler anında dönmezse
-        // operatör tükenmiş bedeni fark etmez.
-        tile.IsOutOfStock.Should().BeTrue();
-        tile.IsLow.Should().BeFalse();
+        vm.Display.Should().Be("A1");
     }
 }

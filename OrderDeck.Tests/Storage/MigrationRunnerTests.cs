@@ -29,7 +29,7 @@ public class MigrationRunnerTests
         tables.Should().NotContain("LabelBackup");
 
         var version = conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().Be(25);
+        version.Should().Be(26);
 
         // Migration 018 added the Shipment table for kümülatif kargo dosyası.
         tables.Should().Contain("Shipment");
@@ -38,6 +38,11 @@ public class MigrationRunnerTests
         tables.Should().Contain("CatalogProduct");
         tables.Should().Contain("CatalogVariant");
         tables.Should().Contain("CatalogCategory");
+
+        // Migration 026 dropped the local product layer: katalogun tek sahibi
+        // sunucu, yerel tanım kalmadı.
+        tables.Should().NotContain("Product");
+        tables.Should().NotContain("ProductSize");
 
         var customerColumns = conn.Query<string>(
             "SELECT name FROM pragma_table_info('Customer')").AsList();
@@ -58,7 +63,7 @@ public class MigrationRunnerTests
 
         using var conn = db.Open();
         var version = conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().Be(25);
+        version.Should().Be(26);
     }
 
     [Fact]

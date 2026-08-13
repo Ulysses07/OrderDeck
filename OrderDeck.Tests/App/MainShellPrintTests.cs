@@ -163,11 +163,10 @@ public class MainShellPrintTests
         // Start a session so AddChatToQueue works
         sessionSvc.Start("Test", new[] { "instagram" });
 
-        var productRepo = new ProductRepository(db);
+        var catalogRepo = new CatalogReplicaRepository(db);
         var productCard = new ProductCardViewModel(
-            productRepo,
-            new ProductPhotoStore(Path.Combine(Path.GetTempPath(), "od-test-" + Guid.NewGuid().ToString("N"))),
-            clock.Object);
+            catalogRepo,
+            new CatalogPhotoCache(Path.Combine(Path.GetTempPath(), "od-test-" + Guid.NewGuid().ToString("N"))));
 
         var vm = new MainShellViewModel(
             bus, labelSvc, sessionSvc, printer, customerSvc, customerRepo,

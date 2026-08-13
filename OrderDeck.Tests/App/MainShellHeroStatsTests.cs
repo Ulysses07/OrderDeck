@@ -93,10 +93,10 @@ public class MainShellHeroStatsTests
         h.Vm.ActiveCode = "A100";
 
         h.Vm.ProductCard.Code.Should().Be("A100");
-        // Kod tanınmıyor → kart "tanımlı değil" der; form operatörün açık
-        // isteğiyle açılır (yazarken her tuşta açılıp kapanmasın).
+        // Kod katalogda yok → kart "katalogda yok" der ve akış kesilmez;
+        // tanımlama yolu YOK, katalogun tek sahibi panel.
         h.Vm.ProductCard.IsUnknown.Should().BeTrue();
-        h.Vm.ProductCard.IsEditing.Should().BeFalse();
+        h.Vm.ProductCard.HasProduct.Should().BeFalse();
     }
 
     [Fact]

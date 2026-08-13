@@ -80,10 +80,6 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<CustomerRepository>();
         services.AddSingleton<LabelRepository>();
         services.AddSingleton<PaymentRepository>();
-        // Arayüz Faz 1: ürün kartı (ad/fotoğraf/beden adetleri) yalnız yerel SQLite.
-        services.AddSingleton<ProductRepository>();
-        // Ürün fotoğrafı deposu — kapsamı %LOCALAPPDATA%\OrderDeck\products.
-        services.AddSingleton<ProductPhotoStore>();
         // Stok Faz 1b: sunucu katalogunun salt-okunur replikası ve kapak
         // fotoğrafı önbelleği. Tek yazarı CatalogSyncService.
         services.AddSingleton<CatalogReplicaRepository>();
