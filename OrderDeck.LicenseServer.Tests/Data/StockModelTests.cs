@@ -56,9 +56,20 @@ public class StockModelTests
     public void Order_index_exists_for_reconciliation_lookup()
     {
         var indexes = Model().FindEntityType(typeof(StockMovement))!.GetIndexes();
-        indexes.Should().Contain(i =>
-            i.Properties.Count == 1 &&
-            i.Properties[0].Name == nameof(StockMovement.OrderId));
+        var index = indexes.Should().ContainSingle(i =>
+            i.Properties.Count == 2 &&
+            i.Properties[0].Name == nameof(StockMovement.LicenseId) &&
+            i.Properties[1].Name == nameof(StockMovement.OrderId)).Which;
+
+        // Mutabakat sorgusunun okuduğu sütunlar yaprak sayfada duruyor mu?
+        // Duruyorsa sorgu covering olur ve ana tabloya key lookup yapmaz.
+        index.FindAnnotation("SqlServer:Include")!.Value
+            .Should().BeEquivalentTo(new[]
+            {
+                nameof(StockMovement.ProductId),
+                nameof(StockMovement.ProductVariantId),
+                nameof(StockMovement.Quantity)
+            });
     }
 
     [Fact]

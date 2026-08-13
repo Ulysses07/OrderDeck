@@ -729,8 +729,15 @@ public class LicenseDbContext : DbContext
             b.HasIndex(m => new { m.LicenseId, m.ProductId, m.ProductVariantId });
             // WPF çekme imleci: WHERE LicenseId=… AND CreatedAt > @since ORDER BY CreatedAt
             b.HasIndex(m => new { m.LicenseId, m.CreatedAt });
-            // Mutabakat: bir siparişin mevcut hareketlerini bul.
-            b.HasIndex(m => m.OrderId);
+            // Mutabakat: WHERE LicenseId=… AND OrderId IN (…) — sipariş senkron
+            // paketinin mevcut hareketlerini bulur. LicenseId anahtarda olmasa
+            // her isabet için ana tabloya key lookup gerekirdi; Include ile
+            // sorgunun okuduğu üç sütun da yaprakta durduğundan sorgu covering
+            // olur, ana tabloya hiç gitmez. Yayın boyunca sürekli koşan sıcak
+            // yol: WPF her sipariş güncellemesinde paketi yeniden gönderiyor ve
+            // paket başına 200 sipariş id'sine kadar çıkabiliyor.
+            b.HasIndex(m => new { m.LicenseId, m.OrderId })
+                .IncludeProperties(m => new { m.ProductId, m.ProductVariantId, m.Quantity });
         });
 
         // Seed SKUs
