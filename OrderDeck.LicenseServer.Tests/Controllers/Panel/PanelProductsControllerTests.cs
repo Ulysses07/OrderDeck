@@ -260,6 +260,28 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
             .Which.Code.Should().Be("GUZEL ELBISE");
     }
 
+    /// <summary>
+    /// Update da NormalizeCode'dan geçiyor ve kod değiştiğinde SyncVariantCodes
+    /// her varyantın VariantCode'unu yeniden türetiyor. Barkod yükü ASCII
+    /// olmak zorunda; Türkçe harfli ürün kodu katlanmazsa barkod bozulur.
+    /// </summary>
+    [Fact]
+    public async Task Update_folds_turkish_letters_and_rederives_variant_codes()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Şık Elbise", code: "SIK1",
+            axis1Name: "Renk", axis1Role: 2);
+        await PostVariantAsync(client, product.Id, axis1Value: "Siyah");
+
+        var resp = await PutProductAsync(client, product, code: "  şık elbise  ",
+            axis1Name: "Renk", axis1Role: 2);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var dto = (await resp.Content.ReadFromJsonAsync<ProductDto>())!;
+        dto.Code.Should().Be("SIK ELBISE");
+        AssertVariantCodesAreDerived(product.Id);
+    }
+
     [Fact]
     public async Task Create_400_on_empty_name()
     {

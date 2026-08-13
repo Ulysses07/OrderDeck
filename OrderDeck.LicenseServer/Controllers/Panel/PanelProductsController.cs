@@ -154,10 +154,8 @@ public sealed class PanelProductsController : ControllerBase
             // PostgreSQL duyarlı; göçte davranış değişmesin).
             //
             // Kod için ayrı bir iğne gerekmiyor çünkü `Code` de yazma anında aynı
-            // normalleştiriciden geçiyor (NormalizeCode). Eskiden burada "Code
-            // zaten ASCII büyük harf" yazıyordu — bu yalnız OTOMATİK üretilen
-            // kodlar (A1, A2) için doğruydu; kod elle yazılabiliyor ve sahada
-            // "güzel elbise" gibi çok kelimeli Türkçe ifadeler oluyor.
+            // normalleştiriciden geçiyor (NormalizeCode). Kod elle yazılabiliyor ve
+            // sahada "güzel elbise" gibi çok kelimeli Türkçe ifadeler oluyor.
             var needle = SearchNormalizer.Normalize(q);
             if (needle.Length > 0)
                 query = query.Where(
@@ -687,9 +685,14 @@ public sealed class PanelProductsController : ControllerBase
     ///
     /// <c>ToUpperInvariant</c> TEK BAŞINA yetmiyor: Türkçe'de <c>ı</c>'yı küçük
     /// bırakır, <c>İ</c>'yi korur. Ürün adında kullanılan normalleştiricinin
-    /// aynısı kullanılıyor ki dört tüketici de aynı kuralı paylaşsın —
-    /// benzersizlik, panel araması, <c>VariantCodeBuilder</c> üstünden barkod
-    /// yükü ve WPF'in izleyici yorumunu eşleştirmesi.
+    /// aynısı kullanılıyor ki üç mevcut tüketici de aynı kuralı paylaşsın —
+    /// benzersizlik, panel araması ve <c>VariantCodeBuilder</c> üstünden barkod
+    /// yükü.
+    ///
+    /// <b>Faz 1b zorunluluğu:</b> WPF katalog istemcisi indiğinde, izleyici
+    /// yorumuyla ürün kodunu eşleştiren kod (<c>MainShellViewModel.ChatFilter</c>
+    /// şu an <c>OrdinalIgnoreCase</c> kullanıyor) da bu normalleştiriciden
+    /// geçirilmeli; aksi hâlde Türkçe harfli kodlar sessizce eşleşmez.
     ///
     /// Yan etki bilinçli: "ŞIK1" ile "SIK1" aynı koda iner, bir arada var
     /// olamaz. İzleyici ikisini zaten ayırt edemezdi.
