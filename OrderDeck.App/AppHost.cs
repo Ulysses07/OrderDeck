@@ -84,6 +84,10 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<ProductRepository>();
         // Ürün fotoğrafı deposu — kapsamı %LOCALAPPDATA%\OrderDeck\products.
         services.AddSingleton<ProductPhotoStore>();
+        // Stok Faz 1b: sunucu katalogunun salt-okunur replikası ve kapak
+        // fotoğrafı önbelleği. Tek yazarı CatalogSyncService.
+        services.AddSingleton<CatalogReplicaRepository>();
+        services.AddSingleton<CatalogPhotoCache>();
         // PDF dekont parse: DekontEkleDrawer "PDF Yükle" butonu kullanır.
         services.AddSingleton<PdfDekontParser>();
         // Kargo PR C: dekont eşleştirme servisi (LabelRepository + AppSettings.Shipping).
@@ -510,6 +514,17 @@ public sealed class AppHost : IDisposable
         // Customer tablosuna ingest eder. 30 sn cadence, watermark LastShopperIngestAt.
         services.AddSingleton<Services.Sync.ShopperRegistrationIngestService>();
         services.AddHostedService<Services.Sync.ShopperRegistrationIngestHostedService>();
+
+        // Katalog replikası (Stok Faz 1b): sunucudaki katalogun tam anlık
+        // görüntüsü 5 dakikada bir yerel SQLite'a yazılır. Fotoğraf baytları
+        // presigned R2 adresinden KİMLİKSİZ bir istemciyle çekiliyor —
+        // LicenseApiClient'ın istemcisi Authorization ekler ve presigned
+        // isteği bozardı.
+        // Adı tam nitelikli yazıyoruz: ifade bağlamında `Services`,
+        // AppHost'un statik IServiceProvider özelliğine bağlanıyor.
+        services.AddHttpClient(OrderDeck.App.Services.Sync.CatalogSyncService.PhotoClientName);
+        services.AddSingleton<Services.Sync.CatalogSyncService>();
+        services.AddHostedService<Services.Sync.CatalogSyncHostedService>();
 
         // UI freeze diagnostic (2026-05-13): her 5 dakikada bir UI thread'in
         // responsive olduğunu log'a yazan heartbeat. Donma anında log'da
