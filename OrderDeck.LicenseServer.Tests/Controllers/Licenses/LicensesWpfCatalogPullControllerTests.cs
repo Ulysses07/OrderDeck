@@ -272,4 +272,50 @@ public class LicensesWpfCatalogPullControllerTests : IClassFixture<ApiFactory>
         public Task DeleteAsync(string objectKey, CancellationToken ct = default)
             => Task.CompletedTask;
     }
+
+    [Fact]
+    public async Task Categories_are_returned_ordered_by_path()
+    {
+        var (client, licenseId) = await SeedAsync(0);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+        var kok = new Category
+        {
+            Id = Guid.NewGuid(), LicenseId = licenseId, Name = "Erkek",
+            SortOrder = 0, IsActive = true,
+            CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
+        };
+        kok.Path = $"/{kok.Id:N}/";
+        var alt = new Category
+        {
+            Id = Guid.NewGuid(), LicenseId = licenseId, Name = "Tişört",
+            ParentCategoryId = kok.Id, SortOrder = 0, IsActive = true,
+            CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
+        };
+        alt.Path = $"/{kok.Id:N}/{alt.Id:N}/";
+        db.Categories.AddRange(kok, alt);
+        await db.SaveChangesAsync();
+
+        var rows = await client.GetFromJsonAsync<List<JsonElement>>(
+            $"/api/v1/licenses/{licenseId}/catalog/categories");
+
+        rows!.Should().HaveCount(2);
+        // Path sıralaması ağacı ata-önce diziyor; WPF ayrıca sıralama yapmasın.
+        rows[0].GetProperty("name").GetString().Should().Be("Erkek");
+        rows[1].GetProperty("name").GetString().Should().Be("Tişört");
+        rows[1].GetProperty("parentCategoryId").GetString()
+               .Should().Be(kok.Id.ToString());
+    }
+
+    [Fact]
+    public async Task Categories_of_a_foreign_license_are_not_returned()
+    {
+        var (client, _) = await SeedAsync(0);
+
+        var res = await client.GetAsync(
+            $"/api/v1/licenses/{Guid.NewGuid()}/catalog/categories");
+
+        res.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
 }

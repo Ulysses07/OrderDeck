@@ -164,4 +164,39 @@ public sealed class LicensesWpfCatalogPullController : ControllerBase
 
         return Ok(rows);
     }
+
+    public sealed record CatalogCategoryDto(
+        Guid Id,
+        Guid? ParentCategoryId,
+        string Name,
+        string Path,
+        int SortOrder,
+        bool IsActive);
+
+    /// <summary>
+    /// Kategori ağacının tamamı. <b>Sayfalama yok</b>: derinlik
+    /// <c>CatalogLimits.CategoryMaxDepth</c> ile sınırlı ve ağaç lisans başına
+    /// onlar mertebesinde — sayfalamak, çözdüğünden çok karmaşıklık getirirdi.
+    ///
+    /// Pasif kategoriler de dönüyor: ürün pasif bir kategoriye bağlı kalmış
+    /// olabilir ve WPF'te adının kaybolması "kategori yok" gibi görünürdü.
+    /// Sıralama <c>Path</c> üstünde — ata her zaman çocuğundan önce gelir.
+    /// </summary>
+    [HttpGet("categories")]
+    public async Task<IActionResult> Categories(Guid licenseId, CancellationToken ct = default)
+    {
+        var customerId = User.GetTenantCustomerId();
+        var ownsLicense = await _db.Licenses
+            .AnyAsync(l => l.Id == licenseId && l.CustomerId == customerId, ct);
+        if (!ownsLicense) return NotFound();
+
+        var rows = await _db.Categories
+            .Where(c => c.LicenseId == licenseId)
+            .OrderBy(c => c.Path)
+            .Select(c => new CatalogCategoryDto(
+                c.Id, c.ParentCategoryId, c.Name, c.Path, c.SortOrder, c.IsActive))
+            .ToListAsync(ct);
+
+        return Ok(rows);
+    }
 }
