@@ -268,22 +268,33 @@ public sealed class LicenseApiClient
     /// üstünde keyset sayfalama imleci.
     /// <para>Çağıran, boş sayfa gelene kadar son ürünün <c>Id</c>'siyle döngüye
     /// devam ETMELİ ve ancak tamamı geldiğinde replikayı baştan yazmalıdır.</para>
-    /// <para><b>Dönen satır sayısı &lt; take'i bitiş göstergesi olarak KULLANMA</b>
-    /// — hem sunucu hem istemci <paramref name="take"/>'i 1..500 arasına kırpıyor.</para>
+    /// <para><paramref name="take"/> 1..500 dışındaysa metot <b>fırlatır</b>, sessizce
+    /// kırpmaz: sunucunun onurlandırmayacağı bir take'i elinde tutan çağıran, dönen
+    /// sayfayı "eksik" sanıp döngüyü erken bitirirdi.</para>
+    /// <para><b>Dönen satır sayısı &lt; take'i bitiş göstergesi olarak KULLANMA.</b>
+    /// Tek güvenilir bitiş işareti <c>rows.Count == 0</c>'dır: son dolu sayfa da tam
+    /// olarak take satır içerebilir — o zaman "eksik sayfa" hiç görünmez — ve
+    /// sunucunun sayfa davranışı bir gün değişse bile boş sayfa kuralı bozulmaz.</para>
     /// <para>İmleci <c>rows[^1].Id</c>'den al, sayfayı yeniden SIRALAMA: sunucu
     /// sırası SQL Server'ın <c>uniqueidentifier</c> karşılaştırmasında üretiliyor,
     /// .NET'in <c>Guid.CompareTo</c> sırası farklı düşer ve satır atlatır.</para>
-    /// <para>Hata durumunda boş liste DÖNMEZ, fırlatır (404/401/5xx/ağ/bozuk gövde).
-    /// Çağıran döngünün tamamını sarmalayıp herhangi bir hatada replikayı
-    /// yazmadan çıkmalıdır.</para>
+    /// <para>Hata durumunda boş liste DÖNMEZ, <see cref="LicenseApiException"/>
+    /// fırlatır — 404/401/5xx/ağ <b>ve bozuk gövde</b> (JSON değil, kesik ya da
+    /// şemaya uymayan yanıt) dahil hepsi bu tek aileden gelir. Çağıran döngünün
+    /// tamamını tek bir <c>catch (LicenseApiException)</c> ile sarmalayıp herhangi
+    /// bir hatada replikayı yazmadan çıkabilir.</para>
     /// </summary>
     public async Task<List<CatalogProductPullItem>> GetCatalogProductsAsync(
         Guid licenseId, Guid? after, int take = 200, CancellationToken ct = default)
     {
         // Sunucu take'i 1..500'e kırpıyor (LicensesWpfCatalogPullController).
-        // Aynı kırpmayı burada da yap: aksi hâlde 1000 isteyip 500 alan bir
-        // çağıran "eksik sayfa = son sayfa" sanıp kataloğun kalanını siler.
-        take = Math.Clamp(take, 1, 500);
+        // Sessizce kırpmıyoruz: take by-value, çağıran kendi elindeki 1000'i
+        // görmeye devam eder ve "500 < 1000, demek ki son sayfa" diye döngüyü
+        // erken bitirir — ardından gelen tam-yenileme kataloğun kalanını siler.
+        // Sınır dışı take bir ÇAĞIRAN HATASI; sessizce düzeltmek yerine fırlat.
+        if (take is < 1 or > 500)
+            throw new ArgumentOutOfRangeException(nameof(take), take,
+                "take 1..500 olmalı (sunucu sınırı, LicensesWpfCatalogPullController).");
 
         var qs = after is null ? $"?take={take}" : $"?after={after}&take={take}";
         return await GetExpectingJsonAsync<List<CatalogProductPullItem>>(
@@ -454,7 +465,15 @@ public sealed class LicenseApiClient
             using (resp)
             {
                 if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
-                return (await DeserializeAsync<TResp>(resp, ct))!;
+                try { return (await DeserializeAsync<TResp>(resp, ct))!; }
+                catch (JsonException ex)
+                {
+                    // Gövde JSON değil ya da şemaya uymuyor (kesik yanıt, JSON
+                    // content-type'lı HTML hata sayfası...). Çağıran bu dosyadan
+                    // LicenseApiException bekliyor; ham JsonException sızmasın.
+                    throw new LicenseApiUnknownException((int)resp.StatusCode,
+                        $"Gövde çözümlenemedi: {ex.Message}");
+                }
             }
         }
     }

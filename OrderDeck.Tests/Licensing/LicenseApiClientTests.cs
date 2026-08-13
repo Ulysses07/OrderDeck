@@ -231,6 +231,8 @@ public sealed class LicenseApiClientTests
         var client = BuildClient(req => { seen = req; return FakeHttpMessageHandler.Json(200, "[]"); });
 
         var licenseId = Guid.NewGuid();
+        // take, varsayılandan (200) FARKLI seçiliyor: aksi hâlde sorgu dizesine
+        // 200 sabitlense de test yeşil kalır, parametre gerçekten sınanmaz.
         await client.GetCatalogProductsAsync(licenseId, after: null, take: 50);
 
         seen!.RequestUri!.PathAndQuery.Should().Be(
@@ -238,18 +240,33 @@ public sealed class LicenseApiClientTests
     }
 
     [Fact]
-    public async Task GetCatalogProductsAsync_take_degerini_sunucunun_sinirina_kirpar()
+    public async Task GetCatalogProductsAsync_sinir_icindeki_take_i_tele_aynen_yazar()
     {
         HttpRequestMessage? seen = null;
         var client = BuildClient(req => { seen = req; return FakeHttpMessageHandler.Json(200, "[]"); });
 
         var licenseId = Guid.NewGuid();
-        await client.GetCatalogProductsAsync(licenseId, after: null, take: 1000);
+        await client.GetCatalogProductsAsync(licenseId, after: null, take: 500);
 
-        // Sunucu zaten 500'e kırpıyor; istemci fazlasını istemeyerek
-        // "eksik sayfa = son sayfa" yanılgısını kaynağında keser.
+        // Üst sınırın kendisi GEÇERLİ: istemci onu kırpmadan, değiştirmeden geçirmeli.
         seen!.RequestUri!.PathAndQuery.Should().Be(
             $"/api/v1/licenses/{licenseId}/catalog/products?take=500");
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-5)]
+    [InlineData(501)]
+    [InlineData(1000)]
+    public async Task GetCatalogProductsAsync_sinir_disi_take_degerini_reddeder(int take)
+    {
+        var client = BuildClient(_ => FakeHttpMessageHandler.Json(200, "[]"));
+
+        // Sessizce kırpsaydık çağıran kendi take'iyle "eksik sayfa = son sayfa"
+        // sanıp kataloğun kalanını sildirirdi. Yüksek sesle reddet.
+        var act = () => client.GetCatalogProductsAsync(Guid.NewGuid(), after: null, take: take);
+
+        await act.Should().ThrowAsync<ArgumentOutOfRangeException>();
     }
 
     [Fact]
@@ -261,7 +278,19 @@ public sealed class LicenseApiClientTests
         // senkron döngüsü bunu son sayfa sanıp replikayı komple silerdi.
         var act = () => client.GetCatalogProductsAsync(Guid.NewGuid(), after: null);
 
-        await act.Should().ThrowAsync<LicenseApiException>();
+        await act.Should().ThrowAsync<LicenseApiUnknownException>();
+    }
+
+    [Fact]
+    public async Task GetCatalogProductsAsync_bozuk_govdeyi_LicenseApi_hatasina_cevirir()
+    {
+        var client = BuildClient(_ => FakeHttpMessageHandler.Json(200, "{\"oops\":1}"));
+
+        // Çağıran (senkron döngüsü) bu dosyadan LicenseApiException bekliyor.
+        // Ham JsonException sızsaydı hosted service sessizce ölür, senkron durur.
+        var act = () => client.GetCatalogProductsAsync(Guid.NewGuid(), after: null);
+
+        await act.Should().ThrowAsync<LicenseApiUnknownException>();
     }
 
     [Fact]
@@ -277,6 +306,7 @@ public sealed class LicenseApiClientTests
         var licenseId = Guid.NewGuid();
         var rows = await client.GetCatalogCategoriesAsync(licenseId);
 
+        // İstek kaydedilmezse test HERHANGİ bir URL'e karşı yeşil kalırdı.
         seen!.RequestUri!.PathAndQuery.Should().Be(
             $"/api/v1/licenses/{licenseId}/catalog/categories");
         rows.Should().ContainSingle();
@@ -292,7 +322,7 @@ public sealed class LicenseApiClientTests
         // Ürün ucuyla aynı sınıf hata: bozuk gövde "kategori yok" demek değil.
         var act = () => client.GetCatalogCategoriesAsync(Guid.NewGuid());
 
-        await act.Should().ThrowAsync<LicenseApiException>();
+        await act.Should().ThrowAsync<LicenseApiUnknownException>();
     }
 
     [Fact]
@@ -325,14 +355,20 @@ public sealed class LicenseApiClientTests
         p.NameSearch.Should().Be("ELBISE");
         // Para: 199.90 tam gelmeli, araya double girmemeli (bkz. CatalogReplicaRepository).
         p.DefaultPrice.Should().Be(199.90m);
+        // decimal'e özgü: double olsaydı bu çarpım 599.6999999999999 düşerdi.
+        (p.DefaultPrice * 3).Should().Be(599.70m);
         p.ShelfLocation.Should().Be("R3-K2");
         p.Axis1Name.Should().Be("Beden");
         p.Axis1Role.Should().Be(1);
+        p.Axis2Name.Should().Be("Renk");
         p.Axis2Role.Should().Be(2);
         // Yerel replika unix SANİYE saklıyor; damganın UTC çözüldüğünü sabitle.
         p.UpdatedAt.Should().Be(DateTimeOffset.Parse("2026-08-13T10:00:00Z"));
         p.UpdatedAt.ToUnixTimeSeconds().Should().Be(1786615200);
         p.CoverPhotoKey.Should().Be("lic/products/p/k.img");
+        // İmzalı adres de bağlanmalı: null gelmesi MEŞRU sayıldığı için (bkz.
+        // CatalogPullDtos) bozuk bir bağlama sessizce "fotoğraf yok"a düşer.
+        p.CoverPhotoUrl.Should().Be("https://r2.local/k.img?sig=1");
 
         // Varyant sırası = dizi sırası; 025'teki SortOrder sözleşmesi buna dayanıyor.
         p.Variants.Should().ContainSingle();
