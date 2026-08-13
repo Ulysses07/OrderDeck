@@ -1,5 +1,5 @@
 using FluentAssertions;
-using OrderDeck.LicenseServer.Services.Catalog;
+using OrderDeck.Shared.Text;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Catalog;

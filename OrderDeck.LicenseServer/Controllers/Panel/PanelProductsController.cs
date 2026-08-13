@@ -7,6 +7,7 @@ using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
 using OrderDeck.LicenseServer.Services.BroadcastPosts;
 using OrderDeck.LicenseServer.Services.Catalog;
+using OrderDeck.Shared.Text;
 
 namespace OrderDeck.LicenseServer.Controllers.Panel;
 

@@ -1,6 +1,6 @@
-using OrderDeck.LicenseServer.Domain;
-using OrderDeck.LicenseServer.Services.Catalog;
 using Microsoft.EntityFrameworkCore;
+using OrderDeck.LicenseServer.Domain;
+using OrderDeck.Shared.Text;
 
 namespace OrderDeck.LicenseServer.Data;
 

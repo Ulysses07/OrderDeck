@@ -25,6 +25,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OrderDeck.Licensing.Tests",
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OrderDeck.PdfParsing", "OrderDeck.PdfParsing\OrderDeck.PdfParsing.csproj", "{E22A6837-C397-4B5F-8CA3-AE4B60C3D495}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OrderDeck.Shared", "OrderDeck.Shared\OrderDeck.Shared.csproj", "{5FAC2B2E-FE3E-4149-BD44-5EF5B4B36A41}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -167,6 +169,18 @@ Global
 		{E22A6837-C397-4B5F-8CA3-AE4B60C3D495}.Release|x64.Build.0 = Release|Any CPU
 		{E22A6837-C397-4B5F-8CA3-AE4B60C3D495}.Release|x86.ActiveCfg = Release|Any CPU
 		{E22A6837-C397-4B5F-8CA3-AE4B60C3D495}.Release|x86.Build.0 = Release|Any CPU
+		{5FAC2B2E-FE3E-4149-BD44-5EF5B4B36A41}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5FAC2B2E-FE3E-4149-BD44-5EF5B4B36A41}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5FAC2B2E-FE3E-4149-BD44-5EF5B4B36A41}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{5FAC2B2E-FE3E-4149-BD44-5EF5B4B36A41}.Debug|x64.Build.0 = Debug|Any CPU
+		{5FAC2B2E-FE3E-4149-BD44-5EF5B4B36A41}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{5FAC2B2E-FE3E-4149-BD44-5EF5B4B36A41}.Debug|x86.Build.0 = Debug|Any CPU
+		{5FAC2B2E-FE3E-4149-BD44-5EF5B4B36A41}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5FAC2B2E-FE3E-4149-BD44-5EF5B4B36A41}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5FAC2B2E-FE3E-4149-BD44-5EF5B4B36A41}.Release|x64.ActiveCfg = Release|Any CPU
+		{5FAC2B2E-FE3E-4149-BD44-5EF5B4B36A41}.Release|x64.Build.0 = Release|Any CPU
+		{5FAC2B2E-FE3E-4149-BD44-5EF5B4B36A41}.Release|x86.ActiveCfg = Release|Any CPU
+		{5FAC2B2E-FE3E-4149-BD44-5EF5B4B36A41}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

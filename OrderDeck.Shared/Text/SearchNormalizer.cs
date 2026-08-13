@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace OrderDeck.LicenseServer.Services.Catalog;
+namespace OrderDeck.Shared.Text;
 
 /// <summary>
 /// Arama için karşılaştırılabilir biçim üretir: büyük harf + Türkçe harfler
