@@ -2045,31 +2045,66 @@ git commit -m "test(katalog): fotoğraf önbelleğinin adlandırma ve atomiklik 
 > içeren istekler ürün sayfasını, `/catalog/categories` içerenler kategori
 > listesini döndürsün. Yeni bir desen icat etme.
 
+> **UYGULAMA NOTU (2026-08-14, gerçekleşen hâl).** Bu bölüm, Task 5 ve 6
+> teslim edildikten sonra üç noktada düzeltildi; aşağıdaki metin artık
+> `612d266` commit'indeki kodun kendisini anlatıyor.
+>
+> 1. **Döngü yalnız BOŞ sayfada biter** (`batch.Count == 0`), kısa sayfada
+>    değil. `GetCatalogProductsAsync`'in XML dokümanı bunu koyu yazıyor;
+>    metodun ilk çağıranının kendi sözleşmesini çiğnemesi bu dalın üç kez
+>    bedelini ödediği "yorum söz verir, kod tutmaz" deseniydi. Bedeli tur
+>    başına **bir** boş istek (5 dakikada bir — ölçülemez); karşılığında
+>    `PageSize` sunucunun 500'lük kırpma sınırını aştığı gün katalogun
+>    sessizce kırpılması imkânsız hâle geliyor.
+> 2. **Fotoğraf muhafızı `string.IsNullOrWhiteSpace`** ile — `Length > 0`
+>    ile değil. Task 6 incelemesinden sonra `CatalogPhotoCache.Save` boş/boşluk
+>    anahtarda `ArgumentException` fırlatıyor; `Length > 0` boşluktan ibaret
+>    anahtarı içeri alırdı. Aynısı `CoverPhotoUrl` için de geçerli.
+> 3. **`Prune` artık `IEnumerable<string?>` alıyor** ve boşları kendi eliyor;
+>    `_repo.CoverPhotoKeys()` (kovaryans sayesinde) olduğu gibi bağlanıyor.
+>
+> **Plandan sapma (yeni):** plandaki döngü `MaxPages` tavanına çarpınca
+> elindeki YARIM listeyi yazıyordu — görevin bütün varlık sebebi olan
+> "kısmi çekme asla yazılmaz" kuralının aynı ihlali, sadece başka kapıdan.
+> Tavana çarpan tur artık `Replace` çağırmadan 0 dönüyor ve uyarı logluyor;
+> davranışı `Hitting_the_page_ceiling_writes_nothing` testi koruyor.
+
 - [ ] **Step 1: Testleri yaz (başarısız olacak)**
 
-`OrderDeck.Tests/Services/Sync/CatalogSyncServiceTests.cs` — dört senaryo:
+`OrderDeck.Tests/Services/Sync/CatalogSyncServiceTests.cs`.
+
+Koşum takımı `ShopperRegistrationIngestServiceTests`'ten alındı; üstüne
+eklenenler: `/catalog/products` ve `/catalog/categories` dalları, fotoğraf
+indirmelerini sayan sahte `IHttpClientFactory`, ve seçilen sayfayı 500'e
+düşüren `FailProductPage`. Sahte sunucu imleci **sayfanın son ürününün
+Id'siyle** çözüyor; tanımadığı bir imleç için 500 dönüyor — yanlış yerden
+alınmış bir imleç sessizce boş sayfaya dönüşmesin diye.
 
 ```csharp
+    /// Bitiş işareti kısa sayfa DEĞİL, boş sayfadır → 200+200+1'lik katalog
+    /// DÖRT istek eder, sonuncusu boş döner.
     [Fact]
-    public async Task Pulls_every_page_until_a_short_page_arrives()
+    public async Task Pulls_every_page_until_an_empty_page_arrives()
     {
-        // 200'lük iki tam sayfa + 1 kayıtlık üçüncü sayfa = 401 ürün.
-        // İkinci sayfanın isteği, birinci sayfanın SON ürününün id'sini
-        // `after` olarak taşımalı.
-        var harness = Harness.WithProductPages(pageSizes: [200, 200, 1]);
+        using var harness = Harness.WithProductPages([200, 200, 1]);
 
         var written = await harness.Service.SyncOnceAsync(CancellationToken.None);
 
         written.Should().Be(401);
-        harness.RequestedAfterCursors.Should().Equal(
-            null, harness.LastIdOfPage(0), harness.LastIdOfPage(1));
+        harness.RequestedAfterCursors.Should().Equal(new Guid?[]
+        {
+            null,
+            harness.LastIdOfPage(0),
+            harness.LastIdOfPage(1),
+            harness.LastIdOfPage(2)
+        }, "imleç her zaman bir önceki sayfanın SON ürününden gelir");
         harness.Repo.FindByCode("A401").Should().NotBeNull();
     }
 
     [Fact]
     public async Task A_failure_midway_leaves_the_previous_replica_untouched()
     {
-        var harness = Harness.WithProductPages(pageSizes: [200, 200, 1]);
+        using var harness = Harness.WithProductPages([200, 200, 1]);
         await harness.Service.SyncOnceAsync(CancellationToken.None);
 
         // İkinci sayfada 500: yarım liste ASLA yazılmamalı, yoksa silinmemiş
@@ -2079,31 +2114,60 @@ git commit -m "test(katalog): fotoğraf önbelleğinin adlandırma ve atomiklik 
         var written = await harness.Service.SyncOnceAsync(CancellationToken.None);
 
         written.Should().Be(0);
-        harness.Repo.FindByCode("A401").Should().NotBeNull();
+        harness.Repo.FindByCode("A401").Should().NotBeNull("yarım çekme replikaya dokunmaz");
+    }
+
+    /// Sayfa tavanına çarpan tur da yarım listedir.
+    [Fact]
+    public async Task Hitting_the_page_ceiling_writes_nothing()
+    {
+        using var harness = Harness.WithEndlessFullPages();
+
+        var written = await harness.Service.SyncOnceAsync(CancellationToken.None);
+
+        written.Should().Be(0);
+        harness.Repo.FindByCode("A1").Should().BeNull("tavana çarpan tur replikaya yazmaz");
     }
 
     [Fact]
     public async Task Downloads_only_the_photos_that_are_not_cached_yet()
     {
-        var harness = Harness.WithProductPages(pageSizes: [2], withPhotos: true);
+        using var harness = Harness.WithProductPages([2], withPhotos: true);
+
         await harness.Service.SyncOnceAsync(CancellationToken.None);
         harness.PhotoDownloads.Should().Be(2);
 
         // İkinci turda anahtarlar değişmedi → tek bayt bile indirilmemeli.
         await harness.Service.SyncOnceAsync(CancellationToken.None);
         harness.PhotoDownloads.Should().Be(2);
+
+        harness.CreatedClientNames.Should().OnlyContain(
+            n => n == CatalogSyncService.PhotoClientName,
+            "imzalı R2 adresine Authorization ekleyen istemci isteği bozar");
     }
 
     [Fact]
     public async Task Returns_zero_without_calling_the_api_when_no_license_key_is_set()
     {
-        var harness = Harness.WithProductPages(pageSizes: [1]);
+        using var harness = Harness.WithProductPages([1]);
         harness.SetLicenseKey(null);
 
         var written = await harness.Service.SyncOnceAsync(CancellationToken.None);
 
         written.Should().Be(0);
         harness.RequestCount.Should().Be(0);
+    }
+
+    /// Kayıtlar çözülebiliyor mu: eksik bir bağımlılık burada değil,
+    /// kullanıcının makinesinde AÇILIŞ ÇÖKMESİ olarak görünürdü.
+    [Fact]
+    public void AppHost_resolves_the_service_and_registers_its_background_job()
+    {
+        using var host = new global::OrderDeck.App.AppHost();
+
+        host.Services.GetRequiredService<CatalogSyncService>().Should().NotBeNull();
+        host.Services.GetServices<IHostedService>()
+            .Should().ContainSingle(s => s is CatalogSyncHostedService);
     }
 ```
 
@@ -2195,13 +2259,39 @@ public sealed class CatalogSyncService
         {
             var pulled = new List<CatalogProductPullItem>();
             Guid? after = null;
+            var complete = false;
 
             for (var page = 0; page < MaxPages; page++)
             {
                 var batch = await _api.GetCatalogProductsAsync(licenseId.Value, after, PageSize, ct);
+
+                // Tek güvenilir bitiş işareti BOŞ sayfa — GetCatalogProductsAsync'in
+                // XML dokümanı bunu koyu yazıyor. "Kısa sayfa = son sayfa" kuralı
+                // bir istek tasarruf ederdi ama PageSize sunucunun kırpma sınırını
+                // (500) aştığı gün katalogu SESSİZCE kırpardı: eksik ürünler
+                // yayında hiç eşleşmez ve hiçbir yerde hata görünmez.
+                if (batch.Count == 0)
+                {
+                    complete = true;
+                    break;
+                }
+
                 pulled.AddRange(batch);
-                if (batch.Count < PageSize) break;
+
+                // İmleç birebir son satırın Id'si. Sayfayı yerelde YENİDEN SIRALAMA:
+                // sunucu sırası SQL Server'ın uniqueidentifier karşılaştırmasından
+                // geliyor, .NET'in Guid.CompareTo sırası farklı düşer ve satır atlatır.
                 after = batch[^1].Id;
+            }
+
+            if (!complete)
+            {
+                // Tavana çarptık: elimizdeki liste yarım. Yazmak, tavandan sonraki
+                // bütün ürünleri silinmiş saymak olurdu — ağın yarıda kopmasından
+                // farkı yok, aynı şekilde davranıyoruz.
+                _log.LogWarning(
+                    "Katalog senkronu {MaxPages} sayfada bitmedi; yarım liste yazılmadı", MaxPages);
+                return 0;
             }
 
             var categories = await _api.GetCatalogCategoriesAsync(licenseId.Value, ct);
@@ -2212,6 +2302,9 @@ public sealed class CatalogSyncService
                 pulled.SelectMany(ToVariants).ToList(),
                 categories.Select(ToCategory).ToList());
 
+            // Save ve Prune AYNI iş parçacığında, sırayla: CatalogPhotoCache
+            // iş parçacığı güvenli değil, paralel koşarlarsa temizlik sürmekte
+            // olan indirmenin .tmp dosyasını siler.
             await DownloadMissingPhotosAsync(pulled, ct);
             _photos.Prune(_repo.CoverPhotoKeys());
 
@@ -2238,13 +2331,22 @@ public sealed class CatalogSyncService
 
         foreach (var p in pulled)
         {
-            if (p.CoverPhotoKey is not { Length: > 0 } key) continue;
-            if (p.CoverPhotoUrl is not { Length: > 0 } url) continue;
+            // Boşluktan ibaret anahtar Save'i fırlatır (Has onu asla göremez,
+            // Prune canlı sayar → her turda yeniden indirilen ölümsüz yetim).
+            // Bu yüzden Length kontrolü değil IsNullOrWhiteSpace.
+            if (string.IsNullOrWhiteSpace(p.CoverPhotoKey)) continue;
+
+            // URL'in null gelmesi MEŞRU: sunucu R2 imzalama hatasını yutup
+            // sayfayı yine 200 döndürüyor. Böyle bir turda indirmeyi atla ve
+            // önbellekteki dosyayı KORU — "fotoğraf silinmiş" sayma.
+            if (string.IsNullOrWhiteSpace(p.CoverPhotoUrl)) continue;
+
+            var key = p.CoverPhotoKey;
             if (_photos.Has(key)) continue;
 
             try
             {
-                _photos.Save(key, await http.GetByteArrayAsync(url, ct));
+                _photos.Save(key, await http.GetByteArrayAsync(p.CoverPhotoUrl, ct));
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -2266,10 +2368,15 @@ public sealed class CatalogSyncService
         p.Axis1Name, p.Axis1Role,
         p.Axis2Name, p.Axis2Role,
         p.CoverPhotoKey,
+        // ToUnixTimeSeconds — .DateTime/.LocalDateTime DEĞİL: yerel saate
+        // çevirmek tr-TR makinede sessiz veri hatası üretir.
         p.UpdatedAt.ToUnixTimeSeconds());
 
     private static IEnumerable<CatalogVariant> ToVariants(CatalogProductPullItem p)
-        // Sıra sunucunun kararı (VariantCode'a göre); replika onu indeksle korur.
+        // Sıra sunucunun kararı (VariantCode'a göre, SQL Server collation'ında);
+        // DTO'da SortOrder alanı yok, sıralamanın kendisi dizideki konum.
+        // Yerelde VariantCode'a göre yeniden sıralamak SQLite'ın ordinal
+        // karşılaştırmasıyla farklı düşerdi, o yüzden indeksi taşıyoruz.
         => p.Variants.Select((v, i) => new CatalogVariant(
             v.Id.ToString("N"), p.Id.ToString("N"),
             v.Axis1Value, v.Axis1Code, v.Axis2Value, v.Axis2Code,
@@ -2388,18 +2495,32 @@ public sealed class CatalogSyncHostedService : BackgroundService
         // presigned R2 adresinden KİMLİKSİZ bir istemciyle çekiliyor —
         // LicenseApiClient'ın istemcisi Authorization ekler ve presigned
         // isteği bozardı.
-        services.AddHttpClient(Services.Sync.CatalogSyncService.PhotoClientName);
+        // Adı tam nitelikli yazıyoruz: ifade bağlamında `Services`,
+        // AppHost'un statik IServiceProvider özelliğine bağlanıyor.
+        services.AddHttpClient(OrderDeck.App.Services.Sync.CatalogSyncService.PhotoClientName);
         services.AddSingleton<Services.Sync.CatalogSyncService>();
         services.AddHostedService<Services.Sync.CatalogSyncHostedService>();
 ```
+
+> `Services.Sync.CatalogSyncService.PhotoClientName` **derlenmiyor**: tür
+> argümanı bağlamında `Services` ad alanına çözülüyor ama bir ifadenin içinde
+> `AppHost.Services` (IServiceProvider) özelliğine bağlanıyor. Ad tam nitelikli
+> yazılmalı.
 
 `CatalogReplicaRepository` ve `CatalogPhotoCache` kayıtlarını, eski
 `ProductRepository`/`ProductPhotoStore` satırlarının (84 ve 86) yanına ekle:
 
 ```csharp
+        // Stok Faz 1b: sunucu katalogunun salt-okunur replikası ve kapak
+        // fotoğrafı önbelleği. Tek yazarı CatalogSyncService.
         services.AddSingleton<CatalogReplicaRepository>();
         services.AddSingleton<CatalogPhotoCache>();
 ```
+
+> `CatalogPhotoCache`'in ctor'u `string? root = null` alıyor; MS DI varsayılan
+> değerli parametreyi çözebiliyor — bu, uydurmaya bırakılmayıp
+> `AppHost_resolves_the_service_and_registers_its_background_job` testiyle
+> doğrulandı.
 
 > Hosted service'i `App.xaml.cs`'e elle eklemeye gerek **yok**:
 > `WpfStartupEnvironment.StartBackgroundServicesAsync()` içindeki genel döngü
@@ -2412,7 +2533,8 @@ dotnet build OrderDeck.App/OrderDeck.App.csproj
 dotnet test OrderDeck.Tests/OrderDeck.Tests.csproj \
   --filter "FullyQualifiedName~CatalogSyncServiceTests"
 ```
-Beklenen: derleme 0 hata, testler PASS (4/4).
+Gerçekleşen: derleme 0 uyarı/0 hata, **6/6 PASS**; tüm takım **985/985**
+(Task 7 öncesi 979 + 6).
 
 - [ ] **Step 7: Commit**
 
@@ -2423,6 +2545,23 @@ git add OrderDeck.App/Services/Sync/CatalogSyncService.cs \
         OrderDeck.Tests/Services/Sync/CatalogSyncServiceTests.cs
 git commit -m "feat(katalog): WPF katalog senkron servisi"
 ```
+Commit: **`612d266`**.
+
+- [ ] **Step 8: Testlerin gerçekten koruduğunu kanıtla (mutasyon turu)**
+
+Her bozma elle uygulanıp koşuldu, KIRMIZI görüldükten sonra elle geri alındı
+(commit önce, mutasyon sonra):
+
+| Bozma | Yakalayan test(ler) |
+|---|---|
+| Sonlandırma `batch.Count < PageSize`'a döndürüldü | `Pulls_every_page_until_an_empty_page_arrives` (3 imleç geldi, 4 bekleniyordu) |
+| İmleç `batch[^1].Id` yerine `batch[0].Id` | `Pulls_every_page_until_an_empty_page_arrives`, `A_failure_midway_leaves_the_previous_replica_untouched`, `Downloads_only_the_photos_that_are_not_cached_yet` (sahte sunucu tanımadığı imlece 500 döner) |
+| `Replace(...)` sayfa döngüsünün İÇİNE alındı | `A_failure_midway_leaves_the_previous_replica_untouched` (görevin varlık sebebi), `Hitting_the_page_ceiling_writes_nothing` |
+| `_photos.Has(key)` atlaması kaldırıldı | `Downloads_only_the_photos_that_are_not_cached_yet` (ikinci tur 2 yerine 4 indirdi) |
+| Lisans anahtarı erken çıkışı kaldırıldı | `Returns_zero_without_calling_the_api_when_no_license_key_is_set` |
+| `if (!complete) return 0;` tavan muhafızı kaldırıldı | `Hitting_the_page_ceiling_writes_nothing` |
+
+Hiçbir mutasyon hayatta kalmadı.
 
 ---
 
