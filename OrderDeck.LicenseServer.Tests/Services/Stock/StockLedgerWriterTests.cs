@@ -60,7 +60,8 @@ public class StockLedgerWriterTests : IClassFixture<ApiFactory>
 
     private static object Payload(
         Guid orderId, Guid? productId, Guid? variantId,
-        bool cancelled = false, bool shippingFee = false, bool tentative = false) => new
+        bool cancelled = false, bool shippingFee = false, bool tentative = false,
+        DateTimeOffset? addedAt = null, DateTimeOffset? cancelledAt = null) => new
     {
         id = orderId,
         sessionId = (Guid?)null,
@@ -71,9 +72,11 @@ public class StockLedgerWriterTests : IClassFixture<ApiFactory>
         messageText = "A1 M",
         code = "A1",
         price = 100m,
-        addedAt = DateTimeOffset.UtcNow,
+        addedAt = addedAt ?? DateTimeOffset.UtcNow,
         printedAt = (DateTimeOffset?)null,
-        cancelledAt = cancelled ? DateTimeOffset.UtcNow : (DateTimeOffset?)null,
+        cancelledAt = cancelled
+            ? (cancelledAt ?? DateTimeOffset.UtcNow)
+            : (DateTimeOffset?)null,
         cancelReason = cancelled ? "vazgeçti" : null,
         isShippingFee = shippingFee,
         isBackupPromoted = false,
@@ -217,5 +220,92 @@ public class StockLedgerWriterTests : IClassFixture<ApiFactory>
         var movement = (await MovementsAsync(s.LicenseId)).Single();
         movement.OccurredAt.Should().BeCloseTo(backdated, TimeSpan.FromSeconds(2));
         movement.CreatedAt.Should().BeAfter(backdated.AddHours(1));
+    }
+
+    /// <summary>
+    /// Aynı sipariş id'si tek pakette iki kez geçerse telafi iki kez yazılmamalı.
+    /// Yazıcı DOĞRUDAN sürülüyor: uç dışa açık bir HTTP API ve bu invaryantın
+    /// sahibi controller değil yazıcının kendisi.
+    /// </summary>
+    [Fact]
+    public async Task Duplicate_order_id_in_one_batch_does_not_double_compensate()
+    {
+        var s = await SeedAsync();
+        var orderId = Guid.NewGuid();
+
+        // Defterde zaten satış duruyor (−1).
+        (await SyncAsync(s, Payload(orderId, s.ProductId, s.VariantId))).EnsureSuccessStatusCode();
+
+        var now = DateTimeOffset.UtcNow;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var writer = scope.ServiceProvider
+                .GetRequiredService<OrderDeck.LicenseServer.Services.Stock.StockLedgerWriter>();
+
+            // Aynı sipariş, aynı pakette iki kez, ikisi de iptal.
+            var input = new OrderDeck.LicenseServer.Services.Stock.LedgerOrderInput(
+                new OrderDeck.LicenseServer.Services.Stock.LedgerOrderState(
+                    orderId, s.ProductId, s.VariantId,
+                    IsShippingFee: false, IsCancelled: true, IsTentativeBackup: false),
+                SoldAt: now.AddHours(-2),
+                CancelledAt: now);
+
+            await writer.ApplyAsync(s.LicenseId, new[] { input, input }, now, default);
+            await db.SaveChangesAsync();
+        }
+
+        var movements = await MovementsAsync(s.LicenseId);
+        movements.Sum(m => m.Quantity).Should().Be(0);
+        movements.Should().HaveCount(2);
+    }
+
+    /// <summary>
+    /// Aynı yeni siparişin tek pakette iki kez gelmesi senkron ucunu da
+    /// düşürmemeli (iki kez <c>Add</c> → EF izleme istisnası → 500).
+    /// </summary>
+    [Fact]
+    public async Task Duplicate_order_id_in_one_request_is_accepted_once()
+    {
+        var s = await SeedAsync();
+        var orderId = Guid.NewGuid();
+
+        var resp = await SyncAsync(
+            s,
+            Payload(orderId, s.ProductId, s.VariantId),
+            Payload(orderId, s.ProductId, s.VariantId));
+
+        resp.EnsureSuccessStatusCode();
+        (await MovementsAsync(s.LicenseId)).Should().ContainSingle(m => m.Quantity == -1);
+    }
+
+    /// <summary>
+    /// İptal telafisinin iş zamanı iptal anıdır, satış anı değil — yoksa
+    /// geçmişe dönük her stok raporu yanlış çıkar.
+    /// </summary>
+    [Fact]
+    public async Task Cancellation_movement_occurs_at_cancel_time_not_at_sale_time()
+    {
+        var s = await SeedAsync();
+        var orderId = Guid.NewGuid();
+        var soldAt = DateTimeOffset.UtcNow.AddDays(-4);
+        var cancelledAt = DateTimeOffset.UtcNow.AddHours(-3);
+
+        (await SyncAsync(s, Payload(orderId, s.ProductId, s.VariantId, addedAt: soldAt)))
+            .EnsureSuccessStatusCode();
+        (await SyncAsync(s, Payload(
+                orderId, s.ProductId, s.VariantId,
+                cancelled: true, addedAt: soldAt, cancelledAt: cancelledAt)))
+            .EnsureSuccessStatusCode();
+
+        var movements = await MovementsAsync(s.LicenseId);
+        movements.Should().HaveCount(2);
+
+        var sale = movements.Single(m => m.Quantity == -1);
+        sale.OccurredAt.Should().BeCloseTo(soldAt, TimeSpan.FromSeconds(2));
+
+        var compensation = movements.Single(m => m.Quantity == 1);
+        compensation.OccurredAt.Should().BeCloseTo(cancelledAt, TimeSpan.FromSeconds(2));
+        compensation.OccurredAt.Should().NotBeCloseTo(soldAt, TimeSpan.FromMinutes(1));
     }
 }

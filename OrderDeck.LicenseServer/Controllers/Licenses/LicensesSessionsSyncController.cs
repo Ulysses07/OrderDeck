@@ -196,7 +196,15 @@ public sealed class LicensesSessionsSyncController : ControllerBase
             return Problem(title: "batch-too-large", detail: "Max 200 order per batch.", statusCode: 400);
 
         var now = DateTimeOffset.UtcNow;
-        var ids = req.Orders.Select(o => o.Id).ToList();
+
+        // Paketi sipariş id'sine göre TEKİLLEŞTİR. Aynı id iki kez gelirse
+        // aşağıdaki döngü aynı yeni siparişi iki kez Add eder → EF izleme
+        // istisnası → 500. Son giriş kazanır: payload sırası istemcinin niyet
+        // sırasıdır. Bu liste hem sipariş yazma döngüsünde hem defter çağrısında
+        // kullanılır — iki yol aynı veriyi görmeli.
+        var orders = req.Orders.GroupBy(o => o.Id).Select(g => g.Last()).ToList();
+
+        var ids = orders.Select(o => o.Id).ToList();
         var existing = await _db.Orders
             .Where(o => o.LicenseId == licenseId && ids.Contains(o.Id))
             .ToDictionaryAsync(o => o.Id, ct);
@@ -207,7 +215,7 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         // shopper, identified via ShopperBroadcasterLink.WpfCustomerId).
         var newOrdersForShopperPush = new List<(string CustomerIdHex, decimal Price)>();
 
-        foreach (var item in req.Orders)
+        foreach (var item in orders)
         {
             if (existing.TryGetValue(item.Id, out var current))
             {
@@ -269,7 +277,7 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         // ama stok düşmedi" ara durumu hiç oluşmasın.
         await _ledger.ApplyAsync(
             licenseId,
-            req.Orders.Select(o => new Services.Stock.LedgerOrderInput(
+            orders.Select(o => new Services.Stock.LedgerOrderInput(
                 new Services.Stock.LedgerOrderState(
                     o.Id,
                     o.ProductId,
@@ -277,7 +285,8 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                     o.IsShippingFee,
                     o.CancelledAt is not null,
                     o.IsTentativeBackup),
-                o.AddedAt)).ToList(),
+                o.AddedAt,
+                o.CancelledAt)).ToList(),
             now,
             ct);
 

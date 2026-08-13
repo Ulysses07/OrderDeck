@@ -4,8 +4,24 @@ using OrderDeck.LicenseServer.Domain;
 
 namespace OrderDeck.LicenseServer.Services.Stock;
 
-/// <summary>Yazıcıya giren tek sipariş: mutabakat durumu + iş zamanı.</summary>
-public sealed record LedgerOrderInput(LedgerOrderState State, DateTimeOffset OccurredAt);
+/// <summary>
+/// Yazıcıya giren tek sipariş: mutabakat durumu + iş zamanları.
+///
+/// İki zaman taşınır çünkü hareketin <c>OccurredAt</c>'i deltanın işaretine
+/// bağlıdır: düşüm satış anında, telafi iptal anında olmuştur. Tek zaman
+/// taşısaydık 1 Ağustos'ta satılıp 5 Ağustos'ta iptal edilen siparişin telafisi
+/// 1 Ağustos'a yazılır ve aradaki her geçmişe dönük rapor yanlış çıkardı.
+/// </summary>
+/// <param name="State">Siparişin mutabakata giren güncel hâli.</param>
+/// <param name="SoldAt">Satış anı — siparişin <c>AddedAt</c>'i.</param>
+/// <param name="CancelledAt">
+/// İptal anı; sipariş iptal değilse null. Null olduğu hâlde pozitif delta
+/// üretilebilir (varyant yeniden bağlama) — o durumda olay <b>şimdi</b> olur.
+/// </param>
+public sealed record LedgerOrderInput(
+    LedgerOrderState State,
+    DateTimeOffset SoldAt,
+    DateTimeOffset? CancelledAt);
 
 /// <summary>
 /// <see cref="StockLedgerReconciler"/>'ı veritabanına bağlar: mevcut hareketleri
@@ -74,7 +90,13 @@ public sealed class StockLedgerWriter
                 .Where(v => v.LicenseId == licenseId && variantIds.Contains(v.Id))
                 .ToDictionaryAsync(v => v.Id, v => v.ProductId, ct);
 
-        foreach (var input in orders)
+        // Sipariş bazında TEKİLLEŞTİR. existingByOrder veritabanından bir kez
+        // okunur ve döngü içinde tazelenmez (SaveChanges'i çağıran biz değiliz),
+        // yani aynı id ikinci turda yine eski toplamı görüp AYNI farkı bir daha
+        // yazardı: zaten −1 duran sipariş pakette iki kez iptal gelirse bakiye 0
+        // yerine +1 olurdu. Uç dışa açık bir HTTP API; invaryantın sahibi yazıcı.
+        // Son giriş kazanır: payload sırası istemcinin niyet sırasıdır.
+        foreach (var input in orders.GroupBy(o => o.State.OrderId).Select(g => g.Last()))
         {
             var state = Sanitize(input.State, licenseId, knownProducts, knownVariants);
 
@@ -97,7 +119,13 @@ public sealed class StockLedgerWriter
                         ? StockMovementReason.Sale
                         : StockMovementReason.CancelReturn,
                     OrderId = state.OrderId,
-                    OccurredAt = input.OccurredAt,
+                    // İş zamanı da işarete bağlı: düşüm satış anında olmuştur.
+                    // Telafi ise iptal anında — iptal yoksa (varyant yeniden
+                    // bağlama: A'dan B'ye taşınan sipariş A için +1 üretir) olay
+                    // tam da şimdi oluyor, o yüzden now'a düşülür.
+                    OccurredAt = delta.QuantityDelta < 0
+                        ? input.SoldAt
+                        : input.CancelledAt ?? now,
                     CreatedAt = now,
                 });
             }
