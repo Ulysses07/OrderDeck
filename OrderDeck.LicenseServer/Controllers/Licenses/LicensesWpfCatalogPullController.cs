@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.BroadcastPosts;
 
 namespace OrderDeck.LicenseServer.Controllers.Licenses;
 
@@ -25,7 +26,13 @@ namespace OrderDeck.LicenseServer.Controllers.Licenses;
 public sealed class LicensesWpfCatalogPullController : ControllerBase
 {
     private readonly LicenseDbContext _db;
-    public LicensesWpfCatalogPullController(LicenseDbContext db) => _db = db;
+    private readonly IBroadcastMediaStorage _storage;
+
+    public LicensesWpfCatalogPullController(LicenseDbContext db, IBroadcastMediaStorage storage)
+    {
+        _db = db;
+        _storage = storage;
+    }
 
     public sealed record CatalogVariantDto(
         Guid Id,
@@ -45,6 +52,17 @@ public sealed class LicensesWpfCatalogPullController : ControllerBase
         string? Axis1Name, int? Axis1Role,
         string? Axis2Name, int? Axis2Role,
         DateTimeOffset UpdatedAt,
+        /// <param name="CoverPhotoKey">
+        /// Kapak fotoğrafının R2 nesne anahtarı (en küçük <c>SortOrder</c>);
+        /// fotoğraf yoksa null. <b>Önbellek anahtarı budur</b> — URL değil.
+        /// </param>
+        string? CoverPhotoKey,
+        /// <param name="CoverPhotoUrl">
+        /// Aynı nesne için <b>5 dakika</b> geçerli imzalı indirme adresi.
+        /// Saklanmamalı; çekme döngüsünün hemen ardından indirilip
+        /// <c>CoverPhotoKey</c> altına önbelleklenmeli.
+        /// </param>
+        string? CoverPhotoUrl,
         List<CatalogVariantDto> Variants);
 
     /// <param name="licenseId">Katalogu çekilecek lisans.</param>
@@ -81,6 +99,10 @@ public sealed class LicensesWpfCatalogPullController : ControllerBase
                 p.Axis1Name, p.Axis1Role == null ? null : (int?)p.Axis1Role,
                 p.Axis2Name, p.Axis2Role == null ? null : (int?)p.Axis2Role,
                 p.UpdatedAt,
+                // Kapak = en küçük SortOrder (ayrı IsCover bayrağı bilerek yok).
+                p.Photos.OrderBy(x => x.SortOrder)
+                        .Select(x => x.ObjectKey).FirstOrDefault(),
+                null,
                 p.Variants
                     .OrderBy(v => v.VariantCode)
                     .Select(v => new CatalogVariantDto(
@@ -89,6 +111,17 @@ public sealed class LicensesWpfCatalogPullController : ControllerBase
                         v.VariantCode, v.Barcode, v.IsActive))
                     .ToList()))
             .ToListAsync(ct);
+
+        // İmzalama YEREL bir HMAC, ağ çağrısı değil — sayfa başına en çok 500
+        // imza mikrosaniyeler sürer. Yine de fotoğrafsız ürünler atlanıyor.
+        for (var i = 0; i < rows.Count; i++)
+        {
+            if (rows[i].CoverPhotoKey is not { Length: > 0 } key) continue;
+            rows[i] = rows[i] with
+            {
+                CoverPhotoUrl = await _storage.CreateDownloadUrlAsync(key, ct)
+            };
+        }
 
         return Ok(rows);
     }

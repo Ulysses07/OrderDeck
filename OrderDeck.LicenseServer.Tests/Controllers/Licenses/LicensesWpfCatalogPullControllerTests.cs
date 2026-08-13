@@ -16,7 +16,7 @@ public class LicensesWpfCatalogPullControllerTests : IClassFixture<ApiFactory>
     public LicensesWpfCatalogPullControllerTests(ApiFactory factory) => _factory = factory;
 
     private async Task<(HttpClient Client, Guid LicenseId)> SeedAsync(
-        int productCount, bool archiveFirst = false)
+        int productCount, bool archiveFirst = false, bool withPhotos = false)
     {
         var (client, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
         using var scope = _factory.Services.CreateScope();
@@ -48,6 +48,25 @@ public class LicensesWpfCatalogPullControllerTests : IClassFixture<ApiFactory>
                 Axis1Value = "M", Axis1Code = "M", VariantCode = product.Code + "-M",
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
             });
+            if (withPhotos)
+            {
+                // Kapak = en KÜÇÜK SortOrder. İki fotoğrafı bilerek ters sırada
+                // ekliyoruz ki "ilk eklenen" ile "kapak" karışırsa test yakalasın.
+                db.ProductPhotos.Add(new ProductPhoto
+                {
+                    Id = Guid.NewGuid(), LicenseId = license.Id, ProductId = product.Id,
+                    ObjectKey = $"{license.Id:N}/products/{product.Id:N}/ikinci.img",
+                    ContentType = "image/jpeg", SizeBytes = 2048, SortOrder = 1,
+                    CreatedAt = DateTimeOffset.UtcNow
+                });
+                db.ProductPhotos.Add(new ProductPhoto
+                {
+                    Id = Guid.NewGuid(), LicenseId = license.Id, ProductId = product.Id,
+                    ObjectKey = $"{license.Id:N}/products/{product.Id:N}/kapak.img",
+                    ContentType = "image/jpeg", SizeBytes = 1024, SortOrder = 0,
+                    CreatedAt = DateTimeOffset.UtcNow
+                });
+            }
         }
 
         await db.SaveChangesAsync();
@@ -111,5 +130,32 @@ public class LicensesWpfCatalogPullControllerTests : IClassFixture<ApiFactory>
         var resp = await client.GetAsync($"/api/v1/licenses/{otherLicenseId}/catalog/products");
 
         resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task Cover_photo_is_the_smallest_sort_order()
+    {
+        var (client, licenseId) = await SeedAsync(1, withPhotos: true);
+
+        var rows = await client.GetFromJsonAsync<List<JsonElement>>(
+            $"/api/v1/licenses/{licenseId}/catalog/products");
+
+        var key = rows![0].GetProperty("coverPhotoKey").GetString();
+        key.Should().EndWith("/kapak.img");
+
+        // URL imzalı ve kısa ömürlü; sözleşme "anahtarı içeren bir adres dönüyor".
+        rows[0].GetProperty("coverPhotoUrl").GetString().Should().Contain(key!);
+    }
+
+    [Fact]
+    public async Task Product_without_photos_reports_null_cover()
+    {
+        var (client, licenseId) = await SeedAsync(1);
+
+        var rows = await client.GetFromJsonAsync<List<JsonElement>>(
+            $"/api/v1/licenses/{licenseId}/catalog/products");
+
+        rows![0].GetProperty("coverPhotoKey").ValueKind.Should().Be(JsonValueKind.Null);
+        rows[0].GetProperty("coverPhotoUrl").ValueKind.Should().Be(JsonValueKind.Null);
     }
 }
