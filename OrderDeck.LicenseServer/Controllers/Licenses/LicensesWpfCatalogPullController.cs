@@ -148,9 +148,12 @@ public sealed class LicensesWpfCatalogPullController : ControllerBase
                     CoverPhotoUrl = await _storage.CreateDownloadUrlAsync(key, ct)
                 };
             }
-            catch (OperationCanceledException)
+            // Yalnız GERÇEK iptal fırlatılır. Koşulsuz bir OperationCanceledException
+            // dalı, depolama bir gün ağ çağrısı yapmaya başlarsa (R2 zaman aşımı →
+            // ct iptal edilmemişken TaskCanceledException) sayfayı yine düşürürdü.
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                throw; // Gerçek iptal — yutulamaz.
+                throw;
             }
             catch (Exception ex)
             {

@@ -210,6 +210,10 @@ Beklenen: FAIL — `coverPhotoKey` diye bir özellik yok
    için istemci etkilenmez; okunabilirlik için fotoğraf alanlarını
    `UpdatedAt`'in yanına koyuyoruz):
 
+`<param>` blokları record **bildiriminin üstüne** yazılır (kardeş
+`LicensesWpfStockPullController.cs:77-80` kalıbı); parametre listesinin içine
+gömülürse derleyici belgeye bağlamaz.
+
 ```csharp
     /// <param name="CoverPhotoKey">
     /// Kapak fotoğrafının R2 nesne anahtarı (en küçük <c>SortOrder</c>);
@@ -269,14 +273,38 @@ Beklenen: FAIL — `coverPhotoKey` diye bir özellik yok
         for (var i = 0; i < rows.Count; i++)
         {
             if (rows[i].CoverPhotoKey is not { Length: > 0 } key) continue;
-            rows[i] = rows[i] with
+
+            // İmzalama hatası sayfayı düşürmesin: CoverPhotoUrl null kalır, döngü
+            // devam eder, uç yine 200 döner. Ürün verisi ve CoverPhotoKey akar;
+            // istemci elindeki önbelleği korur. Alternatifi R2 kimlik bilgisi
+            // eksik bir sunucuda bütün kataloğun HİÇ kurulamamasıdır (keyset
+            // imleci ilk sayfada takılır).
+            try
             {
-                CoverPhotoUrl = await _storage.CreateDownloadUrlAsync(key, ct)
-            };
+                rows[i] = rows[i] with
+                {
+                    CoverPhotoUrl = await _storage.CreateDownloadUrlAsync(key, ct)
+                };
+            }
+            // Yalnız GERÇEK iptal fırlatılır; koşulsuz bir dal, depolama ileride
+            // ağ çağrısı yaparsa (zaman aşımı → ct iptal edilmemişken
+            // TaskCanceledException) sayfayı yine düşürürdü.
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex,
+                    "Kapak fotoğrafı imzalanamadı, CoverPhotoUrl null bırakıldı. Key={Key}", key);
+            }
         }
 
         return Ok(rows);
 ```
+
+Logger'ı da ctor'a enjekte et (`ILogger<LicensesWpfCatalogPullController>`,
+kardeş controller'lardaki kalıp).
 
 - [ ] **Step 4: Testleri koştur, geçtiklerini gör**
 
