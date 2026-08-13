@@ -163,6 +163,55 @@ public class LicensesWpfStockPullControllerTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Movements_newer_than_the_stability_horizon_are_not_returned()
+    {
+        // Ufkun altındaki varyant: −1, Stamp damgalı.
+        var (client, licenseId, productId, variantIds) = await SeedAsync(1, 1);
+
+        // Aynı ürüne ufkun ÜSTÜNDE (şu an damgalı) bir hareket ekle. Uçuşta olan
+        // bir işlemin bu damganın gerisine yazma ihtimali sürdüğü için uç bu
+        // satırı henüz okumamalı.
+        Guid freshVariantId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var fresh = new ProductVariant
+            {
+                Id = Guid.NewGuid(), LicenseId = licenseId, ProductId = productId,
+                Axis1Value = "B9", Axis1Code = "B9",
+                VariantCode = "A1-B9", IsActive = true,
+                CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
+            };
+            db.ProductVariants.Add(fresh);
+            freshVariantId = fresh.Id;
+
+            db.StockMovements.Add(new StockMovement
+            {
+                Id = Guid.NewGuid(),
+                LicenseId = licenseId,
+                ProductId = productId,
+                ProductVariantId = fresh.Id,
+                Quantity = -5,
+                Reason = StockMovementReason.Sale,
+                OccurredAt = DateTimeOffset.UtcNow,
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var page = await GetPageAsync(client, licenseId, Stamp.AddMinutes(-1), Guid.Empty, 100);
+
+        var balances = page.GetProperty("balances").EnumerateArray().ToList();
+        balances.Should().HaveCount(1);
+        balances[0].GetProperty("productVariantId").GetGuid().Should().Be(variantIds[0]);
+        balances[0].GetProperty("quantity").GetInt32().Should().Be(-1);
+        balances.Should().NotContain(
+            b => b.GetProperty("productVariantId").GetGuid() == freshVariantId);
+        // İmleç de taze satıra atlamamalı; ufkun altındaki son satırda kalır.
+        page.GetProperty("cursorCreatedAt").GetDateTimeOffset().Should().Be(Stamp);
+    }
+
+    [Fact]
     public async Task Another_customers_license_is_not_readable()
     {
         var (client, _, _, _) = await SeedAsync(1, 1);

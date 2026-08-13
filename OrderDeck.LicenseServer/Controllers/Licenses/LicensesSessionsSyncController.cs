@@ -275,6 +275,15 @@ public sealed class LicensesSessionsSyncController : ControllerBase
 
         // Defter, siparişlerle AYNI SaveChanges'te yazılır: "sipariş kaydedildi
         // ama stok düşmedi" ara durumu hiç oluşmasın.
+        //
+        // Defter satırlarının damgası WPF çekme imlecinin sütunu (CreatedAt), bu
+        // yüzden yukarıdaki `now` yerine burada TAZE okunuyor: okuma ile commit
+        // arasındaki pencere ne kadar darsa imlecin gerisine düşme riski o kadar
+        // küçülür. Asıl güvence yine de çekme ucundaki kararlılık ufku; bu sadece
+        // ikinci katman. Sipariş alanları `now`'u kullanmaya devam ediyor —
+        // onların damgası imleç sütunu değil.
+        var ledgerNow = DateTimeOffset.UtcNow;
+
         await _ledger.ApplyAsync(
             licenseId,
             orders.Select(o => new Services.Stock.LedgerOrderInput(
@@ -287,7 +296,7 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                     o.IsTentativeBackup),
                 o.AddedAt,
                 o.CancelledAt)).ToList(),
-            now,
+            ledgerNow,
             ct);
 
         await _db.SaveChangesAsync(ct);

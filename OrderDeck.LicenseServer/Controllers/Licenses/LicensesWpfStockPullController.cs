@@ -33,6 +33,10 @@ namespace OrderDeck.LicenseServer.Controllers.Licenses;
 /// bütün hareketler aynı <c>CreatedAt</c> damgasını taşıyor, <c>take</c> sınırı
 /// bu eşitlik kümesinin ortasından kesebilir. Yalnız zaman imleci olsaydı kesilen
 /// satırların anahtarları eski bakiyede donup kalırdı.
+///
+/// Sorgu ayrıca bir <b>kararlılık ufkunun</b> altında kalır: henüz commit
+/// edilmemiş bir işlemin yazacağı satırın imlecin gerisine düşmemesi için
+/// son saniyeler hiç okunmaz (bkz. <c>StabilityHorizon</c>).
 /// </summary>
 [ApiController]
 [Route("api/v1/licenses/{licenseId:guid}/stock")]
@@ -41,6 +45,23 @@ public sealed class LicensesWpfStockPullController : ControllerBase
 {
     private readonly LicenseDbContext _db;
     private readonly StockBalanceService _balances;
+
+    // Kararlılık ufku: commit sırası damga sırasına eşit DEĞİL. Bir yazıcı
+    // (sipariş senkron ucu) damgasını okuduktan sonra commit'e kadar onlarca
+    // milisaniye geçiyor; o arada başka bir yazıcı daha YENİ damgayla commit
+    // edip imleci ileri taşıyabilir. Uçuştaki işlem sonradan commit edince
+    // satırları imlecin GERİSİNE düşer ve WPF onları bir daha hiç görmez —
+    // ürünün bakiyesi sessizce eski değerde donar.
+    //
+    // Çözüm tabanı geriye çekmek (örtüşme payı) değil, TAVAN koymak: bu ufkun
+    // üstündeki hareketler hiç okunmuyor. Uçuştaki işlem damgasını az önce
+    // okuduğu için hep ufkun üstünde kalır, dolayısıyla imleç onu atlayamaz.
+    // Örtüşme payı seçilmedi: aynı CreatedAt'i paylaşan satır sayısı take'i
+    // aşarsa taban her çağrıda geriye kayar ve imleç hiç ilerlemez (sonsuz
+    // döngü). Taban sabit kaldığı için bileşik imlecin ilerleme garantisi
+    // bozulmuyor. Bedeli: panelden girilen stok WPF'e en fazla 1 dk gecikmeyle
+    // yansır.
+    private static readonly TimeSpan StabilityHorizon = TimeSpan.FromSeconds(60);
 
     public LicensesWpfStockPullController(LicenseDbContext db, StockBalanceService balances)
     {
@@ -83,8 +104,11 @@ public sealed class LicensesWpfStockPullController : ControllerBase
 
         take = Math.Clamp(take, 1, 1000);
 
+        var horizon = DateTimeOffset.UtcNow - StabilityHorizon;
+
         var page = await _db.StockMovements
             .Where(m => m.LicenseId == licenseId
+                        && m.CreatedAt <= horizon
                         && (m.CreatedAt > since
                             || (m.CreatedAt == since && m.Id.CompareTo(sinceId) > 0)))
             .OrderBy(m => m.CreatedAt).ThenBy(m => m.Id)
