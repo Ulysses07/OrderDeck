@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Text.Json;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
@@ -16,7 +17,14 @@ public class StockDeleteGuardTests : IClassFixture<ApiFactory>
 
     private sealed record Seed(HttpClient Client, Guid ProductId, Guid VariantId);
 
-    private async Task<Seed> SeedAsync(bool withMovement)
+    /// <param name="withMovement">Varyanta bağlı bir stok hareketi yazılsın mı.</param>
+    /// <param name="axisless">
+    /// <c>true</c> ise kart eksensiz kurulur ve varyant, <c>BuildAutoVariant</c>
+    /// ile aynı şekli alır: eksen değerleri boş, varyant kodu ürün kodunun aynısı.
+    /// Eksen ekleme senaryosunun tam olarak bu şekle ihtiyacı var — değerli
+    /// varyantta <c>axis-in-use</c> zaten devreye girer, stok kapısı hiç sınanmaz.
+    /// </param>
+    private async Task<Seed> SeedAsync(bool withMovement, bool axisless = false)
     {
         var (client, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
         using var scope = _factory.Services.CreateScope();
@@ -42,7 +50,9 @@ public class StockDeleteGuardTests : IClassFixture<ApiFactory>
         var variant = new ProductVariant
         {
             Id = Guid.NewGuid(), LicenseId = license.Id, ProductId = product.Id,
-            Axis1Value = "M", Axis1Code = "M", VariantCode = "A1-M",
+            Axis1Value = axisless ? null : "M",
+            Axis1Code = axisless ? null : "M",
+            VariantCode = axisless ? "A1" : "A1-M",
             CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
         };
         db.ProductVariants.Add(variant);
@@ -99,5 +109,47 @@ public class StockDeleteGuardTests : IClassFixture<ApiFactory>
         var resp = await s.Client.DeleteAsync($"/api/panel/products/{s.ProductId}");
 
         resp.StatusCode.Should().BeOneOf(HttpStatusCode.NoContent, HttpStatusCode.OK);
+    }
+
+    /// <summary>
+    /// Eksensiz karta eksen eklemek, otomatik varyantı SİLİP yerine değerli
+    /// varyantlar açmak demek. O varyantın defteri varsa silme Restrict FK'sına
+    /// çarpar (InMemory'de zorlanmaz, SQL Server'da 500) — kapı 409'la önce
+    /// kapanmalı.
+    /// </summary>
+    private static Task<HttpResponseMessage> PutAddAxisAsync(Seed s)
+        => s.Client.PutAsJsonAsync($"/api/panel/products/{s.ProductId}", new
+        {
+            name = "Tişört",
+            code = "A1",
+            categoryId = (Guid?)null,
+            defaultPrice = 100m,
+            cost = (decimal?)null,
+            shelfLocation = (string?)null,
+            axis1Name = "Beden",
+            axis1Role = 2,
+            axis2Name = (string?)null,
+            axis2Role = (int?)null,
+        });
+
+    [Fact]
+    public async Task Axisless_product_with_movements_cannot_gain_an_axis()
+    {
+        var s = await SeedAsync(withMovement: true, axisless: true);
+
+        var resp = await PutAddAxisAsync(s);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await TitleAsync(resp)).Should().Be("axis-in-use-stock");
+    }
+
+    [Fact]
+    public async Task Axisless_product_without_movements_can_still_gain_an_axis()
+    {
+        var s = await SeedAsync(withMovement: false, axisless: true);
+
+        var resp = await PutAddAxisAsync(s);
+
+        resp.StatusCode.Should().BeOneOf(HttpStatusCode.OK, HttpStatusCode.NoContent);
     }
 }

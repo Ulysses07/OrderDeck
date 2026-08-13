@@ -439,6 +439,29 @@ public sealed class PanelProductsController : ControllerBase
                           + "Önce varyantları silmelisin.",
                     statusCode: 409);
 
+            // Eksensiz kartın otomatik varyantı hasValued'a TAKILMAZ (BuildAutoVariant
+            // eksen değeri doldurmuyor, ikisi de null) — ama o varyantın defteri
+            // olabilir: stok elemanı eksensiz ürüne pekâlâ mal kabul girer. Bu
+            // satırlar duruyorken RemoveRange, Restrict FK'sına çarpıp 500'e düşerdi
+            // ve ürün bir daha ASLA eksen kazanamazdı (hareket de silinemez).
+            //
+            // Kontrolün yeri kasıtlı: RemoveRange'ten ÖNCE ve sahiplik/lisans
+            // doğrulandıktan SONRA. Aşağı kaydırılırsa silme zaten denenmiş olur —
+            // Türkçe 409 yerine yine 500 döneriz. Yukarı taşınırsa başka lisansın
+            // defteri 409/404 farkından sızar.
+            var variantIds = product.Variants.Select(v => v.Id).ToList();
+            var hasMovements = await _db.StockMovements
+                .AnyAsync(m => m.ProductVariantId != null
+                               && variantIds.Contains(m.ProductVariantId.Value), ct);
+            if (hasMovements)
+                return Problem(title: "axis-in-use-stock",
+                    detail: "Bu ürünün stok hareketleri var; eksen yapısı artık "
+                          + "değiştirilemez (eksen açıp kapatmak da dahil). "
+                          + "Hareketler geçmiş satışların dayanağı olduğu için "
+                          + "silinemez. Farklı bir eksen yapısı gerekiyorsa yeni "
+                          + "bir ürün kartı açmalısın.",
+                    statusCode: 409);
+
             _db.ProductVariants.RemoveRange(product.Variants.ToList());
             product.Variants.Clear();
         }
