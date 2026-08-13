@@ -253,26 +253,55 @@ public sealed class LicenseApiClient
 
     // ─── WPF katalog replikası (Stok Faz 1b) ──────────────────────────────
 
+    // Bu iki metot, dosyadaki diğer liste uçlarından (örn.
+    // GetWpfCustomersSinceAsync) BİLEREK ayrılıyor: onlarda `?? new()` ile boş
+    // liste dönmek zararsız, burada boş liste DÖNGÜ SONLANDIRICISI. Bozuk bir
+    // gövde (200 + literal `null`) sessizce boş listeye çevrilirse çekme döngüsü
+    // "katalog boş" sanır ve işlemsel DELETE+INSERT replikayı komple siler —
+    // ardından yayında hiçbir ürün kodu eşleşmez. Bu yüzden coerce etmiyoruz,
+    // fırlatıyoruz. Gerçek hatalar zaten gürültülü (ThrowMappedAsync); geriye
+    // yalnız bu sessiz dönüşüm kalıyordu.
+
     /// <summary>
     /// Kataloğun bir sayfasını çeker. <b>Tam anlık görüntü</b> —
     /// <paramref name="after"/> bir DEĞİŞİM imleci değil, birincil anahtar
-    /// üstünde keyset sayfalama imleci. Çağıran, boş sayfa gelene kadar son
-    /// ürünün <c>Id</c>'siyle döngüye devam eder ve ancak tamamı geldiğinde
-    /// replikayı baştan yazar.
+    /// üstünde keyset sayfalama imleci.
+    /// <para>Çağıran, boş sayfa gelene kadar son ürünün <c>Id</c>'siyle döngüye
+    /// devam ETMELİ ve ancak tamamı geldiğinde replikayı baştan yazmalıdır.</para>
+    /// <para><b>Dönen satır sayısı &lt; take'i bitiş göstergesi olarak KULLANMA</b>
+    /// — hem sunucu hem istemci <paramref name="take"/>'i 1..500 arasına kırpıyor.</para>
+    /// <para>İmleci <c>rows[^1].Id</c>'den al, sayfayı yeniden SIRALAMA: sunucu
+    /// sırası SQL Server'ın <c>uniqueidentifier</c> karşılaştırmasında üretiliyor,
+    /// .NET'in <c>Guid.CompareTo</c> sırası farklı düşer ve satır atlatır.</para>
+    /// <para>Hata durumunda boş liste DÖNMEZ, fırlatır (404/401/5xx/ağ/bozuk gövde).
+    /// Çağıran döngünün tamamını sarmalayıp herhangi bir hatada replikayı
+    /// yazmadan çıkmalıdır.</para>
     /// </summary>
     public async Task<List<CatalogProductPullItem>> GetCatalogProductsAsync(
         Guid licenseId, Guid? after, int take = 200, CancellationToken ct = default)
     {
+        // Sunucu take'i 1..500'e kırpıyor (LicensesWpfCatalogPullController).
+        // Aynı kırpmayı burada da yap: aksi hâlde 1000 isteyip 500 alan bir
+        // çağıran "eksik sayfa = son sayfa" sanıp kataloğun kalanını siler.
+        take = Math.Clamp(take, 1, 500);
+
         var qs = after is null ? $"?take={take}" : $"?after={after}&take={take}";
         return await GetExpectingJsonAsync<List<CatalogProductPullItem>>(
-            $"/api/v1/licenses/{licenseId}/catalog/products{qs}", ct) ?? new();
+            $"/api/v1/licenses/{licenseId}/catalog/products{qs}", ct)
+            ?? throw new LicenseApiUnknownException(200,
+                "Katalog ürün sayfası bozuk geldi (gövde null). Bu 'katalog boş' demek değildir.");
     }
 
-    /// <summary>Kategori ağacının tamamı; sayfalama yok (derinlik sınırlı).</summary>
+    /// <summary>Kategori ağacının tamamı; sayfalama yok (derinlik sınırlı).
+    /// Sunucu <b>pasif</b> kategorileri de döndürür — bir ürün pasif kategoriye
+    /// bağlı kalmış olabilir; WPF <c>IsActive == false</c> satırları beklemeli,
+    /// bozuk veri saymamalıdır. Bozuk gövdede boş liste dönmez, fırlatır.</summary>
     public async Task<List<CatalogCategoryPullItem>> GetCatalogCategoriesAsync(
         Guid licenseId, CancellationToken ct = default)
         => await GetExpectingJsonAsync<List<CatalogCategoryPullItem>>(
-            $"/api/v1/licenses/{licenseId}/catalog/categories", ct) ?? new();
+            $"/api/v1/licenses/{licenseId}/catalog/categories", ct)
+            ?? throw new LicenseApiUnknownException(200,
+                "Katalog kategori ağacı bozuk geldi (gövde null). Bu 'kategori yok' demek değildir.");
 
     // ─── Customer balance (E1/E3) ────────────────────────────────────
 

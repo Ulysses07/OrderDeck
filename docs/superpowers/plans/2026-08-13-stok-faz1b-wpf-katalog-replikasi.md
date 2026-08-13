@@ -1097,12 +1097,24 @@ git commit -m "feat(katalog): yerel replika deposu"
 ```csharp
 namespace OrderDeck.Licensing.Api.Models;
 
+/// <summary>Sunucudan çekilen tek bir katalog ürünü (tel modeli).</summary>
 /// <param name="CoverPhotoKey">
 /// R2 nesne anahtarı; <b>kalıcı</b> önbellek anahtarı. Fotoğraf yoksa null.
 /// </param>
 /// <param name="CoverPhotoUrl">
 /// Aynı nesnenin 5 dakika geçerli imzalı adresi. <b>Saklanmaz</b> — yalnız
 /// bu çekme turunda indirmek için kullanılır.
+/// <para><c>CoverPhotoKey</c> dolu iken bunun null gelmesi <b>meşru bir
+/// durumdur</b>: sunucu imzalama başarısız olursa sayfayı düşürmez, URL'i null
+/// bırakıp anahtarı yine gönderir. Önbellek bu durumda mevcut yerel dosyayı
+/// KORUMALI, "fotoğraf silinmiş" sayıp atmamalıdır.</para>
+/// </param>
+/// <param name="Variants">
+/// Ürünün varyantları. <b>Dizideki konum sıralamanın kendisidir</b> — sunucu
+/// SQL Server collation'ında <c>VariantCode</c>'a göre sıralayıp gönderiyor;
+/// SQLite'ın ordinal sıralaması farklı düşebileceği için yerelde yeniden
+/// SIRALANMAZ, dizi indeksi <c>SortOrder</c> olarak taşınır (bkz.
+/// <c>025_catalog_replica.sql</c>).
 /// </param>
 public sealed record CatalogProductPullItem(
     Guid Id,
@@ -1121,6 +1133,7 @@ public sealed record CatalogProductPullItem(
     string? CoverPhotoUrl,
     List<CatalogVariantPullItem> Variants);
 
+/// <summary>Bir ürünün tek varyantı; sırası taşıyıcı dizinin konumundan gelir.</summary>
 public sealed record CatalogVariantPullItem(
     Guid Id,
     string? Axis1Value,
@@ -1131,6 +1144,7 @@ public sealed record CatalogVariantPullItem(
     string? Barcode,
     bool IsActive);
 
+/// <summary>Kategori ağacının tek düğümü; <c>Path</c> sırası ata-önce dizer.</summary>
 public sealed record CatalogCategoryPullItem(
     Guid Id,
     Guid? ParentCategoryId,
@@ -1180,26 +1194,118 @@ public sealed record CatalogCategoryPullItem(
         var client = BuildClient(req => { seen = req; return FakeHttpMessageHandler.Json(200, "[]"); });
 
         var licenseId = Guid.NewGuid();
-        await client.GetCatalogProductsAsync(licenseId, after: null, take: 200);
+        // take, varsayılandan (200) FARKLI seçiliyor: aksi hâlde sorgu dizesine
+        // 200 sabitlense de test yeşil kalır, parametre gerçekten sınanmaz.
+        await client.GetCatalogProductsAsync(licenseId, after: null, take: 50);
 
         seen!.RequestUri!.PathAndQuery.Should().Be(
-            $"/api/v1/licenses/{licenseId}/catalog/products?take=200");
+            $"/api/v1/licenses/{licenseId}/catalog/products?take=50");
+    }
+
+    [Fact]
+    public async Task GetCatalogProductsAsync_take_degerini_sunucunun_sinirina_kirpar()
+    {
+        HttpRequestMessage? seen = null;
+        var client = BuildClient(req => { seen = req; return FakeHttpMessageHandler.Json(200, "[]"); });
+
+        var licenseId = Guid.NewGuid();
+        await client.GetCatalogProductsAsync(licenseId, after: null, take: 1000);
+
+        // Sunucu zaten 500'e kırpıyor; istemci fazlasını istemeyerek
+        // "eksik sayfa = son sayfa" yanılgısını kaynağında keser.
+        seen!.RequestUri!.PathAndQuery.Should().Be(
+            $"/api/v1/licenses/{licenseId}/catalog/products?take=500");
+    }
+
+    [Fact]
+    public async Task GetCatalogProductsAsync_null_govdeyi_bos_katalog_saymaz()
+    {
+        var client = BuildClient(_ => FakeHttpMessageHandler.Json(200, "null"));
+
+        // Bozuk gövde "katalog boş" demek DEĞİL. Sessizce boş liste dönseydi
+        // senkron döngüsü bunu son sayfa sanıp replikayı komple silerdi.
+        var act = () => client.GetCatalogProductsAsync(Guid.NewGuid(), after: null);
+
+        await act.Should().ThrowAsync<LicenseApiException>();
     }
 
     [Fact]
     public async Task GetCatalogCategoriesAsync_parses_the_tree()
     {
-        var client = BuildClient(_ => FakeHttpMessageHandler.Json(200, """
+        HttpRequestMessage? seen = null;
+        var client = BuildClient(req => { seen = req; return FakeHttpMessageHandler.Json(200, """
             [{ "id":"33333333-3333-3333-3333-333333333333",
                "parentCategoryId":null, "name":"Erkek",
                "path":"/33/", "sortOrder":0, "isActive":true }]
-            """));
+            """); });
 
-        var rows = await client.GetCatalogCategoriesAsync(Guid.NewGuid());
+        var licenseId = Guid.NewGuid();
+        var rows = await client.GetCatalogCategoriesAsync(licenseId);
 
+        // İstek kaydedilmezse test HERHANGİ bir URL'e karşı yeşil kalırdı.
+        seen!.RequestUri!.PathAndQuery.Should().Be(
+            $"/api/v1/licenses/{licenseId}/catalog/categories");
         rows.Should().ContainSingle();
         rows[0].Name.Should().Be("Erkek");
         rows[0].ParentCategoryId.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetCatalogCategoriesAsync_null_govdeyi_bos_agac_saymaz()
+    {
+        var client = BuildClient(_ => FakeHttpMessageHandler.Json(200, "null"));
+
+        // Ürün ucuyla aynı sınıf hata: bozuk gövde "kategori yok" demek değil.
+        var act = () => client.GetCatalogCategoriesAsync(Guid.NewGuid());
+
+        await act.Should().ThrowAsync<LicenseApiException>();
+    }
+
+    [Fact]
+    public async Task GetCatalogProductsAsync_urun_alanlarini_tel_uzerinden_baglar()
+    {
+        var client = BuildClient(_ => FakeHttpMessageHandler.Json(200, """
+            [{ "id":"11111111-1111-1111-1111-111111111111",
+               "categoryId":"55555555-5555-5555-5555-555555555555",
+               "code":"A1", "name":"Elbise", "nameSearch":"ELBISE",
+               "defaultPrice":199.90, "shelfLocation":"R3-K2",
+               "axis1Name":"Beden", "axis1Role":1,
+               "axis2Name":"Renk",  "axis2Role":2,
+               "updatedAt":"2026-08-13T10:00:00Z",
+               "coverPhotoKey":"lic/products/p/k.img",
+               "coverPhotoUrl":"https://r2.local/k.img?sig=1",
+               "variants":[{ "id":"44444444-4444-4444-4444-444444444444",
+                             "axis1Value":"M","axis1Code":"M",
+                             "axis2Value":"Kirmizi","axis2Code":"KRM",
+                             "variantCode":"A1-M-KRM","barcode":"8690000000001",
+                             "isActive":true }] }]
+            """));
+
+        var p = (await client.GetCatalogProductsAsync(Guid.NewGuid(), after: null))[0];
+
+        // Kod, yayında yorumla eşleşen TEK alan — bağlanmazsa yanlış ürün satılır.
+        p.Code.Should().Be("A1");
+        p.Id.Should().Be(Guid.Parse("11111111-1111-1111-1111-111111111111"));
+        p.CategoryId.Should().Be(Guid.Parse("55555555-5555-5555-5555-555555555555"));
+        p.Name.Should().Be("Elbise");
+        p.NameSearch.Should().Be("ELBISE");
+        // Para: 199.90 tam gelmeli, araya double girmemeli (bkz. CatalogReplicaRepository).
+        p.DefaultPrice.Should().Be(199.90m);
+        p.ShelfLocation.Should().Be("R3-K2");
+        p.Axis1Name.Should().Be("Beden");
+        p.Axis1Role.Should().Be(1);
+        p.Axis2Role.Should().Be(2);
+        // Yerel replika unix SANİYE saklıyor; damganın UTC çözüldüğünü sabitle.
+        p.UpdatedAt.Should().Be(DateTimeOffset.Parse("2026-08-13T10:00:00Z"));
+        p.UpdatedAt.ToUnixTimeSeconds().Should().Be(1786615200);
+        p.CoverPhotoKey.Should().Be("lic/products/p/k.img");
+
+        // Varyant sırası = dizi sırası; 025'teki SortOrder sözleşmesi buna dayanıyor.
+        p.Variants.Should().ContainSingle();
+        p.Variants[0].VariantCode.Should().Be("A1-M-KRM");
+        p.Variants[0].Axis1Value.Should().Be("M");
+        p.Variants[0].Axis2Code.Should().Be("KRM");
+        p.Variants[0].IsActive.Should().BeTrue();
     }
 ```
 
@@ -1218,26 +1324,55 @@ Beklenen: FAIL — `GetCatalogProductsAsync` tanımlı değil (derleme hatası).
 ```csharp
     // ─── WPF katalog replikası (Stok Faz 1b) ──────────────────────────────
 
+    // Bu iki metot, dosyadaki diğer liste uçlarından (örn.
+    // GetWpfCustomersSinceAsync) BİLEREK ayrılıyor: onlarda `?? new()` ile boş
+    // liste dönmek zararsız, burada boş liste DÖNGÜ SONLANDIRICISI. Bozuk bir
+    // gövde (200 + literal `null`) sessizce boş listeye çevrilirse çekme döngüsü
+    // "katalog boş" sanır ve işlemsel DELETE+INSERT replikayı komple siler —
+    // ardından yayında hiçbir ürün kodu eşleşmez. Bu yüzden coerce etmiyoruz,
+    // fırlatıyoruz. Gerçek hatalar zaten gürültülü (ThrowMappedAsync); geriye
+    // yalnız bu sessiz dönüşüm kalıyordu.
+
     /// <summary>
     /// Kataloğun bir sayfasını çeker. <b>Tam anlık görüntü</b> —
     /// <paramref name="after"/> bir DEĞİŞİM imleci değil, birincil anahtar
-    /// üstünde keyset sayfalama imleci. Çağıran, boş sayfa gelene kadar son
-    /// ürünün <c>Id</c>'siyle döngüye devam eder ve ancak tamamı geldiğinde
-    /// replikayı baştan yazar.
+    /// üstünde keyset sayfalama imleci.
+    /// <para>Çağıran, boş sayfa gelene kadar son ürünün <c>Id</c>'siyle döngüye
+    /// devam ETMELİ ve ancak tamamı geldiğinde replikayı baştan yazmalıdır.</para>
+    /// <para><b>Dönen satır sayısı &lt; take'i bitiş göstergesi olarak KULLANMA</b>
+    /// — hem sunucu hem istemci <paramref name="take"/>'i 1..500 arasına kırpıyor.</para>
+    /// <para>İmleci <c>rows[^1].Id</c>'den al, sayfayı yeniden SIRALAMA: sunucu
+    /// sırası SQL Server'ın <c>uniqueidentifier</c> karşılaştırmasında üretiliyor,
+    /// .NET'in <c>Guid.CompareTo</c> sırası farklı düşer ve satır atlatır.</para>
+    /// <para>Hata durumunda boş liste DÖNMEZ, fırlatır (404/401/5xx/ağ/bozuk gövde).
+    /// Çağıran döngünün tamamını sarmalayıp herhangi bir hatada replikayı
+    /// yazmadan çıkmalıdır.</para>
     /// </summary>
     public async Task<List<CatalogProductPullItem>> GetCatalogProductsAsync(
         Guid licenseId, Guid? after, int take = 200, CancellationToken ct = default)
     {
+        // Sunucu take'i 1..500'e kırpıyor (LicensesWpfCatalogPullController).
+        // Aynı kırpmayı burada da yap: aksi hâlde 1000 isteyip 500 alan bir
+        // çağıran "eksik sayfa = son sayfa" sanıp kataloğun kalanını siler.
+        take = Math.Clamp(take, 1, 500);
+
         var qs = after is null ? $"?take={take}" : $"?after={after}&take={take}";
         return await GetExpectingJsonAsync<List<CatalogProductPullItem>>(
-            $"/api/v1/licenses/{licenseId}/catalog/products{qs}", ct) ?? new();
+            $"/api/v1/licenses/{licenseId}/catalog/products{qs}", ct)
+            ?? throw new LicenseApiUnknownException(200,
+                "Katalog ürün sayfası bozuk geldi (gövde null). Bu 'katalog boş' demek değildir.");
     }
 
-    /// <summary>Kategori ağacının tamamı; sayfalama yok (derinlik sınırlı).</summary>
+    /// <summary>Kategori ağacının tamamı; sayfalama yok (derinlik sınırlı).
+    /// Sunucu <b>pasif</b> kategorileri de döndürür — bir ürün pasif kategoriye
+    /// bağlı kalmış olabilir; WPF <c>IsActive == false</c> satırları beklemeli,
+    /// bozuk veri saymamalıdır. Bozuk gövdede boş liste dönmez, fırlatır.</summary>
     public async Task<List<CatalogCategoryPullItem>> GetCatalogCategoriesAsync(
         Guid licenseId, CancellationToken ct = default)
         => await GetExpectingJsonAsync<List<CatalogCategoryPullItem>>(
-            $"/api/v1/licenses/{licenseId}/catalog/categories", ct) ?? new();
+            $"/api/v1/licenses/{licenseId}/catalog/categories", ct)
+            ?? throw new LicenseApiUnknownException(200,
+                "Katalog kategori ağacı bozuk geldi (gövde null). Bu 'kategori yok' demek değildir.");
 ```
 
 - [ ] **Step 5: Koştur, geçtiğini gör**

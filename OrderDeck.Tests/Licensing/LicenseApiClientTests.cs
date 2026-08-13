@@ -231,25 +231,114 @@ public sealed class LicenseApiClientTests
         var client = BuildClient(req => { seen = req; return FakeHttpMessageHandler.Json(200, "[]"); });
 
         var licenseId = Guid.NewGuid();
-        await client.GetCatalogProductsAsync(licenseId, after: null, take: 200);
+        await client.GetCatalogProductsAsync(licenseId, after: null, take: 50);
 
         seen!.RequestUri!.PathAndQuery.Should().Be(
-            $"/api/v1/licenses/{licenseId}/catalog/products?take=200");
+            $"/api/v1/licenses/{licenseId}/catalog/products?take=50");
+    }
+
+    [Fact]
+    public async Task GetCatalogProductsAsync_take_degerini_sunucunun_sinirina_kirpar()
+    {
+        HttpRequestMessage? seen = null;
+        var client = BuildClient(req => { seen = req; return FakeHttpMessageHandler.Json(200, "[]"); });
+
+        var licenseId = Guid.NewGuid();
+        await client.GetCatalogProductsAsync(licenseId, after: null, take: 1000);
+
+        // Sunucu zaten 500'e kırpıyor; istemci fazlasını istemeyerek
+        // "eksik sayfa = son sayfa" yanılgısını kaynağında keser.
+        seen!.RequestUri!.PathAndQuery.Should().Be(
+            $"/api/v1/licenses/{licenseId}/catalog/products?take=500");
+    }
+
+    [Fact]
+    public async Task GetCatalogProductsAsync_null_govdeyi_bos_katalog_saymaz()
+    {
+        var client = BuildClient(_ => FakeHttpMessageHandler.Json(200, "null"));
+
+        // Bozuk gövde "katalog boş" demek DEĞİL. Sessizce boş liste dönseydi
+        // senkron döngüsü bunu son sayfa sanıp replikayı komple silerdi.
+        var act = () => client.GetCatalogProductsAsync(Guid.NewGuid(), after: null);
+
+        await act.Should().ThrowAsync<LicenseApiException>();
     }
 
     [Fact]
     public async Task GetCatalogCategoriesAsync_parses_the_tree()
     {
-        var client = BuildClient(_ => FakeHttpMessageHandler.Json(200, """
+        HttpRequestMessage? seen = null;
+        var client = BuildClient(req => { seen = req; return FakeHttpMessageHandler.Json(200, """
             [{ "id":"33333333-3333-3333-3333-333333333333",
                "parentCategoryId":null, "name":"Erkek",
                "path":"/33/", "sortOrder":0, "isActive":true }]
-            """));
+            """); });
 
-        var rows = await client.GetCatalogCategoriesAsync(Guid.NewGuid());
+        var licenseId = Guid.NewGuid();
+        var rows = await client.GetCatalogCategoriesAsync(licenseId);
 
+        seen!.RequestUri!.PathAndQuery.Should().Be(
+            $"/api/v1/licenses/{licenseId}/catalog/categories");
         rows.Should().ContainSingle();
         rows[0].Name.Should().Be("Erkek");
         rows[0].ParentCategoryId.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetCatalogCategoriesAsync_null_govdeyi_bos_agac_saymaz()
+    {
+        var client = BuildClient(_ => FakeHttpMessageHandler.Json(200, "null"));
+
+        // Ürün ucuyla aynı sınıf hata: bozuk gövde "kategori yok" demek değil.
+        var act = () => client.GetCatalogCategoriesAsync(Guid.NewGuid());
+
+        await act.Should().ThrowAsync<LicenseApiException>();
+    }
+
+    [Fact]
+    public async Task GetCatalogProductsAsync_urun_alanlarini_tel_uzerinden_baglar()
+    {
+        var client = BuildClient(_ => FakeHttpMessageHandler.Json(200, """
+            [{ "id":"11111111-1111-1111-1111-111111111111",
+               "categoryId":"55555555-5555-5555-5555-555555555555",
+               "code":"A1", "name":"Elbise", "nameSearch":"ELBISE",
+               "defaultPrice":199.90, "shelfLocation":"R3-K2",
+               "axis1Name":"Beden", "axis1Role":1,
+               "axis2Name":"Renk",  "axis2Role":2,
+               "updatedAt":"2026-08-13T10:00:00Z",
+               "coverPhotoKey":"lic/products/p/k.img",
+               "coverPhotoUrl":"https://r2.local/k.img?sig=1",
+               "variants":[{ "id":"44444444-4444-4444-4444-444444444444",
+                             "axis1Value":"M","axis1Code":"M",
+                             "axis2Value":"Kirmizi","axis2Code":"KRM",
+                             "variantCode":"A1-M-KRM","barcode":"8690000000001",
+                             "isActive":true }] }]
+            """));
+
+        var p = (await client.GetCatalogProductsAsync(Guid.NewGuid(), after: null))[0];
+
+        // Kod, yayında yorumla eşleşen TEK alan — bağlanmazsa yanlış ürün satılır.
+        p.Code.Should().Be("A1");
+        p.Id.Should().Be(Guid.Parse("11111111-1111-1111-1111-111111111111"));
+        p.CategoryId.Should().Be(Guid.Parse("55555555-5555-5555-5555-555555555555"));
+        p.Name.Should().Be("Elbise");
+        p.NameSearch.Should().Be("ELBISE");
+        // Para: 199.90 tam gelmeli, araya double girmemeli (bkz. CatalogReplicaRepository).
+        p.DefaultPrice.Should().Be(199.90m);
+        p.ShelfLocation.Should().Be("R3-K2");
+        p.Axis1Name.Should().Be("Beden");
+        p.Axis1Role.Should().Be(1);
+        p.Axis2Role.Should().Be(2);
+        // Yerel replika unix SANİYE saklıyor; damganın UTC çözüldüğünü sabitle.
+        p.UpdatedAt.Should().Be(DateTimeOffset.Parse("2026-08-13T10:00:00Z"));
+        p.UpdatedAt.ToUnixTimeSeconds().Should().Be(1786615200);
+        p.CoverPhotoKey.Should().Be("lic/products/p/k.img");
+
+        // Varyant sırası = dizi sırası; 025'teki SortOrder sözleşmesi buna dayanıyor.
+        p.Variants.Should().ContainSingle();
+        p.Variants[0].VariantCode.Should().Be("A1-M-KRM");
+        p.Variants[0].Axis1Value.Should().Be("M");
+        p.Variants[0].Axis2Code.Should().Be("KRM");
+        p.Variants[0].IsActive.Should().BeTrue();
     }
 }
