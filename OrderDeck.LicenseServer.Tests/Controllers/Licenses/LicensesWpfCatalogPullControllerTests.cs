@@ -2,7 +2,9 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using FluentAssertions;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
@@ -16,10 +18,12 @@ public class LicensesWpfCatalogPullControllerTests : IClassFixture<ApiFactory>
     public LicensesWpfCatalogPullControllerTests(ApiFactory factory) => _factory = factory;
 
     private async Task<(HttpClient Client, Guid LicenseId)> SeedAsync(
-        int productCount, bool archiveFirst = false, bool withPhotos = false)
+        int productCount, bool archiveFirst = false, bool withPhotos = false,
+        bool photoOnEvenOnly = false, ApiFactory? overrideFactory = null)
     {
-        var (client, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
-        using var scope = _factory.Services.CreateScope();
+        var f = overrideFactory ?? _factory;
+        var (client, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(f);
+        using var scope = f.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
 
         var license = new License
@@ -48,7 +52,11 @@ public class LicensesWpfCatalogPullControllerTests : IClassFixture<ApiFactory>
                 Axis1Value = "M", Axis1Code = "M", VariantCode = product.Code + "-M",
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
             });
-            if (withPhotos)
+            // withPhotos: tüm ürünlere fotoğraf; photoOnEvenOnly: yalnız çift indeksli
+            // ürünlere fotoğraf koyar (tek indeksliler fotoğrafsız kalır). Bu sayede
+            // "sayfanın ortasında fotoğrafsız ürün" dalı (continue) kapsanabilir.
+            var addPhoto = withPhotos || (photoOnEvenOnly && i % 2 == 0);
+            if (addPhoto)
             {
                 // Kapak = en KÜÇÜK SortOrder. İki fotoğrafı bilerek ters sırada
                 // ekliyoruz ki "ilk eklenen" ile "kapak" karışırsa test yakalasın.
@@ -157,5 +165,111 @@ public class LicensesWpfCatalogPullControllerTests : IClassFixture<ApiFactory>
 
         rows![0].GetProperty("coverPhotoKey").ValueKind.Should().Be(JsonValueKind.Null);
         rows[0].GetProperty("coverPhotoUrl").ValueKind.Should().Be(JsonValueKind.Null);
+    }
+
+    /// <summary>
+    /// Döngü doğruluğu: her satırın kendi coverPhotoKey/coverPhotoUrl ikilisi
+    /// eşleşiyor; fotoğrafsız satırlarda ikisi de null. Tek ürünlü testlerde
+    /// rows[i] yerine rows[0] yazılsa geçer — bu test birden çok ürünle
+    /// gerçek indekslemeyi zorlar ve "continue" dalını kapsama alır.
+    /// </summary>
+    [Fact]
+    public async Task Each_row_gets_its_own_cover_photo_url_and_photoless_rows_are_null()
+    {
+        // 4 ürün: 0. ve 2. (çift seed indeksi) fotoğraflı, 1. ve 3. fotoğrafsız.
+        // API Id üstünde sıralıyor — seed sırası != API sırası olabilir. Bunun
+        // için her satırı coverPhotoKey varlığına göre ayrı ayrı doğruluyoruz:
+        // fotoğraflı satırda URL anahtarını içermeli, fotoğrafsızda ikisi de null.
+        var (client, licenseId) = await SeedAsync(4, photoOnEvenOnly: true);
+
+        var rows = await client.GetFromJsonAsync<List<JsonElement>>(
+            $"/api/v1/licenses/{licenseId}/catalog/products");
+
+        rows!.Should().HaveCount(4);
+
+        // Tam 2 satır fotoğraflı, 2 satır fotoğrafsız olmalı.
+        var withKey = rows.Where(r =>
+            r.GetProperty("coverPhotoKey").ValueKind == JsonValueKind.String).ToList();
+        var withoutKey = rows.Where(r =>
+            r.GetProperty("coverPhotoKey").ValueKind == JsonValueKind.Null).ToList();
+
+        withKey.Should().HaveCount(2, because: "çift-indeksli 2 ürün fotoğraflı");
+        withoutKey.Should().HaveCount(2, because: "tek-indeksli 2 ürün fotoğrafsız");
+
+        // Fotoğraflı satırlar: kapak anahtarı ve imzalı URL dolu, birbirine uygun.
+        foreach (var row in withKey)
+        {
+            var key = row.GetProperty("coverPhotoKey").GetString()!;
+            key.Should().EndWith("/kapak.img", because: "kapak en küçük SortOrder olmalı");
+            var url = row.GetProperty("coverPhotoUrl");
+            url.ValueKind.Should().Be(JsonValueKind.String, because: "imzalı URL almalı");
+            url.GetString().Should().Contain(key, because: "URL kendi anahtarını içermeli");
+        }
+
+        // Fotoğrafsız satırlar: her ikisi de null.
+        foreach (var row in withoutKey)
+        {
+            row.GetProperty("coverPhotoUrl").ValueKind.Should().Be(JsonValueKind.Null,
+                because: "fotoğrafsız satırda coverPhotoUrl null olmalı");
+        }
+    }
+
+    /// <summary>
+    /// Hata dayanıklılığı: imzalama fırlattığında sayfa yine 200 döner,
+    /// coverPhotoKey dolu ama coverPhotoUrl null kalır — katalog kurulabilir.
+    /// </summary>
+    [Fact]
+    public async Task Signing_failure_keeps_page_200_and_sets_cover_url_to_null()
+    {
+        using var factory = new ThrowingStorageApiFactory();
+        var (client, licenseId) = await SeedAsync(1, withPhotos: true, overrideFactory: factory);
+
+        var rows = await client.GetFromJsonAsync<List<JsonElement>>(
+            $"/api/v1/licenses/{licenseId}/catalog/products");
+
+        rows!.Should().ContainSingle();
+        rows[0].GetProperty("coverPhotoKey").GetString().Should().EndWith("/kapak.img");
+        rows[0].GetProperty("coverPhotoUrl").ValueKind.Should().Be(JsonValueKind.Null);
+    }
+
+    /// <summary>
+    /// CreateDownloadUrlAsync her çağrıda fırlatan storage. İmzalama hata
+    /// dayanıklılığı testinde kullanılır.
+    /// </summary>
+    private sealed class ThrowingStorageApiFactory : ApiFactory
+    {
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            base.ConfigureWebHost(builder);
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<OrderDeck.LicenseServer.Services.BroadcastPosts.IBroadcastMediaStorage>();
+                services.AddSingleton<OrderDeck.LicenseServer.Services.BroadcastPosts.IBroadcastMediaStorage>(
+                    new ThrowingBroadcastMediaStorage());
+            });
+        }
+    }
+
+    private sealed class ThrowingBroadcastMediaStorage :
+        OrderDeck.LicenseServer.Services.BroadcastPosts.IBroadcastMediaStorage
+    {
+        public Task<string> CreateUploadUrlAsync(string objectKey, string contentType,
+            long sizeBytes, CancellationToken ct = default)
+            => Task.FromResult($"https://stub.local/{objectKey}?upload=1");
+
+        public Task<string> CreateDownloadUrlAsync(string objectKey, CancellationToken ct = default)
+            => throw new InvalidOperationException("Test: R2 kimlik bilgisi eksik — imzalama başarısız.");
+
+        public Task<OrderDeck.LicenseServer.Services.BroadcastPosts.MediaObjectInfo?> HeadAsync(
+            string objectKey, CancellationToken ct = default)
+            => Task.FromResult<OrderDeck.LicenseServer.Services.BroadcastPosts.MediaObjectInfo?>(null);
+
+        public Task<IReadOnlyList<OrderDeck.LicenseServer.Services.BroadcastPosts.MediaObjectListing>> ListAsync(
+            string prefix, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<OrderDeck.LicenseServer.Services.BroadcastPosts.MediaObjectListing>>(
+                Array.Empty<OrderDeck.LicenseServer.Services.BroadcastPosts.MediaObjectListing>());
+
+        public Task DeleteAsync(string objectKey, CancellationToken ct = default)
+            => Task.CompletedTask;
     }
 }
