@@ -47,6 +47,14 @@ public sealed class LicensesWpfCatalogPullController : ControllerBase
         string VariantCode, string? Barcode,
         bool IsActive);
 
+    public sealed record CatalogCategoryDto(
+        Guid Id,
+        Guid? ParentCategoryId,
+        string Name,
+        string Path,
+        int SortOrder,
+        bool IsActive);
+
     /// <param name="Id">Ürün birincil anahtarı.</param>
     /// <param name="CategoryId">Bağlı kategori; kategorisiz ürünlerde null.</param>
     /// <param name="Code">Ürün kodu.</param>
@@ -164,14 +172,6 @@ public sealed class LicensesWpfCatalogPullController : ControllerBase
 
         return Ok(rows);
     }
-
-    public sealed record CatalogCategoryDto(
-        Guid Id,
-        Guid? ParentCategoryId,
-        string Name,
-        string Path,
-        int SortOrder,
-        bool IsActive);
 
     /// <summary>
     /// Kategori ağacının tamamı. <b>Sayfalama yok</b>: derinlik

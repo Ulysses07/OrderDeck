@@ -276,45 +276,84 @@ public class LicensesWpfCatalogPullControllerTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Categories_are_returned_ordered_by_path()
     {
+        // Düzeltme 2: çocuğu önce AddRange'e koyuyor, adlar ters alfabetik seçildi.
+        //   - Ekleme sırası yanlış cevabı verirdi (alt → kok).
+        //   - Ad sıralaması da yanlış cevabı verirdi ("Ayakkabı" < "Üst Giyim" → alt önce).
+        // Yalnız Path sıralaması doğru ata-önce sırayı üretebilir.
+        //
+        // Düzeltme 3: pasif (IsActive=false) üçüncü kategori eklendi ve döndüğü
+        // doğrulandı; inceleyen'in .Where(c => c.IsActive) eklemesine karşı dayanıklı.
+        // Ayrı test yerine burada tutuldu: kurgu zaten üç-kategori senaryosuna hazır
+        // ve pasif sözleşme sıralama sözleşmesiyle aynı uçla korunuyor.
         var (client, licenseId) = await SeedAsync(0);
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
 
         var kok = new Category
         {
-            Id = Guid.NewGuid(), LicenseId = licenseId, Name = "Erkek",
+            Id = Guid.NewGuid(), LicenseId = licenseId,
+            // "Üst Giyim" alfabetik olarak "Ayakkabı"dan SONRA gelir;
+            // ad sıralaması kok'u sona iterdi — Path sıralaması önce koyuyor.
+            Name = "Üst Giyim",
             SortOrder = 0, IsActive = true,
             CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
         };
         kok.Path = $"/{kok.Id:N}/";
+
         var alt = new Category
         {
-            Id = Guid.NewGuid(), LicenseId = licenseId, Name = "Tişört",
+            Id = Guid.NewGuid(), LicenseId = licenseId,
+            // "Ayakkabı" alfabetik olarak "Üst Giyim"den ÖNCE gelir;
+            // ad sıralaması alt'ı başa iterdi — Path sıralaması çocuğu sonra koyuyor.
+            Name = "Ayakkabı",
             ParentCategoryId = kok.Id, SortOrder = 0, IsActive = true,
             CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
         };
         alt.Path = $"/{kok.Id:N}/{alt.Id:N}/";
-        db.Categories.AddRange(kok, alt);
+
+        // Düzeltme 3: pasif kategori — kökün ikinci çocuğu. "Atkı" alfabetik olarak
+        // "Ayakkabı"dan ÖNCE gelir; ad sıralaması onu alt'ın da önüne koyardı.
+        // Path sıralaması doğru sırayı (kok → alt → pasif) koruyor.
+        var pasif = new Category
+        {
+            Id = Guid.NewGuid(), LicenseId = licenseId,
+            Name = "Atkı",
+            ParentCategoryId = kok.Id, SortOrder = 1, IsActive = false,
+            CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
+        };
+        pasif.Path = $"/{kok.Id:N}/{pasif.Id:N}/";
+
+        // Çocukları önce ekliyoruz — ekleme sırası yanlış cevabı verirdi.
+        db.Categories.AddRange(alt, pasif, kok);
         await db.SaveChangesAsync();
 
         var rows = await client.GetFromJsonAsync<List<JsonElement>>(
             $"/api/v1/licenses/{licenseId}/catalog/categories");
 
-        rows!.Should().HaveCount(2);
-        // Path sıralaması ağacı ata-önce diziyor; WPF ayrıca sıralama yapmasın.
-        rows[0].GetProperty("name").GetString().Should().Be("Erkek");
-        rows[1].GetProperty("name").GetString().Should().Be("Tişört");
+        // Pasif kategori de dönmeli (Düzeltme 3).
+        rows!.Should().HaveCount(3);
+        // Path sıralaması: kok → alt → pasif (Düzeltme 2).
+        rows[0].GetProperty("name").GetString().Should().Be("Üst Giyim");
+        rows[1].GetProperty("name").GetString().Should().Be("Ayakkabı");
         rows[1].GetProperty("parentCategoryId").GetString()
+               .Should().Be(kok.Id.ToString());
+        rows[2].GetProperty("name").GetString().Should().Be("Atkı");
+        rows[2].GetProperty("parentCategoryId").GetString()
                .Should().Be(kok.Id.ToString());
     }
 
     [Fact]
     public async Task Categories_of_a_foreign_license_are_not_returned()
     {
+        // Düzeltme 1: rastgele Guid yerine gerçek yabancı lisans tohumlanıyor.
+        // Önceki sürüm yalnız "var olmayan lisans 404 döner" diyordu.
+        // Bu sürüm iki ayrı müşteri oluşturur; birincinin istemcisi ikincinin
+        // lisansını isteyerek kiracı yalıtımını zorlar.
         var (client, _) = await SeedAsync(0);
+        var (_, yabanciLicenseId) = await SeedAsync(0);
 
         var res = await client.GetAsync(
-            $"/api/v1/licenses/{Guid.NewGuid()}/catalog/categories");
+            $"/api/v1/licenses/{yabanciLicenseId}/catalog/categories");
 
         res.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
