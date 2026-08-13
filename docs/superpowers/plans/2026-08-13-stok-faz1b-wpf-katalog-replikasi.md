@@ -811,6 +811,23 @@ public class CatalogReplicaRepositoryTests
     }
 
     [Fact]
+    public void FindByCode_picks_the_same_row_every_time_when_the_code_repeats()
+    {
+        var repo = Make(out _);
+        // Replika indeksi bilerek UNIQUE değil (bkz. göç 025): beklenmedik bir
+        // çakışma bütün senkron transaction'ını düşürmesin. Bedeli, aynı kodu
+        // taşıyan iki satırın mümkün olması — arama yine de KARARLI dönmeli,
+        // yoksa aynı yorum yayının iki anında iki farklı ürüne eşleşir.
+        // "z-dup" alfabetik olarak sonra gelir ama Code eşit olduğu için sırayı
+        // Id belirler: ORDER BY Code, Id → "a-dup".
+        repo.Replace(
+            [Product("z-dup", "A1"), Product("a-dup", "A1")],
+            [], []);
+
+        repo.FindByCode("A1")!.Id.Should().Be("a-dup");
+    }
+
+    [Fact]
     public void FindByCode_round_trips_default_price()
     {
         var repo = Make(out _);
