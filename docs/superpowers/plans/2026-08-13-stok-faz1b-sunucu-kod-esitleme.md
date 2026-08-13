@@ -446,23 +446,56 @@ Katlama yalnız **yazma anında** uygulanıyor; deploy'dan önce kaydedilmiş ko
 olduğu gibi kalır. Faz 1a kataloğu 2026-08-12'den beri canlı, yani eski satır
 **olabilir** — "sahada boş" varsayımına güvenme, sorguyla bak.
 
-Prod DB'de (`orderdeck-sqlserver`) çalıştır:
+Prod DB'de (`orderdeck-sqlserver`) çalıştır. **Sorgu 1 — kanonik olmayan satırlar:**
 
 ```sql
 SELECT Id, LicenseId, Code, Name
 FROM Products
 WHERE Code COLLATE Latin1_General_BIN2
       LIKE N'%[abcdefghijklmnopqrstuvwxyzçğıöşüÇĞİÖŞÜ]%'
-   OR Code <> LTRIM(RTRIM(Code))
    OR Code LIKE N'%  %'
+   OR CHARINDEX(CHAR(9),  Code) > 0
+   OR CHARINDEX(CHAR(10), Code) > 0
+   OR CHARINDEX(CHAR(13), Code) > 0
 ORDER BY LicenseId, Code;
 ```
 
 `BIN2` collation şart: varsayılan `CI_AS` altında `LIKE '%[a-z]%'` büyük harfleri
 de yakalar ve sorgu her satırı döndürür.
 
-Dönen her satır için panelde ürünü aç, kodu **değiştirmeden Kaydet** — yazma yolu
-kodu kanonik hâline indirir. Sorgu boş dönene kadar tekrarla.
+Baştaki/sondaki boşluk **aranmıyor**: eski `NormalizeCode` zaten `Trim()`
+uyguluyordu, öyle bir satır oluşamaz. Aranan, eskisinin sadeleştirmediği **iç**
+boşluk ve sekme/satır sonu.
+
+**Sorgu ekranda bozulmuş olabilir** — desen ASCII dışı harf içeriyor ve
+`docker exec … sqlcmd` boru hattı bunları mangleyebilir. Boş sonuca güvenmeden
+önce bilerek bozuk bir satır ekleyip (`INSERT` yerine panelden geçici bir ürün
+açmak yeterli) sorgunun onu döndürdüğünü gör, sonra sil.
+
+**Sorgu 2 — katlama sonrası çakışacak çiftler (ÖNCE bunu çalıştır):**
+
+```sql
+WITH Folded AS (
+    SELECT Id, LicenseId, Code,
+           UPPER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+               Code COLLATE Latin1_General_BIN2,
+               N'ç', N'c'), N'ğ', N'g'), N'ı', N'i'), N'İ', N'i'),
+               N'ö', N'o'), N'ş', N's'), N'ü', N'u')) AS Canon
+    FROM Products)
+SELECT LicenseId, Canon, COUNT(*) AS n,
+       STRING_AGG(Code, ' | ') AS Codes
+FROM Folded
+GROUP BY LicenseId, Canon
+HAVING COUNT(*) > 1;
+```
+
+Sorgu 1 bunları **gösteremez** çünkü çiftin kanonik yarısını (`ISIK 1`) filtreler.
+Çakışan çift varsa, Kaydet'e basmadan önce birini elle yeniden adlandır — yoksa
+aşağıdaki kilitlenmeye kendi elinle girersin.
+
+Sonra Sorgu 1'in döndürdüğü her satır için panelde ürünü aç, kodu **değiştirmeden
+Kaydet** — yazma yolu kodu kanonik hâline indirir. Sorgu 1 boş dönene kadar
+tekrarla.
 
 **Atlanırsa iki ayrı sessiz hata çıkar:**
 

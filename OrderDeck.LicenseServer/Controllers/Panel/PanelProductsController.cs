@@ -696,6 +696,13 @@ public sealed class PanelProductsController : ControllerBase
     ///
     /// Yan etki bilinçli: "ŞIK1" ile "SIK1" aynı koda iner, bir arada var
     /// olamaz. İzleyici ikisini zaten ayırt edemezdi.
+    ///
+    /// <b>Kalan açık:</b> bu KATLAMA, süzme değil. <c>TurkishAscii</c> yalnız
+    /// yedi Türkçe harfi eşliyor; <c>Â Î Û É</c> gibi başkaları kodda hayatta
+    /// kalır ve Code128 yükünü hâlâ bozabilir (<c>AxisCodeDeriver</c> eksen
+    /// tarafında bunları eliyor, kod tarafında elenmiyor). Kapatmak koda
+    /// karakter kısıtı getirmek demek — konuşuldu ve reddedildi; kısıt gerekirse
+    /// ayrı bir karar olarak ele alınmalı.
     /// </summary>
     private static string NormalizeCode(string? code)
         => SearchNormalizer.Normalize(code);
