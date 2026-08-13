@@ -2032,7 +2032,7 @@ git commit -m "test(katalog): fotoğraf önbelleğinin adlandırma ve atomiklik 
 **Files:**
 - Create: `OrderDeck.App/Services/Sync/CatalogSyncService.cs`
 - Create: `OrderDeck.App/Services/Sync/CatalogSyncHostedService.cs`
-- Modify: `OrderDeck.App/AppHost.cs` (satır ~511 civarı, shopper ingest kayıtlarının yanına)
+- Modify: `OrderDeck.App/AppHost.cs` (shopper ingest kayıtlarının yanına; teslim edilen hâlde 518-527)
 - Test: `OrderDeck.Tests/Services/Sync/CatalogSyncServiceTests.cs`
 
 > **Test koşum takımı:** lisans kimliği çözümlemesi `GetMyLicensesAsync`
@@ -2046,8 +2046,23 @@ git commit -m "test(katalog): fotoğraf önbelleğinin adlandırma ve atomiklik 
 > listesini döndürsün. Yeni bir desen icat etme.
 
 > **UYGULAMA NOTU (2026-08-14, gerçekleşen hâl).** Bu bölüm, Task 5 ve 6
-> teslim edildikten sonra üç noktada düzeltildi; aşağıdaki metin artık
-> `612d266` commit'indeki kodun kendisini anlatıyor.
+> teslim edildikten sonra dört noktada düzeltildi.
+>
+> **Aşağıdaki kod blokları `612d266`'nın İSKELETİDİR, birebir kopyası
+> DEĞİLDİR.** Önceki hâli "kodun kendisi" diyordu; doğru değildi — teslim
+> edilen dosya bu metinde bulunmayan dört açıklama daha taşıyor: (a) sınıf
+> dokümanındaki "…ardından yayında operatörün yazdığı kod yanlış ürüne
+> eşleşirdi" cümlesi, (b) `MaxPages` dokümanındaki "tavana çarpmak **başarı
+> değil**" notu, (c) `SearchNormalizer.Normalize(p.Code)` satırının üstündeki
+> "aranan iğne de aynı fonksiyondan geçiyor" açıklaması, (d) lisans
+> çözümlemesinin `─── Lisans kimliği çözümlemesi ───` bölüm başlığı. Kanıt
+> okumak isteyen dosyanın kendisine baksın; bu blok niyeti anlatır.
+>
+> **Ayrıca kod `612d266`'dan sonra bir daha değişti**: gözden geçirme turu
+> (`8c383d9`, `c6f5adb`) üretimi öldüren bir hata ile beş boşluk kapattı —
+> aşağıdaki blokların o kısımları artık ESKİ. Ne değiştiği ve neden
+> değiştiği **Step 9**'da; blokları burada yeniden yazmak yerine tek yerde
+> anlatmayı seçtik ki iki metin arasında yeni bir "hangisi doğru?" doğmasın.
 >
 > 1. **Döngü yalnız BOŞ sayfada biter** (`batch.Count == 0`), kısa sayfada
 >    değil. `GetCatalogProductsAsync`'in XML dokümanı bunu koyu yazıyor;
@@ -2062,6 +2077,13 @@ git commit -m "test(katalog): fotoğraf önbelleğinin adlandırma ve atomiklik 
 >    anahtarı içeri alırdı. Aynısı `CoverPhotoUrl` için de geçerli.
 > 3. **`Prune` artık `IEnumerable<string?>` alıyor** ve boşları kendi eliyor;
 >    `_repo.CoverPhotoKeys()` (kovaryans sayesinde) olduğu gibi bağlanıyor.
+> 4. **`Downloads_only_the_photos_that_are_not_cached_yet` testine
+>    `CreatedClientNames` iddiası eklendi.** Bu, "fotoğraf baytları KİMLİKSİZ
+>    istemciyle çekilir" değişmezinin kodda tek koruyucusu: kimlik taşıyan
+>    istemciye dönmek hiçbir testi kırmaz, hiçbir istisna fırlatmaz — R2
+>    presigned adrese fazladan `Authorization` geldiği için 403 döner, o 403
+>    `LogDebug`'a yutulur ve kartlar sessizce fotoğrafsız kalır. Sahte
+>    `IHttpClientFactory` bu yüzden istenen istemci adlarını kaydediyor.
 >
 > **Plandan sapma (yeni):** plandaki döngü `MaxPages` tavanına çarpınca
 > elindeki YARIM listeyi yazıyordu — görevin bütün varlık sebebi olan
@@ -2069,7 +2091,7 @@ git commit -m "test(katalog): fotoğraf önbelleğinin adlandırma ve atomiklik 
 > Tavana çarpan tur artık `Replace` çağırmadan 0 dönüyor ve uyarı logluyor;
 > davranışı `Hitting_the_page_ceiling_writes_nothing` testi koruyor.
 
-- [ ] **Step 1: Testleri yaz (başarısız olacak)**
+- [x] **Step 1: Testleri yaz (başarısız olacak)**
 
 `OrderDeck.Tests/Services/Sync/CatalogSyncServiceTests.cs`.
 
@@ -2171,7 +2193,7 @@ alınmış bir imleç sessizce boş sayfaya dönüşmesin diye.
     }
 ```
 
-- [ ] **Step 2: Koştur, başarısız olduğunu gör**
+- [x] **Step 2: Koştur, başarısız olduğunu gör**
 
 ```bash
 dotnet test OrderDeck.Tests/OrderDeck.Tests.csproj \
@@ -2179,7 +2201,7 @@ dotnet test OrderDeck.Tests/OrderDeck.Tests.csproj \
 ```
 Beklenen: FAIL — `CatalogSyncService` tipi yok.
 
-- [ ] **Step 3: Servisi yaz**
+- [x] **Step 3: Servisi yaz**
 
 `OrderDeck.App/Services/Sync/CatalogSyncService.cs`:
 
@@ -2414,7 +2436,7 @@ public sealed class CatalogSyncService
 > `ShopperRegistrationIngestService` ile birebir aynı — bilerek. İki servis
 > ayrışırsa lisans çözümleme davranışı iki farklı yerde yaşamaya başlar.
 
-- [ ] **Step 4: Arka plan işini yaz**
+- [x] **Step 4: Arka plan işini yaz**
 
 `OrderDeck.App/Services/Sync/CatalogSyncHostedService.cs` —
 `ShopperRegistrationIngestHostedService` ile **aynı iskelet** (açılışta ilk
@@ -2485,9 +2507,10 @@ public sealed class CatalogSyncHostedService : BackgroundService
 }
 ```
 
-- [ ] **Step 5: DI kayıtlarını ekle**
+- [x] **Step 5: DI kayıtlarını ekle**
 
-`AppHost.cs`, shopper ingest kayıtlarının (satır ~511-512) hemen altına:
+`AppHost.cs`, shopper ingest kayıtlarının (teslim edilen hâlde 515-516) hemen
+altına — yani 518-527:
 
 ```csharp
         // Katalog replikası (Stok Faz 1b): sunucudaki katalogun tam anlık
@@ -2508,7 +2531,8 @@ public sealed class CatalogSyncHostedService : BackgroundService
 > yazılmalı.
 
 `CatalogReplicaRepository` ve `CatalogPhotoCache` kayıtlarını, eski
-`ProductRepository`/`ProductPhotoStore` satırlarının (84 ve 86) yanına ekle:
+`ProductRepository`/`ProductPhotoStore` satırlarının (84 ve 86) hemen altına
+ekle; teslim edilen hâlde **89 ve 90**:
 
 ```csharp
         // Stok Faz 1b: sunucu katalogunun salt-okunur replikası ve kapak
@@ -2526,7 +2550,7 @@ public sealed class CatalogSyncHostedService : BackgroundService
 > `WpfStartupEnvironment.StartBackgroundServicesAsync()` içindeki genel döngü
 > kayıtlı bütün `IHostedService`'leri başlatıyor.
 
-- [ ] **Step 6: Koştur, geçtiğini gör**
+- [x] **Step 6: Koştur, geçtiğini gör**
 
 ```bash
 dotnet build OrderDeck.App/OrderDeck.App.csproj
@@ -2536,7 +2560,7 @@ dotnet test OrderDeck.Tests/OrderDeck.Tests.csproj \
 Gerçekleşen: derleme 0 uyarı/0 hata, **6/6 PASS**; tüm takım **985/985**
 (Task 7 öncesi 979 + 6).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add OrderDeck.App/Services/Sync/CatalogSyncService.cs \
@@ -2547,7 +2571,7 @@ git commit -m "feat(katalog): WPF katalog senkron servisi"
 ```
 Commit: **`612d266`**.
 
-- [ ] **Step 8: Testlerin gerçekten koruduğunu kanıtla (mutasyon turu)**
+- [x] **Step 8: Testlerin gerçekten koruduğunu kanıtla (mutasyon turu)**
 
 Her bozma elle uygulanıp koşuldu, KIRMIZI görüldükten sonra elle geri alındı
 (commit önce, mutasyon sonra):
@@ -2561,7 +2585,121 @@ Her bozma elle uygulanıp koşuldu, KIRMIZI görüldükten sonra elle geri alın
 | Lisans anahtarı erken çıkışı kaldırıldı | `Returns_zero_without_calling_the_api_when_no_license_key_is_set` |
 | `if (!complete) return 0;` tavan muhafızı kaldırıldı | `Hitting_the_page_ceiling_writes_nothing` |
 
-Hiçbir mutasyon hayatta kalmadı.
+**Yukarıdaki ALTI bozmanın hiçbiri hayatta kalmadı.** Cümleyi burada
+bitirmek yanıltıcı olurdu, o yüzden kapsamı açıkça yazıyoruz: bu tur yalnız
+**sayfalama, ya-hep-ya-hiç ve tavan muhafızını** yokladı. **Alan eşlemesi
+(`ToProduct`/`ToVariants`/`ToCategory`) hiç bozulmadı**, dolayısıyla o
+turdan "test takımı sağlam" sonucu çıkmaz. Nitekim bağımsız bir mutasyon
+gözden geçirmesi (2026-08-14) **18 bozmadan 8'inin hayatta kaldığını**
+ölçtü — hepsi eşleme, kayıt seviyesi, eşzamanlılık ve ritim tarafında.
+Genişletilmiş tur ve üretimi öldüren hata **Step 9**'da.
+
+- [x] **Step 9: Gözden geçirme turu — üretimi öldüren hata + eşlemenin çivilenmesi**
+
+Commit'ler: **`8c383d9`** (kod + eşleme/ritim testleri), **`c6f5adb`**
+(bozuk gövde kayıt seviyesi), **`<STEP9SHA>`** (bu bölüm + `AppHost.cs`
+yorumu).
+
+**Üretimi öldüren hata.** `HttpClient`'ın zaman aşımı
+`TaskCanceledException` olarak yüzeye çıkıyor ve o **bir**
+`OperationCanceledException`. Fotoğraf indirmesinin iç `catch`'i de turun
+dış `catch`'i de `when (ex is not OperationCanceledException)` yazılmıştı;
+yani **tek bir fotoğrafın zaman aşımı `SyncOnceAsync`'ten kaçıyordu.**
+`CatalogSyncHostedService` kaçan istisnayı kapanma işareti sayıp ilk turda
+`return`, döngüde `break` ediyordu: **uygulama yeniden başlayana kadar bir
+daha hiç katalog senkronu olmuyor**, operatör bayat katalogla yayına
+çıkıyor ve hiçbir yerde hata görünmüyordu. Acı olan şu: `LicenseApiClient`
+bu tuzağı zaten biliyor ve kapatıyor (`catch (TaskCanceledException) when
+(!ct.IsCancellationRequested)` → `LicenseApiNetworkException`) — çekme
+yarısı güvenliydi, yalnız ham fotoğraf istemcisi açıktaydı. Doğru filtre
+**türe değil token'a** bakar: `when (!ct.IsCancellationRequested)`. Gerçek
+iptal aynen yayılır (`A_genuine_cancellation_still_propagates`), zaman
+aşımı ise olduğu şey — bir başarısızlık — olarak ele alınır.
+
+Aynı gerekçeyle `CatalogSyncHostedService` de artık **hiçbir
+`OperationCanceledException`'a "kapanma" diye güvenmiyor**; turdan çıkan
+OCE yutuluyor ve kapanma kararı yalnız `stoppingToken.IsCancellationRequested`
+ile veriliyor.
+
+**Kapatılan diğer boşluklar:**
+
+1. **Tek turlu kapı (`SemaphoreSlim(1,1)`, sıfır zaman aşımlı).** Kodda
+   "`Save` ve `Prune` aynı iş parçacığında, sırayla" yazıyordu; tur İÇİNDE
+   doğru, turlar ARASINDA hiçbir mekanizma yoktu — servis singleton,
+   `SyncOnceAsync` public, `_cachedLicenseId`/`_cachedLicenseKey`
+   senkronsuz. Bir "Yenile" düğmesi eklendiği gün iki tur örtüşür ve
+   `CatalogPhotoCache` kendi dokümanının uyardığı `File.Move` →
+   `FileNotFoundException`'a düşerdi. Kapı **kuyruğa almıyor**: süren tur
+   zaten AYNI tam anlık görüntüyü çekiyor, ikinciyi kuyruğa almak iki tam
+   çekmeyi arka arkaya koşturur, sunucuya iki kat yük bindirir ve sonucu
+   değiştirmezdi — o yüzden logla ve 0 dön.
+2. **İki kademeli ritim (30 sn → 5 dk).** Sınıfın dokümanı "açılıştaki tur
+   replikayı doldurur" diyordu; açılışta lisans anahtarı çözülmemişse tur 0
+   döner ve bir sonraki deneme **5 dakika sonraydı** — replika bütün yayın
+   hazırlığı boyunca boş kalabilirdi. Artık ilk GERÇEKTEN başarılı tura
+   kadar 30 saniye, sonra 5 dakika. Üstel geri çekilme YOK, gereksiz.
+3. **Tavan kaydı ayırt edilebilir oldu.** Aynı metin hem "katalog 40.000'i
+   gerçekten aştı" hem "sunucu imleci ilerletmiyor" için çıkıyordu; çareleri
+   zıt. Kayda çekilen satır sayısı ve son imleç eklendi.
+4. **`LicenseApiUnknownException` (2xx + bozuk gövde) artık `LogError`.**
+   401, kopan bağlantı ve bozuk gövde aynı Warning satırında eriyordu; oysa
+   ilk ikisi bir sonraki turda kendini onarır, bozuk gövde onarmaz.
+   `LicenseApiClient` bu durumu bilerek gürültülü yapıyor ("bu 'katalog boş'
+   demek DEĞİLDİR"). Sıradan 5xx Warning kalıyor.
+5. **Yorum doğruluğu (davranış değişmedi).** (a) "imzalı adres 5 dakika
+   geçerli, indirme çekmenin hemen ardında" fazla söz veriyordu: indirmeler
+   BÜTÜN sayfalardan, kategori isteğinden ve `Replace`'ten sonra, üstelik
+   sırayla başlıyor; soğuk önbellekte ilk sayfaların imzası dolabilir, R2
+   403 döner ve `LogDebug`'a yutulur. Yorum artık bunu ve gerçek hafifleticiyi
+   yazıyor: her tur önbellekte olanı atladığı için kuyruk kısalır, indirilmemiş
+   kuyruk her turda daha erken başlar ve önbellek turlar içinde **yakınsar**.
+   Paralelleştirmek YASAK — `CatalogPhotoCache` iş parçacığı güvenli değil.
+   (b) Boş anahtar muhafızının "ölümsüz yetim" gerekçesi Task 6'dan beri
+   geçersizdi (`Prune` boşları kendi eliyor, `CoverPhotoKeys()` SQL'de
+   `<> ''` süzüyor); ayakta kalan tek sebep "`Save` fırlatır". (c)
+   `CatalogProductPullItem.NameSearch` tel modelinde geliyor ama bilerek
+   düşürülüyor (yerel eşleştirme ADA değil KODA bakıyor) — bunun bir hata
+   sanılmaması için yazıldı. (d) `AppHost.cs`'teki "5 dakikada bir" yorumu
+   iki kademeli ritmi anlatacak şekilde düzeltildi.
+
+**Genişletilmiş mutasyon turu (16 bozma).** Her biri elle uygulandı,
+KIRMIZI görüldü, elle geri alındı (commit önce, mutasyon sonra):
+
+| # | Bozma | Yakalayan test |
+|---|---|---|
+| M1 | `ToProduct`: `Code` yerine `Name` | `Every_field_survives_the_round_trip_from_the_wire_to_the_replica` |
+| M1b | `ToProduct`: `Name` yerine `Code` (takasın öbür yarısı) | `Every_field_survives_the_round_trip…` |
+| M2 | `Axis1Name` ↔ `Axis2Name` takası | `Every_field_survives_the_round_trip…` |
+| M3 | Varyantlar düşürüldü (`Variants.Take(0)`) | `Every_field_survives_the_round_trip…` |
+| M4 | Kategoriler düşürüldü (`Replace`'e boş liste) | `Every_field_survives_the_round_trip…` |
+| M5 | Varyant `SortOrder` hep 0 | `Every_field_survives_the_round_trip…` |
+| M6 | `Id.ToString("N")` → `ToString()` (tireli) | `Every_field_survives_the_round_trip…` |
+| M7 | `UpdatedAt.ToUnixTimeSeconds()` → `.LocalDateTime.Ticks` | `Every_field_survives_the_round_trip…` |
+| M8 | `SearchNormalizer.Normalize(p.Code)` → `p.Code` | `A_turkish_multi_word_code_matches_whatever_the_chat_types` |
+| M9 | `_photos.Prune(...)` çağrısı kaldırıldı | `A_product_that_disappears_from_the_server_loses_its_cached_photo` |
+| M10 | İç `catch` filtresi `ex is not OperationCanceledException`'a döndürüldü | `A_photo_timeout_is_a_failure_not_a_shutdown` |
+| M11 | Dış `catch` filtresi aynı şekilde döndürüldü | `An_operation_canceled_exception_without_cancellation_never_escapes_the_round` |
+| M12 | Kapı etkisizleştirildi (semafor `new(int.MaxValue, int.MaxValue)`) | `A_second_round_started_while_one_runs_returns_immediately` |
+| M13 | Hızlı açılış ritmi geri alındı (`PeriodicTimer(_steadyInterval)`) | `Retries_on_a_fast_cadence_until_the_first_successful_round` |
+| M14 | Bozuk gövde `LogError` → `LogWarning` | `A_malformed_body_is_logged_louder_than_an_ordinary_failure` |
+| M15 | İç `try/catch`'in KENDİSİ kaldırıldı | `A_photo_timeout_is_a_failure_not_a_shutdown` |
+
+**16/16 öldü.** İki not:
+
+- **M12'nin biçimi bilerek seçildi.** `_gate` alanını tamamen silmek
+  CS0414 ("atanmış ama kullanılmamış alan") üretiyor ve `TreatWarningsAsErrors`
+  yüzünden **derlenmiyor**; derlenmeyen bozma "öldü" sayılmaz. Derlenen
+  eşdeğeri: semafor doyumsuz olsun — kapı vardır ama hiç kapanmaz.
+- **Bilerek çivilenmeyen bir davranış var:** `CatalogSyncHostedService`
+  içindeki `catch (OperationCanceledException) { return false; }`.
+  `SyncOnceAsync` artık iptal-olmayan hiçbir OCE'yi dışarı vermediği için
+  (M10/M11/M15 bunu çiviliyor) bu satır **erişilemez bir ikinci savunma**;
+  onu test etmek servis seviyesindeki garantiyi taklit eden yapay bir sahte
+  gerektirirdi. Kasıtlı bırakıldı, unutulmadı.
+
+**Doğrulama:** `dotnet build OrderDeck.App/OrderDeck.App.csproj` → 0 uyarı /
+0 hata; `dotnet test OrderDeck.Tests/OrderDeck.Tests.csproj` → **994/994**
+(Task 7'nin ilk teslimindeki 985 + gözden geçirme turunun 9 yeni testi).
 
 ---
 

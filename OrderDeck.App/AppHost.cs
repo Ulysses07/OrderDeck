@@ -516,7 +516,11 @@ public sealed class AppHost : IDisposable
         services.AddHostedService<Services.Sync.ShopperRegistrationIngestHostedService>();
 
         // Katalog replikası (Stok Faz 1b): sunucudaki katalogun tam anlık
-        // görüntüsü 5 dakikada bir yerel SQLite'a yazılır. Fotoğraf baytları
+        // görüntüsü yerel SQLite'a yazılır. Ritim İKİ kademeli — ilk GERÇEKTEN
+        // başarılı tura kadar 30 saniye, sonra 5 dakika (bkz.
+        // CatalogSyncHostedService): açılışta lisans anahtarı henüz
+        // çözülmemişken tek ritim 5 dakika olsaydı taze giriş yapan operatör
+        // bütün yayın hazırlığı boyunca boş katalogla otururdu. Fotoğraf baytları
         // presigned R2 adresinden KİMLİKSİZ bir istemciyle çekiliyor —
         // LicenseApiClient'ın istemcisi Authorization ekler ve presigned
         // isteği bozardı.
