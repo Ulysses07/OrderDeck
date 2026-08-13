@@ -1472,7 +1472,7 @@ git commit -m "feat(katalog): katalog çekme istemci metotları"
 `OrderDeck.Tests/App/CatalogPhotoCacheTests.cs` (uygulanan hâli). Plandaki üç
 testin üstüne önce üç tane eklendi (`Save`'in yerine koyması, `Prune`'un geçici
 artıkları süpürmesi, klasör hiç yokken `Prune`'un sessiz kalması); ardından
-**mutasyon incelemesi** 16 mutasyonun 8'inin hayatta kaldığını gösterince sekiz
+**mutasyon incelemesi** 16 mutasyonun 8'inin hayatta kaldığını gösterince dokuz
 test daha eklendi. Yeni testlerin her biri belirli bir hayatta kalan mutasyonu
 öldürmek için var:
 
@@ -1483,11 +1483,12 @@ test daha eklendi. Yeni testlerin her biri belirli bir hayatta kalan mutasyonu
 | `Key_to_file_mapping_survives_a_new_cache_instance` | Eşlemeyi örneğe bağlama (uygulama yeniden başlayınca önbellek yetim kalır) |
 | `Save_consumes_the_temp_file_left_by_a_crashed_write` | `Save`→düz `File.WriteAllBytes` (geçici+`Move` yok) |
 | `Save_rejects_a_blank_key_instead_of_writing_an_orphan` | `Save`/`ResolveAbsolute` koruma asimetrisi → ölümsüz yetim dosya |
+| `ResolveAbsolute_refuses_a_blank_key_even_if_a_file_sits_at_its_hash` | `ResolveAbsolute` korumasını `objectKey is null`'a daraltma |
 | `Prune_ignores_blank_keys_in_the_live_list` | Listedeki tek `null`'ın bütün senkron turunu düşürmesi |
 | `Prune_survives_a_locked_file_and_still_sweeps_the_rest` | `catch (IOException)` kaldırma |
 | `Prune_survives_a_read_only_file_and_still_sweeps_the_rest` | `catch (UnauthorizedAccessException)` kaldırma |
 
-İki nokta özellikle önemli:
+Üç nokta özellikle önemli:
 
 1. **Dosya adı Windows'ta `File.Exists` ile kanıtlanamaz.** NTFS büyük/küçük harf
    ayırmadığı için `.ToLowerInvariant()` düşse bile `File.Exists(küçük_harf)`
@@ -1497,6 +1498,14 @@ test daha eklendi. Yeni testlerin her biri belirli bir hayatta kalan mutasyonu
    Eskiden "yerine koyma atomik olduğu için" diyordu ama ölçtüğü şey yalnızca
    kısalma — düz `File.WriteAllBytes` de bunu verir. Yorum artık sadece
    kanıtladığını söylüyor; atomikliği ayrı bir test kanıtlıyor.
+3. **`ResolveAbsolute`'un boşluk koruması ancak diskte karşılığı olunca
+   gözlenebilir.** `Save` boş anahtarı reddettiğine göre `hash("")` yolunda
+   dosya oluşamaz, dolayısıyla korumayı `objectKey is null`'a daraltan mutasyon
+   düz bir testle yakalanmaz. Testi anlamlı kılan gerçek senaryo: düzeltmeden
+   önceki sürüm bu dosyayı yazıyordu, yani güncelleyen kullanıcının diskinde
+   kalmış olabilir. Test o yetimi elle ekiyor ve okuma tarafının yine de `null`
+   dönmesini şart koşuyor — yoksa fotoğrafsız tüm ürünler aynı görseli
+   gösterirdi. Koruma böylece süs olmaktan çıkıp yük taşıyor.
 
 ```csharp
 using System;
@@ -1618,6 +1627,24 @@ public class CatalogPhotoCacheTests : IDisposable
         cache.ResolveAbsolute("").Should().BeNull();
         cache.ResolveAbsolute("   ").Should().BeNull();
         cache.ResolveAbsolute("hic/olmayan.img").Should().BeNull();
+    }
+
+    [Fact]
+    public void ResolveAbsolute_refuses_a_blank_key_even_if_a_file_sits_at_its_hash()
+    {
+        var cache = new CatalogPhotoCache(_root);
+        Directory.CreateDirectory(_root);
+        // Save artık boş anahtarı reddediyor, ama düzeltmeden ÖNCEKİ sürüm
+        // yazıyordu: güncelleyen kullanıcının diskinde böyle bir yetim
+        // durabilir. Okuma tarafı boş anahtarı ASLA bir dosyaya bağlamamalı —
+        // yoksa fotoğrafsız ürünlerin hepsi aynı yetim görseli gösterir.
+        File.WriteAllBytes(Path.Combine(_root, ExpectedFileName("")), [1]);
+        File.WriteAllBytes(Path.Combine(_root, ExpectedFileName("   ")), [2]);
+
+        cache.ResolveAbsolute("").Should().BeNull();
+        cache.ResolveAbsolute("   ").Should().BeNull();
+        cache.Has("").Should().BeFalse();
+        cache.Has("   ").Should().BeFalse();
     }
 
     [Fact]
@@ -1965,20 +1992,20 @@ dotnet test OrderDeck.Tests/OrderDeck.Tests.csproj \
   --filter "FullyQualifiedName~CatalogPhotoCacheTests"
 ```
 Beklenen: PASS.
-Gerçekleşen: PASS 14/14 (ilk turda 6/6, inceleme sonrası +8). Tüm takım 978/978.
+Gerçekleşen: PASS 15/15 (ilk turda 6/6, inceleme sonrası +9). Tüm takım 979/979.
 
 Mutasyon tablosu — incelemede **hayatta kalan** yedi mutasyonun hepsi artık
 ölüyor (her biri elle uygulandı, kırmızı görüldü, elle geri alındı):
 
-| Mutasyon | Öldüren test |
+| Mutasyon | Öldüren test(ler) |
 |---|---|
-| `SHA256`→`MD5` | `Save_writes_to_the_lowercase_sha256_hex_of_the_key` |
-| `.ToLowerInvariant()` düşür | `Save_writes_to_the_lowercase_sha256_hex_of_the_key` |
-| `FileNameFor`→`objectKey.Replace('/','_') + Extension` | `Save_writes_to_the_lowercase_sha256_hex_of_the_key` (+ 3 test daha) |
+| `SHA256`→`MD5` | `Save_writes_to_the_lowercase_sha256_hex_of_the_key` + 3 |
+| `.ToLowerInvariant()` düşür | `Save_writes_to_the_lowercase_sha256_hex_of_the_key` + 3 |
+| `FileNameFor`→`objectKey.Replace('/','_') + Extension` | `Save_writes_to_the_lowercase_sha256_hex_of_the_key` + 3 |
 | `Save`→düz `File.WriteAllBytes` | `Save_consumes_the_temp_file_left_by_a_crashed_write` |
 | `catch (IOException)` kaldır | `Prune_survives_a_locked_file_and_still_sweeps_the_rest` |
 | `catch (UnauthorizedAccessException)` kaldır | `Prune_survives_a_read_only_file_and_still_sweeps_the_rest` |
-| `ResolveAbsolute` koruması→yalnız `objectKey is null` | `Save_rejects_a_blank_key_instead_of_writing_an_orphan` |
+| `ResolveAbsolute` koruması→yalnız `objectKey is null` | `ResolveAbsolute_refuses_a_blank_key_even_if_a_file_sits_at_its_hash` |
 
 İlk turda doğrulanan `*.img*`→`*.img` mutasyonu da hâlâ ölüyor
 (`Prune_sweeps_leftover_temp_files`).

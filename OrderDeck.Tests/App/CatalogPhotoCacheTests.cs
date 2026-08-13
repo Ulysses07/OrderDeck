@@ -120,6 +120,24 @@ public class CatalogPhotoCacheTests : IDisposable
     }
 
     [Fact]
+    public void ResolveAbsolute_refuses_a_blank_key_even_if_a_file_sits_at_its_hash()
+    {
+        var cache = new CatalogPhotoCache(_root);
+        Directory.CreateDirectory(_root);
+        // Save artık boş anahtarı reddediyor, ama düzeltmeden ÖNCEKİ sürüm
+        // yazıyordu: güncelleyen kullanıcının diskinde böyle bir yetim
+        // durabilir. Okuma tarafı boş anahtarı ASLA bir dosyaya bağlamamalı —
+        // yoksa fotoğrafsız ürünlerin hepsi aynı yetim görseli gösterir.
+        File.WriteAllBytes(Path.Combine(_root, ExpectedFileName("")), [1]);
+        File.WriteAllBytes(Path.Combine(_root, ExpectedFileName("   ")), [2]);
+
+        cache.ResolveAbsolute("").Should().BeNull();
+        cache.ResolveAbsolute("   ").Should().BeNull();
+        cache.Has("").Should().BeFalse();
+        cache.Has("   ").Should().BeFalse();
+    }
+
+    [Fact]
     public void Save_overwrites_previous_bytes_for_the_same_key()
     {
         var cache = new CatalogPhotoCache(_root);
