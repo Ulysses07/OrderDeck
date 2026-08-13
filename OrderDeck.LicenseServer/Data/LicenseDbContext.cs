@@ -54,6 +54,7 @@ public class LicenseDbContext : DbContext
     public DbSet<Product> Products => Set<Product>();
     public DbSet<ProductVariant> ProductVariants => Set<ProductVariant>();
     public DbSet<ProductPhoto> ProductPhotos => Set<ProductPhoto>();
+    public DbSet<StockMovement> StockMovements => Set<StockMovement>();
 
     /// <summary>
     /// Türetilmiş kolonların tazelendiği <b>tek</b> nokta.
@@ -701,6 +702,32 @@ public class LicenseDbContext : DbContext
             // Yetim temizleme işi kovadaki anahtarı DB'de arıyor; anahtarın
             // benzersizliği o karşılaştırmanın ön şartı.
             b.HasIndex(p => p.ObjectKey).IsUnique();
+        });
+
+        mb.Entity<StockMovement>(b =>
+        {
+            b.HasKey(m => m.Id);
+            b.Property(m => m.Reason).HasConversion<int>();
+            b.Property(m => m.Note).HasMaxLength(CatalogLimits.MovementNote);
+
+            b.HasOne(m => m.License).WithMany()
+                .HasForeignKey(m => m.LicenseId).OnDelete(DeleteBehavior.Cascade);
+
+            // Restrict: hareketi olan ürün/varyant SİLİNEMEZ. Cascade olsaydı tek
+            // bir yanlış tıklama defterin bir bölümünü sessizce yok ederdi.
+            // Controller bunu 409 ile karşılıyor (bkz. Task 10) — kullanıcı
+            // DbUpdateException/500 değil, Türkçe bir açıklama görüyor.
+            b.HasOne(m => m.Product).WithMany()
+                .HasForeignKey(m => m.ProductId).OnDelete(DeleteBehavior.Restrict);
+            b.HasOne(m => m.ProductVariant).WithMany()
+                .HasForeignKey(m => m.ProductVariantId).OnDelete(DeleteBehavior.Restrict);
+
+            // Bakiye toplaması: WHERE LicenseId=… GROUP BY ProductId, ProductVariantId
+            b.HasIndex(m => new { m.LicenseId, m.ProductId, m.ProductVariantId });
+            // WPF çekme imleci: WHERE LicenseId=… AND CreatedAt > @since ORDER BY CreatedAt
+            b.HasIndex(m => new { m.LicenseId, m.CreatedAt });
+            // Mutabakat: bir siparişin mevcut hareketlerini bul.
+            b.HasIndex(m => m.OrderId);
         });
 
         // Seed SKUs
