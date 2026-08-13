@@ -1,0 +1,36 @@
+# Docker derleme bağlamı. Dockerfile artık `COPY . .` yapıyor (proje grafiğini
+# elle ikizlemek yerine restore'un çözmesi için) — bağlamın küçük kalması bu
+# dosyanın işi.
+#
+# BURAYA PROJE KLASÖRÜ YAZMA. Yalnız derleme çıktısı ve kaynak olmayan gürültü
+# elenir. Bir projeyi elemek, kaldırdığımız ikizlenmeyi geri getirir: bugün
+# LicenseServer'ın grafiğinde olmayan bir proje yarın olur ve derleme yine
+# sessizce kırılır.
+
+# Derleme çıktıları — yerelde derlenmiş bir ağaçta yüzlerce MB tutar ve imaja
+# hiçbir şey katmaz; SDK zaten konteyner içinde yeniden derliyor.
+**/bin/
+**/obj/
+**/publish/
+artifacts/
+
+# Sürüm geçmişi: derlemede kullanılmıyor (MinVer/GitVersion/SourceLink yok).
+.git/
+.github/
+
+# JS tarafı — sunucu imajına girmiyor.
+**/node_modules/
+web/dist/
+Extension/dist/
+
+# IDE / editör / araç durumu
+.vs/
+.vscode/
+.idea/
+.claude/
+.codex/
+*.user
+
+# Belgeler ve yerel notlar
+docs/
+*.md
