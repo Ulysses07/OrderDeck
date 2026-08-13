@@ -41,5 +41,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\OrderDeck.PdfParsing\OrderDeck.PdfParsing.csproj" />
+    <ProjectReference Include="..\OrderDeck.Shared\OrderDeck.Shared.csproj" />
   </ItemGroup>
 </Project>

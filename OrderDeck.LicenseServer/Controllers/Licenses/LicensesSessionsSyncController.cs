@@ -20,15 +20,18 @@ public sealed class LicensesSessionsSyncController : ControllerBase
 {
     private readonly LicenseDbContext _db;
     private readonly INotificationSender _push;
+    private readonly Services.Stock.StockLedgerWriter _ledger;
     private readonly ILogger<LicensesSessionsSyncController> _log;
 
     public LicensesSessionsSyncController(
         LicenseDbContext db,
         INotificationSender push,
+        Services.Stock.StockLedgerWriter ledger,
         ILogger<LicensesSessionsSyncController> log)
     {
         _db = db;
         _push = push;
+        _ledger = ledger;
         _log = log;
     }
 
@@ -158,7 +161,12 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         string? CancelReason,
         bool IsShippingFee,
         bool IsBackupPromoted,
-        bool IsTentativeBackup);
+        bool IsTentativeBackup,
+        // Varsayılanlı: eski WPF sürümleri bu alanları göndermiyor ve
+        // göndermemeleri hata değil — ürün bağlanmamış sipariş geçerli bir
+        // durumdur (kart "tanımlı değil" der, satış yine olur).
+        Guid? ProductId = null,
+        Guid? ProductVariantId = null);
 
     public sealed record SyncOrdersRequest(List<SyncOrderItem> Orders);
 
@@ -169,6 +177,7 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         DateTimeOffset AddedAt, DateTimeOffset? PrintedAt,
         DateTimeOffset? CancelledAt, string? CancelReason,
         bool IsShippingFee, bool IsBackupPromoted, bool IsTentativeBackup,
+        Guid? ProductId, Guid? ProductVariantId,
         DateTimeOffset UpdatedAt);
 
     [HttpPost("orders/sync")]
@@ -187,7 +196,15 @@ public sealed class LicensesSessionsSyncController : ControllerBase
             return Problem(title: "batch-too-large", detail: "Max 200 order per batch.", statusCode: 400);
 
         var now = DateTimeOffset.UtcNow;
-        var ids = req.Orders.Select(o => o.Id).ToList();
+
+        // Paketi sipariş id'sine göre TEKİLLEŞTİR. Aynı id iki kez gelirse
+        // aşağıdaki döngü aynı yeni siparişi iki kez Add eder → EF izleme
+        // istisnası → 500. Son giriş kazanır: payload sırası istemcinin niyet
+        // sırasıdır. Bu liste hem sipariş yazma döngüsünde hem defter çağrısında
+        // kullanılır — iki yol aynı veriyi görmeli.
+        var orders = req.Orders.GroupBy(o => o.Id).Select(g => g.Last()).ToList();
+
+        var ids = orders.Select(o => o.Id).ToList();
         var existing = await _db.Orders
             .Where(o => o.LicenseId == licenseId && ids.Contains(o.Id))
             .ToDictionaryAsync(o => o.Id, ct);
@@ -198,7 +215,7 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         // shopper, identified via ShopperBroadcasterLink.WpfCustomerId).
         var newOrdersForShopperPush = new List<(string CustomerIdHex, decimal Price)>();
 
-        foreach (var item in req.Orders)
+        foreach (var item in orders)
         {
             if (existing.TryGetValue(item.Id, out var current))
             {
@@ -212,6 +229,8 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 current.IsShippingFee = item.IsShippingFee;
                 current.IsBackupPromoted = item.IsBackupPromoted;
                 current.IsTentativeBackup = item.IsTentativeBackup;
+                current.ProductId = item.ProductId;
+                current.ProductVariantId = item.ProductVariantId;
                 current.UpdatedAt = now;
             }
             else
@@ -235,6 +254,8 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                     IsShippingFee = item.IsShippingFee,
                     IsBackupPromoted = item.IsBackupPromoted,
                     IsTentativeBackup = item.IsTentativeBackup,
+                    ProductId = item.ProductId,
+                    ProductVariantId = item.ProductVariantId,
                     UpdatedAt = now
                 });
                 // Sadece basılmış (printed), iptal değil, kargo ücreti değil,
@@ -251,6 +272,32 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 }
             }
         }
+
+        // Defter, siparişlerle AYNI SaveChanges'te yazılır: "sipariş kaydedildi
+        // ama stok düşmedi" ara durumu hiç oluşmasın.
+        //
+        // Defter satırlarının damgası WPF çekme imlecinin sütunu (CreatedAt), bu
+        // yüzden yukarıdaki `now` yerine burada TAZE okunuyor: okuma ile commit
+        // arasındaki pencere ne kadar darsa imlecin gerisine düşme riski o kadar
+        // küçülür. Asıl güvence yine de çekme ucundaki kararlılık ufku; bu sadece
+        // ikinci katman. Sipariş alanları `now`'u kullanmaya devam ediyor —
+        // onların damgası imleç sütunu değil.
+        var ledgerNow = DateTimeOffset.UtcNow;
+
+        await _ledger.ApplyAsync(
+            licenseId,
+            orders.Select(o => new Services.Stock.LedgerOrderInput(
+                new Services.Stock.LedgerOrderState(
+                    o.Id,
+                    o.ProductId,
+                    o.ProductVariantId,
+                    o.IsShippingFee,
+                    o.CancelledAt is not null,
+                    o.IsTentativeBackup),
+                o.AddedAt,
+                o.CancelledAt)).ToList(),
+            ledgerNow,
+            ct);
 
         await _db.SaveChangesAsync(ct);
 
@@ -290,6 +337,7 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 o.MessageText, o.Code, o.Price,
                 o.AddedAt, o.PrintedAt, o.CancelledAt, o.CancelReason,
                 o.IsShippingFee, o.IsBackupPromoted, o.IsTentativeBackup,
+                o.ProductId, o.ProductVariantId,
                 o.UpdatedAt))
             .ToListAsync(ct);
 

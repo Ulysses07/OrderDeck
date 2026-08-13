@@ -1,6 +1,6 @@
-using OrderDeck.LicenseServer.Domain;
-using OrderDeck.LicenseServer.Services.Catalog;
 using Microsoft.EntityFrameworkCore;
+using OrderDeck.LicenseServer.Domain;
+using OrderDeck.Shared.Text;
 
 namespace OrderDeck.LicenseServer.Data;
 
@@ -54,6 +54,7 @@ public class LicenseDbContext : DbContext
     public DbSet<Product> Products => Set<Product>();
     public DbSet<ProductVariant> ProductVariants => Set<ProductVariant>();
     public DbSet<ProductPhoto> ProductPhotos => Set<ProductPhoto>();
+    public DbSet<StockMovement> StockMovements => Set<StockMovement>();
 
     /// <summary>
     /// Türetilmiş kolonların tazelendiği <b>tek</b> nokta.
@@ -336,6 +337,9 @@ public class LicenseDbContext : DbContext
             b.HasIndex(o => new { o.LicenseId, o.CustomerId });
             // Reverse-sync cursor.
             b.HasIndex(o => new { o.LicenseId, o.UpdatedAt });
+            // Ürün silinmeden önce "bu ürüne bağlı sipariş var mı" sorusu ve
+            // panel ürün-bazlı sipariş listesi bu indeksi okur. FK yok, indeks var.
+            b.HasIndex(o => new { o.LicenseId, o.ProductId });
         });
 
         // WhatsApp template sync (PR 2026-05-15): WPF PaymentSettings replikası.
@@ -701,6 +705,39 @@ public class LicenseDbContext : DbContext
             // Yetim temizleme işi kovadaki anahtarı DB'de arıyor; anahtarın
             // benzersizliği o karşılaştırmanın ön şartı.
             b.HasIndex(p => p.ObjectKey).IsUnique();
+        });
+
+        mb.Entity<StockMovement>(b =>
+        {
+            b.HasKey(m => m.Id);
+            b.Property(m => m.Reason).HasConversion<int>();
+            b.Property(m => m.Note).HasMaxLength(CatalogLimits.MovementNote);
+
+            b.HasOne(m => m.License).WithMany()
+                .HasForeignKey(m => m.LicenseId).OnDelete(DeleteBehavior.Cascade);
+
+            // Restrict: hareketi olan ürün/varyant SİLİNEMEZ. Cascade olsaydı tek
+            // bir yanlış tıklama defterin bir bölümünü sessizce yok ederdi.
+            // Controller bunu 409 ile karşılıyor (bkz. Task 10) — kullanıcı
+            // DbUpdateException/500 değil, Türkçe bir açıklama görüyor.
+            b.HasOne(m => m.Product).WithMany()
+                .HasForeignKey(m => m.ProductId).OnDelete(DeleteBehavior.Restrict);
+            b.HasOne(m => m.ProductVariant).WithMany()
+                .HasForeignKey(m => m.ProductVariantId).OnDelete(DeleteBehavior.Restrict);
+
+            // Bakiye toplaması: WHERE LicenseId=… GROUP BY ProductId, ProductVariantId
+            b.HasIndex(m => new { m.LicenseId, m.ProductId, m.ProductVariantId });
+            // WPF çekme imleci: WHERE LicenseId=… AND CreatedAt > @since ORDER BY CreatedAt
+            b.HasIndex(m => new { m.LicenseId, m.CreatedAt });
+            // Mutabakat: WHERE LicenseId=… AND OrderId IN (…) — sipariş senkron
+            // paketinin mevcut hareketlerini bulur. LicenseId anahtarda olmasa
+            // her isabet için ana tabloya key lookup gerekirdi; Include ile
+            // sorgunun okuduğu üç sütun da yaprakta durduğundan sorgu covering
+            // olur, ana tabloya hiç gitmez. Yayın boyunca sürekli koşan sıcak
+            // yol: WPF her sipariş güncellemesinde paketi yeniden gönderiyor ve
+            // paket başına 200 sipariş id'sine kadar çıkabiliyor.
+            b.HasIndex(m => new { m.LicenseId, m.OrderId })
+                .IncludeProperties(m => new { m.ProductId, m.ProductVariantId, m.Quantity });
         });
 
         // Seed SKUs

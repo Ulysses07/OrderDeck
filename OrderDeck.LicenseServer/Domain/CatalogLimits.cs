@@ -75,6 +75,12 @@ public static class CatalogLimits
     public const int Barcode = 64;
 
     /// <summary>
+    /// Stok hareketi notu ("mal kabul irsaliye 4412", "sayım farkı"). Serbest
+    /// metin; 200 karakter panelde tek satırda okunabilir kalıyor.
+    /// </summary>
+    public const int MovementNote = 200;
+
+    /// <summary>
     /// Kategori ağacının azami seviye sayısı (kök = 1).
     ///
     /// Neden gerekli: <c>Path</c> seviye başına 33 karakter büyüyor

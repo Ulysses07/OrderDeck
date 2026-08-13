@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using OrderDeck.LicenseServer.Data;
 
@@ -11,9 +12,11 @@ using OrderDeck.LicenseServer.Data;
 namespace OrderDeck.LicenseServer.Data.Migrations
 {
     [DbContext(typeof(LicenseDbContext))]
-    partial class LicenseDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260813090931_AddStockMovement")]
+    partial class AddStockMovement
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -841,12 +844,6 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<DateTimeOffset?>("PrintedAt")
                         .HasColumnType("datetimeoffset");
 
-                    b.Property<Guid?>("ProductId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<Guid?>("ProductVariantId")
-                        .HasColumnType("uniqueidentifier");
-
                     b.Property<Guid?>("SessionId")
                         .HasColumnType("uniqueidentifier");
 
@@ -863,8 +860,6 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.HasIndex("SessionId");
 
                     b.HasIndex("LicenseId", "CustomerId");
-
-                    b.HasIndex("LicenseId", "ProductId");
 
                     b.HasIndex("LicenseId", "UpdatedAt");
 
@@ -1782,15 +1777,13 @@ namespace OrderDeck.LicenseServer.Data.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("OrderId");
+
                     b.HasIndex("ProductId");
 
                     b.HasIndex("ProductVariantId");
 
                     b.HasIndex("LicenseId", "CreatedAt");
-
-                    b.HasIndex("LicenseId", "OrderId");
-
-                    SqlServerIndexBuilderExtensions.IncludeProperties(b.HasIndex("LicenseId", "OrderId"), new[] { "ProductId", "ProductVariantId", "Quantity" });
 
                     b.HasIndex("LicenseId", "ProductId", "ProductVariantId");
 

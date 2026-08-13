@@ -7,6 +7,7 @@ using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
 using OrderDeck.LicenseServer.Services.BroadcastPosts;
 using OrderDeck.LicenseServer.Services.Catalog;
+using OrderDeck.Shared.Text;
 
 namespace OrderDeck.LicenseServer.Controllers.Panel;
 
@@ -438,6 +439,29 @@ public sealed class PanelProductsController : ControllerBase
                           + "Önce varyantları silmelisin.",
                     statusCode: 409);
 
+            // Eksensiz kartın otomatik varyantı hasValued'a TAKILMAZ (BuildAutoVariant
+            // eksen değeri doldurmuyor, ikisi de null) — ama o varyantın defteri
+            // olabilir: stok elemanı eksensiz ürüne pekâlâ mal kabul girer. Bu
+            // satırlar duruyorken RemoveRange, Restrict FK'sına çarpıp 500'e düşerdi
+            // ve ürün bir daha ASLA eksen kazanamazdı (hareket de silinemez).
+            //
+            // Kontrolün yeri kasıtlı: RemoveRange'ten ÖNCE ve sahiplik/lisans
+            // doğrulandıktan SONRA. Aşağı kaydırılırsa silme zaten denenmiş olur —
+            // Türkçe 409 yerine yine 500 döneriz. Yukarı taşınırsa başka lisansın
+            // defteri 409/404 farkından sızar.
+            var variantIds = product.Variants.Select(v => v.Id).ToList();
+            var hasMovements = await _db.StockMovements
+                .AnyAsync(m => m.ProductVariantId != null
+                               && variantIds.Contains(m.ProductVariantId.Value), ct);
+            if (hasMovements)
+                return Problem(title: "axis-in-use-stock",
+                    detail: "Bu ürünün stok hareketleri var; eksen yapısı artık "
+                          + "değiştirilemez (eksen açıp kapatmak da dahil). "
+                          + "Hareketler geçmiş satışların dayanağı olduğu için "
+                          + "silinemez. Farklı bir eksen yapısı gerekiyorsa yeni "
+                          + "bir ürün kartı açmalısın.",
+                    statusCode: 409);
+
             _db.ProductVariants.RemoveRange(product.Variants.ToList());
             product.Variants.Clear();
         }
@@ -499,6 +523,20 @@ public sealed class PanelProductsController : ControllerBase
 
         var product = await LoadAsync(id, licenseId.Value, ct);
         if (product is null) return NotFound();
+
+        // Restrict FK zaten silmeyi engelliyor; buradaki kontrol kullanıcıya
+        // 500 yerine Türkçe bir açıklama vermek için. Defteri olan ürün
+        // silinemez — silinseydi geçmiş satışların dayanağı kaybolurdu.
+        //
+        // Kontrolün yeri kasıtlı: sahiplik doğrulandıktan SONRA. Önce olsaydı
+        // başka lisansın ürününde hareket olup olmadığı 409/404 farkından
+        // sızardı.
+        var hasMovements = await _db.StockMovements
+            .AnyAsync(m => m.ProductId == id, ct);
+        if (hasMovements)
+            return Problem(title: "product-has-stock-movements",
+                detail: "Bu ürünün stok hareketleri var; silinemez. Arşivleyebilirsiniz.",
+                statusCode: 409);
 
         // Galeri fotoğraflarının anahtarlarını DB commit öncesinde toplayıyoruz
         // — commit sonrası satırlar gider, anahtara erişemeyiz.

@@ -6,6 +6,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
 using OrderDeck.LicenseServer.Services.Catalog;
+using OrderDeck.Shared.Text;
 
 namespace OrderDeck.LicenseServer.Controllers.Panel;
 
@@ -264,6 +265,16 @@ public sealed class PanelProductVariantsController : ControllerBase
 
         var variant = product.Variants.FirstOrDefault(v => v.Id == id);
         if (variant is null) return NotFound();
+
+        // Restrict FK zaten engelliyor; bu kontrol 500 yerine Türkçe açıklama
+        // dönmek için. Sahiplik doğrulandıktan SONRA çalışıyor — aksi hâlde
+        // başka lisansın varyantının defteri 409/404 farkından sızardı.
+        var hasMovements = await _db.StockMovements
+            .AnyAsync(m => m.ProductVariantId == id, ct);
+        if (hasMovements)
+            return Problem(title: "variant-has-stock-movements",
+                detail: "Bu varyantın stok hareketleri var; silinemez. Pasife alabilirsiniz.",
+                statusCode: 409);
 
         _db.ProductVariants.Remove(variant);
         product.UpdatedAt = DateTimeOffset.UtcNow;

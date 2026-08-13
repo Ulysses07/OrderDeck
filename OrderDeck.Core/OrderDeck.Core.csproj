@@ -17,5 +17,6 @@
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
     <ProjectReference Include="..\OrderDeck.PdfParsing\OrderDeck.PdfParsing.csproj" />
+    <ProjectReference Include="..\OrderDeck.Shared\OrderDeck.Shared.csproj" />
   </ItemGroup>
 </Project>

@@ -34,7 +34,9 @@ public sealed record SyncOrderItem(
     string? CancelReason,
     bool IsShippingFee,
     bool IsBackupPromoted,
-    bool IsTentativeBackup);
+    bool IsTentativeBackup,
+    System.Guid? ProductId = null,
+    System.Guid? ProductVariantId = null);
 
 public sealed record SyncOrdersRequest(System.Collections.Generic.IReadOnlyList<SyncOrderItem> Orders);
 
