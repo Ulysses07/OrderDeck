@@ -153,9 +153,11 @@ public sealed class PanelProductsController : ControllerBase
             // eşleşme veritabanının collation'ından bağımsız (SQL Server duyarsız,
             // PostgreSQL duyarlı; göçte davranış değişmesin).
             //
-            // Kod için ayrı bir iğne gerekmiyor: `Code` zaten ASCII büyük harf
-            // üretiliyor (NextCode / AxisCodeDeriver), normalleştirilmiş iğne de
-            // büyük harf.
+            // Kod için ayrı bir iğne gerekmiyor çünkü `Code` de yazma anında aynı
+            // normalleştiriciden geçiyor (NormalizeCode). Eskiden burada "Code
+            // zaten ASCII büyük harf" yazıyordu — bu yalnız OTOMATİK üretilen
+            // kodlar (A1, A2) için doğruydu; kod elle yazılabiliyor ve sahada
+            // "güzel elbise" gibi çok kelimeli Türkçe ifadeler oluyor.
             var needle = SearchNormalizer.Normalize(q);
             if (needle.Length > 0)
                 query = query.Where(
@@ -679,8 +681,21 @@ public sealed class PanelProductsController : ControllerBase
             .Include(p => p.Variants)
             .FirstOrDefaultAsync(p => p.Id == id && p.LicenseId == licenseId, ct);
 
+    /// <summary>
+    /// Kodun kanonik hâli. Kod bir <b>kimlik</b>: sistem onu ham saklamıyor,
+    /// yazma anında tek bir biçime indirgiyor (bugün de öyle — "  a5 " → "A5").
+    ///
+    /// <c>ToUpperInvariant</c> TEK BAŞINA yetmiyor: Türkçe'de <c>ı</c>'yı küçük
+    /// bırakır, <c>İ</c>'yi korur. Ürün adında kullanılan normalleştiricinin
+    /// aynısı kullanılıyor ki dört tüketici de aynı kuralı paylaşsın —
+    /// benzersizlik, panel araması, <c>VariantCodeBuilder</c> üstünden barkod
+    /// yükü ve WPF'in izleyici yorumunu eşleştirmesi.
+    ///
+    /// Yan etki bilinçli: "ŞIK1" ile "SIK1" aynı koda iner, bir arada var
+    /// olamaz. İzleyici ikisini zaten ayırt edemezdi.
+    /// </summary>
     private static string NormalizeCode(string? code)
-        => (code ?? string.Empty).Trim().ToUpperInvariant();
+        => SearchNormalizer.Normalize(code);
 
     private static string? Trim(string? value)
         => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
