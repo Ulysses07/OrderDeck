@@ -16,10 +16,6 @@ namespace OrderDeck.LicenseServer.Controllers.Licenses;
 /// imleci silmeleri hiç göremez ve WPF'te hayalet satır bırakır — o satır da
 /// yayında yanlış ürüne eşleşir. Katalog lisans başına yüzler mertebesinde
 /// olduğu için tam sayfalı çekme hem ucuz hem kendini onarıcı.
-///
-/// Sayfalama <b>Id üstünde keyset</b>: <c>OrderBy(Id).Where(Id > after)</c>.
-/// Offset kullanılmıyor — sayfalar arasında araya giren bir kayıt satır
-/// atlatırdı.
 /// </summary>
 [ApiController]
 [Route("api/v1/licenses/{licenseId:guid}/catalog")]
@@ -92,6 +88,11 @@ public sealed class LicensesWpfCatalogPullController : ControllerBase
         string? CoverPhotoUrl,
         List<CatalogVariantDto> Variants);
 
+    /// <summary>
+    /// Ürün kataloğunun sayfalı anlık görüntüsü. Sayfalama <b>Id üstünde keyset</b>:
+    /// <c>OrderBy(Id).Where(Id &gt; after)</c>. Offset kullanılmıyor — sayfalar
+    /// arasında araya giren bir kayıt satır atlatırdı.
+    /// </summary>
     /// <param name="licenseId">Katalogu çekilecek lisans.</param>
     /// <param name="after">Son alınan ürünün Id'si; ilk sayfada verilmez.</param>
     /// <param name="take">Varsayılan 200, üst sınır 500.</param>

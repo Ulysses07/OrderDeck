@@ -300,9 +300,22 @@ public class LicensesWpfCatalogPullControllerTests : IClassFixture<ApiFactory>
         };
         kok.Path = $"/{kok.Id:N}/";
 
+        // Uç yalnız "ata önce, çocuk sonra" garantisi veriyor; kardeş sırası
+        // Path içindeki kendi Id'ye göre lexicografik belirleniyor ve bu Id
+        // Guid.NewGuid() olduğundan rastgele gelir. Testi deterministik kılmak
+        // için iki GUID üretip küçük olanı "Ayakkabı"ya, büyük olanı "Atkı"ya
+        // atıyoruz; böylece Ayakkabı < Atkı sırası Path üstünde garantileniyor.
+        var childId1 = Guid.NewGuid();
+        var childId2 = Guid.NewGuid();
+        var (ayakkabiId, atkiId) = string.Compare(
+            childId1.ToString("N"), childId2.ToString("N"),
+            StringComparison.Ordinal) < 0
+            ? (childId1, childId2)
+            : (childId2, childId1);
+
         var alt = new Category
         {
-            Id = Guid.NewGuid(), LicenseId = licenseId,
+            Id = ayakkabiId, LicenseId = licenseId,
             // "Ayakkabı" alfabetik olarak "Üst Giyim"den ÖNCE gelir;
             // ad sıralaması alt'ı başa iterdi — Path sıralaması çocuğu sonra koyuyor.
             Name = "Ayakkabı",
@@ -316,7 +329,7 @@ public class LicensesWpfCatalogPullControllerTests : IClassFixture<ApiFactory>
         // Path sıralaması doğru sırayı (kok → alt → pasif) koruyor.
         var pasif = new Category
         {
-            Id = Guid.NewGuid(), LicenseId = licenseId,
+            Id = atkiId, LicenseId = licenseId,
             Name = "Atkı",
             ParentCategoryId = kok.Id, SortOrder = 1, IsActive = false,
             CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
