@@ -38,11 +38,26 @@ CREATE TABLE CatalogProduct (
 -- Benzersizliği sunucu (LicenseId, Code) üstünde zaten uyguluyor; burada
 -- unique olsaydı beklenmedik bir çakışma bütün senkron transaction'ını
 -- düşürür ve replika sessizce eskirdi.
+--
+-- Bu indeks yalnız EŞİTLİK aramasını hızlandırır: WHERE CodeNormalized = ?
+-- → SEARCH ... USING INDEX. LIKE aramaları (WHERE CodeNormalized LIKE 'A%'
+-- veya WHERE '…yorum…' LIKE '%'||CodeNormalized||'%') indeksi KULLANMAZ —
+-- SQLite LIKE optimizasyonu BINARY collation'da çalışmaz (NOCASE ister).
+-- Bu nedenle yorum eşleştirmesi metni token'lara bölüp token başına eşitlik
+-- araması yapmalı. Katalog lisans başına yüzler mertebesinde olduğu için
+-- tam tarama felaket değil, ama tercih bilinçli olsun; LIKE '%...%' yazan
+-- biri sessizce tam tarama yapar.
 CREATE INDEX IX_CatalogProduct_CodeNormalized ON CatalogProduct(CodeNormalized);
 
+-- FK YOK, bilerek: SqliteConnectionFactory ve InMemorySqlite ikisi de
+-- ForeignKeys=true kuruyor (024'teki ProductSize cascade'i çalışıyor).
+-- Buradaki FK yokluğu aynı UNIQUE yokluğuyla aynı mantık — tek bozuk sayfa
+-- bütün senkron transaction'ını düşürmesin. Bedeli: cascade yok, bu yüzden
+-- Replace varyantları AÇIKÇA silmek zorunda; aksi hâlde kısmi tazeleme
+-- öksüz satır üretir.
 CREATE TABLE CatalogVariant (
     Id          TEXT PRIMARY KEY,
-    ProductId   TEXT NOT NULL,
+    ProductId   TEXT NOT NULL,  -- CatalogProduct.Id; FK bilerek yok, yukarıya bak.
     Axis1Value  TEXT,
     Axis1Code   TEXT,
     Axis2Value  TEXT,
@@ -50,8 +65,12 @@ CREATE TABLE CatalogVariant (
     VariantCode TEXT NOT NULL,
     Barcode     TEXT,
     IsActive    INTEGER NOT NULL,
-    -- Sunucudan gelen sıra (VariantCode'a göre). Alfabetik sıralama burada
-    -- yeniden üretilmiyor: sıra sunucunun kararı, replika onu korur.
+    -- Sunucunun JSON dizisindeki konum (0-tabanlı dizi indeksi). Sunucu
+    -- varyantları OrderBy(v => v.VariantCode) ile sıralayıp dizi olarak
+    -- gönderiyor; CatalogReplicaRepository bunu Select((v, i) => ... i) ile
+    -- doldurur. Neden yerelde yeniden sıralamıyoruz: sunucu sırası SQL Server
+    -- collation'ında üretiliyor, SQLite'ın ordinal sıralaması farklı düşebilir
+    -- — o yüzden sıra taşınıyor, yeniden hesaplanmıyor.
     SortOrder   INTEGER NOT NULL
 );
 

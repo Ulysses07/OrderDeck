@@ -34,6 +34,11 @@ public class MigrationRunnerTests
         // Migration 018 added the Shipment table for kümülatif kargo dosyası.
         tables.Should().Contain("Shipment");
 
+        // Migration 025 added the catalog replica tables (salt-okunur replika).
+        tables.Should().Contain("CatalogProduct");
+        tables.Should().Contain("CatalogVariant");
+        tables.Should().Contain("CatalogCategory");
+
         var customerColumns = conn.Query<string>(
             "SELECT name FROM pragma_table_info('Customer')").AsList();
         customerColumns.Should().Contain(new[]
