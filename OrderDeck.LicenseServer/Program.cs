@@ -122,6 +122,7 @@ public class Program
         builder.Services.AddScoped<AdminActionEmailService>();
         builder.Services.AddScoped<IntakeFormService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Stock.StockLedgerWriter>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Stock.StockBalanceService>();
         builder.Services.AddSingleton<WhatsAppLinkBuilder>();
 
         // WhatsApp Cloud API — SMS/Push pattern'iyle aynı. Dev/test → log
