@@ -158,7 +158,12 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         string? CancelReason,
         bool IsShippingFee,
         bool IsBackupPromoted,
-        bool IsTentativeBackup);
+        bool IsTentativeBackup,
+        // Varsayılanlı: eski WPF sürümleri bu alanları göndermiyor ve
+        // göndermemeleri hata değil — ürün bağlanmamış sipariş geçerli bir
+        // durumdur (kart "tanımlı değil" der, satış yine olur).
+        Guid? ProductId = null,
+        Guid? ProductVariantId = null);
 
     public sealed record SyncOrdersRequest(List<SyncOrderItem> Orders);
 
@@ -169,6 +174,7 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         DateTimeOffset AddedAt, DateTimeOffset? PrintedAt,
         DateTimeOffset? CancelledAt, string? CancelReason,
         bool IsShippingFee, bool IsBackupPromoted, bool IsTentativeBackup,
+        Guid? ProductId, Guid? ProductVariantId,
         DateTimeOffset UpdatedAt);
 
     [HttpPost("orders/sync")]
@@ -212,6 +218,8 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 current.IsShippingFee = item.IsShippingFee;
                 current.IsBackupPromoted = item.IsBackupPromoted;
                 current.IsTentativeBackup = item.IsTentativeBackup;
+                current.ProductId = item.ProductId;
+                current.ProductVariantId = item.ProductVariantId;
                 current.UpdatedAt = now;
             }
             else
@@ -235,6 +243,8 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                     IsShippingFee = item.IsShippingFee,
                     IsBackupPromoted = item.IsBackupPromoted,
                     IsTentativeBackup = item.IsTentativeBackup,
+                    ProductId = item.ProductId,
+                    ProductVariantId = item.ProductVariantId,
                     UpdatedAt = now
                 });
                 // Sadece basılmış (printed), iptal değil, kargo ücreti değil,
@@ -290,6 +300,7 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 o.MessageText, o.Code, o.Price,
                 o.AddedAt, o.PrintedAt, o.CancelledAt, o.CancelReason,
                 o.IsShippingFee, o.IsBackupPromoted, o.IsTentativeBackup,
+                o.ProductId, o.ProductVariantId,
                 o.UpdatedAt))
             .ToListAsync(ct);
 

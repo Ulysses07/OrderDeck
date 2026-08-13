@@ -337,6 +337,9 @@ public class LicenseDbContext : DbContext
             b.HasIndex(o => new { o.LicenseId, o.CustomerId });
             // Reverse-sync cursor.
             b.HasIndex(o => new { o.LicenseId, o.UpdatedAt });
+            // Ürün silinmeden önce "bu ürüne bağlı sipariş var mı" sorusu ve
+            // panel ürün-bazlı sipariş listesi bu indeksi okur. FK yok, indeks var.
+            b.HasIndex(o => new { o.LicenseId, o.ProductId });
         });
 
         // WhatsApp template sync (PR 2026-05-15): WPF PaymentSettings replikası.
