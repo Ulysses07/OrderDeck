@@ -33,7 +33,7 @@ public sealed class PanelBroadcastCodesController : ControllerBase
     public PanelBroadcastCodesController(LicenseDbContext db) => _db = db;
 
     public sealed record BroadcastCodeDto(
-        string? SellerAxisValue, string Code, DateTimeOffset CreatedAt);
+        string? SellerAxisValue, string Code, DateTimeOffset CreatedAt, bool IsCurrent);
 
     // Doğrulama attribute'ları positional record'un PARAMETRESİNE yazılıyor;
     // deponun yerleşik kalıbı bu (bkz. PanelProductVariantsController içindeki
@@ -44,10 +44,19 @@ public sealed class PanelBroadcastCodesController : ControllerBase
         [MaxLength(CatalogLimits.BroadcastCode)] string? Code);
 
     /// <summary>
-    /// Ürünün <b>güncel</b> yayın kodları: satıcı ekseni değeri başına en yeni
-    /// satır. Emekli kodlar burada dönmez — panelin işi güncel kodu
-    /// düzenletmek. (Sonraki fazda eklenecek WPF çekme ucu emeklileri de
-    /// alacak; eşleştirme onlara ihtiyaç duyacak.)
+    /// Ürünün <b>tüm</b> yayın kodu geçmişi, en yeni başta. Satıcı ekseni değeri
+    /// başına en yeni satır <c>IsCurrent: true</c> gelir — düzenlenebilir güncel
+    /// kod odur; geri kalanı emeklidir.
+    ///
+    /// <para><b>Emekliler bilerek gönderiliyor:</b> satır asla silinmediği için
+    /// emekli kod kalıcı olarak rezervedir ve aynı kod başka bir yere yazılmak
+    /// istendiğinde 409 <c>broadcast-code-taken</c> üretir. Emekliler
+    /// gönderilmezse operatör o kodun nerede kullanıldığını görebileceği hiçbir
+    /// ekrana sahip olmaz — teşhis edilemez bir çakışma kalır.</para>
+    ///
+    /// <para>Aynı verinin öteki tüketicisi olan WPF çekme ucu
+    /// (<c>LicensesWpfCatalogPullController</c>) emeklileri zaten gönderiyor;
+    /// bu uç da artık aynı tabloyu aynı şekilde anlatıyor.</para>
     /// </summary>
     [AllowStockStaff]
     [HttpGet]
@@ -71,13 +80,24 @@ public sealed class PanelBroadcastCodesController : ControllerBase
             .ThenByDescending(x => x.Id)
             .ToListAsync(ct);
 
-        var current = rows
-            .GroupBy(x => SearchNormalizer.Normalize(x.SellerAxisValue), StringComparer.Ordinal)
-            .Select(g => g.First())
-            .Select(x => new BroadcastCodeDto(x.SellerAxisValue, x.Code, x.CreatedAt))
+        // "Güncel olan hangisi" kuralını panel değil SUNUCU söylüyor: panel
+        // "listede ilk gelen günceldir" diye kendi hesaplasaydı kuralın iki
+        // tanımı olur ve zamanla ayrışırdı. Aynı karar bu depoda bir kez daha
+        // verildi — CodeNormalized de tele konuyor (gerekçesi
+        // CatalogBroadcastCodeDto'nun doc'unda): kural sunucuda tanımlı,
+        // telde taşınıyor.
+        //
+        // Hesap bellekte: satırlar zaten çekildi ve sıra en yeni başta, yani
+        // bir satıcı ekseni değerinin İLK görülen satırı güncel, sonrakiler
+        // emekli. HashSet.Add ilk görülene true, tekrarına false döner.
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var history = rows
+            .Select(x => new BroadcastCodeDto(
+                x.SellerAxisValue, x.Code, x.CreatedAt,
+                IsCurrent: seen.Add(SearchNormalizer.Normalize(x.SellerAxisValue))))
             .ToList();
 
-        return Ok(current);
+        return Ok(history);
     }
 
     /// <summary>
@@ -139,7 +159,8 @@ public sealed class PanelBroadcastCodesController : ControllerBase
             // atamanın tazelenmesi — ilk atama anının kaybı bu yüzden zararsız.
             existing.CreatedAt = now;
             await _db.SaveChangesAsync(ct);
-            return Ok(new BroadcastCodeDto(existing.SellerAxisValue, existing.Code, existing.CreatedAt));
+            return Ok(new BroadcastCodeDto(
+                existing.SellerAxisValue, existing.Code, existing.CreatedAt, IsCurrent: true));
         }
 
         var row = new ProductBroadcastCode
@@ -176,7 +197,8 @@ public sealed class PanelBroadcastCodesController : ControllerBase
             throw; // Benzersizlik değilse yutma — bilinmeyen veri hatası 500 olmalı.
         }
 
-        return Ok(new BroadcastCodeDto(row.SellerAxisValue, row.Code, row.CreatedAt));
+        return Ok(new BroadcastCodeDto(
+            row.SellerAxisValue, row.Code, row.CreatedAt, IsCurrent: true));
     }
 
     /// <summary>

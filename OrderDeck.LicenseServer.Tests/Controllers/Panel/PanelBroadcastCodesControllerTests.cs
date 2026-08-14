@@ -34,6 +34,7 @@ public class PanelBroadcastCodesControllerTests : IClassFixture<ApiFactory>
         get.GetArrayLength().Should().Be(1);
         get[0].GetProperty("code").GetString().Should().Be("ateş");
         get[0].GetProperty("sellerAxisValue").GetString().Should().Be("Siyah");
+        get[0].GetProperty("isCurrent").GetBoolean().Should().BeTrue();
     }
 
     /// <summary>
@@ -119,7 +120,8 @@ public class PanelBroadcastCodesControllerTests : IClassFixture<ApiFactory>
 
     /// <summary>
     /// Kod değişince eski satır SİLİNMEZ — kodu rezerve tutmaya devam eder.
-    /// "Güncel" olan yalnız en yeni satır, GET onu döndürür.
+    /// "Güncel" olan yalnız en yeni satır ama GET emekliyi de döndürür:
+    /// aşağıdaki 409'un sebebini operatörün görebileceği tek ekran orası.
     /// </summary>
     [Fact]
     public async Task Changing_the_code_keeps_the_old_one_reserved()
@@ -134,17 +136,134 @@ public class PanelBroadcastCodesControllerTests : IClassFixture<ApiFactory>
         await client.PutAsJsonAsync(
             $"/api/panel/products/{productId}/broadcast-codes",
             new { sellerAxisValue = "Siyah", code = "YENI" });
+        await StampCreatedAtAsync(productId, ("ESKI", 10), ("YENI", 5));
 
-        var current = await client.GetFromJsonAsync<JsonElement>(
+        var codes = await client.GetFromJsonAsync<JsonElement>(
             $"/api/panel/products/{productId}/broadcast-codes");
-        current.GetArrayLength().Should().Be(1);
-        current[0].GetProperty("code").GetString().Should().Be("YENI");
+        codes.GetArrayLength().Should().Be(2);
+        codes[0].GetProperty("code").GetString().Should().Be("YENI");
+        codes[0].GetProperty("isCurrent").GetBoolean().Should().BeTrue();
+        codes[1].GetProperty("code").GetString().Should().Be("ESKI");
+        codes[1].GetProperty("isCurrent").GetBoolean().Should().BeFalse();
 
         var stealOld = await client.PutAsJsonAsync(
             $"/api/panel/products/{other}/broadcast-codes",
             new { sellerAxisValue = "Siyah", code = "ESKI" });
 
         stealOld.StatusCode.Should().Be(HttpStatusCode.Conflict);
+    }
+
+    /// <summary>
+    /// GET tüm geçmişi döndürür: en yeni satır <c>isCurrent: true</c>, emekli
+    /// satır <c>false</c> ve sıra en yeni başta. Emekli satır listeden düşerse
+    /// operatör, o kodu başka bir yere yazmayı denediğinde aldığı 409'un
+    /// kaynağını hiçbir ekranda göremez.
+    /// </summary>
+    [Fact]
+    public async Task Get_returns_the_retired_code_alongside_the_current_one()
+    {
+        var client = await NewPanelClientAsync();
+        var productId = await NewProductWithSellerAxisAsync(client);
+
+        await client.PutAsJsonAsync(
+            $"/api/panel/products/{productId}/broadcast-codes",
+            new { sellerAxisValue = "Siyah", code = "ATEŞ" });
+        await client.PutAsJsonAsync(
+            $"/api/panel/products/{productId}/broadcast-codes",
+            new { sellerAxisValue = "Siyah", code = "SU" });
+        await StampCreatedAtAsync(productId, ("ATEŞ", 10), ("SU", 5));
+
+        var codes = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/panel/products/{productId}/broadcast-codes");
+
+        codes.GetArrayLength().Should().Be(2);
+
+        codes[0].GetProperty("code").GetString().Should().Be("SU");
+        codes[0].GetProperty("sellerAxisValue").GetString().Should().Be("Siyah");
+        codes[0].GetProperty("isCurrent").GetBoolean().Should().BeTrue();
+
+        codes[1].GetProperty("code").GetString().Should().Be("ATEŞ");
+        codes[1].GetProperty("sellerAxisValue").GetString().Should().Be("Siyah");
+        codes[1].GetProperty("isCurrent").GetBoolean().Should().BeFalse();
+    }
+
+    /// <summary>
+    /// <c>IsCurrent</c> satıcı ekseni değeri BAŞINA hesaplanır: "Gri"nin en
+    /// yeni kodu, listede ondan sonra gelse bile güncel kalır. Bayrak tüm
+    /// listenin ilk satırına verilseydi bu test kırmızıya dönerdi.
+    /// </summary>
+    [Fact]
+    public async Task Each_seller_axis_value_keeps_its_own_current_code()
+    {
+        var client = await NewPanelClientAsync();
+        var productId = await NewProductWithSellerAxisAsync(client);
+
+        var gri = await client.PostAsJsonAsync(
+            $"/api/panel/products/{productId}/variants",
+            new { axis1Value = "Gri", isActive = true });
+        gri.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        foreach (var (value, code) in new[]
+                 {
+                     ("Siyah", "ATEŞ"), ("Siyah", "SU"),
+                     ("Gri", "DUMAN"), ("Gri", "BUZ"),
+                 })
+        {
+            var put = await client.PutAsJsonAsync(
+                $"/api/panel/products/{productId}/broadcast-codes",
+                new { sellerAxisValue = value, code });
+            put.StatusCode.Should().Be(HttpStatusCode.OK);
+        }
+
+        // Sıra BİLEREK "Siyah'ın güncel kodu en başta değil" olacak şekilde
+        // kuruluyor: BUZ (Gri, güncel) listenin ilk satırı.
+        await StampCreatedAtAsync(productId,
+            ("ATEŞ", 40), ("DUMAN", 30), ("SU", 20), ("BUZ", 10));
+
+        var codes = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/panel/products/{productId}/broadcast-codes");
+
+        codes.GetArrayLength().Should().Be(4);
+
+        var seen = codes.EnumerateArray()
+            .Select(x => (
+                Code: x.GetProperty("code").GetString(),
+                Value: x.GetProperty("sellerAxisValue").GetString(),
+                IsCurrent: x.GetProperty("isCurrent").GetBoolean()))
+            .ToList();
+
+        // En yeni başta.
+        seen.Select(x => x.Code).Should().Equal("BUZ", "SU", "DUMAN", "ATEŞ");
+
+        seen.Should().Contain(("BUZ", "Gri", true));
+        seen.Should().Contain(("SU", "Siyah", true));
+        seen.Should().Contain(("DUMAN", "Gri", false));
+        seen.Should().Contain(("ATEŞ", "Siyah", false));
+    }
+
+    /// <summary>
+    /// Yazılan satırların <c>CreatedAt</c>'ini DB üstünden ayrıştırır.
+    /// Gerekçesi kararlılık: GET sıralaması <c>CreatedAt</c> üstünde ve
+    /// eşitlikte tie-break rastgele bir Guid'e düşüyor. Arka arkaya atılan iki
+    /// PUT, saatin çözünürlüğü yüzünden aynı tick'e düşebilir; o zaman sıra
+    /// kura ile belirlenir ve test kararsız olur. Damgalar mutlak değil, birbirine
+    /// göre okunmalı — <paramref name="stamps"/> "kaç dakika önce" verir.
+    /// </summary>
+    private async Task StampCreatedAtAsync(
+        Guid productId, params (string Code, int MinutesAgo)[] stamps)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var now = DateTimeOffset.UtcNow;
+
+        foreach (var (code, minutesAgo) in stamps)
+        {
+            var row = await db.ProductBroadcastCodes
+                .SingleAsync(x => x.ProductId == productId && x.Code == code);
+            row.CreatedAt = now.AddMinutes(-minutesAgo);
+        }
+
+        await db.SaveChangesAsync();
     }
 
     [Fact]
