@@ -320,8 +320,13 @@ public sealed class ProductBroadcastCode
             // durduğu için indeks kodu rezerve tutmaya devam eder.
             b.HasIndex(x => new { x.LicenseId, x.CodeNormalized }).IsUnique();
 
-            // Ürün kartını açarken "bu ürünün kodları" sorgusu.
-            b.HasIndex(x => new { x.LicenseId, x.ProductId });
+            // "Bu ürünün kodları, en yenisi önce" — Görev 8'in GET'i ve Görev
+            // 10'un çekme sorgusu bu sırayı istiyor. Baştaki kolonun ProductId
+            // olması ayrıca FK'nin kendi indeksi işini görür: ürün silinince
+            // cascade DELETE seek yapar. Kardeşler de aynı kalıpta
+            // (ProductVariant: (ProductId, …), ProductPhoto: (ProductId, SortOrder)).
+            // LicenseId kiracı filtresi olarak sorguda kalıntı predicate kalır.
+            b.HasIndex(x => new { x.ProductId, x.CreatedAt });
         });
 ```
 
@@ -385,7 +390,7 @@ Beklenen: `Done. To undo this action, use 'ef migrations remove'`.
 - `CreateTable("ProductBroadcastCodes", …)` — kolonlar `Id`, `LicenseId`, `ProductId`, `SellerAxisValue` (`nvarchar(60)`, nullable), `Code` (`nvarchar(32)`, not null), `CodeNormalized` (`nvarchar(32)`, not null), `CreatedAt`
 - `ProductId` üstünde `onDelete: ReferentialAction.Cascade` FK
 - `CreateIndex("IX_ProductBroadcastCodes_LicenseId_CodeNormalized", unique: true)`
-- `CreateIndex("IX_ProductBroadcastCodes_LicenseId_ProductId")`
+- `CreateIndex("IX_ProductBroadcastCodes_ProductId_CreatedAt")`
 
 Eğer başka bir tabloya `AlterColumn`/`DropColumn` sızmışsa, dal `origin/master` ile senkron değil demektir: `dotnet ef migrations remove` ile geri al, `git log --oneline -1 OrderDeck.LicenseServer/Migrations` ile son göçü kontrol et.
 
@@ -1442,6 +1447,7 @@ EOF
 **Files:**
 - Create: `OrderDeck.LicenseServer/Controllers/Panel/PanelBroadcastCodesController.cs`
 - Modify: `OrderDeck.LicenseServer/Domain/Product.cs`
+- Modify: `OrderDeck.LicenseServer/Controllers/Panel/PanelProductsController.cs` (Adım 6 — silme bekçisi)
 - Test: `OrderDeck.LicenseServer.Tests/Panel/PanelBroadcastCodesTests.cs`
 
 - [ ] **Adım 1: Test dosyasındaki kurulum kalıbını öğren**
@@ -1906,18 +1912,69 @@ public sealed class PanelBroadcastCodesController : ControllerBase
 }
 ```
 
-- [ ] **Adım 6: Testleri çalıştır**
+- [ ] **Adım 6: Kodu olan ürünün silinmesini engelle**
+
+Bu adım, Görev 1'in kod incelemesinde çıkan bir deliği kapatıyor.
+`ProductBroadcastCode` → `Product` ilişkisi `Cascade`, ve
+`PanelProductsController.Delete` stok hareketi yoksa ürünü **fiziksel**
+siliyor (`_db.Products.Remove`). Yani bugünkü hâliyle: kodu olan ürünü sil →
+cascade kod satırını da götürür → "ATEŞ" serbest kalır → başka ürüne verilir →
+eski yayın videosundaki kodu yazan izleyicinin siparişi **yanlış ürüne**
+düşer. Tam olarak `ProductBroadcastCode` XML doc'unun engellemek için var
+olduğu senaryo.
+
+`Cascade` kalmalı (lisans/müşteri silme yolu ona bağlı); kapı ucun kendisinde
+kapanır. `PanelProductsController.Delete` içinde, mevcut stok hareketi
+kontrolünün (`product-has-stock-movements`, `Problem(... 409)`) **hemen
+ardına**, aynı kalıpta:
+
+```csharp
+        // Kodu olan ürün silinemez: satır cascade ile giderse kod serbest
+        // kalır ve bir daha ASLA devredilmemesi gereken kod başka bir ürüne
+        // verilebilir hâle gelir (bkz. ProductBroadcastCode XML doc).
+        if (await _db.ProductBroadcastCodes.AnyAsync(x => x.ProductId == product.Id, ct))
+            return Problem(title: "product-has-broadcast-codes",
+                detail: "Bu ürünün yayın kodları var; silinemez. Arşivleyebilirsiniz.",
+                statusCode: 409);
+```
+
+Ve `PanelBroadcastCodesTests.cs` sonuna testi ekle:
+
+```csharp
+    /// <summary>
+    /// Kodun kalıcı rezervasyonu ancak satır durursa mümkün; ürün fiziksel
+    /// silinirse cascade satırı götürür ve kod yeniden dağıtılabilir hâle
+    /// gelirdi. O yüzden kodu olan ürün silinmez, arşivlenir.
+    /// </summary>
+    [Fact]
+    public async Task Product_with_broadcast_code_cannot_be_deleted()
+    {
+        var client = await NewPanelClientAsync();
+        var productId = await NewProductWithSellerAxisAsync(client);
+
+        await client.PutAsJsonAsync(
+            $"/api/panel/products/{productId}/broadcast-codes",
+            new { sellerAxisValue = "Siyah", code = "ATEŞ" });
+
+        var del = await client.DeleteAsync($"/api/panel/products/{productId}");
+
+        del.StatusCode.Should().Be(HttpStatusCode.Conflict);
+    }
+```
+
+- [ ] **Adım 7: Testleri çalıştır**
 
 ```bash
 dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --filter FullyQualifiedName~PanelBroadcastCodesTests
 ```
 
-Beklenen: 6 test PASS.
+Beklenen: 7 test PASS.
 
-- [ ] **Adım 7: Commit**
+- [ ] **Adım 8: Commit**
 
 ```bash
 git add OrderDeck.LicenseServer/Controllers/Panel/PanelBroadcastCodesController.cs \
+        OrderDeck.LicenseServer/Controllers/Panel/PanelProductsController.cs \
         OrderDeck.LicenseServer/Domain/Product.cs \
         OrderDeck.LicenseServer.Tests/Panel/PanelBroadcastCodesTests.cs
 git commit -m "$(cat <<'EOF'
