@@ -1719,6 +1719,15 @@ public sealed class PanelBroadcastCodesController : ControllerBase
     /// düzenletmek. (WPF çekme ucu emeklileri de alıyor; eşleştirme onlara
     /// ihtiyaç duyuyor.)
     /// </summary>
+    //
+    // ⚠️ BU KARAR SONRADAN GERİ ALINDI (uygulama sırasında, Görev 11'de).
+    // Emekliler süzülünce operatör kalıcı rezerve olan bir kodun NEREDE
+    // kullanıldığını görebileceği hiçbir ekrana sahip olmuyordu: kodu başka
+    // yere yazmayı deneyince 409 broadcast-code-taken alıyor ve teşhis
+    // edemiyordu. Uç artık TÜM geçmişi en yeni başta döndürüyor ve
+    // BroadcastCodeDto'da `bool IsCurrent` taşıyor (satıcı ekseni değeri
+    // başına ilk satır true). Gerçek hâli için koda bak; aşağıdaki kod bloğu
+    // tarihsel kayıttır.
     [AllowStockStaff]
     [HttpGet]
     public async Task<IActionResult> Get(Guid productId, CancellationToken ct)
@@ -2521,14 +2530,27 @@ bölümü ekle:
 // ─── Yayın kodları ────────────────────────────────────────────────────────
 // Yayın kodu ürün + SATICI EKSENİ DEĞERİ seviyesinde ("Elbise + Siyah" → ATEŞ);
 // varyant seviyesinde kod yok. Sunucu ekle-only tutuyor: kod değişince yeni
-// satır yazılır, eski satır kodu rezerve tutmaya devam eder. Bu uç yalnız
-// GÜNCEL olanları döndürüyor.
+// satır yazılır, eski satır kodu rezerve tutmaya devam eder.
+//
+// Uç TÜM geçmişi en yeni başta döndürüyor — emekliler dahil. Emekli kod
+// kalıcı olarak rezerve olduğu için (aynı kod başka yere yazılmak istenince
+// 409 broadcast-code-taken) operatörün onu görebilmesi şart; görmezse
+// çakışmayı teşhis edemez.
 
 export type BroadcastCode = {
   /** Satıcı ekseni olmayan üründe null — kod ürünün tamamına ait. */
   sellerAxisValue: string | null;
   code: string;
   createdAt: string;
+  /**
+   * Satıcı ekseni değerinin GÜNCEL kodu mu? Düzenleme kutusuna bağlanacak
+   * satır budur; false olanlar emekli, salt okunur gösterilmeli.
+   *
+   * Bayrağı sunucu üretiyor ve panel "listedeki ilk satır günceldir" diye
+   * KENDİ HESAPLAMAMALI: kuralın ikinci bir tanımı zamanla ayrışır. Aynı
+   * gerekçeyle codeNormalized da telde taşınıyor.
+   */
+  isCurrent: boolean;
 };
 
 export function useBroadcastCodes(productId: string | null) {
@@ -3190,7 +3212,12 @@ import type { Product } from "../../api/catalog";
 import { BroadcastCodeSection } from "./BroadcastCodeSection";
 
 const state = vi.hoisted(() => ({
-  codes: [] as { sellerAxisValue: string | null; code: string; createdAt: string }[],
+  codes: [] as {
+    sellerAxisValue: string | null;
+    code: string;
+    createdAt: string;
+    isCurrent: boolean;
+  }[],
   setImpl: vi.fn(async (_a: unknown) => {}),
 }));
 
@@ -3258,12 +3285,41 @@ describe("BroadcastCodeSection", () => {
 
   it("sunucudaki güncel kodu kutuya yazar", () => {
     state.codes = [
-      { sellerAxisValue: "Siyah", code: "ATEŞ", createdAt: "2026-08-14T10:00:00Z" },
+      {
+        sellerAxisValue: "Siyah",
+        code: "ATEŞ",
+        createdAt: "2026-08-14T10:00:00Z",
+        isCurrent: true,
+      },
     ];
     render(<BroadcastCodeSection product={product()} />);
 
     expect(screen.getByLabelText("Siyah yayın kodu")).toHaveValue("ATEŞ");
     expect(screen.getByLabelText("Mavi yayın kodu")).toHaveValue("");
+  });
+
+  it("emekli kodu kutuya YAZMAZ, ayrıca listeler", () => {
+    // En yeni başta; süzgeç bozulursa kutuya "ATEŞ" dolar ve test kırmızıya
+    // döner. Emekli kodun görünür olması şart: kalıcı rezerve olduğu için
+    // operatör onu başka yere yazmaya kalkınca 409 alıyor.
+    state.codes = [
+      {
+        sellerAxisValue: "Siyah",
+        code: "SU",
+        createdAt: "2026-08-14T12:00:00Z",
+        isCurrent: true,
+      },
+      {
+        sellerAxisValue: "Siyah",
+        code: "ATEŞ",
+        createdAt: "2026-08-14T10:00:00Z",
+        isCurrent: false,
+      },
+    ];
+    render(<BroadcastCodeSection product={product()} />);
+
+    expect(screen.getByLabelText("Siyah yayın kodu")).toHaveValue("SU");
+    expect(screen.getByText(/ATEŞ/)).toBeInTheDocument();
   });
 
   it("kaydedince kodu satıcı ekseni değeriyle birlikte gönderir", async () => {
@@ -3401,9 +3457,27 @@ export function BroadcastCodeSection({ product }: Props) {
     return out;
   }, [product]);
 
+  // Uç TÜM geçmişi döndürüyor; `isCurrent` süzgeci ŞART. Süzülmezse döngünün
+  // sonuncusu haritada kalır ve liste en yeni başta sıralı olduğu için kutuya
+  // EN ESKİ (emekli) kod dolar — operatör kaydedince de o emekli kod yeniden
+  // yazılmış olur.
   const current = useMemo(() => {
     const m = new Map<string, string>();
-    for (const c of codes) m.set(normalize(c.sellerAxisValue ?? ""), c.code);
+    for (const c of codes)
+      if (c.isCurrent) m.set(normalize(c.sellerAxisValue ?? ""), c.code);
+    return m;
+  }, [codes]);
+
+  // Emekliler operatöre gösterilmeli: kod kalıcı rezerve ve aynı kodu başka
+  // bir yere yazmaya kalkınca 409 geliyor. Görünmezlerse operatör çakışmayı
+  // teşhis edemez — bu ucun geçmişi göndermesinin tek sebebi buydu.
+  const retired = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const c of codes) {
+      if (c.isCurrent) continue;
+      const key = normalize(c.sellerAxisValue ?? "");
+      (m.get(key) ?? m.set(key, []).get(key)!).push(c.code);
+    }
     return m;
   }, [codes]);
 
@@ -3417,14 +3491,24 @@ export function BroadcastCodeSection({ product }: Props) {
 
   return (
     <div className="divide-y divide-bg-elevated">
-      {values.map((value) => (
-        <CodeBox
-          key={value ?? ""}
-          productId={product.id}
-          sellerAxisValue={value}
-          initial={current.get(normalize(value ?? "")) ?? ""}
-        />
-      ))}
+      {values.map((value) => {
+        const old = retired.get(normalize(value ?? "")) ?? [];
+        return (
+          <div key={value ?? ""}>
+            <CodeBox
+              productId={product.id}
+              sellerAxisValue={value}
+              initial={current.get(normalize(value ?? "")) ?? ""}
+            />
+            {old.length > 0 && (
+              <p className="px-1 pb-2 text-xs text-text-muted">
+                Eski kodlar (hâlâ rezerve, başka ürüne verilemez):{" "}
+                {old.join(", ")}
+              </p>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
