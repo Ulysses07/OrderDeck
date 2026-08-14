@@ -2717,29 +2717,34 @@ stok bakiyeleri `LicensesWpfStockPullController`'dan gelir ve o **plan 3'ün**
 konusu. Bu planın sonunda kart; kapak fotoğrafını, kodu, adı ve varyant
 listesini gösterir.
 
-**Files:**
-- Create: `OrderDeck.App/ViewModels/CatalogVariantViewModel.cs`
-- Create: `OrderDeck.Core/Storage/Migrations/026_drop_local_products.sql`
-- Modify: `OrderDeck.App/ViewModels/ProductCardViewModel.cs` (baştan yazılır)
-- Modify: `OrderDeck.App/Views/Shell/ProductCard.xaml` (C ve D bölümleri gider)
-- Modify: `OrderDeck.App/Views/Shell/ProductCard.xaml.cs` (baştan yazılır)
-- Modify: `OrderDeck.App/AppHost.cs:83-86`
-- Modify: `OrderDeck.Tests/App/MainShellTestHarness.cs:105-109`
-- Modify: `OrderDeck.Tests/App/MainShellPrintTests.cs:166-170`
-- Modify: `OrderDeck.Tests/Storage/MigrationRunnerTests.cs:32,56`
-- Delete: `OrderDeck.Core/Catalog/Product.cs`
-- Delete: `OrderDeck.Core/Storage/Repositories/ProductRepository.cs`
-- Delete: `OrderDeck.App/Services/ProductPhotoStore.cs`
-- Delete: `OrderDeck.App/ViewModels/ProductSizeViewModel.cs`
-- Delete: `OrderDeck.Tests/Storage/ProductRepositoryTests.cs`
-- Delete: `OrderDeck.Tests/App/ProductPhotoStoreTests.cs`
-- Test: `OrderDeck.Tests/App/ProductCardViewModelTests.cs` (baştan yazılır)
+**Files:** (satır numaraları TESLİMDEKİ hâl; ✅ = teslim edildi)
+- Create: `OrderDeck.App/ViewModels/CatalogVariantViewModel.cs` ✅
+- Create: `OrderDeck.Core/Storage/Migrations/026_drop_local_products.sql` ✅
+- Modify: `OrderDeck.App/ViewModels/ProductCardViewModel.cs` (baştan yazıldı) ✅
+- Modify: `OrderDeck.App/Views/Shell/ProductCard.xaml` (C ve D bölümleri gitti) ✅
+- Modify: `OrderDeck.App/Views/Shell/ProductCard.xaml.cs` (baştan yazıldı) ✅
+- Modify: `OrderDeck.App/AppHost.cs:83-86` (dört satır; **numara doğruydu**) ✅
+- Modify: `OrderDeck.Tests/App/MainShellTestHarness.cs:105-109` (**doğruydu**) ✅
+- Modify: `OrderDeck.Tests/App/MainShellPrintTests.cs:166-170` (**doğruydu**) ✅
+- Modify: `OrderDeck.Tests/Storage/MigrationRunnerTests.cs:32,**61**`
+  (plan `56` diyordu; 56 `runner.Run();` satırı, sürüm iddiası 61'de) ✅
+- Modify: `OrderDeck.Tests/App/MainShellHeroStatsTests.cs:99`
+  (**planda yoktu** — `IsEditing` iddiası kaldırılan üyeye bakıyordu) ✅
+- Delete: `OrderDeck.Core/Catalog/Product.cs` ✅
+- Delete: `OrderDeck.Core/Storage/Repositories/ProductRepository.cs` ✅
+- Delete: `OrderDeck.App/Services/ProductPhotoStore.cs` ✅
+- Delete: `OrderDeck.App/ViewModels/ProductSizeViewModel.cs` ✅
+- Delete: `OrderDeck.Tests/Storage/ProductRepositoryTests.cs` ✅
+- Delete: `OrderDeck.Tests/App/ProductPhotoStoreTests.cs` ✅
+- Test: `OrderDeck.Tests/App/ProductCardViewModelTests.cs` (baştan yazıldı) ✅
+- Test: `OrderDeck.Tests/App/ProductCardTemplateTests.cs` (**planda yoktu**;
+  gerekçe aşağıda "Sapma 4") ✅
 
 > `MainShellViewModel` **değişmiyor**: ctor'u `ProductCardViewModel` tipini
 > alıyor, tip adı aynı kalıyor. `MainShellViewCompositionTests.cs:53` de
 > değişmiyor — orada `new ProductCard()` parametresiz kuruluyor.
 
-- [ ] **Step 1: Testleri baştan yaz (başarısız olacak)**
+- [x] **Step 1: Testleri baştan yaz (başarısız olacak)**
 
 `OrderDeck.Tests/App/ProductCardViewModelTests.cs` — **dosyanın tamamını** bu
 içerikle değiştir (eski testler tanımlama/kaydetme akışını sınıyordu, o akış
@@ -2768,7 +2773,7 @@ public class ProductCardViewModelTests
 {
     private static (ProductCardViewModel Vm, CatalogReplicaRepository Repo, string Root) Make()
     {
-        var db = InMemorySqlite.Create();
+        var db = new InMemorySqlite();   // Sapma 1: statik Create() yok
         new MigrationRunner(db).Run();
         var repo = new CatalogReplicaRepository(db);
         var root = Path.Combine(Path.GetTempPath(), "od-test-" + Guid.NewGuid().ToString("N"));
@@ -2856,7 +2861,7 @@ public class ProductCardViewModelTests
 }
 ```
 
-- [ ] **Step 2: Koştur, başarısız olduğunu gör**
+- [x] **Step 2: Koştur, başarısız olduğunu gör**
 
 ```bash
 dotnet test OrderDeck.Tests/OrderDeck.Tests.csproj \
@@ -2865,7 +2870,7 @@ dotnet test OrderDeck.Tests/OrderDeck.Tests.csproj \
 Beklenen: derleme hatası — `CatalogVariantViewModel` yok, `ProductCardViewModel`
 ctor'u `CatalogReplicaRepository` almıyor.
 
-- [ ] **Step 3: `CatalogVariantViewModel`'i yaz**
+- [x] **Step 3: `CatalogVariantViewModel`'i yaz**
 
 `OrderDeck.App/ViewModels/CatalogVariantViewModel.cs`:
 
@@ -2903,7 +2908,7 @@ public sealed class CatalogVariantViewModel
 }
 ```
 
-- [ ] **Step 4: `ProductCardViewModel`'i baştan yaz**
+- [x] **Step 4: `ProductCardViewModel`'i baştan yaz**
 
 `OrderDeck.App/ViewModels/ProductCardViewModel.cs` — **dosyanın tamamı**:
 
@@ -3013,7 +3018,7 @@ public sealed partial class ProductCardViewModel : ObservableObject
 }
 ```
 
-- [ ] **Step 5: Koştur, geçtiğini gör**
+- [x] **Step 5: Koştur, geçtiğini gör**
 
 ```bash
 dotnet test OrderDeck.Tests/OrderDeck.Tests.csproj \
@@ -3021,7 +3026,7 @@ dotnet test OrderDeck.Tests/OrderDeck.Tests.csproj \
 ```
 Beklenen: PASS (5/5).
 
-- [ ] **Step 6: XAML'i sadeleştir**
+- [x] **Step 6: XAML'i sadeleştir**
 
 `OrderDeck.App/Views/Shell/ProductCard.xaml` — **dosyanın tamamı**:
 
@@ -3159,7 +3164,7 @@ public partial class ProductCard : UserControl
 }
 ```
 
-- [ ] **Step 7: Eski katmanı sil, kayıtları düzelt**
+- [x] **Step 7: Eski katmanı sil, kayıtları düzelt**
 
 ```bash
 git rm OrderDeck.Core/Catalog/Product.cs \
@@ -3205,7 +3210,7 @@ Her iki dosyada `using OrderDeck.App.Services;` (CatalogPhotoCache) ve
 mevcut değilse ekle; artık kullanılmayan `ProductPhotoStore` using'i varsa
 kaldır.
 
-- [ ] **Step 8: Göçü yaz ve sürümü yükselt**
+- [x] **Step 8: Göçü yaz ve sürümü yükselt**
 
 `OrderDeck.Core/Storage/Migrations/026_drop_local_products.sql`:
 
@@ -3226,22 +3231,35 @@ DROP TABLE IF EXISTS Product;
 UPDATE _meta SET SchemaVersion = 26 WHERE Id = 1;
 ```
 
-`OrderDeck.Tests/Storage/MigrationRunnerTests.cs` satır 32 ve 56: `Be(25)` →
-`Be(26)`.
+`OrderDeck.Tests/Storage/MigrationRunnerTests.cs` satır 32 ve **61**: `Be(25)` →
+`Be(26)`. (Plan `56` diyordu; 56 `runner.Run();` satırı.)
 
-- [ ] **Step 9: Tam derleme + üç test projesi**
+Ayrıca aynı `[Fact]`'e iki iddia eklendi (**Sapma 3**) — sürüm sayacı tek başına
+scriptin **koştuğunu** kanıtlıyor ama `DROP`'ların işini yaptığını değil:
+
+```csharp
+        // Migration 026 dropped the local product layer: katalogun tek sahibi
+        // sunucu, yerel tanım kalmadı.
+        tables.Should().NotContain("Product");
+        tables.Should().NotContain("ProductSize");
+```
+
+- [x] **Step 9: Tam derleme + üç test projesi**
 
 ```bash
 dotnet build OrderDeck.sln --configuration Debug --nologo
 dotnet test OrderDeck.Tests/OrderDeck.Tests.csproj
 dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj
 ```
-Beklenen: 0 hata; silinen dört test dosyasının testleri düşmüş, kalan hepsi PASS.
+Beklenen: 0 hata; silinen **iki** test dosyasının testleri düşmüş, kalan hepsi
+PASS.
 `grep -rn "ProductRepository\|ProductPhotoStore\|ProductSizeViewModel" --include=*.cs .`
 → yalnız sunucu tarafındaki alakasız isimler (`PanelProductPhotoController` gibi)
-kalmalı, WPF tarafında hiç eşleşme olmamalı.
+kalmalı, WPF tarafında hiç eşleşme olmamalı. Teslimde tarama **sıfır** eşleşme
+verdi (sunucu tarafında da bu üç ad yokmuş). `--exclude-dir=.claude` şart:
+`.claude/worktrees/` altında repo kopyaları duruyor ve taramayı kirletiyor.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add OrderDeck.App/ViewModels/ProductCardViewModel.cs \
@@ -3253,9 +3271,74 @@ git add OrderDeck.App/ViewModels/ProductCardViewModel.cs \
         OrderDeck.Tests/App/ProductCardViewModelTests.cs \
         OrderDeck.Tests/App/MainShellTestHarness.cs \
         OrderDeck.Tests/App/MainShellPrintTests.cs \
+        OrderDeck.Tests/App/MainShellHeroStatsTests.cs \
         OrderDeck.Tests/Storage/MigrationRunnerTests.cs
 git commit -m "feat(katalog): ürün kartı replikadan okusun, yerel ürün tanımı kalksın"
 ```
+
+Teslim: `e30b3a8` (kod + göç) ve `a6a3c49` (rozet şablonu testi).
+
+#### Teslim kaydı
+
+**StaticResource anahtarları — hepsi DOĞRUYDU.** Planın markup'ı ezberden
+yazıldığı için 19 anahtarın tamamı (`OD.Brush.Surface2/Border/Text/TextDim`,
+`OD.Radius.Sm/Md`, `OD.Pad.1/2/4/Top5`, `OD.Font.F1/F2/Display`,
+`OD.Text.Micro/Mono`, `OD.Panel`, `OD.Layout.ProductImageHeight(+Short)`,
+`BoolToVisibleConverter`) `Themes/*.xaml` + `App.xaml` içinde `x:Key` taramasıyla
+tek tek doğrulandı; tipleri de kontrol edildi (`OD.Pad.*` → `Thickness`,
+`OD.Radius.*` → `CornerRadius`, `OD.Font.F*` ve `OD.Layout.*` → `sys:Double`).
+Hiçbiri uydurma çıkmadı, hiçbiri değiştirilmedi.
+
+**Sapmalar**
+
+1. `InMemorySqlite.Create()` **yok** — sınıfın yalnız parametresiz ctor'u var
+   (`OrderDeck.Tests/TestHelpers/InMemorySqlite.cs:16`). `new InMemorySqlite()`
+   kullanıldı; komşu testlerin zaten yaptığı şey.
+2. `MainShellHeroStatsTests.cs:99` planda **hiç anılmamıştı** ama
+   `ProductCard.IsEditing`'e bakıyordu → derleme kırıldı. İddia
+   `HasProduct.Should().BeFalse()`'a çevrildi (aynı şeyi yeni sözlükle söylüyor),
+   test silinmedi: `ActiveCode` → `ProductCard.Load` kablosunu koruyan tek test o.
+3. `MigrationRunnerTests`'e `NotContain("Product"/"ProductSize")` eklendi.
+   Gerekçe yukarıda.
+4. **Yeni dosya `ProductCardTemplateTests.cs`.** Planın varsayımı —
+   "`MainShellViewCompositionTests`'teki `new ProductCard()` XAML'i çözer" —
+   `DataTemplate` **içi için yanlış**. Ölçüldü: `VariantChip` içindeki
+   `OD.Brush.Surface2` anahtarı `OD.Brush.SurfaceZZZ` yapıldığında kompozisyon
+   testi **yeşil kaldı** (şablon ancak bir öğe materyalize olurken açılıyor);
+   aynı bozma köke, `Border`'ın `Padding`'ine uygulandığında ise
+   `XamlParseException` ile kırmızıya döndü. Yani rozetteki yanlış bir anahtar
+   CI'dan geçip operatör **ilk ürünü yükleyince** patlardı — kartın en sık
+   görülen hâlinde. Yeni test kartı dolu bir ürünle gerçekten yerleştirip
+   (`Measure`/`Arrange`/`Pump`) rozetin metnini arıyor; aynı bozmayla kırmızıya
+   dönüyor.
+
+**Mutasyon tablosu** (elle uygulandı, RED doğrulandı, elle geri alındı)
+
+| Mutasyon | Yakalayan test |
+|---|---|
+| `if (v.IsActive)` filtresi kalkar | `ProductCardViewModelTests.Known_code_loads_name_and_active_variants` |
+| `Load`'un boş-kod dalı kalkar | `…Empty_code_shows_neither_product_nor_unknown` |
+| Bilinmeyen kod dalı `unknown: false` döner | `…Unknown_code_is_reported_without_clearing_the_typed_code` **+** `MainShellHeroStatsTests.Active_code_change_loads_the_product_card` |
+| `CatalogVariantViewModel` kod-yedeği kalkar | `…Variant_without_axis_values_falls_back_to_its_code` |
+| `PhotoAbsolutePath` doğrudan `CoverPhotoKey` döner | `…Photo_path_is_null_until_the_cover_file_is_cached` |
+| `MigrationRunnerTests` beklentisi `Be(25)`'e döner | `Run_creates_all_tables_at_version_5…` **+** `Run_is_idempotent` (göç gerçekten koşuyor) |
+| `VariantChip` içindeki `OD.Brush.Surface2` bozulur | `ProductCardTemplateTests` (kompozisyon testi **yakalamıyor** — Sapma 4) |
+| Kökteki `OD.Pad.4` bozulur | `MainShellViewCompositionTests` |
+
+Sağ kalan mutasyon **yok**.
+
+**Sayılar:** `OrderDeck.Tests` 973/973 · `OrderDeck.LicenseServer.Tests`
+1397/1397 · `OrderDeck.Licensing.Tests` 128/128. Debug ve Release derlemeleri
+0 hata; Release'teki 6 uyarı **yeni değil** (hepsi elimize hiç değmeyen
+`OrderDeck.Licensing.Tests` / `OrderDeck.LicenseServer.Tests` dosyalarında).
+`OrderDeck.Tests` 994 → 973: silinen `ProductRepositoryTests` +
+`ProductPhotoStoreTests` ve eski 21 kartlı test yerine 5 yeni + 1 şablon testi.
+
+**Bilinen borç (bu görevde ÇÖZÜLMEDİ):** `MigrationRunner` scriptleri
+transaction'a sarmıyor; yarım uygulanan bir script sürüm sayacını takılı
+bırakır. 026 bunu **kötüleştirmiyor**: iki ifade de `DROP TABLE IF EXISTS`,
+yani tekrar koşmak zararsız ve ikisi arasında kalınsa bile ikinci koşuş
+tamamlar. Yine de mimari borç olarak duruyor.
 
 ---
 
