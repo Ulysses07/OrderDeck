@@ -76,7 +76,7 @@ sayıydı ve hareket defteriyle ilgisi yoktu; gerçek bakiye plan 3'te geliyor.
 
 | Dosya | Sorumluluk |
 |---|---|
-| `OrderDeck.Core/Storage/Migrations/025_catalog_replica.sql` | *(yeni)* Eski tabloları düşür, üç replika tablosunu kur |
+| `OrderDeck.Core/Storage/Migrations/025_catalog_replica.sql` | *(yeni)* Üç replika tablosunu kur (eski tabloları DÜŞÜRMEZ; düşürme Task 8 / `026`) |
 | `OrderDeck.Core/Catalog/CatalogReplica.cs` | *(yeni)* `CatalogProduct`, `CatalogVariant`, `CatalogCategory` kayıtları |
 | `OrderDeck.Core/Storage/Repositories/CatalogReplicaRepository.cs` | *(yeni)* Tek transaction'da baştan yazma + kodla arama |
 | `OrderDeck.Core/Catalog/Product.cs` | *(silinir)* Eski yerel kayıtlar |
@@ -2620,6 +2620,18 @@ Aynı gerekçeyle `CatalogSyncHostedService` de artık **hiçbir
 `OperationCanceledException`'a "kapanma" diye güvenmiyor**; turdan çıkan
 OCE yutuluyor ve kapanma kararı yalnız `stoppingToken.IsCancellationRequested`
 ile veriliyor.
+
+> **Yukarıdaki "döngü ölür" hikâyesi TARİHTİR, teslim edilen kodun tarifi
+> değil.** Bu iki düzeltme aynı commit'te (`8c383d9`) gitti: hosted service
+> artık OCE'yi yutup döngüye devam ediyor, yani kaçan bir istisna senkronu
+> uygulama ömrü boyunca öldürmez. Filtreler yine de **token'a bakmak
+> zorunda**, çünkü kalan bedel gerçek: kaçan OCE turu yarıda keser
+> (`Prune` atlanır, başarı kaydı yazılmaz), `SyncOnceAsync` replika az önce
+> yazılmış olsa bile 0 döner ve replika henüz dolmadıysa hosted service 30
+> saniyelik açılış ritminde kalır — üstelik `RunRoundAsync` OCE'yi **kayıt
+> düşmeden** yuttuğu için arıza hiçbir yerde görünmez. Kodun kendisi bu
+> gerekçeyi anlatıyor (`CatalogSyncService`, iki `catch` filtresi) ve
+> `A_photo_timeout_is_a_failure_not_a_shutdown` onu çiviliyor.
 
 **Kapatılan diğer boşluklar:**
 
