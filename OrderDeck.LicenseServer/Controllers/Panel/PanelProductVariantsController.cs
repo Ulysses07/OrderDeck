@@ -220,12 +220,52 @@ public sealed class PanelProductVariantsController : ControllerBase
         var conflict = await VariantValuesTakenAsync(product.Id, built, id, ct);
         if (conflict is not null) return conflict;
 
+        // Eski satıcı değeri, atamalardan ÖNCE okunmalı: aşağıdaki satırlar
+        // variant'ı yerinde değiştiriyor.
+        var oldSellerNorm = SearchNormalizer.Normalize(product.SellerAxisValueOf(variant));
+
         var now = DateTimeOffset.UtcNow;
         variant.Axis1Value = built.Axis1Value;
         variant.Axis2Value = built.Axis2Value;
         variant.IsActive = req.IsActive;
         variant.UpdatedAt = now;
         product.UpdatedAt = now;
+
+        // Satıcı ekseni değeri yeniden adlandırıldıysa yayın kodunu da taşı.
+        // Kod, ürün + satıcı ekseni DEĞERİNE bağlı; değer değişip kod yerinde
+        // kalsaydı kod hiçbir kırılıma çözülemez hâle gelirdi.
+        //
+        // Şart: eski değeri taşıyan BAŞKA varyant kalmamış olmalı. Kalmışsa bu
+        // yeniden adlandırma değil, tek satırın başka değere geçirilmesidir ve
+        // eski kod hâlâ geçerli bir kırılımı gösteriyor.
+        //
+        // Aynı SaveChanges içinde: ayrı bir kaydetme, arada düşen bir istekte
+        // kodu sahipsiz bırakırdı.
+        var newSellerNorm = SearchNormalizer.Normalize(product.SellerAxisValueOf(variant));
+        if (product.SellerAxis != 0
+            && oldSellerNorm.Length > 0
+            && !string.Equals(oldSellerNorm, newSellerNorm, StringComparison.Ordinal))
+        {
+            var stillUsed = product.Variants.Any(v =>
+                v.Id != variant.Id
+                && string.Equals(
+                    SearchNormalizer.Normalize(product.SellerAxisValueOf(v)),
+                    oldSellerNorm, StringComparison.Ordinal));
+
+            if (!stillUsed)
+            {
+                var newSellerValue = product.SellerAxisValueOf(variant);
+                var affected = await _db.ProductBroadcastCodes
+                    .Where(x => x.ProductId == product.Id)
+                    .ToListAsync(ct);
+
+                foreach (var codeRow in affected)
+                    if (string.Equals(
+                            SearchNormalizer.Normalize(codeRow.SellerAxisValue),
+                            oldSellerNorm, StringComparison.Ordinal))
+                        codeRow.SellerAxisValue = newSellerValue;
+            }
+        }
 
         try
         {
