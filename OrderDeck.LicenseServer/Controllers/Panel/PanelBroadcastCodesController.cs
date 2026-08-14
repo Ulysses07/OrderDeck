@@ -35,9 +35,10 @@ public sealed class PanelBroadcastCodesController : ControllerBase
     public sealed record BroadcastCodeDto(
         string? SellerAxisValue, string Code, DateTimeOffset CreatedAt);
 
-    // DİKKAT — positional record'da doğrulama attribute'u PARAMETREYE yazılır,
-    // [property:] hedefiyle DEĞİL. MVC record'un birincil kurucusunu okuyor;
-    // metadata property'ye taşınırsa çalışma zamanında istisna atıyor.
+    // Doğrulama attribute'ları positional record'un PARAMETRESİNE yazılıyor;
+    // deponun yerleşik kalıbı bu (bkz. PanelProductVariantsController içindeki
+    // VariantRequest). [property:] hedefiyle ne olacağını denemedik — kalıptan
+    // sapmamak için burada da parametre üstünde duruyorlar.
     public sealed record BroadcastCodeRequest(
         [MaxLength(CatalogLimits.AxisValue)] string? SellerAxisValue,
         [MaxLength(CatalogLimits.BroadcastCode)] string? Code);
@@ -45,8 +46,8 @@ public sealed class PanelBroadcastCodesController : ControllerBase
     /// <summary>
     /// Ürünün <b>güncel</b> yayın kodları: satıcı ekseni değeri başına en yeni
     /// satır. Emekli kodlar burada dönmez — panelin işi güncel kodu
-    /// düzenletmek. (WPF çekme ucu emeklileri de alıyor; eşleştirme onlara
-    /// ihtiyaç duyuyor.)
+    /// düzenletmek. (Sonraki fazda eklenecek WPF çekme ucu emeklileri de
+    /// alacak; eşleştirme onlara ihtiyaç duyacak.)
     /// </summary>
     [AllowStockStaff]
     [HttpGet]
@@ -62,6 +63,11 @@ public sealed class PanelBroadcastCodesController : ControllerBase
         var rows = await _db.ProductBroadcastCodes.AsNoTracking()
             .Where(x => x.LicenseId == licenseId.Value && x.ProductId == productId)
             .OrderByDescending(x => x.CreatedAt)
+            // Tie-break KEYFÎ ama KARARLI; amacı belirlilik, anlam değil.
+            // Id rastgele bir Guid ve bu ThenBy SQL'e çevriliyor — Guid
+            // sıralaması SQL Server ile PostgreSQL'de aynı değil, yani göçte
+            // eşit CreatedAt'li iki satırın sırası değişebilir. Kabul edildi:
+            // buraya düşmek için aynı tick'e iki kod yazılması gerekir.
             .ThenByDescending(x => x.Id)
             .ToListAsync(ct);
 
@@ -97,12 +103,17 @@ public sealed class PanelBroadcastCodesController : ControllerBase
             return Problem(title: "missing-code",
                 detail: "Yayın kodu boş olamaz.", statusCode: 400);
 
-        // Normalize hâl boşsa kod yalnız noktalama taşıyor demektir; böyle bir
-        // kod yorumda hiçbir zaman eşleşmez, kaydetmek yanlış güven verirdi.
-        var normalized = SearchNormalizer.Normalize(code);
-        if (normalized.Length == 0)
+        // En az bir harf ya da rakam ŞART. Normalize'ın boş dönmesine
+        // güvenilemez: SearchNormalizer noktalamayı BİLEREK koruyor, yani
+        // "---" normalize edildiğinde de dolu kalır. Böyle bir kod canlı
+        // yorumda hiçbir zaman eşleşmez ama kaydedilince kalıcı olarak
+        // rezerve olur (satır asla silinmiyor) — hem yanlış güven verir hem
+        // geri alınamaz çöp bırakır.
+        if (!code.Any(char.IsLetterOrDigit))
             return Problem(title: "invalid-code",
                 detail: "Yayın kodu en az bir harf ya da rakam içermeli.", statusCode: 400);
+
+        var normalized = SearchNormalizer.Normalize(code);
 
         var sellerValue = ResolveSellerAxisValue(product, req.SellerAxisValue, out var axisError);
         if (axisError is not null) return axisError;
@@ -121,6 +132,11 @@ public sealed class PanelBroadcastCodesController : ControllerBase
             // reddederdi), var olanı güncel yap.
             existing.Code = code;
             existing.SellerAxisValue = sellerValue;
+            // ProductBroadcastCode'un "kod değişikliği güncelleme değil, yeni
+            // satır" kuralıyla çelişmiyor: o kural kodun HEDEFİ değiştiğinde
+            // geçerli (IsSameTarget onu zaten yukarıda eledi). Aynı hedefe
+            // aynı kodun yeniden yazılması yeni bir atama değil, var olan
+            // atamanın tazelenmesi — ilk atama anının kaybı bu yüzden zararsız.
             existing.CreatedAt = now;
             await _db.SaveChangesAsync(ct);
             return Ok(new BroadcastCodeDto(existing.SellerAxisValue, existing.Code, existing.CreatedAt));

@@ -94,8 +94,9 @@ public sealed class Product
     /// <summary>
     /// Satıcı ekseninin sırası: 1, 2 ya da 0 (satıcı ekseni yok). Satıcı
     /// ekseni barkot okutmayla sabitlenen eksendir; yayın kodu ona bağlanır.
-    /// Tek bir yerde hesaplanıyor — iki controller da bunu kullanıyor ve
-    /// kopyalansaydı biri değişip öbürü kalırdı.
+    /// Türetme domain'de duruyor çünkü hangi eksenin satıcı ekseni olduğu
+    /// <b>ürünün kendi bilgisi</b>; bir controller'a kopyalansaydı eksen
+    /// kuralı değiştiği gün kopya sessizce ayrışırdı.
     /// </summary>
     [NotMapped]
     public int SellerAxis =>

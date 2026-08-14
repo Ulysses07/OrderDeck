@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
@@ -79,6 +80,41 @@ public class PanelBroadcastCodesControllerTests : IClassFixture<ApiFactory>
             new { sellerAxisValue = "Siyah", code = "ATEŞ" });
 
         again.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Asıl iddia bu: YENİ SATIR AÇILMADI. Yalnız 200'e bakmak yetmez —
+        // EF InMemory benzersiz indeksi zorlamadığı için ikinci satır eklense
+        // de test yeşil kalırdı; prod'da (SQL Server) aynı yol 500 olurdu.
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var rows = await db.ProductBroadcastCodes.CountAsync(x => x.ProductId == productId);
+        rows.Should().Be(1);
+    }
+
+    /// <summary>
+    /// Benzersizlik LİSANS BAŞINA, global değil: iki farklı yayıncı aynı yayın
+    /// kodunu kullanabilmeli. Ön kontroldeki <c>LicenseId</c> filtresi düşerse
+    /// kırmızıya dönen tek test bu.
+    /// </summary>
+    [Fact]
+    public async Task Same_code_under_another_license_is_allowed()
+    {
+        // NewPanelClientAsync her çağrıda yeni müşteri + yeni lisans üretir,
+        // yani iki istemci iki ayrı kiracıdır.
+        var first = await NewPanelClientAsync();
+        var firstProduct = await NewProductWithSellerAxisAsync(first);
+        var taken = await first.PutAsJsonAsync(
+            $"/api/panel/products/{firstProduct}/broadcast-codes",
+            new { sellerAxisValue = "Siyah", code = "ATEŞ" });
+        taken.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var second = await NewPanelClientAsync();
+        var secondProduct = await NewProductWithSellerAxisAsync(second);
+
+        var res = await second.PutAsJsonAsync(
+            $"/api/panel/products/{secondProduct}/broadcast-codes",
+            new { sellerAxisValue = "Siyah", code = "ATEŞ" });
+
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
     /// <summary>
@@ -122,6 +158,10 @@ public class PanelBroadcastCodesControllerTests : IClassFixture<ApiFactory>
             new { sellerAxisValue = "Turuncu", code = "ATEŞ" });
 
         res.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        // Başlık da doğrulanıyor: [ApiController] model doğrulaması da 400
+        // üretir, yalnız durum koduna bakan test bambaşka bir sebeple geçerdi.
+        (await res.Content.ReadAsStringAsync())
+            .Should().Contain("unknown-seller-axis-value");
     }
 
     [Fact]
@@ -135,6 +175,26 @@ public class PanelBroadcastCodesControllerTests : IClassFixture<ApiFactory>
             new { sellerAxisValue = "Siyah", code = "   " });
 
         res.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await res.Content.ReadAsStringAsync()).Should().Contain("missing-code");
+    }
+
+    /// <summary>
+    /// Yalnız noktalamadan oluşan kod reddedilir: canlı yorumda hiçbir zaman
+    /// eşleşmez ama kabul edilseydi satır silinmediği için kodu kalıcı olarak
+    /// rezerve ederdi.
+    /// </summary>
+    [Fact]
+    public async Task Code_without_letters_or_digits_is_rejected()
+    {
+        var client = await NewPanelClientAsync();
+        var productId = await NewProductWithSellerAxisAsync(client);
+
+        var res = await client.PutAsJsonAsync(
+            $"/api/panel/products/{productId}/broadcast-codes",
+            new { sellerAxisValue = "Siyah", code = "---" });
+
+        res.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await res.Content.ReadAsStringAsync()).Should().Contain("invalid-code");
     }
 
     /// <summary>
