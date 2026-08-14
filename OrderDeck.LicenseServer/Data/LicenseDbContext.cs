@@ -699,9 +699,6 @@ public class LicenseDbContext : DbContext
             b.HasKey(v => v.Id);
             b.Property(v => v.Axis1Value).HasMaxLength(CatalogLimits.AxisValue);
             b.Property(v => v.Axis2Value).HasMaxLength(CatalogLimits.AxisValue);
-            b.Property(v => v.Axis1Code).HasMaxLength(CatalogLimits.AxisCode);
-            b.Property(v => v.Axis2Code).HasMaxLength(CatalogLimits.AxisCode);
-            b.Property(v => v.VariantCode).HasMaxLength(CatalogLimits.VariantCode).IsRequired();
             b.Property(v => v.Barcode).HasMaxLength(CatalogLimits.Barcode);
             b.Property(v => v.Axis1ValueNorm).HasMaxLength(CatalogLimits.AxisValue).IsRequired();
             b.Property(v => v.Axis2ValueNorm).HasMaxLength(CatalogLimits.AxisValue).IsRequired();
@@ -713,8 +710,6 @@ public class LicenseDbContext : DbContext
             // üretiyordu — o 409 bu indeksle birlikte ortadan kalkıyor.
             b.HasIndex(v => new { v.ProductId, v.Axis1ValueNorm, v.Axis2ValueNorm })
                 .IsUnique();
-            b.HasIndex(v => new { v.ProductId, v.VariantCode }).IsUnique();
-            b.HasIndex(v => new { v.LicenseId, v.VariantCode });
         });
 
         mb.Entity<ProductBroadcastCode>(b =>

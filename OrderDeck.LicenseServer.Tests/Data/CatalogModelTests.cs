@@ -55,7 +55,7 @@ public class CatalogModelTests : IClassFixture<ApiFactory>
             Id = Guid.NewGuid(),
             LicenseId = license.Id,
             CategoryId = category.Id,
-            Code = "A1",
+            Code = "SK00001",
             Name = "Basic Tişört",
             DefaultPrice = 499.90m,
             Cost = 210m,
@@ -73,9 +73,8 @@ public class CatalogModelTests : IClassFixture<ApiFactory>
             Id = Guid.NewGuid(),
             LicenseId = license.Id,
             ProductId = product.Id,
-            Axis1Value = "Siyah", Axis1Code = "SIYA",
-            Axis2Value = "M", Axis2Code = "M",
-            VariantCode = "A1-SIYA-M",
+            Axis1Value = "Siyah",
+            Axis2Value = "M",
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
@@ -90,7 +89,7 @@ public class CatalogModelTests : IClassFixture<ApiFactory>
         loaded.Category!.Name.Should().Be("Tişört");
         loaded.Axis1Role.Should().Be(AxisRole.Seller);
         loaded.Variants.Should().ContainSingle()
-            .Which.VariantCode.Should().Be("A1-SIYA-M");
+            .Which.Axis1ValueNorm.Should().Be("SIYAH");
     }
 
     /// <summary>
@@ -121,9 +120,6 @@ public class CatalogModelTests : IClassFixture<ApiFactory>
             (typeof(ProductPhoto), nameof(ProductPhoto.ContentType), CatalogLimits.PhotoContentType),
             (typeof(ProductVariant), nameof(ProductVariant.Axis1Value), CatalogLimits.AxisValue),
             (typeof(ProductVariant), nameof(ProductVariant.Axis2Value), CatalogLimits.AxisValue),
-            (typeof(ProductVariant), nameof(ProductVariant.Axis1Code), CatalogLimits.AxisCode),
-            (typeof(ProductVariant), nameof(ProductVariant.Axis2Code), CatalogLimits.AxisCode),
-            (typeof(ProductVariant), nameof(ProductVariant.VariantCode), CatalogLimits.VariantCode),
             (typeof(ProductVariant), nameof(ProductVariant.Barcode), CatalogLimits.Barcode),
             (typeof(ProductVariant), nameof(ProductVariant.Axis1ValueNorm), CatalogLimits.AxisValue),
             (typeof(ProductVariant), nameof(ProductVariant.Axis2ValueNorm), CatalogLimits.AxisValue),
@@ -321,7 +317,6 @@ public class CatalogModelTests : IClassFixture<ApiFactory>
             ProductId = product.Id,
             Axis1Value = " kırmızı ",
             Axis2Value = null,
-            VariantCode = "SK00042-KIRM",
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         };

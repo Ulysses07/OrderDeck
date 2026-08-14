@@ -5,8 +5,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
-using OrderDeck.LicenseServer.Services.Catalog;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
+using OrderDeck.Shared.Text;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Controllers.Panel;
@@ -17,9 +17,8 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
     public PanelProductsControllerTests(ApiFactory f) => _factory = f;
 
     private sealed record VariantDto(
-        Guid Id, string? Axis1Value, string? Axis1Code,
-        string? Axis2Value, string? Axis2Code,
-        string VariantCode, string? Barcode, bool IsActive);
+        Guid Id, string? Axis1Value, string? Axis2Value,
+        string? Barcode, bool IsActive);
 
     private sealed record PhotoRow(
         Guid Id, string ObjectKey, string ContentType, long SizeBytes,
@@ -134,22 +133,18 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
     {
         var resp = await client.PostAsJsonAsync(
             $"/api/panel/products/{productId}/variants",
-            new
-            {
-                axis1Value, axis1Code = (string?)null,
-                axis2Value, axis2Code = (string?)null, isActive = true,
-            });
+            new { axis1Value, axis2Value, isActive = true });
         resp.StatusCode.Should().Be(HttpStatusCode.Created);
         return (await resp.Content.ReadFromJsonAsync<VariantDto>())!;
     }
 
     /// <summary>
-    /// Değişmez kural: bir üründeki HER varyantın kodu, güncel ürün kodu ile o
-    /// varyantın eksen kod parçalarından üretilene birebir eşit olmalı — hangi
-    /// uç noktanın yazdığı fark etmez. Yeni bir yazma yolu türetmeyi unutursa
-    /// bu doğrulama düşer.
+    /// Değişmez kural: bir üründeki HER varyantın normalleştirilmiş eksen çifti
+    /// tekil olmalı — hangi uç noktanın yazdığı fark etmez. Kolonlar
+    /// <c>SaveChanges</c> zincirinde doldurulduğu için yeni bir yazma yolu
+    /// normalleştirmeyi atlarsa bu doğrulama düşer.
     /// </summary>
-    private void AssertVariantCodesAreDerived(Guid productId)
+    private void AssertVariantAxesAreUnique(Guid productId)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -157,11 +152,19 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
 
         foreach (var variant in product.Variants)
         {
-            variant.VariantCode.Should().Be(
-                VariantCodeBuilder.Build(product.Code, variant.Axis1Code, variant.Axis2Code),
-                "'{0}' varyantının kodu güncel ürün kodundan türetilmiş olmalı",
+            variant.Axis1ValueNorm.Should().Be(
+                SearchNormalizer.Normalize(variant.Axis1Value),
+                "'{0}' varyantının 1. eksen normali kaydedilen değerden türetilmeli",
+                variant.Id);
+            variant.Axis2ValueNorm.Should().Be(
+                SearchNormalizer.Normalize(variant.Axis2Value),
+                "'{0}' varyantının 2. eksen normali kaydedilen değerden türetilmeli",
                 variant.Id);
         }
+
+        product.Variants
+            .Select(v => (v.Axis1ValueNorm, v.Axis2ValueNorm))
+            .Should().OnlyHaveUniqueItems("aynı eksen çifti üründe iki kez olamaz");
     }
 
     [Fact]
@@ -215,8 +218,8 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>
-    /// Update sistem koduna dokunmaz; varyant kodları ürün kodu değişmediğinden
-    /// yeniden türetilmez. Eksen varyantları isim değişiminden etkilenmez.
+    /// Update sistem koduna dokunmaz; eksen varyantları isim değişiminden
+    /// etkilenmez.
     /// </summary>
     [Fact]
     public async Task Update_keeps_the_system_code_unchanged()
@@ -232,7 +235,7 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var dto = (await resp.Content.ReadFromJsonAsync<ProductDto>())!;
         dto.Code.Should().Be(product.Code); // SK00001 — değişmez
-        AssertVariantCodesAreDerived(product.Id);
+        AssertVariantAxesAreUnique(product.Id);
     }
 
     [Fact]
@@ -389,8 +392,8 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         var product = await CreateProductAsync(client, "Tek kalem");
 
         product.Variants.Should().HaveCount(1);
-        product.Variants[0].VariantCode.Should().Be(product.Code);
         product.Variants[0].Axis1Value.Should().BeNull();
+        product.Variants[0].Axis2Value.Should().BeNull();
     }
 
     [Fact]
@@ -598,11 +601,11 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>
-    /// Eksensiz ürün tek otomatik varyant taşır. Ürün kodu değişmediğinden
-    /// varyant kodu da aynı kalır.
+    /// Eksensiz ürün tek otomatik varyant taşır; ürün güncellemesi bu satırı
+    /// ne çoğaltır ne siler.
     /// </summary>
     [Fact]
-    public async Task Update_keeps_variant_code_in_sync_with_the_system_code()
+    public async Task Update_keeps_the_single_auto_variant()
     {
         var (client, _) = await SeedAsync();
         var product = await CreateProductAsync(client, "Tek kalem");
@@ -618,11 +621,11 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var dto = (await resp.Content.ReadFromJsonAsync<ProductDto>())!;
         dto.Code.Should().Be(product.Code); // SK00001 — değişmez
-        dto.Variants.Single().VariantCode.Should().Be(product.Code);
+        dto.Variants.Single().Axis1Value.Should().BeNull();
     }
 
     [Fact]
-    public async Task Update_variant_codes_stay_derived_from_the_system_code()
+    public async Task Update_keeps_the_axis_variant_untouched()
     {
         var (client, _) = await SeedAsync();
         var product = await CreateProductAsync(client, "Renkli",
@@ -635,9 +638,8 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var dto = (await resp.Content.ReadFromJsonAsync<ProductDto>())!;
         dto.Code.Should().Be(product.Code); // SK00001 — değişmez
-        // Varyant kodu: SK00001-SIYA
-        dto.Variants.Single().VariantCode.Should().Be(product.Code + "-SIYA");
-        AssertVariantCodesAreDerived(product.Id);
+        dto.Variants.Single().Axis1Value.Should().Be("Siyah");
+        AssertVariantAxesAreUnique(product.Id);
     }
 
     [Fact]
@@ -661,12 +663,12 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var dto = (await resp.Content.ReadFromJsonAsync<ProductDto>())!;
-        dto.Variants.Single().VariantCode.Should().Be(product.Code + "-SIYA");
+        dto.Variants.Single().Axis1Value.Should().Be("Siyah");
         dto.Variants.Single().Barcode.Should().Be("8690000000017");
     }
 
     [Fact]
-    public async Task Variant_codes_stay_derived_across_the_whole_product_lifecycle()
+    public async Task Variant_axes_stay_normalized_across_the_whole_product_lifecycle()
     {
         var (client, _) = await SeedAsync();
         var product = await CreateProductAsync(client, "Çok eksenli",
@@ -675,29 +677,26 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
 
         var siyah = await PostVariantAsync(client, product.Id, "Siyah", "38");
         var beyaz = await PostVariantAsync(client, product.Id, "Beyaz", "40");
-        AssertVariantCodesAreDerived(product.Id);
+        AssertVariantAxesAreUnique(product.Id);
 
-        // 1) Ürün güncellendi (eksenler aynı) — varyant kodları sistem kodundan türetilmeli.
+        // 1) Ürün güncellendi (eksenler aynı) — varyantların eksen değerleri korunmalı.
         (await PutProductAsync(client, product,
             axis1Name: "Renk", axis1Role: 2, axis2Name: "Beden", axis2Role: 1))
             .StatusCode.Should().Be(HttpStatusCode.OK);
-        AssertVariantCodesAreDerived(product.Id);
+        AssertVariantAxesAreUnique(product.Id);
 
         var afterUpdate = await client.GetFromJsonAsync<ProductDto>(
             $"/api/panel/products/{product.Id}");
         afterUpdate!.Code.Should().Be(code);
-        afterUpdate.Variants.Select(v => v.VariantCode)
-            .Should().BeEquivalentTo([$"{code}-SIYA-38", $"{code}-BEYA-40"]);
+        afterUpdate.Variants.Select(v => $"{v.Axis1Value}/{v.Axis2Value}")
+            .Should().BeEquivalentTo(["Siyah/38", "Beyaz/40"]);
 
         // 2) Varyantın kendi eksen değeri değişti.
         (await client.PutAsJsonAsync(
             $"/api/panel/products/{product.Id}/variants/{beyaz.Id}",
-            new
-            {
-                axis1Value = "Mavi", axis1Code = (string?)null,
-                axis2Value = "42", axis2Code = (string?)null, isActive = true,
-            })).StatusCode.Should().Be(HttpStatusCode.OK);
-        AssertVariantCodesAreDerived(product.Id);
+            new { axis1Value = "Mavi", axis2Value = "42", isActive = true }))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        AssertVariantAxesAreUnique(product.Id);
 
         // 3) Eksenler kapandı — geriye tek otomatik varyant kalır.
         foreach (var id in new[] { siyah.Id, beyaz.Id })
@@ -706,13 +705,13 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
 
         (await PutProductAsync(client, afterUpdate))
             .StatusCode.Should().Be(HttpStatusCode.OK);
-        AssertVariantCodesAreDerived(product.Id);
+        AssertVariantAxesAreUnique(product.Id);
 
-        // 4) Ürün kodu hiç değişmedi; eksensiz otomatik varyantın kodu sistem koduyla aynı.
+        // 4) Ürün kodu hiç değişmedi; geriye eksensiz tek otomatik varyant kaldı.
         var final = await client.GetFromJsonAsync<ProductDto>(
             $"/api/panel/products/{product.Id}");
         final!.Code.Should().Be(code);
-        final.Variants.Single().VariantCode.Should().Be(code);
+        final.Variants.Single().Axis1Value.Should().BeNull();
     }
 
     [Fact]
@@ -750,8 +749,7 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
             db.ProductVariants.Add(new ProductVariant
             {
                 Id = Guid.NewGuid(), LicenseId = entity.LicenseId, ProductId = entity.Id,
-                Axis1Value = "Siyah", Axis1Code = "SIYA",
-                VariantCode = entity.Code + "-SIYA", IsActive = true,
+                Axis1Value = "Siyah", IsActive = true,
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
             await db.SaveChangesAsync();
@@ -891,9 +889,8 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         var dto = (await resp.Content.ReadFromJsonAsync<ProductDto>())!;
         dto.Axis1Name.Should().BeNull();
         dto.Axis1Role.Should().BeNull();
-        dto.Variants.Single().VariantCode.Should().Be(dto.Code);
         dto.Variants.Single().Axis1Value.Should().BeNull();
-        AssertVariantCodesAreDerived(product.Id);
+        AssertVariantAxesAreUnique(product.Id);
     }
 
     /// <summary>
@@ -919,7 +916,7 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         dto.Variants.Single().Id.Should().Be(variant.Id);
         dto.Variants.Single().Axis1Value.Should().Be("Siyah");
         dto.Variants.Single().Axis2Value.Should().Be("38");
-        AssertVariantCodesAreDerived(product.Id);
+        AssertVariantAxesAreUnique(product.Id);
     }
 
     [Fact]

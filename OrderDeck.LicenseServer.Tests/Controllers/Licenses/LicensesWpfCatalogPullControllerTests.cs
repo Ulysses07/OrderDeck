@@ -49,7 +49,7 @@ public class LicensesWpfCatalogPullControllerTests : IClassFixture<ApiFactory>
             db.ProductVariants.Add(new ProductVariant
             {
                 Id = Guid.NewGuid(), LicenseId = license.Id, ProductId = product.Id,
-                Axis1Value = "M", Axis1Code = "M", VariantCode = product.Code + "-M",
+                Axis1Value = "M",
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
             });
             // withPhotos: tüm ürünlere fotoğraf; photoOnEvenOnly: yalnız çift indeksli

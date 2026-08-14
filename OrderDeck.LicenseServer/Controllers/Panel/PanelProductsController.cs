@@ -16,7 +16,7 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 /// <b>rolü</b> ürüne özeldir (satıcı ekseni barkotla sabitlenir, izleyici ekseni
 /// yorumdan gelir). İkisi de kapatılabilir.
 ///
-/// Eksensiz ürün de tek bir varyant satırı taşır (<c>VariantCode = Code</c>) —
+/// Eksensiz ürün de tek bir varyant satırı taşır (iki eksen değeri de boş) —
 /// böylece Faz 1b'de stok hareketi her zaman bir varyanta bağlanabilir.
 /// </summary>
 [ApiController]
@@ -52,14 +52,7 @@ public sealed class PanelProductsController : ControllerBase
         AxisRole? Axis2Role);
 
     public sealed record VariantDto(
-        Guid Id,
-        string? Axis1Value,
-        string? Axis1Code,
-        string? Axis2Value,
-        string? Axis2Code,
-        string VariantCode,
-        string? Barcode,
-        bool IsActive);
+        Guid Id, string? Axis1Value, string? Axis2Value, string? Barcode, bool IsActive);
 
     public sealed record ProductDto(
         Guid Id,
@@ -468,9 +461,7 @@ public sealed class PanelProductsController : ControllerBase
             _db.ProductVariants.Add(created);
         }
 
-        SyncVariantCodes(product, now);
-
-        // Kod artık burada değişmiyor; benzersizlik yarışı yalnız Create'te olabilir.
+        // Ürün kodu burada değişmiyor; benzersizlik yarışı yalnız Create'te olabilir.
         await _db.SaveChangesAsync(ct);
 
         return Ok(await ToDtoAsync(product, ct));
@@ -582,32 +573,12 @@ public sealed class PanelProductsController : ControllerBase
         Id = Guid.NewGuid(),
         LicenseId = product.LicenseId,
         ProductId = product.Id,
-        VariantCode = VariantCodeBuilder.Build(product.Code, null, null),
+        // Eksen değeri yok; Axis*ValueNorm boş dize kalır ve UNIQUE indeks
+        // ürün başına tek otomatik satıra izin verir.
         IsActive = true,
         CreatedAt = now,
         UpdatedAt = now,
     };
-
-    /// <summary>
-    /// <c>VariantCode</c> türetilmiş bir değer ve türetmenin sahibi ürün kartı:
-    /// ürün kodu değiştiğinde bayat kalmasın diye TÜM varyantlar yeniden
-    /// hesaplanır (eksensiz otomatik satır da bunun sıradan bir hâli).
-    ///
-    /// <c>Barcode</c>'a bilerek dokunulmaz — o ayrı ve değişmez fiziksel kimlik;
-    /// ürün adı/kodu değişse de rafta duran etiket geçerli kalmalı.
-    /// </summary>
-    private static void SyncVariantCodes(Product product, DateTimeOffset now)
-    {
-        foreach (var variant in product.Variants)
-        {
-            var code = VariantCodeBuilder.Build(
-                product.Code, variant.Axis1Code, variant.Axis2Code);
-            if (variant.VariantCode == code) continue;
-
-            variant.VariantCode = code;
-            variant.UpdatedAt = now;
-        }
-    }
 
     private Task<Product?> LoadAsync(Guid id, Guid licenseId, CancellationToken ct)
         => _db.Products
@@ -643,11 +614,14 @@ public sealed class PanelProductsController : ControllerBase
             p.ShelfLocation,
             p.Axis1Name, p.Axis1Role, p.Axis2Name, p.Axis2Role,
             photoDtos, p.IsArchived, p.CreatedAt, p.UpdatedAt,
+            // Sıralama normalize değerlerde: ASCII ve sağlayıcıdan bağımsız.
+            // Ham değerde sıralamak sırayı veritabanının collation'ına bağlardı
+            // ve Postgres göçünde kırılım listesi sessizce karışırdı.
             p.Variants
-                .OrderBy(v => v.VariantCode, StringComparer.Ordinal)
+                .OrderBy(v => v.Axis1ValueNorm, StringComparer.Ordinal)
+                .ThenBy(v => v.Axis2ValueNorm, StringComparer.Ordinal)
                 .Select(v => new VariantDto(
-                    v.Id, v.Axis1Value, v.Axis1Code, v.Axis2Value, v.Axis2Code,
-                    v.VariantCode, v.Barcode, v.IsActive))
+                    v.Id, v.Axis1Value, v.Axis2Value, v.Barcode, v.IsActive))
                 .ToList());
     }
 

@@ -15,9 +15,8 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
     public PanelProductVariantsControllerTests(ApiFactory f) => _factory = f;
 
     private sealed record VariantDto(
-        Guid Id, string? Axis1Value, string? Axis1Code,
-        string? Axis2Value, string? Axis2Code,
-        string VariantCode, string? Barcode, bool IsActive);
+        Guid Id, string? Axis1Value, string? Axis2Value,
+        string? Barcode, bool IsActive);
 
     private sealed record ProductDto(
         Guid Id, Guid? CategoryId, string Code, string Name,
@@ -92,13 +91,17 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
 
     private static Task<HttpResponseMessage> PostVariantAsync(
         HttpClient client, Guid productId,
-        string? axis1Value = null, string? axis1Code = null,
-        string? axis2Value = null, string? axis2Code = null)
+        string? axis1Value = null, string? axis2Value = null)
         => client.PostAsJsonAsync($"/api/panel/products/{productId}/variants",
-            new { axis1Value, axis1Code, axis2Value, axis2Code, isActive = true });
+            new { axis1Value, axis2Value, isActive = true });
 
+    /// <summary>
+    /// Varyantın kodu yok: kullanıcıya görünen hâli eksen değerinin ta kendisi.
+    /// Değer <b>olduğu gibi</b> saklanmalı (Türkçe harfler dahil); ASCII'ye
+    /// kısaltma yapan eski kod kavramı kalktı.
+    /// </summary>
     [Fact]
-    public async Task Create_derives_the_code_from_the_display_value()
+    public async Task Create_stores_the_display_value_as_is()
     {
         var (client, _) = await SeedAsync();
         var product = await CreateProductAsync(client);
@@ -108,27 +111,11 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.Created);
         var dto = (await resp.Content.ReadFromJsonAsync<VariantDto>())!;
         dto.Axis1Value.Should().Be("Yeşil");
-        dto.Axis1Code.Should().Be("YESI");
-        dto.VariantCode.Should().Be($"{product.Code}-YESI");
+        dto.Axis2Value.Should().BeNull();
     }
 
     [Fact]
-    public async Task Create_prefers_the_manually_supplied_code()
-    {
-        var (client, _) = await SeedAsync();
-        var product = await CreateProductAsync(client);
-
-        var resp = await PostVariantAsync(client, product.Id,
-            axis1Value: "Yeşil", axis1Code: "yes");
-
-        resp.StatusCode.Should().Be(HttpStatusCode.Created);
-        var dto = (await resp.Content.ReadFromJsonAsync<VariantDto>())!;
-        dto.Axis1Code.Should().Be("YES");
-        dto.VariantCode.Should().Be($"{product.Code}-YES");
-    }
-
-    [Fact]
-    public async Task Create_builds_a_two_segment_code_for_a_two_axis_product()
+    public async Task Create_stores_both_values_for_a_two_axis_product()
     {
         var (client, _) = await SeedAsync();
         var product = await CreateProductAsync(client,
@@ -139,8 +126,8 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
 
         resp.StatusCode.Should().Be(HttpStatusCode.Created);
         var dto = (await resp.Content.ReadFromJsonAsync<VariantDto>())!;
-        dto.Axis2Code.Should().Be("38");
-        dto.VariantCode.Should().Be($"{product.Code}-SIYA-38");
+        dto.Axis1Value.Should().Be("Siyah");
+        dto.Axis2Value.Should().Be("38");
     }
 
     [Fact]
@@ -205,23 +192,9 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
         (await TitleAsync(resp)).Should().Be("unexpected-axis-value");
     }
 
-    [Fact]
-    public async Task Create_400_when_no_ascii_code_can_be_derived()
-    {
-        var (client, _) = await SeedAsync();
-        var product = await CreateProductAsync(client);
-
-        var resp = await PostVariantAsync(client, product.Id, axis1Value: "•••");
-
-        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-        (await TitleAsync(resp)).Should().Be("invalid-axis-code");
-    }
-
     /// <summary>
     /// Görünen eksen değeri serbest metin ama kolon <c>nvarchar(60)</c>;
     /// sınır DTO'da duyurulmazsa taşan girdi prod'da 500 oluyor.
-    /// (Kod parçası ayrı bir konu: onu <c>AxisCodeDeriver</c> zaten 4 karaktere
-    /// kısaltıyor, yani 8'lik kolon yapı gereği taşmıyor.)
     /// </summary>
     [Theory]
     [InlineData("Axis1Value")]
@@ -243,32 +216,33 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>
-    /// Aynı değerin farklı yazımı GERÇEK tekrardır: kullanıcı açısından
-    /// "kırmızı" ile "Kırmızı" aynı varyant. Mesaj da kodu değil DEĞERİ anmalı —
-    /// kullanıcı kartta kodu değil değeri görüyor.
+    /// Farklı yazım gerçek tekrardır: baştaki/sondaki boşluk, harf büyüklüğü ve
+    /// Türkçe harf katlaması normalleştiriciden geçiyor — "  kirmizi  " ile
+    /// "Kırmızı" aynı varyant. Mesaj da kodu değil DEĞERİ anmalı; kullanıcı
+    /// kartta kodu değil değeri görüyor.
     /// </summary>
     [Fact]
-    public async Task Create_409_duplicate_variant_when_the_same_value_is_re_added_in_another_casing()
+    public async Task Same_axis_value_in_different_casing_is_a_duplicate()
     {
         var (client, _) = await SeedAsync();
         var product = await CreateProductAsync(client);
         (await PostVariantAsync(client, product.Id, axis1Value: "Kırmızı"))
             .StatusCode.Should().Be(HttpStatusCode.Created);
 
-        var resp = await PostVariantAsync(client, product.Id, axis1Value: "kırmızı");
+        var resp = await PostVariantAsync(client, product.Id, axis1Value: "  kirmizi  ");
 
         resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
         (await TitleAsync(resp)).Should().Be("duplicate-variant");
-        (await DetailAsync(resp)).Should().Contain("kırmızı");
+        (await DetailAsync(resp)).Should().Contain("kirmizi");
     }
 
     /// <summary>
-    /// Değerler farklı ama türetilen 4 karakterlik kod aynı: kullanıcı iki AYRI
-    /// varyant istiyor ve hakkı da var. "Zaten var" demek onu yanlış yönlendirir
-    /// — kartta öyle bir değer yok. Ayrı slug + çareyi söyleyen mesaj şart.
+    /// Eskiden bu iki değer aynı türetilmiş koda (KIRM) düşüp yapay bir 409
+    /// üretiyordu. Benzersizlik normalize DEĞERE taşındığından ikisi de
+    /// meşru ve ayrı varyant.
     /// </summary>
     [Fact]
-    public async Task Create_409_variant_code_collision_when_a_different_value_derives_the_same_code()
+    public async Task Similar_axis_values_are_separate_variants()
     {
         var (client, _) = await SeedAsync();
         var product = await CreateProductAsync(client);
@@ -277,35 +251,15 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
 
         var resp = await PostVariantAsync(client, product.Id, axis1Value: "Kırmızılı");
 
-        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
-        (await TitleAsync(resp)).Should().Be("variant-code-collision");
-        var detail = await DetailAsync(resp);
-        detail.Should().Contain("Kırmızılı");
-        detail.Should().Contain("'Kırmızı'");
-        detail.Should().Contain("eksen kodunu elle");
-    }
-
-    /// <summary>Çakışmanın çaresi işlemeli: eksen kodu elle verilince iki satır yan yana yaşar.</summary>
-    [Fact]
-    public async Task Create_201_when_the_colliding_value_carries_a_manual_axis_code()
-    {
-        var (client, _) = await SeedAsync();
-        var product = await CreateProductAsync(client);
-        (await PostVariantAsync(client, product.Id, axis1Value: "Kırmızı"))
-            .StatusCode.Should().Be(HttpStatusCode.Created);
-
-        var resp = await PostVariantAsync(client, product.Id,
-            axis1Value: "Kırmızılı", axis1Code: "KRMZ");
-
         resp.StatusCode.Should().Be(HttpStatusCode.Created);
         var after = await client.GetFromJsonAsync<ProductDto>($"/api/panel/products/{product.Id}");
-        after!.Variants.Select(v => v.VariantCode).Should().BeEquivalentTo(
-            new[] { $"{product.Code}-KIRM", $"{product.Code}-KRMZ" });
+        after!.Variants.Select(v => v.Axis1Value).Should().BeEquivalentTo(
+            new[] { "Kırmızı", "Kırmızılı" });
     }
 
-    /// <summary>İkinci eksende doğan çakışma da aynı sınıflandırmadan geçmeli.</summary>
+    /// <summary>İkinci eksende de aynı kural: benzer yazım ayrı varyanttır.</summary>
     [Fact]
-    public async Task Create_409_variant_code_collision_on_the_second_axis()
+    public async Task Similar_second_axis_values_are_separate_variants()
     {
         var (client, _) = await SeedAsync();
         var product = await CreateProductAsync(client,
@@ -316,11 +270,7 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
         var resp = await PostVariantAsync(client, product.Id,
             axis1Value: "Siyah", axis2Value: "Küçükçe");
 
-        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
-        (await TitleAsync(resp)).Should().Be("variant-code-collision");
-        var detail = await DetailAsync(resp);
-        detail.Should().Contain("Siyah / Küçükçe");
-        detail.Should().Contain("'Siyah / Küçük'");
+        resp.StatusCode.Should().Be(HttpStatusCode.Created);
     }
 
     /// <summary>İki eksenli üründe gerçek tekrar da doğru slug'ı almalı.</summary>
@@ -341,9 +291,8 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>
-    /// Aynı eksen değeri iki kez eklenemez; varyant kodu sistem kodundan türetilir.
-    /// Ürün kodu artık değişmez (sistem üretimi SK00001…), bu yüzden testin
-    /// odağı "aynı değer tekrar eklenemiyor" olarak sadeleştirildi.
+    /// Ürün kartı güncellendikten sonra da aynı eksen değeri iki kez eklenemez:
+    /// benzersizlik ürüne değil, varyantın normalize eksen değerlerine bağlı.
     /// </summary>
     [Fact]
     public async Task Create_409_when_the_same_axis_value_is_re_added_after_a_product_update()
@@ -370,11 +319,11 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
 
         var after = await client.GetFromJsonAsync<ProductDto>($"/api/panel/products/{product.Id}");
         after!.Variants.Should().ContainSingle();
-        after.Variants[0].VariantCode.Should().Be($"{product.Code}-SIYA");
+        after.Variants[0].Axis1Value.Should().Be("Siyah");
     }
 
     [Fact]
-    public async Task Update_recomputes_the_variant_code()
+    public async Task Update_changes_the_axis_value()
     {
         var (client, _) = await SeedAsync();
         var product = await CreateProductAsync(client);
@@ -385,15 +334,13 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
             $"/api/panel/products/{product.Id}/variants/{created.Id}",
             new
             {
-                axis1Value = "Beyaz", axis1Code = (string?)null,
-                axis2Value = (string?)null, axis2Code = (string?)null,
+                axis1Value = "Beyaz", axis2Value = (string?)null,
                 isActive = false,
             });
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var dto = (await resp.Content.ReadFromJsonAsync<VariantDto>())!;
-        dto.Axis1Code.Should().Be("BEYA");
-        dto.VariantCode.Should().Be($"{product.Code}-BEYA");
+        dto.Axis1Value.Should().Be("Beyaz");
         dto.IsActive.Should().BeFalse();
     }
 
@@ -410,8 +357,7 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
             $"/api/panel/products/{product.Id}/variants/{beyaz.Id}",
             new
             {
-                axis1Value = "Siyah", axis1Code = (string?)null,
-                axis2Value = (string?)null, axis2Code = (string?)null,
+                axis1Value = "Siyah", axis2Value = (string?)null,
                 isActive = true,
             });
 
@@ -420,11 +366,11 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>
-    /// Güncelleme yolu da ayrımı yapmalı: kardeşin koduna DÜŞEN ama değeri
-    /// farklı olan satır "zaten var" değil, çakışmadır.
+    /// Güncelleme yolu da yeni gerçeğe uymalı: kardeşiyle aynı türetilmiş koda
+    /// düşen ama DEĞERİ farklı olan satır artık çakışma değil.
     /// </summary>
     [Fact]
-    public async Task Update_409_variant_code_collision_when_the_new_value_derives_a_siblings_code()
+    public async Task Update_200_when_the_new_value_only_resembles_a_sibling()
     {
         var (client, _) = await SeedAsync();
         var product = await CreateProductAsync(client);
@@ -436,14 +382,13 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
             $"/api/panel/products/{product.Id}/variants/{mavi.Id}",
             new
             {
-                axis1Value = "Kırmızılı", axis1Code = (string?)null,
-                axis2Value = (string?)null, axis2Code = (string?)null,
+                axis1Value = "Kırmızılı", axis2Value = (string?)null,
                 isActive = true,
             });
 
-        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
-        (await TitleAsync(resp)).Should().Be("variant-code-collision");
-        (await DetailAsync(resp)).Should().Contain("eksen kodunu elle");
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await resp.Content.ReadFromJsonAsync<VariantDto>())!
+            .Axis1Value.Should().Be("Kırmızılı");
     }
 
     /// <summary>
@@ -462,8 +407,7 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
             $"/api/panel/products/{product.Id}/variants/{created.Id}",
             new
             {
-                axis1Value = "Kırmızı", axis1Code = (string?)null,
-                axis2Value = (string?)null, axis2Code = (string?)null,
+                axis1Value = "Kırmızı", axis2Value = (string?)null,
                 isActive = false,
             });
 
@@ -487,8 +431,7 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
             $"/api/panel/products/{product.Id}/variants/{variant.Id}",
             new
             {
-                axis1Value = "Beyaz", axis1Code = (string?)null,
-                axis2Value = (string?)null, axis2Code = (string?)null,
+                axis1Value = "Beyaz", axis2Value = (string?)null,
                 isActive = false,
             });
 
@@ -546,7 +489,6 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
         var (client, _) = await SeedAsync();
         var product = await CreateProductAsync(client, "Tişört",
             axis1Name: "Renk", axis1Role: 1, axis2Name: "Beden", axis2Role: 2);
-        var code = product.Code; // SK00001 — sistem üretimi, değişmez
 
         var resp = await client.PostAsJsonAsync(
             $"/api/panel/products/{product.Id}/variants/bulk",
@@ -563,8 +505,8 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var body = await resp.Content.ReadFromJsonAsync<BulkResult>();
         body!.Variants.Should().HaveCount(3);
-        body.Variants.Select(v => v.VariantCode).Should()
-            .BeEquivalentTo(new[] { $"{code}-SIYA-M", $"{code}-SIYA-L", $"{code}-BEYA-M" });
+        body.Variants.Select(v => $"{v.Axis1Value}/{v.Axis2Value}").Should()
+            .BeEquivalentTo(new[] { "Siyah/M", "Siyah/L", "Beyaz/M" });
     }
 
     /// <summary>

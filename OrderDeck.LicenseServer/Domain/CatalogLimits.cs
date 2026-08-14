@@ -53,16 +53,6 @@ public static class CatalogLimits
     /// </summary>
     public const int MaxProductPhotos = 4;
     public const int AxisValue = 60;
-    public const int AxisCode = 8;
-
-    /// <summary>
-    /// Türetilmiş değer, istemciden gelmez: <c>Product.Code</c> + iki eksen kod
-    /// parçası, "-" ile birleşik. Girdiler sınırlıyken <b>yapı gereği</b> sığar:
-    /// 32 + 1 + 4 + 1 + 4 = 42 ≤ 64 (eksen kod parçasını
-    /// <c>AxisCodeDeriver</c> 4 karaktere kısaltıyor, kolon sınırı 8 olsa bile).
-    /// Bu yüzden ayrıca çalışma zamanı kontrolü yok.
-    /// </summary>
-    public const int VariantCode = 64;
 
     /// <summary>
     /// Tek toplu istekte yazılabilecek azami varyant. Gerçek ihtiyaç 12–20
