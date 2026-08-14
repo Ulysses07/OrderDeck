@@ -83,6 +83,11 @@ public sealed class LicensesWpfCatalogPullController : ControllerBase
     /// <c>CoverPhotoKey</c> altına önbelleklenmeli.
     /// </param>
     /// <param name="Variants">Ürüne ait varyantlar; varyantsız ürün yoktur.</param>
+    /// <param name="BroadcastCodes">
+    /// Ürünün TÜM yayın kodları, emekliler dahil, en yeni başta. Emekliler
+    /// bilerek gönderiliyor: izleyici eski yayın videosundaki kodu bugün
+    /// yazabilir ve o kod hâlâ aynı ürünü gösteriyor.
+    /// </param>
     public sealed record CatalogProductDto(
         Guid Id,
         Guid? CategoryId,
@@ -97,11 +102,6 @@ public sealed class LicensesWpfCatalogPullController : ControllerBase
         string? CoverPhotoKey,
         string? CoverPhotoUrl,
         List<CatalogVariantDto> Variants,
-        /// <summary>
-        /// Ürünün TÜM yayın kodları, emekliler dahil, en yeni başta. Emekliler
-        /// bilerek gönderiliyor: izleyici eski yayın videosundaki kodu bugün
-        /// yazabilir ve o kod hâlâ aynı ürünü gösteriyor.
-        /// </summary>
         List<CatalogBroadcastCodeDto> BroadcastCodes);
 
     /// <summary>
