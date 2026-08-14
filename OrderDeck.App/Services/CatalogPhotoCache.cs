@@ -47,6 +47,22 @@ public sealed class CatalogPhotoCache
     public bool Has(string? objectKey) => ResolveAbsolute(objectKey) is not null;
 
     /// <summary>
+    /// Bir fotoğraf önbelleğe YERLEŞTİĞİNDE tetiklenir; taşınan değer R2 nesne
+    /// anahtarı. Gerekçe: replika ile fotoğraflar aynı anda dolmuyor —
+    /// <c>CatalogSyncService</c> önce replikayı yazıyor, fotoğrafları SONRA
+    /// indiriyor. Operatör o aradaki bir kodu yazdıysa kart ürünü bulur ama
+    /// fotoğraf kutusu boş kalır; olay olmasaydı kutu, operatör başka bir koda
+    /// gidip geri dönene kadar boş kalırdı (<c>ProductCardViewModel.Load</c>
+    /// yalnız aktif kod DEĞİŞİNCE koşuyor).
+    ///
+    /// <b>Hangi iş parçacığında:</b> <see cref="Save"/>'i kim çağırdıysa onun
+    /// üstünde, yani üretimde senkron arka plan iş parçacığında. Bu sınıfın
+    /// "iş parçacığı güvenli değil" sözleşmesi DEĞİŞMİYOR; UI'ya geçmek
+    /// abonenin işi (bkz. <c>ProductCardViewModel.OnPhotoCached</c>).
+    /// </summary>
+    public event EventHandler<string>? PhotoCached;
+
+    /// <summary>
     /// Baytları anahtarın dosyasına yazar.
     ///
     /// NEDEN önce geçici dosya: doğrudan hedefe yazarken <b>yazma yarıda
@@ -81,6 +97,13 @@ public sealed class CatalogPhotoCache
 
         File.WriteAllBytes(temp, bytes);
         File.Move(temp, Path.Combine(_root, fileName), overwrite: true);
+
+        // Haber Move'dan SONRA: aboneler <see cref="ResolveAbsolute"/> ile
+        // dosyayı okuyacak, yarım yazılmış geçiciyi değil. Bir abonenin
+        // fırlatması yazmayı geri almaz ama indirme turunu düşürür —
+        // CatalogSyncService'in fotoğraf döngüsü zaten her tek fotoğrafı kendi
+        // try/catch'ine alıyor, o yüzden burada ayrıca yutmuyoruz.
+        PhotoCached?.Invoke(this, objectKey);
     }
 
     /// <summary>Önbellekteki dosyanın tam yolu; yoksa null (view placeholder gösterir).</summary>

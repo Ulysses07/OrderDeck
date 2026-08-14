@@ -24,13 +24,19 @@ namespace OrderDeck.Tests.App;
 /// </summary>
 public class ProductCardViewModelTests
 {
-    private static (ProductCardViewModel Vm, CatalogReplicaRepository Repo, string Root) Make()
+    /// <summary>
+    /// Önbelleği de döndürüyor: fotoğraf haberi testlerinin kartın abone
+    /// olduğu <b>aynı</b> örnek üzerinden <c>Save</c> etmesi gerekiyor
+    /// (<see cref="CatalogPhotoCache.PhotoCached"/> örnek başına bir olay).
+    /// </summary>
+    private static (ProductCardViewModel Vm, CatalogReplicaRepository Repo, CatalogPhotoCache Photos) Make()
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
         var repo = new CatalogReplicaRepository(db);
-        var root = Path.Combine(Path.GetTempPath(), "od-test-" + Guid.NewGuid().ToString("N"));
-        return (new ProductCardViewModel(repo, new CatalogPhotoCache(root)), repo, root);
+        var photos = new CatalogPhotoCache(
+            Path.Combine(Path.GetTempPath(), "od-test-" + Guid.NewGuid().ToString("N")));
+        return (new ProductCardViewModel(repo, photos), repo, photos);
     }
 
     private static CatalogProduct Product(
@@ -149,8 +155,7 @@ public class ProductCardViewModelTests
     [Fact]
     public void Photo_path_is_null_until_the_cover_file_is_cached()
     {
-        var (vm, repo, root) = Make();
-        var photos = new CatalogPhotoCache(root);
+        var (vm, repo, photos) = Make();
         repo.Replace([Product("p1", "A1", coverKey: "lic/p1/kapak.img")], [], []);
 
         vm.Load("A1");
@@ -177,6 +182,64 @@ public class ProductCardViewModelTests
         // haber verilmezse Image bağı ilk çizimdeki değerde donar ve kart
         // yeni ürünün adıyla ESKİ ürünün fotoğrafını gösterir.
         changed.Should().Contain(nameof(ProductCardViewModel.PhotoAbsolutePath));
+    }
+
+    // ── Senkron fotoğrafı sonradan indirince ──────────────────────────────────
+    //
+    // Replika ile fotoğraflar aynı anda dolmuyor: CatalogSyncService önce
+    // Replace ediyor, indirmeleri SONRA yapıyor. Operatör o aradaki bir kodu
+    // yazmışsa kart ürünü bulur ama fotoğraf kutusu boş kalır — ve Load yalnız
+    // AKTİF KOD DEĞİŞİNCE koştuğu için kutu, operatör başka bir koda gidip
+    // dönene kadar boş kalırdı. Yayında bakılan tek görsel bu.
+    //
+    // İŞ PARÇACIĞI NOTU: kart, kendisini yaratan iş parçacığının dispatcher'ını
+    // saklıyor; üretimde bu UI thread'i, olay ise senkronun arka plan
+    // thread'inden geliyor → InvokeAsync ile UI'ya taşınıyor. Testte Save aynı
+    // thread'den çağrıldığı için CheckAccess() true ve haber SATIR İÇİNDE
+    // yükseliyor: canlı bir mesaj döngüsü gerekmiyor, bekleme/pompalama yok.
+
+    [Fact]
+    public void A_photo_that_lands_for_the_shown_product_updates_the_card_by_itself()
+    {
+        var (vm, repo, photos) = Make();
+        SeedTwoProducts(repo);
+
+        vm.Load("A1");
+        vm.PhotoAbsolutePath.Should().BeNull("ön koşul: dosya henüz inmedi");
+
+        var changed = new List<string?>();
+        ((INotifyPropertyChanged)vm).PropertyChanged += (_, e) => changed.Add(e.PropertyName);
+
+        // A1'in kapak anahtarı (bkz. SeedTwoProducts) — senkron turu fotoğrafı
+        // kart zaten ekrandayken indirdi.
+        photos.Save("lic/p1/kapak.img", [1, 2, 3]);
+
+        // Equal (Contain değil): YALNIZ fotoğraf yolu duyurulmalı. Ürünün
+        // kendisi değişmedi; başka bir özellik ya da koleksiyon tazelenirse
+        // kart yayın ortasında boşuna yeniden kurulur.
+        changed.Should().Equal(nameof(ProductCardViewModel.PhotoAbsolutePath));
+        vm.PhotoAbsolutePath.Should().NotBeNull("kutu kendiliğinden dolmalı");
+        vm.Variants.Should().ContainSingle("varyantlara dokunulmadı");
+    }
+
+    [Fact]
+    public void A_photo_that_lands_for_another_product_does_not_touch_the_card()
+    {
+        var (vm, repo, photos) = Make();
+        SeedTwoProducts(repo);
+
+        vm.Load("A1");
+
+        var changed = new List<string?>();
+        ((INotifyPropertyChanged)vm).PropertyChanged += (_, e) => changed.Add(e.PropertyName);
+
+        // Soğuk önbellekte tek tur bütün katalogu indiriyor: kartta duran ürüne
+        // ait olmayan yüzlerce anahtar geçiyor. Hepsi haber sayılsaydı kart
+        // yayın boyunca durmadan bağ tazelerdi.
+        photos.Save("lic/p2/baska-urun.img", [4, 5, 6]);
+
+        changed.Should().BeEmpty();
+        vm.PhotoAbsolutePath.Should().BeNull("kartın kendi dosyası hâlâ inmedi");
     }
 
     [Fact]
