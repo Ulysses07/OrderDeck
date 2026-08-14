@@ -919,6 +919,66 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         AssertVariantAxesAreUnique(product.Id);
     }
 
+    /// <summary>
+    /// Deliğin ta kendisi: varyantlar silinince "dolu varyant" ve "stok hareketi"
+    /// bekçilerinin ikisi de susuyor, ama yayın kodu satırı yerinde kalıyor. Yeni
+    /// eksende aynı adlı bir değer açılsa eski kod sessizce başka bir kırılıma
+    /// bağlanırdı — kod bir daha devredilemediği için geri dönüşü yok.
+    /// </summary>
+    [Fact]
+    public async Task Update_409_when_the_axis_changes_while_broadcast_codes_exist()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Yayın kodlu",
+            axis1Name: "Renk", axis1Role: 1);
+        var variant = await PostVariantAsync(client, product.Id, axis1Value: "Siyah");
+
+        var assigned = await client.PutAsJsonAsync(
+            $"/api/panel/products/{product.Id}/broadcast-codes",
+            new { sellerAxisValue = "Siyah", code = "ATEŞ" });
+        assigned.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var removed = await client.DeleteAsync(
+            $"/api/panel/products/{product.Id}/variants/{variant.Id}");
+        removed.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var resp = await PutProductAsync(client, product,
+            axis1Name: "Model", axis1Role: 1);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await TitleAsync(resp)).Should().Be("axis-in-use-broadcast-codes");
+
+        var after = await client.GetFromJsonAsync<ProductDto>(
+            $"/api/panel/products/{product.Id}");
+        after!.Axis1Name.Should().Be("Renk");
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        db.ProductBroadcastCodes.Single(x => x.ProductId == product.Id)
+            .SellerAxisValue.Should().Be("Siyah");
+    }
+
+    /// <summary>
+    /// Bekçinin normal yolu kırmadığının kanıtı: kodu olmayan varyantsız kartta
+    /// eksen adı hâlâ değiştirilebilir.
+    /// </summary>
+    [Fact]
+    public async Task Update_changes_the_axis_when_the_product_has_no_broadcast_code()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Kodsuz kart",
+            axis1Name: "Renk", axis1Role: 1);
+        product.Variants.Should().BeEmpty();
+
+        var resp = await PutProductAsync(client, product,
+            axis1Name: "Model", axis1Role: 1);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var dto = (await resp.Content.ReadFromJsonAsync<ProductDto>())!;
+        dto.Axis1Name.Should().Be("Model");
+        dto.Axis1Role.Should().Be(1);
+    }
+
     [Fact]
     public async Task Delete_removes_the_product_and_its_variants()
     {

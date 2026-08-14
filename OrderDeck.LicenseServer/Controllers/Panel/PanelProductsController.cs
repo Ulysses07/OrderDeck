@@ -428,6 +428,35 @@ public sealed class PanelProductsController : ControllerBase
                           + "bir ürün kartı açmalısın.",
                     statusCode: 409);
 
+            // Yayın kodu varsa eksen yapısı bir daha DEĞİŞMEZ; kontrol bilerek
+            // varyant sayısından bağımsız. Delik tam da varyant kalmamışken
+            // açılıyordu: operatör önce tüm varyantları siler (stok hareketi
+            // yoksa serbest), sonra Renk(Seller)→Model(Seller) yapar; kod satırı
+            // SellerAxisValue = "Siyah" ile yerinde kalır ve yeni eksende
+            // açılacak "Siyah" değerine sessizce bağlanır. Kod bir daha
+            // devredilemediği için (bkz. ProductBroadcastCode XML doc) bu hata
+            // geri alınamaz: yayında "ATEŞ = siyah RENK" duyan izleyicinin
+            // siparişi "Siyah MODEL"e düşer.
+            //
+            // Yeniden adlandırmaya izin verip anlam değişimini engellemek
+            // mümkün değil — gerekçesi yukarıda (Renkk→Renk ile Renk→Beden
+            // string olarak ayırt edilemez). Satıcı ekseni olmayan ürüne
+            // sonradan satıcı ekseni eklenmesi de aynı sorunu üretir (o
+            // kodların SellerAxisValue'su null'dur); tek "kod var mı" kontrolü
+            // ikisini de kapsıyor.
+            //
+            // Yeri, bir üstteki axis-in-use-stock kontrolüyle aynı gerekçeyle
+            // burada: RemoveRange'ten ÖNCE, sahiplik doğrulandıktan SONRA.
+            if (await _db.ProductBroadcastCodes.AnyAsync(x => x.ProductId == product.Id, ct))
+                return Problem(title: "axis-in-use-broadcast-codes",
+                    detail: "Bu ürünün yayın kodları var; eksen yapısı artık "
+                          + "değiştirilemez (eksen açıp kapatmak da dahil). "
+                          + "Kod bir daha devredilemediği için eski kod yeni "
+                          + "eksende sessizce başka bir kırılıma bağlanırdı. "
+                          + "Farklı bir eksen yapısı gerekiyorsa yeni bir ürün "
+                          + "kartı açmalısın.",
+                    statusCode: 409);
+
             _db.ProductVariants.RemoveRange(product.Variants.ToList());
             product.Variants.Clear();
         }
