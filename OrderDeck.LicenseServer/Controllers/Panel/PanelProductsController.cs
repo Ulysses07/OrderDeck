@@ -150,9 +150,9 @@ public sealed class PanelProductsController : ControllerBase
             // eşleşme veritabanının collation'ından bağımsız (SQL Server duyarsız,
             // PostgreSQL duyarlı; göçte davranış değişmesin).
             //
-            // Kod için ayrı bir iğne gerekmiyor çünkü `Code` de yazma anında aynı
-            // normalleştiriciden geçiyor (NormalizeCode). Kod elle yazılabiliyor ve
-            // sahada "güzel elbise" gibi çok kelimeli Türkçe ifadeler oluyor.
+            // `Code` sistem tarafından üretilir (SK00001…) ve normalleştirilmemiş
+            // sayısal bir sonek içerir; bu nedenle kod araması da needle üzerinden
+            // Contains ile çalışır — ayrı bir normalleştirme adımı gerekmez.
             var needle = SearchNormalizer.Normalize(q);
             if (needle.Length > 0)
                 query = query.Where(
@@ -342,7 +342,11 @@ public sealed class PanelProductsController : ControllerBase
             // o yol EF InMemory'de hiç çalışmaz (benzersiz indeks zorlanmıyor) —
             // yani hiç test edilemeyen bir kurtarma kodu eklerdik. Operatör
             // kaydete bir daha basınca yeni numara üretilir.
-            var raced = await _db.Products.AnyAsync(
+            // SaveChanges patladıktan sonra ChangeTracker'da başarısız ürün hâlâ
+            // Added durumunda kalır. AsNoTracking olmazsa EF bu kalıntı entity'yi
+            // sonuçla karıştırabilir; AnyAsync şu an EXISTS'e döndüğü için pratikte
+            // fark etmez, ama ileride FirstOrDefault'a dönüşürse yanlış cevap verir.
+            var raced = await _db.Products.AsNoTracking().AnyAsync(
                 p => p.LicenseId == licenseId.Value && p.Code == code && p.Id != product.Id, ct);
             if (raced)
                 return Problem(title: "code-race",

@@ -346,7 +346,7 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
     /// odağı "aynı değer tekrar eklenemiyor" olarak sadeleştirildi.
     /// </summary>
     [Fact]
-    public async Task Create_409_when_the_same_value_is_re_added_after_a_product_code_change()
+    public async Task Create_409_when_the_same_axis_value_is_re_added_after_a_product_update()
     {
         var (client, _) = await SeedAsync();
         var product = await CreateProductAsync(client);
