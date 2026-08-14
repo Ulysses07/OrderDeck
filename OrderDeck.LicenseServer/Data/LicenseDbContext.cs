@@ -53,6 +53,7 @@ public class LicenseDbContext : DbContext
     public DbSet<Category> Categories => Set<Category>();
     public DbSet<Product> Products => Set<Product>();
     public DbSet<ProductVariant> ProductVariants => Set<ProductVariant>();
+    public DbSet<ProductBroadcastCode> ProductBroadcastCodes => Set<ProductBroadcastCode>();
     public DbSet<ProductPhoto> ProductPhotos => Set<ProductPhoto>();
     public DbSet<StockMovement> StockMovements => Set<StockMovement>();
 
@@ -74,6 +75,12 @@ public class LicenseDbContext : DbContext
             if (entry.State is not (EntityState.Added or EntityState.Modified)) continue;
 
             entry.Entity.NameSearch = SearchNormalizer.Normalize(entry.Entity.Name);
+        }
+
+        foreach (var entry in ChangeTracker.Entries<ProductBroadcastCode>())
+        {
+            if (entry.State is not (EntityState.Added or EntityState.Modified)) continue;
+            entry.Entity.CodeNormalized = SearchNormalizer.Normalize(entry.Entity.Code);
         }
     }
 
@@ -692,6 +699,24 @@ public class LicenseDbContext : DbContext
                 .HasForeignKey(v => v.ProductId).OnDelete(DeleteBehavior.Cascade);
             b.HasIndex(v => new { v.ProductId, v.VariantCode }).IsUnique();
             b.HasIndex(v => new { v.LicenseId, v.VariantCode });
+        });
+
+        mb.Entity<ProductBroadcastCode>(b =>
+        {
+            b.HasKey(x => x.Id);
+            b.Property(x => x.SellerAxisValue).HasMaxLength(CatalogLimits.AxisValue);
+            b.Property(x => x.Code).HasMaxLength(CatalogLimits.BroadcastCode).IsRequired();
+            b.Property(x => x.CodeNormalized).HasMaxLength(CatalogLimits.BroadcastCode).IsRequired();
+
+            b.HasOne(x => x.Product).WithMany(p => p.BroadcastCodes)
+                .HasForeignKey(x => x.ProductId).OnDelete(DeleteBehavior.Cascade);
+
+            // Lisans başına KALICI benzersizlik: kod emekliye ayrılsa da satır
+            // durduğu için indeks kodu rezerve tutmaya devam eder.
+            b.HasIndex(x => new { x.LicenseId, x.CodeNormalized }).IsUnique();
+
+            // Ürün kartını açarken "bu ürünün kodları" sorgusu.
+            b.HasIndex(x => new { x.LicenseId, x.ProductId });
         });
 
         mb.Entity<ProductPhoto>(b =>

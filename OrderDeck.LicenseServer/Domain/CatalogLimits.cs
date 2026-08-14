@@ -75,6 +75,18 @@ public static class CatalogLimits
     public const int Barcode = 64;
 
     /// <summary>
+    /// Yayın kodu (<c>ProductBroadcastCode.Code</c>) ve normalize hâli.
+    /// 32 karakter: operatör bunu canlı yayında sesli söylüyor ve izleyici
+    /// yoruma yazıyor — pratikte 3-8 karakter. Tavan cömert bırakıldı ki
+    /// "ATEŞ KIRMIZI" gibi iki kelimelik kodlar da sığsın.
+    ///
+    /// Normalize hâlin sınırı ham hâlle AYNI olmalı: <c>SearchNormalizer</c>
+    /// karakter atmıyor (yalnız büyütüp katlıyor, boşlukları sadeleştiriyor),
+    /// yani normalize hâl asla ham hâlden uzun olamaz.
+    /// </summary>
+    public const int BroadcastCode = 32;
+
+    /// <summary>
     /// Stok hareketi notu ("mal kabul irsaliye 4412", "sayım farkı"). Serbest
     /// metin; 200 karakter panelde tek satırda okunabilir kalıyor.
     /// </summary>

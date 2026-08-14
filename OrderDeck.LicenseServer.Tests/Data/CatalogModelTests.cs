@@ -125,6 +125,9 @@ public class CatalogModelTests : IClassFixture<ApiFactory>
             (typeof(ProductVariant), nameof(ProductVariant.Axis2Code), CatalogLimits.AxisCode),
             (typeof(ProductVariant), nameof(ProductVariant.VariantCode), CatalogLimits.VariantCode),
             (typeof(ProductVariant), nameof(ProductVariant.Barcode), CatalogLimits.Barcode),
+            (typeof(ProductBroadcastCode), nameof(ProductBroadcastCode.SellerAxisValue), CatalogLimits.AxisValue),
+            (typeof(ProductBroadcastCode), nameof(ProductBroadcastCode.Code), CatalogLimits.BroadcastCode),
+            (typeof(ProductBroadcastCode), nameof(ProductBroadcastCode.CodeNormalized), CatalogLimits.BroadcastCode),
         };
 
         foreach (var (entity, property, limit) in expected)
@@ -224,6 +227,56 @@ public class CatalogModelTests : IClassFixture<ApiFactory>
         loaded.Photos.Should().HaveCount(3);
         loaded.Photos.OrderBy(p => p.SortOrder).First().ObjectKey
             .Should().EndWith("0.img", "kapak = en küçük SortOrder");
+    }
+
+    /// <summary>
+    /// Bekçi: <c>CodeNormalized</c> türetilmiş bir kolon ve türetme controller'da
+    /// DEĞİL, <c>SaveChanges</c> zincirinde yapılıyor — <c>NameSearch</c> ile aynı
+    /// gerekçe. Yayın kodunun benzersizliği ve canlı yorum eşleştirmesi bu kolona
+    /// dayandığı için, kuralı atlayan bir yazma yolu eklenirse kod sessizce
+    /// eşleşmez hâle gelirdi.
+    /// </summary>
+    [Fact]
+    public async Task Broadcast_code_normalized_is_derived_on_insert_and_refreshed_on_update()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+        var license = NewLicense();
+        db.Licenses.Add(license);
+
+        var product = new Product
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = license.Id,
+            Code = "SK00001",
+            Name = "Yayın Kodlu",
+            DefaultPrice = 100m,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+        db.Products.Add(product);
+
+        var broadcast = new ProductBroadcastCode
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = license.Id,
+            ProductId = product.Id,
+            SellerAxisValue = "Siyah",
+            Code = "  ateş  ",
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.ProductBroadcastCodes.Add(broadcast);
+        await db.SaveChangesAsync();
+
+        broadcast.CodeNormalized.Should().Be("ATES");
+
+        broadcast.Code = "Kırmızı Ateş";
+        await db.SaveChangesAsync();
+
+        broadcast.CodeNormalized.Should().Be("KIRMIZI ATES",
+            "kod değişince türetilmiş kolon bayat kalırsa yayın kodu canlı "
+            + "yorumla eşleşmez");
     }
 
     [Fact]

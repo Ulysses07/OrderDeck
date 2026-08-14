@@ -31,7 +31,12 @@ public sealed class Product
     public Guid? CategoryId { get; set; }
     public Category? Category { get; set; }
 
-    /// <summary>Lisans başına benzersiz. Otomatik üretilir (A1, A2…), elle değiştirilebilir.</summary>
+    /// <summary>
+    /// Stok kodu. Lisans başına benzersiz, <b>sistem üretir</b>
+    /// (<c>SK00001</c>, <c>SK00002</c>…) ve bir daha değişmez — elle
+    /// düzenlenemez. Yayında söylenen kod bu DEĞİL; o
+    /// <see cref="ProductBroadcastCode"/>.
+    /// </summary>
     public string Code { get; set; } = string.Empty;
 
     public string Name { get; set; } = string.Empty;
@@ -77,4 +82,10 @@ public sealed class Product
     public List<ProductPhoto> Photos { get; set; } = new();
 
     public List<ProductVariant> Variants { get; set; } = new();
+
+    /// <summary>
+    /// Bu ürüne verilmiş yayın kodları — emeklileri dahil (satır silinmiyor).
+    /// "Güncel" kod, satıcı ekseni değeri başına en yeni <c>CreatedAt</c>.
+    /// </summary>
+    public List<ProductBroadcastCode> BroadcastCodes { get; set; } = new();
 }
