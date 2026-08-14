@@ -7,7 +7,11 @@
 -- BOŞ olduğu doğrulandı — ürün kartı özelliği kullanılmamış. Taşıma kodu
 -- yazmak, hiç var olmayan bir veri için kalıcı bakım yükü olurdu.
 --
--- Sıra önemli: ProductSize'ın Product'a FK'si var, önce çocuk düşüyor.
+-- Çocuk tablo önce düşüyor; bu bir ALIŞKANLIK, zorunluluk DEĞİL. Ölçüldü:
+-- 024'teki FK "ON DELETE CASCADE" olduğu ve DROP TABLE örtük silme yaptığı
+-- için iki sıra da (satır varken ve "Foreign Keys=true" ile) sorunsuz koşuyor.
+-- Sırayı yine de böyle bırakıyoruz ki gelecekte cascade'siz bir FK ile
+-- karşılaşan biri kalıbı bozmak zorunda kalmasın.
 DROP TABLE IF EXISTS ProductSize;
 DROP TABLE IF EXISTS Product;
 

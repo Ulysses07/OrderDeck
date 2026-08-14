@@ -57,8 +57,14 @@
             </StackPanel>
 
             <!-- ── B: görüntüleme ───────────────────────────────────────── -->
-            <!-- IsEditing gitti, tek koşul kaldı: artık üst üste binebilecek
-                 ikinci bir dolu durum yok. -->
+            <!-- IsEditing gitti, bu bölümün tek koşulu HasProduct. Ama üç bölüm
+                 de AYNI Grid'i paylaşıyor ve görünürlükleri üç BAĞIMSIZ bağa
+                 dayanıyor (Code == "" tetikleyicisi · IsUnknown · HasProduct);
+                 birbirini dışlamaları yapıdan değil, ProductCardViewModel'in
+                 disiplininden geliyor. O disiplin bozulursa bölümler üst üste
+                 biner — bu yüzden ProductCardTemplateTests
+                 (Only_one_of_the_three_sections_is_visible_at_a_time) yerleşimi
+                 gerçekten koşturup hangisinin görünür olduğunu ölçüyor. -->
             <StackPanel Visibility="{Binding HasProduct,
                                      Converter={StaticResource BoolToVisibleConverter}}">
                 <Border CornerRadius="{StaticResource OD.Radius.Md}"

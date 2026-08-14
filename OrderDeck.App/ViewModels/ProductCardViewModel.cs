@@ -57,8 +57,10 @@ public sealed partial class ProductCardViewModel : ObservableObject
 
     /// <summary>
     /// Kartı verilen ürün koduna göre tazeler. Kod büyük/küçük harf ve Türkçe
-    /// harf farkından bağımsız aranır (<c>SearchNormalizer</c> hem replikaya
-    /// yazarken hem burada uygulanıyor).
+    /// harf farkından bağımsız aranır; normalleştirmeyi bu sınıf DEĞİL,
+    /// <see cref="CatalogReplicaRepository.FindByCode"/> yapıyor (iğneyi de
+    /// saklanan kolonu da aynı <c>SearchNormalizer</c>'dan geçiriyor).
+    /// Buradan giden tek şey kırpılmış ham metin.
     /// </summary>
     public void Load(string? code)
     {
