@@ -80,10 +80,10 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<CustomerRepository>();
         services.AddSingleton<LabelRepository>();
         services.AddSingleton<PaymentRepository>();
-        // Arayüz Faz 1: ürün kartı (ad/fotoğraf/beden adetleri) yalnız yerel SQLite.
-        services.AddSingleton<ProductRepository>();
-        // Ürün fotoğrafı deposu — kapsamı %LOCALAPPDATA%\OrderDeck\products.
-        services.AddSingleton<ProductPhotoStore>();
+        // Stok Faz 1b: sunucu katalogunun salt-okunur replikası ve kapak
+        // fotoğrafı önbelleği. Tek yazarı CatalogSyncService.
+        services.AddSingleton<CatalogReplicaRepository>();
+        services.AddSingleton<CatalogPhotoCache>();
         // PDF dekont parse: DekontEkleDrawer "PDF Yükle" butonu kullanır.
         services.AddSingleton<PdfDekontParser>();
         // Kargo PR C: dekont eşleştirme servisi (LabelRepository + AppSettings.Shipping).
@@ -510,6 +510,21 @@ public sealed class AppHost : IDisposable
         // Customer tablosuna ingest eder. 30 sn cadence, watermark LastShopperIngestAt.
         services.AddSingleton<Services.Sync.ShopperRegistrationIngestService>();
         services.AddHostedService<Services.Sync.ShopperRegistrationIngestHostedService>();
+
+        // Katalog replikası (Stok Faz 1b): sunucudaki katalogun tam anlık
+        // görüntüsü yerel SQLite'a yazılır. Ritim İKİ kademeli — ilk GERÇEKTEN
+        // başarılı tura kadar 30 saniye, sonra 5 dakika (bkz.
+        // CatalogSyncHostedService): açılışta lisans anahtarı henüz
+        // çözülmemişken tek ritim 5 dakika olsaydı taze giriş yapan operatör
+        // bütün yayın hazırlığı boyunca boş katalogla otururdu. Fotoğraf baytları
+        // presigned R2 adresinden KİMLİKSİZ bir istemciyle çekiliyor —
+        // LicenseApiClient'ın istemcisi Authorization ekler ve presigned
+        // isteği bozardı.
+        // Adı tam nitelikli yazıyoruz: ifade bağlamında `Services`,
+        // AppHost'un statik IServiceProvider özelliğine bağlanıyor.
+        services.AddHttpClient(OrderDeck.App.Services.Sync.CatalogSyncService.PhotoClientName);
+        services.AddSingleton<Services.Sync.CatalogSyncService>();
+        services.AddHostedService<Services.Sync.CatalogSyncHostedService>();
 
         // UI freeze diagnostic (2026-05-13): her 5 dakikada bir UI thread'in
         // responsive olduğunu log'a yazan heartbeat. Donma anında log'da

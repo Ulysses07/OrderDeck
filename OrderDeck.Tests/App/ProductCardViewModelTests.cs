@@ -1,232 +1,271 @@
+using System.ComponentModel;
 using System.IO;
-using System.Linq;
 using FluentAssertions;
-using Moq;
 using OrderDeck.App.Services;
 using OrderDeck.App.ViewModels;
 using OrderDeck.Core.Catalog;
 using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
-using OrderDeck.Core.Time;
+using OrderDeck.Shared.Text;
 using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.Tests.App;
 
+/// <summary>
+/// Ürün kartı artık SALT OKUR: kaynağı sunucu kataloğunun yerel replikası.
+/// Tanımlama/düzenleme/fotoğraf seçme akışları kaldırıldı (katalogun sahibi
+/// panel), o yüzden buradaki testler yalnız Load'un üç durumunu sınıyor.
+///
+/// Testlerin çoğu ART ARDA iki Load çağırıyor. Sebep üretimden geliyor:
+/// <c>MainShellViewModel</c> aktif kodun HER tuş vuruşunda Load'u yeniden
+/// çağırıyor, yani kart pratikte hiçbir zaman taze bir nesne değil — bayat
+/// kalan tek bir alan yayında yanlış ürünü gösterir.
+/// </summary>
 public class ProductCardViewModelTests
 {
-    private static (ProductCardViewModel Vm, ProductRepository Repo) Make()
+    /// <summary>
+    /// Önbelleği de döndürüyor: fotoğraf haberi testlerinin kartın abone
+    /// olduğu <b>aynı</b> örnek üzerinden <c>Save</c> etmesi gerekiyor
+    /// (<see cref="CatalogPhotoCache.PhotoCached"/> örnek başına bir olay).
+    /// </summary>
+    private static (ProductCardViewModel Vm, CatalogReplicaRepository Repo, CatalogPhotoCache Photos) Make()
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
-        var repo = new ProductRepository(db);
-        var photos = new ProductPhotoStore(
-            Path.Combine(Path.GetTempPath(), "od-card-" + System.Guid.NewGuid().ToString("N")));
-        var clock = new Mock<IClock>();
-        clock.Setup(c => c.UnixNow()).Returns(2000L);
-        return (new ProductCardViewModel(repo, photos, clock.Object), repo);
+        var repo = new CatalogReplicaRepository(db);
+        var photos = new CatalogPhotoCache(
+            Path.Combine(Path.GetTempPath(), "od-test-" + Guid.NewGuid().ToString("N")));
+        return (new ProductCardViewModel(repo, photos), repo, photos);
     }
 
+    private static CatalogProduct Product(
+        string id, string code, string name = "Elbise", string? coverKey = null)
+        => new(id, null, code, SearchNormalizer.Normalize(code), name,
+               199.90m, null, "Renk", 1, "Beden", 2, coverKey, 1_700_000_000);
+
+    /// <summary>İki ürün + her birinin kendi varyantı; geçişleri sınayan testlerin ortak zemini.</summary>
+    private static void SeedTwoProducts(CatalogReplicaRepository repo)
+        => repo.Replace(
+            [
+                Product("p1", "A1", "Güzel Elbise", "lic/p1/kapak.img"),
+                Product("p2", "B2", "Mavi Etek"),
+            ],
+            [
+                new CatalogVariant("v1", "p1", "Kırmızı", "KIRM", "M", "M",
+                                   "A1-KIRM-M", null, true, 0),
+                new CatalogVariant("v2", "p2", "Mavi", "MAVI", "L", "L",
+                                   "B2-MAVI-L", null, true, 0),
+            ],
+            []);
+
     [Fact]
-    public void Load_unknown_code_offers_definition_without_opening_the_form()
+    public void Empty_code_shows_neither_product_nor_unknown()
     {
-        var (vm, _) = Make();
+        var (vm, repo, _) = Make();
+        SeedTwoProducts(repo);
 
-        vm.Load("A100");
+        // Önce gerçek bir ürün: boş koleksiyonun boş kalmasını değil,
+        // DOLU kartın gerçekten temizlendiğini ölçüyoruz.
+        vm.Load("A1");
+        vm.Load("   ");
 
-        vm.Code.Should().Be("A100");
+        vm.Code.Should().BeEmpty();
         vm.HasProduct.Should().BeFalse();
-        // Form KENDİLİĞİNDEN açılmaz: kod kutusuna "A100" yazılırken "A",
-        // "A1", "A10" da tanınmayan kodlardır — form her tuşta açılıp
-        // kapanırdı. Kart yalnız "tanımlı değil" der.
-        vm.IsUnknown.Should().BeTrue();
-        vm.IsEditing.Should().BeFalse();
-        vm.Name.Should().BeEmpty();
-        vm.Sizes.Should().BeEmpty();
-    }
-
-    [Fact]
-    public void BeginEdit_opens_the_form_for_an_unknown_code()
-    {
-        var (vm, _) = Make();
-        vm.Load("A100");
-
-        vm.BeginEditCommand.Execute(null);
-
-        vm.IsEditing.Should().BeTrue();
         vm.IsUnknown.Should().BeFalse();
+        // Bayat kalan her alan yayında bir önceki ürünü göstermeye devam ederdi.
+        vm.Name.Should().BeEmpty();
+        vm.CoverPhotoKey.Should().BeNull();
+        vm.Variants.Should().BeEmpty();
     }
 
     [Fact]
-    public void Load_known_code_shows_saved_product()
+    public void Unknown_code_is_reported_without_clearing_the_typed_code()
     {
-        var (vm, repo) = Make();
-        repo.Save(new Product("A100", "Kırmızı Elbise", "a100.jpg", 0),
-            new[] { new ProductSize("A100", "S", 3, 0), new ProductSize("A100", "M", 0, 1) });
+        var (vm, _, _) = Make();
 
-        vm.Load("A100");
+        vm.Load("A7");
 
-        vm.HasProduct.Should().BeTrue();
-        vm.IsEditing.Should().BeFalse();
-        vm.Name.Should().Be("Kırmızı Elbise");
-        vm.Sizes.Select(s => s.Size).Should().Equal("S", "M");
-        vm.Sizes[0].Quantity.Should().Be(3);
-    }
-
-    [Fact]
-    public void Load_blank_code_clears_the_card()
-    {
-        var (vm, repo) = Make();
-        repo.Save(new Product("A100", "Kırmızı Elbise", null, 0), new[] { new ProductSize("A100", "S", 3, 0) });
-        vm.Load("A100");
-
-        vm.Load("");
-
-        // Hero'daki kod kutusu boşaltıldığında kart eski ürünü göstermeye
-        // devam ederse operatör yanlış stoğa bakar.
+        // Kod ekranda kalmalı: operatör neyi yazdığını görsün.
+        vm.Code.Should().Be("A7");
         vm.HasProduct.Should().BeFalse();
-        vm.IsEditing.Should().BeFalse();
-        vm.Sizes.Should().BeEmpty();
+        vm.IsUnknown.Should().BeTrue();
     }
 
     [Fact]
-    public void ApplySizesText_creates_tiles_in_written_order()
+    public void Unknown_code_after_a_loaded_product_leaves_nothing_behind()
     {
-        var (vm, _) = Make();
-        vm.Load("A100");
+        var (vm, repo, _) = Make();
+        SeedTwoProducts(repo);
 
-        vm.SizesText = "S, M, L, XL";
-        vm.ApplySizesText();
+        vm.Load("A1");
+        vm.Load("YOKBOYLEKOD");
 
-        vm.Sizes.Select(s => s.Size).Should().Equal("S", "M", "L", "XL");
-        vm.Sizes.Select(s => s.SortOrder).Should().Equal(0, 1, 2, 3);
-        vm.Sizes.Should().OnlyContain(s => s.Quantity == 0);
+        vm.Code.Should().Be("YOKBOYLEKOD");
+        vm.HasProduct.Should().BeFalse();
+        vm.IsUnknown.Should().BeTrue();
+        // "Katalogda yok" yazısının ALTINDA eski ürünün adı, fotoğrafı ve
+        // varyantları durursa operatör tanınmayan kodu tanınmış sanar.
+        vm.Name.Should().BeEmpty();
+        vm.CoverPhotoKey.Should().BeNull();
+        vm.Variants.Should().BeEmpty();
     }
 
     [Fact]
-    public void ApplySizesText_keeps_quantities_of_surviving_sizes()
+    public void Known_code_loads_name_and_active_variants()
     {
-        var (vm, _) = Make();
-        vm.Load("A100");
-        vm.SizesText = "S,M";
-        vm.ApplySizesText();
-        vm.Sizes[1].Quantity = 7;   // M = 7
+        var (vm, repo, _) = Make();
+        repo.Replace(
+            [Product("p1", "GUZEL ELBISE", "Güzel Elbise")],
+            [
+                new CatalogVariant("v1", "p1", "Kırmızı", "KIRM", "M", "M",
+                                   "GUZEL ELBISE-KIRM-M", null, true, 0),
+                new CatalogVariant("v2", "p1", "Kırmızı", "KIRM", "L", "L",
+                                   "GUZEL ELBISE-KIRM-L", null, false, 1),
+            ],
+            []);
 
-        vm.SizesText = "M,L";
-        vm.ApplySizesText();
+        vm.Load("güzel elbise");
 
-        // Operatör beden setini düzeltirken hayatta kalan bedenin adedini
-        // yeniden yazmak zorunda kalmamalı.
-        vm.Sizes.Select(s => s.Size).Should().Equal("M", "L");
-        vm.Sizes[0].Quantity.Should().Be(7);
-    }
-
-    [Fact]
-    public void ApplySizesText_drops_duplicates_and_blanks()
-    {
-        var (vm, _) = Make();
-        vm.Load("A100");
-
-        vm.SizesText = "S, , s ,M,,M";
-        vm.ApplySizesText();
-
-        // Beden Product tablosunda PK'nın parçası — çift satır INSERT'te
-        // patlar; burada eleriz.
-        vm.Sizes.Select(s => s.Size).Should().Equal("S", "M");
-    }
-
-    [Fact]
-    public void Save_persists_product_and_leaves_edit_mode()
-    {
-        var (vm, repo) = Make();
-        vm.Load("A100");
-        vm.Name = "Kırmızı Elbise";
-        vm.SizesText = "S,M";
-        vm.ApplySizesText();
-        vm.Sizes[0].Quantity = 4;
-
-        vm.SaveCommand.Execute(null);
-
-        vm.IsEditing.Should().BeFalse();
         vm.HasProduct.Should().BeTrue();
-        repo.Get("A100")!.Name.Should().Be("Kırmızı Elbise");
-        repo.Get("A100")!.UpdatedAt.Should().Be(2000);   // IClock, unix SANİYE
-        repo.GetSizes("A100").Single(s => s.Size == "S").Quantity.Should().Be(4);
+        vm.IsUnknown.Should().BeFalse();
+        vm.Name.Should().Be("Güzel Elbise");
+        // Kartta katalogun KANONİK yazımı durur, operatörün tuşladığı metin
+        // değil: kod ekrandan okunup panele/kargoya yazılabiliyor.
+        vm.Code.Should().Be("GUZEL ELBISE");
+        // Pasif varyant gösterilmez: operatör satamayacağı bir kırılımı görmesin.
+        vm.Variants.Should().ContainSingle().Which.Display.Should().Be("Kırmızı · M");
     }
 
     [Fact]
-    public void Save_is_blocked_while_name_is_blank()
+    public void Loading_a_second_product_drops_the_first_products_variants()
     {
-        var (vm, repo) = Make();
-        vm.Load("A100");
-        vm.SizesText = "S";
-        vm.ApplySizesText();
+        var (vm, repo, _) = Make();
+        SeedTwoProducts(repo);
 
-        vm.SaveCommand.CanExecute(null).Should().BeFalse();
+        vm.Load("A1");
+        vm.Load("B2");
 
-        vm.Name = "Kırmızı Elbise";
-        vm.SaveCommand.CanExecute(null).Should().BeTrue();
+        vm.Name.Should().Be("Mavi Etek");
+        // Üretimde Load her tuş vuruşunda koşuyor; birikirse kartta iki ayrı
+        // ürünün varyantları yan yana durur ve operatör yanlışını okutur.
+        vm.Variants.Select(v => v.Display).Should().Equal("Mavi · L");
     }
 
     [Fact]
-    public void CancelEdit_restores_the_saved_state()
+    public void Photo_path_is_null_until_the_cover_file_is_cached()
     {
-        var (vm, repo) = Make();
-        repo.Save(new Product("A100", "Kırmızı Elbise", null, 0),
-            new[] { new ProductSize("A100", "S", 3, 0) });
-        vm.Load("A100");
-        vm.BeginEditCommand.Execute(null);
-        vm.Name = "Bozuk isim";
-        vm.SizesText = "XXL";
-        vm.ApplySizesText();
+        var (vm, repo, photos) = Make();
+        repo.Replace([Product("p1", "A1", coverKey: "lic/p1/kapak.img")], [], []);
 
-        vm.CancelEditCommand.Execute(null);
+        vm.Load("A1");
+        vm.PhotoAbsolutePath.Should().BeNull();
 
-        vm.Name.Should().Be("Kırmızı Elbise");
-        vm.Sizes.Select(s => s.Size).Should().Equal("S");
-        vm.IsEditing.Should().BeFalse();
-    }
-
-    [Fact]
-    public void SetPhoto_copies_the_file_and_exposes_absolute_path()
-    {
-        var (vm, _) = Make();
-        vm.Load("A100");
-        var src = Path.Combine(Path.GetTempPath(), System.Guid.NewGuid().ToString("N") + ".png");
-        File.WriteAllBytes(src, new byte[] { 1 });
-
-        vm.SetPhoto(src);
-
-        vm.PhotoPath.Should().Be("a100.png");
+        // Senkron fotoğrafı indirdikten sonra aynı kod yeniden okunduğunda yol dolar.
+        photos.Save("lic/p1/kapak.img", [1, 2, 3]);
+        vm.Load("A1");
         vm.PhotoAbsolutePath.Should().NotBeNull();
-        File.Exists(vm.PhotoAbsolutePath!).Should().BeTrue();
-        File.Delete(src);
-    }
-
-    [Theory]
-    [InlineData(0, false, true)]
-    [InlineData(1, true, false)]
-    [InlineData(2, true, false)]
-    [InlineData(3, false, false)]
-    public void Size_tile_low_and_out_flags(int qty, bool low, bool outOfStock)
-    {
-        var tile = new ProductSizeViewModel("M", qty, 0);
-
-        // Mockup: .cnt.low amber, .size.out soluk + üstü çizili.
-        tile.IsLow.Should().Be(low);
-        tile.IsOutOfStock.Should().Be(outOfStock);
     }
 
     [Fact]
-    public void Size_tile_flags_react_to_quantity_edits()
+    public void Cover_key_change_raises_a_change_for_the_photo_path()
     {
-        var tile = new ProductSizeViewModel("M", 5, 0);
+        var (vm, repo, _) = Make();
+        SeedTwoProducts(repo);
 
-        tile.Quantity = 0;
+        var changed = new List<string?>();
+        ((INotifyPropertyChanged)vm).PropertyChanged += (_, e) => changed.Add(e.PropertyName);
 
-        // Adet kartta satır-içi düzenleniyor; rozetler anında dönmezse
-        // operatör tükenmiş bedeni fark etmez.
-        tile.IsOutOfStock.Should().BeTrue();
-        tile.IsLow.Should().BeFalse();
+        vm.Load("A1");
+
+        // PhotoAbsolutePath hesaplanan bir özellik: CoverPhotoKey değişince
+        // haber verilmezse Image bağı ilk çizimdeki değerde donar ve kart
+        // yeni ürünün adıyla ESKİ ürünün fotoğrafını gösterir.
+        changed.Should().Contain(nameof(ProductCardViewModel.PhotoAbsolutePath));
+    }
+
+    // ── Senkron fotoğrafı sonradan indirince ──────────────────────────────────
+    //
+    // Replika ile fotoğraflar aynı anda dolmuyor: CatalogSyncService önce
+    // Replace ediyor, indirmeleri SONRA yapıyor. Operatör o aradaki bir kodu
+    // yazmışsa kart ürünü bulur ama fotoğraf kutusu boş kalır — ve Load yalnız
+    // AKTİF KOD DEĞİŞİNCE koştuğu için kutu, operatör başka bir koda gidip
+    // dönene kadar boş kalırdı. Yayında bakılan tek görsel bu.
+    //
+    // İŞ PARÇACIĞI NOTU: kart, kendisini yaratan iş parçacığının dispatcher'ını
+    // saklıyor; üretimde bu UI thread'i, olay ise senkronun arka plan
+    // thread'inden geliyor → InvokeAsync ile UI'ya taşınıyor. Testte Save aynı
+    // thread'den çağrıldığı için CheckAccess() true ve haber SATIR İÇİNDE
+    // yükseliyor: canlı bir mesaj döngüsü gerekmiyor, bekleme/pompalama yok.
+
+    [Fact]
+    public void A_photo_that_lands_for_the_shown_product_updates_the_card_by_itself()
+    {
+        var (vm, repo, photos) = Make();
+        SeedTwoProducts(repo);
+
+        vm.Load("A1");
+        vm.PhotoAbsolutePath.Should().BeNull("ön koşul: dosya henüz inmedi");
+
+        var changed = new List<string?>();
+        ((INotifyPropertyChanged)vm).PropertyChanged += (_, e) => changed.Add(e.PropertyName);
+
+        // A1'in kapak anahtarı (bkz. SeedTwoProducts) — senkron turu fotoğrafı
+        // kart zaten ekrandayken indirdi.
+        photos.Save("lic/p1/kapak.img", [1, 2, 3]);
+
+        // Equal (Contain değil): YALNIZ fotoğraf yolu duyurulmalı. Ürünün
+        // kendisi değişmedi; başka bir özellik ya da koleksiyon tazelenirse
+        // kart yayın ortasında boşuna yeniden kurulur.
+        changed.Should().Equal(nameof(ProductCardViewModel.PhotoAbsolutePath));
+        vm.PhotoAbsolutePath.Should().NotBeNull("kutu kendiliğinden dolmalı");
+        vm.Variants.Should().ContainSingle("varyantlara dokunulmadı");
+    }
+
+    [Fact]
+    public void A_photo_that_lands_for_another_product_does_not_touch_the_card()
+    {
+        var (vm, repo, photos) = Make();
+        SeedTwoProducts(repo);
+
+        vm.Load("A1");
+
+        var changed = new List<string?>();
+        ((INotifyPropertyChanged)vm).PropertyChanged += (_, e) => changed.Add(e.PropertyName);
+
+        // Soğuk önbellekte tek tur bütün katalogu indiriyor: kartta duran ürüne
+        // ait olmayan yüzlerce anahtar geçiyor. Hepsi haber sayılsaydı kart
+        // yayın boyunca durmadan bağ tazelerdi.
+        photos.Save("lic/p2/baska-urun.img", [4, 5, 6]);
+
+        changed.Should().BeEmpty();
+        vm.PhotoAbsolutePath.Should().BeNull("kartın kendi dosyası hâlâ inmedi");
+    }
+
+    [Fact]
+    public void Variant_without_axis_values_falls_back_to_its_code()
+    {
+        var vm = new CatalogVariantViewModel(
+            new CatalogVariant("v1", "p1", null, null, null, null, "A1", null, true, 0));
+
+        vm.Display.Should().Be("A1");
+    }
+
+    // Tek eksenli ürün (yalnız "Beden") bu katalogda İSTİSNA DEĞİL, olağan hâl.
+    // İkinci eksen süzülmezse rozette "M · " yazar; kimsenin fark etmeyeceği
+    // kadar küçük, her üründe görünecek kadar sık. Üç biçimin de sınanmasının
+    // sebebi ölçüldü: süzgeç `v is not null`'a düşürülünce yalnız null durumu
+    // yeşil kalıyor — sunucudan boş dize gelen kurulumda rozet bozulurdu ve
+    // CatalogSyncService değeri olduğu gibi geçiriyor.
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Variant_with_a_single_axis_has_no_dangling_separator(string? missingAxis)
+    {
+        var vm = new CatalogVariantViewModel(
+            new CatalogVariant("v1", "p1", "M", "M", missingAxis, null, "A1-M", null, true, 0));
+
+        vm.Display.Should().Be("M");
     }
 }

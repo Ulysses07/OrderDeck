@@ -251,6 +251,69 @@ public sealed class LicenseApiClient
             $"/api/v1/licenses/{licenseId}/wpf-customers/since{qs}", ct) ?? new();
     }
 
+    // ─── WPF katalog replikası (Stok Faz 1b) ──────────────────────────────
+
+    // Bu iki metot, dosyadaki diğer liste uçlarından (örn.
+    // GetWpfCustomersSinceAsync) BİLEREK ayrılıyor: onlarda `?? new()` ile boş
+    // liste dönmek zararsız, burada boş liste DÖNGÜ SONLANDIRICISI. Bozuk bir
+    // gövde (200 + literal `null`) sessizce boş listeye çevrilirse çekme döngüsü
+    // "katalog boş" sanır ve işlemsel DELETE+INSERT replikayı komple siler —
+    // ardından yayında hiçbir ürün kodu eşleşmez. Bu yüzden coerce etmiyoruz,
+    // fırlatıyoruz. Gerçek hatalar zaten gürültülü (ThrowMappedAsync); geriye
+    // yalnız bu sessiz dönüşüm kalıyordu.
+
+    /// <summary>
+    /// Kataloğun bir sayfasını çeker. <b>Tam anlık görüntü</b> —
+    /// <paramref name="after"/> bir DEĞİŞİM imleci değil, birincil anahtar
+    /// üstünde keyset sayfalama imleci.
+    /// <para>Çağıran, boş sayfa gelene kadar son ürünün <c>Id</c>'siyle döngüye
+    /// devam ETMELİ ve ancak tamamı geldiğinde replikayı baştan yazmalıdır.</para>
+    /// <para><paramref name="take"/> 1..500 dışındaysa metot <b>fırlatır</b>, sessizce
+    /// kırpmaz: sunucunun onurlandırmayacağı bir take'i elinde tutan çağıran, dönen
+    /// sayfayı "eksik" sanıp döngüyü erken bitirirdi.</para>
+    /// <para><b>Dönen satır sayısı &lt; take'i bitiş göstergesi olarak KULLANMA.</b>
+    /// Tek güvenilir bitiş işareti <c>rows.Count == 0</c>'dır: son dolu sayfa da tam
+    /// olarak take satır içerebilir — o zaman "eksik sayfa" hiç görünmez — ve
+    /// sunucunun sayfa davranışı bir gün değişse bile boş sayfa kuralı bozulmaz.</para>
+    /// <para>İmleci <c>rows[^1].Id</c>'den al, sayfayı yeniden SIRALAMA: sunucu
+    /// sırası SQL Server'ın <c>uniqueidentifier</c> karşılaştırmasında üretiliyor,
+    /// .NET'in <c>Guid.CompareTo</c> sırası farklı düşer ve satır atlatır.</para>
+    /// <para>Hata durumunda boş liste DÖNMEZ, <see cref="LicenseApiException"/>
+    /// fırlatır — 404/401/5xx/ağ <b>ve bozuk gövde</b> (JSON değil, kesik ya da
+    /// şemaya uymayan yanıt) dahil hepsi bu tek aileden gelir. Çağıran döngünün
+    /// tamamını tek bir <c>catch (LicenseApiException)</c> ile sarmalayıp herhangi
+    /// bir hatada replikayı yazmadan çıkabilir.</para>
+    /// </summary>
+    public async Task<List<CatalogProductPullItem>> GetCatalogProductsAsync(
+        Guid licenseId, Guid? after, int take = 200, CancellationToken ct = default)
+    {
+        // Sunucu take'i 1..500'e kırpıyor (LicensesWpfCatalogPullController).
+        // Sessizce kırpmıyoruz: take by-value, çağıran kendi elindeki 1000'i
+        // görmeye devam eder ve "500 < 1000, demek ki son sayfa" diye döngüyü
+        // erken bitirir — ardından gelen tam-yenileme kataloğun kalanını siler.
+        // Sınır dışı take bir ÇAĞIRAN HATASI; sessizce düzeltmek yerine fırlat.
+        if (take is < 1 or > 500)
+            throw new ArgumentOutOfRangeException(nameof(take), take,
+                "take 1..500 olmalı (sunucu sınırı, LicensesWpfCatalogPullController).");
+
+        var qs = after is null ? $"?take={take}" : $"?after={after}&take={take}";
+        return await GetExpectingJsonAsync<List<CatalogProductPullItem>>(
+            $"/api/v1/licenses/{licenseId}/catalog/products{qs}", ct)
+            ?? throw new LicenseApiUnknownException(200,
+                "Katalog ürün sayfası bozuk geldi (gövde null). Bu 'katalog boş' demek değildir.");
+    }
+
+    /// <summary>Kategori ağacının tamamı; sayfalama yok (derinlik sınırlı).
+    /// Sunucu <b>pasif</b> kategorileri de döndürür — bir ürün pasif kategoriye
+    /// bağlı kalmış olabilir; WPF <c>IsActive == false</c> satırları beklemeli,
+    /// bozuk veri saymamalıdır. Bozuk gövdede boş liste dönmez, fırlatır.</summary>
+    public async Task<List<CatalogCategoryPullItem>> GetCatalogCategoriesAsync(
+        Guid licenseId, CancellationToken ct = default)
+        => await GetExpectingJsonAsync<List<CatalogCategoryPullItem>>(
+            $"/api/v1/licenses/{licenseId}/catalog/categories", ct)
+            ?? throw new LicenseApiUnknownException(200,
+                "Katalog kategori ağacı bozuk geldi (gövde null). Bu 'kategori yok' demek değildir.");
+
     // ─── Customer balance (E1/E3) ────────────────────────────────────
 
     /// <summary>WPF "Ödeme iste" anlığında müşterinin bakiyesini sorgular.
@@ -402,7 +465,15 @@ public sealed class LicenseApiClient
             using (resp)
             {
                 if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
-                return (await DeserializeAsync<TResp>(resp, ct))!;
+                try { return (await DeserializeAsync<TResp>(resp, ct))!; }
+                catch (JsonException ex)
+                {
+                    // Gövde JSON değil ya da şemaya uymuyor (kesik yanıt, JSON
+                    // content-type'lı HTML hata sayfası...). Çağıran bu dosyadan
+                    // LicenseApiException bekliyor; ham JsonException sızmasın.
+                    throw new LicenseApiUnknownException((int)resp.StatusCode,
+                        $"Gövde çözümlenemedi: {ex.Message}");
+                }
             }
         }
     }

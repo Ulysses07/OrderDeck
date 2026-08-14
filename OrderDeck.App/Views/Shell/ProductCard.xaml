@@ -2,50 +2,21 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <UserControl.Resources>
-        <!-- Beden karesi. .low → amber sayı, .out → soluk
-             (mockup .size / .cnt.low / .size.out). -->
-        <DataTemplate x:Key="SizeTile">
+        <!-- Varyant rozeti. Eski SizeTile'ın yerini alıyor: adet kutusu YOK,
+             çünkü bakiye stok defterinden gelecek (plan 3) ve elle
+             düzenlenebilir bir sayı olmayacak. -->
+        <DataTemplate x:Key="VariantChip">
             <Border Background="{StaticResource OD.Brush.Surface2}"
                     BorderBrush="{StaticResource OD.Brush.Border}"
                     BorderThickness="1"
                     CornerRadius="{StaticResource OD.Radius.Sm}"
-                    Padding="{StaticResource OD.Pad.3}"
+                    Padding="{StaticResource OD.Pad.2}"
                     Margin="{StaticResource OD.Pad.1}">
-                <Border.Style>
-                    <Style TargetType="Border">
-                        <Style.Triggers>
-                            <DataTrigger Binding="{Binding IsOutOfStock}" Value="True">
-                                <Setter Property="Opacity" Value="0.38"/>
-                            </DataTrigger>
-                        </Style.Triggers>
-                    </Style>
-                </Border.Style>
-                <StackPanel>
-                    <TextBlock Text="{Binding Size}"
-                               HorizontalAlignment="Center"
-                               FontSize="{StaticResource OD.Font.F1}"
-                               Foreground="{StaticResource OD.Brush.TextDim}"/>
-                    <!-- Adet satır-içi düzenlenir: gridin tek etkileşimi bu.
-                         Otomatik düşüş YOK (spec §9.1). -->
-                    <!-- Stil özelliği ya öznitelik olarak ya da öğe olarak
-                         verilir, İKİSİ BİRDEN olmaz (XamlParseException).
-                         Tetikleyici gerektiği için öğe biçimi seçildi. -->
-                    <TextBox Text="{Binding Quantity, UpdateSourceTrigger=PropertyChanged}"
-                             HorizontalContentAlignment="Center"
-                             FontFamily="{StaticResource OD.Font.Mono}"
-                             FontSize="{StaticResource OD.Font.F3}">
-                        <TextBox.Style>
-                            <Style TargetType="TextBox" BasedOn="{StaticResource OD.TextBox}">
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding IsLow}" Value="True">
-                                        <Setter Property="Foreground"
-                                                Value="{StaticResource OD.Brush.Amber}"/>
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </TextBox.Style>
-                    </TextBox>
-                </StackPanel>
+                <TextBlock Text="{Binding Display}"
+                           HorizontalAlignment="Center"
+                           TextTrimming="CharacterEllipsis"
+                           FontSize="{StaticResource OD.Font.F1}"
+                           Foreground="{StaticResource OD.Brush.TextDim}"/>
             </Border>
         </DataTemplate>
     </UserControl.Resources>
@@ -68,46 +39,34 @@
                 </TextBlock.Style>
             </TextBlock>
 
-            <!-- ── D: kod tanımlı değil ─────────────────────────────────── -->
-            <!-- Form KENDİLİĞİNDEN açılmaz (VM'deki gerekçe): kod yazılırken
-                 her ara tuş vuruşu tanınmayan bir koddur. Tanımlamayı
-                 operatör başlatır. -->
+            <!-- ── D: kod katalogda yok ─────────────────────────────────── -->
+            <!-- "Ürün Tanımla" butonu KALDIRILDI: katalogun sahibi panel.
+                 Operatöre ne yapacağı söyleniyor, akış kesilmiyor. -->
             <StackPanel VerticalAlignment="Center"
                         Visibility="{Binding IsUnknown,
                                      Converter={StaticResource BoolToVisibleConverter}}">
                 <TextBlock Style="{StaticResource OD.Text.Micro}"
                            HorizontalAlignment="Center">
                     <Run Text="{Binding Code, Mode=OneWay}"/>
-                    <Run Text="tanımlı değil"/>
+                    <Run Text="katalogda yok"/>
                 </TextBlock>
-                <Button Content="Ürün Tanımla"
-                        Style="{StaticResource OD.Button.Primary}"
-                        Command="{Binding BeginEditCommand}"
-                        HorizontalAlignment="Center"
-                        Margin="{StaticResource OD.Pad.Top5}"/>
+                <TextBlock Text="Ürünü panelden ekleyin"
+                           Style="{StaticResource OD.Text.Micro}"
+                           HorizontalAlignment="Center"
+                           Margin="{StaticResource OD.Pad.Top5}"/>
             </StackPanel>
 
             <!-- ── B: görüntüleme ───────────────────────────────────────── -->
-            <!-- Görünürlük TEK BAŞINA HasProduct'a bağlanamaz: BeginEdit
-                 IsEditing'i true yaparken HasProduct'ı true BIRAKIR, o yüzden
-                 kayıtlı bir ürün düzenlenirken B ile C üst üste binerdi.
-                 Mevcut üyelerle çözüm: HasProduct=True + IsEditing=False. -->
-            <StackPanel>
-                <StackPanel.Style>
-                    <Style TargetType="StackPanel">
-                        <Setter Property="Visibility" Value="Collapsed"/>
-                        <Style.Triggers>
-                            <MultiDataTrigger>
-                                <MultiDataTrigger.Conditions>
-                                    <Condition Binding="{Binding HasProduct}" Value="True"/>
-                                    <Condition Binding="{Binding IsEditing}" Value="False"/>
-                                </MultiDataTrigger.Conditions>
-                                <Setter Property="Visibility" Value="Visible"/>
-                            </MultiDataTrigger>
-                        </Style.Triggers>
-                    </Style>
-                </StackPanel.Style>
-
+            <!-- IsEditing gitti, bu bölümün tek koşulu HasProduct. Ama üç bölüm
+                 de AYNI Grid'i paylaşıyor ve görünürlükleri üç BAĞIMSIZ bağa
+                 dayanıyor (Code == "" tetikleyicisi · IsUnknown · HasProduct);
+                 birbirini dışlamaları yapıdan değil, ProductCardViewModel'in
+                 disiplininden geliyor. O disiplin bozulursa bölümler üst üste
+                 biner — bu yüzden ProductCardTemplateTests
+                 (Only_one_of_the_three_sections_is_visible_at_a_time) yerleşimi
+                 gerçekten koşturup hangisinin görünür olduğunu ölçüyor. -->
+            <StackPanel Visibility="{Binding HasProduct,
+                                     Converter={StaticResource BoolToVisibleConverter}}">
                 <Border CornerRadius="{StaticResource OD.Radius.Md}"
                         Background="{StaticResource OD.Brush.Surface2}"
                         ClipToBounds="True">
@@ -116,7 +75,7 @@
                             <Setter Property="Height"
                                     Value="{StaticResource OD.Layout.ProductImageHeight}"/>
                             <Style.Triggers>
-                                <!-- 850px altı: fotoğraf kısalır, ızgara ekranda kalır.
+                                <!-- 850px altı: fotoğraf kısalır, liste ekranda kalır.
                                      Ata UserControl = bu ProductCard; DataContext'i
                                      MainShellViewModel (ProductCard'a inen bağ alttaki
                                      Border'da, kökte değil). Pencereye çıkma —
@@ -134,68 +93,27 @@
                            RenderOptions.BitmapScalingMode="HighQuality"/>
                 </Border>
 
-                <DockPanel LastChildFill="False" Margin="{StaticResource OD.Pad.Top5}">
-                    <TextBlock DockPanel.Dock="Left" Text="{Binding Code}"
-                               Style="{StaticResource OD.Text.Mono}"
-                               VerticalAlignment="Center"/>
-                    <Button DockPanel.Dock="Right" Content="Düzenle"
-                            Style="{StaticResource OD.Button.Ghost}"
-                            Command="{Binding BeginEditCommand}"/>
-                </DockPanel>
+                <TextBlock Text="{Binding Code}"
+                           Style="{StaticResource OD.Text.Mono}"
+                           Margin="{StaticResource OD.Pad.Top5}"/>
 
                 <TextBlock Text="{Binding Name}" TextWrapping="Wrap"
                            FontFamily="{StaticResource OD.Font.Display}"
                            FontSize="{StaticResource OD.Font.F2}"
                            Foreground="{StaticResource OD.Brush.Text}"/>
 
-                <TextBlock Text="BEDEN STOĞU" Style="{StaticResource OD.Text.Micro}"
+                <!-- Varyantsız (tek varyantlı, eksensiz) üründe liste tek
+                     rozet gösterir; başlık yine de anlamlı kalıyor. -->
+                <TextBlock Text="VARYANTLAR" Style="{StaticResource OD.Text.Micro}"
                            Margin="{StaticResource OD.Pad.Top5}"/>
-                <ItemsControl ItemsSource="{Binding Sizes}"
-                              ItemTemplate="{StaticResource SizeTile}">
+                <ItemsControl ItemsSource="{Binding Variants}"
+                              ItemTemplate="{StaticResource VariantChip}">
                     <ItemsControl.ItemsPanel>
                         <ItemsPanelTemplate>
-                            <UniformGrid Columns="4"/>
+                            <UniformGrid Columns="3"/>
                         </ItemsPanelTemplate>
                     </ItemsControl.ItemsPanel>
                 </ItemsControl>
-            </StackPanel>
-
-            <!-- ── C: tanımlama / düzenleme (satır-içi, pop-up YOK) ──────── -->
-            <StackPanel Visibility="{Binding IsEditing,
-                                     Converter={StaticResource BoolToVisibleConverter}}">
-                <TextBlock Text="ÜRÜN ADI" Style="{StaticResource OD.Text.Micro}"/>
-                <TextBox Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"
-                         Style="{StaticResource OD.TextBox}"/>
-
-                <TextBlock Text="BEDENLER (virgülle)" Style="{StaticResource OD.Text.Micro}"
-                           Margin="{StaticResource OD.Pad.Top5}"/>
-                <DockPanel LastChildFill="True">
-                    <Button DockPanel.Dock="Right" Content="Uygula"
-                            Style="{StaticResource OD.Button.Ghost}"
-                            Click="ApplySizes_OnClick"/>
-                    <TextBox Text="{Binding SizesText, UpdateSourceTrigger=PropertyChanged}"
-                             Style="{StaticResource OD.TextBox}"/>
-                </DockPanel>
-
-                <ItemsControl ItemsSource="{Binding Sizes}"
-                              ItemTemplate="{StaticResource SizeTile}"
-                              Margin="{StaticResource OD.Pad.Top5}">
-                    <ItemsControl.ItemsPanel>
-                        <ItemsPanelTemplate>
-                            <UniformGrid Columns="4"/>
-                        </ItemsPanelTemplate>
-                    </ItemsControl.ItemsPanel>
-                </ItemsControl>
-
-                <StackPanel Orientation="Horizontal" Margin="{StaticResource OD.Pad.Top5}">
-                    <Button Content="Fotoğraf Seç…" Style="{StaticResource OD.Button.Ghost}"
-                            Click="PickPhoto_OnClick"/>
-                    <Button Content="Kaydet" Style="{StaticResource OD.Button.Primary}"
-                            Command="{Binding SaveCommand}"
-                            Margin="{StaticResource OD.Pad.2}"/>
-                    <Button Content="Vazgeç" Style="{StaticResource OD.Button.Ghost}"
-                            Command="{Binding CancelEditCommand}"/>
-                </StackPanel>
             </StackPanel>
         </Grid>
     </Border>
