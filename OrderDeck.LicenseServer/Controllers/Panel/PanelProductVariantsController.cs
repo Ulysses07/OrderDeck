@@ -255,8 +255,14 @@ public sealed class PanelProductVariantsController : ControllerBase
             if (!stillUsed)
             {
                 var newSellerValue = product.SellerAxisValueOf(variant);
+                // LicenseId süzgeci burada gereksiz — ürün sahiplik kontrolünden
+                // geçti ve ProductId kiracıyı zaten belirliyor. Yine de duruyor:
+                // bu depoda yayın kodu sorguları İSTİSNASIZ kiracıyla süzülüyor
+                // (bkz. PanelBroadcastCodesController) ve tek bir istisna, çok
+                // kiracılı bir sistemde okuyanı "demek ki şart değilmiş"e götürür.
                 var affected = await _db.ProductBroadcastCodes
-                    .Where(x => x.ProductId == product.Id)
+                    .Where(x => x.LicenseId == product.LicenseId
+                                && x.ProductId == product.Id)
                     .ToListAsync(ct);
 
                 foreach (var codeRow in affected)

@@ -265,6 +265,44 @@ public class PanelBroadcastCodesControllerTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>
+    /// Ürün iki eksenli kurulur: "Renk" satıcı ekseni (rol 1), "Beden" izleyici
+    /// ekseni (rol 2). Altında <c>Siyah/M</c> ve <c>Siyah/L</c> — yani AYNI
+    /// satıcı ekseni değerini paylaşan iki satır. Ürün Id'si döner.
+    ///
+    /// <para>Tek eksenli ürünle bu kurulum mümkün değil: benzersizlik
+    /// <c>(ProductId, Axis1ValueNorm, Axis2ValueNorm)</c> üstünde ve ikinci
+    /// eksen yokken <c>Axis2ValueNorm</c> her satırda boş dize kalır, dolayısıyla
+    /// iki varyant aynı satıcı değerini taşıyamaz.</para>
+    /// </summary>
+    private static async Task<Guid> NewTwoAxisProductWithSharedSellerValueAsync(
+        HttpClient client)
+    {
+        var created = await client.PostAsJsonAsync("/api/panel/products", new
+        {
+            name = "İki Eksenli " + Guid.NewGuid().ToString("N")[..6],
+            defaultPrice = 100m,
+            axis1Name = "Renk",
+            axis1Role = 1,
+            axis2Name = "Beden",
+            axis2Role = 2,
+        });
+        created.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var dto = await created.Content.ReadFromJsonAsync<JsonElement>();
+        var id = dto.GetProperty("id").GetGuid();
+
+        foreach (var beden in new[] { "M", "L" })
+        {
+            var variant = await client.PostAsJsonAsync(
+                $"/api/panel/products/{id}/variants",
+                new { axis1Value = "Siyah", axis2Value = beden, isActive = true });
+            variant.StatusCode.Should().Be(HttpStatusCode.Created);
+        }
+
+        return id;
+    }
+
+    /// <summary>
     /// Satıcı ekseni değeri yeniden adlandırılınca kod da taşınır. Taşınmasaydı
     /// kod sahipsiz kalır ve canlı yorumda hiçbir kırılıma çözülemezdi —
     /// operatör de bunu ancak yayın ortasında fark ederdi.
@@ -337,5 +375,50 @@ public class PanelBroadcastCodesControllerTests : IClassFixture<ApiFactory>
         codes.GetArrayLength().Should().Be(1);
         codes[0].GetProperty("sellerAxisValue").GetString().Should().Be("Gri",
             "kodun bağlı olduğu değer değişmedi");
+    }
+
+    /// <summary>
+    /// <c>stillUsed</c> korumasının GERÇEK sınavı. Ürün iki eksenli:
+    /// <c>Siyah/M</c> ve <c>Siyah/L</c> iki ayrı satır ama aynı satıcı ekseni
+    /// değerini paylaşıyor. <c>Siyah/M</c>'nin rengi "Antrasit" yapılınca bu bir
+    /// yeniden adlandırma değil — "Siyah" hâlâ <c>Siyah/L</c>'de yaşıyor, yani
+    /// kod hâlâ geçerli bir kırılımı gösteriyor ve taşınmamalı.
+    ///
+    /// <para><b>Neden ayrı bir test:</b> yukarıdaki
+    /// <see cref="Moving_one_row_does_not_carry_the_code"/> tek eksenli ürünle
+    /// kurulu ve orada iki varyant aynı satıcı değerini paylaşamıyor
+    /// (benzersizlik <c>(ProductId, Axis1ValueNorm, Axis2ValueNorm)</c> üstünde,
+    /// ikinci eksen yokken <c>Axis2ValueNorm</c> hep boş dize). Orada eski değerde
+    /// zaten kod olmadığı için <c>stillUsed</c> kaldırılsa da test yeşil kalıyor —
+    /// ölçüldü. Bu senaryo, koruma düştüğünde kırmızıya dönen tek testtir.</para>
+    /// </summary>
+    [Fact]
+    public async Task Renaming_a_row_that_shares_its_seller_value_does_not_carry_the_code()
+    {
+        var client = await NewPanelClientAsync();
+        var productId = await NewTwoAxisProductWithSharedSellerValueAsync(client);
+
+        await client.PutAsJsonAsync(
+            $"/api/panel/products/{productId}/broadcast-codes",
+            new { sellerAxisValue = "Siyah", code = "ATEŞ" });
+
+        var product = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/panel/products/{productId}");
+        var siyahMId = product.GetProperty("variants").EnumerateArray()
+            .First(v => v.GetProperty("axis2Value").GetString() == "M")
+            .GetProperty("id").GetGuid();
+
+        var renamed = await client.PutAsJsonAsync(
+            $"/api/panel/products/{productId}/variants/{siyahMId}",
+            new { axis1Value = "Antrasit", axis2Value = "M", isActive = true });
+        renamed.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var codes = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/panel/products/{productId}/broadcast-codes");
+
+        codes.GetArrayLength().Should().Be(1);
+        codes[0].GetProperty("sellerAxisValue").GetString().Should().Be("Siyah",
+            "'Siyah' hâlâ Siyah/L satırında kullanımda; kod orada kalmalı");
+        codes[0].GetProperty("code").GetString().Should().Be("ATEŞ");
     }
 }
