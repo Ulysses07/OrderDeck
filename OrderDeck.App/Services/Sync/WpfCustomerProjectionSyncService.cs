@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Logging;
 using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage.Repositories;
@@ -47,6 +48,24 @@ public sealed class WpfCustomerProjectionSyncService
         _log             = log;
     }
 
+    // Sunucunun kabul sınırları (LicensesWpfCustomersSyncController "Validate
+    // input items minimally" bloğu). Burada AYNEN tekrarlanıyor, çünkü tek amaç
+    // "sunucu bunu reddeder mi?" sorusunu göndermeden önce cevaplamak. Sunucu
+    // sınırı bir gün gevşerse buradaki eleme fazladan kayıt atlar (hata değil,
+    // yalnız gecikme); sıkılaşırsa yine parti reddedilir ve bu sabitler
+    // güncellenmeli — bu yüzden değerler kaynağıyla birlikte anılıyor.
+    private const int MaxPlatformLength = 32;
+    private const int MaxUsernameLength = 128;
+
+    // [NotNullWhen(true)]: "kabul edilebilir" demek aynı zamanda "boş değil"
+    // demek. Bu olmadan aşağıdaki uyarı satırındaki `?.` derleyiciyi şüpheye
+    // düşürüp WpfCustomerSyncItem kurulumunda CS8604 veriyor.
+    private static bool IsServerAcceptable(
+        [NotNullWhen(true)] string? platform,
+        [NotNullWhen(true)] string? username)
+        => !string.IsNullOrWhiteSpace(platform) && platform.Length <= MaxPlatformLength
+        && !string.IsNullOrWhiteSpace(username) && username.Length <= MaxUsernameLength;
+
     /// <summary>
     /// Single sync tick: runs one or more batches until the repo returns fewer
     /// than BatchSize rows. Returns total customers synced across all batches.
@@ -78,6 +97,29 @@ public sealed class WpfCustomerProjectionSyncService
                 if (!Guid.TryParseExact(c.Id, "N", out var customerGuid))
                 {
                     _log.LogWarning("Skipping customer with non-GUID Id={Id}", c.Id);
+                    continue;
+                }
+                // Sunucu boş/aşırı uzun Platform veya Username gördüğünde
+                // PARTİNİN TAMAMINI 400'le reddediyor
+                // (LicensesWpfCustomersSyncController). Watermark hatada
+                // ilerlemediği için tek bir bozuk satır boru hattını KALICI
+                // kilitler: aynı parti her turda yeniden gönderilir, arkasındaki
+                // herkes rehin kalır ve tek belirti dakikada bir düşen bir
+                // uyarı satırı olur. 2026-08-14'te sahada tam olarak bu yaşandı
+                // — Facebook App Review onayından önce açılmış, Username'i boş
+                // TEK kayıt 565 müşteriyi 12 gün boyunca sunucuya ulaştırmadı.
+                //
+                // Bu yüzden bozuk satır burada elenir. Sunucudaki doğrulama
+                // aynen kalmalı: sınır orada, bu yalnız istemcinin kendi
+                // kuyruğunu zehirlememesi. Elenen kayıt zaten eşleşemezdi —
+                // sunucu tarafı match'i (LicenseId, Platform, Username) üçlüsüne
+                // dayanıyor, bu alanlar boşken eşleşecek bir şey yok.
+                if (!IsServerAcceptable(c.Platform, c.Username))
+                {
+                    _log.LogWarning(
+                        "Skipping customer Id={Id}: sunucunun reddedeceği Platform/Username " +
+                        "(platform uzunluk {PlatformLength}, username uzunluk {UsernameLength})",
+                        c.Id, c.Platform?.Length ?? 0, c.Username?.Length ?? 0);
                     continue;
                 }
                 items.Add(new WpfCustomerSyncItem(

@@ -208,6 +208,73 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         capturedIds!.Should().HaveCount(1, "only the valid-GUID customer should be included in the POST");
     }
 
+    /// <summary>
+    /// Sunucu boş Username'li bir kaydı gördüğünde PARTİNİN TAMAMINI 400'le
+    /// reddediyor; watermark da hatada ilerlemediği için tek bozuk satır boru
+    /// hattını kalıcı kilitliyordu. 2026-08-14'te sahada yaşandı: Facebook App
+    /// Review onayından önce açılmış, Username'i boş TEK kayıt 565 müşteriyi 12
+    /// gün sunucuya ulaştırmadı.
+    ///
+    /// Bu test bozuk satırın POST'a hiç girmediğini VE geri kalanın akmaya devam
+    /// ettiğini ölçüyor. Watermark kontrolü kritik: eleme çalışsa bile watermark
+    /// bozuk satırın ötesine geçmezse kilit ertesi turda geri gelir.
+    /// </summary>
+    [Fact]
+    public async Task SyncOnce_customer_the_server_would_reject_is_skipped()
+    {
+        List<string>? capturedIds = null;
+        var fx = Build(req =>
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (path == "/api/v1/me/licenses")
+                return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/wpf-customers/sync"))
+            {
+                var body = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+                var doc  = JsonDocument.Parse(body);
+                capturedIds = doc.RootElement.GetProperty("customers")
+                    .EnumerateArray()
+                    .Select(e => e.GetProperty("id").GetString()!)
+                    .ToList();
+
+                // Sunucunun gerçek davranışını taklit et: bir tanesi bile
+                // geçersizse partinin TAMAMI 400. Eleme çalışmazsa bu test
+                // "watermark ilerlemedi" diye patlar — asıl korunan davranış bu.
+                var anyInvalid = doc.RootElement.GetProperty("customers")
+                    .EnumerateArray()
+                    .Any(e => string.IsNullOrWhiteSpace(e.GetProperty("username").GetString()));
+                return anyInvalid
+                    ? FakeHttpMessageHandler.Empty(400)
+                    : FakeHttpMessageHandler.Json(200, SyncRespJson(synced: capturedIds.Count));
+            }
+            return FakeHttpMessageHandler.Empty(404);
+        });
+        using var _d = fx.Db;
+
+        fx.Customers.Insert(MakeCustomer(100L));
+
+        // Username'i boş kayıt: repo Insert'i böyle bir kaydı üretmiyor olabilir,
+        // sahadaki satır da doğrudan ingestor'dan gelmişti — düz SQL ile kur.
+        using var conn = fx.Db.Open();
+        conn.Execute(
+            @"INSERT INTO Customer (Id, Platform, Username, DisplayName, AvatarUrl,
+                FirstSeenAt, LastSeenAt, IsBlacklisted, BlacklistReason, Notes,
+                TotalLabelsPrinted, TotalAmount, BlacklistedAt, Address, Phone, RecipientPaysActive)
+              VALUES (@id, 'facebook', '', NULL, NULL, 190, 200, 0, NULL, NULL, 7, 0, NULL, NULL, NULL, 0)",
+            new { id = Guid.NewGuid().ToString("N") });
+
+        fx.Customers.Insert(MakeCustomer(300L));
+
+        var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
+
+        capturedIds.Should().NotBeNull("parti gönderilmiş olmalı");
+        capturedIds!.Should().HaveCount(2, "yalnız Username'i boş kayıt elenmeli");
+        result.Should().Be(2);
+
+        fx.Store.Load().LastCustomerProjectionSyncAt.Should().Be(300L,
+            "watermark bozuk satırın ÖTESİNE geçmeli, yoksa kilit ertesi turda geri gelir");
+    }
+
     [Fact]
     public async Task SyncOnce_api_failure_does_not_advance_watermark()
     {
