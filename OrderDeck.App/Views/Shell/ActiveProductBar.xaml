@@ -11,7 +11,11 @@
 
             <!-- ÜRÜN KODU -->
             <TextBlock Text="ÜRÜN KODU" Style="{StaticResource OD.Text.Micro}"/>
-            <TextBox x:Name="CodeBox" MaxLength="6"
+            <!-- MaxLength = CatalogLimits.ProductCode (32). Şemanın kendisi
+                 nvarchar(32); daha uzun bir kod katalogda var olamaz, o yüzden
+                 kutu var olabilecek en uzun kodu alır, bir fazlasını almaz.
+                 Eski değer 6 idi ve 7 harfli kodların yazılmasını engelliyordu. -->
+            <TextBox x:Name="CodeBox" MaxLength="32"
                          Text="{Binding ActiveCode, UpdateSourceTrigger=PropertyChanged}"
                          CharacterCasing="Upper"
                      FontFamily="{StaticResource OD.Font.Display}">
