@@ -3200,6 +3200,27 @@ Elbise                         stok kodu: SK00001
 > kanca (`useBroadcastCodes`) çağırmak gerekirdi — çocuk bileşen o kanca-sırası
 > tuzağını da kapatıyor.
 
+> **Uygulamada sapma (2026-08-14):** Plandaki `CodeBox` değerini
+> `useState(initial)` ile İLK render'da kilitliyor, ama `initial` react-query'den
+> ASENKRON geliyor. Kutu yükleme sırasında çizilirse `""` ile kurulur ve kodlar
+> sonradan gelse bile boş kalır; operatör "kod yok" sanıp yazınca var olan kod
+> geri alınamaz biçimde emekliye ayrılır. Bu yüzden bileşene iki kapı eklendi:
+> `isLoading` → "Yayın kodları yükleniyor…", `isError` → kırmızı uyarı. (Hata
+> yolu ayrı gerekiyor: sorgu hata verince `isLoading` false'a düşüyor ve `data`
+> undefined kalıyor, yalnız yükleme kapısı boş kutu çizerdi.) Test sayısı 8
+> değil **14**; mock hatada `data`yı hiç vermiyor ve yükleme→yüklendi geçişi de
+> test ediliyor.
+>
+> İki ek sapma (kod incelemesinden):
+> - `CodeBox`'ın React `key`'ine güncel kod eklendi. Kutu değeri `useState`'te
+>   olduğu için sunucudaki değişikliği görmüyordu; sorgu odakta yenileniyor,
+>   kod başka bir cihazdan değiştiyse Kaydet ESKİ kodu geri yazıp yenisini
+>   emekliye ayırıyordu.
+> - Satır listesi artık varyant değerleri ∪ sunucudaki kod değerleri. Varyant
+>   silinince sunucu kod satırını bırakıyor; yalnız varyantlara bakan liste o
+>   kodu tamamen gizliyordu ve operatör 409'u teşhis edemiyordu. Yetim satır
+>   salt okunur (`OrphanRow`).
+
 - [ ] **Adım 1: Bileşen testini yaz (kırmızı)**
 
 `apps/panel/src/components/stock/BroadcastCodeSection.test.tsx`:
