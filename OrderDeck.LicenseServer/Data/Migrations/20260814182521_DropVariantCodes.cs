@@ -43,30 +43,41 @@ namespace OrderDeck.LicenseServer.Data.Migrations
             // yani pratikte no-op. Yine de veri varmış gibi yazıldı: bir sonraki
             // ortamda (staging, yeniden kurulan prod) boş olmayabilir.
             //
+            // SIRA, SearchNormalizer ile birebir aynı olmalı: ÖNCE büyüt, SONRA
+            // katla (Normalize: value.ToUpperInvariant() → TurkishAscii.Fold).
+            // Tersi collation'a bağımlı olurdu: önce katlayıp 'ı'yı 'i' yapsak,
+            // sonraki UPPER'ı veritabanı yorumlar — Türkçe bir collation'da
+            // UPPER('i') = 'İ' döner ve kolon C#'ın ürettiği 'I' ile ayrışırdı.
+            // Bu, tasarımın kaçmaya çalıştığı hatanın ta kendisi olurdu.
+            //
+            // Katlama hedefleri doğrudan BÜYÜK ASCII ve her harfin iki yazımı da
+            // kaynak listesinde: UPPER hangi collation altında Türkçe harfi
+            // çevirmiş ya da olduğu gibi bırakmış olursa olsun sonuç aynı kalıyor.
+            //
             // SearchNormalizer'dan tek farkı: kelime ARASI çoklu boşluğu teke
             // indirmiyor. Kabul edildi — eksen değerinde ("Siyah", "M") çift boşluk
             // gerçekçi değil, ve eşleşmeyen tek satır yalnız o varyantı yeniden
             // kaydetmeyi gerektirir.
             migrationBuilder.Sql(@"
 UPDATE [ProductVariants]
-SET [Axis1ValueNorm] = UPPER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+SET [Axis1ValueNorm] = REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
                        REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
-                         LTRIM(RTRIM(ISNULL([Axis1Value], N'')))
-                       , N'ç', N'c'), N'Ç', N'C')
-                       , N'ğ', N'g'), N'Ğ', N'G')
-                       , N'ı', N'i'), N'İ', N'I')
-                       , N'ö', N'o'), N'Ö', N'O')
-                       , N'ş', N's'), N'Ş', N'S')
-                       , N'ü', N'u'), N'Ü', N'U')),
-    [Axis2ValueNorm] = UPPER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+                         UPPER(LTRIM(RTRIM(ISNULL([Axis1Value], N''))))
+                       , N'Ç', N'C'), N'ç', N'C')
+                       , N'Ğ', N'G'), N'ğ', N'G')
+                       , N'İ', N'I'), N'ı', N'I')
+                       , N'Ö', N'O'), N'ö', N'O')
+                       , N'Ş', N'S'), N'ş', N'S')
+                       , N'Ü', N'U'), N'ü', N'U'),
+    [Axis2ValueNorm] = REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
                        REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
-                         LTRIM(RTRIM(ISNULL([Axis2Value], N'')))
-                       , N'ç', N'c'), N'Ç', N'C')
-                       , N'ğ', N'g'), N'Ğ', N'G')
-                       , N'ı', N'i'), N'İ', N'I')
-                       , N'ö', N'o'), N'Ö', N'O')
-                       , N'ş', N's'), N'Ş', N'S')
-                       , N'ü', N'u'), N'Ü', N'U'));
+                         UPPER(LTRIM(RTRIM(ISNULL([Axis2Value], N''))))
+                       , N'Ç', N'C'), N'ç', N'C')
+                       , N'Ğ', N'G'), N'ğ', N'G')
+                       , N'İ', N'I'), N'ı', N'I')
+                       , N'Ö', N'O'), N'ö', N'O')
+                       , N'Ş', N'S'), N'ş', N'S')
+                       , N'Ü', N'U'), N'ü', N'U');
 ");
 
             migrationBuilder.CreateIndex(
