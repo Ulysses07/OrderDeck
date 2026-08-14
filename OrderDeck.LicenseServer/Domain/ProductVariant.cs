@@ -26,6 +26,21 @@ public sealed class ProductVariant
     public string? Axis2Code { get; set; }
 
     /// <summary>
+    /// <c>SearchNormalizer.Normalize(Axis1Value)</c>. Türetilmiş — elle YAZILMAZ,
+    /// <c>LicenseDbContext.SyncDerivedColumns</c> dolduruyor.
+    ///
+    /// <para>Varyantın kimliği bu iki kolon. Ham değerlerin üstüne benzersizlik
+    /// kurmak iki yerde sessizce bozulurdu: harf duyarlılığı veritabanının
+    /// collation'ına kalırdı (SQL Server duyarsız, PostgreSQL duyarlı) ve
+    /// NULL'lar indekste birbirinden farklı sayılırdı. Eksen yoksa değer
+    /// <b>boş dize</b>, null değil.</para>
+    /// </summary>
+    public string Axis1ValueNorm { get; set; } = string.Empty;
+
+    /// <summary><see cref="Axis1ValueNorm"/>'un ikinci eksen karşılığı.</summary>
+    public string Axis2ValueNorm { get; set; } = string.Empty;
+
+    /// <summary>
     /// Ürün kodu + eksen kod parçaları, "-" ile birleşik (A12-SIYA-M).
     ///
     /// <b>Türetilmiş</b> bir değer: tek kurucusu

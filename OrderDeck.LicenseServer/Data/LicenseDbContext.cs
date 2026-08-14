@@ -82,6 +82,14 @@ public class LicenseDbContext : DbContext
             if (entry.State is not (EntityState.Added or EntityState.Modified)) continue;
             entry.Entity.CodeNormalized = SearchNormalizer.Normalize(entry.Entity.Code);
         }
+
+        foreach (var entry in ChangeTracker.Entries<ProductVariant>())
+        {
+            if (entry.State is not (EntityState.Added or EntityState.Modified)) continue;
+            // Normalize(null) boş dize döndürüyor — eksensiz satır da NOT NULL kalıyor.
+            entry.Entity.Axis1ValueNorm = SearchNormalizer.Normalize(entry.Entity.Axis1Value);
+            entry.Entity.Axis2ValueNorm = SearchNormalizer.Normalize(entry.Entity.Axis2Value);
+        }
     }
 
     // DİKKAT — parametresiz SaveChanges() ve SaveChangesAsync(ct) aşırı yüklemeleri
@@ -695,8 +703,16 @@ public class LicenseDbContext : DbContext
             b.Property(v => v.Axis2Code).HasMaxLength(CatalogLimits.AxisCode);
             b.Property(v => v.VariantCode).HasMaxLength(CatalogLimits.VariantCode).IsRequired();
             b.Property(v => v.Barcode).HasMaxLength(CatalogLimits.Barcode);
+            b.Property(v => v.Axis1ValueNorm).HasMaxLength(CatalogLimits.AxisValue).IsRequired();
+            b.Property(v => v.Axis2ValueNorm).HasMaxLength(CatalogLimits.AxisValue).IsRequired();
             b.HasOne(v => v.Product).WithMany(p => p.Variants)
                 .HasForeignKey(v => v.ProductId).OnDelete(DeleteBehavior.Cascade);
+
+            // Varyantın kimliği eksen değerleri; kod DEĞİL. Kod üstündeki eski
+            // indeks ("Kırmızı" ve "Kırmızılı" ikisi de KIRM) yapay çakışma
+            // üretiyordu — o 409 bu indeksle birlikte ortadan kalkıyor.
+            b.HasIndex(v => new { v.ProductId, v.Axis1ValueNorm, v.Axis2ValueNorm })
+                .IsUnique();
             b.HasIndex(v => new { v.ProductId, v.VariantCode }).IsUnique();
             b.HasIndex(v => new { v.LicenseId, v.VariantCode });
         });

@@ -125,6 +125,8 @@ public class CatalogModelTests : IClassFixture<ApiFactory>
             (typeof(ProductVariant), nameof(ProductVariant.Axis2Code), CatalogLimits.AxisCode),
             (typeof(ProductVariant), nameof(ProductVariant.VariantCode), CatalogLimits.VariantCode),
             (typeof(ProductVariant), nameof(ProductVariant.Barcode), CatalogLimits.Barcode),
+            (typeof(ProductVariant), nameof(ProductVariant.Axis1ValueNorm), CatalogLimits.AxisValue),
+            (typeof(ProductVariant), nameof(ProductVariant.Axis2ValueNorm), CatalogLimits.AxisValue),
             (typeof(ProductBroadcastCode), nameof(ProductBroadcastCode.SellerAxisValue), CatalogLimits.AxisValue),
             (typeof(ProductBroadcastCode), nameof(ProductBroadcastCode.Code), CatalogLimits.BroadcastCode),
             (typeof(ProductBroadcastCode), nameof(ProductBroadcastCode.CodeNormalized), CatalogLimits.BroadcastCode),
@@ -277,6 +279,64 @@ public class CatalogModelTests : IClassFixture<ApiFactory>
         broadcast.CodeNormalized.Should().Be("KIRMIZI ATES",
             "kod değişince türetilmiş kolon bayat kalırsa yayın kodu canlı "
             + "yorumla eşleşmez");
+    }
+
+    /// <summary>
+    /// Bekçi: varyant benzersizliği artık normalize eksen değerleri üstünde ve
+    /// bu kolonlar da <c>SaveChanges</c> zincirinde türetiliyor.
+    ///
+    /// <para>Eksen YOKSA değer <c>null</c> değil <b>boş dize</b>. Sebebi
+    /// benzersizlik indeksi: hem SQL Server hem PostgreSQL, UNIQUE indekste
+    /// NULL'ları birbirinden FARKLI sayar — tek eksenli üründe
+    /// <c>Axis2Value</c> null olduğu için indeks hiç ısırmazdı ve aynı kırılım
+    /// sınırsız kez eklenebilirdi.</para>
+    /// </summary>
+    [Fact]
+    public async Task Variant_axis_values_are_normalized_and_never_null()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+        var license = NewLicense();
+        db.Licenses.Add(license);
+
+        var product = new Product
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = license.Id,
+            Code = "SK00042",
+            Name = "Normalize",
+            DefaultPrice = 10m,
+            Axis1Name = "Renk",
+            Axis1Role = AxisRole.Seller,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+        db.Products.Add(product);
+
+        var variant = new ProductVariant
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = license.Id,
+            ProductId = product.Id,
+            Axis1Value = " kırmızı ",
+            Axis2Value = null,
+            VariantCode = "SK00042-KIRM",
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+        db.ProductVariants.Add(variant);
+        await db.SaveChangesAsync();
+
+        variant.Axis1ValueNorm.Should().Be("KIRMIZI");
+        variant.Axis2ValueNorm.Should().Be("",
+            "eksensiz kolon NULL kalırsa UNIQUE indeks o satırları benzersiz "
+            + "sayar ve aynı kırılım tekrar tekrar eklenebilir");
+
+        variant.Axis1Value = "Mavi";
+        await db.SaveChangesAsync();
+
+        variant.Axis1ValueNorm.Should().Be("MAVI");
     }
 
     [Fact]
