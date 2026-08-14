@@ -715,8 +715,13 @@ public class LicenseDbContext : DbContext
             // durduğu için indeks kodu rezerve tutmaya devam eder.
             b.HasIndex(x => new { x.LicenseId, x.CodeNormalized }).IsUnique();
 
-            // Ürün kartını açarken "bu ürünün kodları" sorgusu.
-            b.HasIndex(x => new { x.LicenseId, x.ProductId });
+            // "Bu ürünün kodları, en yenisi önce" — yayın kodu ucunun GET'i ve
+            // WPF katalog çekmesi bu sırayı istiyor. Baştaki kolonun ProductId
+            // olması ayrıca FK'nin kendi indeksi işini görür: ürün silinince
+            // cascade DELETE seek yapar. Kardeşler de aynı kalıpta
+            // (ProductVariant: (ProductId, …), ProductPhoto: (ProductId, SortOrder)).
+            // LicenseId kiracı filtresi olarak sorguda kalıntı predicate kalır.
+            b.HasIndex(x => new { x.ProductId, x.CreatedAt });
         });
 
         mb.Entity<ProductPhoto>(b =>
