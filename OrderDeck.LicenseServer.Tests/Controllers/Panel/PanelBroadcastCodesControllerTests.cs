@@ -41,9 +41,14 @@ public class PanelBroadcastCodesControllerTests : IClassFixture<ApiFactory>
     /// Kod bir daha ASLA devredilmez: başka bir ürüne verilmiş kod reddedilir.
     /// Devredilseydi, eski yayın videosundaki kodu bugün yazan izleyicinin
     /// siparişi yanlış ürüne düşerdi.
+    ///
+    /// <para>409 <b>nerede</b> kullanıldığını söylemek zorunda: kod hiç serbest
+    /// bırakılmadığı için çakışma çoğu zaman aylar önceki başka bir ürünle olur
+    /// ve operatörün onu bulmak için tarayabileceği bir ekran yok. Mesaj sadece
+    /// "kullanılmış" deseydi elinde teşhis edilemez bir "olmaz" kalırdı.</para>
     /// </summary>
     [Fact]
-    public async Task Code_used_by_another_product_is_rejected()
+    public async Task Code_used_by_another_product_is_rejected_and_says_where()
     {
         var client = await NewPanelClientAsync();
         var first = await NewProductWithSellerAxisAsync(client);
@@ -53,13 +58,67 @@ public class PanelBroadcastCodesControllerTests : IClassFixture<ApiFactory>
             $"/api/panel/products/{first}/broadcast-codes",
             new { sellerAxisValue = "Siyah", code = "ATEŞ" });
 
+        // Denenen yazım BİLEREK farklı: çakışma normalize üstünden ("ates" ile
+        // "ATEŞ" aynı sayılıyor). Mesaj kayıtlı yazımı da söylemezse operatör
+        // ürün kartında kendi yazdığı metni arar ve bulamaz.
         var clash = await client.PutAsJsonAsync(
             $"/api/panel/products/{second}/broadcast-codes",
             new { sellerAxisValue = "Siyah", code = "ates" });
 
         clash.StatusCode.Should().Be(HttpStatusCode.Conflict);
-        (await clash.Content.ReadAsStringAsync())
-            .Should().Contain("Bu yayın kodu daha önce kullanılmış.");
+
+        var owner = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/panel/products/{first}");
+        var detail = await DetailAsync(clash);
+
+        detail.Should().Contain("'ates'").And.Contain("'ATEŞ' ile aynı sayılıyor");
+        detail.Should().Contain(owner.GetProperty("code").GetString()!);
+        detail.Should().Contain(owner.GetProperty("name").GetString()!);
+        detail.Should().Contain("'Siyah'");
+    }
+
+    /// <summary>
+    /// Ekseni olmayan üründe kod ürünün tamamına ait; mesaj olmayan bir eksen
+    /// değeri uydurmamalı.
+    /// </summary>
+    [Fact]
+    public async Task Conflict_on_an_axisless_product_names_only_the_product()
+    {
+        var client = await NewPanelClientAsync();
+        var first = await NewAxislessProductAsync(client);
+        var second = await NewProductWithSellerAxisAsync(client);
+
+        var taken = await client.PutAsJsonAsync(
+            $"/api/panel/products/{first}/broadcast-codes",
+            new { code = "ATEŞ" });
+        taken.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var clash = await client.PutAsJsonAsync(
+            $"/api/panel/products/{second}/broadcast-codes",
+            new { sellerAxisValue = "Siyah", code = "ATEŞ" });
+
+        clash.StatusCode.Should().Be(HttpStatusCode.Conflict);
+
+        var owner = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/panel/products/{first}");
+        var detail = await DetailAsync(clash);
+
+        detail.Should().Contain(owner.GetProperty("name").GetString()!);
+        detail.Should().NotContain("değerine");
+        // Kayıtlı yazım denenenle aynı: "aynı sayılıyor" eki takılmamalı.
+        detail.Should().NotContain("aynı sayılıyor");
+    }
+
+    /// <summary>
+    /// ProblemDetails'in <c>detail</c> alanını çözülmüş metin olarak verir.
+    /// Ham gövdeye bakmak kırılgan: JSON yazıcısı ASCII dışı harfleri kaçış
+    /// dizisine çevirirse ("ş" → <c>\u015F</c>) düz metin araması yanlış
+    /// kırmızı üretir.
+    /// </summary>
+    private static async Task<string> DetailAsync(HttpResponseMessage res)
+    {
+        var body = await res.Content.ReadFromJsonAsync<JsonElement>();
+        return body.GetProperty("detail").GetString()!;
     }
 
     /// <summary>
@@ -381,6 +440,23 @@ public class PanelBroadcastCodesControllerTests : IClassFixture<ApiFactory>
         variant.StatusCode.Should().Be(HttpStatusCode.Created);
 
         return id;
+    }
+
+    /// <summary>
+    /// Eksensiz ürün: yayın kodu ürünün tamamına verilir, satıcı ekseni değeri
+    /// yoktur. Otomatik varyantı sunucu açar.
+    /// </summary>
+    private static async Task<Guid> NewAxislessProductAsync(HttpClient client)
+    {
+        var created = await client.PostAsJsonAsync("/api/panel/products", new
+        {
+            name = "Eksensiz " + Guid.NewGuid().ToString("N")[..6],
+            defaultPrice = 100m,
+        });
+        created.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var dto = await created.Content.ReadFromJsonAsync<JsonElement>();
+        return dto.GetProperty("id").GetGuid();
     }
 
     /// <summary>
