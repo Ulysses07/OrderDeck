@@ -5,8 +5,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
-using OrderDeck.LicenseServer.Services.Catalog;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
+using OrderDeck.Shared.Text;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Controllers.Panel;
@@ -17,9 +17,8 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
     public PanelProductsControllerTests(ApiFactory f) => _factory = f;
 
     private sealed record VariantDto(
-        Guid Id, string? Axis1Value, string? Axis1Code,
-        string? Axis2Value, string? Axis2Code,
-        string VariantCode, string? Barcode, bool IsActive);
+        Guid Id, string? Axis1Value, string? Axis2Value,
+        string? Barcode, bool IsActive);
 
     private sealed record PhotoRow(
         Guid Id, string ObjectKey, string ContentType, long SizeBytes,
@@ -43,8 +42,6 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
     private sealed record CategoryDto(
         Guid Id, Guid? ParentCategoryId, string Name, string Path,
         int Depth, int SortOrder, bool IsActive);
-
-    private sealed record NextCodeDto(string Code);
 
     private static async Task<string?> TitleAsync(HttpResponseMessage resp)
     {
@@ -96,35 +93,34 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
     }
 
     private static Task<HttpResponseMessage> PostProductAsync(
-        HttpClient client, string name, string? code = null, Guid? categoryId = null,
+        HttpClient client, string name, Guid? categoryId = null,
         decimal price = 100m, decimal? cost = null,
         string? axis1Name = null, int? axis1Role = null,
         string? axis2Name = null, int? axis2Role = null)
         => client.PostAsJsonAsync("/api/panel/products", new
         {
-            name, code, categoryId, defaultPrice = price, cost,
+            name, categoryId, defaultPrice = price, cost,
             axis1Name, axis1Role, axis2Name, axis2Role,
         });
 
     private static async Task<ProductDto> CreateProductAsync(
-        HttpClient client, string name, string? code = null, Guid? categoryId = null,
+        HttpClient client, string name, Guid? categoryId = null,
         decimal price = 100m, string? axis1Name = null, int? axis1Role = null,
         string? axis2Name = null, int? axis2Role = null)
     {
-        var resp = await PostProductAsync(client, name, code, categoryId, price,
+        var resp = await PostProductAsync(client, name, categoryId, price,
             null, axis1Name, axis1Role, axis2Name, axis2Role);
         resp.StatusCode.Should().Be(HttpStatusCode.Created);
         return (await resp.Content.ReadFromJsonAsync<ProductDto>())!;
     }
 
     private static Task<HttpResponseMessage> PutProductAsync(
-        HttpClient client, ProductDto product, string? code = null,
+        HttpClient client, ProductDto product,
         string? axis1Name = null, int? axis1Role = null,
         string? axis2Name = null, int? axis2Role = null)
         => client.PutAsJsonAsync($"/api/panel/products/{product.Id}", new
         {
             name = product.Name,
-            code = code ?? product.Code,
             categoryId = product.CategoryId,
             defaultPrice = product.DefaultPrice,
             cost = product.Cost,
@@ -137,22 +133,18 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
     {
         var resp = await client.PostAsJsonAsync(
             $"/api/panel/products/{productId}/variants",
-            new
-            {
-                axis1Value, axis1Code = (string?)null,
-                axis2Value, axis2Code = (string?)null, isActive = true,
-            });
+            new { axis1Value, axis2Value, isActive = true });
         resp.StatusCode.Should().Be(HttpStatusCode.Created);
         return (await resp.Content.ReadFromJsonAsync<VariantDto>())!;
     }
 
     /// <summary>
-    /// Değişmez kural: bir üründeki HER varyantın kodu, güncel ürün kodu ile o
-    /// varyantın eksen kod parçalarından üretilene birebir eşit olmalı — hangi
-    /// uç noktanın yazdığı fark etmez. Yeni bir yazma yolu türetmeyi unutursa
-    /// bu doğrulama düşer.
+    /// Değişmez kural: bir üründeki HER varyantın normalleştirilmiş eksen çifti
+    /// tekil olmalı — hangi uç noktanın yazdığı fark etmez. Kolonlar
+    /// <c>SaveChanges</c> zincirinde doldurulduğu için yeni bir yazma yolu
+    /// normalleştirmeyi atlarsa bu doğrulama düşer.
     /// </summary>
-    private void AssertVariantCodesAreDerived(Guid productId)
+    private void AssertVariantAxesAreUnique(Guid productId)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -160,11 +152,19 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
 
         foreach (var variant in product.Variants)
         {
-            variant.VariantCode.Should().Be(
-                VariantCodeBuilder.Build(product.Code, variant.Axis1Code, variant.Axis2Code),
-                "'{0}' varyantının kodu güncel ürün kodundan türetilmiş olmalı",
+            variant.Axis1ValueNorm.Should().Be(
+                SearchNormalizer.Normalize(variant.Axis1Value),
+                "'{0}' varyantının 1. eksen normali kaydedilen değerden türetilmeli",
+                variant.Id);
+            variant.Axis2ValueNorm.Should().Be(
+                SearchNormalizer.Normalize(variant.Axis2Value),
+                "'{0}' varyantının 2. eksen normali kaydedilen değerden türetilmeli",
                 variant.Id);
         }
+
+        product.Variants
+            .Select(v => (v.Axis1ValueNorm, v.Axis2ValueNorm))
+            .Should().OnlyHaveUniqueItems("aynı eksen çifti üründe iki kez olamaz");
     }
 
     [Fact]
@@ -178,108 +178,64 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task Create_assigns_A1_to_the_first_product()
+    public async Task Create_assigns_SK00001_to_the_first_product()
     {
         var (client, _) = await SeedAsync();
 
         var product = await CreateProductAsync(client, "Basic tişört");
 
-        product.Code.Should().Be("A1");
+        product.Code.Should().Be("SK00001");
     }
 
     [Fact]
-    public async Task Create_assigns_A2_to_the_second_product()
+    public async Task Create_assigns_SK00002_to_the_second_product()
     {
         var (client, _) = await SeedAsync();
         await CreateProductAsync(client, "Birinci");
 
         var second = await CreateProductAsync(client, "İkinci");
 
-        second.Code.Should().Be("A2");
-    }
-
-    [Fact]
-    public async Task Create_normalizes_the_manual_code_and_rejects_the_duplicate()
-    {
-        var (client, _) = await SeedAsync();
-
-        var first = await CreateProductAsync(client, "Elle kodlu", code: "  a5 ");
-        first.Code.Should().Be("A5");
-
-        var resp = await PostProductAsync(client, "Aynı kod", code: "A5");
-
-        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
-        (await TitleAsync(resp)).Should().Be("duplicate-code");
+        second.Code.Should().Be("SK00002");
     }
 
     /// <summary>
-    /// "Işık 1" → ToUpperInvariant "IŞıK 1" üretir: ı (U+0131) küçük kalır,
-    /// Ş yerinde durur. Kod bir kimlik ve izleyici yorumu ona karşı
-    /// eşleştirilecek — Türkçe klavyesi olmayan biri "isik 1" yazdığında da
-    /// aynı ürüne düşmeli.
+    /// Sistem kodları SK00001 biçiminde; isim araması NameSearch kolonuna dayanıyor.
+    /// Kod araması SK00001 gibi tam kodla çalışır — sistem kodu Türkçe harf içermez.
     /// </summary>
     [Fact]
-    public async Task Create_folds_turkish_letters_in_the_code()
+    public async Task List_finds_a_product_by_its_system_code()
     {
         var (client, _) = await SeedAsync();
-
-        var product = await CreateProductAsync(client, "Işıklı Elbise", code: "  Işık 1 ");
-
-        product.Code.Should().Be("ISIK 1");
-    }
-
-    [Fact]
-    public async Task Create_409_when_the_code_only_differs_by_turkish_letters()
-    {
-        var (client, _) = await SeedAsync();
-        await CreateProductAsync(client, "Şık Elbise", code: "ŞIK1");
-
-        // "sik1" katlandığında "SIK1"; "ŞIK1" de "SIK1". İzleyici ikisini
-        // ayırt edemez, o yüzden bir arada var olamazlar.
-        var resp = await PostProductAsync(client, "Sıkı Elbise", code: "sik1");
-
-        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
-        (await TitleAsync(resp)).Should().Be("duplicate-code");
-    }
-
-    /// <summary>
-    /// Çok kelimeli Türkçe kod sahadaki gerçek kullanım ("güzel elbise").
-    /// Panel araması iğneyi SearchNormalizer'dan geçiriyor; saklanan kod da
-    /// aynı normalleştiriciden geçmezse arama sessizce boş döner.
-    /// </summary>
-    [Fact]
-    public async Task List_finds_a_multiword_turkish_code_typed_without_turkish_letters()
-    {
-        var (client, _) = await SeedAsync();
-        await CreateProductAsync(client, "Elbise", code: "güzel elbise");
+        var product = await CreateProductAsync(client, "Elbise");
+        // Sistem ilk ürüne SK00001 verir.
+        product.Code.Should().Be("SK00001");
 
         var page = await client.GetFromJsonAsync<ProductPage>(
-            "/api/panel/products?q=guzel%20elbise&page=1&pageSize=20");
+            "/api/panel/products?q=SK00001&page=1&pageSize=20");
 
         page!.Items.Should().ContainSingle()
-            .Which.Code.Should().Be("GUZEL ELBISE");
+            .Which.Code.Should().Be("SK00001");
     }
 
     /// <summary>
-    /// Update da NormalizeCode'dan geçiyor ve kod değiştiğinde SyncVariantCodes
-    /// her varyantın VariantCode'unu yeniden türetiyor. Barkod yükü ASCII
-    /// olmak zorunda; Türkçe harfli ürün kodu katlanmazsa barkod bozulur.
+    /// Update sistem koduna dokunmaz; eksen varyantları isim değişiminden
+    /// etkilenmez.
     /// </summary>
     [Fact]
-    public async Task Update_folds_turkish_letters_and_rederives_variant_codes()
+    public async Task Update_keeps_the_system_code_unchanged()
     {
         var (client, _) = await SeedAsync();
-        var product = await CreateProductAsync(client, "Şık Elbise", code: "SIK1",
+        var product = await CreateProductAsync(client, "Şık Elbise",
             axis1Name: "Renk", axis1Role: 2);
         await PostVariantAsync(client, product.Id, axis1Value: "Siyah");
 
-        var resp = await PutProductAsync(client, product, code: "  şık elbise  ",
+        var resp = await PutProductAsync(client, product,
             axis1Name: "Renk", axis1Role: 2);
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var dto = (await resp.Content.ReadFromJsonAsync<ProductDto>())!;
-        dto.Code.Should().Be("SIK ELBISE");
-        AssertVariantCodesAreDerived(product.Id);
+        dto.Code.Should().Be(product.Code); // SK00001 — değişmez
+        AssertVariantAxesAreUnique(product.Id);
     }
 
     [Fact]
@@ -294,13 +250,14 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>
-    /// Kolonlar sınırlı (<c>Name</c> 200, <c>Code</c> 32, eksen adı 40); sınır
-    /// DTO'da duyurulmazsa taşan girdi prod'da kesme hatasına, yani 500'e düşer.
+    /// Kolonlar sınırlı (<c>Name</c> 200, eksen adı 40); sınır DTO'da
+    /// duyurulmazsa taşan girdi prod'da kesme hatasına, yani 500'e düşer.
     /// InMemory bunu göremediği için sınır sunucu tarafında kapatılmalı.
+    /// Not: <c>Code</c> artık istemciden gelmiyor — o alanın sınırı burada
+    /// denetlenmiyor.
     /// </summary>
     [Theory]
     [InlineData("Name")]
-    [InlineData("Code")]
     [InlineData("Axis1Name")]
     [InlineData("Axis2Name")]
     public async Task Create_400_when_a_field_exceeds_its_column_limit(string field)
@@ -309,7 +266,6 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
 
         var resp = await PostProductAsync(client,
             name: field == "Name" ? new string('A', CatalogLimits.ProductName + 1) : "Uzun alan",
-            code: field == "Code" ? new string('A', CatalogLimits.ProductCode + 1) : null,
             axis1Name: field is "Axis1Name" or "Axis2Name"
                 ? new string('A', CatalogLimits.AxisName + 1) : null,
             axis1Role: field is "Axis1Name" or "Axis2Name" ? 1 : null,
@@ -330,7 +286,6 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         var resp = await client.PutAsJsonAsync($"/api/panel/products/{product.Id}", new
         {
             name = new string('A', CatalogLimits.ProductName + 1),
-            code = product.Code,
             categoryId = (Guid?)null,
             defaultPrice = product.DefaultPrice,
             cost = (decimal?)null,
@@ -437,8 +392,8 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         var product = await CreateProductAsync(client, "Tek kalem");
 
         product.Variants.Should().HaveCount(1);
-        product.Variants[0].VariantCode.Should().Be(product.Code);
         product.Variants[0].Axis1Value.Should().BeNull();
+        product.Variants[0].Axis2Value.Should().BeNull();
     }
 
     [Fact]
@@ -570,7 +525,7 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
 
         var resp = await clientB.PutAsJsonAsync($"/api/panel/products/{product.Id}", new
         {
-            name = "B ele geçirdi", code = product.Code, categoryId = (Guid?)null,
+            name = "B ele geçirdi", categoryId = (Guid?)null,
             defaultPrice = 999m, cost = (decimal?)null,
             axis1Name = (string?)null, axis1Role = (int?)null,
             axis2Name = (string?)null, axis2Role = (int?)null,
@@ -616,7 +571,7 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
 
         var resp = await client.PutAsJsonAsync($"/api/panel/products/{product.Id}", new
         {
-            name = "Yeni ad", code = product.Code, categoryId = category.Id,
+            name = "Yeni ad", categoryId = category.Id,
             defaultPrice = 250m, cost = 120m,
             axis1Name = (string?)null, axis1Role = (int?)null,
             axis2Name = (string?)null, axis2Role = (int?)null,
@@ -630,44 +585,34 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         dto.Cost.Should().Be(120m);
     }
 
+    /// <summary>
+    /// Sıradan bir güncelleme (ad/fiyat) sistem koduna dokunmaz.
+    /// </summary>
     [Fact]
-    public async Task Update_409_when_the_code_is_taken_by_a_sibling()
+    public async Task Update_preserves_the_system_code()
     {
         var (client, _) = await SeedAsync();
-        await CreateProductAsync(client, "Birinci", code: "K1");
-        var second = await CreateProductAsync(client, "İkinci", code: "K2");
+        var product = await CreateProductAsync(client, "Kendi kodu");
 
-        var resp = await PutProductAsync(client, second, code: "k1");
+        var resp = await PutProductAsync(client, product);
 
-        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
-        (await TitleAsync(resp)).Should().Be("duplicate-code");
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await resp.Content.ReadFromJsonAsync<ProductDto>())!.Code.Should().Be(product.Code);
     }
 
     /// <summary>
-    /// Kart kendi koduyla kaydedilince kendi kendiyle çakışmamalı — benzersizlik
-    /// kontrolü kendi satırını dışlamazsa her sıradan güncelleme 409 yerdi.
+    /// Eksensiz ürün tek otomatik varyant taşır; ürün güncellemesi bu satırı
+    /// ne çoğaltır ne siler.
     /// </summary>
     [Fact]
-    public async Task Update_200_when_the_product_keeps_its_own_code()
-    {
-        var (client, _) = await SeedAsync();
-        var product = await CreateProductAsync(client, "Kendi kodu", code: "K9");
-
-        var resp = await PutProductAsync(client, product, code: "K9");
-
-        resp.StatusCode.Should().Be(HttpStatusCode.OK);
-        (await resp.Content.ReadFromJsonAsync<ProductDto>())!.Code.Should().Be("K9");
-    }
-
-    [Fact]
-    public async Task Update_rewrites_the_auto_variant_code_when_the_product_code_changes()
+    public async Task Update_keeps_the_single_auto_variant()
     {
         var (client, _) = await SeedAsync();
         var product = await CreateProductAsync(client, "Tek kalem");
 
         var resp = await client.PutAsJsonAsync($"/api/panel/products/{product.Id}", new
         {
-            name = product.Name, code = "B7", categoryId = (Guid?)null,
+            name = "Yeni ad", categoryId = (Guid?)null,
             defaultPrice = product.DefaultPrice, cost = (decimal?)null,
             axis1Name = (string?)null, axis1Role = (int?)null,
             axis2Name = (string?)null, axis2Role = (int?)null,
@@ -675,30 +620,30 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var dto = (await resp.Content.ReadFromJsonAsync<ProductDto>())!;
-        dto.Code.Should().Be("B7");
-        dto.Variants.Single().VariantCode.Should().Be("B7");
+        dto.Code.Should().Be(product.Code); // SK00001 — değişmez
+        dto.Variants.Single().Axis1Value.Should().BeNull();
     }
 
     [Fact]
-    public async Task Update_rewrites_the_variant_codes_of_an_axis_product_when_the_code_changes()
+    public async Task Update_keeps_the_axis_variant_untouched()
     {
         var (client, _) = await SeedAsync();
         var product = await CreateProductAsync(client, "Renkli",
             axis1Name: "Renk", axis1Role: 2);
         await PostVariantAsync(client, product.Id, axis1Value: "Siyah");
 
-        var resp = await PutProductAsync(client, product, code: "B7",
+        var resp = await PutProductAsync(client, product,
             axis1Name: "Renk", axis1Role: 2);
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var dto = (await resp.Content.ReadFromJsonAsync<ProductDto>())!;
-        dto.Code.Should().Be("B7");
-        dto.Variants.Single().VariantCode.Should().Be("B7-SIYA");
-        AssertVariantCodesAreDerived(product.Id);
+        dto.Code.Should().Be(product.Code); // SK00001 — değişmez
+        dto.Variants.Single().Axis1Value.Should().Be("Siyah");
+        AssertVariantAxesAreUnique(product.Id);
     }
 
     [Fact]
-    public async Task Update_never_touches_the_barcode_when_the_product_code_changes()
+    public async Task Update_never_touches_the_barcode()
     {
         var (client, _) = await SeedAsync();
         var product = await CreateProductAsync(client, "Barkotlu",
@@ -713,64 +658,60 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
             await db.SaveChangesAsync();
         }
 
-        var resp = await PutProductAsync(client, product, code: "C4",
+        var resp = await PutProductAsync(client, product,
             axis1Name: "Renk", axis1Role: 2);
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var dto = (await resp.Content.ReadFromJsonAsync<ProductDto>())!;
-        dto.Variants.Single().VariantCode.Should().Be("C4-SIYA");
+        dto.Variants.Single().Axis1Value.Should().Be("Siyah");
         dto.Variants.Single().Barcode.Should().Be("8690000000017");
     }
 
     [Fact]
-    public async Task Variant_codes_stay_derived_across_the_whole_product_lifecycle()
+    public async Task Variant_axes_stay_normalized_across_the_whole_product_lifecycle()
     {
         var (client, _) = await SeedAsync();
         var product = await CreateProductAsync(client, "Çok eksenli",
             axis1Name: "Renk", axis1Role: 2, axis2Name: "Beden", axis2Role: 1);
+        var code = product.Code; // SK00001 — değişmez
 
         var siyah = await PostVariantAsync(client, product.Id, "Siyah", "38");
         var beyaz = await PostVariantAsync(client, product.Id, "Beyaz", "40");
-        AssertVariantCodesAreDerived(product.Id);
+        AssertVariantAxesAreUnique(product.Id);
 
-        // 1) Ürün kodu değişti — iki varyant da yenilenmeli.
-        (await PutProductAsync(client, product, code: "Z9",
+        // 1) Ürün güncellendi (eksenler aynı) — varyantların eksen değerleri korunmalı.
+        (await PutProductAsync(client, product,
             axis1Name: "Renk", axis1Role: 2, axis2Name: "Beden", axis2Role: 1))
             .StatusCode.Should().Be(HttpStatusCode.OK);
-        AssertVariantCodesAreDerived(product.Id);
+        AssertVariantAxesAreUnique(product.Id);
 
-        var afterRename = await client.GetFromJsonAsync<ProductDto>(
+        var afterUpdate = await client.GetFromJsonAsync<ProductDto>(
             $"/api/panel/products/{product.Id}");
-        afterRename!.Variants.Select(v => v.VariantCode)
-            .Should().BeEquivalentTo(["Z9-SIYA-38", "Z9-BEYA-40"]);
+        afterUpdate!.Code.Should().Be(code);
+        afterUpdate.Variants.Select(v => $"{v.Axis1Value}/{v.Axis2Value}")
+            .Should().BeEquivalentTo(["Siyah/38", "Beyaz/40"]);
 
         // 2) Varyantın kendi eksen değeri değişti.
         (await client.PutAsJsonAsync(
             $"/api/panel/products/{product.Id}/variants/{beyaz.Id}",
-            new
-            {
-                axis1Value = "Mavi", axis1Code = (string?)null,
-                axis2Value = "42", axis2Code = (string?)null, isActive = true,
-            })).StatusCode.Should().Be(HttpStatusCode.OK);
-        AssertVariantCodesAreDerived(product.Id);
+            new { axis1Value = "Mavi", axis2Value = "42", isActive = true }))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        AssertVariantAxesAreUnique(product.Id);
 
         // 3) Eksenler kapandı — geriye tek otomatik varyant kalır.
         foreach (var id in new[] { siyah.Id, beyaz.Id })
             (await client.DeleteAsync($"/api/panel/products/{product.Id}/variants/{id}"))
                 .StatusCode.Should().Be(HttpStatusCode.NoContent);
 
-        (await PutProductAsync(client, afterRename, code: "Z9"))
+        (await PutProductAsync(client, afterUpdate))
             .StatusCode.Should().Be(HttpStatusCode.OK);
-        AssertVariantCodesAreDerived(product.Id);
+        AssertVariantAxesAreUnique(product.Id);
 
-        // 4) Eksensiz ürünün kodu bir kez daha değişti.
-        (await PutProductAsync(client, afterRename, code: "Z8"))
-            .StatusCode.Should().Be(HttpStatusCode.OK);
-        AssertVariantCodesAreDerived(product.Id);
-
+        // 4) Ürün kodu hiç değişmedi; geriye eksensiz tek otomatik varyant kaldı.
         var final = await client.GetFromJsonAsync<ProductDto>(
             $"/api/panel/products/{product.Id}");
-        final!.Variants.Single().VariantCode.Should().Be("Z8");
+        final!.Code.Should().Be(code);
+        final.Variants.Single().Axis1Value.Should().BeNull();
     }
 
     [Fact]
@@ -782,7 +723,7 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
 
         var resp = await client.PutAsJsonAsync($"/api/panel/products/{product.Id}", new
         {
-            name = product.Name, code = product.Code, categoryId = (Guid?)null,
+            name = product.Name, categoryId = (Guid?)null,
             defaultPrice = product.DefaultPrice, cost = (decimal?)null,
             axis1Name = "Renk", axis1Role = 2,
             axis2Name = (string?)null, axis2Role = (int?)null,
@@ -808,8 +749,7 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
             db.ProductVariants.Add(new ProductVariant
             {
                 Id = Guid.NewGuid(), LicenseId = entity.LicenseId, ProductId = entity.Id,
-                Axis1Value = "Siyah", Axis1Code = "SIYA",
-                VariantCode = entity.Code + "-SIYA", IsActive = true,
+                Axis1Value = "Siyah", IsActive = true,
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
             await db.SaveChangesAsync();
@@ -817,7 +757,7 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
 
         var resp = await client.PutAsJsonAsync($"/api/panel/products/{product.Id}", new
         {
-            name = product.Name, code = product.Code, categoryId = (Guid?)null,
+            name = product.Name, categoryId = (Guid?)null,
             defaultPrice = product.DefaultPrice, cost = (decimal?)null,
             axis1Name = (string?)null, axis1Role = (int?)null,
             axis2Name = (string?)null, axis2Role = (int?)null,
@@ -949,9 +889,8 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         var dto = (await resp.Content.ReadFromJsonAsync<ProductDto>())!;
         dto.Axis1Name.Should().BeNull();
         dto.Axis1Role.Should().BeNull();
-        dto.Variants.Single().VariantCode.Should().Be(dto.Code);
         dto.Variants.Single().Axis1Value.Should().BeNull();
-        AssertVariantCodesAreDerived(product.Id);
+        AssertVariantAxesAreUnique(product.Id);
     }
 
     /// <summary>
@@ -977,7 +916,67 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         dto.Variants.Single().Id.Should().Be(variant.Id);
         dto.Variants.Single().Axis1Value.Should().Be("Siyah");
         dto.Variants.Single().Axis2Value.Should().Be("38");
-        AssertVariantCodesAreDerived(product.Id);
+        AssertVariantAxesAreUnique(product.Id);
+    }
+
+    /// <summary>
+    /// Deliğin ta kendisi: varyantlar silinince "dolu varyant" ve "stok hareketi"
+    /// bekçilerinin ikisi de susuyor, ama yayın kodu satırı yerinde kalıyor. Yeni
+    /// eksende aynı adlı bir değer açılsa eski kod sessizce başka bir kırılıma
+    /// bağlanırdı — kod bir daha devredilemediği için geri dönüşü yok.
+    /// </summary>
+    [Fact]
+    public async Task Update_409_when_the_axis_changes_while_broadcast_codes_exist()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Yayın kodlu",
+            axis1Name: "Renk", axis1Role: 1);
+        var variant = await PostVariantAsync(client, product.Id, axis1Value: "Siyah");
+
+        var assigned = await client.PutAsJsonAsync(
+            $"/api/panel/products/{product.Id}/broadcast-codes",
+            new { sellerAxisValue = "Siyah", code = "ATEŞ" });
+        assigned.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var removed = await client.DeleteAsync(
+            $"/api/panel/products/{product.Id}/variants/{variant.Id}");
+        removed.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var resp = await PutProductAsync(client, product,
+            axis1Name: "Model", axis1Role: 1);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await TitleAsync(resp)).Should().Be("axis-in-use-broadcast-codes");
+
+        var after = await client.GetFromJsonAsync<ProductDto>(
+            $"/api/panel/products/{product.Id}");
+        after!.Axis1Name.Should().Be("Renk");
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        db.ProductBroadcastCodes.Single(x => x.ProductId == product.Id)
+            .SellerAxisValue.Should().Be("Siyah");
+    }
+
+    /// <summary>
+    /// Bekçinin normal yolu kırmadığının kanıtı: kodu olmayan varyantsız kartta
+    /// eksen adı hâlâ değiştirilebilir.
+    /// </summary>
+    [Fact]
+    public async Task Update_changes_the_axis_when_the_product_has_no_broadcast_code()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Kodsuz kart",
+            axis1Name: "Renk", axis1Role: 1);
+        product.Variants.Should().BeEmpty();
+
+        var resp = await PutProductAsync(client, product,
+            axis1Name: "Model", axis1Role: 1);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var dto = (await resp.Content.ReadFromJsonAsync<ProductDto>())!;
+        dto.Axis1Name.Should().Be("Model");
+        dto.Axis1Role.Should().Be(1);
     }
 
     [Fact]
@@ -1048,17 +1047,6 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task Next_code_endpoint_returns_the_next_free_code()
-    {
-        var (client, _) = await SeedAsync();
-        await CreateProductAsync(client, "Birinci");
-
-        var dto = await client.GetFromJsonAsync<NextCodeDto>("/api/panel/products/next-code");
-
-        dto!.Code.Should().Be("A2");
-    }
-
-    [Fact]
     public async Task Shelf_location_is_saved_trimmed_and_blank_becomes_null()
     {
         var (client, _) = await SeedAsync();
@@ -1103,14 +1091,14 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
     {
         var (client, _) = await SeedAsync();
 
-        var tisort = await CreateProductAsync(client, "Tişört", "AV1",
+        var tisort = await CreateProductAsync(client, "Tişört",
             axis1Name: "Renk", axis1Role: 1, axis2Name: "Beden", axis2Role: 2);
         foreach (var (renk, beden) in new[] { ("Siyah", "M"), ("Beyaz", "L") })
             (await client.PostAsJsonAsync($"/api/panel/products/{tisort.Id}/variants",
                 new { axis1Value = renk, axis2Value = beden, isActive = true }))
                 .StatusCode.Should().Be(HttpStatusCode.Created);
 
-        var gomlek = await CreateProductAsync(client, "Gömlek", "AV2",
+        var gomlek = await CreateProductAsync(client, "Gömlek",
             axis1Name: "Beden", axis1Role: 2);
         (await client.PostAsJsonAsync($"/api/panel/products/{gomlek.Id}/variants",
             new { axis1Value = "XL", isActive = true }))
@@ -1143,14 +1131,14 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
     public async Task Axis_values_never_leaks_another_tenants_values()
     {
         var (clientA, _) = await SeedAsync();
-        var mine = await CreateProductAsync(clientA, "Tişört", "AV3",
+        var mine = await CreateProductAsync(clientA, "Tişört",
             axis1Name: "Beden", axis1Role: 2);
         (await clientA.PostAsJsonAsync($"/api/panel/products/{mine.Id}/variants",
             new { axis1Value = "M", isActive = true }))
             .StatusCode.Should().Be(HttpStatusCode.Created);
 
         var (clientB, _) = await SeedAsync();
-        var theirs = await CreateProductAsync(clientB, "Gömlek", "AV4",
+        var theirs = await CreateProductAsync(clientB, "Gömlek",
             axis1Name: "Beden", axis1Role: 2);
         (await clientB.PostAsJsonAsync($"/api/panel/products/{theirs.Id}/variants",
             new { axis1Value = "XXL", isActive = true }))
@@ -1166,7 +1154,7 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
     public async Task Product_without_photos_has_no_cover_and_an_empty_gallery()
     {
         var (client, _) = await SeedAsync();
-        var product = await CreateProductAsync(client, "Kapaksız", "K1");
+        var product = await CreateProductAsync(client, "Kapaksız");
 
         var page = await client.GetFromJsonAsync<ProductPage>("/api/panel/products");
         page!.Items.Single(i => i.Id == product.Id).CoverUrl.Should().BeNull();
@@ -1180,7 +1168,7 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
     public async Task Product_with_photos_has_cover_url_in_list_and_sorted_gallery_in_detail()
     {
         var (client, _) = await SeedAsync();
-        var product = await CreateProductAsync(client, "Fotoğraflı galeri", "GR1");
+        var product = await CreateProductAsync(client, "Fotoğraflı galeri");
 
         // İki fotoğraf ekle — AttachPhotoAsync her seferinde yeni bir anahtar üretir.
         var key0 = await AttachPhotoAsync(client, product.Id);
@@ -1199,5 +1187,51 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
         detail.Photos[1].SortOrder.Should().Be(1);
         detail.Photos[0].Url.Should().NotBeNullOrEmpty();
         detail.Photos[1].Url.Should().NotBeNullOrEmpty();
+    }
+
+    /// <summary>
+    /// Kod artık istemciden gelmiyor: gövdede kod alanı YOK, sunucu üretiyor.
+    /// İkinci ürün sıradaki numarayı almalı — aynı kodu alsalardı yayın
+    /// eşleştirmesi iki ürün arasında salınırdı.
+    /// </summary>
+    [Fact]
+    public async Task Created_products_get_sequential_system_codes()
+    {
+        var (client, _) = await SeedAsync();
+
+        var first = await client.PostAsJsonAsync("/api/panel/products", new
+        {
+            name = "Birinci", defaultPrice = 100m,
+        });
+        first.StatusCode.Should().Be(HttpStatusCode.Created);
+        var firstDto = await first.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+
+        var second = await client.PostAsJsonAsync("/api/panel/products", new
+        {
+            name = "İkinci", defaultPrice = 100m,
+        });
+        second.StatusCode.Should().Be(HttpStatusCode.Created);
+        var secondDto = await second.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+
+        var firstCode = firstDto.GetProperty("code").GetString()!;
+        var secondCode = secondDto.GetProperty("code").GetString()!;
+
+        firstCode.Should().MatchRegex("^SK[0-9]{5,}$");
+        secondCode.Should().MatchRegex("^SK[0-9]{5,}$");
+        secondCode.Should().NotBe(firstCode);
+    }
+
+    /// <summary>
+    /// Kod ucu emekli: panel artık "sıradaki kod"u sormuyor, kaydederken
+    /// öğreniyor.
+    /// </summary>
+    [Fact]
+    public async Task Next_code_endpoint_is_gone()
+    {
+        var (client, _) = await SeedAsync();
+
+        var res = await client.GetAsync("/api/panel/products/next-code");
+
+        res.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 }

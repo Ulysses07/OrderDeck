@@ -53,6 +53,7 @@ public class LicenseDbContext : DbContext
     public DbSet<Category> Categories => Set<Category>();
     public DbSet<Product> Products => Set<Product>();
     public DbSet<ProductVariant> ProductVariants => Set<ProductVariant>();
+    public DbSet<ProductBroadcastCode> ProductBroadcastCodes => Set<ProductBroadcastCode>();
     public DbSet<ProductPhoto> ProductPhotos => Set<ProductPhoto>();
     public DbSet<StockMovement> StockMovements => Set<StockMovement>();
 
@@ -74,6 +75,20 @@ public class LicenseDbContext : DbContext
             if (entry.State is not (EntityState.Added or EntityState.Modified)) continue;
 
             entry.Entity.NameSearch = SearchNormalizer.Normalize(entry.Entity.Name);
+        }
+
+        foreach (var entry in ChangeTracker.Entries<ProductBroadcastCode>())
+        {
+            if (entry.State is not (EntityState.Added or EntityState.Modified)) continue;
+            entry.Entity.CodeNormalized = SearchNormalizer.Normalize(entry.Entity.Code);
+        }
+
+        foreach (var entry in ChangeTracker.Entries<ProductVariant>())
+        {
+            if (entry.State is not (EntityState.Added or EntityState.Modified)) continue;
+            // Normalize(null) boş dize döndürüyor — eksensiz satır da NOT NULL kalıyor.
+            entry.Entity.Axis1ValueNorm = SearchNormalizer.Normalize(entry.Entity.Axis1Value);
+            entry.Entity.Axis2ValueNorm = SearchNormalizer.Normalize(entry.Entity.Axis2Value);
         }
     }
 
@@ -684,14 +699,40 @@ public class LicenseDbContext : DbContext
             b.HasKey(v => v.Id);
             b.Property(v => v.Axis1Value).HasMaxLength(CatalogLimits.AxisValue);
             b.Property(v => v.Axis2Value).HasMaxLength(CatalogLimits.AxisValue);
-            b.Property(v => v.Axis1Code).HasMaxLength(CatalogLimits.AxisCode);
-            b.Property(v => v.Axis2Code).HasMaxLength(CatalogLimits.AxisCode);
-            b.Property(v => v.VariantCode).HasMaxLength(CatalogLimits.VariantCode).IsRequired();
             b.Property(v => v.Barcode).HasMaxLength(CatalogLimits.Barcode);
+            b.Property(v => v.Axis1ValueNorm).HasMaxLength(CatalogLimits.AxisValue).IsRequired();
+            b.Property(v => v.Axis2ValueNorm).HasMaxLength(CatalogLimits.AxisValue).IsRequired();
             b.HasOne(v => v.Product).WithMany(p => p.Variants)
                 .HasForeignKey(v => v.ProductId).OnDelete(DeleteBehavior.Cascade);
-            b.HasIndex(v => new { v.ProductId, v.VariantCode }).IsUnique();
-            b.HasIndex(v => new { v.LicenseId, v.VariantCode });
+
+            // Varyantın kimliği eksen değerleri; kod DEĞİL. Kod üstündeki eski
+            // indeks ("Kırmızı" ve "Kırmızılı" ikisi de KIRM) yapay çakışma
+            // üretiyordu — o 409 bu indeksle birlikte ortadan kalkıyor.
+            b.HasIndex(v => new { v.ProductId, v.Axis1ValueNorm, v.Axis2ValueNorm })
+                .IsUnique();
+        });
+
+        mb.Entity<ProductBroadcastCode>(b =>
+        {
+            b.HasKey(x => x.Id);
+            b.Property(x => x.SellerAxisValue).HasMaxLength(CatalogLimits.AxisValue);
+            b.Property(x => x.Code).HasMaxLength(CatalogLimits.BroadcastCode).IsRequired();
+            b.Property(x => x.CodeNormalized).HasMaxLength(CatalogLimits.BroadcastCode).IsRequired();
+
+            b.HasOne(x => x.Product).WithMany(p => p.BroadcastCodes)
+                .HasForeignKey(x => x.ProductId).OnDelete(DeleteBehavior.Cascade);
+
+            // Lisans başına KALICI benzersizlik: kod emekliye ayrılsa da satır
+            // durduğu için indeks kodu rezerve tutmaya devam eder.
+            b.HasIndex(x => new { x.LicenseId, x.CodeNormalized }).IsUnique();
+
+            // "Bu ürünün kodları, en yenisi önce" — yayın kodu ucunun GET'i ve
+            // WPF katalog çekmesi bu sırayı istiyor. Baştaki kolonun ProductId
+            // olması ayrıca FK'nin kendi indeksi işini görür: ürün silinince
+            // cascade DELETE seek yapar. Kardeşler de aynı kalıpta
+            // (ProductVariant: (ProductId, …), ProductPhoto: (ProductId, SortOrder)).
+            // LicenseId kiracı filtresi olarak sorguda kalıntı predicate kalır.
+            b.HasIndex(x => new { x.ProductId, x.CreatedAt });
         });
 
         mb.Entity<ProductPhoto>(b =>

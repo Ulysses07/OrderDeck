@@ -16,7 +16,7 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 /// <b>rolü</b> ürüne özeldir (satıcı ekseni barkotla sabitlenir, izleyici ekseni
 /// yorumdan gelir). İkisi de kapatılabilir.
 ///
-/// Eksensiz ürün de tek bir varyant satırı taşır (<c>VariantCode = Code</c>) —
+/// Eksensiz ürün de tek bir varyant satırı taşır (iki eksen değeri de boş) —
 /// böylece Faz 1b'de stok hareketi her zaman bir varyanta bağlanabilir.
 /// </summary>
 [ApiController]
@@ -42,7 +42,6 @@ public sealed class PanelProductsController : ControllerBase
     // ("validation metadata must be associated with the constructor parameter").
     public sealed record UpsertRequest(
         [MaxLength(CatalogLimits.ProductName)] string Name,
-        [MaxLength(CatalogLimits.ProductCode)] string? Code,
         Guid? CategoryId,
         decimal DefaultPrice,
         decimal? Cost,
@@ -53,14 +52,7 @@ public sealed class PanelProductsController : ControllerBase
         AxisRole? Axis2Role);
 
     public sealed record VariantDto(
-        Guid Id,
-        string? Axis1Value,
-        string? Axis1Code,
-        string? Axis2Value,
-        string? Axis2Code,
-        string VariantCode,
-        string? Barcode,
-        bool IsActive);
+        Guid Id, string? Axis1Value, string? Axis2Value, string? Barcode, bool IsActive);
 
     public sealed record ProductDto(
         Guid Id,
@@ -93,8 +85,6 @@ public sealed class PanelProductsController : ControllerBase
         DateTimeOffset UpdatedAt);
 
     public sealed record ProductPageDto(IReadOnlyList<ProductRowDto> Items, int Total);
-
-    public sealed record NextCodeDto(string Code);
 
     /// <summary>
     /// Stok elemanı maliyeti ne görür ne yazar (spec: "ciro bilgilerini
@@ -153,9 +143,9 @@ public sealed class PanelProductsController : ControllerBase
             // eşleşme veritabanının collation'ından bağımsız (SQL Server duyarsız,
             // PostgreSQL duyarlı; göçte davranış değişmesin).
             //
-            // Kod için ayrı bir iğne gerekmiyor çünkü `Code` de yazma anında aynı
-            // normalleştiriciden geçiyor (NormalizeCode). Kod elle yazılabiliyor ve
-            // sahada "güzel elbise" gibi çok kelimeli Türkçe ifadeler oluyor.
+            // `Code` sistem tarafından üretilir (SK00001…) ve normalleştirilmemiş
+            // sayısal bir sonek içerir; bu nedenle kod araması da needle üzerinden
+            // Contains ile çalışır — ayrı bir normalleştirme adımı gerekmez.
             var needle = SearchNormalizer.Normalize(q);
             if (needle.Length > 0)
                 query = query.Where(
@@ -210,21 +200,6 @@ public sealed class PanelProductsController : ControllerBase
         }
 
         return Ok(new ProductPageDto(items, total));
-    }
-
-    [AllowStockStaff]
-    [HttpGet("next-code")]
-    public async Task<IActionResult> NextCode(CancellationToken ct)
-    {
-        var licenseId = await ResolveActiveLicenseAsync(ct);
-        if (licenseId is null) return Problem(title: "no-active-license", statusCode: 400);
-
-        var codes = await _db.Products
-            .Where(p => p.LicenseId == licenseId.Value)
-            .Select(p => p.Code)
-            .ToListAsync(ct);
-
-        return Ok(new NextCodeDto(CatalogCodeSequence.Next(codes)));
     }
 
     public sealed record AxisValuesDto(string Name, IReadOnlyList<string> Values);
@@ -310,20 +285,13 @@ public sealed class PanelProductsController : ControllerBase
         var categoryError = await ValidateCategoryAsync(req.CategoryId, licenseId.Value, ct);
         if (categoryError is not null) return categoryError;
 
-        var code = NormalizeCode(req.Code);
-        if (code.Length == 0)
-        {
-            var codes = await _db.Products
-                .Where(p => p.LicenseId == licenseId.Value)
-                .Select(p => p.Code)
-                .ToListAsync(ct);
-            code = CatalogCodeSequence.Next(codes);
-        }
-        else
-        {
-            var taken = await CodeTakenAsync(licenseId.Value, code, excludeId: null, ct);
-            if (taken is not null) return taken;
-        }
+        // Kod SİSTEMİN: istemci gövdesinde yok, buradan üretiliyor. Operatörün
+        // yayında söylediği kod ayrı bir kavram (ProductBroadcastCode).
+        var codes = await _db.Products
+            .Where(p => p.LicenseId == licenseId.Value)
+            .Select(p => p.Code)
+            .ToListAsync(ct);
+        var code = StockCodeSequence.Next(codes);
 
         var now = DateTimeOffset.UtcNow;
         var product = new Product
@@ -357,20 +325,26 @@ public sealed class PanelProductsController : ControllerBase
         }
         catch (DbUpdateException)
         {
-            // Yarış: ön kontrolden sonra başka bir istek aynı kodu aldı. En sık
-            // hâli otomatik kod — kod boş bırakılınca sıradaki numara üretiliyor
-            // ve çift tıklama iki isteğe AYNI numarayı veriyor.
-            //
-            // Sebebi SQL hata numarasından (2601/2627) ayıklamıyoruz: sağlayıcıya
-            // bağımlı olur ve PostgreSQL göçünde sessizce çürür. Tekrar SORMAK
-            // hem sağlayıcıdan bağımsız hem kesin.
+            // Yarış: iki istek aynı anda sıradaki numarayı okudu ve aynı kodu
+            // üretti (çift tıklama). Sebebi SQL hata numarasından (2601/2627)
+            // ayıklamıyoruz: sağlayıcıya bağımlı olur ve PostgreSQL göçünde
+            // sessizce çürür. Tekrar SORMAK hem sağlayıcıdan bağımsız hem kesin.
             //
             // Yeniden deneme (kodu tazeleyip tekrar kaydetme) BİLEREK yapılmadı:
             // istisna sonrası entity'leri detach edip yeniden kurmak gerekirdi ve
             // o yol EF InMemory'de hiç çalışmaz (benzersiz indeks zorlanmıyor) —
-            // yani hiç test edilemeyen bir kurtarma kodu eklerdik.
-            var raced = await CodeTakenAsync(licenseId.Value, code, product.Id, ct);
-            if (raced is not null) return raced;
+            // yani hiç test edilemeyen bir kurtarma kodu eklerdik. Operatör
+            // kaydete bir daha basınca yeni numara üretilir.
+            // SaveChanges patladıktan sonra ChangeTracker'da başarısız ürün hâlâ
+            // Added durumunda kalır. AsNoTracking olmazsa EF bu kalıntı entity'yi
+            // sonuçla karıştırabilir; AnyAsync şu an EXISTS'e döndüğü için pratikte
+            // fark etmez, ama ileride FirstOrDefault'a dönüşürse yanlış cevap verir.
+            var raced = await _db.Products.AsNoTracking().AnyAsync(
+                p => p.LicenseId == licenseId.Value && p.Code == code && p.Id != product.Id, ct);
+            if (raced)
+                return Problem(title: "code-race",
+                    detail: "Ürün kodu üretilirken çakışma oldu. Lütfen tekrar kaydet.",
+                    statusCode: 409);
             throw; // Benzersizlik değilse (örn. eşzamanlı silinen kategorinin FK'sı)
                    // yutma — bilinmeyen veri hatası 500 olarak görünmeli.
         }
@@ -395,14 +369,6 @@ public sealed class PanelProductsController : ControllerBase
 
         var categoryError = await ValidateCategoryAsync(req.CategoryId, licenseId.Value, ct);
         if (categoryError is not null) return categoryError;
-
-        var code = NormalizeCode(req.Code);
-        if (code.Length == 0) code = product.Code;
-        if (code != product.Code)
-        {
-            var taken = await CodeTakenAsync(licenseId.Value, code, product.Id, ct);
-            if (taken is not null) return taken;
-        }
 
         var newAxis1 = Trim(req.Axis1Name);
         var newAxis2 = Trim(req.Axis2Name);
@@ -462,13 +428,43 @@ public sealed class PanelProductsController : ControllerBase
                           + "bir ürün kartı açmalısın.",
                     statusCode: 409);
 
+            // Yayın kodu varsa eksen yapısı bir daha DEĞİŞMEZ; kontrol bilerek
+            // varyant sayısından bağımsız. Delik tam da varyant kalmamışken
+            // açılıyordu: operatör önce tüm varyantları siler (stok hareketi
+            // yoksa serbest), sonra Renk(Seller)→Model(Seller) yapar; kod satırı
+            // SellerAxisValue = "Siyah" ile yerinde kalır ve yeni eksende
+            // açılacak "Siyah" değerine sessizce bağlanır. Kod bir daha
+            // devredilemediği için (bkz. ProductBroadcastCode XML doc) bu hata
+            // geri alınamaz: yayında "ATEŞ = siyah RENK" duyan izleyicinin
+            // siparişi "Siyah MODEL"e düşer.
+            //
+            // Yeniden adlandırmaya izin verip anlam değişimini engellemek
+            // mümkün değil — gerekçesi yukarıda (Renkk→Renk ile Renk→Beden
+            // string olarak ayırt edilemez). Satıcı ekseni olmayan ürüne
+            // sonradan satıcı ekseni eklenmesi de aynı sorunu üretir (o
+            // kodların SellerAxisValue'su null'dur); tek "kod var mı" kontrolü
+            // ikisini de kapsıyor.
+            //
+            // Yeri, bir üstteki axis-in-use-stock kontrolüyle aynı gerekçeyle
+            // burada: RemoveRange'ten ÖNCE, sahiplik doğrulandıktan SONRA.
+            // LicenseId süzgecinin gerekçesi silme bekçisinde yazılı.
+            if (await _db.ProductBroadcastCodes.AnyAsync(
+                    x => x.LicenseId == product.LicenseId && x.ProductId == product.Id, ct))
+                return Problem(title: "axis-in-use-broadcast-codes",
+                    detail: "Bu ürünün yayın kodları var; eksen yapısı artık "
+                          + "değiştirilemez (eksen açıp kapatmak da dahil). "
+                          + "Kod bir daha devredilemediği için eski kod yeni "
+                          + "eksende sessizce başka bir kırılıma bağlanırdı. "
+                          + "Farklı bir eksen yapısı gerekiyorsa yeni bir ürün "
+                          + "kartı açmalısın.",
+                    statusCode: 409);
+
             _db.ProductVariants.RemoveRange(product.Variants.ToList());
             product.Variants.Clear();
         }
 
         var now = DateTimeOffset.UtcNow;
         product.CategoryId = req.CategoryId;
-        product.Code = code;
         product.Name = req.Name.Trim();
         product.DefaultPrice = req.DefaultPrice;
         // Stok elemanı maliyeti göremediği için gövdeye de koyamaz; gelen null'ı
@@ -496,20 +492,8 @@ public sealed class PanelProductsController : ControllerBase
             _db.ProductVariants.Add(created);
         }
 
-        SyncVariantCodes(product, now);
-
-        try
-        {
-            await _db.SaveChangesAsync(ct);
-        }
-        catch (DbUpdateException)
-        {
-            // Create'teki yarışın aynısı (gerekçe orada); kendi satırı çakışma
-            // sayılmasın diye dışlanıyor.
-            var raced = await CodeTakenAsync(licenseId.Value, code, product.Id, ct);
-            if (raced is not null) return raced;
-            throw;
-        }
+        // Ürün kodu burada değişmiyor; benzersizlik yarışı yalnız Create'te olabilir.
+        await _db.SaveChangesAsync(ct);
 
         return Ok(await ToDtoAsync(product, ct));
     }
@@ -536,6 +520,20 @@ public sealed class PanelProductsController : ControllerBase
         if (hasMovements)
             return Problem(title: "product-has-stock-movements",
                 detail: "Bu ürünün stok hareketleri var; silinemez. Arşivleyebilirsiniz.",
+                statusCode: 409);
+
+        // Kodu olan ürün silinemez: satır cascade ile giderse kod serbest
+        // kalır ve bir daha ASLA devredilmemesi gereken kod başka bir ürüne
+        // verilebilir hâle gelir (bkz. ProductBroadcastCode XML doc).
+        //
+        // LicenseId süzgeci kiracı güvenliği için GEREKSİZ (ürün sahiplik
+        // kontrolünden geçti, ProductId kiracıyı belirliyor); gerekçesi
+        // PanelProductVariantsController'da yazılı olan kurala uymak için
+        // duruyor: yayın kodu sorguları istisnasız kiracıyla süzülüyor.
+        if (await _db.ProductBroadcastCodes.AnyAsync(
+                x => x.LicenseId == product.LicenseId && x.ProductId == product.Id, ct))
+            return Problem(title: "product-has-broadcast-codes",
+                detail: "Bu ürünün yayın kodları var; silinemez. Arşivleyebilirsiniz.",
                 statusCode: 409);
 
         // Galeri fotoğraflarının anahtarlarını DB commit öncesinde toplayıyoruz
@@ -602,33 +600,6 @@ public sealed class PanelProductsController : ControllerBase
         return null;
     }
 
-    /// <summary>
-    /// Kod bu lisansta başkası tarafından tutuluyorsa 409 döner, yoksa null.
-    ///
-    /// Hem <c>SaveChanges</c> ÖNCESİ ön kontrol hem SONRASI yarış sınıflandırması
-    /// buradan geçiyor: iki ayrı kopya olsaydı biri değişip öbürü kalır, aynı
-    /// çakışma isteğin zamanlamasına göre 409 ya da 500 olurdu. Kural
-    /// atlanamayacağı TEK noktada.
-    ///
-    /// Sorgu <c>AsNoTracking</c>: <see cref="DbUpdateException"/> sonrası context
-    /// kirli, başarısız kayıt hâlâ <c>Added</c> durumunda takip ediliyor; izlenen
-    /// sorgu kimlik çözümlemesiyle o kaydı geri getirip yanlış cevap verebilir.
-    /// </summary>
-    private async Task<IActionResult?> CodeTakenAsync(
-        Guid licenseId, string code, Guid? excludeId, CancellationToken ct)
-    {
-        var taken = await _db.Products
-            .AsNoTracking()
-            .AnyAsync(p => p.LicenseId == licenseId
-                           && p.Code == code
-                           && (excludeId == null || p.Id != excludeId), ct);
-
-        return taken
-            ? Problem(title: "duplicate-code",
-                detail: $"'{code}' kodu zaten kullanılıyor.", statusCode: 409)
-            : null;
-    }
-
     private async Task<IActionResult?> ValidateCategoryAsync(
         Guid? categoryId, Guid licenseId, CancellationToken ct)
     {
@@ -647,65 +618,17 @@ public sealed class PanelProductsController : ControllerBase
         Id = Guid.NewGuid(),
         LicenseId = product.LicenseId,
         ProductId = product.Id,
-        VariantCode = VariantCodeBuilder.Build(product.Code, null, null),
+        // Eksen değeri yok; Axis*ValueNorm boş dize kalır ve UNIQUE indeks
+        // ürün başına tek otomatik satıra izin verir.
         IsActive = true,
         CreatedAt = now,
         UpdatedAt = now,
     };
 
-    /// <summary>
-    /// <c>VariantCode</c> türetilmiş bir değer ve türetmenin sahibi ürün kartı:
-    /// ürün kodu değiştiğinde bayat kalmasın diye TÜM varyantlar yeniden
-    /// hesaplanır (eksensiz otomatik satır da bunun sıradan bir hâli).
-    ///
-    /// <c>Barcode</c>'a bilerek dokunulmaz — o ayrı ve değişmez fiziksel kimlik;
-    /// ürün adı/kodu değişse de rafta duran etiket geçerli kalmalı.
-    /// </summary>
-    private static void SyncVariantCodes(Product product, DateTimeOffset now)
-    {
-        foreach (var variant in product.Variants)
-        {
-            var code = VariantCodeBuilder.Build(
-                product.Code, variant.Axis1Code, variant.Axis2Code);
-            if (variant.VariantCode == code) continue;
-
-            variant.VariantCode = code;
-            variant.UpdatedAt = now;
-        }
-    }
-
     private Task<Product?> LoadAsync(Guid id, Guid licenseId, CancellationToken ct)
         => _db.Products
             .Include(p => p.Variants)
             .FirstOrDefaultAsync(p => p.Id == id && p.LicenseId == licenseId, ct);
-
-    /// <summary>
-    /// Kodun kanonik hâli. Kod bir <b>kimlik</b>: sistem onu ham saklamıyor,
-    /// yazma anında tek bir biçime indirgiyor (bugün de öyle — "  a5 " → "A5").
-    ///
-    /// <c>ToUpperInvariant</c> TEK BAŞINA yetmiyor: Türkçe'de <c>ı</c>'yı küçük
-    /// bırakır, <c>İ</c>'yi korur. Ürün adında kullanılan normalleştiricinin
-    /// aynısı kullanılıyor ki üç mevcut tüketici de aynı kuralı paylaşsın —
-    /// benzersizlik, panel araması ve <c>VariantCodeBuilder</c> üstünden barkod
-    /// yükü.
-    ///
-    /// <b>Faz 1b zorunluluğu:</b> WPF katalog istemcisi indiğinde, izleyici
-    /// yorumuyla ürün kodunu eşleştiren kod (<c>MainShellViewModel.ChatFilter</c>
-    /// şu an <c>OrdinalIgnoreCase</c> kullanıyor) da bu normalleştiriciden
-    /// geçirilmeli; aksi hâlde Türkçe harfli kodlar sessizce eşleşmez.
-    ///
-    /// Yan etki bilinçli: "ŞIK1" ile "SIK1" aynı koda iner, bir arada var
-    /// olamaz. İzleyici ikisini zaten ayırt edemezdi.
-    ///
-    /// <b>Kalan açık:</b> bu KATLAMA, süzme değil. <c>TurkishAscii</c> yalnız
-    /// yedi Türkçe harfi eşliyor; <c>Â Î Û É</c> gibi başkaları kodda hayatta
-    /// kalır ve Code128 yükünü hâlâ bozabilir (<c>AxisCodeDeriver</c> eksen
-    /// tarafında bunları eliyor, kod tarafında elenmiyor). Kapatmak koda
-    /// karakter kısıtı getirmek demek — konuşuldu ve reddedildi; kısıt gerekirse
-    /// ayrı bir karar olarak ele alınmalı.
-    /// </summary>
-    private static string NormalizeCode(string? code)
-        => SearchNormalizer.Normalize(code);
 
     private static string? Trim(string? value)
         => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
@@ -736,11 +659,21 @@ public sealed class PanelProductsController : ControllerBase
             p.ShelfLocation,
             p.Axis1Name, p.Axis1Role, p.Axis2Name, p.Axis2Role,
             photoDtos, p.IsArchived, p.CreatedAt, p.UpdatedAt,
+            // Sıralama normalize değerlerde: ASCII'ye katlanmış, yani "Kırmızı"
+            // ile "kirmizi" aynı yere düşüyor.
+            //
+            // Burada collation riski YOK: p.Variants bir List ve Include ile zaten
+            // belleğe yüklendi, bu OrderBy LINQ-to-Objects — SQL'e hiç çevrilmiyor.
+            // StringComparer.Ordinal yine de açıkça yazılı, çünkü varsayılan
+            // karşılaştırıcı kültüre bağlıdır (sunucunun kültürü değişince sıra da
+            // değişirdi); ordinal, sırayı sağlayıcıdan ve kültürden bağımsız
+            // deterministik tutar. Collation'a karşı asıl önlem WPF çekme ucunda
+            // (LicensesWpfCatalogPullController) — sırayı istemci orada devralıyor.
             p.Variants
-                .OrderBy(v => v.VariantCode, StringComparer.Ordinal)
+                .OrderBy(v => v.Axis1ValueNorm, StringComparer.Ordinal)
+                .ThenBy(v => v.Axis2ValueNorm, StringComparer.Ordinal)
                 .Select(v => new VariantDto(
-                    v.Id, v.Axis1Value, v.Axis1Code, v.Axis2Value, v.Axis2Code,
-                    v.VariantCode, v.Barcode, v.IsActive))
+                    v.Id, v.Axis1Value, v.Axis2Value, v.Barcode, v.IsActive))
                 .ToList());
     }
 

@@ -50,8 +50,6 @@ public class OrderProductLinkSyncTests : IClassFixture<ApiFactory>
             LicenseId = license.Id,
             ProductId = product.Id,
             Axis1Value = "M",
-            Axis1Code = "M",
-            VariantCode = "A1-M",
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow
         };

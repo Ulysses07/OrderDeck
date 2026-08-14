@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using OrderDeck.LicenseServer.Data;
 
@@ -11,9 +12,11 @@ using OrderDeck.LicenseServer.Data;
 namespace OrderDeck.LicenseServer.Data.Migrations
 {
     [DbContext(typeof(LicenseDbContext))]
-    partial class LicenseDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260814143647_AddProductBroadcastCode")]
+    partial class AddProductBroadcastCode
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1230,21 +1233,19 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<string>("Axis1Code")
+                        .HasMaxLength(8)
+                        .HasColumnType("nvarchar(8)");
+
                     b.Property<string>("Axis1Value")
                         .HasMaxLength(60)
                         .HasColumnType("nvarchar(60)");
 
-                    b.Property<string>("Axis1ValueNorm")
-                        .IsRequired()
-                        .HasMaxLength(60)
-                        .HasColumnType("nvarchar(60)");
+                    b.Property<string>("Axis2Code")
+                        .HasMaxLength(8)
+                        .HasColumnType("nvarchar(8)");
 
                     b.Property<string>("Axis2Value")
-                        .HasMaxLength(60)
-                        .HasColumnType("nvarchar(60)");
-
-                    b.Property<string>("Axis2ValueNorm")
-                        .IsRequired()
                         .HasMaxLength(60)
                         .HasColumnType("nvarchar(60)");
 
@@ -1267,9 +1268,16 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<string>("VariantCode")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
                     b.HasKey("Id");
 
-                    b.HasIndex("ProductId", "Axis1ValueNorm", "Axis2ValueNorm")
+                    b.HasIndex("LicenseId", "VariantCode");
+
+                    b.HasIndex("ProductId", "VariantCode")
                         .IsUnique();
 
                     b.ToTable("ProductVariants");

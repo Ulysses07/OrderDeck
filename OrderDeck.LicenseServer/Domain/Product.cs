@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations.Schema;
+
 namespace OrderDeck.LicenseServer.Domain;
 
 /// <summary>
@@ -31,7 +33,12 @@ public sealed class Product
     public Guid? CategoryId { get; set; }
     public Category? Category { get; set; }
 
-    /// <summary>Lisans başına benzersiz. Otomatik üretilir (A1, A2…), elle değiştirilebilir.</summary>
+    /// <summary>
+    /// Stok kodu. Lisans başına benzersiz, <b>sistem üretir</b>
+    /// (<c>SK00001</c>, <c>SK00002</c>…) ve bir daha değişmez — elle
+    /// düzenlenemez. Yayında söylenen kod bu DEĞİL; o
+    /// <see cref="ProductBroadcastCode"/>.
+    /// </summary>
     public string Code { get; set; } = string.Empty;
 
     public string Name { get; set; } = string.Empty;
@@ -77,4 +84,32 @@ public sealed class Product
     public List<ProductPhoto> Photos { get; set; } = new();
 
     public List<ProductVariant> Variants { get; set; } = new();
+
+    /// <summary>
+    /// Bu ürüne verilmiş yayın kodları — emeklileri dahil (satır silinmiyor).
+    /// "Güncel" kod, satıcı ekseni değeri başına en yeni <c>CreatedAt</c>.
+    /// </summary>
+    public List<ProductBroadcastCode> BroadcastCodes { get; set; } = new();
+
+    /// <summary>
+    /// Satıcı ekseninin sırası: 1, 2 ya da 0 (satıcı ekseni yok). Satıcı
+    /// ekseni barkot okutmayla sabitlenen eksendir; yayın kodu ona bağlanır.
+    /// Türetme domain'de duruyor çünkü hangi eksenin satıcı ekseni olduğu
+    /// <b>ürünün kendi bilgisi</b>; bir controller'a kopyalansaydı eksen
+    /// kuralı değiştiği gün kopya sessizce ayrışırdı.
+    /// </summary>
+    [NotMapped]
+    public int SellerAxis =>
+        Axis1Name is not null && Axis1Role == AxisRole.Seller ? 1
+        : Axis2Name is not null && Axis2Role == AxisRole.Seller ? 2
+        : 0;
+
+    /// <summary>Varyantın satıcı ekseni değeri; satıcı ekseni yoksa null.</summary>
+    public string? SellerAxisValueOf(ProductVariant variant) =>
+        SellerAxis switch
+        {
+            1 => variant.Axis1Value,
+            2 => variant.Axis2Value,
+            _ => null,
+        };
 }

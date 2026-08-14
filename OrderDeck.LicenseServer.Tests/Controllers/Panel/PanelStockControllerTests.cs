@@ -43,7 +43,7 @@ public class PanelStockControllerTests : IClassFixture<ApiFactory>
         var variant = new ProductVariant
         {
             Id = Guid.NewGuid(), LicenseId = license.Id, ProductId = product.Id,
-            Axis1Value = "M", Axis1Code = "M", VariantCode = "A1-M",
+            Axis1Value = "M",
             CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
         };
         db.ProductVariants.Add(variant);

@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Services.Auth;
 using OrderDeck.LicenseServer.Services.BroadcastPosts;
+using OrderDeck.Shared.Text;
 
 namespace OrderDeck.LicenseServer.Controllers.Licenses;
 
@@ -43,6 +44,15 @@ public sealed class LicensesWpfCatalogPullController : ControllerBase
         string VariantCode, string? Barcode,
         bool IsActive);
 
+    /// <summary>
+    /// Yayın kodunun tel modeli. <c>CodeNormalized</c> de gönderiliyor:
+    /// eşleştirmeyi WPF yapıyor ve normalleştirmeyi orada bir kez daha
+    /// uygulamak, iki tanımın zamanla ayrışması demekti — kural sunucuda
+    /// tanımlı, telde taşınıyor.
+    /// </summary>
+    public sealed record CatalogBroadcastCodeDto(
+        string? SellerAxisValue, string Code, string CodeNormalized, DateTimeOffset CreatedAt);
+
     public sealed record CatalogCategoryDto(
         Guid Id,
         Guid? ParentCategoryId,
@@ -73,6 +83,11 @@ public sealed class LicensesWpfCatalogPullController : ControllerBase
     /// <c>CoverPhotoKey</c> altına önbelleklenmeli.
     /// </param>
     /// <param name="Variants">Ürüne ait varyantlar; varyantsız ürün yoktur.</param>
+    /// <param name="BroadcastCodes">
+    /// Ürünün TÜM yayın kodları, emekliler dahil, en yeni başta. Emekliler
+    /// bilerek gönderiliyor: izleyici eski yayın videosundaki kodu bugün
+    /// yazabilir ve o kod hâlâ aynı ürünü gösteriyor.
+    /// </param>
     public sealed record CatalogProductDto(
         Guid Id,
         Guid? CategoryId,
@@ -86,7 +101,8 @@ public sealed class LicensesWpfCatalogPullController : ControllerBase
         DateTimeOffset UpdatedAt,
         string? CoverPhotoKey,
         string? CoverPhotoUrl,
-        List<CatalogVariantDto> Variants);
+        List<CatalogVariantDto> Variants,
+        List<CatalogBroadcastCodeDto> BroadcastCodes);
 
     /// <summary>
     /// Ürün kataloğunun sayfalı anlık görüntüsü. Sayfalama <b>Id üstünde keyset</b>:
@@ -131,14 +147,64 @@ public sealed class LicensesWpfCatalogPullController : ControllerBase
                 p.Photos.OrderBy(x => x.SortOrder)
                         .Select(x => x.ObjectKey).FirstOrDefault(),
                 null,  // CoverPhotoUrl — ikinci aşamada, materyalizasyondan sonra imzalanarak doldurulur.
+                // GEÇİCİ UYUM KALKANI — plan 2/3'te kaldırılacak.
+                //
+                // Sunucudaki VariantCode/Axis*Code kolonları kalktı ama WPF
+                // replikasında VariantCode hâlâ NOT NULL ve tel modelinde
+                // nullable değil. Alanı ürünün stok koduyla dolduruyoruz:
+                // WPF bu değeri YALNIZ iki eksen değeri de boşken gösteriyor
+                // (CatalogVariantViewModel: Display = label ?? VariantCode) ve
+                // o satırlar zaten BuildAutoVariant ile product.Code taşıyordu
+                // — davranış birebir aynı.
+                //
+                // Axis1Code/Axis2Code artık gönderilmiyor; iki tarafta da
+                // nullable olduğu için JSON'da yoklukları sorunsuz.
+                // Sıralama BİLEREK burada yok — SQL'e çevrilirdi ve sırayı
+                // veritabanının collation'ına bağlardı. Materyalizasyondan
+                // sonra, aşağıdaki döngüde bellekte ordinal sıralanıyor.
                 p.Variants
-                    .OrderBy(v => v.VariantCode)
                     .Select(v => new CatalogVariantDto(
-                        v.Id, v.Axis1Value, v.Axis1Code,
-                        v.Axis2Value, v.Axis2Code,
-                        v.VariantCode, v.Barcode, v.IsActive))
+                        v.Id, v.Axis1Value, null,
+                        v.Axis2Value, null,
+                        p.Code, v.Barcode, v.IsActive))
+                    .ToList(),
+                // Varyantların aksine bu sıralama SQL'de kalabiliyor: CreatedAt
+                // bir tarih, sırası collation'dan bağımsız. Sıra yine de tel
+                // sözleşmesinin parçası — WPF'e "en yeni başta" diye veriliyor
+                // ve orada yeniden sıralanmıyor.
+                p.BroadcastCodes
+                    .OrderByDescending(x => x.CreatedAt)
+                    // Guid tie-break'i belirsiz; kararın gerekçesi
+                    // PanelBroadcastCodesController.Get'te yazılı.
+                    .ThenByDescending(x => x.Id)
+                    .Select(x => new CatalogBroadcastCodeDto(
+                        x.SellerAxisValue, x.Code, x.CodeNormalized, x.CreatedAt))
                     .ToList()))
             .ToListAsync(ct);
+
+        // Varyant sırası TEL SÖZLEŞMESİNİN parçası: CatalogPullDtos'ta yazdığı gibi
+        // "dizideki konum sıralamanın kendisidir" — WPF geleni yeniden SIRALAMIYOR,
+        // dizi indeksini SortOrder olarak yazıyor. Bu yüzden sıra veritabanının
+        // collation'ına bağlı OLAMAZ: bugünkü SQL Server harf/aksan duyarsız,
+        // PostgreSQL duyarlı; göç günü aynı katalog farklı sırada gelir ve WPF'teki
+        // varyant listesi iki senkron arasında sessizce yeniden dizilirdi. Sıralama
+        // bu yüzden SQL'de değil burada — belleğe alındıktan sonra,
+        // StringComparer.Ordinal ile — yapılıyor; sonuç sağlayıcıdan ve kültürden
+        // bağımsız, deterministik.
+        //
+        // Norm değerler tel modelinde taşınmıyor. Yalnız sıralamak için DTO'ya alan
+        // eklemek yerine SearchNormalizer ile yeniden hesaplıyoruz: kolonu dolduran
+        // fonksiyonun ta kendisi (LicenseDbContext.SyncDerivedColumns), yani sonuç
+        // kolonla birebir aynı ve istemci sözleşmesi genişlemiyor.
+        for (var i = 0; i < rows.Count; i++)
+        {
+            rows[i] = rows[i] with
+            {
+                Variants = [.. rows[i].Variants
+                    .OrderBy(v => SearchNormalizer.Normalize(v.Axis1Value), StringComparer.Ordinal)
+                    .ThenBy(v => SearchNormalizer.Normalize(v.Axis2Value), StringComparer.Ordinal)]
+            };
+        }
 
         // İmzalama YEREL bir HMAC, ağ çağrısı değil — sayfa başına en çok 500
         // imza mikrosaniyeler sürer. Yine de fotoğrafsız ürünler atlanıyor.

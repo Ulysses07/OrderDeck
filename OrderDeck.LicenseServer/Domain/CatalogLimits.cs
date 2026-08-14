@@ -53,16 +53,6 @@ public static class CatalogLimits
     /// </summary>
     public const int MaxProductPhotos = 4;
     public const int AxisValue = 60;
-    public const int AxisCode = 8;
-
-    /// <summary>
-    /// Türetilmiş değer, istemciden gelmez: <c>Product.Code</c> + iki eksen kod
-    /// parçası, "-" ile birleşik. Girdiler sınırlıyken <b>yapı gereği</b> sığar:
-    /// 32 + 1 + 4 + 1 + 4 = 42 ≤ 64 (eksen kod parçasını
-    /// <c>AxisCodeDeriver</c> 4 karaktere kısaltıyor, kolon sınırı 8 olsa bile).
-    /// Bu yüzden ayrıca çalışma zamanı kontrolü yok.
-    /// </summary>
-    public const int VariantCode = 64;
 
     /// <summary>
     /// Tek toplu istekte yazılabilecek azami varyant. Gerçek ihtiyaç 12–20
@@ -73,6 +63,18 @@ public static class CatalogLimits
     public const int MaxBulkVariants = 200;
 
     public const int Barcode = 64;
+
+    /// <summary>
+    /// Yayın kodu (<c>ProductBroadcastCode.Code</c>) ve normalize hâli.
+    /// 32 karakter: operatör bunu canlı yayında sesli söylüyor ve izleyici
+    /// yoruma yazıyor — pratikte 3-8 karakter. Tavan cömert bırakıldı ki
+    /// "ATEŞ KIRMIZI" gibi iki kelimelik kodlar da sığsın.
+    ///
+    /// Normalize hâlin sınırı ham hâlle AYNI olmalı: <c>SearchNormalizer</c>
+    /// karakter atmıyor (yalnız büyütüp katlıyor, boşlukları sadeleştiriyor),
+    /// yani normalize hâl asla ham hâlden uzun olamaz.
+    /// </summary>
+    public const int BroadcastCode = 32;
 
     /// <summary>
     /// Stok hareketi notu ("mal kabul irsaliye 4412", "sayım farkı"). Serbest

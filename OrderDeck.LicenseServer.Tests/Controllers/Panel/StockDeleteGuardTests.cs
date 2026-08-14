@@ -51,8 +51,6 @@ public class StockDeleteGuardTests : IClassFixture<ApiFactory>
         {
             Id = Guid.NewGuid(), LicenseId = license.Id, ProductId = product.Id,
             Axis1Value = axisless ? null : "M",
-            Axis1Code = axisless ? null : "M",
-            VariantCode = axisless ? "A1" : "A1-M",
             CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
         };
         db.ProductVariants.Add(variant);

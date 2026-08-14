@@ -55,7 +55,7 @@ public class CatalogModelTests : IClassFixture<ApiFactory>
             Id = Guid.NewGuid(),
             LicenseId = license.Id,
             CategoryId = category.Id,
-            Code = "A1",
+            Code = "SK00001",
             Name = "Basic Tişört",
             DefaultPrice = 499.90m,
             Cost = 210m,
@@ -73,9 +73,8 @@ public class CatalogModelTests : IClassFixture<ApiFactory>
             Id = Guid.NewGuid(),
             LicenseId = license.Id,
             ProductId = product.Id,
-            Axis1Value = "Siyah", Axis1Code = "SIYA",
-            Axis2Value = "M", Axis2Code = "M",
-            VariantCode = "A1-SIYA-M",
+            Axis1Value = "Siyah",
+            Axis2Value = "M",
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
@@ -90,7 +89,7 @@ public class CatalogModelTests : IClassFixture<ApiFactory>
         loaded.Category!.Name.Should().Be("Tişört");
         loaded.Axis1Role.Should().Be(AxisRole.Seller);
         loaded.Variants.Should().ContainSingle()
-            .Which.VariantCode.Should().Be("A1-SIYA-M");
+            .Which.Axis1ValueNorm.Should().Be("SIYAH");
     }
 
     /// <summary>
@@ -121,10 +120,12 @@ public class CatalogModelTests : IClassFixture<ApiFactory>
             (typeof(ProductPhoto), nameof(ProductPhoto.ContentType), CatalogLimits.PhotoContentType),
             (typeof(ProductVariant), nameof(ProductVariant.Axis1Value), CatalogLimits.AxisValue),
             (typeof(ProductVariant), nameof(ProductVariant.Axis2Value), CatalogLimits.AxisValue),
-            (typeof(ProductVariant), nameof(ProductVariant.Axis1Code), CatalogLimits.AxisCode),
-            (typeof(ProductVariant), nameof(ProductVariant.Axis2Code), CatalogLimits.AxisCode),
-            (typeof(ProductVariant), nameof(ProductVariant.VariantCode), CatalogLimits.VariantCode),
             (typeof(ProductVariant), nameof(ProductVariant.Barcode), CatalogLimits.Barcode),
+            (typeof(ProductVariant), nameof(ProductVariant.Axis1ValueNorm), CatalogLimits.AxisValue),
+            (typeof(ProductVariant), nameof(ProductVariant.Axis2ValueNorm), CatalogLimits.AxisValue),
+            (typeof(ProductBroadcastCode), nameof(ProductBroadcastCode.SellerAxisValue), CatalogLimits.AxisValue),
+            (typeof(ProductBroadcastCode), nameof(ProductBroadcastCode.Code), CatalogLimits.BroadcastCode),
+            (typeof(ProductBroadcastCode), nameof(ProductBroadcastCode.CodeNormalized), CatalogLimits.BroadcastCode),
         };
 
         foreach (var (entity, property, limit) in expected)
@@ -224,6 +225,113 @@ public class CatalogModelTests : IClassFixture<ApiFactory>
         loaded.Photos.Should().HaveCount(3);
         loaded.Photos.OrderBy(p => p.SortOrder).First().ObjectKey
             .Should().EndWith("0.img", "kapak = en küçük SortOrder");
+    }
+
+    /// <summary>
+    /// Bekçi: <c>CodeNormalized</c> türetilmiş bir kolon ve türetme controller'da
+    /// DEĞİL, <c>SaveChanges</c> zincirinde yapılıyor — <c>NameSearch</c> ile aynı
+    /// gerekçe. Yayın kodunun benzersizliği ve canlı yorum eşleştirmesi bu kolona
+    /// dayandığı için, kuralı atlayan bir yazma yolu eklenirse kod sessizce
+    /// eşleşmez hâle gelirdi.
+    /// </summary>
+    [Fact]
+    public async Task Broadcast_code_normalized_is_derived_on_insert_and_refreshed_on_update()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+        var license = NewLicense();
+        db.Licenses.Add(license);
+
+        var product = new Product
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = license.Id,
+            Code = "SK00001",
+            Name = "Yayın Kodlu",
+            DefaultPrice = 100m,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+        db.Products.Add(product);
+
+        var broadcast = new ProductBroadcastCode
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = license.Id,
+            ProductId = product.Id,
+            SellerAxisValue = "Siyah",
+            Code = "  ateş  ",
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.ProductBroadcastCodes.Add(broadcast);
+        await db.SaveChangesAsync();
+
+        broadcast.CodeNormalized.Should().Be("ATES");
+
+        broadcast.Code = "Kırmızı Ateş";
+        await db.SaveChangesAsync();
+
+        broadcast.CodeNormalized.Should().Be("KIRMIZI ATES",
+            "kod değişince türetilmiş kolon bayat kalırsa yayın kodu canlı "
+            + "yorumla eşleşmez");
+    }
+
+    /// <summary>
+    /// Bekçi: varyant benzersizliği artık normalize eksen değerleri üstünde ve
+    /// bu kolonlar da <c>SaveChanges</c> zincirinde türetiliyor.
+    ///
+    /// <para>Eksen YOKSA değer <c>null</c> değil <b>boş dize</b>. Sebebi
+    /// benzersizlik indeksi: hem SQL Server hem PostgreSQL, UNIQUE indekste
+    /// NULL'ları birbirinden FARKLI sayar — tek eksenli üründe
+    /// <c>Axis2Value</c> null olduğu için indeks hiç ısırmazdı ve aynı kırılım
+    /// sınırsız kez eklenebilirdi.</para>
+    /// </summary>
+    [Fact]
+    public async Task Variant_axis_values_are_normalized_and_never_null()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+        var license = NewLicense();
+        db.Licenses.Add(license);
+
+        var product = new Product
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = license.Id,
+            Code = "SK00042",
+            Name = "Normalize",
+            DefaultPrice = 10m,
+            Axis1Name = "Renk",
+            Axis1Role = AxisRole.Seller,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+        db.Products.Add(product);
+
+        var variant = new ProductVariant
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = license.Id,
+            ProductId = product.Id,
+            Axis1Value = " kırmızı ",
+            Axis2Value = null,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+        db.ProductVariants.Add(variant);
+        await db.SaveChangesAsync();
+
+        variant.Axis1ValueNorm.Should().Be("KIRMIZI");
+        variant.Axis2ValueNorm.Should().Be("",
+            "eksensiz kolon NULL kalırsa UNIQUE indeks o satırları benzersiz "
+            + "sayar ve aynı kırılım tekrar tekrar eklenebilir");
+
+        variant.Axis1Value = "Mavi";
+        await db.SaveChangesAsync();
+
+        variant.Axis1ValueNorm.Should().Be("MAVI");
     }
 
     [Fact]

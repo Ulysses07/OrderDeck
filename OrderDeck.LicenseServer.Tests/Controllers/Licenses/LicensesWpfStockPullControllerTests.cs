@@ -54,8 +54,7 @@ public class LicensesWpfStockPullControllerTests : IClassFixture<ApiFactory>
             var variant = new ProductVariant
             {
                 Id = Guid.NewGuid(), LicenseId = license.Id, ProductId = product.Id,
-                Axis1Value = $"B{v}", Axis1Code = $"B{v}",
-                VariantCode = $"A1-B{v}", IsActive = true,
+                Axis1Value = $"B{v}", IsActive = true,
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
             };
             db.ProductVariants.Add(variant);
@@ -178,8 +177,7 @@ public class LicensesWpfStockPullControllerTests : IClassFixture<ApiFactory>
             var fresh = new ProductVariant
             {
                 Id = Guid.NewGuid(), LicenseId = licenseId, ProductId = productId,
-                Axis1Value = "B9", Axis1Code = "B9",
-                VariantCode = "A1-B9", IsActive = true,
+                Axis1Value = "B9", IsActive = true,
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
             };
             db.ProductVariants.Add(fresh);

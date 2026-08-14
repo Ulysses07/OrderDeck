@@ -14,10 +14,10 @@ namespace OrderDeck.Licensing.Api.Models;
 /// </param>
 /// <param name="Variants">
 /// Ürünün varyantları. <b>Dizideki konum sıralamanın kendisidir</b> — sunucu
-/// SQL Server collation'ında <c>VariantCode</c>'a göre sıralayıp gönderiyor;
-/// SQLite'ın ordinal sıralaması farklı düşebileceği için yerelde yeniden
-/// SIRALANMAZ, dizi indeksi <c>SortOrder</c> olarak taşınır (bkz.
-/// <c>025_catalog_replica.sql</c>).
+/// normalize eksen değerlerine göre <b>ordinal</b> sıralayıp gönderiyor
+/// (sıralama sunucuda bellekte yapılıyor; veritabanı collation'ına bağlı
+/// DEĞİL). Yerelde yeniden SIRALANMAZ, dizi indeksi <c>SortOrder</c> olarak
+/// taşınır (bkz. <c>025_catalog_replica.sql</c>).
 /// </param>
 public sealed record CatalogProductPullItem(
     Guid Id,
