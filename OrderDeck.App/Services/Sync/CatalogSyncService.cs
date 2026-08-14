@@ -201,10 +201,13 @@ public sealed class CatalogSyncService
         }
         // Filtre "iptal değilse" DEĞİL, "token iptal edilmediyse": HttpClient'ın
         // zaman aşımı TaskCanceledException olarak çıkıyor ve o da bir
-        // OperationCanceledException. Tür bakan bir filtre onu dışarı kaçırır,
-        // CatalogSyncHostedService de kaçanı kapanma işareti sayıp döngüden
-        // çıkardı — uygulama yeniden başlayana kadar bir daha hiç senkron olmaz,
-        // üstelik hiçbir yerde hata görünmez.
+        // OperationCanceledException. Tür bakan bir filtre onu dışarı kaçırır
+        // ve zaman aşımı SESSİZ bir başarısızlığa dönüşürdü:
+        // CatalogSyncHostedService kaçan OperationCanceledException'ı kayıt
+        // düşmeden yutuyor (RunRoundAsync: "catch (OperationCanceledException)
+        // { return false; }"). Döngü ölmez, ama aşağıdaki Warning hiç yazılmaz
+        // ve tur "yazmadı" sayılır: replika henüz dolmadıysa 30 saniyelik
+        // açılış ritmi 5 dakikaya hiç oturmaz, üstelik arıza günlükte görünmez.
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
             _log.LogWarning(ex, "Katalog senkronu başarısız; replika olduğu gibi bırakıldı");
@@ -258,11 +261,15 @@ public sealed class CatalogSyncService
             // "İptal değilse" DEĞİL, "token iptal edilmediyse": HttpClient'ın
             // zaman aşımı TaskCanceledException, yani bir
             // OperationCanceledException. Türe bakan filtre onu yakalamaz;
-            // istisna SyncOnceAsync'ten kaçar ve CatalogSyncHostedService
-            // kaçanı KAPANMA sanıp döngüyü bitirir — tek bir fotoğrafın zaman
-            // aşımı, uygulama yeniden başlayana kadar katalog senkronunu
-            // tamamen öldürür. Aynı tuzağı LicenseApiClient de kapatıyor
-            // (GetExpectingJsonAsync: TaskCanceledException → LicenseApiNetworkException).
+            // istisna fotoğraf döngüsünden kaçar ve TEK bir fotoğrafın zaman
+            // aşımı bütün turu başarısız yapar: kalan fotoğraflar indirilmez,
+            // Prune atlanır (katalogdan düşen ürünlerin dosyaları bir tur daha
+            // diskte kalır), başarı kaydı yazılmaz ve SyncOnceAsync — replika
+            // az önce yazılmış olmasına rağmen — 0 döner. Sonuncusu görünür bir
+            // bedel: CatalogSyncHostedService "yazan tur" görene kadar 30
+            // saniyelik açılış ritminde kalır, 5 dakikaya oturmaz. Aynı tuzağı
+            // LicenseApiClient de kapatıyor (GetExpectingJsonAsync:
+            // TaskCanceledException → LicenseApiNetworkException).
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
                 // Tek fotoğrafın düşmesi katalogu düşürmez: kart placeholder
