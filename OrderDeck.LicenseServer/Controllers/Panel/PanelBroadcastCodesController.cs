@@ -150,7 +150,8 @@ public sealed class PanelBroadcastCodesController : ControllerBase
 
         if (existing is not null)
         {
-            if (!IsSameTarget(existing, product.Id, sellerValue)) return CodeTaken();
+            if (!IsSameTarget(existing, product.Id, sellerValue))
+                return await CodeTakenAsync(code, existing, ct);
 
             // Aynı hedefe aynı kod: yeni satır AÇMA (benzersiz indeks zaten
             // reddederdi), var olanı güncel yap.
@@ -197,7 +198,7 @@ public sealed class PanelBroadcastCodesController : ControllerBase
                     x => x.LicenseId == licenseId.Value
                          && x.CodeNormalized == normalized
                          && x.Id != row.Id, ct);
-            if (raced is not null) return CodeTaken();
+            if (raced is not null) return await CodeTakenAsync(code, raced, ct);
             throw; // Benzersizlik değilse yutma — bilinmeyen veri hatası 500 olmalı.
         }
 
@@ -218,9 +219,46 @@ public sealed class PanelBroadcastCodesController : ControllerBase
                SearchNormalizer.Normalize(sellerAxisValue),
                StringComparison.Ordinal);
 
-    private IActionResult CodeTaken()
-        => Problem(title: "broadcast-code-taken",
-            detail: "Bu yayın kodu daha önce kullanılmış.", statusCode: 409);
+    /// <summary>
+    /// Çakışan kodun <b>nerede</b> durduğunu söyleyen 409. Eski metin ("bu kod
+    /// daha önce kullanılmış") teşhis edilemezdi: kod bir daha asla serbest
+    /// bırakılmadığı için çakışma çoğu zaman aylar önceki BAŞKA bir ürünün
+    /// emekli koduyla olur ve operatörün onu bulmak için tarayacağı bir ekran
+    /// yok — elinde yalnız "olmaz" kalırdı.
+    ///
+    /// <para>Kodun güncel mi emekli mi olduğu bilerek yazılmıyor: "güncel olan
+    /// hangisi" kuralının tek tanımı GET ucunda (bkz. oradaki not) ve burada
+    /// ikinci bir tanım açmak o kuralı zamanla ayrıştırırdı. Ürün adı yeterli —
+    /// panel o ürünün kartında kodu ya güncel kutusunda ya "eski kodlar"
+    /// satırında gösteriyor.</para>
+    /// </summary>
+    private async Task<IActionResult> CodeTakenAsync(
+        string attempted, ProductBroadcastCode conflicting, CancellationToken ct)
+    {
+        // LicenseId süzgeci kiracı güvenliği için gereksiz (çakışan satır zaten
+        // arayanın lisansından süzülerek bulundu) ama depo kuralı: yayın kodu
+        // yolundaki sorgular istisnasız kiracıyla süzülüyor.
+        var owner = await _db.Products.AsNoTracking()
+            .Where(p => p.Id == conflicting.ProductId && p.LicenseId == conflicting.LicenseId)
+            .Select(p => p.Code + " " + p.Name)
+            .FirstOrDefaultAsync(ct);
+
+        // Kayıtlı kod, denenen koddan farklı YAZILMIŞ olabilir: çakışma
+        // normalize üstünden ("ates" ile "ATEŞ" aynı sayılıyor). Farkı
+        // göstermezsek operatör ürün kartında yazdığı metni arar ve bulamaz.
+        var subject = string.Equals(attempted, conflicting.Code, StringComparison.Ordinal)
+            ? $"'{attempted}'"
+            : $"'{attempted}' ('{conflicting.Code}' ile aynı sayılıyor)";
+
+        var where = conflicting.SellerAxisValue is { Length: > 0 } value
+            ? $"'{owner}' ürününde '{value}' değerine"
+            : $"'{owner}' ürününe";
+
+        return Problem(title: "broadcast-code-taken",
+            detail: $"{subject} kodu {where} ayrılmış. Yayın kodları devredilemez; "
+                  + "eski kodlar da rezerve kalır.",
+            statusCode: 409);
+    }
 
     /// <summary>
     /// Gelen satıcı ekseni değerini doğrular ve ürün kartındaki <b>kanonik</b>
