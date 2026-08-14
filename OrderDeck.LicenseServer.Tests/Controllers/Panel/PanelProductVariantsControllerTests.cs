@@ -76,13 +76,13 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
 
     private static async Task<ProductDto> CreateProductAsync(
         HttpClient client,
-        string name = "Deneme ürünü", string? code = null,
+        string name = "Deneme ürünü",
         string? axis1Name = "Renk", int? axis1Role = 2,
         string? axis2Name = null, int? axis2Role = null)
     {
         var resp = await client.PostAsJsonAsync("/api/panel/products", new
         {
-            name, code, categoryId = (Guid?)null,
+            name, categoryId = (Guid?)null,
             defaultPrice = 100m, cost = (decimal?)null,
             axis1Name, axis1Role, axis2Name, axis2Role,
         });
@@ -341,9 +341,9 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>
-    /// Ürün kodu değişince eski varyant kodu bayatlarsa, aynı eksen değeri
-    /// ikinci kez eklendiğinde çakışma yakalanamaz ve tek üründe iki özdeş
-    /// Axis1Value oluşurdu. Kod türetildiği için çakışma yakalanmalı.
+    /// Aynı eksen değeri iki kez eklenemez; varyant kodu sistem kodundan türetilir.
+    /// Ürün kodu artık değişmez (sistem üretimi SK00001…), bu yüzden testin
+    /// odağı "aynı değer tekrar eklenemiyor" olarak sadeleştirildi.
     /// </summary>
     [Fact]
     public async Task Create_409_when_the_same_value_is_re_added_after_a_product_code_change()
@@ -353,14 +353,16 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
         (await PostVariantAsync(client, product.Id, axis1Value: "Siyah"))
             .StatusCode.Should().Be(HttpStatusCode.Created);
 
+        // Ürün kodu sistem tarafından üretilir ve değişmez; adı güncelleyelim.
         (await client.PutAsJsonAsync($"/api/panel/products/{product.Id}", new
         {
-            name = product.Name, code = "D3", categoryId = (Guid?)null,
+            name = "Yeni ad", categoryId = (Guid?)null,
             defaultPrice = product.DefaultPrice, cost = (decimal?)null,
             axis1Name = "Renk", axis1Role = 2,
             axis2Name = (string?)null, axis2Role = (int?)null,
         })).StatusCode.Should().Be(HttpStatusCode.OK);
 
+        // Güncelleme sonrası aynı eksen değeri eklenemez — çakışma yakalanmalı.
         var resp = await PostVariantAsync(client, product.Id, axis1Value: "Siyah");
 
         resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
@@ -368,7 +370,7 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
 
         var after = await client.GetFromJsonAsync<ProductDto>($"/api/panel/products/{product.Id}");
         after!.Variants.Should().ContainSingle();
-        after.Variants[0].VariantCode.Should().Be("D3-SIYA");
+        after.Variants[0].VariantCode.Should().Be($"{product.Code}-SIYA");
     }
 
     [Fact]
@@ -542,8 +544,9 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
     public async Task Bulk_writes_every_row_in_one_go()
     {
         var (client, _) = await SeedAsync();
-        var product = await CreateProductAsync(client, "Tişört", "T1",
+        var product = await CreateProductAsync(client, "Tişört",
             axis1Name: "Renk", axis1Role: 1, axis2Name: "Beden", axis2Role: 2);
+        var code = product.Code; // SK00001 — sistem üretimi, değişmez
 
         var resp = await client.PostAsJsonAsync(
             $"/api/panel/products/{product.Id}/variants/bulk",
@@ -561,7 +564,7 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
         var body = await resp.Content.ReadFromJsonAsync<BulkResult>();
         body!.Variants.Should().HaveCount(3);
         body.Variants.Select(v => v.VariantCode).Should()
-            .BeEquivalentTo(new[] { "T1-SIYA-M", "T1-SIYA-L", "T1-BEYA-M" });
+            .BeEquivalentTo(new[] { $"{code}-SIYA-M", $"{code}-SIYA-L", $"{code}-BEYA-M" });
     }
 
     /// <summary>
@@ -573,7 +576,7 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
     public async Task Bulk_writes_zero_rows_when_any_item_is_invalid()
     {
         var (client, _) = await SeedAsync();
-        var product = await CreateProductAsync(client, "Tişört", "T2",
+        var product = await CreateProductAsync(client, "Tişört",
             axis1Name: "Renk", axis1Role: 1, axis2Name: "Beden", axis2Role: 2);
 
         var resp = await client.PostAsJsonAsync(
@@ -600,7 +603,7 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
     public async Task Bulk_rejects_a_duplicate_inside_the_batch()
     {
         var (client, _) = await SeedAsync();
-        var product = await CreateProductAsync(client, "Tişört", "T3",
+        var product = await CreateProductAsync(client, "Tişört",
             axis1Name: "Renk", axis1Role: 1);
 
         var resp = await client.PostAsJsonAsync(
@@ -622,7 +625,7 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
     public async Task Bulk_rejects_a_row_that_already_exists()
     {
         var (client, _) = await SeedAsync();
-        var product = await CreateProductAsync(client, "Tişört", "T4",
+        var product = await CreateProductAsync(client, "Tişört",
             axis1Name: "Renk", axis1Role: 1);
 
         (await client.PostAsJsonAsync($"/api/panel/products/{product.Id}/variants",
