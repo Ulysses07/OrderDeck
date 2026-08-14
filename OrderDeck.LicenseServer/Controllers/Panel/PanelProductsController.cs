@@ -614,9 +614,16 @@ public sealed class PanelProductsController : ControllerBase
             p.ShelfLocation,
             p.Axis1Name, p.Axis1Role, p.Axis2Name, p.Axis2Role,
             photoDtos, p.IsArchived, p.CreatedAt, p.UpdatedAt,
-            // Sıralama normalize değerlerde: ASCII ve sağlayıcıdan bağımsız.
-            // Ham değerde sıralamak sırayı veritabanının collation'ına bağlardı
-            // ve Postgres göçünde kırılım listesi sessizce karışırdı.
+            // Sıralama normalize değerlerde: ASCII'ye katlanmış, yani "Kırmızı"
+            // ile "kirmizi" aynı yere düşüyor.
+            //
+            // Burada collation riski YOK: p.Variants bir List ve Include ile zaten
+            // belleğe yüklendi, bu OrderBy LINQ-to-Objects — SQL'e hiç çevrilmiyor.
+            // StringComparer.Ordinal yine de açıkça yazılı, çünkü varsayılan
+            // karşılaştırıcı kültüre bağlıdır (sunucunun kültürü değişince sıra da
+            // değişirdi); ordinal, sırayı sağlayıcıdan ve kültürden bağımsız
+            // deterministik tutar. Collation'a karşı asıl önlem WPF çekme ucunda
+            // (LicensesWpfCatalogPullController) — sırayı istemci orada devralıyor.
             p.Variants
                 .OrderBy(v => v.Axis1ValueNorm, StringComparer.Ordinal)
                 .ThenBy(v => v.Axis2ValueNorm, StringComparer.Ordinal)

@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Services.Auth;
 using OrderDeck.LicenseServer.Services.BroadcastPosts;
+using OrderDeck.Shared.Text;
 
 namespace OrderDeck.LicenseServer.Controllers.Licenses;
 
@@ -143,9 +144,10 @@ public sealed class LicensesWpfCatalogPullController : ControllerBase
                 //
                 // Axis1Code/Axis2Code artık gönderilmiyor; iki tarafta da
                 // nullable olduğu için JSON'da yoklukları sorunsuz.
+                // Sıralama BİLEREK burada yok — SQL'e çevrilirdi ve sırayı
+                // veritabanının collation'ına bağlardı. Materyalizasyondan
+                // sonra, aşağıdaki döngüde bellekte ordinal sıralanıyor.
                 p.Variants
-                    .OrderBy(v => v.Axis1ValueNorm)
-                    .ThenBy(v => v.Axis2ValueNorm)
                     .Select(v => new CatalogVariantDto(
                         v.Id, v.Axis1Value, null,
                         v.Axis2Value, null,
@@ -157,6 +159,29 @@ public sealed class LicensesWpfCatalogPullController : ControllerBase
         // imza mikrosaniyeler sürer. Yine de fotoğrafsız ürünler atlanıyor.
         for (var i = 0; i < rows.Count; i++)
         {
+            // Varyant sırası TEL SÖZLEŞMESİNİN parçası: CatalogPullDtos'ta yazdığı
+            // gibi "dizideki konum sıralamanın kendisidir" — WPF geleni yeniden
+            // SIRALAMIYOR, dizi indeksini SortOrder olarak yazıyor. Bu yüzden sıra
+            // veritabanının collation'ına bağlı OLAMAZ: bugünkü SQL Server
+            // harf/aksan duyarsız, PostgreSQL duyarlı; göç günü aynı katalog farklı
+            // sırada gelir ve WPF'teki varyant listesi iki senkron arasında sessizce
+            // yeniden dizilirdi. Sıralama bu yüzden SQL'de değil burada — belleğe
+            // alındıktan sonra, StringComparer.Ordinal ile — yapılıyor; sonuç
+            // sağlayıcıdan ve kültürden bağımsız, deterministik.
+            //
+            // Norm değerler tel modelinde taşınmıyor. Yalnız sıralamak için DTO'ya
+            // alan eklemek yerine SearchNormalizer ile yeniden hesaplıyoruz: kolonu
+            // dolduran fonksiyonun ta kendisi (LicenseDbContext.SyncDerivedColumns),
+            // yani sonuç kolonla birebir aynı ve istemci sözleşmesi genişlemiyor.
+            // Yer olarak da buraya yakışıyor: döngü zaten materyalizasyon sonrası
+            // çalışıyor ve sıralama fotoğrafsız satırlar elenmeden ÖNCE yapılmalı.
+            rows[i] = rows[i] with
+            {
+                Variants = [.. rows[i].Variants
+                    .OrderBy(v => SearchNormalizer.Normalize(v.Axis1Value), StringComparer.Ordinal)
+                    .ThenBy(v => SearchNormalizer.Normalize(v.Axis2Value), StringComparer.Ordinal)]
+            };
+
             if (rows[i].CoverPhotoKey is not { Length: > 0 } key) continue;
 
             // İmzalama hatası sayfayı düşürmesin: CoverPhotoUrl null kalır, döngü

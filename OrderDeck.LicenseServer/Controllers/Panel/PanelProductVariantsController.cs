@@ -85,7 +85,11 @@ public sealed class PanelProductVariantsController : ControllerBase
             // kendisi bu yüzden burada değil, iki yolun da çağırdığı
             // VariantValuesTakenAsync'te duruyor; testler onu ön kontrol
             // üzerinden geçiyor ve burası yalnız tesisat kalıyor.
-            var raced = await VariantValuesTakenAsync(product.Id, built, variant.Id, ct);
+            //
+            // excludeId null — toplu yolla (CreateBulk) aynı: satır yazılamadığı
+            // için veritabanında dışlanacak bir kayıt yok. Kendi Id'sini geçmek
+            // etkisiz ama aynı soruyu iki farklı biçimde sormak olurdu.
+            var raced = await VariantValuesTakenAsync(product.Id, built, excludeId: null, ct);
             if (raced is not null) return raced;
             throw; // Benzersizlik değilse yutma — bilinmeyen veri hatası 500 olmalı.
         }
@@ -329,9 +333,11 @@ public sealed class PanelProductVariantsController : ControllerBase
     /// alırdı.</para>
     ///
     /// <para>Sorgu <c>AsNoTracking</c>: <see cref="DbUpdateException"/> sonrası
-    /// context kirli, başarısız kayıt hâlâ <c>Added</c> durumunda takip
-    /// ediliyor; izlenen sorgu kimlik çözümlemesiyle o kaydı geri getirip
-    /// yanlış cevap verebilir.</para>
+    /// ChangeTracker'da başarısız varyant hâlâ <c>Added</c> durumunda kalır.
+    /// <c>AnyAsync</c> şu an <c>EXISTS</c>'e çevrildiği ve entity materyalize
+    /// etmediği için kimlik çözümlemesi devreye girmiyor — yani pratikte fark
+    /// etmiyor. Yine de kalıyor: sorgu ileride <c>FirstOrDefault</c>'a dönerse
+    /// izlenen kirli kayıt sonuca karışıp yanlış cevap verir.</para>
     /// </summary>
     private async Task<IActionResult?> VariantValuesTakenAsync(
         Guid productId, Segments built, Guid? excludeId, CancellationToken ct)
@@ -355,8 +361,14 @@ public sealed class PanelProductVariantsController : ControllerBase
     }
 
     /// <summary>
-    /// Mesajlarda değer kodla değil, kullanıcının kartta GÖRDÜĞÜ hâliyle anılır;
-    /// iki eksende "Siyah / M".
+    /// Mesajlarda değer kodla değil ham eksen değeriyle anılır; iki eksende
+    /// "Siyah / M".
+    ///
+    /// <para>DİKKAT — anılan hâl <b>bu istekte yazılan</b> değerdir, çakışan
+    /// satırın kayıtlı hâli değil: çakışan satır artık veritabanından geri
+    /// okunmuyor. Yani kullanıcı "  kirmizi  " yazarsa kartta "Kırmızı" görünse
+    /// bile mesaj "'kirmizi' zaten var" der. Kabul edildi: normalize eşleşme
+    /// zaten yazımdan bağımsız ve kullanıcı kendi yazdığını tanır.</para>
     /// </summary>
     private static string Describe(string? axis1Value, string? axis2Value)
         => axis2Value is null

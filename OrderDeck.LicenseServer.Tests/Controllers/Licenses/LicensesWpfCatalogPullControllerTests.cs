@@ -95,6 +95,53 @@ public class LicensesWpfCatalogPullControllerTests : IClassFixture<ApiFactory>
         rows[0].GetProperty("variants").GetArrayLength().Should().Be(1);
     }
 
+    /// <summary>
+    /// Varyant sırası tel sözleşmesinin parçası: WPF geleni yeniden sıralamıyor,
+    /// dizi indeksini SortOrder olarak yazıyor. Bu yüzden sıra veritabanının
+    /// collation'ına bağlı olamaz — normalize değer üstünde ORDINAL olmalı.
+    ///
+    /// Kurgu bunu zorluyor: değerler hem büyük/küçük harf hem Türkçe harf farkı
+    /// taşıyor ve ekleme sırası bilerek ters. Normalize hâlleri "KIRMIZI",
+    /// "SIYAH", "TURUNCU" — ordinal sıra bu. Ham değerde ya da harf duyarsız bir
+    /// collation'da "Turuncu" ile "siyah" yer değiştirebilirdi.
+    /// </summary>
+    [Fact]
+    public async Task Variants_are_ordered_ordinally_by_normalized_axis_values()
+    {
+        var (client, licenseId) = await SeedAsync(0);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+        var product = new Product
+        {
+            Id = Guid.NewGuid(), LicenseId = licenseId,
+            Code = "VAR1", Name = "Sıralama Ürünü", DefaultPrice = 50m,
+            Axis1Name = "Renk",
+            CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
+        };
+        db.Products.Add(product);
+
+        foreach (var deger in new[] { "Turuncu", "siyah", "Kırmızı" })
+            db.ProductVariants.Add(new ProductVariant
+            {
+                Id = Guid.NewGuid(), LicenseId = licenseId, ProductId = product.Id,
+                Axis1Value = deger,
+                CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
+            });
+
+        await db.SaveChangesAsync();
+
+        var rows = await client.GetFromJsonAsync<List<JsonElement>>(
+            $"/api/v1/licenses/{licenseId}/catalog/products");
+
+        var variants = rows!.Single(r => r.GetProperty("code").GetString() == "VAR1")
+                            .GetProperty("variants");
+
+        variants.EnumerateArray()
+            .Select(v => v.GetProperty("axis1Value").GetString())
+            .Should().Equal("Kırmızı", "siyah", "Turuncu");
+    }
+
     [Fact]
     public async Task Archived_products_are_excluded()
     {
