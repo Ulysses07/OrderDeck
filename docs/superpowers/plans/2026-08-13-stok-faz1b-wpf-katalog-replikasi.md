@@ -3325,9 +3325,12 @@ Hiçbiri uydurma çıkmadı, hiçbiri değiştirilmedi.
 | `VariantChip` içindeki `OD.Brush.Surface2` bozulur | `ProductCardTemplateTests` (kompozisyon testi **yakalamıyor** — Sapma 4) |
 | Kökteki `OD.Pad.4` bozulur | `MainShellViewCompositionTests` |
 
-Sağ kalan mutasyon **yok**.
+> Buraya "Sağ kalan mutasyon **yok**" yazılmıştı — **YANLIŞTI.** İlk teslimin
+> bozma turu dardı (8 bozma) ve hepsi zaten yazılmış testlere denk geliyordu.
+> Genişletilmiş tur (24 bozma) **9 sağ kalan** buldu; doğru kayıt aşağıda,
+> "Step 11: Gözden geçirme turu"nda.
 
-**Sayılar:** `OrderDeck.Tests` 973/973 · `OrderDeck.LicenseServer.Tests`
+**Sayılar (İLK TESLİM):** `OrderDeck.Tests` 973/973 · `OrderDeck.LicenseServer.Tests`
 1397/1397 · `OrderDeck.Licensing.Tests` 128/128. Debug ve Release derlemeleri
 0 hata; Release'teki 6 uyarı **yeni değil** (hepsi elimize hiç değmeyen
 `OrderDeck.Licensing.Tests` / `OrderDeck.LicenseServer.Tests` dosyalarında).
@@ -3339,6 +3342,97 @@ transaction'a sarmıyor; yarım uygulanan bir script sürüm sayacını takılı
 bırakır. 026 bunu **kötüleştirmiyor**: iki ifade de `DROP TABLE IF EXISTS`,
 yani tekrar koşmak zararsız ve ikisi arasında kalınsa bile ikinci koşuş
 tamamlar. Yine de mimari borç olarak duruyor.
+
+- [x] **Step 11: Gözden geçirme turu — 9 sağ kalan mutasyon kapatıldı**
+
+Commit'ler: **`451989e`** (testler + yorum düzeltmeleri), **`(bu bölüm)`**.
+
+**Şartname denetimi APPROVED çıktı**: teslim edilen kod planla örtüşüyor,
+gizli sapma yok, kalıntı yok, kapsam kayması yok. Üretim mantığı **doğru**
+bulundu ve bu turda **davranışı değiştirilmedi** — dokunulan tek üretim
+satırları yorum satırları.
+
+**Kırılan şey testlerdi.** İlk teslimin bozma turu 8 mutasyonluktu ve her
+biri zaten yazılmış bir teste denk geliyordu; yani tur, testlerin
+sınamadığı yerlere hiç bakmamıştı. 24 bozmalık genişletilmiş tur **9 sağ
+kalan** buldu. Ortak kök: kartın üretimdeki gerçek kullanım biçimi hiç
+taklit edilmiyordu. `MainShellViewModel` aktif kodun **her tuş vuruşunda**
+`ProductCardViewModel.Load`'u çağırıyor — kart pratikte hiçbir zaman taze
+bir nesne değil. Bütün testler ise TEK bir `Load` ile taze bir nesneye
+bakıyordu, dolayısıyla "bayat kalan alan" sınıfının tamamı ölçüsüzdü.
+`ProductCardViewModelTests:45`'teki `Variants.Should().BeEmpty()` bunun
+en açık örneğiydi: hiç doldurulmamış bir koleksiyonun boş olduğunu
+söylüyordu.
+
+| # | Sağ kalan bozma | Artık öldüren test | Ölçüm |
+|---|---|---|---|
+| M5 | `Load` içindeki `Variants.Clear()` silinir | `ProductCardViewModelTests.Loading_a_second_product_drops_the_first_products_variants` | KIRMIZI (1/12) |
+| M9 | `Reset` içindeki `Variants.Clear()` silinir | `…Empty_code_shows_neither_product_nor_unknown` **+** `…Unknown_code_after_a_loaded_product_leaves_nothing_behind` | KIRMIZI (2/12) |
+| M23 | `Reset` `Name`/`CoverPhotoKey`'i temizlemez | aynı iki test | KIRMIZI (2/12) |
+| M6 | `Code = product.Code` → `Code = trimmed` | `…Known_code_loads_name_and_active_variants` | KIRMIZI (1/12) |
+| M8 | `[NotifyPropertyChangedFor(nameof(PhotoAbsolutePath))]` silinir | `…Cover_key_change_raises_a_change_for_the_photo_path` | KIRMIZI (1/12) |
+| M12b | `CatalogVariantViewModel`'in eksen süzgeci düşer | `…Variant_with_a_single_axis_has_no_dangling_separator` **+** `…Variant_without_axis_values_falls_back_to_its_code` | KIRMIZI (2/12) |
+| M12c | Süzgeç `!IsNullOrWhiteSpace` → `is not null` (turda ek olarak bulundu) | `…Variant_with_a_single_axis…("")` ve `("   ")` | KIRMIZI (2/14) |
+| M19 | "katalogda yok" bloğunun görünürlüğü `IsUnknown` → `HasProduct` | `ProductCardTemplateTests.Only_one_of_the_three_sections_is_visible_at_a_time` | KIRMIZI (1/14) |
+| M20 | `IsShort` tetikleyicisinin bağ yolu bozulur (`AncestorType=UserControl` → `Self`) | `ProductCardTemplateTests.A_short_window_shortens_the_product_photo` | KIRMIZI (1/14) |
+| M26 | 026'daki iki `DROP TABLE`'ın sırası ters çevrilir | **test EKLENMEDİ** — gerekçe aşağıda | — |
+
+Her bozma elle uygulandı, KIRMIZI görüldü, **elle** geri alındı; tur
+bittiğinde `git diff` üretim tarafında yalnız yorum değişikliği gösterdi.
+
+**Ölçümle ilgili üç not:**
+
+1. **M12b'nin biçimi.** Gözden geçirenin tarifi ("süzgeç düşerse rozette
+   `M · ` yazar") ancak `Select`'in de null-güvenli hâle getirilmesiyle
+   doğru; süzgeç düz silinirse `v!.Trim()` **NullReferenceException**
+   atar. İki biçim de ölçüldü, ikisi de kırmızı.
+2. **M12c planda yoktu, turda çıktı.** Süzgeç `v is not null`'a
+   düşürüldüğünde yeni tek-eksen testi (Axis2Value = `null`) **yeşil
+   kalıyordu** — yani gözden geçirmenin önerdiği test tek başına yetmiyor.
+   Sunucudan boş dize gelen bir kurulumda rozet bozulurdu ve
+   `CatalogSyncService` bu alanı olduğu gibi geçiriyor. Test bu yüzden
+   `[Theory]`: `null` · `""` · `"   "`. Üretim kodu değişmedi; sınanan şey
+   zaten `IsNullOrWhiteSpace`'in verdiği söz.
+3. **Görsel ağaçta düz metin taraması yetmiyor.** `Visibility="Collapsed"`
+   bir öğe görsel ağaçtan **silinmiyor**; eski `Collect` yardımcısı üç
+   bölümün metnini de topluyordu, yani M19 onunla ölçülemezdi. Yeni
+   `CollectVisible` görünür olmayan alt ağacı budayarak iniyor —
+   `IsVisible` KULLANILMADI, çünkü bir `PresentationSource`'a bağlı
+   olmayan yerleşimde o özellik her öğede `false` döner ve test her şeyi
+   "görünmez" sayardı.
+
+**M26 için neden test yok.** 026'nın "Sıra önemli: ProductSize'ın Product'a
+FK'si var" yorumu **yanlıştı** ve iki `DROP`'un yeri değiştirilince paket
+yeşil kalıyordu. Ölçüldü (satırlar dolu, `Foreign Keys=true`): 024'teki FK
+`ON DELETE CASCADE` ve `DROP TABLE` örtük `DELETE` yaptığı için **iki sıra
+da** sorunsuz koşuyor. Var olmayan bir kuralı teste çivilemek yanlış güven
+üretirdi; doğru düzeltme **yorumu gerçeğe çekmekti**. İfadelerin sırası
+DEĞİŞMEDİ (cascade'siz bir FK ile karşılaşacak gelecek için güvenli
+alışkanlık).
+
+**Düzeltilen yanlış/abartılı yorumlar (davranış değişmedi):**
+
+- `026_drop_local_products.sql:10` — "sıra önemli" iddiası; yukarıdaki
+  ölçümle değiştirildi.
+- `ProductCardViewModel.cs:59` — "`SearchNormalizer` … burada uygulanıyor"
+  diyordu; `SearchNormalizer` bu dosyada **hiç geçmiyor**, normalleştirmeyi
+  `CatalogReplicaRepository.FindByCode` yapıyor. Davranış doğru, cümle
+  yanıltıcıydı.
+- `ProductCard.xaml:60` — "artık üst üste binebilecek ikinci bir dolu durum
+  yok" fazla söz veriyordu: üç bölüm tek `Grid`'i paylaşıyor ve
+  görünürlükleri üç **bağımsız** bağa dayanıyor; dışlama yapıdan değil
+  ViewModel disiplininden geliyor ve M19 o disiplinin sessizce
+  bozulabildiğini gösterdi. XAML **yeniden yapılandırılmadı** (plan 3'ün
+  konusu).
+- `ProductCardTemplateTests.cs:38` — `ShellStub.IsShort` özeti var olmayan
+  bir kapsamı işaret ediyordu; artık gerçekten iki değerle de yerleşim
+  koşuyor.
+- `ProductCardViewModelTests.cs:17` — "Load'un **dört** durumu" diyordu;
+  üç durum var (ViewModel'in kendi dokümanı da "Üç durum" diyor).
+
+**Sayılar:** `dotnet build OrderDeck.sln` → 0 hata / **0 uyarı**;
+`dotnet test OrderDeck.Tests/OrderDeck.Tests.csproj` → **981/981**
+(ilk teslimdeki 973 + bu turun 8 yeni test durumu).
 
 ---
 
