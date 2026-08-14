@@ -81,6 +81,83 @@ public class LicensesWpfCatalogPullControllerTests : IClassFixture<ApiFactory>
         return (client, license.Id);
     }
 
+    /// <summary>
+    /// Tek ürünlü lisans kurar ve ürünün Id'sini de döndürür — SeedAsync yalnız
+    /// lisansı veriyor, yayın kodu satırları ise ürüne bağlanmak zorunda.
+    /// </summary>
+    private async Task<(HttpClient Client, Guid LicenseId, Guid ProductId)>
+        NewLicenseWithProductAsync()
+    {
+        var (client, licenseId) = await SeedAsync(0);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+        var product = new Product
+        {
+            Id = Guid.NewGuid(), LicenseId = licenseId,
+            Code = "YK1", Name = "Yayın Kodu Ürünü", DefaultPrice = 75m,
+            CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
+        };
+        db.Products.Add(product);
+        await db.SaveChangesAsync();
+
+        return (client, licenseId, product.Id);
+    }
+
+    /// <summary>
+    /// Yayın kodu satırını doğrudan yazar. <c>CodeNormalized</c> BİLEREK
+    /// verilmiyor: türetilmiş kolonu <c>LicenseDbContext.SyncDerivedColumns</c>
+    /// dolduruyor, elle yazmak testi üretim kuralından koparırdı.
+    /// <paramref name="createdAt"/> parametre: sıralama iddiası ancak zaman
+    /// damgaları belirliyse anlamlı.
+    /// </summary>
+    private async Task AddBroadcastCodeAsync(
+        Guid productId, string? sellerAxisValue, string code, DateTimeOffset createdAt)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+        var licenseId = db.Products
+            .Where(p => p.Id == productId)
+            .Select(p => p.LicenseId)
+            .Single();
+
+        db.ProductBroadcastCodes.Add(new ProductBroadcastCode
+        {
+            Id = Guid.NewGuid(), LicenseId = licenseId, ProductId = productId,
+            SellerAxisValue = sellerAxisValue, Code = code, CreatedAt = createdAt
+        });
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Çekme ucu yayın kodlarını EMEKLİLERİYLE BİRLİKTE gönderir. WPF'in
+    /// eşleştiricisi (plan 2/3) eski yayın videolarından gelen kodları da
+    /// çözebilmeli — emekli kod hâlâ aynı ürünü gösteriyor.
+    /// </summary>
+    [Fact]
+    public async Task Pull_carries_broadcast_codes_including_retired_ones()
+    {
+        var (client, licenseId, productId) = await NewLicenseWithProductAsync();
+
+        await AddBroadcastCodeAsync(productId, "Siyah", "ESKI", DateTimeOffset.UtcNow.AddDays(-2));
+        await AddBroadcastCodeAsync(productId, "Siyah", "YENI", DateTimeOffset.UtcNow);
+
+        var rows = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/v1/licenses/{licenseId}/catalog/products");
+
+        var product = rows.EnumerateArray()
+            .First(p => p.GetProperty("id").GetGuid() == productId);
+        var codes = product.GetProperty("broadcastCodes");
+
+        codes.GetArrayLength().Should().Be(2);
+        codes.EnumerateArray().Select(c => c.GetProperty("code").GetString())
+            .Should().BeEquivalentTo(new[] { "YENI", "ESKI" });
+        codes[0].GetProperty("code").GetString().Should().Be("YENI",
+            "en yeni kod başta gelmeli — güncel olan o");
+        codes[0].GetProperty("codeNormalized").GetString().Should().Be("YENI");
+    }
+
     [Fact]
     public async Task Returns_products_with_their_variants()
     {

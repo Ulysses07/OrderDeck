@@ -44,6 +44,15 @@ public sealed class LicensesWpfCatalogPullController : ControllerBase
         string VariantCode, string? Barcode,
         bool IsActive);
 
+    /// <summary>
+    /// Yayın kodunun tel modeli. <c>CodeNormalized</c> de gönderiliyor:
+    /// eşleştirmeyi WPF yapıyor ve normalleştirmeyi orada bir kez daha
+    /// uygulamak, iki tanımın zamanla ayrışması demekti — kural sunucuda
+    /// tanımlı, telde taşınıyor.
+    /// </summary>
+    public sealed record CatalogBroadcastCodeDto(
+        string? SellerAxisValue, string Code, string CodeNormalized, DateTimeOffset CreatedAt);
+
     public sealed record CatalogCategoryDto(
         Guid Id,
         Guid? ParentCategoryId,
@@ -87,7 +96,13 @@ public sealed class LicensesWpfCatalogPullController : ControllerBase
         DateTimeOffset UpdatedAt,
         string? CoverPhotoKey,
         string? CoverPhotoUrl,
-        List<CatalogVariantDto> Variants);
+        List<CatalogVariantDto> Variants,
+        /// <summary>
+        /// Ürünün TÜM yayın kodları, emekliler dahil, en yeni başta. Emekliler
+        /// bilerek gönderiliyor: izleyici eski yayın videosundaki kodu bugün
+        /// yazabilir ve o kod hâlâ aynı ürünü gösteriyor.
+        /// </summary>
+        List<CatalogBroadcastCodeDto> BroadcastCodes);
 
     /// <summary>
     /// Ürün kataloğunun sayfalı anlık görüntüsü. Sayfalama <b>Id üstünde keyset</b>:
@@ -152,6 +167,18 @@ public sealed class LicensesWpfCatalogPullController : ControllerBase
                         v.Id, v.Axis1Value, null,
                         v.Axis2Value, null,
                         p.Code, v.Barcode, v.IsActive))
+                    .ToList(),
+                // Varyantların aksine bu sıralama SQL'de kalabiliyor: CreatedAt
+                // bir tarih, sırası collation'dan bağımsız. Sıra yine de tel
+                // sözleşmesinin parçası — WPF'e "en yeni başta" diye veriliyor
+                // ve orada yeniden sıralanmıyor.
+                p.BroadcastCodes
+                    .OrderByDescending(x => x.CreatedAt)
+                    // Guid tie-break'i belirsiz; kararın gerekçesi
+                    // PanelBroadcastCodesController.Get'te yazılı.
+                    .ThenByDescending(x => x.Id)
+                    .Select(x => new CatalogBroadcastCodeDto(
+                        x.SellerAxisValue, x.Code, x.CodeNormalized, x.CreatedAt))
                     .ToList()))
             .ToListAsync(ct);
 
