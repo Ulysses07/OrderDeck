@@ -90,12 +90,16 @@ public sealed class PanelBroadcastCodesController : ControllerBase
         // Hesap bellekte: satırlar zaten çekildi ve sıra en yeni başta, yani
         // bir satıcı ekseni değerinin İLK görülen satırı güncel, sonrakiler
         // emekli. HashSet.Add ilk görülene true, tekrarına false döner.
+        //
+        // Döngü bilerek açık yazıldı, Select'e gömülmedi: Add bir YAN ETKİ ve
+        // LINQ ertelenmiş çalışıyor — projeksiyon ikinci kez sayılsaydı (bir
+        // refactor'ın kolayca yapabileceği şey) her satır emekli dönerdi.
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        var history = rows
-            .Select(x => new BroadcastCodeDto(
+        var history = new List<BroadcastCodeDto>(rows.Count);
+        foreach (var x in rows)
+            history.Add(new BroadcastCodeDto(
                 x.SellerAxisValue, x.Code, x.CreatedAt,
-                IsCurrent: seen.Add(SearchNormalizer.Normalize(x.SellerAxisValue))))
-            .ToList();
+                IsCurrent: seen.Add(SearchNormalizer.Normalize(x.SellerAxisValue))));
 
         return Ok(history);
     }
