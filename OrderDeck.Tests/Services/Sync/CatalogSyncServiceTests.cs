@@ -578,16 +578,77 @@ public sealed class CatalogSyncServiceTests
             .Should().NotBeNull("kalan ürünün dosyası korunur");
     }
 
+    /// <summary>
+    /// <b>Anahtar dolu ama adres null</b> MEŞRU bir yanıt: sunucu R2 imzalama
+    /// hatasını yutup sayfayı yine 200 döndürüyor. Böyle bir tur, fotoğrafı
+    /// "silinmiş" saymamalı — önbellekteki dosya durmalı — ve <b>indirmeyi
+    /// hiç denememeli</b>.
+    ///
+    /// Ölçüldü: "denemez" kısmının tek gözlenebilir izi KAYIT. Muhafız
+    /// silinince önbellekte olmayan ürün için <c>GetByteArrayAsync(null)</c>
+    /// çağrılıyor, istemcinin <c>BaseAddress</c>'i olmadığı için istek daha
+    /// yola çıkmadan düşüyor (yani indirme sayacı yine 0 kalıyor) ve tur
+    /// başına ürün başına bir "Kapak fotoğrafı indirilemedi" satırı birikiyor:
+    /// üretimde 5 dakikada bir tekrarlayan, hiçbir zaman düzelmeyen sahte
+    /// arıza gürültüsü. Testin RED'e döndüğü yer de burası.
+    /// </summary>
+    [Fact]
+    public async Task A_null_photo_url_is_skipped_and_the_cached_file_survives()
+    {
+        var cachedId = Guid.NewGuid();
+        var uncachedId = Guid.NewGuid();
+        var cachedKey = $"lic/products/{cachedId:N}/kapak.img";
+        var uncachedKey = $"lic/products/{uncachedId:N}/kapak.img";
+
+        using var harness = Harness.WithCatalog(
+        [
+            UrlLessProduct(cachedId, "A1", cachedKey),
+            UrlLessProduct(uncachedId, "A2", uncachedKey)
+        ]);
+
+        // Önceki turda, adres hâlâ imzalanabiliyorken inmiş dosya.
+        harness.Photos.Save(cachedKey, [1, 2, 3]);
+
+        var written = await harness.Service.SyncOnceAsync(CancellationToken.None);
+
+        written.Should().Be(2, "adressiz fotoğraf katalogu düşürmez");
+        harness.Photos.ResolveAbsolute(cachedKey)
+            .Should().NotBeNull("adres gelmedi diye önbellekteki dosya atılmaz");
+        harness.PhotoDownloads.Should().Be(0, "indirilecek bir adres yok");
+        harness.Logs.Should().NotContain(
+            e => e.Message.Contains("Kapak fotoğrafı indirilemedi"),
+            "adressiz ürün bir ARIZA değil, sunucunun bilinen davranışı");
+    }
+
+    /// <summary>Kapak anahtarı dolu, imzalı adresi null olan ürün.</summary>
+    private static CatalogProductPullItem UrlLessProduct(Guid id, string code, string coverKey)
+        => new(
+            Id: id,
+            CategoryId: null,
+            Code: code,
+            Name: $"Ürün {code}",
+            NameSearch: $"ÜRÜN {code}",
+            DefaultPrice: 99m,
+            ShelfLocation: null,
+            Axis1Name: "Beden", Axis1Role: 1,
+            Axis2Name: null, Axis2Role: null,
+            UpdatedAt: DateTimeOffset.FromUnixTimeSeconds(1_700_000_000L),
+            CoverPhotoKey: coverKey,
+            CoverPhotoUrl: null,
+            Variants: []);
+
     // ── İptal ile zaman aşımının ayrımı ───────────────────────────────────────
 
     /// <summary>
     /// <c>HttpClient</c>'ın zaman aşımı <see cref="TaskCanceledException"/>
     /// olarak yüzeye çıkıyor ve o da bir
-    /// <see cref="OperationCanceledException"/>. "İptal değilse yakala" filtresi
-    /// bunu yakalamaz: istisna <c>SyncOnceAsync</c>'ten kaçar,
-    /// <c>CatalogSyncHostedService</c> onu kapanma işareti sanıp döngüden çıkar
-    /// ve <b>uygulama yeniden başlayana kadar bir daha hiç senkron olmaz</b> —
-    /// hiçbir yerde de hata görünmez. Doğru filtre <c>!ct.IsCancellationRequested</c>.
+    /// <see cref="OperationCanceledException"/>. Türe bakan bir filtre bunu
+    /// yakalamaz: istisna fotoğraf döngüsünden kaçar ve <b>tek bir fotoğrafın
+    /// zaman aşımı bütün turu başarısız yapar</b> — kalan fotoğraflar inmez,
+    /// <c>Prune</c> atlanır ve <c>SyncOnceAsync</c>, replika az önce yazılmış
+    /// olmasına rağmen 0 döner. Bedeli görünür: <c>CatalogSyncHostedService</c>
+    /// yazan bir tur görene kadar 30 saniyelik açılış ritminde kalır, 5 dakikaya
+    /// oturmaz. Doğru filtre <c>!ct.IsCancellationRequested</c>.
     /// </summary>
     [Fact]
     public async Task A_photo_timeout_is_a_failure_not_a_shutdown()
@@ -604,8 +665,10 @@ public sealed class CatalogSyncServiceTests
     /// <summary>
     /// Fotoğraf döngüsünün DIŞINDA doğan, iptal olmayan bir
     /// <see cref="OperationCanceledException"/> de turdan kaçmamalı: dış
-    /// <c>catch</c> arka plan servisine giden son eşik, oradan kaçan her
-    /// <c>OperationCanceledException</c> kapanma sayılıyor.
+    /// <c>catch</c> arka plan servisine giden son eşik ve oradan kaçan bir
+    /// <c>OperationCanceledException</c> hiçbir kayıt düşmeden yutuluyor
+    /// (<c>CatalogSyncHostedService.RunRoundAsync</c>) — yani arıza tamamen
+    /// sessizleşir.
     /// </summary>
     [Fact]
     public async Task An_operation_canceled_exception_without_cancellation_never_escapes_the_round()
