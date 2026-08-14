@@ -29,9 +29,9 @@ public sealed class PanelProductVariantsController : ControllerBase
 
     public PanelProductVariantsController(LicenseDbContext db) => _db = db;
 
-    // DİKKAT — positional record'da doğrulama attribute'u PARAMETREYE yazılır,
-    // [property:] hedefiyle DEĞİL. MVC record'un birincil kurucusunu okuyor;
-    // metadata property'ye taşınırsa çalışma zamanında istisna atıyor.
+    // Doğrulama attribute'ları positional record'un PARAMETRESİNE yazılıyor;
+    // deponun kalıbı bu. [property:] hedefiyle ne olacağını denemedik —
+    // kalıptan sapmamak için parametre üstünde duruyorlar.
     public sealed record VariantRequest(
         [MaxLength(CatalogLimits.AxisValue)] string? Axis1Value,
         [MaxLength(CatalogLimits.AxisValue)] string? Axis2Value,
