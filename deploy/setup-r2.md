@@ -3,6 +3,10 @@
 OrderDeck broadcast post media (foto/video) Cloudflare R2'de tutulur.
 Mevcut FCM kurulumu gibi tek seferlik bir setup, sonra otomatik.
 
+**Aynı bucket'ı katalog ürün fotoğrafları da kullanıyor** (Faz 1a, `PanelProductPhotoController`)
+— dosya adı hâlâ "broadcast-posts" ama içerik iki akıştan geliyor. CORS
+listesini daraltırken bunu unutma.
+
 ## 1. Cloudflare hesabı + R2
 
 1. https://dash.cloudflare.com → R2 sekmesi → **Enable R2**
@@ -11,13 +15,39 @@ Mevcut FCM kurulumu gibi tek seferlik bir setup, sonra otomatik.
    ```json
    [{
      "AllowedOrigins": ["https://localhost", "capacitor://localhost",
-                        "https://license.orderdeckapp.com"],
+                        "http://localhost",
+                        "https://license.orderdeckapp.com",
+                        "https://panel.orderdeckapp.com"],
      "AllowedMethods": ["GET", "PUT", "HEAD"],
      "AllowedHeaders": ["*"],
      "ExposeHeaders": ["ETag"],
      "MaxAgeSeconds": 3600
    }]
    ```
+
+   > **Tarayıcıdan yükleyen HER yeni istemci bu listeye eklenmeli.** Yükleme
+   > presigned URL ile doğrudan R2'ye gittiği için araya sunucu girmiyor; CORS
+   > tek kapı. Listede olmayan origin `OPTIONS` preflight'ında **403** alır ve
+   > tarayıcıda yalnız `Failed to fetch` görünür — sunucu log'una hiçbir şey
+   > düşmez.
+   >
+   > Bu liste 2026-05'te yalnız mobil için yazılmıştı. Panel
+   > (`panel.orderdeckapp.com`) 2026-08'de web'e alınırken origin eklenmedi ve
+   > panelden fotoğraf yükleme —hem ürün hem yayın gönderisi— sessizce kırık
+   > kaldı; mobil çalışmaya devam ettiği için kimse fark etmedi. 2026-08-14'te
+   > düzeltildi.
+   >
+   > Doğrulama (yazma yapmaz; `<account>` ve origin'i değiştir):
+   > ```bash
+   > curl -s -o /dev/null -D - -X OPTIONS \
+   >   "https://<account>.r2.cloudflarestorage.com/orderdeck-broadcast-posts/probe.img" \
+   >   -H "Origin: https://panel.orderdeckapp.com" \
+   >   -H "Access-Control-Request-Method: PUT" \
+   >   -H "Access-Control-Request-Headers: content-type"
+   > ```
+   > İzinli origin `204` + `Access-Control-Allow-Origin` döner; izinsiz origin
+   > `403`. İkisini de dene — yalnız izinliyi denemek politikanın ardına kadar
+   > açık olmadığını göstermez.
 
 ## 2. API token
 
