@@ -447,7 +447,9 @@ public sealed class PanelProductsController : ControllerBase
             //
             // Yeri, bir üstteki axis-in-use-stock kontrolüyle aynı gerekçeyle
             // burada: RemoveRange'ten ÖNCE, sahiplik doğrulandıktan SONRA.
-            if (await _db.ProductBroadcastCodes.AnyAsync(x => x.ProductId == product.Id, ct))
+            // LicenseId süzgecinin gerekçesi silme bekçisinde yazılı.
+            if (await _db.ProductBroadcastCodes.AnyAsync(
+                    x => x.LicenseId == product.LicenseId && x.ProductId == product.Id, ct))
                 return Problem(title: "axis-in-use-broadcast-codes",
                     detail: "Bu ürünün yayın kodları var; eksen yapısı artık "
                           + "değiştirilemez (eksen açıp kapatmak da dahil). "
@@ -523,7 +525,13 @@ public sealed class PanelProductsController : ControllerBase
         // Kodu olan ürün silinemez: satır cascade ile giderse kod serbest
         // kalır ve bir daha ASLA devredilmemesi gereken kod başka bir ürüne
         // verilebilir hâle gelir (bkz. ProductBroadcastCode XML doc).
-        if (await _db.ProductBroadcastCodes.AnyAsync(x => x.ProductId == product.Id, ct))
+        //
+        // LicenseId süzgeci kiracı güvenliği için GEREKSİZ (ürün sahiplik
+        // kontrolünden geçti, ProductId kiracıyı belirliyor); gerekçesi
+        // PanelProductVariantsController'da yazılı olan kurala uymak için
+        // duruyor: yayın kodu sorguları istisnasız kiracıyla süzülüyor.
+        if (await _db.ProductBroadcastCodes.AnyAsync(
+                x => x.LicenseId == product.LicenseId && x.ProductId == product.Id, ct))
             return Problem(title: "product-has-broadcast-codes",
                 detail: "Bu ürünün yayın kodları var; silinemez. Arşivleyebilirsiniz.",
                 statusCode: 409);
