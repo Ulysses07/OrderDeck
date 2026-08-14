@@ -491,6 +491,14 @@ public sealed class PanelProductsController : ControllerBase
                 detail: "Bu ürünün stok hareketleri var; silinemez. Arşivleyebilirsiniz.",
                 statusCode: 409);
 
+        // Kodu olan ürün silinemez: satır cascade ile giderse kod serbest
+        // kalır ve bir daha ASLA devredilmemesi gereken kod başka bir ürüne
+        // verilebilir hâle gelir (bkz. ProductBroadcastCode XML doc).
+        if (await _db.ProductBroadcastCodes.AnyAsync(x => x.ProductId == product.Id, ct))
+            return Problem(title: "product-has-broadcast-codes",
+                detail: "Bu ürünün yayın kodları var; silinemez. Arşivleyebilirsiniz.",
+                statusCode: 409);
+
         // Galeri fotoğraflarının anahtarlarını DB commit öncesinde toplayıyoruz
         // — commit sonrası satırlar gider, anahtara erişemeyiz.
         var galleryKeys = await _db.ProductPhotos

@@ -49,6 +49,13 @@ public class StockStaffEndpointInventoryTests
         "PanelProductVariantsController.Update",
         "PanelProductVariantsController.Delete",
 
+        // Yayın kodu ürün kartının parçası: stok elemanı kartı açıyorsa
+        // yayında söylenecek kodu da yazabilmeli. Uç yalnız ürün + satıcı
+        // ekseni değeri + kod taşıyor; müşteri, sipariş, ödeme ya da ciro
+        // bilgisi göstermiyor — spec'teki kısıtı ihlal etmiyor.
+        "PanelBroadcastCodesController.Get",
+        "PanelBroadcastCodesController.Put",
+
         "PanelProductPhotoController.CreateUploadUrl",
         "PanelProductPhotoController.Attach",
         "PanelProductPhotoController.List",

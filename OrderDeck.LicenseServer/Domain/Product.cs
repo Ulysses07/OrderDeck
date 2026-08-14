@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations.Schema;
+
 namespace OrderDeck.LicenseServer.Domain;
 
 /// <summary>
@@ -88,4 +90,25 @@ public sealed class Product
     /// "Güncel" kod, satıcı ekseni değeri başına en yeni <c>CreatedAt</c>.
     /// </summary>
     public List<ProductBroadcastCode> BroadcastCodes { get; set; } = new();
+
+    /// <summary>
+    /// Satıcı ekseninin sırası: 1, 2 ya da 0 (satıcı ekseni yok). Satıcı
+    /// ekseni barkot okutmayla sabitlenen eksendir; yayın kodu ona bağlanır.
+    /// Tek bir yerde hesaplanıyor — iki controller da bunu kullanıyor ve
+    /// kopyalansaydı biri değişip öbürü kalırdı.
+    /// </summary>
+    [NotMapped]
+    public int SellerAxis =>
+        Axis1Name is not null && Axis1Role == AxisRole.Seller ? 1
+        : Axis2Name is not null && Axis2Role == AxisRole.Seller ? 2
+        : 0;
+
+    /// <summary>Varyantın satıcı ekseni değeri; satıcı ekseni yoksa null.</summary>
+    public string? SellerAxisValueOf(ProductVariant variant) =>
+        SellerAxis switch
+        {
+            1 => variant.Axis1Value,
+            2 => variant.Axis2Value,
+            _ => null,
+        };
 }
