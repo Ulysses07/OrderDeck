@@ -26,7 +26,16 @@ public class BroadcastCodeResolverTests
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
         var repo = new CatalogReplicaRepository(db);
-        repo.Replace(new[] { product }, variants, Array.Empty<CatalogCategory>(), codes);
+
+        // SortOrder'ı dizideki konumdan veriyoruz — CatalogSyncService de tam
+        // olarak bunu yapıyor. Testlerin çoğu sırayı doğruluyor ve GetVariants
+        // "ORDER BY SortOrder" diyor; hepsine 0 verseydik sıra SQLite'ın eşitlik
+        // durumundaki davranışına kalırdı, ki bu bir sözleşme değil.
+        repo.Replace(
+            new[] { product },
+            variants.Select((v, i) => v with { SortOrder = i }).ToList(),
+            Array.Empty<CatalogCategory>(),
+            codes);
         return new BroadcastCodeResolver(repo);
     }
 
