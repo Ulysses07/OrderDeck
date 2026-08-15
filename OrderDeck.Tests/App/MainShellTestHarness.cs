@@ -8,6 +8,7 @@ using System.Text;
 using OrderDeck.App.Services;
 using OrderDeck.App.Services.IntakeForm;
 using OrderDeck.App.ViewModels;
+using OrderDeck.Core.Catalog;
 using OrderDeck.Core.Chat;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Sales;
@@ -104,7 +105,7 @@ internal static class MainShellTestHarness
 
         var catalogRepo = new CatalogReplicaRepository(db);
         var productCard = new ProductCardViewModel(
-            catalogRepo,
+            new BroadcastCodeResolver(catalogRepo),
             new CatalogPhotoCache(Path.Combine(Path.GetTempPath(), "od-test-" + Guid.NewGuid().ToString("N"))));
 
         // Sahte diyalog servisi ŞART: gerçek WpfDialogService modal bir

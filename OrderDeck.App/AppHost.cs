@@ -6,6 +6,7 @@ using OrderDeck.App.Services.IntakeForm;
 using OrderDeck.Chat.Bridge;
 using OrderDeck.Chat.Ingestors;
 using OrderDeck.Core;
+using OrderDeck.Core.Catalog;
 using OrderDeck.Core.Chat;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Sales;
@@ -83,6 +84,10 @@ public sealed class AppHost : IDisposable
         // Stok Faz 1b: sunucu katalogunun salt-okunur replikası ve kapak
         // fotoğrafı önbelleği. Tek yazarı CatalogSyncService.
         services.AddSingleton<CatalogReplicaRepository>();
+        // Yayın kodu çözümleyicisi: kod kutusu da sipariş akışı da AYNI örneği
+        // kullanmalı, yoksa kartta görünen varyantlarla çekmecede seçilebilen
+        // değerler ayrışabilir.
+        services.AddSingleton<BroadcastCodeResolver>();
         services.AddSingleton<CatalogPhotoCache>();
         // PDF dekont parse: DekontEkleDrawer "PDF Yükle" butonu kullanır.
         services.AddSingleton<PdfDekontParser>();

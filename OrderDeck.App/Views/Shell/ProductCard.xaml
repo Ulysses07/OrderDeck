@@ -97,10 +97,20 @@
                            Style="{StaticResource OD.Text.Mono}"
                            Margin="{StaticResource OD.Pad.Top5}"/>
 
-                <TextBlock Text="{Binding Name}" TextWrapping="Wrap"
+                <!-- İki Run: satıcı ekseni değeri sönük renkte yazılıyor. Tek
+                     bir Text bağı olsaydı ad ile son eki birleştirmek için
+                     converter gerekirdi. Run'lar ARALARINDA boşluk olmadan
+                     bitişik yazılıyor — TextBlock'un inline koleksiyonunda
+                     satır sonu + girinti TEK BOŞLUĞA sadeleşir ve "Elbise
+                     · Siyah" yerine "Elbise  · Siyah" çıkardı; " · " zaten
+                     SellerAxisSuffix'in içinde. -->
+                <TextBlock TextWrapping="Wrap"
                            FontFamily="{StaticResource OD.Font.Display}"
                            FontSize="{StaticResource OD.Font.F2}"
-                           Foreground="{StaticResource OD.Brush.Text}"/>
+                           Foreground="{StaticResource OD.Brush.Text}"><Run
+                        Text="{Binding Name, Mode=OneWay}"/><Run
+                        Text="{Binding SellerAxisSuffix, Mode=OneWay}"
+                        Foreground="{StaticResource OD.Brush.TextDim}"/></TextBlock>
 
                 <!-- Varyantsız (tek varyantlı, eksensiz) üründe liste tek
                      rozet gösterir; başlık yine de anlamlı kalıyor. -->

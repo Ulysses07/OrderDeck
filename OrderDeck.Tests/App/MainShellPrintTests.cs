@@ -9,6 +9,7 @@ using FluentAssertions;
 using OrderDeck.App.Services;
 using OrderDeck.App.Services.IntakeForm;
 using OrderDeck.App.ViewModels;
+using OrderDeck.Core.Catalog;
 using OrderDeck.Core.Chat;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Sales;
@@ -165,7 +166,7 @@ public class MainShellPrintTests
 
         var catalogRepo = new CatalogReplicaRepository(db);
         var productCard = new ProductCardViewModel(
-            catalogRepo,
+            new BroadcastCodeResolver(catalogRepo),
             new CatalogPhotoCache(Path.Combine(Path.GetTempPath(), "od-test-" + Guid.NewGuid().ToString("N"))));
 
         var vm = new MainShellViewModel(
