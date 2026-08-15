@@ -93,6 +93,24 @@ kullanıcı hatası kalkanı**; gerçek bariyer çekme ucu süzgeci + WPF'in
 cascade ile gidiyor. `product-has-stock-movements` bekçisi ve mesajı kalıyor;
 "Arşivleyebilirsiniz" cümlesi artık gerçek bir ucu işaret ediyor.
 
+### 2b. Arşivdeki ürüne kod yazma yasağı — `PanelBroadcastCodesController.Put`
+
+Plan yazılırken atlanmıştı, uygulama sırasında çıktı: `Put`'un arşiv bekçisi
+yoktu. Bekçisiz hâli sessiz ve **kalıcı** bir kaçak — arşivlenen ürüne
+sonradan yazılan kod:
+
+- yayında hiçbir zaman eşleşmez (çekme ucu `!p.IsArchived` süzüyor),
+- ama kalıcı olarak rezerve olur,
+- ve `Archive` zaten arşivli üründe erken döndüğü için **bir daha silinmez**.
+
+Yani "yayın kodu olan ürün = yayında satılabilen ürün" kuralı panelin kod
+bölümünü gizlemesine bağlı kalırdı. `Put` artık arşivli üründe 409
+`product-archived` veriyor; panel gizlemesi yalnız kolaylık.
+
+Aynı yerde iki metin de güncellendi: sınıfın "kod serbest bırakılamaz" diyen
+XML doc'u (artık yanlış) ve `broadcast-code-taken` 409'unun son cümlesi — çıkış
+kapısını (arşivle ya da sil) söylemezse operatör elindeki tek çözümü aramaz.
+
 ### 3. Eksen değiştirme yasağı — `PanelProductsController.cs:451`
 
 **Kod değişmiyor.** Yasak "kod var mı" üstünde; arşiv kodları sildiği için

@@ -244,6 +244,47 @@ public class ProductArchiveTests : IClassFixture<ApiFactory>
         (await CodeCountAsync(s.ProductId)).Should().Be(1);
     }
 
+    /// <summary>
+    /// Kuralın öteki yarısı: arşivdeki ürüne kod YAZILAMAZ. Bekçi olmasa
+    /// arşivleme sızdırırdı — arşivden sonra yazılan kod kalıcı olarak rezerve
+    /// olur, üstelik tekrar arşivleme erken döndüğü için bir daha silinmez ve
+    /// kod sonsuza dek arşivde asılı kalırdı.
+    /// </summary>
+    [Fact]
+    public async Task Archived_product_rejects_new_broadcast_codes()
+    {
+        var s = await SeedAsync(withCode: false);
+        (await s.Client.PostAsync($"/api/panel/products/{s.ProductId}/archive", null))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var resp = await s.Client.PutAsJsonAsync(
+            $"/api/panel/products/{s.ProductId}/broadcast-codes",
+            new { sellerAxisValue = "Siyah", code = "ATEŞ" + Guid.NewGuid().ToString("N")[..6] });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await TitleAsync(resp)).Should().Be("product-archived");
+        (await CodeCountAsync(s.ProductId)).Should().Be(0);
+    }
+
+    /// <summary>
+    /// Yasak arşive özgü, kalıcı değil: arşivden çıkan ürün yeniden kod alabilir.
+    /// Zaten "arşivden çıkarınca yeni kod ver" sözleşmesinin çalıştığı yer burası.
+    /// </summary>
+    [Fact]
+    public async Task Unarchived_product_accepts_broadcast_codes_again()
+    {
+        var s = await SeedAsync(withCode: false);
+        await s.Client.PostAsync($"/api/panel/products/{s.ProductId}/archive", null);
+        await s.Client.PostAsync($"/api/panel/products/{s.ProductId}/unarchive", null);
+
+        var resp = await s.Client.PutAsJsonAsync(
+            $"/api/panel/products/{s.ProductId}/broadcast-codes",
+            new { sellerAxisValue = "Siyah", code = "ATEŞ" + Guid.NewGuid().ToString("N")[..6] });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await CodeCountAsync(s.ProductId)).Should().Be(1);
+    }
+
     [Fact]
     public async Task Archived_product_leaves_the_default_list_but_stays_behind_the_flag()
     {
@@ -280,8 +321,8 @@ public class ProductArchiveTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>
-    /// Arşivden geçmeden de silinebilmeli: kod satırları ürünle birlikte cascade
-    /// ile gidiyor. Eski davranış burada 409 <c>product-has-broadcast-codes</c>
+    /// Arşivden geçmeden de silinebilmeli: kod satırları ürünle birlikte
+    /// gidiyor. Eski davranış burada 409 <c>product-has-broadcast-codes</c>
     /// veriyordu ve operatörün elinde hiçbir çıkış kalmıyordu (arşivleme ucu
     /// yoktu).
     /// </summary>

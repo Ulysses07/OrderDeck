@@ -18,10 +18,16 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 /// ("kod bir daha asla devredilmez") ürün kartının kurallarıyla hiç
 /// kesişmiyor.</para>
 ///
-/// <para><b>Silme ucu YOK.</b> Kod serbest bırakılamaz: eski yayın
-/// videosundaki kodu bugün yazan izleyicinin siparişi, kod devredilmiş olsaydı
-/// yanlış ürüne düşerdi. Kod değişikliği bu yüzden güncelleme değil, yeni satır
-/// — eski satır kodu rezerve tutmaya devam eder.</para>
+/// <para><b>Silme ucu YOK</b> — tek bir kod tek başına geri alınamaz, kod
+/// değişikliği de güncelleme değil yeni satır; eski satır kodu rezerve tutmaya
+/// devam eder. Amaç, aynı kodun aynı anda iki ürüne bağlanamaması.</para>
+///
+/// <para><b>Ama kod artık sonsuza dek rezerve değil:</b> kod satırları ÜRÜNLE
+/// birlikte gidiyor — ürün arşivlenince
+/// (<c>PanelProductsController.Archive</c>) ya da hiç stok hareketi yokken
+/// silinince. Bu, "yayın kodu asla serbest kalmaz" aksiyomunun bilinçli
+/// gevşetilmesi; gerekçesi ve kabul edilen bedeli
+/// <c>docs/superpowers/plans/2026-08-15-urun-arsivleme-yayin-kodu.md</c>.</para>
 /// </summary>
 [ApiController]
 [Route("api/panel/products/{productId:guid}/broadcast-codes")]
@@ -121,6 +127,21 @@ public sealed class PanelBroadcastCodesController : ControllerBase
             .Include(p => p.Variants)
             .FirstOrDefaultAsync(p => p.Id == productId && p.LicenseId == licenseId.Value, ct);
         if (product is null) return NotFound();
+
+        // Arşivdeki ürüne kod YAZILAMAZ — bu bekçi "yayın kodu olan ürün =
+        // yayında satılabilen ürün" kuralını ihlal EDİLEMEZ yapıyor, panelin
+        // kod bölümünü gizlemesi yalnız kolaylık.
+        //
+        // Bekçisiz hâli sessiz ve kalıcı bir kaçak: arşivdeki ürün WPF'e hiç
+        // gitmiyor (LicensesWpfCatalogPullController: !p.IsArchived), yani
+        // buraya yazılan kod yayında hiçbir zaman eşleşmez ama kalıcı olarak
+        // rezerve olur — üstelik Archive zaten arşivli üründe erken döndüğü
+        // için kodu bir daha silmez. Kod sonsuza dek arşivde asılı kalırdı.
+        if (product.IsArchived)
+            return Problem(title: "product-archived",
+                detail: "Arşivdeki ürüne yayın kodu verilemez: arşivdeki ürün "
+                      + "yayında satılamaz. Önce ürünü arşivden çıkar.",
+                statusCode: 409);
 
         var code = (req.Code ?? string.Empty).Trim();
         if (code.Length == 0)
@@ -254,9 +275,13 @@ public sealed class PanelBroadcastCodesController : ControllerBase
             ? $"'{owner}' ürününde '{value}' değerine"
             : $"'{owner}' ürününe";
 
+        // Çıkış kapısı bilerek yazılıyor: kod artık serbest kalabiliyor ama
+        // yalnız ÜRÜN üzerinden (arşivle ya da sil). Söylenmezse operatör
+        // kodun devredilemez olduğunu okur ve elindeki tek çözümü aramaz.
         return Problem(title: "broadcast-code-taken",
-            detail: $"{subject} kodu {where} ayrılmış. Yayın kodları devredilemez; "
-                  + "eski kodlar da rezerve kalır.",
+            detail: $"{subject} kodu {where} ayrılmış. Kod tek başına devredilemez; "
+                  + "boşaltmak için o ürünü arşivle (kodları silinir) ya da hiç "
+                  + "stok hareketi yoksa sil.",
             statusCode: 409);
     }
 
