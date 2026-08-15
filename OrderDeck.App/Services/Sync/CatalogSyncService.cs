@@ -163,10 +163,12 @@ public sealed class CatalogSyncService
             var categories = await _api.GetCatalogCategoriesAsync(licenseId.Value, ct);
 
             // Buraya geldiysek tam anlık görüntü elimizde: tek transaction'da yaz.
+            // TODO(Task 3): broadcastCodes parametresi eklenecek.
             _repo.Replace(
                 pulled.Select(ToProduct).ToList(),
                 pulled.SelectMany(ToVariants).ToList(),
-                categories.Select(ToCategory).ToList());
+                categories.Select(ToCategory).ToList(),
+                []);
 
             // Save ve Prune AYNI iş parçacığında, sırayla — ve turlar arası
             // örtüşme SyncOnceAsync'teki kapıyla engelleniyor: CatalogPhotoCache
@@ -302,14 +304,11 @@ public sealed class CatalogSyncService
         p.UpdatedAt.ToUnixTimeSeconds());
 
     private static IEnumerable<CatalogVariant> ToVariants(CatalogProductPullItem p)
-        // Sıra sunucunun kararı (VariantCode'a göre, SQL Server collation'ında);
-        // DTO'da SortOrder alanı yok, sıralamanın kendisi dizideki konum.
-        // Yerelde VariantCode'a göre yeniden sıralamak SQLite'ın ordinal
-        // karşılaştırmasıyla farklı düşerdi, o yüzden indeksi taşıyoruz.
+        // Sıra sunucunun kararı; DTO'da SortOrder alanı yok, sıralamanın
+        // kendisi dizideki konum. TODO(Task 3): tam implementasyon.
         => p.Variants.Select((v, i) => new CatalogVariant(
             v.Id.ToString("N"), p.Id.ToString("N"),
-            v.Axis1Value, v.Axis1Code, v.Axis2Value, v.Axis2Code,
-            v.VariantCode, v.Barcode, v.IsActive, i));
+            v.Axis1Value, v.Axis2Value, v.Barcode, v.IsActive, i));
 
     private static CatalogCategory ToCategory(CatalogCategoryPullItem c) => new(
         c.Id.ToString("N"), c.ParentCategoryId?.ToString("N"),

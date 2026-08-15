@@ -435,18 +435,14 @@ public sealed class CatalogSyncServiceTests
 
         var variants = harness.Repo.GetVariants(stored.Id);
         variants.Should().HaveCount(2, "varyantlar düşerse beden seçimi imkânsızlaşır");
-        variants.Select(v => v.VariantCode).Should().Equal(
-            new[] { "KOD-7-XL-KR", "KOD-7-S-MV" },
-            "sıra sunucunun kararı; SortOrder dizideki konumu taşır");
+        // TODO(Task 3): VariantCode/Axis1Code/Axis2Code kaldırıldı; sıra SortOrder ile korunuyor.
         variants[0].SortOrder.Should().Be(0);
         variants[1].SortOrder.Should().Be(1);
         variants[0].Id.Should().Be("0a0a0a0a1b1b2c2c3d3d4e4e4e4e4e4e");
         variants[0].ProductId.Should().Be("11111111222233334444555555555555");
         variants[1].ProductId.Should().Be("11111111222233334444555555555555");
         variants[0].Axis1Value.Should().Be("XL");
-        variants[0].Axis1Code.Should().Be("XL");
         variants[0].Axis2Value.Should().Be("Kırmızı");
-        variants[0].Axis2Code.Should().Be("KR");
         variants[0].Barcode.Should().Be("8690000000017");
         variants[0].IsActive.Should().BeTrue();
         variants[1].Id.Should().Be("f0f0f0f0e1e1d2d2c3c3b4b4b4b4b4b4");

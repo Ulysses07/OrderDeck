@@ -120,9 +120,8 @@ public class ProductCardTemplateTests
             [new CatalogProduct("p1", null, "A1", SearchNormalizer.Normalize("A1"),
                                 "Güzel Elbise", 199.90m, null, "Renk", 1, "Beden", 2,
                                 null, 1_700_000_000)],
-            [new CatalogVariant("v1", "p1", "Kırmızı", "KIRM", "M", "M",
-                                "A1-KIRM-M", null, true, 0)],
-            []);
+            [new CatalogVariant("v1", "p1", "Kırmızı", "M", null, true, 0)],
+            [], []);
 
     /// <summary>Kartı verilen kodla gerçekten yerleştirir.</summary>
     private static ProductCard Lay(

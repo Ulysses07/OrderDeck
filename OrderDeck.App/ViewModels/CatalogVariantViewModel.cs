@@ -12,8 +12,6 @@ public sealed class CatalogVariantViewModel
 {
     public CatalogVariantViewModel(CatalogVariant variant)
     {
-        VariantCode = variant.VariantCode;
-
         var parts = new[] { variant.Axis1Value, variant.Axis2Value }
             .Where(v => !string.IsNullOrWhiteSpace(v))
             .Select(v => v!.Trim());
@@ -21,11 +19,9 @@ public sealed class CatalogVariantViewModel
         var label = string.Join(" · ", parts);
 
         // Eksensiz üründe de tam bir varyant var; gösterilecek değer yoksa
-        // boş kutu yerine varyant kodunu yazıyoruz.
-        Display = label.Length > 0 ? label : VariantCode;
+        // ürün Id'sini fallback olarak kullanıyoruz (Task 4'te gözden geçirilecek).
+        Display = label.Length > 0 ? label : variant.Id;
     }
-
-    public string VariantCode { get; }
 
     public string Display { get; }
 }

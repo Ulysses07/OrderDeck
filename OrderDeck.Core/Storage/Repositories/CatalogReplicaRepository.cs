@@ -23,7 +23,8 @@ public sealed class CatalogReplicaRepository
     public void Replace(
         IReadOnlyList<CatalogProduct> products,
         IReadOnlyList<CatalogVariant> variants,
-        IReadOnlyList<CatalogCategory> categories)
+        IReadOnlyList<CatalogCategory> categories,
+        IReadOnlyList<CatalogBroadcastCode> broadcastCodes)
     {
         using var conn = _factory.Open();
         using var tx = conn.BeginTransaction();
@@ -31,6 +32,7 @@ public sealed class CatalogReplicaRepository
         // Silme sırası önemsiz (FK yok — replikada bütünlüğü sunucu garanti
         // ediyor, yerel cascade kurmak yanlış güven verirdi), ama hepsi AYNI
         // transaction'da: yarı silinmiş bir replika hiç yoktan kötüdür.
+        conn.Execute("DELETE FROM CatalogBroadcastCode", transaction: tx);
         conn.Execute("DELETE FROM CatalogVariant", transaction: tx);
         conn.Execute("DELETE FROM CatalogProduct", transaction: tx);
         conn.Execute("DELETE FROM CatalogCategory", transaction: tx);
@@ -58,16 +60,13 @@ public sealed class CatalogReplicaRepository
             conn.Execute(
                 """
                 INSERT INTO CatalogVariant
-                    (Id, ProductId, Axis1Value, Axis1Code, Axis2Value, Axis2Code,
-                     VariantCode, Barcode, IsActive, SortOrder)
+                    (Id, ProductId, Axis1Value, Axis2Value, Barcode, IsActive, SortOrder)
                 VALUES
-                    (@Id, @ProductId, @Axis1Value, @Axis1Code, @Axis2Value, @Axis2Code,
-                     @VariantCode, @Barcode, @IsActive, @SortOrder)
+                    (@Id, @ProductId, @Axis1Value, @Axis2Value, @Barcode, @IsActive, @SortOrder)
                 """,
                 variants.Select(v => new
                 {
-                    v.Id, v.ProductId, v.Axis1Value, v.Axis1Code,
-                    v.Axis2Value, v.Axis2Code, v.VariantCode, v.Barcode,
+                    v.Id, v.ProductId, v.Axis1Value, v.Axis2Value, v.Barcode,
                     IsActive = v.IsActive ? 1 : 0,
                     v.SortOrder
                 }).ToList(), tx);
@@ -85,6 +84,16 @@ public sealed class CatalogReplicaRepository
                     c.Id, c.ParentCategoryId, c.Name, c.Path, c.SortOrder,
                     IsActive = c.IsActive ? 1 : 0
                 }).ToList(), tx);
+
+        if (broadcastCodes.Count > 0)
+            conn.Execute(
+                """
+                INSERT INTO CatalogBroadcastCode
+                    (ProductId, SellerAxisValue, Code, CodeNormalized, CreatedAt, SortOrder)
+                VALUES
+                    (@ProductId, @SellerAxisValue, @Code, @CodeNormalized, @CreatedAt, @SortOrder)
+                """,
+                broadcastCodes, tx);
 
         tx.Commit();
     }
@@ -112,21 +121,60 @@ public sealed class CatalogReplicaRepository
             .Select(Map).FirstOrDefault();
     }
 
+    /// <summary>
+    /// Operatörün kod kutusuna yazdığı <b>yayın kodunu</b> bulur. İğne saklanan
+    /// kolonla aynı normalizasyondan geçiyor: büyük/küçük harf ve Türkçe harf
+    /// farkı önemsiz, ardışık boşluklar sadeleşir.
+    ///
+    /// <c>LIMIT 1</c> savunma amaçlı: indeks unique değil (bkz. göç 027).
+    /// Beklenmedik bir çakışmada patlamak yerine sunucunun sırasındaki ilk
+    /// (= en yeni) kodu verir; <c>ProductId</c> ikincil anahtarı sırayı
+    /// deterministik yapar.
+    /// </summary>
+    public CatalogBroadcastCode? FindBroadcastCode(string? code)
+    {
+        var needle = SearchNormalizer.Normalize(code);
+        if (needle.Length == 0) return null;
+
+        using var conn = _factory.Open();
+        return conn.Query<BroadcastCodeRow>(
+            """
+            SELECT ProductId, SellerAxisValue, Code, CodeNormalized, CreatedAt, SortOrder
+            FROM CatalogBroadcastCode
+            WHERE CodeNormalized = @needle
+            ORDER BY SortOrder, ProductId LIMIT 1
+            """,
+            new { needle })
+            .Select(r => new CatalogBroadcastCode(
+                r.ProductId, r.SellerAxisValue, r.Code, r.CodeNormalized,
+                r.CreatedAt, r.SortOrder))
+            .FirstOrDefault();
+    }
+
+    /// <summary>Yayın kodundan gelen kimlikle ürünü çeker.</summary>
+    public CatalogProduct? GetProductById(string productId)
+    {
+        using var conn = _factory.Open();
+        return conn.Query<ProductRow>(
+            $"SELECT {ProductColumns} FROM CatalogProduct WHERE Id = @productId LIMIT 1",
+            new { productId })
+            .Select(Map).FirstOrDefault();
+    }
+
     public IReadOnlyList<CatalogVariant> GetVariants(string productId)
     {
         using var conn = _factory.Open();
         return conn.Query<VariantRow>(
             """
-            SELECT Id, ProductId, Axis1Value, Axis1Code, Axis2Value, Axis2Code,
-                   VariantCode, Barcode, IsActive, SortOrder
+            SELECT Id, ProductId, Axis1Value, Axis2Value, Barcode, IsActive, SortOrder
             FROM CatalogVariant
             WHERE ProductId = @productId
             ORDER BY SortOrder
             """,
             new { productId })
             .Select(r => new CatalogVariant(
-                r.Id, r.ProductId, r.Axis1Value, r.Axis1Code, r.Axis2Value,
-                r.Axis2Code, r.VariantCode, r.Barcode, r.IsActive == 1, r.SortOrder))
+                r.Id, r.ProductId, r.Axis1Value, r.Axis2Value,
+                r.Barcode, r.IsActive == 1, r.SortOrder))
             .ToList();
     }
 
@@ -187,12 +235,19 @@ public sealed class CatalogReplicaRepository
         public string Id { get; init; } = "";
         public string ProductId { get; init; } = "";
         public string? Axis1Value { get; init; }
-        public string? Axis1Code { get; init; }
         public string? Axis2Value { get; init; }
-        public string? Axis2Code { get; init; }
-        public string VariantCode { get; init; } = "";
         public string? Barcode { get; init; }
         public int IsActive { get; init; }
+        public int SortOrder { get; init; }
+    }
+
+    private sealed class BroadcastCodeRow
+    {
+        public string ProductId { get; init; } = "";
+        public string? SellerAxisValue { get; init; }
+        public string Code { get; init; } = "";
+        public string CodeNormalized { get; init; } = "";
+        public long CreatedAt { get; init; }
         public int SortOrder { get; init; }
     }
 

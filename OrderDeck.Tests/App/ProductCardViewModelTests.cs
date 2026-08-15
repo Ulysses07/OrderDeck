@@ -52,12 +52,10 @@ public class ProductCardViewModelTests
                 Product("p2", "B2", "Mavi Etek"),
             ],
             [
-                new CatalogVariant("v1", "p1", "Kırmızı", "KIRM", "M", "M",
-                                   "A1-KIRM-M", null, true, 0),
-                new CatalogVariant("v2", "p2", "Mavi", "MAVI", "L", "L",
-                                   "B2-MAVI-L", null, true, 0),
+                new CatalogVariant("v1", "p1", "Kırmızı", "M", null, true, 0),
+                new CatalogVariant("v2", "p2", "Mavi", "L", null, true, 0),
             ],
-            []);
+            [], []);
 
     [Fact]
     public void Empty_code_shows_neither_product_nor_unknown()
@@ -118,12 +116,10 @@ public class ProductCardViewModelTests
         repo.Replace(
             [Product("p1", "GUZEL ELBISE", "Güzel Elbise")],
             [
-                new CatalogVariant("v1", "p1", "Kırmızı", "KIRM", "M", "M",
-                                   "GUZEL ELBISE-KIRM-M", null, true, 0),
-                new CatalogVariant("v2", "p1", "Kırmızı", "KIRM", "L", "L",
-                                   "GUZEL ELBISE-KIRM-L", null, false, 1),
+                new CatalogVariant("v1", "p1", "Kırmızı", "M", null, true, 0),
+                new CatalogVariant("v2", "p1", "Kırmızı", "L", null, false, 1),
             ],
-            []);
+            [], []);
 
         vm.Load("güzel elbise");
 
@@ -156,7 +152,7 @@ public class ProductCardViewModelTests
     public void Photo_path_is_null_until_the_cover_file_is_cached()
     {
         var (vm, repo, photos) = Make();
-        repo.Replace([Product("p1", "A1", coverKey: "lic/p1/kapak.img")], [], []);
+        repo.Replace([Product("p1", "A1", coverKey: "lic/p1/kapak.img")], [], [], []);
 
         vm.Load("A1");
         vm.PhotoAbsolutePath.Should().BeNull();
@@ -243,12 +239,12 @@ public class ProductCardViewModelTests
     }
 
     [Fact]
-    public void Variant_without_axis_values_falls_back_to_its_code()
+    public void Variant_without_axis_values_falls_back_to_its_id()
     {
         var vm = new CatalogVariantViewModel(
-            new CatalogVariant("v1", "p1", null, null, null, null, "A1", null, true, 0));
+            new CatalogVariant("v1", "p1", null, null, null, true, 0));
 
-        vm.Display.Should().Be("A1");
+        vm.Display.Should().Be("v1");
     }
 
     // Tek eksenli ürün (yalnız "Beden") bu katalogda İSTİSNA DEĞİL, olağan hâl.
@@ -264,7 +260,7 @@ public class ProductCardViewModelTests
     public void Variant_with_a_single_axis_has_no_dangling_separator(string? missingAxis)
     {
         var vm = new CatalogVariantViewModel(
-            new CatalogVariant("v1", "p1", "M", "M", missingAxis, null, "A1-M", null, true, 0));
+            new CatalogVariant("v1", "p1", "M", missingAxis, null, true, 0));
 
         vm.Display.Should().Be("M");
     }
