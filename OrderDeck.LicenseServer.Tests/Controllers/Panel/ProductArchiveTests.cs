@@ -160,34 +160,23 @@ public class ProductArchiveTests : IClassFixture<ApiFactory>
         product.UpdatedAt.Should().BeOnOrAfter(before);
     }
 
+    /// <summary>
+    /// Açık yayın arşivlemeyi ENGELLEMEZ. Bir zamanlar engelliyordu (409
+    /// <c>broadcast-in-progress</c>); bekçi 2026-08-15'te kaldırıldı çünkü
+    /// sunucudaki <see cref="StreamSession"/> pasif replika ve WPF oturumu
+    /// ömrü boyunca yalnız iki kez push ediyor (açılış + kapanış), heartbeat
+    /// yok. Kapanış push'u bir kez kaçınca oturum sonsuza kadar "açık" kalıp
+    /// arşivlemeyi kalıcı kilitliyordu — 13 Ağustos'ta gerçekten oldu ve
+    /// ancak DB'ye elle yazarak açıldı.
+    ///
+    /// <para>Bu test o kilidin geri gelmesini engelliyor: birisi bekçiyi iyi
+    /// niyetle geri koyarsa burası kırılır.</para>
+    /// </summary>
     [Fact]
-    public async Task Archiving_is_rejected_while_a_broadcast_is_live()
+    public async Task Archiving_is_allowed_even_while_a_broadcast_is_live()
     {
         var s = await SeedAsync(withCode: true);
         await StartBroadcastAsync(s.LicenseId);
-
-        var resp = await s.Client.PostAsync($"/api/panel/products/{s.ProductId}/archive", null);
-
-        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
-        (await TitleAsync(resp)).Should().Be("broadcast-in-progress");
-        // Reddedilen istek kodlara DOKUNMAMALI: silme SaveChanges'ten önce
-        // yapılıyor, bekçi yanlış yere konursa satırlar 409'a rağmen giderdi.
-        (await CodeCountAsync(s.ProductId)).Should().Be(1);
-    }
-
-    [Fact]
-    public async Task Archiving_is_allowed_once_the_broadcast_has_ended()
-    {
-        var s = await SeedAsync(withCode: true);
-        await StartBroadcastAsync(s.LicenseId);
-
-        using (var scope = _factory.Services.CreateScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-            var session = await db.StreamSessions.FirstAsync(x => x.LicenseId == s.LicenseId);
-            session.EndedAt = DateTimeOffset.UtcNow;
-            await db.SaveChangesAsync();
-        }
 
         var resp = await s.Client.PostAsync($"/api/panel/products/{s.ProductId}/archive", null);
 
@@ -195,19 +184,12 @@ public class ProductArchiveTests : IClassFixture<ApiFactory>
         (await CodeCountAsync(s.ProductId)).Should().Be(0);
     }
 
-    /// <summary>
-    /// Tekrar arşivleme, yayın bekçisinden ÖNCE dönmeli. Aksi hâlde yayın
-    /// başladıktan sonra panelin yeniden gönderdiği istek 409 alır ve zaten
-    /// arşivde olan ürün için hiç yakınsamayan bir hata döngüsü kurulurdu.
-    /// </summary>
     [Fact]
-    public async Task Archiving_an_already_archived_product_succeeds_even_mid_broadcast()
+    public async Task Archiving_an_already_archived_product_is_idempotent()
     {
         var s = await SeedAsync(withCode: true);
         (await s.Client.PostAsync($"/api/panel/products/{s.ProductId}/archive", null))
             .StatusCode.Should().Be(HttpStatusCode.OK);
-
-        await StartBroadcastAsync(s.LicenseId);
 
         var again = await s.Client.PostAsync($"/api/panel/products/{s.ProductId}/archive", null);
 
@@ -408,20 +390,4 @@ public class ProductArchiveTests : IClassFixture<ApiFactory>
             .IsArchived.Should().BeFalse();
     }
 
-    /// <summary>
-    /// Yayın bekçisi kiracıya bağlı olmalı: BAŞKA bir lisansın açık yayını
-    /// benim ürünümü arşivlemeyi engellememeli.
-    /// </summary>
-    [Fact]
-    public async Task Another_tenants_live_broadcast_does_not_block_archiving()
-    {
-        var mine = await SeedAsync(withCode: true);
-        var other = await SeedAsync(withCode: false);
-        await StartBroadcastAsync(other.LicenseId);
-
-        var resp = await mine.Client.PostAsync(
-            $"/api/panel/products/{mine.ProductId}/archive", null);
-
-        resp.StatusCode.Should().Be(HttpStatusCode.OK);
-    }
 }
