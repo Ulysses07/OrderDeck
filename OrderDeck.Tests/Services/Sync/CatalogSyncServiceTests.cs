@@ -255,8 +255,9 @@ public sealed class CatalogSyncServiceTests
                 CoverPhotoKey: key,
                 CoverPhotoUrl: key is null ? null : $"https://r2.test.local/{id:N}?sig=abc",
                 Variants: [
-                    new CatalogVariantPullItem(Guid.NewGuid(), "M", "M", null, null, $"A{n}-M", null, true)
-                ]);
+                    new CatalogVariantPullItem(Guid.NewGuid(), "M", null, null, true)
+                ],
+                BroadcastCodes: []);
         }
 
         private HttpResponseMessage Respond(HttpRequestMessage req)
@@ -397,9 +398,10 @@ public sealed class CatalogSyncServiceTests
             CoverPhotoKey: "lic/products/kod7/kapak.img",
             CoverPhotoUrl: null,
             Variants: [
-                new CatalogVariantPullItem(xlVariantId, "XL", "XL", "Kırmızı", "KR", "KOD-7-XL-KR", "8690000000017", true),
-                new CatalogVariantPullItem(sVariantId, "S", "S", "Mavi", "MV", "KOD-7-S-MV", null, false)
-            ]);
+                new CatalogVariantPullItem(xlVariantId, "XL", "Kırmızı", "8690000000017", true),
+                new CatalogVariantPullItem(sVariantId, "S", "Mavi", null, false)
+            ],
+            BroadcastCodes: []);
 
         var categories = new List<CatalogCategoryPullItem>
         {
@@ -435,7 +437,8 @@ public sealed class CatalogSyncServiceTests
 
         var variants = harness.Repo.GetVariants(stored.Id);
         variants.Should().HaveCount(2, "varyantlar düşerse beden seçimi imkânsızlaşır");
-        // TODO(Task 3): VariantCode/Axis1Code/Axis2Code kaldırıldı; sıra SortOrder ile korunuyor.
+        // Varyant kodu kavramı kalktı (bkz. 027); sunucunun sırası artık
+        // yalnız SortOrder ile korunuyor — XL önce geldiyse XL 0 olmalı.
         variants[0].SortOrder.Should().Be(0);
         variants[1].SortOrder.Should().Be(1);
         variants[0].Id.Should().Be("0a0a0a0a1b1b2c2c3d3d4e4e4e4e4e4e");
@@ -470,6 +473,103 @@ public sealed class CatalogSyncServiceTests
     }
 
     /// <summary>
+    /// Yayın kodu tel modelinden replikaya inmezse operatör kod kutusuna "ATEŞ"
+    /// yazdığında hiçbir şey bulunmaz: ürünlerin hepsi doğru inmiş olsa bile
+    /// yayın durur. Kod ürünün STOK kodundan (<c>SK00001</c>) ayrı bir kavram —
+    /// ürün eşlemesi geçerken bu eşleme sessizce boş kalabilir, o yüzden ayrıca
+    /// çivileniyor.
+    ///
+    /// Katalog bilerek zor kurulmuş: ilk ürünün <b>iki</b> kodu var ve sunucu
+    /// bunları <b>en yeni önce</b> sıralamış (ATEŞ önce, BUZ sonra) — yani
+    /// CreatedAt'e göre ARTAN sıranın tersinde; ikinci ürünün hiç kodu yok;
+    /// üçüncünün kodu satıcı ekseni olmayan bir ürüne ait (SellerAxisValue null).
+    /// </summary>
+    [Fact]
+    public async Task Broadcast_codes_reach_the_replica_with_the_server_order_intact()
+    {
+        var dressId = Guid.Parse("aaaaaaaa-1111-2222-3333-444444444444");
+        var codelessId = Guid.Parse("bbbbbbbb-1111-2222-3333-444444444444");
+        var axislessId = Guid.Parse("cccccccc-1111-2222-3333-444444444444");
+
+        // Yerel saate çevrilirse tr-TR makinede sessizce kayar; bu yüzden UTC
+        // olmayan bir sapma seçildi ve beklenen unix saniye ELLE yazıldı.
+        var atesCreatedAt = new DateTimeOffset(2026, 8, 7, 12, 0, 0, TimeSpan.FromHours(3));
+        var buzCreatedAt = new DateTimeOffset(2026, 7, 31, 0, 15, 0, TimeSpan.FromHours(3));
+
+        var dress = CodedProduct(dressId, "SK00001",
+        [
+            new CatalogBroadcastCodePullItem("Siyah", "ATEŞ", "ATES", atesCreatedAt),
+            new CatalogBroadcastCodePullItem("Beyaz", "BUZ", "BUZ", buzCreatedAt)
+        ]);
+        var codeless = CodedProduct(codelessId, "SK00002", []);
+        var axisless = CodedProduct(axislessId, "SK00003",
+        [
+            new CatalogBroadcastCodePullItem(null, "Tekli", "TEKLI", atesCreatedAt)
+        ]);
+
+        using var harness = Harness.WithCatalog([dress, codeless, axisless]);
+
+        var written = await harness.Service.SyncOnceAsync(CancellationToken.None);
+        written.Should().Be(3);
+
+        // İğne saklanan kolonla aynı normalizasyondan geçiyor: sohbete "ateş"
+        // yazan da "ATES" yazan da aynı koda düşer.
+        var ates = harness.Repo.FindBroadcastCode("ateş");
+        ates.Should().NotBeNull("kod inmezse operatörün yazdığı şey hiçbir ürüne düşmez");
+        ates!.ProductId.Should().Be("aaaaaaaa111122223333444444444444",
+            "kimlikler repo genelinde tiresiz \"N\" biçiminde; tireli Id sessizce eşleşmez");
+        ates.SellerAxisValue.Should().Be("Siyah");
+        ates.Code.Should().Be("ATEŞ", "kartta operatörün yazdığı hâl gösteriliyor");
+        ates.CodeNormalized.Should().Be("ATES", "sunucunun gönderdiği biçim, yerelde yeniden hesaplanmaz");
+        ates.CreatedAt.Should().Be(1_786_093_200L, "unix SANİYE (+03:00 → 09:00Z)");
+        ates.SortOrder.Should().Be(0);
+
+        // Sunucunun "en yeni önce" sırası dizideki konumla taşınıyor: BUZ daha
+        // ESKİ olduğu hâlde 1. sırada. CreatedAt'e göre yerelde sıralasaydık
+        // sıra aynı çıkardı ve bu satır hiçbir şey ispatlamazdı — kanıt, DAHA
+        // ESKİ kodun daha büyük SortOrder alması.
+        var buz = harness.Repo.FindBroadcastCode("buz");
+        buz.Should().NotBeNull();
+        buz!.SortOrder.Should().Be(1);
+        buz.SellerAxisValue.Should().Be("Beyaz");
+        buz.CreatedAt.Should().Be(1_785_446_100L);
+        buz.ProductId.Should().Be("aaaaaaaa111122223333444444444444");
+
+        // Satıcı ekseni olmayan üründe kod ürünün tamamını gösterir; ayrıca
+        // sayaç ürün başına sıfırlanıyor (genel bir sayaç olsaydı 2 olurdu).
+        var tekli = harness.Repo.FindBroadcastCode("tekli");
+        tekli.Should().NotBeNull();
+        tekli!.SellerAxisValue.Should().BeNull();
+        tekli.ProductId.Should().Be("cccccccc111122223333444444444444");
+        tekli.SortOrder.Should().Be(0, "sıra dizinin konumu; her ürün 0'dan başlar");
+
+        // Kodsuz ürün hiçbir satır üretmemeli: stok kodundan kod uydurulursa
+        // operatör panelde vermediği bir kodla eşleşme görürdü.
+        harness.Repo.FindBroadcastCode("SK00002").Should().BeNull();
+        harness.Repo.GetProductById("bbbbbbbb111122223333444444444444")
+            .Should().NotBeNull("ürün yine de replikada");
+    }
+
+    /// <summary>Yalnız kodu ve yayın kodları önemli olan sade bir ürün.</summary>
+    private static CatalogProductPullItem CodedProduct(
+        Guid id, string code, List<CatalogBroadcastCodePullItem> broadcastCodes)
+        => new(
+            Id: id,
+            CategoryId: null,
+            Code: code,
+            Name: $"Ürün {code}",
+            NameSearch: $"ÜRÜN {code}",
+            DefaultPrice: 149m,
+            ShelfLocation: null,
+            Axis1Name: "Renk", Axis1Role: 1,
+            Axis2Name: null, Axis2Role: null,
+            UpdatedAt: DateTimeOffset.FromUnixTimeSeconds(1_723_000_000L),
+            CoverPhotoKey: null,
+            CoverPhotoUrl: null,
+            Variants: [],
+            BroadcastCodes: broadcastCodes);
+
+    /// <summary>
     /// Kod çok kelimeli ve Türkçe harfli olabilir. Sohbete "ışıltı 1" yazan da
     /// "IŞILTI 1" yazan da "isilti 1" yazan da aynı ürüne düşmeli — saklanan
     /// kolon da aranan iğne de <c>SearchNormalizer</c>'dan geçtiği için.
@@ -486,7 +586,7 @@ public sealed class CatalogSyncServiceTests
             Axis1Name: null, Axis1Role: null, Axis2Name: null, Axis2Role: null,
             UpdatedAt: DateTimeOffset.FromUnixTimeSeconds(1_723_000_000L),
             CoverPhotoKey: null, CoverPhotoUrl: null,
-            Variants: []);
+            Variants: [], BroadcastCodes: []);
 
         using var harness = Harness.WithCatalog([product]);
 
@@ -631,7 +731,8 @@ public sealed class CatalogSyncServiceTests
             UpdatedAt: DateTimeOffset.FromUnixTimeSeconds(1_700_000_000L),
             CoverPhotoKey: coverKey,
             CoverPhotoUrl: null,
-            Variants: []);
+            Variants: [],
+            BroadcastCodes: []);
 
     // ── İptal ile zaman aşımının ayrımı ───────────────────────────────────────
 

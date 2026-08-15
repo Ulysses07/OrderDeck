@@ -339,10 +339,15 @@ public sealed class LicenseApiClientTests
                "coverPhotoKey":"lic/products/p/k.img",
                "coverPhotoUrl":"https://r2.local/k.img?sig=1",
                "variants":[{ "id":"44444444-4444-4444-4444-444444444444",
-                             "axis1Value":"M","axis1Code":"M",
-                             "axis2Value":"Kirmizi","axis2Code":"KRM",
-                             "variantCode":"A1-M-KRM","barcode":"8690000000001",
-                             "isActive":true }] }]
+                             "axis1Value":"M",
+                             "axis2Value":"Kirmizi",
+                             "barcode":"8690000000001",
+                             "isActive":true }],
+               "broadcastCodes":[
+                    { "sellerAxisValue":"Kirmizi", "code":"ATES",
+                      "codeNormalized":"ATES", "createdAt":"2026-08-13T10:00:00Z" },
+                    { "sellerAxisValue":null, "code":"BUZ",
+                      "codeNormalized":"BUZ", "createdAt":"2026-08-12T10:00:00Z" }] }]
             """));
 
         var p = (await client.GetCatalogProductsAsync(Guid.NewGuid(), after: null))[0];
@@ -372,9 +377,20 @@ public sealed class LicenseApiClientTests
 
         // Varyant sırası = dizi sırası; 025'teki SortOrder sözleşmesi buna dayanıyor.
         p.Variants.Should().ContainSingle();
-        p.Variants[0].VariantCode.Should().Be("A1-M-KRM");
         p.Variants[0].Axis1Value.Should().Be("M");
-        p.Variants[0].Axis2Code.Should().Be("KRM");
+        p.Variants[0].Axis2Value.Should().Be("Kirmizi");
+        p.Variants[0].Barcode.Should().Be("8690000000001");
         p.Variants[0].IsActive.Should().BeTrue();
+
+        // Yayın kodları da gömülü dizi; sırası (en yeni önce) SortOrder'a
+        // dönüşüyor, o yüzden bağlamanın diziyi olduğu gibi taşıması şart.
+        p.BroadcastCodes.Should().HaveCount(2);
+        p.BroadcastCodes[0].Code.Should().Be("ATES");
+        p.BroadcastCodes[0].CodeNormalized.Should().Be("ATES");
+        p.BroadcastCodes[0].SellerAxisValue.Should().Be("Kirmizi");
+        p.BroadcastCodes[0].CreatedAt.ToUnixTimeSeconds().Should().Be(1786615200);
+        // Satıcı ekseni olmayan üründe null MEŞRU: kod ürünün tamamını gösterir.
+        p.BroadcastCodes[1].SellerAxisValue.Should().BeNull();
+        p.BroadcastCodes[1].Code.Should().Be("BUZ");
     }
 }
