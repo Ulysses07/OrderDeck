@@ -189,7 +189,11 @@ public class MainShellPrintTests
     private static void Enqueue(MainShellViewModel vm, string username, decimal price)
     {
         vm.ActivePriceText = price.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
-        vm.AddChatToQueue(ChatVm(username, $"alıyorum {Guid.NewGuid():N}"));
+        // AddChatToQueueAsync'i senkron köprülemek burada GÜVENLİ: bu yardımcı
+        // çekmece servisi VERİLMEMİŞ Fx() kurulumunda kullanılıyor, o yolda hiç
+        // await edilen bir şey yok — metot baştan sona senkron koşup biter.
+        vm.AddChatToQueueAsync(ChatVm(username, $"alıyorum {Guid.NewGuid():N}"))
+          .GetAwaiter().GetResult();
     }
 
     [Fact]

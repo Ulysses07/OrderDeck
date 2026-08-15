@@ -1,0 +1,41 @@
+<UserControl x:Class="OrderDeck.App.Views.Drawers.VariantPickerDrawer"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Varyant seçici — spec §6.2. Yorumdan beden tek ve tam çıkmadığında
+         açılır; tek tam eşleşmede bu çekmece HİÇ görünmez, akış kesilmez.
+         Başlık ("Elbise · Siyah — Beden") şeritten geliyor, gövde yalnız
+         ürün satırını, ipucunu ve seçenekleri taşıyor. -->
+    <StackPanel Margin="{StaticResource OD.Pad.5}" VerticalAlignment="Top">
+        <TextBlock Text="{Binding ProductLine}"
+                   Style="{StaticResource OD.Text.Section}"/>
+
+        <TextBlock Text="{Binding Hint}"
+                   Style="{StaticResource OD.Text.Hint}"/>
+
+        <ItemsControl ItemsSource="{Binding Items}"
+                      Margin="{StaticResource OD.Pad.Top5}">
+            <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                    <CheckBox Content="{Binding Value}"
+                              Style="{StaticResource OD.CheckBox}"
+                              IsChecked="{Binding IsChecked, Mode=TwoWay}"
+                              Margin="{StaticResource OD.Pad.Bottom3}"/>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+
+        <!-- "Ekle" hiçbir şey işaretli değilken kapalı: boş sipariş yazılamaz. -->
+        <Button Content="Ekle"
+                Style="{StaticResource OD.Button.Primary}"
+                Margin="{StaticResource OD.Pad.Top5}"
+                IsDefault="True"
+                IsEnabled="{Binding CanConfirm}"
+                Click="Confirm_OnClick"/>
+
+        <Button Content="Vazgeç"
+                Style="{StaticResource OD.Button.Ghost}"
+                HorizontalContentAlignment="Center"
+                Margin="{StaticResource OD.Pad.Top4}"
+                Click="Cancel_OnClick"/>
+    </StackPanel>
+</UserControl>
