@@ -31,12 +31,32 @@ public sealed record CatalogVariant(
     string Id,
     string ProductId,
     string? Axis1Value,
-    string? Axis1Code,
     string? Axis2Value,
-    string? Axis2Code,
-    string VariantCode,
     string? Barcode,
     bool IsActive,
+    int SortOrder);
+
+/// <summary>
+/// Operatörün yayında kullandığı kod. Stok kodundan (<c>SK00001</c>) FARKLI:
+/// stok kodunu sunucu üretir ve değişmez; yayın kodunu operatör panelden verir,
+/// ürün + <b>satıcı ekseni değeri</b> düzeyindedir ve kalıcı olarak rezervedir.
+/// </summary>
+/// <param name="SellerAxisValue">
+/// Kodun işaret ettiği satıcı ekseni değeri ("Siyah"). Ürünün satıcı ekseni
+/// yoksa null — kod o zaman ürünün tamamını gösterir.
+/// </param>
+/// <param name="CodeNormalized">
+/// Sunucunun ürettiği normalize biçim. <b>Yerelde yeniden hesaplanmaz</b>;
+/// arama iğnesi <c>SearchNormalizer.Normalize</c> ile üretilip bununla
+/// karşılaştırılır.
+/// </param>
+/// <param name="SortOrder">Sunucunun gönderdiği dizideki konum (en yeni önce).</param>
+public sealed record CatalogBroadcastCode(
+    string ProductId,
+    string? SellerAxisValue,
+    string Code,
+    string CodeNormalized,
+    long CreatedAt,
     int SortOrder);
 
 /// <param name="Path">Id tabanlı yol; sıralaması ağacı ata-önce dizer.</param>

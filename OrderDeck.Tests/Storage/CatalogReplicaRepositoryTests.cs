@@ -24,7 +24,7 @@ public class CatalogReplicaRepositoryTests
     public void FindByCode_matches_case_and_turkish_letters_insensitively()
     {
         var repo = Make(out _);
-        repo.Replace([Product("p1", "GUZEL ELBISE")], [], []);
+        repo.Replace([Product("p1", "GUZEL ELBISE")], [], [], []);
 
         repo.FindByCode("güzel elbise")!.Id.Should().Be("p1");
         repo.FindByCode("  Güzel   Elbise ")!.Id.Should().Be("p1");
@@ -35,10 +35,10 @@ public class CatalogReplicaRepositoryTests
     public void Replace_wipes_rows_that_the_server_no_longer_reports()
     {
         var repo = Make(out _);
-        repo.Replace([Product("p1", "A1"), Product("p2", "A2")], [], []);
+        repo.Replace([Product("p1", "A1"), Product("p2", "A2")], [], [], []);
 
         // Sunucu artık yalnız A2'yi bildiriyor: A1 panelden silinmiş demektir.
-        repo.Replace([Product("p2", "A2")], [], []);
+        repo.Replace([Product("p2", "A2")], [], [], []);
 
         repo.FindByCode("A1").Should().BeNull();
         repo.FindByCode("A2").Should().NotBeNull();
@@ -52,11 +52,12 @@ public class CatalogReplicaRepositoryTests
         // İlk tur: ürün + varyant + kategori hepsi dolu.
         repo.Replace(
             [Product("p1", "A1")],
-            [new CatalogVariant("v1", "p1", null, null, null, null, "A1", null, true, 0)],
-            [new CatalogCategory("c1", null, "Erkek", "/c1/", 0, true)]);
+            [new CatalogVariant("v1", "p1", null, null, null, true, 0)],
+            [new CatalogCategory("c1", null, "Erkek", "/c1/", 0, true)],
+            []);
 
         // İkinci tur: sunucu ürünü bildiriyor ama varyant ve kategori listesi boş.
-        repo.Replace([Product("p1", "A1")], [], []);
+        repo.Replace([Product("p1", "A1")], [], [], []);
 
         repo.GetVariants("p1").Should().BeEmpty();
         repo.GetCategories().Should().BeEmpty();
@@ -71,11 +72,11 @@ public class CatalogReplicaRepositoryTests
             [
                 // "z-first" alfabetik olarak "a-second"'dan sonra gelir ama
                 // SortOrder 0 ile önde olmalı — ORDER BY SortOrder'ı test eder.
-                new CatalogVariant("z-first",  "p1", "Kırmızı", "KIRM", "S", "S", "A1-KIRM-S", null, true,  0),
-                new CatalogVariant("a-second", "p1", "Kırmızı", "KIRM", "M", "M", "A1-KIRM-M", null, false, 1),
-                new CatalogVariant("v9",       "p2", null, null, null, null, "A2", null, true, 0),
+                new CatalogVariant("z-first",  "p1", "Kırmızı", "S", null, true,  0),
+                new CatalogVariant("a-second", "p1", "Kırmızı", "M", null, false, 1),
+                new CatalogVariant("v9",       "p2", null, null, null, true, 0),
             ],
-            []);
+            [], []);
 
         var variants = repo.GetVariants("p1");
 
@@ -98,7 +99,7 @@ public class CatalogReplicaRepositoryTests
                 new CatalogCategory("c2",   null, "Kadın",        "/c2/",     2, false),
                 new CatalogCategory("c1a",  "c1", "Gömlek",      "/c1/c1a/", 1, true),
                 new CatalogCategory("c1",   null, "Erkek",       "/c1/",     0, true),
-            ]);
+            ], []);
 
         var cats = repo.GetCategories();
 
@@ -135,7 +136,7 @@ public class CatalogReplicaRepositoryTests
                 // Fotoğrafsız ürün listede olmamalı.
                 Product("p3", "A3"),
             ],
-            [], []);
+            [], [], []);
 
         var keys = repo.CoverPhotoKeys();
 
@@ -155,7 +156,7 @@ public class CatalogReplicaRepositoryTests
         // Id belirler: ORDER BY Code, Id → "a-dup".
         repo.Replace(
             [Product("z-dup", "A1"), Product("a-dup", "A1")],
-            [], []);
+            [], [], []);
 
         repo.FindByCode("A1")!.Id.Should().Be("a-dup");
     }
@@ -165,10 +166,60 @@ public class CatalogReplicaRepositoryTests
     {
         var repo = Make(out _);
         var product = Product("p1", "A1") with { DefaultPrice = 199.95m };
-        repo.Replace([product], [], []);
+        repo.Replace([product], [], [], []);
 
         var found = repo.FindByCode("A1");
 
         found!.DefaultPrice.Should().Be(199.95m);
+    }
+
+    [Fact]
+    public void FindBroadcastCode_normalize_edilmis_iğneyle_bulur()
+    {
+        var repo = Make(out _);
+        var product = new CatalogProduct(
+            "p1", null, "SK00001", "SK00001", "Elbise", 100m, null,
+            "Renk", 1, "Beden", 2, null, 0);
+
+        repo.Replace(
+            new[] { product },
+            Array.Empty<CatalogVariant>(),
+            Array.Empty<CatalogCategory>(),
+            new[] { new CatalogBroadcastCode("p1", "Siyah", "Ateş", "ATES", 0, 0) });
+
+        // Operatör küçük harf + Türkçe karakterle yazıyor; iğne aynı
+        // normalizasyondan geçtiği için bulunmalı.
+        var hit = repo.FindBroadcastCode("ateş");
+
+        hit.Should().NotBeNull();
+        hit!.ProductId.Should().Be("p1");
+        hit.SellerAxisValue.Should().Be("Siyah");
+        hit.Code.Should().Be("Ateş");
+    }
+
+    [Fact]
+    public void Replace_eski_yayin_kodlarini_siler()
+    {
+        var repo = Make(out _);
+        var product = new CatalogProduct(
+            "p1", null, "SK00001", "SK00001", "Elbise", 100m, null,
+            null, null, null, null, null, 0);
+
+        repo.Replace(new[] { product }, Array.Empty<CatalogVariant>(), Array.Empty<CatalogCategory>(),
+            new[] { new CatalogBroadcastCode("p1", null, "Ateş", "ATES", 0, 0) });
+        repo.Replace(new[] { product }, Array.Empty<CatalogVariant>(), Array.Empty<CatalogCategory>(),
+            new[] { new CatalogBroadcastCode("p1", null, "Buz", "BUZ", 0, 0) });
+
+        // Sunucuda silinen kod yerelde hayalet kalırsa yayında YANLIŞ ÜRÜNE
+        // eşleşir — bu testin tek amacı o hayaleti yakalamak.
+        repo.FindBroadcastCode("ateş").Should().BeNull();
+        repo.FindBroadcastCode("buz").Should().NotBeNull();
+    }
+
+    [Fact]
+    public void GetProductById_bulamayinca_null_doner()
+    {
+        var repo = Make(out _);
+        repo.GetProductById("yok").Should().BeNull();
     }
 }

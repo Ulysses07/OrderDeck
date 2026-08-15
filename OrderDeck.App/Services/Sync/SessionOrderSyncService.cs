@@ -120,12 +120,18 @@ public sealed class SessionOrderSyncService
             CancelReason: l.CancelReason,
             IsShippingFee: l.IsShippingFee,
             IsBackupPromoted: l.IsBackupPromoted,
-            IsTentativeBackup: l.IsTentativeBackup
+            IsTentativeBackup: l.IsTentativeBackup,
+            // Yerelde TEXT "N", telde Guid. Ayrıştırılamayan değer null'a
+            // düşer: bozuk tek satır bütün partiyi düşürmemeli.
+            ProductId: System.Guid.TryParse(l.ProductId, out var pid) ? pid : null,
+            ProductVariantId: System.Guid.TryParse(l.ProductVariantId, out var vid) ? vid : null
         )).ToList();
 
         try
         {
-            _ = await _api.SyncOrdersAsync(licenseId, new SyncOrdersRequest(items), ct);
+            // Bu istemci katalog kimliği gönderebiliyor; sunucu stok hareketini
+            // yalnız bu bayrak açıkken üretiyor.
+            _ = await _api.SyncOrdersAsync(licenseId, new SyncOrdersRequest(items, CatalogAware: true), ct);
         }
         catch (LicenseApiException ex)
         {

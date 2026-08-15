@@ -166,7 +166,8 @@ public sealed class CatalogSyncService
             _repo.Replace(
                 pulled.Select(ToProduct).ToList(),
                 pulled.SelectMany(ToVariants).ToList(),
-                categories.Select(ToCategory).ToList());
+                categories.Select(ToCategory).ToList(),
+                pulled.SelectMany(ToBroadcastCodes).ToList());
 
             // Save ve Prune AYNI iş parçacığında, sırayla — ve turlar arası
             // örtüşme SyncOnceAsync'teki kapıyla engelleniyor: CatalogPhotoCache
@@ -301,15 +302,26 @@ public sealed class CatalogSyncService
         // çevirmek tr-TR makinede sessiz veri hatası üretir.
         p.UpdatedAt.ToUnixTimeSeconds());
 
+    // Sıra sunucunun kararı: DTO'da SortOrder alanı YOK, sıralamanın kendisi
+    // dizideki konum. Bu yüzden yerelde YENİDEN SIRALAMIYORUZ, indeksi olduğu
+    // gibi taşıyoruz. Yerelde sıralasaydık sunucudan ayrışırdık: SQLite'ın
+    // ordinal karşılaştırması sunucunun sırasıyla aynı değil — sunucu tam da
+    // bunu deterministik tutmak için sıralamayı bellekte, normalize eksen
+    // değerlerine göre yapıyor.
     private static IEnumerable<CatalogVariant> ToVariants(CatalogProductPullItem p)
-        // Sıra sunucunun kararı (VariantCode'a göre, SQL Server collation'ında);
-        // DTO'da SortOrder alanı yok, sıralamanın kendisi dizideki konum.
-        // Yerelde VariantCode'a göre yeniden sıralamak SQLite'ın ordinal
-        // karşılaştırmasıyla farklı düşerdi, o yüzden indeksi taşıyoruz.
         => p.Variants.Select((v, i) => new CatalogVariant(
             v.Id.ToString("N"), p.Id.ToString("N"),
-            v.Axis1Value, v.Axis1Code, v.Axis2Value, v.Axis2Code,
-            v.VariantCode, v.Barcode, v.IsActive, i));
+            v.Axis1Value, v.Axis2Value, v.Barcode, v.IsActive, i));
+
+    // Dizideki konum SortOrder oluyor — varyantlarla aynı kural (bkz. 027).
+    private static IEnumerable<CatalogBroadcastCode> ToBroadcastCodes(CatalogProductPullItem p) =>
+        p.BroadcastCodes.Select((c, i) => new CatalogBroadcastCode(
+            p.Id.ToString("N"),
+            c.SellerAxisValue,
+            c.Code,
+            c.CodeNormalized,
+            c.CreatedAt.ToUnixTimeSeconds(),
+            i));
 
     private static CatalogCategory ToCategory(CatalogCategoryPullItem c) => new(
         c.Id.ToString("N"), c.ParentCategoryId?.ToString("N"),

@@ -32,7 +32,8 @@ public sealed class LabelService
     public Label Add(string sessionId, ChatMessage message, decimal price, string? code,
         bool isBackupPromoted = false,
         string? parentLabelId = null,
-        bool isTentativeBackup = false)
+        bool isTentativeBackup = false,
+        string? productId = null, string? productVariantId = null)
     {
         var customer = _customers.GetOrCreate(
             message.Platform, message.Username, message.DisplayName, message.AvatarUrl);
@@ -51,7 +52,9 @@ public sealed class LabelService
             IsBackupPromoted: isBackupPromoted,
             ParentLabelId: parentLabelId,
             IsTentativeBackup: isTentativeBackup,
-            DisplayName: message.DisplayName);
+            DisplayName: message.DisplayName,
+            ProductId: productId,
+            ProductVariantId: productVariantId);
 
         _labels.Insert(label);
         return label;

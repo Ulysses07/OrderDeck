@@ -8,6 +8,7 @@ using System.Text;
 using OrderDeck.App.Services;
 using OrderDeck.App.Services.IntakeForm;
 using OrderDeck.App.ViewModels;
+using OrderDeck.Core.Catalog;
 using OrderDeck.Core.Chat;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Sales;
@@ -66,7 +67,7 @@ internal static class MainShellTestHarness
         Mock<IClock> Clock,
         FakeDialogService Dialogs);
 
-    public static Harness Build()
+    public static Harness Build(OrderDeck.App.Services.Drawers.IDrawerService? drawers = null)
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
@@ -104,7 +105,7 @@ internal static class MainShellTestHarness
 
         var catalogRepo = new CatalogReplicaRepository(db);
         var productCard = new ProductCardViewModel(
-            catalogRepo,
+            new BroadcastCodeResolver(catalogRepo),
             new CatalogPhotoCache(Path.Combine(Path.GetTempPath(), "od-test-" + Guid.NewGuid().ToString("N"))));
 
         // Sahte diyalog servisi ŞART: gerçek WpfDialogService modal bir
@@ -116,7 +117,8 @@ internal static class MainShellTestHarness
         var vm = new MainShellViewModel(
             bus, labelSvc, sessionSvc, printer, customerSvc, customerRepo,
             labelRepo, clock.Object, productCard,
-            giveawaySvc, banner, licenseSvc, intakeSync, tempStore, dialogs);
+            giveawaySvc, banner, licenseSvc, intakeSync, tempStore, dialogs,
+            drawers: drawers);
 
         return new Harness(vm, printer, db, labelSvc, customerRepo, sessionSvc, clock, dialogs);
     }
@@ -134,7 +136,11 @@ internal static class MainShellTestHarness
         string text = "alıyorum")
     {
         vm.ActivePriceText = price.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
-        vm.AddChatToQueue(ChatVm(username, $"{text} {Guid.NewGuid():N}"));
+        // AddChatToQueueAsync'i senkron köprülemek burada GÜVENLİ: bu yardımcı
+        // çekmece servisi VERİLMEMİŞ harness'te kullanılıyor, o yolda hiç await
+        // edilen bir şey yok — metot baştan sona senkron koşup biter.
+        vm.AddChatToQueueAsync(ChatVm(username, $"{text} {Guid.NewGuid():N}"))
+          .GetAwaiter().GetResult();
     }
 
     /// <summary>Pre-seeded LicenseService → Active status. Same logic as the original

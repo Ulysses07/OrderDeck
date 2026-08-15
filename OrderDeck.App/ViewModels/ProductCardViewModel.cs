@@ -3,26 +3,28 @@ using System.Collections.ObjectModel;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using OrderDeck.App.Services;
-using OrderDeck.Core.Storage.Repositories;
+using OrderDeck.Core.Catalog;
 
 namespace OrderDeck.App.ViewModels;
 
 /// <summary>
-/// Sağ paneldeki ürün kartı. Kaynağı sunucu kataloğunun yerel replikası
-/// (<see cref="CatalogReplicaRepository"/>), yazma yolu YOK.
+/// Sağ paneldeki ürün kartı. Kaynağı replikanın üstündeki
+/// <see cref="BroadcastCodeResolver"/>; yazma yolu YOK. Kod kutusu bir
+/// <b>yayın kodu</b> kutusudur: operatörün yazdığı kod hem ürünü hem satıcı
+/// ekseninin değerini birlikte belirler, kart da ikisini birlikte gösterir.
 ///
 /// Neden salt okunur: katalogun tek sahibi panel. Operatör burada ürün
 /// tanımlayabilseydi aynı ürünün iki ayrı gerçeği olurdu (yerelde tanımlı,
 /// sunucuda yok) ve stok hareketi hangi ürüne yazılacağı belirsizleşirdi.
 ///
-/// Üç durum: kod yok (boş kart) · kod var ama katalogda yok
-/// (<see cref="IsUnknown"/>) · kod katalogda var (<see cref="HasProduct"/>).
+/// Üç durum: kod yok (boş kart) · kod çözülemedi
+/// (<see cref="IsUnknown"/>) · kod çözüldü (<see cref="HasProduct"/>).
 /// Bilinmeyen kod bir <b>hata değil</b>: operatör kodu yazarken her ara tuş
 /// vuruşu tanınmayan bir koddur, akış kesilmez.
 /// </summary>
 public sealed partial class ProductCardViewModel : ObservableObject
 {
-    private readonly CatalogReplicaRepository _repo;
+    private readonly BroadcastCodeResolver _resolver;
     private readonly CatalogPhotoCache _photos;
 
     /// <summary>
@@ -33,9 +35,9 @@ public sealed partial class ProductCardViewModel : ObservableObject
     /// </summary>
     private readonly Dispatcher _dispatcher;
 
-    public ProductCardViewModel(CatalogReplicaRepository repo, CatalogPhotoCache photos)
+    public ProductCardViewModel(BroadcastCodeResolver resolver, CatalogPhotoCache photos)
     {
-        _repo = repo;
+        _resolver = resolver;
         _photos = photos;
         _dispatcher = Dispatcher.CurrentDispatcher;
 
@@ -82,17 +84,27 @@ public sealed partial class ProductCardViewModel : ObservableObject
 
     public ObservableCollection<CatalogVariantViewModel> Variants { get; } = new();
 
+    // IsUnknown Code'u okuyor: doğrudan bir Code ataması haber vermeseydi
+    // "katalogda yok" bloğunun görünürlüğü bayat kalırdı.
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsUnknown))]
     private string _code = string.Empty;
 
     [ObservableProperty]
     private string _name = string.Empty;
 
-    [ObservableProperty]
-    private bool _hasProduct;
+    // Alan DEĞİL, hesaplanan: iki bayrak da tek gerçekten (_resolution)
+    // türüyor, birbirinden ya da çözümlemeden ayrışmaları imkânsız.
+    public bool HasProduct => _resolution is not null;
+    public bool IsUnknown => Code.Length > 0 && _resolution is null;
 
+    /// <summary>Kartta ürün adının ardına eklenen " · Siyah" son eki; yoksa boş.</summary>
     [ObservableProperty]
-    private bool _isUnknown;
+    private string _sellerAxisSuffix = string.Empty;
+
+    /// <summary>Çözülmüş kod; sipariş akışı bunu kart üzerinden okur.</summary>
+    public BroadcastCodeResolution? Resolution => _resolution;
+    private BroadcastCodeResolution? _resolution;
 
     /// <summary>R2 nesne anahtarı; dosya yolu değil.</summary>
     [ObservableProperty]
@@ -112,50 +124,45 @@ public sealed partial class ProductCardViewModel : ObservableObject
     public string? PhotoAbsolutePath => _photos.ResolveAbsolute(CoverPhotoKey);
 
     /// <summary>
-    /// Kartı verilen ürün koduna göre tazeler. Kod büyük/küçük harf ve Türkçe
-    /// harf farkından bağımsız aranır; normalleştirmeyi bu sınıf DEĞİL,
-    /// <see cref="CatalogReplicaRepository.FindByCode"/> yapıyor (iğneyi de
-    /// saklanan kolonu da aynı <c>SearchNormalizer</c>'dan geçiriyor).
-    /// Buradan giden tek şey kırpılmış ham metin.
+    /// Kod kutusundaki metni <b>yayın kodu</b> olarak çözer. Stok kodu burada
+    /// bilerek aranmaz: stok kodu depo/raf dilidir, yayın kodu yayın dilidir;
+    /// ikisini aynı kutuda kabul etmek "SK00001" yazan operatöre yanlış ürünü
+    /// açabilirdi.
     /// </summary>
     public void Load(string? code)
     {
         var trimmed = (code ?? string.Empty).Trim();
-        if (trimmed.Length == 0)
+
+        _resolution = trimmed.Length == 0 ? null : _resolver.Resolve(trimmed);
+
+        // Kod çözüldüyse kartta KATALOĞUN yazımı durur ("ates" yazana "Ateş"
+        // gösterilir), çözülmediyse operatörün yazdığı ham metin. Kanonik hâli
+        // göstermek onayın kendisi: operatör kodun tanındığını yazımdan anlar,
+        // ekrandan okuyup panele/kargo formuna geçirdiğinde de doğru olan gider.
+        Code = _resolution?.Code ?? trimmed;
+
+        if (_resolution is null)
         {
-            Reset(string.Empty, unknown: false);
-            return;
+            Name = string.Empty;
+            SellerAxisSuffix = string.Empty;
+            CoverPhotoKey = null;
+            Variants.Clear();
+        }
+        else
+        {
+            Name = _resolution.Product.Name;
+            SellerAxisSuffix = string.IsNullOrWhiteSpace(_resolution.SellerAxisValue)
+                ? string.Empty
+                : $" · {_resolution.SellerAxisValue!.Trim()}";
+            CoverPhotoKey = _resolution.Product.CoverPhotoKey;
+
+            Variants.Clear();
+            // Süzme ve pasif eleme çözümleyicide yapıldı; kart yalnız gösteriyor.
+            foreach (var v in _resolution.Variants)
+                Variants.Add(new CatalogVariantViewModel(v, _resolution.Product.Code));
         }
 
-        var product = _repo.FindByCode(trimmed);
-        if (product is null)
-        {
-            Reset(trimmed, unknown: true);
-            return;
-        }
-
-        Code = product.Code;
-        Name = product.Name;
-        CoverPhotoKey = product.CoverPhotoKey;
-        HasProduct = true;
-        IsUnknown = false;
-
-        Variants.Clear();
-        foreach (var v in _repo.GetVariants(product.Id))
-        {
-            // Pasif varyant gösterilmez: satılamayacak bir kırılım karta
-            // girerse operatör onu okutmayı dener.
-            if (v.IsActive) Variants.Add(new CatalogVariantViewModel(v));
-        }
-    }
-
-    private void Reset(string code, bool unknown)
-    {
-        Code = code;
-        Name = string.Empty;
-        CoverPhotoKey = null;
-        HasProduct = false;
-        IsUnknown = unknown;
-        Variants.Clear();
+        OnPropertyChanged(nameof(HasProduct));
+        OnPropertyChanged(nameof(IsUnknown));
     }
 }

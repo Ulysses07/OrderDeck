@@ -19,10 +19,12 @@ public sealed class LabelRepository
         conn.Execute(
             @"INSERT INTO Label
               (Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code, Price, AddedAt, PrintedAt,
-               IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt)
+               IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt,
+               ProductId, ProductVariantId)
               VALUES
               (@Id, @SessionId, @CustomerId, @Platform, @Username, @DisplayName, @MessageText, @Code, @Price, @AddedAt, @PrintedAt,
-               @IsBackupPromoted, @ParentLabelId, @IsTentativeBackup, @IsShippingFee, @ShipmentId, @SyncedAt)",
+               @IsBackupPromoted, @ParentLabelId, @IsTentativeBackup, @IsShippingFee, @ShipmentId, @SyncedAt,
+               @ProductId, @ProductVariantId)",
             new
             {
                 l.Id, l.SessionId, l.CustomerId, l.Platform, l.Username, l.DisplayName, l.MessageText,
@@ -32,7 +34,9 @@ public sealed class LabelRepository
                 IsTentativeBackup = l.IsTentativeBackup ? 1 : 0,
                 IsShippingFee = l.IsShippingFee ? 1 : 0,
                 l.ShipmentId,
-                l.SyncedAt
+                l.SyncedAt,
+                l.ProductId,
+                l.ProductVariantId
             });
     }
 
@@ -47,7 +51,7 @@ public sealed class LabelRepository
         using var conn = _factory.Open();
         var row = conn.QueryFirstOrDefault<Row>(
             @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
-                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt
+                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId
               FROM Label WHERE Id=@id",
             new { id });
         return row is null ? null : Map(row);
@@ -63,7 +67,7 @@ public sealed class LabelRepository
         // can stick the spare sticker on the goods.
         var rows = conn.Query<Row>(
             @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
-                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt
+                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId
               FROM Label
               WHERE SessionId=@sessionId AND PrintedAt IS NULL AND CancelledAt IS NULL
               ORDER BY AddedAt",
@@ -82,7 +86,7 @@ public sealed class LabelRepository
         using var conn = _factory.Open();
         var rows = conn.Query<Row>(
             @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
-                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt
+                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId
               FROM Label
               WHERE ParentLabelId=@parentLabelId AND IsTentativeBackup = 1 AND CancelledAt IS NULL
               ORDER BY AddedAt",
@@ -162,7 +166,7 @@ public sealed class LabelRepository
         using var conn = _factory.Open();
         var rows = conn.Query<Row>(
             @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
-                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt
+                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId
               FROM Label
               WHERE SyncedAt IS NULL
               ORDER BY AddedAt
@@ -396,7 +400,7 @@ public sealed class LabelRepository
         using var conn = _factory.Open();
         var rows = conn.Query<Row>(
             @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
-                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt
+                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId
               FROM Label
               WHERE CustomerId=@customerId
                 AND ShipmentId IS NULL
@@ -440,7 +444,9 @@ public sealed class LabelRepository
             DisplayName: r.DisplayName,
             IsShippingFee: r.IsShippingFee != 0,
             ShipmentId: r.ShipmentId,
-            SyncedAt: r.SyncedAt);
+            SyncedAt: r.SyncedAt,
+            ProductId: r.ProductId,
+            ProductVariantId: r.ProductVariantId);
 
     private sealed class Row
     {
@@ -463,6 +469,8 @@ public sealed class LabelRepository
         public int IsShippingFee { get; init; }
         public string? ShipmentId { get; init; }
         public long? SyncedAt { get; init; }
+        public string? ProductId { get; init; }
+        public string? ProductVariantId { get; init; }
     }
 
     private sealed class TotalsRow

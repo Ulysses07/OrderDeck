@@ -54,7 +54,7 @@ public class ProductCardTemplateTests
     {
         var error = ThemeTestHost.RunOnSta(() =>
         {
-            var card = Lay(Seed, "A1");
+            var card = Lay(Seed, "Ateş");
 
             var texts = new List<string>();
             CollectVisible(card, texts);
@@ -82,7 +82,7 @@ public class ProductCardTemplateTests
             Assert.DoesNotContain(unknown, t => t.Contains("Güzel Elbise"));
 
             var loaded = new List<string>();
-            CollectVisible(Lay(Seed, "A1"), loaded);
+            CollectVisible(Lay(Seed, "Ateş"), loaded);
             Assert.Contains(loaded, t => t.Contains("Güzel Elbise"));
             Assert.DoesNotContain(loaded, t => t.Contains("katalogda yok"));
         });
@@ -107,22 +107,26 @@ public class ProductCardTemplateTests
                 (double)Application.Current.Resources["OD.Layout.ProductImageHeightShort"];
             Assert.NotEqual(tall, shortened);
 
-            Assert.Equal(tall, PhotoHeight(Lay(Seed, "A1")));
-            Assert.Equal(shortened, PhotoHeight(Lay(Seed, "A1", isShort: true)));
+            Assert.Equal(tall, PhotoHeight(Lay(Seed, "Ateş")));
+            Assert.Equal(shortened, PhotoHeight(Lay(Seed, "Ateş", isShort: true)));
         });
 
         Assert.Null(error);
     }
 
-    /// <summary>Bir ürün + bir aktif varyantlı replika.</summary>
+    /// <summary>
+    /// Bir ürün + bir aktif varyant + bir YAYIN KODU. Kod kutusu stok kodunu
+    /// aramıyor, kart ürüne ancak "Ateş" ile ulaşıyor.
+    /// </summary>
     private static void Seed(CatalogReplicaRepository repo)
         => repo.Replace(
-            [new CatalogProduct("p1", null, "A1", SearchNormalizer.Normalize("A1"),
+            [new CatalogProduct("p1", null, "SK00001", SearchNormalizer.Normalize("SK00001"),
                                 "Güzel Elbise", 199.90m, null, "Renk", 1, "Beden", 2,
                                 null, 1_700_000_000)],
-            [new CatalogVariant("v1", "p1", "Kırmızı", "KIRM", "M", "M",
-                                "A1-KIRM-M", null, true, 0)],
-            []);
+            [new CatalogVariant("v1", "p1", "Kırmızı", "M", null, true, 0)],
+            [],
+            [new CatalogBroadcastCode("p1", "Kırmızı", "Ateş",
+                                      SearchNormalizer.Normalize("Ateş"), 1_700_000_000, 0)]);
 
     /// <summary>Kartı verilen kodla gerçekten yerleştirir.</summary>
     private static ProductCard Lay(
@@ -135,7 +139,7 @@ public class ProductCardTemplateTests
         seed(repo);
 
         var vm = new ProductCardViewModel(
-            repo,
+            new BroadcastCodeResolver(repo),
             new CatalogPhotoCache(
                 Path.Combine(Path.GetTempPath(), "od-test-" + Guid.NewGuid().ToString("N"))));
         vm.Load(code);

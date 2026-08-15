@@ -32,12 +32,12 @@ public class MainShellViewModelQueueTests
     }
 
     [Fact]
-    public void AddChatToQueue_with_invalid_price_does_not_add()
+    public async Task AddChatToQueue_with_invalid_price_does_not_add()
     {
         var h = MainShellTestHarness.Build();
         h.Vm.ActivePriceText = "abc";
 
-        h.Vm.AddChatToQueue(MainShellTestHarness.ChatVm("@buyer", "alıyorum"));
+        await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@buyer", "alıyorum"));
 
         h.Vm.PrintQueue.Should().BeEmpty(
             "an unparseable price should keep the chat message out of the queue");

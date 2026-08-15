@@ -9,6 +9,7 @@ using FluentAssertions;
 using OrderDeck.App.Services;
 using OrderDeck.App.Services.IntakeForm;
 using OrderDeck.App.ViewModels;
+using OrderDeck.Core.Catalog;
 using OrderDeck.Core.Chat;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Sales;
@@ -165,7 +166,7 @@ public class MainShellPrintTests
 
         var catalogRepo = new CatalogReplicaRepository(db);
         var productCard = new ProductCardViewModel(
-            catalogRepo,
+            new BroadcastCodeResolver(catalogRepo),
             new CatalogPhotoCache(Path.Combine(Path.GetTempPath(), "od-test-" + Guid.NewGuid().ToString("N"))));
 
         var vm = new MainShellViewModel(
@@ -188,7 +189,11 @@ public class MainShellPrintTests
     private static void Enqueue(MainShellViewModel vm, string username, decimal price)
     {
         vm.ActivePriceText = price.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
-        vm.AddChatToQueue(ChatVm(username, $"alıyorum {Guid.NewGuid():N}"));
+        // AddChatToQueueAsync'i senkron köprülemek burada GÜVENLİ: bu yardımcı
+        // çekmece servisi VERİLMEMİŞ Fx() kurulumunda kullanılıyor, o yolda hiç
+        // await edilen bir şey yok — metot baştan sona senkron koşup biter.
+        vm.AddChatToQueueAsync(ChatVm(username, $"alıyorum {Guid.NewGuid():N}"))
+          .GetAwaiter().GetResult();
     }
 
     [Fact]

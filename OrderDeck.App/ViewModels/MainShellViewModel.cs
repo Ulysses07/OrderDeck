@@ -16,6 +16,7 @@ using OrderDeck.App.Views;
 using OrderDeck.Chat.Bridge;
 using OrderDeck.Chat.Facebook;
 using OrderDeck.Chat.YouTube;
+using OrderDeck.Core.Catalog;
 using OrderDeck.Core.Chat;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Sales;
@@ -881,8 +882,21 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         }
     }
 
-    public void AddChatToQueue(ChatMessageViewModel messageVm)
+    /// <summary>
+    /// Çekmece açıkken gelen ikinci çift-tık yok sayılsın diye. Tasarım
+    /// "çekmece akışı keser" diyor, ama <c>DrawerHost</c> bilinçli olarak MODAL
+    /// DEĞİL (operatör çekmece açıkken sohbeti okumaya devam edebilmeli).
+    /// Kesme kuralını bu yüzden görsel bir perdeyle değil, burada uyguluyoruz.
+    /// </summary>
+    private bool _variantPickerOpen;
+
+    /// <summary>Açık çekmecenin içeriği; testler akışı bunun üzerinden sürer.</summary>
+    public VariantPickerViewModel? ActiveVariantPicker { get; private set; }
+
+    public async Task AddChatToQueueAsync(ChatMessageViewModel messageVm)
     {
+        if (_variantPickerOpen) return;
+
         var session = _sessions.GetActive();
         if (session is null)
         {
@@ -897,8 +911,58 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             return;
         }
 
-        var label = _labels.Add(session.Id, messageVm.Message, price,
-            string.IsNullOrWhiteSpace(ActiveCode) ? null : ActiveCode.Trim());
+        var code = string.IsNullOrWhiteSpace(ActiveCode) ? null : ActiveCode.Trim();
+        var resolution = ProductCard.Resolution;
+
+        // Kod katalogda çözülmediyse veya üründe izleyici ekseni yoksa seçilecek
+        // bir şey yok: satır bugünkü gibi tek seferde yazılır.
+        if (resolution is null || !resolution.HasViewerAxis)
+        {
+            WriteOrder(session.Id, messageVm, price, code, resolution, null);
+            return;
+        }
+
+        var match = AxisValueMatcher.Match(
+            messageVm.Message.Text, code, resolution.ViewerAxisValues);
+
+        if (!match.NeedsPicker)
+        {
+            WriteOrder(session.Id, messageVm, price, code, resolution, match.Values[0]);
+            return;
+        }
+
+        if (_drawers is null) return;   // yalnız testte; bkz. alanın notu
+
+        var picker = new VariantPickerViewModel(resolution, match);
+        ActiveVariantPicker = picker;
+        _variantPickerOpen = true;
+        try
+        {
+            var confirmed = await _drawers.ShowAsync(
+                $"{picker.ProductLine} — {picker.AxisName}",
+                d => Views.Drawers.VariantPickerDrawer.Create(d, picker));
+
+            // Esc / Vazgeç → HİÇBİR sipariş yazılmaz (kabul kriteri 8).
+            if (!confirmed) return;
+
+            // İşaretlenen her değer AYRI satır (kabul kriteri 9).
+            foreach (var value in picker.SelectedValues)
+                WriteOrder(session.Id, messageVm, price, code, resolution, value);
+        }
+        finally
+        {
+            _variantPickerOpen = false;
+            ActiveVariantPicker = null;
+        }
+    }
+
+    private void WriteOrder(
+        string sessionId, ChatMessageViewModel messageVm, decimal price,
+        string? code, BroadcastCodeResolution? resolution, string? viewerAxisValue)
+    {
+        var label = _labels.Add(sessionId, messageVm.Message, price, code,
+            productId: resolution?.Product.Id,
+            productVariantId: resolution?.ResolveVariantId(viewerAxisValue));
         PrintQueue.Add(new LabelViewModel(label, messageVm.IsSenderBlacklisted));
     }
 

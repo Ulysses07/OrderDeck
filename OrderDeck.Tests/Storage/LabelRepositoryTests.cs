@@ -181,4 +181,36 @@ public class LabelRepositoryTests
 
         repo.GetByCustomer("c-X").Should().BeEmpty();
     }
+
+    [Fact]
+    public void Katalog_kimlikleri_gidip_geliyor()
+    {
+        var (db, repo, sid, cid) = Fx();
+        using var _ = db;
+
+        repo.Insert(MakeLabel("l1", sid, cid) with
+        {
+            ProductId = "p1",
+            ProductVariantId = "v2"
+        });
+
+        var back = repo.GetById("l1");
+        back!.ProductId.Should().Be("p1");
+        back.ProductVariantId.Should().Be("v2");
+    }
+
+    [Fact]
+    public void Katalog_kimlikleri_opsiyonel()
+    {
+        // Bilinmeyen kod / katalog dışı satış: satır yine yazılır, sadece
+        // stok hareketi doğmaz (kabul kriteri 10).
+        var (db, repo, sid, cid) = Fx();
+        using var _ = db;
+
+        repo.Insert(MakeLabel("l1", sid, cid));
+
+        var back = repo.GetById("l1");
+        back!.ProductId.Should().BeNull();
+        back.ProductVariantId.Should().BeNull();
+    }
 }
