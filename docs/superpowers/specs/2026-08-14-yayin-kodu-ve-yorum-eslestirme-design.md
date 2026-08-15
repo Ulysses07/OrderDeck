@@ -333,3 +333,16 @@ Sıra bağlayıcı: 2 numara 1 numaranın ucuna bağımlı.
 10. Katalogda olmayan bir kod yazılıp çift tıklanınca çekmece açılmaz, satır
     bugünkü gibi yazılır, sunucuda hiç stok hareketi oluşmaz.
 11. Eksensiz ürün (kolye) → çekmece açılmaz, stok üründen düşer.
+
+## Uygulama notu (2026-08-15)
+
+Plan 3/3 uygulandı: `BroadcastCodeResolver` + `AxisValueMatcher` + varyant seçici
+çekmece + `Label.ProductId/ProductVariantId` + `CatalogAware` senkron.
+
+**Kapsamdan çıkarılan tek madde:** sunucudaki geçici uyum kalkanı
+(`LicensesWpfCatalogPullController` içindeki `VariantCode` doldurması) bu sürümde
+KALDIRILMADI. Sebep: `CatalogVariantPullItem.VariantCode` eski istemcilerde
+non-nullable ve replikadaki kolon `NOT NULL`; kalkan kaldırılınca sahadaki eski
+WPF kurulumları katalog senkronunu **sessizce** kaybederdi (hata
+`CatalogSyncService`'te Warning'e yutuluyor). Kaldırma işi ayrı PR'a alındı ve
+yeni WPF sürümünün Velopack ile yayılmasına bağlandı.
