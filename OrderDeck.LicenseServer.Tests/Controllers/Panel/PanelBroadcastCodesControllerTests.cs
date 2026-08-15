@@ -376,12 +376,22 @@ public class PanelBroadcastCodesControllerTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>
-    /// Kodun kalıcı rezervasyonu ancak satır durursa mümkün; ürün fiziksel
-    /// silinirse cascade satırı götürür ve kod yeniden dağıtılabilir hâle
-    /// gelirdi. O yüzden kodu olan ürün silinmez, arşivlenir.
+    /// Bu test eskiden TERSİNİ savunuyordu ("kodu olan ürün silinemez"): kod
+    /// kalıcı rezerve sayıldığı için satırın durması şarttı. Kural bilerek
+    /// gevşetildi — kodu olup HİÇ stok hareketi olmayan ürün silinebiliyor ve
+    /// kodunu serbest bırakıyor.
+    ///
+    /// <para>Gerekçe: hareketler <c>OrderId</c> taşıyor (StockLedgerWriter),
+    /// yani "hareket yok" = "sipariş yok" = o kodla geçmişte tek bir satış bile
+    /// yapılmamış; serbest kalan kodun bozacağı bir geçmiş yok. Eski kural ise
+    /// yanlışlıkla açılmış bir ürün kartını kalıcı hâle getiriyordu, üstelik
+    /// hata mesajının işaret ettiği arşivleme ucu o sırada hiç yoktu.</para>
+    ///
+    /// <para>Serbest bırakmanın tüm sözleşmesi <c>ProductArchiveTests</c>'te;
+    /// burada yalnız bu dosyanın eski iddiasının yerine geçen hâli duruyor.</para>
     /// </summary>
     [Fact]
-    public async Task Product_with_broadcast_code_cannot_be_deleted()
+    public async Task Product_with_broadcast_code_can_be_deleted_when_it_has_no_movements()
     {
         var client = await NewPanelClientAsync();
         var productId = await NewProductWithSellerAxisAsync(client);
@@ -392,7 +402,17 @@ public class PanelBroadcastCodesControllerTests : IClassFixture<ApiFactory>
 
         var del = await client.DeleteAsync($"/api/panel/products/{productId}");
 
-        del.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        del.StatusCode.Should().BeOneOf(HttpStatusCode.NoContent, HttpStatusCode.OK);
+
+        // "Serbest kaldı" demek, kodun BAŞKA bir ürüne verilebilmesi demek.
+        // Satır sayısına bakmak yetmez — asıl iddia, çakışma bekçisinin (ve
+        // gerçek sağlayıcıda UNIQUE indeksin) artık takılmaması.
+        var other = await NewProductWithSellerAxisAsync(client);
+        var reuse = await client.PutAsJsonAsync(
+            $"/api/panel/products/{other}/broadcast-codes",
+            new { sellerAxisValue = "Siyah", code = "ATEŞ" });
+
+        reuse.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
     /// <summary>

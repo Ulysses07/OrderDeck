@@ -43,6 +43,14 @@ public class StockStaffEndpointInventoryTests
         "PanelProductsController.Create",
         "PanelProductsController.Update",
         "PanelProductsController.Delete",
+        // Arşivleme, silmenin yumuşak hâli — silme zaten açıkken kapalı tutmak
+        // tutarsız olurdu (stok elemanı ürünü büsbütün silebiliyor ama rafa
+        // kaldıramıyor). Uç ürünün yayın kodlarını siliyor, ama kod yazma ucu
+        // (PanelBroadcastCodesController.Put) da bu listede: kodu verebilen
+        // rolün geri alabilmesi tutarlı. Müşteri/sipariş/ödeme/ciro bilgisi
+        // göstermiyor.
+        "PanelProductsController.Archive",
+        "PanelProductsController.Unarchive",
 
         "PanelProductVariantsController.Create",
         "PanelProductVariantsController.CreateBulk",

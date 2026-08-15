@@ -28,6 +28,25 @@ public class PasswordResetCodeServiceTests
             NullLogger<PasswordResetCodeService>.Instance);
     }
 
+    /// <summary>
+    /// GÜNLÜK tavan testleri için geçmiş zaman üretir: bugünün UTC başlangıcı
+    /// ile <paramref name="now"/> arasını eşit aralığa böler, <c>i</c>. en yeni.
+    /// </summary>
+    /// <remarks>
+    /// Sabit bir geçmiş (<c>now.AddMinutes(-50)</c>) KULLANILAMAZ: servis
+    /// günlük tavanı <c>CreatedAt &gt;= todayStart</c> ile sayıyor
+    /// (<see cref="PasswordResetCodeService.IssueAsync"/>), yani gece yarısından
+    /// hemen sonra çalışan koşuda o satırlar DÜNE düşer, tavan hiç dolmaz ve
+    /// test saate bağlı olarak kırılır. 2026-08-15'te CI 00:47 UTC'de tam
+    /// böyle kırıldı. Aralığı <c>now - todayStart</c> ile ölçeklemek satırları
+    /// her koşuda bugünün içinde tutuyor.
+    /// </remarks>
+    private static DateTimeOffset EarlierToday(DateTimeOffset now, int i, int count)
+    {
+        var todayStart = new DateTimeOffset(now.UtcDateTime.Date, TimeSpan.Zero);
+        return now - (now - todayStart) * (i + 1) / (count + 1);
+    }
+
     private static async Task<Shopper> SeedShopperAsync(LicenseDbContext db)
     {
         var now = DateTimeOffset.UtcNow;
@@ -84,16 +103,19 @@ public class PasswordResetCodeServiceTests
         var svc = NewService(db);
         var shopper = await SeedShopperAsync(db);
 
-        // 5 kod bugün, hepsi cooldown dışında (CreatedAt geçmişe yayılmış).
+        // 5 kod BUGÜN (bkz. EarlierToday: gece yarısı tuzağı) ve geçmişe
+        // yayılmış. Tavan kontrolü cooldown'dan önce çalıştığı için iddia
+        // satırlar cooldown içine düşse de tavanı ölçer.
         var now = DateTimeOffset.UtcNow;
-        for (int i = 0; i < PasswordResetCodeService.PerPhoneDailyMax; i++)
+        const int count = PasswordResetCodeService.PerPhoneDailyMax;
+        for (int i = 0; i < count; i++)
             db.ShopperPasswordResetCodes.Add(new ShopperPasswordResetCode
             {
                 Id = Guid.NewGuid(),
                 ShopperId = shopper.Id,
                 CodeHash = Hasher.Hash("000000"),
-                CreatedAt = now.AddMinutes(-10 * (i + 1)),
-                ExpiresAt = now.AddMinutes(-10 * (i + 1)).AddMinutes(10),
+                CreatedAt = EarlierToday(now, i, count),
+                ExpiresAt = EarlierToday(now, i, count).AddMinutes(10),
             });
         await db.SaveChangesAsync();
 
@@ -136,14 +158,16 @@ public class PasswordResetCodeServiceTests
         var svc = NewService(db, globalCap: 1);
         var now = DateTimeOffset.UtcNow;
 
-        // Global cap=1 ve bugün zaten 1 kod var → yeni istek reddedilir.
+        // Global cap=1 ve BUGÜN zaten 1 kod var → yeni istek reddedilir.
+        // Satır bugünün içinde kalmalı (bkz. EarlierToday): sabit -30dk, gece
+        // yarısından sonraki ilk yarım saatte düne düşüp tavanı boşaltırdı.
         var other = await SeedShopperAsync(db);
         db.ShopperPasswordResetCodes.Add(new ShopperPasswordResetCode
         {
             Id = Guid.NewGuid(),
             ShopperId = other.Id,
             CodeHash = Hasher.Hash("000000"),
-            CreatedAt = now.AddMinutes(-30),
+            CreatedAt = EarlierToday(now, 0, 1),
             ExpiresAt = now,
         });
         await db.SaveChangesAsync();

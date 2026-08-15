@@ -448,6 +448,12 @@ public sealed class PanelProductsController : ControllerBase
             // Yeri, bir üstteki axis-in-use-stock kontrolüyle aynı gerekçeyle
             // burada: RemoveRange'ten ÖNCE, sahiplik doğrulandıktan SONRA.
             // LicenseId süzgecinin gerekçesi silme bekçisinde yazılı.
+            //
+            // Arşivleme bu kilidi MEŞRU şekilde açıyor: Archive ürünün tüm kod
+            // satırlarını siliyor, dolayısıyla arşivdeki üründe eksen yapısı
+            // serbestçe değiştirilebiliyor. Delik değil — yukarıdaki senaryonun
+            // dayandığı "yerinde kalan kod satırı" ortada yok; ürün arşivden
+            // çıkınca kodlar YENİ eksenlere göre sıfırdan veriliyor.
             if (await _db.ProductBroadcastCodes.AnyAsync(
                     x => x.LicenseId == product.LicenseId && x.ProductId == product.Id, ct))
                 return Problem(title: "axis-in-use-broadcast-codes",
@@ -522,19 +528,19 @@ public sealed class PanelProductsController : ControllerBase
                 detail: "Bu ürünün stok hareketleri var; silinemez. Arşivleyebilirsiniz.",
                 statusCode: 409);
 
-        // Kodu olan ürün silinemez: satır cascade ile giderse kod serbest
-        // kalır ve bir daha ASLA devredilmemesi gereken kod başka bir ürüne
-        // verilebilir hâle gelir (bkz. ProductBroadcastCode XML doc).
+        // Yayın kodu için AYRI bir bekçi bilerek YOK — eskiden vardı, kaldırıldı.
+        // Kod satırları ürünle birlikte gidiyor ve kod serbest kalıyor.
         //
-        // LicenseId süzgeci kiracı güvenliği için GEREKSİZ (ürün sahiplik
-        // kontrolünden geçti, ProductId kiracıyı belirliyor); gerekçesi
-        // PanelProductVariantsController'da yazılı olan kurala uymak için
-        // duruyor: yayın kodu sorguları istisnasız kiracıyla süzülüyor.
-        if (await _db.ProductBroadcastCodes.AnyAsync(
-                x => x.LicenseId == product.LicenseId && x.ProductId == product.Id, ct))
-            return Problem(title: "product-has-broadcast-codes",
-                detail: "Bu ürünün yayın kodları var; silinemez. Arşivleyebilirsiniz.",
-                statusCode: 409);
+        // Bu, "yayın kodu asla serbest kalmaz" aksiyomunun bilinçli gevşetilmesi
+        // ve güvenliği bir üstteki bekçiden geliyor: buraya gelen ürünün HİÇ
+        // stok hareketi yok, hareketler OrderId taşıdığı için (StockLedgerWriter)
+        // hiç siparişi de yok. Yani serbest kalan kodla geçmişte tek bir satış
+        // bile yapılmamış; kodu yarın başka bir ürüne vermek hiçbir geçmiş
+        // kaydın anlamını değiştirmez.
+        //
+        // Kodu OLAN ama hareketi olan ürünün çıkış kapısı arşivleme (Archive):
+        // orada kodlar siliniyor, ürün kartı duruyor.
+        // Ayrıntı: docs/superpowers/plans/2026-08-15-urun-arsivleme-yayin-kodu.md
 
         // Galeri fotoğraflarının anahtarlarını DB commit öncesinde toplayıyoruz
         // — commit sonrası satırlar gider, anahtara erişemeyiz.
@@ -542,6 +548,18 @@ public sealed class PanelProductsController : ControllerBase
             .Where(p => p.ProductId == product.Id)
             .Select(p => p.ObjectKey)
             .ToListAsync(ct);
+
+        // Kod satırları AÇIKÇA siliniyor, cascade'e bırakılmıyor. FK zaten
+        // Cascade (LicenseDbContext: ProductBroadcastCode → Product) ama o
+        // cascade sağlayıcıya bağlı: EF InMemory referans bütünlüğü zorlamıyor
+        // ve satırlar ortada kalıyor. Aynı gerekçeyle bir alt satırdaki varyant
+        // silmesi de açık — depo kuralı: silinmesi anlamlı olan satır elle
+        // silinir, çünkü "silindi" varsayımı testte de üretimde de aynı
+        // davranmalı.
+        var codes = await _db.ProductBroadcastCodes
+            .Where(x => x.LicenseId == product.LicenseId && x.ProductId == product.Id)
+            .ToListAsync(ct);
+        _db.ProductBroadcastCodes.RemoveRange(codes);
 
         _db.ProductVariants.RemoveRange(product.Variants);
         _db.Products.Remove(product);
@@ -561,6 +579,111 @@ public sealed class PanelProductsController : ControllerBase
             await _storage.DeleteAsync(key, ct);
 
         return NoContent();
+    }
+
+    /// <summary>
+    /// Ürünü arşive alır ve <b>yayın kodlarını siler</b>.
+    ///
+    /// <para>Dayandığı kural: <i>yayın kodu olan ürün = yayında satılabilen
+    /// ürün.</i> Arşivdeki ürün yayında satılamaz — bu bugün de yapısal olarak
+    /// doğru: WPF çekme ucu arşivlileri süzüyor
+    /// (<see cref="Licenses.LicensesWpfCatalogPullController"/>) ve WPF
+    /// replikası her turda tam anlık görüntüyle DEĞİŞTİRİLİYOR
+    /// (CatalogSyncService <c>Replace</c>), yani arşivlenen ürün bir sonraki
+    /// turda WPF'ten de düşüyor. Satılamayan ürünün koda ihtiyacı olmadığı
+    /// için kodlar burada bırakılmıyor, siliniyor.</para>
+    ///
+    /// <para>Bunun bedeli kabul edildi: kod serbest kalır ve ileride başka bir
+    /// ürüne verilebilir. Teorik zarar (eski yayın kaydından gelen yorumun yeni
+    /// ürüne düşmesi) iş modelinde karşılığı olmayan bir senaryo — mezat
+    /// yayınları canlı izlenip canlı satılıyor. Emekli kod geçmişinin
+    /// kaybolması da bilerek kabul edildi.</para>
+    ///
+    /// <para>Ters yön (<see cref="Unarchive"/>) ürünü <b>kodsuz</b> geri
+    /// getirir; yeni kod istemek panelin işi.</para>
+    /// </summary>
+    [AllowStockStaff]
+    [HttpPost("{id:guid}/archive")]
+    public async Task<IActionResult> Archive(Guid id, CancellationToken ct)
+    {
+        var licenseId = await ResolveActiveLicenseAsync(ct);
+        if (licenseId is null) return Problem(title: "no-active-license", statusCode: 400);
+
+        var product = await LoadAsync(id, licenseId.Value, ct);
+        if (product is null) return NotFound();
+
+        // Zaten arşivliyse iş yok. Erken çıkış bekçilerden ÖNCE: aksi hâlde
+        // yayın sürerken arşivdeki bir ürüne gelen tekrar isteği 409 alırdı ve
+        // panelin yeniden denemesi hiç yakınsamazdı.
+        if (product.IsArchived) return Ok(await ToDtoAsync(product, ct));
+
+        // Yayın sürerken arşivleme yok: kod tam yayının ortasında silinir,
+        // izleyicinin yazdığı kod bir anda karşılıksız kalırdı.
+        //
+        // Bu bekçi bir DOĞRULUK bariyeri DEĞİL, kullanıcı hatası kalkanı:
+        // StreamSession sunucuda pasif replika (kararı WPF veriyor), WPF
+        // çevrimdışıyken kapanmamış bir oturum "açık" görünmeye devam edebilir
+        // ya da tersine yeni açılan yayın henüz senkronlanmamış olabilir.
+        // Gerçek bariyer çekme ucundaki arşiv süzgeci.
+        //
+        // Yeri kasıtlı: sahiplik doğrulandıktan SONRA — önce olsaydı başka bir
+        // lisansın yayında olup olmadığı 409/404 farkından sızardı.
+        if (await _db.StreamSessions.AnyAsync(
+                s => s.LicenseId == product.LicenseId && s.EndedAt == null, ct))
+            return Problem(title: "broadcast-in-progress",
+                detail: "Yayın sürerken ürün arşivlenemez: arşivleme ürünün yayın "
+                      + "kodlarını siler ve izleyicilerin yazdığı kod yayının "
+                      + "ortasında karşılıksız kalırdı. Yayını bitirdikten sonra "
+                      + "tekrar dene.",
+                statusCode: 409);
+
+        // Güncel + emekli, ürünün TÜM kod satırları. LicenseId süzgeci kiracı
+        // güvenliği için gereksiz (ürün sahiplik kontrolünden geçti) ama depo
+        // kuralı: yayın kodu sorguları istisnasız kiracıyla süzülüyor.
+        var codes = await _db.ProductBroadcastCodes
+            .Where(x => x.LicenseId == product.LicenseId && x.ProductId == product.Id)
+            .ToListAsync(ct);
+        _db.ProductBroadcastCodes.RemoveRange(codes);
+
+        var now = DateTimeOffset.UtcNow;
+        product.IsArchived = true;
+        product.ArchivedAt = now;
+        // UpdatedAt şart: hem panel listesi hem WPF çekmesi bu kolonun
+        // indeksinden besleniyor, dokunulmazsa arşivleme sıralamada görünmez.
+        product.UpdatedAt = now;
+
+        await _db.SaveChangesAsync(ct);
+
+        return Ok(await ToDtoAsync(product, ct));
+    }
+
+    /// <summary>
+    /// Ürünü arşivden çıkarır. Kodlar geri GELMEZ — arşive girerken silindiler.
+    /// Ürün kodsuz döner; yeni kod istemek panelin işi (uç, kodları gövdede
+    /// zorunlu tutmuyor: operatörü tek hamlede bütün varyantların kodunu
+    /// doldurmaya mahkûm ederdi). Kodsuz ürün sunucuda hiçbir şeyi bozmaz,
+    /// yalnızca yayında eşleşmez.
+    /// </summary>
+    [AllowStockStaff]
+    [HttpPost("{id:guid}/unarchive")]
+    public async Task<IActionResult> Unarchive(Guid id, CancellationToken ct)
+    {
+        var licenseId = await ResolveActiveLicenseAsync(ct);
+        if (licenseId is null) return Problem(title: "no-active-license", statusCode: 400);
+
+        var product = await LoadAsync(id, licenseId.Value, ct);
+        if (product is null) return NotFound();
+
+        if (!product.IsArchived) return Ok(await ToDtoAsync(product, ct));
+
+        var now = DateTimeOffset.UtcNow;
+        product.IsArchived = false;
+        product.ArchivedAt = null;
+        product.UpdatedAt = now;
+
+        await _db.SaveChangesAsync(ct);
+
+        return Ok(await ToDtoAsync(product, ct));
     }
 
     private IActionResult? Validate(UpsertRequest req)
