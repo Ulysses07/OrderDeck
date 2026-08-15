@@ -39,7 +39,7 @@ public sealed class SessionOrderSyncServiceTests
     }
 
     private sealed record Fx(SessionOrderSyncService Svc, SessionRepository Sessions,
-        LabelRepository Labels, InMemorySqlite Db);
+        LabelRepository Labels, InMemorySqlite Db, List<string> OrdersJson);
 
     private static Fx Build()
     {
@@ -52,14 +52,24 @@ public sealed class SessionOrderSyncServiceTests
             new Customer("c1hex", "instagram", "@alice", "Alice", null, 100, 100,
                 false, null, null, 0, 0m, BlacklistedAt: null, Address: null, Phone: null));
 
+        var capturedOrdersJson = new List<string>();
+
         var handler = new FakeHttpMessageHandler(req =>
         {
             var path = req.RequestUri!.AbsolutePath;
             if (path == "/api/v1/me/licenses")
                 return FakeHttpMessageHandler.Json(200,
                     "[{\"id\":\"11111111-1111-1111-1111-111111111111\",\"licenseKey\":\"TEST-KEY-001\"}]");
-            if (path.EndsWith("/sessions/sync") || path.EndsWith("/orders/sync"))
+            if (path.EndsWith("/sessions/sync"))
                 return FakeHttpMessageHandler.Json(200, "[]");
+            if (path.EndsWith("/orders/sync"))
+            {
+                // Sahte handler, gerçek ağ yok; gövde JsonContent.Create tarafından
+                // bellekte oluşturulmuş — GetAwaiter().GetResult() burada güvenli.
+                var json = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+                capturedOrdersJson.Add(json);
+                return FakeHttpMessageHandler.Json(200, "[]");
+            }
             return new HttpResponseMessage(HttpStatusCode.NotFound);
         });
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
@@ -69,7 +79,7 @@ public sealed class SessionOrderSyncServiceTests
             new FakeLicenseProvider(), new FakeClock(),
             NullLogger<SessionOrderSyncService>.Instance);
 
-        return new Fx(svc, sessions, labels, db);
+        return new Fx(svc, sessions, labels, db, capturedOrdersJson);
     }
 
     [Fact]
@@ -149,5 +159,36 @@ public sealed class SessionOrderSyncServiceTests
 
         var r2 = await fx.Svc.SyncOnceAsync();
         r2.SessionsPushed.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Katalog_kimlikleri_sunucuya_gider()
+    {
+        var fx = Build();
+        using var _d = fx.Db;
+
+        var sid = Guid.NewGuid().ToString("N");
+        var lid = Guid.NewGuid().ToString("N");
+        var pid = Guid.NewGuid().ToString("N");
+        var vid = Guid.NewGuid().ToString("N");
+
+        fx.Sessions.Insert(new StreamSession(sid, "S1", 1700000000L, null,
+            new[] { "instagram" }, null));
+
+        fx.Labels.Insert(new Label(lid, sid, "c1hex", "instagram", "@alice",
+            "ürün", null, 250m, 1700000200L, null, DisplayName: "Alice",
+            ProductId: pid, ProductVariantId: vid));
+
+        await fx.Svc.SyncOnceAsync();
+
+        using var doc = System.Text.Json.JsonDocument.Parse(fx.OrdersJson.Single());
+        var root = doc.RootElement;
+
+        // Bayrak false kalırsa sunucu satırı katalog dışı sayar ve stok düşmez.
+        root.GetProperty("catalogAware").GetBoolean().Should().BeTrue();
+
+        var order = root.GetProperty("orders")[0];
+        order.GetProperty("productId").GetGuid().Should().Be(Guid.Parse(pid));
+        order.GetProperty("productVariantId").GetGuid().Should().Be(Guid.Parse(vid));
     }
 }
