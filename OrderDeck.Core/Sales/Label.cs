@@ -55,4 +55,12 @@ public sealed record Label(
     /// <summary>PR siparis-sync (2026-05-13): LicenseServer'a son sync zamanı.
     /// Null = outbox'ta. State mutation (MarkPrinted/Cancel/UpdatePrice)
     /// sonrası null'a düşer → bir sonraki tick'te tekrar push.</summary>
-    long? SyncedAt = null);
+    long? SyncedAt = null,
+    /// <summary>Katalog ürününün sunucudaki kimliği ("N" biçimi). Null =
+    /// satır bir katalog ürününe bağlanamadı (bilinmeyen kod, kodsuz satış);
+    /// sunucu bu satır için stok hareketi üretmez.</summary>
+    string? ProductId = null,
+    /// <summary>Katalog varyantının sunucudaki kimliği. ProductId dolu iken
+    /// bunun null olması meşrudur: ürünün hiç ekseni yoksa stok ürün
+    /// düzeyinden düşer.</summary>
+    string? ProductVariantId = null);
