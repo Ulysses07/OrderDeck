@@ -132,9 +132,14 @@ public sealed partial class ProductCardViewModel : ObservableObject
     public void Load(string? code)
     {
         var trimmed = (code ?? string.Empty).Trim();
-        Code = trimmed;
 
         _resolution = trimmed.Length == 0 ? null : _resolver.Resolve(trimmed);
+
+        // Kod çözüldüyse kartta KATALOĞUN yazımı durur ("ates" yazana "Ateş"
+        // gösterilir), çözülmediyse operatörün yazdığı ham metin. Kanonik hâli
+        // göstermek onayın kendisi: operatör kodun tanındığını yazımdan anlar,
+        // ekrandan okuyup panele/kargo formuna geçirdiğinde de doğru olan gider.
+        Code = _resolution?.Code ?? trimmed;
 
         if (_resolution is null)
         {

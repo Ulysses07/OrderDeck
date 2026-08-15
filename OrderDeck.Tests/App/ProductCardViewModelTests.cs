@@ -164,10 +164,11 @@ public class ProductCardViewModelTests
         vm.IsUnknown.Should().BeFalse();
         vm.Name.Should().Be("Güzel Elbise");
         // Arama büyük/küçük harf ve Türkçe harf farkından bağımsız: "ates"
-        // ile "Ateş" aynı iğneye normalleşiyor.
-        vm.Code.Should().Be("ates");
-        // Kanonik yazım çözümlemede duruyor — sipariş/kargo metnine yazılacak
-        // olan bu, operatörün tuşladığı metin değil.
+        // ile "Ateş" aynı iğneye normalleşiyor. Kod çözülünce kartta KATALOĞUN
+        // yazımı durur, operatörün tuşladığı metin değil: yazımın düzelmesi
+        // kodun tanındığının onayıdır ve karttan okuyup panele/kargo formuna
+        // geçiren operatör doğru olanı taşır.
+        vm.Code.Should().Be("Ateş");
         vm.Resolution!.Code.Should().Be("Ateş");
         // Pasif varyant gösterilmez: operatör satamayacağı bir kırılımı görmesin.
         vm.Variants.Should().ContainSingle().Which.Display.Should().Be("Kırmızı · M");
