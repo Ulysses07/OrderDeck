@@ -612,30 +612,32 @@ public sealed class PanelProductsController : ControllerBase
         var product = await LoadAsync(id, licenseId.Value, ct);
         if (product is null) return NotFound();
 
-        // Zaten arşivliyse iş yok. Erken çıkış bekçilerden ÖNCE: aksi hâlde
-        // yayın sürerken arşivdeki bir ürüne gelen tekrar isteği 409 alırdı ve
-        // panelin yeniden denemesi hiç yakınsamazdı.
+        // Zaten arşivliyse iş yok — uç bilerek idempotent.
         if (product.IsArchived) return Ok(await ToDtoAsync(product, ct));
 
-        // Yayın sürerken arşivleme yok: kod tam yayının ortasında silinir,
-        // izleyicinin yazdığı kod bir anda karşılıksız kalırdı.
+        // Burada "yayın sürerken arşivleme yok" diye bir bekçi ARANMASIN:
+        // 2026-08-15'te bilerek kaldırıldı (önce vardı, `EndedAt == null` bir
+        // StreamSession görünce 409 dönüyordu).
         //
-        // Bu bekçi bir DOĞRULUK bariyeri DEĞİL, kullanıcı hatası kalkanı:
-        // StreamSession sunucuda pasif replika (kararı WPF veriyor), WPF
-        // çevrimdışıyken kapanmamış bir oturum "açık" görünmeye devam edebilir
-        // ya da tersine yeni açılan yayın henüz senkronlanmamış olabilir.
-        // Gerçek bariyer çekme ucundaki arşiv süzgeci.
+        // Sebep: sunucudaki StreamSessions pasif bir replika ve senkron outbox
+        // — WPF bir oturumu ömrü boyunca yalnız İKİ kez push ediyor (açılış ve
+        // kapanış, bkz. SessionRepository.GetUnsynced), heartbeat yok. Kapanış
+        // push'u bir kez kaçarsa (çökme, makine değişimi, yeniden kurulum)
+        // oturum sunucuda sonsuza kadar "açık" kalıyor ve o lisansta arşivleme
+        // kalıcı olarak kilitleniyor; operatörün panelden çıkışı yok. Bu
+        // varsayımsal değil: 13 Ağustos'ta kapanmayan bir oturum yüzünden
+        // arşivleme kilitlendi, ancak DB'ye elle yazarak açıldı.
         //
-        // Yeri kasıtlı: sahiplik doğrulandıktan SONRA — önce olsaydı başka bir
-        // lisansın yayında olup olmadığı 409/404 farkından sızardı.
-        if (await _db.StreamSessions.AnyAsync(
-                s => s.LicenseId == product.LicenseId && s.EndedAt == null, ct))
-            return Problem(title: "broadcast-in-progress",
-                detail: "Yayın sürerken ürün arşivlenemez: arşivleme ürünün yayın "
-                      + "kodlarını siler ve izleyicilerin yazdığı kod yayının "
-                      + "ortasında karşılıksız kalırdı. Yayını bitirdikten sonra "
-                      + "tekrar dene.",
-                statusCode: 409);
+        // "UpdatedAt bayatsa yok say" da çare değil: heartbeat olmadığı için
+        // UpdatedAt gerçek bir 3,5 saatlik yayında da başlangıçta donuyor;
+        // hayaleti temizleyecek kadar kısa her pencere gerçek yayını da
+        // öldürür.
+        //
+        // Kaybedilen şey yalnızca bir kullanıcı hatası kalkanıydı; DOĞRULUK
+        // bariyeri değil. Gerçek bariyer çekme ucundaki arşiv süzgeci
+        // (LicensesWpfCatalogPullController) — arşivlenen ürün bir sonraki
+        // turda WPF replikasından da düşüyor. Yayın ortasında yanlışlıkla
+        // arşivlemeye karşı uyarı artık panelin onay kutusunda.
 
         // Güncel + emekli, ürünün TÜM kod satırları. LicenseId süzgeci kiracı
         // güvenliği için gereksiz (ürün sahiplik kontrolünden geçti) ama depo

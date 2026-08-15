@@ -62,9 +62,9 @@ POST /api/panel/products/{id:guid}/unarchive
    bekçiler — sıra `Delete`'teki gerekçenin aynısı: sahiplik önce, yoksa başka
    kiracının ürün durumu 409/404 farkından sızar.
 2. Zaten arşivliyse `204` (idempotent).
-3. **Açık yayın bekçisi:** `_db.StreamSessions.AnyAsync(s => s.LicenseId == ...
-   && s.EndedAt == null)` → 409 `broadcast-in-progress`, "Yayın sürerken ürün
-   arşivlenemez; yayın kodu yayının ortasında silinirdi."
+3. ~~**Açık yayın bekçisi:** `_db.StreamSessions.AnyAsync(s => s.LicenseId == ...
+   && s.EndedAt == null)` → 409 `broadcast-in-progress`.~~ **Yazıldı, sonra
+   2026-08-15'te kaldırıldı** — gerekçe aşağıda.
 4. `_db.ProductBroadcastCodes.RemoveRange(...)` — ürünün tüm kod satırları
    (güncel + emekli), `LicenseId` süzgeciyle (depo kuralı).
 5. `IsArchived = true`, `ArchivedAt = now`, `UpdatedAt = now`. `UpdatedAt` şart:
@@ -86,6 +86,19 @@ Yayın bekçisinin sınırı yazıya geçirilecek: `StreamSession` **pasif repli
 "açık" görünebilir, ya da tersi. Bu yüzden bekçi **doğruluk bariyeri değil,
 kullanıcı hatası kalkanı**; gerçek bariyer çekme ucu süzgeci + WPF'in
 `Replace`'i.
+
+> **Sonradan not (2026-08-15): bekçi kaldırıldı.** Yukarıdaki "sonsuza dek açık
+> görünebilir" ihtimali plan yazıldıktan iki gün sonra gerçekleşti: 13 Ağustos'ta
+> başka bir makinede açılan bir oturumun kapanış push'u hiç gelmedi, lisansta
+> arşivleme kilitlendi ve ancak prod DB'ye elle yazarak açıldı. Kilit
+> kendiliğinden çözülemiyor, operatörün panelden çıkışı yok:
+> `SessionRepository.GetUnsynced` yalnız `SyncedAt IS NULL` satırlarını
+> gönderdiği için bir oturum ömrü boyunca tam **iki** kez push ediliyor (açılış +
+> kapanış), heartbeat yok. "UpdatedAt bayatsa yok say" da işe yaramaz: heartbeat
+> olmadığı için `UpdatedAt` gerçek 3,5 saatlik bir yayında da başlangıçta donuyor,
+> hayaleti temizleyecek kadar kısa her pencere gerçek yayını da öldürür.
+> Kaybedilen şey yalnız kullanıcı hatası kalkanıydı; o uyarı artık panelin onay
+> kutusunda. Doğruluk bariyeri (çekme ucu süzgeci + `Replace`) yerinde.
 
 ### 2. `Delete` bekçisinin sadeleşmesi — `PanelProductsController.cs:525-537`
 
@@ -152,7 +165,7 @@ barkoda dayalı rapor boşluk bırakırdı.)
 - Arşivleme ürünün yayın kodlarını siliyor; `GET .../broadcast-codes` boş.
 - Arşivlenen ürün `GET /products` varsayılan listesinde yok, `includeArchived=true` ile var.
 - Arşivlenen ürün WPF çekme ucunda yok (`LicensesWpfCatalogPullControllerTests` zaten `archiveFirst` kurgusu taşıyor).
-- Açık `StreamSession` varken arşivleme 409 `broadcast-in-progress`.
+- Açık `StreamSession` varken arşivleme **geçiyor** (bekçi kaldırıldı, bkz. 1. bölümdeki sonradan not); test bekçinin geri gelmesine karşı duruyor.
 - Kodu olan + hareketi olmayan ürün artık **silinebiliyor** (eski 409 gitti).
 - Hareketi olan ürün hâlâ 409 `product-has-stock-movements`.
 - Arşiv → eksen değiştir → arşivden çıkar akışı 409 vermiyor.
