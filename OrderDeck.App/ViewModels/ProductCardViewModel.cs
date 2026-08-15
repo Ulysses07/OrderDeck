@@ -145,7 +145,7 @@ public sealed partial class ProductCardViewModel : ObservableObject
         {
             // Pasif varyant gösterilmez: satılamayacak bir kırılım karta
             // girerse operatör onu okutmayı dener.
-            if (v.IsActive) Variants.Add(new CatalogVariantViewModel(v));
+            if (v.IsActive) Variants.Add(new CatalogVariantViewModel(v, product.Code));
         }
     }
 

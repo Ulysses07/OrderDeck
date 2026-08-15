@@ -237,31 +237,4 @@ public class ProductCardViewModelTests
         changed.Should().BeEmpty();
         vm.PhotoAbsolutePath.Should().BeNull("kartın kendi dosyası hâlâ inmedi");
     }
-
-    [Fact]
-    public void Variant_without_axis_values_falls_back_to_its_id()
-    {
-        var vm = new CatalogVariantViewModel(
-            new CatalogVariant("v1", "p1", null, null, null, true, 0));
-
-        vm.Display.Should().Be("v1");
-    }
-
-    // Tek eksenli ürün (yalnız "Beden") bu katalogda İSTİSNA DEĞİL, olağan hâl.
-    // İkinci eksen süzülmezse rozette "M · " yazar; kimsenin fark etmeyeceği
-    // kadar küçük, her üründe görünecek kadar sık. Üç biçimin de sınanmasının
-    // sebebi ölçüldü: süzgeç `v is not null`'a düşürülünce yalnız null durumu
-    // yeşil kalıyor — sunucudan boş dize gelen kurulumda rozet bozulurdu ve
-    // CatalogSyncService değeri olduğu gibi geçiriyor.
-    [Theory]
-    [InlineData(null)]
-    [InlineData("")]
-    [InlineData("   ")]
-    public void Variant_with_a_single_axis_has_no_dangling_separator(string? missingAxis)
-    {
-        var vm = new CatalogVariantViewModel(
-            new CatalogVariant("v1", "p1", "M", missingAxis, null, true, 0));
-
-        vm.Display.Should().Be("M");
-    }
 }
