@@ -29,7 +29,7 @@ public class MigrationRunnerTests
         tables.Should().NotContain("LabelBackup");
 
         var version = conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().Be(28);
+        version.Should().Be(29);
 
         // Migration 018 added the Shipment table for kümülatif kargo dosyası.
         tables.Should().Contain("Shipment");
@@ -43,6 +43,10 @@ public class MigrationRunnerTests
         // sunucu, yerel tanım kalmadı.
         tables.Should().NotContain("Product");
         tables.Should().NotContain("ProductSize");
+
+        // Migration 029 added the stock balance replica + its pull cursor.
+        tables.Should().Contain("CatalogStockBalance");
+        tables.Should().Contain("CatalogStockCursor");
 
         var customerColumns = conn.Query<string>(
             "SELECT name FROM pragma_table_info('Customer')").AsList();
@@ -63,7 +67,7 @@ public class MigrationRunnerTests
 
         using var conn = db.Open();
         var version = conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().Be(28);
+        version.Should().Be(29);
     }
 
     [Fact]
