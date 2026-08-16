@@ -303,6 +303,37 @@ public sealed class LicenseApiClient
                 "Katalog ürün sayfası bozuk geldi (gövde null). Bu 'katalog boş' demek değildir.");
     }
 
+    /// <summary>
+    /// Stok hareket defterinden bileşik imleçle bir sayfa bakiye çeker.
+    ///
+    /// <para>Gövde <b>mutlak</b> bakiye taşır (sunucu <c>SUM</c>'ı yapıp
+    /// gönderiyor); istemci toplamaz, yerine yazar.</para>
+    ///
+    /// <para>Katalog uçlarıyla aynı gerekçeyle burada da <c>?? new()</c> YOK:
+    /// boş liste bu döngüde hem sonlandırıcı hem imleç ilerletici, bozuk gövdeyi
+    /// boş sayfa saymak hareketleri sessizce kaybettirirdi.</para>
+    ///
+    /// <para>Sunucu <c>UtcNow - 60sn</c>'den yeni hareketleri hiç okumuyor
+    /// (commit sırası ≠ zaman damgası sırası). Yani en taze hareketler bir
+    /// sonraki tura kalır — bu bir hata değil, sözleşmenin parçası.</para>
+    /// </summary>
+    public async Task<StockBalancePullResponse> GetStockBalancesSinceAsync(
+        Guid licenseId, DateTimeOffset since, Guid sinceId,
+        int take = 500, CancellationToken ct = default)
+    {
+        if (take is < 1 or > 1000)
+            throw new ArgumentOutOfRangeException(nameof(take), take,
+                "take 1..1000 olmalı (sunucu sınırı, LicensesWpfStockPullController).");
+
+        var qs = $"?since={Uri.EscapeDataString(since.ToString("O"))}"
+               + $"&sinceId={sinceId}&take={take}";
+
+        return await GetExpectingJsonAsync<StockBalancePullResponse>(
+            $"/api/v1/licenses/{licenseId}/stock/balances/since{qs}", ct)
+            ?? throw new LicenseApiUnknownException(200,
+                "Stok bakiye sayfası bozuk geldi (gövde null). İmleç ilerletilmemeli.");
+    }
+
     /// <summary>Kategori ağacının tamamı; sayfalama yok (derinlik sınırlı).
     /// Sunucu <b>pasif</b> kategorileri de döndürür — bir ürün pasif kategoriye
     /// bağlı kalmış olabilir; WPF <c>IsActive == false</c> satırları beklemeli,
