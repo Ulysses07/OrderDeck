@@ -156,4 +156,93 @@ public class BroadcastCodeResolverTests
         resolver.Resolve("yok").Should().BeNull();
         resolver.Resolve(null).Should().BeNull();
     }
+
+    [Fact]
+    public void Barkod_urunu_ve_satici_ekseni_degerini_cozer()
+    {
+        var sut = Build(Elbise(),
+            new[]
+            {
+                V("v1", "Siyah", "M") with { Barcode = "0000000001" },
+                V("v2", "Beyaz", "M") with { Barcode = "0000000002" },
+            },
+            new[]
+            {
+                new CatalogBroadcastCode("p1", "Siyah", "ATES", "ATES", 0, 0),
+                new CatalogBroadcastCode("p1", "Beyaz", "KAR", "KAR", 0, 1),
+            });
+
+        var hit = sut.Resolve("0000000002");
+
+        // Okutulan parça Beyaz; kart Beyaz kırılımını açmalı, ilk kodu değil.
+        hit!.Product.Id.Should().Be("p1");
+        hit.Code.Should().Be("KAR");
+        hit.SellerAxisValue.Should().Be("Beyaz");
+    }
+
+    [Fact]
+    public void Yayin_kodu_barkoda_gore_oncelikli()
+    {
+        // Aynı metin hem yayın kodu hem barkod olsaydı yayın kodu kazanır:
+        // operatörün ağzından çıkan kod, elindeki parçadan önce gelir.
+        var sut = Build(Elbise(),
+            new[] { V("v1", "Siyah", "M") with { Barcode = "ATES" } },
+            new[] { new CatalogBroadcastCode("p1", "Siyah", "ATES", "ATES", 0, 0) });
+
+        sut.Resolve("ATES")!.Code.Should().Be("ATES");
+    }
+
+    [Fact]
+    public void Yayin_kodu_olmayan_urunun_barkodu_reddedilir()
+    {
+        var sut = Build(Elbise(),
+            new[] { V("v1", "Siyah", "M") with { Barcode = "0000000001" } },
+            Array.Empty<CatalogBroadcastCode>());
+
+        // Kart bir YAYIN KODU gösteriyor; kodu olmayan ürünü açmak, operatöre
+        // izleyicilere söyleyeceği kodu olmayan bir ürün göstermek olurdu.
+        sut.Resolve("0000000001").Should().BeNull();
+    }
+
+    [Fact]
+    public void Barkodun_satici_degerine_kod_yoksa_reddedilir()
+    {
+        var sut = Build(Elbise(),
+            new[] { V("v1", "Beyaz", "M") with { Barcode = "0000000002" } },
+            new[] { new CatalogBroadcastCode("p1", "Siyah", "ATES", "ATES", 0, 0) });
+
+        // Beyaz kırılımının kodu yok. "ATES"e düşmek yanlış rengi açardı.
+        sut.Resolve("0000000002").Should().BeNull();
+    }
+
+    [Fact]
+    public void Eksensiz_urunde_barkod_tek_koda_coz()
+    {
+        var product = new CatalogProduct(
+            "p2", null, "SK00002", "SK00002", "Çanta", 50m, null,
+            null, null, null, null, null, 0);
+        var sut = Build(product,
+            new[] { new CatalogVariant("v9", "p2", null, null, "0000000009", true, 0) },
+            new[] { new CatalogBroadcastCode("p2", null, "CANTA", "CANTA", 0, 0) });
+
+        sut.Resolve("0000000009")!.Code.Should().Be("CANTA");
+    }
+
+    [Fact]
+    public void Pasif_varyantin_barkodu_reddedilir()
+    {
+        var sut = Build(Elbise(),
+            new[]
+            {
+                V("v1", "Siyah", "S") with { Barcode = "0000000001" },
+                V("v2", "Siyah", "M", active: false) with { Barcode = "0000000002" },
+            },
+            new[] { new CatalogBroadcastCode("p1", "Siyah", "ATES", "ATES", 0, 0) });
+
+        // Aktif kardeşi okutmak kartı açar...
+        sut.Resolve("0000000001")!.Code.Should().Be("ATES");
+        // ...ama pasif parçanın etiketi açmaz: kart açılsaydı operatör satışta
+        // olmayan bir kırılımı okutmuş olduğunu göremezdi (bkz. karar notu).
+        sut.Resolve("0000000002").Should().BeNull();
+    }
 }

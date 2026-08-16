@@ -22,9 +22,17 @@ public sealed class BroadcastCodeResolver
 
     public BroadcastCodeResolver(CatalogReplicaRepository repo) => _repo = repo;
 
+    /// <summary>
+    /// Kutuya yazılan/okutulan metni çözer.
+    ///
+    /// <para><b>Sıra:</b> önce yayın kodu, sonra barkod. Aynı metin ikisinde
+    /// birden olamaz — sunucu 10 haneli saf sayıyı yayın kodu olarak
+    /// reddediyor — ama sıra yine de anlamlı: operatörün ağzından çıkan kod,
+    /// elindeki parçadan önce gelir.</para>
+    /// </summary>
     public BroadcastCodeResolution? Resolve(string? code)
     {
-        var hit = _repo.FindBroadcastCode(code);
+        var hit = _repo.FindBroadcastCode(code) ?? ResolveByBarcode(code);
         if (hit is null) return null;
 
         var product = _repo.GetProductById(hit.ProductId);
@@ -60,6 +68,53 @@ public sealed class BroadcastCodeResolver
             viewerAxis,
             variants,
             viewerValues);
+    }
+
+    /// <summary>
+    /// Barkodu bir <see cref="CatalogBroadcastCode"/>'a indirger.
+    ///
+    /// <para><b>Neden koda indirgeniyor:</b> barkod bir varyantı gösteriyor
+    /// ama kartın ve sipariş akışının tamamı bir yayın kodu üzerinden
+    /// çalışıyor. Barkodu koda çevirince aşağıdaki gövde — varyant süzme,
+    /// izleyici ekseni, stok rozetleri — hiç değişmeden çalışıyor. Ayrı bir
+    /// çözümleme dalı yazsaydık iki yol zamanla ayrışırdı.</para>
+    ///
+    /// <para><b>Pasif varyant reddedilir.</b> <c>FindVariantByBarcode</c>
+    /// pasif varyantı da döndürüyor (kararı çağırana bırakıyor) — karar
+    /// burada: reddetmek. Kabul etseydik kart açılır ama okutulan kırılım
+    /// listede olmazdı (gövde <c>IsActive</c> süzüyor); operatör kart
+    /// açıldığı için parçanın satılabilir olduğuna inanıp kodu izleyicilere
+    /// söyler, hata ancak yorumdan gelen sipariş varyanta çevrilemediğinde —
+    /// yani yayının ortasında, izleyici parçayı çoktan istemişken — ortaya
+    /// çıkardı. <c>null</c> dönmek operatörü yanlış anda değil, güvenli anda
+    /// durduruyor. Kartta "katalogda yok" görünmesi eksik bir mesaj, ama
+    /// çözümü <see cref="BroadcastCodeResolution"/>'a yeni bir alan eklemekten
+    /// geçiyor ve bu kapsamın dışında.</para>
+    ///
+    /// <para><b>Kodu olmayan ürün reddedilir</b> (<c>null</c> → kartta
+    /// "katalogda yok"): kart yayın kodunu gösteriyor, kodu olmayan bir ürünü
+    /// açmak operatöre izleyicilere söyleyecek kodu olmayan bir ürün
+    /// göstermek olurdu.</para>
+    ///
+    /// <para>Satıcı ekseni eşleşmesi C#'ta, <see cref="Same"/> ile: SQLite'ta
+    /// Türkçe katlama yok, SQL'de karşılaştırmak "İ/ı" çiftlerini kaçırırdı.</para>
+    /// </summary>
+    private CatalogBroadcastCode? ResolveByBarcode(string? barcode)
+    {
+        var variant = _repo.FindVariantByBarcode(barcode);
+        if (variant is null || !variant.IsActive) return null;
+
+        var product = _repo.GetProductById(variant.ProductId);
+        if (product is null) return null;
+
+        var codes = _repo.GetBroadcastCodes(product.Id);
+        if (codes.Count == 0) return null;
+
+        var sellerAxis = AxisIndexOf(product, SellerRole);
+        if (sellerAxis == 0) return codes[0];
+
+        var sellerValue = AxisValue(variant, sellerAxis);
+        return codes.FirstOrDefault(c => Same(c.SellerAxisValue, sellerValue));
     }
 
     private static int AxisIndexOf(CatalogProduct p, int role) =>
