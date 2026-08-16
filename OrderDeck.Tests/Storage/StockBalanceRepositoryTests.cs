@@ -97,6 +97,42 @@ public class StockBalanceRepositoryTests
         }
     }
 
+    /// <summary>
+    /// Silme yalnız sayfadaki ANAHTARI vurmalı. Ölçüldü: DELETE'ten varyant
+    /// koşulu çıkarıldığında paketin geri kalanı yeşil kalıyor, çünkü her test
+    /// ya ürün başına tek satır yazıyor ya da bütün satırları aynı sayfada
+    /// yazıyor — kayıp hemen geri ekleniyor. Üretimde ise tek varyant taşıyan
+    /// bir sayfa o ürünün diğer bakiyelerini siler ve sonraki bir sayfa
+    /// tesadüfen kapsayana dek silinmiş kalırlar.
+    /// </summary>
+    [Fact]
+    public void ApplyPage_leaves_untouched_keys_of_the_same_product_alone()
+    {
+        var repo = Build(out var db);
+        using (db)
+        {
+            var pid = Guid.NewGuid().ToString("N");
+            var a = Guid.NewGuid().ToString("N");
+            var b = Guid.NewGuid().ToString("N");
+
+            repo.ApplyPage(new[]
+            {
+                new CatalogStockBalance(pid, a, 7),
+                new CatalogStockBalance(pid, b, 5),
+                new CatalogStockBalance(pid, null, 3),
+            }, new StockCursor(DateTimeOffset.UnixEpoch, Guid.NewGuid()));
+
+            repo.ApplyPage(new[] { new CatalogStockBalance(pid, a, 6) },
+                new StockCursor(DateTimeOffset.UnixEpoch.AddMinutes(1), Guid.NewGuid()));
+
+            var rows = repo.GetForProduct(pid);
+            rows.Should().HaveCount(3);
+            rows.Should().ContainEquivalentOf(new CatalogStockBalance(pid, a, 6));
+            rows.Should().ContainEquivalentOf(new CatalogStockBalance(pid, b, 5));
+            rows.Should().ContainEquivalentOf(new CatalogStockBalance(pid, null, 3));
+        }
+    }
+
     [Fact]
     public void ApplyPage_with_empty_page_still_advances_cursor()
     {
