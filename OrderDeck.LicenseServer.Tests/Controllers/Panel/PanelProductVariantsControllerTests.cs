@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using OrderDeck.LicenseServer.Controllers.Panel;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
@@ -583,4 +584,207 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
     }
 
     private sealed record BulkResult(List<VariantDto> Variants);
+
+    // -----------------------------------------------------------------------
+    // Barkod testleri (Görev 3)
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// Ürün olan ve kimlik doğrulaması yapılmış bir client + productId döndürür.
+    /// Mevcut SeedAsync + CreateProductAsync yardımcılarını kullanır; yeni kalıp icat etmez.
+    /// </summary>
+    private async Task<(HttpClient Client, Guid ProductId)> SetupProductAsync()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client);
+        return (client, product.Id);
+    }
+
+    [Fact]
+    public async Task Barkod_bos_birakilirsa_sunucu_doldurur()
+    {
+        var (client, productId) = await SetupProductAsync();
+
+        var res = await client.PostAsJsonAsync(
+            $"/api/panel/products/{productId}/variants",
+            new { axis1Value = "Siyah", axis2Value = (string?)null, isActive = true });
+
+        res.StatusCode.Should().Be(HttpStatusCode.Created);
+        var dto = await res.Content.ReadFromJsonAsync<PanelProductsController.VariantDto>();
+        dto!.Barcode.Should().Be("0000000001");
+    }
+
+    [Fact]
+    public async Task Elle_yazilan_barkod_korunur()
+    {
+        var (client, productId) = await SetupProductAsync();
+
+        var res = await client.PostAsJsonAsync(
+            $"/api/panel/products/{productId}/variants",
+            new { axis1Value = "Siyah", axis2Value = (string?)null,
+                  isActive = true, barcode = "8690000000017" });
+
+        res.StatusCode.Should().Be(HttpStatusCode.Created);
+        var dto = await res.Content.ReadFromJsonAsync<PanelProductsController.VariantDto>();
+        dto!.Barcode.Should().Be("8690000000017");
+    }
+
+    [Fact]
+    public async Task Ayni_barkod_iki_varyanta_verilemez()
+    {
+        var (client, productId) = await SetupProductAsync();
+
+        await client.PostAsJsonAsync($"/api/panel/products/{productId}/variants",
+            new { axis1Value = "Siyah", axis2Value = (string?)null,
+                  isActive = true, barcode = "8690000000017" });
+
+        var res = await client.PostAsJsonAsync($"/api/panel/products/{productId}/variants",
+            new { axis1Value = "Beyaz", axis2Value = (string?)null,
+                  isActive = true, barcode = "8690000000017" });
+
+        res.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await TitleAsync(res)).Should().Be("duplicate-barcode");
+    }
+
+    /// <summary>
+    /// Sınırı aşan barkod, eylem gövdesine HİÇ ulaşmadan kesiliyor:
+    /// <c>VariantRequest.Barcode</c> üzerindeki <c>[MaxLength]</c> sayesinde
+    /// <c>[ApiController]</c> standart <c>ValidationProblemDetails</c> dönüyor.
+    /// Denetleyicideki ikinci uzunluk kontrolü bu yüzden silindi — bu test o
+    /// silmenin bekçisi: attribute kaldırılırsa taşan girdi prod'da kolon
+    /// sınırından 500 olurdu ve burası kırmızıya döner.
+    /// (Eksen değerlerinde de aynı kalıp, bkz.
+    /// <c>Create_400_when_an_axis_value_exceeds_the_column_limit</c>.)
+    /// </summary>
+    [Fact]
+    public async Task Uzun_barkod_model_dogrulamasinda_kesilir()
+    {
+        var (client, productId) = await SetupProductAsync();
+
+        var res = await client.PostAsJsonAsync($"/api/panel/products/{productId}/variants",
+            new { axis1Value = "Siyah", axis2Value = (string?)null,
+                  isActive = true, barcode = new string('9', CatalogLimits.Barcode + 1) });
+
+        res.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await HasValidationErrorAsync(res, "Barcode")).Should().BeTrue();
+        (await TitleAsync(res)).Should().NotBe("barcode-too-long");
+    }
+
+    [Fact]
+    public async Task Code128_disi_karakter_reddedilir()
+    {
+        var (client, productId) = await SetupProductAsync();
+
+        // Türkçe harf Code128'in ASCII 32-126 kümesinde YOK; yazıcıya
+        // gönderilse okunamayan bir sembol basılırdı.
+        var res = await client.PostAsJsonAsync($"/api/panel/products/{productId}/variants",
+            new { axis1Value = "Siyah", axis2Value = (string?)null,
+                  isActive = true, barcode = "ÜRÜN-1" });
+
+        res.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await TitleAsync(res)).Should().Be("barcode-not-printable");
+    }
+
+    [Fact]
+    public async Task Toplu_yolda_her_satir_kendi_numarasini_alir()
+    {
+        var (client, productId) = await SetupProductAsync();
+
+        var res = await client.PostAsJsonAsync(
+            $"/api/panel/products/{productId}/variants/bulk",
+            new { items = new[]
+            {
+                new { axis1Value = "Siyah", axis2Value = (string?)null, isActive = true },
+                new { axis1Value = "Beyaz", axis2Value = (string?)null, isActive = true },
+            }});
+
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await res.Content
+            .ReadFromJsonAsync<PanelProductVariantsController.BulkResultDto>();
+        body!.Variants.Select(v => v.Barcode)
+            .Should().Equal("0000000001", "0000000002");
+    }
+
+    /// <summary>
+    /// Karışık parti: bazı satırlar elle barkodlu, bazıları boş. Elle yazılanlar
+    /// harfi harfine korunmalı, boşlar sayaçtan doldurulmalı ve sonuç
+    /// KONUM KONUM eşleşmeli — barkod listesi ile satır listesi ayrı
+    /// döngülerde kurulduğu için kayma bu testten başka yerde görünmez.
+    /// Sayaç yalnız boş satırlar kadar ilerler: elle yazılan kod sayacı
+    /// tüketmez, o yüzden üçüncü satır 0000000003 değil 0000000002 alır.
+    /// </summary>
+    [Fact]
+    public async Task Toplu_yolda_bos_ve_elle_yazilan_barkodlar_karisik_olabilir()
+    {
+        var (client, productId) = await SetupProductAsync();
+
+        var res = await client.PostAsJsonAsync(
+            $"/api/panel/products/{productId}/variants/bulk",
+            new { items = new[]
+            {
+                new { axis1Value = "Siyah", axis2Value = (string?)null,
+                      isActive = true, barcode = (string?)null },
+                new { axis1Value = "Beyaz", axis2Value = (string?)null,
+                      isActive = true, barcode = (string?)"8690000000017" },
+                new { axis1Value = "Mavi", axis2Value = (string?)null,
+                      isActive = true, barcode = (string?)null },
+            }});
+
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await res.Content
+            .ReadFromJsonAsync<PanelProductVariantsController.BulkResultDto>();
+
+        body!.Variants.Select(v => v.Axis1Value)
+            .Should().Equal("Siyah", "Beyaz", "Mavi");
+        body.Variants.Select(v => v.Barcode)
+            .Should().Equal("0000000001", "8690000000017", "0000000002");
+    }
+
+    /// <summary>
+    /// Aynı elle yazılan barkod partide iki kez geçiyorsa veritabanına hiç
+    /// gitmeden 409 dönmeli: benzersiz indeksten dönen hata prod'da 500 olurdu.
+    /// </summary>
+    [Fact]
+    public async Task Toplu_yolda_ayni_barkod_iki_kez_yazilamaz()
+    {
+        var (client, productId) = await SetupProductAsync();
+
+        var res = await client.PostAsJsonAsync(
+            $"/api/panel/products/{productId}/variants/bulk",
+            new { items = new[]
+            {
+                new { axis1Value = "Siyah", axis2Value = (string?)null,
+                      isActive = true, barcode = "8690000000017" },
+                new { axis1Value = "Beyaz", axis2Value = (string?)null,
+                      isActive = true, barcode = "8690000000017" },
+            }});
+
+        res.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await TitleAsync(res)).Should().Be("duplicate-barcode-in-batch");
+
+        var after = await client.GetFromJsonAsync<ProductDto>(
+            $"/api/panel/products/{productId}");
+        after!.Variants.Should().BeEmpty("çakışan parti hiç satır bırakmamalı");
+    }
+
+    [Fact]
+    public async Task Guncellemede_bos_barkod_mevcut_degeri_silmez()
+    {
+        var (client, productId) = await SetupProductAsync();
+
+        var created = await client.PostAsJsonAsync(
+            $"/api/panel/products/{productId}/variants",
+            new { axis1Value = "Siyah", axis2Value = (string?)null, isActive = true });
+        var dto = await created.Content
+            .ReadFromJsonAsync<PanelProductsController.VariantDto>();
+
+        var res = await client.PutAsJsonAsync(
+            $"/api/panel/products/{productId}/variants/{dto!.Id}",
+            new { axis1Value = "Siyah", axis2Value = (string?)null, isActive = false });
+
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+        var updated = await res.Content
+            .ReadFromJsonAsync<PanelProductsController.VariantDto>();
+        updated!.Barcode.Should().Be("0000000001");
+    }
 }
