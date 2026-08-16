@@ -1878,11 +1878,22 @@ Beklenen: derleme hatası — `FindVariantByBarcode` / `GetBroadcastCodes` yok.
     }
 
     /// <summary>
-    /// Ürünün yayın kodları, panelde verilen sırayla.
+    /// Ürünün yayın kodları, sunucunun verdiği sırayla.
     ///
     /// <para>Barkod okutma yolu için: barkod varyanta, varyant ürüne çözülüyor
-    /// ama akışın geri kalanı bir YAYIN KODU bekliyor. Sıra önemli — birden
-    /// çok kod varsa operatörün panelde ilk sıraya koyduğu kod gösterilir.</para>
+    /// ama akışın geri kalanı bir YAYIN KODU bekliyor.</para>
+    ///
+    /// <para><b>Sıra ne DEĞİL:</b> panelde elle dizilmiş bir sıra yok — böyle
+    /// bir özellik hiç yapılmadı. <c>SortOrder</c> senkron sırasında dizi
+    /// indeksinden atanıyor (<c>CatalogSyncService</c>) ve sunucu kodları
+    /// <c>CreatedAt</c>'e göre AZALAN gönderiyor
+    /// (<c>LicensesWpfCatalogPullController</c>). Yani <c>SortOrder = 0</c>
+    /// <b>en son eklenen kod</b> demek.</para>
+    ///
+    /// <para><b>Çağırana uyarı:</b> eksenli üründe ilk kodu almak yanlış —
+    /// her eksen değerinin kendi kodu var, çağıran <c>SellerAxisValue</c>
+    /// üzerinden eşleştirmeli. İlk kodu almak yalnız eksensiz üründe
+    /// (tek kod) anlamlı.</para>
     /// </summary>
     public IReadOnlyList<CatalogBroadcastCode> GetBroadcastCodes(string productId)
     {

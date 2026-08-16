@@ -223,8 +223,12 @@ public class CatalogReplicaRepositoryTests
         repo.GetProductById("yok").Should().BeNull();
     }
 
+    // Eksen değerleri null: yanındaki <see cref="Product"/> yardımcısı da eksensiz
+    // ürün kuruyor (Axis1Name/Axis2Name null). "Siyah"/"M" yazmak, ürünün eksen
+    // TANIMLAMADIĞI halde varyantın eksen DEĞERİ taşıdığı, üretimde olamayacak bir
+    // kurgu üretirdi. Barkod aramasının eksenle işi yok; sabit kurgu ucuz.
     private static CatalogVariant Variant(string id, string productId, string barcode) =>
-        new(id, productId, "Siyah", "M", barcode, true, 0);
+        new(id, productId, null, null, barcode, true, 0);
 
     [Fact]
     public void Barkod_varyanti_bulur()
