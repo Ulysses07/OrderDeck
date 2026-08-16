@@ -2670,6 +2670,46 @@ public class BarcodeLabelViewModelTests
     private static CatalogVariant V(string id, string renk, string beden, string barcode) =>
         new(id, "p1", renk, beden, barcode, true, 0);
 
+    private static BarcodeLabelViewModel Yuklu(params CatalogVariant[] variants)
+    {
+        var sut = new BarcodeLabelViewModel();
+        sut.Load(new BroadcastCodeResolution(
+            Elbise(), "ATES", "Siyah", "Beden", 2, variants, new[] { "M", "L" }));
+        return sut;
+    }
+
+    [Fact]
+    public void Satir_secimi_degisince_CanPrint_bildirilir()
+    {
+        // "Bas" düğmesi CanPrint'e BAĞLI; getter'ı okumak yetmiyor, WPF'in
+        // haberdar olması gerekiyor. Bildirim kopsaydı operatör son kutunun
+        // işaretini kaldırdığında düğme AÇIK kalır, boş iş yazıcıya giderdi —
+        // ve testler bunu görmezdi, çünkü getter yine doğru cevap veriyor.
+        var sut = Yuklu(V("v1", "Siyah", "M", "0000000001"));
+        var bildirildi = false;
+        sut.PropertyChanged += (_, a) =>
+        {
+            if (a.PropertyName == nameof(BarcodeLabelViewModel.CanPrint)) bildirildi = true;
+        };
+
+        sut.Rows[0].IsSelected = false;
+
+        bildirildi.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Adet_sifirsa_basilamaz()
+    {
+        // Adet kutusu serbest metin: operatör "0" yazabiliyor. Engellemezsek
+        // iş BarcodeLabelDocument.Build'a gider ve oradan gelen istisnanın
+        // mesajı .NET'in İngilizce metnidir — Türkçe arayüzde anlamsız.
+        var sut = Yuklu(V("v1", "Siyah", "M", "0000000001"));
+
+        sut.Copies = 0;
+
+        sut.CanPrint.Should().BeFalse();
+    }
+
     [Fact]
     public void Cozulmus_urunun_varyantlarini_listeler()
     {
@@ -2764,9 +2804,17 @@ public sealed partial class BarcodeLabelViewModel : ObservableObject
 
     /// <summary>Etiket başına kopya. 1: operatör çoğunlukla tek parça etiketliyor.</summary>
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanPrint))]
     private int _copies = 1;
 
-    public bool CanPrint => Rows.Any(r => r.IsSelected);
+    /// <summary>
+    /// <c>Copies > 0</c> da şart: kutu serbest metin ve operatör "0" yazabiliyor.
+    /// Yazdırmayı orada engellemezsek iş <c>BarcodeLabelDocument.Build</c>'a
+    /// gider, oradan gelen <see cref="System.ArgumentOutOfRangeException"/>
+    /// mesajı .NET'in İNGİLİZCE metnidir ve Türkçe arayüzde operatöre hiçbir
+    /// şey anlatmaz. Düğmeyi kapatmak hatayı hiç doğurmuyor.
+    /// </summary>
+    public bool CanPrint => Copies > 0 && Rows.Any(r => r.IsSelected);
 
     public void Load(BroadcastCodeResolution? resolution)
     {
@@ -2892,9 +2940,12 @@ Beklenen: 4 passed.
 `OrderDeck.App/Views/Drawers/BarcodeLabelDrawer.xaml.cs`:
 
 ```csharp
+using System;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Extensions.DependencyInjection;
+using OrderDeck.App.Services;
 using OrderDeck.App.Services.Drawers;
 using OrderDeck.App.ViewModels;
 using OrderDeck.Labeling;
@@ -2926,10 +2977,44 @@ public partial class BarcodeLabelDrawer : UserControl
     public static BarcodeLabelDrawer Create(Drawer drawer, BarcodeLabelViewModel vm)
         => new(drawer, vm);
 
-    private void Print_OnClick(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// Basım FIRLATABİLİR: <c>BarcodeLabelDocument.Build</c> etikete sığmayan
+    /// barkodu <see cref="ArgumentException"/> ile reddediyor ve yazıcı
+    /// sürücüsü de patlayabiliyor. Yakalanmayan bir istisna Click
+    /// işleyicisinde uygulamayı çökertirdi — yayının ortasında.
+    ///
+    /// <para>Hatada çekmece KAPANMIYOR: operatör seçimini düzeltip yeniden
+    /// deneyebilsin.</para>
+    ///
+    /// <para><b>Basım arka planda</b> (<c>Task.Run</c>): <c>PrintDocument.Print()</c>
+    /// senkron ve sürücü/spooler asılırsa UI thread'i süresiz kilitler — yazıcı
+    /// çevrimdışıysa ya da kâğıdı bittiyse kabuk komple donar, sohbet akmaz,
+    /// kod girilemez, yayın durur. Müşteri etiketi tarafında bu ders bir kez
+    /// alınmıştı (<c>MainShellViewModel.PrintAsync</c>, 2026-05-13); aynı
+    /// <c>PrintDocument</c>, aynı spooler.</para>
+    ///
+    /// <para>Yük arka plana GEÇMEDEN önce toplanıyor: <see cref="BarcodeLabelViewModel.Rows"/>
+    /// bir <c>ObservableCollection</c>, başka thread'den okumak yasak.</para>
+    /// </summary>
+    private async void Print_OnClick(object sender, RoutedEventArgs e)
     {
-        var printer = App.Host.Services.GetRequiredService<BarcodeLabelPrinter>();
-        printer.Print(_vm.BuildLabels(), _vm.Copies);
+        var services = App.Host.Services;
+        var labels = _vm.BuildLabels();
+        var copies = _vm.Copies;
+        try
+        {
+            var printer = services.GetRequiredService<BarcodeLabelPrinter>();
+            await Task.Run(() => printer.Print(labels, copies));
+        }
+        catch (Exception ex)
+        {
+            // İstisna mesajı zaten Türkçe ve hangi barkodun sığmadığını
+            // yazıyor; operatöre olduğu gibi gösteriliyor.
+            await services.GetRequiredService<IDialogService>()
+                .ShowAsync(ex.Message, "Etiket basılamadı", DialogSeverity.Error);
+            return;
+        }
+
         _drawer.Close(true);
     }
 
@@ -2947,7 +3032,7 @@ public partial class BarcodeLabelDrawer : UserControl
                           RelativeSource={RelativeSource AncestorType=UserControl}}"/>
 ```
 
-Bağın `RelativeSource` ile kurulması şart: `ProductCard`'ın `DataContext`'i `ProductCardViewModel`, komut ise `MainShellViewModel`'de (çekmeceyi açan servis orada).
+Bağ `RelativeSource` ile kuruluyor: kart içinde `DataContext`'i `ProductCardViewModel`'e çeviren iç `Border`'lar var, düğme onların altında kalabilir. `AncestorType=UserControl` `ProductCard`'ın köküne çıkıyor; kök kendi `DataContext`'ini kurmadığı için `MainShellView`'dan miras kalan `MainShellViewModel` geliyor — komut orada (çekmeceyi açan servis orada). Aynı kalıp kartta zaten `DataContext.IsShort` DataTrigger'ında kullanılıyor.
 
 `OrderDeck.App/ViewModels/MainShellViewModel.cs` — diğer çekmece komutlarının yanına:
 
