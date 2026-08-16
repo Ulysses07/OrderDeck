@@ -115,6 +115,73 @@ public class ProductCardTemplateTests
     }
 
     /// <summary>
+    /// Değer ve sayı AYRI satırlarda. Tek satırda ("Kırmızı · M · 3") uzun
+    /// eksen değerlerinde <c>TextTrimming</c> önce sayıyı yerdi — yani
+    /// operatörün tam da bakmak istediği şeyi.
+    /// </summary>
+    [Fact]
+    public void Variant_chip_shows_the_value_and_the_quantity()
+    {
+        var error = ThemeTestHost.RunOnSta(() =>
+        {
+            var texts = new List<string>();
+            CollectVisible(Lay(Seed, "Ateş", stock: Qty("v1", 3)), texts);
+
+            Assert.Contains("Kırmızı · M", texts);
+            Assert.Contains("3", texts);
+        });
+
+        Assert.Null(error);
+    }
+
+    /// <summary>
+    /// 0 sönük (bilgi — satış engellenmiyor), eksi accent (tema kuralı:
+    /// "Danger ayrı renk değil, Accent'in kendisi"). Fırçalar kaynak
+    /// sözlüğünden okunuyor: sabit renk yazmak, tema değiştiğinde testi
+    /// sessizce yalancı yapardı.
+    /// </summary>
+    [Fact]
+    public void Zero_is_dimmed_and_negative_is_accented()
+    {
+        var error = ThemeTestHost.RunOnSta(() =>
+        {
+            var dim = Application.Current.Resources["OD.Brush.TextDim"];
+            var accent = Application.Current.Resources["OD.Brush.Accent"];
+            var normal = Application.Current.Resources["OD.Brush.Text"];
+
+            // Bakiye tohumlanmazsa varyantın sayısı 0: eksik satır = 0 adet.
+            Assert.Same(dim, FindText(Lay(Seed, "Ateş"), "0").Foreground);
+            Assert.Same(accent,
+                FindText(Lay(Seed, "Ateş", stock: Qty("v1", -2)), "-2").Foreground);
+            Assert.Same(normal,
+                FindText(Lay(Seed, "Ateş", stock: Qty("v1", 5)), "5").Foreground);
+        });
+
+        Assert.Null(error);
+    }
+
+    /// <summary>
+    /// Varyantsız bakiye satırı yalnız sıfırdan farklıysa çiziliyor: her
+    /// eksenli üründe "Varyantsız: 0" yazmak kartı gürültüye boğardı.
+    /// </summary>
+    [Fact]
+    public void Product_level_line_appears_only_when_non_zero()
+    {
+        var error = ThemeTestHost.RunOnSta(() =>
+        {
+            var none = new List<string>();
+            CollectVisible(Lay(Seed, "Ateş", stock: Qty(null, 0)), none);
+            Assert.DoesNotContain(none, t => t.Contains("Varyantsız"));
+
+            var shown = new List<string>();
+            CollectVisible(Lay(Seed, "Ateş", stock: Qty(null, -2)), shown);
+            Assert.Contains(shown, t => t.Contains("Varyantsız") && t.Contains("2"));
+        });
+
+        Assert.Null(error);
+    }
+
+    /// <summary>
     /// Bir ürün + bir aktif varyant + bir YAYIN KODU. Kod kutusu stok kodunu
     /// aramıyor, kart ürüne ancak "Ateş" ile ulaşıyor.
     /// </summary>
@@ -130,19 +197,24 @@ public class ProductCardTemplateTests
 
     /// <summary>Kartı verilen kodla gerçekten yerleştirir.</summary>
     private static ProductCard Lay(
-        Action<CatalogReplicaRepository> seed, string code, bool isShort = false)
+        Action<CatalogReplicaRepository> seed, string code, bool isShort = false,
+        Action<StockBalanceRepository>? stock = null)
     {
-        // Yerleşim depoya dokunmuyor: Load ne gerekiyorsa çoktan okudu.
+        // Yerleşim depoya dokunmuyor: Load ne gerekiyorsa çoktan okudu —
+        // bakiyeler dahil (RefreshBalances, Load'un son adımı).
         using var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
         var repo = new CatalogReplicaRepository(db);
         seed(repo);
 
+        var balances = new StockBalanceRepository(db);
+        stock?.Invoke(balances);
+
         var vm = new ProductCardViewModel(
             new BroadcastCodeResolver(repo),
             new CatalogPhotoCache(
                 Path.Combine(Path.GetTempPath(), "od-test-" + Guid.NewGuid().ToString("N"))),
-            new StockBalanceProvider(new StockBalanceRepository(db), new LabelRepository(db)));
+            new StockBalanceProvider(balances, new LabelRepository(db)));
         vm.Load(code);
 
         var card = new ProductCard { DataContext = new ShellStub(vm, isShort) };
@@ -156,6 +228,36 @@ public class ProductCardTemplateTests
         card.UpdateLayout();
         return card;
     }
+
+    /// <summary>
+    /// Tek satırlık sunucu bakiyesi. <c>variantId</c> null verilirse ürün
+    /// seviyesine yazar — varyanta bağlanmamış hareketler ayrı kovada toplanıyor.
+    /// </summary>
+    private static Action<StockBalanceRepository> Qty(string? variantId, int quantity)
+        => repo => repo.ApplyPage(
+            [new CatalogStockBalance("p1", variantId, quantity)],
+            new StockCursor(DateTimeOffset.UnixEpoch, Guid.Empty));
+
+    private static TextBlock? TryFindText(DependencyObject root, string text)
+    {
+        if (root is TextBlock tb && tb.Text == text) return tb;
+
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+            if (TryFindText(VisualTreeHelper.GetChild(root, i), text) is { } hit)
+                return hit;
+
+        return null;
+    }
+
+    /// <summary>
+    /// Verilen metni taşıyan <c>TextBlock</c>. Rozetteki sayının RENGİNİ
+    /// okumak için gerekiyor: <c>CollectVisible</c> yalnız metni topluyor,
+    /// fırçayı görmüyor.
+    /// </summary>
+    private static TextBlock FindText(DependencyObject root, string text)
+        => TryFindText(root, text)
+           ?? throw new InvalidOperationException(
+               $"'{text}' metinli TextBlock görsel ağaçta yok — rozet çizilmemiş.");
 
     /// <summary>Fotoğrafı taşıyan <c>Border</c>'ın yerleşim sonrası yüksekliği.</summary>
     private static double PhotoHeight(DependencyObject root)
