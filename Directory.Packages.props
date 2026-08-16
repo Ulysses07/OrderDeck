@@ -84,6 +84,15 @@
     <PackageVersion Include="Serilog.Sinks.Console" Version="6.1.1" />
     <PackageVersion Include="Serilog.Sinks.File" Version="7.0.0" />
     <PackageVersion Include="Swashbuckle.AspNetCore" Version="10.2.3" />
+    <!-- Code128 modül üretimi. LİSANS: Apache 2.0 (2026-08-16 doğrulandı) —
+         ticari kullanım serbest, atıf yeterli. 0.16.11'de çekirdek paket
+         GÖRÜNTÜ KÜTÜPHANESİNDEN BAĞIMSIZ: hiç bağımlılığı yok, yalnız
+         BitMatrix/bool dizisi üretiyor, çizimi biz yapıyoruz. Bu yüzden
+         System.Drawing.Common'a zorlamıyor ve ileride sunucu tarafında da
+         kullanılabilir. (Elenenler: QuestPDF = 1M$ eşikli ticari lisans;
+         iText7 = AGPL; BarcodeLib = System.Drawing.Common'a bağımlı,
+         Windows'a çivili.) -->
+    <PackageVersion Include="ZXing.Net" Version="0.16.11" />
 
     <!-- Google APIs — YouTube Data API v3 + OAuth 2.0 desktop flow. Used by
          OrderDeck.Chat/YouTube/* for the moderation features (delete chat
