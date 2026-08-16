@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Extensions.DependencyInjection;
@@ -42,14 +43,26 @@ public partial class BarcodeLabelDrawer : UserControl
     ///
     /// <para>Hatada çekmece KAPANMIYOR: operatör seçimini düzeltip yeniden
     /// deneyebilsin. Kapatsaydık kartı ve seçimi baştan kurması gerekirdi.</para>
+    ///
+    /// <para><b>Basım arka planda</b> (<c>Task.Run</c>): <c>PrintDocument.Print()</c>
+    /// senkron ve sürücü/spooler asılırsa UI thread'i süresiz kilitler — yazıcı
+    /// çevrimdışıysa ya da kâğıdı bittiyse kabuk komple donar, sohbet akmaz,
+    /// kod girilemez, yayın durur. Müşteri etiketi tarafında bu ders bir kez
+    /// alınmıştı (<c>MainShellViewModel.PrintAsync</c>, 2026-05-13); aynı
+    /// <c>PrintDocument</c>, aynı spooler.</para>
+    ///
+    /// <para>Yük arka plana GEÇMEDEN önce toplanıyor: <see cref="BarcodeLabelViewModel.Rows"/>
+    /// bir <c>ObservableCollection</c>, başka thread'den okumak yasak.</para>
     /// </summary>
     private async void Print_OnClick(object sender, RoutedEventArgs e)
     {
         var services = App.Host.Services;
+        var labels = _vm.BuildLabels();
+        var copies = _vm.Copies;
         try
         {
-            services.GetRequiredService<BarcodeLabelPrinter>()
-                .Print(_vm.BuildLabels(), _vm.Copies);
+            var printer = services.GetRequiredService<BarcodeLabelPrinter>();
+            await Task.Run(() => printer.Print(labels, copies));
         }
         catch (Exception ex)
         {

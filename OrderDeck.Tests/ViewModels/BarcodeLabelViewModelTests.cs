@@ -18,6 +18,46 @@ public class BarcodeLabelViewModelTests
     private static CatalogVariant V(string id, string renk, string beden, string barcode) =>
         new(id, "p1", renk, beden, barcode, true, 0);
 
+    private static BarcodeLabelViewModel Yuklu(params CatalogVariant[] variants)
+    {
+        var sut = new BarcodeLabelViewModel();
+        sut.Load(new BroadcastCodeResolution(
+            Elbise(), "ATES", "Siyah", "Beden", 2, variants, new[] { "M", "L" }));
+        return sut;
+    }
+
+    [Fact]
+    public void Satir_secimi_degisince_CanPrint_bildirilir()
+    {
+        // "Bas" düğmesi CanPrint'e BAĞLI; getter'ı okumak yetmiyor, WPF'in
+        // haberdar olması gerekiyor. Bildirim kopsaydı operatör son kutunun
+        // işaretini kaldırdığında düğme AÇIK kalır, boş iş yazıcıya giderdi —
+        // ve testler bunu görmezdi, çünkü getter yine doğru cevap veriyor.
+        var sut = Yuklu(V("v1", "Siyah", "M", "0000000001"));
+        var bildirildi = false;
+        sut.PropertyChanged += (_, a) =>
+        {
+            if (a.PropertyName == nameof(BarcodeLabelViewModel.CanPrint)) bildirildi = true;
+        };
+
+        sut.Rows[0].IsSelected = false;
+
+        bildirildi.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Adet_sifirsa_basilamaz()
+    {
+        // Adet kutusu serbest metin: operatör "0" yazabiliyor. Engellemezsek
+        // iş BarcodeLabelDocument.Build'a gider ve oradan gelen istisnanın
+        // mesajı .NET'in İngilizce metnidir — Türkçe arayüzde anlamsız.
+        var sut = Yuklu(V("v1", "Siyah", "M", "0000000001"));
+
+        sut.Copies = 0;
+
+        sut.CanPrint.Should().BeFalse();
+    }
+
     [Fact]
     public void Cozulmus_urunun_varyantlarini_listeler()
     {

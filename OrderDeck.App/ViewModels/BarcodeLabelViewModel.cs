@@ -25,9 +25,17 @@ public sealed partial class BarcodeLabelViewModel : ObservableObject
 
     /// <summary>Etiket başına kopya. 1: operatör çoğunlukla tek parça etiketliyor.</summary>
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanPrint))]
     private int _copies = 1;
 
-    public bool CanPrint => Rows.Any(r => r.IsSelected);
+    /// <summary>
+    /// <c>Copies > 0</c> da şart: kutu serbest metin ve operatör "0" yazabiliyor.
+    /// Yazdırmayı orada engellemezsek iş <c>BarcodeLabelDocument.Build</c>'a
+    /// gider, oradan gelen <see cref="System.ArgumentOutOfRangeException"/>
+    /// mesajı .NET'in İNGİLİZCE metnidir ve Türkçe arayüzde operatöre hiçbir
+    /// şey anlatmaz. Düğmeyi kapatmak hatayı hiç doğurmuyor.
+    /// </summary>
+    public bool CanPrint => Copies > 0 && Rows.Any(r => r.IsSelected);
 
     public void Load(BroadcastCodeResolution? resolution)
     {
