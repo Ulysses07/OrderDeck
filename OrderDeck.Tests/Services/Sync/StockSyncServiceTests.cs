@@ -97,10 +97,13 @@ public class StockSyncServiceTests
              "hasMore":false}
             """;
         var svc = Build(db, req => Route(req, page), provider);
+        var fired = 0;
+        provider.BalancesChanged += (_, __) => fired++;
 
         var written = await svc.SyncOnceAsync(CancellationToken.None);
 
         written.Should().Be(1);
+        fired.Should().Be(1);
         repo.GetForProduct("11111111111111111111111111111111")
             .Should().ContainSingle().Which.Quantity.Should().Be(5);
         repo.GetCursor().Id.Should().Be(Guid.Parse("33333333-3333-3333-3333-333333333333"));
@@ -158,6 +161,52 @@ public class StockSyncServiceTests
         await svc.SyncOnceAsync(CancellationToken.None);
 
         fired.Should().Be(0);
+    }
+
+    /// <summary>
+    /// Bu servisin kardeşi <c>CatalogSyncService</c>'ten ayrıldığı TEK nokta:
+    /// katalog yarım listeyi hiç yazmıyor (anlık görüntü, eksiği ürün siler),
+    /// stok ise defter olduğu için her sayfa kendi başına doğru — ikinci sayfa
+    /// patlasa bile birincisi kalıcı ve imleç onun sonunda duruyor.
+    ///
+    /// Ölçüldü: bu davranışı hiçbir test tutmuyordu; sayfa döngüsü
+    /// <c>ApplyPage</c>'i toplayıp döngü sonunda tek seferde yazacak şekilde
+    /// bozulduğunda paketin geri kalanı yeşil kalıyor.
+    /// </summary>
+    [Fact]
+    public async Task Keeps_the_first_page_when_the_second_one_fails()
+    {
+        _pageCursor = 0;
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new StockBalanceRepository(db);
+        var provider = new StockBalanceProvider(repo, new LabelRepository(db));
+
+        const string first = """
+            {"balances":[{"productId":"11111111-1111-1111-1111-111111111111",
+                          "productVariantId":null,"quantity":5}],
+             "cursorCreatedAt":"2026-08-15T10:00:00+00:00",
+             "cursorId":"33333333-3333-3333-3333-333333333333",
+             "hasMore":true}
+            """;
+
+        var stockCalls = 0;
+        var svc = Build(db, req =>
+        {
+            if (req.RequestUri!.PathAndQuery.Contains("/me/licenses"))
+                return FakeHttpMessageHandler.Json(200,
+                    $$"""[{"id":"{{LicenseId}}","licenseKey":"LDK-TEST"}]""");
+
+            if (stockCalls++ == 0) return FakeHttpMessageHandler.Json(200, first);
+            throw new HttpRequestException("ikinci sayfada ağ koptu");
+        }, provider);
+
+        var written = await svc.SyncOnceAsync(CancellationToken.None);
+
+        written.Should().Be(1);
+        repo.GetForProduct("11111111111111111111111111111111")
+            .Should().ContainSingle().Which.Quantity.Should().Be(5);
+        repo.GetCursor().Id.Should().Be(Guid.Parse("33333333-3333-3333-3333-333333333333"));
     }
 
     [Fact]

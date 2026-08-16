@@ -66,6 +66,10 @@ public class StockBalanceProviderTests
         var snapshot = provider.ForProduct(pid);
         snapshot.For(vid).Should().Be(5);
         snapshot.ProductLevel.Should().Be(3);
+        // For(null) ürün seviyesine YÖNLENDİRİR. Ölçüldü: bu satır olmadan
+        // yönlendirme "return 0" yapılabiliyor ve paket yeşil kalıyor —
+        // varyantsız ürünün bakiyesi ekranda hep 0 görünürdü.
+        snapshot.For(null).Should().Be(3);
     }
 
     [Fact]

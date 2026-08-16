@@ -64,8 +64,15 @@ public sealed class StockSyncService
             return 0;
         }
 
-        try { return await SyncCoreAsync(ct); }
+        int written;
+        try { written = await SyncCoreAsync(ct); }
         finally { _gate.Release(); }
+
+        // Bildirim KAPININ DIŞINDA: abonesi görünüm modelleri ve fırlatan bir
+        // abone kapı tutulurken patlarsa, yazılmış ve kalıcı olmuş bir sayfa
+        // "başarısız tur" diye günlüğe düşerdi. Yazma bitti; haber vermek ayrı iş.
+        if (written > 0) _provider.RaiseBalancesChanged();
+        return written;
     }
 
     private async Task<int> SyncCoreAsync(CancellationToken ct)
@@ -80,8 +87,10 @@ public sealed class StockSyncService
         try
         {
             var cursor = _repo.GetCursor();
+            var pages = 0;
+            var more = false;
 
-            for (var page = 0; page < MaxPages; page++)
+            for (; pages < MaxPages; pages++)
             {
                 var res = await _api.GetStockBalancesSinceAsync(
                     licenseId.Value, cursor.CreatedAt, cursor.Id, PageSize, ct);
@@ -100,8 +109,27 @@ public sealed class StockSyncService
                 _repo.ApplyPage(balances, cursor);
                 written += balances.Count;
 
-                if (!res.HasMore) break;
+                more = res.HasMore;
+                if (!more) break;
             }
+
+            // Tavana çarpmak SESSİZ kalmamalı. İki ayrı arıza aynı yerden
+            // çıkıyor ve çareleri zıt: (a) defter gerçekten tavanı aştı →
+            // sonraki tur kaldığı yerden devam eder, yapılacak bir şey yok,
+            // (b) sunucu imleci ilerletmiyor → aynı sayfa turda 200 kez
+            // yeniden yazılır, sonsuza dek, hiçbir iz bırakmadan. Ayrımı
+            // yazılan satır sayısı veriyor; imleç de sorguyu sunucu tarafında
+            // birebir tekrarlamayı sağlıyor.
+            if (more)
+                _log.LogWarning(
+                    "Stok senkronu {MaxPages} sayfada bitmedi ({PageSize} satır/sayfa); "
+                  + "{Rows} satır yazıldı, son imleç {Cursor}. Yazılanlar KALICI. "
+                  + "Satır sayısı tavana (MaxPages×PageSize) yakınsa defter gerçekten "
+                  + "büyümüştür; çok daha küçükse sunucu imleci ilerletmiyor demektir.",
+                    MaxPages, PageSize, written, cursor);
+            else if (written > 0)
+                _log.LogInformation(
+                    "Stok senkronu: {Rows} bakiye satırı, {Pages} sayfa", written, pages + 1);
         }
         catch (LicenseApiUnknownException ex)
             when (!ct.IsCancellationRequested && ex.StatusCode is >= 200 and < 300)
@@ -117,7 +145,6 @@ public sealed class StockSyncService
             _log.LogWarning(ex, "Stok senkronu başarısız; sonraki turda yeniden denenecek");
         }
 
-        if (written > 0) _provider.RaiseBalancesChanged();
         return written;
     }
 
