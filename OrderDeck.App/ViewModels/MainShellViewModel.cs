@@ -964,6 +964,12 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             productId: resolution?.Product.Id,
             productVariantId: resolution?.ResolveVariantId(viewerAxisValue));
         PrintQueue.Add(new LabelViewModel(label, messageVm.IsSenderBlacklisted));
+
+        // Etiket yazmanın tek dar boğazı burası; bakiye senkron turunu
+        // beklemeden düşsün. İPTAL yolu burada DEĞİL: iptal edilen adet
+        // bakiyeye ancak bir sonraki turda (≤60 sn) ya da kart yeniden
+        // yüklendiğinde döner — bilinçli ödünç, gecikme temkinli yönde.
+        ProductCard.RefreshBalances();
     }
 
     /// <summary>
