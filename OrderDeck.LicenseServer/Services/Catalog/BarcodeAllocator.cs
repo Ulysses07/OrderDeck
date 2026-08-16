@@ -32,9 +32,21 @@ public sealed class BarcodeAllocator
 
     public BarcodeAllocator(LicenseDbContext db) => _db = db;
 
-    /// <summary>10 hane, soldan sıfır dolgulu, kültürden bağımsız.</summary>
+    /// <summary>
+    /// Barkod numarasının hane sayısı. Sabit burada duruyor çünkü numara
+    /// uzayını TANIMLAYAN yer burası: aynı sayıyı bilen ikinci bir yer daha
+    /// var (<c>PanelBroadcastCodesController</c>, "10 haneli saf sayı yayın
+    /// kodu olamaz" bekçisi). Ayrı ayrı yazılsalardı hane genişliği
+    /// değiştiğinde bekçi sessizce yanlış uzayı korurdu.
+    /// </summary>
+    public const int Digits = 10;
+
+    private static readonly string PadFormat =
+        "D" + Digits.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary><see cref="Digits"/> hane, soldan sıfır dolgulu, kültürden bağımsız.</summary>
     public static string Format(long n) =>
-        n.ToString("D10", CultureInfo.InvariantCulture);
+        n.ToString(PadFormat, CultureInfo.InvariantCulture);
 
     /// <summary>
     /// <paramref name="count"/> adet benzersiz barkod ayırır ve geri döner;

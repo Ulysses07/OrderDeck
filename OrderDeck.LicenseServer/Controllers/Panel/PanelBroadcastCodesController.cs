@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Catalog;
 using OrderDeck.Shared.Text;
 
 namespace OrderDeck.LicenseServer.Controllers.Panel;
@@ -157,6 +158,18 @@ public sealed class PanelBroadcastCodesController : ControllerBase
         if (!code.Any(char.IsLetterOrDigit))
             return Problem(title: "invalid-code",
                 detail: "Yayın kodu en az bir harf ya da rakam içermeli.", statusCode: 400);
+
+        // Barkod numara uzayıyla çakışmayı engelle. WPF'te kod kutusu tek:
+        // önce yayın kodu, bulunamazsa barkod aranıyor. 10 haneli saf sayı
+        // her iki kümede de bulunabilseydi aynı metin iki farklı ürüne
+        // çözülür, hangisinin açılacağı sıralamaya kalırdı.
+        //
+        // Bekçi bu uçta TEK duruyor: Code alanına yazan başka bir yol yok.
+        if (code.Length == BarcodeAllocator.Digits && code.All(char.IsAsciiDigit))
+            return Problem(title: "reserved-barcode-format",
+                detail: "10 haneli saf sayı barkod numarası olarak ayrıldı; "
+                      + "yayın kodu olarak kullanılamaz.",
+                statusCode: 400);
 
         var normalized = SearchNormalizer.Normalize(code);
 

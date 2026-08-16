@@ -636,4 +636,84 @@ public class PanelBroadcastCodesControllerTests : IClassFixture<ApiFactory>
             "'Siyah' hâlâ Siyah/L satırında kullanımda; kod orada kalmalı");
         codes[0].GetProperty("code").GetString().Should().Be("ATEŞ");
     }
+
+    /// <summary>
+    /// WPF'te tek kutu var: operatör kodu da barkodu da oraya yazıyor ve kutu
+    /// önce yayın kodu, bulunamazsa barkod arıyor. 10 haneli saf sayı barkod
+    /// numara uzayı; yayın kodu olarak da kabul edilseydi aynı metin iki farklı
+    /// ürüne çözülür, hangisinin açılacağı arama sırasına kalırdı.
+    /// </summary>
+    [Fact]
+    public async Task On_haneli_saf_sayi_yayin_kodu_olamaz()
+    {
+        var client = await NewPanelClientAsync();
+        var productId = await NewAxislessProductAsync(client);
+
+        var res = await client.PutAsJsonAsync(
+            $"/api/panel/products/{productId}/broadcast-codes",
+            new { code = "0000000001", sellerAxisValue = (string?)null });
+
+        res.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        // Başlık da doğrulanıyor: [ApiController] model doğrulaması da,
+        // bir üstteki "harf/rakam şart" bekçisi de 400 üretir. Yalnız durum
+        // koduna bakan test bambaşka bir sebeple geçerdi.
+        (await res.Content.ReadAsStringAsync())
+            .Should().Contain("reserved-barcode-format");
+    }
+
+    /// <summary>
+    /// Yasak "10 karakter" değil, "10 haneli SAF SAYI". Bekçi sayı koşulunu
+    /// unutup yalnız uzunluğa baksaydı 10 harflik sıradan kodlar da kapanırdı;
+    /// bu test o yarıyı çiviliyor.
+    /// </summary>
+    [Fact]
+    public async Task On_karakterli_ama_sayi_olmayan_kod_kabul_edilir()
+    {
+        var client = await NewPanelClientAsync();
+        var productId = await NewAxislessProductAsync(client);
+
+        var res = await client.PutAsJsonAsync(
+            $"/api/panel/products/{productId}/broadcast-codes",
+            new { code = "A000000001", sellerAxisValue = (string?)null });
+
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    /// <summary>
+    /// Bekçi <c>Trim</c>'lenmiş değeri okumalı. Ham gövdeye baksaydı boşluklu
+    /// "  0000000001  " uzunluk sınavını geçemez, barkod uzayındaki numara
+    /// yayın kodu olarak kaydedilirdi — kaydedilen değer zaten trim'li.
+    /// </summary>
+    [Fact]
+    public async Task Bosluklu_on_haneli_sayi_da_reddedilir()
+    {
+        var client = await NewPanelClientAsync();
+        var productId = await NewAxislessProductAsync(client);
+
+        var res = await client.PutAsJsonAsync(
+            $"/api/panel/products/{productId}/broadcast-codes",
+            new { code = "  0000000001  ", sellerAxisValue = (string?)null });
+
+        res.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await res.Content.ReadAsStringAsync())
+            .Should().Contain("reserved-barcode-format");
+    }
+
+    /// <summary>
+    /// Yasak yalnız 10 haneye özgü: kural "sayı olamaz" değil, "barkod numara
+    /// uzayıyla çakışamaz". Bekçi uzunluğu unutup her sayıyı reddetseydi
+    /// operatörün elindeki sayısal kodların tamamı kapanırdı.
+    /// </summary>
+    [Fact]
+    public async Task Dokuz_haneli_sayi_yayin_kodu_olabilir()
+    {
+        var client = await NewPanelClientAsync();
+        var productId = await NewAxislessProductAsync(client);
+
+        var res = await client.PutAsJsonAsync(
+            $"/api/panel/products/{productId}/broadcast-codes",
+            new { code = "123456789", sellerAxisValue = (string?)null });
+
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
 }
