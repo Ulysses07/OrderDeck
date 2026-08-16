@@ -56,6 +56,7 @@ public class LicenseDbContext : DbContext
     public DbSet<ProductBroadcastCode> ProductBroadcastCodes => Set<ProductBroadcastCode>();
     public DbSet<ProductPhoto> ProductPhotos => Set<ProductPhoto>();
     public DbSet<StockMovement> StockMovements => Set<StockMovement>();
+    public DbSet<BarcodeCounter> BarcodeCounters => Set<BarcodeCounter>();
 
     /// <summary>
     /// Türetilmiş kolonların tazelendiği <b>tek</b> nokta.
@@ -746,6 +747,18 @@ public class LicenseDbContext : DbContext
             // Yetim temizleme işi kovadaki anahtarı DB'de arıyor; anahtarın
             // benzersizliği o karşılaştırmanın ön şartı.
             b.HasIndex(p => p.ObjectKey).IsUnique();
+        });
+
+        mb.Entity<BarcodeCounter>(b =>
+        {
+            b.HasKey(c => c.LicenseId);
+            // LicenseId çağıran tarafından verilen doğal anahtar — EF convention'ı
+            // Guid PK'yi ValueGeneratedOnAdd sayıyor, biz kasıtlı olarak kapatıyoruz.
+            b.Property(c => c.LicenseId).ValueGeneratedNever();
+            // ValueGeneratedOnAddOrUpdate + IsConcurrencyToken: SQL Server'da
+            // rowversion'a çevrilir, InMemory'de sessizce yok sayılır (testler
+            // eşzamanlılık damgasını zaten sınayamıyor — bkz. sınıf XML doc'u).
+            b.Property(c => c.RowVersion).IsRowVersion();
         });
 
         mb.Entity<StockMovement>(b =>
