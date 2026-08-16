@@ -973,6 +973,27 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     }
 
     /// <summary>
+    /// Kartta açık ürünün etiketlerini bastırır. Çekmece
+    /// <c>IDrawerService.ShowAsync(title, factory)</c> ile açılıyor —
+    /// bütün diğer çekmecelerle aynı yol.
+    ///
+    /// <para>Ürün yoksa sessizce çıkar: düğme zaten yalnız çözülmüş kodda
+    /// görünüyor, ama kod kutusu komut tetiklendikten sonra da temizlenebilir.</para>
+    /// </summary>
+    [RelayCommand]
+    private async Task PrintLabelsAsync()
+    {
+        if (_drawers is null) return;   // yalnız testte; bkz. alanın notu
+        if (ProductCard.Resolution is null) return;
+
+        var vm = new BarcodeLabelViewModel();
+        vm.Load(ProductCard.Resolution);
+
+        await _drawers.ShowAsync("Etiket Bas",
+            d => Views.Drawers.BarcodeLabelDrawer.Create(d, vm));
+    }
+
+    /// <summary>
     /// Activates backup-selection mode for a label: subsequent chat double-clicks
     /// will be routed to <see cref="AssignChatAsBackup"/> until ESC or assignment.
     /// </summary>

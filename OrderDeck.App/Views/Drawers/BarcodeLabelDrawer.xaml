@@ -1,0 +1,49 @@
+<UserControl x:Class="OrderDeck.App.Views.Drawers.BarcodeLabelDrawer"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Etiket basma çekmecesi. Başlık şeritten geliyor; gövde ürün adını,
+         varyant satırlarını ve adet kutusunu taşıyor. Satırlar varsayılan
+         SEÇİLİ: operatör çoğunlukla hepsini basıyor, tersini seçmek istisna. -->
+    <StackPanel Margin="{StaticResource OD.Pad.5}" VerticalAlignment="Top">
+        <TextBlock Text="{Binding ProductName}"
+                   Style="{StaticResource OD.Text.Section}"/>
+
+        <ItemsControl ItemsSource="{Binding Rows}"
+                      Margin="{StaticResource OD.Pad.Top5}">
+            <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                    <DockPanel Margin="{StaticResource OD.Pad.Bottom3}">
+                        <TextBlock DockPanel.Dock="Right"
+                                   Text="{Binding Barcode}"
+                                   FontFamily="Consolas"
+                                   Style="{StaticResource OD.Text.Hint}"/>
+                        <CheckBox Content="{Binding Display}"
+                                  Style="{StaticResource OD.CheckBox}"
+                                  IsChecked="{Binding IsSelected, Mode=TwoWay}"/>
+                    </DockPanel>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+
+        <TextBlock Text="Adet (her satır için)"
+                   Style="{StaticResource OD.Text.Hint}"
+                   Margin="{StaticResource OD.Pad.Top4}"/>
+        <TextBox Style="{StaticResource OD.TextBox}"
+                 Text="{Binding Copies, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                 MaxLength="3"/>
+
+        <!-- Hiçbir satır seçili değilken kapalı: boş iş yazıcıya gitmesin. -->
+        <Button Content="Bas"
+                Style="{StaticResource OD.Button.Primary}"
+                Margin="{StaticResource OD.Pad.Top5}"
+                IsDefault="True"
+                IsEnabled="{Binding CanPrint}"
+                Click="Print_OnClick"/>
+
+        <Button Content="Vazgeç"
+                Style="{StaticResource OD.Button.Ghost}"
+                HorizontalContentAlignment="Center"
+                Margin="{StaticResource OD.Pad.Top4}"
+                Click="Cancel_OnClick"/>
+    </StackPanel>
+</UserControl>
