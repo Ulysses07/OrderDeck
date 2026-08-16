@@ -32,6 +32,15 @@ public sealed class BarcodeLabelPrinter
             _settings.LabelHeightMm,
             _settings.LabelFontFamily);
 
+        // Basımı log'a yaz: "etiket çıkmadı" şikâyetinde işin yazıcıya hiç
+        // gidip gitmediğini ayırt etmenin tek yolu bu (LabelPrinter'da da var).
+        _log?.LogInformation(
+            "Barkod etiketi basılıyor: {Count} adet, yazıcı '{Printer}'.",
+            labels.Count * copies,
+            string.IsNullOrWhiteSpace(_settings.PrinterName)
+                ? "(varsayılan)"
+                : _settings.PrinterName);
+
         var started = DateTimeOffset.UtcNow;
         doc.Print();
         var elapsed = DateTimeOffset.UtcNow - started;

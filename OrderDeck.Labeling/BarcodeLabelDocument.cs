@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Drawing.Printing;
 using System.Runtime.Versioning;
 
@@ -64,12 +65,49 @@ public static class BarcodeLabelDocument
         return result;
     }
 
+    /// <summary>
+    /// <see cref="EncodeWithQuietZone"/> + etikete sığma kontrolü.
+    ///
+    /// <para><b>Neden ayrı bir kapı:</b> sığmayan barkodu kırpmak (eski
+    /// <c>Math.Max(0f, …)</c>) taşmayı çözmüyor, GİZLİYOR — kâğıda gözle
+    /// kusursuz görünen ama stop deseni ve checksum'ı kesilmiş bir barkod
+    /// basılırdı. Etiket ürüne yapıştırılır, hata ancak yayının ortasında
+    /// okuyucu ötmeyince ortaya çıkardı. Burada patlamak, kâğıt hiç
+    /// hareket etmeden operatörü durduruyor.</para>
+    ///
+    /// <para><b>Kapasite:</b> 60 mm etikette 0.4 mm modülle 150 modül var,
+    /// 20'si sessiz bölgeye gidiyor. Sayaçtan gelen 10 haneli sayı Code128-C
+    /// ile çift çift sıkıştığı için 110 modül (≈44 mm) — bol bol sığar.
+    /// <b>Elle</b> yazılan harfli barkod sıkışmaz (Code128-B, karakter başına
+    /// 11 modül) ve 60 mm'ye ancak 8 karakter girer. Sunucu elle girilen
+    /// barkoda 64 karaktere kadar izin verdiği için bu sınır gerçek.</para>
+    ///
+    /// <para>Saf hesap: System.Drawing'e dokunmuyor, platformsuz kalıyor.</para>
+    /// </summary>
+    public static bool[] EncodeForLabel(string payload, int labelWidthMm)
+    {
+        var modules = EncodeWithQuietZone(payload);
+        var neededMm = modules.Length * ModuleWidthMm;
+        if (neededMm > labelWidthMm)
+            throw new ArgumentException(
+                $"'{payload}' barkodu {labelWidthMm} mm etikete sığmıyor: " +
+                $"{neededMm:0.#} mm gerekiyor.",
+                nameof(payload));
+        return modules;
+    }
+
     /// <summary>Tek etikette basılacak içerik.</summary>
     public sealed record Label(string Barcode, string ProductName, string VariantName);
 
     /// <summary>
     /// Her etiketi <paramref name="copies"/> kez basan bir belge kurar.
     /// Sayfa başına tek etiket — rulo yazıcıda "sayfa" zaten bir etiket.
+    ///
+    /// <para><b>Kodlama burada, çizimde değil:</b> her barkod belge kurulurken
+    /// bir kez kodlanıp doğrulanıyor. Böylece sığmayan bir yük <c>PrintPage</c>
+    /// içinde — yani kâğıt çoktan sarılmışken, önceki etiketler basılmışken —
+    /// değil, tek bir sayfa gitmeden patlıyor. Tekrarlar da aynı diziyi
+    /// paylaşıyor: kopya başına yeniden kodlamanın anlamı yok.</para>
     /// </summary>
     [SupportedOSPlatform("windows")]
     public static PrintDocument Build(
@@ -81,10 +119,13 @@ public static class BarcodeLabelDocument
         if (copies <= 0)
             throw new ArgumentOutOfRangeException(nameof(copies));
 
-        var queue = new List<Label>(labels.Count * copies);
+        var queue = new List<(Label Label, bool[] Modules)>(labels.Count * copies);
         foreach (var label in labels)
+        {
+            var modules = EncodeForLabel(label.Barcode, widthMm);
             for (var i = 0; i < copies; i++)
-                queue.Add(label);
+                queue.Add((label, modules));
+        }
 
         var doc = new PrintDocument();
         // Boş isim varsayılan yazıcıyı seçtirir; atarsak sürücü "böyle bir
@@ -98,7 +139,17 @@ public static class BarcodeLabelDocument
         var index = 0;
         doc.PrintPage += (_, e) =>
         {
-            DrawLabel(e.Graphics!, queue[index], widthMm, heightMm, fontFamily);
+            // Belge public ve ham PrintDocument dönüyor: bir PrintPreviewDialog
+            // sayfayı ikinci kez isteyebilir. Kardeş LabelPrintDocument'teki
+            // aynı koruma.
+            if (index >= queue.Count)
+            {
+                e.HasMorePages = false;
+                return;
+            }
+
+            var (label, modules) = queue[index];
+            DrawLabel(e.Graphics!, label, modules, widthMm, fontFamily);
             index++;
             e.HasMorePages = index < queue.Count;
         };
@@ -107,19 +158,29 @@ public static class BarcodeLabelDocument
 
     [SupportedOSPlatform("windows")]
     private static void DrawLabel(
-        Graphics g, Label label, int widthMm, int heightMm, string fontFamily)
+        Graphics g, Label label, bool[] modules, int widthMm, string fontFamily)
     {
         // Grafik birimi milimetreye çevriliyor: bütün ölçüler etiketin
         // fiziksel boyutuyla aynı dilde olsun, dpi hesabı tek yerde kalsın.
         g.PageUnit = GraphicsUnit.Millimeter;
+        // Kenar yumuşatma barkodun düşmanı: çizgi kenarındaki gri piksel
+        // okuyucunun eşiğine göre bazen çizgi bazen boşluk sayılır. Varsayılana
+        // güvenmeyip açıkça kapatıyoruz.
+        g.SmoothingMode = SmoothingMode.None;
+        g.PixelOffsetMode = PixelOffsetMode.Half;
 
-        var modules = EncodeWithQuietZone(label.Barcode);
         var barcodeWidth = modules.Length * ModuleWidthMm;
-        var left = Math.Max(0f, (widthMm - barcodeWidth) / 2f);
+        // Build sığmayanı zaten reddetti; burada kırpma/negatife düşme yok.
+        var left = (widthMm - barcodeWidth) / 2f;
 
-        using var nameFont = new Font(fontFamily, 3f, FontStyle.Bold);
-        using var variantFont = new Font(fontFamily, 2.5f);
-        using var codeFont = new Font(fontFamily, 2.5f);
+        // GraphicsUnit.Millimeter ŞART: Font'un em boyutu varsayılan olarak
+        // PUNTO, ve PageUnit'i milimetreye çevirmek onu değiştirmiyor —
+        // yalnız çizim koordinatlarını çeviriyor. Birimsiz "3f" 1.31 mm'lik
+        // bir yazı üretiyordu; insan-okur satır 1.10 mm'ye düşüyor, yani
+        // "okuyucu çalışmazsa elle yaz" güvenlik ağı yok oluyordu.
+        using var nameFont = new Font(fontFamily, 3f, FontStyle.Bold, GraphicsUnit.Millimeter);
+        using var variantFont = new Font(fontFamily, 2.5f, FontStyle.Regular, GraphicsUnit.Millimeter);
+        using var codeFont = new Font(fontFamily, 3f, FontStyle.Regular, GraphicsUnit.Millimeter);
         using var black = new SolidBrush(Color.Black);
 
         var y = 1.5f;
@@ -136,9 +197,22 @@ public static class BarcodeLabelDocument
             y += 3.5f;
         }
 
-        for (var i = 0; i < modules.Length; i++)
-            if (modules[i])
-                g.FillRectangle(black, left + i * ModuleWidthMm, y, ModuleWidthMm, BarHeightMm);
+        // Bitişik dolu modüller TEK dikdörtgen: Code128'de 2-4 modül kalınlığında
+        // çizgiler olağan. Modül modül çizseydik kalın çizginin içinde sürücünün
+        // yeniden rasterleştirdiği dikişler kalırdı; okuyucu o dikişi ince bir
+        // boşluk sanabilir.
+        var m = 0;
+        while (m < modules.Length)
+        {
+            if (!modules[m]) { m++; continue; }
+
+            var run = 1;
+            while (m + run < modules.Length && modules[m + run]) run++;
+
+            g.FillRectangle(
+                black, left + m * ModuleWidthMm, y, run * ModuleWidthMm, BarHeightMm);
+            m += run;
+        }
 
         y += BarHeightMm + 1f;
 

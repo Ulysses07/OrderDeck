@@ -47,6 +47,29 @@ public class BarcodeLabelDocumentTests
     }
 
     [Fact]
+    public void Sayac_barkodu_60mm_etikete_sigar()
+    {
+        var act = () => BarcodeLabelDocument.EncodeForLabel("0000000001", 60);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Elle_yazilan_barkodun_siniri_sekiz_karakter()
+    {
+        // Sayaç barkodu Code128-C ile çift çift sıkışıyor; ELLE yazılan harfli
+        // barkod sıkışmıyor (karakter başına 11 modül) ve 60 mm'ye ancak 8
+        // karakter giriyor. Sunucu 64 karaktere izin verdiği için sınır gerçek.
+        // Sığmayanı kırpmak, stop deseni ve checksum'ı olmayan — gözle
+        // kusursuz görünen — bir etiket basardı; bu yüzden patlıyoruz.
+        var sekiz = () => BarcodeLabelDocument.EncodeForLabel("ABCDEFGH", 60);
+        var dokuz = () => BarcodeLabelDocument.EncodeForLabel("ABCDEFGHI", 60);
+
+        sekiz.Should().NotThrow();
+        dokuz.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
     public void MmToHundredths_LabelPrintDocument_ile_ayni()
     {
         // İki belge aynı yazıcıya, aynı kâğıda basıyor. Ölçü dönüşümü
