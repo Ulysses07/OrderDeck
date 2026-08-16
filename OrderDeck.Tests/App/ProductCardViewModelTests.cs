@@ -32,14 +32,19 @@ public class ProductCardViewModelTests
     /// Depo da dönüyor çünkü tohumlama hâlâ replikaya yazıyor — kart artık
     /// depoyu GÖRMÜYOR, arasına <see cref="BroadcastCodeResolver"/> girdi.
     /// </summary>
-    private static (ProductCardViewModel Vm, CatalogReplicaRepository Repo, CatalogPhotoCache Photos) Make()
+    private static (ProductCardViewModel Vm, CatalogReplicaRepository Repo,
+                    CatalogPhotoCache Photos, StockBalanceRepository Stock,
+                    StockBalanceProvider Balances) Make()
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
         var repo = new CatalogReplicaRepository(db);
+        var stock = new StockBalanceRepository(db);
+        var balances = new StockBalanceProvider(stock, new LabelRepository(db));
         var photos = new CatalogPhotoCache(
             Path.Combine(Path.GetTempPath(), "od-test-" + Guid.NewGuid().ToString("N")));
-        return (new ProductCardViewModel(new BroadcastCodeResolver(repo), photos), repo, photos);
+        return (new ProductCardViewModel(new BroadcastCodeResolver(repo), photos, balances),
+                repo, photos, stock, balances);
     }
 
     /// <summary>Satıcı ekseni "Renk" (rol 1), izleyici ekseni "Beden" (rol 2).</summary>
@@ -94,7 +99,7 @@ public class ProductCardViewModelTests
     [Fact]
     public void Empty_code_shows_neither_product_nor_unknown()
     {
-        var (vm, repo, _) = Make();
+        var (vm, repo, _, _, _) = Make();
         SeedTwoProducts(repo);
 
         // Önce gerçek bir ürün: boş koleksiyonun boş kalmasını değil,
@@ -115,7 +120,7 @@ public class ProductCardViewModelTests
     [Fact]
     public void Unknown_code_is_reported_without_clearing_the_typed_code()
     {
-        var (vm, _, _) = Make();
+        var (vm, _, _, _, _) = Make();
 
         vm.Load("A7");
 
@@ -128,7 +133,7 @@ public class ProductCardViewModelTests
     [Fact]
     public void Unknown_code_after_a_loaded_product_leaves_nothing_behind()
     {
-        var (vm, repo, _) = Make();
+        var (vm, repo, _, _, _) = Make();
         SeedTwoProducts(repo);
 
         vm.Load("Ateş");
@@ -148,7 +153,7 @@ public class ProductCardViewModelTests
     [Fact]
     public void Known_code_loads_name_and_active_variants()
     {
-        var (vm, repo, _) = Make();
+        var (vm, repo, _, _, _) = Make();
         repo.Replace(
             [Product("p1", "SK00001", "Güzel Elbise")],
             [
@@ -177,7 +182,7 @@ public class ProductCardViewModelTests
     [Fact]
     public void Loading_a_second_product_drops_the_first_products_variants()
     {
-        var (vm, repo, _) = Make();
+        var (vm, repo, _, _, _) = Make();
         SeedTwoProducts(repo);
 
         vm.Load("Ateş");
@@ -192,7 +197,7 @@ public class ProductCardViewModelTests
     [Fact]
     public void Photo_path_is_null_until_the_cover_file_is_cached()
     {
-        var (vm, repo, photos) = Make();
+        var (vm, repo, photos, _, _) = Make();
         repo.Replace(
             [Product("p1", "SK00001", coverKey: "lic/p1/kapak.img")],
             [],
@@ -211,7 +216,7 @@ public class ProductCardViewModelTests
     [Fact]
     public void Cover_key_change_raises_a_change_for_the_photo_path()
     {
-        var (vm, repo, _) = Make();
+        var (vm, repo, _, _, _) = Make();
         SeedTwoProducts(repo);
 
         var changed = new List<string?>();
@@ -230,7 +235,7 @@ public class ProductCardViewModelTests
     [Fact]
     public void Yayin_kodu_urunu_ve_satici_degerini_gosterir()
     {
-        var (vm, repo, _) = Make();
+        var (vm, repo, _, _, _) = Make();
         // Elbise: Axis1 "Renk" rol 1 (satıcı), Axis2 "Beden" rol 2 (izleyici).
         // Varyantlar: v1 (Siyah, M), v2 (Beyaz, M). Kod: ("p1","Siyah","Ateş","ATES",0,0)
         repo.Replace(
@@ -255,7 +260,7 @@ public class ProductCardViewModelTests
     [Fact]
     public void Stok_kodu_kod_kutusunda_ARANMAZ()
     {
-        var (vm, repo, _) = Make();
+        var (vm, repo, _, _, _) = Make();
         repo.Replace(
             [Elbise()],
             [
@@ -275,7 +280,7 @@ public class ProductCardViewModelTests
     [Fact]
     public void Satici_ekseni_yoksa_son_ek_bostur()
     {
-        var (vm, repo, _) = Make();
+        var (vm, repo, _, _, _) = Make();
         // Kolye: hiç ekseni yok. Tek varyant (null, null). Kod ("p1", null, "Buz","BUZ",0,0)
         repo.Replace(
             [Kolye()],
@@ -308,7 +313,7 @@ public class ProductCardViewModelTests
     [Fact]
     public void A_photo_that_lands_for_the_shown_product_updates_the_card_by_itself()
     {
-        var (vm, repo, photos) = Make();
+        var (vm, repo, photos, _, _) = Make();
         SeedTwoProducts(repo);
 
         vm.Load("Ateş");
@@ -332,7 +337,7 @@ public class ProductCardViewModelTests
     [Fact]
     public void A_photo_that_lands_for_another_product_does_not_touch_the_card()
     {
-        var (vm, repo, photos) = Make();
+        var (vm, repo, photos, _, _) = Make();
         SeedTwoProducts(repo);
 
         vm.Load("Ateş");
@@ -347,5 +352,99 @@ public class ProductCardViewModelTests
 
         changed.Should().BeEmpty();
         vm.PhotoAbsolutePath.Should().BeNull("kartın kendi dosyası hâlâ inmedi");
+    }
+
+    // ── Stok bakiyeleri ───────────────────────────────────────────────────────
+
+    private static StockCursor AnyCursor() =>
+        new(DateTimeOffset.UnixEpoch, Guid.NewGuid());
+
+    [Fact]
+    public void Load_fills_variant_quantities_from_the_ledger()
+    {
+        var (vm, repo, _, stock, _) = Make();
+        SeedTwoProducts(repo);
+        stock.ApplyPage([new CatalogStockBalance("p1", "v1", 4)], AnyCursor());
+
+        vm.Load("Ateş");
+
+        vm.Variants.Should().ContainSingle().Which.Quantity.Should().Be(4);
+    }
+
+    [Fact]
+    public void RefreshBalances_updates_in_place_without_rebuilding_the_list()
+    {
+        var (vm, repo, _, stock, _) = Make();
+        SeedTwoProducts(repo);
+        stock.ApplyPage([new CatalogStockBalance("p1", "v1", 4)], AnyCursor());
+
+        vm.Load("Ateş");
+        var chip = vm.Variants.Single();
+
+        stock.ApplyPage([new CatalogStockBalance("p1", "v1", 9)], AnyCursor());
+        vm.RefreshBalances();
+
+        // AYNI nesne güncellenmeli: koleksiyonu baştan kurmak yayın ortasında
+        // rozetlerin görsel olarak zıplamasına yol açardı.
+        vm.Variants.Single().Should().BeSameAs(chip);
+        chip.Quantity.Should().Be(9);
+    }
+
+    [Fact]
+    public void Product_level_balance_is_hidden_when_zero()
+    {
+        var (vm, repo, _, _, _) = Make();
+        SeedTwoProducts(repo);
+
+        vm.Load("Ateş");
+
+        vm.ProductLevelQuantity.Should().Be(0);
+        vm.HasProductLevelQuantity.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Product_level_balance_is_shown_when_non_zero()
+    {
+        var (vm, repo, _, stock, _) = Make();
+        SeedTwoProducts(repo);
+        stock.ApplyPage([new CatalogStockBalance("p1", null, -2)], AnyCursor());
+
+        vm.Load("Ateş");
+
+        vm.ProductLevelQuantity.Should().Be(-2);
+        vm.HasProductLevelQuantity.Should().BeTrue();
+    }
+
+    [Fact]
+    public void BalancesChanged_from_sync_refreshes_the_card()
+    {
+        var (vm, repo, _, stock, balances) = Make();
+        SeedTwoProducts(repo);
+
+        vm.Load("Ateş");
+        stock.ApplyPage([new CatalogStockBalance("p1", "v1", 6)], AnyCursor());
+
+        // Senkron turu bittiğinde ekrandaki kart kendiliğinden tazelenmeli;
+        // operatörün başka bir koda gidip dönmesi gerekmemeli.
+        // (Testte olay aynı iş parçacığından geliyor → CheckAccess() true,
+        // haber satır içinde yükseliyor; fotoğraf testlerindeki notun aynısı.)
+        balances.RaiseBalancesChanged();
+
+        vm.Variants.Single().Quantity.Should().Be(6);
+    }
+
+    [Fact]
+    public void Card_without_a_product_has_no_product_level_quantity()
+    {
+        var (vm, repo, _, stock, _) = Make();
+        SeedTwoProducts(repo);
+        stock.ApplyPage([new CatalogStockBalance("p1", null, -2)], AnyCursor());
+
+        vm.Load("Ateş");
+        vm.Load("YOKBOYLEKOD");
+
+        // Bayat kalırsa "katalogda yok" yazısının altında önceki ürünün
+        // bakiyesi durur.
+        vm.HasProductLevelQuantity.Should().BeFalse();
     }
 }

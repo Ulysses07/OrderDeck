@@ -165,9 +165,12 @@ public class MainShellPrintTests
         sessionSvc.Start("Test", new[] { "instagram" });
 
         var catalogRepo = new CatalogReplicaRepository(db);
+        var stockProvider = new StockBalanceProvider(
+            new StockBalanceRepository(db), labelRepo);
         var productCard = new ProductCardViewModel(
             new BroadcastCodeResolver(catalogRepo),
-            new CatalogPhotoCache(Path.Combine(Path.GetTempPath(), "od-test-" + Guid.NewGuid().ToString("N"))));
+            new CatalogPhotoCache(Path.Combine(Path.GetTempPath(), "od-test-" + Guid.NewGuid().ToString("N"))),
+            stockProvider);
 
         var vm = new MainShellViewModel(
             bus, labelSvc, sessionSvc, printer, customerSvc, customerRepo,

@@ -141,7 +141,8 @@ public class ProductCardTemplateTests
         var vm = new ProductCardViewModel(
             new BroadcastCodeResolver(repo),
             new CatalogPhotoCache(
-                Path.Combine(Path.GetTempPath(), "od-test-" + Guid.NewGuid().ToString("N"))));
+                Path.Combine(Path.GetTempPath(), "od-test-" + Guid.NewGuid().ToString("N"))),
+            new StockBalanceProvider(new StockBalanceRepository(db), new LabelRepository(db)));
         vm.Load(code);
 
         var card = new ProductCard { DataContext = new ShellStub(vm, isShort) };
