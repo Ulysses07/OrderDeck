@@ -25,10 +25,27 @@ public sealed class BroadcastCodeResolver
     /// <summary>
     /// Kutuya yazılan/okutulan metni çözer.
     ///
-    /// <para><b>Sıra:</b> önce yayın kodu, sonra barkod. Aynı metin ikisinde
-    /// birden olamaz — sunucu 10 haneli saf sayıyı yayın kodu olarak
-    /// reddediyor — ama sıra yine de anlamlı: operatörün ağzından çıkan kod,
-    /// elindeki parçadan önce gelir.</para>
+    /// <para><b>Sıra:</b> önce yayın kodu, sonra barkod — operatörün ağzından
+    /// çıkan kod, elindeki parçadan önce gelir.</para>
+    ///
+    /// <para><b>Bu sıra estetik değil, TAŞIYICI.</b> Sayaçtan ayrılan
+    /// barkodlarda çakışma imkânsız (sunucu 10 haneli saf sayıyı yayın kodu
+    /// olarak reddediyor), ama panelden <b>elle</b> yazılan barkod herhangi
+    /// bir yazdırılabilir ASCII olabiliyor ve iki uzay arasında çapraz kontrol
+    /// YOK: bir varyantın barkodu <c>ATES</c> iken bambaşka bir ürünün yayın
+    /// kodu da <c>ATES</c> olabilir. Böyle bir çakışmada kod kazanır, yani
+    /// barkodun sahibi ürüne bu yolla ERİŞİLEMEZ. Sırayı çevirmek daha
+    /// kötüsünü yapardı: operatörün söylediği koda başkasının etiketi
+    /// gölge düşürürdü. Sıra bir testle sabit
+    /// (<c>Yayin_kodu_barkoda_gore_oncelikli</c>).</para>
+    ///
+    /// <para><b>İki arama aynı kutuda buluşuyor ama farklı eşleşme kuralları
+    /// kullanıyor:</b> yayın kodu NORMALİZE edilerek aranıyor (büyük harf +
+    /// Türkçe katlama), barkod BİREBİR (opak yük, gerekçesi
+    /// <c>CatalogReplicaRepository.FindVariantByBarcode</c>'da). Sonuç: kod
+    /// tarafı geniş, barkod tarafı dar. Sayaç barkodları saf rakam olduğu
+    /// için etkilenmiyor; elle yazılan <c>abc-12</c> barkodu ise kutuya
+    /// <c>ABC-12</c> diye yazılırsa eşleşmez.</para>
     /// </summary>
     public BroadcastCodeResolution? Resolve(string? code)
     {
@@ -87,14 +104,29 @@ public sealed class BroadcastCodeResolver
     /// söyler, hata ancak yorumdan gelen sipariş varyanta çevrilemediğinde —
     /// yani yayının ortasında, izleyici parçayı çoktan istemişken — ortaya
     /// çıkardı. <c>null</c> dönmek operatörü yanlış anda değil, güvenli anda
-    /// durduruyor. Kartta "katalogda yok" görünmesi eksik bir mesaj, ama
-    /// çözümü <see cref="BroadcastCodeResolution"/>'a yeni bir alan eklemekten
-    /// geçiyor ve bu kapsamın dışında.</para>
+    /// durduruyor. <c>FindVariantByBarcode</c>'un doc'u tam da bunun bedelini
+    /// uyarıyor — "sessizce bulunamadı demek operatörü etiketin bozuk olduğuna
+    /// inandırır" — ve o bedel burada BİLEREK kabul ediliyor: yanlış kırılımla
+    /// yayına devam etmek, bir etiketi boşuna şüpheli saymaktan pahalı.
+    /// Mesajı düzeltmenin yolu <see cref="BroadcastCodeResolution"/>'a bir
+    /// sebep alanı eklemekten geçiyor ve bu kapsamın dışında.</para>
     ///
     /// <para><b>Kodu olmayan ürün reddedilir</b> (<c>null</c> → kartta
     /// "katalogda yok"): kart yayın kodunu gösteriyor, kodu olmayan bir ürünü
     /// açmak operatöre izleyicilere söyleyecek kodu olmayan bir ürün
     /// göstermek olurdu.</para>
+    ///
+    /// <para><b>İlk eşleşen kod = GÜNCEL kod, sıralamaya bağımlı.</b> Bir
+    /// ürünün aynı kırılımında birden çok kod satırı olabilir: kod değişikliği
+    /// güncelleme değil YENİ SATIR (eskisi kodu rezerve tutmaya devam eder) ve
+    /// emekli satırlar da WPF'e iniyor. Buradaki <c>codes[0]</c> /
+    /// <c>FirstOrDefault</c> güncel kodu veriyor çünkü zincirin tamamı öyle
+    /// kurulu: sunucu <c>CreatedAt</c> AZALAN gönderir → <c>CatalogSyncService</c>
+    /// dizi indeksini <c>SortOrder</c> yapar → <c>GetBroadcastCodes</c>
+    /// <c>ORDER BY SortOrder</c> der. <b>O <c>ORDER BY</c> gösterim uğruna
+    /// değiştirilirse</b> (ör. <c>ORDER BY Code</c>) burası sessizce EMEKLİ bir
+    /// kodu karta yazar; operatör izleyicilere panelde artık görünmeyen bir kod
+    /// söyler. Kural teste bağlı: <c>Barkod_emekli_degil_guncel_kodu_verir</c>.</para>
     ///
     /// <para>Satıcı ekseni eşleşmesi C#'ta, <see cref="Same"/> ile: SQLite'ta
     /// Türkçe katlama yok, SQL'de karşılaştırmak "İ/ı" çiftlerini kaçırırdı.</para>

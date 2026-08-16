@@ -21,6 +21,18 @@ public class BroadcastCodeResolverTests
         CatalogProduct product,
         IReadOnlyList<CatalogVariant> variants,
         IReadOnlyList<CatalogBroadcastCode> codes)
+        => Build(new[] { product }, variants, codes);
+
+    /// <summary>
+    /// Çok ürünlü kurulum. Tek ürünle kurulan testler bir metnin hangi YOLDAN
+    /// (kod mu barkod mu) çözüldüğünü ayırt edemiyor: iki yol da aynı ürüne
+    /// varıyor ve sıra ters çevrilse bile sonuç değişmiyor. Yolları ayırmak
+    /// için metnin sahiplerinin farklı ürünler olması gerekiyor.
+    /// </summary>
+    private static BroadcastCodeResolver Build(
+        IReadOnlyList<CatalogProduct> products,
+        IReadOnlyList<CatalogVariant> variants,
+        IReadOnlyList<CatalogBroadcastCode> codes)
     {
         // Şema önce göç ettirilmeli: tablolar olmadan her sorgu patlar.
         var db = new InMemorySqlite();
@@ -32,7 +44,7 @@ public class BroadcastCodeResolverTests
         // "ORDER BY SortOrder" diyor; hepsine 0 verseydik sıra SQLite'ın eşitlik
         // durumundaki davranışına kalırdı, ki bu bir sözleşme değil.
         repo.Replace(
-            new[] { product },
+            products,
             variants.Select((v, i) => v with { SortOrder = i }).ToList(),
             Array.Empty<CatalogCategory>(),
             codes);
@@ -183,13 +195,83 @@ public class BroadcastCodeResolverTests
     [Fact]
     public void Yayin_kodu_barkoda_gore_oncelikli()
     {
-        // Aynı metin hem yayın kodu hem barkod olsaydı yayın kodu kazanır:
-        // operatörün ağzından çıkan kod, elindeki parçadan önce gelir.
-        var sut = Build(Elbise(),
-            new[] { V("v1", "Siyah", "M") with { Barcode = "ATES" } },
-            new[] { new CatalogBroadcastCode("p1", "Siyah", "ATES", "ATES", 0, 0) });
+        // Aynı metin hem yayın kodu hem barkod olabilir: elle yazılan barkod
+        // herhangi bir metin olabiliyor ve iki uzay arasında çapraz kontrol yok.
+        // Çakışmada yayın kodu kazanır — operatörün ağzından çıkan kod, elindeki
+        // parçadan önce gelir.
+        //
+        // İki metin AYRI ürünlerde: aynı üründe olsalardı iki yol da aynı koda
+        // varır, sıra ters çevrilse bile test yeşil kalırdı — yani hiçbir şey
+        // sınamazdı. Burada tersine çevirmek sonucu p2'den p1'e kaydırır.
+        var canta = new CatalogProduct(
+            "p2", null, "SK00002", "SK00002", "Çanta", 50m, null,
+            null, null, null, null, null, 0);
 
-        sut.Resolve("ATES")!.Code.Should().Be("ATES");
+        var sut = Build(
+            new[] { Elbise(), canta },
+            new[]
+            {
+                V("v1", "Siyah", "M") with { Barcode = "ATES" },
+                new CatalogVariant("v9", "p2", null, null, "0000000009", true, 0),
+            },
+            new[]
+            {
+                new CatalogBroadcastCode("p1", "Siyah", "GECE", "GECE", 0, 0),
+                new CatalogBroadcastCode("p2", null, "ATES", "ATES", 0, 0),
+            });
+
+        var hit = sut.Resolve("ATES");
+
+        hit!.Product.Id.Should().Be("p2");
+        hit.Code.Should().Be("ATES");
+    }
+
+    [Fact]
+    public void Eksensiz_urunun_kodu_yoksa_barkodu_reddedilir()
+    {
+        // Eksensiz dal `codes[0]` diyor; boş liste bekçisi düşerse burası
+        // IndexOutOfRange ile ÇÖKER. Eksenli kardeş test (yukarıdaki
+        // Yayin_kodu_olmayan_urunun_barkodu_reddedilir) o dala hiç girmediği
+        // için bekçiyi tutmuyor — bu test tutuyor.
+        //
+        // Senaryo gündelik: operatör eksensiz ürünü açar, sunucu barkodu
+        // kendiliğinden atar, ama operatör daha yayın kodu vermemiştir ve
+        // etiketi okutur.
+        var canta = new CatalogProduct(
+            "p2", null, "SK00002", "SK00002", "Çanta", 50m, null,
+            null, null, null, null, null, 0);
+
+        var sut = Build(canta,
+            new[] { new CatalogVariant("v9", "p2", null, null, "0000000009", true, 0) },
+            Array.Empty<CatalogBroadcastCode>());
+
+        sut.Resolve("0000000009").Should().BeNull();
+    }
+
+    [Fact]
+    public void Barkod_emekli_degil_guncel_kodu_verir()
+    {
+        // Kod değişikliği güncelleme değil YENİ SATIR; eski satır kodu rezerve
+        // tutmaya devam ettiği için silinmiyor ve replikaya da iniyor. Yani
+        // "eksensiz ürün = tek kod" yanlış.
+        //
+        // Kurgu bilerek tuzaklı: emekli satır ÖNCE ekleniyor ve alfabetik olarak
+        // da önde ("CANTA" < "CANTA2"). GetBroadcastCodes'un "ORDER BY SortOrder"ı
+        // düşerse ya da gösterim uğruna "ORDER BY Code"a çevrilirse bu test kırılır
+        // — yoksa operatör izleyicilere panelde artık görünmeyen bir kod söylerdi.
+        var canta = new CatalogProduct(
+            "p2", null, "SK00002", "SK00002", "Çanta", 50m, null,
+            null, null, null, null, null, 0);
+
+        var sut = Build(canta,
+            new[] { new CatalogVariant("v9", "p2", null, null, "0000000009", true, 0) },
+            new[]
+            {
+                new CatalogBroadcastCode("p2", null, "CANTA", "CANTA", 100, 1),
+                new CatalogBroadcastCode("p2", null, "CANTA2", "CANTA2", 200, 0),
+            });
+
+        sut.Resolve("0000000009")!.Code.Should().Be("CANTA2");
     }
 
     [Fact]

@@ -237,10 +237,15 @@ public sealed class CatalogReplicaRepository
     /// (<c>LicensesWpfCatalogPullController</c>). Yani <c>SortOrder = 0</c>
     /// <b>en son eklenen kod</b> demek.</para>
     ///
-    /// <para><b>Çağırana uyarı:</b> eksenli üründe ilk kodu almak yanlış —
-    /// her eksen değerinin kendi kodu var, çağıran <c>SellerAxisValue</c>
-    /// üzerinden eşleştirmeli. İlk kodu almak yalnız eksensiz üründe
-    /// (tek kod) anlamlı.</para>
+    /// <para><b>Çağırana uyarı — eksen:</b> eksenli üründe ilk kodu almak
+    /// yanlış; her eksen değerinin kendi kodu var, çağıran
+    /// <c>SellerAxisValue</c> üzerinden eşleştirmeli.</para>
+    ///
+    /// <para><b>Çağırana uyarı — emekli kodlar:</b> tek bir kırılımın da
+    /// birden çok satırı olabilir. Kod değişikliği güncelleme değil YENİ
+    /// SATIR; eski satır kodu rezerve tutmaya devam ettiği için silinmiyor ve
+    /// buraya da iniyor. Sıralama sayesinde ilk satır GÜNCEL olan; "eksensiz
+    /// ürün = tek kod" diye düşünen çağıran yanılır.</para>
     /// </summary>
     public IReadOnlyList<CatalogBroadcastCode> GetBroadcastCodes(string productId)
     {
