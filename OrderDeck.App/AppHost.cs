@@ -84,6 +84,8 @@ public sealed class AppHost : IDisposable
         // Stok Faz 1b: sunucu katalogunun salt-okunur replikası ve kapak
         // fotoğrafı önbelleği. Tek yazarı CatalogSyncService.
         services.AddSingleton<CatalogReplicaRepository>();
+        services.AddSingleton<StockBalanceRepository>();
+        services.AddSingleton<OrderDeck.Core.Catalog.StockBalanceProvider>();
         // Yayın kodu çözümleyicisi: kod kutusu da sipariş akışı da AYNI örneği
         // kullanmalı, yoksa kartta görünen varyantlarla çekmecede seçilebilen
         // değerler ayrışabilir.
@@ -530,6 +532,8 @@ public sealed class AppHost : IDisposable
         services.AddHttpClient(OrderDeck.App.Services.Sync.CatalogSyncService.PhotoClientName);
         services.AddSingleton<Services.Sync.CatalogSyncService>();
         services.AddHostedService<Services.Sync.CatalogSyncHostedService>();
+        services.AddSingleton<Services.Sync.StockSyncService>();
+        services.AddHostedService<Services.Sync.StockSyncHostedService>();
 
         // UI freeze diagnostic (2026-05-13): her 5 dakikada bir UI thread'in
         // responsive olduğunu log'a yazan heartbeat. Donma anında log'da
