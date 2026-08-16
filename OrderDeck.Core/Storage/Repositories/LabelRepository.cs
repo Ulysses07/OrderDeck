@@ -435,6 +435,47 @@ public sealed class LabelRepository
             .ToList();
     }
 
+    /// <summary>
+    /// Yerelde yazılmış ama sunucuya <b>henüz gitmemiş</b> etiketleri
+    /// (ürün, varyant) anahtarına göre sayar. Gösterilen bakiye
+    /// <c>sunucu bakiyesi − bu sayı</c> olarak hesaplanır.
+    ///
+    /// <para>Filtre sunucudaki defter sayma kuralının <b>birebir aynası</b>:
+    /// bir etiket stoktan düşer ancak ve ancak ürüne bağlıysa, kargo bedeli
+    /// değilse, iptal edilmemişse ve geçici yedek değilse. Biri unutulursa
+    /// gösterilen bakiye sunucununkiyle kalıcı olarak ayrışır.</para>
+    ///
+    /// <para><c>GROUP BY ProductVariantId</c> NULL'ları tek kovada topluyor —
+    /// SQLite'ta GROUP BY, UNIQUE'in aksine NULL'ları eşit sayar. Ürün
+    /// seviyesindeki (varyantsız) bekleyenler bu sayede tek satır olur.</para>
+    /// </summary>
+    public IReadOnlyList<PendingStockDelta> GetPendingStockDeltas(string productId)
+    {
+        using var conn = _factory.Open();
+        return conn.Query<PendingRow>(
+            """
+            SELECT ProductVariantId, COUNT(*) AS PendingCount
+            FROM Label
+            WHERE SyncedAt IS NULL
+              AND ProductId = @productId
+              AND IsShippingFee = 0
+              AND CancelledAt IS NULL
+              AND IsTentativeBackup = 0
+            GROUP BY ProductVariantId
+            """,
+            new { productId })
+            .Select(r => new PendingStockDelta(
+                productId, r.ProductVariantId, (int)r.PendingCount))
+            .ToList();
+    }
+
+    // SQLite COUNT(*) Int64 döner; daraltma burada (bkz. ShipmentRepository.Row).
+    private sealed class PendingRow
+    {
+        public string? ProductVariantId { get; init; }
+        public long PendingCount { get; init; }
+    }
+
     private static Label Map(Row r) =>
         new(r.Id, r.SessionId, r.CustomerId, r.Platform, r.Username, r.MessageText,
             r.Code, r.Price, r.AddedAt, r.PrintedAt, r.CancelledAt, r.CancelReason,
