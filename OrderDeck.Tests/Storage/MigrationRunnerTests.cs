@@ -29,7 +29,7 @@ public class MigrationRunnerTests
         tables.Should().NotContain("LabelBackup");
 
         var version = conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().Be(30);
+        version.Should().Be(31);
 
         // Migration 018 added the Shipment table for kümülatif kargo dosyası.
         tables.Should().Contain("Shipment");
@@ -59,6 +59,12 @@ public class MigrationRunnerTests
             { "TotalLabelsPrinted", "TotalAmount", "BlacklistedAt", "Notes", "IsBlacklisted" });
         customerColumns.Should().NotContain(new[]
             { "TrustScore", "TotalOrders", "CompletedOrders", "CancelledOrders" });
+
+        // Göç 031: okutma yolu barkodu indeksten buluyor. İndekssiz sorgu
+        // her okutmada tam tarama olurdu — yayın sırasında hissedilir.
+        conn.Query<string>(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='CatalogVariant'")
+            .Should().Contain("IX_CatalogVariant_Barcode");
     }
 
     [Fact]
@@ -72,7 +78,7 @@ public class MigrationRunnerTests
 
         using var conn = db.Open();
         var version = conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().Be(30);
+        version.Should().Be(31);
     }
 
     [Fact]
