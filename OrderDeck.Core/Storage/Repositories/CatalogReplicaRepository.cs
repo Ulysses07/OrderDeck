@@ -187,9 +187,16 @@ public sealed class CatalogReplicaRepository
     /// ve okutma yanlış ürünü açardı. Yalnız baştaki/sondaki boşluk kırpılır:
     /// okutucular klavye taklidi yapıyor ve sonda bir Enter/boşluk bırakabiliyor.</para>
     ///
-    /// <para><c>LIMIT 1</c>: benzersizliğin sahibi sunucu. Replikada indeks
-    /// UNIQUE değil (gerekçesi göç 031'de), yani teorik bir çift satır
-    /// sorguyu patlatmak yerine ilkini döndürsün.</para>
+    /// <para><c>ORDER BY Id LIMIT 1</c>: benzersizliğin sahibi sunucu, replikada
+    /// indeks UNIQUE değil (gerekçesi göç 031'de) — yani çift satır mümkün.
+    /// O durumda sorgu patlamak yerine tek satır döndürür, ama <b>her seferinde
+    /// AYNI satırı</b>: sırasız <c>LIMIT 1</c> hangi satırın döneceğini SQLite'ın
+    /// plan seçimine bırakırdı ve aynı fiziksel etiket iki ayrı anda iki farklı
+    /// ürünü açabilirdi. <c>Id</c> birincil anahtar olduğu için tek başına tam
+    /// sıra veriyor; kardeş sorgular (<see cref="FindByCode"/>,
+    /// <see cref="FindBroadcastCode"/>) anlamlı bir kolonla sıraladıklarından
+    /// tekilleştirici ikinci anahtara ihtiyaç duyuyor, burada öyle bir kolon yok
+    /// (<c>Barcode</c> zaten <c>WHERE</c>'de sabit).</para>
     /// </summary>
     public CatalogVariant? FindVariantByBarcode(string? barcode)
     {
@@ -202,7 +209,7 @@ public sealed class CatalogReplicaRepository
             SELECT Id, ProductId, Axis1Value, Axis2Value, Barcode, IsActive, SortOrder
             FROM CatalogVariant
             WHERE Barcode = @needle
-            LIMIT 1
+            ORDER BY Id LIMIT 1
             """,
             new { needle })
             .Select(r => new CatalogVariant(
