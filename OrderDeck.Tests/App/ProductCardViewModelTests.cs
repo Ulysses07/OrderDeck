@@ -434,6 +434,29 @@ public class ProductCardViewModelTests
     }
 
     [Fact]
+    public void Product_level_change_raises_a_change_for_the_visibility_flag()
+    {
+        var (vm, repo, _, stock, balances) = Make();
+        SeedTwoProducts(repo);
+
+        vm.Load("Ateş");
+
+        var changed = new List<string?>();
+        ((INotifyPropertyChanged)vm).PropertyChanged += (_, e) => changed.Add(e.PropertyName);
+
+        stock.ApplyPage([new CatalogStockBalance("p1", null, -2)], AnyCursor());
+        balances.RaiseBalancesChanged();
+
+        // HasProductLevelQuantity hesaplanan bir özellik ve XAML'de doğrudan
+        // Visibility'ye bağlı. Ölçüldü: setter'daki iki haber satırı silinince
+        // paketin tamamı yeşil kalıyor — çünkü diğer testler getter'ı okuyor.
+        // Haber gitmezse "Varyantsız: −N" satırı senkron turundan sonra HİÇ
+        // görünmez; yani bu commit'in vaadi sessizce kaybolur.
+        changed.Should().Contain(nameof(ProductCardViewModel.ProductLevelQuantity));
+        changed.Should().Contain(nameof(ProductCardViewModel.HasProductLevelQuantity));
+    }
+
+    [Fact]
     public void Card_without_a_product_has_no_product_level_quantity()
     {
         var (vm, repo, _, stock, _) = Make();
