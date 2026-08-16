@@ -16,15 +16,21 @@ public sealed class LabelRepository
         // SQLite stores BOOLs as INTEGER — Dapper handles bool→0/1 conversion,
         // but we cast explicitly so the parameter type is unambiguous on
         // callers that pass an anonymous-typed projection.
+        //
+        // StockSyncedAt = SyncedAt: göç 030'daki backfill'in aynısı. Yeni
+        // yazılan etikette ikisi de NULL; yedekten geri yüklenen, sunucuya
+        // çoktan gitmiş bir satırda ikisi de dolu olmalı — yoksa geri yükleme
+        // bakiyeden bir kez daha düşerdi. Label kaydına ayrı bir alan eklemeye
+        // gerek yok: damganın kaynağı zaten SyncedAt.
         conn.Execute(
             @"INSERT INTO Label
               (Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code, Price, AddedAt, PrintedAt,
                IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt,
-               ProductId, ProductVariantId)
+               StockSyncedAt, ProductId, ProductVariantId)
               VALUES
               (@Id, @SessionId, @CustomerId, @Platform, @Username, @DisplayName, @MessageText, @Code, @Price, @AddedAt, @PrintedAt,
                @IsBackupPromoted, @ParentLabelId, @IsTentativeBackup, @IsShippingFee, @ShipmentId, @SyncedAt,
-               @ProductId, @ProductVariantId)",
+               @SyncedAt, @ProductId, @ProductVariantId)",
             new
             {
                 l.Id, l.SessionId, l.CustomerId, l.Platform, l.Username, l.DisplayName, l.MessageText,
@@ -118,17 +124,20 @@ public sealed class LabelRepository
     public void ConfirmTentativeBackups(IEnumerable<string> labelIds)
     {
         using var conn = _factory.Open();
+        // IsTentativeBackup STOK-İLGİLİ: geçici yedek sunucuda hareket üretmez,
+        // onaylanmış olan üretir. Damga düşüyor ki satır yeniden bekleyen sayılsın.
         conn.Execute(
-            "UPDATE Label SET IsTentativeBackup = 0 WHERE Id IN @ids AND IsTentativeBackup = 1",
+            "UPDATE Label SET IsTentativeBackup = 0, StockSyncedAt=NULL WHERE Id IN @ids AND IsTentativeBackup = 1",
             new { ids = labelIds.ToArray() });
     }
 
     public void MarkCancelled(IEnumerable<string> ids, long cancelledAt, string reason)
     {
         using var conn = _factory.Open();
-        // State değişikliği → SyncedAt NULL.
+        // State değişikliği → SyncedAt NULL. CancelledAt stok-ilgili olduğu için
+        // StockSyncedAt de düşüyor.
         conn.Execute(
-            "UPDATE Label SET CancelledAt=@cancelledAt, CancelReason=@reason, SyncedAt=NULL WHERE Id IN @ids",
+            "UPDATE Label SET CancelledAt=@cancelledAt, CancelReason=@reason, SyncedAt=NULL, StockSyncedAt=NULL WHERE Id IN @ids",
             new { cancelledAt, reason, ids = ids.ToArray() });
     }
 
@@ -136,13 +145,16 @@ public sealed class LabelRepository
     {
         using var conn = _factory.Open();
         conn.Execute(
-            "UPDATE Label SET CancelledAt=NULL, CancelReason=NULL, SyncedAt=NULL WHERE Id IN @ids",
+            "UPDATE Label SET CancelledAt=NULL, CancelReason=NULL, SyncedAt=NULL, StockSyncedAt=NULL WHERE Id IN @ids",
             new { ids = ids.ToArray() });
     }
 
     public void MarkPrinted(IEnumerable<string> ids, long printedAt)
     {
         using var conn = _factory.Open();
+        // StockSyncedAt'e BİLEREK dokunulmuyor: yazdırmak satırı push kuyruğuna
+        // geri alır ama stok açısından hiçbir şeyi değiştirmez — sunucunun
+        // defterinde hareket zaten var. Silinirse aynı etiket ikinci kez düşülür.
         conn.Execute(
             "UPDATE Label SET PrintedAt=@printedAt, SyncedAt=NULL WHERE Id IN @ids",
             new { printedAt, ids = ids.ToArray() });
@@ -154,6 +166,7 @@ public sealed class LabelRepository
     public void UpdatePrice(string id, decimal price)
     {
         using var conn = _factory.Open();
+        // MarkPrinted'daki gerekçenin aynısı: fiyat stok-ilgili değil.
         conn.Execute("UPDATE Label SET Price=@price, SyncedAt=NULL WHERE Id=@id", new { id, price });
     }
 
@@ -175,11 +188,13 @@ public sealed class LabelRepository
         return rows.Select(Map).ToList();
     }
 
-    /// <summary>Push başarılı sonrası SyncedAt'i set eder.</summary>
+    /// <summary>Push başarılı sonrası SyncedAt'i set eder. StockSyncedAt de
+    /// burada doluyor: push başarılıysa sunucu satırın stok-ilgili hâlini
+    /// görmüş, defterini ona göre kurmuş demektir.</summary>
     public void MarkSynced(string id, long syncedAt)
     {
         using var conn = _factory.Open();
-        conn.Execute("UPDATE Label SET SyncedAt=@syncedAt WHERE Id=@id",
+        conn.Execute("UPDATE Label SET SyncedAt=@syncedAt, StockSyncedAt=@syncedAt WHERE Id=@id",
             new { id, syncedAt });
     }
 
@@ -433,6 +448,52 @@ public sealed class LabelRepository
                 CancelledAt: r.CancelledAt,
                 CancelReason: r.CancelReason))
             .ToList();
+    }
+
+    /// <summary>
+    /// Yerelde yazılmış ama sunucuya <b>henüz gitmemiş</b> etiketleri
+    /// (ürün, varyant) anahtarına göre sayar. Gösterilen bakiye
+    /// <c>sunucu bakiyesi − bu sayı</c> olarak hesaplanır.
+    ///
+    /// <para>Filtre sunucudaki defter sayma kuralının <b>birebir aynası</b>:
+    /// bir etiket stoktan düşer ancak ve ancak ürüne bağlıysa, kargo bedeli
+    /// değilse, iptal edilmemişse ve geçici yedek değilse. Biri unutulursa
+    /// gösterilen bakiye sunucununkiyle kalıcı olarak ayrışır.</para>
+    ///
+    /// <para><c>GROUP BY ProductVariantId</c> NULL'ları tek kovada topluyor —
+    /// SQLite'ta GROUP BY, UNIQUE'in aksine NULL'ları eşit sayar. Ürün
+    /// seviyesindeki (varyantsız) bekleyenler bu sayede tek satır olur.</para>
+    ///
+    /// <para>Süzgeç <c>SyncedAt</c> DEĞİL <c>StockSyncedAt</c>: ilki bir outbox
+    /// bayrağı ve yazdırma/fiyat düzeltme onu yeniden NULL'a çekiyor, oysa o
+    /// satır sunucunun defterinde çoktan sayılmış olur — aynı etiket ikinci kez
+    /// düşülürdü. Ayrıntı göç 030'da.</para>
+    /// </summary>
+    public IReadOnlyList<PendingStockDelta> GetPendingStockDeltas(string productId)
+    {
+        using var conn = _factory.Open();
+        return conn.Query<PendingRow>(
+            """
+            SELECT ProductVariantId, COUNT(*) AS PendingCount
+            FROM Label
+            WHERE StockSyncedAt IS NULL
+              AND ProductId = @productId
+              AND IsShippingFee = 0
+              AND CancelledAt IS NULL
+              AND IsTentativeBackup = 0
+            GROUP BY ProductVariantId
+            """,
+            new { productId })
+            .Select(r => new PendingStockDelta(
+                productId, r.ProductVariantId, (int)r.PendingCount))
+            .ToList();
+    }
+
+    // SQLite COUNT(*) Int64 döner; daraltma burada (bkz. ShipmentRepository.Row).
+    private sealed class PendingRow
+    {
+        public string? ProductVariantId { get; init; }
+        public long PendingCount { get; init; }
     }
 
     private static Label Map(Row r) =>

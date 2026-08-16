@@ -26,6 +26,7 @@ public sealed partial class ProductCardViewModel : ObservableObject
 {
     private readonly BroadcastCodeResolver _resolver;
     private readonly CatalogPhotoCache _photos;
+    private readonly StockBalanceProvider _stock;
 
     /// <summary>
     /// Kartı yaratan iş parçacığının dispatcher'ı — üretimde UI thread'i
@@ -35,17 +36,37 @@ public sealed partial class ProductCardViewModel : ObservableObject
     /// </summary>
     private readonly Dispatcher _dispatcher;
 
-    public ProductCardViewModel(BroadcastCodeResolver resolver, CatalogPhotoCache photos)
+    public ProductCardViewModel(
+        BroadcastCodeResolver resolver, CatalogPhotoCache photos, StockBalanceProvider stock)
     {
         _resolver = resolver;
         _photos = photos;
+        _stock = stock;
         _dispatcher = Dispatcher.CurrentDispatcher;
 
-        // Abonelikten ÇIKILMIYOR: ikisi de DI'da singleton (AppHost:
-        // CatalogPhotoCache ve ProductCardViewModel) ve kart uygulama boyunca
-        // yaşıyor, yani sızacak bir şey yok. Kart bir gün transient olursa bu
-        // satır IDisposable ister.
+        // Abonelikten ÇIKILMIYOR: hepsi DI'da singleton (AppHost:
+        // CatalogPhotoCache, StockBalanceProvider ve ProductCardViewModel) ve
+        // kart uygulama boyunca yaşıyor, yani sızacak bir şey yok. Kart bir gün
+        // transient olursa bu satırlar IDisposable ister.
         _photos.PhotoCached += OnPhotoCached;
+        _stock.BalancesChanged += OnBalancesChanged;
+    }
+
+    /// <summary>
+    /// Senkron turu replikaya yazdı. Olay arka plan iş parçacığından geliyor;
+    /// <see cref="RefreshBalances"/> gözlemlenen koleksiyonun elemanlarına
+    /// yazdığı için UI iş parçacığına geçmek ŞART (fotoğraf yolundaki gibi
+    /// InvokeAsync — senkron turu UI'yı beklemesin).
+    /// </summary>
+    private void OnBalancesChanged(object? sender, EventArgs e)
+    {
+        if (!_dispatcher.CheckAccess())
+        {
+            _dispatcher.InvokeAsync(RefreshBalances);
+            return;
+        }
+
+        RefreshBalances();
     }
 
     /// <summary>
@@ -124,6 +145,50 @@ public sealed partial class ProductCardViewModel : ObservableObject
     public string? PhotoAbsolutePath => _photos.ResolveAbsolute(CoverPhotoKey);
 
     /// <summary>
+    /// Hiçbir varyanta bağlanmamış bakiye. Sıfırdan farklıysa kartta tek satır
+    /// olarak gösteriliyor: eksensiz ürünlerde satışın tamamı buradan düşer,
+    /// eksenli üründe ise sıfırdan farklı bir değer panelde varyanta
+    /// bağlanmamış bir hareket olduğunu söyler — operatörün görmesi gerekir.
+    /// </summary>
+    public int ProductLevelQuantity
+    {
+        get => _productLevelQuantity;
+        private set
+        {
+            if (_productLevelQuantity == value) return;
+            _productLevelQuantity = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(HasProductLevelQuantity));
+        }
+    }
+    private int _productLevelQuantity;
+
+    public bool HasProductLevelQuantity => ProductLevelQuantity != 0;
+
+    /// <summary>
+    /// Rozetlerdeki sayıları YERİNDE tazeler; koleksiyonu yeniden kurmaz.
+    /// Yeniden kurmak yayın ortasında rozetlerin görsel olarak zıplamasına ve
+    /// kaydırma konumunun kaybolmasına yol açardı.
+    ///
+    /// <para>Ürün yoksa sessizce çıkar — kod kutusu boşken ya da kod
+    /// çözülemezken tazelenecek bir şey yok.</para>
+    /// </summary>
+    public void RefreshBalances()
+    {
+        if (_resolution is null)
+        {
+            ProductLevelQuantity = 0;
+            return;
+        }
+
+        var snapshot = _stock.ForProduct(_resolution.Product.Id);
+        foreach (var chip in Variants)
+            chip.Quantity = snapshot.For(chip.VariantId);
+
+        ProductLevelQuantity = snapshot.ProductLevel;
+    }
+
+    /// <summary>
     /// Kod kutusundaki metni <b>yayın kodu</b> olarak çözer. Stok kodu burada
     /// bilerek aranmaz: stok kodu depo/raf dilidir, yayın kodu yayın dilidir;
     /// ikisini aynı kutuda kabul etmek "SK00001" yazan operatöre yanlış ürünü
@@ -161,6 +226,8 @@ public sealed partial class ProductCardViewModel : ObservableObject
             foreach (var v in _resolution.Variants)
                 Variants.Add(new CatalogVariantViewModel(v, _resolution.Product.Code));
         }
+
+        RefreshBalances();
 
         OnPropertyChanged(nameof(HasProduct));
         OnPropertyChanged(nameof(IsUnknown));

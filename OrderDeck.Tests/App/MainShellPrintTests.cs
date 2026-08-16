@@ -24,6 +24,7 @@ using OrderDeck.Licensing.Api;
 using OrderDeck.Licensing.Services;
 using OrderDeck.Licensing.Storage;
 using OrderDeck.Licensing.Trial;
+using OrderDeck.Shared.Text;   // SearchNormalizer
 using OrderDeck.Tests.Fakes;
 using OrderDeck.Tests.TestHelpers;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -165,9 +166,12 @@ public class MainShellPrintTests
         sessionSvc.Start("Test", new[] { "instagram" });
 
         var catalogRepo = new CatalogReplicaRepository(db);
+        var stockProvider = new StockBalanceProvider(
+            new StockBalanceRepository(db), labelRepo);
         var productCard = new ProductCardViewModel(
             new BroadcastCodeResolver(catalogRepo),
-            new CatalogPhotoCache(Path.Combine(Path.GetTempPath(), "od-test-" + Guid.NewGuid().ToString("N"))));
+            new CatalogPhotoCache(Path.Combine(Path.GetTempPath(), "od-test-" + Guid.NewGuid().ToString("N"))),
+            stockProvider);
 
         var vm = new MainShellViewModel(
             bus, labelSvc, sessionSvc, printer, customerSvc, customerRepo,
@@ -256,5 +260,49 @@ public class MainShellPrintTests
         vm.PrintQueue.Should().HaveCount(1);
         vm.PrintQueue[0].Username.Should().Be("@c");
         vm.SelectedQueueItems.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// Ürünün YALNIZ satıcı ekseni var (Renk, rol 1) — izleyici ekseni yok.
+    /// Bu bilerek: izleyici ekseni olsaydı <c>AddChatToQueueAsync</c> varyant
+    /// seçici çekmecesini açmaya çalışır, harness ise <c>drawers: null</c> ile
+    /// kuruluyor ve akış hiç sipariş yazmadan sessizce dönerdi.
+    /// Satıcı ekseni tekil kaldığı için <c>ResolveVariantId(null)</c> "v1"
+    /// veriyor, yani düşüş VARYANT kovasında görünüyor.
+    /// </summary>
+    private static void SeedProductWithBalance(
+        MainShellTestHarness.Harness h, string code, int quantity)
+    {
+        new CatalogReplicaRepository(h.Db).Replace(
+            [new CatalogProduct("p1", null, "SK00001",
+                                SearchNormalizer.Normalize("SK00001"), "Kolye",
+                                89.90m, null, "Renk", 1, null, null, null,
+                                1_700_000_000)],
+            [new CatalogVariant("v1", "p1", "Kırmızı", null, null, true, 0)],
+            [],
+            [new CatalogBroadcastCode("p1", "Kırmızı", code,
+                                      SearchNormalizer.Normalize(code),
+                                      1_700_000_000, 0)]);
+
+        new StockBalanceRepository(h.Db).ApplyPage(
+            [new CatalogStockBalance("p1", "v1", quantity)],
+            new StockCursor(DateTimeOffset.UnixEpoch, Guid.Empty));
+    }
+
+    [Fact]
+    public void Writing_an_order_immediately_drops_the_shown_balance()
+    {
+        var h = MainShellTestHarness.Build();
+        SeedProductWithBalance(h, code: "Buz", quantity: 5);
+
+        // ActiveCode ataması ProductCard.Load'u tetikliyor (OnActiveCodeChanged).
+        h.Vm.ActiveCode = "Buz";
+        h.Vm.ProductCard.Variants.Single().Quantity.Should().Be(5);
+
+        MainShellTestHarness.EnqueueLabel(h.Vm, "@ali", 100m);
+
+        // Senkron turu BEKLENMEDEN düşmeli: operatör aynı kodu arka arkaya
+        // satarken ekrandaki sayının gerçeği göstermesi gerekiyor.
+        h.Vm.ProductCard.Variants.Single().Quantity.Should().Be(4);
     }
 }

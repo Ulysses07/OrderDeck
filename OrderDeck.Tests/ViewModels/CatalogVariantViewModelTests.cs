@@ -50,4 +50,41 @@ public class CatalogVariantViewModelTests
 
         vm.Display.Should().Be("M");
     }
+
+    [Fact]
+    public void Carries_variant_id_for_balance_lookup()
+    {
+        var v = new CatalogVariant("v1", "p1", "M", null, null, true, 0);
+
+        new CatalogVariantViewModel(v, "SK1").VariantId.Should().Be("v1");
+    }
+
+    [Fact]
+    public void Quantity_change_raises_property_changed_for_flags()
+    {
+        var vm = new CatalogVariantViewModel(
+            new CatalogVariant("v1", "p1", "M", null, null, true, 0), "SK1");
+        var changed = new List<string?>();
+        vm.PropertyChanged += (_, e) => changed.Add(e.PropertyName);
+
+        vm.Quantity = -3;
+
+        changed.Should().Contain(nameof(CatalogVariantViewModel.Quantity));
+        changed.Should().Contain(nameof(CatalogVariantViewModel.IsZero));
+        changed.Should().Contain(nameof(CatalogVariantViewModel.IsNegative));
+    }
+
+    [Theory]
+    [InlineData(5, false, false)]
+    [InlineData(0, true, false)]
+    [InlineData(-1, false, true)]
+    public void Flags_classify_quantity(int qty, bool isZero, bool isNegative)
+    {
+        var vm = new CatalogVariantViewModel(
+            new CatalogVariant("v1", "p1", "M", null, null, true, 0), "SK1")
+        { Quantity = qty };
+
+        vm.IsZero.Should().Be(isZero);
+        vm.IsNegative.Should().Be(isNegative);
+    }
 }

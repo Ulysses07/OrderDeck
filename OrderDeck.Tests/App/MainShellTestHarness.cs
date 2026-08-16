@@ -104,9 +104,12 @@ internal static class MainShellTestHarness
         sessionSvc.Start("Test", new[] { "instagram" });
 
         var catalogRepo = new CatalogReplicaRepository(db);
+        var stockProvider = new StockBalanceProvider(
+            new StockBalanceRepository(db), labelRepo);
         var productCard = new ProductCardViewModel(
             new BroadcastCodeResolver(catalogRepo),
-            new CatalogPhotoCache(Path.Combine(Path.GetTempPath(), "od-test-" + Guid.NewGuid().ToString("N"))));
+            new CatalogPhotoCache(Path.Combine(Path.GetTempPath(), "od-test-" + Guid.NewGuid().ToString("N"))),
+            stockProvider);
 
         // Sahte diyalog servisi ŞART: gerçek WpfDialogService modal bir
         // MessageBox açar, koşuyu kilitler ve kendi mesaj döngüsünde alakasız
