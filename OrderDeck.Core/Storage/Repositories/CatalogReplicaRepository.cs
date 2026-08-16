@@ -178,6 +178,63 @@ public sealed class CatalogReplicaRepository
             .ToList();
     }
 
+    /// <summary>
+    /// Barkodu birebir eşleşen varyant, yoksa <c>null</c>.
+    ///
+    /// <para><b>Normalize EDİLMEZ</b> (yayın kodunun aksine): barkod yükü opak
+    /// bir dizgi, okutucu onu karakteri karakterine üretiyor. Normalize etmek
+    /// "AB12" ile "ab12"yi aynı sayardı — bunlar farklı iki varyant olabilir
+    /// ve okutma yanlış ürünü açardı. Yalnız baştaki/sondaki boşluk kırpılır:
+    /// okutucular klavye taklidi yapıyor ve sonda bir Enter/boşluk bırakabiliyor.</para>
+    ///
+    /// <para><c>LIMIT 1</c>: benzersizliğin sahibi sunucu. Replikada indeks
+    /// UNIQUE değil (gerekçesi göç 031'de), yani teorik bir çift satır
+    /// sorguyu patlatmak yerine ilkini döndürsün.</para>
+    /// </summary>
+    public CatalogVariant? FindVariantByBarcode(string? barcode)
+    {
+        var needle = (barcode ?? string.Empty).Trim();
+        if (needle.Length == 0) return null;
+
+        using var conn = _factory.Open();
+        return conn.Query<VariantRow>(
+            """
+            SELECT Id, ProductId, Axis1Value, Axis2Value, Barcode, IsActive, SortOrder
+            FROM CatalogVariant
+            WHERE Barcode = @needle
+            LIMIT 1
+            """,
+            new { needle })
+            .Select(r => new CatalogVariant(
+                r.Id, r.ProductId, r.Axis1Value, r.Axis2Value,
+                r.Barcode, r.IsActive == 1, r.SortOrder))
+            .FirstOrDefault();
+    }
+
+    /// <summary>
+    /// Ürünün yayın kodları, panelde verilen sırayla.
+    ///
+    /// <para>Barkod okutma yolu için: barkod varyanta, varyant ürüne çözülüyor
+    /// ama akışın geri kalanı bir YAYIN KODU bekliyor. Sıra önemli — birden
+    /// çok kod varsa operatörün panelde ilk sıraya koyduğu kod gösterilir.</para>
+    /// </summary>
+    public IReadOnlyList<CatalogBroadcastCode> GetBroadcastCodes(string productId)
+    {
+        using var conn = _factory.Open();
+        return conn.Query<BroadcastCodeRow>(
+            """
+            SELECT ProductId, SellerAxisValue, Code, CodeNormalized, CreatedAt, SortOrder
+            FROM CatalogBroadcastCode
+            WHERE ProductId = @productId
+            ORDER BY SortOrder, Code
+            """,
+            new { productId })
+            .Select(r => new CatalogBroadcastCode(
+                r.ProductId, r.SellerAxisValue, r.Code, r.CodeNormalized,
+                r.CreatedAt, r.SortOrder))
+            .ToList();
+    }
+
     public IReadOnlyList<CatalogCategory> GetCategories()
     {
         using var conn = _factory.Open();

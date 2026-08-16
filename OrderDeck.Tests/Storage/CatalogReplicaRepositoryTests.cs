@@ -222,4 +222,74 @@ public class CatalogReplicaRepositoryTests
         var repo = Make(out _);
         repo.GetProductById("yok").Should().BeNull();
     }
+
+    private static CatalogVariant Variant(string id, string productId, string barcode) =>
+        new(id, productId, "Siyah", "M", barcode, true, 0);
+
+    [Fact]
+    public void Barkod_varyanti_bulur()
+    {
+        var repo = Make(out _);
+        repo.Replace(
+            new[] { Product("p1", "SK00001") },
+            new[] { Variant("v1", "p1", barcode: "0000000007") },
+            Array.Empty<CatalogCategory>(),
+            Array.Empty<CatalogBroadcastCode>());
+
+        repo.FindVariantByBarcode("0000000007")!.Id.Should().Be("v1");
+    }
+
+    [Fact]
+    public void Barkod_aramasi_bosluklari_kirpar()
+    {
+        var repo = Make(out _);
+        repo.Replace(
+            new[] { Product("p1", "SK00001") },
+            new[] { Variant("v1", "p1", barcode: "0000000007") },
+            Array.Empty<CatalogCategory>(),
+            Array.Empty<CatalogBroadcastCode>());
+
+        // Okutucu klavye taklidi yapıyor; başa/sona boşluk düşebiliyor.
+        repo.FindVariantByBarcode("  0000000007  ")!.Id.Should().Be("v1");
+    }
+
+    [Fact]
+    public void Barkod_aramasi_harf_duyarli()
+    {
+        var repo = Make(out _);
+        repo.Replace(
+            new[] { Product("p1", "SK00001") },
+            new[] { Variant("v1", "p1", barcode: "AB12") },
+            Array.Empty<CatalogCategory>(),
+            Array.Empty<CatalogBroadcastCode>());
+
+        // Yük opak: "ab12" BAŞKA bir barkod olabilir. Normalize etmek,
+        // yanlış ürünü açmaya yol açardı.
+        repo.FindVariantByBarcode("ab12").Should().BeNull();
+    }
+
+    [Fact]
+    public void Bos_barkod_null_doner()
+    {
+        var repo = Make(out _);
+        repo.FindVariantByBarcode("   ").Should().BeNull();
+    }
+
+    [Fact]
+    public void Urunun_yayin_kodlari_sirayla_doner()
+    {
+        var repo = Make(out _);
+        repo.Replace(
+            new[] { Product("p1", "SK00001") },
+            Array.Empty<CatalogVariant>(),
+            Array.Empty<CatalogCategory>(),
+            new[]
+            {
+                new CatalogBroadcastCode("p1", "Siyah", "ATES", "ATES", 0, 1),
+                new CatalogBroadcastCode("p1", null, "KAR", "KAR", 0, 0),
+            });
+
+        repo.GetBroadcastCodes("p1").Select(c => c.Code)
+            .Should().Equal("KAR", "ATES");
+    }
 }
