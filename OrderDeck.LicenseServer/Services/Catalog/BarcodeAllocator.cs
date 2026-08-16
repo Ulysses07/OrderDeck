@@ -81,15 +81,11 @@ public sealed class BarcodeAllocator
             for (var i = 0; i < need; i++)
                 candidates.Add(Format(counter.Next + i));
 
-            // Null barkodlar hiçbir adayla çakışamaz: sorgudan önceden filtrelenir.
-            // Bu hem anlambilimsel olarak doğru (null = henüz atanmamış), hem de
-            // TreatWarningsAsErrors ortamında string? → string dönüşümünden kaçınır.
             var taken = await _db.ProductVariants
                 .AsNoTracking()
                 .Where(v => v.LicenseId == licenseId
-                            && v.Barcode != null
                             && candidates.Contains(v.Barcode))
-                .Select(v => v.Barcode!)
+                .Select(v => v.Barcode)
                 .ToListAsync(ct);
 
             var takenSet = new HashSet<string>(taken, StringComparer.Ordinal);

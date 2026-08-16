@@ -700,7 +700,7 @@ public class LicenseDbContext : DbContext
             b.HasKey(v => v.Id);
             b.Property(v => v.Axis1Value).HasMaxLength(CatalogLimits.AxisValue);
             b.Property(v => v.Axis2Value).HasMaxLength(CatalogLimits.AxisValue);
-            b.Property(v => v.Barcode).HasMaxLength(CatalogLimits.Barcode);
+            b.Property(v => v.Barcode).HasMaxLength(CatalogLimits.Barcode).IsRequired();
             b.Property(v => v.Axis1ValueNorm).HasMaxLength(CatalogLimits.AxisValue).IsRequired();
             b.Property(v => v.Axis2ValueNorm).HasMaxLength(CatalogLimits.AxisValue).IsRequired();
             b.HasOne(v => v.Product).WithMany(p => p.Variants)
@@ -711,6 +711,12 @@ public class LicenseDbContext : DbContext
             // üretiyordu — o 409 bu indeksle birlikte ortadan kalkıyor.
             b.HasIndex(v => new { v.ProductId, v.Axis1ValueNorm, v.Axis2ValueNorm })
                 .IsUnique();
+
+            // Son savunma hattı. İlk savunma controller'daki ön kontrol; bu indeks
+            // yarışta kaybedenin 500 yerine 409 almasını sağlıyor.
+            // DİKKAT: EF InMemory benzersiz indeksi ZORLAMIYOR — bu kuralı testler
+            // ancak model metadata'sı üzerinden doğrulayabilir.
+            b.HasIndex(v => new { v.LicenseId, v.Barcode }).IsUnique();
         });
 
         mb.Entity<ProductBroadcastCode>(b =>
