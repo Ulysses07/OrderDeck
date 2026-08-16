@@ -11,13 +11,19 @@
 
             <!-- ÜRÜN KODU -->
             <TextBlock Text="ÜRÜN KODU" Style="{StaticResource OD.Text.Micro}"/>
-            <!-- MaxLength = CatalogLimits.ProductCode (32). Şemanın kendisi
-                 nvarchar(32); daha uzun bir kod katalogda var olamaz, o yüzden
-                 kutu var olabilecek en uzun kodu alır, bir fazlasını almaz.
-                 Eski değer 6 idi ve 7 harfli kodların yazılmasını engelliyordu. -->
-            <TextBox x:Name="CodeBox" MaxLength="32"
+            <!-- MaxLength = CatalogLimits.Barcode (64). Kutu artık İKİ uzayı
+                 birden alıyor: yayın kodu (32) ve barkod (64). Dar sınırda
+                 kalsaydı uzun bir barkod okutulurken sessizce kırpılır,
+                 hiçbir ürüne çözülmezdi — operatör kırpmayı da fark etmezdi,
+                 kutu doluymuş gibi görünür.
+                 (Eski değer 6 idi, 7 harfli kodları engelliyordu; sonra 32 oldu.)
+
+                 CharacterCasing YOK: barkod yükü opak ve BİREBİR aranıyor,
+                 okutucunun ürettiği "ab12" büyütülünce başka bir barkod olur
+                 ve eşleşme kaçar. Yayın kodu bundan zarar görmüyor — o zaten
+                 SearchNormalizer'da katlanıyor, görsel büyütmeye ihtiyacı yoktu. -->
+            <TextBox x:Name="CodeBox" MaxLength="64"
                          Text="{Binding ActiveCode, UpdateSourceTrigger=PropertyChanged}"
-                         CharacterCasing="Upper"
                      FontFamily="{StaticResource OD.Font.Display}">
                 <TextBox.Style>
                     <Style TargetType="TextBox"
