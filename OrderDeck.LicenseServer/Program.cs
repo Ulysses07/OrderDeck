@@ -83,6 +83,7 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Backup.BackupRestoreDrillJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.BroadcastPosts.BroadcastPostCleanupJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Catalog.ProductPhotoOrphanCleanupJob>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Catalog.BarcodeAllocator>();
         builder.Services.AddHttpContextAccessor();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Audit.IAuditService,
                                     OrderDeck.LicenseServer.Services.Audit.AuditService>();
