@@ -111,4 +111,82 @@ public class LabelRepositoryPendingStockTests
 
         repo.GetPendingStockDeltas(Guid.NewGuid().ToString("N")).Should().BeEmpty();
     }
+
+    // ── Damganın SyncedAt'ten ayrılması (göç 030) ─────────────────────────────
+    //
+    // SyncedAt bir OUTBOX bayrağı: "sunucudaki kopya bayat mı". Stokta sorulan
+    // soru başka: "sunucu bu satırı defterine yazdı mı". İkisi yalnız STOK-İLGİLİ
+    // alanlar değişince birlikte düşmeli; aşağıdaki dört test o ayrımı sabitliyor.
+
+    [Fact]
+    public void Printing_does_not_make_a_synced_label_pending_again()
+    {
+        var (db, repo) = Fx();
+        using var _ = db;
+
+        var pid = Guid.NewGuid().ToString("N");
+        repo.Insert(Row("l1", pid, null));
+        repo.MarkSynced("l1", 2000);
+
+        repo.MarkPrinted(new[] { "l1" }, 2500);
+
+        // Yazdırmak satırı push kuyruğuna geri alır (SyncedAt=NULL) ama stok
+        // açısından hiçbir şey değişmedi — hareket sunucunun defterinde duruyor.
+        // Bu satır bekleyen sayılırsa operatör kuyruğu yazdırdığı anda kart,
+        // yazdırılan adet kadar EKSİK gösterir.
+        repo.GetPendingStockDeltas(pid).Should().BeEmpty();
+        repo.GetUnsynced().Should().ContainSingle().Which.Id.Should().Be("l1");
+    }
+
+    [Fact]
+    public void Price_edit_does_not_make_a_synced_label_pending_again()
+    {
+        var (db, repo) = Fx();
+        using var _ = db;
+
+        var pid = Guid.NewGuid().ToString("N");
+        repo.Insert(Row("l1", pid, null));
+        repo.MarkSynced("l1", 2000);
+
+        repo.UpdatePrice("l1", 250m);
+
+        repo.GetPendingStockDeltas(pid).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Uncancelling_a_synced_label_makes_it_pending_again()
+    {
+        var (db, repo) = Fx();
+        using var _ = db;
+
+        var pid = Guid.NewGuid().ToString("N");
+        repo.Insert(Row("l1", pid, null));
+        repo.MarkSynced("l1", 2000);
+        repo.MarkCancelled(new[] { "l1" }, 2100, "test");
+        repo.MarkSynced("l1", 2200);   // iptal sunucuya gitti → hareket silindi
+
+        repo.Uncancel(new[] { "l1" });
+
+        // Burada damga DÜŞMELİ: CancelledAt stok-ilgili, sunucu hareketi
+        // kaldırmıştı. Düşmezse satış bakiyeden hiç düşmez.
+        repo.GetPendingStockDeltas(pid).Should()
+            .ContainSingle().Which.PendingCount.Should().Be(1);
+    }
+
+    [Fact]
+    public void Confirming_a_tentative_backup_makes_it_pending()
+    {
+        var (db, repo) = Fx();
+        using var _ = db;
+
+        var pid = Guid.NewGuid().ToString("N");
+        repo.Insert(Row("l1", pid, null, tentative: true));
+        repo.MarkSynced("l1", 2000);   // sunucu geçici yedek gördü → hareket yok
+
+        repo.ConfirmTentativeBackups(new[] { "l1" });
+
+        // IsTentativeBackup da stok-ilgili: onaylanan yedek artık gerçek satış.
+        repo.GetPendingStockDeltas(pid).Should()
+            .ContainSingle().Which.PendingCount.Should().Be(1);
+    }
 }
