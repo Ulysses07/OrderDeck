@@ -258,9 +258,27 @@ public class Program
                 o.SlidingExpiration = true;
                 o.Cookie.HttpOnly = true;
                 o.Cookie.SameSite = SameSiteMode.Lax;
-                o.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+                // Always, SameAsRequest DEĞİL. SameAsRequest çerezin Secure
+                // bayrağını Request.Scheme'e bağlar; scheme ise ters vekil
+                // arkasında yalnız UseForwardedHeaders varsa doğrudur. Yani
+                // oturum çerezinin korunması, pipeline'ın en başındaki başka
+                // bir middleware'in varlığına bağlı kalıyordu — o middleware
+                // bugüne kadar yoktu ve çerez üretimden Secure'suz çıkıyordu.
+                // Always bu bağı tamamen koparır: kimse Secure'u kazara
+                // düşüremez.
+                o.Cookie.SecurePolicy = AdminCookieSecurePolicy(builder.Environment);
                 o.Cookie.Name = "OrderDeckAdmin";
             });
+
+        // CSRF çerezi de aynı kurala tabi. Varsayılanı CookieSecurePolicy.None,
+        // yani hiç ayarlanmazsa Secure bayrağı HİÇ çıkmaz — üretimde bugün
+        // durum buydu.
+        builder.Services.AddAntiforgery(o =>
+        {
+            o.Cookie.HttpOnly = true;
+            o.Cookie.SameSite = SameSiteMode.Strict;
+            o.Cookie.SecurePolicy = AdminCookieSecurePolicy(builder.Environment);
+        });
 
         builder.Services.AddOptions<JwtBearerOptions>("Bearer-Customer")
             .Configure<IOptions<JwtOptions>>((o, jwtOpts) =>
@@ -645,9 +663,30 @@ public class Program
         });
 
         app.UseCors();
-        app.UseRateLimiter();
         app.UseAuthentication();
         app.UseAuthorization();
+        // Rate limiter kimlik doğrulamadan SONRA. Politikaların üçü
+        // (backup-upload, backup-delete, whatsapp-send) bölüm anahtarı olarak
+        // ctx.User'daki müşteri kimliğini kullanıyor; daha önce burası
+        // UseAuthentication'dan önce geldiği için o kimlik her zaman boştu ve
+        // anahtar sessizce yedeğe düşüyordu. backup-delete'in yedeği yok
+        // ("anon" sabiti), yani limit müşteri başına 30/saat değil TÜM
+        // platformda 30/saat olarak işliyordu — bir müşterinin temizliği
+        // diğerlerini kilitliyordu. Hata mesajı üretmediği için de yıllarca
+        // fark edilmeden durabilirdi; ApiFactory.OnRateLimitPartition kancası
+        // ve RateLimiterIdentityTests bunu artık teste bağlıyor.
+        //
+        // UseAuthorization'dan da sonra olmasının nedeni AddAuthentication()'ın
+        // varsayılan şemasının olmaması: UseAuthentication tek başına ctx.User'ı
+        // doldurmuyor, doldurma işi politikadaki AddAuthenticationSchemes ile
+        // yetkilendirme middleware'inde oluyor.
+        //
+        // Bedeli: yetkilendirmeden 401/403 ile dönen istekler artık limiter'a
+        // hiç uğramıyor, yani geçersiz token'la yapılan seli global limit
+        // saymıyor. Kabul edilebilir, çünkü asıl saldırı yüzeyi olan uçların
+        // tamamı ([AllowAnonymous] giriş/kayıt/parola/kod-arama) yetkilendirmeden
+        // zaten geçiyor ve hem global hem kendi limitine tabi kalıyor.
+        app.UseRateLimiter();
         // Dashboard /admin/hangfire altında — Caddy zaten /admin/* proxy'liyor
         // (admin paneli orada) ve AdminCookie path=/ olduğu için burada da geçerli.
         app.UseHangfireDashboard("/admin/hangfire", new DashboardOptions
@@ -710,6 +749,20 @@ public class Program
     /// burada döngü yaratmaz: yapılandırılmış bir HTTPS portu yok, üstelik
     /// scheme artık zaten https.</para>
     /// </summary>
+    /// <summary>
+    /// Üretimde <see cref="CookieSecurePolicy.Always"/>, başka her yerde
+    /// <see cref="CookieSecurePolicy.SameAsRequest"/>.
+    ///
+    /// Koşul gevşeklik değil zorunluluk: yerel geliştirme ve test sunucusu düz
+    /// HTTP konuşuyor. Always orada da geçerli olsaydı tarayıcı/TestServer
+    /// çerezi hiç saklamaz, admin paneline giriş yapılamaz ve bunu bir hata
+    /// mesajı değil yalnız sonu gelmeyen giriş yönlendirmesi olarak görürdük.
+    /// Üretimde ise HTTPS dışında bir şey yok, dolayısıyla Always'in maliyeti
+    /// sıfır.
+    /// </summary>
+    public static CookieSecurePolicy AdminCookieSecurePolicy(IHostEnvironment env) =>
+        env.IsProduction() ? CookieSecurePolicy.Always : CookieSecurePolicy.SameAsRequest;
+
     public static ForwardedHeadersOptions CreateForwardedHeadersOptions()
     {
         var options = new ForwardedHeadersOptions
