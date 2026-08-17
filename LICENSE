@@ -1,21 +1,79 @@
-MIT License
+OrderDeck — Proprietary Software License
+Copyright (c) 2026 Ulysses07. All rights reserved.
 
-Copyright (c) 2026 Ulysses07
+TÜRKÇE ÖZET (bağlayıcı metin aşağıdaki İngilizce sürümdür)
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Bu depo kaynak kodu okunabilsin diye herkese açıktır; bu, kodun serbestçe
+kullanılabileceği anlamına GELMEZ. Kodu kopyalamak, değiştirmek, dağıtmak,
+kendi ürününüzde kullanmak veya buradan türetilmiş bir yazılım yayınlamak
+için telif hakkı sahibinden yazılı izin almanız gerekir. OrderDeck
+uygulamasının kullanımı ayrıca satın alınan lisans sözleşmesine tabidir.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+TERMS
+
+1. Definitions
+   "Software" means the source code, build scripts, configuration, assets and
+   documentation contained in this repository, together with any compiled or
+   packaged artifact produced from them.
+   "Licensor" means the copyright holder named above.
+
+2. Grant
+   The Software is made publicly readable for the sole purposes of inspection,
+   security review, and reference. Licensor grants you a limited,
+   non-exclusive, non-transferable, revocable right to view the Software and
+   to make a local copy for those purposes only.
+
+3. Restrictions
+   Except as expressly permitted in Section 2, or under a separate written
+   agreement signed by Licensor, you may NOT:
+   (a) use the Software, in whole or in part, in any product, service or
+       internal system;
+   (b) copy, modify, adapt, translate or create derivative works of it;
+   (c) distribute, publish, sublicense, sell, rent or lease it;
+   (d) remove or alter any copyright, trademark or attribution notice.
+
+   Public visibility of this repository is not, and shall not be construed
+   as, a grant of any right beyond Section 2.
+
+4. Contributions
+   Pull requests are not currently accepted. Any material you nonetheless
+   submit is licensed to Licensor irrevocably, worldwide, royalty-free, for
+   any purpose, without obligation on Licensor's part.
+
+5. Use of the OrderDeck application
+   Running the OrderDeck application is governed by the commercial license
+   agreement entered into with Licensor and enforced by the OrderDeck license
+   server. This file does not grant any right to use the application.
+
+6. Trademarks
+   "OrderDeck" and associated logos are trademarks of their respective owner.
+   No trademark rights are granted by this license.
+
+7. Third-party components
+   The Software depends on third-party components distributed under their own
+   licenses. Those licenses apply to those components and are unaffected by
+   this file.
+
+8. No warranty
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+9. Limitation of liability
+   IN NO EVENT SHALL LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+   FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+   DEALINGS IN THE SOFTWARE.
+
+10. Governing law
+    This license is governed by the laws of the Republic of Türkiye. The
+    courts of Istanbul shall have exclusive jurisdiction.
+
+11. Prior licensing
+    Between 2026-06-03 and 2026-08-17 this repository carried an MIT license
+    file. That grant is not revoked for anyone who obtained a copy of the
+    Software during that period, with respect to the version they obtained.
+    This file governs the Software from 2026-08-17 onward.
+
+Permission requests: contact the copyright holder.

@@ -76,4 +76,6 @@ docs/superpowers/        # spec'ler + plan'lar (Phase 1-5 + kargo feature)
 GitHub Actions: `.github/workflows/build-test.yml` (Windows runner + dotnet test).
 
 ### Lisans
-Kapalı kaynak — `Ulysses07` özel mülk. Pull request kabul edilmiyor (henüz).
+Kapalı kaynak — `Ulysses07` özel mülk. Depo herkese **okunabilir**, ama kod
+serbest değil: kullanım/kopyalama/türetme yazılı izne tabidir. Tam metin:
+[LICENSE](LICENSE). Pull request kabul edilmiyor (henüz).
