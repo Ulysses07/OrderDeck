@@ -6,6 +6,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
 using OrderDeck.LicenseServer.Services.Pagination;
+using OrderDeck.LicenseServer.Services.ShopperLinking;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
 
 namespace OrderDeck.LicenseServer.Controllers.Shopper;
@@ -90,14 +91,17 @@ public sealed class ShopperBroadcastersController : ControllerBase
         if (existingActiveLink is not null)
             return Problem(title: "already-linked", statusCode: 409);
 
-        // 6. Match WpfCustomerProjection
+        // 6. Match WpfCustomerProjection — bağlamak için telefon kanıtı şart.
+        // Kayıt akışıyla (ShopperAuthController.Register adım 7) aynı kural;
+        // gerekçe WpfCustomerLinkMatcher'da.
         var platformNorm = req.Platform.Trim().ToLowerInvariant();
         var usernameNorm = req.Username.Trim();
-        var wpfMatch = await _db.WpfCustomerProjections
+        var candidates = await _db.WpfCustomerProjections
             .Where(p => p.LicenseId == license.Id &&
                         p.Platform == platformNorm &&
                         p.Username == usernameNorm)
-            .FirstOrDefaultAsync(ct);
+            .ToListAsync(ct);
+        var wpfMatch = WpfCustomerLinkMatcher.FindProven(candidates, shopper.Phone);
 
         // 7. Insert new link
         var link = new ShopperBroadcasterLink
@@ -114,7 +118,11 @@ public sealed class ShopperBroadcastersController : ControllerBase
 
         // 7a. Auto-projection: if no existing WpfCustomerProjection matched, create one
         // so the broadcaster sees the new shopper immediately.
-        if (link.WpfCustomerId is null)
+        //
+        // Koşul "eşleşme yok" değil "aday hiç yok": aday varken kanıt gelmediyse
+        // yeni satır açmak, gerçek müşterinin kaydını taklit eden bir kopya
+        // üretirdi. Bağlantı beklemede kalır (WpfCustomerId = null).
+        if (candidates.Count == 0)
         {
             var projectionId = Guid.NewGuid();
             _db.WpfCustomerProjections.Add(new WpfCustomerProjection

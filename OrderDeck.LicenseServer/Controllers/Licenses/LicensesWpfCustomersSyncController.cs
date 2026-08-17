@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.ShopperLinking;
 
 namespace OrderDeck.LicenseServer.Controllers.Licenses;
 
@@ -97,6 +98,15 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
         // Retroactive match: for newly-synced (or updated) projections, find any
         // ShopperBroadcasterLink with matching (LicenseId, Platform, Username) where
         // WpfCustomerId is null, and set it. Drive-by — avoids needing a cron job.
+        //
+        // Burada da telefon kanıtı şart; kural WpfCustomerLinkMatcher'da. Bu üçüncü
+        // kopyanın kapısız kalması, kayıt ve katılma akışlarındaki düzeltmeleri
+        // TAMAMEN boşa çıkarırdı: kanıt gelmediği için beklemede bırakılan bağlantı
+        // bir sonraki WPF sync'inde buradan sessizce bağlanırdı.
+        //
+        // Bu aynı zamanda kurtarma yolu: yayıncı WPF'te müşterinin telefonunu
+        // girdiğinde sync o telefonu buraya taşır ve beklemedeki bağlantı kendiliğinden
+        // kurulur — ayrı bir onay ekranı gerekmiyor.
         var retroactiveMatches = 0;
         foreach (var item in req.Customers)
         {
@@ -107,10 +117,12 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
                     && l.LeftAt == null
                     && l.Platform == platformLower
                     && l.Username == item.Username)
+                .Select(l => new { Link = l, l.Shopper!.Phone })
                 .ToListAsync(ct);
-            foreach (var link in unmatchedLinks)
+            foreach (var row in unmatchedLinks)
             {
-                link.WpfCustomerId = item.Id;
+                if (!WpfCustomerLinkMatcher.PhoneProves(item.Phone, row.Phone)) continue;
+                row.Link.WpfCustomerId = item.Id;
                 retroactiveMatches++;
             }
         }

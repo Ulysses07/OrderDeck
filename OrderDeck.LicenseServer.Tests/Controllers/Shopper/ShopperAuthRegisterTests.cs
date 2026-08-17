@@ -210,7 +210,10 @@ public class ShopperAuthRegisterTests : IClassFixture<ApiFactory>
     {
         var (licenseId, code, _) = await SeedLicenseAsync();
 
-        // Seed a WpfCustomerProjection that matches (licenseId, "youtube", "wpfmatch")
+        // Seed a WpfCustomerProjection that matches (licenseId, "youtube", "wpfmatch").
+        // Telefon kasten kayıt telefonuyla aynı: bağlantı ancak sahiplik kanıtlanınca
+        // kurulur (ShopperIdentityTakeoverTests kuralın kendisini test ediyor).
+        var phone = UniquePhone();
         var wpfId = Guid.NewGuid();
         using (var scope = _factory.Services.CreateScope())
         {
@@ -221,12 +224,12 @@ public class ShopperAuthRegisterTests : IClassFixture<ApiFactory>
                 LicenseId = licenseId,
                 Platform = "youtube",
                 Username = "wpfmatch",
+                Phone = phone,
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
             await db.SaveChangesAsync();
         }
 
-        var phone = UniquePhone();
         var req = new RegisterRequest(code, "WpfUser", phone, "Password1!", "Samsun", "youtube", "wpfmatch");
         var resp = await _factory.CreateClient()
             .PostAsJsonAsync("/api/v1/shopper/auth/register", req);
@@ -294,6 +297,7 @@ public class ShopperAuthRegisterTests : IClassFixture<ApiFactory>
     public async Task Register_with_existing_projection_does_not_create_duplicate()
     {
         var (licenseId, code, _) = await SeedLicenseAsync();
+        var phone = UniquePhone();
         var wpfId = Guid.NewGuid();
         using (var scope = _factory.Services.CreateScope())
         {
@@ -304,12 +308,12 @@ public class ShopperAuthRegisterTests : IClassFixture<ApiFactory>
                 LicenseId = licenseId,
                 Platform = "youtube",
                 Username = "existingprojuser",
+                Phone = phone,
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
             await db.SaveChangesAsync();
         }
 
-        var phone = UniquePhone();
         var req = new RegisterRequest(code, "ExistProj User", phone, "Password1!", "Trabzon", "youtube", "existingprojuser");
         var resp = await _factory.CreateClient()
             .PostAsJsonAsync("/api/v1/shopper/auth/register", req);
