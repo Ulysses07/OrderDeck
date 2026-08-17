@@ -1,15 +1,23 @@
 # OrderDeck — Repo Guide for Claude
 
 This repo holds the broadcaster side of OrderDeck (a Turkish live-stream
-e-commerce platform). The shopper-side mobile app lives in a separate
-repo, **OrderDeck-Shopper** (private, on disk at
-`C:\Users\burak\source\repos\OrderDeck-Shopper`).
+e-commerce platform). Two sibling repos hold the web/mobile clients:
+
+- **OrderDeck-Shopper** (private) — `apps/shopper`, the customer mobile app
+- **OrderDeck-Mobile** (private) — `apps/panel`, the broadcaster web panel,
+  deployed to `panel.orderdeckapp.com`
+
+Both live next to this one under `source/repos/`.
+
+> **This repo is PUBLIC** (since 2026-08-10, for CI quota). History is
+> included, so every past commit is readable. Secret hygiene is
+> non-negotiable: no credentials, tokens or customer data in-repo, ever.
 
 ## Stack
 
 - **`OrderDeck.App`** — WPF desktop app, broadcaster operator UI (`net10.0-windows`)
 - **`OrderDeck.LicenseServer`** — ASP.NET Core 10 server, deployed to VPS via Docker (`license.orderdeckapp.com`)
-- **`OrderDeck.Chat`** — chat bridge (WebSocket server + YouTube scraper), used by WPF
+- **`OrderDeck.Chat`** — chat bridge (WebSocket server + YouTube Data API v3), used by WPF. The YouTube scraper and the HTML-scraping live resolver were deleted in PR #213; the only YouTube path now is the official API
 - **`OrderDeck.Core`** — shared domain
 - **`Extension/`** — Chrome MV3 extension that scrapes Instagram/TikTok/Facebook live chat → forwards to WPF over `ws://localhost:4748`
 - **SQL Server (prod)** in Docker on VPS; **InMemory** for tests
@@ -19,10 +27,11 @@ repo, **OrderDeck-Shopper** (private, on disk at
 
 ## Mobile-side stack (OrderDeck-Shopper)
 
-- React + Vite + TypeScript + Capacitor 6
+- React 18 + Vite 7 + TypeScript 5 + Capacitor 8 (**Android only** — there is no
+  iOS target; `@capacitor/ios` isn't even a dependency)
 - TanStack Query + Zustand
 - Capacitor Preferences for auth tokens (native) / localStorage (web)
-- Tailwind + ESLint v9
+- Tailwind + ESLint v9 + Vitest
 
 ## Conventions
 
@@ -34,10 +43,13 @@ repo, **OrderDeck-Shopper** (private, on disk at
 
 ## Test + build
 
-- `dotnet test OrderDeck.Tests/OrderDeck.Tests.csproj` — WPF/Chat side (~620 tests)
-- `dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj` — server side (~747 tests)
+- `dotnet test OrderDeck.Tests/OrderDeck.Tests.csproj` — WPF/Chat side
+- `dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj` — server side
 - `dotnet build OrderDeck.App/OrderDeck.App.csproj` — WPF (Windows-only)
 - CI runs both via `.github/workflows/build-test.yml`; server deploy via `license-server-deploy.yml`
+- Test counts are deliberately not written down here. Every number that was
+  ever pinned in this file went stale within weeks and then misled; read the
+  count off the CI run instead.
 
 ## Logs (WPF, local dev)
 
@@ -58,12 +70,6 @@ repo, **OrderDeck-Shopper** (private, on disk at
 - For risky operations (force push, destructive DB writes, prod deploys, sharing publicly) — **ask first**, never assume
 - When facing a hard bug, **stop and reason out loud** before writing code; the user prefers a short discussion over a flurry of speculative PRs
 - Don't add features, refactors, or "improvements" beyond what was asked
-
-## Currently in-flight (as of 2026-05-23)
-
-- Shopper app Faz 4 (push notifications) — server-side PR #91 merged, client PRs in flight
-- Chat dedupe regression chain (PR #92 → #93 → #94 → #95 → #96) — see those PRs for the saga; current state: Tier 1 WeakSet element-identity dedupe with Tier 2 hash fallback, manifest 1.4.8
-- Customer projection sync between WPF and server (PR #88) — done
 
 ## Memory
 
