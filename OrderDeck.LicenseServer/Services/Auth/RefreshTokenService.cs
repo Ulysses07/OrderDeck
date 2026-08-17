@@ -101,7 +101,22 @@ public sealed class RefreshTokenService
         existing.ReplacedByTokenHash = newHash;
 
         _db.RefreshTokens.Add(newEntity);
-        await _db.SaveChangesAsync(ct);
+
+        try
+        {
+            // Yukarıdaki RevokedAt kontrolü tek başına yetmez: iki istek aynı
+            // satırı aynı anda okuyup ikisi de "iptal değil" görebilir. Asıl
+            // koruma burada — RevokedAt eşzamanlılık belirteci olduğu için EF
+            // iptali "WHERE RevokedAt IS NULL" ile yazar; yarışı kaybeden
+            // istek 0 satır günceller ve aşağıdaki istisnayı alır. Yeni
+            // token'ın eklenmesi aynı SaveChanges'te olduğundan kaybeden
+            // hiçbir şey yazamaz.
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            throw new RefreshTokenInvalidException("revoked");
+        }
 
         var (access, accessExpires) = _jwt.IssueCustomerToken(existing.CustomerId, existing.Customer.Email);
 

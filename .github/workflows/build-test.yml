@@ -67,13 +67,62 @@ jobs:
           --results-directory ${{ github.workspace }}/TestResults
           --blame-hang-timeout 5m
 
-      # NOTE: previous flag was `xUnit.ParallelizeAssembly=false` — that's a
-      # no-op when running a single .csproj. The actual switch we want is
-      # `ParallelizeTestCollections=false` (in-assembly serialization).
+      # Sunucu testleri artık ayrı bir işte (license-server-test), ubuntu'da.
+      # Sebep aşağıda.
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: ${{ github.workspace }}/TestResults/*.trx
+          if-no-files-found: warn
+
+  # Sunucu testleri — ubuntu, çünkü bir kısmı gerçek SQL Server container'ı
+  # istiyor.
+  #
+  # Neden Windows işinden çıkarıldı: suite'in çoğu InMemory'de koşuyor ama
+  # InMemory'de eşzamanlılık semantiği yok — aynı satıra iki eşzamanlı yazma
+  # yarışmıyor. Refresh token rotasyonunun tek kullanımlık olduğunu ancak
+  # gerçek bir veritabanına karşı kanıtlayabiliyoruz (bkz.
+  # RefreshTokenConcurrencyTests). Testcontainers Linux container'ı açıyor;
+  # windows-latest runner'ında bu çalışmaz.
+  #
+  # Filtre/etiketle ayırmak yerine işin tamamı buraya taşındı: etiket koymayı
+  # unutan bir sonraki test yanlış runner'da patlardı. Ayrıca prod zaten
+  # Linux — burada koşmak parite açısından da daha doğru.
+  #
+  # Proje net10.0 (WPF yok), o yüzden solution'a değil doğrudan csproj'a
+  # kuruluyor.
+  license-server-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'global.json') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      # NOTE: eski bayrak `xUnit.ParallelizeAssembly=false` idi — tek bir
+      # .csproj koşarken bu etkisiz. İstediğimiz anahtar
+      # `ParallelizeTestCollections=false` (assembly içi sıralama).
       - name: Test - OrderDeck.LicenseServer.Tests
         run: >
           dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj
-          --configuration Release --no-build --no-restore --nologo
+          --configuration Release --nologo
           --logger "console;verbosity=normal"
           --logger "trx;LogFileName=license-server.trx"
           --results-directory ${{ github.workspace }}/TestResults
@@ -84,7 +133,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results
+          name: test-results-license-server
           path: ${{ github.workspace }}/TestResults/*.trx
           if-no-files-found: warn
 
