@@ -41,6 +41,17 @@ public class ApiFactory : WebApplicationFactory<Program>
     /// keys (e.g. tighter rate limits, quota caps). Default: no overrides.</summary>
     protected virtual IDictionary<string, string?> ExtraConfig => new Dictionary<string, string?>();
 
+    /// <summary>
+    /// Doldurulursa, bir politika kararı verilirken istek bağlamıyla çağrılır.
+    /// Limitler testte kapalı olduğu için sayıları değil, kararın hangi bilgiyle
+    /// verildiğini gözlemlemeye yarar — özellikle <c>ctx.User</c>'ın dolu olup
+    /// olmadığını. Kullanıcıya göre bölünen politikalar (backup-upload,
+    /// backup-delete, whatsapp-send) rate limiter middleware'i kimlik
+    /// doğrulamadan önce çalışırsa sessizce yanlış anahtara düşer: hata vermez,
+    /// yalnız herkesi tek kovaya toplar. Bunu ancak buradan görebiliriz.
+    /// </summary>
+    protected virtual Action<string, HttpContext>? OnRateLimitPartition => null;
+
     /// <summary>Override in derived test fixture to add DbContext-level options
     /// (e.g. a fault-injecting <c>SaveChanges</c> interceptor). Runs on the same
     /// options builder as the InMemory provider swap, so the shared DB name is
@@ -147,7 +158,12 @@ public class ApiFactory : WebApplicationFactory<Program>
                 opts.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
                 foreach (var policy in DiscoverRateLimitPolicyNames())
                 {
-                    opts.AddPolicy(policy, _ => RateLimitPartition.GetNoLimiter(string.Empty));
+                    var name = policy;
+                    opts.AddPolicy(name, ctx =>
+                    {
+                        OnRateLimitPartition?.Invoke(name, ctx);
+                        return RateLimitPartition.GetNoLimiter(string.Empty);
+                    });
                 }
                 opts.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(_ =>
                     RateLimitPartition.GetNoLimiter(string.Empty));
