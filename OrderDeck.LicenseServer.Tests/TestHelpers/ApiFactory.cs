@@ -58,6 +58,19 @@ public class ApiFactory : WebApplicationFactory<Program>
     /// preserved. Default: no extra options.</summary>
     protected virtual void ConfigureDbContextOptions(DbContextOptionsBuilder opt) { }
 
+    /// <summary>
+    /// Testlerin koştuğu veritabanı sağlayıcısını seçer. Varsayılan InMemory:
+    /// hızlı ve Docker istemiyor, suite'in ezici çoğunluğu için doğru tercih.
+    ///
+    /// Gerçek eşzamanlılık semantiği (aynı satıra iki eşzamanlı yazma) ve
+    /// <c>ExecuteUpdate/Delete</c> InMemory'de YOK — bunlara dayanan bir
+    /// düzeltme InMemory'de test edilirse CI yeşil yanar ama hiçbir şey
+    /// kanıtlamaz. O testler <see cref="RelationalApiFactory"/> ile gerçek
+    /// SQL Server container'ına karşı koşar.
+    /// </summary>
+    protected virtual void ConfigureDatabase(DbContextOptionsBuilder opt)
+        => opt.UseInMemoryDatabase(_dbName);
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
@@ -99,7 +112,7 @@ public class ApiFactory : WebApplicationFactory<Program>
 
             services.AddDbContext<LicenseDbContext>(opt =>
             {
-                opt.UseInMemoryDatabase(_dbName);
+                ConfigureDatabase(opt);
                 ConfigureDbContextOptions(opt);
             });
 
@@ -114,8 +127,7 @@ public class ApiFactory : WebApplicationFactory<Program>
             var roCtxDescriptor = services.SingleOrDefault(d => d.ServiceType == typeof(LicenseReadOnlyDbContext));
             if (roCtxDescriptor is not null) services.Remove(roCtxDescriptor);
             services.RemoveAll<IDbContextOptionsConfiguration<LicenseReadOnlyDbContext>>();
-            services.AddDbContext<LicenseReadOnlyDbContext>(opt =>
-                opt.UseInMemoryDatabase(_dbName));
+            services.AddDbContext<LicenseReadOnlyDbContext>(ConfigureDatabase);
 
             var emailDescriptor = services.SingleOrDefault(d => d.ServiceType == typeof(IEmailSender));
             if (emailDescriptor is not null) services.Remove(emailDescriptor);

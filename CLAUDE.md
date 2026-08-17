@@ -44,9 +44,15 @@ Both live next to this one under `source/repos/`.
 ## Test + build
 
 - `dotnet test OrderDeck.Tests/OrderDeck.Tests.csproj` — WPF/Chat side
-- `dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj` — server side
+- `dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj` — server side.
+  Mostly InMemory, but a handful of tests start a real SQL Server through
+  Testcontainers (`SqlServerContainerFixture`), because InMemory has no
+  concurrency semantics — a fix that hinges on a row-level race can't be proven
+  there. **Docker must be running** or those tests fail
 - `dotnet build OrderDeck.App/OrderDeck.App.csproj` — WPF (Windows-only)
-- CI runs both via `.github/workflows/build-test.yml`; server deploy via `license-server-deploy.yml`
+- CI runs both via `.github/workflows/build-test.yml`; server deploy via
+  `license-server-deploy.yml`. Server tests run in their own **ubuntu** job —
+  the Windows runner can't start Linux containers
 - Test counts are deliberately not written down here. Every number that was
   ever pinned in this file went stale within weeks and then misled; read the
   count off the CI run instead.

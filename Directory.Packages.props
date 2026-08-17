@@ -146,5 +146,10 @@
     <PackageVersion Include="coverlet.collector" Version="10.0.1" />
     <PackageVersion Include="xunit" Version="2.9.3" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
+    <!-- Gerçek SQL Server'a karşı koşan entegrasyon testleri için. InMemory
+         sağlayıcısı ne eşzamanlılık ne de ExecuteUpdate/Delete destekliyor;
+         bu ikisine dayanan düzeltmeler InMemory'de test edilirse CI yeşil
+         yanar ama hiçbir şey kanıtlamaz. Docker gerektirir. -->
+    <PackageVersion Include="Testcontainers.MsSql" Version="4.14.0" />
   </ItemGroup>
 </Project>

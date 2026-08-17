@@ -268,6 +268,15 @@ public class LicenseDbContext : DbContext
                 .HasForeignKey(t => t.CustomerId).OnDelete(DeleteBehavior.Cascade);
             b.HasIndex(t => t.TokenHash).IsUnique();
             b.HasIndex(t => new { t.CustomerId, t.RevokedAt });
+            // Rotasyonun tek kullanımlık olması buna bağlı: eşzamanlılık
+            // belirteci sayesinde EF, iptali "UPDATE ... WHERE RevokedAt IS NULL"
+            // olarak yazar. Belirteç olmasaydı iki eşzamanlı yenileme aynı
+            // satırı okuyup ikisi de geçerli token üretirdi — çalınan token
+            // meşru olanla yan yana yaşardı, yani tek kullanımlık rotasyonun
+            // tek varlık sebebi (hırsızlığı yakalamak) ortadan kalkardı.
+            // Bilerek rowversion DEĞİL: rowversion SQL Server'a özgü, bu ise
+            // Postgres'te de aynı çalışır ve şema değişikliği istemez.
+            b.Property(t => t.RevokedAt).IsConcurrencyToken();
         });
 
         mb.Entity<PushDevice>(b =>
@@ -492,6 +501,10 @@ public class LicenseDbContext : DbContext
             b.HasIndex(t => t.TokenHash);
             b.Property(t => t.ReplacedByTokenHash).HasMaxLength(64);
             b.Property(t => t.CreatedByIp).HasMaxLength(45);
+            // Gerekçe için RefreshToken eşlemesindeki nota bakın; müşteri
+            // token'ının ömrü 90 gün olduğu için buradaki açık daha da uzun
+            // yaşardı.
+            b.Property(t => t.RevokedAt).IsConcurrencyToken();
         });
 
         mb.Entity<ShopperSupportRequest>(b =>
