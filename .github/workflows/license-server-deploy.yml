@@ -205,16 +205,25 @@ jobs:
       - name: Smoke test
         if: steps.ordering.outputs.skip != 'true'
         run: |
+          # /healthz DEĞİL /ready: /healthz sıfır kontrol koşturur (Predicate =>
+          # false), yani süreç ayakta olduğu sürece 200 döner. Veritabanına hiç
+          # bağlanamayan, EF migration'ı yarıda kalmış bir konteyner de smoke
+          # testini geçerdi — dağıtım yeşil görünür, ilk gerçek istek patlardı.
+          # /ready "ready" etiketli kontrolleri (DbContext) koşturur.
+          #
           # license-server start time on this VPS is ~10s cold, longer on EF
           # migration. Poll up to 60s.
           for i in $(seq 1 30); do
-            code=$(curl -s -o /dev/null -w "%{http_code}" -m 5 \
-                   https://license.orderdeckapp.com/healthz || echo "000")
+            code=$(curl -s -o /tmp/ready.out -w "%{http_code}" -m 5 \
+                   https://license.orderdeckapp.com/ready || echo "000")
             if [ "$code" = "200" ]; then
-              echo "Healthy after ${i} attempt(s)"
+              echo "Ready after ${i} attempt(s)"
               exit 0
             fi
             sleep 2
           done
-          echo "::error::healthz failed to return 200 within 60s"
+          echo "::error::/ready failed to return 200 within 60s (last=${code})"
+          # Gövde hangi kontrolün düştüğünü söyler; log'a yazmazsak VPS'e
+          # girmeden teşhis edilemez.
+          cat /tmp/ready.out 2>/dev/null || true
           exit 1
