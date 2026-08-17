@@ -209,7 +209,11 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
     {
         var (client, _, licenseId) = await SetupAsync();
 
-        // Pre-seed a Shopper and a ShopperBroadcasterLink with WpfCustomerId = null
+        // Pre-seed a Shopper and a ShopperBroadcasterLink with WpfCustomerId = null.
+        // Geriye dönük eşleştirme artık telefon kanıtı istiyor (bkz.
+        // WpfCustomerLinkMatcher), o yüzden aşağıdaki sync payload'ı aynı
+        // numarayı taşıyor.
+        var phone = "+90500" + Random.Shared.Next(1_000_000, 9_999_999);
         Guid shopperId;
         Guid linkId;
         using (var scope = _factory.Services.CreateScope())
@@ -219,7 +223,7 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
             {
                 Id = Guid.NewGuid(),
                 FullName = "Test Shopper",
-                Phone = "+90500" + Guid.NewGuid().ToString("N")[..7],
+                Phone = phone,
                 PasswordHash = "hash",
                 Address = "Some address",
                 CreatedAt = DateTimeOffset.UtcNow,
@@ -251,7 +255,7 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
                 customers = new[]
                 {
                     new { id = wpfCustomerId, platform = "youtube", username = "matchme",
-                          fullName = (string?)null, phone = (string?)null, address = (string?)null,
+                          fullName = (string?)null, phone = (string?)phone, address = (string?)null,
                           updatedAt = DateTimeOffset.UtcNow }
                 }
             });

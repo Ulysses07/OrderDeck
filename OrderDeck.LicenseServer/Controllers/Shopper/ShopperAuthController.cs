@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.ShopperLinking;
 
 namespace OrderDeck.LicenseServer.Controllers.Shopper;
 
@@ -166,14 +167,18 @@ public sealed class ShopperAuthController : ControllerBase
         if (existingLink is not null)
             return Problem(title: "already-linked", statusCode: 409);
 
-        // 7. Match WpfCustomerProjection by (LicenseId, Platform, Username)
+        // 7. Match WpfCustomerProjection by (LicenseId, Platform, Username) — ama
+        // bağlamak için telefon kanıtı şart. Kullanıcı adı yayın sohbetinde
+        // herkese açık olduğu için tek başına sahiplik kanıtı değil; gerekçe
+        // WpfCustomerLinkMatcher'da.
         var platformNorm = req.Platform.Trim().ToLowerInvariant();
         var usernameNorm = req.Username.Trim();
-        var wpfMatch = await _db.WpfCustomerProjections
+        var candidates = await _db.WpfCustomerProjections
             .Where(p => p.LicenseId == license.Id &&
                         p.Platform == platformNorm &&
                         p.Username == usernameNorm)
-            .FirstOrDefaultAsync(ct);
+            .ToListAsync(ct);
+        var wpfMatch = WpfCustomerLinkMatcher.FindProven(candidates, shopper.Phone);
 
         // 8. Insert link
         var link = new ShopperBroadcasterLink
@@ -191,7 +196,13 @@ public sealed class ShopperAuthController : ControllerBase
         // 8a. Auto-projection: if no existing WpfCustomerProjection matched, create one
         // so the broadcaster sees the new shopper immediately (without waiting for a
         // WPF → server customer sync). WPF polls /wpf-customers/since to ingest these rows.
-        if (link.WpfCustomerId is null)
+        //
+        // Koşul "eşleşme yok" değil "aday hiç yok": aday varken kanıt gelmediyse
+        // yeni satır AÇILMAZ. Açsaydık yayıncının müşteri listesinde aynı
+        // (platform, kullanıcı adı) için ikinci bir kayıt belirir, üstelik
+        // kanıtlanmamış kişinin bilgileriyle — gerçek müşterinin kaydını taklit
+        // eden bir kopya. Bağlantı beklemede kalır (WpfCustomerId = null).
+        if (candidates.Count == 0)
         {
             var projectionId = Guid.NewGuid();
             _db.WpfCustomerProjections.Add(new WpfCustomerProjection

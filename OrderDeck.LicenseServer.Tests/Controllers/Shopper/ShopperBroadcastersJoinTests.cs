@@ -82,9 +82,13 @@ public class ShopperBroadcastersJoinTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>
-    /// Registers a shopper against broadcaster A. Returns (accessToken, shopperId).
+    /// Registers a shopper against broadcaster A. Returns (accessToken, shopperId, phone).
+    ///
+    /// Telefon da dönüyor çünkü bir yayıncının müşteri kaydına bağlanmak artık
+    /// telefon kanıtı istiyor (bkz. WpfCustomerLinkMatcher); eşleşme bekleyen
+    /// testler seedledikleri projeksiyona bu numarayı yazmak zorunda.
     /// </summary>
-    private async Task<(string accessToken, Guid shopperId)> RegisterShopperAsync(
+    private async Task<(string accessToken, Guid shopperId, string phone)> RegisterShopperAsync(
         HttpClient client, string broadcasterCode)
     {
         var phone = UniquePhone();
@@ -92,7 +96,7 @@ public class ShopperBroadcastersJoinTests : IClassFixture<ApiFactory>
         var resp = await client.PostAsJsonAsync("/api/v1/shopper/auth/register", req);
         resp.StatusCode.Should().Be(HttpStatusCode.Created, "registration prerequisite must succeed");
         var body = await resp.Content.ReadFromJsonAsync<AuthResponse>();
-        return (body!.AccessToken, body.ShopperId);
+        return (body!.AccessToken, body.ShopperId, phone);
     }
 
     // ── T1: Happy path — join broadcaster B after registered with A ──────────
@@ -104,7 +108,7 @@ public class ShopperBroadcastersJoinTests : IClassFixture<ApiFactory>
         var (_, codeA, _) = await SeedLicenseAsync();
         var (licenseIdB, codeB, nameB) = await SeedLicenseAsync();
 
-        var (token, shopperId) = await RegisterShopperAsync(client, codeA);
+        var (token, shopperId, _) = await RegisterShopperAsync(client, codeA);
 
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
         var resp = await client.PostAsJsonAsync(
@@ -124,7 +128,7 @@ public class ShopperBroadcastersJoinTests : IClassFixture<ApiFactory>
     {
         var client = _factory.CreateClient();
         var (_, codeA, _) = await SeedLicenseAsync();
-        var (token, _) = await RegisterShopperAsync(client, codeA);
+        var (token, _, _) = await RegisterShopperAsync(client, codeA);
 
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
         var resp = await client.PostAsJsonAsync(
@@ -141,7 +145,7 @@ public class ShopperBroadcastersJoinTests : IClassFixture<ApiFactory>
     {
         var client = _factory.CreateClient();
         var (_, codeA, _) = await SeedLicenseAsync();
-        var (token, _) = await RegisterShopperAsync(client, codeA);
+        var (token, _, _) = await RegisterShopperAsync(client, codeA);
 
         // Attempt to join broadcaster A again (already linked via register)
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -160,7 +164,7 @@ public class ShopperBroadcastersJoinTests : IClassFixture<ApiFactory>
         var client = _factory.CreateClient();
         var (_, codeA, _) = await SeedLicenseAsync();
         var (licenseIdB, codeB, _) = await SeedLicenseAsync();
-        var (token, shopperId) = await RegisterShopperAsync(client, codeA);
+        var (token, shopperId, _) = await RegisterShopperAsync(client, codeA);
 
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
@@ -202,9 +206,11 @@ public class ShopperBroadcastersJoinTests : IClassFixture<ApiFactory>
         var client = _factory.CreateClient();
         var (_, codeA, _) = await SeedLicenseAsync();
         var (licenseIdB, codeB, _) = await SeedLicenseAsync();
-        var (token, shopperId) = await RegisterShopperAsync(client, codeA);
+        var (token, shopperId, phone) = await RegisterShopperAsync(client, codeA);
 
-        // Seed a WpfCustomerProjection for broadcaster B
+        // Seed a WpfCustomerProjection for broadcaster B. Telefon bilerek
+        // shopper'ınkiyle aynı: kullanıcı adı yayın sohbetinde herkese açık
+        // olduğu için tek başına bağlanmaya yetmiyor, kanıt telefon.
         var wpfId = Guid.NewGuid();
         using (var scope = _factory.Services.CreateScope())
         {
@@ -215,6 +221,7 @@ public class ShopperBroadcastersJoinTests : IClassFixture<ApiFactory>
                 LicenseId = licenseIdB,
                 Platform = "instagram",
                 Username = "wpfmatch",
+                Phone = phone,
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
             await db.SaveChangesAsync();
@@ -257,7 +264,7 @@ public class ShopperBroadcastersJoinTests : IClassFixture<ApiFactory>
         var client = _factory.CreateClient();
         var (_, codeA, _) = await SeedLicenseAsync();
         var (_, codeB, _) = await SeedLicenseAsync();
-        var (token, _) = await RegisterShopperAsync(client, codeA);
+        var (token, _, _) = await RegisterShopperAsync(client, codeA);
 
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
         var resp = await client.PostAsJsonAsync(
@@ -274,7 +281,7 @@ public class ShopperBroadcastersJoinTests : IClassFixture<ApiFactory>
         var client = _factory.CreateClient();
         var (_, codeA, _) = await SeedLicenseAsync();
         var (licenseIdB, codeB, _) = await SeedLicenseAsync();
-        var (token, shopperId) = await RegisterShopperAsync(client, codeA);
+        var (token, shopperId, _) = await RegisterShopperAsync(client, codeA);
 
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
         var resp = await client.PostAsJsonAsync(
@@ -306,7 +313,7 @@ public class ShopperBroadcastersJoinTests : IClassFixture<ApiFactory>
         var client = _factory.CreateClient();
         var (_, codeA, _) = await SeedLicenseAsync();
         var (licenseIdB, codeB, _) = await SeedLicenseAsync();
-        var (token, shopperId) = await RegisterShopperAsync(client, codeA);
+        var (token, shopperId, phone) = await RegisterShopperAsync(client, codeA);
 
         var wpfId = Guid.NewGuid();
         using (var scope = _factory.Services.CreateScope())
@@ -318,6 +325,7 @@ public class ShopperBroadcastersJoinTests : IClassFixture<ApiFactory>
                 LicenseId = licenseIdB,
                 Platform = "twitch",
                 Username = "joinexistproj",
+                Phone = phone,
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
             await db.SaveChangesAsync();

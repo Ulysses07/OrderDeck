@@ -98,7 +98,10 @@ public class ShopperOrdersTests : IClassFixture<ApiFactory>
         const string platform = "youtube";
         const string username = "ordersuser";
 
-        // Seed WpfCustomerProjection
+        // Seed WpfCustomerProjection. Telefon kayıt telefonuyla aynı olmalı:
+        // bağlantı yalnızca sahiplik kanıtlanınca kurulur, kullanıcı adı
+        // (yayın sohbetinde herkese açık) tek başına yetmez.
+        var phone = UniquePhone();
         using (var scope = _factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -108,12 +111,12 @@ public class ShopperOrdersTests : IClassFixture<ApiFactory>
                 LicenseId = licenseId,
                 Platform = platform,
                 Username = username,
+                Phone = phone,
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
             await db.SaveChangesAsync();
         }
 
-        var phone = UniquePhone();
         var req = new RegisterRequest(broadcasterCode, "Orders User", phone, "OrdersPass1!", "Ankara", platform, username);
         var resp = await client.PostAsJsonAsync("/api/v1/shopper/auth/register", req);
         resp.StatusCode.Should().Be(HttpStatusCode.Created, "registration prerequisite must succeed");
