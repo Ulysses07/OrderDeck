@@ -382,13 +382,8 @@ public sealed class ShopperAuthController : ControllerBase
         shopper.PasswordHash = _passwordHasher.Hash(req.NewPassword!);
         shopper.UpdatedAt = now;
 
-        // Aktif refresh token'ları iptal et — eski cihazlar otomatik logout
-        // (panel issue-temp-password ile aynı desen).
-        var refreshes = await _db.ShopperRefreshTokens
-            .Where(t => t.ShopperId == shopper.Id && t.RevokedAt == null)
-            .ToListAsync(ct);
-        foreach (var t in refreshes)
-            t.RevokedAt = now;
+        // Aktif refresh token'ları iptal et — eski cihazlar otomatik logout.
+        await _refresh.MarkAllRevokedAsync(shopper.Id, now, ct);
 
         await _db.SaveChangesAsync(ct);
         return NoContent();
@@ -504,10 +499,16 @@ public sealed class ShopperAuthController : ControllerBase
             return Problem(title: "weak-password", statusCode: 400);
 
         // 5 & 6. Update password hash and timestamp
+        var now = DateTimeOffset.UtcNow;
         shopper.PasswordHash = _passwordHasher.Hash(req.NewPassword);
-        shopper.UpdatedAt = DateTimeOffset.UtcNow;
+        shopper.UpdatedAt = now;
 
-        // 7. Save
+        // 7. Diğer oturumları düşür. Parola değiştirmenin asıl sebebi çoğu zaman
+        // "hesabıma biri girdi" olduğu için, eski refresh token'lar ayakta
+        // kalırsa işlem amacını karşılamaz. Bu cihaz da yeniden giriş yapar —
+        // token yenilemesi istemcide tutulduğu için burada ayıramıyoruz.
+        await _refresh.MarkAllRevokedAsync(shopper.Id, now, ct);
+
         await _db.SaveChangesAsync(ct);
 
         // 8. Return 204

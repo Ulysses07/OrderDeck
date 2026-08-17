@@ -70,6 +70,27 @@ public sealed class ShopperRefreshTokenService
         return (old.ShopperId, newRaw, newExpiresAt);
     }
 
+    /// <summary>
+    /// Shopper'ın tüm aktif refresh token'larını iptal işaretler; iptal edilen
+    /// sayıyı döner. Parolanın değiştiği her yerde çağrılmalı: parola değişmiş
+    /// ama eski cihazlar hâlâ yenileme yapabiliyorsa, parolayı değiştirmek
+    /// hesabı geri almaz — saldırgan 90 gün boyunca oturumda kalır.
+    ///
+    /// SaveChanges BİLEREK burada çağrılmıyor. İptal, parola değişikliğiyle
+    /// aynı SaveChanges'te commit olmalı; ayrı çağrı olsaydı arada düşen bir
+    /// istek tam olarak kapatmaya çalıştığımız durumu bırakırdı.
+    /// </summary>
+    public async Task<int> MarkAllRevokedAsync(
+        Guid shopperId, DateTimeOffset now, CancellationToken ct)
+    {
+        var active = await _db.ShopperRefreshTokens
+            .Where(t => t.ShopperId == shopperId && t.RevokedAt == null)
+            .ToListAsync(ct);
+        foreach (var t in active)
+            t.RevokedAt = now;
+        return active.Count;
+    }
+
     private static string GenerateRaw()
     {
         var bytes = RandomNumberGenerator.GetBytes(32);

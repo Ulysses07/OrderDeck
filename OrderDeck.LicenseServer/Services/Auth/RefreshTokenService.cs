@@ -130,6 +130,27 @@ public sealed class RefreshTokenService
         return new RevokeResult(true, existing.Id, existing.CustomerId);
     }
 
+    /// <summary>
+    /// Müşterinin tüm aktif refresh token'larını iptal işaretler; iptal edilen
+    /// sayıyı döner. Parolanın değiştiği her yerde çağrılmalı: parola değişmiş
+    /// ama eski oturumlar hâlâ yenileme yapabiliyorsa, parolayı değiştirmek
+    /// hesabı geri almaz — saldırgan oturumda kalmaya devam eder.
+    ///
+    /// SaveChanges BİLEREK burada çağrılmıyor. İptal, parola değişikliğiyle
+    /// aynı SaveChanges'te commit olmalı; ayrı çağrı olsaydı arada düşen bir
+    /// istek tam olarak kapatmaya çalıştığımız durumu bırakırdı.
+    /// </summary>
+    public async Task<int> MarkAllRevokedAsync(
+        Guid customerId, DateTimeOffset now, CancellationToken ct)
+    {
+        var active = await _db.RefreshTokens
+            .Where(t => t.CustomerId == customerId && t.RevokedAt == null)
+            .ToListAsync(ct);
+        foreach (var t in active)
+            t.RevokedAt = now;
+        return active.Count;
+    }
+
     private static string GenerateRawToken()
     {
         Span<byte> bytes = stackalloc byte[32];
