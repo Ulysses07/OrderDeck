@@ -54,4 +54,30 @@ public class ShopperControllerConventionTests
             .ToList();
         offenders.Should().BeEmpty("[ApiController] ile ModelState validation + ProblemDetails consistency");
     }
+
+    /// <summary>
+    /// Anonim shopper ucu = internete açık kapı. Kimlik doğrulaması olmayan bir
+    /// uçta rate limit yoksa kaba kuvvet, hesap sayımı ve (SMS/push gönderen
+    /// uçlarda) doğrudan maliyet üretimi bedavaya gelir. Bu uçların tamamı
+    /// limitsizdi; yeniden limitsiz hâle gelmesin diye kural teste bağlandı.
+    /// </summary>
+    [Fact]
+    public void All_anonymous_shopper_actions_have_rate_limiting()
+    {
+        var offenders = new List<string>();
+        foreach (var t in DiscoverShopperControllers())
+        {
+            foreach (var m in t.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+            {
+                if (m.GetCustomAttribute<AllowAnonymousAttribute>(inherit: true) is null) continue;
+                if (m.GetCustomAttribute<Microsoft.AspNetCore.RateLimiting.EnableRateLimitingAttribute>(inherit: true) is not null) continue;
+                // Sınıf düzeyinde bir politika da kabul: kuralın amacı ucun bir
+                // kovaya bağlı olması, attribute'un nerede durduğu değil.
+                if (t.GetCustomAttribute<Microsoft.AspNetCore.RateLimiting.EnableRateLimitingAttribute>(inherit: true) is not null) continue;
+                offenders.Add($"{t.Name}.{m.Name}: [AllowAnonymous] var ama [EnableRateLimiting] yok");
+            }
+        }
+
+        offenders.Should().BeEmpty();
+    }
 }

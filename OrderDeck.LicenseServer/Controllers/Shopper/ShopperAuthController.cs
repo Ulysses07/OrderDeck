@@ -1,6 +1,7 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
@@ -32,6 +33,19 @@ public sealed record RefreshResponse(
 /// Shopper (müşteri app) kimlik doğrulama endpointleri.
 /// Register + Login anonim (AllowAnonymous); Refresh de anonim çünkü
 /// access token gerekmez.
+///
+/// <para><b>Her uç rate limit'li.</b> Buradaki uçların çoğu anonim ve mobil
+/// uygulamanın internete açık tek kapısı; operatör tarafındaki
+/// <c>AuthController</c> baştan beri limitliyken bu taraf limitsizdi.
+/// Politikalar Program.cs'te tanımlı: <c>auth-register</c> / <c>auth-login</c> /
+/// <c>auth-refresh</c> operatör tarafıyla ORTAK (aynı saldırı, aynı bütçe),
+/// parola akışları ve tırmandırma ucu ise gerekçeleri politika tanımlarında
+/// yazılı ayrı kovalar kullanıyor.</para>
+///
+/// <para>Limitler IP'ye göre bölünüyor; bunun anlamlı olması Caddy'nin
+/// arkasında <c>UseForwardedHeaders</c>'a bağlı (bkz.
+/// <c>Program.CreateForwardedHeadersOptions</c>) — o kaldırılırsa buradaki
+/// bütün politikalar sessizce tek kovaya çöker.</para>
 /// </summary>
 [ApiController]
 [Authorize(AuthenticationSchemes = "Bearer-Shopper")]
@@ -85,6 +99,7 @@ public sealed class ShopperAuthController : ControllerBase
 
     [AllowAnonymous]
     [HttpPost("register")]
+    [EnableRateLimiting("auth-register")]
     public async Task<IActionResult> Register([FromBody] RegisterRequest req, CancellationToken ct)
     {
         // 1. Basic field validation
@@ -217,6 +232,7 @@ public sealed class ShopperAuthController : ControllerBase
 
     [AllowAnonymous]
     [HttpPost("login")]
+    [EnableRateLimiting("auth-login")]
     public async Task<IActionResult> Login([FromBody] LoginRequest req, CancellationToken ct)
     {
         // 1. Phone normalization
@@ -255,6 +271,7 @@ public sealed class ShopperAuthController : ControllerBase
 
     [AllowAnonymous]
     [HttpPost("refresh")]
+    [EnableRateLimiting("auth-refresh")]
     public async Task<IActionResult> Refresh([FromBody] RefreshRequest req, CancellationToken ct)
     {
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
@@ -286,6 +303,7 @@ public sealed class ShopperAuthController : ControllerBase
 
     [AllowAnonymous]
     [HttpPost("forgot-password")]
+    [EnableRateLimiting("shopper-password")]
     public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest req, CancellationToken ct)
     {
         // Self-service SMS OTP. Her zaman 202 (no enumeration leak): geçersiz
@@ -328,6 +346,7 @@ public sealed class ShopperAuthController : ControllerBase
 
     [AllowAnonymous]
     [HttpPost("reset-password")]
+    [EnableRateLimiting("shopper-password")]
     public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequest req, CancellationToken ct)
     {
         if (!PhoneNormalizer.TryNormalize(req.Phone, out var phone))
@@ -368,6 +387,7 @@ public sealed class ShopperAuthController : ControllerBase
 
     [AllowAnonymous]
     [HttpPost("forgot-password/escalate")]
+    [EnableRateLimiting("shopper-support-escalate")]
     public async Task<IActionResult> ForgotPasswordEscalate([FromBody] ForgotPasswordRequest req, CancellationToken ct)
     {
         // "SMS gelmedi" fallback'i: eski manuel akış. Bağlı yayıncılara destek
@@ -451,6 +471,7 @@ public sealed class ShopperAuthController : ControllerBase
     public sealed record ChangePasswordRequest(string CurrentPassword, string NewPassword);
 
     [HttpPost("change-password")]
+    [EnableRateLimiting("shopper-password")]
     public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequest req, CancellationToken ct)
     {
         // 1. Get shopperId from claims (sub or NameIdentifier).

@@ -339,6 +339,34 @@ public class Program
                         PermitLimit = 30,
                         Window = TimeSpan.FromMinutes(1)
                     }));
+            // Shopper parola akışları (unut / sıfırla / değiştir). auth-login
+            // kovasını PAYLAŞMIYOR: parolasını unutan kullanıcı önce birkaç kez
+            // yanlış girip sonra "parolamı unuttum"a basıyor — aynı kovada
+            // olsalardı tam da yardıma ihtiyacı olan kişi 429 yerdi.
+            // Asıl korumalar serviste (OTP deneme sayacı, SMS maliyet tavanı);
+            // buradaki yalnız sel kapağı, o yüzden cömert.
+            opt.AddPolicy("shopper-password", ctx =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                    factory: _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 10,
+                        Window = TimeSpan.FromMinutes(1)
+                    }));
+            // Shopper "SMS gelmedi" tırmandırma ucu. Anonim ve her çağrı bağlı
+            // her yayıncıya bir destek talebi satırı + bir push demek: tek bir
+            // telefon numarası bilinerek döngüye sokulursa yayıncının telefonu
+            // bildirime boğulur, tablo şişer. SMS akışının aksine burada servis
+            // içinde bir tavan yok, tek koruma bu. Limit dar tutuldu; gerçek
+            // kullanımda kişi başı günde bir-iki denemeden fazlası anlamsız.
+            opt.AddPolicy("shopper-support-escalate", ctx =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                    factory: _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 3,
+                        Window = TimeSpan.FromHours(1)
+                    }));
             opt.AddPolicy("intake-form-submit", ctx =>
                 RateLimitPartition.GetFixedWindowLimiter(
                     partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",

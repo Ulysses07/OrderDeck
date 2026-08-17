@@ -33,7 +33,12 @@ public sealed class ShopperBroadcastersController : ControllerBase
     public sealed record JoinRequest(string BroadcasterCode, string Platform, string Username);
     public sealed record JoinResponse(BroadcasterSummary[] Broadcasters);
 
+    // Anonim ve numaralandırılabilir: kod uzayı taranarak platformdaki her
+    // yayıncının lisans kimliği ve müşteri adı toplanabilir. Limit, kayıt/giriş
+    // ile aynı kovayı kullanıyor — gerçek akışta kullanıcı kodu bir kez yazıp
+    // hemen kaydolduğu için çakışma yaratmıyor, tarama ise ilk dakikada duruyor.
     [AllowAnonymous]
+    [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting("auth-login")]
     [HttpGet("code-lookup")]
     public async Task<IActionResult> CodeLookup([FromQuery] string? code, CancellationToken ct)
     {
