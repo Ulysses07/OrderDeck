@@ -21,11 +21,14 @@ public sealed class PanelSupportRequestsController : ControllerBase
 {
     private readonly LicenseDbContext _db;
     private readonly PasswordHasher _hasher;
+    private readonly ShopperRefreshTokenService _refresh;
 
-    public PanelSupportRequestsController(LicenseDbContext db, PasswordHasher hasher)
+    public PanelSupportRequestsController(
+        LicenseDbContext db, PasswordHasher hasher, ShopperRefreshTokenService refresh)
     {
         _db = db;
         _hasher = hasher;
+        _refresh = refresh;
     }
 
     public sealed record SupportRequestDto(
@@ -115,11 +118,7 @@ public sealed class PanelSupportRequestsController : ControllerBase
 
         // Aktif refresh token'ları iptal et — eski cihazlar otomatik logout
         // olsun, shopper geçici parolayla giriş yapıp yenisini belirlesin.
-        var refreshes = await _db.ShopperRefreshTokens
-            .Where(t => t.ShopperId == request.ShopperId && t.RevokedAt == null)
-            .ToListAsync(ct);
-        foreach (var t in refreshes)
-            t.RevokedAt = now;
+        await _refresh.MarkAllRevokedAsync(request.ShopperId, now, ct);
 
         await _db.SaveChangesAsync(ct);
 

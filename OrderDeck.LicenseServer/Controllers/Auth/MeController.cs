@@ -14,11 +14,13 @@ public sealed class MeController : ControllerBase
 {
     private readonly LicenseDbContext _db;
     private readonly PasswordHasher _hasher;
+    private readonly RefreshTokenService _refresh;
 
-    public MeController(LicenseDbContext db, PasswordHasher hasher)
+    public MeController(LicenseDbContext db, PasswordHasher hasher, RefreshTokenService refresh)
     {
         _db = db;
         _hasher = hasher;
+        _refresh = refresh;
     }
 
     [HttpGet]
@@ -52,7 +54,15 @@ public sealed class MeController : ControllerBase
         if (!_hasher.Verify(c.PasswordHash, req.CurrentPassword))
             return Problem(title: "wrong-current-password", statusCode: 400);
 
+        var now = DateTimeOffset.UtcNow;
         c.PasswordHash = _hasher.Hash(req.NewPassword);
+
+        // Diğer oturumları düşür. Parola değiştirmenin asıl sebebi çoğu zaman
+        // "hesabıma biri girdi" olduğu için, eski refresh token'lar ayakta
+        // kalırsa işlem amacını karşılamaz. Bu oturum da yeniden giriş yapar —
+        // token yenilemesi istemcide tutulduğu için burada ayıramıyoruz.
+        await _refresh.MarkAllRevokedAsync(c.Id, now, ct);
+
         await _db.SaveChangesAsync(ct);
         return NoContent();
     }

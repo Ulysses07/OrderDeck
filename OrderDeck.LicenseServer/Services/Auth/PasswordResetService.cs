@@ -17,6 +17,7 @@ public sealed class PasswordResetService
     private readonly LicenseDbContext _db;
     private readonly PasswordHasher _hasher;
     private readonly EmailSendCoordinator _coordinator;
+    private readonly RefreshTokenService _refresh;
     private readonly string _publicBaseUrl;
     private readonly ILogger<PasswordResetService> _log;
 
@@ -24,12 +25,14 @@ public sealed class PasswordResetService
         LicenseDbContext db,
         PasswordHasher hasher,
         EmailSendCoordinator coordinator,
+        RefreshTokenService refresh,
         IConfiguration config,
         ILogger<PasswordResetService> log)
     {
         _db = db;
         _hasher = hasher;
         _coordinator = coordinator;
+        _refresh = refresh;
         _publicBaseUrl = config["App:PublicBaseUrl"]?.TrimEnd('/') ?? "https://localhost:5001";
         _log = log;
     }
@@ -88,8 +91,15 @@ public sealed class PasswordResetService
         if (DateTimeOffset.UtcNow - record.CreatedAt > TokenLifetime) return PasswordResetResult.TokenInvalid;
         if (newPassword.Length < 8) return PasswordResetResult.PasswordTooShort;
 
+        var now = DateTimeOffset.UtcNow;
         record.Customer.PasswordHash = _hasher.Hash(newPassword);
-        record.UsedAt = DateTimeOffset.UtcNow;
+        record.UsedAt = now;
+
+        // Bu akışın tamamı "hesabıma erişemiyorum" içindir; eski refresh
+        // token'lar ayakta bırakılırsa hesabı ele geçiren taraf parola
+        // sıfırlansa bile oturumda kalır ve sıfırlama hiçbir işe yaramaz.
+        await _refresh.MarkAllRevokedAsync(record.CustomerId, now, ct);
+
         await _db.SaveChangesAsync(ct);
 
         _log.LogInformation("Password reset completed for customer {CustomerId}", record.CustomerId);
