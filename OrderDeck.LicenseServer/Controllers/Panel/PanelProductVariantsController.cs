@@ -93,7 +93,7 @@ public sealed class PanelProductVariantsController : ControllerBase
         {
             await _db.SaveChangesAsync(ct);
         }
-        catch (DbUpdateException)
+        catch (DbUpdateException ex)
         {
             // Yarış: ön kontrolden sonra başka bir istek aynı kırılımı aldı
             // (panelde çift tıklama ya da iki sekme yeter). Sebebi SQL hata numarasından
@@ -114,6 +114,7 @@ public sealed class PanelProductVariantsController : ControllerBase
             var racedBarcode = await BarcodeTakenAsync(
                 product.LicenseId, barcode, excludeId: null, ct);
             if (racedBarcode is not null) return racedBarcode;
+            if (CounterRaced(ex)) return CounterBusy();
             throw; // Benzersizlik değilse yutma — bilinmeyen veri hatası 500 olmalı.
         }
 
@@ -258,7 +259,7 @@ public sealed class PanelProductVariantsController : ControllerBase
         {
             await _db.SaveChangesAsync(ct);
         }
-        catch (DbUpdateException)
+        catch (DbUpdateException ex)
         {
             // Create'teki yarışın aynısı (gerekçe orada). Tek fark: hangi satırın
             // çakıştığını bilmiyoruz, hepsini yeniden soruyoruz.
@@ -273,6 +274,7 @@ public sealed class PanelProductVariantsController : ControllerBase
                     product.LicenseId, code, excludeId: null, ct);
                 if (racedBarcode is not null) return racedBarcode;
             }
+            if (CounterRaced(ex)) return CounterBusy();
             throw;
         }
 
@@ -381,7 +383,7 @@ public sealed class PanelProductVariantsController : ControllerBase
         {
             await _db.SaveChangesAsync(ct);
         }
-        catch (DbUpdateException)
+        catch (DbUpdateException ex)
         {
             // Create'teki yarışın aynısı (gerekçe orada); kendi satırı çakışma
             // sayılmasın diye dışlanıyor.
@@ -395,6 +397,7 @@ public sealed class PanelProductVariantsController : ControllerBase
             var racedBarcode = await BarcodeTakenAsync(
                 product.LicenseId, variant.Barcode, id, ct);
             if (racedBarcode is not null) return racedBarcode;
+            if (CounterRaced(ex)) return CounterBusy();
             throw;
         }
 
@@ -541,6 +544,34 @@ public sealed class PanelProductVariantsController : ControllerBase
             detail: $"'{barcode}' barkodu başka bir varyantta kullanılıyor.",
             statusCode: 409);
     }
+
+    /// <summary>
+    /// Başarısız yazma <see cref="BarcodeCounter"/> satırı yüzünden mi?
+    ///
+    /// <para>Aynı lisansta iki eşzamanlı varyant yazımı sayacı aynı değerden
+    /// okur. Kaybeden ikisinden birini alır: satır zaten varsa RowVersion
+    /// uyuşmazlığı, lisansta İLK satır oluşuyorsa birincil anahtar çakışması.
+    /// İkisi de <see cref="DbUpdateException"/>, ikisinin de çaresi aynı —
+    /// tekrar dene. <see cref="BarcodeCounter"/>'ın kendi doc'u bu sözü zaten
+    /// veriyor ("çağıran 409 döner"); burada tutulmazsa panel 500 görür,
+    /// operatöre söylenecek hiçbir şey kalmaz ve sunucuda gereksiz bir alarm
+    /// çalar.</para>
+    ///
+    /// <para>SQL hata numarasına DEĞİL, başarısız girdinin türüne bakıyoruz:
+    /// numara sağlayıcıya bağımlı olur ve PostgreSQL göçünde sessizce çürür
+    /// — <c>DbUpdateException</c> yakalarken zaten verilmiş karar.</para>
+    ///
+    /// <para><b>Testsiz:</b> EF InMemory ne benzersiz indeksi ne RowVersion'ı
+    /// zorluyor, istisna testte hiç doğmuyor. Dosyadaki diğer yarış dallarıyla
+    /// aynı durum ve aynı gerekçe.</para>
+    /// </summary>
+    private static bool CounterRaced(DbUpdateException ex) =>
+        ex.Entries.Any(e => e.Entity is BarcodeCounter);
+
+    private IActionResult CounterBusy() =>
+        Problem(title: "barcode-counter-busy",
+            detail: "Aynı anda başka bir barkod işlemi yapıldı; tekrar dene.",
+            statusCode: 409);
 
     /// <summary>
     /// Bu kırılım üründe zaten varsa 409 döndürür, yoksa null.
