@@ -121,6 +121,27 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     public ProductCardViewModel ProductCard { get; }
 
     /// <summary>
+    /// Kabuğun geri kalanına akan kod. <see cref="ActiveCode"/> kutunun HAM
+    /// metni — kutuya barkod da okutulabiliyor (bkz. <c>BroadcastCodeResolver</c>),
+    /// oysa aşağıdaki her şey yayın kodu üzerine kurulu: izleyici yoruma o kodu
+    /// yazıyor, sipariş satırı onu taşıyor, müşteri etiketine o basılıyor.
+    ///
+    /// <para><b>Barkod aşağı sızsaydı</b> üç şey birden bozulurdu ve üçü de
+    /// yayının ortasında, en pahalı anda görünürdü: "yalnız aktif kod" süzgeci
+    /// 10 haneli sayıyı arayıp sohbeti bomboş bırakır, sipariş satırına
+    /// okunaksız bir sayı yazılır, ürün sayacı okutmadan önce yazılmış
+    /// siparişleri saymaz ve sıfırlanmış görünürdü. Barkodun işi kartı
+    /// açmakla biter.</para>
+    ///
+    /// <para>Kart <c>Code</c>'u kanonik yazımıyla tutuyor ("ates" → "Ateş") ve
+    /// çözülemeyen metinde kutudaki hâline düşüyor — yani senkronlanmamış bir
+    /// kodu operatör yine de takip edebiliyor. Tek kaynak orası olsun diye
+    /// kartı okuyoruz, aynı mantığı burada ikinci kez kurmuyoruz.</para>
+    /// </summary>
+    private string? EffectiveCode =>
+        string.IsNullOrWhiteSpace(ProductCard.Code) ? null : ProductCard.Code;
+
+    /// <summary>
     /// Kenar çubuğu alt bilgisindeki bağlantı noktaları. Sabit dört satır —
     /// eksik platform "bağlı değil" olarak görünür, listeden düşmez.
     /// </summary>
@@ -208,8 +229,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
         // "Yalnız aktif kod" — kod boşken filtreyi uygulamıyoruz, yoksa
         // sohbet tamamen boşalır ve operatör panel bozuldu sanır.
-        if (OnlyActiveCode && !string.IsNullOrWhiteSpace(ActiveCode) &&
-            m.Text?.Contains(ActiveCode.Trim(), StringComparison.OrdinalIgnoreCase) != true)
+        var code = EffectiveCode;
+        if (OnlyActiveCode && code is not null &&
+            m.Text?.Contains(code, StringComparison.OrdinalIgnoreCase) != true)
             return false;
 
         if (string.IsNullOrWhiteSpace(ChatSearchText)) return true;
@@ -266,9 +288,9 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         SessionLabelCount = totals.PrintedCount;
         SessionRevenue = totals.TotalAmount;
 
-        ProductOrderCount = string.IsNullOrWhiteSpace(ActiveCode)
-            ? 0
-            : _labelRepo.CountSessionLabelsByCode(session.Id, ActiveCode.Trim());
+        ProductOrderCount = EffectiveCode is { } code
+            ? _labelRepo.CountSessionLabelsByCode(session.Id, code)
+            : 0;
     }
 
     [ObservableProperty] private string _activePriceText = "0";
@@ -911,7 +933,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             return;
         }
 
-        var code = string.IsNullOrWhiteSpace(ActiveCode) ? null : ActiveCode.Trim();
+        var code = EffectiveCode;
         var resolution = ProductCard.Resolution;
 
         // Kod katalogda çözülmediyse veya üründe izleyici ekseni yoksa seçilecek
@@ -970,6 +992,27 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         // bakiyeye ancak bir sonraki turda (≤60 sn) ya da kart yeniden
         // yüklendiğinde döner — bilinçli ödünç, gecikme temkinli yönde.
         ProductCard.RefreshBalances();
+    }
+
+    /// <summary>
+    /// Kartta açık ürünün etiketlerini bastırır. Çekmece
+    /// <c>IDrawerService.ShowAsync(title, factory)</c> ile açılıyor —
+    /// bütün diğer çekmecelerle aynı yol.
+    ///
+    /// <para>Ürün yoksa sessizce çıkar: düğme zaten yalnız çözülmüş kodda
+    /// görünüyor, ama kod kutusu komut tetiklendikten sonra da temizlenebilir.</para>
+    /// </summary>
+    [RelayCommand]
+    private async Task PrintLabelsAsync()
+    {
+        if (_drawers is null) return;   // yalnız testte; bkz. alanın notu
+        if (ProductCard.Resolution is null) return;
+
+        var vm = new BarcodeLabelViewModel();
+        vm.Load(ProductCard.Resolution);
+
+        await _drawers.ShowAsync("Etiket Bas",
+            d => Views.Drawers.BarcodeLabelDrawer.Create(d, vm));
     }
 
     /// <summary>

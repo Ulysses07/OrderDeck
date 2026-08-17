@@ -57,6 +57,14 @@ public class StockStaffEndpointInventoryTests
         "PanelProductVariantsController.Update",
         "PanelProductVariantsController.Delete",
 
+        // Barkod numarası ayırma: stok elemanı varyant açıp etiket bastığına
+        // göre numarayı da alabilmeli — varyant yazma yolları (yukarıdaki
+        // Create/CreateBulk/Update) zaten boş barkodu ona doldurup veriyor,
+        // bu uç yalnız aynı numarayı KAYDETMEDEN ÖNCE gösteriyor. Yanıtta
+        // 10 haneli sayıdan başka bir şey yok; müşteri, sipariş, ödeme ya da
+        // ciro bilgisi taşımıyor.
+        "PanelBarcodesController.Next",
+
         // Yayın kodu ürün kartının parçası: stok elemanı kartı açıyorsa
         // yayında söylenecek kodu da yazabilmeli. Uç yalnız ürün + satıcı
         // ekseni değeri + kod taşıyor; müşteri, sipariş, ödeme ya da ciro

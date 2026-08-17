@@ -222,4 +222,102 @@ public class CatalogReplicaRepositoryTests
         var repo = Make(out _);
         repo.GetProductById("yok").Should().BeNull();
     }
+
+    // Eksen değerleri null: yanındaki <see cref="Product"/> yardımcısı da eksensiz
+    // ürün kuruyor (Axis1Name/Axis2Name null). "Siyah"/"M" yazmak, ürünün eksen
+    // TANIMLAMADIĞI halde varyantın eksen DEĞERİ taşıdığı, üretimde olamayacak bir
+    // kurgu üretirdi. Barkod aramasının eksenle işi yok; sabit kurgu ucuz.
+    private static CatalogVariant Variant(string id, string productId, string barcode) =>
+        new(id, productId, null, null, barcode, true, 0);
+
+    [Fact]
+    public void Barkod_varyanti_bulur()
+    {
+        var repo = Make(out _);
+        repo.Replace(
+            new[] { Product("p1", "SK00001") },
+            new[] { Variant("v1", "p1", barcode: "0000000007") },
+            Array.Empty<CatalogCategory>(),
+            Array.Empty<CatalogBroadcastCode>());
+
+        repo.FindVariantByBarcode("0000000007")!.Id.Should().Be("v1");
+    }
+
+    [Fact]
+    public void Barkod_aramasi_bosluklari_kirpar()
+    {
+        var repo = Make(out _);
+        repo.Replace(
+            new[] { Product("p1", "SK00001") },
+            new[] { Variant("v1", "p1", barcode: "0000000007") },
+            Array.Empty<CatalogCategory>(),
+            Array.Empty<CatalogBroadcastCode>());
+
+        // Okutucu klavye taklidi yapıyor; başa/sona boşluk düşebiliyor.
+        repo.FindVariantByBarcode("  0000000007  ")!.Id.Should().Be("v1");
+    }
+
+    [Fact]
+    public void Barkod_aramasi_harf_duyarli()
+    {
+        var repo = Make(out _);
+        repo.Replace(
+            new[] { Product("p1", "SK00001") },
+            new[] { Variant("v1", "p1", barcode: "AB12") },
+            Array.Empty<CatalogCategory>(),
+            Array.Empty<CatalogBroadcastCode>());
+
+        // Yük opak: "ab12" BAŞKA bir barkod olabilir. Normalize etmek,
+        // yanlış ürünü açmaya yol açardı.
+        repo.FindVariantByBarcode("ab12").Should().BeNull();
+    }
+
+    [Fact]
+    public void Barkod_ayni_barkod_tekrarlarsa_hep_ayni_satiri_secer()
+    {
+        var repo = Make(out _);
+        // Replika indeksi bilerek UNIQUE değil (bkz. göç 031): senkron sırasında
+        // bir barkodun varyanttan varyanta devri geçici bir çakışma üretebilir ve
+        // UNIQUE olsaydı INSERT düşüp katalog senkronu sessizce ölürdü. Bedeli,
+        // aynı barkodu taşıyan iki satırın mümkün olması — okutma yine de KARARLI
+        // dönmeli, yoksa AYNI fiziksel etiket iki ayrı anda iki farklı ürünü açar.
+        // "z-dup" INSERT sırasında önde: sıralama olmasa sorgu onu döndürürdü,
+        // Id tekil olduğu için ORDER BY Id → "a-dup".
+        repo.Replace(
+            new[] { Product("p1", "SK00001"), Product("p2", "SK00002") },
+            new[]
+            {
+                Variant("z-dup", "p1", barcode: "0000000007"),
+                Variant("a-dup", "p2", barcode: "0000000007"),
+            },
+            Array.Empty<CatalogCategory>(),
+            Array.Empty<CatalogBroadcastCode>());
+
+        repo.FindVariantByBarcode("0000000007")!.Id.Should().Be("a-dup");
+    }
+
+    [Fact]
+    public void Bos_barkod_null_doner()
+    {
+        var repo = Make(out _);
+        repo.FindVariantByBarcode("   ").Should().BeNull();
+    }
+
+    [Fact]
+    public void Urunun_yayin_kodlari_sirayla_doner()
+    {
+        var repo = Make(out _);
+        repo.Replace(
+            new[] { Product("p1", "SK00001") },
+            Array.Empty<CatalogVariant>(),
+            Array.Empty<CatalogCategory>(),
+            new[]
+            {
+                new CatalogBroadcastCode("p1", "Siyah", "ATES", "ATES", 0, 1),
+                new CatalogBroadcastCode("p1", null, "KAR", "KAR", 0, 0),
+            });
+
+        repo.GetBroadcastCodes("p1").Select(c => c.Code)
+            .Should().Equal("KAR", "ATES");
+    }
 }

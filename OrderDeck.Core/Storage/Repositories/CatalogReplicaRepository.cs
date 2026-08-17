@@ -178,6 +178,92 @@ public sealed class CatalogReplicaRepository
             .ToList();
     }
 
+    /// <summary>
+    /// Barkodu birebir eşleşen varyant, yoksa <c>null</c>.
+    ///
+    /// <para><b>Normalize EDİLMEZ</b> (yayın kodunun aksine): barkod yükü opak
+    /// bir dizgi, okutucu onu karakteri karakterine üretiyor. Normalize etmek
+    /// "AB12" ile "ab12"yi aynı sayardı — bunlar farklı iki varyant olabilir
+    /// ve okutma yanlış ürünü açardı. Yalnız baştaki/sondaki boşluk kırpılır:
+    /// okutucular klavye taklidi yapıyor ve sonda bir Enter/boşluk bırakabiliyor.</para>
+    ///
+    /// <para><c>ORDER BY Id LIMIT 1</c>: benzersizliğin sahibi sunucu, replikada
+    /// indeks UNIQUE değil (gerekçesi göç 031'de) — yani çift satır mümkün.
+    /// O durumda sorgu patlamak yerine tek satır döndürür, ama <b>her seferinde
+    /// AYNI satırı</b>: sırasız <c>LIMIT 1</c> hangi satırın döneceğini SQLite'ın
+    /// plan seçimine bırakırdı ve aynı fiziksel etiket iki ayrı anda iki farklı
+    /// ürünü açabilirdi. <c>Id</c> birincil anahtar olduğu için tek başına tam
+    /// sıra veriyor; kardeş sorgular (<see cref="FindByCode"/>,
+    /// <see cref="FindBroadcastCode"/>) anlamlı bir kolonla sıraladıklarından
+    /// tekilleştirici ikinci anahtara ihtiyaç duyuyor, burada öyle bir kolon yok
+    /// (<c>Barcode</c> zaten <c>WHERE</c>'de sabit).</para>
+    ///
+    /// <para><b>Pasif varyant da döner</b> — <c>IsActive</c> burada süzülmez.
+    /// Sebep: elde tutulan fiziksel etiket bir gerçek, pasifleştirilmiş olması
+    /// onu yok saymayı değil, ne yapılacağına ÇAĞIRANIN karar vermesini
+    /// gerektirir (sessizce "bulunamadı" demek operatörü etiketin bozuk
+    /// olduğuna inandırırdı).</para>
+    /// </summary>
+    public CatalogVariant? FindVariantByBarcode(string? barcode)
+    {
+        var needle = (barcode ?? string.Empty).Trim();
+        if (needle.Length == 0) return null;
+
+        using var conn = _factory.Open();
+        return conn.Query<VariantRow>(
+            """
+            SELECT Id, ProductId, Axis1Value, Axis2Value, Barcode, IsActive, SortOrder
+            FROM CatalogVariant
+            WHERE Barcode = @needle
+            ORDER BY Id LIMIT 1
+            """,
+            new { needle })
+            .Select(r => new CatalogVariant(
+                r.Id, r.ProductId, r.Axis1Value, r.Axis2Value,
+                r.Barcode, r.IsActive == 1, r.SortOrder))
+            .FirstOrDefault();
+    }
+
+    /// <summary>
+    /// Ürünün yayın kodları, sunucunun verdiği sırayla.
+    ///
+    /// <para>Barkod okutma yolu için: barkod varyanta, varyant ürüne çözülüyor
+    /// ama akışın geri kalanı bir YAYIN KODU bekliyor.</para>
+    ///
+    /// <para><b>Sıra ne DEĞİL:</b> panelde elle dizilmiş bir sıra yok — böyle
+    /// bir özellik hiç yapılmadı. <c>SortOrder</c> senkron sırasında dizi
+    /// indeksinden atanıyor (<c>CatalogSyncService</c>) ve sunucu kodları
+    /// <c>CreatedAt</c>'e göre AZALAN gönderiyor
+    /// (<c>LicensesWpfCatalogPullController</c>). Yani <c>SortOrder = 0</c>
+    /// <b>en son eklenen kod</b> demek.</para>
+    ///
+    /// <para><b>Çağırana uyarı — eksen:</b> eksenli üründe ilk kodu almak
+    /// yanlış; her eksen değerinin kendi kodu var, çağıran
+    /// <c>SellerAxisValue</c> üzerinden eşleştirmeli.</para>
+    ///
+    /// <para><b>Çağırana uyarı — emekli kodlar:</b> tek bir kırılımın da
+    /// birden çok satırı olabilir. Kod değişikliği güncelleme değil YENİ
+    /// SATIR; eski satır kodu rezerve tutmaya devam ettiği için silinmiyor ve
+    /// buraya da iniyor. Sıralama sayesinde ilk satır GÜNCEL olan; "eksensiz
+    /// ürün = tek kod" diye düşünen çağıran yanılır.</para>
+    /// </summary>
+    public IReadOnlyList<CatalogBroadcastCode> GetBroadcastCodes(string productId)
+    {
+        using var conn = _factory.Open();
+        return conn.Query<BroadcastCodeRow>(
+            """
+            SELECT ProductId, SellerAxisValue, Code, CodeNormalized, CreatedAt, SortOrder
+            FROM CatalogBroadcastCode
+            WHERE ProductId = @productId
+            ORDER BY SortOrder, Code
+            """,
+            new { productId })
+            .Select(r => new CatalogBroadcastCode(
+                r.ProductId, r.SellerAxisValue, r.Code, r.CodeNormalized,
+                r.CreatedAt, r.SortOrder))
+            .ToList();
+    }
+
     public IReadOnlyList<CatalogCategory> GetCategories()
     {
         using var conn = _factory.Open();

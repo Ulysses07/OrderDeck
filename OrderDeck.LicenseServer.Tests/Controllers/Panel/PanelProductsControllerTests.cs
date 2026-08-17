@@ -1234,4 +1234,60 @@ public class PanelProductsControllerTests : IClassFixture<ApiFactory>
 
         res.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
+
+    /// <summary>
+    /// Depoda barkod okutucusu var: operatör ürünü adıyla aramak yerine eldeki
+    /// parçayı okutuyor; okutucu metni arama kutusuna yazıyor. Barkod araması
+    /// çalışmasa okutucu panelde ölü olur.
+    ///
+    /// Barkod NORMALİZE EDİLMEZ — yük opak ASCII, birebir eşleşmeli. Bu yüzden
+    /// karşılaştırma normalize edilmiş `needle` üzerinden değil, ham sorguyla
+    /// yapılıyor.
+    /// </summary>
+    [Fact]
+    public async Task Arama_varyant_barkoduyla_da_eslesir()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Barkotlu Ürün",
+            axis1Name: "Renk", axis1Role: 2);
+
+        var variantResp = await client.PostAsJsonAsync(
+            $"/api/panel/products/{product.Id}/variants",
+            new { axis1Value = "Siyah", axis2Value = (string?)null,
+                  isActive = true, barcode = "8690000000017" });
+        variantResp.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var res = await client.GetAsync("/api/panel/products?q=8690000000017");
+
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await res.Content.ReadFromJsonAsync<ProductPage>();
+        body!.Items.Should().ContainSingle().Which.Id.Should().Be(product.Id);
+    }
+
+    /// <summary>
+    /// Barkod eşleşmesi TAM: ad ve kod gibi <c>Contains</c> değil. Okutucu
+    /// numaranın tamamını yazar, yarımını değil; parça eşleşmesi açılsaydı
+    /// tek okutma birbiriyle ilgisiz ürünleri getirebilirdi. Bu test
+    /// sözleşmeyi çiviliyor — biri "kullanıcı yarım yazıyor" diye
+    /// <c>Contains</c>'e çevirirse burada yakalanır.
+    /// </summary>
+    [Fact]
+    public async Task Yarim_barkod_urunu_getirmez()
+    {
+        var (client, _) = await SeedAsync();
+        var product = await CreateProductAsync(client, "Barkotlu Ürün",
+            axis1Name: "Renk", axis1Role: 2);
+
+        var variantResp = await client.PostAsJsonAsync(
+            $"/api/panel/products/{product.Id}/variants",
+            new { axis1Value = "Siyah", axis2Value = (string?)null,
+                  isActive = true, barcode = "8690000000017" });
+        variantResp.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var res = await client.GetAsync("/api/panel/products?q=869000");
+
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await res.Content.ReadFromJsonAsync<ProductPage>();
+        body!.Items.Should().BeEmpty();
+    }
 }

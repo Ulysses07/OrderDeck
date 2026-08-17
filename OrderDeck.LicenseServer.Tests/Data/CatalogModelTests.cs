@@ -356,4 +356,38 @@ public class CatalogModelTests : IClassFixture<ApiFactory>
 
         subtree.Should().BeEquivalentTo(new[] { "Erkek", "Üst Giyim" });
     }
+
+    [Fact]
+    public void Barkod_lisans_icinde_benzersizdir()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var entity = db.Model.FindEntityType(typeof(ProductVariant))!;
+
+        var index = entity.GetIndexes().FirstOrDefault(i =>
+            i.Properties.Select(p => p.Name)
+                .SequenceEqual(new[] { "LicenseId", "Barcode" }));
+
+        index.Should().NotBeNull("barkod benzersizliği son savunma hattı");
+        index!.IsUnique.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// Bu test <c>.IsRequired()</c> çağrısını değil, <c>ProductVariant.Barcode</c>
+    /// CLR tipinin nullable OLMAMASINI çiviliyor: modeli zorunlu yapan şey NRT
+    /// convention'ı, eşlemedeki çağrı yalnız niyeti yazıya döküyor. Tip bir gün
+    /// <c>string?</c>'e dönerse hiçbir derleme hatası çıkmaz, bir sonraki göç
+    /// sütunu sessizce nullable'a çevirir ve "barkodsuz varyant olamaz"
+    /// değişmezinin son savunma hattı düşer.
+    /// </summary>
+    [Fact]
+    public void Barkod_zorunludur()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var entity = db.Model.FindEntityType(typeof(ProductVariant))!;
+
+        entity.FindProperty(nameof(ProductVariant.Barcode))!
+            .IsNullable.Should().BeFalse("barkodsuz varyant var olmamalı");
+    }
 }

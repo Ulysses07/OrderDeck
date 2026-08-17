@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using FluentAssertions;
@@ -463,6 +463,24 @@ public class PanelBroadcastCodesControllerTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>
+    /// <see cref="NewProductWithSellerAxisAsync"/> ile açılmış ürünün Siyah
+    /// varyantına elle barkod yazar. Varyant ucunda okuma yok; kimlik ürün
+    /// ayrıntısından alınıyor. Eksensiz ürün kullanılamaz: o uçta varyant
+    /// güncellemesi <c>product-has-no-axis</c> ile reddediliyor.
+    /// </summary>
+    private static async Task<HttpResponseMessage> SetBarcodeAsync(
+        HttpClient client, Guid productId, string barcode)
+    {
+        var product = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/panel/products/{productId}");
+        var variantId = product.GetProperty("variants")[0].GetProperty("id").GetGuid();
+
+        return await client.PutAsJsonAsync(
+            $"/api/panel/products/{productId}/variants/{variantId}",
+            new { axis1Value = "Siyah", isActive = true, barcode });
+    }
+
+    /// <summary>
     /// Eksensiz ürün: yayın kodu ürünün tamamına verilir, satıcı ekseni değeri
     /// yoktur. Otomatik varyantı sunucu açar.
     /// </summary>
@@ -635,5 +653,158 @@ public class PanelBroadcastCodesControllerTests : IClassFixture<ApiFactory>
         codes[0].GetProperty("sellerAxisValue").GetString().Should().Be("Siyah",
             "'Siyah' hâlâ Siyah/L satırında kullanımda; kod orada kalmalı");
         codes[0].GetProperty("code").GetString().Should().Be("ATEŞ");
+    }
+
+    /// <summary>
+    /// WPF'te tek kutu var: operatör kodu da barkodu da oraya yazıyor ve kutu
+    /// önce yayın kodu, bulunamazsa barkod arıyor. 10 haneli saf sayı barkod
+    /// numara uzayı; yayın kodu olarak da kabul edilseydi aynı metin iki farklı
+    /// ürüne çözülür, hangisinin açılacağı arama sırasına kalırdı.
+    /// </summary>
+    [Fact]
+    public async Task On_haneli_saf_sayi_yayin_kodu_olamaz()
+    {
+        var client = await NewPanelClientAsync();
+        var productId = await NewAxislessProductAsync(client);
+
+        var res = await client.PutAsJsonAsync(
+            $"/api/panel/products/{productId}/broadcast-codes",
+            new { code = "0000000001", sellerAxisValue = (string?)null });
+
+        res.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        // Başlık da doğrulanıyor: [ApiController] model doğrulaması da,
+        // bir üstteki "harf/rakam şart" bekçisi de 400 üretir. Yalnız durum
+        // koduna bakan test bambaşka bir sebeple geçerdi.
+        (await res.Content.ReadAsStringAsync())
+            .Should().Contain("reserved-barcode-format");
+    }
+
+    /// <summary>
+    /// 10 hane bekçisi yalnız SAYAÇ barkodlarını koruyor. Elle yazılan barkod
+    /// herhangi bir ASCII dizisi olabildiği için ikinci bir çakışma yolu var:
+    /// bir varyantın barkodu <c>ATES</c> iken aynı lisansta <c>Ateş</c> yayın
+    /// kodu açılırsa kutuya <c>ATES</c> okutulduğunda kod kazanır ve barkodun
+    /// sahibi varyanta bu yolla ERİŞİLEMEZ olur — basılmış etiket sessizce
+    /// işe yaramaz hâle gelir.
+    /// </summary>
+    [Fact]
+    public async Task Mevcut_barkodu_golgeleyen_yayin_kodu_reddedilir()
+    {
+        var client = await NewPanelClientAsync();
+        var productId = await NewAxislessProductAsync(client);
+        var other = await NewProductWithSellerAxisAsync(client);
+
+        // Barkodu elle "ATES" yapılmış bir varyant.
+        var put = await SetBarcodeAsync(client, other, "ATES");
+        put.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var res = await client.PutAsJsonAsync(
+            $"/api/panel/products/{productId}/broadcast-codes",
+            new { code = "Ateş", sellerAxisValue = (string?)null });
+
+        res.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await res.Content.ReadAsStringAsync())
+            .Should().Contain("code-shadows-barcode");
+    }
+
+    /// <summary>
+    /// Çakışma NORMALİZE karşılaştırmayla aranmalı: WPF kutusu yayın kodunu
+    /// normalize ederek arıyor, yani "ates" barkodu "ATEŞ" kodunu da gölgeliyor.
+    /// Bekçi ham eşitliğe bakarsa bu yol açık kalır.
+    /// </summary>
+    [Fact]
+    public async Task Golge_kontrolu_buyuk_kucuk_harf_ve_turkce_katlamadan_bagimsiz()
+    {
+        var client = await NewPanelClientAsync();
+        var productId = await NewAxislessProductAsync(client);
+        var other = await NewProductWithSellerAxisAsync(client);
+
+        await SetBarcodeAsync(client, other, "ates");
+
+        var res = await client.PutAsJsonAsync(
+            $"/api/panel/products/{productId}/broadcast-codes",
+            new { code = "ATEŞ", sellerAxisValue = (string?)null });
+
+        res.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await res.Content.ReadAsStringAsync())
+            .Should().Contain("code-shadows-barcode");
+    }
+
+    /// <summary>
+    /// Bekçi lisans kapsamlı olmalı: barkod da yayın kodu da lisans içinde
+    /// benzersiz. Başka müşterinin barkodu yüzünden kod reddedilseydi
+    /// yayıncılar birbirinin kod uzayını tüketirdi.
+    /// </summary>
+    [Fact]
+    public async Task Baska_lisanstaki_barkod_yayin_kodunu_engellemez()
+    {
+        var first = await NewPanelClientAsync();
+        var other = await NewProductWithSellerAxisAsync(first);
+        await SetBarcodeAsync(first, other, "ATES");
+
+        var second = await NewPanelClientAsync();
+        var productId = await NewAxislessProductAsync(second);
+
+        var res = await second.PutAsJsonAsync(
+            $"/api/panel/products/{productId}/broadcast-codes",
+            new { code = "ATES", sellerAxisValue = (string?)null });
+
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    /// <summary>
+    /// Yasak "10 karakter" değil, "10 haneli SAF SAYI". Bekçi sayı koşulunu
+    /// unutup yalnız uzunluğa baksaydı 10 harflik sıradan kodlar da kapanırdı;
+    /// bu test o yarıyı çiviliyor.
+    /// </summary>
+    [Fact]
+    public async Task On_karakterli_ama_sayi_olmayan_kod_kabul_edilir()
+    {
+        var client = await NewPanelClientAsync();
+        var productId = await NewAxislessProductAsync(client);
+
+        var res = await client.PutAsJsonAsync(
+            $"/api/panel/products/{productId}/broadcast-codes",
+            new { code = "A000000001", sellerAxisValue = (string?)null });
+
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    /// <summary>
+    /// Bekçi <c>Trim</c>'lenmiş değeri okumalı. Ham gövdeye baksaydı boşluklu
+    /// "  0000000001  " uzunluk sınavını geçemez, barkod uzayındaki numara
+    /// yayın kodu olarak kaydedilirdi — kaydedilen değer zaten trim'li.
+    /// </summary>
+    [Fact]
+    public async Task Bosluklu_on_haneli_sayi_da_reddedilir()
+    {
+        var client = await NewPanelClientAsync();
+        var productId = await NewAxislessProductAsync(client);
+
+        var res = await client.PutAsJsonAsync(
+            $"/api/panel/products/{productId}/broadcast-codes",
+            new { code = "  0000000001  ", sellerAxisValue = (string?)null });
+
+        res.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await res.Content.ReadAsStringAsync())
+            .Should().Contain("reserved-barcode-format");
+    }
+
+    /// <summary>
+    /// Yasak yalnız 10 haneye özgü: kural "sayı olamaz" değil, "barkod numara
+    /// uzayıyla çakışamaz". Bekçi uzunluğu unutup her sayıyı reddetseydi
+    /// operatörün elindeki sayısal kodların tamamı kapanırdı.
+    /// </summary>
+    [Fact]
+    public async Task Dokuz_haneli_sayi_yayin_kodu_olabilir()
+    {
+        var client = await NewPanelClientAsync();
+        var productId = await NewAxislessProductAsync(client);
+
+        var res = await client.PutAsJsonAsync(
+            $"/api/panel/products/{productId}/broadcast-codes",
+            new { code = "123456789", sellerAxisValue = (string?)null });
+
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 }

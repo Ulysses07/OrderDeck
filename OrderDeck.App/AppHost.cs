@@ -305,6 +305,10 @@ public sealed class AppHost : IDisposable
             sp.GetRequiredService<AppSettings>(),
             sp.GetRequiredService<ILogger<LabelPrinter>>()));
         services.AddSingleton<ILabelPrinter>(sp => sp.GetRequiredService<LabelPrinter>());
+        // Barkod etiketi ayrı bir sınıf (yükü farklı), ILabelPrinter'a bağlanmıyor.
+        services.AddSingleton<BarcodeLabelPrinter>(sp => new BarcodeLabelPrinter(
+            sp.GetRequiredService<AppSettings>(),
+            sp.GetRequiredService<ILogger<BarcodeLabelPrinter>>()));
 
         // Animation catalog client (Task 20)
         services.AddSingleton<Services.AnimationCatalogClient>(sp => new Services.AnimationCatalogClient(

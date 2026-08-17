@@ -165,6 +165,18 @@
                     <Run Text="Varyantsız:"/>
                     <Run Text="{Binding ProductLevelQuantity, Mode=OneWay}"/>
                 </TextBlock>
+
+                <!-- Etiket basma çekmecesini açar. Komut ProductCardViewModel'de
+                     DEĞİL, çekmece yığınının sahibi MainShellViewModel'de; bu
+                     Border'ın DataContext'i ProductCard olduğu için bağ ata
+                     UserControl'e — yani bu ProductCard'a, DataContext'i
+                     MainShellViewModel — çıkıyor. Pencereye çıkma: MainWindow'un
+                     DataContext'i yok (fotoğraf yüksekliğindeki notun aynısı). -->
+                <Button Content="Etiket bas"
+                        Style="{StaticResource OD.Button.Ghost}"
+                        Margin="{StaticResource OD.Pad.Top4}"
+                        Command="{Binding DataContext.PrintLabelsCommand,
+                                          RelativeSource={RelativeSource AncestorType=UserControl}}"/>
             </StackPanel>
         </Grid>
     </Border>

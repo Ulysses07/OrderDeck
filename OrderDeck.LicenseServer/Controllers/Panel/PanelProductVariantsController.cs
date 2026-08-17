@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Catalog;
 using OrderDeck.Shared.Text;
 
 namespace OrderDeck.LicenseServer.Controllers.Panel;
@@ -17,8 +18,9 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 ///
 /// Benzersizlik normalize eksen değerlerinde
 /// (<c>Axis1ValueNorm</c>, <c>Axis2ValueNorm</c>) — türetilmiş kısaltmalarda
-/// değil. Faz 1c'de barkot yükü basım anında <c>ProductVariant.Barcode</c>'a
-/// yazılıp dondurulacak; okutma oradan çözümlenir.
+/// değil. Barkod yükü varyant YARATILIRKEN atanır (basım anında değil): boş
+/// gönderilirse sunucu lisans sayacından doldurur, benzersizliği
+/// (LicenseId, Barcode) indeksi korur.
 /// </summary>
 [ApiController]
 [Route("api/panel/products/{productId:guid}/variants")]
@@ -26,8 +28,13 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 public sealed class PanelProductVariantsController : ControllerBase
 {
     private readonly LicenseDbContext _db;
+    private readonly BarcodeAllocator _barcodes;
 
-    public PanelProductVariantsController(LicenseDbContext db) => _db = db;
+    public PanelProductVariantsController(LicenseDbContext db, BarcodeAllocator barcodes)
+    {
+        _db = db;
+        _barcodes = barcodes;
+    }
 
     // Doğrulama attribute'ları positional record'un PARAMETRESİNE yazılıyor;
     // deponun kalıbı bu. [property:] hedefiyle ne olacağını denemedik —
@@ -35,7 +42,8 @@ public sealed class PanelProductVariantsController : ControllerBase
     public sealed record VariantRequest(
         [MaxLength(CatalogLimits.AxisValue)] string? Axis1Value,
         [MaxLength(CatalogLimits.AxisValue)] string? Axis2Value,
-        bool IsActive);
+        bool IsActive,
+        [MaxLength(CatalogLimits.Barcode)] string? Barcode = null);
 
     [AllowStockStaff]
     [HttpPost]
@@ -54,6 +62,17 @@ public sealed class PanelProductVariantsController : ControllerBase
         var conflict = await VariantValuesTakenAsync(product.Id, built, excludeId: null, ct);
         if (conflict is not null) return conflict;
 
+        // Hatayı değil DEĞERİ soruyoruz: böylece derleyici barcode'u buradan
+        // sonra null-olmayan sayıyor ve aşağıdaki üç kullanım susturma
+        // gerektirmiyor. Değer null ise hata dolu olmak zorunda.
+        var (barcode, barcodeError) = await ResolveBarcodeAsync(
+            product.LicenseId, req.Barcode, ct);
+        if (barcode is null) return barcodeError!;
+
+        var barcodeConflict = await BarcodeTakenAsync(
+            product.LicenseId, barcode, excludeId: null, ct);
+        if (barcodeConflict is not null) return barcodeConflict;
+
         var now = DateTimeOffset.UtcNow;
         var variant = new ProductVariant
         {
@@ -62,6 +81,7 @@ public sealed class PanelProductVariantsController : ControllerBase
             ProductId = product.Id,
             Axis1Value = built.Axis1Value,
             Axis2Value = built.Axis2Value,
+            Barcode = barcode,
             IsActive = req.IsActive,
             CreatedAt = now,
             UpdatedAt = now,
@@ -73,7 +93,7 @@ public sealed class PanelProductVariantsController : ControllerBase
         {
             await _db.SaveChangesAsync(ct);
         }
-        catch (DbUpdateException)
+        catch (DbUpdateException ex)
         {
             // Yarış: ön kontrolden sonra başka bir istek aynı kırılımı aldı
             // (panelde çift tıklama ya da iki sekme yeter). Sebebi SQL hata numarasından
@@ -91,6 +111,10 @@ public sealed class PanelProductVariantsController : ControllerBase
             // etkisiz ama aynı soruyu iki farklı biçimde sormak olurdu.
             var raced = await VariantValuesTakenAsync(product.Id, built, excludeId: null, ct);
             if (raced is not null) return raced;
+            var racedBarcode = await BarcodeTakenAsync(
+                product.LicenseId, barcode, excludeId: null, ct);
+            if (racedBarcode is not null) return racedBarcode;
+            if (CounterRaced(ex)) return CounterBusy();
             throw; // Benzersizlik değilse yutma — bilinmeyen veri hatası 500 olmalı.
         }
 
@@ -165,15 +189,65 @@ public sealed class PanelProductVariantsController : ControllerBase
             if (conflict is not null) return conflict;
         }
 
+        // 4) Elle yazılmış barkodların HEPSİ, ayırmadan ÖNCE doğrulanır.
+        //    Sıra keyfî değil: geçersiz bir satır yüzünden buradan dönülürse
+        //    sayaç hiç dokunulmamış olur. (Erken dönüşte SaveChanges
+        //    çalışmadığı için ilerlemiş sayaç zaten diske yazılmazdı — ama o
+        //    güvence isteğin şekline bağlı bir tesadüf; ayırmayı doğrulamanın
+        //    ARDINA almak "istek başına tam bir ayırma" kuralını yapısal kılar.)
+        var explicitCodes = new string?[items.Count];
+        for (var i = 0; i < items.Count; i++)
+        {
+            if (Trim(items[i].Barcode) is null) continue;
+
+            var (resolved, barcodeError) = await ResolveBarcodeAsync(
+                product.LicenseId, items[i].Barcode, ct);
+            // Değer üzerinden soruyoruz ki derleyici daraltabilsin: null bir
+            // yuva aşağıda "boş, ayırma gerekiyor" demek: hatayı değerden
+            // ayrı sorsaydık, hatasız gelen bir null autoCount'u şişirirdi.
+            if (resolved is null) return barcodeError!;
+            explicitCodes[i] = resolved;
+        }
+
+        // Tek ayırma çağrısı: ayırıcı yalnız KAYDEDİLMİŞ satırları görüyor,
+        // parti içinde ikinci kez çağırmak aynı numaraları verirdi.
+        var autoCount = explicitCodes.Count(c => c is null);
+        var pool = new Queue<string>(
+            await _barcodes.AllocateAsync(product.LicenseId, autoCount, ct));
+
+        // Konum eşlemesi korunuyor: barcodes[i] ↔ items[i] ↔ built[i]. Aşağıdaki
+        // Select((segments, i) => …) bu hizaya güveniyor; listenin uzunluğu ve
+        // sırası items ile birebir aynı kalmalı.
+        var barcodes = new List<string>(items.Count);
+        for (var i = 0; i < items.Count; i++)
+            barcodes.Add(explicitCodes[i] ?? pool.Dequeue());
+
+        // Parti içi tekrar — eksen değerlerindekiyle aynı gerekçe: benzersiz
+        // indeksten dönen hata prod'da 500 olurdu.
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var code in barcodes)
+            if (!seen.Add(code))
+                return Problem(title: "duplicate-barcode-in-batch",
+                    detail: $"'{code}' barkodu listede birden fazla kez var.",
+                    statusCode: 409);
+
+        foreach (var code in barcodes)
+        {
+            var barcodeConflict = await BarcodeTakenAsync(
+                product.LicenseId, code, excludeId: null, ct);
+            if (barcodeConflict is not null) return barcodeConflict;
+        }
+
         var now = DateTimeOffset.UtcNow;
-        var variants = built.Zip(items, (segments, item) => new ProductVariant
+        var variants = built.Select((segments, i) => new ProductVariant
         {
             Id = Guid.NewGuid(),
             LicenseId = product.LicenseId,
             ProductId = product.Id,
             Axis1Value = segments.Axis1Value,
             Axis2Value = segments.Axis2Value,
-            IsActive = item.IsActive,
+            Barcode = barcodes[i],
+            IsActive = items[i].IsActive,
             CreatedAt = now,
             UpdatedAt = now,
         }).ToList();
@@ -185,7 +259,7 @@ public sealed class PanelProductVariantsController : ControllerBase
         {
             await _db.SaveChangesAsync(ct);
         }
-        catch (DbUpdateException)
+        catch (DbUpdateException ex)
         {
             // Create'teki yarışın aynısı (gerekçe orada). Tek fark: hangi satırın
             // çakıştığını bilmiyoruz, hepsini yeniden soruyoruz.
@@ -194,6 +268,13 @@ public sealed class PanelProductVariantsController : ControllerBase
                 var raced = await VariantValuesTakenAsync(product.Id, segments, null, ct);
                 if (raced is not null) return raced;
             }
+            foreach (var code in barcodes)
+            {
+                var racedBarcode = await BarcodeTakenAsync(
+                    product.LicenseId, code, excludeId: null, ct);
+                if (racedBarcode is not null) return racedBarcode;
+            }
+            if (CounterRaced(ex)) return CounterBusy();
             throw;
         }
 
@@ -219,6 +300,31 @@ public sealed class PanelProductVariantsController : ControllerBase
 
         var conflict = await VariantValuesTakenAsync(product.Id, built, id, ct);
         if (conflict is not null) return conflict;
+
+        // Boş gönderilen barkod, MEVCUT değeri korur. "Sil" anlamına gelseydi
+        // panelde alanı temizleyen bir yanlış tıklama basılı etiketi
+        // geçersizleştirirdi; barkodsuz varyant zaten var olamaz.
+        //
+        // Mevcut değer BOŞSA (kolon henüz nullable; barkod öncesi yazılmış eski
+        // satırlar) burası onu doldurmuyor — bilerek. Eski satırların iyileştirmesi
+        // bu planın ilerleyen görevindeki NOT NULL göçüne ve onunla gelen
+        // geri-doldurmaya ait. Güncelleme yolu böylece saf kalıyor: yalnız
+        // ÇAĞIRANIN istediğini yapıyor, yan etkiyle veri onarmıyor. Aksi hâlde
+        // "sadece IsActive'i kapat" isteği sessizce barkod da atardı.
+        var requestedBarcode = Trim(req.Barcode);
+        if (requestedBarcode is not null
+            && !string.Equals(requestedBarcode, variant.Barcode, StringComparison.Ordinal))
+        {
+            var (resolved, barcodeError) = await ResolveBarcodeAsync(
+                product.LicenseId, requestedBarcode, ct);
+            if (resolved is null) return barcodeError!;
+
+            var barcodeConflict = await BarcodeTakenAsync(
+                product.LicenseId, resolved, id, ct);
+            if (barcodeConflict is not null) return barcodeConflict;
+
+            variant.Barcode = resolved;
+        }
 
         // Eski satıcı değeri, atamalardan ÖNCE okunmalı: aşağıdaki satırlar
         // variant'ı yerinde değiştiriyor.
@@ -277,12 +383,21 @@ public sealed class PanelProductVariantsController : ControllerBase
         {
             await _db.SaveChangesAsync(ct);
         }
-        catch (DbUpdateException)
+        catch (DbUpdateException ex)
         {
             // Create'teki yarışın aynısı (gerekçe orada); kendi satırı çakışma
             // sayılmasın diye dışlanıyor.
             var raced = await VariantValuesTakenAsync(product.Id, built, id, ct);
             if (raced is not null) return raced;
+
+            // Barkod da aynı işlemde yazılıyor; yarışı Create/CreateBulk ile
+            // birebir aynı biçimde sınıflandırıyoruz, yoksa aynı çakışma uca
+            // göre farklı cevap alırdı. Fark yalnız excludeId: bu satır zaten
+            // veritabanında duruyor, kendi barkodu çakışma sayılmamalı.
+            var racedBarcode = await BarcodeTakenAsync(
+                product.LicenseId, variant.Barcode, id, ct);
+            if (racedBarcode is not null) return racedBarcode;
+            if (CounterRaced(ex)) return CounterBusy();
             throw;
         }
 
@@ -364,6 +479,125 @@ public sealed class PanelProductVariantsController : ControllerBase
             SearchNormalizer.Normalize(axis1Value),
             SearchNormalizer.Normalize(axis2Value));
     }
+
+    /// <summary>
+    /// Code128 yalnız ASCII 32-126 basar. Türkçe harf ya da kontrol karakteri
+    /// içeren bir yük, yazıcıya gitse okunamayan sembol üretirdi — kabulü
+    /// burada, yazma yolunun başında kesiyoruz.
+    /// </summary>
+    private static bool IsPrintableCode128(string s) =>
+        s.All(c => c >= ' ' && c <= '~');
+
+    /// <summary>
+    /// Barkod yükünü hazırlar: elle yazılmışsa doğrular, boşsa sayaçtan ayırır.
+    /// Hata, geri callback ile değil dönen ikilinin <c>Error</c> alanıyla
+    /// bildirilir — böylece çağıranın kontrolü atlaması hâlinde <c>Value</c>
+    /// null kaldığı için derleyici uyarabiliyor; callback kalıbında her çağrı
+    /// yerinde bir <c>!</c> gerekiyordu ve bu güvenceyi susturuyordu.
+    ///
+    /// <para><b>Boş = hata değil:</b> kural "kullanıcı barkod yazsın" değil,
+    /// "barkodsuz varyant var olmasın". Sunucu boşluğu kendisi doldurunca
+    /// kural ihlal edilemez hâle geliyor ve ileride gelecek Excel toplu
+    /// içe aktarımı barkod sütunu boş bir dosyayla da çalışabiliyor.</para>
+    ///
+    /// <para>Uzunluk burada KONTROL EDİLMİYOR: <c>VariantRequest.Barcode</c>
+    /// üzerindeki <c>[MaxLength]</c> sayesinde taşan girdi <c>[ApiController]</c>
+    /// model doğrulamasında 400 alıyor ve eylem gövdesine hiç ulaşmıyor.
+    /// Buradaki ikinci kontrol ölü koddu.</para>
+    /// </summary>
+    private async Task<(string? Value, IActionResult? Error)> ResolveBarcodeAsync(
+        Guid licenseId, string? requested, CancellationToken ct)
+    {
+        var trimmed = Trim(requested);
+        if (trimmed is null)
+        {
+            var allocated = await _barcodes.AllocateAsync(licenseId, 1, ct);
+            return (allocated[0], null);
+        }
+
+        if (!IsPrintableCode128(trimmed))
+            return (null, Problem(title: "barcode-not-printable",
+                detail: "Barkod yalnız İngiliz alfabesi harfleri, rakam ve "
+                      + "temel noktalama içerebilir (Code128).",
+                statusCode: 400));
+
+        // Yayın kodu uzayıyla çakışmayı engelle. Kutuda kod barkodu YENİYOR
+        // (BroadcastCodeResolver: önce kod, bulunamazsa barkod), yani bir yayın
+        // koduyla aynı barkod hiç açılmayan bir etiket demek — ürün kartı hep
+        // kodun sahibine gider. Sessizce ölü etiket basmak yerine yazarken
+        // reddediyoruz; kaybedilen tek şey bir barkod tercihi.
+        //
+        // Yalnız ELLE yazılan yolda: sayaç barkodu 10 haneli saf sayı ve o
+        // biçim yayın kodu olarak zaten yasak (reserved-barcode-format), yani
+        // otomatik yolda çakışma imkânsız — orada sorgu yapmak boşuna gecikme.
+        //
+        // Karşılaştırma normalize hâl üzerinden, çünkü kutu kodu öyle arıyor.
+        // Barkod ASCII 32-126 ile sınırlı olduğundan (IsPrintableCode128)
+        // Normalize onun için sadece büyük harfe çevirmek demek.
+        //
+        // Geriye dönük DEĞİL: bekçiden önce yazılmış veriyi onarmıyor.
+        var normalized = SearchNormalizer.Normalize(trimmed);
+        var shadows = await _db.ProductBroadcastCodes
+            .AsNoTracking()
+            .AnyAsync(c => c.LicenseId == licenseId && c.CodeNormalized == normalized, ct);
+        if (shadows)
+            return (null, Problem(title: "barcode-shadows-broadcast-code",
+                detail: $"'{trimmed}' bir yayın koduyla aynı; bu barkod "
+                      + "okutulduğunda kodun sahibi ürün açılır. Başka bir "
+                      + "barkod yaz ya da boş bırak.",
+                statusCode: 409));
+
+        return (trimmed, null);
+    }
+
+    /// <summary>
+    /// Bu barkod lisansta zaten kullanılıyorsa 409 döndürür, yoksa null.
+    /// <c>VariantValuesTakenAsync</c> ile aynı gerekçe: hem SaveChanges öncesi
+    /// ön kontrol hem sonrası yarış sınıflandırması tek metottan geçsin.
+    /// </summary>
+    private async Task<IActionResult?> BarcodeTakenAsync(
+        Guid licenseId, string barcode, Guid? excludeId, CancellationToken ct)
+    {
+        var exists = await _db.ProductVariants
+            .AsNoTracking()
+            .AnyAsync(v => v.LicenseId == licenseId
+                           && v.Barcode == barcode
+                           && (excludeId == null || v.Id != excludeId), ct);
+
+        if (!exists) return null;
+
+        return Problem(title: "duplicate-barcode",
+            detail: $"'{barcode}' barkodu başka bir varyantta kullanılıyor.",
+            statusCode: 409);
+    }
+
+    /// <summary>
+    /// Başarısız yazma <see cref="BarcodeCounter"/> satırı yüzünden mi?
+    ///
+    /// <para>Aynı lisansta iki eşzamanlı varyant yazımı sayacı aynı değerden
+    /// okur. Kaybeden ikisinden birini alır: satır zaten varsa RowVersion
+    /// uyuşmazlığı, lisansta İLK satır oluşuyorsa birincil anahtar çakışması.
+    /// İkisi de <see cref="DbUpdateException"/>, ikisinin de çaresi aynı —
+    /// tekrar dene. <see cref="BarcodeCounter"/>'ın kendi doc'u bu sözü zaten
+    /// veriyor ("çağıran 409 döner"); burada tutulmazsa panel 500 görür,
+    /// operatöre söylenecek hiçbir şey kalmaz ve sunucuda gereksiz bir alarm
+    /// çalar.</para>
+    ///
+    /// <para>SQL hata numarasına DEĞİL, başarısız girdinin türüne bakıyoruz:
+    /// numara sağlayıcıya bağımlı olur ve PostgreSQL göçünde sessizce çürür
+    /// — <c>DbUpdateException</c> yakalarken zaten verilmiş karar.</para>
+    ///
+    /// <para><b>Testsiz:</b> EF InMemory ne benzersiz indeksi ne RowVersion'ı
+    /// zorluyor, istisna testte hiç doğmuyor. Dosyadaki diğer yarış dallarıyla
+    /// aynı durum ve aynı gerekçe.</para>
+    /// </summary>
+    private static bool CounterRaced(DbUpdateException ex) =>
+        ex.Entries.Any(e => e.Entity is BarcodeCounter);
+
+    private IActionResult CounterBusy() =>
+        Problem(title: "barcode-counter-busy",
+            detail: "Aynı anda başka bir barkod işlemi yapıldı; tekrar dene.",
+            statusCode: 409);
 
     /// <summary>
     /// Bu kırılım üründe zaten varsa 409 döndürür, yoksa null.

@@ -42,16 +42,25 @@ public sealed class ProductVariant
     public string Axis2ValueNorm { get; set; } = string.Empty;
 
     /// <summary>
-    /// Faz 1c'de doldurulur (Code128). 1a'da her zaman null.
+    /// Fiziksel kimlik. Yük <b>varyant yaratılırken</b> atanır ve bir daha
+    /// türetilmez: lisans başına 10 haneli bir sayaçtan gelen opak numara
+    /// (bkz. <see cref="BarcodeCounter"/>), ya da paneldeki elle girilen değer.
     ///
-    /// Fiziksel kimlik ve <b>değişmez</b>: yük <b>basım anında</b> buraya
-    /// yazılıp dondurulur, okutma da bu alandan çözümlenir. Türetilmiş bir
-    /// değerden her seferinde yeniden hesaplansaydı, girdisi değiştiği anda
-    /// rafta duran ürüne yapıştırılmış etiket geçersiz olurdu.
+    /// <para><b>Neden türetilmiyor:</b> eksen değerinden ya da Id'den
+    /// hesaplansaydı, bir yazım düzeltmesi ("Siyah" → "Siyah ") basılı
+    /// etiketleri geçersiz kılardı. Atanmış numara, yazıldığı andan sonra
+    /// hiçbir düzenlemeden etkilenmez.</para>
     ///
-    /// Faz 1c'de bu alan kendi indeksini ister.
+    /// <para><b>Neden boş olamaz:</b> kural "kullanıcı barkod yazsın" değil,
+    /// "barkodsuz varyant var olmasın" — sunucu üç yazma yolunda da boşluğu
+    /// kendisi dolduruyor. Benzersizlik <c>(LicenseId, Barcode)</c>
+    /// indeksinde.</para>
+    ///
+    /// <para>Numara türetilmediği için varyant yaratılır yaratılmaz belli;
+    /// katalog senkronuyla WPF replikasına iniyor ve <b>çevrimdışı okutma</b>
+    /// çalışıyor.</para>
     /// </summary>
-    public string? Barcode { get; set; }
+    public string Barcode { get; set; } = string.Empty;
 
     public bool IsActive { get; set; } = true;
 

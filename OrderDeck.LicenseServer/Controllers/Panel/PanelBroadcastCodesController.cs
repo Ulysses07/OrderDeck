@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Catalog;
 using OrderDeck.Shared.Text;
 
 namespace OrderDeck.LicenseServer.Controllers.Panel;
@@ -158,7 +159,45 @@ public sealed class PanelBroadcastCodesController : ControllerBase
             return Problem(title: "invalid-code",
                 detail: "Yayın kodu en az bir harf ya da rakam içermeli.", statusCode: 400);
 
+        // Barkod numara uzayıyla çakışmayı engelle. WPF'te kod kutusu tek:
+        // önce yayın kodu, bulunamazsa barkod aranıyor. 10 haneli saf sayı
+        // her iki kümede de bulunabilseydi aynı metin iki farklı ürüne
+        // çözülür, hangisinin açılacağı sıralamaya kalırdı.
+        //
+        // Bekçi bu uçta TEK duruyor: Code alanına yazan başka bir yol yok.
+        if (code.Length == BarcodeAllocator.Digits && code.All(char.IsAsciiDigit))
+            return Problem(title: "reserved-barcode-format",
+                detail: "10 haneli saf sayı barkod numarası olarak ayrıldı; "
+                      + "yayın kodu olarak kullanılamaz.",
+                statusCode: 400);
+
         var normalized = SearchNormalizer.Normalize(code);
+
+        // 10 hane bekçisi yalnız SAYAÇ barkodlarını koruyor; elle yazılan barkod
+        // herhangi bir ASCII dizisi olabildiği için ikinci bir çakışma yolu var.
+        // Kutuda kod barkodu YENDİĞİ için (BroadcastCodeResolver) böyle bir kod
+        // açıldığı anda barkodun sahibi varyanta o yoldan erişilemez olur:
+        // basılmış etiket sessizce işe yaramaz hâle gelir. Sessiz bozulma yerine
+        // yazarken reddediyoruz — burada kaybedilen tek şey bir kod tercihi.
+        //
+        // Karşılaştırma normalize hâl üzerinden: kutu kodu normalize ederek
+        // arıyor, yani "ates" barkodu "ATEŞ" kodunu da gölgeler. Barkodlar
+        // ASCII 32-126 ile sınırlı olduğu için (IsPrintableCode128) barkodun
+        // normalize hâli sadece büyük harfe çevrilmiş hâlidir — Türkçe katlama
+        // hiç devreye girmez, bu yüzden ToUpper karşılaştırması tam.
+        //
+        // Geriye dönük DEĞİL: bekçiden önce yazılmış veriyi onarmıyor.
+        var shadowed = await _db.ProductVariants
+            .AsNoTracking()
+            .AnyAsync(v => v.LicenseId == licenseId.Value
+                        && v.Barcode != null
+                        && v.Barcode.ToUpper() == normalized, ct);
+        if (shadowed)
+            return Problem(title: "code-shadows-barcode",
+                detail: $"'{code}' bir varyantın barkoduyla aynı; yayın kodu "
+                      + "olarak kullanılırsa o barkod okutulduğunda yanlış ürün "
+                      + "açılır. Başka bir kod seç.",
+                statusCode: 409);
 
         var sellerValue = ResolveSellerAxisValue(product, req.SellerAxisValue, out var axisError);
         if (axisError is not null) return axisError;

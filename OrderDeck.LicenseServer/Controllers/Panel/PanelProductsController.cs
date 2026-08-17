@@ -146,10 +146,24 @@ public sealed class PanelProductsController : ControllerBase
             // `Code` sistem tarafından üretilir (SK00001…) ve normalleştirilmemiş
             // sayısal bir sonek içerir; bu nedenle kod araması da needle üzerinden
             // Contains ile çalışır — ayrı bir normalleştirme adımı gerekmez.
+            //
+            // Barkod NORMALİZE EDİLMEZ: normalleştirici yükü DEĞİŞTİRİR — büyük
+            // harfe çevirir ve ardışık boşlukları daraltır. Barkod doğrulaması
+            // Code128'in tamamını (ASCII 32-126, boşluk dahil) kabul ettiği için
+            // ikisi de gerçek bir yükü kaçırabilir; bu yüzden ham `rawQuery`.
+            // Harf duyarlılığı yine sütunun collation'ına bağlı.
+            var rawQuery = q.Trim();
             var needle = SearchNormalizer.Normalize(q);
             if (needle.Length > 0)
-                query = query.Where(
-                    p => p.NameSearch.Contains(needle) || p.Code.Contains(needle));
+                // `v.LicenseId` koşulu mantıken gereksiz (varyant zaten kendi
+                // ürününün lisansında) ama sorgu için değil indeks için var:
+                // benzersiz indeks (LicenseId, Barcode) sıralı, lider sütun bu
+                // EXISTS içinde bağlı olmazsa seek yerine tarama yapılır.
+                query = query.Where(p =>
+                    p.NameSearch.Contains(needle)
+                    || p.Code.Contains(needle)
+                    || p.Variants.Any(v => v.LicenseId == licenseId.Value
+                                           && v.Barcode == rawQuery));
         }
 
         var total = await query.CountAsync(ct);
