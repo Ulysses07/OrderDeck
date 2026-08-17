@@ -1,8 +1,10 @@
-using System.Globalization;
+﻿using System.Globalization;
+using System.Net;
 using System.Security.Claims;
 using System.Text;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Localization;
 using Hangfire;
 using Hangfire.SqlServer;
@@ -337,6 +339,34 @@ public class Program
                         PermitLimit = 30,
                         Window = TimeSpan.FromMinutes(1)
                     }));
+            // Shopper parola akışları (unut / sıfırla / değiştir). auth-login
+            // kovasını PAYLAŞMIYOR: parolasını unutan kullanıcı önce birkaç kez
+            // yanlış girip sonra "parolamı unuttum"a basıyor — aynı kovada
+            // olsalardı tam da yardıma ihtiyacı olan kişi 429 yerdi.
+            // Asıl korumalar serviste (OTP deneme sayacı, SMS maliyet tavanı);
+            // buradaki yalnız sel kapağı, o yüzden cömert.
+            opt.AddPolicy("shopper-password", ctx =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                    factory: _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 10,
+                        Window = TimeSpan.FromMinutes(1)
+                    }));
+            // Shopper "SMS gelmedi" tırmandırma ucu. Anonim ve her çağrı bağlı
+            // her yayıncıya bir destek talebi satırı + bir push demek: tek bir
+            // telefon numarası bilinerek döngüye sokulursa yayıncının telefonu
+            // bildirime boğulur, tablo şişer. SMS akışının aksine burada servis
+            // içinde bir tavan yok, tek koruma bu. Limit dar tutuldu; gerçek
+            // kullanımda kişi başı günde bir-iki denemeden fazlası anlamsız.
+            opt.AddPolicy("shopper-support-escalate", ctx =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                    factory: _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 3,
+                        Window = TimeSpan.FromHours(1)
+                    }));
             opt.AddPolicy("intake-form-submit", ctx =>
                 RateLimitPartition.GetFixedWindowLimiter(
                     partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
@@ -587,6 +617,11 @@ public class Program
                 "15 4 * * *");  // 04:15 UTC daily
         }
 
+        // Ters vekil farkındalığı — pipeline'ın EN BAŞI, çünkü aşağıdaki her
+        // şey Request.Scheme ve RemoteIpAddress'i doğru kabul ediyor.
+        // Gerekçe ve ayarların tek tek anlamı: CreateForwardedHeadersOptions.
+        app.UseForwardedHeaders(CreateForwardedHeadersOptions());
+
         if (app.Environment.IsDevelopment())
         {
             app.UseSwagger();
@@ -639,6 +674,61 @@ public class Program
         });
 
         app.Run();
+    }
+
+    /// <summary>
+    /// Caddy'nin arkasında gerçek istemciyi görebilmek için gereken
+    /// <see cref="ForwardedHeadersOptions"/>.
+    ///
+    /// <para>Üretimde Kestrel'e doğrudan kimse ulaşamıyor: compose'ta 8080
+    /// <c>expose</c> ediliyor, <c>ports</c> ile yayınlanmıyor; tek giriş Caddy.
+    /// Bu middleware olmadan <c>RemoteIpAddress</c> her istekte Caddy
+    /// konteynerinin adresi (172.18.0.3) oluyordu ve bunun iki bedeli vardı:</para>
+    /// <list type="number">
+    /// <item>Rate limit politikalarının tamamı IP'ye göre bölünüyor (auth-login
+    /// 5/dk, intake-form-submit 5/saat...). Tek IP = tek kova demek: limitler
+    /// kullanıcı başına değil TÜM İNTERNET için geçerliydi. Bir bot herkesi
+    /// kilitleyebilir, saldırgan 5 denemesini kendi kotasından değil ortak
+    /// kotadan harcardı.</item>
+    /// <item>Denetim kayıtlarındaki IP alanı sabit bir konteyner adresiydi,
+    /// yani hiçbir şey söylemiyordu.</item>
+    /// </list>
+    ///
+    /// <para><b>Sahtecilik neden mümkün değil:</b> <c>ForwardLimit</c>
+    /// varsayılanı 1, yani <c>X-Forwarded-For</c>'un EN SAĞDAKİ girdisi okunur —
+    /// o da Caddy'nin kendi eklediği gerçek istemci adresidir. İstemci başlığı
+    /// kendi uydurursa Caddy onun SAĞINA ekler, uydurma değer soldaki
+    /// girdilerde kalır ve hiç okunmaz. <c>KnownIPNetworks</c>'ün Docker köprü
+    /// aralığına daraltılması da başlığın yalnız vekilden geldiğinde dikkate
+    /// alınmasını garantiliyor: listedeki ağlardan gelmeyen bir istekte başlık
+    /// tamamen yok sayılır.</para>
+    ///
+    /// <para><b>XForwardedProto neden dahil:</b> Caddy TLS'i sonlandırıp http
+    /// olarak proxy'liyor, bu yüzden <c>Request.Scheme</c> "http" görünüyordu ve
+    /// admin çerezindeki <see cref="CookieSecurePolicy.SameAsRequest"/> çerezi
+    /// <c>Secure</c> bayrağı OLMADAN yazıyordu. <c>UseHttpsRedirection</c>
+    /// burada döngü yaratmaz: yapılandırılmış bir HTTPS portu yok, üstelik
+    /// scheme artık zaten https.</para>
+    /// </summary>
+    public static ForwardedHeadersOptions CreateForwardedHeadersOptions()
+    {
+        var options = new ForwardedHeadersOptions
+        {
+            ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
+        };
+        // Varsayılan liste yalnız loopback'i tanır; konteynerde vekil loopback'te
+        // olmadığı için başlık sessizce yok sayılırdı. Listeyi sıfırlayıp
+        // bilerek dolduruyoruz.
+        options.KnownIPNetworks.Clear();
+        options.KnownProxies.Clear();
+        // Docker'ın varsayılan köprü havuzu. Ağ yeniden yaratıldığında somut alt
+        // ağ kayabildiği için (172.18 → 172.19...) tek adres değil havuzun
+        // tamamı güveniliyor; oraya erişebilen zaten compose ağının içinde.
+        options.KnownIPNetworks.Add(new System.Net.IPNetwork(IPAddress.Parse("172.16.0.0"), 12));
+        // Yerel geliştirme ve konteyner içi çağrılar.
+        options.KnownIPNetworks.Add(new System.Net.IPNetwork(IPAddress.Parse("127.0.0.0"), 8));
+        options.KnownIPNetworks.Add(new System.Net.IPNetwork(IPAddress.IPv6Loopback, 128));
+        return options;
     }
 
     private static async Task SeedAdminAsync(LicenseDbContext db, IConfiguration cfg)

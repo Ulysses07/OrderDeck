@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Reflection;
 using System.Threading.RateLimiting;
 using Hangfire;
 using Hangfire.MemoryStorage;
@@ -132,23 +133,19 @@ public class ApiFactory : WebApplicationFactory<Program>
             // registrations (added by AddRateLimiter in Program.cs) and register a fresh
             // unlimited configuration so auth tests don't get 429.
             //
-            // DİKKAT: bu liste Program.cs'teki politika adlarını ELLE yansıtıyor ve
-            // eksiği sessiz kalmıyor — [EnableRateLimiting("x")] taşıyan bir ucun
-            // karşılığı burada yoksa istek 429 değil 500 oluyor ("no such policy
-            // exists") ve o ucun BÜTÜN testleri düşüyor. Program.cs'e yeni politika
-            // eklerken buraya da ekle.
+            // Politika adları ELLE yazılmıyor: [EnableRateLimiting("x")] taşıyan
+            // her uç taranıp adı buradan toplanıyor. Elle tutulan bir liste
+            // Program.cs'ten sessizce ayrılıyordu ve bedeli ağırdı — karşılığı
+            // olmayan bir politika 429 değil 500 ("no such policy exists")
+            // üretiyor, yani o ucun BÜTÜN testleri, üstelik ilgisiz bir hatayla
+            // düşüyor. Kaynağı kullanımın kendisi yapınca liste güncel kalmak
+            // zorunda değil, zaten hep güncel.
             services.RemoveAll<Microsoft.Extensions.Options.IConfigureOptions<RateLimiterOptions>>();
             services.RemoveAll<Microsoft.Extensions.Options.IPostConfigureOptions<RateLimiterOptions>>();
             services.AddRateLimiter(opts =>
             {
                 opts.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-                foreach (var policy in new[]
-                {
-                    "auth-register", "auth-login", "auth-refresh",
-                    "intake-form-submit", "youtube-verify",
-                    "backup-upload", "backup-delete",
-                    "whatsapp-send",
-                })
+                foreach (var policy in DiscoverRateLimitPolicyNames())
                 {
                     opts.AddPolicy(policy, _ => RateLimitPartition.GetNoLimiter(string.Empty));
                 }
@@ -157,6 +154,22 @@ public class ApiFactory : WebApplicationFactory<Program>
             });
         });
     }
+
+    /// <summary>
+    /// Sunucu derlemesindeki her <c>[EnableRateLimiting("...")]</c> kullanımının
+    /// politika adını toplar. Testlerde limitleri kapatabilmek için gereken tek
+    /// bilgi bu: ada karşılık bir politika kayıtlı olmalı, ne yaptığı önemli
+    /// değil. Hiç kullanılmayan bir politikanın burada olmaması da sorun değil.
+    /// </summary>
+    private static IEnumerable<string> DiscoverRateLimitPolicyNames() =>
+        typeof(Program).Assembly.GetTypes()
+            .SelectMany(t => t.GetCustomAttributes<EnableRateLimitingAttribute>(inherit: true)
+                .Concat(t.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+                         .SelectMany(m => m.GetCustomAttributes<EnableRateLimitingAttribute>(inherit: true))))
+            .Select(a => a.PolicyName)
+            .Where(name => !string.IsNullOrEmpty(name))
+            .Select(name => name!)
+            .Distinct();
 
     protected override IHost CreateHost(IHostBuilder builder)
     {

@@ -13,9 +13,11 @@ Kurulum rehberi: **[SETUP.md](SETUP.md)** (Türkçe)
 ### Stack
 - **OrderDeck.App** — WPF .NET 10 desktop (operatör arayüzü)
 - **OrderDeck.Core** — domain (sales / customers / sessions / giveaways / payments / shipments)
-- **OrderDeck.Chat** — chat ingestion (Chrome extension WS bridge + YouTube scraper)
+- **OrderDeck.Chat** — chat ingestion (Chrome extension WS bridge + YouTube Data API v3)
 - **OrderDeck.Labeling** — thermal printer label rendering (PrintDocument)
 - **OrderDeck.Overlay** — embedded ASP.NET Core HTTP server (`localhost:4747` + fallback 4757-4760) for OBS browser sources
+- **OrderDeck.PdfParsing** — banka dekontu PDF ayrıştırma (PdfPig)
+- **OrderDeck.Shared** — projeler arası küçük yardımcılar (metin normalizasyonu vb.)
 - **OrderDeck.Licensing** — license activation + heartbeat + Payment/Shipment sync clients
 - **OrderDeck.LicenseServer** — VPS-deployed ASP.NET Core API (license issuance + customer accounts + Panel API)
 - **Extension/** — Chrome MV3 extension (DOM scraper for IG/TT/FB livestream chat) — [Chrome Web Store](https://chromewebstore.google.com/) yayında
@@ -32,7 +34,8 @@ Kurulum rehberi: **[SETUP.md](SETUP.md)** (Türkçe)
 ### Bina
 ```bash
 dotnet build       # tüm solution
-dotnet test        # 560+ unit/integration test (OrderDeck.Tests + LicenseServer + Licensing)
+dotnet test        # 3 test projesi: OrderDeck.Tests + LicenseServer.Tests + Licensing.Tests
+                   # (güncel sayı için CI'ya bak — buraya yazılan sayı sürekli eskiyor)
 dotnet run --project OrderDeck.App   # local dev launch
 ```
 
@@ -50,6 +53,8 @@ OrderDeck.Core/          # domain (sales/customers/payments/shipments/giveaways)
 OrderDeck.Chat/          # chat ingestion
 OrderDeck.Labeling/      # thermal printer label rendering
 OrderDeck.Overlay/       # OBS overlay HTTP server + animation plugins
+OrderDeck.PdfParsing/    # banka dekontu PDF ayrıştırma
+OrderDeck.Shared/        # projeler arası yardımcılar
 OrderDeck.Licensing/     # license + sync clients (Payment + Shipment)
 OrderDeck.LicenseServer/ # license server (VPS, ghcr.io image)
 OrderDeck.Tests/         # WPF + Core tests
@@ -71,4 +76,6 @@ docs/superpowers/        # spec'ler + plan'lar (Phase 1-5 + kargo feature)
 GitHub Actions: `.github/workflows/build-test.yml` (Windows runner + dotnet test).
 
 ### Lisans
-Kapalı kaynak — `Ulysses07` özel mülk. Pull request kabul edilmiyor (henüz).
+Kapalı kaynak — `Ulysses07` özel mülk. Depo herkese **okunabilir**, ama kod
+serbest değil: kullanım/kopyalama/türetme yazılı izne tabidir. Tam metin:
+[LICENSE](LICENSE). Pull request kabul edilmiyor (henüz).
