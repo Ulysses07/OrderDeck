@@ -521,6 +521,32 @@ public sealed class PanelProductVariantsController : ControllerBase
                       + "temel noktalama içerebilir (Code128).",
                 statusCode: 400));
 
+        // Yayın kodu uzayıyla çakışmayı engelle. Kutuda kod barkodu YENİYOR
+        // (BroadcastCodeResolver: önce kod, bulunamazsa barkod), yani bir yayın
+        // koduyla aynı barkod hiç açılmayan bir etiket demek — ürün kartı hep
+        // kodun sahibine gider. Sessizce ölü etiket basmak yerine yazarken
+        // reddediyoruz; kaybedilen tek şey bir barkod tercihi.
+        //
+        // Yalnız ELLE yazılan yolda: sayaç barkodu 10 haneli saf sayı ve o
+        // biçim yayın kodu olarak zaten yasak (reserved-barcode-format), yani
+        // otomatik yolda çakışma imkânsız — orada sorgu yapmak boşuna gecikme.
+        //
+        // Karşılaştırma normalize hâl üzerinden, çünkü kutu kodu öyle arıyor.
+        // Barkod ASCII 32-126 ile sınırlı olduğundan (IsPrintableCode128)
+        // Normalize onun için sadece büyük harfe çevirmek demek.
+        //
+        // Geriye dönük DEĞİL: bekçiden önce yazılmış veriyi onarmıyor.
+        var normalized = SearchNormalizer.Normalize(trimmed);
+        var shadows = await _db.ProductBroadcastCodes
+            .AsNoTracking()
+            .AnyAsync(c => c.LicenseId == licenseId && c.CodeNormalized == normalized, ct);
+        if (shadows)
+            return (null, Problem(title: "barcode-shadows-broadcast-code",
+                detail: $"'{trimmed}' bir yayın koduyla aynı; bu barkod "
+                      + "okutulduğunda kodun sahibi ürün açılır. Başka bir "
+                      + "barkod yaz ya da boş bırak.",
+                statusCode: 409));
+
         return (trimmed, null);
     }
 

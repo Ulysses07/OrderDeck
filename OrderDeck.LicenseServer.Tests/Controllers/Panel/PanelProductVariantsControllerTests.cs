@@ -685,6 +685,126 @@ public class PanelProductVariantsControllerTests : IClassFixture<ApiFactory>
         (await TitleAsync(res)).Should().Be("barcode-not-printable");
     }
 
+    /// <summary>
+    /// Elle yazılan barkod, aynı lisanstaki bir yayın koduyla aynı olamaz.
+    /// Kutuda kod barkodu yendiği için (<c>BroadcastCodeResolver</c>) böyle bir
+    /// barkodun etiketi basılsa bile hiç açılmaz: okutulan metin kodun sahibi
+    /// ürüne gider. Sessizce işe yaramayan etiket basmak yerine yazarken
+    /// reddediyoruz.
+    /// </summary>
+    [Fact]
+    public async Task Yayin_kodunu_golgeleyen_elle_barkod_reddedilir()
+    {
+        var (client, productId) = await SetupProductAsync();
+        await CreateBroadcastCodeAsync(client, "ATEŞ");
+
+        var res = await client.PostAsJsonAsync($"/api/panel/products/{productId}/variants",
+            new { axis1Value = "Siyah", axis2Value = (string?)null,
+                  isActive = true, barcode = "ATES" });
+
+        res.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await TitleAsync(res)).Should().Be("barcode-shadows-broadcast-code");
+    }
+
+    /// <summary>
+    /// Karşılaştırma NORMALİZE hâl üzerinden: kutu kodu normalize ederek arıyor,
+    /// yani "ates" barkodu da "ATEŞ" kodunun altında kalır. Bekçi ham eşitliğe
+    /// bakarsa bu yol açık kalırdı.
+    /// </summary>
+    [Fact]
+    public async Task Golge_kontrolu_buyuk_kucuk_harf_ve_turkce_katlamadan_bagimsiz()
+    {
+        var (client, productId) = await SetupProductAsync();
+        await CreateBroadcastCodeAsync(client, "ATEŞ");
+
+        var res = await client.PostAsJsonAsync($"/api/panel/products/{productId}/variants",
+            new { axis1Value = "Siyah", axis2Value = (string?)null,
+                  isActive = true, barcode = "ates" });
+
+        res.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await TitleAsync(res)).Should().Be("barcode-shadows-broadcast-code");
+    }
+
+    /// <summary>
+    /// Toplu uç de aynı bekçiden geçmeli: barkod çözümü tek huniden
+    /// (<c>ResolveBarcodeAsync</c>) akıyor, bu test o huninin toplu yolda da
+    /// kullanıldığını çiviliyor.
+    /// </summary>
+    [Fact]
+    public async Task Toplu_yolda_da_golgeleyen_barkod_reddedilir()
+    {
+        var (client, productId) = await SetupProductAsync();
+        await CreateBroadcastCodeAsync(client, "ATEŞ");
+
+        var res = await client.PostAsJsonAsync($"/api/panel/products/{productId}/variants/bulk",
+            new
+            {
+                items = new[]
+                {
+                    new { axis1Value = "Siyah", axis2Value = (string?)null,
+                          isActive = true, barcode = "ATES" },
+                },
+            });
+
+        res.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await TitleAsync(res)).Should().Be("barcode-shadows-broadcast-code");
+    }
+
+    /// <summary>
+    /// Bekçi lisans kapsamlı: kod da barkod da lisans içinde benzersiz. Başka
+    /// müşterinin yayın kodu yüzünden barkod reddedilseydi yayıncılar birbirinin
+    /// barkod uzayını tüketirdi.
+    /// </summary>
+    [Fact]
+    public async Task Baska_lisanstaki_yayin_kodu_barkodu_engellemez()
+    {
+        var (other, _) = await SetupProductAsync();
+        await CreateBroadcastCodeAsync(other, "ATEŞ");
+
+        var (client, productId) = await SetupProductAsync();
+
+        var res = await client.PostAsJsonAsync($"/api/panel/products/{productId}/variants",
+            new { axis1Value = "Siyah", axis2Value = (string?)null,
+                  isActive = true, barcode = "ATES" });
+
+        res.StatusCode.Should().Be(HttpStatusCode.Created);
+    }
+
+    /// <summary>
+    /// Sayaçtan ayrılan barkod bekçiden etkilenmemeli: 10 haneli saf sayı zaten
+    /// yayın kodu olamıyor (<c>reserved-barcode-format</c>), yani o kümede
+    /// çakışma imkânsız. Bekçi otomatik yolu da yoklasaydı her ekleme bir sorgu
+    /// daha yapardı ve hiçbir şey kazanmazdı.
+    /// </summary>
+    [Fact]
+    public async Task Sayactan_ayrilan_barkod_yayin_kodundan_etkilenmez()
+    {
+        var (client, productId) = await SetupProductAsync();
+        await CreateBroadcastCodeAsync(client, "ATEŞ");
+
+        var res = await client.PostAsJsonAsync($"/api/panel/products/{productId}/variants",
+            new { axis1Value = "Siyah", axis2Value = (string?)null, isActive = true });
+
+        res.StatusCode.Should().Be(HttpStatusCode.Created);
+    }
+
+    /// <summary>
+    /// Yayın kodunu, varyantı denenecek ürünün DIŞINDA bir ürüne bağlar:
+    /// çakışma ürünler arası olduğunda da yakalanmalı, kod lisans kapsamlı.
+    /// </summary>
+    private static async Task CreateBroadcastCodeAsync(HttpClient client, string code)
+    {
+        // Eksensiz ürün: kod ürünün tamamına veriliyor, satıcı ekseni değeri yok.
+        var owner = await CreateProductAsync(
+            client, name: "Kod sahibi " + Guid.NewGuid().ToString("N")[..6],
+            axis1Name: null, axis1Role: null);
+
+        var res = await client.PutAsJsonAsync(
+            $"/api/panel/products/{owner.Id}/broadcast-codes",
+            new { code, sellerAxisValue = (string?)null });
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
     [Fact]
     public async Task Toplu_yolda_her_satir_kendi_numarasini_alir()
     {

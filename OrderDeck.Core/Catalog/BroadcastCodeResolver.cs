@@ -28,16 +28,19 @@ public sealed class BroadcastCodeResolver
     /// <para><b>Sıra:</b> önce yayın kodu, sonra barkod — operatörün ağzından
     /// çıkan kod, elindeki parçadan önce gelir.</para>
     ///
-    /// <para><b>Bu sıra estetik değil, TAŞIYICI.</b> Sayaçtan ayrılan
-    /// barkodlarda çakışma imkânsız (sunucu 10 haneli saf sayıyı yayın kodu
-    /// olarak reddediyor), ama panelden <b>elle</b> yazılan barkod herhangi
-    /// bir yazdırılabilir ASCII olabiliyor ve iki uzay arasında çapraz kontrol
-    /// YOK: bir varyantın barkodu <c>ATES</c> iken bambaşka bir ürünün yayın
-    /// kodu da <c>ATES</c> olabilir. Böyle bir çakışmada kod kazanır, yani
-    /// barkodun sahibi ürüne bu yolla ERİŞİLEMEZ. Sırayı çevirmek daha
-    /// kötüsünü yapardı: operatörün söylediği koda başkasının etiketi
+    /// <para><b>Bu sıra estetik değil, TAŞIYICI.</b> Çakışmada kod kazanıyor,
+    /// yani barkodun sahibi ürüne bu yolla ERİŞİLEMEZ olur. Sırayı çevirmek
+    /// daha kötüsünü yapardı: operatörün söylediği koda başkasının etiketi
     /// gölge düşürürdü. Sıra bir testle sabit
     /// (<c>Yayin_kodu_barkoda_gore_oncelikli</c>).</para>
+    ///
+    /// <para><b>Çakışma sunucuda ÖNLENİYOR:</b> lisans içinde iki uzay ayrık
+    /// tutuluyor — sayaç barkodunun biçimi (10 haneli saf sayı) yayın kodu
+    /// olarak yasak, elle yazılan barkod var olan bir kodla aynı olamıyor
+    /// (<c>barcode-shadows-broadcast-code</c>), yayın kodu da var olan bir
+    /// barkodla aynı olamıyor (<c>code-shadows-barcode</c>). Bekçiler geriye
+    /// dönük DEĞİL: onlardan önce yazılmış veride çakışma hâlâ mümkün, bu
+    /// yüzden yukarıdaki öncelik kuralı yaşamaya devam ediyor.</para>
     ///
     /// <para><b>İki arama aynı kutuda buluşuyor ama farklı eşleşme kuralları
     /// kullanıyor:</b> yayın kodu NORMALİZE edilerek aranıyor (büyük harf +

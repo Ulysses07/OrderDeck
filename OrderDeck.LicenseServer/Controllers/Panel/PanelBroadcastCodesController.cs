@@ -173,6 +173,32 @@ public sealed class PanelBroadcastCodesController : ControllerBase
 
         var normalized = SearchNormalizer.Normalize(code);
 
+        // 10 hane bekçisi yalnız SAYAÇ barkodlarını koruyor; elle yazılan barkod
+        // herhangi bir ASCII dizisi olabildiği için ikinci bir çakışma yolu var.
+        // Kutuda kod barkodu YENDİĞİ için (BroadcastCodeResolver) böyle bir kod
+        // açıldığı anda barkodun sahibi varyanta o yoldan erişilemez olur:
+        // basılmış etiket sessizce işe yaramaz hâle gelir. Sessiz bozulma yerine
+        // yazarken reddediyoruz — burada kaybedilen tek şey bir kod tercihi.
+        //
+        // Karşılaştırma normalize hâl üzerinden: kutu kodu normalize ederek
+        // arıyor, yani "ates" barkodu "ATEŞ" kodunu da gölgeler. Barkodlar
+        // ASCII 32-126 ile sınırlı olduğu için (IsPrintableCode128) barkodun
+        // normalize hâli sadece büyük harfe çevrilmiş hâlidir — Türkçe katlama
+        // hiç devreye girmez, bu yüzden ToUpper karşılaştırması tam.
+        //
+        // Geriye dönük DEĞİL: bekçiden önce yazılmış veriyi onarmıyor.
+        var shadowed = await _db.ProductVariants
+            .AsNoTracking()
+            .AnyAsync(v => v.LicenseId == licenseId.Value
+                        && v.Barcode != null
+                        && v.Barcode.ToUpper() == normalized, ct);
+        if (shadowed)
+            return Problem(title: "code-shadows-barcode",
+                detail: $"'{code}' bir varyantın barkoduyla aynı; yayın kodu "
+                      + "olarak kullanılırsa o barkod okutulduğunda yanlış ürün "
+                      + "açılır. Başka bir kod seç.",
+                statusCode: 409);
+
         var sellerValue = ResolveSellerAxisValue(product, req.SellerAxisValue, out var axisError);
         if (axisError is not null) return axisError;
 

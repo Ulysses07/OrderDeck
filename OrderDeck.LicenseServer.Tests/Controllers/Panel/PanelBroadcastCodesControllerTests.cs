@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using FluentAssertions;
@@ -463,6 +463,24 @@ public class PanelBroadcastCodesControllerTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>
+    /// <see cref="NewProductWithSellerAxisAsync"/> ile açılmış ürünün Siyah
+    /// varyantına elle barkod yazar. Varyant ucunda okuma yok; kimlik ürün
+    /// ayrıntısından alınıyor. Eksensiz ürün kullanılamaz: o uçta varyant
+    /// güncellemesi <c>product-has-no-axis</c> ile reddediliyor.
+    /// </summary>
+    private static async Task<HttpResponseMessage> SetBarcodeAsync(
+        HttpClient client, Guid productId, string barcode)
+    {
+        var product = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/panel/products/{productId}");
+        var variantId = product.GetProperty("variants")[0].GetProperty("id").GetGuid();
+
+        return await client.PutAsJsonAsync(
+            $"/api/panel/products/{productId}/variants/{variantId}",
+            new { axis1Value = "Siyah", isActive = true, barcode });
+    }
+
+    /// <summary>
     /// Eksensiz ürün: yayın kodu ürünün tamamına verilir, satıcı ekseni değeri
     /// yoktur. Otomatik varyantı sunucu açar.
     /// </summary>
@@ -659,6 +677,79 @@ public class PanelBroadcastCodesControllerTests : IClassFixture<ApiFactory>
         // koduna bakan test bambaşka bir sebeple geçerdi.
         (await res.Content.ReadAsStringAsync())
             .Should().Contain("reserved-barcode-format");
+    }
+
+    /// <summary>
+    /// 10 hane bekçisi yalnız SAYAÇ barkodlarını koruyor. Elle yazılan barkod
+    /// herhangi bir ASCII dizisi olabildiği için ikinci bir çakışma yolu var:
+    /// bir varyantın barkodu <c>ATES</c> iken aynı lisansta <c>Ateş</c> yayın
+    /// kodu açılırsa kutuya <c>ATES</c> okutulduğunda kod kazanır ve barkodun
+    /// sahibi varyanta bu yolla ERİŞİLEMEZ olur — basılmış etiket sessizce
+    /// işe yaramaz hâle gelir.
+    /// </summary>
+    [Fact]
+    public async Task Mevcut_barkodu_golgeleyen_yayin_kodu_reddedilir()
+    {
+        var client = await NewPanelClientAsync();
+        var productId = await NewAxislessProductAsync(client);
+        var other = await NewProductWithSellerAxisAsync(client);
+
+        // Barkodu elle "ATES" yapılmış bir varyant.
+        var put = await SetBarcodeAsync(client, other, "ATES");
+        put.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var res = await client.PutAsJsonAsync(
+            $"/api/panel/products/{productId}/broadcast-codes",
+            new { code = "Ateş", sellerAxisValue = (string?)null });
+
+        res.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await res.Content.ReadAsStringAsync())
+            .Should().Contain("code-shadows-barcode");
+    }
+
+    /// <summary>
+    /// Çakışma NORMALİZE karşılaştırmayla aranmalı: WPF kutusu yayın kodunu
+    /// normalize ederek arıyor, yani "ates" barkodu "ATEŞ" kodunu da gölgeliyor.
+    /// Bekçi ham eşitliğe bakarsa bu yol açık kalır.
+    /// </summary>
+    [Fact]
+    public async Task Golge_kontrolu_buyuk_kucuk_harf_ve_turkce_katlamadan_bagimsiz()
+    {
+        var client = await NewPanelClientAsync();
+        var productId = await NewAxislessProductAsync(client);
+        var other = await NewProductWithSellerAxisAsync(client);
+
+        await SetBarcodeAsync(client, other, "ates");
+
+        var res = await client.PutAsJsonAsync(
+            $"/api/panel/products/{productId}/broadcast-codes",
+            new { code = "ATEŞ", sellerAxisValue = (string?)null });
+
+        res.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await res.Content.ReadAsStringAsync())
+            .Should().Contain("code-shadows-barcode");
+    }
+
+    /// <summary>
+    /// Bekçi lisans kapsamlı olmalı: barkod da yayın kodu da lisans içinde
+    /// benzersiz. Başka müşterinin barkodu yüzünden kod reddedilseydi
+    /// yayıncılar birbirinin kod uzayını tüketirdi.
+    /// </summary>
+    [Fact]
+    public async Task Baska_lisanstaki_barkod_yayin_kodunu_engellemez()
+    {
+        var first = await NewPanelClientAsync();
+        var other = await NewProductWithSellerAxisAsync(first);
+        await SetBarcodeAsync(first, other, "ATES");
+
+        var second = await NewPanelClientAsync();
+        var productId = await NewAxislessProductAsync(second);
+
+        var res = await second.PutAsJsonAsync(
+            $"/api/panel/products/{productId}/broadcast-codes",
+            new { code = "ATES", sellerAxisValue = (string?)null });
+
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
     /// <summary>
