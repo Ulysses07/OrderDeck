@@ -62,6 +62,24 @@ public static class CatalogLimits
     /// </summary>
     public const int MaxBulkVariants = 200;
 
+    /// <summary>
+    /// Barkod alanının SAKLAMA sınırı — basılabilirlik sınırı DEĞİL.
+    ///
+    /// <para>Sistemin kendi ayırdığı barkod 10 hane; alan bu kadar cömert
+    /// çünkü elle geçirilen tedarikçi barkodları (EAN-13, UPC) buraya
+    /// yazılıyor. 64, o senaryolara fazlasıyla yeterken alanı da tek bir
+    /// indeks sayfasına sığacak kadar küçük tutuyor.</para>
+    ///
+    /// <para><b>Bilinçli boşluk:</b> 60 mm etikete Code128 ile ancak 8
+    /// ALFANÜMERİK karakter giriyor (sayı dizileri Code128-C ile çift çift
+    /// sıkıştığı için 10 hane ≈ 44 mm, EAN-13 ≈ 57 mm — ikisi de sığar).
+    /// Sunucu bunu zorlayamaz: etiket ölçüsü operatörün masaüstü ayarında ve
+    /// 10-200 mm arası değişebiliyor, sunucu o değeri hiç görmüyor. Zorlarsa
+    /// ya 100 mm etiketi olan yayıncıyı boşuna keser ya da 20 mm'liye yalan
+    /// söyler. Bu yüzden sınır basım anında, kâğıt hiç hareket etmeden ve ne
+    /// yapılacağını söyleyerek zorlanıyor — bkz. <c>BarcodeLabelDocument
+    /// .EncodeForLabel</c> ve <c>EnsureLabelHeightFits</c>.</para>
+    /// </summary>
     public const int Barcode = 64;
 
     /// <summary>

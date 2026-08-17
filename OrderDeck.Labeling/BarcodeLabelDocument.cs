@@ -38,6 +38,27 @@ public static class BarcodeLabelDocument
     /// <summary>Çizgi yüksekliği (mm).</summary>
     public const float BarHeightMm = 12f;
 
+    // Dikey düzen ölçüleri. Sabit olarak duruyorlar çünkü asgari etiket
+    // yüksekliği bunların TOPLAMI; çizimde gömülü sayı kalsaydı doğrulama
+    // ile düzen ayrı ayrı değişebilir ve kapı sessizce yanlış olurdu.
+    private const float TopMarginMm = 1.5f;
+    private const float NameLineMm = 4f;
+    private const float VariantLineMm = 3.5f;
+    private const float BarToCodeGapMm = 1f;
+    private const float CodeLineMm = 3f;
+    private const float BottomMarginMm = 1f;
+
+    /// <summary>
+    /// Düzenin dikeyde ihtiyaç duyduğu asgari etiket yüksekliği (mm).
+    ///
+    /// <para>Varyant satırı VAR sayılıyor: barkodu olan şey varyanttır, satır
+    /// pratikte hep dolu. Yok sayıp 3.5 mm kısmak, satırın çıktığı anda
+    /// kırpılan bir etiket üretirdi — kapının tek işi bunu engellemek.</para>
+    /// </summary>
+    public const float MinLabelHeightMm =
+        TopMarginMm + NameLineMm + VariantLineMm + BarHeightMm
+        + BarToCodeGapMm + CodeLineMm + BottomMarginMm;
+
     /// <summary>
     /// Milimetreyi <see cref="PrintDocument"/>'ın kullandığı 1/100 inch
     /// birimine çevirir. <see cref="LabelPrintDocument.MmToHundredths"/> ile
@@ -91,9 +112,38 @@ public static class BarcodeLabelDocument
         if (neededMm > labelWidthMm)
             throw new ArgumentException(
                 $"'{payload}' barkodu {labelWidthMm} mm etikete sığmıyor: " +
-                $"{neededMm:0.#} mm gerekiyor.",
+                $"{neededMm:0.#} mm gerekiyor. Ayarlar'dan etiket genişliğini " +
+                "büyüt ya da bu varyanta daha kısa bir barkod ver.",
                 nameof(payload));
         return modules;
+    }
+
+    /// <summary>
+    /// Etiket yüksekliğinin düzeni taşıdığını doğrular.
+    ///
+    /// <para><b>Neden ayrı bir kapı:</b> genişlik taşması patlarken yükseklik
+    /// taşması SESSİZDİ. Ayarlar 10 mm yüksekliğe izin veriyor (ölçü müşteri
+    /// etiketiyle paylaşılıyor, orada 10 mm mantıklı olabilir) ama barkod
+    /// düzeni <see cref="MinLabelHeightMm"/> mm istiyor. Kısa kâğıtta çizgilerin
+    /// altı ve insan-okur satır yazıcı tarafından kırpılır: etiket gözle
+    /// neredeyse doğru görünür, ürüne yapıştırılır, sonra okuyucu ötmez ve elle
+    /// yazılacak numara da yoktur. Genişlikte reddedilen hata sınıfının aynısı.</para>
+    ///
+    /// <para><b>Neden ayarı kısıtlamıyoruz:</b> genişlik/yükseklik müşteri
+    /// etiketiyle ORTAK. Küçük kâğıtla yalnız müşteri etiketi basan operatörün
+    /// ayarını reddetmek çalışan bir akışı bozardı. Doğru yer basım anı: kâğıt
+    /// hiç hareket etmeden, ne yapması gerektiğini söyleyen bir hata.</para>
+    ///
+    /// <para>Saf hesap: System.Drawing'e dokunmuyor, platformsuz kalıyor.</para>
+    /// </summary>
+    public static void EnsureLabelHeightFits(int labelHeightMm)
+    {
+        if (labelHeightMm < MinLabelHeightMm)
+            throw new ArgumentException(
+                $"{labelHeightMm} mm etiket barkod düzenine yetmiyor: en az " +
+                $"{MinLabelHeightMm:0.#} mm gerekiyor. Ayarlar'dan etiket " +
+                "yüksekliğini büyüt.",
+                nameof(labelHeightMm));
     }
 
     /// <summary>Tek etikette basılacak içerik.</summary>
@@ -118,6 +168,10 @@ public static class BarcodeLabelDocument
             throw new ArgumentException("Basılacak etiket yok.", nameof(labels));
         if (copies <= 0)
             throw new ArgumentOutOfRangeException(nameof(copies));
+        // Yükseklik kapısı EN BAŞTA: yazıcı seçilmeden, sayfa boyutu
+        // kurulmadan patlıyor. Yüke bağlı olmadığı için tek etiket bile
+        // kodlanmadan bilinebiliyor.
+        EnsureLabelHeightFits(heightMm);
 
         var queue = new List<(Label Label, bool[] Modules)>(labels.Count * copies);
         foreach (var label in labels)
@@ -178,23 +232,26 @@ public static class BarcodeLabelDocument
         // yalnız çizim koordinatlarını çeviriyor. Birimsiz "3f" 1.31 mm'lik
         // bir yazı üretiyordu; insan-okur satır 1.10 mm'ye düşüyor, yani
         // "okuyucu çalışmazsa elle yaz" güvenlik ağı yok oluyordu.
-        using var nameFont = new Font(fontFamily, 3f, FontStyle.Bold, GraphicsUnit.Millimeter);
-        using var variantFont = new Font(fontFamily, 2.5f, FontStyle.Regular, GraphicsUnit.Millimeter);
-        using var codeFont = new Font(fontFamily, 3f, FontStyle.Regular, GraphicsUnit.Millimeter);
+        //
+        // Punto satır yüksekliğinden türetiliyor (satır payı 1 mm): düzen
+        // ölçüsü büyütülünce yazı da onunla büyüsün, ikisi ayrışmasın.
+        using var nameFont = new Font(fontFamily, NameLineMm - 1f, FontStyle.Bold, GraphicsUnit.Millimeter);
+        using var variantFont = new Font(fontFamily, VariantLineMm - 1f, FontStyle.Regular, GraphicsUnit.Millimeter);
+        using var codeFont = new Font(fontFamily, CodeLineMm, FontStyle.Regular, GraphicsUnit.Millimeter);
         using var black = new SolidBrush(Color.Black);
 
-        var y = 1.5f;
+        var y = TopMarginMm;
         g.DrawString(
             TruncateToWidth(g, label.ProductName, nameFont, widthMm - 2f),
             nameFont, black, 1f, y);
-        y += 4f;
+        y += NameLineMm;
 
         if (label.VariantName.Length > 0)
         {
             g.DrawString(
                 TruncateToWidth(g, label.VariantName, variantFont, widthMm - 2f),
                 variantFont, black, 1f, y);
-            y += 3.5f;
+            y += VariantLineMm;
         }
 
         // Bitişik dolu modüller TEK dikdörtgen: Code128'de 2-4 modül kalınlığında
@@ -214,7 +271,7 @@ public static class BarcodeLabelDocument
             m += run;
         }
 
-        y += BarHeightMm + 1f;
+        y += BarHeightMm + BarToCodeGapMm;
 
         // İnsan tarafından okunabilir satır: okuyucu çalışmazsa operatör
         // numarayı elle yazabilsin.
