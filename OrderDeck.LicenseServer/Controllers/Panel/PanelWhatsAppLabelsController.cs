@@ -32,7 +32,9 @@ public sealed class PanelWhatsAppLabelsController : ControllerBase
 
     public sealed class LabelRequest
     {
-        [Required, MaxLength(60)]
+        // 40 = WaLabel.Name kolon genişliği. Daha geniş bırakılırsa doğrulama
+        // geçer, SQL Server kırpma hatası verir ve panel 500 görür.
+        [Required, MaxLength(40)]
         public string Name { get; set; } = "";
 
         [Required, MaxLength(7)]

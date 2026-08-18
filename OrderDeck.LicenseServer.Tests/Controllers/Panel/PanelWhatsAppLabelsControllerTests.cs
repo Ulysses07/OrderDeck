@@ -65,6 +65,9 @@ public class PanelWhatsAppLabelsControllerTests : IClassFixture<ApiFactory>
             "/api/panel/whatsapp-labels", new { name = "Test", color = "#123456" });
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        // Reddin GERÇEKTEN paletten geldiğini doğrula: ad ya da uzunluk
+        // doğrulaması patlasaydı da 400 çıkardı.
+        (await resp.Content.ReadAsStringAsync()).Should().Contain("invalid-color");
     }
 
     [Fact]
@@ -93,6 +96,22 @@ public class PanelWhatsAppLabelsControllerTests : IClassFixture<ApiFactory>
         updated.Name.Should().Be("Dekont var");
         // Büyük harfle gönderildi, kanonik küçük harfle saklanır.
         updated.Color.Should().Be("#ef4444");
+    }
+
+    /// <summary>Panelin en sık yaptığı düzenleme: adı bırak, rengi değiştir.
+    /// Yinelenen ad kontrolü etiketin kendisini dışlamazsa bu istek 409
+    /// döner ve renk hiç değiştirilemez.</summary>
+    [Fact]
+    public async Task Changing_only_the_color_is_not_a_duplicate_of_itself()
+    {
+        var (client, _) = await SeedAsync();
+        var label = await CreateAsync(client, "Dekont geldi");
+
+        var resp = await client.PatchAsJsonAsync(
+            $"/api/panel/whatsapp-labels/{label.Id}", new { name = "Dekont geldi", color = "#22c55e" });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await resp.Content.ReadFromJsonAsync<LabelDto>())!.Color.Should().Be("#22c55e");
     }
 
     [Fact]
@@ -159,6 +178,12 @@ public class PanelWhatsAppLabelsControllerTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Without_an_active_license_the_list_is_empty()
     {
+        // Ortada etiket OLDUĞUNU önce garanti et: tablo boşken bu test
+        // lisans dalını değil, yalnız boşluğu ölçerdi (sınıf içindeki
+        // testler tek InMemory veritabanını paylaşıyor, sıraları garanti değil).
+        var (owner, _) = await SeedAsync();
+        await CreateAsync(owner, "Sahibinin etiketi");
+
         var (client, _, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
 
         var list = await client.GetFromJsonAsync<List<LabelDto>>("/api/panel/whatsapp-labels");
