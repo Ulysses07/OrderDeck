@@ -39,10 +39,16 @@ public sealed class PanelWhatsAppConversationsController : ControllerBase
         List<ConversationLabelDto> Labels, DekontDto? LatestDekont);
 
     [HttpGet]
-    public async Task<IActionResult> List([FromQuery] Guid? labelId, CancellationToken ct)
+    public async Task<IActionResult> List(
+        [FromQuery] Guid? labelId, [FromQuery] int limit, CancellationToken ct)
     {
         var licenseId = await PanelLicenseScope.ResolveAsync(_db, User.GetTenantCustomerId(), ct);
         if (licenseId is null) return Ok(Array.Empty<ConversationDto>());
+
+        // Sohbet satırları hiç budanmıyor, hesap yaşadıkça birikiyor. Sınır aynı
+        // zamanda ids'i de kapıyor: aşağıdaki iki sorgu onu IN/OPENJSON listesine
+        // çeviriyor, sınırsız bırakılırsa o listeler de sınırsız büyür.
+        var take = limit is > 0 and <= 200 ? limit : 50;
 
         var q = _db.WaConversations.Where(c => c.LicenseId == licenseId.Value);
 
@@ -54,6 +60,7 @@ public sealed class PanelWhatsAppConversationsController : ControllerBase
 
         var conversations = await q
             .OrderByDescending(c => c.LastMessageAt ?? c.CreatedAt)
+            .Take(take)
             .Select(c => new
             {
                 c.Id, c.CustomerPhone, c.ProfileName, c.Status, c.UnreadCount, c.LastMessageAt,
@@ -81,7 +88,7 @@ public sealed class PanelWhatsAppConversationsController : ControllerBase
         // Sohbetin EN SON ayrıştırılmış dekontu. Mesaj zaman damgasına göre,
         // çünkü webhook'lar sırasız gelebilir ama damga müşterinin gönderdiği andır.
         var dekonts = await (
-            from d in _db.WaDekontExtractions
+            from d in _db.WaDekontExtractions.AsNoTracking()
             join m in _db.WaMessages on d.WaMessageId equals m.Id
             where ids.Contains(m.ConversationId)
             select new { m.ConversationId, m.Timestamp, D = d })
@@ -139,7 +146,18 @@ public sealed class PanelWhatsAppConversationsController : ControllerBase
             Source = "manual",
             CreatedAt = DateTimeOffset.UtcNow,
         });
-        await _db.SaveChangesAsync(ct);
+
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException)
+        {
+            // Yarış: operatör tıklarken LabelRuleApplier (ayrı DbContext, gelen
+            // webhook işi) aynı etiketi otomatik yapıştırmış olabilir. Benzersiz
+            // indeks bunu reddeder ama çağıranın istediği sonuç — bağın var
+            // olması — yine sağlandı; uç zaten idempotent.
+        }
 
         return NoContent();
     }

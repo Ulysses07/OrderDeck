@@ -157,8 +157,16 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
             await db.SaveChangesAsync();
         }
 
+        // İkinci etiket şart: tek etiket olsaydı "bu etiket" ile "herhangi bir
+        // etiket" ayırt edilemez, filtre koşulu silinse bile test yeşil kalırdı.
+        var second = await s.Client.PostAsJsonAsync(
+            "/api/panel/whatsapp-labels", new { name = "İnsan baksın", color = "#ef4444" });
+        var otherLabel = (await second.Content.ReadFromJsonAsync<LabelDto>())!;
+
         await s.Client.PostAsync(
             $"/api/panel/whatsapp-conversations/{s.ConversationId}/labels/{s.LabelId}", null);
+        await s.Client.PostAsync(
+            $"/api/panel/whatsapp-conversations/{otherConversationId}/labels/{otherLabel.Id}", null);
 
         var filtered = await s.Client.GetFromJsonAsync<List<ConversationDto>>(
             $"/api/panel/whatsapp-conversations?labelId={s.LabelId}");
@@ -177,11 +185,14 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
             var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
 
             // İki dekont: eski ve yeni. Panelde güncel olan işe yarar.
-            foreach (var (wamId, payer, amount, minutesAgo) in new[]
-                     {
-                         ("wamid.old", "ESKİ GÖNDEREN", 100m, 60),
-                         ("wamid.new", "AYŞE YILMAZ", 1250.50m, 1),
-                     })
+            //
+            // Satırların YAZILMA sırası mesaj sırasının bilerek tersi: gecikmeli
+            // bir webhook eski mesajı sonradan yazar. Yani eski mesajın CreatedAt'i
+            // yeni mesajınkinden büyük. Böylece doğru cevabı yalnızca mesajın
+            // Timestamp'ine göre sıralamak verir, satır yazma anına göre değil.
+            void SeedDekont(
+                string wamId, string payer, decimal amount,
+                int timestampMinutesAgo, int createdAtMinutesAgo)
             {
                 var messageId = Guid.NewGuid();
                 db.WaMessages.Add(new WaMessage
@@ -189,19 +200,23 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
                     Id = messageId, ConversationId = s.ConversationId, LicenseId = s.LicenseId,
                     WamId = wamId, Direction = "in", Type = "document",
                     Status = "received",
-                    Timestamp = DateTimeOffset.UtcNow.AddMinutes(-minutesAgo),
-                    CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-minutesAgo),
+                    Timestamp = DateTimeOffset.UtcNow.AddMinutes(-timestampMinutesAgo),
+                    CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-createdAtMinutesAgo),
                 });
                 db.WaDekontExtractions.Add(new WaDekontExtraction
                 {
                     WaMessageId = messageId, LicenseId = s.LicenseId,
                     PayerName = payer, Amount = amount,
-                    PaidAt = DateTimeOffset.UtcNow.AddMinutes(-minutesAgo),
+                    PaidAt = DateTimeOffset.UtcNow.AddMinutes(-timestampMinutesAgo),
                     ReferansNo = "REF" + wamId, PdfHash = "h" + wamId,
                     ParserConfidence = "High",
-                    CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-minutesAgo),
+                    CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-createdAtMinutesAgo),
                 });
             }
+
+            SeedDekont("wamid.old", "ESKİ GÖNDEREN", 100m, timestampMinutesAgo: 60, createdAtMinutesAgo: 1);
+            SeedDekont("wamid.new", "AYŞE YILMAZ", 1250.50m, timestampMinutesAgo: 1, createdAtMinutesAgo: 60);
+
             await db.SaveChangesAsync();
         }
 
@@ -229,6 +244,26 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
         var resp = await mine.Client.PostAsync(
             $"/api/panel/whatsapp-conversations/{theirs.ConversationId}/labels/{mine.LabelId}", null);
         resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task Another_broadcasters_label_cannot_be_detached()
+    {
+        var mine = await SeedAsync();
+        var theirs = await SeedAsync("905441112233");
+
+        await mine.Client.PostAsync(
+            $"/api/panel/whatsapp-conversations/{mine.ConversationId}/labels/{mine.LabelId}", null);
+
+        await theirs.Client.DeleteAsync(
+            $"/api/panel/whatsapp-conversations/{mine.ConversationId}/labels/{mine.LabelId}");
+
+        // Durum kodu iki türlü de NoContent (kaldırma idempotent), o yüzden asıl
+        // kanıt etiketin ayakta kalması: koruma olmasa sessizce silinmiş olurdu.
+        var list = await mine.Client.GetFromJsonAsync<List<ConversationDto>>(
+            "/api/panel/whatsapp-conversations");
+        list!.Single(c => c.Id == mine.ConversationId)
+            .Labels.Should().ContainSingle().Which.WaLabelId.Should().Be(mine.LabelId);
     }
 
     [Fact]
