@@ -224,6 +224,12 @@ public sealed class LabelRuleApplierTests
     /// kez yazıyor). Etiket satırı aynı <c>SaveChanges</c>'te yazılacağı için
     /// EF'in sohbeti önce eklediğini bilmesi şart — yoksa yabancı anahtar
     /// ihlali. Bu yüzden yol Guid değil, varlığın kendisini alıyor.
+    ///
+    /// <para>NOT: InMemory sağlayıcısı yabancı anahtar kısıtı uygulamaz — bu
+    /// test yalnızca etiketin doğru <c>ConversationId</c> ile yazıldığını
+    /// gösterir, ekleme SIRASINI kanıtlamaz. Gezinme özelliği atamasını biri
+    /// kaldırırsa burası yeşil kalır; sıra garantisi ancak gerçek SQL Server
+    /// karşısında görünür.</para>
     /// </summary>
     [Fact]
     public async Task Applies_to_a_conversation_that_is_not_saved_yet()
