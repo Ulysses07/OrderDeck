@@ -44,8 +44,12 @@ public sealed class WhatsAppInboundJob
     }
 
     /// <summary>Mesajlar commit edildikten SONRA uygulanacak etiket işi.
-    /// Sohbet varlığı taşınır çünkü paket işlenirken henüz kaydedilmemiş
-    /// olabilir; telefonu ancak sıra boşaltılırken okuruz.</summary>
+    /// Sohbetin KENDİSİ taşınır, telefonu değil: telefonla arayan yol numarayı
+    /// TR formatına normalize etmek zorunda ve yurt dışı numaralarını eliyor.
+    /// Elimizdeki varlıkla eşleştirmenin böyle bir sınırı yok.
+    ///
+    /// <para>Alan değil PARAMETRE olarak dolaşır: job Hangfire çağrıları
+    /// arasında durum tutmamalı.</para></summary>
     private readonly record struct PendingLabel(
         Guid LicenseId, WaLabelEvent Event, WaConversation Conversation);
 
@@ -76,10 +80,38 @@ public sealed class WhatsAppInboundJob
         // retry mesajı WamId'den atlar ve etiket hiç yapışmaz. Eksik bir
         // "Dekont geldi" bir tıkla telafi edilir; geri alınan paketin bedeli
         // yeniden indirme + retry fırtınası.
+        //
+        // Eşleştirme telefonla DEĞİL sohbet nesnesiyle yapılır: telefon yolu
+        // numarayı TR'ye normalize etmek zorunda ve yurt dışı bir wa_id'yi
+        // sessizce eliyor. Sohbet zaten elimizde, çözmeye gerek yok.
         foreach (var p in pendingLabels)
         {
-            await _labels.TryApplyAndSaveAsync(
-                p.LicenseId, p.Event, p.Conversation.CustomerPhone, ct);
+            try
+            {
+                // ApplyToConversationAsync yalnız satırı hazırlar; kaydı biz atarız.
+                await _labels.ApplyToConversationAsync(p.LicenseId, p.Event, p.Conversation, ct);
+                await _db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateException ex)
+            {
+                // SİLME: yarışı kaybeden satır değişiklik izleyicisinde "Added"
+                // olarak KALIR. Temizlemezsek bir sonraki turun SaveChanges'i onu
+                // yeniden denemeye kalkar ve o turdaki masum etiketi de beraberinde
+                // düşürür — tek bir çakışma sıradaki her şeyi zehirler. Bu yüzden
+                // hâlâ eklenmeyi bekleyen tüm etiket satırlarını izleyiciden
+                // ayırıp döngüyü temiz bir durumla sürdürüyoruz.
+                foreach (var entry in _db.ChangeTracker
+                             .Entries<WaConversationLabel>()
+                             .Where(e => e.State == EntityState.Added)
+                             .ToList())
+                {
+                    entry.State = EntityState.Detached;
+                }
+
+                _log.LogWarning(ex,
+                    "Otomatik etiket uygulanamadı: sohbet {ConversationId}, lisans {LicenseId}, olay {Event}",
+                    p.Conversation.Id, p.LicenseId, p.Event);
+            }
         }
     }
 
