@@ -220,10 +220,11 @@ public sealed class LabelRuleApplierTests
     }
 
     /// <summary>
-    /// Gelen mesaj işlenirken sohbet HENÜZ KAYDEDİLMEMİŞ olabilir (müşteri ilk
-    /// kez yazıyor). Etiket satırı aynı <c>SaveChanges</c>'te yazılacağı için
-    /// EF'in sohbeti önce eklediğini bilmesi şart — yoksa yabancı anahtar
-    /// ihlali. Bu yüzden yol Guid değil, varlığın kendisini alıyor.
+    /// Yol Guid değil, varlığın kendisini alıyor: çağıran elinde HENÜZ
+    /// KAYDEDİLMEMİŞ bir sohbet tutuyorsa (müşteri ilk kez yazıyor) etiket
+    /// satırı onunla aynı <c>SaveChanges</c>'e düşebilir ve EF'in sohbeti önce
+    /// eklediğini bilmesi şart olur — yoksa yabancı anahtar ihlali. Gelen mesaj
+    /// işi artık etiketi ayrı kayıtta yazıyor, ama bu garanti duruyor.
     ///
     /// <para>NOT: InMemory sağlayıcısı yabancı anahtar kısıtı uygulamaz — bu
     /// test yalnızca etiketin doğru <c>ConversationId</c> ile yazıldığını

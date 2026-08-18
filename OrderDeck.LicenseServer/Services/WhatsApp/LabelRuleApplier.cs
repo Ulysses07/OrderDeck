@@ -194,10 +194,10 @@ public sealed class LabelRuleApplier
     /// webhook paketinde iki belge) satır henüz DB'de olmaz ve yalnız sorguya
     /// güvenen bir kontrol unique index'i ihlal ederdi.</para>
     ///
-    /// <para><paramref name="conversation"/> yalnız çağıran elinde <b>henüz
-    /// kaydedilmemiş</b> bir sohbet varlığı tutuyorsa verilir; gezinme
-    /// özelliğini doldurmak EF'e "önce sohbeti ekle" demenin tek güvenilir
-    /// yoludur. Kaydedilmiş sohbetlerde <c>null</c> kalır.</para>
+    /// <para><paramref name="conversation"/> çağıranın elinde sohbet varlığı
+    /// varsa verilir; gezinme özelliğini doldurmak, sohbet henüz
+    /// kaydedilmemişken EF'e "önce sohbeti ekle" demenin tek güvenilir yolu.
+    /// Yalnız id bilinen çağrılarda <c>null</c> kalır ve satır FK ile bağlanır.</para>
     /// </summary>
     private async Task StageAsync(
         Guid licenseId, Guid conversationId, Guid labelId, string source,

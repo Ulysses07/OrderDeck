@@ -186,11 +186,12 @@ public sealed class WhatsAppInboundLabelTests
     }
 
     [Fact]
-    public async Task Label_is_written_in_the_same_save_as_a_brand_new_conversation()
+    public async Task Label_lands_on_a_conversation_created_in_the_same_batch()
     {
         var (db, job, _, _, _) = Build();
 
-        // Bu numaradan daha önce hiç mesaj yok → sohbet aynı SaveChanges'te oluşur.
+        // Bu numaradan daha önce hiç mesaj yok → sohbet bu partide oluşur ve
+        // etiket ondan SONRAKİ ayrı kayıtta yazılır; FK yine tutmalı.
         db.WaConversations.Should().BeEmpty();
 
         await job.ProcessAsync(MediaPayload("wamid.new", "document", from: "905339998877"));
