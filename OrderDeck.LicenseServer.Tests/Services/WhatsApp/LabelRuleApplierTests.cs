@@ -113,6 +113,11 @@ public sealed class LabelRuleApplierTests
         SeedLabelAndRule(db, licenseId, WaLabelEvent.PaymentApproved);
         SeedConversation(db, licenseId, canonicalPhone: "14155552671");
 
+        // Eleyen adımın normalize olduğunu açıkça yaz: sohbet duruyor ve
+        // numarası birebir tutuyor, buna rağmen etiket yapışmıyorsa sebep
+        // "sohbet bulunamadı" değil, numaranın TR olmaması.
+        LabelRuleApplier.ToConversationPhone("+14155552671").Should().BeNull();
+
         await applier.ApplyAsync(licenseId, WaLabelEvent.PaymentApproved, "+14155552671", default);
         await db.SaveChangesAsync();
 
@@ -130,6 +135,9 @@ public sealed class LabelRuleApplierTests
         await db.SaveChangesAsync();
 
         db.WaConversationLabels.Should().BeEmpty();
+        // Numara tutuyor, sohbet duruyor — tek fark lisans. Bu satır olmasa
+        // test, numara hiç çözülemediği için de yeşil kalabilirdi.
+        db.WaConversations.Single().CustomerPhone.Should().Be("905321234567");
     }
 
     [Fact]
