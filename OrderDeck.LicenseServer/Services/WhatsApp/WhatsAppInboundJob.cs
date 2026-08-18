@@ -43,17 +43,48 @@ public sealed class WhatsAppInboundJob
         _media = media;
     }
 
+    /// <summary>Mesajlar commit edildikten SONRA uygulanacak etiket işi.
+    /// Sohbet varlığı taşınır çünkü paket işlenirken henüz kaydedilmemiş
+    /// olabilir; telefonu ancak sıra boşaltılırken okuruz.</summary>
+    private readonly record struct PendingLabel(
+        Guid LicenseId, WaLabelEvent Event, WaConversation Conversation);
+
     public async Task ProcessAsync(string rawJson, CancellationToken ct = default)
     {
         var events = WhatsAppWebhookParser.Parse(rawJson);
         if (events.IsEmpty) return;
 
-        await ProcessMessagesAsync(events, ct);
+        var pendingLabels = new List<PendingLabel>();
+        await ProcessMessagesAsync(events, pendingLabels, ct);
         await ProcessStatusesAsync(events, ct);
         await _db.SaveChangesAsync(ct);
+
+        // Etiket AYRI kaydedilir, mesajlarla aynı işlemi paylaşmaz.
+        //
+        // Sebep: etiket ekleme "önce bak, sonra yaz" ve son savunma hattı
+        // IX_WaConversationLabels_ConversationId_WaLabelId. Aynı müşterinin iki
+        // paketi eşzamanlı işlenirse biri yarışı kaybeder; tek SaveChanges
+        // olsaydı o çakışma mesajları, durumları ve dekont özetini de geri
+        // alırdı. Hangfire retry'ında medya baştan iner ve R2'ye yetim bir
+        // kopya düşer; Meta da arka arkaya başarısızlıkta webhook aboneliğini
+        // kapatabiliyor. Etiket tavsiye niteliğinde, bu bedele değmez.
+        //
+        // Sıra da bilinçli: sohbet müşteri ilk kez yazdığında YALNIZ yukarıdaki
+        // SaveChanges'ten sonra var olur, etiket ancak ondan sonra bağlanabilir.
+        //
+        // Kabul edilen bedel: mesaj yazıldıktan sonra etiket kaydı düşerse
+        // retry mesajı WamId'den atlar ve etiket hiç yapışmaz. Eksik bir
+        // "Dekont geldi" bir tıkla telafi edilir; geri alınan paketin bedeli
+        // yeniden indirme + retry fırtınası.
+        foreach (var p in pendingLabels)
+        {
+            await _labels.TryApplyAndSaveAsync(
+                p.LicenseId, p.Event, p.Conversation.CustomerPhone, ct);
+        }
     }
 
-    private async Task ProcessMessagesAsync(WhatsAppWebhookEvents events, CancellationToken ct)
+    private async Task ProcessMessagesAsync(
+        WhatsAppWebhookEvents events, List<PendingLabel> pendingLabels, CancellationToken ct)
     {
         foreach (var m in events.Messages)
         {
@@ -123,10 +154,20 @@ public sealed class WhatsAppInboundJob
 
                 // Dekont olabilecek her şey tek olay: gelenin gerçekten dekont
                 // olduğu bilinemez, yanlış etiketin bedeli bir tık.
+                //
+                // Burada yalnız sıraya alınır, yazılmaz (bkz. ProcessAsync).
                 if (m.Type is "document" or "image")
                 {
-                    await _labels.ApplyToConversationAsync(
-                        account.LicenseId, WaLabelEvent.CustomerSentDocument, convo, ct);
+                    // Tek pakette iki belge gelebiliyor; aynı sohbet için
+                    // gereksiz ikinci bir SaveChanges turu açmayalım.
+                    var queued = pendingLabels.Any(p =>
+                        p.Conversation.Id == convo.Id
+                        && p.Event == WaLabelEvent.CustomerSentDocument);
+                    if (!queued)
+                    {
+                        pendingLabels.Add(new PendingLabel(
+                            account.LicenseId, WaLabelEvent.CustomerSentDocument, convo));
+                    }
                 }
             }
         }

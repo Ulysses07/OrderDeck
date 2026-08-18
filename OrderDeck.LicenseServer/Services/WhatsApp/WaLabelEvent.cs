@@ -51,12 +51,11 @@ public static class WaLabelColors
         "#6b7280", // gri
     };
 
-    /// <summary>Büyük/küçük harf duyarsız — panel <c>#EF4444</c> gönderdiğinde
-    /// reddetmek kullanıcıya hiçbir şey anlatmayan bir hata olurdu.</summary>
-    public static bool IsValid(string? color) => Normalize(color) is not null;
-
     /// <summary>Paletteki kanonik (küçük harfli) hâli, yoksa <c>null</c>.
-    /// Kaydedilen değer daima buradan geçer ki panelde renkler karşılaştırılabilsin.</summary>
+    /// Kaydedilen değer daima buradan geçer ki panelde renkler karşılaştırılabilsin.
+    ///
+    /// <para>Büyük/küçük harf duyarsız — panel <c>#EF4444</c> gönderdiğinde
+    /// reddetmek kullanıcıya hiçbir şey anlatmayan bir hata olurdu.</para></summary>
     public static string? Normalize(string? color)
     {
         if (string.IsNullOrWhiteSpace(color)) return null;
