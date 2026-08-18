@@ -200,4 +200,154 @@ public sealed class LabelRuleApplierTests
 
         db.WaConversationLabels.Single().Source.Should().Be("manual");
     }
+
+    [Fact]
+    public async Task Applies_to_a_conversation_that_is_already_in_hand()
+    {
+        var (db, applier, licenseId) = Build();
+        var labelId = SeedLabelAndRule(db, licenseId, WaLabelEvent.CustomerSentDocument);
+        var conversationId = SeedConversation(db, licenseId);
+        var conversation = db.WaConversations.Single(c => c.Id == conversationId);
+
+        await applier.ApplyToConversationAsync(
+            licenseId, WaLabelEvent.CustomerSentDocument, conversation, default);
+        await db.SaveChangesAsync();
+
+        var row = db.WaConversationLabels.Single();
+        row.ConversationId.Should().Be(conversationId);
+        row.WaLabelId.Should().Be(labelId);
+        row.Source.Should().Be("auto");
+    }
+
+    /// <summary>
+    /// Gelen mesaj işlenirken sohbet HENÜZ KAYDEDİLMEMİŞ olabilir (müşteri ilk
+    /// kez yazıyor). Etiket satırı aynı <c>SaveChanges</c>'te yazılacağı için
+    /// EF'in sohbeti önce eklediğini bilmesi şart — yoksa yabancı anahtar
+    /// ihlali. Bu yüzden yol Guid değil, varlığın kendisini alıyor.
+    /// </summary>
+    [Fact]
+    public async Task Applies_to_a_conversation_that_is_not_saved_yet()
+    {
+        var (db, applier, licenseId) = Build();
+        SeedLabelAndRule(db, licenseId, WaLabelEvent.CustomerSentDocument);
+
+        var fresh = new WaConversation
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = licenseId,
+            CustomerPhone = "905321234567",
+            PhoneNumberId = "PNID_1",
+            Status = "open",
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.WaConversations.Add(fresh);
+
+        await applier.ApplyToConversationAsync(
+            licenseId, WaLabelEvent.CustomerSentDocument, fresh, default);
+        await db.SaveChangesAsync();
+
+        db.WaConversationLabels.Single().ConversationId.Should().Be(fresh.Id);
+    }
+
+    private static void SeedWpfCustomer(
+        LicenseDbContext db, Guid licenseId, Guid customerId, string? phone)
+    {
+        db.WpfCustomerProjections.Add(new WpfCustomerProjection
+        {
+            Id = customerId,
+            LicenseId = licenseId,
+            Platform = "youtube",
+            Username = "musteri",
+            Phone = phone,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        });
+        db.SaveChanges();
+    }
+
+    [Fact]
+    public async Task Resolves_the_phone_from_the_wpf_customer_projection()
+    {
+        var (db, applier, licenseId) = Build();
+        var labelId = SeedLabelAndRule(db, licenseId, WaLabelEvent.OrderReceived);
+        var conversationId = SeedConversation(db, licenseId);
+        var customerId = Guid.NewGuid();
+        SeedWpfCustomer(db, licenseId, customerId, "0532 123 45 67");
+
+        await applier.TryApplyAndSaveByWpfCustomersAsync(
+            licenseId, WaLabelEvent.OrderReceived, new[] { customerId.ToString("N") }, default);
+
+        var row = db.WaConversationLabels.Single();
+        row.ConversationId.Should().Be(conversationId);
+        row.WaLabelId.Should().Be(labelId);
+    }
+
+    /// <summary>
+    /// Yayıncının WPF'te telefonunu girmediği müşteri — kanıt yok, atlanır.
+    /// Bu meşru bir durum: sohbetten gelip form doldurmamış müşteriler.
+    /// </summary>
+    [Fact]
+    public async Task Wpf_customer_without_a_phone_is_skipped()
+    {
+        var (db, applier, licenseId) = Build();
+        SeedLabelAndRule(db, licenseId, WaLabelEvent.OrderReceived);
+        SeedConversation(db, licenseId);
+        var customerId = Guid.NewGuid();
+        SeedWpfCustomer(db, licenseId, customerId, phone: null);
+
+        await applier.TryApplyAndSaveByWpfCustomersAsync(
+            licenseId, WaLabelEvent.OrderReceived, new[] { customerId.ToString("N") }, default);
+
+        db.WaConversationLabels.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Unparsable_customer_id_does_not_throw()
+    {
+        var (db, applier, licenseId) = Build();
+        SeedLabelAndRule(db, licenseId, WaLabelEvent.OrderReceived);
+        SeedConversation(db, licenseId);
+
+        var act = async () => await applier.TryApplyAndSaveByWpfCustomersAsync(
+            licenseId, WaLabelEvent.OrderReceived, new[] { "", "not-a-guid" }, default);
+
+        await act.Should().NotThrowAsync();
+        db.WaConversationLabels.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Batch_labels_every_matching_customer_once()
+    {
+        var (db, applier, licenseId) = Build();
+        SeedLabelAndRule(db, licenseId, WaLabelEvent.ShipmentStatusChanged);
+        SeedConversation(db, licenseId, "905321234567");
+        SeedConversation(db, licenseId, "905339876543");
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+        SeedWpfCustomer(db, licenseId, a, "+905321234567");
+        SeedWpfCustomer(db, licenseId, b, "+905339876543");
+
+        // Aynı müşteri pakette iki kez → yine tek etiket.
+        await applier.TryApplyAndSaveByWpfCustomersAsync(
+            licenseId, WaLabelEvent.ShipmentStatusChanged,
+            new[] { a.ToString("N"), b.ToString("N"), a.ToString("N") }, default);
+
+        db.WaConversationLabels.Should().HaveCount(2);
+    }
+
+    /// <summary>
+    /// Etiketleme iş kaydından SONRA çalışır ve onu asla geri almaz. Kural
+    /// yoksa bile çağrı sessiz kalmalı — hiçbir controller bu yüzden 500
+    /// dönmemeli.
+    /// </summary>
+    [Fact]
+    public async Task Save_variant_never_throws_when_there_is_nothing_to_do()
+    {
+        var (db, applier, licenseId) = Build();
+
+        var act = async () => await applier.TryApplyAndSaveAsync(
+            licenseId, WaLabelEvent.PaymentApproved, "+905321234567", default);
+
+        await act.Should().NotThrowAsync();
+        db.WaConversationLabels.Should().BeEmpty();
+    }
 }

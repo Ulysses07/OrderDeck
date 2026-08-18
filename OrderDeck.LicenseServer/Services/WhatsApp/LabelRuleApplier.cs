@@ -73,6 +73,108 @@ public sealed class LabelRuleApplier
             ? WaPhone.Canonical(e164)
             : null;
 
+    /// <summary>
+    /// Sohbet zaten elimizdeyken kullanılır (gelen mesaj işleme). Telefon
+    /// çözmeye gerek yok — bu yol eşleştirmenin en güvenilir hâli.
+    ///
+    /// <para>Parametre Guid değil VARLIĞIN KENDİSİ: müşteri ilk kez yazdığında
+    /// sohbet henüz kaydedilmemiş olur ve etiket satırı aynı
+    /// <c>SaveChanges</c>'te yazılır. Gezinme özelliğini doldurmak, EF'e
+    /// "önce sohbeti ekle" demenin tek güvenilir yolu.</para>
+    /// </summary>
+    public async Task ApplyToConversationAsync(
+        Guid licenseId, WaLabelEvent eventKey, WaConversation conversation, CancellationToken ct)
+    {
+        var labelId = await FindRuleLabelIdAsync(licenseId, eventKey, ct);
+        if (labelId is null) return;
+
+        await StageAsync(licenseId, conversation.Id, labelId.Value, "auto", ct, conversation);
+    }
+
+    /// <summary>
+    /// İş kaydı ZATEN commit edilmiş çağrı yerleri için: etiketi ekler,
+    /// kaydeder ve her türlü hatayı yutup loglar.
+    ///
+    /// <para>Yutmak bilinçli: bir dekont onayı, etiket yazılamadı diye
+    /// başarısız sayılamaz. Etiketin kaybı bir tıkla telafi edilir, onayın
+    /// kaybı müşteriyi bekletir.</para>
+    /// </summary>
+    public async Task TryApplyAndSaveAsync(
+        Guid licenseId, WaLabelEvent eventKey, string? phone, CancellationToken ct)
+    {
+        try
+        {
+            await ApplyAsync(licenseId, eventKey, phone, ct);
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex,
+                "Otomatik etiket uygulanamadı: lisans {LicenseId}, olay {Event}",
+                licenseId, eventKey);
+        }
+    }
+
+    /// <summary>
+    /// Sipariş/kargo sync'i için toplu yol. Bu olaylarda telefon YOK: elimizde
+    /// yalnız <c>Order.CustomerId</c> / <c>Shipment.CustomerId</c> var ve bu
+    /// alan WPF'in lokal müşteri GUID'inin hex yazımı. Telefona ancak
+    /// <see cref="WpfCustomerProjection"/> üzerinden ulaşılır.
+    ///
+    /// <para>Toplu çalışır çünkü iki sync uç noktası da paket hâlinde (≤200)
+    /// geliyor; satır başına sorgu açmak yayın sırasında gereksiz yük olurdu.</para>
+    /// </summary>
+    public async Task TryApplyAndSaveByWpfCustomersAsync(
+        Guid licenseId,
+        WaLabelEvent eventKey,
+        IReadOnlyCollection<string> wpfCustomerIds,
+        CancellationToken ct)
+    {
+        try
+        {
+            if (wpfCustomerIds.Count == 0) return;
+
+            var labelId = await FindRuleLabelIdAsync(licenseId, eventKey, ct);
+            if (labelId is null) return;
+
+            var ids = wpfCustomerIds
+                .Select(raw => Guid.TryParse(raw, out var g) ? g : Guid.Empty)
+                .Where(g => g != Guid.Empty)
+                .Distinct()
+                .ToList();
+            if (ids.Count == 0) return;
+
+            var phones = await _db.WpfCustomerProjections
+                .Where(p => p.LicenseId == licenseId && ids.Contains(p.Id) && p.Phone != null)
+                .Select(p => p.Phone!)
+                .ToListAsync(ct);
+
+            var canonical = phones
+                .Select(ToConversationPhone)
+                .Where(p => p is not null)
+                .Select(p => p!)
+                .Distinct()
+                .ToList();
+            if (canonical.Count == 0) return;
+
+            var conversationIds = await _db.WaConversations
+                .Where(c => c.LicenseId == licenseId && canonical.Contains(c.CustomerPhone))
+                .Select(c => c.Id)
+                .ToListAsync(ct);
+
+            foreach (var conversationId in conversationIds)
+                await StageAsync(licenseId, conversationId, labelId.Value, "auto", ct);
+
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex,
+                "Otomatik etiket (WPF müşteri yolu) uygulanamadı: lisans {LicenseId}, olay {Event}",
+                licenseId, eventKey);
+        }
+    }
+
     private Task<Guid?> FindRuleLabelIdAsync(
         Guid licenseId, WaLabelEvent eventKey, CancellationToken ct)
         => _db.WaLabelRules
