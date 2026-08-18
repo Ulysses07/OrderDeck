@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.WhatsApp;
+using OrderDeck.PdfParsing;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.WhatsApp;
@@ -34,7 +35,11 @@ public sealed class WhatsAppInboundJobTests
         });
         db.SaveChanges();
 
-        return (db, new WhatsAppInboundJob(db, accounts, NullLogger<WhatsAppInboundJob>.Instance), licenseId);
+        return (db, new WhatsAppInboundJob(
+            db, accounts, NullLogger<WhatsAppInboundJob>.Instance,
+            new LabelRuleApplier(db, NullLogger<LabelRuleApplier>.Instance),
+            new WaDekontExtractor(new PdfDekontParser(), NullLogger<WaDekontExtractor>.Instance)),
+            licenseId);
     }
 
     private static string TextPayload(

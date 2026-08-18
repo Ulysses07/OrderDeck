@@ -3,6 +3,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
 using OrderDeck.LicenseServer.Services.Push;
+using OrderDeck.LicenseServer.Services.WhatsApp;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -24,15 +25,18 @@ public sealed class PanelPaymentsController : ControllerBase
 {
     private readonly LicenseDbContext _db;
     private readonly INotificationSender _push;
+    private readonly LabelRuleApplier _labels;
     private readonly ILogger<PanelPaymentsController> _log;
 
     public PanelPaymentsController(
         LicenseDbContext db,
         INotificationSender push,
+        LabelRuleApplier labels,
         ILogger<PanelPaymentsController> log)
     {
         _db = db;
         _push = push;
+        _labels = labels;
         _log = log;
     }
 
@@ -114,6 +118,7 @@ public sealed class PanelPaymentsController : ControllerBase
         payment.UpdatedAt = now;
         await _db.SaveChangesAsync(ct);
 
+        await ApplyConversationLabelAsync(payment, WaLabelEvent.PaymentApproved, ct);
         await NotifyShopperPaymentDecisionAsync(payment, approved: true, reason: null, ct);
         return NoContent();
     }
@@ -143,9 +148,31 @@ public sealed class PanelPaymentsController : ControllerBase
         payment.UpdatedAt = now;
         await _db.SaveChangesAsync(ct);
 
+        await ApplyConversationLabelAsync(payment, WaLabelEvent.PaymentRejected, ct);
         await NotifyShopperPaymentDecisionAsync(payment, approved: false,
             reason: payment.RejectReason, ct);
         return NoContent();
+    }
+
+    /// <summary>
+    /// Karar sonrası müşterinin WhatsApp sohbetine otomatik etiket.
+    ///
+    /// <para>Ödeme SaveChanges'inden SONRA çağrılır: etiket yazılamasa bile
+    /// onay kaydı yerinde kalır. Telefon kaynağı <c>Shopper.Phone</c> —
+    /// ShopperId null ise (eski WhatsApp akışından gelen dekont) elimizde
+    /// telefon yoktur, sessizce atlanır.</para>
+    /// </summary>
+    private async Task ApplyConversationLabelAsync(
+        Payment payment, WaLabelEvent eventKey, CancellationToken ct)
+    {
+        if (payment.ShopperId is null) return;
+
+        var phone = await _db.Shoppers
+            .Where(s => s.Id == payment.ShopperId.Value)
+            .Select(s => s.Phone)
+            .FirstOrDefaultAsync(ct);
+
+        await _labels.TryApplyAndSaveAsync(payment.LicenseId, eventKey, phone, ct);
     }
 
     /// <summary>

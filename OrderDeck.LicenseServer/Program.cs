@@ -148,6 +148,8 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.WhatsApp.WhatsAppAccountService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.WhatsApp.WhatsAppMessagingService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.WhatsApp.WhatsAppInboundJob>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.WhatsApp.LabelRuleApplier>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.WhatsApp.WaDekontExtractor>();
 
         // Medya indirici sağlayıcıdan bağımsız kayıtlı: log modunda da inbound
         // job onu ister, gerçek token olmadığı için Graph çağrısı uyarı loglayıp

@@ -2,6 +2,7 @@ using System.Security.Claims;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.WhatsApp;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -26,10 +27,12 @@ namespace OrderDeck.LicenseServer.Controllers.Licenses;
 public sealed class LicensesShipmentsSyncController : ControllerBase
 {
     private readonly LicenseDbContext _db;
+    private readonly LabelRuleApplier _labels;
 
-    public LicensesShipmentsSyncController(LicenseDbContext db)
+    public LicensesShipmentsSyncController(LicenseDbContext db, LabelRuleApplier labels)
     {
         _db = db;
+        _labels = labels;
     }
 
     public sealed record SyncShipmentItem(
@@ -76,6 +79,12 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
             return Problem(title: "batch-too-large", detail: "Max 200 shipment per batch.", statusCode: 400);
 
         var now = DateTimeOffset.UtcNow;
+
+        // Durumu GERÇEKTEN değişen kargoların müşterileri. WPF outbox aynı
+        // satırı değişmeden tekrar gönderebiliyor; "her sync = olay" deseydik
+        // sohbet her turda yeniden etiketlenmeye çalışılırdı.
+        var statusChangedCustomers = new List<string>();
+
         var ids = req.Shipments.Select(s => s.Id).ToList();
         var existing = await _db.Shipments
             .Where(s => s.LicenseId == licenseId && ids.Contains(s.Id))
@@ -87,6 +96,9 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
 
             if (existing.TryGetValue(item.Id, out var current))
             {
+                if (current.Status != status && !string.IsNullOrWhiteSpace(item.CustomerId))
+                    statusChangedCustomers.Add(item.CustomerId);
+
                 // WPF authoritative — tüm mutable alanları update
                 current.CustomerId = item.CustomerId;
                 current.Status = status;
@@ -98,6 +110,12 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
             }
             else
             {
+                // Yeni dosya "Pending" ile açılıyor — bu bir karar değil, yalnız
+                // kaydın doğuşu. Yayıncı beklet/alıcı ödemeli/kargolandı dediyse
+                // ilk sync'te bile olay sayılır.
+                if (status != ShipmentStatus.Pending && !string.IsNullOrWhiteSpace(item.CustomerId))
+                    statusChangedCustomers.Add(item.CustomerId);
+
                 _db.Shipments.Add(new Shipment
                 {
                     Id = item.Id,
@@ -114,6 +132,9 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
         }
 
         await _db.SaveChangesAsync(ct);
+
+        await _labels.TryApplyAndSaveByWpfCustomersAsync(
+            licenseId, WaLabelEvent.ShipmentStatusChanged, statusChangedCustomers, ct);
 
         var echoed = await _db.Shipments
             .Where(s => s.LicenseId == licenseId && ids.Contains(s.Id))

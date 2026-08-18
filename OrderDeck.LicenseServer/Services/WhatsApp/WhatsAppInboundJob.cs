@@ -23,31 +23,100 @@ public sealed class WhatsAppInboundJob
     private readonly LicenseDbContext _db;
     private readonly WhatsAppAccountService _accounts;
     private readonly ILogger<WhatsAppInboundJob> _log;
+    private readonly LabelRuleApplier _labels;
+    private readonly WaDekontExtractor _dekonts;
     private readonly WhatsAppMediaDownloader? _media;
 
     public WhatsAppInboundJob(
         LicenseDbContext db,
         WhatsAppAccountService accounts,
         ILogger<WhatsAppInboundJob> log,
+        LabelRuleApplier labels,
+        WaDekontExtractor dekonts,
         WhatsAppMediaDownloader? media = null)
     {
         _db = db;
         _accounts = accounts;
         _log = log;
+        _labels = labels;
+        _dekonts = dekonts;
         _media = media;
     }
+
+    /// <summary>Mesajlar commit edildikten SONRA uygulanacak etiket işi.
+    /// Sohbetin KENDİSİ taşınır, telefonu değil: telefonla arayan yol numarayı
+    /// TR formatına normalize etmek zorunda ve yurt dışı numaralarını eliyor.
+    /// Elimizdeki varlıkla eşleştirmenin böyle bir sınırı yok.
+    ///
+    /// <para>Alan değil PARAMETRE olarak dolaşır: job Hangfire çağrıları
+    /// arasında durum tutmamalı.</para></summary>
+    private readonly record struct PendingLabel(
+        Guid LicenseId, WaLabelEvent Event, WaConversation Conversation);
 
     public async Task ProcessAsync(string rawJson, CancellationToken ct = default)
     {
         var events = WhatsAppWebhookParser.Parse(rawJson);
         if (events.IsEmpty) return;
 
-        await ProcessMessagesAsync(events, ct);
+        var pendingLabels = new List<PendingLabel>();
+        await ProcessMessagesAsync(events, pendingLabels, ct);
         await ProcessStatusesAsync(events, ct);
         await _db.SaveChangesAsync(ct);
+
+        // Etiket AYRI kaydedilir, mesajlarla aynı işlemi paylaşmaz.
+        //
+        // Sebep: etiket ekleme "önce bak, sonra yaz" ve son savunma hattı
+        // IX_WaConversationLabels_ConversationId_WaLabelId. Aynı müşterinin iki
+        // paketi eşzamanlı işlenirse biri yarışı kaybeder; tek SaveChanges
+        // olsaydı o çakışma mesajları, durumları ve dekont özetini de geri
+        // alırdı. Hangfire retry'ında medya baştan iner ve R2'ye yetim bir
+        // kopya düşer; Meta da arka arkaya başarısızlıkta webhook aboneliğini
+        // kapatabiliyor. Etiket tavsiye niteliğinde, bu bedele değmez.
+        //
+        // Sıra da bilinçli: sohbet müşteri ilk kez yazdığında YALNIZ yukarıdaki
+        // SaveChanges'ten sonra var olur, etiket ancak ondan sonra bağlanabilir.
+        //
+        // Kabul edilen bedel: mesaj yazıldıktan sonra etiket kaydı düşerse
+        // retry mesajı WamId'den atlar ve etiket hiç yapışmaz. Eksik bir
+        // "Dekont geldi" bir tıkla telafi edilir; geri alınan paketin bedeli
+        // yeniden indirme + retry fırtınası.
+        //
+        // Eşleştirme telefonla DEĞİL sohbet nesnesiyle yapılır: telefon yolu
+        // numarayı TR'ye normalize etmek zorunda ve yurt dışı bir wa_id'yi
+        // sessizce eliyor. Sohbet zaten elimizde, çözmeye gerek yok.
+        foreach (var p in pendingLabels)
+        {
+            try
+            {
+                // ApplyToConversationAsync yalnız satırı hazırlar; kaydı biz atarız.
+                await _labels.ApplyToConversationAsync(p.LicenseId, p.Event, p.Conversation, ct);
+                await _db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateException ex)
+            {
+                // SİLME: yarışı kaybeden satır değişiklik izleyicisinde "Added"
+                // olarak KALIR. Temizlemezsek bir sonraki turun SaveChanges'i onu
+                // yeniden denemeye kalkar ve o turdaki masum etiketi de beraberinde
+                // düşürür — tek bir çakışma sıradaki her şeyi zehirler. Bu yüzden
+                // hâlâ eklenmeyi bekleyen tüm etiket satırlarını izleyiciden
+                // ayırıp döngüyü temiz bir durumla sürdürüyoruz.
+                foreach (var entry in _db.ChangeTracker
+                             .Entries<WaConversationLabel>()
+                             .Where(e => e.State == EntityState.Added)
+                             .ToList())
+                {
+                    entry.State = EntityState.Detached;
+                }
+
+                _log.LogWarning(ex,
+                    "Otomatik etiket uygulanamadı: sohbet {ConversationId}, lisans {LicenseId}, olay {Event}",
+                    p.Conversation.Id, p.LicenseId, p.Event);
+            }
+        }
     }
 
-    private async Task ProcessMessagesAsync(WhatsAppWebhookEvents events, CancellationToken ct)
+    private async Task ProcessMessagesAsync(
+        WhatsAppWebhookEvents events, List<PendingLabel> pendingLabels, CancellationToken ct)
     {
         foreach (var m in events.Messages)
         {
@@ -69,7 +138,7 @@ public sealed class WhatsAppInboundJob
             // Başarısızlık mesajı düşürmez — media null döner, metin/metadata kalır.
             var media = await TryFetchMediaAsync(account, m, ct);
 
-            _db.WaMessages.Add(new WaMessage
+            var message = new WaMessage
             {
                 Id = Guid.NewGuid(),
                 ConversationId = convo.Id,
@@ -86,7 +155,22 @@ public sealed class WhatsAppInboundJob
                 Status = m.IsEcho ? "sent" : "received",
                 Timestamp = m.Timestamp,
                 CreatedAt = DateTimeOffset.UtcNow,
-            });
+            };
+            _db.WaMessages.Add(message);
+
+            // Baytlar YALNIZ PDF için dolu gelir (bkz. WhatsAppMediaRef.Bytes).
+            // Görsel dekontlar AI gerektirir, ayrı faz.
+            if (!m.IsEcho && media?.Bytes is { Length: > 0 })
+            {
+                var extraction = _dekonts.TryExtract(account.LicenseId, message.Id, media.Bytes);
+                if (extraction is not null)
+                {
+                    // Mesaj da bu SaveChanges'te yazılıyor; gezinme özelliği
+                    // bağı açıkça kurup EF'e ekleme sırasını anlatıyor (PK = FK).
+                    extraction.WaMessage = message;
+                    _db.WaDekontExtractions.Add(extraction);
+                }
+            }
 
             if (convo.LastMessageAt is null || m.Timestamp > convo.LastMessageAt)
                 convo.LastMessageAt = m.Timestamp;
@@ -99,6 +183,24 @@ public sealed class WhatsAppInboundJob
                 convo.UnreadCount++;
                 // Operatör kapatmış olsa bile yeni mesaj sohbeti geri açar.
                 convo.Status = "open";
+
+                // Dekont olabilecek her şey tek olay: gelenin gerçekten dekont
+                // olduğu bilinemez, yanlış etiketin bedeli bir tık.
+                //
+                // Burada yalnız sıraya alınır, yazılmaz (bkz. ProcessAsync).
+                if (m.Type is "document" or "image")
+                {
+                    // Tek pakette iki belge gelebiliyor; aynı sohbet için
+                    // gereksiz ikinci bir SaveChanges turu açmayalım.
+                    var queued = pendingLabels.Any(p =>
+                        p.Conversation.Id == convo.Id
+                        && p.Event == WaLabelEvent.CustomerSentDocument);
+                    if (!queued)
+                    {
+                        pendingLabels.Add(new PendingLabel(
+                            account.LicenseId, WaLabelEvent.CustomerSentDocument, convo));
+                    }
+                }
             }
         }
     }
@@ -126,8 +228,10 @@ public sealed class WhatsAppInboundJob
     private async Task<WaConversation> GetOrCreateConversationAsync(
         WhatsAppAccount account, WhatsAppInboundMessage m, CancellationToken ct)
     {
-        var convo = await _db.WaConversations.FirstOrDefaultAsync(
-            c => c.LicenseId == account.LicenseId && c.CustomerPhone == m.FromPhone, ct);
+        var convo = _db.WaConversations.Local
+            .FirstOrDefault(c => c.LicenseId == account.LicenseId && c.CustomerPhone == m.FromPhone)
+            ?? await _db.WaConversations.FirstOrDefaultAsync(
+                c => c.LicenseId == account.LicenseId && c.CustomerPhone == m.FromPhone, ct);
 
         if (convo is null)
         {

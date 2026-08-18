@@ -12,8 +12,14 @@ namespace OrderDeck.LicenseServer.Services.WhatsApp;
 
 /// <summary>Medyanın kalıcı hale getirilmiş hali. <see cref="ObjectKey"/> null ise
 /// bayt indirilmedi (boyut limiti aşıldı ya da indirme başarısız) — metadata yine
-/// de saklanır ki operatör mesajın bir görsel/belge olduğunu görsün.</summary>
-public sealed record WhatsAppMediaRef(string? ObjectKey, string? MimeType, long? SizeBytes);
+/// de saklanır ki operatör mesajın bir görsel/belge olduğunu görsün.
+///
+/// <para><see cref="Bytes"/> YALNIZ <c>application/pdf</c> için ve yalnız 10 MB'a
+/// kadar doldurulur: dekont ayrıştırıcısı baytları hemen istiyor ve depoda
+/// geri-okuma yok. Her türü taşımak 100 MB'lık belge limitiyle belleği
+/// patlatırdı; büyük PDF'ler R2'ye yazılır ama ayrıştırılmaz.</para></summary>
+public sealed record WhatsAppMediaRef(
+    string? ObjectKey, string? MimeType, long? SizeBytes, byte[]? Bytes = null);
 
 /// <summary>
 /// Gelen medya mesajlarını kalıcılaştırır: <c>GET /{media-id}</c> ile geçici URL
@@ -28,7 +34,7 @@ public sealed record WhatsAppMediaRef(string? ObjectKey, string? MimeType, long?
 /// kendisi</i> de tekrar tekrar işlenmeye çalışılır. Medya ikincil veri; hata
 /// loglanır, mesaj metinsel haliyle kaydedilir.</para>
 /// </summary>
-public sealed class WhatsAppMediaDownloader
+public class WhatsAppMediaDownloader
 {
     /// <summary>Meta'nın tür başına kabul ettiği üst sınırlar. Aşan medyayı
     /// indirmeyiz — Meta zaten göndertmez, ama webhook'a güvenip 100 MB'ı
@@ -42,6 +48,11 @@ public sealed class WhatsAppMediaDownloader
             ["document"] = 100L * 1024 * 1024,
             ["sticker"] = 512L * 1024,
         };
+
+    /// <summary>Ayrıştırmak üzere baytları geri taşıdığımız PDF üst sınırı.
+    /// Belge limiti (100 MB) indirme/R2 için geçerli; PdfPig'e verilecek
+    /// baytlar için ayrı ve çok daha dar bir tavan gerekiyor.</summary>
+    private const long MaxPdfParseBytes = 10L * 1024 * 1024;
 
     private static readonly IReadOnlyDictionary<string, string> ExtByMime =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -75,7 +86,7 @@ public sealed class WhatsAppMediaDownloader
         _log = log;
     }
 
-    public async Task<WhatsAppMediaRef?> FetchAsync(
+    public virtual async Task<WhatsAppMediaRef?> FetchAsync(
         string mediaId,
         string messageType,
         WhatsAppSendContext ctx,
@@ -111,7 +122,16 @@ public sealed class WhatsAppMediaDownloader
 
         _log.LogInformation(
             "WhatsApp media saklandı: {MediaId} → {Key} ({Size} bayt)", mediaId, key, bytes.LongLength);
-        return new WhatsAppMediaRef(key, mime, bytes.LongLength);
+
+        // Baytları geri taşımak = PdfPig'i satır içi çalıştırmak: ayrıştırma
+        // DbContext ve SQL bağlantısı tutan Hangfire iş parçacığında oluyor.
+        // Gerçek bir banka dekontu bir megabaytın altında; 10 MB'ı aşan bir
+        // "belge" dekont değildir, ayrıştırmaya çalışmak yalnız işçiyi ve
+        // belleği meşgul eder. R2 yüklemesi ve mesaj satırı aynen kalır —
+        // atlanan tek şey özet çıkarımı.
+        var isPdf = string.Equals(mime, "application/pdf", StringComparison.OrdinalIgnoreCase);
+        var parseBytes = isPdf && bytes.LongLength <= MaxPdfParseBytes ? bytes : null;
+        return new WhatsAppMediaRef(key, mime, bytes.LongLength, parseBytes);
     }
 
     private async Task<(string Url, string? Mime, long? Size)?> GetMetadataAsync(

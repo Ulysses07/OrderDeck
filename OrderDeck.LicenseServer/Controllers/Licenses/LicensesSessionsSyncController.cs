@@ -3,6 +3,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
 using OrderDeck.LicenseServer.Services.Push;
+using OrderDeck.LicenseServer.Services.WhatsApp;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -21,17 +22,20 @@ public sealed class LicensesSessionsSyncController : ControllerBase
     private readonly LicenseDbContext _db;
     private readonly INotificationSender _push;
     private readonly Services.Stock.StockLedgerWriter _ledger;
+    private readonly LabelRuleApplier _labels;
     private readonly ILogger<LicensesSessionsSyncController> _log;
 
     public LicensesSessionsSyncController(
         LicenseDbContext db,
         INotificationSender push,
         Services.Stock.StockLedgerWriter ledger,
+        LabelRuleApplier labels,
         ILogger<LicensesSessionsSyncController> log)
     {
         _db = db;
         _push = push;
         _ledger = ledger;
+        _labels = labels;
         _log = log;
     }
 
@@ -318,6 +322,16 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         }
 
         await _db.SaveChangesAsync(ct);
+
+        // Etiket olayı, push bildiriminin kullandığı listeyi paylaşıyor:
+        // "yeni + basılmış + iptal değil + kargo ücreti değil + geçici yedek
+        // değil". İkinci bir gerçek-satış tanımı yazmıyoruz ki ikisi zamanla
+        // ayrışmasın.
+        await _labels.TryApplyAndSaveByWpfCustomersAsync(
+            licenseId,
+            WaLabelEvent.OrderReceived,
+            newOrdersForShopperPush.Select(o => o.CustomerIdHex).ToList(),
+            ct);
 
         if (newPrintedOrders.Count > 0)
         {
