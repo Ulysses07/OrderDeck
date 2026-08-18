@@ -125,9 +125,12 @@ public sealed class LabelRepository
     {
         using var conn = _factory.Open();
         // IsTentativeBackup STOK-İLGİLİ: geçici yedek sunucuda hareket üretmez,
-        // onaylanmış olan üretir. Damga düşüyor ki satır yeniden bekleyen sayılsın.
+        // onaylanmış olan üretir. StockSyncedAt düşüyor ki satır yeniden bekleyen
+        // sayılsın, SyncedAt de düşüyor ki sunucu bu değişikliği GÖRSÜN — tek
+        // outbox o. Yalnız StockSyncedAt düşerse satır bir daha push edilmez ve
+        // sunucu yedeği ömür boyu "geçici" sanar (bkz. MarkCancelled).
         conn.Execute(
-            "UPDATE Label SET IsTentativeBackup = 0, StockSyncedAt=NULL WHERE Id IN @ids AND IsTentativeBackup = 1",
+            "UPDATE Label SET IsTentativeBackup = 0, SyncedAt=NULL, StockSyncedAt=NULL WHERE Id IN @ids AND IsTentativeBackup = 1",
             new { ids = labelIds.ToArray() });
     }
 

@@ -324,6 +324,55 @@ public class StockStaffScopeTests : IClassFixture<ApiFactory>
         staffView.Cost.Should().Be(100m);
     }
 
+    /// <summary>
+    /// Hareket dökümü stok elemanına açık, ama <c>orderId</c> siparişe götüren
+    /// bir tutamaç — spec'in "sipariş bilgisini göremez" kuralı tam olarak bunu
+    /// kapsıyor. Maliyet maskesiyle aynı biçim: uç kapanmıyor, tek alan boşalıyor.
+    /// </summary>
+    [Fact]
+    public async Task Stock_operator_reads_the_movement_but_not_its_order_id()
+    {
+        var (owner, customerId) = await SeedOwnerWithIdAsync();
+        var stock = await OperatorClientAsync(owner, "stock");
+
+        var created = await CreateProductAsync(owner, "Satılan ürün", cost: null);
+        created.StatusCode.Should().Be(HttpStatusCode.Created);
+        var productId = (await created.Content.ReadFromJsonAsync<ProductCostView>())!.Id;
+
+        // Satış hareketleri yalnız WPF senkronundan doğuyor; panelden yazmanın
+        // yolu yok, o yüzden satır doğrudan kuruluyor.
+        var orderId = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var licenseId = db.Licenses.First(l => l.CustomerId == customerId).Id;
+            db.StockMovements.Add(new StockMovement
+            {
+                Id = Guid.NewGuid(), LicenseId = licenseId, ProductId = productId,
+                Quantity = -1, Reason = StockMovementReason.Sale, OrderId = orderId,
+                OccurredAt = DateTimeOffset.UtcNow, CreatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var stockView = await ReadMovementAsync(stock, productId);
+        var ownerView = await ReadMovementAsync(owner, productId);
+
+        // Uç açık — hareket okunuyor; yalnız sipariş bağı boş dönüyor.
+        stockView.Quantity.Should().Be(-1);
+        stockView.OrderId.Should().BeNull();
+        ownerView.OrderId.Should().Be(orderId);
+    }
+
+    private sealed record MovementView(Guid Id, int Quantity, Guid? OrderId);
+
+    private static async Task<MovementView> ReadMovementAsync(HttpClient client, Guid productId)
+    {
+        var resp = await client.GetAsync($"/api/panel/stock/movements?productId={productId}");
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        return (await resp.Content.ReadFromJsonAsync<List<MovementView>>())!.Single();
+    }
+
     [Fact]
     public async Task Stock_operator_cannot_write_a_cost()
     {

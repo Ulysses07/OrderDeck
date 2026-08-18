@@ -35,6 +35,11 @@ public sealed class PanelStockController : ControllerBase
         _balances = balances;
     }
 
+    /// <summary>Tek istekte sorulabilecek ürün sayısı. Katalog ölçeği lisans
+    /// başına yüzler mertebesinde; panelin tek ekranda bundan fazlasına ihtiyacı
+    /// yok. Sayı <c>AdminWhatsAppConversationsController</c> ile aynı deyimden.</summary>
+    private const int MaxBalanceProductIds = 200;
+
     public sealed record StockBalanceDto(Guid ProductId, Guid? ProductVariantId, int Quantity);
 
     public sealed record StockMovementDto(
@@ -68,7 +73,14 @@ public sealed class PanelStockController : ControllerBase
         [FromQuery] Guid[]? productId, CancellationToken ct)
     {
         var licenseId = await ResolveActiveLicenseAsync(ct);
-        if (licenseId is null) return NotFound();
+        if (licenseId is null) return NoLicense();
+
+        // Tavan aşılınca sessizce kırpmak yerine reddediliyor: kırpılan istek
+        // eksik bakiye döner ve panelin bunu anlamasının bir yolu yoktur.
+        if (productId is { Length: > MaxBalanceProductIds })
+            return Problem(title: "too-many-products",
+                detail: $"En çok {MaxBalanceProductIds} ürün sorulabilir.",
+                statusCode: 400);
 
         var rows = await _balances.GetAsync(licenseId.Value, productId, ct);
 
@@ -87,9 +99,14 @@ public sealed class PanelStockController : ControllerBase
         CancellationToken ct = default)
     {
         var licenseId = await ResolveActiveLicenseAsync(ct);
-        if (licenseId is null) return NotFound();
+        if (licenseId is null) return NoLicense();
 
         take = Math.Clamp(take, 1, 500);
+
+        // Stok elemanı sipariş bilgisi göremez (sınıf özetindeki kural).
+        // OrderId siparişe götüren bir tutamaç, o yüzden ona boş dönüyor —
+        // uç kapanmıyor, yalnız bu alan maskeleniyor (maliyet maskesiyle aynı).
+        var hideOrder = User.GetOperatorRole() == OperatorRoles.Stock;
 
         var q = _db.StockMovements
             .Where(m => m.LicenseId == licenseId.Value && m.ProductId == productId);
@@ -101,7 +118,7 @@ public sealed class PanelStockController : ControllerBase
             .Take(take)
             .Select(m => new StockMovementDto(
                 m.Id, m.ProductId, m.ProductVariantId,
-                m.Quantity, (int)m.Reason, m.OrderId, m.Note,
+                m.Quantity, (int)m.Reason, hideOrder ? null : m.OrderId, m.Note,
                 m.OccurredAt, m.CreatedAt))
             .ToListAsync(ct);
 
@@ -115,7 +132,7 @@ public sealed class PanelStockController : ControllerBase
         [FromBody] CreateEntryRequest req, CancellationToken ct)
     {
         var licenseId = await ResolveActiveLicenseAsync(ct);
-        if (licenseId is null) return NotFound();
+        if (licenseId is null) return NoLicense();
 
         var target = await ResolveTargetAsync(licenseId.Value, req.ProductId, req.ProductVariantId, ct);
         if (target is null) return NotFound(TargetProblem());
@@ -153,7 +170,7 @@ public sealed class PanelStockController : ControllerBase
         [FromBody] CreateCountRequest req, CancellationToken ct)
     {
         var licenseId = await ResolveActiveLicenseAsync(ct);
-        if (licenseId is null) return NotFound();
+        if (licenseId is null) return NoLicense();
 
         var target = await ResolveTargetAsync(licenseId.Value, req.ProductId, req.ProductVariantId, ct);
         if (target is null) return NotFound(TargetProblem());
@@ -184,6 +201,12 @@ public sealed class PanelStockController : ControllerBase
     }
 
     // ─── yardımcılar ──────────────────────────────────────────────────
+
+    /// <summary>Kardeş panel controller'larının ortak yanıtı. 404 DEĞİL: panel
+    /// "lisansın yok" ile "ürün yok"u ayırt edebilmeli, yoksa kullanıcıya yanlış
+    /// şey söyler.</summary>
+    private IActionResult NoLicense()
+        => Problem(title: "no-active-license", statusCode: 400);
 
     private ProblemDetails TargetProblem() => new()
     {
@@ -222,17 +245,10 @@ public sealed class PanelStockController : ControllerBase
     }
 
     /// <summary>
-    /// Müşterinin aktif lisansı. Panel controller'larının ortak kalıbı; ilk
-    /// verilen (en eski) lisans seçilir.
+    /// Müşterinin aktif lisansı. Gövde <see cref="PanelLicenseScope"/> ile
+    /// birebir aynıydı; kopya bırakılırsa iki tanım zamanla ayrışır ve stok
+    /// ekranı kardeşlerinden farklı bir lisans seçmeye başlar.
     /// </summary>
     private Task<Guid?> ResolveActiveLicenseAsync(CancellationToken ct)
-    {
-        var customerId = User.GetTenantCustomerId();
-        var now = DateTimeOffset.UtcNow;
-        return _db.Licenses
-            .Where(l => l.CustomerId == customerId && l.RevokedAt == null && l.ExpiresAt > now)
-            .OrderBy(l => l.IssuedAt)
-            .Select(l => (Guid?)l.Id)
-            .FirstOrDefaultAsync(ct);
-    }
+        => PanelLicenseScope.ResolveAsync(_db, User.GetTenantCustomerId(), ct);
 }

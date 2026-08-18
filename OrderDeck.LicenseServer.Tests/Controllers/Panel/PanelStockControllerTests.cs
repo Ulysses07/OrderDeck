@@ -101,7 +101,7 @@ public class PanelStockControllerTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task Entry_rejects_a_product_from_another_license()
+    public async Task Entry_rejects_a_product_that_does_not_exist()
     {
         var s = await SeedAsync();
 
@@ -109,6 +109,90 @@ public class PanelStockControllerTests : IClassFixture<ApiFactory>
             new { productId = Guid.NewGuid(), productVariantId = (Guid?)null, quantity = 1 });
 
         resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    /// <summary>
+    /// Yukarıdaki test rastgele bir GUID gönderiyor — o satır zaten hiç yok, yani
+    /// kiracı süzgeci tamamen kaldırılsa bile 404 gelirdi ve test yeşil yanardı.
+    /// Burada ürün GERÇEKTEN var, sadece başkasının: 404 ancak süzgeç çalışıyorsa
+    /// gelir. İzolasyonu ölçen tek test bu.
+    /// </summary>
+    [Fact]
+    public async Task Entry_rejects_a_product_that_belongs_to_another_broadcaster()
+    {
+        var mine = await SeedAsync();
+        var theirs = await SeedAsync();
+
+        var resp = await mine.Client.PostAsJsonAsync("/api/panel/stock/entries",
+            new { productId = theirs.ProductId, productVariantId = (Guid?)null, quantity = 1 });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        // Ve girişin sahibinin defterine de düşmediğini doğrula: 404 dönüp satırı
+        // yine de yazmak sessiz veri bozulması olurdu.
+        (await BalanceOfAsync(theirs.Client, theirs.ProductId, null)).Should().Be(0);
+    }
+
+    /// <summary>Başkasının bakiyesi hiç görünmemeli — ürün kimliğini bilmek yetmez.</summary>
+    [Fact]
+    public async Task Balances_never_leak_another_broadcasters_product()
+    {
+        var mine = await SeedAsync();
+        var theirs = await SeedAsync();
+
+        await theirs.Client.PostAsJsonAsync("/api/panel/stock/entries",
+            new { productId = theirs.ProductId, productVariantId = (Guid?)null, quantity = 7 });
+
+        var resp = await mine.Client.GetAsync(
+            $"/api/panel/stock/balances?productId={theirs.ProductId}");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await resp.Content.ReadFromJsonAsync<List<JsonElement>>())!.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// Aktif lisansı olmayan yayıncı. Kardeş panel controller'ları bu durumda
+    /// <c>no-active-license</c> başlıklı 400 dönüyor; buradan 404 dönerse panel
+    /// "lisansın yok" ile "ürün yok"u ayırt edemez ve kullanıcıya yanlış şey söyler.
+    /// </summary>
+    [Fact]
+    public async Task Without_an_active_license_the_answer_is_a_titled_400()
+    {
+        var (client, _, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
+
+        foreach (var resp in new[]
+                 {
+                     await client.GetAsync("/api/panel/stock/balances"),
+                     await client.GetAsync($"/api/panel/stock/movements?productId={Guid.NewGuid()}"),
+                     await client.PostAsJsonAsync("/api/panel/stock/entries",
+                         new { productId = Guid.NewGuid(), quantity = 1 }),
+                     await client.PostAsJsonAsync("/api/panel/stock/counts",
+                         new { productId = Guid.NewGuid(), countedQuantity = 1 }),
+                 })
+        {
+            resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+            (await resp.Content.ReadAsStringAsync()).Should().Contain("no-active-license");
+        }
+    }
+
+    /// <summary>
+    /// <c>productId</c> tekrar edilebilir bir sorgu parametresi, yani istemci
+    /// binlercesini gönderebilir ve her biri doğrudan bir <c>IN</c> listesine
+    /// giriyor. Tavan sessizce kırpılmıyor: kırpılsaydı panel eksik bakiye
+    /// görürdü ve bunu anlamasının bir yolu olmazdı.
+    /// </summary>
+    [Fact]
+    public async Task Balances_rejects_more_product_ids_than_the_cap()
+    {
+        var s = await SeedAsync();
+
+        var query = string.Join("&", Enumerable.Range(0, 201)
+            .Select(_ => $"productId={Guid.NewGuid()}"));
+
+        var resp = await s.Client.GetAsync($"/api/panel/stock/balances?{query}");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await resp.Content.ReadAsStringAsync()).Should().Contain("too-many-products");
     }
 
     [Fact]
