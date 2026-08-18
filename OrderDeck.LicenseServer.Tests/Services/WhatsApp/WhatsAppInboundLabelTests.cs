@@ -34,9 +34,9 @@ public sealed class WhatsAppInboundLabelTests
     }
 
     /// <summary>Graph'a çıkmadan sabit bir <see cref="WhatsAppMediaRef"/> döndüren
-    /// indirici. <c>WhatsAppMediaDownloader</c> mühürlü olmadığı için
-    /// <c>FetchAsync</c> sanal yapılamaz; bunun yerine HTTP katmanını taklit
-    /// etmek yerine job'a hazır bir alt sınıf veriyoruz.</summary>
+    /// indirici. HTTP katmanını taklit etmemek için <c>WhatsAppMediaDownloader</c>
+    /// mührü kaldırılıp <c>FetchAsync</c> sanal yapıldı; job'a hazır bir alt sınıf
+    /// veriyoruz.</summary>
     private static class FakeMedia
     {
         public static WhatsAppMediaDownloader ReturningPdf(byte[] bytes)
@@ -246,6 +246,11 @@ public sealed class WhatsAppInboundLabelTests
 
         parser.Calls.Should().Be(1);
 
+        // Not: InMemory sağlayıcısı FK kısıtı uygulamaz ve ekleme sırasını
+        // topolojik olarak çözmez; bu yüzden buradaki hiçbir doğrulama
+        // WhatsAppInboundJob'daki `extraction.WaMessage = message` bağının
+        // SQL Server'da gerekli olduğunu KANITLAMAZ. O bağ silinse bu testler
+        // yine yeşil kalır, prod'da PK=FK ihlali verirdi.
         var msg = await db.WaMessages.SingleAsync();
         var row = await db.WaDekontExtractions.SingleAsync();
         row.WaMessageId.Should().Be(msg.Id);
@@ -263,6 +268,10 @@ public sealed class WhatsAppInboundLabelTests
 
         await job.ProcessAsync(MediaPayload("wamid.img", "image"));
 
+        // Medyanın GERÇEKTEN indiğini önce doğrula: indirici hiç çağrılmasaydı
+        // da parser 0 kalırdı ve test "görsel ayrıştırılmıyor" kararını değil,
+        // indirmenin atlandığını ölçerdi.
+        (await db.WaMessages.SingleAsync()).MediaR2Key.Should().Be("k.jpg");
         parser.Calls.Should().Be(0);
         db.WaConversationLabels.Should().ContainSingle();
         db.WaDekontExtractions.Should().BeEmpty();
@@ -271,8 +280,8 @@ public sealed class WhatsAppInboundLabelTests
     [Fact]
     public async Task A_document_without_pdf_bytes_is_still_saved_and_labeled()
     {
-        // Medya indirici kayıtlı değil ya da belge PDF değil → bayt yok.
-        // Mesaj yine kaydedilmeli, etiket yine yapışmalı; yalnız özet çıkmaz.
+        // Medya indirici kayıtlı değil → bayt yok. Mesaj yine kaydedilmeli,
+        // etiket yine yapışmalı; yalnız özet çıkmaz.
         var (db, job, _, _, parser) = Build();
 
         await job.ProcessAsync(MediaPayload("wamid.nomedia", "document"));

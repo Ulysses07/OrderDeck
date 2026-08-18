@@ -102,8 +102,8 @@ public sealed class WhatsAppInboundJob
                 var extraction = _dekonts.TryExtract(account.LicenseId, message.Id, media.Bytes);
                 if (extraction is not null)
                 {
-                    // Gezinme özelliği: mesaj da bu SaveChanges'te yazılıyor,
-                    // EF'e ekleme sırasını başka türlü anlatamayız (PK = FK).
+                    // Mesaj da bu SaveChanges'te yazılıyor; gezinme özelliği
+                    // bağı açıkça kurup EF'e ekleme sırasını anlatıyor (PK = FK).
                     extraction.WaMessage = message;
                     _db.WaDekontExtractions.Add(extraction);
                 }
