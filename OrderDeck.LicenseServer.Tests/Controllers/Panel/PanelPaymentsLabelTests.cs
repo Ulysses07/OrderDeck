@@ -131,7 +131,11 @@ public class PanelPaymentsLabelTests : IClassFixture<ApiFactory>
 
     /// <summary>
     /// Etiketleme onayı GERİ ALMAZ. Kural tanımlı değilken de onay geçmeli;
-    /// bu test, etiket yolunun iş akışına bağlanmadığının kanıtı.
+    /// bu test, etiket yolunun iş akışını KİLİTLEMEDİĞİNİN kanıtı.
+    ///
+    /// <para>Kapsadığı yol yalnız "kural yok" erken dönüşü. Kural VARKEN yazma
+    /// patlarsa istisnanın yutulduğu, <c>LabelRuleApplier</c> testlerinde
+    /// kanıtlanıyor — burada değil.</para>
     /// </summary>
     [Fact]
     public async Task Approval_still_succeeds_when_no_rule_is_defined()
