@@ -138,13 +138,13 @@ public class ShipmentSyncLabelTests : IClassFixture<ApiFactory>
         await s.Client.PostAsJsonAsync(
             $"/api/v1/licenses/{s.LicenseId}/shipments/sync",
             Body(shipmentId, s.WpfCustomerId, "held"));
-        var countAfterFirst = await LabelCountAsync(s.ConversationId);
+        (await LabelCountAsync(s.ConversationId)).Should().Be(
+            1, "yeni satır Pending DIŞINDA doğduysa bu bir karardır");
 
         await s.Client.PostAsJsonAsync(
             $"/api/v1/licenses/{s.LicenseId}/shipments/sync",
             Body(shipmentId, s.WpfCustomerId, "held"));
-
-        countAfterFirst.Should().Be(1);
-        (await LabelCountAsync(s.ConversationId)).Should().Be(1);
+        (await LabelCountAsync(s.ConversationId)).Should().Be(
+            1, "aynı durumun tekrarı olay değildir");
     }
 }
