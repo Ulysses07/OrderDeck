@@ -50,6 +50,10 @@ public class LicenseDbContext : DbContext
     public DbSet<WaConversation> WaConversations => Set<WaConversation>();
     public DbSet<WaMessage> WaMessages => Set<WaMessage>();
     public DbSet<WaSendAttempt> WaSendAttempts => Set<WaSendAttempt>();
+    public DbSet<WaLabel> WaLabels => Set<WaLabel>();
+    public DbSet<WaLabelRule> WaLabelRules => Set<WaLabelRule>();
+    public DbSet<WaConversationLabel> WaConversationLabels => Set<WaConversationLabel>();
+    public DbSet<WaDekontExtraction> WaDekontExtractions => Set<WaDekontExtraction>();
     public DbSet<Category> Categories => Set<Category>();
     public DbSet<Product> Products => Set<Product>();
     public DbSet<ProductVariant> ProductVariants => Set<ProductVariant>();
@@ -663,6 +667,62 @@ public class LicenseDbContext : DbContext
             b.Property(a => a.ErrorCode).HasMaxLength(32);
             b.Property(a => a.ErrorMessage).HasMaxLength(1000);
             b.HasIndex(a => a.StartedAt);
+        });
+
+        mb.Entity<WaLabel>(b =>
+        {
+            b.HasKey(l => l.Id);
+            b.HasOne(l => l.License).WithMany().HasForeignKey(l => l.LicenseId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.Property(l => l.Name).HasMaxLength(40).IsRequired();
+            b.Property(l => l.Color).HasMaxLength(9).IsRequired();
+            // Aynı ada iki etiket, panelde ayırt edilemez bir liste demek.
+            b.HasIndex(l => new { l.LicenseId, l.Name }).IsUnique();
+        });
+
+        mb.Entity<WaLabelRule>(b =>
+        {
+            b.HasKey(r => r.Id);
+            b.HasOne(r => r.License).WithMany().HasForeignKey(r => r.LicenseId)
+             .OnDelete(DeleteBehavior.Cascade);
+            // NoAction: License silinirken kural satırı zaten License cascade'i
+            // ile gidiyor. Buradan da cascade verilseydi SQL Server iki yol
+            // görüp şemayı reddederdi. Etiket silmede temizlik controller'da.
+            b.HasOne(r => r.WaLabel).WithMany().HasForeignKey(r => r.WaLabelId)
+             .OnDelete(DeleteBehavior.NoAction);
+            b.Property(r => r.EventKey).HasConversion<int>();
+            // Bir olay en fazla bir etiket üretir.
+            b.HasIndex(r => new { r.LicenseId, r.EventKey }).IsUnique();
+        });
+
+        mb.Entity<WaConversationLabel>(b =>
+        {
+            b.HasKey(cl => cl.Id);
+            b.HasOne(cl => cl.License).WithMany().HasForeignKey(cl => cl.LicenseId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.HasOne(cl => cl.Conversation).WithMany().HasForeignKey(cl => cl.ConversationId)
+             .OnDelete(DeleteBehavior.NoAction);
+            b.HasOne(cl => cl.WaLabel).WithMany().HasForeignKey(cl => cl.WaLabelId)
+             .OnDelete(DeleteBehavior.NoAction);
+            b.Property(cl => cl.Source).HasMaxLength(8).IsRequired();
+            // Kural iki kez tetiklenirse (webhook tekrarı, çift onay) sohbette
+            // aynı etiket iki kez görünmesin.
+            b.HasIndex(cl => new { cl.ConversationId, cl.WaLabelId }).IsUnique();
+            b.HasIndex(cl => new { cl.LicenseId, cl.WaLabelId });
+        });
+
+        mb.Entity<WaDekontExtraction>(b =>
+        {
+            // PK = FK: bir mesajın en fazla bir ayrıştırması olur.
+            b.HasKey(d => d.WaMessageId);
+            b.HasOne(d => d.WaMessage).WithOne().HasForeignKey<WaDekontExtraction>(d => d.WaMessageId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.Property(d => d.PayerName).HasMaxLength(200);
+            b.Property(d => d.Amount).HasPrecision(18, 2);
+            b.Property(d => d.ReferansNo).HasMaxLength(100);
+            b.Property(d => d.PdfHash).HasMaxLength(64).IsRequired();
+            b.Property(d => d.ParserConfidence).HasMaxLength(16).IsRequired();
+            b.HasIndex(d => d.LicenseId);
         });
 
         mb.Entity<Category>(b =>
