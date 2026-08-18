@@ -125,6 +125,9 @@ public sealed class WhatsAppInboundLabelTests
         }
         """);
 
+        // İki mesajın DA işlendiğini önce doğrula: ikincisi atlanmış olsaydı
+        // tek etiket yine çıkardı ve test tekilleştirmeyi değil, atlamayı ölçerdi.
+        db.WaMessages.Should().HaveCount(2);
         db.WaConversationLabels.Should().ContainSingle();
     }
 
@@ -161,6 +164,9 @@ public sealed class WhatsAppInboundLabelTests
         }
         """);
 
+        // Gövde ayrıştırılamasaydı da etiket çıkmazdı; mesajın gerçekten
+        // işlendiğini görelim ki test echo kararını ölçsün, ayrıştırma hatasını değil.
+        db.WaMessages.Should().ContainSingle();
         db.WaConversationLabels.Should().BeEmpty();
     }
 
@@ -173,6 +179,7 @@ public sealed class WhatsAppInboundLabelTests
 
         await job.ProcessAsync(MediaPayload("wamid.norule", "document"));
 
+        db.WaMessages.Should().ContainSingle();
         db.WaConversationLabels.Should().BeEmpty();
     }
 }
