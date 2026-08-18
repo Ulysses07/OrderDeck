@@ -16,6 +16,10 @@ public sealed class WaDekontExtraction
     public Guid WaMessageId { get; set; }
     public WaMessage WaMessage { get; set; } = null!;
 
+    /// <summary>Sorguları mesaja join'lemeden tenant'a kapatmak için denormalize
+    /// — <c>WaMessage.LicenseId</c> ile aynı gerekçe. Gezinme özelliği YOK:
+    /// silme <c>WaMessage</c> üzerinden akıyor, License'tan ikinci bir cascade
+    /// yolu açılmasın.</summary>
     public Guid LicenseId { get; set; }
 
     public string? PayerName { get; set; }
