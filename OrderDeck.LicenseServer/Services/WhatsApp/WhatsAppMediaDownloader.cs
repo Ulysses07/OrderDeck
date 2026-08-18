@@ -12,8 +12,13 @@ namespace OrderDeck.LicenseServer.Services.WhatsApp;
 
 /// <summary>Medyanın kalıcı hale getirilmiş hali. <see cref="ObjectKey"/> null ise
 /// bayt indirilmedi (boyut limiti aşıldı ya da indirme başarısız) — metadata yine
-/// de saklanır ki operatör mesajın bir görsel/belge olduğunu görsün.</summary>
-public sealed record WhatsAppMediaRef(string? ObjectKey, string? MimeType, long? SizeBytes);
+/// de saklanır ki operatör mesajın bir görsel/belge olduğunu görsün.
+///
+/// <para><see cref="Bytes"/> YALNIZ <c>application/pdf</c> için doldurulur:
+/// dekont ayrıştırıcısı baytları hemen istiyor ve depoda geri-okuma yok.
+/// Her türü taşımak 100 MB'lık belge limitiyle belleği patlatırdı.</para></summary>
+public sealed record WhatsAppMediaRef(
+    string? ObjectKey, string? MimeType, long? SizeBytes, byte[]? Bytes = null);
 
 /// <summary>
 /// Gelen medya mesajlarını kalıcılaştırır: <c>GET /{media-id}</c> ile geçici URL
@@ -111,7 +116,9 @@ public sealed class WhatsAppMediaDownloader
 
         _log.LogInformation(
             "WhatsApp media saklandı: {MediaId} → {Key} ({Size} bayt)", mediaId, key, bytes.LongLength);
-        return new WhatsAppMediaRef(key, mime, bytes.LongLength);
+
+        var isPdf = string.Equals(mime, "application/pdf", StringComparison.OrdinalIgnoreCase);
+        return new WhatsAppMediaRef(key, mime, bytes.LongLength, isPdf ? bytes : null);
     }
 
     private async Task<(string Url, string? Mime, long? Size)?> GetMetadataAsync(
