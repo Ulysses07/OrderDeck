@@ -81,4 +81,23 @@ public sealed class WaLabelSchemaTests
         fks[nameof(WaConversation)].Should().Be(DeleteBehavior.NoAction);
         fks[nameof(WaLabel)].Should().Be(DeleteBehavior.NoAction);
     }
+
+    /// <summary>
+    /// Kural satırında da aynı kısıt var: License'tan cascade, etiketten
+    /// NoAction. Biri "düzeltip" etikete cascade verirse SQL Server şemayı
+    /// reddeder — bunu göç üretilirken değil, burada yakalayalım.
+    /// </summary>
+    [Fact]
+    public void Rules_cascade_only_from_license()
+    {
+        using var db = NewDb();
+        var fks = db.Model.FindEntityType(typeof(WaLabelRule))!
+            .GetForeignKeys()
+            .ToDictionary(
+                fk => fk.PrincipalEntityType.ClrType.Name,
+                fk => fk.DeleteBehavior);
+
+        fks[nameof(License)].Should().Be(DeleteBehavior.Cascade);
+        fks[nameof(WaLabel)].Should().Be(DeleteBehavior.NoAction);
+    }
 }
