@@ -77,10 +77,14 @@ public sealed class LabelRuleApplier
     /// Sohbet zaten elimizdeyken kullanılır (gelen mesaj işleme). Telefon
     /// çözmeye gerek yok — bu yol eşleştirmenin en güvenilir hâli.
     ///
-    /// <para>Parametre Guid değil VARLIĞIN KENDİSİ: müşteri ilk kez yazdığında
-    /// sohbet henüz kaydedilmemiş olur ve etiket satırı aynı
-    /// <c>SaveChanges</c>'te yazılır. Gezinme özelliğini doldurmak, EF'e
-    /// "önce sohbeti ekle" demenin tek güvenilir yolu.</para>
+    /// <para>Parametre Guid değil VARLIĞIN KENDİSİ: <c>ToConversationPhone</c>
+    /// yalnız TR numaralarını çözer, yurt dışından yazan müşteri o yoldan
+    /// eşleşemezdi. Gezinme özelliğini doldurmak ayrıca sohbet henüz
+    /// kaydedilmemişken de doğru ekleme sırasını garanti eder.</para>
+    ///
+    /// <para><b>Kaydetmez.</b> Çağıran kaydeder — gelen mesaj işi etiketi
+    /// mesajlar commit edildikten SONRA ayrı bir <c>SaveChanges</c>'te yazar,
+    /// yoksa etiket yarışını kaybetmek bütün webhook yığınını geri alırdı.</para>
     /// </summary>
     public async Task ApplyToConversationAsync(
         Guid licenseId, WaLabelEvent eventKey, WaConversation conversation, CancellationToken ct)
