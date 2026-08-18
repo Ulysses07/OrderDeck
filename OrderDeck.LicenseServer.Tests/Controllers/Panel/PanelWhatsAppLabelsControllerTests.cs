@@ -190,4 +190,38 @@ public class PanelWhatsAppLabelsControllerTests : IClassFixture<ApiFactory>
 
         list.Should().BeEmpty();
     }
+
+    [Fact]
+    public async Task Palette_returns_exactly_the_colors_the_server_accepts()
+    {
+        var (client, _) = await SeedAsync();
+
+        var palette = await client.GetFromJsonAsync<List<string>>(
+            "/api/panel/whatsapp-labels/palette");
+
+        palette.Should().BeEquivalentTo(WaLabelColors.Palette);
+
+        // Asıl mesele listenin kendisi değil, ucun panelin elini bağlaması:
+        // dönen her renk POST'ta kabul edilmeli. Palet ile Normalize ayrışırsa
+        // panel kendi ekranından seçtiği rengi kaydedemez ve invalid-color yer.
+        foreach (var color in palette!)
+        {
+            var resp = await client.PostAsJsonAsync(
+                "/api/panel/whatsapp-labels", new { name = $"Palet {color}", color });
+            resp.StatusCode.Should().Be(HttpStatusCode.Created, "renk {0} palette duruyor", color);
+        }
+    }
+
+    [Fact]
+    public async Task Palette_is_served_without_an_active_license()
+    {
+        // Palet sabit ve yayıncıya ait değil; lisans çözmeye kalkarsak etiket
+        // ekranı lisansı henüz oturmamış yayıncıda renk seçici olmadan açılır.
+        var (client, _, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
+
+        var resp = await client.GetAsync("/api/panel/whatsapp-labels/palette");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await resp.Content.ReadFromJsonAsync<List<string>>()).Should().NotBeEmpty();
+    }
 }

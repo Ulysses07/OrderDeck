@@ -1,4 +1,4 @@
-using System.ComponentModel.DataAnnotations;
+﻿using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -55,6 +55,16 @@ public sealed class PanelWhatsAppLabelsController : ControllerBase
 
         return Ok(rows);
     }
+
+    /// <summary>
+    /// Kabul edilen renkler. Palet sunucuda sabit ve <see cref="Create"/> yalnız
+    /// buradakileri kaydeder; panel listeyi kendi kaynağına kopyalasaydı iki
+    /// taraf sessizce ayrışır ve yayıncı kendi seçtiği rengi kaydedemezdi.
+    ///
+    /// <para>Lisans çözmez: palet yayıncıya ait değil, kod sabiti.</para>
+    /// </summary>
+    [HttpGet("palette")]
+    public IActionResult Palette() => Ok(WaLabelColors.Palette);
 
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] LabelRequest req, CancellationToken ct)
