@@ -136,10 +136,13 @@ public class OrderSyncLabelTests : IClassFixture<ApiFactory>
     {
         var s = await SeedAsync();
 
-        await s.Client.PostAsJsonAsync(
+        var resp = await s.Client.PostAsJsonAsync(
             $"/api/v1/licenses/{s.LicenseId}/orders/sync",
             Body(s.WpfCustomerId, printedAt: DateTimeOffset.UtcNow, isShippingFee: true));
 
+        // Sync'in GERÇEKTEN çalıştığını da doğrula: 0 etiket, istek reddedilmiş
+        // olsaydı da çıkardı — o zaman test filtreyi değil hatayı ölçerdi.
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
         (await LabelCountAsync(s.ConversationId)).Should().Be(0);
     }
 
@@ -148,10 +151,11 @@ public class OrderSyncLabelTests : IClassFixture<ApiFactory>
     {
         var s = await SeedAsync();
 
-        await s.Client.PostAsJsonAsync(
+        var resp = await s.Client.PostAsJsonAsync(
             $"/api/v1/licenses/{s.LicenseId}/orders/sync",
             Body(s.WpfCustomerId, printedAt: null));
 
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
         (await LabelCountAsync(s.ConversationId)).Should().Be(0);
     }
 }
