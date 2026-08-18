@@ -189,4 +189,23 @@ public class LabelRepositoryPendingStockTests
         repo.GetPendingStockDeltas(pid).Should()
             .ContainSingle().Which.PendingCount.Should().Be(1);
     }
+
+    [Fact]
+    public void Confirming_a_tentative_backup_puts_it_back_in_the_push_queue()
+    {
+        var (db, repo) = Fx();
+        using var _ = db;
+
+        var pid = Guid.NewGuid().ToString("N");
+        repo.Insert(Row("l1", pid, null, tentative: true));
+        repo.MarkSynced("l1", 2000);
+
+        repo.ConfirmTentativeBackups(new[] { "l1" });
+
+        // Tek outbox SyncedAt: StockSyncedAt push kuyruğu değil, yerel gösterim
+        // süzgeci. Onay yalnız StockSyncedAt'i düşürürse satır bir daha push
+        // edilmez, sunucu yedeği ömür boyu "geçici" sanar ve StockLedgerReconciler
+        // ona hiç hareket üretmez — satış sunucunun defterine hiç girmez.
+        repo.GetUnsynced().Should().ContainSingle().Which.Id.Should().Be("l1");
+    }
 }
