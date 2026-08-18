@@ -117,7 +117,8 @@ public sealed class WhatsAppMediaDownloaderTests
             NullLogger<WhatsAppMediaDownloader>.Instance);
 
         var job = new WhatsAppInboundJob(
-            db, accounts, NullLogger<WhatsAppInboundJob>.Instance, downloader);
+            db, accounts, NullLogger<WhatsAppInboundJob>.Instance,
+            new LabelRuleApplier(db, NullLogger<LabelRuleApplier>.Instance), downloader);
 
         return (db, job, store);
     }

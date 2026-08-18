@@ -34,7 +34,9 @@ public sealed class WhatsAppInboundJobTests
         });
         db.SaveChanges();
 
-        return (db, new WhatsAppInboundJob(db, accounts, NullLogger<WhatsAppInboundJob>.Instance), licenseId);
+        return (db, new WhatsAppInboundJob(
+            db, accounts, NullLogger<WhatsAppInboundJob>.Instance,
+            new LabelRuleApplier(db, NullLogger<LabelRuleApplier>.Instance)), licenseId);
     }
 
     private static string TextPayload(

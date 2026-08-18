@@ -23,17 +23,20 @@ public sealed class WhatsAppInboundJob
     private readonly LicenseDbContext _db;
     private readonly WhatsAppAccountService _accounts;
     private readonly ILogger<WhatsAppInboundJob> _log;
+    private readonly LabelRuleApplier _labels;
     private readonly WhatsAppMediaDownloader? _media;
 
     public WhatsAppInboundJob(
         LicenseDbContext db,
         WhatsAppAccountService accounts,
         ILogger<WhatsAppInboundJob> log,
+        LabelRuleApplier labels,
         WhatsAppMediaDownloader? media = null)
     {
         _db = db;
         _accounts = accounts;
         _log = log;
+        _labels = labels;
         _media = media;
     }
 
@@ -99,6 +102,14 @@ public sealed class WhatsAppInboundJob
                 convo.UnreadCount++;
                 // Operatör kapatmış olsa bile yeni mesaj sohbeti geri açar.
                 convo.Status = "open";
+
+                // Dekont olabilecek her şey tek olay: gelenin gerçekten dekont
+                // olduğu bilinemez, yanlış etiketin bedeli bir tık.
+                if (m.Type is "document" or "image")
+                {
+                    await _labels.ApplyToConversationAsync(
+                        account.LicenseId, WaLabelEvent.CustomerSentDocument, convo, ct);
+                }
             }
         }
     }
@@ -126,8 +137,10 @@ public sealed class WhatsAppInboundJob
     private async Task<WaConversation> GetOrCreateConversationAsync(
         WhatsAppAccount account, WhatsAppInboundMessage m, CancellationToken ct)
     {
-        var convo = await _db.WaConversations.FirstOrDefaultAsync(
-            c => c.LicenseId == account.LicenseId && c.CustomerPhone == m.FromPhone, ct);
+        var convo = _db.WaConversations.Local
+            .FirstOrDefault(c => c.LicenseId == account.LicenseId && c.CustomerPhone == m.FromPhone)
+            ?? await _db.WaConversations.FirstOrDefaultAsync(
+                c => c.LicenseId == account.LicenseId && c.CustomerPhone == m.FromPhone, ct);
 
         if (convo is null)
         {
