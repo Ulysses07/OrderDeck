@@ -37,6 +37,9 @@ public class PanelWhatsAppLabelRulesControllerTests : IClassFixture<ApiFactory>
 
         var created = await client.PostAsJsonAsync(
             "/api/panel/whatsapp-labels", new { name = "Dekont geldi", color = "#eab308" });
+        // Hata gövdesi de LabelDto'ya sessizce çözülür (ortak alan yok) ve
+        // Id boş Guid kalır; o hâlde testler yanlış nedenle geçerdi.
+        created.EnsureSuccessStatusCode();
         var label = (await created.Content.ReadFromJsonAsync<LabelDto>())!;
         return (client, label.Id);
     }
@@ -54,6 +57,10 @@ public class PanelWhatsAppLabelRulesControllerTests : IClassFixture<ApiFactory>
             "PaymentApproved", "PaymentRejected", "OrderReceived",
             "ShipmentStatusChanged", "CustomerSentDocument",
         });
+        // Enum'a altıncı olay eklenip açıklama sözlüğü unutulursa uç onu hiç
+        // göstermez ve panelden atanamaz — LabelRuleApplier tetiklese bile
+        // sessizce hiçbir şey olmaz. Bu satır o sessizliği bozar.
+        rules.Select(r => r.EventKey).Should().BeEquivalentTo(Enum.GetNames<WaLabelEvent>());
         rules.Should().OnlyContain(r => r.WaLabelId == null);
         rules.Should().OnlyContain(r => r.Description.Length > 0);
     }
@@ -111,15 +118,22 @@ public class PanelWhatsAppLabelRulesControllerTests : IClassFixture<ApiFactory>
         rules!.Single(r => r.EventKey == "PaymentApproved").WaLabelId.Should().BeNull();
     }
 
-    [Fact]
-    public async Task An_unknown_event_key_is_rejected()
+    // "3" ve virgüllü liste: Enum.TryParse ikisini de kabul ederdi. Tel biçimi
+    // olay ADI olduğuna göre sayı değerleri sözleşmenin parçası değil.
+    [Theory]
+    [InlineData("SomethingElse")]
+    [InlineData("paymentapproved")]
+    [InlineData("3")]
+    [InlineData("PaymentApproved,PaymentRejected")]
+    public async Task An_unknown_event_key_is_rejected(string eventKey)
     {
         var (client, labelId) = await SeedAsync();
 
         var resp = await client.PutAsJsonAsync(
-            "/api/panel/whatsapp-label-rules/SomethingElse", new { waLabelId = labelId });
+            $"/api/panel/whatsapp-label-rules/{eventKey}", new { waLabelId = labelId });
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await resp.Content.ReadAsStringAsync()).Should().Contain("unknown-event");
     }
 
     [Fact]

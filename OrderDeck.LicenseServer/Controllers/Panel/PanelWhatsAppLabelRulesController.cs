@@ -72,13 +72,14 @@ public sealed class PanelWhatsAppLabelRulesController : ControllerBase
     public async Task<IActionResult> Put(
         string eventKey, [FromBody] RuleRequest req, CancellationToken ct)
     {
-        if (!Enum.TryParse<WaLabelEvent>(eventKey, ignoreCase: false, out var parsed)
-            || !Descriptions.ContainsKey(parsed))
-        {
-            // ignoreCase: false bilerek — "paymentapproved" kabul edilirse
-            // panelde yazım hatası sessizce çalışır, sonra düzeltilemez.
-            return Problem(title: "unknown-event", statusCode: 400);
-        }
+        // Tel biçimi olay ADI. Enum.TryParse bilerek kullanılmıyor: sayıyı ("3")
+        // ve virgüllü listeyi de kabul ediyor, yani panel sunucu enum'unun sayı
+        // değerlerine bağlanabilirdi. Büyük/küçük harf de duyarlı — "paymentapproved"
+        // geçseydi panelde yazım hatası sessizce çalışır, sonra düzeltilemezdi.
+        var match = Descriptions.Keys.Cast<WaLabelEvent?>()
+            .FirstOrDefault(k => k.ToString() == eventKey);
+        if (match is null) return Problem(title: "unknown-event", statusCode: 400);
+        var parsed = match.Value;
 
         var licenseId = await PanelLicenseScope.ResolveAsync(_db, User.GetTenantCustomerId(), ct);
         if (licenseId is null) return NotFound();
