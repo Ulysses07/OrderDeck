@@ -24,6 +24,7 @@ public sealed class WhatsAppInboundJob
     private readonly WhatsAppAccountService _accounts;
     private readonly ILogger<WhatsAppInboundJob> _log;
     private readonly LabelRuleApplier _labels;
+    private readonly WaDekontExtractor _dekonts;
     private readonly WhatsAppMediaDownloader? _media;
 
     public WhatsAppInboundJob(
@@ -31,12 +32,14 @@ public sealed class WhatsAppInboundJob
         WhatsAppAccountService accounts,
         ILogger<WhatsAppInboundJob> log,
         LabelRuleApplier labels,
+        WaDekontExtractor dekonts,
         WhatsAppMediaDownloader? media = null)
     {
         _db = db;
         _accounts = accounts;
         _log = log;
         _labels = labels;
+        _dekonts = dekonts;
         _media = media;
     }
 
@@ -72,7 +75,7 @@ public sealed class WhatsAppInboundJob
             // Başarısızlık mesajı düşürmez — media null döner, metin/metadata kalır.
             var media = await TryFetchMediaAsync(account, m, ct);
 
-            _db.WaMessages.Add(new WaMessage
+            var message = new WaMessage
             {
                 Id = Guid.NewGuid(),
                 ConversationId = convo.Id,
@@ -89,7 +92,22 @@ public sealed class WhatsAppInboundJob
                 Status = m.IsEcho ? "sent" : "received",
                 Timestamp = m.Timestamp,
                 CreatedAt = DateTimeOffset.UtcNow,
-            });
+            };
+            _db.WaMessages.Add(message);
+
+            // Baytlar YALNIZ PDF için dolu gelir (bkz. WhatsAppMediaRef.Bytes).
+            // Görsel dekontlar AI gerektirir, ayrı faz.
+            if (!m.IsEcho && media?.Bytes is { Length: > 0 })
+            {
+                var extraction = _dekonts.TryExtract(account.LicenseId, message.Id, media.Bytes);
+                if (extraction is not null)
+                {
+                    // Gezinme özelliği: mesaj da bu SaveChanges'te yazılıyor,
+                    // EF'e ekleme sırasını başka türlü anlatamayız (PK = FK).
+                    extraction.WaMessage = message;
+                    _db.WaDekontExtractions.Add(extraction);
+                }
+            }
 
             if (convo.LastMessageAt is null || m.Timestamp > convo.LastMessageAt)
                 convo.LastMessageAt = m.Timestamp;

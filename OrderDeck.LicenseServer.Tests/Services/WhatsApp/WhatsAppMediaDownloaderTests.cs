@@ -8,6 +8,7 @@ using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.WhatsApp;
+using OrderDeck.PdfParsing;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.WhatsApp;
@@ -118,7 +119,9 @@ public sealed class WhatsAppMediaDownloaderTests
 
         var job = new WhatsAppInboundJob(
             db, accounts, NullLogger<WhatsAppInboundJob>.Instance,
-            new LabelRuleApplier(db, NullLogger<LabelRuleApplier>.Instance), downloader);
+            new LabelRuleApplier(db, NullLogger<LabelRuleApplier>.Instance),
+            new WaDekontExtractor(new PdfDekontParser(), NullLogger<WaDekontExtractor>.Instance),
+            downloader);
 
         return (db, job, store);
     }

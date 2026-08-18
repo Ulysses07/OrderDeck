@@ -33,7 +33,7 @@ public sealed record WhatsAppMediaRef(
 /// kendisi</i> de tekrar tekrar işlenmeye çalışılır. Medya ikincil veri; hata
 /// loglanır, mesaj metinsel haliyle kaydedilir.</para>
 /// </summary>
-public sealed class WhatsAppMediaDownloader
+public class WhatsAppMediaDownloader
 {
     /// <summary>Meta'nın tür başına kabul ettiği üst sınırlar. Aşan medyayı
     /// indirmeyiz — Meta zaten göndertmez, ama webhook'a güvenip 100 MB'ı
@@ -80,7 +80,7 @@ public sealed class WhatsAppMediaDownloader
         _log = log;
     }
 
-    public async Task<WhatsAppMediaRef?> FetchAsync(
+    public virtual async Task<WhatsAppMediaRef?> FetchAsync(
         string mediaId,
         string messageType,
         WhatsAppSendContext ctx,

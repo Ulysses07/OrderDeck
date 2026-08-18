@@ -6,13 +6,64 @@ using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.WhatsApp;
+using OrderDeck.PdfParsing;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.WhatsApp;
 
 public sealed class WhatsAppInboundLabelTests
 {
-    private static (LicenseDbContext Db, WhatsAppInboundJob Job, Guid LicenseId, Guid LabelId) Build()
+    /// <summary>Testin kontrol edebildiği sahte PDF ayrıştırıcısı.</summary>
+    private sealed class StubParser : IPdfDekontParser
+    {
+        public int Calls { get; private set; }
+
+        public PdfDekontParser.ParseResult Parse(byte[] pdfBytes)
+        {
+            Calls++;
+            return new PdfDekontParser.ParseResult(
+                PayerName: "AYŞE YILMAZ",
+                Amount: 1250.50m,
+                PaidAt: new DateTime(2026, 8, 18, 14, 30, 0),
+                ReferansNo: "REF123456",
+                PdfHash: "abc123",
+                RawText: "ham metin",
+                RecipientIban: "TR330006100519786457841326",
+                RecipientName: "EMAR GLOBAL");
+        }
+    }
+
+    /// <summary>Graph'a çıkmadan sabit bir <see cref="WhatsAppMediaRef"/> döndüren
+    /// indirici. <c>WhatsAppMediaDownloader</c> mühürlü olmadığı için
+    /// <c>FetchAsync</c> sanal yapılamaz; bunun yerine HTTP katmanını taklit
+    /// etmek yerine job'a hazır bir alt sınıf veriyoruz.</summary>
+    private static class FakeMedia
+    {
+        public static WhatsAppMediaDownloader ReturningPdf(byte[] bytes)
+            => new StubDownloader(new WhatsAppMediaRef("k.pdf", "application/pdf", bytes.Length, bytes));
+
+        public static WhatsAppMediaDownloader ReturningImage()
+            => new StubDownloader(new WhatsAppMediaRef("k.jpg", "image/jpeg", 10, null));
+
+        private sealed class StubDownloader : WhatsAppMediaDownloader
+        {
+            private readonly WhatsAppMediaRef _ref;
+
+            public StubDownloader(WhatsAppMediaRef mediaRef)
+                : base(new HttpClient(), new InMemoryWhatsAppMediaStore(),
+                       Options.Create(new WhatsAppOptions()),
+                       NullLogger<WhatsAppMediaDownloader>.Instance)
+                => _ref = mediaRef;
+
+            public override Task<WhatsAppMediaRef?> FetchAsync(
+                string mediaId, string messageType, WhatsAppSendContext ctx,
+                Guid licenseId, CancellationToken ct = default)
+                => Task.FromResult<WhatsAppMediaRef?>(_ref);
+        }
+    }
+
+    private static (LicenseDbContext Db, WhatsAppInboundJob Job, Guid LicenseId, Guid LabelId, StubParser Parser)
+        Build(WhatsAppMediaDownloader? media = null)
     {
         var db = new LicenseDbContext(new DbContextOptionsBuilder<LicenseDbContext>()
             .UseInMemoryDatabase($"wainlbl-{Guid.NewGuid():N}").Options);
@@ -52,11 +103,14 @@ public sealed class WhatsAppInboundLabelTests
         });
         db.SaveChanges();
 
+        var parser = new StubParser();
         var job = new WhatsAppInboundJob(
             db, accounts, NullLogger<WhatsAppInboundJob>.Instance,
-            new LabelRuleApplier(db, NullLogger<LabelRuleApplier>.Instance));
+            new LabelRuleApplier(db, NullLogger<LabelRuleApplier>.Instance),
+            new WaDekontExtractor(parser, NullLogger<WaDekontExtractor>.Instance),
+            media);
 
-        return (db, job, licenseId, labelId);
+        return (db, job, licenseId, labelId, parser);
     }
 
     /// <summary>Tek medya mesajı içeren webhook gövdesi.</summary>
@@ -78,7 +132,7 @@ public sealed class WhatsAppInboundLabelTests
     [InlineData("image")]
     public async Task Document_and_image_both_raise_the_label(string type)
     {
-        var (db, job, _, labelId) = Build();
+        var (db, job, _, labelId, _) = Build();
 
         await job.ProcessAsync(MediaPayload("wamid.1", type));
 
@@ -90,7 +144,7 @@ public sealed class WhatsAppInboundLabelTests
     [Fact]
     public async Task Text_message_does_not_raise_the_label()
     {
-        var (db, job, _, _) = Build();
+        var (db, job, _, _, _) = Build();
 
         await job.ProcessAsync("""
         {
@@ -109,7 +163,7 @@ public sealed class WhatsAppInboundLabelTests
     [Fact]
     public async Task Two_documents_in_one_batch_produce_one_link()
     {
-        var (db, job, _, _) = Build();
+        var (db, job, _, _, _) = Build();
 
         await job.ProcessAsync("""
         {
@@ -134,7 +188,7 @@ public sealed class WhatsAppInboundLabelTests
     [Fact]
     public async Task Label_is_written_in_the_same_save_as_a_brand_new_conversation()
     {
-        var (db, job, _, _) = Build();
+        var (db, job, _, _, _) = Build();
 
         // Bu numaradan daha önce hiç mesaj yok → sohbet aynı SaveChanges'te oluşur.
         db.WaConversations.Should().BeEmpty();
@@ -149,7 +203,7 @@ public sealed class WhatsAppInboundLabelTests
     [Fact]
     public async Task Echo_of_our_own_document_does_not_raise_the_label()
     {
-        var (db, job, _, _) = Build();
+        var (db, job, _, _, _) = Build();
 
         // Parser echo'yu field=="smb_message_echoes" ile tanır, "context" alanıyla değil.
         await job.ProcessAsync("""
@@ -173,7 +227,7 @@ public sealed class WhatsAppInboundLabelTests
     [Fact]
     public async Task Without_a_rule_no_label_is_written()
     {
-        var (db, job, _, _) = Build();
+        var (db, job, _, _, _) = Build();
         db.WaLabelRules.RemoveRange(db.WaLabelRules);
         db.SaveChanges();
 
@@ -181,5 +235,51 @@ public sealed class WhatsAppInboundLabelTests
 
         db.WaMessages.Should().ContainSingle();
         db.WaConversationLabels.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Pdf_dekont_is_parsed_and_stored_next_to_the_message()
+    {
+        var (db, job, licenseId, _, parser) = Build(FakeMedia.ReturningPdf([9, 9, 9]));
+
+        await job.ProcessAsync(MediaPayload("wamid.pdf", "document"));
+
+        parser.Calls.Should().Be(1);
+
+        var msg = await db.WaMessages.SingleAsync();
+        var row = await db.WaDekontExtractions.SingleAsync();
+        row.WaMessageId.Should().Be(msg.Id);
+        row.LicenseId.Should().Be(licenseId);
+        row.PayerName.Should().Be("AYŞE YILMAZ");
+        row.Amount.Should().Be(1250.50m);
+        row.ParserConfidence.Should().Be("High");
+    }
+
+    [Fact]
+    public async Task Image_dekont_is_labeled_but_not_parsed()
+    {
+        // Görsel dekont AI gerektirir — ayrı faz. Etiket yine de yapışır.
+        var (db, job, _, _, parser) = Build(FakeMedia.ReturningImage());
+
+        await job.ProcessAsync(MediaPayload("wamid.img", "image"));
+
+        parser.Calls.Should().Be(0);
+        db.WaConversationLabels.Should().ContainSingle();
+        db.WaDekontExtractions.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_document_without_pdf_bytes_is_still_saved_and_labeled()
+    {
+        // Medya indirici kayıtlı değil ya da belge PDF değil → bayt yok.
+        // Mesaj yine kaydedilmeli, etiket yine yapışmalı; yalnız özet çıkmaz.
+        var (db, job, _, _, parser) = Build();
+
+        await job.ProcessAsync(MediaPayload("wamid.nomedia", "document"));
+
+        parser.Calls.Should().Be(0);
+        db.WaMessages.Should().ContainSingle();
+        db.WaConversationLabels.Should().ContainSingle();
+        db.WaDekontExtractions.Should().BeEmpty();
     }
 }
