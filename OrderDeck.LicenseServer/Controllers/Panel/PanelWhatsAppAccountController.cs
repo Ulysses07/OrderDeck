@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
@@ -29,17 +30,20 @@ public sealed class PanelWhatsAppAccountController : ControllerBase
     private readonly WhatsAppAccountService _accounts;
     private readonly IWhatsAppOnboardingClient _graph;
     private readonly ILogger<PanelWhatsAppAccountController> _log;
+    private readonly WhatsAppOptions _opt;
 
     public PanelWhatsAppAccountController(
         LicenseDbContext db,
         WhatsAppAccountService accounts,
         IWhatsAppOnboardingClient graph,
-        ILogger<PanelWhatsAppAccountController> log)
+        ILogger<PanelWhatsAppAccountController> log,
+        IOptions<WhatsAppOptions> opt)
     {
         _db = db;
         _accounts = accounts;
         _graph = graph;
         _log = log;
+        _opt = opt.Value;
     }
 
     public sealed record EmbeddedSignupRequest(string Code, string WabaId, string PhoneNumberId);
@@ -139,6 +143,14 @@ public sealed class PanelWhatsAppAccountController : ControllerBase
             .FirstOrDefaultAsync(a => a.LicenseId == licenseId.Value, ct);
         return account is null ? NotFound() : Ok(ToView(account));
     }
+
+    public sealed record SignupConfig(string AppId, string ConfigId, string GraphApiVersion);
+
+    /// <summary>Panelin FB JS SDK'yı açmak için ihtiyaç duyduğu genel değerler.
+    /// App Secret BURAYA GİRMEZ — o değerle tenant token'ı üretilebiliyor.</summary>
+    [HttpGet("signup-config")]
+    public IActionResult GetSignupConfig() =>
+        Ok(new SignupConfig(_opt.AppId, _opt.EmbeddedSignupConfigId, _opt.GraphApiVersion));
 
     private static AccountView ToView(WhatsAppAccount a) => new(
         a.WabaId, a.PhoneNumberId, a.DisplayPhoneNumber, a.VerifiedName,

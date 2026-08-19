@@ -181,6 +181,22 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
         (await TitleAsync(resp)).Should().Be("no-active-license");
     }
 
+    [Fact]
+    public async Task The_panel_can_read_the_signup_configuration_but_never_the_app_secret()
+    {
+        var seed = await SeedAsync();
+
+        var resp = await seed.Client.GetAsync("/api/panel/whatsapp/account/signup-config");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.TryGetProperty("appId", out _).Should().BeTrue();
+        doc.RootElement.TryGetProperty("configId", out _).Should().BeTrue();
+        doc.RootElement.TryGetProperty("graphApiVersion", out _).Should().BeTrue();
+        // App Secret sunucuda kalır; panele sızarsa herkes tenant token'ı üretebilir.
+        doc.RootElement.TryGetProperty("appSecret", out _).Should().BeFalse();
+    }
+
     private static async Task<string?> TitleAsync(HttpResponseMessage resp)
     {
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
