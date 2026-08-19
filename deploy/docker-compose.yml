@@ -110,9 +110,15 @@ services:
       # karşılar — ikisi de boşsa webhook her isteği 403 ile reddeder.
       # Provider "cloud" giden Graph çağrılarını açar; gelen mesaj yolu
       # provider'dan bağımsız çalışır.
+      # AppId + EmbeddedSignupConfigId panelin FB JS SDK'sını açar (Embedded
+      # Signup). İkisi de gizli değil ama boş kalırsa yayıncı "Bağla" düğmesine
+      # bastığında Meta penceresi hiç açılmaz. Burada listelenmeyen anahtar
+      # container'a GİRMEZ — .env'e yazmak tek başına yetmiyor.
       OrderDeck__WhatsApp__Provider: "${OrderDeck__WhatsApp__Provider:-log}"
       OrderDeck__WhatsApp__AppSecret: "${OrderDeck__WhatsApp__AppSecret:-}"
       OrderDeck__WhatsApp__VerifyToken: "${OrderDeck__WhatsApp__VerifyToken:-}"
+      OrderDeck__WhatsApp__AppId: "${OrderDeck__WhatsApp__AppId:-}"
+      OrderDeck__WhatsApp__EmbeddedSignupConfigId: "${OrderDeck__WhatsApp__EmbeddedSignupConfigId:-}"
       # OpenTelemetry export. Set OTEL_EXPORTER_OTLP_ENDPOINT in .env to push
       # traces+metrics to a collector (Grafana Cloud, Honeycomb, Tempo, etc.).
       # Empty = no push; /metrics scrape endpoint still works regardless.
