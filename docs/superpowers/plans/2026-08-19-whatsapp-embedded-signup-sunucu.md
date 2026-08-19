@@ -12,13 +12,26 @@
 
 ---
 
+## ⚠️ Uygulama notu — bu plan artık kodun kaynağı DEĞİL
+
+Plan uygulandı ve inceleme turlarında **bilerek değiştirildi**. Aşağıdaki noktalarda kodu oku, planı değil (`Services/WhatsApp/`, `Controllers/Panel/PanelWhatsAppAccountController.cs`):
+
+1. **Code takası GET + sorgu dizesi değil, POST + form gövdesi.** Plandaki `GET /oauth/access_token?...&client_secret=...` **reddedildi**: bu istemci `AddHttpClient` ile kayıtlı, yani `LoggingHttpMessageHandler` istek URI'sini Information seviyesinde log'a yazıyor ve `AddHttpClientInstrumentation` aynı URI'yi ikinci kez tüketiyor. App secret'ı sorgu dizesine koymak onu iki ayrı log yoluna teslim ederdi. **Aşağıdaki kod bloklarında ve Graph tablosunun 1. satırında bu eski tasarım duruyor — kopyalama.**
+2. **Meta'nın ham yanıt gövdesi çağırana dönmüyor.** Beklenmedik yanıtlar sabit metne (`Opaque<T>`) indirgeniyor; code-takası gövdesi sunucu log'una da yazılmıyor (form-encoded düşerse token açıkta olurdu).
+3. **PIN numaraya ait, lisansa değil.** `ResolvePinAsync` saklı PIN'i yalnız `PhoneNumberId` de eşleşiyorsa yeniden kullanıyor; Meta reddederse (`register.Ok == false`) PIN hiç yazılmıyor.
+4. **Ek korumalar:** Graph'tan önce çapraz kiracı sahiplik kontrolü (409), `^[0-9]{1,32}$` id doğrulaması, personel operatöre `owner-only` 403, token ile PIN için ayrı `IDataProtector` purpose'ları, yapılandırılmamış sunucuda `signup-config` → 503.
+
+**Açık kalanlar (ayrı dal):** `waba_id` ↔ `phone_number_id` eşleşmesi doğrulanmıyor; "numarayı kopar" ucu yok.
+
+---
+
 ## Referans: Meta Graph çağrıları
 
 Hepsi `https://graph.facebook.com/{version}` altında (`WhatsAppOptions.GraphBaseUrl` + `GraphApiVersion`, bugün `v25.0`).
 
 | # | Çağrı | Kimlik |
 |---|---|---|
-| 1 | `GET /oauth/access_token?client_id={AppId}&client_secret={AppSecret}&code={code}` → `{ "access_token": "...", "token_type": "bearer" }` | app kimliği (query'de) |
+| 1 | ~~`GET /oauth/access_token?client_id=...&client_secret=...&code=...`~~ → uygulamada **`POST /oauth/access_token`**, aynı üç alan **form gövdesinde** (bkz. yukarıdaki uygulama notu) → `{ "access_token": "...", "token_type": "bearer" }` | app kimliği (gövdede) |
 | 2 | `POST /{wabaId}/subscribed_apps` → `{ "success": true }` | Bearer = iş token'ı |
 | 3 | `GET /{phoneNumberId}?fields=display_phone_number,verified_name` → `{ "display_phone_number": "+90 555 111 22 33", "verified_name": "..." }` | Bearer = iş token'ı |
 | 4 | `POST /{phoneNumberId}/register` gövde `{ "messaging_product": "whatsapp", "pin": "123456" }` → `{ "success": true }` | Bearer = iş token'ı |
@@ -53,7 +66,7 @@ Hata gövdesi her zaman `{ "error": { "code": 190, "message": "..." } }` — mev
 **Files:**
 - Modify: `OrderDeck.LicenseServer/Services/WhatsApp/WhatsAppOptions.cs:28`
 
-- [ ] **Step 1: Alanları ekle**
+- [x] **Step 1: Alanları ekle**
 
 `WhatsAppOptions.cs` içinde `AppSecret` özelliğinin hemen altına:
 
@@ -69,12 +82,12 @@ Hata gövdesi her zaman `{ "error": { "code": 190, "message": "..." } }` — mev
     public string EmbeddedSignupConfigId { get; set; } = "";
 ```
 
-- [ ] **Step 2: Derle**
+- [x] **Step 2: Derle**
 
 Run: `dotnet build OrderDeck.LicenseServer/OrderDeck.LicenseServer.csproj`
 Expected: Build succeeded, 0 error.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add OrderDeck.LicenseServer/Services/WhatsApp/WhatsAppOptions.cs
@@ -89,7 +102,7 @@ git commit -m "feat(whatsapp): Embedded Signup için AppId ve config id ayarlar�
 - Modify: `OrderDeck.LicenseServer/Domain/WhatsAppAccount.cs:32`
 - Create: `OrderDeck.LicenseServer/Data/Migrations/<timestamp>_AddWhatsAppTwoStepPin.cs` (EF üretir)
 
-- [ ] **Step 1: Alanı ekle**
+- [x] **Step 1: Alanı ekle**
 
 `WhatsAppAccount.cs` içinde `AccessTokenProtected` özelliğinin altına:
 
@@ -101,22 +114,22 @@ git commit -m "feat(whatsapp): Embedded Signup için AppId ve config id ayarlar�
     public string? TwoStepPinProtected { get; set; }
 ```
 
-- [ ] **Step 2: Migration üret**
+- [x] **Step 2: Migration üret**
 
 Run: `dotnet ef migrations add AddWhatsAppTwoStepPin --project OrderDeck.LicenseServer --output-dir Data/Migrations`
 Expected: iki dosya oluşur (`*_AddWhatsAppTwoStepPin.cs` + `.Designer.cs`) ve `LicenseDbContextModelSnapshot.cs` güncellenir.
 
-- [ ] **Step 3: Migration'ın gerçekten tek sütun eklediğini gör**
+- [x] **Step 3: Migration'ın gerçekten tek sütun eklediğini gör**
 
 Run: `git diff --stat && cat OrderDeck.LicenseServer/Data/Migrations/*_AddWhatsAppTwoStepPin.cs`
 Expected: `Up` içinde yalnız `migrationBuilder.AddColumn<string>(name: "TwoStepPinProtected", table: "WhatsAppAccounts", nullable: true)`. Başka tabloya dokunuyorsa DUR — model ile snapshot arasında ilgisiz bir sapma var, önce onu araştır.
 
-- [ ] **Step 4: Sunucu testleri hâlâ yeşil**
+- [x] **Step 4: Sunucu testleri hâlâ yeşil**
 
 Run: `dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj`
 Expected: Failed: 0.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add OrderDeck.LicenseServer/Domain/WhatsAppAccount.cs OrderDeck.LicenseServer/Data/Migrations
@@ -133,7 +146,7 @@ Dört Graph çağrısını tek tek TDD ile ekliyoruz. Önce sözleşme + ilk ça
 - Create: `OrderDeck.LicenseServer/Services/WhatsApp/WhatsAppOnboardingClient.cs`
 - Test: `OrderDeck.LicenseServer.Tests/Services/WhatsApp/WhatsAppOnboardingClientTests.cs`
 
-- [ ] **Step 1: Failing test yaz**
+- [x] **Step 1: Failing test yaz**
 
 `OrderDeck.LicenseServer.Tests/Services/WhatsApp/WhatsAppOnboardingClientTests.cs`:
 
@@ -203,12 +216,13 @@ public sealed class WhatsAppOnboardingClientTests
         result.Ok.Should().BeTrue();
         result.Value.Should().Be("BIZ_TOKEN");
 
-        var url = handler.Requests[0].RequestUri!.ToString();
-        handler.Requests[0].Method.Should().Be(HttpMethod.Get);
-        url.Should().StartWith("https://graph.test/v25.0/oauth/access_token?");
-        url.Should().Contain("client_id=APP_1");
-        url.Should().Contain("client_secret=SECRET_1");
-        url.Should().Contain("code=CODE_123");
+        // UYGULAMADA DEĞİŞTİ: secret sorgu dizesinde değil, form gövdesinde
+        // gidiyor (bkz. baştaki uygulama notu). Sevk edilen assert şu:
+        var sent = handler.Requests[0];
+        sent.Method.Should().Be(HttpMethod.Post);
+        sent.RequestUri!.ToString().Should().Be("https://graph.test/v25.0/oauth/access_token");
+        var form = await sent.Content!.ReadAsStringAsync();
+        form.Should().Contain("client_id=APP_1").And.Contain("code=CODE_123");
     }
 
     [Fact]
@@ -227,12 +241,12 @@ public sealed class WhatsAppOnboardingClientTests
 }
 ```
 
-- [ ] **Step 2: Testin derlenmediğini gör**
+- [x] **Step 2: Testin derlenmediğini gör**
 
 Run: `dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --filter FullyQualifiedName~WhatsAppOnboardingClientTests`
 Expected: derleme hatası — `WhatsAppOnboardingClient` bulunamıyor (CS0246).
 
-- [ ] **Step 3: İstemciyi yaz**
+- [x] **Step 3: İstemciyi yaz**
 
 `OrderDeck.LicenseServer/Services/WhatsApp/WhatsAppOnboardingClient.cs`:
 
@@ -284,12 +298,18 @@ public sealed class WhatsAppOnboardingClient : IWhatsAppOnboardingClient
 
     public async Task<GraphResult<string>> ExchangeCodeAsync(string code, CancellationToken ct)
     {
-        var url = $"{Root}/oauth/access_token" +
-                  $"?client_id={Uri.EscapeDataString(_opt.AppId)}" +
-                  $"&client_secret={Uri.EscapeDataString(_opt.AppSecret)}" +
-                  $"&code={Uri.EscapeDataString(code)}";
-
-        using var req = new HttpRequestMessage(HttpMethod.Get, url);
+        // UYGULAMADA DEĞİŞTİ: app secret ve tek kullanımlık code GÖVDEDE gider,
+        // sorgu dizesinde DEĞİL — istek URI'si iki ayrı log yoluna düşüyor
+        // (bkz. baştaki uygulama notu). Sevk edilen hâli:
+        using var req = new HttpRequestMessage(HttpMethod.Post, $"{Root}/oauth/access_token")
+        {
+            Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["client_id"] = _opt.AppId,
+                ["client_secret"] = _opt.AppSecret,
+                ["code"] = code,
+            }),
+        };
         return await SendAsync(req, "code-exchange", root =>
             root.TryGetProperty("access_token", out var t) ? t.GetString() : null, ct);
     }
@@ -345,12 +365,12 @@ public sealed class WhatsAppOnboardingClient : IWhatsAppOnboardingClient
 }
 ```
 
-- [ ] **Step 4: Testlerin geçtiğini gör**
+- [x] **Step 4: Testlerin geçtiğini gör**
 
 Run: `dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --filter FullyQualifiedName~WhatsAppOnboardingClientTests`
 Expected: Passed: 2, Failed: 0.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add OrderDeck.LicenseServer/Services/WhatsApp/WhatsAppOnboardingClient.cs OrderDeck.LicenseServer.Tests/Services/WhatsApp/WhatsAppOnboardingClientTests.cs
@@ -365,7 +385,7 @@ git commit -m "feat(whatsapp): Embedded Signup code'unu iş token'ına çevir"
 - Modify: `OrderDeck.LicenseServer/Services/WhatsApp/WhatsAppOnboardingClient.cs`
 - Test: `OrderDeck.LicenseServer.Tests/Services/WhatsApp/WhatsAppOnboardingClientTests.cs`
 
-- [ ] **Step 1: Failing testleri yaz**
+- [x] **Step 1: Failing testleri yaz**
 
 `WhatsAppOnboardingClientTests.cs` içindeki son `}` öncesine ekle:
 
@@ -418,12 +438,12 @@ git commit -m "feat(whatsapp): Embedded Signup code'unu iş token'ına çevir"
     }
 ```
 
-- [ ] **Step 2: Testlerin derlenmediğini gör**
+- [x] **Step 2: Testlerin derlenmediğini gör**
 
 Run: `dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --filter FullyQualifiedName~WhatsAppOnboardingClientTests`
 Expected: CS1061 — `SubscribeAppAsync` / `ReadPhoneNumberAsync` / `RegisterPhoneNumberAsync` yok.
 
-- [ ] **Step 3: Arayüze üç metodu ekle**
+- [x] **Step 3: Arayüze üç metodu ekle**
 
 `WhatsAppOnboardingClient.cs` içinde `IWhatsAppOnboardingClient`'a, `ExchangeCodeAsync` bildiriminin altına:
 
@@ -442,7 +462,7 @@ Expected: CS1061 — `SubscribeAppAsync` / `ReadPhoneNumberAsync` / `RegisterPho
         string phoneNumberId, string pin, string businessToken, CancellationToken ct);
 ```
 
-- [ ] **Step 4: Gövdeleri yaz**
+- [x] **Step 4: Gövdeleri yaz**
 
 `WhatsAppOnboardingClient` sınıfında `ExchangeCodeAsync`'in altına:
 
@@ -499,12 +519,12 @@ Expected: CS1061 — `SubscribeAppAsync` / `ReadPhoneNumberAsync` / `RegisterPho
     }
 ```
 
-- [ ] **Step 5: Testlerin geçtiğini gör**
+- [x] **Step 5: Testlerin geçtiğini gör**
 
 Run: `dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --filter FullyQualifiedName~WhatsAppOnboardingClientTests`
 Expected: Passed: 5, Failed: 0.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add OrderDeck.LicenseServer/Services/WhatsApp/WhatsAppOnboardingClient.cs OrderDeck.LicenseServer.Tests/Services/WhatsApp/WhatsAppOnboardingClientTests.cs
@@ -521,7 +541,7 @@ Bugün "aynı Phone Number ID iki lisansa bağlanamaz" kuralı yalnız admin con
 - Modify: `OrderDeck.LicenseServer/Services/WhatsApp/WhatsAppAccountService.cs`
 - Test: `OrderDeck.LicenseServer.Tests/Services/WhatsApp/WhatsAppAccountUpsertTests.cs` (create)
 
-- [ ] **Step 1: Failing test yaz**
+- [x] **Step 1: Failing test yaz**
 
 `OrderDeck.LicenseServer.Tests/Services/WhatsApp/WhatsAppAccountUpsertTests.cs`:
 
@@ -602,12 +622,12 @@ public sealed class WhatsAppAccountUpsertTests
 }
 ```
 
-- [ ] **Step 2: Testin derlenmediğini gör**
+- [x] **Step 2: Testin derlenmediğini gör**
 
 Run: `dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --filter FullyQualifiedName~WhatsAppAccountUpsertTests`
 Expected: CS0246 — `WhatsAppAccountUpsert` yok.
 
-- [ ] **Step 3: Servise upsert'i ekle**
+- [x] **Step 3: Servise upsert'i ekle**
 
 `WhatsAppAccountService.cs` içinde `namespace` satırının altına, sınıfın dışına:
 
@@ -678,12 +698,12 @@ Ve `WhatsAppAccountService` sınıfının içine, `ResolveSendContextAsync`'in a
     }
 ```
 
-- [ ] **Step 4: Testlerin geçtiğini gör**
+- [x] **Step 4: Testlerin geçtiğini gör**
 
 Run: `dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --filter FullyQualifiedName~WhatsAppAccountUpsertTests`
 Expected: Passed: 3, Failed: 0.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add OrderDeck.LicenseServer/Services/WhatsApp/WhatsAppAccountService.cs OrderDeck.LicenseServer.Tests/Services/WhatsApp/WhatsAppAccountUpsertTests.cs
@@ -697,7 +717,7 @@ git commit -m "refactor(whatsapp): hesap bağlama kuralını tek gövdede topla"
 **Files:**
 - Modify: `OrderDeck.LicenseServer/Controllers/Licenses/AdminWhatsAppAccountsController.cs:81-117`
 
-- [ ] **Step 1: Gövdeyi değiştir**
+- [x] **Step 1: Gövdeyi değiştir**
 
 `Connect` metodunda `var phoneNumberId = req.PhoneNumberId.Trim();` satırından metodun `return Ok(...)` satırına kadar olan bloğu şununla değiştir:
 
@@ -724,16 +744,16 @@ git commit -m "refactor(whatsapp): hesap bağlama kuralını tek gövdede topla"
         return Ok(ToResponse(account, req.AccessToken));
 ```
 
-- [ ] **Step 2: Artık kullanılmayan `using` ve alanları temizle**
+- [x] **Step 2: Artık kullanılmayan `using` ve alanları temizle**
 
 `_db` hâlâ `Licenses.AnyAsync` ve `Get` için gerekli — bırak. Başka bir şey silme.
 
-- [ ] **Step 3: Mevcut admin testlerinin hâlâ yeşil olduğunu gör**
+- [x] **Step 3: Mevcut admin testlerinin hâlâ yeşil olduğunu gör**
 
 Run: `dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --filter FullyQualifiedName~WhatsAppAccount`
 Expected: Failed: 0. Kırmızı varsa refactor davranışı değiştirmiş demektir — geri al, farkı bul.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add OrderDeck.LicenseServer/Controllers/Licenses/AdminWhatsAppAccountsController.cs
@@ -750,7 +770,7 @@ git commit -m "refactor(whatsapp): admin bağlama ucu ortak upsert'i kullansın"
 
 **Yetki notu:** `StockStaffScopeFilter` varsayılan-kapalı; `[AllowStockStaff]` koymadığımız için stok elemanı bu uca zaten erişemez. Ek kod gerekmiyor.
 
-- [ ] **Step 1: Failing test yaz**
+- [x] **Step 1: Failing test yaz**
 
 `OrderDeck.LicenseServer.Tests/Controllers/Panel/PanelWhatsAppAccountControllerTests.cs`:
 
@@ -927,12 +947,12 @@ public sealed class PanelWhatsAppAccountControllerTests : IClassFixture<ApiFacto
 }
 ```
 
-- [ ] **Step 2: Testin derlenmediğini gör**
+- [x] **Step 2: Testin derlenmediğini gör**
 
 Run: `dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --filter FullyQualifiedName~PanelWhatsAppAccountControllerTests`
 Expected: derleme hatası ya da 404 — controller yok.
 
-- [ ] **Step 3: Controller'ı yaz**
+- [x] **Step 3: Controller'ı yaz**
 
 `OrderDeck.LicenseServer/Controllers/Panel/PanelWhatsAppAccountController.cs`:
 
@@ -1092,7 +1112,7 @@ public sealed class PanelWhatsAppAccountController : ControllerBase
 }
 ```
 
-- [ ] **Step 4: DI kaydını ekle**
+- [x] **Step 4: DI kaydını ekle**
 
 `OrderDeck.LicenseServer/Program.cs` içinde `builder.Services.AddScoped<...WhatsAppAccountService>();` satırının hemen üstüne:
 
@@ -1105,17 +1125,17 @@ public sealed class PanelWhatsAppAccountController : ControllerBase
                 c => c.Timeout = TimeSpan.FromSeconds(waOnboardTimeout <= 0 ? 15 : waOnboardTimeout));
 ```
 
-- [ ] **Step 5: Testlerin geçtiğini gör**
+- [x] **Step 5: Testlerin geçtiğini gör**
 
 Run: `dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --filter FullyQualifiedName~PanelWhatsAppAccountControllerTests`
 Expected: Passed: 5, Failed: 0.
 
-- [ ] **Step 6: Tüm sunucu takımı yeşil**
+- [x] **Step 6: Tüm sunucu takımı yeşil**
 
 Run: `dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj`
 Expected: Failed: 0.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add OrderDeck.LicenseServer/Controllers/Panel/PanelWhatsAppAccountController.cs OrderDeck.LicenseServer/Program.cs OrderDeck.LicenseServer.Tests/Controllers/Panel/PanelWhatsAppAccountControllerTests.cs
@@ -1132,7 +1152,7 @@ Panel JS SDK'yı açmak için `config_id` ve app id'yi bilmek zorunda. Bunları 
 - Modify: `OrderDeck.LicenseServer/Controllers/Panel/PanelWhatsAppAccountController.cs`
 - Test: `OrderDeck.LicenseServer.Tests/Controllers/Panel/PanelWhatsAppAccountControllerTests.cs`
 
-- [ ] **Step 1: Failing test yaz**
+- [x] **Step 1: Failing test yaz**
 
 `PanelWhatsAppAccountControllerTests.cs` içindeki son `}` öncesine:
 
@@ -1154,12 +1174,12 @@ Panel JS SDK'yı açmak için `config_id` ve app id'yi bilmek zorunda. Bunları 
     }
 ```
 
-- [ ] **Step 2: Testin kırmızı olduğunu gör**
+- [x] **Step 2: Testin kırmızı olduğunu gör**
 
 Run: `dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --filter FullyQualifiedName~The_panel_can_read_the_signup_configuration`
 Expected: FAIL — 404 NotFound.
 
-- [ ] **Step 3: Ucu ekle**
+- [x] **Step 3: Ucu ekle**
 
 `PanelWhatsAppAccountController` içinde `IWhatsAppOnboardingClient _graph;` alanının altına yeni alan ve ctor parametresi ekle:
 
@@ -1181,12 +1201,12 @@ Sonra `Get` metodunun altına:
         Ok(new SignupConfig(_opt.AppId, _opt.EmbeddedSignupConfigId, _opt.GraphApiVersion));
 ```
 
-- [ ] **Step 4: Testin geçtiğini gör**
+- [x] **Step 4: Testin geçtiğini gör**
 
 Run: `dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --filter FullyQualifiedName~PanelWhatsAppAccountControllerTests`
 Expected: Passed: 6, Failed: 0.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add OrderDeck.LicenseServer/Controllers/Panel/PanelWhatsAppAccountController.cs OrderDeck.LicenseServer.Tests/Controllers/Panel/PanelWhatsAppAccountControllerTests.cs
@@ -1200,7 +1220,7 @@ git commit -m "feat(whatsapp): panel için Embedded Signup yapılandırma ucu"
 **Files:**
 - Modify: `docs/whatsapp-cloud-api-integration-plan.md`
 
-- [ ] **Step 1: Yeni ortam değişkenlerini belgele**
+- [x] **Step 1: Yeni ortam değişkenlerini belgele**
 
 `docs/whatsapp-cloud-api-integration-plan.md` dosyasının sonuna:
 
@@ -1233,7 +1253,7 @@ sayfasındaki **"Claim a sandbox account"** ile Meta'nın verdiği sandbox WABA
 üzerinden Embedded Signup uçtan denenebilir.
 ```
 
-- [ ] **Step 2: İki takımı da çalıştır**
+- [x] **Step 2: İki takımı da çalıştır**
 
 Run: `dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj`
 Expected: Failed: 0.
@@ -1241,12 +1261,12 @@ Expected: Failed: 0.
 Run: `dotnet test OrderDeck.Tests/OrderDeck.Tests.csproj`
 Expected: Failed: 0. (Bu plan WPF'e dokunmuyor; kırmızı çıkarsa ilgisiz bir sapma var.)
 
-- [ ] **Step 3: Sır taraması — repo PUBLIC**
+- [x] **Step 3: Sır taraması — repo PUBLIC**
 
 Run: `git diff master --stat && git grep -nE "EAA[A-Za-z0-9]{20,}|client_secret=[A-Za-z0-9]{16,}" -- . ':!docs/superpowers/plans'`
 Expected: hiçbir eşleşme yok. Eşleşme varsa commit ETME, önce temizle.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs/whatsapp-cloud-api-integration-plan.md
