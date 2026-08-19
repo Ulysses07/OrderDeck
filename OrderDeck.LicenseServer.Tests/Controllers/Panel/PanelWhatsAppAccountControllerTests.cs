@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using FluentAssertions;
@@ -67,7 +68,26 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
     /// taban tipi döndürdüğü için oradan geçmiyor.</summary>
     private sealed class OnboardingApiFactory : ApiFactory
     {
+        private readonly bool _signupConfigured;
+
+        /// <param name="signupConfigured">false = <c>AppId</c>/<c>ConfigId</c> boş,
+        /// yani sunucu Embedded Signup için hiç yapılandırılmamış.</param>
+        public OnboardingApiFactory(bool signupConfigured = true)
+            => _signupConfigured = signupConfigured;
+
         public FakeOnboardingClient Graph { get; } = new();
+
+        /// <summary>Uç boş yapılandırmayı 503 saydığı için varsayılan fabrika bu
+        /// iki anahtarı vermek zorunda; yoksa config'i okuyan test yanlış
+        /// sebeple kırmızıya döner. Değerler sahte, sunucu onları kullanmıyor.</summary>
+        protected override IDictionary<string, string?> ExtraConfig =>
+            _signupConfigured
+                ? new Dictionary<string, string?>
+                {
+                    ["OrderDeck:WhatsApp:AppId"] = "1234567890",
+                    ["OrderDeck:WhatsApp:EmbeddedSignupConfigId"] = "9876543210",
+                }
+                : new Dictionary<string, string?>();
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -76,9 +96,9 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
         }
     }
 
-    private OnboardingApiFactory NewFactory()
+    private OnboardingApiFactory NewFactory(bool signupConfigured = true)
     {
-        var factory = new OnboardingApiFactory();
+        var factory = new OnboardingApiFactory(signupConfigured);
         _factories.Add(factory);
         return factory;
     }
@@ -108,6 +128,30 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
         await db.SaveChangesAsync();
 
         return new Seed(client, license.Id, factory.Graph, factory);
+    }
+
+    private sealed record OperatorLoginResp(string Token);
+
+    /// <summary>Yayıncının davet ettiği bir personel adına giriş yapmış client.
+    /// Rol bilerek "staff": "stock" zaten genel kapıya takıldığı için sahiplik
+    /// kuralını yalnız staff sınayabilir.</summary>
+    private static async Task<HttpClient> StaffClientAsync(Seed seed)
+    {
+        var email = $"op-{Guid.NewGuid():N}@example.com";
+        var password = "pwd-" + Guid.NewGuid().ToString("N");
+
+        var invite = await seed.Client.PostAsJsonAsync("/api/panel/operators",
+            new { email, name = "Personel", password, role = "staff" });
+        invite.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var client = seed.Factory.CreateClient();
+        var login = await client.PostAsJsonAsync(
+            "/api/v1/auth/operator-login", new { email, password });
+        login.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = (await login.Content.ReadFromJsonAsync<OperatorLoginResp>())!;
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", body.Token);
+        return client;
     }
 
     /// <summary>Satırdaki şifreli PIN'i çözer — testin "kaydedilen PIN hangisi"
@@ -354,6 +398,62 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
         doc.RootElement.TryGetProperty("graphApiVersion", out _).Should().BeTrue();
         // App Secret sunucuda kalır; panele sızarsa herkes tenant token'ı üretebilir.
         doc.RootElement.TryGetProperty("appSecret", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task An_unconfigured_server_says_so_instead_of_handing_out_empty_ids()
+    {
+        var seed = await SeedTenantAsync(NewFactory(signupConfigured: false));
+
+        var resp = await seed.Client.GetAsync("/api/panel/whatsapp/account/signup-config");
+
+        // 200 + boş id'ler panelin FB SDK'sını yine de açardı: yayıncı,
+        // sebebi sunucu yapılandırması olan anlaşılmaz bir Meta hatası görürdü.
+        resp.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+        (await TitleAsync(resp)).Should().Be("embedded-signup-not-configured");
+    }
+
+    [Fact]
+    public async Task One_broadcaster_never_sees_another_ones_connection()
+    {
+        var first = await SeedAsync();
+        (await first.Client.PostAsJsonAsync("/api/panel/whatsapp/account/embedded-signup", Body))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var second = await SeedTenantAsync(first.Factory);
+
+        var mine = await first.Client.GetAsync("/api/panel/whatsapp/account");
+        var theirs = await second.Client.GetAsync("/api/panel/whatsapp/account");
+
+        mine.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await mine.Content.ReadAsStringAsync()).Should().Contain("+90 555 111 22 33");
+
+        // Sorgu lisansa göre daraltılmasaydı B, A'nın numarasını ve WABA id'sini
+        // görürdü — tek store'da iki yayıncı gerçek üretim şekli.
+        theirs.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task A_staff_operator_cannot_touch_the_whatsapp_connection()
+    {
+        var seed = await SeedAsync();
+        var staff = await StaffClientAsync(seed);
+
+        var connect = await staff.PostAsJsonAsync(
+            "/api/panel/whatsapp/account/embedded-signup", Body);
+        var read = await staff.GetAsync("/api/panel/whatsapp/account");
+        var config = await staff.GetAsync("/api/panel/whatsapp/account/signup-config");
+
+        // Numara bağlamak/koparmak hesap düzeyinde bir karar; personelin
+        // yayıncının WhatsApp kimliğini devralmasının yolu olmamalı.
+        foreach (var resp in new[] { connect, read, config })
+        {
+            resp.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+            (await TitleAsync(resp)).Should().Be("owner-only");
+        }
+
+        // Asıl mesele 403 değil: personelin isteği Meta'ya HİÇ gitmemeli.
+        seed.Graph.SeenCode.Should().BeNull();
     }
 
     private static async Task<string?> TitleAsync(HttpResponseMessage resp)

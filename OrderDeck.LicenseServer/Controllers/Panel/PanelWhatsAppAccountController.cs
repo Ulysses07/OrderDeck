@@ -59,6 +59,16 @@ public sealed class PanelWhatsAppAccountController : ControllerBase
 
     public sealed record EmbeddedSignupRequest(string Code, string WabaId, string PhoneNumberId);
 
+    /// <summary>
+    /// Numara bağlamak/koparmak hesap düzeyinde bir karar: yayıncının WhatsApp
+    /// kimliğini personel devralamamalı. Aynı kapı okuma uçlarında da duruyor —
+    /// bağlı numara ile Meta yapılandırması personelin göreceği bilgi değil.
+    /// </summary>
+    private IActionResult? OwnerOnly(string detail) =>
+        User.IsOperator()
+            ? Problem(title: "owner-only", detail: detail, statusCode: 403)
+            : null;
+
     public sealed record AccountView(
         string WabaId,
         string PhoneNumberId,
@@ -72,6 +82,9 @@ public sealed class PanelWhatsAppAccountController : ControllerBase
     public async Task<IActionResult> Complete(
         [FromBody] EmbeddedSignupRequest req, CancellationToken ct)
     {
+        if (OwnerOnly("WhatsApp numarasını yalnız hesap sahibi bağlayabilir.")
+            is { } forbidden) return forbidden;
+
         var licenseId = await PanelLicenseScope.ResolveAsync(_db, User.GetTenantCustomerId(), ct);
         if (licenseId is null) return Problem(title: "no-active-license", statusCode: 400);
 
@@ -204,6 +217,9 @@ public sealed class PanelWhatsAppAccountController : ControllerBase
     [HttpGet]
     public async Task<IActionResult> Get(CancellationToken ct)
     {
+        if (OwnerOnly("Bağlı WhatsApp numarasını yalnız hesap sahibi görebilir.")
+            is { } forbidden) return forbidden;
+
         var licenseId = await PanelLicenseScope.ResolveAsync(_db, User.GetTenantCustomerId(), ct);
         if (licenseId is null) return Problem(title: "no-active-license", statusCode: 400);
 
@@ -217,8 +233,24 @@ public sealed class PanelWhatsAppAccountController : ControllerBase
     /// <summary>Panelin FB JS SDK'yı açmak için ihtiyaç duyduğu genel değerler.
     /// App Secret BURAYA GİRMEZ — o değerle tenant token'ı üretilebiliyor.</summary>
     [HttpGet("signup-config")]
-    public IActionResult GetSignupConfig() =>
-        Ok(new SignupConfig(_opt.AppId, _opt.EmbeddedSignupConfigId, _opt.GraphApiVersion));
+    public IActionResult GetSignupConfig()
+    {
+        if (OwnerOnly("WhatsApp bağlama ayarlarını yalnız hesap sahibi görebilir.")
+            is { } forbidden) return forbidden;
+
+        // Boş değerlerle dönmek en kötüsü: panel FB SDK'yı yine de açar ve
+        // yayıncı, sebebi sunucu yapılandırması olan anlaşılmaz bir Meta
+        // hatasıyla karşılaşır. Eksikliği söyleyen tek yer burası.
+        if (string.IsNullOrWhiteSpace(_opt.AppId) ||
+            string.IsNullOrWhiteSpace(_opt.EmbeddedSignupConfigId))
+        {
+            return Problem(
+                title: "embedded-signup-not-configured", statusCode: 503,
+                detail: "WhatsApp bağlama sunucuda henüz yapılandırılmadı.");
+        }
+
+        return Ok(new SignupConfig(_opt.AppId, _opt.EmbeddedSignupConfigId, _opt.GraphApiVersion));
+    }
 
     private static AccountView ToView(WhatsAppAccount a) => new(
         a.WabaId, a.PhoneNumberId, a.DisplayPhoneNumber, a.VerifiedName,
