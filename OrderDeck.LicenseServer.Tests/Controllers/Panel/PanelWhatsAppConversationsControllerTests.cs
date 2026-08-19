@@ -23,8 +23,11 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
     private sealed record ConversationLabelDto(Guid WaLabelId, string Name, string Color, string Source);
     private sealed record ConversationDto(
         Guid Id, string CustomerPhone, string? ProfileName, string Status,
-        int UnreadCount, DateTimeOffset? LastMessageAt,
+        int UnreadCount, DateTimeOffset? LastMessageAt, DateTimeOffset? WindowExpiresAt,
         List<ConversationLabelDto> Labels, DekontDto? LatestDekont);
+
+    private sealed record SendResponse(
+        bool Ok, string? ErrorCode, string? ErrorMessage, Guid? MessageId);
 
     private sealed record MessageDto(
         Guid Id, string Direction, string Type, string? Body, string Status,
@@ -402,5 +405,149 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
             $"/api/panel/whatsapp-conversations/{mine.ConversationId}/labels/{theirs.LabelId}", null);
 
         resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    /// <summary>Gönderim için bağlı bir hesap ŞART; ayrıca 24s penceresi
+    /// <c>LastInboundAt</c>'ten hesaplandığı için onu da buradan kurguluyoruz.</summary>
+    private async Task ConnectWhatsAppAsync(Seed s, DateTimeOffset lastInboundAt)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var accounts = scope.ServiceProvider.GetRequiredService<WhatsAppAccountService>();
+
+        db.WhatsAppAccounts.Add(new WhatsAppAccount
+        {
+            Id = Guid.NewGuid(), LicenseId = s.LicenseId,
+            WabaId = "WABA_" + Guid.NewGuid().ToString("N")[..8],
+            PhoneNumberId = "PNID_1", DisplayPhoneNumber = "+905550000000",
+            AccessTokenProtected = accounts.ProtectToken("token"),
+            Status = "active", ConnectedAt = DateTimeOffset.UtcNow,
+        });
+
+        var convo = await db.WaConversations.SingleAsync(c => c.Id == s.ConversationId);
+        convo.LastInboundAt = lastInboundAt;
+        await db.SaveChangesAsync();
+    }
+
+    [Fact]
+    public async Task A_reply_goes_out_and_shows_up_in_the_thread()
+    {
+        var s = await SeedAsync();
+        await ConnectWhatsAppAsync(s, DateTimeOffset.UtcNow.AddHours(-1));
+
+        var resp = await s.Client.PostAsJsonAsync(
+            $"/api/panel/whatsapp-conversations/{s.ConversationId}/send",
+            new { text = "  Kargonuz yola çıktı  " });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = (await resp.Content.ReadFromJsonAsync<SendResponse>())!;
+        body.Ok.Should().BeTrue();
+
+        var messages = await s.Client.GetFromJsonAsync<List<MessageDto>>(
+            $"/api/panel/whatsapp-conversations/{s.ConversationId}/messages");
+
+        var sent = messages!.Single(m => m.Id == body.MessageId);
+        sent.Direction.Should().Be("out");
+        sent.Origin.Should().Be("panel");
+        sent.Status.Should().Be("sent");
+        // Kenar boşlukları kırpılmalı: kutuya yapıştırılan metnin sonundaki
+        // satır sonu, gönderilen mesajda görünmemeli.
+        sent.Body.Should().Be("Kargonuz yola çıktı");
+    }
+
+    // Pencere kapalıyken Meta 131047 ile reddediyor. Uç bunu ÖNDEN kesip sebebi
+    // gövdede söylüyor; 4xx dönseydi panel bunu genel ağ hatasına indirger,
+    // yayıncı "neden gitmedi" sorusunun cevabını hiç göremezdi.
+    [Fact]
+    public async Task A_reply_is_refused_when_the_24h_window_is_closed()
+    {
+        var s = await SeedAsync();
+        await ConnectWhatsAppAsync(s, DateTimeOffset.UtcNow.AddHours(-25));
+
+        var resp = await s.Client.PostAsJsonAsync(
+            $"/api/panel/whatsapp-conversations/{s.ConversationId}/send",
+            new { text = "merhaba" });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = (await resp.Content.ReadFromJsonAsync<SendResponse>())!;
+        body.Ok.Should().BeFalse();
+        body.ErrorCode.Should().Be("window_closed");
+        body.MessageId.Should().BeNull();
+
+        var messages = await s.Client.GetFromJsonAsync<List<MessageDto>>(
+            $"/api/panel/whatsapp-conversations/{s.ConversationId}/messages");
+        messages!.Should().NotContain(m => m.Direction == "out");
+    }
+
+    [Fact]
+    public async Task Another_broadcasters_conversation_cannot_be_replied_to()
+    {
+        var mine = await SeedAsync();
+        var theirs = await SeedAsync("905441112233");
+        await ConnectWhatsAppAsync(theirs, DateTimeOffset.UtcNow.AddHours(-1));
+
+        var resp = await mine.Client.PostAsJsonAsync(
+            $"/api/panel/whatsapp-conversations/{theirs.ConversationId}/send",
+            new { text = "başkasının müşterisi" });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        var messages = await theirs.Client.GetFromJsonAsync<List<MessageDto>>(
+            $"/api/panel/whatsapp-conversations/{theirs.ConversationId}/messages");
+        messages!.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task An_empty_reply_never_reaches_meta()
+    {
+        var s = await SeedAsync();
+        await ConnectWhatsAppAsync(s, DateTimeOffset.UtcNow.AddHours(-1));
+
+        var resp = await s.Client.PostAsJsonAsync(
+            $"/api/panel/whatsapp-conversations/{s.ConversationId}/send",
+            new { text = "   \n  " });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    // Meta'nın gövde sınırı 4096; aşanı Graph reddediyor. Göndermeden kesmek
+    // hem boşuna çağrıyı hem "failed" satırını önlüyor.
+    [Fact]
+    public async Task A_reply_longer_than_metas_limit_is_cut_before_the_call()
+    {
+        var s = await SeedAsync();
+        await ConnectWhatsAppAsync(s, DateTimeOffset.UtcNow.AddHours(-1));
+
+        var resp = await s.Client.PostAsJsonAsync(
+            $"/api/panel/whatsapp-conversations/{s.ConversationId}/send",
+            new { text = new string('a', 4097) });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        var messages = await s.Client.GetFromJsonAsync<List<MessageDto>>(
+            $"/api/panel/whatsapp-conversations/{s.ConversationId}/messages");
+        messages!.Should().BeEmpty();
+    }
+
+    // Panel yazma kutusunu bu değerle kilitliyor. Boolean dönseydi pencere
+    // önbellekteki cevap bayatlarken kapanır, kutu açık kalırdı.
+    [Fact]
+    public async Task The_window_deadline_is_exposed_so_the_panel_can_lock_the_box()
+    {
+        var s = await SeedAsync();
+
+        var before = await s.Client.GetFromJsonAsync<List<ConversationDto>>(
+            "/api/panel/whatsapp-conversations");
+        // Müşteri hiç yazmadıysa pencere hiç açılmamıştır — "şu an kapalı" ile
+        // aynı şey değil, panel bunu ayrı anlatıyor.
+        before!.Single(c => c.Id == s.ConversationId).WindowExpiresAt.Should().BeNull();
+
+        var lastInbound = DateTimeOffset.UtcNow.AddHours(-3);
+        await ConnectWhatsAppAsync(s, lastInbound);
+
+        var after = await s.Client.GetFromJsonAsync<List<ConversationDto>>(
+            "/api/panel/whatsapp-conversations");
+        after!.Single(c => c.Id == s.ConversationId).WindowExpiresAt
+            .Should().BeCloseTo(lastInbound.AddHours(24), TimeSpan.FromSeconds(1));
     }
 }
