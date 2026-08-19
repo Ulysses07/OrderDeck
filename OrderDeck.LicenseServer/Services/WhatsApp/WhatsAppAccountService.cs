@@ -6,6 +6,24 @@ using OrderDeck.LicenseServer.Domain;
 
 namespace OrderDeck.LicenseServer.Services.WhatsApp;
 
+/// <summary>Bir hesabı bağlamak için gereken her şey. <paramref name="TwoStepPin"/>
+/// yalnız Embedded Signup'ta dolu — elle bağlamada PIN'i biz belirlemiyoruz.</summary>
+public sealed record WhatsAppAccountUpsert(
+    string WabaId,
+    string PhoneNumberId,
+    string DisplayPhoneNumber,
+    string AccessToken,
+    string? VerifiedName,
+    string? TwoStepPin);
+
+/// <summary><see cref="WhatsAppAccountService.UpsertAsync"/> sonucu.
+/// <paramref name="Conflict"/> = numara başka lisansta (çağıran 409 döner).</summary>
+public sealed record WhatsAppAccountUpsertResult(bool Ok, bool Conflict, WhatsAppAccount? Account)
+{
+    public static WhatsAppAccountUpsertResult Success(WhatsAppAccount a) => new(true, false, a);
+    public static readonly WhatsAppAccountUpsertResult Taken = new(false, true, null);
+}
+
 /// <summary>
 /// Tenant'ın WhatsApp hesabını çözer ve Access Token'ı şifreler/çözer.
 ///
@@ -73,5 +91,48 @@ public sealed class WhatsAppAccountService
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Lisansın WhatsApp hesabını oluşturur ya da günceller. Elle bağlayan admin
+    /// ucu ile Embedded Signup ucunun ORTAK gövdesi — "aynı Phone Number ID iki
+    /// lisansa bağlanamaz" kuralı burada tek kopya duruyor.
+    /// </summary>
+    public async Task<WhatsAppAccountUpsertResult> UpsertAsync(
+        Guid licenseId, WhatsAppAccountUpsert input, CancellationToken ct)
+    {
+        var phoneNumberId = input.PhoneNumberId.Trim();
+
+        var owner = await _db.WhatsAppAccounts
+            .FirstOrDefaultAsync(a => a.PhoneNumberId == phoneNumberId, ct);
+        if (owner is not null && owner.LicenseId != licenseId)
+            return WhatsAppAccountUpsertResult.Taken;
+
+        var account = await _db.WhatsAppAccounts
+            .FirstOrDefaultAsync(a => a.LicenseId == licenseId, ct);
+        var now = DateTimeOffset.UtcNow;
+
+        if (account is null)
+        {
+            account = new WhatsAppAccount { Id = Guid.NewGuid(), LicenseId = licenseId, ConnectedAt = now };
+            _db.WhatsAppAccounts.Add(account);
+        }
+
+        account.WabaId = input.WabaId.Trim();
+        account.PhoneNumberId = phoneNumberId;
+        account.DisplayPhoneNumber = input.DisplayPhoneNumber;
+        account.VerifiedName = string.IsNullOrWhiteSpace(input.VerifiedName) ? null : input.VerifiedName.Trim();
+        account.AccessTokenProtected = ProtectToken(input.AccessToken.Trim());
+        // PIN yalnız yeni geldiyse yazılır: elle bağlama (PIN'siz) bir Embedded
+        // Signup'ın bıraktığı PIN'i silmemeli, yoksa numara yeniden register
+        // edilemez hâle gelir.
+        if (!string.IsNullOrWhiteSpace(input.TwoStepPin))
+            account.TwoStepPinProtected = ProtectToken(input.TwoStepPin);
+        account.Status = "active";
+        account.LastError = null;
+        account.DisconnectedAt = null;
+
+        await _db.SaveChangesAsync(ct);
+        return WhatsAppAccountUpsertResult.Success(account);
     }
 }
