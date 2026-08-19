@@ -12,7 +12,7 @@ using OrderDeck.LicenseServer.Data;
 namespace OrderDeck.LicenseServer.Data.Migrations
 {
     [DbContext(typeof(LicenseDbContext))]
-    [Migration("20260819101309_AddWhatsAppTwoStepPin")]
+    [Migration("20260819110750_AddWhatsAppTwoStepPin")]
     partial class AddWhatsAppTwoStepPin
     {
         /// <inheritdoc />
@@ -2258,7 +2258,8 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasColumnType("nvarchar(16)");
 
                     b.Property<string>("TwoStepPinProtected")
-                        .HasColumnType("nvarchar(max)");
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
 
                     b.Property<string>("VerifiedName")
                         .HasMaxLength(200)

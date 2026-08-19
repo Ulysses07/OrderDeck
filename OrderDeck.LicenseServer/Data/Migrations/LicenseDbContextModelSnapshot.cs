@@ -2255,7 +2255,8 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasColumnType("nvarchar(16)");
 
                     b.Property<string>("TwoStepPinProtected")
-                        .HasColumnType("nvarchar(max)");
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
 
                     b.Property<string>("VerifiedName")
                         .HasMaxLength(200)

@@ -13,7 +13,8 @@ namespace OrderDeck.LicenseServer.Data.Migrations
             migrationBuilder.AddColumn<string>(
                 name: "TwoStepPinProtected",
                 table: "WhatsAppAccounts",
-                type: "nvarchar(max)",
+                type: "nvarchar(4000)",
+                maxLength: 4000,
                 nullable: true);
         }
 
