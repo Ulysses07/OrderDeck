@@ -27,6 +27,16 @@ public sealed class WhatsAppOptions
     /// <c>X-Hub-Signature-256</c> = HMAC-SHA256(appSecret, rawBody) ile doğrulanır.</summary>
     public string AppSecret { get; set; } = "";
 
+    /// <summary>Meta App ID. Embedded Signup'ta <c>oauth/access_token</c> çağrısının
+    /// <c>client_id</c>'si. WhatsApp app'i Facebook chat app'inden AYRI — bu değeri
+    /// oradan kopyalama.</summary>
+    public string AppId { get; set; } = "";
+
+    /// <summary>Facebook Login for Business "Configuration ID" — panelin JS SDK'ya
+    /// verdiği <c>config_id</c>. Sunucu bunu kullanmaz, yalnız panele bildirir;
+    /// burada durmasının sebebi tek bir WhatsApp yapılandırma bloğu olması.</summary>
+    public string EmbeddedSignupConfigId { get; set; } = "";
+
     /// <summary>Varsayılan/ilk tenant (kendi numaran) Phone Number ID — çok-tenant
     /// DB'ye geçene kadar config'ten. Graph POST hedefi: <c>/{PhoneNumberId}/messages</c>.</summary>
     public string DefaultPhoneNumberId { get; set; } = "";
