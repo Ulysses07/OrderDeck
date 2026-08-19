@@ -149,7 +149,11 @@ public sealed class PanelWhatsAppAccountController : ControllerBase
                 detail: Detail(subscribe.ErrorCode, subscribe.ErrorMessage));
         }
 
-        var phone = await _graph.ReadPhoneNumberAsync(phoneNumberId, token, ct);
+        // WABA ÜZERİNDEN okunuyor: numaranın gerçekten o WABA'ya ait olduğunu
+        // doğrulayan tek yer burası. İkisi bağımsız geldiği için eşleşmeyen bir
+        // çift satıra yazılabilir ve abonelik yanlış hesaba gider — o numaraya
+        // gelen mesajlar webhook'umuza HİÇ düşmezken panel "bağlı" gösterir.
+        var phone = await _graph.ReadPhoneNumberAsync(wabaId, phoneNumberId, token, ct);
         if (!phone.Ok)
         {
             return Problem(
@@ -223,9 +227,77 @@ public sealed class PanelWhatsAppAccountController : ControllerBase
         var licenseId = await PanelLicenseScope.ResolveAsync(_db, User.GetTenantCustomerId(), ct);
         if (licenseId is null) return Problem(title: "no-active-license", statusCode: 400);
 
+        // Koparılmış satır DURUYOR (PIN'i taşıyor) ama panel için "bağlı numara
+        // yok" demek: aksi hâlde yayıncı kopardığı numarayı bağlıymış gibi görür.
         var account = await _db.WhatsAppAccounts
-            .FirstOrDefaultAsync(a => a.LicenseId == licenseId.Value, ct);
+            .FirstOrDefaultAsync(a => a.LicenseId == licenseId.Value && a.DisconnectedAt == null, ct);
         return account is null ? NotFound() : Ok(ToView(account));
+    }
+
+    /// <summary><paramref name="MetaUnsubscribed"/> false ise yerel bağ koptu ama
+    /// uygulamamız WABA'ya abone kaldı — panel bunu söyleyebilmeli.</summary>
+    public sealed record DisconnectResult(
+        DateTimeOffset DisconnectedAt, bool MetaUnsubscribed, string? MetaError);
+
+    /// <summary>
+    /// Bağlı numarayı koparır.
+    ///
+    /// <para><b>Satır silinmez.</b> Şifreli PIN satırda duruyor ve Meta yeniden
+    /// register'da AYNI PIN'i istiyor — silseydik yayıncı kendi numarasını bir daha
+    /// bağlayamaz, tek çıkış Meta desteği olurdu. Bunun yerine
+    /// <see cref="WhatsAppAccount.DisconnectedAt"/> damgalanıp durum "disconnected"
+    /// oluyor (<c>GetActiveByLicenseAsync</c> "active" filtreliyor, yani gönderim
+    /// anında duruyor) ve token satırdan siliniyor.</para>
+    ///
+    /// <para><b>Meta ayağı ölümcül değil.</b> Token süresi dolmuşsa abonelik hiçbir
+    /// zaman kaldırılamaz; bunu ölümcül saymak yayıncıyı yanlış numarada kilitlerdi.
+    /// Yerel kopma her hâlükârda oluyor, kalan iş yanıtta söyleniyor.</para>
+    /// </summary>
+    [HttpDelete]
+    public async Task<IActionResult> Disconnect(CancellationToken ct)
+    {
+        if (OwnerOnly("WhatsApp numarasını yalnız hesap sahibi koparabilir.")
+            is { } forbidden) return forbidden;
+
+        var licenseId = await PanelLicenseScope.ResolveAsync(_db, User.GetTenantCustomerId(), ct);
+        if (licenseId is null) return Problem(title: "no-active-license", statusCode: 400);
+
+        var account = await _db.WhatsAppAccounts
+            .FirstOrDefaultAsync(a => a.LicenseId == licenseId.Value && a.DisconnectedAt == null, ct);
+        if (account is null) return NotFound();
+
+        // Abonelik kaldırılmazsa o numaraya gelen mesajlar webhook'umuza düşmeye
+        // devam eder — artık kime ait olduğunu bilmediğimiz hâlde.
+        string? metaError;
+        var token = _accounts.TryUnprotectToken(account.AccessTokenProtected);
+        if (string.IsNullOrEmpty(token))
+        {
+            metaError = "Saklı token çözülemedi; Meta aboneliği kaldırılamadı.";
+        }
+        else
+        {
+            var unsubscribe = await _graph.UnsubscribeAppAsync(account.WabaId, token, ct);
+            metaError = unsubscribe.Ok
+                ? null
+                : Detail(unsubscribe.ErrorCode, unsubscribe.ErrorMessage);
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        account.Status = "disconnected";
+        account.DisconnectedAt = now;
+        account.LastError = metaError is null
+            ? null
+            : Truncate($"disconnect: {metaError}", MaxLastErrorLength);
+        // Token satırda kalsaydı "kopardım" diyen yayıncının numarasından hâlâ
+        // mesaj gönderilebilirdi. PIN kalıyor, token gidiyor.
+        account.AccessTokenProtected = "";
+        await _db.SaveChangesAsync(ct);
+
+        _log.LogInformation(
+            "WhatsApp bağlantısı koparıldı: lisans {LicenseId}, phone_number_id {Pnid}, Meta aboneliği {Meta}",
+            licenseId, account.PhoneNumberId, metaError is null ? "kaldırıldı" : "KALDIRILAMADI");
+
+        return Ok(new DisconnectResult(now, metaError is null, metaError));
     }
 
     public sealed record SignupConfig(string AppId, string ConfigId, string GraphApiVersion);

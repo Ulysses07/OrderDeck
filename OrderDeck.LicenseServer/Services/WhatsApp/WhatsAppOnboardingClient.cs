@@ -31,9 +31,15 @@ public interface IWhatsAppOnboardingClient
     /// o numaraya gelen mesajlar webhook'umuza HİÇ düşmez.</summary>
     Task<GraphResult<bool>> SubscribeAppAsync(string wabaId, string businessToken, CancellationToken ct);
 
-    /// <summary>Numaranın görünen hâli (UI için).</summary>
+    /// <summary>Aboneliği kaldırır — numara koparıldıktan sonra o hatta gelen
+    /// mesajların webhook'umuza düşmeye devam etmemesi için.</summary>
+    Task<GraphResult<bool>> UnsubscribeAppAsync(string wabaId, string businessToken, CancellationToken ct);
+
+    /// <summary>Numaranın görünen hâli (UI için) — WABA'nın kendi numara
+    /// listesinden okunur, böylece numaranın O WABA'ya ait olduğu da kanıtlanır.
+    /// Eşleşmiyorsa <c>phone-number-not-in-waba</c> koduyla başarısız olur.</summary>
     Task<GraphResult<WhatsAppPhoneNumberInfo>> ReadPhoneNumberAsync(
-        string phoneNumberId, string businessToken, CancellationToken ct);
+        string wabaId, string phoneNumberId, string businessToken, CancellationToken ct);
 
     /// <summary>Numarayı Cloud API'ye kaydeder ve iki adımlı PIN'i belirler.
     /// Numara zaten kayıtlıysa Meta hata döner — çağıran bunu ölümcül saymamalı.</summary>
@@ -85,21 +91,68 @@ public sealed class WhatsAppOnboardingClient : IWhatsAppOnboardingClient
         return await SendSuccessAsync(req, "subscribe-app", ct);
     }
 
+    public async Task<GraphResult<bool>> UnsubscribeAppAsync(
+        string wabaId, string businessToken, CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Delete, $"{Root}/{wabaId}/subscribed_apps");
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", businessToken);
+        return await SendSuccessAsync(req, "unsubscribe-app", ct);
+    }
+
+    /// <summary>Bir WABA'nın numara listesinden tek satır.</summary>
+    private sealed record ListedNumber(string Id, string DisplayPhoneNumber, string? VerifiedName);
+
+    /// <summary>Meta bir WABA'ya varsayılan olarak 25 numaraya izin veriyor;
+    /// 100 bunun çok üstünde, yani sayfalama takibine gerek kalmıyor.</summary>
+    private const int PhoneNumberPageLimit = 100;
+
+    /// <summary>
+    /// Numarayı doğrudan <c>GET /{phoneNumberId}</c> ile okumak da görünen numarayı
+    /// verirdi ama numaranın istekte gelen WABA'ya ait olduğunu KANITLAMAZDI:
+    /// Meta'nın numara düğümünde üst WABA'ya geri işaret eden bir alan yok. Liste
+    /// ucundan okumak ikisini tek çağrıda çözüyor — eşleşme doğrulanmazsa satıra
+    /// numaranın sahibi olmayan bir WABA yazılır, abonelik yanlış hesaba gider ve
+    /// o numaraya gelen mesajlar webhook'umuza hiç düşmez.
+    /// </summary>
     public async Task<GraphResult<WhatsAppPhoneNumberInfo>> ReadPhoneNumberAsync(
-        string phoneNumberId, string businessToken, CancellationToken ct)
+        string wabaId, string phoneNumberId, string businessToken, CancellationToken ct)
     {
         using var req = new HttpRequestMessage(
-            HttpMethod.Get, $"{Root}/{phoneNumberId}?fields=display_phone_number,verified_name");
+            HttpMethod.Get,
+            $"{Root}/{wabaId}/phone_numbers" +
+            $"?fields=id,display_phone_number,verified_name&limit={PhoneNumberPageLimit}");
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", businessToken);
 
-        return await SendAsync(req, "read-phone-number", root =>
+        var listed = await SendAsync(req, "read-phone-number", ReadNumbers, ct);
+        if (!listed.Ok)
+            return GraphResult<WhatsAppPhoneNumberInfo>.Failure(listed.ErrorCode, listed.ErrorMessage);
+
+        var match = listed.Value!.FirstOrDefault(n => n.Id == phoneNumberId);
+        return match is null
+            ? GraphResult<WhatsAppPhoneNumberInfo>.Failure(
+                "phone-number-not-in-waba",
+                "Numara bu WhatsApp Business hesabına ait değil.")
+            : GraphResult<WhatsAppPhoneNumberInfo>.Success(
+                new WhatsAppPhoneNumberInfo(match.DisplayPhoneNumber, match.VerifiedName));
+    }
+
+    /// <summary>Boş liste geçerli bir yanıt (WABA'da numara yok) — <c>null</c>
+    /// yalnız <c>data</c> dizisi hiç yokken, yani şekil beklenmedikken döner.</summary>
+    private static List<ListedNumber>? ReadNumbers(JsonElement root)
+    {
+        if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
+            return null;
+
+        var numbers = new List<ListedNumber>();
+        foreach (var item in data.EnumerateArray())
         {
-            if (!root.TryGetProperty("display_phone_number", out var d)) return null;
-            var display = d.GetString();
-            if (string.IsNullOrWhiteSpace(display)) return null;
-            var name = root.TryGetProperty("verified_name", out var v) ? v.GetString() : null;
-            return new WhatsAppPhoneNumberInfo(display, string.IsNullOrWhiteSpace(name) ? null : name);
-        }, ct);
+            var id = item.TryGetProperty("id", out var i) ? i.GetString() : null;
+            var display = item.TryGetProperty("display_phone_number", out var d) ? d.GetString() : null;
+            if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(display)) continue;
+            var name = item.TryGetProperty("verified_name", out var v) ? v.GetString() : null;
+            numbers.Add(new ListedNumber(id, display, string.IsNullOrWhiteSpace(name) ? null : name));
+        }
+        return numbers;
     }
 
     public async Task<GraphResult<bool>> RegisterPhoneNumberAsync(

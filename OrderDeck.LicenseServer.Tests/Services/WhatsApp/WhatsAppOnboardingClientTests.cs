@@ -139,20 +139,60 @@ public sealed class WhatsAppOnboardingClientTests
     }
 
     [Fact]
-    public async Task Reading_the_phone_number_asks_only_for_the_display_fields()
+    public async Task Unsubscribing_the_app_deletes_the_subscription_on_the_waba()
+    {
+        var handler = new ScriptedHandler((HttpStatusCode.OK, """{ "success": true }"""));
+
+        var result = await Client(handler)
+            .UnsubscribeAppAsync("WABA_9", "BIZ_TOKEN", CancellationToken.None);
+
+        result.Ok.Should().BeTrue();
+        handler.Requests[0].Method.Should().Be(HttpMethod.Delete);
+        handler.Requests[0].RequestUri!.ToString()
+            .Should().Be("https://graph.test/v25.0/WABA_9/subscribed_apps");
+        handler.Requests[0].Headers.Authorization!.Parameter.Should().Be("BIZ_TOKEN");
+    }
+
+    [Fact]
+    public async Task Reading_the_phone_number_goes_through_the_wabas_own_number_list()
     {
         var handler = new ScriptedHandler((HttpStatusCode.OK, """
-            { "display_phone_number": "+90 555 111 22 33", "verified_name": "Emar Global" }
+            { "data": [
+                { "id": "PNID_1", "display_phone_number": "+90 555 000 00 00", "verified_name": "Başka" },
+                { "id": "PNID_7", "display_phone_number": "+90 555 111 22 33", "verified_name": "Emar Global" }
+            ] }
             """));
 
         var result = await Client(handler)
-            .ReadPhoneNumberAsync("PNID_7", "BIZ_TOKEN", CancellationToken.None);
+            .ReadPhoneNumberAsync("WABA_9", "PNID_7", "BIZ_TOKEN", CancellationToken.None);
 
         result.Ok.Should().BeTrue();
         result.Value!.DisplayPhoneNumber.Should().Be("+90 555 111 22 33");
         result.Value.VerifiedName.Should().Be("Emar Global");
-        handler.Requests[0].RequestUri!.ToString()
-            .Should().Be("https://graph.test/v25.0/PNID_7?fields=display_phone_number,verified_name");
+
+        // Numarayı doğrudan `GET /{pnid}` ile okumak da görünen numarayı verirdi
+        // ama numaranın O WABA'ya ait olduğunu KANITLAMAZDI: Meta'nın numara
+        // düğümünde üst WABA'ya geri işaret eden bir alan yok. Tek çağrıda hem
+        // görünen numara hem eşleşme buradan geliyor.
+        handler.Requests[0].RequestUri!.ToString().Should().Be(
+            "https://graph.test/v25.0/WABA_9/phone_numbers?fields=id,display_phone_number,verified_name&limit=100");
+    }
+
+    [Fact]
+    public async Task A_number_that_belongs_to_a_different_waba_is_reported_as_a_mismatch()
+    {
+        var handler = new ScriptedHandler((HttpStatusCode.OK, """
+            { "data": [ { "id": "PNID_1", "display_phone_number": "+90 555 000 00 00" } ] }
+            """));
+
+        var result = await Client(handler)
+            .ReadPhoneNumberAsync("WABA_9", "PNID_7", "BIZ_TOKEN", CancellationToken.None);
+
+        // Eşleşme doğrulanmasaydı satıra numaranın SAHİBİ OLMAYAN bir WABA
+        // yazılırdı: abonelik yanlış hesaba gider, o numaraya gelen mesajlar
+        // webhook'umuza hiç düşmez ve panel "bağlı" göstermeye devam eder.
+        result.Ok.Should().BeFalse();
+        result.ErrorCode.Should().Be("phone-number-not-in-waba");
     }
 
     [Fact]
