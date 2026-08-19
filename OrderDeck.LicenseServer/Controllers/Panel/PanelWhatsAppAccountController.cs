@@ -99,14 +99,17 @@ public sealed class PanelWhatsAppAccountController : ControllerBase
                 detail: Detail(phone.ErrorCode, phone.ErrorMessage));
         }
 
-        var pin = NewPin();
+        var pin = await ResolvePinAsync(licenseId.Value, ct);
         var register = await _graph.RegisterPhoneNumberAsync(req.PhoneNumberId.Trim(), pin, token, ct);
 
         var result = await _accounts.UpsertAsync(
             licenseId.Value,
             new WhatsAppAccountUpsert(
                 req.WabaId, req.PhoneNumberId, phone.Value!.DisplayPhoneNumber,
-                token, phone.Value.VerifiedName, pin),
+                token, phone.Value.VerifiedName,
+                // Meta reddettiyse PIN'i YAZMA: saklı PIN kaybolursa numara bir
+                // daha register edilemez, kurtarma yolu yalnız Meta desteği.
+                register.Ok ? pin : null),
             ct);
 
         if (result.Conflict)
@@ -158,6 +161,28 @@ public sealed class PanelWhatsAppAccountController : ControllerBase
 
     private static string Detail(string? code, string? message) =>
         string.IsNullOrWhiteSpace(message) ? code ?? "bilinmeyen hata" : $"{code}: {message}";
+
+    /// <summary>
+    /// Register'a verilecek PIN. Lisansın saklı PIN'i varsa AYNISI kullanılır:
+    /// Meta yeniden kayıtta numaranın mevcut PIN'ini istiyor, yenisi 133005
+    /// ("PIN mismatch") ile döner. Çözülemeyen şifre (anahtar döndü) saklı PIN
+    /// yok demektir — yeni üretip register'ın söyleyeceğine bakarız.
+    /// </summary>
+    private async Task<string> ResolvePinAsync(Guid licenseId, CancellationToken ct)
+    {
+        var stored = await _db.WhatsAppAccounts
+            .Where(a => a.LicenseId == licenseId)
+            .Select(a => a.TwoStepPinProtected)
+            .FirstOrDefaultAsync(ct);
+
+        if (!string.IsNullOrWhiteSpace(stored))
+        {
+            var pin = _accounts.TryUnprotectToken(stored);
+            if (!string.IsNullOrWhiteSpace(pin)) return pin;
+        }
+
+        return NewPin();
+    }
 
     /// <summary>Numaranın iki adımlı PIN'i. Tahmin edilebilir olmamalı — şifreli
     /// saklanıyor ve yayıncı adına numarayı kilitleyen değer bu.</summary>

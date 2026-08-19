@@ -83,7 +83,8 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
         return factory;
     }
 
-    private sealed record Seed(HttpClient Client, Guid LicenseId, FakeOnboardingClient Graph);
+    private sealed record Seed(
+        HttpClient Client, Guid LicenseId, FakeOnboardingClient Graph, OnboardingApiFactory Factory);
 
     private async Task<Seed> SeedAsync()
     {
@@ -103,7 +104,18 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
         db.Licenses.Add(license);
         await db.SaveChangesAsync();
 
-        return new Seed(client, license.Id, factory.Graph);
+        return new Seed(client, license.Id, factory.Graph, factory);
+    }
+
+    /// <summary>Satırdaki şifreli PIN'i çözer — testin "kaydedilen PIN hangisi"
+    /// sorusunu ancak DB'den okuyarak cevaplayabildiği yer.</summary>
+    private static string? StoredPin(Seed seed)
+    {
+        using var scope = seed.Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var accounts = scope.ServiceProvider.GetRequiredService<WhatsAppAccountService>();
+        var row = db.WhatsAppAccounts.Single(a => a.LicenseId == seed.LicenseId);
+        return row.TwoStepPinProtected is null ? null : accounts.TryUnprotectToken(row.TwoStepPinProtected);
     }
 
     private static object Body => new { code = "CODE_1", wabaId = "WABA_1", phoneNumberId = "PNID_1" };
@@ -167,6 +179,43 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var json = await resp.Content.ReadAsStringAsync();
         json.Should().Contain("133005");
+    }
+
+    [Fact]
+    public async Task A_rejected_pin_never_replaces_the_stored_one()
+    {
+        var seed = await SeedAsync();
+
+        (await seed.Client.PostAsJsonAsync("/api/panel/whatsapp/account/embedded-signup", Body))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        var firstPin = seed.Graph.SeenPin;
+        firstPin.Should().NotBeNullOrEmpty();
+
+        // İkinci bağlanma (token yenilemenin belgeli yolu) — Meta PIN'i reddediyor.
+        seed.Graph.Register = GraphResult<bool>.Failure("133005", "Two step verification PIN mismatch.");
+        (await seed.Client.PostAsJsonAsync("/api/panel/whatsapp/account/embedded-signup", Body))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Reddedilen PIN yazılsaydı numara bir daha register edilemezdi:
+        // Meta hep ilk PIN'i ister, kurtarma yolu yalnız Meta desteği.
+        StoredPin(seed).Should().Be(firstPin);
+    }
+
+    [Fact]
+    public async Task A_second_signup_reuses_the_stored_pin_instead_of_inventing_one()
+    {
+        var seed = await SeedAsync();
+
+        (await seed.Client.PostAsJsonAsync("/api/panel/whatsapp/account/embedded-signup", Body))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        var firstPin = seed.Graph.SeenPin;
+
+        (await seed.Client.PostAsJsonAsync("/api/panel/whatsapp/account/embedded-signup", Body))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Yeni PIN üretmek register'ı garanti başarısız kılardı — Meta yeniden
+        // kayıtta numaranın MEVCUT PIN'ini bekliyor.
+        seed.Graph.SeenPin.Should().Be(firstPin);
     }
 
     [Fact]
