@@ -73,6 +73,24 @@ public sealed class PanelWhatsAppAccountController : ControllerBase
                 detail: "code, wabaId ve phoneNumberId zorunlu.");
         }
 
+        // Sahiplik kontrolü Graph'tan ÖNCE. UpsertAsync'teki aynı kontrol dört
+        // çağrının ARDINDAN çalışıyor: 409'u gördüğümüzde code çoktan yanmış,
+        // uygulama abone edilmiş ve /register asıl sahibin numarasına YENİ bir
+        // PIN yazmış oluyor. O PIN'i saklamadan attığımız için numara bir daha
+        // register edilemiyor — kurtarma yolu yalnız Meta desteği. Kötü niyet
+        // gerekmiyor: tek Meta Business altındaki ajans, elle bağlanmış numara
+        // ya da iki lisanslı müşteri bu isteği doğal olarak üretiyor.
+        // UpsertAsync'teki kontrol yarış yedeği olarak DURUYOR.
+        var phoneNumberId = req.PhoneNumberId.Trim();
+        var takenByAnother = await _db.WhatsAppAccounts.AnyAsync(
+            a => a.PhoneNumberId == phoneNumberId && a.LicenseId != licenseId.Value, ct);
+        if (takenByAnother)
+        {
+            return Problem(
+                title: "phone-number-id-taken", statusCode: 409,
+                detail: "Bu numara başka bir hesaba bağlı. Destekle iletişime geç.");
+        }
+
         var exchange = await _graph.ExchangeCodeAsync(req.Code.Trim(), ct);
         if (!exchange.Ok)
         {

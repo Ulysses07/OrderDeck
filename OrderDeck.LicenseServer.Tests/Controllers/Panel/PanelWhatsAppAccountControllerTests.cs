@@ -86,10 +86,13 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
     private sealed record Seed(
         HttpClient Client, Guid LicenseId, FakeOnboardingClient Graph, OnboardingApiFactory Factory);
 
-    private async Task<Seed> SeedAsync()
-    {
-        var factory = NewFactory();
+    private async Task<Seed> SeedAsync() => await SeedTenantAsync(NewFactory());
 
+    /// <summary>Verilen fabrikaya bir yayıncı daha ekler. "Her teste bir fabrika"
+    /// kuralı PhoneNumberId'nin global unique olmasından geliyordu; çapraz-tenant
+    /// senaryosu tam da bunu sınadığı için TEK store'da İKİ lisans gerekiyor.</summary>
+    private static async Task<Seed> SeedTenantAsync(OnboardingApiFactory factory)
+    {
         var (client, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(factory);
 
         using var scope = factory.Services.CreateScope();
@@ -216,6 +219,39 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
         // Yeni PIN üretmek register'ı garanti başarısız kılardı — Meta yeniden
         // kayıtta numaranın MEVCUT PIN'ini bekliyor.
         seed.Graph.SeenPin.Should().Be(firstPin);
+    }
+
+    [Fact]
+    public async Task A_number_owned_by_another_tenant_is_refused_before_any_meta_call()
+    {
+        var first = await SeedAsync();
+        (await first.Client.PostAsJsonAsync("/api/panel/whatsapp/account/embedded-signup", Body))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // İkinci yayıncı AYNI store'da: ajans birden çok yayıncıyı tek Meta
+        // Business altında yönetiyorsa ya da aynı müşterinin iki lisansı varsa
+        // bu istek kötü niyet olmadan gelir.
+        var second = await SeedTenantAsync(first.Factory);
+
+        // İlk bağlanmanın izlerini sil ki "hiç çağrılmadı" ölçülebilsin.
+        first.Graph.SeenCode = null;
+        first.Graph.SeenWabaId = null;
+        first.Graph.SeenPin = null;
+
+        var resp = await second.Client.PostAsJsonAsync(
+            "/api/panel/whatsapp/account/embedded-signup", Body);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await TitleAsync(resp)).Should().Be("phone-number-id-taken");
+
+        // Asıl mesele: Graph'a HİÇ gidilmemeli. Gidilseydi 30 saniyelik code
+        // yanar, uygulama abone edilir ve /register asıl sahibin numarasına
+        // sakladığımız PIN'den BAŞKA bir PIN yazardı — 409'la birlikte attığımız
+        // o PIN yüzünden numara bir daha register edilemez, kurtarma yolu
+        // yalnız Meta desteği.
+        first.Graph.SeenCode.Should().BeNull();
+        first.Graph.SeenWabaId.Should().BeNull();
+        first.Graph.SeenPin.Should().BeNull();
     }
 
     [Fact]
