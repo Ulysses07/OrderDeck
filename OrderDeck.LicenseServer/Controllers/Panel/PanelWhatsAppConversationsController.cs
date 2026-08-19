@@ -4,11 +4,13 @@ using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.WhatsApp;
 
 namespace OrderDeck.LicenseServer.Controllers.Panel;
 
 /// <summary>
-/// Panelin sohbet listesi, sohbetin mesajları, etiket filtresi ve elle etiketleme.
+/// Panelin sohbet listesi, sohbetin mesajları, serbest-metin cevap gönderme,
+/// etiket filtresi ve elle etiketleme.
 ///
 /// <para><b>Etiketler otomatik DÜŞMEZ.</b> Sunucu hiçbir etiketi kaldırmaz —
 /// ödeme onaylansa bile "Dekont geldi" durur. Bu bilinçli: etiket "iş var"
@@ -21,10 +23,13 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 public sealed class PanelWhatsAppConversationsController : ControllerBase
 {
     private readonly LicenseDbContext _db;
+    private readonly WhatsAppMessagingService _messaging;
 
-    public PanelWhatsAppConversationsController(LicenseDbContext db)
+    public PanelWhatsAppConversationsController(
+        LicenseDbContext db, WhatsAppMessagingService messaging)
     {
         _db = db;
+        _messaging = messaging;
     }
 
     public sealed record DekontDto(
@@ -33,9 +38,19 @@ public sealed class PanelWhatsAppConversationsController : ControllerBase
 
     public sealed record ConversationLabelDto(Guid WaLabelId, string Name, string Color, string Source);
 
+    /// <summary>
+    /// <c>WindowExpiresAt</c>: 24 saatlik service penceresinin kapanacağı an;
+    /// müşteri hiç yazmamışsa null.
+    ///
+    /// <para><b>Neden "kapalı mı" bayrağı değil de mutlak an:</b> panel bu listeyi
+    /// önbelleğe alıyor. Boolean gönderseydik pencere kullanıcı ekrana bakarken
+    /// kapanır, yazma kutusu açık kalır ve gönderilen mesaj Meta'dan 131047 ile
+    /// geri dönerdi. Mutlak anı istemci her render'da <c>Date.now()</c> ile
+    /// karşılaştırabiliyor — bayat önbellek yanlış cevap üretmiyor.</para>
+    /// </summary>
     public sealed record ConversationDto(
         Guid Id, string CustomerPhone, string? ProfileName, string Status,
-        int UnreadCount, DateTimeOffset? LastMessageAt,
+        int UnreadCount, DateTimeOffset? LastMessageAt, DateTimeOffset? WindowExpiresAt,
         List<ConversationLabelDto> Labels, DekontDto? LatestDekont);
 
     [HttpGet]
@@ -63,7 +78,8 @@ public sealed class PanelWhatsAppConversationsController : ControllerBase
             .Take(take)
             .Select(c => new
             {
-                c.Id, c.CustomerPhone, c.ProfileName, c.Status, c.UnreadCount, c.LastMessageAt,
+                c.Id, c.CustomerPhone, c.ProfileName, c.Status, c.UnreadCount,
+                c.LastMessageAt, c.LastInboundAt,
             })
             .ToListAsync(ct);
 
@@ -109,6 +125,7 @@ public sealed class PanelWhatsAppConversationsController : ControllerBase
         var rows = conversations
             .Select(c => new ConversationDto(
                 c.Id, c.CustomerPhone, c.ProfileName, c.Status, c.UnreadCount, c.LastMessageAt,
+                WhatsAppServiceWindow.ExpiresAt(c.LastInboundAt),
                 labelsByConversation.TryGetValue(c.Id, out var ls) ? ls : new List<ConversationLabelDto>(),
                 latestDekont.TryGetValue(c.Id, out var d) ? d : null))
             .ToList();
@@ -162,6 +179,59 @@ public sealed class PanelWhatsAppConversationsController : ControllerBase
                 m.Id, m.Direction, m.Type, m.Body, m.Status, m.Origin, m.TemplateName,
                 m.MediaMimeType, m.ErrorCode, m.ErrorMessage, m.Timestamp))
             .ToList());
+    }
+
+    public sealed record SendRequest(string Text);
+
+    public sealed record SendResponse(
+        bool Ok, string? ErrorCode, string? ErrorMessage, Guid? MessageId);
+
+    /// <summary>Meta'nın serbest-metin gövde sınırı. Aşan mesajı Graph reddeder,
+    /// yani göndermeden kesmek tek doğru davranış.</summary>
+    private const int MaxTextLength = 4096;
+
+    /// <summary>
+    /// Sohbete serbest-metin (service) cevabı gönderir.
+    ///
+    /// <para><b>Yalnız serbest metin:</b> 24 saatlik pencere kapalıysa
+    /// <see cref="WhatsAppMessagingService"/> Graph'a hiç gitmeden
+    /// <c>window_closed</c> döner. Onaylı template gönderimi bilerek kapsam
+    /// dışı — Meta'da onaylı şablon listesini çekmek ve parametrelerini
+    /// doldurtmak ayrı bir iş.</para>
+    ///
+    /// <para><b>Neden hata durumunda da 200:</b> "gönderilemedi" ≠ "istek
+    /// hatalı". Pencere kapalı, hesap bağlı değil ya da Meta reddetti —
+    /// üçünde de istek geçerliydi ve sebebi gövdede taşınıyor. 4xx dönseydi
+    /// panelin fetch katmanı bunları genel bir ağ hatasına indirger, yayıncı
+    /// da gerçek sebebi hiç görmezdi. Gönderilemeyen mesaj ayrıca
+    /// <c>Status="failed"</c> satırı olarak yazılıyor, yani sohbette görünüyor.</para>
+    /// </summary>
+    [HttpPost("{conversationId:guid}/send")]
+    public async Task<IActionResult> Send(
+        Guid conversationId, [FromBody] SendRequest req, CancellationToken ct)
+    {
+        var text = req.Text?.Trim() ?? "";
+        if (text.Length == 0)
+            return Problem(title: "empty-body", statusCode: 400, detail: "Mesaj boş olamaz.");
+        if (text.Length > MaxTextLength)
+            return Problem(
+                title: "text-too-long", statusCode: 400,
+                detail: $"Mesaj en fazla {MaxTextLength} karakter olabilir.");
+
+        var licenseId = await PanelLicenseScope.ResolveAsync(_db, User.GetTenantCustomerId(), ct);
+        if (licenseId is null) return NotFound();
+
+        // Numarayı istekten DEĞİL sohbetten alıyoruz: aksi hâlde uç, sohbet
+        // listesinde hiç görünmeyen rastgele numaralara mesaj atmanın yolu olurdu.
+        var convo = await _db.WaConversations.AsNoTracking().FirstOrDefaultAsync(
+            c => c.Id == conversationId && c.LicenseId == licenseId.Value, ct);
+        if (convo is null) return NotFound();
+
+        var outcome = await _messaging.SendTextAsync(
+            licenseId.Value, convo.CustomerPhone, text, origin: "panel", ct);
+
+        return Ok(new SendResponse(
+            outcome.Ok, outcome.ErrorCode, outcome.ErrorMessage, outcome.MessageId));
     }
 
     /// <summary>Okunmamış rozetini sıfırlar — sohbeti açan panel çağırır.</summary>
