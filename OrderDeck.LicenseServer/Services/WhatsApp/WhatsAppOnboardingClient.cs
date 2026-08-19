@@ -59,12 +59,20 @@ public sealed class WhatsAppOnboardingClient : IWhatsAppOnboardingClient
 
     public async Task<GraphResult<string>> ExchangeCodeAsync(string code, CancellationToken ct)
     {
-        var url = $"{Root}/oauth/access_token" +
-                  $"?client_id={Uri.EscapeDataString(_opt.AppId)}" +
-                  $"&client_secret={Uri.EscapeDataString(_opt.AppSecret)}" +
-                  $"&code={Uri.EscapeDataString(code)}";
-
-        using var req = new HttpRequestMessage(HttpMethod.Get, url);
+        // App secret ve tek kullanımlık code GÖVDEDE gider, sorgu dizesinde
+        // DEĞİL: bu istemci AddHttpClient ile kayıtlı, yani LoggingHttpMessageHandler
+        // istek URI'sini Information seviyesinde yazıyor ve AddHttpClientInstrumentation
+        // aynı URI'yi ikinci kez tüketiyor. Query redaction ikisinde de ayrı ayrı
+        // kapatılabilen bir çalışma zamanı varsayılanı — sırrı ona emanet etme.
+        using var req = new HttpRequestMessage(HttpMethod.Post, $"{Root}/oauth/access_token")
+        {
+            Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["client_id"] = _opt.AppId,
+                ["client_secret"] = _opt.AppSecret,
+                ["code"] = code,
+            }),
+        };
         return await SendAsync(req, "code-exchange", root =>
             root.TryGetProperty("access_token", out var t) ? t.GetString() : null, ct);
     }

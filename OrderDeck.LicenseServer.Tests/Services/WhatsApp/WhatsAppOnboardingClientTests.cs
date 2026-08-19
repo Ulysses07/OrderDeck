@@ -63,12 +63,18 @@ public sealed class WhatsAppOnboardingClientTests
         result.Ok.Should().BeTrue();
         result.Value.Should().Be("BIZ_TOKEN");
 
+        // Kimlik bilgileri GÖVDEDE gitmeli. Sorgu dizesindeyken app secret'ı
+        // koruyan tek şey HttpClient log'unun redaction'ı idi — o bir çalışma
+        // zamanı varsayılanı (DOTNET_SYSTEM_NET_HTTP_DISABLEURIREDACTION) ve
+        // OTel'in URI'yi yazan ayrı bir kapağı daha var.
         var url = handler.Requests[0].RequestUri!.ToString();
-        handler.Requests[0].Method.Should().Be(HttpMethod.Get);
-        url.Should().StartWith("https://graph.test/v25.0/oauth/access_token?");
-        url.Should().Contain("client_id=APP_1");
-        url.Should().Contain("client_secret=SECRET_1");
-        url.Should().Contain("code=CODE_123");
+        handler.Requests[0].Method.Should().Be(HttpMethod.Post);
+        url.Should().Be("https://graph.test/v25.0/oauth/access_token");
+        url.Should().NotContain("client_secret");
+        url.Should().NotContain("SECRET_1");
+        handler.Bodies[0].Should().Contain("client_id=APP_1");
+        handler.Bodies[0].Should().Contain("client_secret=SECRET_1");
+        handler.Bodies[0].Should().Contain("code=CODE_123");
     }
 
     [Fact]
