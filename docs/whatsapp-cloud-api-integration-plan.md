@@ -314,3 +314,37 @@ Meta Cloud API  ──webhook POST──►  LicenseServer /api/whatsapp/webhook
 - [ ] Guardrail/prompt-injection/kill-switch
 - [ ] Kademeli otonomi + audit
 - [ ] Testler
+
+---
+
+## Embedded Signup — gereken ortam değişkenleri (2026-08-19)
+
+VPS `.env` (prod) ve `docker-compose.yml` ortamına eklenecek:
+
+| Anahtar | Değer / nereden alınır |
+|---|---|
+| `OrderDeck__WhatsApp__AppId` | `1539000484386031` — "OrderDeck WP" app'i (Facebook chat app'i `3939617702835404` DEĞİL) |
+| `OrderDeck__WhatsApp__EmbeddedSignupConfigId` | App Dashboard > Facebook Login for Business > Configurations. 2026-08-19'da **iki** config var: `2063978347839185` ve `1064272643022213`, ikisi de "Tech Provider Embedded Signup config" adında — hangisinin kullanılacağı Meta konsolundan teyit edilmeli |
+
+`AppSecret` zaten mevcut ve webhook imzası için kullanılıyor; Embedded Signup
+token takası da onu kullanır — yeni bir sır eklenmiyor.
+
+**Meta konsolu — 2026-08-19 durumu:**
+- ✅ App Mode = **Published/Live**, Required actions boş
+- ✅ Become Tech Provider = **"2 of 2 steps complete"**
+- ✅ App Review 2026-08-12 **onaylandı**: `whatsapp_business_messaging`,
+  `whatsapp_business_management`, `public_profile` — üçü de Approved
+- ✅ Facebook Login for Business > Ayarlar > **Valid OAuth Redirect URIs** =
+  `https://panel.orderdeckapp.com/whatsapp/callback` (2026-08-19'da dolduruldu;
+  öncesinde boştu)
+- ✅ **Allowed Domains for the JavaScript SDK** = `https://orderdeckapp.com/` +
+  `https://panel.orderdeckapp.com/` (panel alan adı 2026-08-19'da eklendi;
+  eksikken `FB.login` penceresi açılmıyordu)
+
+> Meta destek e-postasının "WhatsApp Business Terms of Service kabul edilmemiş"
+> teşhisi **yanlıştı**: Tech Provider 2/2, App Mode Live ve Required actions boş.
+> Gerçek engel yalnız yukarıdaki iki alandı.
+
+**Gerçek yayıncı olmadan test:** Use cases > Become a Partner > Become Tech Provider
+sayfasındaki **"Claim a sandbox account"** ile Meta'nın verdiği sandbox WABA
+üzerinden Embedded Signup uçtan denenebilir.

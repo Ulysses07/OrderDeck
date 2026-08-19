@@ -145,6 +145,13 @@ public class Program
             builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.WhatsApp.IWhatsAppSender,
                 OrderDeck.LicenseServer.Services.WhatsApp.LogWhatsAppSender>();
 
+        // Embedded Signup Graph istemcisi — gönderenden AYRI kayıtlı: sağlayıcı
+        // "log" olsa da (dev) onboarding uçları derlenebilir/test edilebilir olmalı.
+        var waOnboardTimeout = builder.Configuration.GetValue("OrderDeck:WhatsApp:TimeoutSeconds", 15);
+        builder.Services.AddHttpClient<OrderDeck.LicenseServer.Services.WhatsApp.IWhatsAppOnboardingClient,
+                OrderDeck.LicenseServer.Services.WhatsApp.WhatsAppOnboardingClient>(
+                c => c.Timeout = TimeSpan.FromSeconds(waOnboardTimeout <= 0 ? 15 : waOnboardTimeout));
+
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.WhatsApp.WhatsAppAccountService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.WhatsApp.WhatsAppMessagingService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.WhatsApp.WhatsAppInboundJob>();

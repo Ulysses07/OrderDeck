@@ -31,6 +31,12 @@ public sealed class WhatsAppAccount
     /// saklanır, asla düz metin dönmez.</summary>
     public string AccessTokenProtected { get; set; } = "";
 
+    /// <summary>Numaranın iki adımlı doğrulama PIN'i — <c>IDataProtector</c> ile
+    /// şifreli. Register sırasında biz belirliyoruz; Meta yeniden register'da
+    /// AYNI PIN'i istiyor, saklamazsak yayıncı kendi numarasından kilitlenir.
+    /// Elle bağlanan hesaplarda null (PIN'i biz belirlememişiz).</summary>
+    public string? TwoStepPinProtected { get; set; }
+
     /// <summary>"active" | "disabled" | "revoked" (token geçersizleşti / Meta kapattı).</summary>
     public string Status { get; set; } = "active";
 

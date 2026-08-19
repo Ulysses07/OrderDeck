@@ -78,41 +78,24 @@ public sealed class AdminWhatsAppAccountsController : ControllerBase
 
         if (!await _db.Licenses.AnyAsync(l => l.Id == licenseId, ct)) return NotFound();
 
-        var phoneNumberId = req.PhoneNumberId.Trim();
+        var result = await _accounts.UpsertAsync(
+            licenseId,
+            new WhatsAppAccountUpsert(
+                req.WabaId, req.PhoneNumberId, display, req.AccessToken, req.VerifiedName, null),
+            ct);
 
-        // PhoneNumberId global unique: aynı numara iki tenant'a bağlanamaz, yoksa
-        // webhook yönlendirmesi hangi lisansa gideceğini bilemez.
-        var owner = await _db.WhatsAppAccounts
-            .FirstOrDefaultAsync(a => a.PhoneNumberId == phoneNumberId, ct);
-        if (owner is not null && owner.LicenseId != licenseId)
+        if (result.Conflict)
         {
             return Problem(
                 title: "phone-number-id-taken", statusCode: 409,
                 detail: "Bu Phone Number ID başka bir lisansa bağlı.");
         }
 
-        var account = await _db.WhatsAppAccounts.FirstOrDefaultAsync(a => a.LicenseId == licenseId, ct);
-        var now = DateTimeOffset.UtcNow;
-
-        if (account is null)
-        {
-            account = new WhatsAppAccount { Id = Guid.NewGuid(), LicenseId = licenseId, ConnectedAt = now };
-            _db.WhatsAppAccounts.Add(account);
-        }
-
-        account.WabaId = req.WabaId.Trim();
-        account.PhoneNumberId = phoneNumberId;
-        account.DisplayPhoneNumber = display;
-        account.VerifiedName = string.IsNullOrWhiteSpace(req.VerifiedName) ? null : req.VerifiedName.Trim();
-        account.AccessTokenProtected = _accounts.ProtectToken(req.AccessToken.Trim());
-        account.Status = "active";
-        account.LastError = null;
-        account.DisconnectedAt = null;
-
-        await _db.SaveChangesAsync(ct);
+        var account = result.Account!;
 
         _log.LogInformation(
-            "WhatsApp hesabı bağlandı: lisans {LicenseId}, phone_number_id {Pnid}", licenseId, phoneNumberId);
+            "WhatsApp hesabı bağlandı: lisans {LicenseId}, phone_number_id {Pnid}",
+            licenseId, account.PhoneNumberId);
 
         return Ok(ToResponse(account, req.AccessToken));
     }

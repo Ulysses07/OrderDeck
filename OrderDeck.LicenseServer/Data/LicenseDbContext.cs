@@ -616,6 +616,7 @@ public class LicenseDbContext : DbContext
             b.Property(a => a.DisplayPhoneNumber).HasMaxLength(20).IsRequired();
             b.Property(a => a.VerifiedName).HasMaxLength(200);
             b.Property(a => a.AccessTokenProtected).HasMaxLength(4000).IsRequired();
+            b.Property(a => a.TwoStepPinProtected).HasMaxLength(4000);
             b.Property(a => a.Status).HasMaxLength(16).IsRequired();
             b.Property(a => a.LastError).HasMaxLength(500);
             // Webhook yönlendirmesi bu alandan tenant bulur → global unique.
