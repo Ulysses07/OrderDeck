@@ -21,7 +21,10 @@ Plan uygulandı ve inceleme turlarında **bilerek değiştirildi**. Aşağıdaki
 3. **PIN numaraya ait, lisansa değil.** `ResolvePinAsync` saklı PIN'i yalnız `PhoneNumberId` de eşleşiyorsa yeniden kullanıyor; Meta reddederse (`register.Ok == false`) PIN hiç yazılmıyor.
 4. **Ek korumalar:** Graph'tan önce çapraz kiracı sahiplik kontrolü (409), `^[0-9]{1,32}$` id doğrulaması, personel operatöre `owner-only` 403, token ile PIN için ayrı `IDataProtector` purpose'ları, yapılandırılmamış sunucuda `signup-config` → 503.
 
-**Açık kalanlar (ayrı dal):** `waba_id` ↔ `phone_number_id` eşleşmesi doğrulanmıyor; "numarayı kopar" ucu yok.
+5. **Numara WABA'nın kendi listesinden okunuyor** (`GET /{wabaId}/phone_numbers`), tek numara düğümünden değil: Meta'nın numara düğümünde üst WABA'ya geri işaret eden alan yok, yani eşleşmeyi kanıtlamanın başka yolu yok. Eşleşmezse `phone-number-not-in-waba`. **Graph tablosunun 3. satırında bu eski tasarım duruyor — kopyalama.**
+6. **`DELETE /api/panel/whatsapp/account` var** (kopar): Meta aboneliğini kaldırır, satırı SİLMEZ (şifreli PIN orada), `DisconnectedAt` damgalar, durumu `disconnected` yapar ve token'ı satırdan siler. Meta ayağı başarısız olursa yerel kopma yine olur, kalan iş yanıtta `metaError` olarak döner.
+
+**Açık kalanlar (ayrı dal):** yok — plandaki iki açık madde de kapandı.
 
 ---
 

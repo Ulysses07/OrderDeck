@@ -35,10 +35,12 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
             GraphResult<WhatsAppPhoneNumberInfo>.Success(
                 new WhatsAppPhoneNumberInfo("+90 555 111 22 33", "Emar Global"));
         public GraphResult<bool> Register = GraphResult<bool>.Success(true);
+        public GraphResult<bool> Unsubscribe = GraphResult<bool>.Success(true);
 
         public string? SeenCode;
         public string? SeenWabaId;
         public string? SeenPin;
+        public string? SeenUnsubscribedWabaId;
 
         public Task<GraphResult<string>> ExchangeCodeAsync(string code, CancellationToken ct)
         {
@@ -52,8 +54,15 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
             return Task.FromResult(Subscribe);
         }
 
+        public Task<GraphResult<bool>> UnsubscribeAppAsync(string wabaId, string token, CancellationToken ct)
+        {
+            SeenUnsubscribedWabaId = wabaId;
+            return Task.FromResult(Unsubscribe);
+        }
+
         public Task<GraphResult<WhatsAppPhoneNumberInfo>> ReadPhoneNumberAsync(
-            string phoneNumberId, string token, CancellationToken ct) => Task.FromResult(Phone);
+            string wabaId, string phoneNumberId, string token, CancellationToken ct) =>
+            Task.FromResult(Phone);
 
         public Task<GraphResult<bool>> RegisterPhoneNumberAsync(
             string phoneNumberId, string pin, string token, CancellationToken ct)
@@ -463,10 +472,11 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
             "/api/panel/whatsapp/account/embedded-signup", Body);
         var read = await staff.GetAsync("/api/panel/whatsapp/account");
         var config = await staff.GetAsync("/api/panel/whatsapp/account/signup-config");
+        var disconnect = await staff.DeleteAsync("/api/panel/whatsapp/account");
 
         // Numara bağlamak/koparmak hesap düzeyinde bir karar; personelin
         // yayıncının WhatsApp kimliğini devralmasının yolu olmamalı.
-        foreach (var resp in new[] { connect, read, config })
+        foreach (var resp in new[] { connect, read, config, disconnect })
         {
             resp.StatusCode.Should().Be(HttpStatusCode.Forbidden);
             (await TitleAsync(resp)).Should().Be("owner-only");
@@ -474,6 +484,120 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
 
         // Asıl mesele 403 değil: personelin isteği Meta'ya HİÇ gitmemeli.
         seed.Graph.SeenCode.Should().BeNull();
+        seed.Graph.SeenUnsubscribedWabaId.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Disconnecting_unsubscribes_at_meta_and_stops_the_panel_showing_a_number()
+    {
+        var seed = await SeedAsync();
+        (await seed.Client.PostAsJsonAsync("/api/panel/whatsapp/account/embedded-signup", Body))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var resp = await seed.Client.DeleteAsync("/api/panel/whatsapp/account");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        // Satırı yalnız DB'den silmek yetmezdi: uygulamamız WABA'ya abone
+        // kalırsa o numaraya gelen mesajlar sessizce webhook'umuza düşmeye
+        // devam eder — artık kime ait olduğunu bilmediğimiz hâlde.
+        seed.Graph.SeenUnsubscribedWabaId.Should().Be("1001");
+
+        (await seed.Client.GetAsync("/api/panel/whatsapp/account"))
+            .StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task Disconnecting_keeps_the_row_so_the_pin_survives_a_reconnect()
+    {
+        var seed = await SeedAsync();
+        (await seed.Client.PostAsJsonAsync("/api/panel/whatsapp/account/embedded-signup", Body))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        var firstPin = seed.Graph.SeenPin;
+
+        (await seed.Client.DeleteAsync("/api/panel/whatsapp/account"))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        (await seed.Client.PostAsJsonAsync("/api/panel/whatsapp/account/embedded-signup", Body))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Kopar = satırı sil olsaydı şifreli PIN de giderdi ve yeniden bağlanan
+        // yayıncı yeni bir PIN gönderirdi: Meta numaranın MEVCUT PIN'ini istediği
+        // için 133005 döner ve numara bir daha register edilemez — kurtarma yolu
+        // yalnız Meta desteği.
+        seed.Graph.SeenPin.Should().Be(firstPin);
+        StoredPin(seed).Should().Be(firstPin);
+    }
+
+    [Fact]
+    public async Task Disconnecting_clears_the_stored_token_so_nothing_can_send_anymore()
+    {
+        var seed = await SeedAsync();
+        (await seed.Client.PostAsJsonAsync("/api/panel/whatsapp/account/embedded-signup", Body))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        (await seed.Client.DeleteAsync("/api/panel/whatsapp/account"))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var scope = seed.Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var row = db.WhatsAppAccounts.Single(a => a.LicenseId == seed.LicenseId);
+
+        // Satır PIN için duruyor; ama token da dursaydı "kopardım" diyen
+        // yayıncının numarasından hâlâ mesaj gönderilebilirdi.
+        row.Status.Should().Be("disconnected");
+        row.DisconnectedAt.Should().NotBeNull();
+        row.AccessTokenProtected.Should().BeEmpty();
+        row.TwoStepPinProtected.Should().NotBeNullOrEmpty();
+    }
+
+    [Fact]
+    public async Task A_failed_meta_unsubscribe_still_disconnects_but_says_what_is_left_over()
+    {
+        var seed = await SeedAsync();
+        (await seed.Client.PostAsJsonAsync("/api/panel/whatsapp/account/embedded-signup", Body))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        seed.Graph.Unsubscribe = GraphResult<bool>.Failure("190", "Access token has expired.");
+
+        var resp = await seed.Client.DeleteAsync("/api/panel/whatsapp/account");
+
+        // Meta'yı ölümcül saymak yayıncıyı yanlış numarada KİLİTLERDİ: token
+        // süresi dolmuşsa abonelik hiçbir zaman kaldırılamaz, yani numara hiçbir
+        // zaman koparılamazdı. Yerel kopma her hâlükârda olur, kalan iş söylenir.
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var json = await resp.Content.ReadAsStringAsync();
+        json.Should().Contain("190");
+
+        (await seed.Client.GetAsync("/api/panel/whatsapp/account"))
+            .StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task Disconnecting_without_a_connected_number_is_a_404_not_a_crash()
+    {
+        var seed = await SeedAsync();
+
+        var resp = await seed.Client.DeleteAsync("/api/panel/whatsapp/account");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        seed.Graph.SeenUnsubscribedWabaId.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task One_broadcaster_can_never_disconnect_another_ones_number()
+    {
+        var first = await SeedAsync();
+        (await first.Client.PostAsJsonAsync("/api/panel/whatsapp/account/embedded-signup", Body))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var second = await SeedTenantAsync(first.Factory);
+
+        var resp = await second.Client.DeleteAsync("/api/panel/whatsapp/account");
+
+        // Lisansa daraltılmasaydı B'nin "kopar" düğmesi A'nın canlı hattını
+        // düşürürdü — tek store'da iki yayıncı gerçek üretim şekli.
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        first.Graph.SeenUnsubscribedWabaId.Should().BeNull();
+        (await first.Client.GetAsync("/api/panel/whatsapp/account"))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
     private static async Task<string?> TitleAsync(HttpResponseMessage resp)
