@@ -245,7 +245,7 @@ public sealed class PanelWhatsAppAccountController : ControllerBase
 
         if (!string.IsNullOrWhiteSpace(stored))
         {
-            var pin = _accounts.TryUnprotectToken(stored);
+            var pin = _accounts.TryUnprotectPin(stored);
             if (!string.IsNullOrWhiteSpace(pin)) return pin;
         }
 

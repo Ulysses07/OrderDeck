@@ -118,7 +118,7 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var accounts = scope.ServiceProvider.GetRequiredService<WhatsAppAccountService>();
         var row = db.WhatsAppAccounts.Single(a => a.LicenseId == seed.LicenseId);
-        return row.TwoStepPinProtected is null ? null : accounts.TryUnprotectToken(row.TwoStepPinProtected);
+        return row.TwoStepPinProtected is null ? null : accounts.TryUnprotectPin(row.TwoStepPinProtected);
     }
 
     // wabaId/phoneNumberId Meta'da saf rakam ve uç bunu doğruluyor — sahte

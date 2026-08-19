@@ -40,8 +40,14 @@ public sealed class WhatsAppAccountService
 {
     private const string ProtectorPurpose = "OrderDeck.WhatsApp.AccessToken.v1";
 
+    /// <summary>PIN'in purpose'u token'ınkinden AYRI: aynı purpose'la iki alan
+    /// korunursa birinin şifreli metni öbürünün yerine geçirilebilir hâle gelir
+    /// (satırı yazabilen biri token'ı PIN sütununa taşıyıp okutabilirdi).</summary>
+    private const string PinProtectorPurpose = "OrderDeck.WhatsApp.TwoStepPin.v1";
+
     private readonly LicenseDbContext _db;
     private readonly IDataProtector _protector;
+    private readonly IDataProtector _pinProtector;
     private readonly WhatsAppOptions _opt;
 
     public WhatsAppAccountService(
@@ -49,6 +55,7 @@ public sealed class WhatsAppAccountService
     {
         _db = db;
         _protector = protection.CreateProtector(ProtectorPurpose);
+        _pinProtector = protection.CreateProtector(PinProtectorPurpose);
         _opt = opt.Value;
     }
 
@@ -56,9 +63,19 @@ public sealed class WhatsAppAccountService
 
     /// <summary>Şifreli token'ı çözer. Anahtar döndüyse/bozuksa null döner
     /// (çağıran hesabı "revoked" işaretleyip yayıncıdan yeniden bağlanmasını ister).</summary>
-    public string? TryUnprotectToken(string protectedToken)
+    public string? TryUnprotectToken(string protectedToken) =>
+        TryUnprotect(_protector, protectedToken);
+
+    public string ProtectPin(string rawPin) => _pinProtector.Protect(rawPin);
+
+    /// <summary>Şifreli iki adımlı PIN'i çözer. Anahtar döndüyse null döner —
+    /// çağıran o zaman yeni PIN üretip Meta'nın ne diyeceğine bakar.</summary>
+    public string? TryUnprotectPin(string protectedPin) =>
+        TryUnprotect(_pinProtector, protectedPin);
+
+    private static string? TryUnprotect(IDataProtector protector, string payload)
     {
-        try { return _protector.Unprotect(protectedToken); }
+        try { return protector.Unprotect(payload); }
         catch (System.Security.Cryptography.CryptographicException) { return null; }
     }
 
@@ -127,7 +144,7 @@ public sealed class WhatsAppAccountService
         // Signup'ın bıraktığı PIN'i silmemeli, yoksa numara yeniden register
         // edilemez hâle gelir.
         if (!string.IsNullOrWhiteSpace(input.TwoStepPin))
-            account.TwoStepPinProtected = ProtectToken(input.TwoStepPin);
+            account.TwoStepPinProtected = ProtectPin(input.TwoStepPin);
         account.Status = "active";
         account.LastError = null;
         account.DisconnectedAt = null;

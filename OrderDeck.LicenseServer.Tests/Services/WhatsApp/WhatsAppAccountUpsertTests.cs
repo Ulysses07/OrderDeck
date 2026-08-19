@@ -71,4 +71,23 @@ public sealed class WhatsAppAccountUpsertTests
         row.TwoStepPinProtected.Should().NotBeNull().And.NotContain("123456");
         svc.TryUnprotectToken(row.AccessTokenProtected).Should().Be("TOKEN");
     }
+
+    [Fact]
+    public async Task The_pin_and_the_token_do_not_share_a_key()
+    {
+        var svc = Service(out var db);
+        using var _ = db;
+        var licenseId = Guid.NewGuid();
+
+        await svc.UpsertAsync(licenseId, Input("PNID_3"), CancellationToken.None);
+        var row = db.WhatsAppAccounts.Single(a => a.LicenseId == licenseId);
+
+        svc.TryUnprotectPin(row.TwoStepPinProtected!).Should().Be("123456");
+
+        // Ayrı purpose = kriptografik alan ayrımı. Tek purpose'ta iki şifreli
+        // metin birbirinin yerine geçirilebilirdi: satıra yazabilen biri token'ı
+        // PIN sütununa taşıyıp okutabilir, ya da tersi.
+        svc.TryUnprotectToken(row.TwoStepPinProtected!).Should().BeNull();
+        svc.TryUnprotectPin(row.AccessTokenProtected).Should().BeNull();
+    }
 }
