@@ -169,6 +169,12 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadGateway);
         (await TitleAsync(resp)).Should().Be("whatsapp-subscribe-failed");
+
+        // Yarım satır sessiz veri bozulması olurdu: panel "bağlı" gösterir,
+        // webhook'lar ise abonelik olmadığı için o numaraya HİÇ düşmez.
+        using var scope = seed.Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        db.WhatsAppAccounts.Any(a => a.LicenseId == seed.LicenseId).Should().BeFalse();
     }
 
     [Fact]
