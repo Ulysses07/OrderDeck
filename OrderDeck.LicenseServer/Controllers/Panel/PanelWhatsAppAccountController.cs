@@ -172,7 +172,7 @@ public sealed class PanelWhatsAppAccountController : ControllerBase
                 detail: "Meta beklenmedik uzunlukta bir numara döndü.");
         }
 
-        var pin = await ResolvePinAsync(licenseId.Value, ct);
+        var pin = await ResolvePinAsync(licenseId.Value, phoneNumberId, ct);
         var register = await _graph.RegisterPhoneNumberAsync(phoneNumberId, pin, token, ct);
 
         var result = await _accounts.UpsertAsync(
@@ -263,15 +263,22 @@ public sealed class PanelWhatsAppAccountController : ControllerBase
         string.IsNullOrWhiteSpace(message) ? code ?? "bilinmeyen hata" : $"{code}: {message}";
 
     /// <summary>
-    /// Register'a verilecek PIN. Lisansın saklı PIN'i varsa AYNISI kullanılır:
-    /// Meta yeniden kayıtta numaranın mevcut PIN'ini istiyor, yenisi 133005
-    /// ("PIN mismatch") ile döner. Çözülemeyen şifre (anahtar döndü) saklı PIN
-    /// yok demektir — yeni üretip register'ın söyleyeceğine bakarız.
+    /// Register'a verilecek PIN. Lisansın saklı PIN'i AYNI numaraya aitse
+    /// aynısı kullanılır: Meta yeniden kayıtta numaranın mevcut PIN'ini istiyor,
+    /// yenisi 133005 ("PIN mismatch") ile döner. Çözülemeyen şifre (anahtar
+    /// döndü) saklı PIN yok demektir — yeni üretip register'ın söyleyeceğine
+    /// bakarız.
+    ///
+    /// <para><paramref name="phoneNumberId"/> eşleşmesi şart: yayıncı numara
+    /// değiştirdiğinde eski numaranın PIN'ini yenisine göndermek 133005 üretir,
+    /// hata yüzünden yeni PIN saklanmaz ve satırdaki PIN eski numaranınki olarak
+    /// kalır — her denemede aynı yanlış PIN gider, çıkış yolu kalmaz.</para>
     /// </summary>
-    private async Task<string> ResolvePinAsync(Guid licenseId, CancellationToken ct)
+    private async Task<string> ResolvePinAsync(
+        Guid licenseId, string phoneNumberId, CancellationToken ct)
     {
         var stored = await _db.WhatsAppAccounts
-            .Where(a => a.LicenseId == licenseId)
+            .Where(a => a.LicenseId == licenseId && a.PhoneNumberId == phoneNumberId)
             .Select(a => a.TwoStepPinProtected)
             .FirstOrDefaultAsync(ct);
 

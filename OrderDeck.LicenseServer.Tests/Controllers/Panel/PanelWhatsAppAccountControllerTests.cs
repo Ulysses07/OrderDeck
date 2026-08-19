@@ -273,6 +273,26 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
         seed.Graph.SeenPin.Should().Be(firstPin);
     }
 
+    [Fact]
+    public async Task Switching_to_a_new_number_does_not_carry_the_old_numbers_pin()
+    {
+        var seed = await SeedAsync();
+
+        (await seed.Client.PostAsJsonAsync("/api/panel/whatsapp/account/embedded-signup", Body))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        var firstPin = seed.Graph.SeenPin;
+
+        (await seed.Client.PostAsJsonAsync("/api/panel/whatsapp/account/embedded-signup",
+                new { code = "CODE_2", wabaId = "1001", phoneNumberId = "3003" }))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // PIN numaraya ait, lisansa değil. Eskisini yeni numaraya göndermek
+        // 133005 üretir; hata yüzünden yeni PIN saklanmaz ve satırdaki PIN eski
+        // numaranınki kalır — her denemede aynı yanlış PIN gider, çıkış yok.
+        seed.Graph.SeenPin.Should().NotBe(firstPin);
+        StoredPin(seed).Should().Be(seed.Graph.SeenPin);
+    }
+
     // Meta id'leri saf rakam. Doğrulanmazsa iki ayrı şey oluyor: değer Graph
     // yoluna ("{Root}/{wabaId}/subscribed_apps") aynen giriyor — sorgu dizesi
     // eklenebiliyor, ".." parçaları Uri tarafından başka bir düğüme
