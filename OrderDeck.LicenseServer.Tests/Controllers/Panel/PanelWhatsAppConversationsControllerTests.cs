@@ -26,6 +26,11 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
         int UnreadCount, DateTimeOffset? LastMessageAt,
         List<ConversationLabelDto> Labels, DekontDto? LatestDekont);
 
+    private sealed record MessageDto(
+        Guid Id, string Direction, string Type, string? Body, string Status,
+        string? Origin, string? TemplateName, string? MediaMimeType,
+        string? ErrorCode, string? ErrorMessage, DateTimeOffset Timestamp);
+
     private sealed record Seed(HttpClient Client, Guid LicenseId, Guid LabelId, Guid ConversationId);
 
     private async Task<Seed> SeedAsync(string phone = "905321234567")
@@ -264,6 +269,127 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
             "/api/panel/whatsapp-conversations");
         list!.Single(c => c.Id == mine.ConversationId)
             .Labels.Should().ContainSingle().Which.WaLabelId.Should().Be(mine.LabelId);
+    }
+
+    private static void SeedMessage(
+        LicenseDbContext db, Seed s, string wamId, string direction, string? body,
+        int timestampMinutesAgo, int createdAtMinutesAgo)
+    {
+        db.WaMessages.Add(new WaMessage
+        {
+            Id = Guid.NewGuid(), ConversationId = s.ConversationId, LicenseId = s.LicenseId,
+            WamId = wamId, Direction = direction, Type = "text", Body = body,
+            Status = direction == "in" ? "received" : "delivered",
+            Origin = direction == "out" ? "panel" : null,
+            Timestamp = DateTimeOffset.UtcNow.AddMinutes(-timestampMinutesAgo),
+            CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-createdAtMinutesAgo),
+        });
+    }
+
+    [Fact]
+    public async Task Messages_come_back_oldest_first_by_the_time_meta_stamped_them()
+    {
+        var s = await SeedAsync();
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+            // Satır YAZILMA sırası mesaj sırasının bilerek tersi: gecikmeli webhook
+            // eski mesajı sonradan yazar. Doğru cevabı yalnız Timestamp sıralaması
+            // verir; CreatedAt'e göre sıralansaydı sohbet ters görünürdü.
+            SeedMessage(db, s, "wamid.a", "in", "Merhaba", timestampMinutesAgo: 30, createdAtMinutesAgo: 1);
+            SeedMessage(db, s, "wamid.b", "out", "Buyurun", timestampMinutesAgo: 20, createdAtMinutesAgo: 30);
+            SeedMessage(db, s, "wamid.c", "in", "1250 TL gönderdim", timestampMinutesAgo: 10, createdAtMinutesAgo: 20);
+            await db.SaveChangesAsync();
+        }
+
+        var messages = await s.Client.GetFromJsonAsync<List<MessageDto>>(
+            $"/api/panel/whatsapp-conversations/{s.ConversationId}/messages");
+
+        messages.Should().NotBeNull();
+        messages!.Select(m => m.Body).Should()
+            .ContainInOrder("Merhaba", "Buyurun", "1250 TL gönderdim");
+        messages!.Select(m => m.Direction).Should().ContainInOrder("in", "out", "in");
+        messages!.Single(m => m.Body == "Buyurun").Origin.Should().Be("panel");
+    }
+
+    // Uzun bir sohbette istenen "en yeni N", "en eski N" değil: yayıncı ekranı
+    // açtığında son yazışmayı görmeli, aylar önceki ilk mesajı değil.
+    [Fact]
+    public async Task A_limit_keeps_the_newest_messages_not_the_oldest()
+    {
+        var s = await SeedAsync();
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            for (var i = 0; i < 5; i++)
+                SeedMessage(db, s, $"wamid.n{i}", "in", $"mesaj {i}",
+                    timestampMinutesAgo: 100 - i, createdAtMinutesAgo: 100 - i);
+            await db.SaveChangesAsync();
+        }
+
+        var messages = await s.Client.GetFromJsonAsync<List<MessageDto>>(
+            $"/api/panel/whatsapp-conversations/{s.ConversationId}/messages?limit=2");
+
+        messages!.Select(m => m.Body).Should().Equal("mesaj 3", "mesaj 4");
+    }
+
+    [Fact]
+    public async Task Marking_a_conversation_read_clears_the_badge()
+    {
+        var s = await SeedAsync();   // UnreadCount = 2 ile geliyor
+
+        var resp = await s.Client.PostAsync(
+            $"/api/panel/whatsapp-conversations/{s.ConversationId}/read", null);
+        resp.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var list = await s.Client.GetFromJsonAsync<List<ConversationDto>>(
+            "/api/panel/whatsapp-conversations");
+        list!.Single(c => c.Id == s.ConversationId).UnreadCount.Should().Be(0);
+    }
+
+    // Panel bu GET'i yeniden odaklanmada ve arka planda tazeliyor. Okuma yan
+    // etkili olsaydı rozet, yayıncı sohbete hiç bakmadan sessizce sıfırlanırdı.
+    [Fact]
+    public async Task Reading_the_messages_does_not_silently_clear_the_badge()
+    {
+        var s = await SeedAsync();
+
+        await s.Client.GetFromJsonAsync<List<MessageDto>>(
+            $"/api/panel/whatsapp-conversations/{s.ConversationId}/messages");
+
+        var list = await s.Client.GetFromJsonAsync<List<ConversationDto>>(
+            "/api/panel/whatsapp-conversations");
+        list!.Single(c => c.Id == s.ConversationId).UnreadCount.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Another_broadcasters_messages_cannot_be_read()
+    {
+        var mine = await SeedAsync();
+        var theirs = await SeedAsync("905441112233");
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            SeedMessage(db, theirs, "wamid.secret", "in", "gizli", 5, 5);
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await mine.Client.GetAsync(
+            $"/api/panel/whatsapp-conversations/{theirs.ConversationId}/messages");
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        var read = await mine.Client.PostAsync(
+            $"/api/panel/whatsapp-conversations/{theirs.ConversationId}/read", null);
+        read.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        // Rozet ayakta kalmalı: koruma olmasa başkasının sohbeti okundu sayılırdı.
+        var list = await theirs.Client.GetFromJsonAsync<List<ConversationDto>>(
+            "/api/panel/whatsapp-conversations");
+        list!.Single(c => c.Id == theirs.ConversationId).UnreadCount.Should().Be(2);
     }
 
     [Fact]

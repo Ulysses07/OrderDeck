@@ -8,7 +8,7 @@ using OrderDeck.LicenseServer.Services.Auth;
 namespace OrderDeck.LicenseServer.Controllers.Panel;
 
 /// <summary>
-/// Panelin sohbet listesi: etiketler, etiket filtresi ve elle etiketleme.
+/// Panelin sohbet listesi, sohbetin mesajları, etiket filtresi ve elle etiketleme.
 ///
 /// <para><b>Etiketler otomatik DÜŞMEZ.</b> Sunucu hiçbir etiketi kaldırmaz —
 /// ödeme onaylansa bile "Dekont geldi" durur. Bu bilinçli: etiket "iş var"
@@ -114,6 +114,76 @@ public sealed class PanelWhatsAppConversationsController : ControllerBase
             .ToList();
 
         return Ok(rows);
+    }
+
+    public sealed record MessageDto(
+        Guid Id, string Direction, string Type, string? Body, string Status,
+        string? Origin, string? TemplateName, string? MediaMimeType,
+        string? ErrorCode, string? ErrorMessage, DateTimeOffset Timestamp);
+
+    /// <summary>
+    /// Bir sohbetin mesajları, eskiden yeniye.
+    ///
+    /// <para>Sıralama <c>Timestamp</c> ile, satırın yazılma anıyla değil: gecikmeli
+    /// webhook eski bir mesajı sonradan yazabiliyor ve o zaman ekranda sohbet
+    /// karışık görünürdü.</para>
+    ///
+    /// <para>Okunmamış sayacı burada sıfırlanmıyor; onun ucu ayrı
+    /// (<see cref="MarkRead"/>). Sebep: bu GET'i panel yeniden odaklanmada,
+    /// yeniden bağlanmada ve arka planda tazeliyor — yan etkisi olsaydı rozet
+    /// yayıncı hiç bakmadan sessizce sıfırlanırdı.</para>
+    /// </summary>
+    [HttpGet("{conversationId:guid}/messages")]
+    public async Task<IActionResult> Messages(
+        Guid conversationId, [FromQuery] int limit, CancellationToken ct)
+    {
+        var licenseId = await PanelLicenseScope.ResolveAsync(_db, User.GetTenantCustomerId(), ct);
+        if (licenseId is null) return NotFound();
+
+        // Sohbet id'si tahmin edilse bile başka yayıncının yazışması okunamamalı.
+        var owns = await _db.WaConversations.AnyAsync(
+            c => c.Id == conversationId && c.LicenseId == licenseId.Value, ct);
+        if (!owns) return NotFound();
+
+        var take = limit is > 0 and <= 500 ? limit : 100;
+
+        // Önce SON mesajlar alınıyor (Take + azalan), sonra ekran için ters
+        // çevriliyor: uzun bir sohbette istenen "en yeni 100", "en eski 100" değil.
+        var rows = await _db.WaMessages
+            .AsNoTracking()
+            .Where(m => m.ConversationId == conversationId && m.LicenseId == licenseId.Value)
+            .OrderByDescending(m => m.Timestamp)
+            .Take(take)
+            .ToListAsync(ct);
+
+        return Ok(rows
+            .OrderBy(m => m.Timestamp)
+            .Select(m => new MessageDto(
+                m.Id, m.Direction, m.Type, m.Body, m.Status, m.Origin, m.TemplateName,
+                m.MediaMimeType, m.ErrorCode, m.ErrorMessage, m.Timestamp))
+            .ToList());
+    }
+
+    /// <summary>Okunmamış rozetini sıfırlar — sohbeti açan panel çağırır.</summary>
+    [HttpPost("{conversationId:guid}/read")]
+    public async Task<IActionResult> MarkRead(Guid conversationId, CancellationToken ct)
+    {
+        var licenseId = await PanelLicenseScope.ResolveAsync(_db, User.GetTenantCustomerId(), ct);
+        if (licenseId is null) return NotFound();
+
+        var convo = await _db.WaConversations.FirstOrDefaultAsync(
+            c => c.Id == conversationId && c.LicenseId == licenseId.Value, ct);
+        if (convo is null) return NotFound();
+
+        // Zaten sıfırsa yazmıyoruz: panel her sohbet açılışında çağırıyor, aksi
+        // hâlde her bakış boşuna bir UPDATE olurdu.
+        if (convo.UnreadCount != 0)
+        {
+            convo.UnreadCount = 0;
+            await _db.SaveChangesAsync(ct);
+        }
+
+        return NoContent();
     }
 
     [HttpPost("{conversationId:guid}/labels/{labelId:guid}")]
