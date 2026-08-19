@@ -129,7 +129,9 @@ public sealed class WhatsAppOnboardingClient : IWhatsAppOnboardingClient
     }
 
     /// <summary>Ortak gövde: gönder, JSON'u ayrıştır, Meta hatasını yapısal sonuca
-    /// çevir. <paramref name="step"/> yalnız log içindir — token/code ASLA loglanmaz.
+    /// çevir. <paramref name="step"/> yalnız log içindir; elimizdeki token ve code
+    /// ASLA loglanmaz — beklenmedik yanıtlarda yalnız Meta'nın gövdesi kırpılarak
+    /// sunucu log'una düşer, çağırana hiçbir şekilde dönmez.
     ///
     /// <para><c>where T : class</c> şart: "okuyucu null döndüyse şekil beklenmedik"
     /// kuralı değer tiplerinde işlemez (<c>false</c> asla null olmaz). Başarı
@@ -164,16 +166,40 @@ public sealed class WhatsAppOnboardingClient : IWhatsAppOnboardingClient
             }
 
             if (!resp.IsSuccessStatusCode)
-                return GraphResult<T>.Failure(((int)resp.StatusCode).ToString(), body);
+                return Opaque<T>(step, resp, body, ((int)resp.StatusCode).ToString());
 
             var value = read(root);
             return value is null
-                ? GraphResult<T>.Failure("unexpected-shape", body)
+                ? Opaque<T>(step, resp, body, "unexpected-shape")
                 : GraphResult<T>.Success(value);
         }
         catch (JsonException)
         {
-            return GraphResult<T>.Failure(((int)resp.StatusCode).ToString(), body);
+            // Meta'nın eski OAuth ucu form-encoded dönüyordu ve GraphApiVersion
+            // operatör ayarı — bu dal gerçekten erişilebilir ve o gövdede
+            // access_token var. Ham hâli asla dışarı çıkmamalı.
+            return Opaque<T>(step, resp, body, ((int)resp.StatusCode).ToString());
         }
     }
+
+    /// <summary>Meta'nın kendi <c>error.message</c>'ı OLMAYAN başarısızlıklar.
+    /// Gövde çağırana DÖNMEZ: çağıran panel ucu <c>ErrorMessage</c>'ı tarayıcıya
+    /// gösteriyor ve code-exchange yanıtı akıştaki tek iş token'ını taşıyan gövde.
+    /// Teşhis için gövdenin kırpılmış hâli yalnız sunucu log'una yazılır.</summary>
+    private GraphResult<T> Opaque<T>(
+        string step, HttpResponseMessage resp, string body, string code) where T : class
+    {
+        _log.LogWarning(
+            "WhatsApp onboarding beklenmedik yanıt ({Step}, HTTP {Status}, {Code}): {Body}",
+            step, (int)resp.StatusCode, code, Truncate(body));
+        return GraphResult<T>.Failure(code, OpaqueMessage);
+    }
+
+    /// <summary>Dışarı dönen sabit metin — gövdeden hiçbir şey taşımaz.</summary>
+    private const string OpaqueMessage = "beklenmedik yanıt";
+
+    private const int LogBodyLimit = 500;
+
+    private static string Truncate(string body) =>
+        body.Length <= LogBodyLimit ? body : string.Concat(body.AsSpan(0, LogBodyLimit), "…");
 }

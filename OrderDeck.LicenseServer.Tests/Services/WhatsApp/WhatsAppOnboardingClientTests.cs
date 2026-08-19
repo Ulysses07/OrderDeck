@@ -92,6 +92,38 @@ public sealed class WhatsAppOnboardingClientTests
     }
 
     [Fact]
+    public async Task An_unparseable_response_never_carries_its_body_back_to_the_caller()
+    {
+        // Meta'nın eski OAuth ucu JSON değil form-encoded dönüyordu ve
+        // GraphApiVersion operatör ayarı — yani bu gövde hâlâ gelebilir.
+        // İçindeki access_token, çağıranın Detail(...) yoluyla panele ve
+        // oradan tarayıcıya iner; ham gövde ASLA dışarı çıkmamalı.
+        var handler = new ScriptedHandler(
+            (HttpStatusCode.OK, "access_token=EAA_SAHTE_TOKEN_DEGERI&expires=5184000"));
+
+        var result = await Client(handler).ExchangeCodeAsync("CODE_123", CancellationToken.None);
+
+        result.Ok.Should().BeFalse();
+        result.ErrorMessage.Should().NotContain("EAA_SAHTE_TOKEN_DEGERI");
+        result.ErrorMessage.Should().NotContain("access_token");
+    }
+
+    [Fact]
+    public async Task An_unexpected_shape_reports_a_code_without_echoing_the_body()
+    {
+        // 200 ama beklenen alan yok: gövde yine dışarı sızmamalı, ama
+        // panelin gösterebileceği bir kod kalmalı.
+        var handler = new ScriptedHandler(
+            (HttpStatusCode.OK, """{ "gizli": "EAA_SAHTE_TOKEN_DEGERI" }"""));
+
+        var result = await Client(handler).ExchangeCodeAsync("CODE_123", CancellationToken.None);
+
+        result.Ok.Should().BeFalse();
+        result.ErrorCode.Should().Be("unexpected-shape");
+        result.ErrorMessage.Should().NotContain("EAA_SAHTE_TOKEN_DEGERI");
+    }
+
+    [Fact]
     public async Task Subscribing_the_app_posts_to_the_waba_with_the_business_token()
     {
         var handler = new ScriptedHandler((HttpStatusCode.OK, """{ "success": true }"""));
