@@ -84,4 +84,51 @@ public sealed class WhatsAppOnboardingClientTests
         result.ErrorCode.Should().Be("100");
         result.ErrorMessage.Should().Contain("Invalid verification code");
     }
+
+    [Fact]
+    public async Task Subscribing_the_app_posts_to_the_waba_with_the_business_token()
+    {
+        var handler = new ScriptedHandler((HttpStatusCode.OK, """{ "success": true }"""));
+
+        var result = await Client(handler)
+            .SubscribeAppAsync("WABA_9", "BIZ_TOKEN", CancellationToken.None);
+
+        result.Ok.Should().BeTrue();
+        handler.Requests[0].Method.Should().Be(HttpMethod.Post);
+        handler.Requests[0].RequestUri!.ToString()
+            .Should().Be("https://graph.test/v25.0/WABA_9/subscribed_apps");
+        handler.Requests[0].Headers.Authorization!.Parameter.Should().Be("BIZ_TOKEN");
+    }
+
+    [Fact]
+    public async Task Reading_the_phone_number_asks_only_for_the_display_fields()
+    {
+        var handler = new ScriptedHandler((HttpStatusCode.OK, """
+            { "display_phone_number": "+90 555 111 22 33", "verified_name": "Emar Global" }
+            """));
+
+        var result = await Client(handler)
+            .ReadPhoneNumberAsync("PNID_7", "BIZ_TOKEN", CancellationToken.None);
+
+        result.Ok.Should().BeTrue();
+        result.Value!.DisplayPhoneNumber.Should().Be("+90 555 111 22 33");
+        result.Value.VerifiedName.Should().Be("Emar Global");
+        handler.Requests[0].RequestUri!.ToString()
+            .Should().Be("https://graph.test/v25.0/PNID_7?fields=display_phone_number,verified_name");
+    }
+
+    [Fact]
+    public async Task Registering_the_number_sends_the_pin_in_the_body()
+    {
+        var handler = new ScriptedHandler((HttpStatusCode.OK, """{ "success": true }"""));
+
+        var result = await Client(handler)
+            .RegisterPhoneNumberAsync("PNID_7", "123456", "BIZ_TOKEN", CancellationToken.None);
+
+        result.Ok.Should().BeTrue();
+        handler.Requests[0].RequestUri!.ToString()
+            .Should().Be("https://graph.test/v25.0/PNID_7/register");
+        handler.Bodies[0].Should().Contain("\"messaging_product\":\"whatsapp\"");
+        handler.Bodies[0].Should().Contain("\"pin\":\"123456\"");
+    }
 }
