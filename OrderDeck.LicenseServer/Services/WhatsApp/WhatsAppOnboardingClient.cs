@@ -73,7 +73,7 @@ public sealed class WhatsAppOnboardingClient : IWhatsAppOnboardingClient
                 ["code"] = code,
             }),
         };
-        return await SendAsync(req, "code-exchange", root =>
+        return await SendAsync(req, ExchangeStep, root =>
             root.TryGetProperty("access_token", out var t) ? t.GetString() : null, ct);
     }
 
@@ -189,11 +189,20 @@ public sealed class WhatsAppOnboardingClient : IWhatsAppOnboardingClient
     private GraphResult<T> Opaque<T>(
         string step, HttpResponseMessage resp, string body, string code) where T : class
     {
+        // Code takası yanıtı log'a da GİRMEZ. Form-encoded düşen bir gövdede
+        // access_token açıkta duruyor; sunucu log'u tarayıcıdan güvenli ama
+        // bu repoda sır hijyeni pazarlık konusu değil. Diğer adımların
+        // gövdesinde token yok — teşhis için onlar kırpılarak yazılır.
         _log.LogWarning(
             "WhatsApp onboarding beklenmedik yanıt ({Step}, HTTP {Status}, {Code}): {Body}",
-            step, (int)resp.StatusCode, code, Truncate(body));
+            step, (int)resp.StatusCode, code,
+            step == ExchangeStep ? "[gövde gizlendi]" : Truncate(body));
         return GraphResult<T>.Failure(code, OpaqueMessage);
     }
+
+    /// <summary>Gövdesi token taşıyabilen tek adım — <see cref="Opaque{T}"/> bunu
+    /// log'da da gizler.</summary>
+    private const string ExchangeStep = "code-exchange";
 
     /// <summary>Dışarı dönen sabit metin — gövdeden hiçbir şey taşımaz.</summary>
     private const string OpaqueMessage = "beklenmedik yanıt";
