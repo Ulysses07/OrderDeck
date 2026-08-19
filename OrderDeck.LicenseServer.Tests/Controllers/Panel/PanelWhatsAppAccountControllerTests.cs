@@ -121,7 +121,9 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
         return row.TwoStepPinProtected is null ? null : accounts.TryUnprotectToken(row.TwoStepPinProtected);
     }
 
-    private static object Body => new { code = "CODE_1", wabaId = "WABA_1", phoneNumberId = "PNID_1" };
+    // wabaId/phoneNumberId Meta'da saf rakam ve uç bunu doğruluyor — sahte
+    // değerler de rakam olmak zorunda.
+    private static object Body => new { code = "CODE_1", wabaId = "1001", phoneNumberId = "2002" };
 
     [Fact]
     public async Task A_completed_signup_connects_the_account_without_revealing_the_token()
@@ -136,7 +138,7 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
         json.Should().Contain("+90 555 111 22 33");
 
         seed.Graph.SeenCode.Should().Be("CODE_1");
-        seed.Graph.SeenWabaId.Should().Be("WABA_1");
+        seed.Graph.SeenWabaId.Should().Be("1001");
         seed.Graph.SeenPin.Should().HaveLength(6).And.MatchRegex("^[0-9]{6}$");
     }
 
@@ -219,6 +221,72 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
         // Yeni PIN üretmek register'ı garanti başarısız kılardı — Meta yeniden
         // kayıtta numaranın MEVCUT PIN'ini bekliyor.
         seed.Graph.SeenPin.Should().Be(firstPin);
+    }
+
+    // Meta id'leri saf rakam. Doğrulanmazsa iki ayrı şey oluyor: değer Graph
+    // yoluna ("{Root}/{wabaId}/subscribed_apps") aynen giriyor — sorgu dizesi
+    // eklenebiliyor, ".." parçaları Uri tarafından başka bir düğüme
+    // normalleştiriliyor — ve uzun değer nvarchar(64)'e sığmayıp UpsertAsync'te
+    // patlıyor, yani /register PIN'i yazdıktan SONRA 500.
+    [Theory]
+    [InlineData("1001", "2002?fields=id")]
+    [InlineData("..%2F..%2Fme", "2002")]
+    [InlineData("1001", "2002/messages")]
+    [InlineData("1001", "999999999999999999999999999999999999")]
+    [InlineData("WABA_1", "2002")]
+    public async Task A_meta_id_that_is_not_digits_is_refused_before_any_meta_call(
+        string wabaId, string phoneNumberId)
+    {
+        var seed = await SeedAsync();
+
+        var resp = await seed.Client.PostAsJsonAsync(
+            "/api/panel/whatsapp/account/embedded-signup",
+            new { code = "CODE_1", wabaId, phoneNumberId });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await TitleAsync(resp)).Should().Be("invalid-embedded-signup-payload");
+        seed.Graph.SeenCode.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task A_long_register_error_is_trimmed_to_fit_its_column()
+    {
+        var seed = await SeedAsync();
+        seed.Graph.Register = GraphResult<bool>.Failure("133005", new string('x', 2_000));
+
+        var resp = await seed.Client.PostAsJsonAsync(
+            "/api/panel/whatsapp/account/embedded-signup", Body);
+
+        // LastError nvarchar(500). Kırpılmasaydı SaveChangesAsync patlardı ve
+        // hesap satırı ZATEN yazılmış olduğu için panel, çalışan bir hesap
+        // için 500 görürdü. InMemory MaxLength'i uygulamıyor — bu yüzden
+        // uzunluk burada elle ölçülüyor.
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var scope = seed.Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var row = db.WhatsAppAccounts.Single(a => a.LicenseId == seed.LicenseId);
+        row.LastError.Should().StartWith("register: 133005");
+        row.LastError!.Length.Should().BeLessThanOrEqualTo(500);
+    }
+
+    [Fact]
+    public async Task An_over_long_display_number_from_meta_fails_at_the_boundary()
+    {
+        var seed = await SeedAsync();
+        seed.Graph.Phone = GraphResult<WhatsAppPhoneNumberInfo>.Success(
+            new WhatsAppPhoneNumberInfo(new string('9', 64), "Emar Global"));
+
+        var resp = await seed.Client.PostAsJsonAsync(
+            "/api/panel/whatsapp/account/embedded-signup", Body);
+
+        // DisplayPhoneNumber nvarchar(20). Sınırda durmasaydı /register PIN'i
+        // yazdıktan sonra DbUpdateException gelirdi — saklanmayan PIN yine
+        // numarayı kilitlerdi. Numara bilerek kanonikleştirilmiyor, yalnız
+        // uzunluk bakılıyor.
+        resp.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+        (await TitleAsync(resp)).Should().Be("whatsapp-phone-read-failed");
+        seed.Graph.SeenPin.Should().BeNull();
     }
 
     [Fact]
