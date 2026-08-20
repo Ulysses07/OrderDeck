@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -9,8 +10,8 @@ using OrderDeck.LicenseServer.Services.WhatsApp;
 namespace OrderDeck.LicenseServer.Controllers.Panel;
 
 /// <summary>
-/// Panelin sohbet listesi, sohbetin mesajları, serbest-metin cevap gönderme,
-/// etiket filtresi ve elle etiketleme.
+/// Panelin sohbet listesi, sohbetin mesajları, cevap gönderme (serbest metin ve
+/// onaylı şablon), etiket filtresi ve elle etiketleme.
 ///
 /// <para><b>Etiketler otomatik DÜŞMEZ.</b> Sunucu hiçbir etiketi kaldırmaz —
 /// ödeme onaylansa bile "Dekont geldi" durur. Bu bilinçli: etiket "iş var"
@@ -195,9 +196,8 @@ public sealed class PanelWhatsAppConversationsController : ControllerBase
     ///
     /// <para><b>Yalnız serbest metin:</b> 24 saatlik pencere kapalıysa
     /// <see cref="WhatsAppMessagingService"/> Graph'a hiç gitmeden
-    /// <c>window_closed</c> döner. Onaylı template gönderimi bilerek kapsam
-    /// dışı — Meta'da onaylı şablon listesini çekmek ve parametrelerini
-    /// doldurtmak ayrı bir iş.</para>
+    /// <c>window_closed</c> döner; o hâlde <see cref="SendTemplate"/>
+    /// kullanılmalı.</para>
     ///
     /// <para><b>Neden hata durumunda da 200:</b> "gönderilemedi" ≠ "istek
     /// hatalı". Pencere kapalı, hesap bağlı değil ya da Meta reddetti —
@@ -232,6 +232,109 @@ public sealed class PanelWhatsAppConversationsController : ControllerBase
 
         return Ok(new SendResponse(
             outcome.Ok, outcome.ErrorCode, outcome.ErrorMessage, outcome.MessageId));
+    }
+
+    public sealed record SendTemplateRequest(string Name, string Language, List<string>? Params);
+
+    /// <summary>Meta'nın şablon adı alfabesi: küçük harf, rakam, alt çizgi.</summary>
+    private static readonly Regex TemplateName =
+        new("^[a-z0-9_]{1,512}$", RegexOptions.CultureInvariant);
+
+    /// <summary>Dil kodu: <c>tr</c>, <c>en_US</c>, <c>pt_BR</c>…</summary>
+    private static readonly Regex TemplateLanguage =
+        new("^[A-Za-z]{2,3}([_-][A-Za-z0-9]{2,4})?$", RegexOptions.CultureInvariant);
+
+    /// <summary>Meta'nın gövde parametresi sınırı.</summary>
+    private const int MaxParamLength = 1024;
+
+    /// <summary>Bir şablonda bu kadar değişken olması pratikte imkânsız; sınır
+    /// yalnız uydurma bir isteğin uzun bir Graph gövdesine dönüşmesini kesiyor.</summary>
+    private const int MaxParamCount = 20;
+
+    /// <summary>
+    /// Sohbete Meta'da ONAYLI şablon gönderir — 24 saatlik pencere kapalıyken
+    /// gönderilebilen tek mesaj türü.
+    ///
+    /// <para><b>Pencere kontrolü yok, bilerek:</b> şablon business-initiated ve
+    /// pencereden bağımsız geçerli. Pencere açıkken de gönderilebiliyor ama
+    /// panel bunu sunmuyor; serbest metin hem bedava hem daha doğal.</para>
+    ///
+    /// <para><b>Şablonun onaylı olup olmadığını Meta'ya sormuyoruz.</b> Panel
+    /// listeyi <c>/api/panel/whatsapp-approved-templates</c>'ten çekip seçtiriyor;
+    /// burada ikinci kez sormak her gönderime bir Graph turu ekler ve Meta'nın
+    /// zaten verdiği cevabı ("şablon yok", "parametre sayısı tutmuyor")
+    /// tekrarlardı. O cevap <c>Status="failed"</c> satırı olarak sohbete
+    /// yazıldığı için yayıncı sebebi görüyor.</para>
+    ///
+    /// <para><b>Yerelde neyi kesiyoruz:</b> Meta parametre içinde satır sonu,
+    /// sekme ve 4+ ardışık boşluk kabul etmiyor. Bu, kopyala-yapıştır yapan
+    /// operatörün düzenli olarak düşeceği tuzak ve hatası (132000) kriptik —
+    /// üstelik şablon <b>ücretli</b>. Göndermeden söylemek doğrusu.</para>
+    /// </summary>
+    [HttpPost("{conversationId:guid}/send-template")]
+    public async Task<IActionResult> SendTemplate(
+        Guid conversationId, [FromBody] SendTemplateRequest req, CancellationToken ct)
+    {
+        var name = req.Name?.Trim() ?? "";
+        if (!TemplateName.IsMatch(name))
+            return Problem(title: "invalid-template-name", statusCode: 400, detail: "Şablon adı geçersiz.");
+
+        var language = req.Language?.Trim() ?? "";
+        if (!TemplateLanguage.IsMatch(language))
+            return Problem(title: "invalid-template-language", statusCode: 400, detail: "Şablon dili geçersiz.");
+
+        var parameters = req.Params ?? new List<string>();
+        if (parameters.Count > MaxParamCount)
+            return Problem(
+                title: "too-many-parameters", statusCode: 400,
+                detail: $"Bir şablonda en fazla {MaxParamCount} değişken olabilir.");
+
+        for (var i = 0; i < parameters.Count; i++)
+        {
+            var value = parameters[i] ?? "";
+            if (value.Trim().Length == 0)
+                return Problem(
+                    title: "empty-parameter", statusCode: 400,
+                    detail: $"{i + 1}. değişken boş olamaz.");
+            if (value.Length > MaxParamLength)
+                return Problem(
+                    title: "parameter-too-long", statusCode: 400,
+                    detail: $"{i + 1}. değişken en fazla {MaxParamLength} karakter olabilir.");
+            if (HasForbiddenWhitespace(value))
+                return Problem(
+                    title: "parameter-has-newline", statusCode: 400,
+                    detail: $"{i + 1}. değişken satır sonu, sekme ya da arka arkaya boşluk içeremez.");
+            parameters[i] = value;
+        }
+
+        var licenseId = await PanelLicenseScope.ResolveAsync(_db, User.GetTenantCustomerId(), ct);
+        if (licenseId is null) return NotFound();
+
+        // Serbest metinle aynı gerekçe: numara istekten değil sohbetten.
+        var convo = await _db.WaConversations.AsNoTracking().FirstOrDefaultAsync(
+            c => c.Id == conversationId && c.LicenseId == licenseId.Value, ct);
+        if (convo is null) return NotFound();
+
+        var outcome = await _messaging.SendTemplateAsync(
+            licenseId.Value, convo.CustomerPhone,
+            new WhatsAppTemplate(name, language, parameters),
+            origin: "panel", ct);
+
+        return Ok(new SendResponse(
+            outcome.Ok, outcome.ErrorCode, outcome.ErrorMessage, outcome.MessageId));
+    }
+
+    /// <summary>Meta'nın şablon parametresinde reddettiği boşluk biçimleri.</summary>
+    private static bool HasForbiddenWhitespace(string value)
+    {
+        var runOfSpaces = 0;
+        foreach (var ch in value)
+        {
+            if (ch == '\n' || ch == '\r' || ch == '\t') return true;
+            runOfSpaces = ch == ' ' ? runOfSpaces + 1 : 0;
+            if (runOfSpaces >= 4) return true;
+        }
+        return false;
     }
 
     /// <summary>Okunmamış rozetini sıfırlar — sohbeti açan panel çağırır.</summary>

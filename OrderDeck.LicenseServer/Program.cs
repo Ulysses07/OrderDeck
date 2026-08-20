@@ -152,6 +152,13 @@ public class Program
                 OrderDeck.LicenseServer.Services.WhatsApp.WhatsAppOnboardingClient>(
                 c => c.Timeout = TimeSpan.FromSeconds(waOnboardTimeout <= 0 ? 15 : waOnboardTimeout));
 
+        // Şablon kataloğu da sağlayıcıdan bağımsız: onboarding istemcisiyle aynı
+        // gerekçe. Bağlı hesabı olmayan lisans zaten uçta 503 alıyor, yani "log"
+        // modunda Graph'a hiç çıkılmıyor.
+        builder.Services.AddHttpClient<OrderDeck.LicenseServer.Services.WhatsApp.IWhatsAppTemplateCatalog,
+                OrderDeck.LicenseServer.Services.WhatsApp.WhatsAppTemplateCatalog>(
+                c => c.Timeout = TimeSpan.FromSeconds(waOnboardTimeout <= 0 ? 15 : waOnboardTimeout));
+
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.WhatsApp.WhatsAppAccountService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.WhatsApp.WhatsAppMessagingService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.WhatsApp.WhatsAppInboundJob>();

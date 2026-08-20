@@ -16,6 +16,10 @@ public sealed record WhatsAppAccountUpsert(
     string? VerifiedName,
     string? TwoStepPin);
 
+/// <summary>WABA düzeyi çağrılar için kimlikler — bkz.
+/// <see cref="WhatsAppAccountService.ResolveWabaContextAsync"/>.</summary>
+public sealed record WhatsAppWabaContext(string WabaId, string AccessToken);
+
 /// <summary><see cref="WhatsAppAccountService.UpsertAsync"/> sonucu.
 /// <paramref name="Conflict"/> = numara başka lisansta (çağıran 409 döner).</summary>
 public sealed record WhatsAppAccountUpsertResult(bool Ok, bool Conflict, WhatsAppAccount? Account)
@@ -108,6 +112,24 @@ public sealed class WhatsAppAccountService
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// WABA düzeyi Graph çağrıları (şablon kataloğu) için kimlikler.
+    ///
+    /// <para><b>Gönderim bağlamından neden ayrı:</b> mesaj <c>{PhoneNumberId}/messages</c>'a,
+    /// şablon listesi <c>{WabaId}/message_templates</c>'a gidiyor. Ayrıca
+    /// <see cref="ResolveSendContextAsync"/>'in config fallback'i (tek numarayla
+    /// uçtan test) WABA id taşımıyor — bu yüzden burada fallback YOK ve hesabı
+    /// bağlı olmayan lisans null alır.</para>
+    /// </summary>
+    public async Task<WhatsAppWabaContext?> ResolveWabaContextAsync(Guid licenseId, CancellationToken ct)
+    {
+        var account = await GetActiveByLicenseAsync(licenseId, ct);
+        if (account is null || string.IsNullOrWhiteSpace(account.WabaId)) return null;
+
+        var token = TryUnprotectToken(account.AccessTokenProtected);
+        return string.IsNullOrEmpty(token) ? null : new WhatsAppWabaContext(account.WabaId, token);
     }
 
     /// <summary>
