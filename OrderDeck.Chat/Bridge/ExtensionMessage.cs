@@ -35,4 +35,7 @@ public sealed record ExtensionStats(
     long WindowStart,
     long WindowEnd,
     long WindowDurationMs,
-    int DedupeCacheSize);
+    int DedupeCacheSize,
+    // Köprü kapalıyken outbox'a alınan yorum sayısı. Eski extension
+    // sürümleri bu alanı göndermez → 0 kalır.
+    int Queued = 0);

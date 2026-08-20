@@ -186,10 +186,33 @@ public sealed class LabelService
         }
         if (idsToFlip.Count == 0) return;
 
-        _labels.Uncancel(idsToFlip);
-
-        foreach (var (customerId, agg) in groupedAmounts)
-            _customers.RecordPrintedLabels(customerId, agg.Count, agg.Amount);
+        // Bu blok eskiden telafisizdi: RecordPrintedLabels ortada patlarsa
+        // etiketler "iptal değil" olarak dururken müşterinin cirosu eksik
+        // kalıyordu — Label tablosu ile Customer toplamı sessizce ayrışıyordu.
+        // Cancel bunu telafi ediyordu, Uncancel etmiyordu.
+        //
+        // Sıra Cancel'ın TERSİ ve bu bilinçli: önce müşteri toplamları, sonra
+        // etiket satırları. Cancel'ın sırasını taklit etseydik telafi için
+        // etiketleri yeniden iptal etmek gerekirdi, ama Uncancel CancelReason
+        // ve CancelledAt'i NULL'lıyor — o telafi kayıpsız olamazdı, nedeni
+        // uydurmak zorunda kalırdık. Bu sırada telafi saf aritmetik.
+        var customersUpdated = new List<(string CustomerId, int Count, decimal Amount)>(groupedAmounts.Count);
+        try
+        {
+            foreach (var (customerId, agg) in groupedAmounts)
+            {
+                _customers.RecordPrintedLabels(customerId, agg.Count, agg.Amount);
+                customersUpdated.Add((customerId, agg.Count, agg.Amount));
+            }
+            // Tek UPDATE ... WHERE Id IN (...) — ya hepsi döner ya hiçbiri.
+            _labels.Uncancel(idsToFlip);
+        }
+        catch
+        {
+            foreach (var (customerId, count, amount) in customersUpdated)
+                try { _customers.RecordPrintedLabels(customerId, -count, -amount); } catch { }
+            throw;
+        }
     }
 
     /// <summary>
@@ -328,12 +351,29 @@ public sealed class LabelService
             lbl = lbl with { Price = newPrice.Value };
         }
 
-        _labels.ConfirmTentativeBackups(new[] { backupLabelId });
-
         // Retroactive aggregate credit if the sticker was already printed.
+        //
+        // Alacak ÖNCE, onay SONRA. Ters sırada (eski hâli) alacak kaydı
+        // patlarsa yedek "gerçek satış" olarak işaretlenmiş ama cirosu hiç
+        // yazılmamış oluyordu — hem sessiz hem de yönü kötü bir ayrışma:
+        // operatör satışı yapılmış görüp eksik ciroyu fark etmiyordu.
+        // Bu sırada onay adımı patlarsa alacağı geri alıp hata fırlatıyoruz.
+        var credited = false;
         if (lbl.PrintedAt.HasValue)
         {
             _customers.RecordPrintedLabels(lbl.CustomerId, 1, lbl.Price);
+            credited = true;
+        }
+
+        try
+        {
+            _labels.ConfirmTentativeBackups(new[] { backupLabelId });
+        }
+        catch
+        {
+            if (credited)
+                try { _customers.RecordPrintedLabels(lbl.CustomerId, -1, -lbl.Price); } catch { }
+            throw;
         }
 
         return lbl with { IsTentativeBackup = false };

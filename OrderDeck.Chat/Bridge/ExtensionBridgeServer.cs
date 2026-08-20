@@ -303,12 +303,13 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
                     // Extension'dan gelen scan/dedupe sayaçları — diyagnoz için loglanır.
                     // 10s window: scanCount, commentsObserved, deduped, sent, observerBursts.
                     _log.LogInformation(
-                        "Extension stats [{Platform}]: scans={Scans} observed={Observed} deduped={Deduped} sent={Sent} bursts={Bursts} cache={Cache} (window {WindowMs}ms)",
+                        "Extension stats [{Platform}]: scans={Scans} observed={Observed} deduped={Deduped} sent={Sent} queued={Queued} bursts={Bursts} cache={Cache} (window {WindowMs}ms)",
                         msg.Platform,
                         msg.Stats?.ScanCount ?? 0,
                         msg.Stats?.CommentsObserved ?? 0,
                         msg.Stats?.Deduped ?? 0,
                         msg.Stats?.Sent ?? 0,
+                        msg.Stats?.Queued ?? 0,
                         msg.Stats?.ObserverBursts ?? 0,
                         msg.Stats?.DedupeCacheSize ?? 0,
                         msg.Stats?.WindowDurationMs ?? 0);
@@ -322,6 +323,17 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
                     _log.LogWarning(
                         "Extension watchdog [{Platform}]: action={Action} sinceSendMs={SinceSendMs} rows={Rows}",
                         msg.Platform, msg.Action ?? "?", msg.SinceSendMs ?? 0, msg.Rows ?? 0);
+                }
+                else if (msg is { Type: "chat-dropped", Platform: not null, Count: not null })
+                {
+                    // Köprü kapalıyken extension yorumları outbox'ta biriktirir;
+                    // outbox taştıysa ya da başka yayına geçildiyse bir kısmı
+                    // atılır. Kayıp SESSİZ KALMAMALI — mezat modelinde kaybolan
+                    // yorum kaybolan sipariş demek. Error seviyesi bilinçli:
+                    // operatör "kaç sipariş kaçtı" sorusunu logdan yanıtlayabilsin.
+                    _log.LogError(
+                        "Extension outbox [{Platform}]: köprü kapalıyken {Count} yorum kaybedildi",
+                        msg.Platform, msg.Count.Value);
                 }
                 else if (msg is { Type: "viewers", Platform: not null, Count: not null })
                 {

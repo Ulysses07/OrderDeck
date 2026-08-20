@@ -63,3 +63,10 @@ orderdeck-chat-bridge-*/
 # .env.example commit'lenir; gerçek .env asla.
 .env
 !.env.example
+
+# Brainstorm görsel oturumu (yerel)
+.superpowers/
+
+# Denetim/analiz raporları: doğrulanmış açık listesi içerirler ve bu repo
+# PUBLIC. Yerelde dursunlar, asla commit'lenmesinler.
+*.docx
