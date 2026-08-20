@@ -11,6 +11,7 @@ using Hangfire.SqlServer;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Services.Auth;
 using OrderDeck.LicenseServer.Services.Backup;
+using OrderDeck.LicenseServer.Services.Configuration;
 using OrderDeck.LicenseServer.Services.Email;
 using OrderDeck.LicenseServer.Services.IntakeForm;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -96,17 +97,22 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Audit.IAuditService,
                                     OrderDeck.LicenseServer.Services.Audit.AuditService>();
 
-        // Email sender selection
-        var emailProvider = builder.Configuration["Email:Provider"] ?? "smtp";
-        if (emailProvider.Equals("disk", StringComparison.OrdinalIgnoreCase))
+        // Sağlayıcı seçimleri (email / SMS / WhatsApp / push / medya) tek kapıdan:
+        // ProviderName.Resolve tanınmayan adı açılışta patlatır. Eskiden bunların
+        // bir kısmı sessizce yedeğe düşüyordu ve SMS/WhatsApp'ın yedeği hiçbir şey
+        // göndermeyen "log" sağlayıcısıydı — bkz. ProviderName sınıf yorumu.
+        var emailProvider = ProviderName.Resolve(
+            builder.Configuration, "Email:Provider", "smtp", "smtp", "disk");
+        if (emailProvider == "disk")
             builder.Services.AddSingleton<IEmailSender, DiskEmailSender>();
         else
             builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
 
         // SMS sender selection (email pattern'iyle aynı). Dev/test → log,
         // prod → Netgsm. Netgsm HttpClient ile typed-client olarak bağlanır.
-        var smsProvider = builder.Configuration["Sms:Provider"] ?? "log";
-        if (smsProvider.Equals("netgsm", StringComparison.OrdinalIgnoreCase))
+        var smsProvider = ProviderName.Resolve(
+            builder.Configuration, "Sms:Provider", "log", "log", "netgsm");
+        if (smsProvider == "netgsm")
         {
             // Timeout: Netgsm asılı kalırsa forgot-password isteğini default
             // 100sn boyunca bloklamasın (SMS inline await ediliyor).
@@ -139,8 +145,9 @@ public class Program
         // Tenant-aware: gönderim kimlikleri çağrı başına WhatsAppSendContext'ten.
         builder.Services.Configure<OrderDeck.LicenseServer.Services.WhatsApp.WhatsAppOptions>(
             builder.Configuration.GetSection("OrderDeck:WhatsApp"));
-        var waProvider = builder.Configuration["OrderDeck:WhatsApp:Provider"] ?? "log";
-        if (waProvider.Equals("cloud", StringComparison.OrdinalIgnoreCase))
+        var waProvider = ProviderName.Resolve(
+            builder.Configuration, "OrderDeck:WhatsApp:Provider", "log", "log", "cloud");
+        if (waProvider == "cloud")
         {
             var waTimeout = builder.Configuration.GetValue("OrderDeck:WhatsApp:TimeoutSeconds", 15);
             builder.Services.AddHttpClient<OrderDeck.LicenseServer.Services.WhatsApp.IWhatsAppSender,
@@ -196,14 +203,15 @@ public class Program
         // Push notifications. Provider: "stub" (default) veya "fcm".
         // PR #51 (2026-05-14) — stub log-only fan-out.
         // PR Push Faz 2 (2026-05-15) — gerçek FCM (FirebaseAdmin SDK).
-        var pushProvider = builder.Configuration["OrderDeck:Push:Provider"] ?? "stub";
-        if (pushProvider.Equals("stub", StringComparison.OrdinalIgnoreCase))
+        var pushProvider = ProviderName.Resolve(
+            builder.Configuration, "OrderDeck:Push:Provider", "stub", "stub", "fcm");
+        if (pushProvider == "stub")
         {
             builder.Services.AddScoped<
                 OrderDeck.LicenseServer.Services.Push.INotificationSender,
                 OrderDeck.LicenseServer.Services.Push.StubNotificationSender>();
         }
-        else if (pushProvider.Equals("fcm", StringComparison.OrdinalIgnoreCase))
+        else
         {
             // Bind options + initialize FirebaseApp singleton fail-fast.
             var fcmOptions = new OrderDeck.LicenseServer.Services.Push.FcmOptions();
@@ -218,22 +226,18 @@ public class Program
                 OrderDeck.LicenseServer.Services.Push.INotificationSender,
                 OrderDeck.LicenseServer.Services.Push.FcmNotificationSender>();
         }
-        else
-        {
-            throw new InvalidOperationException(
-                $"Unsupported push provider: {pushProvider}. Valid values: 'stub', 'fcm'.");
-        }
 
         // Broadcast media storage — provider seçimi (stub | r2)
         // Provider: appsettings.json "OrderDeck:BroadcastMedia:Provider" = "stub" | "r2"
-        var bmProvider = builder.Configuration["OrderDeck:BroadcastMedia:Provider"] ?? "stub";
-        if (bmProvider.Equals("stub", StringComparison.OrdinalIgnoreCase))
+        var bmProvider = ProviderName.Resolve(
+            builder.Configuration, "OrderDeck:BroadcastMedia:Provider", "stub", "stub", "r2");
+        if (bmProvider == "stub")
         {
             builder.Services.AddSingleton<
                 OrderDeck.LicenseServer.Services.BroadcastPosts.IBroadcastMediaStorage,
                 OrderDeck.LicenseServer.Services.BroadcastPosts.StubBroadcastMediaStorage>();
         }
-        else if (bmProvider.Equals("r2", StringComparison.OrdinalIgnoreCase))
+        else
         {
             var r2Opt = new OrderDeck.LicenseServer.Services.BroadcastPosts.R2Options();
             builder.Configuration.GetSection("R2").Bind(r2Opt);
@@ -242,15 +246,10 @@ public class Program
                 OrderDeck.LicenseServer.Services.BroadcastPosts.IBroadcastMediaStorage,
                 OrderDeck.LicenseServer.Services.BroadcastPosts.R2BroadcastMediaStorage>();
         }
-        else
-        {
-            throw new InvalidOperationException(
-                $"Unsupported broadcast media provider: {bmProvider}. Valid values: 'stub', 'r2'.");
-        }
 
         // Shopper payment storage — same provider selection as broadcast media (stub | r2)
         // R2Options already registered as singleton above when bmProvider == "r2".
-        if (bmProvider.Equals("stub", StringComparison.OrdinalIgnoreCase))
+        if (bmProvider == "stub")
         {
             builder.Services.AddSingleton<
                 OrderDeck.LicenseServer.Services.ShopperPayments.IShopperPaymentStorage,
@@ -264,7 +263,7 @@ public class Program
         }
 
         // WhatsApp medyası aynı bucket'ı paylaşır ("wa/" öneki) → aynı provider seçimi.
-        if (bmProvider.Equals("stub", StringComparison.OrdinalIgnoreCase))
+        if (bmProvider == "stub")
         {
             builder.Services.AddSingleton<
                 OrderDeck.LicenseServer.Services.WhatsApp.IWhatsAppMediaStore,
