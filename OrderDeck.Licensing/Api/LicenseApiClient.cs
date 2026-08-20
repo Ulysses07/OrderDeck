@@ -6,7 +6,7 @@ using OrderDeck.Licensing.Api.Models;
 
 namespace OrderDeck.Licensing.Api;
 
-public sealed class LicenseApiClient
+public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
 {
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -460,6 +460,22 @@ public sealed class LicenseApiClient
         if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
         return (await DeserializeAsync<IssueTempPasswordResponse>(resp, ct))!;
     }
+
+    // ─── Facebook OAuth aracısı (Bearer-Customer) ─────────────────────
+
+    /// <summary>Yapılandırma sunucudan gelir; böylece Meta panelinde config
+    /// veya izin seti değişince yeni masaüstü sürümü yayınlamak gerekmez.</summary>
+    public Task<OrderDeck.Core.Chat.FacebookOAuthConfig> GetFacebookOAuthConfigAsync(
+        CancellationToken ct = default)
+        => GetExpectingJsonAsync<OrderDeck.Core.Chat.FacebookOAuthConfig>(
+            "/api/v1/facebook/oauth/config", ct);
+
+    /// <summary>Takası sunucu yapar — App Secret masaüstü binary'sine hiç
+    /// girmez. <c>code</c> kısa ömürlü, çağrı gecikmemeli.</summary>
+    public Task<OrderDeck.Core.Chat.FacebookLongLivedToken> ExchangeFacebookCodeAsync(
+        string code, CancellationToken ct = default)
+        => PostJsonExpectingJsonAsync<object, OrderDeck.Core.Chat.FacebookLongLivedToken>(
+            "/api/v1/facebook/oauth/exchange", new { code }, ct);
 
     // ─── HTTP helpers ────────────────────────────────────────────────
 

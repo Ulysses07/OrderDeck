@@ -255,6 +255,9 @@ public sealed class AppHost : IDisposable
             new OrderDeck.Chat.Facebook.FacebookOAuthService(
                 () => sp.GetRequiredService<AppSettings>(),
                 sp.GetRequiredService<OrderDeck.Chat.Facebook.EncryptedFacebookTokenStore>(),
+                // Yapılandırma + code→token takası lisans sunucusundan geçiyor;
+                // App Secret bu binary'de yok.
+                sp.GetRequiredService<LicenseApiClient>(),
                 new HttpClient { Timeout = TimeSpan.FromSeconds(30) },
                 sp.GetRequiredService<ILogger<OrderDeck.Chat.Facebook.FacebookOAuthService>>()));
         services.AddSingleton<OrderDeck.Chat.Facebook.FacebookModerationService>(sp =>
