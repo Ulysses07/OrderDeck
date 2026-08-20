@@ -11,6 +11,7 @@ using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using OrderDeck.Core.Chat;
 using OrderDeck.Core.Settings;
 
 namespace OrderDeck.Chat.Facebook;
@@ -22,14 +23,22 @@ namespace OrderDeck.Chat.Facebook;
 /// Meta doesn't ship a .NET equivalent of <c>GoogleWebAuthorizationBroker</c>
 /// — there is no library that spins up the loopback listener for us.
 ///
+/// <para><b>App Secret bu derlemede yoktur.</b> Meta, Google'ın aksine masaüstü
+/// sırrını "gizli değil" saymaz; üstelik yayın hattına enjeksiyon adımı hiç
+/// eklenmemişti, bu yüzden sabitler sahaya BOŞ gidiyor ve Facebook'a bağlanma
+/// her kurulumda patlıyordu. Hem yapılandırmayı hem code→token takasını artık
+/// lisans sunucusu veriyor (<see cref="IFacebookOAuthBroker"/>).</para>
+///
 /// <para>Flow on Connect:</para>
 /// <list type="number">
+///   <item>Yapılandırmayı (<c>app_id</c>, <c>config_id</c>, <c>redirect_uri</c>)
+///     lisans sunucusundan al.</item>
 ///   <item>Build the authorise URL with <c>client_id</c>, <c>redirect_uri</c>,
 ///     <c>state</c>, and <c>config_id</c> (Login for Business config).</item>
 ///   <item>Open the default browser.</item>
 ///   <item>Listen on <see cref="LoopbackPrefix"/> for the redirect.</item>
-///   <item>Exchange the <c>?code=...</c> for a short-lived user token.</item>
-///   <item>Exchange the short-lived user token for a long-lived one (~60d).</item>
+///   <item><c>?code=...</c>'u sunucuya ver, uzun ömürlü (~60g) kullanıcı
+///     token'ını al — iki adımlı takası sunucu yapar.</item>
 ///   <item>Hit <c>/me/accounts</c>, ask the caller to pick a Page (or auto-pick
 ///     if there's only one).</item>
 ///   <item>Derive the Page access token from <c>/{page-id}?fields=access_token,name</c>.</item>
@@ -49,20 +58,6 @@ public sealed class FacebookOAuthService
     /// </summary>
     public const string LoopbackPrefix = "http://localhost:4849/facebook/callback/";
 
-    /// <summary>
-    /// The redirect URI registered with Meta. It is NOT the loopback address:
-    /// Meta refuses to save a localhost entry under "Valid OAuth Redirect URIs"
-    /// ("http://localhost redirects are automatically allowed while in
-    /// development mode only"), so a Live-mode app cannot use one. Instead
-    /// orderdeckapp.com/facebook/callback is a Caddy rule that 302s straight
-    /// back to <see cref="LoopbackPrefix"/> with the query string intact —
-    /// see deploy/Caddyfile. Nothing is stored server-side.
-    ///
-    /// Strict Mode requires an exact match, and the same value must be sent on
-    /// both the authorize call and the code→token exchange, hence one constant.
-    /// </summary>
-    private const string RedirectUri = "https://orderdeckapp.com/facebook/callback";
-
     private static readonly string GraphBase =
         $"https://graph.facebook.com/{FacebookOAuthDefaults.GraphApiVersion}";
     private static readonly string DialogBase =
@@ -70,6 +65,7 @@ public sealed class FacebookOAuthService
 
     private readonly Func<AppSettings> _settings;
     private readonly EncryptedFacebookTokenStore _tokenStore;
+    private readonly IFacebookOAuthBroker _broker;
     private readonly HttpClient _http;
     private readonly ILogger<FacebookOAuthService> _log;
 
@@ -81,11 +77,13 @@ public sealed class FacebookOAuthService
     public FacebookOAuthService(
         Func<AppSettings> settings,
         EncryptedFacebookTokenStore tokenStore,
+        IFacebookOAuthBroker broker,
         HttpClient http,
         ILogger<FacebookOAuthService> log)
     {
         _settings = settings;
         _tokenStore = tokenStore;
+        _broker = broker;
         _http = http;
         _log = log;
     }
@@ -144,16 +142,21 @@ public sealed class FacebookOAuthService
         CancellationToken ct = default)
     {
         var s = _settings();
-        if (!HasCredentials(s, out var appId, out var appSecret, out var configId))
+
+        // 0. Yapılandırma lisans sunucusundan gelir. Eskiden derleme
+        //    zamanı sabitiydi; yayın hattına enjeksiyon adımı hiç eklenmediği
+        //    için sahaya BOŞ gidiyor ve her kurulumda "App ID eksik" hatası
+        //    veriyordu. Artık tek kaynak sunucu.
+        var cfg = await _broker.GetFacebookOAuthConfigAsync(ct).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(cfg.AppId))
             throw new InvalidOperationException(
-                "Facebook App ID / Secret missing. Either build a release with " +
-                "FacebookOAuthDefaults populated, or drop the values into " +
-                "AppSettings (settings.json) for development.");
+                "Sunucu Facebook uygulamasını bildirmedi. Lisans sunucusunda " +
+                "OrderDeck:Facebook yapılandırması eksik.");
 
         // 1. Authorise URL — state binds the callback to this attempt so a
         //    stale browser tab can't smuggle a code from a different session.
         var state = GenerateState();
-        var url = BuildAuthorizeUrl(appId, configId, state);
+        var url = BuildAuthorizeUrl(cfg.AppId, cfg.LoginConfigId, cfg.RedirectUri, state);
 
         // 2. Spin up the loopback listener BEFORE opening the browser so we
         //    don't lose the redirect if Facebook is uncharacteristically fast.
@@ -184,12 +187,10 @@ public sealed class FacebookOAuthService
             throw new InvalidOperationException("OAuth state mismatch — possible CSRF.");
         }
 
-        // 4. Code → short-lived user token.
-        var shortLived = await ExchangeCodeAsync(appId, appSecret, code, ct).ConfigureAwait(false);
-
-        // 5. Short-lived → long-lived (~60d).
-        var longLived = await ExchangeForLongLivedAsync(appId, appSecret, shortLived.AccessToken, ct)
-            .ConfigureAwait(false);
+        // 4-5. Code → uzun ömürlü kullanıcı token'ı. İki adımı da sunucu
+        //      yapıyor; App Secret bu binary'de YOK. Code kısa yaşıyor,
+        //      araya bir şey sokma.
+        var longLived = await _broker.ExchangeFacebookCodeAsync(code, ct).ConfigureAwait(false);
 
         // 6. List the operator's Pages → ask the picker.
         var pages = await ListPagesAsync(longLived.AccessToken, ct).ConfigureAwait(false);
@@ -209,8 +210,8 @@ public sealed class FacebookOAuthService
             .ConfigureAwait(false);
 
         // 8. Persist + cache.
-        var expires = longLived.ExpiresIn > 0
-            ? DateTimeOffset.UtcNow.AddSeconds(longLived.ExpiresIn)
+        var expires = longLived.ExpiresInSeconds > 0
+            ? DateTimeOffset.UtcNow.AddSeconds(longLived.ExpiresInSeconds)
             : (DateTimeOffset?)null;
 
         var bundle = new FacebookTokenBundle(
@@ -245,13 +246,25 @@ public sealed class FacebookOAuthService
 
     // ---- helpers --------------------------------------------------------
 
-    private static string BuildAuthorizeUrl(string appId, string configId, string state)
+    /// <summary>
+    /// <paramref name="redirectUri"/> Meta'ya kayıtlı olan adrestir ve loopback
+    /// DEĞİLDİR: Meta "Valid OAuth Redirect URIs" altına localhost kaydını
+    /// Live mode'da kabul etmiyor. orderdeckapp.com/facebook/callback, sorgu
+    /// dizesini olduğu gibi <see cref="LoopbackPrefix"/>'e 302'leyen bir Caddy
+    /// kuralı — sunucuda hiçbir şey saklanmıyor (deploy/Caddyfile).
+    ///
+    /// Strict Mode birebir eşleşme istediği için authorize çağrısındaki ve
+    /// code→token takasındaki değer AYNI olmalı; ikisi de artık sunucudan
+    /// geliyor, tek kaynak orası.
+    /// </summary>
+    private static string BuildAuthorizeUrl(
+        string appId, string configId, string redirectUri, string state)
     {
         // config_id encodes the Login for Business permission set so we don't
         // pass scope=... at all (Meta picks scopes from the configuration).
         var sb = new StringBuilder(DialogBase);
         sb.Append("?client_id=").Append(Uri.EscapeDataString(appId));
-        sb.Append("&redirect_uri=").Append(Uri.EscapeDataString(RedirectUri));
+        sb.Append("&redirect_uri=").Append(Uri.EscapeDataString(redirectUri));
         sb.Append("&state=").Append(Uri.EscapeDataString(state));
         sb.Append("&response_type=code");
         if (!string.IsNullOrWhiteSpace(configId))
@@ -323,28 +336,6 @@ public sealed class FacebookOAuthService
         return (code!, state);
     }
 
-    private async Task<TokenResponse> ExchangeCodeAsync(
-        string appId, string appSecret, string code, CancellationToken ct)
-    {
-        var url = $"{GraphBase}/oauth/access_token" +
-                  $"?client_id={Uri.EscapeDataString(appId)}" +
-                  $"&client_secret={Uri.EscapeDataString(appSecret)}" +
-                  $"&redirect_uri={Uri.EscapeDataString(RedirectUri)}" +
-                  $"&code={Uri.EscapeDataString(code)}";
-        return await GetJsonAsync<TokenResponse>(url, ct).ConfigureAwait(false);
-    }
-
-    private async Task<TokenResponse> ExchangeForLongLivedAsync(
-        string appId, string appSecret, string shortLivedToken, CancellationToken ct)
-    {
-        var url = $"{GraphBase}/oauth/access_token" +
-                  $"?grant_type=fb_exchange_token" +
-                  $"&client_id={Uri.EscapeDataString(appId)}" +
-                  $"&client_secret={Uri.EscapeDataString(appSecret)}" +
-                  $"&fb_exchange_token={Uri.EscapeDataString(shortLivedToken)}";
-        return await GetJsonAsync<TokenResponse>(url, ct).ConfigureAwait(false);
-    }
-
     private async Task<IReadOnlyList<FacebookPageCandidate>> ListPagesAsync(
         string userAccessToken, CancellationToken ct)
     {
@@ -402,37 +393,7 @@ public sealed class FacebookOAuthService
         return Convert.ToHexString(buf);
     }
 
-    /// <summary>
-    /// AppSettings overrides win first (QA/dev against a separate Meta App),
-    /// then the compiled-in defaults baked by the build pipeline. Returns
-    /// false if either App ID or Secret is missing — config_id is optional
-    /// (skip when empty → standard scope=... flow).
-    /// </summary>
-    private static bool HasCredentials(AppSettings settings,
-        out string appId, out string appSecret, out string configId)
-    {
-        appId = !string.IsNullOrWhiteSpace(settings.FacebookAppId)
-            ? settings.FacebookAppId!
-            : FacebookOAuthDefaults.AppId;
-        appSecret = !string.IsNullOrWhiteSpace(settings.FacebookAppSecret)
-            ? settings.FacebookAppSecret!
-            : FacebookOAuthDefaults.AppSecret;
-        configId = !string.IsNullOrWhiteSpace(settings.FacebookLoginConfigId)
-            ? settings.FacebookLoginConfigId!
-            : FacebookOAuthDefaults.LoginConfigId;
-
-        return !string.IsNullOrWhiteSpace(appId)
-            && !string.IsNullOrWhiteSpace(appSecret);
-    }
-
     // ---- wire shapes ----------------------------------------------------
-
-    private sealed class TokenResponse
-    {
-        [JsonPropertyName("access_token")] public string AccessToken { get; set; } = "";
-        [JsonPropertyName("token_type")] public string? TokenType { get; set; }
-        [JsonPropertyName("expires_in")] public long ExpiresIn { get; set; }
-    }
 
     private sealed class MeAccountsResponse
     {

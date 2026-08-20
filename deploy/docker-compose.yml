@@ -119,6 +119,16 @@ services:
       OrderDeck__WhatsApp__VerifyToken: "${OrderDeck__WhatsApp__VerifyToken:-}"
       OrderDeck__WhatsApp__AppId: "${OrderDeck__WhatsApp__AppId:-}"
       OrderDeck__WhatsApp__EmbeddedSignupConfigId: "${OrderDeck__WhatsApp__EmbeddedSignupConfigId:-}"
+      # Masaüstünün Facebook/Instagram OAuth'u (2026-08-20). AppSecret SUNUCUDA
+      # KALIR: code→token takasını sunucu yapar, masaüstü yalnız code gönderir.
+      # Eskiden bu sır WPF binary'sine derlenmek zorundaydı; enjeksiyon adımı
+      # yayın hattına hiç eklenmediği için sahaya BOŞ gidiyor ve her kurulumda
+      # Facebook bağlantısı "App ID eksik" diye patlıyordu.
+      # AppId/LoginConfigId gizli değil ama boşsa masaüstü OAuth penceresini
+      # hiç açamaz. Bu, WhatsApp app'inden AYRI bir Meta app'idir — karıştırma.
+      OrderDeck__Facebook__AppId: "${OrderDeck__Facebook__AppId:-}"
+      OrderDeck__Facebook__AppSecret: "${OrderDeck__Facebook__AppSecret:-}"
+      OrderDeck__Facebook__LoginConfigId: "${OrderDeck__Facebook__LoginConfigId:-}"
       # OpenTelemetry export. Set OTEL_EXPORTER_OTLP_ENDPOINT in .env to push
       # traces+metrics to a collector (Grafana Cloud, Honeycomb, Tempo, etc.).
       # Empty = no push; /metrics scrape endpoint still works regardless.

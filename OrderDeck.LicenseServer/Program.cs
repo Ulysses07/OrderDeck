@@ -172,6 +172,17 @@ public class Program
         builder.Services.AddHttpClient<OrderDeck.LicenseServer.Services.WhatsApp.WhatsAppMediaDownloader>(
             c => c.Timeout = TimeSpan.FromSeconds(waMediaTimeout <= 0 ? 15 : waMediaTimeout));
 
+        // Facebook OAuth (masaüstü sohbet/moderasyon app'i — WhatsApp app'inden
+        // AYRI). Yapılandırma yoksa uçlar 503 döner, o yüzden istemci koşulsuz
+        // kayıtlı: "log modu" gibi bir alternatif yol yok, takas ya sunucuda
+        // yapılır ya hiç yapılmaz.
+        builder.Services.Configure<OrderDeck.LicenseServer.Services.Facebook.FacebookOptions>(
+            builder.Configuration.GetSection("OrderDeck:Facebook"));
+        var fbTimeout = builder.Configuration.GetValue("OrderDeck:Facebook:TimeoutSeconds", 15);
+        builder.Services.AddHttpClient<OrderDeck.LicenseServer.Services.Facebook.IFacebookOAuthExchanger,
+                OrderDeck.LicenseServer.Services.Facebook.FacebookOAuthExchanger>(
+                c => c.Timeout = TimeSpan.FromSeconds(fbTimeout <= 0 ? 15 : fbTimeout));
+
         builder.Services.AddSingleton<BackupStorageService>();
         builder.Services.AddScoped<BackupRetentionService>();
         builder.Services.AddScoped<BackupViewerService>();
@@ -456,6 +467,22 @@ public class Program
                     factory: _ => new FixedWindowRateLimiterOptions
                     {
                         PermitLimit = 300,
+                        Window = TimeSpan.FromHours(1),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0
+                    }));
+            // Facebook code takası — bu uç bizim App Secret'ımızı kullanıyor,
+            // yani kötüye kullanımı doğrudan Meta app'imizin itibarına yazılır.
+            // Bölüm anahtarı çağıran müşteri (NAT arkasındaki yayıncılar aynı
+            // IP'yi paylaşabilir). Normal kullanım günde bir-iki bağlanma;
+            // limit elle deneme-yanılmaya yer bırakacak kadar geniş.
+            opt.AddPolicy("facebook-oauth", ctx =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    partitionKey: ctx.User.FindFirstValue(ClaimTypes.NameIdentifier)
+                                  ?? ctx.Connection.RemoteIpAddress?.ToString() ?? "anon",
+                    factory: _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 20,
                         Window = TimeSpan.FromHours(1),
                         QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
                         QueueLimit = 0

@@ -75,22 +75,10 @@ public sealed class AppSettings
     /// yaptıktan sonra). Null = Facebook canlı yorum/moderasyon kapalı.</summary>
     public string? FacebookPageId { get; set; }
 
-    /// <summary>Facebook App ID. Production'da
-    /// <c>FacebookOAuthDefaults.AppId</c>'ye düşer; QA/dev için ayrı bir
-    /// Meta App ile test ederken bu alandan override edilir.</summary>
-    public string? FacebookAppId { get; set; }
-
-    /// <summary>Facebook App Secret. Production'da <c>FacebookOAuthDefaults</c>
-    /// içinde sabitli; dev override için bu alan kullanılır. Desktop OAuth
-    /// kullanımında binary'de zaten yer aldığı için "secret" kelimesi yanıltıcı —
-    /// asıl korunan refresh token + Page access token (DPAPI ile şifrelenir).</summary>
-    public string? FacebookAppSecret { get; set; }
-
-    /// <summary>Facebook Login for Business config ID. OAuth dialog URL'inde
-    /// <c>config_id={ID}</c> olarak gider; "Manage everything on your Page" use
-    /// case'inde tanımladığımız permission setini operatöre seçimsiz olarak
-    /// uygular.</summary>
-    public string? FacebookLoginConfigId { get; set; }
+    // FacebookAppId / FacebookAppSecret / FacebookLoginConfigId buradan
+    // KALDIRILDI: App ID, config id ve redirect URI artık lisans sunucusundan
+    // geliyor, App Secret ise masaüstüne hiç inmiyor. Geri ekleme — bir daha
+    // makineden makineye settings.json kopyalama durumuna düşmeyelim.
 
     /// <summary>Feature-flag: Instagram canlı yorum çekme yöntemi. Varsayılan
     /// <see cref="OrderDeck.Core.Chat.InstagramIngestMode.Scraper"/> (extension).
