@@ -37,18 +37,23 @@ export default function DataDeletionTr() {
       </ul>
       <p>
         Canlı chat akışının kendisi geçicidir ve uygulama kapatıldığında silinir.
-        Ancak yorumdan oluşturulan <strong>müşteri kaydı ve sipariş/etiket</strong>
-        bilgileri, yayıncının işini yürütebilmesi için saklanır.
+        Ancak yorumdan oluşturulan{' '}
+        <strong>müşteri kaydı ve sipariş/etiket</strong> bilgileri, yayıncının
+        işini yürütebilmesi için saklanır.
       </p>
 
       <h2>2. Yayıncıysanız (OrderDeck kullanıcısı)</h2>
       <ul>
-        <li>Uygulamadaki <strong>Müşteri Detayı</strong> ekranından ilgili müşteri/sipariş
-          kayıtlarını silebilirsiniz.</li>
+        <li>Uygulamadaki <strong>Müşteri Detayı</strong> ekranından siparişleri
+          <strong> iptal edebilir</strong> ve müşteri notlarını düzenleyebilirsiniz.
+          Kayıtların kalıcı olarak silinmesi bu ekrandan yapılmaz; aşağıdaki
+          e-posta yoluyla talep edilir.</li>
         <li>Ayarlar → Facebook üzerinden <strong>“Bağlantıyı Kaldır”</strong> ile Sayfa
           erişim jetonunu ve OAuth verilerini kaldırabilirsiniz.</li>
-        <li>Tüm hesabınızın ve ilişkili verilerin silinmesi için{' '}
-          <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a> adresine yazın.</li>
+        <li>Belirli müşteri/sipariş kayıtlarının kalıcı olarak silinmesi ya da tüm
+          hesabınızın ve ilişkili verilerin silinmesi için{' '}
+          <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a> adresine yazın.
+          Talebinizi doğruladıktan sonra <strong>30 gün içinde</strong> sileriz.</li>
       </ul>
 
       <h2>3. İzleyici / yorumcuysanız</h2>
