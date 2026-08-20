@@ -550,4 +550,146 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
         after!.Single(c => c.Id == s.ConversationId).WindowExpiresAt
             .Should().BeCloseTo(lastInbound.AddHours(24), TimeSpan.FromSeconds(1));
     }
+
+    private Task<HttpResponseMessage> SendTemplateAsync(
+        Seed s, object payload, Guid? conversationId = null) =>
+        s.Client.PostAsJsonAsync(
+            $"/api/panel/whatsapp-conversations/{conversationId ?? s.ConversationId}/send-template",
+            payload);
+
+    // Şablonun varlık sebebi bu: pencere kapalıyken gönderilebilen tek mesaj
+    // türü. Serbest metin burada window_closed alırdı.
+    [Fact]
+    public async Task A_template_goes_out_even_though_the_window_is_closed()
+    {
+        var s = await SeedAsync();
+        await ConnectWhatsAppAsync(s, DateTimeOffset.UtcNow.AddHours(-25));
+
+        var resp = await SendTemplateAsync(s, new
+        {
+            name = "odeme_hatirlatma",
+            language = "tr",
+            @params = new[] { "Ayşe", "250" },
+        });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = (await resp.Content.ReadFromJsonAsync<SendResponse>())!;
+        body.Ok.Should().BeTrue();
+
+        var messages = await s.Client.GetFromJsonAsync<List<MessageDto>>(
+            $"/api/panel/whatsapp-conversations/{s.ConversationId}/messages");
+
+        var sent = messages!.Single(m => m.Id == body.MessageId);
+        sent.Direction.Should().Be("out");
+        sent.Type.Should().Be("template");
+        sent.Origin.Should().Be("panel");
+        sent.TemplateName.Should().Be("odeme_hatirlatma");
+        // Onaylı gövde Meta'da duruyor; sohbette "hangi değerlerle gitti"
+        // sorusunu yalnız parametreler cevaplayabiliyor.
+        sent.Body.Should().Be("Ayşe | 250");
+    }
+
+    [Fact]
+    public async Task A_template_without_parameters_can_be_sent()
+    {
+        var s = await SeedAsync();
+        await ConnectWhatsAppAsync(s, DateTimeOffset.UtcNow.AddHours(-25));
+
+        var resp = await SendTemplateAsync(s, new { name = "hello_world", language = "en_US" });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await resp.Content.ReadFromJsonAsync<SendResponse>())!.Ok.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Another_broadcasters_conversation_cannot_be_sent_a_template()
+    {
+        var mine = await SeedAsync();
+        var theirs = await SeedAsync("905441112233");
+        await ConnectWhatsAppAsync(theirs, DateTimeOffset.UtcNow.AddHours(-25));
+
+        var resp = await SendTemplateAsync(
+            mine, new { name = "hello_world", language = "en_US" }, theirs.ConversationId);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        var messages = await theirs.Client.GetFromJsonAsync<List<MessageDto>>(
+            $"/api/panel/whatsapp-conversations/{theirs.ConversationId}/messages");
+        messages!.Should().BeEmpty();
+    }
+
+    // Meta parametre içinde satır sonu/sekme/4+ boşluk kabul etmiyor ve hatası
+    // (132000) kriptik. Şablon ÜCRETLİ olduğu için yanlış çağrıyı hiç yapmamak
+    // yayıncının parasını koruyor.
+    [Theory]
+    [InlineData("iki\nsatır")]
+    [InlineData("sekme\tli")]
+    [InlineData("çok    boşluk")]
+    public async Task A_parameter_meta_would_reject_never_reaches_it(string value)
+    {
+        var s = await SeedAsync();
+        await ConnectWhatsAppAsync(s, DateTimeOffset.UtcNow.AddHours(-25));
+
+        var resp = await SendTemplateAsync(s, new
+        {
+            name = "odeme_hatirlatma",
+            language = "tr",
+            @params = new[] { value },
+        });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        var messages = await s.Client.GetFromJsonAsync<List<MessageDto>>(
+            $"/api/panel/whatsapp-conversations/{s.ConversationId}/messages");
+        messages!.Should().BeEmpty();
+    }
+
+    // Boş parametre Meta'da yer tutucuyu boş bırakmıyor, mesajı komple
+    // reddettiriyor — üstelik yayıncı alanı doldurmayı unuttuğunu anlamıyor.
+    [Fact]
+    public async Task An_empty_parameter_never_reaches_meta()
+    {
+        var s = await SeedAsync();
+        await ConnectWhatsAppAsync(s, DateTimeOffset.UtcNow.AddHours(-25));
+
+        var resp = await SendTemplateAsync(s, new
+        {
+            name = "odeme_hatirlatma",
+            language = "tr",
+            @params = new[] { "Ayşe", "   " },
+        });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Theory]
+    [InlineData("Odeme_Hatirlatma", "tr")]   // büyük harf — Meta'nın alfabesinde yok
+    [InlineData("odeme hatirlatma", "tr")]   // boşluk
+    [InlineData("", "tr")]
+    [InlineData("odeme_hatirlatma", "türkçe")]
+    [InlineData("odeme_hatirlatma", "")]
+    public async Task A_malformed_template_reference_is_refused(string name, string language)
+    {
+        var s = await SeedAsync();
+        await ConnectWhatsAppAsync(s, DateTimeOffset.UtcNow.AddHours(-25));
+
+        var resp = await SendTemplateAsync(s, new { name, language });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    // Bağlı hesabı olmayan lisans için şablon da gönderilemez; sebebi gövdede
+    // taşınıyor (serbest metinle aynı sözleşme).
+    [Fact]
+    public async Task A_template_needs_a_connected_account()
+    {
+        var s = await SeedAsync();
+
+        var resp = await SendTemplateAsync(s, new { name = "hello_world", language = "en_US" });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = (await resp.Content.ReadFromJsonAsync<SendResponse>())!;
+        body.Ok.Should().BeFalse();
+        body.ErrorCode.Should().Be("no_account");
+    }
 }
