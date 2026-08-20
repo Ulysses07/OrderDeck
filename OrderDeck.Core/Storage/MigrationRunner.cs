@@ -16,10 +16,23 @@ public sealed class MigrationRunner
     private const string MigrationPrefix = "OrderDeck.Core.Storage.Migrations.";
 
     private readonly IDbConnectionFactory _factory;
+    private readonly IEnumerable<(int Version, string Sql)> _scripts;
 
     public MigrationRunner(IDbConnectionFactory factory)
+        : this(factory, LoadEmbeddedScripts())
+    {
+    }
+
+    /// <summary>
+    /// Script kaynağını dışarıdan alan aşırı yükleme. Gömülü script'ler her zaman
+    /// geçerli olduğu için üretimde kullanılmaz; kasten bozuk bir script vererek
+    /// yarım göçün geri alındığını doğrulamanın başka yolu yok.
+    /// </summary>
+    public MigrationRunner(
+        IDbConnectionFactory factory, IEnumerable<(int Version, string Sql)> scripts)
     {
         _factory = factory;
+        _scripts = scripts;
     }
 
     public void Run()
@@ -33,11 +46,46 @@ public sealed class MigrationRunner
             ? conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1")
             : 0;
 
-        foreach (var (version, sql) in LoadEmbeddedScripts())
+        // Yabancı anahtar denetimi göç boyunca kapalı. Şema değiştiren script'ler
+        // tablo yeniden kurma (yeni tablo → kopyala → eski tabloyu düşür → adını
+        // değiştir) yapıyor; denetim açıkken aradaki tutarsız anlar hem patlayabilir
+        // hem de DROP TABLE'ın örtük silmesi ON DELETE CASCADE'i tetikleyip çocuk
+        // satırları süpürebilir. SQLite'ın kendi belgelediği reçete bu.
+        //
+        // PRAGMA'nın transaction DIŞINDA olması ŞART: transaction içinde sessizce
+        // hiçbir şey yapmaz. 002_pivot_to_labels.sql kendi içinde bu pragma'yı
+        // çağırıyor ama artık transaction içinde kaldığı için etkisiz — bu satır
+        // onun da yerini tutuyor.
+        conn.Execute("PRAGMA foreign_keys = OFF;");
+        try
         {
-            if (version <= currentVersion) continue;
-            conn.Execute(sql);
-            currentVersion = version;
+            foreach (var (version, sql) in _scripts)
+            {
+                if (version <= currentVersion) continue;
+
+                // Her script tek bir transaction. Öncesinde her ifade kendi örtük
+                // transaction'ında koşuyordu: script ortada patlarsa ilk ifadeler
+                // uygulanmış ama SchemaVersion ilerlememiş oluyordu. Sonraki açılışta
+                // aynı script baştan koşuyor ve "table already exists" ile ölüyordu —
+                // yani veritabanı yarı göç etmiş, uygulama da hiç açılamaz hâlde
+                // kalıyordu. Artık ya script'in tamamı ya hiçbiri.
+                using var tx = conn.BeginTransaction();
+                try
+                {
+                    conn.Execute(sql, transaction: tx);
+                    tx.Commit();
+                }
+                catch
+                {
+                    tx.Rollback();
+                    throw;
+                }
+                currentVersion = version;
+            }
+        }
+        finally
+        {
+            conn.Execute("PRAGMA foreign_keys = ON;");
         }
     }
 

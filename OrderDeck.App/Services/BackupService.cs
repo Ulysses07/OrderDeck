@@ -2,6 +2,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using Microsoft.Extensions.Logging;
+using OrderDeck.Core.Storage;
 using OrderDeck.Licensing.Backup;
 
 namespace OrderDeck.App.Services;
@@ -74,7 +75,12 @@ public sealed class BackupService
             var tempCopy = Path.Combine(Path.GetTempPath(), $"orderdeck-bup-{Guid.NewGuid():N}.db");
             try
             {
-                File.Copy(_databaseFile, tempCopy, overwrite: true);
+                // Düz dosya kopyası DEĞİL: veritabanı açıkken kopyalanırsa yarım
+                // yazılmış sayfalar yakalanabilir, WAL kipinde ise işlenmiş son
+                // siparişler henüz -wal dosyasındadır ve kopyaya hiç girmez —
+                // yedek geçerli görünür ama eskidir. Çevrimiçi yedekleme API'si
+                // tutarlı ve yan dosyasız tek bir dosya üretir.
+                SqliteFile.Snapshot(_databaseFile, tempCopy);
 
                 byte[] zipBytes;
                 using (var ms = new MemoryStream())

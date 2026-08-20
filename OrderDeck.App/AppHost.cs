@@ -67,7 +67,8 @@ public sealed class AppHost : IDisposable
         services.AddSingleton(typeof(ILogger<>), typeof(Logger<>));
 
         // Settings + time
-        services.AddSingleton(new SettingsStore(AppPaths.SettingsFile));
+        services.AddSingleton(sp => new SettingsStore(
+            AppPaths.SettingsFile, sp.GetRequiredService<ILogger<SettingsStore>>()));
         services.AddSingleton(sp => sp.GetRequiredService<SettingsStore>().Load());
         services.AddSingleton<IClock, SystemClock>();
 
