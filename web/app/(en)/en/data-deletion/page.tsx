@@ -41,12 +41,16 @@ export default function DataDeletionEn() {
 
       <h2>2. If you are the operator (OrderDeck user)</h2>
       <ul>
-        <li>Delete the relevant customer/order records from the <strong>Customer
-          Details</strong> screen in the app.</li>
+        <li>You can <strong>cancel</strong> orders and edit customer notes from the{' '}
+          <strong>Customer Details</strong> screen in the app. Permanent deletion of
+          records is not performed from that screen; request it by email as described
+          below.</li>
         <li>Use <strong>“Disconnect”</strong> under Settings → Facebook to remove the
           Page access token and OAuth data.</li>
-        <li>To delete your entire account and associated data, email{' '}
-          <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>.</li>
+        <li>To permanently delete specific customer/order records, or your entire
+          account and associated data, email{' '}
+          <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>. After verifying your
+          request, we delete the data <strong>within 30 days</strong>.</li>
       </ul>
 
       <h2>3. If you are a viewer / commenter</h2>

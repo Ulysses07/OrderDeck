@@ -50,6 +50,11 @@ public class Program
         builder.Services.Configure<BackupOptions>(builder.Configuration.GetSection("Backup"));
         builder.Services.Configure<OrderDeck.LicenseServer.Services.Audit.AuditRetentionOptions>(
             builder.Configuration.GetSection("Audit:Retention"));
+        // 90 gün — gizlilik politikasındaki "Güvenlik kayıtları: 90 gün" ile
+        // bağlı. Bu değeri değiştiren web/app/(tr)/gizlilik-politikasi ve
+        // (en)/privacy-policy metinlerini de değiştirmek zorunda.
+        builder.Services.Configure<OrderDeck.LicenseServer.Services.Audit.SecurityDataRetentionOptions>(
+            builder.Configuration.GetSection("Audit:SecurityRetention"));
 
         // DbContext (primary — used for all writes + reads when no replica configured).
         builder.Services.AddDbContext<LicenseDbContext>(opt =>
@@ -82,6 +87,7 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Licensing.LicenseValidator>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Licensing.ActivationManager>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Audit.AuditRetentionJobs>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Audit.SecurityDataRetentionJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Backup.BackupRestoreDrillJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.BroadcastPosts.BroadcastPostCleanupJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Catalog.ProductPhotoOrphanCleanupJob>();
@@ -634,6 +640,16 @@ public class Program
                 "audit-retention",
                 j => j.PruneAsync(CancellationToken.None),
                 "30 3 * * *");  // 03:30 UTC daily
+
+            // Güvenlik kaydı anonimleştirme — 90 günden eski IP/User-Agent
+            // alanlarını satırı silmeden boşaltır. Gizlilik politikasındaki
+            // "Güvenlik kayıtları: 90 gün" taahhüdünü fiilen uygulayan iş bu.
+            // audit-retention'dan SONRA çalışır: o zaten 24 aydan eski satırları
+            // sildiği için burada işlenecek satır sayısı azalmış olur.
+            manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Audit.SecurityDataRetentionJob>(
+                "security-data-retention",
+                j => j.AnonymiseAsync(CancellationToken.None),
+                "40 3 * * *");  // 03:40 UTC daily
 
             // Weekly backup-restore drill — proves an actual production blob
             // round-trips through decrypt + ZIP + SQLite integrity. Failures
