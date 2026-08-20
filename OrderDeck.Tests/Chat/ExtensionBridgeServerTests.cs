@@ -271,6 +271,39 @@ public class ExtensionBridgeServerTests
     }
 
     [Fact]
+    public async Task ChatDropped_message_logged_not_published()
+    {
+        // "chat-dropped": extension köprü kapalıyken biriktirdiği yorumların
+        // bir kısmını atmak zorunda kaldığını bildirir. Bu bir sayaç raporu —
+        // ChatBus'a sipariş olarak düşmemeli, yalnızca loglanmalı.
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(bus, port: 0);
+        await server.StartAsync(CancellationToken.None);
+
+        var publishCount = 0;
+        using var sub = bus.Subscribe(_ => Interlocked.Increment(ref publishCount));
+
+        using var ws = new ClientWebSocket();
+        await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
+            CancellationToken.None);
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            type = "chat-dropped",
+            platform = "instagram",
+            count = 37,
+            timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        });
+        await SendRaw(ws, payload);
+        await Task.Delay(200);
+
+        publishCount.Should().Be(0,
+            because: "kayıp raporu bir yorum değil — sohbete sipariş olarak düşmemeli");
+
+        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
+
+    [Fact]
     public async Task Viewers_message_updates_tracker_not_bus()
     {
         // A "viewers" payload feeds the ViewerCountTracker and must NOT produce

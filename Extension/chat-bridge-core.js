@@ -61,6 +61,19 @@ window.OrderDeckChatBridge = (function () {
     // memory unbounded growth olmaz.
     const CACHE_LIMIT = 5000;
 
+    // ── Bağlantı kopukken biriken yorumlar (outbox) ─────────────────────────
+    // Köprü kapalıyken (WPF yeniden başlıyor, Velopack güncellemesi, port
+    // takılması) MutationObserver çalışmaya devam eder: yorumlar taranır,
+    // "görüldü" işaretlenir ve — outbox olmadan — sessizce kaybolurdu. Mezat
+    // modelinde kaybolan yorum kaybolan siparişdir, üstelik operatör bunu
+    // asla öğrenmezdi (tek iz DevTools konsolundaydı).
+    //
+    // Gönderilemeyen chat mesajları burada sıraya girer, bağlantı kurulunca
+    // sırasıyla akıtılır. Sınır dolarsa EN ESKİ atılır: canlı yayında geçmişte
+    // bir boşluk görmek, şimdiki akışı kaçırmaktan iyidir. Atılan sayısı
+    // WPF'e "chat-dropped" mesajıyla bildirilir — kayıp sessiz kalmaz.
+    const OUTBOX_LIMIT = 500;   // ~2dk yoğun akış (220 yorum/dk)
+
     // ── Stall watchdog (Instagram donması, 2026-07-15 logları) ──────────────
     // Instagram'ın web sayfası (hem /live izleyici hem yayıncı ekranı) uzun
     // oturumda (~30-45dk, liste binlerce satıra şişince) DOM'a yeni yorum
@@ -147,6 +160,7 @@ window.OrderDeckChatBridge = (function () {
                 commentsObserved: 0,       // total comments found across all scans this window
                 deduped: 0,                // total dropped as duplicates
                 sent: 0,                   // total emitted to WS
+                queued: 0,                 // bağlantı kopukken outbox'a alınan
                 observerBursts: 0,
                 scanIntervalMs: SCAN_INTERVAL,
                 dedupeWindowMs: 0,          // 0 = session-scoped (no TTL)
@@ -163,12 +177,14 @@ window.OrderDeckChatBridge = (function () {
             snapshot.dedupeCacheSize = seenHashes.size;
             sendMessage({ type: 'debug-stats', platform: adapter.platform, stats: snapshot });
             // Operator-visible summary in DevTools console during broadcast.
-            log(`📊 stats(${(snapshot.windowDurationMs/1000).toFixed(1)}s): observed=${snapshot.commentsObserved} sent=${snapshot.sent} deduped=${snapshot.deduped} scans=${snapshot.scanCount} bursts=${snapshot.observerBursts} cache=${snapshot.dedupeCacheSize}`);
+            log(`📊 stats(${(snapshot.windowDurationMs/1000).toFixed(1)}s): observed=${snapshot.commentsObserved} sent=${snapshot.sent} queued=${snapshot.queued} deduped=${snapshot.deduped} scans=${snapshot.scanCount} bursts=${snapshot.observerBursts} cache=${snapshot.dedupeCacheSize}`);
             stats = freshStats();
         }
 
         let ws = null;
         let isConnected = false;
+        let outbox = [];         // gönderilemeyen chat payload'ları (FIFO)
+        let outboxDropped = 0;   // sınır taşınca atılan yorum sayısı
         let observer = null;
         let observerScanTimer = null;
         let scanTimer = null;
@@ -199,6 +215,10 @@ window.OrderDeckChatBridge = (function () {
                     });
 
                     try { chrome.runtime.sendMessage({ action: 'setConnected', connected: true, platform: adapter.platform }); } catch (e) {}
+
+                    // Taramadan ÖNCE: kopukluk sırasında birikenler, yeni
+                    // taramanın ürettiklerinden önce ve kendi sıralarında gitsin.
+                    flushOutbox();
 
                     startPeriodicScan();
 
@@ -255,6 +275,53 @@ window.OrderDeckChatBridge = (function () {
                 return true;
             }
             return false;
+        }
+
+        /// Kaybı kabul edilemez mesajlar (chat) için: gönderemezsek sıraya al.
+        /// Diğer mesaj tipleri (viewers, debug-stats, watchdog, pong) bilerek
+        /// sendMessage kullanmaya devam eder — onlar zaten periyodik ve
+        /// bayatlamış bir kopyasını sonradan göndermek yanıltıcı olur.
+        function sendOrQueue(data) {
+            if (sendMessage(data)) return true;
+            if (outbox.length >= OUTBOX_LIMIT) {
+                outbox.shift();
+                outboxDropped++;
+            }
+            outbox.push(data);
+            return false;
+        }
+
+        /// Bağlantı kurulur kurulmaz sırayı akıt. Akıtma sırasında bağlantı
+        /// yine düşerse kalanı outbox'ta bırakır — bir sonraki onopen dener.
+        function flushOutbox() {
+            if (outbox.length === 0 && outboxDropped === 0) return;
+
+            const pending = outbox;
+            outbox = [];
+            let flushed = 0;
+            for (const msg of pending) {
+                if (!sendMessage(msg)) break;
+                flushed++;
+            }
+            if (flushed < pending.length) {
+                // Kalanları başa koy: sıra korunur, yeni gelenler arkaya eklenir.
+                outbox = pending.slice(flushed).concat(outbox);
+            }
+            if (flushed > 0) {
+                lastSentAt = Date.now();
+                log(`Outbox: bağlantı kopukken biriken ${flushed} yorum gönderildi` +
+                    (outbox.length > 0 ? ` (${outbox.length} hâlâ bekliyor)` : ''));
+            }
+
+            // Taşma sessiz kalmamalı — operatör WPF tarafında görsün.
+            if (outboxDropped > 0 && sendMessage({
+                type: 'chat-dropped', platform: adapter.platform,
+                count: outboxDropped, timestamp: Date.now()
+            })) {
+                logError(`Outbox taştı: ${outboxDropped} yorum kaybedildi ` +
+                    `(sınır ${OUTBOX_LIMIT}) — köprü çok uzun süre kapalı kaldı`);
+                outboxDropped = 0;
+            }
         }
 
         function handleServerMessage(data) {
@@ -333,9 +400,6 @@ window.OrderDeckChatBridge = (function () {
                     stats.deduped++;
                     return;
                 }
-                stats.sent++;
-                lastSentAt = Date.now();
-
                 const payload = {
                     type: 'chat',
                     platform: adapter.platform,
@@ -349,7 +413,17 @@ window.OrderDeckChatBridge = (function () {
 
                 log(`✓ [${source ?? 'scan'}]: @${username}: ${text.substring(0, 50)}${text.length > 50 ? '...' : ''}`);
 
-                if (!sendMessage(payload)) log('  -> ERROR: WebSocket not connected');
+                if (sendOrQueue(payload)) {
+                    stats.sent++;
+                    lastSentAt = Date.now();
+                } else {
+                    // Kayıp değil, ertelenmiş: bağlantı gelince flushOutbox atar.
+                    // lastSentAt'e dokunulmuyor — watchdog zaten !isConnected
+                    // durumunda tetiklenmiyor, ayrıca yanlış "akış canlı" izlenimi
+                    // vermemeli.
+                    stats.queued++;
+                    log(`  -> köprü kapalı, sıraya alındı (${outbox.length}/${OUTBOX_LIMIT})`);
+                }
             });
 
             return stats.sent;
@@ -507,6 +581,19 @@ window.OrderDeckChatBridge = (function () {
                 lastUrl = url;
                 log('Page changed:', url);
                 isLivePage = adapter.checkIfLivePage();
+
+                // Başka yayına geçiliyor: köprü kapalıyken birikmiş yorumlar
+                // ARTIK GÖNDERİLMEMELİ — WPF gelen mesajı o anki oturuma
+                // yazar, yani eski yayının yorumları yeni yayının siparişi
+                // olurdu. Atıyoruz ama sayıyoruz; bağlantı kurulunca operatöre
+                // "şu kadar yorum kaybedildi" olarak bildirilir.
+                if (outbox.length > 0) {
+                    outboxDropped += outbox.length;
+                    logError(`Sayfa değişti: gönderilememiş ${outbox.length} yorum ` +
+                        `atıldı (yanlış yayına yazılmasınlar diye)`);
+                    outbox = [];
+                }
+
                 if (isLivePage) {
                     seenHashes.clear();
                     // seenElements (WeakSet) has no clear() — but old DOM is gone
