@@ -57,8 +57,11 @@ public sealed class OverlayHost : IAsyncDisposable
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
     private WebApplication? _app;
-    private readonly ConcurrentDictionary<Guid, WebSocket> _chatClients = new();
-    private readonly ConcurrentDictionary<Guid, WebSocket> _giveawayClients = new();
+    // Yayın döngüsü artık doğrudan sokete değil, istemcinin sınırlı kuyruğuna
+    // yazıyor: ateşle-unut gönderimler takılan bir istemcide tavansız
+    // birikiyordu (bkz. OverlayClient).
+    private readonly ConcurrentDictionary<Guid, OverlayClient> _chatClients = new();
+    private readonly ConcurrentDictionary<Guid, OverlayClient> _giveawayClients = new();
     private IDisposable? _busSub;
     private Action<GiveawayStartedEvent>? _onStarted;
     private Action<GiveawayParticipantEvent>? _onParticipant;
@@ -80,6 +83,12 @@ public sealed class OverlayHost : IAsyncDisposable
         string AnimationId,
         double AudioVolume,
         bool AudioMuted);
+
+    /// <summary>Bağlı overlay başına tutulan en fazla çerçeve sayısı. Bunun
+    /// ötesinde en eski çerçeve düşürülür — takılan bir istemci belleği
+    /// tavansız büyütemez. Testlerin ve tanılamanın sınırı okuyabilmesi için
+    /// açık.</summary>
+    public const int ClientQueueCapacity = OverlayClient.Capacity;
 
     public int Port { get; private set; }
 
@@ -281,11 +290,12 @@ public sealed class OverlayHost : IAsyncDisposable
     private async Task HandleChatClient(WebSocket ws, CancellationToken ct)
     {
         var id = Guid.NewGuid();
-        _chatClients.TryAdd(id, ws);
+        var client = new OverlayClient(ws, "chat", _log, ct);
+        _chatClients.TryAdd(id, client);
         try
         {
             var snapshot = new OverlayEvent("chat.snapshot", new ChatSnapshotEvent(BuildChatSnapshot()));
-            await SendJson(ws, snapshot, ct);
+            client.Enqueue(Serialize(snapshot));
             await PumpReceiveLoop(ws, ct);
         }
         catch (OperationCanceledException) { }
@@ -293,6 +303,7 @@ public sealed class OverlayHost : IAsyncDisposable
         finally
         {
             _chatClients.TryRemove(id, out _);
+            await client.DisposeAsync();
             try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None); } catch { }
         }
     }
@@ -300,7 +311,8 @@ public sealed class OverlayHost : IAsyncDisposable
     private async Task HandleGiveawayClient(WebSocket ws, CancellationToken ct)
     {
         var id = Guid.NewGuid();
-        _giveawayClients.TryAdd(id, ws);
+        var client = new OverlayClient(ws, "giveaway", _log, ct);
+        _giveawayClients.TryAdd(id, client);
         try
         {
             // If a giveaway is already active, send a "started" snapshot so a late-joining overlay catches up.
@@ -313,7 +325,7 @@ public sealed class OverlayHost : IAsyncDisposable
                         active.Id, active.Keyword, active.WinnerCount, active.DurationSeconds,
                         active.StartedAt, active.AnimationId,
                         audio.Volume, audio.Muted));
-                await SendJson(ws, startedEvt, ct);
+                client.Enqueue(Serialize(startedEvt));
 
                 // Late-joining overlay should also see current participant count, not 0.
                 var count = _giveaway.GetActiveParticipantCount();
@@ -326,7 +338,7 @@ public sealed class OverlayHost : IAsyncDisposable
                         AvatarUrl: null,
                         Platform: "",
                         TotalCount: count));
-                    await SendJson(ws, countEvt, ct);
+                    client.Enqueue(Serialize(countEvt));
                 }
             }
             await PumpReceiveLoop(ws, ct);
@@ -336,6 +348,7 @@ public sealed class OverlayHost : IAsyncDisposable
         finally
         {
             _giveawayClients.TryRemove(id, out _);
+            await client.DisposeAsync();
             try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None); } catch { }
         }
     }
@@ -365,41 +378,25 @@ public sealed class OverlayHost : IAsyncDisposable
         var evt = new OverlayEvent("chat.message",
             new ChatMessageEvent(m.Id, m.Platform, m.Username, m.DisplayName,
                 m.AvatarUrl, m.Text, m.ReceivedAt));
-        var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(evt, WireJson));
+        var bytes = Serialize(evt);
         // Snapshot the value collection before iterating: enumerating a
         // ConcurrentDictionary is technically allowed but a concurrent
         // TryRemove (from HandleChatClient.finally on a closing socket)
         // can yield stale or duplicate entries to the broadcast loop.
-        // Capturing once also frees the broadcast thread to fire SendBytes
-        // without the dictionary's read lock held under load.
-        foreach (var ws in _chatClients.Values.ToArray())
-        {
-            if (ws.State != WebSocketState.Open) continue;
-            _ = SendBytes(ws, bytes, CancellationToken.None);
-        }
+        foreach (var client in _chatClients.Values.ToArray())
+            client.Enqueue(bytes);
     }
 
     private void BroadcastGiveaway(string type, object data)
     {
-        var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new OverlayEvent(type, data), WireJson));
+        var bytes = Serialize(new OverlayEvent(type, data));
         // Same snapshot rationale as BroadcastChatMessage above.
-        foreach (var ws in _giveawayClients.Values.ToArray())
-        {
-            if (ws.State != WebSocketState.Open) continue;
-            _ = SendBytes(ws, bytes, CancellationToken.None);
-        }
+        foreach (var client in _giveawayClients.Values.ToArray())
+            client.Enqueue(bytes);
     }
 
-    private static async Task SendJson(WebSocket ws, object payload, CancellationToken ct)
-    {
-        await SendBytes(ws, Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload, WireJson)), ct);
-    }
-
-    private static async Task SendBytes(WebSocket ws, byte[] bytes, CancellationToken ct)
-    {
-        try { await ws.SendAsync(bytes, WebSocketMessageType.Text, true, ct); }
-        catch { /* swallow per-client errors so one slow client doesn't kill the broadcast */ }
-    }
+    private static byte[] Serialize(object payload) =>
+        Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload, WireJson));
 
     public async ValueTask DisposeAsync() => await StopAsync();
 }
