@@ -99,6 +99,7 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Audit.AuditRetentionJobs>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Audit.SecurityDataRetentionJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Backup.BackupRestoreDrillJob>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Backup.BackupOrphanCleanupJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.BroadcastPosts.BroadcastPostCleanupJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Catalog.ProductPhotoOrphanCleanupJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Catalog.BarcodeAllocator>();
@@ -700,6 +701,19 @@ public class Program
                 "product-photo-orphan-cleanup",
                 j => j.RunAsync(CancellationToken.None),
                 "15 4 * * *");  // 04:15 UTC daily
+
+            // Yedek blob mutabakatı — depolama kökünde kalmış yetim dosyaları
+            // süpürür. Silme yollarındaki sıra artık "önce satır, sonra dosya";
+            // bedeli, satır gittikten sonra dosya silinemezse (ya da yükleme
+            // ortasında süreç ölürse) geriye yetim dosya kalması. Onu ancak
+            // diskle veritabanını karşılaştıran bu iş bulabilir. 24 saatlik
+            // ödemsiz süre, sürmekte olan bir yüklemenin blob'unu silmesini
+            // engelliyor. Geri yükleme provasından (04:30 MON) ÖNCE çalışır:
+            // prova diskteki en yeni blob'u seçiyor, yetime takılmasın.
+            manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Backup.BackupOrphanCleanupJob>(
+                "backup-orphan-cleanup",
+                j => j.RunAsync(CancellationToken.None),
+                "20 4 * * *");  // 04:20 UTC daily
         }
 
         // Ters vekil farkındalığı — pipeline'ın EN BAŞI, çünkü aşağıdaki her

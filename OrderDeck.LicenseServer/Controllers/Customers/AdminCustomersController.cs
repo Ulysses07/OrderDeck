@@ -138,11 +138,14 @@ public sealed class AdminCustomersController : ControllerBase
 
         var preEmail = customer.Email;
 
-        // 1. Delete encrypted backup blobs from the filesystem before nuking
-        //    the rows that point to them — otherwise we'd lose the path.
+        // 1. Collect the encrypted backup blob paths. The files are deleted
+        //    AFTER SaveChanges, not before: if we wiped the files first and the
+        //    save then failed, the customer would keep rows pointing at blobs
+        //    that no longer exist — backups they can see but never restore.
+        //    Holding the paths in a local list costs nothing.
         var backupRows = await _db.CustomerBackups
             .Where(b => b.CustomerId == id).ToListAsync(ct);
-        foreach (var b in backupRows) _backups.DeleteBlob(b.BlobPath);
+        var backupBlobPaths = backupRows.Select(b => b.BlobPath).ToList();
 
         // 2. Hard-delete dependent rows. FK cascade would handle Activations
         //    via Licenses, but doing it explicitly keeps the operation
@@ -185,6 +188,11 @@ public sealed class AdminCustomersController : ControllerBase
         customer.Notes = null;
 
         await _db.SaveChangesAsync(ct);
+
+        // Rows are gone — now the files. A failure here leaves an orphan blob,
+        // which BackupOrphanCleanupJob sweeps; DeleteBlob already logs and
+        // swallows so a locked file can't fail an otherwise-completed purge.
+        foreach (var path in backupBlobPaths) _backups.DeleteBlob(path);
 
         await _audit.LogAsync(AuditEvents.CustomerPurged, AuditTargets.Customer, id.ToString(),
             details: new

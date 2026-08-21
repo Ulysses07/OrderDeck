@@ -44,9 +44,12 @@ public sealed class IndexModel : PageModel
             x => x.Id == backupId && x.CustomerId == id, ct);
         if (b is null) return NotFound();
 
-        _storage.DeleteBlob(b.BlobPath);
+        // ÖNCE satır, SONRA dosya — ters sırada, dosya gidip SaveChanges
+        // patlarsa geri yüklenemeyen bir "hayalet yedek" satırı kalır.
+        var blobPath = b.BlobPath;
         _db.CustomerBackups.Remove(b);
         await _db.SaveChangesAsync(ct);
+        _storage.DeleteBlob(blobPath);
 
         await _audit.LogAsync(BackupAuditEvents.BackupDeleted,
             BackupAuditEvents.TargetType, backupId.ToString(),

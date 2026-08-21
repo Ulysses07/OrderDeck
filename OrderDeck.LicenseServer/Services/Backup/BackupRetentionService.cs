@@ -72,12 +72,14 @@ public sealed class BackupRetentionService
         if (nonMilestones.Count > MaxNonMilestones)
         {
             var toDelete = nonMilestones.Skip(MaxNonMilestones).ToList();
-            foreach (var old in toDelete)
-            {
-                _storage.DeleteBlob(old.BlobPath);
-                _db.CustomerBackups.Remove(old);
-            }
+            // ÖNCE satırlar, SONRA dosyalar. Ters sırada SaveChanges patlarsa
+            // dosyaları silinmiş ama satırları duran bir yığın "hayalet yedek"
+            // kalırdı — müşteri listede görür, geri yükleyemez. Bu sırada en
+            // kötü ihtimalle yetim dosya kalır; BackupOrphanCleanupJob toplar.
+            var blobPaths = toDelete.Select(b => b.BlobPath).ToList();
+            _db.CustomerBackups.RemoveRange(toDelete);
             await _db.SaveChangesAsync(ct);
+            foreach (var path in blobPaths) _storage.DeleteBlob(path);
             _log.LogInformation("Retention trimmed {Count} backups for customer {CustomerId}",
                 toDelete.Count, customerId);
         }

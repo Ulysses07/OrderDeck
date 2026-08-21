@@ -108,7 +108,21 @@ public sealed class MeBackupsController : ControllerBase
             KeyVersion = keyVersion
         };
         _db.CustomerBackups.Add(backup);
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch
+        {
+            // Blob diskte, satır yazılamadı. Sıra bilinçli olarak böyle: ters
+            // sırada satır yazılıp blob yazılamasaydı hayalet yedek kalırdı.
+            // Burada kalan yetim dosyayı hemen toplamak ucuz — ama YETERLİ
+            // DEĞİL: süreç tam bu noktada ölürse bu catch hiç çalışmaz. Asıl
+            // güvence BackupOrphanCleanupJob; bu yalnızca sık görülen hâli
+            // beklemeden kapatır.
+            _storage.DeleteBlob(blobPath);
+            throw;
+        }
 
         _metrics.BackupsUploaded.Add(1);
         _metrics.BackupUploadBytes.Record(encrypted.Length);
@@ -185,9 +199,14 @@ public sealed class MeBackupsController : ControllerBase
             .FirstOrDefaultAsync(x => x.Id == id && x.CustomerId == CustomerId, ct);
         if (b is null) return NotFound();
 
-        _storage.DeleteBlob(b.BlobPath);
+        // Sıra kritik: ÖNCE satır, SONRA dosya. Ters sırada, dosya silindikten
+        // sonra SaveChanges patlarsa müşteride "hayalet yedek" kalır — listede
+        // görünür, geri yüklemeye kalktığı an yoktur. Bu sırada ise en kötü
+        // ihtimalle yetim bir dosya kalır; onu BackupOrphanCleanupJob toplar.
+        var blobPath = b.BlobPath;
         _db.CustomerBackups.Remove(b);
         await _db.SaveChangesAsync(ct);
+        _storage.DeleteBlob(blobPath);
 
         await _audit.LogAsync(BackupAuditEvents.BackupDeleted,
             BackupAuditEvents.TargetType, id.ToString(),
