@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Data.Common;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -39,13 +40,6 @@ public sealed class MigrationRunner
     {
         using var conn = _factory.Open();
 
-        var hasMeta = conn.ExecuteScalar<long>(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='_meta'") > 0;
-
-        int currentVersion = hasMeta
-            ? conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1")
-            : 0;
-
         // Yabancı anahtar denetimi göç boyunca kapalı. Şema değiştiren script'ler
         // tablo yeniden kurma (yeni tablo → kopyala → eski tabloyu düşür → adını
         // değiştir) yapıyor; denetim açıkken aradaki tutarsız anlar hem patlayabilir
@@ -59,28 +53,55 @@ public sealed class MigrationRunner
         conn.Execute("PRAGMA foreign_keys = OFF;");
         try
         {
-            foreach (var (version, sql) in _scripts)
+            // BEGIN IMMEDIATE: yazma kilidini okumadan ÖNCE al.
+            //
+            // Sürüm okuması ile script'lerin uygulanması aynı transaction'da
+            // olmak ZORUNDA. Ayrı olurlarsa iki runner (iki uygulama örneği, ya
+            // da açılış sırasında üst üste binen iki başlatma) şunu yapabiliyor:
+            // A sürüm 4'ü uygulayıp Giveaway tablosunu yaratıyor; B ise daha
+            // önce okuduğu eski sürüm numarasına göre script 002'yi koşturup
+            // aynı tabloyu DROP ediyor. Sonuç sessiz şema — ve veri — kaybı.
+            //
+            // Bu yarış WAL'dan önce de vardı; eski rollback-journal kipinin
+            // okumaları da bloke etmesi onu gizliyordu. WAL okurları
+            // engellemediği için eski sürüm numarasını okuma penceresi ardına
+            // kadar açıldı.
+            //
+            // BEGIN (deferred) yetmez: yazma kilidi ilk yazmaya kadar
+            // alınmadığından iki runner da okumayı yapıp aynı boşluğa düşer.
+            // IMMEDIATE ile ikinci runner en baştan bekler, sonra güncel sürüm
+            // numarasını okur ve zaten uygulanmış script'leri atlar.
+            conn.Execute("BEGIN IMMEDIATE;");
+            try
             {
-                if (version <= currentVersion) continue;
+                var hasMeta = conn.ExecuteScalar<long>(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='_meta'") > 0;
 
-                // Her script tek bir transaction. Öncesinde her ifade kendi örtük
+                int currentVersion = hasMeta
+                    ? conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1")
+                    : 0;
+
+                // Tüm göç tek bir transaction. Öncesinde her ifade kendi örtük
                 // transaction'ında koşuyordu: script ortada patlarsa ilk ifadeler
-                // uygulanmış ama SchemaVersion ilerlememiş oluyordu. Sonraki açılışta
-                // aynı script baştan koşuyor ve "table already exists" ile ölüyordu —
-                // yani veritabanı yarı göç etmiş, uygulama da hiç açılamaz hâlde
-                // kalıyordu. Artık ya script'in tamamı ya hiçbiri.
-                using var tx = conn.BeginTransaction();
-                try
+                // uygulanmış ama SchemaVersion ilerlememiş oluyordu. Sonraki
+                // açılışta aynı script baştan koşuyor ve "table already exists"
+                // ile ölüyordu — veritabanı yarı göç etmiş, uygulama da hiç
+                // açılamaz hâlde kalıyordu. Artık ya hepsi ya hiçbiri.
+                foreach (var (version, sql) in _scripts)
                 {
-                    conn.Execute(sql, transaction: tx);
-                    tx.Commit();
+                    if (version <= currentVersion) continue;
+                    conn.Execute(sql);
+                    currentVersion = version;
                 }
-                catch
-                {
-                    tx.Rollback();
-                    throw;
-                }
-                currentVersion = version;
+
+                conn.Execute("COMMIT;");
+            }
+            catch
+            {
+                // Geri alma da patlarsa asıl hatayı gölgelemesin: teşhis için
+                // değerli olan, göçü hangi ifadenin düşürdüğü.
+                try { conn.Execute("ROLLBACK;"); } catch (DbException) { }
+                throw;
             }
         }
         finally

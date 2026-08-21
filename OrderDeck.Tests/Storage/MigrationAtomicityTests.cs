@@ -18,18 +18,26 @@ namespace OrderDeck.Tests.Storage;
 /// </summary>
 public class MigrationAtomicityTests
 {
-    private static IEnumerable<(int Version, string Sql)> Bootstrap() => new[]
-    {
-        (1, @"CREATE TABLE _meta (Id INTEGER PRIMARY KEY, SchemaVersion INTEGER NOT NULL);
-              INSERT INTO _meta (Id, SchemaVersion) VALUES (1, 1);")
-    };
+    /// <summary>
+    /// Sürüm 1'i ayrı bir koşuda uygular. Ayrı olması ŞART: tüm göç seti tek
+    /// transaction'da koştuğu için aynı koşuda verilseydi patlayan script onu
+    /// da geri alırdı. Sahadaki durum da bu — <c>_meta</c> daha önceki bir
+    /// açılışta kurulmuş, bu koşu yalnızca yeni script'i uygulamaya çalışıyor.
+    /// </summary>
+    private static void ApplyBootstrap(InMemorySqlite db) =>
+        new MigrationRunner(db, new[]
+        {
+            (1, @"CREATE TABLE _meta (Id INTEGER PRIMARY KEY, SchemaVersion INTEGER NOT NULL);
+                  INSERT INTO _meta (Id, SchemaVersion) VALUES (1, 1);")
+        }).Run();
 
     [Fact]
     public void Failed_script_leaves_no_partial_schema_behind()
     {
         using var db = new InMemorySqlite();
+        ApplyBootstrap(db);
 
-        var scripts = new List<(int, string)>(Bootstrap())
+        var scripts = new List<(int, string)>
         {
             (2, @"CREATE TABLE Onceki (Id TEXT PRIMARY KEY);
                   CREATE TABLE Bozuk (Id TEXT PRIMARY KEY);
@@ -56,8 +64,9 @@ public class MigrationAtomicityTests
     public void Fixed_script_applies_cleanly_after_a_failure()
     {
         using var db = new InMemorySqlite();
+        ApplyBootstrap(db);
 
-        var broken = new List<(int, string)>(Bootstrap())
+        var broken = new List<(int, string)>
         {
             (2, @"CREATE TABLE Urun (Id TEXT PRIMARY KEY);
                   BU SATIR SQL DEGIL;
@@ -67,7 +76,7 @@ public class MigrationAtomicityTests
 
         // Aynı sürüm, düzeltilmiş hâliyle yeniden koşuyor. Geri alma çalıştıysa
         // "table Urun already exists" almadan geçmeli.
-        var fixedScripts = new List<(int, string)>(Bootstrap())
+        var fixedScripts = new List<(int, string)>
         {
             (2, @"CREATE TABLE Urun (Id TEXT PRIMARY KEY);
                   UPDATE _meta SET SchemaVersion = 2 WHERE Id = 1;")
