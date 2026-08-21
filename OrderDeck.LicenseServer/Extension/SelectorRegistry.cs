@@ -40,45 +40,9 @@ public static class SelectorRegistry
     /// </summary>
     public static readonly SelectorBundle Current = new(
         SchemaVersion: 1,
-        PublishedAt: new DateTimeOffset(2026, 6, 22, 10, 0, 0, TimeSpan.Zero),
+        PublishedAt: new DateTimeOffset(2026, 8, 21, 10, 0, 0, TimeSpan.Zero),
         Platforms: new Dictionary<string, PlatformSelectors>
         {
-            // Instagram uzantıdan kaldırıldı (resmi Graph API devraldı), ama bu
-            // blok BİLEREK duruyor: sahadaki eski uzantı sürümleri hâlâ IG
-            // kazıyor ve selektörlerini buradan çekiyor. Blok silinirse sunucu
-            // deploy'u anında onların Instagram'ını öldürür. Yeni uzantı Web
-            // Store'da yaygınlaşana kadar dokunma.
-            ["instagram"] = new(
-                IsLivePage: new IsLivePageSelectors(
-                    UrlPatterns: new[] { "/live" },
-                    DomSelectors: new[]
-                    {
-                        "[aria-label*=\"Live\" i]",
-                        "[aria-label*=\"Canlı\" i]",
-                    }),
-                Comments: new CommentSelectors(
-                    PrimaryContainers: "[aria-label*=\"yorum\" i], [aria-label*=\"comment\" i]",
-                    PrimaryRowItems: "span[dir=\"auto\"]",
-                    FallbackPattern: "div-2span"),
-                ObserverTarget: new[] { "[role=\"main\"]", "section" },
-                Validators: new ValidatorSettings(
-                    UsernameMaxLength: 50,
-                    MessageMaxLength: 1000,
-                    UiTextBlocklist: new[]
-                    {
-                        "live", "messages", "share", "like", "comment", "send", "follow",
-                        "canlı", "mesajlar", "paylaş", "beğen", "yorum", "gönder", "takip et",
-                        "izliyor", "watching", "viewers", "izleyici",
-                    },
-                    TimeStringRegex: @"^\d+\s*(dk|sa|gün|sn|m|h|d|s|ay|yıl|min|hr|sec)$"),
-                // İzleyici sayısı — ilk turda en iyi tahmin; canlı yayında doğrulanacak.
-                Viewers: new ViewerSelectors(new[]
-                {
-                    "a[href$=\"/live_viewers/\"]",
-                    "span[aria-label*=\"izley\" i]",
-                    "span[aria-label*=\"watch\" i]",
-                })),
-
             ["tiktok"] = new(
                 IsLivePage: new IsLivePageSelectors(
                     UrlPatterns: new[] { "/live" },

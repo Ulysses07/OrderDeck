@@ -81,9 +81,9 @@ public sealed partial class SettingsViewModel : ViewModelBase
     partial void OnIsFacebookConnectedChanged(bool value) => OnPropertyChanged(nameof(IsFacebookIdle));
 
     // Instagram resmi Graph API (2026-08-05). Ayrı bir OAuth yok — IG erişimi
-    // bağlı Facebook Sayfa'sı üzerinden gidiyor. Bu yüzden burada yalnız
-    // anahtar + durum var, "Bağlan" butonu yok.
-    [ObservableProperty] private bool _useOfficialInstagramApi;
+    // bağlı Facebook Sayfa'sı üzerinden gidiyor. Bu yüzden burada yalnız durum
+    // var, "Bağlan" butonu yok. Kip seçimi de yok: kazıyıcı uzantıdan
+    // kaldırıldığı için resmi API tek yol.
     [ObservableProperty] private string _instagramAccountStatus = "Kontrol ediliyor...";
 
     /// <summary>Bağlı Facebook oturumunda IG izinleri yoksa true — kullanıcı
@@ -455,10 +455,6 @@ public sealed partial class SettingsViewModel : ViewModelBase
         // Phase 5c — YouTube
         YouTubeChannelHandle = _liveSettings.YouTubeChannelHandle ?? string.Empty;
 
-        // Instagram — resmi Graph API opt-in.
-        UseOfficialInstagramApi =
-            _liveSettings.InstagramIngestMode == OrderDeck.Core.Chat.InstagramIngestMode.OfficialApi;
-
         // Phase 5f — Spam filter
         SpamFilterEnabled       = _liveSettings.SpamFilter.Enabled;
         SpamDropShortMessages   = _liveSettings.SpamFilter.DropShortMessages;
@@ -559,12 +555,6 @@ public sealed partial class SettingsViewModel : ViewModelBase
         // instead of attempting to resolve "".
         var trimmedHandle = YouTubeChannelHandle?.Trim();
         _liveSettings.YouTubeChannelHandle = string.IsNullOrEmpty(trimmedHandle) ? null : trimmedHandle;
-
-        // Instagram. Köprü bu değeri Func ile her mesajda okuyor, hosted service
-        // döngü başında — Kaydet'e basar basmaz etkili, yeniden başlatma yok.
-        _liveSettings.InstagramIngestMode = UseOfficialInstagramApi
-            ? OrderDeck.Core.Chat.InstagramIngestMode.OfficialApi
-            : OrderDeck.Core.Chat.InstagramIngestMode.Scraper;
 
         // Phase 5f — Spam filter. The SpamFilter service reads this object on
         // every message via Func<AppSettings>, so changes take effect the

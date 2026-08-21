@@ -29,7 +29,7 @@ public sealed class SettingsStore
 
     public AppSettings Load()
     {
-        if (TryRead(_filePath, out var settings)) return settings;
+        if (TryRead(_filePath, out var settings)) return Migrate(settings);
 
         // Ana dosya okunamadı. Yedek, Save'in her başarılı yazımda bıraktığı bir
         // önceki sürüm: en fazla bir değişiklik geride, sıfırdan başlamaktan çok iyi.
@@ -37,7 +37,7 @@ public sealed class SettingsStore
         {
             _log.LogWarning(
                 "Ayar dosyası okunamadı, yedekten ({BackupPath}) yüklendi", _backupPath);
-            return fromBackup;
+            return Migrate(fromBackup);
         }
 
         // İkisi de gitti. Bozuk dosyayı SİLMİYORUZ: yazıcı adı, YouTube anahtarı,
@@ -61,6 +61,32 @@ public sealed class SettingsStore
         }
 
         return new AppSettings();
+    }
+
+    /// <summary>
+    /// Diskten okunan ayarları güncel şemaya taşır.
+    ///
+    /// <para><b>Neden gerekli.</b> C# tarafındaki varsayılanı değiştirmek
+    /// sahadaki kurulumları etkilemez: <c>settings.json</c> tüm nesneyi
+    /// yazdığı için bir kez "Kaydet"e basmış her makinede alan zaten dosyada
+    /// duruyor ve deserialize'da <b>diskteki değer varsayılanı ezer</b>.
+    /// Yani varsayılanı çevirmek tek başına sessizce etkisiz kalır.</para>
+    /// </summary>
+    private AppSettings Migrate(AppSettings settings)
+    {
+        // Instagram kazıyıcısı uzantıdan kaldırıldı; tek yol resmi Graph API.
+        // Göç olmadan, diskinde "Scraper" yazan yayıncıların Instagram'ı yeni
+        // uzantı sürümüyle birlikte tamamen kararırdı: uzantı IG göndermiyor,
+        // resmi ingestor da kipe bakıp kendini kapatıyor.
+        if (settings.InstagramIngestMode != Chat.InstagramIngestMode.OfficialApi)
+        {
+            _log.LogInformation(
+                "Instagram kipi resmi API'ye taşındı (diskteki eski değer: {Old})",
+                settings.InstagramIngestMode);
+            settings.InstagramIngestMode = Chat.InstagramIngestMode.OfficialApi;
+        }
+
+        return settings;
     }
 
     public void Save(AppSettings settings)

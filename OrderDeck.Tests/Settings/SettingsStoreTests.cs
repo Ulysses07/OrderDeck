@@ -57,6 +57,56 @@ public class SettingsStoreTests
 
         File.Delete(path);
     }
+
+    /// <summary>
+    /// Instagram kazıyıcısı uzantıdan kaldırıldı; tek yol resmi Graph API.
+    /// C# varsayılanını çevirmek sahadaki kurulumlar için YETMEZ: settings.json
+    /// tüm nesneyi yazdığı için bir kez "Kaydet"e basmış her makinede alan
+    /// dosyada duruyor ve deserialize'da diskteki değer varsayılanı ezer.
+    /// Göç olmasa o yayıncıların Instagram'ı yeni uzantı sürümüyle birlikte
+    /// sessizce kararırdı — uzantı IG göndermiyor, resmi ingestor da kipe
+    /// bakıp kendini kapatıyor.
+    /// </summary>
+    [Fact]
+    public void Load_migrates_a_persisted_Scraper_mode_to_the_official_api()
+    {
+        var path = CreateTempPath();
+        File.WriteAllText(path, """
+            {
+              "overlayPort": 4747,
+              "instagramIngestMode": "Scraper",
+              "printerName": "Zebra ZD220"
+            }
+            """);
+
+        var loaded = new SettingsStore(path).Load();
+
+        loaded.InstagramIngestMode.Should().Be(OrderDeck.Core.Chat.InstagramIngestMode.OfficialApi);
+        loaded.PrinterName.Should().Be("Zebra ZD220", "göç yalnız IG kipine dokunmalı");
+
+        File.Delete(path);
+    }
+
+    /// <summary>
+    /// Göç ana dosyayla sınırlı kalmamalı: bozuk settings.json'da Load yedeğe
+    /// düşüyor ve yedek de aynı eski değeri taşıyor.
+    /// </summary>
+    [Fact]
+    public void Load_migrates_the_backup_copy_too()
+    {
+        var path = CreateTempPath();
+        File.WriteAllText(path, "{ bozuk json");
+        File.WriteAllText(path + ".bak", """{ "instagramIngestMode": "Scraper" }""");
+
+        var loaded = new SettingsStore(path).Load();
+
+        loaded.InstagramIngestMode.Should().Be(OrderDeck.Core.Chat.InstagramIngestMode.OfficialApi);
+
+        File.Delete(path + ".bak");
+        foreach (var f in Directory.GetFiles(Path.GetTempPath(),
+                     Path.GetFileName(path) + ".corrupt-*"))
+            File.Delete(f);
+    }
 }
 
 public class SettingsStore_PaymentTests

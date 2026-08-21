@@ -56,14 +56,18 @@ public class ExtensionConfigControllerTests : IClassFixture<ApiFactory>
         root.GetProperty("publishedAt").GetDateTimeOffset().Should().BeAfter(System.DateTimeOffset.MinValue);
 
         var platforms = root.GetProperty("platforms");
-        platforms.TryGetProperty("instagram", out _).Should().BeTrue();
         platforms.TryGetProperty("tiktok",    out _).Should().BeTrue();
         platforms.TryGetProperty("facebook",  out _).Should().BeTrue();
 
-        var ig = platforms.GetProperty("instagram");
-        ig.GetProperty("comments").GetProperty("primaryContainers").GetString()
+        // Instagram uzantıdan kaldırıldı (resmi Graph API devraldı), selektörleri
+        // de sunucudan düştü. Kalması zararsız değil: kimsenin kullanmadığı bir
+        // kazıma şemasını yayınlamaya devam etmek yanıltıcı.
+        platforms.TryGetProperty("instagram", out _).Should().BeFalse();
+
+        var tt = platforms.GetProperty("tiktok");
+        tt.GetProperty("comments").GetProperty("primaryContainers").GetString()
             .Should().NotBeNullOrWhiteSpace();
-        ig.GetProperty("validators").GetProperty("uiTextBlocklist").GetArrayLength()
+        tt.GetProperty("validators").GetProperty("uiTextBlocklist").GetArrayLength()
             .Should().BeGreaterThan(0);
     }
 
