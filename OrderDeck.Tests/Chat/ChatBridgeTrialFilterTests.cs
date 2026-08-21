@@ -91,7 +91,7 @@ public class ChatBridgeTrialFilterTests
         // Köprü el sıkışmada Origin doğruluyor (K-02); ClientWebSocket
         // kendiliğinden göndermez, uzantının kaynağını taklit ediyoruz.
         using var ws = new ClientWebSocket();
-        ws.Options.SetRequestHeader("Origin", "https://www.instagram.com");
+        ws.Options.SetRequestHeader("Origin", "https://www.tiktok.com");
         await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"), CancellationToken.None);
 
         await SendChatMessage(ws, platform: "tiktok", username: "@tester", text: "hello");
@@ -104,8 +104,15 @@ public class ChatBridgeTrialFilterTests
         await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
     }
 
+    /// <summary>
+    /// Eskiden burada Instagram için bir istisna vardı: denemede köprü susarken
+    /// IG mesajları geçiriliyordu. Uzantıdan Instagram kaldırılıp resmi Graph
+    /// API tek yol olunca istisnanın karşılığı kalmadı — köprüye "instagram"
+    /// diyen bir istemci artık ya eski bir sürüm ya da sahte. Deneme kullanıcısı
+    /// Instagram'ı yine görür, ama köprüden değil resmi API'den.
+    /// </summary>
     [Fact]
-    public async Task TrialActive_Instagram_message_passes_through()
+    public async Task TrialActive_Instagram_message_is_dropped_too()
     {
         var bus = new CapturingChatBus();
         var probe = new FakeTrialProbe(isTrialMode: true);
@@ -115,15 +122,15 @@ public class ChatBridgeTrialFilterTests
         // Köprü el sıkışmada Origin doğruluyor (K-02); ClientWebSocket
         // kendiliğinden göndermez, uzantının kaynağını taklit ediyoruz.
         using var ws = new ClientWebSocket();
-        ws.Options.SetRequestHeader("Origin", "https://www.instagram.com");
+        ws.Options.SetRequestHeader("Origin", "https://www.tiktok.com");
         await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"), CancellationToken.None);
 
         await SendChatMessage(ws, platform: "instagram", username: "@ayse", text: "mavi m");
 
-        await WaitForPublishOrTimeout(bus, timeoutMs: 2000);
+        await WaitForPublishOrTimeout(bus, timeoutMs: 400);
 
-        bus.Published.Should().HaveCount(1, "Instagram messages must pass through in trial mode");
-        bus.Published[0].Platform.Should().Be("instagram");
+        bus.Published.Should().BeEmpty(
+            "denemede köprü tamamen sessiz; Instagram istisnası kaldırıldı");
 
         await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
     }
@@ -140,7 +147,7 @@ public class ChatBridgeTrialFilterTests
         // Köprü el sıkışmada Origin doğruluyor (K-02); ClientWebSocket
         // kendiliğinden göndermez, uzantının kaynağını taklit ediyoruz.
         using var ws = new ClientWebSocket();
-        ws.Options.SetRequestHeader("Origin", "https://www.instagram.com");
+        ws.Options.SetRequestHeader("Origin", "https://www.tiktok.com");
         await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"), CancellationToken.None);
 
         await SendChatMessage(ws, platform: "tiktok", username: "@expired_user", text: "buy now");
@@ -164,7 +171,7 @@ public class ChatBridgeTrialFilterTests
         // Köprü el sıkışmada Origin doğruluyor (K-02); ClientWebSocket
         // kendiliğinden göndermez, uzantının kaynağını taklit ediyoruz.
         using var ws = new ClientWebSocket();
-        ws.Options.SetRequestHeader("Origin", "https://www.instagram.com");
+        ws.Options.SetRequestHeader("Origin", "https://www.tiktok.com");
         await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"), CancellationToken.None);
 
         await SendChatMessage(ws, platform: "tiktok", username: "@premium_user", text: "hello world");

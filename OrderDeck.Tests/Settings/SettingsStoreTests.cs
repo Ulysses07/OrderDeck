@@ -57,6 +57,34 @@ public class SettingsStoreTests
 
         File.Delete(path);
     }
+
+    /// <summary>
+    /// <c>instagramIngestMode</c> alanı şemadan kaldırıldı (uzantıdan Instagram
+    /// çıkınca seçilecek ikinci kip kalmadı). Sahadaki her settings.json'da o
+    /// anahtar hâlâ duruyor; okuma bunun üstünde patlarsa uygulama bir daha hiç
+    /// açılmaz. System.Text.Json eşleşmeyen üyeyi varsayılan olarak atlar —
+    /// bu test o varsayılana bağımlılığımızı kilitliyor.
+    /// </summary>
+    [Fact]
+    public void Load_ignores_the_retired_instagram_mode_field()
+    {
+        var path = CreateTempPath();
+        File.WriteAllText(path, """
+            {
+              "overlayPort": 4747,
+              "instagramIngestMode": "Scraper",
+              "printerName": "Zebra ZD220"
+            }
+            """);
+
+        var loaded = new SettingsStore(path).Load();
+
+        loaded.OverlayPort.Should().Be(4747);
+        loaded.PrinterName.Should().Be("Zebra ZD220",
+            "artık tanınmayan tek alan, dosyanın geri kalanını götürmemeli");
+
+        File.Delete(path);
+    }
 }
 
 public class SettingsStore_PaymentTests

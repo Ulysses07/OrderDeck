@@ -34,11 +34,6 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
     private readonly ITrialModeProbe? _trialProbe;
     private readonly SpamFilter? _spamFilter;
     private readonly ViewerCountTracker? _viewers;
-    // OfficialApi modunda extension'dan gelen Instagram yorumlarını bastırırız;
-    // aynı yorum Graph poller'dan da geliyor ve iki yolun externalId uzayları
-    // ayrık olduğu için dedupe yakalayamaz. Func<> çünkü operatör Ayarlar'dan
-    // modu değiştirince köprüyü yeniden başlatmadan etkili olmalı.
-    private readonly Func<bool>? _isInstagramOfficial;
     private readonly ILogger<ExtensionBridgeServer> _log;
     private readonly HttpListener _listener = new();
     private CancellationTokenSource? _cts;
@@ -92,14 +87,12 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
         ILogger<ExtensionBridgeServer>? log = null,
         ITrialModeProbe? trialProbe = null,
         SpamFilter? spamFilter = null,
-        ViewerCountTracker? viewers = null,
-        Func<bool>? isInstagramOfficial = null)
+        ViewerCountTracker? viewers = null)
     {
         _bus = bus;
         _trialProbe = trialProbe;
         _spamFilter = spamFilter;
         _viewers = viewers;
-        _isInstagramOfficial = isInstagramOfficial;
         _log = log ?? NullLogger<ExtensionBridgeServer>.Instance;
         Port = port == 0 ? FindFreePort() : port;
         _listener.Prefixes.Add($"http://localhost:{Port}/");
@@ -192,12 +185,15 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
     /// İkisi de kabul ediliyor — hangi kaynağın görüneceği Chrome sürümüne göre
     /// değişebilir ve yanlış tahmin sohbetin tamamen susması demek. Alan adı
     /// kümesi <c>manifest.json</c>'daki <c>content_scripts.matches</c> ile aynı,
-    /// şema kısıtı da oradaki <c>*://</c> ile hizalı.</para>
+    /// şema kısıtı da oradaki <c>*://</c> ile hizalı. Facebook ve Instagram
+    /// uzantıdan kaldırıldığı (resmi Graph API devraldı) için listede tek alan
+    /// adı kaldı: TikTok'un resmi bir canlı sohbet API'si yok, köprü artık
+    /// yalnızca onun için var.</para>
     ///
     /// <para><b>Neyi kapatmaz.</b> Yerel bir süreç <c>Origin</c>'i serbestçe
-    /// uydurabilir; instagram.com/tiktok.com üstündeki bir XSS de bu kapıdan
-    /// geçer. Bunları ancak paylaşılan bir sır ya da native messaging kapatır —
-    /// köprünün emekliye ayrılma planı orada.</para>
+    /// uydurabilir; tiktok.com üstündeki bir XSS de bu kapıdan geçer. Bunları
+    /// ancak paylaşılan bir sır ya da native messaging kapatır — köprünün
+    /// emekliye ayrılma planı orada.</para>
     /// </summary>
     private static bool IsAllowedOrigin(string? origin)
     {
@@ -210,11 +206,10 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
         if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri)) return false;
         if (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp) return false;
 
-        return IsHostOrSubdomainOf(uri.Host, "instagram.com")
-            || IsHostOrSubdomainOf(uri.Host, "tiktok.com");
+        return IsHostOrSubdomainOf(uri.Host, "tiktok.com");
     }
 
-    /// <summary>Nokta sınırlı alt alan eşleşmesi — "evilinstagram.com" geçmemeli.</summary>
+    /// <summary>Nokta sınırlı alt alan eşleşmesi — "eviltiktok.com" geçmemeli.</summary>
     private static bool IsHostOrSubdomainOf(string host, string domain) =>
         string.Equals(host, domain, StringComparison.OrdinalIgnoreCase) ||
         host.EndsWith("." + domain, StringComparison.OrdinalIgnoreCase);
@@ -299,26 +294,16 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
 
                 if (msg is { Type: "chat", Platform: not null, Username: not null, Text: not null })
                 {
-                    // Instagram resmi API'deyken extension kopyası düşer. Yeni
-                    // uzantı zaten IG göndermiyor; bu dal sahada henüz
-                    // güncellenmemiş eski sürümlerin çift-post yapmasını önlüyor.
-                    //
-                    // Trial istisnası KALDIRILDI: InstagramChatHostedService artık
-                    // denemede de çalıştığı için burada bırakmak çift-post demekti.
-                    if (string.Equals(msg.Platform, "instagram", StringComparison.OrdinalIgnoreCase) &&
-                        _isInstagramOfficial?.Invoke() == true)
+                    // Deneme sürümünde köprü sessiz. Eskiden "instagram" hariç
+                    // tutuluyordu; IG uzantıdan kaldırıldığı (resmi Graph API
+                    // devraldı) ve el sıkışma artık yalnız tiktok.com'u kabul
+                    // ettiği için o istisnanın karşılığı kalmadı. Deneme
+                    // kullanıcısı IG/FB/YouTube'u resmi API'lerden almaya
+                    // devam ediyor — kısıtlanan tek yol köprü.
+                    if (_trialProbe?.IsTrialMode == true)
                     {
                         _log.LogDebug(
-                            "Instagram OfficialApi mode: dropping extension message from {Username}",
-                            msg.Username);
-                        continue;
-                    }
-
-                    if (_trialProbe?.IsTrialMode == true &&
-                        !string.Equals(msg.Platform, "instagram", StringComparison.OrdinalIgnoreCase))
-                    {
-                        _log.LogDebug(
-                            "Trial mode: dropping non-Instagram message from platform '{Platform}' by {Username}",
+                            "Trial mode: dropping message from platform '{Platform}' by {Username}",
                             msg.Platform, msg.Username);
                         continue;
                     }

@@ -15,15 +15,9 @@ namespace OrderDeck.Chat.Ingestors.Instagram;
 /// <summary>
 /// Instagram canlı yorum ingestor'ının yaşam döngüsü.
 /// <see cref="OrderDeck.Chat.Ingestors.Facebook.FacebookChatHostedService"/>
-/// ile aynı şekil; iki farkı var:
-///
-/// <list type="number">
-///   <item><b>Kip kapısı.</b> <see cref="AppSettings.InstagramIngestMode"/>
-///     <c>OfficialApi</c> değilse hiç çalışmaz. Varsayılan artık
-///     <c>OfficialApi</c>: uzantıdan Instagram kaldırıldı, başka yol yok.</item>
-///   <item><b>Kalıcı hata</b> (token/izin) → yeniden denemek yerine uzun idle.
-///     Sonsuz retry kullanıcının token'ını düzeltmiyor, sadece log dolduruyor.</item>
-/// </list>
+/// ile aynı şekil; tek farkı <b>kalıcı hatada</b> (token/izin) yeniden
+/// denemek yerine uzun idle'a düşmesi — sonsuz retry kullanıcının token'ını
+/// düzeltmiyor, sadece log dolduruyor.
 ///
 /// <para>Ayrı OAuth yok: bağlı Facebook Sayfa token'ına biniyoruz.</para>
 /// </summary>
@@ -35,13 +29,8 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
     private static readonly TimeSpan IdleAfterFatal = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan MaxBackoff = TimeSpan.FromMinutes(5);
 
-    /// <summary>Poller çalışırken ayarın hâlâ <c>OfficialApi</c> olup olmadığını
-    /// yoklama aralığı. Bkz. <see cref="WaitForPollerAsync"/>.</summary>
-    private static readonly TimeSpan ModeWatchInterval = TimeSpan.FromSeconds(5);
-
     public const string HttpClientName = "instagram-graph";
 
-    private readonly Func<AppSettings> _settingsProvider;
     private readonly FacebookOAuthService _oauth;
     private readonly IChatBus _bus;
     private readonly ILoggerFactory _loggerFactory;
@@ -55,7 +44,6 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
     private CancellationTokenSource? _pollerCts;
 
     public InstagramChatHostedService(
-        Func<AppSettings> settingsProvider,
         FacebookOAuthService oauth,
         IChatBus bus,
         ILoggerFactory loggerFactory,
@@ -63,7 +51,6 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
         StreamSessionService? sessions = null,
         IHttpClientFactory? httpFactory = null)
     {
-        _settingsProvider = settingsProvider;
         _oauth = oauth;
         _bus = bus;
         _loggerFactory = loggerFactory;
@@ -117,18 +104,11 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
         {
             try
             {
-                // 1) Kip kapısı. Operatör elle Scraper'a döndüyse dokunma.
-                if (_settingsProvider().InstagramIngestMode != InstagramIngestMode.OfficialApi)
-                {
-                    await Task.Delay(IdleWhenOffline, ct);
-                    continue;
-                }
+                // Kip kapısı ve trial kapısı YOK: uzantıdan Instagram kaldırıldığı
+                // için resmi API tek yol. Kapatılabilir olması sohbetin sessizce
+                // susması demekti, açık kalması ise çift-post riski taşımıyor.
 
-                // Trial kapısı YOK: uzantıdan Instagram kaldırıldığı için deneme
-                // kullanıcısının tek IG yolu burası. Kapalı tutulursa deneme
-                // sürümünde Instagram tamamen kararırdı.
-
-                // 2) Facebook Sayfa bağlantısı yoksa IG'ye de erişemeyiz.
+                // 1) Facebook Sayfa bağlantısı yoksa IG'ye de erişemeyiz.
                 var creds = await _oauth.GetPageCredentialsAsync(ct).ConfigureAwait(false);
                 if (creds is null)
                 {
@@ -136,7 +116,7 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
                     continue;
                 }
 
-                // 3) Operatör "Yayın Başlat"a basmadıysa Graph'a dokunma.
+                // 2) Operatör "Yayın Başlat"a basmadıysa Graph'a dokunma.
                 if (_sessions is not null && _sessions.GetActive() is null)
                 {
                     await Task.Delay(IdleWhenOffline, ct);
@@ -177,7 +157,8 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
                 {
                     await poller.StartAsync(pollerCts.Token);
                     consecutiveCrashes = 0;
-                    await WaitForPollerAsync(poller, pollerCts);
+                    // Hatayı yüzeye çıkarır (iptalde OperationCanceledException).
+                    await poller.Completion.ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
                 catch (OperationCanceledException) { /* SessionEnded — devam */ }
@@ -218,40 +199,6 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
                 try { await Task.Delay(IdleAfterPollerExit, ct); } catch { break; }
             }
         }
-    }
-
-    /// <summary>
-    /// Poller bitene kadar bekler, ama arada ayarı yoklar.
-    ///
-    /// <para><b>Neden:</b> köprüdeki extension bastırması her mesajda
-    /// değerlendiriliyor, yani operatör resmi modu <b>yayın ortasında</b>
-    /// kapattığı anda extension yorumları yeniden akmaya başlar. Poller
-    /// yalnız döngü başında ayara baksaydı yayın sonuna kadar çalışmaya
-    /// devam eder ve her yorum iki kez düşerdi — bu tasarımın önlemek için
-    /// var olduğu senaryonun ta kendisi.</para>
-    /// </summary>
-    private async Task WaitForPollerAsync(
-        InstagramLiveCommentsPoller poller, CancellationTokenSource pollerCts)
-    {
-        while (!poller.Completion.IsCompleted)
-        {
-            pollerCts.Token.ThrowIfCancellationRequested();
-
-            var tick = Task.Delay(ModeWatchInterval, pollerCts.Token);
-            var finished = await Task.WhenAny(poller.Completion, tick).ConfigureAwait(false);
-            if (finished == poller.Completion) break;
-
-            if (_settingsProvider().InstagramIngestMode != InstagramIngestMode.OfficialApi)
-            {
-                _log.LogInformation(
-                    "[InstagramChatHostedService] official mode turned off — stopping poller");
-                pollerCts.Cancel();
-                break;
-            }
-        }
-
-        // Hatayı yüzeye çıkar (iptalde OperationCanceledException fırlatır).
-        await poller.Completion.ConfigureAwait(false);
     }
 
     /// <summary>30s × 2^(n-1), 5dk tavan. Facebook/YouTube ile aynı eğri.</summary>

@@ -40,7 +40,7 @@ public class ExtensionBridgeServerTests
     /// <see cref="ClientWebSocket"/> kendiliğinden Origin göndermez.
     /// </summary>
     private static async Task<ClientWebSocket> ConnectAsync(
-        ExtensionBridgeServer server, string origin = "https://www.instagram.com")
+        ExtensionBridgeServer server, string origin = "https://www.tiktok.com")
     {
         var ws = new ClientWebSocket();
         ws.Options.SetRequestHeader("Origin", origin);
@@ -330,112 +330,6 @@ public class ExtensionBridgeServerTests
         await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
     }
 
-    // ── Official-API bastırma ────────────────────────────────────────────────
-
-    [Fact]
-    public async Task Official_mode_drops_extension_instagram_messages()
-    {
-        // OfficialApi açıkken IG yorumları Graph poller'dan geliyor. Extension
-        // aynı yorumu farklı bir externalId ile gönderirse dedupe yakalayamaz
-        // (DOM-üretimi id vs. gerçek yorum id'si) → operatör çift sipariş görür.
-        var bus = new ChatBus(ringBufferSize: 10);
-        await using var server = new ExtensionBridgeServer(
-            bus, port: 0, isInstagramOfficial: () => true);
-        await server.StartAsync(CancellationToken.None);
-
-        var received = new System.Collections.Generic.List<ChatMessage>();
-        using var sub = bus.Subscribe(m => { lock (received) received.Add(m); });
-
-        using var ws = await ConnectAsync(server);
-
-        await SendRaw(ws, SerializeChat("instagram", "@ali", "AB-25", externalId: "ig-1-abc"));
-        await Task.Delay(200);
-
-        lock (received) received.Should().BeEmpty();
-
-        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
-    }
-
-    [Fact]
-    public async Task Official_mode_does_not_affect_other_platforms()
-    {
-        // Bastırma yalnız Instagram'a özgü. TikTok hâlâ extension'dan geliyor.
-        var bus = new ChatBus(ringBufferSize: 10);
-        await using var server = new ExtensionBridgeServer(
-            bus, port: 0, isInstagramOfficial: () => true);
-        await server.StartAsync(CancellationToken.None);
-
-        var received = new TaskCompletionSource<ChatMessage>();
-        using var sub = bus.Subscribe(m => received.TrySetResult(m));
-
-        using var ws = await ConnectAsync(server);
-
-        await SendRaw(ws, SerializeChat("tiktok", "@mehmet", "KIRMIZI M", externalId: "tt-1"));
-
-        var msg = await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        msg.Platform.Should().Be("tiktok");
-
-        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
-    }
-
-    [Fact]
-    public async Task Trial_mode_also_drops_extension_instagram_when_official_is_on()
-    {
-        // Eskiden burada trial istisnası vardı: InstagramChatHostedService
-        // denemede çalışmadığı için uzantının IG kopyası geçiriliyordu. Artık
-        // resmi servis denemede de çalışıyor, dolayısıyla istisna çift-post
-        // üretirdi. Sahada henüz güncellenmemiş eski uzantı sürümleri IG
-        // göndermeye devam ediyor — bastırılması gereken tam olarak onlar.
-        var bus = new ChatBus(ringBufferSize: 10);
-        await using var server = new ExtensionBridgeServer(
-            bus, port: 0, trialProbe: new TrialProbeStub(true), isInstagramOfficial: () => true);
-        await server.StartAsync(CancellationToken.None);
-
-        var publishCount = 0;
-        using var sub = bus.Subscribe(_ => Interlocked.Increment(ref publishCount));
-
-        using var ws = await ConnectAsync(server);
-
-        await SendRaw(ws, SerializeChat("instagram", "@ayse_y", "MAVI XL", externalId: "ig-7"));
-
-        // Düşürülmesi bekleniyor, yani beklenecek bir olay yok; sunucunun
-        // mesajı işlemesine yetecek kadar bekleyip sayaca bakıyoruz.
-        await Task.Delay(500);
-        Volatile.Read(ref publishCount).Should().Be(0,
-            "resmi API açıkken uzantının IG kopyası denemede de düşmeli");
-
-        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
-    }
-
-    private sealed class TrialProbeStub(bool isTrialMode) : OrderDeck.Core.Chat.ITrialModeProbe
-    {
-        public bool IsTrialMode { get; } = isTrialMode;
-    }
-
-    [Fact]
-    public async Task Scraper_mode_still_forwards_instagram()
-    {
-        // Bayrak false → eski davranış aynen. Varsayılan (bayrak hiç verilmemiş)
-        // da bu olmalı; "Forwards_chat_message_from_extension_to_ChatBus" testi
-        // varsayılanı zaten kilitliyor.
-        var bus = new ChatBus(ringBufferSize: 10);
-        await using var server = new ExtensionBridgeServer(
-            bus, port: 0, isInstagramOfficial: () => false);
-        await server.StartAsync(CancellationToken.None);
-
-        var received = new TaskCompletionSource<ChatMessage>();
-        using var sub = bus.Subscribe(m => received.TrySetResult(m));
-
-        using var ws = await ConnectAsync(server);
-
-        await SendRaw(ws, SerializeChat("instagram", "@ayse_y", "MAVI XL", externalId: "ig-9"));
-
-        var msg = await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        msg.Platform.Should().Be("instagram");
-
-        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
-    }
-
     // ── Origin kapısı (K-02) ─────────────────────────────────────────────────
     //
     // WebSocket CORS'a tabi değil: tarayıcı Origin'i gönderir ama zorlamaz.
@@ -445,9 +339,10 @@ public class ExtensionBridgeServerTests
     [Theory]
     [InlineData("https://evil.example")]
     [InlineData("http://localhost:3000")]
-    [InlineData("https://evilinstagram.com")]        // sonek karışıklığı
-    [InlineData("https://instagram.com.evil.test")]  // önek karışıklığı
-    [InlineData("null")]                             // sandbox'lı iframe
+    [InlineData("https://eviltiktok.com")]        // sonek karışıklığı
+    [InlineData("https://tiktok.com.evil.test")]  // önek karışıklığı
+    [InlineData("https://www.instagram.com")]     // IG uzantıdan kaldırıldı
+    [InlineData("null")]                          // sandbox'lı iframe
     public async Task Rejects_handshake_from_a_foreign_origin(string origin)
     {
         var bus = new ChatBus(ringBufferSize: 10);
@@ -475,9 +370,8 @@ public class ExtensionBridgeServerTests
 
     [Theory]
     [InlineData("chrome-extension://abcdefghijklmnopabcdefghijklmnop")]
-    [InlineData("https://www.instagram.com")]
-    [InlineData("https://instagram.com")]
     [InlineData("https://www.tiktok.com")]
+    [InlineData("https://tiktok.com")]
     public async Task Accepts_the_extension_and_its_host_pages(string origin)
     {
         // Kabul edilen kaynak yalnız el sıkışmayı geçmemeli, mesaj da akmalı.

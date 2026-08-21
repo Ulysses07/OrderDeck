@@ -9,10 +9,16 @@ namespace OrderDeck.LicenseServer.Extension;
 
 /// <summary>
 /// Single source of truth for the DOM selectors the OrderDeck browser
-/// extension uses to scrape live-chat messages off Instagram, TikTok and
-/// Facebook. The extension fetches the JSON projection of <see cref="Current"/>
-/// at <c>GET /api/v1/extension/selectors</c>, caches it locally, and uses it
+/// extension uses to scrape live-chat messages off TikTok. The extension
+/// fetches the JSON projection of <see cref="Current"/> at
+/// <c>GET /api/v1/extension/selectors</c>, caches it locally, and uses it
 /// every time DOM scanning runs.
+///
+/// <para><b>Why TikTok only:</b> YouTube, Facebook and Instagram all have
+/// official APIs now and are read server-side, so their content scripts were
+/// removed from the extension. TikTok has no official live-chat API — it is
+/// the sole reason both the extension and the local WebSocket bridge still
+/// exist. Publishing selectors nobody scrapes would only mislead.</para>
 ///
 /// <para><b>Why this exists:</b> Each platform rotates DOM internals every
 /// few months, breaking sideloaded extensions silently. Pushing a new
@@ -40,45 +46,9 @@ public static class SelectorRegistry
     /// </summary>
     public static readonly SelectorBundle Current = new(
         SchemaVersion: 1,
-        PublishedAt: new DateTimeOffset(2026, 6, 22, 10, 0, 0, TimeSpan.Zero),
+        PublishedAt: new DateTimeOffset(2026, 8, 21, 10, 0, 0, TimeSpan.Zero),
         Platforms: new Dictionary<string, PlatformSelectors>
         {
-            // Instagram uzantıdan kaldırıldı (resmi Graph API devraldı), ama bu
-            // blok BİLEREK duruyor: sahadaki eski uzantı sürümleri hâlâ IG
-            // kazıyor ve selektörlerini buradan çekiyor. Blok silinirse sunucu
-            // deploy'u anında onların Instagram'ını öldürür. Yeni uzantı Web
-            // Store'da yaygınlaşana kadar dokunma.
-            ["instagram"] = new(
-                IsLivePage: new IsLivePageSelectors(
-                    UrlPatterns: new[] { "/live" },
-                    DomSelectors: new[]
-                    {
-                        "[aria-label*=\"Live\" i]",
-                        "[aria-label*=\"Canlı\" i]",
-                    }),
-                Comments: new CommentSelectors(
-                    PrimaryContainers: "[aria-label*=\"yorum\" i], [aria-label*=\"comment\" i]",
-                    PrimaryRowItems: "span[dir=\"auto\"]",
-                    FallbackPattern: "div-2span"),
-                ObserverTarget: new[] { "[role=\"main\"]", "section" },
-                Validators: new ValidatorSettings(
-                    UsernameMaxLength: 50,
-                    MessageMaxLength: 1000,
-                    UiTextBlocklist: new[]
-                    {
-                        "live", "messages", "share", "like", "comment", "send", "follow",
-                        "canlı", "mesajlar", "paylaş", "beğen", "yorum", "gönder", "takip et",
-                        "izliyor", "watching", "viewers", "izleyici",
-                    },
-                    TimeStringRegex: @"^\d+\s*(dk|sa|gün|sn|m|h|d|s|ay|yıl|min|hr|sec)$"),
-                // İzleyici sayısı — ilk turda en iyi tahmin; canlı yayında doğrulanacak.
-                Viewers: new ViewerSelectors(new[]
-                {
-                    "a[href$=\"/live_viewers/\"]",
-                    "span[aria-label*=\"izley\" i]",
-                    "span[aria-label*=\"watch\" i]",
-                })),
-
             ["tiktok"] = new(
                 IsLivePage: new IsLivePageSelectors(
                     UrlPatterns: new[] { "/live" },
@@ -132,41 +102,6 @@ public static class SelectorRegistry
                     "[data-e2e=\"live-room-stats\"]",
                     "[data-e2e=\"live-viewer-count\"]",
                     "[class*=\"ViewerCount\"]",
-                })),
-
-            ["facebook"] = new(
-                IsLivePage: new IsLivePageSelectors(
-                    // FB Live runs from many paths and has no single "I am live"
-                    // signal. Empty pattern list = always treat as scrapeable;
-                    // scanForComments() returns empty when nothing matches.
-                    UrlPatterns: Array.Empty<string>(),
-                    DomSelectors: Array.Empty<string>(),
-                    AlwaysTrue: true),
-                Comments: new CommentSelectors(
-                    PrimaryContainers: "[aria-label*=\"yorum\" i], [aria-label*=\"comment\" i]",
-                    PrimaryRowItems: "span[dir=\"auto\"]",
-                    FallbackPattern: "article-span-pair",
-                    SecondaryContainers: new[] { "div[role=\"article\"]" }),
-                ObserverTarget: new[] { "[role=\"complementary\"]", "[role=\"main\"]" },
-                Validators: new ValidatorSettings(
-                    UsernameMaxLength: 50,
-                    MessageMaxLength: 1000,
-                    UiTextBlocklist: new[]
-                    {
-                        "beğen", "like", "yanıtla", "reply", "paylaş", "share",
-                        "gizle", "hide", "bildir", "report", "sabitle", "pin",
-                        "yorum yap", "comment", "görüntüle", "view",
-                        "canlı", "live", "izliyor", "watching", "izleyici", "viewers",
-                        "mesaj gönder", "send message",
-                    },
-                    TimeStringRegex: @"^\d+\s*(dk|sa|gün|sn|m|h|d|s|ay|yıl|min|hr|sec)$",
-                    UrlShapedUsernameDenied: true),
-                // İzleyici sayısı — ilk turda en iyi tahmin; canlı yayında doğrulanacak.
-                Viewers: new ViewerSelectors(new[]
-                {
-                    "[aria-label*=\"izley\" i]",
-                    "[aria-label*=\"watching\" i]",
-                    "[aria-label*=\"viewer\" i]",
                 })),
         });
 
