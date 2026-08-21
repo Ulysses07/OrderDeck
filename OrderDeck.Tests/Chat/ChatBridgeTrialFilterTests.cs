@@ -88,7 +88,10 @@ public class ChatBridgeTrialFilterTests
         await using var server = new ExtensionBridgeServer(bus, port: 0, trialProbe: probe);
         await server.StartAsync(CancellationToken.None);
 
+        // Köprü el sıkışmada Origin doğruluyor (K-02); ClientWebSocket
+        // kendiliğinden göndermez, uzantının kaynağını taklit ediyoruz.
         using var ws = new ClientWebSocket();
+        ws.Options.SetRequestHeader("Origin", "https://www.instagram.com");
         await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"), CancellationToken.None);
 
         await SendChatMessage(ws, platform: "tiktok", username: "@tester", text: "hello");
@@ -109,7 +112,10 @@ public class ChatBridgeTrialFilterTests
         await using var server = new ExtensionBridgeServer(bus, port: 0, trialProbe: probe);
         await server.StartAsync(CancellationToken.None);
 
+        // Köprü el sıkışmada Origin doğruluyor (K-02); ClientWebSocket
+        // kendiliğinden göndermez, uzantının kaynağını taklit ediyoruz.
         using var ws = new ClientWebSocket();
+        ws.Options.SetRequestHeader("Origin", "https://www.instagram.com");
         await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"), CancellationToken.None);
 
         await SendChatMessage(ws, platform: "instagram", username: "@ayse", text: "mavi m");
@@ -131,7 +137,10 @@ public class ChatBridgeTrialFilterTests
         await using var server = new ExtensionBridgeServer(bus, port: 0, trialProbe: probe);
         await server.StartAsync(CancellationToken.None);
 
+        // Köprü el sıkışmada Origin doğruluyor (K-02); ClientWebSocket
+        // kendiliğinden göndermez, uzantının kaynağını taklit ediyoruz.
         using var ws = new ClientWebSocket();
+        ws.Options.SetRequestHeader("Origin", "https://www.instagram.com");
         await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"), CancellationToken.None);
 
         await SendChatMessage(ws, platform: "tiktok", username: "@expired_user", text: "buy now");
@@ -152,7 +161,10 @@ public class ChatBridgeTrialFilterTests
         await using var server = new ExtensionBridgeServer(bus, port: 0, trialProbe: probe);
         await server.StartAsync(CancellationToken.None);
 
+        // Köprü el sıkışmada Origin doğruluyor (K-02); ClientWebSocket
+        // kendiliğinden göndermez, uzantının kaynağını taklit ediyoruz.
         using var ws = new ClientWebSocket();
+        ws.Options.SetRequestHeader("Origin", "https://www.instagram.com");
         await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"), CancellationToken.None);
 
         await SendChatMessage(ws, platform: "tiktok", username: "@premium_user", text: "hello world");

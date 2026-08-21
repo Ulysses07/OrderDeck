@@ -34,6 +34,21 @@ public class ExtensionBridgeServerTests
         await ws.SendAsync(Encoding.UTF8.GetBytes(json),
             WebSocketMessageType.Text, true, CancellationToken.None);
 
+    /// <summary>
+    /// Köprü artık el sıkışmada <c>Origin</c> doğruluyor (K-02), o yüzden her
+    /// test istemcisi uzantının gerçekte göndereceği türden bir kaynak sunmalı.
+    /// <see cref="ClientWebSocket"/> kendiliğinden Origin göndermez.
+    /// </summary>
+    private static async Task<ClientWebSocket> ConnectAsync(
+        ExtensionBridgeServer server, string origin = "https://www.instagram.com")
+    {
+        var ws = new ClientWebSocket();
+        ws.Options.SetRequestHeader("Origin", origin);
+        await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
+            CancellationToken.None);
+        return ws;
+    }
+
     // ── Baseline ─────────────────────────────────────────────────────────────
 
     [Fact]
@@ -46,9 +61,7 @@ public class ExtensionBridgeServerTests
         var received = new TaskCompletionSource<ChatMessage>();
         using var sub = bus.Subscribe(m => received.TrySetResult(m));
 
-        using var ws = new ClientWebSocket();
-        await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
-            CancellationToken.None);
+        using var ws = await ConnectAsync(server);
 
         await SendRaw(ws, SerializeChat("instagram", "@ayse_y", "MAVI XL aldım"));
 
@@ -73,9 +86,7 @@ public class ExtensionBridgeServerTests
         var received = new System.Collections.Generic.List<ChatMessage>();
         using var sub = bus.Subscribe(m => { lock (received) received.Add(m); });
 
-        using var ws = new ClientWebSocket();
-        await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
-            CancellationToken.None);
+        using var ws = await ConnectAsync(server);
 
         await SendRaw(ws, SerializeChat("instagram", "@ali", "AB-25", externalId: "ig-1-abc"));
         await Task.Delay(50);
@@ -100,9 +111,7 @@ public class ExtensionBridgeServerTests
         var received = new System.Collections.Generic.List<ChatMessage>();
         using var sub = bus.Subscribe(m => { lock (received) received.Add(m); });
 
-        using var ws = new ClientWebSocket();
-        await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
-            CancellationToken.None);
+        using var ws = await ConnectAsync(server);
 
         await SendRaw(ws, SerializeChat("instagram", "@ali", "AB-25", externalId: "ig-1-abc"));
         await Task.Delay(50);
@@ -127,9 +136,7 @@ public class ExtensionBridgeServerTests
         var received = new System.Collections.Generic.List<ChatMessage>();
         using var sub = bus.Subscribe(m => { lock (received) received.Add(m); });
 
-        using var ws = new ClientWebSocket();
-        await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
-            CancellationToken.None);
+        using var ws = await ConnectAsync(server);
 
         await SendRaw(ws, SerializeChat("tiktok", "@veli", "RED-L", externalId: "tt-1-x"));
         await Task.Delay(5_100);
@@ -153,9 +160,7 @@ public class ExtensionBridgeServerTests
         var received = new System.Collections.Generic.List<ChatMessage>();
         using var sub = bus.Subscribe(m => { lock (received) received.Add(m); });
 
-        using var ws = new ClientWebSocket();
-        await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
-            CancellationToken.None);
+        using var ws = await ConnectAsync(server);
 
         await SendRaw(ws, SerializeChat("instagram", "ali", "AB-25", externalId: "ig-1-a"));
         await Task.Delay(50);
@@ -181,9 +186,7 @@ public class ExtensionBridgeServerTests
         var received = new System.Collections.Generic.List<ChatMessage>();
         using var sub = bus.Subscribe(m => { lock (received) received.Add(m); });
 
-        using var ws = new ClientWebSocket();
-        await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
-            CancellationToken.None);
+        using var ws = await ConnectAsync(server);
 
         await SendRaw(ws, SerializeChat("instagram", "@x", "hello", externalId: null));
         await Task.Delay(50);
@@ -206,9 +209,7 @@ public class ExtensionBridgeServerTests
         var publishCount = 0;
         using var sub = bus.Subscribe(_ => Interlocked.Increment(ref publishCount));
 
-        using var ws = new ClientWebSocket();
-        await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
-            CancellationToken.None);
+        using var ws = await ConnectAsync(server);
 
         var statsPayload = JsonSerializer.Serialize(new
         {
@@ -250,9 +251,7 @@ public class ExtensionBridgeServerTests
         var publishCount = 0;
         using var sub = bus.Subscribe(_ => Interlocked.Increment(ref publishCount));
 
-        using var ws = new ClientWebSocket();
-        await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
-            CancellationToken.None);
+        using var ws = await ConnectAsync(server);
 
         var payload = JsonSerializer.Serialize(new
         {
@@ -283,9 +282,7 @@ public class ExtensionBridgeServerTests
         var publishCount = 0;
         using var sub = bus.Subscribe(_ => Interlocked.Increment(ref publishCount));
 
-        using var ws = new ClientWebSocket();
-        await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
-            CancellationToken.None);
+        using var ws = await ConnectAsync(server);
 
         var payload = JsonSerializer.Serialize(new
         {
@@ -316,9 +313,7 @@ public class ExtensionBridgeServerTests
         var publishCount = 0;
         using var sub = bus.Subscribe(_ => Interlocked.Increment(ref publishCount));
 
-        using var ws = new ClientWebSocket();
-        await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
-            CancellationToken.None);
+        using var ws = await ConnectAsync(server);
 
         var payload = JsonSerializer.Serialize(new
         {
@@ -351,9 +346,7 @@ public class ExtensionBridgeServerTests
         var received = new System.Collections.Generic.List<ChatMessage>();
         using var sub = bus.Subscribe(m => { lock (received) received.Add(m); });
 
-        using var ws = new ClientWebSocket();
-        await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
-            CancellationToken.None);
+        using var ws = await ConnectAsync(server);
 
         await SendRaw(ws, SerializeChat("instagram", "@ali", "AB-25", externalId: "ig-1-abc"));
         await Task.Delay(200);
@@ -375,9 +368,7 @@ public class ExtensionBridgeServerTests
         var received = new TaskCompletionSource<ChatMessage>();
         using var sub = bus.Subscribe(m => received.TrySetResult(m));
 
-        using var ws = new ClientWebSocket();
-        await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
-            CancellationToken.None);
+        using var ws = await ConnectAsync(server);
 
         await SendRaw(ws, SerializeChat("tiktok", "@mehmet", "KIRMIZI M", externalId: "tt-1"));
 
@@ -400,9 +391,7 @@ public class ExtensionBridgeServerTests
         var received = new TaskCompletionSource<ChatMessage>();
         using var sub = bus.Subscribe(m => received.TrySetResult(m));
 
-        using var ws = new ClientWebSocket();
-        await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
-            CancellationToken.None);
+        using var ws = await ConnectAsync(server);
 
         await SendRaw(ws, SerializeChat("instagram", "@ayse_y", "MAVI XL", externalId: "ig-7"));
 
@@ -431,9 +420,7 @@ public class ExtensionBridgeServerTests
         var received = new TaskCompletionSource<ChatMessage>();
         using var sub = bus.Subscribe(m => received.TrySetResult(m));
 
-        using var ws = new ClientWebSocket();
-        await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
-            CancellationToken.None);
+        using var ws = await ConnectAsync(server);
 
         await SendRaw(ws, SerializeChat("instagram", "@ayse_y", "MAVI XL", externalId: "ig-9"));
 
@@ -441,5 +428,114 @@ public class ExtensionBridgeServerTests
         msg.Platform.Should().Be("instagram");
 
         await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
+
+    // ── Origin kapısı (K-02) ─────────────────────────────────────────────────
+    //
+    // WebSocket CORS'a tabi değil: tarayıcı Origin'i gönderir ama zorlamaz.
+    // Kapı açıkken yayıncının açtığı herhangi bir sayfa köprüye bağlanıp sahte
+    // sipariş basabiliyordu.
+
+    [Theory]
+    [InlineData("https://evil.example")]
+    [InlineData("http://localhost:3000")]
+    [InlineData("https://evilinstagram.com")]        // sonek karışıklığı
+    [InlineData("https://instagram.com.evil.test")]  // önek karışıklığı
+    [InlineData("null")]                             // sandbox'lı iframe
+    public async Task Rejects_handshake_from_a_foreign_origin(string origin)
+    {
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(bus, port: 0);
+        await server.StartAsync(CancellationToken.None);
+
+        await Assert.ThrowsAnyAsync<WebSocketException>(
+            () => ConnectAsync(server, origin));
+    }
+
+    [Fact]
+    public async Task Rejects_handshake_without_an_origin_header()
+    {
+        // Tarayıcılar Origin'i her zaman gönderir; göndermeyen istemci tarayıcı
+        // değildir — köprünün tek meşru istemcisi ise bir tarayıcı uzantısı.
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(bus, port: 0);
+        await server.StartAsync(CancellationToken.None);
+
+        using var ws = new ClientWebSocket();
+        await Assert.ThrowsAnyAsync<WebSocketException>(
+            () => ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
+                CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData("chrome-extension://abcdefghijklmnopabcdefghijklmnop")]
+    [InlineData("https://www.instagram.com")]
+    [InlineData("https://instagram.com")]
+    [InlineData("https://www.tiktok.com")]
+    public async Task Accepts_the_extension_and_its_host_pages(string origin)
+    {
+        // Kabul edilen kaynak yalnız el sıkışmayı geçmemeli, mesaj da akmalı.
+        // Content script'in hangi kaynağı gösterdiği Chrome sürümüne göre
+        // değişebilir; yanlış tahmin sohbetin tamamen susması demek olduğu için
+        // her iki bağlam da kilitleniyor.
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(bus, port: 0);
+        await server.StartAsync(CancellationToken.None);
+
+        var received = new TaskCompletionSource<ChatMessage>();
+        using var sub = bus.Subscribe(m => received.TrySetResult(m));
+
+        using var ws = await ConnectAsync(server, origin);
+        await SendRaw(ws, SerializeChat("tiktok", "@veli", "RED-L", externalId: "tt-ok"));
+
+        var msg = await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        msg.Text.Should().Be("RED-L");
+
+        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Foreign_page_cannot_inject_a_fake_order()
+    {
+        // Asıl zarar bu: mezat modelinde ürün kodu içeren yorum bir sipariştir.
+        // Yayıncının açtığı kötü niyetli bir sekme, köprüye bağlanabildiği anda
+        // uydurma müşteri adına sipariş yaratabiliyordu.
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(bus, port: 0);
+        await server.StartAsync(CancellationToken.None);
+
+        var publishCount = 0;
+        using var sub = bus.Subscribe(_ => Interlocked.Increment(ref publishCount));
+
+        var ws = new ClientWebSocket();
+        ws.Options.SetRequestHeader("Origin", "https://evil.example");
+        try
+        {
+            await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
+                CancellationToken.None);
+            await SendRaw(ws, SerializeChat("instagram", "@kurban", "AB-25", externalId: "sahte-1"));
+        }
+        catch (WebSocketException) { /* beklenen: el sıkışma reddedildi */ }
+        finally { ws.Dispose(); }
+
+        await Task.Delay(200);
+        publishCount.Should().Be(0, "yabancı bir sayfa sohbet akışına sipariş enjekte edememeli");
+    }
+
+    [Fact]
+    public async Task Health_endpoint_does_not_advertise_wildcard_CORS()
+    {
+        // Tek tüketici sihirbazın kendi HttpClient'ı — CORS onu ilgilendirmiyor.
+        // Wildcard varken rastgele bir sayfa yanıtı okuyup yayıncının OrderDeck
+        // çalıştırdığını parmak izleyebiliyordu.
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(bus, port: 0);
+        await server.StartAsync(CancellationToken.None);
+
+        using var http = new System.Net.Http.HttpClient();
+        using var res = await http.GetAsync($"http://localhost:{server.Port}/_health");
+
+        res.IsSuccessStatusCode.Should().BeTrue("sihirbazın 'Doğrula' butonu bu uca bağlı");
+        res.Headers.Contains("Access-Control-Allow-Origin").Should().BeFalse();
     }
 }

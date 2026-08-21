@@ -16,6 +16,9 @@ namespace OrderDeck.Chat.Bridge;
 /// extension content scripts connect to. Each incoming JSON payload is parsed as an
 /// <see cref="ExtensionMessage"/>; "chat" messages are forwarded to the supplied
 /// <see cref="IChatBus"/>.
+///
+/// <para>El sıkışmalar <see cref="IsAllowedOrigin"/> ile süzülür — localhost'ta
+/// dinlemek tek başına kapıyı kapatmaz.</para>
 /// </summary>
 public sealed class ExtensionBridgeServer : IAsyncDisposable
 {
@@ -143,6 +146,18 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
                 continue;
             }
 
+            var origin = context.Request.Headers["Origin"];
+            if (!IsAllowedOrigin(origin))
+            {
+                // Güvenlik olayı: sahada log taramasıyla görülebilsin.
+                _log.LogWarning(
+                    "Köprüye izinsiz kaynaktan WebSocket bağlantısı reddedildi: Origin={Origin}",
+                    string.IsNullOrEmpty(origin) ? "(başlık yok)" : origin);
+                context.Response.StatusCode = 403;
+                context.Response.Close();
+                continue;
+            }
+
             var wsContext = await context.AcceptWebSocketAsync(subProtocol: null);
             // Fire-and-forget per-connection handler. ContinueWith logs any
             // unobserved exception so we don't lose runtime errors silently —
@@ -155,6 +170,54 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
                     TaskScheduler.Default);
         }
     }
+
+    /// <summary>
+    /// WebSocket el sıkışmalarında kabul edilen kaynaklar.
+    ///
+    /// <para><b>Neden gerekli.</b> WebSocket CORS'a tabi değildir: tarayıcı
+    /// <c>Origin</c> başlığını gönderir ama <i>zorlamaz</i> — doğrulama tamamen
+    /// sunucunun işidir. Kapı açık kaldığında yayıncının açtığı herhangi bir web
+    /// sayfası <c>ws://localhost:4748/extension</c>'a bağlanıp sahte "chat"
+    /// çerçevesi basabilir. Mezat modelinde ürün kodu içeren yorum bir sipariş
+    /// demek; yani uydurma sipariş, uydurma müşteri, sahte izleyici sayısı ve
+    /// sahte "kayıp yorum" hata logu.</para>
+    ///
+    /// <para><b>Başlık yoksa reddedilir.</b> Tarayıcılar <c>Origin</c>'i her
+    /// zaman gönderir; göndermeyen istemci tarayıcı değildir — köprünün tek
+    /// meşru istemcisi ise bir tarayıcı uzantısıdır.</para>
+    ///
+    /// <para><b>Küme neden bu.</b> Uzantının kendi bağlamı (service worker,
+    /// popup) <c>chrome-extension://</c> kaynağıyla gelir; content script'ler
+    /// sayfanın bağlamında çalıştığı için el sıkışmada sayfanın kaynağı görünür.
+    /// İkisi de kabul ediliyor — hangi kaynağın görüneceği Chrome sürümüne göre
+    /// değişebilir ve yanlış tahmin sohbetin tamamen susması demek. Alan adı
+    /// kümesi <c>manifest.json</c>'daki <c>content_scripts.matches</c> ile aynı,
+    /// şema kısıtı da oradaki <c>*://</c> ile hizalı.</para>
+    ///
+    /// <para><b>Neyi kapatmaz.</b> Yerel bir süreç <c>Origin</c>'i serbestçe
+    /// uydurabilir; instagram.com/tiktok.com üstündeki bir XSS de bu kapıdan
+    /// geçer. Bunları ancak paylaşılan bir sır ya da native messaging kapatır —
+    /// köprünün emekliye ayrılma planı orada.</para>
+    /// </summary>
+    private static bool IsAllowedOrigin(string? origin)
+    {
+        if (string.IsNullOrWhiteSpace(origin)) return false;
+
+        // Chrome ve Edge'in ikisi de uzantı kaynağı için chrome-extension:// kullanır.
+        if (origin.StartsWith("chrome-extension://", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri)) return false;
+        if (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp) return false;
+
+        return IsHostOrSubdomainOf(uri.Host, "instagram.com")
+            || IsHostOrSubdomainOf(uri.Host, "tiktok.com");
+    }
+
+    /// <summary>Nokta sınırlı alt alan eşleşmesi — "evilinstagram.com" geçmemeli.</summary>
+    private static bool IsHostOrSubdomainOf(string host, string domain) =>
+        string.Equals(host, domain, StringComparison.OrdinalIgnoreCase) ||
+        host.EndsWith("." + domain, StringComparison.OrdinalIgnoreCase);
 
     private void HandleHealthRequest(HttpListenerContext context)
     {
@@ -170,9 +233,10 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
             context.Response.StatusCode = 200;
             context.Response.ContentType = "application/json; charset=utf-8";
             context.Response.ContentLength64 = payload.Length;
-            // Localhost-only so CORS isn't a real risk, but the wizard fetches
-            // from a custom HttpClient so wildcard is fine + saves debugging.
-            context.Response.Headers["Access-Control-Allow-Origin"] = "*";
+            // `Access-Control-Allow-Origin: *` bilinçli olarak YOK. Tek tüketici
+            // sihirbazın kendi HttpClient'ı; CORS onu hiç ilgilendirmiyor.
+            // Wildcard varken rastgele bir web sayfası yanıtı okuyup yayıncının
+            // OrderDeck çalıştırdığını parmak izleyebiliyordu.
             context.Response.OutputStream.Write(payload, 0, payload.Length);
         }
         catch (Exception ex)
