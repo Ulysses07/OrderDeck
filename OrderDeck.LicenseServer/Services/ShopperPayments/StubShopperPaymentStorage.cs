@@ -25,6 +25,9 @@ public sealed class StubShopperPaymentStorage : IShopperPaymentStorage
     /// <summary>Test inspection only.</summary>
     public bool Contains(string objectKey) => _store.ContainsKey(objectKey);
 
+    /// <summary>Test inspection only. Yetim nesne iddiaları bunun üzerinden ölçülür.</summary>
+    public int Count => _store.Count;
+
     /// <summary>Test inspection only.</summary>
     public byte[]? GetBytes(string objectKey)
         => _store.TryGetValue(objectKey, out var v) ? v.Bytes : null;

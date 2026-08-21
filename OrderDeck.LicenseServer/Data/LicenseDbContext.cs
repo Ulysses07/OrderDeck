@@ -209,6 +209,12 @@ public class LicenseDbContext : DbContext
             b.HasOne(t => t.Customer).WithMany()
                 .HasForeignKey(t => t.CustomerId).OnDelete(DeleteBehavior.Cascade);
             b.HasIndex(t => new { t.CustomerId, t.UsedAt });
+            // "Kullanıldı mı" kontrolü ile damgalama arasındaki pencereyi kapatır:
+            // aynı sıfırlama bağlantısı iki kez POST edildiğinde ikisi de UsedAt'i
+            // null görüp ikisi de parolayı değiştirebiliyordu. Jeton UPDATE'e
+            // WHERE UsedAt IS NULL ekliyor; ikinci istek jeton hatası alır ve
+            // token-invalid döner.
+            b.Property(t => t.UsedAt).IsConcurrencyToken();
         });
 
         mb.Entity<IntakeFormConfig>(b =>
@@ -553,6 +559,12 @@ public class LicenseDbContext : DbContext
              .OnDelete(DeleteBehavior.Cascade);
             b.Property(c => c.CodeHash).HasMaxLength(256).IsRequired();
             b.Property(c => c.RequestIp).HasMaxLength(45);
+            // Deneme sayacı eşzamanlılık jetonu. Kaba kuvvet denemesi tek koddan
+            // paralel istek yollarsa hepsi AttemptCount'u aynı değerden okur ve
+            // aynı değeri yazar; sayaç bir tur atlar, tavan hiç dolmaz. Jeton
+            // sayesinde UPDATE ... WHERE AttemptCount = okunan olur; ikinci
+            // yazan patlar ve reddedilir (VerifyAndConsumeAsync).
+            b.Property(c => c.AttemptCount).IsConcurrencyToken();
             // Rate-limit / en-son-kod sorguları için.
             b.HasIndex(c => new { c.ShopperId, c.CreatedAt });
             // Global günlük tavan sorgusu (CreatedAt >= bugün).
