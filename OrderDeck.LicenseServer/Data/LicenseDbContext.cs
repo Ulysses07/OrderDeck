@@ -360,6 +360,10 @@ public class LicenseDbContext : DbContext
             b.Property(o => o.Code).HasMaxLength(64);
             b.Property(o => o.Price).HasPrecision(18, 2);
             b.Property(o => o.CancelReason).HasMaxLength(500);
+            // Bkz. Order.SyncVersion: siparişi kilitler, asıl korunan ondan
+            // türetilen stok defteri. Jeton olmadan paralel iki senkron isteği
+            // aynı hareket toplamını okuyup aynı telafiyi iki kez yazıyordu.
+            b.Property(o => o.SyncVersion).IsConcurrencyToken();
             b.HasOne(o => o.License).WithMany()
                 .HasForeignKey(o => o.LicenseId).OnDelete(DeleteBehavior.Cascade);
             // 2026-05-15 fix: SQL Server iki cascade path (Order→License + Order→
