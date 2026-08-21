@@ -81,6 +81,7 @@ public class Program
         builder.Services.AddSingleton<OrderDeck.PdfParsing.IPdfDekontParser,
             OrderDeck.PdfParsing.PdfDekontParser>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.ShopperPayments.ShopperPaymentSubmissionService>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Shoppers.ShopperPurgeService>();
         builder.Services.AddSingleton<JwtTokenService>();
         builder.Services.AddScoped<RefreshTokenService>();
         builder.Services.AddScoped<EmailConfirmationService>();

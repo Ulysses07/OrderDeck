@@ -17,4 +17,13 @@ public sealed class WpfCustomerProjection
     public string? Phone { get; set; }
     public string? Address { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
+
+    /// <summary>
+    /// KVKK silme talebi kapsamında bu satırın kişisel alanları temizlendiyse
+    /// dolu. Senkron kapısı olarak kullanılır: WPF hâlâ kendi yerel kopyasını
+    /// taşıdığı için, işaret olmasa bir sonraki push kişisel veriyi buraya
+    /// geri yazar (LicensesWpfCustomersSyncController koşulsuz üzerine yazıyor)
+    /// ve silme sessizce geri alınırdı.
+    /// </summary>
+    public DateTimeOffset? PurgedAt { get; set; }
 }

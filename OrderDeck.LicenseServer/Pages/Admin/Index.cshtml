@@ -38,3 +38,14 @@
         </div>
     </div>
 </div>
+
+@if (Model.PendingDeletionRequests > 0)
+{
+    <div class="alert alert-danger d-flex justify-content-between align-items-center mt-4">
+        <span>
+            <strong data-stat="pending-deletions">@Model.PendingDeletionRequests</strong>
+            bekleyen müşteri silme talebi var.
+        </span>
+        <a asp-page="/Admin/Shoppers/DeletionRequests" class="btn btn-sm btn-danger">Görüntüle</a>
+    </div>
+}

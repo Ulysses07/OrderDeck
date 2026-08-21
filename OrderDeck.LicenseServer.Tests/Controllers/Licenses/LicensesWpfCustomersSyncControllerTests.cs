@@ -331,6 +331,52 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
         link2.WpfCustomerId.Should().Be(existingWpfId, "pre-existing WpfCustomerId must not be overwritten");
     }
 
+    /// <summary>
+    /// KVKK silmesinin kalıcılığı bu teste bağlı. Yayıncının kendi
+    /// bilgisayarındaki kopya silme sırasında temizlenmiyor (WPF ingest'i var
+    /// olan satırı atlıyor), yani sahadaki uygulama silinen kişinin adını ve
+    /// telefonunu hâlâ taşıyor ve her push'ta buraya yolluyor. Kalkan
+    /// olmasaydı, kişi yayında bir yorum yazdığı anda LastSeenAt ilerler,
+    /// satır yeniden push edilir ve az önce silinen veri geri gelirdi.
+    /// </summary>
+    [Fact]
+    public async Task Silinmis_projeksiyona_kisisel_veri_geri_yazilmaz()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var id = Guid.NewGuid();
+
+        await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/wpf-customers/sync",
+            new { customers = new[] { MakeSyncItem(id, "youtube", "silinen", "Ayşe Yılmaz", "+905001112233", "Kadıköy") } });
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var proj = await db.WpfCustomerProjections.FirstAsync(p => p.Id == id);
+            proj.FullName = null;
+            proj.Phone = null;
+            proj.Address = null;
+            proj.PurgedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/wpf-customers/sync",
+            new { customers = new[] { MakeSyncItem(id, "youtube", "silinen", "Ayşe Yılmaz", "+905001112233", "Kadıköy") } });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        // Sayılıyor: istemcinin watermark'ı ilerlemezse aynı parti sonsuza
+        // kadar yeniden gönderilir ve arkasındaki müşteriler rehin kalır.
+        (await resp.Content.ReadFromJsonAsync<SyncResponse>())!.Synced.Should().Be(1);
+
+        using var verify = _factory.Services.CreateScope();
+        var verifyDb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var after = await verifyDb.WpfCustomerProjections.FirstAsync(p => p.Id == id);
+        after.FullName.Should().BeNull();
+        after.Phone.Should().BeNull();
+        after.Address.Should().BeNull();
+    }
+
     [Fact]
     public async Task No_auth_returns_401()
     {

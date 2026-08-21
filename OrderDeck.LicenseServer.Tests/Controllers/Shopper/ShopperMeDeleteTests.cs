@@ -148,4 +148,52 @@ public class ShopperMeDeleteTests : IClassFixture<ApiFactory>
         var resp = await client.DeleteAsync("/api/v1/shopper/me");
         resp.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
+
+    // ── Silme talebi kuyruğa giriyor mu ──────────────────────────────────────
+
+    /// <summary>
+    /// Butona basmak veriyi silmiyor, admin paneline iş düşürüyor. Talep satırı
+    /// oluşmazsa kullanıcı "sildim" sanır ama kimse haberdar olmaz.
+    /// Telefonun talep anında kopyalanması şart: purge sonrası Shopper satırında
+    /// telefon kalmayacağı için admin kimin talebine baktığını göremez.
+    /// </summary>
+    [Fact]
+    public async Task DeleteMe_bekleyen_silme_talebi_olusturur()
+    {
+        var client = _factory.CreateClient();
+        var (token, shopperId, phone, _) = await RegisterShopperAsync(client);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        (await client.DeleteAsync("/api/v1/shopper/me")).StatusCode
+            .Should().Be(HttpStatusCode.NoContent);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var request = await db.ShopperDeletionRequests
+            .SingleAsync(r => r.ShopperId == shopperId);
+
+        request.HandledAt.Should().BeNull();
+        request.PhoneAtRequest.Should().Be(phone);
+    }
+
+    /// <summary>
+    /// Silinmiş hesabın token'ı hâlâ elinde olan biri isteği tekrarlarsa
+    /// (ya da kullanıcı butona iki kez basarsa) admin listesinde ikinci bir iş
+    /// belirmemeli.
+    /// </summary>
+    [Fact]
+    public async Task DeleteMe_ikinci_cagri_ikinci_talep_acmaz()
+    {
+        var client = _factory.CreateClient();
+        var (token, shopperId, _, _) = await RegisterShopperAsync(client);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        await client.DeleteAsync("/api/v1/shopper/me");
+        await client.DeleteAsync("/api/v1/shopper/me");
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.ShopperDeletionRequests.CountAsync(r => r.ShopperId == shopperId))
+            .Should().Be(1);
+    }
 }

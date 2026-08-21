@@ -181,6 +181,26 @@ public sealed class ShopperMeController : ControllerBase
         shopper.DeletedAt = now;
         shopper.UpdatedAt = now;
 
+        // Silme talebini kuyruğa al. Kişisel veri burada SİLİNMİYOR — hesap
+        // erişime kapanıyor, veriyi admin panelinden bir insan siliyor
+        // (ShopperPurgeService). Talebin kaydı KVKK kanıtı: ne zaman geldi,
+        // ne zaman karşılandı.
+        //
+        // Zaten bekleyen talep varsa ikincisini açmıyoruz; kullanıcının
+        // butona iki kez basması admin listesinde iki iş üretmemeli.
+        var alreadyPending = await _db.ShopperDeletionRequests
+            .AnyAsync(r => r.ShopperId == shopper.Id && r.HandledAt == null, ct);
+        if (!alreadyPending)
+        {
+            _db.ShopperDeletionRequests.Add(new Domain.ShopperDeletionRequest
+            {
+                Id = Guid.NewGuid(),
+                ShopperId = shopper.Id,
+                PhoneAtRequest = shopper.Phone,
+                RequestedAt = now,
+            });
+        }
+
         // Revoke all active refresh tokens
         var refreshTokens = await _db.ShopperRefreshTokens
             .Where(t => t.ShopperId == shopperId && t.RevokedAt == null)
