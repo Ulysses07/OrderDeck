@@ -40,7 +40,7 @@ public class ExtensionBridgeServerTests
     /// <see cref="ClientWebSocket"/> kendiliğinden Origin göndermez.
     /// </summary>
     private static async Task<ClientWebSocket> ConnectAsync(
-        ExtensionBridgeServer server, string origin = "https://www.instagram.com")
+        ExtensionBridgeServer server, string origin = "https://www.tiktok.com")
     {
         var ws = new ClientWebSocket();
         ws.Options.SetRequestHeader("Origin", origin);
@@ -445,9 +445,10 @@ public class ExtensionBridgeServerTests
     [Theory]
     [InlineData("https://evil.example")]
     [InlineData("http://localhost:3000")]
-    [InlineData("https://evilinstagram.com")]        // sonek karışıklığı
-    [InlineData("https://instagram.com.evil.test")]  // önek karışıklığı
-    [InlineData("null")]                             // sandbox'lı iframe
+    [InlineData("https://eviltiktok.com")]        // sonek karışıklığı
+    [InlineData("https://tiktok.com.evil.test")]  // önek karışıklığı
+    [InlineData("https://www.instagram.com")]     // IG uzantıdan kaldırıldı
+    [InlineData("null")]                          // sandbox'lı iframe
     public async Task Rejects_handshake_from_a_foreign_origin(string origin)
     {
         var bus = new ChatBus(ringBufferSize: 10);
@@ -475,9 +476,8 @@ public class ExtensionBridgeServerTests
 
     [Theory]
     [InlineData("chrome-extension://abcdefghijklmnopabcdefghijklmnop")]
-    [InlineData("https://www.instagram.com")]
-    [InlineData("https://instagram.com")]
     [InlineData("https://www.tiktok.com")]
+    [InlineData("https://tiktok.com")]
     public async Task Accepts_the_extension_and_its_host_pages(string origin)
     {
         // Kabul edilen kaynak yalnız el sıkışmayı geçmemeli, mesaj da akmalı.

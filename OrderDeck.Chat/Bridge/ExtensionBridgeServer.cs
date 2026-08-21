@@ -192,12 +192,15 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
     /// İkisi de kabul ediliyor — hangi kaynağın görüneceği Chrome sürümüne göre
     /// değişebilir ve yanlış tahmin sohbetin tamamen susması demek. Alan adı
     /// kümesi <c>manifest.json</c>'daki <c>content_scripts.matches</c> ile aynı,
-    /// şema kısıtı da oradaki <c>*://</c> ile hizalı.</para>
+    /// şema kısıtı da oradaki <c>*://</c> ile hizalı. Facebook ve Instagram
+    /// uzantıdan kaldırıldığı (resmi Graph API devraldı) için listede tek alan
+    /// adı kaldı: TikTok'un resmi bir canlı sohbet API'si yok, köprü artık
+    /// yalnızca onun için var.</para>
     ///
     /// <para><b>Neyi kapatmaz.</b> Yerel bir süreç <c>Origin</c>'i serbestçe
-    /// uydurabilir; instagram.com/tiktok.com üstündeki bir XSS de bu kapıdan
-    /// geçer. Bunları ancak paylaşılan bir sır ya da native messaging kapatır —
-    /// köprünün emekliye ayrılma planı orada.</para>
+    /// uydurabilir; tiktok.com üstündeki bir XSS de bu kapıdan geçer. Bunları
+    /// ancak paylaşılan bir sır ya da native messaging kapatır — köprünün
+    /// emekliye ayrılma planı orada.</para>
     /// </summary>
     private static bool IsAllowedOrigin(string? origin)
     {
@@ -210,11 +213,10 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
         if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri)) return false;
         if (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp) return false;
 
-        return IsHostOrSubdomainOf(uri.Host, "instagram.com")
-            || IsHostOrSubdomainOf(uri.Host, "tiktok.com");
+        return IsHostOrSubdomainOf(uri.Host, "tiktok.com");
     }
 
-    /// <summary>Nokta sınırlı alt alan eşleşmesi — "evilinstagram.com" geçmemeli.</summary>
+    /// <summary>Nokta sınırlı alt alan eşleşmesi — "eviltiktok.com" geçmemeli.</summary>
     private static bool IsHostOrSubdomainOf(string host, string domain) =>
         string.Equals(host, domain, StringComparison.OrdinalIgnoreCase) ||
         host.EndsWith("." + domain, StringComparison.OrdinalIgnoreCase);

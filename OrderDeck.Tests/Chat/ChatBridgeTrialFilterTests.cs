@@ -91,7 +91,7 @@ public class ChatBridgeTrialFilterTests
         // Köprü el sıkışmada Origin doğruluyor (K-02); ClientWebSocket
         // kendiliğinden göndermez, uzantının kaynağını taklit ediyoruz.
         using var ws = new ClientWebSocket();
-        ws.Options.SetRequestHeader("Origin", "https://www.instagram.com");
+        ws.Options.SetRequestHeader("Origin", "https://www.tiktok.com");
         await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"), CancellationToken.None);
 
         await SendChatMessage(ws, platform: "tiktok", username: "@tester", text: "hello");
@@ -115,7 +115,7 @@ public class ChatBridgeTrialFilterTests
         // Köprü el sıkışmada Origin doğruluyor (K-02); ClientWebSocket
         // kendiliğinden göndermez, uzantının kaynağını taklit ediyoruz.
         using var ws = new ClientWebSocket();
-        ws.Options.SetRequestHeader("Origin", "https://www.instagram.com");
+        ws.Options.SetRequestHeader("Origin", "https://www.tiktok.com");
         await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"), CancellationToken.None);
 
         await SendChatMessage(ws, platform: "instagram", username: "@ayse", text: "mavi m");
@@ -140,7 +140,7 @@ public class ChatBridgeTrialFilterTests
         // Köprü el sıkışmada Origin doğruluyor (K-02); ClientWebSocket
         // kendiliğinden göndermez, uzantının kaynağını taklit ediyoruz.
         using var ws = new ClientWebSocket();
-        ws.Options.SetRequestHeader("Origin", "https://www.instagram.com");
+        ws.Options.SetRequestHeader("Origin", "https://www.tiktok.com");
         await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"), CancellationToken.None);
 
         await SendChatMessage(ws, platform: "tiktok", username: "@expired_user", text: "buy now");
@@ -164,7 +164,7 @@ public class ChatBridgeTrialFilterTests
         // Köprü el sıkışmada Origin doğruluyor (K-02); ClientWebSocket
         // kendiliğinden göndermez, uzantının kaynağını taklit ediyoruz.
         using var ws = new ClientWebSocket();
-        ws.Options.SetRequestHeader("Origin", "https://www.instagram.com");
+        ws.Options.SetRequestHeader("Origin", "https://www.tiktok.com");
         await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"), CancellationToken.None);
 
         await SendChatMessage(ws, platform: "tiktok", username: "@premium_user", text: "hello world");
