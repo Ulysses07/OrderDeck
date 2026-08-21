@@ -14,6 +14,7 @@ public class IndexModel : PageModel
     public int ActiveLicenses { get; private set; }
     public int ExpiredOrRevokedLicenses { get; private set; }
     public int ActiveActivations { get; private set; }
+    public int PendingDeletionRequests { get; private set; }
 
     public async Task OnGetAsync(CancellationToken ct)
     {
@@ -22,5 +23,6 @@ public class IndexModel : PageModel
         ActiveLicenses = await _db.Licenses.CountAsync(l => l.RevokedAt == null && l.ExpiresAt > now, ct);
         ExpiredOrRevokedLicenses = await _db.Licenses.CountAsync(l => l.RevokedAt != null || l.ExpiresAt <= now, ct);
         ActiveActivations = await _db.Activations.CountAsync(a => a.DeactivatedAt == null, ct);
+        PendingDeletionRequests = await _db.ShopperDeletionRequests.CountAsync(r => r.HandledAt == null, ct);
     }
 }

@@ -261,6 +261,40 @@ public class ShopperAuthRegisterTests : IClassFixture<ApiFactory>
         resp2.StatusCode.Should().Be(HttpStatusCode.Conflict);
     }
 
+    /// <summary>
+    /// Hesabını silmiş biri aynı numarayla yeniden kaydolmaya kalkarsa, kayıt
+    /// akışı numarayı mevcut satırla eşleyip o satıra bağlanıyordu: kullanıcı
+    /// "kaydoldum" sanıp DeletedAt yüzünden hiçbir yere giremeyen bir hesapla
+    /// kalıyordu. Talep işlenene kadar açık bir hata dönmek gerekiyor —
+    /// admin purge'ü yaptıktan sonra telefon boşalacağı için kayıt tekrar açılır.
+    /// </summary>
+    [Fact]
+    public async Task Register_silme_talebi_beklerken_409_doner()
+    {
+        var (_, code, _) = await SeedLicenseAsync();
+        var phone = UniquePhone();
+        var req = new RegisterRequest(code, "Pending User", phone, "Password1!", "Bursa", "youtube", "pendinguser");
+
+        (await _factory.CreateClient().PostAsJsonAsync("/api/v1/shopper/auth/register", req))
+            .StatusCode.Should().Be(HttpStatusCode.Created);
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var shopper = await db.Shoppers.FirstAsync(s => s.Phone == phone);
+            shopper.DeletedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync();
+        }
+
+        var (_, code2, _) = await SeedLicenseAsync();
+        var resp = await _factory.CreateClient().PostAsJsonAsync(
+            "/api/v1/shopper/auth/register",
+            req with { BroadcasterCode = code2 });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await resp.Content.ReadAsStringAsync()).Should().Contain("deletion-pending");
+    }
+
     // ── T7.9: No existing WpfProjection → auto-creates one + sets WpfCustomerId ─
 
     [Fact]

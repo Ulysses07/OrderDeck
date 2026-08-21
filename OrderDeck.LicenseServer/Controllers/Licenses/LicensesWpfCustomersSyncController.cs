@@ -69,6 +69,19 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
         {
             if (existing.TryGetValue(item.Id, out var current))
             {
+                // Silinmiş kayıt: kişisel alanlara DOKUNMA. Yayıncının kendi
+                // bilgisayarındaki kopya silinmediği için (WPF ingest yalnızca
+                // yeni satır ekliyor, var olanı güncellemiyor) bu satır her
+                // push'ta ad/telefon/adresi geri getirirdi; silme tek bir
+                // yayında yorum yazılmasıyla sessizce geri alınırdı.
+                // Sayılıyor ama yazılmıyor: istemcinin watermark'ı ilerlesin,
+                // aynı parti sonsuza kadar yeniden gönderilmesin.
+                if (current.PurgedAt is not null)
+                {
+                    synced++;
+                    continue;
+                }
+
                 current.Platform = item.Platform.ToLowerInvariant();
                 current.Username = item.Username;
                 current.FullName = item.FullName;

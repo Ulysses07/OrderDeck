@@ -39,6 +39,7 @@ public class LicenseDbContext : DbContext
     public DbSet<PaymentSubmissionAudit> PaymentSubmissionAudits => Set<PaymentSubmissionAudit>();
     public DbSet<ShopperRefreshToken> ShopperRefreshTokens => Set<ShopperRefreshToken>();
     public DbSet<ShopperSupportRequest> ShopperSupportRequests => Set<ShopperSupportRequest>();
+    public DbSet<ShopperDeletionRequest> ShopperDeletionRequests => Set<ShopperDeletionRequest>();
     public DbSet<CustomerBalance> CustomerBalances => Set<CustomerBalance>();
     public DbSet<CustomerBalanceTransaction> CustomerBalanceTransactions => Set<CustomerBalanceTransaction>();
     public DbSet<ShopperPasswordResetCode> ShopperPasswordResetCodes => Set<ShopperPasswordResetCode>();
@@ -433,7 +434,14 @@ public class LicenseDbContext : DbContext
             b.HasKey(s => s.Id);
             b.Property(s => s.FullName).HasMaxLength(200).IsRequired();
             b.Property(s => s.Phone).HasMaxLength(20).IsRequired();
-            b.HasIndex(s => s.Phone).IsUnique();
+            // Filtreli unique: telefonu yalnızca YAŞAYAN kayıtlar rezerve eder.
+            // Silme talebi işlenince telefon boşaltılıyor (KVKK: kimliğin en
+            // güçlü tekil alanı o); filtresiz unique olsaydı ikinci purge
+            // ikinci boş telefonla çakışırdı. Ayrıca doğru davranış da bu:
+            // hesabı silinen kişi aynı numarayla yeniden kayıt olabilmeli.
+            b.HasIndex(s => s.Phone)
+             .HasFilter("[DeletedAt] IS NULL")
+             .IsUnique();
             b.Property(s => s.PasswordHash).HasMaxLength(256).IsRequired();
             b.Property(s => s.Address).HasMaxLength(500).IsRequired();
             b.Property(s => s.Email).HasMaxLength(256);
@@ -520,6 +528,21 @@ public class LicenseDbContext : DbContext
              .OnDelete(DeleteBehavior.Cascade);
             b.Property(r => r.Kind).HasMaxLength(32).IsRequired();
             b.HasIndex(r => new { r.LicenseId, r.ResolvedAt, r.CreatedAt });
+        });
+
+        mb.Entity<ShopperDeletionRequest>(b =>
+        {
+            b.HasKey(r => r.Id);
+            b.Property(r => r.PhoneAtRequest).HasMaxLength(20).IsRequired();
+            b.Property(r => r.HandledBy).HasMaxLength(256);
+            b.Property(r => r.Notes).HasMaxLength(1024);
+            // Admin panelindeki bekleyen listesi ve sayaç bu index üstünden.
+            b.HasIndex(r => new { r.HandledAt, r.RequestedAt });
+            // Aynı shopper'ın bekleyen ikinci talep açmasını engeller; ikinci
+            // kez "sil" demek yeni bir iş yaratmamalı.
+            b.HasIndex(r => r.ShopperId)
+             .HasFilter("[HandledAt] IS NULL")
+             .IsUnique();
         });
 
         mb.Entity<ShopperPasswordResetCode>(b =>

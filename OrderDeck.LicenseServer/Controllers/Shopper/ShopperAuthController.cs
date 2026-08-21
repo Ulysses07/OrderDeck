@@ -136,6 +136,15 @@ public sealed class ShopperAuthController : ControllerBase
 
         if (shopper is not null)
         {
+            // Silme talebi bekleyen hesap yeniden kullanılamaz. Bu dal
+            // olmasaydı kayıt akışı DeletedAt'i dolu satırı geri verir,
+            // kişi "kayıt oldum" sanır ama diğer tüm endpoint'ler onu
+            // reddederdi. Talep işlendikten sonra telefon boşaldığı için
+            // aynı numarayla sıfırdan kayıt zaten mümkün.
+            if (shopper.DeletedAt is not null)
+                return Problem(title: "deletion-pending", statusCode: 409,
+                    detail: "Bu numara için bekleyen bir hesap silme talebi var.");
+
             // Phone already exists — verify password
             if (!_passwordHasher.Verify(shopper.PasswordHash, req.Password))
                 return Problem(title: "phone-already-used", statusCode: 401);

@@ -18,6 +18,9 @@ public static class AuditEvents
     public const string CustomerDataExported = "customer.data-exported";
     public const string CustomerPurged = "customer.purged";
 
+    // Shopper (müşteri app) silme talebi — elle işlenen KVKK akışı.
+    public const string ShopperPurged = "shopper.purged";
+
     // Multi-operator (PR-5 Faz 1+2) — owner Customer'ın staff hesap CRUD'u.
     public const string OperatorInvited = "operator.invited";
     public const string OperatorDeleted = "operator.deleted";
@@ -31,4 +34,5 @@ public static class AuditTargets
     public const string Activation = "activation";
     public const string RefreshToken = "RefreshToken";
     public const string Operator = "operator";
+    public const string Shopper = "shopper";
 }

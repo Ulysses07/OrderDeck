@@ -1,0 +1,106 @@
+@page "/admin/shoppers/deletion-requests"
+@model DeletionRequestsModel
+@{
+    ViewData["Title"] = "Silme Talepleri";
+}
+<h1 class="h3 mb-4">Müşteri Silme Talepleri</h1>
+
+<ul class="nav nav-tabs mb-3">
+    <li class="nav-item">
+        <a class="nav-link @(Model.ShowHandled ? "" : "active")"
+           asp-route-handled="false">
+            Bekleyen
+            @if (Model.PendingCount > 0)
+            {
+                <span class="badge bg-danger" data-stat="pending-deletions">@Model.PendingCount</span>
+            }
+        </a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link @(Model.ShowHandled ? "active" : "")"
+           asp-route-handled="true">İşlenmiş</a>
+    </li>
+</ul>
+
+@if (!Model.ShowHandled && Model.PendingCount > 0)
+{
+    <div class="alert alert-warning">
+        <strong>Silme geri alınamaz.</strong> Ad, telefon, adres, e-posta, TC kimlik no
+        ve dekont PDF'leri kalıcı olarak silinir. Ödeme kayıtlarının tutar, tarih ve
+        referans numarası mali kayıt olarak kalır.
+    </div>
+}
+
+@if (!Model.Items.Any())
+{
+    <p class="text-muted">
+        @(Model.ShowHandled ? "İşlenmiş talep yok." : "Bekleyen talep yok.")
+    </p>
+}
+else
+{
+    <table class="table table-hover" data-table="deletion-requests">
+        <thead>
+            <tr>
+                <th>Telefon</th>
+                <th>Talep Tarihi</th>
+                <th>Ödeme</th>
+                @if (Model.ShowHandled)
+                {
+                    <th>İşlenme</th>
+                    <th>İşleyen</th>
+                    <th>Sonuç</th>
+                }
+                else
+                {
+                    <th></th>
+                }
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var r in Model.Items)
+            {
+                <tr>
+                    <td><code>@r.PhoneAtRequest</code></td>
+                    <td>@r.RequestedAt.ToString("dd.MM.yyyy HH:mm")</td>
+                    <td>@r.PaymentCount</td>
+                    @if (Model.ShowHandled)
+                    {
+                        <td>@r.HandledAt?.ToString("dd.MM.yyyy HH:mm")</td>
+                        <td>@r.HandledBy</td>
+                        <td><small class="text-muted">@r.Notes</small></td>
+                    }
+                    else
+                    {
+                        <td>
+                            <form method="post" asp-page-handler="Purge"
+                                  asp-route-id="@r.Id"
+                                  asp-route-handled="@Model.ShowHandled"
+                                  asp-route-page="@Model.CurrentPage"
+                                  onsubmit="return confirm('@r.PhoneAtRequest numaralı müşterinin kişisel verisi kalıcı olarak silinecek. Emin misiniz?');">
+                                <button type="submit" class="btn btn-sm btn-danger">Sil</button>
+                            </form>
+                        </td>
+                    }
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    @if (Model.TotalPages > 1)
+    {
+        <nav>
+            <ul class="pagination">
+                @if (Model.CurrentPage > 1)
+                {
+                    <li class="page-item"><a class="page-link" asp-route-handled="@Model.ShowHandled" asp-route-page="@(Model.CurrentPage - 1)">Önceki</a></li>
+                }
+                <li class="page-item active"><span class="page-link">@Model.CurrentPage / @Model.TotalPages</span></li>
+                @if (Model.CurrentPage < Model.TotalPages)
+                {
+                    <li class="page-item"><a class="page-link" asp-route-handled="@Model.ShowHandled" asp-route-page="@(Model.CurrentPage + 1)">Sonraki</a></li>
+                }
+            </ul>
+        </nav>
+    }
+}
