@@ -14,6 +14,9 @@ namespace OrderDeck.Core.Chat;
 /// Disabled by default; the auctioneer enables individual rules from the
 /// Settings dialog. Each rule maps to a setter on <see cref="SpamFilterSettings"/>
 /// and is independently togglable.
+///
+/// Registered as a singleton and shared by every ingest source, so
+/// <see cref="ShouldDrop"/> is safe to call from several threads at once.
 /// </summary>
 public sealed class SpamFilter
 {
@@ -31,6 +34,16 @@ public sealed class SpamFilter
     private readonly LinkedList<(string Username, string Text, long ReceivedAt)> _recent = new();
     private const int RecentWindowSeconds = 2;
     private const int RecentMaxEntries    = 200;
+
+    // The window above is shared state and this filter is a singleton called
+    // from four independent loops at once (the bridge's per-socket receive
+    // loop, the YouTube poller, the Instagram poller and the Facebook stream).
+    // LinkedList<T> is not thread-safe: concurrent AddLast/RemoveFirst throws
+    // out of the enumeration ("Collection was modified"), which escapes the
+    // ingest loop and kills that source's chat until it reconnects — and in
+    // the worst case leaves a cycle in the list that makes the foreach spin
+    // forever. Everything that touches _recent runs under this lock.
+    private readonly object _recentLock = new();
 
     public SpamFilter(Func<SpamFilterSettings> settingsProvider)
     {
@@ -72,19 +85,29 @@ public sealed class SpamFilter
         {
             var textKey = trimmed.ToLowerInvariant();
             var userKey = username ?? string.Empty;
-            EvictExpired(unixSecondsNow);
-            foreach (var entry in _recent)
+
+            // Scan and insert must be one atomic step: two viewers handled by
+            // two ingestors could otherwise both scan, both miss, and both
+            // insert. Held only for the window walk (≤200 entries), so the
+            // contention cost is far below the per-message JSON parse that
+            // already happened upstream.
+            lock (_recentLock)
             {
-                if (entry.Username == userKey && entry.Text == textKey)
-                    return "duplicate";
+                EvictExpired(unixSecondsNow);
+                foreach (var entry in _recent)
+                {
+                    if (entry.Username == userKey && entry.Text == textKey)
+                        return "duplicate";
+                }
+                _recent.AddLast((userKey, textKey, unixSecondsNow));
+                if (_recent.Count > RecentMaxEntries) _recent.RemoveFirst();
             }
-            _recent.AddLast((userKey, textKey, unixSecondsNow));
-            if (_recent.Count > RecentMaxEntries) _recent.RemoveFirst();
         }
 
         return null;
     }
 
+    /// <summary>Caller must hold <see cref="_recentLock"/>.</summary>
     private void EvictExpired(long now)
     {
         var cutoff = now - RecentWindowSeconds;
