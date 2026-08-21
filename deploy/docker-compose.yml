@@ -59,10 +59,15 @@ services:
       Smtp__Password: "${SMTP_PASSWORD:-}"
       Smtp__FromAddress: "${SMTP_FROM:-noreply@orderdeckapp.com}"
       Smtp__FromName: "OrderDeck"
-      # SMS (shopper parola sıfırlama OTP). Provider boş/log = dev davranışı
-      # (SMS sadece log'a yazılır); "netgsm" = gerçek gönderim. Netgsm__* boşsa
-      # provider netgsm olsa bile gönderim reddedilir — .env'de doldur.
-      Sms__Provider: "${SMS_PROVIDER:-log}"
+      # SMS (shopper parola sıfırlama OTP). "netgsm" = gerçek gönderim, "log" =
+      # sadece log'a yaz (dev). Netgsm__* boşsa provider netgsm olsa bile
+      # gönderim reddedilir — .env'de doldur.
+      #
+      # `:-log` DEĞİL `:?`: eksik bir .env satırı yüzünden üretime sessizce
+      # "hiçbir şey göndermeyen" sağlayıcıyla çıkmak, açılmayan bir konteynerden
+      # çok daha pahalı — kayıp ancak müşteri "kod gelmedi" dediğinde fark
+      # edilir. Sunucu tarafındaki ikinci savunma ProviderName.ResolveLive.
+      Sms__Provider: "${SMS_PROVIDER:?compose dosyasinin yanindaki .env icinde ayarla: netgsm (bkz. deploy/README.md)}"
       Netgsm__UserCode: "${NETGSM_USERCODE:-}"
       Netgsm__Password: "${NETGSM_PASSWORD:-}"
       Netgsm__Header: "${NETGSM_HEADER:-}"
@@ -104,8 +109,10 @@ services:
       OrderDeck__Push__Provider: "${OrderDeck__Push__Provider:-fcm}"
       OrderDeck__Push__Fcm__ServiceAccountJsonPath: "/etc/orderdeck/firebase-service-account.json"
       # Broadcast posts (Spec 2, 2026-05-19) — Cloudflare R2 medya deposu.
-      # Provider "stub" = bellekte tut (dev); R2__* dolu değilse stub'da kal.
-      OrderDeck__BroadcastMedia__Provider: "${OrderDeck__BroadcastMedia__Provider:-stub}"
+      # Provider "stub" = bellekte tut (dev), "r2" = gerçek depo. Stub üretimde
+      # en pahalı sessiz arıza: yüklenen medya ve müşteri dekontları hiçbir yere
+      # yazılmaz ama yükleme başarılı döner. Bu yüzden `:-stub` değil `:?`.
+      OrderDeck__BroadcastMedia__Provider: "${OrderDeck__BroadcastMedia__Provider:?compose dosyasinin yanindaki .env icinde ayarla: r2 (bkz. deploy/README.md)}"
       R2__AccountId: "${R2__AccountId:-}"
       R2__AccessKeyId: "${R2__AccessKeyId:-}"
       R2__SecretAccessKey: "${R2__SecretAccessKey:-}"
@@ -119,7 +126,7 @@ services:
       # Signup). İkisi de gizli değil ama boş kalırsa yayıncı "Bağla" düğmesine
       # bastığında Meta penceresi hiç açılmaz. Burada listelenmeyen anahtar
       # container'a GİRMEZ — .env'e yazmak tek başına yetmiyor.
-      OrderDeck__WhatsApp__Provider: "${OrderDeck__WhatsApp__Provider:-log}"
+      OrderDeck__WhatsApp__Provider: "${OrderDeck__WhatsApp__Provider:?compose dosyasinin yanindaki .env icinde ayarla: cloud (bkz. deploy/README.md)}"
       OrderDeck__WhatsApp__AppSecret: "${OrderDeck__WhatsApp__AppSecret:-}"
       OrderDeck__WhatsApp__VerifyToken: "${OrderDeck__WhatsApp__VerifyToken:-}"
       OrderDeck__WhatsApp__AppId: "${OrderDeck__WhatsApp__AppId:-}"
