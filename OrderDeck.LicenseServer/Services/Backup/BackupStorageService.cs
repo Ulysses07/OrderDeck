@@ -146,6 +146,32 @@ public sealed class BackupStorageService
         return await File.ReadAllBytesAsync(blobPath, ct);
     }
 
+    /// <summary>
+    /// Depolama kökündeki tüm yedek blob'larını, son yazılma zamanlarıyla listeler.
+    /// Yetim mutabakatı (<see cref="BackupOrphanCleanupJob"/>) için var: bir dosyanın
+    /// veritabanında karşılığı olup olmadığı ancak diski listeleyerek anlaşılabilir —
+    /// satırı hiç yazılmamış bir blob'u DB'yi sorgulayarak bulmak tanımı gereği imkânsız.
+    ///
+    /// <para>Kapsam <b>yapı gereği</b> daraltılmıştır: yalnız adı GUID olarak
+    /// ayrıştırılabilen alt klasörlerdeki <c>*.bin</c> dosyaları. Kök bir gün başka bir
+    /// şeyle paylaşılan bir dizine ayarlanırsa, silme ölçütünün doğruluğuna değil
+    /// dizin yapısına güvenmiş oluruz.</para>
+    /// </summary>
+    public IReadOnlyList<(string Path, DateTimeOffset LastWriteUtc)> EnumerateBlobs()
+    {
+        var root = Path.GetFullPath(_opt.StorageRoot);
+        if (!Directory.Exists(root)) return Array.Empty<(string, DateTimeOffset)>();
+
+        var result = new List<(string, DateTimeOffset)>();
+        foreach (var dir in Directory.EnumerateDirectories(root))
+        {
+            if (!Guid.TryParse(Path.GetFileName(dir), out _)) continue;
+            foreach (var file in Directory.EnumerateFiles(dir, "*.bin"))
+                result.Add((Path.GetFullPath(file), new DateTimeOffset(File.GetLastWriteTimeUtc(file), TimeSpan.Zero)));
+        }
+        return result;
+    }
+
     public void DeleteBlob(string blobPath)
     {
         try
