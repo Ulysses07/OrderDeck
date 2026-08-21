@@ -44,7 +44,12 @@ services:
       # separate read-only login routed there). Empty = read paths fall back
       # to the primary, which keeps single-VPS deployments unchanged.
       ConnectionStrings__LicenseDbReadOnly: "${SQL_READ_REPLICA_CONN:-}"
-      Jwt__SecretKey: "${JWT_SECRET}"
+      # `:?` olmadan, .env'de JWT_SECRET yoksa compose buraya BOŞ STRING
+      # koyar ve o boş değer appsettings.json'daki anahtarı da ezer — yani
+      # imzalama anahtarı sessizce yok olur. Kök (dev) compose dosyası bu
+      # korumaya zaten sahipti, üretime bakan bu dosya değildi.
+      # Sunucu tarafındaki ikinci savunma JwtOptionsValidator.
+      Jwt__SecretKey: "${JWT_SECRET:?compose dosyasinin yanindaki .env icinde ayarla (bkz. deploy/README.md)}"
       Jwt__Issuer: "orderdeck-license-server"
       App__PublicBaseUrl: "https://orderdeckapp.com"
       Smtp__Host: "${SMTP_HOST:-smtp.example.com}"

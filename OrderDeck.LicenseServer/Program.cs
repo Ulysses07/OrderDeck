@@ -44,7 +44,15 @@ public class Program
         var builder = WebApplication.CreateBuilder(args);
 
         // Options binding
-        builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection("Jwt"));
+        //
+        // JWT ayrı duruyor çünkü tek doğrulanan o: yanlış imzalama anahtarıyla
+        // açılan sunucu hiçbir belirti vermez, /healthz anonim olduğu için
+        // yeşil yanar ve hata ancak sömürüldüğünde görünür. ValidateOnStart
+        // konteyneri hiç ayağa kaldırmıyor — kurallar için JwtOptionsValidator.
+        builder.Services.AddOptions<JwtOptions>()
+            .Bind(builder.Configuration.GetSection("Jwt"))
+            .ValidateOnStart();
+        builder.Services.AddSingleton<IValidateOptions<JwtOptions>, JwtOptionsValidator>();
         builder.Services.Configure<SmtpOptions>(builder.Configuration.GetSection("Smtp"));
         builder.Services.Configure<OrderDeck.LicenseServer.Services.Sms.NetgsmOptions>(
             builder.Configuration.GetSection("Netgsm"));
