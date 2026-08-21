@@ -121,44 +121,47 @@ public sealed class LabelRepository
     /// <summary>Flips IsTentativeBackup→0 for the given label ids. Used when
     /// the operator confirms a backup after the original buyer cancels.
     /// Returns the labels affected so callers can update customer aggregates.</summary>
-    public void ConfirmTentativeBackups(IEnumerable<string> labelIds)
+    public void ConfirmTentativeBackups(IEnumerable<string> labelIds, DbWrite? write = null)
     {
-        using var conn = _factory.Open();
         // IsTentativeBackup STOK-İLGİLİ: geçici yedek sunucuda hareket üretmez,
         // onaylanmış olan üretir. StockSyncedAt düşüyor ki satır yeniden bekleyen
         // sayılsın, SyncedAt de düşüyor ki sunucu bu değişikliği GÖRSÜN — tek
         // outbox o. Yalnız StockSyncedAt düşerse satır bir daha push edilmez ve
         // sunucu yedeği ömür boyu "geçici" sanar (bkz. MarkCancelled).
-        conn.Execute(
+        _factory.Execute(write,
             "UPDATE Label SET IsTentativeBackup = 0, SyncedAt=NULL, StockSyncedAt=NULL WHERE Id IN @ids AND IsTentativeBackup = 1",
             new { ids = labelIds.ToArray() });
     }
 
-    public void MarkCancelled(IEnumerable<string> ids, long cancelledAt, string reason)
+    /// <param name="write">
+    /// Doluysa yazma çağıranın işlemine katılır (bkz. <see cref="DbWrite"/>).
+    /// Boş bırakılırsa metot kendi bağlantısını açar — mevcut çağıranlar için
+    /// davranış değişmiyor.
+    /// </param>
+    public void MarkCancelled(IEnumerable<string> ids, long cancelledAt, string reason, DbWrite? write = null)
     {
-        using var conn = _factory.Open();
         // State değişikliği → SyncedAt NULL. CancelledAt stok-ilgili olduğu için
         // StockSyncedAt de düşüyor.
-        conn.Execute(
+        _factory.Execute(write,
             "UPDATE Label SET CancelledAt=@cancelledAt, CancelReason=@reason, SyncedAt=NULL, StockSyncedAt=NULL WHERE Id IN @ids",
             new { cancelledAt, reason, ids = ids.ToArray() });
     }
 
-    public void Uncancel(IEnumerable<string> ids)
+    /// <param name="write"><inheritdoc cref="MarkCancelled" path="/param[@name='write']"/></param>
+    public void Uncancel(IEnumerable<string> ids, DbWrite? write = null)
     {
-        using var conn = _factory.Open();
-        conn.Execute(
+        _factory.Execute(write,
             "UPDATE Label SET CancelledAt=NULL, CancelReason=NULL, SyncedAt=NULL, StockSyncedAt=NULL WHERE Id IN @ids",
             new { ids = ids.ToArray() });
     }
 
-    public void MarkPrinted(IEnumerable<string> ids, long printedAt)
+    /// <param name="write"><inheritdoc cref="MarkCancelled" path="/param[@name='write']"/></param>
+    public void MarkPrinted(IEnumerable<string> ids, long printedAt, DbWrite? write = null)
     {
-        using var conn = _factory.Open();
         // StockSyncedAt'e BİLEREK dokunulmuyor: yazdırmak satırı push kuyruğuna
         // geri alır ama stok açısından hiçbir şeyi değiştirmez — sunucunun
         // defterinde hareket zaten var. Silinirse aynı etiket ikinci kez düşülür.
-        conn.Execute(
+        _factory.Execute(write,
             "UPDATE Label SET PrintedAt=@printedAt, SyncedAt=NULL WHERE Id IN @ids",
             new { printedAt, ids = ids.ToArray() });
     }
@@ -166,11 +169,12 @@ public sealed class LabelRepository
     /// <summary>Updates the Price of a single label. Used by
     /// <c>LabelService.ConfirmBackup</c> when the operator negotiates a
     /// different number while promoting a tentative backup.</summary>
-    public void UpdatePrice(string id, decimal price)
+    /// <param name="write"><inheritdoc cref="MarkCancelled" path="/param[@name='write']"/></param>
+    public void UpdatePrice(string id, decimal price, DbWrite? write = null)
     {
-        using var conn = _factory.Open();
         // MarkPrinted'daki gerekçenin aynısı: fiyat stok-ilgili değil.
-        conn.Execute("UPDATE Label SET Price=@price, SyncedAt=NULL WHERE Id=@id", new { id, price });
+        _factory.Execute(write,
+            "UPDATE Label SET Price=@price, SyncedAt=NULL WHERE Id=@id", new { id, price });
     }
 
     /// <summary>

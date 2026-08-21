@@ -87,9 +87,15 @@ public sealed class CustomerService
         return _repo.GetById(row.Id);
     }
 
-    public void RecordPrintedLabels(string customerId, int labelCount, decimal amount)
+    /// <param name="write">
+    /// Doluysa güncelleme çağıranın işlemine katılır — etiket durumuyla
+    /// müşteri toplamının aynı pakette yazılmasını sağlar
+    /// (bkz. <see cref="Storage.DbWrite"/>).
+    /// </param>
+    public void RecordPrintedLabels(
+        string customerId, int labelCount, decimal amount, Storage.DbWrite? write = null)
     {
-        _repo.IncrementLabelStats(customerId, labelCount, amount, _clock.UnixNow());
+        _repo.IncrementLabelStats(customerId, labelCount, amount, _clock.UnixNow(), write);
     }
 
     /// <summary>Marks the customer as blacklisted with optional reason. If the

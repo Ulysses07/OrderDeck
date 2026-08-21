@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using OrderDeck.Core.Chat;
 using OrderDeck.Core.Customers;
+using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
 
@@ -11,15 +12,18 @@ public sealed class LabelService
 {
     private readonly LabelRepository _labels;
     private readonly CustomerService _customers;
+    private readonly IDbConnectionFactory _factory;
     private readonly IClock _clock;
 
     public LabelService(
         LabelRepository labels,
         CustomerService customers,
+        IDbConnectionFactory factory,
         IClock clock)
     {
         _labels = labels;
         _customers = customers;
+        _factory = factory;
         _clock = clock;
     }
 
@@ -130,35 +134,21 @@ public sealed class LabelService
         }
         if (idsToFlip.Count == 0) return;
 
-        _labels.MarkCancelled(idsToFlip, _clock.UnixNow(), reason);
-
-        // Compensating action: if the customer-aggregate updates throw (e.g.
-        // SQLite locked, FK violation), the label rows are already flipped to
-        // cancelled. Without compensation the customer's TotalLabelsPrinted /
-        // TotalAmount would diverge from the Label table. Better to re-flip
-        // the labels and surface a loud error than carry the divergence.
-        // True transaction-scoped atomicity needs an IDbTransaction overload
-        // pair on both repositories — tracked separately as data-layer
-        // refactor (out of scope for this hotfix).
-        var customersUpdated = new List<(string CustomerId, int Count, decimal Amount)>(groupedAmounts.Count);
-        try
-        {
-            foreach (var (customerId, agg) in groupedAmounts)
-            {
-                _customers.RecordPrintedLabels(customerId, -agg.Count, -agg.Amount);
-                customersUpdated.Add((customerId, agg.Count, agg.Amount));
-            }
-        }
-        catch
-        {
-            // Roll back the customer aggregates we already adjusted, then
-            // un-flip the label rows. Swallow rollback failures — the outer
-            // throw is what the caller cares about.
-            foreach (var (customerId, count, amount) in customersUpdated)
-                try { _customers.RecordPrintedLabels(customerId, count, amount); } catch { }
-            try { _labels.Uncancel(idsToFlip); } catch { }
-            throw;
-        }
+        // Etiket damgası ve müşteri toplamı AYNI pakette. Buradaki okumalar
+        // (yukarıdaki GetById döngüsü) paket açılmadan önce bitti — bu kasıtlı:
+        // paket açıkken ikinci bir bağlantıya gitmek SQLite'ta kilide düşer.
+        //
+        // Burada eskiden elle yazılmış bir telafi vardı: müşteri toplamı
+        // patlarsa etiketleri geri çevirip toplamları geri alıyordu. Silindi,
+        // çünkü telafinin patlama sebebi asıl hatanınkiyle aynı olma
+        // eğilimindedir (kilitli dosya, dolu disk) — yani tam gerektiği anda
+        // çalışmıyordu, üstelik hatası yutulduğu için sessizce. Süreç ortada
+        // ölürse zaten hiç çalışmıyordu. Geri sarmayı artık veritabanı yapıyor.
+        using var write = DbWrite.Begin(_factory);
+        _labels.MarkCancelled(idsToFlip, _clock.UnixNow(), reason, write);
+        foreach (var (customerId, agg) in groupedAmounts)
+            _customers.RecordPrintedLabels(customerId, -agg.Count, -agg.Amount, write);
+        write.Commit();
     }
 
     /// <summary>Reverses Cancel — re-applies the printed-label aggregates so
@@ -186,33 +176,15 @@ public sealed class LabelService
         }
         if (idsToFlip.Count == 0) return;
 
-        // Bu blok eskiden telafisizdi: RecordPrintedLabels ortada patlarsa
-        // etiketler "iptal değil" olarak dururken müşterinin cirosu eksik
-        // kalıyordu — Label tablosu ile Customer toplamı sessizce ayrışıyordu.
-        // Cancel bunu telafi ediyordu, Uncancel etmiyordu.
-        //
-        // Sıra Cancel'ın TERSİ ve bu bilinçli: önce müşteri toplamları, sonra
-        // etiket satırları. Cancel'ın sırasını taklit etseydik telafi için
-        // etiketleri yeniden iptal etmek gerekirdi, ama Uncancel CancelReason
-        // ve CancelledAt'i NULL'lıyor — o telafi kayıpsız olamazdı, nedeni
-        // uydurmak zorunda kalırdık. Bu sırada telafi saf aritmetik.
-        var customersUpdated = new List<(string CustomerId, int Count, decimal Amount)>(groupedAmounts.Count);
-        try
-        {
-            foreach (var (customerId, agg) in groupedAmounts)
-            {
-                _customers.RecordPrintedLabels(customerId, agg.Count, agg.Amount);
-                customersUpdated.Add((customerId, agg.Count, agg.Amount));
-            }
-            // Tek UPDATE ... WHERE Id IN (...) — ya hepsi döner ya hiçbiri.
-            _labels.Uncancel(idsToFlip);
-        }
-        catch
-        {
-            foreach (var (customerId, count, amount) in customersUpdated)
-                try { _customers.RecordPrintedLabels(customerId, -count, -amount); } catch { }
-            throw;
-        }
+        // Yazma sırası artık önemsiz: paket ya bütün hâlinde kalıcı olur ya
+        // hiç olmaz. (Eski telafili kurulumda sıra kritikti — Uncancel
+        // CancelReason'ı NULL'ladığı için etiketleri "geri iptal etmek"
+        // kayıpsız olamazdı, nedeni uydurmak gerekirdi. O kısıt kalktı.)
+        using var write = DbWrite.Begin(_factory);
+        foreach (var (customerId, agg) in groupedAmounts)
+            _customers.RecordPrintedLabels(customerId, agg.Count, agg.Amount, write);
+        _labels.Uncancel(idsToFlip, write);
+        write.Commit();
     }
 
     /// <summary>
@@ -238,31 +210,17 @@ public sealed class LabelService
                 groupedAmounts[lbl.CustomerId] = (1, lbl.Price);
         }
 
-        _labels.MarkPrinted(labelIds, _clock.UnixNow());
-
-        // Same compensation strategy as Cancel — see comment there. If a
-        // customer aggregate update fails after the labels are already
-        // marked printed, undo the aggregate updates we landed and call
-        // it a hard failure rather than leave the totals diverged.
-        var customersUpdated = new List<(string CustomerId, int Count, decimal Amount)>(groupedAmounts.Count);
-        try
-        {
-            foreach (var (customerId, agg) in groupedAmounts)
-            {
-                _customers.RecordPrintedLabels(customerId, agg.Count, agg.Amount);
-                customersUpdated.Add((customerId, agg.Count, agg.Amount));
-            }
-        }
-        catch
-        {
-            foreach (var (customerId, count, amount) in customersUpdated)
-                try { _customers.RecordPrintedLabels(customerId, -count, -amount); } catch { }
-            // No public Unmark-printed primitive — accept the divergence
-            // here and rely on the throw to alert the operator. The
-            // alternative would be to add LabelRepository.UnmarkPrinted
-            // which is more surface area than this hotfix wants. Tracked.
-            throw;
-        }
+        // Bu metot dördü içinde en kötü durumdaydı: telafisi hiç yoktu.
+        // Müşteri toplamı patladığında etiketler "basıldı" olarak kalıyor,
+        // toplamlar geri alınıyordu — ve kod bunu "accept the divergence"
+        // diyerek kabul ediyordu, çünkü geri almak için UnmarkPrinted diye bir
+        // ilkel gerekiyordu. Pakete alınca o ilkele hiç gerek kalmıyor:
+        // yazılmamış bir UPDATE'i geri almak gerekmez.
+        using var write = DbWrite.Begin(_factory);
+        _labels.MarkPrinted(labelIds, _clock.UnixNow(), write);
+        foreach (var (customerId, agg) in groupedAmounts)
+            _customers.RecordPrintedLabels(customerId, agg.Count, agg.Amount, write);
+        write.Commit();
     }
 
     // ─── Backup buyers ──────────────────────────────────────────────────────
@@ -343,38 +301,28 @@ public sealed class LabelService
         if (!lbl.IsTentativeBackup)
             return lbl; // already confirmed — caller can ignore.
 
+        // Üç yazma da tek pakette: fiyat güncellemesi, ciro alacağı, onay
+        // damgası. Fiyat de pakete dahil — eskiden onay adımı patladığında
+        // fiyat değişmiş, yedek hâlâ "geçici" kalmış oluyordu.
+        using var write = DbWrite.Begin(_factory);
+
         // Optional price update: operator may negotiate a different number
         // when promoting (e.g. discount because the spare buyer hesitated).
         if (newPrice.HasValue && newPrice.Value != lbl.Price)
         {
-            _labels.UpdatePrice(backupLabelId, newPrice.Value);
+            _labels.UpdatePrice(backupLabelId, newPrice.Value, write);
             lbl = lbl with { Price = newPrice.Value };
         }
 
         // Retroactive aggregate credit if the sticker was already printed.
-        //
-        // Alacak ÖNCE, onay SONRA. Ters sırada (eski hâli) alacak kaydı
-        // patlarsa yedek "gerçek satış" olarak işaretlenmiş ama cirosu hiç
-        // yazılmamış oluyordu — hem sessiz hem de yönü kötü bir ayrışma:
-        // operatör satışı yapılmış görüp eksik ciroyu fark etmiyordu.
-        // Bu sırada onay adımı patlarsa alacağı geri alıp hata fırlatıyoruz.
-        var credited = false;
+        // Yazma sırası artık önemsiz — paket ya bütün hâlinde kalıcı olur ya
+        // hiç olmaz. (Eskiden sıra kritikti: onay önce yazılırsa yedek
+        // "gerçek satış" görünüp cirosu hiç yazılmamış olabiliyordu.)
         if (lbl.PrintedAt.HasValue)
-        {
-            _customers.RecordPrintedLabels(lbl.CustomerId, 1, lbl.Price);
-            credited = true;
-        }
+            _customers.RecordPrintedLabels(lbl.CustomerId, 1, lbl.Price, write);
 
-        try
-        {
-            _labels.ConfirmTentativeBackups(new[] { backupLabelId });
-        }
-        catch
-        {
-            if (credited)
-                try { _customers.RecordPrintedLabels(lbl.CustomerId, -1, -lbl.Price); } catch { }
-            throw;
-        }
+        _labels.ConfirmTentativeBackups(new[] { backupLabelId }, write);
+        write.Commit();
 
         return lbl with { IsTentativeBackup = false };
     }
