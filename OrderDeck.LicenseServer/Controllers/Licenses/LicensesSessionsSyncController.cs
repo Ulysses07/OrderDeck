@@ -247,6 +247,12 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 current.ProductId = item.ProductId;
                 current.ProductVariantId = item.ProductVariantId;
                 current.UpdatedAt = now;
+                // Eşzamanlılık jetonunu ilerlet (bkz. Order.SyncVersion).
+                // Sipariş alanları değişmemiş olsa bile artırıyoruz: paketin
+                // deftere girmesi tek başına satırın "işlendiğini" gösterir ve
+                // aynı siparişe paralel giren ikinci isteğin görmesi gereken
+                // tam da bu.
+                current.SyncVersion++;
             }
             else
             {
@@ -321,7 +327,31 @@ public sealed class LicensesSessionsSyncController : ControllerBase
                 ct);
         }
 
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // Bu paketteki bir sipariş, biz okuduktan sonra başka bir istek
+            // tarafından yazılmış (istemci zaman aşımı sanıp aynı partiyi
+            // yeniden yollamış olabilir). Jeton yazmayı durdurdu ve İŞLEM
+            // TÜMÜYLE geri sarıldı — yarım uygulanmış paket yok.
+            //
+            // Kaybedene "tamam" demek en tehlikeli cevap olurdu: hem stok
+            // hareketi yazılmadı hem de WPF satırları senkronlandı diye
+            // işaretleyip bir daha hiç göndermez. 409 diyoruz; WPF'in outbox'ı
+            // hata gören partiyi işaretlemediği için bir sonraki turda aynen
+            // yeniden gönderiyor. O turda defter güncel toplamı okur ve fark
+            // üretmez — tekrar zararsız, sonuç yakınsıyor.
+            _log.LogInformation(
+                "Order sync çakışması, istemci yeniden denemeli (license={LicenseId}, count={Count})",
+                licenseId, orders.Count);
+            return Problem(
+                title: "sync-conflict",
+                detail: "Bu siparişler eşzamanlı başka bir istekle yazıldı; paketi yeniden gönderin.",
+                statusCode: 409);
+        }
 
         // Etiket olayı, push bildiriminin kullandığı listeyi paylaşıyor:
         // "yeni + basılmış + iptal değil + kargo ücreti değil + geçici yedek

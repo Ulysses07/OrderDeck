@@ -66,4 +66,27 @@ public sealed class Order
     public Guid? ProductVariantId { get; set; }
 
     public DateTimeOffset UpdatedAt { get; set; }
+
+    /// <summary>
+    /// Eşzamanlılık jetonu. Her senkron güncellemesinde bir artar; EF üretilen
+    /// UPDATE'e <c>WHERE SyncVersion = okunan</c> ekler, yani aynı satıra
+    /// paralel giren ikinci istek yazamaz.
+    ///
+    /// Korunan şey aslında sipariş alanları değil, ondan TÜRETİLEN stok
+    /// defteri. <c>StockLedgerWriter</c> "bugüne kadarki hareketler" toplamını
+    /// bir kez okuyup farkı yazıyor; iki istek aynı toplamı okursa aynı farkı
+    /// iki kez yazar (satılmış siparişin iptali +1 yerine +2 telafi üretir) ve
+    /// stok sessizce şişer. Defter yalnız bu uçtan, hep siparişin kendi satırı
+    /// da güncellenerek yazıldığı için siparişi kilitlemek deftere de yetiyor:
+    /// hareket yazan her yol önce bu sütunu geçmek zorunda.
+    ///
+    /// Zaman damgası (<see cref="UpdatedAt"/>) jeton olarak seçilmedi: iki
+    /// istek aynı saat tikine düşerse jeton sessizce işlevsizleşir. Monoton
+    /// sayaçta böyle bir delik yok.
+    ///
+    /// Neden <c>rowversion</c> değil: o sütun tipi SQL Server'a özgü,
+    /// planlanan Postgres göçünde karşılığı yok. Sayacı kendimiz artırınca
+    /// davranış sağlayıcıdan bağımsız kalıyor.
+    /// </summary>
+    public int SyncVersion { get; set; }
 }
