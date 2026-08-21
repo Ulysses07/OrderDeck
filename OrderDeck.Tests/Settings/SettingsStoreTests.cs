@@ -59,16 +59,14 @@ public class SettingsStoreTests
     }
 
     /// <summary>
-    /// Instagram kazıyıcısı uzantıdan kaldırıldı; tek yol resmi Graph API.
-    /// C# varsayılanını çevirmek sahadaki kurulumlar için YETMEZ: settings.json
-    /// tüm nesneyi yazdığı için bir kez "Kaydet"e basmış her makinede alan
-    /// dosyada duruyor ve deserialize'da diskteki değer varsayılanı ezer.
-    /// Göç olmasa o yayıncıların Instagram'ı yeni uzantı sürümüyle birlikte
-    /// sessizce kararırdı — uzantı IG göndermiyor, resmi ingestor da kipe
-    /// bakıp kendini kapatıyor.
+    /// <c>instagramIngestMode</c> alanı şemadan kaldırıldı (uzantıdan Instagram
+    /// çıkınca seçilecek ikinci kip kalmadı). Sahadaki her settings.json'da o
+    /// anahtar hâlâ duruyor; okuma bunun üstünde patlarsa uygulama bir daha hiç
+    /// açılmaz. System.Text.Json eşleşmeyen üyeyi varsayılan olarak atlar —
+    /// bu test o varsayılana bağımlılığımızı kilitliyor.
     /// </summary>
     [Fact]
-    public void Load_migrates_a_persisted_Scraper_mode_to_the_official_api()
+    public void Load_ignores_the_retired_instagram_mode_field()
     {
         var path = CreateTempPath();
         File.WriteAllText(path, """
@@ -81,31 +79,11 @@ public class SettingsStoreTests
 
         var loaded = new SettingsStore(path).Load();
 
-        loaded.InstagramIngestMode.Should().Be(OrderDeck.Core.Chat.InstagramIngestMode.OfficialApi);
-        loaded.PrinterName.Should().Be("Zebra ZD220", "göç yalnız IG kipine dokunmalı");
+        loaded.OverlayPort.Should().Be(4747);
+        loaded.PrinterName.Should().Be("Zebra ZD220",
+            "artık tanınmayan tek alan, dosyanın geri kalanını götürmemeli");
 
         File.Delete(path);
-    }
-
-    /// <summary>
-    /// Göç ana dosyayla sınırlı kalmamalı: bozuk settings.json'da Load yedeğe
-    /// düşüyor ve yedek de aynı eski değeri taşıyor.
-    /// </summary>
-    [Fact]
-    public void Load_migrates_the_backup_copy_too()
-    {
-        var path = CreateTempPath();
-        File.WriteAllText(path, "{ bozuk json");
-        File.WriteAllText(path + ".bak", """{ "instagramIngestMode": "Scraper" }""");
-
-        var loaded = new SettingsStore(path).Load();
-
-        loaded.InstagramIngestMode.Should().Be(OrderDeck.Core.Chat.InstagramIngestMode.OfficialApi);
-
-        File.Delete(path + ".bak");
-        foreach (var f in Directory.GetFiles(Path.GetTempPath(),
-                     Path.GetFileName(path) + ".corrupt-*"))
-            File.Delete(f);
     }
 }
 

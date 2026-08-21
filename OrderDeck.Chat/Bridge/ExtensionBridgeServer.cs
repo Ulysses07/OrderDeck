@@ -31,11 +31,6 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
     private readonly ITrialModeProbe? _trialProbe;
     private readonly SpamFilter? _spamFilter;
     private readonly ViewerCountTracker? _viewers;
-    // OfficialApi modunda extension'dan gelen Instagram yorumlarını bastırırız;
-    // aynı yorum Graph poller'dan da geliyor ve iki yolun externalId uzayları
-    // ayrık olduğu için dedupe yakalayamaz. Func<> çünkü operatör Ayarlar'dan
-    // modu değiştirince köprüyü yeniden başlatmadan etkili olmalı.
-    private readonly Func<bool>? _isInstagramOfficial;
     private readonly ILogger<ExtensionBridgeServer> _log;
     private readonly HttpListener _listener = new();
     private CancellationTokenSource? _cts;
@@ -89,14 +84,12 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
         ILogger<ExtensionBridgeServer>? log = null,
         ITrialModeProbe? trialProbe = null,
         SpamFilter? spamFilter = null,
-        ViewerCountTracker? viewers = null,
-        Func<bool>? isInstagramOfficial = null)
+        ViewerCountTracker? viewers = null)
     {
         _bus = bus;
         _trialProbe = trialProbe;
         _spamFilter = spamFilter;
         _viewers = viewers;
-        _isInstagramOfficial = isInstagramOfficial;
         _log = log ?? NullLogger<ExtensionBridgeServer>.Instance;
         Port = port == 0 ? FindFreePort() : port;
         _listener.Prefixes.Add($"http://localhost:{Port}/");
@@ -235,26 +228,16 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
 
                 if (msg is { Type: "chat", Platform: not null, Username: not null, Text: not null })
                 {
-                    // Instagram resmi API'deyken extension kopyası düşer. Yeni
-                    // uzantı zaten IG göndermiyor; bu dal sahada henüz
-                    // güncellenmemiş eski sürümlerin çift-post yapmasını önlüyor.
-                    //
-                    // Trial istisnası KALDIRILDI: InstagramChatHostedService artık
-                    // denemede de çalıştığı için burada bırakmak çift-post demekti.
-                    if (string.Equals(msg.Platform, "instagram", StringComparison.OrdinalIgnoreCase) &&
-                        _isInstagramOfficial?.Invoke() == true)
+                    // Deneme sürümünde köprü sessiz. Eskiden "instagram" hariç
+                    // tutuluyordu; IG uzantıdan kaldırıldığı (resmi Graph API
+                    // devraldı) ve el sıkışma artık yalnız tiktok.com'u kabul
+                    // ettiği için o istisnanın karşılığı kalmadı. Deneme
+                    // kullanıcısı IG/FB/YouTube'u resmi API'lerden almaya
+                    // devam ediyor — kısıtlanan tek yol köprü.
+                    if (_trialProbe?.IsTrialMode == true)
                     {
                         _log.LogDebug(
-                            "Instagram OfficialApi mode: dropping extension message from {Username}",
-                            msg.Username);
-                        continue;
-                    }
-
-                    if (_trialProbe?.IsTrialMode == true &&
-                        !string.Equals(msg.Platform, "instagram", StringComparison.OrdinalIgnoreCase))
-                    {
-                        _log.LogDebug(
-                            "Trial mode: dropping non-Instagram message from platform '{Platform}' by {Username}",
+                            "Trial mode: dropping message from platform '{Platform}' by {Username}",
                             msg.Platform, msg.Username);
                         continue;
                     }
