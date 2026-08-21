@@ -91,10 +91,17 @@ public sealed class CustomerRepository
         return row is null ? null : Map(row);
     }
 
-    public void IncrementLabelStats(string id, int labelDelta, decimal amountDelta, long lastSeenAt)
+    /// <param name="write">
+    /// Doluysa yazma çağıranın işlemine katılır (bkz. <see cref="DbWrite"/>).
+    /// Etiket durumu ile müşteri toplamı birlikte değişmek zorunda: biri yazılıp
+    /// öbürü yazılmazsa ciro ile etiket listesi sessizce ayrışır. Boş
+    /// bırakılırsa metot kendi bağlantısını açar — mevcut çağıranlar için
+    /// davranış değişmiyor.
+    /// </param>
+    public void IncrementLabelStats(
+        string id, int labelDelta, decimal amountDelta, long lastSeenAt, DbWrite? write = null)
     {
-        using var conn = _factory.Open();
-        conn.Execute(
+        _factory.Execute(write,
             @"UPDATE Customer
               SET TotalLabelsPrinted = TotalLabelsPrinted + @labelDelta,
                   TotalAmount        = TotalAmount + @amountDelta,

@@ -32,7 +32,7 @@ public class LabelRepositoryPlatformBreakdownTests
         var customerRepo = new CustomerRepository(db);
         var labelRepo = new LabelRepository(db);
         var customerSvc = new CustomerService(customerRepo, new SessionRepository(db), labelRepo, clock);
-        var svc = new LabelService(labelRepo, customerSvc, clock);
+        var svc = new LabelService(labelRepo, customerSvc, db, clock);
         return (svc, labelRepo, db, "s1");
     }
 

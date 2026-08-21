@@ -35,7 +35,7 @@ public class LabelServiceBackupTests
         var customerRepo = new CustomerRepository(db);
         var labelRepo    = new LabelRepository(db);
         var customerSvc  = new CustomerService(customerRepo, new SessionRepository(db), labelRepo, clock.Object);
-        var svc          = new LabelService(labelRepo, customerSvc, clock.Object);
+        var svc          = new LabelService(labelRepo, customerSvc, db, clock.Object);
 
         var parentMsg = new ChatMessage(System.Guid.NewGuid().ToString("N"),
             "instagram", null, "@buyer", "Buyer", null, "MAVI XL aldım", 1000,

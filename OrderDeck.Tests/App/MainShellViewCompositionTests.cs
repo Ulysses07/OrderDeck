@@ -243,7 +243,7 @@ public class MainShellViewCompositionTests
         var clock = new SystemClock();
         return new CustomerDetailViewModel(
             customers, labels,
-            new LabelService(labels, new CustomerService(customers, sessions, labels, clock), clock),
+            new LabelService(labels, new CustomerService(customers, sessions, labels, clock), db, clock),
             new GiveawayRepository(db),
             new StreamSessionService(sessions, clock),
             BuildLicenseApi());
@@ -261,7 +261,7 @@ public class MainShellViewCompositionTests
         var customers = new CustomerRepository(db);
         var clock = new SystemClock();
         var service = new LabelService(
-            labels, new CustomerService(customers, sessions, labels, clock), clock);
+            labels, new CustomerService(customers, sessions, labels, clock), db, clock);
 
         var parent = MakeLabel("l1", "instagram", "alice", "ALC-1", 250m);
         var backups = new[]

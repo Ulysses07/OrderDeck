@@ -113,7 +113,7 @@ public class LongBroadcastStressTest
         settings.Shipping.ShippingFee = 150m;
 
         var customerService = new CustomerService(customerRepo, sessionRepo, labelRepo, clock);
-        var labelService = new LabelService(labelRepo, customerService, clock);
+        var labelService = new LabelService(labelRepo, customerService, db, clock);
         var matcher = new PaymentMatcherService(labelRepo, () => settings);
         var shipmentService = new ShipmentService(
             shipmentRepo, labelRepo, () => settings, () => clock.UnixNow());
