@@ -100,7 +100,20 @@ public sealed class PasswordResetService
         // sıfırlansa bile oturumda kalır ve sıfırlama hiçbir işe yaramaz.
         await _refresh.MarkAllRevokedAsync(record.CustomerId, now, ct);
 
-        await _db.SaveChangesAsync(ct);
+        // UsedAt eşzamanlılık jetonu: yukarıdaki "kullanılmış mı" kontrolü ile bu
+        // yazma arasındaki pencerede aynı bağlantı ikinci kez POST edilirse
+        // ikisi de token'ı taze görür ve ikisi de parolayı değiştirir. Jeton
+        // UPDATE'e "WHERE UsedAt IS NULL" ekliyor; kaybeden istek buraya düşer.
+        // Tek kullanımlık olması güvenlik vaadinin kendisi: e-postası sızmış
+        // bağlantının ikinci kez işe yaramaması gerekiyor.
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return PasswordResetResult.TokenInvalid;
+        }
 
         _log.LogInformation("Password reset completed for customer {CustomerId}", record.CustomerId);
         return PasswordResetResult.Success;

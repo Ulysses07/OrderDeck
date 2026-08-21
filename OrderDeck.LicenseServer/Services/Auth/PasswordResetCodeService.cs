@@ -118,15 +118,34 @@ public sealed class PasswordResetCodeService
         if (row.AttemptCount > MaxVerifyAttempts)
         {
             row.ConsumedAt = now;   // brute-force kilidi
-            await _db.SaveChangesAsync(ct);
-            return false;
+            return await SaveOrDenyAsync(false, ct);
         }
 
         var ok = _hasher.Verify(row.CodeHash, code ?? "");
         if (ok)
             row.ConsumedAt = now;
-        await _db.SaveChangesAsync(ct);
-        return ok;
+        return await SaveOrDenyAsync(ok, ct);
+    }
+
+    /// <summary>
+    /// Yazma çakışırsa (AttemptCount eşzamanlılık jetonu) isteği REDDEDER.
+    /// Okuma ile yazma arasındaki pencerede aynı satıra paralel bir doğrulama
+    /// girdiyse bizim okuduğumuz sayaç eskimiştir; "başarılı" demek o paralel
+    /// denemenin sayacını yutmak, yani tavanı delmek olur. Kaba kuvvet
+    /// denemesinin kazanabileceği tek senaryo bu; çakışmada hep hayır diyoruz.
+    /// Meşru kullanıcı için maliyeti yok — o zaten tek istek yolluyor.
+    /// </summary>
+    private async Task<bool> SaveOrDenyAsync(bool result, CancellationToken ct)
+    {
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+            return result;
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return false;
+        }
     }
 
     private static string GenerateCode()

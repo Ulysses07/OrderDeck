@@ -198,7 +198,24 @@ public sealed class ShopperPaymentSubmissionService
             CreatedAt = now,
         });
 
-        await _db.SaveChangesAsync(ct);
+        // Adım 5'teki mükerrer kontrolü ile bu insert arasında pencere var:
+        // aynı dekontu iki kez yollayan istemci (ya da timeout sonrası yeniden
+        // deneyen uygulama) iki isteği paralel çalıştırırsa ikisi de kontrolü
+        // geçer, hakem olarak yalnız unique index kalır. O da patladığında iki
+        // şey oluyordu: (a) kullanıcı "bu dekont zaten yüklü" yerine 500
+        // görüyordu, (b) R2'ye yüklenmiş PDF'e artık hiçbir satır işaret
+        // etmediği için YETİM kalıyordu — ve yetim nesne KVKK silmesinden de
+        // kaçıyor, çünkü ShopperPurgeService dekontları Payment.MediaObjectKey
+        // üzerinden buluyor.
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex)
+        {
+            await TryDeleteOrphanAsync(objectKey, ct);
+            throw await ClassifyWriteFailureAsync(input, parseResult.PdfHash, effRef ?? "", ex, ct);
+        }
 
         // 13. Push notification to broadcaster (best-effort, don't throw)
         try
@@ -226,6 +243,71 @@ public sealed class ShopperPaymentSubmissionService
         }
 
         return new SubmitResult(paymentId, flags.ToArray(), confidence, parseResult);
+    }
+
+    /// <summary>
+    /// Yazma başarısızsa R2'deki nesneyi geri al. Silme de başarısız olursa
+    /// yalnız loglanır: asıl istisna kullanıcıya gitmeli, temizlik hatası onu
+    /// gölgelememeli. Loglanan anahtar kovadan elle silinebilir.
+    /// </summary>
+    private async Task TryDeleteOrphanAsync(string objectKey, CancellationToken ct)
+    {
+        try
+        {
+            await _storage.DeleteAsync(objectKey, ct);
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex,
+                "[PaymentSubmit] Yazma başarısız oldu ama R2 nesnesi de silinemedi, yetim kaldı: {Key}",
+                objectKey);
+        }
+    }
+
+    /// <summary>
+    /// Yazma hatasının sebebini veritabanına sorarak sınıflandırır.
+    /// Sağlayıcıya özgü hata numarasına (SQL Server 2601/2627) bakmak yerine
+    /// "şimdi bakınca çakışan satır var mı?" diye soruyoruz: aynı cevabı verir,
+    /// InMemory ve SQL Server'da aynı şekilde çalışır, Postgres'e geçişte de
+    /// kırılmaz.
+    ///
+    /// Çakışma bulunamazsa istisna olduğu gibi yukarı gider — bilinmeyen bir
+    /// yazma hatasını "mükerrer dekont" diye göstermek, gerçek arızayı
+    /// kullanıcı hatası gibi gizlerdi.
+    /// </summary>
+    private async Task<Exception> ClassifyWriteFailureAsync(
+        SubmitInput input, string? pdfHash, string referansNo, DbUpdateException original, CancellationToken ct)
+    {
+        if (!string.IsNullOrEmpty(pdfHash))
+        {
+            var byHash = await _db.Payments
+                .Where(p => p.PdfHash == pdfHash)
+                .Select(p => new { p.LicenseId, p.ShopperId })
+                .FirstOrDefaultAsync(ct);
+            if (byHash is not null)
+            {
+                return byHash.LicenseId == input.LicenseId && byHash.ShopperId == input.ShopperId
+                    ? new SubmitFailureException(409, "duplicate-dekont")
+                    : new SubmitFailureException(409, "cross-tenant-duplicate");
+            }
+        }
+
+        // Referans no'nun mükerrerliği adım 5'te hiç kontrol edilmiyor; tek
+        // koruma (LicenseId, ReferansNo) unique index'i. Aynı yayıncıya aynı
+        // referansla ikinci dekont geldiğinde kullanıcı bugüne kadar 500
+        // görüyordu.
+        if (!string.IsNullOrEmpty(referansNo))
+        {
+            var refExists = await _db.Payments
+                .AnyAsync(p => p.LicenseId == input.LicenseId && p.ReferansNo == referansNo, ct);
+            if (refExists)
+                return new SubmitFailureException(409, "duplicate-referans");
+        }
+
+        _log.LogError(original,
+            "[PaymentSubmit] Sınıflandırılamayan yazma hatası (shopper={Shopper}, license={License})",
+            input.ShopperId, input.LicenseId);
+        return original;
     }
 
     private static string ComputeMetadataHash(
