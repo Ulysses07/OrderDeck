@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Data.Common;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -16,28 +17,113 @@ public sealed class MigrationRunner
     private const string MigrationPrefix = "OrderDeck.Core.Storage.Migrations.";
 
     private readonly IDbConnectionFactory _factory;
+    private readonly IReadOnlyList<(int Version, string Sql)> _scripts;
 
     public MigrationRunner(IDbConnectionFactory factory)
+        : this(factory, LoadEmbeddedScripts())
     {
+    }
+
+    /// <summary>
+    /// Script kaynağını dışarıdan alan aşırı yükleme. Gömülü script'ler her zaman
+    /// geçerli olduğu için üretimde kullanılmaz; kasten bozuk bir script vererek
+    /// yarım göçün geri alındığını doğrulamanın başka yolu yok.
+    ///
+    /// Parametre tipi bilerek <see cref="IReadOnlyList{T}"/>; <c>IEnumerable</c>
+    /// OLAMAZ. <c>AddSingleton&lt;MigrationRunner&gt;()</c> en çok parametreli
+    /// çözülebilir kurucuyu seçer ve MS.DI <c>IEnumerable&lt;T&gt;</c>'yi hiçbir
+    /// kayıt olmasa bile BOŞ koleksiyon olarak çözer. Yani bu aşırı yükleme
+    /// <c>IEnumerable</c> alsaydı — ki alıyordu — üretimde seçilen kurucu bu
+    /// olur, göç sıfır script'le "başarıyla" koşar ve şema hiç kurulmazdı.
+    /// Hata vermeden. Sıfırdan kurulumda uygulama boş bir veritabanıyla açılırdı.
+    /// <c>IReadOnlyList</c> kayıtlı olmadığı için DI bu kurucuyu eleyip tek
+    /// parametreliye düşüyor.
+    /// </summary>
+    public MigrationRunner(
+        IDbConnectionFactory factory, IReadOnlyList<(int Version, string Sql)> scripts)
+    {
+        // Boş script kümesi hiçbir zaman geçerli değil: ya gömülü kaynaklar
+        // düşmüştür ya da yanlış kurucu seçilmiştir. İkisi de sessizce boş bir
+        // veritabanı üretiyordu; artık açılışta yüksek sesle patlıyor.
+        if (scripts.Count == 0)
+            throw new InvalidOperationException(
+                "Göç script'i bulunamadı; şema kurulamaz.");
+
         _factory = factory;
+        _scripts = scripts;
     }
 
     public void Run()
     {
         using var conn = _factory.Open();
 
-        var hasMeta = conn.ExecuteScalar<long>(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='_meta'") > 0;
-
-        int currentVersion = hasMeta
-            ? conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1")
-            : 0;
-
-        foreach (var (version, sql) in LoadEmbeddedScripts())
+        // Yabancı anahtar denetimi göç boyunca kapalı. Şema değiştiren script'ler
+        // tablo yeniden kurma (yeni tablo → kopyala → eski tabloyu düşür → adını
+        // değiştir) yapıyor; denetim açıkken aradaki tutarsız anlar hem patlayabilir
+        // hem de DROP TABLE'ın örtük silmesi ON DELETE CASCADE'i tetikleyip çocuk
+        // satırları süpürebilir. SQLite'ın kendi belgelediği reçete bu.
+        //
+        // PRAGMA'nın transaction DIŞINDA olması ŞART: transaction içinde sessizce
+        // hiçbir şey yapmaz. 002_pivot_to_labels.sql kendi içinde bu pragma'yı
+        // çağırıyor ama artık transaction içinde kaldığı için etkisiz — bu satır
+        // onun da yerini tutuyor.
+        conn.Execute("PRAGMA foreign_keys = OFF;");
+        try
         {
-            if (version <= currentVersion) continue;
-            conn.Execute(sql);
-            currentVersion = version;
+            // BEGIN IMMEDIATE: yazma kilidini okumadan ÖNCE al.
+            //
+            // Sürüm okuması ile script'lerin uygulanması aynı transaction'da
+            // olmak ZORUNDA. Ayrı olurlarsa iki runner (iki uygulama örneği, ya
+            // da açılış sırasında üst üste binen iki başlatma) şunu yapabiliyor:
+            // A sürüm 4'ü uygulayıp Giveaway tablosunu yaratıyor; B ise daha
+            // önce okuduğu eski sürüm numarasına göre script 002'yi koşturup
+            // aynı tabloyu DROP ediyor. Sonuç sessiz şema — ve veri — kaybı.
+            //
+            // Bu yarış WAL'dan önce de vardı; eski rollback-journal kipinin
+            // okumaları da bloke etmesi onu gizliyordu. WAL okurları
+            // engellemediği için eski sürüm numarasını okuma penceresi ardına
+            // kadar açıldı.
+            //
+            // BEGIN (deferred) yetmez: yazma kilidi ilk yazmaya kadar
+            // alınmadığından iki runner da okumayı yapıp aynı boşluğa düşer.
+            // IMMEDIATE ile ikinci runner en baştan bekler, sonra güncel sürüm
+            // numarasını okur ve zaten uygulanmış script'leri atlar.
+            conn.Execute("BEGIN IMMEDIATE;");
+            try
+            {
+                var hasMeta = conn.ExecuteScalar<long>(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='_meta'") > 0;
+
+                int currentVersion = hasMeta
+                    ? conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1")
+                    : 0;
+
+                // Tüm göç tek bir transaction. Öncesinde her ifade kendi örtük
+                // transaction'ında koşuyordu: script ortada patlarsa ilk ifadeler
+                // uygulanmış ama SchemaVersion ilerlememiş oluyordu. Sonraki
+                // açılışta aynı script baştan koşuyor ve "table already exists"
+                // ile ölüyordu — veritabanı yarı göç etmiş, uygulama da hiç
+                // açılamaz hâlde kalıyordu. Artık ya hepsi ya hiçbiri.
+                foreach (var (version, sql) in _scripts)
+                {
+                    if (version <= currentVersion) continue;
+                    conn.Execute(sql);
+                    currentVersion = version;
+                }
+
+                conn.Execute("COMMIT;");
+            }
+            catch
+            {
+                // Geri alma da patlarsa asıl hatayı gölgelemesin: teşhis için
+                // değerli olan, göçü hangi ifadenin düşürdüğü.
+                try { conn.Execute("ROLLBACK;"); } catch (DbException) { }
+                throw;
+            }
+        }
+        finally
+        {
+            conn.Execute("PRAGMA foreign_keys = ON;");
         }
     }
 
@@ -46,7 +132,10 @@ public sealed class MigrationRunner
     /// `NNN_description.sql` where NNN is the integer version. Files that don't start
     /// with three digits are skipped.
     /// </summary>
-    private static IEnumerable<(int Version, string Sql)> LoadEmbeddedScripts()
+    private static IReadOnlyList<(int Version, string Sql)> LoadEmbeddedScripts() =>
+        ReadEmbeddedScripts().ToList();
+
+    private static IEnumerable<(int Version, string Sql)> ReadEmbeddedScripts()
     {
         var assembly = typeof(MigrationRunner).Assembly;
         var resourceNames = assembly.GetManifestResourceNames()

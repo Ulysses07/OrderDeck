@@ -57,6 +57,28 @@ public class RestoreServiceTests : IDisposable
         File.ReadAllBytes(_dbPath + ".pre-restore.bak").Should().BeEquivalentTo(existingDb);
     }
 
+    /// <summary>
+    /// Ana dosyanın üzerine dışarıdan bir veritabanı yazıldığında eski
+    /// <c>-wal</c>/<c>-shm</c> yan dosyaları kalırsa SQLite onları yeni dosyaya
+    /// aitmiş gibi uygulamaya çalışır: geri yükleme "başarılı" döner, uygulama
+    /// bozuk veya karışmış veriyle açılır.
+    /// </summary>
+    [Fact]
+    public async Task RestoreAsync_deletes_stale_wal_sidecars()
+    {
+        File.WriteAllBytes(_dbPath, Encoding.UTF8.GetBytes("OLD-DB"));
+        File.WriteAllBytes(_dbPath + "-wal", Encoding.UTF8.GetBytes("eski wal"));
+        File.WriteAllBytes(_dbPath + "-shm", Encoding.UTF8.GetBytes("eski shm"));
+
+        var fake = new FakeBackupClientWithDownload(BuildZip(Encoding.UTF8.GetBytes("NEW-DB")));
+        var sut = new RestoreService(_dbPath, fake, NullLogger<RestoreService>.Instance);
+
+        (await sut.RestoreAsync(Guid.NewGuid())).Success.Should().BeTrue();
+
+        File.Exists(_dbPath + "-wal").Should().BeFalse();
+        File.Exists(_dbPath + "-shm").Should().BeFalse();
+    }
+
     [Fact]
     public async Task RestoreAsync_DownloadFails_LeavesOriginalDbUntouched()
     {
