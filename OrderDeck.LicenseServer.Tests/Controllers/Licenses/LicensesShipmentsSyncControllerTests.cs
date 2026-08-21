@@ -44,6 +44,20 @@ public class LicensesShipmentsSyncControllerTests : IClassFixture<ApiFactory>
         return (client, customerId, licenseId);
     }
 
+    /// <summary>
+    /// Lisansın shipment satırlarını kararlılık ufkunun gerisine taşır — sunucu
+    /// son saniyelerde değişen satırları okumadığı için testin push ettiği
+    /// satırlar aksi hâlde görünmez.
+    /// </summary>
+    private async Task SettleAsync(Guid licenseId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var rows = await db.Shipments.Where(s => s.LicenseId == licenseId).ToListAsync();
+        foreach (var row in rows) row.UpdatedAt = row.UpdatedAt.AddMinutes(-1);
+        await db.SaveChangesAsync();
+    }
+
     private sealed record SyncedShipmentDto(
         Guid Id, string CustomerId, string Status,
         decimal CumulativeAmount,
@@ -179,6 +193,11 @@ public class LicensesShipmentsSyncControllerTests : IClassFixture<ApiFactory>
                       createdAt = DateTimeOffset.UtcNow.AddHours(-1),
                       heldAt = (DateTimeOffset?)null, shippedAt = (DateTimeOffset?)null }
             }});
+
+        // Push edilen satırlar kararlılık ufkunun içinde; uç onları bilerek
+        // okumuyor (bkz. ReverseSyncCursor). Yerleşmiş sayılmaları için
+        // damgalarını geriye al.
+        await SettleAsync(licenseId);
 
         // MinValue cursor → ikisi de gelir
         var resp = await client.GetAsync(

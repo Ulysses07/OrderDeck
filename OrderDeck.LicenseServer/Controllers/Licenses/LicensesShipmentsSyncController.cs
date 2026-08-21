@@ -2,6 +2,7 @@ using System.Security.Claims;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Sync;
 using OrderDeck.LicenseServer.Services.WhatsApp;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -152,11 +153,16 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
     /// Reverse sync: WPF App nadiren bu endpoint'i çağırır (Shipment WPF
     /// authoritative; mobile mutation yapmıyor). Yine de eklendi — gelecekte
     /// multi-instance WPF veya CSR'ın server'da düzeltme yaptığı durumlar için.
+    ///
+    /// <para>İmleç bileşik, sorgu kararlılık ufkunun altında; gerekçe
+    /// <see cref="ReverseSyncCursor"/>'da. İstemci bir sonraki imleci sayfanın
+    /// son satırından okur — yanıt sırası <c>(UpdatedAt, Id)</c>.</para>
     /// </summary>
     [HttpGet("since")]
     public async Task<IActionResult> Since(
         Guid licenseId,
         [FromQuery] DateTimeOffset since,
+        [FromQuery] Guid sinceId = default,
         [FromQuery] int take = 100,
         CancellationToken ct = default)
     {
@@ -166,10 +172,14 @@ public sealed class LicensesShipmentsSyncController : ControllerBase
         if (!ownsLicense) return NotFound();
 
         take = Math.Clamp(take, 1, 500);
+        var horizon = ReverseSyncCursor.Horizon();
 
         var rows = await _db.Shipments
-            .Where(s => s.LicenseId == licenseId && s.UpdatedAt > since)
-            .OrderBy(s => s.UpdatedAt)
+            .Where(s => s.LicenseId == licenseId
+                        && s.UpdatedAt <= horizon
+                        && (s.UpdatedAt > since
+                            || (s.UpdatedAt == since && s.Id.CompareTo(sinceId) > 0)))
+            .OrderBy(s => s.UpdatedAt).ThenBy(s => s.Id)
             .Take(take)
             .Select(s => new SyncedShipmentDto(
                 s.Id, s.CustomerId,

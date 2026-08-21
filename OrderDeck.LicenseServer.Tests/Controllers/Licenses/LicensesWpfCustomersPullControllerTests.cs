@@ -58,7 +58,9 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
             FullName = fullName,
             Phone = phone,
             Address = address,
-            UpdatedAt = updatedAt ?? DateTimeOffset.UtcNow,
+            // Varsayılan damga kararlılık ufkunun gerisinde: uç, son saniyelerde
+            // değişen satırları bilerek okumuyor (bkz. ReverseSyncCursor).
+            UpdatedAt = updatedAt ?? DateTimeOffset.UtcNow.AddMinutes(-1),
         });
         await db.SaveChangesAsync();
     }
@@ -83,15 +85,102 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
         await SeedProjectionAsync(licenseId, id2, "instagram", "user2", null, null, null, t2);
         await SeedProjectionAsync(licenseId, id3, "tiktok", "user3", null, null, null, t3);
 
-        // since = t1 → should return id2 and id3 (strictly after t1)
+        // Bileşik imleç (t1, id1) → yalnız id2 ve id3
         var since = Uri.EscapeDataString(t1.ToString("O"));
-        var resp = await client.GetAsync($"/api/v1/licenses/{licenseId}/wpf-customers/since?since={since}");
+        var resp = await client.GetAsync(
+            $"/api/v1/licenses/{licenseId}/wpf-customers/since?since={since}&sinceId={id1:D}");
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var items = await resp.Content.ReadFromJsonAsync<List<WpfCustomerPullItem>>();
         items.Should().NotBeNull();
         items!.Should().HaveCount(2);
         items.Select(i => i.Id).Should().BeEquivalentTo(new[] { id2, id3 });
+    }
+
+    // ── sinceId göndermeyen eski istemci: imleçteki satır tekrar gelir ────────
+    // Kayıp değil fazlalık; WPF tarafındaki uygulama idempotent upsert.
+
+    [Fact]
+    public async Task Since_without_sinceId_redelivers_the_row_at_the_cursor()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+
+        var t0 = DateTimeOffset.UtcNow.AddMinutes(-10);
+        var t1 = t0.AddMinutes(1);
+        var t2 = t0.AddMinutes(2);
+
+        var id1 = Guid.NewGuid();
+        var id2 = Guid.NewGuid();
+        await SeedProjectionAsync(licenseId, id1, "youtube", "legacy1", updatedAt: t1);
+        await SeedProjectionAsync(licenseId, id2, "youtube", "legacy2", updatedAt: t2);
+
+        var since = Uri.EscapeDataString(t1.ToString("O"));
+        var resp = await client.GetAsync($"/api/v1/licenses/{licenseId}/wpf-customers/since?since={since}");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var items = await resp.Content.ReadFromJsonAsync<List<WpfCustomerPullItem>>();
+        items!.Select(i => i.Id).Should().BeEquivalentTo(new[] { id1, id2 },
+            "sinceId yoksa boş GUID varsayılır; imleçteki eşitlik kümesi yeniden gönderilir");
+    }
+
+    // ── Eşitlik kümesi sayfa sınırında kesilirse hiçbir satır kaybolmaz ──────
+
+    [Fact]
+    public async Task Since_tie_group_split_across_pages_loses_nothing()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+
+        // Tek push'un damgaladığı gibi: 5 satır AYNI UpdatedAt değerinde.
+        var tie = DateTimeOffset.UtcNow.AddMinutes(-10);
+        var ids = Enumerable.Range(0, 5).Select(_ => Guid.NewGuid()).ToList();
+        for (var i = 0; i < ids.Count; i++)
+            await SeedProjectionAsync(licenseId, ids[i], "youtube", $"tieuser{i}", updatedAt: tie);
+
+        var cursor = tie;
+        var cursorId = Guid.Empty;
+        var seen = new List<Guid>();
+
+        // take=2 ile sayfala: eşitlik kümesi iki kez ortadan kesiliyor.
+        for (var page = 0; page < 5; page++)
+        {
+            var resp = await client.GetAsync(
+                $"/api/v1/licenses/{licenseId}/wpf-customers/since" +
+                $"?since={Uri.EscapeDataString(cursor.ToString("O"))}&sinceId={cursorId:D}&take=2");
+            resp.StatusCode.Should().Be(HttpStatusCode.OK);
+            var items = await resp.Content.ReadFromJsonAsync<List<WpfCustomerPullItem>>();
+            if (items!.Count == 0) break;
+
+            seen.AddRange(items.Select(i => i.Id));
+            cursor = items[^1].UpdatedAt;
+            cursorId = items[^1].Id;
+        }
+
+        seen.Should().BeEquivalentTo(ids,
+            "aynı damgayı paylaşan satırlar sayfa sınırında kesilse de hepsi teslim edilmeli");
+    }
+
+    // ── Kararlılık ufku: az önce yazılmış satır bu turda okunmaz ─────────────
+
+    [Fact]
+    public async Task Since_withholds_rows_written_inside_the_stability_horizon()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+
+        var settled = Guid.NewGuid();
+        var justWritten = Guid.NewGuid();
+        await SeedProjectionAsync(licenseId, settled, "youtube", "settled",
+            updatedAt: DateTimeOffset.UtcNow.AddMinutes(-1));
+        await SeedProjectionAsync(licenseId, justWritten, "youtube", "justwritten",
+            updatedAt: DateTimeOffset.UtcNow);
+
+        var since = Uri.EscapeDataString(DateTimeOffset.UtcNow.AddMinutes(-10).ToString("O"));
+        var resp = await client.GetAsync($"/api/v1/licenses/{licenseId}/wpf-customers/since?since={since}");
+
+        var items = await resp.Content.ReadFromJsonAsync<List<WpfCustomerPullItem>>();
+        items!.Select(i => i.Id).Should().Contain(settled);
+        items.Select(i => i.Id).Should().NotContain(justWritten,
+            "ufkun içindeki satır okunursa, ondan önce başlamış ama henüz commit etmemiş " +
+            "bir işlem imlecin gerisinde kalıp kalıcı olarak kaybolur");
     }
 
     // ── since=MinValue returns all projections ───────────────────────────────

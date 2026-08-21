@@ -114,11 +114,12 @@ public sealed class ShipmentSyncService
     private async Task<int> PullReverseAsync(Guid licenseId, CancellationToken ct)
     {
         var since = _settings.LastShipmentReverseSync ?? DateTimeOffset.MinValue;
+        var sinceId = _settings.LastShipmentReverseSyncId ?? Guid.Empty;
 
         List<SyncedShipmentDto> rows;
         try
         {
-            rows = await _api.GetShipmentsSinceAsync(licenseId, since, PullPageSize, ct);
+            rows = await _api.GetShipmentsSinceAsync(licenseId, since, sinceId, PullPageSize, ct);
         }
         catch (LicenseApiException ex)
         {
@@ -128,16 +129,12 @@ public sealed class ShipmentSyncService
 
         if (rows.Count == 0) return 0;
 
-        DateTimeOffset newCursor = since;
-        foreach (var dto in rows.OrderBy(d => d.UpdatedAt))
-        {
-            // Server'dan gelen ID lokal'de var mı? WPF authoritative olduğu için
-            // genelde server-only update gelmez; gelirse log + bilgi amaçlı.
-            // Şu an apply etmiyoruz (status conflict riski). Cursor advance ediyoruz.
-            if (dto.UpdatedAt > newCursor) newCursor = dto.UpdatedAt;
-        }
-
-        _settings.LastShipmentReverseSync = newCursor;
+        // Server'dan gelen satırlar apply EDİLMİYOR (WPF authoritative; status
+        // conflict riski) — yalnız imleç ilerliyor. İmleç (UpdatedAt, Id) çifti;
+        // sunucu da bu sıraya göre sayfalıyor.
+        var last = rows.OrderBy(d => d.UpdatedAt).ThenBy(d => d.Id).Last();
+        _settings.LastShipmentReverseSync = last.UpdatedAt;
+        _settings.LastShipmentReverseSyncId = last.Id;
         _settingsStore.Save(_settings);
         return rows.Count;
     }

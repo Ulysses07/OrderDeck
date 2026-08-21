@@ -40,6 +40,12 @@ public class LicensesPaymentsSyncControllerTests : IClassFixture<ApiFactory>
         return (client, customerId, licenseId);
     }
 
+    /// <summary>
+    /// Kararlılık ufkunun gerisinde kalan bir damga: <c>since</c> ucu son
+    /// saniyelerde değişen satırları bilerek okumuyor (bkz. ReverseSyncCursor).
+    /// </summary>
+    private static DateTimeOffset Settled => DateTimeOffset.UtcNow.AddMinutes(-1);
+
     private sealed record SyncedPaymentDto(
         Guid Id, string Status, DateTimeOffset? ApprovedAt,
         DateTimeOffset? RejectedAt, string? RejectReason, DateTimeOffset UpdatedAt);
@@ -219,14 +225,14 @@ public class LicensesPaymentsSyncControllerTests : IClassFixture<ApiFactory>
                     Id = pid1, LicenseId = licenseId, PayerName = "A", Amount = 1,
                     PaidAt = DateTimeOffset.UtcNow, ReferansNo = "S1",
                     Status = PaymentStatus.Pending,
-                    CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
+                    CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = Settled
                 },
                 new Payment
                 {
                     Id = pid2, LicenseId = licenseId, PayerName = "B", Amount = 2,
                     PaidAt = DateTimeOffset.UtcNow, ReferansNo = "S2",
                     Status = PaymentStatus.Approved,
-                    CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
+                    CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = Settled,
                     ApprovedAt = DateTimeOffset.UtcNow
                 },
                 new Payment
@@ -266,7 +272,7 @@ public class LicensesPaymentsSyncControllerTests : IClassFixture<ApiFactory>
                     Id = Guid.NewGuid(), LicenseId = licenseA, PayerName = "A1",
                     Amount = 1, PaidAt = DateTimeOffset.UtcNow, ReferansNo = "AL1",
                     Status = PaymentStatus.Pending, CreatedAt = DateTimeOffset.UtcNow,
-                    UpdatedAt = DateTimeOffset.UtcNow
+                    UpdatedAt = Settled
                 },
                 new Payment
                 {
@@ -282,5 +288,93 @@ public class LicensesPaymentsSyncControllerTests : IClassFixture<ApiFactory>
             $"/api/v1/licenses/{licenseA}/payments/since?since={Uri.EscapeDataString(cursor.ToString("O"))}");
         var body = await resp.Content.ReadFromJsonAsync<List<SyncedPaymentDto>>();
         body!.Should().HaveCount(1, "client A sees only A's license payments");
+    }
+
+    // ── Eşitlik kümesi sayfa sınırında kesilirse hiçbir dekont kaybolmaz ─────
+    // WPF tek push'ta 200 dekonta aynı UpdatedAt damgasını basıyor; istemcinin
+    // sayfa boyutu da 200. Eşitlik kümesi gerçek, kuramsal değil.
+
+    [Fact]
+    public async Task Since_tie_group_split_across_pages_loses_no_payment()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+
+        var tie = DateTimeOffset.UtcNow.AddMinutes(-10);
+        var ids = Enumerable.Range(0, 5).Select(_ => Guid.NewGuid()).ToList();
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            for (var i = 0; i < ids.Count; i++)
+                db.Payments.Add(new Payment
+                {
+                    Id = ids[i], LicenseId = licenseId, PayerName = $"Tie {i}", Amount = i + 1,
+                    PaidAt = tie, ReferansNo = $"TIE-{i}", Status = PaymentStatus.Pending,
+                    CreatedAt = tie, UpdatedAt = tie
+                });
+            await db.SaveChangesAsync();
+        }
+
+        var cursor = tie;
+        var cursorId = Guid.Empty;
+        var seen = new List<Guid>();
+
+        for (var page = 0; page < 5; page++)
+        {
+            var resp = await client.GetAsync(
+                $"/api/v1/licenses/{licenseId}/payments/since" +
+                $"?since={Uri.EscapeDataString(cursor.ToString("O"))}&sinceId={cursorId:D}&take=2");
+            resp.StatusCode.Should().Be(HttpStatusCode.OK);
+            var items = await resp.Content.ReadFromJsonAsync<List<SyncedPaymentDto>>();
+            if (items!.Count == 0) break;
+
+            seen.AddRange(items.Select(i => i.Id));
+            cursor = items[^1].UpdatedAt;
+            cursorId = items[^1].Id;
+        }
+
+        seen.Should().BeEquivalentTo(ids,
+            "aynı damgayı paylaşan dekontlar sayfa sınırında kesilse de hepsi teslim edilmeli");
+    }
+
+    // ── Kararlılık ufku: az önce yazılmış dekont bu turda okunmaz ───────────
+
+    [Fact]
+    public async Task Since_withholds_payments_written_inside_the_stability_horizon()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+
+        var settled = Guid.NewGuid();
+        var justWritten = Guid.NewGuid();
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Payments.AddRange(
+                new Payment
+                {
+                    Id = settled, LicenseId = licenseId, PayerName = "Yerleşmiş", Amount = 10,
+                    PaidAt = Settled, ReferansNo = "H-SETTLED", Status = PaymentStatus.Approved,
+                    CreatedAt = Settled, UpdatedAt = Settled, ApprovedAt = Settled
+                },
+                new Payment
+                {
+                    Id = justWritten, LicenseId = licenseId, PayerName = "Yeni", Amount = 20,
+                    PaidAt = DateTimeOffset.UtcNow, ReferansNo = "H-FRESH",
+                    Status = PaymentStatus.Approved,
+                    CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
+                    ApprovedAt = DateTimeOffset.UtcNow
+                });
+            await db.SaveChangesAsync();
+        }
+
+        var since = Uri.EscapeDataString(DateTimeOffset.UtcNow.AddMinutes(-30).ToString("O"));
+        var resp = await client.GetAsync($"/api/v1/licenses/{licenseId}/payments/since?since={since}");
+        var body = await resp.Content.ReadFromJsonAsync<List<SyncedPaymentDto>>();
+
+        body!.Select(p => p.Id).Should().Contain(settled);
+        body.Select(p => p.Id).Should().NotContain(justWritten,
+            "ufkun içindeki satır okunup imleç oraya taşınırsa, damgası daha eski olduğu " +
+            "hâlde henüz commit etmemiş bir onay imlecin gerisinde kalıp kalıcı olarak kaybolur");
     }
 }

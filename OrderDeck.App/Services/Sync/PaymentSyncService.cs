@@ -125,11 +125,12 @@ public sealed class PaymentSyncService
     private async Task<int> PullReverseAsync(Guid licenseId, CancellationToken ct)
     {
         var since = _settings.LastPaymentReverseSync ?? DateTimeOffset.MinValue;
+        var sinceId = _settings.LastPaymentReverseSyncId ?? Guid.Empty;
 
         List<SyncedPaymentDto> rows;
         try
         {
-            rows = await _api.GetPaymentsSinceAsync(licenseId, since, PullPageSize, ct);
+            rows = await _api.GetPaymentsSinceAsync(licenseId, since, sinceId, PullPageSize, ct);
         }
         catch (LicenseApiException ex)
         {
@@ -139,14 +140,15 @@ public sealed class PaymentSyncService
 
         if (rows.Count == 0) return 0;
 
-        DateTimeOffset newCursor = since;
-        foreach (var dto in rows.OrderBy(d => d.UpdatedAt))
-        {
-            ApplyDto(dto);
-            if (dto.UpdatedAt > newCursor) newCursor = dto.UpdatedAt;
-        }
+        // İmleç (UpdatedAt, Id) çifti; sunucu da bu sıraya göre sayfalıyor.
+        // Yalnız en büyük UpdatedAt alınsaydı, aynı damgayı paylaşan satırlar
+        // sayfa sınırında kesildiğinde kalanları bir daha istenmezdi.
+        var ordered = rows.OrderBy(d => d.UpdatedAt).ThenBy(d => d.Id).ToList();
+        foreach (var dto in ordered) ApplyDto(dto);
 
-        _settings.LastPaymentReverseSync = newCursor;
+        var last = ordered[^1];
+        _settings.LastPaymentReverseSync = last.UpdatedAt;
+        _settings.LastPaymentReverseSyncId = last.Id;
         _settingsStore.Save(_settings);
         return rows.Count;
     }

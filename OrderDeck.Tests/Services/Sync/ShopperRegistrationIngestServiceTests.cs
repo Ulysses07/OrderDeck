@@ -165,9 +165,10 @@ public sealed class ShopperRegistrationIngestServiceTests
         customer.Username.Should().Be("newuser");
         customer.IsBlacklisted.Should().BeFalse();
 
-        // Watermark advanced
-        var newWatermark = fx.Store.Load().LastShopperIngestAt;
-        newWatermark.Should().Be(updatedAt.ToUnixTimeSeconds());
+        // Watermark advanced — tam hassasiyetle, (UpdatedAt, Id) çifti olarak
+        var saved = fx.Store.Load();
+        saved.LastShopperIngestUpdatedAt.Should().Be(updatedAt);
+        saved.LastShopperIngestId.Should().Be(shopperId);
     }
 
     // ── Already-exists by (Platform, Username) → skipped, watermark still advances ─
@@ -216,9 +217,11 @@ public sealed class ShopperRegistrationIngestServiceTests
 
         result.Should().Be(0, "already-existing customer must be skipped");
 
-        // Watermark still advances to the item's UpdatedAt
-        fx.Store.Load().LastShopperIngestAt.Should().Be(updatedAt.ToUnixTimeSeconds(),
+        // Watermark still advances to the item's (UpdatedAt, Id)
+        var saved = fx.Store.Load();
+        saved.LastShopperIngestUpdatedAt.Should().Be(updatedAt,
             "watermark must advance even when all items were skipped (idempotent)");
+        saved.LastShopperIngestId.Should().Be(shopperId);
     }
 
     // ── API failure → returns 0, watermark NOT advanced ───────────────────────
@@ -295,8 +298,10 @@ public sealed class ShopperRegistrationIngestServiceTests
         var newCustomer = fx.Customers.FindByPlatformAndUsername("tiktok", "brandnew");
         newCustomer.Should().NotBeNull();
 
-        // Watermark advances to max(t1, t2) = t2
-        fx.Store.Load().LastShopperIngestAt.Should().Be(t2.ToUnixTimeSeconds());
+        // Watermark advances to the last row in (UpdatedAt, Id) order = (t2, existingId)
+        var saved = fx.Store.Load();
+        saved.LastShopperIngestUpdatedAt.Should().Be(t2);
+        saved.LastShopperIngestId.Should().Be(existingId);
     }
 
     // ── since query param is built from watermark ─────────────────────────────
@@ -330,5 +335,49 @@ public sealed class ShopperRegistrationIngestServiceTests
         // The query string must contain the expected ISO-8601 watermark
         var expectedDate = DateTimeOffset.FromUnixTimeSeconds(knownTimestamp).ToString("O");
         capturedQuery!.Should().Contain(Uri.EscapeDataString(expectedDate));
+        capturedQuery.Should().Contain($"sinceId={Guid.Empty:D}",
+            "eski kurulumda id imleci yok — boş Guid ile başlanmalı");
+    }
+
+    // ── Yeni (UpdatedAt, Id) imleci varsa eski Unix alanı yok sayılır ─────────
+
+    [Fact]
+    public async Task IngestOnce_prefers_composite_cursor_over_legacy_unix_watermark()
+    {
+        string? capturedQuery = null;
+        var fx = Build(req =>
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (path == "/api/v1/me/licenses")
+                return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/wpf-customers/since"))
+            {
+                capturedQuery = req.RequestUri.Query;
+                return FakeHttpMessageHandler.Json(200, "[]");
+            }
+            return FakeHttpMessageHandler.Empty(404);
+        });
+        using var _d = fx.Db;
+
+        // Aynı saniyeyi paylaşan bir küme ortasında kalmış imleç: milisaniye
+        // hassasiyeti korunmazsa aşağıdaki beklenti tutmaz.
+        var cursor = new DateTimeOffset(2026, 8, 21, 10, 30, 15, 750, TimeSpan.Zero);
+        var cursorId = Guid.Parse("11112222-3333-4444-5555-666677778888");
+
+        var settings = fx.Store.Load();
+        settings.LastShopperIngestAt = 1_715_000_000L; // eski alan — yok sayılmalı
+        settings.LastShopperIngestUpdatedAt = cursor;
+        settings.LastShopperIngestId = cursorId;
+        fx.Store.Save(settings);
+
+        await fx.Svc.IngestOnceAsync(CancellationToken.None);
+
+        capturedQuery.Should().NotBeNullOrEmpty();
+        capturedQuery!.Should().Contain(Uri.EscapeDataString(cursor.ToString("O")),
+            "imleç saniyeye yuvarlanmadan gönderilmeli");
+        capturedQuery.Should().Contain($"sinceId={cursorId:D}");
+        capturedQuery.Should().NotContain(
+            Uri.EscapeDataString(DateTimeOffset.FromUnixTimeSeconds(1_715_000_000L).ToString("O")),
+            "yeni imleç varken eski Unix alanı kullanılmamalı");
     }
 }
