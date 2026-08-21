@@ -35,4 +35,16 @@ public class InstagramChatHostedServiceTests
         InstagramChatHostedService.ComputeBackoff(5).Should().Be(TimeSpan.FromMinutes(5));
         InstagramChatHostedService.ComputeBackoff(50).Should().Be(TimeSpan.FromMinutes(5));
     }
+
+    /// <summary>
+    /// Uzantıdan Instagram kaldırıldı; resmi API artık tek yol. Varsayılan
+    /// yanlışlıkla <c>Scraper</c>'a dönerse hiçbir şey hata vermez, Instagram
+    /// sessizce kararır — bu yüzden değeri teste bağlıyoruz.
+    /// </summary>
+    [Fact]
+    public void Default_ingest_mode_is_the_official_api()
+    {
+        new OrderDeck.Core.Settings.AppSettings().InstagramIngestMode
+            .Should().Be(OrderDeck.Core.Chat.InstagramIngestMode.OfficialApi);
+    }
 }

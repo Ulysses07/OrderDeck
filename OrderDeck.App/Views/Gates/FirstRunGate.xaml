@@ -109,7 +109,7 @@
                             Visibility="{Binding IsStep3, Converter={StaticResource BoolToVisibleConverter}}">
                     <TextBlock Text="YouTube Kanal Bağlantısı" Style="{StaticResource OD.Text.Section}"/>
                     <TextBlock Style="{StaticResource OD.Text.Label}"
-                               Text="YouTube canlı yayınlarındaki chat mesajlarını OrderDeck'e çekmek için kanal handle'ını gir. Boş bırakırsan sadece Instagram/TikTok için Chrome eklentisi ile çalışır."/>
+                               Text="YouTube canlı yayınlarındaki chat mesajlarını OrderDeck'e çekmek için kanal handle'ını gir. Boş bırakırsan YouTube chat'i gelmez; diğer platformlar etkilenmez."/>
                     <TextBlock Text="Kanal handle'ı veya URL'si"
                                Style="{StaticResource OD.Text.Label}"
                                Margin="{StaticResource OD.Pad.Top5}"/>
@@ -144,7 +144,7 @@
                     <StackPanel>
                         <TextBlock Text="Chrome Eklentisi Kurulumu" Style="{StaticResource OD.Text.Section}"/>
                         <TextBlock Style="{StaticResource OD.Text.Label}"
-                                   Text="Instagram / TikTok canlı yayın chat'i için Chrome eklentisini kurman gerekiyor. (YouTube ve Facebook eklenti olmadan, doğrudan OrderDeck'ten çalışır.) Aşağıdaki adımları sırasıyla uygula:"/>
+                                   Text="TikTok canlı yayın chat'i için Chrome eklentisini kurman gerekiyor. (YouTube, Facebook ve Instagram eklenti olmadan, doğrudan OrderDeck'ten çalışır.) Aşağıdaki adımları sırasıyla uygula:"/>
 
                         <Border Style="{StaticResource OD.Panel}"
                                 Background="{StaticResource OD.Brush.Surface2}"

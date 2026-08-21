@@ -279,15 +279,14 @@ public sealed class AppHost : IDisposable
 
         // Instagram canlı yorumları — resmi Graph API. Facebook OAuth
         // servisini paylaşıyor (IG erişimi Sayfa token'ı üzerinden gidiyor;
-        // ayrı bir IG oturumu yok). Varsayılan olarak uykuda:
-        // AppSettings.InstagramIngestMode == Scraper iken hiçbir çağrı yapmaz.
+        // ayrı bir IG oturumu yok). Artık varsayılan yol: uzantıda Instagram
+        // kalmadı, deneme sürümü dahil tek IG kaynağı bu servis.
         services.AddHostedService(sp =>
             new OrderDeck.Chat.Ingestors.Instagram.InstagramChatHostedService(
                 () => sp.GetRequiredService<AppSettings>(),
                 sp.GetRequiredService<OrderDeck.Chat.Facebook.FacebookOAuthService>(),
                 sp.GetRequiredService<IChatBus>(),
                 sp.GetRequiredService<ILoggerFactory>(),
-                trialProbe: sp.GetRequiredService<LicenseService>(),
                 spamFilter: sp.GetRequiredService<SpamFilter>(),
                 sessions: sp.GetRequiredService<StreamSessionService>(),
                 httpFactory: sp.GetRequiredService<IHttpClientFactory>()));

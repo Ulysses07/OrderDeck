@@ -2,38 +2,6 @@
   "schemaVersion": 1,
   "publishedAt": "2026-06-22T10:00:00+00:00",
   "platforms": {
-    "instagram": {
-      "isLivePage": {
-        "urlPatterns": ["/live"],
-        "domSelectors": [
-          "[aria-label*=\"Live\" i]",
-          "[aria-label*=\"Canlı\" i]"
-        ]
-      },
-      "comments": {
-        "primaryContainers": "[aria-label*=\"yorum\" i], [aria-label*=\"comment\" i]",
-        "primaryRowItems": "span[dir=\"auto\"]",
-        "fallbackPattern": "div-2span"
-      },
-      "observerTarget": ["[role=\"main\"]", "section"],
-      "validators": {
-        "usernameMaxLength": 50,
-        "messageMaxLength": 1000,
-        "uiTextBlocklist": [
-          "live", "messages", "share", "like", "comment", "send", "follow",
-          "canlı", "mesajlar", "paylaş", "beğen", "yorum", "gönder", "takip et",
-          "izliyor", "watching", "viewers", "izleyici"
-        ],
-        "timeStringRegex": "^\\d+\\s*(dk|sa|gün|sn|m|h|d|s|ay|yıl|min|hr|sec)$"
-      },
-      "viewers": {
-        "selectors": [
-          "a[href$=\"/live_viewers/\"]",
-          "span[aria-label*=\"izley\" i]",
-          "span[aria-label*=\"watch\" i]"
-        ]
-      }
-    },
     "tiktok": {
       "isLivePage": {
         "urlPatterns": ["/live"],

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Net.Http;
 using System.Runtime.Versioning;
 using System.Threading;
@@ -18,9 +18,9 @@ namespace OrderDeck.Chat.Ingestors.Instagram;
 /// ile aynı şekil; iki farkı var:
 ///
 /// <list type="number">
-///   <item><b>Feature-flag kapısı.</b> <see cref="AppSettings.InstagramIngestMode"/>
-///     <c>OfficialApi</c> değilse hiç çalışmaz — varsayılan <c>Scraper</c>,
-///     yani App Review onayına kadar davranış değişmez.</item>
+///   <item><b>Kip kapısı.</b> <see cref="AppSettings.InstagramIngestMode"/>
+///     <c>OfficialApi</c> değilse hiç çalışmaz. Varsayılan artık
+///     <c>OfficialApi</c>: uzantıdan Instagram kaldırıldı, başka yol yok.</item>
 ///   <item><b>Kalıcı hata</b> (token/izin) → yeniden denemek yerine uzun idle.
 ///     Sonsuz retry kullanıcının token'ını düzeltmiyor, sadece log dolduruyor.</item>
 /// </list>
@@ -46,7 +46,6 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
     private readonly IChatBus _bus;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<InstagramChatHostedService> _log;
-    private readonly ITrialModeProbe? _trialProbe;
     private readonly SpamFilter? _spamFilter;
     private readonly StreamSessionService? _sessions;
     private readonly IHttpClientFactory? _httpFactory;
@@ -60,7 +59,6 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
         FacebookOAuthService oauth,
         IChatBus bus,
         ILoggerFactory loggerFactory,
-        ITrialModeProbe? trialProbe = null,
         SpamFilter? spamFilter = null,
         StreamSessionService? sessions = null,
         IHttpClientFactory? httpFactory = null)
@@ -70,7 +68,6 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
         _bus = bus;
         _loggerFactory = loggerFactory;
         _log = loggerFactory.CreateLogger<InstagramChatHostedService>();
-        _trialProbe = trialProbe;
         _spamFilter = spamFilter;
         _sessions = sessions;
         _httpFactory = httpFactory;
@@ -120,18 +117,16 @@ public sealed class InstagramChatHostedService : IHostedService, IDisposable
         {
             try
             {
-                // 1) Feature-flag. Varsayılan Scraper → hiçbir şey yapma.
+                // 1) Kip kapısı. Operatör elle Scraper'a döndüyse dokunma.
                 if (_settingsProvider().InstagramIngestMode != InstagramIngestMode.OfficialApi)
                 {
                     await Task.Delay(IdleWhenOffline, ct);
                     continue;
                 }
 
-                if (_trialProbe?.IsTrialMode == true)
-                {
-                    await Task.Delay(IdleWhenOffline, ct);
-                    continue;
-                }
+                // Trial kapısı YOK: uzantıdan Instagram kaldırıldığı için deneme
+                // kullanıcısının tek IG yolu burası. Kapalı tutulursa deneme
+                // sürümünde Instagram tamamen kararırdı.
 
                 // 2) Facebook Sayfa bağlantısı yoksa IG'ye de erişemeyiz.
                 var creds = await _oauth.GetPageCredentialsAsync(ct).ConfigureAwait(false);

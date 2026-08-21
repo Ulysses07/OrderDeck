@@ -142,7 +142,6 @@ async function refreshSelectorsFromServer() {
         try {
             const tabs = await chrome.tabs.query({
                 url: [
-                    '*://*.instagram.com/*',
                     '*://*.tiktok.com/*',
                 ],
             });

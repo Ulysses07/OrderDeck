@@ -59,7 +59,7 @@ YouTube canlı yayınlarındaki chat mesajlarını OrderDeck'e otomatik çekmek 
 - Örnek: `@orderdeck`
 - Veya tam URL: `https://youtube.com/@orderdeck`
 
-YouTube kullanmıyorsan bu adımı atla — Instagram/TikTok/Facebook için Chrome eklentisi yeterli.
+YouTube kullanmıyorsan bu adımı atla. Instagram ve Facebook, Ayarlar'daki Facebook bağlantısı üzerinden doğrudan OrderDeck'ten çalışır; yalnız TikTok için Chrome eklentisi gerekir.
 
 ### Adım 4 — Yazıcı Ayarları _(opsiyonel)_
 
@@ -103,8 +103,8 @@ OBS'de iki tane **Browser Source** ekle:
 ## 5. Yayın Başlatma
 
 1. OrderDeck → **Yayın Başlat** butonuna bas (ana ekran üst kısmı)
-2. Chrome'da Instagram/TikTok/Facebook canlı yayın sayfanı aç → eklenti otomatik bağlanır
-3. YouTube live'sini başlat (handle eşleştiyse otomatik bulunur)
+2. TikTok'ta yayın yapıyorsan Chrome'da canlı yayın sayfanı aç → eklenti otomatik bağlanır
+3. YouTube, Facebook ve Instagram yayınları otomatik bulunur (eklenti gerekmez)
 4. OBS'de **Yayını Başlat**
 
 Chat overlay'inde mesajlar görünmeye başladığında her şey çalışıyordur.

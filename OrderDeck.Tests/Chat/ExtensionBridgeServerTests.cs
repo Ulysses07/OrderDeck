@@ -388,17 +388,20 @@ public class ExtensionBridgeServerTests
     }
 
     [Fact]
-    public async Task Trial_mode_keeps_extension_instagram_even_when_official_is_on()
+    public async Task Trial_mode_also_drops_extension_instagram_when_official_is_on()
     {
-        // InstagramChatHostedService trial modda hiç çalışmıyor. Burada da
-        // bastırırsak trial kullanıcısının tek platformu tamamen kararır.
+        // Eskiden burada trial istisnası vardı: InstagramChatHostedService
+        // denemede çalışmadığı için uzantının IG kopyası geçiriliyordu. Artık
+        // resmi servis denemede de çalışıyor, dolayısıyla istisna çift-post
+        // üretirdi. Sahada henüz güncellenmemiş eski uzantı sürümleri IG
+        // göndermeye devam ediyor — bastırılması gereken tam olarak onlar.
         var bus = new ChatBus(ringBufferSize: 10);
         await using var server = new ExtensionBridgeServer(
             bus, port: 0, trialProbe: new TrialProbeStub(true), isInstagramOfficial: () => true);
         await server.StartAsync(CancellationToken.None);
 
-        var received = new TaskCompletionSource<ChatMessage>();
-        using var sub = bus.Subscribe(m => received.TrySetResult(m));
+        var publishCount = 0;
+        using var sub = bus.Subscribe(_ => Interlocked.Increment(ref publishCount));
 
         using var ws = new ClientWebSocket();
         await ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}/extension"),
@@ -406,8 +409,11 @@ public class ExtensionBridgeServerTests
 
         await SendRaw(ws, SerializeChat("instagram", "@ayse_y", "MAVI XL", externalId: "ig-7"));
 
-        var msg = await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        msg.Platform.Should().Be("instagram");
+        // Düşürülmesi bekleniyor, yani beklenecek bir olay yok; sunucunun
+        // mesajı işlemesine yetecek kadar bekleyip sayaca bakıyoruz.
+        await Task.Delay(500);
+        Volatile.Read(ref publishCount).Should().Be(0,
+            "resmi API açıkken uzantının IG kopyası denemede de düşmeli");
 
         await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
     }

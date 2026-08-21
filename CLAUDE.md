@@ -19,7 +19,7 @@ Both live next to this one under `source/repos/`.
 - **`OrderDeck.LicenseServer`** — ASP.NET Core 10 server, deployed to VPS via Docker (`license.orderdeckapp.com`)
 - **`OrderDeck.Chat`** — chat bridge (WebSocket server + YouTube Data API v3), used by WPF. The YouTube scraper and the HTML-scraping live resolver were deleted in PR #213; the only YouTube path now is the official API
 - **`OrderDeck.Core`** — shared domain
-- **`Extension/`** — Chrome MV3 extension that scrapes Instagram/TikTok/Facebook live chat → forwards to WPF over `ws://localhost:4748`
+- **`Extension/`** — Chrome MV3 extension that scrapes **TikTok** live chat → forwards to WPF over `ws://localhost:4748`. Facebook was dropped in `0752a0d`, Instagram right after: both have official APIs now. TikTok is the only platform with no official path, and the only reason the bridge still exists
 - **SQL Server (prod)** in Docker on VPS; **InMemory** for tests
 - **EF Core 10**, Dapper for hot-path WPF queries (SQLite local)
 - **Cloudflare R2** via AWS SDK S3 + SigV4 — uses `DisablePayloadSigning = true` + `UseChunkEncoding = false` (R2 doesn't support `STREAMING-AWS4-HMAC-SHA256-PAYLOAD`)
