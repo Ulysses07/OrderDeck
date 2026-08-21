@@ -1,3 +1,7 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
 using FluentAssertions;
 using OrderDeck.Core.Chat;
 using Xunit;
@@ -142,5 +146,49 @@ public class SpamFilterTests
 
         // "go" hits short before anything else.
         f.ShouldDrop("go", U, 100).Should().Be("short");
+    }
+
+    // ── Eşzamanlılık (Y-05) ────────────────────────────────────────────────
+
+    /// <summary>
+    /// <see cref="SpamFilter"/> tekil (singleton) kaydedilir ve dört ayrı
+    /// döngüden aynı anda çağrılır: köprünün soket başına alma döngüsü,
+    /// YouTube resmi API yoklayıcısı, Instagram yoklayıcısı ve Facebook akışı.
+    /// Yinelenen penceresi bu çağrılar arasında paylaşıldığı için okuma+yazma
+    /// bölümünün eşzamanlı erişime dayanması şart.
+    ///
+    /// <para>Farklı kullanıcı + farklı metin gönderiliyor, yani <i>hiçbir</i>
+    /// çağrının "duplicate" dönmemesi gerekiyor. Zaman aşımı bilerek var:
+    /// bağlı listede döngü oluşursa <c>foreach</c> hiç bitmez, testin asılı
+    /// kalması yerine düşmesini istiyoruz.</para>
+    /// </summary>
+    [Fact]
+    public async Task Duplicate_window_survives_concurrent_ingest()
+    {
+        var f = Make(new SpamFilterSettings { DropDuplicates = true });
+
+        const int sources = 4;
+        const int perSource = 20_000;
+
+        var start = new System.Threading.Barrier(sources);
+        var tasks = Enumerable.Range(0, sources).Select(source => Task.Run(() =>
+        {
+            var drops = new List<string>();
+            start.SignalAndWait();
+            for (var i = 0; i < perSource; i++)
+            {
+                // Sabit "şimdi": pencere hiç dolmuyor, dolayısıyla her çağrı
+                // hem listeyi tarıyor hem de ekleyip (200'ü aşınca) baştan
+                // siliyor — yarışın en sıkı hâli.
+                var reason = f.ShouldDrop($"mesaj-{source}-{i}", $"kullanici-{source}", 100);
+                if (reason is not null) drops.Add(reason);
+            }
+            return drops;
+        })).ToArray();
+
+        var results = await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(30));
+
+        results.SelectMany(d => d).Should().BeEmpty(
+            "her mesaj benzersiz; 'duplicate' dönmesi pencerenin bozulduğu anlamına gelir");
     }
 }
