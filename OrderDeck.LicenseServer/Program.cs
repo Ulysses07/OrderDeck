@@ -110,6 +110,13 @@ public class Program
         // ProviderName.Resolve tanınmayan adı açılışta patlatır. Eskiden bunların
         // bir kısmı sessizce yedeğe düşüyordu ve SMS/WhatsApp'ın yedeği hiçbir şey
         // göndermeyen "log" sağlayıcısıydı — bkz. ProviderName sınıf yorumu.
+        //
+        // Varsayılanı sahte olanlar ResolveLive'dan geçer: üretimde o varsayılana
+        // düşmek yasak. E-posta listede yok çünkü onun varsayılanı ("smtp") zaten
+        // gerçek sağlayıcı — yanlış yapılandırılırsa gönderim hata verir, sessiz
+        // kalmaz.
+        var isProduction = builder.Environment.IsProduction();
+
         var emailProvider = ProviderName.Resolve(
             builder.Configuration, "Email:Provider", "smtp", "smtp", "disk");
         if (emailProvider == "disk")
@@ -119,8 +126,8 @@ public class Program
 
         // SMS sender selection (email pattern'iyle aynı). Dev/test → log,
         // prod → Netgsm. Netgsm HttpClient ile typed-client olarak bağlanır.
-        var smsProvider = ProviderName.Resolve(
-            builder.Configuration, "Sms:Provider", "log", "log", "netgsm");
+        var smsProvider = ProviderName.ResolveLive(
+            builder.Configuration, isProduction, "Sms:Provider", "log", "log", "netgsm");
         if (smsProvider == "netgsm")
         {
             // Timeout: Netgsm asılı kalırsa forgot-password isteğini default
@@ -154,8 +161,8 @@ public class Program
         // Tenant-aware: gönderim kimlikleri çağrı başına WhatsAppSendContext'ten.
         builder.Services.Configure<OrderDeck.LicenseServer.Services.WhatsApp.WhatsAppOptions>(
             builder.Configuration.GetSection("OrderDeck:WhatsApp"));
-        var waProvider = ProviderName.Resolve(
-            builder.Configuration, "OrderDeck:WhatsApp:Provider", "log", "log", "cloud");
+        var waProvider = ProviderName.ResolveLive(
+            builder.Configuration, isProduction, "OrderDeck:WhatsApp:Provider", "log", "log", "cloud");
         if (waProvider == "cloud")
         {
             var waTimeout = builder.Configuration.GetValue("OrderDeck:WhatsApp:TimeoutSeconds", 15);
@@ -212,8 +219,8 @@ public class Program
         // Push notifications. Provider: "stub" (default) veya "fcm".
         // PR #51 (2026-05-14) — stub log-only fan-out.
         // PR Push Faz 2 (2026-05-15) — gerçek FCM (FirebaseAdmin SDK).
-        var pushProvider = ProviderName.Resolve(
-            builder.Configuration, "OrderDeck:Push:Provider", "stub", "stub", "fcm");
+        var pushProvider = ProviderName.ResolveLive(
+            builder.Configuration, isProduction, "OrderDeck:Push:Provider", "stub", "stub", "fcm");
         if (pushProvider == "stub")
         {
             builder.Services.AddScoped<
@@ -238,8 +245,8 @@ public class Program
 
         // Broadcast media storage — provider seçimi (stub | r2)
         // Provider: appsettings.json "OrderDeck:BroadcastMedia:Provider" = "stub" | "r2"
-        var bmProvider = ProviderName.Resolve(
-            builder.Configuration, "OrderDeck:BroadcastMedia:Provider", "stub", "stub", "r2");
+        var bmProvider = ProviderName.ResolveLive(
+            builder.Configuration, isProduction, "OrderDeck:BroadcastMedia:Provider", "stub", "stub", "r2");
         if (bmProvider == "stub")
         {
             builder.Services.AddSingleton<

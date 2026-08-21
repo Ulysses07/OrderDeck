@@ -40,6 +40,18 @@ JWT_SECRET=ReplaceWith64CharRandomBase64String_GenerateWithOpenSSL
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD_HASH=ReplaceWithBCryptHash
 
+# Sağlayıcı seçimleri — ZORUNLU, compose bunlar olmadan başlamaz.
+#
+# Her birinin bir de "hiçbir iş yapmayan" karşılığı var (log / stub) ve o
+# varsayılan olsaydı eksik bir satır üretimde sessiz arızaya dönüşürdü:
+# sunucu açılır, sağlık kontrolü yeşil yanar, gönderimler "başarılı" döner
+# ama SMS gitmez, WhatsApp gitmez, yüklenen dekont hiçbir yere yazılmaz.
+# Bu yüzden hem compose hem sunucu eksik değerde açılışı durduruyor.
+# Geliştirme makinesinde log/stub yazmak serbest — kural yalnız üretimde.
+SMS_PROVIDER=netgsm
+OrderDeck__WhatsApp__Provider=cloud
+OrderDeck__BroadcastMedia__Provider=r2
+
 # Optional: SMTP (set to real values when email features needed)
 SMTP_HOST=smtp.example.com
 SMTP_PORT=587
