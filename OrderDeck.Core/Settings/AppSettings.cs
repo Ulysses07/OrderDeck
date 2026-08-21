@@ -91,14 +91,19 @@ public sealed class AppSettings
     // geliyor, App Secret ise masaüstüne hiç inmiyor. Geri ekleme — bir daha
     // makineden makineye settings.json kopyalama durumuna düşmeyelim.
 
-    /// <summary>Feature-flag: Instagram canlı yorum çekme yöntemi. Varsayılan
-    /// <see cref="OrderDeck.Core.Chat.InstagramIngestMode.Scraper"/> (extension).
-    /// <c>OfficialApi</c> = resmi Graph API (bağlı FB Page üzerinden IG business
-    /// account → live_media → comments polling, read-only). Official açıkken
-    /// bridge'in IG mesajları düşürülür (çift-post önleme). IG business hesabı
-    /// bağlı FB Page üzerinden erişildiği için ayrı OAuth/token gerekmez.</summary>
+    /// <summary>Instagram canlı yorum çekme yöntemi. Varsayılan
+    /// <see cref="OrderDeck.Core.Chat.InstagramIngestMode.OfficialApi"/> = resmi
+    /// Graph API (bağlı FB Page üzerinden IG business account → live_media →
+    /// comments polling, read-only). Official açıkken bridge'in IG mesajları
+    /// düşürülür (çift-post önleme). IG business hesabı bağlı FB Page üzerinden
+    /// erişildiği için ayrı OAuth/token gerekmez.
+    ///
+    /// <para><c>Scraper</c> artık yeni uzantıda karşılığı olmayan bir kip:
+    /// uzantıdan Instagram kaldırıldı. Enum değeri, sahada henüz güncellenmemiş
+    /// eski uzantı sürümleriyle çalışan kurulumlar için duruyor — geçiş bitince
+    /// tamamen kaldırılabilir.</para></summary>
     public OrderDeck.Core.Chat.InstagramIngestMode InstagramIngestMode { get; set; }
-        = OrderDeck.Core.Chat.InstagramIngestMode.Scraper;
+        = OrderDeck.Core.Chat.InstagramIngestMode.OfficialApi;
 
     /// <summary>Spam/troll filter rules applied to inbound chat messages
     /// before they reach the bus. Disabled rules pass everything through.</summary>

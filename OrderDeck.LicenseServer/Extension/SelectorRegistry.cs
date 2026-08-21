@@ -43,6 +43,11 @@ public static class SelectorRegistry
         PublishedAt: new DateTimeOffset(2026, 6, 22, 10, 0, 0, TimeSpan.Zero),
         Platforms: new Dictionary<string, PlatformSelectors>
         {
+            // Instagram uzantıdan kaldırıldı (resmi Graph API devraldı), ama bu
+            // blok BİLEREK duruyor: sahadaki eski uzantı sürümleri hâlâ IG
+            // kazıyor ve selektörlerini buradan çekiyor. Blok silinirse sunucu
+            // deploy'u anında onların Instagram'ını öldürür. Yeni uzantı Web
+            // Store'da yaygınlaşana kadar dokunma.
             ["instagram"] = new(
                 IsLivePage: new IsLivePageSelectors(
                     UrlPatterns: new[] { "/live" },

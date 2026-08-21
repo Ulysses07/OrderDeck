@@ -478,7 +478,8 @@ window.OrderDeckChatBridge = (function () {
 
         // ── Stall watchdog ───────────────────────────────────────────────────
         // adapter.stallRecovery: { nudge?: () => void, allowReload?: boolean }
-        // sağlayan platformlarda (şimdilik Instagram) aktif.
+        // sağlayan platformlarda aktif. Instagram kaldırıldıktan sonra bunu
+        // sağlayan adapter kalmadı; mekanizma yeni bir platform için duruyor.
         function watchdogTick() {
             if (!adapter.stallRecovery) return;
             if (!isConnected || !isLivePage) { nudgedAt = 0; return; }

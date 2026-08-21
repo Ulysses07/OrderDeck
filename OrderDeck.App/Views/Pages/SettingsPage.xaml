@@ -284,14 +284,16 @@
                                        Visibility="{Binding InstagramNeedsReconnect,
                                                     Converter={StaticResource BoolToVisibleConverter}}"
                                        Text="Instagram yorumları için Facebook bağlantını yenilemen gerekiyor — yukarıdaki 'Bağlantıyı Kaldır' + 'Facebook'a Bağlan' adımını uygula."/>
-                            <CheckBox Content="Instagram yorumlarını resmi API'den al (deneysel)"
+                            <CheckBox Content="Instagram yorumlarını resmi API'den al"
                                       Style="{StaticResource OD.Toggle}"
                                       IsChecked="{Binding UseOfficialInstagramApi}"/>
                             <TextBlock Style="{StaticResource OD.Text.Hint}">
-                                Kapalıyken yorumlar tarayıcı eklentisinden gelir; yayın sayfasının bir sekmede açık
-                                kalması gerekir. Açtığında yorumlar doğrudan Instagram'ın resmi API'sinden okunur,
-                                tarayıcı sekmesi gerekmez. Instagram canlı yayında yorum silme/gizleme desteklemediği
-                                için resmi yolda sağ-tık moderasyon menüsü çıkmaz.
+                                Açıkken (varsayılan) yorumlar doğrudan Instagram'ın resmi API'sinden okunur, tarayıcı
+                                sekmesi gerekmez; karşılığında Instagram'a bağlı bir Facebook Sayfası şart. Instagram
+                                canlı yayında yorum silme/gizleme desteklemediği için resmi yolda sağ-tık moderasyon
+                                menüsü çıkmaz. Kapatırsan yorumlar tarayıcı eklentisinden beklenir — ancak eklentinin
+                                güncel sürümünde Instagram desteği kaldırıldı, yani bu seçenek yalnız eski sürüm
+                                eklentisi kurulu makinelerde çalışır ve ilerleyen sürümlerde tamamen kalkacak.
                             </TextBlock>
                         </StackPanel>
                     </Border>
