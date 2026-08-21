@@ -143,12 +143,7 @@ public sealed class AppHost : IDisposable
             log: sp.GetRequiredService<ILogger<ExtensionBridgeServer>>(),
             trialProbe: sp.GetRequiredService<LicenseService>(),
             spamFilter: sp.GetRequiredService<SpamFilter>(),
-            viewers: sp.GetRequiredService<ViewerCountTracker>(),
-            // Resmi API açıkken extension'ın IG yorumları düşer; aynı yorum
-            // Graph poller'dan geliyor ve iki yolun externalId'leri ayrık.
-            isInstagramOfficial: () =>
-                sp.GetRequiredService<AppSettings>().InstagramIngestMode
-                    == InstagramIngestMode.OfficialApi));
+            viewers: sp.GetRequiredService<ViewerCountTracker>()));
         services.AddSingleton<ChatBridgeIngestor>();
 
         // Phase 5c — YouTube canlı sohbet. Tek yol: resmi gRPC streamList
@@ -283,7 +278,6 @@ public sealed class AppHost : IDisposable
         // kalmadı, deneme sürümü dahil tek IG kaynağı bu servis.
         services.AddHostedService(sp =>
             new OrderDeck.Chat.Ingestors.Instagram.InstagramChatHostedService(
-                () => sp.GetRequiredService<AppSettings>(),
                 sp.GetRequiredService<OrderDeck.Chat.Facebook.FacebookOAuthService>(),
                 sp.GetRequiredService<IChatBus>(),
                 sp.GetRequiredService<ILoggerFactory>(),
