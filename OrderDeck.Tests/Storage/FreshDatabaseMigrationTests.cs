@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using Dapper;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.Core.Storage;
 using Xunit;
 
@@ -39,5 +40,32 @@ public sealed class FreshDatabaseMigrationTests : IDisposable
             "SELECT name FROM sqlite_master WHERE type='table'").ToHashSet();
 
         tables.Should().Contain(new[] { "Customer", "Label", "Giveaway", "Payment" });
+    }
+
+    /// <summary>
+    /// AppHost'un kaydının birebir aynısı. Konteynerden çözülen runner gerçek
+    /// script'lerle koşmalı.
+    ///
+    /// Bunu ayrı bir test yapan olay: test dikişi olarak eklenen
+    /// <c>IEnumerable</c> alan kurucuyu DI tercih etti — MS.DI hiçbir kayıt
+    /// olmasa da <c>IEnumerable&lt;T&gt;</c>'yi boş koleksiyonla çözer. Göç
+    /// sıfır script'le sessizce "başarılı" oldu, şema hiç kurulmadı. Doğrudan
+    /// <c>new MigrationRunner(factory)</c> çağıran test bunu göremiyordu.
+    /// </summary>
+    [Fact]
+    public void Runner_resolved_from_the_container_applies_the_real_scripts()
+    {
+        var dbPath = Path.Combine(_dir, "di.db");
+
+        var services = new ServiceCollection();
+        services.AddSingleton<IDbConnectionFactory>(_ => new SqliteConnectionFactory(dbPath));
+        services.AddSingleton<MigrationRunner>();
+
+        using var provider = services.BuildServiceProvider();
+        provider.GetRequiredService<MigrationRunner>().Run();
+
+        using var conn = provider.GetRequiredService<IDbConnectionFactory>().Open();
+        conn.Query<string>("SELECT name FROM sqlite_master WHERE type='table'")
+            .Should().Contain("Giveaway");
     }
 }

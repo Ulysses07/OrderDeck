@@ -17,7 +17,7 @@ public sealed class MigrationRunner
     private const string MigrationPrefix = "OrderDeck.Core.Storage.Migrations.";
 
     private readonly IDbConnectionFactory _factory;
-    private readonly IEnumerable<(int Version, string Sql)> _scripts;
+    private readonly IReadOnlyList<(int Version, string Sql)> _scripts;
 
     public MigrationRunner(IDbConnectionFactory factory)
         : this(factory, LoadEmbeddedScripts())
@@ -28,10 +28,27 @@ public sealed class MigrationRunner
     /// Script kaynağını dışarıdan alan aşırı yükleme. Gömülü script'ler her zaman
     /// geçerli olduğu için üretimde kullanılmaz; kasten bozuk bir script vererek
     /// yarım göçün geri alındığını doğrulamanın başka yolu yok.
+    ///
+    /// Parametre tipi bilerek <see cref="IReadOnlyList{T}"/>; <c>IEnumerable</c>
+    /// OLAMAZ. <c>AddSingleton&lt;MigrationRunner&gt;()</c> en çok parametreli
+    /// çözülebilir kurucuyu seçer ve MS.DI <c>IEnumerable&lt;T&gt;</c>'yi hiçbir
+    /// kayıt olmasa bile BOŞ koleksiyon olarak çözer. Yani bu aşırı yükleme
+    /// <c>IEnumerable</c> alsaydı — ki alıyordu — üretimde seçilen kurucu bu
+    /// olur, göç sıfır script'le "başarıyla" koşar ve şema hiç kurulmazdı.
+    /// Hata vermeden. Sıfırdan kurulumda uygulama boş bir veritabanıyla açılırdı.
+    /// <c>IReadOnlyList</c> kayıtlı olmadığı için DI bu kurucuyu eleyip tek
+    /// parametreliye düşüyor.
     /// </summary>
     public MigrationRunner(
-        IDbConnectionFactory factory, IEnumerable<(int Version, string Sql)> scripts)
+        IDbConnectionFactory factory, IReadOnlyList<(int Version, string Sql)> scripts)
     {
+        // Boş script kümesi hiçbir zaman geçerli değil: ya gömülü kaynaklar
+        // düşmüştür ya da yanlış kurucu seçilmiştir. İkisi de sessizce boş bir
+        // veritabanı üretiyordu; artık açılışta yüksek sesle patlıyor.
+        if (scripts.Count == 0)
+            throw new InvalidOperationException(
+                "Göç script'i bulunamadı; şema kurulamaz.");
+
         _factory = factory;
         _scripts = scripts;
     }
@@ -115,7 +132,10 @@ public sealed class MigrationRunner
     /// `NNN_description.sql` where NNN is the integer version. Files that don't start
     /// with three digits are skipped.
     /// </summary>
-    private static IEnumerable<(int Version, string Sql)> LoadEmbeddedScripts()
+    private static IReadOnlyList<(int Version, string Sql)> LoadEmbeddedScripts() =>
+        ReadEmbeddedScripts().ToList();
+
+    private static IEnumerable<(int Version, string Sql)> ReadEmbeddedScripts()
     {
         var assembly = typeof(MigrationRunner).Assembly;
         var resourceNames = assembly.GetManifestResourceNames()
