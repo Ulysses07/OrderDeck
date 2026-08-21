@@ -27,10 +27,21 @@ public sealed class AppSettings
     /// sonra güncellenen mobile onay/red sonuçlarını çekiyor. İlk run'da null.</summary>
     public DateTimeOffset? LastPaymentReverseSync { get; set; }
 
+    /// <summary>Bkz. <see cref="LastPaymentReverseSync"/> — imlecin eşitlik
+    /// bozucusu. Sunucu tek push'ta 200 dekontu tek <c>UpdatedAt</c> damgasıyla
+    /// yazıyor; yalnız damga üstünde koşan bir imleç, sayfa o eşitlik kümesinin
+    /// ortasından kesildiğinde kalan satırları bir daha hiç istemez. Damga +
+    /// birincil anahtar çifti sıralamayı toplam yapıyor.</summary>
+    public Guid? LastPaymentReverseSyncId { get; set; }
+
     /// <summary>Shipment sync (PR-D, 2026-05-13): kümülatif kargo reverse-sync
     /// cursor. WPF authoritative olduğu için pull nadiren çalışır, ama
     /// cursor advance edilir.</summary>
     public DateTimeOffset? LastShipmentReverseSync { get; set; }
+
+    /// <summary>Bkz. <see cref="LastPaymentReverseSyncId"/> — kargo imlecinin
+    /// eşitlik bozucusu.</summary>
+    public Guid? LastShipmentReverseSyncId { get; set; }
 
     /// <summary>Phase 4g: WhatsApp ödeme isteme yapılandırması.</summary>
     public PaymentSettings Payment { get; set; } = new();
@@ -117,11 +128,23 @@ public sealed class AppSettings
     /// next tick retries from the same position.</summary>
     public long LastCustomerProjectionSyncAt { get; set; }
 
-    /// <summary>Faz 0c-3 (2026-05-21): watermark for pulling server-created
-    /// WpfCustomerProjection rows (auto-created on shopper register/join) into
-    /// the local Customer table. Unix seconds derived from UpdatedAt of the last
-    /// successfully ingested row. 0 = never pulled.</summary>
+    /// <summary><b>Kullanımdan kalktı</b> — yerine
+    /// <see cref="LastShopperIngestUpdatedAt"/> + <see cref="LastShopperIngestId"/>.
+    /// Saniyeye yuvarlanmış olduğu için imleç, aynı saniyeyi paylaşan satırların
+    /// ortasında sayfa dolduğunda başladığı yere dönüyor ve hiç ilerlemiyordu.
+    /// Alan yalnız <b>bir kez okunuyor</b>: yeni imleç boşsa ondan tohumlanıyor.
+    /// Silinseydi imleç sıfırlanır, sunucudaki bütün projeksiyonlar yeniden
+    /// çekilir ve yayıncının yerelde <i>sildiği</i> müşteriler geri gelirdi.</summary>
     public long LastShopperIngestAt { get; set; }
+
+    /// <summary>Shopper kayıt ingest imleci — sayfanın son satırının tam
+    /// hassasiyetli <c>UpdatedAt</c>'i. Null = hiç çekilmedi (bkz.
+    /// <see cref="LastShopperIngestAt"/> tohumlaması).</summary>
+    public DateTimeOffset? LastShopperIngestUpdatedAt { get; set; }
+
+    /// <summary>Bkz. <see cref="LastPaymentReverseSyncId"/> — ingest imlecinin
+    /// eşitlik bozucusu.</summary>
+    public Guid? LastShopperIngestId { get; set; }
 
     /// <summary>Dönem raporunun e-Fatura sayfası için sabitler + fatura no sayacı.</summary>
     public EInvoiceSettings EInvoice { get; set; } = new();

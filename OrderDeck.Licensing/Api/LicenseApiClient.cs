@@ -139,12 +139,17 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
         => PostJsonExpectingJsonAsync<SyncPaymentsRequest, List<SyncedPaymentDto>>(
             $"/api/v1/licenses/{licenseId}/payments/sync", req, ct);
 
-    /// <summary>Reverse sync: server'da UpdatedAt &gt; since olan payment status'larını çek
-    /// (mobile onay/red sonucu). Cursor WPF tarafında AppSettings.LastPaymentReverseSync'te.</summary>
+    /// <summary>Reverse sync: mobile onay/red sonuçlarını çeker. İmleç
+    /// <b>bileşik</b> — (<paramref name="since"/>, <paramref name="sinceId"/>).
+    /// Yalnız zaman damgası gönderilseydi, aynı damgayı paylaşan satırlar sayfa
+    /// sınırında kesildiğinde kalanları bir daha hiç dönmezdi; damga eşitliği
+    /// varsayımsal değil, tek push 200 dekontu tek damgayla yazıyor. Cursor WPF
+    /// tarafında AppSettings.LastPaymentReverseSync(+Id)'de.</summary>
     public async Task<List<SyncedPaymentDto>> GetPaymentsSinceAsync(
-        Guid licenseId, DateTimeOffset since, int take = 200, CancellationToken ct = default)
+        Guid licenseId, DateTimeOffset since, Guid sinceId,
+        int take = 200, CancellationToken ct = default)
     {
-        var qs = $"?since={Uri.EscapeDataString(since.ToString("O"))}&take={take}";
+        var qs = $"?since={Uri.EscapeDataString(since.ToString("O"))}&sinceId={sinceId:D}&take={take}";
         return await GetExpectingJsonAsync<List<SyncedPaymentDto>>(
             $"/api/v1/licenses/{licenseId}/payments/since{qs}", ct) ?? new();
     }
@@ -158,11 +163,13 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
         => PostJsonExpectingJsonAsync<SyncShipmentsRequest, List<SyncedShipmentDto>>(
             $"/api/v1/licenses/{licenseId}/shipments/sync", req, ct);
 
-    /// <summary>Reverse sync (nadiren kullanılır — WPF authoritative).</summary>
+    /// <summary>Reverse sync (nadiren kullanılır — WPF authoritative). İmleç
+    /// bileşik; gerekçe <see cref="GetPaymentsSinceAsync"/>'de.</summary>
     public async Task<List<SyncedShipmentDto>> GetShipmentsSinceAsync(
-        Guid licenseId, DateTimeOffset since, int take = 200, CancellationToken ct = default)
+        Guid licenseId, DateTimeOffset since, Guid sinceId,
+        int take = 200, CancellationToken ct = default)
     {
-        var qs = $"?since={Uri.EscapeDataString(since.ToString("O"))}&take={take}";
+        var qs = $"?since={Uri.EscapeDataString(since.ToString("O"))}&sinceId={sinceId:D}&take={take}";
         return await GetExpectingJsonAsync<List<SyncedShipmentDto>>(
             $"/api/v1/licenses/{licenseId}/shipments/since{qs}", ct) ?? new();
     }
@@ -240,13 +247,14 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
     // ─── WPF customers pull (Faz 0c-3) ────────────────────────────────────
 
     /// <summary>Pulls server-created WpfCustomerProjection rows (auto-created on
-    /// shopper register/join) newer than <paramref name="since"/>. WPF ingests
-    /// these as local Customer rows. Cursor is UpdatedAt of the last row received;
-    /// WPF advances its own watermark (AppSettings.LastShopperIngestAt).</summary>
+    /// shopper register/join). İmleç bileşik — (<paramref name="since"/>,
+    /// <paramref name="sinceId"/>); gerekçe <see cref="GetPaymentsSinceAsync"/>'de.
+    /// WPF sayfanın son satırından imleci ilerletir.</summary>
     public async Task<List<WpfCustomerPullItem>> GetWpfCustomersSinceAsync(
-        Guid licenseId, DateTimeOffset since, int take = 100, CancellationToken ct = default)
+        Guid licenseId, DateTimeOffset since, Guid sinceId,
+        int take = 100, CancellationToken ct = default)
     {
-        var qs = $"?since={Uri.EscapeDataString(since.ToString("O"))}&take={take}";
+        var qs = $"?since={Uri.EscapeDataString(since.ToString("O"))}&sinceId={sinceId:D}&take={take}";
         return await GetExpectingJsonAsync<List<WpfCustomerPullItem>>(
             $"/api/v1/licenses/{licenseId}/wpf-customers/since{qs}", ct) ?? new();
     }

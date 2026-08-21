@@ -54,13 +54,18 @@ public sealed class ShopperRegistrationIngestService
         if (licenseId is null) return 0;
 
         var settings = _settingsStore.Load();
-        var watermark = settings.LastShopperIngestAt > 0
-            ? DateTimeOffset.FromUnixTimeSeconds(settings.LastShopperIngestAt)
-            : DateTimeOffset.MinValue;
+        // Eski kurulumlarda imleç saniyeye yuvarlanmış bir Unix damgasıydı; yeni
+        // alan boşsa ondan tohumlanıyor (bkz. AppSettings.LastShopperIngestAt).
+        var watermark = settings.LastShopperIngestUpdatedAt
+            ?? (settings.LastShopperIngestAt > 0
+                ? DateTimeOffset.FromUnixTimeSeconds(settings.LastShopperIngestAt)
+                : DateTimeOffset.MinValue);
+        var watermarkId = settings.LastShopperIngestId ?? Guid.Empty;
 
         try
         {
-            var items = await _api.GetWpfCustomersSinceAsync(licenseId.Value, watermark, take: 100, ct);
+            var items = await _api.GetWpfCustomersSinceAsync(
+                licenseId.Value, watermark, watermarkId, take: 100, ct);
             if (items.Count == 0) return 0;
 
             var inserted = 0;
@@ -90,9 +95,13 @@ public sealed class ShopperRegistrationIngestService
                 inserted++;
             }
 
-            // Advance watermark to the latest UpdatedAt in this batch
-            var newWatermark = items.Max(i => i.UpdatedAt).ToUnixTimeSeconds();
-            settings.LastShopperIngestAt = newWatermark;
+            // İmleç sayfanın son satırı — (UpdatedAt, Id) çifti, sunucunun
+            // sayfaladığı sıra. Saniyeye yuvarlanmıyor: yuvarlama, aynı saniyeyi
+            // paylaşan satırlarla sayfa dolduğunda imleci başladığı yere
+            // döndürüp ilerlemeyi büsbütün durduruyordu.
+            var last = items.OrderBy(i => i.UpdatedAt).ThenBy(i => i.Id).Last();
+            settings.LastShopperIngestUpdatedAt = last.UpdatedAt;
+            settings.LastShopperIngestId = last.Id;
             _settingsStore.Save(settings);
 
             if (inserted > 0)

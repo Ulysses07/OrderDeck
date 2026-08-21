@@ -3,6 +3,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
 using OrderDeck.LicenseServer.Services.Push;
+using OrderDeck.LicenseServer.Services.Sync;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -170,12 +171,20 @@ public sealed class LicensesPaymentsSyncController : ControllerBase
 
     /// <summary>
     /// Reverse sync: WPF App periyodik olarak çağırır → mobile tarafından
-    /// onay/red edilen payment'ları local'e indirir. `since` cursor (UTC).
+    /// onay/red edilen payment'ları local'e indirir.
+    ///
+    /// İmleç <b>bileşik</b> (<c>since</c> + <c>sinceId</c>) ve kararlılık
+    /// ufkunun altında; gerekçe <see cref="ReverseSyncCursor"/>'da. WPF bir
+    /// sonraki imleci sayfanın son satırından okur — yanıt sırası
+    /// <c>(UpdatedAt, Id)</c>. <c>sinceId</c> isteğe bağlı: sahadaki eski
+    /// kurulumlar göndermiyor, o zaman imleçteki eşitlik kümesi yeniden
+    /// gönderilir (uygulama idempotent upsert, kayıp değil fazlalık).
     /// </summary>
     [HttpGet("since")]
     public async Task<IActionResult> Since(
         Guid licenseId,
         [FromQuery] DateTimeOffset since,
+        [FromQuery] Guid sinceId = default,
         [FromQuery] int take = 100,
         CancellationToken ct = default)
     {
@@ -185,10 +194,14 @@ public sealed class LicensesPaymentsSyncController : ControllerBase
         if (!ownsLicense) return NotFound();
 
         take = Math.Clamp(take, 1, 500);
+        var horizon = ReverseSyncCursor.Horizon();
 
         var rows = await _db.Payments
-            .Where(p => p.LicenseId == licenseId && p.UpdatedAt > since)
-            .OrderBy(p => p.UpdatedAt)
+            .Where(p => p.LicenseId == licenseId
+                        && p.UpdatedAt <= horizon
+                        && (p.UpdatedAt > since
+                            || (p.UpdatedAt == since && p.Id.CompareTo(sinceId) > 0)))
+            .OrderBy(p => p.UpdatedAt).ThenBy(p => p.Id)
             .Take(take)
             .Select(p => new SyncedPaymentDto(
                 p.Id,

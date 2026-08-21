@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Sync;
 
 namespace OrderDeck.LicenseServer.Controllers.Licenses;
 
@@ -29,13 +30,16 @@ public sealed class LicensesWpfCustomersPullController : ControllerBase
         DateTimeOffset UpdatedAt);
 
     /// <summary>
-    /// since cursor (UpdatedAt). WPF kendi watermark'ını ilerletir.
+    /// Bileşik imleç (<c>since</c> + <c>sinceId</c>), kararlılık ufkunun
+    /// altında; gerekçe <see cref="ReverseSyncCursor"/>'da. WPF bir sonraki
+    /// imleci sayfanın son satırından okur — yanıt sırası <c>(UpdatedAt, Id)</c>.
     /// take default 100, max 500.
     /// </summary>
     [HttpGet("since")]
     public async Task<IActionResult> Since(
         Guid licenseId,
         [FromQuery] DateTimeOffset since,
+        [FromQuery] Guid sinceId = default,
         [FromQuery] int take = 100,
         CancellationToken ct = default)
     {
@@ -45,10 +49,14 @@ public sealed class LicensesWpfCustomersPullController : ControllerBase
         if (!ownsLicense) return NotFound();
 
         take = Math.Clamp(take, 1, 500);
+        var horizon = ReverseSyncCursor.Horizon();
 
         var rows = await _db.WpfCustomerProjections
-            .Where(p => p.LicenseId == licenseId && p.UpdatedAt > since)
-            .OrderBy(p => p.UpdatedAt)
+            .Where(p => p.LicenseId == licenseId
+                        && p.UpdatedAt <= horizon
+                        && (p.UpdatedAt > since
+                            || (p.UpdatedAt == since && p.Id.CompareTo(sinceId) > 0)))
+            .OrderBy(p => p.UpdatedAt).ThenBy(p => p.Id)
             .Take(take)
             .Select(p => new WpfCustomerPullItem(
                 p.Id, p.Platform, p.Username,
