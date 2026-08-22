@@ -186,31 +186,60 @@ replica is rewritten each sync so it does not grow over time. The terms that
 do grow are history: `Label`, `Customer`, `GiveawayParticipant`, `Payment`,
 `Shipment`.
 
-### Off-host replication (S3-compatible, optional)
+### Off-host replication (gecelik cron → R2)
 
-By default backups live only under `/opt/orderdeck/backups/` on the VPS.
-A host loss takes everything with it. Enable S3 replication by adding the
-following to `/opt/orderdeck/.env`:
+Saha dışı kopyalama **uygulamada değil**, VPS'te cron ile yapılır. Hepsi tek
+bucket'ta: `s3://orderdeck-prod-backups/`.
 
-```env
-BACKUP_S3_ENABLED=true
-BACKUP_S3_SERVICE_URL=https://s3.us-west-001.backblazeb2.com   # B2 / AWS / Wasabi / MinIO
-BACKUP_S3_ACCESS_KEY=…
-BACKUP_S3_SECRET_KEY=…
-BACKUP_S3_BUCKET=orderdeck-prod
-BACKUP_S3_PREFIX=orderdeck-backups/
+| İçerik | Script | Cron | Prefix |
+|---|---|---|---|
+| SQL `.bak` (gzip) | `backup-sql-to-r2.sh` | `0 3 * * *` | `sql-bak/` |
+| DataProtection anahtarları | `backup-keys-to-r2.sh` | `30 3 * * *` | `keys/` |
+| `.env` (GPG şifreli) | `backup-env-to-r2.sh` | `45 3 * * *` | `env/` |
+| Müşteri yedek blob'ları | `backup-blobs-to-r2.sh` | `0 4 * * *` | `customer-blobs/` |
+
+Dördü birlikte anlamlı: blob'lar şifreli, çözmek için `.env`'deki ana anahtar
+gerekli, hangi blob'un hangi anahtar sürümüyle yazıldığı ise SQL'deki
+`CustomerBackups.KeyVersion` satırında. Biri eksikse geri dönüş yapılamaz.
+
+**Neden uygulama içi replikasyon yok:** eski `Backup:S3` yolu silindi. İki
+sebeple: R2'de hiç çalışmazdı (`AuthenticationRegion` ve `DisablePayloadSigning`
+eksikti) ve `Task.Run` ile ateşle-unut olduğu için hangi blob'un kopyalandığı
+kayda geçmiyordu — süreç yeniden başlayınca (her deploy) uçuştaki iş sessizce
+kayboluyordu. `aws s3 sync` yapı gereği artımlı ve tekrar güvenli: bir gece
+kaçan dosya ertesi gece gider. Bedeli, kopyanın anlık değil en fazla ~24 saat
+gecikmeli olması; blob o sürede zaten yerelde duruyor.
+
+Blob senkronu `--delete` kullanır: retention ve KVKK silme talebi off-site
+kopyada da uygulanmalı. R2'de nesne sürümleme **yok** (yalnız prefix bazlı
+bucket lock var), o yüzden script'te toplu silme tel tuzağı var — yerel blob
+sayısı uzaktakinin yarısının altına düşerse senkron çalışmaz. Kasıtlıysa
+`ALLOW_MASS_DELETE=1` ile çalıştır.
+
+#### `.env` yedeği — kurulum (bir kez)
+
+Script parolayı **üretmez**. Üretseydi parola yalnız bu host'ta yaşayan bir
+dosya olurdu ve host'u kaybettiğimizde R2'deki şifreli `.env` de kullanılamaz
+hâle gelirdi — yani tam korumaya çalıştığımız senaryoda işe yaramazdı.
+
+```bash
+# 1) Parolayı ÜRET ve ÖNCE parola yöneticine kaydet:
+openssl rand -base64 48
+
+# 2) Sonra VPS'e yaz:
+ssh root@72.62.53.86
+umask 077 && printf '%s' '<parola>' > /opt/orderdeck/.env-backup-pass
+
+# 3) Elle bir kez çalıştır ve log'a bak:
+/opt/orderdeck/scripts/backup-env-to-r2.sh
 ```
 
-Behavior:
-- Each successful POST `/api/v1/me/backups` triggers a fire-and-forget upload
-  of the encrypted blob to S3 with key `{prefix}{customerId}/{filename}.bin`.
-- BestEffort=true (default in code): S3 errors logged + ignored, customer
-  POST still returns 200. Set `Backup:S3:BestEffort=false` to fail the POST
-  on S3 errors (stronger durability, more end-user latency).
-- Blobs are already AES-256-GCM encrypted before upload; bucket can be
-  public-read with no risk to backup contents (still recommend private).
-- No automatic deletion mirror — local retention prunes the VPS, S3 keeps
-  forever. Configure S3 lifecycle policies separately if needed.
+Script yüklemeden önce şifre-çöz turu yapar (indir–çöz–karşılaştır); tur
+başarısızsa yükleme yapılmaz. Şifrelenmiş ama açılamayan bir yedek, hiç yedek
+almamaktan kötüdür — felaket anına kadar yedeğin olduğunu sanırsın.
+
+Geri dönüşte parola yalnız parola yöneticinde olduğu için:
+`gpg --decrypt env-YYYY-MM-DD.gpg > .env`
 
 ## DNS
 
