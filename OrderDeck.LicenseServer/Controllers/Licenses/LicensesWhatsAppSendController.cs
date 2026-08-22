@@ -185,6 +185,8 @@ public sealed class LicensesWhatsAppSendController : ControllerBase
                 }
 
                 // Terk edilmiş rezervasyon → devral (yeni denemenin başlangıcı).
+                // Devralma tek başına bir UPDATE; kimin kazandığına aşağıdaki
+                // SaveChanges karar veriyor (Status + StartedAt belirteçleri).
                 _log.LogWarning(
                     "Bayat WhatsApp rezervasyonu devralındı (key={Key}, license={LicenseId}, önceki başlangıç={StartedAt:o})",
                     key, licenseId, existing.StartedAt);
@@ -209,18 +211,31 @@ public sealed class LicensesWhatsAppSendController : ControllerBase
             {
                 await _db.SaveChangesAsync(ct);
             }
+            catch (DbUpdateConcurrencyException) when (!isNewReservation)
+            {
+                // DEVRALMA yarışı. İki yeniden-deneme aynı bayat satırı okuyup
+                // ikisi de devralmayı deneyebilir; PK burada koruma sağlamaz
+                // çünkü satır zaten var. Asıl koruma Status + StartedAt
+                // eşzamanlılık belirteçleri (bkz. LicenseDbContext): EF devralmayı
+                // "WHERE Id=@id AND Status='pending' AND StartedAt=<okunan>" ile
+                // yazar, kaybeden 0 satır günceller ve buraya düşer.
+                //
+                // Kaybeden GÖNDERMEMELİ: aksi halde aynı faturalı mesaj müşteriye
+                // iki kez gider ve idempotency kaydı hiçbir şey ifade etmez.
+                var winnerReplay = await ReadRaceWinnerAsync(key, ct);
+                if (winnerReplay is null) throw;
+                _log.LogWarning(
+                    "WhatsApp devralma yarışı: bayat rezervasyonu başka istek devraldı (key={Key}, license={LicenseId})",
+                    key, licenseId);
+                return Ok(winnerReplay);
+            }
             catch (DbUpdateException) when (isNewReservation)
             {
                 // Yalnız EKLEME çakışması in_progress'e dönüşebilir: devralma yolu
-                // UPDATE'tir, orada DbUpdateException "başkası kazandı" değil gerçek
-                // bir DB hatasıdır ve in_progress diye yutulursa WPF "gönderildi"
-                // der, oysa hiçbir şey gitmemiştir.
-                _db.ChangeTracker.Clear();
-                var winner = await _db.WaSendAttempts.AsNoTracking()
-                    .FirstOrDefaultAsync(a => a.Id == key, ct);
-                var winnerReplay = winner is null ? null : ReplayIfKnown(winner);
-                // Ortada gerçek bir kazanan yoksa (satır yok ya da o da bayat)
-                // yarış hikâyesi tutmuyor → hatayı sakla, 500 ile dışarı ver.
+                // UPDATE'tir, orada (eşzamanlılık DIŞINDAKİ) DbUpdateException
+                // "başkası kazandı" değil gerçek bir DB hatasıdır ve in_progress
+                // diye yutulursa WPF "gönderildi" der, oysa hiçbir şey gitmemiştir.
+                var winnerReplay = await ReadRaceWinnerAsync(key, ct);
                 if (winnerReplay is null) throw;
                 _log.LogWarning(
                     "WhatsApp rezervasyon yarışı: anahtarı başka istek kazandı (key={Key}, license={LicenseId})",
@@ -327,6 +342,24 @@ public sealed class LicensesWhatsAppSendController : ControllerBase
         }
 
         return null;
+    }
+
+    /// <summary>Rezervasyon yarışını kaybeden istek için: satırı temiz bir
+    /// izleyiciyle yeniden okuyup <b>kazananın</b> sonucunu (ya da "hâlâ
+    /// uçuşta"yı) döner.
+    ///
+    /// <para>Ortada gerçek bir kazanan yoksa — satır hiç yoksa ya da okunan hâli
+    /// yine bayatsa — null döner. O zaman "yarışı kaybettim" hikâyesi tutmuyor
+    /// demektir ve çağıran hatayı yutmak yerine dışarı vermeli; yutulursa WPF
+    /// gitmemiş bir mesajı gitmiş sayar.</para></summary>
+    private async Task<SendResponse?> ReadRaceWinnerAsync(Guid key, CancellationToken ct)
+    {
+        // Patlayan SaveChanges'in yarım kalmış değişiklikleri hâlâ takipte;
+        // temizlemezsek yeniden okuma o bayat örneği geri verir.
+        _db.ChangeTracker.Clear();
+        var winner = await _db.WaSendAttempts.AsNoTracking()
+            .FirstOrDefaultAsync(a => a.Id == key, ct);
+        return winner is null ? null : ReplayIfKnown(winner);
     }
 
     private void LogReplay(SendResponse replay, Guid key, Guid licenseId)
