@@ -62,6 +62,10 @@ public sealed class OverlayBroadcastDeliveryTests : IAsyncLifetime
     private async Task<ClientWebSocket> ConnectAsync(int port, string path, CancellationToken ct)
     {
         var ws = new ClientWebSocket();
+        // Overlay artık el sıkışmayı Origin ile süzüyor. OBS Browser Source
+        // sayfayı aynı konaktan yüklediği için gerçek istemci hep bunu gönderir;
+        // ClientWebSocket kendiliğinden göndermez.
+        ws.Options.SetRequestHeader("Origin", $"http://localhost:{port}");
         _clients.Add(ws);
         await ws.ConnectAsync(new Uri($"ws://localhost:{port}{path}"), ct);
         return ws;
