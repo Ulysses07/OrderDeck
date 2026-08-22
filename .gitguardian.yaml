@@ -1,16 +1,50 @@
-# GitGuardian config — secret scanner allowlist.
+# ggshield (GitGuardian CLI) yapılandırması.
 #
-# Test projects intentionally contain dummy passwords/credentials for
-# fixture setup (e.g. PostAsJsonAsync invite flows). These are not real
-# secrets; they are generated at runtime or exist only in test scope.
+# ── KAPSAM UYARISI ────────────────────────────────────────────────────────
+# Bu dosya PR'daki "GitGuardian Security Checks" sonucunu ETKİLEMEZ.
+# O check'i GitHub App yapıyor; App taramayı sunucu tarafında koşturuyor ve
+# repo içindeki bu dosyayı okumuyor. App'in dışlamaları dashboard'da:
+#   Settings → Secrets detection → Filepath exclusions
 #
-# We ignore the *.Tests directories entirely — real production secrets
-# must never live there by policy. CI catches any drift via Code Review.
+# Buradaki satırlar yalnız `ggshield` komutu elle veya bir pre-commit
+# hook'uyla çalıştırıldığında geçerli. Şu an repoda ggshield'ı çalıştıran
+# hiçbir hook ya da workflow YOK — yani bu dosya bugün fiilen etkisiz.
+# Etkili olması isteniyorsa ggshield'ı CI'a/pre-commit'e bağlamak ve
+# GITGUARDIAN_API_KEY sağlamak gerekir.
 #
-# .env.example: yalnız placeholder değerler içeren örnek şablon (gerçek .env
-# gitignore'lu). Placeholder'lar gerçek secret değil; scanner'da allowlist'lenir.
-paths-ignore:
-  - "**/*.Tests/**"
-  - "**/Tests/**"
-  - "**/TestHelpers/**"
-  - ".env.example"
+# ── GLOB TUZAĞI ───────────────────────────────────────────────────────────
+# ggshield'ın çeviricisi (core/filter.py, translate_user_pattern) `**`
+# ifadesini yalnız ARDINDAN `/` gelirse özyinelemeli sayıyor. Sondaki `**`
+# ikinci ikameye düşüp `([^/]+)([^/]+)` oluyor: tek segment, eğik çizgi
+# geçemiyor. Sonuç olarak `**/*.Tests/**` deseni
+#   OrderDeck.LicenseServer.Tests/Services/Auth/Foo.cs
+# yolunu EŞLEMİYOR (iki kademe derinde). Bir dizin ağacının tamamını
+# kastediyorsan deseni eğik çizgiyle bitir: `**/*.Tests/`
+#
+# Bu dosya 2026-08-22'ye kadar tam olarak bu hatayı taşıyordu; üç desen de
+# ölüydü ve kimse fark etmemişti çünkü dosya zaten hiç okunmuyordu.
+version: 2
+
+secret:
+  ignored_paths:
+    # Yalnız placeholder değer içeren örnek şablon. Gerçek .env gitignore'lu.
+    - '.env.example'
+
+    # ── Test dizinleri BİLEREK dışlanmıyor ───────────────────────────────
+    # Eskiden burada `**/*.Tests/**` vardı. Sözdizimi düzeltilirken geri
+    # getirilmedi, iki sebeple:
+    #
+    # 1) Yetkili tarayıcı onları dışlamıyor. PR #314'te bir test dosyası
+    #    "Generic Password" ile yakalandı. Burada dışlarsak yerel tarama
+    #    yeşil, CI kırmızı verir. İki tarayıcının farklı cevap vermesi tek
+    #    bir yerde kırmızı görmekten daha kötü: yerel sonuca güven biter.
+    #
+    # 2) Repo public. Test dizinini toptan dışlayan bir kural, oraya
+    #    yanlışlıkla yapıştırılmış GERÇEK bir anahtarı da görünmez yapar —
+    #    ve testler tam olarak "bir denesem" diye gerçek token yapıştırılan
+    #    yerler.
+    #
+    # Bunun yerine kural: testlerde sabit kimlik dizgesi YAZMA, çalışma
+    # anında üret → $"{prefix}-{Guid.NewGuid():N}". Örnek:
+    #   OrderDeck.LicenseServer.Tests/Services/Auth/AdminLoginLockoutTests.cs
+    # Böylece dışlamaya gerek kalmıyor ve tarayıcı keskin kalıyor.
