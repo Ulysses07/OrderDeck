@@ -10,14 +10,12 @@ namespace OrderDeck.LicenseServer.Controllers.Auth;
 [Route("api/v1/admin/auth")]
 public sealed class AdminAuthController : ControllerBase
 {
-    private readonly LicenseDbContext _db;
-    private readonly PasswordHasher _hasher;
+    private readonly AdminLoginService _login;
     private readonly JwtTokenService _jwt;
 
-    public AdminAuthController(LicenseDbContext db, PasswordHasher hasher, JwtTokenService jwt)
+    public AdminAuthController(AdminLoginService login, JwtTokenService jwt)
     {
-        _db = db;
-        _hasher = hasher;
+        _login = login;
         _jwt = jwt;
     }
 
@@ -28,13 +26,15 @@ public sealed class AdminAuthController : ControllerBase
     [EnableRateLimiting("auth-login")]
     public async Task<IActionResult> Login([FromBody] LoginRequest req, CancellationToken ct)
     {
-        var admin = await _db.AdminUsers.FirstOrDefaultAsync(a => a.Username == req.Username, ct);
-        if (admin is null || !_hasher.Verify(admin.PasswordHash, req.Password))
+        // Kilit Razor sayfasıyla ORTAK servisten geliyor: iki kapı aynı hesaba
+        // açılıyor, birini korumak kilidi anlamsız kılardı.
+        var result = await _login.AuthenticateAsync(req.Username, req.Password, ct);
+        if (result.Outcome == AdminLoginService.Outcome.LockedOut)
+            return Problem(title: "account-locked", statusCode: 429);
+        if (!result.IsSuccess)
             return Problem(title: "invalid-credentials", statusCode: 401);
 
-        admin.LastLoginAt = DateTimeOffset.UtcNow;
-        await _db.SaveChangesAsync(ct);
-
+        var admin = result.Admin!;
         var (token, expiresAt) = _jwt.IssueAdminToken(admin.Id, admin.Username);
         return Ok(new LoginResponse(token, expiresAt));
     }

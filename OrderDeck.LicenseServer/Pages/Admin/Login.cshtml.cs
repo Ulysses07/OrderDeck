@@ -1,4 +1,4 @@
-using System.ComponentModel.DataAnnotations;
+﻿using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Services.Auth;
@@ -7,20 +7,20 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 
 namespace OrderDeck.LicenseServer.Pages.Admin;
 
+[EnableRateLimiting("admin-login")]
 public class LoginModel : PageModel
 {
-    private readonly LicenseDbContext _db;
-    private readonly PasswordHasher _hasher;
+    private readonly AdminLoginService _login;
     private readonly IAuditService _audit;
 
-    public LoginModel(LicenseDbContext db, PasswordHasher hasher, IAuditService audit)
+    public LoginModel(AdminLoginService login, IAuditService audit)
     {
-        _db = db;
-        _hasher = hasher;
+        _login = login;
         _audit = audit;
     }
 
@@ -47,16 +47,26 @@ public class LoginModel : PageModel
     {
         if (!ModelState.IsValid) return Page();
 
-        var admin = await _db.AdminUsers.FirstOrDefaultAsync(a => a.Username == Input.Username, ct);
-        if (admin is null || !_hasher.Verify(admin.PasswordHash, Input.Password))
+        var result = await _login.AuthenticateAsync(Input.Username, Input.Password, ct);
+        if (result.Outcome == AdminLoginService.Outcome.LockedOut)
+        {
+            // Kilit sebebi açıkça söyleniyor: bu tek operatörlü bir panel ve
+            // "neden giremiyorum" sorusu destek çağrısına dönüşüyor. Kullanıcı
+            // adının varlığını ele veriyor, ama o bilgi zaten yanıt süresinden
+            // sızıyor (bilinmeyen ad Argon2 çalıştırmadan hemen dönüyor).
+            var minutes = Math.Max(1, (int)Math.Ceiling(
+                (result.LockedUntil!.Value - DateTimeOffset.UtcNow).TotalMinutes));
+            ErrorMessage = $"Çok fazla hatalı deneme. {minutes} dakika sonra tekrar deneyin.";
+            return Page();
+        }
+
+        if (!result.IsSuccess)
         {
             ErrorMessage = "Geçersiz kullanıcı adı veya şifre.";
             return Page();
         }
 
-        admin.LastLoginAt = DateTimeOffset.UtcNow;
-        await _db.SaveChangesAsync(ct);
-
+        var admin = result.Admin!;
         var claims = new[]
         {
             new Claim("sub", admin.Id.ToString()),

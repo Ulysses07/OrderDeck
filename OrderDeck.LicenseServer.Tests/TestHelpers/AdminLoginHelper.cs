@@ -59,6 +59,23 @@ public static class AdminLoginHelper
         return input?.Value ?? throw new InvalidOperationException("No anti-forgery token found in HTML.");
     }
 
+    /// <summary>
+    /// Giriş sayfasındaki hata kutusunun ÇÖZÜLMÜŞ metnini döndürür.
+    ///
+    /// <para>Ham HTML'de aramak yanıltıcı: Razor'ın varsayılan encoder'ı ASCII
+    /// dışındaki her karakteri sayısal varlığa çeviriyor, yani "Geçersiz"
+    /// kaynakta "Ge&amp;#xE7;ersiz" olarak duruyor. Tarayıcı bunu çözüp doğru
+    /// gösteriyor; dolayısıyla operatörün gördüğü şeyi test etmek istiyorsak
+    /// belgeyi ayrıştırmak zorundayız. (Eskiden <c>Html.Raw</c> kullanıldığı
+    /// için metin kaynakta da düz duruyordu — o sink kaldırıldı.)</para>
+    /// </summary>
+    public static string ExtractAlertText(string html)
+    {
+        var ctx = BrowsingContext.New(Configuration.Default);
+        var doc = ctx.OpenAsync(req => req.Content(html)).GetAwaiter().GetResult();
+        return doc.QuerySelector(".alert-danger")?.TextContent.Trim() ?? "";
+    }
+
     /// <summary>Idempotently creates an admin user with the given password.</summary>
     public static async Task EnsureAdminSeededAsync(ApiFactory factory, string username, string password)
     {

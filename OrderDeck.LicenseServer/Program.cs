@@ -81,6 +81,7 @@ public class Program
 
         // Services
         builder.Services.AddSingleton<PasswordHasher>();
+        builder.Services.AddScoped<AdminLoginService>();
         builder.Services.AddScoped<ShopperRefreshTokenService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.ShopperCode.IShopperCodeValidator,
             OrderDeck.LicenseServer.Services.ShopperCode.ShopperCodeValidator>();
@@ -390,6 +391,23 @@ public class Program
                         PermitLimit = 5,
                         Window = TimeSpan.FromMinutes(1)
                     }));
+            // Razor /admin/login. Kendi politikası var çünkü Razor Pages'te sayfa
+            // TEK uç: aynı politika GET'i de sayardı ve giriş formunu birkaç kez
+            // yenileyen operatör kendi giriş sayfasından 429 yerdi. Bu yüzden
+            // yalnız POST bölümleniyor, GET limitsiz geçiyor.
+            //
+            // Asıl koruma bu değil, hesap kilidi (AdminLoginService): IP başına
+            // sınır IP döndüren saldırganı durdurmuyor. Buradaki yalnız sel kapağı.
+            opt.AddPolicy("admin-login", ctx =>
+                HttpMethods.IsPost(ctx.Request.Method)
+                    ? RateLimitPartition.GetFixedWindowLimiter(
+                        partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                        factory: _ => new FixedWindowRateLimiterOptions
+                        {
+                            PermitLimit = 5,
+                            Window = TimeSpan.FromMinutes(1)
+                        })
+                    : RateLimitPartition.GetNoLimiter<string>("admin-login-get"));
             opt.AddPolicy("auth-register", ctx =>
                 RateLimitPartition.GetFixedWindowLimiter(
                     partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
