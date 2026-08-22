@@ -1,0 +1,36 @@
+# Dependabot — SHA pin'lerini taze tutar.
+#
+# Bu dosya olmadan SHA pin'lemesi yarım bir çözüm: `actions/checkout@v4`'ü
+# commit SHA'sına sabitlemek retag saldırısını kapatır ama aynı hamlede
+# upstream'in güvenlik yamalarını da dondurur. Yani pin + otomatik bump
+# birlikte anlamlı; yalnız pin, zamanla eskiyen bir action ağacı demek.
+#
+# Dependabot SHA pin'lerini anlıyor: PR'da hem SHA'yı hem yanındaki
+# `# vX.Y.Z` yorumunu günceller, o yüzden yorumlar süs değil — sürüm
+# okunabilirliği onlara bağlı.
+#
+# Neden yalnız github-actions:
+#   - `docker` ekosistemi burada işe yaramaz. Dockerfile/compose'daki
+#     imajlar `10.0`, `2022-latest`, `2-alpine` gibi KAYAN etiketler;
+#     Dependabot bunlarda bump edecek bir sürüm görmez, gördüğünde de
+#     major atlatmaya çalışır (sdk:10.0 → 11.0). İmaj pin'i ayrı bir iş,
+#     gerekçesi PR'da yazılı.
+#   - `nuget` bilerek kapalı: bu repoda paket yükseltmesi WPF tarafını
+#     kırabilecek bir iş ve yayınlanmamış sürüm borcu varken haftalık PR
+#     akışı gürültüden ibaret olurdu.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # Tek PR: 20+ pin ayrı ayrı açılırsa kimse bakmaz ve pin'ler yine eskir.
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: chore
+      include: scope
+    open-pull-requests-limit: 5
