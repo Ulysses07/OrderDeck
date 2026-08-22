@@ -97,6 +97,37 @@ ADMIN_PASSWORD_HASH: see Phase 4a admin bootstrap docs (BCrypt-Net)
 - **Logs (live)**: `docker compose logs -f license-server`
 - **DB backup**: `docker compose exec sqlserver /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SQL_PASSWORD" -Q "BACKUP DATABASE OrderDeckLicense TO DISK = '/var/opt/mssql/backup/orderdeck-$(date +%F).bak'"`
 
+## Deploy geri alma (rollback)
+
+**Normalde elle bir şey yapman gerekmez.** 2026-08-22'den beri deploy workflow'u
+kendi geri alıyor: `.env`'e dokunmadan önce mevcut `LICENSE_SERVER_TAG` +
+`.deployed_sha` VPS'te `/opt/orderdeck/.rollback` dosyasına yazılır; SSH deploy'u
+kalıcı olarak düşerse **veya** smoke testi (`/ready`) 60 sn içinde 200 vermezse
+önceki sürüme dönülür ve runner `/ready`'yi tekrar yoklar. Geri alma da tutmazsa
+iş `ELLE MÜDAHALE` hatasıyla kırmızı kalır.
+
+Script'i CI her deploy'da kopyalar (`deploy/scripts/rollback-license-server.sh` →
+`/opt/orderdeck/scripts/`), yani elle kurulum yok ve dosya hep repo'daki sürümle
+aynı.
+
+Elle geri alma (CI dışında, gece 3'te):
+
+```bash
+cd /opt/orderdeck
+scripts/rollback-license-server.sh --apply     # --run-id VERME: CI dışı çalıştırmada
+                                               # koşu eşleşmesi aranmaz
+```
+
+`--apply` şunları yapar: `.env`'deki etiketi kayıtlı önceki `master-<sha>`'ya
+sed'ler, compose bu deploy'da değiştiyse `docker-compose.yml.prev`'i geri koyar
+(bozuk hâli `docker-compose.yml.failed` olarak saklar), `up -d` eder,
+`.deployed_sha`'yı geri yazar ve konteynerin `running` olduğunu doğrular.
+
+Kayıtlı durum yoksa (`.rollback` silinmişse — başarılı deploy sonrası silinir)
+klasik yol: `.env`'de `LICENSE_SERVER_TAG`'i bir önceki `master-<short-sha>`'ya
+çevir, `docker compose up -d license-server`. Tüm sha etiketleri değişmez;
+imaj prune 72 saatlik geçmişi tutar, daha eskisi GHCR'dan çekilir.
+
 ## EF migration history bootstrap (one-time, before first Migrate() deploy)
 
 The original deploy used `EnsureCreated()` so the DB has all the schema but no
