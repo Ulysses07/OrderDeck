@@ -1,4 +1,4 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using System.Security.Cryptography;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http.Features;
@@ -21,7 +21,6 @@ public sealed class MeBackupsController : ControllerBase
     private readonly BackupStorageService _storage;
     private readonly BackupRetentionService _retention;
     private readonly IAuditService _audit;
-    private readonly IS3BackupSink _s3;
     private readonly Microsoft.Extensions.Options.IOptions<BackupOptions> _opt;
     private readonly BackupUploadThrottle _throttle;
     private readonly OrderDeck.LicenseServer.Services.Observability.OrderDeckMetrics _metrics;
@@ -32,7 +31,6 @@ public sealed class MeBackupsController : ControllerBase
         BackupStorageService storage,
         BackupRetentionService retention,
         IAuditService audit,
-        IS3BackupSink s3,
         Microsoft.Extensions.Options.IOptions<BackupOptions> opt,
         BackupUploadThrottle throttle,
         OrderDeck.LicenseServer.Services.Observability.OrderDeckMetrics metrics,
@@ -42,7 +40,6 @@ public sealed class MeBackupsController : ControllerBase
         _storage = storage;
         _retention = retention;
         _audit = audit;
-        _s3 = s3;
         _opt = opt;
         _throttle = throttle;
         _metrics = metrics;
@@ -194,19 +191,12 @@ public sealed class MeBackupsController : ControllerBase
         // Re-load to capture milestone flag (retention may have set it)
         var saved = await _db.CustomerBackups.FindAsync(new object[] { backup.Id }, ct);
 
-        // Off-host replication (Phase 5b). Fire-and-forget when BestEffort=true
-        // so the customer's POST doesn't wait on cross-region S3 latency. Sink
-        // is a no-op when Backup:S3:Enabled=false.
-        if (_s3.IsEnabled)
-        {
-            var customerIdCopy = CustomerId;
-            var blobPathCopy = blobPath;
-            _ = Task.Run(async () =>
-            {
-                try { await _s3.UploadAsync(blobPathCopy, customerIdCopy); }
-                catch (Exception ex) { _log.LogError(ex, "S3 replication failed for {Path}", blobPathCopy); }
-            });
-        }
+        // Saha dışı kopyalama burada YAPILMIYOR. Eskiden `Task.Run` ile
+        // ateşlenip unutuluyordu: kopyalandığına dair kayıt yoktu, yeniden
+        // deneme yoktu ve süreç yeniden başlarsa (her deploy) uçuştaki iş
+        // sessizce kayboluyordu. Artık gecelik cron `aws s3 sync` yapıyor —
+        // artımlı ve tekrar güvenli, kaçan dosya ertesi gece gidiyor.
+        // Bkz. deploy/scripts/backup-blobs-to-r2.sh, HA-PLAYBOOK G6.
 
         await _audit.LogAsync(BackupAuditEvents.BackupCreated,
             BackupAuditEvents.TargetType,

@@ -108,12 +108,8 @@ services:
       Backup__MaxBlobSizeMb: "64"
       Backup__MaxConcurrentUploads: "2"
       Backup__UploadQueueWaitSeconds: "10"
-      Backup__S3__Enabled: "${BACKUP_S3_ENABLED:-false}"
-      Backup__S3__ServiceUrl: "${BACKUP_S3_SERVICE_URL:-}"
-      Backup__S3__AccessKey: "${BACKUP_S3_ACCESS_KEY:-}"
-      Backup__S3__SecretKey: "${BACKUP_S3_SECRET_KEY:-}"
-      Backup__S3__Bucket: "${BACKUP_S3_BUCKET:-}"
-      Backup__S3__Prefix: "${BACKUP_S3_PREFIX:-orderdeck-backups/}"
+      # Backup__S3__* kaldırıldı: saha dışı kopyalama artık uygulamada değil,
+      # VPS'te gecelik cron ile (deploy/scripts/backup-blobs-to-r2.sh).
       Cors__AllowedOrigins: "${CORS_ALLOWED_ORIGINS:-}"
       # Push (PR #56, 2026-05-15) — FCM. Sağlayıcıyı "stub" yaparsan gerçek
       # bildirim gitmez. JSON anahtar dosyası host'tan read-only mount edilir

@@ -576,17 +576,13 @@ public class Program
         if (!builder.Environment.IsEnvironment("Testing"))
             builder.Services.AddHangfireServer();
 
-        // S3 off-host backup replication. Disabled-by-default; switch to the
-        // real implementation only when Backup:S3:Enabled=true. The no-op sink
-        // keeps controller code uniform without forcing every prod deployment
-        // to provision a bucket up-front.
-        var s3Enabled = builder.Configuration.GetValue<bool>("Backup:S3:Enabled");
-        if (s3Enabled)
-            builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Backup.IS3BackupSink,
-                                          OrderDeck.LicenseServer.Services.Backup.S3BackupSink>();
-        else
-            builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Backup.IS3BackupSink,
-                                          OrderDeck.LicenseServer.Services.Backup.NoOpS3BackupSink>();
+        // Saha dışı yedek replikasyonu artık uygulamada DEĞİL: VPS'te gecelik
+        // cron (`deploy/scripts/backup-blobs-to-r2.sh`) yapıyor. Buradaki
+        // `Backup:S3` yolu silindi — açılabilir görünüyordu ama R2'de
+        // çalışmazdı (AuthenticationRegion + DisablePayloadSigning eksikti) ve
+        // `Task.Run` ile ateşle-unut olduğu için hangi blob'un kopyalandığı
+        // hiç kayda geçmiyordu; her deploy'un yeniden başlattığı süreçte
+        // uçuştaki kopyalama sessizce kayboluyordu. Ayrıntı: HA-PLAYBOOK G6.
 
         // OpenTelemetry: tracing + metrics. Custom OrderDeckMetrics meter is
         // registered as a singleton so domain code can inject it. AspNetCore +
