@@ -65,7 +65,6 @@ export default function SecGiveaway({ locale }: { locale: LandingLocale }) {
       io.disconnect();
       clearTimeout(timer.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (

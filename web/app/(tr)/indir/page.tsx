@@ -1,5 +1,4 @@
 import type { Metadata } from 'next';
-import Link from 'next/link';
 import { Download, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { Nav } from '@/components/Nav';
 import { Footer } from '@/components/Footer';
