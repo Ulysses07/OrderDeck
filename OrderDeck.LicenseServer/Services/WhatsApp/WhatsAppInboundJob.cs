@@ -53,15 +53,34 @@ public sealed class WhatsAppInboundJob
     private readonly record struct PendingLabel(
         Guid LicenseId, WaLabelEvent Event, WaConversation Conversation);
 
+    /// <summary>Tek webhook paketinin BİR sohbete yaptığı toplam etki.
+    ///
+    /// <para><b>Neden birikiyor:</b> okunmamış sayacı ve "en yeni zaman damgası"
+    /// oku-değiştir-yaz alanları; izlenen varlık üzerinde güncellenirse EF bunu
+    /// <c>SET UnreadCount = &lt;okunan+1&gt;</c> diye yazar ve aynı müşterinin iki
+    /// paketini işleyen iki Hangfire çalışanı aynı değeri okuyup birbirinin
+    /// artışını siler. Paket başına tek atomik UPDATE'e indirgeyip kararı
+    /// veritabanına bırakıyoruz — bkz.
+    /// <see cref="ApplyConversationDeltasAsync"/>.</para></summary>
+    private sealed class ConversationDelta
+    {
+        public int UnreadDelta;
+        public DateTimeOffset LastMessageAt;
+        public DateTimeOffset? LastInboundAt;
+        public bool Reopen;
+    }
+
     public async Task ProcessAsync(string rawJson, CancellationToken ct = default)
     {
         var events = WhatsAppWebhookParser.Parse(rawJson);
         if (events.IsEmpty) return;
 
         var pendingLabels = new List<PendingLabel>();
-        await ProcessMessagesAsync(events, pendingLabels, ct);
+        var deltas = new Dictionary<Guid, ConversationDelta>();
+        await ProcessMessagesAsync(events, pendingLabels, deltas, ct);
         await ProcessStatusesAsync(events, ct);
         await _db.SaveChangesAsync(ct);
+        await ApplyConversationDeltasAsync(deltas, ct);
 
         // Etiket AYRI kaydedilir, mesajlarla aynı işlemi paylaşmaz.
         //
@@ -116,7 +135,8 @@ public sealed class WhatsAppInboundJob
     }
 
     private async Task ProcessMessagesAsync(
-        WhatsAppWebhookEvents events, List<PendingLabel> pendingLabels, CancellationToken ct)
+        WhatsAppWebhookEvents events, List<PendingLabel> pendingLabels,
+        Dictionary<Guid, ConversationDelta> deltas, CancellationToken ct)
     {
         foreach (var m in events.Messages)
         {
@@ -172,17 +192,21 @@ public sealed class WhatsAppInboundJob
                 }
             }
 
-            if (convo.LastMessageAt is null || m.Timestamp > convo.LastMessageAt)
-                convo.LastMessageAt = m.Timestamp;
+            // Sohbet toplamları izlenen varlığa YAZILMAZ, biriktirilir; paket
+            // sonunda tek atomik UPDATE'e dönüşür (bkz. ConversationDelta).
+            if (!deltas.TryGetValue(convo.Id, out var delta))
+                deltas[convo.Id] = delta = new ConversationDelta();
+
+            if (m.Timestamp > delta.LastMessageAt) delta.LastMessageAt = m.Timestamp;
 
             if (!m.IsEcho)
             {
                 // Pencereyi YALNIZ müşteriden gelen mesaj açar.
-                if (convo.LastInboundAt is null || m.Timestamp > convo.LastInboundAt)
-                    convo.LastInboundAt = m.Timestamp;
-                convo.UnreadCount++;
+                if (delta.LastInboundAt is null || m.Timestamp > delta.LastInboundAt)
+                    delta.LastInboundAt = m.Timestamp;
+                delta.UnreadDelta++;
                 // Operatör kapatmış olsa bile yeni mesaj sohbeti geri açar.
-                convo.Status = "open";
+                delta.Reopen = true;
 
                 // Dekont olabilecek her şey tek olay: gelenin gerçekten dekont
                 // olduğu bilinemez, yanlış etiketin bedeli bir tık.
@@ -202,6 +226,78 @@ public sealed class WhatsAppInboundJob
                     }
                 }
             }
+        }
+    }
+
+    /// <summary>Paketin sohbet toplamlarını (okunmamış sayacı, son mesaj/son
+    /// gelen zamanı, yeniden açma) sohbet başına TEK atomik UPDATE ile uygular.
+    ///
+    /// <para><b>Neden atomik:</b> Meta aynı müşteriden arka arkaya paket
+    /// gönderebiliyor ve Hangfire bunları paralel çalışanlarda işliyor. Alanlar
+    /// izlenen varlıkta güncellenseydi her çalışan "okuduğu değeri + kendi
+    /// katkısı"nı yazar, sonuncusu diğerini silerdi. Bedeli görünmez değil:
+    /// kaybolan <c>UnreadCount</c> artışı rozeti eksik gösterir ve müşteri mesajı
+    /// gözden kaçar; geriye giden <c>LastInboundAt</c> ise 24 saatlik hizmet
+    /// penceresini erken kapatır — serbest metin hâlâ mümkünken sunucu ÜCRETLİ
+    /// şablona düşer. Karar veritabanına bırakılıyor: sayaç <c>UnreadCount + @d</c>
+    /// ile artıyor, zaman damgaları yalnız İLERİ gidebiliyor.</para>
+    ///
+    /// <para><b>Neden SaveChanges'ten SONRA:</b> müşteri ilk kez yazdığında
+    /// sohbet satırı ancak o kayıtla var olur; önce çalışsaydı WHERE hiçbir satır
+    /// bulmaz ve toplamlar sessizce kaybolurdu.</para></summary>
+    private async Task ApplyConversationDeltasAsync(
+        Dictionary<Guid, ConversationDelta> deltas, CancellationToken ct)
+    {
+        if (deltas.Count == 0) return;
+
+        // InMemory sağlayıcısında ExecuteUpdate yok; orada eşzamanlılık semantiği
+        // de olmadığı için aynı monoton kuralları izlenen varlığa uygulamak
+        // davranışı birebir korur. Aynı ikili yol WaSendAttemptCleanupJob'da da var.
+        if (!_db.Database.IsRelational())
+        {
+            foreach (var (id, d) in deltas)
+            {
+                var convo = await _db.WaConversations.FirstOrDefaultAsync(c => c.Id == id, ct);
+                if (convo is null) continue;
+
+                convo.UnreadCount += d.UnreadDelta;
+                if (convo.LastMessageAt is null || convo.LastMessageAt < d.LastMessageAt)
+                    convo.LastMessageAt = d.LastMessageAt;
+                if (d.LastInboundAt is { } inbound
+                    && (convo.LastInboundAt is null || convo.LastInboundAt < inbound))
+                {
+                    convo.LastInboundAt = inbound;
+                }
+                if (d.Reopen) convo.Status = "open";
+            }
+
+            await _db.SaveChangesAsync(ct);
+            return;
+        }
+
+        foreach (var (id, d) in deltas)
+        {
+            var unreadDelta = d.UnreadDelta;
+            var lastMessageAt = d.LastMessageAt;
+            var lastInboundAt = d.LastInboundAt;
+            // null → sohbetin mevcut durumu korunur (COALESCE).
+            var reopenTo = d.Reopen ? "open" : null;
+
+            await _db.WaConversations
+                .Where(c => c.Id == id)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(c => c.UnreadCount, c => c.UnreadCount + unreadDelta)
+                    .SetProperty(c => c.LastMessageAt,
+                        c => c.LastMessageAt == null || c.LastMessageAt < lastMessageAt
+                            ? lastMessageAt
+                            : c.LastMessageAt)
+                    .SetProperty(c => c.LastInboundAt,
+                        c => lastInboundAt != null
+                             && (c.LastInboundAt == null || c.LastInboundAt < lastInboundAt)
+                            ? lastInboundAt
+                            : c.LastInboundAt)
+                    .SetProperty(c => c.Status, c => reopenTo ?? c.Status),
+                    ct);
         }
     }
 
