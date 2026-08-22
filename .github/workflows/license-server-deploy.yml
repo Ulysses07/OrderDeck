@@ -7,8 +7,9 @@ name: license-server-deploy
 # and `compose up -d`.
 #
 # `deploy/docker-compose.yml` is the source of truth for the live file since
-# 2026-08-22 — hand edits under /opt/orderdeck will be overwritten on the next
-# deploy. `.env` is NOT synced: it holds the secrets and stays VPS-only.
+# 2026-08-22, and `deploy/Caddyfile` since 2026-08-23 — hand edits under
+# /opt/orderdeck will be overwritten on the next deploy. `.env` is NOT synced:
+# it holds the secrets and stays VPS-only.
 #
 # Production routing pins to `master-<short-sha>` (immutable). `:latest`
 # is pushed for ergonomic manual ops only — never read by VPS compose
@@ -303,6 +304,193 @@ jobs:
               exit 1
               ;;
           esac
+
+      - name: Sync Caddyfile to VPS
+        if: steps.ordering.outputs.skip != 'true'
+        id: caddy
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        # `deploy/Caddyfile` de tıpkı #318 öncesi compose gibi HİÇBİR YERE
+        # kopyalanmıyordu: canlı dosya `/opt/orderdeck/Caddyfile` elle
+        # düzenleniyordu (VPS'te 8 adet `Caddyfile.bak-*` bunun kalıntısı).
+        # 2026-08-23'te ölçüldüğünde ikisi tesadüfen birebir aynıydı
+        # (sha256 a64d9142…), ama bunu koruyan bir mekanizma yoktu — yani
+        # repo dosyası her an sessizce şablona dönüşebilirdi. Compose'da bu
+        # tam olarak olmuştu.
+        #
+        # Compose'dan AYRI bir adım, çünkü uygulama yolu bambaşka:
+        #
+        #   1. Doğrulama `docker compose config` değil `caddy validate`. Üstelik
+        #      ÇALIŞAN konteynerin imaj kimliğiyle (`{{.Image}}`, etiket değil)
+        #      tek kullanımlık bir konteynerde koşuyor: config'i gerçekte
+        #      yükleyecek olan binary ile doğrulayan binary aynı olsun.
+        #
+        #   2. Yazma `mv` DEĞİL, yerinde `cat > `. Compose dosyasını compose
+        #      her seferinde yoldan okur, Caddyfile ise tek-dosya bind mount
+        #      (`./Caddyfile:/etc/caddy/Caddyfile:ro`) — konteyner INODE'a
+        #      bağlı. `mv` yeni bir inode koyar, konteyner eski dosyayı görmeye
+        #      devam eder ve `caddy reload` sessizce ESKİ config'i yükler.
+        #      Değişiklik uygulanmış gibi görünür, olmaz. `.prev`'ten geri
+        #      dönüş de aynı sebeple yerinde yazıyor.
+        #
+        #   3. Uygulama `up -d` değil `caddy reload` (kesintisiz; konteyner
+        #      yeniden yaratılırsa TLS sertifika önbelleği ve tüm siteler
+        #      birkaç saniye düşer).
+        #
+        # Kendi geri alması var ve Deploy'dan ÖNCE koşuyor: O-12'nin geri alma
+        # script'i yalnız license-server imajını/compose'u geri alır, Caddyfile'a
+        # dokunmaz. Yani bozuk bir Caddyfile'ı buradan başka kimse toparlamaz.
+        # Reload düşerse ya da reload'dan sonra beş siteden biri cevap vermezse
+        # `.prev` yerine yazılıp yeniden reload ediliyor, sonra iş kırmızıya
+        # dönüyor — deploy hiç başlamamış oluyor.
+        #
+        # SINIRI AÇIK OLSUN: sağlık yoklaması durum koduna bakar. Yanlış bir
+        # CSP/başlık değişikliği 200 dönmeye devam eder, buradan YAKALANMAZ;
+        # onun doğrulaması tarayıcıda elle yapılmak zorunda.
+        run: |
+          SSH_OPTS="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+                    -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3"
+          DEST="${DEPLOY_USER}@${DEPLOY_HOST}"
+
+          # Compose adımıyla aynı iki-tur kalıbı: salt-okuma verdict turu her
+          # denemede aynı sonucu verir, mutasyon turu `.new`'in varlığıyla
+          # korunur (onu silen tek şey uygulama bloğunun kendisi).
+          caddy_verdict() {
+            scp $SSH_OPTS deploy/Caddyfile "${DEST}:/opt/orderdeck/Caddyfile.new" || return 1
+            ssh $SSH_OPTS "$DEST" '
+              cd /opt/orderdeck || exit 1
+              img=$(docker inspect -f "{{.Image}}" orderdeck-caddy) || exit 1
+              if ! docker run --rm -v /opt/orderdeck/Caddyfile.new:/etc/caddy/Caddyfile:ro \
+                     "$img" caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile; then
+                rm -f Caddyfile.new
+                echo CADDY_INVALID
+                exit 0
+              fi
+              if cmp -s Caddyfile.new Caddyfile; then
+                rm -f Caddyfile.new
+                echo CADDY_SAME
+                exit 0
+              fi
+              echo CADDY_CHANGED' 2>&1
+          }
+
+          # Sıra kritik. `.new` işareti ancak reload BAŞARILI olduktan sonra
+          # siliniyor: yazma ile reload arasında bağlantı koparsa ikinci deneme
+          # işi tamamlar. Aksi hâlde dosya yeni, çalışan config eski kalır ve
+          # sonraki koşu `CADDY_SAME` deyip farkı yutardı (#318/#325'in sınıfı).
+          #
+          # Yedek ise yalnız canlı dosya HENÜZ yazılmadıysa alınıyor: koşulsuz
+          # bir `cp` ikinci denemede `.prev`'i yeni dosyayla ezer, yani geri
+          # dönülecek sürüm yok olurdu.
+          caddy_apply() {
+            ssh $SSH_OPTS "$DEST" '
+              cd /opt/orderdeck || exit 1
+              if [ ! -f Caddyfile.new ]; then
+                echo CADDY_APPLIED
+                exit 0
+              fi
+              if ! cmp -s Caddyfile Caddyfile.new; then
+                cp Caddyfile Caddyfile.prev || exit 1
+                cat Caddyfile.new > Caddyfile || exit 1
+              fi
+              if ! docker exec orderdeck-caddy caddy reload \
+                     --config /etc/caddy/Caddyfile --adapter caddyfile; then
+                cat Caddyfile.prev > Caddyfile
+                docker exec orderdeck-caddy caddy reload \
+                  --config /etc/caddy/Caddyfile --adapter caddyfile || true
+                rm -f Caddyfile.new
+                echo CADDY_RELOAD_FAILED
+                exit 0
+              fi
+              rm -f Caddyfile.new
+              echo CADDY_APPLIED' 2>&1
+          }
+
+          caddy_restore() {
+            ssh $SSH_OPTS "$DEST" '
+              cd /opt/orderdeck || exit 1
+              [ -f Caddyfile.prev ] || { echo CADDY_NO_PREV; exit 0; }
+              cat Caddyfile.prev > Caddyfile || exit 1
+              docker exec orderdeck-caddy caddy reload \
+                --config /etc/caddy/Caddyfile --adapter caddyfile || exit 1
+              echo CADDY_RESTORED' 2>&1
+          }
+
+          VERDICT=""
+          for attempt in 1 2 3; do
+            if VERDICT=$(caddy_verdict); then break; fi
+            echo "$VERDICT"
+            VERDICT=""
+            echo "::warning::Caddyfile senkronu başarısız (deneme ${attempt}/3); yeniden denenecek..."
+            sleep $((attempt * 5))
+          done
+
+          echo "$VERDICT"
+          case "$VERDICT" in
+            *CADDY_INVALID*)
+              echo "::error::Caddyfile doğrulaması başarısız (caddy validate) — canlı dosyaya dokunulmadı"
+              exit 1
+              ;;
+            *CADDY_SAME*)
+              echo "Caddyfile değişmedi."
+              exit 0
+              ;;
+            *CADDY_CHANGED*)
+              ;;
+            *)
+              echo "::error::Caddyfile senkronu 3 denemede tamamlanamadı — canlı dosyaya dokunulmadı"
+              exit 1
+              ;;
+          esac
+
+          APPLY=""
+          for attempt in 1 2 3; do
+            if APPLY=$(caddy_apply); then break; fi
+            echo "$APPLY"
+            APPLY=""
+            echo "::warning::Caddyfile uygulaması başarısız (deneme ${attempt}/3); yeniden denenecek..."
+            sleep $((attempt * 5))
+          done
+
+          echo "$APPLY"
+          case "$APPLY" in
+            *CADDY_RELOAD_FAILED*)
+              echo "::error::caddy reload başarısız — önceki Caddyfile geri kondu"
+              exit 1
+              ;;
+            *CADDY_APPLIED*)
+              ;;
+            *)
+              echo "::error::Caddyfile uygulaması 3 denemede tamamlanamadı"
+              exit 1
+              ;;
+          esac
+
+          # Reload başarılı = config yüklendi. Ama geçerli bir config yanlış da
+          # olabilir (bir site bloğu düşmüş, root yolu bozulmuş). Beş herkese
+          # açık yüzeyin hepsi ayrı ayrı yoklanıyor: tek bir /ready yoklaması
+          # panel ya da marketing sitesi kırıldığında bunu göremezdi.
+          FAILED=""
+          for url in \
+            https://license.orderdeckapp.com/ready \
+            https://orderdeckapp.com/ \
+            https://panel.orderdeckapp.com/ \
+            https://emarglobal.com/ \
+            https://www.orderdeckapp.com/
+          do
+            if ! curl -fsS -o /dev/null -m 15 --retry 3 --retry-delay 2 --retry-all-errors "$url"; then
+              FAILED="${FAILED} ${url}"
+            fi
+          done
+
+          if [ -n "$FAILED" ]; then
+            echo "::error::Caddy reload sonrası cevap vermeyen adres(ler):${FAILED} — geri alınıyor"
+            caddy_restore || true
+            exit 1
+          fi
+
+          echo "Caddyfile güncellendi, reload edildi, beş yüzey de cevap veriyor."
 
       - name: Deploy to VPS
         if: steps.ordering.outputs.skip != 'true'
