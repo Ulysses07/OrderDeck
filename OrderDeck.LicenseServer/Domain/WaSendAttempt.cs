@@ -20,7 +20,9 @@ public sealed class WaSendAttempt
     public Guid LicenseId { get; set; }
     public License? License { get; set; }
 
-    /// <summary>"pending" (rezerve edildi, sonuç yok) | "done" (sonuç işlendi).</summary>
+    /// <summary>"pending" (rezerve edildi, sonuç yok) | "done" (sonuç işlendi).
+    /// <see cref="StartedAt"/> ile birlikte eşzamanlılık belirteci — bkz.
+    /// <c>LicenseDbContext</c>.</summary>
     public string Status { get; set; } = "pending";
 
     /// <summary>Tamamlanmış gönderimin sonucu; "pending" iken null.</summary>
@@ -35,7 +37,10 @@ public sealed class WaSendAttempt
 
     /// <summary>Denemenin BAŞLADIĞI an. Bayat "pending" tespiti bununla yapılır.
     /// Terk edilmiş bir rezervasyon devralınınca üzerine yazılır — yani "satırın
-    /// oluşturulma anı" değil, "şu an uçuşta olan denemenin başlangıcı".</summary>
+    /// oluşturulma anı" değil, "şu an uçuşta olan denemenin başlangıcı".
+    ///
+    /// <para><see cref="Status"/> ile birlikte eşzamanlılık belirteci: devralmayı
+    /// yalnız satırı gerçekten değiştiren istek kazanır, kaybeden göndermez.</para></summary>
     public DateTimeOffset StartedAt { get; set; }
 
     public DateTimeOffset? CompletedAt { get; set; }

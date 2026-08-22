@@ -703,7 +703,20 @@ public class LicenseDbContext : DbContext
             b.HasKey(a => a.Id);
             b.HasOne(a => a.License).WithMany().HasForeignKey(a => a.LicenseId)
              .OnDelete(DeleteBehavior.Cascade);
-            b.Property(a => a.Status).HasMaxLength(16).IsRequired();
+            // Status + StartedAt eşzamanlılık belirteci: bayat rezervasyonun
+            // DEVRALINMASINI koşullu hale getiriyor. İki yeniden-deneme aynı
+            // bayat satırı okuyup ikisi de devralabiliyordu; PK yalnız yeni
+            // EKLEME yarışını kapatıyor, devralma UPDATE'ini değil. Sonuç aynı
+            // faturalı mesajın müşteriye iki kez gitmesiydi.
+            //
+            // İkisi birden gerekli, tek başına ikisi de yetmiyor:
+            //   • Yalnız StartedAt olsaydı, iki dakikayı aşan bir gönderim tam
+            //     devralma anında sonucunu yazsa (Status pending→done, StartedAt
+            //     DEĞİŞMEZ) devralan yine kazanır ve ikinci mesajı gönderirdi.
+            //   • Yalnız Status olsaydı, iki devralma da pending→pending yazdığı
+            //     için ikisi de kazanırdı.
+            b.Property(a => a.Status).HasMaxLength(16).IsRequired().IsConcurrencyToken();
+            b.Property(a => a.StartedAt).IsConcurrencyToken();
             b.Property(a => a.ErrorCode).HasMaxLength(32);
             b.Property(a => a.ErrorMessage).HasMaxLength(1000);
             b.HasIndex(a => a.StartedAt);
