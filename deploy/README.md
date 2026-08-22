@@ -191,16 +191,34 @@ do grow are history: `Label`, `Customer`, `GiveawayParticipant`, `Payment`,
 Saha dışı kopyalama **uygulamada değil**, VPS'te cron ile yapılır. Hepsi tek
 bucket'ta: `s3://orderdeck-prod-backups/`.
 
-| İçerik | Script | Cron | Prefix |
+| İçerik | Script | Cron | Uzak nesne |
 |---|---|---|---|
-| SQL `.bak` (gzip) | `backup-sql-to-r2.sh` | `0 3 * * *` | `sql-bak/` |
-| DataProtection anahtarları | `backup-keys-to-r2.sh` | `30 3 * * *` | `keys/` |
-| `.env` (GPG şifreli) | `backup-env-to-r2.sh` | `45 3 * * *` | `env/` |
-| Müşteri yedek blob'ları | `backup-blobs-to-r2.sh` | `0 4 * * *` | `customer-blobs/` |
+| SQL `.bak` | `backup-sql-to-r2.sh` | `0 3 * * *` | `sql-bak/orderdeck-<tarih>.bak.gz.gpg` |
+| DataProtection anahtarları | `backup-keys-to-r2.sh` | `30 3 * * *` | `keys/keys-<tarih>.tar.gz.gpg` |
+| `.env` | `backup-env-to-r2.sh` | `45 3 * * *` | `env/env-<tarih>.gpg` |
+| Müşteri yedek blob'ları | `backup-blobs-to-r2.sh` | `0 4 * * *` | `customer-blobs/…` (AES-256-GCM) |
 
 Dördü birlikte anlamlı: blob'lar şifreli, çözmek için `.env`'deki ana anahtar
 gerekli, hangi blob'un hangi anahtar sürümüyle yazıldığı ise SQL'deki
 `CustomerBackups.KeyVersion` satırında. Biri eksikse geri dönüş yapılamaz.
+
+**Dördü de uzakta şifreli**, ilk üçü aynı GPG parolasıyla
+(`/opt/orderdeck/.env-backup-pass`; asıl kopya parola yöneticisinde). Bir süre
+`.bak` ve anahtarlar **düz** gidiyordu — o hâlde `.env`'i şifrelemek tiyatroydu:
+R2'yi okuyabilen birinin `.env`'e ihtiyacı yok, müşteri verisi zaten `.bak`'ın
+içinde, imzalama anahtarları da düz XML olarak yanında. 2026-08-22 restore
+tatbikatı bunu somutlaştırdı: tek bir *salt-okunur* R2 token'ıyla tüm prod
+veritabanı temiz bir makinede restore edilebildi.
+
+Tehdit modeli: bu şifreleme VPS'i ele geçirene karşı hiçbir şey yapmaz (adam
+zaten canlı DB'yi okuyor), **R2'nin veya bir token'ın sızmasına** karşı yapar.
+Yereldeki `.bak` kopyaları bilerek şifresiz; host'a erişen zaten DB'ye erişiyor,
+şifrelemek yalnızca restore'u zorlaştırırdı.
+
+Anahtarlar `aws s3 sync` yerine **tarihli tarball** olarak gidiyor: sync dosya
+başına şifreleme yapamaz. Anahtarlar KB boyutunda ve nadiren değişiyor, her
+gece tam anlık görüntü almak bedava — üstelik restore ederken yarı senkronize
+bir dizin yerine tutarlı bir halka veriyor.
 
 **Neden uygulama içi replikasyon yok:** eski `Backup:S3` yolu silindi. İki
 sebeple: R2'de hiç çalışmazdı (`AuthenticationRegion` ve `DisablePayloadSigning`
@@ -216,11 +234,12 @@ bucket lock var), o yüzden script'te toplu silme tel tuzağı var — yerel blo
 sayısı uzaktakinin yarısının altına düşerse senkron çalışmaz. Kasıtlıysa
 `ALLOW_MASS_DELETE=1` ile çalıştır.
 
-#### `.env` yedeği — kurulum (bir kez)
+#### GPG parolası — kurulum (bir kez, üç script için ortak)
 
-Script parolayı **üretmez**. Üretseydi parola yalnız bu host'ta yaşayan bir
-dosya olurdu ve host'u kaybettiğimizde R2'deki şifreli `.env` de kullanılamaz
-hâle gelirdi — yani tam korumaya çalıştığımız senaryoda işe yaramazdı.
+Script'ler parolayı **üretmez**. Üretselerdi parola yalnız bu host'ta yaşayan
+bir dosya olurdu ve host'u kaybettiğimizde R2'deki şifreli yedekler de
+kullanılamaz hâle gelirdi — yani tam korumaya çalıştığımız senaryoda işe
+yaramazdı.
 
 ```bash
 # 1) Parolayı ÜRET ve ÖNCE parola yöneticine kaydet:
@@ -234,12 +253,43 @@ umask 077 && printf '%s' '<parola>' > /opt/orderdeck/.env-backup-pass
 /opt/orderdeck/scripts/backup-env-to-r2.sh
 ```
 
-Script yüklemeden önce şifre-çöz turu yapar (indir–çöz–karşılaştır); tur
+Script'ler yüklemeden **önce** şifre-çöz turu yapar (şifrele–çöz–`cmp`); tur
 başarısızsa yükleme yapılmaz. Şifrelenmiş ama açılamayan bir yedek, hiç yedek
-almamaktan kötüdür — felaket anına kadar yedeğin olduğunu sanırsın.
+almamaktan kötüdür — felaket anına kadar yedeğin olduğunu sanırsın. Bozuk bir
+parola dosyası böylece bozulduğu gece patlar, ihtiyaç duyulduğu gece değil.
 
-Geri dönüşte parola yalnız parola yöneticinde olduğu için:
-`gpg --decrypt env-YYYY-MM-DD.gpg > .env`
+**Parolayı döndürürsen eskisini parola yöneticisinden silme.** R2'deki geçmiş
+`.gpg` nesneleri eski parolayla şifreli kalır; retention penceresi (30 gün)
+dolana kadar iki parola da geçerlidir.
+
+#### Geri yükleme
+
+Parola yalnız parola yöneticisinde olduğu için hepsi elle çözülür:
+
+```bash
+gpg --decrypt env-YYYY-MM-DD.gpg          > .env
+gpg --decrypt orderdeck-YYYY-MM-DD.bak.gz.gpg | gunzip > orderdeck.bak
+gpg --decrypt keys-YYYY-MM-DD.tar.gz.gpg  | tar -xz -C /opt/orderdeck/keys
+```
+
+R2 kimlik bilgileri **ölen host'ta** (`/root/.aws/credentials`) ve `.env`'in
+içinde (`R2__SecretAccessKey`) — ama `.env` R2'nin içinde olduğu için ondan
+bootstrap edilemez. Kurtarma **Cloudflare hesabına giriş** gerektirir: panelden
+yeni bir *Object Read only* R2 token'ı üretilir. Parola yöneticisinde saklanması
+gereken şey uzun ömürlü bir token değil (bayatlar, kimse fark etmez), Cloudflare
+hesap erişimidir.
+
+#### Bir kereye mahsus: eski şifresiz nesneleri sil
+
+Şifrelemeye geçmeden önce R2'ye **düz** yüklenmiş nesneler retention penceresi
+boyunca orada durmaya devam eder ve otomatik temizlik onlara dokunmaz (tarih
+eşleşmesi yalnız yeni adlandırmayı tanır — tanımadığı bir şeyi silmesini
+istemiyoruz). Şifreli ilk tur başarılı olduktan **sonra** elle:
+
+```bash
+aws s3 rm s3://orderdeck-prod-backups/sql-bak/ --recursive --exclude '*' --include '*.bak.gz' --profile r2
+aws s3 rm s3://orderdeck-prod-backups/keys/    --recursive --exclude '*' --include '*.xml'    --profile r2
+```
 
 ## DNS
 

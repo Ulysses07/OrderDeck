@@ -68,10 +68,16 @@ time; promote on primary failure.
 
 ### Cutover playbook
 
+0. Log in to **Cloudflare** and mint a fresh *Object Read only* R2 token. The
+   existing credentials live on the host you just lost, and the copy inside
+   `.env` can't help you — `.env` is itself in the bucket. What the password
+   manager must hold is Cloudflare account access, not a long-lived token.
 1. Restore latest SQL `.bak` (the one produced by the cron documented in
-   `deploy/README.md`) to the standby's SQL Server.
-2. Restore DataProtection keys from `s3://orderdeck-prod-backups/keys/`
-   (see "Operational gaps" 1).
+   `deploy/README.md`) to the standby's SQL Server. It is GPG symmetric-
+   encrypted: `gpg --decrypt orderdeck-<date>.bak.gz.gpg | gunzip > x.bak`.
+2. Restore DataProtection keys from `s3://orderdeck-prod-backups/keys/` —
+   also GPG-encrypted: `gpg --decrypt keys-<date>.tar.gz.gpg | tar -xz -C
+   /opt/orderdeck/keys` (see "Operational gaps" 1).
 3. Restore `.env` from `s3://orderdeck-prod-backups/env/` — it is GPG
    symmetric-encrypted, the passphrase is in the password manager, NOT on the
    host (see "Operational gaps" 5). This is what carries `BACKUP_MASTER_KEYS_*`;
@@ -137,20 +143,37 @@ replication on AG).
 
 These are the parts code can't help with — pure ops hygiene.
 
-1. **DataProtection keys backup** — ✅ DONE 2026-05-05. Nightly rsync to
-   Cloudflare R2 via [`deploy/scripts/backup-keys-to-r2.sh`](scripts/backup-keys-to-r2.sh),
-   cron `30 3 * * *`. Target: `s3://orderdeck-prod-backups/keys/`. Logs:
-   `/var/log/orderdeck-keys-backup.log`. Without this, password reset
-   tokens + customer JWTs signed by lost keys would be unrecoverable on
-   host failure.
+1. **DataProtection keys backup** — ✅ DONE 2026-05-05, **encrypted 2026-08-22**.
+   Nightly GPG-symmetric tarball to Cloudflare R2 via
+   [`deploy/scripts/backup-keys-to-r2.sh`](scripts/backup-keys-to-r2.sh),
+   cron `30 3 * * *`. Target:
+   `s3://orderdeck-prod-backups/keys/keys-<date>.tar.gz.gpg`, 30-day
+   retention. Logs: `/var/log/orderdeck-keys-backup.log`. Without this,
+   password reset tokens + customer JWTs signed by lost keys would be
+   unrecoverable on host failure.
 
-2. **SQL `.bak` to off-host storage** — ✅ DONE 2026-05-05. Nightly
-   `BACKUP DATABASE` inside the sqlserver container, gzip on host (SQL
-   Express has no native compression), upload to R2 via
-   [`deploy/scripts/backup-sql-to-r2.sh`](scripts/backup-sql-to-r2.sh),
-   cron `0 3 * * *`. Target: `s3://orderdeck-prod-backups/sql-bak/`.
-   Retention: 3 days local, 30 days remote. Logs:
+   Until 2026-08-22 these were `aws s3 sync`ed as **plaintext XML**, which
+   inverted the point of the gap: anyone who could read the bucket held the
+   signing key ring and could mint any token they liked. `sync` can't encrypt
+   per file, hence the switch to a dated tarball — also a more coherent thing
+   to restore than a half-synced directory.
+
+2. **SQL `.bak` to off-host storage** — ✅ DONE 2026-05-05, **encrypted
+   2026-08-22**. Nightly `BACKUP DATABASE` inside the sqlserver container,
+   gzip on host (SQL Express has no native compression), GPG-symmetric, upload
+   to R2 via [`deploy/scripts/backup-sql-to-r2.sh`](scripts/backup-sql-to-r2.sh),
+   cron `0 3 * * *`. Target:
+   `s3://orderdeck-prod-backups/sql-bak/orderdeck-<date>.bak.gz.gpg`.
+   Retention: 3 days local (plaintext, deliberately), 30 days remote. Logs:
    `/var/log/orderdeck-sql-backup.log`.
+
+   The `.bak` is raw customer data — `Customers`, `Payments`,
+   `GiveawayParticipants`, i.e. KVKK-scoped PII. While it sat there as plain
+   gzip, encrypting `.env` (gap 5) was theatre: an attacker holding a bucket
+   token has no need for the key ring when the data itself is right there. The
+   2026-08-22 restore drill demonstrated exactly this — a single **read-only**
+   R2 token was enough to restore the entire production database on a clean
+   machine.
 
 3. **Disk-full monitoring** — ✅ DONE 2026-05-05. Hourly cron runs
    [`deploy/scripts/disk-check.sh`](scripts/disk-check.sh): if root
@@ -216,6 +239,21 @@ These are the parts code can't help with — pure ops hygiene.
    objects and the local count has dropped below half the remote count, the
    script aborts and does nothing. Override for a genuine bulk deletion with
    `ALLOW_MASS_DELETE=1`.
+
+7. **Restore drill** — ✅ DONE 2026-08-22. Full chain exercised on a clean
+   machine, touching nothing in production: fresh read-only R2 token from the
+   Cloudflare dashboard → pull all four artefacts → decrypt `.env` with the
+   password-manager passphrase (not the host copy — the point was to test the
+   password-manager copy) → restore the `.bak` into a throwaway
+   `mssql/server:2022-latest` container → read `KeyVersion` +
+   `ChecksumSha256` from `CustomerBackups` → decrypt the blob with that key
+   version → **SHA256 matched the stored checksum** → the extracted
+   `orderdeck.db` opened with 9 tables / 13,224 rows. Everything was then
+   destroyed and the drill token revoked.
+
+   The drill is what turned gaps 1 and 2 from "done" into "done but
+   unencrypted", which is why they were rewritten the same day. Re-run it
+   after any change to the envelope format, the key ring, or the passphrase.
 
 ---
 
