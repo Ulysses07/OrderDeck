@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -45,6 +46,42 @@ public sealed class PdfDekontParser : IPdfDekontParser
         string? RecipientIban = null,    // 2026-05-12: alıcı IBAN — Settings.Iban ile karşılaştırma için
         string? RecipientName = null);   // 2026-05-12: alıcı adı — Settings.AccountHolder ile karşılaştırma için
 
+    // ── Kaynak tavanları ────────────────────────────────────────────────
+    //
+    // Girdi düşman kontrolünde: müşteri dekontu hem shopper uygulamasından
+    // (kimliği doğrulanmış yükleme) hem WhatsApp'tan geliyor. Bayt sınırı
+    // (5/10 MB) tek başına yetmiyor, çünkü PDF'in ÜÇ boyutu da bayttan
+    // bağımsız büyüyebiliyor:
+    //
+    //   • Sayfa sayısı — paylaşılan sayfa nesneleriyle birkaç KB binlerce
+    //     sayfa ilan edebilir.
+    //   • Çıkarılan metin — sıkıştırılmış içerik akışı megabaytlarca metne
+    //     açılabilir.
+    //   • Regex işi — asıl tehlike bu. Aşağıdaki ~50 desenin çoğu tembel
+    //     niceleyici + alternatifli ileri-bakış içeriyor; eşleşmeyen uzun bir
+    //     metinde maliyet metin uzunluğunun KARESİ ile büyüyor. 1 MB'lık tek
+    //     satırlık bir metin tek deseni dakikalarca meşgul edebilir.
+    //
+    // Gerçek bir banka dekontu 1-2 sayfa ve birkaç KB metin; bu tavanlar
+    // sahadaki hiçbir dekonta değmiyor.
+    private const int MaxPages = 25;
+    private const int MaxTextChars = 200_000;
+
+    /// <summary>Tüm alan çıkarımı için TOPLAM duvar saati bütçesi. Desen
+    /// başına ayrı bir zaman aşımı yetmezdi: ~50 desen × 1 sn hâlâ dakikalık
+    /// bir bütçe demek. Her <c>Regex</c> çağrısına KALAN süre veriliyor,
+    /// böylece toplam maliyet buranın üstüne çıkamıyor.</summary>
+    private static readonly TimeSpan ExtractionBudget = TimeSpan.FromSeconds(3);
+
+    private const RegexOptions DefaultOptions =
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant;
+
+    /// <summary>Bütçenin bitiş anı (<see cref="Stopwatch"/> tick'i); 0 =
+    /// bütçe yok. Ayrıştırma baştan sona senkron olduğu için thread-static
+    /// taşıma güvenli — alternatifi beş çıkarıcının ve testlerinin imzasını
+    /// değiştirmekti.</summary>
+    [ThreadStatic] private static long s_deadline;
+
     public ParseResult Parse(byte[] pdfBytes)
     {
         var text = ExtractText(pdfBytes);
@@ -55,26 +92,75 @@ public sealed class PdfDekontParser : IPdfDekontParser
     /// <summary>Text already extracted (testler için). Production'da
     /// <see cref="Parse(byte[])"/> kullan — bu sadece extractor logic'i
     /// test edebilmek için public.</summary>
-    public ParseResult ParseFromText(string text, string hash) => new(
-        PayerName: ExtractPayerName(text),
-        Amount: ExtractAmount(text),
-        PaidAt: ExtractPaidAt(text),
-        ReferansNo: ExtractReferansNo(text),
-        PdfHash: hash,
-        RawText: text,
-        RecipientIban: ExtractRecipientIban(text),
-        RecipientName: ExtractRecipientName(text));
+    public ParseResult ParseFromText(string text, string hash)
+    {
+        // Kırpma ve bütçe Parse'ta değil BURADA kuruluyor: bu metot public ve
+        // metin dışarıdan da gelebiliyor, dolayısıyla korumanın tek girişte
+        // durması gerekiyor.
+        if (text.Length > MaxTextChars) text = text[..MaxTextChars];
+
+        s_deadline = Stopwatch.GetTimestamp()
+            + (long)(ExtractionBudget.TotalSeconds * Stopwatch.Frequency);
+        try
+        {
+            return new(
+                PayerName: ExtractPayerName(text),
+                Amount: ExtractAmount(text),
+                PaidAt: ExtractPaidAt(text),
+                ReferansNo: ExtractReferansNo(text),
+                PdfHash: hash,
+                RawText: text,
+                RecipientIban: ExtractRecipientIban(text),
+                RecipientName: ExtractRecipientName(text));
+        }
+        finally
+        {
+            s_deadline = 0;
+        }
+    }
+
+    /// <summary>Bütçeden kalan süre. <c>Zero</c> → bütçe tükendi.
+    /// <c>InfiniteMatchTimeout</c> → bütçe hiç kurulmamış (çıkarıcıları
+    /// doğrudan çağıran birim testleri).</summary>
+    private static TimeSpan Remaining()
+    {
+        if (s_deadline == 0) return Regex.InfiniteMatchTimeout;
+        var ticks = s_deadline - Stopwatch.GetTimestamp();
+        return ticks <= 0
+            ? TimeSpan.Zero
+            : TimeSpan.FromSeconds((double)ticks / Stopwatch.Frequency);
+    }
+
+    /// <summary>Bütçeye bağlı <see cref="Regex.Match(string, string)"/>.
+    /// Süre dolduğunda fırlatmıyor, "eşleşme yok" diyor: ayrıştırıcı zaten
+    /// best-effort ve her alan null olabilir. Bulunamayan alanı operatör elle
+    /// dolduruyor; patolojik bir PDF'in bedeli en fazla boş bir form.</summary>
+    private static Match MatchWithin(string text, string pattern)
+    {
+        var remaining = Remaining();
+        if (remaining == TimeSpan.Zero) return Match.Empty;
+        try
+        {
+            return Regex.Match(text, pattern, DefaultOptions, remaining);
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return Match.Empty;
+        }
+    }
 
     private static string ExtractText(byte[] pdfBytes)
     {
         using var stream = new MemoryStream(pdfBytes);
         using var document = PdfDocument.Open(stream);
         var sb = new StringBuilder();
-        foreach (var page in document.GetPages())
+        var pages = Math.Min(document.NumberOfPages, MaxPages);
+        for (var i = 1; i <= pages; i++)
         {
-            sb.AppendLine(page.Text);
+            sb.AppendLine(document.GetPage(i).Text);
+            if (sb.Length >= MaxTextChars) break;
         }
-        return sb.ToString();
+        return sb.Length > MaxTextChars ? sb.ToString(0, MaxTextChars) : sb.ToString();
     }
 
     private static string ComputeSha256(byte[] bytes)
@@ -136,7 +222,7 @@ public sealed class PdfDekontParser : IPdfDekontParser
 
         foreach (var pattern in patterns)
         {
-            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            var match = MatchWithin(text, pattern);
             if (match.Success)
             {
                 var name = match.Groups[1].Value.Trim();
@@ -183,7 +269,7 @@ public sealed class PdfDekontParser : IPdfDekontParser
 
         foreach (var pattern in labeledPatterns)
         {
-            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            var match = MatchWithin(text, pattern);
             if (match.Success)
             {
                 var raw = match.Groups[1].Value;
@@ -194,12 +280,27 @@ public sealed class PdfDekontParser : IPdfDekontParser
         // Fallback: belge içindeki en büyük "X,YY TL" veya "X.YY TL" değeri.
         // Yanlış pozitif riski var (IBAN parçası vb.) ama explicit label
         // bulunamadıysa son çare.
-        var fallback = Regex.Matches(text,
-                @"([\d][\d\.,]{0,15}[\.,]\d{2})\s*(?:TL|TRY)\b")
-            .Select(m => TryParseLocaleDecimal(m.Groups[1].Value, out var d) ? d : 0m)
-            .Where(d => d > 0)
-            .OrderByDescending(d => d)
-            .FirstOrDefault();
+        // Tek eşleşme değil TÜM belge taranıyor, dolayısıyla bu da bütçeye
+        // bağlanmalı. Süre dolarsa o ana kadarki en büyükle yetiniyoruz —
+        // amaç zaten "en büyük tutar", kısmi liste hiç yoktan iyi.
+        var remaining = Remaining();
+        if (remaining == TimeSpan.Zero) return null;
+
+        var fallback = 0m;
+        try
+        {
+            var scanner = new Regex(
+                @"([\d][\d\.,]{0,15}[\.,]\d{2})\s*(?:TL|TRY)\b", RegexOptions.None, remaining);
+            foreach (Match m in scanner.Matches(text))
+            {
+                if (TryParseLocaleDecimal(m.Groups[1].Value, out var d) && d > fallback)
+                    fallback = d;
+            }
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            // Yutuluyor: elde kalan en büyük değerle devam.
+        }
         return fallback > 0 ? fallback : null;
     }
 
@@ -248,7 +349,7 @@ public sealed class PdfDekontParser : IPdfDekontParser
 
         foreach (var pattern in labeledPatterns)
         {
-            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            var match = MatchWithin(text, pattern);
             if (match.Success && TryParseTurkishDate(match.Groups[1].Value, out var date))
             {
                 return date;
@@ -260,7 +361,7 @@ public sealed class PdfDekontParser : IPdfDekontParser
         // run-on'larda eski `\d{2,4}` + `\b` kombinasyonu fail ediyordu —
         // greedy backtrack hiçbir yıl tamamlamıyordu çünkü digit→digit
         // transition'da `\b` yok. Fixed 4-digit non-greedy bunu çözüyor.
-        var anyDate = Regex.Match(text, @"(\d{1,2}[\./]\d{1,2}[\./]\d{4})");
+        var anyDate = MatchWithin(text, @"(\d{1,2}[\./]\d{1,2}[\./]\d{4})");
         if (anyDate.Success && TryParseTurkishDate(anyDate.Groups[1].Value, out var fallback))
         {
             return fallback;
@@ -297,7 +398,7 @@ public sealed class PdfDekontParser : IPdfDekontParser
 
         foreach (var pattern in dashAlphanumericPatterns)
         {
-            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            var match = MatchWithin(text, pattern);
             if (match.Success)
             {
                 var value = match.Groups[1].Value.Trim();
@@ -326,7 +427,7 @@ public sealed class PdfDekontParser : IPdfDekontParser
 
         foreach (var pattern in numericPatterns)
         {
-            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            var match = MatchWithin(text, pattern);
             if (match.Success)
             {
                 var value = match.Groups[1].Value.Trim();
@@ -344,7 +445,7 @@ public sealed class PdfDekontParser : IPdfDekontParser
 
         foreach (var pattern in alphanumericPatterns)
         {
-            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            var match = MatchWithin(text, pattern);
             if (match.Success)
             {
                 var value = match.Groups[1].Value.Trim();
@@ -403,7 +504,7 @@ public sealed class PdfDekontParser : IPdfDekontParser
 
         foreach (var pattern in patterns)
         {
-            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            var match = MatchWithin(text, pattern);
             if (match.Success)
             {
                 var name = Regex.Replace(match.Groups[1].Value.Trim(), @"\s+", " ");
@@ -484,7 +585,7 @@ public sealed class PdfDekontParser : IPdfDekontParser
 
         foreach (var pattern in patterns)
         {
-            var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            var match = MatchWithin(text, pattern);
             if (match.Success)
             {
                 // Whitespace çıkar, normalize et
