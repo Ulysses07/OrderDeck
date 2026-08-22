@@ -51,36 +51,33 @@ public sealed class BackupStorageService
 
     /// <summary>Encrypts plaintext with the active key. Returns the envelope bytes
     /// AND the version that was used so the caller persists it alongside the row.</summary>
-    public (byte[] envelope, int keyVersion) Encrypt(byte[] plaintext)
+    public (byte[] envelope, int keyVersion) Encrypt(ReadOnlySpan<byte> plaintext)
     {
         var version = _activeVersion;
         var key = _keys[version];
 
-        var nonce = RandomNumberGenerator.GetBytes(NonceSize);
-        var ciphertext = new byte[plaintext.Length];
-        var tag = new byte[TagSize];
+        // v0 (legacy) ile v1+ arasındaki TEK fark baştaki sürüm baytı. v0
+        // çıktısı Phase-5b öncesiyle baytına kadar aynı kalmalı: mevcut bir
+        // kurulum yeni koda geçerken ne blob yeniden yazmak ne de bayrak günü
+        // yapmak zorunda kalsın — ActiveKeyVersion >=1 olana dek her yeni blob
+        // hâlâ v0.
+        var headerSize = version == 0 ? 0 : 1;
+
+        // Doğrudan çıktı tamponuna şifreleniyor. Önceden nonce/ciphertext/tag
+        // ayrı ayrı ayrılıp sonra BlockCopy ile buraya taşınıyordu; bu, blob
+        // boyutunda GEREKSİZ bir ikinci kopya demekti (64 MB'lık bir yedekte
+        // 64 MB fazladan). Çıktı baytları birebir aynı.
+        var output = new byte[headerSize + NonceSize + TagSize + plaintext.Length];
+        if (headerSize == 1) output[0] = (byte)version;
+
+        var nonce = output.AsSpan(headerSize, NonceSize);
+        var tag = output.AsSpan(headerSize + NonceSize, TagSize);
+        var ciphertext = output.AsSpan(headerSize + NonceSize + TagSize);
+
+        RandomNumberGenerator.Fill(nonce);
         using var aes = new AesGcm(key, TagSize);
         aes.Encrypt(nonce, plaintext, ciphertext, tag);
 
-        if (version == 0)
-        {
-            // Legacy v0 path: bytewise-identical to pre-Phase-5b output. This lets
-            // a deployment opt into the new code without rewriting any blobs and
-            // without needing a flag day — until ActiveKeyVersion bumps to >=1,
-            // every new blob is still v0.
-            var v0 = new byte[NonceSize + TagSize + ciphertext.Length];
-            Buffer.BlockCopy(nonce, 0, v0, 0, NonceSize);
-            Buffer.BlockCopy(tag, 0, v0, NonceSize, TagSize);
-            Buffer.BlockCopy(ciphertext, 0, v0, NonceSize + TagSize, ciphertext.Length);
-            return (v0, 0);
-        }
-
-        // v1+ envelope: prepend the version byte.
-        var output = new byte[1 + NonceSize + TagSize + ciphertext.Length];
-        output[0] = (byte)version;
-        Buffer.BlockCopy(nonce, 0, output, 1, NonceSize);
-        Buffer.BlockCopy(tag, 0, output, 1 + NonceSize, TagSize);
-        Buffer.BlockCopy(ciphertext, 0, output, 1 + NonceSize + TagSize, ciphertext.Length);
         return (output, version);
     }
 

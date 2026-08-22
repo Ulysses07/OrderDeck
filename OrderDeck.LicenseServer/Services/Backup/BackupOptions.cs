@@ -21,7 +21,42 @@ public sealed class BackupOptions
     public int ActiveKeyVersion { get; set; } = 0;
 
     public string StorageRoot { get; set; } = "/app/Backups";
-    public int MaxBlobSizeMb { get; set; } = 200;
+
+    /// <summary>
+    /// Tek bir yedek gövdesinin üst sınırı.
+    ///
+    /// <para><b>Bu sayı bellekten türetildi, veriden değil.</b> Yükleme yolu
+    /// blob'u akıtmıyor, topluyor: istek başına elde düz metin + zarf, yani
+    /// yaklaşık <b>2 × blob</b> duruyor (AES-GCM tek-atış API'si ikisini de tam
+    /// boy ister; akıtmak zarf formatını chunk'lı hâle getirmeyi gerektirir).
+    /// Konteyner <c>mem_limit: 1g</c> ile koşuyor, dolayısıyla tepe bellek
+    /// <c>MaxBlobSizeMb × 2 × <see cref="MaxConcurrentUploads"/></c> ≈ 256 MB.
+    /// Bu üç sayıdan birini büyütürken diğerlerine bakmadan yapma.</para>
+    ///
+    /// <para>Ölçüm için: gerçek bir kurulumda <c>orderdeck.db</c> 4,9 MB,
+    /// zip'i 1,6 MB. Ürün fotoğrafları yedeğe GİRMİYOR (DB'de yalnız R2 nesne
+    /// anahtarı var, baytlar ayrı disk önbelleğinde) ve stok replikası her
+    /// senkronda baştan yazıldığı için zamanla büyümüyor. Büyüyen tek şey
+    /// geçmiş: Label / Customer / GiveawayParticipant / Payment / Shipment.</para>
+    /// </summary>
+    public int MaxBlobSizeMb { get; set; } = 64;
+
+    /// <summary>
+    /// Aynı anda gövdesi belleğe alınan yükleme sayısı.
+    ///
+    /// <para>Oran sınırı bu işi yapmıyor: <c>backup-upload</c> politikası
+    /// müşteri kimliğine bölünmüş 6/saat, yani tek müşterinin sıklığını
+    /// sınırlar — aynı anda kaç müşterinin yüklediğini değil. Bu kapı olmadan
+    /// blob başına tavan koymak sunucu belleğine tavan koymuyor.</para>
+    /// </summary>
+    public int MaxConcurrentUploads { get; set; } = 2;
+
+    /// <summary>
+    /// Sıra açılmasını beklemenin üst sınırı; aşılırsa 503 + Retry-After.
+    /// Sınırsız beklemek bellek baskısını açık bağlantı baskısına çevirmekten
+    /// ibaret olurdu.
+    /// </summary>
+    public int UploadQueueWaitSeconds { get; set; } = 10;
 
     /// <summary>Per-customer cap on total stored (encrypted) backup bytes. Counted
     /// across all rows in CustomerBackups for that customer (active retention

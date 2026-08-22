@@ -215,6 +215,8 @@ public class Program
                 c => c.Timeout = TimeSpan.FromSeconds(fbTimeout <= 0 ? 15 : fbTimeout));
 
         builder.Services.AddSingleton<BackupStorageService>();
+        // Singleton ŞART: süreç başına tek sayaç olmasının bütün amacı bu.
+        builder.Services.AddSingleton<BackupUploadThrottle>();
         builder.Services.AddScoped<BackupRetentionService>();
         builder.Services.AddScoped<BackupViewerService>();
 

@@ -143,6 +143,34 @@ to a fresh version, then audit + delete affected blobs (they're encrypted
 under the leaked key, retention can't help). Customers will upload fresh
 backups under the new active version.
 
+### Upload size + concurrency budget
+
+`Backup__MaxBlobSizeMb` (64), `Backup__MaxConcurrentUploads` (2) and the
+license-server `mem_limit` (1g) share one budget and must be changed together.
+The upload path buffers rather than streams — AES-GCM's one-shot API needs the
+plaintext and the envelope in memory at the same time — so a request holds
+roughly **2 × blob**. Peak is therefore `MaxBlobSizeMb × 2 × MaxConcurrentUploads`
+≈ 256 MB.
+
+The per-customer rate limit (`backup-upload`, 6/hour) does **not** bound this:
+it is partitioned by customer id, so it caps how often one customer uploads,
+not how many upload at once. That is what `MaxConcurrentUploads` is for; when
+the gate is full a request gets 503 + `Retry-After` after
+`Backup__UploadQueueWaitSeconds`.
+
+> Historical note: this value used to read 200 and had no effect whatsoever.
+> The server's default request-body cap (30,000,000 bytes ≈ 28.6 MB) bound
+> first, so the app's own 413 branch was unreachable and raising the setting
+> changed nothing. The limit is now applied per request, which means the
+> configured number is finally the real one.
+
+Sizing reality check: a real installation's `orderdeck.db` was 4.9 MB, 1.6 MB
+zipped. Product photos are **not** in the backup (the DB stores only the R2
+object key; the bytes sit in a separate on-disk cache), and the stock/catalog
+replica is rewritten each sync so it does not grow over time. The terms that
+do grow are history: `Label`, `Customer`, `GiveawayParticipant`, `Payment`,
+`Shipment`.
+
 ### Off-host replication (S3-compatible, optional)
 
 By default backups live only under `/opt/orderdeck/backups/` on the VPS.
