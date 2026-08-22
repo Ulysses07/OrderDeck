@@ -128,7 +128,9 @@ public sealed class AppHost : IDisposable
         // of scroll-back even at the worst spike, which is enough for the
         // auctioneer to catch a missed mention. 200 was sized for a single
         // platform Live and started dropping mid-product-shows.
-        services.AddSingleton<IChatBus>(_ => new ChatBus(ringBufferSize: 500));
+        services.AddSingleton<IChatBus>(sp => new ChatBus(
+            ringBufferSize: 500,
+            log: sp.GetRequiredService<ILogger<ChatBus>>()));
         // SpamFilter pulls its rule toggles from the live AppSettings via Func
         // so changes from the Settings dialog take effect immediately without
         // a service restart.
