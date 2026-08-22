@@ -49,6 +49,89 @@ public static class SqliteFile
         source.BackupDatabase(destination);
     }
 
+    /// <summary>SQLite dosya başlığı: ilk 16 bayt, sonundaki NUL dahil.</summary>
+    private static ReadOnlySpan<byte> HeaderMagic => "SQLite format 3\u0000"u8;
+
+    /// <summary>
+    /// Dosyanın gerçekten açılabilir, sayfa yapısı tutarlı bir SQLite
+    /// veritabanı olduğunu doğrular.
+    ///
+    /// <para>İki aşamalı: önce 16 baytlık dosya başlığı (ucuz eleme — yanlış
+    /// içerik, kırpılmış indirme, HTML hata sayfası buradan döner), sonra
+    /// <c>PRAGMA quick_check</c>. <c>quick_check</c> tercih edildi çünkü
+    /// <c>integrity_check</c>'in yaptığı pahalı indeks-içerik çapraz
+    /// doğrulaması dışında her şeyi yapar ve büyük bir veritabanında
+    /// saniyeler yerine milisaniyeler sürer; geri yükleme akışında kullanıcı
+    /// bekliyor.</para>
+    ///
+    /// <para>Bağlantı <c>ReadWrite</c> açılıyor, <c>ReadOnly</c> DEĞİL: WAL
+    /// kipindeki bir veritabanını salt-okunur açmak <c>-shm</c> dosyası
+    /// yoksa "unable to open database file" ile patlar ve sağlam bir dosyaya
+    /// "bozuk" damgası vurur. <c>Create</c> yok — olmayan dosya doğrulamayı
+    /// geçmemeli.</para>
+    /// </summary>
+    /// <param name="error">Başarısızsa insan okuyabilir sebep; başarılıysa null.</param>
+    public static bool IsIntactDatabase(string path, out string? error)
+    {
+        if (!File.Exists(path))
+        {
+            error = "dosya yok";
+            return false;
+        }
+
+        try
+        {
+            using var fs = File.OpenRead(path);
+            if (fs.Length < HeaderMagic.Length)
+            {
+                error = $"dosya SQLite başlığı için fazla küçük ({fs.Length} bayt)";
+                return false;
+            }
+
+            Span<byte> head = stackalloc byte[16];
+            fs.ReadExactly(head);
+            if (!head.SequenceEqual(HeaderMagic))
+            {
+                error = "SQLite dosya başlığı yok";
+                return false;
+            }
+        }
+        catch (IOException ex)
+        {
+            error = $"dosya okunamadı: {ex.Message}";
+            return false;
+        }
+
+        try
+        {
+            using var conn = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = path,
+                Mode = SqliteOpenMode.ReadWrite,
+                Pooling = false
+            }.ToString());
+
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "PRAGMA quick_check;";
+            var result = cmd.ExecuteScalar() as string;
+
+            if (!string.Equals(result, "ok", StringComparison.OrdinalIgnoreCase))
+            {
+                error = $"quick_check: {result ?? "(sonuç yok)"}";
+                return false;
+            }
+        }
+        catch (SqliteException ex)
+        {
+            error = $"açılamadı: {ex.Message}";
+            return false;
+        }
+
+        error = null;
+        return true;
+    }
+
     /// <summary>
     /// <c>-wal</c> ve <c>-shm</c> yan dosyalarını siler.
     ///

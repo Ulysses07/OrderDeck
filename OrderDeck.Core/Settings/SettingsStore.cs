@@ -16,6 +16,29 @@ public sealed class SettingsStore
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
+    /// <summary>
+    /// Ayar dosyasına erişimi süreç içinde tekleştirir.
+    ///
+    /// <para><b>Neden gerekli.</b> <see cref="Save"/> sabit bir <c>.tmp</c>
+    /// yoluna yazıp <c>File.Replace</c> ile yerine geçiriyor. Bu üç adım
+    /// (yaz → diske indir → yer değiştir) atomik DEĞİL: iki hosted service
+    /// aynı anda kaydederse ikisi de aynı <c>.tmp</c>'yi açmaya çalışır —
+    /// <c>FileShare.None</c> yüzünden biri <c>IOException</c> alır ve o
+    /// servisin cursor'u sessizce kaydedilmez, ya da biri diğerinin henüz
+    /// yer değiştirmemiş geçici dosyasını ezer. Sahada bu, sync cursor'unun
+    /// geri gitmesi (aynı kayıtların tekrar çekilmesi) demek.</para>
+    ///
+    /// <para><b>Neden static.</b> DI'da tek örnek var ama testler ve
+    /// <c>AppHost</c>'un ayrı <c>Load()</c> çağrıları aynı dosyaya bakan
+    /// başka örnekler üretebiliyor. Kilit dosyayı korumalı, nesneyi değil.
+    /// Kaydetme saniyede bir kez bile olmadığından tek global kilidin
+    /// maliyeti ölçülemez.</para>
+    ///
+    /// <para><b>Neyi kapatmaz.</b> Süreçler arası yarışı — ama uygulama tek
+    /// örnek çalışıyor (<c>App.xaml.cs</c> mutex'i), o kapı zaten kapalı.</para>
+    /// </summary>
+    private static readonly Lock FileGate = new();
+
     private readonly string _filePath;
     private readonly string _backupPath;
     private readonly ILogger _log;
@@ -28,6 +51,16 @@ public sealed class SettingsStore
     }
 
     public AppSettings Load()
+    {
+        // Okuma da kilit altında: bir Save'in File.Replace anına denk gelen
+        // okuma dosyayı bulamayabilir ve bozuk sanıp karantinaya alabilirdi.
+        lock (FileGate)
+        {
+            return LoadCore();
+        }
+    }
+
+    private AppSettings LoadCore()
     {
         if (TryRead(_filePath, out var settings)) return settings;
 
@@ -64,6 +97,14 @@ public sealed class SettingsStore
     }
 
     public void Save(AppSettings settings)
+    {
+        lock (FileGate)
+        {
+            SaveCore(settings);
+        }
+    }
+
+    private void SaveCore(AppSettings settings)
     {
         var directory = Path.GetDirectoryName(_filePath);
         if (!string.IsNullOrEmpty(directory))

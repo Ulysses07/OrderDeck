@@ -438,4 +438,83 @@ public class ExtensionBridgeServerTests
         res.IsSuccessStatusCode.Should().BeTrue("sihirbazın 'Doğrula' butonu bu uca bağlı");
         res.Headers.Contains("Access-Control-Allow-Origin").Should().BeFalse();
     }
+
+    // ── Yol denetimi (K-02) ──────────────────────────────────────────────────
+    //
+    // Köprü eskiden HERHANGİ bir yola gelen yükseltme isteğini kabul ediyordu.
+    // Uzantı her zaman /extension'a bağlanır; başka yol ya eski bir istemci ya
+    // da köprüyü tarayan bir şey.
+
+    [Theory]
+    [InlineData("/")]
+    [InlineData("/ws")]
+    [InlineData("/extension/")]
+    [InlineData("/Extension")]   // büyük/küçük harf duyarlı olmalı
+    public async Task Rejects_websocket_upgrade_on_any_other_path(string path)
+    {
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(bus, port: 0);
+        await server.StartAsync(CancellationToken.None);
+
+        using var ws = new ClientWebSocket();
+        ws.Options.SetRequestHeader("Origin", "https://www.tiktok.com");
+
+        await Assert.ThrowsAnyAsync<WebSocketException>(
+            () => ws.ConnectAsync(new Uri($"ws://localhost:{server.Port}{path}"),
+                CancellationToken.None));
+    }
+
+    // ── Mesaj boyu sınırı (K-02) ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task Oversized_message_closes_the_connection_without_publishing()
+    {
+        // Sınır yokken tek bir istemci EndOfMessage'ı hiç göndermeden çerçeve
+        // akıtarak uygulamanın belleğini tüketebiliyordu.
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(bus, port: 0);
+        await server.StartAsync(CancellationToken.None);
+
+        var publishCount = 0;
+        using var sub = bus.Subscribe(_ => Interlocked.Increment(ref publishCount));
+
+        using var ws = await ConnectAsync(server);
+
+        // 64 KB sınırının üstünde tek bir chat mesajı.
+        await SendRaw(ws, SerializeChat(
+            "tiktok", "@spam", new string('A', 200_000), externalId: "dev-1"));
+
+        // Sunucu MessageTooBig ile kapatmalı.
+        var buf = new byte[1024];
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (ws.State == WebSocketState.Open && DateTime.UtcNow < deadline)
+        {
+            try { await ws.ReceiveAsync(buf, CancellationToken.None); }
+            catch (WebSocketException) { break; }
+        }
+
+        publishCount.Should().Be(0, "sınırı aşan mesaj sohbet akışına girmemeli");
+        ws.State.Should().NotBe(WebSocketState.Open);
+    }
+
+    [Fact]
+    public async Task Normal_sized_message_still_flows_after_the_size_cap()
+    {
+        // Sınır gerçek trafiği kesmemeli: avatar URL'li bir chat satırı ~1 KB.
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(bus, port: 0);
+        await server.StartAsync(CancellationToken.None);
+
+        var received = new TaskCompletionSource<ChatMessage>();
+        using var sub = bus.Subscribe(m => received.TrySetResult(m));
+
+        using var ws = await ConnectAsync(server);
+        await SendRaw(ws, SerializeChat(
+            "tiktok", "@ayse", new string('m', 4_000), externalId: "uzun-ama-normal"));
+
+        var msg = await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        msg.Text.Should().HaveLength(4_000);
+
+        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
 }

@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Text;
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.App.Services;
 using OrderDeck.Licensing.Backup;
@@ -25,6 +26,39 @@ public class RestoreServiceTests : IDisposable
         try { Directory.Delete(_tempDir, recursive: true); } catch { }
     }
 
+    /// <summary>
+    /// Gerçek, açılabilir bir SQLite veritabanının baytları. Geri yükleme artık
+    /// quick_check'ten geçmeyen içeriği reddettiği için testlerin de gerçek bir
+    /// veritabanı üretmesi gerekiyor; "NEW-DB" gibi düz metinler doğru olarak
+    /// reddedilir.
+    /// </summary>
+    private byte[] BuildRealDatabase(string marker)
+    {
+        var path = Path.Combine(_tempDir, $"seed-{Guid.NewGuid():N}.db");
+        using (var conn = new SqliteConnection($"Data Source={path};Pooling=False"))
+        {
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText =
+                "CREATE TABLE marker (value TEXT NOT NULL);" +
+                $"INSERT INTO marker (value) VALUES ('{marker}');";
+            cmd.ExecuteNonQuery();
+        }
+
+        var bytes = File.ReadAllBytes(path);
+        File.Delete(path);
+        return bytes;
+    }
+
+    private static string ReadMarker(string dbPath)
+    {
+        using var conn = new SqliteConnection($"Data Source={dbPath};Pooling=False");
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT value FROM marker LIMIT 1;";
+        return (string)cmd.ExecuteScalar()!;
+    }
+
     private static byte[] BuildZip(byte[] dbContent)
     {
         using var ms = new MemoryStream();
@@ -40,11 +74,9 @@ public class RestoreServiceTests : IDisposable
     [Fact]
     public async Task RestoreAsync_DownloadsAndExtracts_CreatesPreRestoreBak()
     {
-        var existingDb = Encoding.UTF8.GetBytes("OLD-DB");
-        File.WriteAllBytes(_dbPath, existingDb);
+        File.WriteAllBytes(_dbPath, BuildRealDatabase("OLD"));
 
-        var newDbContent = Encoding.UTF8.GetBytes("NEW-DB-FROM-CLOUD");
-        var zip = BuildZip(newDbContent);
+        var zip = BuildZip(BuildRealDatabase("NEW-FROM-CLOUD"));
 
         var fake = new FakeBackupClientWithDownload(zip);
         var sut = new RestoreService(_dbPath, fake, NullLogger<RestoreService>.Instance);
@@ -52,9 +84,71 @@ public class RestoreServiceTests : IDisposable
         var result = await sut.RestoreAsync(Guid.NewGuid());
 
         result.Success.Should().BeTrue();
-        File.ReadAllBytes(_dbPath).Should().BeEquivalentTo(newDbContent);
+        ReadMarker(_dbPath).Should().Be("NEW-FROM-CLOUD");
         File.Exists(_dbPath + ".pre-restore.bak").Should().BeTrue();
-        File.ReadAllBytes(_dbPath + ".pre-restore.bak").Should().BeEquivalentTo(existingDb);
+        ReadMarker(_dbPath + ".pre-restore.bak").Should().Be("OLD");
+    }
+
+    /// <summary>
+    /// Y-08'in özü: zip açılıyor, dosya var, boyutu da makul — ama SQLite
+    /// değil. Eskiden bu "Geri yükleme tamamlandı" diyip aktif veritabanının
+    /// üzerine yazıyordu; bozukluk ancak bir sonraki açılışta görülüyordu.
+    /// </summary>
+    [Fact]
+    public async Task RestoreAsync_ZipContainsNonSqliteFile_FailsWithoutTouchingDb()
+    {
+        var existing = BuildRealDatabase("OLD");
+        File.WriteAllBytes(_dbPath, existing);
+
+        var zip = BuildZip(Encoding.UTF8.GetBytes(new string('x', 4096)));
+        var sut = new RestoreService(
+            _dbPath, new FakeBackupClientWithDownload(zip), NullLogger<RestoreService>.Instance);
+
+        var result = await sut.RestoreAsync(Guid.NewGuid());
+
+        result.Success.Should().BeFalse();
+        result.Error.Should().Contain("geçerli bir veritabanı değil");
+        File.ReadAllBytes(_dbPath).Should().BeEquivalentTo(existing);
+        ReadMarker(_dbPath).Should().Be("OLD");
+    }
+
+    /// <summary>
+    /// Başlığı doğru ama sayfaları bozuk dosya: başlık denetimini geçer,
+    /// quick_check'e takılır.
+    /// </summary>
+    [Fact]
+    public async Task RestoreAsync_CorruptedSqlitePages_FailsWithoutTouchingDb()
+    {
+        var existing = BuildRealDatabase("OLD");
+        File.WriteAllBytes(_dbPath, existing);
+
+        // Başlığı koru, gövdeyi çöple doldur.
+        var corrupt = BuildRealDatabase("BROKEN");
+        for (var i = 100; i < corrupt.Length; i++) corrupt[i] = 0xEE;
+
+        var sut = new RestoreService(
+            _dbPath, new FakeBackupClientWithDownload(BuildZip(corrupt)),
+            NullLogger<RestoreService>.Instance);
+
+        var result = await sut.RestoreAsync(Guid.NewGuid());
+
+        result.Success.Should().BeFalse();
+        ReadMarker(_dbPath).Should().Be("OLD");
+    }
+
+    /// <summary>Doğrulama başarısız olunca yarım açılmış dosya diskte kalmamalı.</summary>
+    [Fact]
+    public async Task RestoreAsync_FailedValidation_RemovesTempExtract()
+    {
+        File.WriteAllBytes(_dbPath, BuildRealDatabase("OLD"));
+
+        var zip = BuildZip(Encoding.UTF8.GetBytes("kesinlikle sqlite değil"));
+        var sut = new RestoreService(
+            _dbPath, new FakeBackupClientWithDownload(zip), NullLogger<RestoreService>.Instance);
+
+        await sut.RestoreAsync(Guid.NewGuid());
+
+        File.Exists(_dbPath + ".restoring").Should().BeFalse();
     }
 
     /// <summary>
@@ -66,11 +160,11 @@ public class RestoreServiceTests : IDisposable
     [Fact]
     public async Task RestoreAsync_deletes_stale_wal_sidecars()
     {
-        File.WriteAllBytes(_dbPath, Encoding.UTF8.GetBytes("OLD-DB"));
+        File.WriteAllBytes(_dbPath, BuildRealDatabase("OLD"));
         File.WriteAllBytes(_dbPath + "-wal", Encoding.UTF8.GetBytes("eski wal"));
         File.WriteAllBytes(_dbPath + "-shm", Encoding.UTF8.GetBytes("eski shm"));
 
-        var fake = new FakeBackupClientWithDownload(BuildZip(Encoding.UTF8.GetBytes("NEW-DB")));
+        var fake = new FakeBackupClientWithDownload(BuildZip(BuildRealDatabase("NEW")));
         var sut = new RestoreService(_dbPath, fake, NullLogger<RestoreService>.Instance);
 
         (await sut.RestoreAsync(Guid.NewGuid())).Success.Should().BeTrue();
@@ -82,7 +176,7 @@ public class RestoreServiceTests : IDisposable
     [Fact]
     public async Task RestoreAsync_DownloadFails_LeavesOriginalDbUntouched()
     {
-        var existingDb = Encoding.UTF8.GetBytes("OLD-DB");
+        var existingDb = BuildRealDatabase("OLD");
         File.WriteAllBytes(_dbPath, existingDb);
         var fake = new FakeBackupClientWithDownload(failOnDownload: true);
         var sut = new RestoreService(_dbPath, fake, NullLogger<RestoreService>.Instance);
@@ -96,7 +190,7 @@ public class RestoreServiceTests : IDisposable
     [Fact]
     public async Task RestoreAsync_InvalidZipMissingDbEntry_ReturnsFailure_NoOverwrite()
     {
-        var existingDb = Encoding.UTF8.GetBytes("OLD-DB");
+        var existingDb = BuildRealDatabase("OLD");
         File.WriteAllBytes(_dbPath, existingDb);
 
         var badZip = new byte[] { 1, 2, 3 };

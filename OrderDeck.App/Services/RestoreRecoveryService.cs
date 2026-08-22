@@ -1,6 +1,7 @@
 using System.IO;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using OrderDeck.Core.Storage;
 
 namespace OrderDeck.App.Services;
 
@@ -25,17 +26,22 @@ public sealed class RestoreRecoveryService : IHostedService
         var bakPath = _databaseFile + RestoreService.PreRestoreBakSuffix;
         if (!File.Exists(bakPath)) return Task.CompletedTask;
 
-        var mainExists = File.Exists(_databaseFile);
-        var mainSize = mainExists ? new FileInfo(_databaseFile).Length : 0;
-
-        if (mainExists && mainSize >= 1024)
+        // Bu dosya operatörün elindeki SON geri dönüş kopyası; silmek geri
+        // alınamaz. Eskiden ölçüt "var ve 1 KB'den büyük"tü — yarım yazılmış
+        // ya da sayfaları bozuk büyük bir dosya bu eşiği rahatça geçiyor ve
+        // tek sağlam kopyayı sessizce yok ediyordu. Artık ölçüt, veritabanının
+        // gerçekten açılıp quick_check'ten geçmesi.
+        if (SqliteFile.IsIntactDatabase(_databaseFile, out var error))
         {
             _log.LogInformation("Cleaning up successful pre-restore backup: {Path}", bakPath);
             try { File.Delete(bakPath); } catch (Exception ex) { _log.LogWarning(ex, "Failed to delete bak"); }
         }
         else
         {
-            _log.LogWarning("Detected pre-restore backup at {Path} but main DB is empty/missing — possible interrupted restore", bakPath);
+            _log.LogWarning(
+                "Geri yükleme yedeği duruyor ({Path}) çünkü aktif veritabanı doğrulanamadı: {Error} — " +
+                "yarım kalmış bir geri yükleme olabilir, yedek KORUNDU",
+                bakPath, error);
         }
         return Task.CompletedTask;
     }

@@ -81,6 +81,25 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
         return true;
     }
 
+    /// <summary>Uzantının bağlandığı tek yol; başka yola gelen yükseltme reddedilir.</summary>
+    private const string WebSocketPath = "/extension";
+
+    /// <summary>
+    /// Tek bir WebSocket mesajının azami boyutu. Sınır yokken tek bir istemci
+    /// <c>EndOfMessage</c>'ı hiç göndermeden çerçeve akıtarak MemoryStream'i
+    /// büyütüp uygulamanın belleğini tüketebiliyordu — köprü localhost'ta
+    /// dinlediği için bunu yayıncının açtığı herhangi bir sayfa (kaynak
+    /// denetiminden geçen bir tiktok.com sekmesi ya da yerel bir süreç)
+    /// yapabilirdi. Gerçek trafik çok altında: en büyük yük, avatar URL'si
+    /// içeren bir "chat" satırı, ~1 KB.
+    /// </summary>
+    private const int MaxMessageBytes = 64 * 1024;
+
+    /// <summary>Kabul döngüsü üst üste bu kadar hata alırsa pes eder.</summary>
+    private const int MaxConsecutiveAcceptFailures = 20;
+
+    private const int AcceptRetryDelayMs = 250;
+
     public int Port { get; private set; }
 
     public ExtensionBridgeServer(IChatBus bus, int port = 4748,
@@ -116,11 +135,47 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
 
     private async Task AcceptLoop(CancellationToken ct)
     {
+        var consecutiveFailures = 0;
+
         while (!ct.IsCancellationRequested)
         {
             HttpListenerContext context;
-            try { context = await _listener.GetContextAsync(); }
-            catch { return; }
+            try
+            {
+                context = await _listener.GetContextAsync();
+                consecutiveFailures = 0;
+            }
+            catch (Exception) when (!_listener.IsListening || ct.IsCancellationRequested)
+            {
+                // Beklenen kapanış: StopAsync listener'ı durdurdu.
+                return;
+            }
+            catch (Exception ex)
+            {
+                // Tek bir el sıkışmanın düşmesi (istemci yarıda kesti, geçici
+                // soket hatası) TÜM köprüyü öldürmemeli. Eskiden buradaki
+                // `catch { return; }` tam bunu yapıyordu: sohbet sessizce
+                // duruyor, uygulama çalışmaya devam ediyor, operatör yorumların
+                // neden gelmediğini anlayamıyordu — yeniden başlatmaktan başka
+                // çare yoktu ve logda da tek satır yoktu.
+                consecutiveFailures++;
+                if (consecutiveFailures >= MaxConsecutiveAcceptFailures)
+                {
+                    _log.LogError(ex,
+                        "Köprü dinleyicisi üst üste {Count} kez başarısız oldu; kabul döngüsü durduruluyor",
+                        consecutiveFailures);
+                    return;
+                }
+
+                _log.LogWarning(ex,
+                    "Köprü el sıkışması alınamadı ({Count}/{Max}); dinlemeye devam ediliyor",
+                    consecutiveFailures, MaxConsecutiveAcceptFailures);
+
+                // Kalıcı bir arızada döngünün CPU yakmasını engeller.
+                try { await Task.Delay(AcceptRetryDelayMs, ct); }
+                catch (OperationCanceledException) { return; }
+                continue;
+            }
 
             if (!context.Request.IsWebSocketRequest)
             {
@@ -139,6 +194,21 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
                 continue;
             }
 
+            // Yol denetimi. Eskiden HERHANGİ bir yola gelen yükseltme isteği
+            // kabul ediliyordu; uzantı her zaman /extension'a bağlanır, o
+            // yüzden başka bir yola gelen istek ya eski/bozuk bir istemci ya
+            // da köprüyü tarayan bir şey. Kaynak denetiminden ÖNCE, çünkü
+            // daha ucuz ve reddi daha kesin.
+            var path = context.Request.Url?.AbsolutePath;
+            if (!string.Equals(path, WebSocketPath, StringComparison.Ordinal))
+            {
+                _log.LogWarning(
+                    "Köprüye beklenmeyen yoldan WebSocket bağlantısı reddedildi: {Path}", path);
+                context.Response.StatusCode = 404;
+                context.Response.Close();
+                continue;
+            }
+
             var origin = context.Request.Headers["Origin"];
             if (!IsAllowedOrigin(origin))
             {
@@ -151,7 +221,23 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
                 continue;
             }
 
-            var wsContext = await context.AcceptWebSocketAsync(subProtocol: null);
+            HttpListenerWebSocketContext wsContext;
+            try
+            {
+                wsContext = await context.AcceptWebSocketAsync(subProtocol: null);
+            }
+            catch (Exception ex)
+            {
+                // Yükseltme el sıkışması yarıda kalabilir (istemci vazgeçti,
+                // bozuk başlık). Bu istisna korumasızken döngünün DIŞINA
+                // taşıyor ve kabul görevini öldürüyordu — kaynak/yol
+                // denetimlerini geçmiş sıradan bir kopukluk köprüyü topyekûn
+                // susturabilirdi.
+                _log.LogWarning(ex, "WebSocket yükseltmesi tamamlanamadı");
+                try { context.Response.Abort(); } catch { /* ignore */ }
+                continue;
+            }
+
             // Fire-and-forget per-connection handler. ContinueWith logs any
             // unobserved exception so we don't lose runtime errors silently —
             // Handle has its own per-frame catch but scheduling/setup errors
@@ -265,11 +351,17 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
         {
             ms.SetLength(0);
             WebSocketReceiveResult res;
+            var tooLarge = false;
             try
             {
                 do
                 {
                     res = await ws.ReceiveAsync(buf, ct);
+                    if (ms.Length + res.Count > MaxMessageBytes)
+                    {
+                        tooLarge = true;
+                        break;
+                    }
                     ms.Write(buf, 0, res.Count);
                 } while (!res.EndOfMessage);
             }
@@ -277,6 +369,24 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
             catch (Exception ex)
             {
                 _log.LogWarning(ex, "Extension WS receive failed");
+                break;
+            }
+
+            if (tooLarge)
+            {
+                // Bağlantıyı KAPATIYORUZ, mesajı atlayıp devam etmiyoruz:
+                // taşan mesajın kalan çerçeveleri okunmadığı için sonraki
+                // ReceiveAsync onları yeni bir mesajın başı sanar ve akış
+                // kalıcı olarak bozulur.
+                _log.LogWarning(
+                    "Extension WS mesajı {Limit} bayt sınırını aştı; bağlantı kapatılıyor",
+                    MaxMessageBytes);
+                try
+                {
+                    await ws.CloseAsync(
+                        WebSocketCloseStatus.MessageTooBig, "message too large", ct);
+                }
+                catch (Exception ex) { _log.LogDebug(ex, "Oversize close failed"); }
                 break;
             }
 

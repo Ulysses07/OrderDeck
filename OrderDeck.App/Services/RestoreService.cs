@@ -16,6 +16,15 @@ public sealed class RestoreService
 {
     public const string PreRestoreBakSuffix = ".pre-restore.bak";
 
+    /// <summary>
+    /// Zip içinden açılacak azami veritabanı boyutu. Yedek kendi sunucumuzdan
+    /// kimlik doğrulamalı indiriliyor, yani zip bombası için önce sunucunun
+    /// ele geçmesi gerekir — ama açma işlemi diski dolduran tek adım olduğu
+    /// için sınır ucuz bir emniyet. 2 GB, en büyük gerçek yayıncı
+    /// veritabanının kat kat üstünde.
+    /// </summary>
+    private const long MaxUncompressedBytes = 2L * 1024 * 1024 * 1024;
+
     private readonly string _databaseFile;
     private readonly IBackupClient _client;
     private readonly ILogger<RestoreService> _log;
@@ -44,6 +53,7 @@ public sealed class RestoreService
         }
 
         var bakPath = _databaseFile + PreRestoreBakSuffix;
+        var tempExtract = _databaseFile + ".restoring";
         try
         {
             // Hedge: backup existing db before overwriting
@@ -51,16 +61,34 @@ public sealed class RestoreService
                 HedgeExistingDatabase(bakPath);
 
             // Extract to temp first, then atomic move-overwrite
-            var tempExtract = _databaseFile + ".restoring";
             using (var ms = new MemoryStream(zipBytes))
             using (var archive = new ZipArchive(ms, ZipArchiveMode.Read))
             {
                 var entry = archive.GetEntry("orderdeck.db")
                     ?? throw new InvalidOperationException("Backup zip missing orderdeck.db entry");
+
+                // Merkezî dizindeki boyut yalan söyleyebilir, o yüzden hem
+                // beyan edileni hem gerçekten akan baytı sınırlıyoruz.
+                if (entry.Length > MaxUncompressedBytes)
+                    throw new InvalidOperationException(
+                        $"Yedek beyan edilen boyutu aşıyor ({entry.Length} bayt).");
+
                 await using var src = entry.Open();
                 await using var dst = File.Create(tempExtract);
-                await src.CopyToAsync(dst, ct);
+                await CopyWithLimitAsync(src, dst, MaxUncompressedBytes, ct);
             }
+
+            // Aktif veritabanının üzerine yazmadan ÖNCE doğrula. Eskiden tek
+            // denetim "dosya var ve boyutu > 0" idi ve o da yalnız hata
+            // yolunda çalışıyordu: kırpılmış bir indirme ya da SQLite bile
+            // olmayan bir içerik "Geri yükleme tamamlandı" mesajıyla aktif
+            // veritabanının üzerine yazılıyordu. Bozukluk ancak bir sonraki
+            // açılışta görülüyordu — o noktada operatörün elinde ne yedek
+            // vardı ne de ne olduğuna dair bir iz.
+            if (!SqliteFile.IsIntactDatabase(tempExtract, out var integrityError))
+                throw new InvalidOperationException(
+                    $"Yedek dosyası geçerli bir veritabanı değil ({integrityError}); " +
+                    "mevcut veritabanına dokunulmadı.");
 
             // Replace db
             File.Move(tempExtract, _databaseFile, overwrite: true);
@@ -77,10 +105,15 @@ public sealed class RestoreService
         catch (Exception ex)
         {
             _log.LogError(ex, "Restore failed mid-way for {BackupId}", backupId);
+
+            // Yarım açılmış dosya diskte kalmasın; bir sonraki denemede
+            // File.Create zaten üzerine yazar ama boşuna yer tutar.
+            try { if (File.Exists(tempExtract)) File.Delete(tempExtract); } catch { /* best effort */ }
+
             // Roll back from .pre-restore.bak if extract corrupted the original
             try
             {
-                if (File.Exists(bakPath) && !ZipLooksValid(_databaseFile))
+                if (File.Exists(bakPath) && !SqliteFile.IsIntactDatabase(_databaseFile, out _))
                 {
                     File.Copy(bakPath, _databaseFile, overwrite: true);
                     SqliteFile.DeleteSidecars(_databaseFile);
@@ -88,6 +121,27 @@ public sealed class RestoreService
             }
             catch { /* best effort */ }
             return new RestoreResult(false, $"Geri yükleme hatası: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// <c>Stream.CopyToAsync</c>'in sınırlı sürümü. Zip'in beyan ettiği boyuta
+    /// güvenmeyip gerçekten akan baytı sayar — sıkıştırma bombasında disk
+    /// dolmadan durur.
+    /// </summary>
+    private static async Task CopyWithLimitAsync(
+        Stream source, Stream destination, long maxBytes, CancellationToken ct)
+    {
+        var buffer = new byte[81920];
+        long total = 0;
+        int read;
+        while ((read = await source.ReadAsync(buffer, ct)) > 0)
+        {
+            total += read;
+            if (total > maxBytes)
+                throw new InvalidOperationException(
+                    $"Yedek açılırken {maxBytes} baytlık sınır aşıldı.");
+            await destination.WriteAsync(buffer.AsMemory(0, read), ct);
         }
     }
 
@@ -114,6 +168,4 @@ public sealed class RestoreService
             File.Copy(_databaseFile, bakPath, overwrite: true);
         }
     }
-
-    private static bool ZipLooksValid(string path) => File.Exists(path) && new FileInfo(path).Length > 0;
 }
