@@ -40,6 +40,14 @@ Both live next to this one under `source/repos/`.
 - **Commit messages**: imperative; **Turkish or English are both fine — match the user's tone**
 - Always include `Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>` on commits I author
 - Hosted services in WPF: registered in `AppHost.cs` via `AddHostedService<>`, but **must also be explicitly started** in `App.xaml.cs` (WPF has no `IHost` builder — see PR #89 fix that added the generic startup loop)
+- **Never write a literal credential string in tests** — not even an obviously
+  fake one. Generate it: `$"{prefix}-{Guid.NewGuid():N}"` (see
+  `AdminLoginLockoutTests.NewCredential`). The scanner can't tell a fixture
+  from the real thing, and the repo is public, so the alternative is an
+  allowlist that would also hide a real key pasted into a test. Applies to doc
+  comments too — a quoted password-shaped example trips it. Note that
+  `.gitguardian.yaml` does **not** control the PR check: that's the GitHub
+  App, configured dashboard-side
 
 ## Test + build
 
