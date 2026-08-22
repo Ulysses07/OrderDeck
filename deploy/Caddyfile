@@ -1,3 +1,15 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# CANLI DOSYA BU. 2026-08-23'ten beri `license-server-deploy.yml` her deploy'da
+# bu dosyayı VPS'e kopyalıyor, `caddy validate` ile doğruluyor ve reload ediyor.
+# `/opt/orderdeck/Caddyfile` üzerinde yapılan elle düzenlemeler bir sonraki
+# deploy'da SİLİNİR — değişiklik buraya, PR ile gelmeli.
+#
+# Öncesinde kopyalayan hiçbir şey yoktu: canlı dosya elle düzenleniyordu
+# (VPS'teki `Caddyfile.bak-*` yığını bunun kalıntısı) ve repo'daki sürümün
+# doğru kalması yalnızca dikkate bağlıydı. `deploy/docker-compose.yml` aynı
+# kurulumda sessizce şablona dönüşmüştü (PR #318).
+# ─────────────────────────────────────────────────────────────────────────────
+
 {
     # Force Let's Encrypt production (avoid staging fallback after early DNS failures)
     acme_ca https://acme-v02.api.letsencrypt.org/directory
