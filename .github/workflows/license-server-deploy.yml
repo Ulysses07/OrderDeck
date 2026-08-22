@@ -28,8 +28,14 @@ name: license-server-deploy
 # pull` detects the unchanged digest and `up -d` is a no-op — effectively
 # a free fast-path for unrelated master commits.
 #
-# Rollback: edit /opt/orderdeck/.env to point LICENSE_SERVER_TAG at a
-# previous master-<sha> tag and `docker compose up -d license-server`.
+# Rollback (2026-08-22, denetim O-12): otomatik. Deploy adımı .env'e
+# dokunmadan önce mevcut tag+sha'yı VPS'teki `.rollback` dosyasına yazar;
+# smoke test düşerse `deploy/scripts/rollback-license-server.sh --apply`
+# önceki sürüme döner ve runner /ready'yi yeniden yoklar. Geri alma da
+# başarısız olursa iş kırmızı kalır — o zaman elle müdahale gerekir.
+# Script'in kendisi her deploy'da VPS'e kopyalanıyor (compose gibi), yani
+# "güvenlik ağı kurulu değildi" durumu oluşamaz; elle çalıştırmak için
+# `/opt/orderdeck/scripts/rollback-license-server.sh --apply`.
 # All sha tags are immutable; image prune retains 72h of history.
 
 on:
@@ -155,7 +161,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Sync compose to VPS
+      - name: Sync compose + scripts to VPS
         if: steps.ordering.outputs.skip != 'true'
         id: compose
         env:
@@ -177,14 +183,23 @@ jobs:
         #      karşılanmayan bir `:?` burada patlar ve canlı dosyaya dokunulmaz.
         #   2. `.prev` yedeği: Deploy adımı kalıcı olarak başarısız olursa eski
         #      dosya geri konur.
-        # Kalan boşluk: compose geçerli AMA uygulamayı bozuyorsa `up -d` başarılı
-        # olur, smoke test düşer ve geri alma OLMAZ. Smoke başarısızlığında
-        # otomatik geri alma denetimin O-12 maddesi, ayrı iş.
+        #   3. Compose geçerli AMA uygulamayı bozuyorsa `up -d` başarılı olur ve
+        #      smoke test düşer; bu durumda `Rollback on smoke failure` adımı
+        #      devreye girer (denetim O-12).
+        #
+        # Geri alma script'i de burada kopyalanıyor: Deploy adımından ÖNCE
+        # çalışan tek uzak adım bu, yani güvenlik ağı her zaman kurulu ve taze.
         run: |
           SSH_OPTS="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15"
 
           scp $SSH_OPTS deploy/docker-compose.yml \
             "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/orderdeck/docker-compose.yml.new"
+
+          ssh $SSH_OPTS "${DEPLOY_USER}@${DEPLOY_HOST}" 'mkdir -p /opt/orderdeck/scripts'
+          scp $SSH_OPTS deploy/scripts/rollback-license-server.sh \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/orderdeck/scripts/rollback-license-server.sh"
+          ssh $SSH_OPTS "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            'chmod +x /opt/orderdeck/scripts/rollback-license-server.sh'
 
           # İşaretçiler bilerek ortak ek almıyor: "UNCHANGED" içinde "CHANGED"
           # geçer ve `case` kalıbı yanlış dalı seçerdi.
@@ -215,6 +230,7 @@ jobs:
 
       - name: Deploy to VPS
         if: steps.ordering.outputs.skip != 'true'
+        id: deploy
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
@@ -238,6 +254,12 @@ jobs:
           # patlatmasın (ordering guard ile aynı flake). Uzaktaki komut
           # idempotent (sed/echo/docker compose up/prune) → tekrar güvenli.
           #
+          # `--capture` .env'e DOKUNULMADAN önce koşar: mevcut LICENSE_SERVER_TAG
+          # ve .deployed_sha `.rollback`'a yazılır. Retry'a karşı korumalı —
+          # script aynı run-id için dosya varsa üzerine yazmaz, yoksa ikinci
+          # deneme "önceki sürüm" diye YENİ etiketi kaydeder ve geri alma bozuk
+          # imaja dönerdi. Argümanlar runner'da genişliyor (kaçış tuzağı yok).
+          #
           # Kapsam compose değişip değişmediğine bağlı. Compose aynıysa davranış
           # eskisiyle birebir: yalnız license-server. Değiştiyse dosyanın TAMAMI
           # uygulanmalı — `up -d license-server` caddy/sqlserver tanımındaki bir
@@ -257,6 +279,7 @@ jobs:
               "set -e
                cd /opt/orderdeck
                echo '${GHCR_TOKEN}' | docker login ghcr.io -u '${GHCR_ACTOR}' --password-stdin
+               scripts/rollback-license-server.sh --capture --run-id '${GITHUB_RUN_ID}' --compose-changed '${COMPOSE_CHANGED}'
                if grep -q '^LICENSE_SERVER_TAG=' .env; then
                  sed -i.bak 's|^LICENSE_SERVER_TAG=.*|LICENSE_SERVER_TAG=${NEW_TAG}|' .env
                else
@@ -265,9 +288,6 @@ jobs:
                docker compose pull license-server
                ${UP_CMD}
                echo '${NEW_SHA}' > .deployed_sha
-               # Yedeği başarıda SİL: kalırsa sonraki bir deploy'un geri alma
-               # dalı bu bayat dosyayı canlıya koyardı.
-               rm -f docker-compose.yml.prev
                docker image prune -f --filter 'until=72h' >/dev/null
                docker logout ghcr.io >/dev/null 2>&1 || true"
           }
@@ -281,23 +301,19 @@ jobs:
           done
           echo "::error::Deploy failed after 3 attempts"
 
-          # Compose'u biz değiştirdiysek geri al: aksi hâlde prod, hiç ayağa
-          # kalkmamış bir tanımla baş başa kalır. Geri alma en iyi çaba —
+          # Kayıtlı duruma dön: hem compose'u hem LICENSE_SERVER_TAG'i. (Eskiden
+          # burada yalnız compose geri konurdu; .env sed'i ilk denemede geçip
+          # sonrası düştüğünde etiket yeni sürümde kalıyordu.) En iyi çaba —
           # başarısız olursa asıl hatayı gölgelemesin diye `|| true`.
-          if [ "${COMPOSE_CHANGED}" = "true" ]; then
-            echo "::warning::compose geri alınıyor (docker-compose.yml.prev)"
-            ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
-              -o ConnectTimeout=15 "${DEPLOY_USER}@${DEPLOY_HOST}" \
-              "cd /opt/orderdeck
-               if [ -f docker-compose.yml.prev ]; then
-                 mv docker-compose.yml.prev docker-compose.yml
-                 docker compose up -d || true
-               fi" || true
-          fi
+          echo "::warning::geri alma deneniyor (.rollback)"
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            -o ConnectTimeout=15 "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "cd /opt/orderdeck && scripts/rollback-license-server.sh --apply --run-id '${GITHUB_RUN_ID}'" || true
           exit 1
 
       - name: Smoke test
         if: steps.ordering.outputs.skip != 'true'
+        id: smoke
         run: |
           # /healthz DEĞİL /ready: /healthz sıfır kontrol koşturur (Predicate =>
           # false), yani süreç ayakta olduğu sürece 200 döner. Veritabanına hiç
@@ -321,3 +337,73 @@ jobs:
           # girmeden teşhis edilemez.
           cat /tmp/ready.out 2>/dev/null || true
           exit 1
+
+      - name: Rollback on smoke failure
+        # Denetim O-12. Deploy'un KENDİSİ başarılıysa ama uygulama gelmiyorsa
+        # (geçerli compose + ayağa kalkan ama bozuk imaj) buraya düşülür.
+        # Deploy başarısız olduğunda geri almayı o adım kendi içinde yaptı;
+        # burada tekrar denemek `.rollback` silinmiş olduğu için gürültü olurdu.
+        if: >-
+          always() && steps.deploy.outcome == 'success' &&
+          steps.smoke.outcome == 'failure'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          GHCR_ACTOR: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "::warning::smoke düştü — önceki sürüme dönülüyor"
+
+          # Login gerekli: eski imaj büyük ihtimalle yerelde (prune 72h tutuyor)
+          # ama 72 saatten eski bir sürüme dönüyorsak pull şart ve GHCR paketi
+          # private.
+          # `|| rc=$?`: adım `bash -e` ile koşuyor, çıplak bir ssh düşerse burada
+          # kesilir ve logout ile aşağıdaki teşhis hiç çalışmaz.
+          rc=0
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "set -e
+             cd /opt/orderdeck
+             echo '${GHCR_TOKEN}' | docker login ghcr.io -u '${GHCR_ACTOR}' --password-stdin
+             scripts/rollback-license-server.sh --apply --run-id '${GITHUB_RUN_ID}'" || rc=$?
+
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            -o ConnectTimeout=15 "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            'docker logout ghcr.io >/dev/null 2>&1 || true' || true
+
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::GERİ ALMA BAŞARISIZ — prod bozuk olabilir, elle müdahale gerek"
+            exit 1
+          fi
+
+          # Konteynerin 'running' olması yetmez: smoke'u düşüren şey zaten ayağa
+          # kalkan ama /ready vermeyen bir sürümdü. Uçtan tekrar doğrula.
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /tmp/ready-rb.out -w "%{http_code}" -m 5 \
+                   https://license.orderdeckapp.com/ready || echo "000")
+            if [ "$code" = "200" ]; then
+              echo "::warning::geri alma başarılı — prod önceki sürümde ayakta"
+              # İş yine de kırmızı kalmalı: master'da bozuk bir commit var.
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "::error::geri alma sonrası /ready hâlâ 200 değil (last=${code}) — ELLE MÜDAHALE"
+          cat /tmp/ready-rb.out 2>/dev/null || true
+          exit 1
+
+      - name: Finalize rollback state
+        # Başarılı deploy sonrası `.rollback` ve `docker-compose.yml.prev` silinir.
+        # Kalırsa sonraki bir koşunun geri alma dalı bayat dosyayı canlıya koyardı.
+        if: >-
+          steps.ordering.outputs.skip != 'true' &&
+          steps.deploy.outcome == 'success' && steps.smoke.outcome == 'success'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            -o ConnectTimeout=15 "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            'cd /opt/orderdeck && scripts/rollback-license-server.sh --clear' || \
+            echo "::warning::rollback durumu temizlenemedi (sonraki deploy üzerine yazar)"
