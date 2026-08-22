@@ -199,7 +199,8 @@ public sealed class ShopperPaymentSubmissionServiceTests
         decimal? overrideAmount = null,
         string? overridePayerName = null,
         DateTimeOffset? overridePaidAt = null,
-        string? overrideReferansNo = null) =>
+        string? overrideReferansNo = null,
+        string userAgent = "TestAgent/1.0") =>
         new SubmitInput(
             ShopperId: shopperId,
             LicenseId: licenseId,
@@ -209,7 +210,7 @@ public sealed class ShopperPaymentSubmissionServiceTests
             OverridePaidAt: overridePaidAt,
             OverrideReferansNo: overrideReferansNo,
             IpAddress: "1.2.3.4",
-            UserAgent: "TestAgent/1.0");
+            UserAgent: userAgent);
 
     // ─── 1. Happy path ───────────────────────────────────────────────────────
 
@@ -795,6 +796,175 @@ public sealed class ShopperPaymentSubmissionServiceTests
         // Should not throw even though push fails
         var act = async () => await svc.SubmitAsync(MakeInput(shopper.Id, license.Id), default);
         await act.Should().NotThrowAsync();
+    }
+
+    // ─── 20. Alan sınırları (Y-12) ───────────────────────────────────────────
+    //
+    // Bu bloğun sorduğu tek soru: sütuna sığmayan bir değer, PDF R2'ye
+    // yazılmadan ÖNCE mi durduruluyor? InMemory sağlayıcısı MaxLength'i zaten
+    // uygulamıyor, dolayısıyla "SaveChanges patlıyor mu" diye ölçmenin anlamı
+    // yok — ölçülen şey davranış: 400 dönüyor ve depoda hiçbir nesne kalmıyor.
+
+    private static (ShopperPaymentSubmissionService Svc, StubShopperPaymentStorage Storage) BuildWithStorage(
+        LicenseDbContext db, PdfDekontParser.ParseResult parseResult)
+    {
+        var storage = new StubShopperPaymentStorage();
+        var svc = new ShopperPaymentSubmissionService(
+            db,
+            new ShopperPaymentRateLimiter(db),
+            storage,
+            new FakePdfDekontParser(parseResult),
+            new CapturingNotificationSender(),
+            NullLogger<ShopperPaymentSubmissionService>.Instance);
+        return (svc, storage);
+    }
+
+    private async Task<(ShopperPaymentSubmissionService Svc, StubShopperPaymentStorage Storage, Shopper Shopper, License License)>
+        SeedForValidationAsync(LicenseDbContext db, PdfDekontParser.ParseResult? parseResult = null)
+    {
+        SeedSku(db);
+        var customer = SeedCustomer(db);
+        var shopper = SeedShopper(db);
+        var license = SeedLicense(db, customer.Id, iban: null);
+        await db.SaveChangesAsync();
+        var (svc, storage) = BuildWithStorage(db, parseResult ?? ParseResults.FullHigh());
+        return (svc, storage, shopper, license);
+    }
+
+    [Fact]
+    public async Task Cok_uzun_gonderen_adi_yuklemeden_once_reddediliyor()
+    {
+        await using var db = NewDb();
+        var (svc, storage, shopper, license) = await SeedForValidationAsync(db);
+
+        var act = async () => await svc.SubmitAsync(
+            MakeInput(shopper.Id, license.Id, overridePayerName: new string('A', 201)), default);
+
+        var ex = (await act.Should().ThrowAsync<SubmitFailureException>()).Which;
+        ex.StatusCode.Should().Be(400);
+        ex.ErrorCode.Should().Be("invalid-payer-name");
+        storage.Count.Should().Be(0, "doğrulama R2 yüklemesinden önce çalışmalı");
+    }
+
+    [Fact]
+    public async Task Sinirdaki_gonderen_adi_kabul_ediliyor()
+    {
+        await using var db = NewDb();
+        var (svc, _, shopper, license) = await SeedForValidationAsync(db);
+
+        var name = new string('A', 200);
+        var result = await svc.SubmitAsync(
+            MakeInput(shopper.Id, license.Id, overridePayerName: name), default);
+
+        var payment = await db.Payments.FirstAsync(p => p.Id == result.PaymentId);
+        payment.PayerName.Should().Be(name);
+    }
+
+    [Fact]
+    public async Task Cok_uzun_referans_no_yuklemeden_once_reddediliyor()
+    {
+        await using var db = NewDb();
+        var (svc, storage, shopper, license) = await SeedForValidationAsync(db);
+
+        var act = async () => await svc.SubmitAsync(
+            MakeInput(shopper.Id, license.Id, overrideReferansNo: new string('9', 65)), default);
+
+        var ex = (await act.Should().ThrowAsync<SubmitFailureException>()).Which;
+        ex.StatusCode.Should().Be(400);
+        ex.ErrorCode.Should().Be("invalid-referans-no");
+        storage.Count.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData("-1")]                              // negatif
+    [InlineData("10000000000000000")]               // decimal(18,2) taşması
+    [InlineData("100.999")]                         // kuruştan küçük basamak
+    public async Task Gecersiz_tutar_yuklemeden_once_reddediliyor(string rawAmount)
+    {
+        await using var db = NewDb();
+        var (svc, storage, shopper, license) = await SeedForValidationAsync(db);
+
+        var amount = decimal.Parse(rawAmount, System.Globalization.CultureInfo.InvariantCulture);
+        var act = async () => await svc.SubmitAsync(
+            MakeInput(shopper.Id, license.Id, overrideAmount: amount), default);
+
+        var ex = (await act.Should().ThrowAsync<SubmitFailureException>()).Which;
+        ex.StatusCode.Should().Be(400);
+        ex.ErrorCode.Should().Be("invalid-amount");
+        storage.Count.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Gelecek_tarihli_odeme_yuklemeden_once_reddediliyor()
+    {
+        await using var db = NewDb();
+        var (svc, storage, shopper, license) = await SeedForValidationAsync(db);
+
+        var act = async () => await svc.SubmitAsync(
+            MakeInput(shopper.Id, license.Id, overridePaidAt: DateTimeOffset.UtcNow.AddDays(2)), default);
+
+        var ex = (await act.Should().ThrowAsync<SubmitFailureException>()).Which;
+        ex.StatusCode.Should().Be(400);
+        ex.ErrorCode.Should().Be("invalid-paid-at");
+        storage.Count.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Saat_kaymasi_toleransi_icindeki_tarih_kabul_ediliyor()
+    {
+        await using var db = NewDb();
+        var (svc, _, shopper, license) = await SeedForValidationAsync(db);
+
+        var act = async () => await svc.SubmitAsync(
+            MakeInput(shopper.Id, license.Id, overridePaidAt: DateTimeOffset.UtcNow.AddHours(2)), default);
+
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task Asiri_uzun_user_agent_istegi_bozmuyor_kirpiliyor()
+    {
+        await using var db = NewDb();
+        var (svc, _, shopper, license) = await SeedForValidationAsync(db);
+
+        var result = await svc.SubmitAsync(
+            MakeInput(shopper.Id, license.Id, userAgent: new string('U', 4000)), default);
+
+        var audit = await db.PaymentSubmissionAudits.FirstAsync(a => a.PaymentId == result.PaymentId);
+        audit.UserAgent.Length.Should().Be(512);
+    }
+
+    [Fact]
+    public async Task Parser_ciktisi_reddedilmiyor_sinira_kirpiliyor()
+    {
+        await using var db = NewDb();
+        var parseResult = ParseResults.FullHigh() with
+        {
+            PayerName = new string('B', 400),
+            ReferansNo = new string('7', 100),
+            RecipientName = new string('C', 400),
+        };
+        var (svc, _, shopper, license) = await SeedForValidationAsync(db, parseResult);
+
+        var result = await svc.SubmitAsync(MakeInput(shopper.Id, license.Id), default);
+
+        var payment = await db.Payments.FirstAsync(p => p.Id == result.PaymentId);
+        payment.PayerName.Length.Should().Be(200);
+        payment.ReferansNo.Length.Should().Be(64);
+        payment.RecipientName!.Length.Should().Be(200);
+    }
+
+    [Fact]
+    public async Task Sutuna_sigmayan_parser_tutari_okunamadi_sayiliyor()
+    {
+        await using var db = NewDb();
+        var parseResult = ParseResults.FullHigh() with { Amount = 10_000_000_000_000_000m };
+        var (svc, _, shopper, license) = await SeedForValidationAsync(db, parseResult);
+
+        var result = await svc.SubmitAsync(MakeInput(shopper.Id, license.Id), default);
+
+        var payment = await db.Payments.FirstAsync(p => p.Id == result.PaymentId);
+        payment.Amount.Should().Be(0m);
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────────────

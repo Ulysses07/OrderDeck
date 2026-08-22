@@ -38,6 +38,25 @@ public sealed class SubmitFailureException : Exception
 
 public sealed class ShopperPaymentSubmissionService
 {
+    // ── DB sınırlarının aynası ────────────────────────────────────────────────
+    // Kaynak: LicenseDbContext, Payment ve PaymentSubmissionAudit eşlemeleri.
+    // Bu sabitler oradaki HasMaxLength/HasPrecision değerleriyle AYNI kalmalı;
+    // biri değişip diğeri kalırsa aradaki fark yine SaveChanges'te patlar.
+    private const int MaxPayerNameLength = 200;
+    private const int MaxReferansNoLength = 64;
+    private const int MaxRecipientNameLength = 200;
+    private const int MaxIbanLength = 34;
+    private const int MaxUserAgentLength = 512;
+
+    /// <summary>decimal(18,2)'nin taşıdığı en büyük değer.</summary>
+    private const decimal MaxAmount = 9_999_999_999_999_999.99m;
+
+    /// <summary>
+    /// Dekont tarihi için ileri yön toleransı. İstemci saati sunucudan biraz
+    /// ileri olabilir; ama bir ödeme "yarın" yapılmış olamaz.
+    /// </summary>
+    private static readonly TimeSpan PaidAtFutureSkew = TimeSpan.FromDays(1);
+
     private readonly LicenseDbContext _db;
     private readonly IShopperPaymentRateLimiter _rateLimiter;
     private readonly IShopperPaymentStorage _storage;
@@ -71,6 +90,20 @@ public sealed class ShopperPaymentSubmissionService
             || input.PdfBytes[3] != (byte)'F'
             || input.PdfBytes[4] != (byte)'-')
             throw new SubmitFailureException(400, "invalid-pdf", "PDF magic byte mismatch");
+
+        // 1b. İstemcinin gönderdiği override alanları — parse ve YÜKLEMEDEN önce.
+        //
+        // Buradaki her kontrol bir DB kısıtının aynası. Kontrol yokken fazladan
+        // uzun bir değer ta SaveChanges'e kadar gidiyordu: o noktada PDF çoktan
+        // R2'ye yazılmış oluyor, hata sınıflandırılamadığı için kullanıcı 500
+        // görüyor, nesne de en iyi ihtimalle geri siliniyordu. Yani her kötü
+        // istek bir yazma + bir silme maliyeti üretiyordu.
+        //
+        // Override'lar İSTEMCİNİN beyanı olduğu için burada reddediliyor (400):
+        // sınırı aşan değeri sessizce kırpmak, kullanıcının yazdığından farklı
+        // bir ödeme kaydı oluşturmak olurdu. Parser çıktısı ise (adım 6b)
+        // kırpılıyor — orası beyan değil, tahmin.
+        ValidateOverrides(input);
 
         // 2. Rate limit
         var rlReason = await _rateLimiter.CheckAsync(input.ShopperId, input.LicenseId, ct);
@@ -113,8 +146,29 @@ public sealed class ShopperPaymentSubmissionService
                 : (DateTimeOffset?)null);
         var effRef = input.OverrideReferansNo ?? parseResult.ReferansNo;
 
+        // 6b. Parser çıktısını DB sınırlarına indir.
+        //
+        // Override doğrulanmış durumda, dolayısıyla buradaki düzeltmeler yalnız
+        // PARSER'dan gelen değerlere dokunuyor. Parser'ın isim yakalayan
+        // regex'leri açık uçlu (`(...)+?` + sonlandırıcı olarak `$`), yani
+        // biçimsiz ya da kasten hazırlanmış bir PDF 200 karakteri aşan bir
+        // "isim" üretebiliyor. Bu bir beyan değil, kötü bir çıkarım: dekontun
+        // tamamını reddetmek yerine kırpılıyor — zaten yayıncı kaydı elle
+        // gözden geçiriyor ve PDF'in kendisi de kayıtta duruyor.
+        effPayer = Clamp(effPayer, MaxPayerNameLength);
+        effRef = Clamp(effRef, MaxReferansNoLength);
+        var recipientIban = Clamp(parseResult.RecipientIban, MaxIbanLength);
+        var recipientName = Clamp(parseResult.RecipientName, MaxRecipientNameLength);
+
+        // Sayı ve tarihte kırpmanın karşılığı yok: yarısı kesilmiş bir tutar
+        // uydurma bir tutardır. Sütuna sığmayan parser çıktısı "okunamadı"
+        // sayılıp düşürülüyor — aşağıdaki `?? 0m` / `?? now` yedeği zaten bu
+        // durum için var ve güven puanı da eksik alanı hesaba katıyor.
+        if (effAmount is { } amt && (amt < 0m || amt > MaxAmount)) effAmount = null;
+        if (effPaidAt is { } pd && pd > DateTimeOffset.UtcNow + PaidAtFutureSkew) effPaidAt = null;
+
         // 7. MetadataHash (soft duplicate)
-        var metadataHash = ComputeMetadataHash(effAmount, effPayer, effPaidAt, effRef, parseResult.RecipientIban);
+        var metadataHash = ComputeMetadataHash(effAmount, effPayer, effPaidAt, effRef, recipientIban);
         var flags = new List<string>();
         var metadataDup = await _db.Payments
             .AnyAsync(p => p.LicenseId == input.LicenseId
@@ -145,7 +199,7 @@ public sealed class ShopperPaymentSubmissionService
         else
         {
             var ibanA = NormalizeIban(license.PaymentIban);
-            var ibanB = NormalizeIban(parseResult.RecipientIban ?? "");
+            var ibanB = NormalizeIban(recipientIban ?? "");
             if (ibanA != ibanB) flags.Add("iban-mismatch");
         }
 
@@ -176,8 +230,8 @@ public sealed class ShopperPaymentSubmissionService
             MediaContentType = "application/pdf",
             PdfHash = parseResult.PdfHash,
             MetadataHash = metadataHash,
-            RecipientIban = parseResult.RecipientIban,
-            RecipientName = parseResult.RecipientName,
+            RecipientIban = recipientIban,
+            RecipientName = recipientName,
             FraudFlags = fraudFlagsString,
             ParserConfidence = confidence,
             CreatedAt = now,
@@ -191,7 +245,12 @@ public sealed class ShopperPaymentSubmissionService
             ShopperId = input.ShopperId,
             LicenseId = input.LicenseId,
             IpAddress = input.IpAddress,
-            UserAgent = input.UserAgent,
+            // User-Agent tamamen istemcinin elinde ve sütun 512 NVARCHAR.
+            // 600 karakterlik bir header göndermek, bu satıra kadar gelen her
+            // isteği (PDF parse + R2 yazma dahil) 500'e çeviriyordu — dekont
+            // yüklemeyi uzaktan bozmanın en ucuz yolu buydu. Kimlik değil iz
+            // kaydı olduğu için isteği reddetmek yerine kırpılıyor.
+            UserAgent = Clamp(input.UserAgent, MaxUserAgentLength) ?? "",
             FraudFlags = fraudFlagsString,
             ParserConfidence = confidence,
             ParserRawText = parseResult.RawText,
@@ -244,6 +303,48 @@ public sealed class ShopperPaymentSubmissionService
 
         return new SubmitResult(paymentId, flags.ToArray(), confidence, parseResult);
     }
+
+    /// <summary>
+    /// İstemcinin gönderdiği override alanlarını DB kısıtlarıyla karşılaştırır.
+    /// Hiçbir I/O yapmaz; parse ve yüklemeden önce çalışması bunun için önemli.
+    /// </summary>
+    private static void ValidateOverrides(SubmitInput input)
+    {
+        if (input.OverridePayerName is { Length: > MaxPayerNameLength })
+            throw new SubmitFailureException(400, "invalid-payer-name",
+                $"Gönderen adı en fazla {MaxPayerNameLength} karakter olabilir.");
+
+        if (input.OverrideReferansNo is { Length: > MaxReferansNoLength })
+            throw new SubmitFailureException(400, "invalid-referans-no",
+                $"Referans no en fazla {MaxReferansNoLength} karakter olabilir.");
+
+        if (input.OverrideAmount is { } amount)
+        {
+            if (amount < 0m || amount > MaxAmount)
+                throw new SubmitFailureException(400, "invalid-amount",
+                    "Tutar negatif olamaz ve üst sınırı aşamaz.");
+
+            // Kuruştan küçük basamak: sütun decimal(18,2) olduğu için SQL
+            // Server bunu sessizce yuvarlardı — yani kullanıcı 100,999 yazıp
+            // 101,00 kaydedilirdi ve bunu hiçbir yerde göremezdi. Para
+            // alanında sessiz yuvarlama kabul edilmiyor, açıkça reddediliyor.
+            if (decimal.Round(amount, 2) != amount)
+                throw new SubmitFailureException(400, "invalid-amount",
+                    "Tutar en fazla iki ondalık basamak içerebilir.");
+        }
+
+        if (input.OverridePaidAt is { } paidAt
+            && paidAt > DateTimeOffset.UtcNow + PaidAtFutureSkew)
+            throw new SubmitFailureException(400, "invalid-paid-at",
+                "Ödeme tarihi gelecekte olamaz.");
+    }
+
+    /// <summary>
+    /// Sütuna sığmayan metni kırpar. Alt sınır uydurulmuyor: burada sorulan tek
+    /// soru "bu değer sütuna sığıyor mu".
+    /// </summary>
+    private static string? Clamp(string? value, int maxLength)
+        => value is not null && value.Length > maxLength ? value[..maxLength] : value;
 
     /// <summary>
     /// Yazma başarısızsa R2'deki nesneyi geri al. Silme de başarısız olursa
