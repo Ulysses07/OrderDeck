@@ -2,8 +2,13 @@ name: license-server-deploy
 
 # License-server CI deploy. Fires after build-test passes on master:
 # build a Linux image (license-server is net10.0, no WPF), push to GHCR
-# with `latest` + immutable `master-<sha>` tags, then update the VPS
-# .env's LICENSE_SERVER_TAG to the new sha and `compose up -d`.
+# with `latest` + immutable `master-<sha>` tags, sync `deploy/docker-compose.yml`
+# to the VPS, then update the VPS .env's LICENSE_SERVER_TAG to the new sha
+# and `compose up -d`.
+#
+# `deploy/docker-compose.yml` is the source of truth for the live file since
+# 2026-08-22 — hand edits under /opt/orderdeck will be overwritten on the next
+# deploy. `.env` is NOT synced: it holds the secrets and stays VPS-only.
 #
 # Production routing pins to `master-<short-sha>` (immutable). `:latest`
 # is pushed for ergonomic manual ops only — never read by VPS compose
@@ -150,6 +155,64 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Sync compose to VPS
+        if: steps.ordering.outputs.skip != 'true'
+        id: compose
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        # `deploy/docker-compose.yml` eskiden hiçbir yere kopyalanmıyordu: bu
+        # workflow VPS'te yalnız `.env`'in LICENSE_SERVER_TAG satırını güncelleyip
+        # `compose up` diyordu. Yani repo'daki dosya bir ŞABLONdu ve elle bakılan
+        # canlı dosyadan sessizce ayrışmıştı — 2026-08-22'de ölçülen fark:
+        # `Jwt__SecretKey` üretimde `:?` korumasızdı (eksik .env satırı imzalama
+        # anahtarını boş stringe indirir), Sms/WhatsApp/BroadcastMedia sağlayıcıları
+        # `:-log`/`:-stub`'a düşüyordu (sessizce hiçbir şey göndermeyen üretim) ve
+        # PR #317'nin yükleme tavanı hiç uygulanmamıştı. deploy/README.md ise bu
+        # korumaları yaşıyormuş gibi anlatıyordu.
+        #
+        # Artık repo dosyası tek kaynak. Bedeli açık: bozuk bir compose merge
+        # edilirse prod'u düşürebilir. İki kalkan var —
+        #   1. `config -q`: değişkenler .env ile çözülüyor mu, YAML geçerli mi;
+        #      karşılanmayan bir `:?` burada patlar ve canlı dosyaya dokunulmaz.
+        #   2. `.prev` yedeği: Deploy adımı kalıcı olarak başarısız olursa eski
+        #      dosya geri konur.
+        # Kalan boşluk: compose geçerli AMA uygulamayı bozuyorsa `up -d` başarılı
+        # olur, smoke test düşer ve geri alma OLMAZ. Smoke başarısızlığında
+        # otomatik geri alma denetimin O-12 maddesi, ayrı iş.
+        run: |
+          SSH_OPTS="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15"
+
+          scp $SSH_OPTS deploy/docker-compose.yml \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/orderdeck/docker-compose.yml.new"
+
+          # İşaretçiler bilerek ortak ek almıyor: "UNCHANGED" içinde "CHANGED"
+          # geçer ve `case` kalıbı yanlış dalı seçerdi.
+          RESULT=$(ssh $SSH_OPTS "${DEPLOY_USER}@${DEPLOY_HOST}" "
+            cd /opt/orderdeck || exit 1
+            if ! docker compose -f docker-compose.yml.new config -q; then
+              rm -f docker-compose.yml.new
+              exit 1
+            fi
+            if cmp -s docker-compose.yml.new docker-compose.yml; then
+              rm -f docker-compose.yml.new
+              echo COMPOSE_SAME
+              exit 0
+            fi
+            cp docker-compose.yml docker-compose.yml.prev || exit 1
+            mv docker-compose.yml.new docker-compose.yml || exit 1
+            echo COMPOSE_CHANGED" 2>&1) || true
+
+          echo "$RESULT"
+          case "$RESULT" in
+            *COMPOSE_CHANGED*) echo "changed=true"  >> $GITHUB_OUTPUT ;;
+            *COMPOSE_SAME*)    echo "changed=false" >> $GITHUB_OUTPUT ;;
+            *)
+              echo "::error::compose doğrulaması başarısız — canlı dosyaya dokunulmadı"
+              exit 1
+              ;;
+          esac
+
       - name: Deploy to VPS
         if: steps.ordering.outputs.skip != 'true'
         env:
@@ -157,6 +220,7 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           NEW_TAG: ${{ steps.tags.outputs.tag }}
           NEW_SHA: ${{ steps.tags.outputs.sha }}
+          COMPOSE_CHANGED: ${{ steps.compose.outputs.changed }}
           # GHCR package PRIVATE — VPS pull için kimlik gerekiyor. Runner'ın
           # otomatik GITHUB_TOKEN'ı (packages:write yetkili) her run'da taze;
           # VPS'te bununla login olunca PAT/secret/expire derdi olmadan private
@@ -173,6 +237,19 @@ jobs:
           # Retry: runner→VPS arası geçici SSH connect timeout'u deploy'u
           # patlatmasın (ordering guard ile aynı flake). Uzaktaki komut
           # idempotent (sed/echo/docker compose up/prune) → tekrar güvenli.
+          #
+          # Kapsam compose değişip değişmediğine bağlı. Compose aynıysa davranış
+          # eskisiyle birebir: yalnız license-server. Değiştiyse dosyanın TAMAMI
+          # uygulanmalı — `up -d license-server` caddy/sqlserver tanımındaki bir
+          # değişikliği sessizce yutardı, ki bu tam da bu PR'ın kapattığı hata
+          # sınıfı. Compose bildirimsel olduğu için tanımı değişmeyen konteynere
+          # dokunulmaz; sqlserver ancak gerçekten düzenlenirse yeniden yaratılır.
+          if [ "${COMPOSE_CHANGED}" = "true" ]; then
+            UP_CMD="docker compose up -d"
+          else
+            UP_CMD="docker compose up -d license-server"
+          fi
+
           deploy_remote() {
             ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
               -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
@@ -186,8 +263,11 @@ jobs:
                  echo 'LICENSE_SERVER_TAG=${NEW_TAG}' >> .env
                fi
                docker compose pull license-server
-               docker compose up -d license-server
+               ${UP_CMD}
                echo '${NEW_SHA}' > .deployed_sha
+               # Yedeği başarıda SİL: kalırsa sonraki bir deploy'un geri alma
+               # dalı bu bayat dosyayı canlıya koyardı.
+               rm -f docker-compose.yml.prev
                docker image prune -f --filter 'until=72h' >/dev/null
                docker logout ghcr.io >/dev/null 2>&1 || true"
           }
@@ -200,6 +280,20 @@ jobs:
             sleep $((attempt * 10))
           done
           echo "::error::Deploy failed after 3 attempts"
+
+          # Compose'u biz değiştirdiysek geri al: aksi hâlde prod, hiç ayağa
+          # kalkmamış bir tanımla baş başa kalır. Geri alma en iyi çaba —
+          # başarısız olursa asıl hatayı gölgelemesin diye `|| true`.
+          if [ "${COMPOSE_CHANGED}" = "true" ]; then
+            echo "::warning::compose geri alınıyor (docker-compose.yml.prev)"
+            ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+              -o ConnectTimeout=15 "${DEPLOY_USER}@${DEPLOY_HOST}" \
+              "cd /opt/orderdeck
+               if [ -f docker-compose.yml.prev ]; then
+                 mv docker-compose.yml.prev docker-compose.yml
+                 docker compose up -d || true
+               fi" || true
+          fi
           exit 1
 
       - name: Smoke test
