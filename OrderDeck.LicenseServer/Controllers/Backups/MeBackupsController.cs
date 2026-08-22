@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using System.Security.Cryptography;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
@@ -22,6 +23,7 @@ public sealed class MeBackupsController : ControllerBase
     private readonly IAuditService _audit;
     private readonly IS3BackupSink _s3;
     private readonly Microsoft.Extensions.Options.IOptions<BackupOptions> _opt;
+    private readonly BackupUploadThrottle _throttle;
     private readonly OrderDeck.LicenseServer.Services.Observability.OrderDeckMetrics _metrics;
     private readonly ILogger<MeBackupsController> _log;
 
@@ -32,6 +34,7 @@ public sealed class MeBackupsController : ControllerBase
         IAuditService audit,
         IS3BackupSink s3,
         Microsoft.Extensions.Options.IOptions<BackupOptions> opt,
+        BackupUploadThrottle throttle,
         OrderDeck.LicenseServer.Services.Observability.OrderDeckMetrics metrics,
         ILogger<MeBackupsController> log)
     {
@@ -41,6 +44,7 @@ public sealed class MeBackupsController : ControllerBase
         _audit = audit;
         _s3 = s3;
         _opt = opt;
+        _throttle = throttle;
         _metrics = metrics;
         _log = log;
     }
@@ -58,14 +62,72 @@ public sealed class MeBackupsController : ControllerBase
         if (string.IsNullOrWhiteSpace(sha) || sha.Length != 64)
             return BadRequest(new { error = "X-Backup-Sha256 header required (64 hex chars)" });
 
-        var maxBytes = _opt.Value.MaxBlobSizeMb * 1024L * 1024L;
-        using var ms = new MemoryStream();
-        await Request.Body.CopyToAsync(ms, ct);
-        if (ms.Length > maxBytes)
-            return StatusCode(StatusCodes.Status413PayloadTooLarge,
-                new { error = $"Backup exceeds {_opt.Value.MaxBlobSizeMb} MB limit" });
+        var maxMb = _opt.Value.MaxBlobSizeMb;
+        var maxBytes = maxMb * 1024L * 1024L;
 
-        var bytes = ms.ToArray();
+        // Kestrel'in varsayılan gövde tavanı 30.000.000 bayt (~28,6 MB) ve
+        // MaxBlobSizeMb'den TAMAMEN bağımsız. Bu satır eklenene kadar aşağıdaki
+        // 413 dalına hiç gelinmiyordu: 28,6 MB'ı aşan istek daha sunucu
+        // katmanında kesiliyor, müşteri bizim mesajımızı değil ham protokol
+        // hatasını görüyordu — ve MaxBlobSizeMb'yi büyütmek hiçbir şeyi
+        // değiştirmiyordu, çünkü bağlayıcı sınır o değildi.
+        var sizeFeature = HttpContext.Features.Get<IHttpMaxRequestBodySizeFeature>();
+        if (sizeFeature is { IsReadOnly: false })
+            sizeFeature.MaxRequestBodySize = maxBytes;
+
+        // Content-Length varsa gövdeyi HİÇ okumadan reddet. Okuyup sonra
+        // ölçmek, zaten reddedeceğimiz baytları önce belleğe almak demekti;
+        // tavanı yükseltmenin bedelini de tam olarak orası ödüyordu.
+        if (Request.ContentLength is { } declaredLength && declaredLength > maxBytes)
+            return TooLarge(maxMb);
+
+        // Sıra: gövdeyi okumadan ÖNCE. Kapının amacı eşzamanlı tamponlanan bayt
+        // miktarını sınırlamak; okuduktan sonra beklemek hiçbir şey korumaz.
+        if (!await _throttle.TryEnterAsync(ct))
+        {
+            Response.Headers.RetryAfter = "30";
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                new { error = "Server is busy storing other backups. Retry shortly." });
+        }
+
+        byte[] bytes;
+        try
+        {
+            try
+            {
+                bytes = await ReadBodyAsync(ct);
+            }
+            catch (BadHttpRequestException ex)
+                when (ex.StatusCode == StatusCodes.Status413PayloadTooLarge)
+            {
+                // Yukarıda kurduğumuz sınır tetiklendi (Content-Length yoksa ya
+                // da yalan söylediyse). Ham hata yerine kendi gövdemizi dönüyoruz
+                // ki istemci iki yolda da aynı yanıtı görsün.
+                return TooLarge(maxMb);
+            }
+            catch (EndOfStreamException)
+            {
+                // Content-Length söylediğinden az bayt geldi. Yarım gövdeyi
+                // yedek diye kaydetmektense reddetmek şart — SHA da tutmazdı
+                // ama o kontrole gelmeden burada kesiliyor.
+                return BadRequest(new { error = "Request body shorter than Content-Length" });
+            }
+
+            return await StoreAsync(bytes, sha, maxMb, ct);
+        }
+        finally
+        {
+            _throttle.Exit();
+        }
+    }
+
+    private async Task<IActionResult> StoreAsync(byte[] bytes, string sha, int maxMb, CancellationToken ct)
+    {
+        // Savunma derinliği: Content-Length yoksa VE sunucu gövde sınırını
+        // uygulamıyorsa (TestServer'da bu özellik yok) tek kalan ölçüm bu.
+        if (bytes.LongLength > maxMb * 1024L * 1024L)
+            return TooLarge(maxMb);
+
         var actualSha = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
         if (!string.Equals(actualSha, sha, StringComparison.OrdinalIgnoreCase))
             return BadRequest(new { error = "SHA256 mismatch — body integrity check failed" });
@@ -81,10 +143,10 @@ public sealed class MeBackupsController : ControllerBase
                 .Where(b => b.CustomerId == CustomerId)
                 .SumAsync(b => (long?)b.SizeBytes, ct) ?? 0L;
             var quotaBytes = quotaMb * 1024L * 1024L;
-            // ms.Length is plaintext; encrypted is ms.Length + 28 (nonce+tag). Use
-            // ms.Length as a close-enough estimate — over-counting is fine, we'd
+            // bytes is plaintext; encrypted is bytes.Length + 28 (nonce+tag). Use
+            // bytes.Length as a close-enough estimate — over-counting is fine, we'd
             // rather reject borderline cases than blow the cap.
-            if (existingBytes + ms.Length > quotaBytes)
+            if (existingBytes + bytes.LongLength > quotaBytes)
             {
                 return StatusCode(StatusCodes.Status507InsufficientStorage,
                     new { error = $"Per-customer backup quota exceeded ({quotaMb} MB). Delete older backups via /api/v1/me/backups/{{id}}." });
@@ -160,6 +222,38 @@ public sealed class MeBackupsController : ControllerBase
             isMonthlyMilestone = saved.IsMonthlyMilestone
         });
     }
+
+    /// <summary>
+    /// Gövdeyi tek bir dizide toplar.
+    ///
+    /// <para>Content-Length varsa dizi TAM boyutta ayrılıyor. Önceki hâl
+    /// <c>MemoryStream</c> ile okuyup <c>ToArray()</c> çağırıyordu; bu, blob
+    /// boyutunda iki fazladan kopya demekti — tampon büyürken bırakılan eski
+    /// diziler, artı ToArray'in çıkardığı yeni dizi. 64 MB'lık bir yedekte
+    /// gereksiz yere ~128 MB. Boyutun üst sınırı çağıran tarafta zaten
+    /// doğrulanmış olduğu için burada ayrılan dizi de sınırlı.</para>
+    ///
+    /// <para>Content-Length yoksa (chunked) boyutu önden bilemiyoruz; tavanı
+    /// Kestrel uyguluyor ve aşılırsa okuma <see cref="BadHttpRequestException"/>
+    /// ile düşüyor.</para>
+    /// </summary>
+    private async Task<byte[]> ReadBodyAsync(CancellationToken ct)
+    {
+        if (Request.ContentLength is { } length)
+        {
+            var buffer = new byte[length];
+            await Request.Body.ReadExactlyAsync(buffer, ct);
+            return buffer;
+        }
+
+        using var ms = new MemoryStream();
+        await Request.Body.CopyToAsync(ms, ct);
+        return ms.ToArray();
+    }
+
+    private IActionResult TooLarge(int maxMb) =>
+        StatusCode(StatusCodes.Status413PayloadTooLarge,
+            new { error = $"Backup exceeds {maxMb} MB limit" });
 
     [HttpGet]
     public async Task<IActionResult> List(CancellationToken ct)

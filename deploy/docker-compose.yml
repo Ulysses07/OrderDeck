@@ -95,7 +95,19 @@ services:
       Backup__MasterKeys__2: "${BACKUP_MASTERKEYS_2:-}"
       Backup__ActiveKeyVersion: "${BACKUP_ACTIVEKEYVERSION:-0}"
       Backup__StorageRoot: "/app/Backups"
-      Backup__MaxBlobSizeMb: "200"
+      # Bu üçlü BİRLİKTE okunmalı; aşağıdaki mem_limit ile aynı bütçeyi
+      # paylaşıyorlar. Yükleme yolu blob'u akıtmıyor, topluyor: istek başına
+      # elde düz metin + zarf, yani ~2 × blob duruyor. Tepe bellek dolayısıyla
+      # MaxBlobSizeMb × 2 × MaxConcurrentUploads ≈ 256 MB. Birini büyütürken
+      # diğerlerine bakmadan yapma.
+      #
+      # Eskiden burada 200 yazıyordu ve bu sayı HİÇBİR ŞEY YAPMIYORDU: sunucunun
+      # varsayılan istek gövdesi tavanı (30.000.000 bayt) daha önce devreye
+      # giriyordu. Artık tavan istek başına uygulanıyor, yani buradaki değer
+      # gerçekten bağlayıcı — 200 bırakmak 800 MB'lık tek istek demek olurdu.
+      Backup__MaxBlobSizeMb: "64"
+      Backup__MaxConcurrentUploads: "2"
+      Backup__UploadQueueWaitSeconds: "10"
       Backup__S3__Enabled: "${BACKUP_S3_ENABLED:-false}"
       Backup__S3__ServiceUrl: "${BACKUP_S3_SERVICE_URL:-}"
       Backup__S3__AccessKey: "${BACKUP_S3_ACCESS_KEY:-}"
