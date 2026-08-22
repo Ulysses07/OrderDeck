@@ -189,41 +189,117 @@ jobs:
         #
         # Geri alma script'i de burada kopyalanıyor: Deploy adımından ÖNCE
         # çalışan tek uzak adım bu, yani güvenlik ağı her zaman kurulu ve taze.
+        #
+        # Retry (2026-08-23): bu adım uzun süre tek retry'sız uzak adımdı ve
+        # 2026-08-22'de İKİ kez geçici bir SSH connect timeout'u tüm deploy'u
+        # kırmızıya çevirdi (run 32598222980, 32599066095). Prod'a dokunulmadı
+        # ama her seferinde elle `gh run rerun --failed` gerekti.
+        #
+        # Retry burada diğer adımlardan daha dikkatli olmak zorunda: sıralama
+        # koruması ve Deploy idempotent iş yapıyor, buradaki iş ise canlı dosyayı
+        # DEĞİŞTİRİYOR. Bloğun tamamını körlemesine tekrarlamak yeni bir hata
+        # sınıfı açardı — takas uzakta başarılı olup çıktı yolda kaybolursa
+        # ikinci deneme `cmp` ile dosyaları eşit bulur, `COMPOSE_SAME` der ve
+        # gerçek compose değişikliği sessizce yutulur (#318'in kapattığı sınıf).
+        #
+        # O yüzden iki ayrı tur var:
+        #   1. Gönder + doğrula + karşılaştır — kalıcı durumu değiştirmez (`.new`
+        #      her turda yeniden yazılıyor), yani kaç kez tekrarlanırsa
+        #      tekrarlansın verdict aynı çıkar.
+        #   2. Takas — yalnız CHANGED'de koşar, tek mutasyon burasıdır. Tekrar
+        #      güvenliği `.new`'in varlığından geliyor: onu silen tek şey bu
+        #      bloğun `mv`'si, dolayısıyla dosya yoksa takas zaten tamamlanmıştır.
+        #      Bu, bugün var olan gizli bir deliği de kapatıyor: takas uzakta olup
+        #      çıktı kaybolduğunda canlı dosya yeni, konteyner eski kalıyordu ve
+        #      sonraki deploy farkı `COMPOSE_SAME` diye yutuyordu.
         run: |
-          SSH_OPTS="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15"
-
-          scp $SSH_OPTS deploy/docker-compose.yml \
-            "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/orderdeck/docker-compose.yml.new"
-
-          ssh $SSH_OPTS "${DEPLOY_USER}@${DEPLOY_HOST}" 'mkdir -p /opt/orderdeck/scripts'
-          scp $SSH_OPTS deploy/scripts/rollback-license-server.sh \
-            "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/orderdeck/scripts/rollback-license-server.sh"
-          ssh $SSH_OPTS "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            'chmod +x /opt/orderdeck/scripts/rollback-license-server.sh'
+          SSH_OPTS="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+                    -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3"
+          DEST="${DEPLOY_USER}@${DEPLOY_HOST}"
 
           # İşaretçiler bilerek ortak ek almıyor: "UNCHANGED" içinde "CHANGED"
           # geçer ve `case` kalıbı yanlış dalı seçerdi.
-          RESULT=$(ssh $SSH_OPTS "${DEPLOY_USER}@${DEPLOY_HOST}" "
-            cd /opt/orderdeck || exit 1
-            if ! docker compose -f docker-compose.yml.new config -q; then
-              rm -f docker-compose.yml.new
-              exit 1
-            fi
-            if cmp -s docker-compose.yml.new docker-compose.yml; then
-              rm -f docker-compose.yml.new
-              echo COMPOSE_SAME
-              exit 0
-            fi
-            cp docker-compose.yml docker-compose.yml.prev || exit 1
-            mv docker-compose.yml.new docker-compose.yml || exit 1
-            echo COMPOSE_CHANGED" 2>&1) || true
+          #
+          # Fonksiyon koşul bağlamında çağrıldığı için `bash -e` gövdede askıya
+          # alınır; erken çıkışı sağlayan şey açık `|| return 1`'ler.
+          sync_and_verdict() {
+            scp $SSH_OPTS deploy/docker-compose.yml \
+              "${DEST}:/opt/orderdeck/docker-compose.yml.new" || return 1
+            ssh $SSH_OPTS "$DEST" 'mkdir -p /opt/orderdeck/scripts' || return 1
+            scp $SSH_OPTS deploy/scripts/rollback-license-server.sh \
+              "${DEST}:/opt/orderdeck/scripts/rollback-license-server.sh" || return 1
+            ssh $SSH_OPTS "$DEST" \
+              'chmod +x /opt/orderdeck/scripts/rollback-license-server.sh' || return 1
+            # Geçersiz compose DETERMİNİSTİK bir hata: kendi işaretçisiyle ve
+            # sıfır çıkışla dönüyor ki retry döngüsü onu boşuna 3 kez denemesin.
+            ssh $SSH_OPTS "$DEST" "
+              cd /opt/orderdeck || exit 1
+              if ! docker compose -f docker-compose.yml.new config -q; then
+                rm -f docker-compose.yml.new
+                echo COMPOSE_INVALID
+                exit 0
+              fi
+              if cmp -s docker-compose.yml.new docker-compose.yml; then
+                rm -f docker-compose.yml.new
+                echo COMPOSE_SAME
+                exit 0
+              fi
+              echo COMPOSE_CHANGED" 2>&1
+          }
+
+          swap_remote() {
+            ssh $SSH_OPTS "$DEST" "
+              cd /opt/orderdeck || exit 1
+              if [ ! -f docker-compose.yml.new ]; then
+                echo SWAP_DONE
+                exit 0
+              fi
+              cp docker-compose.yml docker-compose.yml.prev || exit 1
+              mv docker-compose.yml.new docker-compose.yml || exit 1
+              echo SWAP_DONE" 2>&1
+          }
+
+          RESULT=""
+          for attempt in 1 2 3; do
+            if RESULT=$(sync_and_verdict); then break; fi
+            echo "$RESULT"
+            RESULT=""
+            echo "::warning::compose senkronu başarısız (deneme ${attempt}/3); yeniden denenecek..."
+            sleep $((attempt * 5))
+          done
 
           echo "$RESULT"
           case "$RESULT" in
-            *COMPOSE_CHANGED*) echo "changed=true"  >> $GITHUB_OUTPUT ;;
-            *COMPOSE_SAME*)    echo "changed=false" >> $GITHUB_OUTPUT ;;
+            *COMPOSE_INVALID*)
+              echo "::error::compose doğrulaması başarısız (config -q) — canlı dosyaya dokunulmadı"
+              exit 1
+              ;;
+            *COMPOSE_SAME*)
+              echo "changed=false" >> $GITHUB_OUTPUT
+              exit 0
+              ;;
+            *COMPOSE_CHANGED*)
+              ;;
             *)
-              echo "::error::compose doğrulaması başarısız — canlı dosyaya dokunulmadı"
+              echo "::error::compose senkronu 3 denemede tamamlanamadı — canlı dosyaya dokunulmadı"
+              exit 1
+              ;;
+          esac
+
+          SWAP=""
+          for attempt in 1 2 3; do
+            if SWAP=$(swap_remote); then break; fi
+            echo "$SWAP"
+            SWAP=""
+            echo "::warning::compose takası başarısız (deneme ${attempt}/3); yeniden denenecek..."
+            sleep $((attempt * 5))
+          done
+
+          echo "$SWAP"
+          case "$SWAP" in
+            *SWAP_DONE*) echo "changed=true" >> $GITHUB_OUTPUT ;;
+            *)
+              echo "::error::compose takası 3 denemede tamamlanamadı"
               exit 1
               ;;
           esac
