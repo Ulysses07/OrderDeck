@@ -233,6 +233,7 @@ public sealed class OverlayHost : IAsyncDisposable
         app.Map("/ws/chat", async (HttpContext ctx) =>
         {
             if (!ctx.WebSockets.IsWebSocketRequest) { ctx.Response.StatusCode = 400; return; }
+            if (!AllowWebSocket(ctx, port)) return;
             using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
             await HandleChatClient(ws, ctx.RequestAborted);
         });
@@ -240,11 +241,67 @@ public sealed class OverlayHost : IAsyncDisposable
         app.Map("/ws/giveaway", async (HttpContext ctx) =>
         {
             if (!ctx.WebSockets.IsWebSocketRequest) { ctx.Response.StatusCode = 400; return; }
+            if (!AllowWebSocket(ctx, port)) return;
             using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
             await HandleGiveawayClient(ws, ctx.RequestAborted);
         });
 
         return app;
+    }
+
+    /// <summary>El sıkışmayı süzer; reddederse 403 yazıp <c>false</c> döner.</summary>
+    private bool AllowWebSocket(HttpContext ctx, int port)
+    {
+        var origin = ctx.Request.Headers.Origin.ToString();
+        if (IsOverlayPageOrigin(origin, port)) return true;
+
+        // Güvenlik olayı: sahada log taramasıyla görülebilsin.
+        _log.LogWarning(
+            "Overlay'e izinsiz kaynaktan WebSocket bağlantısı reddedildi: Origin={Origin}, Yol={Path}",
+            string.IsNullOrEmpty(origin) ? "(başlık yok)" : origin, ctx.Request.Path.Value);
+        ctx.Response.StatusCode = 403;
+        return false;
+    }
+
+    /// <summary>
+    /// WebSocket el sıkışmalarında kabul edilen kaynak: overlay sayfasının
+    /// kendisi.
+    ///
+    /// <para><b>Neden gerekli.</b> WebSocket CORS'a tabi değildir — tarayıcı
+    /// <c>Origin</c> başlığını gönderir ama <i>zorlamaz</i>. Kestrel'in
+    /// loopback'e bağlı olması da kapıyı kapatmaz: yayıncının tarayıcısında
+    /// açık herhangi bir sayfa <c>ws://localhost:4747/ws/chat</c>'e bağlanıp
+    /// canlı sohbetin tamamını (kullanıcı adları, mesaj metinleri, avatarlar)
+    /// ve çekiliş katılımcılarını okuyabiliyordu. Bağlantı anında gönderilen
+    /// <c>chat.snapshot</c> geçmişi de veriyor; yani tek bir sekme yeter.</para>
+    ///
+    /// <para><b>Küme neden bu.</b> Overlay sayfaları (chat.js, giveaway.js,
+    /// preview.js) soket URL'ini <c>location.host</c>'tan kuruyor, yani meşru
+    /// el sıkışma her zaman <i>aynı kaynaklı</i>: şema http, konak loopback,
+    /// port da bağlanılan port. Operatör OBS'e <c>localhost</c> yerine
+    /// <c>127.0.0.1</c> yazabildiği için konak adı yerine loopback denetimi
+    /// yapılıyor. Port'un sabitlenmesi DNS yeniden bağlama saldırısını da
+    /// kapatır: <c>evil.com</c> 127.0.0.1'e çözülse bile kaynak
+    /// <c>http://evil.com:4747</c> olarak gelir.</para>
+    ///
+    /// <para><b>Başlık yoksa reddedilir.</b> Overlay'in tek meşru istemcisi bir
+    /// tarayıcı (OBS Browser Source / WebView2); tarayıcılar <c>Origin</c>'i her
+    /// zaman gönderir.</para>
+    ///
+    /// <para><b>Neyi kapatmaz.</b> Yerel bir süreç <c>Origin</c>'i serbestçe
+    /// uydurabilir. Overlay salt-okunur bir yayın olduğu ve yerel süreç zaten
+    /// veritabanı dosyasını okuyabildiği için bu kabul edilen risk.</para>
+    /// </summary>
+    internal static bool IsOverlayPageOrigin(string? origin, int port)
+    {
+        if (string.IsNullOrWhiteSpace(origin)) return false;
+        if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri)) return false;
+        if (!string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)) return false;
+        if (uri.Port != port) return false;
+
+        var host = uri.Host.Trim('[', ']');
+        if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase)) return true;
+        return System.Net.IPAddress.TryParse(host, out var ip) && System.Net.IPAddress.IsLoopback(ip);
     }
 
     /// <summary>Bus + giveaway event subscriptions. Idempotent — only the
