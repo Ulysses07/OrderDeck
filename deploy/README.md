@@ -97,6 +97,31 @@ ADMIN_PASSWORD_HASH: see Phase 4a admin bootstrap docs (BCrypt-Net)
 - **Logs (live)**: `docker compose logs -f license-server`
 - **DB backup**: `docker compose exec sqlserver /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SQL_PASSWORD" -Q "BACKUP DATABASE OrderDeckLicense TO DISK = '/var/opt/mssql/backup/orderdeck-$(date +%F).bak'"`
 
+## SQL Server sürüm yükseltme (artık elle)
+
+`sqlserver` imajı **digest'e pinli** (`2022-latest@sha256:2dca9ee5…`). Sebep:
+kayan etiket, host yeniden kurulduğunda üretimdekinden başka bir derleme
+getiriyordu ve yeni bir CU veri dosyalarını **geri alınamaz** biçimde yükseltir.
+
+Bunun bedeli: CU güncellemeleri artık kendiliğinden gelmiyor. Yükseltmek
+istendiğinde sıra şu:
+
+```bash
+# 1) Taze yedek al ve R2'ye gittiğini DOĞRULA (yükseltme geri alınamaz).
+/opt/orderdeck/scripts/backup-sql-to-r2.sh
+
+# 2) Etiketin bugün neye çözüldüğüne bak.
+curl -sI -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+  https://mcr.microsoft.com/v2/mssql/server/manifests/2022-latest | grep -i docker-content-digest
+
+# 3) deploy/docker-compose.yml'daki digest'i güncelleyip PR aç (dosyanın sahibi CI).
+```
+
+Yükseltme deploy'u `sqlserver` konteynerini yeniden yaratır → veritabanı kısa
+süre düşer → smoke testi düşerse #321'in geri alması tetiklenir ama **veri
+dosyası yükseltmesini geri almaz**. Bu yüzden izlenen bir pencerede yapılmalı,
+sıradan bir merge'ün yan etkisi olarak değil.
+
 ## Deploy geri alma (rollback)
 
 **Normalde elle bir şey yapman gerekmez.** 2026-08-22'den beri deploy workflow'u

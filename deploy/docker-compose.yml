@@ -1,7 +1,22 @@
 services:
 
   sqlserver:
-    image: mcr.microsoft.com/mssql/server:2022-latest
+    # Digest'e pinli (denetim O-14). `2022-latest` KAYAN bir etiket: 2026-08-22'de
+    # ölçüldüğünde üretimde `sha256:2dca9ee5…` (16.0.4250.1, RTM-CU24-GDR)
+    # koşuyordu ama etiket çoktan `sha256:ba4c8329…`'a taşınmıştı. Yani bu satır
+    # etiketle kalsaydı, host'u yeniden kuran biri (HA-PLAYBOOK devir senaryosu)
+    # üretimdekinden BAŞKA bir SQL Server derlemesi ayağa kaldırırdı.
+    #
+    # Bu tek başına "yeni sürüm gelir" meselesi değil: yeni bir CU veri
+    # dosyalarını yükseltir ve o yükseltme GERİ ALINAMAZ — eski imaja dönmek
+    # veritabanını açamaz hâle gelir. Deploy'un otomatik geri alması (#321)
+    # imajı kurtarır, dosya formatını kurtarmaz.
+    #
+    # Digest ÜRETİMDE ÇALIŞANI gösteriyor, `2022-latest`'in bugünkü hâlini değil:
+    # pinleme ile sürüm yükseltmesi ayrı kararlar. CU yükseltmesi ayrıca
+    # yapılmalı — önce yedek, sonra bilinçli bir pencerede.
+    # Etiket kısmı yalnız okunabilirlik için; docker digest'i kullanır.
+    image: mcr.microsoft.com/mssql/server:2022-latest@sha256:2dca9ee5cd5316952d9b6ef4a0c088ac95b55e3502accdda0fc12ad6ede7b905
     container_name: orderdeck-sqlserver
     restart: unless-stopped
     environment:
