@@ -588,6 +588,16 @@ public sealed class AppHost : IDisposable
         var refresher = Services.GetRequiredService<TokenRefresher>();
         licenseApi.OnUnauthorized = ct => refresher.TryRefreshAsync(ct);
 
+        // Açılışta ölçülen bütünlük sonucu (bkz. BootDatabaseState). Logger
+        // ancak burada var; ölçümün kendisi migration'dan önce yapıldı.
+        if (bootDatabaseState.IntegrityError is { } integrityError)
+        {
+            Services.GetRequiredService<ILogger<AppHost>>().LogError(
+                "Yerel veritabanı açılışta quick_check'ten geçemedi: {Error}. " +
+                "Sorgular beklenmedik biçimde patlarsa sebebi bu olabilir; bulut yedeğinden geri yükleme önerilir.",
+                integrityError);
+        }
+
         // Apply migrations once at boot
         Services.GetRequiredService<MigrationRunner>().Run();
 

@@ -9,6 +9,12 @@ public sealed class SqliteConnectionFactory : IDbConnectionFactory
     private readonly object _journalGate = new();
     private bool _journalConfigured;
 
+    /// <summary>
+    /// Yazma kilidi çakışmasında bir bağlantının bekleyeceği en uzun süre
+    /// (saniye). Testlerin ve tanılamanın sınırı okuyabilmesi için açık.
+    /// </summary>
+    public const int WriteContentionTimeoutSeconds = 10;
+
     public SqliteConnectionFactory(string filePath)
     {
         _connectionString = new SqliteConnectionStringBuilder
@@ -16,7 +22,34 @@ public sealed class SqliteConnectionFactory : IDbConnectionFactory
             DataSource = filePath,
             Mode = SqliteOpenMode.ReadWriteCreate,
             Pooling = true,
-            ForeignKeys = true
+            ForeignKeys = true,
+            // Yazma kilidi çakışmasında bekleme bütçesi.
+            //
+            // NEDEN BURADA, NEDEN `PRAGMA busy_timeout` DEĞİL. Kilit çakışması
+            // SQLite'tan SQLITE_BUSY olarak döner; Microsoft.Data.Sqlite bunu
+            // görünce komutu KENDİ döngüsünde, CommandTimeout dolana dek
+            // yeniden dener. Yani bekleme süresini belirleyen şey SQLite'ın
+            // busy handler'ı değil, sürücünün bütçesi. Ölçüldü (bir yazar
+            // kilidi tutarken ikinci yazar):
+            //
+            //   ayar yok                            → 30.033 ms sonra hata
+            //   PRAGMA busy_timeout = 3000          → 31.428 ms sonra hata
+            //   Default Timeout = 5                 →  5.047 ms sonra hata
+            //   busy_timeout = 3000 + Timeout = 5   →  6.910 ms sonra hata
+            //
+            // busy_timeout tek başına hiçbir şeyi bağlamıyor; ikisi birlikte
+            // ise bütçeyi AŞIRIYOR, çünkü sürücü bütçeyi ancak iki deneme
+            // ARASINDA kontrol edebiliyor ve SQLite tek denemenin içinde
+            // uyuyor. Bu yüzden busy_timeout bilerek kurulmuyor.
+            //
+            // 10 sn neden yeter: buradaki her yazma işlemi birkaç satırlık ve
+            // milisaniyeler sürüyor; 10 sn boyunca serbest kalmayan bir kilit
+            // geçici çekişme değil, takılmış bir işlem demektir. Görünmez 30
+            // sn'lik varsayılan ise operatörün arayüzünü yarım dakika
+            // dondurabiliyordu. Bütçe dolduğunda yazma hata veriyor; senkron
+            // servisleri imleçlerini yalnızca başarılı yazmadan sonra
+            // ilerlettiği için bir sonraki turda yeniden denenir.
+            DefaultTimeout = WriteContentionTimeoutSeconds
         }.ToString();
     }
 

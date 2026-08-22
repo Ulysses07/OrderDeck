@@ -28,10 +28,27 @@ public sealed class BootDatabaseState
     /// </summary>
     public const long TinyThresholdBytes = 10240;
 
-    private BootDatabaseState(bool isMissingOrTiny) => IsMissingOrTiny = isMissingOrTiny;
+    private BootDatabaseState(bool isMissingOrTiny, string? integrityError)
+    {
+        IsMissingOrTiny = isMissingOrTiny;
+        IntegrityError = integrityError;
+    }
 
     /// <summary>Açılış anında dosya yok muydu ya da eşiğin altında mıydı.</summary>
     public bool IsMissingOrTiny { get; }
+
+    /// <summary>
+    /// Açılışta <c>PRAGMA quick_check</c>'in verdiği hata; sağlamsa (ya da
+    /// ölçülecek dosya yoksa) <c>null</c>.
+    ///
+    /// Neden ölçülüyor: bozulma bugüne dek ancak bir sorgu patladığında,
+    /// çoğu zaman yayının ortasında görülüyordu. Açılışta bir kez bakmak
+    /// sahadaki log dökümüne "veritabanı o gün zaten bozuktu" sinyalini
+    /// koyuyor. Ölçüm <b>bilgi amaçlı</b>: açılışı engellemiyor, çünkü bozuk
+    /// bir dosyadan da çoğu zaman veri okunabiliyor ve operatörün elindeki
+    /// tek kopya o.
+    /// </summary>
+    public string? IntegrityError { get; }
 
     /// <summary>
     /// Dosyayı bir kez okur ve kararı dondurur. <c>AppHost</c> ctor'unun EN
@@ -39,7 +56,17 @@ public sealed class BootDatabaseState
     /// başka bir noktadan çağrılırsa ölçtüğü şey migration'ın kendi
     /// yarattığı boş şema olur.
     /// </summary>
-    public static BootDatabaseState Capture(string databaseFile) =>
-        new(!File.Exists(databaseFile) ||
-            new FileInfo(databaseFile).Length < TinyThresholdBytes);
+    public static BootDatabaseState Capture(string databaseFile)
+    {
+        var missingOrTiny =
+            !File.Exists(databaseFile) ||
+            new FileInfo(databaseFile).Length < TinyThresholdBytes;
+
+        // Olmayan/boş dosyada quick_check'in söyleyeceği bir şey yok; üstelik
+        // ilk açılışta gereksiz bir "bozuk" uyarısı üretirdi.
+        if (missingOrTiny) return new BootDatabaseState(true, null);
+
+        OrderDeck.Core.Storage.SqliteFile.IsIntactDatabase(databaseFile, out var error);
+        return new BootDatabaseState(false, error);
+    }
 }

@@ -123,6 +123,56 @@ public class BootDatabaseStateTests
         finally { try { Directory.Delete(dir, recursive: true); } catch (IOException) { /* SQLite handle */ } }
     }
 
+    // ── Açılış bütünlük telemetrisi (O-07) ──────────────────────────────────
+
+    [Fact]
+    public void Saglam_veritabaninda_butunluk_hatasi_yok()
+    {
+        var dir = TempDir();
+        try
+        {
+            var db = Path.Combine(dir, "orderdeck.db");
+            new MigrationRunner(new SqliteConnectionFactory(db)).Run();
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+
+            BootDatabaseState.Capture(db).IntegrityError.Should().BeNull();
+        }
+        finally { try { Directory.Delete(dir, recursive: true); } catch (IOException) { } }
+    }
+
+    [Fact]
+    public void Bozuk_veritabani_acilista_raporlaniyor()
+    {
+        // Bozulma bugüne dek ancak bir sorgu patladığında, çoğu zaman yayının
+        // ortasında görülüyordu. Açılışta bir kez bakmak sahadaki log
+        // dökümüne sinyal koyuyor.
+        var dir = TempDir();
+        try
+        {
+            var db = Path.Combine(dir, "orderdeck.db");
+            File.WriteAllBytes(db, new byte[512 * 1024]);
+
+            var state = BootDatabaseState.Capture(db);
+
+            state.IsMissingOrTiny.Should().BeFalse("dosya boyutça yeterli");
+            state.IntegrityError.Should().NotBeNull("ama açılabilir bir veritabanı değil");
+        }
+        finally { Directory.Delete(dir, recursive: true); }
+    }
+
+    [Fact]
+    public void Dosya_yokken_butunluk_hatasi_uretilmiyor()
+    {
+        // İlk açılışta operatöre "veritabanın bozuk" demek yanlış olurdu.
+        var dir = TempDir();
+        try
+        {
+            BootDatabaseState.Capture(Path.Combine(dir, "orderdeck.db"))
+                .IntegrityError.Should().BeNull();
+        }
+        finally { Directory.Delete(dir, recursive: true); }
+    }
+
     [Fact]
     public void AppHost_yakalanmis_durumu_tek_ornek_olarak_veriyor()
     {
