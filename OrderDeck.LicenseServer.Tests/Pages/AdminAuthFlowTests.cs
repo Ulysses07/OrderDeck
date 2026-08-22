@@ -70,8 +70,8 @@ public sealed class AdminAuthFlowTests : IClassFixture<ApiFactory>
         var postResp = await client.PostAsync("/admin/login", form);
 
         postResp.StatusCode.Should().Be(HttpStatusCode.OK);
-        var html = await postResp.Content.ReadAsStringAsync();
-        html.Should().Contain("Geçersiz");
+        var alert = AdminLoginHelper.ExtractAlertText(await postResp.Content.ReadAsStringAsync());
+        alert.Should().Contain("Geçersiz");
     }
 
     [Fact]

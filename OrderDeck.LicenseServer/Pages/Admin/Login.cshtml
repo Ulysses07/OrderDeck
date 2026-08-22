@@ -17,7 +17,9 @@
         <h1 class="h3 mb-4">OrderDeck Admin</h1>
         @if (!string.IsNullOrEmpty(Model.ErrorMessage))
         {
-            <div class="alert alert-danger">@Html.Raw(Model.ErrorMessage)</div>
+            @* Html.Raw DEĞİL: mesaj bugün sabit, ama ham HTML sink'i tutmak
+               kaynağı değiştiği gün sessizce enjeksiyon açar. *@
+            <div class="alert alert-danger">@Model.ErrorMessage</div>
         }
         <form method="post">
             <input type="hidden" asp-for="ReturnUrl" />
