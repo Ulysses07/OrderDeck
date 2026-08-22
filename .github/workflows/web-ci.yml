@@ -1,0 +1,63 @@
+name: web-ci
+
+# Marketing sitesinin (web/) PR-zamanı kalite kapısı.
+#
+# Bu kapı daha önce YOKTU: `build-test.yml` yalnız .NET tarafını (windows
+# runner) derliyor, `web-deploy.yml` ise sadece master'a push'ta çalışıyor.
+# Yani web'de bozuk bir değişiklik ancak merge'den SONRA, prod deploy'unun
+# içinde ortaya çıkıyordu — hatanın yakalandığı an ile canlıya gitme anı
+# aynıydı. Burada aynı adımlar merge'den önce koşuyor.
+#
+# Deploy'la kasten örtüşüyor (build + verify-out): kapının değeri tam olarak
+# deploy'un yapacağı işi önceden yapmasında.
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'web/**'
+      - '.github/workflows/web-ci.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: web-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build (static export)
+        run: npm run build
+
+      - name: Verify build output
+        run: npm run verify-out

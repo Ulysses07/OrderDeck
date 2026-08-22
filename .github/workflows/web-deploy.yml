@@ -44,13 +44,10 @@ jobs:
       - name: Build (static export)
         run: npm run build
 
+      # Beklenen sayfa listesi `web/scripts/verify-out.mjs` içinde — aynı betiği
+      # PR kapısı (web-ci.yml) da çağırıyor, liste tek yerde duruyor.
       - name: Verify build output
-        run: |
-          test -f out/index.html || (echo "out/index.html missing"; exit 1)
-          test -f out/en/index.html || (echo "out/en/index.html missing"; exit 1)
-          test -f out/gizlilik-politikasi/index.html || (echo "TR privacy missing"; exit 1)
-          test -f out/en/privacy-policy/index.html || (echo "EN privacy missing"; exit 1)
-          echo "Build verification passed"
+        run: npm run verify-out
 
       - name: Setup SSH
         env:
