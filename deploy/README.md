@@ -8,6 +8,21 @@
 
 License-server build artık CI tarafından (`.github/workflows/`) ghcr.io'a push'lanıyor; VPS `docker compose pull` ile yeni image'i alıp restart eder. Local source tree (`app/`) artık VPS'te gerekmiyor.
 
+### docker-compose.yml'ın sahibi CI (2026-08-22'den beri)
+
+`deploy/docker-compose.yml` her deploy'da VPS'e kopyalanır ve `/opt/orderdeck/docker-compose.yml` dosyasını **ezer**. VPS'te elle yapılan düzenlemeler bir sonraki master merge'inde kaybolur — değişiklik repo'da yapılmalı.
+
+Bu kuraldan önce dosya hiç kopyalanmıyordu ve iki kopya sessizce ayrışmıştı:
+canlı dosyada `Jwt__SecretKey`'in `:?` koruması yoktu, sağlayıcılar
+`:-log`/`:-stub`'a düşüyordu ve repo'da yapılan yükleme tavanı değişikliği hiç
+uygulanmamıştı. Aşağıdaki "compose bunlar olmadan başlamaz" cümlesi o dönemde
+**canlı için doğru değildi**.
+
+`.env` senkronize **edilmez** — sırları taşır, yalnız VPS'te durur. Bu yüzden
+yeni bir `:?` zorunlu değişkeni eklerken önce `.env`'e satırı koy: eksikse CI'ın
+`docker compose config -q` doğrulaması deploy'u durdurur (canlı dosyaya
+dokunmadan).
+
 ## Layout on VPS
 
 ```
