@@ -13,7 +13,7 @@ public class MainShellHeroStatsTests
     [Fact]
     public void Queue_count_tracks_the_print_queue()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
 
         h.Vm.QueueCount.Should().Be(0);
         MainShellTestHarness.EnqueueLabel(h.Vm, "ayse", 100m);
@@ -24,7 +24,7 @@ public class MainShellHeroStatsTests
     [Fact]
     public void Product_count_counts_only_the_active_code()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
 
         h.Vm.ActiveCode = "A100";
         MainShellTestHarness.EnqueueLabel(h.Vm, "ayse", 100m);
@@ -41,7 +41,7 @@ public class MainShellHeroStatsTests
     [Fact]
     public void Product_count_is_zero_when_no_code_is_active()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         MainShellTestHarness.EnqueueLabel(h.Vm, "ayse", 100m);
 
         h.Vm.ActiveCode = "";
@@ -54,7 +54,7 @@ public class MainShellHeroStatsTests
     [Fact]
     public async Task Session_totals_count_printed_labels_only()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         MainShellTestHarness.EnqueueLabel(h.Vm, "ayse", 150m);
 
         // Henüz basılmadı → GetSessionTotals PrintedAt IS NOT NULL istiyor.
@@ -71,7 +71,7 @@ public class MainShellHeroStatsTests
     [Fact]
     public async Task Revenue_mask_hides_the_amount_but_not_the_value()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         MainShellTestHarness.EnqueueLabel(h.Vm, "ayse", 150m);
         await h.Vm.PrintCommand.ExecuteAsync(null);
 
@@ -88,7 +88,7 @@ public class MainShellHeroStatsTests
     [Fact]
     public void Active_code_change_loads_the_product_card()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
 
         h.Vm.ActiveCode = "A100";
 
@@ -102,7 +102,7 @@ public class MainShellHeroStatsTests
     [Fact]
     public void Stream_duration_text_is_empty_without_an_active_session()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         // EndStreamCommand yerine servisi doğrudan çağırıyoruz: komut async ve
         // onay MessageBox'ı açabiliyor — test sürecinde diyalog istemiyoruz.
         h.Sessions.End(h.Sessions.GetActive()!.Id);
@@ -115,7 +115,7 @@ public class MainShellHeroStatsTests
     [Fact]
     public void Stream_duration_text_is_hh_mm_ss()
     {
-        var h = MainShellTestHarness.Build();       // session StartedAt = 1000
+        using var h = MainShellTestHarness.Build();       // session StartedAt = 1000
         h.Clock.Setup(c => c.UnixNow()).Returns(1000L + 3661L);
 
         h.Vm.RefreshHeroStats();

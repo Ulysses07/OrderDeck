@@ -56,6 +56,7 @@ public class VariantPickerFlowTests
 
     private static MainShellTestHarness.Harness Seed(FakeDrawerService drawers)
     {
+        // Harness'i ÇAĞIRAN sahipleniyor (using ile) — burada yıkma, döndürüyoruz.
         var h = MainShellTestHarness.Build(drawers);
         drawers.Vm = h.Vm;
 
@@ -92,7 +93,7 @@ public class VariantPickerFlowTests
     {
         var drawers = new FakeDrawerService(_ => throw new Xunit.Sdk.XunitException(
             "tek ve tam eşleşmede çekmece açılmamalıydı"));
-        var h = Seed(drawers);
+        using var h = Seed(drawers);
         h.Vm.ActiveCode = "ateş";
 
         await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@ali", "ateş m"));
@@ -107,7 +108,7 @@ public class VariantPickerFlowTests
     public async Task Esc_hicbir_siparis_yazmaz()
     {
         var drawers = new FakeDrawerService(_ => false);
-        var h = Seed(drawers);
+        using var h = Seed(drawers);
         h.Vm.ActiveCode = "ateş";
 
         await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@ali", "bana da"));
@@ -126,7 +127,7 @@ public class VariantPickerFlowTests
             picker.SelectedValues.Should().Equal("M", "L");
             return true;
         });
-        var h = Seed(drawers);
+        using var h = Seed(drawers);
         h.Vm.ActiveCode = "ateş";
 
         await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@ali", "ateş m l"));
@@ -142,7 +143,7 @@ public class VariantPickerFlowTests
     {
         var drawers = new FakeDrawerService(_ => throw new Xunit.Sdk.XunitException(
             "bilinmeyen kodda seçilecek bir şey yok"));
-        var h = Seed(drawers);
+        using var h = Seed(drawers);
         h.Vm.ActiveCode = "zzz";
 
         await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@ali", "zzz m"));
@@ -159,7 +160,7 @@ public class VariantPickerFlowTests
     {
         var drawers = new FakeDrawerService(_ => throw new Xunit.Sdk.XunitException(
             "eksensiz üründe çekmece açılmamalıydı"));
-        var h = Seed(drawers);
+        using var h = Seed(drawers);
         h.Vm.ActiveCode = "buz";
 
         await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@ali", "buz"));

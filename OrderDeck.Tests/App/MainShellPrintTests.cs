@@ -292,7 +292,7 @@ public class MainShellPrintTests
     [Fact]
     public void Writing_an_order_immediately_drops_the_shown_balance()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         SeedProductWithBalance(h, code: "Buz", quantity: 5);
 
         // ActiveCode ataması ProductCard.Load'u tetikliyor (OnActiveCodeChanged).

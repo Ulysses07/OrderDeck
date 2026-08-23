@@ -21,7 +21,7 @@ public class MainShellViewModelQueueTests
     [Fact]
     public void AddChatToQueue_appends_a_label_with_provided_price()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
 
         MainShellTestHarness.EnqueueLabel(h.Vm, "@buyer", 250m);
 
@@ -34,7 +34,7 @@ public class MainShellViewModelQueueTests
     [Fact]
     public async Task AddChatToQueue_with_invalid_price_does_not_add()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         h.Vm.ActivePriceText = "abc";
 
         await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@buyer", "alıyorum"));
@@ -53,7 +53,7 @@ public class MainShellViewModelQueueTests
     [Fact]
     public void AddChatToQueue_attaches_active_code_when_set()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         h.Vm.ActiveCode = "MAVI";
         MainShellTestHarness.EnqueueLabel(h.Vm, "@buyer", 199m);
 
@@ -63,7 +63,7 @@ public class MainShellViewModelQueueTests
     [Fact]
     public void AddChatToQueue_with_blank_code_stores_null()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         h.Vm.ActiveCode = "   ";
         MainShellTestHarness.EnqueueLabel(h.Vm, "@buyer", 199m);
 
@@ -74,7 +74,7 @@ public class MainShellViewModelQueueTests
     [Fact]
     public void PrintButtonLabel_reflects_selection_state()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
 
         h.Vm.PrintButtonLabel.Should().Be("Yazdır");
 
@@ -92,7 +92,7 @@ public class MainShellViewModelQueueTests
     [Fact]
     public void DeleteButtonLabel_reflects_selection_state()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
 
         h.Vm.DeleteButtonLabel.Should().Be("Seçileni Sil");
 
@@ -112,7 +112,7 @@ public class MainShellViewModelQueueTests
     [Fact]
     public void RemoveSelectedFromQueue_drops_only_selected_rows()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         MainShellTestHarness.EnqueueLabel(h.Vm, "@a", 10m);
         MainShellTestHarness.EnqueueLabel(h.Vm, "@b", 20m);
         MainShellTestHarness.EnqueueLabel(h.Vm, "@c", 30m);
@@ -130,7 +130,7 @@ public class MainShellViewModelQueueTests
     [Fact]
     public void RemoveSelectedFromQueue_with_empty_selection_is_a_noop()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         MainShellTestHarness.EnqueueLabel(h.Vm, "@a", 10m);
 
         h.Vm.RemoveSelectedFromQueueCommand.Execute(null);
@@ -143,7 +143,7 @@ public class MainShellViewModelQueueTests
     {
         // Regression guard: the backup tentative row shouldn't get caught
         // up in selection-based removals targeting other rows.
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         MainShellTestHarness.EnqueueLabel(h.Vm, "@parent", 199m);
         var parent = h.Vm.PrintQueue[0];
 

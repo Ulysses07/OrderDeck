@@ -438,7 +438,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         UpdateLicenseUiFromService();
         UpdateServerOfflineBanner();
 
-        Banner.AutoDrawRequested += () => DrawGiveawayNowCommand.Execute(null);
+        Banner.AutoDrawRequested += OnBannerAutoDrawRequested;
 
         SelectedQueueItems.CollectionChanged += (_, _) =>
         {
@@ -1660,12 +1660,39 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             || decimal.TryParse(text, NumberStyles.Any, Formatting.TrFormats.TR, out price);
     }
 
+    private void OnBannerAutoDrawRequested() => DrawGiveawayNowCommand.Execute(null);
+
+    private bool _disposed;
+
+    /// <summary>
+    /// Ctor'da başlatılan HER timer'ı durdurur ve ctor'da bağlanan HER olayı
+    /// çözer. İkisi de tek tek sayılmak zorunda: çalışan bir DispatcherTimer
+    /// <c>Dispatcher._timers</c> içinde GÜÇLÜ referansla durur, yani Tick
+    /// handler'ı üzerinden bu VM'in tüm nesne grafiğini (SQLite bağlantısı,
+    /// lisans servisi, chat bus) sonsuza dek kökler. Uygulamada shell tek
+    /// örnek olduğu için görünmezdi; testte harness başına bir VM üretiliyor
+    /// ve xunit iş parçacığını yeniden kullandığı için sızıntı koşu boyunca
+    /// birikiyordu (harness başına 3 timer). <c>_chatHealthTimer</c> burada
+    /// EKSİKTİ — eksik bir Dispose, hiç olmayanla aynı sonucu veriyordu.
+    /// </summary>
     public void Dispose()
     {
+        if (_disposed) return;
+        _disposed = true;
+
         _chatFlushTimer?.Stop();
         _chatFlushTimer = null;
+        _chatHealthTimer?.Stop();
+        _chatHealthTimer = null;
         _heroTimer?.Stop();
         _heroTimer = null;
+
+        _giveaways.WinnersDrawn -= OnGiveawayWinnersDrawn;
+        _intakeSync.SubmissionsSynced -= OnIntakeSubmissionsSynced;
+        _licenseService.StatusChanged -= OnLicenseStatusChanged;
+        _licenseService.HeartbeatStateChanged -= OnHeartbeatStateChanged;
+        Banner.AutoDrawRequested -= OnBannerAutoDrawRequested;
+
         Banner.Dispose();
         _busSubscription.Dispose();
     }

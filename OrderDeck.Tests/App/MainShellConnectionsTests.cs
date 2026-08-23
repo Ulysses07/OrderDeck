@@ -9,7 +9,7 @@ public class MainShellConnectionsTests
     [Fact]
     public void Four_platforms_are_always_listed()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
 
         h.Vm.RefreshConnections();
 
@@ -22,7 +22,7 @@ public class MainShellConnectionsTests
     [Fact]
     public void Platforms_without_a_tracker_are_all_disconnected()
     {
-        var h = MainShellTestHarness.Build();   // ViewerCountTracker verilmedi
+        using var h = MainShellTestHarness.Build();   // ViewerCountTracker verilmedi
 
         h.Vm.RefreshConnections();
 
@@ -32,7 +32,7 @@ public class MainShellConnectionsTests
     [Fact]
     public void Printer_line_shows_the_configured_printer()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
 
         h.Vm.RefreshPrinterStatus("Zebra ZD420");
 
@@ -43,7 +43,7 @@ public class MainShellConnectionsTests
     [Fact]
     public void Printer_line_warns_when_no_printer_is_configured()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
 
         h.Vm.RefreshPrinterStatus(null);
 

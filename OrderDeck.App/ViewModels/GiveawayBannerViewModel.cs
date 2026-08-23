@@ -86,5 +86,12 @@ public sealed partial class GiveawayBannerViewModel : ViewModelBase, IDisposable
         CountdownText = $"{mm}:{ss:D2}";
     }
 
-    public void Dispose() => _timer.Stop();
+    // Stop() tek başına yetmez: DispatcherTimer durdurulduktan sonra da Tick
+    // aboneliğini tutar, o abonelik de bu VM'i kökler. Testte harness başına
+    // bir VM üretildiği için abonelik bırakılırsa grafik koşu boyunca yaşar.
+    public void Dispose()
+    {
+        _timer.Stop();
+        _timer.Tick -= OnTick;
+    }
 }
