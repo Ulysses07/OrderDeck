@@ -75,6 +75,14 @@ time; promote on primary failure.
 1. Restore latest SQL `.bak` (the one produced by the cron documented in
    `deploy/README.md`) to the standby's SQL Server. It is GPG symmetric-
    encrypted: `gpg --decrypt orderdeck-<date>.bak.gz.gpg | gunzip > x.bak`.
+1b. **Run `deploy/setup-app-sql-login.sh` on the standby.** The restore brought
+   the database *user* `orderdeck_app` but not its *login* — logins live in
+   `master`, which is not in the `.bak`. The user is now orphaned: its SID
+   matches nothing on the new instance, so the app fails with `Login failed`
+   even though the password in `.env` is correct. The script repairs the
+   mapping (`ALTER USER ... WITH LOGIN`) and is safe to re-run. Skipping this
+   turns a 10-minute cutover into a confusing outage, because the symptom
+   points at the password.
 2. Restore DataProtection keys from `s3://orderdeck-prod-backups/keys/` —
    also GPG-encrypted: `gpg --decrypt keys-<date>.tar.gz.gpg | tar -xz -C
    /opt/orderdeck/keys` (see "Operational gaps" 1).

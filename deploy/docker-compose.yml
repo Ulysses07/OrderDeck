@@ -58,7 +58,24 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_URLS: "http://+:8080"
-      ConnectionStrings__LicenseDb: "Server=sqlserver,1433;Database=OrderDeckLicense;User=sa;Password=${SQL_PASSWORD};TrustServerCertificate=True;Encrypt=True;"
+      # Denetim O-11 Faz 3a: uygulama artık `sa` ile bağlanmıyor. `orderdeck_app`
+      # yalnız OrderDeckLicense üzerinde `db_owner`; sunucu düzeyinde hiçbir
+      # yetkisi yok (login yaratamaz, sp_configure/xp_cmdshell açamaz, msdb'yi
+      # okuyamaz — üretimde negatif testle doğrulandı). `sa` sysadmin olduğu için
+      # konteynerde kod çalıştıran biri instance'ın TAMAMINI devralabiliyordu.
+      #
+      # `db_owner` bilerek: uygulama açılışta `Migrate()` ve Hangfire
+      # `PrepareSchemaIfNecessary` çalıştırıyor, ikisi de DDL istiyor.
+      # Gerekçenin tamamı `deploy/setup-app-sql-login.sh` başında.
+      #
+      # `:?` bilinçli: `.env` CI tarafından senkronize EDİLMEZ. Değişken boşsa
+      # compose'un kendisi durur ve bu, CI'ın `docker compose config -q` ön
+      # kapısında — yani prod'a hiç dokunulmadan — patlar.
+      #
+      # `sa` ortadan kalkmadı: healthcheck, gecelik yedek cron'u, bootstrap-admin
+      # ve smoke-jwt-refresh host tarafında root koşan operatör aletleri; onlar
+      # `sa`'da kalıyor. Değişen tek şey internete bakan process.
+      ConnectionStrings__LicenseDb: "Server=sqlserver,1433;Database=OrderDeckLicense;User=orderdeck_app;Password=${APP_SQL_PASSWORD:?deploy/setup-app-sql-login.sh ile uretilip .env e yazilmali};TrustServerCertificate=True;Encrypt=True;"
       # HA: read-only replica connection (SQL Server AlwaysOn secondary, or a
       # separate read-only login routed there). Empty = read paths fall back
       # to the primary, which keeps single-VPS deployments unchanged.
