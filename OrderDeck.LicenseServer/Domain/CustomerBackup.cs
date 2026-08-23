@@ -33,4 +33,18 @@ public sealed class CustomerBackup
     /// Stored in DB so the right key is selectable on decrypt; without this
     /// column the server couldn't tell two key generations apart.</summary>
     public int KeyVersion { get; set; }
+
+    /// <summary>
+    /// Zarf BİÇİMİ — anahtar sürümünden ayrı bir eksen.
+    /// 0 = eski tek-atış AES-GCM zarfı (<see cref="KeyVersion"/> baştaki sürüm
+    /// baytının olup olmadığını söyler), 2 = parçalı akış zarfı.
+    ///
+    /// <para><b>Neden ayrı bir sütun:</b> eski biçimde ilk bayt "anahtar sürümü"
+    /// anlamına geliyordu, yani biçimi baytlardan okumak <c>KeyVersion == 2</c>
+    /// olan bir kurulumda iki biçimi birbirinden ayıramazdı. Belirsizliğin bedeli
+    /// tam olarak müşterinin tek felaket kurtarma kopyasını çözememek olurdu; bir
+    /// sütun bundan ucuz. Diskteki sihirli imza (<c>ODB2</c>) yalnızca veritabanı
+    /// satırı olmayan araçlar (restore tatbikatı, <c>RestoreVerify</c>) için var.</para>
+    /// </summary>
+    public int EnvelopeFormat { get; set; }
 }

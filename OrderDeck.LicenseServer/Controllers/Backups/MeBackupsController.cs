@@ -87,30 +87,9 @@ public sealed class MeBackupsController : ControllerBase
                 new { error = "Server is busy storing other backups. Retry shortly." });
         }
 
-        byte[] bytes;
         try
         {
-            try
-            {
-                bytes = await ReadBodyAsync(ct);
-            }
-            catch (BadHttpRequestException ex)
-                when (ex.StatusCode == StatusCodes.Status413PayloadTooLarge)
-            {
-                // Yukarıda kurduğumuz sınır tetiklendi (Content-Length yoksa ya
-                // da yalan söylediyse). Ham hata yerine kendi gövdemizi dönüyoruz
-                // ki istemci iki yolda da aynı yanıtı görsün.
-                return TooLarge(maxMb);
-            }
-            catch (EndOfStreamException)
-            {
-                // Content-Length söylediğinden az bayt geldi. Yarım gövdeyi
-                // yedek diye kaydetmektense reddetmek şart — SHA da tutmazdı
-                // ama o kontrole gelmeden burada kesiliyor.
-                return BadRequest(new { error = "Request body shorter than Content-Length" });
-            }
-
-            return await StoreAsync(bytes, sha, maxMb, ct);
+            return await StoreAsync(sha, maxMb, maxBytes, ct);
         }
         finally
         {
@@ -118,53 +97,105 @@ public sealed class MeBackupsController : ControllerBase
         }
     }
 
-    private async Task<IActionResult> StoreAsync(byte[] bytes, string sha, int maxMb, CancellationToken ct)
+    /// <summary>
+    /// Gövdeyi <b>akıtarak</b> diske şifreler: istek gövdesi → parçalı AES-GCM →
+    /// blob dosyası. Bellekte hiçbir zaman iki parçadan (2 MiB) fazlası durmuyor.
+    ///
+    /// <para>Eskiden sıra tersineydi: önce tüm gövde bir diziye, sonra şifreli
+    /// zarf ikinci bir diziye alınıyordu — istek başına <b>2 × blob</b>. 64 MB
+    /// tavan ve 2 eşzamanlı yükleme ile bu, 1 GB'lık konteynerde 256 MB tepe
+    /// demekti; üstelik 64 MB'lık diziler büyük nesne yığınına düşüyor ve orası
+    /// varsayılan olarak SIKIŞTIRILMIYOR, yani aritmetik tepenin altında da
+    /// parçalanmayla tükenilebiliyordu.</para>
+    ///
+    /// <para><b>Doğrulama neden yazımdan SONRA:</b> düz metnin özetini akıtmadan
+    /// hesaplamanın yolu yok — baytları ikinci kez görebilmek için hepsini
+    /// bellekte ya da diskte tutmak, yani düzeltmeye çalıştığımız şeyi geri
+    /// getirmek gerekirdi. Doğrulama düşerse blob siliniyor; süreç tam o anda
+    /// ölürse geriye satırı olmayan bir dosya kalır ve onu
+    /// <see cref="OrderDeck.LicenseServer.Services.Backup.BackupOrphanCleanupJob"/>
+    /// zaten topluyor. Ters tercih (önce satır) hayalet yedek üretirdi.</para>
+    /// </summary>
+    private async Task<IActionResult> StoreAsync(string sha, int maxMb, long maxBytes, CancellationToken ct)
     {
-        // Savunma derinliği: Content-Length yoksa VE sunucu gövde sınırını
-        // uygulamıyorsa (TestServer'da bu özellik yok) tek kalan ölçüm bu.
-        if (bytes.LongLength > maxMb * 1024L * 1024L)
-            return TooLarge(maxMb);
+        var quotaMb = _opt.Value.PerCustomerQuotaMb;
+        var quotaBytes = quotaMb * 1024L * 1024L;
+        var existingBytes = quotaMb > 0
+            ? await _db.CustomerBackups
+                .Where(b => b.CustomerId == CustomerId)
+                .SumAsync(b => (long?)b.SizeBytes, ct) ?? 0L
+            : 0L;
 
-        var actualSha = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-        if (!string.Equals(actualSha, sha, StringComparison.OrdinalIgnoreCase))
+        // Content-Length varsa kotayı tek bayt yazmadan reddedebiliyoruz;
+        // yoksa (chunked) ancak yazdıktan sonra ölçebiliriz.
+        if (quotaMb > 0 && Request.ContentLength is { } declared && existingBytes + declared > quotaBytes)
+            return QuotaExceeded(quotaMb);
+
+        var blobPath = _storage.NewBlobPath(CustomerId);
+        EncryptStreamResult result;
+        try
+        {
+            await using var blob = new FileStream(
+                blobPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                bufferSize: 64 * 1024, useAsync: true);
+            result = await _storage.EncryptToAsync(Request.Body, blob, maxBytes, ct);
+        }
+        catch (BackupTooLargeException)
+        {
+            // Savunma derinliği: Content-Length yoksa ya da yalan söylediyse VE
+            // sunucu gövde sınırını uygulamıyorsa (TestServer'da bu özellik yok)
+            // tek kalan ölçüm bu.
+            _storage.DeleteBlob(blobPath);
+            return TooLarge(maxMb);
+        }
+        catch (BadHttpRequestException ex) when (ex.StatusCode == StatusCodes.Status413PayloadTooLarge)
+        {
+            // Kestrel'in gövde sınırı tetiklendi. Ham hata yerine kendi gövdemizi
+            // dönüyoruz ki istemci iki yolda da aynı yanıtı görsün.
+            _storage.DeleteBlob(blobPath);
+            return TooLarge(maxMb);
+        }
+        catch (BadHttpRequestException)
+        {
+            // Content-Length söylediğinden az bayt geldi / bağlantı yarıda koptu.
+            // Yarım gövdeyi yedek diye kaydetmektense reddetmek şart.
+            _storage.DeleteBlob(blobPath);
+            return BadRequest(new { error = "Request body ended before Content-Length" });
+        }
+        catch
+        {
+            _storage.DeleteBlob(blobPath);
+            throw;
+        }
+
+        if (!string.Equals(result.PlaintextSha256Hex, sha, StringComparison.OrdinalIgnoreCase))
+        {
+            _storage.DeleteBlob(blobPath);
             return BadRequest(new { error = "SHA256 mismatch — body integrity check failed" });
+        }
 
         // Per-customer storage quota. Retention prunes oldest non-milestones to 5,
         // but a customer accumulating monthly milestones for years could still drift
-        // past a sane budget. Reject up-front instead of after the encrypted blob
-        // is on disk so we don't waste IO writing something we'd just delete.
-        var quotaMb = _opt.Value.PerCustomerQuotaMb;
-        if (quotaMb > 0)
+        // past a sane budget.
+        if (quotaMb > 0 && existingBytes + result.EnvelopeBytes > quotaBytes)
         {
-            var existingBytes = await _db.CustomerBackups
-                .Where(b => b.CustomerId == CustomerId)
-                .SumAsync(b => (long?)b.SizeBytes, ct) ?? 0L;
-            var quotaBytes = quotaMb * 1024L * 1024L;
-            // bytes is plaintext; encrypted is bytes.Length + 28 (nonce+tag). Use
-            // bytes.Length as a close-enough estimate — over-counting is fine, we'd
-            // rather reject borderline cases than blow the cap.
-            if (existingBytes + bytes.LongLength > quotaBytes)
-            {
-                return StatusCode(StatusCodes.Status507InsufficientStorage,
-                    new { error = $"Per-customer backup quota exceeded ({quotaMb} MB). Delete older backups via /api/v1/me/backups/{{id}}." });
-            }
+            _storage.DeleteBlob(blobPath);
+            return QuotaExceeded(quotaMb);
         }
-
-        var (encrypted, keyVersion) = _storage.Encrypt(bytes);
-        var blobPath = await _storage.WriteBlobAsync(CustomerId, encrypted, ct);
 
         var backup = new CustomerBackup
         {
             Id = Guid.NewGuid(),
             CustomerId = CustomerId,
             BlobPath = blobPath,
-            SizeBytes = encrypted.Length,
-            ChecksumSha256 = actualSha,
+            SizeBytes = result.EnvelopeBytes,
+            ChecksumSha256 = result.PlaintextSha256Hex,
             CreatedAt = DateTimeOffset.UtcNow,
             IsMonthlyMilestone = false,
             UserAgent = Request.Headers["User-Agent"].ToString(),
             MachineName = Request.Headers["X-Machine-Name"].ToString(),
-            KeyVersion = keyVersion
+            KeyVersion = result.KeyVersion,
+            EnvelopeFormat = BackupStorageService.FormatChunked
         };
         _db.CustomerBackups.Add(backup);
         try
@@ -184,7 +215,7 @@ public sealed class MeBackupsController : ControllerBase
         }
 
         _metrics.BackupsUploaded.Add(1);
-        _metrics.BackupUploadBytes.Record(encrypted.Length);
+        _metrics.BackupUploadBytes.Record(result.EnvelopeBytes);
 
         await _retention.EnforceAfterInsertAsync(CustomerId, backup.Id, ct);
 
@@ -201,7 +232,7 @@ public sealed class MeBackupsController : ControllerBase
         await _audit.LogAsync(BackupAuditEvents.BackupCreated,
             BackupAuditEvents.TargetType,
             backup.Id.ToString(),
-            new { sizeBytes = encrypted.Length, isMonthlyMilestone = saved!.IsMonthlyMilestone },
+            new { sizeBytes = result.EnvelopeBytes, isMonthlyMilestone = saved!.IsMonthlyMilestone },
             ct);
 
         return StatusCode(StatusCodes.Status201Created, new
@@ -213,37 +244,13 @@ public sealed class MeBackupsController : ControllerBase
         });
     }
 
-    /// <summary>
-    /// Gövdeyi tek bir dizide toplar.
-    ///
-    /// <para>Content-Length varsa dizi TAM boyutta ayrılıyor. Önceki hâl
-    /// <c>MemoryStream</c> ile okuyup <c>ToArray()</c> çağırıyordu; bu, blob
-    /// boyutunda iki fazladan kopya demekti — tampon büyürken bırakılan eski
-    /// diziler, artı ToArray'in çıkardığı yeni dizi. 64 MB'lık bir yedekte
-    /// gereksiz yere ~128 MB. Boyutun üst sınırı çağıran tarafta zaten
-    /// doğrulanmış olduğu için burada ayrılan dizi de sınırlı.</para>
-    ///
-    /// <para>Content-Length yoksa (chunked) boyutu önden bilemiyoruz; tavanı
-    /// Kestrel uyguluyor ve aşılırsa okuma <see cref="BadHttpRequestException"/>
-    /// ile düşüyor.</para>
-    /// </summary>
-    private async Task<byte[]> ReadBodyAsync(CancellationToken ct)
-    {
-        if (Request.ContentLength is { } length)
-        {
-            var buffer = new byte[length];
-            await Request.Body.ReadExactlyAsync(buffer, ct);
-            return buffer;
-        }
-
-        using var ms = new MemoryStream();
-        await Request.Body.CopyToAsync(ms, ct);
-        return ms.ToArray();
-    }
-
     private IActionResult TooLarge(int maxMb) =>
         StatusCode(StatusCodes.Status413PayloadTooLarge,
             new { error = $"Backup exceeds {maxMb} MB limit" });
+
+    private IActionResult QuotaExceeded(long quotaMb) =>
+        StatusCode(StatusCodes.Status507InsufficientStorage,
+            new { error = $"Per-customer backup quota exceeded ({quotaMb} MB). Delete older backups via /api/v1/me/backups/{{id}}." });
 
     [HttpGet]
     public async Task<IActionResult> List(CancellationToken ct)
@@ -263,6 +270,16 @@ public sealed class MeBackupsController : ControllerBase
         return Ok(list);
     }
 
+    /// <summary>
+    /// Yedeği çözüp <b>akıtarak</b> döner.
+    ///
+    /// <para>Bu uç, yükleme yolunun aksine ne oran sınırına ne de eşzamanlılık
+    /// kapısına takılıyor (yalnız IP başına 100/dk'lık genel sel kapağı var) —
+    /// yani zarfı ve düz metni birlikte belleğe alan eski hâlde istek başına
+    /// <b>2 × blob</b> tutan ve hiçbir tavanı olmayan taraf tam olarak burasıydı.
+    /// Denetim raporu yalnız yükleme yolunu işaret ediyordu; ölçüsüz olan
+    /// aslında bu.</para>
+    /// </summary>
     [HttpGet("{id:guid}/download")]
     public async Task<IActionResult> Download(Guid id, CancellationToken ct)
     {
@@ -270,9 +287,16 @@ public sealed class MeBackupsController : ControllerBase
             .FirstOrDefaultAsync(x => x.Id == id && x.CustomerId == CustomerId, ct);
         if (b is null) return NotFound();
 
-        var encrypted = await _storage.ReadBlobAsync(b.BlobPath, ct);
-        var plaintext = _storage.Decrypt(encrypted, b.KeyVersion);
-        return File(plaintext, "application/octet-stream", $"orderdeck-backup-{b.CreatedAt:yyyyMMdd-HHmmss}.zip");
+        await using var envelope = _storage.OpenBlobRead(b.BlobPath);
+
+        // Başlıklar ilk bayttan ÖNCE yazılıyor: gövde akmaya başladıktan sonra
+        // başlık eklenemez, ve hata olursa yanıt zaten yarım gider.
+        Response.ContentType = "application/octet-stream";
+        Response.Headers.ContentDisposition =
+            $"attachment; filename=\"orderdeck-backup-{b.CreatedAt:yyyyMMdd-HHmmss}.zip\"";
+
+        await _storage.DecryptToAsync(envelope, b.EnvelopeFormat, b.KeyVersion, Response.Body, ct);
+        return new EmptyResult();
     }
 
     [HttpDelete("{id:guid}")]

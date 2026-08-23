@@ -25,13 +25,14 @@ public sealed class BackupOptions
     /// <summary>
     /// Tek bir yedek gövdesinin üst sınırı.
     ///
-    /// <para><b>Bu sayı bellekten türetildi, veriden değil.</b> Yükleme yolu
-    /// blob'u akıtmıyor, topluyor: istek başına elde düz metin + zarf, yani
-    /// yaklaşık <b>2 × blob</b> duruyor (AES-GCM tek-atış API'si ikisini de tam
-    /// boy ister; akıtmak zarf formatını chunk'lı hâle getirmeyi gerektirir).
-    /// Konteyner <c>mem_limit: 1g</c> ile koşuyor, dolayısıyla tepe bellek
-    /// <c>MaxBlobSizeMb × 2 × <see cref="MaxConcurrentUploads"/></c> ≈ 256 MB.
-    /// Bu üç sayıdan birini büyütürken diğerlerine bakmadan yapma.</para>
+    /// <para><b>Bu sayı artık bellekle bağlı DEĞİL.</b> Eskiden öyleydi: yükleme
+    /// yolu blob'u akıtmıyor topluyordu ve istek başına elde düz metin + zarf,
+    /// yani ~<b>2 × blob</b> duruyordu (tepe ≈ <c>MaxBlobSizeMb × 2 ×
+    /// <see cref="MaxConcurrentUploads"/></c> = 256 MB, konteyner ise
+    /// <c>mem_limit: 1g</c>). Yükleme ve indirme artık parçalı zarfla akıyor,
+    /// tepe bellek parça boyutuna bağlı (~2 MiB/istek) ve blob büyüklüğünden
+    /// bağımsız. Yani bu tavan bugün <b>diski ve kotayı</b> korumak için var,
+    /// belleği değil.</para>
     ///
     /// <para>Ölçüm için: gerçek bir kurulumda <c>orderdeck.db</c> 4,9 MB,
     /// zip'i 1,6 MB. Ürün fotoğrafları yedeğe GİRMİYOR (DB'de yalnız R2 nesne

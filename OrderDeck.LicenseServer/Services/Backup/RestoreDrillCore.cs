@@ -68,18 +68,24 @@ public static class RestoreDrillCore
     {
         var steps = new List<DrillStep>();
         var passed = true;
+        var zipPath = Path.Combine(workdir, "restored.zip");
 
         // ─── Step 1: read + decrypt ─────────────────────────────────
-        byte[] envelope;
-        byte[] plaintext;
+        //
+        // Tatbikatın veritabanı satırı YOK (elindeki tek şey diskte duran bir
+        // dosya), dolayısıyla zarf biçimini sütundan öğrenemiyor. Parçalı biçim
+        // bu yüzden diskte kendini tanıtıyor: baştaki sihirli imza. Eski tek-atış
+        // zarfların böyle bir imzası yok — onlar için tek ipucu keyVersion, yani
+        // çağıranın verdiği tahmin. Yeni bloblarda tatbikat artık tahmin etmiyor.
+        // Path-traversal savunması: doğrudan File.Open yerine
+        // BackupStorageService.OpenBlobRead — o EnsurePathInsideStorageRoot ile
+        // blobPath'i yapılandırılmış storage root'una hapseder ('..' ve root-dışı
+        // mutlak yolları reddeder). Drill root dışındaki keyfi bir dosyayı asla
+        // okumamalı.
+        Stream envelope;
         try
         {
-            // Path-traversal savunması: doğrudan File.ReadAllBytesAsync yerine
-            // BackupStorageService.ReadBlobAsync kullan — o EnsurePathInsideStorageRoot
-            // ile blobPath'i yapılandırılmış storage root'una hapseder ('..' ve
-            // root-dışı mutlak yolları reddeder). Drill root dışındaki keyfi bir
-            // dosyayı asla okumamalı.
-            envelope = await storage.ReadBlobAsync(blobPath, ct);
+            envelope = storage.OpenBlobRead(blobPath);
         }
         catch (Exception ex)
         {
@@ -87,27 +93,37 @@ public static class RestoreDrillCore
             return new DrillResult(false, blobPath, keyVersion, steps);
         }
 
-        try
+        await using (envelope)
         {
-            plaintext = storage.Decrypt(envelope, keyVersion);
-            steps.Add(new DrillStep("Decrypt",
-                true,
-                $"{envelope.Length} envelope bytes → {plaintext.Length} plaintext bytes (keyVersion={keyVersion})"));
-        }
-        catch (CryptographicException ex)
-        {
-            steps.Add(new DrillStep("Decrypt", false,
-                $"AES-GCM auth tag mismatch — wrong key or tampered blob ({ex.Message})"));
-            return new DrillResult(false, blobPath, keyVersion, steps);
-        }
-        catch (Exception ex)
-        {
-            steps.Add(new DrillStep("Decrypt", false, $"{ex.GetType().Name}: {ex.Message}"));
-            return new DrillResult(false, blobPath, keyVersion, steps);
-        }
+            try
+            {
+                var head = new byte[4];
+                var headLen = await envelope.ReadAsync(head, ct);
+                envelope.Position = 0;
+                var format = BackupStorageService.LooksChunked(head.AsSpan(0, headLen))
+                    ? BackupStorageService.FormatChunked
+                    : BackupStorageService.FormatSingleShot;
 
-        var zipPath = Path.Combine(workdir, "restored.zip");
-        await File.WriteAllBytesAsync(zipPath, plaintext, ct);
+                await using (var zip = File.Create(zipPath))
+                    await storage.DecryptToAsync(envelope, format, keyVersion, zip, ct);
+
+                steps.Add(new DrillStep("Decrypt",
+                    true,
+                    $"{envelope.Length} envelope bytes → {new FileInfo(zipPath).Length} plaintext bytes " +
+                    $"(format={format}, keyVersion={keyVersion})"));
+            }
+            catch (CryptographicException ex)
+            {
+                steps.Add(new DrillStep("Decrypt", false,
+                    $"AES-GCM auth tag mismatch — wrong key or tampered blob ({ex.Message})"));
+                return new DrillResult(false, blobPath, keyVersion, steps);
+            }
+            catch (Exception ex)
+            {
+                steps.Add(new DrillStep("Decrypt", false, $"{ex.GetType().Name}: {ex.Message}"));
+                return new DrillResult(false, blobPath, keyVersion, steps);
+            }
+        }
 
         // ─── Step 2: ZIP integrity ─────────────────────────────────
         var extractDir = Path.Combine(workdir, "extracted");

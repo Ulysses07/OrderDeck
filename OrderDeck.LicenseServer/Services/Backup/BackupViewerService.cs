@@ -32,16 +32,21 @@ public sealed class BackupViewerService
         var b = await _db.CustomerBackups.FirstOrDefaultAsync(x => x.Id == backupId, ct)
             ?? throw new InvalidOperationException($"Backup {backupId} not found");
 
-        var encrypted = await _storage.ReadBlobAsync(b.BlobPath, ct);
-        var zipBytes = _storage.Decrypt(encrypted, b.KeyVersion);
-
         var tempDir = Path.Combine(Path.GetTempPath(), $"orderdeck-view-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempDir);
 
         try
         {
-            using (var ms = new MemoryStream(zipBytes))
-            using (var archive = new ZipArchive(ms, ZipArchiveMode.Read))
+            // Zip belleğe değil geçici dosyaya çözülüyor: eski hâlde zarf ve düz
+            // metin aynı anda bellekteydi (2 × blob) ve bu servisin önünde ne oran
+            // sınırı ne eşzamanlılık kapısı var. Dizin zaten .db için yaratılıyor,
+            // dolayısıyla yeni bir temizlik yolu açılmıyor — aynı `catch` siliyor.
+            var zipPath = Path.Combine(tempDir, "backup.zip");
+            await using (var envelope = _storage.OpenBlobRead(b.BlobPath))
+            await using (var zipFile = File.Create(zipPath))
+                await _storage.DecryptToAsync(envelope, b.EnvelopeFormat, b.KeyVersion, zipFile, ct);
+
+            using (var archive = ZipFile.OpenRead(zipPath))
             {
                 var dbEntry = archive.GetEntry("orderdeck.db")
                     ?? throw new InvalidOperationException("Backup zip missing orderdeck.db entry");
@@ -50,6 +55,10 @@ public sealed class BackupViewerService
                 using var src = dbEntry.Open();
                 await src.CopyToAsync(dest, ct);
             }
+
+            // Şifresi çözülmüş zip artık gereksiz; oturum boyunca müşteri verisini
+            // iki kopya hâlinde tutmanın anlamı yok.
+            try { File.Delete(zipPath); } catch { /* temizliği BackupSession bitiriyor */ }
 
             var dbFile = Path.Combine(tempDir, "orderdeck.db");
             var conn = new SqliteConnection($"Data Source={dbFile};Mode=ReadOnly");
