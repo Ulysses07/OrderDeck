@@ -30,13 +30,25 @@ public class GiveawayBannerViewModelTests
 {
     private const long Now = 1_000_000L;
 
+    /// <summary>
+    /// <b>Her zaman <c>using</c> ile kullan.</b> <c>StartTracking</c> timer'ı
+    /// başlatır; çalışan timer <c>Dispatcher._timers</c> içinde güçlü referansla
+    /// durur ve VM'i koşunun sonuna kadar kökler.
+    /// </summary>
     private sealed record Harness(
         InMemorySqlite Db,
         GiveawayRepository Repo,
         SessionRepository Sessions,
         CustomerRepository Customers,
         Mock<IClock> Clock,
-        GiveawayBannerViewModel Vm);
+        GiveawayBannerViewModel Vm) : IDisposable
+    {
+        public void Dispose()
+        {
+            Vm.Dispose();
+            Db.Dispose();
+        }
+    }
 
     private const string SessionId = "s-test";
 
@@ -95,7 +107,7 @@ public class GiveawayBannerViewModelTests
     [Fact]
     public void Initial_state_is_inactive_with_empty_observables()
     {
-        var h = Build();
+        using var h = Build();
 
         h.Vm.IsActive.Should().BeFalse();
         h.Vm.Keyword.Should().Be("");
@@ -109,7 +121,7 @@ public class GiveawayBannerViewModelTests
     [Fact]
     public void StartTracking_populates_observables_for_timed_giveaway()
     {
-        var h = Build(now: Now);
+        using var h = Build(now: Now);
         // 90 seconds remaining: started 30s ago with a 120s duration.
         var g = InsertGiveaway(h, durationSeconds: 120, startedAt: Now - 30, keyword: "yarış");
 
@@ -124,7 +136,7 @@ public class GiveawayBannerViewModelTests
     [Fact]
     public void StartTracking_zero_padding_in_seconds_component()
     {
-        var h = Build(now: Now);
+        using var h = Build(now: Now);
         // 9 seconds remaining → expect "0:09" (zero-padded), not "0:9".
         var g = InsertGiveaway(h, durationSeconds: 9, startedAt: Now);
 
@@ -136,7 +148,7 @@ public class GiveawayBannerViewModelTests
     [Fact]
     public void StartTracking_manual_end_mode_shows_indefinite_label()
     {
-        var h = Build();
+        using var h = Build();
         var g = InsertGiveaway(h, durationSeconds: 0, startedAt: Now);
 
         h.Vm.StartTracking(g);
@@ -148,7 +160,7 @@ public class GiveawayBannerViewModelTests
     [Fact]
     public void StartTracking_seeds_participant_count_from_repository()
     {
-        var h = Build();
+        using var h = Build();
         var g = InsertGiveaway(h, durationSeconds: 60, startedAt: Now);
         AddParticipant(h, g.Id, "c1", "alice");
         AddParticipant(h, g.Id, "c2", "bob");
@@ -161,7 +173,7 @@ public class GiveawayBannerViewModelTests
     [Fact]
     public void Tick_refreshes_participant_count_when_new_entries_arrive()
     {
-        var h = Build();
+        using var h = Build();
         var g = InsertGiveaway(h, durationSeconds: 60, startedAt: Now);
         AddParticipant(h, g.Id, "c1", "alice");
         h.Vm.StartTracking(g);
@@ -178,7 +190,7 @@ public class GiveawayBannerViewModelTests
     [Fact]
     public void StopTracking_clears_active_state()
     {
-        var h = Build();
+        using var h = Build();
         var g = InsertGiveaway(h, durationSeconds: 60, startedAt: Now);
         h.Vm.StartTracking(g);
 
@@ -193,7 +205,7 @@ public class GiveawayBannerViewModelTests
         // Race protection: a Tick already queued in the dispatcher when we call
         // StopTracking would otherwise still hit UpdateState. _active=null
         // gates that path so the queued tick is harmless.
-        var h = Build();
+        using var h = Build();
         var g = InsertGiveaway(h, durationSeconds: 0, startedAt: Now);
         h.Vm.StartTracking(g);
         AddParticipant(h, g.Id, "c1", "alice");
@@ -210,7 +222,7 @@ public class GiveawayBannerViewModelTests
     [Fact]
     public void AutoDrawRequested_fires_when_countdown_reaches_zero()
     {
-        var h = Build(now: Now);
+        using var h = Build(now: Now);
         var g = InsertGiveaway(h, durationSeconds: 30, startedAt: Now - 30); // remaining = 0
         var fired = 0;
         h.Vm.AutoDrawRequested += () => fired++;
@@ -226,7 +238,7 @@ public class GiveawayBannerViewModelTests
     {
         // Remaining is *negative* (clock ran past endsAt while we weren't
         // looking — e.g. system suspended). Same branch, same outcome.
-        var h = Build(now: Now);
+        using var h = Build(now: Now);
         var g = InsertGiveaway(h, durationSeconds: 10, startedAt: Now - 30);
         var fired = 0;
         h.Vm.AutoDrawRequested += () => fired++;
@@ -242,7 +254,7 @@ public class GiveawayBannerViewModelTests
     {
         // DurationSeconds=0 means the streamer ends manually; no clock-based
         // auto-draw can ever happen, regardless of what UpdateState computes.
-        var h = Build();
+        using var h = Build();
         var g = InsertGiveaway(h, durationSeconds: 0, startedAt: Now - 9_999);
         var fired = 0;
         h.Vm.AutoDrawRequested += () => fired++;
@@ -258,7 +270,7 @@ public class GiveawayBannerViewModelTests
     [Fact]
     public void Stopping_before_countdown_zero_prevents_AutoDrawRequested()
     {
-        var h = Build(now: Now);
+        using var h = Build(now: Now);
         var g = InsertGiveaway(h, durationSeconds: 60, startedAt: Now); // remaining = 60
         var fired = 0;
         h.Vm.AutoDrawRequested += () => fired++;
@@ -278,7 +290,7 @@ public class GiveawayBannerViewModelTests
         // Sequential giveaways within the same banner: stop the old, start the
         // new. AutoDrawRequested for the new one must work independently of
         // the old one's history.
-        var h = Build(now: Now);
+        using var h = Build(now: Now);
         var first  = InsertGiveaway(h, durationSeconds: 30, startedAt: Now - 30, id: "g1");
         var fired = 0;
         h.Vm.AutoDrawRequested += () => fired++;
@@ -300,7 +312,7 @@ public class GiveawayBannerViewModelTests
         // Models the real consumer pattern (MainShellViewModel.DrawGiveawayNow):
         // AutoDrawRequested handler synchronously calls StopTracking, so any
         // tick still in flight after the auto-draw branch must early-return.
-        var h = Build(now: Now);
+        using var h = Build(now: Now);
         var g = InsertGiveaway(h, durationSeconds: 30, startedAt: Now - 30); // remaining = 0
         var fired = 0;
         h.Vm.AutoDrawRequested += () =>
@@ -321,7 +333,7 @@ public class GiveawayBannerViewModelTests
     [Fact]
     public void Dispose_is_safe_when_idle()
     {
-        var h = Build();
+        using var h = Build();
 
         var act = () => h.Vm.Dispose();
 
@@ -331,7 +343,7 @@ public class GiveawayBannerViewModelTests
     [Fact]
     public void Dispose_after_StartTracking_stops_the_timer()
     {
-        var h = Build();
+        using var h = Build();
         var g = InsertGiveaway(h, durationSeconds: 60, startedAt: Now);
         h.Vm.StartTracking(g);
 

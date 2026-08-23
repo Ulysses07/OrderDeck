@@ -32,6 +32,7 @@ public class MainShellBarcodeScanFlowTests
 
     private static MainShellTestHarness.Harness Seed()
     {
+        // Harness'i ÇAĞIRAN sahipleniyor (using ile) — burada yıkma, döndürüyoruz.
         var h = MainShellTestHarness.Build();
 
         new CatalogReplicaRepository(h.Db).Replace(
@@ -58,7 +59,7 @@ public class MainShellBarcodeScanFlowTests
         // Sipariş satırındaki kod müşteri etiketine basılıyor ve ürün sayacı
         // da onun üzerinden dönüyor. Barkod sızsaydı etikette 10 haneli
         // anlamsız bir sayı görünürdü.
-        var h = Seed();
+        using var h = Seed();
         h.Vm.ActiveCode = BarkodM;
 
         await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@ali", "ateş m"));
@@ -73,7 +74,7 @@ public class MainShellBarcodeScanFlowTests
         // İzleyici yoruma "ateş" yazıyor, barkodu değil. Süzgeç kutudaki ham
         // metni arasaydı "yalnız aktif kod" açıkken sohbet bomboş kalır ve
         // operatör siparişleri göremezdi.
-        var h = Seed();
+        using var h = Seed();
         h.Vm.ChatMessages.Add(MainShellTestHarness.ChatVm("ayse", "ateş alıyorum"));
         h.Vm.ChatMessages.Add(MainShellTestHarness.ChatVm("fatma", "başka bir şey"));
         h.Vm.ActiveCode = BarkodM;
@@ -90,7 +91,7 @@ public class MainShellBarcodeScanFlowTests
         // Operatör önce kodu yazıp sipariş alıyor, sonra aynı ürünün etiketini
         // okutuyor. Sayaç ham metinle sorgulansaydı okutmadan sonra "0 sipariş"
         // gösterir ve operatör siparişlerin kaybolduğunu sanırdı.
-        var h = Seed();
+        using var h = Seed();
         h.Vm.ActiveCode = "ateş";
         await h.Vm.AddChatToQueueAsync(MainShellTestHarness.ChatVm("@ali", "ateş m"));
         h.Vm.RefreshHeroStats();
@@ -108,7 +109,7 @@ public class MainShellBarcodeScanFlowTests
         // Katalogda olmayan bir kod da süzgeci beslemeye devam etmeli: operatör
         // henüz senkronlanmamış bir ürünü kodla takip edebiliyor. Çözüm yoksa
         // düşülecek yer kutudaki metindir.
-        var h = Seed();
+        using var h = Seed();
         h.Vm.ChatMessages.Add(MainShellTestHarness.ChatVm("ayse", "Z999 alıyorum"));
         h.Vm.ChatMessages.Add(MainShellTestHarness.ChatVm("fatma", "başka"));
         h.Vm.ActiveCode = "Z999";

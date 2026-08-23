@@ -57,6 +57,12 @@ internal static class MainShellTestHarness
         public void PrintGiftLabels(IReadOnlyList<Label> labels) => GiftCalls.Add(labels.ToList());
     }
 
+    /// <summary>
+    /// <b>Her zaman <c>using</c> ile kullan.</b> VM ctor'u üç DispatcherTimer
+    /// başlatıyor; çalışan bir timer <c>Dispatcher._timers</c> içinde güçlü
+    /// referansla durduğu için, yıkılmayan her harness kendi VM grafiğini
+    /// (SQLite bağlantısı dahil) koşunun sonuna kadar canlı tutar.
+    /// </summary>
     public sealed record Harness(
         MainShellViewModel Vm,
         FakeLabelPrinter Printer,
@@ -65,7 +71,14 @@ internal static class MainShellTestHarness
         CustomerRepository CustomerRepo,
         StreamSessionService Sessions,
         Mock<IClock> Clock,
-        FakeDialogService Dialogs);
+        FakeDialogService Dialogs) : IDisposable
+    {
+        public void Dispose()
+        {
+            Vm.Dispose();
+            Db.Dispose();
+        }
+    }
 
     public static Harness Build(OrderDeck.App.Services.Drawers.IDrawerService? drawers = null)
     {

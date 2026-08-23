@@ -37,16 +37,15 @@ jobs:
       - name: Build (Release)
         run: dotnet build OrderDeck.sln --configuration Release --no-restore --nologo
 
-      # WPF/Dispatcher-heavy tests are excluded from CI for now. Locally
-      # they pass cleanly (2.5 min serial, ~6s parallel), but Release
-      # config on the GitHub Windows runner triggers a host-shutdown
-      # deadlock — a DispatcherTimer attached during MainShellTestHarness
-      # construction (GiveawayBannerViewModel) keeps a per-thread WPF
-      # Dispatcher alive past the last test, blocking process exit.
-      # Tracked as separate tech debt: make MainShellTestHarness +
-      # GiveawayBannerViewModelTests dispose VMs and shut down the
-      # test-thread Dispatcher explicitly. Until then, keep the runner
-      # green and rely on local execution for the excluded suites.
+      # MainShell + GiveawayBannerViewModel suites used to be filtered out of
+      # this step (2026-05-05, c3b0b46) because the runner hung. Root cause:
+      # MainShellViewModel's ctor starts three DispatcherTimers and a running
+      # DispatcherTimer sits in Dispatcher._timers behind a STRONG reference,
+      # so every undisposed harness rooted its whole VM graph — SQLite
+      # connection included — for the rest of the run. The old Dispose only
+      # stopped two of the three, and no test called it at all. Measured:
+      # 390 leaked timers over 130 harness builds; after the fix, 0.
+      # Now unfiltered — the whole suite runs on CI again.
       - name: Test - OrderDeck.Tests (Core/App)
         run: >
           dotnet test OrderDeck.Tests/OrderDeck.Tests.csproj
@@ -55,7 +54,6 @@ jobs:
           --logger "trx;LogFileName=core-app.trx"
           --results-directory ${{ github.workspace }}/TestResults
           --blame-hang-timeout 3m
-          --filter "FullyQualifiedName!~MainShell&FullyQualifiedName!~GiveawayBannerViewModel"
           -- xUnit.ParallelizeTestCollections=false
 
       - name: Test - OrderDeck.Licensing.Tests

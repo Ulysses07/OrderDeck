@@ -19,7 +19,7 @@ public class MainShellViewModelBackupTests
     [Fact]
     public void Begin_backup_mode_sets_target_label_and_banner()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         MainShellTestHarness.EnqueueLabel(h.Vm, "@buyer", 199m);
         var label = h.Vm.PrintQueue[0];
 
@@ -34,7 +34,7 @@ public class MainShellViewModelBackupTests
     [Fact]
     public void Cancel_backup_selection_clears_state()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         MainShellTestHarness.EnqueueLabel(h.Vm, "@buyer", 199m);
         var label = h.Vm.PrintQueue[0];
 
@@ -49,7 +49,7 @@ public class MainShellViewModelBackupTests
     [Fact]
     public void TryAssignChatAsBackup_outside_mode_returns_false()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         MainShellTestHarness.EnqueueLabel(h.Vm, "@buyer", 199m);
 
         var consumed = h.Vm.TryAssignChatAsBackup(MainShellTestHarness.ChatVm("@yedek", "ben de"));
@@ -62,7 +62,7 @@ public class MainShellViewModelBackupTests
     [Fact]
     public void TryAssignChatAsBackup_in_mode_creates_tentative_label_and_clears_mode()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         MainShellTestHarness.EnqueueLabel(h.Vm, "@buyer", 199m);
         var parentVm = h.Vm.PrintQueue[0];
         h.Vm.BeginAddBackupCommand.Execute(parentVm);
@@ -85,7 +85,7 @@ public class MainShellViewModelBackupTests
         // The chip on the parent row should reflect backup count without a
         // full queue requery — we assert the in-place bump that
         // TryAssignChatAsBackup does on the LabelViewModel.
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         MainShellTestHarness.EnqueueLabel(h.Vm, "@buyer", 199m);
         var parentVm = h.Vm.PrintQueue[0];
         h.Vm.BeginAddBackupCommand.Execute(parentVm);
@@ -101,7 +101,7 @@ public class MainShellViewModelBackupTests
     {
         // Defensive: the chip click can theoretically fire with no item if
         // a stale binding catches it — should silently ignore, not throw.
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
 
         h.Vm.BeginAddBackupCommand.Execute(null);
 
@@ -113,7 +113,7 @@ public class MainShellViewModelBackupTests
     {
         // The tentative-backup row gets its own LabelViewModel; its own
         // BackupCount stays at 0 (it's a leaf, not a parent).
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         MainShellTestHarness.EnqueueLabel(h.Vm, "@buyer", 199m);
         h.Vm.BeginAddBackupCommand.Execute(h.Vm.PrintQueue[0]);
         h.Vm.TryAssignChatAsBackup(MainShellTestHarness.ChatVm("@yedek", "+1"));
@@ -126,7 +126,7 @@ public class MainShellViewModelBackupTests
     [Fact]
     public void Multiple_backups_for_same_parent_create_distinct_queue_rows()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         MainShellTestHarness.EnqueueLabel(h.Vm, "@buyer", 199m);
         var parent = h.Vm.PrintQueue[0];
 
@@ -150,7 +150,7 @@ public class MainShellViewModelBackupTests
         // Round-trips through the persistence layer — a second call to
         // GetBackups (the Service equivalent of what the cancel flow does)
         // should see the tentative row.
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         MainShellTestHarness.EnqueueLabel(h.Vm, "@buyer", 199m);
         var parent = h.Vm.PrintQueue[0];
         h.Vm.BeginAddBackupCommand.Execute(parent);

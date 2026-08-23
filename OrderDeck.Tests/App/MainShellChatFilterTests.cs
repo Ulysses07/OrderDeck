@@ -13,7 +13,7 @@ public class MainShellChatFilterTests
     [Fact]
     public void No_filter_shows_every_message()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         h.Vm.ChatMessages.Add(MainShellTestHarness.ChatVm("ayse", "A100 alıyorum"));
         h.Vm.ChatMessages.Add(MainShellTestHarness.ChatVm("fatma", "merhaba"));
 
@@ -23,7 +23,7 @@ public class MainShellChatFilterTests
     [Fact]
     public void Search_matches_username_and_text_case_insensitively()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         h.Vm.ChatMessages.Add(MainShellTestHarness.ChatVm("ayse", "merhaba"));
         h.Vm.ChatMessages.Add(MainShellTestHarness.ChatVm("fatma", "AYSE'ye selam"));
         h.Vm.ChatMessages.Add(MainShellTestHarness.ChatVm("zeynep", "başka"));
@@ -37,7 +37,7 @@ public class MainShellChatFilterTests
     [Fact]
     public void Only_active_code_filters_by_the_hero_code()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         h.Vm.ChatMessages.Add(MainShellTestHarness.ChatVm("ayse", "a100 alıyorum"));
         h.Vm.ChatMessages.Add(MainShellTestHarness.ChatVm("fatma", "B200 alıyorum"));
         h.Vm.ActiveCode = "A100";
@@ -50,7 +50,7 @@ public class MainShellChatFilterTests
     [Fact]
     public void Only_active_code_is_inert_while_no_code_is_active()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         h.Vm.ChatMessages.Add(MainShellTestHarness.ChatVm("ayse", "a100"));
         h.Vm.ChatMessages.Add(MainShellTestHarness.ChatVm("fatma", "B200"));
         h.Vm.ActiveCode = "";
@@ -65,7 +65,7 @@ public class MainShellChatFilterTests
     [Fact]
     public void Filters_combine()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         h.Vm.ChatMessages.Add(MainShellTestHarness.ChatVm("ayse", "A100 alıyorum"));
         h.Vm.ChatMessages.Add(MainShellTestHarness.ChatVm("fatma", "A100 alıyorum"));
         h.Vm.ActiveCode = "A100";
@@ -79,7 +79,7 @@ public class MainShellChatFilterTests
     [Fact]
     public void Changing_the_active_code_refreshes_the_view()
     {
-        var h = MainShellTestHarness.Build();
+        using var h = MainShellTestHarness.Build();
         h.Vm.ChatMessages.Add(MainShellTestHarness.ChatVm("ayse", "A100"));
         h.Vm.ChatMessages.Add(MainShellTestHarness.ChatVm("fatma", "B200"));
         h.Vm.ActiveCode = "A100";
