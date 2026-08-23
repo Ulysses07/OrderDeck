@@ -23,6 +23,18 @@ services:
       Jwt__Issuer: "orderdeck-license-server"
       Email__Provider: "disk"
       App__PublicBaseUrl: "http://localhost:8080"
+      # Konteyner artık root koşmuyor (bkz. Dockerfile `USER $APP_UID`, uid 1654).
+      # /app imaj katmanında root'a ait, yani ORAYA YAZAN her varsayılan kırılır:
+      #   - Smtp:DiskOutputDirectory varsayılanı "./tmp/emails" → /app/tmp/emails
+      #   - Backup:StorageRoot varsayılanı "/app/Backups"
+      # İkisi de Directory.CreateDirectory ile açılıyor ve UnauthorizedAccess atar.
+      # Yazılabilir tek yer /tmp (1777). Prod'da bu yollar bind mount + chown 1654.
+      Smtp__DiskOutputDirectory: "/tmp/emails"
+      Backup__StorageRoot: "/tmp/backups"
+      # $HOME=/home/app ama o dizin imajda YOK ve /home root'a ait → varsayılan
+      # anahtar yolu açılamaz, DataProtection sessizce geçici (bellekte) anahtara
+      # düşer. Yerelde kalıcılık gerekmiyor ama yolu vermek uyarıyı susturur.
+      DataProtection__KeysPath: "/tmp/dp-keys"
     ports:
       - "8080:8080"
     depends_on:

@@ -4,6 +4,7 @@ using System.Security.Claims;
 using System.Text;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Localization;
 using Hangfire;
@@ -64,6 +65,34 @@ public class Program
         // (en)/privacy-policy metinlerini de değiştirmek zorunda.
         builder.Services.Configure<OrderDeck.LicenseServer.Services.Audit.SecurityDataRetentionOptions>(
             builder.Configuration.GetSection("Audit:SecurityRetention"));
+
+        // DataProtection anahtar halkasının yeri — AÇIKÇA sabitleniyor.
+        //
+        // Bu çağrı olmadan ASP.NET Core anahtarları `$HOME/.aspnet/DataProtection-Keys`
+        // altında tutar. Yani anahtarların yeri, process'in HANGİ KULLANICI olarak
+        // koştuğuna bağlıdır. Konteyner root iken bu `/root/...` oluyordu ve compose
+        // oraya mount ediyordu; `USER` eklendiği an `$HOME` değişir, uygulama BOŞ bir
+        // dizin görür, kendine yeni bir anahtar üretir ve AÇILIŞ BAŞARILI OLUR.
+        //
+        // Sessiz kaybın bedeli: `WhatsAppAccounts` satırlarındaki erişim token'ı ve
+        // iki adımlı doğrulama PIN'i IDataProtector ile şifreli. Anahtar değişince
+        // çözülemezler ve `WhatsAppAccountService.TryUnprotect` CryptographicException'ı
+        // yutup `null` döndüğü için hiçbir yerde hata görünmez — entegrasyon susar.
+        // Yayıncının Embedded Signup'ı baştan yapması gerekir.
+        //
+        // SetApplicationName ÇAĞIRMA. Uygulama ayracı varsayılan olarak
+        // ContentRootPath'tir (konteynerde `/app`) ve amaç zincirinin parçasıdır;
+        // değiştirmek yukarıdaki payload'ları aynı şekilde çözülemez hâle getirir.
+        //
+        // Boş bırakılırsa (dev/test) varsayılan davranış korunur.
+        var keysPath = builder.Configuration["DataProtection:KeysPath"];
+        if (!string.IsNullOrWhiteSpace(keysPath))
+        {
+            Directory.CreateDirectory(keysPath);
+            EnsureKeyRingUsable(keysPath);
+            builder.Services.AddDataProtection()
+                .PersistKeysToFileSystem(new DirectoryInfo(keysPath));
+        }
 
         // DbContext (primary — used for all writes + reads when no replica configured).
         builder.Services.AddDbContext<LicenseDbContext>(opt =>
@@ -886,6 +915,44 @@ public class Program
         options.KnownIPNetworks.Add(new System.Net.IPNetwork(IPAddress.Parse("127.0.0.0"), 8));
         options.KnownIPNetworks.Add(new System.Net.IPNetwork(IPAddress.IPv6Loopback, 128));
         return options;
+    }
+
+    /// <summary>
+    /// Anahtar halkası dizininin gerçekten okunup yazılabildiğini AÇILIŞTA doğrular.
+    ///
+    /// <para><c>Directory.CreateDirectory</c> bunu kanıtlamaz: dizin zaten varsa
+    /// hiçbir şey yapmaz. Konteyner uid 1654 olarak koştuğu için asıl arıza şudur —
+    /// host'taki <c>/opt/orderdeck/keys</c> chown'lanmayı unutulursa içindeki
+    /// <c>key-*.xml</c> dosyaları <c>0600 root</c> kalır. O zaman dizin listelenir,
+    /// açılış sorunsuz görünür, ama ilk <c>Protect/Unprotect</c> çağrısında —
+    /// yani ilk WhatsApp gönderiminde — patlar. Deploy çoktan bitmiş, smoke test
+    /// yeşil yanmıştır.</para>
+    ///
+    /// <para>Burada patlamak bunu <b>deploy zamanı</b> arızasına çevirir: konteyner
+    /// açılmaz, workflow geri alır. Yanlış alarm riski yok — bu iznler olmadan
+    /// uygulama zaten işini yapamaz.</para>
+    /// </summary>
+    private static void EnsureKeyRingUsable(string keysPath)
+    {
+        var probe = Path.Combine(keysPath, $".write-probe-{Guid.NewGuid():N}");
+        try
+        {
+            File.WriteAllText(probe, string.Empty);
+            File.Delete(probe);
+
+            // Var olan anahtarlar da okunabilmeli; yazılabilir dizin + okunamayan
+            // dosya tam olarak "chown unutuldu" senaryosu.
+            foreach (var key in Directory.EnumerateFiles(keysPath, "key-*.xml"))
+                File.OpenRead(key).Dispose();
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            throw new InvalidOperationException(
+                $"DataProtection anahtar halkası '{keysPath}' kullanılamıyor: {ex.Message}. " +
+                "Konteyner uid 1654 (app) olarak koşuyor — host'ta " +
+                "`chown -R 1654:1654 /opt/orderdeck/keys` çalıştırılmalı " +
+                "(bkz. deploy/README.md, denetim O-11).", ex);
+        }
     }
 
     private static async Task SeedAdminAsync(LicenseDbContext db, IConfiguration cfg)

@@ -33,10 +33,55 @@ dokunmadan).
 ├── web-out/              # marketing site static export (Caddy bind-mount /srv/web)
 │   └── downloads/        # OrderDeck-X.Y.Z-setup.exe public download
 ├── keys/                 # ASP.NET Core DataProtection keys (Docker volume mount)
+├── tmp/                  # license-server /tmp (yedek zarfı açma alanı)
 ├── sql-data/             # SQL Server data files (Docker volume mount)
 ├── backups/              # encrypted customer backup blobs (per-customer dir)
 └── caddy_data            # Docker named volume — Let's Encrypt certs
 ```
+
+## Konteyner root koşmuyor — mount'lar uid 1654'e ait OLMALI (denetim O-11)
+
+License-server imajı `USER $APP_UID` ile, yani **uid/gid 1654 (`app`)** olarak
+koşuyor ve kök dosya sistemi `read_only: true`. Yazılabilir tek yerler bind
+mount edilen üç dizin. Docker bind mount'ları host sahipliğini aynen aktarır ve
+bu dizinler bugün `root:root` — **chown yapılmadan konteyner açılmaz veya daha
+kötüsü sessizce bozulur.**
+
+Bu adımlar **deploy'dan ÖNCE** çalıştırılmalıdır. Güvenlidir: hâlâ root koşan
+mevcut konteyner dosya sahipliğini yok sayar, yani çalışan sisteme dokunmaz.
+
+```bash
+cd /opt/orderdeck
+mkdir -p tmp
+chown -R 1654:1654 keys backups tmp
+# FCM servis hesabı anahtarı 0600 — sahibi değişmezse konteyner okuyamaz ve
+# push bildirimleri sessizce ölür.
+chown 1654:1654 /etc/orderdeck/firebase-service-account.json
+```
+
+Doğrulama (deploy sonrası):
+
+```bash
+docker exec orderdeck-license id                     # uid=1654(app)
+docker exec orderdeck-license ls -la /app/keys       # key-*.xml, sahibi 1654
+docker exec orderdeck-license touch /app/probe       # Read-only file system
+```
+
+### DataProtection anahtar yolu neden `.env`/compose'da açıkça yazılı
+
+`DataProtection__KeysPath: "/app/keys"` compose'da **zorunlu**. Yoksa ASP.NET
+Core anahtarları `$HOME/.aspnet/DataProtection-Keys` altında arar; root iken bu
+`/root/...` idi ve compose oraya mount ediyordu. Kullanıcı değişince `$HOME`
+`/home/app` olur — o dizin imajda yoktur, uygulama **yeni bir anahtar üretir ve
+açılış başarılı olur**. `WhatsAppAccounts` satırındaki erişim token'ı ve iki
+adımlı doğrulama PIN'i o anahtarla şifreli; çözülemez hâle gelirler ve
+`WhatsAppAccountService.TryUnprotect` istisnayı yuttuğu için **hiçbir yerde hata
+görünmez**. Kurtarma yolu yayıncının Embedded Signup'ı baştan yapmasıdır.
+
+Host tarafındaki `./keys` dizini DEĞİŞMEDİ; yalnız konteyner içindeki hedefi
+`/root/.aspnet/DataProtection-Keys` → `/app/keys` oldu. Aynı dosyalar, aynı
+anahtarlar. `WORKDIR /app` de değişmemeli: DataProtection'ın uygulama ayracı
+`ContentRootPath`'tir ve amaç zincirinin parçasıdır.
 
 ## Initial deploy
 
