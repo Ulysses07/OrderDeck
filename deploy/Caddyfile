@@ -26,9 +26,56 @@
     }
 }
 
+# ─── CSP ve Permissions-Policy hakkında (denetim O-15) ───────────────────────
+# Bu iki başlık BİLEREK snippet'e konmadı: dört yüzeyin dördü de farklı şey
+# yüklüyor (jsdelivr, Meta SDK, R2 presigned URL, YouTube avatarı) ve ortak bir
+# politika ya hepsini kıracak kadar dar ya da hiçbir şeyi engellemeyecek kadar
+# geniş olurdu. Her site kendi satırını taşıyor; hangi kaynağın neden orada
+# olduğu ilgili site bloğunun yorumunda yazılı.
+#
+# `upgrade-insecure-requests` HİÇBİR yerde yok, kasıtlı: sayfalarda karışık
+# içerik zaten yok (her şey görece yol ya da https), buna karşılık aşağıdaki
+# `orderdeckapp.com/facebook/callback` yönlendirmesinin hedefi
+# `http://localhost:4849` — masaüstündeki OAuth dinleyicisi. Hiçbir şey
+# kazandırmayan bir direktif için o adresin https'e yükseltilme ihtimalini
+# göze almanın anlamı yok.
+#
+# `script-src` statik sitelerde ve Razor'da `'unsafe-inline'` içeriyor; tercih
+# değil, ölçüm sonucu:
+#   • Next statik export'ta hydration yükü satır içi <script> olarak basılıyor
+#     (canlı HTML'de orderdeckapp.com'da 3, emarglobal.com'da 7 blok). Sunucu
+#     yok → nonce üretilemez; hash'ler her build'de değişir.
+#   • Razor'da IntakeForm'un kendi satır içi <script>'i var, ayrıca
+#     Admin/Customers/Backups ve Admin/Shoppers/DeletionRequests sayfalarında
+#     `onsubmit=` işleyicileri var. Satır içi olay işleyicisini ne nonce ne
+#     hash açar — yalnızca `'unsafe-inline'`.
+# Yani bu iki yüzeyde CSP satır içi XSS'i DURDURMAZ. Durdurdukları: dışarıdan
+# script yükleme, `<object>`/`<embed>`, `<base>` enjeksiyonu, form hedefinin
+# kaçırılması, çerçeveleme ve `connect-src` dışına sızdırma. Satır içi
+# korumasını da kazanmak bu işleyicileri `addEventListener`'a taşımayı
+# gerektirir — ayrı bir iş, buranın konusu değil.
+#
+# Panel tek istisna: Vite bundle'ında sıfır satır içi script var (canlı
+# index.html'de sayıldı) ve 538 KB'lık üretim bundle'ında `eval`,
+# `new Function` ya da `new Worker` geçmiyor. Orada `script-src` gerçekten
+# sıkı — `'unsafe-inline'` yok.
+
 license.orderdeckapp.com {
     import security_headers
     encode gzip
+
+    # Razor yüzeyi. jsdelivr = Bootstrap 5.3.3 (CSS her sayfada, JS bundle'ı
+    # yalnız _AdminLayout'ta). yt3.* = YouTube kanal avatarı; IntakeForm
+    # `/api/public/verify/youtube` cevabındaki `thumbnail`ı <img> olarak
+    # basıyor ve o URL `yt3.ggpht.com`'dan geliyor (canlı API'de doğrulandı).
+    # `yt3.googleusercontent.com` de listede çünkü Google aynı avatarı zaman
+    # zaman o alan adından servis ediyor; ikisi de yalnız görsel.
+    # `connect-src 'self'` yeterli: bu sitede dışarıya giden tek fetch yok,
+    # YouTube çağrısını sunucu yapıyor. Hangfire panosu (loopback'e kapalı)
+    # kendi satır içi script/style'ını kullanıyor, o da 'self'+'unsafe-inline'
+    # ile kapsanıyor.
+    header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: https://yt3.ggpht.com https://yt3.googleusercontent.com; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+    header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), autoplay=()"
 
     # Block public access to internal observability endpoints (Phase 5e).
     # /metrics (Prometheus scrape) and the Hangfire dashboard should only be
@@ -62,6 +109,22 @@ orderdeckapp.com {
     encode gzip zstd
 
     # Brotli'i enable etmek için xcaddy build gerekiyor — şimdilik gzip+zstd yeterli.
+
+    # Politika site geneli: statik Next çıktısı ile aşağıda proxy'lenen Razor
+    # IntakeForm'un BİRLEŞİMİ. Ayrı `handle` blokları içine ayrı `header`
+    # koymak yerine tek satır, çünkü aradaki tek fark img-src'deki YouTube
+    # avatarı; onu statik sayfalara da açmanın maliyeti yok, iki ayrı başlığın
+    # Caddy direktif sırasıyla nasıl birleştiğini kestirmeye çalışmanın ise var.
+    #
+    # jsdelivr BURADA YOK ve olmamalı: IntakeForm.cshtml `Layout = null`
+    # kullanıyor, yani Bootstrap'ı çeken _Layout'a hiç uğramıyor — kendi
+    # satır içi <style>'ı ve `data:` SVG'siyle geliyor.
+    #
+    # Fontlar `/_next/static/media/*.woff2`, yani 'self'.
+    # `connect-src 'self'`: formun tek fetch'i `/api/public/verify/youtube`
+    # ve o da aynı origin'den (aşağıdaki proxy sayesinde).
+    header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://yt3.ggpht.com https://yt3.googleusercontent.com; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+    header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), autoplay=()"
 
     # ─── Müşteri kayıt formu ───────────────────────────────────────────────
     # Form license-server'daki Razor sayfası (DB config + submission + YouTube
@@ -127,6 +190,33 @@ panel.orderdeckapp.com {
     import security_headers
     encode gzip zstd
 
+    # Tek sıkı `script-src` burada: panelin index.html'i satır içi script
+    # içermiyor, dolayısıyla `'unsafe-inline'` olmadan yaşayabiliyor.
+    #
+    # connect.facebook.net = Meta JS SDK, `WhatsAppBaglaScreen` açıldığında
+    # talep üzerine indiriliyor (`facebookSdk.ts`, index.html'e gömülü değil).
+    # `*.facebook.com` hem frame-src hem connect-src'te: Embedded Signup'ın
+    # kendisi POPUP olarak açılıyor (popup'a bizim CSP'miz uygulanmaz), ama
+    # SDK kendi gizli `xd_arbiter` iframe'ini kuruyor ve `autoLogAppEvents`
+    # ile olay gönderiyor. Alt alan adı sabit olmadığı için (www / web /
+    # staticxx / graph) joker; `*.fbcdn.net` de aynı sebeple emniyet payı.
+    #
+    # R2: ürün/duyuru görselleri ve videoları presigned URL ile DOĞRUDAN
+    # R2'den okunuyor, yükleme de `fetch(uploadUrl, PUT)` ile doğrudan oraya
+    # gidiyor — bu yüzden hem img/media-src'te hem connect-src'te.
+    # Hesap kimliği alt alan adında olduğundan joker yazıldı: bu repo public,
+    # kimliği buraya yazmanın gereği yok.
+    # `blob:` = `URL.createObjectURL` ile üretilen yükleme önizlemesi,
+    # `data:` = `@capacitor/camera`'nın DataUrl sonucu.
+    #
+    # license.orderdeckapp.com = API tabanı (`config.ts`).
+    header Content-Security-Policy "default-src 'self'; script-src 'self' https://connect.facebook.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.r2.cloudflarestorage.com https://*.fbcdn.net; media-src 'self' blob: https://*.r2.cloudflarestorage.com; font-src 'self' data:; connect-src 'self' https://license.orderdeckapp.com https://*.r2.cloudflarestorage.com https://*.facebook.com https://*.fbcdn.net; frame-src https://*.facebook.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+
+    # `camera=(self)` — diğer üç yüzeyden farklı. Panel `@capacitor/camera`
+    # kullanıyor (`YeniDuyuruScreen`, duyuruya fotoğraf ekleme); web'de bu
+    # `getUserMedia`'ya düşüyor ve `camera=()` çekimi sessizce öldürürdü.
+    header Permissions-Policy "camera=(self), microphone=(), geolocation=(), payment=(), usb=(), autoplay=()"
+
     root * /srv/panel
 
     # Vite hash'li varlıkların hepsini /assets/ altına koyuyor. Burada eksik
@@ -167,6 +257,13 @@ www.emarglobal.com {
 emarglobal.com {
     import security_headers
     encode gzip zstd
+
+    # En dar politika, çünkü sitede dışarıdan yüklenen HİÇBİR kaynak yok:
+    # canlı HTML'de tüm <img> `/img/...`, CSS'te @font-face yok, dışarıya
+    # giden fetch yok. Görünen dış adresler (wa.me, maps, instagram, youtube)
+    # sadece <a href> — CSP'nin ilgi alanı değil.
+    header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+    header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), autoplay=()"
 
     @static path *.css *.js *.svg *.png *.jpg *.jpeg *.webp *.woff2 *.ico
     header @static Cache-Control "public, max-age=31536000, immutable"
