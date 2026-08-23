@@ -27,6 +27,10 @@ services:
       - ./sql-data:/var/opt/mssql
     networks:
       - web
+    # Denetim O-11 bu servisi "root koşuyor" diye işaretlemişti; 2026-08-23'te
+    # üretimde ölçüldü: zaten uid 10001 (mssql). Bilerek başka sertleştirme
+    # eklenmedi — veri katmanında marjinal kazanç için risk alınmıyor;
+    # `sa` → en az yetkili login işi ayrı bir faz (O-11 Faz 3).
     expose:
       - "1433"
     # SQL Express has a hard 1410 MB process memory cap — keep a comfortable margin
@@ -110,6 +114,13 @@ services:
       Backup__MasterKeys__2: "${BACKUP_MASTERKEYS_2:-}"
       Backup__ActiveKeyVersion: "${BACKUP_ACTIVEKEYVERSION:-0}"
       Backup__StorageRoot: "/app/Backups"
+      # DataProtection anahtar halkası — YOLU AÇIKÇA VERİLMEK ZORUNDA.
+      # Boş bırakılırsa uygulama `$HOME/.aspnet/DataProtection-Keys`'e döner ve
+      # konteyner artık root koşmadığı için $HOME değişmiştir: uygulama boş bir
+      # dizin bulup KENDİNE YENİ ANAHTAR ÜRETİR, açılış başarılı olur ve
+      # WhatsAppAccounts'taki şifreli token/PIN sessizce çözülemez hâle gelir.
+      # Ayrıntı: Program.cs'teki DataProtection bloğu.
+      DataProtection__KeysPath: "/app/keys"
       # Bu üçlü BİRLİKTE okunmalı; aşağıdaki mem_limit ile aynı bütçeyi
       # paylaşıyorlar. Yükleme yolu blob'u akıtmıyor, topluyor: istek başına
       # elde düz metin + zarf, yani ~2 × blob duruyor. Tepe bellek dolayısıyla
@@ -170,14 +181,33 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
       OTEL_EXPORTER_OTLP_HEADERS: "${OTEL_EXPORTER_OTLP_HEADERS:-}"
     volumes:
-      - ./keys:/root/.aspnet/DataProtection-Keys
+      # Host yolu DEĞİŞMEDİ (./keys), yalnız konteyner içindeki hedefi değişti:
+      # eskiden /root/.aspnet/DataProtection-Keys idi, çünkü uygulama anahtarları
+      # $HOME altında arıyordu. Artık yol DataProtection__KeysPath ile sabit.
+      # Aynı host dizini = aynı key-*.xml dosyaları = mevcut şifreli veriler açılır.
+      - ./keys:/app/keys
       - ./backups:/app/Backups
+      # /tmp bilerek tmpfs DEĞİL. Yedek görüntüleyici ve haftalık restore
+      # tatbikatı 64 MB'a kadar zarfı buraya açıp içindeki .db'yi çıkarıyor;
+      # tmpfs konteynerin bellek cgroup'una sayıldığı için aşağıdaki mem_limit
+      # ile aynı bütçeden yerdi ve tatbikat OOM'la düşerdi. Disk destekli.
+      - ./tmp:/tmp
       # FCM servis hesabı anahtarı — host'ta duruyor, imaja girmiyor.
+      # 0600 olduğu için host'ta uid 1654'e chown edilmiş olmalı, yoksa
+      # konteyner dosyayı okuyamaz ve push bildirimleri sessizce ölür.
       - /etc/orderdeck/firebase-service-account.json:/etc/orderdeck/firebase-service-account.json:ro
     networks:
       - web
     expose:
       - "8080"
+    # Denetim O-11 sertleştirmesi. Konteyner imajdaki `app` (uid 1654) olarak
+    # koşuyor (bkz. Dockerfile USER). read_only kök dosya sistemini kilitler;
+    # yazılabilir tek yerler yukarıdaki üç bind mount.
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     # Cap memory/CPU so a backup-upload retry loop or a Hangfire worker storm
     # can't OOM the VPS and take SQL Server down with it.
     mem_limit: 1g
@@ -208,6 +238,17 @@ services:
       - caddy_config:/config
     networks:
       - web
+    # cap_drop: ALL root'tan da NET_BIND_SERVICE'i alır, o olmadan 80/443
+    # bağlanamaz — bu yüzden tek yetenek geri veriliyor. read_only EKLENMEDİ:
+    # Caddy ACME sertifikalarını ve OCSP staple'ını çalışırken yazıyor, bunu
+    # kilitlemenin bedeli sertifika yenilenmemesi olur ve arıza ancak 60 gün
+    # sonra görünür.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
     mem_limit: 256m
     memswap_limit: 256m
     cpus: 1.0

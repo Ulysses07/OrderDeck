@@ -32,7 +32,8 @@ public sealed record WhatsAppAccountUpsertResult(bool Ok, bool Conflict, WhatsAp
 /// Tenant'ın WhatsApp hesabını çözer ve Access Token'ı şifreler/çözer.
 ///
 /// <para><b>Token saklama:</b> <c>IDataProtector</c> ile şifrelenir. Anahtarlar
-/// prod'da <c>./keys:/root/.aspnet/DataProtection-Keys</c> volume'unda kalıcıdır;
+/// prod'da <c>./keys:/app/keys</c> volume'unda kalıcıdır (yol <c>DataProtection:KeysPath</c>
+/// ile sabit — konteyner root koşmadığı için <c>$HOME</c>'a güvenilemez);
 /// bu klasör kaybolursa token'lar çözülemez ve yayıncıların Embedded Signup'ı
 /// tekrar yapması gerekir (backup kapsamında olmalı).</para>
 ///

@@ -30,4 +30,18 @@ WORKDIR /app
 COPY --from=build /app/publish .
 EXPOSE 8080
 ENV ASPNETCORE_URLS=http://+:8080
+
+# Denetim O-11: root olarak koşma. `app` kullanıcısı (uid/gid 1654) .NET 8'den
+# beri resmi runtime imajında hazır geliyor; $APP_UID de imajın kendi ENV'i.
+#
+# Bunun bedeli host tarafında ödenir: bind mount edilen /app/keys, /app/Backups,
+# /tmp ve /etc/orderdeck/firebase-service-account.json 1654'e ait olmak ZORUNDA.
+# Root sahipliği yok saydığı için bu chown'lar konteyner hâlâ root koşarken
+# yapılabilir ve mevcut sisteme dokunmaz — deploy'dan ÖNCE yapılmalıdır.
+# Adımların tamamı deploy/README.md'de.
+#
+# WORKDIR /app değişmemeli: DataProtection'ın uygulama ayracı ContentRootPath'tir
+# ve amaç zincirinin parçasıdır — değişirse şifreli WhatsApp token'ları çözülemez.
+USER $APP_UID
+
 ENTRYPOINT ["dotnet", "OrderDeck.LicenseServer.dll"]
