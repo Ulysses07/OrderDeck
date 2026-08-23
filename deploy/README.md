@@ -67,6 +67,36 @@ docker exec orderdeck-license ls -la /app/keys       # key-*.xml, sahibi 1654
 docker exec orderdeck-license touch /app/probe       # Read-only file system
 ```
 
+## Uygulamanın SQL login'i `sa` değil (denetim O-11 Faz 3a)
+
+`deploy/setup-app-sql-login.sh` `orderdeck_app` login'ini kurar: yalnız
+`OrderDeckLicense` üzerinde `db_owner`, sunucu düzeyinde sıfır yetki. Script
+idempotent, `.env`'deki parolayı korur ve sonunda **yeni login'le bağlanıp**
+doğrular.
+
+`db_owner` (datareader/writer değil) çünkü uygulama açılışta `Migrate()` ve
+Hangfire `PrepareSchemaIfNecessary` çalıştırıyor — ikisi de DDL istiyor. Bunları
+deploy zamanına taşımak (raporun önerdiği iki-kimlik kurgusu) her migration'ı bir
+önceki uygulama sürümüyle geriye dönük uyumlu olmaya mecbur bırakırdı; kazancı
+"uygulama kendi tablosunu düşüremesin" ile sınırlıyken bedeli her PR'a yayılıyordu.
+Bilinçli olarak yapılmadı.
+
+`sa` kaldırılmadı: healthcheck, `scripts/backup-sql-to-r2.sh`, `bootstrap-admin.sh`
+ve `smoke-jwt-refresh.sh` host tarafında root koşan operatör aletleri ve `sa`'da
+kalıyorlar. Değişen tek şey internete bakan process.
+
+**Parola rotasyonu:** script'i yeniden çalıştırmadan önce `.env`'den
+`APP_SQL_PASSWORD` satırını sil; script yeni parola üretip login'i `ALTER LOGIN`
+ile günceller, sonra `docker compose up -d license-server`.
+
+### `.bak` restore'undan sonra login'i MUTLAKA onar
+
+Restore veritabanı **kullanıcısını** getirir ama **login'i getirmez** — login
+`master`'da yaşar. Yeni instance'ta kullanıcının SID'i hiçbir login'e uymaz,
+uygulama `Login failed` ile açılmaz ve hata yanıltıcıdır (parola doğrudur).
+`setup-app-sql-login.sh` bu durumu `ALTER USER ... WITH LOGIN` ile onarır — restore
+sonrası çalıştırmak zorunludur. Bkz. HA-PLAYBOOK.md cutover adım 1b.
+
 ### DataProtection anahtar yolu neden `.env`/compose'da açıkça yazılı
 
 `DataProtection__KeysPath: "/app/keys"` compose'da **zorunlu**. Yoksa ASP.NET
@@ -96,6 +126,8 @@ Copy to `/opt/orderdeck/.env` (file mode 600, do NOT commit):
 
 ```env
 SQL_PASSWORD=ReplaceWithStrong32CharPassword!
+# Uygulamanın SQL login'i — `sa` DEĞİL. setup-app-sql-login.sh üretir, elle yazma.
+APP_SQL_PASSWORD=GenerateWith_setup-app-sql-login.sh
 JWT_SECRET=ReplaceWith64CharRandomBase64String_GenerateWithOpenSSL
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD_HASH=ReplaceWithBCryptHash
