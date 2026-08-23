@@ -41,10 +41,9 @@ public sealed class WpfStartupEnvironment : IStartupEnvironment
     private readonly IServiceProvider _services;
     private readonly ILogger<WpfStartupEnvironment> _log;
 
-    private OverlayHost? _overlay;
-    private ChatBridgeIngestor? _ingestor;
-    private HeartbeatHostedService? _heartbeat;
-    private Services.IntakeForm.IntakeFormSyncHostedService? _intakeSync;
+    // Overlay ve köprü artık ALAN DEĞİL: durdurmayı defter üstlendiği için
+    // ikisine de yalnız başlatma metodunun içinde ihtiyaç var.
+    private readonly HostedServiceLifecycle _lifecycle;
 
     public WpfStartupEnvironment(
         LicenseService license,
@@ -66,6 +65,7 @@ public sealed class WpfStartupEnvironment : IStartupEnvironment
         _root = root;
         _services = services;
         _log = log;
+        _lifecycle = new HostedServiceLifecycle(log);
 
         // Yayın bitti → bulut yedeği (fire-and-forget). BURADA, ctor'da:
         // akış oturum kurtarmada "Yayını bitir" seçilirse EndSession'ı
@@ -106,12 +106,17 @@ public sealed class WpfStartupEnvironment : IStartupEnvironment
 
     public async Task<bool> StartBackgroundServicesAsync()
     {
-        _overlay = _services.GetRequiredService<OverlayHost>();
-        _ingestor = _services.GetRequiredService<ChatBridgeIngestor>();
+        var overlay = _services.GetRequiredService<OverlayHost>();
+        var ingestor = _services.GetRequiredService<ChatBridgeIngestor>();
+
+        // Deftere başlatmadan ÖNCE yazılıyorlar: başlatma yarıda patlarsa
+        // (port çakışması dalı dahil) geriye yarım dinleyici kalmış olabilir
+        // ve OnExit yine de durdurmayı denemek zorunda.
+        _lifecycle.Track(nameof(OverlayHost), _ => overlay.StopAsync());
 
         try
         {
-            await _overlay.StartAsync();
+            await overlay.StartAsync();
         }
         catch (Exception ex) when (IsPortInUse(ex))
         {
@@ -135,23 +140,25 @@ public sealed class WpfStartupEnvironment : IStartupEnvironment
             return false;
         }
 
-        if (_overlay.FellBackFromPreferredPort)
+        if (overlay.FellBackFromPreferredPort)
         {
-            _log.LogWarning("Overlay running on fallback port {Port} (4747 was busy)", _overlay.Port);
+            _log.LogWarning("Overlay running on fallback port {Port} (4747 was busy)", overlay.Port);
             MessageBox.Show(
-                $"Overlay portu 4747 başka uygulama kullanıyor; otomatik olarak {_overlay.Port}'e geçildi.\n\n" +
+                $"Overlay portu 4747 başka uygulama kullanıyor; otomatik olarak {overlay.Port}'e geçildi.\n\n" +
                 "OBS Browser Source URL'lerini güncelle:\n" +
-                $"  http://localhost:{_overlay.Port}/overlay/chat\n" +
-                $"  http://localhost:{_overlay.Port}/overlay/giveaway\n\n" +
+                $"  http://localhost:{overlay.Port}/overlay/chat\n" +
+                $"  http://localhost:{overlay.Port}/overlay/giveaway\n\n" +
                 "Bu durum genelde başka bir OrderDeck instance veya farklı bir uygulama " +
                 "tarafından 4747'nin tutulduğunda olur.",
                 "OrderDeck — Yedek Port Kullanılıyor",
                 MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
+        _lifecycle.Track(nameof(ChatBridgeIngestor), ct => ingestor.StopAsync(ct));
+
         try
         {
-            await _ingestor.StartAsync(CancellationToken.None);
+            await ingestor.StartAsync(CancellationToken.None);
         }
         catch (Exception ex) when (IsPortInUse(ex))
         {
@@ -175,46 +182,41 @@ public sealed class WpfStartupEnvironment : IStartupEnvironment
             // Köprüsüz devam — YouTube ve elle akışlar çalışıyor.
         }
 
-        _heartbeat = _services.GetServices<IHostedService>()
-            .OfType<HeartbeatHostedService>().FirstOrDefault();
-        _ = _heartbeat?.StartAsync(CancellationToken.None);
+        // WPF'te IHost builder yok; hosted service'ler elle başlatılmazsa ölü
+        // örnek kalıyor (CLAUDE.md kuralı, PR #89). Sıra korunuyor: heartbeat
+        // ve intake sync eskiden de önce geliyordu, kapanış da bunun tersi
+        // olmak zorunda.
+        var registered = _services.GetServices<IHostedService>().ToList();
+        var ordered = new List<IHostedService>();
+        AddFirst<HeartbeatHostedService>();
+        AddFirst<Services.IntakeForm.IntakeFormSyncHostedService>();
 
-        _intakeSync = _services.GetServices<IHostedService>()
-            .OfType<Services.IntakeForm.IntakeFormSyncHostedService>().FirstOrDefault();
-        _ = _intakeSync?.StartAsync(CancellationToken.None);
+        var alreadyOrdered = new HashSet<IHostedService>(ordered, ReferenceEqualityComparer.Instance);
+        ordered.AddRange(registered.Where(s => !alreadyOrdered.Contains(s)));
 
-        // WPF'te IHost builder yok; kalan hosted service'ler elle
-        // başlatılmazsa ölü örnek kalıyor (CLAUDE.md kuralı, PR #89).
-        var alreadyStarted = new HashSet<IHostedService>(ReferenceEqualityComparer.Instance);
-        if (_heartbeat is not null) alreadyStarted.Add(_heartbeat);
-        if (_intakeSync is not null) alreadyStarted.Add(_intakeSync);
-
-        foreach (var svc in _services.GetServices<IHostedService>())
-        {
-            if (alreadyStarted.Contains(svc)) continue;
-            try
-            {
-                _ = svc.StartAsync(CancellationToken.None);
-            }
-            catch (Exception ex)
-            {
-                _log.LogWarning(ex,
-                    "Hosted service {Service} failed to start; continuing",
-                    svc.GetType().Name);
-            }
-        }
+        await _lifecycle.StartAllAsync(ordered);
 
         return true;
+
+        void AddFirst<T>() where T : IHostedService
+        {
+            var svc = registered.OfType<T>().FirstOrDefault();
+            if (svc is not null) ordered.Add(svc);
+        }
     }
 
-    /// <summary>App.OnExit'ten çağrılır. Task.Run sarmalayıcıları korunuyor:
-    /// kapanışta hâlâ senkron beklenen bir yol var.</summary>
+    /// <summary>
+    /// App.OnExit'ten çağrılır. Task.Run sarmalayıcısı korunuyor: kapanış
+    /// senkron ve UI thread'inde, doğrudan GetResult() dispatcher'la
+    /// kilitlenebilir.
+    ///
+    /// Artık dört sabit alanı değil, <see cref="HostedServiceLifecycle"/>'ın
+    /// deftere yazdığı HER ŞEYİ ters sırayla durduruyor.
+    /// </summary>
     public void StopBackgroundServices()
     {
-        try { Task.Run(() => _intakeSync?.StopAsync(CancellationToken.None) ?? Task.CompletedTask).GetAwaiter().GetResult(); } catch { /* ignore */ }
-        try { Task.Run(() => _heartbeat?.StopAsync(CancellationToken.None) ?? Task.CompletedTask).GetAwaiter().GetResult(); } catch { /* ignore */ }
-        try { Task.Run(() => _ingestor?.StopAsync(CancellationToken.None) ?? Task.CompletedTask).GetAwaiter().GetResult(); } catch { /* ignore */ }
-        try { Task.Run(() => _overlay?.StopAsync() ?? Task.CompletedTask).GetAwaiter().GetResult(); } catch { /* ignore */ }
+        try { Task.Run(() => _lifecycle.StopAllAsync()).GetAwaiter().GetResult(); }
+        catch (Exception ex) { _log.LogWarning(ex, "Arka plan servisleri durdurulurken hata"); }
     }
 
     public void MountShell()
