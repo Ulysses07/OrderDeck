@@ -25,59 +25,61 @@ public sealed class WhatsAppMessageBuilder
         //   {toplam_oncesi}— bakiye düşülmeden önceki toplam (TotalBeforeBalance)
         // Bu placeholder'lar geriye uyumlu — eski template'lerde yer almıyorsa
         // sessiz geçer.
-        var bakiyeText = ctx.AppliedBalance > 0
-            ? ctx.AppliedBalance.ToString("N2", Tr)
-            : "";
-        return template
-            .Replace("{ad}", ctx.DisplayName)
-            .Replace("{tutar}", ctx.TotalAmount.ToString("N2", Tr))
-            .Replace("{tarih}", ctx.StreamDate.ToString("dd MMMM yyyy", Tr))
-            .Replace("{iban}", ctx.Iban ?? "")
-            .Replace("{hesap_sahibi}", ctx.AccountHolder ?? "")
-            .Replace("{papara}", ctx.Papara ?? "")
-            .Replace("{urun_toplami}", ctx.ProductTotal.ToString("N2", Tr))
-            .Replace("{kargo_ucreti}",
-                ctx.ShippingFee.HasValue ? ctx.ShippingFee.Value.ToString("N2", Tr) : "—")
-            .Replace("{kargo}", ctx.ShippingNote)
-            .Replace("{bakiye}", bakiyeText)
-            .Replace("{net_tutar}", ctx.TotalAmount.ToString("N2", Tr))
-            .Replace("{toplam_oncesi}",
-                (ctx.TotalBeforeBalance > 0 ? ctx.TotalBeforeBalance : ctx.TotalAmount)
-                .ToString("N2", Tr));
+        var values = WhatsAppFieldCatalog.BuildValues(ctx);
+        var result = template;
+        foreach (var field in WhatsAppFieldCatalog.All)
+        {
+            result = result.Replace("{" + field.Key + "}", values[field.Key]);
+        }
+
+        return result;
     }
 
     /// <summary>
-    /// Aynı <see cref="PaymentContext"/>'ten onaylı Meta şablonunun gövde
-    /// parametrelerini üretir. Sıra ŞABLONA BAĞLI ve değiştirilemez:
-    /// <c>{{1}}</c> ad, <c>{{2}}</c> tarih, <c>{{3}}</c> ürün toplamı,
-    /// <c>{{4}}</c> kargo, <c>{{5}}</c> ödenecek tutar, <c>{{6}}</c> IBAN,
-    /// <c>{{7}}</c> hesap sahibi. Meta'da onaylı gövdeyi değiştirmeden burayı
-    /// değiştirmek, müşteriye yanlış alanları yanlış etiketlerle gösterir.
+    /// Onaylı Meta şablonunun gövde parametrelerini üretir.
+    ///
+    /// <para><paramref name="fieldKeys"/> yayıncının ayar ekranında kurduğu
+    /// eşleme: <c>{{1}}</c> hangi alan, <c>{{2}}</c> hangi alan… Sıra ŞABLONA
+    /// bağlı ve eşlemeyi yayıncı kurar, çünkü şablonun <b>adı ve dili Meta'da
+    /// kilitli</b> — onaya girmiş bir şablon bizim beklediğimiz şekle
+    /// getirilemez, uyum sağlaması gereken taraf biziz. (Bu metot uzun süre
+    /// sabit yedi değerlik bir dizi döndürüyordu; sahadaki dört parametreli
+    /// onaylı şablonla hiç tutmadı ve her gönderim sessizce <c>wa.me</c>'ye
+    /// düştü.)</para>
     ///
     /// <para><b>Eksik değer varsa null döner.</b> Meta boş parametreyi kabul
     /// etmiyor; IBAN'ı ya da hesap sahibi girilmemiş bir yayıncıda şablonu
     /// denemek her gönderimde hata almak demek. null = "şablon yolu yok",
-    /// çağıran eski <c>wa.me</c> davranışına düşer.</para>
+    /// çağıran eski <c>wa.me</c> davranışına düşer. Eşlemenin kendisi boşsa ya
+    /// da tanınmayan bir alan içeriyorsa da null döner — aynı güvenli düşüş.</para>
     ///
-    /// <para>Tek istisna kargo notu: kargo özelliği kapalıyken meşru olarak boş
-    /// geliyor (<c>ComputeShipping</c>), o yüzden orada tire konur. Aksi hâlde
-    /// kargoyu kullanmayan yayıncı şablon yolunu hiç göremezdi.</para>
+    /// <para>Meşru olarak boş kalabilen alanlar (kargo notu, bakiye) iptal
+    /// sebebi değil, tire ile gider; bkz.
+    /// <see cref="WhatsAppField.EmptyIsLegitimate"/>.</para>
     /// </summary>
-    public IReadOnlyList<string>? BuildPaymentTemplateParams(PaymentContext ctx)
+    public IReadOnlyList<string>? BuildPaymentTemplateParams(
+        PaymentContext ctx, IReadOnlyList<string> fieldKeys)
     {
-        var shipping = Sanitize(ctx.ShippingNote);
-        var values = new[]
-        {
-            Sanitize(ctx.DisplayName),
-            Sanitize(ctx.StreamDate.ToString("dd MMMM yyyy", Tr)),
-            Sanitize(ctx.ProductTotal.ToString("N2", Tr)),
-            shipping.Length == 0 ? "—" : shipping,
-            Sanitize(ctx.TotalAmount.ToString("N2", Tr)),
-            Sanitize(ctx.Iban),
-            Sanitize(ctx.AccountHolder),
-        };
+        if (fieldKeys is null || fieldKeys.Count == 0) return null;
 
-        return Array.Exists(values, v => v.Length == 0) ? null : values;
+        var values = WhatsAppFieldCatalog.BuildValues(ctx);
+        var result = new string[fieldKeys.Count];
+        for (var i = 0; i < fieldKeys.Count; i++)
+        {
+            var field = WhatsAppFieldCatalog.TryFind(fieldKeys[i] ?? "");
+            if (field is null) return null;
+
+            var value = Sanitize(values[field.Key]);
+            if (value.Length == 0)
+            {
+                if (!field.EmptyIsLegitimate) return null;
+                value = WhatsAppFieldCatalog.EmptyPlaceholder;
+            }
+
+            result[i] = value;
+        }
+
+        return result;
     }
 
     /// <summary>Şablon parametresi satır sonu, sekme ya da 4'ten fazla ardışık

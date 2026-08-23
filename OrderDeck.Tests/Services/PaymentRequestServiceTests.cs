@@ -169,11 +169,18 @@ public class PaymentRequestServiceTests : IDisposable
         _store.Save(settings);
     }
 
-    /// <summary>Şablon yolunun açılması için gereken asgari ayar.</summary>
+    /// <summary>Şablon yolunun açılması için gereken asgari ayar: ödeme
+    /// bilgileri + yayıncının Ayarlar ekranında seçtiği şablon ve yuva
+    /// eşlemesi. Eşleme artık kodda sabit değil, bu yüzden test de kurmak
+    /// zorunda.</summary>
     private static void WithPaymentDetails(AppSettings s)
     {
         s.Payment.Iban = "TR12 0006 4000 0011";
         s.Payment.AccountHolder = "Burak S";
+        s.Payment.CloudTemplateName = "odeme_hatirlatma";
+        s.Payment.CloudTemplateLanguage = "tr";
+        s.Payment.CloudTemplateParams = new List<string>
+            { "ad", "tarih", "urun_toplami", "kargo", "tutar", "iban", "hesap_sahibi" };
     }
 
     public void Dispose()
@@ -568,7 +575,31 @@ public class PaymentRequestServiceTests : IDisposable
         // IBAN girilmemişse şablon parametrelerinden biri boş kalır; Meta bunu
         // her seferinde reddeder. Denemek yerine hiç göndermiyoruz → sunucu
         // window_closed döner, eski wa.me davranışı sürer.
-        EnableCloudApi(s => s.Payment.AccountHolder = "Burak S");
+        EnableCloudApi(s =>
+        {
+            WithPaymentDetails(s);
+            s.Payment.Iban = "";
+        });
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+
+        await sut.OpenWhatsAppAsync(
+            MakeCustomer("+905551234567"), 250m, new DateTime(2026, 7, 28));
+
+        handler.SentBodies.Should().ContainSingle();
+        SentTemplate(handler.SentBodies[0]).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task OpenWhatsAppAsync_NoSlotMapping_OmitsTemplate()
+    {
+        // Şablon seçili ama hangi yuvaya ne yazılacağı kurulmamış. Tahminle
+        // doldurmak yanlış sayıda/sırada parametre demek; Meta reddeder ve her
+        // deneme faturalı. Şablonu hiç göndermeyip wa.me'ye düşmek doğru.
+        EnableCloudApi(s =>
+        {
+            WithPaymentDetails(s);
+            s.Payment.CloudTemplateParams = new List<string>();
+        });
         var (sut, handler) = MakeCloudSut(_store, _launcher);
 
         await sut.OpenWhatsAppAsync(

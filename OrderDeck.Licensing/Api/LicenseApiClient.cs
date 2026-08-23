@@ -446,6 +446,22 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
         => PostJsonExpectingJsonAsync<WhatsAppSendRequest, WhatsAppSendResponse>(
             $"/api/v1/licenses/{licenseId}/whatsapp/send", req, ct);
 
+    /// <summary>Lisansa bağlı WhatsApp hesabının Meta'da onaylı şablonları —
+    /// ayar ekranındaki şablon seçicinin veri kaynağı.
+    ///
+    /// <para>Lisans AÇIK geçiliyor (panelin örtük kapsamı değil): operatörün
+    /// seçtiği lisans neyse şablonlar da o hesabınki olmalı, yoksa seçim ile
+    /// gönderim farklı hesaplara bakar.</para>
+    ///
+    /// <para>Hesap bağlı değilse sunucu 503 döner ve bu metot fırlatır. Boş liste
+    /// dönmek yanlış olurdu: "WhatsApp bağlı değil" ile "bağlı ama onaylı şablon
+    /// yok" yayıncı için taban tabana zıt iki iş.</para></summary>
+    public async Task<List<ApprovedTemplateDto>> GetApprovedWhatsAppTemplatesAsync(
+        Guid licenseId, CancellationToken ct = default)
+        => await GetExpectingJsonAsync<List<ApprovedTemplateDto>>(
+            $"/api/v1/licenses/{licenseId}/whatsapp/approved-templates", ct)
+            ?? new List<ApprovedTemplateDto>();
+
     /// <summary>Yayıncının bağlı shopper'larının bekleyen (opsiyonel: geçmiş dahil)
     /// destek taleplerini listeler. Bearer-Customer auth otomatik.</summary>
     public async Task<SupportRequestDto[]> GetSupportRequestsAsync(

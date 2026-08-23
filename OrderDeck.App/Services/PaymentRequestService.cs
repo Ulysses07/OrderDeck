@@ -293,8 +293,9 @@ public sealed class PaymentRequestService
     /// gönderim yolu burasıdır — serbest metin yalnız müşteri son 24 saatte
     /// yazmışsa geçerli.</para>
     ///
-    /// <para>Şablon adı boşsa yol bilerek kapalıdır: Meta'da onaylanmamış bir ad
-    /// göndermek her denemede hata almak demek. Parametrelerden biri (ör. IBAN
+    /// <para>Şablon adı ya da alan eşlemesi boşsa yol bilerek kapalıdır: Meta'da
+    /// onaylanmamış bir ad göndermek her denemede hata almak demek, eşlemesiz
+    /// şablon da yanlış sayıda parametre demek. Parametrelerden biri (ör. IBAN
     /// ya da hesap sahibi girilmemişse) boşsa da null döner — Meta boş parametre
     /// kabul etmiyor.</para>
     /// </summary>
@@ -305,7 +306,19 @@ public sealed class PaymentRequestService
         if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(language))
             return null;
 
-        var parameters = _messageBuilder.BuildPaymentTemplateParams(ctx);
+        // Eşleme ayardan geliyor çünkü şablonun şeklini Meta belirliyor, biz
+        // değil (ad ve dil onaydan sonra değiştirilemiyor). Eşleme kurulmamışsa
+        // parametre sayısını tahmin etmektense şablon yolunu hiç açmıyoruz.
+        var mapping = settings.Payment.CloudTemplateParams;
+        if (mapping is null || mapping.Count == 0)
+        {
+            _log?.LogInformation(
+                "WhatsApp şablonu atlandı: '{Name}' için alan eşlemesi kurulmamış (Ayarlar → WhatsApp Cloud API)",
+                name);
+            return null;
+        }
+
+        var parameters = _messageBuilder.BuildPaymentTemplateParams(ctx, mapping);
         if (parameters is null)
         {
             _log?.LogInformation(

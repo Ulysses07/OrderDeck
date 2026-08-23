@@ -209,8 +209,7 @@ public sealed class PaymentSettings
     /// Varsayılan kapalı: gerçek numara Coexistence ile bağlanana kadar Cloud
     /// API'nin 24 saat penceresi çoğu müşteride kapalı olacağı için otomatik
     /// gönderim zaten wa.me'ye düşer; bayrağı kapalı tutmak bu gereksiz turu da
-    /// önler. settings.json'dan açılır — tek yayıncılı geçiş dönemi için ayar
-    /// ekranına gerek yok.
+    /// önler. Ayarlar ekranındaki "WhatsApp Cloud API" bölümünden açılır.
     /// </summary>
     public bool UseCloudApi { get; set; } = false;
 
@@ -221,18 +220,36 @@ public sealed class PaymentSettings
     ///
     /// Boş bırakılırsa şablon yolu tümden kapanır ve eski davranış (wa.me)
     /// sürer — onaylanmamış bir şablon adıyla denemek her seferinde Meta'dan
-    /// hata almak demek.
+    /// hata almak demek. Varsayılanı boş olmasının sebebi de bu: bir ad tahmin
+    /// etmek, hiç var olmayan şablona her gönderimde hata aldırırdı.
     ///
-    /// Şablon gövdesi <see cref="Customers.WhatsAppMessageBuilder.BuildPaymentTemplateParams"/>
-    /// ile birebir sıralı olmak zorunda: {{1}} ad, {{2}} tarih, {{3}} ürün
-    /// toplamı, {{4}} kargo, {{5}} ödenecek tutar, {{6}} IBAN, {{7}} hesap
-    /// sahibi.
+    /// Ayarlar ekranındaki seçici bu alanı Meta'dan gelen ONAYLI şablon
+    /// listesinden doldurur; elle yazılmaz.
     /// </summary>
-    public string CloudTemplateName { get; set; } = "odeme_hatirlatma";
+    public string CloudTemplateName { get; set; } = "";
 
     /// <summary>Şablonun Meta'daki dil kodu (Türkçe = <c>tr</c>). Yanlış kod
-    /// "template does not exist" hatası verir — şablon dil bazında kayıtlı.</summary>
-    public string CloudTemplateLanguage { get; set; } = "tr";
+    /// "template does not exist" hatası verir — şablon dil bazında kayıtlı.
+    /// Ad gibi bu da seçiciden gelir: Meta'da ad ve dil şablonun kimliği ve
+    /// oluşturulduktan sonra DEĞİŞTİRİLEMİYOR.</summary>
+    public string CloudTemplateLanguage { get; set; } = "";
+
+    /// <summary>
+    /// Şablon gövdesindeki <c>{{1}}</c>, <c>{{2}}</c>… yuvalarının hangi alandan
+    /// dolacağı — sırayla alan anahtarları (bkz.
+    /// <see cref="Customers.WhatsAppFieldCatalog"/>), örn.
+    /// <c>["ad", "net_tutar", "iban", "hesap_sahibi"]</c>.
+    ///
+    /// <para><b>Neden ayar:</b> şablonun adı ve dili Meta'da kilitli; onaya
+    /// girmiş bir şablon bizim beklediğimiz şekle getirilemiyor. Bu eşleme
+    /// koda gömülüyken (sabit yedi değer) sahadaki dört parametreli onaylı
+    /// şablonla hiç tutmadı ve şablon yolu sessizce hiç çalışmadı.</para>
+    ///
+    /// <para>Uzunluğu şablonun parametre sayısına eşit olmalı; ayar ekranı
+    /// eşit değilken kaydettirmiyor. Boşsa şablon yolu kapalıdır —
+    /// <see cref="CloudTemplateName"/> boşken olduğu gibi güvenli düşüş.</para>
+    /// </summary>
+    public List<string> CloudTemplateParams { get; set; } = new();
 }
 
 /// <summary>
