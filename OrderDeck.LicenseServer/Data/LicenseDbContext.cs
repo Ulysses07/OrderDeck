@@ -23,6 +23,7 @@ public class LicenseDbContext : DbContext
     public DbSet<IntakeFormConfig> IntakeFormConfigs => Set<IntakeFormConfig>();
     public DbSet<IntakeFormSubmission> IntakeFormSubmissions => Set<IntakeFormSubmission>();
     public DbSet<CustomerBackup> CustomerBackups => Set<CustomerBackup>();
+    public DbSet<BackupQuotaCounter> BackupQuotaCounters => Set<BackupQuotaCounter>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<PushDevice> PushDevices => Set<PushDevice>();
     public DbSet<Payment> Payments => Set<Payment>();
@@ -269,6 +270,19 @@ public class LicenseDbContext : DbContext
                 .HasDatabaseName("IX_CustomerBackups_CustomerId_CreatedAt_DESC");
         });
 
+        mb.Entity<BackupQuotaCounter>(e =>
+        {
+            e.HasKey(c => c.CustomerId);
+            // CustomerId çağıranın verdiği doğal anahtar — EF convention'ı Guid
+            // PK'yi ValueGeneratedOnAdd sayıyor, kasıtlı kapatıyoruz.
+            e.Property(c => c.CustomerId).ValueGeneratedNever();
+            e.Property(c => c.RowVersion).IsRowVersion();
+            e.HasOne(c => c.Customer)
+                .WithMany()
+                .HasForeignKey(c => c.CustomerId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
         mb.Entity<RefreshToken>(b =>
         {
             b.HasKey(t => t.Id);
@@ -509,9 +523,14 @@ public class LicenseDbContext : DbContext
             b.Property(a => a.UserAgent).HasMaxLength(512).IsRequired();
             b.Property(a => a.FraudFlags).HasMaxLength(256).IsRequired();
             b.Property(a => a.ParserConfidence).HasMaxLength(16).IsRequired();
+            b.Property(a => a.Outcome).HasMaxLength(40).IsRequired();
             b.HasIndex(a => a.PaymentId);
             b.HasIndex(a => a.CreatedAt);
             b.HasIndex(a => new { a.LicenseId, a.CreatedAt });   // for license-level rate limit window queries
+            // Alıcı başına saatlik pencere sorgusu. Reddedilen denemeler de bu
+            // tabloya yazıldığından satır sayısı artık istek sayısı kadar; aynı
+            // sorgunun indekssiz hâli tam da kötüye kullanım anında pahalılaşırdı.
+            b.HasIndex(a => new { a.ShopperId, a.CreatedAt });
         });
 
         mb.Entity<ShopperRefreshToken>(b =>

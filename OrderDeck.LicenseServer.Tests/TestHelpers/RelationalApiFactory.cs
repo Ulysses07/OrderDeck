@@ -11,7 +11,7 @@ namespace OrderDeck.LicenseServer.Tests.TestHelpers;
 /// kalan her test InMemory'de kalmalı — bu fabrika container başlangıcı
 /// yüzünden kat kat yavaş.
 /// </summary>
-public sealed class RelationalApiFactory : ApiFactory
+public class RelationalApiFactory : ApiFactory
 {
     private readonly string _connectionString;
 

@@ -120,16 +120,19 @@ public sealed class MeBackupsController : ControllerBase
     {
         var quotaMb = _opt.Value.PerCustomerQuotaMb;
         var quotaBytes = quotaMb * 1024L * 1024L;
-        var existingBytes = quotaMb > 0
-            ? await _db.CustomerBackups
-                .Where(b => b.CustomerId == CustomerId)
-                .SumAsync(b => (long?)b.SizeBytes, ct) ?? 0L
-            : 0L;
 
         // Content-Length varsa kotayı tek bayt yazmadan reddedebiliyoruz;
-        // yoksa (chunked) ancak yazdıktan sonra ölçebiliriz.
-        if (quotaMb > 0 && Request.ContentLength is { } declared && existingBytes + declared > quotaBytes)
-            return QuotaExceeded(quotaMb);
+        // yoksa (chunked) ancak yazdıktan sonra ölçebiliriz. Bu ilk bakış
+        // BİLEREK korumasız: amacı yalnızca kesin reddedilecek bir gövdeyi
+        // boşuna akıtmamak. Bağlayıcı karar aşağıda, hakemin arkasında.
+        if (quotaMb > 0 && Request.ContentLength is { } declared)
+        {
+            var quickSum = await _db.CustomerBackups
+                .Where(b => b.CustomerId == CustomerId)
+                .SumAsync(b => (long?)b.SizeBytes, ct) ?? 0L;
+            if (quickSum + declared > quotaBytes)
+                return QuotaExceeded(quotaMb);
+        }
 
         var blobPath = _storage.NewBlobPath(CustomerId);
         EncryptStreamResult result;
@@ -177,10 +180,35 @@ public sealed class MeBackupsController : ControllerBase
         // Per-customer storage quota. Retention prunes oldest non-milestones to 5,
         // but a customer accumulating monthly milestones for years could still drift
         // past a sane budget.
-        if (quotaMb > 0 && existingBytes + result.EnvelopeBytes > quotaBytes)
+        //
+        // Sıra kritik ve şöyle okunmalı: hakem satırı ÖNCE okunuyor (rowversion
+        // yakalanıyor), toplam SONRA alınıyor. Aynı müşterinin eşzamanlı ikinci
+        // yüklemesi ya (a) hakemi okumamızdan önce yazmıştır — o zaman toplamda
+        // görünür — ya da (b) sonra yazar, o zaman aşağıdaki SaveChanges damga
+        // uyuşmazlığıyla düşer. Üçüncü bir hâl yok; eski kodda ikisi de bayat
+        // toplamı okuyup ikisi de geçebiliyordu ve aşan baytlar diskte kaldığı
+        // için kota bir daha kendiliğinden toparlanmıyordu.
+        if (quotaMb > 0)
         {
-            _storage.DeleteBlob(blobPath);
-            return QuotaExceeded(quotaMb);
+            var guard = await _db.BackupQuotaCounters
+                .FirstOrDefaultAsync(g => g.CustomerId == CustomerId, ct);
+            if (guard is null)
+            {
+                guard = new BackupQuotaCounter { CustomerId = CustomerId };
+                _db.BackupQuotaCounters.Add(guard);
+            }
+
+            var usedBytes = await _db.CustomerBackups
+                .Where(b => b.CustomerId == CustomerId)
+                .SumAsync(b => (long?)b.SizeBytes, ct) ?? 0L;
+
+            if (usedBytes + result.EnvelopeBytes > quotaBytes)
+            {
+                _storage.DeleteBlob(blobPath);
+                return QuotaExceeded(quotaMb);
+            }
+
+            guard.Ticket++;
         }
 
         var backup = new CustomerBackup
@@ -201,6 +229,25 @@ public sealed class MeBackupsController : ControllerBase
         try
         {
             await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException)
+        {
+            // Kota hakemini kaybettik: ya damga uyuşmadı (satır zaten vardı) ya
+            // da ilk satırı ikimiz birden yazmaya çalıştık ve biri PK çakışması
+            // aldı. İkinci hâl DbUpdateConcurrencyException DEĞİL, o yüzden
+            // geniş tür yakalanıyor — dar yakalasaydık 409'un var olma sebebi
+            // olan pencerede 500 dönerdi (emsal: PanelBarcodesController).
+            // Yedek satırı aynı SaveChanges'te olduğu için o da geri alındı;
+            // geriye yalnız blob kalıyor.
+            _storage.DeleteBlob(blobPath);
+            _log.LogInformation(
+                "Yedek yükleme kota hakemini kaybetti (customer={Customer}) — istemci yeniden denemeli",
+                CustomerId);
+            return Conflict(new
+            {
+                error = "backup-quota-busy",
+                detail = "Aynı anda başka bir yedek yükleniyordu; tekrar dene."
+            });
         }
         catch
         {

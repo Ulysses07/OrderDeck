@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using OrderDeck.LicenseServer.Data;
 
@@ -11,9 +12,11 @@ using OrderDeck.LicenseServer.Data;
 namespace OrderDeck.LicenseServer.Data.Migrations
 {
     [DbContext(typeof(LicenseDbContext))]
-    partial class LicenseDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260824140524_AddBackupQuotaCounter")]
+    partial class AddBackupQuotaCounter
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1083,11 +1086,6 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<Guid>("LicenseId")
                         .HasColumnType("uniqueidentifier");
 
-                    b.Property<string>("Outcome")
-                        .IsRequired()
-                        .HasMaxLength(40)
-                        .HasColumnType("nvarchar(40)");
-
                     b.Property<string>("ParserConfidence")
                         .IsRequired()
                         .HasMaxLength(16)
@@ -1096,7 +1094,7 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<string>("ParserRawText")
                         .HasColumnType("nvarchar(max)");
 
-                    b.Property<Guid?>("PaymentId")
+                    b.Property<Guid>("PaymentId")
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<Guid>("ShopperId")
@@ -1114,8 +1112,6 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.HasIndex("PaymentId");
 
                     b.HasIndex("LicenseId", "CreatedAt");
-
-                    b.HasIndex("ShopperId", "CreatedAt");
 
                     b.ToTable("PaymentSubmissionAudits");
                 });
