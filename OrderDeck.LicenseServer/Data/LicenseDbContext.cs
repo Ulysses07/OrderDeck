@@ -523,9 +523,14 @@ public class LicenseDbContext : DbContext
             b.Property(a => a.UserAgent).HasMaxLength(512).IsRequired();
             b.Property(a => a.FraudFlags).HasMaxLength(256).IsRequired();
             b.Property(a => a.ParserConfidence).HasMaxLength(16).IsRequired();
+            b.Property(a => a.Outcome).HasMaxLength(40).IsRequired();
             b.HasIndex(a => a.PaymentId);
             b.HasIndex(a => a.CreatedAt);
             b.HasIndex(a => new { a.LicenseId, a.CreatedAt });   // for license-level rate limit window queries
+            // Alıcı başına saatlik pencere sorgusu. Reddedilen denemeler de bu
+            // tabloya yazıldığından satır sayısı artık istek sayısı kadar; aynı
+            // sorgunun indekssiz hâli tam da kötüye kullanım anında pahalılaşırdı.
+            b.HasIndex(a => new { a.ShopperId, a.CreatedAt });
         });
 
         mb.Entity<ShopperRefreshToken>(b =>

@@ -967,6 +967,94 @@ public sealed class ShopperPaymentSubmissionServiceTests
         payment.Amount.Should().Be(0m);
     }
 
+    // ─── 21. Reddedilen deneme de oran sınırını tüketiyor ────────────────────
+    //
+    // Eski davranışta defter satırı YALNIZ başarı yolunda yazılıyordu; yani
+    // geçersiz PDF ya da mükerrer dekont gönderen bir istemci sayaca hiç
+    // dokunmadan sonsuz kez deneyebiliyordu. Oysa sınırın koruduğu iş — PDF
+    // ayrıştırma, bazı yollarda R2 yazması — reddedilen istekte de yapılıyor.
+
+    [Fact]
+    public async Task Reddedilen_deneme_deftere_yaziliyor()
+    {
+        await using var db = NewDb();
+        var (svc, _, shopper, license) = await SeedForValidationAsync(db);
+
+        var act = async () => await svc.SubmitAsync(
+            MakeInput(shopper.Id, license.Id, pdfBytes: PdfBytes.Invalid), default);
+        await act.Should().ThrowAsync<SubmitFailureException>();
+
+        var audit = await db.PaymentSubmissionAudits.SingleAsync();
+        audit.PaymentId.Should().BeNull("reddedilen denemede doğmuş bir ödeme yok");
+        audit.Outcome.Should().Be("invalid-pdf");
+        audit.ShopperId.Should().Be(shopper.Id);
+        audit.LicenseId.Should().Be(license.Id);
+    }
+
+    [Fact]
+    public async Task Bes_reddedilen_deneme_saatlik_butceyi_tuketiyor()
+    {
+        await using var db = NewDb();
+        var (svc, _, shopper, license) = await SeedForValidationAsync(db);
+
+        for (var i = 0; i < 5; i++)
+        {
+            var bad = async () => await svc.SubmitAsync(
+                MakeInput(shopper.Id, license.Id, pdfBytes: PdfBytes.Invalid), default);
+            await bad.Should().ThrowAsync<SubmitFailureException>()
+                .Where(e => e.ErrorCode == "invalid-pdf");
+        }
+
+        // Altıncı istek geçerli bir PDF olsa bile bütçe bitti.
+        var act = async () => await svc.SubmitAsync(MakeInput(shopper.Id, license.Id), default);
+
+        await act.Should().ThrowAsync<SubmitFailureException>()
+            .Where(e => e.StatusCode == 429 && e.ErrorCode == "shopper-hourly-limit");
+    }
+
+    /// <summary>
+    /// 429'un kendisi deftere YAZILMAMALI. Yazılsaydı ısrarla deneyen istemci
+    /// kendi penceresini sürekli tazeler, kayan bir saatlik sınır kalıcı bir
+    /// yasağa dönüşürdü.
+    /// </summary>
+    [Fact]
+    public async Task Oran_siniri_reddi_deftere_yazilmiyor()
+    {
+        await using var db = NewDb();
+        var (svc, _, shopper, license) = await SeedForValidationAsync(db);
+
+        for (var i = 0; i < 5; i++)
+        {
+            var bad = async () => await svc.SubmitAsync(
+                MakeInput(shopper.Id, license.Id, pdfBytes: PdfBytes.Invalid), default);
+            await bad.Should().ThrowAsync<SubmitFailureException>();
+        }
+
+        var before = await db.PaymentSubmissionAudits.CountAsync();
+
+        for (var i = 0; i < 3; i++)
+        {
+            var limited = async () => await svc.SubmitAsync(MakeInput(shopper.Id, license.Id), default);
+            await limited.Should().ThrowAsync<SubmitFailureException>()
+                .Where(e => e.StatusCode == 429);
+        }
+
+        (await db.PaymentSubmissionAudits.CountAsync()).Should().Be(before);
+    }
+
+    [Fact]
+    public async Task Basarili_gonderim_outcome_ok_yaziyor()
+    {
+        await using var db = NewDb();
+        var (svc, _, shopper, license) = await SeedForValidationAsync(db);
+
+        var result = await svc.SubmitAsync(MakeInput(shopper.Id, license.Id), default);
+
+        var audit = await db.PaymentSubmissionAudits.SingleAsync();
+        audit.PaymentId.Should().Be(result.PaymentId);
+        audit.Outcome.Should().Be(SubmissionOutcomes.Ok);
+    }
+
     // ─── Helpers ─────────────────────────────────────────────────────────────
 
     /// <summary>Mirrors the private ComputeMetadataHash in the service.</summary>

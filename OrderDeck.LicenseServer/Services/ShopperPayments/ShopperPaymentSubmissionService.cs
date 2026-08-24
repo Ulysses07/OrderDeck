@@ -47,6 +47,7 @@ public sealed class ShopperPaymentSubmissionService
     private const int MaxRecipientNameLength = 200;
     private const int MaxIbanLength = 34;
     private const int MaxUserAgentLength = 512;
+    private const int MaxOutcomeLength = 40;
 
     /// <summary>decimal(18,2)'nin taşıdığı en büyük değer.</summary>
     private const decimal MaxAmount = 9_999_999_999_999_999.99m;
@@ -80,7 +81,36 @@ public sealed class ShopperPaymentSubmissionService
         _log = log;
     }
 
+    /// <summary>
+    /// Dekont gönderimi. Sonuç ne olursa olsun <b>bir deneme kaydı</b> bırakır
+    /// (bkz. <see cref="PaymentSubmissionAudit"/>): oran sınırının saydığı
+    /// defter o tablo, ve yalnız başarılar yazılırken sınır hiç bağlamıyordu.
+    ///
+    /// <para>Sınırın kendisi en başta, ayrıştırmadan da yüklemeden de önce
+    /// sorgulanıyor — engellenmiş bir alıcıya PDF ayrıştırmak, sınırın önlemeye
+    /// çalıştığı işi yapmak olurdu. Sınıra takılan istek kayıt BIRAKMIYOR:
+    /// bıraksaydı, ısrarla deneyen istemci kendi penceresini durmadan tazeler
+    /// ve saatlik sınır kayan pencere olmaktan çıkıp süresiz yasağa
+    /// dönüşürdü.</para>
+    /// </summary>
     public async Task<SubmitResult> SubmitAsync(SubmitInput input, CancellationToken ct)
+    {
+        var rlReason = await _rateLimiter.CheckAsync(input.ShopperId, input.LicenseId, ct);
+        if (rlReason is not null)
+            throw new SubmitFailureException(429, rlReason);
+
+        try
+        {
+            return await SubmitCoreAsync(input, ct);
+        }
+        catch (SubmitFailureException ex)
+        {
+            await RecordRejectedAttemptAsync(input, ex.ErrorCode);
+            throw;
+        }
+    }
+
+    private async Task<SubmitResult> SubmitCoreAsync(SubmitInput input, CancellationToken ct)
     {
         // 1. Magic byte check
         if (input.PdfBytes.Length < 5
@@ -105,10 +135,7 @@ public sealed class ShopperPaymentSubmissionService
         // kırpılıyor — orası beyan değil, tahmin.
         ValidateOverrides(input);
 
-        // 2. Rate limit
-        var rlReason = await _rateLimiter.CheckAsync(input.ShopperId, input.LicenseId, ct);
-        if (rlReason is not null)
-            throw new SubmitFailureException(429, rlReason);
+        // 2. Oran sınırı SubmitAsync'te, bu metoda girmeden önce sorgulandı.
 
         // 3. Parser
         PdfDekontParser.ParseResult parseResult;
@@ -254,6 +281,7 @@ public sealed class ShopperPaymentSubmissionService
             FraudFlags = fraudFlagsString,
             ParserConfidence = confidence,
             ParserRawText = parseResult.RawText,
+            Outcome = SubmissionOutcomes.Ok,
             CreatedAt = now,
         });
 
@@ -302,6 +330,50 @@ public sealed class ShopperPaymentSubmissionService
         }
 
         return new SubmitResult(paymentId, flags.ToArray(), confidence, parseResult);
+    }
+
+    /// <summary>
+    /// Reddedilen denemeyi deftere yazar; oran sınırı bu satırları sayıyor.
+    ///
+    /// <para><b>İptal jetonu bilerek taşınmıyor.</b> İstemci bağlantıyı yarıda
+    /// keserse istek jetonu iptal olur; sayaç yazmasını ona bağlasaydık,
+    /// gönderimi başlatıp hemen kesmek sınırı tamamen atlatmanın en ucuz yolu
+    /// olurdu.</para>
+    ///
+    /// <para>Yazma başarısız olursa yalnız loglanır: kullanıcının göreceği hata
+    /// asıl reddin kendisi olmalı, defter arızası onu gölgelememeli.</para>
+    /// </summary>
+    private async Task RecordRejectedAttemptAsync(SubmitInput input, string outcome)
+    {
+        // Yazma yolunda patlayan bir SaveChanges'ten geliyor olabiliriz; o
+        // durumda izleyicide yazılamamış Payment/Audit satırları duruyor ve
+        // temizlenmezse bu kaydetme onları da yeniden denerdi.
+        _db.ChangeTracker.Clear();
+
+        _db.PaymentSubmissionAudits.Add(new PaymentSubmissionAudit
+        {
+            Id = Guid.NewGuid(),
+            PaymentId = null,
+            ShopperId = input.ShopperId,
+            LicenseId = input.LicenseId,
+            IpAddress = input.IpAddress,
+            UserAgent = Clamp(input.UserAgent, MaxUserAgentLength) ?? "",
+            FraudFlags = "",
+            ParserConfidence = "",
+            Outcome = Clamp(outcome, MaxOutcomeLength) ?? "",
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+
+        try
+        {
+            await _db.SaveChangesAsync(CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex,
+                "[PaymentSubmit] Reddedilen deneme deftere yazılamadı (shopper={Shopper}, outcome={Outcome})",
+                input.ShopperId, outcome);
+        }
     }
 
     /// <summary>
