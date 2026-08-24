@@ -1,4 +1,4 @@
-using FluentAssertions;
+﻿using FluentAssertions;
 using OrderDeck.Licensing.Api;
 using OrderDeck.Licensing.Api.Models;
 using OrderDeck.Licensing.Tests.TestHelpers;
@@ -253,6 +253,51 @@ public class LicenseApiClientTests
         rows[0].Phone.Should().Be("+905551111111");
         handler.Requests[0].RequestUri!.AbsolutePath.Should().Be("/api/v1/me/form-submissions");
         handler.Requests[0].RequestUri.Query.Should().Contain("since=").And.Contain("limit=25");
+    }
+
+    // ─── Onaylı WhatsApp şablonları ───────────────────────────────────
+
+    private static readonly Guid WaTemplateLicenseId =
+        Guid.Parse("22222222-2222-2222-2222-222222222222");
+
+    /// <summary>
+    /// WhatsApp hesabı bağlı olmayan lisansta sunucu 503 + "no-whatsapp-account"
+    /// döner. Bu testin sabitlediği şey <b>hangi tipin</b> fırlatıldığı:
+    /// ThrowMappedAsync 5xx'i LicenseApiUnknownException'a çeviriyor, yani
+    /// çağıran HttpRequestException yakalayamaz. WhatsAppCloudSettingsViewModel
+    /// tam da bunu yakalamaya çalıştığı için "hesap bağlı değil" uyarısı hiç
+    /// görünmüyordu; kullanıcı yanlış yöne bakıyordu.
+    /// </summary>
+    [Fact]
+    public async Task GetApprovedWhatsAppTemplatesAsync_throws_Unknown_with_503_when_account_not_linked()
+    {
+        var (client, _) = BuildClient(_ =>
+            FakeHttpMessageHandler.Problem(503, "no-whatsapp-account", "WhatsApp hesabı bağlı değil"));
+
+        var act = async () => await client.GetApprovedWhatsAppTemplatesAsync(WaTemplateLicenseId);
+
+        (await act.Should().ThrowAsync<LicenseApiUnknownException>())
+            .Which.StatusCode.Should().Be(503);
+    }
+
+    [Fact]
+    public async Task GetApprovedWhatsAppTemplatesAsync_returns_templates_on_200()
+    {
+        var (client, handler) = BuildClient(_ => FakeHttpMessageHandler.Json(200, """
+            [{"name":"siparis_onay","language":"tr","category":"UTILITY","headerText":null,
+              "bodyText":"Merhaba {{1}}, siparisin hazir.","footerText":null,"buttons":[],
+              "parameterCount":1,"parameterExamples":["Ayse"],"unsupportedReason":null}]
+            """));
+
+        var rows = await client.GetApprovedWhatsAppTemplatesAsync(WaTemplateLicenseId);
+
+        rows.Should().HaveCount(1);
+        rows[0].Name.Should().Be("siparis_onay");
+        rows[0].BodyText.Should().Be("Merhaba {{1}}, siparisin hazir.");
+        rows[0].ParameterCount.Should().Be(1);
+        handler.Requests[0].Method.Method.Should().Be("GET");
+        handler.Requests[0].RequestUri!.AbsolutePath
+            .Should().Be($"/api/v1/licenses/{WaTemplateLicenseId}/whatsapp/approved-templates");
     }
 
     // ─── Toplu SMS ────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
@@ -159,7 +159,10 @@ public sealed partial class WhatsAppCloudSettingsViewModel : ObservableObject
                 ? $"Kayıtlı şablon ({_persistedName}/{_persistedLanguage}) onaylı listede yok — yeniden seç."
                 : null;
         }
-        catch (System.Net.Http.HttpRequestException ex) when ((int?)ex.StatusCode == 503)
+        // LicenseApiClient başarısız yanıtı ThrowMappedAsync ile sarmalıyor:
+        // 5xx → LicenseApiUnknownException. HttpRequestException buraya hiç
+        // ulaşmıyor, dolayısıyla onu yakalamak bu dalı ölü bırakıyordu.
+        catch (LicenseApiUnknownException ex) when (ex.StatusCode == 503)
         {
             ErrorMessage = "Bu lisansa bağlı WhatsApp hesabı yok. Önce panelden WhatsApp'ı bağla.";
         }
