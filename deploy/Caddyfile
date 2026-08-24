@@ -74,7 +74,13 @@ license.orderdeckapp.com {
     # YouTube çağrısını sunucu yapıyor. Hangfire panosu (loopback'e kapalı)
     # kendi satır içi script/style'ını kullanıyor, o da 'self'+'unsafe-inline'
     # ile kapsanıyor.
-    header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: https://yt3.ggpht.com https://yt3.googleusercontent.com; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+    #
+    # `form-action`'da `https://wa.me` var çünkü kayıt formu POST'tan sonra
+    # oraya 302 dönüyor ve Chrome/Safari `form-action`'ı yönlendirme hedefine
+    # de uyguluyor (Firefox uygulamıyor). Eksik olduğunda form sessizce ölüyor:
+    # kayıt DB'ye yazılıyor ama tarayıcı WhatsApp'a geçemiyor, ekranda hiçbir
+    # şey olmuyor. 2026-08-23'te canlı yayında bu şekilde patladı.
+    header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: https://yt3.ggpht.com https://yt3.googleusercontent.com; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' https://wa.me"
     header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), autoplay=()"
 
     # Block public access to internal observability endpoints (Phase 5e).
@@ -123,7 +129,11 @@ orderdeckapp.com {
     # Fontlar `/_next/static/media/*.woff2`, yani 'self'.
     # `connect-src 'self'`: formun tek fetch'i `/api/public/verify/youtube`
     # ve o da aynı origin'den (aşağıdaki proxy sayesinde).
-    header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://yt3.ggpht.com https://yt3.googleusercontent.com; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+    #
+    # `form-action`'daki `https://wa.me` şart: form POST'tan sonra oraya 302
+    # dönüyor, Chrome/Safari yönlendirme hedefini de `form-action`'a karşı
+    # denetliyor. Yoksa form sessizce ölür (bkz. license.* bloğundaki not).
+    header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://yt3.ggpht.com https://yt3.googleusercontent.com; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' https://wa.me"
     header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), autoplay=()"
 
     # ─── Müşteri kayıt formu ───────────────────────────────────────────────
