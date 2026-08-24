@@ -137,17 +137,49 @@ public class WhatsAppMessageBuilderTests
         new(name, 450m, new DateTime(2026, 7, 28), iban, holder, null,
             ProductTotal: 450m, ShippingFee: null, ShippingNote: shippingNote);
 
+    /// <summary>Yayıncının Ayarlar ekranında kurduğu yuva→alan eşlemesi.
+    /// Buradaki sıra artık kodda sabit değil; testlerde yalnız örnek bir
+    /// eşleme olarak duruyor.</summary>
+    private static readonly string[] SevenSlotMapping =
+        { "ad", "tarih", "urun_toplami", "kargo", "tutar", "iban", "hesap_sahibi" };
+
     [Fact]
-    public void BuildPaymentTemplateParams_matches_approved_body_order()
+    public void BuildPaymentTemplateParams_follows_configured_mapping_order()
     {
-        // Sıra Meta'da onaylı gövdeye kilitli: {{1}} ad, {{2}} tarih,
-        // {{3}} ürün toplamı, {{4}} kargo, {{5}} tutar, {{6}} IBAN, {{7}} sahip.
-        // Burada kayma olursa müşteri IBAN'ın yerinde tarihi görür.
-        var result = _sut.BuildPaymentTemplateParams(FullContext());
+        // Değerler eşlemenin sırasına göre dizilir. Kayma olursa müşteri
+        // IBAN'ın yerinde tarihi görür.
+        var result = _sut.BuildPaymentTemplateParams(FullContext(), SevenSlotMapping);
 
         result.Should().Equal(
             "Ayşe Yılmaz", "28 Temmuz 2026", "450,00", "Ücretsiz kargo",
             "450,00", "TR12 0006 4000 0011", "Burak S");
+    }
+
+    [Fact]
+    public void BuildPaymentTemplateParams_honours_a_different_mapping()
+    {
+        // Sahadaki dört parametreli şablon: aynı bağlam, başka sıra.
+        var result = _sut.BuildPaymentTemplateParams(
+            FullContext(), new[] { "tutar", "ad", "hesap_sahibi", "iban" });
+
+        result.Should().Equal("450,00", "Ayşe Yılmaz", "Burak S", "TR12 0006 4000 0011");
+    }
+
+    [Fact]
+    public void BuildPaymentTemplateParams_null_when_mapping_is_empty()
+    {
+        // Eşleme kurulmamış → şablon yolu kapalı, wa.me'ye düşülür.
+        _sut.BuildPaymentTemplateParams(FullContext(), Array.Empty<string>())
+            .Should().BeNull();
+    }
+
+    [Fact]
+    public void BuildPaymentTemplateParams_null_when_mapping_has_unknown_key()
+    {
+        // Ayarlar dosyası elle düzenlenmiş olabilir; tanınmayan alanı
+        // tahminle doldurmaktansa göndermemek doğru.
+        _sut.BuildPaymentTemplateParams(FullContext(), new[] { "ad", "yok_boyle_bir_alan" })
+            .Should().BeNull();
     }
 
     [Theory]
@@ -159,7 +191,7 @@ public class WhatsAppMessageBuilderTests
         string? iban, string? holder)
     {
         // Meta boş parametreyi reddediyor → şablonu hiç denememek gerekiyor.
-        _sut.BuildPaymentTemplateParams(FullContext(iban: iban, holder: holder))
+        _sut.BuildPaymentTemplateParams(FullContext(iban: iban, holder: holder), SevenSlotMapping)
             .Should().BeNull();
     }
 
@@ -168,7 +200,8 @@ public class WhatsAppMessageBuilderTests
     {
         // Kargo özelliği kapalı → not boş gelir. Bu meşru bir durum; şablon
         // yolunu tümden kapatmamalı.
-        var result = _sut.BuildPaymentTemplateParams(FullContext(shippingNote: ""));
+        var result = _sut.BuildPaymentTemplateParams(
+            FullContext(shippingNote: ""), SevenSlotMapping);
 
         result.Should().NotBeNull();
         result![3].Should().Be("—");
@@ -178,7 +211,8 @@ public class WhatsAppMessageBuilderTests
     public void BuildPaymentTemplateParams_strips_newlines_and_tabs()
     {
         // Ad sohbetten geliyor; satır sonu/sekme taşıyan parametreyi Meta reddeder.
-        var result = _sut.BuildPaymentTemplateParams(FullContext(name: "Ayşe\n\tYılmaz  Kaya"));
+        var result = _sut.BuildPaymentTemplateParams(
+            FullContext(name: "Ayşe\n\tYılmaz  Kaya"), SevenSlotMapping);
 
         result.Should().NotBeNull();
         result![0].Should().Be("Ayşe Yılmaz Kaya");
@@ -187,6 +221,7 @@ public class WhatsAppMessageBuilderTests
     [Fact]
     public void BuildPaymentTemplateParams_null_when_name_is_blank()
     {
-        _sut.BuildPaymentTemplateParams(FullContext(name: "  ")).Should().BeNull();
+        _sut.BuildPaymentTemplateParams(FullContext(name: "  "), SevenSlotMapping)
+            .Should().BeNull();
     }
 }

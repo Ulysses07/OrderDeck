@@ -118,6 +118,11 @@ public sealed partial class SettingsViewModel : ViewModelBase
     public IntakeFormSettingsViewModel IntakeForm { get; }
     public ShopperAppSettingsViewModel ShopperApp { get; }
 
+    /// <summary>Ödeme &amp; Kargo sekmesindeki "WhatsApp Cloud API" bölümü.
+    /// Testlerin çoğu bunu vermiyor (sunucuya çıkıyor); null olduğunda bölüm
+    /// yalnız görünmez, kayıtlı ayarlar olduğu gibi korunur.</summary>
+    public WhatsAppCloudSettingsViewModel? WhatsAppCloud { get; }
+
     private readonly YouTubeOAuthService? _youTubeOAuth;
     private readonly FacebookOAuthService? _facebookOAuth;
     private readonly Services.Sync.WhatsAppTemplateSyncService? _waTemplateSync;
@@ -135,9 +140,11 @@ public sealed partial class SettingsViewModel : ViewModelBase
         AnimationCatalogClient? catalogClient = null,
         Services.Sync.WhatsAppTemplateSyncService? waTemplateSync = null,
         System.Net.Http.IHttpClientFactory? httpFactory = null,
-        Services.Drawers.IDrawerService? drawers = null)
+        Services.Drawers.IDrawerService? drawers = null,
+        WhatsAppCloudSettingsViewModel? whatsAppCloud = null)
     {
         _drawers = drawers;
+        WhatsAppCloud = whatsAppCloud;
         _liveSettings = settings;
         _store = store;
         _originalOverlayPort = settings.OverlayPort;
@@ -452,6 +459,9 @@ public sealed partial class SettingsViewModel : ViewModelBase
         // PR-E — Kümülatif kargo "kazandın" template.
         ShippingWonTemplate = _liveSettings.Payment.ShippingWonTemplate;
 
+        // WhatsApp Cloud API — şablon seçimi + yuva eşlemesi.
+        WhatsAppCloud?.LoadFrom(_liveSettings.Payment);
+
         // Phase 5c — YouTube
         YouTubeChannelHandle = _liveSettings.YouTubeChannelHandle ?? string.Empty;
 
@@ -517,6 +527,14 @@ public sealed partial class SettingsViewModel : ViewModelBase
             }
         }
 
+        // WhatsApp Cloud API — yarım kalmış yuva eşlemesi kaydedilemez: Meta'ya
+        // yanlış sayıda parametre gitmesi demek ve şablon faturalı.
+        if (WhatsAppCloud?.ValidationError() is { } waError)
+        {
+            ValidationError = waError;
+            return false;
+        }
+
         ValidationError = null;
         return true;
     }
@@ -550,6 +568,9 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
         // PR-E — Kümülatif kargo "kazandın" template.
         _liveSettings.Payment.ShippingWonTemplate = ShippingWonTemplate ?? string.Empty;
+
+        // WhatsApp Cloud API — şablon seçimi + yuva eşlemesi.
+        WhatsAppCloud?.CommitTo(_liveSettings.Payment);
 
         // Phase 5c — YouTube. Empty string → null so the hosted service idles
         // instead of attempting to resolve "".

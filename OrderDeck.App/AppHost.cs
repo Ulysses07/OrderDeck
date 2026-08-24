@@ -555,6 +555,9 @@ public sealed class AppHost : IDisposable
         // Müşteri App settings (Faz 0c-2)
         services.AddTransient<ViewModels.ShopperAppSettingsViewModel>();
 
+        // WhatsApp Cloud API şablon seçici + yuva eşlemesi
+        services.AddTransient<ViewModels.WhatsAppCloudSettingsViewModel>();
+
         // Licensing dialogs (Phase 4b)
         services.AddTransient<ViewModels.LoginDialogViewModel>();
         services.AddTransient<ViewModels.AccountDialogViewModel>();

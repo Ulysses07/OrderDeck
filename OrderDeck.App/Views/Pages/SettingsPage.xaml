@@ -376,6 +376,123 @@
                         </StackPanel>
                     </Border>
 
+                    <!-- WhatsApp Cloud API.
+
+                         Yukarıdaki kutu wa.me bağlantısına yazılan SERBEST METNİ
+                         ayarlıyor; burası Meta'nın ONAYLADIĞI şablonu. İkisi
+                         karıştırılmamalı: müşteri son 24 saatte yazmadıysa
+                         serbest metin Meta tarafından reddediliyor ve tek
+                         gönderilebilen şey onaylı şablon oluyor — yani prodda
+                         asıl gönderim yolu burası.
+
+                         Yuva eşlemesi neden yayıncıda: şablonun adı ve dili
+                         Meta'da onaydan sonra DEĞİŞTİRİLEMİYOR, dolayısıyla
+                         şablon bizim beklediğimiz şekle getirilemiyor. Eşleme
+                         koda gömülüyken sahadaki dört parametreli şablonla hiç
+                         tutmadı ve her mesaj sessizce wa.me'ye düştü.
+
+                         WhatsAppCloud null ise (testlerde, ve sunucu istemcisi
+                         kurulmamış kabuklarda) bölüm gizlenir; kayıtlı ayarlar
+                         korunur. -->
+                    <Border Style="{StaticResource OD.Card}"
+                            Visibility="{Binding WhatsAppCloud, Converter={StaticResource NullToCollapsedConverter}}">
+                        <StackPanel DataContext="{Binding WhatsAppCloud}">
+                            <TextBlock Style="{StaticResource OD.Text.Section}" Text="WhatsApp Cloud API"/>
+                            <TextBlock Style="{StaticResource OD.Text.Hint}"
+                                       Text="Açıkken mesaj doğrudan WhatsApp'tan gider. Müşteri son 24 saatte yazmışsa yukarıdaki serbest metin, yazmamışsa aşağıda seçtiğin onaylı şablon gönderilir. Şablon gönderimi ücretlidir."/>
+
+                            <CheckBox Content="Mesajları WhatsApp Cloud API ile gönder"
+                                      Style="{StaticResource OD.Toggle}"
+                                      Margin="{StaticResource OD.Pad.Top4}"
+                                      IsChecked="{Binding UseCloudApi}"/>
+
+                            <StackPanel Orientation="Horizontal" Margin="{StaticResource OD.Pad.Top4}">
+                                <Button Content="Onaylı şablonları getir"
+                                        Style="{StaticResource OD.Button.Secondary}"
+                                        Command="{Binding LoadTemplatesCommand}"
+                                        IsEnabled="{Binding IsIdle}"
+                                        ToolTip="Şablon listesi her seferinde Meta'dan taze okunur; onay durumu orada değişebiliyor."/>
+                                <TextBlock Text="{Binding StatusMessage}"
+                                           Style="{StaticResource OD.Text.Hint}"
+                                           VerticalAlignment="Center"
+                                           Margin="{StaticResource OD.Pad.X2}"/>
+                            </StackPanel>
+
+                            <TextBlock Text="{Binding ErrorMessage}"
+                                       Style="{StaticResource OD.Text.Hint}"
+                                       Foreground="{StaticResource OD.Brush.AccentHot}"
+                                       TextWrapping="Wrap"
+                                       Visibility="{Binding ErrorMessage, Converter={StaticResource NullToCollapsedConverter}}"/>
+
+                            <!-- Seçici liste geldiği anda görünür: SelectedTemplate'e
+                                 bağlanırsa seçim yapılmadan gizli kalır ve seçim
+                                 yapılamaz. -->
+                            <StackPanel Visibility="{Binding Templates.Count, Converter={StaticResource CountToVisibleConverter}}">
+                                <TextBlock Style="{StaticResource OD.Text.Label}"
+                                           Margin="{StaticResource OD.Pad.Top4}" Text="Şablon"/>
+                                <ComboBox Style="{StaticResource OD.ComboBox}"
+                                          ItemsSource="{Binding Templates}"
+                                          SelectedItem="{Binding SelectedTemplate}">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock>
+                                                <Run Text="{Binding Name, Mode=OneWay}"/>
+                                                <Run Text=" · "/>
+                                                <Run Text="{Binding Language, Mode=OneWay}"/>
+                                            </TextBlock>
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+                            </StackPanel>
+
+                            <StackPanel Visibility="{Binding SelectedTemplate, Converter={StaticResource NullToCollapsedConverter}}">
+                                <!-- Gövde metni: yayıncı hangi mesajın gideceğini
+                                     görmeden ücretli bir şablon seçmemeli. -->
+                                <TextBlock Text="{Binding SelectedTemplate.BodyText}"
+                                           Style="{StaticResource OD.Text.Hint}"
+                                           TextWrapping="Wrap"
+                                           FontFamily="{StaticResource OD.Font.Mono}"
+                                           Margin="{StaticResource OD.Pad.Top4}"/>
+
+                                <TextBlock Text="{Binding SelectedUnsupportedReason}"
+                                           Style="{StaticResource OD.Text.Hint}"
+                                           Foreground="{StaticResource OD.Brush.AccentHot}"
+                                           TextWrapping="Wrap"
+                                           Visibility="{Binding SelectedUnsupportedReason, Converter={StaticResource NullToCollapsedConverter}}"/>
+
+                                <TextBlock Style="{StaticResource OD.Text.Label}"
+                                           Margin="{StaticResource OD.Pad.Top5}"
+                                           Text="Şablondaki değişkenler"/>
+                                <ItemsControl ItemsSource="{Binding Slots}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <DockPanel Margin="{StaticResource OD.Pad.Bottom4}">
+                                                <TextBlock DockPanel.Dock="Left" Width="44"
+                                                           Text="{Binding Label}"
+                                                           VerticalAlignment="Center"
+                                                           FontFamily="{StaticResource OD.Font.Mono}"
+                                                           Style="{StaticResource OD.Text.Label}"/>
+                                                <TextBlock DockPanel.Dock="Right" MaxWidth="160"
+                                                           Text="{Binding Example}"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           VerticalAlignment="Center"
+                                                           Margin="{StaticResource OD.Pad.X2}"
+                                                           Style="{StaticResource OD.Text.Hint}"
+                                                           ToolTip="Şablon Meta'ya onaya giderken verilen örnek değer."/>
+                                                <ComboBox Style="{StaticResource OD.ComboBox}"
+                                                          ItemsSource="{Binding Fields}"
+                                                          DisplayMemberPath="Label"
+                                                          SelectedItem="{Binding SelectedField}"/>
+                                            </DockPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock Style="{StaticResource OD.Text.Hint}"
+                                           Text="Her değişken için bir alan seç. Eksik bırakılırsa ayarlar kaydedilmez — Meta yanlış sayıda parametreyi reddeder ve her deneme ücretlidir."/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
                     <Border Style="{StaticResource OD.Card}">
                         <StackPanel>
                             <TextBlock Style="{StaticResource OD.Text.Section}" Text="Kargo"/>
