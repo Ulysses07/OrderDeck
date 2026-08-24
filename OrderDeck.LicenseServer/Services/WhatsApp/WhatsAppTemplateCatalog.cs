@@ -125,12 +125,29 @@ public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
         _log = log;
     }
 
-    /// <summary>Meta bir WABA'da varsayılan olarak 250 şablona izin veriyor —
-    /// tek sayfa istemek sayfalama takibini gereksiz kılıyor.</summary>
     private const int PageLimit = 250;
+
+    /// <summary>
+    /// Sayfa sayısı tavanı. <see cref="PageLimit"/> ile çarpımı (5000) gerçek bir
+    /// WABA'da görülecek şablon sayısının çok üstünde; buraya düşmek neredeyse
+    /// kesinlikle imleç döngüsü demek. Tavana çarpınca elde olanı döndürmüyoruz —
+    /// düzeltilen kusur zaten <b>sessiz eksik liste</b>ydi.
+    /// </summary>
+    private const int MaxPages = 20;
 
     private const int LogBodyLimit = 500;
 
+    /// <summary>
+    /// <para><b>Sayfalama neden var.</b> Eskiden tek sayfa isteniyordu, gerekçe
+    /// "Meta zaten 250 şablona izin veriyor"du. O tavan hesap katmanına göre
+    /// değişiyor ve yükseltilebiliyor; tavanı aşan yayıncı, panelde eksik bir
+    /// liste görüyordu — üstelik <b>uyarısız</b>, yani Meta'da onaylattığı şablonu
+    /// bulamayınca eksikliği kendi hesabına yoruyordu. Artık
+    /// <c>paging.cursors.after</c> zinciri sonuna kadar izleniyor.</para>
+    ///
+    /// <para>Ara sayfalardan biri düşerse <b>tüm çağrı</b> hata döner. Kısmi liste
+    /// döndürmek, düzeltilen kusurun tam kendisi olurdu.</para>
+    /// </summary>
     public async Task<GraphResult<IReadOnlyList<ApprovedTemplate>>> ListApprovedAsync(
         string wabaId, string businessToken, CancellationToken ct)
     {
@@ -138,6 +155,45 @@ public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
             $"{_opt.GraphBaseUrl.TrimEnd('/')}/{_opt.GraphApiVersion}/{wabaId}/message_templates" +
             $"?fields=name,status,category,language,components&limit={PageLimit}";
 
+        var list = new List<ApprovedTemplate>();
+
+        for (var page = 1; ; page++)
+        {
+            if (page > MaxPages)
+            {
+                _log.LogWarning(
+                    "WhatsApp şablon sayfalaması {Max} sayfayı aştı (waba={Waba}) — imleç döngüsü olabilir",
+                    MaxPages, wabaId);
+                return GraphResult<IReadOnlyList<ApprovedTemplate>>.Failure(
+                    "paging-limit", "şablon listesi sayfalaması bitmedi");
+            }
+
+            var (next, failure) = await ReadPageAsync(url, businessToken, wabaId, list, ct);
+            if (failure is not null) return failure;
+            if (string.IsNullOrEmpty(next)) break;
+            url = next;
+        }
+
+        // Aynı şablonun birden çok dili olabiliyor; ada göre sıralamak
+        // panelde dil varyantlarını yan yana getiriyor. Sıralama sayfa
+        // sınırlarını da siliyor — panel sayfalamayı hiç görmüyor.
+        list.Sort((a, b) =>
+        {
+            var byName = string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
+            return byName != 0
+                ? byName
+                : string.Compare(a.Language, b.Language, StringComparison.OrdinalIgnoreCase);
+        });
+
+        return GraphResult<IReadOnlyList<ApprovedTemplate>>.Success(list);
+    }
+
+    /// <summary>Tek sayfa: satırları <paramref name="into"/>'ya ekler.</summary>
+    /// <returns><c>Next</c> doluysa devam edilecek mutlak URL;
+    /// <c>Failure</c> doluysa çağrı orada biter.</returns>
+    private async Task<(string? Next, GraphResult<IReadOnlyList<ApprovedTemplate>>? Failure)> ReadPageAsync(
+        string url, string businessToken, string wabaId, List<ApprovedTemplate> into, CancellationToken ct)
+    {
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", businessToken);
 
@@ -149,7 +205,7 @@ public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
         catch (Exception ex)
         {
             _log.LogWarning(ex, "WhatsApp şablon listesi ağ hatası (waba={Waba})", wabaId);
-            return GraphResult<IReadOnlyList<ApprovedTemplate>>.Failure("network", ex.Message);
+            return (null, GraphResult<IReadOnlyList<ApprovedTemplate>>.Failure("network", ex.Message));
         }
 
         var body = await resp.Content.ReadAsStringAsync(ct);
@@ -163,7 +219,7 @@ public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
                 var code = err.TryGetProperty("code", out var c) ? c.ToString() : null;
                 var msg = err.TryGetProperty("message", out var m) ? m.GetString() : null;
                 _log.LogWarning("WhatsApp şablon listesi hatası ({Code}): {Msg}", code, msg);
-                return GraphResult<IReadOnlyList<ApprovedTemplate>>.Failure(code, msg);
+                return (null, GraphResult<IReadOnlyList<ApprovedTemplate>>.Failure(code, msg));
             }
 
             if (!resp.IsSuccessStatusCode ||
@@ -172,37 +228,41 @@ public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
                 _log.LogWarning(
                     "WhatsApp şablon listesi beklenmedik yanıt (HTTP {Status}): {Body}",
                     (int)resp.StatusCode, Truncate(body));
-                return GraphResult<IReadOnlyList<ApprovedTemplate>>.Failure(
-                    ((int)resp.StatusCode).ToString(), "beklenmedik yanıt");
+                return (null, GraphResult<IReadOnlyList<ApprovedTemplate>>.Failure(
+                    ((int)resp.StatusCode).ToString(), "beklenmedik yanıt"));
             }
 
-            var list = new List<ApprovedTemplate>();
             foreach (var item in data.EnumerateArray())
             {
                 var parsed = ReadTemplate(item);
-                if (parsed is not null) list.Add(parsed);
+                if (parsed is not null) into.Add(parsed);
             }
 
-            // Aynı şablonun birden çok dili olabiliyor; ada göre sıralamak
-            // panelde dil varyantlarını yan yana getiriyor.
-            list.Sort((a, b) =>
-            {
-                var byName = string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
-                return byName != 0
-                    ? byName
-                    : string.Compare(a.Language, b.Language, StringComparison.OrdinalIgnoreCase);
-            });
-
-            return GraphResult<IReadOnlyList<ApprovedTemplate>>.Success(list);
+            return (ReadNextPageUrl(root, data), null);
         }
         catch (JsonException)
         {
             _log.LogWarning(
                 "WhatsApp şablon listesi JSON değil (HTTP {Status}): {Body}",
                 (int)resp.StatusCode, Truncate(body));
-            return GraphResult<IReadOnlyList<ApprovedTemplate>>.Failure(
-                ((int)resp.StatusCode).ToString(), "beklenmedik yanıt");
+            return (null, GraphResult<IReadOnlyList<ApprovedTemplate>>.Failure(
+                ((int)resp.StatusCode).ToString(), "beklenmedik yanıt"));
         }
+    }
+
+    /// <summary>
+    /// Bir sonraki sayfanın mutlak URL'i, yoksa null.
+    ///
+    /// <para>Meta son sayfada da <c>paging.cursors.after</c> döndürebiliyor; tek
+    /// güvenilir "bitti" işareti <c>paging.next</c>'in <b>yokluğu</b>. Yine de boş
+    /// <c>data</c> geldiğinde duruyoruz: <c>next</c> sonsuza kadar dolu kalırsa
+    /// tavana çarpıp koca listeyi hata sayardık.</para>
+    /// </summary>
+    private static string? ReadNextPageUrl(JsonElement root, JsonElement data)
+    {
+        if (data.GetArrayLength() == 0) return null;
+        if (!root.TryGetProperty("paging", out var paging)) return null;
+        return Str(paging, "next");
     }
 
     /// <summary>Tek şablon satırı → <see cref="ApprovedTemplate"/>. Onaylı

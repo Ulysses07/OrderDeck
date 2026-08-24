@@ -251,6 +251,119 @@ public sealed class WhatsAppTemplateCatalogTests
             HttpRequestMessage request, CancellationToken ct) =>
             throw new HttpRequestException("bağlantı yok");
     }
+
+    // ─── Sayfalama ────────────────────────────────────────────────────────
+
+    /// <summary>Sırayla verilen yanıtları döndürür; sıra biterse son yanıtı
+    /// tekrarlar (imleç döngüsü senaryosu için).</summary>
+    private sealed class ScriptedHandler : HttpMessageHandler
+    {
+        private readonly (HttpStatusCode Status, string Body)[] _pages;
+        private int _index;
+        public List<string> Urls { get; } = new();
+        public List<string?> AuthParams { get; } = new();
+
+        public ScriptedHandler(params (HttpStatusCode Status, string Body)[] pages) => _pages = pages;
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken ct)
+        {
+            Urls.Add(request.RequestUri!.ToString());
+            AuthParams.Add(request.Headers.Authorization?.Parameter);
+            var (status, body) = _pages[Math.Min(_index++, _pages.Length - 1)];
+            return Task.FromResult(new HttpResponseMessage(status)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json"),
+            });
+        }
+    }
+
+    private static string Page(string name, string? next) =>
+        $$"""
+          { "data": [ { "name": "{{name}}", "status": "APPROVED", "category": "UTILITY",
+              "language": "tr", "components": [ { "type": "BODY", "text": "b" } ] } ],
+            "paging": { {{(next is null ? "" : $"\"next\": \"{next}\"")}} } }
+          """;
+
+    [Fact]
+    public async Task Every_page_is_followed_until_paging_next_runs_out()
+    {
+        // Düzeltilen kusur: tek sayfa isteniyordu ve 250'yi aşan yayıncı listeyi
+        // EKSİK görüyordu — üstelik uyarısız.
+        var handler = new ScriptedHandler(
+            (HttpStatusCode.OK, Page("a", "https://graph.test/next-2")),
+            (HttpStatusCode.OK, Page("b", "https://graph.test/next-3")),
+            (HttpStatusCode.OK, Page("c", null)));
+
+        var result = await Catalog(handler).ListApprovedAsync("WABA_1", "TOKEN_1", CancellationToken.None);
+
+        result.Ok.Should().BeTrue();
+        result.Value!.Select(t => t.Name).Should().Equal("a", "b", "c");
+        handler.Urls.Should().HaveCount(3);
+        handler.Urls[1].Should().Be("https://graph.test/next-2");
+        handler.Urls[2].Should().Be("https://graph.test/next-3");
+    }
+
+    [Fact]
+    public async Task A_page_that_comes_back_empty_ends_the_walk()
+    {
+        // Meta son sayfada da `next` döndürebiliyor; boş `data` gelince durmazsak
+        // tavana kadar boşuna gidip koca listeyi hata sayardık.
+        var handler = new ScriptedHandler(
+            (HttpStatusCode.OK, Page("a", "https://graph.test/next-2")),
+            (HttpStatusCode.OK, """{ "data": [], "paging": { "next": "https://graph.test/next-3" } }"""));
+
+        var result = await Catalog(handler).ListApprovedAsync("WABA_1", "TOKEN_1", CancellationToken.None);
+
+        result.Ok.Should().BeTrue();
+        result.Value!.Select(t => t.Name).Should().Equal("a");
+        handler.Urls.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task A_failure_midway_fails_the_whole_call_instead_of_returning_a_short_list()
+    {
+        // Kısmi liste döndürmek, düzeltilen kusurun ta kendisi olurdu: yayıncı
+        // eksik listeyi tam sanardı.
+        var handler = new ScriptedHandler(
+            (HttpStatusCode.OK, Page("a", "https://graph.test/next-2")),
+            (HttpStatusCode.BadRequest, """{ "error": { "code": 190, "message": "Session has expired." } }"""));
+
+        var result = await Catalog(handler).ListApprovedAsync("WABA_1", "TOKEN_1", CancellationToken.None);
+
+        result.Ok.Should().BeFalse();
+        result.ErrorCode.Should().Be("190");
+        result.Value.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task A_cursor_that_never_ends_is_stopped_and_reported()
+    {
+        // Kendini gösteren `next` — sonsuz döngü. Tavana çarpınca elde olanı
+        // döndürmek yine sessiz eksik liste demek olurdu.
+        var handler = new ScriptedHandler(
+            (HttpStatusCode.OK, Page("a", "https://graph.test/loop")));
+
+        var result = await Catalog(handler).ListApprovedAsync("WABA_1", "TOKEN_1", CancellationToken.None);
+
+        result.Ok.Should().BeFalse();
+        result.ErrorCode.Should().Be("paging-limit");
+        handler.Urls.Should().HaveCount(20);
+    }
+
+    [Fact]
+    public async Task Later_pages_carry_the_business_token_too()
+    {
+        // `paging.next` Meta'nın verdiği mutlak URL; yetkilendirmeyi taşıdığını
+        // varsayamayız, Bearer başlığını her sayfada kendimiz koyuyoruz.
+        var handler = new ScriptedHandler(
+            (HttpStatusCode.OK, Page("a", "https://graph.test/next-2")),
+            (HttpStatusCode.OK, Page("b", null)));
+
+        await Catalog(handler).ListApprovedAsync("WABA_1", "TOKEN_7", CancellationToken.None);
+
+        handler.AuthParams.Should().Equal("TOKEN_7", "TOKEN_7");
+    }
 }
 
 /// <summary>
