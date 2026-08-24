@@ -75,19 +75,28 @@ license.orderdeckapp.com {
     # kendi satır içi script/style'ını kullanıyor, o da 'self'+'unsafe-inline'
     # ile kapsanıyor.
     #
-    # `form-action`'da WhatsApp adresleri var çünkü kayıt formu POST'tan sonra
-    # oraya 302 dönüyor ve Chrome/Safari `form-action`'ı yönlendirme hedefine
-    # de uyguluyor (Firefox uygulamıyor). Eksik olduğunda form sessizce ölüyor:
-    # kayıt DB'ye yazılıyor ama tarayıcı WhatsApp'a geçemiyor, ekranda hiçbir
-    # şey olmuyor. 2026-08-23'te canlı yayında bu şekilde patladı.
+    # `form-action 'self'` — buraya WhatsApp adresi EKLEME.
     #
-    # İKİ adres birden gerekli: zincir `wa.me` → 302 → `api.whatsapp.com`
-    # şeklinde ve Chrome kuralı zincirin HER adımına uyguluyor. Yalnız
-    # `wa.me` izinliyken form 2026-08-24'te aynı şekilde ölmeye devam etti.
-    # Bu liste Meta'nın zincirine bağımlı; kalıcı çözüm 302'yi tamamen
-    # kaldırıp onay sayfası + JS `location.href` kullanmak (form-action
-    # JS yönlendirmesini kapsamıyor).
-    header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: https://yt3.ggpht.com https://yt3.googleusercontent.com; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' https://wa.me https://api.whatsapp.com"
+    # Kayıt formu 2026-08-23 ve 08-24'te iki kez canlı yayında sessizce öldü:
+    # POST'tan sonra `wa.me`'ye 302 dönüyordu, Chrome/Safari ise `form-action`'ı
+    # yönlendirme zincirinin HER adımına uyguluyor (Firefox uygulamıyor).
+    # Kayıt DB'ye yazılıyor ama tarayıcı WhatsApp'a geçemiyordu, ekranda hiçbir
+    # şey olmuyordu. Önce `wa.me` eklendi (#335) — yetmedi, çünkü zincir
+    # `wa.me` → 302 → `api.whatsapp.com` şeklindeymiş; ikincisi de eklendi
+    # (#336). O liste Meta'nın zincirine bağımlıydı: bir hop daha eklenseydi
+    # form üçüncü kez ölecekti.
+    #
+    # #337 ile 302 tamamen kalktı. Form artık kendi yoluna dönüyor, WhatsApp'a
+    # geçiş onay sayfasındaki `location.href` ile yapılıyor ve JS
+    # yönlendirmesi hiçbir CSP direktifinin kapsamında DEĞİL (bunu yapacak
+    # `navigate-to` direktifi 2022'de spec'ten çıkarıldı, hiçbir tarayıcıda
+    # yayınlanmadı). Dolayısıyla dış adreslerin burada işi kalmadı; zincir
+    # değişse bile form etkilenmiyor.
+    #
+    # Adresleri geri eklemek yalnız korumayı gevşetir, hiçbir şeyi düzeltmez:
+    # form artık dışarıya POST etmiyor. Kayıt formu bir daha bozulursa sebep
+    # burası değildir.
+    header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: https://yt3.ggpht.com https://yt3.googleusercontent.com; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
     header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), autoplay=()"
 
     # Block public access to internal observability endpoints (Phase 5e).
@@ -137,12 +146,11 @@ orderdeckapp.com {
     # `connect-src 'self'`: formun tek fetch'i `/api/public/verify/youtube`
     # ve o da aynı origin'den (aşağıdaki proxy sayesinde).
     #
-    # `form-action`'daki WhatsApp adresleri şart: form POST'tan sonra oraya 302
-    # dönüyor, Chrome/Safari yönlendirme hedefini de `form-action`'a karşı
-    # denetliyor — hem de zincirin her adımında, o yüzden `wa.me` yanında
-    # onun 302'yle devrettiği `api.whatsapp.com` de listede. Yoksa form
-    # sessizce ölür (bkz. license.* bloğundaki not).
-    header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://yt3.ggpht.com https://yt3.googleusercontent.com; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' https://wa.me https://api.whatsapp.com"
+    # `form-action 'self'` — buraya WhatsApp adresi EKLEME. Kayıt formu artık
+    # dışarıya POST etmiyor: #337'den beri kendi yoluna dönüyor ve WhatsApp'a
+    # geçiş onay sayfasındaki `location.href` ile yapılıyor. Gerekçenin tamamı
+    # license.* bloğundaki nota yazılı.
+    header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://yt3.ggpht.com https://yt3.googleusercontent.com; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
     header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), autoplay=()"
 
     # ─── Müşteri kayıt formu ───────────────────────────────────────────────
