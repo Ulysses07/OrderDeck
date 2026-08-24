@@ -114,9 +114,26 @@ jobs:
           restore-keys: |
             nuget-${{ runner.os }}-
 
-      # NOTE: eski bayrak `xUnit.ParallelizeAssembly=false` idi — tek bir
-      # .csproj koşarken bu etkisiz. İstediğimiz anahtar
-      # `ParallelizeTestCollections=false` (assembly içi sıralama).
+      # Bu suite PARALEL koşar — `xUnit.ParallelizeTestCollections=false`
+      # bilerek yok.
+      #
+      # Bayrak buraya 2d2b115'te gelmişti, ama gerekçesi bu projeye hiç ait
+      # değildi: sızdıran şey `GiveawayBannerViewModelTests`'in WPF
+      # DispatcherTimer'ıydı ve o sınıf OrderDeck.Tests'te. Bu proje net10.0,
+      # tek referansı OrderDeck.LicenseServer — içinde WPF yok. (O sızıntı da
+      # zaten sonradan düzeltildi, bkz. yukarıdaki OrderDeck.Tests yorumu.)
+      # Bedeli ölçüldü: seri 1806 test ~14 dk sürüyordu, tek bir yavaş sınıf
+      # olmadan — düz kuyruk, test başına ort. 0.45 sn.
+      #
+      # Paralellik yapıca güvenli, kural olarak korunmalı:
+      #   - ApiFactory her fixture'a `Guid.NewGuid()` ile AYRI InMemory DB adı
+      #     ve ayrı geçici backup kökü veriyor; sınıflar birbirinin verisini
+      #     göremiyor. Paylaşılan sabit bir DB adı eklenirse bu bozulur.
+      #   - Gerçek SQL Server isteyen testlerin hepsi tek
+      #     [Collection("sqlserver")] içinde; kendi aralarında seri kalıyorlar
+      #     ve container bir kez kalkıyor.
+      # Doğrulama: bayrak kaldırıldıktan sonra yerelde 3 kez koşuldu,
+      # 1808/1808, sıfır flake.
       - name: Test - OrderDeck.LicenseServer.Tests
         run: >
           dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj
@@ -125,7 +142,6 @@ jobs:
           --logger "trx;LogFileName=license-server.trx"
           --results-directory ${{ github.workspace }}/TestResults
           --blame-hang-timeout 5m
-          -- xUnit.ParallelizeTestCollections=false
 
       - name: Upload test results
         if: always()
