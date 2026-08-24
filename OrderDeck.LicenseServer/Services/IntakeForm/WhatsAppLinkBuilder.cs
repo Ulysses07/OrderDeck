@@ -6,6 +6,14 @@ namespace OrderDeck.LicenseServer.Services.IntakeForm;
 /// </summary>
 public sealed class WhatsAppLinkBuilder
 {
+    /// <summary>Yayıncı numarası gerçekten bir sohbet açabilir mi?
+    /// Boş/eksik numarada <c>Build</c> sessizce <c>https://wa.me/?text=...</c>
+    /// üretiyor; o adres WhatsApp'ta hiçbir sohbet açmıyor, müşteri de kaydının
+    /// alındığını göremiyor. Çağıran taraf link kurmadan önce bunu sormalı.
+    /// Eşik 10 hane: ülke kodsuz TR mobil numaranın uzunluğu.</summary>
+    public static bool HasUsablePhone(string? phone)
+        => phone is not null && phone.Count(char.IsAsciiDigit) >= 10;
+
     /// <summary>
     /// Builds a WhatsApp deep link URL with encoded message.
     /// Phone format: strips +, space, dash.

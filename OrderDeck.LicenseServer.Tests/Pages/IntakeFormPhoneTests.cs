@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
@@ -132,8 +133,13 @@ public sealed class IntakeFormPhoneTests : IClassFixture<ApiFactory>
         var form = BuildForm(antiForgery, slug, phone: "5551234567");
         var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
 
+        // POST artık WhatsApp'a değil, kendi sayfasına dönüyor; wa.me linki
+        // onay ekranında duruyor. Sebep: CSP `form-action` yönlendirme
+        // zincirini denetliyor, sayfa içi `location.href` denetlenmiyor.
         postResp.StatusCode.Should().Be(HttpStatusCode.Redirect);
-        postResp.Headers.Location!.ToString().Should().StartWith("https://wa.me/905551234567?text=");
+        postResp.Headers.Location!.ToString().Should().Be($"/r/{slug}");
+        var waUrl = await ReadWhatsAppLinkAsync(client, $"/r/{slug}");
+        waUrl.Should().StartWith("https://wa.me/905551234567?text=");
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -161,9 +167,22 @@ public sealed class IntakeFormPhoneTests : IClassFixture<ApiFactory>
         var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
 
         postResp.StatusCode.Should().Be(HttpStatusCode.Redirect);
-        var url = postResp.Headers.Location!.ToString();
+        var url = await ReadWhatsAppLinkAsync(client, $"/r/{slug}");
         var queryStart = url.IndexOf("?text=") + 6;
         var decoded = Uri.UnescapeDataString(url[queryStart..]);
         decoded.Should().Contain("Telefon: +905551234567");
+    }
+
+    /// <summary>Onay ekranını çekip "WhatsApp'tan gönder" butonunun hedefini döner.
+    /// Link TempData'da taşındığı için çağıran client çerezleri saklamalı.</summary>
+    private static async Task<string> ReadWhatsAppLinkAsync(HttpClient client, string path)
+    {
+        var resp = await client.GetAsync(path);
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var html = await resp.Content.ReadAsStringAsync();
+        html.Should().Contain("Kaydın alındı");
+        var match = Regex.Match(html, "id=\"waLink\"[^>]*href=\"([^\"]+)\"");
+        match.Success.Should().BeTrue("onay ekranında WhatsApp linki olmalı");
+        return WebUtility.HtmlDecode(match.Groups[1].Value);
     }
 }
