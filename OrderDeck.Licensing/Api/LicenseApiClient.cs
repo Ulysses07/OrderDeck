@@ -120,12 +120,17 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
         => PostJsonExpectingJsonAsync<IntakeFormUpsertRequest, IntakeFormConfigDto>(
             "/api/v1/me/intake-form", req, ct, methodOverride: HttpMethod.Put);
 
+    /// <summary>Artımlı kayıt akışı. İmleç <b>bileşik</b> — (<paramref name="since"/>,
+    /// <paramref name="sinceId"/>). Yalnız zaman damgası gönderilseydi, aynı damgayı
+    /// paylaşan kayıtlar sayfa sınırında kesildiğinde kalanları bir daha hiç
+    /// dönmezdi ve o satır bir müşteri KAYDI olduğu için kendiliğinden onarılmazdı.
+    /// Cursor WPF tarafında AppSettings.LastIntakeFormSync(+Id)'de.</summary>
     public async Task<List<IntakeFormSubmissionDto>> GetFormSubmissionsAsync(
-        DateTimeOffset? since, int limit = 50, CancellationToken ct = default)
+        DateTimeOffset? since, Guid sinceId = default, int limit = 50, CancellationToken ct = default)
     {
         var qs = since is null
             ? $"?limit={limit}"
-            : $"?since={Uri.EscapeDataString(since.Value.ToString("O"))}&limit={limit}";
+            : $"?since={Uri.EscapeDataString(since.Value.ToString("O"))}&sinceId={sinceId}&limit={limit}";
         return await GetExpectingJsonAsync<List<IntakeFormSubmissionDto>>(
             "/api/v1/me/form-submissions" + qs, ct) ?? new();
     }

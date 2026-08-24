@@ -246,13 +246,19 @@ public class LicenseApiClientTests
             """[{"id":"00000000-0000-0000-0000-000000000001","username":"u","fullName":"n","address":"a","phone":"+905551111111","submittedAt":"2026-04-30T12:00:00Z"}]"""));
 
         var since = new DateTimeOffset(2026, 4, 30, 11, 0, 0, TimeSpan.Zero);
-        var rows = await client.GetFormSubmissionsAsync(since, limit: 25);
+        var sinceId = Guid.Parse("00000000-0000-0000-0000-0000000000aa");
+        var rows = await client.GetFormSubmissionsAsync(since, sinceId, limit: 25);
 
         rows.Should().HaveCount(1);
         rows[0].Username.Should().Be("u");
         rows[0].Phone.Should().Be("+905551111111");
         handler.Requests[0].RequestUri!.AbsolutePath.Should().Be("/api/v1/me/form-submissions");
-        handler.Requests[0].RequestUri.Query.Should().Contain("since=").And.Contain("limit=25");
+        // İmleç bileşik: yalnız damga gönderilseydi, aynı damgayı paylaşan
+        // kayıtlar sayfa sınırında kesildiğinde kalanları bir daha dönmezdi.
+        handler.Requests[0].RequestUri.Query.Should()
+            .Contain("since=")
+            .And.Contain($"sinceId={sinceId}")
+            .And.Contain("limit=25");
     }
 
     // ─── Onaylı WhatsApp şablonları ───────────────────────────────────

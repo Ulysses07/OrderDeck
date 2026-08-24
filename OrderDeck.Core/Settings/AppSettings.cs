@@ -23,6 +23,12 @@ public sealed class AppSettings
     /// <summary>Phase 4f: last intake form submission cursor (max SubmittedAt synced).</summary>
     public DateTimeOffset? LastIntakeFormSync { get; set; }
 
+    /// <summary>Bkz. <see cref="LastPaymentReverseSyncId"/> — kayıt formu imlecinin
+    /// eşitlik bozucusu. Burada atlanan satır bir müşteri KAYDI: yayıncı formu
+    /// dolduran müşteriyi hiç görmez ve gönderim bir daha güncellenmediği için
+    /// eksik kendiliğinden kapanmaz.</summary>
+    public Guid? LastIntakeFormSyncId { get; set; }
+
     /// <summary>Payment sync (PR B): server'dan UpdatedAt cursor — bu tarihten
     /// sonra güncellenen mobile onay/red sonuçlarını çekiyor. İlk run'da null.</summary>
     public DateTimeOffset? LastPaymentReverseSync { get; set; }

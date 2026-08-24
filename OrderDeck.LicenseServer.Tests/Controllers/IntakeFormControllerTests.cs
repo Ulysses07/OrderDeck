@@ -168,7 +168,9 @@ public sealed class IntakeFormControllerTests : IClassFixture<ApiFactory>
                 Username = "uname",
                 FullName = "Full Name",
                 Address = "Test Address",
-                SubmittedAt = DateTimeOffset.UtcNow
+                // Kararlılık ufkunun gerisinde: uç, son saniyelerde yazılan
+                // satırları bilerek okumuyor (bkz. ReverseSyncCursor).
+                SubmittedAt = DateTimeOffset.UtcNow.AddMinutes(-1)
             });
             await db.SaveChangesAsync();
         }

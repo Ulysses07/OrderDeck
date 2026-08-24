@@ -60,14 +60,17 @@ public sealed class IntakeFormSyncService
 
         int totalUpdated = 0;
         DateTimeOffset? since = null;
-        // Sayfalama: server SubmittedAt > since döner; son sayfa < limit olunca dur.
-        // Güvenlik tavanı: kilitlenmesin diye makul bir sayfa limiti.
+        var sinceId = Guid.Empty;
+        // Sayfalama imleci (SubmittedAt, Id); son sayfa < limit olunca dur.
+        // Yalnız damgayla ilerleseydi, tam bir sayfa dolusu kayıt aynı damgayı
+        // paylaştığında imleç HİÇ ilerlemez ve döngü tavana kadar aynı sayfayı
+        // çekerdi. Güvenlik tavanı yine de duruyor.
         for (var page = 0; page < 500 && !ct.IsCancellationRequested; page++)
         {
             List<IntakeFormSubmissionDto> submissions;
             try
             {
-                submissions = await _api.GetFormSubmissionsAsync(since, limit: 100, ct);
+                submissions = await _api.GetFormSubmissionsAsync(since, sinceId, limit: 100, ct);
             }
             catch (LicenseApiException ex)
             {
@@ -96,10 +99,11 @@ public sealed class IntakeFormSyncService
 
                 if (identities.Count > 0 && !string.IsNullOrWhiteSpace(sub.FullName))
                     totalUpdated += _customers.BackfillFullNameForIdentities(identities, sub.FullName);
-
-                if (sub.SubmittedAt > (since ?? DateTimeOffset.MinValue))
-                    since = sub.SubmittedAt;
             }
+
+            var last = submissions.OrderBy(s => s.SubmittedAt).ThenBy(s => s.Id).Last();
+            since = last.SubmittedAt;
+            sinceId = last.Id;
 
             if (submissions.Count < 100) break; // son sayfa
         }
@@ -113,11 +117,12 @@ public sealed class IntakeFormSyncService
     public async Task<int> SyncOnceAsync(CancellationToken ct = default)
     {
         var since = _settings.LastIntakeFormSync;
+        var sinceId = _settings.LastIntakeFormSyncId ?? Guid.Empty;
 
         List<IntakeFormSubmissionDto> submissions;
         try
         {
-            submissions = await _api.GetFormSubmissionsAsync(since, limit: 50, ct);
+            submissions = await _api.GetFormSubmissionsAsync(since, sinceId, limit: 50, ct);
             LastSyncWasAuthFailure = false;
         }
         catch (InvalidCredentialsException ex)
@@ -139,9 +144,14 @@ public sealed class IntakeFormSyncService
         if (submissions.Count == 0) return 0;
 
         var nowUnix = _clock.UnixNow();
-        DateTimeOffset newCursor = since ?? DateTimeOffset.MinValue;
 
-        foreach (var sub in submissions.OrderBy(s => s.SubmittedAt))
+        // İmleç (SubmittedAt, Id) çifti; sunucu da bu sıraya göre sayfalıyor.
+        // Yalnız en büyük SubmittedAt alınsaydı, aynı damgayı paylaşan kayıtlar
+        // sayfa sınırında kesildiğinde kalanları bir daha hiç istenmezdi — ve o
+        // satır bir müşteri KAYDI olduğu için eksik kendiliğinden kapanmazdı.
+        var ordered = submissions.OrderBy(s => s.SubmittedAt).ThenBy(s => s.Id).ToList();
+
+        foreach (var sub in ordered)
         {
             // Bildirilen platform kimliklerini topla (çoklu-platform).
             var identities = new List<(string Platform, string Username, string? PreferredDisplayName)>();
@@ -177,15 +187,15 @@ public sealed class IntakeFormSyncService
                 _customers.UpsertFromIntakeForm(
                     sub.Username, sub.FullName, sub.Address, sub.Phone, nowUnix);
             }
-
-            if (sub.SubmittedAt > newCursor) newCursor = sub.SubmittedAt;
         }
 
-        _settings.LastIntakeFormSync = newCursor;
+        var last = ordered[^1];
+        _settings.LastIntakeFormSync = last.SubmittedAt;
+        _settings.LastIntakeFormSyncId = last.Id;
         _settingsStore.Save(_settings);
 
-        _log.LogInformation("Intake form sync: {Count} submission(s) processed (cursor → {Cursor})",
-            submissions.Count, newCursor);
+        _log.LogInformation("Intake form sync: {Count} submission(s) processed (cursor → {Cursor}/{CursorId})",
+            submissions.Count, last.SubmittedAt, last.Id);
 
         SubmissionsSynced?.Invoke(this, submissions.Count);
         return submissions.Count;

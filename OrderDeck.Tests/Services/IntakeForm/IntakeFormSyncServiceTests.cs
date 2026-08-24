@@ -87,6 +87,40 @@ public sealed class IntakeFormSyncServiceTests
     }
 
     [Fact]
+    public async Task SyncOnceAsync_cursor_carries_the_last_row_id_not_just_the_timestamp()
+    {
+        // Aynı damgayı paylaşan iki kayıt. İmleç yalnız damga olsaydı, sunucu
+        // bir sonraki turda `> damga` sorulduğu için ikisini de bir daha hiç
+        // döndürmezdi — ve atlanan satır bir müşteri KAYDI.
+        var (svc, _, settings, _) = Build(_ => FakeHttpMessageHandler.Json(200,
+            """
+            [{"id":"00000000-0000-0000-0000-0000000000bb","username":"b","fullName":"B","address":"a","submittedAt":"2026-04-30T12:00:00Z"},
+             {"id":"00000000-0000-0000-0000-0000000000aa","username":"a","fullName":"A","address":"a","submittedAt":"2026-04-30T12:00:00Z"}]
+            """));
+
+        await svc.SyncOnceAsync();
+
+        settings.LastIntakeFormSync.Should().Be(new DateTimeOffset(2026, 4, 30, 12, 0, 0, TimeSpan.Zero));
+        // Sıra (SubmittedAt, Id) → son satır büyük olan Id.
+        settings.LastIntakeFormSyncId.Should()
+            .Be(Guid.Parse("00000000-0000-0000-0000-0000000000bb"));
+    }
+
+    [Fact]
+    public async Task SyncOnceAsync_sends_both_halves_of_the_cursor()
+    {
+        var (svc, _, settings, handler) = Build(_ => FakeHttpMessageHandler.Json(200, "[]"));
+        settings.LastIntakeFormSync = new DateTimeOffset(2026, 4, 30, 12, 0, 0, TimeSpan.Zero);
+        settings.LastIntakeFormSyncId = Guid.Parse("00000000-0000-0000-0000-0000000000cc");
+
+        await svc.SyncOnceAsync();
+
+        handler.Requests[0].RequestUri!.Query.Should()
+            .Contain("since=")
+            .And.Contain("sinceId=00000000-0000-0000-0000-0000000000cc");
+    }
+
+    [Fact]
     public async Task SyncOnceAsync_returns_zero_on_network_failure_and_does_not_advance_cursor()
     {
         var (svc, _, settings, _) = Build(_ => throw new HttpRequestException("dns fail"));
