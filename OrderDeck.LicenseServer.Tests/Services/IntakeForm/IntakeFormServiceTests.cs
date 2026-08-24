@@ -162,28 +162,110 @@ public sealed class IntakeFormServiceTests : IClassFixture<ApiFactory>
         stored.Should().NotBeNull();
     }
 
+    /// <summary>
+    /// <c>SaveSubmissionAsync</c> damgayı kendi koyuyor (hep "şimdi"), o yüzden
+    /// imleç testleri satırları doğrudan DB'ye yazıyor: hem damga hem Id kontrol
+    /// altında olmalı.
+    /// </summary>
+    private async Task<Guid> SeedSubmissionAsync(
+        Guid configId, Guid id, DateTimeOffset submittedAt, string username)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        db.IntakeFormSubmissions.Add(new IntakeFormSubmission
+        {
+            Id = id,
+            IntakeFormConfigId = configId,
+            Username = username,
+            FullName = username,
+            Address = "a",
+            SubmittedAt = submittedAt
+        });
+        await db.SaveChangesAsync();
+        return id;
+    }
+
+    private async Task<IntakeFormConfig> SeedConfigAsync(Guid customerId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var svc = scope.ServiceProvider.GetRequiredService<IntakeFormService>();
+        var slug = $"slug-{Guid.NewGuid():N}"[..15];
+        return await svc.UpsertConfigAsync(customerId, slug, "+905551234567", null, true, default);
+    }
+
+    /// <summary>Kararlılık ufkunun gerisinde kalan bir damga — <c>since</c> ucu
+    /// son saniyelerde yazılan satırları bilerek okumuyor (bkz. ReverseSyncCursor).</summary>
+    private static DateTimeOffset Settled => DateTimeOffset.UtcNow.AddMinutes(-1);
+
     [Fact]
     public async Task GetSubmissionsSinceAsync_returns_only_newer_than_cursor_ordered_asc()
     {
         var customer = await SeedCustomerAsync();
+        var cfg = await SeedConfigAsync(customer.Id);
+
+        var t2 = Settled.AddMinutes(-5);
+        await SeedSubmissionAsync(cfg.Id, Guid.NewGuid(), t2.AddMinutes(-1), "u1");
+        await SeedSubmissionAsync(cfg.Id, Guid.NewGuid(), t2.AddMinutes(1), "u2");
+        await SeedSubmissionAsync(cfg.Id, Guid.NewGuid(), t2.AddMinutes(2), "u3");
+
         using var scope = _factory.Services.CreateScope();
         var svc = scope.ServiceProvider.GetRequiredService<IntakeFormService>();
-        var slug = $"slug-{Guid.NewGuid():N}"[..15];
-        var cfg = await svc.UpsertConfigAsync(customer.Id, slug, "+905551234567", null, true, default);
-
-        // 3 submissions: now-2h, now-1h, now (in DB, scope shared with InMemory)
-        await svc.SaveSubmissionAsync(cfg.Id, "u1", "n1", "a1", null, null, default);
-        await Task.Delay(20);
-        var t2 = DateTimeOffset.UtcNow;
-        await Task.Delay(20);
-        await svc.SaveSubmissionAsync(cfg.Id, "u2", "n2", "a2", null, null, default);
-        await Task.Delay(20);
-        await svc.SaveSubmissionAsync(cfg.Id, "u3", "n3", "a3", null, null, default);
-
-        var rows = await svc.GetSubmissionsSinceAsync(customer.Id, t2, limit: 50, default);
+        var rows = await svc.GetSubmissionsSinceAsync(customer.Id, t2, Guid.Empty, limit: 50, default);
 
         rows.Should().HaveCount(2);
         rows[0].Username.Should().Be("u2");
         rows[1].Username.Should().Be("u3");
+    }
+
+    [Fact]
+    public async Task A_row_sharing_the_cursor_timestamp_is_not_skipped_forever()
+    {
+        // Düzeltilen kusur: imleç yalnız SubmittedAt'ti. WPF sayfanın en büyük
+        // damgasını imleç yapıp `> imleç` sorduğu için, aynı milisaniyedeki
+        // kardeş satır bir daha HİÇ dönmüyordu. Atlanan satır bir müşteri KAYDI
+        // ve gönderim bir daha güncellenmediği için eksik kendiliğinden kapanmaz.
+        var customer = await SeedCustomerAsync();
+        var cfg = await SeedConfigAsync(customer.Id);
+
+        var sameInstant = Settled;
+        var ids = new[] { Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid() }
+            .OrderBy(g => g).ToArray();
+        await SeedSubmissionAsync(cfg.Id, ids[0], sameInstant, "a");
+        await SeedSubmissionAsync(cfg.Id, ids[1], sameInstant, "b");
+        await SeedSubmissionAsync(cfg.Id, ids[2], sameInstant, "c");
+
+        using var scope = _factory.Services.CreateScope();
+        var svc = scope.ServiceProvider.GetRequiredService<IntakeFormService>();
+
+        // İlk sayfa kasten eşitlik kümesinin ORTASINDAN kesiliyor.
+        var page1 = await svc.GetSubmissionsSinceAsync(
+            customer.Id, DateTimeOffset.MinValue, Guid.Empty, limit: 2, default);
+        page1.Select(r => r.Id).Should().Equal(ids[0], ids[1]);
+
+        // İmleç son satırdan okunuyor; kalan satır hâlâ geliyor.
+        var last = page1[^1];
+        var page2 = await svc.GetSubmissionsSinceAsync(
+            customer.Id, last.SubmittedAt, last.Id, limit: 2, default);
+        page2.Select(r => r.Id).Should().Equal(ids[2]);
+    }
+
+    [Fact]
+    public async Task Rows_written_in_the_last_seconds_are_held_back()
+    {
+        // Commit sırası damga sırasına eşit değil: damgasını okuyup geç commit
+        // eden bir gönderim, imleç ilerlemişse arkada kalır ve bir daha
+        // istenmez. Tavan koyup son saniyeleri hiç okumamak bunu kapatıyor.
+        var customer = await SeedCustomerAsync();
+        var cfg = await SeedConfigAsync(customer.Id);
+
+        await SeedSubmissionAsync(cfg.Id, Guid.NewGuid(), Settled, "eski");
+        await SeedSubmissionAsync(cfg.Id, Guid.NewGuid(), DateTimeOffset.UtcNow, "taze");
+
+        using var scope = _factory.Services.CreateScope();
+        var svc = scope.ServiceProvider.GetRequiredService<IntakeFormService>();
+        var rows = await svc.GetSubmissionsSinceAsync(
+            customer.Id, DateTimeOffset.MinValue, Guid.Empty, limit: 50, default);
+
+        rows.Select(r => r.Username).Should().Equal("eski");
     }
 }

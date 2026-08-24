@@ -142,11 +142,35 @@ public sealed class IntakeFormService
         return sub;
     }
 
+    /// <summary>
+    /// WPF'in artımlı çektiği kayıt akışı. İmleç <b>bileşik</b>
+    /// (<paramref name="since"/> + <paramref name="sinceId"/>) ve kararlılık
+    /// ufkunun altında; iki kuralın da gerekçesi
+    /// <see cref="Sync.ReverseSyncCursor"/>'da yazılı.
+    ///
+    /// <para><b>Burada bedeli ne.</b> Bu uçtan atlanan satır bir müşteri
+    /// KAYDIdır: yayıncı formu dolduran müşteriyi masaüstünde hiç görmez ve
+    /// kendiliğinden onarılmaz, çünkü gönderim bir daha güncellenmiyor. Yalnız
+    /// <c>SubmittedAt</c> üstünde koşan eski imleç iki yoldan satır kaybediyordu
+    /// — aynı damgayı paylaşan satırların ortasından geçen sayfa sınırı ve
+    /// damgasını okuduktan sonra geç commit eden gönderim.</para>
+    ///
+    /// <para><paramref name="sinceId"/> isteğe bağlı: sahadaki eski WPF
+    /// kurulumları göndermiyor, o zaman imleçteki eşitlik kümesi yeniden gönderilir
+    /// (istemci tarafı idempotent upsert — kayıp değil fazlalık).</para>
+    /// </summary>
     public Task<List<IntakeFormSubmission>> GetSubmissionsSinceAsync(
-        Guid customerId, DateTimeOffset since, int limit, CancellationToken ct = default) =>
-        _db.IntakeFormSubmissions
-            .Where(s => s.Config.CustomerId == customerId && s.SubmittedAt > since)
-            .OrderBy(s => s.SubmittedAt)
+        Guid customerId, DateTimeOffset since, Guid sinceId, int limit,
+        CancellationToken ct = default)
+    {
+        var horizon = Sync.ReverseSyncCursor.Horizon();
+        return _db.IntakeFormSubmissions
+            .Where(s => s.Config.CustomerId == customerId
+                        && s.SubmittedAt <= horizon
+                        && (s.SubmittedAt > since
+                            || (s.SubmittedAt == since && s.Id.CompareTo(sinceId) > 0)))
+            .OrderBy(s => s.SubmittedAt).ThenBy(s => s.Id)
             .Take(limit)
             .ToListAsync(ct);
+    }
 }

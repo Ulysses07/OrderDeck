@@ -75,16 +75,22 @@ public sealed class IntakeFormController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// Artımlı kayıt akışı. İmleç <b>bileşik</b> — WPF bir sonrakini yanıtın son
+    /// satırından okur, sıra <c>(SubmittedAt, Id)</c>. <c>sinceId</c> isteğe
+    /// bağlı; gerekçesi <see cref="IntakeFormService.GetSubmissionsSinceAsync"/>'de.
+    /// </summary>
     [HttpGet("api/v1/me/form-submissions")]
     public async Task<IActionResult> GetSubmissions(
         [FromQuery] DateTimeOffset? since,
+        [FromQuery] Guid sinceId,
         [FromQuery] int limit,
         CancellationToken ct)
     {
         if (limit < 1 || limit > 200) limit = 50;
         var customerId = GetCustomerId();
         var rows = await _service.GetSubmissionsSinceAsync(
-            customerId, since ?? DateTimeOffset.MinValue, limit, ct);
+            customerId, since ?? DateTimeOffset.MinValue, sinceId, limit, ct);
         return Ok(rows.Select(s => new SubmissionBody(
             s.Id, s.Username, s.FullName, s.Address, s.Phone, s.SubmittedAt,
             s.YouTubeUsername, s.InstagramUsername, s.FacebookUsername, s.TikTokUsername,
