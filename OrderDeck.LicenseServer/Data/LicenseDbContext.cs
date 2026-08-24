@@ -23,6 +23,7 @@ public class LicenseDbContext : DbContext
     public DbSet<IntakeFormConfig> IntakeFormConfigs => Set<IntakeFormConfig>();
     public DbSet<IntakeFormSubmission> IntakeFormSubmissions => Set<IntakeFormSubmission>();
     public DbSet<CustomerBackup> CustomerBackups => Set<CustomerBackup>();
+    public DbSet<BackupQuotaCounter> BackupQuotaCounters => Set<BackupQuotaCounter>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<PushDevice> PushDevices => Set<PushDevice>();
     public DbSet<Payment> Payments => Set<Payment>();
@@ -267,6 +268,19 @@ public class LicenseDbContext : DbContext
             e.HasIndex(b => new { b.CustomerId, b.CreatedAt })
                 .IsDescending(false, true)
                 .HasDatabaseName("IX_CustomerBackups_CustomerId_CreatedAt_DESC");
+        });
+
+        mb.Entity<BackupQuotaCounter>(e =>
+        {
+            e.HasKey(c => c.CustomerId);
+            // CustomerId çağıranın verdiği doğal anahtar — EF convention'ı Guid
+            // PK'yi ValueGeneratedOnAdd sayıyor, kasıtlı kapatıyoruz.
+            e.Property(c => c.CustomerId).ValueGeneratedNever();
+            e.Property(c => c.RowVersion).IsRowVersion();
+            e.HasOne(c => c.Customer)
+                .WithMany()
+                .HasForeignKey(c => c.CustomerId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         mb.Entity<RefreshToken>(b =>

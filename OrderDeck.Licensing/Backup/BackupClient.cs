@@ -12,20 +12,35 @@ public sealed class BackupClient : IBackupClient
 
     public BackupClient(HttpClient http) => _http = http;
 
+    /// <summary>
+    /// Yedeği yükler. 409 alırsa <b>bir kez</b> yeniden dener: sunucu aynı
+    /// müşterinin eşzamanlı iki yüklemesinden birini kota hakemiyle geri
+    /// çeviriyor (bkz. <c>BackupQuotaCounter</c>) ve kaybeden istek yeniden
+    /// denendiğinde güncel toplamı görüp ya geçiyor ya da dürüst bir 507
+    /// alıyor. Tek deneme yeter: hakemi kaybetmek için karşımızda gerçekten
+    /// eşzamanlı bir yükleme olması gerekiyor, o da bu sırada bitmiş olur.
+    /// Sınırsız denemek, kalıcı bir hatayı sonsuz döngüye çevirirdi.
+    /// </summary>
     public async Task<BackupMetadata> UploadAsync(byte[] zipPayload, string sha256Hex, string? machineName, CancellationToken ct = default)
     {
-        var content = new ByteArrayContent(zipPayload);
-        content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/octet-stream");
+        for (var attempt = 0; ; attempt++)
+        {
+            var content = new ByteArrayContent(zipPayload);
+            content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/octet-stream");
 
-        using var req = new HttpRequestMessage(HttpMethod.Post, "/api/v1/me/backups") { Content = content };
-        req.Headers.Add("X-Backup-Sha256", sha256Hex);
-        if (!string.IsNullOrEmpty(machineName))
-            req.Headers.Add("X-Machine-Name", machineName);
+            using var req = new HttpRequestMessage(HttpMethod.Post, "/api/v1/me/backups") { Content = content };
+            req.Headers.Add("X-Backup-Sha256", sha256Hex);
+            if (!string.IsNullOrEmpty(machineName))
+                req.Headers.Add("X-Machine-Name", machineName);
 
-        using var resp = await _http.SendAsync(req, ct);
-        await EnsureSuccessOrThrowAsync(resp, ct);
-        var meta = await resp.Content.ReadFromJsonAsync<BackupMetadata>(JsonOpts, ct);
-        return meta ?? throw new LicenseApiUnknownException((int)resp.StatusCode, "Empty response from upload");
+            using var resp = await _http.SendAsync(req, ct);
+            if (resp.StatusCode == System.Net.HttpStatusCode.Conflict && attempt == 0)
+                continue;
+
+            await EnsureSuccessOrThrowAsync(resp, ct);
+            var meta = await resp.Content.ReadFromJsonAsync<BackupMetadata>(JsonOpts, ct);
+            return meta ?? throw new LicenseApiUnknownException((int)resp.StatusCode, "Empty response from upload");
+        }
     }
 
     public async Task<IReadOnlyList<BackupMetadata>> ListAsync(CancellationToken ct = default)

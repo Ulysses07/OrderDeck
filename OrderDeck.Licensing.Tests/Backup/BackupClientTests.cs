@@ -60,6 +60,51 @@ public class BackupClientTests
         ((LicenseApiUnknownException)ex.Which).StatusCode.Should().Be(413);
     }
 
+    /// <summary>
+    /// Sunucu, aynı müşterinin eşzamanlı iki yüklemesinden birini kota hakemiyle
+    /// 409'a düşürüyor. Kaybeden istek yeniden denendiğinde güncel toplamı görüp
+    /// geçmeli — aksi hâlde tamamen geçerli bir yedek, yalnızca zamanlama
+    /// yüzünden kullanıcıya hata olarak görünürdü.
+    /// </summary>
+    [Fact]
+    public async Task UploadAsync_409_alinca_bir_kez_yeniden_dener()
+    {
+        var meta = new
+        {
+            id = Guid.NewGuid(),
+            sizeBytes = 10L,
+            createdAt = DateTimeOffset.UtcNow,
+            isMonthlyMilestone = false,
+            machineName = "TEST"
+        };
+        var first = true;
+        var (client, handler) = Make(_ =>
+        {
+            if (first) { first = false; return FakeHttpMessageHandler.Problem(409, "backup-quota-busy"); }
+            return FakeHttpMessageHandler.Json(201, JsonSerializer.Serialize(meta));
+        });
+
+        var result = await client.UploadAsync(new byte[] { 1, 2, 3 }, "deadbeef", "TEST");
+
+        handler.Requests.Should().HaveCount(2);
+        handler.Requests.Last().Headers.GetValues("X-Backup-Sha256").Should().Contain("deadbeef",
+            "yeniden denemede başlıklar birebir aynı olmalı");
+        result.Id.Should().Be(meta.id);
+    }
+
+    /// <summary>İkinci 409 gerçek bir hata: sonsuz döngü yerine yüzeye çıkmalı.</summary>
+    [Fact]
+    public async Task UploadAsync_ikinci_409u_hata_olarak_yukseltir()
+    {
+        var (client, handler) = Make(_ => FakeHttpMessageHandler.Problem(409, "backup-quota-busy"));
+
+        Func<Task> act = () => client.UploadAsync(new byte[] { 1 }, "abc", null);
+
+        var ex = await act.Should().ThrowAsync<LicenseApiException>();
+        ((LicenseApiUnknownException)ex.Which).StatusCode.Should().Be(409);
+        handler.Requests.Should().HaveCount(2, "yalnız bir kez yeniden denenmeli");
+    }
+
     [Fact]
     public async Task ListAsync_ReturnsArrayOfMetadata()
     {
