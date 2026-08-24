@@ -16,7 +16,7 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
     public IntakeFormPageTests(ApiFactory factory) => _factory = factory;
 
     private async Task<(string slug, Guid customerId)> SeedConfigAsync(
-        bool licenseActive = true, bool formActive = true)
+        bool licenseActive = true, bool formActive = true, string whatsAppPhone = "+905551234567")
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -49,7 +49,7 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             Id = Guid.NewGuid(),
             CustomerId = customer.Id,
             Slug = slug,
-            WhatsAppPhone = "+905551234567",
+            WhatsAppPhone = whatsAppPhone,
             IsActive = formActive,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow
@@ -123,8 +123,17 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
         });
         var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
 
+        // POST WhatsApp'a değil, formun kendi yoluna dönüyor (POST-Redirect-GET).
+        // wa.me linki onay ekranında; CSP `form-action` yönlendirme zincirini
+        // denetlediği için gönderim akışında dış adres bilerek yok.
         postResp.StatusCode.Should().Be(HttpStatusCode.Redirect);
-        postResp.Headers.Location!.ToString().Should().StartWith("https://wa.me/905551234567?text=");
+        postResp.Headers.Location!.ToString().Should().Be($"/r/{slug}");
+
+        var okResp = await client.GetAsync($"/r/{slug}");
+        okResp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var okHtml = await okResp.Content.ReadAsStringAsync();
+        okHtml.Should().Contain("Kaydın alındı");
+        okHtml.Should().Contain("https://wa.me/905551234567?text=");
 
         // Submission persisted?
         using var scope = _factory.Services.CreateScope();
@@ -137,6 +146,77 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
         sub.District.Should().Be("Kadıköy");
         sub.Address.Should().Be("Atatürk Cad. No:12");
     }
+
+    [Fact]
+    public async Task Confirmation_page_is_one_shot_so_refresh_does_not_resubmit()
+    {
+        // Sahada gözlenen kusur: ekranda geri bildirim olmayınca müşteri
+        // "Tamamla"ya üst üste basıyordu ve DB'ye aynı kayıttan 10+ kopya
+        // düşüyordu. Onay ekranı hem geri bildirim veriyor hem POST-Redirect-GET
+        // sayesinde F5'i zararsız kılıyor.
+        var (slug, customerId) = await SeedConfigAsync();
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = true
+        });
+
+        var getResp = await client.GetAsync($"/r/{slug}");
+        var antiForgery = AdminLoginHelper.ExtractAntiForgeryToken(await getResp.Content.ReadAsStringAsync());
+        await client.PostAsync($"/r/{slug}?handler=Submit", BuildValidForm(antiForgery, slug));
+
+        (await (await client.GetAsync($"/r/{slug}")).Content.ReadAsStringAsync())
+            .Should().Contain("Kaydın alındı");
+
+        // İkinci GET (F5): onay tüketildi, form geri geliyor ve yeni kayıt yok.
+        var refreshHtml = await (await client.GetAsync($"/r/{slug}")).Content.ReadAsStringAsync();
+        refreshHtml.Should().NotContain("Kaydın alındı");
+        refreshHtml.Should().Contain("intakeForm");
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var count = await db.IntakeFormSubmissions
+            .CountAsync(s => s.Config.CustomerId == customerId);
+        count.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Confirmation_page_shown_without_link_when_broadcaster_has_no_phone()
+    {
+        // Numara tanımsızsa `wa.me/?text=...` hiçbir sohbet açmıyor. Link
+        // kurmak yerine onay ekranını linksiz gösteriyoruz — müşteri en azından
+        // kaydının geçtiğini görüyor, boş ekranla kalmıyor.
+        var (slug, _) = await SeedConfigAsync(whatsAppPhone: "");
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = true
+        });
+
+        var getResp = await client.GetAsync($"/r/{slug}");
+        var antiForgery = AdminLoginHelper.ExtractAntiForgeryToken(await getResp.Content.ReadAsStringAsync());
+        var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", BuildValidForm(antiForgery, slug));
+
+        postResp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        var html = await (await client.GetAsync($"/r/{slug}")).Content.ReadAsStringAsync();
+        html.Should().Contain("Kaydın alındı");
+        html.Should().NotContain("waLink");
+        html.Should().NotContain("wa.me");
+    }
+
+    private static FormUrlEncodedContent BuildValidForm(string antiForgery, string slug)
+        => new(new Dictionary<string, string>
+        {
+            ["__RequestVerificationToken"] = antiForgery,
+            ["Slug"] = slug,
+            ["Input.InstagramUsername"] = "bilalcanli",
+            ["Input.FullName"] = "Bilal Canlı",
+            ["Input.Email"] = "bilal@example.com",
+            ["Input.Address"] = "Atatürk Cad. No:12",
+            ["Input.City"] = "İstanbul",
+            ["Input.District"] = "Kadıköy",
+            ["Input.Phone"] = "5551234567"
+        });
 
     [Fact]
     public async Task Post_submit_honeypot_filled_silently_returns_200_and_does_not_persist()

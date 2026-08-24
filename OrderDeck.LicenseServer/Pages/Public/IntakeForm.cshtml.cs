@@ -31,6 +31,22 @@ public class IntakeFormModel : PageModel
 
     public IntakeFormConfig? Config { get; private set; }
 
+    // Kayıt alındıktan sonraki onay ekranını süren iki değer. POST doğrudan
+    // WhatsApp'a 302 dönmüyor; kendi sayfasına dönüyor ve geçiş orada JS ile
+    // yapılıyor. Sebep: CSP `form-action` yalnız form gönderimlerini denetliyor
+    // ve bunu yönlendirme zincirinin HER adımına uyguluyor — `wa.me` kendi de
+    // `api.whatsapp.com`'a 302 attığı için form 2026-08-23 ve 08-24'te iki kez
+    // sessizce öldü. Sayfa içi `location.href` hiçbir CSP direktifinin kapsamında
+    // değil (bunu yapacak `navigate-to` direktifi spec'ten çıkarıldı), yani
+    // Meta zincire hop eklese bile bu akış kırılmaz.
+    //
+    // TempData çerezi Data Protection ile şifreli ve tek kullanımlık: sayfa
+    // okununca siliniyor, böylece ad/adres/telefon içeren taslak metin tarayıcıda
+    // kalmıyor. Çerez engelliyse zaten anti-forgery de çalışmadığı için form hiç
+    // gönderilemiyor — yani bu akış kimseye yeni bir kısıt getirmiyor.
+    [TempData] public string? WhatsAppUrl { get; set; }
+    [TempData] public bool Submitted { get; set; }
+
     public sealed class IntakeFormInput
     {
         // Çoklu-platform kullanıcı adları — her biri opsiyonel, en az 1 zorunlu
@@ -211,15 +227,35 @@ public class IntakeFormModel : PageModel
             city: Input.City,
             district: Input.District);
 
-        var url = _linkBuilder.Build(
-            Config.WhatsAppPhone,
-            yt, ig, fb, tt,
-            Input.FullName.Trim(),
-            Input.Address.Trim(),
-            normalizedPhone,
-            Input.City,
-            Input.District);
-        return Redirect(url);
+        // Yayıncının numarası tanımsızsa link kurmuyoruz: `wa.me/?text=...`
+        // WhatsApp'ta hiçbir sohbet açmıyor, müşteri de kaydının geçtiğini
+        // göremiyor. Onay ekranı bu durumda linksiz gösteriliyor.
+        if (WhatsAppLinkBuilder.HasUsablePhone(Config.WhatsAppPhone))
+        {
+            WhatsAppUrl = _linkBuilder.Build(
+                Config.WhatsAppPhone,
+                yt, ig, fb, tt,
+                Input.FullName.Trim(),
+                Input.Address.Trim(),
+                normalizedPhone,
+                Input.City,
+                Input.District);
+        }
+        else
+        {
+            WhatsAppUrl = null;
+            _log.LogWarning(
+                "Intake config {Slug} has no usable WhatsApp phone; confirmation shown without link",
+                Slug);
+        }
+
+        Submitted = true;
+
+        // POST-Redirect-GET: müşteri F5'e bastığında kayıt tekrarlanmasın.
+        // Hedef, formun açıldığı yolun kendisi — sayfanın iki route'u var
+        // (/musteri-kayit/{slug} ve eski /r/{slug}) ve müşteriyi geldiği
+        // adreste tutuyoruz.
+        return LocalRedirect(Request.Path.Value ?? $"/musteri-kayit/{Slug}");
     }
 
     private void AddHandleError(string key, string platform, string? handle)

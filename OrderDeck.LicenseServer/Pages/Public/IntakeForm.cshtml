@@ -81,12 +81,42 @@
         .btn:active { transform:translateY(1px); }
         .platform-ico { display:inline-block; width:16px; text-align:center; margin-right:5px; }
         .hidden-hp { position:absolute; left:-9999px; display:none; }
+        a.btn { display:block; text-align:center; text-decoration:none; }
+        .ok-ico { width:52px; height:52px; border-radius:50%; background:rgba(22,163,74,.12);
+                  color:var(--od-ok); font-size:28px; line-height:52px; text-align:center;
+                  margin:0 auto 14px; }
+        .ok-wrap { text-align:center; }
+        .ok-wrap h1 { margin-bottom:8px; }
     </style>
 </head>
 <body>
 <div class="wrap">
     <div class="brand"><span class="dot"></span> OrderDeck</div>
     <div class="card">
+@if (Model.Submitted)
+{
+        <div class="ok-wrap">
+            <div class="ok-ico">✓</div>
+            <h1>Kaydın alındı</h1>
+            @if (Model.WhatsAppUrl is not null)
+            {
+                <p class="sub">
+                    Şimdi WhatsApp açılıp yayıncıya göndereceğin mesaj hazır gelecek.
+                    Açılmazsa aşağıdaki butona dokun.
+                </p>
+                <a class="btn" id="waLink" href="@Model.WhatsAppUrl" rel="noopener">WhatsApp'tan gönder</a>
+            }
+            else
+            {
+                <p class="sub">
+                    Bilgilerin yayıncıya ulaştı. WhatsApp bağlantısı şu an kullanılamıyor,
+                    tekrar form doldurmana gerek yok.
+                </p>
+            }
+        </div>
+}
+else
+{
         <h1>@(Model.Config!.CustomTitle ?? "Bilgi Gönder")</h1>
         <p class="sub">Bilgilerini gir, tamamla — WhatsApp'tan yayıncıya iletilsin.</p>
 
@@ -223,11 +253,30 @@
             <div class="err" id="formErr"></div>
             <button type="submit" class="btn">Tamamla ve WhatsApp'tan Gönder</button>
         </form>
+}
     </div>
 </div>
 
+@if (Model.Submitted && Model.WhatsAppUrl is not null)
+{
+    <script>
+    // WhatsApp'a geçiş bilerek burada, form gönderiminin 302'siyle değil:
+    // CSP `form-action` form gönderimlerini ve onların yönlendirme zincirini
+    // denetliyor, `location.href` ise hiçbir CSP direktifinin kapsamında değil.
+    // Atlama başarısız olsa bile yukarıdaki "Kaydın alındı" ekranı ve buton
+    // duruyor, yani müşteri hiçbir koşulda boş ekranla kalmıyor.
+    (function () {
+        var l = document.getElementById('waLink');
+        if (l) window.location.href = l.href;
+    })();
+    </script>
+}
+
 <script>
 (function () {
+    // Onay ekranında form yok; aşağıdaki kodun tamamı form alanlarına dokunuyor.
+    if (!document.getElementById('intakeForm')) return;
+
     // (a) Kullanici adi normalize: bastaki at-isaretini + DIS bosluklari temizle
     // (chat'teki halle eslessin, gruplama saglam olsun).
     // IC bosluk bilerek KORUNUR: "Musa Sevinc" sessizce "MusaSevinc"e donusurse
