@@ -7,10 +7,25 @@ namespace OrderDeck.LicenseServer.Services.WhatsApp;
 /// <summary>Meta webhook gövdesinden çıkarılan, bizim ilgilendiğimiz olaylar.</summary>
 public sealed record WhatsAppWebhookEvents(
     IReadOnlyList<WhatsAppInboundMessage> Messages,
-    IReadOnlyList<WhatsAppStatusUpdate> Statuses)
+    IReadOnlyList<WhatsAppStatusUpdate> Statuses,
+    /// <summary>
+    /// Telefon numarası taşımadığı için ayrıştırılamayan mesajların BSUID'leri
+    /// (<c>from_user_id</c>; yoksa boş string).
+    ///
+    /// <para>Kullanıcı adı özelliğini açmış bir müşteri, son 30 gün içinde
+    /// yazışmadıysak ve Meta'nın kişi defterinde değilse, webhook'ta
+    /// <c>wa_id</c>/<c>from</c> göndermiyor — yerine yalnız BSUID geliyor.
+    /// Sohbet modelimiz telefona anahtarlı olduğu için bu mesajı henüz
+    /// kaydedemiyoruz. Buradaki amaç kaydetmek değil, <b>kaybın sessiz
+    /// olmasını engellemek</b>: yayıncı yazan müşteriyi görmüyorken logda hiçbir
+    /// iz bulunmuyordu. Gerçek çözüm BSUID'i sohbet kimliği yapmak
+    /// (ayrı iş); bu liste o işin ne kadar acil olduğunu ölçüyor.</para>
+    /// </summary>
+    IReadOnlyList<string> DroppedNoPhoneUserIds)
 {
     public static readonly WhatsAppWebhookEvents Empty =
-        new(Array.Empty<WhatsAppInboundMessage>(), Array.Empty<WhatsAppStatusUpdate>());
+        new(Array.Empty<WhatsAppInboundMessage>(), Array.Empty<WhatsAppStatusUpdate>(),
+            Array.Empty<string>());
 
     public bool IsEmpty => Messages.Count == 0 && Statuses.Count == 0;
 }
@@ -61,6 +76,7 @@ public static class WhatsAppWebhookParser
         {
             var messages = new List<WhatsAppInboundMessage>();
             var statuses = new List<WhatsAppStatusUpdate>();
+            var droppedNoPhone = new List<string>();
 
             if (!doc.RootElement.TryGetProperty("entry", out var entries) ||
                 entries.ValueKind != JsonValueKind.Array)
@@ -98,6 +114,8 @@ public static class WhatsAppWebhookParser
                         {
                             var parsed = ParseMessage(m, phoneNumberId, profileNames, isEcho);
                             if (parsed is not null) messages.Add(parsed);
+                            else if (HasNoPhone(m, isEcho))
+                                droppedNoPhone.Add(Str(m, "from_user_id") ?? "");
                         }
                     }
 
@@ -113,10 +131,25 @@ public static class WhatsAppWebhookParser
                 }
             }
 
-            return messages.Count == 0 && statuses.Count == 0
+            return messages.Count == 0 && statuses.Count == 0 && droppedNoPhone.Count == 0
                 ? WhatsAppWebhookEvents.Empty
-                : new WhatsAppWebhookEvents(messages, statuses);
+                : new WhatsAppWebhookEvents(messages, statuses, droppedNoPhone);
         }
+    }
+
+    /// <summary>
+    /// Mesaj yalnızca telefon numarası taşımadığı için mi elendi?
+    ///
+    /// <para><c>ParseMessage</c> birden çok sebeple null döner (kimliksiz mesaj,
+    /// numarasız mesaj). Yalnız numarasızları saymak için ayrı bakıyoruz;
+    /// aksi hâlde bozuk bir payload da BSUID sayacını şişirir ve ölçüm yalan
+    /// söylerdi.</para>
+    /// </summary>
+    private static bool HasNoPhone(JsonElement m, bool isEcho)
+    {
+        if (string.IsNullOrEmpty(Str(m, "id"))) return false;
+        var phone = WaPhone.Canonical(isEcho ? Str(m, "to") : Str(m, "from"));
+        return phone.Length == 0;
     }
 
     private static Dictionary<string, string> ReadContactNames(JsonElement value)

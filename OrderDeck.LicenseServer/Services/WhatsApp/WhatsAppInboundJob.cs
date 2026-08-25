@@ -73,6 +73,26 @@ public sealed class WhatsAppInboundJob
     public async Task ProcessAsync(string rawJson, CancellationToken ct = default)
     {
         var events = WhatsAppWebhookParser.Parse(rawJson);
+
+        // Numarasız (yalnız BSUID taşıyan) mesajlar burada ölçülüyor.
+        //
+        // Log, IsEmpty kontrolünden ÖNCE: paket yalnızca numarasız mesajlardan
+        // oluşuyorsa IsEmpty true döner ve ölçüm hiç çalışmazdı — üstelik kaybın
+        // en saf hâli tam olarak o paket.
+        //
+        // Bu satır mesajı kurtarmıyor; kaybın sessiz olmasını engelliyor.
+        // Sohbet modeli telefona anahtarlı olduğu sürece kaydedemiyoruz (bkz.
+        // WhatsAppWebhookEvents.DroppedNoPhoneUserIds). Buradaki sayı, BSUID'i
+        // sohbet kimliği yapma işinin ne kadar acil olduğunu söyleyecek.
+        if (events.DroppedNoPhoneUserIds.Count > 0)
+        {
+            _log.LogWarning(
+                "WhatsApp: {Count} mesaj telefon numarası taşımadığı için işlenemedi (BSUID: {UserIds}). " +
+                "Müşteri kullanıcı adı özelliğini açmış olabilir; mesaj panele DÜŞMEDİ.",
+                events.DroppedNoPhoneUserIds.Count,
+                string.Join(", ", events.DroppedNoPhoneUserIds));
+        }
+
         if (events.IsEmpty) return;
 
         var pendingLabels = new List<PendingLabel>();

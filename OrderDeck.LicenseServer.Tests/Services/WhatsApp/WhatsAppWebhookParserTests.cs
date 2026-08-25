@@ -160,4 +160,57 @@ public sealed class WhatsAppWebhookParserTests
         m.Type.Should().Be("contacts");
         m.Body.Should().BeNull();
     }
+
+    /// <summary>
+    /// Kullanıcı adı özelliğini açmış müşteri: Meta <c>from</c>/<c>wa_id</c>
+    /// göndermiyor, yerine yalnız BSUID geliyor. Mesajı kaydedemiyoruz (sohbet
+    /// telefona anahtarlı) ama sessizce kaybolmamalı.
+    /// </summary>
+    [Fact]
+    public void Numarasiz_mesaj_BSUID_ile_olculur()
+    {
+        var payload = """
+        {
+          "entry": [{ "changes": [{ "field": "messages", "value": {
+            "metadata": { "phone_number_id": "PNID_1" },
+            "contacts": [{ "user_id": "US.13491208655302741918" }],
+            "messages": [{ "from_user_id": "US.13491208655302741918", "id": "wamid.NOPHONE",
+                           "timestamp": "1753440000", "type": "text",
+                           "text": { "body": "numarasız" } }]
+          }}]}]
+        }
+        """;
+
+        var events = WhatsAppWebhookParser.Parse(payload);
+
+        events.Messages.Should().BeEmpty();
+        events.DroppedNoPhoneUserIds.Should().ContainSingle()
+            .Which.Should().Be("US.13491208655302741918");
+    }
+
+    /// <summary>
+    /// Bozuk payload (kimliksiz mesaj) BSUID sayacını şişirmemeli — aksi hâlde
+    /// ölçüm, "kullanıcı adı" olgusunu gerçekte olduğundan büyük gösterirdi.
+    /// </summary>
+    [Fact]
+    public void Kimliksiz_mesaj_BSUID_sayacini_sismez()
+    {
+        var payload = """
+        {
+          "entry": [{ "changes": [{ "field": "messages", "value": {
+            "metadata": { "phone_number_id": "PNID_1" },
+            "messages": [{ "timestamp": "1753440000", "type": "text",
+                           "text": { "body": "ne id ne numara" } }]
+          }}]}]
+        }
+        """;
+
+        WhatsAppWebhookParser.Parse(payload).DroppedNoPhoneUserIds.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Normal_mesajda_BSUID_listesi_bos_kalir()
+    {
+        WhatsAppWebhookParser.Parse(TextMessagePayload).DroppedNoPhoneUserIds.Should().BeEmpty();
+    }
 }
