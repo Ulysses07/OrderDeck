@@ -76,21 +76,19 @@ public sealed class WhatsAppInboundJob
 
         // Numarasız (yalnız BSUID taşıyan) mesajlar burada ölçülüyor.
         //
-        // Log, IsEmpty kontrolünden ÖNCE: paket yalnızca numarasız mesajlardan
-        // oluşuyorsa IsEmpty true döner ve ölçüm hiç çalışmazdı — üstelik kaybın
-        // en saf hâli tam olarak o paket.
+        // Log anlık teşhis için; kalıcı kayıt WaDroppedInbound tablosunda.
+        // Sunucuda kalıcı log yok — konteynerin json-file sürücüsü her deploy'da
+        // sıfırlanıyor, master'a her merge de bir deploy. Yalnız loga yazan bir
+        // ölçüm, karar verilene kadar yaşamaz.
         //
-        // Bu satır mesajı kurtarmıyor; kaybın sessiz olmasını engelliyor.
-        // Sohbet modeli telefona anahtarlı olduğu sürece kaydedemiyoruz (bkz.
-        // WhatsAppWebhookEvents.DroppedNoPhoneUserIds). Buradaki sayı, BSUID'i
-        // sohbet kimliği yapma işinin ne kadar acil olduğunu söyleyecek.
-        if (events.DroppedNoPhoneUserIds.Count > 0)
+        // Hiçbiri mesajı kurtarmıyor; kaybın sessiz olmasını engelliyor.
+        if (events.DroppedNoPhone.Count > 0)
         {
             _log.LogWarning(
                 "WhatsApp: {Count} mesaj telefon numarası taşımadığı için işlenemedi (BSUID: {UserIds}). " +
                 "Müşteri kullanıcı adı özelliğini açmış olabilir; mesaj panele DÜŞMEDİ.",
-                events.DroppedNoPhoneUserIds.Count,
-                string.Join(", ", events.DroppedNoPhoneUserIds));
+                events.DroppedNoPhone.Count,
+                string.Join(", ", events.DroppedNoPhone.Select(d => d.UserId)));
         }
 
         if (events.IsEmpty) return;
@@ -100,6 +98,7 @@ public sealed class WhatsAppInboundJob
         await ProcessMessagesAsync(events, pendingLabels, deltas, ct);
         await ProcessStatusesAsync(events, ct);
         await ProcessUserPreferencesAsync(events, ct);
+        await ProcessDroppedInboundAsync(events, ct);
         await _db.SaveChangesAsync(ct);
         await ApplyConversationDeltasAsync(deltas, ct);
 
@@ -475,6 +474,69 @@ public sealed class WhatsAppInboundJob
             _log.LogInformation(
                 "WhatsApp pazarlama tercihi: {Category}={Value} (lisans {LicenseId}).",
                 p.Category, p.Value, account.LicenseId);
+        }
+    }
+
+    /// <summary>
+    /// Numarasız geldiği için düşen mesajları müşteri başına sayar.
+    ///
+    /// <para>Amaç mesajı kurtarmak değil — mesaj zaten gitti ve Meta yeniden
+    /// göndermiyor. Amaç, "BSUID'i sohbet kimliği yap" kararını tahminle değil
+    /// sayıyla verebilmek: kaç müşteri, ne zamandan beri, hangi hatta.</para>
+    /// </summary>
+    private async Task ProcessDroppedInboundAsync(WhatsAppWebhookEvents events, CancellationToken ct)
+    {
+        foreach (var d in events.DroppedNoPhone)
+        {
+            // Ne telefon ne BSUID: kimin mesajı olduğunu bilmiyoruz. Hepsini tek
+            // satırda toplamak "kaç müşteri" sorusunun cevabını bozardı.
+            if (string.IsNullOrWhiteSpace(d.UserId))
+            {
+                _log.LogWarning(
+                    "WhatsApp: hiç kimlik taşımayan mesaj düştü ({PhoneNumberId}).",
+                    d.PhoneNumberId);
+                continue;
+            }
+
+            var account = await _accounts.GetByPhoneNumberIdAsync(d.PhoneNumberId, ct);
+            if (account is null)
+            {
+                _log.LogWarning(
+                    "WhatsApp: tanınmayan numaraya numarasız mesaj düştü ({PhoneNumberId}).",
+                    d.PhoneNumberId);
+                continue;
+            }
+
+            // Local önce: aynı müşteri aynı pakette birden çok mesaj yazmış
+            // olabilir. Yalnız veritabanına bakılsaydı ilk Add henüz
+            // kaydedilmediği için ikincisi de satır açar ve SaveChanges tekil
+            // indeksten patlardı.
+            var row = _db.WaDroppedInbounds.Local.FirstOrDefault(
+                    x => x.LicenseId == account.LicenseId && x.BsuId == d.UserId)
+                ?? await _db.WaDroppedInbounds.FirstOrDefaultAsync(
+                    x => x.LicenseId == account.LicenseId && x.BsuId == d.UserId, ct);
+
+            if (row is null)
+            {
+                _db.WaDroppedInbounds.Add(new WaDroppedInbound
+                {
+                    Id = Guid.NewGuid(),
+                    LicenseId = account.LicenseId,
+                    BsuId = d.UserId,
+                    PhoneNumberId = d.PhoneNumberId,
+                    MessageCount = 1,
+                    FirstSeenAt = d.Timestamp,
+                    LastSeenAt = d.Timestamp,
+                });
+                continue;
+            }
+
+            row.MessageCount++;
+
+            // Damgalar sırasız gelebilir: aralığı iki uçtan da genişlet, yoksa
+            // geç işlenen eski bir paket "ne zamandan beri" cevabını bozar.
+            if (d.Timestamp < row.FirstSeenAt) row.FirstSeenAt = d.Timestamp;
+            if (d.Timestamp > row.LastSeenAt) row.LastSeenAt = d.Timestamp;
         }
     }
 

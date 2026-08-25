@@ -184,8 +184,34 @@ public sealed class WhatsAppWebhookParserTests
         var events = WhatsAppWebhookParser.Parse(payload);
 
         events.Messages.Should().BeEmpty();
-        events.DroppedNoPhoneUserIds.Should().ContainSingle()
-            .Which.Should().Be("US.13491208655302741918");
+
+        var dropped = events.DroppedNoPhone.Should().ContainSingle().Subject;
+        dropped.UserId.Should().Be("US.13491208655302741918");
+        // Hangi hatta düştüğü olmadan kayıp bir yayıncıya atfedilemez.
+        dropped.PhoneNumberId.Should().Be("PNID_1");
+        dropped.Timestamp.Should().Be(DateTimeOffset.FromUnixTimeSeconds(1753440000));
+    }
+
+    /// <summary>
+    /// Yalnız numarasız mesaj içeren paket <c>IsEmpty</c> sayılmamalı — sayılsaydı
+    /// <c>ProcessAsync</c> erken döner ve ölçüm hiç yazılmazdı. Üstelik kaybın en
+    /// saf hâli tam olarak bu paket: tek mesaj, o da numarasız.
+    /// </summary>
+    [Fact]
+    public void Yalniz_numarasiz_mesaj_iceren_paket_bos_sayilmaz()
+    {
+        var payload = """
+        {
+          "entry": [{ "changes": [{ "field": "messages", "value": {
+            "metadata": { "phone_number_id": "PNID_1" },
+            "messages": [{ "from_user_id": "US.13491208655302741918", "id": "wamid.NOPHONE",
+                           "timestamp": "1753440000", "type": "text",
+                           "text": { "body": "numarasız" } }]
+          }}]}]
+        }
+        """;
+
+        WhatsAppWebhookParser.Parse(payload).IsEmpty.Should().BeFalse();
     }
 
     /// <summary>
@@ -205,12 +231,12 @@ public sealed class WhatsAppWebhookParserTests
         }
         """;
 
-        WhatsAppWebhookParser.Parse(payload).DroppedNoPhoneUserIds.Should().BeEmpty();
+        WhatsAppWebhookParser.Parse(payload).DroppedNoPhone.Should().BeEmpty();
     }
 
     [Fact]
     public void Normal_mesajda_BSUID_listesi_bos_kalir()
     {
-        WhatsAppWebhookParser.Parse(TextMessagePayload).DroppedNoPhoneUserIds.Should().BeEmpty();
+        WhatsAppWebhookParser.Parse(TextMessagePayload).DroppedNoPhone.Should().BeEmpty();
     }
 }
