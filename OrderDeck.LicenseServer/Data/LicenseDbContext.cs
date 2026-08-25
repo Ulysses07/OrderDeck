@@ -706,6 +706,7 @@ public class LicenseDbContext : DbContext
             b.Property(p => p.BsuId).HasMaxLength(64);
             b.Property(p => p.Category).HasMaxLength(64).IsRequired();
             b.Property(p => p.Preference).HasMaxLength(16).IsRequired();
+            b.Property(p => p.Source).HasMaxLength(32).IsRequired();
 
             // İki FİLTRELİ tekil indeks, tek birleşik indeks değil: kimliklerin
             // ikisi de null olabildiği için birleşik indeks NULL'ları ayrı satır

@@ -6,6 +6,22 @@ public static class WaMarketingPreferences
 {
     public const string Stop = "stop";
     public const string Resume = "resume";
+
+    /// <summary>Meta'nın bugün belgelediği tek kategori. Tercih webhook'unda
+    /// gelen kategori olduğu gibi kullanılır; bu sabite yalnızca kararı
+    /// <b>biz çıkarsadığımızda</b> (131050) ihtiyaç var.</summary>
+    public const string MarketingCategory = "marketing_messages";
+}
+
+/// <summary><see cref="WaMarketingPreference.Source"/> için sabitler: kararı
+/// nereden öğrendik.</summary>
+public static class WaMarketingPreferenceSources
+{
+    /// <summary>Müşterinin kendi beyanı — <c>user_preferences</c> webhook'u.</summary>
+    public const string UserPreferences = "user_preferences";
+
+    /// <summary>Çıkarım — pazarlama mesajımız <c>131050</c> ile düştü.</summary>
+    public const string Error131050 = "error_131050";
 }
 
 /// <summary>
@@ -69,6 +85,25 @@ public sealed class WaMarketingPreference
     /// ezer ve müşteriye çıkmak istediği mesajı göndeririz.</para>
     /// </summary>
     public DateTimeOffset PreferenceAt { get; set; }
+
+    /// <summary>
+    /// Kararı nereden öğrendik — bkz. <see cref="WaMarketingPreferenceSources"/>.
+    /// Yürürlükteki <see cref="Preference"/> ile birlikte güncellenir; satırın
+    /// değil, <b>kararın</b> özelliğidir.
+    ///
+    /// <para><b>Neden ayrı sütun:</b> defterde iki farklı güçte kanıt birikiyor.
+    /// <c>user_preferences</c> müşterinin kendi beyanı; <c>131050</c> ise bizim
+    /// çıkarımımız — Meta mesajı düşürdü, biz de "demek ki çıkmış" dedik. İkisi
+    /// aynı sütuna yazılıp ayırt edilemez hâle gelirse defter, müşterinin
+    /// söylemediği bir şeyi söylemiş gibi gösterir. Gönderim engelleme kuralı
+    /// yazılırken ya da "ben çıkmadım" itirazı geldiğinde sorulacak soru tam
+    /// olarak "bunu nereden biliyoruz" olacak.</para>
+    ///
+    /// <para>Sütunu sonradan eklemek de mümkündü, ama o zaman mevcut her satır
+    /// kalıcı olarak "bilinmiyor" kalırdı; şu an defter boş olduğu için bedeli
+    /// sıfır.</para>
+    /// </summary>
+    public string Source { get; set; } = "";
 
     /// <summary>Satırın bizde en son ne zaman yazıldığı (teşhis için;
     /// karar sıralamasında kullanılmaz).</summary>
