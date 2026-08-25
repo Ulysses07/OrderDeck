@@ -139,6 +139,7 @@ public sealed class WhatsAppUserPreferencesTests
         row.Category.Should().Be("marketing_messages");
         row.Preference.Should().Be(WaMarketingPreferences.Stop);
         row.PreferenceAt.Should().Be(DateTimeOffset.FromUnixTimeSeconds(1731705721));
+        row.Source.Should().Be(WaMarketingPreferenceSources.UserPreferences);
     }
 
     [Fact]
@@ -256,5 +257,184 @@ public sealed class WhatsAppUserPreferencesTests
         await job.ProcessAsync(payload);
 
         db.WaMarketingPreferences.Should().ContainSingle();
+    }
+
+    // ---------- 131050: düşen pazarlama mesajından çıkarım ----------
+    //
+    // Tercih webhook'u yalnız abone olduğumuz andan SONRA çıkanları haber
+    // veriyor; Meta geçmişi göndermiyor. Bugüne kadar çıkmış müşteriler
+    // deftere ancak bu yoldan giriyor — yani fiilen çalışan yol bu.
+
+    private static void SeedOutbound(
+        LicenseDbContext db, Guid licenseId, string phone, params string[] wamIds)
+    {
+        var convoId = Guid.NewGuid();
+        db.WaConversations.Add(new WaConversation
+        {
+            Id = convoId,
+            LicenseId = licenseId,
+            CustomerPhone = phone,
+            PhoneNumberId = "PNID_1",
+            Status = "open",
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+
+        foreach (var wamId in wamIds)
+        {
+            db.WaMessages.Add(new WaMessage
+            {
+                Id = Guid.NewGuid(),
+                ConversationId = convoId,
+                LicenseId = licenseId,
+                WamId = wamId,
+                Direction = "out",
+                Type = "template",
+                Status = "sent",
+                Timestamp = DateTimeOffset.UtcNow,
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+        }
+
+        db.SaveChanges();
+    }
+
+    /// <summary>Durum webhook'u: <c>timestamp</c> burada yine STRING.</summary>
+    private static string FailedPayload(long ts, string code, params string[] wamIds)
+    {
+        var statuses = string.Join(", ", wamIds.Select(id =>
+            $$"""
+            { "id": "{{id}}", "status": "failed", "timestamp": "{{ts}}",
+              "errors": [{ "code": {{code}}, "title": "Marketing message blocked" }] }
+            """));
+
+        return $$$"""
+        {
+          "entry": [{ "changes": [{ "field": "messages", "value": {
+            "metadata": { "phone_number_id": "PNID_1" },
+            "statuses": [{{{statuses}}}]
+          }}]}]
+        }
+        """;
+    }
+
+    [Fact]
+    public async Task Dusen_pazarlama_mesaji_stop_olarak_deftere_yazilir()
+    {
+        var (db, job, licenseId) = Build();
+        SeedOutbound(db, licenseId, "905321234567", "wamid.OUT1");
+
+        await job.ProcessAsync(FailedPayload(1731705721, "131050", "wamid.OUT1"));
+
+        var row = db.WaMarketingPreferences.Single();
+        row.LicenseId.Should().Be(licenseId);
+        row.CustomerPhone.Should().Be("905321234567");
+        row.Category.Should().Be(WaMarketingPreferences.MarketingCategory);
+        row.Preference.Should().Be(WaMarketingPreferences.Stop);
+        row.PreferenceAt.Should().Be(DateTimeOffset.FromUnixTimeSeconds(1731705721));
+        row.Source.Should().Be(
+            WaMarketingPreferenceSources.Error131050,
+            "kaynak ayırt edilmezse defter, müşterinin söylemediği bir şeyi " +
+            "söylemiş gibi gösterir");
+
+        db.WaMessages.Single().ErrorCode.Should().Be("131050", "mesaj kaydı da bozulmamalı");
+    }
+
+    /// <summary>Yalnız 131050 tercih anlamına gelir. 131047 (pencere kapalı) ya
+    /// da 131026 (teslim edilemez) müşterinin kararı hakkında hiçbir şey
+    /// söylemez; deftere yazmak uydurma olurdu.</summary>
+    [Theory]
+    [InlineData("131047")]
+    [InlineData("131026")]
+    [InlineData("131049")]
+    public async Task Baska_hata_kodu_deftere_yazilmaz(string code)
+    {
+        var (db, job, licenseId) = Build();
+        SeedOutbound(db, licenseId, "905321234567", "wamid.OUT1");
+
+        await job.ProcessAsync(FailedPayload(1731705721, code, "wamid.OUT1"));
+
+        db.WaMarketingPreferences.Should().BeEmpty();
+    }
+
+    /// <summary>Müşterinin kendi beyanı, sonradan gelirse çıkarımı ezmeli —
+    /// hem karar hem kaynak güncellenmeli.</summary>
+    [Fact]
+    public async Task Sonraki_resume_131050_karari_ezer()
+    {
+        var (db, job, licenseId) = Build();
+        SeedOutbound(db, licenseId, "905321234567", "wamid.OUT1");
+
+        await job.ProcessAsync(FailedPayload(1731705721, "131050", "wamid.OUT1"));
+        await job.ProcessAsync(Payload("resume", 1731705999));
+
+        var row = db.WaMarketingPreferences.Single();
+        row.Preference.Should().Be(WaMarketingPreferences.Resume);
+        row.Source.Should().Be(WaMarketingPreferenceSources.UserPreferences);
+    }
+
+    /// <summary>
+    /// <b>Bu testin koruduğu şey:</b> müşteri geri döndükten sonra, ondan önce
+    /// gönderilmiş bir mesajın düşme bildirimi geç gelebilir. Sıralama işleme
+    /// anına göre yapılsaydı bu bildirim <c>resume</c>'u ezer ve geri dönmüş
+    /// müşteriyi tekrar çıkmış sayardık.
+    /// </summary>
+    [Fact]
+    public async Task Gec_gelen_131050_yeni_resume_u_ezmez()
+    {
+        var (db, job, licenseId) = Build();
+        SeedOutbound(db, licenseId, "905321234567", "wamid.OUT1");
+
+        await job.ProcessAsync(Payload("resume", 1731705999));
+        await job.ProcessAsync(FailedPayload(1731705721, "131050", "wamid.OUT1"));
+
+        var row = db.WaMarketingPreferences.Single();
+        row.Preference.Should().Be(WaMarketingPreferences.Resume);
+        row.Source.Should().Be(WaMarketingPreferenceSources.UserPreferences);
+    }
+
+    /// <summary>Zaten <c>stop</c> yazılmış müşteride 131050 ikinci satır
+    /// açmamalı.</summary>
+    [Fact]
+    public async Task Zaten_stop_olan_musteride_ikinci_satir_acilmaz()
+    {
+        var (db, job, licenseId) = Build();
+        SeedOutbound(db, licenseId, "905321234567", "wamid.OUT1");
+
+        await job.ProcessAsync(Payload("stop", 1731705721));
+        await job.ProcessAsync(FailedPayload(1731705999, "131050", "wamid.OUT1"));
+
+        db.WaMarketingPreferences.Should().ContainSingle()
+            .Which.Preference.Should().Be(WaMarketingPreferences.Stop);
+    }
+
+    /// <summary>
+    /// <b>Bu testin koruduğu şey:</b> aynı pakette aynı müşteriye giden iki
+    /// mesaj birden düşebilir (toplu gönderim). Arama yalnız veritabanına
+    /// bakarsa ilk <c>Add</c> henüz kaydedilmediği için ikinci olay da yeni
+    /// satır açar ve <c>SaveChanges</c> tekil indeksten patlar — o da tüm
+    /// paketi, içindeki gerçek mesajlarla birlikte düşürür.
+    /// </summary>
+    [Fact]
+    public async Task Ayni_paketteki_iki_dusen_mesaj_tek_satir_yazar()
+    {
+        var (db, job, licenseId) = Build();
+        SeedOutbound(db, licenseId, "905321234567", "wamid.OUT1", "wamid.OUT2");
+
+        await job.ProcessAsync(
+            FailedPayload(1731705721, "131050", "wamid.OUT1", "wamid.OUT2"));
+
+        db.WaMarketingPreferences.Should().ContainSingle();
+    }
+
+    /// <summary>Bizim kaydımız olmayan mesajın durumu zaten atlanıyor; deftere
+    /// de bir şey yazılmamalı.</summary>
+    [Fact]
+    public async Task Taninmayan_mesaj_icin_defter_yazilmaz()
+    {
+        var (db, job, _) = Build();
+
+        await job.ProcessAsync(FailedPayload(1731705721, "131050", "wamid.BILINMEYEN"));
+
+        db.WaMarketingPreferences.Should().BeEmpty();
     }
 }

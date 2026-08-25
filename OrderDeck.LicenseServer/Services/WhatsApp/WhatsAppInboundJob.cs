@@ -386,7 +386,55 @@ public sealed class WhatsAppInboundJob
             msg.Status = s.Status;
             if (s.ErrorCode is not null) msg.ErrorCode = s.ErrorCode;
             if (s.ErrorMessage is not null) msg.ErrorMessage = s.ErrorMessage;
+
+            if (s.ErrorCode == MarketingOptOutErrorCode)
+            {
+                await RecordOptOutFromFailureAsync(msg, s, ct);
+            }
         }
+    }
+
+    /// <summary>Meta'nın "alıcı pazarlama mesajlarından çıkmış" hata kodu.</summary>
+    private const string MarketingOptOutErrorCode = "131050";
+
+    /// <summary>
+    /// Düşen bir pazarlama mesajından tercih çıkarır.
+    ///
+    /// <para><b>Neden gerekli:</b> <c>user_preferences</c> webhook'u yalnızca
+    /// abone olduğumuz andan SONRA çıkanlar için çalışıyor ve Meta geçmişi
+    /// yeniden göndermiyor. Bugüne kadar çıkmış müşteriler defterde hiç
+    /// görünmeyecekti — ama onlara atılan ilk pazarlama mesajı <c>131050</c>
+    /// ile düşecek. Yani fiilen çalışan yol bu; defteri dolduran da bu olacak.</para>
+    ///
+    /// <para><b>Neden şablon türüne bakılmıyor:</b> sinyal hata kodunun kendisi.
+    /// Mesajın pazarlama olup olmadığını bizim sınıflandırmamıza bağlamak,
+    /// yanlış sınıflandırdığımızda kararı sessizce düşürürdü.</para>
+    /// </summary>
+    private async Task RecordOptOutFromFailureAsync(
+        WaMessage msg, WhatsAppStatusUpdate s, CancellationToken ct)
+    {
+        // Sohbetten telefon: durum webhook'u kimlik taşımıyor, ama mesajı KİME
+        // gönderdiğimizi kendi kaydımız zaten biliyor.
+        var phone = _db.WaConversations.Local.FirstOrDefault(c => c.Id == msg.ConversationId)?.CustomerPhone
+            ?? (await _db.WaConversations.FirstOrDefaultAsync(c => c.Id == msg.ConversationId, ct))
+                ?.CustomerPhone;
+
+        if (string.IsNullOrWhiteSpace(phone))
+        {
+            _log.LogWarning(
+                "WhatsApp: {Code} geldi ama mesajın sohbeti/telefonu bulunamadı ({WamId}).",
+                MarketingOptOutErrorCode, s.WamId);
+            return;
+        }
+
+        await UpsertMarketingPreferenceAsync(
+            msg.LicenseId, phone, bsuId: null, WaMarketingPreferences.MarketingCategory,
+            WaMarketingPreferences.Stop, s.Timestamp,
+            WaMarketingPreferenceSources.Error131050, ct);
+
+        _log.LogInformation(
+            "WhatsApp: {Code} nedeniyle pazarlama tercihi 'stop' olarak işlendi (lisans {LicenseId}).",
+            MarketingOptOutErrorCode, msg.LicenseId);
     }
 
     /// <summary>
@@ -420,60 +468,91 @@ public sealed class WhatsAppInboundJob
                 continue;
             }
 
-            // BSUID önce: kullanıcı adı özelliğinde telefon kaybolabiliyor,
-            // BSUID kalıcı. Telefonla arayıp bulamayıp yeni satır açmak,
-            // aynı kişi için ikinci bir defter satırı yaratırdı.
-            var row = p.UserId is not null
-                ? await _db.WaMarketingPreferences.FirstOrDefaultAsync(
-                    x => x.LicenseId == account.LicenseId && x.Category == p.Category &&
-                         x.BsuId == p.UserId, ct)
-                : null;
-
-            row ??= p.WaId is not null
-                ? await _db.WaMarketingPreferences.FirstOrDefaultAsync(
-                    x => x.LicenseId == account.LicenseId && x.Category == p.Category &&
-                         x.CustomerPhone == p.WaId, ct)
-                : null;
-
-            if (row is null)
-            {
-                _db.WaMarketingPreferences.Add(new WaMarketingPreference
-                {
-                    Id = Guid.NewGuid(),
-                    LicenseId = account.LicenseId,
-                    CustomerPhone = p.WaId,
-                    BsuId = p.UserId,
-                    Category = p.Category,
-                    Preference = p.Value,
-                    PreferenceAt = p.Timestamp,
-                    UpdatedAt = DateTimeOffset.UtcNow,
-                });
-            }
-            else
-            {
-                // Eksik kimliği tamamla: kararın sırasından bağımsız, her zaman
-                // kazanç. İki kimlikten biriyle açılmış satır, diğeri geldiğinde
-                // tam kimliğe kavuşur ve gelecekteki eşleştirmeler kolaylaşır.
-                row.CustomerPhone ??= p.WaId;
-                row.BsuId ??= p.UserId;
-
-                // Sıralama Meta'nın damgasına göre: webhook'lar sırasız gelebilir
-                // ve Hangfire eski bir paketi yeniden işleyebilir. İşleme anına
-                // göre sıralasaydık geç işlenen eski bir "resume", yeni bir
-                // "stop"u ezer ve müşteriye çıkmak istediği mesajı gönderirdik.
-                if (p.Timestamp >= row.PreferenceAt)
-                {
-                    row.Preference = p.Value;
-                    row.PreferenceAt = p.Timestamp;
-                }
-
-                row.UpdatedAt = DateTimeOffset.UtcNow;
-            }
+            await UpsertMarketingPreferenceAsync(
+                account.LicenseId, p.WaId, p.UserId, p.Category, p.Value, p.Timestamp,
+                WaMarketingPreferenceSources.UserPreferences, ct);
 
             _log.LogInformation(
                 "WhatsApp pazarlama tercihi: {Category}={Value} (lisans {LicenseId}).",
                 p.Category, p.Value, account.LicenseId);
         }
+    }
+
+    /// <summary>
+    /// Pazarlama tercihi defterine tek giriş noktası.
+    ///
+    /// <para><b>Neden ortak:</b> deftere iki ayrı yol yazıyor — müşterinin kendi
+    /// beyanı (<c>user_preferences</c>) ve bizim çıkarımımız (<c>131050</c>).
+    /// Eşleştirme ve sıralama kuralları iki yerde ayrı ayrı dursaydı biri
+    /// değiştirilip diğeri unutulabilirdi; sessizce ayrışan iki kural, aynı
+    /// müşteri için iki farklı cevap demek.</para>
+    /// </summary>
+    private async Task UpsertMarketingPreferenceAsync(
+        Guid licenseId, string? phone, string? bsuId, string category,
+        string preference, DateTimeOffset at, string source, CancellationToken ct)
+    {
+        // Önce Local: aynı pakette aynı müşteri için iki olay gelebilir (ör. iki
+        // pazarlama mesajı birden 131050 ile düştü). Yalnız veritabanına
+        // bakılsaydı ilk Add henüz kaydedilmediği için ikincisi de yeni satır
+        // açar ve SaveChanges tekil indeksten patlardı.
+        var row = _db.WaMarketingPreferences.Local.FirstOrDefault(
+            x => x.LicenseId == licenseId && x.Category == category &&
+                 ((bsuId is not null && x.BsuId == bsuId) ||
+                  (phone is not null && x.CustomerPhone == phone)));
+
+        // BSUID önce: kullanıcı adı özelliğinde telefon kaybolabiliyor, BSUID
+        // kalıcı. Telefonla arayıp bulamayıp yeni satır açmak, aynı kişi için
+        // ikinci bir defter satırı yaratırdı.
+        if (row is null && bsuId is not null)
+        {
+            row = await _db.WaMarketingPreferences.FirstOrDefaultAsync(
+                x => x.LicenseId == licenseId && x.Category == category && x.BsuId == bsuId, ct);
+        }
+
+        if (row is null && phone is not null)
+        {
+            row = await _db.WaMarketingPreferences.FirstOrDefaultAsync(
+                x => x.LicenseId == licenseId && x.Category == category &&
+                     x.CustomerPhone == phone, ct);
+        }
+
+        if (row is null)
+        {
+            _db.WaMarketingPreferences.Add(new WaMarketingPreference
+            {
+                Id = Guid.NewGuid(),
+                LicenseId = licenseId,
+                CustomerPhone = phone,
+                BsuId = bsuId,
+                Category = category,
+                Preference = preference,
+                PreferenceAt = at,
+                Source = source,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            return;
+        }
+
+        // Eksik kimliği tamamla: kararın sırasından bağımsız, her zaman kazanç.
+        // İki kimlikten biriyle açılmış satır, diğeri geldiğinde tam kimliğe
+        // kavuşur ve gelecekteki eşleştirmeler kolaylaşır.
+        row.CustomerPhone ??= phone;
+        row.BsuId ??= bsuId;
+
+        // Sıralama Meta'nın damgasına göre: webhook'lar sırasız gelebilir ve
+        // Hangfire eski bir paketi yeniden işleyebilir. İşleme anına göre
+        // sıralasaydık geç işlenen eski bir "resume", yeni bir "stop"u ezer ve
+        // müşteriye çıkmak istediği mesajı gönderirdik.
+        if (at >= row.PreferenceAt)
+        {
+            row.Preference = preference;
+            row.PreferenceAt = at;
+            // Kaynak, satırın değil YÜRÜRLÜKTEKİ kararın özelliği: karar
+            // değişmediyse eski kaynağı korumak gerekir.
+            row.Source = source;
+        }
+
+        row.UpdatedAt = DateTimeOffset.UtcNow;
     }
 
     private static int Rank(string status) => status switch
