@@ -21,14 +21,45 @@ public sealed record WhatsAppWebhookEvents(
     /// iz bulunmuyordu. Gerçek çözüm BSUID'i sohbet kimliği yapmak
     /// (ayrı iş); bu liste o işin ne kadar acil olduğunu ölçüyor.</para>
     /// </summary>
-    IReadOnlyList<string> DroppedNoPhoneUserIds)
+    IReadOnlyList<string> DroppedNoPhoneUserIds,
+
+    /// <summary>Pazarlama mesajı tercihi değişiklikleri (<c>user_preferences</c>).</summary>
+    IReadOnlyList<WhatsAppUserPreference> UserPreferences)
 {
     public static readonly WhatsAppWebhookEvents Empty =
         new(Array.Empty<WhatsAppInboundMessage>(), Array.Empty<WhatsAppStatusUpdate>(),
-            Array.Empty<string>());
+            Array.Empty<string>(), Array.Empty<WhatsAppUserPreference>());
 
-    public bool IsEmpty => Messages.Count == 0 && Statuses.Count == 0;
+    /// <summary>
+    /// İşlenecek bir şey var mı? <see cref="DroppedNoPhoneUserIds"/> BİLEREK
+    /// dışarıda: o liste kaydedilmiyor, yalnız loglanıyor ve log bu kontrolden
+    /// önce çalışıyor. <see cref="UserPreferences"/> ise kaydediliyor, dolayısıyla
+    /// burada sayılmak ZORUNDA — sayılmasaydı yalnız tercih içeren bir paket
+    /// erken dönüp sessizce düşerdi.
+    /// </summary>
+    public bool IsEmpty =>
+        Messages.Count == 0 && Statuses.Count == 0 && UserPreferences.Count == 0;
 }
+
+/// <summary>
+/// Müşterinin pazarlama mesajı tercihini değiştirdiği olay.
+///
+/// <para>Kimlik iki alandan gelebilir ve <b>ikisi de eksik olabilir</b>:
+/// <c>wa_id</c> kullanıcı adı özelliğinde düşer, <c>user_id</c> (BSUID) her
+/// payload'da bulunmayabilir. Ayrıştırıcı hiçbirini uydurmaz; kimliksiz olayı
+/// tüketici eler.</para>
+/// </summary>
+public sealed record WhatsAppUserPreference(
+    string PhoneNumberId,
+    string? WaId,
+    string? UserId,
+    /// <summary>Bugün tek belgelenmiş değer: <c>marketing_messages</c>.</summary>
+    string Category,
+    /// <summary><c>stop</c> ya da <c>resume</c>. Tanımadığımız bir değer
+    /// geldiğinde olduğu gibi taşınır — yorumlamak yerine saklamak, sessizce
+    /// elemekten iyidir.</summary>
+    string Value,
+    DateTimeOffset Timestamp);
 
 /// <summary>Gelen (ya da echo ile geri düşen) tek bir mesaj.</summary>
 public sealed record WhatsAppInboundMessage(
@@ -77,6 +108,7 @@ public static class WhatsAppWebhookParser
             var messages = new List<WhatsAppInboundMessage>();
             var statuses = new List<WhatsAppStatusUpdate>();
             var droppedNoPhone = new List<string>();
+            var preferences = new List<WhatsAppUserPreference>();
 
             if (!doc.RootElement.TryGetProperty("entry", out var entries) ||
                 entries.ValueKind != JsonValueKind.Array)
@@ -96,12 +128,19 @@ public static class WhatsAppWebhookParser
                 {
                     var field = Str(change, "field") ?? "";
                     var isEcho = field == "smb_message_echoes";
-                    if (field != "messages" && !isEcho) continue;
+                    var isPreference = field == "user_preferences";
+                    if (field != "messages" && !isEcho && !isPreference) continue;
                     if (!change.TryGetProperty("value", out var value)) continue;
 
                     var phoneNumberId = value.TryGetProperty("metadata", out var meta)
                         ? Str(meta, "phone_number_id") ?? ""
                         : "";
+
+                    if (isPreference)
+                    {
+                        ReadUserPreferences(value, phoneNumberId, preferences);
+                        continue;
+                    }
 
                     var profileNames = ReadContactNames(value);
 
@@ -131,9 +170,10 @@ public static class WhatsAppWebhookParser
                 }
             }
 
-            return messages.Count == 0 && statuses.Count == 0 && droppedNoPhone.Count == 0
+            return messages.Count == 0 && statuses.Count == 0 &&
+                   droppedNoPhone.Count == 0 && preferences.Count == 0
                 ? WhatsAppWebhookEvents.Empty
-                : new WhatsAppWebhookEvents(messages, statuses, droppedNoPhone);
+                : new WhatsAppWebhookEvents(messages, statuses, droppedNoPhone, preferences);
         }
     }
 
@@ -151,6 +191,58 @@ public static class WhatsAppWebhookParser
         var phone = WaPhone.Canonical(isEcho ? Str(m, "to") : Str(m, "from"));
         return phone.Length == 0;
     }
+
+    /// <summary>
+    /// <c>value.user_preferences[]</c> dizisini okur.
+    ///
+    /// <para><c>detail</c> alanı BİLEREK okunmuyor: Meta onu insan okusun diye
+    /// yazıyor ("User requested to resume marketing messages") ve metni
+    /// habersiz değiştirebilir. Karar <c>value</c> + <c>category</c>
+    /// alanlarında; serbest metne dayanan bir mantık ilk yerelleştirmede
+    /// sessizce bozulurdu.</para>
+    ///
+    /// <para><c>value</c>/<c>category</c> boşsa satır atlanır — kararı
+    /// olmayan bir tercih kaydı, defteri kirletmekten başka işe yaramaz.
+    /// Kimlik alanları ise burada elenmiyor: hangi kimliğin yeterli olduğuna
+    /// tüketici karar verir.</para>
+    /// </summary>
+    private static void ReadUserPreferences(
+        JsonElement value, string phoneNumberId, List<WhatsAppUserPreference> into)
+    {
+        if (!value.TryGetProperty("user_preferences", out var prefs) ||
+            prefs.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (var p in prefs.EnumerateArray())
+        {
+            var decision = Str(p, "value");
+            var category = Str(p, "category");
+            if (string.IsNullOrWhiteSpace(decision) || string.IsNullOrWhiteSpace(category))
+                continue;
+
+            var waId = WaPhone.Canonical(Str(p, "wa_id"));
+            var userId = Str(p, "user_id");
+
+            into.Add(new WhatsAppUserPreference(
+                phoneNumberId,
+                waId.Length == 0 ? null : waId,
+                string.IsNullOrWhiteSpace(userId) ? null : userId,
+                category!,
+                decision!,
+                ParseUnixSeconds(Str(p, "timestamp") ?? NumAsString(p, "timestamp"))));
+        }
+    }
+
+    /// <summary>Meta zaman damgasını mesajlarda <b>string</b>, tercih
+    /// olaylarında <b>sayı</b> olarak gönderiyor. İkisini de kabul ediyoruz;
+    /// tek biçime güvenmek, damgayı sessizce "şimdi"ye düşürürdü — ve bu
+    /// alan sıralama otoritesi olduğu için yanlış tercihi kalıcı yapardı.</summary>
+    private static string? NumAsString(JsonElement el, string name) =>
+        el.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number
+            ? v.GetRawText()
+            : null;
 
     private static Dictionary<string, string> ReadContactNames(JsonElement value)
     {

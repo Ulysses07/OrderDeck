@@ -56,6 +56,7 @@ public class LicenseDbContext : DbContext
     public DbSet<WaLabelRule> WaLabelRules => Set<WaLabelRule>();
     public DbSet<WaConversationLabel> WaConversationLabels => Set<WaConversationLabel>();
     public DbSet<WaDekontExtraction> WaDekontExtractions => Set<WaDekontExtraction>();
+    public DbSet<WaMarketingPreference> WaMarketingPreferences => Set<WaMarketingPreference>();
     public DbSet<Category> Categories => Set<Category>();
     public DbSet<Product> Products => Set<Product>();
     public DbSet<ProductVariant> ProductVariants => Set<ProductVariant>();
@@ -693,6 +694,26 @@ public class LicenseDbContext : DbContext
             b.Property(c => c.Status).HasMaxLength(16).IsRequired();
             b.HasIndex(c => new { c.LicenseId, c.CustomerPhone }).IsUnique();
             b.HasIndex(c => new { c.LicenseId, c.LastMessageAt });
+        });
+
+        mb.Entity<WaMarketingPreference>(b =>
+        {
+            b.HasKey(p => p.Id);
+            b.HasOne(p => p.License).WithMany().HasForeignKey(p => p.LicenseId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.Property(p => p.CustomerPhone).HasMaxLength(20);
+            // BSUID 23 karakter geliyor; Meta biçimi büyütürse diye pay bırakıldı.
+            b.Property(p => p.BsuId).HasMaxLength(64);
+            b.Property(p => p.Category).HasMaxLength(64).IsRequired();
+            b.Property(p => p.Preference).HasMaxLength(16).IsRequired();
+
+            // İki FİLTRELİ tekil indeks, tek birleşik indeks değil: kimliklerin
+            // ikisi de null olabildiği için birleşik indeks NULL'ları ayrı satır
+            // sayar ve aynı müşteri için sınırsız kopya birikirdi.
+            b.HasIndex(p => new { p.LicenseId, p.Category, p.CustomerPhone })
+             .IsUnique().HasFilter("[CustomerPhone] IS NOT NULL");
+            b.HasIndex(p => new { p.LicenseId, p.Category, p.BsuId })
+             .IsUnique().HasFilter("[BsuId] IS NOT NULL");
         });
 
         mb.Entity<WaMessage>(b =>
