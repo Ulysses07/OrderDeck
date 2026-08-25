@@ -99,6 +99,7 @@ public sealed class WhatsAppInboundJob
         var deltas = new Dictionary<Guid, ConversationDelta>();
         await ProcessMessagesAsync(events, pendingLabels, deltas, ct);
         await ProcessStatusesAsync(events, ct);
+        await ProcessUserPreferencesAsync(events, ct);
         await _db.SaveChangesAsync(ct);
         await ApplyConversationDeltasAsync(deltas, ct);
 
@@ -385,6 +386,93 @@ public sealed class WhatsAppInboundJob
             msg.Status = s.Status;
             if (s.ErrorCode is not null) msg.ErrorCode = s.ErrorCode;
             if (s.ErrorMessage is not null) msg.ErrorMessage = s.ErrorMessage;
+        }
+    }
+
+    /// <summary>
+    /// Pazarlama mesajı tercihlerini kalıcılaştırır.
+    ///
+    /// <para><b>Neden mesajlarla aynı SaveChanges'te:</b> tercih olayı kendi
+    /// paketinde gelir, mesajlarla aynı pakette gelmez. Aynı işlemi paylaşmaları
+    /// pratikte bir çakışma yaratmıyor; ayrı bir işlem açmak ise tercih
+    /// yazıldıktan sonra düşen bir paketin yeniden denemesini karmaşıklaştırırdı.</para>
+    /// </summary>
+    private async Task ProcessUserPreferencesAsync(WhatsAppWebhookEvents events, CancellationToken ct)
+    {
+        foreach (var p in events.UserPreferences)
+        {
+            // Kimliksiz tercih kaydedilemez: kimin kararı olduğunu bilmiyoruz.
+            // Uydurulmuş bir eşleştirme, kaydın hiç olmamasından tehlikeli.
+            if (p.WaId is null && p.UserId is null)
+            {
+                _log.LogWarning(
+                    "WhatsApp: kimliksiz user_preferences olayı atlandı ({Category}={Value}).",
+                    p.Category, p.Value);
+                continue;
+            }
+
+            var account = await _accounts.GetByPhoneNumberIdAsync(p.PhoneNumberId, ct);
+            if (account is null)
+            {
+                _log.LogWarning(
+                    "WhatsApp: tanınmayan numara için user_preferences olayı ({PhoneNumberId}).",
+                    p.PhoneNumberId);
+                continue;
+            }
+
+            // BSUID önce: kullanıcı adı özelliğinde telefon kaybolabiliyor,
+            // BSUID kalıcı. Telefonla arayıp bulamayıp yeni satır açmak,
+            // aynı kişi için ikinci bir defter satırı yaratırdı.
+            var row = p.UserId is not null
+                ? await _db.WaMarketingPreferences.FirstOrDefaultAsync(
+                    x => x.LicenseId == account.LicenseId && x.Category == p.Category &&
+                         x.BsuId == p.UserId, ct)
+                : null;
+
+            row ??= p.WaId is not null
+                ? await _db.WaMarketingPreferences.FirstOrDefaultAsync(
+                    x => x.LicenseId == account.LicenseId && x.Category == p.Category &&
+                         x.CustomerPhone == p.WaId, ct)
+                : null;
+
+            if (row is null)
+            {
+                _db.WaMarketingPreferences.Add(new WaMarketingPreference
+                {
+                    Id = Guid.NewGuid(),
+                    LicenseId = account.LicenseId,
+                    CustomerPhone = p.WaId,
+                    BsuId = p.UserId,
+                    Category = p.Category,
+                    Preference = p.Value,
+                    PreferenceAt = p.Timestamp,
+                    UpdatedAt = DateTimeOffset.UtcNow,
+                });
+            }
+            else
+            {
+                // Eksik kimliği tamamla: kararın sırasından bağımsız, her zaman
+                // kazanç. İki kimlikten biriyle açılmış satır, diğeri geldiğinde
+                // tam kimliğe kavuşur ve gelecekteki eşleştirmeler kolaylaşır.
+                row.CustomerPhone ??= p.WaId;
+                row.BsuId ??= p.UserId;
+
+                // Sıralama Meta'nın damgasına göre: webhook'lar sırasız gelebilir
+                // ve Hangfire eski bir paketi yeniden işleyebilir. İşleme anına
+                // göre sıralasaydık geç işlenen eski bir "resume", yeni bir
+                // "stop"u ezer ve müşteriye çıkmak istediği mesajı gönderirdik.
+                if (p.Timestamp >= row.PreferenceAt)
+                {
+                    row.Preference = p.Value;
+                    row.PreferenceAt = p.Timestamp;
+                }
+
+                row.UpdatedAt = DateTimeOffset.UtcNow;
+            }
+
+            _log.LogInformation(
+                "WhatsApp pazarlama tercihi: {Category}={Value} (lisans {LicenseId}).",
+                p.Category, p.Value, account.LicenseId);
         }
     }
 
