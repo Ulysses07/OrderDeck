@@ -57,6 +57,7 @@ public class LicenseDbContext : DbContext
     public DbSet<WaConversationLabel> WaConversationLabels => Set<WaConversationLabel>();
     public DbSet<WaDekontExtraction> WaDekontExtractions => Set<WaDekontExtraction>();
     public DbSet<WaMarketingPreference> WaMarketingPreferences => Set<WaMarketingPreference>();
+    public DbSet<WaDroppedInbound> WaDroppedInbounds => Set<WaDroppedInbound>();
     public DbSet<Category> Categories => Set<Category>();
     public DbSet<Product> Products => Set<Product>();
     public DbSet<ProductVariant> ProductVariants => Set<ProductVariant>();
@@ -715,6 +716,18 @@ public class LicenseDbContext : DbContext
              .IsUnique().HasFilter("[CustomerPhone] IS NOT NULL");
             b.HasIndex(p => new { p.LicenseId, p.Category, p.BsuId })
              .IsUnique().HasFilter("[BsuId] IS NOT NULL");
+        });
+
+        mb.Entity<WaDroppedInbound>(b =>
+        {
+            b.HasKey(d => d.Id);
+            b.HasOne(d => d.License).WithMany().HasForeignKey(d => d.LicenseId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.Property(d => d.BsuId).HasMaxLength(64).IsRequired();
+            b.Property(d => d.PhoneNumberId).HasMaxLength(32).IsRequired();
+
+            // Müşteri başına tek satır: sayaç, mesaj defteri değil.
+            b.HasIndex(d => new { d.LicenseId, d.BsuId }).IsUnique();
         });
 
         mb.Entity<WaMessage>(b =>

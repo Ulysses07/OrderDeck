@@ -9,37 +9,48 @@ public sealed record WhatsAppWebhookEvents(
     IReadOnlyList<WhatsAppInboundMessage> Messages,
     IReadOnlyList<WhatsAppStatusUpdate> Statuses,
     /// <summary>
-    /// Telefon numarası taşımadığı için ayrıştırılamayan mesajların BSUID'leri
-    /// (<c>from_user_id</c>; yoksa boş string).
+    /// Telefon numarası taşımadığı için ayrıştırılamayan mesajlar.
     ///
     /// <para>Kullanıcı adı özelliğini açmış bir müşteri, son 30 gün içinde
     /// yazışmadıysak ve Meta'nın kişi defterinde değilse, webhook'ta
     /// <c>wa_id</c>/<c>from</c> göndermiyor — yerine yalnız BSUID geliyor.
     /// Sohbet modelimiz telefona anahtarlı olduğu için bu mesajı henüz
-    /// kaydedemiyoruz. Buradaki amaç kaydetmek değil, <b>kaybın sessiz
-    /// olmasını engellemek</b>: yayıncı yazan müşteriyi görmüyorken logda hiçbir
-    /// iz bulunmuyordu. Gerçek çözüm BSUID'i sohbet kimliği yapmak
-    /// (ayrı iş); bu liste o işin ne kadar acil olduğunu ölçüyor.</para>
+    /// kaydedemiyoruz. Buradaki amaç mesajı kurtarmak değil, <b>kaybın sessiz
+    /// olmasını engellemek</b>: yayıncı yazan müşteriyi görmüyorken hiçbir iz
+    /// kalmıyordu. Gerçek çözüm BSUID'i sohbet kimliği yapmak (ayrı iş); bu
+    /// liste o işin ne kadar acil olduğunu ölçüyor.</para>
     /// </summary>
-    IReadOnlyList<string> DroppedNoPhoneUserIds,
+    IReadOnlyList<WhatsAppDroppedInbound> DroppedNoPhone,
 
     /// <summary>Pazarlama mesajı tercihi değişiklikleri (<c>user_preferences</c>).</summary>
     IReadOnlyList<WhatsAppUserPreference> UserPreferences)
 {
     public static readonly WhatsAppWebhookEvents Empty =
         new(Array.Empty<WhatsAppInboundMessage>(), Array.Empty<WhatsAppStatusUpdate>(),
-            Array.Empty<string>(), Array.Empty<WhatsAppUserPreference>());
+            Array.Empty<WhatsAppDroppedInbound>(), Array.Empty<WhatsAppUserPreference>());
 
     /// <summary>
-    /// İşlenecek bir şey var mı? <see cref="DroppedNoPhoneUserIds"/> BİLEREK
-    /// dışarıda: o liste kaydedilmiyor, yalnız loglanıyor ve log bu kontrolden
-    /// önce çalışıyor. <see cref="UserPreferences"/> ise kaydediliyor, dolayısıyla
-    /// burada sayılmak ZORUNDA — sayılmasaydı yalnız tercih içeren bir paket
-    /// erken dönüp sessizce düşerdi.
+    /// İşlenecek bir şey var mı?
+    ///
+    /// <para><b>Üç liste de sayılmak ZORUNDA</b>, çünkü üçü de kalıcılaşıyor.
+    /// <see cref="DroppedNoPhone"/> eskiden dışarıdaydı — o zaman yalnız
+    /// loglanıyordu ve log bu kontrolden önce çalışıyordu. Artık deftere
+    /// yazılıyor: dışarıda bırakılsaydı <b>yalnız numarasız mesaj içeren bir
+    /// paket</b> erken döner ve ölçüm hiç çalışmazdı. Üstelik kaybın en saf
+    /// hâli tam olarak o paket — tek mesaj, o da numarasız.</para>
     /// </summary>
     public bool IsEmpty =>
-        Messages.Count == 0 && Statuses.Count == 0 && UserPreferences.Count == 0;
+        Messages.Count == 0 && Statuses.Count == 0 &&
+        DroppedNoPhone.Count == 0 && UserPreferences.Count == 0;
 }
+
+/// <summary>Numarasız geldiği için panele düşemeyen bir gelen mesajın izi.</summary>
+public sealed record WhatsAppDroppedInbound(
+    string PhoneNumberId,
+    /// <summary><c>from_user_id</c>. Hiç kimlik yoksa boş string gelir — o
+    /// mesajı deftere yazamayız, kimin olduğunu bilmiyoruz.</summary>
+    string UserId,
+    DateTimeOffset Timestamp);
 
 /// <summary>
 /// Müşterinin pazarlama mesajı tercihini değiştirdiği olay.
@@ -107,7 +118,7 @@ public static class WhatsAppWebhookParser
         {
             var messages = new List<WhatsAppInboundMessage>();
             var statuses = new List<WhatsAppStatusUpdate>();
-            var droppedNoPhone = new List<string>();
+            var droppedNoPhone = new List<WhatsAppDroppedInbound>();
             var preferences = new List<WhatsAppUserPreference>();
 
             if (!doc.RootElement.TryGetProperty("entry", out var entries) ||
@@ -154,7 +165,10 @@ public static class WhatsAppWebhookParser
                             var parsed = ParseMessage(m, phoneNumberId, profileNames, isEcho);
                             if (parsed is not null) messages.Add(parsed);
                             else if (HasNoPhone(m, isEcho))
-                                droppedNoPhone.Add(Str(m, "from_user_id") ?? "");
+                                droppedNoPhone.Add(new WhatsAppDroppedInbound(
+                                    phoneNumberId,
+                                    Str(m, "from_user_id") ?? "",
+                                    ParseUnixSeconds(Str(m, "timestamp"))));
                         }
                     }
 
