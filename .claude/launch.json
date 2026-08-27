@@ -6,6 +6,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "web", "run", "dev"],
       "port": 3000
+    },
+    {
+      "name": "panel",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "../OrderDeck-Mobile/apps/panel", "run", "dev"],
+      "port": 5173
     }
   ]
 }
