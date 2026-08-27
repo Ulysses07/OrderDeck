@@ -59,6 +59,9 @@ orderdeck-chat-bridge-*/
 .claude/settings.local.json
 .claude/worktrees/
 
+# Codex CLI yerel araç ayarı (makineye özel; paylaşılacak bir şey yok)
+.codex/
+
 # Yerel geliştirme secret'ları (kök docker-compose.yml bunları okur).
 # .env.example commit'lenir; gerçek .env asla.
 .env
