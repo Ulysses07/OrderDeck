@@ -692,4 +692,90 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
         body.Ok.Should().BeFalse();
         body.ErrorCode.Should().Be("no_account");
     }
+
+    private sealed record DroppedInboundDto(
+        int CustomerCount, int MessageCount,
+        DateTimeOffset? FirstSeenAt, DateTimeOffset? LastSeenAt);
+
+    private static async Task<DroppedInboundDto> GetDroppedAsync(Seed s) =>
+        (await s.Client.GetFromJsonAsync<DroppedInboundDto>(
+            "/api/panel/whatsapp-conversations/dropped-inbound"))!;
+
+    private async Task AddDroppedAsync(
+        Guid licenseId, string bsuId, int count, DateTimeOffset first, DateTimeOffset last)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        db.WaDroppedInbounds.Add(new WaDroppedInbound
+        {
+            Id = Guid.NewGuid(), LicenseId = licenseId, BsuId = bsuId,
+            PhoneNumberId = "PNID_1", MessageCount = count,
+            FirstSeenAt = first, LastSeenAt = last,
+        });
+        await db.SaveChangesAsync();
+    }
+
+    // Kayıp yokken 404 değil sıfırlı gövde: panel "veri yok" ile "kayıp yok"u
+    // ayırt etmek zorunda kalmasın.
+    [Fact]
+    public async Task Hic_dusen_mesaj_yoksa_sifir_doner()
+    {
+        var s = await SeedAsync();
+
+        var body = await GetDroppedAsync(s);
+
+        body.CustomerCount.Should().Be(0);
+        body.MessageCount.Should().Be(0);
+        body.FirstSeenAt.Should().BeNull();
+        body.LastSeenAt.Should().BeNull();
+    }
+
+    // Satır sayısı kaç MÜŞTERİ, MessageCount toplamı kaç mesaj — ikisi ayrı
+    // soru ve uyarı metni ikisini de kullanıyor. Damgalar da iki uçtan:
+    // "ne zamandan beri" ile "en son ne zaman" farklı satırlardan gelebilir.
+    [Fact]
+    public async Task Musteri_sayisi_ile_mesaj_sayisi_ayri_toplanir()
+    {
+        var s = await SeedAsync();
+        var ilk = DateTimeOffset.UtcNow.AddDays(-9);
+        var son = DateTimeOffset.UtcNow.AddHours(-2);
+
+        await AddDroppedAsync(s.LicenseId, "US.1", 7, ilk, DateTimeOffset.UtcNow.AddDays(-5));
+        await AddDroppedAsync(s.LicenseId, "US.2", 4, DateTimeOffset.UtcNow.AddDays(-3), son);
+
+        var body = await GetDroppedAsync(s);
+
+        body.CustomerCount.Should().Be(2);
+        body.MessageCount.Should().Be(11);
+        body.FirstSeenAt.Should().BeCloseTo(ilk, TimeSpan.FromSeconds(1));
+        body.LastSeenAt.Should().BeCloseTo(son, TimeSpan.FromSeconds(1));
+    }
+
+    // Uyarı "senin müşterin sana yazdı" diyor. Başka yayıncının hattındaki
+    // kayıp sızsaydı, yayıncıyı hiç yaşamadığı bir kayba inandırırdı.
+    [Fact]
+    public async Task Baska_yayincinin_kaybi_sizmaz()
+    {
+        var mine = await SeedAsync();
+        var theirs = await SeedAsync("905441112233");
+
+        await AddDroppedAsync(
+            theirs.LicenseId, "US.9", 99,
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        var body = await GetDroppedAsync(mine);
+
+        body.CustomerCount.Should().Be(0);
+        body.MessageCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Kimliksiz_istek_401_alir()
+    {
+        var anon = _factory.CreateClient();
+
+        var resp = await anon.GetAsync("/api/panel/whatsapp-conversations/dropped-inbound");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
 }

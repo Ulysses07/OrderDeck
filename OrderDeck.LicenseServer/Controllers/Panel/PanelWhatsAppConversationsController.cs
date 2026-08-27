@@ -134,6 +134,45 @@ public sealed class PanelWhatsAppConversationsController : ControllerBase
         return Ok(rows);
     }
 
+    /// <summary>
+    /// Numarasız geldiği için sohbet listesine hiç düşemeyen mesajların özeti.
+    ///
+    /// <para><b>Eşik burada değil panelde:</b> uç kümülatif toplamı ve son
+    /// görülme anını döndürüyor, "uyarı gösterilsin mi" kararını istemci
+    /// veriyor. Aynı sebep <see cref="ConversationDto.WindowExpiresAt"/>'teki
+    /// sebep — bu cevap önbelleğe alınıyor; sunucu "göster/gösterme" bayrağı
+    /// yollasaydı bayrak bayatlar, uyarı kayıp durduktan günler sonra da
+    /// ekranda kalırdı. Mutlak anı istemci her render'da
+    /// <c>Date.now()</c> ile karşılaştırabiliyor.</para>
+    /// </summary>
+    public sealed record DroppedInboundDto(
+        int CustomerCount, int MessageCount,
+        DateTimeOffset? FirstSeenAt, DateTimeOffset? LastSeenAt);
+
+    [HttpGet("dropped-inbound")]
+    public async Task<IActionResult> DroppedInbound(CancellationToken ct)
+    {
+        var licenseId = await PanelLicenseScope.ResolveAsync(_db, User.GetTenantCustomerId(), ct);
+        if (licenseId is null) return Ok(new DroppedInboundDto(0, 0, null, null));
+
+        // Satır sayısı = kaç MÜŞTERİ (tablo müşteri başına tek satır tutuyor),
+        // MessageCount toplamı = kaç mesaj. İkisi ayrı sorular: "3 müşteri"
+        // yayıncıya kaç kişiyi kaçırdığını, "11 mesaj" kaybın hacmini söyler.
+        var summary = await _db.WaDroppedInbounds
+            .Where(d => d.LicenseId == licenseId.Value)
+            .GroupBy(_ => 1)
+            .Select(g => new DroppedInboundDto(
+                g.Count(),
+                g.Sum(x => x.MessageCount),
+                g.Min(x => (DateTimeOffset?)x.FirstSeenAt),
+                g.Max(x => (DateTimeOffset?)x.LastSeenAt)))
+            .FirstOrDefaultAsync(ct);
+
+        // Hiç kayıp yoksa grup oluşmaz; sıfırlı gövde dönüyoruz ki panel
+        // "veri yok" ile "kayıp yok" ayrımı yapmak zorunda kalmasın.
+        return Ok(summary ?? new DroppedInboundDto(0, 0, null, null));
+    }
+
     public sealed record MessageDto(
         Guid Id, string Direction, string Type, string? Body, string Status,
         string? Origin, string? TemplateName, string? MediaMimeType,
