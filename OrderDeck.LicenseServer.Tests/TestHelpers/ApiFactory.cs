@@ -150,7 +150,23 @@ public class ApiFactory : WebApplicationFactory<Program>
             services.AddHangfire(cfg => cfg
                 .UseSimpleAssemblyNameTypeSerializer()
                 .UseRecommendedSerializerSettings()
-                .UseMemoryStorage());
+                .UseMemoryStorage()
+                // Hangfire'ın günlük sağlayıcısı SÜREÇ GENELİ statik
+                // (LogProvider.CurrentLogProvider), oysa her test sınıfı
+                // IClassFixture<ApiFactory> ile KENDİ host'unu kuruyor ve xUnit
+                // sınıfları paralel koşturuyor. AddHangfire, bu geri çağrıdan
+                // hemen ÖNCE statiğe o host'un ILoggerFactory'sine bağlı bir
+                // sağlayıcı yazıyor; host kapanınca statikte kapatılmış bir
+                // fabrika kalıyor ve hâlâ koşan başka bir sınıf Hangfire'a
+                // dokunduğunda ObjectDisposedException alıyor — CI'da rastgele
+                // testler düşüyordu, hep farklı testler, ürün kodu suçsuz.
+                //
+                // NullLoggerFactory.Instance süreç ömürlü ve Dispose'u no-op:
+                // hiçbir host'a bağlı olmadığı için bayatlayamaz. Bedeli,
+                // Hangfire'ın kendi iç günlüklerinin testlerde susması — bunlara
+                // bakmak gerekirse buraya geçici olarak gerçek bir fabrika ver.
+                .UseLogProvider(new Hangfire.AspNetCore.AspNetCoreLogProvider(
+                    Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance)));
 
             // Disable rate limiting in tests — remove all IConfigureOptions<RateLimiterOptions>
             // registrations (added by AddRateLimiter in Program.cs) and register a fresh
