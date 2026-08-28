@@ -558,6 +558,26 @@ public class Program
                         QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
                         QueueLimit = 0
                     }));
+            // Panel CSP ihlal bildirimi — anonim telemetri. Asıl sınırlama
+            // İSTEMCİDE: panel sayfa yüklemesi başına en çok birkaç benzersiz
+            // ihlal yolluyor. Buradaki limit ona güvenmemek için, çünkü uç
+            // anonim. Bilerek düşük tutuldu: aynı ihlali yüz kez görmek sıfır
+            // ek bilgi veriyor, ilk birkaçı zaten her şeyi söylüyor.
+            //
+            // Not: adlandırılmış politika global limiter'ın YERİNE geçmiyor,
+            // ona EK olarak işliyor — yani bir ihlal fırtınası kullanıcının
+            // kendi 100/dk bütçesini de yerdi. İstemci tarafındaki tavan bu
+            // yüzden isteğe bağlı bir iyileştirme değil, gereklilik.
+            opt.AddPolicy("csp-report", ctx =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                    factory: _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 60,
+                        Window = TimeSpan.FromHours(1),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0
+                    }));
             opt.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
                 RateLimitPartition.GetFixedWindowLimiter(
                     partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
