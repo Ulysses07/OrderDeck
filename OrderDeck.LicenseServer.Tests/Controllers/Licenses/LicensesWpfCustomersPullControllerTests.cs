@@ -18,7 +18,8 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
 
     private sealed record WpfCustomerPullItem(
         Guid Id, string Platform, string Username,
-        string? FullName, string? Phone, string? Address, DateTimeOffset UpdatedAt);
+        string? FullName, string? Phone, string? Address, DateTimeOffset UpdatedAt,
+        DateTimeOffset? PurgedAt);
 
     private async Task<(HttpClient client, Guid customerId, Guid licenseId)> SetupAsync()
     {
@@ -45,7 +46,8 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
     }
 
     private async Task SeedProjectionAsync(Guid licenseId, Guid id, string platform, string username,
-        string? fullName = null, string? phone = null, string? address = null, DateTimeOffset? updatedAt = null)
+        string? fullName = null, string? phone = null, string? address = null, DateTimeOffset? updatedAt = null,
+        DateTimeOffset? purgedAt = null)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -61,6 +63,7 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
             // Varsayılan damga kararlılık ufkunun gerisinde: uç, son saniyelerde
             // değişen satırları bilerek okumuyor (bkz. ReverseSyncCursor).
             UpdatedAt = updatedAt ?? DateTimeOffset.UtcNow.AddMinutes(-1),
+            PurgedAt = purgedAt,
         });
         await db.SaveChangesAsync();
     }
@@ -322,5 +325,35 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
         item.FullName.Should().Be("Full Name");
         item.Phone.Should().Be("+905001112233");
         item.Address.Should().Be("Istanbul");
+        item.PurgedAt.Should().BeNull("silinmemiş satırda damga boş olmalı");
+    }
+
+    // ── KVKK: silinen satır ELENMİYOR, damgayla gönderiliyor ─────────────────
+    //
+    // Bu uç, yayıncının kendi bilgisayarındaki üçüncü kopyaya ulaşan TEK yol.
+    // Satır yanıttan düşseydi WPF silmeyi hiç duymaz, kişisel veri orada
+    // süresiz kalırdı (bkz. ShopperPurgeService adım 3).
+
+    [Fact]
+    public async Task Since_purged_row_is_delivered_with_the_stamp()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+
+        var id = Guid.NewGuid();
+        var purgedAt = DateTimeOffset.UtcNow.AddMinutes(-2);
+        // Purge sonrası satırın hâli: kişisel alanlar zaten boş.
+        await SeedProjectionAsync(licenseId, id, "youtube", "silinenkullanici",
+            fullName: null, phone: null, address: null,
+            updatedAt: purgedAt, purgedAt: purgedAt);
+
+        var since = Uri.EscapeDataString(purgedAt.AddSeconds(-1).ToString("O"));
+        var resp = await client.GetAsync($"/api/v1/licenses/{licenseId}/wpf-customers/since?since={since}");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var items = await resp.Content.ReadFromJsonAsync<List<WpfCustomerPullItem>>();
+        var item = items!.Single(i => i.Id == id);
+        item.PurgedAt.Should().NotBeNull("WPF'in yerel kopyayı temizleyebilmesi için işaret şart");
+        item.Username.Should().Be("silinenkullanici",
+            "kimlik anahtarı kalmalı — WPF eşleşmeyi (Platform, Username) ile yapıyor");
     }
 }

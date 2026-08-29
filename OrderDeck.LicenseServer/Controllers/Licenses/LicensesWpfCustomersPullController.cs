@@ -20,6 +20,17 @@ public sealed class LicensesWpfCustomersPullController : ControllerBase
     private readonly LicenseDbContext _db;
     public LicensesWpfCustomersPullController(LicenseDbContext db) => _db = db;
 
+    /// <param name="PurgedAt">
+    /// KVKK silme talebiyle sunucudaki kişisel alanlar temizlendiyse dolu.
+    /// Bu satırlar yanıttan ELENMİYOR, işaretlenerek gönderiliyor: yayıncının
+    /// kendi bilgisayarındaki kopyayı ancak bu işaret temizletebilir (WPF'in
+    /// sunucudan silme haberi alacağı başka bir kanal yok). Elenselerdi silme
+    /// yayıncının diskinde sonsuza kadar kalırdı.
+    ///
+    /// Alanın SONA eklenmesi kasıtlı — sahadaki eski kurulumlar (v0.8.0 ve
+    /// öncesi) bilinmeyen JSON alanını yok sayar; bu ekleme onları kırmaz,
+    /// yalnızca temizlik dalını çalıştıramazlar.
+    /// </param>
     public sealed record WpfCustomerPullItem(
         Guid Id,
         string Platform,
@@ -27,7 +38,8 @@ public sealed class LicensesWpfCustomersPullController : ControllerBase
         string? FullName,
         string? Phone,
         string? Address,
-        DateTimeOffset UpdatedAt);
+        DateTimeOffset UpdatedAt,
+        DateTimeOffset? PurgedAt);
 
     /// <summary>
     /// Bileşik imleç (<c>since</c> + <c>sinceId</c>), kararlılık ufkunun
@@ -61,7 +73,7 @@ public sealed class LicensesWpfCustomersPullController : ControllerBase
             .Select(p => new WpfCustomerPullItem(
                 p.Id, p.Platform, p.Username,
                 p.FullName, p.Phone, p.Address,
-                p.UpdatedAt))
+                p.UpdatedAt, p.PurgedAt))
             .ToListAsync(ct);
 
         return Ok(rows);
