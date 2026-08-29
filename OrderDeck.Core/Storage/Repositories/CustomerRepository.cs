@@ -620,6 +620,53 @@ public sealed class CustomerRepository
         return null;
     }
 
+    /// <summary>
+    /// KVKK silme talebi: yayıncının kendi bilgisayarındaki kişisel alanları
+    /// kalıcı olarak boşaltır. Sunucudaki <c>ShopperPurgeService</c>'in üçüncü
+    /// katmanı — tetikleyici <c>ShopperRegistrationIngestService</c>'e gelen
+    /// <c>PurgedAt</c> işareti.
+    ///
+    /// <para><b>Satır silinmiyor, boşaltılıyor.</b> Sunucudaki desenin aynısı:
+    /// <c>Label</c> ve <c>Order</c> satırları <c>Customer.Id</c>'ye bağlı; satır
+    /// gidince mali geçmiş sahipsiz kalır ve ciro raporları sessizce bozulur.</para>
+    ///
+    /// <para><b>Kalanlar ve gerekçesi:</b> <c>Platform</c>/<c>Username</c> kimlik
+    /// anahtarı — silinirse aynı kişi yayında tek bir yorum yazdığı anda chat
+    /// akışı satırı bulamaz ve TEMİZ bir kopyasını yeniden açar; kalınca mevcut
+    /// boş satırla eşleşir, yalnız <c>LastSeenAt</c> ilerler.
+    /// <c>TotalAmount</c>/<c>TotalLabelsPrinted</c> mali kayıt.
+    /// <c>IsBlacklisted</c> sahtekârlık koruması (sunucuda ödeme hash'lerinin
+    /// kalmasıyla aynı gerekçe) — temizlenseydi silme talebi kara listeden
+    /// çıkmanın yolu olurdu. <c>Notes</c> yayıncının kendi yazdığı işletme
+    /// notu; serbest metin olduğu için kişisel veri içerebilir ama silinmesi
+    /// operatörün kendi kaydını yok etmek olur — bilerek dokunulmuyor.</para>
+    ///
+    /// <para><c>LastSeenAt</c>'e DOKUNULMUYOR: değişseydi satır
+    /// <c>GetUpdatedSince</c>'e düşer ve bir sonraki push'ta sunucuya geri
+    /// giderdi (orada <c>PurgedAt</c> kapısına takılıp yazılmazdı ama boşuna
+    /// tur atardı).</para>
+    /// </summary>
+    /// <returns>Güncellenen satır sayısı; bilinmeyen id'de 0.</returns>
+    public int ScrubPersonalData(string customerId)
+    {
+        using var conn = _factory.Open();
+        return conn.Execute(
+            @"UPDATE Customer
+              SET DisplayName     = '[Silindi]',
+                  FullName        = NULL,
+                  Address         = NULL,
+                  City            = NULL,
+                  District        = NULL,
+                  Phone           = NULL,
+                  Email           = NULL,
+                  Tckn            = NULL,
+                  AvatarUrl       = NULL,
+                  WhatsAppConsent = 0,
+                  SmsConsent      = 0
+              WHERE Id = @id",
+            new { id = customerId });
+    }
+
     /// <summary>Phase 4g: WhatsApp E.164 telefonu güncelle. Geçersiz id no-op.</summary>
     public void UpdatePhone(string customerId, string e164Phone)
     {

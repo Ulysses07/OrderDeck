@@ -16,6 +16,12 @@ namespace OrderDeck.App.Services.Sync;
 ///
 /// Eğer WPF'te aynı (Platform, Username) ile bir Customer zaten varsa skip
 /// (idempotent). Aksi halde yeni Customer kaydı insert eder.
+///
+/// Tek istisna <c>PurgedAt</c>: KVKK silme talebiyle sunucuda temizlenen kişinin
+/// yerel kopyası da boşaltılır (bkz. <c>CustomerRepository.ScrubPersonalData</c>).
+/// Kişisel veri üç katmanda duruyor — sunucu Shoppers, sunucu
+/// WpfCustomerProjections ve burası; ilk ikisini <c>ShopperPurgeService</c>
+/// hallediyor, üçüncüsüne ulaşan tek yol bu ingest.
 /// </summary>
 public sealed class ShopperRegistrationIngestService
 {
@@ -69,10 +75,27 @@ public sealed class ShopperRegistrationIngestService
             if (items.Count == 0) return 0;
 
             var inserted = 0;
+            var scrubbed = 0;
             foreach (var item in items)
             {
-                // Idempotent: skip if WPF already has a Customer with this (Platform, Username)
                 var existing = _customers.FindByPlatformAndUsername(item.Platform, item.Username);
+
+                // KVKK silme talebi (Y-13/Y-14 3. katman). Kişisel verinin
+                // üçüncü kopyası yayıncının kendi diskinde; sunucu onu
+                // silemediği için tek yol bu işaret.
+                //
+                // Var olan satır TEMİZLENİR ama yeni satır AÇILMAZ: silinen
+                // kişinin kaydı bu bilgisayarda hiç yoksa, sunucudan gelen boş
+                // satırı burada oluşturmanın hiçbir faydası yok — sadece adı
+                // "[Silindi]" olan sahte bir müşteri kartı üretirdi.
+                if (item.PurgedAt is not null)
+                {
+                    if (existing is not null && _customers.ScrubPersonalData(existing.Id) > 0)
+                        scrubbed++;
+                    continue;
+                }
+
+                // Idempotent: skip if WPF already has a Customer with this (Platform, Username)
                 if (existing is not null) continue;
 
                 var nowUnix = _clock.UnixNow();
@@ -106,6 +129,10 @@ public sealed class ShopperRegistrationIngestService
 
             if (inserted > 0)
                 _log.LogInformation("Ingested {Count} shopper registrations as new customers", inserted);
+            // Ayrı satır: silme işleminin sahaya indiğinin tek kanıtı bu günlük.
+            if (scrubbed > 0)
+                _log.LogInformation(
+                    "KVKK silme: {Count} yerel müşteri kaydının kişisel alanları temizlendi", scrubbed);
             return inserted;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

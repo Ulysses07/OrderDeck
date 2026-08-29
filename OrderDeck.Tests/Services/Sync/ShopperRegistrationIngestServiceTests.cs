@@ -52,6 +52,13 @@ public sealed class ShopperRegistrationIngestServiceTests
         return "[" + string.Join(",", entries) + "]";
     }
 
+    /// <summary>Purge sonrası sunucunun gönderdiği satır: kişisel alanlar boş,
+    /// <c>purgedAt</c> dolu.</summary>
+    private static string PurgedPullJson(Guid id, string platform, string username, DateTimeOffset updatedAt) =>
+        $"[{{\"id\":\"{id}\",\"platform\":\"{platform}\",\"username\":\"{username}\"," +
+        $"\"fullName\":null,\"phone\":null,\"address\":null," +
+        $"\"updatedAt\":\"{updatedAt:O}\",\"purgedAt\":\"{updatedAt:O}\"}}]";
+
     private sealed record Fixture(
         ShopperRegistrationIngestService Svc,
         CustomerRepository Customers,
@@ -302,6 +309,105 @@ public sealed class ShopperRegistrationIngestServiceTests
         var saved = fx.Store.Load();
         saved.LastShopperIngestUpdatedAt.Should().Be(t2);
         saved.LastShopperIngestId.Should().Be(existingId);
+    }
+
+    // ── KVKK silme (Y-13/Y-14 3. katman) ──────────────────────────────────────
+
+    [Fact]
+    public async Task IngestOnce_purged_item_scrubs_local_customer()
+    {
+        var shopperId = Guid.NewGuid();
+        var updatedAt = DateTimeOffset.UtcNow;
+
+        var fx = Build(req =>
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (path == "/api/v1/me/licenses")
+                return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/wpf-customers/since"))
+                return FakeHttpMessageHandler.Json(200,
+                    PurgedPullJson(shopperId, "youtube", "silinen", updatedAt));
+            return FakeHttpMessageHandler.Empty(404);
+        });
+        using var _d = fx.Db;
+
+        fx.Customers.Insert(new OrderDeck.Core.Customers.Customer(
+            Id: shopperId.ToString("N"),
+            Platform: "youtube",
+            Username: "silinen",
+            DisplayName: "Ayşe Y.",
+            AvatarUrl: "https://cdn.example/a.jpg",
+            FirstSeenAt: 1000L,
+            LastSeenAt: 2000L,
+            IsBlacklisted: true,
+            BlacklistReason: "ödeme yapmadı",
+            Notes: null,
+            TotalLabelsPrinted: 3,
+            TotalAmount: 450m,
+            BlacklistedAt: 1500L,
+            Address: "Ankara",
+            Phone: "+905001112233",
+            RecipientPaysActive: false,
+            GroupId: null,
+            Email: "a@example.com",
+            Tckn: "TCKN-YER-TUTUCU",
+            WhatsAppConsent: true,
+            SmsConsent: true,
+            FullName: "Ayşe Yılmaz",
+            City: "Ankara",
+            District: "Çankaya"));
+
+        var result = await fx.Svc.IngestOnceAsync(CancellationToken.None);
+
+        result.Should().Be(0, "temizlik ekleme değil");
+
+        var c = fx.Customers.FindByPlatformAndUsername("youtube", "silinen");
+        c.Should().NotBeNull("satır silinmiyor, boşaltılıyor — Label/Order ona bağlı");
+        c!.FullName.Should().BeNull();
+        c.Phone.Should().BeNull();
+        c.Address.Should().BeNull();
+        c.City.Should().BeNull();
+        c.District.Should().BeNull();
+        c.Email.Should().BeNull();
+        c.Tckn.Should().BeNull();
+        c.AvatarUrl.Should().BeNull();
+        c.DisplayName.Should().Be("[Silindi]");
+        c.WhatsAppConsent.Should().BeFalse();
+        c.SmsConsent.Should().BeFalse();
+
+        // Kalanlar: mali kayıt ve sahtekârlık koruması
+        c.TotalAmount.Should().Be(450m);
+        c.TotalLabelsPrinted.Should().Be(3);
+        c.IsBlacklisted.Should().BeTrue("silme talebi kara listeden çıkmanın yolu olmamalı");
+        c.LastSeenAt.Should().Be(2000L,
+            "LastSeenAt değişseydi satır GetUpdatedSince'e düşüp boşuna sunucuya geri giderdi");
+
+        var saved = fx.Store.Load();
+        saved.LastShopperIngestId.Should().Be(shopperId, "imleç ilerlemeli");
+    }
+
+    [Fact]
+    public async Task IngestOnce_purged_item_does_not_create_a_local_customer()
+    {
+        var shopperId = Guid.NewGuid();
+
+        var fx = Build(req =>
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (path == "/api/v1/me/licenses")
+                return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/wpf-customers/since"))
+                return FakeHttpMessageHandler.Json(200,
+                    PurgedPullJson(shopperId, "tiktok", "hicgormedigimiz", DateTimeOffset.UtcNow));
+            return FakeHttpMessageHandler.Empty(404);
+        });
+        using var _d = fx.Db;
+
+        var result = await fx.Svc.IngestOnceAsync(CancellationToken.None);
+
+        result.Should().Be(0);
+        fx.Customers.FindByPlatformAndUsername("tiktok", "hicgormedigimiz").Should().BeNull(
+            "bu bilgisayarda hiç bulunmayan kişi için adı '[Silindi]' olan sahte bir kart açılmamalı");
     }
 
     // ── since query param is built from watermark ─────────────────────────────
