@@ -23,26 +23,49 @@ public sealed record WhatsAppWebhookEvents(
     IReadOnlyList<WhatsAppDroppedInbound> DroppedNoPhone,
 
     /// <summary>Pazarlama mesajı tercihi değişiklikleri (<c>user_preferences</c>).</summary>
-    IReadOnlyList<WhatsAppUserPreference> UserPreferences)
+    IReadOnlyList<WhatsAppUserPreference> UserPreferences,
+
+    /// <summary>Coexistence rehber senkronu (<c>smb_app_state_sync</c>): yayıncının
+    /// telefonundaki kişiler.</summary>
+    IReadOnlyList<WhatsAppContactSync> Contacts)
 {
     public static readonly WhatsAppWebhookEvents Empty =
         new(Array.Empty<WhatsAppInboundMessage>(), Array.Empty<WhatsAppStatusUpdate>(),
-            Array.Empty<WhatsAppDroppedInbound>(), Array.Empty<WhatsAppUserPreference>());
+            Array.Empty<WhatsAppDroppedInbound>(), Array.Empty<WhatsAppUserPreference>(),
+            Array.Empty<WhatsAppContactSync>());
 
     /// <summary>
     /// İşlenecek bir şey var mı?
     ///
-    /// <para><b>Üç liste de sayılmak ZORUNDA</b>, çünkü üçü de kalıcılaşıyor.
+    /// <para><b>Listelerin HEPSİ sayılmak ZORUNDA</b>, çünkü hepsi kalıcılaşıyor.
     /// <see cref="DroppedNoPhone"/> eskiden dışarıdaydı — o zaman yalnız
     /// loglanıyordu ve log bu kontrolden önce çalışıyordu. Artık deftere
     /// yazılıyor: dışarıda bırakılsaydı <b>yalnız numarasız mesaj içeren bir
     /// paket</b> erken döner ve ölçüm hiç çalışmazdı. Üstelik kaybın en saf
-    /// hâli tam olarak o paket — tek mesaj, o da numarasız.</para>
+    /// hâli tam olarak o paket — tek mesaj, o da numarasız. Aynı gerekçe
+    /// <see cref="Contacts"/> için de geçerli: rehber senkronu kendi paketinde
+    /// gelir, mesaj taşımaz.</para>
     /// </summary>
     public bool IsEmpty =>
         Messages.Count == 0 && Statuses.Count == 0 &&
-        DroppedNoPhone.Count == 0 && UserPreferences.Count == 0;
+        DroppedNoPhone.Count == 0 && UserPreferences.Count == 0 &&
+        Contacts.Count == 0;
 }
+
+/// <summary>
+/// Coexistence rehber senkronundan (<c>smb_app_state_sync</c>) tek kişi.
+///
+/// <para>Bu ad, müşterinin WhatsApp profil adı DEĞİL — yayıncının kendi
+/// telefonuna kaydettiği addır. İkisi farklı şeyler, bu yüzden tüketici onu
+/// yalnız profil adı boşken kullanıyor.</para>
+/// </summary>
+public sealed record WhatsAppContactSync(
+    string PhoneNumberId,
+    string Phone,
+    string? FullName,
+    /// <summary><c>add</c> | <c>update</c> | <c>remove</c>. Tanımadığımız bir
+    /// değer olduğu gibi taşınır; kararı tüketici verir.</summary>
+    string Action);
 
 /// <summary>Numarasız geldiği için panele düşemeyen bir gelen mesajın izi.</summary>
 public sealed record WhatsAppDroppedInbound(
@@ -83,9 +106,24 @@ public sealed record WhatsAppInboundMessage(
     string? MediaId,
     string? MediaMimeType,
     DateTimeOffset Timestamp,
-    /// <summary>true = yayıncının Business App'ten attığı mesajın echo'su
-    /// (<c>smb_message_echoes</c>). Bu mesaj 24s penceresini AÇMAZ.</summary>
-    bool IsEcho);
+    /// <summary>true = mesaj yayıncı tarafından yazılmış (giden). Canlı akışta
+    /// <c>smb_message_echoes</c>, geçmiş aktarımında yönü <c>from</c> belirler.
+    /// Bu mesaj 24s penceresini AÇMAZ.</summary>
+    bool IsEcho,
+
+    /// <summary>
+    /// true = mesaj <c>history</c> webhook'uyla gelen GEÇMİŞ kayıt, canlı bir
+    /// olay değil.
+    ///
+    /// <para>Yön bilgisinden ayrı tutulmak zorunda: geçmiş hem gelen hem giden
+    /// mesaj taşıyor, ama hiçbiri canlı bir olayın yan etkilerini
+    /// tetiklememeli. Coexistence onboarding'i 180 günlük arşivi tek seferde
+    /// akıtıyor; bu bayrak olmasaydı yayıncı panelde yüzlerce okunmamış
+    /// rozetiyle, kapattığı sohbetlerin hepsi yeniden açılmış hâlde ve aylar
+    /// önceki her belgeye "Dekont geldi" etiketi yapışmış olarak karşılaşırdı.
+    /// Ayrıca arşivdeki her medya R2'ye yeniden inerdi.</para>
+    /// </summary>
+    bool IsHistory = false);
 
 /// <summary>Giden mesajın teslim durumu güncellemesi.</summary>
 public sealed record WhatsAppStatusUpdate(
@@ -101,8 +139,10 @@ public sealed record WhatsAppStatusUpdate(
 /// ayrıştırma patlamamalı, aksi halde Hangfire retry döngüsüne gireriz.
 ///
 /// <para>İlgilendiğimiz <c>field</c> değerleri: <c>messages</c> (gelen mesaj +
-/// durum güncellemeleri) ve <c>smb_message_echoes</c> (yayıncının telefondan
-/// attığı mesajlar).</para>
+/// durum güncellemeleri), <c>smb_message_echoes</c> (yayıncının telefondan
+/// attığı mesajlar), <c>user_preferences</c> (pazarlama tercihi) ve
+/// coexistence'ın iki senkron alanı: <c>history</c> (geçmiş sohbetler) +
+/// <c>smb_app_state_sync</c> (telefondaki rehber).</para>
 /// </summary>
 public static class WhatsAppWebhookParser
 {
@@ -120,6 +160,7 @@ public static class WhatsAppWebhookParser
             var statuses = new List<WhatsAppStatusUpdate>();
             var droppedNoPhone = new List<WhatsAppDroppedInbound>();
             var preferences = new List<WhatsAppUserPreference>();
+            var contacts = new List<WhatsAppContactSync>();
 
             if (!doc.RootElement.TryGetProperty("entry", out var entries) ||
                 entries.ValueKind != JsonValueKind.Array)
@@ -140,7 +181,13 @@ public static class WhatsAppWebhookParser
                     var field = Str(change, "field") ?? "";
                     var isEcho = field == "smb_message_echoes";
                     var isPreference = field == "user_preferences";
-                    if (field != "messages" && !isEcho && !isPreference) continue;
+                    var isHistory = field == "history";
+                    var isStateSync = field == "smb_app_state_sync";
+                    if (field != "messages" && !isEcho && !isPreference &&
+                        !isHistory && !isStateSync)
+                    {
+                        continue;
+                    }
                     if (!change.TryGetProperty("value", out var value)) continue;
 
                     var phoneNumberId = value.TryGetProperty("metadata", out var meta)
@@ -150,6 +197,18 @@ public static class WhatsAppWebhookParser
                     if (isPreference)
                     {
                         ReadUserPreferences(value, phoneNumberId, preferences);
+                        continue;
+                    }
+
+                    if (isStateSync)
+                    {
+                        ReadStateSync(value, phoneNumberId, contacts);
+                        continue;
+                    }
+
+                    if (isHistory)
+                    {
+                        ReadHistory(value, phoneNumberId, messages);
                         continue;
                     }
 
@@ -185,9 +244,108 @@ public static class WhatsAppWebhookParser
             }
 
             return messages.Count == 0 && statuses.Count == 0 &&
-                   droppedNoPhone.Count == 0 && preferences.Count == 0
+                   droppedNoPhone.Count == 0 && preferences.Count == 0 &&
+                   contacts.Count == 0
                 ? WhatsAppWebhookEvents.Empty
-                : new WhatsAppWebhookEvents(messages, statuses, droppedNoPhone, preferences);
+                : new WhatsAppWebhookEvents(
+                    messages, statuses, droppedNoPhone, preferences, contacts);
+        }
+    }
+
+    /// <summary>
+    /// <c>history</c> paketini okur: <c>history[] → threads[] → messages[]</c>.
+    ///
+    /// <para><b>Yön thread'den çıkar.</b> Thread'in <c>id</c>'si karşı tarafın
+    /// (müşterinin) numarası; mesajın <c>from</c>'u ona eşitse gelen, değilse
+    /// giden. Canlı akıştaki gibi <c>from</c>/<c>to</c> ikilisine bakmak burada
+    /// çalışmaz: geçmiş, aynı thread içinde iki yönü birden taşıyor.</para>
+    ///
+    /// <para><c>history_context</c> BİLEREK okunmuyor. Tek taşıdığı bilgi
+    /// aylar öncesine ait teslim/okundu tiki; sohbet geçmişinde bir karara
+    /// dönüşmüyor, ama taşımak durum sıralaması (<c>Rank</c>) için ikinci bir
+    /// giriş yolu açardı.</para>
+    ///
+    /// <para>Chunk üstverisi (<c>phase</c>/<c>chunk_order</c>/<c>progress</c>)
+    /// de okunmuyor: mesajlar <c>WamId</c> ile zaten idempotent yazılıyor,
+    /// dolayısıyla sıra ve ilerleme yüzdesi bir şeyi değiştirmiyor.</para>
+    /// </summary>
+    private static void ReadHistory(
+        JsonElement value, string phoneNumberId, List<WhatsAppInboundMessage> into)
+    {
+        if (!value.TryGetProperty("history", out var chunks) ||
+            chunks.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (var chunk in chunks.EnumerateArray())
+        {
+            if (!chunk.TryGetProperty("threads", out var threads) ||
+                threads.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var thread in threads.EnumerateArray())
+            {
+                var counterparty = WaPhone.Canonical(Str(thread, "id"));
+                // Karşı taraf numarası yoksa mesajı hangi sohbete koyacağımızı
+                // bilmiyoruz; uydurmak yerine atlıyoruz.
+                if (counterparty.Length == 0) continue;
+
+                if (!thread.TryGetProperty("messages", out var msgs) ||
+                    msgs.ValueKind != JsonValueKind.Array)
+                {
+                    continue;
+                }
+
+                foreach (var m in msgs.EnumerateArray())
+                {
+                    var outgoing = WaPhone.Canonical(Str(m, "from")) != counterparty;
+                    var parsed = ParseMessage(
+                        m, phoneNumberId, EmptyProfileNames,
+                        isEcho: outgoing, isHistory: true, knownCounterparty: counterparty);
+                    if (parsed is not null) into.Add(parsed);
+                }
+            }
+        }
+    }
+
+    /// <summary>Geçmişte <c>contacts[]</c> bloğu yok — profil adı canlı akıştan
+    /// gelir. Her thread için boş sözlük ayırmamak adına tek örnek.</summary>
+    private static readonly Dictionary<string, string> EmptyProfileNames =
+        new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// <c>smb_app_state_sync</c> paketini okur: yayıncının telefonundaki rehber.
+    ///
+    /// <para>Numarasız kişi atlanır — eşleştirebileceğimiz tek anahtar o.
+    /// <c>type</c> bugün yalnız <c>contact</c>; başka bir tür gelirse
+    /// yorumlamaya çalışmadan atlanıyor.</para>
+    /// </summary>
+    private static void ReadStateSync(
+        JsonElement value, string phoneNumberId, List<WhatsAppContactSync> into)
+    {
+        if (!value.TryGetProperty("state_sync", out var items) ||
+            items.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (var item in items.EnumerateArray())
+        {
+            if (Str(item, "type") != "contact") continue;
+            if (!item.TryGetProperty("contact", out var contact)) continue;
+
+            var phone = WaPhone.Canonical(Str(contact, "phone_number"));
+            if (phone.Length == 0) continue;
+
+            var fullName = Str(contact, "full_name");
+            into.Add(new WhatsAppContactSync(
+                phoneNumberId,
+                phone,
+                string.IsNullOrWhiteSpace(fullName) ? null : fullName,
+                Str(item, "action") ?? "add"));
         }
     }
 
@@ -280,14 +438,21 @@ public static class WhatsAppWebhookParser
         return map;
     }
 
+    /// <param name="knownCounterparty">
+    /// Geçmiş aktarımında karşı taraf thread'den biliniyor; mesajın kendi
+    /// <c>from</c>/<c>to</c> alanlarından çıkarmaya çalışmak orada yanlış
+    /// sonuç verir (bkz. <see cref="ReadHistory"/>). Canlı akışta null.
+    /// </param>
     private static WhatsAppInboundMessage? ParseMessage(
-        JsonElement m, string phoneNumberId, Dictionary<string, string> profileNames, bool isEcho)
+        JsonElement m, string phoneNumberId, Dictionary<string, string> profileNames,
+        bool isEcho, bool isHistory = false, string? knownCounterparty = null)
     {
         var wamId = Str(m, "id");
         if (string.IsNullOrEmpty(wamId)) return null;
 
         // Gelen mesajda "from" = müşteri. Echo'da "from" = işletme, karşı taraf "to".
-        var counterparty = WaPhone.Canonical(isEcho ? Str(m, "to") : Str(m, "from"));
+        var counterparty = knownCounterparty
+            ?? WaPhone.Canonical(isEcho ? Str(m, "to") : Str(m, "from"));
         if (counterparty.Length == 0) return null;
 
         var type = Str(m, "type") ?? "unknown";
@@ -337,7 +502,7 @@ public static class WhatsAppWebhookParser
 
         return new WhatsAppInboundMessage(
             phoneNumberId, wamId!, counterparty, profileName, type, body, mediaId, mime,
-            ParseUnixSeconds(Str(m, "timestamp")), isEcho);
+            ParseUnixSeconds(Str(m, "timestamp")), isEcho, isHistory);
     }
 
     private static WhatsAppStatusUpdate? ParseStatus(JsonElement s)

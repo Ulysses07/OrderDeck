@@ -278,6 +278,44 @@ public sealed class WhatsAppInboundLabelTests
         db.WaDekontExtractions.Should().BeEmpty();
     }
 
+    /// <summary>
+    /// Coexistence geçmişinden gelen belge. Meta 180 güne kadar arşiv akıtıyor;
+    /// canlı yolla aynı davransaydı o arşivdeki her belge R2'ye yeniden yazılır,
+    /// her PDF ayrıştırılır ve yayıncı yıllar öncesine ait yüzlerce "Dekont
+    /// geldi" etiketiyle karşılaşırdı.
+    /// </summary>
+    [Fact]
+    public async Task History_document_is_stored_without_media_parsing_or_label()
+    {
+        var (db, job, _, _, parser) = Build(FakeMedia.ReturningPdf([9, 9, 9]));
+
+        await job.ProcessAsync("""
+        {
+          "entry": [{ "changes": [{ "field": "history", "value": {
+            "metadata": { "phone_number_id": "PNID_1" },
+            "history": [{ "threads": [{
+              "id": "905321234567",
+              "messages": [{ "from": "905321234567", "id": "wamid.HDOC",
+                             "timestamp": "1753440000", "type": "document",
+                             "document": { "id": "M_OLD", "mime_type": "application/pdf" } }]
+            }]}]
+          }}]}]
+        }
+        """);
+
+        // Satır YAZILIR — arşiv kaybolmuyor, yalnız yan etkileri kesiliyor.
+        var msg = await db.WaMessages.SingleAsync();
+        msg.Origin.Should().Be("history");
+        msg.Type.Should().Be("document");
+
+        // İndirici sahte ve çağrılsaydı "k.pdf" yazardı; boş olması indirmenin
+        // gerçekten atlandığını kanıtlıyor.
+        msg.MediaR2Key.Should().BeNull();
+        parser.Calls.Should().Be(0);
+        db.WaDekontExtractions.Should().BeEmpty();
+        db.WaConversationLabels.Should().BeEmpty();
+    }
+
     [Fact]
     public async Task A_document_without_pdf_bytes_is_still_saved_and_labeled()
     {

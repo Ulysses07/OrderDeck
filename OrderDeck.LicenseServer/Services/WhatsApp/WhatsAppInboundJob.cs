@@ -99,6 +99,7 @@ public sealed class WhatsAppInboundJob
         await ProcessStatusesAsync(events, ct);
         await ProcessUserPreferencesAsync(events, ct);
         await ProcessDroppedInboundAsync(events, ct);
+        await ProcessContactsAsync(events, ct);
         await _db.SaveChangesAsync(ct);
         await ApplyConversationDeltasAsync(deltas, ct);
 
@@ -176,7 +177,11 @@ public sealed class WhatsAppInboundJob
             // Medya, mesaj satırı yazılmadan ÖNCE indirilir: Meta'nın verdiği
             // URL 5 dakikada ölüyor, dolayısıyla erteleyecek lüksümüz yok.
             // Başarısızlık mesajı düşürmez — media null döner, metin/metadata kalır.
-            var media = await TryFetchMediaAsync(account, m, ct);
+            //
+            // Geçmiş aktarımında İNDİRİLMEZ: coexistence onboarding'i 180 günlük
+            // arşivi tek seferde akıtıyor, o arşivdeki her görsel/belge R2'ye
+            // yeniden yazılırdı. Mesajın metni ve türü yine kaydediliyor.
+            var media = m.IsHistory ? null : await TryFetchMediaAsync(account, m, ct);
 
             var message = new WaMessage
             {
@@ -186,7 +191,10 @@ public sealed class WhatsAppInboundJob
                 LicenseId = account.LicenseId,
                 WamId = m.WamId,
                 Direction = m.IsEcho ? "out" : "in",
-                Origin = m.IsEcho ? "echo" : null,
+                // "history" hem gelen hem giden satırda duruyor: aktarılmış bir
+                // kaydı canlı olandan ayıran tek işaret bu. Ayrım gerçek —
+                // bu satırlarda medya inmedi ve dekont çıkarımı hiç çalışmadı.
+                Origin = m.IsHistory ? "history" : m.IsEcho ? "echo" : null,
                 Type = m.Type,
                 Body = m.Body,
                 MediaR2Key = media?.ObjectKey,
@@ -222,8 +230,20 @@ public sealed class WhatsAppInboundJob
             if (!m.IsEcho)
             {
                 // Pencereyi YALNIZ müşteriden gelen mesaj açar.
+                //
+                // Geçmiş kayıtlar da sayılıyor ve bu DOĞRU: damgalar yalnız ileri
+                // gidiyor (bkz. ApplyConversationDeltasAsync), yani aylar öncesine
+                // ait bir mesaj hiçbir şeyi değiştirmez; buna karşılık yayıncı
+                // onboarding'den bir saat önce mesaj almışsa 24 saatlik hizmet
+                // penceresi gerçekten AÇIK ve bunu bilmemiz gerekiyor.
                 if (delta.LastInboundAt is null || m.Timestamp > delta.LastInboundAt)
                     delta.LastInboundAt = m.Timestamp;
+
+                // Buradan aşağısı canlı olaylara özel. Geçmiş aktarımı bir olay
+                // değil, bir arşiv: okunmamış saymaz, kapatılmış sohbeti geri
+                // açmaz, etiket basmaz.
+                if (m.IsHistory) continue;
+
                 delta.UnreadDelta++;
                 // Operatör kapatmış olsa bile yeni mesaj sohbeti geri açar.
                 delta.Reopen = true;
@@ -537,6 +557,61 @@ public sealed class WhatsAppInboundJob
             // geç işlenen eski bir paket "ne zamandan beri" cevabını bozar.
             if (d.Timestamp < row.FirstSeenAt) row.FirstSeenAt = d.Timestamp;
             if (d.Timestamp > row.LastSeenAt) row.LastSeenAt = d.Timestamp;
+        }
+    }
+
+    /// <summary>
+    /// Coexistence rehber senkronu (<c>smb_app_state_sync</c>): yayıncının
+    /// telefonundaki kişi adlarını sohbetlere işler.
+    ///
+    /// <para><b>Sohbet AÇILMAZ.</b> Rehberde yüzlerce kişi var ve çoğu bu
+    /// yayıncıya hiç yazmadı; her biri için sohbet satırı açmak paneli hiç
+    /// konuşulmamış boş sohbetlerle doldururdu. Ad yalnız var olan sohbete
+    /// yapışır.</para>
+    ///
+    /// <para><b>Dolu profil adının üzerine YAZILMAZ.</b> İki ad farklı şeyler:
+    /// <c>ProfileName</c> müşterinin kendi koyduğu WhatsApp adı, buradaki ise
+    /// yayıncının telefonuna kaydettiği ad. Üzerine yazmak, canlı akıştan gelen
+    /// doğru adı sessizce kaybettirirdi. Boşluğu doldurmak katkı, ezmek kayıp.</para>
+    ///
+    /// <para><c>remove</c> eylemi YOK SAYILIYOR: yayıncı kişiyi telefonundan
+    /// silse bile sohbet ve içindeki mesajlar duruyor; adı geri almak paneli
+    /// çıplak numaraya döndürmekten başka işe yaramaz.</para>
+    /// </summary>
+    private async Task ProcessContactsAsync(WhatsAppWebhookEvents events, CancellationToken ct)
+    {
+        var applied = 0;
+
+        foreach (var c in events.Contacts)
+        {
+            if (c.Action == "remove" || string.IsNullOrWhiteSpace(c.FullName)) continue;
+
+            var account = await _accounts.GetByPhoneNumberIdAsync(c.PhoneNumberId, ct);
+            if (account is null)
+            {
+                _log.LogWarning(
+                    "WhatsApp: tanınmayan numara için rehber senkronu ({PhoneNumberId}).",
+                    c.PhoneNumberId);
+                continue;
+            }
+
+            // Local önce: aynı pakette hem geçmiş mesajı hem rehber kaydı
+            // gelebiliyor ve sohbet henüz kaydedilmemiş olabilir.
+            var convo = _db.WaConversations.Local.FirstOrDefault(
+                    x => x.LicenseId == account.LicenseId && x.CustomerPhone == c.Phone)
+                ?? await _db.WaConversations.FirstOrDefaultAsync(
+                    x => x.LicenseId == account.LicenseId && x.CustomerPhone == c.Phone, ct);
+
+            if (convo is null || !string.IsNullOrWhiteSpace(convo.ProfileName)) continue;
+
+            convo.ProfileName = c.FullName;
+            applied++;
+        }
+
+        if (applied > 0)
+        {
+            _log.LogInformation(
+                "WhatsApp rehber senkronu: {Count} sohbete kişi adı işlendi.", applied);
         }
     }
 

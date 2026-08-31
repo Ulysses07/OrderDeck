@@ -214,6 +214,139 @@ public sealed class WhatsAppInboundJobTests
         db.WaMessages.Should().BeEmpty();
     }
 
+    /// <summary>Coexistence geçmiş paketi: bir thread, iki yönlü iki mesaj.</summary>
+    private static string HistoryPayload(long inboundTs = 1753440000) => $$$"""
+        {
+          "entry": [{ "changes": [{ "field": "history", "value": {
+            "metadata": { "phone_number_id": "PNID_1" },
+            "history": [{ "threads": [{
+              "id": "905321234567",
+              "messages": [
+                { "from": "905321234567", "id": "wamid.H_IN", "timestamp": "{{{inboundTs}}}",
+                  "type": "text", "text": { "body": "eski soru" } },
+                { "from": "905550000000", "to": "905321234567", "id": "wamid.H_OUT",
+                  "timestamp": "{{{inboundTs + 60}}}", "type": "text",
+                  "text": { "body": "eski cevap" } }]
+            }]}]
+          }}]}]
+        }
+        """;
+
+    [Fact]
+    public async Task History_is_archived_without_unread_badges()
+    {
+        var (db, job, _) = Build();
+
+        await job.ProcessAsync(HistoryPayload());
+
+        var inbound = db.WaMessages.Single(m => m.WamId == "wamid.H_IN");
+        inbound.Direction.Should().Be("in");
+        inbound.Origin.Should().Be("history");
+
+        var outbound = db.WaMessages.Single(m => m.WamId == "wamid.H_OUT");
+        outbound.Direction.Should().Be("out");
+        outbound.Origin.Should().Be("history");
+
+        var convo = db.WaConversations.Single();
+
+        // Aktarım bir olay değil, arşiv: 180 günlük geçmiş yüzlerce okunmamış
+        // rozeti üretseydi yayıncı gerçek yeni mesajı göremezdi.
+        convo.UnreadCount.Should().Be(0);
+
+        // Ama hizmet penceresi GERÇEK: yayıncı onboarding'den bir saat önce
+        // mesaj aldıysa 24 saatlik pencere açık ve bunu bilmemiz gerekiyor.
+        convo.LastInboundAt.Should().Be(DateTimeOffset.FromUnixTimeSeconds(1753440000));
+    }
+
+    [Fact]
+    public async Task History_does_not_reopen_a_closed_conversation()
+    {
+        var (db, job, licenseId) = Build();
+        db.WaConversations.Add(new WaConversation
+        {
+            Id = Guid.NewGuid(), LicenseId = licenseId, CustomerPhone = "905321234567",
+            PhoneNumberId = "PNID_1", Status = "closed", CreatedAt = DateTimeOffset.UtcNow.AddDays(-3),
+        });
+        await db.SaveChangesAsync();
+
+        await job.ProcessAsync(HistoryPayload());
+
+        // Mesajların GERÇEKTEN işlendiğini önce doğrula, yoksa test "geri
+        // açmıyor" kararını değil, paketin atlandığını ölçerdi.
+        db.WaMessages.Should().HaveCount(2);
+        db.WaConversations.Single().Status.Should().Be("closed");
+    }
+
+    [Fact]
+    public async Task Contact_sync_only_fills_an_empty_profile_name()
+    {
+        var (db, job, licenseId) = Build();
+
+        // Müşteri kendi WhatsApp adını zaten göndermiş.
+        await job.ProcessAsync(TextPayload("wamid.1", name: "Ayşe"));
+
+        await job.ProcessAsync("""
+        {
+          "entry": [{ "changes": [{ "field": "smb_app_state_sync", "value": {
+            "metadata": { "phone_number_id": "PNID_1" },
+            "state_sync": [{ "type": "contact", "action": "add",
+              "contact": { "phone_number": "905321234567", "full_name": "Rehberdeki Ad" } }]
+          }}]}]
+        }
+        """);
+
+        // Rehber adı yayıncının kendi defterindeki etiket; müşterinin profil adı
+        // müşterinin kendi seçtiği ad. Üzerine yazmak, panelde görünen adı
+        // sessizce değiştirirdi.
+        db.WaConversations.Single().ProfileName.Should().Be("Ayşe");
+    }
+
+    [Fact]
+    public async Task Contact_sync_names_a_conversation_that_has_none()
+    {
+        var (db, job, licenseId) = Build();
+        db.WaConversations.Add(new WaConversation
+        {
+            Id = Guid.NewGuid(), LicenseId = licenseId, CustomerPhone = "905321234567",
+            PhoneNumberId = "PNID_1", Status = "open", CreatedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+
+        await job.ProcessAsync("""
+        {
+          "entry": [{ "changes": [{ "field": "smb_app_state_sync", "value": {
+            "metadata": { "phone_number_id": "PNID_1" },
+            "state_sync": [{ "type": "contact", "action": "add",
+              "contact": { "phone_number": "905321234567", "full_name": "Rehberdeki Ad" } }]
+          }}]}]
+        }
+        """);
+
+        // Geçmiş aktarımında contacts[] bloğu yok: adsız kalan sohbetlerin tek
+        // adı bu senkrondan gelir.
+        db.WaConversations.Single().ProfileName.Should().Be("Rehberdeki Ad");
+    }
+
+    [Fact]
+    public async Task Contact_sync_never_creates_a_conversation()
+    {
+        var (db, job, _) = Build();
+
+        await job.ProcessAsync("""
+        {
+          "entry": [{ "changes": [{ "field": "smb_app_state_sync", "value": {
+            "metadata": { "phone_number_id": "PNID_1" },
+            "state_sync": [{ "type": "contact", "action": "add",
+              "contact": { "phone_number": "905339998877", "full_name": "Hiç Yazmayan" } }]
+          }}]}]
+        }
+        """);
+
+        // Rehberde yayıncının tüm kişileri var — hepsine sohbet açmak paneli
+        // hiç mesajlaşmamış yüzlerce satırla doldururdu.
+        db.WaConversations.Should().BeEmpty();
+    }
+
     private static string StatusPayload(string wamId, string status) => $$$"""
         {
           "entry": [{ "changes": [{ "field": "messages", "value": {
