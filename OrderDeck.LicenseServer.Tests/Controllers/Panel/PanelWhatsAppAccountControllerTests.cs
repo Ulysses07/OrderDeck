@@ -36,11 +36,13 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
                 new WhatsAppPhoneNumberInfo("+90 555 111 22 33", "Emar Global"));
         public GraphResult<bool> Register = GraphResult<bool>.Success(true);
         public GraphResult<bool> Unsubscribe = GraphResult<bool>.Success(true);
+        public GraphResult<string> Sync = GraphResult<string>.Success("REQ_1");
 
         public string? SeenCode;
         public string? SeenWabaId;
         public string? SeenPin;
         public string? SeenUnsubscribedWabaId;
+        public readonly List<string> SeenSyncTypes = [];
 
         public Task<GraphResult<string>> ExchangeCodeAsync(string code, CancellationToken ct)
         {
@@ -69,6 +71,13 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
         {
             SeenPin = pin;
             return Task.FromResult(Register);
+        }
+
+        public Task<GraphResult<string>> SyncSmbAppDataAsync(
+            string phoneNumberId, string syncType, string token, CancellationToken ct)
+        {
+            SeenSyncTypes.Add(syncType);
+            return Task.FromResult(Sync);
         }
     }
 
@@ -347,6 +356,80 @@ public sealed class PanelWhatsAppAccountControllerTests : IDisposable
         var row = db.WhatsAppAccounts.Single(a => a.LicenseId == seed.LicenseId);
         row.LastError.Should().StartWith("register: 133005");
         row.LastError!.Length.Should().BeLessThanOrEqualTo(500);
+    }
+
+    /// <summary>Numarayı Business App'te yaşıyor gösteren Graph cevabı.</summary>
+    private static GraphResult<WhatsAppPhoneNumberInfo> Coexistence =>
+        GraphResult<WhatsAppPhoneNumberInfo>.Success(
+            new WhatsAppPhoneNumberInfo("+90 555 111 22 33", "Emar Global", "SMB_APP"));
+
+    [Fact]
+    public async Task A_coexistence_number_is_never_registered_because_it_already_is()
+    {
+        var seed = await SeedAsync();
+        seed.Graph.Phone = Coexistence;
+
+        var resp = await seed.Client.PostAsJsonAsync(
+            "/api/panel/whatsapp/account/embedded-signup", Body);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Asıl mesele: /register'a HİÇ gidilmemeli. Gidilseydi yayıncının günlük
+        // kullandığı telefondaki numaraya yeni bir iki adımlı PIN yazmaya
+        // kalkardık — en iyi ihtimalle hata, en kötüsünde yayıncıyı kendi
+        // telefonundaki uygulamadan kilitleyen bir değişiklik.
+        seed.Graph.SeenPin.Should().BeNull();
+        StoredPin(seed).Should().BeNull();
+
+        // Kayıt yerine senkron borcu: Meta onboarding'den sonra 24 saat içinde
+        // ikisi de başlatılmazsa müşterinin offboard edilmesini şart koşuyor.
+        seed.Graph.SeenSyncTypes.Should().Equal(
+            WhatsAppSmbSyncTypes.History, WhatsAppSmbSyncTypes.Contacts);
+    }
+
+    [Fact]
+    public async Task A_number_without_a_platform_type_is_still_registered()
+    {
+        var seed = await SeedAsync();
+
+        var resp = await seed.Client.PostAsJsonAsync(
+            "/api/panel/whatsapp/account/embedded-signup", Body);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Meta alanı hiç göndermezse coexistence VARSAYILMIYOR: register'ı
+        // gereksiz yere atlamak, kaydı hiç yapılmamış bir numarayı sessizce
+        // gönderemez hâlde bırakırdı.
+        seed.Graph.SeenPin.Should().NotBeNullOrEmpty();
+        seed.Graph.SeenSyncTypes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_failed_coexistence_sync_is_recorded_but_still_connects()
+    {
+        var seed = await SeedAsync();
+        seed.Graph.Phone = Coexistence;
+        seed.Graph.Sync = GraphResult<string>.Failure("100", "Unsupported request");
+
+        var resp = await seed.Client.PostAsJsonAsync(
+            "/api/panel/whatsapp/account/embedded-signup", Body);
+
+        // Senkron tutmasa da hesap ÇALIŞIR: gelen mesajlar akar, gönderim akar.
+        // Ölümcül saymak, yalnız arşiv aktarımı yüzünden bağlanmayı iptal etmek
+        // olurdu. Kayıp yalnızca geçmiş sohbetler + rehber adları.
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // İkincisi birincinin başarısızlığına RAĞMEN denenmeli: rehber senkronu
+        // geçmişe bağlı değil, ikisi ayrı ayrı 24 saatlik pencereye tabi.
+        seed.Graph.SeenSyncTypes.Should().Equal(
+            WhatsAppSmbSyncTypes.History, WhatsAppSmbSyncTypes.Contacts);
+
+        using var scope = seed.Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var row = db.WhatsAppAccounts.Single(a => a.LicenseId == seed.LicenseId);
+        row.LastError.Should().StartWith("senkron: ");
+        row.LastError.Should().Contain(WhatsAppSmbSyncTypes.History);
+        row.LastError.Should().Contain(WhatsAppSmbSyncTypes.Contacts);
     }
 
     [Fact]

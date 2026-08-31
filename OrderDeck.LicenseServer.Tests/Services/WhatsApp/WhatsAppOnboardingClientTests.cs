@@ -174,8 +174,12 @@ public sealed class WhatsAppOnboardingClientTests
         // ama numaranın O WABA'ya ait olduğunu KANITLAMAZDI: Meta'nın numara
         // düğümünde üst WABA'ya geri işaret eden bir alan yok. Tek çağrıda hem
         // görünen numara hem eşleşme buradan geliyor.
+        // platform_type de AYNI çağrıda isteniyor: coexistence numarasında
+        // /register atlanmalı ve o kararı verecek tek sinyal bu alan. Ayrı bir
+        // istekle sormak, onboarding'e bir başarısızlık noktası daha eklerdi.
         handler.Requests[0].RequestUri!.ToString().Should().Be(
-            "https://graph.test/v25.0/WABA_9/phone_numbers?fields=id,display_phone_number,verified_name&limit=100");
+            "https://graph.test/v25.0/WABA_9/phone_numbers" +
+            "?fields=id,display_phone_number,verified_name,platform_type&limit=100");
     }
 
     [Fact]
@@ -208,5 +212,61 @@ public sealed class WhatsAppOnboardingClientTests
             .Should().Be("https://graph.test/v25.0/PNID_7/register");
         handler.Bodies[0].Should().Contain("\"messaging_product\":\"whatsapp\"");
         handler.Bodies[0].Should().Contain("\"pin\":\"123456\"");
+    }
+
+    [Theory]
+    [InlineData("SMB_APP", true)]
+    [InlineData("CLOUD_API", false)]
+    [InlineData(null, false)]
+    public async Task The_platform_type_decides_whether_the_number_lives_in_the_business_app(
+        string? platformType, bool expected)
+    {
+        var field = platformType is null ? "" : $", \"platform_type\": \"{platformType}\"";
+        var handler = new ScriptedHandler((HttpStatusCode.OK, $$"""
+            { "data": [ { "id": "PNID_7", "display_phone_number": "+90 555 111 22 33"{{field}} } ] }
+            """));
+
+        var result = await Client(handler)
+            .ReadPhoneNumberAsync("WABA_9", "PNID_7", "BIZ_TOKEN", CancellationToken.None);
+
+        result.Ok.Should().BeTrue();
+
+        // Alan hiç gelmediğinde coexistence VARSAYILMIYOR: register'ı gereksiz
+        // yere atlamak, kaydı hiç yapılmamış bir numarayı sessizce gönderemez
+        // hâlde bırakırdı.
+        result.Value!.IsBusinessApp.Should().Be(expected);
+    }
+
+    [Fact]
+    public async Task Starting_the_coexistence_sync_posts_the_requested_type()
+    {
+        var handler = new ScriptedHandler((HttpStatusCode.OK, """{ "request_id": "REQ_42" }"""));
+
+        var result = await Client(handler).SyncSmbAppDataAsync(
+            "PNID_7", WhatsAppSmbSyncTypes.History, "BIZ_TOKEN", CancellationToken.None);
+
+        result.Ok.Should().BeTrue();
+        // request_id Meta desteğine gitmesi gereken tek iz — kaybolursa
+        // "senkron neden gelmedi" sorusunun cevaplanacak yolu kalmaz.
+        result.Value.Should().Be("REQ_42");
+
+        handler.Requests[0].Method.Should().Be(HttpMethod.Post);
+        handler.Requests[0].RequestUri!.ToString()
+            .Should().Be("https://graph.test/v25.0/PNID_7/smb_app_data");
+        handler.Bodies[0].Should().Contain("\"sync_type\":\"history\"");
+    }
+
+    [Fact]
+    public async Task A_sync_response_without_a_request_id_is_still_a_success()
+    {
+        var handler = new ScriptedHandler((HttpStatusCode.OK, """{ "success": true }"""));
+
+        var result = await Client(handler).SyncSmbAppDataAsync(
+            "PNID_7", WhatsAppSmbSyncTypes.Contacts, "BIZ_TOKEN", CancellationToken.None);
+
+        // 2xx ve Meta'nın error bloğu yok → senkron başlamış demektir. Bunu
+        // "beklenmedik şekil" sayıp başarısız göstermenin bedeli, 24 saatlik
+        // pencerenin boşa harcanması ve hesabın offboard edilmesi olurdu.
+        result.Ok.Should().BeTrue();
     }
 }

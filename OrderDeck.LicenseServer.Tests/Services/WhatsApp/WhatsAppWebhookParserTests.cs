@@ -239,4 +239,132 @@ public sealed class WhatsAppWebhookParserTests
     {
         WhatsAppWebhookParser.Parse(TextMessagePayload).DroppedNoPhone.Should().BeEmpty();
     }
+
+    /// <summary>
+    /// Coexistence geçmiş aktarımı. Yön <c>from</c>'dan DEĞİL thread'den
+    /// çıkarılıyor: bir thread iki yönü birden taşıdığı için canlı akışın
+    /// "from = müşteri" varsayımı burada çalışmaz — işletmenin kendi yazdığı
+    /// mesaj müşteriden gelmiş gibi kaydedilirdi.
+    /// </summary>
+    private const string HistoryPayload = """
+    {
+      "entry": [{ "changes": [{ "field": "history", "value": {
+        "metadata": { "phone_number_id": "PNID_1" },
+        "history": [{
+          "metadata": { "phase": "0", "chunk_order": 1, "progress": 100 },
+          "threads": [{
+            "id": "905321234567",
+            "messages": [
+              { "from": "905321234567", "id": "wamid.H_IN", "timestamp": "1753440000",
+                "type": "text", "text": { "body": "eski soru" } },
+              { "from": "905550000000", "to": "905321234567", "id": "wamid.H_OUT",
+                "timestamp": "1753440060", "type": "text", "text": { "body": "eski cevap" } }
+            ]
+          }]
+        }]
+      }}]}]
+    }
+    """;
+
+    [Fact]
+    public void Gecmis_thread_kimliginden_yon_cikarilir()
+    {
+        var events = WhatsAppWebhookParser.Parse(HistoryPayload);
+
+        events.Messages.Should().HaveCount(2);
+
+        var inbound = events.Messages.Single(m => m.WamId == "wamid.H_IN");
+        inbound.IsEcho.Should().BeFalse();
+        inbound.IsHistory.Should().BeTrue();
+        inbound.PhoneNumberId.Should().Be("PNID_1");
+        inbound.FromPhone.Should().Be("905321234567");
+        inbound.Body.Should().Be("eski soru");
+
+        // İşletmenin yazdığı mesaj giden sayılmalı, ama karşı taraf yine
+        // müşteri: sohbet müşterinin numarasına anahtarlı.
+        var outbound = events.Messages.Single(m => m.WamId == "wamid.H_OUT");
+        outbound.IsEcho.Should().BeTrue();
+        outbound.IsHistory.Should().BeTrue();
+        outbound.FromPhone.Should().Be("905321234567");
+    }
+
+    [Fact]
+    public void Canli_mesaj_gecmis_isaretlenmez()
+    {
+        WhatsAppWebhookParser.Parse(TextMessagePayload)
+            .Messages.Should().ContainSingle().Subject
+            .IsHistory.Should().BeFalse();
+    }
+
+    /// <summary>Thread kimliği yoksa mesajı hangi sohbete koyacağımızı
+    /// bilmiyoruz; uydurmak yerine atlanıyor.</summary>
+    [Fact]
+    public void Kimliksiz_thread_atlanir()
+    {
+        var payload = """
+        {
+          "entry": [{ "changes": [{ "field": "history", "value": {
+            "metadata": { "phone_number_id": "PNID_1" },
+            "history": [{ "threads": [{
+              "messages": [{ "from": "905321234567", "id": "wamid.H", "timestamp": "1753440000",
+                             "type": "text", "text": { "body": "sahipsiz" } }]
+            }]}]
+          }}]}]
+        }
+        """;
+
+        WhatsAppWebhookParser.Parse(payload).IsEmpty.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Rehber_senkronu_kisi_adlarini_tasir()
+    {
+        var payload = """
+        {
+          "entry": [{ "changes": [{ "field": "smb_app_state_sync", "value": {
+            "metadata": { "phone_number_id": "PNID_1" },
+            "state_sync": [
+              { "type": "contact", "action": "add",
+                "contact": { "phone_number": "905321234567", "full_name": "Ayşe Yılmaz" } },
+              { "type": "contact", "action": "remove",
+                "contact": { "phone_number": "905329999999", "full_name": "Silinen" } },
+              { "type": "contact", "action": "add", "contact": { "full_name": "Numarasız" } },
+              { "type": "chat", "chat": { "id": "905321234567" } }
+            ]
+          }}]}]
+        }
+        """;
+
+        var events = WhatsAppWebhookParser.Parse(payload);
+
+        // "chat" satırı ve numarasız kişi elenir; "remove" ayrıştırıcıda değil
+        // işleyicide yok sayılır, çünkü kaybı görmek için önce okumak lazım.
+        events.Contacts.Should().HaveCount(2);
+
+        var added = events.Contacts[0];
+        added.PhoneNumberId.Should().Be("PNID_1");
+        added.Phone.Should().Be("905321234567");
+        added.FullName.Should().Be("Ayşe Yılmaz");
+        added.Action.Should().Be("add");
+
+        events.Contacts[1].Action.Should().Be("remove");
+    }
+
+    /// <summary>Yalnız rehber taşıyan paket boş sayılırsa <c>ProcessAsync</c>
+    /// erken döner ve adlar hiç işlenmez.</summary>
+    [Fact]
+    public void Yalniz_rehber_iceren_paket_bos_sayilmaz()
+    {
+        var payload = """
+        {
+          "entry": [{ "changes": [{ "field": "smb_app_state_sync", "value": {
+            "metadata": { "phone_number_id": "PNID_1" },
+            "state_sync": [{ "type": "contact", "action": "add",
+              "contact": { "phone_number": "905321234567", "full_name": "Ayşe" } }]
+          }}]}]
+        }
+        """;
+
+        WhatsAppWebhookParser.Parse(payload).IsEmpty.Should().BeFalse();
+    }
 }

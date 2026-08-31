@@ -16,8 +16,21 @@ public sealed record GraphResult<T>(T? Value, string? ErrorCode, string? ErrorMe
         new(default, string.IsNullOrWhiteSpace(code) ? "unknown" : code, message);
 }
 
-/// <summary>Numaranın Meta'daki görünen hâli — yalnız UI için.</summary>
-public sealed record WhatsAppPhoneNumberInfo(string DisplayPhoneNumber, string? VerifiedName);
+/// <summary>Numaranın Meta'daki görünen hâli.</summary>
+/// <param name="PlatformType">
+/// <c>CLOUD_API</c> | <c>SMB_APP</c> | <c>ON_PREMISE</c> | <c>NOT_APPLICABLE</c>.
+/// <c>SMB_APP</c> = numara yayıncının telefonundaki WhatsApp Business
+/// uygulamasında yaşıyor (coexistence) ve <b>yeniden kaydedilmemeli</b> —
+/// bkz. <see cref="IWhatsAppOnboardingClient.RegisterPhoneNumberAsync"/>.
+/// Meta alanı göndermezse null; o durumda coexistence VARSAYILMAZ.
+/// </param>
+public sealed record WhatsAppPhoneNumberInfo(
+    string DisplayPhoneNumber, string? VerifiedName, string? PlatformType = null)
+{
+    /// <summary>Numara Business App'te mi yaşıyor?</summary>
+    public bool IsBusinessApp =>
+        string.Equals(PlatformType, "SMB_APP", StringComparison.OrdinalIgnoreCase);
+}
 
 /// <summary>Embedded Signup'ın Graph ayağı. Yalnız HTTP yapar; DB'ye dokunmaz,
 /// karar vermez — böylece panel ucu testlerinde tek parça sahtelenebilir.</summary>
@@ -42,9 +55,35 @@ public interface IWhatsAppOnboardingClient
         string wabaId, string phoneNumberId, string businessToken, CancellationToken ct);
 
     /// <summary>Numarayı Cloud API'ye kaydeder ve iki adımlı PIN'i belirler.
-    /// Numara zaten kayıtlıysa Meta hata döner — çağıran bunu ölümcül saymamalı.</summary>
+    /// Numara zaten kayıtlıysa Meta hata döner — çağıran bunu ölümcül saymamalı.
+    ///
+    /// <para><b>Coexistence numarasında ÇAĞRILMAZ.</b> Meta'nın Business App
+    /// onboarding rehberi kayıt adımını açıkça atlatıyor ("the number is already
+    /// registered"); üstelik bu çağrı yayıncının telefonunda kullandığı numaraya
+    /// yeni bir iki adımlı PIN yazmaya kalkar.</para></summary>
     Task<GraphResult<bool>> RegisterPhoneNumberAsync(
         string phoneNumberId, string pin, string businessToken, CancellationToken ct);
+
+    /// <summary>
+    /// Coexistence senkronunu başlatır: yayıncının telefonundaki sohbet geçmişi
+    /// (<c>history</c>) ya da rehberi (<c>smb_app_state_sync</c>). Veri bu
+    /// çağrının yanıtında DEĞİL, webhook'la parça parça gelir; dönen değer
+    /// Meta desteğine verilecek <c>request_id</c>'dir.
+    ///
+    /// <para><b>Süre sınırlı:</b> onboarding tamamlandıktan sonra 24 saat içinde
+    /// çağrılmazsa Meta müşterinin offboard edilmesini şart koşuyor.</para>
+    /// </summary>
+    Task<GraphResult<string>> SyncSmbAppDataAsync(
+        string phoneNumberId, string syncType, string businessToken, CancellationToken ct);
+}
+
+/// <summary><see cref="IWhatsAppOnboardingClient.SyncSmbAppDataAsync"/>'in
+/// kabul ettiği iki senkron türü. İkisi de çağrılmak zorunda: biri geçmiş
+/// sohbetleri, diğeri kişi adlarını getiriyor.</summary>
+public static class WhatsAppSmbSyncTypes
+{
+    public const string History = "history";
+    public const string Contacts = "smb_app_state_sync";
 }
 
 public sealed class WhatsAppOnboardingClient : IWhatsAppOnboardingClient
@@ -100,7 +139,8 @@ public sealed class WhatsAppOnboardingClient : IWhatsAppOnboardingClient
     }
 
     /// <summary>Bir WABA'nın numara listesinden tek satır.</summary>
-    private sealed record ListedNumber(string Id, string DisplayPhoneNumber, string? VerifiedName);
+    private sealed record ListedNumber(
+        string Id, string DisplayPhoneNumber, string? VerifiedName, string? PlatformType);
 
     /// <summary>Meta bir WABA'ya varsayılan olarak 25 numaraya izin veriyor;
     /// 100 bunun çok üstünde, yani sayfalama takibine gerek kalmıyor.</summary>
@@ -120,7 +160,8 @@ public sealed class WhatsAppOnboardingClient : IWhatsAppOnboardingClient
         using var req = new HttpRequestMessage(
             HttpMethod.Get,
             $"{Root}/{wabaId}/phone_numbers" +
-            $"?fields=id,display_phone_number,verified_name&limit={PhoneNumberPageLimit}");
+            $"?fields=id,display_phone_number,verified_name,platform_type" +
+            $"&limit={PhoneNumberPageLimit}");
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", businessToken);
 
         var listed = await SendAsync(req, "read-phone-number", ReadNumbers, ct);
@@ -133,7 +174,8 @@ public sealed class WhatsAppOnboardingClient : IWhatsAppOnboardingClient
                 "phone-number-not-in-waba",
                 "Numara bu WhatsApp Business hesabına ait değil.")
             : GraphResult<WhatsAppPhoneNumberInfo>.Success(
-                new WhatsAppPhoneNumberInfo(match.DisplayPhoneNumber, match.VerifiedName));
+                new WhatsAppPhoneNumberInfo(
+                    match.DisplayPhoneNumber, match.VerifiedName, match.PlatformType));
     }
 
     /// <summary>Boş liste geçerli bir yanıt (WABA'da numara yok) — <c>null</c>
@@ -150,7 +192,11 @@ public sealed class WhatsAppOnboardingClient : IWhatsAppOnboardingClient
             var display = item.TryGetProperty("display_phone_number", out var d) ? d.GetString() : null;
             if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(display)) continue;
             var name = item.TryGetProperty("verified_name", out var v) ? v.GetString() : null;
-            numbers.Add(new ListedNumber(id, display, string.IsNullOrWhiteSpace(name) ? null : name));
+            var platform = item.TryGetProperty("platform_type", out var p) ? p.GetString() : null;
+            numbers.Add(new ListedNumber(
+                id, display,
+                string.IsNullOrWhiteSpace(name) ? null : name,
+                string.IsNullOrWhiteSpace(platform) ? null : platform));
         }
         return numbers;
     }
@@ -164,6 +210,25 @@ public sealed class WhatsAppOnboardingClient : IWhatsAppOnboardingClient
         };
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", businessToken);
         return await SendSuccessAsync(req, "register-number", ct);
+    }
+
+    public async Task<GraphResult<string>> SyncSmbAppDataAsync(
+        string phoneNumberId, string syncType, string businessToken, CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Post, $"{Root}/{phoneNumberId}/smb_app_data")
+        {
+            Content = JsonContent.Create(new { messaging_product = "whatsapp", sync_type = syncType }),
+        };
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", businessToken);
+
+        // request_id yoksa "ok" dönüyoruz, null DEĞİL: bu noktada HTTP 2xx ve
+        // Meta'nın error bloğu yok, yani senkron başlamış demektir. null dönmek
+        // SendAsync'in "beklenmedik şekil" dalına düşer ve başarılı bir çağrıyı
+        // başarısız gösterirdi — bedeli 24 saatlik pencerenin boşa harcanması.
+        return await SendAsync(req, $"smb-app-data-{syncType}", root =>
+            root.TryGetProperty("request_id", out var r) && r.ValueKind == JsonValueKind.String
+                ? r.GetString()
+                : "ok", ct);
     }
 
     /// <summary><c>{ "success": true }</c> dönen uçlar için ortak yol. İçeride

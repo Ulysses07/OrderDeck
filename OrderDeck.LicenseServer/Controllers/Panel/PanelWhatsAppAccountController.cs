@@ -176,17 +176,35 @@ public sealed class PanelWhatsAppAccountController : ControllerBase
                 detail: "Meta beklenmedik uzunlukta bir numara döndü.");
         }
 
-        var pin = await ResolvePinAsync(licenseId.Value, phoneNumberId, ct);
-        var register = await _graph.RegisterPhoneNumberAsync(phoneNumberId, pin, token, ct);
+        // Coexistence: numara yayıncının telefonundaki WhatsApp Business
+        // uygulamasında yaşıyor ve ZATEN kayıtlı. Meta'nın Business App
+        // onboarding rehberi kayıt adımını açıkça atlatıyor. Atlamazsak
+        // yayıncının günlük kullandığı numaraya yeni bir iki adımlı PIN
+        // yazmaya kalkardık — en iyi ihtimalle hata, en kötüsünde yayıncıyı
+        // kendi telefonundaki uygulamadan kilitleyen bir değişiklik.
+        //
+        // Meta alanı hiç göndermezse coexistence VARSAYILMIYOR: register'ı
+        // gereksiz yere atlamak, kaydı hiç yapılmamış bir numarayı sessizce
+        // gönderemez hâlde bırakırdı.
+        var isCoexistence = phone.Value.IsBusinessApp;
+
+        string? pinToStore = null;
+        GraphResult<bool>? register = null;
+        if (!isCoexistence)
+        {
+            var pin = await ResolvePinAsync(licenseId.Value, phoneNumberId, ct);
+            register = await _graph.RegisterPhoneNumberAsync(phoneNumberId, pin, token, ct);
+            // Meta reddettiyse PIN'i YAZMA: saklı PIN kaybolursa numara bir
+            // daha register edilemez, kurtarma yolu yalnız Meta desteği.
+            if (register.Ok) pinToStore = pin;
+        }
 
         var result = await _accounts.UpsertAsync(
             licenseId.Value,
             new WhatsAppAccountUpsert(
                 wabaId, phoneNumberId, display,
                 token, phone.Value.VerifiedName,
-                // Meta reddettiyse PIN'i YAZMA: saklı PIN kaybolursa numara bir
-                // daha register edilemez, kurtarma yolu yalnız Meta desteği.
-                register.Ok ? pin : null),
+                pinToStore),
             ct);
 
         if (result.Conflict)
@@ -198,24 +216,80 @@ public sealed class PanelWhatsAppAccountController : ControllerBase
 
         var account = result.Account!;
 
-        if (!register.Ok)
+        // Coexistence'ta kayıt yerine SENKRON borcumuz var: Meta, onboarding'den
+        // sonra 24 saat içinde geçmiş ve rehber senkronu başlatılmazsa müşterinin
+        // offboard edilmesini şart koşuyor. Bu yüzden hemen burada, isteğin
+        // içinde çağrılıyor — arka plana atmak, kuyruğun tıkandığı bir günde
+        // yayıncının hesabını sessizce kaybettirirdi.
+        var syncError = isCoexistence ? await StartCoexistenceSyncAsync(account, token, ct) : null;
+
+        var failure = syncError
+            ?? (register is { Ok: false }
+                // Hesap çalışıyor olabilir (numara zaten kayıtlı) ama gönderim
+                // "not registered" verirse panelin sebebi gösterebilmesi lazım.
+                ? $"register: {Detail(register.ErrorCode, register.ErrorMessage)}"
+                : null);
+
+        if (failure is not null)
         {
-            // Hesap çalışıyor olabilir (numara zaten kayıtlı) ama gönderim
-            // "not registered" verirse panelin sebebi gösterebilmesi lazım.
             // Metin Meta'dan geliyor ve kolon nvarchar(500): kırpmazsak uzun bir
             // mesaj SaveChangesAsync'i patlatır — hesap satırı ZATEN yazılmış
             // olduğu için panel, bağlanmış bir hesap için 500 görür.
-            account.LastError = Truncate(
-                $"register: {register.ErrorCode} {register.ErrorMessage}".Trim(),
-                MaxLastErrorLength);
+            account.LastError = Truncate(failure, MaxLastErrorLength);
             await _db.SaveChangesAsync(ct);
         }
 
         _log.LogInformation(
-            "Embedded Signup tamamlandı: lisans {LicenseId}, phone_number_id {Pnid}",
-            licenseId, account.PhoneNumberId);
+            "Embedded Signup tamamlandı: lisans {LicenseId}, phone_number_id {Pnid}, coexistence {Coexistence}",
+            licenseId, account.PhoneNumberId, isCoexistence);
 
         return Ok(ToView(account));
+    }
+
+    /// <summary>
+    /// Coexistence senkronunu başlatır: önce sohbet geçmişi, sonra rehber.
+    /// Veri webhook'la parça parça gelir; burada yalnız tetikleniyor.
+    ///
+    /// <para><b>Ölümcül değil.</b> Numara bu noktada bağlanmış ve çalışıyor;
+    /// senkron düştü diye onboarding'i başarısız saymak, yayıncıyı çalışan bir
+    /// hesabı olmadan bırakırdı. Ama sessiz de kalınamaz: senkronsuz geçen 24
+    /// saatin sonunda hesabın offboard edilmesi gerekiyor, yani hata panele
+    /// taşınmak zorunda. Kurtarma yolu aynı süre içinde Embedded Signup'ı
+    /// tekrar çalıştırmak.</para>
+    ///
+    /// <para>Geçmiş düşse bile rehber DENENİYOR: ikisi ayrı senkron ve birinin
+    /// düşmesi diğerini imkânsız kılmıyor.</para>
+    /// </summary>
+    private async Task<string?> StartCoexistenceSyncAsync(
+        WhatsAppAccount account, string token, CancellationToken ct)
+    {
+        var failures = new List<string>();
+
+        foreach (var syncType in new[]
+                 {
+                     WhatsAppSmbSyncTypes.History,
+                     WhatsAppSmbSyncTypes.Contacts,
+                 })
+        {
+            var sync = await _graph.SyncSmbAppDataAsync(
+                account.PhoneNumberId, syncType, token, ct);
+
+            if (sync.Ok)
+            {
+                // request_id yalnız Meta desteğine verilecek referans.
+                _log.LogInformation(
+                    "Coexistence senkronu başladı: lisans {LicenseId}, tür {SyncType}, request_id {RequestId}",
+                    account.LicenseId, syncType, sync.Value);
+                continue;
+            }
+
+            _log.LogWarning(
+                "Coexistence senkronu başlatılamadı: lisans {LicenseId}, tür {SyncType} ({Code})",
+                account.LicenseId, syncType, sync.ErrorCode);
+            failures.Add($"{syncType}: {Detail(sync.ErrorCode, sync.ErrorMessage)}");
+        }
+
+        return failures.Count == 0 ? null : $"senkron: {string.Join("; ", failures)}";
     }
 
     [HttpGet]
