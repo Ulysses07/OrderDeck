@@ -23,14 +23,23 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 [Authorize(AuthenticationSchemes = "Bearer-Customer")]
 public sealed class PanelWhatsAppConversationsController : ControllerBase
 {
+    /// <summary>Medya linkinin ömrü. Ürün fotoğrafındaki 15 dakikadan kısa:
+    /// buradaki dosya müşterinin dekontu olabiliyor (IBAN, ad soyad) ve
+    /// presigned link imzayı taşıdığı için ömrü boyunca token'sız okunabilir.
+    /// Tarayıcı <c>img</c>/<c>video</c> etiketini render anında indirdiğinden
+    /// kısaltmanın görünür bir bedeli yok.</summary>
+    private static readonly TimeSpan MediaUrlLifetime = TimeSpan.FromMinutes(5);
+
     private readonly LicenseDbContext _db;
     private readonly WhatsAppMessagingService _messaging;
+    private readonly IWhatsAppMediaStore _mediaStore;
 
     public PanelWhatsAppConversationsController(
-        LicenseDbContext db, WhatsAppMessagingService messaging)
+        LicenseDbContext db, WhatsAppMessagingService messaging, IWhatsAppMediaStore mediaStore)
     {
         _db = db;
         _messaging = messaging;
+        _mediaStore = mediaStore;
     }
 
     public sealed record DekontDto(
@@ -173,9 +182,24 @@ public sealed class PanelWhatsAppConversationsController : ControllerBase
         return Ok(summary ?? new DroppedInboundDto(0, 0, null, null));
     }
 
+    /// <summary>
+    /// <c>MediaUrl</c>: R2'deki dosyanın kısa ömürlü (<see cref="MediaUrlLifetime"/>)
+    /// imzalı indirme linki; medya yoksa ya da indirilememişse null.
+    ///
+    /// <para><b>Neden vekil uç değil de imzalı link:</b> panel API'ye Bearer
+    /// JWT ile konuşuyor, ama <c>img</c>/<c>video</c> etiketi istek başlığı
+    /// göndermiyor. Vekilden geçirmek için dosyayı JS'le blob olarak indirmek
+    /// gerekirdi; o da video/ses'te aralık (range) isteğini ve tarayıcının
+    /// aşamalı oynatmasını kaybettirirdi. Ürün fotoğrafı yolu da (
+    /// <c>PanelProductPhotoController</c>) aynı deyimi kullanıyor.</para>
+    ///
+    /// <para><b>Link her istekte yeniden üretiliyor</b>, saklanmıyor: imza
+    /// süreli olduğu için saklanan kopya bayatlar ve panelin arka planda
+    /// tazelediği listede kırık görsel olarak görünürdü.</para>
+    /// </summary>
     public sealed record MessageDto(
         Guid Id, string Direction, string Type, string? Body, string Status,
-        string? Origin, string? TemplateName, string? MediaMimeType,
+        string? Origin, string? TemplateName, string? MediaMimeType, string? MediaUrl,
         string? ErrorCode, string? ErrorMessage, DateTimeOffset Timestamp);
 
     /// <summary>
@@ -213,12 +237,23 @@ public sealed class PanelWhatsAppConversationsController : ControllerBase
             .Take(take)
             .ToListAsync(ct);
 
-        return Ok(rows
-            .OrderBy(m => m.Timestamp)
-            .Select(m => new MessageDto(
+        var dtos = new List<MessageDto>(rows.Count);
+        foreach (var m in rows.OrderBy(m => m.Timestamp))
+        {
+            // Anahtar yoksa dosya bizde hiç yok: medya indirilememiş ya da mesaj
+            // geçmiş senkronundan gelmiş olabilir (geçmişte medya bilerek
+            // inmiyor). Uydurma link üretmek yerine null bırakılıyor; panel o
+            // durumda eskisi gibi yalnız "Görsel"/"Belge" etiketi basıyor.
+            var url = string.IsNullOrWhiteSpace(m.MediaR2Key)
+                ? null
+                : await _mediaStore.CreateDownloadUrlAsync(m.MediaR2Key, MediaUrlLifetime, ct);
+
+            dtos.Add(new MessageDto(
                 m.Id, m.Direction, m.Type, m.Body, m.Status, m.Origin, m.TemplateName,
-                m.MediaMimeType, m.ErrorCode, m.ErrorMessage, m.Timestamp))
-            .ToList());
+                m.MediaMimeType, url, m.ErrorCode, m.ErrorMessage, m.Timestamp));
+        }
+
+        return Ok(dtos);
     }
 
     public sealed record SendRequest(string Text);

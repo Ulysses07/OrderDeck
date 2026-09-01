@@ -31,7 +31,7 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
 
     private sealed record MessageDto(
         Guid Id, string Direction, string Type, string? Body, string Status,
-        string? Origin, string? TemplateName, string? MediaMimeType,
+        string? Origin, string? TemplateName, string? MediaMimeType, string? MediaUrl,
         string? ErrorCode, string? ErrorMessage, DateTimeOffset Timestamp);
 
     private sealed record Seed(HttpClient Client, Guid LicenseId, Guid LabelId, Guid ConversationId);
@@ -276,12 +276,14 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
 
     private static void SeedMessage(
         LicenseDbContext db, Seed s, string wamId, string direction, string? body,
-        int timestampMinutesAgo, int createdAtMinutesAgo)
+        int timestampMinutesAgo, int createdAtMinutesAgo,
+        string type = "text", string? mediaKey = null, string? mediaMime = null)
     {
         db.WaMessages.Add(new WaMessage
         {
             Id = Guid.NewGuid(), ConversationId = s.ConversationId, LicenseId = s.LicenseId,
-            WamId = wamId, Direction = direction, Type = "text", Body = body,
+            WamId = wamId, Direction = direction, Type = type, Body = body,
+            MediaR2Key = mediaKey, MediaMimeType = mediaMime,
             Status = direction == "in" ? "received" : "delivered",
             Origin = direction == "out" ? "panel" : null,
             Timestamp = DateTimeOffset.UtcNow.AddMinutes(-timestampMinutesAgo),
@@ -337,6 +339,57 @@ public class PanelWhatsAppConversationsControllerTests : IClassFixture<ApiFactor
             $"/api/panel/whatsapp-conversations/{s.ConversationId}/messages?limit=2");
 
         messages!.Select(m => m.Body).Should().Equal("mesaj 3", "mesaj 4");
+    }
+
+    // Medyanın kendisi R2'de; panele giden şey kısa ömürlü imzalı link.
+    // Testte depo InMemory (Provider=stub) olduğu için link "memory://" ile
+    // başlıyor — önemli olan biçimi değil, anahtarı olan mesaja link ÜRETİLMESİ.
+    [Fact]
+    public async Task A_media_message_comes_back_with_a_download_link()
+    {
+        var s = await SeedAsync();
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            SeedMessage(db, s, "wamid.img", "in", "dekont", 5, 5,
+                type: "image", mediaKey: $"wa/{s.LicenseId:N}/2026/09/media-1.jpg",
+                mediaMime: "image/jpeg");
+            await db.SaveChangesAsync();
+        }
+
+        var messages = await s.Client.GetFromJsonAsync<List<MessageDto>>(
+            $"/api/panel/whatsapp-conversations/{s.ConversationId}/messages");
+
+        var media = messages!.Single();
+        media.Type.Should().Be("image");
+        media.MediaMimeType.Should().Be("image/jpeg");
+        media.MediaUrl.Should().NotBeNullOrWhiteSpace();
+        media.MediaUrl.Should().Contain("media-1.jpg");
+    }
+
+    // Geçmiş senkronundan (coexistence) gelen mesajlarda medya bilerek
+    // indirilmiyor; indirme başarısız olduğunda da anahtar yazılmıyor. İki
+    // durumda da uydurma link üretmek, panelde kırık görsel demek olurdu.
+    [Fact]
+    public async Task A_media_message_without_a_stored_file_has_no_link()
+    {
+        var s = await SeedAsync();
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            SeedMessage(db, s, "wamid.hist", "in", null, 5, 5,
+                type: "image", mediaKey: null, mediaMime: "image/jpeg");
+            await db.SaveChangesAsync();
+        }
+
+        var messages = await s.Client.GetFromJsonAsync<List<MessageDto>>(
+            $"/api/panel/whatsapp-conversations/{s.ConversationId}/messages");
+
+        var media = messages!.Single();
+        media.Type.Should().Be("image");
+        media.MediaUrl.Should().BeNull();
     }
 
     [Fact]
