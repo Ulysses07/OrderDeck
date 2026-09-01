@@ -31,7 +31,7 @@ public sealed record WabaTemplate(
     string? HeaderText,
     string BodyText,
     string? FooterText,
-    IReadOnlyList<string> Buttons,
+    IReadOnlyList<WhatsAppTemplateButton> Buttons,
     int ParameterCount,
     IReadOnlyList<string> ParameterExamples,
     string? UnsupportedReason,
@@ -243,7 +243,7 @@ public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
         string? bodyText = null;
         string? footerText = null;
         string? unsupported = null;
-        var buttons = new List<string>();
+        var buttons = new List<WhatsAppTemplateButton>();
         var examples = new List<string>();
 
         if (item.TryGetProperty("components", out var comps) && comps.ValueKind == JsonValueKind.Array)
@@ -318,22 +318,29 @@ public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
         }
     }
 
-    private static void ReadButtons(JsonElement buttonsComponent, List<string> labels, ref string? unsupported)
+    /// <summary>Butonları tipiyle birlikte okur — düzenleme formu adresi ve
+    /// numarayı geri doldurmak zorunda; yalnız etiketi taşısaydık kaydeden
+    /// yayıncı butonun adresini sessizce silerdi.</summary>
+    private static void ReadButtons(
+        JsonElement buttonsComponent, List<WhatsAppTemplateButton> into, ref string? unsupported)
     {
         if (!buttonsComponent.TryGetProperty("buttons", out var bs) || bs.ValueKind != JsonValueKind.Array)
             return;
 
         foreach (var b in bs.EnumerateArray())
         {
-            var label = Str(b, "text");
-            if (!string.IsNullOrWhiteSpace(label)) labels.Add(label!);
+            var type = (Str(b, "type") ?? "").ToUpperInvariant();
+            var url = Str(b, "url");
+            into.Add(new WhatsAppTemplateButton(type, Str(b, "text") ?? "", url, Str(b, "phone_number")));
 
             // Dinamik URL soneki ve kopyalanabilir kod, gövdeden AYRI bir
             // bileşen parametresi istiyor. Sabit butonlar (quick reply, düz URL,
-            // telefon) parametresiz çalıştığı için sorun değil.
-            var type = (Str(b, "type") ?? "").ToUpperInvariant();
-            var url = Str(b, "url");
-            if (type == "COPY_CODE" || (url?.Contains("{{", StringComparison.Ordinal) ?? false))
+            // telefon) parametresiz çalıştığı için sorun değil. İki sebep ayrı
+            // yazılıyor: "değişken var" ile "bu türü göndermiyoruz" farklı
+            // şeyler ve yayıncı yanlış olanı aramaya çıkıyor.
+            if (type == "COPY_CODE")
+                unsupported ??= WhatsAppTemplateShape.ButtonTypeUnsupported;
+            else if (url?.Contains("{{", StringComparison.Ordinal) ?? false)
                 unsupported ??= WhatsAppTemplateShape.ButtonVariable;
         }
     }

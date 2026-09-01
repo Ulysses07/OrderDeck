@@ -86,6 +86,6 @@ public sealed class LicensesWhatsAppApprovedTemplatesController : ControllerBase
 
         return Ok(result.Value!.Select(t => new TemplateDto(
             t.Name, t.Language, t.Category, t.HeaderText, t.BodyText, t.FooterText,
-            t.Buttons, t.ParameterCount, t.ParameterExamples, t.UnsupportedReason)));
+            t.Buttons.Select(b => b.Text).ToList(), t.ParameterCount, t.ParameterExamples, t.UnsupportedReason)));
     }
 }

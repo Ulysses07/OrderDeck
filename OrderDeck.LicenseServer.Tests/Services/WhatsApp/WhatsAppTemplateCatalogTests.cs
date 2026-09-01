@@ -28,6 +28,9 @@ public sealed class WhatsAppTemplateCatalogTests
             _body = body;
         }
 
+        /// <summary>200 OK varsayılan — yalnız gövde içeriği önemli olan testler için.</summary>
+        public StubHandler(string body) : this(HttpStatusCode.OK, body) { }
+
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken ct)
         {
@@ -53,6 +56,10 @@ public sealed class WhatsAppTemplateCatalogTests
     private static Task<GraphResult<IReadOnlyList<WabaTemplate>>> ListAsync(
         HttpStatusCode status, string body) =>
         Catalog(new StubHandler(status, body)).ListApprovedAsync("WABA_1", "TOKEN_1", CancellationToken.None);
+
+    private static Task<GraphResult<IReadOnlyList<WabaTemplate>>> ListAsync(
+        HttpMessageHandler handler) =>
+        Catalog(handler).ListApprovedAsync("WABA_1", "TOKEN_1", CancellationToken.None);
 
     private const string OneApproved = """
         { "data": [ {
@@ -93,7 +100,7 @@ public sealed class WhatsAppTemplateCatalogTests
         t.HeaderText.Should().Be("Sipariş bilgisi");
         t.BodyText.Should().Be("Merhaba {{1}}, {{2}} TL ödemeniz bekleniyor.");
         t.FooterText.Should().Be("OrderDeck");
-        t.Buttons.Should().Equal("Tamam");
+        t.Buttons.Select(b => b.Text).Should().Equal("Tamam");
         t.ParameterCount.Should().Be(2);
         // Örnekler panelde alanların yer tutucusu; yayıncı hangi değişkenin ne
         // olduğunu ancak bunlardan anlıyor.
@@ -150,16 +157,29 @@ public sealed class WhatsAppTemplateCatalogTests
         result.Value!.Single().UnsupportedReason.Should().Be(WhatsAppTemplateShape.HeaderVariable);
     }
 
-    [Theory]
-    [InlineData("""{ "type": "COPY_CODE", "text": "Kodu kopyala" }""")]
-    [InlineData("""{ "type": "URL", "text": "Takip et", "url": "https://x.test/{{1}}" }""")]
-    public async Task A_button_that_wants_its_own_parameter_is_refused(string button)
+    [Fact]
+    public async Task A_copy_code_button_is_refused_as_unsupported_type()
     {
-        var result = await ListAsync(HttpStatusCode.OK, $$"""
+        // COPY_CODE türü bir bileşen parametresi istiyor; "değişken var" değil
+        // "bu türü göndermiyoruz" — yayıncı yanlış olanı aramaya çıkmasın.
+        var result = await ListAsync(HttpStatusCode.OK, """
             { "data": [ { "id": "4001", "name": "kampanya", "status": "APPROVED", "category": "MARKETING",
                 "language": "tr", "components": [
                   { "type": "BODY", "text": "İndirim başladı." },
-                  { "type": "BUTTONS", "buttons": [ {{button}} ] } ] } ] }
+                  { "type": "BUTTONS", "buttons": [ { "type": "COPY_CODE", "text": "Kodu kopyala" } ] } ] } ] }
+            """);
+
+        result.Value!.Single().UnsupportedReason.Should().Be(WhatsAppTemplateShape.ButtonTypeUnsupported);
+    }
+
+    [Fact]
+    public async Task A_dynamic_url_button_is_refused_as_needing_a_variable()
+    {
+        var result = await ListAsync(HttpStatusCode.OK, """
+            { "data": [ { "id": "4001", "name": "kampanya", "status": "APPROVED", "category": "MARKETING",
+                "language": "tr", "components": [
+                  { "type": "BODY", "text": "İndirim başladı." },
+                  { "type": "BUTTONS", "buttons": [ { "type": "URL", "text": "Takip et", "url": "https://x.test/{{1}}" } ] } ] } ] }
             """);
 
         result.Value!.Single().UnsupportedReason.Should().Be(WhatsAppTemplateShape.ButtonVariable);
@@ -179,7 +199,7 @@ public sealed class WhatsAppTemplateCatalogTests
 
         var t = result.Value!.Single();
         t.UnsupportedReason.Should().BeNull();
-        t.Buttons.Should().Equal("Siteye git", "Ara");
+        t.Buttons.Select(b => b.Text).Should().Equal("Siteye git", "Ara");
     }
 
     [Fact]
@@ -398,6 +418,28 @@ public sealed class WhatsAppTemplateCatalogTests
         Assert.True(result.Ok);
         Assert.Equal(2, result.Value!.Count);
         Assert.Equal("INVALID_FORMAT", result.Value!.Single(t => t.Name == "b").RejectedReason);
+    }
+
+    [Fact]
+    public async Task Butonlarin_adresi_ve_numarasi_okunuyor()
+    {
+        var handler = new StubHandler("""
+        {"data":[{"id":"7","name":"kampanya","status":"APPROVED","category":"MARKETING",
+          "language":"tr","components":[
+            {"type":"BODY","text":"İndirim başladı."},
+            {"type":"BUTTONS","buttons":[
+              {"type":"URL","text":"Siteye git","url":"https://orderdeckapp.com"},
+              {"type":"PHONE_NUMBER","text":"Ara","phone_number":"+905321234567"},
+              {"type":"QUICK_REPLY","text":"Tamam"}]}]}]}
+        """);
+
+        var result = await ListAsync(handler);
+
+        var b = Assert.Single(result.Value!).Buttons;
+        Assert.Equal(["URL", "PHONE_NUMBER", "QUICK_REPLY"], b.Select(x => x.Type));
+        Assert.Equal("https://orderdeckapp.com", b[0].Url);
+        Assert.Equal("+905321234567", b[1].PhoneNumber);
+        Assert.Null(b[2].Url);
     }
 }
 

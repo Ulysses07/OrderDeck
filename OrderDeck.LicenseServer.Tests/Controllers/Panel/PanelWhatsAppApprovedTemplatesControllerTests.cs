@@ -132,7 +132,7 @@ public sealed class PanelWhatsAppApprovedTemplatesControllerTests : IDisposable
         s.Catalog.Result = GraphResult<IReadOnlyList<WabaTemplate>>.Success([
             new WabaTemplate(
                 "1001", "odeme_hatirlatma", "tr", "UTILITY", "APPROVED", "Sipariş bilgisi",
-                "Merhaba {{1}}, {{2}} TL", "OrderDeck", ["Tamam"], 2, ["Ayşe", "250"], null, null),
+                "Merhaba {{1}}, {{2}} TL", "OrderDeck", [new WhatsAppTemplateButton("QUICK_REPLY", "Tamam", null, null)], 2, ["Ayşe", "250"], null, null),
         ]);
 
         var resp = await ListAsync(s);
