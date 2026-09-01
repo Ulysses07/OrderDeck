@@ -109,4 +109,48 @@ public class WhatsAppTemplateWriteTests
         Assert.Equal("100", result.ErrorCode);
         Assert.Contains("already exists", result.ErrorMessage);
     }
+
+    /// <summary>Oluşturmada gönderdiğimiz bileşenleri Meta'nın liste yanıtına
+    /// koyup katalogla geri okuyoruz. Gönderilemez çıkarsa panel kendi
+    /// gönderemeyeceği şablonu üretiyor demektir.</summary>
+    [Theory]
+    [MemberData(nameof(GonderilebilirTaslaklar))]
+    public async Task Olusturulan_sablon_katalogca_gonderilebilir_okunuyor(WhatsAppTemplateDraft draft)
+    {
+        Assert.Null(WhatsAppTemplateShape.Validate(draft));
+
+        var create = new CapturingHandler("""{"id":"9100","status":"PENDING"}""");
+        var created = await Catalog(create).CreateAsync(
+            "WABA1", "TOKEN", "gidis_donus", "UTILITY", "tr", draft, CancellationToken.None);
+        Assert.True(created.Ok);
+
+        using var sent = JsonDocument.Parse(create.Body!);
+        var components = sent.RootElement.GetProperty("components").GetRawText();
+
+        var listJson = $$"""
+        {"data":[{"id":"9100","name":"gidis_donus","status":"APPROVED","category":"UTILITY",
+                  "language":"tr","components":{{components}}}]}
+        """;
+
+        var read = await Catalog(new CapturingHandler(listJson))
+            .ListAllAsync("WABA1", "TOKEN", CancellationToken.None);
+
+        Assert.True(read.Ok);
+        var t = Assert.Single(read.Value!);
+        Assert.Null(t.UnsupportedReason);
+        Assert.Equal(draft.BodyExamples.Count, t.ParameterCount);
+    }
+
+    public static TheoryData<WhatsAppTemplateDraft> GonderilebilirTaslaklar() => new()
+    {
+        new WhatsAppTemplateDraft(null, "Kargonuz yolda.", null, [], []),
+        new WhatsAppTemplateDraft("Sipariş bilgisi", "Merhaba {{1}}.", "OrderDeck", ["Ayşe"], []),
+        new WhatsAppTemplateDraft(null, "Merhaba {{1}}, {{2}} TL.", null, ["Ayşe", "250"],
+        [
+            new WhatsAppTemplateButton("QUICK_REPLY", "Evet", null, null),
+            new WhatsAppTemplateButton("QUICK_REPLY", "Hayır", null, null),
+            new WhatsAppTemplateButton("URL", "Siteye git", "https://orderdeckapp.com", null),
+            new WhatsAppTemplateButton("PHONE_NUMBER", "Ara", null, "+905321234567"),
+        ]),
+    };
 }
