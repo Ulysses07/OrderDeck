@@ -49,6 +49,9 @@ public static class WhatsAppTemplateShape
     public const string ButtonVariable =
         "Şablonun butonu değişken istiyor; panel bu tür şablonu gönderemiyor.";
 
+    public const string ButtonTypeUnsupported =
+        "Panel yalnız hızlı yanıt, bağlantı ve arama butonu gönderebiliyor.";
+
     public const string AuthCategory =
         "Doğrulama (authentication) şablonları ayrı bir gönderim biçimi istiyor.";
 
@@ -181,7 +184,7 @@ public static class WhatsAppTemplateShape
                     break;
 
                 default:
-                    return ButtonVariable;
+                    return ButtonTypeUnsupported;
             }
         }
 

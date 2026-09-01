@@ -107,9 +107,11 @@ public class WhatsAppTemplateDraftTests
 
     [Fact]
     public void Bilinmeyen_buton_turu_reddedilir() =>
-        Assert.NotNull(WhatsAppTemplateShape.Validate(Draft(buttons: [
-            new("COPY_CODE", "Kodu kopyala", null, null),
-        ])));
+        Assert.Equal(
+            WhatsAppTemplateShape.ButtonTypeUnsupported,
+            WhatsAppTemplateShape.Validate(Draft(buttons: [
+                new("COPY_CODE", "Kodu kopyala", null, null),
+            ])));
 
     [Fact]
     public void Bos_buton_etiketi_reddedilir() =>
