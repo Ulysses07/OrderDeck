@@ -41,10 +41,16 @@ public sealed record WabaTemplate(
 /// karar vermez — panel ucu testlerinde tek parça sahtelenebilsin diye.</summary>
 public interface IWhatsAppTemplateCatalog
 {
-    /// <summary>Yalnız <c>APPROVED</c> şablonları döndürür. Onay bekleyen ya da
-    /// reddedilen şablon gönderilemez; listede göstermek yayıncıya
-    /// gönderebileceği izlenimi verirdi.</summary>
+    /// <summary>Yalnız <c>APPROVED</c> şablonlar — gönderim listesi. Süzme
+    /// <see cref="ListAllAsync"/> çıktısı üzerinde yapılır, ayrıştırıcıda değil.</summary>
     Task<GraphResult<IReadOnlyList<WabaTemplate>>> ListApprovedAsync(
+        string wabaId, string businessToken, CancellationToken ct);
+
+    /// <summary>Durumdan bağımsız tüm şablonlar. Panelin yönetim ekranı onay
+    /// bekleyeni ve reddedileni de göstermek zorunda; ayrıca yazma uçları
+    /// sahipliği bu listeyle doğruluyor (Meta'nın düzenle/sil uçları WABA
+    /// kapsamlı değil).</summary>
+    Task<GraphResult<IReadOnlyList<WabaTemplate>>> ListAllAsync(
         string wabaId, string businessToken, CancellationToken ct);
 }
 
@@ -85,7 +91,7 @@ public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
     /// <para>Ara sayfalardan biri düşerse <b>tüm çağrı</b> hata döner. Kısmi liste
     /// döndürmek, düzeltilen kusurun tam kendisi olurdu.</para>
     /// </summary>
-    public async Task<GraphResult<IReadOnlyList<WabaTemplate>>> ListApprovedAsync(
+    public async Task<GraphResult<IReadOnlyList<WabaTemplate>>> ListAllAsync(
         string wabaId, string businessToken, CancellationToken ct)
     {
         var url =
@@ -111,11 +117,6 @@ public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
             url = next;
         }
 
-        // Onay bekleyen ya da reddedilen şablon gönderilemez; gönderim listesinde
-        // göstermek yayıncıya gönderebileceği izlenimi verirdi. Ayrıştırıcı artık
-        // hepsini okuduğu için süzme burada.
-        list.RemoveAll(t => !string.Equals(t.Status, "APPROVED", StringComparison.OrdinalIgnoreCase));
-
         // Aynı şablonun birden çok dili olabiliyor; ada göre sıralamak
         // panelde dil varyantlarını yan yana getiriyor. Sıralama sayfa
         // sınırlarını da siliyor — panel sayfalamayı hiç görmüyor.
@@ -128,6 +129,22 @@ public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
         });
 
         return GraphResult<IReadOnlyList<WabaTemplate>>.Success(list);
+    }
+
+    /// <summary>Yalnız <c>APPROVED</c> şablonlar — gönderim listesi.
+    /// Süzme burada, ayrıştırıcıda değil: aynı ayrıştırıcı yönetim listesine de
+    /// hizmet ediyor.</summary>
+    public async Task<GraphResult<IReadOnlyList<WabaTemplate>>> ListApprovedAsync(
+        string wabaId, string businessToken, CancellationToken ct)
+    {
+        var all = await ListAllAsync(wabaId, businessToken, ct);
+        if (!all.Ok) return all;
+
+        var approved = all.Value!
+            .Where(t => string.Equals(t.Status, "APPROVED", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        return GraphResult<IReadOnlyList<WabaTemplate>>.Success(approved);
     }
 
     /// <summary>Tek sayfa: satırları <paramref name="into"/>'ya ekler.</summary>

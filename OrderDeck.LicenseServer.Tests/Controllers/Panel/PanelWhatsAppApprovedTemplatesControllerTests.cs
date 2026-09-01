@@ -36,6 +36,14 @@ public sealed class PanelWhatsAppApprovedTemplatesControllerTests : IDisposable
             SeenToken = businessToken;
             return Task.FromResult(Result);
         }
+
+        public Task<GraphResult<IReadOnlyList<WabaTemplate>>> ListAllAsync(
+            string wabaId, string businessToken, CancellationToken ct)
+        {
+            SeenWabaId = wabaId;
+            SeenToken = businessToken;
+            return Task.FromResult(Result);
+        }
     }
 
     private sealed class TemplateApiFactory : ApiFactory

@@ -379,6 +379,26 @@ public sealed class WhatsAppTemplateCatalogTests
 
         handler.AuthParams.Should().Equal("TOKEN_7", "TOKEN_7");
     }
+
+    [Fact]
+    public async Task ListAll_onaysiz_sablonlari_da_dondurur()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK, """
+        {"data":[
+          {"id":"1","name":"a","status":"APPROVED","category":"UTILITY","language":"tr",
+           "components":[{"type":"BODY","text":"Onaylı"}]},
+          {"id":"2","name":"b","status":"REJECTED","category":"MARKETING","language":"tr",
+           "rejected_reason":"INVALID_FORMAT",
+           "components":[{"type":"BODY","text":"Reddedilen"}]}
+        ]}
+        """);
+
+        var result = await Catalog(handler).ListAllAsync("WABA1", "TOKEN", CancellationToken.None);
+
+        Assert.True(result.Ok);
+        Assert.Equal(2, result.Value!.Count);
+        Assert.Equal("INVALID_FORMAT", result.Value!.Single(t => t.Name == "b").RejectedReason);
+    }
 }
 
 /// <summary>
