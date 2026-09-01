@@ -188,6 +188,80 @@ public sealed class PanelWhatsAppMessageTemplatesControllerTests : IDisposable
         Assert.Equal(HttpStatusCode.BadGateway, resp.StatusCode);
     }
 
+    private sealed record ButtonReq(string Type, string Text, string? Url, string? PhoneNumber);
+
+    private sealed record DraftReq(
+        string? HeaderText, string BodyText, string? FooterText,
+        List<string>? BodyExamples, List<ButtonReq>? Buttons);
+
+    private sealed record CreateReq(string Name, string Category, DraftReq Draft);
+
+    private static CreateReq NewTemplate(
+        string name = "siparis_hazir", string category = "UTILITY",
+        string body = "Merhaba {{1}}, siparişiniz hazır.", List<string>? examples = null) =>
+        new(name, category, new DraftReq(null, body, null, examples ?? ["Ayşe"], null));
+
+    private static Task<HttpResponseMessage> CreateAsync(Seed s, CreateReq req) =>
+        s.Client.PostAsJsonAsync("/api/panel/whatsapp-message-templates", req);
+
+    [Fact]
+    public async Task Olusturma_metaya_ad_kategori_ve_dili_geciriyor()
+    {
+        var s = await SeedAsync();
+        await ConnectWhatsAppAsync(s);
+
+        var resp = await CreateAsync(s, NewTemplate());
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var created = s.Catalog.Created!.Value;
+        Assert.Equal("siparis_hazir", created.Name);
+        Assert.Equal("UTILITY", created.Category);
+        Assert.Equal("tr", created.Language);
+        Assert.Equal(["Ayşe"], created.Draft.BodyExamples);
+    }
+
+    // Doğrulama Graph'a çıkmadan yerelde: Meta'nın 132000 hatası okunmaz ve
+    // reddedilen şablon WABA'nın kalite notunu düşürüyor.
+    [Theory]
+    [InlineData("Sipariş Hazır", "UTILITY")]      // geçersiz ad
+    [InlineData("siparis_hazir", "AUTHENTICATION")] // geçersiz kategori
+    public async Task Gecersiz_ad_veya_kategori_400_ve_metaya_gitmiyor(string name, string category)
+    {
+        var s = await SeedAsync();
+        await ConnectWhatsAppAsync(s);
+
+        var resp = await CreateAsync(s, NewTemplate(name, category));
+
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Null(s.Catalog.Created);
+    }
+
+    [Fact]
+    public async Task Eksik_ornek_degeri_400()
+    {
+        var s = await SeedAsync();
+        await ConnectWhatsAppAsync(s);
+
+        var resp = await CreateAsync(s, NewTemplate(examples: []));
+
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Null(s.Catalog.Created);
+    }
+
+    [Fact]
+    public async Task Ayni_ad_hatasi_metadan_502_olarak_geciyor()
+    {
+        var s = await SeedAsync();
+        await ConnectWhatsAppAsync(s);
+        s.Catalog.CreateResult = GraphResult<WhatsAppTemplateCreated>.Failure(
+            "100", "Template name already exists");
+
+        var resp = await CreateAsync(s, NewTemplate());
+
+        Assert.Equal(HttpStatusCode.BadGateway, resp.StatusCode);
+        Assert.Contains("already exists", await resp.Content.ReadAsStringAsync());
+    }
+
     public void Dispose()
     {
         foreach (var f in _factories) f.Dispose();
