@@ -153,4 +153,33 @@ public class WhatsAppTemplateWriteTests
             new WhatsAppTemplateButton("PHONE_NUMBER", "Ara", null, "+905321234567"),
         ]),
     };
+
+    [Fact]
+    public async Task Update_sablon_kimligine_yalniz_bilesenleri_gonderiyor()
+    {
+        var handler = new CapturingHandler("""{"success":true}""");
+
+        var result = await Catalog(handler).UpdateAsync("9001", "TOKEN", Draft(), CancellationToken.None);
+
+        Assert.True(result.Ok);
+        Assert.Equal(HttpMethod.Post, handler.Method);
+        Assert.Equal("https://graph.test/v25.0/9001", handler.Url);
+
+        using var sent = JsonDocument.Parse(handler.Body!);
+        Assert.False(sent.RootElement.TryGetProperty("name", out _));
+        Assert.False(sent.RootElement.TryGetProperty("category", out _));
+        Assert.False(sent.RootElement.TryGetProperty("language", out _));
+        Assert.Equal(4, sent.RootElement.GetProperty("components").GetArrayLength());
+    }
+
+    // Meta 200 + {"success":false} dönebiliyor; başarı saymak yayıncıya
+    // kaydedilmemiş bir düzenlemeyi kaydedildi diye gösterirdi.
+    [Fact]
+    public async Task Update_success_false_hata_sayiliyor()
+    {
+        var result = await Catalog(new CapturingHandler("""{"success":false}"""))
+            .UpdateAsync("9001", "TOKEN", Draft(), CancellationToken.None);
+
+        Assert.False(result.Ok);
+    }
 }

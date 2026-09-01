@@ -64,6 +64,12 @@ public interface IWhatsAppTemplateCatalog
     Task<GraphResult<WhatsAppTemplateCreated>> CreateAsync(
         string wabaId, string businessToken, string name, string category, string language,
         WhatsAppTemplateDraft draft, CancellationToken ct);
+
+    /// <summary>Şablonun bileşenlerini günceller. Ad/kategori/dil gönderilmiyor:
+    /// onaylı şablonda Meta zaten kabul etmiyor, panel de üçünü her durumda
+    /// kilitliyor.</summary>
+    Task<GraphResult<bool>> UpdateAsync(
+        string templateId, string businessToken, WhatsAppTemplateDraft draft, CancellationToken ct);
 }
 
 public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
@@ -399,6 +405,30 @@ public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
 
         return GraphResult<WhatsAppTemplateCreated>.Success(
             new WhatsAppTemplateCreated(id!, Str(doc.RootElement, "status") ?? "PENDING"));
+    }
+
+    public async Task<GraphResult<bool>> UpdateAsync(
+        string templateId, string businessToken, WhatsAppTemplateDraft draft, CancellationToken ct)
+    {
+        var sent = await SendAsync(
+            HttpMethod.Post, $"{Base()}/{templateId}", businessToken,
+            new { components = BuildComponents(draft) }, templateId, ct);
+
+        return ReadSuccess(sent);
+    }
+
+    /// <summary>Meta yazma yanıtı <c>{"success":true}</c>. HTTP 200 tek başına
+    /// yetmiyor: <c>success:false</c> gövdesi de 200 ile geliyor.</summary>
+    private static GraphResult<bool> ReadSuccess(GraphResult<JsonDocument> sent)
+    {
+        if (!sent.Ok) return GraphResult<bool>.Failure(sent.ErrorCode, sent.ErrorMessage);
+
+        using var doc = sent.Value!;
+        var ok = doc.RootElement.TryGetProperty("success", out var s) && s.ValueKind == JsonValueKind.True;
+
+        return ok
+            ? GraphResult<bool>.Success(true)
+            : GraphResult<bool>.Failure("unexpected", "Meta işlemi onaylamadı");
     }
 
     /// <summary>Taslak → Graph bileşen dizisi. Boş başlık/alt bilgi/buton hiç
