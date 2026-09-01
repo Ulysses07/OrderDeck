@@ -53,6 +53,10 @@ public sealed class PanelWhatsAppApprovedTemplatesControllerTests : IDisposable
         public Task<GraphResult<bool>> UpdateAsync(
             string templateId, string businessToken, WhatsAppTemplateDraft draft, CancellationToken ct) =>
             throw new NotSupportedException("Bu test yalnız listeyi kullanıyor.");
+
+        public Task<GraphResult<bool>> DeleteAsync(
+            string wabaId, string businessToken, string templateId, string name, CancellationToken ct) =>
+            throw new NotSupportedException("Bu test yalnız listeyi kullanıyor.");
     }
 
     private sealed class TemplateApiFactory : ApiFactory

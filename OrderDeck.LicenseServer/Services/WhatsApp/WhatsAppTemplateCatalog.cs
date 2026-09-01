@@ -70,6 +70,12 @@ public interface IWhatsAppTemplateCatalog
     /// kilitliyor.</summary>
     Task<GraphResult<bool>> UpdateAsync(
         string templateId, string businessToken, WhatsAppTemplateDraft draft, CancellationToken ct);
+
+    /// <summary>Şablonu siler. <paramref name="name"/> da isteniyor: Meta'nın
+    /// ucu ada göre çalışıyor, <c>hsm_id</c> tek bir dil sürümüne daraltıyor.
+    /// Yalnız ad gönderseydik aynı adın bütün dilleri silinirdi.</summary>
+    Task<GraphResult<bool>> DeleteAsync(
+        string wabaId, string businessToken, string templateId, string name, CancellationToken ct);
 }
 
 public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
@@ -414,6 +420,16 @@ public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
             HttpMethod.Post, $"{Base()}/{templateId}", businessToken,
             new { components = BuildComponents(draft) }, templateId, ct);
 
+        return ReadSuccess(sent);
+    }
+
+    public async Task<GraphResult<bool>> DeleteAsync(
+        string wabaId, string businessToken, string templateId, string name, CancellationToken ct)
+    {
+        var url = $"{Base()}/{wabaId}/message_templates" +
+                  $"?name={Uri.EscapeDataString(name)}&hsm_id={Uri.EscapeDataString(templateId)}";
+
+        var sent = await SendAsync(HttpMethod.Delete, url, businessToken, null, wabaId, ct);
         return ReadSuccess(sent);
     }
 

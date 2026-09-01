@@ -182,4 +182,20 @@ public class WhatsAppTemplateWriteTests
 
         Assert.False(result.Ok);
     }
+
+    [Fact]
+    public async Task Delete_hem_adi_hem_kimligi_gonderiyor()
+    {
+        var handler = new CapturingHandler("""{"success":true}""");
+
+        var result = await Catalog(handler)
+            .DeleteAsync("WABA1", "TOKEN", "9001", "siparis_hazir", CancellationToken.None);
+
+        Assert.True(result.Ok);
+        Assert.Equal(HttpMethod.Delete, handler.Method);
+        Assert.Contains("https://graph.test/v25.0/WABA1/message_templates?", handler.Url);
+        Assert.Contains("name=siparis_hazir", handler.Url);
+        Assert.Contains("hsm_id=9001", handler.Url);
+        Assert.Null(handler.Body);
+    }
 }
