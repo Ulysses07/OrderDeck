@@ -151,7 +151,9 @@ Graph sorgusuna `id` ve `rejected_reason` alanları ekleniyor.
 
 `ApprovedTemplate` kaydı `Id`, `Status` ve `RejectedReason` alanlarını kazanıp
 `WabaTemplate` adını alıyor — onaylı olmayan satırları da taşıyacağı için eski
-ad yanlış olurdu.
+ad yanlış olurdu. Adı iki tüketici birden kullanıyor: panel ucu ve **WPF'in
+ayar ekranına bakan** `LicensesWhatsAppApprovedTemplatesController`; ikisi de
+düzeltilecek.
 
 `ListApprovedAsync` aynı ayrıştırıcının üzerinde `status == APPROVED`
 filtresine dönüşüyor. Gönderim seçicisinin DTO'su ve davranışı değişmiyor.
@@ -219,7 +221,12 @@ Meta'nın hata kodları anlaşılmaz ve şablon ücretli.
 
 ## Panel tasarımı
 
-**Ekran** `/whatsapp-sablonlar`, "Daha Fazla → İletişim" altında. Liste her
+**Ekran** `/whatsapp-mesaj-sablonlari`, "Daha Fazla → İletişim" altında, menüde
+"WhatsApp Mesaj Şablonları" adıyla. Panelde **zaten** `/whatsapp-sablonlari`
+var ve menüde "WhatsApp Şablonları" yazıyor — o ekran WPF'in wa.me metin
+kalıplarının önizlemesi. Yeni ekranı tek harf farkla adlandırmak, iki şablon
+kavramını panelde birbirine karıştırmanın en kısa yolu olurdu; ad Meta'nın
+kendi terimini ("message template") taşıyor. Liste her
 şablonu durum rozetiyle gösteriyor; reddedilenin sebebi Meta'dan geldiği gibi
 yazılıyor. Çevirmeye çalışmak, tanımadığımız bir sebebi sessizce yutmak olurdu.
 
