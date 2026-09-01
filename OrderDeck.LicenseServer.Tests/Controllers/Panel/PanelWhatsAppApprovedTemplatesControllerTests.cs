@@ -17,7 +17,7 @@ namespace OrderDeck.LicenseServer.Tests.Controllers.Panel;
 /// cevabı değil, ucun o cevaba ne YAPTIĞI: hangi lisansın WABA'sına sorduğu,
 /// hesabı olmayanı nasıl ayırdığı ve Meta düşünce ne döndüğü.
 /// </summary>
-public sealed class PanelWhatsAppWabaTemplatesControllerTests : IDisposable
+public sealed class PanelWhatsAppApprovedTemplatesControllerTests : IDisposable
 {
     private readonly List<TemplateApiFactory> _factories = [];
 
