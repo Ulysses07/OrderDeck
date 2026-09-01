@@ -113,6 +113,69 @@ public sealed class PanelWhatsAppMessageTemplatesController : ControllerBase
         return Ok(new CreatedDto(result.Value!.Id, result.Value!.Status));
     }
 
+    [HttpPost("{id}")]
+    public async Task<IActionResult> Update(string id, [FromBody] DraftRequest req, CancellationToken ct)
+    {
+        var draft = ToDraft(req);
+        var draftError = WhatsAppTemplateShape.Validate(draft);
+        if (draftError is not null) return Invalid(draftError);
+
+        var (scope, error) = await ResolveScopeAsync(ct);
+        if (error is not null) return error;
+
+        var (owned, ownError) = await FindOwnedAsync(scope!, id, ct);
+        if (ownError is not null) return ownError;
+
+        if (string.Equals(owned!.Status, "PENDING", StringComparison.OrdinalIgnoreCase))
+        {
+            return Problem(
+                title: "template-pending", statusCode: 409,
+                detail: "Onay bekleyen şablon düzenlenemiyor; Meta sonuçlanmasını bekliyor.");
+        }
+
+        var result = await _catalog.UpdateAsync(owned.Id, scope!.AccessToken, draft, ct);
+        if (!result.Ok) return GraphProblem("whatsapp-template-update-failed", result);
+
+        return Ok(new { success = true });
+    }
+
+    [HttpDelete("{id}")]
+    public async Task<IActionResult> Delete(string id, CancellationToken ct)
+    {
+        var (scope, error) = await ResolveScopeAsync(ct);
+        if (error is not null) return error;
+
+        var (owned, ownError) = await FindOwnedAsync(scope!, id, ct);
+        if (ownError is not null) return ownError;
+
+        // Ad listeden alınıyor, istekten DEĞİL: Meta'nın silme ucu ada göre
+        // çalışıyor ve uydurma bir ad başka bir şablonu sildirebilirdi.
+        var result = await _catalog.DeleteAsync(
+            scope!.WabaId, scope.AccessToken, owned!.Id, owned.Name, ct);
+        if (!result.Ok) return GraphProblem("whatsapp-template-delete-failed", result);
+
+        return Ok(new { success = true });
+    }
+
+    /// <summary>Şablonu bu WABA'nın listesinden bulur. Hem kiracı koruması hem
+    /// silmenin ihtiyaç duyduğu adın kaynağı.</summary>
+    private async Task<(WabaTemplate? Template, IActionResult? Error)> FindOwnedAsync(
+        WabaScope scope, string id, CancellationToken ct)
+    {
+        var all = await _catalog.ListAllAsync(scope.WabaId, scope.AccessToken, ct);
+        if (!all.Ok) return (null, GraphProblem("whatsapp-templates-read-failed", all));
+
+        var found = all.Value!.FirstOrDefault(t => t.Id == id);
+        if (found is null)
+        {
+            return (null, Problem(
+                title: "template-not-found", statusCode: 404,
+                detail: "Şablon bu WhatsApp hesabında bulunamadı."));
+        }
+
+        return (found, null);
+    }
+
     /// <summary>Doğrulama hatası 400 + Türkçe metin. Panel bu metni olduğu gibi
     /// gösteriyor; Meta'nın kendi hata metni yayıncıya hiçbir şey anlatmıyor.</summary>
     private IActionResult Invalid(string message) =>

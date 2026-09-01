@@ -262,6 +262,101 @@ public sealed class PanelWhatsAppMessageTemplatesControllerTests : IDisposable
         Assert.Contains("already exists", await resp.Content.ReadAsStringAsync());
     }
 
+    private static Task<HttpResponseMessage> UpdateAsync(Seed s, string id, DraftReq draft) =>
+        s.Client.PostAsJsonAsync($"/api/panel/whatsapp-message-templates/{id}", draft);
+
+    private static DraftReq EditedDraft() =>
+        new(null, "Kargonuz bugün çıktı.", null, [], null);
+
+    [Fact]
+    public async Task Duzenleme_yalniz_bilesenleri_metaya_geciriyor()
+    {
+        var s = await SeedAsync();
+        await ConnectWhatsAppAsync(s);
+        s.Catalog.All = GraphResult<IReadOnlyList<WabaTemplate>>.Success([Template("T1", "kargo")]);
+
+        var resp = await UpdateAsync(s, "T1", EditedDraft());
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal("T1", s.Catalog.Updated!.Value.TemplateId);
+        Assert.Equal("Kargonuz bugün çıktı.", s.Catalog.Updated!.Value.Draft.BodyText);
+    }
+
+    // Meta'nın düzenleme ucu WABA kapsamlı değil: kimliği doğrudan geçirseydik
+    // yayıncı, kimliğini bildiği BAŞKA bir yayıncının şablonunu düzenlerdi.
+    [Fact]
+    public async Task Baska_wabanin_sablonu_duzenlenemiyor()
+    {
+        var s = await SeedAsync();
+        await ConnectWhatsAppAsync(s);
+        s.Catalog.All = GraphResult<IReadOnlyList<WabaTemplate>>.Success([Template("T1", "kargo")]);
+
+        var resp = await UpdateAsync(s, "BASKASININ", EditedDraft());
+
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+        Assert.Null(s.Catalog.Updated);
+    }
+
+    // Meta onay bekleyen şablonu düzenlemeye hiç izin vermiyor; isteği yollamak
+    // yayıncıya anlaşılmaz bir Graph hatası gösterirdi.
+    [Fact]
+    public async Task Onay_bekleyen_sablon_duzenlenemiyor()
+    {
+        var s = await SeedAsync();
+        await ConnectWhatsAppAsync(s);
+        s.Catalog.All = GraphResult<IReadOnlyList<WabaTemplate>>.Success([
+            Template("T1", "kargo", "PENDING"),
+        ]);
+
+        var resp = await UpdateAsync(s, "T1", EditedDraft());
+
+        Assert.Equal(HttpStatusCode.Conflict, resp.StatusCode);
+        Assert.Null(s.Catalog.Updated);
+    }
+
+    [Fact]
+    public async Task Duzenlemede_de_dogrulama_calisiyor()
+    {
+        var s = await SeedAsync();
+        await ConnectWhatsAppAsync(s);
+        s.Catalog.All = GraphResult<IReadOnlyList<WabaTemplate>>.Success([Template("T1", "kargo")]);
+
+        var resp = await UpdateAsync(s, "T1", new DraftReq(null, "   ", null, [], null));
+
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Null(s.Catalog.Updated);
+    }
+
+    // Silme ucu adı da istiyor; adı istekten alsaydık yayıncı bir şablonun
+    // kimliğiyle başka bir şablonun adını eşleştirip yanlış satırı sildirebilirdi.
+    [Fact]
+    public async Task Silmede_ad_istekten_degil_listeden_aliniyor()
+    {
+        var s = await SeedAsync();
+        await ConnectWhatsAppAsync(s);
+        s.Catalog.All = GraphResult<IReadOnlyList<WabaTemplate>>.Success([
+            Template("T1", "kargo_bildirimi"),
+        ]);
+
+        var resp = await s.Client.DeleteAsync("/api/panel/whatsapp-message-templates/T1");
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal(("T1", "kargo_bildirimi"), s.Catalog.Deleted);
+    }
+
+    [Fact]
+    public async Task Baska_wabanin_sablonu_silinemiyor()
+    {
+        var s = await SeedAsync();
+        await ConnectWhatsAppAsync(s);
+        s.Catalog.All = GraphResult<IReadOnlyList<WabaTemplate>>.Success([Template("T1", "kargo")]);
+
+        var resp = await s.Client.DeleteAsync("/api/panel/whatsapp-message-templates/BASKASININ");
+
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+        Assert.Null(s.Catalog.Deleted);
+    }
+
     public void Dispose()
     {
         foreach (var f in _factories) f.Dispose();
