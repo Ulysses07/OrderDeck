@@ -50,13 +50,13 @@ public sealed class WhatsAppTemplateCatalogTests
             new HttpClient(handler), opt, NullLogger<WhatsAppTemplateCatalog>.Instance);
     }
 
-    private static Task<GraphResult<IReadOnlyList<ApprovedTemplate>>> ListAsync(
+    private static Task<GraphResult<IReadOnlyList<WabaTemplate>>> ListAsync(
         HttpStatusCode status, string body) =>
         Catalog(new StubHandler(status, body)).ListApprovedAsync("WABA_1", "TOKEN_1", CancellationToken.None);
 
     private const string OneApproved = """
         { "data": [ {
-            "name": "odeme_hatirlatma", "status": "APPROVED",
+            "id": "1001", "name": "odeme_hatirlatma", "status": "APPROVED",
             "category": "UTILITY", "language": "tr",
             "components": [
               { "type": "HEADER", "format": "TEXT", "text": "Sipariş bilgisi" },
@@ -111,7 +111,7 @@ public sealed class WhatsAppTemplateCatalogTests
         // Onaylı olmayan şablon gönderilemiyor. Listede göstermek yayıncıya
         // gönderebileceği izlenimi verirdi.
         var result = await ListAsync(HttpStatusCode.OK, $$"""
-            { "data": [ { "name": "t", "status": "{{status}}", "category": "UTILITY",
+            { "data": [ { "id": "2001", "name": "t", "status": "{{status}}", "category": "UTILITY",
                 "language": "tr",
                 "components": [ { "type": "BODY", "text": "Merhaba" } ] } ] }
             """);
@@ -127,7 +127,7 @@ public sealed class WhatsAppTemplateCatalogTests
     public async Task A_media_header_is_listed_with_the_reason_not_hidden()
     {
         var result = await ListAsync(HttpStatusCode.OK, """
-            { "data": [ { "name": "kargo", "status": "APPROVED", "category": "UTILITY",
+            { "data": [ { "id": "3001", "name": "kargo", "status": "APPROVED", "category": "UTILITY",
                 "language": "tr", "components": [
                   { "type": "HEADER", "format": "IMAGE" },
                   { "type": "BODY", "text": "Kargonuz yolda." } ] } ] }
@@ -141,7 +141,7 @@ public sealed class WhatsAppTemplateCatalogTests
     public async Task A_variable_in_the_header_is_refused()
     {
         var result = await ListAsync(HttpStatusCode.OK, """
-            { "data": [ { "name": "kargo", "status": "APPROVED", "category": "UTILITY",
+            { "data": [ { "id": "3002", "name": "kargo", "status": "APPROVED", "category": "UTILITY",
                 "language": "tr", "components": [
                   { "type": "HEADER", "format": "TEXT", "text": "{{1}} numaralı sipariş" },
                   { "type": "BODY", "text": "Kargonuz yolda." } ] } ] }
@@ -156,7 +156,7 @@ public sealed class WhatsAppTemplateCatalogTests
     public async Task A_button_that_wants_its_own_parameter_is_refused(string button)
     {
         var result = await ListAsync(HttpStatusCode.OK, $$"""
-            { "data": [ { "name": "kampanya", "status": "APPROVED", "category": "MARKETING",
+            { "data": [ { "id": "4001", "name": "kampanya", "status": "APPROVED", "category": "MARKETING",
                 "language": "tr", "components": [
                   { "type": "BODY", "text": "İndirim başladı." },
                   { "type": "BUTTONS", "buttons": [ {{button}} ] } ] } ] }
@@ -169,7 +169,7 @@ public sealed class WhatsAppTemplateCatalogTests
     public async Task A_fixed_button_is_not_a_problem()
     {
         var result = await ListAsync(HttpStatusCode.OK, """
-            { "data": [ { "name": "kampanya", "status": "APPROVED", "category": "MARKETING",
+            { "data": [ { "id": "4002", "name": "kampanya", "status": "APPROVED", "category": "MARKETING",
                 "language": "tr", "components": [
                   { "type": "BODY", "text": "İndirim başladı." },
                   { "type": "BUTTONS", "buttons": [
@@ -188,7 +188,7 @@ public sealed class WhatsAppTemplateCatalogTests
         // OTP şablonu gövde parametresini değil buton parametresini istiyor;
         // bizim gönderim biçimimize hiç uymuyor.
         var result = await ListAsync(HttpStatusCode.OK, """
-            { "data": [ { "name": "dogrulama", "status": "APPROVED", "category": "AUTHENTICATION",
+            { "data": [ { "id": "5001", "name": "dogrulama", "status": "APPROVED", "category": "AUTHENTICATION",
                 "language": "tr", "components": [
                   { "type": "BODY", "text": "{{1}} doğrulama kodunuz." } ] } ] }
             """);
@@ -202,11 +202,11 @@ public sealed class WhatsAppTemplateCatalogTests
         // Aynı şablonun dil varyantları panelde yan yana dursun diye.
         var result = await ListAsync(HttpStatusCode.OK, """
             { "data": [
-              { "name": "zil", "status": "APPROVED", "category": "UTILITY", "language": "tr",
+              { "id": "6001", "name": "zil", "status": "APPROVED", "category": "UTILITY", "language": "tr",
                 "components": [ { "type": "BODY", "text": "b" } ] },
-              { "name": "alarm", "status": "APPROVED", "category": "UTILITY", "language": "tr",
+              { "id": "6002", "name": "alarm", "status": "APPROVED", "category": "UTILITY", "language": "tr",
                 "components": [ { "type": "BODY", "text": "b" } ] },
-              { "name": "alarm", "status": "APPROVED", "category": "UTILITY", "language": "en",
+              { "id": "6003", "name": "alarm", "status": "APPROVED", "category": "UTILITY", "language": "en",
                 "components": [ { "type": "BODY", "text": "b" } ] } ] }
             """);
 
@@ -280,7 +280,7 @@ public sealed class WhatsAppTemplateCatalogTests
 
     private static string Page(string name, string? next) =>
         $$"""
-          { "data": [ { "name": "{{name}}", "status": "APPROVED", "category": "UTILITY",
+          { "data": [ { "id": "7001", "name": "{{name}}", "status": "APPROVED", "category": "UTILITY",
               "language": "tr", "components": [ { "type": "BODY", "text": "b" } ] } ],
             "paging": { {{(next is null ? "" : $"\"next\": \"{next}\"")}} } }
           """;
@@ -349,6 +349,21 @@ public sealed class WhatsAppTemplateCatalogTests
         result.Ok.Should().BeFalse();
         result.ErrorCode.Should().Be("paging-limit");
         handler.Urls.Should().HaveCount(20);
+    }
+
+    [Fact]
+    public async Task Liste_sablonun_kimligini_ve_durumunu_tasir()
+    {
+        var result = await ListAsync(HttpStatusCode.OK, """
+            {"data":[{"id":"1200","name":"kargo","status":"APPROVED","category":"UTILITY",
+                      "language":"tr","components":[{"type":"BODY","text":"Kargonuz yolda."}]}]}
+            """);
+
+        Assert.True(result.Ok);
+        var t = Assert.Single(result.Value!);
+        Assert.Equal("1200", t.Id);
+        Assert.Equal("APPROVED", t.Status);
+        Assert.Null(t.RejectedReason);
     }
 
     [Fact]

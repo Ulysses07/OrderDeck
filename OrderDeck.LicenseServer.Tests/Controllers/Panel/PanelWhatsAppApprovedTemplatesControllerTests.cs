@@ -17,19 +17,19 @@ namespace OrderDeck.LicenseServer.Tests.Controllers.Panel;
 /// cevabı değil, ucun o cevaba ne YAPTIĞI: hangi lisansın WABA'sına sorduğu,
 /// hesabı olmayanı nasıl ayırdığı ve Meta düşünce ne döndüğü.
 /// </summary>
-public sealed class PanelWhatsAppApprovedTemplatesControllerTests : IDisposable
+public sealed class PanelWhatsAppWabaTemplatesControllerTests : IDisposable
 {
     private readonly List<TemplateApiFactory> _factories = [];
 
     private sealed class FakeTemplateCatalog : IWhatsAppTemplateCatalog
     {
-        public GraphResult<IReadOnlyList<ApprovedTemplate>> Result =
-            GraphResult<IReadOnlyList<ApprovedTemplate>>.Success([]);
+        public GraphResult<IReadOnlyList<WabaTemplate>> Result =
+            GraphResult<IReadOnlyList<WabaTemplate>>.Success([]);
 
         public string? SeenWabaId;
         public string? SeenToken;
 
-        public Task<GraphResult<IReadOnlyList<ApprovedTemplate>>> ListApprovedAsync(
+        public Task<GraphResult<IReadOnlyList<WabaTemplate>>> ListApprovedAsync(
             string wabaId, string businessToken, CancellationToken ct)
         {
             SeenWabaId = wabaId;
@@ -121,10 +121,10 @@ public sealed class PanelWhatsAppApprovedTemplatesControllerTests : IDisposable
     {
         var s = await SeedAsync();
         await ConnectWhatsAppAsync(s, "WABA_42");
-        s.Catalog.Result = GraphResult<IReadOnlyList<ApprovedTemplate>>.Success([
-            new ApprovedTemplate(
-                "odeme_hatirlatma", "tr", "UTILITY", "Sipariş bilgisi",
-                "Merhaba {{1}}, {{2}} TL", "OrderDeck", ["Tamam"], 2, ["Ayşe", "250"], null),
+        s.Catalog.Result = GraphResult<IReadOnlyList<WabaTemplate>>.Success([
+            new WabaTemplate(
+                "1001", "odeme_hatirlatma", "tr", "UTILITY", "APPROVED", "Sipariş bilgisi",
+                "Merhaba {{1}}, {{2}} TL", "OrderDeck", ["Tamam"], 2, ["Ayşe", "250"], null, null),
         ]);
 
         var resp = await ListAsync(s);
@@ -149,10 +149,10 @@ public sealed class PanelWhatsAppApprovedTemplatesControllerTests : IDisposable
     {
         var s = await SeedAsync();
         await ConnectWhatsAppAsync(s);
-        s.Catalog.Result = GraphResult<IReadOnlyList<ApprovedTemplate>>.Success([
-            new ApprovedTemplate(
-                "kargo", "tr", "UTILITY", null, "Kargonuz yolda.", null,
-                [], 0, [], WhatsAppTemplateShape.HeaderMedia),
+        s.Catalog.Result = GraphResult<IReadOnlyList<WabaTemplate>>.Success([
+            new WabaTemplate(
+                "1002", "kargo", "tr", "UTILITY", "APPROVED", null, "Kargonuz yolda.", null,
+                [], 0, [], WhatsAppTemplateShape.HeaderMedia, null),
         ]);
 
         var list = (await (await ListAsync(s)).Content.ReadFromJsonAsync<List<TemplateDto>>())!;
@@ -180,7 +180,7 @@ public sealed class PanelWhatsAppApprovedTemplatesControllerTests : IDisposable
         // olmayan bir sorunu Meta'da aramaya başlar.
         var s = await SeedAsync();
         await ConnectWhatsAppAsync(s);
-        s.Catalog.Result = GraphResult<IReadOnlyList<ApprovedTemplate>>.Failure(
+        s.Catalog.Result = GraphResult<IReadOnlyList<WabaTemplate>>.Failure(
             "190", "Session has expired.");
 
         var resp = await ListAsync(s);

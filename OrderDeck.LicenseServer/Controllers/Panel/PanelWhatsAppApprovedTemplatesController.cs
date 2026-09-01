@@ -41,7 +41,7 @@ public sealed class PanelWhatsAppApprovedTemplatesController : ControllerBase
 
     /// <summary>
     /// <paramref name="UnsupportedReason"/> null ise şablon gönderilebilir.
-    /// Dolu olan da listeye giriyor — bkz. <see cref="ApprovedTemplate"/>.
+    /// Dolu olan da listeye giriyor — bkz. <see cref="WabaTemplate"/>.
     /// </summary>
     public sealed record TemplateDto(
         string Name,

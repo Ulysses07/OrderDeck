@@ -6,7 +6,8 @@ using Microsoft.Extensions.Options;
 namespace OrderDeck.LicenseServer.Services.WhatsApp;
 
 /// <summary>
-/// Meta'da ONAYLI bir şablonun panelin ihtiyaç duyduğu hâli.
+/// Meta'daki bir şablonun panelin ihtiyaç duyduğu hâli — <b>her durumdan</b>
+/// (APPROVED, PENDING, REJECTED, PAUSED…).
 ///
 /// <para><b>Gövde metni neden taşınıyor:</b> onaylı metin Meta'da duruyor ve biz
 /// hiçbir yerde saklamıyoruz. Panel yayıncıya "hangi mesaj gidecek" sorusunu
@@ -16,18 +17,25 @@ namespace OrderDeck.LicenseServer.Services.WhatsApp;
 /// <para><paramref name="UnsupportedReason"/> doluysa şablon listede görünür ama
 /// gönderilemez. Gizlemek yerine sebebini yazıyoruz: yayıncı Meta'da onaylattığı
 /// şablonu panelde hiç göremezse eksikliği bize değil kendi hesabına yorar.</para>
+///
+/// <para><paramref name="RejectedReason"/> Meta'nın ham kodu (örn.
+/// <c>INVALID_FORMAT</c>). Çevirmiyoruz: ret sebebini aramaya çıkan yayıncı ancak
+/// bu dizgeyle Meta belgelerinde karşılık bulabiliyor.</para>
 /// </summary>
-public sealed record ApprovedTemplate(
+public sealed record WabaTemplate(
+    string Id,
     string Name,
     string Language,
     string Category,
+    string Status,
     string? HeaderText,
     string BodyText,
     string? FooterText,
     IReadOnlyList<string> Buttons,
     int ParameterCount,
     IReadOnlyList<string> ParameterExamples,
-    string? UnsupportedReason);
+    string? UnsupportedReason,
+    string? RejectedReason);
 
 /// <summary>WABA'nın onaylı şablon listesi. Yalnız HTTP yapar; DB'ye dokunmaz,
 /// karar vermez — panel ucu testlerinde tek parça sahtelenebilsin diye.</summary>
@@ -36,7 +44,7 @@ public interface IWhatsAppTemplateCatalog
     /// <summary>Yalnız <c>APPROVED</c> şablonları döndürür. Onay bekleyen ya da
     /// reddedilen şablon gönderilemez; listede göstermek yayıncıya
     /// gönderebileceği izlenimi verirdi.</summary>
-    Task<GraphResult<IReadOnlyList<ApprovedTemplate>>> ListApprovedAsync(
+    Task<GraphResult<IReadOnlyList<WabaTemplate>>> ListApprovedAsync(
         string wabaId, string businessToken, CancellationToken ct);
 }
 
@@ -77,14 +85,14 @@ public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
     /// <para>Ara sayfalardan biri düşerse <b>tüm çağrı</b> hata döner. Kısmi liste
     /// döndürmek, düzeltilen kusurun tam kendisi olurdu.</para>
     /// </summary>
-    public async Task<GraphResult<IReadOnlyList<ApprovedTemplate>>> ListApprovedAsync(
+    public async Task<GraphResult<IReadOnlyList<WabaTemplate>>> ListApprovedAsync(
         string wabaId, string businessToken, CancellationToken ct)
     {
         var url =
             $"{_opt.GraphBaseUrl.TrimEnd('/')}/{_opt.GraphApiVersion}/{wabaId}/message_templates" +
-            $"?fields=name,status,category,language,components&limit={PageLimit}";
+            $"?fields=id,name,status,category,language,components,rejected_reason&limit={PageLimit}";
 
-        var list = new List<ApprovedTemplate>();
+        var list = new List<WabaTemplate>();
 
         for (var page = 1; ; page++)
         {
@@ -93,7 +101,7 @@ public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
                 _log.LogWarning(
                     "WhatsApp şablon sayfalaması {Max} sayfayı aştı (waba={Waba}) — imleç döngüsü olabilir",
                     MaxPages, wabaId);
-                return GraphResult<IReadOnlyList<ApprovedTemplate>>.Failure(
+                return GraphResult<IReadOnlyList<WabaTemplate>>.Failure(
                     "paging-limit", "şablon listesi sayfalaması bitmedi");
             }
 
@@ -102,6 +110,11 @@ public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
             if (string.IsNullOrEmpty(next)) break;
             url = next;
         }
+
+        // Onay bekleyen ya da reddedilen şablon gönderilemez; gönderim listesinde
+        // göstermek yayıncıya gönderebileceği izlenimi verirdi. Ayrıştırıcı artık
+        // hepsini okuduğu için süzme burada.
+        list.RemoveAll(t => !string.Equals(t.Status, "APPROVED", StringComparison.OrdinalIgnoreCase));
 
         // Aynı şablonun birden çok dili olabiliyor; ada göre sıralamak
         // panelde dil varyantlarını yan yana getiriyor. Sıralama sayfa
@@ -114,14 +127,14 @@ public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
                 : string.Compare(a.Language, b.Language, StringComparison.OrdinalIgnoreCase);
         });
 
-        return GraphResult<IReadOnlyList<ApprovedTemplate>>.Success(list);
+        return GraphResult<IReadOnlyList<WabaTemplate>>.Success(list);
     }
 
     /// <summary>Tek sayfa: satırları <paramref name="into"/>'ya ekler.</summary>
     /// <returns><c>Next</c> doluysa devam edilecek mutlak URL;
     /// <c>Failure</c> doluysa çağrı orada biter.</returns>
-    private async Task<(string? Next, GraphResult<IReadOnlyList<ApprovedTemplate>>? Failure)> ReadPageAsync(
-        string url, string businessToken, string wabaId, List<ApprovedTemplate> into, CancellationToken ct)
+    private async Task<(string? Next, GraphResult<IReadOnlyList<WabaTemplate>>? Failure)> ReadPageAsync(
+        string url, string businessToken, string wabaId, List<WabaTemplate> into, CancellationToken ct)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", businessToken);
@@ -134,7 +147,7 @@ public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
         catch (Exception ex)
         {
             _log.LogWarning(ex, "WhatsApp şablon listesi ağ hatası (waba={Waba})", wabaId);
-            return (null, GraphResult<IReadOnlyList<ApprovedTemplate>>.Failure("network", ex.Message));
+            return (null, GraphResult<IReadOnlyList<WabaTemplate>>.Failure("network", ex.Message));
         }
 
         var body = await resp.Content.ReadAsStringAsync(ct);
@@ -148,7 +161,7 @@ public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
                 var code = err.TryGetProperty("code", out var c) ? c.ToString() : null;
                 var msg = err.TryGetProperty("message", out var m) ? m.GetString() : null;
                 _log.LogWarning("WhatsApp şablon listesi hatası ({Code}): {Msg}", code, msg);
-                return (null, GraphResult<IReadOnlyList<ApprovedTemplate>>.Failure(code, msg));
+                return (null, GraphResult<IReadOnlyList<WabaTemplate>>.Failure(code, msg));
             }
 
             if (!resp.IsSuccessStatusCode ||
@@ -157,7 +170,7 @@ public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
                 _log.LogWarning(
                     "WhatsApp şablon listesi beklenmedik yanıt (HTTP {Status}): {Body}",
                     (int)resp.StatusCode, Truncate(body));
-                return (null, GraphResult<IReadOnlyList<ApprovedTemplate>>.Failure(
+                return (null, GraphResult<IReadOnlyList<WabaTemplate>>.Failure(
                     ((int)resp.StatusCode).ToString(), "beklenmedik yanıt"));
             }
 
@@ -174,7 +187,7 @@ public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
             _log.LogWarning(
                 "WhatsApp şablon listesi JSON değil (HTTP {Status}): {Body}",
                 (int)resp.StatusCode, Truncate(body));
-            return (null, GraphResult<IReadOnlyList<ApprovedTemplate>>.Failure(
+            return (null, GraphResult<IReadOnlyList<WabaTemplate>>.Failure(
                 ((int)resp.StatusCode).ToString(), "beklenmedik yanıt"));
         }
     }
@@ -194,15 +207,18 @@ public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
         return Str(paging, "next");
     }
 
-    /// <summary>Tek şablon satırı → <see cref="ApprovedTemplate"/>. Onaylı
-    /// olmayan ya da şekli tanınmayan satır için null (listeye girmez).</summary>
-    private static ApprovedTemplate? ReadTemplate(JsonElement item)
+    /// <summary>Tek şablon satırı → <see cref="WabaTemplate"/>. Şekli tanınmayan
+    /// satır için null (listeye girmez). Durum süzmesi burada DEĞİL: aynı
+    /// ayrıştırıcı hem onaylı listeye hem yönetim listesine hizmet ediyor.</summary>
+    private static WabaTemplate? ReadTemplate(JsonElement item)
     {
+        var id = Str(item, "id");
         var name = Str(item, "name");
         var language = Str(item, "language");
-        var status = Str(item, "status");
-        if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(language)) return null;
-        if (!string.Equals(status, "APPROVED", StringComparison.OrdinalIgnoreCase)) return null;
+        var status = Str(item, "status") ?? "";
+        if (string.IsNullOrWhiteSpace(id) ||
+            string.IsNullOrWhiteSpace(name) ||
+            string.IsNullOrWhiteSpace(language)) return null;
 
         var category = Str(item, "category") ?? "";
 
@@ -261,9 +277,9 @@ public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
         if (category.Equals("AUTHENTICATION", StringComparison.OrdinalIgnoreCase))
             unsupported ??= WhatsAppTemplateShape.AuthCategory;
 
-        return new ApprovedTemplate(
-            name!, language!, category, headerText, bodyText!, footerText,
-            buttons, count, examples, unsupported);
+        return new WabaTemplate(
+            id!, name!, language!, category, status, headerText, bodyText!, footerText,
+            buttons, count, examples, unsupported, Str(item, "rejected_reason"));
     }
 
     /// <summary>Meta'nın örnek değerleri: <c>example.body_text = [[ "Ayşe", "250" ]]</c>.
