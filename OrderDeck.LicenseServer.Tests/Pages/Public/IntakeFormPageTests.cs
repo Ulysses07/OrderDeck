@@ -537,7 +537,7 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
     /// <summary>
     /// Facebook kuralı yalnız uzunluk sınırı koyuyor; boşluğa ve Türkçe
     /// karaktere izin veriyor. Eşleşme görünen ada dayalı olduğu için
-    /// Facebook bilerek adres çözümlemesinin dışında.
+    /// Facebook kutusuna girilen metne adres çözümlemesi uygulanmıyor.
     /// </summary>
     [Fact]
     public async Task Post_submit_facebook_gorunen_ad_ile_kayit_gecer()
@@ -575,5 +575,49 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             .FirstOrDefaultAsync();
         sub.Should().NotBeNull();
         sub!.FacebookUsername.Should().Be("Bilal Canlı");
+    }
+
+    /// <summary>
+    /// Facebook adres çözümlemesinin dışında tutuluyor — kutuya adres benzeri
+    /// bir metin girilse bile görünen ad sayılır, "yanlış kutu" hatası VERMEZ.
+    /// Diğer üç platformdan farklı olan bu dal, kaldırıldığında hiçbir test
+    /// düşmüyordu; davranışı burada çiviliyoruz.
+    /// </summary>
+    [Fact]
+    public async Task Post_submit_facebook_kutusuna_adres_girilse_de_adres_hatasi_vermez()
+    {
+        var (slug, customerId) = await SeedConfigAsync();
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = true
+        });
+
+        var getResp = await client.GetAsync($"/r/{slug}");
+        var antiForgery = AdminLoginHelper.ExtractAntiForgeryToken(await getResp.Content.ReadAsStringAsync());
+
+        var form = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["__RequestVerificationToken"] = antiForgery,
+            ["Slug"] = slug,
+            ["Input.FacebookUsername"] = "https://www.instagram.com/bilalcanli",
+            ["Input.FullName"] = "Bilal Canlı",
+            ["Input.Email"] = "bilal@example.com",
+            ["Input.Address"] = "Atatürk Cad. No:12",
+            ["Input.City"] = "İstanbul",
+            ["Input.District"] = "Kadıköy",
+            ["Input.Phone"] = "5551234567"
+        });
+        var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
+
+        postResp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var sub = await db.IntakeFormSubmissions
+            .Where(s => s.Config.CustomerId == customerId)
+            .FirstOrDefaultAsync();
+        sub.Should().NotBeNull();
+        sub!.FacebookUsername.Should().Be("https://www.instagram.com/bilalcanli");
     }
 }

@@ -252,6 +252,10 @@ public class IntakeFormModel : PageModel
     /// çeviri hatası, normalize, kural doğrulaması. Sıra kritik — doğrulama
     /// çeviriden ÖNCE koşarsa yapıştırılan adres reddedilir. Dört kutunun da
     /// aynı sırayı izlemesi için tek yerde.
+    ///
+    /// Dönen ikilinin ikinci elemanı yalnız <c>youtube.com/channel/UC…</c>
+    /// adresinde dolu: o adres handle değil, doğrudan kanal kimliği verir.
+    /// İkisi aynı anda dolu olmaz.
     /// </summary>
     private (string? Handle, string? ChannelId) Resolve(string key, string platform, string? raw)
     {
