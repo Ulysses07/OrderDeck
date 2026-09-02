@@ -11,6 +11,13 @@ public enum ProfileInputKind
     Error
 }
 
+/// <param name="Kind">Parse sonucunun türü.</param>
+/// <param name="Value">
+/// URL yolunda: kırpılmış/çıkarılmış değer. Dokunulmadan geçiş (pass-through)
+/// yolunda: baştaki boşluk ve <c>@</c> dahil ham girdi. Tüketici her zaman
+/// <see cref="HandleValidator.Normalize"/> çağırmalıdır.
+/// </param>
+/// <param name="Error">Hata mesajı; yalnızca <see cref="ProfileInputKind.Error"/> dalında dolu.</param>
 public sealed record ProfileParseResult(ProfileInputKind Kind, string? Value, string? Error)
 {
     public static ProfileParseResult Handle(string? h) => new(ProfileInputKind.Handle, h, null);
@@ -34,8 +41,16 @@ public sealed record ProfileParseResult(ProfileInputKind Kind, string? Value, st
 /// </summary>
 public static class ProfileUrlParser
 {
-    private static readonly string[] InstagramNonProfile =
-        ["p", "reel", "reels", "stories", "tv", "explore"];
+    // Gönderi/hikâye adresleri — müşteri profil yerine bir içeriği yapıştırmış.
+    private static readonly string[] InstagramPostPaths =
+        ["p", "reel", "reels", "stories", "tv"];
+
+    // Instagram'ın kendi ayrılmış yolları. Bunlar handle olarak dönerse
+    // HandleValidator onları GEÇERLİ bir kullanıcı adı sanıyor ("accounts" 8
+    // harf, hepsi geçerli karakter) ve kayıt sessizce ölüyor. Asıl tehlike bu:
+    // müşteri hiçbir uyarı görmüyor.
+    private static readonly string[] InstagramReserved =
+        ["explore", "accounts", "direct", "challenge", "s", "share"];
 
     public static ProfileParseResult Parse(string platform, string? raw)
     {
@@ -85,7 +100,8 @@ public static class ProfileUrlParser
         {
             HandleValidator.YouTube => ParseYouTube(host, path),
             HandleValidator.Instagram => ParseInstagram(path),
-            _ => ParseTikTok(host, path)
+            HandleValidator.TikTok => ParseTikTok(host, path),
+            _ => ProfileParseResult.Handle(raw)
         };
     }
 
@@ -140,8 +156,11 @@ public static class ProfileUrlParser
 
         var first = path.Split('/')[0];
 
-        if (InstagramNonProfile.Contains(first, StringComparer.OrdinalIgnoreCase))
+        if (InstagramPostPaths.Contains(first, StringComparer.OrdinalIgnoreCase))
             return ProfileParseResult.Fail("Bu bir gönderi adresi, profil adresi değil. " + igHelp);
+
+        if (InstagramReserved.Contains(first, StringComparer.OrdinalIgnoreCase))
+            return ProfileParseResult.Fail("Bu bir profil adresi değil. " + igHelp);
 
         return ProfileParseResult.Handle(first);
     }

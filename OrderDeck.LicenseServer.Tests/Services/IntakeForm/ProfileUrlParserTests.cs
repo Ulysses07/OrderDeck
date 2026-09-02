@@ -52,7 +52,7 @@ public sealed class ProfileUrlParserTests
     [InlineData("https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv")]
     [InlineData("youtube.com/channel/UCabcdefghijklmnopqrstuv/")]
     [InlineData("https://m.youtube.com/channel/UCabcdefghijklmnopqrstuv?si=x")]
-    public void YouTube_channel_adresi_kanal_kimligi_olarak_donser(string raw)
+    public void YouTube_channel_adresi_kanal_kimligi_olarak_doner(string raw)
     {
         var r = ProfileUrlParser.Parse(HandleValidator.YouTube, raw);
 
@@ -64,6 +64,8 @@ public sealed class ProfileUrlParserTests
     [Theory]
     [InlineData("https://www.youtube.com/channel/UCkisa")]
     [InlineData("https://www.youtube.com/channel/XXabcdefghijklmnopqrstuv")]
+    // Uzunluk ve önek doğru ama geçersiz karakter ('!') içeriyor — for döngüsü bunu yakalamalı.
+    [InlineData("https://www.youtube.com/channel/UCabcdefghij!lmnopqrstuv")]
     public void YouTube_bozuk_kanal_kimligi_reddedilir(string raw)
     {
         var r = ProfileUrlParser.Parse(HandleValidator.YouTube, raw);
@@ -112,13 +114,43 @@ public sealed class ProfileUrlParserTests
     [InlineData("https://instagram.com/p/Cxyz123")]
     [InlineData("https://www.instagram.com/reel/Cxyz123")]
     [InlineData("https://instagram.com/stories/bilalcanli/123456")]
-    [InlineData("https://instagram.com/explore/tags/moda")]
     public void Instagram_gonderi_adresi_reddedilir(string raw)
     {
         var r = ProfileUrlParser.Parse(HandleValidator.Instagram, raw);
 
         r.Kind.Should().Be(ProfileInputKind.Error);
         r.Error.Should().NotBeNullOrWhiteSpace();
+    }
+
+    /// <summary>
+    /// Instagram'ın ayrılmış sistem yolları profil değil. Tehlike: HandleValidator
+    /// "accounts" gibi bir değeri 8 harfli geçerli kullanıcı adı sayar ve kayıt
+    /// sessizce ölür — müşteri hiçbir uyarı görmez.
+    /// </summary>
+    [Theory]
+    [InlineData("instagram.com/accounts/login")]
+    [InlineData("https://www.instagram.com/accounts/login/?next=/bilalcanli/")]
+    [InlineData("instagram.com/direct/inbox")]
+    [InlineData("https://instagram.com/explore/tags/moda")]
+    public void Instagram_ayrilmis_yollar_reddedilir(string raw)
+    {
+        var r = ProfileUrlParser.Parse(HandleValidator.Instagram, raw);
+
+        r.Kind.Should().Be(ProfileInputKind.Error);
+        r.Error.Should().NotBeNullOrWhiteSpace();
+    }
+
+    /// <summary>
+    /// Baştaki/sondaki boşluk ve satır sonu mobilde yapıştırmada çok yaygın.
+    /// Trim() bu durumu yakalar; handle temiz çıkmalı.
+    /// </summary>
+    [Fact]
+    public void Instagram_baslangic_ve_son_boslugu_temizlenir()
+    {
+        var r = ProfileUrlParser.Parse(HandleValidator.Instagram, "  https://www.instagram.com/bilalcanli  ");
+
+        r.Kind.Should().Be(ProfileInputKind.Handle);
+        r.Value.Should().Be("bilalcanli");
     }
 
     /// <summary>TikTok: yol @ ile başlamalı; sondaki /video/… kırpılır.</summary>
