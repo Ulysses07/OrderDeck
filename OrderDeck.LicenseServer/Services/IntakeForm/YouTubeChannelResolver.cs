@@ -54,8 +54,13 @@ public sealed class YouTubeChannelResolver : IYouTubeChannelResolver
             var client = _httpFactory.CreateClient();
             client.Timeout = TimeSpan.FromSeconds(8);
             var url = "https://www.googleapis.com/youtube/v3/channels" +
-                      $"?part=id,snippet&forHandle={Uri.EscapeDataString(h)}&key={_apiKey}";
-            using var resp = await client.GetAsync(url, ct).ConfigureAwait(false);
+                      $"?part=id,snippet&forHandle={Uri.EscapeDataString(h)}";
+            // Anahtar sorgu dizesinde DEĞİL başlıkta: AddHttpClient()'ın varsayılan
+            // günlükleyicisi giden isteğin tam URI'sini Information seviyesinde
+            // yazıyor, yani `&key=…` doğrudan konteyner günlüğüne düşerdi.
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.Add("X-goog-api-key", _apiKey);
+            using var resp = await client.SendAsync(req, ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
             {
                 _log.LogWarning("YouTube kanalı çözümlenemedi — HTTP {StatusCode}, handle={Handle}",
