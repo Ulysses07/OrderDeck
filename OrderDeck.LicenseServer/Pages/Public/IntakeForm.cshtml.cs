@@ -218,10 +218,20 @@ public class IntakeFormModel : PageModel
                     "Bu kullanıcı adına ait bir YouTube kanalı bulunamadı. Kanal sayfanı aç, "
                     + "adres çubuğundaki @ ile başlayan adresi yapıştır.");
             }
+            else if (ch.ChannelId is null)
+            {
+                // Kanal var ama API kimlik döndürmedi (beklenmedik gövde). Onaylatacak
+                // bir kimlik yok; müşteriyi kilitlemek yerine handle ile kaydediyoruz
+                // ama sessiz kalmıyoruz — bu bizim tarafımızda bir arıza.
+                _log.LogWarning("YouTube kanalı bulundu ama kimlik gelmedi — handle={Handle}", yt);
+                resolvedChannelId = null;
+            }
             else if (!Input.YouTubeConfirmed)
             {
                 ModelState.AddModelError("Input.YouTubeConfirmed",
-                    $"\"{ch.Title}\" kanalının sana ait olduğunu onayla.");
+                    ch.Title is { Length: > 0 }
+                        ? $"\"{ch.Title}\" kanalının sana ait olduğunu onayla."
+                        : "Bulunan kanalın sana ait olduğunu onayla.");
             }
             else
             {

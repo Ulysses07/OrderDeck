@@ -191,6 +191,34 @@ public sealed class IntakeFormYouTubeIdentityTests : IClassFixture<YouTubeIdenti
     }
 
     /// <summary>
+    /// API "kanal var" diyor ama kimlik döndürmüyor (beklenmedik gövde —
+    /// YouTubeChannelResolver id alanını bulamazsa null bırakıyor). Onaylatacak
+    /// kimlik yok: müşteri kilitlenmez, kayıt handle ile alınır. Sunucuda
+    /// uyarı günlüğe düşer; sessizce geçmez.
+    /// </summary>
+    [Fact]
+    public async Task Kimliksiz_kanal_gonderimi_engellemez()
+    {
+        _factory.Resolver.ByHandle["kimliksiz"] =
+            new YouTubeChannel(true, true, "Kimliksiz Kanal", null, null);
+
+        var (slug, customerId) = await SeedConfigAsync();
+        var client = NewClient();
+        var token = await TokenAsync(client, slug);
+
+        var resp = await client.PostAsync($"/r/{slug}?handler=Submit", Form(token, slug,
+            ("Input.YouTubeUsername", "kimliksiz"),
+            ("Input.YouTubeConfirmed", "true")));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+
+        var sub = await LatestAsync(customerId);
+        sub.Should().NotBeNull();
+        sub!.YouTubeUsername.Should().Be("kimliksiz");
+        sub.YouTubeChannelId.Should().BeNull();
+    }
+
+    /// <summary>
     /// Kota bitmesi/ağ arızası BİZİM sorunumuz. Müşteriyi kilitlemek yerine kayıt
     /// alınır; channelId boş kalır, eşleştirme handle üzerinden yürür (bugünkü hâl).
     /// </summary>
