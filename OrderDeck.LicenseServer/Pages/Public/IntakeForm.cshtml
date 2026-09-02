@@ -161,8 +161,11 @@ else
                     <input type="checkbox" id="ytConfirm" asp-for="Input.YouTubeConfirmed" />
                     <span>Bu kanal bana ait.</span>
                 </label>
-                <span class="err" asp-validation-for="Input.YouTubeConfirmed"></span>
+                @* Sıra önemli: showError() alandaki İLK .err kutusunu buluyor ve
+                   JS'in yazdığı her mesaj kullanıcı adına ait. Onay kutusunun
+                   hatasını yalnız sunucu yazıyor, JS de gizlerken temizliyor. *@
                 <span class="err" asp-validation-for="Input.YouTubeUsername"></span>
+                <span class="err" id="ytConfirmErr" asp-validation-for="Input.YouTubeConfirmed"></span>
             </div>
 
             <div class="field">
@@ -308,10 +311,15 @@ else
         return v.trim();
     }
 
-    // Sunucudaki ProfileUrlParser'ın aynası. Yetkili kaynak SUNUCU — burası
-    // yalnızca anında geri bildirim için. İkisi ayrışırsa sunucu kazanır ve
-    // müşteri gönderim sonrası hatayı görür; sessiz kabul yok.
-    var IG_NONPROFILE = ['p', 'reel', 'reels', 'stories', 'tv', 'explore'];
+    // Sunucudaki ProfileUrlParser'ın aynası. Yetkili kaynak SUNUCU — ama
+    // "ayrışırsa sunucu yakalar" BURADA GEÇERLİ DEĞİL: applyParse alanın
+    // değerini yerinde değiştiriyor, yani sunucuya giden şey artık adres değil
+    // çıkarılan kullanıcı adı. İstemci "share"i geçerli sayarsa sunucu yalnız
+    // "share" görür (eğik çizgi yok → dokunmadan geçer) ve HandleValidator onu
+    // geçerli bir Instagram adı sanar. Kayıt sessizce yanlış adla yazılır.
+    // Bu yüzden iki liste de ProfileUrlParser.cs ile BİREBİR aynı olmalı.
+    var IG_POST = ['p', 'reel', 'reels', 'stories', 'tv'];
+    var IG_RESERVED = ['explore', 'accounts', 'direct', 'challenge', 's', 'share'];
 
     function isChannelId(id) { return /^UC[A-Za-z0-9_-]{22}$/.test(id); }
 
@@ -377,9 +385,13 @@ else
             if (seg.length === 0)
                 return { kind: 'error', value: '',
                          error: 'Adreste kullan\u0131c\u0131 ad\u0131 g\u00f6r\u00fcnm\u00fcyor. ' + igHelp };
-            if (IG_NONPROFILE.indexOf(seg[0].toLowerCase()) >= 0)
+            var igFirst = seg[0].toLowerCase();
+            if (IG_POST.indexOf(igFirst) >= 0)
                 return { kind: 'error', value: '',
                          error: 'Bu bir g\u00f6nderi adresi, profil adresi de\u011fil. ' + igHelp };
+            if (IG_RESERVED.indexOf(igFirst) >= 0)
+                return { kind: 'error', value: '',
+                         error: 'Bu bir profil adresi de\u011fil. ' + igHelp };
             return { kind: 'handle', value: seg[0], error: '' };
         }
 
@@ -485,13 +497,23 @@ else
     function esc(s) { return (s || '').replace(/[&<>"]/g, function (c) {
         return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
 
+    var ytConfirmErr = document.getElementById('ytConfirmErr');
+
     function showConfirm(on) {
         if (!ytConfirmWrap) return;
         ytConfirmWrap.hidden = !on;
-        if (!on && ytConfirm) ytConfirm.checked = false;
+        if (!on) {
+            if (ytConfirm) ytConfirm.checked = false;
+            // Sunucudan gelen "onayla" hatası kutu gizlenince ekranda kalmasın.
+            if (ytConfirmErr) ytConfirmErr.textContent = '';
+        }
     }
 
-    function verifyYouTube() {
+    // keepConfirm: sayfa ilk yüklenirken true. O anda handle DEĞİŞMEMİŞTİR —
+    // sunucunun az önce doğruladığı değerin ta kendisidir. Sıfırlamak, kayıt
+    // formunda ilgisiz bir alandan (TC, telefon…) hata alan müşterinin YouTube
+    // onayını sessizce kaldırır ve ikinci kez engellenmesine yol açardı.
+    function verifyYouTube(keepConfirm) {
         if (!yt) return;
         var p = applyParse(yt);
 
@@ -512,7 +534,7 @@ else
         if (h.length === 0) { ytState = ''; lastChecked = null; setStatus(''); showConfirm(false); return; }
         if (h === lastChecked) return;
 
-        showConfirm(false);      // handle değişti → önceki onay geçersiz
+        if (!keepConfirm) showConfirm(false);   // handle değişti → önceki onay geçersiz
         lastChecked = h;
         ytState = 'checking';
         setStatus('<span class="spinner"></span><span class="yt-checking">kontrol ediliyor\u2026</span>');
@@ -539,14 +561,25 @@ else
     }
 
     if (yt) {
-        yt.addEventListener('blur', function () { clearTimeout(ytTimer); ytTimer = setTimeout(verifyYouTube, 200); });
+        // setTimeout işleyiciye argüman geçirmiyor; keepConfirm'i yine de açıkça
+        // yazıyoruz — burada onayın sıfırlanması İSTENEN davranış.
+        yt.addEventListener('blur', function () {
+            clearTimeout(ytTimer);
+            ytTimer = setTimeout(function () { verifyYouTube(false); }, 200);
+        });
         yt.addEventListener('input', function () {
             showConfirm(false);                          // yazarken eski onay geçersiz
-            clearTimeout(ytTimer); ytTimer = setTimeout(verifyYouTube, 700);
+            // Durum da geçersiz: aksi hâlde 700 ms dolmadan gönderilirse kapı
+            // bayat 'ok' görüp "kanalı onayla" der, ama onay kutusu az önce
+            // gizlendiği için müşteriye onaylayacak bir şey gösterilmez.
+            // 'checking' kapıyı geçirir; asıl kararı sunucu zaten veriyor.
+            ytState = 'checking';
+            clearTimeout(ytTimer);
+            ytTimer = setTimeout(function () { verifyYouTube(false); }, 700);
         });
-        // Sunucu hatasıyla dönen sayfada alan dolu gelir; durum makinesini ve
-        // onay kutusunu yeniden kur (sunucu kartı zaten çizdi).
-        if (yt.value) verifyYouTube();
+        // Sunucu hatasıyla dönen sayfada alan dolu gelir; durum makinesini yeniden
+        // kur (sunucu kartı zaten çizdi). İşaretli onay korunur — bkz. keepConfirm.
+        if (yt.value) verifyYouTube(true);
     }
 
     // (c) E-posta — sunucudaki EmailValidator ile ayni kural.
