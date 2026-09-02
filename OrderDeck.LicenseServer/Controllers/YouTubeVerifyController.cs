@@ -11,8 +11,8 @@ namespace OrderDeck.LicenseServer.Controllers;
 /// rate-limit ve JSON biçimi var.
 ///
 /// DİKKAT: Bu uç yalnız GÖSTERİM içindir. Kaydedilen channelId'yi sunucu gönderim
-/// anında KENDİSİ yeniden çözer (IntakeForm.cshtml.cs) — buradan dönen değere
-/// istemci üzerinden güvenilmez.
+/// anında KENDİSİ yeniden çözecek (IntakeForm.cshtml.cs'e bir sonraki adımda
+/// bağlanacak) — buradan dönen değere istemci üzerinden güvenilmez.
 /// </summary>
 [ApiController]
 [AllowAnonymous]

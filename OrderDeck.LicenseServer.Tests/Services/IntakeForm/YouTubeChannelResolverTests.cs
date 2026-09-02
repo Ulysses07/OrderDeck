@@ -3,6 +3,7 @@ using System.Text;
 using FluentAssertions;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.LicenseServer.Services.IntakeForm;
 using Xunit;
 
@@ -28,7 +29,8 @@ public sealed class YouTubeChannelResolverTests
         return new YouTubeChannelResolver(
             new SingleHandlerFactory(handler),
             new MemoryCache(new MemoryCacheOptions()),
-            config);
+            config,
+            NullLogger<YouTubeChannelResolver>.Instance);
     }
 
     [Fact]
@@ -46,6 +48,10 @@ public sealed class YouTubeChannelResolverTests
         r.Thumbnail.Should().Be("https://yt3.example/a.jpg");
         // Handle @ atılıp küçük harfe indirilerek sorgulanır.
         handler.Requests[0].RequestUri!.Query.Should().Contain("forHandle=orderdeck");
+        // channels.list kullanılır, search.list değil (search.list 100 kota birimi = yasak).
+        handler.Requests[0].RequestUri!.AbsolutePath.Should().Be("/youtube/v3/channels");
+        handler.Requests[0].RequestUri!.Query.Should().Contain("part=id,snippet");
+        handler.Requests[0].RequestUri!.Query.Should().Contain("forHandle=");
     }
 
     [Fact]
@@ -117,6 +123,60 @@ public sealed class YouTubeChannelResolverTests
         handler.Requests.Should().BeEmpty();
     }
 
+    /// <summary>
+    /// Başarısız aramalar cache'lenmez. Aksi takdirde tek bir 403 yanıtı aynı
+    /// handle'ı bir saat zehirler; sonraki başarılı deneme asla ağa çıkmaz.
+    /// </summary>
+    [Fact]
+    public async Task Basarisiz_arama_cache_lenmez_sonraki_cagri_agdan_gider()
+    {
+        // İlk çağrıda Forbidden (kota/geçici hata), ikinci çağrıda gerçek sonuç.
+        var handler = new ScriptedHandler(
+            (HttpStatusCode.Forbidden, ""),
+            (HttpStatusCode.OK, FoundJson));
+        var sut = Build(handler, NewApiKey());
+
+        var first = await sut.ResolveHandleAsync("orderdeck", CancellationToken.None);
+        var second = await sut.ResolveHandleAsync("orderdeck", CancellationToken.None);
+
+        first.Available.Should().BeFalse();          // degrade
+        second.Exists.Should().BeTrue();              // gerçek sonuç geldi
+        second.ChannelId.Should().Be("UCabcdefghijklmnopqrstuv");
+        // İki ayrı HTTP çağrısı yapıldı — cache zehirlenmesi yok.
+        handler.Requests.Should().HaveCount(2);
+    }
+
+    /// <summary>
+    /// HttpClient.Timeout süresi dolduğunda atılan TaskCanceledException (CancellationToken
+    /// iptal edilmemişken) yumuşak degrade'e dönüşmeli — fırlatılmamalı. Aksi takdirde
+    /// googleapis yavaş yanıt verdiğinde müşterinin kaydı kaybolur.
+    ///
+    /// NOT: Test, CancellationToken.None ile çağırır — bu zaman aşımı senaryosunun
+    /// tam karşılığıdır (ct iptal edilmemiş ama handler fırlatıyor).
+    /// </summary>
+    [Fact]
+    public async Task Zaman_asimi_exception_u_Available_false_a_donusur_musteri_kaybolmaz()
+    {
+        var handler = new TimeoutSimulatingHandler();
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["YouTube:ApiKey"] = NewApiKey() })
+            .Build();
+        var sut = new YouTubeChannelResolver(
+            new SingleHandlerFactory(handler),
+            new MemoryCache(new MemoryCacheOptions()),
+            config,
+            NullLogger<YouTubeChannelResolver>.Instance);
+
+        // CancellationToken.None → ct.IsCancellationRequested == false
+        // Handler fırlattığı TaskCanceledException catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        // koşulunu SAĞLAMAZ, dolayısıyla genel catch'e düşer ve Available:false döner.
+        var act = () => sut.ResolveHandleAsync("orderdeck", CancellationToken.None);
+
+        var r = await act.Should().NotThrowAsync();
+        r.Subject.Available.Should().BeFalse();
+        r.Subject.Exists.Should().BeFalse();
+    }
+
     private sealed class SingleHandlerFactory : IHttpClientFactory
     {
         private readonly HttpMessageHandler _handler;
@@ -141,5 +201,14 @@ public sealed class YouTubeChannelResolverTests
                 Content = new StringContent(body, Encoding.UTF8, "application/json")
             });
         }
+    }
+
+    // HttpClient.Timeout dolduğunda atılan TaskCanceledException'ı simüle eder.
+    // İptal edilmemiş bir CancellationToken ile (None) fırlatır — timeout senaryosu budur.
+    private sealed class TimeoutSimulatingHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken ct)
+            => throw new TaskCanceledException("simüle edilmiş zaman aşımı", null, new CancellationToken());
     }
 }

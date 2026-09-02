@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Logging;
 
 namespace OrderDeck.LicenseServer.Services.IntakeForm;
 
@@ -15,17 +16,23 @@ namespace OrderDeck.LicenseServer.Services.IntakeForm;
 public sealed class YouTubeChannelResolver : IYouTubeChannelResolver
 {
     private static readonly TimeSpan CacheTtl = TimeSpan.FromHours(1);
-    private static readonly YouTubeChannel Unavailable = new(false, false, null, null, null);
+    private static readonly YouTubeChannel Unavailable = new(Available: false, Exists: false, Title: null, Thumbnail: null, ChannelId: null);
 
     private readonly IHttpClientFactory _httpFactory;
     private readonly IMemoryCache _cache;
     private readonly string? _apiKey;
+    private readonly ILogger<YouTubeChannelResolver> _log;
 
-    public YouTubeChannelResolver(IHttpClientFactory httpFactory, IMemoryCache cache, IConfiguration config)
+    public YouTubeChannelResolver(
+        IHttpClientFactory httpFactory,
+        IMemoryCache cache,
+        IConfiguration config,
+        ILogger<YouTubeChannelResolver> log)
     {
         _httpFactory = httpFactory;
         _cache = cache;
         _apiKey = config["YouTube:ApiKey"];
+        _log = log;
     }
 
     public async Task<YouTubeChannel> ResolveHandleAsync(string? handle, CancellationToken ct)
@@ -35,9 +42,10 @@ public sealed class YouTubeChannelResolver : IYouTubeChannelResolver
 
         var h = (handle ?? "").Trim().TrimStart('@').Trim().ToLowerInvariant();
         if (h.Length == 0 || h.Length > 64)
-            return new YouTubeChannel(true, false, null, null, null);
+            return new YouTubeChannel(Available: true, Exists: false, Title: null, Thumbnail: null, ChannelId: null);
 
-        if (_cache.TryGetValue("ytv:" + h, out YouTubeChannel? cached) && cached is not null)
+        var cacheKey = "ytv:" + h;
+        if (_cache.TryGetValue(cacheKey, out YouTubeChannel? cached) && cached is not null)
             return cached;
 
         YouTubeChannel result;
@@ -49,7 +57,11 @@ public sealed class YouTubeChannelResolver : IYouTubeChannelResolver
                       $"?part=id,snippet&forHandle={Uri.EscapeDataString(h)}&key={_apiKey}";
             using var resp = await client.GetAsync(url, ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
+            {
+                _log.LogWarning("YouTube kanalı çözümlenemedi — HTTP {StatusCode}, handle={Handle}",
+                    (int)resp.StatusCode, h);
                 return Unavailable;
+            }
 
             await using var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
             using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct).ConfigureAwait(false);
@@ -60,27 +72,36 @@ public sealed class YouTubeChannelResolver : IYouTubeChannelResolver
                 // items[0].id = kanalın channelId'si (UCxxx). WPF'teki chat kaydıyla
                 // BİREBİR eşleşen değer bu.
                 var channelId = items[0].TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
-                var snippet = items[0].GetProperty("snippet");
-                var title = snippet.TryGetProperty("title", out var t) ? t.GetString() : null;
+                string? title = null;
                 string? thumb = null;
-                if (snippet.TryGetProperty("thumbnails", out var th) &&
-                    th.TryGetProperty("default", out var def) &&
-                    def.TryGetProperty("url", out var u))
-                    thumb = u.GetString();
-                result = new YouTubeChannel(true, true, title, thumb, channelId);
+                if (items[0].TryGetProperty("snippet", out var snippet))
+                {
+                    title = snippet.TryGetProperty("title", out var t) ? t.GetString() : null;
+                    if (snippet.TryGetProperty("thumbnails", out var th) &&
+                        th.TryGetProperty("default", out var def) &&
+                        def.TryGetProperty("url", out var u))
+                        thumb = u.GetString();
+                }
+                result = new YouTubeChannel(Available: true, Exists: true, Title: title, Thumbnail: thumb, ChannelId: channelId);
             }
             else
             {
-                result = new YouTubeChannel(true, false, null, null, null);
+                result = new YouTubeChannel(Available: true, Exists: false, Title: null, Thumbnail: null, ChannelId: null);
             }
         }
-        catch (OperationCanceledException) { throw; }
-        catch
+        // Yalnız GERÇEK istek iptali (tarayıcı bağlantısı kesildi vb.) yeniden
+        // fırlatılır. "when" koşulu olmasaydı HttpClient.Timeout süresi dolduğunda
+        // atılan TaskCanceledException (ct iptal edilmemişken) da buraya düşer ve
+        // müşterinin kaydı kaybolurdu — oysa bu bizim ağ sorunumuz, müşteriyi
+        // kilitlememeli.
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
         {
+            _log.LogWarning(ex, "YouTube kanal çözümü başarısız, yumuşak degrade — handle={Handle}", h);
             return Unavailable;
         }
 
-        _cache.Set("ytv:" + h, result, CacheTtl);
+        _cache.Set(cacheKey, result, CacheTtl);
         return result;
     }
 }
