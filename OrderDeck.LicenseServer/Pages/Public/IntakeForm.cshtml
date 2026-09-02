@@ -547,20 +547,21 @@ else
             ytState = ''; lastChecked = null; lastResult = null;
             setStatus(''); showConfirm(false); return;
         }
-        if (h === lastChecked) {
+        if (h === lastChecked && lastResult) {
             // Aynı handle'a geri dönüldü (a → ab → a). Ağa gitmeye gerek yok ama
             // öylece dönemeyiz: 'input' işleyicisi bu arada durumu 'checking'e
             // çekip onay kutusunu gizledi. Kalırsa durum kalıcı 'checking' olur,
             // istemci kapısı geçirir, sunucu "kanalı onayla" der ve müşteriye
             // onaylayacak kutu gösterilmez — çıkmaz. Son sonucu geri kur.
-            // lastResult null ise istek hâlâ uçuşta; ekranı o yazacak.
-            if (lastResult) {
-                ytState = lastResult.state;
-                setStatus(lastResult.html);
-                showConfirm(lastResult.confirm);
-            }
+            ytState = lastResult.state;
+            setStatus(lastResult.html);
+            showConfirm(lastResult.confirm);
             return;
         }
+        // Sonuç yoksa (istek uçuşta ya da bayat diye düşürüldü) yeniden sor.
+        // Aynı handle'a ikinci istek atmak bedava sayılır: sunucu çözümü bir saat
+        // önbellekte, yani kota harcanmıyor. Buradan sessizce dönmek ise durumu
+        // kalıcı 'checking'te ve ekranı sonsuz spinner'da bırakırdı.
 
         if (!keepConfirm) showConfirm(false);   // handle değişti → önceki onay geçersiz
         lastChecked = h;
@@ -570,7 +571,7 @@ else
         fetch('/api/public/verify/youtube?handle=' + encodeURIComponent(h))
             .then(function (r) { return r.json(); })
             .then(function (d) {
-                if (yt.value !== h) return;              // kullanıcı arada değiştirdi
+                if (stale()) return;
                 if (!d || d.available === false) {
                     // Bizim kota/ağ arızamız müşteriyi engellemesin.
                     apply('unavailable', '', false); return;
@@ -584,7 +585,21 @@ else
                         false);
                 }
             })
-            .catch(function () { apply('unavailable', '', false); });
+            .catch(function () { if (!stale()) apply('unavailable', '', false); });
+
+        // Bu yanıtın hâlâ geçerli olup olmadığı. İKİ koşul da şart:
+        //
+        //   yt.value !== h  → müşteri arada başka bir şey yazdı, ekranı ezmeyelim.
+        //   h !== lastChecked → daha yeni bir doğrulama bunu geçersiz kıldı.
+        //
+        // İkincisi olmadan şu sessiz felaket mümkün: "a" sorgusu uçarken müşteri
+        // "ab" yazıyor (lastChecked='ab'), sonra "a"ya dönüyor; "a"nın yanıtı
+        // gelince yt.value uyuştuğu için geçiyor ve lastResult'a YAZILIYOR —
+        // oysa lastResult 'ab'ye ait sayılıyor. Müşteri tekrar "ab" yazınca
+        // önbellekten "a"nın kanal kartı açılıyor: gördüğü ad "a"nın, sunucunun
+        // çözdüğü handle "ab". Yabancının kanalını onaylatmak tam olarak bu
+        // özelliğin engellemek için var olduğu şey.
+        function stale() { return yt.value !== h || h !== lastChecked; }
 
         // Sonucu hem ekrana yazar hem önbelleğe alır; ikisi ayrışamasın diye tek yerde.
         function apply(state, html, withConfirm) {

@@ -277,9 +277,15 @@ public sealed class IntakeFormYouTubeIdentityTests : IClassFixture<YouTubeIdenti
     /// onayla" bağı korumanın tamamı.
     ///
     /// Razor'ın boolean nitelik davranışına güvenmek yerine çıktının kendisine
-    /// bakıyoruz: HTML'de niteliğin DEĞERİ değil VARLIĞI belirleyici. Razor
-    /// yanlışlıkla hep bassa (hidden="False" dahil) kutu kalıcı gizli kalır ve
-    /// kimse onaylayamaz; hiç basmasa kutu hep görünür. İki yön de kırık.
+    /// bakıyoruz: HTML'de niteliğin DEĞERİ değil VARLIĞI belirleyici. Nitelik
+    /// hiç basılmazsa kutu hep görünür (bu test), hep basılırsa — hidden="False"
+    /// dahil — kutu kalıcı gizli kalır ve kimse onaylayamaz (kardeş test
+    /// Kanal_bulununca_onay_kutusu_gorunur_gelir). İkisi birlikte gerekli.
+    ///
+    /// Kapsam sınırı: bu testler niteliği bağlıyor, GİZLENMEYİ değil.
+    /// IntakeForm.cshtml'deki ".yt-confirm[hidden] { display:none }" satırı
+    /// silinirse ikisi de yeşil kalır ama kutu yine hep görünür olur — yazar
+    /// kuralı tarayıcının [hidden] kuralını köken önceliğiyle eziyor.
     /// </summary>
     [Fact]
     public async Task Onay_kutusu_kanal_karti_yokken_gizli_gelir()
