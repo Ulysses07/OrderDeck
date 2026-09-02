@@ -198,37 +198,49 @@ public class IntakeFormModel : PageModel
             ModelState.AddModelError("Input.InstagramUsername",
                 "En az bir platform kullanıcı adı girin (Instagram, YouTube, Facebook veya TikTok).");
 
-        // YouTube kimliği: sunucu handle'ı KENDİSİ çözer. İstemciden channelId
-        // kabul edilmiyor — JS'i atlayan bir istek kaydı istediği kimliğe bağlardı.
-        // Kanal bulunduğunda onay zorunlu: "test1234" yerine "test" yazan müşteri
-        // için doğrulama yeşil ✓ verir (test gerçek bir yabancının kanalı) ve kayıt
-        // yabancıya bağlanır; kartta gördüğü adı onaylatmak bunu yakalayan tek şey.
-        string? resolvedChannelId = channelIdFromUrl;
-        if (channelIdFromUrl is null && yt is not null
-            && HandleValidator.Validate(HandleValidator.YouTube, yt) is null)
+        // YouTube kimliği: sunucu KENDİSİ çözer — hem @handle hem channel/UC… yolunda.
+        // İstemciden channelId kabul edilmiyor; JS'i atlayan bir istek kaydı istediği
+        // kimliğe bağlardı. Kanal bulunduğunda onay zorunlu: "test1234" yerine "test"
+        // yazan müşteri için doğrulama yeşil ✓ verir (test gerçek bir yabancının kanalı)
+        // ve kayıt yabancıya bağlanır; kartta gördüğü adı onaylatmak bunu yakalayan tek şey.
+        // Adres yolu da aynı kapıdan geçer: yanlış kanalın sayfasından kopyalayan
+        // müşteriyi başka hiçbir şey yakalamıyor.
+        string? resolvedChannelId = null;
+        var fromUrl = channelIdFromUrl is not null;
+        YouTubeChannel? ch = null;
+
+        if (fromUrl)
+            ch = await _youTube.ResolveChannelIdAsync(channelIdFromUrl, ct);
+        else if (yt is not null && HandleValidator.Validate(HandleValidator.YouTube, yt) is null)
+            ch = await _youTube.ResolveHandleAsync(yt, ct);
+
+        if (ch is not null)
         {
-            var ch = await _youTube.ResolveHandleAsync(yt, ct);
             YouTubeChannelTitle = ch.Title;
             YouTubeChannelThumbnail = ch.Thumbnail;
 
             if (!ch.Available)
             {
                 // Kota/ağ arızası bizim sorunumuz; müşteriyi kilitlemiyoruz.
-                resolvedChannelId = null;
+                // channelIdFromUrl doluysa onu koruyoruz: adresten gelen kimlik
+                // yapısal olarak geçerli, elimizdeki tek sağlam veriyi atmayalım.
+                // Handle yolunda bu değer zaten null.
+                resolvedChannelId = channelIdFromUrl;
             }
             else if (!ch.Exists)
             {
-                ModelState.AddModelError("Input.YouTubeUsername",
-                    "Bu kullanıcı adına ait bir YouTube kanalı bulunamadı. Kanal sayfanı aç, "
-                    + "adres çubuğundaki @ ile başlayan adresi yapıştır.");
+                ModelState.AddModelError("Input.YouTubeUsername", fromUrl
+                    ? "Bu adresteki YouTube kanalını bulamadık. Kanal sayfanı aç, adres çubuğundakini yapıştır."
+                    : "Bu kullanıcı adına ait bir YouTube kanalı bulunamadı. Kanal sayfanı aç, "
+                      + "adres çubuğundaki @ ile başlayan adresi yapıştır.");
             }
             else if (ch.ChannelId is null)
             {
                 // Kanal var ama API kimlik döndürmedi (beklenmedik gövde). Onaylatacak
-                // bir kimlik yok; müşteriyi kilitlemek yerine handle ile kaydediyoruz
+                // bir kimlik yok; müşteriyi kilitlemek yerine elimizdekiyle devam ediyoruz
                 // ama sessiz kalmıyoruz — bu bizim tarafımızda bir arıza.
-                _log.LogWarning("YouTube kanalı bulundu ama kimlik gelmedi — handle={Handle}", yt);
-                resolvedChannelId = null;
+                _log.LogWarning("YouTube kanalı bulundu ama kimlik gelmedi — girdi={Girdi}", channelIdFromUrl ?? yt);
+                resolvedChannelId = channelIdFromUrl;
             }
             else if (!Input.YouTubeConfirmed)
             {

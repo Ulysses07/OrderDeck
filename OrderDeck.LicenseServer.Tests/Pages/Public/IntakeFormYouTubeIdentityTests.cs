@@ -40,6 +40,12 @@ public sealed class IntakeFormYouTubeIdentityTests : IClassFixture<YouTubeIdenti
 {
     private const string RealChannelId = "UCabcdefghijklmnopqrstuv";
 
+    // Adres yolunun testleri için: müşterinin YAPIŞTIRDIĞI kimlik ve API'nin
+    // GERİ DÖNDÜĞÜ kimlik bilerek FARKLI. Sunucunun girdiyi körü körüne
+    // yankılamadığı ancak ikisi ayrıldığında çivilenebiliyor.
+    private const string PastedChannelId = "UCpasted0000000000000abc";
+    private const string CanonicalChannelId = "UCcanonical00000000000xy";
+
     private readonly YouTubeIdentityFactory _factory;
     public IntakeFormYouTubeIdentityTests(YouTubeIdentityFactory factory) => _factory = factory;
 
@@ -249,26 +255,146 @@ public sealed class IntakeFormYouTubeIdentityTests : IClassFixture<YouTubeIdenti
     }
 
     /// <summary>
-    /// channel/UC… adresi kimliğin KENDİSİ; API'ye gitmeye ve onay istemeye gerek yok.
-    /// Yanlış yazılmış bir UC… hiçbir kanala denk gelmez, sessizce yabancıya bağlanamaz.
+    /// DEĞİŞTİ: eskiden bu test "kanal adresi kimliğin kendisidir, API'ye gitmeye
+    /// ve onay istemeye gerek yok" davranışını çiviliyordu. Onay kuralının o
+    /// boşluğu artık kapalı: müşteri YANLIŞ kanalın sayfasından kopyalarsa
+    /// (yapıştırdığı UC… yapısal olarak kusursuz ama başkasına ait) hiçbir şey
+    /// yakalamıyordu. Testin niyeti aynı — "kanal adresi yapıştırılan gönderim
+    /// kabul ediliyor" — ama artık adres yolu da handle yolu gibi çözülüyor:
+    /// varlık sorgusu YAPILIR, kart çizilir, onay istenir.
+    ///
+    /// Ayrıca çağrının "id:" önekiyle kaydedilmesi, adresin yanlışlıkla
+    /// forHandle sorgusuna düşmediğini gösteriyor.
     /// </summary>
     [Fact]
-    public async Task Kanal_adresi_yapistirilinca_api_ye_gidilmez()
+    public async Task Kanal_adresi_yapistirilinca_api_ye_gidilir()
     {
+        _factory.Resolver.ById[PastedChannelId] =
+            new YouTubeChannel(true, true, "Adres Kanalı", null, CanonicalChannelId);
+
         var (slug, customerId) = await SeedConfigAsync();
         var client = NewClient();
         var token = await TokenAsync(client, slug);
         var callsBefore = _factory.Resolver.Calls.Count;
 
         var resp = await client.PostAsync($"/r/{slug}?handler=Submit", Form(token, slug,
-            ("Input.YouTubeUsername", $"https://www.youtube.com/channel/{RealChannelId}")));
+            ("Input.YouTubeUsername", $"https://www.youtube.com/channel/{PastedChannelId}"),
+            ("Input.YouTubeConfirmed", "true")));
 
         resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
-        _factory.Resolver.Calls.Count.Should().Be(callsBefore);
+        _factory.Resolver.Calls.Skip(callsBefore).Should()
+            .ContainSingle().Which.Should().Be("id:" + PastedChannelId);
+
+        (await LatestAsync(customerId)).Should().NotBeNull();
+    }
+
+    /// <summary>
+    /// Adres yolunun asıl açığı: müşteri YANLIŞ kanalın sayfasından kopyalıyor.
+    /// Yapıştırılan UC… kusursuz görünür, hiçbir biçim kontrolüne takılmaz ve
+    /// kayıt sessizce yabancıya bağlanır. Onay kutusu bunu yakalayan tek şey —
+    /// kartta gördüğü ad kendisine ait değilse müşteri onaylamaz.
+    /// </summary>
+    [Fact]
+    public async Task Kanal_adresinde_de_onay_kutusu_zorunlu()
+    {
+        _factory.Resolver.ById[PastedChannelId] =
+            new YouTubeChannel(true, true, "Yabancı Adres Kanalı", null, CanonicalChannelId);
+
+        var (slug, customerId) = await SeedConfigAsync();
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = true });
+        var token = await TokenAsync(client, slug);
+
+        var resp = await client.PostAsync($"/r/{slug}?handler=Submit", Form(token, slug,
+            ("Input.YouTubeUsername", $"https://www.youtube.com/channel/{PastedChannelId}")));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var html = WebUtility.HtmlDecode(await resp.Content.ReadAsStringAsync());
+        // Kanalın ADI hatada geçmeli: müşteri neyi onaylamadığını görmezse
+        // yanlış kanalı yakalayamaz.
+        html.Should().Contain("Yabancı Adres Kanalı");
+
+        (await LatestAsync(customerId)).Should().BeNull();
+    }
+
+    /// <summary>
+    /// Onay verildiğinde kaydedilen kimlik API'nin DÖNDÜRDÜĞÜ değer olmalı,
+    /// müşterinin yapıştırdığı değer değil. Sahte çözümleyici bilerek farklı bir
+    /// kimlik döndürüyor: sunucu girdiyi yankılıyor olsaydı bu test kırmızı olurdu.
+    /// </summary>
+    [Fact]
+    public async Task Kanal_adresi_onaylaninca_apinin_dondurdugu_kimlik_kaydedilir()
+    {
+        _factory.Resolver.ById[PastedChannelId] =
+            new YouTubeChannel(true, true, "Onaylı Kanal", null, CanonicalChannelId);
+
+        var (slug, customerId) = await SeedConfigAsync();
+        var client = NewClient();
+        var token = await TokenAsync(client, slug);
+
+        var resp = await client.PostAsync($"/r/{slug}?handler=Submit", Form(token, slug,
+            ("Input.YouTubeUsername", $"https://www.youtube.com/channel/{PastedChannelId}"),
+            ("Input.YouTubeConfirmed", "true")));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
 
         var sub = await LatestAsync(customerId);
         sub.Should().NotBeNull();
-        sub!.YouTubeChannelId.Should().Be(RealChannelId);
+        sub!.YouTubeChannelId.Should().Be(CanonicalChannelId);
+        sub.YouTubeChannelId.Should().NotBe(PastedChannelId);
+    }
+
+    /// <summary>
+    /// Kota/ağ arızası adres yolunda da müşteriyi kilitlemez. Handle yolundan
+    /// tek farkı: elimizde adresten çıkmış, yapısal olarak geçerli bir kimlik
+    /// VAR — arıza yüzünden onu atmak kaydı gereksiz yere kimliksiz bırakırdı.
+    /// </summary>
+    [Fact]
+    public async Task Kanal_adresinde_api_ulasilamazsa_adresten_cikan_kimlik_korunur()
+    {
+        _factory.Resolver.ForceUnavailable = true;
+        try
+        {
+            var (slug, customerId) = await SeedConfigAsync();
+            var client = NewClient();
+            var token = await TokenAsync(client, slug);
+
+            var resp = await client.PostAsync($"/r/{slug}?handler=Submit", Form(token, slug,
+                ("Input.YouTubeUsername", $"https://www.youtube.com/channel/{PastedChannelId}")));
+
+            resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+
+            var sub = await LatestAsync(customerId);
+            sub.Should().NotBeNull();
+            sub!.YouTubeChannelId.Should().Be(PastedChannelId);
+        }
+        finally
+        {
+            _factory.Resolver.ForceUnavailable = false;
+        }
+    }
+
+    /// <summary>
+    /// Adres var olmayan bir kanala işaret ediyor (kanal kapanmış, kimlik eksik
+    /// kopyalanmış). "Baktık, yok" cevabı bloke eder — sessizce kimliksiz kayıt
+    /// açmak müşteriye hiçbir şey söylemeden eşleşmeyi bozardı.
+    /// </summary>
+    [Fact]
+    public async Task Kanal_adresi_bos_bir_kimlige_isaret_ediyorsa_gonderim_engellenir()
+    {
+        var (slug, customerId) = await SeedConfigAsync();
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = true });
+        var token = await TokenAsync(client, slug);
+
+        // ById'de tanımlı DEĞİL → sahte "Available:true, Exists:false" döner.
+        var resp = await client.PostAsync($"/r/{slug}?handler=Submit", Form(token, slug,
+            ("Input.YouTubeUsername", "https://www.youtube.com/channel/UCyokboyleKanal000000000"),
+            ("Input.YouTubeConfirmed", "true")));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var html = WebUtility.HtmlDecode(await resp.Content.ReadAsStringAsync());
+        html.Should().Contain("Bu adresteki YouTube kanalını bulamadık");
+
+        (await LatestAsync(customerId)).Should().BeNull();
     }
 
     /// <summary>

@@ -177,6 +177,111 @@ public sealed class YouTubeChannelResolverTests
         r.Subject.Exists.Should().BeFalse();
     }
 
+    /// <summary>
+    /// Kanal kimliği yolu <c>forHandle</c> DEĞİL <c>id</c> ile sorulur — forHandle'a
+    /// "UCabc…" göndermek hiçbir kanala denk gelmez ve geçerli kanal adresini
+    /// yapıştıran müşteri engellenirdi. Anahtar yine sorgu dizesinde değil
+    /// başlıkta: HttpClient günlükleyicisi tam URI'yi Information seviyesinde
+    /// konteyner günlüğüne yazıyor.
+    /// </summary>
+    [Fact]
+    public async Task Kimlik_sorgusu_id_parametresi_kullanir_anahtar_baslikta()
+    {
+        var handler = new ScriptedHandler((HttpStatusCode.OK, FoundJson));
+        var sut = Build(handler, NewApiKey());
+
+        var r = await sut.ResolveChannelIdAsync("UCabcdefghijklmnopqrstuv", CancellationToken.None);
+
+        r.Exists.Should().BeTrue();
+        r.ChannelId.Should().Be("UCabcdefghijklmnopqrstuv");
+
+        var req = handler.Requests[0];
+        req.RequestUri!.AbsolutePath.Should().Be("/youtube/v3/channels");
+        req.RequestUri!.Query.Should().Contain("id=UCabcdefghijklmnopqrstuv");
+        req.RequestUri!.Query.Should().NotContain("forHandle");
+        req.RequestUri!.Query.Should().NotContain("key=");
+        req.Headers.Contains("X-goog-api-key").Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Kimlik_icin_ikinci_cagri_cache_ten_gelir()
+    {
+        var handler = new ScriptedHandler((HttpStatusCode.OK, FoundJson));
+        var sut = Build(handler, NewApiKey());
+
+        await sut.ResolveChannelIdAsync("UCabcdefghijklmnopqrstuv", CancellationToken.None);
+        var r = await sut.ResolveChannelIdAsync("UCabcdefghijklmnopqrstuv", CancellationToken.None);
+
+        r.ChannelId.Should().Be("UCabcdefghijklmnopqrstuv");
+        handler.Requests.Should().HaveCount(1);
+    }
+
+    /// <summary>
+    /// İki önbellek anahtar uzayı ÇAKIŞMAMALI. Aynı string önce handle sonra
+    /// kimlik olarak sorulursa iki ayrı sorgu gitmeli: tek anahtar uzayı olsaydı
+    /// handle sonucu kimlik sorgusunun cevabı yerine geçer ve yanlış kanal
+    /// onaylatılırdı.
+    /// </summary>
+    [Fact]
+    public async Task Handle_ve_kimlik_onbellekleri_cakismaz()
+    {
+        var handler = new ScriptedHandler(
+            (HttpStatusCode.OK, FoundJson),
+            (HttpStatusCode.OK, FoundJson));
+        var sut = Build(handler, NewApiKey());
+
+        await sut.ResolveHandleAsync("orderdeck", CancellationToken.None);
+        await sut.ResolveChannelIdAsync("orderdeck", CancellationToken.None);
+
+        handler.Requests.Should().HaveCount(2);
+        handler.Requests[0].RequestUri!.Query.Should().Contain("forHandle=");
+        handler.Requests[1].RequestUri!.Query.Should().Contain("id=orderdeck");
+    }
+
+    /// <summary>
+    /// Kimlik yolunda da yumuşak degrade: Available:false = "bakamadık", çağıran
+    /// bunu müşteriyi engellemek için KULLANMAMALI.
+    /// </summary>
+    [Fact]
+    public async Task Kimlik_sorgusu_hatasinda_Available_false_doner()
+    {
+        var sut = Build(new ScriptedHandler((HttpStatusCode.Forbidden, "quota")), NewApiKey());
+
+        var r = await sut.ResolveChannelIdAsync("UCabcdefghijklmnopqrstuv", CancellationToken.None);
+
+        r.Available.Should().BeFalse();
+        r.Exists.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// Kanal kimlikleri büyük/küçük harf DUYARLI — handle yolundaki
+    /// ToLowerInvariant burada uygulanamaz, uygulanırsa geçerli kimlik
+    /// bulunamaz hâle gelir.
+    /// </summary>
+    [Fact]
+    public async Task Kimlik_kucuk_harfe_indirilmez()
+    {
+        var handler = new ScriptedHandler((HttpStatusCode.OK, FoundJson));
+        var sut = Build(handler, NewApiKey());
+
+        await sut.ResolveChannelIdAsync("UCabcdefghijklmnopqrstuv", CancellationToken.None);
+
+        handler.Requests[0].RequestUri!.Query.Should().Contain("id=UCabcdefghijklmnopqrstuv");
+    }
+
+    [Fact]
+    public async Task Bos_kimlik_cagri_yapmadan_bulunamadi_doner()
+    {
+        var handler = new ScriptedHandler();
+        var sut = Build(handler, NewApiKey());
+
+        var r = await sut.ResolveChannelIdAsync("  ", CancellationToken.None);
+
+        r.Available.Should().BeTrue();
+        r.Exists.Should().BeFalse();
+        handler.Requests.Should().BeEmpty();
+    }
+
     private sealed class SingleHandlerFactory : IHttpClientFactory
     {
         private readonly HttpMessageHandler _handler;

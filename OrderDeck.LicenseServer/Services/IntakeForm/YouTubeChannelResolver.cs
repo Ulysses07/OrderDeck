@@ -1,14 +1,16 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 
 namespace OrderDeck.LicenseServer.Services.IntakeForm;
 
 /// <summary>
-/// <c>channels.list?forHandle</c> ile handle → kanal çözümü (1 kota birimi/çağrı;
-/// <c>search.list</c> 100 birim olduğu için KULLANILMAZ). Sonuçlar handle bazında
+/// <c>channels.list</c> ile kanal çözümü — handle için <c>forHandle</c>, kanal
+/// adresinden çıkan kimlik için <c>id</c> (ikisi de 1 kota birimi/çağrı;
+/// <c>search.list</c> 100 birim olduğu için KULLANILMAZ). Sonuçlar girdi bazında
 /// 1 saat cache'lenir, böylece istemcinin canlı doğrulaması ile gönderim anındaki
-/// sunucu doğrulaması tek çağrıya iner.
+/// sunucu doğrulaması tek çağrıya iner. İki yolun önbellek anahtarları AYRI
+/// ("ytv:" / "ytid:") — çakışsalardı biri diğerinin cevabı yerine geçerdi.
 ///
 /// API key <c>YouTube:ApiKey</c> (VPS .env: <c>YouTube__ApiKey</c>). Key yoksa ya da
 /// çağrı düşerse <c>Available:false</c> döner — yumuşak degrade.
@@ -17,6 +19,8 @@ public sealed class YouTubeChannelResolver : IYouTubeChannelResolver
 {
     private static readonly TimeSpan CacheTtl = TimeSpan.FromHours(1);
     private static readonly YouTubeChannel Unavailable = new(Available: false, Exists: false, Title: null, Thumbnail: null, ChannelId: null);
+    // "Baktık, yok" — Unavailable ile ANLAMCA ZIT: bu değer çağıranı bloke etmeye yetkilendirir.
+    private static readonly YouTubeChannel NotFound = new(Available: true, Exists: false, Title: null, Thumbnail: null, ChannelId: null);
 
     private readonly IHttpClientFactory _httpFactory;
     private readonly IMemoryCache _cache;
@@ -35,16 +39,57 @@ public sealed class YouTubeChannelResolver : IYouTubeChannelResolver
         _log = log;
     }
 
-    public async Task<YouTubeChannel> ResolveHandleAsync(string? handle, CancellationToken ct)
+    public Task<YouTubeChannel> ResolveHandleAsync(string? handle, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(_apiKey))
-            return Unavailable;
+            return Task.FromResult(Unavailable);
 
         var h = (handle ?? "").Trim().TrimStart('@').Trim().ToLowerInvariant();
         if (h.Length == 0 || h.Length > 64)
-            return new YouTubeChannel(Available: true, Exists: false, Title: null, Thumbnail: null, ChannelId: null);
+            return Task.FromResult(NotFound);
 
-        var cacheKey = "ytv:" + h;
+        return QueryAsync(
+            cacheKey: "ytv:" + h,
+            url: "https://www.googleapis.com/youtube/v3/channels" +
+                 $"?part=id,snippet&forHandle={Uri.EscapeDataString(h)}",
+            logInput: h,
+            ct);
+    }
+
+    /// <summary>
+    /// Kanal kimliği yolu. Handle yolundan iki farkı var, ikisi de kritik:
+    /// sorgu <c>forHandle</c> değil <c>id</c> (forHandle'a UC… vermek hiçbir
+    /// kanala denk gelmez) ve normalizasyon yalnız <c>Trim()</c> —
+    /// <c>TrimStart('@')</c>/<c>ToLowerInvariant()</c> YOK, çünkü kanal
+    /// kimlikleri büyük/küçük harf duyarlı ve küçültülmüş kimlik bulunamaz.
+    /// </summary>
+    public Task<YouTubeChannel> ResolveChannelIdAsync(string? channelId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(_apiKey))
+            return Task.FromResult(Unavailable);
+
+        var id = (channelId ?? "").Trim();
+        if (id.Length == 0 || id.Length > 64)
+            return Task.FromResult(NotFound);
+
+        // Önek "ytid:" — handle önbelleği "ytv:" kullanıyor. Tek anahtar uzayı
+        // olsaydı aynı string'in handle sonucu kimlik sorgusunun cevabı yerine
+        // geçer ve müşteriye yanlış kanal onaylatılırdı.
+        return QueryAsync(
+            cacheKey: "ytid:" + id,
+            url: "https://www.googleapis.com/youtube/v3/channels" +
+                 $"?part=id,snippet&id={Uri.EscapeDataString(id)}",
+            logInput: id,
+            ct);
+    }
+
+    /// <summary>
+    /// İki yolun ortak gövdesi: önbellek, HTTP, JSON ayrıştırma, yumuşak degrade.
+    /// Tek yerde durması şart — iki kopyanın biri düzeltilip diğeri unutulursa
+    /// aradaki fark sessizce müşteriye yansır.
+    /// </summary>
+    private async Task<YouTubeChannel> QueryAsync(string cacheKey, string url, string logInput, CancellationToken ct)
+    {
         if (_cache.TryGetValue(cacheKey, out YouTubeChannel? cached) && cached is not null)
             return cached;
 
@@ -53,8 +98,6 @@ public sealed class YouTubeChannelResolver : IYouTubeChannelResolver
         {
             var client = _httpFactory.CreateClient();
             client.Timeout = TimeSpan.FromSeconds(8);
-            var url = "https://www.googleapis.com/youtube/v3/channels" +
-                      $"?part=id,snippet&forHandle={Uri.EscapeDataString(h)}";
             // Anahtar sorgu dizesinde DEĞİL başlıkta: AddHttpClient()'ın varsayılan
             // günlükleyicisi giden isteğin tam URI'sini Information seviyesinde
             // yazıyor, yani `&key=…` doğrudan konteyner günlüğüne düşerdi.
@@ -63,8 +106,8 @@ public sealed class YouTubeChannelResolver : IYouTubeChannelResolver
             using var resp = await client.SendAsync(req, ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
             {
-                _log.LogWarning("YouTube kanalı çözümlenemedi — HTTP {StatusCode}, handle={Handle}",
-                    (int)resp.StatusCode, h);
+                _log.LogWarning("YouTube kanalı çözümlenemedi — HTTP {StatusCode}, girdi={Girdi}",
+                    (int)resp.StatusCode, logInput);
                 return Unavailable;
             }
 
@@ -91,7 +134,7 @@ public sealed class YouTubeChannelResolver : IYouTubeChannelResolver
             }
             else
             {
-                result = new YouTubeChannel(Available: true, Exists: false, Title: null, Thumbnail: null, ChannelId: null);
+                result = NotFound;
             }
         }
         // Yalnız GERÇEK istek iptali (tarayıcı bağlantısı kesildi vb.) yeniden
@@ -102,7 +145,7 @@ public sealed class YouTubeChannelResolver : IYouTubeChannelResolver
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
-            _log.LogWarning(ex, "YouTube kanal çözümü başarısız, yumuşak degrade — handle={Handle}", h);
+            _log.LogWarning(ex, "YouTube kanal çözümü başarısız, yumuşak degrade — girdi={Girdi}", logInput);
             return Unavailable;
         }
 
