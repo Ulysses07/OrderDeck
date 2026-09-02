@@ -357,6 +357,59 @@ public sealed class PanelWhatsAppMessageTemplatesControllerTests : IDisposable
         Assert.Null(s.Catalog.Deleted);
     }
 
+    // ─── Yetki testleri ────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Kimliksiz_istek_401()
+    {
+        var factory = new TemplateApiFactory();
+        _factories.Add(factory);
+
+        var resp = await factory.CreateClient().GetAsync("/api/panel/whatsapp-message-templates");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
+    }
+
+    // Şablon oluşturmak marka adına mesaj yazmak demek ve reddedilen şablon
+    // WABA'nın kalite notunu düşürüyor — stok elemanı bu bölümde işi yok.
+    [Fact]
+    public async Task Stok_elemani_403()
+    {
+        var factory = new TemplateApiFactory();
+        _factories.Add(factory);
+
+        // Owner oluştur
+        var (ownerClient, _, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(factory);
+
+        // Stok operatörü davet et
+        var email    = $"op-{Guid.NewGuid():N}@example.com";
+        var password = "pwd-" + Guid.NewGuid().ToString("N");
+        var invite   = await ownerClient.PostAsJsonAsync("/api/panel/operators",
+            new { email, name = "Depo", password, role = "stock" });
+        Assert.Equal(HttpStatusCode.Created, invite.StatusCode);
+
+        // Stok operatörü olarak giriş yap
+        var anon  = factory.CreateClient();
+        var login = await anon.PostAsJsonAsync("/api/v1/auth/operator-login", new { email, password });
+        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+
+        var body  = await login.Content.ReadFromJsonAsync<OperatorLoginResp>();
+        anon.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", body!.Token);
+
+        // Stok elemanı şablon listesine erişememeli
+        var resp = await anon.GetAsync("/api/panel/whatsapp-message-templates");
+
+        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+        // Meta'ya hiç çıkılmadığını doğrula
+        Assert.Null(factory.Catalog.SeenWabaId);
+        Assert.Null(factory.Catalog.SeenToken);
+    }
+
+    private sealed record OperatorLoginResp(
+        string Token, DateTimeOffset ExpiresAt, Guid OperatorId, Guid TenantCustomerId,
+        string Email, string Name, string Role);
+
     public void Dispose()
     {
         foreach (var f in _factories) f.Dispose();
