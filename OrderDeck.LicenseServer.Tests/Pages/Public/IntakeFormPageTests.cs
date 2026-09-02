@@ -450,9 +450,9 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>
-    /// Satır 208 (channelIdFromUrl is null) ve satır 225 (?? channelIdFromUrl)
-    /// birlikte çiviler: kanal adresi tek dolu platform kutusu olunca kayıt geçmeli
-    /// ve legacy Username kanal kimliğini taşımalı.
+    /// Kanal kimliği bir handle DEĞİL, o yüzden hem "en az bir platform"
+    /// kuralında hem legacy Username seçiminde ayrıca sayılması gerekiyor;
+    /// bu test ikisini birden çiviliyor.
     /// </summary>
     [Fact]
     public async Task Post_submit_sadece_youtube_kanal_adresi_ile_kayit_gecer()
@@ -490,7 +490,7 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             .Where(s => s.Config.CustomerId == customerId)
             .FirstOrDefaultAsync();
         sub.Should().NotBeNull();
-        // Legacy Username kanal kimliğini taşımalı (satır 225: ?? channelIdFromUrl).
+        // Handle yok; legacy Username kanal kimliğine düşmeli.
         sub!.Username.Should().Be("UCabcdefghijklmnopqrstuv");
     }
 
@@ -535,8 +535,9 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>
-    /// Facebook kuralı yalnız uzunluk sınırı koyuyor (HandleValidator.cs:64);
-    /// boşluk ve Türkçe karaktere izin veriyor. Görünen ad girişi geçmeli.
+    /// Facebook kuralı yalnız uzunluk sınırı koyuyor; boşluğa ve Türkçe
+    /// karaktere izin veriyor. Eşleşme görünen ada dayalı olduğu için
+    /// Facebook bilerek adres çözümlemesinin dışında.
     /// </summary>
     [Fact]
     public async Task Post_submit_facebook_gorunen_ad_ile_kayit_gecer()
