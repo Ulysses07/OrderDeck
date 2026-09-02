@@ -225,6 +225,14 @@ public class IntakeFormModel : PageModel
                 // channelIdFromUrl doluysa onu koruyoruz: adresten gelen kimlik
                 // yapısal olarak geçerli, elimizdeki tek sağlam veriyi atmayalım.
                 // Handle yolunda bu değer zaten null.
+                //
+                // Ama bu, özelliğin tek bilinçli deliği: kayıt DOĞRULANMADAN açılıyor
+                // ve kimse onaylamıyor. İz bırakmazsak kaç kaydın bu delikten geçtiğini
+                // ölçemeyiz — kota yükseltmesi mi, önbellek mi, yoksa hiç sorun mu var,
+                // ancak bu satır söyleyebilir.
+                _log.LogWarning(
+                    "YouTube doğrulanamadı, kimlik onaysız kabul edildi — girdi={Girdi}, adresten={Adresten}",
+                    channelIdFromUrl ?? yt, fromUrl);
                 resolvedChannelId = channelIdFromUrl;
             }
             else if (!ch.Exists)

@@ -374,6 +374,37 @@ public sealed class IntakeFormYouTubeIdentityTests : IClassFixture<YouTubeIdenti
     }
 
     /// <summary>
+    /// API "kanal var" diyor ama gövdede kimlik yok — beklenmedik bir yanıt.
+    /// Onaylatacak bir kimlik olmadığı için onay kutusu ARANMAZ; müşteri
+    /// kilitlenmez ve adresten çıkan kimlik korunur.
+    ///
+    /// Bu dal görünmez olduğu için testi de kolayca atlanır: kaldırıldığında
+    /// akış bir alttaki "onayla" dalına düşer, gönderim engellenir ve kanal
+    /// adresini doğru yapıştıran müşteri hiç göremeyeceği bir kutuyu
+    /// onaylamaya çalışırken çıkmaza girer.
+    /// </summary>
+    [Fact]
+    public async Task Kanal_adresinde_api_kimlik_dondurmezse_gonderim_engellenmez()
+    {
+        _factory.Resolver.ById[PastedChannelId] =
+            new YouTubeChannel(true, true, "Kimliksiz Kanal", null, null);
+
+        var (slug, customerId) = await SeedConfigAsync();
+        var client = NewClient();
+        var token = await TokenAsync(client, slug);
+
+        // Onay kutusu bilerek İŞARETSİZ: bu dalda onay istenmemeli.
+        var resp = await client.PostAsync($"/r/{slug}?handler=Submit", Form(token, slug,
+            ("Input.YouTubeUsername", $"https://www.youtube.com/channel/{PastedChannelId}")));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+
+        var sub = await LatestAsync(customerId);
+        sub.Should().NotBeNull();
+        sub!.YouTubeChannelId.Should().Be(PastedChannelId);
+    }
+
+    /// <summary>
     /// Adres var olmayan bir kanala işaret ediyor (kanal kapanmış, kimlik eksik
     /// kopyalanmış). "Baktık, yok" cevabı bloke eder — sessizce kimliksiz kayıt
     /// açmak müşteriye hiçbir şey söylemeden eşleşmeyi bozardı.

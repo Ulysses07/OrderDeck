@@ -545,7 +545,8 @@ else
         var p = applyParse(yt);
 
         if (p.kind === 'error') {
-            ytState = 'parse-error'; lastChecked = null; lastResult = null;
+            ytState = 'parse-error'; ytFromUrl = false;
+            lastChecked = null; lastResult = null;
             setStatus(''); showConfirm(false); showError(yt, p.error);
             return;
         }
@@ -590,10 +591,7 @@ else
             .then(function (r) { return r.json(); })
             .then(function (d) {
                 if (stale()) return;
-                if (!d || d.available === false) {
-                    // Bizim kota/ağ arızamız müşteriyi engellemesin.
-                    apply('unavailable', '', false); return;
-                }
+                if (!d || d.available === false) { unavailable(); return; }
                 if (d.exists) {
                     var img = d.thumbnail ? '<img src="' + esc(d.thumbnail) + '" alt="">' : '';
                     apply('ok', img + '<span class="yt-ok">\u2713 ' + esc(d.title || 'Kanal bulundu') + '</span>', true);
@@ -605,7 +603,20 @@ else
                         false);
                 }
             })
-            .catch(function () { if (!stale()) apply('unavailable', '', false); });
+            .catch(function () { if (!stale()) unavailable(); });
+
+        // "Bakamadık" dalı. keepConfirm ise ekranda duran kart SUNUCUNUN az önce
+        // çizdiği karttır (hatalı gönderim sonrası yeniden render) ve sunucu o
+        // gönderimde "kanalı onayla" diyor olabilir. Kartı silip kutuyu gizlemek
+        // tam çıkmaz üretir: onay isteniyor, onaylanacak kutu ekranda yok.
+        // Müşteri buraya en çok kendi tetiklediği 429 ile düşer (hız sınırı →
+        // r.json() patlar → .catch). Durumu 'unavailable'a çekmek yeterli:
+        // gönderim kapısı bu durumu geçiriyor, karar yine sunucuda veriliyor.
+        // keepConfirm değilse kutu zaten gizlendi, ekran spinner'da — temizlemek doğru.
+        function unavailable() {
+            if (keepConfirm) { ytState = 'unavailable'; lastResult = null; return; }
+            apply('unavailable', '', false);
+        }
 
         // Bu yanıtın hâlâ geçerli olup olmadığı. İKİ koşul da şart:
         //
