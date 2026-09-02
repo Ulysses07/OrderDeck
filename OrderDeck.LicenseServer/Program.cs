@@ -186,6 +186,10 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Stock.StockLedgerWriter>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Stock.StockBalanceService>();
         builder.Services.AddSingleton<WhatsAppLinkBuilder>();
+        // Tekil: bağımlılıkları (IHttpClientFactory/IMemoryCache/IConfiguration) tekil.
+        // Cache'in paylaşılması önemli — istemcinin canlı doğrulaması ile gönderimdeki
+        // sunucu doğrulaması aynı 1 saatlik girdiyi kullansın.
+        builder.Services.AddSingleton<IYouTubeChannelResolver, YouTubeChannelResolver>();
 
         // WhatsApp Cloud API — SMS/Push pattern'iyle aynı. Dev/test → log
         // (gerçek çağrı yok), prod → cloud (Graph API, typed HttpClient).
