@@ -51,16 +51,19 @@ public class IntakeFormModel : PageModel
     {
         // Çoklu-platform kullanıcı adları — her biri opsiyonel, en az 1 zorunlu
         // (OnPostSubmitAsync içinde doğrulanır).
-        [StringLength(64, ErrorMessage = "En fazla 64 karakter")]
+        // 200: yapıştırılan profil ADRESİ de bu alandan geçiyor (uzunluk kontrolü
+        // model binding'de, parser'dan ÖNCE koşuyor). Kullanıcı adının kendi
+        // sınırını HandleValidator uyguluyor — 64 karakter kuralı orada duruyor.
+        [StringLength(200, ErrorMessage = "En fazla 200 karakter")]
         public string? YouTubeUsername { get; set; }
 
-        [StringLength(64, ErrorMessage = "En fazla 64 karakter")]
+        [StringLength(200, ErrorMessage = "En fazla 200 karakter")]
         public string? InstagramUsername { get; set; }
 
         [StringLength(64, ErrorMessage = "En fazla 64 karakter")]
         public string? FacebookUsername { get; set; }
 
-        [StringLength(64, ErrorMessage = "En fazla 64 karakter")]
+        [StringLength(200, ErrorMessage = "En fazla 200 karakter")]
         public string? TikTokUsername { get; set; }
 
         // JS doğrulaması başarılıysa doldurulan gizli alan (channels.list'ten).
@@ -129,20 +132,36 @@ public class IntakeFormModel : PageModel
         Config = await _service.GetActiveBySlugAsync(Slug, ct);
         if (Config is null) return StatusCode(StatusCodes.Status410Gone);
 
+        // Girdi profil ADRESİ olabilir — kullanıcı adını sunucu çıkarır.
+        // Sahada müşteriler adresi yapıştırıp elle kırpmaya çalışıyor ve orada
+        // yanlış yazıyorlar; kırpmayı biz yapıyoruz. Facebook parser'a girmiyor:
+        // FB eşleşmesi görünen ada dayalı, elle girdi doğru veri üretiyor.
+        var ytParsed = ProfileUrlParser.Parse(HandleValidator.YouTube, Input.YouTubeUsername);
+        var igParsed = ProfileUrlParser.Parse(HandleValidator.Instagram, Input.InstagramUsername);
+        var ttParsed = ProfileUrlParser.Parse(HandleValidator.TikTok, Input.TikTokUsername);
+
+        AddParseError("Input.YouTubeUsername", ytParsed);
+        AddParseError("Input.InstagramUsername", igParsed);
+        AddParseError("Input.TikTokUsername", ttParsed);
+
+        // youtube.com/channel/UC… kanal kimliğini doğrudan verir; handle yok.
+        var channelIdFromUrl = ytParsed.Kind == ProfileInputKind.YouTubeChannelId ? ytParsed.Value : null;
+
         // Kullanıcı adları: baştaki @ + dış boşluk temizlenir, sonra her
         // platformun kendi kurallarına göre doğrulanır. Kurala uymayan kayıt
         // sohbetteki kişiyle eşleşemeyeceği için kabul edilmez.
-        var yt = HandleValidator.Normalize(Input.YouTubeUsername);
-        var ig = HandleValidator.Normalize(Input.InstagramUsername);
+        var yt = HandleValidator.Normalize(HandleOf(ytParsed));
+        var ig = HandleValidator.Normalize(HandleOf(igParsed));
         var fb = HandleValidator.Normalize(Input.FacebookUsername);
-        var tt = HandleValidator.Normalize(Input.TikTokUsername);
+        var tt = HandleValidator.Normalize(HandleOf(ttParsed));
 
         // Temizlenmiş hâli forma geri yaz — hata varsa kullanıcı düzelteceği
         // metni görsün, geçerliyse gönderilen değerle kaydedilen aynı olsun.
-        Input.YouTubeUsername = yt;
-        Input.InstagramUsername = ig;
+        // Adres çözülemediyse (Error) yazdığı metin dursun ki neyi düzelteceğini görsün.
+        if (ytParsed.Kind != ProfileInputKind.Error) Input.YouTubeUsername = yt ?? channelIdFromUrl;
+        if (igParsed.Kind != ProfileInputKind.Error) Input.InstagramUsername = ig;
         Input.FacebookUsername = fb;
-        Input.TikTokUsername = tt;
+        if (ttParsed.Kind != ProfileInputKind.Error) Input.TikTokUsername = tt;
 
         AddHandleError("Input.YouTubeUsername", HandleValidator.YouTube, yt);
         AddHandleError("Input.InstagramUsername", HandleValidator.Instagram, ig);
@@ -186,12 +205,9 @@ public class IntakeFormModel : PageModel
         }
 
         // En az bir platform kullanıcı adı zorunlu.
-        if (yt is null && ig is null && fb is null && tt is null)
-        {
-            ModelState.AddModelError(
-                "Input.InstagramUsername",
+        if (yt is null && channelIdFromUrl is null && ig is null && fb is null && tt is null)
+            ModelState.AddModelError("Input.InstagramUsername",
                 "En az bir platform kullanıcı adı girin (Instagram, YouTube, Facebook veya TikTok).");
-        }
 
         if (!ModelState.IsValid) return Page();
 
@@ -206,7 +222,7 @@ public class IntakeFormModel : PageModel
         }
 
         // Eski WPF sync'i için legacy Username = ilk dolu platform adı.
-        var legacyUsername = yt ?? ig ?? fb ?? tt ?? "";
+        var legacyUsername = yt ?? ig ?? fb ?? tt ?? channelIdFromUrl ?? "";
 
         await _service.SaveSubmissionAsync(
             Config.Id,
@@ -263,6 +279,16 @@ public class IntakeFormModel : PageModel
         var error = HandleValidator.Validate(platform, handle);
         if (error is not null) ModelState.AddModelError(key, error);
     }
+
+    private void AddParseError(string key, ProfileParseResult parsed)
+    {
+        if (parsed.Kind == ProfileInputKind.Error)
+            ModelState.AddModelError(key, parsed.Error!);
+    }
+
+    /// <summary>Yalnız Handle sonucu handle'dır; kanal kimliği ve hata değildir.</summary>
+    private static string? HandleOf(ProfileParseResult parsed)
+        => parsed.Kind == ProfileInputKind.Handle ? parsed.Value : null;
 
     /// <summary>Trims and normalizes empty/whitespace input to null.</summary>
     private static string? Trim(string? s)
