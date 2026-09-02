@@ -132,41 +132,14 @@ public class IntakeFormModel : PageModel
         Config = await _service.GetActiveBySlugAsync(Slug, ct);
         if (Config is null) return StatusCode(StatusCodes.Status410Gone);
 
-        // Girdi profil ADRESİ olabilir — kullanıcı adını sunucu çıkarır.
-        // Sahada müşteriler adresi yapıştırıp elle kırpmaya çalışıyor ve orada
-        // yanlış yazıyorlar; kırpmayı biz yapıyoruz. Facebook parser'a girmiyor:
-        // FB eşleşmesi görünen ada dayalı, elle girdi doğru veri üretiyor.
-        var ytParsed = ProfileUrlParser.Parse(HandleValidator.YouTube, Input.YouTubeUsername);
-        var igParsed = ProfileUrlParser.Parse(HandleValidator.Instagram, Input.InstagramUsername);
-        var ttParsed = ProfileUrlParser.Parse(HandleValidator.TikTok, Input.TikTokUsername);
-
-        AddParseError("Input.YouTubeUsername", ytParsed);
-        AddParseError("Input.InstagramUsername", igParsed);
-        AddParseError("Input.TikTokUsername", ttParsed);
-
-        // youtube.com/channel/UC… kanal kimliğini doğrudan verir; handle yok.
-        var channelIdFromUrl = ytParsed.Kind == ProfileInputKind.YouTubeChannelId ? ytParsed.Value : null;
-
-        // Kullanıcı adları: baştaki @ + dış boşluk temizlenir, sonra her
-        // platformun kendi kurallarına göre doğrulanır. Kurala uymayan kayıt
-        // sohbetteki kişiyle eşleşemeyeceği için kabul edilmez.
-        var yt = HandleValidator.Normalize(HandleOf(ytParsed));
-        var ig = HandleValidator.Normalize(HandleOf(igParsed));
-        var fb = HandleValidator.Normalize(Input.FacebookUsername);
-        var tt = HandleValidator.Normalize(HandleOf(ttParsed));
-
-        // Temizlenmiş hâli forma geri yaz — hata varsa kullanıcı düzelteceği
-        // metni görsün, geçerliyse gönderilen değerle kaydedilen aynı olsun.
-        // Adres çözülemediyse (Error) yazdığı metin dursun ki neyi düzelteceğini görsün.
-        if (ytParsed.Kind != ProfileInputKind.Error) Input.YouTubeUsername = yt ?? channelIdFromUrl;
-        if (igParsed.Kind != ProfileInputKind.Error) Input.InstagramUsername = ig;
-        Input.FacebookUsername = fb;
-        if (ttParsed.Kind != ProfileInputKind.Error) Input.TikTokUsername = tt;
-
-        AddHandleError("Input.YouTubeUsername", HandleValidator.YouTube, yt);
-        AddHandleError("Input.InstagramUsername", HandleValidator.Instagram, ig);
-        AddHandleError("Input.FacebookUsername", HandleValidator.Facebook, fb);
-        AddHandleError("Input.TikTokUsername", HandleValidator.TikTok, tt);
+        // Her platform için: adres→kullanıcı adı çevirisi, çeviri hatası,
+        // normalize, kural doğrulaması — dört adım tek metodda, dört kutu
+        // aynı sırayı izliyor. Facebook bilerek dahil: parser kısa devre
+        // yapıp girdiyi olduğu gibi geçiriyor, davranış değişmez.
+        var (yt, channelIdFromUrl) = Resolve("Input.YouTubeUsername", HandleValidator.YouTube, Input.YouTubeUsername);
+        var (ig, _) = Resolve("Input.InstagramUsername", HandleValidator.Instagram, Input.InstagramUsername);
+        var (fb, _) = Resolve("Input.FacebookUsername", HandleValidator.Facebook, Input.FacebookUsername);
+        var (tt, _) = Resolve("Input.TikTokUsername", HandleValidator.TikTok, Input.TikTokUsername);
 
         // E-posta: dış boşluk + alan adı normalize edilir, sonra biçim ve
         // yaygın alan adı yazım hatası kontrolü. Hatalıysa kayıt oluşmaz.
@@ -274,21 +247,27 @@ public class IntakeFormModel : PageModel
         return LocalRedirect(Request.Path.Value ?? $"/musteri-kayit/{Slug}");
     }
 
-    private void AddHandleError(string key, string platform, string? handle)
+    /// <summary>
+    /// Bir platform kutusunun tam boru hattı: adres→kullanıcı adı çevirisi,
+    /// çeviri hatası, normalize, kural doğrulaması. Sıra kritik — doğrulama
+    /// çeviriden ÖNCE koşarsa yapıştırılan adres reddedilir. Dört kutunun da
+    /// aynı sırayı izlemesi için tek yerde.
+    /// </summary>
+    private (string? Handle, string? ChannelId) Resolve(string key, string platform, string? raw)
     {
+        var parsed = ProfileUrlParser.Parse(platform, raw);
+        if (parsed.Kind == ProfileInputKind.Error)
+        {
+            ModelState.AddModelError(key, parsed.Error!);
+            return (null, null);
+        }
+
+        var channelId = parsed.Kind == ProfileInputKind.YouTubeChannelId ? parsed.Value : null;
+        var handle = HandleValidator.Normalize(parsed.Kind == ProfileInputKind.Handle ? parsed.Value : null);
         var error = HandleValidator.Validate(platform, handle);
         if (error is not null) ModelState.AddModelError(key, error);
+        return (handle, channelId);
     }
-
-    private void AddParseError(string key, ProfileParseResult parsed)
-    {
-        if (parsed.Kind == ProfileInputKind.Error)
-            ModelState.AddModelError(key, parsed.Error!);
-    }
-
-    /// <summary>Yalnız Handle sonucu handle'dır; kanal kimliği ve hata değildir.</summary>
-    private static string? HandleOf(ProfileParseResult parsed)
-        => parsed.Kind == ProfileInputKind.Handle ? parsed.Value : null;
 
     /// <summary>Trims and normalizes empty/whitespace input to null.</summary>
     private static string? Trim(string? s)
