@@ -46,6 +46,9 @@ public static class WhatsAppTemplateShape
     public const string HeaderVariable =
         "Şablonun başlığında değişken var; panel yalnız gövde değişkenlerini doldurabiliyor.";
 
+    public const string FooterVariable =
+        "Şablonun alt bilgisinde değişken kullanılamıyor; Meta bunu reddediyor.";
+
     public const string ButtonVariable =
         "Şablonun butonu değişken istiyor; panel bu tür şablonu gönderemiyor.";
 
@@ -145,8 +148,12 @@ public static class WhatsAppTemplateShape
             if (header.Contains("{{", StringComparison.Ordinal)) return HeaderVariable;
         }
 
-        if (draft.FooterText is { Length: > MaxFooterLength })
-            return $"Alt bilgi en çok {MaxFooterLength} karakter olabilir.";
+        if (draft.FooterText is { } footer)
+        {
+            if (footer.Length > MaxFooterLength)
+                return $"Alt bilgi en çok {MaxFooterLength} karakter olabilir.";
+            if (footer.Contains("{{", StringComparison.Ordinal)) return FooterVariable;
+        }
 
         return ValidateButtons(draft.Buttons);
     }

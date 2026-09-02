@@ -375,21 +375,19 @@ public sealed class PanelWhatsAppMessageTemplatesControllerTests : IDisposable
     [Fact]
     public async Task Stok_elemani_403()
     {
-        var factory = new TemplateApiFactory();
-        _factories.Add(factory);
-
-        // Owner oluştur
-        var (ownerClient, _, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(factory);
+        // Sahip lisanslı olmalı: lisanssız müşteride davet ucu "no-license" ile
+        // 400 döner, operatör hiç oluşmaz ve 403 iddiası sınanmadan geçerdi.
+        var s = await SeedAsync();
 
         // Stok operatörü davet et
         var email    = $"op-{Guid.NewGuid():N}@example.com";
-        var password = "pwd-" + Guid.NewGuid().ToString("N");
-        var invite   = await ownerClient.PostAsJsonAsync("/api/panel/operators",
+        var password = $"pwd-{Guid.NewGuid():N}";
+        var invite   = await s.Client.PostAsJsonAsync("/api/panel/operators",
             new { email, name = "Depo", password, role = "stock" });
         Assert.Equal(HttpStatusCode.Created, invite.StatusCode);
 
         // Stok operatörü olarak giriş yap
-        var anon  = factory.CreateClient();
+        var anon  = s.Factory.CreateClient();
         var login = await anon.PostAsJsonAsync("/api/v1/auth/operator-login", new { email, password });
         Assert.Equal(HttpStatusCode.OK, login.StatusCode);
 
@@ -402,8 +400,8 @@ public sealed class PanelWhatsAppMessageTemplatesControllerTests : IDisposable
 
         Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
         // Meta'ya hiç çıkılmadığını doğrula
-        Assert.Null(factory.Catalog.SeenWabaId);
-        Assert.Null(factory.Catalog.SeenToken);
+        Assert.Null(s.Catalog.SeenWabaId);
+        Assert.Null(s.Catalog.SeenToken);
     }
 
     private sealed record OperatorLoginResp(

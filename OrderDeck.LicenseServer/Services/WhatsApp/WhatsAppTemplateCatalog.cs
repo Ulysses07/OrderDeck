@@ -509,40 +509,45 @@ public sealed class WhatsAppTemplateCatalog : IWhatsAppTemplateCatalog
             return GraphResult<JsonDocument>.Failure("network", ex.Message);
         }
 
-        var body = await resp.Content.ReadAsStringAsync(ct);
-        JsonDocument doc;
-        try
+        // Yanıtı burada kapatıyoruz; dönen JsonDocument'in ondan bağımsız
+        // olması gerekiyor — gövdeyi metne okuduğumuz için öyle.
+        using (resp)
         {
-            doc = JsonDocument.Parse(body);
-        }
-        catch (JsonException)
-        {
-            _log.LogWarning(
-                "WhatsApp şablon yazma yanıtı JSON değil (HTTP {Status}): {Body}",
-                (int)resp.StatusCode, Truncate(body));
-            return GraphResult<JsonDocument>.Failure(
-                ((int)resp.StatusCode).ToString(), "beklenmedik yanıt");
-        }
+            var body = await resp.Content.ReadAsStringAsync(ct);
+            JsonDocument doc;
+            try
+            {
+                doc = JsonDocument.Parse(body);
+            }
+            catch (JsonException)
+            {
+                _log.LogWarning(
+                    "WhatsApp şablon yazma yanıtı JSON değil (HTTP {Status}): {Body}",
+                    (int)resp.StatusCode, Truncate(body));
+                return GraphResult<JsonDocument>.Failure(
+                    ((int)resp.StatusCode).ToString(), "beklenmedik yanıt");
+            }
 
-        if (doc.RootElement.TryGetProperty("error", out var err))
-        {
-            var code = err.TryGetProperty("code", out var c) ? c.ToString() : null;
-            var msg = err.TryGetProperty("message", out var m) ? m.GetString() : null;
-            doc.Dispose();
-            _log.LogWarning("WhatsApp şablon yazma hatası ({Code}): {Msg}", code, msg);
-            return GraphResult<JsonDocument>.Failure(code, msg);
-        }
+            if (doc.RootElement.TryGetProperty("error", out var err))
+            {
+                var code = err.TryGetProperty("code", out var c) ? c.ToString() : null;
+                var msg = err.TryGetProperty("message", out var m) ? m.GetString() : null;
+                doc.Dispose();
+                _log.LogWarning("WhatsApp şablon yazma hatası ({Code}): {Msg}", code, msg);
+                return GraphResult<JsonDocument>.Failure(code, msg);
+            }
 
-        if (!resp.IsSuccessStatusCode)
-        {
-            doc.Dispose();
-            _log.LogWarning(
-                "WhatsApp şablon yazma beklenmedik yanıt (HTTP {Status}): {Body}",
-                (int)resp.StatusCode, Truncate(body));
-            return GraphResult<JsonDocument>.Failure(
-                ((int)resp.StatusCode).ToString(), "beklenmedik yanıt");
-        }
+            if (!resp.IsSuccessStatusCode)
+            {
+                doc.Dispose();
+                _log.LogWarning(
+                    "WhatsApp şablon yazma beklenmedik yanıt (HTTP {Status}): {Body}",
+                    (int)resp.StatusCode, Truncate(body));
+                return GraphResult<JsonDocument>.Failure(
+                    ((int)resp.StatusCode).ToString(), "beklenmedik yanıt");
+            }
 
-        return GraphResult<JsonDocument>.Success(doc);
+            return GraphResult<JsonDocument>.Success(doc);
+        }
     }
 }

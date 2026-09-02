@@ -90,6 +90,14 @@ public class WhatsAppTemplateDraftTests
     public void Uzun_altbilgi_reddedilir() =>
         Assert.NotNull(WhatsAppTemplateShape.Validate(Draft(footer: new string('a', 61))));
 
+    // Meta alt bilgide değişkene izin vermiyor; yerelde elemezsek şablon ücretli
+    // bir ret olarak geri döner.
+    [Fact]
+    public void Altbilgide_degisken_reddedilir() =>
+        Assert.Equal(
+            WhatsAppTemplateShape.FooterVariable,
+            WhatsAppTemplateShape.Validate(Draft(footer: "Alt bilgi {{1}}")));
+
     [Fact]
     public void Gecerli_butonlar_kabul_edilir() =>
         Assert.Null(WhatsAppTemplateShape.Validate(Draft(buttons: [
