@@ -66,6 +66,11 @@
         .yt-status img { width:22px; height:22px; border-radius:50%; }
         .yt-confirm { display: flex; align-items: center; gap: 8px; margin-top: 8px;
                       font-size: 14px; cursor: pointer; }
+        /* Yazar kuralı, tarayıcının [hidden]{display:none} kuralını köken
+           önceliğiyle ezer. Bu satır olmadan onay kutusu HİÇ gizlenmez:
+           kanal kartı çizilmeden de ekranda durur ve müşteri görmediği bir
+           kanalı "bana ait" diye onaylayabilir — özelliğin tek koruması bu bağ. */
+        .yt-confirm[hidden] { display: none; }
         .yt-confirm input { width: 18px; height: 18px; flex: none; cursor: pointer; }
         .yt-ok { color:var(--od-ok); font-weight:600; }
         .yt-warn { color:var(--od-warn); font-weight:600; }
@@ -145,7 +150,9 @@ else
                     <input class="inp uname" id="ytUser" asp-for="Input.YouTubeUsername" maxlength="200"
                            inputmode="text" placeholder="kanalhandle veya kanal adresi" />
                 </div>
-                <div class="yt-status" id="ytStatus">
+                @* aria-live: onaylanacak kanal adı JS ile yazılıyor. Duyurulmazsa
+                   ekran okuyucu kullanan müşteri adı hiç duymadan onay verir. *@
+                <div class="yt-status" id="ytStatus" aria-live="polite">
                     @if (!string.IsNullOrEmpty(Model.YouTubeChannelTitle))
                     {
                         @* Hatalı gönderimden sonra kart tekrar çizilsin; JS de aynısını üretiyor. *@
@@ -339,7 +346,10 @@ else
         var sl = rest.indexOf('/');
         var host = (sl < 0 ? rest : rest.slice(0, sl)).toLowerCase();
         var path = sl < 0 ? '' : rest.slice(sl + 1);
-        host = host.replace(/^www\./, '').replace(/^m\./, '');
+        // Zincirleme DEĞİL: sunucu if/else if yapıyor (ProfileUrlParser.cs).
+        // Zincirlersek "www.m.instagram.com" istemcide tanınır, sunucuda tanınmaz.
+        if (host.indexOf('www.') === 0) host = host.slice(4);
+        else if (host.indexOf('m.') === 0) host = host.slice(2);
 
         var hostPlatform =
             (host === 'youtube.com' || host === 'youtu.be') ? 'YouTubeUsername' :
@@ -489,7 +499,9 @@ else
     var ytStatus = document.getElementById('ytStatus');
     var ytConfirmWrap = document.getElementById('ytConfirmWrap');
     var ytConfirm = document.getElementById('ytConfirm');
-    var ytTimer = null, lastChecked = null;
+    // lastResult: lastChecked'e ait son SONUÇ ({state, html, confirm}). Uçuştaki
+    // istek varken null. Aynı handle'a geri dönüldüğünde ekranı yeniden kurmak için.
+    var ytTimer = null, lastChecked = null, lastResult = null;
     // '' | 'checking' | 'ok' | 'missing' | 'unavailable' | 'urlid' | 'parse-error'
     var ytState = '';
 
@@ -518,24 +530,41 @@ else
         var p = applyParse(yt);
 
         if (p.kind === 'error') {
-            ytState = 'parse-error'; lastChecked = null;
+            ytState = 'parse-error'; lastChecked = null; lastResult = null;
             setStatus(''); showConfirm(false); showError(yt, p.error);
             return;
         }
         if (p.kind === 'channelId') {
             // Kanal adresi kimliğin kendisi — varlık sorgusu ve onay gereksiz.
-            ytState = 'urlid'; lastChecked = null;
+            ytState = 'urlid'; lastChecked = null; lastResult = null;
             setStatus('<span class="yt-ok">\u2713 Kanal adresi al\u0131nd\u0131</span>');
             showConfirm(false); showError(yt, '');
             return;
         }
 
         var h = yt.value;
-        if (h.length === 0) { ytState = ''; lastChecked = null; setStatus(''); showConfirm(false); return; }
-        if (h === lastChecked) return;
+        if (h.length === 0) {
+            ytState = ''; lastChecked = null; lastResult = null;
+            setStatus(''); showConfirm(false); return;
+        }
+        if (h === lastChecked) {
+            // Aynı handle'a geri dönüldü (a → ab → a). Ağa gitmeye gerek yok ama
+            // öylece dönemeyiz: 'input' işleyicisi bu arada durumu 'checking'e
+            // çekip onay kutusunu gizledi. Kalırsa durum kalıcı 'checking' olur,
+            // istemci kapısı geçirir, sunucu "kanalı onayla" der ve müşteriye
+            // onaylayacak kutu gösterilmez — çıkmaz. Son sonucu geri kur.
+            // lastResult null ise istek hâlâ uçuşta; ekranı o yazacak.
+            if (lastResult) {
+                ytState = lastResult.state;
+                setStatus(lastResult.html);
+                showConfirm(lastResult.confirm);
+            }
+            return;
+        }
 
         if (!keepConfirm) showConfirm(false);   // handle değişti → önceki onay geçersiz
         lastChecked = h;
+        lastResult = null;
         ytState = 'checking';
         setStatus('<span class="spinner"></span><span class="yt-checking">kontrol ediliyor\u2026</span>');
         fetch('/api/public/verify/youtube?handle=' + encodeURIComponent(h))
@@ -544,20 +573,26 @@ else
                 if (yt.value !== h) return;              // kullanıcı arada değiştirdi
                 if (!d || d.available === false) {
                     // Bizim kota/ağ arızamız müşteriyi engellemesin.
-                    ytState = 'unavailable'; setStatus(''); return;
+                    apply('unavailable', '', false); return;
                 }
                 if (d.exists) {
-                    ytState = 'ok';
                     var img = d.thumbnail ? '<img src="' + esc(d.thumbnail) + '" alt="">' : '';
-                    setStatus(img + '<span class="yt-ok">\u2713 ' + esc(d.title || 'Kanal bulundu') + '</span>');
-                    showConfirm(true);
+                    apply('ok', img + '<span class="yt-ok">\u2713 ' + esc(d.title || 'Kanal bulundu') + '</span>', true);
                 } else {
-                    ytState = 'missing';
-                    setStatus('<span class="yt-warn">\u26a0 Bu kullan\u0131c\u0131 ad\u0131na ait kanal bulunamad\u0131</span>');
-                    showConfirm(false);
+                    apply('missing',
+                        '<span class="yt-warn">\u26a0 Bu kullan\u0131c\u0131 ad\u0131na ait kanal bulunamad\u0131</span>',
+                        false);
                 }
             })
-            .catch(function () { ytState = 'unavailable'; setStatus(''); });
+            .catch(function () { apply('unavailable', '', false); });
+
+        // Sonucu hem ekrana yazar hem önbelleğe alır; ikisi ayrışamasın diye tek yerde.
+        function apply(state, html, withConfirm) {
+            ytState = state;
+            setStatus(html);
+            showConfirm(withConfirm);
+            lastResult = { state: state, html: html, confirm: withConfirm };
+        }
     }
 
     if (yt) {

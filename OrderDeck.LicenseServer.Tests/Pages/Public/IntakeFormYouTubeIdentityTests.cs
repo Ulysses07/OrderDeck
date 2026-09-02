@@ -272,6 +272,68 @@ public sealed class IntakeFormYouTubeIdentityTests : IClassFixture<YouTubeIdenti
     }
 
     /// <summary>
+    /// Onay kutusu, kanal kartı çizilmeden EKRANDA OLMAMALI. Görmediği bir kanalı
+    /// onaylayabilen müşteride bu özelliğin hiçbir anlamı kalmaz — "gördüğün adı
+    /// onayla" bağı korumanın tamamı.
+    ///
+    /// Razor'ın boolean nitelik davranışına güvenmek yerine çıktının kendisine
+    /// bakıyoruz: HTML'de niteliğin DEĞERİ değil VARLIĞI belirleyici. Razor
+    /// yanlışlıkla hep bassa (hidden="False" dahil) kutu kalıcı gizli kalır ve
+    /// kimse onaylayamaz; hiç basmasa kutu hep görünür. İki yön de kırık.
+    /// </summary>
+    [Fact]
+    public async Task Onay_kutusu_kanal_karti_yokken_gizli_gelir()
+    {
+        var (slug, _) = await SeedConfigAsync();
+        var client = NewClient();
+
+        var html = await (await client.GetAsync($"/r/{slug}")).Content.ReadAsStringAsync();
+
+        var label = LabelTag(html);
+        label.Should().Contain("hidden",
+            "kanal kartı yokken onay kutusu ekranda olmamalı");
+    }
+
+    /// <summary>
+    /// Aynı bağın diğer yönü: sunucu kanalı bulup kartı çizdiyse (onay
+    /// işaretlenmediği için sayfa geri döndü) kutu GÖRÜNÜR olmalı. Gizli kalırsa
+    /// müşteri "kanalı onayla" hatasını görür ama onaylayacak bir şey bulamaz.
+    /// </summary>
+    [Fact]
+    public async Task Kanal_bulununca_onay_kutusu_gorunur_gelir()
+    {
+        _factory.Resolver.ByHandle["gorunur"] =
+            new YouTubeChannel(true, true, "Görünür Kanal", null, RealChannelId);
+
+        var (slug, _) = await SeedConfigAsync();
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = true });
+        var token = await TokenAsync(client, slug);
+
+        var resp = await client.PostAsync($"/r/{slug}?handler=Submit", Form(token, slug,
+            ("Input.YouTubeUsername", "gorunur")));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var html = await resp.Content.ReadAsStringAsync();
+
+        LabelTag(html).Should().NotContain("hidden",
+            "sunucu kanalı bulduysa onaylanacak kutu ekranda olmalı");
+    }
+
+    /// <summary>
+    /// Onay kutusunun etiketinin açılış etiketini kesip çıkarır. Nitelik varlığını
+    /// arayacağımız için sayfanın geri kalanındaki "hidden" geçişleri (gizli
+    /// alanlar, honeypot CSS'i) sonucu kirletmemeli.
+    /// </summary>
+    private static string LabelTag(string html)
+    {
+        var start = html.IndexOf("id=\"ytConfirmWrap\"", StringComparison.Ordinal);
+        start.Should().BeGreaterThan(-1, "onay kutusunun etiketi sayfada olmalı");
+        var open = html.LastIndexOf('<', start);
+        var close = html.IndexOf('>', start);
+        return html[open..(close + 1)];
+    }
+
+    /// <summary>
     /// YouTube kutusu boşken hiçbir doğrulama tetiklenmemeli — Instagram'la kayıt
     /// olan müşteri YouTube yüzünden engellenemez.
     /// </summary>
