@@ -64,6 +64,9 @@
         .err { font-size:12.5px; color:var(--od-red); margin-top:5px; min-height:1px; }
         .yt-status { font-size:13px; margin-top:6px; display:flex; align-items:center; gap:8px; min-height:20px; }
         .yt-status img { width:22px; height:22px; border-radius:50%; }
+        .yt-confirm { display: flex; align-items: center; gap: 8px; margin-top: 8px;
+                      font-size: 14px; cursor: pointer; }
+        .yt-confirm input { width: 18px; height: 18px; flex: none; cursor: pointer; }
         .yt-ok { color:var(--od-ok); font-weight:600; }
         .yt-warn { color:var(--od-warn); font-weight:600; }
         .yt-checking { color:var(--od-muted); }
@@ -129,8 +132,8 @@ else
                 <label class="lbl" asp-for="Input.InstagramUsername"><span class="platform-ico">📷</span>Instagram</label>
                 <div class="with-prefix">
                     <span class="pfx">@@</span>
-                    <input class="inp uname" asp-for="Input.InstagramUsername" maxlength="64"
-                           inputmode="text" placeholder="kullaniciadi" />
+                    <input class="inp uname" asp-for="Input.InstagramUsername" maxlength="200"
+                           inputmode="text" placeholder="kullaniciadi veya profil adresi" />
                 </div>
                 <span class="err" asp-validation-for="Input.InstagramUsername"></span>
             </div>
@@ -139,10 +142,26 @@ else
                 <label class="lbl" asp-for="Input.YouTubeUsername"><span class="platform-ico">📺</span>YouTube</label>
                 <div class="with-prefix">
                     <span class="pfx">@@</span>
-                    <input class="inp uname" id="ytUser" asp-for="Input.YouTubeUsername" maxlength="64"
-                           inputmode="text" placeholder="kanalhandle" />
+                    <input class="inp uname" id="ytUser" asp-for="Input.YouTubeUsername" maxlength="200"
+                           inputmode="text" placeholder="kanalhandle veya kanal adresi" />
                 </div>
-                <div class="yt-status" id="ytStatus"></div>
+                <div class="yt-status" id="ytStatus">
+                    @if (!string.IsNullOrEmpty(Model.YouTubeChannelTitle))
+                    {
+                        @* Hatalı gönderimden sonra kart tekrar çizilsin; JS de aynısını üretiyor. *@
+                        @if (!string.IsNullOrEmpty(Model.YouTubeChannelThumbnail))
+                        {
+                            <img src="@Model.YouTubeChannelThumbnail" alt="" />
+                        }
+                        <span class="yt-ok">✓ @Model.YouTubeChannelTitle</span>
+                    }
+                </div>
+                <label class="yt-confirm" id="ytConfirmWrap"
+                       hidden="@(string.IsNullOrEmpty(Model.YouTubeChannelTitle))">
+                    <input type="checkbox" id="ytConfirm" asp-for="Input.YouTubeConfirmed" />
+                    <span>Bu kanal bana ait.</span>
+                </label>
+                <span class="err" asp-validation-for="Input.YouTubeConfirmed"></span>
                 <span class="err" asp-validation-for="Input.YouTubeUsername"></span>
             </div>
 
@@ -156,7 +175,7 @@ else
                 <label class="lbl" asp-for="Input.TikTokUsername"><span class="platform-ico">🎵</span>TikTok</label>
                 <div class="with-prefix">
                     <span class="pfx">@@</span>
-                    <input class="inp uname" asp-for="Input.TikTokUsername" maxlength="64" placeholder="kullaniciadi" />
+                    <input class="inp uname" asp-for="Input.TikTokUsername" maxlength="200" placeholder="kullaniciadi veya profil adresi" />
                 </div>
                 <span class="err" asp-validation-for="Input.TikTokUsername"></span>
             </div>
@@ -289,6 +308,107 @@ else
         return v.trim();
     }
 
+    // Sunucudaki ProfileUrlParser'ın aynası. Yetkili kaynak SUNUCU — burası
+    // yalnızca anında geri bildirim için. İkisi ayrışırsa sunucu kazanır ve
+    // müşteri gönderim sonrası hatayı görür; sessiz kabul yok.
+    var IG_NONPROFILE = ['p', 'reel', 'reels', 'stories', 'tv', 'explore'];
+
+    function isChannelId(id) { return /^UC[A-Za-z0-9_-]{22}$/.test(id); }
+
+    // Döner: { kind: 'handle'|'channelId'|'error', value: string, error: string }
+    function parseProfileUrl(platform, raw) {
+        var s = (raw || '').trim();
+        if (s.length === 0 || s.indexOf('/') < 0 || platform === 'FacebookUsername')
+            return { kind: 'handle', value: s, error: '' };
+
+        var rest = s;
+        var sch = rest.indexOf('://');
+        if (sch >= 0) rest = rest.slice(sch + 3);
+        var cut = rest.search(/[?#]/);
+        if (cut >= 0) rest = rest.slice(0, cut);
+        rest = rest.replace(/\/+$/, '');
+
+        var sl = rest.indexOf('/');
+        var host = (sl < 0 ? rest : rest.slice(0, sl)).toLowerCase();
+        var path = sl < 0 ? '' : rest.slice(sl + 1);
+        host = host.replace(/^www\./, '').replace(/^m\./, '');
+
+        var hostPlatform =
+            (host === 'youtube.com' || host === 'youtu.be') ? 'YouTubeUsername' :
+            (host === 'instagram.com') ? 'InstagramUsername' :
+            (host === 'tiktok.com' || host === 'vm.tiktok.com' || host === 'vt.tiktok.com')
+                ? 'TikTokUsername' : null;
+
+        // Tanımadığımız adres: mevcut "sadece kullanıcı adını yaz" mesajına düşsün.
+        if (!hostPlatform) return { kind: 'handle', value: s, error: '' };
+
+        if (hostPlatform !== platform)
+            return { kind: 'error', value: '',
+                     error: 'Bu bir ' + RULES[hostPlatform].name + ' adresi. '
+                          + RULES[platform].name + ' kutusuna ' + RULES[platform].name
+                          + ' kullan\u0131c\u0131 ad\u0131n\u0131 yaz.' };
+
+        var seg = path.length === 0 ? [] : path.split('/');
+
+        if (hostPlatform === 'YouTubeUsername') {
+            var ytHelp = 'Kanal sayfan\u0131 a\u00e7, adres \u00e7ubu\u011fundaki '
+                       + AT + ' ile ba\u015flayan adresi yap\u0131\u015ft\u0131r.';
+            if (host === 'youtu.be' || seg.length === 0)
+                return { kind: 'error', value: '',
+                         error: 'Bu bir video adresi, kanal adresi de\u011fil. ' + ytHelp };
+            if (seg[0].charAt(0) === AT) {
+                var h = seg[0].slice(1);
+                return h.length === 0
+                    ? { kind: 'error', value: '', error: 'Adreste kanal ad\u0131 g\u00f6r\u00fcnm\u00fcyor. ' + ytHelp }
+                    : { kind: 'handle', value: h, error: '' };
+            }
+            if (seg[0] === 'channel') {
+                var id = seg[1] || '';
+                return isChannelId(id)
+                    ? { kind: 'channelId', value: id, error: '' }
+                    : { kind: 'error', value: '',
+                        error: 'Kanal adresi eksik ya da bozuk g\u00f6r\u00fcn\u00fcyor. ' + ytHelp };
+            }
+            return { kind: 'error', value: '', error: 'Bu adresten kanal\u0131 bulam\u0131yoruz. ' + ytHelp };
+        }
+
+        if (hostPlatform === 'InstagramUsername') {
+            var igHelp = 'Profil sayfan\u0131 a\u00e7, adres \u00e7ubu\u011fundakini yap\u0131\u015ft\u0131r.';
+            if (seg.length === 0)
+                return { kind: 'error', value: '',
+                         error: 'Adreste kullan\u0131c\u0131 ad\u0131 g\u00f6r\u00fcnm\u00fcyor. ' + igHelp };
+            if (IG_NONPROFILE.indexOf(seg[0].toLowerCase()) >= 0)
+                return { kind: 'error', value: '',
+                         error: 'Bu bir g\u00f6nderi adresi, profil adresi de\u011fil. ' + igHelp };
+            return { kind: 'handle', value: seg[0], error: '' };
+        }
+
+        if (host === 'vm.tiktok.com' || host === 'vt.tiktok.com')
+            return { kind: 'error', value: '',
+                     error: 'Bu k\u0131sa link. Linki taray\u0131c\u0131da a\u00e7, adres '
+                          + '\u00e7ubu\u011fundaki uzun adresi yap\u0131\u015ft\u0131r.' };
+        if (seg.length === 0 || seg[0].charAt(0) !== AT)
+            return { kind: 'error', value: '',
+                     error: 'Bu bir profil adresi de\u011fil. Profil sayfan\u0131 a\u00e7, '
+                          + 'adres \u00e7ubu\u011fundakini yap\u0131\u015ft\u0131r.' };
+        var tth = seg[0].slice(1);
+        return tth.length === 0
+            ? { kind: 'error', value: '', error: 'Adreste kullan\u0131c\u0131 ad\u0131 g\u00f6r\u00fcnm\u00fcyor.' }
+            : { kind: 'handle', value: tth, error: '' };
+    }
+
+    function platformOf(el) {
+        return (el.getAttribute('name') || '').split('.').pop();
+    }
+
+    // Alanı yerinde ayrıştırır; parse sonucunu döner.
+    function applyParse(el) {
+        var p = parseProfileUrl(platformOf(el), el.value);
+        if (p.kind === 'handle') el.value = normalizeHandle(p.value);
+        else if (p.kind === 'channelId') el.value = p.value;
+        return p;
+    }
+
     // Platform kurallari — sunucudaki HandleValidator ile ayni.
     // facebook YOK: canli yorumlarda gelen sey kullanici adi degil GORUNEN AD
     // ("Musa Sevinc"), oraya handle kurali koymak eslesmeyi kirar.
@@ -342,49 +462,91 @@ else
 
     document.querySelectorAll('.uname').forEach(function (el) {
         el.addEventListener('blur', function () {
-            el.value = normalizeHandle(el.value);
+            var p = applyParse(el);
+            if (p.kind === 'error') { showError(el, p.error); return; }
+            if (p.kind === 'channelId') { showError(el, ''); return; } // handle kuralı geçerli değil
             showError(el, handleError(el, el.value));
         });
         el.addEventListener('input', function () { showError(el, ''); });
     });
 
-    // (b) YouTube handle doğrulama — blur'da debounced, channels.list?forHandle (1 kota birimi).
+    // (b) YouTube kimliği — kanal kartı + zorunlu onay.
+    // channelId ARTIK POSTALANMIYOR: sunucu handle'ı kendisi çözüyor. Buradaki
+    // doğrulama yalnız müşteriye "hangi kanala bağlanıyorsun" diye göstermek için.
     var yt = document.getElementById('ytUser');
     var ytStatus = document.getElementById('ytStatus');
-    var ytChannelId = document.getElementById('ytChannelId');
+    var ytConfirmWrap = document.getElementById('ytConfirmWrap');
+    var ytConfirm = document.getElementById('ytConfirm');
     var ytTimer = null, lastChecked = null;
+    // '' | 'checking' | 'ok' | 'missing' | 'unavailable' | 'urlid' | 'parse-error'
+    var ytState = '';
 
     function setStatus(html) { ytStatus.innerHTML = html; }
     function esc(s) { return (s || '').replace(/[&<>"]/g, function (c) {
         return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
 
+    function showConfirm(on) {
+        if (!ytConfirmWrap) return;
+        ytConfirmWrap.hidden = !on;
+        if (!on && ytConfirm) ytConfirm.checked = false;
+    }
+
     function verifyYouTube() {
-        var h = normalizeHandle(yt.value);
-        yt.value = h;
-        if (ytChannelId) ytChannelId.value = ''; // handle değişti → eski channelId geçersiz
-        if (h.length === 0) { setStatus(''); lastChecked = null; return; }
+        if (!yt) return;
+        var p = applyParse(yt);
+
+        if (p.kind === 'error') {
+            ytState = 'parse-error'; lastChecked = null;
+            setStatus(''); showConfirm(false); showError(yt, p.error);
+            return;
+        }
+        if (p.kind === 'channelId') {
+            // Kanal adresi kimliğin kendisi — varlık sorgusu ve onay gereksiz.
+            ytState = 'urlid'; lastChecked = null;
+            setStatus('<span class="yt-ok">\u2713 Kanal adresi al\u0131nd\u0131</span>');
+            showConfirm(false); showError(yt, '');
+            return;
+        }
+
+        var h = yt.value;
+        if (h.length === 0) { ytState = ''; lastChecked = null; setStatus(''); showConfirm(false); return; }
         if (h === lastChecked) return;
+
+        showConfirm(false);      // handle değişti → önceki onay geçersiz
         lastChecked = h;
-        setStatus('<span class="spinner"></span><span class="yt-checking">kontrol ediliyor…</span>');
+        ytState = 'checking';
+        setStatus('<span class="spinner"></span><span class="yt-checking">kontrol ediliyor\u2026</span>');
         fetch('/api/public/verify/youtube?handle=' + encodeURIComponent(h))
             .then(function (r) { return r.json(); })
             .then(function (d) {
-                if (normalizeHandle(yt.value) !== h) return; // kullanıcı değiştirdi
-                if (!d || d.available === false) { setStatus(''); return; }
+                if (yt.value !== h) return;              // kullanıcı arada değiştirdi
+                if (!d || d.available === false) {
+                    // Bizim kota/ağ arızamız müşteriyi engellemesin.
+                    ytState = 'unavailable'; setStatus(''); return;
+                }
                 if (d.exists) {
-                    // channelId'yi sakla → WPF'te chat kaydıyla birebir eşleşme.
-                    if (ytChannelId) ytChannelId.value = d.channelId || '';
+                    ytState = 'ok';
                     var img = d.thumbnail ? '<img src="' + esc(d.thumbnail) + '" alt="">' : '';
-                    setStatus(img + '<span class="yt-ok">✓ ' + esc(d.title || 'Kanal bulundu') + '</span>');
+                    setStatus(img + '<span class="yt-ok">\u2713 ' + esc(d.title || 'Kanal bulundu') + '</span>');
+                    showConfirm(true);
                 } else {
-                    setStatus('<span class="yt-warn">⚠ Bu kullanıcı adına ait kanal bulunamadı — doğru yazdığından emin ol</span>');
+                    ytState = 'missing';
+                    setStatus('<span class="yt-warn">\u26a0 Bu kullan\u0131c\u0131 ad\u0131na ait kanal bulunamad\u0131</span>');
+                    showConfirm(false);
                 }
             })
-            .catch(function () { setStatus(''); });
+            .catch(function () { ytState = 'unavailable'; setStatus(''); });
     }
+
     if (yt) {
         yt.addEventListener('blur', function () { clearTimeout(ytTimer); ytTimer = setTimeout(verifyYouTube, 200); });
-        yt.addEventListener('input', function () { clearTimeout(ytTimer); ytTimer = setTimeout(verifyYouTube, 700); });
+        yt.addEventListener('input', function () {
+            showConfirm(false);                          // yazarken eski onay geçersiz
+            clearTimeout(ytTimer); ytTimer = setTimeout(verifyYouTube, 700);
+        });
+        // Sunucu hatasıyla dönen sayfada alan dolu gelir; durum makinesini ve
+        // onay kutusunu yeniden kur (sunucu kartı zaten çizdi).
+        if (yt.value) verifyYouTube();
     }
 
     // (c) E-posta — sunucudaki EmailValidator ile ayni kural.
@@ -542,9 +704,11 @@ else
         var fields = Array.prototype.slice.call(document.querySelectorAll('.uname'));
         var anyUser = false, firstBad = null, bad = [];
         fields.forEach(function (el) {
-            el.value = normalizeHandle(el.value);
+            var p = applyParse(el);
             if (el.value.length > 0) anyUser = true;
-            var msg = handleError(el, el.value);
+            var msg = p.kind === 'error' ? p.error
+                    : p.kind === 'channelId' ? ''
+                    : handleError(el, el.value);
             showError(el, msg);
             if (msg) { bad.push(labelOf(el)); if (!firstBad) firstBad = el; }
         });
@@ -584,6 +748,26 @@ else
             return;
         }
         unameErr.textContent = '';
+
+        // YouTube kimlik kapısı. Sunucu aynı kararı veriyor (IntakeForm.cshtml.cs);
+        // buradaki amaç müşteriyi sunucuya gidip dönmeden uyarmak.
+        if (yt && yt.value && ytState !== 'urlid' && ytState !== 'unavailable') {
+            if (ytState === 'missing') {
+                e.preventDefault();
+                showError(yt, 'Bu kullan\u0131c\u0131 ad\u0131na ait bir YouTube kanal\u0131 '
+                            + 'bulunamad\u0131. Kanal sayfan\u0131 a\u00e7, adres \u00e7ubu\u011fundaki '
+                            + AT + ' ile ba\u015flayan adresi yap\u0131\u015ft\u0131r.');
+                formErr.textContent = 'YouTube kullan\u0131c\u0131 ad\u0131n\u0131 d\u00fczelt.';
+                yt.focus();
+                return;
+            }
+            if (ytState === 'ok' && ytConfirm && !ytConfirm.checked) {
+                e.preventDefault();
+                formErr.textContent = 'YouTube kanal\u0131n\u0131n sana ait oldu\u011funu onayla.';
+                ytConfirm.focus();
+                return;
+            }
+        }
 
         // Kurala uymayan kayıt sohbetle eşleşemez → gönderimi durdur.
         if (firstBad) {
