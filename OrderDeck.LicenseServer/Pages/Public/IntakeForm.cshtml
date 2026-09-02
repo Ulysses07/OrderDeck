@@ -424,10 +424,19 @@ else
     }
 
     // Alanı yerinde ayrıştırır; parse sonucunu döner.
+    //
+    // channelId dalında alana DOKUNULMAZ — bilerek. Alanı çıplak "UCabc…"ye
+    // çevirirsek sunucuya giden şey artık adres olmaz; ProfileUrlParser girdide
+    // "/" yoksa dokunmadan geçirdiği için o değer HANDLE sanılır, forHandle=ucabc…
+    // sorulur, kanal bulunamaz ve geçerli kanal adresini yapıştıran müşteri
+    // engellenir. (YouTube API'ye ulaşılamadığı anda daha kötüsü: kayıt
+    // Username="UCabc…" ile açılır, kimliksiz, sohbetle asla eşleşmez.)
+    // Adresi olduğu gibi bırakıp kanal kimliğini sunucunun kendisine çıkarttırmak
+    // "sunucu yetkilidir" kuralının da gereği. Üç çağrı yeri de bu dalda
+    // el.value okumuyor, yalnız p.kind'e bakıyor.
     function applyParse(el) {
         var p = parseProfileUrl(platformOf(el), el.value);
         if (p.kind === 'handle') el.value = normalizeHandle(p.value);
-        else if (p.kind === 'channelId') el.value = p.value;
         return p;
     }
 
