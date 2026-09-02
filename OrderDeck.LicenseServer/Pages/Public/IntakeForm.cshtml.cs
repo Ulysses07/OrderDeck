@@ -263,6 +263,22 @@ public class IntakeFormModel : PageModel
             }
         }
 
+        // Kanal adresi yapıştıran müşteri kullanıcı adı yazmıyor: yt null kalıyor
+        // ve kayıt yalnız channelId ile açılıyor. WPF sync'i handle'ı DisplayName
+        // olarak taşıyor (IntakeFormSyncService), taşıyacak handle yoksa yayıncı
+        // müşteri listesinde çıplak "UCabc…" görüyor. API'nin AYNI yanıtta
+        // döndürdüğü customUrl bunu ek kota harcamadan dolduruyor.
+        //
+        // Google'dan geldi diye doğrudan yazmıyoruz: girdi kutusuyla aynı normalize
+        // ve doğrulama kapısından geçiyor. Geçemezse SESSİZCE boş kalıyor — burada
+        // hata üretmek, kendi verimiz yüzünden müşteriyi engellemek olurdu.
+        if (yt is null && ch is { Handle: not null })
+        {
+            var apiHandle = HandleValidator.Normalize(ch.Handle);
+            if (HandleValidator.Validate(HandleValidator.YouTube, apiHandle) is null)
+                yt = apiHandle;
+        }
+
         if (!ModelState.IsValid) return Page();
 
         // Phase 4g — normalize TR phone to E.164

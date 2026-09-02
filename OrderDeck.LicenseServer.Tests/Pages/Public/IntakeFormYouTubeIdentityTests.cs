@@ -344,6 +344,66 @@ public sealed class IntakeFormYouTubeIdentityTests : IClassFixture<YouTubeIdenti
     }
 
     /// <summary>
+    /// Kanal adresi yapıştıran müşteri kullanıcı adı YAZMIYOR. Kayıt yalnız
+    /// channelId ile açılırsa yayıncı, müşteri listesinde çıplak "UCabc…"
+    /// görüyor: WPF sync'i handle'ı DisplayName olarak taşıyor, taşıyacak
+    /// handle yoksa taşıyamıyor. Eşleşme bozulmuyor (channelId birebir),
+    /// sessizce kaybolan şey OKUNABİLİRLİK — bu yüzden testi olmadan fark
+    /// edilmesi zor. API aynı yanıtta customUrl döndürüyor, ek kota yok.
+    /// </summary>
+    [Fact]
+    public async Task Kanal_adresinde_kullanici_adi_api_handle_inden_doldurulur()
+    {
+        _factory.Resolver.ById[PastedChannelId] =
+            new YouTubeChannel(true, true, "Handle'lı Kanal", null, CanonicalChannelId, "@apidenhandle");
+
+        var (slug, customerId) = await SeedConfigAsync();
+        var client = NewClient();
+        var token = await TokenAsync(client, slug);
+
+        var resp = await client.PostAsync($"/r/{slug}?handler=Submit", Form(token, slug,
+            ("Input.YouTubeUsername", $"https://www.youtube.com/channel/{PastedChannelId}"),
+            ("Input.YouTubeConfirmed", "true")));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+
+        var sub = await LatestAsync(customerId);
+        sub.Should().NotBeNull();
+        // Baştaki at-işareti normalize ediliyor — elle yazılan handle ile aynı biçim.
+        sub!.YouTubeUsername.Should().Be("apidenhandle");
+        sub.YouTubeChannelId.Should().Be(CanonicalChannelId);
+        // Legacy alan da artık çıplak kimlik değil.
+        sub.Username.Should().Be("apidenhandle");
+    }
+
+    /// <summary>
+    /// API'den gelen handle bozuksa (boşluklu, eğik çizgili) SESSİZCE atılır.
+    /// Kendi verimiz yüzünden müşteriyi engellemek ya da doğrulamadan geçmemiş
+    /// bir değeri kaydetmek — ikisi de yanlış.
+    /// </summary>
+    [Fact]
+    public async Task Api_handle_i_gecersizse_kullanici_adi_bos_birakilir()
+    {
+        _factory.Resolver.ById[PastedChannelId] =
+            new YouTubeChannel(true, true, "Bozuk Handle", null, CanonicalChannelId, "iki kelime/eğik");
+
+        var (slug, customerId) = await SeedConfigAsync();
+        var client = NewClient();
+        var token = await TokenAsync(client, slug);
+
+        var resp = await client.PostAsync($"/r/{slug}?handler=Submit", Form(token, slug,
+            ("Input.YouTubeUsername", $"https://www.youtube.com/channel/{PastedChannelId}"),
+            ("Input.YouTubeConfirmed", "true")));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect, "kendi verimiz müşteriyi engellememeli");
+
+        var sub = await LatestAsync(customerId);
+        sub.Should().NotBeNull();
+        sub!.YouTubeUsername.Should().BeNull();
+        sub.YouTubeChannelId.Should().Be(CanonicalChannelId);
+    }
+
+    /// <summary>
     /// Kota/ağ arızası adres yolunda da müşteriyi kilitlemez. Handle yolundan
     /// tek farkı: elimizde adresten çıkmış, yapısal olarak geçerli bir kimlik
     /// VAR — arıza yüzünden onu atmak kaydı gereksiz yere kimliksiz bırakırdı.

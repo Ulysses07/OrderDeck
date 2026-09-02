@@ -122,15 +122,21 @@ public sealed class YouTubeChannelResolver : IYouTubeChannelResolver
                 var channelId = items[0].TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
                 string? title = null;
                 string? thumb = null;
+                string? handle = null;
                 if (items[0].TryGetProperty("snippet", out var snippet))
                 {
                     title = snippet.TryGetProperty("title", out var t) ? t.GetString() : null;
+                    // customUrl = kanalın "@handle"ı. Kanal adresi yolunda müşteri
+                    // kullanıcı adı yazmıyor; bunu almazsak kayıt çıplak UC… ile
+                    // açılır. Aynı yanıtta geliyor, ek kota harcanmıyor.
+                    handle = snippet.TryGetProperty("customUrl", out var cu) ? cu.GetString() : null;
                     if (snippet.TryGetProperty("thumbnails", out var th) &&
                         th.TryGetProperty("default", out var def) &&
                         def.TryGetProperty("url", out var u))
                         thumb = u.GetString();
                 }
-                result = new YouTubeChannel(Available: true, Exists: true, Title: title, Thumbnail: thumb, ChannelId: channelId);
+                result = new YouTubeChannel(Available: true, Exists: true, Title: title, Thumbnail: thumb,
+                    ChannelId: channelId, Handle: handle);
             }
             else
             {

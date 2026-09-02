@@ -6,8 +6,17 @@ namespace OrderDeck.LicenseServer.Services.IntakeForm;
 /// KULLANMAMALI, yoksa bizim arızamız müşteriye fatura edilmiş olur.
 /// </param>
 /// <param name="Exists">Handle gerçekten bir kanala karşılık geliyor mu.</param>
+/// <param name="Handle">
+/// Kanalın <c>@handle</c>'ı (API'de <c>snippet.customUrl</c>). Kanal ADRESİ
+/// yapıştıran müşteride kullanıcı adı kutusu boş kalır; bu değer olmadan kayıt
+/// yalnız <c>UC…</c> ile açılır ve yayıncı müşteri listesinde çıplak kimlik
+/// görür (WPF tarafı handle'ı DisplayName olarak taşıyor, taşıyacak handle
+/// yoksa taşıyamıyor). Aynı yanıtta zaten geliyor — ek kota yok. Her kanalda
+/// bulunmayabilir (handle almamış eski kanallar), bu yüzden nullable.
+/// </param>
 public sealed record YouTubeChannel(
-    bool Available, bool Exists, string? Title, string? Thumbnail, string? ChannelId);
+    bool Available, bool Exists, string? Title, string? Thumbnail, string? ChannelId,
+    string? Handle = null);
 
 public interface IYouTubeChannelResolver
 {
