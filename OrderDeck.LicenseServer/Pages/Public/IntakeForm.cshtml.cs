@@ -1,4 +1,4 @@
-using System.ComponentModel.DataAnnotations;
+﻿using System.ComponentModel.DataAnnotations;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.IntakeForm;
 using Microsoft.AspNetCore.Mvc;
@@ -7,6 +7,11 @@ using Microsoft.AspNetCore.RateLimiting;
 
 namespace OrderDeck.LicenseServer.Pages.Public;
 
+// Hız sınırı SINIF düzeyinde olmak ZORUNDA: Razor Pages uç nokta üstverisini
+// sayfa tipinden okuyor, handler metoduna konan öznitelik hiç uygulanmıyor
+// (sessizce etkisiz kalıyordu). Politika kendi içinde POST/GET ayrımı yapıyor —
+// bkz. Program.cs "intake-form-submit".
+[EnableRateLimiting("intake-form-submit")]
 public class IntakeFormModel : PageModel
 {
     private readonly IntakeFormService _service;
@@ -129,7 +134,6 @@ public class IntakeFormModel : PageModel
         return Page();
     }
 
-    [EnableRateLimiting("intake-form-submit")]
     public async Task<IActionResult> OnPostSubmitAsync(CancellationToken ct)
     {
         // Honeypot — bot doldurursa silent 200, persist YOK, redirect YOK

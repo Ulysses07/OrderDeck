@@ -487,17 +487,24 @@ public class Program
                         PermitLimit = 3,
                         Window = TimeSpan.FromHours(1)
                     }));
+            // Kayıt formu gönderimi. Politika YALNIZ POST'u sınırlar: öznitelik
+            // Razor Pages'te sayfa TİPİNE konmak zorunda (handler metoduna konan
+            // öznitelik uç nokta üstverisine hiç girmiyor, sessizce etkisiz kalıyor),
+            // o yüzden sayfayı açan GET'ler de bu politikadan geçiyor. Formu birkaç
+            // kez yenileyen gerçek müşteri 429 yememeli; sınır gönderime ait.
             opt.AddPolicy("intake-form-submit", ctx =>
-                RateLimitPartition.GetFixedWindowLimiter(
-                    partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-                    factory: _ => new FixedWindowRateLimiterOptions
-                    {
-                        PermitLimit = int.TryParse(
-                            Environment.GetEnvironmentVariable("ORDERDECK_INTAKE_RATELIMIT_PER_HOUR")
-                            ?? Environment.GetEnvironmentVariable("LIVEDECK_INTAKE_RATELIMIT_PER_HOUR"),
-                            out var n) ? n : 5,
-                        Window = TimeSpan.FromHours(1)
-                    }));
+                HttpMethods.IsPost(ctx.Request.Method)
+                    ? RateLimitPartition.GetFixedWindowLimiter(
+                        partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                        factory: _ => new FixedWindowRateLimiterOptions
+                        {
+                            PermitLimit = int.TryParse(
+                                Environment.GetEnvironmentVariable("ORDERDECK_INTAKE_RATELIMIT_PER_HOUR")
+                                ?? Environment.GetEnvironmentVariable("LIVEDECK_INTAKE_RATELIMIT_PER_HOUR"),
+                                out var n) ? n : 5,
+                            Window = TimeSpan.FromHours(1)
+                        })
+                    : RateLimitPartition.GetNoLimiter<string>("intake-form-get"));
             // Public YouTube handle doğrulama (intake formu) — IP başına dakikada 30.
             opt.AddPolicy("youtube-verify", ctx =>
                 RateLimitPartition.GetFixedWindowLimiter(
