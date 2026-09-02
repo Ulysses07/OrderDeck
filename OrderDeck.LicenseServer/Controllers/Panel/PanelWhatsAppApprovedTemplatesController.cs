@@ -41,7 +41,7 @@ public sealed class PanelWhatsAppApprovedTemplatesController : ControllerBase
 
     /// <summary>
     /// <paramref name="UnsupportedReason"/> null ise şablon gönderilebilir.
-    /// Dolu olan da listeye giriyor — bkz. <see cref="ApprovedTemplate"/>.
+    /// Dolu olan da listeye giriyor — bkz. <see cref="WabaTemplate"/>.
     /// </summary>
     public sealed record TemplateDto(
         string Name,
@@ -81,6 +81,6 @@ public sealed class PanelWhatsAppApprovedTemplatesController : ControllerBase
 
         return Ok(result.Value!.Select(t => new TemplateDto(
             t.Name, t.Language, t.Category, t.HeaderText, t.BodyText, t.FooterText,
-            t.Buttons, t.ParameterCount, t.ParameterExamples, t.UnsupportedReason)));
+            t.Buttons.Select(b => b.Text).ToList(), t.ParameterCount, t.ParameterExamples, t.UnsupportedReason)));
     }
 }

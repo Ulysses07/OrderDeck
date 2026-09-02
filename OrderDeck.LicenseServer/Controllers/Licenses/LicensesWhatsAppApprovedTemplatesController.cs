@@ -45,7 +45,7 @@ public sealed class LicensesWhatsAppApprovedTemplatesController : ControllerBase
 
     /// <summary><c>UnsupportedReason</c> null ise şablon gönderilebilir. Dolu
     /// olan da listeye giriyor: yayıncı Meta'da onaylattığı şablonu listede hiç
-    /// göremezse eksikliği kendi hesabına yorar (bkz. <see cref="ApprovedTemplate"/>).</summary>
+    /// göremezse eksikliği kendi hesabına yorar (bkz. <see cref="WabaTemplate"/>).</summary>
     public sealed record TemplateDto(
         string Name,
         string Language,
@@ -86,6 +86,6 @@ public sealed class LicensesWhatsAppApprovedTemplatesController : ControllerBase
 
         return Ok(result.Value!.Select(t => new TemplateDto(
             t.Name, t.Language, t.Category, t.HeaderText, t.BodyText, t.FooterText,
-            t.Buttons, t.ParameterCount, t.ParameterExamples, t.UnsupportedReason)));
+            t.Buttons.Select(b => b.Text).ToList(), t.ParameterCount, t.ParameterExamples, t.UnsupportedReason)));
     }
 }
