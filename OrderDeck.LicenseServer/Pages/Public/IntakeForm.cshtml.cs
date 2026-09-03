@@ -212,6 +212,19 @@ public class IntakeFormModel : PageModel
 
         LoadLinkedIdentities();
 
+        // ChannelId'siz YouTube kimliğini bağlı sayma: Facebook kimliklerinde
+        // ChannelId null olur ve gelecekte bir OAuth hatası da boş bırakabilir.
+        // Boşsa bağlı gibi davranmak çözücüyü atlatır ve null channelId kaydeder.
+        // Kimliği burada sıfırlamak invariant'ı tek yerde tutuyor; aşağıdaki
+        // resolve ternarysi, at-least-one ve linked-YT bloğu tutarlı kalır.
+        if (LinkedYouTube is not null && string.IsNullOrEmpty(LinkedYouTube.ChannelId))
+        {
+            _log.LogWarning(
+                "Bağlı YouTube kimliğinde ChannelId boş, bağlı sayılmıyor — Handle={Handle}",
+                LinkedYouTube.Handle);
+            LinkedYouTube = null;
+        }
+
         // Her platform için: adres→kullanıcı adı çevirisi, çeviri hatası,
         // normalize, kural doğrulaması — dört adım tek metodda, dört kutu
         // aynı sırayı izliyor. Facebook bilerek dahil: parser kısa devre
