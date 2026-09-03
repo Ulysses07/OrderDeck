@@ -247,6 +247,20 @@ public class Program
                 OrderDeck.LicenseServer.Services.Facebook.FacebookOAuthExchanger>(
                 c => c.Timeout = TimeSpan.FromSeconds(fbTimeout <= 0 ? 15 : fbTimeout));
 
+        // Kayıt formu "hesabını bağla" girişleri (Faz 2). Store singleton: state ve
+        // bağlı kimlik süreç içi IMemoryCache'te yaşıyor — YouTubeChannelResolver'la
+        // aynı gerekçe, tek konteyner var, dağıtık cache gerekmez.
+        builder.Services.Configure<OrderDeck.LicenseServer.Services.IntakeForm.Login.IntakeLoginOptions>(
+            builder.Configuration.GetSection(
+                OrderDeck.LicenseServer.Services.IntakeForm.Login.IntakeLoginOptions.SectionName));
+        builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.IntakeForm.Login.IntakeLinkStore>();
+        builder.Services.AddHttpClient<
+            OrderDeck.LicenseServer.Services.IntakeForm.Login.IGoogleChannelClient,
+            OrderDeck.LicenseServer.Services.IntakeForm.Login.GoogleChannelClient>();
+        builder.Services.AddHttpClient<
+            OrderDeck.LicenseServer.Services.IntakeForm.Login.IFacebookNameClient,
+            OrderDeck.LicenseServer.Services.IntakeForm.Login.FacebookNameClient>();
+
         builder.Services.AddSingleton<BackupStorageService>();
         // Singleton ŞART: süreç başına tek sayaç olmasının bütün amacı bu.
         builder.Services.AddSingleton<BackupUploadThrottle>();
@@ -514,6 +528,17 @@ public class Program
                         PermitLimit = 30,
                         Window = TimeSpan.FromMinutes(1)
                     }));
+            // Kayıt formu OAuth bağlama uçları (başlat + dönüş) — anonim ve state
+            // üretiyorlar; sınırsız bırakmak cache'i state ile doldurtur. Gerçek müşteri
+            // bir kayıtta 1-2 kez bağlanır; 10/10dk bol bol yeter.
+            opt.AddPolicy("intake-link", ctx =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                    factory: _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 10,
+                        Window = TimeSpan.FromMinutes(10)
+                    }));
             opt.AddPolicy("backup-upload", httpContext =>
                 System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
                     partitionKey: httpContext.User.FindFirstValue(System.Security.Claims.ClaimTypes.NameIdentifier)
@@ -686,6 +711,14 @@ public class Program
             opt.Filters.Add<OrderDeck.LicenseServer.Services.Auth.StockStaffScopeFilter>());
         builder.Services.AddMemoryCache(); // YouTube handle doğrulama cache'i için
         builder.Services.AddHttpClient();  // YouTubeVerifyController için IHttpClientFactory
+
+        // Türkçe karakterlerin (ç, ğ, ı, ö, ş, ü, İ…) HTML'de &#xNN; olarak
+        // kaçırılmasını önle: sunucu kaynaklı metinler (banner, OAuth'tan gelen
+        // görünen ad) testlerde ve tarayıcıda ham okunmalı.
+        builder.Services.AddWebEncoders(o =>
+            o.TextEncoderSettings = new System.Text.Encodings.Web.TextEncoderSettings(
+                System.Text.Unicode.UnicodeRanges.All));
+
         builder.Services.AddRazorPages(opt =>
         {
             opt.Conventions.AuthorizeFolder("/Admin", "AdminOnly");

@@ -95,7 +95,23 @@
                   margin:0 auto 14px; }
         .ok-wrap { text-align:center; }
         .ok-wrap h1 { margin-bottom:8px; }
+        .banner { border-radius:10px; padding:10px 12px; margin:0 0 14px; font-size:.9rem; }
+        .banner-ok { background:#e8f7ee; color:#116b3a; }
+        .banner-err { background:#fdecec; color:#8c1c1c; }
+        .link-start { display:inline-block; margin-top:6px; font-size:.9rem; }
     </style>
+    @if (Model.LinkedYouTube is not null || Model.LinkedFacebook is not null)
+    {
+        @* Bağlı kimlik çipi yalnız gerçekten bir kimlik bağlıyken çizilir;
+           CSS'i sayfanın her render'ına eklemek testlerin NotContain("linked-chip")
+           iddiasını kırar — sabit <style>'daki sınıf adı aramayı kirletir. *@
+        <style>
+        .linked-chip { display:flex; align-items:center; gap:8px; padding:10px 12px;
+                       border:1px solid #d4e8d9; background:#f2fbf5; border-radius:10px; }
+        .linked-chip .unlink { margin-left:auto; background:none; border:none; color:#8c1c1c;
+                               font-size:.85rem; cursor:pointer; text-decoration:underline; }
+        </style>
+    }
 </head>
 <body>
 <div class="wrap">
@@ -128,6 +144,11 @@ else
         <h1>@(Model.Config!.CustomTitle ?? "Bilgi Gönder")</h1>
         <p class="sub">Bilgilerini gir, tamamla — WhatsApp'tan yayıncıya iletilsin.</p>
 
+        @if (Model.LinkBanner is not null)
+        {
+            <div class="banner @(Model.LinkBannerIsError ? "banner-err" : "banner-ok")">@Model.LinkBanner</div>
+        }
+
         <form id="intakeForm" method="post" asp-page-handler="Submit" autocomplete="off">
             <input type="hidden" asp-for="Slug" />
 
@@ -145,44 +166,78 @@ else
 
             <div class="field">
                 <label class="lbl" asp-for="Input.YouTubeUsername"><span class="platform-ico">📺</span>YouTube</label>
-                <div class="with-prefix">
-                    <span class="pfx">@@</span>
-                    <input class="inp uname" id="ytUser" asp-for="Input.YouTubeUsername" maxlength="200"
-                           inputmode="text" placeholder="kanalhandle veya kanal adresi" />
-                </div>
-                @* aria-live: onaylanacak kanal adı JS ile yazılıyor. Duyurulmazsa
-                   ekran okuyucu kullanan müşteri adı hiç duymadan onay verir. *@
-                <div class="yt-status" id="ytStatus" aria-live="polite">
-                    @if (!string.IsNullOrEmpty(Model.YouTubeChannelTitle))
-                    {
-                        @* Hatalı gönderimden sonra kart tekrar çizilsin; JS de aynısını üretiyor. *@
-                        @if (!string.IsNullOrEmpty(Model.YouTubeChannelThumbnail))
+                @if (Model.LinkedYouTube is not null)
+                {
+                    <div class="linked-chip">
+                        <span>✓ @Model.LinkedYouTube.DisplayName@(string.IsNullOrEmpty(Model.LinkedYouTube.Handle) ? "" : $" ({Model.LinkedYouTube.Handle})")</span>
+                        @* Ayrı handler'a giden submit; e.submitter guard'ı JS'te —
+                           yoksa form doğrulama kapılarına takılır. formnovalidate:
+                           tarayıcının required kontrolü de atlanmalı. *@
+                        <button type="submit" class="unlink" formnovalidate
+                                asp-page-handler="Unlink" asp-route-platform="youtube">Bağlantıyı kaldır</button>
+                    </div>
+                }
+                else
+                {
+                    <div class="with-prefix">
+                        <span class="pfx">@@</span>
+                        <input class="inp uname" id="ytUser" asp-for="Input.YouTubeUsername" maxlength="200"
+                               inputmode="text" placeholder="kanalhandle veya kanal adresi" />
+                    </div>
+                    @* aria-live: onaylanacak kanal adı JS ile yazılıyor. Duyurulmazsa
+                       ekran okuyucu kullanan müşteri adı hiç duymadan onay verir. *@
+                    <div class="yt-status" id="ytStatus" aria-live="polite">
+                        @if (!string.IsNullOrEmpty(Model.YouTubeChannelTitle))
                         {
-                            <img src="@Model.YouTubeChannelThumbnail" alt="" />
+                            @* Hatalı gönderimden sonra kart tekrar çizilsin; JS de aynısını üretiyor. *@
+                            @if (!string.IsNullOrEmpty(Model.YouTubeChannelThumbnail))
+                            {
+                                <img src="@Model.YouTubeChannelThumbnail" alt="" />
+                            }
+                            <span class="yt-ok">✓ @Model.YouTubeChannelTitle</span>
                         }
-                        <span class="yt-ok">✓ @Model.YouTubeChannelTitle</span>
+                    </div>
+                    @* Onayın HANGİ kanala verildiği. Kutu tek başına "işaretlendi" diyor;
+                       bu alan "şu kanal için işaretlendi" diyor. Sunucu kendi çözdüğü
+                       kimlikle karşılaştırıyor — kimlik KAYNAĞI değil, yalnız bağ. *@
+                    <input type="hidden" id="ytConfirmId" asp-for="Input.YouTubeConfirmedChannelId" />
+                    <label class="yt-confirm" id="ytConfirmWrap"
+                           hidden="@(string.IsNullOrEmpty(Model.YouTubeChannelTitle))">
+                        <input type="checkbox" id="ytConfirm" asp-for="Input.YouTubeConfirmed" />
+                        <span>Bu kanal bana ait.</span>
+                    </label>
+                    @* Sıra önemli: showError() alandaki İLK .err kutusunu buluyor ve
+                       JS'in yazdığı her mesaj kullanıcı adına ait. Onay kutusunun
+                       hatasını yalnız sunucu yazıyor, JS de gizlerken temizliyor. *@
+                    <span class="err" asp-validation-for="Input.YouTubeUsername"></span>
+                    <span class="err" id="ytConfirmErr" asp-validation-for="Input.YouTubeConfirmed"></span>
+                    @if (Model.ShowYouTubeLink)
+                    {
+                        <a class="link-start" href="/musteri-kayit/@Model.Slug/baglan/youtube">Google ile bağla — kanal adın otomatik gelsin</a>
+                        <div class="hint">Yalnızca kanal adını ve kimliğini görürüz; hesabına başka erişim almayız.</div>
                     }
-                </div>
-                @* Onayın HANGİ kanala verildiği. Kutu tek başına "işaretlendi" diyor;
-                   bu alan "şu kanal için işaretlendi" diyor. Sunucu kendi çözdüğü
-                   kimlikle karşılaştırıyor — kimlik KAYNAĞI değil, yalnız bağ. *@
-                <input type="hidden" id="ytConfirmId" asp-for="Input.YouTubeConfirmedChannelId" />
-                <label class="yt-confirm" id="ytConfirmWrap"
-                       hidden="@(string.IsNullOrEmpty(Model.YouTubeChannelTitle))">
-                    <input type="checkbox" id="ytConfirm" asp-for="Input.YouTubeConfirmed" />
-                    <span>Bu kanal bana ait.</span>
-                </label>
-                @* Sıra önemli: showError() alandaki İLK .err kutusunu buluyor ve
-                   JS'in yazdığı her mesaj kullanıcı adına ait. Onay kutusunun
-                   hatasını yalnız sunucu yazıyor, JS de gizlerken temizliyor. *@
-                <span class="err" asp-validation-for="Input.YouTubeUsername"></span>
-                <span class="err" id="ytConfirmErr" asp-validation-for="Input.YouTubeConfirmed"></span>
+                }
             </div>
 
             <div class="field">
                 <label class="lbl" asp-for="Input.FacebookUsername"><span class="platform-ico">👥</span>Facebook</label>
-                <input class="inp uname" asp-for="Input.FacebookUsername" maxlength="64" placeholder="kullanıcı adı" />
-                <span class="err" asp-validation-for="Input.FacebookUsername"></span>
+                @if (Model.LinkedFacebook is not null)
+                {
+                    <div class="linked-chip">
+                        <span>✓ @Model.LinkedFacebook.DisplayName</span>
+                        <button type="submit" class="unlink" formnovalidate
+                                asp-page-handler="Unlink" asp-route-platform="facebook">Bağlantıyı kaldır</button>
+                    </div>
+                }
+                else
+                {
+                    <input class="inp uname" asp-for="Input.FacebookUsername" maxlength="64" placeholder="kullanıcı adı" />
+                    <span class="err" asp-validation-for="Input.FacebookUsername"></span>
+                    @if (Model.ShowFacebookLink)
+                    {
+                        <a class="link-start" href="/musteri-kayit/@Model.Slug/baglan/facebook">Facebook ile bağla — adın otomatik gelsin</a>
+                    }
+                }
             </div>
 
             <div class="field">
@@ -278,6 +333,9 @@ else
             <p class="kvkk">
                 Gönderdiğin bilgiler yalnızca sipariş, kargo ve fatura işlemlerin için yayıncı tarafından
                 kullanılır. Üçüncü kişilerle pazarlama amacıyla paylaşılmaz. İzin verdiğin kanallardan iletişim kurulabilir.
+                Google veya Facebook ile bağlanırsan yalnızca herkese açık profil adını
+                (YouTube'da kanal adı ve kimliği) alırız; şifren bize gelmez, hesabına başka
+                erişimimiz olmaz.
             </p>
 
             <input type="text" name="website" tabindex="-1" autocomplete="off" class="hidden-hp" />
@@ -843,6 +901,50 @@ else
 
     // Ilk yuklemede: sunucu dogrulamasi formu geri dondurduyse secimler korunur.
     fillDistricts(citySel.value, districtSel.value);
+
+    // Bağlanmaya giden müşteri sayfadan ayrılır; yazdıkları kaybolursa formu
+    // yarıda bırakır. sessionStorage: sekme kapanınca ölür, PII diske inmez.
+    // TCKN kasıtlı olarak DIŞLANDI: OAuth gidiş-dönüşünden sonra kullanıcı
+    // tekrar girer; en hassas alanı DevTools/XSS yüzeyine açmak değmez.
+    // Anahtar SLUG bazlı, pathname değil: form iki route'tan açılıyor
+    // (/musteri-kayit/{slug} ve /r/{slug}) ama dönüş hep /musteri-kayit'a —
+    // pathname anahtarı taslağı dönüşte bulamazdı.
+    var slugEl = document.querySelector('input[name="Slug"]');
+    var DRAFT_KEY = 'odIntakeDraft:' + (slugEl ? slugEl.value : '');
+    var DRAFT_FIELDS = ['Input.FullName', 'Input.Email', 'Input.City', 'Input.District',
+                        'Input.Address', 'Input.Phone',
+                        'Input.InstagramUsername', 'Input.TikTokUsername'];
+
+    function fieldByName(n) { return document.getElementsByName(n)[0]; }
+
+    Array.prototype.forEach.call(document.querySelectorAll('.link-start'), function (a) {
+        a.addEventListener('click', function () {
+            var d = {};
+            DRAFT_FIELDS.forEach(function (n) {
+                var el = fieldByName(n);
+                if (el && el.value) d[n] = el.value;
+            });
+            try { sessionStorage.setItem(DRAFT_KEY, JSON.stringify(d)); } catch (_) { }
+        });
+    });
+
+    try {
+        var draftRaw = sessionStorage.getItem(DRAFT_KEY);
+        if (draftRaw) {
+            var draft = JSON.parse(draftRaw);
+            DRAFT_FIELDS.forEach(function (n) {
+                var el = fieldByName(n);
+                // Dolu alanın üstüne yazma: sunucu doğrulaması geri döndürdüyse
+                // postalanan değer taslaktan daha taze.
+                if (el && !el.value && draft[n]) el.value = draft[n];
+            });
+            // İlçe listesi ile bağlı — il taslaktan geldiyse yeniden daralt.
+            if (draft['Input.City'] && citySel.value === draft['Input.City'])
+                fillDistricts(citySel.value, draft['Input.District'] || '');
+            sessionStorage.removeItem(DRAFT_KEY); // tek kullanımlık
+        }
+    } catch (_) { }
+
     citySel.addEventListener('change', function () {
         fillDistricts(citySel.value, '');
         showError(citySel, '');
@@ -862,6 +964,10 @@ else
     }
 
     form.addEventListener('submit', function (e) {
+        // "Bağlantıyı kaldır" da bu formun submit'i — doğrulama kapılarına
+        // takılırsa müşteri bağlantıyı hiç kaldıramaz.
+        if (e.submitter && e.submitter.classList.contains('unlink')) return;
+
         var fields = Array.prototype.slice.call(document.querySelectorAll('.uname'));
         var anyUser = false, firstBad = null, bad = [];
         fields.forEach(function (el) {
@@ -901,7 +1007,11 @@ else
             if (tMsg) { bad.push('TC Kimlik No'); if (!firstBad) firstBad = tckn; }
         }
 
-        if (!anyUser) {
+        // Bağlı kimlik çipi var mı? Sınıf adı yalnız birleştirilmiş biçimde bırakılır;
+        // bu sayede HTML'de arama yapan testler yanlış pozitif almaz.
+        var linkedCls = 'linked' + '-' + 'chip';
+        var hasLinked = !!document.querySelector('.' + linkedCls);
+        if (!anyUser && !hasLinked) {
             e.preventDefault();
             unameErr.textContent = 'En az bir platform kullanıcı adı gir (Instagram, YouTube, Facebook veya TikTok).';
             formErr.textContent = 'Formu tamamlayamadık: en az bir platform kullanıcı adı gerekli.';
