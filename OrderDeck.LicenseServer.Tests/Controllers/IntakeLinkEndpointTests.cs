@@ -103,9 +103,8 @@ public sealed class IntakeLinkEndpointTests : IClassFixture<IntakeLinkFactory>
         resp.Headers.Location!.ToString().Should().Be($"/musteri-kayit/{slug}?baglanti=ok");
         _factory.Google.Codes.Should().Contain("gcode-1");
 
-        // Task 7'de açılacak
-        // var html = await (await client.GetAsync($"/musteri-kayit/{slug}")).Content.ReadAsStringAsync();
-        // html.Should().Contain("Bağlı Kanal");
+        var html = await (await client.GetAsync($"/musteri-kayit/{slug}")).Content.ReadAsStringAsync();
+        html.Should().Contain("Bağlı Kanal");
     }
 
     [Fact]
@@ -210,9 +209,88 @@ public sealed class IntakeLinkEndpointTests : IClassFixture<IntakeLinkFactory>
         var resp = await client.GetAsync($"/musteri-kayit/baglanti-donusu?state={state}&code=fbcode");
 
         resp.Headers.Location!.ToString().Should().Be($"/musteri-kayit/{slug}?baglanti=ok");
-        // Task 7'de açılacak
-        // var html = await (await client.GetAsync($"/musteri-kayit/{slug}")).Content.ReadAsStringAsync();
-        // html.Should().Contain("Musa Sevinç");
+        var html = await (await client.GetAsync($"/musteri-kayit/{slug}")).Content.ReadAsStringAsync();
+        html.Should().Contain("Musa Sevinç");
+    }
+
+    /// <summary>Bağlama akışını sonuna kadar koşturur: start → callback.
+    /// Dönen client'ın çerezinde nonce, store'da kimlik var.</summary>
+    private async Task<(HttpClient Client, string Slug)> LinkAsync(
+        string platform, IntakeLoginResult result)
+    {
+        if (platform == "youtube") _factory.Google.Result = result;
+        else _factory.Facebook.Result = result;
+        var slug = await SeedSlugAsync();
+        var client = NewClient();
+        var startResp = await client.GetAsync($"/musteri-kayit/{slug}/baglan/{platform}");
+        await client.GetAsync($"/musteri-kayit/baglanti-donusu?state={StateFrom(startResp)}&code=c");
+        return (client, slug);
+    }
+
+    [Fact]
+    public async Task Bagli_youtube_chip_cizer_input_gizler()
+    {
+        var (client, slug) = await LinkAsync("youtube", new IntakeLoginResult(true, null,
+            new IntakeLinkedIdentity("Bilal Kanal", "@bilalkanal", "UCbagli0001")));
+
+        var html = await (await client.GetAsync($"/musteri-kayit/{slug}?baglanti=ok"))
+            .Content.ReadAsStringAsync();
+
+        html.Should().Contain("linked-chip");
+        html.Should().Contain("Bilal Kanal");
+        html.Should().Contain("Hesabın bağlandı");    // ok banner'ı
+        html.Should().NotContain("id=\"ytUser\"");    // elle giriş kutusu çizilmedi
+    }
+
+    [Fact]
+    public async Task Ok_banneri_kimlik_yoksa_cizilmez()
+    {
+        // ?baglanti=ok elle de yazılabilir — kimliksizken "bağlandı" diye
+        // yalan söylemek müşteriyi boş kayda götürür.
+        var slug = await SeedSlugAsync();
+        var html = await (await NewClient().GetAsync($"/musteri-kayit/{slug}?baglanti=ok"))
+            .Content.ReadAsStringAsync();
+        html.Should().NotContain("Hesabın bağlandı");
+    }
+
+    [Fact]
+    public async Task Kanalyok_banneri_cizilir()
+    {
+        var slug = await SeedSlugAsync();
+        var html = await (await NewClient().GetAsync($"/musteri-kayit/{slug}?baglanti=kanalyok"))
+            .Content.ReadAsStringAsync();
+        html.Should().Contain("YouTube kanalı yok");
+    }
+
+    [Fact]
+    public async Task Unlink_kimligi_siler_ve_kutuyu_geri_getirir()
+    {
+        var (client, slug) = await LinkAsync("youtube", new IntakeLoginResult(true, null,
+            new IntakeLinkedIdentity("Bilal Kanal", "@bilalkanal", "UCbagli0002")));
+        var html = await (await client.GetAsync($"/musteri-kayit/{slug}")).Content.ReadAsStringAsync();
+        var token = AdminLoginHelper.ExtractAntiForgeryToken(html);
+
+        var resp = await client.PostAsync($"/musteri-kayit/{slug}?handler=Unlink&platform=youtube",
+            new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["__RequestVerificationToken"] = token,
+                ["Slug"] = slug
+            }));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        var after = await (await client.GetAsync($"/musteri-kayit/{slug}")).Content.ReadAsStringAsync();
+        after.Should().NotContain("linked-chip");
+        after.Should().Contain("id=\"ytUser\"");
+    }
+
+    [Fact]
+    public async Task Baglama_linkleri_bayrak_acikken_cizilir()
+    {
+        var slug = await SeedSlugAsync();
+        var html = await (await NewClient().GetAsync($"/musteri-kayit/{slug}"))
+            .Content.ReadAsStringAsync();
+        html.Should().Contain($"/musteri-kayit/{slug}/baglan/youtube");
+        html.Should().Contain($"/musteri-kayit/{slug}/baglan/facebook");
     }
 
     private async Task<string> SeedSlugAsync()
@@ -330,5 +408,51 @@ public sealed class IntakeLinkDisabledTests : IClassFixture<IntakeLinkDisabledFa
             .StatusCode.Should().Be(HttpStatusCode.NotFound);
         (await client.GetAsync("/musteri-kayit/herhangi/baglan/facebook"))
             .StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task Bayrak_kapaliysa_formda_baglama_linki_yok()
+    {
+        string slug;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var customer = new Customer
+            {
+                Id = Guid.NewGuid(),
+                Email = $"kapali-{Guid.NewGuid():N}@x",
+                Name = "Kapali",
+                PasswordHash = "x",
+                CreatedAt = DateTimeOffset.UtcNow,
+                EmailConfirmedAt = DateTimeOffset.UtcNow
+            };
+            db.Customers.Add(customer);
+            db.Licenses.Add(new License
+            {
+                Id = Guid.NewGuid(),
+                LicenseKey = "LDK-KPL-" + Guid.NewGuid().ToString("N"),
+                CustomerId = customer.Id,
+                SkuCode = "STD",
+                ActivationSlots = 1,
+                IssuedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(30)
+            });
+            slug = $"k-{Guid.NewGuid():N}"[..10];
+            db.IntakeFormConfigs.Add(new IntakeFormConfig
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customer.Id,
+                Slug = slug,
+                WhatsAppPhone = "+905551234567",
+                IsActive = true,
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var html = await (await _factory.CreateClient().GetAsync($"/musteri-kayit/{slug}"))
+            .Content.ReadAsStringAsync();
+        html.Should().NotContain("/baglan/");
     }
 }

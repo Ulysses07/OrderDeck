@@ -711,6 +711,14 @@ public class Program
             opt.Filters.Add<OrderDeck.LicenseServer.Services.Auth.StockStaffScopeFilter>());
         builder.Services.AddMemoryCache(); // YouTube handle doğrulama cache'i için
         builder.Services.AddHttpClient();  // YouTubeVerifyController için IHttpClientFactory
+
+        // Türkçe karakterlerin (ç, ğ, ı, ö, ş, ü, İ…) HTML'de &#xNN; olarak
+        // kaçırılmasını önle: sunucu kaynaklı metinler (banner, OAuth'tan gelen
+        // görünen ad) testlerde ve tarayıcıda ham okunmalı.
+        builder.Services.AddWebEncoders(o =>
+            o.TextEncoderSettings = new System.Text.Encodings.Web.TextEncoderSettings(
+                System.Text.Unicode.UnicodeRanges.All));
+
         builder.Services.AddRazorPages(opt =>
         {
             opt.Conventions.AuthorizeFolder("/Admin", "AdminOnly");

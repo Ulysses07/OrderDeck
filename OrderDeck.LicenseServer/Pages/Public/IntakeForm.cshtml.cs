@@ -1,6 +1,10 @@
 using System.ComponentModel.DataAnnotations;
+using Microsoft.Extensions.Options;
+using OrderDeck.LicenseServer.Controllers;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Facebook;
 using OrderDeck.LicenseServer.Services.IntakeForm;
+using OrderDeck.LicenseServer.Services.IntakeForm.Login;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.AspNetCore.RateLimiting;
@@ -18,17 +22,26 @@ public class IntakeFormModel : PageModel
     private readonly WhatsAppLinkBuilder _linkBuilder;
     private readonly ILogger<IntakeFormModel> _log;
     private readonly IYouTubeChannelResolver _youTube;
+    private readonly IntakeLinkStore _linkStore;
+    private readonly IOptions<IntakeLoginOptions> _loginOptions;
+    private readonly IOptions<FacebookOptions> _facebookOptions;
 
     public IntakeFormModel(
         IntakeFormService service,
         WhatsAppLinkBuilder linkBuilder,
         ILogger<IntakeFormModel> log,
-        IYouTubeChannelResolver youTube)
+        IYouTubeChannelResolver youTube,
+        IntakeLinkStore linkStore,
+        IOptions<IntakeLoginOptions> loginOptions,
+        IOptions<FacebookOptions> facebookOptions)
     {
         _service = service;
         _linkBuilder = linkBuilder;
         _log = log;
         _youTube = youTube;
+        _linkStore = linkStore;
+        _loginOptions = loginOptions;
+        _facebookOptions = facebookOptions;
     }
 
     [BindProperty(SupportsGet = true)]
@@ -42,6 +55,22 @@ public class IntakeFormModel : PageModel
     // Hatalı gönderimden sonra kanal kartını tekrar çizmek için. Kalıcı değil.
     public string? YouTubeChannelTitle { get; private set; }
     public string? YouTubeChannelThumbnail { get; private set; }
+
+    // Faz 2 — OAuth ile bağlanmış kimlikler. Çerezdeki nonce üzerinden
+    // sunucunun KENDİ kaydından okunur; istemciden kimlik kabul edilmez.
+    public IntakeLinkedIdentity? LinkedYouTube { get; private set; }
+    public IntakeLinkedIdentity? LinkedFacebook { get; private set; }
+
+    // Dönüş banner'ı. Metin SABİT koddan seçilir; query'deki serbest
+    // metin ASLA ekrana yazılmaz (XSS).
+    public string? LinkBanner { get; private set; }
+    public bool LinkBannerIsError { get; private set; }
+
+    // Link yalnız özellik gerçekten çalışır durumdayken çizilir — 404 veren
+    // uca görünür link koymak müşteriyi çıkmaza sokar.
+    public bool ShowYouTubeLink => _loginOptions.Value.YouTubeLoginReady;
+    public bool ShowFacebookLink =>
+        _loginOptions.Value.FacebookEnabled && _facebookOptions.Value.IsConfigured;
 
     // Kayıt alındıktan sonraki onay ekranını süren iki değer. POST doğrudan
     // WhatsApp'a 302 dönmüyor; kendi sayfasına dönüyor ve geçiş orada JS ile
@@ -151,6 +180,19 @@ public class IntakeFormModel : PageModel
     {
         Config = await _service.GetActiveBySlugAsync(Slug, ct);
         if (Config is null) return StatusCode(StatusCodes.Status410Gone);
+        LoadLinkedIdentities();
+
+        // "ok" yalnız kimlik GERÇEKTEN varsa çizilir: kod elle URL'e yazılmış
+        // ya da kimliğin 30 dakikası dolmuş olabilir.
+        (LinkBanner, LinkBannerIsError) = Request.Query["baglanti"].ToString() switch
+        {
+            "ok" when LinkedYouTube is not null || LinkedFacebook is not null
+                => ("Hesabın bağlandı. Kalan bilgileri doldurup formu gönder.", false),
+            "iptal" => ("Bağlantı iptal edildi. İstersen kullanıcı adını elle yazabilirsin.", true),
+            "kanalyok" => ("Bu Google hesabında YouTube kanalı yok. Kanalın olan hesabı seç.", true),
+            "saglayici" => ("Bağlantı sırasında bir sorun oldu. Tekrar dene ya da kullanıcı adını elle yaz.", true),
+            _ => (null, false)
+        };
         return Page();
     }
 
@@ -406,6 +448,30 @@ public class IntakeFormModel : PageModel
         var error = HandleValidator.Validate(platform, handle);
         if (error is not null) ModelState.AddModelError(key, error);
         return (handle, channelId);
+    }
+
+    /// <summary>
+    /// Unlink de bu sayfaya POST'lanır (ayrı controller'a değil): anti-forgery
+    /// token'ı zaten formda ve dönüş adresi Request.Path ile geldiği route'a
+    /// (/musteri-kayit/{slug} veya eski /r/{slug}) gider.
+    /// </summary>
+    public async Task<IActionResult> OnPostUnlinkAsync(string platform, CancellationToken ct)
+    {
+        Config = await _service.GetActiveBySlugAsync(Slug, ct);
+        if (Config is null) return StatusCode(StatusCodes.Status410Gone);
+
+        var nonce = Request.Cookies[IntakeLinkController.CookieName];
+        if (!string.IsNullOrEmpty(nonce) && platform is "youtube" or "facebook")
+            _linkStore.RemoveIdentity(nonce, platform);
+        return LocalRedirect(Request.Path.Value ?? $"/musteri-kayit/{Slug}");
+    }
+
+    private void LoadLinkedIdentities()
+    {
+        var nonce = Request.Cookies[IntakeLinkController.CookieName];
+        if (string.IsNullOrEmpty(nonce)) return;
+        LinkedYouTube = _linkStore.GetIdentity(nonce, "youtube");
+        LinkedFacebook = _linkStore.GetIdentity(nonce, "facebook");
     }
 
     /// <summary>Trims and normalizes empty/whitespace input to null.</summary>
