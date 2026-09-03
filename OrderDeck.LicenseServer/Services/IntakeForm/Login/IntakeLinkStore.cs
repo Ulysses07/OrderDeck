@@ -45,6 +45,9 @@ public sealed class IntakeLinkStore
         var key = "ils:" + token;
         if (!_cache.TryGetValue(key, out IntakeLinkState? state) || state is null)
             return null;
+        // TryGetValue + Remove atomik değil — teorik TOCTOU penceresi var. Kabul
+        // edilebilir: tek süreç, tek IMemoryCache, sağlayıcılar paralel callback
+        // göndermez, 256-bit token tekrarı olasılığı sıfıra eşdeğer.
         _cache.Remove(key); // tek kullanımlık — tekrar oynatma burada ölür
         return state;
     }

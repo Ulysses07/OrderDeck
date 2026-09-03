@@ -147,7 +147,10 @@ public sealed class IntakeLinkController : ControllerBase
         {
             _log.LogWarning("Hesap bağlama başarısız — platform={Platform}, kod={Kod}",
                 st.Platform, result.ErrorCode);
-            return LocalRedirect(st.ReturnPath + "?baglanti=" + (result.ErrorCode ?? "saglayici"));
+            // Hata kodu SABİT kümeden gelir; istemci sınıfları başka bir şey döndürürse
+            // (örn. sağlayıcı gövdesinden sızan metin) sorgu dizisine yansıtmayız.
+            var kod = result.ErrorCode is "kanalyok" ? "kanalyok" : "saglayici";
+            return LocalRedirect(st.ReturnPath + "?baglanti=" + kod);
         }
 
         _store.SaveIdentity(nonce, st.Platform, result.Identity);

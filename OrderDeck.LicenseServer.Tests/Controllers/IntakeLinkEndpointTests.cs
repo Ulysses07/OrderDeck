@@ -181,6 +181,23 @@ public sealed class IntakeLinkEndpointTests : IClassFixture<IntakeLinkFactory>
     }
 
     [Fact]
+    public async Task Dustman_hata_kodu_sorgu_dizisine_yansimaz()
+    {
+        // Sağlayıcıdan sızan düşman bir ErrorCode (& veya # içeren) hiçbir zaman
+        // doğrudan yansıtılmamalı; sabit "saglayici" koduna düşmeli.
+        _factory.Google.Result = new IntakeLoginResult(false,
+            $"kotu-{Guid.NewGuid():N}&admin=1", null);
+        var (client, slug, state) = await StartYouTubeAsync();
+
+        var resp = await client.GetAsync($"/musteri-kayit/baglanti-donusu?state={state}&code=c");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        var location = resp.Headers.Location!.ToString();
+        location.Should().Be($"/musteri-kayit/{slug}?baglanti=saglayici");
+        location.Should().NotContain("admin");
+    }
+
+    [Fact]
     public async Task Facebook_donusu_kimligi_kaydeder()
     {
         _factory.Facebook.Result = new IntakeLoginResult(true, null,
