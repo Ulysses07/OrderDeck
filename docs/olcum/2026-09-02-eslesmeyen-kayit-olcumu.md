@@ -96,7 +96,18 @@ olabilir. Elle bakılır.
 
 | Tarih | Platform | Toplam | Hareketsiz | Oran |
 |---|---|---|---|---|
-| | | | | |
+| 2026-09-03 | instagram | 1195 | 590 | 49.4% |
+| 2026-09-03 | youtube | 709 | 326 | 46.0% |
+| 2026-09-03 | facebook | 96 | 76 | 79.2% |
+| 2026-09-03 | tiktok | 23 | 22 | 95.7% |
+
+Sorgu 2 (YouTube handle/channelId ayrışması): **41** satır ayrı kaldı.
+
+Sorgu 3 (şüpheli kısa/uzun handle çifti): **72** eşleşen çift, tamamı Instagram.
+Büyük çoğunluğu büyük/küçük harf varyasyonu (`Ahmet` / `ahmet`) — gerçek
+"test1234 yerine test" hatasına uyan az sayıda satır var (`Musa`→`musaa.sevinc`,
+`Test`→`testkullanici`, `Yakup`→`yakupmusellim`, `ahmet`→üç farklı hesap).
+Liste kanıt değil ipucu; elle bakılmadı.
 
 Ölçüm alındığında tablo doldurulur; Faz 1 yayına girdikten bir süre sonra aynı
 sorgular tekrar çalıştırılıp karşılaştırılır.
