@@ -257,6 +257,9 @@ public class Program
         builder.Services.AddHttpClient<
             OrderDeck.LicenseServer.Services.IntakeForm.Login.IGoogleChannelClient,
             OrderDeck.LicenseServer.Services.IntakeForm.Login.GoogleChannelClient>();
+        builder.Services.AddHttpClient<
+            OrderDeck.LicenseServer.Services.IntakeForm.Login.IFacebookNameClient,
+            OrderDeck.LicenseServer.Services.IntakeForm.Login.FacebookNameClient>();
 
         builder.Services.AddSingleton<BackupStorageService>();
         // Singleton ŞART: süreç başına tek sayaç olmasının bütün amacı bu.
