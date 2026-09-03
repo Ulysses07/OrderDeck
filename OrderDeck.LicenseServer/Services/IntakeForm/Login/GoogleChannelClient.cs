@@ -98,9 +98,10 @@ public sealed class GoogleChannelClient : IGoogleChannelClient
                 return new(false, "kanalyok", null);
             }
 
-            var channelId = items[0].TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
+            var first = items[0];
+            var channelId = first.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
             string? title = null, handle = null;
-            if (items[0].TryGetProperty("snippet", out var sn))
+            if (first.TryGetProperty("snippet", out var sn))
             {
                 title = sn.TryGetProperty("title", out var t) ? t.GetString() : null;
                 handle = sn.TryGetProperty("customUrl", out var cu) ? cu.GetString() : null;
