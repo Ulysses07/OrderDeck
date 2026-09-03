@@ -210,14 +210,29 @@ public class IntakeFormModel : PageModel
         Config = await _service.GetActiveBySlugAsync(Slug, ct);
         if (Config is null) return StatusCode(StatusCodes.Status410Gone);
 
+        LoadLinkedIdentities();
+
         // Her platform için: adres→kullanıcı adı çevirisi, çeviri hatası,
         // normalize, kural doğrulaması — dört adım tek metodda, dört kutu
         // aynı sırayı izliyor. Facebook bilerek dahil: parser kısa devre
         // yapıp girdiyi olduğu gibi geçiriyor, davranış değişmez.
-        var (yt, channelIdFromUrl) = Resolve("Input.YouTubeUsername", HandleValidator.YouTube, Input.YouTubeUsername);
+        var (yt, channelIdFromUrl) = LinkedYouTube is null
+            ? Resolve("Input.YouTubeUsername", HandleValidator.YouTube, Input.YouTubeUsername)
+            : (null, null);
         var (ig, _) = Resolve("Input.InstagramUsername", HandleValidator.Instagram, Input.InstagramUsername);
-        var (fb, _) = Resolve("Input.FacebookUsername", HandleValidator.Facebook, Input.FacebookUsername);
+        var (fb, _) = LinkedFacebook is null
+            ? Resolve("Input.FacebookUsername", HandleValidator.Facebook, Input.FacebookUsername)
+            : (null, null);
         var (tt, _) = Resolve("Input.TikTokUsername", HandleValidator.TikTok, Input.TikTokUsername);
+
+        // Facebook: OAuth'tan gelen GÖRÜNEN ad. HandleValidator BYPASS bilinçli —
+        // görünen ad boşluk/Türkçe karakter içerir ve chat satırı da görünen adla
+        // düştüğü için eşleşme tam bu değer üzerinden.
+        if (LinkedFacebook is not null)
+        {
+            var fbName = LinkedFacebook.DisplayName.Trim();
+            fb = fbName.Length > 64 ? fbName[..64] : fbName;
+        }
 
         // E-posta: dış boşluk + alan adı normalize edilir, sonra biçim ve
         // yaygın alan adı yazım hatası kontrolü. Hatalıysa kayıt oluşmaz.
@@ -256,7 +271,8 @@ public class IntakeFormModel : PageModel
         }
 
         // En az bir platform kullanıcı adı zorunlu.
-        if (yt is null && channelIdFromUrl is null && ig is null && fb is null && tt is null)
+        if (LinkedYouTube is null && LinkedFacebook is null &&
+            yt is null && channelIdFromUrl is null && ig is null && fb is null && tt is null)
             ModelState.AddModelError("Input.InstagramUsername",
                 "En az bir platform kullanıcı adı girin (Instagram, YouTube, Facebook veya TikTok).");
 
@@ -271,7 +287,16 @@ public class IntakeFormModel : PageModel
         var fromUrl = channelIdFromUrl is not null;
         YouTubeChannel? ch = null;
 
-        if (fromUrl)
+        if (LinkedYouTube is not null)
+        {
+            resolvedChannelId = LinkedYouTube.ChannelId;
+            // Handle aynı normalize/doğrulama kapısından geçer (mevcut customUrl
+            // kuralıyla bire bir); geçemezse sessizce boş kalır.
+            var linkedHandle = HandleValidator.Normalize(LinkedYouTube.Handle);
+            if (HandleValidator.Validate(HandleValidator.YouTube, linkedHandle) is null)
+                yt = linkedHandle;
+        }
+        else if (fromUrl)
             ch = await _youTube.ResolveChannelIdAsync(channelIdFromUrl, ct);
         else if (yt is not null && HandleValidator.Validate(HandleValidator.YouTube, yt) is null)
             ch = await _youTube.ResolveHandleAsync(yt, ct);
@@ -372,7 +397,7 @@ public class IntakeFormModel : PageModel
         }
 
         // Eski WPF sync'i için legacy Username = ilk dolu platform adı.
-        var legacyUsername = yt ?? ig ?? fb ?? tt ?? channelIdFromUrl ?? "";
+        var legacyUsername = yt ?? ig ?? fb ?? tt ?? channelIdFromUrl ?? resolvedChannelId ?? "";
 
         await _service.SaveSubmissionAsync(
             Config.Id,
@@ -392,6 +417,15 @@ public class IntakeFormModel : PageModel
             youTubeChannelId: resolvedChannelId,
             city: Input.City,
             district: Input.District);
+
+        // Kimlik tek gönderimlik: bırakılsaydı aynı tarayıcıdan ikinci kayıt
+        // (örn. aile üyesi) öncekinin kanalıyla açılırdı.
+        var linkNonce = Request.Cookies[IntakeLinkController.CookieName];
+        if (!string.IsNullOrEmpty(linkNonce))
+        {
+            _linkStore.RemoveIdentity(linkNonce, "youtube");
+            _linkStore.RemoveIdentity(linkNonce, "facebook");
+        }
 
         // Yayıncının numarası tanımsızsa link kurmuyoruz: `wa.me/?text=...`
         // WhatsApp'ta hiçbir sohbet açmıyor, müşteri de kaydının geçtiğini
