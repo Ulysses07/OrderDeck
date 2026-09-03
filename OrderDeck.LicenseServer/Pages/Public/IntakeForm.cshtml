@@ -163,6 +163,10 @@ else
                         <span class="yt-ok">✓ @Model.YouTubeChannelTitle</span>
                     }
                 </div>
+                @* Onayın HANGİ kanala verildiği. Kutu tek başına "işaretlendi" diyor;
+                   bu alan "şu kanal için işaretlendi" diyor. Sunucu kendi çözdüğü
+                   kimlikle karşılaştırıyor — kimlik KAYNAĞI değil, yalnız bağ. *@
+                <input type="hidden" id="ytConfirmId" asp-for="Input.YouTubeConfirmedChannelId" />
                 <label class="yt-confirm" id="ytConfirmWrap"
                        hidden="@(string.IsNullOrEmpty(Model.YouTubeChannelTitle))">
                     <input type="checkbox" id="ytConfirm" asp-for="Input.YouTubeConfirmed" />
@@ -525,12 +529,23 @@ else
         return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
 
     var ytConfirmErr = document.getElementById('ytConfirmErr');
+    // Onayın hangi kanala verildiğini taşıyan gizli alan. Sunucu bunu KENDİ
+    // çözdüğü kimlikle karşılaştırıyor; tutmuyorsa onayı saymıyor. Yani bu alan
+    // güncel tutulmazsa sonuç "kayıt yanlış kanala bağlanır" değil, "müşteriden
+    // onayı tekrar istenir" olur — bozulursa sessiz değil, gürültülü.
+    var ytConfirmId = document.getElementById('ytConfirmId');
+
+    function setConfirmId(v) { if (ytConfirmId) ytConfirmId.value = v || ''; }
 
     function showConfirm(on) {
         if (!ytConfirmWrap) return;
         ytConfirmWrap.hidden = !on;
         if (!on) {
             if (ytConfirm) ytConfirm.checked = false;
+            // Kutuyla birlikte kimlik de düşer: ikisi ayrışırsa "işaretsiz kutu +
+            // dolu kimlik" gibi anlamsız bir hâl kalır ve sonraki gönderimde
+            // müşterinin artık görmediği bir kanal onaylanmış sayılabilir.
+            setConfirmId('');
             // Sunucudan gelen "onayla" hatası kutu gizlenince ekranda kalmasın.
             if (ytConfirmErr) ytConfirmErr.textContent = '';
         }
@@ -568,6 +583,12 @@ else
             ytState = lastResult.state;
             setStatus(lastResult.html);
             showConfirm(lastResult.confirm);
+            // Kimlik de geri gelmeli: showConfirm(true) yalnız kutuyu açıyor,
+            // gizli alanı 'input' işleyicisi az önce boşalttı. Kurmazsak müşteri
+            // kutuyu işaretler, sunucu "onaylanan kanal boş" görüp yeniden onay
+            // ister ve müşteri işaretli kutuya bakarak neyin yanlış olduğunu
+            // anlayamaz.
+            if (lastResult.confirm) setConfirmId(lastResult.cid);
             return;
         }
         // Sonuç yoksa (istek uçuşta ya da bayat diye düşürüldü) yeniden sor.
@@ -607,7 +628,10 @@ else
                 if (!d || d.available === false) { unavailable(); return; }
                 if (d.exists) {
                     var img = d.thumbnail ? '<img src="' + esc(d.thumbnail) + '" alt="">' : '';
-                    apply('ok', img + '<span class="yt-ok">\u2713 ' + esc(d.title || 'Kanal bulundu') + '</span>', true);
+                    // Dördüncü argüman: kartta GÖRÜNEN kanalın kimliği. Sunucunun
+                    // gönderimde çözeceği değerle aynı — ikisi de aynı API yanıtı.
+                    apply('ok', img + '<span class="yt-ok">\u2713 ' + esc(d.title || 'Kanal bulundu') + '</span>',
+                        true, d.channelId);
                 } else {
                     apply('missing',
                         '<span class="yt-warn">\u26a0 ' + (ytFromUrl
@@ -630,6 +654,9 @@ else
             if (keepConfirm) {
                 ytState = 'unavailable'; lastResult = null;
                 setStatus(prevStatus);   // spinner'ı kaldır, sunucunun kartını geri koy
+                // Gizli kimliğe de dokunmuyoruz: ekranda duran kart sunucunun
+                // çizdiği kart, alandaki kimlik de o karta ait. Temizlemek
+                // müşteriyi "kutu görünür ama onay hiç geçmiyor" turuna sokardı.
                 return;
             }
             apply('unavailable', '', false);
@@ -650,11 +677,14 @@ else
         function stale() { return yt.value !== h || h !== lastChecked; }
 
         // Sonucu hem ekrana yazar hem önbelleğe alır; ikisi ayrışamasın diye tek yerde.
-        function apply(state, html, withConfirm) {
+        // cid: onaylanacak kanalın kimliği. Sıra önemli — showConfirm(false) gizli
+        // alanı temizliyor, dolduran satır ondan SONRA gelmeli.
+        function apply(state, html, withConfirm, cid) {
             ytState = state;
             setStatus(html);
             showConfirm(withConfirm);
-            lastResult = { state: state, html: html, confirm: withConfirm };
+            if (withConfirm) setConfirmId(cid);
+            lastResult = { state: state, html: html, confirm: withConfirm, cid: cid || '' };
         }
     }
 

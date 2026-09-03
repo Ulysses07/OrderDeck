@@ -81,11 +81,31 @@ public class IntakeFormModel : PageModel
         /// <summary>
         /// "Bu benim kanalım" onayı. Kanal bulunduğunda ZORUNLU.
         ///
-        /// channelId burada YOK ve bilerek yok: istemciden gelen kimliğe
-        /// güvenilmiyor, sunucu handle'ı kendisi çözüyor. Alanı postalamaya
-        /// devam etmek "bu değer kullanılıyor" izlenimi verirdi.
+        /// Tek başına yetmez: bu bayrak "bir kutu işaretlendi" diyor, "HANGİ
+        /// kanal onaylandı" demiyor. Bağı <see cref="YouTubeConfirmedChannelId"/>
+        /// kuruyor; ikisi birlikte okunur.
         /// </summary>
         public bool YouTubeConfirmed { get; set; }
+
+        /// <summary>
+        /// Onayın verildiği kanalın kimliği — müşterinin ekranda GÖRDÜĞÜ kanal.
+        /// Sunucu kendi çözdüğü kimlikle karşılaştırır; tutmazsa onay sayılmaz.
+        ///
+        /// Neden gerekli: JS kapalıyken şu tur mümkün — müşteri A kanalının kartını
+        /// görüp kutuyu işaretler, aynı gönderimde kullanıcı adını B yapar. Sunucu
+        /// B'yi çözer, <c>Confirmed=true</c> görür ve müşterinin HİÇ GÖRMEDİĞİ
+        /// kanalı onaylanmış sayar. Özelliğin tek koruması "gördüğün adı onayla"
+        /// bağı; bu alan olmadan o bağ kopuyor.
+        ///
+        /// Kimlik KAYNAĞI DEĞİL: kayda yazılan değer yine API'nin döndürdüğü
+        /// <c>ch.ChannelId</c>. İstemci buraya ne yazarsa yazsın yalnız sunucunun
+        /// kendi çözdüğü kimliğe EŞİTSE işe yarıyor — yeni bir güven yüzeyi açmaz.
+        ///
+        /// Bilerek [StringLength] YOK: uzunluk hatası için ekranda hata kutusu
+        /// olmadığından sayfa sessizce geri dönerdi. Uyuşmayan değer zaten
+        /// "kanalı onayla" hatasına düşüyor — müşterinin okuyup yapabileceği bir şey.
+        /// </summary>
+        public string? YouTubeConfirmedChannelId { get; set; }
 
         [Required(ErrorMessage = "Ad Soyad gerekli")]
         [StringLength(200, ErrorMessage = "En fazla 200 karakter")]
@@ -250,8 +270,26 @@ public class IntakeFormModel : PageModel
                 _log.LogWarning("YouTube kanalı bulundu ama kimlik gelmedi — girdi={Girdi}", channelIdFromUrl ?? yt);
                 resolvedChannelId = channelIdFromUrl;
             }
-            else if (!Input.YouTubeConfirmed)
+            // Onay, ONAYLANAN KANALA bağlı olmalı. Kutunun kendisi yalnız "bir kutu
+            // işaretlendi" diyor. JS açıkken kullanıcı adına dokunulunca kutu
+            // sıfırlanıyor, ama JS kapalıyken şu tur mümkün: müşteri A kanalının
+            // kartını görüp kutuyu işaretler ve AYNI gönderimde kullanıcı adını B
+            // yapar — sunucu B'yi çözer, Confirmed=true görür ve müşterinin hiç
+            // görmediği kanalı onaylanmış sayar. Karşılaştırma bunu kapatıyor.
+            // Ordinal: kanal kimlikleri büyük/küçük harf duyarlı.
+            else if (!Input.YouTubeConfirmed ||
+                     !string.Equals(Input.YouTubeConfirmedChannelId, ch.ChannelId, StringComparison.Ordinal))
             {
+                // Sayfa yeniden çizilirken ÇÖZÜLEN kanalın kartı görünecek; onay da
+                // o kanal için yeniden istenmeli. Tag helper postalanan değeri
+                // modeldekine tercih ettiği için ModelState girdilerini temizlemek
+                // şart: yoksa kutu işaretli, gizli alan eski kimlikle gelir ve
+                // müşteri görmediği kanalı tek tıkla onaylamış olur.
+                ModelState.Remove("Input.YouTubeConfirmed");
+                ModelState.Remove("Input.YouTubeConfirmedChannelId");
+                Input.YouTubeConfirmed = false;
+                Input.YouTubeConfirmedChannelId = ch.ChannelId;
+
                 ModelState.AddModelError("Input.YouTubeConfirmed",
                     ch.Title is { Length: > 0 }
                         ? $"\"{ch.Title}\" kanalının sana ait olduğunu onayla."

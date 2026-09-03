@@ -143,6 +143,16 @@ public sealed class IntakeFormYouTubeIdentityTests : IClassFixture<YouTubeIdenti
         var resp = await client.PostAsync($"/r/{slug}?handler=Submit", Form(token, slug,
             ("Input.YouTubeUsername", "orderdeck"),
             ("Input.YouTubeConfirmed", "true"),
+            ("Input.YouTubeConfirmedChannelId", RealChannelId),
+            // Modelde KARŞILIĞI OLMAYAN bir alan; bilerek burada. Formun bir
+            // zamanlar postaladığı channelId alanının adı buydu ve eski bir
+            // istemci (ya da onu taklit eden biri) hâlâ gönderebilir. Sessizce
+            // düşmesi gerekiyor.
+            //
+            // Onaylanan kimlik alanıyla KARIŞTIRMA: o alan okunuyor ama yalnız
+            // karşılaştırma için — kaydedilen kimliğin kaynağı hiçbir zaman
+            // istemci değil. Uydurma bir onay kimliğinin ne yaptığını
+            // Onay_baska_kanala_verilmisse_gonderim_engellenir çiviliyor.
             ("Input.YouTubeChannelId", "UCzzzzzzzzzzzzzzzzzzzzzz")));
 
         resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
@@ -279,7 +289,10 @@ public sealed class IntakeFormYouTubeIdentityTests : IClassFixture<YouTubeIdenti
 
         var resp = await client.PostAsync($"/r/{slug}?handler=Submit", Form(token, slug,
             ("Input.YouTubeUsername", $"https://www.youtube.com/channel/{PastedChannelId}"),
-            ("Input.YouTubeConfirmed", "true")));
+            ("Input.YouTubeConfirmed", "true"),
+            // Onay YAPIŞTIRILAN kimliğe değil, API'nin döndürdüğüne verilir:
+            // müşterinin ekranda gördüğü kart o yanıttan çizildi.
+            ("Input.YouTubeConfirmedChannelId", CanonicalChannelId)));
 
         resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
         _factory.Resolver.Calls.Skip(callsBefore).Should()
@@ -333,7 +346,10 @@ public sealed class IntakeFormYouTubeIdentityTests : IClassFixture<YouTubeIdenti
 
         var resp = await client.PostAsync($"/r/{slug}?handler=Submit", Form(token, slug,
             ("Input.YouTubeUsername", $"https://www.youtube.com/channel/{PastedChannelId}"),
-            ("Input.YouTubeConfirmed", "true")));
+            ("Input.YouTubeConfirmed", "true"),
+            // Onay YAPIŞTIRILAN kimliğe değil, API'nin döndürdüğüne verilir:
+            // müşterinin ekranda gördüğü kart o yanıttan çizildi.
+            ("Input.YouTubeConfirmedChannelId", CanonicalChannelId)));
 
         resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
 
@@ -363,7 +379,10 @@ public sealed class IntakeFormYouTubeIdentityTests : IClassFixture<YouTubeIdenti
 
         var resp = await client.PostAsync($"/r/{slug}?handler=Submit", Form(token, slug,
             ("Input.YouTubeUsername", $"https://www.youtube.com/channel/{PastedChannelId}"),
-            ("Input.YouTubeConfirmed", "true")));
+            ("Input.YouTubeConfirmed", "true"),
+            // Onay YAPIŞTIRILAN kimliğe değil, API'nin döndürdüğüne verilir:
+            // müşterinin ekranda gördüğü kart o yanıttan çizildi.
+            ("Input.YouTubeConfirmedChannelId", CanonicalChannelId)));
 
         resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
 
@@ -393,7 +412,10 @@ public sealed class IntakeFormYouTubeIdentityTests : IClassFixture<YouTubeIdenti
 
         var resp = await client.PostAsync($"/r/{slug}?handler=Submit", Form(token, slug,
             ("Input.YouTubeUsername", $"https://www.youtube.com/channel/{PastedChannelId}"),
-            ("Input.YouTubeConfirmed", "true")));
+            ("Input.YouTubeConfirmed", "true"),
+            // Onay YAPIŞTIRILAN kimliğe değil, API'nin döndürdüğüne verilir:
+            // müşterinin ekranda gördüğü kart o yanıttan çizildi.
+            ("Input.YouTubeConfirmedChannelId", CanonicalChannelId)));
 
         resp.StatusCode.Should().Be(HttpStatusCode.Redirect, "kendi verimiz müşteriyi engellememeli");
 
@@ -489,6 +511,102 @@ public sealed class IntakeFormYouTubeIdentityTests : IClassFixture<YouTubeIdenti
     }
 
     /// <summary>
+    /// Onay BİR KANALA verilir, genel olarak değil. Senaryo (JS kapalı, ya da JS'in
+    /// sıfırlamasını atlatan herhangi bir istemci): müşteri "yabanci" kanalının
+    /// kartını görüp kutuyu işaretler, sonra kullanıcı adını değiştirip gönderir.
+    /// Kutu işaretli geldiği için sunucu, müşterinin HİÇ GÖRMEDİĞİ kanalı
+    /// onaylanmış sayardı — bu özelliğin engellemek için var olduğu şeyin ta kendisi.
+    ///
+    /// Testte onay eski kanalın kimliğine (RealChannelId) verilmiş, çözülen kanal
+    /// başkası (CanonicalChannelId). Karşılaştırma kalkarsa gönderim geçer.
+    /// </summary>
+    [Fact]
+    public async Task Onay_baska_kanala_verilmisse_gonderim_engellenir()
+    {
+        _factory.Resolver.ByHandle["degisen"] =
+            new YouTubeChannel(true, true, "Değişen Kanal", null, CanonicalChannelId);
+
+        var (slug, customerId) = await SeedConfigAsync();
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = true });
+        var token = await TokenAsync(client, slug);
+
+        var resp = await client.PostAsync($"/r/{slug}?handler=Submit", Form(token, slug,
+            ("Input.YouTubeUsername", "degisen"),
+            ("Input.YouTubeConfirmed", "true"),
+            ("Input.YouTubeConfirmedChannelId", RealChannelId)));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var html = WebUtility.HtmlDecode(await resp.Content.ReadAsStringAsync());
+        // Hata ÇÖZÜLEN kanalın adını taşımalı: müşteri neyi onayladığını sandığını
+        // değil, gerçekte neye baktığını görmeli.
+        html.Should().Contain("Değişen Kanal");
+
+        (await LatestAsync(customerId)).Should().BeNull();
+    }
+
+    /// <summary>
+    /// Reddedilen turdan sonra sayfa yeniden çizilirken onay kutusu İŞARETSİZ,
+    /// gizli kimlik ise ÇÖZÜLEN kanala ait gelmeli.
+    ///
+    /// Tag helper'lar POSTALANAN değeri modeldekine tercih ediyor: ModelState
+    /// temizlenmezse kutu işaretli, gizli alan da eski kimlikle geri gelir.
+    /// O hâlde müşteri hiç görmediği kanalı tek "Gönder" tıklamasıyla onaylamış
+    /// olur ve az önce eklenen karşılaştırma tamamen etkisiz kalır — hem de
+    /// sunucu kodunda hiçbir dal yanlış görünmeden.
+    /// </summary>
+    [Fact]
+    public async Task Onay_reddedilince_kutu_isaretsiz_ve_kimlik_cozulen_kanal_gelir()
+    {
+        _factory.Resolver.ByHandle["yeniden"] =
+            new YouTubeChannel(true, true, "Yeniden Onay", null, CanonicalChannelId);
+
+        var (slug, _) = await SeedConfigAsync();
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = true });
+        var token = await TokenAsync(client, slug);
+
+        var resp = await client.PostAsync($"/r/{slug}?handler=Submit", Form(token, slug,
+            ("Input.YouTubeUsername", "yeniden"),
+            ("Input.YouTubeConfirmed", "true"),
+            ("Input.YouTubeConfirmedChannelId", RealChannelId)));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var html = await resp.Content.ReadAsStringAsync();
+
+        InputTag(html, "ytConfirmId").Should().Contain($"value=\"{CanonicalChannelId}\"",
+            "gizli kimlik ekranda çizilen kartla aynı kanalı göstermeli");
+        InputTag(html, "ytConfirm").Should().NotContain("checked",
+            "müşteri yeni kanalı kendisi onaylamalı");
+    }
+
+    /// <summary>
+    /// Kimliği tutan onay geçer. Yukarıdaki iki testin karşı kutbu: karşılaştırma
+    /// fazla sıkı olsaydı (örn. büyük/küçük harf normalize edilseydi ya da adres
+    /// yolunda yapıştırılan kimlik beklenseydi) hiçbir gönderim geçmezdi ve
+    /// özellik "herkesi engelle"ye dönerdi.
+    /// </summary>
+    [Fact]
+    public async Task Onay_dogru_kanala_verilmisse_gonderim_gecer()
+    {
+        _factory.Resolver.ByHandle["dogruonay"] =
+            new YouTubeChannel(true, true, "Doğru Onay", null, RealChannelId);
+
+        var (slug, customerId) = await SeedConfigAsync();
+        var client = NewClient();
+        var token = await TokenAsync(client, slug);
+
+        var resp = await client.PostAsync($"/r/{slug}?handler=Submit", Form(token, slug,
+            ("Input.YouTubeUsername", "dogruonay"),
+            ("Input.YouTubeConfirmed", "true"),
+            ("Input.YouTubeConfirmedChannelId", RealChannelId)));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+
+        var sub = await LatestAsync(customerId);
+        sub.Should().NotBeNull();
+        sub!.YouTubeChannelId.Should().Be(RealChannelId);
+    }
+
+    /// <summary>
     /// Onay kutusu, kanal kartı çizilmeden EKRANDA OLMAMALI. Görmediği bir kanalı
     /// onaylayabilen müşteride bu özelliğin hiçbir anlamı kalmaz — "gördüğün adı
     /// onayla" bağı korumanın tamamı.
@@ -551,6 +669,20 @@ public sealed class IntakeFormYouTubeIdentityTests : IClassFixture<YouTubeIdenti
     {
         var start = html.IndexOf("id=\"ytConfirmWrap\"", StringComparison.Ordinal);
         start.Should().BeGreaterThan(-1, "onay kutusunun etiketi sayfada olmalı");
+        var open = html.LastIndexOf('<', start);
+        var close = html.IndexOf('>', start);
+        return html[open..(close + 1)];
+    }
+
+    /// <summary>
+    /// Verilen id'ye sahip input'un açılış etiketi. LabelTag ile aynı gerekçe:
+    /// "checked" ya da bir kimlik değeri sayfanın başka yerinde de geçebilir,
+    /// iddia yalnız ilgilendiğimiz etikete bakmalı.
+    /// </summary>
+    private static string InputTag(string html, string id)
+    {
+        var start = html.IndexOf($"id=\"{id}\"", StringComparison.Ordinal);
+        start.Should().BeGreaterThan(-1, $"{id} alanı sayfada olmalı");
         var open = html.LastIndexOf('<', start);
         var close = html.IndexOf('>', start);
         return html[open..(close + 1)];
