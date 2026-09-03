@@ -254,6 +254,9 @@ public class Program
             builder.Configuration.GetSection(
                 OrderDeck.LicenseServer.Services.IntakeForm.Login.IntakeLoginOptions.SectionName));
         builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.IntakeForm.Login.IntakeLinkStore>();
+        builder.Services.AddHttpClient<
+            OrderDeck.LicenseServer.Services.IntakeForm.Login.IGoogleChannelClient,
+            OrderDeck.LicenseServer.Services.IntakeForm.Login.GoogleChannelClient>();
 
         builder.Services.AddSingleton<BackupStorageService>();
         // Singleton ŞART: süreç başına tek sayaç olmasının bütün amacı bu.
