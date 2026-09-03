@@ -73,6 +73,131 @@ public sealed class IntakeLinkEndpointTests : IClassFixture<IntakeLinkFactory>
     private readonly IntakeLinkFactory _factory;
     public IntakeLinkEndpointTests(IntakeLinkFactory factory) => _factory = factory;
 
+    /// <summary>Başlatma 302'sinin Location'ından state'i söker — testin
+    /// sunucuyla paylaştığı tek şey gerçek akışın da taşıdığı değer.</summary>
+    private static string StateFrom(HttpResponseMessage startResp)
+    {
+        var query = startResp.Headers.Location!.Query.TrimStart('?').Split('&');
+        return query.First(p => p.StartsWith("state=")).Substring("state=".Length);
+    }
+
+    private async Task<(HttpClient Client, string Slug, string State)> StartYouTubeAsync()
+    {
+        var slug = await SeedSlugAsync();
+        var client = NewClient();
+        var startResp = await client.GetAsync($"/musteri-kayit/{slug}/baglan/youtube");
+        startResp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        return (client, slug, StateFrom(startResp));
+    }
+
+    [Fact]
+    public async Task Donus_basarili_olunca_forma_ok_ile_yonlendirir_ve_kimlik_gorunur()
+    {
+        _factory.Google.Result = new IntakeLoginResult(true, null,
+            new IntakeLinkedIdentity("Bağlı Kanal", "@baglikanal", "UCbagli00000000000000abc"));
+        var (client, slug, state) = await StartYouTubeAsync();
+
+        var resp = await client.GetAsync($"/musteri-kayit/baglanti-donusu?state={state}&code=gcode-1");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        resp.Headers.Location!.ToString().Should().Be($"/musteri-kayit/{slug}?baglanti=ok");
+        _factory.Google.Codes.Should().Contain("gcode-1");
+
+        // Task 7'de açılacak
+        // var html = await (await client.GetAsync($"/musteri-kayit/{slug}")).Content.ReadAsStringAsync();
+        // html.Should().Contain("Bağlı Kanal");
+    }
+
+    [Fact]
+    public async Task Izin_reddi_iptal_koduyla_forma_doner()
+    {
+        var (client, slug, state) = await StartYouTubeAsync();
+
+        var resp = await client.GetAsync(
+            $"/musteri-kayit/baglanti-donusu?state={state}&error=access_denied");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        resp.Headers.Location!.ToString().Should().Be($"/musteri-kayit/{slug}?baglanti=iptal");
+    }
+
+    [Fact]
+    public async Task Kanalsiz_hesap_kanalyok_koduyla_forma_doner()
+    {
+        _factory.Google.Result = new IntakeLoginResult(false, "kanalyok", null);
+        var (client, slug, state) = await StartYouTubeAsync();
+
+        var resp = await client.GetAsync($"/musteri-kayit/baglanti-donusu?state={state}&code=c");
+
+        resp.Headers.Location!.ToString().Should().Be($"/musteri-kayit/{slug}?baglanti=kanalyok");
+    }
+
+    [Fact]
+    public async Task State_yoksa_veya_bilinmiyorsa_suresi_doldu_sayfasi()
+    {
+        var client = NewClient();
+
+        var noState = await client.GetAsync("/musteri-kayit/baglanti-donusu?code=c");
+        noState.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await noState.Content.ReadAsStringAsync()).Should().Contain("süresi doldu");
+
+        var badState = await client.GetAsync("/musteri-kayit/baglanti-donusu?state=uydurma&code=c");
+        (await badState.Content.ReadAsStringAsync()).Should().Contain("süresi doldu");
+    }
+
+    [Fact]
+    public async Task State_tek_kullanimlik()
+    {
+        _factory.Google.Result = new IntakeLoginResult(true, null,
+            new IntakeLinkedIdentity("Tek Kanal", null, "UCtek0000000000000000abc"));
+        var (client, _, state) = await StartYouTubeAsync();
+
+        (await client.GetAsync($"/musteri-kayit/baglanti-donusu?state={state}&code=c"))
+            .StatusCode.Should().Be(HttpStatusCode.Redirect);
+
+        // Tekrar oynatma: aynı state ikinci kez GEÇMEZ (geri tuşu, kopyalanan URL).
+        var replay = await client.GetAsync($"/musteri-kayit/baglanti-donusu?state={state}&code=c");
+        replay.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await replay.Content.ReadAsStringAsync()).Should().Contain("süresi doldu");
+    }
+
+    [Fact]
+    public async Task Nonce_eslesmezse_reddedilir()
+    {
+        _factory.Google.Result = new IntakeLoginResult(true, null,
+            new IntakeLinkedIdentity("Çalıntı Kanal", null, "UCcalinti000000000000abc"));
+        var (_, _, state) = await StartYouTubeAsync();
+
+        // Farklı tarayıcı (çerezsiz istemci) çalınan state ile dönüyor —
+        // state gerçek ama O TARAYICIYA ait değil. CSRF/oturum sabitleme kapısı.
+        var attacker = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = false
+        });
+        var resp = await attacker.GetAsync($"/musteri-kayit/baglanti-donusu?state={state}&code=c");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await resp.Content.ReadAsStringAsync()).Should().Contain("süresi doldu");
+    }
+
+    [Fact]
+    public async Task Facebook_donusu_kimligi_kaydeder()
+    {
+        _factory.Facebook.Result = new IntakeLoginResult(true, null,
+            new IntakeLinkedIdentity("Musa Sevinç", null, null));
+        var slug = await SeedSlugAsync();
+        var client = NewClient();
+        var startResp = await client.GetAsync($"/musteri-kayit/{slug}/baglan/facebook");
+        var state = StateFrom(startResp);
+
+        var resp = await client.GetAsync($"/musteri-kayit/baglanti-donusu?state={state}&code=fbcode");
+
+        resp.Headers.Location!.ToString().Should().Be($"/musteri-kayit/{slug}?baglanti=ok");
+        // Task 7'de açılacak
+        // var html = await (await client.GetAsync($"/musteri-kayit/{slug}")).Content.ReadAsStringAsync();
+        // html.Should().Contain("Musa Sevinç");
+    }
+
     private async Task<string> SeedSlugAsync()
     {
         using var scope = _factory.Services.CreateScope();
