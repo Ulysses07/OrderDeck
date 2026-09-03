@@ -63,4 +63,31 @@ public sealed class RateLimiterIdentityTests
         factory.Seen.Should().Contain(s => s.Policy == "auth-login",
             "anonim uçlar yetkilendirmeden geçtiği için limiter'a ulaşmaya devam etmeli");
     }
+
+    /// <summary>
+    /// Razor Pages uç nokta üstverisini sayfa TİPİNDEN okuyor: handler metoduna
+    /// konan <c>[EnableRateLimiting]</c> hiçbir zaman uygulanmıyor ve HATA DA
+    /// VERMİYOR. Kayıt formu gönderimi tam bu yüzden uzun süre sınırsız kaldı —
+    /// öznitelik kodda duruyordu, üstelik ApiFactory politika adını taradığı için
+    /// testlerde de "kayıtlı" görünüyordu.
+    ///
+    /// Not: politikanın POST/GET ayrımı <c>Program.cs</c> içindeki fabrikada;
+    /// ApiFactory limitleri kapatmak için o fabrikayı değiştirdiğinden burada
+    /// doğrulanamaz. Buranın kanıtladığı şey, kararın VERİLİYOR olması.
+    /// </summary>
+    [Fact]
+    public async Task Kayit_formu_gonderimi_limiter_a_ulasiyor()
+    {
+        using var factory = new ProbeFactory();
+        var client = factory.CreateClient();
+
+        // Slug'ın geçerli olması gerekmiyor: limiter middleware'i uçtan önce
+        // çalışıyor, yani yanıt ne olursa olsun politika kararı verilmiş oluyor.
+        await client.PostAsync($"/r/{Guid.NewGuid():N}?handler=Submit",
+            new FormUrlEncodedContent(Array.Empty<KeyValuePair<string, string>>()));
+
+        factory.Seen.Should().Contain(s => s.Policy == "intake-form-submit",
+            "kayıt formu POST'u hız sınırı politikasından geçmeli; öznitelik sayfa "
+            + "sınıfından handler metoduna taşınırsa sessizce etkisiz kalır");
+    }
 }

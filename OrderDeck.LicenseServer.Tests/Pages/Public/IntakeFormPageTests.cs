@@ -282,4 +282,342 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
         var html = System.Net.WebUtility.HtmlDecode(await postResp.Content.ReadAsStringAsync());
         html.Should().Contain("En az bir platform");
     }
+
+    /// <summary>
+    /// Sahadaki en sık hata: müşteri profil adresini yapıştırıyor. Eskiden
+    /// HandleValidator bunu reddediyordu; artık sunucu kullanıcı adını kendisi
+    /// çıkarıyor ve DB'ye temiz handle düşüyor.
+    /// </summary>
+    [Fact]
+    public async Task Post_submit_instagram_profil_adresini_kullanici_adina_cevirir()
+    {
+        var (slug, customerId) = await SeedConfigAsync();
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = true
+        });
+
+        var getResp = await client.GetAsync($"/r/{slug}");
+        var antiForgery = AdminLoginHelper.ExtractAntiForgeryToken(await getResp.Content.ReadAsStringAsync());
+
+        var form = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["__RequestVerificationToken"] = antiForgery,
+            ["Slug"] = slug,
+            ["Input.InstagramUsername"] = "https://www.instagram.com/bilalcanli/?igsh=MWx5",
+            ["Input.FullName"] = "Bilal Canlı",
+            ["Input.Email"] = "bilal@example.com",
+            ["Input.Address"] = "Atatürk Cad. No:12",
+            ["Input.City"] = "İstanbul",
+            ["Input.District"] = "Kadıköy",
+            ["Input.Phone"] = "5551234567"
+        });
+        var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
+
+        postResp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var sub = await db.IntakeFormSubmissions
+            .Where(s => s.Config.CustomerId == customerId)
+            .FirstOrDefaultAsync();
+        sub.Should().NotBeNull();
+        sub!.InstagramUsername.Should().Be("bilalcanli");
+    }
+
+    [Fact]
+    public async Task Post_submit_tiktok_video_adresini_kullanici_adina_cevirir()
+    {
+        var (slug, customerId) = await SeedConfigAsync();
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = true
+        });
+
+        var getResp = await client.GetAsync($"/r/{slug}");
+        var antiForgery = AdminLoginHelper.ExtractAntiForgeryToken(await getResp.Content.ReadAsStringAsync());
+
+        var form = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["__RequestVerificationToken"] = antiForgery,
+            ["Slug"] = slug,
+            ["Input.TikTokUsername"] = "https://www.tiktok.com/@edanur/video/7412345678901234567",
+            ["Input.FullName"] = "Eda Nur",
+            ["Input.Email"] = "eda@example.com",
+            ["Input.Address"] = "Atatürk Cad. No:12",
+            ["Input.City"] = "İstanbul",
+            ["Input.District"] = "Kadıköy",
+            ["Input.Phone"] = "5551234567"
+        });
+        var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
+
+        postResp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var sub = await db.IntakeFormSubmissions
+            .Where(s => s.Config.CustomerId == customerId)
+            .FirstOrDefaultAsync();
+        sub.Should().NotBeNull();
+        sub!.TikTokUsername.Should().Be("edanur");
+    }
+
+    /// <summary>
+    /// Çözülemeyen adres SESSİZCE geçmemeli. Gönderi adresindeki kod kullanıcı adı
+    /// sanılırsa kayıt tamamen alakasız bir değere bağlanır.
+    /// </summary>
+    [Fact]
+    public async Task Post_submit_instagram_gonderi_adresi_hata_ile_doner()
+    {
+        var (slug, customerId) = await SeedConfigAsync();
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            HandleCookies = true
+        });
+
+        var getResp = await client.GetAsync($"/r/{slug}");
+        var antiForgery = AdminLoginHelper.ExtractAntiForgeryToken(await getResp.Content.ReadAsStringAsync());
+
+        var form = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["__RequestVerificationToken"] = antiForgery,
+            ["Slug"] = slug,
+            ["Input.InstagramUsername"] = "https://www.instagram.com/p/Cxyz123",
+            ["Input.FullName"] = "Bilal Canlı",
+            ["Input.Email"] = "bilal@example.com",
+            ["Input.Address"] = "Atatürk Cad. No:12",
+            ["Input.City"] = "İstanbul",
+            ["Input.District"] = "Kadıköy",
+            ["Input.Phone"] = "5551234567"
+        });
+        var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
+
+        postResp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var html = System.Net.WebUtility.HtmlDecode(await postResp.Content.ReadAsStringAsync());
+        html.Should().Contain("gönderi adresi");
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var count = await db.IntakeFormSubmissions.CountAsync(s => s.Config.CustomerId == customerId);
+        count.Should().Be(0);
+    }
+
+    /// <summary>
+    /// Alan sınırı 64'te kalsaydı uzun profil adresleri model binding'de,
+    /// yani parser daha çalışmadan reddedilirdi.
+    /// </summary>
+    [Fact]
+    public async Task Post_submit_uzun_profil_adresi_uzunluk_hatasina_takilmaz()
+    {
+        var (slug, customerId) = await SeedConfigAsync();
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = true
+        });
+
+        var getResp = await client.GetAsync($"/r/{slug}");
+        var antiForgery = AdminLoginHelper.ExtractAntiForgeryToken(await getResp.Content.ReadAsStringAsync());
+
+        var longUrl = "https://www.tiktok.com/@birazuzunkullaniciadi/video/7412345678901234567?lang=tr";
+        longUrl.Length.Should().BeGreaterThan(64);
+
+        var form = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["__RequestVerificationToken"] = antiForgery,
+            ["Slug"] = slug,
+            ["Input.TikTokUsername"] = longUrl,
+            ["Input.FullName"] = "Eda Nur",
+            ["Input.Email"] = "eda@example.com",
+            ["Input.Address"] = "Atatürk Cad. No:12",
+            ["Input.City"] = "İstanbul",
+            ["Input.District"] = "Kadıköy",
+            ["Input.Phone"] = "5551234567"
+        });
+        var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
+
+        postResp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var sub = await db.IntakeFormSubmissions
+            .Where(s => s.Config.CustomerId == customerId)
+            .FirstOrDefaultAsync();
+        sub.Should().NotBeNull();
+        sub!.TikTokUsername.Should().Be("birazuzunkullaniciadi");
+    }
+
+    /// <summary>
+    /// Kanal kimliği bir handle DEĞİL, o yüzden hem "en az bir platform"
+    /// kuralında hem legacy Username seçiminde ayrıca sayılması gerekiyor;
+    /// bu test ikisini birden çiviliyor.
+    /// </summary>
+    [Fact]
+    public async Task Post_submit_sadece_youtube_kanal_adresi_ile_kayit_gecer()
+    {
+        var (slug, customerId) = await SeedConfigAsync();
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = true
+        });
+
+        var getResp = await client.GetAsync($"/r/{slug}");
+        var antiForgery = AdminLoginHelper.ExtractAntiForgeryToken(await getResp.Content.ReadAsStringAsync());
+
+        var form = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["__RequestVerificationToken"] = antiForgery,
+            ["Slug"] = slug,
+            ["Input.YouTubeUsername"] = "https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv",
+            ["Input.FullName"] = "Bilal Canlı",
+            ["Input.Email"] = "bilal@example.com",
+            ["Input.Address"] = "Atatürk Cad. No:12",
+            ["Input.City"] = "İstanbul",
+            ["Input.District"] = "Kadıköy",
+            ["Input.Phone"] = "5551234567"
+        });
+        var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
+
+        // "En az bir platform" hatası çıkmamalı — kanal adresi yeterli sayılmalı.
+        postResp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var sub = await db.IntakeFormSubmissions
+            .Where(s => s.Config.CustomerId == customerId)
+            .FirstOrDefaultAsync();
+        sub.Should().NotBeNull();
+        // Handle yok; legacy Username kanal kimliğine düşmeli.
+        sub!.Username.Should().Be("UCabcdefghijklmnopqrstuv");
+    }
+
+    /// <summary>
+    /// Yanlış platforma yapıştırılan adres açık hata vermeli; kayıt oluşmamalı.
+    /// </summary>
+    [Fact]
+    public async Task Post_submit_yanlis_kutuya_yapistirilan_adres_reddedilir()
+    {
+        var (slug, customerId) = await SeedConfigAsync();
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            HandleCookies = true
+        });
+
+        var getResp = await client.GetAsync($"/r/{slug}");
+        var antiForgery = AdminLoginHelper.ExtractAntiForgeryToken(await getResp.Content.ReadAsStringAsync());
+
+        var form = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["__RequestVerificationToken"] = antiForgery,
+            ["Slug"] = slug,
+            // Instagram adresi TikTok kutusuna yapıştırıldı.
+            ["Input.TikTokUsername"] = "https://www.instagram.com/bilalcanli",
+            ["Input.FullName"] = "Bilal Canlı",
+            ["Input.Email"] = "bilal@example.com",
+            ["Input.Address"] = "Atatürk Cad. No:12",
+            ["Input.City"] = "İstanbul",
+            ["Input.District"] = "Kadıköy",
+            ["Input.Phone"] = "5551234567"
+        });
+        var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
+
+        postResp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var html = System.Net.WebUtility.HtmlDecode(await postResp.Content.ReadAsStringAsync());
+        html.Should().Contain("Bu bir Instagram adresi");
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var count = await db.IntakeFormSubmissions.CountAsync(s => s.Config.CustomerId == customerId);
+        count.Should().Be(0);
+    }
+
+    /// <summary>
+    /// Facebook kuralı yalnız uzunluk sınırı koyuyor; boşluğa ve Türkçe
+    /// karaktere izin veriyor. Eşleşme görünen ada dayalı olduğu için
+    /// Facebook kutusuna girilen metne adres çözümlemesi uygulanmıyor.
+    /// </summary>
+    [Fact]
+    public async Task Post_submit_facebook_gorunen_ad_ile_kayit_gecer()
+    {
+        var (slug, customerId) = await SeedConfigAsync();
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = true
+        });
+
+        var getResp = await client.GetAsync($"/r/{slug}");
+        var antiForgery = AdminLoginHelper.ExtractAntiForgeryToken(await getResp.Content.ReadAsStringAsync());
+
+        var form = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["__RequestVerificationToken"] = antiForgery,
+            ["Slug"] = slug,
+            ["Input.FacebookUsername"] = "Bilal Canlı",
+            ["Input.FullName"] = "Bilal Canlı",
+            ["Input.Email"] = "bilal@example.com",
+            ["Input.Address"] = "Atatürk Cad. No:12",
+            ["Input.City"] = "İstanbul",
+            ["Input.District"] = "Kadıköy",
+            ["Input.Phone"] = "5551234567"
+        });
+        var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
+
+        postResp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var sub = await db.IntakeFormSubmissions
+            .Where(s => s.Config.CustomerId == customerId)
+            .FirstOrDefaultAsync();
+        sub.Should().NotBeNull();
+        sub!.FacebookUsername.Should().Be("Bilal Canlı");
+    }
+
+    /// <summary>
+    /// Facebook adres çözümlemesinin dışında tutuluyor — kutuya adres benzeri
+    /// bir metin girilse bile görünen ad sayılır, "yanlış kutu" hatası VERMEZ.
+    /// Diğer üç platformdan farklı olan bu dal, kaldırıldığında hiçbir test
+    /// düşmüyordu; davranışı burada çiviliyoruz.
+    /// </summary>
+    [Fact]
+    public async Task Post_submit_facebook_kutusuna_adres_girilse_de_adres_hatasi_vermez()
+    {
+        var (slug, customerId) = await SeedConfigAsync();
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = true
+        });
+
+        var getResp = await client.GetAsync($"/r/{slug}");
+        var antiForgery = AdminLoginHelper.ExtractAntiForgeryToken(await getResp.Content.ReadAsStringAsync());
+
+        var form = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["__RequestVerificationToken"] = antiForgery,
+            ["Slug"] = slug,
+            ["Input.FacebookUsername"] = "https://www.instagram.com/bilalcanli",
+            ["Input.FullName"] = "Bilal Canlı",
+            ["Input.Email"] = "bilal@example.com",
+            ["Input.Address"] = "Atatürk Cad. No:12",
+            ["Input.City"] = "İstanbul",
+            ["Input.District"] = "Kadıköy",
+            ["Input.Phone"] = "5551234567"
+        });
+        var postResp = await client.PostAsync($"/r/{slug}?handler=Submit", form);
+
+        postResp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var sub = await db.IntakeFormSubmissions
+            .Where(s => s.Config.CustomerId == customerId)
+            .FirstOrDefaultAsync();
+        sub.Should().NotBeNull();
+        sub!.FacebookUsername.Should().Be("https://www.instagram.com/bilalcanli");
+    }
 }
