@@ -128,7 +128,7 @@ public sealed class IntakeLinkController : ControllerBase
         if (st is null || string.IsNullOrEmpty(nonce) ||
             !string.Equals(st.CookieNonce, nonce, StringComparison.Ordinal))
         {
-            // state süresi dolmuş, tekrar oynatılmış ya da başka tarayyıcıdan
+            // state süresi dolmuş, tekrar oynatılmış ya da başka tarayıcıdan
             // geliyor. Slug'ı bilmiyoruz (state'in içindeydi) — forma
             // yönlendiremeyiz, açık bir sayfa basarız.
             return ExpiredPage();
