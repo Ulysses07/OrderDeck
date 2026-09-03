@@ -261,7 +261,13 @@ else
 
             <div class="field">
                 <label class="lbl" asp-for="Input.Email">E-posta <span class="req">*</span></label>
-                <input class="inp" asp-for="Input.Email" type="email" maxlength="200" required placeholder="ornek@@eposta.com" />
+                @* &#64; = at-işareti. @@ KULLANMA: tag helper'lı öğenin özniteliğinde
+                   @@ kaçışı Razor derleyicisini (SDK 10.0.4xx) şaşırtıyor — placeholder
+                   parçalanıp araya ytConfirmWrap'in hidden=" kalıbı basılıyor ve
+                   e-posta alanı görünmez oluyor (prod'da formu tamamen kilitledi).
+                   IntakeFormPageTests.Get_form_page_email_alani_gizlenmeden_render_edilir
+                   bu hattı koruyor. *@
+                <input class="inp" asp-for="Input.Email" type="email" maxlength="200" required placeholder="ornek&#64;eposta.com" />
                 <span class="err" asp-validation-for="Input.Email"></span>
             </div>
 
