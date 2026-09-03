@@ -74,6 +74,27 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Get_form_page_email_alani_gizlenmeden_render_edilir()
+    {
+        // Prod'da e-posta input'u görünmez geldi ve form sessizce gönderilemez
+        // oldu: Razor, tag helper'lı input'taki placeholder="ornek@@eposta.com"
+        // değerini parçalayıp araya başka bir öğenin hidden=" kalıbını bastı
+        // (SDK 10.0.4xx). Bu test e-posta input'unun tek parça, hidden'sız ve
+        // placeholder'ı bozulmamış render edildiğini sabitler.
+        var (slug, _) = await SeedConfigAsync();
+        var client = _factory.CreateClient();
+
+        var html = await (await client.GetAsync($"/r/{slug}")).Content.ReadAsStringAsync();
+
+        var m = System.Text.RegularExpressions.Regex.Match(
+            html, "<input[^>]*id=\"Input_Email\"[^>]*>");
+        m.Success.Should().BeTrue("e-posta input'u sayfada olmalı");
+        m.Value.Should().NotContain("hidden", "e-posta alanı asla gizli render edilmemeli");
+        m.Value.Should().Contain("placeholder=\"ornek&#64;eposta.com\"",
+            "placeholder tek parça kalmalı — parçalanması derleyici hatasının belirtisi");
+    }
+
+    [Fact]
     public async Task Get_form_page_returns_410_when_form_inactive()
     {
         var (slug, _) = await SeedConfigAsync(formActive: false);
