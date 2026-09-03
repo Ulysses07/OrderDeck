@@ -132,6 +132,8 @@ public sealed class IntakeLinkEndpointTests : IClassFixture<IntakeLinkFactory>
         // Kapsam readonly — geniş "youtube" kapsamına sessizce genişlemek
         // tam da bu testin yakalaması gereken regresyon.
         loc.Should().Contain(Uri.EscapeDataString("https://www.googleapis.com/auth/youtube.readonly"));
+        // Geniş "youtube" kapsamına sessiz yükselme — tam da bu testin yakalaması gereken regresyon.
+        loc.Should().NotContain(Uri.EscapeDataString("https://www.googleapis.com/auth/youtube") + "&");
         loc.Should().Contain("state=").And.Contain("response_type=code");
         // Nonce çerezi dönüş ucunun state'i tarayıcıya bağlaması için şart.
         resp.Headers.TryGetValues("Set-Cookie", out var cookies).Should().BeTrue();

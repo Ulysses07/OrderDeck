@@ -93,13 +93,13 @@ public sealed class IntakeLinkController : ControllerBase
               // Hesap seçtir: yayıncı telefonda çoğu kez birden çok Google
               // hesabına girili; sessizce ilkine bağlamak yanlış kanal demek.
               "&prompt=select_account" +
-              "&state=" + state
+              "&state=" + Uri.EscapeDataString(state)
             : "https://www.facebook.com/" + _facebook.Value.GraphApiVersion + "/dialog/oauth" +
               "?client_id=" + Uri.EscapeDataString(_facebook.Value.AppId) +
               "&redirect_uri=" + Uri.EscapeDataString(opt.RedirectUri) +
               "&response_type=code" +
               "&scope=public_profile" +
-              "&state=" + state;
+              "&state=" + Uri.EscapeDataString(state);
 
         return Redirect(authUrl);
     }
