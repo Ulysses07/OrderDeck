@@ -146,9 +146,7 @@ else
 
         @if (Model.LinkBanner is not null)
         {
-            @* LinkBanner yalnız sunucu kodundaki sabit switch ifadesinden gelir,
-               kullanıcı girdisinden gelmez — Html.Raw güvenli. *@
-            <div class="banner @(Model.LinkBannerIsError ? "banner-err" : "banner-ok")">@Html.Raw(Model.LinkBanner)</div>
+            <div class="banner @(Model.LinkBannerIsError ? "banner-err" : "banner-ok")">@Model.LinkBanner</div>
         }
 
         <form id="intakeForm" method="post" asp-page-handler="Submit" autocomplete="off">
@@ -906,13 +904,15 @@ else
 
     // Bağlanmaya giden müşteri sayfadan ayrılır; yazdıkları kaybolursa formu
     // yarıda bırakır. sessionStorage: sekme kapanınca ölür, PII diske inmez.
+    // TCKN kasıtlı olarak DIŞLANDI: OAuth gidiş-dönüşünden sonra kullanıcı
+    // tekrar girer; en hassas alanı DevTools/XSS yüzeyine açmak değmez.
     // Anahtar SLUG bazlı, pathname değil: form iki route'tan açılıyor
     // (/musteri-kayit/{slug} ve /r/{slug}) ama dönüş hep /musteri-kayit'a —
     // pathname anahtarı taslağı dönüşte bulamazdı.
     var slugEl = document.querySelector('input[name="Slug"]');
     var DRAFT_KEY = 'odIntakeDraft:' + (slugEl ? slugEl.value : '');
     var DRAFT_FIELDS = ['Input.FullName', 'Input.Email', 'Input.City', 'Input.District',
-                        'Input.Address', 'Input.Phone', 'Input.Tckn',
+                        'Input.Address', 'Input.Phone',
                         'Input.InstagramUsername', 'Input.TikTokUsername'];
 
     function fieldByName(n) { return document.getElementsByName(n)[0]; }
