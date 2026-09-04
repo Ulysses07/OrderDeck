@@ -197,10 +197,16 @@ services:
       # IntakeLogin__YouTubeEnabled açılmaz. Facebook sırrı yukarıdaki
       # OrderDeck__Facebook__* değerlerinden okunur; Google için AYRI "Web
       # application" client (masaüstününki değil). Bkz. docs/kayit-formu-giris.md
+      #
+      # Bayrak varsayılanı "false" ZORUNLU, boş string DEĞİL: .NET config
+      # binder'ı boş string'i bool'a çeviremez ve options İLK OKUNDUĞUNDA
+      # (yani form sayfasının her isteğinde) exception fırlatır. 2026-09-04'te
+      # `:-` (boş varsayılan) prod kayıt formunu ~17 dk 500'e düşürdü; smoke
+      # test /ready'ye baktığı için yakalamadı.
       IntakeLogin__GoogleClientId: "${IntakeLogin__GoogleClientId:-}"
       IntakeLogin__GoogleClientSecret: "${IntakeLogin__GoogleClientSecret:-}"
-      IntakeLogin__YouTubeEnabled: "${IntakeLogin__YouTubeEnabled:-}"
-      IntakeLogin__FacebookEnabled: "${IntakeLogin__FacebookEnabled:-}"
+      IntakeLogin__YouTubeEnabled: "${IntakeLogin__YouTubeEnabled:-false}"
+      IntakeLogin__FacebookEnabled: "${IntakeLogin__FacebookEnabled:-false}"
       # OpenTelemetry export. Set OTEL_EXPORTER_OTLP_ENDPOINT in .env to push
       # traces+metrics to a collector (Grafana Cloud, Honeycomb, Tempo, etc.).
       # Empty = no push; /metrics scrape endpoint still works regardless.
