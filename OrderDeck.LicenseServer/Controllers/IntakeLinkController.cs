@@ -62,7 +62,7 @@ public sealed class IntakeLinkController : ControllerBase
         var isFacebook = platform == "facebook";
         // Bayrak kontrolü DB'den ÖNCE: kapalı özellik slug taramaya alet olmasın.
         if (isYouTube && !opt.YouTubeLoginReady) return NotFound();
-        if (isFacebook && (!opt.FacebookEnabled || !_facebook.Value.IsConfigured)) return NotFound();
+        if (isFacebook && !opt.FacebookLoginReady) return NotFound();
         if (!isYouTube && !isFacebook) return NotFound();
 
         var config = await _service.GetActiveBySlugAsync(slug, ct);
@@ -100,8 +100,10 @@ public sealed class IntakeLinkController : ControllerBase
               // hesabına girili; sessizce ilkine bağlamak yanlış kanal demek.
               "&prompt=select_account" +
               "&state=" + Uri.EscapeDataString(state)
+            // client_id form'un KENDİ Consumer app'i; sürüm masaüstü seçenekleriyle
+            // ortak kalır ki Graph çağrıları tek yerden yaşlansın.
             : "https://www.facebook.com/" + _facebook.Value.GraphApiVersion + "/dialog/oauth" +
-              "?client_id=" + Uri.EscapeDataString(_facebook.Value.AppId) +
+              "?client_id=" + Uri.EscapeDataString(opt.FacebookAppId!) +
               "&redirect_uri=" + Uri.EscapeDataString(opt.RedirectUri) +
               "&response_type=code" +
               "&scope=public_profile" +

@@ -3,12 +3,18 @@ namespace OrderDeck.LicenseServer.Services.IntakeForm.Login;
 /// <summary>
 /// Kayıt formundaki "hesabını bağla" girişlerinin yapılandırması.
 /// VPS .env: <c>IntakeLogin__GoogleClientId</c>, <c>IntakeLogin__GoogleClientSecret</c>,
+/// <c>IntakeLogin__FacebookAppId</c>, <c>IntakeLogin__FacebookAppSecret</c>,
 /// <c>IntakeLogin__YouTubeEnabled</c>, <c>IntakeLogin__FacebookEnabled</c>.
 ///
 /// YouTube bayrağı Google'ın <c>youtube.readonly</c> kapsam onayına kilitli:
 /// kod karanlıkta yatar, onay gelince bayrak açılır — deploy gerekmez, restart yeter.
-/// Facebook app'i (masaüstüyle aynı, <c>OrderDeck:Facebook</c>) <c>public_profile</c>
-/// için review istemez; o bayrak hemen açılabilir.
+///
+/// Facebook app'i masaüstününkinden (<c>OrderDeck:Facebook</c>) AYRI: o app
+/// "Facebook Login for Business" tipinde ve yalnız <c>public_profile</c> isteyen
+/// klasik dialog'u "supported permission" hatasıyla reddediyor (sahada görüldü,
+/// 2026-09-04). Bu yüzden form için Consumer tipinde ayrı app açıldı
+/// (OrderDeck Kayit, 1090037693602616) — klasik login'de <c>public_profile</c>
+/// otomatik erişimli, review istemez.
 /// </summary>
 public sealed class IntakeLoginOptions
 {
@@ -21,6 +27,13 @@ public sealed class IntakeLoginOptions
 
     /// <summary>Yalnız sunucuda; log'a ve istemciye asla çıkmaz.</summary>
     public string? GoogleClientSecret { get; set; }
+
+    /// <summary>Form için AYRI Consumer app'in kimliği (OrderDeck Kayit).
+    /// Masaüstünün <c>OrderDeck__Facebook__AppId</c>'si DEĞİL.</summary>
+    public string? FacebookAppId { get; set; }
+
+    /// <summary>Yalnız sunucuda; log'a ve istemciye asla çıkmaz.</summary>
+    public string? FacebookAppSecret { get; set; }
 
     /// <summary>İki sağlayıcı için ortak dönüş adresi. Google Cloud Console'da
     /// "Authorized redirect URIs"e, Meta app'inde "Valid OAuth Redirect URIs"e
@@ -36,4 +49,10 @@ public sealed class IntakeLoginOptions
         YouTubeEnabled
         && !string.IsNullOrWhiteSpace(GoogleClientId)
         && !string.IsNullOrWhiteSpace(GoogleClientSecret);
+
+    /// <inheritdoc cref="YouTubeLoginReady"/>
+    public bool FacebookLoginReady =>
+        FacebookEnabled
+        && !string.IsNullOrWhiteSpace(FacebookAppId)
+        && !string.IsNullOrWhiteSpace(FacebookAppSecret);
 }

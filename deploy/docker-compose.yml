@@ -194,9 +194,11 @@ services:
       OrderDeck__Facebook__LoginConfigId: "${OrderDeck__Facebook__LoginConfigId:-}"
       # Kayıt formu "hesabınla bağlan" (PR #360, karanlık deploy). Bayraklar
       # yazılmadıkça uçlar 404 — Google doğrulaması ONAYLANMADAN
-      # IntakeLogin__YouTubeEnabled açılmaz. Facebook sırrı yukarıdaki
-      # OrderDeck__Facebook__* değerlerinden okunur; Google için AYRI "Web
-      # application" client (masaüstününki değil). Bkz. docs/kayit-formu-giris.md
+      # IntakeLogin__YouTubeEnabled açılmaz. Facebook için AYRI Consumer app
+      # ("OrderDeck Kayit", 1090037693602616): masaüstünün yukarıdaki FLB tipli
+      # app'i public_profile-yalnız klasik dialog'u reddediyor (2026-09-04).
+      # Google için de AYRI "Web application" client (masaüstününki değil).
+      # Bkz. docs/kayit-formu-giris.md
       #
       # Bayrak varsayılanı "false" ZORUNLU, boş string DEĞİL: .NET config
       # binder'ı boş string'i bool'a çeviremez ve options İLK OKUNDUĞUNDA
@@ -205,6 +207,8 @@ services:
       # test /ready'ye baktığı için yakalamadı.
       IntakeLogin__GoogleClientId: "${IntakeLogin__GoogleClientId:-}"
       IntakeLogin__GoogleClientSecret: "${IntakeLogin__GoogleClientSecret:-}"
+      IntakeLogin__FacebookAppId: "${IntakeLogin__FacebookAppId:-}"
+      IntakeLogin__FacebookAppSecret: "${IntakeLogin__FacebookAppSecret:-}"
       IntakeLogin__YouTubeEnabled: "${IntakeLogin__YouTubeEnabled:-false}"
       IntakeLogin__FacebookEnabled: "${IntakeLogin__FacebookEnabled:-false}"
       # OpenTelemetry export. Set OTEL_EXPORTER_OTLP_ENDPOINT in .env to push
