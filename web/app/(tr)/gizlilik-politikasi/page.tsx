@@ -43,7 +43,7 @@ export default function PrivacyTr() {
       <h3>1.2. Canlı yayın chat verileri</h3>
       <p>
         Uygulama, bağlanan platformların (Instagram, TikTok, Facebook, YouTube) canlı
-        yayın chat\'lerini okur. Bu mesajlar:
+        yayın chat'lerini okur. Bu mesajlar:
       </p>
       <ul>
         <li><strong>Sadece kullanıcının kendi bilgisayarında</strong> bellek tamponunda tutulur (en fazla son 500 mesaj)</li>
@@ -80,7 +80,7 @@ export default function PrivacyTr() {
 
       <h2>2. YouTube API kullanımı</h2>
       <p>
-        {BRAND}, YouTube Data API v3\'ü iki ayrı akışta kullanır.
+        {BRAND}, YouTube Data API v3'ü iki ayrı akışta kullanır.
         Google API Hizmetleri Kullanıcı Verileri Politikası (Google API Services User Data Policy)
         ve <strong>Limited Use</strong> gerekliliklerine uygunluk taahhüt edilir.
       </p>
@@ -105,7 +105,7 @@ export default function PrivacyTr() {
         <li>Üçüncü kişilere satılmaz veya devredilmez</li>
       </ul>
       <p>
-        OAuth refresh token\'ı kullanıcının makinesinde Windows Data Protection API (DPAPI)
+        OAuth refresh token'ı kullanıcının makinesinde Windows Data Protection API (DPAPI)
         ile şifreli olarak saklanır. Kullanıcı dilediği an{' '}
         <a href="https://myaccount.google.com/permissions" target="_blank" rel="noreferrer">
           https://myaccount.google.com/permissions
@@ -123,7 +123,7 @@ export default function PrivacyTr() {
         <li>
           <code>https://www.googleapis.com/auth/youtube.readonly</code> — Sunucu tarafında
           tek bir <code>channels.list(mine=true)</code> çağrısıyla yalnızca alıcının{' '}
-          <strong>kendi</strong> kanalının adı, handle\'ı (customUrl) ve kanal kimliği
+          <strong>kendi</strong> kanalının adı, handle'ı (customUrl) ve kanal kimliği
           okunur. Abonelikler, oynatma listeleri, videolar, analitik veya başka hiçbir
           veri okunmaz; hiçbir şey yazılmaz, değiştirilmez veya silinmez.
         </li>
@@ -131,8 +131,8 @@ export default function PrivacyTr() {
       <p>Bu akışta:</p>
       <ul>
         <li>
-          OAuth erişim token\'ı sunucuda bir kez kullanılır ve hemen atılır — erişim veya
-          yenileme token\'ı <strong>saklanmaz</strong>
+          OAuth erişim token'ı sunucuda bir kez kullanılır ve hemen atılır — erişim veya
+          yenileme token'ı <strong>saklanmaz</strong>
         </li>
         <li>
           Alınan kanal adı, handle ve kanal kimliği yalnızca alıcının kendi kaydının bir
@@ -145,7 +145,7 @@ export default function PrivacyTr() {
           <a href="https://myaccount.google.com/permissions" target="_blank" rel="noreferrer">
             https://myaccount.google.com/permissions
           </a>{' '}
-          adresinden uygulamanın erişimini iptal edebilir ve Bölüm 6\'daki yolla kaydının
+          adresinden uygulamanın erişimini iptal edebilir ve Bölüm 6'daki yolla kaydının
           silinmesini isteyebilir
         </li>
       </ul>
