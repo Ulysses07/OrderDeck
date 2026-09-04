@@ -192,6 +192,15 @@ services:
       OrderDeck__Facebook__AppId: "${OrderDeck__Facebook__AppId:-}"
       OrderDeck__Facebook__AppSecret: "${OrderDeck__Facebook__AppSecret:-}"
       OrderDeck__Facebook__LoginConfigId: "${OrderDeck__Facebook__LoginConfigId:-}"
+      # Kayıt formu "hesabınla bağlan" (PR #360, karanlık deploy). Bayraklar
+      # yazılmadıkça uçlar 404 — Google doğrulaması ONAYLANMADAN
+      # IntakeLogin__YouTubeEnabled açılmaz. Facebook sırrı yukarıdaki
+      # OrderDeck__Facebook__* değerlerinden okunur; Google için AYRI "Web
+      # application" client (masaüstününki değil). Bkz. docs/kayit-formu-giris.md
+      IntakeLogin__GoogleClientId: "${IntakeLogin__GoogleClientId:-}"
+      IntakeLogin__GoogleClientSecret: "${IntakeLogin__GoogleClientSecret:-}"
+      IntakeLogin__YouTubeEnabled: "${IntakeLogin__YouTubeEnabled:-}"
+      IntakeLogin__FacebookEnabled: "${IntakeLogin__FacebookEnabled:-}"
       # OpenTelemetry export. Set OTEL_EXPORTER_OTLP_ENDPOINT in .env to push
       # traces+metrics to a collector (Grafana Cloud, Honeycomb, Tempo, etc.).
       # Empty = no push; /metrics scrape endpoint still works regardless.
