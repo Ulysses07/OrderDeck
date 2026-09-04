@@ -62,7 +62,7 @@ okunur — yeni değişken yok. Redirect URI kodda sabit:
 > The retrieved channel identity is stored only as part of that viewer's own
 > shipping registration, visible only to the broadcaster they are registering
 > with, and is covered by our privacy policy at
-> https://orderdeckapp.com/privacy.
+> https://orderdeckapp.com/en/privacy-policy/.
 
 **Aynı metnin TR özeti (kendi kaydımız için):** izleyici formda "Google ile
 bağla"ya basar; `channels.list(mine=true)` ile YALNIZ kendi kanalının adı,
