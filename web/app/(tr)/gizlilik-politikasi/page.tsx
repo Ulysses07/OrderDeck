@@ -157,10 +157,12 @@ export default function PrivacyTr() {
         </a>) tabidir.
       </p>
 
-      <h2>3. Tarayıcı eklentisi (Instagram, TikTok, Facebook)</h2>
+      <h2>3. Tarayıcı eklentisi (yalnızca TikTok)</h2>
       <p>
-        Bu üç platform için resmi açık API olmadığından, OrderDeck Chrome/Edge tarayıcı
-        eklentisi kullanılır. Eklenti yalnızca:
+        YouTube, Instagram ve Facebook canlı yayın chat'leri platformların resmi
+        API'leri üzerinden okunur. TikTok resmi bir açık API sunmadığından yalnızca
+        TikTok için OrderDeck Chrome/Edge tarayıcı eklentisi kullanılır. Eklenti
+        yalnızca:
       </p>
       <ul>
         <li>Kullanıcının açtığı canlı yayın sayfasındaki chat mesajlarını okur</li>
