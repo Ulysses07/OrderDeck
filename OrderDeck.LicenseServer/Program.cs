@@ -265,6 +265,7 @@ public class Program
             OrderDeck.LicenseServer.Services.IntakeForm.Login.IFacebookNameClient,
             OrderDeck.LicenseServer.Services.IntakeForm.Login.FacebookNameClient>();
         builder.Services.AddHttpClient<OrderDeck.LicenseServer.Services.Instagram.InstagramPrivateReplyClient>();
+        builder.Services.AddHttpClient<OrderDeck.LicenseServer.Services.Instagram.InstagramAccountService>();
 
         builder.Services.AddSingleton<BackupStorageService>();
         // Singleton ŞART: süreç başına tek sayaç olmasının bütün amacı bu.
