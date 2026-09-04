@@ -6,12 +6,12 @@
 |---|---|
 | `IntakeLogin__GoogleClientId` | Google OAuth istemci kimliği (AYRI "Web application" client — masaüstünün client'ı DEĞİL) |
 | `IntakeLogin__GoogleClientSecret` | Aynı client'ın sırrı |
+| `IntakeLogin__FacebookAppId` | "OrderDeck Kayit" Consumer app'inin kimliği (`1090037693602616`) — masaüstünün app'i DEĞİL |
+| `IntakeLogin__FacebookAppSecret` | Aynı app'in sırrı (Meta → App settings → Basic → App secret) |
 | `IntakeLogin__YouTubeEnabled` | `true` yapılınca YouTube bağlama açılır (Google doğrulaması ONAYLANMADAN açma) |
 | `IntakeLogin__FacebookEnabled` | `true` yapılınca Facebook bağlama açılır (review istemez, hemen açılabilir) |
 
-Facebook app kimliği/sırrı MEVCUT `OrderDeck__Facebook__*` değişkenlerinden
-okunur — yeni değişken yok. Redirect URI kodda sabit:
-`https://orderdeckapp.com/musteri-kayit/baglanti-donusu`.
+Redirect URI kodda sabit: `https://orderdeckapp.com/musteri-kayit/baglanti-donusu`.
 
 ## Google Cloud kurulumu (proje 876199969087 — mevcut onaylı proje)
 
@@ -29,12 +29,27 @@ okunur — yeni değişken yok. Redirect URI kodda sabit:
    (bayrak kapalı) — uçlar 404, formda link yok. Onay gelince `.env`'e
    `IntakeLogin__YouTubeEnabled=true` ekle + `docker compose up -d license-server`.
 
-## Meta (app 3939617702835404) kurulumu
+## Meta kurulumu — AYRI Consumer app ("OrderDeck Kayit", 1090037693602616)
 
-1. **Facebook Login → Settings → Valid OAuth Redirect URIs**'e
-   `https://orderdeckapp.com/musteri-kayit/baglanti-donusu` EKLE (mevcut
-   masaüstü redirect'i kalır).
-2. `public_profile` için App Review GEREKMEZ. `.env`'e
+Masaüstünün app'i (3939617702835404) **Facebook Login for Business** tipinde ve
+yalnız `public_profile` isteyen klasik `dialog/oauth` çağrısını "It looks like
+this app isn't available / supported permission" hatasıyla REDDEDİYOR (sahada
+gerçek kullanıcıyla görüldü, 2026-09-04). FLB'de dialog `config_id` ister ve
+izin kümesi login config'ten gelir; formun ihtiyacı olan salt-`public_profile`
+orada tanımlanamıyor. Çözüm: form için Consumer tipinde ayrı app.
+
+Kurulum durumu (2026-09-04, hepsi yapıldı):
+
+1. Consumer app + "Authenticate and request data from users with Facebook
+   Login" kullanım durumu. Classic login — `config_id` YOK, `public_profile`
+   otomatik erişimli, App Review gerekmez.
+2. **Facebook Login → Settings → Valid OAuth Redirect URIs**:
+   `https://orderdeckapp.com/musteri-kayit/baglanti-donusu`
+3. Basic settings: gizlilik/koşullar/veri-silme URL'leri, kategori (Alışveriş),
+   1024×1024 ikon.
+4. App, Emar Global işletme portföyüne bağlandı (işletme doğrulaması oradan
+   sağlanıyor) ve **Published** durumda.
+5. `.env`'e `IntakeLogin__FacebookAppId` + `IntakeLogin__FacebookAppSecret` +
    `IntakeLogin__FacebookEnabled=true` → `docker compose up -d license-server`.
 
 ## Google doğrulama başvurusu — gerekçe metni

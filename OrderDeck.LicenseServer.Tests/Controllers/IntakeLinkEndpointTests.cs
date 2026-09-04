@@ -7,7 +7,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
-using OrderDeck.LicenseServer.Services.Facebook;
 using OrderDeck.LicenseServer.Services.IntakeForm;
 using OrderDeck.LicenseServer.Services.IntakeForm.Login;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
@@ -26,6 +25,10 @@ public sealed class IntakeLinkFactory : ApiFactory
     public FakeFacebookNameClient Facebook { get; } = new();
     public FakeYouTubeChannelResolver Resolver { get; } = new();
 
+    /// <summary>Formun KENDİ Consumer app kimliği — 302'deki client_id'nin
+    /// bundan gelmesi çivileniyor (masaüstü app'ine sessiz dönüş regresyonu).</summary>
+    public string IntakeFacebookAppId { get; } = $"fbid-{Guid.NewGuid():N}";
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         base.ConfigureWebHost(builder);
@@ -41,14 +44,13 @@ public sealed class IntakeLinkFactory : ApiFactory
             {
                 o.GoogleClientId = $"cid-{Guid.NewGuid():N}";
                 o.GoogleClientSecret = $"cs-{Guid.NewGuid():N}";
+                o.FacebookAppId = IntakeFacebookAppId;
+                o.FacebookAppSecret = $"fbs-{Guid.NewGuid():N}";
                 o.YouTubeEnabled = true;
                 o.FacebookEnabled = true;
             });
-            services.PostConfigure<FacebookOptions>(o =>
-            {
-                o.AppId = $"fbid-{Guid.NewGuid():N}";
-                o.AppSecret = $"fbs-{Guid.NewGuid():N}";
-            });
+            // Masaüstü FacebookOptions BİLEREK yapılandırılmıyor: intake akışı
+            // artık ona bağımlı değil, bu boşluk o bağımsızlığı da test ediyor.
         });
     }
 }
@@ -372,6 +374,10 @@ public sealed class IntakeLinkEndpointTests : IClassFixture<IntakeLinkFactory>
         var loc = resp.Headers.Location!.ToString();
         loc.Should().StartWith("https://www.facebook.com/");
         loc.Should().Contain("scope=public_profile").And.Contain("state=");
+        // client_id formun KENDİ Consumer app'inden gelmeli — masaüstünün FLB
+        // app'i public_profile-yalnız dialog'u reddediyor; oraya sessiz dönüş
+        // sahada "supported permission" hatası demek (2026-09-04).
+        loc.Should().Contain("client_id=" + _factory.IntakeFacebookAppId);
     }
 
     [Fact]

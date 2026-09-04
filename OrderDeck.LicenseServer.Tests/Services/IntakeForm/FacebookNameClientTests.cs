@@ -37,9 +37,13 @@ public sealed class FacebookNameClientTests
         var http = new HttpClient(handler);
         var client = new FacebookNameClient(
             http,
-            Options.Create(new FacebookOptions { AppId = _appId, AppSecret = _appSecret }),
+            // FacebookOptions yalnız GraphBaseUrl/sürüm için; kimlikler artık
+            // IntakeLoginOptions'tan — boş bırakılması bunu da çiviliyor.
+            Options.Create(new FacebookOptions()),
             Options.Create(new IntakeLoginOptions
             {
+                FacebookAppId = _appId,
+                FacebookAppSecret = _appSecret,
                 RedirectUri = "https://orderdeckapp.com/musteri-kayit/baglanti-donusu"
             }),
             NullLogger<FacebookNameClient>.Instance);

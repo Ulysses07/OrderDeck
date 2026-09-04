@@ -14,8 +14,10 @@ public interface IFacebookNameClient
 /// Kayıt formu için Facebook görünen adı: code → kısa ömürlü token →
 /// <c>/me?fields=id,name</c>. Masaüstü akışındaki FacebookOAuthExchanger'dan
 /// AYRI — o long-lived token üretir ve kendi RedirectUri'sine bağlıdır; burada
-/// token metot bitince atılır. App aynı (<c>OrderDeck:Facebook</c>).
-/// GraphBaseUrl testlerde override edilebilsin diye FacebookOptions'tan gelir.
+/// token metot bitince atılır. App de AYRI (bkz. IntakeLoginOptions doc'u):
+/// kimlik bilgileri <c>IntakeLogin__Facebook*</c>'tan gelir. GraphBaseUrl ve
+/// sürüm testlerde override edilebilsin diye FacebookOptions'tan gelmeye
+/// devam eder — takas ucu app'ten bağımsız, aynı Graph.
 /// </summary>
 public sealed class FacebookNameClient : IFacebookNameClient
 {
@@ -47,8 +49,8 @@ public sealed class FacebookNameClient : IFacebookNameClient
             {
                 Content = new FormUrlEncodedContent(new Dictionary<string, string>
                 {
-                    ["client_id"] = _fb.AppId,
-                    ["client_secret"] = _fb.AppSecret,
+                    ["client_id"] = _login.FacebookAppId!,
+                    ["client_secret"] = _login.FacebookAppSecret!,
                     ["redirect_uri"] = _login.RedirectUri,
                     ["code"] = code
                 })

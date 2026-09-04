@@ -2,7 +2,6 @@ using System.ComponentModel.DataAnnotations;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Controllers;
 using OrderDeck.LicenseServer.Domain;
-using OrderDeck.LicenseServer.Services.Facebook;
 using OrderDeck.LicenseServer.Services.IntakeForm;
 using OrderDeck.LicenseServer.Services.IntakeForm.Login;
 using Microsoft.AspNetCore.Mvc;
@@ -24,7 +23,6 @@ public class IntakeFormModel : PageModel
     private readonly IYouTubeChannelResolver _youTube;
     private readonly IntakeLinkStore _linkStore;
     private readonly IOptions<IntakeLoginOptions> _loginOptions;
-    private readonly IOptions<FacebookOptions> _facebookOptions;
 
     public IntakeFormModel(
         IntakeFormService service,
@@ -32,8 +30,7 @@ public class IntakeFormModel : PageModel
         ILogger<IntakeFormModel> log,
         IYouTubeChannelResolver youTube,
         IntakeLinkStore linkStore,
-        IOptions<IntakeLoginOptions> loginOptions,
-        IOptions<FacebookOptions> facebookOptions)
+        IOptions<IntakeLoginOptions> loginOptions)
     {
         _service = service;
         _linkBuilder = linkBuilder;
@@ -41,7 +38,6 @@ public class IntakeFormModel : PageModel
         _youTube = youTube;
         _linkStore = linkStore;
         _loginOptions = loginOptions;
-        _facebookOptions = facebookOptions;
     }
 
     [BindProperty(SupportsGet = true)]
@@ -69,8 +65,7 @@ public class IntakeFormModel : PageModel
     // Link yalnız özellik gerçekten çalışır durumdayken çizilir — 404 veren
     // uca görünür link koymak müşteriyi çıkmaza sokar.
     public bool ShowYouTubeLink => _loginOptions.Value.YouTubeLoginReady;
-    public bool ShowFacebookLink =>
-        _loginOptions.Value.FacebookEnabled && _facebookOptions.Value.IsConfigured;
+    public bool ShowFacebookLink => _loginOptions.Value.FacebookLoginReady;
 
     // Kayıt alındıktan sonraki onay ekranını süren iki değer. POST doğrudan
     // WhatsApp'a 302 dönmüyor; kendi sayfasına dönüyor ve geçiş orada JS ile
