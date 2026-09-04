@@ -113,7 +113,10 @@ public sealed class InstagramLiveCommentJob
         if (!ok)
         {
             acc.LastError = $"private reply düştü ({DateTimeOffset.UtcNow:O})";
-            await _db.SaveChangesAsync(ct);
+            // Best-effort tanı yazımı: iptal/DB hatası no-throw sözleşmesini
+            // delmesin (Hangfire retry'ı tetiklenmemeli).
+            try { await _db.SaveChangesAsync(CancellationToken.None); }
+            catch (Exception ex) { _log.LogWarning(ex, "IG LastError yazılamadı."); }
         }
         else
         {

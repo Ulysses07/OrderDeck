@@ -233,6 +233,21 @@ public sealed class InstagramLiveCommentJobTests
         handler.Requests.Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task Bot_kapali_config_dm_uretmez()
+    {
+        var dp = new EphemeralDataProtectionProvider();
+        using var db = NewDb();
+        var (igUserId, _, _, _) = await SeedAsync(db, dp, botEnabled: false);
+        var (job, handler) = NewJob(db, dp);
+
+        await job.ProcessAsync(
+            Payload(igUserId, "cmt-1", "viewer-1", "biri", "!kayıt"),
+            CancellationToken.None);
+
+        handler.Requests.Should().BeEmpty();
+    }
+
     // DM gövdesindeki linki çıkarmak için yardımcı
     private static string ExtractLink(string body)
     {
