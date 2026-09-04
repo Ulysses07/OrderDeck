@@ -157,10 +157,12 @@ export default function PrivacyEn() {
         </a>).
       </p>
 
-      <h2>3. Browser extension (Instagram, TikTok, Facebook)</h2>
+      <h2>3. Browser extension (TikTok only)</h2>
       <p>
-        Because these three platforms do not offer an open public API, OrderDeck uses a
-        Chrome/Edge browser extension. The extension only:
+        Live-stream chat for YouTube, Instagram and Facebook is read through the
+        platforms&apos; official APIs. Because TikTok does not offer an open public
+        API, OrderDeck uses a Chrome/Edge browser extension for TikTok only. The
+        extension only:
       </p>
       <ul>
         <li>Reads chat messages from the live-stream page the user opens</li>
