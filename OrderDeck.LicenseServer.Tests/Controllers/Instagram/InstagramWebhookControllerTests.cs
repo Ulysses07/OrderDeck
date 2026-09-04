@@ -100,6 +100,18 @@ public sealed class InstagramWebhookControllerTests
         }
 
         [Fact]
+        public async Task Sahte_imzali_post_403()
+        {
+            var body = "{\"object\":\"instagram\"}";
+            var content = new StringContent(body, Encoding.UTF8, "application/json");
+            content.Headers.Add("X-Hub-Signature-256", Sign(body, $"yanlis-{Guid.NewGuid():N}"));
+
+            var resp = await _factory.CreateClient().PostAsync(Url, content);
+
+            resp.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        }
+
+        [Fact]
         public async Task Imzali_post_200_ve_job_kuyruklanir()
         {
             var body = "{\"object\":\"instagram\",\"entry\":[]}";
