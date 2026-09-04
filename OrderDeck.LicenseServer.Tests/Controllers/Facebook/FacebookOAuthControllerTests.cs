@@ -227,12 +227,14 @@ public sealed class FacebookOAuthControllerTests : IDisposable
     [Fact]
     public async Task Ig_botu_acik_musteride_exchange_account_satiri_olusturur()
     {
-        const string PagesJson = """{"data":[{"id":"page-1","access_token":"page-tok-test","instagram_business_account":{"id":"ig-99","username":"test.ig"}}]}""";
+        // Sahte token bile sabit yazılmaz (public repo + tarayıcı kuralı) — üret.
+        var pageTok = $"pagetok-{Guid.NewGuid():N}";
+        var pagesJson = $$$"""{"data":[{"id":"page-1","access_token":"{{{pageTok}}}","instagram_business_account":{"id":"ig-99","username":"test.ig"}}]}""";
 
         var igHandler = new IgStubHandler
         {
             Respond = req => req.RequestUri!.AbsolutePath.Contains("/me/accounts")
-                ? IgJson(PagesJson)
+                ? IgJson(pagesJson)
                 : IgJson("""{"success":true}""")
         };
 
