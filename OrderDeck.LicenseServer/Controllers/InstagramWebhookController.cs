@@ -77,7 +77,10 @@ public sealed class InstagramWebhookController : ControllerBase
     {
         if (!_opt.Ready) return NotFound();
 
-        if (Request.ContentLength > MaxBodyBytes) return StatusCode(StatusCodes.Status413PayloadTooLarge);
+        // ContentLength chunked isteklerde null olur; null'ı sınır aşımı say
+        // (Kestrel'in 30 MB tavanına güvenip 1 MB sınırını deldirmeyelim).
+        if ((Request.ContentLength ?? long.MaxValue) > MaxBodyBytes)
+            return StatusCode(StatusCodes.Status413PayloadTooLarge);
 
         string rawBody;
         using (var reader = new StreamReader(Request.Body, Encoding.UTF8))
