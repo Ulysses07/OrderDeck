@@ -35,4 +35,12 @@ public sealed class IntakeIgTokenServiceTests
         var token = NewService().Create("royalmezat", "musa");
         NewService().TryRead(token).Should().BeNull("EphemeralDataProtectionProvider her seferinde ayrı anahtar üretir");
     }
+
+    [Fact]
+    public void Gecersiz_base64_tokeni_null_doner()
+    {
+        // Sorgu dizisinden gelen token güvenilmez girdi — bozuk base64url
+        // FormatException'a dönüşür, 500 değil null beklenir.
+        NewService().TryRead("!!!").Should().BeNull();
+    }
 }

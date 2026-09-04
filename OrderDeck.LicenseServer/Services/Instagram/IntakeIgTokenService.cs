@@ -23,7 +23,8 @@ public sealed class IntakeIgTokenService
         => _protector.Protect($"{slug}\n{igUsername}", Lifetime);
 
     /// <summary>Geçersiz/süresi dolmuş token'da null — form bağlantısız açılır,
-    /// hata ekranı YOK (spec §4).</summary>
+    /// hata ekranı YOK (spec §4). Sorgu dizisinden gelen bozuk base64url girdisi
+    /// <see cref="FormatException"/> üretebilir; o da burada yutulur, 500 dönmez.</summary>
     public (string Slug, string IgUsername)? TryRead(string token)
     {
         try
@@ -31,7 +32,7 @@ public sealed class IntakeIgTokenService
             var parts = _protector.Unprotect(token).Split('\n');
             return parts.Length == 2 ? (parts[0], parts[1]) : null;
         }
-        catch (CryptographicException)
+        catch (Exception ex) when (ex is CryptographicException or FormatException)
         {
             return null;
         }
