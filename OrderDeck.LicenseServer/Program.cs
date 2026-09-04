@@ -253,6 +253,9 @@ public class Program
         builder.Services.Configure<OrderDeck.LicenseServer.Services.IntakeForm.Login.IntakeLoginOptions>(
             builder.Configuration.GetSection(
                 OrderDeck.LicenseServer.Services.IntakeForm.Login.IntakeLoginOptions.SectionName));
+        builder.Services.Configure<OrderDeck.LicenseServer.Services.Instagram.InstagramDmOptions>(
+            builder.Configuration.GetSection(
+                OrderDeck.LicenseServer.Services.Instagram.InstagramDmOptions.SectionName));
         builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.IntakeForm.Login.IntakeLinkStore>();
         builder.Services.AddHttpClient<
             OrderDeck.LicenseServer.Services.IntakeForm.Login.IGoogleChannelClient,
