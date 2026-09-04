@@ -2,6 +2,7 @@ using System.Net;
 using FluentAssertions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Instagram;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
@@ -238,6 +239,97 @@ public sealed class IntakeFormPageTests : IClassFixture<ApiFactory>
             ["Input.District"] = "Kadıköy",
             ["Input.Phone"] = "5551234567"
         });
+
+    private static FormUrlEncodedContent BuildMinimalForm(string antiForgery, string slug)
+        => new(new Dictionary<string, string>
+        {
+            ["__RequestVerificationToken"] = antiForgery,
+            ["Slug"] = slug,
+            ["Input.FullName"] = "Bilal Canlı",
+            ["Input.Email"] = "bilal@example.com",
+            ["Input.Address"] = "Atatürk Cad. No:12",
+            ["Input.City"] = "İstanbul",
+            ["Input.District"] = "Kadıköy",
+            ["Input.Phone"] = "5551234567"
+        });
+
+    [Fact]
+    public async Task Gecerli_ig_tokeni_kimligi_baglar()
+    {
+        // Arrange
+        var (slug, customerId) = await SeedConfigAsync();
+        var igTokenService = _factory.Services.GetRequiredService<IntakeIgTokenService>();
+        var igUser = $"ig_{Guid.NewGuid():N}"[..20];
+        var token = igTokenService.Create(slug, igUser);
+
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = true
+        });
+
+        // GET ?ig= → bağlı kimlik çipi HTML'de görünmeli
+        var getResp = await client.GetAsync($"/r/{slug}?ig={Uri.EscapeDataString(token)}");
+        getResp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var html = await getResp.Content.ReadAsStringAsync();
+        html.Should().Contain(igUser, "IG kullanıcı adı çipte görünmeli");
+        html.Should().Contain("linked-chip", "bağlı kimlik çipi render edilmeli");
+        html.Should().Contain("Instagram hesabın bağlandı", "bağlantı banner'ı çıkmalı");
+
+        // POST submit → InstagramUsername kayda yazılmış olmalı
+        var antiForgery = AdminLoginHelper.ExtractAntiForgeryToken(html);
+        var postResp = await client.PostAsync($"/r/{slug}?handler=Submit",
+            BuildMinimalForm(antiForgery, slug));
+        postResp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var sub = await db.IntakeFormSubmissions
+            .Where(s => s.Config.CustomerId == customerId)
+            .FirstOrDefaultAsync();
+        sub.Should().NotBeNull();
+        sub!.InstagramUsername.Should().Be(igUser);
+    }
+
+    [Fact]
+    public async Task Yanlis_sluga_ait_token_yok_sayilir()
+    {
+        // Arrange: iki ayrı slug; token başka slug'a ait
+        var (slug1, _) = await SeedConfigAsync();
+        var (slug2, _) = await SeedConfigAsync();
+        var igTokenService = _factory.Services.GetRequiredService<IntakeIgTokenService>();
+        var token = igTokenService.Create(slug1, "birkullanici");
+
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            HandleCookies = true
+        });
+
+        // slug2'ye gönderilen slug1 token'ı → form normal açılır, çip yok, hata yok
+        var getResp = await client.GetAsync($"/r/{slug2}?ig={Uri.EscapeDataString(token)}");
+        getResp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var html = await getResp.Content.ReadAsStringAsync();
+        html.Should().NotContain("linked-chip", "yanlış slug token'ı çip üretmemeli");
+        html.Should().NotContain("Instagram hesabın bağlandı", "bağlantı banner'ı çıkmamalı");
+        html.Should().Contain("intakeForm", "form normal render edilmeli");
+    }
+
+    [Fact]
+    public async Task Bozuk_token_yok_sayilir()
+    {
+        var (slug, _) = await SeedConfigAsync();
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            HandleCookies = true
+        });
+
+        // Bozuk ?ig= → form normal açılır, hata ekranı YOK
+        var getResp = await client.GetAsync($"/r/{slug}?ig=curcuna");
+        getResp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var html = await getResp.Content.ReadAsStringAsync();
+        html.Should().NotContain("linked-chip", "bozuk token çip üretmemeli");
+        html.Should().Contain("intakeForm", "form normal render edilmeli");
+    }
 
     [Fact]
     public async Task Post_submit_honeypot_filled_silently_returns_200_and_does_not_persist()

@@ -13,6 +13,12 @@ public sealed class IntakeFormConfig
     public string WhatsAppPhone { get; set; } = "";
     public string? CustomTitle { get; set; }
     public bool IsActive { get; set; } = true;
+
+    /// <summary>"!kayıt → DM" botu (Instagram). Açılınca: FB OAuth exchange'i
+    /// bu müşterinin Page token'ını sunucuda saklar ve webhook aboneliği kurar.
+    /// Kapalıyken exchange bugünkü gibi yalnız relay eder (token saklanmaz).</summary>
+    public bool InstagramDmBotEnabled { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
 }

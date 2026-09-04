@@ -97,3 +97,58 @@ eşleşemeyen kayıtların (taban ölçüm: hareketsiz oran %46-95, bkz.
    channelId'siyle eşleşiyor mu kontrol et.
 4. Bir süre sonra `docs/olcum/2026-09-02-eslesmeyen-kayit-olcumu.md`
    sorgularını tekrar koştur — oran düşüyor mu, özelliğin varlık sebebi bu.
+
+---
+
+## Instagram "!kayıt" → DM
+
+### Özellik özeti
+
+İzleyici IG canlı yayın sohbetine `!kayıt` yazar; bot bunu yakalar ve private
+reply DM olarak tokenlı kayıt linki gönderir. İzleyici linke tıklayınca form
+açılır ve Instagram kimliği otomatik bağlanır — `InstagramUsername` alanı elle
+girme gerekmez.
+
+Yayıncı tarafı kurulumu iki adım:
+
+1. **Panelden** `instagramDmBotEnabled` bayrağını aç (`PUT /api/v1/me/intake-form`).
+2. **WPF'ten Facebook'a (yeniden) bağlan.** Bağlanma sırasında IG hesabı ve
+   sayfa long-lived token'ı sunucuda şifreli saklanır; `live_comments` webhook
+   aboneliği otomatik kurulur.
+
+### Env değişkenleri (VPS `.env`)
+
+| Değişken | Anlamı |
+|---|---|
+| `InstagramDm__Enabled` | Varsayılan `false` — webhook ucu karanlık. `true` yapılınca `/api/v1/instagram/webhook` aktifleşir. |
+| `InstagramDm__VerifyToken` | Meta panelinde girilen verify token ile **birebir aynı** olmalı. Örnek: `<rastgele-uzun-değer>` |
+
+### Meta paneli el adımları
+
+**Sıra ÖNEMLİ:** önce `.env`'e değerleri yaz ve container'ı yeniden başlat;
+ardından Meta panelinde doğrulama başlat — uç `Enabled=true` olmadan 404
+döner ve Meta doğrulaması geçemez.
+
+1. **Masaüstü uygulamanın app'i** (App ID `3939617702835404`) → **Facebook
+   Login for Business** → ilgili login config'e şu scope'ları ekle:
+   `instagram_manage_messages`, `pages_manage_metadata`.
+
+2. **App → Webhooks → Instagram nesnesi:**
+   - Callback URL: `https://license.orderdeckapp.com/api/v1/instagram/webhook`
+   - Verify Token: `.env`'deki `InstagramDm__VerifyToken` değeriyle aynı
+   - Alan: `live_comments` → abone ol
+
+3. **App Review:** `instagram_manage_messages` advanced access başvurusu aç.
+   Meta ekran kaydı ister (`!kayıt` → DM akışını gösteren video). Onay
+   gelene kadar yalnız app'te rolü olan hesaplar (test kullanıcıları) özelliği
+   kullanabilir.
+
+4. **Yayın sonrası uçtan uca doğrulama:**
+   - Panelden `instagramDmBotEnabled` bayrağını aç.
+   - WPF'ten Facebook'a yeniden bağlan.
+   - Sunucuda `InstagramAccounts` tablosunda bağlı yayıncı satırını kontrol et.
+   - Canlı yayında `!kayıt` yaz.
+   - Birkaç saniye içinde DM'de tokenlı link gelmeli.
+   - Linkte form açılınca Instagram çipi (`@kullanici_adi`) görünmeli.
+   - Kaydın tamamlanması sonrası `InstagramUsername` alanının dolu olduğunu
+     panelden doğrula.

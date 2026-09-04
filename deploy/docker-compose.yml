@@ -211,6 +211,12 @@ services:
       IntakeLogin__FacebookAppSecret: "${IntakeLogin__FacebookAppSecret:-}"
       IntakeLogin__YouTubeEnabled: "${IntakeLogin__YouTubeEnabled:-false}"
       IntakeLogin__FacebookEnabled: "${IntakeLogin__FacebookEnabled:-false}"
+      # Instagram "!kayıt → DM" botu (karanlık deploy). İkisi de doluysa
+      # /api/v1/instagram/webhook ucu aktifleşir; biri eksikse 404 döner.
+      # Sıra ÖNEMLİ: önce bu değerleri .env'e yaz + container restart,
+      # sonra Meta panelinde webhook doğrulamasını başlat (bkz. docs/kayit-formu-giris.md).
+      InstagramDm__Enabled: "${InstagramDm__Enabled:-false}"
+      InstagramDm__VerifyToken: "${InstagramDm__VerifyToken:-}"
       # OpenTelemetry export. Set OTEL_EXPORTER_OTLP_ENDPOINT in .env to push
       # traces+metrics to a collector (Grafana Cloud, Honeycomb, Tempo, etc.).
       # Empty = no push; /metrics scrape endpoint still works regardless.

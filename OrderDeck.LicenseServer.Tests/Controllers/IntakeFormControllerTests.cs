@@ -181,7 +181,67 @@ public sealed class IntakeFormControllerTests : IClassFixture<ApiFactory>
         rows2[0].username.Should().Be("uname");
     }
 
+    [Fact]
+    public async Task Put_InstagramDmBotEnabled_true_then_Get_returns_true_and_persists_in_db()
+    {
+        var (client, customerId) = await CreateAuthedClientAsync();
+        var slug = $"s-{Guid.NewGuid():N}"[..10];
+
+        var putResp = await client.PutAsJsonAsync("/api/v1/me/intake-form", new
+        {
+            slug,
+            whatsAppPhone = "+905551234567",
+            isActive = true,
+            instagramDmBotEnabled = true
+        });
+        putResp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var putBody = await putResp.Content.ReadFromJsonAsync<IntakeFormBody>();
+        putBody!.instagramDmBotEnabled.Should().BeTrue();
+
+        var getResp = await client.GetAsync("/api/v1/me/intake-form");
+        getResp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var getBody = await getResp.Content.ReadFromJsonAsync<IntakeFormBody>();
+        getBody!.instagramDmBotEnabled.Should().BeTrue();
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var cfg = await db.IntakeFormConfigs.FirstAsync(c => c.CustomerId == customerId);
+        cfg.InstagramDmBotEnabled.Should().BeTrue();
+    }
+
+    /// <summary>Uç sözleşmesi tam gövdeli PUT'tur (IsActive gibi): bayrak omit
+    /// edilirse false'a döner. Güvenli taraf — bot istemsiz AÇILAMAZ; panel her
+    /// kayıtta tam gövde yollar. Bu test sözleşmeyi sabitler, sürpriz olmasın.</summary>
+    [Fact]
+    public async Task Put_bayragi_gondermezse_false_a_doner()
+    {
+        var (client, customerId) = await CreateAuthedClientAsync();
+        var slug = $"s-{Guid.NewGuid():N}"[..10];
+
+        await client.PutAsJsonAsync("/api/v1/me/intake-form", new
+        {
+            slug,
+            whatsAppPhone = "+905551234567",
+            isActive = true,
+            instagramDmBotEnabled = true
+        });
+
+        // Bayrak omit edilmiş ikinci PUT — tam gövde sözleşmesi gereği false'a çeker.
+        var putResp = await client.PutAsJsonAsync("/api/v1/me/intake-form", new
+        {
+            slug,
+            whatsAppPhone = "+905551234567",
+            isActive = true
+        });
+        putResp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var cfg = await db.IntakeFormConfigs.FirstAsync(c => c.CustomerId == customerId);
+        cfg.InstagramDmBotEnabled.Should().BeFalse();
+    }
+
     private sealed record LoginBody(string Token, DateTimeOffset ExpiresAt);
-    private sealed record IntakeFormBody(string slug, string whatsAppPhone, string? customTitle, bool isActive, string formUrl);
+    private sealed record IntakeFormBody(string slug, string whatsAppPhone, string? customTitle, bool isActive, string formUrl, bool instagramDmBotEnabled);
     private sealed record SubmissionBody(Guid id, string username, string fullName, string address, DateTimeOffset submittedAt);
 }

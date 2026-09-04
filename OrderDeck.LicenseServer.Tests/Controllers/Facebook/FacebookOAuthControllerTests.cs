@@ -1,9 +1,13 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Facebook;
 using OrderDeck.LicenseServer.Services.WhatsApp;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
@@ -16,6 +20,10 @@ namespace OrderDeck.LicenseServer.Tests.Controllers.Facebook;
 /// cevabı değil, ucun garantileri: App Secret hiçbir yanıtta yok, yetkisiz
 /// çağıran takas yaptıramıyor ve yapılandırılmamış sunucu sessizce değil
 /// açıkça başarısız oluyor.
+///
+/// <para>IG DM bot kancası: exchange başarısıysa TryConnectAsync çağrılır;
+/// bayrağı açık müşteride InstagramAccounts satırı oluşur, bayrak kapalıysa
+/// oluşmaz.</para>
 /// </summary>
 public sealed class FacebookOAuthControllerTests : IDisposable
 {
@@ -36,6 +44,24 @@ public sealed class FacebookOAuthControllerTests : IDisposable
         }
     }
 
+    /// <summary>InstagramAccountService'in /me/accounts ve /subscribed_apps
+    /// isteklerini yakalayan senkron stub. Yanıt kuyrukla değil Respond
+    /// delegate'iyle belirlenir — farklı URL'lere farklı yanıt vermek için.</summary>
+    private sealed class IgStubHandler : HttpMessageHandler
+    {
+        public Func<HttpRequestMessage, HttpResponseMessage> Respond { get; set; } =
+            _ => new HttpResponseMessage(HttpStatusCode.InternalServerError);
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken ct)
+            => Task.FromResult(Respond(request));
+    }
+
+    private static HttpResponseMessage IgJson(string json) => new(HttpStatusCode.OK)
+    {
+        Content = new StringContent(json, Encoding.UTF8, "application/json")
+    };
+
     private sealed class FbApiFactory : ApiFactory
     {
         public FakeExchanger Exchanger { get; } = new();
@@ -43,6 +69,11 @@ public sealed class FacebookOAuthControllerTests : IDisposable
         /// <summary>Varsayılan sunucu yapılandırılmamıştır (App Secret yok);
         /// "yapılandırılmış" hâli testler açıkça istediğinde kuruluyor.</summary>
         public bool Configured { get; init; } = true;
+
+        /// <summary>InstagramAccountService'in HttpClient'ini yönlendiren stub.
+        /// null ise (varsayılan), servise ulaşan istek varsa 500 döner — bayrak
+        /// kapalı senaryolarda istek gelmemesi beklenir zaten.</summary>
+        public IgStubHandler? IgHandler { get; init; }
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -57,22 +88,29 @@ public sealed class FacebookOAuthControllerTests : IDisposable
                     o.LoginConfigId = "CONFIG_1";
                     o.RedirectUri = "https://orderdeckapp.com/facebook/callback";
                     o.GraphApiVersion = "v22.0";
+                    o.GraphBaseUrl = "https://graph.facebook.test";
                 });
+
+                // InstagramAccountService typed HttpClient'inin primary handler'ını
+                // test stub'ıyla değiştir. Typed client adı tam tür adıdır.
+                var handlerToUse = IgHandler ?? new IgStubHandler();
+                s.AddHttpClient<OrderDeck.LicenseServer.Services.Instagram.InstagramAccountService>()
+                    .ConfigurePrimaryHttpMessageHandler(() => handlerToUse);
             });
         }
     }
 
-    private sealed record Seed(HttpClient Client, FbApiFactory Factory)
+    private sealed record Seed(HttpClient Client, FbApiFactory Factory, Guid CustomerId)
     {
         public FakeExchanger Exchanger => Factory.Exchanger;
     }
 
-    private async Task<Seed> SeedAsync(bool configured = true)
+    private async Task<Seed> SeedAsync(bool configured = true, IgStubHandler? igHandler = null)
     {
-        var factory = new FbApiFactory { Configured = configured };
+        var factory = new FbApiFactory { Configured = configured, IgHandler = igHandler };
         _factories.Add(factory);
-        var (client, _, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(factory);
-        return new Seed(client, factory);
+        var (client, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(factory);
+        return new Seed(client, factory, customerId);
     }
 
     private sealed record ConfigDto(
@@ -180,6 +218,91 @@ public sealed class FacebookOAuthControllerTests : IDisposable
             .StatusCode.Should().Be(HttpStatusCode.Unauthorized);
 
         s.Exchanger.SeenCode.Should().BeNull();
+    }
+
+    // IG DM botu: opt-in kancası ──────────────────────────────────────────────
+
+    /// <summary>InstagramDmBotEnabled=true olan müşteride başarılı exchange
+    /// sonrası InstagramAccounts satırı oluşmalı; exchange yanıtı 200 olmalı.</summary>
+    [Fact]
+    public async Task Ig_botu_acik_musteride_exchange_account_satiri_olusturur()
+    {
+        // Sahte token bile sabit yazılmaz (public repo + tarayıcı kuralı) — üret.
+        var pageTok = $"pagetok-{Guid.NewGuid():N}";
+        var pagesJson = $$$"""{"data":[{"id":"page-1","access_token":"{{{pageTok}}}","instagram_business_account":{"id":"ig-99","username":"test.ig"}}]}""";
+
+        var igHandler = new IgStubHandler
+        {
+            Respond = req => req.RequestUri!.AbsolutePath.Contains("/me/accounts")
+                ? IgJson(pagesJson)
+                : IgJson("""{"success":true}""")
+        };
+
+        var s = await SeedAsync(igHandler: igHandler);
+
+        // Müşteriye aktif lisans + botEnabled=true config ekle.
+        using (var scope = s.Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Licenses.Add(new License
+            {
+                Id = Guid.NewGuid(), CustomerId = s.CustomerId, LicenseKey = $"lic-{Guid.NewGuid():N}",
+                IssuedAt = DateTimeOffset.UtcNow, ExpiresAt = DateTimeOffset.UtcNow.AddYears(1)
+            });
+            db.IntakeFormConfigs.Add(new IntakeFormConfig
+            {
+                Id = Guid.NewGuid(), CustomerId = s.CustomerId,
+                Slug = $"s{Guid.NewGuid():N}"[..10],
+                InstagramDmBotEnabled = true, IsActive = true
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await ExchangeAsync(s, "CODE_IG");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var verifyScope = s.Factory.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var acc = await verifyDb.InstagramAccounts.SingleOrDefaultAsync();
+        acc.Should().NotBeNull("bot bayrağı açık, IG hesabı bağlı sayfadan geldi");
+        acc!.IgUserId.Should().Be("ig-99");
+        acc.PageId.Should().Be("page-1");
+    }
+
+    /// <summary>InstagramDmBotEnabled=false (ya da IntakeFormConfig yok) ise
+    /// exchange başarılı olur ama InstagramAccounts satırı OLUŞMAZ.</summary>
+    [Fact]
+    public async Task Ig_botu_kapali_musteride_exchange_account_satiri_olusturmaz()
+    {
+        var s = await SeedAsync(); // igHandler yok — istek gelse 500 döner, ama gelmemeli
+
+        // Lisans var; config yok (ya da botEnabled=false).
+        using (var scope = s.Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Licenses.Add(new License
+            {
+                Id = Guid.NewGuid(), CustomerId = s.CustomerId, LicenseKey = $"lic-{Guid.NewGuid():N}",
+                IssuedAt = DateTimeOffset.UtcNow, ExpiresAt = DateTimeOffset.UtcNow.AddYears(1)
+            });
+            db.IntakeFormConfigs.Add(new IntakeFormConfig
+            {
+                Id = Guid.NewGuid(), CustomerId = s.CustomerId,
+                Slug = $"s{Guid.NewGuid():N}"[..10],
+                InstagramDmBotEnabled = false, IsActive = true
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await ExchangeAsync(s, "CODE_NO_IG");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var verifyScope = s.Factory.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await verifyDb.InstagramAccounts.AnyAsync()).Should().BeFalse(
+            "bayrak kapalı — token saklanmamalı, satır oluşmamalı");
     }
 
     public void Dispose()

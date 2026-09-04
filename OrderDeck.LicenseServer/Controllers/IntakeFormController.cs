@@ -27,10 +27,12 @@ public sealed class IntakeFormController : ControllerBase
     }
 
     public sealed record IntakeFormBody(
-        string Slug, string WhatsAppPhone, string? CustomTitle, bool IsActive, string FormUrl);
+        string Slug, string WhatsAppPhone, string? CustomTitle, bool IsActive, string FormUrl,
+        bool InstagramDmBotEnabled);
 
     public sealed record UpdateRequest(
-        string Slug, string WhatsAppPhone, string? CustomTitle, bool? IsActive);
+        string Slug, string WhatsAppPhone, string? CustomTitle, bool? IsActive,
+        bool? InstagramDmBotEnabled);
 
     public sealed record SubmissionBody(
         Guid Id, string Username, string FullName, string Address, string? Phone, DateTimeOffset SubmittedAt,
@@ -45,7 +47,7 @@ public sealed class IntakeFormController : ControllerBase
         var cfg = await _service.GetByCustomerAsync(customerId, ct);
         if (cfg is null) return NotFound();
         return Ok(new IntakeFormBody(cfg.Slug, cfg.WhatsAppPhone, cfg.CustomTitle, cfg.IsActive,
-            $"{_publicBaseUrl}/musteri-kayit/{cfg.Slug}"));
+            $"{_publicBaseUrl}/musteri-kayit/{cfg.Slug}", cfg.InstagramDmBotEnabled));
     }
 
     [HttpPut("api/v1/me/intake-form")]
@@ -65,9 +67,9 @@ public sealed class IntakeFormController : ControllerBase
         {
             var cfg = await _service.UpsertConfigAsync(
                 customerId, slug, phone, req.CustomTitle?.Trim(),
-                req.IsActive ?? true, ct);
+                req.IsActive ?? true, req.InstagramDmBotEnabled ?? false, ct);
             return Ok(new IntakeFormBody(cfg.Slug, cfg.WhatsAppPhone, cfg.CustomTitle, cfg.IsActive,
-                $"{_publicBaseUrl}/musteri-kayit/{cfg.Slug}"));
+                $"{_publicBaseUrl}/musteri-kayit/{cfg.Slug}", cfg.InstagramDmBotEnabled));
         }
         catch (IntakeFormService.SlugAlreadyTakenException)
         {
