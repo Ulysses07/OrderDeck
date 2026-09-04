@@ -7,7 +7,7 @@ export const metadata: Metadata = {
   description: `${BRAND} kişisel verileri nasıl işliyor — kapsam, saklama, paylaşım, kullanıcı hakları.`,
 };
 
-const EFFECTIVE_DATE = '2026-07-20';
+const EFFECTIVE_DATE = '2026-09-04';
 
 export default function PrivacyTr() {
   return (
@@ -59,6 +59,12 @@ export default function PrivacyTr() {
       </p>
       <ul>
         <li>Platform kullanıcı adları (Instagram, YouTube, Facebook, TikTok — alıcının bildirdiği)</li>
+        <li>
+          Alıcı formdaki opsiyonel &quot;Google ile bağla&quot; veya &quot;Facebook ile
+          bağla&quot; butonunu kullanırsa: kendi hesabının doğrulanmış kimliği — YouTube
+          için kanal adı, handle ve kanal kimliği; Facebook için görünen ad (YouTube
+          akışının ayrıntıları için Bölüm 2)
+        </li>
         <li>Ad soyad, e-posta, telefon (WhatsApp) numarası ve kargo adresi</li>
         <li>Fatura için opsiyonel T.C. Kimlik Numarası (yalnızca alıcı girmek isterse)</li>
         <li>WhatsApp ve/veya SMS ile bilgilendirme mesajı almaya dair açık rıza (onay kutuları)</li>
@@ -74,10 +80,12 @@ export default function PrivacyTr() {
 
       <h2>2. YouTube API kullanımı</h2>
       <p>
-        Uygulamanın YouTube canlı yayın özelliği, YouTube Data API v3 üzerinden çalışır.
+        {BRAND}, YouTube Data API v3\'ü iki ayrı akışta kullanır.
         Google API Hizmetleri Kullanıcı Verileri Politikası (Google API Services User Data Policy)
         ve <strong>Limited Use</strong> gerekliliklerine uygunluk taahhüt edilir.
       </p>
+
+      <h3>2.1. Masaüstü uygulaması (yayıncının kendi hesabı)</h3>
       <p>İstenen OAuth izinleri (kapsamlar):</p>
       <ul>
         <li>
@@ -89,7 +97,7 @@ export default function PrivacyTr() {
           açıkça tıkladığı an, tek tek mesaj silme veya kullanıcı banlama işlemleri için
         </li>
       </ul>
-      <p>YouTube API üzerinden alınan veriler:</p>
+      <p>Masaüstü akışında YouTube API üzerinden alınan veriler:</p>
       <ul>
         <li>Sadece kullanıcının kendi makinesinde işlenir</li>
         <li>{BRAND} sunucularına aktarılmaz</li>
@@ -104,6 +112,43 @@ export default function PrivacyTr() {
         </a>{' '}
         adresinden izni iptal edebilir.
       </p>
+
+      <h3>2.2. Kayıt formunda &quot;Google ile bağla&quot; (alıcının kendi kanalı)</h3>
+      <p>
+        Alıcı kayıt formunda (Bölüm 1.3) alıcı, YouTube kullanıcı adını elle yazmak
+        yerine dilerse &quot;Google ile bağla&quot; butonunu kullanabilir. Bu akışta tek
+        bir OAuth kapsamı istenir:
+      </p>
+      <ul>
+        <li>
+          <code>https://www.googleapis.com/auth/youtube.readonly</code> — Sunucu tarafında
+          tek bir <code>channels.list(mine=true)</code> çağrısıyla yalnızca alıcının{' '}
+          <strong>kendi</strong> kanalının adı, handle\'ı (customUrl) ve kanal kimliği
+          okunur. Abonelikler, oynatma listeleri, videolar, analitik veya başka hiçbir
+          veri okunmaz; hiçbir şey yazılmaz, değiştirilmez veya silinmez.
+        </li>
+      </ul>
+      <p>Bu akışta:</p>
+      <ul>
+        <li>
+          OAuth erişim token\'ı sunucuda bir kez kullanılır ve hemen atılır — erişim veya
+          yenileme token\'ı <strong>saklanmaz</strong>
+        </li>
+        <li>
+          Alınan kanal adı, handle ve kanal kimliği yalnızca alıcının kendi kaydının bir
+          parçası olarak saklanır ve yalnızca alıcının kayıt olduğu yayıncıya görünür
+          (saklama süresi: Bölüm 5, &quot;Kayıt formu ile toplanan alıcı bilgileri&quot;)
+        </li>
+        <li>Bu veri reklamcılık, profilleme veya makine öğrenmesi modeli eğitimi için kullanılmaz; üçüncü kişilere satılmaz veya devredilmez</li>
+        <li>
+          Alıcı dilediği an{' '}
+          <a href="https://myaccount.google.com/permissions" target="_blank" rel="noreferrer">
+            https://myaccount.google.com/permissions
+          </a>{' '}
+          adresinden uygulamanın erişimini iptal edebilir ve Bölüm 6\'daki yolla kaydının
+          silinmesini isteyebilir
+        </li>
+      </ul>
       <p>
         {BRAND} YouTube Data API Hizmetleri&apos;ni kullanır. Google&apos;ın kullanıcı verilerini
         işlemesi, <strong>Google Gizlilik Politikası&apos;na</strong>{' '}

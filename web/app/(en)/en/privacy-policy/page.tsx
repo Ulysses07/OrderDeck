@@ -7,7 +7,7 @@ export const metadata: Metadata = {
   description: `How ${BRAND} handles personal data — scope, retention, sharing, user rights.`,
 };
 
-const EFFECTIVE_DATE = '2026-07-20';
+const EFFECTIVE_DATE = '2026-09-04';
 
 export default function PrivacyEn() {
   return (
@@ -57,6 +57,12 @@ export default function PrivacyEn() {
       </p>
       <ul>
         <li>Platform usernames (Instagram, YouTube, Facebook, TikTok — as declared by the buyer)</li>
+        <li>
+          If the buyer chooses the optional &quot;Sign in with Google&quot; or
+          &quot;Sign in with Facebook&quot; button on the form: the verified identity of
+          their own account — for YouTube the channel title, handle and channel ID; for
+          Facebook the display name (see Section 2 for details of the YouTube flow)
+        </li>
         <li>Full name, email, phone (WhatsApp) number, and shipping address</li>
         <li>Optional Turkish national ID (T.C. Kimlik No) for invoicing (only if the buyer chooses to provide it)</li>
         <li>Explicit consent to receive informational messages via WhatsApp and/or SMS (checkboxes)</li>
@@ -72,12 +78,14 @@ export default function PrivacyEn() {
 
       <h2>2. YouTube API usage</h2>
       <p>
-        The YouTube live-stream functionality uses the YouTube Data API v3. {BRAND}'s use
+        {BRAND} uses the YouTube Data API v3 in two separate flows. {BRAND}'s use
         of information received from YouTube APIs adheres to the{' '}
         <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noreferrer">
           Google API Services User Data Policy
         </a>, including the <strong>Limited Use</strong> requirements.
       </p>
+
+      <h3>2.1. Desktop application (broadcaster&apos;s own account)</h3>
       <p>OAuth scopes requested:</p>
       <ul>
         <li>
@@ -90,7 +98,7 @@ export default function PrivacyEn() {
           inside the application
         </li>
       </ul>
-      <p>Data obtained via the YouTube API:</p>
+      <p>Data obtained via the YouTube API in the desktop flow:</p>
       <ul>
         <li>Is processed only on the user's own machine</li>
         <li>Is never transmitted to {BRAND} servers</li>
@@ -105,6 +113,42 @@ export default function PrivacyEn() {
           https://myaccount.google.com/permissions
         </a>.
       </p>
+
+      <h3>2.2. Registration form &quot;Sign in with Google&quot; (buyer&apos;s own channel)</h3>
+      <p>
+        On the buyer registration form (Section 1.3), a buyer may optionally press
+        &quot;Sign in with Google&quot; instead of typing their YouTube handle by hand.
+        This flow requests a single OAuth scope:
+      </p>
+      <ul>
+        <li>
+          <code>https://www.googleapis.com/auth/youtube.readonly</code> — used for one
+          server-side call to <code>channels.list(mine=true)</code> that reads only the
+          title, handle (customUrl) and channel ID of the buyer&apos;s <strong>own</strong>{' '}
+          channel. No subscriptions, playlists, videos, analytics or any other data are
+          read; nothing is ever posted, modified or deleted.
+        </li>
+      </ul>
+      <p>In this flow:</p>
+      <ul>
+        <li>
+          The OAuth access token is used once, server-side, and immediately discarded —
+          we store <strong>no</strong> access or refresh tokens
+        </li>
+        <li>
+          The retrieved channel title, handle and channel ID are stored solely as part of
+          that buyer&apos;s own registration and are visible only to the broadcaster the
+          buyer is registering with (retention: Section 5, &quot;Buyer information&quot;)
+        </li>
+        <li>The data is not used for advertising, profiling, or training machine-learning models, and is not sold or transferred to third parties</li>
+        <li>
+          Buyers may revoke the app&apos;s access at any time via{' '}
+          <a href="https://myaccount.google.com/permissions" target="_blank" rel="noreferrer">
+            https://myaccount.google.com/permissions
+          </a>{' '}
+          and may request deletion of their registration as described in Section 6
+        </li>
+      </ul>
       <p>
         {BRAND} uses YouTube API Services. Google&apos;s processing of user data is governed
         by the <strong>Google Privacy Policy</strong>{' '}
