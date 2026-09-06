@@ -301,7 +301,9 @@ public sealed class IntakeLinkEndpointTests : IClassFixture<IntakeLinkFactory>
         html.Should().NotContain("id=\"ytUser\"");
         // Facebook'ta da elle giriş bayrak açıkken çizilmez: FB eşleşmesi görünen
         // ada dayalı, OAuth tam olarak onu veriyor — elle "kullanıcı adı" zayıf halka.
-        html.Should().Contain("Facebook ile bağlan");
+        // Onaylı FB Login metninin Türkçesi ("Continue with Facebook") + marka stili.
+        html.Should().Contain("Facebook ile devam et");
+        html.Should().Contain("sso-btn--fb");
         html.Should().NotContain("id=\"Input_FacebookUsername\"");
     }
 
