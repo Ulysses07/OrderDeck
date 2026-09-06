@@ -265,7 +265,7 @@ public sealed class IntakeLinkEndpointTests : IClassFixture<IntakeLinkFactory>
     }
 
     [Fact]
-    public async Task Unlink_kimligi_siler_ve_kutuyu_geri_getirir()
+    public async Task Unlink_kimligi_siler_ve_butonu_geri_getirir()
     {
         var (client, slug) = await LinkAsync("youtube", new IntakeLoginResult(true, null,
             new IntakeLinkedIdentity("Bilal Kanal", "@bilalkanal", "UCbagli0002")));
@@ -282,17 +282,23 @@ public sealed class IntakeLinkEndpointTests : IClassFixture<IntakeLinkFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
         var after = await (await client.GetAsync($"/musteri-kayit/{slug}")).Content.ReadAsStringAsync();
         after.Should().NotContain("linked-chip");
-        after.Should().Contain("id=\"ytUser\"");
+        // Bayrak açıkken elle giriş dönmez; dönen şey YouTube butonudur.
+        after.Should().NotContain("id=\"ytUser\"");
+        after.Should().Contain($"/musteri-kayit/{slug}/baglan/youtube");
     }
 
     [Fact]
-    public async Task Baglama_linkleri_bayrak_acikken_cizilir()
+    public async Task Bayrak_acikken_buton_cizilir_elle_giris_yok()
     {
         var slug = await SeedSlugAsync();
         var html = await (await NewClient().GetAsync($"/musteri-kayit/{slug}"))
             .Content.ReadAsStringAsync();
         html.Should().Contain($"/musteri-kayit/{slug}/baglan/youtube");
         html.Should().Contain($"/musteri-kayit/{slug}/baglan/facebook");
+        // YouTube scope'u isteyen uygulama YouTube butonu kullanır (Google marka
+        // kuralı); elle kanal adı girişi bu modda bilerek çizilmiyor.
+        html.Should().Contain("sso-btn");
+        html.Should().NotContain("id=\"ytUser\"");
     }
 
     private async Task<string> SeedSlugAsync()
@@ -460,5 +466,8 @@ public sealed class IntakeLinkDisabledTests : IClassFixture<IntakeLinkDisabledFa
         var html = await (await _factory.CreateClient().GetAsync($"/musteri-kayit/{slug}"))
             .Content.ReadAsStringAsync();
         html.Should().NotContain("/baglan/");
+        // Bayrak kapalıyken elle giriş geri gelmeli — buton 404'e giderdi,
+        // elle alan da yoksa müşteri YouTube adını hiç veremez.
+        html.Should().Contain("id=\"ytUser\"");
     }
 }

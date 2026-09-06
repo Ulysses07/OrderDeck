@@ -224,9 +224,11 @@ public class IntakeFormModel : PageModel
             {
                 "ok" when LinkedYouTube is not null || LinkedFacebook is not null
                     => ("Hesabın bağlandı. Kalan bilgileri doldurup formu gönder.", false),
-                "iptal" => ("Bağlantı iptal edildi. İstersen kullanıcı adını elle yazabilirsin.", true),
+                // "Elle yaz" yönlendirmesi bilerek yok: YouTube tarafında bayrak
+                // açıkken elle giriş alanı çizilmiyor — yazılacak kutu yok.
+                "iptal" => ("Bağlantı iptal edildi. İstersen tekrar deneyebilirsin.", true),
                 "kanalyok" => ("Bu Google hesabında YouTube kanalı yok. Kanalın olan hesabı seç.", true),
-                "saglayici" => ("Bağlantı sırasında bir sorun oldu. Tekrar dene ya da kullanıcı adını elle yaz.", true),
+                "saglayici" => ("Bağlantı sırasında bir sorun oldu. Lütfen tekrar dene.", true),
                 _ => (null, false)
             };
         }
