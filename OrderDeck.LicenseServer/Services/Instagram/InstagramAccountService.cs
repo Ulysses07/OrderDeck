@@ -13,7 +13,9 @@ namespace OrderDeck.LicenseServer.Services.Instagram;
 /// FB OAuth exchange'inden çağrılır (FacebookOAuthController). Müşterinin
 /// IntakeFormConfig.InstagramDmBotEnabled bayrağı AÇIKSA: uzun ömürlü kullanıcı
 /// token'ından sayfaları çeker, IG professional hesabı bağlı ilk sayfayı seçer,
-/// Page token'ı şifreli saklar ve sayfayı live_comments webhook'una abone eder.
+/// Page token'ı şifreli saklar ve sayfayı app'e abone eder (subscribed_apps);
+/// live_comments olayları bu abonelik + app-level Instagram webhook ayarı
+/// birlikteyken akar.
 /// Bayrak kapalıysa HİÇBİR ŞEY yapmaz — exchange'in "token saklamaz" sözü
 /// varsayılan davranış olarak korunur.
 ///
@@ -117,7 +119,14 @@ public sealed class InstagramAccountService
         {
             Content = new FormUrlEncodedContent(new Dictionary<string, string>
             {
-                ["subscribed_fields"] = "live_comments"
+                // live_comments BURAYA YAZILMAZ: subscribed_fields yalnız Sayfa
+                // alanlarını kabul eder (feed, name, ...) — live_comments bir
+                // Instagram webhook alanıdır ve app-level Webhooks ayarından
+                // gelir. live_comments gönderilirse Meta (#100) ile 400 döner
+                // ve sayfa app'e HİÇ abone olmaz (2026-09-06, Graph Explorer
+                // ile doğrulandı). Buradaki tek amaç sayfayı app'e bağlamak;
+                // geçerli herhangi bir alan yeterli.
+                ["subscribed_fields"] = "name"
             })
         };
         subReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", pageToken);
