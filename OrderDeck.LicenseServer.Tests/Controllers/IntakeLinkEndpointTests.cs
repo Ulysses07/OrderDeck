@@ -299,6 +299,10 @@ public sealed class IntakeLinkEndpointTests : IClassFixture<IntakeLinkFactory>
         // kuralı); elle kanal adı girişi bu modda bilerek çizilmiyor.
         html.Should().Contain("sso-btn");
         html.Should().NotContain("id=\"ytUser\"");
+        // Facebook'ta da elle giriş bayrak açıkken çizilmez: FB eşleşmesi görünen
+        // ada dayalı, OAuth tam olarak onu veriyor — elle "kullanıcı adı" zayıf halka.
+        html.Should().Contain("Facebook ile bağlan");
+        html.Should().NotContain("id=\"Input_FacebookUsername\"");
     }
 
     private async Task<string> SeedSlugAsync()
@@ -467,7 +471,8 @@ public sealed class IntakeLinkDisabledTests : IClassFixture<IntakeLinkDisabledFa
             .Content.ReadAsStringAsync();
         html.Should().NotContain("/baglan/");
         // Bayrak kapalıyken elle giriş geri gelmeli — buton 404'e giderdi,
-        // elle alan da yoksa müşteri YouTube adını hiç veremez.
+        // elle alan da yoksa müşteri YouTube/Facebook adını hiç veremez.
         html.Should().Contain("id=\"ytUser\"");
+        html.Should().Contain("id=\"Input_FacebookUsername\"");
     }
 }
