@@ -2,6 +2,7 @@ using System.ComponentModel.DataAnnotations;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Controllers;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Instagram;
 using OrderDeck.LicenseServer.Services.IntakeForm;
 using OrderDeck.LicenseServer.Services.IntakeForm.Login;
 using Microsoft.AspNetCore.Mvc;
@@ -23,6 +24,8 @@ public class IntakeFormModel : PageModel
     private readonly IYouTubeChannelResolver _youTube;
     private readonly IntakeLinkStore _linkStore;
     private readonly IOptions<IntakeLoginOptions> _loginOptions;
+    private readonly IntakeIgTokenService _igTokens;
+    private readonly IWebHostEnvironment _env;
 
     public IntakeFormModel(
         IntakeFormService service,
@@ -30,7 +33,9 @@ public class IntakeFormModel : PageModel
         ILogger<IntakeFormModel> log,
         IYouTubeChannelResolver youTube,
         IntakeLinkStore linkStore,
-        IOptions<IntakeLoginOptions> loginOptions)
+        IOptions<IntakeLoginOptions> loginOptions,
+        IntakeIgTokenService igTokens,
+        IWebHostEnvironment env)
     {
         _service = service;
         _linkBuilder = linkBuilder;
@@ -38,6 +43,8 @@ public class IntakeFormModel : PageModel
         _youTube = youTube;
         _linkStore = linkStore;
         _loginOptions = loginOptions;
+        _igTokens = igTokens;
+        _env = env;
     }
 
     [BindProperty(SupportsGet = true)]
@@ -56,6 +63,7 @@ public class IntakeFormModel : PageModel
     // sunucunun KENDİ kaydından okunur; istemciden kimlik kabul edilmez.
     public IntakeLinkedIdentity? LinkedYouTube { get; private set; }
     public IntakeLinkedIdentity? LinkedFacebook { get; private set; }
+    public IntakeLinkedIdentity? LinkedInstagram { get; private set; }
 
     // Dönüş banner'ı. Metin SABİT koddan seçilir; query'deki serbest
     // metin ASLA ekrana yazılmaz (XSS).
@@ -175,19 +183,53 @@ public class IntakeFormModel : PageModel
     {
         Config = await _service.GetActiveBySlugAsync(Slug, ct);
         if (Config is null) return StatusCode(StatusCodes.Status410Gone);
+
+        // "!kayıt → DM" linki: token'daki kimlik OAuth kimliğiyle aynı depoya
+        // (IntakeLinkStore) yazılır — çip, submit ve unlink akışları tek yoldan
+        // işler. Geçersiz/bayat token SESSİZCE yok sayılır: izleyici formu yine
+        // doldurabilir, elle alan zaten duruyor.
+        var igToken = Request.Query["ig"].ToString();
+        if (!string.IsNullOrEmpty(igToken) && igToken.Length <= 512
+            && _igTokens.TryRead(igToken) is { } ig
+            && string.Equals(ig.Slug, Slug, StringComparison.OrdinalIgnoreCase))
+        {
+            var nonce = Request.Cookies[IntakeLinkController.CookieName];
+            if (string.IsNullOrEmpty(nonce) || nonce.Length > 128)
+                nonce = IntakeLinkStore.RandomToken();
+            // Çerez seçenekleri IntakeLinkController.Start ile bire bir.
+            Response.Cookies.Append(IntakeLinkController.CookieName, nonce, new CookieOptions
+            {
+                HttpOnly = true,
+                Secure = _env.IsProduction(),
+                SameSite = SameSiteMode.Lax,
+                Path = "/",
+                MaxAge = TimeSpan.FromHours(1)
+            });
+            _linkStore.SaveIdentity(nonce, "instagram",
+                new IntakeLinkedIdentity(ig.IgUsername, ig.IgUsername, null));
+            LinkedInstagram = _linkStore.GetIdentity(nonce, "instagram");
+            (LinkBanner, LinkBannerIsError) =
+                ("Instagram hesabın bağlandı. Kalan bilgileri doldurup formu gönder.", false);
+        }
+
         LoadLinkedIdentities();
 
         // "ok" yalnız kimlik GERÇEKTEN varsa çizilir: kod elle URL'e yazılmış
         // ya da kimliğin 30 dakikası dolmuş olabilir.
-        (LinkBanner, LinkBannerIsError) = Request.Query["baglanti"].ToString() switch
+        // ?ig= bloğu banner'ı zaten set ettiyse (Instagram DM token'ı geçerli)
+        // "baglanti" switch'i ezmesin.
+        if (LinkBanner is null)
         {
-            "ok" when LinkedYouTube is not null || LinkedFacebook is not null
-                => ("Hesabın bağlandı. Kalan bilgileri doldurup formu gönder.", false),
-            "iptal" => ("Bağlantı iptal edildi. İstersen kullanıcı adını elle yazabilirsin.", true),
-            "kanalyok" => ("Bu Google hesabında YouTube kanalı yok. Kanalın olan hesabı seç.", true),
-            "saglayici" => ("Bağlantı sırasında bir sorun oldu. Tekrar dene ya da kullanıcı adını elle yaz.", true),
-            _ => (null, false)
-        };
+            (LinkBanner, LinkBannerIsError) = Request.Query["baglanti"].ToString() switch
+            {
+                "ok" when LinkedYouTube is not null || LinkedFacebook is not null
+                    => ("Hesabın bağlandı. Kalan bilgileri doldurup formu gönder.", false),
+                "iptal" => ("Bağlantı iptal edildi. İstersen kullanıcı adını elle yazabilirsin.", true),
+                "kanalyok" => ("Bu Google hesabında YouTube kanalı yok. Kanalın olan hesabı seç.", true),
+                "saglayici" => ("Bağlantı sırasında bir sorun oldu. Tekrar dene ya da kullanıcı adını elle yaz.", true),
+                _ => (null, false)
+            };
+        }
         return Page();
     }
 
@@ -227,7 +269,9 @@ public class IntakeFormModel : PageModel
         var (yt, channelIdFromUrl) = LinkedYouTube is null
             ? Resolve("Input.YouTubeUsername", HandleValidator.YouTube, Input.YouTubeUsername)
             : (null, null);
-        var (ig, _) = Resolve("Input.InstagramUsername", HandleValidator.Instagram, Input.InstagramUsername);
+        var (ig, _) = LinkedInstagram is null
+            ? Resolve("Input.InstagramUsername", HandleValidator.Instagram, Input.InstagramUsername)
+            : (null, null);
         var (fb, _) = LinkedFacebook is null
             ? Resolve("Input.FacebookUsername", HandleValidator.Facebook, Input.FacebookUsername)
             : (null, null);
@@ -240,6 +284,16 @@ public class IntakeFormModel : PageModel
         {
             var fbName = LinkedFacebook.DisplayName.Trim();
             fb = fbName.Length > 64 ? fbName[..64] : fbName;
+        }
+
+        // Instagram: DM token'ından gelen kullanıcı adı. Elle girişle aynı
+        // normalize/doğrulama kapısından geçer (LinkedYouTube handle deseni);
+        // geçemezse sessizce boş kalır — kendi verimiz müşteriyi kilitlemesin.
+        if (LinkedInstagram is not null)
+        {
+            var linkedIg = HandleValidator.Normalize(LinkedInstagram.Handle);
+            if (HandleValidator.Validate(HandleValidator.Instagram, linkedIg) is null)
+                ig = linkedIg;
         }
 
         // E-posta: dış boşluk + alan adı normalize edilir, sonra biçim ve
@@ -279,7 +333,7 @@ public class IntakeFormModel : PageModel
         }
 
         // En az bir platform kullanıcı adı zorunlu.
-        if (LinkedYouTube is null && LinkedFacebook is null &&
+        if (LinkedYouTube is null && LinkedFacebook is null && LinkedInstagram is null &&
             yt is null && channelIdFromUrl is null && ig is null && fb is null && tt is null)
             ModelState.AddModelError("Input.InstagramUsername",
                 "En az bir platform kullanıcı adı girin (Instagram, YouTube, Facebook veya TikTok).");
@@ -433,6 +487,7 @@ public class IntakeFormModel : PageModel
         {
             _linkStore.RemoveIdentity(linkNonce, "youtube");
             _linkStore.RemoveIdentity(linkNonce, "facebook");
+            _linkStore.RemoveIdentity(linkNonce, "instagram");
         }
 
         // Yayıncının numarası tanımsızsa link kurmuyoruz: `wa.me/?text=...`
@@ -503,7 +558,7 @@ public class IntakeFormModel : PageModel
         if (Config is null) return StatusCode(StatusCodes.Status410Gone);
 
         var nonce = Request.Cookies[IntakeLinkController.CookieName];
-        if (!string.IsNullOrEmpty(nonce) && platform is "youtube" or "facebook")
+        if (!string.IsNullOrEmpty(nonce) && platform is "youtube" or "facebook" or "instagram")
             _linkStore.RemoveIdentity(nonce, platform);
         return LocalRedirect(Request.Path.Value ?? $"/musteri-kayit/{Slug}");
     }
@@ -514,6 +569,7 @@ public class IntakeFormModel : PageModel
         if (string.IsNullOrEmpty(nonce)) return;
         LinkedYouTube = _linkStore.GetIdentity(nonce, "youtube");
         LinkedFacebook = _linkStore.GetIdentity(nonce, "facebook");
+        LinkedInstagram ??= _linkStore.GetIdentity(nonce, "instagram");
     }
 
     /// <summary>Trims and normalizes empty/whitespace input to null.</summary>

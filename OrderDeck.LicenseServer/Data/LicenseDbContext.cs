@@ -49,6 +49,7 @@ public class LicenseDbContext : DbContext
     public DbSet<SmsCampaign> SmsCampaigns => Set<SmsCampaign>();
     public DbSet<SmsCampaignRecipient> SmsCampaignRecipients => Set<SmsCampaignRecipient>();
     public DbSet<WhatsAppAccount> WhatsAppAccounts => Set<WhatsAppAccount>();
+    public DbSet<InstagramAccount> InstagramAccounts => Set<InstagramAccount>();
     public DbSet<WaConversation> WaConversations => Set<WaConversation>();
     public DbSet<WaMessage> WaMessages => Set<WaMessage>();
     public DbSet<WaSendAttempt> WaSendAttempts => Set<WaSendAttempt>();
@@ -681,6 +682,22 @@ public class LicenseDbContext : DbContext
             b.Property(a => a.LastError).HasMaxLength(500);
             // Webhook yönlendirmesi bu alandan tenant bulur → global unique.
             b.HasIndex(a => a.PhoneNumberId).IsUnique();
+            b.HasIndex(a => a.LicenseId);
+        });
+
+        mb.Entity<InstagramAccount>(b =>
+        {
+            b.HasKey(a => a.Id);
+            b.HasOne(a => a.License).WithMany().HasForeignKey(a => a.LicenseId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.Property(a => a.PageId).HasMaxLength(64).IsRequired();
+            b.Property(a => a.IgUserId).HasMaxLength(64).IsRequired();
+            b.Property(a => a.IgUsername).HasMaxLength(128).IsRequired();
+            b.Property(a => a.PageTokenProtected).HasMaxLength(4000).IsRequired();
+            b.Property(a => a.Status).HasMaxLength(16).IsRequired();
+            b.Property(a => a.LastError).HasMaxLength(1024);
+            // Webhook yönlendirmesi bu alandan tenant bulur → global unique.
+            b.HasIndex(a => a.IgUserId).IsUnique();
             b.HasIndex(a => a.LicenseId);
         });
 

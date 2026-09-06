@@ -47,6 +47,7 @@ public sealed class IntakeFormService
     /// <summary>Idempotent claim/update. Throws SlugAlreadyTakenException if slug used by another customer.</summary>
     public async Task<IntakeFormConfig> UpsertConfigAsync(
         Guid customerId, string slug, string whatsAppPhone, string? customTitle, bool isActive,
+        bool instagramDmBotEnabled = false,
         CancellationToken ct = default)
     {
         var conflict = await _db.IntakeFormConfigs
@@ -66,6 +67,7 @@ public sealed class IntakeFormService
                 WhatsAppPhone = whatsAppPhone,
                 CustomTitle = customTitle,
                 IsActive = isActive,
+                InstagramDmBotEnabled = instagramDmBotEnabled,
                 CreatedAt = now,
                 UpdatedAt = now
             };
@@ -78,6 +80,7 @@ public sealed class IntakeFormService
         existing.WhatsAppPhone = whatsAppPhone;
         existing.CustomTitle = customTitle;
         existing.IsActive = isActive;
+        existing.InstagramDmBotEnabled = instagramDmBotEnabled;
         existing.UpdatedAt = now;
         await _db.SaveChangesAsync(ct);
         return existing;

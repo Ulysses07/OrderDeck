@@ -253,6 +253,10 @@ public class Program
         builder.Services.Configure<OrderDeck.LicenseServer.Services.IntakeForm.Login.IntakeLoginOptions>(
             builder.Configuration.GetSection(
                 OrderDeck.LicenseServer.Services.IntakeForm.Login.IntakeLoginOptions.SectionName));
+        builder.Services.Configure<OrderDeck.LicenseServer.Services.Instagram.InstagramDmOptions>(
+            builder.Configuration.GetSection(
+                OrderDeck.LicenseServer.Services.Instagram.InstagramDmOptions.SectionName));
+        builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Instagram.IntakeIgTokenService>();
         builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.IntakeForm.Login.IntakeLinkStore>();
         builder.Services.AddHttpClient<
             OrderDeck.LicenseServer.Services.IntakeForm.Login.IGoogleChannelClient,
@@ -260,6 +264,9 @@ public class Program
         builder.Services.AddHttpClient<
             OrderDeck.LicenseServer.Services.IntakeForm.Login.IFacebookNameClient,
             OrderDeck.LicenseServer.Services.IntakeForm.Login.FacebookNameClient>();
+        builder.Services.AddHttpClient<OrderDeck.LicenseServer.Services.Instagram.InstagramPrivateReplyClient>();
+        builder.Services.AddHttpClient<OrderDeck.LicenseServer.Services.Instagram.InstagramAccountService>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Instagram.InstagramLiveCommentJob>();
 
         builder.Services.AddSingleton<BackupStorageService>();
         // Singleton ŞART: süreç başına tek sayaç olmasının bütün amacı bu.

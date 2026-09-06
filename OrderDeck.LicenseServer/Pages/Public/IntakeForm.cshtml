@@ -100,7 +100,7 @@
         .banner-err { background:#fdecec; color:#8c1c1c; }
         .link-start { display:inline-block; margin-top:6px; font-size:.9rem; }
     </style>
-    @if (Model.LinkedYouTube is not null || Model.LinkedFacebook is not null)
+    @if (Model.LinkedYouTube is not null || Model.LinkedFacebook is not null || Model.LinkedInstagram is not null)
     {
         @* Bağlı kimlik çipi yalnız gerçekten bir kimlik bağlıyken çizilir;
            CSS'i sayfanın her render'ına eklemek testlerin NotContain("linked-chip")
@@ -156,12 +156,23 @@ else
 
             <div class="field">
                 <label class="lbl" asp-for="Input.InstagramUsername"><span class="platform-ico">📷</span>Instagram</label>
-                <div class="with-prefix">
-                    <span class="pfx">@@</span>
-                    <input class="inp uname" asp-for="Input.InstagramUsername" maxlength="200"
-                           inputmode="text" placeholder="kullaniciadi veya profil adresi" />
-                </div>
-                <span class="err" asp-validation-for="Input.InstagramUsername"></span>
+                @if (Model.LinkedInstagram is not null)
+                {
+                    <div class="linked-chip">
+                        <span>✓ &#64;@Model.LinkedInstagram.Handle</span>
+                        <button type="submit" class="unlink" formnovalidate
+                                asp-page-handler="Unlink" asp-route-platform="instagram">Bağlantıyı kaldır</button>
+                    </div>
+                }
+                else
+                {
+                    <div class="with-prefix">
+                        <span class="pfx">@@</span>
+                        <input class="inp uname" asp-for="Input.InstagramUsername" maxlength="200"
+                               inputmode="text" placeholder="kullaniciadi veya profil adresi" />
+                    </div>
+                    <span class="err" asp-validation-for="Input.InstagramUsername"></span>
+                }
             </div>
 
             <div class="field">

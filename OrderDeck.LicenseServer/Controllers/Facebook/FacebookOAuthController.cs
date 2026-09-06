@@ -1,8 +1,10 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Services.Facebook;
+using OrderDeck.LicenseServer.Services.Instagram;
 
 namespace OrderDeck.LicenseServer.Controllers.Facebook;
 
@@ -20,6 +22,13 @@ namespace OrderDeck.LicenseServer.Controllers.Facebook;
 /// verisine dokunmuyor. Gereken tek şey isteğin lisanslı bir müşteriden
 /// gelmesi; aksi hâlde uç, herkese açık ücretsiz bir OAuth vekiline
 /// dönüşürdü.</para>
+///
+/// <para><b>Token saklama:</b> varsayılan olarak takas token'ı SAKLAMAZ;
+/// masaüstü DPAPI ile kendi diskinde tutar. Tek istisna: müşterinin
+/// <c>IntakeFormConfig.InstagramDmBotEnabled</c> bayrağı açıksa
+/// <see cref="InstagramAccountService.TryConnectAsync"/> opt-in olarak
+/// Page token'ını şifreli saklar ve webhook aboneliği kurar. Bayrak kapalı
+/// müşterilerde davranış değişmez.</para>
 /// </summary>
 [ApiController]
 [Route("api/v1/facebook/oauth")]
@@ -28,12 +37,19 @@ public sealed class FacebookOAuthController : ControllerBase
 {
     private readonly FacebookOptions _opt;
     private readonly IFacebookOAuthExchanger _exchanger;
+    private readonly InstagramAccountService _igAccounts;
+    private readonly ILogger<FacebookOAuthController> _log;
 
     public FacebookOAuthController(
-        IOptions<FacebookOptions> opt, IFacebookOAuthExchanger exchanger)
+        IOptions<FacebookOptions> opt,
+        IFacebookOAuthExchanger exchanger,
+        InstagramAccountService igAccounts,
+        ILogger<FacebookOAuthController> log)
     {
         _opt = opt.Value;
         _exchanger = exchanger;
+        _igAccounts = igAccounts;
+        _log = log;
     }
 
     /// <summary>İstemcinin yetkilendirme URL'ini kurabilmesi için gereken
@@ -52,8 +68,10 @@ public sealed class FacebookOAuthController : ControllerBase
 
     public sealed record ExchangeRequest(string Code);
 
-    /// <summary>Uzun ömürlü kullanıcı token'ı. Sunucu bunu SAKLAMAZ; masaüstü
-    /// DPAPI ile kendi diskinde tutar.</summary>
+    /// <summary>Uzun ömürlü kullanıcı token'ı. Sunucu bunu varsayılan olarak
+    /// SAKLAMAZ; masaüstü DPAPI ile kendi diskinde tutar. Yalnız opt-in IG DM
+    /// botu etkin müşterilerde Page token şifreli olarak saklanır
+    /// (bkz. <see cref="InstagramAccountService"/>).</summary>
     public sealed record ExchangeResponse(string AccessToken, long ExpiresInSeconds);
 
     [HttpPost("exchange")]
@@ -73,6 +91,21 @@ public sealed class FacebookOAuthController : ControllerBase
                 detail: $"{result.ErrorCode}: {result.ErrorMessage}",
                 statusCode: 502);
 
+        // IG "!kayıt → DM" botu (opt-in): bayrağı açık müşteride Page token'ı
+        // sunucuya kalıcılaşır. Bayrak kapalıysa TryConnectAsync hiçbir şey
+        // yapmaz — bu ucun "token saklamaz" sözü varsayılan olarak sürer.
+        // Hata exchange'i DÜŞÜRMEZ: masaüstü FB bağlantısı bottan bağımsız.
+        // Hangfire'a kuyruklanMAZ — token job argümanı olarak Hangfire
+        // deposuna düz metin yazılırdı.
+        try
+        {
+            await _igAccounts.TryConnectAsync(GetCustomerId(), result.Value!.AccessToken, ct);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "IG DM botu bağlama denemesi düştü (exchange etkilenmedi).");
+        }
+
         return Ok(new ExchangeResponse(
             result.Value!.AccessToken, result.Value.ExpiresInSeconds));
     }
@@ -84,4 +117,12 @@ public sealed class FacebookOAuthController : ControllerBase
         title: "facebook-not-configured",
         detail: "Sunucuda Facebook uygulaması yapılandırılmamış.",
         statusCode: 503);
+
+    private Guid GetCustomerId()
+    {
+        var sub = User.FindFirst("sub")?.Value
+            ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+            ?? throw new InvalidOperationException("sub claim missing");
+        return Guid.Parse(sub);
+    }
 }
