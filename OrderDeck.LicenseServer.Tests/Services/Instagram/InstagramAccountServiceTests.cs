@@ -103,7 +103,10 @@ public sealed class InstagramAccountServiceTests
 
         handler.Requests.Should().HaveCount(2);
         handler.Requests[1].Uri.AbsolutePath.Should().EndWith("/page-9/subscribed_apps");
-        handler.Requests[1].Body.Should().Contain("live_comments");
+        // Sayfa alanı olmalı — live_comments gönderilirse Meta (#100) ile
+        // reddeder ve abonelik hiç kurulmaz (sahada botun sessizce çalışmaması).
+        handler.Requests[1].Body.Should().Contain("subscribed_fields=name")
+            .And.NotContain("live_comments");
     }
 
     [Fact]
