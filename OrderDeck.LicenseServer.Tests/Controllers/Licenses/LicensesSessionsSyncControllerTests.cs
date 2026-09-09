@@ -164,4 +164,78 @@ public class LicensesSessionsSyncControllerTests : IClassFixture<ApiFactory>
 
         resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
+
+    private static object MakeOrderPayload(Guid orderId, Guid? sessionId) => new
+    {
+        orders = new[] { new {
+            id = orderId, sessionId,
+            customerId = "c1hex", platform = "instagram",
+            username = "@mallory", displayName = (string?)null,
+            messageText = "msg", code = (string?)null, price = 100m,
+            addedAt = DateTimeOffset.UtcNow,
+            printedAt = (DateTimeOffset?)null,
+            cancelledAt = (DateTimeOffset?)null,
+            cancelReason = (string?)null,
+            isShippingFee = false, isBackupPromoted = false,
+            isTentativeBackup = false } }
+    };
+
+    /// <summary>
+    /// F01 (2026-09-09 denetimi): SessionId gövdeden doğrulanmadan
+    /// kopyalanıyordu — bir yayıncı BAŞKA yayıncının oturumuna sipariş
+    /// bağlayabiliyordu. Artık pakette lisansa ait olmayan SessionId varsa
+    /// paketin tamamı 400 ile reddedilir ve kurbanın oturumu temiz kalır.
+    /// </summary>
+    [Fact]
+    public async Task SyncOrders_rejects_session_of_another_license()
+    {
+        // Kurban (B): kendi lisansı + oturumu
+        var (victimClient, victimLicenseId) = await SetupAsync();
+        var victimSessionId = Guid.NewGuid();
+        await victimClient.PostAsJsonAsync($"/api/v1/licenses/{victimLicenseId}/sessions/sync",
+            new { sessions = new[] { new { id = victimSessionId, title = "Kurban yayını",
+                startedAt = DateTimeOffset.UtcNow.AddHours(-1),
+                endedAt = (DateTimeOffset?)null,
+                platforms = "instagram", notes = (string?)null } }});
+
+        // Saldırgan (A): kendi lisansıyla, B'nin oturumuna sipariş göndermeyi dener
+        var (attackerClient, attackerLicenseId) = await SetupAsync();
+        var orderId = Guid.NewGuid();
+        var resp = await attackerClient.PostAsJsonAsync(
+            $"/api/v1/licenses/{attackerLicenseId}/orders/sync",
+            MakeOrderPayload(orderId, victimSessionId));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.Orders.AnyAsync(o => o.Id == orderId)).Should().BeFalse();
+        (await db.Orders.AnyAsync(o => o.SessionId == victimSessionId)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SyncOrders_rejects_unknown_session()
+    {
+        var (client, licenseId) = await SetupAsync();
+
+        var resp = await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/orders/sync",
+            MakeOrderPayload(Guid.NewGuid(), Guid.NewGuid()));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task SyncOrders_accepts_null_session()
+    {
+        var (client, licenseId) = await SetupAsync();
+        var orderId = Guid.NewGuid();
+
+        var resp = await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/orders/sync",
+            MakeOrderPayload(orderId, null));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.Orders.AnyAsync(o => o.Id == orderId)).Should().BeTrue();
+    }
 }

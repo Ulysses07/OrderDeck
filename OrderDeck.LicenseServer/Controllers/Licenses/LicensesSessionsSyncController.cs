@@ -219,6 +219,29 @@ public sealed class LicensesSessionsSyncController : ControllerBase
         // kullanılır — iki yol aynı veriyi görmeli.
         var orders = req.Orders.GroupBy(o => o.Id).Select(g => g.Last()).ToList();
 
+        // SessionId'ler bu lisansa ait mi? FK yalnız oturumun VAR olduğunu
+        // garantiler, lisans eşleşmesini DEĞİL — doğrulamazsak bir yayıncı
+        // başka yayıncının oturumuna sipariş bağlayabilir (2026-09-09 denetimi
+        // F01, gerçek SQL Server'da tekrar üretildi). Paketin tamamını
+        // reddediyoruz: WPF oturumları siparişlerden ÖNCE push'lar, bu yüzden
+        // meşru istemcide bilinmeyen oturum olmaz; hata alan paket senkronsuz
+        // kalır ve sonraki turda yeniden denenir.
+        var sessionIds = orders
+            .Where(o => o.SessionId != null)
+            .Select(o => o.SessionId!.Value)
+            .Distinct()
+            .ToList();
+        if (sessionIds.Count > 0)
+        {
+            var ownedSessionCount = await _db.StreamSessions
+                .CountAsync(s => sessionIds.Contains(s.Id) && s.LicenseId == licenseId, ct);
+            if (ownedSessionCount != sessionIds.Count)
+                return Problem(
+                    title: "unknown-session",
+                    detail: "Pakette bu lisansa ait olmayan SessionId var.",
+                    statusCode: 400);
+        }
+
         var ids = orders.Select(o => o.Id).ToList();
         var existing = await _db.Orders
             .Where(o => o.LicenseId == licenseId && ids.Contains(o.Id))

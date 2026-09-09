@@ -170,4 +170,60 @@ public class PanelOrdersControllerTests : IClassFixture<ApiFactory>
         body.Should().HaveCount(1); // sadece kendi yayını
         body![0].Title.Should().Be("Test Yayın");
     }
+
+    /// <summary>
+    /// F01 (2026-09-09 denetimi) okuma tarafı: başka lisansa ait bir sipariş
+    /// bizim SessionId'mizi taşısa bile (fix öncesi kirletilmiş veri
+    /// senaryosu) aggregate ve listede GÖRÜNMEMELİ — sipariş sorguları artık
+    /// LicenseId ile daraltılıyor.
+    /// </summary>
+    [Fact]
+    public async Task Orders_with_foreign_license_but_own_sessionId_are_excluded()
+    {
+        var (client, _, sessionId) = await SeedAsync();
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var stranger = new Customer
+            {
+                Id = Guid.NewGuid(),
+                Email = $"stranger-{Guid.NewGuid():N}@example.com",
+                EmailConfirmedAt = DateTimeOffset.UtcNow,
+                CreatedAt = DateTimeOffset.UtcNow
+            };
+            var foreignLicense = new License
+            {
+                Id = Guid.NewGuid(),
+                LicenseKey = "FOREIGN-" + Guid.NewGuid().ToString("N"),
+                CustomerId = stranger.Id, SkuCode = "STD",
+                ActivationSlots = 1,
+                IssuedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(30)
+            };
+            db.Customers.Add(stranger);
+            db.Licenses.Add(foreignLicense);
+            // Yabancı lisans + BİZİM session id — FK yalnız oturumun varlığına
+            // bakar, lisans eşleşmesine değil; bu satır DB'ye yazılabilir.
+            db.Orders.Add(new Order
+            {
+                Id = Guid.NewGuid(), LicenseId = foreignLicense.Id,
+                SessionId = sessionId, CustomerId = "cx",
+                Platform = "instagram", Username = "@mallory",
+                MessageText = "sızıntı", Price = 9999m,
+                AddedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var summary = await (await client.GetAsync("/api/panel/sessions"))
+            .Content.ReadFromJsonAsync<List<SessionSummaryDto>>();
+        summary![0].OrderCount.Should().Be(2);
+        summary[0].TotalAmount.Should().Be(300m);
+
+        var orders = await (await client.GetAsync($"/api/panel/sessions/{sessionId}/orders"))
+            .Content.ReadFromJsonAsync<List<OrderDto>>();
+        orders.Should().HaveCount(4);
+        orders!.Should().NotContain(o => o.Price == 9999m);
+    }
 }
