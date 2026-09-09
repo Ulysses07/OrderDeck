@@ -57,12 +57,14 @@ public sealed class PanelOrdersController : ControllerBase
             .Take(take)
             .Select(s => new SessionSummaryDto(
                 s.Id, s.Title, s.StartedAt, s.EndedAt, s.Platforms,
-                _db.Orders.Count(o => o.SessionId == s.Id
+                _db.Orders.Count(o => o.LicenseId == s.LicenseId
+                    && o.SessionId == s.Id
                     && o.CancelledAt == null
                     && !o.IsTentativeBackup
                     && !o.IsShippingFee),
                 _db.Orders
-                    .Where(o => o.SessionId == s.Id
+                    .Where(o => o.LicenseId == s.LicenseId
+                        && o.SessionId == s.Id
                         && o.CancelledAt == null
                         && !o.IsTentativeBackup
                         && !o.IsShippingFee)
@@ -99,13 +101,17 @@ public sealed class PanelOrdersController : ControllerBase
         var customerId = User.GetTenantCustomerId();
         take = Math.Clamp(take, 1, 2000);
 
-        // Session caller'a ait mi kontrol
-        var ownsSession = await _db.StreamSessions
-            .AnyAsync(s => s.Id == sessionId && s.License.CustomerId == customerId, ct);
-        if (!ownsSession) return NotFound();
+        // Session caller'a ait mi kontrol; lisans id'sini de al ki sipariş
+        // sorgusu LicenseId ile daralsın — SessionId tek başına tenant
+        // sınırı değil (bkz. 2026-09-09 denetimi F01).
+        var session = await _db.StreamSessions
+            .Where(s => s.Id == sessionId && s.License.CustomerId == customerId)
+            .Select(s => new { s.LicenseId })
+            .FirstOrDefaultAsync(ct);
+        if (session is null) return NotFound();
 
         var rows = await _db.Orders
-            .Where(o => o.SessionId == sessionId)
+            .Where(o => o.LicenseId == session.LicenseId && o.SessionId == sessionId)
             .OrderBy(o => o.AddedAt)
             .Take(take)
             .Select(o => new OrderDto(
