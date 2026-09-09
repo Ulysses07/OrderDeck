@@ -9,8 +9,13 @@ namespace OrderDeck.LicenseServer.Services.Sms;
 /// bir <see cref="LicenseSmsTransaction"/> ekler ve cache <see cref="LicenseSmsBalance"/>
 /// .CreditsRemaining'i günceller (invariant: CreditsRemaining = SUM(Amount)).
 ///
-/// Çağıran <c>SaveChangesAsync</c>'i kendisi yapar (aynı transaction'da başka
-/// değişikliklerle — ör. kampanya rezervasyonu — atomik kalsın diye).
+/// F03 (2026-09-09 denetimi): CreditsRemaining okuma-hesapla-yazma ile
+/// güncellenir; UpdatedAt concurrency token'ı sayesinde eşzamanlı yazım
+/// çakışması SaveChanges'te yakalanır ve <see cref="ApplyAndSaveAsync"/>
+/// güncel değer üzerinden yeniden hesaplar. Bu yüzden SaveChanges bu servisin
+/// İÇİNDE: retry döngüsü kaydı sarmak zorunda. Çağıranın aynı transaction'da
+/// gitmesi gereken diğer değişiklikleri (ör. kampanya + alıcı satırları)
+/// çağrıdan ÖNCE context'e eklenmiş olmalı — hepsi aynı SaveChanges'le yazılır.
 /// </summary>
 public sealed class LicenseSmsBalanceService
 {
@@ -30,18 +35,26 @@ public sealed class LicenseSmsBalanceService
     }
 
     /// <summary>
-    /// Ledger'a tx ekler ve cache bakiyeyi günceller. <paramref name="amount"/>
-    /// işaretli (+ ekle / − kullan). <c>SaveChanges</c> ÇAĞIRMAZ — çağıran yapar.
-    /// Yeni bakiyeyi döndürür (in-memory hesap).
+    /// Ledger'a tx ekler, cache bakiyeyi günceller ve <b>SaveChanges yapar</b>
+    /// (context'te bekleyen diğer değişikliklerle birlikte, tek transaction).
+    /// <paramref name="amount"/> işaretli (+ ekle / − kullan).
+    ///
+    /// Eşzamanlı yazım çakışmasında bakiye DB'den yeniden yüklenir, delta
+    /// yeniden uygulanır ve <paramref name="disallowNegative"/> kontrolü
+    /// GÜNCEL değer üzerinden tekrarlanır.
     /// </summary>
-    public async Task<int> ApplyAsync(
+    /// <returns>Yeni bakiye; <c>null</c> = işlem bakiyeyi sıfırın altına
+    /// düşürürdü, hiçbir şey yazılmadı.</returns>
+    public async Task<int?> ApplyAndSaveAsync(
         Guid licenseId,
         int amount,
         string kind,
         string? reason,
         Guid? createdByCustomerId,
+        bool disallowNegative,
         CancellationToken ct)
     {
+        const int maxAttempts = 3;
         var now = DateTimeOffset.UtcNow;
 
         _db.LicenseSmsTransactions.Add(new LicenseSmsTransaction
@@ -59,18 +72,43 @@ public sealed class LicenseSmsBalanceService
             .FirstOrDefaultAsync(b => b.LicenseId == licenseId, ct);
         if (balance is null)
         {
+            if (disallowNegative && amount < 0) return null;
             balance = new LicenseSmsBalance
             {
                 Id = Guid.NewGuid(),
                 LicenseId = licenseId,
-                CreditsRemaining = 0,
+                CreditsRemaining = amount,
                 UpdatedAt = now,
             };
             _db.LicenseSmsBalances.Add(balance);
+            // Yeni satır insert'i token'la korunmaz; eşzamanlı iki "ilk yazım"
+            // unique LicenseId index'ine takılır → gürültülü DbUpdateException.
+            await _db.SaveChangesAsync(ct);
+            return balance.CreditsRemaining;
         }
 
         balance.CreditsRemaining += amount;
         balance.UpdatedAt = now;
-        return balance.CreditsRemaining;
+
+        for (var attempt = 1; ; attempt++)
+        {
+            if (disallowNegative && balance.CreditsRemaining < 0) return null;
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+                return balance.CreditsRemaining;
+            }
+            catch (DbUpdateConcurrencyException ex) when (attempt < maxAttempts)
+            {
+                // Araya başka yazım girdi (topup / rezerv / iade): güncel
+                // değeri yükle, deltayı yeniden uygula. Added durumundaki
+                // satırlar (ledger tx, kampanya, alıcılar) izlenmeye devam
+                // eder ve sonraki SaveChanges'te yazılır.
+                foreach (var entry in ex.Entries)
+                    await entry.ReloadAsync(ct);
+                balance.CreditsRemaining += amount;
+                balance.UpdatedAt = DateTimeOffset.UtcNow;
+            }
+        }
     }
 }

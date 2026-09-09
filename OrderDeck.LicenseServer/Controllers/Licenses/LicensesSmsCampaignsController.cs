@@ -100,6 +100,8 @@ public sealed class LicensesSmsCampaignsController : ControllerBase
         var segments = SmsSegmentCalculator.Segments(req.MessageBody);
         var totalCredits = recipients.Count * segments;
 
+        // Ön kontrol yalnız dostane mesaj için; asıl güvence rezervasyondaki
+        // disallowNegative (F03) — yarışta bile kredi eksiye düşemez.
         var balance = await _balance.GetAsync(licenseId, ct);
         if (balance.CreditsRemaining < totalCredits)
             return Problem(title: "insufficient-credits", statusCode: 409,
@@ -135,12 +137,18 @@ public sealed class LicensesSmsCampaignsController : ControllerBase
             });
         }
 
-        // Krediyi rezerve et (aynı transaction'da atomik).
-        await _balance.ApplyAsync(
+        // Krediyi rezerve et — kampanya + alıcı satırları da aynı SaveChanges
+        // içinde yazılır (atomik). null = yarışta kredi yetersiz kaldı.
+        var reserved = await _balance.ApplyAndSaveAsync(
             licenseId, -totalCredits, "send-reserve",
-            reason: $"campaign:{campaignId}", createdByCustomerId: customerId, ct);
-
-        await _db.SaveChangesAsync(ct);
+            reason: $"campaign:{campaignId}", createdByCustomerId: customerId,
+            disallowNegative: true, ct);
+        if (reserved is null)
+        {
+            var current = await _balance.GetAsync(licenseId, ct);
+            return Problem(title: "insufficient-credits", statusCode: 409,
+                detail: $"Gerekli {totalCredits} kredi, mevcut {current.CreditsRemaining}.");
+        }
 
         _jobs.Enqueue<SmsCampaignSendJob>(j => j.RunAsync(campaignId, CancellationToken.None));
 
