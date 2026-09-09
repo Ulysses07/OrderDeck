@@ -476,6 +476,7 @@ public class LicenseDbContext : DbContext
             // Opt-in: ticari ileti izni varsayılan kapalı. İzin yalnızca kayıt
             // ekranındaki açık onay kutusundan (register SmsConsent=true) gelir.
             b.Property(s => s.SmsConsent).HasDefaultValue(false);
+            b.Property(s => s.SmsConsentSource).HasMaxLength(32);
         });
 
         mb.Entity<ShopperBroadcasterLink>(b =>

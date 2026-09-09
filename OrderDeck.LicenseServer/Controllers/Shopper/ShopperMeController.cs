@@ -120,8 +120,21 @@ public sealed class ShopperMeController : ControllerBase
             shopper.NotificationsEnabledPayments = req.NotificationPrefs.Payments;
         }
 
-        if (req.SmsConsent is not null)
+        // Yalnızca DEĞİŞİMDE tarih yaz: idempotent PUT aynı değeri tekrar
+        // gönderirse onay/ret anı kaymamalı (ispat tarihi; bkz. Shopper).
+        if (req.SmsConsent is not null && req.SmsConsent.Value != shopper.SmsConsent)
+        {
             shopper.SmsConsent = req.SmsConsent.Value;
+            if (req.SmsConsent.Value)
+            {
+                shopper.SmsConsentAt = DateTimeOffset.UtcNow;
+                shopper.SmsConsentSource = "profile";
+            }
+            else
+            {
+                shopper.SmsConsentRevokedAt = DateTimeOffset.UtcNow;
+            }
+        }
 
         shopper.UpdatedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync(ct);
