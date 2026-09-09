@@ -164,6 +164,10 @@ public sealed class ShopperAuthController : ControllerBase
                 Email = req.Email,
                 Tc = req.Tc,
                 SmsConsent = req.SmsConsent,
+                // İspat: onay kutusu işaretlendiyse anı ve kaynağı kaydet
+                // (İYS yüklemesi + 6563 ispat yükü; bkz. Shopper.SmsConsentAt).
+                SmsConsentAt = req.SmsConsent ? now : null,
+                SmsConsentSource = req.SmsConsent ? "register" : null,
                 CreatedAt = now,
                 UpdatedAt = now,
             };

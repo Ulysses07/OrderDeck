@@ -26,7 +26,8 @@ public class ShopperMePatchTests : IClassFixture<ApiFactory>
         string Platform,
         string Username,
         string? Email = null,
-        string? Tc = null);
+        string? Tc = null,
+        bool SmsConsent = false);
 
     private sealed record AuthResponse(
         string AccessToken,
@@ -67,7 +68,8 @@ public class ShopperMePatchTests : IClassFixture<ApiFactory>
     private static string UniqueCode() =>
         ("mepatch" + Guid.NewGuid().ToString("N"))[..16];
 
-    private async Task<(string accessToken, Guid shopperId)> RegisterShopperAsync(HttpClient client)
+    private async Task<(string accessToken, Guid shopperId)> RegisterShopperAsync(
+        HttpClient client, bool smsConsent = false)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -98,7 +100,7 @@ public class ShopperMePatchTests : IClassFixture<ApiFactory>
         await db.SaveChangesAsync();
 
         var phone = UniquePhone();
-        var req = new RegisterRequest(code, "Patch User", phone, "Pass1234!", "Ankara", "youtube", "patchuser");
+        var req = new RegisterRequest(code, "Patch User", phone, "Pass1234!", "Ankara", "youtube", "patchuser", SmsConsent: smsConsent);
         var resp = await client.PostAsJsonAsync("/api/v1/shopper/auth/register", req);
         resp.StatusCode.Should().Be(HttpStatusCode.Created);
         var body = await resp.Content.ReadFromJsonAsync<AuthResponse>();
@@ -257,6 +259,104 @@ public class ShopperMePatchTests : IClassFixture<ApiFactory>
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         (await db.Shoppers.FindAsync(shopperId))!.SmsConsent.Should().BeTrue();
+    }
+
+    // ── SMS consent audit: ispat alanları (İYS/6563 — SmsConsentAt/Source/RevokedAt)
+
+    [Fact]
+    public async Task Register_without_consent_leaves_audit_fields_null()
+    {
+        var client = _factory.CreateClient();
+        var (_, shopperId) = await RegisterShopperAsync(client);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var shopper = (await db.Shoppers.FindAsync(shopperId))!;
+        shopper.SmsConsentAt.Should().BeNull();
+        shopper.SmsConsentSource.Should().BeNull();
+        shopper.SmsConsentRevokedAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Register_with_consent_sets_consent_at_and_source_register()
+    {
+        var client = _factory.CreateClient();
+        var before = DateTimeOffset.UtcNow;
+        var (_, shopperId) = await RegisterShopperAsync(client, smsConsent: true);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var shopper = (await db.Shoppers.FindAsync(shopperId))!;
+        shopper.SmsConsent.Should().BeTrue();
+        shopper.SmsConsentAt.Should().NotBeNull().And.BeOnOrAfter(before);
+        shopper.SmsConsentSource.Should().Be("register");
+        shopper.SmsConsentRevokedAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task PatchMe_opt_in_sets_consent_at_and_source_profile()
+    {
+        var client = _factory.CreateClient();
+        var (token, shopperId) = await RegisterShopperAsync(client);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        var before = DateTimeOffset.UtcNow;
+        var resp = await client.PatchAsJsonAsync("/api/v1/shopper/me",
+            new PatchMeRequest(SmsConsent: true));
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var shopper = (await db.Shoppers.FindAsync(shopperId))!;
+        shopper.SmsConsentAt.Should().NotBeNull().And.BeOnOrAfter(before);
+        shopper.SmsConsentSource.Should().Be("profile");
+    }
+
+    [Fact]
+    public async Task PatchMe_same_consent_value_does_not_shift_consent_at()
+    {
+        var client = _factory.CreateClient();
+        var (token, shopperId) = await RegisterShopperAsync(client, smsConsent: true);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        DateTimeOffset? original;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            original = (await db.Shoppers.FindAsync(shopperId))!.SmsConsentAt;
+        }
+        original.Should().NotBeNull();
+
+        // Aynı değeri tekrar PATCH'lemek ispat tarihini kaydırmamalı.
+        var resp = await client.PatchAsJsonAsync("/api/v1/shopper/me",
+            new PatchMeRequest(SmsConsent: true));
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var scope2 = _factory.Services.CreateScope();
+        var db2 = scope2.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var shopper = (await db2.Shoppers.FindAsync(shopperId))!;
+        shopper.SmsConsentAt.Should().Be(original);
+        shopper.SmsConsentSource.Should().Be("register", "değişim olmadığı için kaynak da ezilmemeli");
+    }
+
+    [Fact]
+    public async Task PatchMe_opt_out_sets_revoked_at_and_preserves_consent_at()
+    {
+        var client = _factory.CreateClient();
+        var (token, shopperId) = await RegisterShopperAsync(client, smsConsent: true);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        var before = DateTimeOffset.UtcNow;
+        var resp = await client.PatchAsJsonAsync("/api/v1/shopper/me",
+            new PatchMeRequest(SmsConsent: false));
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var shopper = (await db.Shoppers.FindAsync(shopperId))!;
+        shopper.SmsConsent.Should().BeFalse();
+        shopper.SmsConsentRevokedAt.Should().NotBeNull().And.BeOnOrAfter(before);
+        shopper.SmsConsentAt.Should().NotBeNull("geçmiş onayın ispatı ret ile silinmemeli");
     }
 
     // ── T13.6: No auth → 401 ──────────────────────────────────────────────────
