@@ -61,7 +61,7 @@ public class NetgsmSmsSenderTests
     {
         var (sender, handler) = Build(Opt());
 
-        await sender.SendAsync("+905551112233", "Kodunuz 123456");
+        await sender.SendAsync("+905551112233", "Kodunuz 123456", SmsKind.Transactional);
 
         handler.Request!.Method.Should().Be(HttpMethod.Post);
         handler.Request.RequestUri!.ToString()
@@ -86,7 +86,7 @@ public class NetgsmSmsSenderTests
     {
         var (sender, handler) = Build(Opt());
 
-        await sender.SendAsync("+905551112233", "msg");
+        await sender.SendAsync("+905551112233", "msg", SmsKind.Transactional);
 
         using var doc = JsonDocument.Parse(handler.Body!);
         doc.RootElement.TryGetProperty("iysfilter", out _).Should().BeFalse();
@@ -101,7 +101,7 @@ public class NetgsmSmsSenderTests
         opt.Encoding = "TR";
         var (sender, handler) = Build(opt);
 
-        await sender.SendAsync("+905551112233", "msg");
+        await sender.SendAsync("+905551112233", "msg", SmsKind.Transactional);
 
         using var doc = JsonDocument.Parse(handler.Body!);
         doc.RootElement.GetProperty("iysfilter").GetString().Should().Be("0");
@@ -109,10 +109,40 @@ public class NetgsmSmsSenderTests
     }
 
     [Fact]
+    public async Task SendAsync_commercial_uses_commercial_iysfilter()
+    {
+        // Prod config: IysFilter="0" (OTP), CommercialIysFilter default "11".
+        // Kampanya Commercial gider → Netgsm İYS ret listesine bakar; "0" ile
+        // gitseydi ticari mesaj İYS kontrolsüz çıkardı (mevzuat riski).
+        var opt = Opt();
+        opt.IysFilter = "0";
+        var (sender, handler) = Build(opt);
+
+        await sender.SendAsync("+905551112233", "Kampanya!", SmsKind.Commercial);
+
+        using var doc = JsonDocument.Parse(handler.Body!);
+        doc.RootElement.GetProperty("iysfilter").GetString().Should().Be("11");
+    }
+
+    [Fact]
+    public async Task SendAsync_transactional_keeps_otp_iysfilter()
+    {
+        var opt = Opt();
+        opt.IysFilter = "0";
+        opt.CommercialIysFilter = "11";
+        var (sender, handler) = Build(opt);
+
+        await sender.SendAsync("+905551112233", "Kodunuz 123456", SmsKind.Transactional);
+
+        using var doc = JsonDocument.Parse(handler.Body!);
+        doc.RootElement.GetProperty("iysfilter").GetString().Should().Be("0");
+    }
+
+    [Fact]
     public async Task SendAsync_success_code_00_does_not_throw()
     {
         var (sender, _) = Build(Opt(), respBody: "{\"code\":\"00\",\"bulkid\":\"123\"}");
-        var act = async () => await sender.SendAsync("+905551112233", "msg");
+        var act = async () => await sender.SendAsync("+905551112233", "msg", SmsKind.Transactional);
         await act.Should().NotThrowAsync();
     }
 
@@ -120,7 +150,7 @@ public class NetgsmSmsSenderTests
     public async Task SendAsync_rejected_code_throws()
     {
         var (sender, _) = Build(Opt(), respBody: "{\"code\":\"30\"}");
-        var act = async () => await sender.SendAsync("+905551112233", "msg");
+        var act = async () => await sender.SendAsync("+905551112233", "msg", SmsKind.Transactional);
         await act.Should().ThrowAsync<InvalidOperationException>();
     }
 
@@ -128,7 +158,7 @@ public class NetgsmSmsSenderTests
     public async Task SendAsync_non_success_status_throws()
     {
         var (sender, _) = Build(Opt(), status: HttpStatusCode.InternalServerError, respBody: "{}");
-        var act = async () => await sender.SendAsync("+905551112233", "msg");
+        var act = async () => await sender.SendAsync("+905551112233", "msg", SmsKind.Transactional);
         await act.Should().ThrowAsync<InvalidOperationException>();
     }
 
@@ -137,7 +167,7 @@ public class NetgsmSmsSenderTests
     {
         var (sender, handler) = Build(Opt());
         handler.ThrowOnSend = new HttpRequestException("connection refused");
-        var act = async () => await sender.SendAsync("+905551112233", "msg");
+        var act = async () => await sender.SendAsync("+905551112233", "msg", SmsKind.Transactional);
         await act.Should().ThrowAsync<HttpRequestException>();
     }
 }

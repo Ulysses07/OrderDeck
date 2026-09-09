@@ -15,10 +15,10 @@ public sealed class LogSmsSender : ISmsSender
 
     public LogSmsSender(ILogger<LogSmsSender> log) => _log = log;
 
-    public Task SendAsync(string toPhone, string message, CancellationToken ct = default)
+    public Task SendAsync(string toPhone, string message, SmsKind kind, CancellationToken ct = default)
     {
-        _log.LogInformation("SMS (log provider) to {Phone}: {Message}",
-            PiiMasker.MaskPhone(toPhone), message);
+        _log.LogInformation("SMS (log provider, {Kind}) to {Phone}: {Message}",
+            kind, PiiMasker.MaskPhone(toPhone), message);
         return Task.CompletedTask;
     }
 }

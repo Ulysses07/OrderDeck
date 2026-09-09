@@ -200,6 +200,8 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
 
         _factory.Sms.Sent.Should().HaveCount(4);
         _factory.Sms.Sent.Should().OnlyContain(m => m.Text == "Indirim!");
+        // Kampanya ticari ileti — İYS filtreli (Commercial) gitmek ZORUNDA.
+        _factory.Sms.Sent.Should().OnlyContain(m => m.Kind == SmsKind.Commercial);
 
         var status = await client.GetFromJsonAsync<StatusResponse>(
             $"/api/v1/licenses/{licenseId}/sms-campaigns/{create.CampaignId}");
