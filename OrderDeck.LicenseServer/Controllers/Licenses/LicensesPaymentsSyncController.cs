@@ -129,7 +129,24 @@ public sealed class LicensesPaymentsSyncController : ControllerBase
             }
         }
 
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // Payment.Status eşzamanlılık jetonu (F04): biz satırı okuduktan
+            // sonra panelden bir onay/red kararı geçtiyse UPDATE'imiz düşer.
+            // 409 dönüyoruz; WPF hata gören partiyi senkronlandı saymaz ve
+            // sonraki turda yeniden gönderir — o turda güncel Status okunur.
+            _log.LogInformation(
+                "Payment sync çakışması, istemci yeniden denemeli (license={LicenseId}, count={Count})",
+                licenseId, req.Payments.Count);
+            return Problem(
+                title: "sync-conflict",
+                detail: "Bu ödemeler eşzamanlı başka bir istekle yazıldı; paketi yeniden gönderin.",
+                statusCode: 409);
+        }
 
         // Yeni gelen pending dekontlar için fan-out. Push hatası sync'i bozmaz.
         if (newPendingPayments.Count > 0)

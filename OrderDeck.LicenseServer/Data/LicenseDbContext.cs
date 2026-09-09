@@ -329,7 +329,13 @@ public class LicenseDbContext : DbContext
             b.Property(p => p.PdfHash).HasMaxLength(64);
             b.HasIndex(p => p.PdfHash).IsUnique();
             b.Property(p => p.RejectReason).HasMaxLength(500);
-            b.Property(p => p.Status).HasConversion<int>();
+            // Status eşzamanlılık jetonu (2026-09-09 denetimi F04): Pending →
+            // Approved/Rejected geçişi TEK kazananlı olmalı. Jeton olmadan iki
+            // paralel karar read-check-write ile birbirini ezebiliyordu (gerçek
+            // SQL Server'da tekrar üretildi). UPDATE artık "WHERE Status =
+            // okunan değer" içerir; kaybeden DbUpdateConcurrencyException alır
+            // ve controller 409 döner.
+            b.Property(p => p.Status).HasConversion<int>().IsConcurrencyToken();
             b.Property(p => p.ShipmentDirective).HasConversion<int>();
             b.HasOne(p => p.License).WithMany()
                 .HasForeignKey(p => p.LicenseId).OnDelete(DeleteBehavior.Cascade);
