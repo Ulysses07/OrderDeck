@@ -116,7 +116,18 @@ public sealed class PanelPaymentsController : ControllerBase
         payment.ApprovedAt = now;
         payment.ApprovedByCustomerId = customerId;
         payment.UpdatedAt = now;
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // Status jetonu (bkz. LicenseDbContext): biz okuduktan sonra
+            // yarışan başka bir karar kazandı. Etiket/push yalnız kazanandan
+            // gider; buradan sessizce 409 dönüyoruz — pending kontrolündeki
+            // yanıtın aynısı, istemci iki durumu ayırt etmek zorunda değil.
+            return Problem(title: "not-pending", detail: "Bu ödeme zaten karara bağlanmış.", statusCode: 409);
+        }
 
         await ApplyConversationLabelAsync(payment, WaLabelEvent.PaymentApproved, ct);
         await NotifyShopperPaymentDecisionAsync(payment, approved: true, reason: null, ct);
@@ -146,7 +157,15 @@ public sealed class PanelPaymentsController : ControllerBase
         payment.RejectedByCustomerId = customerId;
         payment.RejectReason = reason.Length > 0 ? reason : null;
         payment.UpdatedAt = now;
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // Yarışan karar kazandı — bkz. Approve'daki açıklama.
+            return Problem(title: "not-pending", detail: "Bu ödeme zaten karara bağlanmış.", statusCode: 409);
+        }
 
         await ApplyConversationLabelAsync(payment, WaLabelEvent.PaymentRejected, ct);
         await NotifyShopperPaymentDecisionAsync(payment, approved: false,
