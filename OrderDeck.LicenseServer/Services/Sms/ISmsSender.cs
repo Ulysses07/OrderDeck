@@ -10,7 +10,9 @@ public interface ISmsSender
     /// <summary>
     /// <paramref name="toPhone"/> E.164 (+90XXXXXXXXXX) beklenir; implementasyon
     /// sağlayıcının istediği formata çevirir. Hata durumunda exception fırlatır
-    /// (çağıran best-effort try/catch ile sarar).
+    /// (çağıran best-effort try/catch ile sarar). <paramref name="kind"/>
+    /// İYS sınıfını belirler — ticari kampanya <see cref="SmsKind.Commercial"/>
+    /// ile gönderilmek ZORUNDA (İYS ret listesi kontrolü).
     /// </summary>
-    Task SendAsync(string toPhone, string message, CancellationToken ct = default);
+    Task SendAsync(string toPhone, string message, SmsKind kind, CancellationToken ct = default);
 }

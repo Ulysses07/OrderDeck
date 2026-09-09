@@ -61,7 +61,8 @@ public sealed class SmsCampaignSendJob
         {
             try
             {
-                await _sms.SendAsync(r.Phone, campaign.MessageBody, ct);
+                // Kampanya = ticari ileti → İYS filtresi "11" (Commercial).
+                await _sms.SendAsync(r.Phone, campaign.MessageBody, SmsKind.Commercial, ct);
                 r.Status = "sent";
                 r.SentAt = DateTimeOffset.UtcNow;
                 r.Error = null;

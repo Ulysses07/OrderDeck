@@ -109,6 +109,9 @@ services:
       Netgsm__Header: "${NETGSM_HEADER:-}"
       # OTP = ticari olmayan bilgilendirme → İYS filtresi "0".
       Netgsm__IysFilter: "${NETGSM_IYSFILTER:-0}"
+      # Toplu kampanya = ticari ileti → "11" (B2C); Netgsm alıcıyı İYS
+      # onay/ret kaydına göre eler. Mesaj türü kod tarafında (SmsKind).
+      Netgsm__CommercialIysFilter: "${NETGSM_COMMERCIAL_IYSFILTER:-11}"
       # In-app update prompt — UpdateChecker bu iki değeri okuyup mevcut
       # sürümle karşılaştırır; LatestVersion boşsa kontrol atlanır (yanlış
       # pozitif yok). Bump akışı: yeni release tag → /opt/orderdeck/.env'e

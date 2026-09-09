@@ -347,7 +347,8 @@ public sealed class ShopperAuthController : ControllerBase
             var message = $"OrderDeck dogrulama kodunuz: {code}. Kod 10 dakika gecerli.";
             try
             {
-                await _sms.SendAsync(phone!, message, ct);
+                // OTP = hizmet mesajı → İYS-muaf (Transactional, filtre "0").
+                await _sms.SendAsync(phone!, message, Services.Sms.SmsKind.Transactional, ct);
             }
             catch (Exception ex)
             {

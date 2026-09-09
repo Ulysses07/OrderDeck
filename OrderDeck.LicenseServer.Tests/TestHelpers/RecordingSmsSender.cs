@@ -10,7 +10,7 @@ namespace OrderDeck.LicenseServer.Tests.TestHelpers;
 /// </summary>
 public sealed class RecordingSmsSender : ISmsSender
 {
-    public sealed record Message(string Phone, string Text);
+    public sealed record Message(string Phone, string Text, SmsKind Kind);
 
     private readonly List<Message> _sent = new();
     private readonly object _lock = new();
@@ -27,11 +27,11 @@ public sealed class RecordingSmsSender : ISmsSender
         lock (_lock) _sent.Clear();
     }
 
-    public Task SendAsync(string toPhone, string message, CancellationToken ct = default)
+    public Task SendAsync(string toPhone, string message, SmsKind kind, CancellationToken ct = default)
     {
         if (ThrowOnSend)
             throw new InvalidOperationException("Simulated SMS provider failure.");
-        lock (_lock) _sent.Add(new Message(toPhone, message));
+        lock (_lock) _sent.Add(new Message(toPhone, message, kind));
         return Task.CompletedTask;
     }
 }

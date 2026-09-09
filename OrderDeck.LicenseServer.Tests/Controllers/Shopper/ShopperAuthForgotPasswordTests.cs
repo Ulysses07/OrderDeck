@@ -170,6 +170,9 @@ public class ShopperAuthForgotPasswordTests : IClassFixture<ApiFactory>
         var sent = _factory.Sms.Sent.Where(m => m.Phone == phone).ToList();
         sent.Should().HaveCount(1);
         Regex.IsMatch(sent[0].Text, @"\d{6}").Should().BeTrue("OTP message contains a 6-digit code");
+        // OTP hizmet mesajı — İYS-muaf (Transactional) gitmeli; Commercial
+        // gönderilirse İYS-retli kullanıcıya parola kodu ulaşmaz.
+        sent[0].Kind.Should().Be(OrderDeck.LicenseServer.Services.Sms.SmsKind.Transactional);
 
         // forgot-password artık support request OLUŞTURMAZ (escalate'e taşındı).
         using var scope = _factory.Services.CreateScope();
