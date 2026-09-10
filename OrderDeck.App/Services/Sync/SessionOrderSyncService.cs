@@ -95,7 +95,9 @@ public sealed class SessionOrderSyncService
         }
 
         var now = _clock.UnixNow();
-        foreach (var s in batch) _sessions.MarkSynced(s.Id, now);
+        // F05: push'a giden Revision ile onayla — uçuş sırasında satır
+        // değiştiyse MarkSynced 0 satır etkiler, sonraki tick tekrar gönderir.
+        foreach (var s in batch) _sessions.MarkSynced(s.Id, now, s.Revision);
         return batch.Count;
     }
 
@@ -140,7 +142,8 @@ public sealed class SessionOrderSyncService
         }
 
         var now = _clock.UnixNow();
-        foreach (var l in batch) _labels.MarkSynced(l.Id, now);
+        // F05: bkz. PushSessionsAsync'teki not.
+        foreach (var l in batch) _labels.MarkSynced(l.Id, now, l.Revision);
         return batch.Count;
     }
 

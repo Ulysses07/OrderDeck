@@ -126,7 +126,7 @@ public class LabelRepositoryPendingStockTests
 
         var pid = Guid.NewGuid().ToString("N");
         repo.Insert(Row("l1", pid, null));
-        repo.MarkSynced("l1", 2000);
+        repo.MarkSynced("l1", 2000, revision: 0);
 
         repo.MarkPrinted(new[] { "l1" }, 2500);
 
@@ -146,7 +146,7 @@ public class LabelRepositoryPendingStockTests
 
         var pid = Guid.NewGuid().ToString("N");
         repo.Insert(Row("l1", pid, null));
-        repo.MarkSynced("l1", 2000);
+        repo.MarkSynced("l1", 2000, revision: 0);
 
         repo.UpdatePrice("l1", 250m);
 
@@ -161,9 +161,10 @@ public class LabelRepositoryPendingStockTests
 
         var pid = Guid.NewGuid().ToString("N");
         repo.Insert(Row("l1", pid, null));
-        repo.MarkSynced("l1", 2000);
+        repo.MarkSynced("l1", 2000, revision: 0);
         repo.MarkCancelled(new[] { "l1" }, 2100, "test");
-        repo.MarkSynced("l1", 2200);   // iptal sunucuya gitti → hareket silindi
+        // İptal Revision'ı 1'e çıkardı; onay güncel revision ile geliyor.
+        repo.MarkSynced("l1", 2200, revision: 1);   // iptal sunucuya gitti → hareket silindi
 
         repo.Uncancel(new[] { "l1" });
 
@@ -181,7 +182,7 @@ public class LabelRepositoryPendingStockTests
 
         var pid = Guid.NewGuid().ToString("N");
         repo.Insert(Row("l1", pid, null, tentative: true));
-        repo.MarkSynced("l1", 2000);   // sunucu geçici yedek gördü → hareket yok
+        repo.MarkSynced("l1", 2000, revision: 0);   // sunucu geçici yedek gördü → hareket yok
 
         repo.ConfirmTentativeBackups(new[] { "l1" });
 
@@ -198,7 +199,7 @@ public class LabelRepositoryPendingStockTests
 
         var pid = Guid.NewGuid().ToString("N");
         repo.Insert(Row("l1", pid, null, tentative: true));
-        repo.MarkSynced("l1", 2000);
+        repo.MarkSynced("l1", 2000, revision: 0);
 
         repo.ConfirmTentativeBackups(new[] { "l1" });
 
