@@ -51,7 +51,7 @@ public class StreamReportViewModel_OpenWhatsAppTests
                (OrderDeck.App.Services.Sync.ICurrentLicenseProvider)
                    new PaymentRequestServiceTestHelpers.NullLicenseProvider());
         var paymentService = new PaymentRequestService(settingsStore, new WhatsAppMessageBuilder(), launcher,
-            api, licenseProvider);
+            api, licenseProvider, new InMemoryPendingBalanceApplyStore());
         var dialogs = new FakeDialogService();
         var sut = new StreamReportViewModel(labels, sessions, giveaways, customers, paymentService, dialogs);
         return (db, customers, sessions, labels, giveaways, launcher, dialogs, settingsPath, sut);

@@ -206,7 +206,7 @@ public sealed partial class StreamReportViewModel : ViewModelBase
             return;
         }
 
-        var result = await _paymentService.OpenWhatsAppAsync(customer, topCustomer.TotalAmount, _currentSessionDate);
+        var result = await RequestPaymentAsync(customer);
 
         if (result == PaymentRequestResult.PhoneRequired)
         {
@@ -215,7 +215,7 @@ public sealed partial class StreamReportViewModel : ViewModelBase
             {
                 var updated = _customers.GetById(customer.Id);
                 if (updated is not null)
-                    await _paymentService.OpenWhatsAppAsync(updated, topCustomer.TotalAmount, _currentSessionDate);
+                    await RequestPaymentAsync(updated);
             }
         }
         else if (result == PaymentRequestResult.LaunchFailed)
@@ -231,6 +231,24 @@ public sealed partial class StreamReportViewModel : ViewModelBase
                 "Gönderim işleniyor — WhatsApp'ta ulaştığını doğrulayın, aksi halde tekrar deneyin.");
         }
 
-        await Task.CompletedTask;
+        // N02: diskte tutarı farklı, yarım kalmış bir bakiye düşüm işi varsa
+        // servis mesaj atmadan önce operatöre sorulmasını ister. Onayda eski
+        // anahtar yeniden kullanılır (çift düşüm imkânsız); redde hiçbir şey
+        // yapılmaz — kayıt açık kalır.
+        async Task<PaymentRequestResult> RequestPaymentAsync(Customer c)
+        {
+            var r = await _paymentService.OpenWhatsAppAsync(c, topCustomer.TotalAmount, _currentSessionDate);
+            if (r != PaymentRequestResult.PendingApplyConflict) return r;
+
+            var proceed = await _dialogService.ConfirmAsync(
+                "Bu müşteri için yarım kalmış bir ödeme isteği var ve tutarı farklıydı. " +
+                "Devam ederseniz bakiye düşümü o yarım işle birleştirilir (ikinci kez düşülmez) " +
+                "ve mesaj yeni tutarla gönderilir.\n\nDevam edilsin mi?",
+                "Yarım kalmış ödeme isteği");
+            if (!proceed) return r;
+
+            return await _paymentService.OpenWhatsAppAsync(
+                c, topCustomer.TotalAmount, _currentSessionDate, overridePendingConflict: true);
+        }
     }
 }
