@@ -2,6 +2,7 @@ using System.Linq;
 using FluentAssertions;
 using OrderDeck.App.ViewModels;
 using OrderDeck.Core.Sales;
+using OrderDeck.Core.Storage.Repositories;
 using Xunit;
 
 namespace OrderDeck.Tests.App;
@@ -157,5 +158,78 @@ public class MainShellViewModelQueueTests
         // The tentative backup row should still be there — only the
         // explicitly selected parent was removed.
         h.Vm.PrintQueue.Should().ContainSingle(l => l.Label.IsTentativeBackup);
+    }
+
+    // ── F06 (denetim 2026-09-09): kuyruktan silme = soft-cancel ──────────────
+    //
+    // Eski davranış fiziksel DELETE idi. Satır sunucuya bir kez push
+    // edildiyse DELETE mezar taşını da yok eder: sunucu kopyası ömür boyu
+    // aktif satış kalır, stok geri gelmez. Aşağıdaki testler yeni sözleşmeyi
+    // sabitliyor: satır YERİNDE kalır, CancelledAt + queue-removed sebebi
+    // yazılır, SyncedAt düşer ki iptal sunucuya gitsin.
+
+    [Fact]
+    public void RemoveSelectedFromQueue_soft_cancels_row_instead_of_deleting()
+    {
+        using var h = MainShellTestHarness.Build();
+        MainShellTestHarness.EnqueueLabel(h.Vm, "@buyer", 250m);
+        var label = h.Vm.PrintQueue[0].Label;
+
+        h.Vm.SelectedQueueItems.Add(h.Vm.PrintQueue[0]);
+        h.Vm.RemoveSelectedFromQueueCommand.Execute(null);
+
+        var repo = new LabelRepository(h.Db);
+        var row = repo.GetById(label.Id);
+        row.Should().NotBeNull("satır silinmemeli, iptal edilmeli — mezar taşı sunucuya gidecek");
+        row!.CancelledAt.Should().Be(1000L);
+        row.CancelReason.Should().Be(CancelReasonCodes.QueueRemoved);
+        row.SyncedAt.Should().BeNull("iptal outbox'a düşmeli ki sunucu stok iade etsin");
+
+        // Kuyruk sorgusu iptalli satırı zaten dışlıyor — restart sonrası da
+        // kuyruğa geri gelmez.
+        h.Labels.GetQueue(label.SessionId).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void RemoveSelectedFromQueue_resets_sync_stamp_on_already_synced_row()
+    {
+        // Asıl hata senaryosu: satır sunucuya PUSH EDİLMİŞKEN kuyruktan
+        // çıkarılıyor. DELETE olsaydı sunucu iptali hiç öğrenmezdi.
+        using var h = MainShellTestHarness.Build();
+        MainShellTestHarness.EnqueueLabel(h.Vm, "@buyer", 250m);
+        var label = h.Vm.PrintQueue[0].Label;
+
+        var repo = new LabelRepository(h.Db);
+        repo.MarkSynced(label.Id, 2000);
+
+        h.Vm.SelectedQueueItems.Add(h.Vm.PrintQueue[0]);
+        h.Vm.RemoveSelectedFromQueueCommand.Execute(null);
+
+        var row = repo.GetById(label.Id)!;
+        row.CancelledAt.Should().NotBeNull();
+        row.SyncedAt.Should().BeNull("sonraki sync tick'i iptali sunucuya taşımalı");
+        repo.GetUnsynced().Should().ContainSingle(l => l.Id == label.Id);
+    }
+
+    [Fact]
+    public void ClearQueue_soft_cancels_every_row()
+    {
+        using var h = MainShellTestHarness.Build();
+        h.Dialogs.ConfirmResult = _ => true;
+        MainShellTestHarness.EnqueueLabel(h.Vm, "@a", 10m);
+        MainShellTestHarness.EnqueueLabel(h.Vm, "@b", 20m);
+        var ids = h.Vm.PrintQueue.Select(l => l.Id).ToList();
+
+        h.Vm.ClearQueueCommand.Execute(null);
+
+        h.Vm.PrintQueue.Should().BeEmpty();
+        var repo = new LabelRepository(h.Db);
+        foreach (var id in ids)
+        {
+            var row = repo.GetById(id);
+            row.Should().NotBeNull();
+            row!.CancelledAt.Should().NotBeNull();
+            row.CancelReason.Should().Be(CancelReasonCodes.QueueRemoved);
+        }
     }
 }

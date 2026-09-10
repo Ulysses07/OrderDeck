@@ -13,6 +13,7 @@ public static class CancelReasonCodes
     public const string WrongProduct   = "wrong-product";   // Yanlış ürün / fiyat
     public const string Duplicate      = "duplicate";       // Mükerrer kayıt
     public const string OutOfStock     = "out-of-stock";    // Stok kalmadı
+    public const string QueueRemoved   = "queue-removed";   // Kuyruktan çıkarıldı
     public const string CustomPrefix   = "custom:";         // Özel sebep (free-form)
 
     /// <summary>Returns the operator-facing Turkish label for a stored reason
@@ -27,6 +28,7 @@ public static class CancelReasonCodes
             WrongProduct   => "Yanlış ürün / fiyat",
             Duplicate      => "Mükerrer kayıt",
             OutOfStock     => "Stok kalmadı",
+            QueueRemoved   => "Kuyruktan çıkarıldı",
             _              => reason
         };
     }

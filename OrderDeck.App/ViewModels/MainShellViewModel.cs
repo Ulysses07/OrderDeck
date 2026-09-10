@@ -1071,15 +1071,19 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         return true;
     }
 
+    // F06 (denetim 2026-09-09): kuyruktan çıkarma fiziksel DELETE yapıyordu.
+    // Satır sunucuya bir kez push edildiyse silmek mezar taşını da yok eder:
+    // sunucu kopyası ömür boyu aktif satış olarak kalır, stok geri gelmez.
+    // Cancel(soft-delete) satırı yerinde bırakır, SyncedAt/StockSyncedAt'i
+    // düşürür → iptal sunucuya gider, StockLedgerReconciler stoğu iade eder.
     [RelayCommand(CanExecute = nameof(CanWrite))]
     private void RemoveSelectedFromQueue()
     {
         if (SelectedQueueItems.Count == 0) return;
-        foreach (var vm in SelectedQueueItems.ToList())
-        {
-            _labels.Delete(vm.Id);
-            PrintQueue.Remove(vm);
-        }
+        var snapshot = SelectedQueueItems.ToList();
+        _labels.Cancel(snapshot.Select(vm => vm.Id).ToList(),
+            CancelReasonCodes.QueueRemoved);
+        foreach (var vm in snapshot) PrintQueue.Remove(vm);
         SelectedQueueItems.Clear();
     }
 
@@ -1090,7 +1094,8 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         if (!_dialogs.Confirm($"Kuyruktaki {PrintQueue.Count} etiket silinecek. Emin misin?",
             "Hepsini Temizle")) return;
 
-        foreach (var item in PrintQueue.ToList()) _labels.Delete(item.Id);
+        _labels.Cancel(PrintQueue.Select(i => i.Id).ToList(),
+            CancelReasonCodes.QueueRemoved);
         PrintQueue.Clear();
     }
 
