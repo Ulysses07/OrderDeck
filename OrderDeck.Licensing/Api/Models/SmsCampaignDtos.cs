@@ -16,7 +16,10 @@ public sealed record SmsPreviewResponse(
     int CreditsRemaining,
     bool Sufficient);
 
-public sealed record SmsCreateRequest(string MessageBody);
+/// <summary>ClientRequestId (F09): gönderim eylemi başına üretilen idempotency
+/// anahtarı. Resilience handler'ın retry'ı veya kullanıcı tekrar denemesi aynı
+/// anahtarı taşır; server ikinci kampanya açmak yerine ilkinin yanıtını döner.</summary>
+public sealed record SmsCreateRequest(string MessageBody, Guid? ClientRequestId = null);
 
 public sealed record SmsCreateResponse(
     Guid CampaignId,

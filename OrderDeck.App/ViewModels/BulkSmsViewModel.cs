@@ -63,11 +63,19 @@ public sealed partial class BulkSmsViewModel : ViewModelBase
         _currentLicense = currentLicense;
     }
 
+    // F09: gönderim eylemi başına idempotency anahtarı. İlk denemede üretilir,
+    // hata olursa SAKLANIR — kullanıcı tekrar "Gönder" dediğinde (veya HTTP
+    // resilience handler yeniden denediğinde) aynı anahtar gider ve server
+    // ikinci kampanya açmaz. Başarıda ya da mesaj değişince sıfırlanır.
+    private Guid? _pendingSendRequestId;
+
     partial void OnMessageBodyChanged(string value)
     {
         CharCount = value?.Length ?? 0;
         // Mesaj değişince önizleme geçersiz → tekrar "Önizle" gerekir.
         PreviewDone = false;
+        // Yeni içerik = yeni kampanya; eski gönderimin anahtarı taşınmaz.
+        _pendingSendRequestId = null;
     }
 
     // License key → Guid LicenseId çözümü (PaymentRequestService ile aynı pattern;
@@ -186,8 +194,12 @@ public sealed partial class BulkSmsViewModel : ViewModelBase
             var licenseId = await ResolveLicenseIdAsync(CancellationToken.None);
             if (licenseId is null) { ErrorMessage = "Aktif lisans bulunamadı."; return; }
 
+            _pendingSendRequestId ??= Guid.NewGuid();
             var created = await _api.CreateSmsCampaignAsync(
-                licenseId.Value, new SmsCreateRequest(MessageBody.Trim()), CancellationToken.None);
+                licenseId.Value,
+                new SmsCreateRequest(MessageBody.Trim(), _pendingSendRequestId),
+                CancellationToken.None);
+            _pendingSendRequestId = null; // başarı — sonraki gönderim yeni eylem
             StatusMessage = $"Kampanya oluşturuldu ({created.RecipientCount} alıcı). Gönderim arka planda sürüyor…";
 
             // Durumu birkaç kez yokla (Hangfire job arka planda işliyor).
