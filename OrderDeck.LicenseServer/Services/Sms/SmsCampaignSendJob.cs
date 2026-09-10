@@ -134,6 +134,9 @@ public sealed class SmsCampaignSendJob
         if (failedCount > 0)
         {
             var refund = failedCount * campaign.SegmentsPerMessage;
+            // N05: gerçekleşen iade kampanyaya da yazılır — iade tx'iyle aynı
+            // SaveChanges'te (atomik), raporlama hesap yerine bunu okur.
+            campaign.RefundedCredits = refund;
             await _balance.ApplyAndSaveAsync(
                 campaign.LicenseId, refund, "send-refund",
                 reason: $"campaign:{campaignId} failed={failedCount}",
