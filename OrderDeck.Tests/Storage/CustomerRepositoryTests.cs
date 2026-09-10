@@ -317,6 +317,48 @@ public class CustomerRepositoryTests
         act.Should().NotThrow();
     }
 
+    // ── N03 (2026-09-10 denetimi): UpdatePhone delta imlecini ilerletmeli ──
+
+    [Fact]
+    public void UpdatePhone_satiri_delta_sorgusuna_dusurur()
+    {
+        // LastSeenAt geçmişte, imleç satırı çoktan geçmiş: telefon güncellenince
+        // satır yeniden seçilmeli; yoksa numara sunucuya hiç senkronlanmaz.
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+        repo.Insert(new Customer("id1", "twitch", "alice", "Alice", null,
+            1000, 1000, false, null, null, 0, 0m, null, null, null));
+        repo.GetUpdatedSince(1000, "id1", 100).Should().BeEmpty("imleç satırı zaten geçti");
+
+        repo.UpdatePhone("id1", "+905551234567");
+
+        var delta = repo.GetUpdatedSince(1000, "id1", 100);
+        delta.Should().ContainSingle().Which.Phone.Should().Be("+905551234567");
+    }
+
+    [Fact]
+    public void UpdatePhone_ayni_saniyede_ikinci_guncelleme_de_secilir()
+    {
+        // İlk güncelleme senkronlandıktan sonra (imleç satırın yeni konumunda)
+        // aynı saniye içindeki ikinci güncelleme de delta'ya düşmeli — bunun
+        // için LastSeenAt satır başına kesin artan (strictly increasing) olmalı.
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+        repo.Insert(new Customer("id1", "twitch", "alice", "Alice", null,
+            1000, 1000, false, null, null, 0, 0m, null, null, null));
+        repo.UpdatePhone("id1", "+905551111111");
+        var first = repo.GetById("id1")!;
+        repo.GetUpdatedSince(first.LastSeenAt, "id1", 100)
+            .Should().BeEmpty("ilk güncelleme senkronlandı, imleç satırın üzerinde");
+
+        repo.UpdatePhone("id1", "+905552222222");
+
+        var delta = repo.GetUpdatedSince(first.LastSeenAt, "id1", 100);
+        delta.Should().ContainSingle().Which.Phone.Should().Be("+905552222222");
+    }
+
     // ── Kargo PR F: RecipientPaysActive ─────────────────────────────────
 
     [Fact]
