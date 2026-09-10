@@ -200,7 +200,9 @@ public class MainShellViewModelQueueTests
         var label = h.Vm.PrintQueue[0].Label;
 
         var repo = new LabelRepository(h.Db);
-        repo.MarkSynced(label.Id, 2000);
+        // F05 (#380) sonrası MarkSynced compare-and-set: taze satırın
+        // Revision'ı 0, ack o yüzden revision:0 ile geçer.
+        repo.MarkSynced(label.Id, 2000, revision: 0);
 
         h.Vm.SelectedQueueItems.Add(h.Vm.PrintQueue[0]);
         h.Vm.RemoveSelectedFromQueueCommand.Execute(null);
