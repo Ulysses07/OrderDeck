@@ -638,6 +638,14 @@ public class LicenseDbContext : DbContext
             b.Property(t => t.Kind).HasMaxLength(32).IsRequired();
             b.Property(t => t.Reason).HasMaxLength(500);
             b.HasIndex(t => new { t.LicenseId, t.WpfCustomerId, t.CreatedAt });
+            // N01 (2026-09-10 denetimi): bir hareket en fazla BİR kez geri
+            // alınabilir. Controller'daki "zaten reversed mı" ön kontrolü
+            // check-then-insert olduğundan yarışta iki isteği de geçirebiliyor;
+            // hakem bu filtered unique index. Kaybeden SaveChanges'te unique
+            // ihlali alır, Reverse action'ı bunu 409'a çevirir.
+            b.HasIndex(t => t.ReversesTransactionId)
+             .IsUnique()
+             .HasFilter("[ReversesTransactionId] IS NOT NULL");
         });
 
         mb.Entity<LicenseSmsBalance>(b =>
