@@ -71,12 +71,24 @@ public sealed class WhatsAppWebhookController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> Receive(CancellationToken ct)
     {
+        // Ucuz ön kontrol — ama tek güvence DEĞİL: chunked istekte
+        // ContentLength null'dır ve "null > sınır" false döner (N09).
         if (Request.ContentLength > MaxBodyBytes) return StatusCode(StatusCodes.Status413PayloadTooLarge);
 
+        // N09 (2026-09-10 denetimi): sınır gerçekten okunan bayta bağlı —
+        // başlık ne derse desin MaxBodyBytes aşılınca 413.
         string rawBody;
-        using (var reader = new StreamReader(Request.Body, Encoding.UTF8))
+        using (var ms = new MemoryStream())
         {
-            rawBody = await reader.ReadToEndAsync(ct);
+            var buffer = new byte[16 * 1024];
+            int read;
+            while ((read = await Request.Body.ReadAsync(buffer, ct)) > 0)
+            {
+                if (ms.Length + read > MaxBodyBytes)
+                    return StatusCode(StatusCodes.Status413PayloadTooLarge);
+                ms.Write(buffer, 0, read);
+            }
+            rawBody = Encoding.UTF8.GetString(ms.GetBuffer(), 0, (int)ms.Length);
         }
 
         var signature = Request.Headers["X-Hub-Signature-256"].ToString();

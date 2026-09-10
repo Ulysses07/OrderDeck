@@ -84,6 +84,31 @@ public sealed class WhatsAppWebhookControllerTests : IClassFixture<WhatsAppWebho
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
+    [Fact]
+    public async Task Receive_returns_413_for_oversized_chunked_body()
+    {
+        // N09 (2026-09-10 denetimi): ContentLength kontrolü chunked istekte
+        // (ContentLength=null) hiç çalışmıyordu — "null > sınır" false döner,
+        // 1MB tavanı atlanır ve gövde sonuna kadar okunurdu (Kestrel'in 30MB
+        // genel tavanına dek). Limit artık gerçek okumada da uygulanmalı.
+        // İmza DOĞRU üretiliyor ki eski kodda istek 200'e ulaşsın: 413 yerine
+        // 200 görmek, sınırın delindiğinin kanıtı.
+        var body = "{\"pad\":\"" + new string('a', 2 * 1024 * 1024) + "\"}";
+        using var request = new HttpRequestMessage(HttpMethod.Post, Url)
+        {
+            Content = new StreamContent(new MemoryStream(Encoding.UTF8.GetBytes(body))),
+        };
+        request.Content.Headers.ContentType = new("application/json") { CharSet = "utf-8" };
+        request.Content.Headers.Add("X-Hub-Signature-256", Sign(body, AppSecret));
+        // Content-Length'i kaldırıp chunked'a zorla — Meta değil, saldırgan senaryosu.
+        request.Headers.TransferEncodingChunked = true;
+
+        var resp = await _factory.CreateClient().SendAsync(request);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.RequestEntityTooLarge,
+            "gövde sınırı Content-Length başlığına değil gerçekten okunan bayta bağlı olmalı");
+    }
+
     private static string Sign(string body, string secret)
     {
         var hash = HMACSHA256.HashData(Encoding.UTF8.GetBytes(secret), Encoding.UTF8.GetBytes(body));
