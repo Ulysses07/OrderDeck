@@ -99,8 +99,6 @@ public sealed class LabelService
         return label;
     }
 
-    public void Delete(string labelId) => _labels.Delete(labelId);
-
     public IReadOnlyList<Label> GetQueue(string sessionId) =>
         _labels.GetUnprintedBySession(sessionId);
 
