@@ -37,10 +37,10 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         $"{{\"synced\":{synced},\"retroactiveMatches\":{retroMatches}}}";
 
     // Create a customer with a valid GUID-N style id.
-    private static Customer MakeCustomer(long lastSeenAt, string? id = null) => new(
+    private static Customer MakeCustomer(long lastSeenAt, string? id = null, string? username = null) => new(
         Id:               id ?? Guid.NewGuid().ToString("N"),
         Platform:         "instagram",
-        Username:         $"user_{lastSeenAt}",
+        Username:         username ?? $"user_{lastSeenAt}",
         DisplayName:      $"User {lastSeenAt}",
         AvatarUrl:        null,
         FirstSeenAt:      lastSeenAt - 1,
@@ -337,5 +337,135 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         var settings = fx.Store.Load();
         settings.LastCustomerProjectionSyncAt.Should().Be(total,
             "watermark advances to max LastSeenAt after both batches");
+    }
+
+    /// <summary>
+    /// F07 (2026-09-09 denetimi): aynı saniyeye BatchSize'dan (500) fazla satır
+    /// düştüğünde eski yalnız-zaman imleci sayfa sınırındaki satırları SONSUZA
+    /// DEK atlıyordu — ilk sayfa 500 döner, watermark o saniyeye ilerler, kalan
+    /// satırlar <c>LastSeenAt &gt; @since</c> filtresine takılır (kanıt: 501
+    /// satırda 1 kayıp, probe-results.txt CUSTOMER_CURSOR). Toplu içe aktarma
+    /// ve saat düzeltmesi bu deseni gerçek hayatta üretir. Bileşik imleç
+    /// (LastSeenAt, Id) ile hepsi akmalı.
+    /// </summary>
+    [Fact]
+    public async Task SyncOnce_501_ayni_saniye_satirda_hicbiri_atlanmaz()
+    {
+        const int total = 501;
+        const long sameSecond = 1_000L;
+        var postedIds = new List<string>();
+        var fx = Build(req =>
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (path == "/api/v1/me/licenses")
+                return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/wpf-customers/sync"))
+            {
+                var body = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+                var doc  = JsonDocument.Parse(body);
+                var ids  = doc.RootElement.GetProperty("customers")
+                    .EnumerateArray()
+                    .Select(e => e.GetProperty("id").GetString()!)
+                    .ToList();
+                postedIds.AddRange(ids);
+                return FakeHttpMessageHandler.Json(200, SyncRespJson(synced: ids.Count));
+            }
+            return FakeHttpMessageHandler.Empty(404);
+        });
+        using var _d = fx.Db;
+
+        for (var i = 0; i < total; i++)
+            fx.Customers.Insert(MakeCustomer(sameSecond, username: $"same_sec_{i}"));
+
+        var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
+
+        result.Should().Be(total, "aynı saniyedeki satırların HİÇBİRİ atlanmamalı");
+        postedIds.Distinct().Should().HaveCount(total,
+            "501 satır → sayfa1=500 + sayfa2=1; eski imleçte 501. satır kayboluyordu");
+
+        var settings = fx.Store.Load();
+        settings.LastCustomerProjectionSyncAt.Should().Be(sameSecond);
+        settings.LastCustomerProjectionSyncId.Should().NotBeNullOrEmpty(
+            "imlecin Id yarısı da kalıcılaşmalı — bir sonraki tur kalınan satırdan devam eder");
+    }
+
+    /// <summary>
+    /// Eski (yalnız-zaman) imleçten yükseltme: Id ayarı boşken watermark &gt; 0
+    /// ise geçmişte atlanmış satırlar watermark'ın ALTINDA kalmıştır — bileşik
+    /// imleç ileriye dönük korur ama geçmişi kurtaramaz. Servis watermark'ı bir
+    /// kez 0'a çekip tam tarama yapmalı (sunucu upsert'i idempotent).
+    /// </summary>
+    [Fact]
+    public async Task SyncOnce_eski_imlecten_gecis_tam_tarama_yapar()
+    {
+        var postedIds = new List<string>();
+        var fx = Build(req =>
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (path == "/api/v1/me/licenses")
+                return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/wpf-customers/sync"))
+            {
+                var body = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+                var doc  = JsonDocument.Parse(body);
+                postedIds.AddRange(doc.RootElement.GetProperty("customers")
+                    .EnumerateArray()
+                    .Select(e => e.GetProperty("id").GetString()!));
+                return FakeHttpMessageHandler.Json(200, SyncRespJson(synced: postedIds.Count));
+            }
+            return FakeHttpMessageHandler.Empty(404);
+        });
+        using var _d = fx.Db;
+
+        // Eski imleç 500'de takılı, Id ayarı hiç yazılmamış — bu kurulum eski
+        // sürümle çalışmış. 100'deki satır eski dünyada atlanmış bir satırı
+        // temsil ediyor: watermark'ın altında ama sunucuya hiç gitmemiş.
+        fx.Customers.Insert(MakeCustomer(100L));
+        var settingsBefore = fx.Store.Load();
+        settingsBefore.LastCustomerProjectionSyncAt = 500L;
+        settingsBefore.LastCustomerProjectionSyncId = "";
+        fx.Store.Save(settingsBefore);
+
+        var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
+
+        result.Should().Be(1, "tam tarama watermark altındaki kayıp satırı kurtarmalı");
+
+        var settings = fx.Store.Load();
+        settings.LastCustomerProjectionSyncId.Should().NotBeNullOrEmpty();
+        settings.LastCustomerProjectionSyncAt.Should().Be(100L,
+            "tarama sonrası imleç gerçek son satıra oturur; Id yarısı dolu olduğu için sıfırlama tekrarlanmaz");
+    }
+
+    /// <summary>Sıfırlamanın TEK SEFERLİK olduğunu sabitler: Id yarısı doluysa
+    /// watermark altındaki satırlar yeniden gönderilMEZ (delta semantiği).</summary>
+    [Fact]
+    public async Task SyncOnce_id_imleci_doluysa_tam_tarama_tekrarlanmaz()
+    {
+        var syncPosts = 0;
+        var fx = Build(req =>
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (path == "/api/v1/me/licenses")
+                return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/wpf-customers/sync"))
+            {
+                Interlocked.Increment(ref syncPosts);
+                return FakeHttpMessageHandler.Json(200, SyncRespJson(synced: 1));
+            }
+            return FakeHttpMessageHandler.Empty(404);
+        });
+        using var _d = fx.Db;
+
+        fx.Customers.Insert(MakeCustomer(100L));
+        var settingsBefore = fx.Store.Load();
+        settingsBefore.LastCustomerProjectionSyncAt = 500L;
+        settingsBefore.LastCustomerProjectionSyncId = Guid.NewGuid().ToString("N");
+        fx.Store.Save(settingsBefore);
+
+        var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
+
+        result.Should().Be(0, "imleç zaten yeni biçimde — watermark altı yeniden taranmaz");
+        syncPosts.Should().Be(0);
+        fx.Store.Load().LastCustomerProjectionSyncAt.Should().Be(500L);
     }
 }
