@@ -677,11 +677,16 @@ public sealed class CustomerRepository
     }
 
     /// <summary>
-    /// Faz 0c-2: WpfCustomerProjection sync için delta query. LastSeenAt > since
-    /// olan customer kayıtlarını döner. <paramref name="max"/> ile batch size sınırı.
-    /// Sonuçlar LastSeenAt ASC sıralı (watermark ilerlemesi deterministic olsun).
+    /// Faz 0c-2: WpfCustomerProjection sync için delta query. Bileşik imleç
+    /// (LastSeenAt, Id) — F07 (2026-09-09 denetimi): yalnız <c>LastSeenAt &gt;
+    /// @since</c> ile sayfalarken aynı saniyeye BatchSize'dan fazla satır
+    /// düşerse (toplu içe aktarma, saat düzeltmesi) sayfa sınırındaki satırlar
+    /// bir sonraki turda <c>&gt;</c> filtresine takılıp SONSUZA DEK atlanıyordu
+    /// (kanıt: 501 aynı-saniye satırda 1 kayıp). Id eşitlik kırıcı: aynı
+    /// saniyede kalınan yerden devam edilebilir.
+    /// Sonuçlar (LastSeenAt, Id) ASC sıralı — imleç son satırdan okunur.
     /// </summary>
-    public IReadOnlyList<Customer> GetUpdatedSince(long sinceUnixSeconds, int max)
+    public IReadOnlyList<Customer> GetUpdatedSince(long sinceUnixSeconds, string sinceId, int max)
     {
         using var conn = _factory.Open();
         var rows = conn.Query<Row>(
@@ -689,10 +694,10 @@ public sealed class CustomerRepository
                      IsBlacklisted, BlacklistReason, Notes, TotalLabelsPrinted, TotalAmount,
                      BlacklistedAt, Address, Phone, RecipientPaysActive
               FROM Customer
-              WHERE LastSeenAt > @since
-              ORDER BY LastSeenAt ASC
+              WHERE LastSeenAt > @since OR (LastSeenAt = @since AND Id > @sinceId)
+              ORDER BY LastSeenAt ASC, Id ASC
               LIMIT @max",
-            new { since = sinceUnixSeconds, max })
+            new { since = sinceUnixSeconds, sinceId, max })
             .ToList();
         return rows.Select(Map).ToList();
     }
