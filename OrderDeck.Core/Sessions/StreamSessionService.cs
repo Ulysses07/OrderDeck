@@ -26,8 +26,11 @@ public sealed class StreamSessionService
             Platforms: platforms,
             Notes: null);
         _repo.Insert(session);
+        SessionStarted?.Invoke(this, new SessionStartedEventArgs(session.Id, session.StartedAt));
         return session;
     }
+
+    public event EventHandler<SessionStartedEventArgs>? SessionStarted;
 
     public event EventHandler<SessionEndedEventArgs>? SessionEnded;
 
