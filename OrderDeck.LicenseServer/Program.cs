@@ -173,6 +173,7 @@ public class Program
                 OrderDeck.LicenseServer.Services.Sms.LogSmsSender>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sms.LicenseSmsBalanceService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sms.SmsCampaignSendJob>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sms.SmsCampaignRecoveryJob>();
         builder.Services.AddScoped<PasswordResetCodeService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Auth.PasswordResetCodeCleanupJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.WhatsApp.WaSendAttemptCleanupJob>();
@@ -814,6 +815,15 @@ public class Program
                 "wa-send-attempt-cleanup",
                 j => j.PruneAsync(CancellationToken.None),
                 "0 4 * * *");  // 04:00 UTC daily
+
+            // F08/F09: takılı SMS kampanyası kurtarma — "sending"de bayat
+            // claim'le kalanları ve hiç enqueue edilememiş "pending"leri
+            // yeniden kuyruğa alır. Sık koşar; çifte enqueue zararsız
+            // (gönderim job'ı claim CAS'ı ile idempotent).
+            manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Sms.SmsCampaignRecoveryJob>(
+                "sms-campaign-recovery",
+                j => j.RunAsync(CancellationToken.None),
+                "*/5 * * * *");  // 5 dakikada bir
 
             // Ürün fotoğrafı mutabakatı — R2'de kalmış yetim nesneleri süpürür.
             // Ürün silme ucundaki inline silme yetmiyor: Attach edilmeden yüklenen
