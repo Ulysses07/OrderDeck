@@ -43,17 +43,8 @@ public class LabelRepositoryTests
         unprinted[0].MessageText.Should().Be("Mavi XL aldım");
     }
 
-    [Fact]
-    public void Delete_removes_label_from_unprinted()
-    {
-        var (db, repo, sid, cid) = Fx();
-        using var _ = db;
-        repo.Insert(MakeLabel("l1", sid, cid));
-
-        repo.Delete("l1");
-
-        repo.GetUnprintedBySession(sid).Should().BeEmpty();
-    }
+    // N07: Delete_removes_label_from_unprinted testi kaldırıldı — LabelRepository.Delete
+    // kasıtlı olarak silindi (fiziksel DELETE mezar taşını yok eder, bkz. LabelRepository).
 
     [Fact]
     public void MarkPrinted_excludes_from_unprinted_and_sets_PrintedAt()
