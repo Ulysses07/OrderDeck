@@ -108,6 +108,88 @@ public sealed class CustomerBalanceConcurrencyTests : IAsyncLifetime
         ledgerSum.Should().Be(-100m);
     }
 
+    [Fact]
+    public async Task Ayni_hareket_esazamanli_yalnizca_bir_kez_reverse_edilebilir()
+    {
+        // N01 (2026-09-10 denetimi): +100 başlangıç, -60 düşüm → bakiye 40.
+        // Aynı -60 hareketine 8 paralel Reverse. Ön kontrol (AnyAsync)
+        // check-then-insert olduğundan yarışta hepsi geçebilir; hakem filtered
+        // unique index olmalı. İndex öncesi davranış: iki+ +60 reversal satırı,
+        // bakiye 160+ (defter ile bakiye TUTARLI biçimde yanlış — F02 token'ı
+        // bu hatayı yakalayamaz, o yüzden ledger==balance asserti yetmez).
+        var (_, _, wpfCustomerId, licenseId, jwt) = await SeedAsync(initialBalance: 40m);
+        var deductionId = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var now = DateTimeOffset.UtcNow;
+            // Defteri bakiyeyle tutarlı kur: +100 başlangıç + (-60) düşüm = 40.
+            db.CustomerBalanceTransactions.Add(new CustomerBalanceTransaction
+            {
+                Id = Guid.NewGuid(),
+                LicenseId = licenseId,
+                WpfCustomerId = wpfCustomerId,
+                Amount = 100m,
+                Kind = "refund-full",
+                CreatedByCustomerId = Guid.NewGuid(),
+                CreatedAt = now.AddMinutes(-2),
+            });
+            db.CustomerBalanceTransactions.Add(new CustomerBalanceTransaction
+            {
+                Id = deductionId,
+                LicenseId = licenseId,
+                WpfCustomerId = wpfCustomerId,
+                Amount = -60m,
+                Kind = "purchase-deduction",
+                CreatedByCustomerId = Guid.NewGuid(),
+                CreatedAt = now.AddMinutes(-1),
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var clients = BuildClients(jwt);
+
+        // Isınma: rota + EF JIT (var olmayan hareket → 404).
+        await Task.WhenAll(clients.Select(c => c.PostAsync(
+            $"/api/panel/customers/{wpfCustomerId}/balance/transactions/{Guid.NewGuid()}/reverse",
+            content: null)));
+
+        // Index öncesi kodda kaybedenlerin retry tükenmesi TestServer'da istisna
+        // olarak fırlar (prod'da 500) — ilk testteki gibi 500 sayıyoruz ki
+        // assertion'lara ulaşılabilsin.
+        var responses = await Task.WhenAll(clients.Select(async c =>
+        {
+            try
+            {
+                var r = await c.PostAsync(
+                    $"/api/panel/customers/{wpfCustomerId}/balance/transactions/{deductionId}/reverse",
+                    content: null);
+                return r.StatusCode;
+            }
+            catch (Exception)
+            {
+                return HttpStatusCode.InternalServerError;
+            }
+        }));
+
+        responses.Count(s => s == HttpStatusCode.OK).Should().Be(1,
+            "aynı hareketi geri almak için N eşzamanlı istekten yalnızca biri kazanmalı");
+        responses.Count(s => s == HttpStatusCode.Conflict)
+            .Should().Be(ParallelAttempts - 1, "kaybedenler already-reversed (409) almalı");
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var reversals = await vdb.CustomerBalanceTransactions
+            .Where(t => t.ReversesTransactionId == deductionId)
+            .ToListAsync();
+        reversals.Should().HaveCount(1, "iş kuralı: her özgün hareket en fazla bir kez geri alınır");
+        reversals[0].Amount.Should().Be(60m);
+
+        var (balance, ledgerSum, _) = await ReadStateAsync(licenseId, wpfCustomerId);
+        balance.Should().Be(100m, "tek geri alma sonrası 40 + 60 = 100 olmalı (çift reversal'da 160 olurdu)");
+        balance.Should().Be(ledgerSum, "invariant: Balance = SUM(ledger)");
+    }
+
     private HttpClient[] BuildClients(string jwt) =>
         Enumerable.Range(0, ParallelAttempts)
             .Select(_ =>

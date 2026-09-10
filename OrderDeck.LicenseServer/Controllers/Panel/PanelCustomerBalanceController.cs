@@ -198,7 +198,10 @@ public sealed class PanelCustomerBalanceController : ControllerBase
                 && t.WpfCustomerId == wpfCustomerId, ct);
         if (original is null) return NotFound();
 
-        // Daha önce reverse edilmiş mi (aynı transaction'ı reverses olarak gösteren satır var mı)?
+        // Daha önce reverse edilmiş mi? Bu ön kontrol hızlı yol — yarışta iki
+        // istek de buradan geçebilir (check-then-insert). Asıl hakem aşağıdaki
+        // filtered unique index (N01): kaybeden SaveChanges'te unique ihlali
+        // alır ve 409'a çevrilir.
         var alreadyReversed = await _db.CustomerBalanceTransactions
             .AnyAsync(t => t.ReversesTransactionId == transactionId, ct);
         if (alreadyReversed) return Problem(title: "already-reversed", statusCode: 409);
@@ -206,15 +209,25 @@ public sealed class PanelCustomerBalanceController : ControllerBase
         // Reversal balance'ı sıfırın altına düşürmesin — kontrol retry
         // döngüsünün içinde (F02, bkz. ManualAdjustment).
         var reverseAmount = -original.Amount;
-        var applied = await ApplyTransactionAsync(licenseId, wpfCustomerId, customerId,
-            amount: reverseAmount,
-            kind: "reversal",
-            originalAmount: null,
-            shippingDeducted: null,
-            reason: $"Reverse of {transactionId:N}",
-            reverses: transactionId,
-            disallowNegative: true,
-            ct: ct);
+        bool applied;
+        try
+        {
+            applied = await ApplyTransactionAsync(licenseId, wpfCustomerId, customerId,
+                amount: reverseAmount,
+                kind: "reversal",
+                originalAmount: null,
+                shippingDeducted: null,
+                reason: $"Reverse of {transactionId:N}",
+                reverses: transactionId,
+                disallowNegative: true,
+                ct: ct);
+        }
+        catch (DbUpdateException ex) when (IsDuplicateReversal(ex))
+        {
+            // N01: eşzamanlı ikinci reverse — index hakemliğini kaybetti.
+            // Transaction geri alındı, bakiyeye hiçbir şey yazılmadı.
+            return Problem(title: "already-reversed", statusCode: 409);
+        }
         if (!applied) return Problem(title: "insufficient-balance", statusCode: 409);
 
         return Ok();
@@ -312,6 +325,17 @@ public sealed class PanelCustomerBalanceController : ControllerBase
             }
         }
     }
+
+    /// <summary>
+    /// N01: SaveChanges'in fırlattığı DbUpdateException, reversal tekillik
+    /// index'inin ihlali mi? 2601/2627 = unique index/constraint violation;
+    /// mesajdaki index adı, CustomerBalance (LicenseId, WpfCustomerId) insert
+    /// yarışının aynı hata koduyla karışmasını önler.
+    /// </summary>
+    private static bool IsDuplicateReversal(DbUpdateException ex) =>
+        ex.InnerException is Microsoft.Data.SqlClient.SqlException sql
+        && sql.Number is 2601 or 2627
+        && sql.Message.Contains("ReversesTransactionId", StringComparison.Ordinal);
 
     private static string? TrimReason(string? reason)
     {
