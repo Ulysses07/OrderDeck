@@ -69,6 +69,10 @@ public sealed partial class BulkSmsViewModel : ViewModelBase
     // ikinci kampanya açmaz. Başarıda ya da mesaj değişince sıfırlanır.
     private Guid? _pendingSendRequestId;
 
+    // Test kancası (N06): durum yoklaması arasındaki bekleme. Prod'da 1.5 sn;
+    // testler kısaltır ki yoklama hatası senaryosu saniyeler sürmesin.
+    internal TimeSpan StatusPollDelay { get; set; } = TimeSpan.FromSeconds(1.5);
+
     partial void OnMessageBodyChanged(string value)
     {
         CharCount = value?.Length ?? 0;
@@ -186,42 +190,82 @@ public sealed partial class BulkSmsViewModel : ViewModelBase
             "Toplu SMS Gönder", MessageBoxButton.YesNo, MessageBoxImage.Question);
         if (confirm != MessageBoxResult.Yes) return;
 
+        await SendCoreAsync();
+    }
+
+    /// <summary>MessageBox onayı sonrası gövde. internal: N06 testleri onay
+    /// penceresi olmadan çağırabilsin.
+    ///
+    /// N06: Create ile durum yoklaması AYRI hata alanları. Eskiden tek
+    /// try/catch'ti: Create başarılı olup anahtar sıfırlandıktan sonra durum
+    /// yoklaması patlarsa "Gönderim başarısız" görünüyor, form dolu ve Gönder
+    /// aktif kalıyordu — operatör tekrar tıklayınca yeni ClientRequestId ile
+    /// İKİNCİ kampanya açılıyordu (aynı alıcılara ikinci SMS + ikinci kredi
+    /// düşümü). Şimdi Create başarısında form ÖNCE temizlenir; yoklama hatası
+    /// yalnız "izlenemedi" der, gönderilebilir durum bırakmaz.</summary>
+    internal async Task SendCoreAsync()
+    {
         IsBusy = true;
         ErrorMessage = null;
         StatusMessage = null;
         try
         {
-            var licenseId = await ResolveLicenseIdAsync(CancellationToken.None);
-            if (licenseId is null) { ErrorMessage = "Aktif lisans bulunamadı."; return; }
+            Guid licenseId;
+            SmsCreateResponse created;
 
-            _pendingSendRequestId ??= Guid.NewGuid();
-            var created = await _api.CreateSmsCampaignAsync(
-                licenseId.Value,
-                new SmsCreateRequest(MessageBody.Trim(), _pendingSendRequestId),
-                CancellationToken.None);
-            _pendingSendRequestId = null; // başarı — sonraki gönderim yeni eylem
-            StatusMessage = $"Kampanya oluşturuldu ({created.RecipientCount} alıcı). Gönderim arka planda sürüyor…";
-
-            // Durumu birkaç kez yokla (Hangfire job arka planda işliyor).
-            for (var i = 0; i < 6; i++)
+            // ── Faz 1: kampanya oluşturma. Burada hata = kampanya AÇILMADI;
+            // anahtar saklanır (F09) ve form olduğu gibi kalır — tekrar
+            // Gönder aynı ClientRequestId ile aynı kampanyayı hedefler.
+            try
             {
-                await Task.Delay(1500);
-                var st = await _api.GetSmsCampaignStatusAsync(
-                    licenseId.Value, created.CampaignId, CancellationToken.None);
-                StatusMessage = $"Durum: {StatusLabel(st.Status)} — {st.Sent} gönderildi, "
-                                + $"{st.Failed} başarısız, {st.Skipped} atlandı.";
-                if (st.Status is "completed" or "failed") break;
+                var resolved = await ResolveLicenseIdAsync(CancellationToken.None);
+                if (resolved is null) { ErrorMessage = "Aktif lisans bulunamadı."; return; }
+                licenseId = resolved.Value;
+
+                _pendingSendRequestId ??= Guid.NewGuid();
+                created = await _api.CreateSmsCampaignAsync(
+                    licenseId,
+                    new SmsCreateRequest(MessageBody.Trim(), _pendingSendRequestId),
+                    CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                ErrorMessage = $"Gönderim başarısız: {ex.Message}";
+                return;
             }
 
-            // Formu temizle, bakiye + geçmiş yenile.
+            // ── Faz 2: kampanya sunucuda açıldı, gönderim arka planda.
+            // Form HEMEN temizlenir ki aşağıdaki yoklama patlasa bile Gönder
+            // yeniden aktifleşmesin.
+            _pendingSendRequestId = null; // başarı — sonraki gönderim yeni eylem
             MessageBody = "";
             PreviewDone = false;
             Sufficient = false;
-            await ReloadBalanceAndHistoryAsync(licenseId.Value, CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            ErrorMessage = $"Gönderim başarısız: {ex.Message}";
+            StatusMessage = $"Kampanya oluşturuldu ({created.RecipientCount} alıcı). Gönderim arka planda sürüyor…";
+
+            try
+            {
+                // Durumu birkaç kez yokla (Hangfire job arka planda işliyor).
+                for (var i = 0; i < 6; i++)
+                {
+                    await Task.Delay(StatusPollDelay);
+                    var st = await _api.GetSmsCampaignStatusAsync(
+                        licenseId, created.CampaignId, CancellationToken.None);
+                    StatusMessage = $"Durum: {StatusLabel(st.Status)} — {st.Sent} gönderildi, "
+                                    + $"{st.Failed} başarısız, {st.Skipped} atlandı.";
+                    if (st.Status is "completed" or "failed") break;
+                }
+
+                // Bakiye + geçmiş yenile.
+                await ReloadBalanceAndHistoryAsync(licenseId, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                // İzleme hatası ≠ gönderim hatası: SMS'ler arka planda gidiyor.
+                // "Gönderim başarısız" demek operatörü tekrar göndermeye iterdi.
+                ErrorMessage = "Kampanya oluşturuldu ancak durum izlenemedi: "
+                    + ex.Message + " — geçmişi Yenile ile kontrol edebilirsin.";
+            }
         }
         finally
         {
