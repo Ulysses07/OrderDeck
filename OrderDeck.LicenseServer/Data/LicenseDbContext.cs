@@ -673,6 +673,11 @@ public class LicenseDbContext : DbContext
             // yazımı CAS olur, kaybeden DbUpdateConcurrencyException alır.
             b.Property(c => c.ClaimedAt).IsConcurrencyToken();
             b.HasIndex(c => new { c.LicenseId, c.CreatedAt });
+            // F09: aynı istemci eylemi (retry dahil) ikinci kampanya açamasın.
+            // Filtreli: eski istemcilerin null anahtarları birbirine çarpmaz.
+            b.HasIndex(c => new { c.LicenseId, c.ClientRequestId })
+             .IsUnique()
+             .HasFilter("[ClientRequestId] IS NOT NULL");
         });
 
         mb.Entity<SmsCampaignRecipient>(b =>

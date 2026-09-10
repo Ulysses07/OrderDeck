@@ -34,6 +34,16 @@ public sealed class SmsCampaign
     /// </summary>
     public DateTimeOffset? ClaimedAt { get; set; }
 
+    /// <summary>
+    /// F09 (denetim 2026-09-09): istemcinin gönderim eylemi başına ürettiği
+    /// idempotency anahtarı. WPF, resilience handler'ın (5xx/ağ retry'ı)
+    /// yeniden gönderdiği istekte aynı anahtarı taşır; (LicenseId,
+    /// ClientRequestId) üstünde filtreli unique index çift kampanya + çift
+    /// kredi rezervini DB seviyesinde engeller. Eski istemciler null gönderir
+    /// (korumasız ama kırılmaz).
+    /// </summary>
+    public Guid? ClientRequestId { get; set; }
+
     public Guid CreatedByCustomerId { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? CompletedAt { get; set; }

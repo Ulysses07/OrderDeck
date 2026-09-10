@@ -76,7 +76,7 @@ public sealed class LicensesSmsCampaignsController : ControllerBase
             balance.CreditsRemaining, balance.CreditsRemaining >= totalCredits));
     }
 
-    public sealed record CreateRequest(string MessageBody);
+    public sealed record CreateRequest(string MessageBody, Guid? ClientRequestId = null);
     public sealed record CreateResponse(Guid CampaignId, int RecipientCount, int TotalCredits);
 
     [HttpPost]
@@ -86,6 +86,18 @@ public sealed class LicensesSmsCampaignsController : ControllerBase
         if (string.IsNullOrWhiteSpace(req.MessageBody) || req.MessageBody.Length > MaxMessageLength)
             return Problem(title: "invalid-message", statusCode: 400);
         if (!await OwnsLicenseAsync(licenseId, ct)) return NotFound();
+
+        // F09: aynı istemci eyleminin tekrarı (resilience retry / çift tık)
+        // yeni kampanya AÇMAZ — var olanın yanıtı döner. Asıl güvence aşağıda
+        // DB'deki filtreli unique index; bu ön kontrol yalnız ucuz yol.
+        if (req.ClientRequestId is Guid key)
+        {
+            var existing = await _db.SmsCampaigns.FirstOrDefaultAsync(
+                c => c.LicenseId == licenseId && c.ClientRequestId == key, ct);
+            if (existing is not null)
+                return Ok(new CreateResponse(
+                    existing.Id, existing.RecipientCount, existing.ReservedCredits));
+        }
 
         var rawRecipients = await ConsentedRecipients(licenseId).ToListAsync(ct);
         // Aynı telefonu tek alıcıya indir (defansif — telefon shopper'da unique).
@@ -120,6 +132,7 @@ public sealed class LicensesSmsCampaignsController : ControllerBase
             RecipientCount = recipients.Count,
             ReservedCredits = totalCredits,
             Status = "pending",
+            ClientRequestId = req.ClientRequestId,
             CreatedByCustomerId = customerId,
             CreatedAt = now,
         };
@@ -139,10 +152,27 @@ public sealed class LicensesSmsCampaignsController : ControllerBase
 
         // Krediyi rezerve et — kampanya + alıcı satırları da aynı SaveChanges
         // içinde yazılır (atomik). null = yarışta kredi yetersiz kaldı.
-        var reserved = await _balance.ApplyAndSaveAsync(
-            licenseId, -totalCredits, "send-reserve",
-            reason: $"campaign:{campaignId}", createdByCustomerId: customerId,
-            disallowNegative: true, ct);
+        int? reserved;
+        try
+        {
+            reserved = await _balance.ApplyAndSaveAsync(
+                licenseId, -totalCredits, "send-reserve",
+                reason: $"campaign:{campaignId}", createdByCustomerId: customerId,
+                disallowNegative: true, ct);
+        }
+        catch (DbUpdateException) when (req.ClientRequestId is not null)
+        {
+            // F09: iki eş istek ön kontrolü aynı anda geçti — kaybeden
+            // (LicenseId, ClientRequestId) unique index'ine çarptı. SaveChanges
+            // atomik olduğu için kaybedenin rezervi de yazılmadı (çift kredi
+            // düşümü yok). Kazananın kampanyasını döndür; bulunamazsa gerçek
+            // bir hatadır, fırlat.
+            var winner = await _db.SmsCampaigns.FirstOrDefaultAsync(
+                c => c.LicenseId == licenseId && c.ClientRequestId == req.ClientRequestId, ct);
+            if (winner is null) throw;
+            return Ok(new CreateResponse(
+                winner.Id, winner.RecipientCount, winner.ReservedCredits));
+        }
         if (reserved is null)
         {
             var current = await _balance.GetAsync(licenseId, ct);

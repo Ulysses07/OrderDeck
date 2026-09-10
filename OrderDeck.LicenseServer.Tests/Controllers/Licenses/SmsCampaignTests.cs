@@ -271,6 +271,45 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
         _factory.Sms.Sent.Should().HaveCount(2, "ikinci job çağrısı tekrar göndermemeli");
     }
 
+    // ── F09 (denetim 2026-09-09): Create idempotency ─────────────────────────
+    //
+    // WPF'in HttpClient'ı AddStandardResilienceHandler kullanıyor: 5xx/ağ
+    // hatasında AYNI gövdeyi yeniden gönderir. Anahtar olmadan kaybolan her
+    // yanıt = ikinci kampanya + ikinci kredi rezervi demekti. Aynı
+    // ClientRequestId'li tekrar, var olan kampanyanın yanıtını döndürmeli.
+    // (Eşzamanlı yarış tarafı SmsCampaignIdempotencyConcurrencyTests'te —
+    // unique index InMemory'de uygulanmadığı için gerçek SQL Server'da.)
+
+    [Fact]
+    public async Task Create_same_client_request_id_returns_existing_campaign()
+    {
+        var (client, licenseId) = await SetupAsync(consenting: 3, credits: 100);
+        var key = Guid.NewGuid();
+
+        var first = await (await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/sms-campaigns",
+            new { messageBody = "Ayni eylem", clientRequestId = key }))
+            .Content.ReadFromJsonAsync<CreateResponse>();
+
+        var retryResp = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/sms-campaigns",
+            new { messageBody = "Ayni eylem", clientRequestId = key });
+        retryResp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var retry = await retryResp.Content.ReadFromJsonAsync<CreateResponse>();
+
+        retry!.CampaignId.Should().Be(first!.CampaignId,
+            "aynı anahtarın tekrarı var olan kampanyayı döndürmeli");
+        retry.TotalCredits.Should().Be(first.TotalCredits);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.SmsCampaigns.CountAsync(c => c.LicenseId == licenseId))
+            .Should().Be(1, "retry ikinci kampanya açmamalı");
+        // Kredi TEK kez rezerve edildi: 100 - 3 = 97.
+        (await db.LicenseSmsBalances.FirstAsync(b => b.LicenseId == licenseId))
+            .CreditsRemaining.Should().Be(97, "retry krediyi ikinci kez düşmemeli");
+    }
+
     // ── F08 (denetim 2026-09-09): "sending"de takılma + kaldığı yerden devam ──
     //
     // Eski davranış: job yalnız "pending" kabul ediyor, sonuçları tek toplu
