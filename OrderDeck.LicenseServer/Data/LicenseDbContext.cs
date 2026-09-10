@@ -618,6 +618,11 @@ public class LicenseDbContext : DbContext
              .OnDelete(DeleteBehavior.NoAction);
             b.Property(c => c.Balance).HasPrecision(18, 2);
             b.HasIndex(c => new { c.LicenseId, c.WpfCustomerId }).IsUnique();
+            // F02 (2026-09-09 denetimi): Balance okuma-hesapla-yazma ile
+            // güncelleniyor; token olmadan eşzamanlı iki yazım birbirini ezip
+            // cache'i ledger toplamından koparabiliyordu. UpdatedAt her yazımda
+            // zaten ilerletiliyor → doğal concurrency token (bkz. RefreshToken.RevokedAt).
+            b.Property(c => c.UpdatedAt).IsConcurrencyToken();
         });
 
         mb.Entity<CustomerBalanceTransaction>(b =>
@@ -641,6 +646,10 @@ public class LicenseDbContext : DbContext
             b.HasOne(s => s.License).WithMany().HasForeignKey(s => s.LicenseId)
              .OnDelete(DeleteBehavior.Cascade);
             b.HasIndex(s => s.LicenseId).IsUnique();
+            // F03 (2026-09-09 denetimi): CreditsRemaining de okuma-hesapla-yazma —
+            // eşzamanlı topup + kampanya rezervi kredi kaybedebiliyordu.
+            // CustomerBalance ile aynı desen: UpdatedAt token.
+            b.Property(s => s.UpdatedAt).IsConcurrencyToken();
         });
 
         mb.Entity<LicenseSmsTransaction>(b =>

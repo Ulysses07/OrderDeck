@@ -37,11 +37,11 @@ public sealed class AdminSmsController : ControllerBase
         var exists = await _db.Licenses.AnyAsync(l => l.Id == licenseId, ct);
         if (!exists) return NotFound();
 
-        var remaining = await _balance.ApplyAsync(
-            licenseId, req.Credits, "purchase", req.Reason, createdByCustomerId: null, ct);
-        await _db.SaveChangesAsync(ct);
+        var remaining = await _balance.ApplyAndSaveAsync(
+            licenseId, req.Credits, "purchase", req.Reason,
+            createdByCustomerId: null, disallowNegative: false, ct);
 
-        return Ok(new TopupResponse(remaining, DateTimeOffset.UtcNow));
+        return Ok(new TopupResponse(remaining!.Value, DateTimeOffset.UtcNow));
     }
 
     public sealed record TransactionItem(

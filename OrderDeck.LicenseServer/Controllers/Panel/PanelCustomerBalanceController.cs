@@ -103,6 +103,7 @@ public sealed class PanelCustomerBalanceController : ControllerBase
             shippingDeducted: null,
             reason: TrimReason(req.Reason),
             reverses: null,
+            disallowNegative: false,
             ct: ct);
 
         return Ok();
@@ -138,6 +139,7 @@ public sealed class PanelCustomerBalanceController : ControllerBase
             shippingDeducted: req.ShippingDeducted,
             reason: TrimReason(req.Reason),
             reverses: null,
+            disallowNegative: false,
             ct: ct);
 
         return Ok();
@@ -161,22 +163,19 @@ public sealed class PanelCustomerBalanceController : ControllerBase
         var (licenseId, valid) = await ResolveLicenseAsync(wpfCustomerId, customerId, ct);
         if (!valid) return NotFound();
 
-        // Negatif manuel ayar bakiyeyi sıfırın altına düşürmesin.
-        if (req.Amount < 0)
-        {
-            var current = await GetCurrentBalanceAsync(licenseId, wpfCustomerId, ct);
-            if (current + req.Amount < 0)
-                return Problem(title: "insufficient-balance", statusCode: 409);
-        }
-
-        await ApplyTransactionAsync(licenseId, wpfCustomerId, customerId,
+        // Negatif manuel ayar bakiyeyi sıfırın altına düşürmesin — kontrol
+        // ApplyTransactionAsync'in retry döngüsünün İÇİNDE yapılır (F02):
+        // buradaki ayrı bir ön okuma, eşzamanlı yazımlarda bayat değere bakardı.
+        var applied = await ApplyTransactionAsync(licenseId, wpfCustomerId, customerId,
             amount: req.Amount,
             kind: "manual-adjustment",
             originalAmount: null,
             shippingDeducted: null,
             reason: TrimReason(req.Reason),
             reverses: null,
+            disallowNegative: true,
             ct: ct);
+        if (!applied) return Problem(title: "insufficient-balance", statusCode: 409);
 
         return Ok();
     }
@@ -204,20 +203,19 @@ public sealed class PanelCustomerBalanceController : ControllerBase
             .AnyAsync(t => t.ReversesTransactionId == transactionId, ct);
         if (alreadyReversed) return Problem(title: "already-reversed", statusCode: 409);
 
-        // Reversal balance'ı sıfırın altına düşürmesin.
-        var current = await GetCurrentBalanceAsync(licenseId, wpfCustomerId, ct);
+        // Reversal balance'ı sıfırın altına düşürmesin — kontrol retry
+        // döngüsünün içinde (F02, bkz. ManualAdjustment).
         var reverseAmount = -original.Amount;
-        if (current + reverseAmount < 0)
-            return Problem(title: "insufficient-balance", statusCode: 409);
-
-        await ApplyTransactionAsync(licenseId, wpfCustomerId, customerId,
+        var applied = await ApplyTransactionAsync(licenseId, wpfCustomerId, customerId,
             amount: reverseAmount,
             kind: "reversal",
             originalAmount: null,
             shippingDeducted: null,
             reason: $"Reverse of {transactionId:N}",
             reverses: transactionId,
+            disallowNegative: true,
             ct: ct);
+        if (!applied) return Problem(title: "insufficient-balance", statusCode: 409);
 
         return Ok();
     }
@@ -236,24 +234,24 @@ public sealed class PanelCustomerBalanceController : ControllerBase
         return row is null ? (Guid.Empty, false) : (row.Value, true);
     }
 
-    private async Task<decimal> GetCurrentBalanceAsync(
-        Guid licenseId, Guid wpfCustomerId, CancellationToken ct)
-    {
-        return await _db.CustomerBalances
-            .Where(b => b.LicenseId == licenseId && b.WpfCustomerId == wpfCustomerId)
-            .Select(b => (decimal?)b.Balance)
-            .FirstOrDefaultAsync(ct) ?? 0m;
-    }
-
     /// <summary>
     /// Ledger satırı yazar + CustomerBalance.Balance'ı günceller (tek transaction).
-    /// CustomerBalance yoksa oluşturur. Caller validation'ları yapmış olmalı.
+    /// CustomerBalance yoksa oluşturur.
+    ///
+    /// F02 (2026-09-09 denetimi): Balance okuma-hesapla-yazma ile güncellenir;
+    /// UpdatedAt concurrency token'ı sayesinde eşzamanlı bir yazım araya girerse
+    /// SaveChanges DbUpdateConcurrencyException fırlatır. O durumda satır DB'den
+    /// yeniden yüklenir, delta tekrar uygulanır ve (istenmişse) negatif-bakiye
+    /// kontrolü GÜNCEL değer üzerinden tekrarlanır. Böylece hem cache ledger
+    /// toplamından kopamaz hem de yetersiz-bakiye kuralı yarışta delinemez.
     /// </summary>
-    private async Task ApplyTransactionAsync(
+    /// <returns>false = işlem bakiyeyi sıfırın altına düşürürdü, hiçbir şey yazılmadı.</returns>
+    private async Task<bool> ApplyTransactionAsync(
         Guid licenseId, Guid wpfCustomerId, Guid createdByCustomerId,
         decimal amount, string kind, decimal? originalAmount, decimal? shippingDeducted,
-        string? reason, Guid? reverses, CancellationToken ct)
+        string? reason, Guid? reverses, bool disallowNegative, CancellationToken ct)
     {
+        const int maxAttempts = 3;
         var now = DateTimeOffset.UtcNow;
 
         _db.CustomerBalanceTransactions.Add(new CustomerBalanceTransaction
@@ -275,6 +273,7 @@ public sealed class PanelCustomerBalanceController : ControllerBase
             .FirstOrDefaultAsync(b => b.LicenseId == licenseId && b.WpfCustomerId == wpfCustomerId, ct);
         if (existing is null)
         {
+            if (disallowNegative && amount < 0) return false;
             _db.CustomerBalances.Add(new CustomerBalance
             {
                 Id = Guid.NewGuid(),
@@ -283,14 +282,35 @@ public sealed class PanelCustomerBalanceController : ControllerBase
                 Balance = amount,
                 UpdatedAt = now,
             });
-        }
-        else
-        {
-            existing.Balance += amount;
-            existing.UpdatedAt = now;
+            // Yeni satır insert'i token'la korunmaz; eşzamanlı iki "ilk yazım"
+            // unique (LicenseId, WpfCustomerId) index'ine takılır → gürültülü
+            // DbUpdateException (500), istemci yeniden dener. Bilinçli tercih.
+            await _db.SaveChangesAsync(ct);
+            return true;
         }
 
-        await _db.SaveChangesAsync(ct);
+        existing.Balance += amount;
+        existing.UpdatedAt = now;
+
+        for (var attempt = 1; ; attempt++)
+        {
+            if (disallowNegative && existing.Balance < 0) return false;
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+                return true;
+            }
+            catch (DbUpdateConcurrencyException ex) when (attempt < maxAttempts)
+            {
+                // Araya başka yazım girdi: bakiyeyi DB'deki güncel değere çek,
+                // deltayı yeniden uygula. Added durumundaki ledger satırı
+                // izlenmeye devam eder, sonraki SaveChanges'te yine insert edilir.
+                foreach (var entry in ex.Entries)
+                    await entry.ReloadAsync(ct);
+                existing.Balance += amount;
+                existing.UpdatedAt = DateTimeOffset.UtcNow;
+            }
+        }
     }
 
     private static string? TrimReason(string? reason)

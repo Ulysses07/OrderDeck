@@ -133,7 +133,7 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
         // Anahtar VARSA ledger satırının PK'sı odur — rezervasyon budur.
         var txId = req.IdempotencyKey ?? Guid.NewGuid();
 
-        _db.CustomerBalanceTransactions.Add(new CustomerBalanceTransaction
+        var tx = new CustomerBalanceTransaction
         {
             Id = txId,
             LicenseId = licenseId,
@@ -144,28 +144,61 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
             Reason = null,
             CreatedByCustomerId = customerId,
             CreatedAt = now,
-        });
+        };
+        _db.CustomerBalanceTransactions.Add(tx);
 
         balance.Balance -= appliedAmount;
         balance.UpdatedAt = now;
 
-        try
+        const int maxAttempts = 3;
+        for (var attempt = 1; ; attempt++)
         {
-            await _db.SaveChangesAsync(ct);
-        }
-        catch (DbUpdateException) when (req.IdempotencyKey is not null)
-        {
-            // Aynı anahtarla yarışan iki istek: PK ihlali TÜM transaction'ı geri
-            // alır (bakiye düşümü dahil), yani kaybeden taraf hiçbir iz bırakmaz.
-            // Kazananın sonucunu oynatabiliyorsak yarış hikâyesi tutuyor demektir;
-            // tutmuyorsa hata gerçek bir DB sorunudur, yutulmamalı.
-            _db.ChangeTracker.Clear();
-            var (winner, _) = await LookupAsync(licenseId, req.IdempotencyKey.Value, ct);
-            if (winner is null) throw;
-            _log.LogWarning(
-                "Bakiye uygulama yarışı: anahtarı başka istek kazandı (key={Key}, license={LicenseId})",
-                req.IdempotencyKey, licenseId);
-            return Ok(winner);
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+                break;
+            }
+            // Sıralama önemli: DbUpdateConcurrencyException, DbUpdateException'dan
+            // türer — önce o yakalanmalı, yoksa idempotency dalı yutar.
+            catch (DbUpdateConcurrencyException ex) when (attempt < maxAttempts)
+            {
+                // F02 (2026-09-09 denetimi): balance satırını araya giren bir
+                // yazım değiştirdi (ör. eşzamanlı iade ya da ikinci bir apply).
+                // Güncel değeri yükle, uygulanabilir tutarı YENİDEN hesapla —
+                // eski appliedAmount bayat okumaya dayanıyordu ve bakiyeyi
+                // sıfırın altına düşürebilirdi.
+                foreach (var entry in ex.Entries)
+                    await entry.ReloadAsync(ct);
+
+                if (balance.Balance <= 0)
+                {
+                    _db.ChangeTracker.Clear();
+                    return Problem(title: "no-balance", statusCode: 409);
+                }
+                appliedAmount = Math.Min(Math.Min(req.Amount, balance.Balance), req.ProductTotal);
+                if (appliedAmount <= 0)
+                {
+                    _db.ChangeTracker.Clear();
+                    return Problem(title: "nothing-to-apply", statusCode: 409);
+                }
+                tx.Amount = -appliedAmount;
+                balance.Balance -= appliedAmount;
+                balance.UpdatedAt = DateTimeOffset.UtcNow;
+            }
+            catch (DbUpdateException) when (req.IdempotencyKey is not null)
+            {
+                // Aynı anahtarla yarışan iki istek: PK ihlali TÜM transaction'ı geri
+                // alır (bakiye düşümü dahil), yani kaybeden taraf hiçbir iz bırakmaz.
+                // Kazananın sonucunu oynatabiliyorsak yarış hikâyesi tutuyor demektir;
+                // tutmuyorsa hata gerçek bir DB sorunudur, yutulmamalı.
+                _db.ChangeTracker.Clear();
+                var (winner, _) = await LookupAsync(licenseId, req.IdempotencyKey.Value, ct);
+                if (winner is null) throw;
+                _log.LogWarning(
+                    "Bakiye uygulama yarışı: anahtarı başka istek kazandı (key={Key}, license={LicenseId})",
+                    req.IdempotencyKey, licenseId);
+                return Ok(winner);
+            }
         }
 
         return Ok(new ApplyResponse(txId, appliedAmount, balance.Balance));

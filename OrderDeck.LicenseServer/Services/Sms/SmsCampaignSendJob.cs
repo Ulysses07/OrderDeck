@@ -77,19 +77,24 @@ public sealed class SmsCampaignSendJob
             }
         }
 
+        // Kampanya sonucu + (varsa) kredi iadesi tek SaveChanges'te yazılır:
+        // status/alıcı güncellemeleri ApplyAndSaveAsync'in kaydına biner.
+        campaign.Status = "completed";
+        campaign.CompletedAt = now;
+
         // Başarısız alıcılar için kredi iadesi — yalnızca kabul edilen gönderim ücretlenir.
         if (failedCount > 0)
         {
             var refund = failedCount * campaign.SegmentsPerMessage;
-            await _balance.ApplyAsync(
+            await _balance.ApplyAndSaveAsync(
                 campaign.LicenseId, refund, "send-refund",
                 reason: $"campaign:{campaignId} failed={failedCount}",
-                createdByCustomerId: null, ct);
+                createdByCustomerId: null, disallowNegative: false, ct);
         }
-
-        campaign.Status = "completed";
-        campaign.CompletedAt = now;
-        await _db.SaveChangesAsync(ct);
+        else
+        {
+            await _db.SaveChangesAsync(ct);
+        }
 
         _log.LogInformation(
             "SmsCampaignSendJob: campaign {Id} completed — {Sent} sent, {Failed} failed",

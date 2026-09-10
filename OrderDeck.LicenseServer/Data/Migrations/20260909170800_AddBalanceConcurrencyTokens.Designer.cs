@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using OrderDeck.LicenseServer.Data;
 
@@ -11,9 +12,11 @@ using OrderDeck.LicenseServer.Data;
 namespace OrderDeck.LicenseServer.Data.Migrations
 {
     [DbContext(typeof(LicenseDbContext))]
-    partial class LicenseDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260909170800_AddBalanceConcurrencyTokens")]
+    partial class AddBalanceConcurrencyTokens
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1092,7 +1095,6 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<int>("Status")
-                        .IsConcurrencyToken()
                         .HasColumnType("int");
 
                     b.Property<DateTimeOffset>("UpdatedAt")
