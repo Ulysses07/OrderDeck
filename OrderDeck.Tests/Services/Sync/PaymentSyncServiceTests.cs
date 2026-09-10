@@ -219,6 +219,55 @@ public sealed class PaymentSyncServiceTests
         settings.LastPaymentReverseSync.Should().NotBeNull();
     }
 
+    /// <summary>N08: Sunucu (UpdatedAt, Id) çiftini SQL Server'ın
+    /// uniqueidentifier sırasıyla sayfalıyor; .NET Guid.CompareTo FARKLI bir
+    /// sıra üretir (SQL son 6 bayttan başlar). Sözleşme sunucu tarafında
+    /// açıkça yazılı: "WPF bir sonraki imleci sayfanın SON satırından okur".
+    /// İstemci yeniden sıralayıp .NET-sırasına göre son satırı seçerse imleç
+    /// sunucunun sayfa sınırının gerisinde kalır → satırlar tekrar iner.</summary>
+    [Fact]
+    public async Task Pull_cursor_sunucunun_teslim_ettigi_son_satirdan_okunur()
+    {
+        // node baytları SQL sırasını belirler: ...0001 < ...0002 (SQL),
+        // ama .NET sırasında 00000000-... < ffffffff-...
+        var sqlSmall = Guid.Parse("ffffffff-ffff-ffff-ffff-000000000001"); // SQL: küçük, .NET: büyük
+        var sqlBig   = Guid.Parse("00000000-0000-0000-0000-000000000002"); // SQL: büyük, .NET: küçük
+
+        var (svc, repo, settings, _, _) = Build(req =>
+        {
+            var path = req.RequestUri!.PathAndQuery;
+            if (path.StartsWith("/api/v1/me/licenses"))
+                return JsonResp(200, LicensesJson());
+            if (path.Contains("/payments/since"))
+            {
+                // Sunucunun teslim sırası (SQL uniqueidentifier): sqlSmall, sqlBig.
+                // Aynı UpdatedAt — sayfa sınırı tam bu eşitlik kümesinde kesildi.
+                var json = $@"[
+                    {{ ""id"": ""{sqlSmall}"", ""status"": ""approved"",
+                       ""approvedAt"": ""2026-05-11T10:30:00Z"", ""rejectedAt"": null,
+                       ""rejectReason"": null, ""updatedAt"": ""2026-05-11T10:30:00Z"" }},
+                    {{ ""id"": ""{sqlBig}"", ""status"": ""approved"",
+                       ""approvedAt"": ""2026-05-11T10:30:00Z"", ""rejectedAt"": null,
+                       ""rejectReason"": null, ""updatedAt"": ""2026-05-11T10:30:00Z"" }}
+                ]";
+                return JsonResp(200, json);
+            }
+            return JsonResp(200, "[]");
+        });
+
+        repo.Insert(NewLocalPayment(sqlSmall.ToString()));
+        repo.MarkSynced(sqlSmall.ToString(), 1714000000L);
+        repo.Insert(NewLocalPayment(sqlBig.ToString(), refNo: "REF-2"));
+        repo.MarkSynced(sqlBig.ToString(), 1714000000L);
+
+        var result = await svc.SyncOnceAsync();
+
+        result.Pulled.Should().Be(2);
+        settings.LastPaymentReverseSyncId.Should().Be(sqlBig,
+            "imleç sunucunun teslim ettiği SON satır olmalı — .NET Guid sırasıyla yeniden seçilirse " +
+            "sunucu sayfa sınırının gerisine düşer ve aynı satırlar tekrar iner");
+    }
+
     [Fact]
     public async Task SyncOnceAsync_uses_since_cursor_in_pull_request()
     {
