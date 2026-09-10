@@ -12,4 +12,7 @@ public sealed record StreamSession(
     /// <summary>PR siparis-sync (2026-05-13): LicenseServer'a son sync zamanı.
     /// Null = outbox'ta, henüz push edilmedi. End/Update sonrası null'a düşer
     /// → bir sonraki tick'te tekrar push.</summary>
-    long? SyncedAt = null);
+    long? SyncedAt = null,
+    /// <summary>F05: her SyncedAt-düşüren mutasyonda +1; MarkSynced yalnız
+    /// Revision değişmemişse yazar (bkz. <see cref="Sales.Label"/>).</summary>
+    long Revision = 0);

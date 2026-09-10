@@ -41,7 +41,7 @@ public sealed class ShipmentRepository
     {
         using var conn = _factory.Open();
         var row = conn.QueryFirstOrDefault<Row>(
-            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt
+            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision
               FROM Shipment WHERE Id=@id",
             new { id });
         return row is null ? null : Map(row);
@@ -55,7 +55,7 @@ public sealed class ShipmentRepository
     {
         using var conn = _factory.Open();
         var row = conn.QueryFirstOrDefault<Row>(
-            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt
+            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision
               FROM Shipment
               WHERE CustomerId=@customerId AND Status IN ('Pending', 'Held')
               ORDER BY CreatedAt DESC
@@ -72,7 +72,7 @@ public sealed class ShipmentRepository
     {
         using var conn = _factory.Open();
         var rows = conn.Query<Row>(
-            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt
+            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision
               FROM Shipment
               WHERE Status=@status
               ORDER BY CreatedAt",
@@ -93,7 +93,7 @@ public sealed class ShipmentRepository
             @"UPDATE Shipment SET
                 Status=@Status, HeldAt=@HeldAt, ShippedAt=@ShippedAt,
                 CumulativeAmount=@CumulativeAmount,
-                SyncedAt=NULL
+                SyncedAt=NULL, Revision = Revision + 1
               WHERE Id=@Id",
             new
             {
@@ -113,7 +113,7 @@ public sealed class ShipmentRepository
     {
         using var conn = _factory.Open();
         var rows = conn.Query<Row>(
-            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt
+            @"SELECT Id, CustomerId, Status, CreatedAt, HeldAt, ShippedAt, CumulativeAmount, SyncedAt, Revision
               FROM Shipment
               WHERE SyncedAt IS NULL
               ORDER BY CreatedAt
@@ -123,12 +123,14 @@ public sealed class ShipmentRepository
     }
 
     /// <summary>Push başarılı sonrası SyncedAt'i set eder. UpdatedAt local'de
-    /// yok — sync timestamp'i ayrıca tutulur.</summary>
-    public void MarkSynced(string id, long syncedAt)
+    /// yok — sync timestamp'i ayrıca tutulur.
+    /// F05: compare-and-set — push uçuştayken Revision değiştiyse 0 satır
+    /// etkiler, satır bekleyen kalır (bkz. <see cref="LabelRepository.MarkSynced"/>).</summary>
+    public void MarkSynced(string id, long syncedAt, long revision)
     {
         using var conn = _factory.Open();
-        conn.Execute("UPDATE Shipment SET SyncedAt=@syncedAt WHERE Id=@id",
-            new { id, syncedAt });
+        conn.Execute("UPDATE Shipment SET SyncedAt=@syncedAt WHERE Id=@id AND Revision=@revision",
+            new { id, syncedAt, revision });
     }
 
     /// <summary>
@@ -158,7 +160,8 @@ public sealed class ShipmentRepository
             System.Enum.Parse<ShipmentStatus>(r.Status),
             r.CreatedAt, r.HeldAt, r.ShippedAt,
             (decimal)r.CumulativeAmount,
-            r.SyncedAt);
+            r.SyncedAt,
+            r.Revision);
 
     private sealed class Row
     {
@@ -170,5 +173,6 @@ public sealed class ShipmentRepository
         public long? ShippedAt { get; init; }
         public double CumulativeAmount { get; init; }
         public long? SyncedAt { get; init; }
+        public long Revision { get; init; }
     }
 }

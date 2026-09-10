@@ -57,7 +57,7 @@ public sealed class LabelRepository
         using var conn = _factory.Open();
         var row = conn.QueryFirstOrDefault<Row>(
             @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
-                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId
+                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId, Revision
               FROM Label WHERE Id=@id",
             new { id });
         return row is null ? null : Map(row);
@@ -73,7 +73,7 @@ public sealed class LabelRepository
         // can stick the spare sticker on the goods.
         var rows = conn.Query<Row>(
             @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
-                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId
+                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId, Revision
               FROM Label
               WHERE SessionId=@sessionId AND PrintedAt IS NULL AND CancelledAt IS NULL
               ORDER BY AddedAt",
@@ -92,7 +92,7 @@ public sealed class LabelRepository
         using var conn = _factory.Open();
         var rows = conn.Query<Row>(
             @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
-                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId
+                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId, Revision
               FROM Label
               WHERE ParentLabelId=@parentLabelId AND IsTentativeBackup = 1 AND CancelledAt IS NULL
               ORDER BY AddedAt",
@@ -129,7 +129,7 @@ public sealed class LabelRepository
         // outbox o. Yalnız StockSyncedAt düşerse satır bir daha push edilmez ve
         // sunucu yedeği ömür boyu "geçici" sanar (bkz. MarkCancelled).
         _factory.Execute(write,
-            "UPDATE Label SET IsTentativeBackup = 0, SyncedAt=NULL, StockSyncedAt=NULL WHERE Id IN @ids AND IsTentativeBackup = 1",
+            "UPDATE Label SET IsTentativeBackup = 0, SyncedAt=NULL, StockSyncedAt=NULL, Revision = Revision + 1 WHERE Id IN @ids AND IsTentativeBackup = 1",
             new { ids = labelIds.ToArray() });
     }
 
@@ -143,7 +143,7 @@ public sealed class LabelRepository
         // State değişikliği → SyncedAt NULL. CancelledAt stok-ilgili olduğu için
         // StockSyncedAt de düşüyor.
         _factory.Execute(write,
-            "UPDATE Label SET CancelledAt=@cancelledAt, CancelReason=@reason, SyncedAt=NULL, StockSyncedAt=NULL WHERE Id IN @ids",
+            "UPDATE Label SET CancelledAt=@cancelledAt, CancelReason=@reason, SyncedAt=NULL, StockSyncedAt=NULL, Revision = Revision + 1 WHERE Id IN @ids",
             new { cancelledAt, reason, ids = ids.ToArray() });
     }
 
@@ -151,7 +151,7 @@ public sealed class LabelRepository
     public void Uncancel(IEnumerable<string> ids, DbWrite? write = null)
     {
         _factory.Execute(write,
-            "UPDATE Label SET CancelledAt=NULL, CancelReason=NULL, SyncedAt=NULL, StockSyncedAt=NULL WHERE Id IN @ids",
+            "UPDATE Label SET CancelledAt=NULL, CancelReason=NULL, SyncedAt=NULL, StockSyncedAt=NULL, Revision = Revision + 1 WHERE Id IN @ids",
             new { ids = ids.ToArray() });
     }
 
@@ -162,7 +162,7 @@ public sealed class LabelRepository
         // geri alır ama stok açısından hiçbir şeyi değiştirmez — sunucunun
         // defterinde hareket zaten var. Silinirse aynı etiket ikinci kez düşülür.
         _factory.Execute(write,
-            "UPDATE Label SET PrintedAt=@printedAt, SyncedAt=NULL WHERE Id IN @ids",
+            "UPDATE Label SET PrintedAt=@printedAt, SyncedAt=NULL, Revision = Revision + 1 WHERE Id IN @ids",
             new { printedAt, ids = ids.ToArray() });
     }
 
@@ -174,7 +174,7 @@ public sealed class LabelRepository
     {
         // MarkPrinted'daki gerekçenin aynısı: fiyat stok-ilgili değil.
         _factory.Execute(write,
-            "UPDATE Label SET Price=@price, SyncedAt=NULL WHERE Id=@id", new { id, price });
+            "UPDATE Label SET Price=@price, SyncedAt=NULL, Revision = Revision + 1 WHERE Id=@id", new { id, price });
     }
 
     /// <summary>
@@ -186,7 +186,7 @@ public sealed class LabelRepository
         using var conn = _factory.Open();
         var rows = conn.Query<Row>(
             @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
-                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId
+                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId, Revision
               FROM Label
               WHERE SyncedAt IS NULL
               ORDER BY AddedAt
@@ -197,12 +197,18 @@ public sealed class LabelRepository
 
     /// <summary>Push başarılı sonrası SyncedAt'i set eder. StockSyncedAt de
     /// burada doluyor: push başarılıysa sunucu satırın stok-ilgili hâlini
-    /// görmüş, defterini ona göre kurmuş demektir.</summary>
-    public void MarkSynced(string id, long syncedAt)
+    /// görmüş, defterini ona göre kurmuş demektir.
+    ///
+    /// F05: compare-and-set — <paramref name="revision"/> push'a giden satırdan
+    /// okunan değer. Push uçuştayken bir mutasyon Revision'ı artırdıysa bu
+    /// UPDATE 0 satır etkiler; satır bekleyen kalır ve bir sonraki tick'te
+    /// güncel hâliyle tekrar gider. Aksi hâlde onay, uçuş sırasındaki
+    /// değişikliği (ör. iptal) sessizce ezerdi.</summary>
+    public void MarkSynced(string id, long syncedAt, long revision)
     {
         using var conn = _factory.Open();
-        conn.Execute("UPDATE Label SET SyncedAt=@syncedAt, StockSyncedAt=@syncedAt WHERE Id=@id",
-            new { id, syncedAt });
+        conn.Execute("UPDATE Label SET SyncedAt=@syncedAt, StockSyncedAt=@syncedAt WHERE Id=@id AND Revision=@revision",
+            new { id, syncedAt, revision });
     }
 
     public SessionTotals GetSessionTotals(string sessionId)
@@ -422,7 +428,7 @@ public sealed class LabelRepository
         using var conn = _factory.Open();
         var rows = conn.Query<Row>(
             @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
-                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId
+                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId, Revision
               FROM Label
               WHERE CustomerId=@customerId
                 AND ShipmentId IS NULL
@@ -514,7 +520,8 @@ public sealed class LabelRepository
             ShipmentId: r.ShipmentId,
             SyncedAt: r.SyncedAt,
             ProductId: r.ProductId,
-            ProductVariantId: r.ProductVariantId);
+            ProductVariantId: r.ProductVariantId,
+            Revision: r.Revision);
 
     private sealed class Row
     {
@@ -539,6 +546,7 @@ public sealed class LabelRepository
         public long? SyncedAt { get; init; }
         public string? ProductId { get; init; }
         public string? ProductVariantId { get; init; }
+        public long Revision { get; init; }
     }
 
     private sealed class TotalsRow

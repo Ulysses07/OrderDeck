@@ -63,4 +63,10 @@ public sealed record Label(
     /// <summary>Katalog varyantının sunucudaki kimliği. ProductId dolu iken
     /// bunun null olması meşrudur: ürünün hiç ekseni yoksa stok ürün
     /// düzeyinden düşer.</summary>
-    string? ProductVariantId = null);
+    string? ProductVariantId = null,
+    /// <summary>F05 (2026-09-09 denetimi): her SyncedAt-düşüren mutasyonda +1.
+    /// MarkSynced yalnız okunan Revision hâlâ aynıysa yazar — push uçuştayken
+    /// yapılan değişiklik onay tarafından ezilemez, satır bekleyen kalır ve
+    /// güncel hâliyle tekrar gider. Yalnız outbox akışı için anlamlı; UI
+    /// sorguları 0 döndürebilir (SELECT'lerinde kolon yok).</summary>
+    long Revision = 0);

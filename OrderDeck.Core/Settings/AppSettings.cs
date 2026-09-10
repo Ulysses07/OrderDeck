@@ -130,6 +130,16 @@ public sealed class AppSettings
     /// next tick retries from the same position.</summary>
     public long LastCustomerProjectionSyncAt { get; set; }
 
+    /// <summary>F07 (2026-09-09 denetimi): müşteri projeksiyon imlecinin eşitlik
+    /// bozucusu — sayfanın son satırının yerel <c>Customer.Id</c>'si ("N" Guid
+    /// metni). Aynı saniyeye BatchSize'dan fazla satır düştüğünde yalnız-zaman
+    /// imleci sayfa sınırındaki satırları sonsuza dek atlıyordu (aynı hata
+    /// sınıfı: <see cref="LastShopperIngestAt"/>). Boş = imleç henüz yeni
+    /// biçime geçmedi; servis bunu görünce watermark'ı bir kez 0'a çekip tam
+    /// tarama yapar — geçmişte atlanmış satırlar ancak böyle kurtulur, sunucu
+    /// upsert'i idempotent olduğu için güvenli.</summary>
+    public string LastCustomerProjectionSyncId { get; set; } = "";
+
     /// <summary><b>Kullanımdan kalktı</b> — yerine
     /// <see cref="LastShopperIngestUpdatedAt"/> + <see cref="LastShopperIngestId"/>.
     /// Saniyeye yuvarlanmış olduğu için imleç, aynı saniyeyi paylaşan satırların

@@ -23,7 +23,10 @@ public sealed record Shipment(
     /// Null = outbox'ta, henüz push edilmedi. Service push sonrası
     /// MarkSynced ile doldurur. Local mutation (AttachLabels, ApplyDecision)
     /// sonra null'a döndürülür → bir sonraki tick'te yeniden push.</summary>
-    long? SyncedAt = null);
+    long? SyncedAt = null,
+    /// <summary>F05: her SyncedAt-düşüren mutasyonda +1; MarkSynced yalnız
+    /// Revision değişmemişse yazar (bkz. <see cref="Label"/>).</summary>
+    long Revision = 0);
 
 /// <summary>
 /// Shipment yaşam döngüsü. Geçişler:

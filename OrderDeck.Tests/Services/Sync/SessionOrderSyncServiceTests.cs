@@ -41,7 +41,12 @@ public sealed class SessionOrderSyncServiceTests
     private sealed record Fx(SessionOrderSyncService Svc, SessionRepository Sessions,
         LabelRepository Labels, InMemorySqlite Db, List<string> OrdersJson);
 
-    private static Fx Build()
+    /// <param name="onSessionsPush">F05 testleri: sessions/sync isteği sunucuda
+    /// "işlenirken" (yanıt dönmeden önce) çalışır — uçuş sırasındaki yerel
+    /// mutasyonu simüle eder.</param>
+    /// <param name="onOrdersPush">Aynısı orders/sync için.</param>
+    private static Fx Build(Action<SessionRepository>? onSessionsPush = null,
+        Action<LabelRepository>? onOrdersPush = null)
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
@@ -61,9 +66,13 @@ public sealed class SessionOrderSyncServiceTests
                 return FakeHttpMessageHandler.Json(200,
                     "[{\"id\":\"11111111-1111-1111-1111-111111111111\",\"licenseKey\":\"TEST-KEY-001\"}]");
             if (path.EndsWith("/sessions/sync"))
+            {
+                onSessionsPush?.Invoke(sessions);
                 return FakeHttpMessageHandler.Json(200, "[]");
+            }
             if (path.EndsWith("/orders/sync"))
             {
+                onOrdersPush?.Invoke(labels);
                 // Sahte handler, gerçek ağ yok; gövde JsonContent.Create tarafından
                 // bellekte oluşturulmuş — GetAwaiter().GetResult() burada güvenli.
                 var json = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
@@ -190,5 +199,80 @@ public sealed class SessionOrderSyncServiceTests
         var order = root.GetProperty("orders")[0];
         order.GetProperty("productId").GetGuid().Should().Be(Guid.Parse(pid));
         order.GetProperty("productVariantId").GetGuid().Should().Be(Guid.Parse(vid));
+    }
+
+    // ── F05 (2026-09-09 denetimi): OUTBOX_ACK_RACE ────────────────────────
+    //
+    // Push uçuştayken yapılan yerel mutasyon SyncedAt'i NULL'a çeker; hemen
+    // ardından gelen onay bunu ezerse satır "senkronize" görünür ama değişiklik
+    // sunucuya HİÇ gitmez (denetim kanıtı: sentCancelled=False,
+    // localCancelled=True, pending=0). Revision compare-and-set bunu keser:
+    // kaybeden onay 0 satır günceller, satır bekleyen kalır.
+
+    [Fact]
+    public async Task Ucustaki_push_sirasinda_iptal_onay_tarafindan_ezilmez()
+    {
+        string? lidToCancel = null;
+        var fx = Build(onOrdersPush: labels =>
+        {
+            if (lidToCancel is not null)
+                labels.MarkCancelled(new[] { lidToCancel }, 1700000500L, "yarış");
+        });
+        using var _d = fx.Db;
+
+        var sid = Guid.NewGuid().ToString("N");
+        fx.Sessions.Insert(new StreamSession(sid, "S1", 1700000000L, null,
+            new[] { "instagram" }, null));
+
+        var lid = Guid.NewGuid().ToString("N");
+        fx.Labels.Insert(new Label(lid, sid, "c1hex", "instagram", "@alice",
+            "ürün", null, 250m, 1700000200L, null, DisplayName: "Alice"));
+
+        lidToCancel = lid;
+        await fx.Svc.SyncOnceAsync();
+        lidToCancel = null;
+
+        // Onay uçuş sırasındaki iptali EZMEMELİ: satır bekleyen kalmalı.
+        var after = fx.Labels.GetById(lid)!;
+        after.CancelledAt.Should().NotBeNull();
+        after.SyncedAt.Should().BeNull("uçuş sırasındaki iptal onay tarafından ezilmemeli");
+
+        // Sonraki tick satırı GÜNCEL (iptalli) hâliyle tekrar gönderir.
+        var r2 = await fx.Svc.SyncOnceAsync();
+        r2.OrdersPushed.Should().Be(1);
+
+        using var doc = System.Text.Json.JsonDocument.Parse(fx.OrdersJson[^1]);
+        doc.RootElement.GetProperty("orders")[0]
+            .GetProperty("cancelledAt").ValueKind
+            .Should().NotBe(System.Text.Json.JsonValueKind.Null);
+        fx.Labels.GetById(lid)!.SyncedAt.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Ucustaki_push_sirasinda_yayin_kapatma_onay_tarafindan_ezilmez()
+    {
+        string? sidToEnd = null;
+        var fx = Build(onSessionsPush: sessions =>
+        {
+            if (sidToEnd is not null)
+                sessions.End(sidToEnd, 1700000900L);
+        });
+        using var _d = fx.Db;
+
+        var sid = Guid.NewGuid().ToString("N");
+        fx.Sessions.Insert(new StreamSession(sid, "S1", 1700000000L, null,
+            new[] { "instagram" }, null));
+
+        sidToEnd = sid;
+        await fx.Svc.SyncOnceAsync();
+        sidToEnd = null;
+
+        var after = fx.Sessions.GetById(sid)!;
+        after.EndedAt.Should().Be(1700000900L);
+        after.SyncedAt.Should().BeNull("uçuş sırasındaki kapatma onay tarafından ezilmemeli");
+
+        var r2 = await fx.Svc.SyncOnceAsync();
+        r2.SessionsPushed.Should().Be(1);
+        fx.Sessions.GetById(sid)!.SyncedAt.Should().NotBeNull();
     }
 }
