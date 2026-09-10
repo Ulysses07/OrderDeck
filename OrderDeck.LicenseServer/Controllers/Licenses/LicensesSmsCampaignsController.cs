@@ -207,12 +207,12 @@ public sealed class LicensesSmsCampaignsController : ControllerBase
             .ToListAsync(ct);
 
         int Count(string s) => counts.FirstOrDefault(c => c.Status == s)?.Count ?? 0;
-        var failed = Count("failed");
 
         return Ok(new StatusResponse(
             campaign.Id, campaign.Status, campaign.RecipientCount,
-            Sent: Count("sent"), Failed: failed, Skipped: Count("skipped"),
-            CreditsRefunded: failed * campaign.SegmentsPerMessage,
+            Sent: Count("sent"), Failed: Count("failed"), Skipped: Count("skipped"),
+            // N05: gerçekleşen iade (job tamamlarken yazar) — hesap değil.
+            CreditsRefunded: campaign.RefundedCredits,
             campaign.CreatedAt, campaign.CompletedAt));
     }
 
@@ -256,13 +256,13 @@ public sealed class LicensesSmsCampaignsController : ControllerBase
         {
             var map = byCampaign.TryGetValue(c.Id, out var m) ? m : null;
             int Count(string s) => map is not null && map.TryGetValue(s, out var n) ? n : 0;
-            var failed = Count("failed");
             return new CampaignListItem(
                 c.Id, c.Status,
                 MessagePreview: c.MessageBody.Length > 60 ? c.MessageBody[..60] : c.MessageBody,
                 c.RecipientCount,
-                Sent: Count("sent"), Failed: failed, Skipped: Count("skipped"),
-                CreditsRefunded: failed * c.SegmentsPerMessage,
+                Sent: Count("sent"), Failed: Count("failed"), Skipped: Count("skipped"),
+                // N05: gerçekleşen iade — hesap değil.
+                CreditsRefunded: c.RefundedCredits,
                 c.CreatedAt, c.CompletedAt);
         }).ToList();
 

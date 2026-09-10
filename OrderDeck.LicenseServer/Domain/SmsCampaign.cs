@@ -21,6 +21,14 @@ public sealed class SmsCampaign
     /// <summary>Oluşturulurken rezerve edilen kredi (RecipientCount × SegmentsPerMessage).</summary>
     public int ReservedCredits { get; set; }
 
+    /// <summary>
+    /// N05 (2026-09-10 denetimi): GERÇEKLEŞEN kredi iadesi. Job kampanyayı
+    /// tamamlarken iadeyle aynı SaveChanges içinde yazar; iade yapılmadıysa 0
+    /// kalır. Raporlama bunu okur — "failed × segment" hesabı gönderim
+    /// sürerken daha yapılmamış iadeyi yapılmış gibi gösteriyordu.
+    /// </summary>
+    public int RefundedCredits { get; set; }
+
     /// <summary>"pending" | "sending" | "completed" | "failed".</summary>
     public string Status { get; set; } = "pending";
 

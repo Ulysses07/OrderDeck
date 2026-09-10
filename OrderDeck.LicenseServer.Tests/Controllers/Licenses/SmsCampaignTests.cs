@@ -320,6 +320,47 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
     // failed sayısından hesaplanır.
 
     [Fact]
+    public async Task Status_gonderim_surerken_iadeyi_gerceklesmis_gibi_raporlamaz()
+    {
+        // N05 (2026-09-10 denetimi): CreditsRefunded "failed × segment" HESABI
+        // değil, gerçekleşen iade olmalı. İade yalnız kampanya tamamlanırken
+        // yapılır; "sending" sırasında failed'lar birikmişken eski kod daha
+        // yapılmamış iadeyi "iade edildi" diye gösteriyordu.
+        _factory.Sms.Clear();
+        _factory.Sms.ThrowOnSend = false;
+        var (client, licenseId) = await SetupAsync(consenting: 4, credits: 100);
+
+        var create = await (await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/sms-campaigns", new { messageBody = "Rapor" }))
+            .Content.ReadFromJsonAsync<CreateResponse>();
+
+        // Gönderim ortası anını kur: sending + 2 failed, iade henüz YOK.
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var campaign = await db.SmsCampaigns.FirstAsync(c => c.Id == create!.CampaignId);
+            campaign.Status = "sending";
+            campaign.ClaimedAt = DateTimeOffset.UtcNow;
+            var recipients = await db.SmsCampaignRecipients
+                .Where(r => r.CampaignId == create!.CampaignId).ToListAsync();
+            recipients[0].Status = "failed"; recipients[0].Error = "boom";
+            recipients[1].Status = "failed"; recipients[1].Error = "boom";
+            await db.SaveChangesAsync();
+        }
+
+        var status = await client.GetFromJsonAsync<StatusResponse>(
+            $"/api/v1/licenses/{licenseId}/sms-campaigns/{create!.CampaignId}");
+        status!.Failed.Should().Be(2);
+        status.CreditsRefunded.Should().Be(0,
+            "iade kampanya tamamlanırken yapılır; sürerken 'iade edildi' raporlanamaz");
+
+        var list = await client.GetFromJsonAsync<List<ListItem>>(
+            $"/api/v1/licenses/{licenseId}/sms-campaigns");
+        list!.Single(c => c.CampaignId == create.CampaignId).CreditsRefunded
+            .Should().Be(0, "liste de gerçekleşen iadeyi göstermeli");
+    }
+
+    [Fact]
     public async Task Job_resumes_stale_sending_campaign_without_resending()
     {
         _factory.Sms.Clear();
