@@ -281,17 +281,23 @@ public sealed partial class PeriodReportViewModel : ViewModelBase
     private void PersistEInvoiceSettings(long? startNumber)
     {
         var prefix = NumberPrefix.Trim();
-        _settings.EInvoice.NumberPrefix = prefix;
-        _settings.EInvoice.ItemName = ItemName;
-        _settings.EInvoice.VatRate = VatRate;
 
-        if (prefix.Length > 0 && startNumber is long n && _invoices.Count > 0)
+        // N04: canlı örnek anında etki için, disk Update ile — bütün-nesne
+        // Save başka bileşenin bu arada yazdığı alanı (sync imleçleri) ezerdi.
+        void Apply(AppSettings s)
         {
-            _settings.EInvoice.NextNumber = n + _invoices.Count;
-            NextNumberText = _settings.EInvoice.NextNumber.ToString();
+            s.EInvoice.NumberPrefix = prefix;
+            s.EInvoice.ItemName = ItemName;
+            s.EInvoice.VatRate = VatRate;
+            if (prefix.Length > 0 && startNumber is long n && _invoices.Count > 0)
+                s.EInvoice.NextNumber = n + _invoices.Count;
         }
 
-        _settingsStore.Save(_settings);
+        Apply(_settings);
+        _settingsStore.Update(Apply);
+
+        if (prefix.Length > 0 && startNumber is not null && _invoices.Count > 0)
+            NextNumberText = _settings.EInvoice.NextNumber.ToString();
     }
 }
 

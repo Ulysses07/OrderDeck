@@ -123,9 +123,14 @@ public sealed class ShopperRegistrationIngestService
             // paylaşan satırlarla sayfa dolduğunda imleci başladığı yere
             // döndürüp ilerlemeyi büsbütün durduruyordu.
             var last = items.OrderBy(i => i.UpdatedAt).ThenBy(i => i.Id).Last();
-            settings.LastShopperIngestUpdatedAt = last.UpdatedAt;
-            settings.LastShopperIngestId = last.Id;
-            _settingsStore.Save(settings);
+            // N04: Update ile atomik birleştirme — bu metodun başında yüklenen
+            // kopya HTTP çağrısı boyunca bayatlamış olabilir; bütün-nesne Save
+            // başka bileşenin o arada yazdığı alanı ezerdi.
+            _settingsStore.Update(s =>
+            {
+                s.LastShopperIngestUpdatedAt = last.UpdatedAt;
+                s.LastShopperIngestId = last.Id;
+            });
 
             if (inserted > 0)
                 _log.LogInformation("Ingested {Count} shopper registrations as new customers", inserted);

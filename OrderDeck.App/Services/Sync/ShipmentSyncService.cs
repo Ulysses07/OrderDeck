@@ -135,9 +135,15 @@ public sealed class ShipmentSyncService
         // conflict riski) — yalnız imleç ilerliyor. İmleç (UpdatedAt, Id) çifti;
         // sunucu da bu sıraya göre sayfalıyor.
         var last = rows.OrderBy(d => d.UpdatedAt).ThenBy(d => d.Id).Last();
+        // N04: bellekteki kopya güncel kalsın (imleç okuması buradan); diske
+        // Update ile atomik birleştirme.
         _settings.LastShipmentReverseSync = last.UpdatedAt;
         _settings.LastShipmentReverseSyncId = last.Id;
-        _settingsStore.Save(_settings);
+        _settingsStore.Update(s =>
+        {
+            s.LastShipmentReverseSync = last.UpdatedAt;
+            s.LastShipmentReverseSyncId = last.Id;
+        });
         return rows.Count;
     }
 

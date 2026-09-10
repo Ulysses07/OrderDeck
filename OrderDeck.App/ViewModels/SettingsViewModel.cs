@@ -546,59 +546,12 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
         // Mutate the live AppSettings instance so dependents (LabelPrinter, OverlayHost)
         // pick up the new values immediately. AppSettings is a class with public setters.
-        _liveSettings.PrinterName          = SelectedPrinter == DefaultPrinterSentinel ? null : SelectedPrinter;
-        _liveSettings.LabelWidthMm         = LabelWidthMm;
-        _liveSettings.LabelHeightMm        = LabelHeightMm;
-        _liveSettings.LabelGapMm           = LabelGapMm;
-        _liveSettings.LabelFontFamily      = LabelFontFamily;
-        _liveSettings.LabelUserFontSize    = LabelUserFontSize;
-        _liveSettings.LabelMessageFontSize = LabelMessageFontSize;
-        _liveSettings.OverlayPort          = OverlayPort;
-        _liveSettings.ChatTheme            = ChatTheme;
+        ApplyFormTo(_liveSettings);
 
-        // Phase 4g — Payment
-        _liveSettings.Payment.WhatsAppMessageTemplate = PaymentTemplate;
-        _liveSettings.Payment.Iban                    = Iban;
-        _liveSettings.Payment.AccountHolder           = AccountHolder;
-        _liveSettings.Payment.Papara                  = Papara;
-
-        // Kargo PR A — Shipping. Empty/0/negative → null (feature kapalı).
-        _liveSettings.Shipping.FreeShippingThreshold = ParseOptionalDecimal(FreeShippingThresholdText);
-        _liveSettings.Shipping.ShippingFee           = ParseOptionalDecimal(ShippingFeeText);
-
-        // PR-E — Kümülatif kargo "kazandın" template.
-        _liveSettings.Payment.ShippingWonTemplate = ShippingWonTemplate ?? string.Empty;
-
-        // WhatsApp Cloud API — şablon seçimi + yuva eşlemesi.
-        WhatsAppCloud?.CommitTo(_liveSettings.Payment);
-
-        // Phase 5c — YouTube. Empty string → null so the hosted service idles
-        // instead of attempting to resolve "".
-        var trimmedHandle = YouTubeChannelHandle?.Trim();
-        _liveSettings.YouTubeChannelHandle = string.IsNullOrEmpty(trimmedHandle) ? null : trimmedHandle;
-
-        // Phase 5f — Spam filter. The SpamFilter service reads this object on
-        // every message via Func<AppSettings>, so changes take effect the
-        // moment Save runs — no restart needed.
-        _liveSettings.SpamFilter.Enabled            = SpamFilterEnabled;
-        _liveSettings.SpamFilter.DropShortMessages  = SpamDropShortMessages;
-        _liveSettings.SpamFilter.MinMessageLength   = SpamMinMessageLength;
-        _liveSettings.SpamFilter.DropDuplicates     = SpamDropDuplicates;
-        _liveSettings.SpamFilter.DropAllCaps        = SpamDropAllCaps;
-        _liveSettings.SpamFilter.DropLinks          = SpamDropLinks;
-        _liveSettings.SpamFilter.DropProfanity      = SpamDropProfanity;
-        _liveSettings.SpamFilter.BlockedWords       = (SpamBlockedWordsText ?? string.Empty)
-            .Split(new[] { ',', '\n', ';' }, System.StringSplitOptions.RemoveEmptyEntries)
-            .Select(w => w.Trim())
-            .Where(w => w.Length > 0)
-            .ToList();
-
-        // Giveaway animation (Task 20)
-        _liveSettings.GiveawayAnimation.DefaultId = AnimationPicker.SelectedId;
-        _liveSettings.GiveawayAnimation.Volume    = AnimationVolume;
-        _liveSettings.GiveawayAnimation.MutedMode = AnimationMuted;
-
-        _store.Save(_liveSettings);
+        // N04: diske bütün-nesne Save yerine atomik Update — canlı örnekteki
+        // sync imleci gibi alanlar açılıştan beri bayatlamış olabilir; yalnız
+        // bu ekranın sahip olduğu alanlar diskteki EN GÜNCEL kopyaya yazılır.
+        _store.Update(ApplyFormTo);
 
         // Faz 2 (2026-05-15): WhatsApp template'leri server'a push'la (mobile
         // preview için). Fire-and-forget — sonuç dialog akışını engellemesin.
@@ -609,6 +562,64 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
         OverlayPortChanged = (OverlayPort != _originalOverlayPort);
         Saved = true;
+    }
+
+    /// <summary>Formdaki değerleri hedef nesneye yazar. İki kez çağrılır: canlı
+    /// (DI) örnek anında etki için, diskten taze yüklenen kopya kalıcılık için
+    /// (bkz. <c>Save</c>, N04). Bu yüzden idempotent olmalı — yalnız atama.</summary>
+    private void ApplyFormTo(AppSettings target)
+    {
+        target.PrinterName          = SelectedPrinter == DefaultPrinterSentinel ? null : SelectedPrinter;
+        target.LabelWidthMm         = LabelWidthMm;
+        target.LabelHeightMm        = LabelHeightMm;
+        target.LabelGapMm           = LabelGapMm;
+        target.LabelFontFamily      = LabelFontFamily;
+        target.LabelUserFontSize    = LabelUserFontSize;
+        target.LabelMessageFontSize = LabelMessageFontSize;
+        target.OverlayPort          = OverlayPort;
+        target.ChatTheme            = ChatTheme;
+
+        // Phase 4g — Payment
+        target.Payment.WhatsAppMessageTemplate = PaymentTemplate;
+        target.Payment.Iban                    = Iban;
+        target.Payment.AccountHolder           = AccountHolder;
+        target.Payment.Papara                  = Papara;
+
+        // Kargo PR A — Shipping. Empty/0/negative → null (feature kapalı).
+        target.Shipping.FreeShippingThreshold = ParseOptionalDecimal(FreeShippingThresholdText);
+        target.Shipping.ShippingFee           = ParseOptionalDecimal(ShippingFeeText);
+
+        // PR-E — Kümülatif kargo "kazandın" template.
+        target.Payment.ShippingWonTemplate = ShippingWonTemplate ?? string.Empty;
+
+        // WhatsApp Cloud API — şablon seçimi + yuva eşlemesi.
+        WhatsAppCloud?.CommitTo(target.Payment);
+
+        // Phase 5c — YouTube. Empty string → null so the hosted service idles
+        // instead of attempting to resolve "".
+        var trimmedHandle = YouTubeChannelHandle?.Trim();
+        target.YouTubeChannelHandle = string.IsNullOrEmpty(trimmedHandle) ? null : trimmedHandle;
+
+        // Phase 5f — Spam filter. The SpamFilter service reads this object on
+        // every message via Func<AppSettings>, so changes take effect the
+        // moment Save runs — no restart needed.
+        target.SpamFilter.Enabled            = SpamFilterEnabled;
+        target.SpamFilter.DropShortMessages  = SpamDropShortMessages;
+        target.SpamFilter.MinMessageLength   = SpamMinMessageLength;
+        target.SpamFilter.DropDuplicates     = SpamDropDuplicates;
+        target.SpamFilter.DropAllCaps        = SpamDropAllCaps;
+        target.SpamFilter.DropLinks          = SpamDropLinks;
+        target.SpamFilter.DropProfanity      = SpamDropProfanity;
+        target.SpamFilter.BlockedWords       = (SpamBlockedWordsText ?? string.Empty)
+            .Split(new[] { ',', '\n', ';' }, System.StringSplitOptions.RemoveEmptyEntries)
+            .Select(w => w.Trim())
+            .Where(w => w.Length > 0)
+            .ToList();
+
+        // Giveaway animation (Task 20)
+        target.GiveawayAnimation.DefaultId = AnimationPicker.SelectedId;
+        target.GiveawayAnimation.Volume    = AnimationVolume;
+        target.GiveawayAnimation.MutedMode = AnimationMuted;
     }
 
     [RelayCommand]
