@@ -667,13 +667,24 @@ public sealed class CustomerRepository
             new { id = customerId });
     }
 
-    /// <summary>Phase 4g: WhatsApp E.164 telefonu güncelle. Geçersiz id no-op.</summary>
+    /// <summary>Phase 4g: WhatsApp E.164 telefonu güncelle. Geçersiz id no-op.
+    ///
+    /// <para>N03 (2026-09-10 denetimi): <c>LastSeenAt</c> de ilerletilir —
+    /// delta imleci (<see cref="GetUpdatedSince"/>) bu sütunu okur; ilerlemezse
+    /// telefon sunucuya HİÇ senkronlanmaz (müşteri bir daha chat'e yazana
+    /// kadar). <c>MAX(LastSeenAt+1, @now)</c>: satır başına kesin artan, böylece
+    /// aynı saniyedeki ikinci güncelleme de imlecin önüne düşer.</para></summary>
     public void UpdatePhone(string customerId, string e164Phone)
     {
         using var conn = _factory.Open();
         conn.Execute(
-            "UPDATE Customer SET Phone=@phone WHERE Id=@id",
-            new { phone = e164Phone, id = customerId });
+            "UPDATE Customer SET Phone=@phone, LastSeenAt=MAX(LastSeenAt+1, @now) WHERE Id=@id",
+            new
+            {
+                phone = e164Phone,
+                id = customerId,
+                now = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            });
     }
 
     /// <summary>
