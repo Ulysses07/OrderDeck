@@ -669,6 +669,9 @@ public class LicenseDbContext : DbContext
              .OnDelete(DeleteBehavior.Cascade);
             b.Property(c => c.MessageBody).HasMaxLength(2000).IsRequired();
             b.Property(c => c.Status).HasMaxLength(16).IsRequired();
+            // F08: iki job aynı kampanyayı aynı anda üstlenemesin — claim
+            // yazımı CAS olur, kaybeden DbUpdateConcurrencyException alır.
+            b.Property(c => c.ClaimedAt).IsConcurrencyToken();
             b.HasIndex(c => new { c.LicenseId, c.CreatedAt });
         });
 

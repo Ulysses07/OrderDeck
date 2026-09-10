@@ -24,6 +24,16 @@ public sealed class SmsCampaign
     /// <summary>"pending" | "sending" | "completed" | "failed".</summary>
     public string Status { get; set; } = "pending";
 
+    /// <summary>
+    /// F08 (denetim 2026-09-09): gönderim job'ının sahiplik damgası
+    /// (concurrency token). Job kampanyayı üstlenirken CAS ile yazar ve her
+    /// alıcı kaydında tazeler (lease kalp atışı). Süreç ölürse damga bayatlar;
+    /// <see cref="Services.Sms.SmsCampaignRecoveryJob"/> bayat "sending"
+    /// kampanyayı yeniden kuyruğa alır — kaldığı yerden devam eder,
+    /// gönderilmişi tekrar göndermez.
+    /// </summary>
+    public DateTimeOffset? ClaimedAt { get; set; }
+
     public Guid CreatedByCustomerId { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? CompletedAt { get; set; }

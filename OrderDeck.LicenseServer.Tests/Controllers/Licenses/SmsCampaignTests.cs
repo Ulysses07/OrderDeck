@@ -271,6 +271,102 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
         _factory.Sms.Sent.Should().HaveCount(2, "ikinci job çağrısı tekrar göndermemeli");
     }
 
+    // ── F08 (denetim 2026-09-09): "sending"de takılma + kaldığı yerden devam ──
+    //
+    // Eski davranış: job yalnız "pending" kabul ediyor, sonuçları tek toplu
+    // SaveChanges ile yazıyordu. Süreç ölürse kampanya sonsuza dek "sending"
+    // kalıyor, krediler rezervede kilitleniyordu; elle "pending"e çekmek ise
+    // gönderilmiş SMS'leri TEKRAR gönderirdi. Yeni sözleşme: bayat claim'li
+    // "sending" devralınır, yalnız "pending" alıcılar gönderilir, iade DB'deki
+    // failed sayısından hesaplanır.
+
+    [Fact]
+    public async Task Job_resumes_stale_sending_campaign_without_resending()
+    {
+        _factory.Sms.Clear();
+        _factory.Sms.ThrowOnSend = false;
+        var (client, licenseId) = await SetupAsync(consenting: 4, credits: 100);
+
+        var create = await (await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/sms-campaigns", new { messageBody = "Devam" }))
+            .Content.ReadFromJsonAsync<CreateResponse>();
+
+        // Önceki koşu 2 alıcıya göndermiş, 1'i başarısız olmuş, 1'i sıradayken
+        // süreç ölmüş gibi kur: status=sending + bayat ClaimedAt.
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var campaign = await db.SmsCampaigns.FirstAsync(c => c.Id == create!.CampaignId);
+            campaign.Status = "sending";
+            campaign.ClaimedAt = DateTimeOffset.UtcNow - SmsCampaignSendJob.ClaimLease - TimeSpan.FromMinutes(1);
+            var recipients = await db.SmsCampaignRecipients
+                .Where(r => r.CampaignId == create!.CampaignId).ToListAsync();
+            recipients[0].Status = "sent"; recipients[0].SentAt = DateTimeOffset.UtcNow;
+            recipients[1].Status = "sent"; recipients[1].SentAt = DateTimeOffset.UtcNow;
+            recipients[2].Status = "failed"; recipients[2].Error = "boom";
+            await db.SaveChangesAsync();
+        }
+
+        _factory.Sms.Clear();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
+            await job.RunAsync(create!.CampaignId, default);
+        }
+
+        // Yalnız sıradaki 1 alıcıya gönderildi — gönderilmişler tekrarlanmadı.
+        _factory.Sms.Sent.Should().HaveCount(1,
+            "devralınan koşu yalnız pending alıcıları göndermeli");
+
+        var status = await client.GetFromJsonAsync<StatusResponse>(
+            $"/api/v1/licenses/{licenseId}/sms-campaigns/{create.CampaignId}");
+        status!.Status.Should().Be("completed");
+        status.Sent.Should().Be(3);
+        status.Failed.Should().Be(1);
+        status.CreditsRefunded.Should().Be(1);
+
+        // İade önceki koşunun failed'ını da kapsar: 100 - 4 + 1 = 97
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.LicenseSmsBalances.FirstAsync(b => b.LicenseId == licenseId))
+            .CreditsRemaining.Should().Be(97);
+    }
+
+    [Fact]
+    public async Task Job_does_not_steal_fresh_sending_claim()
+    {
+        _factory.Sms.Clear();
+        _factory.Sms.ThrowOnSend = false;
+        var (client, licenseId) = await SetupAsync(consenting: 2, credits: 100);
+
+        var create = await (await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/sms-campaigns", new { messageBody = "Canli" }))
+            .Content.ReadFromJsonAsync<CreateResponse>();
+
+        // Başka bir işçi kampanyayı AZ ÖNCE üstlenmiş: claim taze.
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var campaign = await db.SmsCampaigns.FirstAsync(c => c.Id == create!.CampaignId);
+            campaign.Status = "sending";
+            campaign.ClaimedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync();
+        }
+
+        _factory.Sms.Clear();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
+            await job.RunAsync(create!.CampaignId, default);
+        }
+
+        _factory.Sms.Sent.Should().BeEmpty("taze claim'li kampanya çalınmamalı");
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.SmsCampaigns.FirstAsync(c => c.Id == create!.CampaignId))
+            .Status.Should().Be("sending", "kampanya sahibi işçide kalmalı");
+    }
+
     [Fact]
     public async Task Preview_other_license_returns_404()
     {
