@@ -33,7 +33,7 @@ public sealed class SessionRepository
         using var conn = _factory.Open();
         // State değişikliği → SyncedAt NULL'a düşür ki sonraki tick'te push olsun.
         conn.Execute(
-            "UPDATE StreamSession SET EndedAt=@endedAt, SyncedAt=NULL WHERE Id=@id",
+            "UPDATE StreamSession SET EndedAt=@endedAt, SyncedAt=NULL, Revision = Revision + 1 WHERE Id=@id",
             new { id, endedAt });
     }
 
@@ -45,7 +45,7 @@ public sealed class SessionRepository
     {
         using var conn = _factory.Open();
         var rows = SqlMapper.Query<Row>(conn,
-            @"SELECT Id, Title, StartedAt, EndedAt, Platforms, Notes, SyncedAt
+            @"SELECT Id, Title, StartedAt, EndedAt, Platforms, Notes, SyncedAt, Revision
               FROM StreamSession
               WHERE SyncedAt IS NULL
               ORDER BY StartedAt
@@ -54,19 +54,21 @@ public sealed class SessionRepository
         return rows.Select(Map).ToList();
     }
 
-    /// <summary>Push başarılı sonrası SyncedAt'i set eder.</summary>
-    public void MarkSynced(string id, long syncedAt)
+    /// <summary>Push başarılı sonrası SyncedAt'i set eder.
+    /// F05: compare-and-set — push uçuştayken Revision değiştiyse 0 satır
+    /// etkiler, satır bekleyen kalır (bkz. <see cref="LabelRepository.MarkSynced"/>).</summary>
+    public void MarkSynced(string id, long syncedAt, long revision)
     {
         using var conn = _factory.Open();
-        conn.Execute("UPDATE StreamSession SET SyncedAt=@syncedAt WHERE Id=@id",
-            new { id, syncedAt });
+        conn.Execute("UPDATE StreamSession SET SyncedAt=@syncedAt WHERE Id=@id AND Revision=@revision",
+            new { id, syncedAt, revision });
     }
 
     public StreamSession? GetActive()
     {
         using var conn = _factory.Open();
         var row = conn.QueryFirstOrDefault<Row>(
-            "SELECT Id, Title, StartedAt, EndedAt, Platforms, Notes, SyncedAt " +
+            "SELECT Id, Title, StartedAt, EndedAt, Platforms, Notes, SyncedAt, Revision " +
             "FROM StreamSession WHERE EndedAt IS NULL ORDER BY StartedAt DESC LIMIT 1");
         return row is null ? null : Map(row);
     }
@@ -75,7 +77,7 @@ public sealed class SessionRepository
     {
         using var conn = _factory.Open();
         var row = conn.QueryFirstOrDefault<Row>(
-            "SELECT Id, Title, StartedAt, EndedAt, Platforms, Notes, SyncedAt " +
+            "SELECT Id, Title, StartedAt, EndedAt, Platforms, Notes, SyncedAt, Revision " +
             "FROM StreamSession WHERE Id=@id", new { id });
         return row is null ? null : Map(row);
     }
@@ -85,7 +87,7 @@ public sealed class SessionRepository
     {
         using var conn = _factory.Open();
         var row = conn.QueryFirstOrDefault<Row>(
-            @"SELECT Id, Title, StartedAt, EndedAt, Platforms, Notes, SyncedAt
+            @"SELECT Id, Title, StartedAt, EndedAt, Platforms, Notes, SyncedAt, Revision
               FROM StreamSession
               WHERE EndedAt IS NOT NULL
               ORDER BY EndedAt DESC
@@ -97,7 +99,7 @@ public sealed class SessionRepository
     {
         using var conn = _factory.Open();
         var rows = Dapper.SqlMapper.Query<Row>(conn,
-            @"SELECT Id, Title, StartedAt, EndedAt, Platforms, Notes, SyncedAt
+            @"SELECT Id, Title, StartedAt, EndedAt, Platforms, Notes, SyncedAt, Revision
               FROM StreamSession
               WHERE EndedAt IS NOT NULL
               ORDER BY StartedAt DESC
@@ -110,7 +112,8 @@ public sealed class SessionRepository
         r.Id, r.Title, r.StartedAt, r.EndedAt,
         JsonSerializer.Deserialize<string[]>(r.Platforms ?? "[]") ?? System.Array.Empty<string>(),
         r.Notes,
-        r.SyncedAt);
+        r.SyncedAt,
+        r.Revision);
 
     private sealed class Row
     {
@@ -121,5 +124,6 @@ public sealed class SessionRepository
         public string? Platforms { get; init; }
         public string? Notes { get; init; }
         public long? SyncedAt { get; init; }
+        public long Revision { get; init; }
     }
 }

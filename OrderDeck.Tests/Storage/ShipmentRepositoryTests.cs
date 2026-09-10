@@ -218,7 +218,7 @@ public class ShipmentRepositoryTests
         using var _d = db;
 
         repo.Insert(NewShipment());
-        repo.MarkSynced("sh1", syncedAt: 7777L);
+        repo.MarkSynced("sh1", syncedAt: 7777L, revision: 0);
 
         var found = repo.GetById("sh1");
         found!.SyncedAt.Should().Be(7777L);
@@ -232,13 +232,35 @@ public class ShipmentRepositoryTests
         using var _d = db;
 
         repo.Insert(NewShipment());
-        repo.MarkSynced("sh1", syncedAt: 1000L);
+        repo.MarkSynced("sh1", syncedAt: 1000L, revision: 0);
 
         var current = repo.GetById("sh1")!;
         repo.Update(current with { Status = ShipmentStatus.Held, HeldAt = 2000L });
 
         var afterUpdate = repo.GetById("sh1")!;
         afterUpdate.SyncedAt.Should().BeNull("Update SyncedAt'i NULL'a düşürmeli");
+    }
+
+    [Fact]
+    public void MarkSynced_with_stale_revision_is_a_noop()
+    {
+        // F05: push uçuştayken Update geldi → Revision arttı. Eski revision'la
+        // gelen onay hiçbir şey yazmamalı; satır bekleyen kalmalı, yoksa uçuş
+        // sırasındaki değişiklik sunucuya hiç gitmez.
+        var (db, repo, _, _, _) = Fx();
+        using var _d = db;
+
+        repo.Insert(NewShipment());
+        var inFlight = repo.GetUnsynced().Single(); // Revision=0 ile push'a çıktı
+
+        repo.Update(inFlight with { Status = ShipmentStatus.Held, HeldAt = 2000L }); // Revision→1
+
+        repo.MarkSynced("sh1", syncedAt: 3000L, revision: inFlight.Revision);
+
+        var after = repo.GetById("sh1")!;
+        after.SyncedAt.Should().BeNull("bayat revision'lı onay yazmamalı");
+        after.Revision.Should().Be(1);
+        repo.GetUnsynced().Should().ContainSingle().Which.Id.Should().Be("sh1");
     }
 
     [Fact]

@@ -103,8 +103,10 @@ public sealed class ShipmentSyncService
         }
 
         var now = _clock.UnixNow();
+        // F05: push'a giden Revision ile onayla — uçuş sırasında satır
+        // değiştiyse MarkSynced 0 satır etkiler, sonraki tick tekrar gönderir.
         foreach (var item in batch)
-            _shipments.MarkSynced(item.Id, now);
+            _shipments.MarkSynced(item.Id, now, item.Revision);
 
         return batch.Count;
     }
