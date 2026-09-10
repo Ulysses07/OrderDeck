@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Settings;
+using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Licensing.Api;
 using OrderDeck.Licensing.Api.Models;
 
@@ -31,7 +32,16 @@ public enum PaymentRequestResult
     /// söylemek olur; wa.me'yi de açmıyoruz çünkü gönderim gerçekten uçuştaysa
     /// ikinci bir faturalı kopya gider. Doğru davranış: operatörü uyarıp
     /// doğrulamaya yönlendirmek.</para></summary>
-    SendPending
+    SendPending,
+
+    /// <summary>N02 (2026-09-10 denetimi): müşterinin diskte çözülmemiş bir
+    /// bakiye düşüm işi var ve tutarı bu denemeninkinden FARKLI. Eski anahtarı
+    /// sessizce kullanmak yeni satışın düşümünü eski satışın sonucuna
+    /// bağlayabilir; yeni anahtar üretmek ise çift düşümü serbest bırakır.
+    /// Kararı operatör verir — çağıran uyarı gösterip onayla
+    /// <c>overridePendingConflict: true</c> ile yeniden çağırmalı (o zaman eski
+    /// anahtar yeniden kullanılır; para güvenliği anahtar sürekliliğinde).</summary>
+    PendingApplyConflict
 }
 
 /// <summary>
@@ -51,6 +61,7 @@ public sealed class PaymentRequestService
     private readonly IUrlLauncher _launcher;
     private readonly LicenseApiClient _api;
     private readonly ICurrentLicenseProvider _currentLicense;
+    private readonly IPendingBalanceApplyStore _pendingApplies;
     private readonly Microsoft.Extensions.Logging.ILogger<PaymentRequestService>? _log;
 
     public PaymentRequestService(
@@ -59,6 +70,7 @@ public sealed class PaymentRequestService
         IUrlLauncher launcher,
         LicenseApiClient api,
         ICurrentLicenseProvider currentLicense,
+        IPendingBalanceApplyStore pendingApplies,
         Microsoft.Extensions.Logging.ILogger<PaymentRequestService>? log = null)
     {
         _settingsStore = settingsStore;
@@ -66,6 +78,7 @@ public sealed class PaymentRequestService
         _launcher = launcher;
         _api = api;
         _currentLicense = currentLicense;
+        _pendingApplies = pendingApplies;
         _log = log;
     }
 
@@ -147,8 +160,12 @@ public sealed class PaymentRequestService
     /// davranış (bakiye uygulanmamış) ile mesaj gönderilir. Operatör mobile
     /// panel'den manuel ekleyebilir.
     /// </summary>
+    /// <param name="overridePendingConflict">Operatör, tutarı değişmiş bekleyen
+    /// iş uyarısını onayladı — eski anahtar yeniden kullanılır (bkz.
+    /// <see cref="PaymentRequestResult.PendingApplyConflict"/>).</param>
     public async Task<PaymentRequestResult> OpenWhatsAppAsync(
-        Customer customer, decimal productTotal, DateTime streamDate, CancellationToken ct = default)
+        Customer customer, decimal productTotal, DateTime streamDate,
+        bool overridePendingConflict = false, CancellationToken ct = default)
     {
         if (!PhoneNormalizer.IsValidTr(customer.Phone))
             return PaymentRequestResult.PhoneRequired;
@@ -159,28 +176,73 @@ public sealed class PaymentRequestService
         // Bakiye uygulaması (best-effort).
         decimal appliedBalance = 0m;
         var totalBeforeBalance = totalAmount;
+        Guid? pendingApplyKey = null;   // mesaj müşteriye ulaşınca kapatılacak iş
         if (totalAmount > 0 && Guid.TryParseExact(customer.Id, "N", out var wpfCustomerId))
         {
             try
             {
+                // N02 (2026-09-10 denetimi): diskte yarım kalmış bir düşüm işi
+                // varsa anahtarı YENİDEN kullanılır — sunucu ilk sonucu oynatır,
+                // ikinci düşüm imkânsız. Tutar değiştiyse karar operatörün:
+                // sessizce eski anahtar yeni satışı eski sonuca bağlar, yeni
+                // anahtar ise çift düşümü serbest bırakırdı.
+                var pending = _pendingApplies.GetUnresolved(customer.Id);
+                if (pending is not null && pending.ProductTotal != totalAmount && !overridePendingConflict)
+                    return PaymentRequestResult.PendingApplyConflict;
+
                 var licenseId = await ResolveLicenseIdAsync(ct);
                 if (licenseId is not null)
                 {
-                    var preview = await _api.GetBalancePreviewAsync(
-                        licenseId.Value, wpfCustomerId, ct);
-                    if (preview.Balance > 0)
+                    Guid? key = null;
+                    decimal amount = 0m;
+                    if (pending is not null)
                     {
-                        var amount = Math.Min(preview.Balance, totalAmount);
-                        // Çağrı başına yeni anahtar — WhatsApp gönderimiyle aynı
-                        // gerekçe: dayanıklılık katmanı 5xx/ağ hatasında bu POST'u
-                        // da yeniden deniyor ve burası gerçek para düşüyor.
-                        var apply = await _api.ApplyBalanceAsync(
-                            licenseId.Value,
-                            new CustomerBalanceApplyRequest(
-                                wpfCustomerId, amount, totalAmount, Guid.NewGuid()),
-                            ct);
-                        appliedBalance = apply.AppliedAmount;
-                        totalAmount -= apply.AppliedAmount;
+                        // Preview BİLEREK atlanır: ilk deneme düşümü yapmışsa
+                        // bakiye 0 görünür ve kapı apply'ı atlatırdı; oysa cevap
+                        // sunucudaki replay'den gelmeli (replay, balance
+                        // kontrolünden ÖNCE çalışır).
+                        key = pending.IdempotencyKey;
+                        amount = totalAmount;
+                    }
+                    else
+                    {
+                        var preview = await _api.GetBalancePreviewAsync(
+                            licenseId.Value, wpfCustomerId, ct);
+                        if (preview.Balance > 0)
+                        {
+                            // Anahtar apply'dan ÖNCE diske iner: düşüm başarılı
+                            // olup pencere açılamazsa (ya da süreç ölürse) ikinci
+                            // deneme aynı anahtarı bulur.
+                            key = Guid.NewGuid();
+                            amount = Math.Min(preview.Balance, totalAmount);
+                            _pendingApplies.Create(customer.Id, key.Value, totalAmount);
+                        }
+                    }
+
+                    if (key is { } applyKey)
+                    {
+                        pendingApplyKey = applyKey;
+                        try
+                        {
+                            var apply = await _api.ApplyBalanceAsync(
+                                licenseId.Value,
+                                new CustomerBalanceApplyRequest(
+                                    wpfCustomerId, amount, totalAmount, applyKey),
+                                ct);
+                            appliedBalance = apply.AppliedAmount;
+                            totalAmount -= apply.AppliedAmount;
+                        }
+                        catch (ValidationException ex) when (
+                            ex.Code is "no-balance" or "nothing-to-apply")
+                        {
+                            // Replay sunucuda balance kontrolünden önce çalıştığı
+                            // için bu 409, anahtarın HİÇ uygulanmadığının ve
+                            // bakiyenin olmadığının kanıtı. İş güvenle kapanır —
+                            // açık kalsaydı bakiyesiz müşteri sonraki her satışta
+                            // uyarı tetiklerdi.
+                            _pendingApplies.MarkResolved(applyKey);
+                            pendingApplyKey = null;
+                        }
                     }
                 }
             }
@@ -189,7 +251,9 @@ public sealed class PaymentRequestService
                 _log?.LogWarning(ex,
                     "Balance apply failed for customer {CustomerId} — sending WhatsApp without deduction",
                     customer.Id);
-                // Fail-silent → eski davranışla devam
+                // Fail-silent → eski davranışla devam. pendingApplyKey yazıldıysa
+                // iş açık kalır: sunucu düşümü yapmış olabilir, bir sonraki deneme
+                // aynı anahtarla gerçeği replay'den öğrenir.
             }
         }
 
@@ -217,8 +281,11 @@ public sealed class PaymentRequestService
                 customer.Phone!, message, BuildTemplateRef(settings, ctx), "wpf-payment", ct))
             {
                 case CloudSendOutcome.Sent:
+                    ResolvePendingApply(pendingApplyKey);
                     return PaymentRequestResult.Sent;
                 case CloudSendOutcome.Pending:
+                    // Sonuç bilinmiyor — iş açık kalır, bir sonraki deneme aynı
+                    // anahtarı yeniden kullanır (N02).
                     return PaymentRequestResult.SendPending;
             }
         }
@@ -228,11 +295,30 @@ public sealed class PaymentRequestService
         try
         {
             _launcher.Launch(link);
+            ResolvePendingApply(pendingApplyKey);
             return PaymentRequestResult.Opened;
         }
         catch
         {
+            // İş açık kalır: operatörün ikinci tıklaması aynı anahtarı bulur,
+            // bakiye ikinci kez düşmez (N02).
             return PaymentRequestResult.LaunchFailed;
+        }
+    }
+
+    /// <summary>Mesaj müşteriye ulaştı — bekleyen bakiye işini kapatır. Disk
+    /// hatası akışı düşürmemeli: mesaj zaten gitti, en kötü ihtimalle iş açık
+    /// kalır ve bir sonraki satışta operatör uyarı görür.</summary>
+    private void ResolvePendingApply(Guid? key)
+    {
+        if (key is null) return;
+        try
+        {
+            _pendingApplies.MarkResolved(key.Value);
+        }
+        catch (Exception ex)
+        {
+            _log?.LogWarning(ex, "Bekleyen bakiye işi kapatılamadı (key={Key})", key);
         }
     }
 

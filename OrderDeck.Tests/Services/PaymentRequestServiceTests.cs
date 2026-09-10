@@ -26,6 +26,7 @@ public class PaymentRequestServiceTests : IDisposable
     private readonly string _settingsPath;
     private readonly SettingsStore _store;
     private readonly FakeUrlLauncher _launcher;
+    private readonly InMemoryPendingBalanceApplyStore _pending = new();
 
     public PaymentRequestServiceTests()
     {
@@ -36,13 +37,13 @@ public class PaymentRequestServiceTests : IDisposable
 
     /// <summary>Tüm balance HTTP istekleri 404 — testler eski sync OpenWhatsApp
     /// pattern'iyle çalışıyor, async path E3b'ye özel.</summary>
-    private static PaymentRequestService MakeSut(SettingsStore store, FakeUrlLauncher launcher)
+    private PaymentRequestService MakeSut(SettingsStore store, FakeUrlLauncher launcher)
     {
         var http = new HttpClient(new StubHandler()) { BaseAddress = new Uri("https://stub") };
         var api = new LicenseApiClient(http, new LicenseTokenStore());
         var licProv = new StubLicenseProvider();
         return new PaymentRequestService(store, new WhatsAppMessageBuilder(), launcher,
-            api, licProv);
+            api, licProv, _pending);
     }
 
     private sealed class StubLicenseProvider : ICurrentLicenseProvider
@@ -144,14 +145,14 @@ public class PaymentRequestServiceTests : IDisposable
         public string? CurrentLicenseKey => WhatsAppStubHandler.LicenseKey;
     }
 
-    private static (PaymentRequestService Sut, WhatsAppStubHandler Handler) MakeCloudSut(
+    private (PaymentRequestService Sut, WhatsAppStubHandler Handler) MakeCloudSut(
         SettingsStore store, FakeUrlLauncher launcher, ICurrentLicenseProvider? licenseProvider = null)
     {
         var handler = new WhatsAppStubHandler();
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://stub") };
         var api = new LicenseApiClient(http, new LicenseTokenStore());
         var sut = new PaymentRequestService(store, new WhatsAppMessageBuilder(), launcher,
-            api, licenseProvider ?? new FixedLicenseProvider());
+            api, licenseProvider ?? new FixedLicenseProvider(), _pending);
         return (sut, handler);
     }
 
@@ -639,5 +640,136 @@ public class PaymentRequestServiceTests : IDisposable
         result.Should().Be(PaymentRequestResult.Opened);
         handler.SentBodies.Should().BeEmpty();
         _launcher.LaunchedUrls.Should().ContainSingle();
+    }
+
+    // ── N02 (2026-09-10 denetimi): kalıcı ödeme-işi kimliği ─────────────
+    //
+    // Sunucunun apply ucu idempotent (anahtar = ledger PK) ama anahtar yalnız
+    // bellekteyken üretiliyordu: düşüm BAŞARILI olup wa.me penceresi
+    // açılamazsa (LaunchFailed) operatörün ikinci tıklaması yeni anahtar
+    // üretir ve bakiye İKİNCİ kez düşerdi. Anahtar artık diske iner ve mesaj
+    // müşteriye ulaşana kadar (Sent/Opened) yeniden kullanılır.
+
+    /// <summary>Apply gövdesindeki idempotency anahtarı.</summary>
+    private static Guid AppliedKey(string body)
+    {
+        using var doc = JsonDocument.Parse(body);
+        return Guid.Parse(doc.RootElement.GetProperty("idempotencyKey").GetString()!);
+    }
+
+    [Fact]
+    public async Task OpenWhatsAppAsync_LaunchFailed_sonrasi_tekrar_ayni_anahtari_kullanir()
+    {
+        // Çekirdek N02 senaryosu: düşüm yapıldı, pencere açılamadı, operatör
+        // tekrar tıkladı. Eski kod ikinci tıklamada Guid.NewGuid() ürettiği
+        // için sunucu bunu YENİ bir iş sanır ve bakiyeyi ikinci kez düşerdi.
+        var (sut, handler) = MakeCloudSut(_store, _launcher);   // UseCloudApi false → wa.me yolu
+        handler.PreviewBalance = 100m;
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+
+        _launcher.ThrowOnLaunch = new InvalidOperationException("no handler");
+        (await sut.OpenWhatsAppAsync(customer, 250m, new DateTime(2026, 9, 10)))
+            .Should().Be(PaymentRequestResult.LaunchFailed);
+
+        _launcher.ThrowOnLaunch = null;
+        (await sut.OpenWhatsAppAsync(customer, 250m, new DateTime(2026, 9, 10)))
+            .Should().Be(PaymentRequestResult.Opened);
+
+        handler.AppliedBalanceBodies.Should().HaveCount(2);
+        AppliedKey(handler.AppliedBalanceBodies[1]).Should().Be(
+            AppliedKey(handler.AppliedBalanceBodies[0]),
+            "aynı anahtar sunucuda ilk sonucu oynatır — bakiye ikinci kez düşmez");
+    }
+
+    [Fact]
+    public async Task OpenWhatsAppAsync_mesaj_ulasinca_is_kapanir_sonraki_satis_yeni_anahtar_uretir()
+    {
+        // İş "çözülmüş" sayılmazsa ters yönde bozulur: müşterinin SONRAKİ
+        // satışı eski anahtarı kullanır, sunucu ilk sonucu oynatır ve yeni
+        // satışın düşümü hiç yapılmaz.
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+
+        (await sut.OpenWhatsAppAsync(customer, 250m, new DateTime(2026, 9, 10)))
+            .Should().Be(PaymentRequestResult.Opened);
+        (await sut.OpenWhatsAppAsync(customer, 250m, new DateTime(2026, 9, 10)))
+            .Should().Be(PaymentRequestResult.Opened);
+
+        handler.AppliedBalanceBodies.Should().HaveCount(2);
+        AppliedKey(handler.AppliedBalanceBodies[1]).Should().NotBe(
+            AppliedKey(handler.AppliedBalanceBodies[0]),
+            "ilk iş wa.me açıldığında kapandı — ikinci satış ayrı bir düşüm");
+        _pending.Unresolved.Should().BeEmpty("iki iş de mesajla sonuçlandı");
+    }
+
+    [Fact]
+    public async Task OpenWhatsAppAsync_bekleyen_is_farkli_tutarla_uyari_dondurur()
+    {
+        // Yarım kalmış işin tutarı ile yeni denemenin tutarı farklıysa karar
+        // operatörün: eski anahtarı sessizce kullanmak yeni satışın düşümünü
+        // eski sonuca bağlar, yeni anahtar üretmek çift düşümü serbest bırakır.
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+
+        _launcher.ThrowOnLaunch = new InvalidOperationException("no handler");
+        await sut.OpenWhatsAppAsync(customer, 250m, new DateTime(2026, 9, 10));
+        _launcher.ThrowOnLaunch = null;
+
+        var result = await sut.OpenWhatsAppAsync(customer, 300m, new DateTime(2026, 9, 10));
+
+        result.Should().Be(PaymentRequestResult.PendingApplyConflict);
+        handler.AppliedBalanceBodies.Should().HaveCount(1, "uyarı onaylanmadan apply çağrılmaz");
+        _launcher.LaunchedUrls.Should().BeEmpty("uyarı onaylanmadan mesaj da gitmez");
+    }
+
+    [Fact]
+    public async Task OpenWhatsAppAsync_uyari_onaylaninca_eski_anahtarla_devam_eder()
+    {
+        // Operatör uyarıyı onayladı: para güvenliği anahtar sürekliliğinde —
+        // eski anahtar yeni tutarla gider, sunucu ya ilk sonucu oynatır
+        // (ilk istek ulaşmışsa) ya da düşümü şimdi yapar. Hiçbir dalda iki
+        // düşüm yok.
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+
+        _launcher.ThrowOnLaunch = new InvalidOperationException("no handler");
+        await sut.OpenWhatsAppAsync(customer, 250m, new DateTime(2026, 9, 10));
+        _launcher.ThrowOnLaunch = null;
+
+        var result = await sut.OpenWhatsAppAsync(
+            customer, 300m, new DateTime(2026, 9, 10), overridePendingConflict: true);
+
+        result.Should().Be(PaymentRequestResult.Opened);
+        handler.AppliedBalanceBodies.Should().HaveCount(2);
+        AppliedKey(handler.AppliedBalanceBodies[1]).Should().Be(
+            AppliedKey(handler.AppliedBalanceBodies[0]));
+    }
+
+    [Fact]
+    public async Task OpenWhatsAppAsync_bekleyen_is_varken_preview_sifir_olsa_da_apply_cagrilir()
+    {
+        // İlk deneme düşümü YAPMIŞSA bakiye artık 0 görünür. Preview kapısına
+        // takılmak apply'ı atlatır ve operatör "bakiye uygulandı mı?" sorusunun
+        // cevabını hiç alamaz; sunucudaki replay balance kontrolünden ÖNCE
+        // çalıştığı için bekleyen işte preview'a bakmadan apply çağrılmalı.
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+
+        _launcher.ThrowOnLaunch = new InvalidOperationException("no handler");
+        await sut.OpenWhatsAppAsync(customer, 250m, new DateTime(2026, 9, 10));
+        _launcher.ThrowOnLaunch = null;
+
+        handler.PreviewBalance = 0m;   // ilk düşüm bakiyeyi tüketti
+        (await sut.OpenWhatsAppAsync(customer, 250m, new DateTime(2026, 9, 10)))
+            .Should().Be(PaymentRequestResult.Opened);
+
+        handler.AppliedBalanceBodies.Should().HaveCount(2,
+            "bekleyen iş preview'a bakmadan sunucuya sorulmalı — cevap replay'den gelir");
+        AppliedKey(handler.AppliedBalanceBodies[1]).Should().Be(
+            AppliedKey(handler.AppliedBalanceBodies[0]));
     }
 }
