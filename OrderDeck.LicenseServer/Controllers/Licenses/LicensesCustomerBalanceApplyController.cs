@@ -111,8 +111,11 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
         // çağıran onun sonucunu görmemeli.
         if (req.IdempotencyKey is { } preKey)
         {
-            var (replay, foreign) = await LookupAsync(licenseId, preKey, ct);
+            var (replay, foreign, conflict) = await LookupAsync(licenseId, req, preKey, ct);
             if (foreign) return NotFound();
+            if (conflict)
+                return Problem(title: "content-conflict", statusCode: 409,
+                    detail: "Idempotency anahtarı farklı bir istekle kullanılmış.");
             if (replay is not null) return Ok(replay);
         }
 
@@ -192,7 +195,10 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
                 // Kazananın sonucunu oynatabiliyorsak yarış hikâyesi tutuyor demektir;
                 // tutmuyorsa hata gerçek bir DB sorunudur, yutulmamalı.
                 _db.ChangeTracker.Clear();
-                var (winner, _) = await LookupAsync(licenseId, req.IdempotencyKey.Value, ct);
+                var (winner, _, conflict) = await LookupAsync(licenseId, req, req.IdempotencyKey.Value, ct);
+                if (conflict)
+                    return Problem(title: "content-conflict", statusCode: 409,
+                        detail: "Idempotency anahtarı farklı bir istekle kullanılmış.");
                 if (winner is null) throw;
                 _log.LogWarning(
                     "Bakiye uygulama yarışı: anahtarı başka istek kazandı (key={Key}, license={LicenseId})",
@@ -214,25 +220,45 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     /// ele almasak PK ihlali yakalanır, oynatacak sonuç bulunamaz ve istek 500
     /// olurdu; oysa bu istemci hatası, sunucu hatası değil.</para>
     ///
+    /// <para><c>ContentConflict</c>: anahtar bu lisansın düşüm satırı ama yeni
+    /// istek ilk isteğin aynısı değil (A11). Oynatmak yanlış satışa düşüm bağlar;
+    /// hiçbir yan etki olmadan reddedilmeli.</para>
+    ///
     /// <para><c>RemainingBalance</c> o anki gerçek bakiyedir (donmuş bir kopya
     /// değil): istemci bunu ekranda gösteriyor, eski bir değeri oynatmak
     /// operatöre yanlış bakiye gösterirdi. <c>AppliedAmount</c> ise ledger
     /// satırından gelir — "ne kadar düştü" cevabı değişmemeli.</para>
     /// </summary>
-    private async Task<(ApplyResponse? Replay, bool Foreign)> LookupAsync(
-        Guid licenseId, Guid key, CancellationToken ct)
+    private async Task<(ApplyResponse? Replay, bool Foreign, bool ContentConflict)> LookupAsync(
+        Guid licenseId, ApplyRequest req, Guid key, CancellationToken ct)
     {
         var tx = await _db.CustomerBalanceTransactions
             .AsNoTracking()
             .FirstOrDefaultAsync(t => t.Id == key, ct);
-        if (tx is null) return (null, false);
+        if (tx is null) return (null, false, false);
 
         if (tx.LicenseId != licenseId || tx.Kind != KindPurchaseDeduction)
         {
             _log.LogWarning(
                 "Bakiye idempotency anahtarı başka bir kayda ait (key={Key}, license={LicenseId}, kind={Kind})",
                 key, licenseId, tx.Kind);
-            return (null, true);
+            return (null, true, false);
+        }
+
+        // A11: anahtar bu lisansın düşüm satırı ama istek İLK isteğin aynısı
+        // değil. Oynatmak yanlış satışa düşüm bağlar; hiçbir yan etki olmadan
+        // reddet. Amount için tolerans: istemci replay'de Amount=ProductTotal
+        // gönderir; ilk düşümden KÜÇÜK bir Amount ise gerçek bir çelişkidir.
+        // decimal eşitliği değer tabanlıdır: 250m == 250.00m → true. SQL decimal(18,2)
+        // round-trip ölçek ekleyebilir ama değeri değiştiremez; yanlış çelişki üretmez.
+        if (tx.WpfCustomerId != req.WpfCustomerId
+            || tx.OriginalAmount != req.ProductTotal
+            || -tx.Amount > req.Amount)
+        {
+            _log.LogWarning(
+                "Bakiye idempotency anahtarı farklı içerikle yeniden kullanıldı (key={Key}, license={LicenseId})",
+                key, licenseId);
+            return (null, false, true);
         }
 
         var remaining = await _db.CustomerBalances
@@ -243,8 +269,95 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
 
         _log.LogInformation(
             "Bakiye uygulama sonucu tekrar oynatıldı (key={Key}, license={LicenseId})", key, licenseId);
-        return (new ApplyResponse(tx.Id, -tx.Amount, remaining), false);
+        return (new ApplyResponse(tx.Id, -tx.Amount, remaining), false, false);
     }
+
+    // ── POST reverse (revizyon: eski düşümü geri al) ────────────────────────
+
+    /// <summary>Spec K2: aynı satışın toplamı değişince WPF eski düşümü geri
+    /// alıp yeni toplamla taze apply yapar. Panel'deki reverse'in WPF-yüzeyi
+    /// ikizi — ama kapsamı dar: yalnız BU lisansın purchase-deduction satırı.
+    /// Hakem N01 filtered-unique index (ReversesTransactionId): yarışan ikinci
+    /// reverse SaveChanges'te unique ihlali alır → 409 already-reversed.
+    /// İstemci 409 already-reversed'i BAŞARI sayar (geri alma zaten olmuş).</summary>
+    [HttpPost("transactions/{transactionId:guid}/reverse")]
+    public async Task<IActionResult> Reverse(
+        Guid licenseId, Guid transactionId, CancellationToken ct)
+    {
+        if (!await OwnsLicenseAsync(licenseId, ct)) return NotFound();
+
+        var original = await _db.CustomerBalanceTransactions
+            .AsNoTracking()
+            .FirstOrDefaultAsync(t => t.Id == transactionId
+                && t.LicenseId == licenseId
+                && t.Kind == KindPurchaseDeduction, ct);
+        if (original is null) return NotFound();
+
+        // Hızlı yol ön kontrolü; asıl hakem N01 index'i (aşağıdaki catch).
+        var alreadyReversed = await _db.CustomerBalanceTransactions
+            .AnyAsync(t => t.ReversesTransactionId == transactionId, ct);
+        if (alreadyReversed) return Problem(title: "already-reversed", statusCode: 409);
+
+        var balance = await _db.CustomerBalances
+            .FirstOrDefaultAsync(b => b.LicenseId == licenseId
+                && b.WpfCustomerId == original.WpfCustomerId, ct);
+        // Apply bakiye satırı olmadan düşüm yazmaz; satır silinmiyor da.
+        if (balance is null) return NotFound();
+
+        var now = DateTimeOffset.UtcNow;
+        var reverseAmount = -original.Amount; // düşüm negatif → geri alma pozitif
+
+        _db.CustomerBalanceTransactions.Add(new CustomerBalanceTransaction
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = licenseId,
+            WpfCustomerId = original.WpfCustomerId,
+            Amount = reverseAmount,
+            Kind = "reversal",
+            OriginalAmount = null,
+            Reason = $"Reverse of {transactionId:N}",
+            ReversesTransactionId = transactionId,
+            CreatedByCustomerId = User.GetTenantCustomerId(),
+            CreatedAt = now,
+        });
+
+        balance.Balance += reverseAmount;
+        balance.UpdatedAt = now;
+
+        const int maxAttempts = 3;
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+                return Ok();
+            }
+            catch (DbUpdateConcurrencyException ex) when (attempt < maxAttempts)
+            {
+                // F02 kalıbı: bakiyeyi güncel değere çek, deltayı yeniden uygula.
+                // Geri alma para EKLER — negatif kontrolü gerekmez.
+                foreach (var entry in ex.Entries)
+                    await entry.ReloadAsync(ct);
+                balance.Balance += reverseAmount;
+                balance.UpdatedAt = DateTimeOffset.UtcNow;
+            }
+            catch (DbUpdateException ex) when (IsDuplicateReversal(ex))
+            {
+                // N01: eşzamanlı ikinci reverse yarışı kaybetti; transaction
+                // geri alındı, bakiyeye hiçbir şey yazılmadı.
+                _db.ChangeTracker.Clear();
+                return Problem(title: "already-reversed", statusCode: 409);
+            }
+        }
+    }
+
+    /// <summary>N01 hakemi (PanelCustomerBalanceController'daki ile aynı):
+    /// 2601/2627 = unique ihlali; index adı filtresi, başka unique yarışlarının
+    /// aynı koda karışmasını önler.</summary>
+    private static bool IsDuplicateReversal(DbUpdateException ex) =>
+        ex.InnerException is Microsoft.Data.SqlClient.SqlException sql
+        && sql.Number is 2601 or 2627
+        && sql.Message.Contains("ReversesTransactionId", StringComparison.Ordinal);
 
     private async Task<bool> OwnsLicenseAsync(Guid licenseId, CancellationToken ct)
     {

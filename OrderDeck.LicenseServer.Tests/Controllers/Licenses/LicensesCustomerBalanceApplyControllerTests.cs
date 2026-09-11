@@ -246,4 +246,209 @@ public class LicensesCustomerBalanceApplyControllerTests : IClassFixture<ApiFact
 
         resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
+
+    // ── A11: idempotency anahtarı + İÇERİK sözleşmesi ───────────────────────
+    // Replay yalnız istek İLK isteğin aynısıysa meşru. Farklı müşteri/toplam
+    // ile gelen aynı anahtar bir istemci hatasıdır; ilk sonucu oynatmak yanlış
+    // satışa düşüm bağlar. 409 content-conflict + SIFIR yan etki.
+
+    [Fact]
+    public async Task Apply_same_key_different_product_total_returns_content_conflict()
+    {
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        var key = Guid.NewGuid();
+
+        var ilk = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = 100m, ProductTotal = 2100m, IdempotencyKey = key });
+        ilk.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var ikinci = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = 100m, ProductTotal = 999m, IdempotencyKey = key });
+        ikinci.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var problem = await ikinci.Content.ReadFromJsonAsync<ProblemDetailsLite>();
+        problem!.Title.Should().Be("content-conflict");
+
+        // Yan etki yok: bakiye ilk düşümden sonraki değerde kalmalı.
+        var preview = await client.GetFromJsonAsync<PreviewResponse>(
+            $"/api/v1/licenses/{licenseId}/customer-balance/preview?wpfCustomerId={wpfCustomerId}");
+        preview!.Balance.Should().Be(400m);
+    }
+
+    [Fact]
+    public async Task Apply_same_key_different_customer_returns_content_conflict()
+    {
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        var key = Guid.NewGuid();
+
+        await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = 100m, ProductTotal = 2100m, IdempotencyKey = key });
+
+        var ikinci = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = Guid.NewGuid(), Amount = 100m, ProductTotal = 2100m, IdempotencyKey = key });
+        ikinci.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var problem = await ikinci.Content.ReadFromJsonAsync<ProblemDetailsLite>();
+        problem!.Title.Should().Be("content-conflict");
+    }
+
+    [Fact]
+    public async Task Apply_same_key_larger_amount_still_replays()
+    {
+        // Toleranslı yön: replay Amount >= ilk düşüm olduğu sürece meşru —
+        // istemci replay'de Amount=ProductTotal gönderir (sunucu zaten kırpar).
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(100m);
+        var key = Guid.NewGuid();
+
+        var ilk = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = 100m, ProductTotal = 2100m, IdempotencyKey = key });
+        var ilkBody = await ilk.Content.ReadFromJsonAsync<ApplyResponse>();
+
+        var ikinci = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = 2100m, ProductTotal = 2100m, IdempotencyKey = key });
+        ikinci.StatusCode.Should().Be(HttpStatusCode.OK);
+        var ikinciBody = await ikinci.Content.ReadFromJsonAsync<ApplyResponse>();
+        ikinciBody!.AppliedAmount.Should().Be(ilkBody!.AppliedAmount);
+    }
+
+    [Fact]
+    public async Task Apply_same_key_smaller_amount_than_deducted_returns_content_conflict()
+    {
+        // A11 — üçüncü koşul: depolanan düşüm (-tx.Amount) yeni isteğin
+        // yetkilendirdiği miktardan (req.Amount) büyükse çelişki. İlk çağrı
+        // 150m bakiyeden 150m düşürür; replay'de Amount=50m geliyor — oynatmak
+        // istemcinin onaylamadığı bir düşümü kabul etmek olur.
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(200m);
+        var key = Guid.NewGuid();
+
+        var ilk = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = 150m, ProductTotal = 2100m, IdempotencyKey = key });
+        ilk.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Replay: aynı anahtar + aynı müşteri + aynı ProductTotal, ama Amount
+        // gerçekte düşülen tutardan (150m) daha küçük → content-conflict.
+        var ikinci = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = 50m, ProductTotal = 2100m, IdempotencyKey = key });
+        ikinci.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var problem = await ikinci.Content.ReadFromJsonAsync<ProblemDetailsLite>();
+        problem!.Title.Should().Be("content-conflict");
+
+        // Yan etki yok: bakiye ilk düşümden sonraki değerde kalmalı.
+        var preview = await client.GetFromJsonAsync<PreviewResponse>(
+            $"/api/v1/licenses/{licenseId}/customer-balance/preview?wpfCustomerId={wpfCustomerId}");
+        preview!.Balance.Should().Be(50m);
+    }
+
+    private sealed record ProblemDetailsLite(string? Title, string? Detail, int? Status);
+
+    // ── Reverse (revizyon akışının sunucu yarısı) ───────────────────────────
+    // WPF, aynı yayında toplam değişince eski düşümü geri alıp yeni toplamla
+    // taze düşüm yapar (spec K2). Bu uç panel'deki reverse'in WPF-yüzeyi
+    // ikizidir: yalnız kendi lisansının purchase-deduction satırını geri
+    // alabilir, hakem N01 filtered-unique index'tir.
+
+    private async Task<Guid> ApplyAndGetTransactionIdAsync(
+        HttpClient client, Guid licenseId, Guid wpfCustomerId, decimal amount, decimal productTotal)
+    {
+        var key = Guid.NewGuid();
+        var resp = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = amount, ProductTotal = productTotal, IdempotencyKey = key });
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadFromJsonAsync<ApplyResponse>();
+        return body!.TransactionId;
+    }
+
+    [Fact]
+    public async Task Reverse_restores_balance_and_writes_reversal_row()
+    {
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        var txId = await ApplyAndGetTransactionIdAsync(client, licenseId, wpfCustomerId, 100m, 2100m);
+
+        var resp = await client.PostAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/transactions/{txId}/reverse", null);
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var preview = await client.GetFromJsonAsync<PreviewResponse>(
+            $"/api/v1/licenses/{licenseId}/customer-balance/preview?wpfCustomerId={wpfCustomerId}");
+        preview!.Balance.Should().Be(500m); // düşüm geri geldi
+
+        // Tam olarak BİR reversal satırı yazılmalı — birden fazla geri alma
+        // ledger'ı ve bakiyeyi bozar (Apply_same_key_twice_deducts_once'taki
+        // sayım kalıbını yansıtır).
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        db.CustomerBalanceTransactions
+            .Count(t => t.LicenseId == licenseId && t.ReversesTransactionId == txId)
+            .Should().Be(1, "aynı hareket için tam olarak bir geri alma satırı yazılmalı");
+    }
+
+    [Fact]
+    public async Task Reverse_second_call_returns_already_reversed()
+    {
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        var txId = await ApplyAndGetTransactionIdAsync(client, licenseId, wpfCustomerId, 100m, 2100m);
+
+        await client.PostAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/transactions/{txId}/reverse", null);
+        var ikinci = await client.PostAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/transactions/{txId}/reverse", null);
+
+        ikinci.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var problem = await ikinci.Content.ReadFromJsonAsync<ProblemDetailsLite>();
+        problem!.Title.Should().Be("already-reversed");
+
+        var preview = await client.GetFromJsonAsync<PreviewResponse>(
+            $"/api/v1/licenses/{licenseId}/customer-balance/preview?wpfCustomerId={wpfCustomerId}");
+        preview!.Balance.Should().Be(500m); // ikinci geri alma para EKLEMEDİ
+    }
+
+    [Fact]
+    public async Task Reverse_unknown_transaction_returns_404()
+    {
+        var (client, licenseId, _) = await SetupWithBalanceAsync(500m);
+        var resp = await client.PostAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/transactions/{Guid.NewGuid()}/reverse", null);
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task Reverse_non_deduction_transaction_returns_404()
+    {
+        // Seed'deki refund-full satırı bu ucun kapsamı dışında — müşteri yüzeyi
+        // yalnız KENDİ purchase-deduction'ını geri alabilir.
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        Guid refundTxId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            refundTxId = db.CustomerBalanceTransactions
+                .Where(t => t.LicenseId == licenseId && t.WpfCustomerId == wpfCustomerId
+                    && t.Kind == "refund-full")
+                .Select(t => t.Id)
+                .Single();
+        }
+
+        var resp = await client.PostAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/transactions/{refundTxId}/reverse", null);
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task Reverse_foreign_license_returns_404()
+    {
+        var (clientA, licenseA, wpfCustomerA) = await SetupWithBalanceAsync(500m);
+        var txId = await ApplyAndGetTransactionIdAsync(clientA, licenseA, wpfCustomerA, 100m, 2100m);
+
+        var (clientB, licenseB, _) = await SetupWithBalanceAsync(100m);
+        var resp = await clientB.PostAsync(
+            $"/api/v1/licenses/{licenseB}/customer-balance/transactions/{txId}/reverse", null);
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
 }

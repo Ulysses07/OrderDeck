@@ -190,6 +190,117 @@ public sealed class CustomerBalanceConcurrencyTests : IAsyncLifetime
         balance.Should().Be(ledgerSum, "invariant: Balance = SUM(ledger)");
     }
 
+    [Fact]
+    public async Task WPF_ucunda_ayni_hareket_esazamanli_yalnizca_bir_kez_reverse_edilebilir()
+    {
+        // N01 — licenses-surface (WPF ucu) için kapsam doğrulaması.
+        // Panel yüzeyi aynı unique index'e güveniyor; bu test WPF endpoint'inin
+        // IsDuplicateReversal catch dalını da kapsar — InMemory index'i
+        // uygulamadığından sıralı "ikinci çağrı" testi bu dalı asla yürütmez.
+        //
+        // +100 refund-full başlangıç, -60 purchase-deduction → bakiye 40.
+        // 8 paralel Reverse → yalnız biri kazanır, 7'si 409 already-reversed alır.
+        var (_, customerId, jwt) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
+
+        Guid licenseId, wpfCustomerId, deductionId;
+        using (var seedScope = _factory.Services.CreateScope())
+        {
+            var db = seedScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            licenseId = Guid.NewGuid();
+            db.Licenses.Add(new License
+            {
+                Id = licenseId,
+                LicenseKey = "wrev-" + Guid.NewGuid().ToString("N"),
+                CustomerId = customerId,
+                SkuCode = "STD",
+                ActivationSlots = 1,
+                IssuedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
+            });
+            wpfCustomerId = Guid.NewGuid();
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = wpfCustomerId,
+                LicenseId = licenseId,
+                Platform = "youtube",
+                Username = "u" + wpfCustomerId.ToString("N")[..6],
+                UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            db.CustomerBalances.Add(new CustomerBalance
+            {
+                Id = Guid.NewGuid(),
+                LicenseId = licenseId,
+                WpfCustomerId = wpfCustomerId,
+                Balance = 40m,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            var now = DateTimeOffset.UtcNow;
+            db.CustomerBalanceTransactions.Add(new CustomerBalanceTransaction
+            {
+                Id = Guid.NewGuid(),
+                LicenseId = licenseId,
+                WpfCustomerId = wpfCustomerId,
+                Amount = 100m,
+                Kind = "refund-full",
+                CreatedByCustomerId = customerId,
+                CreatedAt = now.AddMinutes(-2),
+            });
+            deductionId = Guid.NewGuid();
+            db.CustomerBalanceTransactions.Add(new CustomerBalanceTransaction
+            {
+                Id = deductionId,
+                LicenseId = licenseId,
+                WpfCustomerId = wpfCustomerId,
+                Amount = -60m,
+                Kind = "purchase-deduction",
+                CreatedByCustomerId = customerId,
+                CreatedAt = now.AddMinutes(-1),
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var clients = BuildClients(jwt);
+        var reverseUrl = $"/api/v1/licenses/{licenseId}/customer-balance/transactions/{deductionId}/reverse";
+
+        // Isınma: rota + EF JIT (var olmayan hareket → 404).
+        await Task.WhenAll(clients.Select(c => c.PostAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/transactions/{Guid.NewGuid()}/reverse",
+            content: null)));
+
+        // 8 paralel Reverse — IsDuplicateReversal catch dalı burada yürütülür.
+        // Kaybeden retry tükenmesinde TestServer istisna fırlatır; prod'da 500.
+        var responses = await Task.WhenAll(clients.Select(async c =>
+        {
+            try
+            {
+                var r = await c.PostAsync(reverseUrl, content: null);
+                return r.StatusCode;
+            }
+            catch (Exception)
+            {
+                return HttpStatusCode.InternalServerError;
+            }
+        }));
+
+        responses.Count(s => s == HttpStatusCode.OK).Should().Be(1,
+            "aynı WPF hareketi için N eşzamanlı reverse'ten yalnızca biri kazanmalı");
+        responses.Count(s => s == HttpStatusCode.Conflict)
+            .Should().Be(ParallelAttempts - 1,
+                "kaybedenler already-reversed (409) almalı — 500 alıyorsa IsDuplicateReversal eşleşmiyor");
+
+        using var verifyScope = _factory.Services.CreateScope();
+        var vdb = verifyScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var reversals = await vdb.CustomerBalanceTransactions
+            .Where(t => t.ReversesTransactionId == deductionId)
+            .ToListAsync();
+        reversals.Should().HaveCount(1, "iş kuralı: her özgün hareket en fazla bir kez geri alınır");
+        reversals[0].Amount.Should().Be(60m);
+
+        var (balance, ledgerSum, _) = await ReadStateAsync(licenseId, wpfCustomerId);
+        balance.Should().Be(100m, "tek geri alma sonrası 40 + 60 = 100 olmalı (çift reversal'da 160 olurdu)");
+        balance.Should().Be(ledgerSum, "invariant: Balance = SUM(ledger)");
+    }
+
     private HttpClient[] BuildClients(string jwt) =>
         Enumerable.Range(0, ParallelAttempts)
             .Select(_ =>
