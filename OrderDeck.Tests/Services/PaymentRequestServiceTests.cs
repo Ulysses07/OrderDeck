@@ -63,11 +63,16 @@ public class PaymentRequestServiceTests : IDisposable
 
     /// <summary>Cloud API yolunu sürebilmek için uçlara cevap veren handler:
     /// /api/v1/me/licenses (lisans id çözümü), .../whatsapp/send (gönderim) ve
-    /// .../customer-balance/{preview,apply} (bakiye düşümü). Diğer her şey 404.</summary>
+    /// .../customer-balance/{preview,apply,transactions/{id}/reverse} (bakiye işlemleri).
+    /// Diğer her şey 404.</summary>
     private sealed class WhatsAppStubHandler : HttpMessageHandler
     {
         public static readonly Guid LicenseId = Guid.Parse("11111111-2222-3333-4444-555555555555");
         public const string LicenseKey = "LDK-TEST-KEY";
+
+        // A9 paralel testi SentBodies/AppliedBalanceBodies/ReverseCalls'u eşzamanlı
+        // yazar; ham List<T> thread-safe değil — tüm yazımlar bu kilit altında.
+        private readonly object _sync = new();
 
         public List<string> SentBodies { get; } = new();
 
@@ -92,6 +97,17 @@ public class PaymentRequestServiceTests : IDisposable
         /// sınamak için türetilmemiş temel tipi kullanıyoruz.)</summary>
         public bool ThrowTimeoutOnSend { get; set; }
 
+        /// <summary>Apply çağrısı bu problem title'ı ile 409 dönsün (null = normal).</summary>
+        public string? ApplyProblemTitle { get; set; }
+        /// <summary>Apply çağrısı ağ hatası fırlatsın (gövde YİNE kaydedilir — istek tele çıktı).</summary>
+        public bool ThrowTimeoutOnApply { get; set; }
+        /// <summary>Reverse çağrılarında yakalanan transactionId'ler.</summary>
+        public List<Guid> ReverseCalls { get; } = new();
+        public string? ReverseProblemTitle { get; set; }
+        public bool ThrowTimeoutOnReverse { get; set; }
+        /// <summary>A9: preview cevabından önce beklenir (yarış rendezvous'u).</summary>
+        public Func<Task>? OnPreviewAsync { get; set; }
+
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -109,12 +125,14 @@ public class PaymentRequestServiceTests : IDisposable
             if (path.EndsWith("/whatsapp/send", StringComparison.Ordinal))
             {
                 if (ThrowTimeoutOnSend) throw new OperationCanceledException("timeout");
-                SentBodies.Add(await request.Content!.ReadAsStringAsync(cancellationToken));
+                var body = await request.Content!.ReadAsStringAsync(cancellationToken);
+                lock (_sync) SentBodies.Add(body);
                 return Json(SendResponseJson, SendStatusCode);
             }
 
             if (path.EndsWith("/customer-balance/preview", StringComparison.Ordinal))
             {
+                if (OnPreviewAsync is not null) await OnPreviewAsync();
                 return Json($$"""
                     {"wpfCustomerId":"{{Guid.Empty}}","balance":{{PreviewBalance.ToString(System.Globalization.CultureInfo.InvariantCulture)}},
                      "updatedAt":"2030-01-01T00:00:00+00:00"}
@@ -123,11 +141,29 @@ public class PaymentRequestServiceTests : IDisposable
 
             if (path.EndsWith("/customer-balance/apply", StringComparison.Ordinal))
             {
-                AppliedBalanceBodies.Add(await request.Content!.ReadAsStringAsync(cancellationToken));
+                // Gövde ÖNCE kaydedilir — zaman aşımı simülasyonunda bile istek tele çıktı sayılır.
+                var body = await request.Content!.ReadAsStringAsync(cancellationToken);
+                lock (_sync) AppliedBalanceBodies.Add(body);
+                if (ThrowTimeoutOnApply) throw new TaskCanceledException("stub timeout");
+                if (ApplyProblemTitle is not null) return Problem(ApplyProblemTitle);
                 return Json($$"""
                     {"transactionId":"{{Guid.NewGuid()}}","appliedAmount":{{PreviewBalance.ToString(System.Globalization.CultureInfo.InvariantCulture)}},
                      "remainingBalance":0}
                     """);
+            }
+
+            // /customer-balance/transactions/{id}/reverse
+            if (path.Contains("/customer-balance/transactions/", StringComparison.Ordinal)
+                && path.EndsWith("/reverse", StringComparison.Ordinal))
+            {
+                // URL'den Guid'i ayıkla: .../transactions/{guid}/reverse
+                var segments = path.Split('/');
+                var guidSegment = segments[^2]; // "reverse"'den önceki segment
+                var transactionId = Guid.Parse(guidSegment);
+                lock (_sync) ReverseCalls.Add(transactionId);
+                if (ThrowTimeoutOnReverse) throw new TaskCanceledException("stub timeout");
+                if (ReverseProblemTitle is not null) return Problem(ReverseProblemTitle);
+                return Json("{}");
             }
 
             return new HttpResponseMessage(HttpStatusCode.NotFound);
@@ -138,6 +174,13 @@ public class PaymentRequestServiceTests : IDisposable
             {
                 Content = new StringContent(body, Encoding.UTF8, "application/json")
             };
+
+        private static HttpResponseMessage Problem(string title) => new((HttpStatusCode)409)
+        {
+            Content = new StringContent(
+                $"{{\"title\":\"{title}\",\"status\":409}}",
+                Encoding.UTF8, "application/problem+json"),
+        };
     }
 
     private sealed class FixedLicenseProvider : ICurrentLicenseProvider
