@@ -844,6 +844,12 @@ public class PaymentRequestServiceTests : IDisposable
         job.ProductTotal.Should().Be(300m);
         job.Revision.Should().Be(1);
         job.State.Should().Be(PaymentJobState.Applied);
+
+        // Revizyonun asıl çıktısı müşterinin gördüğü rakam: 300 − 100 = 200.
+        // İş satırı doğru olup mesajın eski tutarı taşıması sessiz bir para hatasıdır.
+        _launcher.LaunchedUrls.Should().HaveCount(2);
+        _launcher.LaunchedUrls[0].Should().Contain("150%2C00");
+        _launcher.LaunchedUrls[1].Should().Contain("200%2C00");
     }
 
     [Fact] // A7 — geri alma belirsizse revizyon İLERLEMEZ
