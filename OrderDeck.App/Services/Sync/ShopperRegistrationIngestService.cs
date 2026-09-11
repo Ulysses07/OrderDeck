@@ -122,7 +122,13 @@ public sealed class ShopperRegistrationIngestService
             // sayfaladığı sıra. Saniyeye yuvarlanmıyor: yuvarlama, aynı saniyeyi
             // paylaşan satırlarla sayfa dolduğunda imleci başladığı yere
             // döndürüp ilerlemeyi büsbütün durduruyordu.
-            var last = items.OrderBy(i => i.UpdatedAt).ThenBy(i => i.Id).Last();
+            // R3-01: imleç sunucunun teslim ettiği SON satırdan okunur — yeniden
+            // SIRALAMA YOK. Sunucu SQL Server'ın uniqueidentifier sırasıyla
+            // sayfalıyor; .NET Guid.CompareTo farklı bir sıra üretir (SQL
+            // karşılaştırmaya son 6 bayttan başlar). İstemci kendi sırasına göre
+            // "son"u seçerse imleç sunucu sayfa sınırının gerisinde kalır ve
+            // aynı satırlar tekrar iner.
+            var last = items[^1];
             // N04: Update ile atomik birleştirme — bu metodun başında yüklenen
             // kopya HTTP çağrısı boyunca bayatlamış olabilir; bütün-nesne Save
             // başka bileşenin o arada yazdığı alanı ezerdi.

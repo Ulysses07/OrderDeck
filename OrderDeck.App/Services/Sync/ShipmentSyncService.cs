@@ -132,9 +132,12 @@ public sealed class ShipmentSyncService
         if (rows.Count == 0) return 0;
 
         // Server'dan gelen satırlar apply EDİLMİYOR (WPF authoritative; status
-        // conflict riski) — yalnız imleç ilerliyor. İmleç (UpdatedAt, Id) çifti;
-        // sunucu da bu sıraya göre sayfalıyor.
-        var last = rows.OrderBy(d => d.UpdatedAt).ThenBy(d => d.Id).Last();
+        // conflict riski) — yalnız imleç ilerliyor.
+        // R3-01: imleç sunucunun teslim ettiği SON satırdan okunur — yeniden
+        // SIRALAMA YOK. Sunucu SQL uniqueidentifier sırasıyla sayfalıyor; .NET
+        // Guid sırası farklı, istemci "son"u kendisi seçerse imleç sunucu sayfa
+        // sınırının gerisinde kalır ve aynı satırlar tekrar iner.
+        var last = rows[^1];
         // N04: bellekteki kopya güncel kalsın (imleç okuması buradan); diske
         // Update ile atomik birleştirme.
         _settings.LastShipmentReverseSync = last.UpdatedAt;

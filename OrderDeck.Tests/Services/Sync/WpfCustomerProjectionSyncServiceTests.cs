@@ -275,6 +275,60 @@ public sealed class WpfCustomerProjectionSyncServiceTests
             "watermark bozuk satırın ÖTESİNE geçmeli, yoksa kilit ertesi turda geri gelir");
     }
 
+    /// <summary>
+    /// R3-02: Sunucuya giden <c>fullName</c> alanı, müşterinin GERÇEK adı
+    /// (Customer.FullName) olmalı — platform takma adı (DisplayName) değil.
+    /// Eski kod ":no separate FullName field" varsayımıyla DisplayName
+    /// gönderiyordu; alan intake formuyla geldi, yorum bayatladı. FullName
+    /// boşsa DisplayName'e düşülür (projection'da ad hiç boş kalmasın).
+    /// </summary>
+    [Fact]
+    public async Task SyncOnce_fullName_gercek_adi_tasir_displayName_degil()
+    {
+        List<(string Username, string? FullName)>? captured = null;
+        var fx = Build(req =>
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (path == "/api/v1/me/licenses")
+                return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/wpf-customers/sync"))
+            {
+                var body = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+                var doc  = JsonDocument.Parse(body);
+                captured = doc.RootElement.GetProperty("customers")
+                    .EnumerateArray()
+                    .Select(e => (
+                        e.GetProperty("username").GetString()!,
+                        e.GetProperty("fullName").GetString()))
+                    .ToList();
+                return FakeHttpMessageHandler.Json(200, SyncRespJson(synced: captured.Count));
+            }
+            return FakeHttpMessageHandler.Empty(404);
+        });
+        using var _d = fx.Db;
+
+        // Gerçek adı OLAN müşteri: fullName = FullName olmalı.
+        fx.Customers.Insert(MakeCustomer(100L, username: "takma_ad") with
+        {
+            DisplayName = "yayinci_takma_ad",
+            FullName    = "Ayşe Yılmaz",
+        });
+        // Gerçek adı OLMAYAN müşteri: DisplayName'e düşmeli.
+        fx.Customers.Insert(MakeCustomer(200L, username: "sadece_takma") with
+        {
+            DisplayName = "Sadece Takma",
+            FullName    = null,
+        });
+
+        await fx.Svc.SyncOnceAsync(CancellationToken.None);
+
+        captured.Should().NotBeNull();
+        captured!.Single(c => c.Username == "takma_ad").FullName
+            .Should().Be("Ayşe Yılmaz", "gerçek ad varken takma ad gönderilmemeli");
+        captured.Single(c => c.Username == "sadece_takma").FullName
+            .Should().Be("Sadece Takma", "gerçek ad yoksa görünen ada düşülür");
+    }
+
     [Fact]
     public async Task SyncOnce_api_failure_does_not_advance_watermark()
     {

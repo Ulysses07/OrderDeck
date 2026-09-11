@@ -448,6 +448,39 @@ public sealed class ShopperRegistrationIngestServiceTests
             "bu bilgisayarda hiç bulunmayan kişi için adı '[Silindi]' olan sahte bir kart açılmamalı");
     }
 
+    // ── R3-01: imleç sunucunun teslim sırasından, yeniden sıralama YOK ────────
+
+    [Fact]
+    public async Task IngestOnce_imlec_sunucunun_teslim_ettigi_son_satirdan_okunur()
+    {
+        // node baytları SQL sırasını belirler: ...0001 < ...0002 (SQL),
+        // ama .NET sırasında 00000000-... < ffffffff-...
+        var sqlSmall = Guid.Parse("ffffffff-ffff-ffff-ffff-000000000001"); // SQL: küçük, .NET: büyük
+        var sqlBig   = Guid.Parse("00000000-0000-0000-0000-000000000002"); // SQL: büyük, .NET: küçük
+        var updatedAt = DateTimeOffset.UtcNow;
+
+        var fx = Build(req =>
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (path == "/api/v1/me/licenses")
+                return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/wpf-customers/since"))
+                // Sunucunun teslim sırası (SQL uniqueidentifier): sqlSmall, sqlBig.
+                // Aynı UpdatedAt — sayfa sınırı tam bu eşitlik kümesinde kesildi.
+                return FakeHttpMessageHandler.Json(200, PullJson(
+                    (sqlSmall, "tiktok", "u1", "Bir", null, null, updatedAt),
+                    (sqlBig, "tiktok", "u2", "İki", null, null, updatedAt)));
+            return FakeHttpMessageHandler.Empty(404);
+        });
+        using var _d = fx.Db;
+
+        await fx.Svc.IngestOnceAsync(CancellationToken.None);
+
+        fx.Store.Load().LastShopperIngestId.Should().Be(sqlBig,
+            "imleç sunucunun teslim ettiği SON satır olmalı — .NET Guid sırasıyla yeniden seçilirse " +
+            "sunucu sayfa sınırının gerisine düşer ve aynı satırlar tekrar iner");
+    }
+
     // ── since query param is built from watermark ─────────────────────────────
 
     [Fact]

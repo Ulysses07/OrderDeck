@@ -101,9 +101,33 @@ public sealed class IntakeFormSyncServiceTests
         await svc.SyncOnceAsync();
 
         settings.LastIntakeFormSync.Should().Be(new DateTimeOffset(2026, 4, 30, 12, 0, 0, TimeSpan.Zero));
-        // Sıra (SubmittedAt, Id) → son satır büyük olan Id.
+        // R3-01: imleç sunucunun teslim ettiği SON satırın Id'si — istemci
+        // yeniden sıralamaz (sunucu SQL uniqueidentifier sırasıyla sayfalıyor).
         settings.LastIntakeFormSyncId.Should()
-            .Be(Guid.Parse("00000000-0000-0000-0000-0000000000bb"));
+            .Be(Guid.Parse("00000000-0000-0000-0000-0000000000aa"));
+    }
+
+    [Fact]
+    public async Task SyncOnceAsync_imlec_sunucunun_teslim_ettigi_son_satirdan_okunur()
+    {
+        // R3-01: node baytları SQL sırasını belirler: ...0001 < ...0002 (SQL),
+        // ama .NET sırasında 00000000-... < ffffffff-... İstemci yeniden
+        // sıralarsa imleç sunucu sayfa sınırının gerisinde kalır.
+        var sqlSmall = Guid.Parse("ffffffff-ffff-ffff-ffff-000000000001"); // SQL: küçük, .NET: büyük
+        var sqlBig   = Guid.Parse("00000000-0000-0000-0000-000000000002"); // SQL: büyük, .NET: küçük
+
+        // Sunucunun teslim sırası (SQL uniqueidentifier): sqlSmall, sqlBig.
+        var (svc, _, settings, _) = Build(_ => FakeHttpMessageHandler.Json(200,
+            $$"""
+            [{"id":"{{sqlSmall}}","username":"u1","fullName":"Bir","address":"a","submittedAt":"2026-04-30T12:00:00Z"},
+             {"id":"{{sqlBig}}","username":"u2","fullName":"İki","address":"a","submittedAt":"2026-04-30T12:00:00Z"}]
+            """));
+
+        await svc.SyncOnceAsync();
+
+        settings.LastIntakeFormSyncId.Should().Be(sqlBig,
+            "imleç sunucunun teslim ettiği SON satır olmalı — .NET Guid sırasıyla yeniden seçilirse " +
+            "aynı satırlar tekrar iner");
     }
 
     [Fact]

@@ -81,6 +81,62 @@ public class CustomerSearchViewModelTests
         finally { if (File.Exists(path)) File.Delete(path); }
     }
 
+    // R3-03: Arama önce Search(limit:50) çekip SONRA platform süzgecini
+    // uyguluyordu — süzgece uyan kayıt ilk 50 genel eşleşmenin dışındaysa
+    // sonuç YANLIŞ olarak boş dönüyordu. Süzgeç limit'ten ÖNCE çalışmalı.
+    [Fact]
+    public void Search_PlatformFilter_LimitinDisindakiEslesmeyiBulur()
+    {
+        var (db, customers, _, _, _, _, path, sut) = Setup();
+        try
+        {
+            using var _db = db;
+            // 50 tiktok kaydı sorguya uyuyor ve hepsi daha yeni (LastSeenAt
+            // yüksek) → genel eşleşmenin ilk 50'sini dolduruyorlar.
+            for (var i = 0; i < 50; i++)
+            {
+                customers.Insert(new Customer($"t{i:D2}", "tiktok", $"elma{i:D2}", null, null,
+                    1000 + i, 1000 + i, false, null, null, 0, 0m, null, null, null));
+            }
+            // Aranan kayıt: youtube'da, daha eski → ilk 50'nin dışında.
+            customers.Insert(new Customer("y1", "youtube", "elma_gercek", "Elma Gerçek", null,
+                10, 10, false, null, null, 0, 0m, null, null, "+905551111111"));
+
+            sut.PlatformFilter = "youtube";
+            sut.Query = "elma";
+
+            sut.Results.Should().ContainSingle()
+                .Which.Primary.Username.Should().Be("elma_gercek");
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void Search_RegisteredOnly_LimitinDisindakiKayitliMusteriyiBulur()
+    {
+        var (db, customers, _, _, _, _, path, sut) = Setup();
+        try
+        {
+            using var _db = db;
+            // 50 telefonsuz kayıt sorguya uyuyor ve daha yeni.
+            for (var i = 0; i < 50; i++)
+            {
+                customers.Insert(new Customer($"t{i:D2}", "tiktok", $"elma{i:D2}", null, null,
+                    1000 + i, 1000 + i, false, null, null, 0, 0m, null, null, null));
+            }
+            // Tek kayıtlı (telefonlu) müşteri en eski → ilk 50'nin dışında.
+            customers.Insert(new Customer("y1", "youtube", "elma_gercek", "Elma Gerçek", null,
+                10, 10, false, null, null, 0, 0m, null, null, "+905551111111"));
+
+            sut.RegisteredOnly = true;
+            sut.Query = "elma";
+
+            sut.Results.Should().ContainSingle()
+                .Which.Primary.Username.Should().Be("elma_gercek");
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
     [Fact]
     public async Task OpenWhatsApp_PhoneRequired_ShowsDialogThenRetries()
     {
