@@ -35,8 +35,24 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
 
     partial void OnNewThisSessionCountChanged(int value) => HasNewThisSession = value > 0;
 
+    /// <summary>Arama sonucu üst sınırı.</summary>
+    private const int SearchLimit = 50;
+
+    /// <summary>Arama kutusu boşken gösterilen "en yeniler" listesinin üst sınırı.
+    /// Sınırsız liste tüm Customer tablosunu belleğe alıyordu (R3-04).</summary>
+    private const int RecentLimit = 500;
+
     /// <summary>Görünen sonuç sayısı (aktif filtreye göre).</summary>
     public int ResultCount => Results.Count;
+
+    private bool _resultsTruncated;
+
+    /// <summary>Liste altındaki bilgi satırı. Sonuç sınıra dayandıysa bunu
+    /// AÇIKÇA yazar — sessizce eksik liste göstermek, operatörün "yok" sandığı
+    /// bir kaydın aslında listenin dışında kalması demek olurdu.</summary>
+    public string ResultSummary => _resultsTruncated
+        ? $"{ResultCount} sonuç gösteriliyor (en yeniler) — daha eskisi için arayın"
+        : $"{ResultCount} sonuç";
 
     /// <summary>Platform süzgeci seçenekleri (UI ComboBox). Value boş = tümü.
     /// Not: form kayıtları artık gerçek platform satırları (Platform="form" yok);
@@ -117,6 +133,7 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
         RegisteredCount = _customers.CountRegistered();
         ApplySearch(Query);
         OnPropertyChanged(nameof(ResultCount));
+        OnPropertyChanged(nameof(ResultSummary));
     }
 
     private void ApplySearch(string value)
@@ -124,6 +141,7 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
         Results.Clear();
         SelectedCards.Clear();
         _streamAmounts.Clear();
+        _resultsTruncated = false;
 
         if (LastStreamShoppersOnly)
         {
@@ -154,33 +172,26 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
             return;
         }
 
-        // Empty query: show all customers so the operator can discover
-        // newly-registered shoppers (e.g. via the shopper app) who don't
-        // yet have any orders. Previously this returned nothing, leaving
-        // registered customers invisible until someone typed.
+        // Boş sorgu: operatör henüz siparişi olmayan yeni kayıtları (shopper
+        // app'ten gelenler) görebilsin diye varsayılan liste gösterilir —
+        // eskiden burası boş dönüyordu ve kayıtlı müşteri biri yazana kadar
+        // görünmezdi.
         //
-        // R3-03: platform/kayıtlı süzgeçleri Search'e predicate olarak geçer
-        // — limit'ten SONRA dışarıda süzmek, süzgece uyan ama ilk 50 genel
-        // eşleşmenin dışındaki kaydı yanlış boş sonuçla kaybediyordu.
-        // Boş-sorgu yolunda limit yok, süzgeç dışarıda kalabilir.
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            IEnumerable<Customer> f = _customers.GetAll();
-            if (!string.IsNullOrEmpty(PlatformFilter))
-                f = f.Where(c => c.Platform == PlatformFilter);
-            if (RegisteredOnly)
-                f = f.Where(c => !string.IsNullOrWhiteSpace(c.Phone));
-            foreach (var card in BuildCards(f)) Results.Add(card);
-            return;
-        }
+        // R3-04: liste EN YENİ RecentLimit satırla sınırlı. Sınırsız hâli tüm
+        // tabloyu belleğe alıyordu; sıralama zaten LastSeenAt DESC olduğu için
+        // sınır listenin amacını bozmaz, daha eskisi arama kutusunun işi.
+        // Kesildiğinde ResultSummary bunu açıkça yazar.
+        //
+        // R3-03: platform/kayıtlı süzgeçleri her iki yolda da SQL'in İÇİNDE,
+        // limit'ten ÖNCE uygulanır — limit'ten sonra dışarıda süzmek, süzgece
+        // uyan ama ilk N genel satırın dışındaki kaydı yanlış boş sonuçla
+        // kaybediyordu.
+        var rows = string.IsNullOrWhiteSpace(value)
+            ? _customers.GetRecent(RecentLimit, PlatformFilter, RegisteredOnly)
+            : _customers.Search(value.Trim(), SearchLimit, PlatformFilter, RegisteredOnly);
 
-        var platform = PlatformFilter;
-        var registeredOnly = RegisteredOnly;
-        var results = _customers.Search(value.Trim(), limit: 50,
-            filter: c =>
-                (string.IsNullOrEmpty(platform) || c.Platform == platform)
-                && (!registeredOnly || !string.IsNullOrWhiteSpace(c.Phone)));
-        foreach (var card in BuildCards(results)) Results.Add(card);
+        _resultsTruncated = rows.Count >= (string.IsNullOrWhiteSpace(value) ? RecentLimit : SearchLimit);
+        foreach (var card in BuildCards(rows)) Results.Add(card);
     }
 
     /// <summary>Müşteri satırlarını GroupId'ye göre tek karta toplar. GroupId null

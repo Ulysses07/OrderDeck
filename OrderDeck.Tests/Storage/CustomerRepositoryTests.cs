@@ -530,7 +530,7 @@ public class CustomerRepositoryTests
             "Sibel Yılmaz", "İzmir", "+905551112233", null, null, true, false, 5000);
 
         // AYRI satır AÇILMAMALI — mevcut satır güncellenmeli (geçmiş korunur).
-        var all = repo.GetAll().Where(c => c.Platform == "instagram").ToList();
+        var all = repo.GetRecent(1000).Where(c => c.Platform == "instagram").ToList();
         all.Should().HaveCount(1);
         var c = all[0];
         c.Id.Should().Be("shop1");
@@ -555,7 +555,7 @@ public class CustomerRepositoryTests
             "Sibel G", "Ankara", "+905559998877", null, null, false, true, 5000);
 
         // channelId satırına birleşmeli, AYRI (youtube, handle) satırı açılmamalı.
-        var yts = repo.GetAll().Where(c => c.Platform == "youtube").ToList();
+        var yts = repo.GetRecent(1000).Where(c => c.Platform == "youtube").ToList();
         yts.Should().HaveCount(1);
         var c = yts[0];
         c.Id.Should().Be("yt1");

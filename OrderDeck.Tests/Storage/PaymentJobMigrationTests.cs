@@ -89,7 +89,7 @@ public sealed class PaymentJobMigrationTests
         eskiTablo.Should().Be(0);
 
         var version = conn.ExecuteScalar<long>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().Be(34);
+        version.Should().Be(35);
     }
 
     [Fact]

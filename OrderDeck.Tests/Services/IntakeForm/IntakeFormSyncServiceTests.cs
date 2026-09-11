@@ -183,7 +183,7 @@ public sealed class IntakeFormSyncServiceTests
 
         count.Should().Be(1);
         // channelId ile birebir eşleşti → AYRI satır açılmadı, geçmiş korundu.
-        var yts = repo.GetAll().Where(c => c.Platform == "youtube").ToList();
+        var yts = repo.GetRecent(1000).Where(c => c.Platform == "youtube").ToList();
         yts.Should().HaveCount(1);
         yts[0].Id.Should().Be("yt1");
         yts[0].Phone.Should().Be("+905559998877");

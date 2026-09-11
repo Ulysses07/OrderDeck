@@ -25,6 +25,9 @@ public sealed class InMemorySqlite : IDbConnectionFactory, System.IDisposable
     {
         var conn = new SqliteConnection(_connectionString);
         conn.Open();
+        // Üretimdeki SqliteConnectionFactory ile aynı: göç 035 tetikleyicileri
+        // od_search_key/od_phone_key'i çağırıyor.
+        SqliteSearchFunctions.Register(conn);
         return conn;
     }
 
