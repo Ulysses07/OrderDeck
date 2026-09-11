@@ -378,6 +378,15 @@ public class LicensesCustomerBalanceApplyControllerTests : IClassFixture<ApiFact
         var preview = await client.GetFromJsonAsync<PreviewResponse>(
             $"/api/v1/licenses/{licenseId}/customer-balance/preview?wpfCustomerId={wpfCustomerId}");
         preview!.Balance.Should().Be(500m); // düşüm geri geldi
+
+        // Tam olarak BİR reversal satırı yazılmalı — birden fazla geri alma
+        // ledger'ı ve bakiyeyi bozar (Apply_same_key_twice_deducts_once'taki
+        // sayım kalıbını yansıtır).
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        db.CustomerBalanceTransactions
+            .Count(t => t.LicenseId == licenseId && t.ReversesTransactionId == txId)
+            .Should().Be(1, "aynı hareket için tam olarak bir geri alma satırı yazılmalı");
     }
 
     [Fact]
