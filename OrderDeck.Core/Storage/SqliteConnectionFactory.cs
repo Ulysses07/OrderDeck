@@ -57,6 +57,10 @@ public sealed class SqliteConnectionFactory : IDbConnectionFactory
     {
         var conn = new SqliteConnection(_connectionString);
         conn.Open();
+        // Göç 035'in tetikleyicileri od_search_key/od_phone_key'i çağırıyor;
+        // uygulama tanımlı fonksiyonlar bağlantı başına kaydedilir, yani
+        // kaydı unutulan bir bağlantıda Customer'a her yazma patlar.
+        SqliteSearchFunctions.Register(conn);
         EnsureWalMode(conn);
         return conn;
     }

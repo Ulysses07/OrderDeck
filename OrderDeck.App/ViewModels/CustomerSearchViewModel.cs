@@ -159,9 +159,10 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
         // yet have any orders. Previously this returned nothing, leaving
         // registered customers invisible until someone typed.
         //
-        // R3-03: platform/kayıtlı süzgeçleri Search'e predicate olarak geçer
-        // — limit'ten SONRA dışarıda süzmek, süzgece uyan ama ilk 50 genel
-        // eşleşmenin dışındaki kaydı yanlış boş sonuçla kaybediyordu.
+        // R3-03: platform/kayıtlı süzgeçleri Search'e ARGÜMAN olarak geçer ve
+        // SQL'in içinde, limit'ten ÖNCE uygulanır — limit'ten sonra dışarıda
+        // süzmek, süzgece uyan ama ilk 50 genel eşleşmenin dışındaki kaydı
+        // yanlış boş sonuçla kaybediyordu.
         // Boş-sorgu yolunda limit yok, süzgeç dışarıda kalabilir.
         if (string.IsNullOrWhiteSpace(value))
         {
@@ -174,12 +175,8 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
             return;
         }
 
-        var platform = PlatformFilter;
-        var registeredOnly = RegisteredOnly;
         var results = _customers.Search(value.Trim(), limit: 50,
-            filter: c =>
-                (string.IsNullOrEmpty(platform) || c.Platform == platform)
-                && (!registeredOnly || !string.IsNullOrWhiteSpace(c.Phone)));
+            platform: PlatformFilter, registeredOnly: RegisteredOnly);
         foreach (var card in BuildCards(results)) Results.Add(card);
     }
 

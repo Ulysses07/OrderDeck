@@ -7,7 +7,7 @@ namespace OrderDeck.Core.Customers;
 /// kutu iki ayrı yoldan besleniyor: normal arama (repo sorgusu) ve "son
 /// yayında alışveriş yapanlar" süzgeci (bellekteki liste).
 ///
-/// NEDEN AYRI SINIF / NEDEN SQL DEĞİL:
+/// NEDEN AYRI SINIF:
 /// - Arama yalnız <c>Username</c>'e bakıyordu; kartta görünen ad ise
 ///   <c>DisplayName</c>/<c>FullName</c>'den geliyor → operatör ekranda gördüğü
 ///   ismi yazınca sonuç boş dönüyordu.
@@ -15,9 +15,30 @@ namespace OrderDeck.Core.Customers;
 ///   eşleşmez. Ayrıca Türkçe'de i/İ/ı/I ordinal olarak dört ayrı harf.
 /// - Telefonla arama da buradan geçer: iki taraf da rakamlara indirgenmeden
 ///   "0555..." ile kayıttaki "+90555..." eşleşmez.
+///
+/// <para><b>R3-04 (2026-09-12): eşleştirme artık SQL'de koşuyor</b> ama kural
+/// hâlâ BURADA. Çözüm "SQL'e Türkçe öğretmek" değil — katlamayı yazma anında
+/// C#'ta yapıp <c>Customer.SearchKey</c>/<c>PhoneKey</c> kolonlarına koymak
+/// (göç 035). SQL yalnızca önceden katlanmış iki metni <c>INSTR</c> ile
+/// karşılaştırıyor; bu, <c>Contains(..., Ordinal)</c> ile bayt bayt aynı iş.
+/// <see cref="BuildSearchKey"/>/<see cref="NormalizePhoneKey"/> ile
+/// <see cref="Matches"/> aynı <see cref="Fold"/>'u kullandığı için iki yol
+/// ayrışamaz; ayrışmadıklarını CustomerSearchSqlTests rastgele terimlerle
+/// her koşuda yeniden kanıtlıyor.</para>
 /// </summary>
 public static class CustomerSearch
 {
+    /// <summary>Telefon eşleşmesi için gereken en az rakam sayısı. Altında
+    /// arama yüzlerce numarayı getirir, bu yüzden hiç eşleşmez sayılır.</summary>
+    public const int MinPhoneDigits = 4;
+
+    /// <summary>FTS5 <c>trigram</c> belirteçleyicisinin alt sınırı: 3 karakterden
+    /// kısa metni indeksleyemez ve MATCH sorgusu HATA VERMEZ, sessizce BOŞ döner.
+    /// Bu yüzden kısa terimli sorgular indeksi hiç kullanmaz, tarama yoluna
+    /// düşer (bkz. CustomerRepository.Search). Sessiz yanlış-boş sonuç R3-03'ün
+    /// hata sınıfıydı; aynı tuzağa indeksle geri düşmüyoruz.</summary>
+    public const int MinTrigramLength = 3;
+
     /// <summary>Müşteri, arama metnine uyuyor mu? Metin boşlukla ayrılmış
     /// parçalara bölünür ve HEPSİ eşleşmelidir — "delikurt bilal" da
     /// "Bilal Delikurt"u bulur, araya fazladan boşluk kaçması sorun olmaz.
@@ -45,9 +66,21 @@ public static class CustomerSearch
         return true;
     }
 
+    /// <summary>Arama anahtarı: <see cref="Matches"/>'taki "haystack" ile
+    /// BİREBİR aynı metin. <c>Customer.SearchKey</c> kolonuna yazılır (göç 035,
+    /// <c>od_search_key</c> SQL fonksiyonu üzerinden tetikleyiciyle). Biçimi
+    /// değiştirirsen <see cref="Matches"/>'i de değiştirmen gerekir — parite
+    /// testi ikisini birbirine kilitliyor.</summary>
+    public static string BuildSearchKey(string? username, string? displayName, string? fullName) =>
+        $"{Fold(username)} {Fold(displayName)} {Fold(fullName)}";
+
+    /// <summary>Telefon arama anahtarı: <c>Customer.PhoneKey</c> kolonuna yazılır.
+    /// <see cref="Matches"/>'in kayıt tarafında uyguladığı normalizasyonun aynısı.</summary>
+    public static string NormalizePhoneKey(string? phone) => NormalizePhone(phone);
+
     /// <summary>Girdi bir telefon numarası mı? Rakam içeriyor ve rakam dışında
     /// yalnız numara yazımında kullanılan işaretler var demektir.</summary>
-    private static bool IsPhoneQuery(string q) =>
+    public static bool IsPhoneQuery(string q) =>
         q.Any(char.IsAsciiDigit) &&
         q.All(ch => char.IsAsciiDigit(ch) || ch is ' ' or '+' or '-' or '(' or ')' or '/' or '.');
 
@@ -60,7 +93,8 @@ public static class CustomerSearch
     {
         if (normalizedPhone.Length == 0) return false;
         var digits = NormalizePhone(term);
-        return digits.Length >= 4 && normalizedPhone.Contains(digits, StringComparison.Ordinal);
+        return digits.Length >= MinPhoneDigits
+               && normalizedPhone.Contains(digits, StringComparison.Ordinal);
     }
 
     /// <summary>Rakamları süzer, baştaki 90 ülke kodunu ve sıfırları atar
@@ -75,8 +109,14 @@ public static class CustomerSearch
     }
 
     /// <summary>Karşılaştırma anahtarı: Türkçe'nin i ailesi (i/İ/ı/I) tek harfe
-    /// indirilir, kalanı <c>ToLowerInvariant</c> ile küçültülür (ş/ğ/ö/ç/ü dahil).</summary>
-    private static string Fold(string? s) =>
+    /// indirilir, kalanı <c>ToLowerInvariant</c> ile küçültülür (ş/ğ/ö/ç/ü dahil).
+    ///
+    /// <para>Bu SQL'de YAZILAMAZ: SQLite'ın <c>lower()</c>'ı yalnız ASCII'yi
+    /// küçültür, <c>ToLowerInvariant</c> ise tüm Unicode'u. Tetikleyicide
+    /// SQL ifadesiyle taklit etmeye çalışmak "Ş" gibi harflerde sessizce
+    /// ayrışırdı; bu yüzden tetikleyici bu metodu <c>od_search_key</c> olarak
+    /// çağırıyor (bkz. SqliteSearchFunctions).</para></summary>
+    public static string Fold(string? s) =>
         string.IsNullOrEmpty(s)
             ? ""
             : s.Replace('İ', 'i').Replace('I', 'i').Replace('ı', 'i').ToLowerInvariant();

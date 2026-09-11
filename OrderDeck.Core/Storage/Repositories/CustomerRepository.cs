@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using Dapper;
 using OrderDeck.Core.Customers;
 
@@ -331,24 +332,94 @@ public sealed class CustomerRepository
         return rows.Select(Map).ToList();
     }
 
-    /// <summary>Kullanıcı adı VEYA isim araması (Username + DisplayName + FullName),
-    /// LastSeenAt DESC sıralı. Eşleştirme <see cref="CustomerSearch.Matches"/>'ta:
-    /// Türkçe harflere duyarlı olması gerektiği için SQL'de değil bellekte yapılır
-    /// (SQLite <c>LOWER()</c> yalnız ASCII'yi küçültür).
-    /// R3-03: Ek süzgeç (platform/kayıtlı vb.) <paramref name="filter"/> ile
-    /// BURAYA verilmeli — sonuç limit'lendikten SONRA dışarıda süzülürse,
-    /// süzgece uyan ama ilk <paramref name="limit"/> genel eşleşmenin dışında
-    /// kalan kayıt yanlış "boş sonuç" olarak kaybolur.</summary>
+    /// <summary>
+    /// Taze pencere: ilk geçişin baktığı en yeni satır sayısı. Ölçümde (500.000
+    /// satır) yoğun terimler pencereden 0,3-0,9 ms'de dönüyor; pencere dolmazsa
+    /// ikinci geçiş devreye giriyor, yani doğruluk pencereye BAĞLI DEĞİL —
+    /// pencere yalnızca hızlı yol.
+    /// </summary>
+    private const int FreshWindowSize = 5000;
+
+    /// <summary>
+    /// Kullanıcı adı VEYA isim araması (Username + DisplayName + FullName),
+    /// LastSeenAt DESC sıralı. Eşleştirme kuralı yine
+    /// <see cref="CustomerSearch.Matches"/>; buradaki SQL onun
+    /// <see cref="CustomerSearchPlan"/> üzerinden üretilmiş birebir karşılığıdır
+    /// (katlanmış SearchKey/PhoneKey kolonlarında <c>INSTR</c>).
+    ///
+    /// <para><b>R3-04 — neden iki geçiş.</b> Eskiden tüm tablo belleğe alınıp
+    /// LINQ'te süzülüyordu (50.000 satırda 1.451 ms). Ölçüm, tek bir stratejinin
+    /// yetmediğini gösterdi: <c>LastSeenAt</c> indeksinden geriye yürümek YOĞUN
+    /// terimlerde çok hızlı (ilk 50 eşleşmede durur, 0,2-0,6 ms) ama NADİR
+    /// terimde tüm tabloyu tarar (135-222 ms); FTS5 ise tam tersi — nadirde
+    /// 0,9-3,3 ms, yoğunda bütün eşleşmeleri toplayıp sıralamak zorunda olduğu
+    /// için 168-230 ms. Bu yüzden önce taze pencere denenir; pencere
+    /// <paramref name="limit"/> kadar satır döndürdüyse sonuç KANITLANMIŞ
+    /// doğrudur (sıralama LastSeenAt DESC olduğu için pencere dışındaki hiçbir
+    /// satır ilk <paramref name="limit"/>'e giremez) ve ikinci geçişe hiç
+    /// gidilmez.</para>
+    ///
+    /// <para>R3-03: Ek süzgeçler (<paramref name="platform"/>,
+    /// <paramref name="registeredOnly"/>) SQL'in İÇİNDE, limit'ten ÖNCE
+    /// uygulanır. Dışarıda süzülseydi, süzgece uyan ama ilk
+    /// <paramref name="limit"/> genel eşleşmenin dışında kalan kayıt yanlış
+    /// "boş sonuç" olarak kaybolurdu.</para>
+    /// </summary>
     public IReadOnlyList<Customer> Search(
-        string query, int limit = 50, System.Func<Customer, bool>? filter = null)
+        string query, int limit = 50, string? platform = null, bool registeredOnly = false)
     {
-        if (string.IsNullOrWhiteSpace(query))
+        var plan = CustomerSearchPlan.Build(query);
+        if (plan.MatchesNothing)
             return System.Array.Empty<Customer>();
 
-        var matches = GetAll().Where(c => CustomerSearch.Matches(c, query));
-        if (filter is not null)
-            matches = matches.Where(filter);
-        return matches.Take(limit).ToList();
+        var parameters = new Dictionary<string, object?>
+        {
+            ["limit"] = limit,
+            ["window"] = FreshWindowSize
+        };
+        var where = plan.BuildWhereClause("c", parameters);
+
+        var filters = new StringBuilder();
+        if (!string.IsNullOrEmpty(platform))
+        {
+            parameters["platform"] = platform;
+            filters.Append(" AND c.Platform = @platform");
+        }
+        if (registeredOnly)
+            filters.Append(" AND c.Phone IS NOT NULL AND TRIM(c.Phone) <> ''");
+
+        using var conn = _factory.Open();
+
+        // 1. geçiş — yalnız en yeni FreshWindowSize satır.
+        var window = conn.Query<Row>(
+            $@"SELECT c.* FROM (
+                   SELECT * FROM Customer ORDER BY LastSeenAt DESC LIMIT @window
+               ) c
+               WHERE {where}{filters}
+               ORDER BY c.LastSeenAt DESC
+               LIMIT @limit", parameters).ToList();
+
+        if (window.Count >= limit)
+            return window.Select(Map).ToList();
+
+        // 2. geçiş — tüm tablo. Trigram indeksi yalnız her terim 3 harften uzunsa
+        // kullanılabilir; kısa terimde MATCH hata vermeden BOŞ dönerdi (R3-03'ün
+        // yanlış-boş sınıfı), o yüzden tam tarama.
+        var sql = plan.CanUseTrigram
+            ? $@"SELECT c.* FROM CustomerFts f
+                 JOIN Customer c ON c.rowid = f.rowid
+                 WHERE CustomerFts MATCH @match AND {where}{filters}
+                 ORDER BY c.LastSeenAt DESC
+                 LIMIT @limit"
+            : $@"SELECT c.* FROM Customer c
+                 WHERE {where}{filters}
+                 ORDER BY c.LastSeenAt DESC
+                 LIMIT @limit";
+
+        if (plan.CanUseTrigram)
+            parameters["match"] = plan.BuildMatchExpression();
+
+        return conn.Query<Row>(sql, parameters).Select(Map).ToList();
     }
 
     private static Customer Map(Row r) => new(
