@@ -272,6 +272,93 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
         return (new ApplyResponse(tx.Id, -tx.Amount, remaining), false, false);
     }
 
+    // ── POST reverse (revizyon: eski düşümü geri al) ────────────────────────
+
+    /// <summary>Spec K2: aynı satışın toplamı değişince WPF eski düşümü geri
+    /// alıp yeni toplamla taze apply yapar. Panel'deki reverse'in WPF-yüzeyi
+    /// ikizi — ama kapsamı dar: yalnız BU lisansın purchase-deduction satırı.
+    /// Hakem N01 filtered-unique index (ReversesTransactionId): yarışan ikinci
+    /// reverse SaveChanges'te unique ihlali alır → 409 already-reversed.
+    /// İstemci 409 already-reversed'i BAŞARI sayar (geri alma zaten olmuş).</summary>
+    [HttpPost("transactions/{transactionId:guid}/reverse")]
+    public async Task<IActionResult> Reverse(
+        Guid licenseId, Guid transactionId, CancellationToken ct)
+    {
+        if (!await OwnsLicenseAsync(licenseId, ct)) return NotFound();
+
+        var original = await _db.CustomerBalanceTransactions
+            .AsNoTracking()
+            .FirstOrDefaultAsync(t => t.Id == transactionId
+                && t.LicenseId == licenseId
+                && t.Kind == KindPurchaseDeduction, ct);
+        if (original is null) return NotFound();
+
+        // Hızlı yol ön kontrolü; asıl hakem N01 index'i (aşağıdaki catch).
+        var alreadyReversed = await _db.CustomerBalanceTransactions
+            .AnyAsync(t => t.ReversesTransactionId == transactionId, ct);
+        if (alreadyReversed) return Problem(title: "already-reversed", statusCode: 409);
+
+        var balance = await _db.CustomerBalances
+            .FirstOrDefaultAsync(b => b.LicenseId == licenseId
+                && b.WpfCustomerId == original.WpfCustomerId, ct);
+        // Apply bakiye satırı olmadan düşüm yazmaz; satır silinmiyor da.
+        if (balance is null) return NotFound();
+
+        var now = DateTimeOffset.UtcNow;
+        var reverseAmount = -original.Amount; // düşüm negatif → geri alma pozitif
+
+        _db.CustomerBalanceTransactions.Add(new CustomerBalanceTransaction
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = licenseId,
+            WpfCustomerId = original.WpfCustomerId,
+            Amount = reverseAmount,
+            Kind = "reversal",
+            OriginalAmount = null,
+            Reason = $"Reverse of {transactionId:N}",
+            ReversesTransactionId = transactionId,
+            CreatedByCustomerId = User.GetTenantCustomerId(),
+            CreatedAt = now,
+        });
+
+        balance.Balance += reverseAmount;
+        balance.UpdatedAt = now;
+
+        const int maxAttempts = 3;
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+                return Ok();
+            }
+            catch (DbUpdateConcurrencyException ex) when (attempt < maxAttempts)
+            {
+                // F02 kalıbı: bakiyeyi güncel değere çek, deltayı yeniden uygula.
+                // Geri alma para EKLER — negatif kontrolü gerekmez.
+                foreach (var entry in ex.Entries)
+                    await entry.ReloadAsync(ct);
+                balance.Balance += reverseAmount;
+                balance.UpdatedAt = DateTimeOffset.UtcNow;
+            }
+            catch (DbUpdateException ex) when (IsDuplicateReversal(ex))
+            {
+                // N01: eşzamanlı ikinci reverse yarışı kaybetti; transaction
+                // geri alındı, bakiyeye hiçbir şey yazılmadı.
+                _db.ChangeTracker.Clear();
+                return Problem(title: "already-reversed", statusCode: 409);
+            }
+        }
+    }
+
+    /// <summary>N01 hakemi (PanelCustomerBalanceController'daki ile aynı):
+    /// 2601/2627 = unique ihlali; index adı filtresi, başka unique yarışlarının
+    /// aynı koda karışmasını önler.</summary>
+    private static bool IsDuplicateReversal(DbUpdateException ex) =>
+        ex.InnerException is Microsoft.Data.SqlClient.SqlException sql
+        && sql.Number is 2601 or 2627
+        && sql.Message.Contains("ReversesTransactionId", StringComparison.Ordinal);
+
     private async Task<bool> OwnsLicenseAsync(Guid licenseId, CancellationToken ct)
     {
         var callerId = User.GetTenantCustomerId();

@@ -346,4 +346,100 @@ public class LicensesCustomerBalanceApplyControllerTests : IClassFixture<ApiFact
     }
 
     private sealed record ProblemDetailsLite(string? Title, string? Detail, int? Status);
+
+    // ── Reverse (revizyon akışının sunucu yarısı) ───────────────────────────
+    // WPF, aynı yayında toplam değişince eski düşümü geri alıp yeni toplamla
+    // taze düşüm yapar (spec K2). Bu uç panel'deki reverse'in WPF-yüzeyi
+    // ikizidir: yalnız kendi lisansının purchase-deduction satırını geri
+    // alabilir, hakem N01 filtered-unique index'tir.
+
+    private async Task<Guid> ApplyAndGetTransactionIdAsync(
+        HttpClient client, Guid licenseId, Guid wpfCustomerId, decimal amount, decimal productTotal)
+    {
+        var key = Guid.NewGuid();
+        var resp = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = amount, ProductTotal = productTotal, IdempotencyKey = key });
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadFromJsonAsync<ApplyResponse>();
+        return body!.TransactionId;
+    }
+
+    [Fact]
+    public async Task Reverse_restores_balance_and_writes_reversal_row()
+    {
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        var txId = await ApplyAndGetTransactionIdAsync(client, licenseId, wpfCustomerId, 100m, 2100m);
+
+        var resp = await client.PostAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/transactions/{txId}/reverse", null);
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var preview = await client.GetFromJsonAsync<PreviewResponse>(
+            $"/api/v1/licenses/{licenseId}/customer-balance/preview?wpfCustomerId={wpfCustomerId}");
+        preview!.Balance.Should().Be(500m); // düşüm geri geldi
+    }
+
+    [Fact]
+    public async Task Reverse_second_call_returns_already_reversed()
+    {
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        var txId = await ApplyAndGetTransactionIdAsync(client, licenseId, wpfCustomerId, 100m, 2100m);
+
+        await client.PostAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/transactions/{txId}/reverse", null);
+        var ikinci = await client.PostAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/transactions/{txId}/reverse", null);
+
+        ikinci.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var problem = await ikinci.Content.ReadFromJsonAsync<ProblemDetailsLite>();
+        problem!.Title.Should().Be("already-reversed");
+
+        var preview = await client.GetFromJsonAsync<PreviewResponse>(
+            $"/api/v1/licenses/{licenseId}/customer-balance/preview?wpfCustomerId={wpfCustomerId}");
+        preview!.Balance.Should().Be(500m); // ikinci geri alma para EKLEMEDİ
+    }
+
+    [Fact]
+    public async Task Reverse_unknown_transaction_returns_404()
+    {
+        var (client, licenseId, _) = await SetupWithBalanceAsync(500m);
+        var resp = await client.PostAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/transactions/{Guid.NewGuid()}/reverse", null);
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task Reverse_non_deduction_transaction_returns_404()
+    {
+        // Seed'deki refund-full satırı bu ucun kapsamı dışında — müşteri yüzeyi
+        // yalnız KENDİ purchase-deduction'ını geri alabilir.
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        Guid refundTxId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            refundTxId = db.CustomerBalanceTransactions
+                .Where(t => t.LicenseId == licenseId && t.WpfCustomerId == wpfCustomerId
+                    && t.Kind == "refund-full")
+                .Select(t => t.Id)
+                .Single();
+        }
+
+        var resp = await client.PostAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/transactions/{refundTxId}/reverse", null);
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task Reverse_foreign_license_returns_404()
+    {
+        var (clientA, licenseA, wpfCustomerA) = await SetupWithBalanceAsync(500m);
+        var txId = await ApplyAndGetTransactionIdAsync(clientA, licenseA, wpfCustomerA, 100m, 2100m);
+
+        var (clientB, licenseB, _) = await SetupWithBalanceAsync(100m);
+        var resp = await clientB.PostAsync(
+            $"/api/v1/licenses/{licenseB}/customer-balance/transactions/{txId}/reverse", null);
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
 }
