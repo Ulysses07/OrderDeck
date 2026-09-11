@@ -13,6 +13,7 @@ using OrderDeck.App.Services;
 using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Customers;
 using OrderDeck.Core.Settings;
+using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Licensing;
 using OrderDeck.Licensing.Api;
@@ -189,14 +190,17 @@ public class PaymentRequestServiceTests : IDisposable
         public string? CurrentLicenseKey => WhatsAppStubHandler.LicenseKey;
     }
 
+    /// <param name="jobs">Varsayılan fake depo yerine başka bir depo — A9
+    /// yarışın hakemini GERÇEK <see cref="PaymentJobRepository"/> yapıyor.</param>
     private (PaymentRequestService Sut, WhatsAppStubHandler Handler) MakeCloudSut(
-        SettingsStore store, FakeUrlLauncher launcher, ICurrentLicenseProvider? licenseProvider = null)
+        SettingsStore store, FakeUrlLauncher launcher,
+        ICurrentLicenseProvider? licenseProvider = null, IPaymentJobStore? jobs = null)
     {
         var handler = new WhatsAppStubHandler();
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://stub") };
         var api = new LicenseApiClient(http, new LicenseTokenStore());
         var sut = new PaymentRequestService(store, new WhatsAppMessageBuilder(), launcher,
-            api, licenseProvider ?? new FixedLicenseProvider(), _jobs);
+            api, licenseProvider ?? new FixedLicenseProvider(), jobs ?? _jobs);
         return (sut, handler);
     }
 
@@ -913,5 +917,54 @@ public class PaymentRequestServiceTests : IDisposable
         var hedef = _jobs.Snapshot.Single(j => j.ScopeKey == "session:s1");
         hedef.ApplyKey.Should().Be(legacyKey);
         hedef.State.Should().Be(PaymentJobState.Applied);
+    }
+
+    [Fact] // A9 — R2-04: iki eşzamanlı tıklama TEK anahtar üretir
+    public async Task OpenWhatsAppAsync_es_zamanli_iki_cagri_tek_is_tek_anahtar()
+    {
+        // Fake yerine GERÇEK depo: yarışın hakemi SQLite'taki koşullu UPDATE.
+        // Paylaşımlı bellek-DB eşzamanlı yazımda SQLITE_LOCKED verebildiği için
+        // geçici DOSYA tabanlı veritabanı kullanılır (WAL — prod ile aynı).
+        var dbPath = Path.Combine(Path.GetTempPath(), $"odjob-{Guid.NewGuid():N}.db");
+        var factory = new SqliteConnectionFactory(dbPath);
+        try
+        {
+            new MigrationRunner(factory).Run();
+            var repo = new PaymentJobRepository(factory);
+            var (sut, handler) = MakeCloudSut(_store, _launcher, jobs: repo);
+            handler.PreviewBalance = 100m;
+            var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+
+            // Rendezvous: iki istek de preview'a VARANA kadar ikisi de bekler —
+            // ikisinin de FindOrCreate'i geçip BeginApply'a yarışarak girmesi garanti.
+            var arrived = 0;
+            var bothArrived = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            handler.OnPreviewAsync = async () =>
+            {
+                if (Interlocked.Increment(ref arrived) == 2) bothArrived.TrySetResult();
+                await bothArrived.Task;
+            };
+
+            var t1 = Task.Run(() => sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"));
+            var t2 = Task.Run(() => sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"));
+            var results = await Task.WhenAll(t1, t2);
+
+            results.Should().AllBeEquivalentTo(PaymentRequestResult.Opened);
+            handler.AppliedBalanceBodies.Should().NotBeEmpty();
+            handler.AppliedBalanceBodies.Select(AppliedKey).Distinct().Should().HaveCount(1,
+                "kaybeden kazananın anahtarını yeniden kullanır — sunucuda tek düşüm");
+
+            using var conn = factory.Open();
+            // Dapper zaten test projesinde: satır sayısı iddiası
+            Dapper.SqlMapper.ExecuteScalar<long>(conn,
+                "SELECT COUNT(*) FROM PaymentJob").Should().Be(1, "UNIQUE kapsam tek iş");
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            foreach (var f in new[] { dbPath, dbPath + "-wal", dbPath + "-shm" })
+                if (File.Exists(f)) File.Delete(f);
+        }
     }
 }
