@@ -156,9 +156,11 @@ public static class RestoreDrillCore
             .FirstOrDefault();
         if (dbFile is null)
         {
-            steps.Add(new DrillStep("SQLite", false, "No .db file in archive (skipping)"));
-            // Not fatal — older backups may have other layouts. Don't fail
-            // the drill on this alone.
+            steps.Add(new DrillStep("SQLite", false, "No .db file in archive"));
+            // R3-05: masaüstü RestoreService .db içermeyen arşivi REDDEDER —
+            // bu yedek gerçekte geri yüklenemez. Drill'in varlık sebebi tam da
+            // bunu yakalamak; yeşil dönmek alarmı susturuyordu (yanlış yeşil).
+            return new DrillResult(false, blobPath, keyVersion, steps);
         }
         else
         {
