@@ -359,6 +359,64 @@ public class CustomerRepositoryTests
         delta.Should().ContainSingle().Which.Phone.Should().Be("+905552222222");
     }
 
+    // ── N03-k (2026-09-11 denetimi): intake upsert'leri de imleci ilerletmeli ──
+
+    [Fact]
+    public void UpsertFromIntakeForm_guncelleme_satiri_delta_sorgusuna_dusurur()
+    {
+        // Satır zaten senkronlanmış (imleç üzerinde) ve form güncellemesi aynı
+        // saniyede geliyor: LastSeenAt = @now düz yazımı satırı imlecin ARKASINDA
+        // bırakır → telefon/adres sunucuya hiç gitmez. MAX(LastSeenAt+1, @now)
+        // ile satır kesin olarak imlecin önüne düşmeli.
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+        repo.Insert(new Customer("id1", "form", "alice", "Alice", null,
+            1000, 1000, false, null, null, 0, 0m, null, null, null));
+        repo.GetUpdatedSince(1000, "id1", 100).Should().BeEmpty("imleç satırı zaten geçti");
+
+        repo.UpsertFromIntakeForm("alice", "Alice Yılmaz", "İzmir", "+905551234567", nowUnix: 1000);
+
+        var delta = repo.GetUpdatedSince(1000, "id1", 100);
+        delta.Should().ContainSingle().Which.Phone.Should().Be("+905551234567");
+    }
+
+    [Fact]
+    public void UpsertFromIntakeForm_donen_musteri_yazilan_LastSeenAt_ile_ayni()
+    {
+        // Dönen nesnenin LastSeenAt'i DB'ye yazılanla aynı olmalı — çağıran bu
+        // değeri imleç/karşılaştırma için kullanabilir.
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+        repo.Insert(new Customer("id1", "form", "alice", "Alice", null,
+            1000, 1000, false, null, null, 0, 0m, null, null, null));
+
+        var returned = repo.UpsertFromIntakeForm("alice", "Alice Yılmaz", "İzmir", null, nowUnix: 1000);
+
+        returned.LastSeenAt.Should().Be(repo.GetById("id1")!.LastSeenAt);
+    }
+
+    [Fact]
+    public void UpsertPersonFromIntake_guncelleme_satiri_delta_sorgusuna_dusurur()
+    {
+        // Aynı hata çoklu-platform intake upsert'inde de var: mevcut satır
+        // güncellenirken LastSeenAt = @now düz yazılıyor.
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+        repo.Insert(new Customer("id1", "instagram", "alice", "Alice", null,
+            1000, 1000, false, null, null, 0, 0m, null, null, null));
+        repo.GetUpdatedSince(1000, "id1", 100).Should().BeEmpty("imleç satırı zaten geçti");
+
+        repo.UpsertPersonFromIntake(
+            new (string, string, string?)[] { ("instagram", "alice", null) },
+            "Alice Yılmaz", "İzmir", "+905551234567", null, null, false, false, nowUnix: 1000);
+
+        var delta = repo.GetUpdatedSince(1000, "id1", 100);
+        delta.Should().ContainSingle().Which.Phone.Should().Be("+905551234567");
+    }
+
     // ── Kargo PR F: RecipientPaysActive ─────────────────────────────────
 
     [Fact]
