@@ -249,6 +249,8 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
         // değil. Oynatmak yanlış satışa düşüm bağlar; hiçbir yan etki olmadan
         // reddet. Amount için tolerans: istemci replay'de Amount=ProductTotal
         // gönderir; ilk düşümden KÜÇÜK bir Amount ise gerçek bir çelişkidir.
+        // decimal eşitliği değer tabanlıdır: 250m == 250.00m → true. SQL decimal(18,2)
+        // round-trip ölçek ekleyebilir ama değeri değiştiremez; yanlış çelişki üretmez.
         if (tx.WpfCustomerId != req.WpfCustomerId
             || tx.OriginalAmount != req.ProductTotal
             || -tx.Amount > req.Amount)

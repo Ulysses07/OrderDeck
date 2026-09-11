@@ -315,5 +315,35 @@ public class LicensesCustomerBalanceApplyControllerTests : IClassFixture<ApiFact
         ikinciBody!.AppliedAmount.Should().Be(ilkBody!.AppliedAmount);
     }
 
+    [Fact]
+    public async Task Apply_same_key_smaller_amount_than_deducted_returns_content_conflict()
+    {
+        // A11 — üçüncü koşul: depolanan düşüm (-tx.Amount) yeni isteğin
+        // yetkilendirdiği miktardan (req.Amount) büyükse çelişki. İlk çağrı
+        // 150m bakiyeden 150m düşürür; replay'de Amount=50m geliyor — oynatmak
+        // istemcinin onaylamadığı bir düşümü kabul etmek olur.
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(200m);
+        var key = Guid.NewGuid();
+
+        var ilk = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = 150m, ProductTotal = 2100m, IdempotencyKey = key });
+        ilk.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Replay: aynı anahtar + aynı müşteri + aynı ProductTotal, ama Amount
+        // gerçekte düşülen tutardan (150m) daha küçük → content-conflict.
+        var ikinci = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = 50m, ProductTotal = 2100m, IdempotencyKey = key });
+        ikinci.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var problem = await ikinci.Content.ReadFromJsonAsync<ProblemDetailsLite>();
+        problem!.Title.Should().Be("content-conflict");
+
+        // Yan etki yok: bakiye ilk düşümden sonraki değerde kalmalı.
+        var preview = await client.GetFromJsonAsync<PreviewResponse>(
+            $"/api/v1/licenses/{licenseId}/customer-balance/preview?wpfCustomerId={wpfCustomerId}");
+        preview!.Balance.Should().Be(50m);
+    }
+
     private sealed record ProblemDetailsLite(string? Title, string? Detail, int? Status);
 }
