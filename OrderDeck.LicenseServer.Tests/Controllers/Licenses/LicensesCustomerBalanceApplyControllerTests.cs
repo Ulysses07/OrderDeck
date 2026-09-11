@@ -246,4 +246,74 @@ public class LicensesCustomerBalanceApplyControllerTests : IClassFixture<ApiFact
 
         resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
+
+    // ── A11: idempotency anahtarı + İÇERİK sözleşmesi ───────────────────────
+    // Replay yalnız istek İLK isteğin aynısıysa meşru. Farklı müşteri/toplam
+    // ile gelen aynı anahtar bir istemci hatasıdır; ilk sonucu oynatmak yanlış
+    // satışa düşüm bağlar. 409 content-conflict + SIFIR yan etki.
+
+    [Fact]
+    public async Task Apply_same_key_different_product_total_returns_content_conflict()
+    {
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        var key = Guid.NewGuid();
+
+        var ilk = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = 100m, ProductTotal = 2100m, IdempotencyKey = key });
+        ilk.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var ikinci = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = 100m, ProductTotal = 999m, IdempotencyKey = key });
+        ikinci.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var problem = await ikinci.Content.ReadFromJsonAsync<ProblemDetailsLite>();
+        problem!.Title.Should().Be("content-conflict");
+
+        // Yan etki yok: bakiye ilk düşümden sonraki değerde kalmalı.
+        var preview = await client.GetFromJsonAsync<PreviewResponse>(
+            $"/api/v1/licenses/{licenseId}/customer-balance/preview?wpfCustomerId={wpfCustomerId}");
+        preview!.Balance.Should().Be(400m);
+    }
+
+    [Fact]
+    public async Task Apply_same_key_different_customer_returns_content_conflict()
+    {
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        var key = Guid.NewGuid();
+
+        await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = 100m, ProductTotal = 2100m, IdempotencyKey = key });
+
+        var ikinci = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = Guid.NewGuid(), Amount = 100m, ProductTotal = 2100m, IdempotencyKey = key });
+        ikinci.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var problem = await ikinci.Content.ReadFromJsonAsync<ProblemDetailsLite>();
+        problem!.Title.Should().Be("content-conflict");
+    }
+
+    [Fact]
+    public async Task Apply_same_key_larger_amount_still_replays()
+    {
+        // Toleranslı yön: replay Amount >= ilk düşüm olduğu sürece meşru —
+        // istemci replay'de Amount=ProductTotal gönderir (sunucu zaten kırpar).
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(100m);
+        var key = Guid.NewGuid();
+
+        var ilk = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = 100m, ProductTotal = 2100m, IdempotencyKey = key });
+        var ilkBody = await ilk.Content.ReadFromJsonAsync<ApplyResponse>();
+
+        var ikinci = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = 2100m, ProductTotal = 2100m, IdempotencyKey = key });
+        ikinci.StatusCode.Should().Be(HttpStatusCode.OK);
+        var ikinciBody = await ikinci.Content.ReadFromJsonAsync<ApplyResponse>();
+        ikinciBody!.AppliedAmount.Should().Be(ilkBody!.AppliedAmount);
+    }
+
+    private sealed record ProblemDetailsLite(string? Title, string? Detail, int? Status);
 }

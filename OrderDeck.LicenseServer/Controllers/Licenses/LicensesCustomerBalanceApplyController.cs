@@ -111,8 +111,11 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
         // çağıran onun sonucunu görmemeli.
         if (req.IdempotencyKey is { } preKey)
         {
-            var (replay, foreign) = await LookupAsync(licenseId, preKey, ct);
+            var (replay, foreign, conflict) = await LookupAsync(licenseId, req, preKey, ct);
             if (foreign) return NotFound();
+            if (conflict)
+                return Problem(title: "content-conflict", statusCode: 409,
+                    detail: "Idempotency anahtarı farklı bir istekle kullanılmış.");
             if (replay is not null) return Ok(replay);
         }
 
@@ -192,7 +195,10 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
                 // Kazananın sonucunu oynatabiliyorsak yarış hikâyesi tutuyor demektir;
                 // tutmuyorsa hata gerçek bir DB sorunudur, yutulmamalı.
                 _db.ChangeTracker.Clear();
-                var (winner, _) = await LookupAsync(licenseId, req.IdempotencyKey.Value, ct);
+                var (winner, _, conflict) = await LookupAsync(licenseId, req, req.IdempotencyKey.Value, ct);
+                if (conflict)
+                    return Problem(title: "content-conflict", statusCode: 409,
+                        detail: "Idempotency anahtarı farklı bir istekle kullanılmış.");
                 if (winner is null) throw;
                 _log.LogWarning(
                     "Bakiye uygulama yarışı: anahtarı başka istek kazandı (key={Key}, license={LicenseId})",
@@ -214,25 +220,43 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
     /// ele almasak PK ihlali yakalanır, oynatacak sonuç bulunamaz ve istek 500
     /// olurdu; oysa bu istemci hatası, sunucu hatası değil.</para>
     ///
+    /// <para><c>ContentConflict</c>: anahtar bu lisansın düşüm satırı ama yeni
+    /// istek ilk isteğin aynısı değil (A11). Oynatmak yanlış satışa düşüm bağlar;
+    /// hiçbir yan etki olmadan reddedilmeli.</para>
+    ///
     /// <para><c>RemainingBalance</c> o anki gerçek bakiyedir (donmuş bir kopya
     /// değil): istemci bunu ekranda gösteriyor, eski bir değeri oynatmak
     /// operatöre yanlış bakiye gösterirdi. <c>AppliedAmount</c> ise ledger
     /// satırından gelir — "ne kadar düştü" cevabı değişmemeli.</para>
     /// </summary>
-    private async Task<(ApplyResponse? Replay, bool Foreign)> LookupAsync(
-        Guid licenseId, Guid key, CancellationToken ct)
+    private async Task<(ApplyResponse? Replay, bool Foreign, bool ContentConflict)> LookupAsync(
+        Guid licenseId, ApplyRequest req, Guid key, CancellationToken ct)
     {
         var tx = await _db.CustomerBalanceTransactions
             .AsNoTracking()
             .FirstOrDefaultAsync(t => t.Id == key, ct);
-        if (tx is null) return (null, false);
+        if (tx is null) return (null, false, false);
 
         if (tx.LicenseId != licenseId || tx.Kind != KindPurchaseDeduction)
         {
             _log.LogWarning(
                 "Bakiye idempotency anahtarı başka bir kayda ait (key={Key}, license={LicenseId}, kind={Kind})",
                 key, licenseId, tx.Kind);
-            return (null, true);
+            return (null, true, false);
+        }
+
+        // A11: anahtar bu lisansın düşüm satırı ama istek İLK isteğin aynısı
+        // değil. Oynatmak yanlış satışa düşüm bağlar; hiçbir yan etki olmadan
+        // reddet. Amount için tolerans: istemci replay'de Amount=ProductTotal
+        // gönderir; ilk düşümden KÜÇÜK bir Amount ise gerçek bir çelişkidir.
+        if (tx.WpfCustomerId != req.WpfCustomerId
+            || tx.OriginalAmount != req.ProductTotal
+            || -tx.Amount > req.Amount)
+        {
+            _log.LogWarning(
+                "Bakiye idempotency anahtarı farklı içerikle yeniden kullanıldı (key={Key}, license={LicenseId})",
+                key, licenseId);
+            return (null, false, true);
         }
 
         var remaining = await _db.CustomerBalances
@@ -243,7 +267,7 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
 
         _log.LogInformation(
             "Bakiye uygulama sonucu tekrar oynatıldı (key={Key}, license={LicenseId})", key, licenseId);
-        return (new ApplyResponse(tx.Id, -tx.Amount, remaining), false);
+        return (new ApplyResponse(tx.Id, -tx.Amount, remaining), false, false);
     }
 
     private async Task<bool> OwnsLicenseAsync(Guid licenseId, CancellationToken ct)
