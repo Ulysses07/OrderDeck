@@ -147,9 +147,16 @@ public sealed class PaymentSyncService
         foreach (var dto in ordered) ApplyDto(dto);
 
         var last = ordered[^1];
+        // N04: bellekteki kopya güncel kalsın (imleç okuması buradan); diske
+        // Update ile atomik birleştirme — bütün-nesne Save başka bileşenin bu
+        // arada yazdığı alanı ezerdi.
         _settings.LastPaymentReverseSync = last.UpdatedAt;
         _settings.LastPaymentReverseSyncId = last.Id;
-        _settingsStore.Save(_settings);
+        _settingsStore.Update(s =>
+        {
+            s.LastPaymentReverseSync = last.UpdatedAt;
+            s.LastPaymentReverseSyncId = last.Id;
+        });
         return rows.Count;
     }
 

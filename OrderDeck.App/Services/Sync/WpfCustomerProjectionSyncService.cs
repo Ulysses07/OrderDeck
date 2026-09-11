@@ -155,7 +155,7 @@ public sealed class WpfCustomerProjectionSyncService
             // watermark to prevent an infinite loop, then continue.
             if (items.Count == 0)
             {
-                AdvanceWatermark(settings, batch, ref watermark, ref watermarkId);
+                AdvanceWatermark(batch, ref watermark, ref watermarkId);
                 if (batch.Count < BatchSize) break;
                 continue;
             }
@@ -172,7 +172,7 @@ public sealed class WpfCustomerProjectionSyncService
                 return totalSynced; // don't advance watermark on failure
             }
 
-            AdvanceWatermark(settings, batch, ref watermark, ref watermarkId);
+            AdvanceWatermark(batch, ref watermark, ref watermarkId);
 
             if (batch.Count < BatchSize) break; // last page — no more rows
         }
@@ -190,19 +190,25 @@ public sealed class WpfCustomerProjectionSyncService
     /// <summary>İmleci partinin SON satırına taşır ve kalıcılaştırır. Repo
     /// (LastSeenAt, Id) ASC sıralı döndürdüğü için son satır = en büyük imleç;
     /// <c>Max()</c> yerine son eleman okunur ki Id de aynı satırdan gelsin —
-    /// iki alan farklı satırlardan karışırsa imleç geri kayabilirdi.</summary>
+    /// iki alan farklı satırlardan karışırsa imleç geri kayabilirdi.
+    /// N04: kalıcılaştırma <see cref="SettingsStore.Update"/> ile — döngü
+    /// başında yüklenen kopya bayatlamış olabilir; bütün-nesne Save başka
+    /// bileşenin bu arada yazdığı alanı ezerdi.</summary>
     private void AdvanceWatermark(
-        AppSettings settings,
         IReadOnlyList<Core.Customers.Customer> batch,
         ref long watermark,
         ref string watermarkId)
     {
         var last = batch[^1];
-        watermark   = last.LastSeenAt;
-        watermarkId = last.Id;
-        settings.LastCustomerProjectionSyncAt = watermark;
-        settings.LastCustomerProjectionSyncId = watermarkId;
-        _settingsStore.Save(settings);
+        var w    = last.LastSeenAt;
+        var wid  = last.Id;
+        watermark   = w;
+        watermarkId = wid;
+        _settingsStore.Update(s =>
+        {
+            s.LastCustomerProjectionSyncAt = w;
+            s.LastCustomerProjectionSyncId = wid;
+        });
     }
 
     // ─── LicenseId resolution (same caching pattern as other sync services) ──

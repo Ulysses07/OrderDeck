@@ -108,8 +108,10 @@ public sealed class IntakeFormSyncService
             if (submissions.Count < 100) break; // son sayfa
         }
 
+        // N04: bellekteki kopya güncel kalsın; diske Update ile atomik birleştirme
+        // (bütün-nesne Save başka bileşenin bu arada yazdığı alanı ezerdi).
         _settings.FullNameBackfillDone = true;
-        _settingsStore.Save(_settings);
+        _settingsStore.Update(s => s.FullNameBackfillDone = true);
         _log.LogInformation("FullName backfill complete: {Count} row(s) updated", totalUpdated);
         return totalUpdated;
     }
@@ -190,9 +192,15 @@ public sealed class IntakeFormSyncService
         }
 
         var last = ordered[^1];
+        // N04: bellekteki kopya güncel kalsın (imleç okuması buradan); diske
+        // Update ile atomik birleştirme.
         _settings.LastIntakeFormSync = last.SubmittedAt;
         _settings.LastIntakeFormSyncId = last.Id;
-        _settingsStore.Save(_settings);
+        _settingsStore.Update(s =>
+        {
+            s.LastIntakeFormSync = last.SubmittedAt;
+            s.LastIntakeFormSyncId = last.Id;
+        });
 
         _log.LogInformation("Intake form sync: {Count} submission(s) processed (cursor → {Cursor}/{CursorId})",
             submissions.Count, last.SubmittedAt, last.Id);

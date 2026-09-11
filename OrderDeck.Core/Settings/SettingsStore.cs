@@ -96,11 +96,44 @@ public sealed class SettingsStore
         return new AppSettings();
     }
 
+    /// <summary>Verilen nesneyi olduğu gibi yazar. <b>Load-üzerinde-değiştir-Save
+    /// deseni için KULLANMA</b> — elindeki kopya bayatsa başka bir bileşenin bu
+    /// arada kaydettiği alanları ezersin (N04); onun yerine <see cref="Update"/>.
+    /// Bu metot yalnız "elimdeki nesne gerçeğin kendisi" durumları için:
+    /// ilk oluşturma ve test kurulumları.</summary>
     public void Save(AppSettings settings)
     {
         lock (FileGate)
         {
             SaveCore(settings);
+        }
+    }
+
+    /// <summary>
+    /// N04 (2026-09-10 denetimi): atomik oku-değiştir-yaz. Diskteki EN GÜNCEL
+    /// kopya kilit altında yüklenir, <paramref name="mutate"/> yalnız kendi
+    /// alanlarını değiştirir ve sonuç aynı kilit altında yazılır.
+    ///
+    /// <para><b>Neden gerekli.</b> <see cref="Load"/> ve <see cref="Save"/> tek
+    /// tek kilitli ama aralarındaki süre değil: bir servis Load'la aldığı bütün
+    /// nesneyi dakikalar sonra Save'lediğinde, arada başka bir bileşenin
+    /// kaydettiği alanları (ör. sync imleçleri) eski değerleriyle ezer. Sahada
+    /// bu, ayar ekranında Kaydet'e basmanın müşteri-projeksiyon imlecini
+    /// uygulama açılışındaki değere döndürmesi demekti — sonraki turda binlerce
+    /// kayıt boşuna yeniden çekilirdi.</para>
+    ///
+    /// <para>Çağıran, bellekte tuttuğu canlı kopyayı da aynı değerlerle
+    /// güncel tutmalı (bkz. sync servislerindeki kullanım).</para>
+    /// </summary>
+    /// <returns>Diske yazılan güncel nesne.</returns>
+    public AppSettings Update(Action<AppSettings> mutate)
+    {
+        lock (FileGate)
+        {
+            var settings = LoadCore();
+            mutate(settings);
+            SaveCore(settings);
+            return settings;
         }
     }
 

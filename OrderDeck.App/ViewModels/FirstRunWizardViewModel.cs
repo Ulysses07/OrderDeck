@@ -232,11 +232,14 @@ public sealed partial class FirstRunWizardViewModel : ObservableObject
     private void Finish()
     {
         // Persist YouTube handle if the operator typed one.
-        var live = _settingsStore.Load();
+        // N04: Load-değiştir-Save yerine atomik Update — sihirbaz açıkken arka
+        // planda ilerleyen sync imleçleri ezilmesin.
         var trimmedYouTube = YouTubeHandle?.Trim();
-        live.YouTubeChannelHandle = string.IsNullOrEmpty(trimmedYouTube) ? null : trimmedYouTube;
-        live.HasCompletedFirstRun = true;
-        _settingsStore.Save(live);
+        _settingsStore.Update(live =>
+        {
+            live.YouTubeChannelHandle = string.IsNullOrEmpty(trimmedYouTube) ? null : trimmedYouTube;
+            live.HasCompletedFirstRun = true;
+        });
         RequestClose?.Invoke(this, EventArgs.Empty);
     }
 
