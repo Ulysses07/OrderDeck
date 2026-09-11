@@ -124,12 +124,12 @@ public class RestoreDrillCoreTests : IDisposable
     }
 
     [Fact]
-    public async Task RunAsync_with_blob_missing_db_marks_sqlite_step_unhealthy_but_does_not_fail_overall()
+    public async Task RunAsync_with_blob_missing_db_fails_overall()
     {
-        // Rationale: an older customer might have backups whose archive
-        // shape doesn't include a .db (rare but real). Drill should
-        // surface the gap without failing the overall run — failing here
-        // would page someone for a non-issue.
+        // R3-05: .db içermeyen arşiv masaüstü RestoreService tarafından
+        // REDDEDİLİYOR — yani bu yedek gerçekte geri YÜKLENEMEZ. Drill'in
+        // amacı tam da bunu yakalamak; "informational" diye yeşil dönmek
+        // alarmı susturup sahte güven veriyordu (drill PASSED, restore fail).
         var svc = BuildService();
         var blob = await CreateBlobAsync(svc, includeDb: false);
         var workdir = Path.Combine(_root, "drill");
@@ -137,7 +137,7 @@ public class RestoreDrillCoreTests : IDisposable
 
         var result = await RestoreDrillCore.RunAsync(svc, blob, keyVersion: 0, workdir);
 
-        result.Passed.Should().BeTrue("decrypt + zip succeeded; missing db is informational");
+        result.Passed.Should().BeFalse("masaüstü bu arşivi restore edemez; drill de geçmemeli");
         result.Steps.Should().Contain(s => s.Name == "SQLite" && !s.Ok && s.Message.Contains("No .db"));
     }
 

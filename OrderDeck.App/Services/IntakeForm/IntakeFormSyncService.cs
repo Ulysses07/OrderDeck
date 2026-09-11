@@ -147,13 +147,15 @@ public sealed class IntakeFormSyncService
 
         var nowUnix = _clock.UnixNow();
 
-        // İmleç (SubmittedAt, Id) çifti; sunucu da bu sıraya göre sayfalıyor.
-        // Yalnız en büyük SubmittedAt alınsaydı, aynı damgayı paylaşan kayıtlar
-        // sayfa sınırında kesildiğinde kalanları bir daha hiç istenmezdi — ve o
-        // satır bir müşteri KAYDI olduğu için eksik kendiliğinden kapanmazdı.
-        var ordered = submissions.OrderBy(s => s.SubmittedAt).ThenBy(s => s.Id).ToList();
-
-        foreach (var sub in ordered)
+        // İmleç (SubmittedAt, Id) çifti. Yalnız en büyük SubmittedAt alınsaydı,
+        // aynı damgayı paylaşan kayıtlar sayfa sınırında kesildiğinde kalanları
+        // bir daha hiç istenmezdi — ve o satır bir müşteri KAYDI olduğu için
+        // eksik kendiliğinden kapanmazdı.
+        // R3-01: sunucunun teslim sırası olduğu gibi kullanılır — yeniden
+        // SIRALAMA YOK. Sunucu SQL uniqueidentifier sırasıyla sayfalıyor; .NET
+        // Guid sırası farklı, istemci "son"u kendisi seçerse imleç sunucu sayfa
+        // sınırının gerisinde kalır ve aynı satırlar tekrar iner.
+        foreach (var sub in submissions)
         {
             // Bildirilen platform kimliklerini topla (çoklu-platform).
             var identities = new List<(string Platform, string Username, string? PreferredDisplayName)>();
@@ -191,7 +193,7 @@ public sealed class IntakeFormSyncService
             }
         }
 
-        var last = ordered[^1];
+        var last = submissions[^1];
         // N04: bellekteki kopya güncel kalsın (imleç okuması buradan); diske
         // Update ile atomik birleştirme.
         _settings.LastIntakeFormSync = last.SubmittedAt;

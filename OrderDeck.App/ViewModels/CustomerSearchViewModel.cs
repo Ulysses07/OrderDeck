@@ -158,15 +158,29 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
         // newly-registered shoppers (e.g. via the shopper app) who don't
         // yet have any orders. Previously this returned nothing, leaving
         // registered customers invisible until someone typed.
-        var raw = string.IsNullOrWhiteSpace(value)
-            ? _customers.GetAll()
-            : _customers.Search(value.Trim(), limit: 50);
-        IEnumerable<Customer> f = string.IsNullOrEmpty(PlatformFilter)
-            ? raw
-            : raw.Where(c => c.Platform == PlatformFilter);
-        if (RegisteredOnly)
-            f = f.Where(c => !string.IsNullOrWhiteSpace(c.Phone));
-        foreach (var card in BuildCards(f)) Results.Add(card);
+        //
+        // R3-03: platform/kayıtlı süzgeçleri Search'e predicate olarak geçer
+        // — limit'ten SONRA dışarıda süzmek, süzgece uyan ama ilk 50 genel
+        // eşleşmenin dışındaki kaydı yanlış boş sonuçla kaybediyordu.
+        // Boş-sorgu yolunda limit yok, süzgeç dışarıda kalabilir.
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            IEnumerable<Customer> f = _customers.GetAll();
+            if (!string.IsNullOrEmpty(PlatformFilter))
+                f = f.Where(c => c.Platform == PlatformFilter);
+            if (RegisteredOnly)
+                f = f.Where(c => !string.IsNullOrWhiteSpace(c.Phone));
+            foreach (var card in BuildCards(f)) Results.Add(card);
+            return;
+        }
+
+        var platform = PlatformFilter;
+        var registeredOnly = RegisteredOnly;
+        var results = _customers.Search(value.Trim(), limit: 50,
+            filter: c =>
+                (string.IsNullOrEmpty(platform) || c.Platform == platform)
+                && (!registeredOnly || !string.IsNullOrWhiteSpace(c.Phone)));
+        foreach (var card in BuildCards(results)) Results.Add(card);
     }
 
     /// <summary>Müşteri satırlarını GroupId'ye göre tek karta toplar. GroupId null

@@ -17,8 +17,9 @@ namespace OrderDeck.App.Services.Sync;
 /// + LastCustomerProjectionSyncId (eşitlik bozucu — F07, bkz. AppSettings).
 /// Batch: 500/call. Multi-batch loop until exhausted within a single tick.
 ///
-/// Customer.DisplayName → WpfCustomerSyncItem.FullName mapping: WPF lokal
-/// kayıtlarında FullName alanı yok; DisplayName en yakın eşdeğer.
+/// WpfCustomerSyncItem.FullName mapping: Customer.FullName (gerçek ad,
+/// intake formundan) öncelikli; boşsa DisplayName'e (platform takma adı)
+/// düşülür — R3-02.
 ///
 /// LicenseId resolution: GetMyLicensesAsync ile key → Guid (cached).
 /// </summary>
@@ -144,8 +145,12 @@ public sealed class WpfCustomerProjectionSyncService
                     Id:        customerGuid,
                     Platform:  c.Platform,
                     Username:  c.Username,
-                    // DisplayName is the WPF equivalent of FullName (no separate FullName field)
-                    FullName:  c.DisplayName,
+                    // R3-02: Gerçek ad (FullName, intake formundan) varsa onu
+                    // gönder — DisplayName platform TAKMA adıdır ve projection'a
+                    // gerçek ad diye gitmemeli. FullName boşsa DisplayName'e düş
+                    // (ad alanı hiç boş kalmasın; eski kayıtların çoğunda yalnız
+                    // takma ad var).
+                    FullName:  string.IsNullOrWhiteSpace(c.FullName) ? c.DisplayName : c.FullName,
                     Phone:     c.Phone,
                     Address:   c.Address,
                     UpdatedAt: DateTimeOffset.FromUnixTimeSeconds(c.LastSeenAt)));
