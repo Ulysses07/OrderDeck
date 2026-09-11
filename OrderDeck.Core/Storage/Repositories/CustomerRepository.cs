@@ -414,16 +414,22 @@ public sealed class CustomerRepository
 
         if (existing is not null)
         {
+            // N03-k: LastSeenAt = @nowUnix düz yazımı, satır delta imlecinin
+            // (GetUpdatedSince) üzerinde/ötesindeyse güncellemeyi imlecin
+            // ARKASINDA bırakıyordu → telefon/adres sunucuya hiç senkronlanmazdı.
+            // MAX(LastSeenAt+1, @nowUnix) satır başına kesin artan (bkz.
+            // UpdatePhone'daki N03 düzeltmesi).
             conn.Execute(@"
                 UPDATE Customer
                 SET DisplayName = @fullName,
                     Address = @address,
                     Phone = @phone,
-                    LastSeenAt = @nowUnix
+                    LastSeenAt = MAX(LastSeenAt + 1, @nowUnix)
                 WHERE Id = @id",
                 new { fullName, address, phone, nowUnix, id = existing.Id });
+            var newSeen = Math.Max(existing.LastSeenAt + 1, nowUnix);
             var updated = Map(existing);
-            return updated with { DisplayName = fullName, Address = address, Phone = phone, LastSeenAt = nowUnix };
+            return updated with { DisplayName = fullName, Address = address, Phone = phone, LastSeenAt = newSeen };
         }
 
         var id = Guid.NewGuid().ToString("N");
@@ -509,7 +515,9 @@ public sealed class CustomerRepository
                         GroupId = @groupId,
                         Address = @address, City = @city, District = @district,
                         Phone = @phone, Email = @email, Tckn = @tckn,
-                        WhatsAppConsent = @wa, SmsConsent = @sms, LastSeenAt = @now,
+                        WhatsAppConsent = @wa, SmsConsent = @sms,
+                        LastSeenAt = MAX(LastSeenAt + 1, @now), -- N03-k: delta imleci için kesin artan
+
                         DisplayName = COALESCE(NULLIF(DisplayName, ''), @displayForRow),
                         FullName = @fullName
                       WHERE Id = @id",
