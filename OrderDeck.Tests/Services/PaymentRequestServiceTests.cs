@@ -110,6 +110,11 @@ public class PaymentRequestServiceTests : IDisposable
         /// <summary>A9: preview cevabından önce beklenir (yarış rendezvous'u).</summary>
         public Func<Task>? OnPreviewAsync { get; set; }
 
+        /// <summary>true ise lisans listesi ucu ağ hatası fırlatır: anahtar VAR
+        /// ama sunucuya ulaşılamıyor (VPS kapalı / internet yok). Anahtarın hiç
+        /// olmadığı durumdan farklıdır — ayrımı A10 testleri sınar.</summary>
+        public bool ThrowTimeoutOnLicenses { get; set; }
+
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -117,6 +122,7 @@ public class PaymentRequestServiceTests : IDisposable
 
             if (path == "/api/v1/me/licenses")
             {
+                if (ThrowTimeoutOnLicenses) throw new TaskCanceledException("stub timeout");
                 return Json($$"""
                     [{"licenseKey":"{{LicenseKey}}","skuCode":"STD",
                       "expiresAt":"2030-01-01T00:00:00+00:00","revokedAt":null,
@@ -966,5 +972,109 @@ public class PaymentRequestServiceTests : IDisposable
             foreach (var f in new[] { dbPath, dbPath + "-wal", dbPath + "-shm" })
                 if (File.Exists(f)) File.Delete(f);
         }
+    }
+
+    // ── A10: lisans çözülemediğinde blok KARARI yerel iş satırına bakar ──────
+    //
+    // Lisans id çözümü apply'dan ÖNCE patlar: o tıklamada para adına tek bir
+    // istek bile gitmemiştir. Yani "belirsiz" olan sunucuya erişim, satışın
+    // sonucu değil. Neyi bildiğimizi diskteki iş satırı söyler (ağ gerekmez):
+    //   satır yok / created → bu satış için hiç hareket yok → düşümsüz devam
+    //   applied / no_balance + aynı tutar → ne düştüğü yazılı → o tutarla devam
+    //   apply_uncertain     → gerçekten bilmiyoruz → blokla (K3)
+    //   applied + tutar değişti → revizyon geri-alma ister, o da ağsız olmaz → blokla
+    //
+    // Aksi hâlde tek bir VPS kesintisi, bakiyesi hiç olmayan müşteriler dahil
+    // TÜM ödeme mesajlarını durdururdu — yayın ortasında tam iş durması.
+
+    private PaymentJob SeedJob(
+        string customerId, string state, decimal productTotal,
+        decimal? appliedAmount, Guid? applyKey, string scopeKey = "session:s1")
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        return _jobs.Seed(new PaymentJob(
+            Guid.NewGuid().ToString("N"), customerId, scopeKey, productTotal,
+            0, applyKey, appliedAmount, state, now, now, null));
+    }
+
+    [Fact] // A10a — iş yok: hiç para hareketi olmamış, mesaj düşümsüz gider
+    public async Task OpenWhatsAppAsync_lisans_cozulemez_is_yoksa_dusumsuz_devam_eder()
+    {
+        EnableCloudApi();
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.ThrowTimeoutOnLicenses = true;
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.Opened);
+
+        handler.AppliedBalanceBodies.Should().BeEmpty("apply'a hiç gidilmedi");
+        _launcher.LaunchedUrls.Should().ContainSingle()
+            .Which.Should().Contain("250%2C00", "düşüm yok — tam tutar");
+    }
+
+    [Fact] // A10b — iş applied ve tutar aynı: düşülen miktar diskte yazılı
+    public async Task OpenWhatsAppAsync_lisans_cozulemez_applied_is_varsa_kayitli_dusumle_devam_eder()
+    {
+        EnableCloudApi();
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.ThrowTimeoutOnLicenses = true;
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        SeedJob(customer.Id, PaymentJobState.Applied, 250m, 100m, Guid.NewGuid());
+
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.Opened);
+
+        handler.AppliedBalanceBodies.Should().BeEmpty("ikinci düşüm YOK — sonuç zaten kesin");
+        _launcher.LaunchedUrls.Should().ContainSingle()
+            .Which.Should().Contain("150%2C00", "250 − diskteki 100");
+    }
+
+    [Fact] // A10c — iş belirsiz: gerçekten bilmiyoruz, mesaj GİTMEZ
+    public async Task OpenWhatsAppAsync_lisans_cozulemez_is_belirsizse_BalanceUncertain_doner()
+    {
+        EnableCloudApi();
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.ThrowTimeoutOnLicenses = true;
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        SeedJob(customer.Id, PaymentJobState.ApplyUncertain, 250m, null, Guid.NewGuid());
+
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.BalanceUncertain);
+
+        _launcher.LaunchedUrls.Should().BeEmpty();
+        handler.SentBodies.Should().BeEmpty();
+    }
+
+    [Fact] // A10d — iş applied ama tutar değişti: revizyon ağsız yapılamaz
+    public async Task OpenWhatsAppAsync_lisans_cozulemez_tutar_degistiyse_BalanceUncertain_doner()
+    {
+        EnableCloudApi();
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.ThrowTimeoutOnLicenses = true;
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        SeedJob(customer.Id, PaymentJobState.Applied, 250m, 100m, Guid.NewGuid());
+
+        (await sut.OpenWhatsAppAsync(customer, 300m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.BalanceUncertain);
+
+        _launcher.LaunchedUrls.Should().BeEmpty();
+        handler.ReverseCalls.Should().BeEmpty("geri alma ucu zaten erişilemez");
+    }
+
+    [Fact] // A10e — açık miras iş: anahtarı var, sonucu bilinmiyor → blokla
+    public async Task OpenWhatsAppAsync_lisans_cozulemez_acik_miras_is_varsa_BalanceUncertain_doner()
+    {
+        EnableCloudApi();
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.ThrowTimeoutOnLicenses = true;
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        SeedJob(customer.Id, PaymentJobState.ApplyUncertain, 250m, null, Guid.NewGuid(),
+            scopeKey: "legacy");
+
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.BalanceUncertain);
+
+        _launcher.LaunchedUrls.Should().BeEmpty();
     }
 }
