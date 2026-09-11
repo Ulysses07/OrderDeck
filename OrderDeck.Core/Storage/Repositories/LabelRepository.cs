@@ -46,11 +46,9 @@ public sealed class LabelRepository
             });
     }
 
-    public void Delete(string id)
-    {
-        using var conn = _factory.Open();
-        conn.Execute("DELETE FROM Label WHERE Id=@id", new { id });
-    }
+    // N07: Delete(id) kasıtlı olarak YOK. Fiziksel DELETE, sunucuya bir kez
+    // push edilmiş satırın mezar taşını da yok eder — sunucu kopyası ömür
+    // boyu aktif kalır. Kaldırma ihtiyacı MarkCancelled'dan geçmeli.
 
     public Label? GetById(string id)
     {

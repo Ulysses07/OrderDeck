@@ -65,6 +65,61 @@ public class SettingsStoreTests
     /// açılmaz. System.Text.Json eşleşmeyen üyeyi varsayılan olarak atlar —
     /// bu test o varsayılana bağımlılığımızı kilitliyor.
     /// </summary>
+    /// <summary>
+    /// N04 sözleşmesi: Update, çağıranın elindeki (muhtemelen bayat) kopyayı
+    /// değil diskteki EN GÜNCEL hâli değiştirir. İki farklı bileşen ayrı
+    /// alanlara yazarsa ikisi de kalıcı olmalı — bütün-nesne Save'de ikinci
+    /// yazan birincinin alanını ezerdi.
+    /// </summary>
+    [Fact]
+    public void Update_merges_into_latest_disk_state()
+    {
+        var path = CreateTempPath();
+        var store = new SettingsStore(path);
+
+        // Bileşen A: yazıcı adını yazar.
+        store.Update(s => s.PrinterName = "Zebra ZD220");
+        // Bileşen B: (A'nın yazdığından habersiz) sync imlecini yazar.
+        store.Update(s => s.LastCustomerProjectionSyncAt = 1234);
+
+        var reloaded = store.Load();
+        reloaded.PrinterName.Should().Be("Zebra ZD220",
+            "ikinci Update birincinin alanını ezmemeli");
+        reloaded.LastCustomerProjectionSyncAt.Should().Be(1234);
+
+        File.Delete(path);
+    }
+
+    [Fact]
+    public void Update_creates_file_from_defaults_when_missing()
+    {
+        var path = CreateTempPath();
+        var store = new SettingsStore(path);
+
+        var result = store.Update(s => s.ChatTheme = "neon");
+
+        result.ChatTheme.Should().Be("neon");
+        result.OverlayPort.Should().Be(4747, "eksik dosya varsayılanlardan tohumlanmalı");
+        store.Load().ChatTheme.Should().Be("neon");
+
+        File.Delete(path);
+    }
+
+    [Fact]
+    public void Update_returns_the_persisted_object()
+    {
+        var path = CreateTempPath();
+        var store = new SettingsStore(path);
+        store.Save(new AppSettings { PrinterName = "Önceden" });
+
+        var result = store.Update(s => s.LabelWidthMm = 80);
+
+        result.PrinterName.Should().Be("Önceden", "dönen nesne diskteki birleşik hâl olmalı");
+        result.LabelWidthMm.Should().Be(80);
+
+        File.Delete(path);
+    }
+
     [Fact]
     public void Load_ignores_the_retired_instagram_mode_field()
     {

@@ -273,14 +273,25 @@ public sealed class LabelService
     public IReadOnlyDictionary<string, int> GetBackupCounts(IEnumerable<string> parentLabelIds) =>
         _labels.GetTentativeBackupCounts(parentLabelIds);
 
-    /// <summary>Hard-deletes a tentative backup label (operator made a wrong
-    /// pick during the live and wants to undo). Confirmed backups should be
-    /// soft-cancelled via <see cref="Cancel"/> instead — they're real sales.</summary>
+    /// <summary>Geçici yedeği geri alır (operatör yayında yanlış kişiyi
+    /// seçti). Onaylı yedekler gerçek satış — onlar <see cref="Cancel"/>
+    /// akışından geçmeli; burada no-op.
+    ///
+    /// N07 (=F06'nın burada kalan kalıntısı): eskiden fiziksel DELETE'ti.
+    /// Satır sunucuya bir kez push edildiyse silmek mezar taşını da yok
+    /// eder — sunucu kopyası ömür boyu aktif geçici yedek olarak kalır.
+    /// SyncedAt=NULL "hiç gitmedi"yi KANITLAMAZ (her durum değişikliği onu
+    /// sıfırlar), yani güvenle silinebilecek satır ayırt edilemez. Bu
+    /// yüzden her geri alma soft-cancel: satır yerinde kalır, SyncedAt
+    /// düşer, iptal bir sonraki push'ta sunucuya gider. Cancel() tentative
+    /// satırlarda ciro/stok toplamlarına zaten dokunmuyor; bütün yedek
+    /// listeleri de CancelledAt IS NULL filtreli — operatör için görünür
+    /// fark yok.</summary>
     public void RemoveBackup(string backupLabelId)
     {
         var lbl = _labels.GetById(backupLabelId);
         if (lbl is null || !lbl.IsTentativeBackup) return;
-        _labels.Delete(backupLabelId);
+        Cancel(new[] { backupLabelId }, CancelReasonCodes.BackupRemoved);
     }
 
     /// <summary>

@@ -195,22 +195,61 @@ public class LabelServiceBackupTests
         counts[parent.Id].Should().Be(2);
     }
 
+    /// <summary>N07: RemoveBackup fiziksel DELETE yapıyordu. Satır sunucuya
+    /// bir kez push edildiyse silmek mezar taşını da yok eder — sunucu
+    /// kopyası ömür boyu "aktif geçici yedek" olarak kalır. SyncedAt=NULL
+    /// "hiç gitmedi" demek DEĞİL (her durum değişikliği onu sıfırlar), bu
+    /// yüzden ayrım yapılamaz: her geri alma soft-cancel olmalı ki iptal
+    /// bir sonraki push'ta sunucuya ulaşsın.</summary>
     [Fact]
-    public void RemoveBackup_only_deletes_tentative_rows()
+    public void RemoveBackup_soft_cancels_so_the_tombstone_reaches_the_server()
     {
         var (svc, labels, _, _, db, _, parent) = Fx();
         using var _disposer = db;
 
         var b = svc.AddBackup(parent.Id, "instagram", "@y", "Y", null);
+        // Satır sunucuya push edilmiş gibi işaretle.
+        labels.MarkSynced(b.Id, 2000L, labels.GetById(b.Id)!.Revision);
+
         svc.RemoveBackup(b.Id);
-        labels.GetById(b.Id).Should().BeNull();
+
+        var stored = labels.GetById(b.Id);
+        stored.Should().NotBeNull("mezar taşı yerinde kalmalı — DELETE sunucu kopyasını öksüz bırakır");
+        stored!.CancelledAt.Should().NotBeNull();
+        stored.CancelReason.Should().Be(CancelReasonCodes.BackupRemoved);
+        stored.SyncedAt.Should().BeNull("iptal, bir sonraki push'ta sunucuya gitmeli");
+        labels.GetUnsynced().Should().Contain(l => l.Id == b.Id);
+    }
+
+    [Fact]
+    public void RemoveBackup_hides_the_row_from_backup_lists_and_queue()
+    {
+        var (svc, _, _, _, db, sid, parent) = Fx();
+        using var _disposer = db;
+
+        var b = svc.AddBackup(parent.Id, "instagram", "@y", "Y", null);
+        svc.RemoveBackup(b.Id);
+
+        svc.GetBackups(parent.Id).Should().BeEmpty();
+        svc.GetBackupCounts(new[] { parent.Id }).Should().NotContainKey(parent.Id);
+        svc.GetQueue(sid).Should().NotContain(l => l.Id == b.Id);
+    }
+
+    [Fact]
+    public void RemoveBackup_is_a_noop_for_confirmed_backups()
+    {
+        var (svc, labels, _, _, db, _, parent) = Fx();
+        using var _disposer = db;
 
         // After confirm, RemoveBackup is a no-op — confirmed labels are real
         // sales and must go through the standard Cancel() flow instead.
         var b2 = svc.AddBackup(parent.Id, "instagram", "@z", "Z", null);
         svc.ConfirmBackup(b2.Id);
         svc.RemoveBackup(b2.Id);
-        labels.GetById(b2.Id).Should().NotBeNull("confirmed backups can't be silently removed");
+
+        var stored = labels.GetById(b2.Id);
+        stored.Should().NotBeNull("confirmed backups can't be silently removed");
+        stored!.CancelledAt.Should().BeNull("onaylı yedek gerçek satış — RemoveBackup dokunmamalı");
     }
 
     [Fact]

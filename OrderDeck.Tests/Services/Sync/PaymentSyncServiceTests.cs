@@ -288,6 +288,67 @@ public sealed class PaymentSyncServiceTests
         pullCall.Path.Should().Contain("since=", "cursor passed");
     }
 
+    /// <summary>
+    /// N04: servis, ayar nesnesini uygulama AÇILIŞINDA yüklenen singleton
+    /// olarak tutuyor. İmleç kaydı bu bayat kopyayı bütün-nesne Save ile
+    /// diske yazarsa, aradan geçen sürede başka bileşenin yazdığı alan
+    /// (burada PrinterName) sessizce eski değerine döner. Doğru davranış:
+    /// imleç, diskteki en güncel hâlin ÜZERİNE alan-kapsamlı birleştirilir.
+    /// Build() yardımcının store'u dışarı vermeyen 5'li tuple'ı bozulmasın
+    /// diye bu test kendi fikstürünü kuruyor.
+    /// </summary>
+    [Fact]
+    public async Task SyncOnceAsync_cagri_sirasinda_yazilan_ayari_ezmez()
+    {
+        var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new PaymentRepository(db);
+
+        var settingsPath = Path.Combine(Path.GetTempPath(), $"settings-{Guid.NewGuid():N}.json");
+        var store = new SettingsStore(settingsPath);
+        var settings = store.Load(); // açılış singleton'ı — HTTP sırasında bayatlayacak
+
+        var paymentId = Guid.NewGuid();
+        var handler = new FakeHttpMessageHandler(req =>
+        {
+            var path = req.RequestUri!.PathAndQuery;
+            if (path.StartsWith("/api/v1/me/licenses"))
+                return JsonResp(200, LicensesJson());
+            if (path.Contains("/payments/since"))
+            {
+                // Eşzamanlı yazar: servisin Load'ı ile imleç kaydı ARASINDA
+                // başka bir bileşen kendi alanını diske yazıyor.
+                store.Update(s => s.PrinterName = "SONRADAN-YAZILDI");
+                var sinceJson = $@"[{{
+                    ""id"": ""{paymentId}"",
+                    ""status"": ""rejected"",
+                    ""approvedAt"": null,
+                    ""rejectedAt"": ""2026-05-11T10:30:00Z"",
+                    ""rejectReason"": ""tutar uyusmuyor"",
+                    ""updatedAt"": ""2026-05-11T10:30:00Z""
+                }}]";
+                return JsonResp(200, sinceJson);
+            }
+            return JsonResp(200, "[]");
+        });
+        var http = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
+        var api = new LicenseApiClient(http, new OrderDeck.Licensing.Api.LicenseTokenStore());
+        var licenseProvider = new StubLicenseProvider { CurrentLicenseKey = TestLicenseKey };
+        var svc = new PaymentSyncService(api, repo, store, settings, licenseProvider,
+            new FakeClock(), NullLogger<PaymentSyncService>.Instance);
+
+        repo.Insert(NewLocalPayment(paymentId.ToString()));
+        repo.MarkSynced(paymentId.ToString(), 1714000000L);
+
+        var result = await svc.SyncOnceAsync();
+        result.Pulled.Should().Be(1);
+
+        var saved = store.Load();
+        saved.PrinterName.Should().Be("SONRADAN-YAZILDI",
+            "imleç kaydı, çağrı sırasında yazılan alanı ezmemeli (N04)");
+        saved.LastPaymentReverseSync.Should().NotBeNull("imleç yine de ilerlemeli");
+    }
+
     [Fact]
     public async Task SyncOnceAsync_gracefully_handles_5xx_failure()
     {

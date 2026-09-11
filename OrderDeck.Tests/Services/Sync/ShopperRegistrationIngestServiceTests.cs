@@ -231,6 +231,44 @@ public sealed class ShopperRegistrationIngestServiceTests
         saved.LastShopperIngestId.Should().Be(shopperId);
     }
 
+    // ── N04: imleç yazımı başka yazarın alanını ezmemeli ──────────────────────
+
+    [Fact]
+    public async Task IngestOnce_cagri_sirasinda_yazilan_ayari_ezmez()
+    {
+        // Servis döngü başında ayarları yükler, HTTP çağrısından SONRA imleci
+        // kaydeder. Çağrı sırasında başka bir bileşen (ör. ayar ekranı) farklı
+        // bir alanı diske yazarsa, servisin bütün-nesne yazımı o alanı uygulama
+        // açılışındaki (bayat) değerine döndürmemeli.
+        var shopperId = Guid.NewGuid();
+        var updatedAt = DateTimeOffset.UtcNow;
+
+        SettingsStore? storeRef = null;
+        var fx = Build(req =>
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (path == "/api/v1/me/licenses")
+                return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/wpf-customers/since"))
+            {
+                // Tam yarış anı: servis Load'ı yaptı, Save'i henüz yapmadı.
+                storeRef!.Update(s => s.PrinterName = "BAŞKA-YAZAR");
+                return FakeHttpMessageHandler.Json(200, PullJson(
+                    (shopperId, "youtube", "raceuser", "Yarış Kullanıcı", null, null, updatedAt)));
+            }
+            return FakeHttpMessageHandler.Empty(404);
+        });
+        storeRef = fx.Store;
+        using var _d = fx.Db;
+
+        await fx.Svc.IngestOnceAsync(CancellationToken.None);
+
+        var saved = fx.Store.Load();
+        saved.PrinterName.Should().Be("BAŞKA-YAZAR",
+            "imleç kaydı başka yazarın bu arada yazdığı alanı ezmemeli (N04)");
+        saved.LastShopperIngestId.Should().Be(shopperId, "imleç de ilerlemeli");
+    }
+
     // ── API failure → returns 0, watermark NOT advanced ───────────────────────
 
     [Fact]
