@@ -53,12 +53,18 @@ public interface IPaymentJobStore
     /// kazananın anahtarıyla devam et.</summary>
     bool BeginApply(string id, Guid applyKey);
 
+    /// <summary>Çağıran, id'yi aynı akışta <c>FindOrCreate</c>/<c>Get</c>'ten almış olmalıdır;
+    /// var olmayan id sessiz no-op'tur, hata değil.</summary>
     void MarkApplied(string id, decimal appliedAmount);
 
-    /// <summary>Kesin "bakiye yok" cevabı — AppliedAmount 0 yazılır.</summary>
+    /// <summary>Kesin "bakiye yok" cevabı — AppliedAmount 0 yazılır.
+    /// Çağıran, id'yi aynı akışta <c>FindOrCreate</c>/<c>Get</c>'ten almış olmalıdır;
+    /// var olmayan id sessiz no-op'tur, hata değil.</summary>
     void MarkNoBalance(string id);
 
-    /// <summary>Sonuç yeniden belirsizleşti (ör. geri alma ağda kayboldu).</summary>
+    /// <summary>Sonuç yeniden belirsizleşti (ör. geri alma ağda kayboldu).
+    /// Çağıran, id'yi aynı akışta <c>FindOrCreate</c>/<c>Get</c>'ten almış olmalıdır;
+    /// var olmayan id sessiz no-op'tur, hata değil.</summary>
     void MarkUncertain(string id);
 
     /// <summary>Mesaj müşteriye ulaştı — iş kapanır. Idempotent (ilk zaman korunur).</summary>
@@ -152,8 +158,8 @@ public sealed class PaymentJobRepository : IPaymentJobStore
     {
         using var conn = _factory.Open();
         conn.Execute(
-            "UPDATE PaymentJob SET State=@state, AppliedAmount='0', UpdatedAt=@now WHERE Id=@id",
-            new { id, state = PaymentJobState.NoBalance, now = Now() });
+            "UPDATE PaymentJob SET State=@state, AppliedAmount=@amt, UpdatedAt=@now WHERE Id=@id",
+            new { id, state = PaymentJobState.NoBalance, amt = Dec(0m), now = Now() });
     }
 
     public void MarkUncertain(string id)
