@@ -140,13 +140,15 @@ public sealed class PaymentSyncService
 
         if (rows.Count == 0) return 0;
 
-        // İmleç (UpdatedAt, Id) çifti; sunucu da bu sıraya göre sayfalıyor.
-        // Yalnız en büyük UpdatedAt alınsaydı, aynı damgayı paylaşan satırlar
-        // sayfa sınırında kesildiğinde kalanları bir daha istenmezdi.
-        var ordered = rows.OrderBy(d => d.UpdatedAt).ThenBy(d => d.Id).ToList();
-        foreach (var dto in ordered) ApplyDto(dto);
+        // N08: imleç (UpdatedAt, Id) çifti, sunucunun teslim ettiği SON
+        // satırdan okunur — yeniden SIRALAMA YOK. Sunucu SQL Server'ın
+        // uniqueidentifier sırasıyla sayfalıyor; .NET Guid.CompareTo farklı
+        // bir sıra üretir (SQL karşılaştırmaya son 6 bayttan başlar).
+        // İstemci kendi sırasına göre "son"u seçerse imleç sunucu sayfa
+        // sınırının gerisinde kalır ve aynı satırlar tekrar iner.
+        foreach (var dto in rows) ApplyDto(dto);
 
-        var last = ordered[^1];
+        var last = rows[^1];
         // N04: bellekteki kopya güncel kalsın (imleç okuması buradan); diske
         // Update ile atomik birleştirme — bütün-nesne Save başka bileşenin bu
         // arada yazdığı alanı ezerdi.
