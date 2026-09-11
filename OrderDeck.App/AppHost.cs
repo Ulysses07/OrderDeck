@@ -82,10 +82,7 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<CustomerRepository>();
         services.AddSingleton<LabelRepository>();
         services.AddSingleton<PaymentRepository>();
-        // N02: bakiye düşümünün kalıcı ödeme-işi kimliği (PaymentRequestService).
-        services.AddSingleton<IPendingBalanceApplyStore, PendingBalanceApplyRepository>();
-        // R2-01..04: kalıcı ödeme işi (PaymentJob). Yukarıdaki 033 deposunun
-        // yerini alır; servis geçişi PR2'de, o zamana kadar ikisi de kayıtlı.
+        // R2-01..04: bakiye düşümünün kalıcı ödeme işi (PaymentRequestService).
         services.AddSingleton<IPaymentJobStore, PaymentJobRepository>();
         // Stok Faz 1b: sunucu katalogunun salt-okunur replikası ve kapak
         // fotoğrafı önbelleği. Tek yazarı CatalogSyncService.

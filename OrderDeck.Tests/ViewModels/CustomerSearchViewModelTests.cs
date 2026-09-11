@@ -53,7 +53,7 @@ public class CustomerSearchViewModelTests
                (OrderDeck.App.Services.Sync.ICurrentLicenseProvider)
                    new PaymentRequestServiceTestHelpers.NullLicenseProvider());
         var paymentService = new PaymentRequestService(settingsStore, new WhatsAppMessageBuilder(), launcher,
-            api, licenseProvider, new InMemoryPendingBalanceApplyStore());
+            api, licenseProvider, new InMemoryPaymentJobStore());
         var dialogs = new FakeDialogService();
         var sut = new CustomerSearchViewModel(customers, customerService, sessions, labels, paymentService, dialogs);
         return (db, customers, sessions, labels, launcher, dialogs, settingsPath, sut);

@@ -34,14 +34,10 @@ public enum PaymentRequestResult
     /// doğrulamaya yönlendirmek.</para></summary>
     SendPending,
 
-    /// <summary>N02 (2026-09-10 denetimi): müşterinin diskte çözülmemiş bir
-    /// bakiye düşüm işi var ve tutarı bu denemeninkinden FARKLI. Eski anahtarı
-    /// sessizce kullanmak yeni satışın düşümünü eski satışın sonucuna
-    /// bağlayabilir; yeni anahtar üretmek ise çift düşümü serbest bırakır.
-    /// Kararı operatör verir — çağıran uyarı gösterip onayla
-    /// <c>overridePendingConflict: true</c> ile yeniden çağırmalı (o zaman eski
-    /// anahtar yeniden kullanılır; para güvenliği anahtar sürekliliğinde).</summary>
-    PendingApplyConflict
+    /// <summary>Bakiye durumu doğrulanamadı (apply/geri alma belirsiz kaldı ya
+    /// da lisans/önizleme erişilemedi). Mesaj GÖNDERİLMEDİ — operatör tekrar
+    /// denemeli; deneme aynı anahtarla replay yapar, çift düşüm imkânsız.</summary>
+    BalanceUncertain,
 }
 
 /// <summary>
@@ -61,7 +57,7 @@ public sealed class PaymentRequestService
     private readonly IUrlLauncher _launcher;
     private readonly LicenseApiClient _api;
     private readonly ICurrentLicenseProvider _currentLicense;
-    private readonly IPendingBalanceApplyStore _pendingApplies;
+    private readonly IPaymentJobStore _jobs;
     private readonly Microsoft.Extensions.Logging.ILogger<PaymentRequestService>? _log;
 
     public PaymentRequestService(
@@ -70,7 +66,7 @@ public sealed class PaymentRequestService
         IUrlLauncher launcher,
         LicenseApiClient api,
         ICurrentLicenseProvider currentLicense,
-        IPendingBalanceApplyStore pendingApplies,
+        IPaymentJobStore jobs,
         Microsoft.Extensions.Logging.ILogger<PaymentRequestService>? log = null)
     {
         _settingsStore = settingsStore;
@@ -78,7 +74,7 @@ public sealed class PaymentRequestService
         _launcher = launcher;
         _api = api;
         _currentLicense = currentLicense;
-        _pendingApplies = pendingApplies;
+        _jobs = jobs;
         _log = log;
     }
 
@@ -156,16 +152,15 @@ public sealed class PaymentRequestService
     /// ledger'a purchase-deduction kaydı düşer, WhatsApp template'inde
     /// {bakiye} / {net_tutar} placeholder'ları dolar. Sonra wa.me link açılır.
     ///
-    /// Bakiye hatası WhatsApp akışını engellemez — apply başarısızsa eski
-    /// davranış (bakiye uygulanmamış) ile mesaj gönderilir. Operatör mobile
-    /// panel'den manuel ekleyebilir.
+    /// R2-01..04 (2026-09-11): bakiye sonucu KESİNLEŞMEDEN mesaj gönderilmez —
+    /// belirsizlikte <see cref="PaymentRequestResult.BalanceUncertain"/> döner.
     /// </summary>
-    /// <param name="overridePendingConflict">Operatör, tutarı değişmiş bekleyen
-    /// iş uyarısını onayladı — eski anahtar yeniden kullanılır (bkz.
-    /// <see cref="PaymentRequestResult.PendingApplyConflict"/>).</param>
+    /// <param name="scopeKey">Satışın kalıcı kimlik kapsamı:
+    /// "session:{id}" (yayın raporu) | "cumulative" (genel bakiye).
+    /// Aynı kapsam + aynı müşteri = aynı satış; tutar değişirse revizyon.</param>
     public async Task<PaymentRequestResult> OpenWhatsAppAsync(
         Customer customer, decimal productTotal, DateTime streamDate,
-        bool overridePendingConflict = false, CancellationToken ct = default)
+        string scopeKey, CancellationToken ct = default)
     {
         if (!PhoneNormalizer.IsValidTr(customer.Phone))
             return PaymentRequestResult.PhoneRequired;
@@ -173,88 +168,22 @@ public sealed class PaymentRequestService
         var settings = _settingsStore.Load();
         var (totalAmount, shippingFee, shippingNote) = ComputeShipping(customer, productTotal, settings);
 
-        // Bakiye uygulaması (best-effort).
+        // Bakiye uygulaması — PaymentJob durum makinesi (R2-01..04).
+        // Eski fail-silent davranış BİLEREK terk edildi: sonuç belirsizse mesaj
+        // gönderilmez (BalanceUncertain). "Bakiyesi düşmüş ama mesajı yanlış
+        // tutarlı" ihtimali, "operatör bir kez daha tıklar" maliyetinden ağır.
         decimal appliedBalance = 0m;
         var totalBeforeBalance = totalAmount;
-        Guid? pendingApplyKey = null;   // mesaj müşteriye ulaşınca kapatılacak iş
+        PaymentJob? deliveryJob = null;   // mesaj müşteriye ulaşınca kapatılacak iş
         if (totalAmount > 0 && Guid.TryParseExact(customer.Id, "N", out var wpfCustomerId))
         {
-            try
-            {
-                // N02 (2026-09-10 denetimi): diskte yarım kalmış bir düşüm işi
-                // varsa anahtarı YENİDEN kullanılır — sunucu ilk sonucu oynatır,
-                // ikinci düşüm imkânsız. Tutar değiştiyse karar operatörün:
-                // sessizce eski anahtar yeni satışı eski sonuca bağlar, yeni
-                // anahtar ise çift düşümü serbest bırakırdı.
-                var pending = _pendingApplies.GetUnresolved(customer.Id);
-                if (pending is not null && pending.ProductTotal != totalAmount && !overridePendingConflict)
-                    return PaymentRequestResult.PendingApplyConflict;
-
-                var licenseId = await ResolveLicenseIdAsync(ct);
-                if (licenseId is not null)
-                {
-                    Guid? key = null;
-                    decimal amount = 0m;
-                    if (pending is not null)
-                    {
-                        // Preview BİLEREK atlanır: ilk deneme düşümü yapmışsa
-                        // bakiye 0 görünür ve kapı apply'ı atlatırdı; oysa cevap
-                        // sunucudaki replay'den gelmeli (replay, balance
-                        // kontrolünden ÖNCE çalışır).
-                        key = pending.IdempotencyKey;
-                        amount = totalAmount;
-                    }
-                    else
-                    {
-                        var preview = await _api.GetBalancePreviewAsync(
-                            licenseId.Value, wpfCustomerId, ct);
-                        if (preview.Balance > 0)
-                        {
-                            // Anahtar apply'dan ÖNCE diske iner: düşüm başarılı
-                            // olup pencere açılamazsa (ya da süreç ölürse) ikinci
-                            // deneme aynı anahtarı bulur.
-                            key = Guid.NewGuid();
-                            amount = Math.Min(preview.Balance, totalAmount);
-                            _pendingApplies.Create(customer.Id, key.Value, totalAmount);
-                        }
-                    }
-
-                    if (key is { } applyKey)
-                    {
-                        pendingApplyKey = applyKey;
-                        try
-                        {
-                            var apply = await _api.ApplyBalanceAsync(
-                                licenseId.Value,
-                                new CustomerBalanceApplyRequest(
-                                    wpfCustomerId, amount, totalAmount, applyKey),
-                                ct);
-                            appliedBalance = apply.AppliedAmount;
-                            totalAmount -= apply.AppliedAmount;
-                        }
-                        catch (ValidationException ex) when (
-                            ex.Code is "no-balance" or "nothing-to-apply")
-                        {
-                            // Replay sunucuda balance kontrolünden önce çalıştığı
-                            // için bu 409, anahtarın HİÇ uygulanmadığının ve
-                            // bakiyenin olmadığının kanıtı. İş güvenle kapanır —
-                            // açık kalsaydı bakiyesiz müşteri sonraki her satışta
-                            // uyarı tetiklerdi.
-                            _pendingApplies.MarkResolved(applyKey);
-                            pendingApplyKey = null;
-                        }
-                    }
-                }
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _log?.LogWarning(ex,
-                    "Balance apply failed for customer {CustomerId} — sending WhatsApp without deduction",
-                    customer.Id);
-                // Fail-silent → eski davranışla devam. pendingApplyKey yazıldıysa
-                // iş açık kalır: sunucu düşümü yapmış olabilir, bir sonraki deneme
-                // aynı anahtarla gerçeği replay'den öğrenir.
-            }
+            var outcome = await ResolveBalanceAsync(
+                customer, wpfCustomerId, totalAmount, scopeKey, ct);
+            if (outcome.Uncertain)
+                return PaymentRequestResult.BalanceUncertain;
+            deliveryJob = outcome.Job;
+            appliedBalance = outcome.AppliedBalance;
+            totalAmount -= appliedBalance;
         }
 
         var ctx = new PaymentContext(
@@ -281,11 +210,11 @@ public sealed class PaymentRequestService
                 customer.Phone!, message, BuildTemplateRef(settings, ctx), "wpf-payment", ct))
             {
                 case CloudSendOutcome.Sent:
-                    ResolvePendingApply(pendingApplyKey);
+                    CloseJob(deliveryJob);
                     return PaymentRequestResult.Sent;
                 case CloudSendOutcome.Pending:
                     // Sonuç bilinmiyor — iş açık kalır, bir sonraki deneme aynı
-                    // anahtarı yeniden kullanır (N02).
+                    // anahtarı yeniden kullanır (R2-01).
                     return PaymentRequestResult.SendPending;
             }
         }
@@ -295,31 +224,231 @@ public sealed class PaymentRequestService
         try
         {
             _launcher.Launch(link);
-            ResolvePendingApply(pendingApplyKey);
+            CloseJob(deliveryJob);
             return PaymentRequestResult.Opened;
         }
         catch
         {
             // İş açık kalır: operatörün ikinci tıklaması aynı anahtarı bulur,
-            // bakiye ikinci kez düşmez (N02).
+            // bakiye ikinci kez düşmez (R2-01).
             return PaymentRequestResult.LaunchFailed;
         }
     }
 
-    /// <summary>Mesaj müşteriye ulaştı — bekleyen bakiye işini kapatır. Disk
-    /// hatası akışı düşürmemeli: mesaj zaten gitti, en kötü ihtimalle iş açık
-    /// kalır ve bir sonraki satışta operatör uyarı görür.</summary>
-    private void ResolvePendingApply(Guid? key)
+    /// <summary>Mesaj müşteriye ulaştı — iş kapanır. Disk hatası akışı
+    /// düşürmemeli: mesaj zaten gitti; en kötü iş açık kalır ve bir sonraki
+    /// deneme sonucu diskten/replay'den yeniden bulur.</summary>
+    private void CloseJob(PaymentJob? job)
     {
-        if (key is null) return;
-        try
-        {
-            _pendingApplies.MarkResolved(key.Value);
-        }
+        if (job is null) return;
+        try { _jobs.Close(job.Id); }
         catch (Exception ex)
         {
-            _log?.LogWarning(ex, "Bekleyen bakiye işi kapatılamadı (key={Key})", key);
+            _log?.LogWarning(ex, "Ödeme işi kapatılamadı (job={JobId})", job.Id);
         }
+    }
+
+    private sealed record BalanceOutcome(bool Uncertain, decimal AppliedBalance, PaymentJob? Job);
+
+    /// <summary>Satışın bakiye sonucunu kesinleştirir. Dönüşte ya sonuç
+    /// kesindir (Uncertain=false; AppliedBalance mesaja yazılabilir) ya da
+    /// akış durmalıdır (Uncertain=true; çağıran BalanceUncertain döner).</summary>
+    private async Task<BalanceOutcome> ResolveBalanceAsync(
+        Customer customer, Guid wpfCustomerId, decimal totalAmount,
+        string scopeKey, CancellationToken ct)
+    {
+        try
+        {
+            var licenseId = await ResolveLicenseIdAsync(ct);
+            if (licenseId is null)
+            {
+                // Lisans anahtarı hiç yoksa bakiye özelliği kapalı — eski
+                // davranış: düşümsüz devam. Anahtar var ama çözülemediyse
+                // (ağ) belirsizlik: mesajı bloklamak gerekir.
+                if (string.IsNullOrEmpty(_currentLicense.CurrentLicenseKey))
+                    return new(Uncertain: false, 0m, null);
+                return new(Uncertain: true, 0m, null);
+            }
+
+            // 1) Miras (033→034) işi: önce kesinleştir, sonucu bu satışa devret.
+            var legacy = _jobs.GetOpenLegacy(customer.Id);
+            PaymentJob job;
+            if (legacy is not null)
+            {
+                legacy = await ReplayAsync(licenseId.Value, wpfCustomerId, legacy, ct);
+                if (legacy.State == PaymentJobState.ApplyUncertain)
+                    return new(true, 0m, legacy);
+
+                job = _jobs.FindOrCreate(customer.Id, scopeKey, totalAmount);
+                if (job.State == PaymentJobState.Created && job.ApplyKey is null)
+                {
+                    // Taze hedef: miras sonucu (anahtar+tutar+durum) devralır;
+                    // tutar farklıysa aşağıdaki revizyon adımı düzeltir.
+                    _jobs.AdoptLegacyResult(job.Id, legacy.Id);
+                }
+                else
+                {
+                    // Hedef iş kendi hayatını yaşıyor — miras düşümü artıksa
+                    // geri al, işi kapat.
+                    if (legacy.AppliedAmount is > 0m
+                        && !await TryReverseAsync(licenseId.Value, legacy.ApplyKey!.Value, ct))
+                    {
+                        _jobs.MarkUncertain(legacy.Id);
+                        return new(true, 0m, legacy);
+                    }
+                    _jobs.Close(legacy.Id);
+                }
+                job = _jobs.Get(job.Id)!;
+            }
+            else
+            {
+                job = _jobs.FindOrCreate(customer.Id, scopeKey, totalAmount);
+            }
+
+            // 2) Belirsiz iş: bir kez replay (K3) — hâlâ belirsizse blokla.
+            if (job.State == PaymentJobState.ApplyUncertain)
+            {
+                job = await ReplayAsync(licenseId.Value, wpfCustomerId, job, ct);
+                if (job.State == PaymentJobState.ApplyUncertain)
+                    return new(true, 0m, job);
+            }
+
+            // 3) Revizyon (K2): kapsam aynı, tutar değişti — eski düşümü geri
+            //    al, yeni toplam + YENİ anahtarla taze uygula. created işte de
+            //    çalışır (geri alınacak şey yoktur, sadece tutar güncellenir).
+            if (job.ProductTotal != totalAmount)
+            {
+                if (job.AppliedAmount is > 0m
+                    && !await TryReverseAsync(licenseId.Value, job.ApplyKey!.Value, ct))
+                {
+                    _jobs.MarkUncertain(job.Id);
+                    return new(true, 0m, job);
+                }
+                // false = eşzamanlı revizyon kazandı; onun anahtarıyla devam.
+                _jobs.BeginRevision(job.Id, totalAmount, Guid.NewGuid(), job.Revision);
+                job = _jobs.Get(job.Id)!;
+                return await SettleAsync(licenseId.Value, wpfCustomerId, job, ct);
+            }
+
+            // 4) Tekrar paylaşım: sonuç kesin, tutar aynı — finansal çağrı YOK.
+            if (job.State is PaymentJobState.Applied or PaymentJobState.NoBalance)
+                return new(false, job.AppliedAmount ?? 0m, job);
+
+            // 5) Taze iş: önizleme (bakiye yoksa anahtar hiç yazılmaz) →
+            //    anahtar diske → apply.
+            decimal previewBalance;
+            try
+            {
+                var preview = await _api.GetBalancePreviewAsync(licenseId.Value, wpfCustomerId, ct);
+                previewBalance = preview.Balance;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _log?.LogWarning(ex,
+                    "Bakiye önizlemesi alınamadı — mesaj engellendi (job={JobId})", job.Id);
+                return new(true, 0m, job); // anahtar yazılmadı, iş created kaldı
+            }
+            if (previewBalance <= 0)
+            {
+                _jobs.MarkNoBalance(job.Id);
+                return new(false, 0m, _jobs.Get(job.Id));
+            }
+
+            if (!_jobs.BeginApply(job.Id, Guid.NewGuid()))
+            {
+                // Yarışı kaybettik (R2-04/A9): kazananın anahtarı diskte.
+                job = _jobs.Get(job.Id)!;
+                if (job.State is PaymentJobState.Applied or PaymentJobState.NoBalance)
+                    return new(false, job.AppliedAmount ?? 0m, job);
+            }
+            job = _jobs.Get(job.Id)!;
+            return await SettleAsync(licenseId.Value, wpfCustomerId, job, ct);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            _log?.LogError(ex,
+                "Bakiye akışında beklenmeyen hata — mesaj engellendi (customer={CustomerId})",
+                customer.Id);
+            return new(true, 0m, null);
+        }
+    }
+
+    /// <summary>Diskteki anahtarla apply — bir deneme + bir anında tekrar (K3).</summary>
+    private async Task<BalanceOutcome> SettleAsync(
+        Guid licenseId, Guid wpfCustomerId, PaymentJob job, CancellationToken ct)
+    {
+        job = await ReplayAsync(licenseId, wpfCustomerId, job, ct);
+        if (job.State == PaymentJobState.ApplyUncertain)
+            job = await ReplayAsync(licenseId, wpfCustomerId, job, ct);
+        return job.State == PaymentJobState.ApplyUncertain
+            ? new(true, 0m, job)
+            : new(false, job.AppliedAmount ?? 0m, job);
+    }
+
+    /// <summary>İşin diskteki anahtarıyla apply'ı (yeniden) dener, sonucu işe
+    /// yazar. Amount=ProductTotal gönderilir — sunucu bakiyeye/toplama kırpar;
+    /// replay'de birebir aynı gövde gittiği için A11 içerik kontrolünden geçer.</summary>
+    private async Task<PaymentJob> ReplayAsync(
+        Guid licenseId, Guid wpfCustomerId, PaymentJob job, CancellationToken ct)
+    {
+        if (job.ApplyKey is null)
+            throw new InvalidOperationException($"Replay anahtarsız işte çağrıldı (job={job.Id})");
+        try
+        {
+            var apply = await _api.ApplyBalanceAsync(
+                licenseId,
+                new CustomerBalanceApplyRequest(
+                    wpfCustomerId, job.ProductTotal, job.ProductTotal, job.ApplyKey),
+                ct);
+            _jobs.MarkApplied(job.Id, apply.AppliedAmount);
+        }
+        catch (ValidationException ex) when (ex.Code is "no-balance" or "nothing-to-apply")
+        {
+            // Replay sunucuda balance kontrolünden ÖNCE çalışır: bu 409,
+            // anahtarın hiç uygulanmadığının ve bakiye olmadığının kesin kanıtı.
+            _jobs.MarkNoBalance(job.Id);
+        }
+        catch (ValidationException ex) when (ex.Code == "content-conflict")
+        {
+            // Olmamalı: anahtar sunucuda FARKLI içerikle kayıtlı (A11). Kesin
+            // cevap sayamayız — belirsiz bırak, yüksek sesle logla.
+            _log?.LogError(
+                "Bakiye anahtarı sunucuda farklı içerikle kayıtlı (job={JobId}, key={Key})",
+                job.Id, job.ApplyKey);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            _log?.LogWarning(ex, "Bakiye apply belirsiz kaldı (job={JobId})", job.Id);
+        }
+        return _jobs.Get(job.Id)!;
+    }
+
+    /// <summary>Eski düşümü geri alır (K2). 409 already-reversed = idempotent
+    /// başarı (A8). Geçici hatada bir kez daha dener (K3); yine olmazsa false.</summary>
+    private async Task<bool> TryReverseAsync(
+        Guid licenseId, Guid transactionId, CancellationToken ct)
+    {
+        for (var attempt = 1; attempt <= 2; attempt++)
+        {
+            try
+            {
+                await _api.ReverseBalanceTransactionAsync(licenseId, transactionId, ct);
+                return true;
+            }
+            catch (ValidationException ex) when (ex.Code == "already-reversed")
+            {
+                return true;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                _log?.LogWarning(ex,
+                    "Bakiye geri alma denemesi {Attempt} düştü (tx={TxId})", attempt, transactionId);
+            }
+        }
+        return false;
     }
 
     /// <summary>
