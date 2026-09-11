@@ -125,10 +125,9 @@
                       Content="Son yayından alışverişçiler"
                       IsChecked="{Binding LastStreamShoppersOnly}"/>
 
-            <TextBlock Style="{StaticResource OD.Text.Hint}">
-                <Run Text="{Binding ResultCount, Mode=OneWay}"/>
-                <Run Text="sonuç"/>
-            </TextBlock>
+            <TextBlock Style="{StaticResource OD.Text.Hint}"
+                       TextWrapping="Wrap"
+                       Text="{Binding ResultSummary, Mode=OneWay}"/>
         </StackPanel>
 
         <!-- ═══ Liste ═══ -->

@@ -318,17 +318,37 @@ public sealed class CustomerRepository
             new { id = customerId, notes = string.IsNullOrWhiteSpace(notes) ? null : notes.Trim() });
     }
 
-    /// <summary>All customers, ordered by LastSeenAt DESC. Used by the customer
-    /// dialog to show a default list when the search box is empty — otherwise the
-    /// operator has no way to discover newly-registered shoppers (which don't yet
-    /// have orders). WPF ListBox virtualizes by default, so a few thousand rows
-    /// remain responsive.</summary>
-    public IReadOnlyList<Customer> GetAll()
+    /// <summary>
+    /// En son görülen <paramref name="limit"/> müşteri, LastSeenAt DESC sıralı.
+    /// Arama kutusu boşken gösterilen varsayılan liste — operatörün henüz
+    /// siparişi olmayan yeni kayıtları görebilmesi için (arama olmadan hiçbir
+    /// yerde görünmezlerdi).
+    ///
+    /// <para><b>Neden sınırlı.</b> Bu metot eskiden <c>GetAll()</c>'dü ve TÜM
+    /// tabloyu materialize ediyordu — <see cref="Search"/>'ün R3-04'te
+    /// düzeltilen sorununun aynısı, sadece süzgeçsiz hâli. Sıralama zaten
+    /// LastSeenAt DESC olduğu için sınır listenin AMACINI bozmuyor: aranan şey
+    /// "en yeniler". Daha eskisine ulaşmak arama kutusunun işi; kesme UI'da
+    /// açıkça yazılıyor, sessizce eksik liste göstermiyoruz.</para>
+    ///
+    /// <para>Süzgeçler (R3-03 ile aynı gerekçe) SQL'in içinde, limit'ten ÖNCE
+    /// uygulanır — dışarıda süzülseydi süzgece uyan eski kayıt, ilk
+    /// <paramref name="limit"/> genel satırın dışında kalınca kaybolurdu.</para>
+    /// </summary>
+    public IReadOnlyList<Customer> GetRecent(
+        int limit, string? platform = null, bool registeredOnly = false)
     {
+        var filters = new StringBuilder();
+        if (!string.IsNullOrEmpty(platform)) filters.Append(" AND Platform = @platform");
+        if (registeredOnly) filters.Append(" AND Phone IS NOT NULL AND TRIM(Phone) <> ''");
+
         using var conn = _factory.Open();
         var rows = conn.Query<Row>(
-            @"SELECT * FROM Customer
-              ORDER BY LastSeenAt DESC").ToList();
+            $@"SELECT * FROM Customer
+               WHERE 1 = 1{filters}
+               ORDER BY LastSeenAt DESC
+               LIMIT @limit",
+            new { limit, platform }).ToList();
         return rows.Select(Map).ToList();
     }
 

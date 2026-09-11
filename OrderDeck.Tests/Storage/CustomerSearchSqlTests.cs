@@ -137,6 +137,31 @@ public class CustomerSearchSqlTests
     }
 
     [Fact]
+    public void GetRecent_en_yenileri_sınırlı_verir_ve_süzgeci_limitten_önce_uygular()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+
+        var rnd = new Random(11);
+        var all = Enumerable.Range(0, 200).Select(i => Make(i, rnd)).ToList();
+        foreach (var c in all) repo.Insert(c);
+
+        // Sınır: en yeni N satır, LastSeenAt DESC.
+        repo.GetRecent(10).Select(c => c.Id)
+            .Should().Equal(all.OrderByDescending(c => c.LastSeenAt).Take(10).Select(c => c.Id));
+
+        // Süzgeç SQL'in içinde: 10 satırlık pencerede hiç tiktok olmasa bile
+        // tiktok süzgeci en yeni 10 TIKTOK satırını getirmeli.
+        repo.GetRecent(10, platform: "tiktok").Select(c => c.Id)
+            .Should().Equal(all.Where(c => c.Platform == "tiktok")
+                               .OrderByDescending(c => c.LastSeenAt).Take(10).Select(c => c.Id));
+
+        repo.GetRecent(10, registeredOnly: true).Should()
+            .OnlyContain(c => !string.IsNullOrWhiteSpace(c.Phone));
+    }
+
+    [Fact]
     public void Taze_pencere_dolduğunda_sonuç_tam_taramayla_aynı()
     {
         using var db = new InMemorySqlite();
