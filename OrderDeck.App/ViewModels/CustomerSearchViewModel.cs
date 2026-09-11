@@ -277,8 +277,16 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
         {
             // R2-01..03: düşümün sonucu kesinleşmedi, mesaj GÖNDERİLMEDİ.
             // Tekrar deneme aynı anahtarla replay yapar — çift düşüm imkânsız.
-            _dialogService.ShowError(
-                "Bakiye doğrulanamadı — mesaj gönderilmedi. Tekrar deneyin.");
+            //
+            // Hata değil UYARI: kaybedilmiş bir işlem yok ve operatörün
+            // yapabileceği somut bir şey var. Kırmızı hata diyaloğu "bir şey
+            // bozuldu" izlenimi veriyordu; asıl endişeyi ("bakiye iki kez mi
+            // düştü?") metnin sonundaki güvence kapatıyor.
+            _dialogService.Show(
+                "Sunucudan kesin cevap alınamadı; mesaj gönderilmedi. " +
+                "Bağlantıyı kontrol edip tekrar deneyin — çift düşüm olmaz.",
+                "Bakiye doğrulanamadı",
+                DialogSeverity.Warning);
         }
 
         // Kapsam: yayın-içi tutar kullanıldıysa satış o oturuma, değilse

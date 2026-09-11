@@ -250,6 +250,51 @@ public sealed class PaymentRequestService
 
     private sealed record BalanceOutcome(bool Uncertain, decimal AppliedBalance, PaymentJob? Job);
 
+    /// <summary>
+    /// Lisans id'si çözülemediğinde (anahtar yok, ya da sunucuya ulaşılamıyor)
+    /// verilecek karar.
+    ///
+    /// Bu dal apply'dan ÖNCE çalışır: bu tıklamada para adına sunucuya tek bir
+    /// istek bile gitmemiştir. Yani belirsiz olan sunucuya erişim, satışın
+    /// sonucu değil — K3'ün blok gerekçesi burada kendiliğinden geçerli DEĞİL.
+    /// Neyi bildiğimizi diskteki iş satırı söyler; SQLite yerel, ağ istemez.
+    ///
+    /// Her şeyi bloklamak, tek bir VPS kesintisinde bakiyesi hiç olmayan
+    /// müşteriler dahil TÜM ödeme mesajlarını durdururdu — yayın ortasında tam
+    /// iş durması. Blok yalnızca gerçekten bilinmeyen durumlara saklanır.
+    /// </summary>
+    private BalanceOutcome OfflineOutcome(Customer customer, decimal totalAmount, string scopeKey)
+    {
+        // Anahtar hiç yoksa bakiye özelliği zaten kapalı — eski davranış.
+        if (string.IsNullOrEmpty(_currentLicense.CurrentLicenseKey))
+            return new(Uncertain: false, 0m, null);
+
+        // Açık miras (033→034) iş: anahtarı var, sonucu bilinmiyor. Hangi
+        // satışa ait olduğu da belirsiz — kesinleştirmeden devam edilemez.
+        if (_jobs.GetOpenLegacy(customer.Id) is not null)
+            return new(Uncertain: true, 0m, null);
+
+        var job = _jobs.FindOrCreate(customer.Id, scopeKey, totalAmount);
+
+        // created = BeginApply hiç çalışmamış (anahtar yazımı ile durum aynı
+        // UPDATE'te değişir) → bu satış için hiç para hareketi yok.
+        if (job.State == PaymentJobState.Created)
+            return new(Uncertain: false, 0m, null);
+
+        if (job.State is PaymentJobState.Applied or PaymentJobState.NoBalance)
+        {
+            // Tutar değiştiyse revizyon gerekir; revizyon geri-alma çağrısı
+            // ister, o da ağsız olmaz. Eski düşümü yok sayıp tam tutar
+            // yazmak müşteriye yanlış rakam göstermek olurdu.
+            if (job.ProductTotal != totalAmount)
+                return new(Uncertain: true, 0m, job);
+            return new(Uncertain: false, job.AppliedAmount ?? 0m, job);
+        }
+
+        // apply_uncertain: replay şart, o da ağsız olmaz.
+        return new(Uncertain: true, 0m, job);
+    }
+
     /// <summary>Satışın bakiye sonucunu kesinleştirir. Dönüşte ya sonuç
     /// kesindir (Uncertain=false; AppliedBalance mesaja yazılabilir) ya da
     /// akış durmalıdır (Uncertain=true; çağıran BalanceUncertain döner).</summary>
@@ -261,14 +306,7 @@ public sealed class PaymentRequestService
         {
             var licenseId = await ResolveLicenseIdAsync(ct);
             if (licenseId is null)
-            {
-                // Lisans anahtarı hiç yoksa bakiye özelliği kapalı — eski
-                // davranış: düşümsüz devam. Anahtar var ama çözülemediyse
-                // (ağ) belirsizlik: mesajı bloklamak gerekir.
-                if (string.IsNullOrEmpty(_currentLicense.CurrentLicenseKey))
-                    return new(Uncertain: false, 0m, null);
-                return new(Uncertain: true, 0m, null);
-            }
+                return OfflineOutcome(customer, totalAmount, scopeKey);
 
             // 1) Miras (033→034) işi: önce kesinleştir, sonucu bu satışa devret.
             var legacy = _jobs.GetOpenLegacy(customer.Id);
