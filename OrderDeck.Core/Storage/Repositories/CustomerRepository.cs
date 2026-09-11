@@ -703,7 +703,7 @@ public sealed class CustomerRepository
         var rows = conn.Query<Row>(
             @"SELECT Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
                      IsBlacklisted, BlacklistReason, Notes, TotalLabelsPrinted, TotalAmount,
-                     BlacklistedAt, Address, Phone, RecipientPaysActive
+                     BlacklistedAt, Address, Phone, RecipientPaysActive, FullName
               FROM Customer
               WHERE LastSeenAt > @since OR (LastSeenAt = @since AND Id > @sinceId)
               ORDER BY LastSeenAt ASC, Id ASC
