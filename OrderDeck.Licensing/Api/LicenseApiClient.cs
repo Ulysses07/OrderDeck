@@ -380,6 +380,18 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
             $"/api/v1/licenses/{licenseId}/customer-balance/apply", req, ct);
     }
 
+    /// <summary>Bir purchase-deduction satırını geri alır (revizyon akışı, K2).
+    /// <paramref name="transactionId"/> = apply'da kullanılan idempotency
+    /// anahtarı (ledger PK). Sunucu 409 already-reversed dönerse çağıran bunu
+    /// BAŞARI saymalı — geri alma zaten yapılmış.</summary>
+    public async Task ReverseBalanceTransactionAsync(
+        Guid licenseId, Guid transactionId, CancellationToken ct = default)
+    {
+        var url = $"api/v1/licenses/{licenseId}/customer-balance/transactions/{transactionId}/reverse";
+        using var resp = await SendJsonAsync(HttpMethod.Post, url, new { }, ct);
+        if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
+    }
+
     /// <summary>Panel endpoint'i ile customer detay + transaction listesi.
     /// wpfCustomerId = WPF lokal Customer.Id (hex N format) — sync sırasında
     /// server'daki WpfCustomerProjection.Id ile aynı tutuluyor.</summary>
