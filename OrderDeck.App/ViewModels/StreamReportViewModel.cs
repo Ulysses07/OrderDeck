@@ -230,25 +230,16 @@ public sealed partial class StreamReportViewModel : ViewModelBase
             _dialogService.ShowInfo(
                 "Gönderim işleniyor — WhatsApp'ta ulaştığını doğrulayın, aksi halde tekrar deneyin.");
         }
-
-        // N02: diskte tutarı farklı, yarım kalmış bir bakiye düşüm işi varsa
-        // servis mesaj atmadan önce operatöre sorulmasını ister. Onayda eski
-        // anahtar yeniden kullanılır (çift düşüm imkânsız); redde hiçbir şey
-        // yapılmaz — kayıt açık kalır.
-        async Task<PaymentRequestResult> RequestPaymentAsync(Customer c)
+        else if (result == PaymentRequestResult.BalanceUncertain)
         {
-            var r = await _paymentService.OpenWhatsAppAsync(c, topCustomer.TotalAmount, _currentSessionDate);
-            if (r != PaymentRequestResult.PendingApplyConflict) return r;
-
-            var proceed = await _dialogService.ConfirmAsync(
-                "Bu müşteri için yarım kalmış bir ödeme isteği var ve tutarı farklıydı. " +
-                "Devam ederseniz bakiye düşümü o yarım işle birleştirilir (ikinci kez düşülmez) " +
-                "ve mesaj yeni tutarla gönderilir.\n\nDevam edilsin mi?",
-                "Yarım kalmış ödeme isteği");
-            if (!proceed) return r;
-
-            return await _paymentService.OpenWhatsAppAsync(
-                c, topCustomer.TotalAmount, _currentSessionDate, overridePendingConflict: true);
+            // R2-01..03: düşümün sonucu kesinleşmedi, mesaj GÖNDERİLMEDİ.
+            // Tekrar deneme aynı anahtarla replay yapar — çift düşüm imkânsız.
+            _dialogService.ShowError(
+                "Bakiye doğrulanamadı — mesaj gönderilmedi. Tekrar deneyin.");
         }
+
+        async Task<PaymentRequestResult> RequestPaymentAsync(Customer c) =>
+            await _paymentService.OpenWhatsAppAsync(
+                c, topCustomer.TotalAmount, _currentSessionDate, $"session:{_sessionId}");
     }
 }
