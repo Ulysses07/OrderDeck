@@ -334,16 +334,21 @@ public sealed class CustomerRepository
     /// <summary>Kullanıcı adı VEYA isim araması (Username + DisplayName + FullName),
     /// LastSeenAt DESC sıralı. Eşleştirme <see cref="CustomerSearch.Matches"/>'ta:
     /// Türkçe harflere duyarlı olması gerektiği için SQL'de değil bellekte yapılır
-    /// (SQLite <c>LOWER()</c> yalnız ASCII'yi küçültür).</summary>
-    public IReadOnlyList<Customer> Search(string query, int limit = 50)
+    /// (SQLite <c>LOWER()</c> yalnız ASCII'yi küçültür).
+    /// R3-03: Ek süzgeç (platform/kayıtlı vb.) <paramref name="filter"/> ile
+    /// BURAYA verilmeli — sonuç limit'lendikten SONRA dışarıda süzülürse,
+    /// süzgece uyan ama ilk <paramref name="limit"/> genel eşleşmenin dışında
+    /// kalan kayıt yanlış "boş sonuç" olarak kaybolur.</summary>
+    public IReadOnlyList<Customer> Search(
+        string query, int limit = 50, System.Func<Customer, bool>? filter = null)
     {
         if (string.IsNullOrWhiteSpace(query))
             return System.Array.Empty<Customer>();
 
-        return GetAll()
-            .Where(c => CustomerSearch.Matches(c, query))
-            .Take(limit)
-            .ToList();
+        var matches = GetAll().Where(c => CustomerSearch.Matches(c, query));
+        if (filter is not null)
+            matches = matches.Where(filter);
+        return matches.Take(limit).ToList();
     }
 
     private static Customer Map(Row r) => new(
