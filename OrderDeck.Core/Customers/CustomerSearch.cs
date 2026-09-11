@@ -36,8 +36,27 @@ public static class CustomerSearch
     /// kısa metni indeksleyemez ve MATCH sorgusu HATA VERMEZ, sessizce BOŞ döner.
     /// Bu yüzden kısa terimli sorgular indeksi hiç kullanmaz, tarama yoluna
     /// düşer (bkz. CustomerRepository.Search). Sessiz yanlış-boş sonuç R3-03'ün
-    /// hata sınıfıydı; aynı tuzağa indeksle geri düşmüyoruz.</summary>
+    /// hata sınıfıydı; aynı tuzağa indeksle geri düşmüyoruz.
+    ///
+    /// <para>Birim <b>kod noktası</b>, UTF-16 birimi DEĞİL — bkz.
+    /// <see cref="CodePointCount"/>.</para></summary>
     public const int MinTrigramLength = 3;
+
+    /// <summary>Metnin Unicode <b>kod noktası</b> sayısı.
+    ///
+    /// <para><b>R5-01 (2026-09-12).</b> Eşik <c>string.Length</c> ile ölçülüyordu;
+    /// o UTF-16 birimi sayar. "a😀" 3 birim ama yalnızca 2 kod noktasıdır ve
+    /// FTS5'in trigram belirteçleyicisi kod noktası okur (<c>READ_UTF8</c>) —
+    /// yani ondan trigram üretemez. Sonuç: sorgu indekse yönlendiriliyor, MATCH
+    /// hata vermeden boş dönüyor, taze pencerede BULUNMUŞ olan doğru satırlar da
+    /// bu boş sonuçla değiştirildiği için arama yanlışlıkla boş kalıyordu.
+    /// Ölçüyü kod noktasına çevirmek bu sorguları tarama yoluna geri gönderir.</para></summary>
+    public static int CodePointCount(string s)
+    {
+        var count = 0;
+        for (var i = 0; i < s.Length; i += char.IsSurrogatePair(s, i) ? 2 : 1) count++;
+        return count;
+    }
 
     /// <summary>Müşteri, arama metnine uyuyor mu? Metin boşlukla ayrılmış
     /// parçalara bölünür ve HEPSİ eşleşmelidir — "delikurt bilal" da

@@ -113,6 +113,129 @@ public class CustomerSearchSqlTests
         }
     }
 
+    /// <summary>
+    /// R5-01: eşik UTF-16 birimiyle ölçülüyordu. "a😀" 3 birim ama 2 kod
+    /// noktasıdır; trigram belirteçleyicisi ondan hiçbir şey üretemez, MATCH
+    /// hata vermeden boş döner. Taze pencere limit'i doldurmadığı için ikinci
+    /// geçiş HER ZAMAN çalışır ve o boş sonuç, pencerede BULUNMUŞ doğru satırın
+    /// yerine geçerdi — yani arama "kayıt yok" derdi.
+    /// </summary>
+    [Fact]
+    public void Kod_noktası_üçten_az_olan_sorgu_trigrama_gitmez_ve_kaydı_bulur()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+
+        var all = new List<Customer>();
+        var i = 0;
+        foreach (var q in new[] { "a😀", "😀a", "😀😀" })
+        {
+            var c = new Customer(
+                $"e-{i}", "instagram", $"kullanici{i}", $"Ad {q} Soyad", null,
+                FirstSeenAt: 1000, LastSeenAt: 2000 + i,
+                IsBlacklisted: false, BlacklistReason: null, Notes: null,
+                TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null,
+                Address: null, Phone: null);
+            repo.Insert(c);
+            all.Add(c);
+            i++;
+        }
+
+        foreach (var q in new[] { "a😀", "😀a", "😀😀" })
+        {
+            CustomerSearch.CodePointCount(q).Should().Be(2, $"sorgu: '{q}'");
+            CustomerSearchPlan.Build(q).CanUseTrigram.Should().BeFalse($"sorgu: '{q}'");
+
+            repo.Search(q, limit: 50).Select(c => c.Id)
+                .Should().Equal(Reference(all, q, 50).Select(c => c.Id), $"sorgu: '{q}'");
+        }
+
+        // Üç kod noktası: trigram GEÇERLİ ve sonuç yine bellekteki kuralla aynı.
+        CustomerSearchPlan.Build("a😀b").CanUseTrigram.Should().BeTrue();
+        CustomerSearchPlan.Build("ali").CanUseTrigram.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// R5-02: limit SATIRI kesiyor, ekrandaki kart ise grubu topluyor. Kesilen
+    /// üye geri getirilmezse GÖRÜNEN kartın kendi toplamı eksilir.
+    /// </summary>
+    [Fact]
+    public void Grup_tamamlama_limit_dışında_kalan_üyeleri_geri_getirir()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+
+        // Aynı kişi: yeni instagram satırı + ÇOK eski tiktok satırı.
+        repo.Insert(new Customer(
+            "g-new", "instagram", "elma_yeni", "Ali Veli", null,
+            FirstSeenAt: 1000, LastSeenAt: 900_000,
+            IsBlacklisted: false, BlacklistReason: null, Notes: null,
+            TotalLabelsPrinted: 1, TotalAmount: 100m, BlacklistedAt: null,
+            Address: null, Phone: null, GroupId: "grp-1"));
+        repo.Insert(new Customer(
+            "g-old", "tiktok", "elma_eski", "Ali Veli", null,
+            FirstSeenAt: 1000, LastSeenAt: 1,
+            IsBlacklisted: false, BlacklistReason: null, Notes: null,
+            TotalLabelsPrinted: 2, TotalAmount: 200m, BlacklistedAt: null,
+            Address: null, Phone: "+905551112233", GroupId: "grp-1"));
+
+        // Araya 60 dolgu: limit 50'yi doldurup eski üyeyi dışarıda bırakıyorlar.
+        for (var i = 0; i < 60; i++)
+        {
+            repo.Insert(new Customer(
+                $"f-{i}", "instagram", $"elma_dolgu{i}", null, null,
+                FirstSeenAt: 1000, LastSeenAt: 100_000 + i,
+                IsBlacklisted: false, BlacklistReason: null, Notes: null,
+                TotalLabelsPrinted: 0, TotalAmount: 0m, BlacklistedAt: null,
+                Address: null, Phone: null));
+        }
+
+        var rows = repo.Search("elma", limit: 50);
+        rows.Should().HaveCount(50);
+        rows.Select(c => c.Id).Should().NotContain("g-old");
+
+        var completed = repo.CompleteGroups(rows);
+        completed.Should().HaveCount(51);
+        completed.Where(c => c.GroupId == "grp-1").Sum(c => c.TotalAmount).Should().Be(300m);
+        // Telefonlu (birincil) üye geri geldi — kart başlığı iletişimsiz kalmaz.
+        completed.Should().Contain(c => c.Id == "g-old" && c.Phone == "+905551112233");
+        // Hiçbir satır atılmadı, sıra korundu.
+        completed.Take(50).Select(c => c.Id).Should().Equal(rows.Select(c => c.Id));
+    }
+
+    /// <summary>Süzgeç hangi KİŞİLERİN listeleneceğini seçer, kartın İÇERİĞİNİ
+    /// değil: tamamlama süzgece uysaydı telefonlu üye düşer, toplam eksik
+    /// kalırdı.</summary>
+    [Fact]
+    public void Grup_tamamlama_süzgeçten_bağımsızdır()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+
+        repo.Insert(new Customer(
+            "p-ig", "instagram", "elma_ig", "Ali Veli", null,
+            FirstSeenAt: 1000, LastSeenAt: 500,
+            IsBlacklisted: false, BlacklistReason: null, Notes: null,
+            TotalLabelsPrinted: 1, TotalAmount: 100m, BlacklistedAt: null,
+            Address: null, Phone: null, GroupId: "grp-2"));
+        repo.Insert(new Customer(
+            "p-tt", "tiktok", "elma_tt", "Ali Veli", null,
+            FirstSeenAt: 1000, LastSeenAt: 400,
+            IsBlacklisted: false, BlacklistReason: null, Notes: null,
+            TotalLabelsPrinted: 2, TotalAmount: 200m, BlacklistedAt: null,
+            Address: null, Phone: "+905551112233", GroupId: "grp-2"));
+
+        var rows = repo.Search("elma", limit: 50, platform: "instagram");
+        rows.Select(c => c.Id).Should().Equal("p-ig");
+
+        var completed = repo.CompleteGroups(rows);
+        completed.Select(c => c.Id).Should().BeEquivalentTo(new[] { "p-ig", "p-tt" });
+        completed.Sum(c => c.TotalAmount).Should().Be(300m);
+    }
+
     [Fact]
     public void Süzgeç_limitten_önce_uygulanır_eski_kayıt_kaybolmaz()
     {
