@@ -208,43 +208,24 @@ public sealed partial class StreamReportViewModel : ViewModelBase
 
         var result = await RequestPaymentAsync(customer);
 
+        // R4-07: Telefon diyaloğundan sonraki İKİNCİ çağrının sonucu da aynı
+        // bildirim yolundan geçmeli — eskiden dönüş değeri okunmuyordu ve o
+        // çağrı belirsiz/başarısız dönerse ekranda hiçbir şey olmuyordu.
         if (result == PaymentRequestResult.PhoneRequired)
         {
-            var saved = await _dialogService.ShowPhoneEntryAsync(customer.Id);
-            if (saved)
+            if (!await _dialogService.ShowPhoneEntryAsync(customer.Id)) return;
+
+            var updated = _customers.GetById(customer.Id);
+            if (updated is null)
             {
-                var updated = _customers.GetById(customer.Id);
-                if (updated is not null)
-                    await RequestPaymentAsync(updated);
+                _dialogService.ShowError("Müşteri kaydı bulunamadı.");
+                return;
             }
+
+            result = await RequestPaymentAsync(updated);
         }
-        else if (result == PaymentRequestResult.LaunchFailed)
-        {
-            _dialogService.ShowError("WhatsApp açılamadı. WhatsApp Desktop kurulu mu?");
-        }
-        else if (result == PaymentRequestResult.SendPending)
-        {
-            // Sunucu "aynı gönderim işleniyor" dedi: mesaj gitmiş de olabilir,
-            // hiç gitmemiş de. Sessiz kalırsak operatör gittiğini varsayar;
-            // otomatik wa.me açarsak çift mesaj riski var. Kararı ona bırakıyoruz.
-            _dialogService.ShowInfo(
-                "Gönderim işleniyor — WhatsApp'ta ulaştığını doğrulayın, aksi halde tekrar deneyin.");
-        }
-        else if (result == PaymentRequestResult.BalanceUncertain)
-        {
-            // R2-01..03: düşümün sonucu kesinleşmedi, mesaj GÖNDERİLMEDİ.
-            // Tekrar deneme aynı anahtarla replay yapar — çift düşüm imkânsız.
-            //
-            // Hata değil UYARI: kaybedilmiş bir işlem yok ve operatörün
-            // yapabileceği somut bir şey var. Kırmızı hata diyaloğu "bir şey
-            // bozuldu" izlenimi veriyordu; asıl endişeyi ("bakiye iki kez mi
-            // düştü?") metnin sonundaki güvence kapatıyor.
-            _dialogService.Show(
-                "Sunucudan kesin cevap alınamadı; mesaj gönderilmedi. " +
-                "Bağlantıyı kontrol edip tekrar deneyin — çift düşüm olmaz.",
-                "Bakiye doğrulanamadı",
-                DialogSeverity.Warning);
-        }
+
+        PaymentResultPresenter.Notify(_dialogService, result);
 
         async Task<PaymentRequestResult> RequestPaymentAsync(Customer c) =>
             await _paymentService.OpenWhatsAppAsync(

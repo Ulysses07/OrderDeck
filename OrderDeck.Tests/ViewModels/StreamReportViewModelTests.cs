@@ -144,4 +144,40 @@ public class StreamReportViewModel_OpenWhatsAppTests
             if (File.Exists(settingsPath)) File.Delete(settingsPath);
         }
     }
+
+    // R4-07: Telefon diyaloğundan SONRAKİ çağrının dönüşü okunmuyordu. Operatör
+    // numarayı düzeltiyor, ikinci gönderim belirsiz dönüyor, ekranda hiçbir şey
+    // olmuyordu. Bildirim iki çağrı yolunda da aynı yerden geçmeli.
+    [Fact]
+    public async Task OpenWhatsApp_TelefonKaydedildiktenSonrakiBelirsizSonucDaBildirilir()
+    {
+        var (db, customers, sessions, labels, _, launcher, dialogs, settingsPath, sut) =
+            Setup(cloudApiInProgress: true);
+        using var _db = db;
+        try
+        {
+            // Telefonsuz → ilk çağrı PhoneRequired (kontrol en başta).
+            customers.Insert(new Customer("c1", "twitch", "alice", "Alice", null,
+                100, 100, false, null, null, 0, 0m, null, null, null));
+            sessions.Insert(new StreamSession("s1", "Live", 100, null, Array.Empty<string>(), null));
+            labels.Insert(new Label("l1", "s1", "c1", "twitch", "alice", "Apple", null, 75m, 110, 120));
+            sessions.End("s1", 200);
+
+            dialogs.PhoneEntryResult = id => { customers.UpdatePhone(id, "+905551111111"); return true; };
+
+            sut.Load("s1");
+
+            await sut.OpenWhatsAppCommand.ExecuteAsync(sut.TopCustomers[0]);
+
+            dialogs.PhoneEntryShownFor.Should().ContainSingle().Which.Should().Be("c1");
+            // İkinci çağrı SendPending döndü: sessiz kalınamaz.
+            dialogs.InfosShown.Should().ContainSingle()
+                .Which.Should().Contain("doğrulayın");
+            launcher.LaunchedUrls.Should().BeEmpty();
+        }
+        finally
+        {
+            if (File.Exists(settingsPath)) File.Delete(settingsPath);
+        }
+    }
 }
