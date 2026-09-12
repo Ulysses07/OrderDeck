@@ -57,19 +57,26 @@ public interface IPaymentJobStore
     /// kazananın anahtarıyla devam et.</summary>
     bool BeginApply(string id, Guid applyKey);
 
-    /// <summary>Çağıran, id'yi aynı akışta <c>FindOrCreate</c>/<c>Get</c>'ten almış olmalıdır;
-    /// var olmayan id sessiz no-op'tur, hata değil.</summary>
-    void MarkApplied(string id, decimal appliedAmount);
+    /// <summary>Sunucudan kesin "uygulandı" cevabı geldi.
+    ///
+    /// R4-01: yazım KOŞULLUDUR. Bir cevap, gönderildiği denemeye aittir; o
+    /// deneme (<paramref name="expectedRevision"/> + <paramref name="expectedKey"/>)
+    /// hâlâ diskteki deneme değilse cevap bayattır ve yazılmaz. Ağda takılıp
+    /// geç dönen bir cevabın, araya giren revizyonun sonucunu ezmesi para
+    /// hatasıdır: eski tutar yeni satışın düşümü sayılır, müşteriye eksi net
+    /// gider. false = yok sayıldı; çağıran satırı yeniden okumalıdır.</summary>
+    bool MarkApplied(string id, Guid expectedKey, int expectedRevision, decimal appliedAmount);
 
     /// <summary>Kesin "bakiye yok" cevabı — AppliedAmount 0 yazılır.
-    /// Çağıran, id'yi aynı akışta <c>FindOrCreate</c>/<c>Get</c>'ten almış olmalıdır;
-    /// var olmayan id sessiz no-op'tur, hata değil.</summary>
-    void MarkNoBalance(string id);
+    /// <paramref name="expectedKey"/> null olabilir: önizleme 0 döndüğünde iş
+    /// hâlâ anahtarsızdır (created). Koşul kuralı <see cref="MarkApplied"/>
+    /// ile aynıdır.</summary>
+    bool MarkNoBalance(string id, Guid? expectedKey, int expectedRevision);
 
     /// <summary>Sonuç yeniden belirsizleşti (ör. geri alma ağda kayboldu).
-    /// Çağıran, id'yi aynı akışta <c>FindOrCreate</c>/<c>Get</c>'ten almış olmalıdır;
-    /// var olmayan id sessiz no-op'tur, hata değil.</summary>
-    void MarkUncertain(string id);
+    /// Koşul kuralı <see cref="MarkApplied"/> ile aynıdır — bayat bir akışın
+    /// güncel bir sonucu "bilinmiyor"a düşürmesi de aynı sınıftan hatadır.</summary>
+    bool MarkUncertain(string id, Guid? expectedKey, int expectedRevision);
 
     /// <summary>Mesaj müşteriye ulaştı — iş kapanır. Idempotent (ilk zaman korunur).</summary>
     void Close(string id);
@@ -154,28 +161,61 @@ public sealed class PaymentJobRepository : IPaymentJobStore
             }) == 1;
     }
 
-    public void MarkApplied(string id, decimal appliedAmount)
+    // R4-01: sonucu yazan üç metnin ortak koşulu. "ApplyKey IS @key" — SQLite'ın
+    // null-güvenli karşılaştırması; anahtarsız (created) işte de doğru çalışır,
+    // "= NULL" ise her zaman false dönerdi. Durum (State) koşula BİLEREK
+    // girmiyor: bayat cevabı bayat yapan şey denemenin kimliğidir (Revision +
+    // ApplyKey), o denemenin şu anki durumu değil — aynı denemenin sonucunu
+    // ikinci kez yazmak zararsız tekrardır (replay bunu yapar).
+    private const string StaleGuard = " WHERE Id=@id AND Revision=@rev AND ApplyKey IS @key";
+
+    private static string? KeyText(Guid? key) => key?.ToString("N");
+
+    public bool MarkApplied(string id, Guid expectedKey, int expectedRevision, decimal appliedAmount)
     {
         using var conn = _factory.Open();
-        conn.Execute(
-            "UPDATE PaymentJob SET State=@state, AppliedAmount=@amt, UpdatedAt=@now WHERE Id=@id",
-            new { id, state = PaymentJobState.Applied, amt = Dec(appliedAmount), now = Now() });
+        return conn.Execute(
+            "UPDATE PaymentJob SET State=@state, AppliedAmount=@amt, UpdatedAt=@now" + StaleGuard,
+            new
+            {
+                id,
+                rev = expectedRevision,
+                key = KeyText(expectedKey),
+                state = PaymentJobState.Applied,
+                amt = Dec(appliedAmount),
+                now = Now(),
+            }) == 1;
     }
 
-    public void MarkNoBalance(string id)
+    public bool MarkNoBalance(string id, Guid? expectedKey, int expectedRevision)
     {
         using var conn = _factory.Open();
-        conn.Execute(
-            "UPDATE PaymentJob SET State=@state, AppliedAmount=@amt, UpdatedAt=@now WHERE Id=@id",
-            new { id, state = PaymentJobState.NoBalance, amt = Dec(0m), now = Now() });
+        return conn.Execute(
+            "UPDATE PaymentJob SET State=@state, AppliedAmount=@amt, UpdatedAt=@now" + StaleGuard,
+            new
+            {
+                id,
+                rev = expectedRevision,
+                key = KeyText(expectedKey),
+                state = PaymentJobState.NoBalance,
+                amt = Dec(0m),
+                now = Now(),
+            }) == 1;
     }
 
-    public void MarkUncertain(string id)
+    public bool MarkUncertain(string id, Guid? expectedKey, int expectedRevision)
     {
         using var conn = _factory.Open();
-        conn.Execute(
-            "UPDATE PaymentJob SET State=@state, UpdatedAt=@now WHERE Id=@id",
-            new { id, state = PaymentJobState.ApplyUncertain, now = Now() });
+        return conn.Execute(
+            "UPDATE PaymentJob SET State=@state, UpdatedAt=@now" + StaleGuard,
+            new
+            {
+                id,
+                rev = expectedRevision,
+                key = KeyText(expectedKey),
+                state = PaymentJobState.ApplyUncertain,
+                now = Now(),
+            }) == 1;
     }
 
     public void Close(string id)

@@ -348,7 +348,9 @@ public sealed class PaymentRequestService
                     if (l.AppliedAmount is > 0m
                         && !await TryReverseAsync(licenseId.Value, l.ApplyKey!.Value, ct))
                     {
-                        _jobs.MarkUncertain(l.Id);
+                        // Koşul tutmazsa satırı başka bir akış devraldı; bizim
+                        // geri almamız yine de bilinmiyor — bu tıklama durur.
+                        _jobs.MarkUncertain(l.Id, l.ApplyKey, l.Revision);
                         return new(true, 0m, l);
                     }
                     _jobs.Close(l.Id);
@@ -377,7 +379,7 @@ public sealed class PaymentRequestService
                 if (job.AppliedAmount is > 0m
                     && !await TryReverseAsync(licenseId.Value, job.ApplyKey!.Value, ct))
                 {
-                    _jobs.MarkUncertain(job.Id);
+                    _jobs.MarkUncertain(job.Id, job.ApplyKey, job.Revision);
                     return new(true, 0m, job);
                 }
                 // false = eşzamanlı revizyon kazandı; onun anahtarıyla devam.
@@ -406,7 +408,15 @@ public sealed class PaymentRequestService
             }
             if (previewBalance <= 0)
             {
-                _jobs.MarkNoBalance(job.Id);
+                if (!_jobs.MarkNoBalance(job.Id, job.ApplyKey, job.Revision))
+                {
+                    // Araya başka bir akış girdi ve sonucu o yazdı: bizim
+                    // "bakiye yok" gözlemimiz artık bu denemeye ait değil.
+                    job = _jobs.Get(job.Id)!;
+                    return job.State is PaymentJobState.Applied or PaymentJobState.NoBalance
+                        ? new(false, job.AppliedAmount ?? 0m, job)
+                        : new(true, 0m, job);
+                }
                 return new(false, 0m, _jobs.Get(job.Id));
             }
 
@@ -444,26 +454,41 @@ public sealed class PaymentRequestService
 
     /// <summary>İşin diskteki anahtarıyla apply'ı (yeniden) dener, sonucu işe
     /// yazar. Amount=ProductTotal gönderilir — sunucu bakiyeye/toplama kırpar;
-    /// replay'de birebir aynı gövde gittiği için A11 içerik kontrolünden geçer.</summary>
+    /// replay'de birebir aynı gövde gittiği için A11 içerik kontrolünden geçer.
+    ///
+    /// R4-01: cevap, GÖNDERİLDİĞİ denemeye aittir. İstek tele çıktıktan sonra
+    /// araya bir revizyon girebilir (ağda takılan cevap dakikalarca sürebilir);
+    /// o yüzden sonuç, isteği açan anahtar + revizyon koşuluyla yazılır. Koşul
+    /// tutmuyorsa cevap sessizce DEĞİL, günlüğe yazılarak atılır — dönüşte
+    /// satır yeniden okunduğu için çağıran zaten kazananın sonucunu görür.</summary>
     private async Task<PaymentJob> ReplayAsync(
         Guid licenseId, Guid wpfCustomerId, PaymentJob job, CancellationToken ct)
     {
         if (job.ApplyKey is null)
             throw new InvalidOperationException($"Replay anahtarsız işte çağrıldı (job={job.Id})");
+
+        var key = job.ApplyKey.Value;
+        var revision = job.Revision;
+        void LogBayat(string sonuc) => _log?.LogWarning(
+            "Gecikmiş bakiye cevabı yok sayıldı ({Sonuc}) — araya revizyon girdi "
+            + "(job={JobId}, key={Key}, rev={Revision})", sonuc, job.Id, key, revision);
+
         try
         {
             var apply = await _api.ApplyBalanceAsync(
                 licenseId,
                 new CustomerBalanceApplyRequest(
-                    wpfCustomerId, job.ProductTotal, job.ProductTotal, job.ApplyKey),
+                    wpfCustomerId, job.ProductTotal, job.ProductTotal, key),
                 ct);
-            _jobs.MarkApplied(job.Id, apply.AppliedAmount);
+            if (!_jobs.MarkApplied(job.Id, key, revision, apply.AppliedAmount))
+                LogBayat("uygulandı");
         }
         catch (ValidationException ex) when (ex.Code is "no-balance" or "nothing-to-apply")
         {
             // Replay sunucuda balance kontrolünden ÖNCE çalışır: bu 409,
             // anahtarın hiç uygulanmadığının ve bakiye olmadığının kesin kanıtı.
-            _jobs.MarkNoBalance(job.Id);
+            if (!_jobs.MarkNoBalance(job.Id, key, revision))
+                LogBayat("bakiye yok");
         }
         catch (ValidationException ex) when (ex.Code == "content-conflict")
         {

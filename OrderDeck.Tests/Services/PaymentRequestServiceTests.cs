@@ -110,6 +110,18 @@ public class PaymentRequestServiceTests : IDisposable
         /// <summary>A9: preview cevabından önce beklenir (yarış rendezvous'u).</summary>
         public Func<Task>? OnPreviewAsync { get; set; }
 
+        /// <summary>R4-01: apply cevabından önce beklenir. Parametre kaçıncı
+        /// apply çağrısı olduğudur (1'den başlar) — tek bir cevabı yolda
+        /// bekletip gecikmiş cevap senaryosunu kurmak için.</summary>
+        public Func<int, Task>? OnApplyAsync { get; set; }
+        private int _applyCount;
+
+        /// <summary>true ise apply cevabındaki appliedAmount = min(istenen
+        /// tutar, PreviewBalance) — gerçek sunucu gibi. Varsayılan false:
+        /// eski testler appliedAmount olarak doğrudan PreviewBalance bekliyor
+        /// (hepsinde bakiye satış tutarından küçük, yani fark etmiyor).</summary>
+        public bool CapAppliedToRequest { get; set; }
+
         /// <summary>true ise lisans listesi ucu ağ hatası fırlatır: anahtar VAR
         /// ama sunucuya ulaşılamıyor (VPS kapalı / internet yok). Anahtarın hiç
         /// olmadığı durumdan farklıdır — ayrımı A10 testleri sınar.</summary>
@@ -151,11 +163,20 @@ public class PaymentRequestServiceTests : IDisposable
             {
                 // Gövde ÖNCE kaydedilir — zaman aşımı simülasyonunda bile istek tele çıktı sayılır.
                 var body = await request.Content!.ReadAsStringAsync(cancellationToken);
-                lock (_sync) AppliedBalanceBodies.Add(body);
+                int sira;
+                lock (_sync)
+                {
+                    AppliedBalanceBodies.Add(body);
+                    sira = ++_applyCount;
+                }
+                if (OnApplyAsync is not null) await OnApplyAsync(sira);
                 if (ThrowTimeoutOnApply) throw new TaskCanceledException("stub timeout");
                 if (ApplyProblemTitle is not null) return Problem(ApplyProblemTitle);
+                var applied = CapAppliedToRequest
+                    ? Math.Min(PreviewBalance, AppliedAmountRequested(body))
+                    : PreviewBalance;
                 return Json($$"""
-                    {"transactionId":"{{Guid.NewGuid()}}","appliedAmount":{{PreviewBalance.ToString(System.Globalization.CultureInfo.InvariantCulture)}},
+                    {"transactionId":"{{Guid.NewGuid()}}","appliedAmount":{{applied.ToString(System.Globalization.CultureInfo.InvariantCulture)}},
                      "remainingBalance":0}
                     """);
             }
@@ -175,6 +196,12 @@ public class PaymentRequestServiceTests : IDisposable
             }
 
             return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }
+
+        private static decimal AppliedAmountRequested(string body)
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(body);
+            return doc.RootElement.GetProperty("amount").GetDecimal();
         }
 
         private static HttpResponseMessage Json(string body, HttpStatusCode status = HttpStatusCode.OK)
@@ -1002,6 +1029,73 @@ public class PaymentRequestServiceTests : IDisposable
             // Dapper zaten test projesinde: satır sayısı iddiası
             Dapper.SqlMapper.ExecuteScalar<long>(conn,
                 "SELECT COUNT(*) FROM PaymentJob").Should().Be(1, "UNIQUE kapsam tek iş");
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            foreach (var f in new[] { dbPath, dbPath + "-wal", dbPath + "-shm" })
+                if (File.Exists(f)) File.Delete(f);
+        }
+    }
+
+    // ── R4-01: gecikmiş apply cevabı ────────────────────────────────────────
+    //
+    // Rapor §7 sırası: 250'lik apply uzak deftere işlendi ama CEVABI yolda
+    // takıldı; ikinci tıklama aynı anahtarla replay edip 250 sonucunu öğrendi;
+    // üçüncü tıklama satışı 50'ye revize etti (250 geri alındı, 50 uygulandı);
+    // SONRA ilk 250 cevabı serbest kaldı.
+    //
+    // Sözleşme: cevap, GÖNDERİLDİĞİ denemeye aittir. Bayat cevap yazılmaz —
+    // yerel düşüm 50 kalır, yeniden paylaşım net 0 gösterir. (Koşul olmadan
+    // 250 yazılıyor ve müşteriye −200,00 TL'lik bir mesaj gidiyordu.)
+    [Fact]
+    public async Task OpenWhatsAppAsync_gecikmis_apply_cevabi_revizyonun_dusumunu_ezmez()
+    {
+        // Yarış hakemi gerçek depo olmalı (A9 ile aynı gerekçe: dosya + WAL).
+        var dbPath = Path.Combine(Path.GetTempPath(), $"odjob-{Guid.NewGuid():N}.db");
+        var factory = new SqliteConnectionFactory(dbPath);
+        try
+        {
+            new MigrationRunner(factory).Run();
+            var repo = new PaymentJobRepository(factory);
+            var (sut, handler) = MakeCloudSut(_store, _launcher, jobs: repo);
+            handler.PreviewBalance = 1000m;
+            handler.CapAppliedToRequest = true; // sunucu istenen tutarı uygular
+            var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+
+            var ilkApplyVardi = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var ilkCevapSerbest = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            handler.OnApplyAsync = async sira =>
+            {
+                if (sira != 1) return;
+                ilkApplyVardi.TrySetResult();
+                await ilkCevapSerbest.Task;
+            };
+
+            var ilkTiklama = Task.Run(() => sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"));
+            await ilkApplyVardi.Task; // 250 sunucuda işlendi, cevap yolda
+
+            (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+                .Should().Be(PaymentRequestResult.Opened);      // replay: 250 öğrenildi
+            (await sut.OpenWhatsAppAsync(customer, 50m, T, "session:s1"))
+                .Should().Be(PaymentRequestResult.Opened);      // revizyon: 50 uygulandı
+
+            ilkCevapSerbest.TrySetResult();
+            await ilkTiklama;                                    // gecikmiş 250 cevabı
+
+            var job = repo.FindOrCreate(customer.Id, "session:s1", 50m);
+            job.Revision.Should().Be(1);
+            job.ProductTotal.Should().Be(50m);
+            job.AppliedAmount.Should().Be(50m, "gecikmiş 250'lik cevap bayattır");
+
+            // Aynı satışın yeniden paylaşımı: 50 − 50 = 0. Finansal çağrı da yok.
+            var applyAdedi = handler.AppliedBalanceBodies.Count;
+            (await sut.OpenWhatsAppAsync(customer, 50m, T, "session:s1"))
+                .Should().Be(PaymentRequestResult.Opened);
+            handler.AppliedBalanceBodies.Should().HaveCount(applyAdedi);
+            _launcher.LaunchedUrls[^1].Should().Contain("0%2C00").And.NotContain("-200");
         }
         finally
         {

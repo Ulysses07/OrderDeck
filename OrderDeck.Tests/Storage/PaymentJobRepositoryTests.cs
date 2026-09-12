@@ -73,8 +73,9 @@ public sealed class PaymentJobRepositoryTests
     {
         var (_, repo) = Fx();
         var job = repo.FindOrCreate("c1", "session:s1", 100m);
-        repo.BeginApply(job.Id, Guid.NewGuid());
-        repo.MarkApplied(job.Id, 42.5m);
+        var key = Guid.NewGuid();
+        repo.BeginApply(job.Id, key);
+        repo.MarkApplied(job.Id, key, expectedRevision: 0, 42.5m).Should().BeTrue();
 
         var guncel = repo.Get(job.Id)!;
         guncel.State.Should().Be(PaymentJobState.Applied);
@@ -86,11 +87,81 @@ public sealed class PaymentJobRepositoryTests
     {
         var (_, repo) = Fx();
         var job = repo.FindOrCreate("c1", "session:s1", 100m);
-        repo.MarkNoBalance(job.Id);
+        repo.MarkNoBalance(job.Id, expectedKey: null, expectedRevision: 0).Should().BeTrue();
 
         var guncel = repo.Get(job.Id)!;
         guncel.State.Should().Be(PaymentJobState.NoBalance);
         guncel.AppliedAmount.Should().Be(0m);
+    }
+
+    [Fact] // R4-01
+    public void MarkApplied_GecikmisEskiCevap_YeniRevizyonunSonucunuEzemez()
+    {
+        var (_, repo) = Fx();
+        var job = repo.FindOrCreate("c1", "session:s1", 250m);
+        var eskiKey = Guid.NewGuid();
+        repo.BeginApply(job.Id, eskiKey);            // rev 0 — cevabı yolda takıldı
+
+        // Üçüncü çağrı satışı 50'ye revize etti ve sonucu yazdı.
+        var yeniKey = Guid.NewGuid();
+        repo.BeginRevision(job.Id, 50m, yeniKey, expectedRevision: 0).Should().BeTrue();
+        repo.MarkApplied(job.Id, yeniKey, expectedRevision: 1, 50m).Should().BeTrue();
+
+        // Şimdi ilk çağrının 250'lik cevabı serbest kalıyor.
+        repo.MarkApplied(job.Id, eskiKey, expectedRevision: 0, 250m).Should().BeFalse();
+
+        var guncel = repo.Get(job.Id)!;
+        guncel.Revision.Should().Be(1);
+        guncel.ProductTotal.Should().Be(50m);
+        guncel.AppliedAmount.Should().Be(50m,
+            "gecikmiş cevap yeni revizyonun düşümünü ezerse net eksiye düşer");
+    }
+
+    [Fact] // R4-01 — aynı denemenin sonucunu ikinci kez yazmak zararsız tekrardır
+    public void MarkApplied_AyniDenemeIkinciKez_YazmayaDevamEder()
+    {
+        var (_, repo) = Fx();
+        var job = repo.FindOrCreate("c1", "session:s1", 250m);
+        var key = Guid.NewGuid();
+        repo.BeginApply(job.Id, key);
+
+        repo.MarkApplied(job.Id, key, expectedRevision: 0, 100m).Should().BeTrue();
+        repo.MarkApplied(job.Id, key, expectedRevision: 0, 100m).Should().BeTrue();
+        repo.Get(job.Id)!.AppliedAmount.Should().Be(100m);
+    }
+
+    [Fact] // R4-01 — "bakiye yok" cevabı da denemeye bağlı (anahtarsız iş dahil)
+    public void MarkNoBalance_AnahtarsizIste_Calisir_BayatCevabi_Reddeder()
+    {
+        var (_, repo) = Fx();
+        var job = repo.FindOrCreate("c1", "session:s1", 250m);
+
+        // Önizleme 0 döndü: iş hâlâ anahtarsız (created) — koşul null anahtarla kurulur.
+        repo.MarkNoBalance(job.Id, expectedKey: null, expectedRevision: 0).Should().BeTrue();
+        repo.Get(job.Id)!.State.Should().Be(PaymentJobState.NoBalance);
+
+        // Araya revizyon girdikten sonra aynı gözlem artık bayattır.
+        repo.BeginRevision(job.Id, 300m, Guid.NewGuid(), expectedRevision: 0).Should().BeTrue();
+        repo.MarkNoBalance(job.Id, expectedKey: null, expectedRevision: 0).Should().BeFalse();
+        repo.Get(job.Id)!.State.Should().Be(PaymentJobState.ApplyUncertain);
+    }
+
+    [Fact] // R4-01 — bayat akış, güncel sonucu "bilinmiyor"a düşüremez
+    public void MarkUncertain_BayatAkis_GuncelSonucuBozamaz()
+    {
+        var (_, repo) = Fx();
+        var job = repo.FindOrCreate("c1", "session:s1", 250m);
+        var eskiKey = Guid.NewGuid();
+        repo.BeginApply(job.Id, eskiKey);
+        var yeniKey = Guid.NewGuid();
+        repo.BeginRevision(job.Id, 50m, yeniKey, expectedRevision: 0).Should().BeTrue();
+        repo.MarkApplied(job.Id, yeniKey, expectedRevision: 1, 50m).Should().BeTrue();
+
+        repo.MarkUncertain(job.Id, eskiKey, expectedRevision: 0).Should().BeFalse();
+
+        var guncel = repo.Get(job.Id)!;
+        guncel.State.Should().Be(PaymentJobState.Applied);
+        guncel.AppliedAmount.Should().Be(50m);
     }
 
     [Fact]
@@ -111,8 +182,9 @@ public sealed class PaymentJobRepositoryTests
     {
         var (_, repo) = Fx();
         var job = repo.FindOrCreate("c1", "session:s1", 100m);
-        repo.BeginApply(job.Id, Guid.NewGuid());
-        repo.MarkApplied(job.Id, 40m);
+        var ilkKey = Guid.NewGuid();
+        repo.BeginApply(job.Id, ilkKey);
+        repo.MarkApplied(job.Id, ilkKey, expectedRevision: 0, 40m);
 
         repo.Close(job.Id); // teslim edilmişti; tutar düzeltmesi işi yeniden açar (R2-02)
 
@@ -183,7 +255,7 @@ public sealed class PaymentJobRepositoryTests
         var legacy = repo.FindOrCreate("c1", "legacy", 250.75m);
         var legacyKey = Guid.NewGuid();
         repo.BeginApply(legacy.Id, legacyKey);
-        repo.MarkApplied(legacy.Id, 50m);
+        repo.MarkApplied(legacy.Id, legacyKey, expectedRevision: 0, 50m);
 
         var hedef = repo.FindOrCreate("c1", "session:s1", 250.75m);
         repo.AdoptLegacyResult(hedef.Id, legacy.Id);
