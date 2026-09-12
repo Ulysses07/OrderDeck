@@ -582,4 +582,163 @@ public class LicensesCustomerBalanceApplyControllerTests : IClassFixture<ApiFact
             $"/api/v1/licenses/{licenseId}/customer-balance/preview?wpfCustomerId={wpfCustomerId}");
         preview!.Balance.Should().Be(400m);
     }
+
+    // ── R4-03: GET scope (uzlaştırma ucu) ───────────────────────────────────
+    // İstemci taze bir işi apply etmeden ÖNCE burayı sorar. Yedek geri
+    // yüklendiğinde satışın yerel kimliği yok olur ama uzak defter düşümü
+    // hatırlar; bu uç olmadan aynı satış ikinci kez düşülürdü.
+
+    private sealed record ScopeResponse(
+        Guid TransactionId, decimal AppliedAmount, decimal ProductTotal, DateTimeOffset CreatedAt);
+
+    private async Task<HttpResponseMessage> GetScopeAsync(
+        HttpClient client, Guid licenseId, Guid wpfCustomerId, string saleScope) =>
+        await client.GetAsync($"/api/v1/licenses/{licenseId}/customer-balance/scope"
+            + $"?wpfCustomerId={wpfCustomerId}&saleScope={Uri.EscapeDataString(saleScope)}");
+
+    private async Task<Guid> ApplyWithScopeAsync(
+        HttpClient client, Guid licenseId, Guid wpfCustomerId,
+        decimal amount, decimal productTotal, string saleScope)
+    {
+        var resp = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new
+            {
+                WpfCustomerId = wpfCustomerId, Amount = amount, ProductTotal = productTotal,
+                IdempotencyKey = Guid.NewGuid(), SaleScope = saleScope,
+            });
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadFromJsonAsync<ApplyResponse>();
+        return body!.TransactionId;
+    }
+
+    [Fact]
+    public async Task Scope_returns_204_when_no_deduction()
+    {
+        // Kayıt yoksa istemci bugünkü akışta kalır — hiçbir davranış değişmez.
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+
+        var resp = await GetScopeAsync(client, licenseId, wpfCustomerId, "cumulative");
+        resp.StatusCode.Should().Be(HttpStatusCode.NoContent);
+    }
+
+    [Fact]
+    public async Task Scope_returns_existing_deduction()
+    {
+        // R4-03'ün çekirdeği: yerel anahtar kaybolsa bile düşüm tanınabilir.
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        var txId = await ApplyWithScopeAsync(client, licenseId, wpfCustomerId, 100m, 2100m, "cumulative");
+
+        var resp = await GetScopeAsync(client, licenseId, wpfCustomerId, "cumulative");
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadFromJsonAsync<ScopeResponse>();
+        body!.TransactionId.Should().Be(txId);
+        body.AppliedAmount.Should().Be(100m);   // ledger'da -100 duruyor, uç pozitif döner
+        body.ProductTotal.Should().Be(2100m);
+    }
+
+    [Fact]
+    public async Task Scope_ignores_other_scope()
+    {
+        // Kapsam satışın KİMLİĞİ: farklı satışın düşümü benimsenirse ikinci
+        // satış sessizce yutulur (müşteri+tutar tekilleştirmesinin tuzağı).
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        await ApplyWithScopeAsync(client, licenseId, wpfCustomerId, 100m, 2100m, "session:aaa");
+
+        var resp = await GetScopeAsync(client, licenseId, wpfCustomerId, "session:bbb");
+        resp.StatusCode.Should().Be(HttpStatusCode.NoContent);
+    }
+
+    [Fact]
+    public async Task Scope_ignores_other_customer()
+    {
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        await ApplyWithScopeAsync(client, licenseId, wpfCustomerId, 100m, 2100m, "cumulative");
+
+        var resp = await GetScopeAsync(client, licenseId, Guid.NewGuid(), "cumulative");
+        resp.StatusCode.Should().Be(HttpStatusCode.NoContent);
+    }
+
+    [Fact]
+    public async Task Scope_ignores_scopeless_deduction()
+    {
+        // Eski istemcilerin yazdığı kapsamsız satırlar hiçbir kapsama ait
+        // değildir; birine bağlanırlarsa yanlış satış benimsenir.
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        await ApplyAndGetTransactionIdAsync(client, licenseId, wpfCustomerId, 100m, 2100m);
+
+        var resp = await GetScopeAsync(client, licenseId, wpfCustomerId, "cumulative");
+        resp.StatusCode.Should().Be(HttpStatusCode.NoContent);
+    }
+
+    [Fact]
+    public async Task Scope_skips_reversed_deduction()
+    {
+        // Revizyon akışı eski düşümü geri alır; iptal edilmiş bir düşümü
+        // benimsemek onu diriltir ve müşteriye olmayan bir indirim yazar.
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        var txId = await ApplyWithScopeAsync(client, licenseId, wpfCustomerId, 100m, 2100m, "cumulative");
+
+        var reverse = await client.PostAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/transactions/{txId}/reverse", null);
+        reverse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var resp = await GetScopeAsync(client, licenseId, wpfCustomerId, "cumulative");
+        resp.StatusCode.Should().Be(HttpStatusCode.NoContent);
+    }
+
+    [Fact]
+    public async Task Scope_returns_fresh_deduction_after_revision()
+    {
+        // Revizyon sonrası (geri al + yeniden uygula) uç GÜNCEL satırı dönmeli;
+        // eskisini dönmek istemciye yanlış tutarı benimsetirdi.
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        var eski = await ApplyWithScopeAsync(client, licenseId, wpfCustomerId, 100m, 2100m, "cumulative");
+        await client.PostAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/transactions/{eski}/reverse", null);
+        var yeni = await ApplyWithScopeAsync(client, licenseId, wpfCustomerId, 250m, 4000m, "cumulative");
+
+        var resp = await GetScopeAsync(client, licenseId, wpfCustomerId, "cumulative");
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadFromJsonAsync<ScopeResponse>();
+        body!.TransactionId.Should().Be(yeni);
+        body.AppliedAmount.Should().Be(250m);
+        body.ProductTotal.Should().Be(4000m);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task Scope_blank_returns_400(string blank)
+    {
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+
+        var resp = await GetScopeAsync(client, licenseId, wpfCustomerId, blank);
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await resp.Content.ReadFromJsonAsync<ProblemDetailsLite>();
+        problem!.Title.Should().Be("invalid-sale-scope");
+    }
+
+    [Fact]
+    public async Task Scope_missing_parameter_returns_400()
+    {
+        // Parametrenin hiç olmaması da kimlik değildir; sessizce "kayıt yok"
+        // demek, uzlaştırmayı istemci hatasında sessizce kapatırdı.
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+
+        var resp = await client.GetAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/scope?wpfCustomerId={wpfCustomerId}");
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Scope_foreign_license_returns_404()
+    {
+        var (clientA, licenseA, wpfCustomerA) = await SetupWithBalanceAsync(500m);
+        await ApplyWithScopeAsync(clientA, licenseA, wpfCustomerA, 100m, 2100m, "cumulative");
+
+        var (clientB, _, _) = await SetupWithBalanceAsync(100m);
+        var resp = await GetScopeAsync(clientB, licenseA, wpfCustomerA, "cumulative");
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
 }

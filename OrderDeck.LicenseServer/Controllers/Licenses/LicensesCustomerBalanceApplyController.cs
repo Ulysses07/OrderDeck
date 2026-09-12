@@ -77,6 +77,66 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
         return Ok(row ?? new PreviewResponse(wpfCustomerId, 0m, DateTimeOffset.UtcNow));
     }
 
+    // ── GET scope (R4-03 uzlaştırma) ────────────────────────────────────────
+
+    public sealed record ScopeResponse(
+        Guid TransactionId,
+        decimal AppliedAmount,
+        decimal ProductTotal,
+        DateTimeOffset CreatedAt);
+
+    /// <summary>
+    /// R4-03: "bu müşterinin bu satışında zaten bir düşüm var mı?" — salt okunur.
+    ///
+    /// <para>İstemci taze bir işi <c>apply</c> etmeden ÖNCE burayı sorar. Yerel
+    /// yedek geri yüklendiğinde satışın yerel kimliği (idempotency anahtarı) yok
+    /// olur ama uzak defter düşümü hatırlamaya devam eder; anahtarsız istemci onu
+    /// oynatamadığı için aynı satışı ikinci kez düşerdi. Kapsam sunucuda
+    /// durduğundan istemci düşümü <b>tanıyıp benimseyebiliyor</b>.</para>
+    ///
+    /// <para><b>Geri alınmamış</b> satır aranıyor: revizyon akışı eski düşümü
+    /// reverse edip taze bir tane yazar, geri alınmışı benimsemek iptal edilmiş
+    /// bir düşümü diriltirdi. Kapsam başına geri alınmamış satır pratikte en
+    /// fazla bir tanedir (istemci yeniden uygulamadan önce daima geri alır);
+    /// yine de en <b>yeni</b>si seçiliyor — beklenmedik bir çoklukta eski satırı
+    /// benimsemek, istemcinin üzerine yazacağı tutarı yanlış yerden okumak olur.
+    /// <c>CreatedAt</c> eşitliğinde <c>Id</c> ikinci sıralama anahtarı: aynı
+    /// isteğin iki çağrısı aynı cevabı vermeli.</para>
+    ///
+    /// <para>Kayıt yoksa <b>204</b> — istemci bugünkü akışta kalır. Bu, alanın
+    /// yeni olmasından ötürü kapsamsız yazılmış geçmiş satırlar için de geçerli
+    /// ve <b>zararsız</b>: davranış R4-03 öncesine düşer.</para>
+    /// </summary>
+    [HttpGet("scope")]
+    public async Task<IActionResult> Scope(
+        Guid licenseId,
+        [FromQuery] Guid wpfCustomerId,
+        [FromQuery] string? saleScope,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(saleScope)
+            || saleScope.Length > CustomerBalanceTransaction.SaleScopeMaxLength)
+            return Problem(title: "invalid-sale-scope", statusCode: 400,
+                detail: $"Kapsam boş olamaz ve {CustomerBalanceTransaction.SaleScopeMaxLength} "
+                    + "karakteri aşamaz.");
+
+        if (!await OwnsLicenseAsync(licenseId, ct)) return NotFound();
+
+        var row = await _db.CustomerBalanceTransactions
+            .AsNoTracking()
+            .Where(t => t.LicenseId == licenseId
+                && t.WpfCustomerId == wpfCustomerId
+                && t.SaleScope == saleScope
+                && t.Kind == KindPurchaseDeduction
+                && !_db.CustomerBalanceTransactions.Any(r => r.ReversesTransactionId == t.Id))
+            .OrderByDescending(t => t.CreatedAt)
+            .ThenByDescending(t => t.Id)
+            .Select(t => new ScopeResponse(t.Id, -t.Amount, t.OriginalAmount ?? 0m, t.CreatedAt))
+            .FirstOrDefaultAsync(ct);
+
+        return row is null ? NoContent() : Ok(row);
+    }
+
     // ── POST apply ──────────────────────────────────────────────────────────
 
     /// <param name="SaleScope">R4-03: satışın kalıcı kimliği
