@@ -145,16 +145,35 @@ public sealed class PaymentJobRepositoryTests
     }
 
     [Fact]
-    public void GetOpenLegacy_YalnizAcikLegacyIsiniDondurur()
+    public void GetOpenLegacies_YalnizAcikLegacyIsleriniDondurur()
     {
         var (_, repo) = Fx();
-        repo.GetOpenLegacy("c1").Should().BeNull();
+        repo.GetOpenLegacies("c1").Should().BeEmpty();
 
         var legacy = repo.FindOrCreate("c1", "legacy", 100m);
-        repo.GetOpenLegacy("c1")!.Id.Should().Be(legacy.Id);
+        repo.GetOpenLegacies("c1").Should().ContainSingle().Which.Id.Should().Be(legacy.Id);
 
         repo.Close(legacy.Id);
-        repo.GetOpenLegacy("c1").Should().BeNull(); // kapalı legacy görünmez
+        repo.GetOpenLegacies("c1").Should().BeEmpty(); // kapalı legacy görünmez
+    }
+
+    // R4-04: 034 artık her çözülmemiş anahtarı kendi 'legacy:{anahtar}' işine
+    // taşıyor. Depo müşterinin TÜM açık miras işlerini görmek zorunda; birini
+    // gözden kaçırmak, sunucudaki fazla düşümü yerelde izsiz bırakırdı.
+    [Fact]
+    public void GetOpenLegacies_AyniMusterininBirdenFazlaMirasIsiniDondurur()
+    {
+        var (_, repo) = Fx();
+        var eski = repo.FindOrCreate("c1", $"legacy:{Guid.NewGuid():N}", 100m);
+        var yeni = repo.FindOrCreate("c1", $"legacy:{Guid.NewGuid():N}", 250m);
+        repo.FindOrCreate("c1", "session:s1", 40m);   // miras değil
+        repo.FindOrCreate("c2", $"legacy:{Guid.NewGuid():N}", 10m); // başka müşteri
+
+        repo.GetOpenLegacies("c1").Select(j => j.Id)
+            .Should().BeEquivalentTo(new[] { eski.Id, yeni.Id });
+
+        repo.Close(eski.Id);
+        repo.GetOpenLegacies("c1").Should().ContainSingle().Which.Id.Should().Be(yeni.Id);
     }
 
     [Fact]
@@ -176,7 +195,7 @@ public sealed class PaymentJobRepositoryTests
         guncelHedef.ProductTotal.Should().Be(250.75m);
 
         repo.Get(legacy.Id)!.ClosedAt.Should().NotBeNull();
-        repo.GetOpenLegacy("c1").Should().BeNull();
+        repo.GetOpenLegacies("c1").Should().BeEmpty();
     }
 
     [Fact]

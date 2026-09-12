@@ -925,6 +925,43 @@ public class PaymentRequestServiceTests : IDisposable
         hedef.State.Should().Be(PaymentJobState.Applied);
     }
 
+    // R4-04: Göç artık her çözülmemiş 033 anahtarını ayrı bir miras işine
+    // taşıyor, yani aynı müşteride birden fazla açık miras işi olabilir.
+    // Sözleşme: HEPSİNİN sonucu öğrenilir; en yenisi satışa devrolur, kalanı
+    // artık düşümdür → geri alınır ve kapatılır. Eskisini görmezden gelmek,
+    // sunucuda durmaya devam eden fazla düşümü yerelde izsiz bırakırdı.
+    [Fact]
+    public async Task OpenWhatsAppAsync_birden_fazla_acik_miras_is_hepsi_cozulur_eskisi_geri_alinir()
+    {
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 1000m;
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var eskiKey = Guid.NewGuid();
+        var yeniKey = Guid.NewGuid();
+        _jobs.Seed(new PaymentJob(
+            Guid.NewGuid().ToString("N"), customer.Id, $"legacy:{eskiKey:N}", 100m, 0,
+            eskiKey, null, PaymentJobState.ApplyUncertain, 100, 100, null));
+        _jobs.Seed(new PaymentJob(
+            Guid.NewGuid().ToString("N"), customer.Id, $"legacy:{yeniKey:N}", 250m, 0,
+            yeniKey, null, PaymentJobState.ApplyUncertain, 200, 200, null));
+
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.Opened);
+
+        // İki miras anahtarı da replay edildi — hiçbiri "bilinmiyor" kalmadı.
+        handler.AppliedBalanceBodies.Select(AppliedKey)
+            .Should().BeEquivalentTo(new[] { eskiKey, yeniKey });
+
+        // En yenisi satışa devroldu; eskisi geri alındı.
+        handler.ReverseCalls.Should().ContainSingle().Which.Should().Be(eskiKey);
+
+        _jobs.Snapshot.Where(j => j.ScopeKey.StartsWith("legacy:", StringComparison.Ordinal))
+            .Should().OnlyContain(j => j.ClosedAt != null);
+        var hedef = _jobs.Snapshot.Single(j => j.ScopeKey == "session:s1");
+        hedef.ApplyKey.Should().Be(yeniKey);
+        hedef.State.Should().Be(PaymentJobState.Applied);
+    }
+
     [Fact] // A9 — R2-04: iki eşzamanlı tıklama TEK anahtar üretir
     public async Task OpenWhatsAppAsync_es_zamanli_iki_cagri_tek_is_tek_anahtar()
     {
