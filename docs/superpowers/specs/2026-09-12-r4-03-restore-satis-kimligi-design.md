@@ -196,12 +196,12 @@ A'nın revizyon sayacında düştüğü tuzağın aynısı.
 
 ## 6. Uygulama sırası
 
-| PR | İçerik | Merge riski |
-|---|---|---|
-| 1 | Sunucu: `SaleScope` kolonu + göç + `apply` alanı (yazma, okuma yok) | Düşük — nullable kolon, davranış değişmez |
-| 2 | Sunucu: `GET scope` ucu + testler | Düşük — salt okunur |
-| 3 | İstemci: `AdoptRemoteResult` + uzlaştırma dalı + kabul testleri | Orta — para yolu, Velopack sürümüne biner |
-| 4 | S5: sıfır toplamda eski düşümün iadesi | Düşük — istemci, R4-02 altyapısı hazır |
+| PR | İçerik | Merge riski | Durum |
+|---|---|---|---|
+| 1 | Sunucu: `SaleScope` kolonu + göç + `apply` alanı (yazma, okuma yok) | Düşük — nullable kolon, davranış değişmez | ✅ #420 |
+| 2 | Sunucu: `GET scope` ucu + testler | Düşük — salt okunur | ✅ #421 |
+| 3 | İstemci: `AdoptRemoteResult` + uzlaştırma dalı + kabul testleri | Orta — para yolu, Velopack sürümüne biner | ✅ #422 |
+| 4 | S5: sıfır toplamda eski düşümün iadesi | Düşük — istemci, R4-02 altyapısı hazır | ✅ #423 |
 
 S3 kararı gereği **Seçenek C (karantina + "uzlaşma bekliyor" listesi)
 uygulanmayacak**; akış açık kalıyor.
