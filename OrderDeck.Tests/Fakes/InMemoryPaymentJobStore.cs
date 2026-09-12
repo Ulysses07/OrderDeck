@@ -151,6 +151,44 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
         }
     }
 
+    public bool BeginReversal(string id, int expectedRevision, Guid expectedKey, decimal targetTotal)
+    {
+        lock (_gate)
+        {
+            var j = _jobs[id];
+            if (Bayat(j, expectedKey, expectedRevision)) return false;
+            _jobs[id] = j with
+            {
+                State = PaymentJobState.ReversePending,
+                PendingTotal = targetTotal,
+                UpdatedAt = Now(),
+            };
+            return true;
+        }
+    }
+
+    public bool CompleteReversal(string id, int expectedRevision, Guid expectedKey)
+    {
+        lock (_gate)
+        {
+            var j = _jobs[id];
+            if (Bayat(j, expectedKey, expectedRevision)) return false;
+            if (j.State != PaymentJobState.ReversePending) return false;
+            _jobs[id] = j with
+            {
+                ProductTotal = j.PendingTotal ?? j.ProductTotal,
+                Revision = j.Revision + 1,
+                ApplyKey = null,
+                AppliedAmount = null,
+                State = PaymentJobState.Created,
+                PendingTotal = null,
+                ClosedAt = null,
+                UpdatedAt = Now(),
+            };
+            return true;
+        }
+    }
+
     public void AdoptLegacyResult(string targetId, string legacyId)
     {
         lock (_gate)

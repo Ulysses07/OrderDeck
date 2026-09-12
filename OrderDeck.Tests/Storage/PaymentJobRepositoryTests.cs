@@ -286,4 +286,84 @@ public sealed class PaymentJobRepositoryTests
         repo.Get(hedef.Id)!.ApplyKey.Should().Be(hedefKey); // dokunulmadı
         repo.Get(legacy.Id)!.ClosedAt.Should().NotBeNull();
     }
+
+    // ── R4-02: geri alma niyeti ─────────────────────────────────────────────
+
+    [Fact]
+    public void BeginReversal_NiyetiYazar_AnahtarVeEskiToplamKorunur()
+    {
+        var (_, repo) = Fx();
+        var job = repo.FindOrCreate("c1", "session:s1", 250m);
+        var key = Guid.NewGuid();
+        repo.BeginApply(job.Id, key);
+        repo.MarkApplied(job.Id, key, 0, 250m);
+
+        repo.BeginReversal(job.Id, 0, key, targetTotal: 50m).Should().BeTrue();
+
+        var guncel = repo.Get(job.Id)!;
+        guncel.State.Should().Be(PaymentJobState.ReversePending);
+        guncel.PendingTotal.Should().Be(50m);
+        guncel.ProductTotal.Should().Be(250m, "eski düşümün hangi tutara ait olduğu korunur");
+        guncel.ApplyKey.Should().Be(key, "geri alınacak işlem odur");
+        guncel.AppliedAmount.Should().Be(250m);
+    }
+
+    [Fact]
+    public void CompleteReversal_IsiTazeyeDondurur_AnahtariDusurur()
+    {
+        var (_, repo) = Fx();
+        var job = repo.FindOrCreate("c1", "session:s1", 250m);
+        var key = Guid.NewGuid();
+        repo.BeginApply(job.Id, key);
+        repo.MarkApplied(job.Id, key, 0, 250m);
+        repo.BeginReversal(job.Id, 0, key, 50m);
+
+        repo.CompleteReversal(job.Id, 0, key).Should().BeTrue();
+
+        var guncel = repo.Get(job.Id)!;
+        guncel.State.Should().Be(PaymentJobState.Created);
+        guncel.ProductTotal.Should().Be(50m);
+        guncel.PendingTotal.Should().BeNull();
+        guncel.ApplyKey.Should().BeNull("geri alınmış anahtar bir daha replay edilemez");
+        guncel.AppliedAmount.Should().BeNull();
+        guncel.Revision.Should().Be(1, "uçuştaki eski cevaplar bayatlamalı");
+    }
+
+    [Fact]
+    public void CompleteReversal_NiyetYokken_HicbirSeyYapmaz()
+    {
+        var (_, repo) = Fx();
+        var job = repo.FindOrCreate("c1", "session:s1", 250m);
+        var key = Guid.NewGuid();
+        repo.BeginApply(job.Id, key);
+        repo.MarkApplied(job.Id, key, 0, 250m);
+
+        // BeginReversal hiç çağrılmadı: iş applied. Uzlaştırma yokken tamamlama
+        // çağrısı düşümü sessizce silerdi.
+        repo.CompleteReversal(job.Id, 0, key).Should().BeFalse();
+
+        var guncel = repo.Get(job.Id)!;
+        guncel.State.Should().Be(PaymentJobState.Applied);
+        guncel.AppliedAmount.Should().Be(250m);
+        guncel.ApplyKey.Should().Be(key);
+    }
+
+    [Fact]
+    public void BeginReversal_BayatAkis_GuncelDenemeyiGeriAlmayaSokamaz()
+    {
+        var (_, repo) = Fx();
+        var job = repo.FindOrCreate("c1", "session:s1", 250m);
+        var eskiKey = Guid.NewGuid();
+        repo.BeginApply(job.Id, eskiKey);
+
+        var yeniKey = Guid.NewGuid();
+        repo.BeginRevision(job.Id, 50m, yeniKey, expectedRevision: 0).Should().BeTrue();
+        repo.MarkApplied(job.Id, yeniKey, 1, 50m).Should().BeTrue();
+
+        repo.BeginReversal(job.Id, 0, eskiKey, 999m).Should().BeFalse();
+
+        var guncel = repo.Get(job.Id)!;
+        guncel.State.Should().Be(PaymentJobState.Applied);
+        guncel.PendingTotal.Should().BeNull();
+    }
 }

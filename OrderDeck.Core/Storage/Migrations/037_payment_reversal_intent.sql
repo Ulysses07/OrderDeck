@@ -1,0 +1,41 @@
+-- R4-02 (2026-09-12 R4 denetimi, bölüm 8): geri alma belirsizliği AYRI bir
+-- durum olmak zorunda.
+--
+-- BUGÜNKÜ AÇIK: 250'lik düşüm 50'ye revize edilirken uzak geri alma sunucuda
+-- GERÇEKLEŞTİ, fakat cevabı ağda kayboldu. Servis apply_uncertain'e düşüp
+-- BalanceUncertain döndü. Operatör tekrar denedi, ama bu kez aynı kapsam
+-- yeniden ESKİ toplamla (250) istendi. ProductTotal == istenen toplam olduğu
+-- için revizyon dalı hiç çalışmadı; iş apply_uncertain olduğundan eski anahtar
+-- replay edildi ve sunucu o anahtarın TARİHSEL sonucunu (appliedAmount=250)
+-- döndürdü. Oysa o işlem geri alınmıştı: gerçek net düşüm 0. Müşteriye
+-- "250 TL bakiyeniz düşüldü, kalan 0" yazıldı; para hiç düşmemişti.
+--
+-- KÖK NEDEN: apply_uncertain iki ayrı bilinmeyeni tek kutuya koyuyor —
+-- "apply'ın sonucu bilinmiyor" ile "geri almanın sonucu bilinmiyor". İkisinin
+-- doğru davranışı zıt: birincide anahtar replay edilmeli, ikincide anahtar
+-- ARTIK GEÇERSİZ sayılıp önce geri alma uzlaştırılmalı.
+--
+-- ÇÖZÜM: geri alma NİYETİ, istek tele çıkmadan ÖNCE diske iner
+-- (State='reverse_pending' + PendingTotal=hedef toplam, eski ApplyKey yerinde
+-- kalır çünkü geri alınacak işlem odur). Sonraki her deneme, toplam ne olursa
+-- olsun, önce bu niyeti uzlaştırır. Sunucudaki geri alma deterministik
+-- idempotenttir (tekrar = 409 already-reversed = başarı, N01 filtreli tekil
+-- indeksiyle hakemlenir), yani kaybolan bir geri alma cevabı HER ZAMAN tekrar
+-- denenerek kesinleştirilebilir — bu yüzden burada ürün kararına gerek yok.
+--
+-- Uzlaşma başarınca CompleteReversal işi "taze"ye döndürür: ProductTotal =
+-- PendingTotal, Revision+1 (uçuştaki eski cevaplar R4-01 koşuluyla bayatlar),
+-- ApplyKey=NULL, AppliedAmount=NULL, State='created'. Normal akış oradan yeni
+-- bir anahtarla temiz bir düşüm yapar.
+--
+-- PendingTotal neden ayrı kolon: ProductTotal'ı geri alma KESİNLEŞMEDEN
+-- güncellemek, yarıda kalındığında "eski düşüm hangi tutara aitti" bilgisini
+-- silerdi. TEXT — ProductTotal ile aynı gerekçe (034): invariant ondalık metin,
+-- REAL eşitlik karşılaştırmasını (revizyon tespiti) bozar.
+--
+-- Bu dosya 036 (N03-g) henüz birleşmemişken yazıldı; 036 master'a girdi,
+-- artık numaralarda boşluk yok.
+
+ALTER TABLE PaymentJob ADD COLUMN PendingTotal TEXT;
+
+UPDATE _meta SET SchemaVersion = 37 WHERE Id = 1;

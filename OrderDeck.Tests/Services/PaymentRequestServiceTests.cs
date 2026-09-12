@@ -107,6 +107,12 @@ public class PaymentRequestServiceTests : IDisposable
         public List<Guid> ReverseCalls { get; } = new();
         public string? ReverseProblemTitle { get; set; }
         public bool ThrowTimeoutOnReverse { get; set; }
+
+        /// <summary>R4-02: geri alma isteği "sunucuya ulaştığı" anda çalışır —
+        /// niyetin istekten ÖNCE diske indiğini doğrulamak için. Parametre
+        /// geri alınan transactionId.</summary>
+        public Action<Guid>? OnReverse { get; set; }
+
         /// <summary>A9: preview cevabından önce beklenir (yarış rendezvous'u).</summary>
         public Func<Task>? OnPreviewAsync { get; set; }
 
@@ -190,6 +196,7 @@ public class PaymentRequestServiceTests : IDisposable
                 var guidSegment = segments[^2]; // "reverse"'den önceki segment
                 var transactionId = Guid.Parse(guidSegment);
                 lock (_sync) ReverseCalls.Add(transactionId);
+                OnReverse?.Invoke(transactionId);
                 if (ThrowTimeoutOnReverse) throw new TaskCanceledException("stub timeout");
                 if (ReverseProblemTitle is not null) return Problem(ReverseProblemTitle);
                 return Json("{}");
@@ -908,7 +915,13 @@ public class PaymentRequestServiceTests : IDisposable
             "geri alma kesinleşmeden yeni düşüm çift tahsilat riskidir");
         _launcher.LaunchedUrls.Should().HaveCount(oncekiSentSayisi, "mesaj gitmedi");
         handler.ReverseCalls.Should().HaveCount(2, "bir deneme + bir anında tekrar (K3)");
-        _jobs.Snapshot.Single().State.Should().Be(PaymentJobState.ApplyUncertain);
+
+        // R4-02: durum apply_uncertain DEĞİL. Bilinmeyen şey apply'ın sonucu
+        // değil, geri almanın sonucu — ve ikisinin doğru davranışı zıt.
+        var job = _jobs.Snapshot.Single();
+        job.State.Should().Be(PaymentJobState.ReversePending);
+        job.PendingTotal.Should().Be(300m, "niyet, istek tele çıkmadan diske indi");
+        job.ProductTotal.Should().Be(250m, "eski düşümün hangi tutara ait olduğu korunur");
     }
 
     [Fact] // A8 — already-reversed = idempotent başarı
@@ -1036,6 +1049,118 @@ public class PaymentRequestServiceTests : IDisposable
             foreach (var f in new[] { dbPath, dbPath + "-wal", dbPath + "-shm" })
                 if (File.Exists(f)) File.Delete(f);
         }
+    }
+
+    // ── R4-02: yarım kalmış geri alma ───────────────────────────────────────
+    //
+    // Rapor §8 sırası: 250'lik düşümün 50'ye revizyonunda uzak geri alma
+    // sunucuda GERÇEKLEŞTİ ama iki cevap da kayboldu; ardından aynı kapsam
+    // yeniden ESKİ toplamla (250) istendi. Eskiden iş apply_uncertain'de
+    // olduğu için ProductTotal == istenen toplam çıkıyor, revizyon dalı hiç
+    // çalışmıyor ve geri alınmış anahtar replay ediliyordu: sunucu onun
+    // tarihsel sonucunu (250) döndürüyor, servis bunu geçerli düşüm sayıyordu.
+    // Gerçek net düşüm ise 0 — müşteriye düşmemiş bir bakiye düşmüş gibi
+    // yazılıyordu.
+
+    [Fact] // R4-02
+    public async Task OpenWhatsAppAsync_kayip_geri_alma_eski_toplam_geri_gelse_bile_uzlastirilir()
+    {
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 1000m;
+        handler.CapAppliedToRequest = true;
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.Opened);
+        var ilkKey = AppliedKey(handler.AppliedBalanceBodies[0]);
+
+        // Revizyon: geri alma sunucuda GERÇEKLEŞTİ, iki cevap da kayboldu.
+        handler.ThrowTimeoutOnReverse = true;
+        (await sut.OpenWhatsAppAsync(customer, 50m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.BalanceUncertain);
+        handler.ReverseCalls.Should().HaveCount(2).And.OnlyContain(k => k == ilkKey);
+
+        // Ağ düzeldi; aynı kapsam ESKİ toplamla yeniden istendi.
+        handler.ThrowTimeoutOnReverse = false;
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.Opened);
+
+        // Toplam eski değere döndüğü için revizyon dalı çalışmaz; niyeti
+        // yakalayan şey giriş noktasındaki uzlaştırmadır.
+        handler.ReverseCalls.Should().HaveCount(3).And.OnlyContain(k => k == ilkKey,
+            "yarım kalmış geri alma bir kez daha denendi ve kesinleşti");
+
+        var job = _jobs.Snapshot.Single();
+        job.State.Should().Be(PaymentJobState.Applied);
+        job.ApplyKey.Should().NotBe(ilkKey,
+            "geri alınmış işlemin anahtarı bir daha replay edilemez");
+        // 0 → 1 geri almanın kesinleşmesi, 1 → 2 hedefin 50'den 250'ye dönmesi.
+        // Her artış uçuştaki eski bir cevabı R4-01 koşuluyla bayatlatır.
+        job.Revision.Should().Be(2);
+        job.AppliedAmount.Should().Be(250m);
+
+        // Müşterinin gördüğü rakam: 250 − 250 = 0. Eskiden de 0 yazıyordu ama
+        // TEK KURUŞ düşmemişti; artık gerçekten düşmüş bir 250 var.
+        _launcher.LaunchedUrls[^1].Should().Contain("0%2C00");
+        handler.AppliedBalanceBodies.Should().HaveCount(2);
+        AppliedKey(handler.AppliedBalanceBodies[^1]).Should().Be(job.ApplyKey!.Value);
+    }
+
+    [Fact] // R4-02 — niyet diske inmeden istek tele çıkmaz
+    public async Task OpenWhatsAppAsync_geri_alma_niyeti_istekten_ONCE_diske_iner()
+    {
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 1000m;
+        handler.CapAppliedToRequest = true;
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.Opened);
+
+        // İlk geri alma isteği sunucuya ulaştığı ANDA diskteki durumu oku:
+        // niyet orada değilse, süreç tam bu noktada ölürse (kapak kapandı,
+        // elektrik gitti) yarım geri almanın hiçbir izi kalmaz.
+        PaymentJob? istekAninda = null;
+        handler.OnReverse = _ => istekAninda ??= _jobs.Snapshot.Single();
+
+        handler.ThrowTimeoutOnReverse = true;
+        (await sut.OpenWhatsAppAsync(customer, 50m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.BalanceUncertain);
+
+        istekAninda.Should().NotBeNull();
+        istekAninda!.State.Should().Be(PaymentJobState.ReversePending);
+        istekAninda.PendingTotal.Should().Be(50m);
+    }
+
+    [Fact] // R4-02 — geri alma sürerken YENİ bir toplam gelirse (§52)
+    public async Task OpenWhatsAppAsync_geri_alma_yarim_kalmisken_ucuncu_toplam_gelirse_once_uzlastirir()
+    {
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 1000m;
+        handler.CapAppliedToRequest = true;
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.Opened);
+        var ilkKey = AppliedKey(handler.AppliedBalanceBodies[0]);
+
+        handler.ThrowTimeoutOnReverse = true;
+        (await sut.OpenWhatsAppAsync(customer, 50m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.BalanceUncertain);
+
+        // Operatör bu arada sepete bir ürün daha ekledi: hedef artık 80.
+        handler.ThrowTimeoutOnReverse = false;
+        (await sut.OpenWhatsAppAsync(customer, 80m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.Opened);
+
+        var job = _jobs.Snapshot.Single();
+        job.ProductTotal.Should().Be(80m, "yarım kalan niyetin hedefi (50) değil, güncel istek");
+        job.State.Should().Be(PaymentJobState.Applied);
+        job.AppliedAmount.Should().Be(80m);
+        job.ApplyKey.Should().NotBe(ilkKey);
+        handler.ReverseCalls.Should().OnlyContain(k => k == ilkKey,
+            "geri alınacak tek işlem ilk düşümdür; 80'lik düşüm hiç geri alınmadı");
+        _launcher.LaunchedUrls[^1].Should().Contain("0%2C00");
     }
 
     // ── R4-01: gecikmiş apply cevabı ────────────────────────────────────────

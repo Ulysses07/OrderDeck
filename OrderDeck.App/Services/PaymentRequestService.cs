@@ -291,7 +291,8 @@ public sealed class PaymentRequestService
             return new(Uncertain: false, job.AppliedAmount ?? 0m, job);
         }
 
-        // apply_uncertain: replay şart, o da ağsız olmaz.
+        // apply_uncertain: replay şart; reverse_pending (R4-02): yarım kalmış
+        // geri alma uzlaştırılmalı. İkisi de ağsız olmaz.
         return new(Uncertain: true, 0m, job);
     }
 
@@ -363,7 +364,20 @@ public sealed class PaymentRequestService
                 job = _jobs.FindOrCreate(customer.Id, scopeKey, totalAmount);
             }
 
-            // 2) Belirsiz iş: bir kez replay (K3) — hâlâ belirsizse blokla.
+            // 2) Yarım kalmış geri alma (R4-02): HER ŞEYDEN önce uzlaştır.
+            //
+            // İstenen toplam eski değere dönmüş olabilir; o zaman revizyon dalı
+            // hiç çalışmaz ve niyet burada yakalanmazsa görünmez olur. Geri
+            // alınmış bir işlemin anahtarı replay edilirse sunucu onun tarihsel
+            // sonucunu döndürür ve geri alınan tutar geçerli düşüm sanılır.
+            if (job.State == PaymentJobState.ReversePending)
+            {
+                job = await FinishReversalAsync(licenseId.Value, job, ct);
+                if (job.State == PaymentJobState.ReversePending)
+                    return new(true, 0m, job);
+            }
+
+            // 3) Belirsiz iş: bir kez replay (K3) — hâlâ belirsizse blokla.
             if (job.State == PaymentJobState.ApplyUncertain)
             {
                 job = await ReplayAsync(licenseId.Value, wpfCustomerId, job, ct);
@@ -371,28 +385,44 @@ public sealed class PaymentRequestService
                     return new(true, 0m, job);
             }
 
-            // 3) Revizyon (K2): kapsam aynı, tutar değişti — eski düşümü geri
+            // 4) Revizyon (K2): kapsam aynı, tutar değişti — eski düşümü geri
             //    al, yeni toplam + YENİ anahtarla taze uygula. created işte de
             //    çalışır (geri alınacak şey yoktur, sadece tutar güncellenir).
             if (job.ProductTotal != totalAmount)
             {
-                if (job.AppliedAmount is > 0m
-                    && !await TryReverseAsync(licenseId.Value, job.ApplyKey!.Value, ct))
+                if (job.AppliedAmount is > 0m)
                 {
-                    _jobs.MarkUncertain(job.Id, job.ApplyKey, job.Revision);
-                    return new(true, 0m, job);
+                    // R4-02: niyet ÖNCE diske — istek tele çıkmadan.
+                    // false = eşzamanlı akış kazandı; satırı yeniden okuyup
+                    // onun bıraktığı duruma göre devam ederiz.
+                    _jobs.BeginReversal(job.Id, job.Revision, job.ApplyKey!.Value, totalAmount);
+                    job = _jobs.Get(job.Id)!;
+
+                    if (job.State == PaymentJobState.ReversePending)
+                    {
+                        job = await FinishReversalAsync(licenseId.Value, job, ct);
+                        if (job.State == PaymentJobState.ReversePending)
+                            return new(true, 0m, job);
+                    }
                 }
-                // false = eşzamanlı revizyon kazandı; onun anahtarıyla devam.
-                _jobs.BeginRevision(job.Id, totalAmount, Guid.NewGuid(), job.Revision);
-                job = _jobs.Get(job.Id)!;
-                return await SettleAsync(licenseId.Value, wpfCustomerId, job, ct);
+
+                // Buraya gelindiğinde geri alınacak düşüm yok: ya hiç olmadı ya
+                // da kesinleşerek geri alındı (o durumda CompleteReversal işi
+                // zaten hedef toplamla 'created'a döndürdü, koşul tutmaz ve
+                // akış aşağıdaki taze uygulama adımına düşer).
+                if (job.ProductTotal != totalAmount)
+                {
+                    _jobs.BeginRevision(job.Id, totalAmount, Guid.NewGuid(), job.Revision);
+                    job = _jobs.Get(job.Id)!;
+                    return await SettleAsync(licenseId.Value, wpfCustomerId, job, ct);
+                }
             }
 
-            // 4) Tekrar paylaşım: sonuç kesin, tutar aynı — finansal çağrı YOK.
+            // 5) Tekrar paylaşım: sonuç kesin, tutar aynı — finansal çağrı YOK.
             if (job.State is PaymentJobState.Applied or PaymentJobState.NoBalance)
                 return new(false, job.AppliedAmount ?? 0m, job);
 
-            // 5) Taze iş: önizleme (bakiye yoksa anahtar hiç yazılmaz) →
+            // 6) Taze iş: önizleme (bakiye yoksa anahtar hiç yazılmaz) →
             //    anahtar diske → apply.
             decimal previewBalance;
             try
@@ -503,6 +533,32 @@ public sealed class PaymentRequestService
         {
             _log?.LogWarning(ex, "Bakiye apply belirsiz kaldı (job={JobId})", job.Id);
         }
+        return _jobs.Get(job.Id)!;
+    }
+
+    /// <summary>R4-02: diske inmiş geri alma niyetini uzlaştırır. Sunucudaki
+    /// geri alma deterministik idempotenttir (tekrar = 409 already-reversed =
+    /// başarı, A8), yani kaybolan bir cevap HER ZAMAN tekrar denenerek
+    /// kesinleştirilebilir — bu yüzden burada ürün kararına gerek yok.
+    ///
+    /// <para>Kesinleşirse iş hedef toplamla "taze"ye döner ve çağıran normal
+    /// akıştan YENİ bir anahtarla temiz bir düşüm yapar. Kesinleşmezse niyet
+    /// diskte kalır (dönüşte durum hâlâ reverse_pending) ve akış durur:
+    /// operatörün bir sonraki tıklaması kaldığı yerden sürdürür.</para></summary>
+    private async Task<PaymentJob> FinishReversalAsync(
+        Guid licenseId, PaymentJob job, CancellationToken ct)
+    {
+        var key = job.ApplyKey!.Value;
+        if (!await TryReverseAsync(licenseId, key, ct))
+        {
+            _log?.LogWarning(
+                "Geri alma kesinleşmedi — niyet diskte kalıyor, mesaj engellendi "
+                + "(job={JobId}, tx={TxId})", job.Id, key);
+            return job;
+        }
+        // false = araya giren akış uzlaştırmayı zaten yaptı; yeniden okuyup
+        // onun bıraktığı satırla devam etmek doğru davranış.
+        _jobs.CompleteReversal(job.Id, job.Revision, key);
         return _jobs.Get(job.Id)!;
     }
 
