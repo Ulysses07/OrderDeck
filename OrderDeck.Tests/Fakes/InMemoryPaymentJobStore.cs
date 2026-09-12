@@ -71,36 +71,55 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
         }
     }
 
-    public void MarkApplied(string id, decimal appliedAmount)
+    /// <summary>R4-01 koşulu: cevap, gönderildiği denemeye ait olmalı.</summary>
+    private bool Bayat(PaymentJob j, Guid? expectedKey, int expectedRevision)
+        => j.Revision != expectedRevision || j.ApplyKey != expectedKey;
+
+    public bool MarkApplied(string id, Guid expectedKey, int expectedRevision, decimal appliedAmount)
     {
         lock (_gate)
-            _jobs[id] = _jobs[id] with
+        {
+            var j = _jobs[id];
+            if (Bayat(j, expectedKey, expectedRevision)) return false;
+            _jobs[id] = j with
             {
                 State = PaymentJobState.Applied,
                 AppliedAmount = appliedAmount,
                 UpdatedAt = Now(),
             };
+            return true;
+        }
     }
 
-    public void MarkNoBalance(string id)
+    public bool MarkNoBalance(string id, Guid? expectedKey, int expectedRevision)
     {
         lock (_gate)
-            _jobs[id] = _jobs[id] with
+        {
+            var j = _jobs[id];
+            if (Bayat(j, expectedKey, expectedRevision)) return false;
+            _jobs[id] = j with
             {
                 State = PaymentJobState.NoBalance,
                 AppliedAmount = 0m,
                 UpdatedAt = Now(),
             };
+            return true;
+        }
     }
 
-    public void MarkUncertain(string id)
+    public bool MarkUncertain(string id, Guid? expectedKey, int expectedRevision)
     {
         lock (_gate)
-            _jobs[id] = _jobs[id] with
+        {
+            var j = _jobs[id];
+            if (Bayat(j, expectedKey, expectedRevision)) return false;
+            _jobs[id] = j with
             {
                 State = PaymentJobState.ApplyUncertain,
                 UpdatedAt = Now(),
             };
+            return true;
+        }
     }
 
     public void Close(string id)
