@@ -131,7 +131,7 @@ export const en: Messages = {
       },
       {
         q: 'Do I need separate API keys for each platform?',
-        a: 'No. For Instagram, TikTok and Facebook we listen via a browser extension. For YouTube we use OrderDeck\'s own verified YouTube API project — you just sign in with your YouTube account.',
+        a: 'No. For Instagram and Facebook we use Meta\'s official API — signing in with your Facebook account is enough. For YouTube we use OrderDeck\'s own verified YouTube API project; you just sign in with your YouTube account. TikTok is the only platform with no official API, so we listen to it through a browser extension.',
       },
       {
         q: 'Are my messages stored anywhere?',
@@ -196,7 +196,7 @@ export const en: Messages = {
       title: 'After install',
       step1: 'A first-run setup wizard launches automatically',
       step2: 'The wizard walks you through license activation, YouTube channel setup, Chrome extension install, and OBS browser source URLs in 6 steps',
-      step3: 'Chrome extension is awaiting Web Store approval; until then the wizard guides you through the sideload flow',
+      step3: 'The Chrome extension is live on the Web Store and the wizard opens the install link directly. It is only needed for TikTok — Instagram, Facebook and YouTube run on official APIs',
     },
     requirements: {
       title: 'System requirements',

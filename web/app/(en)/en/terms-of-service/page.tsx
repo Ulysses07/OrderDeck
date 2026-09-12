@@ -97,8 +97,8 @@ export default function TermsEn() {
       <h2>5. Third-party services</h2>
       <p>
         The application connects to third-party services to function: the YouTube Data
-        API (Google), and Instagram, TikTok and Facebook environments via a browser
-        extension. Each of these services has its own terms and privacy policies, which
+        API (Google), the Graph API (Meta) for Instagram and Facebook, and the TikTok
+        environment via a browser extension. Each of these services has its own terms and privacy policies, which
         apply to your use of them. {BRAND} makes no guarantee of uninterrupted
         availability of those third-party services.
       </p>

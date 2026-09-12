@@ -128,7 +128,7 @@ export const tr = {
       },
       {
         q: 'Yayın platformları için ek hesap/API anahtarı gerekiyor mu?',
-        a: 'Hayır. Instagram, TikTok ve Facebook için tarayıcı eklentisi üzerinden yayını dinliyoruz. YouTube için OrderDeck\'in kendi onaylı YouTube API uygulamasını kullanıyoruz; sen sadece YouTube hesabınla giriş yapıyorsun.',
+        a: 'Hayır. Instagram ve Facebook için Meta\'nın resmi API\'sini kullanıyoruz; Facebook hesabınla giriş yapman yeterli. YouTube için OrderDeck\'in kendi onaylı YouTube API uygulamasını kullanıyoruz; sen sadece YouTube hesabınla giriş yapıyorsun. Resmi API\'si olmayan tek platform TikTok; onun için tarayıcı eklentisiyle yayını dinliyoruz.',
       },
       {
         q: 'Mesajlar bir yerde saklanıyor mu?',
@@ -193,7 +193,7 @@ export const tr = {
       title: 'Kurulumdan sonra',
       step1: 'OrderDeck kurulduktan sonra otomatik olarak ilk açılış sihirbazı başlatır',
       step2: 'Sihirbaz seni 6 adımda lisans aktivasyonu, YouTube kanal ayarı, Chrome eklentisi kurulumu ve OBS browser source URL\'lerinde yönlendirir',
-      step3: 'Chrome eklentisi mağaza onayını bekliyor; o sırada sihirbaz sideload adımlarını gösterir',
+      step3: 'Chrome eklentisi Web Mağazası\'nda yayında; sihirbaz kurulum linkini doğrudan açar. Eklenti yalnızca TikTok için gerekli — Instagram, Facebook ve YouTube resmi API üzerinden çalışır',
     },
     requirements: {
       title: 'Sistem gereksinimleri',
