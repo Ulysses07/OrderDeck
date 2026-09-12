@@ -33,8 +33,8 @@
 -- silerdi. TEXT — ProductTotal ile aynı gerekçe (034): invariant ondalık metin,
 -- REAL eşitlik karşılaştırmasını (revizyon tespiti) bozar.
 --
--- 036 boş: o numarayı henüz birleşmemiş bir dal tutuyor. MigrationRunner
--- boşluğa toleranslı (version <= currentVersion ise atlar), bu yüzden zararsız.
+-- Bu dosya 036 (N03-g) henüz birleşmemişken yazıldı; 036 master'a girdi,
+-- artık numaralarda boşluk yok.
 
 ALTER TABLE PaymentJob ADD COLUMN PendingTotal TEXT;
 

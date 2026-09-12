@@ -319,21 +319,27 @@ public class CustomerRepositoryTests
 
     // ── N03 (2026-09-10 denetimi): UpdatePhone delta imlecini ilerletmeli ──
 
+    /// <summary>İmleci "bu satır senkronlandı" konumuna taşır — sync servisinin
+    /// AdvanceWatermark'ı ile aynı davranış (partinin son satırının SyncSeq'i).</summary>
+    private static long CursorAfter(CustomerRepository repo, string id)
+        => repo.GetById(id)!.SyncSeq;
+
     [Fact]
     public void UpdatePhone_satiri_delta_sorgusuna_dusurur()
     {
-        // LastSeenAt geçmişte, imleç satırı çoktan geçmiş: telefon güncellenince
-        // satır yeniden seçilmeli; yoksa numara sunucuya hiç senkronlanmaz.
+        // İmleç satırı çoktan geçmiş: telefon güncellenince satır yeniden
+        // seçilmeli; yoksa numara sunucuya hiç senkronlanmaz.
         using var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
         var repo = new CustomerRepository(db);
         repo.Insert(new Customer("id1", "twitch", "alice", "Alice", null,
             1000, 1000, false, null, null, 0, 0m, null, null, null));
-        repo.GetUpdatedSince(1000, "id1", 100).Should().BeEmpty("imleç satırı zaten geçti");
+        var cursor = CursorAfter(repo, "id1");
+        repo.GetUpdatedSince(cursor, 100).Should().BeEmpty("imleç satırı zaten geçti");
 
         repo.UpdatePhone("id1", "+905551234567");
 
-        var delta = repo.GetUpdatedSince(1000, "id1", 100);
+        var delta = repo.GetUpdatedSince(cursor, 100);
         delta.Should().ContainSingle().Which.Phone.Should().Be("+905551234567");
     }
 
@@ -341,21 +347,21 @@ public class CustomerRepositoryTests
     public void UpdatePhone_ayni_saniyede_ikinci_guncelleme_de_secilir()
     {
         // İlk güncelleme senkronlandıktan sonra (imleç satırın yeni konumunda)
-        // aynı saniye içindeki ikinci güncelleme de delta'ya düşmeli — bunun
-        // için LastSeenAt satır başına kesin artan (strictly increasing) olmalı.
+        // aynı saniye içindeki ikinci güncelleme de delta'ya düşmeli — imleç
+        // saatten bağımsız olduğu için saniye çözünürlüğü hiç devreye girmiyor.
         using var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
         var repo = new CustomerRepository(db);
         repo.Insert(new Customer("id1", "twitch", "alice", "Alice", null,
             1000, 1000, false, null, null, 0, 0m, null, null, null));
         repo.UpdatePhone("id1", "+905551111111");
-        var first = repo.GetById("id1")!;
-        repo.GetUpdatedSince(first.LastSeenAt, "id1", 100)
+        var cursor = CursorAfter(repo, "id1");
+        repo.GetUpdatedSince(cursor, 100)
             .Should().BeEmpty("ilk güncelleme senkronlandı, imleç satırın üzerinde");
 
         repo.UpdatePhone("id1", "+905552222222");
 
-        var delta = repo.GetUpdatedSince(first.LastSeenAt, "id1", 100);
+        var delta = repo.GetUpdatedSince(cursor, 100);
         delta.Should().ContainSingle().Which.Phone.Should().Be("+905552222222");
     }
 
@@ -373,11 +379,12 @@ public class CustomerRepositoryTests
         var repo = new CustomerRepository(db);
         repo.Insert(new Customer("id1", "form", "alice", "Alice", null,
             1000, 1000, false, null, null, 0, 0m, null, null, null));
-        repo.GetUpdatedSince(1000, "id1", 100).Should().BeEmpty("imleç satırı zaten geçti");
+        var cursor = CursorAfter(repo, "id1");
+        repo.GetUpdatedSince(cursor, 100).Should().BeEmpty("imleç satırı zaten geçti");
 
         repo.UpsertFromIntakeForm("alice", "Alice Yılmaz", "İzmir", "+905551234567", nowUnix: 1000);
 
-        var delta = repo.GetUpdatedSince(1000, "id1", 100);
+        var delta = repo.GetUpdatedSince(cursor, 100);
         delta.Should().ContainSingle().Which.Phone.Should().Be("+905551234567");
     }
 
@@ -407,14 +414,116 @@ public class CustomerRepositoryTests
         var repo = new CustomerRepository(db);
         repo.Insert(new Customer("id1", "instagram", "alice", "Alice", null,
             1000, 1000, false, null, null, 0, 0m, null, null, null));
-        repo.GetUpdatedSince(1000, "id1", 100).Should().BeEmpty("imleç satırı zaten geçti");
+        var cursor = CursorAfter(repo, "id1");
+        repo.GetUpdatedSince(cursor, 100).Should().BeEmpty("imleç satırı zaten geçti");
 
         repo.UpsertPersonFromIntake(
             new (string, string, string?)[] { ("instagram", "alice", null) },
             "Alice Yılmaz", "İzmir", "+905551234567", null, null, false, false, nowUnix: 1000);
 
-        var delta = repo.GetUpdatedSince(1000, "id1", 100);
+        var delta = repo.GetUpdatedSince(cursor, 100);
         delta.Should().ContainSingle().Which.Phone.Should().Be("+905551234567");
+    }
+
+    // ── N03-g (2026-09-12 denetimi): imleç saatten bağımsız olmalı ──────
+
+    [Fact]
+    public void GetUpdatedSince_ileri_zamanli_baska_satir_imleci_tasisa_da_guncelleme_kaybolmaz()
+    {
+        // Denetimin kontrollü deneyi: imleç GENEL, LastSeenAt artışı SATIRA
+        // ÖZEL. Saat kaymış/ileri zamanlı TEK satır imleci 60 sn öne taşırsa,
+        // BAŞKA bir satırın MAX(LastSeenAt+1, now) artışı imlece asla
+        // yetişemez → o güncelleme sunucuya HİÇ gitmez ve bir daha denenmez.
+        // SyncSeq saatten bağımsız olduğu için bu sınıf yapısal olarak imkânsız.
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+        repo.Insert(new Customer("id1", "twitch", "alice", "Alice", null,
+            now - 10, now - 10, false, null, null, 0, 0m, null, null, null));
+        // Saat kayması / ileri zamanlı veri: bu satır 60 sn ileride ve SON
+        // senkronlanan satır — imleç onun üzerinde kalıyor.
+        repo.Insert(new Customer("skew", "twitch", "bob", "Bob", null,
+            now, now + 60, false, null, null, 0, 0m, null, null, null));
+
+        var batch = repo.GetUpdatedSince(0, 100);
+        batch.Should().HaveCount(2);
+        var cursor = batch[^1].SyncSeq;
+
+        repo.UpdatePhone("id1", "+905551234567");
+
+        var delta = repo.GetUpdatedSince(cursor, 100);
+        delta.Should().ContainSingle("ileri zamanlı satır imleci taşısa da güncelleme kaybolmamalı")
+            .Which.Phone.Should().Be("+905551234567");
+    }
+
+    [Fact]
+    public void GetUpdatedSince_saat_geri_alinirsa_bile_guncelleme_secilir()
+    {
+        // Saat geri alındığında LastSeenAt geri gidebilir (iş zamanı öyle
+        // olmalı — "en son ne zaman görüldü" kullanıcıya gösteriliyor), ama
+        // senkron sırası asla geri gitmemeli.
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+        repo.Insert(new Customer("id1", "twitch", "alice", "Alice", null,
+            5_000_000_000, 5_000_000_000, false, null, null, 0, 0m, null, null, null));
+        var cursor = CursorAfter(repo, "id1");
+
+        // UpdatePhone MAX(LastSeenAt+1, now) yazar; LastSeenAt zaten çok ileride
+        // olduğu için iş zamanı pratikte ilerlemese de satır delta'ya düşmeli.
+        repo.UpdatePhone("id1", "+905551234567");
+
+        repo.GetUpdatedSince(cursor, 100).Should().ContainSingle()
+            .Which.Phone.Should().Be("+905551234567");
+    }
+
+    [Fact]
+    public void GetUpdatedSince_ayni_saniyedeki_satirlar_sayfa_sinirinda_atlanmaz()
+    {
+        // F07: aynı saniyeye BatchSize'dan fazla satır düştüğünde yalnız-zaman
+        // imleci sayfa sınırındaki satırları sonsuza dek atlıyordu. SyncSeq
+        // benzersiz olduğu için "aynı değere sahip iki satır" hâli yok.
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+        for (var i = 0; i < 25; i++)
+        {
+            repo.Insert(new Customer($"id{i:D2}", "twitch", $"u{i}", null, null,
+                1000, 1000, false, null, null, 0, 0m, null, null, null));
+        }
+
+        var seen = new List<string>();
+        long cursor = 0;
+        while (true)
+        {
+            var page = repo.GetUpdatedSince(cursor, 10);
+            if (page.Count == 0) break;
+            seen.AddRange(page.Select(c => c.Id));
+            cursor = page[^1].SyncSeq;
+        }
+
+        seen.Should().HaveCount(25).And.OnlyHaveUniqueItems();
+    }
+
+    [Fact]
+    public void SyncSeq_yalnizca_projeksiyona_giden_alanlar_degisince_artar()
+    {
+        // Etiket basımı sıcak yol: TotalAmount/TotalLabelsPrinted/LastSeenAt
+        // projeksiyonun İÇERİĞİNİ değiştirmiyor. Eskiden imleç LastSeenAt
+        // olduğu için her etiket satırı yeniden gönderiyordu.
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+        repo.Insert(new Customer("id1", "twitch", "alice", "Alice", null,
+            1000, 1000, false, null, null, 0, 0m, null, null, null));
+        var cursor = CursorAfter(repo, "id1");
+
+        repo.IncrementLabelStats("id1", 1, 250m, lastSeenAt: 2000);
+
+        repo.GetUpdatedSince(cursor, 100).Should()
+            .BeEmpty("etiket sayacı sunucu projeksiyonunu değiştirmiyor");
     }
 
     // ── Kargo PR F: RecipientPaysActive ─────────────────────────────────

@@ -13,8 +13,8 @@ namespace OrderDeck.App.Services.Sync;
 /// Platform, Username) ile match yapılır — bu match için server-side projection
 /// gerekli. Server retroactive match'i sync endpoint'inde drive-by yapar.
 ///
-/// Watermark: SettingsStore.LastCustomerProjectionSyncAt (long unix seconds)
-/// + LastCustomerProjectionSyncId (eşitlik bozucu — F07, bkz. AppSettings).
+/// Watermark: SettingsStore.LastCustomerProjectionSyncSeq — Customer.SyncSeq,
+/// tablo geneli kesin artan sayaç (N03-g; göç 036 tetikleyicileri yazar).
 /// Batch: 500/call. Multi-batch loop until exhausted within a single tick.
 ///
 /// WpfCustomerSyncItem.FullName mapping: Customer.FullName (gerçek ad,
@@ -83,31 +83,15 @@ public sealed class WpfCustomerProjectionSyncService
             return 0;
         }
 
-        var settings    = _settingsStore.Load();
-        var watermark   = settings.LastCustomerProjectionSyncAt;
-        var watermarkId = settings.LastCustomerProjectionSyncId;
-
-        // F07 tek seferlik iyileştirme: Id imleci boşken watermark > 0 ise bu
-        // kurulum eski (yalnız-zaman) imleçle çalışmış demektir — sayfa
-        // sınırında atlanmış satırlar watermark'ın ALTINDA kaldığı için bileşik
-        // imleç onları tek başına kurtaramaz. Watermark bir kez 0'a çekilir ve
-        // her şey yeniden taranır; sunucu upsert'i idempotent, maliyet yalnız
-        // birkaç fazladan parti. İlk başarılı kayıtta iki alan birlikte
-        // yazıldığından bu dal bir daha çalışmaz.
-        if (watermark > 0 && string.IsNullOrEmpty(watermarkId))
-        {
-            _log.LogInformation(
-                "Customer projection sync: composite cursor migration — resetting watermark {Watermark} to 0 for one full re-scan",
-                watermark);
-            watermark = 0;
-        }
+        var settings  = _settingsStore.Load();
+        var watermark = settings.LastCustomerProjectionSyncSeq;
 
         var totalSynced  = 0;
         var totalMatches = 0;
 
         while (!ct.IsCancellationRequested)
         {
-            var batch = _customers.GetUpdatedSince(watermark, watermarkId, BatchSize);
+            var batch = _customers.GetUpdatedSince(watermark, BatchSize);
             if (batch.Count == 0) break;
 
             var items = new List<WpfCustomerSyncItem>(batch.Count);
@@ -160,7 +144,7 @@ public sealed class WpfCustomerProjectionSyncService
             // watermark to prevent an infinite loop, then continue.
             if (items.Count == 0)
             {
-                AdvanceWatermark(batch, ref watermark, ref watermarkId);
+                AdvanceWatermark(batch, ref watermark);
                 if (batch.Count < BatchSize) break;
                 continue;
             }
@@ -177,7 +161,7 @@ public sealed class WpfCustomerProjectionSyncService
                 return totalSynced; // don't advance watermark on failure
             }
 
-            AdvanceWatermark(batch, ref watermark, ref watermarkId);
+            AdvanceWatermark(batch, ref watermark);
 
             if (batch.Count < BatchSize) break; // last page — no more rows
         }
@@ -193,27 +177,17 @@ public sealed class WpfCustomerProjectionSyncService
     }
 
     /// <summary>İmleci partinin SON satırına taşır ve kalıcılaştırır. Repo
-    /// (LastSeenAt, Id) ASC sıralı döndürdüğü için son satır = en büyük imleç;
-    /// <c>Max()</c> yerine son eleman okunur ki Id de aynı satırdan gelsin —
-    /// iki alan farklı satırlardan karışırsa imleç geri kayabilirdi.
+    /// SyncSeq ASC sıralı döndürdüğü için son satır = partinin en büyük imleci.
     /// N04: kalıcılaştırma <see cref="SettingsStore.Update"/> ile — döngü
     /// başında yüklenen kopya bayatlamış olabilir; bütün-nesne Save başka
     /// bileşenin bu arada yazdığı alanı ezerdi.</summary>
     private void AdvanceWatermark(
         IReadOnlyList<Core.Customers.Customer> batch,
-        ref long watermark,
-        ref string watermarkId)
+        ref long watermark)
     {
-        var last = batch[^1];
-        var w    = last.LastSeenAt;
-        var wid  = last.Id;
-        watermark   = w;
-        watermarkId = wid;
-        _settingsStore.Update(s =>
-        {
-            s.LastCustomerProjectionSyncAt = w;
-            s.LastCustomerProjectionSyncId = wid;
-        });
+        var w = batch[^1].SyncSeq;
+        watermark = w;
+        _settingsStore.Update(s => s.LastCustomerProjectionSyncSeq = w);
     }
 
     // ─── LicenseId resolution (same caching pattern as other sync services) ──
