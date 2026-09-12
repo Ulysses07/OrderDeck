@@ -66,6 +66,161 @@ public sealed class ShopperPurgeServiceTests
         return (new ShopperPurgeService(db, storage, NullLogger<ShopperPurgeService>.Instance), storage);
     }
 
+    private static ShopperPurgeService Build(LicenseDbContext db, IShopperPaymentStorage storage)
+        => new(db, storage, NullLogger<ShopperPurgeService>.Instance);
+
+    private static Payment SeedPayment(
+        LicenseDbContext db, Shopper shopper, License license, string objectKey)
+    {
+        var payment = new Payment
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = license.Id,
+            ShopperId = shopper.Id,
+            PayerName = "Ayşe Yılmaz",
+            ReferansNo = "REF-1",
+            MediaObjectKey = objectKey,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+        db.Payments.Add(payment);
+        return payment;
+    }
+
+    /// <summary>
+    /// Silme denemesini sayan ve istendiğinde patlayan depo. Gerçek
+    /// <see cref="StubShopperPaymentStorage"/> hiç hata vermediği için
+    /// "silinemedi" yolunu yalnız bu sarmalayıcı görünür kılıyor.
+    /// </summary>
+    private sealed class FlakyStorage : IShopperPaymentStorage
+    {
+        private readonly StubShopperPaymentStorage _inner = new();
+
+        public bool FailDeletes { get; set; }
+        public int DeleteAttempts { get; private set; }
+
+        public Task<string> UploadAsync(string objectKey, byte[] bytes, string contentType, CancellationToken ct = default)
+            => _inner.UploadAsync(objectKey, bytes, contentType, ct);
+
+        public Task<string> CreateDownloadUrlAsync(string objectKey, TimeSpan? expiry = null, CancellationToken ct = default)
+            => _inner.CreateDownloadUrlAsync(objectKey, expiry, ct);
+
+        public Task DeleteAsync(string objectKey, CancellationToken ct = default)
+        {
+            DeleteAttempts++;
+            if (FailDeletes) throw new IOException("depo geçici olarak erişilemez");
+            return _inner.DeleteAsync(objectKey, ct);
+        }
+
+        public bool Contains(string objectKey) => _inner.Contains(objectKey);
+    }
+
+    /// <summary>
+    /// R4-05: dış silme başarısızken başarı damgası vurulmamalı ve nesneye
+    /// giden referans yok edilmemeli. Damga, kovadaki dosya hâlâ dururken
+    /// "dekont silindi" diyen kalıcı bir yalan üretiyordu.
+    /// </summary>
+    [Fact]
+    public async Task Depo_silemezse_PdfPurgedAt_damgalanmaz_ve_anahtar_kuyruga_alinir()
+    {
+        using var db = NewDb();
+        var shopper = SeedShopper(db);
+        var license = SeedLicense(db);
+        const string key = "payments/abc/def.pdf";
+        var payment = SeedPayment(db, shopper, license, key);
+        await db.SaveChangesAsync();
+
+        var storage = new FlakyStorage { FailDeletes = true };
+        await storage.UploadAsync(key, new byte[] { 1, 2, 3 }, "application/pdf");
+
+        var result = await Build(db, storage).PurgeAsync(shopper.Id, default);
+
+        result!.PdfsDeleted.Should().Be(0);
+        result.PdfsPending.Should().Be(1);
+
+        var stored = await db.Payments.FirstAsync(p => p.Id == payment.Id);
+        stored.PdfPurgedAt.Should().BeNull(
+            "dosya kovada duruyorken 'silindi' damgası kalıcı bir yalan olur");
+        stored.PayerName.Should().BeEmpty("diğer kişisel alanlar yine de temizlenmeli");
+
+        var queued = await db.OrphanedMediaObjects.SingleAsync();
+        queued.ObjectKey.Should().Be(key);
+        queued.PaymentId.Should().Be(payment.Id);
+        queued.DeletedAt.Should().BeNull();
+        queued.AttemptCount.Should().Be(1);
+    }
+
+    /// <summary>
+    /// Raporun ölçtüğü asıl kusur: depo düzeltildikten sonra purge tekrarlansa
+    /// bile silme İKİNCİ kez denenmiyordu (iki purge boyunca toplam deneme 1).
+    /// Kuyruk satırı olmadan denenecek bir anahtar kalmıyordu.
+    /// </summary>
+    [Fact]
+    public async Task Depo_duzeldiginde_ikinci_purge_silmeyi_yeniden_dener()
+    {
+        using var db = NewDb();
+        var shopper = SeedShopper(db);
+        var license = SeedLicense(db);
+        const string key = "payments/abc/def.pdf";
+        var payment = SeedPayment(db, shopper, license, key);
+        await db.SaveChangesAsync();
+
+        var storage = new FlakyStorage { FailDeletes = true };
+        await storage.UploadAsync(key, new byte[] { 1, 2, 3 }, "application/pdf");
+
+        await Build(db, storage).PurgeAsync(shopper.Id, default);
+        storage.FailDeletes = false;
+        var second = await Build(db, storage).PurgeAsync(shopper.Id, default);
+
+        storage.DeleteAttempts.Should().Be(2, "ilk deneme başarısızdı; niyet kaybolmamalıydı");
+        storage.Contains(key).Should().BeFalse();
+        second!.PdfsDeleted.Should().Be(1);
+        second.PdfsPending.Should().Be(0);
+
+        var queued = await db.OrphanedMediaObjects.SingleAsync();
+        queued.DeletedAt.Should().NotBeNull();
+        queued.AttemptCount.Should().Be(2);
+
+        // Damga ancak gerçek silme onayından SONRA.
+        (await db.Payments.FirstAsync(p => p.Id == payment.Id))
+            .PdfPurgedAt.Should().NotBeNull();
+    }
+
+    /// <summary>
+    /// Yönetim ekranı "tamamen silindi" izlenimi vermemeli; özet metni eksik
+    /// işi adıyla söylemeli.
+    /// </summary>
+    [Fact]
+    public async Task Eksik_silme_ozet_metninde_gorunur()
+    {
+        using var db = NewDb();
+        var shopper = SeedShopper(db);
+        var license = SeedLicense(db);
+        SeedPayment(db, shopper, license, "payments/abc/def.pdf");
+        await db.SaveChangesAsync();
+
+        var storage = new FlakyStorage { FailDeletes = true };
+        var result = await Build(db, storage).PurgeAsync(shopper.Id, default);
+
+        result!.FullyCompleted.Should().BeFalse();
+        result.ToNote().Should().Contain("silinemedi");
+    }
+
+    [Fact]
+    public async Task Sorunsuz_purge_tamamlandi_isaretlenir()
+    {
+        using var db = NewDb();
+        var shopper = SeedShopper(db);
+        await db.SaveChangesAsync();
+
+        var (service, _) = Build(db);
+        var result = await service.PurgeAsync(shopper.Id, default);
+
+        result!.FullyCompleted.Should().BeTrue();
+        result.PdfsPending.Should().Be(0);
+        db.OrphanedMediaObjects.Should().BeEmpty();
+    }
+
     [Fact]
     public async Task Kisisel_alanlari_temizler_ve_hesabi_kilitler()
     {

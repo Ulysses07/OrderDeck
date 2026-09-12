@@ -120,6 +120,7 @@ public class Program
             OrderDeck.PdfParsing.PdfDekontParser>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.ShopperPayments.ShopperPaymentSubmissionService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Shoppers.ShopperPurgeService>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Shoppers.OrphanedMediaCleanupJob>();
         builder.Services.AddSingleton<JwtTokenService>();
         builder.Services.AddScoped<RefreshTokenService>();
         builder.Services.AddScoped<EmailConfirmationService>();
@@ -807,6 +808,14 @@ public class Program
                 "otp-code-cleanup",
                 j => j.PruneAsync(CancellationToken.None),
                 "45 3 * * *");  // 03:45 UTC daily
+
+            // KVKK silmesinde depodan silinemeyen dekontlar. Kuyruk satırı tek
+            // başına yetmez: yalnız aynı müşteri için ELLE ikinci bir purge
+            // tetiklenirse okunurdu. Kişisel veri silinene kadar denenmeli.
+            manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Shoppers.OrphanedMediaCleanupJob>(
+                "orphaned-media-cleanup",
+                j => j.RunAsync(CancellationToken.None),
+                "50 3 * * *");  // 03:50 UTC daily
 
             // WhatsApp gönderim rezervasyonları — idempotency penceresi dakikalarla
             // ölçülüyor, satırlar yalnız teşhis için saklanıyor. Süresi dolanlar

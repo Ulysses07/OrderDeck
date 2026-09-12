@@ -85,9 +85,16 @@ public class DeletionRequestsModel : PageModel
                 pdfsDeleted = result?.PdfsDeleted ?? 0,
                 projectionsScrubbed = result?.ProjectionsScrubbed ?? 0,
                 dependentRowsDeleted = result?.DependentRowsDeleted ?? 0,
+                pdfsPending = result?.PdfsPending ?? 0,
             }, ct: ct);
 
-        TempData["Success"] ??= $"Silindi. {request.Notes}";
+        // R4-05: dekontların bir kısmı depodan silinemediyse bu "silindi"
+        // değil, "kısmen tamamlandı". Yeşil bir onay kutusu göstermek,
+        // kovada duran kişisel veriyi yöneticiden gizlerdi.
+        if (result is { FullyCompleted: false })
+            TempData["Error"] = $"Silme kısmen tamamlandı. {request.Notes}";
+        else
+            TempData["Success"] ??= $"Silindi. {request.Notes}";
         return RedirectToPage(new { handled, page });
     }
 
