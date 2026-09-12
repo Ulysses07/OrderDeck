@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
+using OrderDeck.Shared.Backup;
 
 namespace OrderDeck.LicenseServer.Services.Backup;
 
@@ -151,57 +152,81 @@ public static class RestoreDrillCore
             return new DrillResult(false, blobPath, keyVersion, steps);
         }
 
-        // ─── Step 3: SQLite integrity (if a .db file is present) ───
-        var dbFile = Directory.EnumerateFiles(extractDir, "*.db", SearchOption.AllDirectories)
-            .FirstOrDefault();
-        if (dbFile is null)
+        // ─── Step 3: SQLite integrity ──────────────────────────────
+        //
+        // R4-06: masaüstü RestoreService arşivin KÖKÜNDEKİ 'orderdeck.db'
+        // girdisini açıyor. Tatbikat "arşivde bulduğun ilk *.db" dediği sürece
+        // yanlış adla konulmuş sağlam bir dosya tatbikatı yeşile boyuyor,
+        // gerçek geri yükleme ise çöküyordu — alarm tam da uyarması gereken
+        // yedekte susuyordu. Denetlenen dosya, geri yüklenecek dosyanın
+        // AYNISI olmak zorunda.
+        var dbFile = Path.Combine(extractDir, BackupArchive.DatabaseEntryName);
+        if (!File.Exists(dbFile))
         {
-            steps.Add(new DrillStep("SQLite", false, "No .db file in archive"));
             // R3-05: masaüstü RestoreService .db içermeyen arşivi REDDEDER —
             // bu yedek gerçekte geri yüklenemez. Drill'in varlık sebebi tam da
             // bunu yakalamak; yeşil dönmek alarmı susturuyordu (yanlış yeşil).
+            steps.Add(new DrillStep("SQLite", false,
+                $"Archive has no root '{BackupArchive.DatabaseEntryName}' entry"));
             return new DrillResult(false, blobPath, keyVersion, steps);
+        }
+
+        try
+        {
+            using var conn = new SqliteConnection(
+                $"Data Source={dbFile};Mode=ReadOnly;Pooling=false");
+            conn.Open();
+
+            int tableCount;
+            using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText =
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'";
+                tableCount = Convert.ToInt32(cmd.ExecuteScalar());
+            }
+            steps.Add(new DrillStep("SQLite open", true,
+                $"{tableCount} tables"));
+
+            using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = "PRAGMA integrity_check";
+                var result = cmd.ExecuteScalar()?.ToString();
+                if (result == "ok")
+                {
+                    steps.Add(new DrillStep("SQLite integrity_check", true, "ok"));
+                }
+                else
+                {
+                    steps.Add(new DrillStep("SQLite integrity_check", false,
+                        result ?? "(no result)"));
+                    passed = false;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            steps.Add(new DrillStep("SQLite open", false,
+                $"{ex.GetType().Name}: {ex.Message}"));
+            return new DrillResult(false, blobPath, keyVersion, steps);
+        }
+
+        // ─── Step 4: OrderDeck kimliği ─────────────────────────────
+        //
+        // integrity_check yabancı bir şemayı da "ok" sayar. Tatbikatın sorusu
+        // "bu dosya açılıyor mu" değil, "bu yedek geri yüklenirse yayıncının
+        // verisi geri gelir mi" — o yüzden _meta/şema sürümü ve çekirdek
+        // tablolar da denetleniyor. Masaüstü geri yüklemesi artık aynı
+        // sözleşmeyi uyguluyor, yani tatbikat gerçekten sahadaki davranışı
+        // prova ediyor.
+        if (BackupArchive.IsOrderDeckDatabase(dbFile, out var contractError))
+        {
+            steps.Add(new DrillStep("OrderDeck schema", true,
+                $"{BackupArchive.DatabaseEntryName} carries _meta + core tables"));
         }
         else
         {
-            try
-            {
-                using var conn = new SqliteConnection(
-                    $"Data Source={dbFile};Mode=ReadOnly;Pooling=false");
-                conn.Open();
-
-                int tableCount;
-                using (var cmd = conn.CreateCommand())
-                {
-                    cmd.CommandText =
-                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'";
-                    tableCount = Convert.ToInt32(cmd.ExecuteScalar());
-                }
-                steps.Add(new DrillStep("SQLite open", true,
-                    $"{tableCount} tables"));
-
-                using (var cmd = conn.CreateCommand())
-                {
-                    cmd.CommandText = "PRAGMA integrity_check";
-                    var result = cmd.ExecuteScalar()?.ToString();
-                    if (result == "ok")
-                    {
-                        steps.Add(new DrillStep("SQLite integrity_check", true, "ok"));
-                    }
-                    else
-                    {
-                        steps.Add(new DrillStep("SQLite integrity_check", false,
-                            result ?? "(no result)"));
-                        passed = false;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                steps.Add(new DrillStep("SQLite open", false,
-                    $"{ex.GetType().Name}: {ex.Message}"));
-                return new DrillResult(false, blobPath, keyVersion, steps);
-            }
+            steps.Add(new DrillStep("OrderDeck schema", false, contractError!));
+            passed = false;
         }
 
         return new DrillResult(passed, blobPath, keyVersion, steps);

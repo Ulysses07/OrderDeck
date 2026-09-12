@@ -3,6 +3,7 @@ using System.IO.Compression;
 using Microsoft.Extensions.Logging;
 using OrderDeck.Core.Storage;
 using OrderDeck.Licensing.Backup;
+using OrderDeck.Shared.Backup;
 
 namespace OrderDeck.App.Services;
 
@@ -64,8 +65,9 @@ public sealed class RestoreService
             using (var ms = new MemoryStream(zipBytes))
             using (var archive = new ZipArchive(ms, ZipArchiveMode.Read))
             {
-                var entry = archive.GetEntry("orderdeck.db")
-                    ?? throw new InvalidOperationException("Backup zip missing orderdeck.db entry");
+                var entry = archive.GetEntry(BackupArchive.DatabaseEntryName)
+                    ?? throw new InvalidOperationException(
+                        $"Backup zip missing {BackupArchive.DatabaseEntryName} entry");
 
                 // Merkezî dizindeki boyut yalan söyleyebilir, o yüzden hem
                 // beyan edileni hem gerçekten akan baytı sınırlıyoruz.
@@ -88,6 +90,18 @@ public sealed class RestoreService
             if (!SqliteFile.IsIntactDatabase(tempExtract, out var integrityError))
                 throw new InvalidOperationException(
                     $"Yedek dosyası geçerli bir veritabanı değil ({integrityError}); " +
+                    "mevcut veritabanına dokunulmadı.");
+
+            // R4-06: sağlam SQLite ≠ geçerli OrderDeck yedeği. quick_check
+            // yabancı bir şemayı da kusursuz sayar; yanlış seçilmiş bir arşiv
+            // (tek tabloluk sentetik bir veritabanı, başka bir uygulamanın
+            // dosyası) "Geri yükleme tamamlandı" diyerek aktif veritabanının
+            // yerine geçebiliyordu — Customer tablosu dahil her şeyin üstüne.
+            // Kimlik denetimi üzerine yazmadan ÖNCE, .pre-restore.bak hâlâ
+            // yerinde dururken yapılmalı.
+            if (!BackupArchive.IsOrderDeckDatabase(tempExtract, out var contractError))
+                throw new InvalidOperationException(
+                    $"Yedek bir OrderDeck veritabanı değil ({contractError}); " +
                     "mevcut veritabanına dokunulmadı.");
 
             // Replace db

@@ -27,21 +27,43 @@ public class RestoreServiceTests : IDisposable
     }
 
     /// <summary>
-    /// Gerçek, açılabilir bir SQLite veritabanının baytları. Geri yükleme artık
-    /// quick_check'ten geçmeyen içeriği reddettiği için testlerin de gerçek bir
-    /// veritabanı üretmesi gerekiyor; "NEW-DB" gibi düz metinler doğru olarak
-    /// reddedilir.
+    /// Gerçek, açılabilir bir OrderDeck veritabanının baytları. Geri yükleme
+    /// artık quick_check'ten geçmeyen içeriği reddettiği için testlerin de
+    /// gerçek bir veritabanı üretmesi gerekiyor; "NEW-DB" gibi düz metinler
+    /// doğru olarak reddedilir. R4-06'dan sonra kimlik de şart: <c>_meta</c> ve
+    /// çekirdek tablolar olmadan dosya OrderDeck yedeği sayılmıyor.
     /// </summary>
-    private byte[] BuildRealDatabase(string marker)
+    private byte[] BuildRealDatabase(string marker) =>
+        BuildDatabase(
+            @"CREATE TABLE _meta (Id INTEGER PRIMARY KEY CHECK (Id = 1),
+                                  SchemaVersion INTEGER NOT NULL);
+              INSERT INTO _meta (Id, SchemaVersion) VALUES (1, 35);
+              CREATE TABLE Customer (Id TEXT PRIMARY KEY, Username TEXT);
+              CREATE TABLE StreamSession (Id TEXT PRIMARY KEY, Title TEXT);
+              CREATE TABLE Label (Id TEXT PRIMARY KEY, Price NUMERIC);
+              CREATE TABLE marker (value TEXT NOT NULL);
+              INSERT INTO marker (value) VALUES ($marker);",
+            marker);
+
+    /// <summary>
+    /// Kusursuz açılan, <c>quick_check</c>'ten geçen ama OrderDeck'e ait
+    /// OLMAYAN bir veritabanı — R4-06'nın sınır deneyi.
+    /// </summary>
+    private byte[] BuildForeignDatabase() =>
+        BuildDatabase(
+            "CREATE TABLE Foreign_ (Id INTEGER PRIMARY KEY, V TEXT);" +
+            "INSERT INTO Foreign_ (V) VALUES ($marker);",
+            "başka uygulamanın verisi");
+
+    private byte[] BuildDatabase(string sql, string marker)
     {
         var path = Path.Combine(_tempDir, $"seed-{Guid.NewGuid():N}.db");
         using (var conn = new SqliteConnection($"Data Source={path};Pooling=False"))
         {
             conn.Open();
             using var cmd = conn.CreateCommand();
-            cmd.CommandText =
-                "CREATE TABLE marker (value TEXT NOT NULL);" +
-                $"INSERT INTO marker (value) VALUES ('{marker}');";
+            cmd.CommandText = sql;
+            cmd.Parameters.AddWithValue("$marker", marker);
             cmd.ExecuteNonQuery();
         }
 
@@ -134,6 +156,33 @@ public class RestoreServiceTests : IDisposable
 
         result.Success.Should().BeFalse();
         ReadMarker(_dbPath).Should().Be("OLD");
+    }
+
+    /// <summary>
+    /// R4-06: dosya kusursuz bir SQLite — başlık doğru, quick_check "ok" —
+    /// ama OrderDeck'e ait değil. Eskiden geri yükleme BAŞARILI dönüyor ve
+    /// aktif veritabanının (Customer tablosu dahil) yerine bu dosya geçiyordu.
+    /// Aynı arşiv sunucudaki tatbikatı da yeşil geçiyordu; iki taraf artık
+    /// aynı sözleşmeyi uyguluyor.
+    /// </summary>
+    [Fact]
+    public async Task RestoreAsync_ZipContainsForeignDatabase_FailsWithoutTouchingDb()
+    {
+        var existing = BuildRealDatabase("OLD");
+        File.WriteAllBytes(_dbPath, existing);
+
+        var sut = new RestoreService(
+            _dbPath, new FakeBackupClientWithDownload(BuildZip(BuildForeignDatabase())),
+            NullLogger<RestoreService>.Instance);
+
+        var result = await sut.RestoreAsync(Guid.NewGuid());
+
+        result.Success.Should().BeFalse();
+        result.Error.Should().Contain("OrderDeck veritabanı değil");
+        ReadMarker(_dbPath).Should().Be("OLD");
+        // Geri dönüş kopyası da yerinde kalmalı: hata hâlinde operatörün
+        // elinde hâlâ üzerine yazılmamış bir kopya olmalı.
+        File.Exists(_dbPath + ".pre-restore.bak").Should().BeTrue();
     }
 
     /// <summary>Doğrulama başarısız olunca yarım açılmış dosya diskte kalmamalı.</summary>
