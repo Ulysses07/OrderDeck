@@ -36,7 +36,13 @@ public sealed record Customer(
     // istiyor, Address ise yalnız kalanı (mahalle/cadde/no) tutuyor.
     // Bu tarihten önceki kayıtlarda null; tüm adres Address'te.
     string? City = null,
-    string? District = null)
+    string? District = null,
+    // N03-g (2026-09-12): sunucu projeksiyonu delta imleci. LastSeenAt "müşteri
+    // en son ne zaman görüldü" iş zamanıdır (saatle geri de gidebilir);
+    // SyncSeq ise yalnızca "bu satırın senkronlanma sırası" — tablo genelinde
+    // kesin artan, saatten tamamen bağımsız. Göç 036'daki tetikleyiciler yazar,
+    // uygulama kodu ASLA set etmez (bu yüzden Insert'te de gönderilmiyor).
+    long SyncSeq = 0)
 {
     /// <summary>Operatöre gösterilecek ad: DisplayName varsa o, yoksa Username'e
     /// düşer. YouTube'da Username = channelId (kalıcı kimlik); listede okunabilir

@@ -59,7 +59,8 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         CustomerRepository Customers,
         SettingsStore Store,
         FakeLicenseProvider License,
-        InMemorySqlite Db);
+        InMemorySqlite Db,
+        string SettingsPath);
 
     private static Fixture Build(
         Func<HttpRequestMessage, HttpResponseMessage> responder,
@@ -83,7 +84,7 @@ public sealed class WpfCustomerProjectionSyncServiceTests
             api, customers, store, licenseProvider,
             NullLogger<WpfCustomerProjectionSyncService>.Instance);
 
-        return new Fixture(svc, customers, store, licenseProvider, db);
+        return new Fixture(svc, customers, store, licenseProvider, db, settingsPath);
     }
 
     private static HttpResponseMessage DefaultResponder(HttpRequestMessage req)
@@ -123,14 +124,14 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         using var _d = fx.Db;
 
         var settingsBefore = fx.Store.Load();
-        settingsBefore.LastCustomerProjectionSyncAt = 999L;
+        settingsBefore.LastCustomerProjectionSyncSeq = 999L;
         fx.Store.Save(settingsBefore);
 
         var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
 
         result.Should().Be(0);
         var settingsAfter = fx.Store.Load();
-        settingsAfter.LastCustomerProjectionSyncAt.Should().Be(999L, "watermark must not change when nothing to sync");
+        settingsAfter.LastCustomerProjectionSyncSeq.Should().Be(999L, "watermark must not change when nothing to sync");
         // No sync call should have been made (only /me/licenses for resolve)
         apiCallCount.Should().BeLessOrEqualTo(1, "only the license resolution GET is allowed");
     }
@@ -163,7 +164,7 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         result.Should().Be(3);
         syncPosts.Should().Be(1, "all 3 fit in one batch");
         var settings = fx.Store.Load();
-        settings.LastCustomerProjectionSyncAt.Should().Be(300L, "watermark advances to batch max");
+        settings.LastCustomerProjectionSyncSeq.Should().Be(3L, "watermark advances to the batch max SyncSeq");
     }
 
     [Fact]
@@ -271,7 +272,7 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         capturedIds!.Should().HaveCount(2, "yalnız Username'i boş kayıt elenmeli");
         result.Should().Be(2);
 
-        fx.Store.Load().LastCustomerProjectionSyncAt.Should().Be(300L,
+        fx.Store.Load().LastCustomerProjectionSyncSeq.Should().Be(3L,
             "watermark bozuk satırın ÖTESİNE geçmeli, yoksa kilit ertesi turda geri gelir");
     }
 
@@ -345,14 +346,14 @@ public sealed class WpfCustomerProjectionSyncServiceTests
 
         fx.Customers.Insert(MakeCustomer(100L));
         var settingsBefore = fx.Store.Load();
-        settingsBefore.LastCustomerProjectionSyncAt = 0L;
+        settingsBefore.LastCustomerProjectionSyncSeq = 0L;
         fx.Store.Save(settingsBefore);
 
         var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
 
         result.Should().Be(0, "failed batch returns 0 synced");
         var settingsAfter = fx.Store.Load();
-        settingsAfter.LastCustomerProjectionSyncAt.Should().Be(0L,
+        settingsAfter.LastCustomerProjectionSyncSeq.Should().Be(0L,
             "watermark must NOT advance when the API batch fails");
     }
 
@@ -389,8 +390,8 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         postBodies.Should().HaveCount(2, "700 customers → batch1=500 + batch2=200");
 
         var settings = fx.Store.Load();
-        settings.LastCustomerProjectionSyncAt.Should().Be(total,
-            "watermark advances to max LastSeenAt after both batches");
+        settings.LastCustomerProjectionSyncSeq.Should().Be(total,
+            "watermark advances to the last row's SyncSeq after both batches");
     }
 
     /// <summary>
@@ -399,8 +400,9 @@ public sealed class WpfCustomerProjectionSyncServiceTests
     /// DEK atlıyordu — ilk sayfa 500 döner, watermark o saniyeye ilerler, kalan
     /// satırlar <c>LastSeenAt &gt; @since</c> filtresine takılır (kanıt: 501
     /// satırda 1 kayıp, probe-results.txt CUSTOMER_CURSOR). Toplu içe aktarma
-    /// ve saat düzeltmesi bu deseni gerçek hayatta üretir. Bileşik imleç
-    /// (LastSeenAt, Id) ile hepsi akmalı.
+    /// ve saat düzeltmesi bu deseni gerçek hayatta üretir. N03-g'den sonra imleç
+    /// SyncSeq ve SyncSeq benzersiz olduğu için "aynı değere sahip iki satır"
+    /// hâli yok — sebep yapısal olarak ortadan kalktı, test nöbette kalıyor.
     /// </summary>
     [Fact]
     public async Task SyncOnce_501_ayni_saniye_satirda_hicbiri_atlanmaz()
@@ -438,19 +440,20 @@ public sealed class WpfCustomerProjectionSyncServiceTests
             "501 satır → sayfa1=500 + sayfa2=1; eski imleçte 501. satır kayboluyordu");
 
         var settings = fx.Store.Load();
-        settings.LastCustomerProjectionSyncAt.Should().Be(sameSecond);
-        settings.LastCustomerProjectionSyncId.Should().NotBeNullOrEmpty(
-            "imlecin Id yarısı da kalıcılaşmalı — bir sonraki tur kalınan satırdan devam eder");
+        settings.LastCustomerProjectionSyncSeq.Should().Be(total,
+            "imleç son satırın SyncSeq'ine oturmalı — bir sonraki tur oradan devam eder");
     }
 
     /// <summary>
-    /// Eski (yalnız-zaman) imleçten yükseltme: Id ayarı boşken watermark &gt; 0
-    /// ise geçmişte atlanmış satırlar watermark'ın ALTINDA kalmıştır — bileşik
-    /// imleç ileriye dönük korur ama geçmişi kurtaramaz. Servis watermark'ı bir
-    /// kez 0'a çekip tam tarama yapmalı (sunucu upsert'i idempotent).
+    /// N03-g yükseltme yolu: sahadaki kurulumların ayar dosyasında ESKİ imleç
+    /// alanları var (<c>lastCustomerProjectionSyncAt</c> + <c>...SyncId</c>).
+    /// Yeni alan onlardan tohumlanmıyor — bilerek: eski dünyada imlecin ALTINDA
+    /// kalıp kalıcı kaybedilmiş satırlar ancak tam taramayla kurtulur. Sunucu
+    /// upsert'i idempotent ve <c>PurgedAt</c> kapılı olduğu için bir tur fazla
+    /// trafikten başka maliyeti yok; silinmiş kişisel veri geri gelmez.
     /// </summary>
     [Fact]
-    public async Task SyncOnce_eski_imlecten_gecis_tam_tarama_yapar()
+    public async Task SyncOnce_eski_imlec_alanlari_tohumlanmaz_tam_tarama_yapar()
     {
         var postedIds = new List<string>();
         var fx = Build(req =>
@@ -471,29 +474,27 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         });
         using var _d = fx.Db;
 
-        // Eski imleç 500'de takılı, Id ayarı hiç yazılmamış — bu kurulum eski
-        // sürümle çalışmış. 100'deki satır eski dünyada atlanmış bir satırı
-        // temsil ediyor: watermark'ın altında ama sunucuya hiç gitmemiş.
+        // 100'deki satır eski dünyada atlanmış bir satırı temsil ediyor: eski
+        // watermark'ın (500) altında ama sunucuya hiç gitmemiş.
         fx.Customers.Insert(MakeCustomer(100L));
-        var settingsBefore = fx.Store.Load();
-        settingsBefore.LastCustomerProjectionSyncAt = 500L;
-        settingsBefore.LastCustomerProjectionSyncId = "";
-        fx.Store.Save(settingsBefore);
+        // Eski sürümün bıraktığı ayar dosyası — yeni alan yok.
+        File.WriteAllText(fx.SettingsPath,
+            """{"lastCustomerProjectionSyncAt":500,"lastCustomerProjectionSyncId":""}""");
+
+        fx.Store.Load().LastCustomerProjectionSyncSeq.Should().Be(0,
+            "tanınmayan eski alanlar yeni imleci tohumlamamalı");
 
         var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
 
-        result.Should().Be(1, "tam tarama watermark altındaki kayıp satırı kurtarmalı");
-
-        var settings = fx.Store.Load();
-        settings.LastCustomerProjectionSyncId.Should().NotBeNullOrEmpty();
-        settings.LastCustomerProjectionSyncAt.Should().Be(100L,
-            "tarama sonrası imleç gerçek son satıra oturur; Id yarısı dolu olduğu için sıfırlama tekrarlanmaz");
+        result.Should().Be(1, "tam tarama eski imlecin altındaki kayıp satırı kurtarmalı");
+        fx.Store.Load().LastCustomerProjectionSyncSeq.Should().Be(1L,
+            "tarama sonrası imleç gerçek son satırın SyncSeq'ine oturur");
     }
 
-    /// <summary>Sıfırlamanın TEK SEFERLİK olduğunu sabitler: Id yarısı doluysa
-    /// watermark altındaki satırlar yeniden gönderilMEZ (delta semantiği).</summary>
+    /// <summary>Tam taramanın TEK SEFERLİK olduğunu sabitler: imleç bir kez
+    /// yazıldıktan sonra altındaki satırlar yeniden gönderilMEZ (delta semantiği).</summary>
     [Fact]
-    public async Task SyncOnce_id_imleci_doluysa_tam_tarama_tekrarlanmaz()
+    public async Task SyncOnce_imlec_yazildiktan_sonra_tam_tarama_tekrarlanmaz()
     {
         var syncPosts = 0;
         var fx = Build(req =>
@@ -512,14 +513,13 @@ public sealed class WpfCustomerProjectionSyncServiceTests
 
         fx.Customers.Insert(MakeCustomer(100L));
         var settingsBefore = fx.Store.Load();
-        settingsBefore.LastCustomerProjectionSyncAt = 500L;
-        settingsBefore.LastCustomerProjectionSyncId = Guid.NewGuid().ToString("N");
+        settingsBefore.LastCustomerProjectionSyncSeq = 500L;
         fx.Store.Save(settingsBefore);
 
         var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
 
-        result.Should().Be(0, "imleç zaten yeni biçimde — watermark altı yeniden taranmaz");
+        result.Should().Be(0, "imleç satırın üzerinde — altı yeniden taranmaz");
         syncPosts.Should().Be(0);
-        fx.Store.Load().LastCustomerProjectionSyncAt.Should().Be(500L);
+        fx.Store.Load().LastCustomerProjectionSyncSeq.Should().Be(500L);
     }
 }
