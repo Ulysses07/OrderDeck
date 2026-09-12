@@ -79,11 +79,15 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
 
     // ── POST apply ──────────────────────────────────────────────────────────
 
+    /// <param name="SaleScope">R4-03: satışın kalıcı kimliği
+    /// (<c>"session:{id}"</c> | <c>"cumulative"</c> | <c>"legacy:{key}"</c>).
+    /// Opsiyonel — eski istemciler göndermez, davranışları değişmez.</param>
     public sealed record ApplyRequest(
         Guid WpfCustomerId,
         decimal Amount,
         decimal ProductTotal,
-        Guid? IdempotencyKey = null);
+        Guid? IdempotencyKey = null,
+        string? SaleScope = null);
 
     public sealed record ApplyResponse(
         Guid TransactionId,
@@ -104,6 +108,16 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
         if (req.IdempotencyKey == Guid.Empty)
             return Problem(title: "invalid-idempotency-key", statusCode: 400,
                 detail: "Idempotency anahtarı boş Guid olamaz.");
+
+        // R4-03: kapsam satışın kimliği olacak; sessizce kırpmak iki farklı
+        // satışı aynı kimliğe indirger. Boş/boşluk metin de kimlik değildir —
+        // "alan yok" ile "alan boş" arasındaki farkı istemci hatası sayıyoruz.
+        if (req.SaleScope is not null
+            && (string.IsNullOrWhiteSpace(req.SaleScope)
+                || req.SaleScope.Length > CustomerBalanceTransaction.SaleScopeMaxLength))
+            return Problem(title: "invalid-sale-scope", statusCode: 400,
+                detail: $"Kapsam boş olamaz ve {CustomerBalanceTransaction.SaleScopeMaxLength} "
+                    + "karakteri aşamaz.");
 
         if (!await OwnsLicenseAsync(licenseId, ct)) return NotFound();
 
@@ -144,6 +158,7 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
             Amount = -appliedAmount,
             Kind = KindPurchaseDeduction,
             OriginalAmount = req.ProductTotal,
+            SaleScope = req.SaleScope,
             Reason = null,
             CreatedByCustomerId = customerId,
             CreatedAt = now,
@@ -251,6 +266,12 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
         // gönderir; ilk düşümden KÜÇÜK bir Amount ise gerçek bir çelişkidir.
         // decimal eşitliği değer tabanlıdır: 250m == 250.00m → true. SQL decimal(18,2)
         // round-trip ölçek ekleyebilir ama değeri değiştiremez; yanlış çelişki üretmez.
+        // R4-03 notu: kapsam (SaleScope) bu karşılaştırmaya BİLEREK girmiyor.
+        // Sürüm yükselten bir istemci, kapsamsız yazılmış bir satırın anahtarını
+        // artık kapsamla replay eder; kapsamı çelişki saysaydık o iş kalıcı
+        // olarak kilitlenirdi (Seçenek A'nın düştüğü tuzağın aynısı). Kimliği
+        // zaten müşteri + tutar bağlıyor, kapsamın eklenmesi bir şey kazandırmaz:
+        // anahtarı olmayan (geri yüklenmiş) istemci onu zaten replay edemez.
         if (tx.WpfCustomerId != req.WpfCustomerId
             || tx.OriginalAmount != req.ProductTotal
             || -tx.Amount > req.Amount)

@@ -451,4 +451,135 @@ public class LicensesCustomerBalanceApplyControllerTests : IClassFixture<ApiFact
             $"/api/v1/licenses/{licenseB}/customer-balance/transactions/{txId}/reverse", null);
         resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
+
+    // ── R4-03: satışın kalıcı kimliği (SaleScope) ───────────────────────────
+    // Bu PR yalnız YAZMA ayağı: kapsam ledger satırında saklanır. Uzlaştırma
+    // (okuma) sonraki PR'da. Buradaki testlerin işi, kimliğin kaybolabilen
+    // tarafta (yerel SQLite) değil kalıcı tarafta durduğunu sabitlemek.
+
+    private async Task<CustomerBalanceTransaction> SingleDeductionAsync(Guid licenseId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        return db.CustomerBalanceTransactions
+            .Single(t => t.LicenseId == licenseId && t.Kind == "purchase-deduction");
+    }
+
+    [Fact]
+    public async Task Apply_persists_sale_scope()
+    {
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        var scopeKey = "session:" + Guid.NewGuid().ToString("N");
+
+        var resp = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = 100m, ProductTotal = 2100m, SaleScope = scopeKey });
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        (await SingleDeductionAsync(licenseId)).SaleScope.Should().Be(scopeKey);
+    }
+
+    [Fact]
+    public async Task Apply_without_sale_scope_leaves_it_null()
+    {
+        // Eski istemciler bu alanı hiç göndermez; davranışları değişmemeli.
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+
+        var resp = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = 100m, ProductTotal = 2100m });
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        (await SingleDeductionAsync(licenseId)).SaleScope.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task Apply_blank_sale_scope_returns_400(string blank)
+    {
+        // "Alan yok" (null) ile "alan boş" farklı şeyler: boş metin kimlik
+        // değildir, kabul edilseydi tüm kapsamsız satışlar aynı kimliğe
+        // düşer ve uzlaştırma yanlış satışı benimserdi.
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+
+        var resp = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = 100m, ProductTotal = 2100m, SaleScope = blank });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await resp.Content.ReadFromJsonAsync<ProblemDetailsLite>();
+        problem!.Title.Should().Be("invalid-sale-scope");
+    }
+
+    [Fact]
+    public async Task Apply_too_long_sale_scope_returns_400_without_side_effect()
+    {
+        // Sessizce kırpmak iki FARKLI satışı aynı kimliğe indirger. Reddetmek
+        // tek doğru davranış — ve reddederken bakiyeye dokunulmamalı.
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        var tooLong = new string('x', CustomerBalanceTransaction.SaleScopeMaxLength + 1);
+
+        var resp = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = 100m, ProductTotal = 2100m, SaleScope = tooLong });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await resp.Content.ReadFromJsonAsync<ProblemDetailsLite>();
+        problem!.Title.Should().Be("invalid-sale-scope");
+
+        var preview = await client.GetFromJsonAsync<PreviewResponse>(
+            $"/api/v1/licenses/{licenseId}/customer-balance/preview?wpfCustomerId={wpfCustomerId}");
+        preview!.Balance.Should().Be(500m);
+    }
+
+    [Fact]
+    public async Task Apply_max_length_sale_scope_is_accepted()
+    {
+        // Sınırın kendisi geçerli olmalı; aksi halde tavan pratikte 127 olurdu.
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        var atLimit = new string('x', CustomerBalanceTransaction.SaleScopeMaxLength);
+
+        var resp = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = 100m, ProductTotal = 2100m, SaleScope = atLimit });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await SingleDeductionAsync(licenseId)).SaleScope.Should().Be(atLimit);
+    }
+
+    [Fact]
+    public async Task Apply_replaying_scopeless_row_with_scope_still_replays()
+    {
+        // A11 sözleşmesine kapsam BİLEREK girmiyor: sürüm yükselten istemci,
+        // kapsamsız yazılmış bir satırın anahtarını artık kapsamla replay eder.
+        // Kapsamı çelişki sayarsak o iş kalıcı olarak kilitlenir.
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        var key = Guid.NewGuid();
+
+        var ilk = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = wpfCustomerId, Amount = 100m, ProductTotal = 2100m, IdempotencyKey = key });
+        ilk.StatusCode.Should().Be(HttpStatusCode.OK);
+        var ilkBody = await ilk.Content.ReadFromJsonAsync<ApplyResponse>();
+
+        var ikinci = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new
+            {
+                WpfCustomerId = wpfCustomerId, Amount = 100m, ProductTotal = 2100m,
+                IdempotencyKey = key, SaleScope = "cumulative",
+            });
+
+        ikinci.StatusCode.Should().Be(HttpStatusCode.OK);
+        var ikinciBody = await ikinci.Content.ReadFromJsonAsync<ApplyResponse>();
+        ikinciBody!.TransactionId.Should().Be(ilkBody!.TransactionId);
+
+        // Replay yan etkisiz: ikinci düşüm yok, kapsam da geriye yazılmıyor.
+        var tx = await SingleDeductionAsync(licenseId);
+        tx.SaleScope.Should().BeNull();
+        var preview = await client.GetFromJsonAsync<PreviewResponse>(
+            $"/api/v1/licenses/{licenseId}/customer-balance/preview?wpfCustomerId={wpfCustomerId}");
+        preview!.Balance.Should().Be(400m);
+    }
 }
