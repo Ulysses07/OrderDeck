@@ -93,8 +93,8 @@ export default function TermsTr() {
       <h2>5. Üçüncü taraf hizmetler</h2>
       <p>
         Uygulama, çalışmak için bağımsız üçüncü taraf hizmetlere bağlanır: YouTube Data
-        API (Google), tarayıcı eklentisi aracılığıyla Instagram, TikTok ve Facebook
-        ortamları. Bu hizmetlerin kendi koşulları ve gizlilik politikaları geçerlidir.
+        API (Google), Instagram ve Facebook için Graph API (Meta) ve tarayıcı eklentisi
+        aracılığıyla TikTok ortamı. Bu hizmetlerin kendi koşulları ve gizlilik politikaları geçerlidir.
         {BRAND}, bu hizmetlerin kesintisiz çalışacağını garanti etmez.
       </p>
       <p>
