@@ -29,7 +29,7 @@ public class MigrationRunnerTests
         tables.Should().NotContain("LabelBackup");
 
         var version = conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().Be(35);
+        version.Should().Be(36);
 
         // Migration 018 added the Shipment table for kümülatif kargo dosyası.
         tables.Should().Contain("Shipment");
@@ -78,7 +78,7 @@ public class MigrationRunnerTests
 
         using var conn = db.Open();
         var version = conn.ExecuteScalar<int>("SELECT SchemaVersion FROM _meta WHERE Id = 1");
-        version.Should().Be(35);
+        version.Should().Be(36);
     }
 
     [Fact]

@@ -124,21 +124,23 @@ public sealed class AppSettings
     /// kez çalışır (LastSeenAt/DisplayName'e dokunmadan sadece boş FullName'i yazar).</summary>
     public bool FullNameBackfillDone { get; set; } = false;
 
-    /// <summary>Faz 0c-2 (2026-05-21): watermark for delta sync of local Customer records
-    /// to LicenseServer's WpfCustomerProjection. Unix seconds. 0 = never synced.
-    /// Advanced after each successful batch; not advanced on failure so the
-    /// next tick retries from the same position.</summary>
-    public long LastCustomerProjectionSyncAt { get; set; }
-
-    /// <summary>F07 (2026-09-09 denetimi): müşteri projeksiyon imlecinin eşitlik
-    /// bozucusu — sayfanın son satırının yerel <c>Customer.Id</c>'si ("N" Guid
-    /// metni). Aynı saniyeye BatchSize'dan fazla satır düştüğünde yalnız-zaman
-    /// imleci sayfa sınırındaki satırları sonsuza dek atlıyordu (aynı hata
-    /// sınıfı: <see cref="LastShopperIngestAt"/>). Boş = imleç henüz yeni
-    /// biçime geçmedi; servis bunu görünce watermark'ı bir kez 0'a çekip tam
-    /// tarama yapar — geçmişte atlanmış satırlar ancak böyle kurtulur, sunucu
-    /// upsert'i idempotent olduğu için güvenli.</summary>
-    public string LastCustomerProjectionSyncId { get; set; } = "";
+    /// <summary>Faz 0c-2 (2026-05-21): yerel Customer kayıtlarının LicenseServer
+    /// <c>WpfCustomerProjection</c>'ına delta sync imleci. 0 = hiç senkronlanmadı.
+    /// Her başarılı partiden sonra ilerler; hatada ilerlemez, böylece sonraki tik
+    /// aynı yerden yeniden dener.
+    ///
+    /// <para>N03-g (2026-09-12 denetimi): değer artık zaman değil, <c>Customer.SyncSeq</c>
+    /// — göç 036'daki tetikleyicilerin yazdığı tablo geneli kesin artan sayaç.
+    /// Önceki iki alan (<c>LastCustomerProjectionSyncAt</c> + <c>...SyncId</c>)
+    /// iş zamanını imleç olarak kullanıyordu; imleç GENEL, artış SATIRA ÖZEL
+    /// olduğu için ileri zamanlı tek satır başka satırların güncellemelerini
+    /// kalıcı olarak imlecin altında bırakabiliyordu. Alanlar silindi: yeni imleç
+    /// 0'dan başlar ve her şey bir kez yeniden taranır — geçmişte kaybedilmiş
+    /// satırlar ancak böyle kurtulur, sunucu upsert'i idempotent ve
+    /// <c>PurgedAt</c> kapılı olduğu için güvenli (silinmiş kişisel veri geri
+    /// gelmez). Ters yön etkilenmiyor: bu imleç yalnız istemci→sunucu push'u
+    /// sürer.</para></summary>
+    public long LastCustomerProjectionSyncSeq { get; set; }
 
     /// <summary><b>Kullanımdan kalktı</b> — yerine
     /// <see cref="LastShopperIngestUpdatedAt"/> + <see cref="LastShopperIngestId"/>.

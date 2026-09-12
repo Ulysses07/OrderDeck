@@ -80,12 +80,12 @@ public class SettingsStoreTests
         // Bileşen A: yazıcı adını yazar.
         store.Update(s => s.PrinterName = "Zebra ZD220");
         // Bileşen B: (A'nın yazdığından habersiz) sync imlecini yazar.
-        store.Update(s => s.LastCustomerProjectionSyncAt = 1234);
+        store.Update(s => s.LastCustomerProjectionSyncSeq = 1234);
 
         var reloaded = store.Load();
         reloaded.PrinterName.Should().Be("Zebra ZD220",
             "ikinci Update birincinin alanını ezmemeli");
-        reloaded.LastCustomerProjectionSyncAt.Should().Be(1234);
+        reloaded.LastCustomerProjectionSyncSeq.Should().Be(1234);
 
         File.Delete(path);
     }

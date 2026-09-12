@@ -495,7 +495,8 @@ public sealed class CustomerRepository
         SmsConsent: r.SmsConsent == 1,
         FullName: r.FullName,
         City: r.City,
-        District: r.District);
+        District: r.District,
+        SyncSeq: r.SyncSeq);
 
     private sealed class Row
     {
@@ -523,6 +524,7 @@ public sealed class CustomerRepository
         public string? FullName { get; init; }
         public string? City { get; init; }
         public string? District { get; init; }
+        public long SyncSeq { get; init; }
     }
 
     /// <summary>
@@ -832,27 +834,38 @@ public sealed class CustomerRepository
     }
 
     /// <summary>
-    /// Faz 0c-2: WpfCustomerProjection sync için delta query. Bileşik imleç
-    /// (LastSeenAt, Id) — F07 (2026-09-09 denetimi): yalnız <c>LastSeenAt &gt;
-    /// @since</c> ile sayfalarken aynı saniyeye BatchSize'dan fazla satır
-    /// düşerse (toplu içe aktarma, saat düzeltmesi) sayfa sınırındaki satırlar
-    /// bir sonraki turda <c>&gt;</c> filtresine takılıp SONSUZA DEK atlanıyordu
-    /// (kanıt: 501 aynı-saniye satırda 1 kayıp). Id eşitlik kırıcı: aynı
-    /// saniyede kalınan yerden devam edilebilir.
-    /// Sonuçlar (LastSeenAt, Id) ASC sıralı — imleç son satırdan okunur.
+    /// Faz 0c-2: WpfCustomerProjection sync için delta query.
+    ///
+    /// <para>N03-g (2026-09-12 denetimi): imleç artık <c>SyncSeq</c> — göç
+    /// 036'daki tetikleyicilerin yazdığı, tablo genelinde kesin artan sayaç.
+    /// Eskiden imleç <c>(LastSeenAt, Id)</c> idi ve şu sınıf hatayı doğuruyordu:
+    /// imleç GENEL, <c>MAX(LastSeenAt+1, now)</c> artışı ise SATIRA ÖZEL. İleri
+    /// zamanlı/saat kaymış tek bir satır imleci 60 sn öne taşıdığında BAŞKA bir
+    /// satırın bir saniyelik artışı imlece asla yetişemiyor, o güncelleme
+    /// sunucuya HİÇ gitmiyordu — ve bir daha denenmiyordu. N03/N03-k'nın "+1"
+    /// düzeltmeleri bu sınıfı kapatamaz; sorun aritmetikte değil, iş zamanı ile
+    /// senkron sırasının aynı kolona yüklenmesindeydi.</para>
+    ///
+    /// <para>Yeni değer her zaman tablodaki en büyükten büyük olduğu için
+    /// güncellenen satır imlecin ÖNÜNE geçmek zorunda. SyncSeq benzersiz
+    /// olduğundan F07'nin (aynı saniyede BatchSize'dan fazla satır → sayfa
+    /// sınırında kalıcı atlama) sebebi de ortadan kalkıyor; eşitlik bozucu Id'ye
+    /// gerek kalmadı.</para>
+    ///
+    /// Sonuçlar SyncSeq ASC sıralı — imleç son satırdan okunur.
     /// </summary>
-    public IReadOnlyList<Customer> GetUpdatedSince(long sinceUnixSeconds, string sinceId, int max)
+    public IReadOnlyList<Customer> GetUpdatedSince(long sinceSeq, int max)
     {
         using var conn = _factory.Open();
         var rows = conn.Query<Row>(
             @"SELECT Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
                      IsBlacklisted, BlacklistReason, Notes, TotalLabelsPrinted, TotalAmount,
-                     BlacklistedAt, Address, Phone, RecipientPaysActive, FullName
+                     BlacklistedAt, Address, Phone, RecipientPaysActive, FullName, SyncSeq
               FROM Customer
-              WHERE LastSeenAt > @since OR (LastSeenAt = @since AND Id > @sinceId)
-              ORDER BY LastSeenAt ASC, Id ASC
+              WHERE SyncSeq > @since
+              ORDER BY SyncSeq ASC
               LIMIT @max",
-            new { since = sinceUnixSeconds, sinceId, max })
+            new { since = sinceSeq, max })
             .ToList();
         return rows.Select(Map).ToList();
     }
