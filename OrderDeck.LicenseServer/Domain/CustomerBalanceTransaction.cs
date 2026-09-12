@@ -6,6 +6,12 @@ namespace OrderDeck.LicenseServer.Domain;
 /// </summary>
 public sealed class CustomerBalanceTransaction
 {
+    /// <summary>R4-03: <see cref="SaleScope"/> sınırı. En uzun gerçek kapsam
+    /// <c>"legacy:"</c> + 32 hane = 39; 128 rahat bir tavan. Sunucu bunu
+    /// aşan kapsamı 400 ile reddeder — sessizce kırpmak, iki farklı satışı
+    /// aynı kimliğe indirger ve yanlış benimsemeye yol açardı.</summary>
+    public const int SaleScopeMaxLength = 128;
+
     public Guid Id { get; set; }
     public Guid LicenseId { get; set; }
     public License License { get; set; } = null!;
@@ -37,6 +43,27 @@ public sealed class CustomerBalanceTransaction
 
     /// <summary>Reversal ise hangi transaction'ı iptal ediyor.</summary>
     public Guid? ReversesTransactionId { get; set; }
+
+    /// <summary>
+    /// R4-03: satışın <b>kalıcı kimliği</b> — istemcinin kapsam anahtarı
+    /// (<c>"session:{id}"</c> | <c>"cumulative"</c> | <c>"legacy:{key}"</c>).
+    ///
+    /// <para>Neden var: bu satırdan önce satışın kimliği YALNIZ yerelde
+    /// yaşıyordu (istemcinin ürettiği rastgele idempotency anahtarı, yerel
+    /// SQLite satırında). Eski bir yedek geri yüklenince o anahtar yok
+    /// oluyor, uzak defter hatırlamaya devam ediyor ve aynı satış ikinci kez
+    /// düşülüyordu. Kimlik, kaybolabilen tarafta değil kaybolmayan tarafta
+    /// duruyor artık.</para>
+    ///
+    /// <para>Nullable: eski istemciler bu alanı hiç göndermez ve
+    /// göndermedikleri sürece davranışları değişmez. Geçmiş satırlar da null
+    /// kalır — göç geriye dönük doldurmaz, çünkü hangi satırın hangi satışa
+    /// ait olduğu bilgisi sunucuda hiç yoktu (R4-03'ün kendisi bu).</para>
+    ///
+    /// <para>Yalnız <c>purchase-deduction</c> satırlarında anlamlı; iade ve
+    /// reversal satırları kapsam taşımaz.</para>
+    /// </summary>
+    public string? SaleScope { get; set; }
 
     /// <summary>Bu transaction'ı oluşturan yayıncı (Customer) — audit.</summary>
     public Guid CreatedByCustomerId { get; set; }

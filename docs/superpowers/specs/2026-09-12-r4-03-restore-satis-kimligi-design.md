@@ -1,7 +1,9 @@
 # R4-03 — Eski yedek sonrası satış kimliği: tasarım önerisi
 
 **Tarih:** 2026-09-12
-**Durum:** 🟡 **KARAR BEKLİYOR** — kod yazılmadı, bilerek.
+**Durum:** 🟢 **KARARLAR ALINDI** (2026-09-12) — uygulamaya geçildi.
+Cevaplar §5'e işlendi. **S1'in premisi kod okumasıyla çürüdü**; gerekçe
+düzeltildi ve "kapsam kapanışı" fikri tamamen elendi (§5.1).
 **Kaynak:** Codex R4 denetimi (87/100), bölüm 9 (R4-03), bölüm 39–40 ve
 bölüm 52 karar tablosu.
 **Kardeş bulgular:** R4-01 (PR #417) ve R4-02 (PR #418) aynı finansal
@@ -152,37 +154,63 @@ kimliği sunucuda duruyor.
 
 ---
 
-## 5. Karar bekleyen sorular
+## 5. Kararlar (2026-09-12 alındı)
 
-Bunlar kodlamadan önce cevaplanmalı; hiçbiri uzun değil ama hiçbirini de
-ben senin adına veremem.
-
-| # | Soru | Neden ben karar veremem |
+| # | Soru | **Karar** |
 |---|---|---|
-| S1 | **`cumulative` kapsamının ömrü ne?** Müşteri başına tek ve sonsuz mu, yoksa "ödendi" denince kapanıp yenisi mi açılıyor? | Sunucuda kapsam kimliğe dönüşünce bu artık kalıcı bir sözleşme. Sonsuz ömürlü kapsam, ikinci bir kümülatif satışı sonsuza dek engeller (§52 satır 1 ve 2). |
-| S2 | **Cihaz/kurulum değişimi** aynı satışın devamı mı, yeni satış mı? Yayıncı yeni bilgisayara geçtiğinde `session:{id}` aynı kalıyor mu? | Kapsam sunucuda tanınacaksa, iki kurulumun aynı kapsamı kullanması "aynı satış" demektir. Bu bir ürün tanımı. |
-| S3 | **Geri yükleme sonrası akış açılsın mı, beklesin mi?** (§52 "Eski yedek sonrası çalışma izni") | Güvenli devam ile yayın ortasında iş durmaması arasındaki denge senin operasyon tercihin. |
-| S4 | **Uzlaştırma sunucuda kayıt bulduğunda mesaj ne desin?** "Bakiyeniz zaten düşülmüştü" mü, yoksa sessizce doğru rakam mı? | Müşteriye görünen metin. |
-| S5 | **Sıfır toplam** (§52) — "bütün ürünler iptal" revizyonu eski düşümü iade etmeli mi? Bugün `totalAmount > 0` koşulu finansal akışı tamamen atlıyor, düşüm olduğu yerde kalıyor. | İş kuralı. R4-02'nin altyapısı (`reverse_pending`) bunu uygulamaya hazır; eksik olan sadece karar. |
+| S1 | `cumulative` kapsamının ömrü | **Kalıcı, müşteri başına tek.** Kapanış mekanizması YOK — bkz. §5.1, sorunun premisi çürüdü. |
+| S2 | Cihaz/kurulum değişimi aynı satış mı? | **Evet, kapsam cihazdan bağımsız.** Kimlik makinede değil sunucuda; R4-03'ün çözümü zaten bu. |
+| S3 | Geri yükleme sonrası akış | **Açık kalsın**, müşteri bazında uzlaştırılsın. Karantina (Seçenek C) **uygulanmayacak**. |
+| S4 | Uzlaştırma kayıt bulunca mesaj | **Sessizce doğru rakam.** Benimsenen tutar zaten gerçek tutardır; müşteriye iç uzlaştırmayı anlatmak gereksiz ve kafa karıştırıcı. |
+| S5 | Sıfır toplam eski düşümü iade etsin mi? | **Evet, iade edilsin.** `totalAmount > 0` kapısı kalkacak; R4-02'nin `reverse_pending` altyapısı kullanılacak. |
 
-S1 ve S2 **B'nin ön şartı** (kapsamın anlamı sunucuya yazılacak).
-S3 sadece C'yi etkiler. S4/S5 bağımsız, sonra da cevaplanabilir.
+### 5.1 S1'in premisi neden çürüdü
+
+Soruyu sorarken iki şey varsaydım; ikisi de yanlış çıktı.
+
+**(a) "Ödendi" diye bir an yok.** Dekont (`Payment`) onayının bakiyeye
+hiçbir etkisi yok; bakiyeye para yalnız `manual-adjustment` ve `refund-*`
+ile giriyor. Dönem/ekstre/kapanış kavramı şemada hiç yok — bakiye tüm
+zamanların koşan toplamı. Yani kapsamı kapatacak bir olay mevcut değil.
+
+**(b) Daha önemlisi, kapanışa gerek de yok.** `Customer.TotalAmount`
+etiket bastıkça artan, **hiç sıfırlanmayan ömürlük toplam**
+(`CustomerRepository.IncrementLabelStats`). "İkinci bir kümülatif satış"
+diye bir şey yok — her yeni istek aynı kapsamın **yukarı revizyonu**, ve
+kod bunu bugün de böyle işliyor.
+
+Belgenin ilk hâlinde "sonsuz ömürlü kapsam ikinci kümülatif satışı
+sonsuza dek engeller" yazıyordu. **Yanlıştı.** Benimseme akışı bitirmiyor,
+revizyon dalına devrediyor:
+
+| Geri yükleme sonrası | Sonuç |
+|---|---|
+| Toplam aynı (250) | Benimser, ikinci düşüm yok → net **250** ✅ |
+| Sonra yeni etiketler (400) | Benimser → 250≠400 → revizyon → eskiyi geri al, 400 uygula → net **400** ✅ |
+
+Kapanış sayacı eklemek zararlı bile olurdu: sayaç **yerelde** yaşamak
+zorunda kalırdı, ve geri yüklemede kaybolan tam da yerel durum. Seçenek
+A'nın revizyon sayacında düştüğü tuzağın aynısı.
 
 ---
 
-## 6. Uygulama sırası (karar çıkınca)
+## 6. Uygulama sırası
 
 | PR | İçerik | Merge riski |
 |---|---|---|
 | 1 | Sunucu: `SaleScope` kolonu + göç + `apply` alanı (yazma, okuma yok) | Düşük — nullable kolon, davranış değişmez |
 | 2 | Sunucu: `GET scope` ucu + testler | Düşük — salt okunur |
 | 3 | İstemci: `AdoptRemoteResult` + uzlaştırma dalı + kabul testleri | Orta — para yolu, Velopack sürümüne biner |
-| 4 | C: geri yükleme damgası + "uzlaşma bekliyor" listesi | Düşük |
+| 4 | S5: sıfır toplamda eski düşümün iadesi | Düşük — istemci, R4-02 altyapısı hazır |
+
+S3 kararı gereği **Seçenek C (karantina + "uzlaşma bekliyor" listesi)
+uygulanmayacak**; akış açık kalıyor.
 
 1 ve 2 önce merge edilmeli ve **sahada bir süre çalışmalı**: istemci uca
 güvenmeden önce sunucunun kapsamları biriktirmiş olması gerekiyor. Aksi
 halde ilk uzlaştırma sorgusu, yalnızca kolonun yeni olması yüzünden boş
-döner ve hiçbir şey kazanmayız.
+döner ve hiçbir şey kazanmayız. Bu boş dönüş **zararsız** — bugünkü
+davranışa düşer, yani R4-03 öncesi duruma; yanlış bir şey yapmaz.
 
 ---
 

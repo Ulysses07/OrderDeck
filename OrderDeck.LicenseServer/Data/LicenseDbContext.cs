@@ -661,6 +661,14 @@ public class LicenseDbContext : DbContext
             b.HasIndex(t => t.ReversesTransactionId)
              .IsUnique()
              .HasFilter("[ReversesTransactionId] IS NOT NULL");
+            // R4-03: uzlaştırma sorgusunun ("bu müşterinin bu kapsamında
+            // geri alınmamış düşüm var mı?") tek indeksi. Filtreli: satırların
+            // ezici çoğunluğu kapsamsız (iade/reversal ve eski istemciler),
+            // onları indekste taşımanın anlamı yok.
+            b.Property(t => t.SaleScope)
+             .HasMaxLength(CustomerBalanceTransaction.SaleScopeMaxLength);
+            b.HasIndex(t => new { t.LicenseId, t.WpfCustomerId, t.SaleScope })
+             .HasFilter("[SaleScope] IS NOT NULL");
         });
 
         mb.Entity<LicenseSmsBalance>(b =>
