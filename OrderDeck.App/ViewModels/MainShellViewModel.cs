@@ -1099,13 +1099,35 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         PrintQueue.Clear();
     }
 
+    /// <summary>R7-04: PrintCommand yalnız KENDİ tekrarını engelliyor.
+    /// EndStream bu metodu doğrudan çağırdığı için komutun koruması devreye
+    /// girmiyor, yazıcı aynı snapshot'ı ikinci kez alıyordu. Bayrak metodun
+    /// kendisinde: hangi kapıdan gelinirse gelinsin uçuştaki baskı sahibi.</summary>
+    private bool _printInFlight;
+
     [RelayCommand(CanExecute = nameof(CanWrite))]
     private async Task Print()
     {
+        if (_printInFlight) return;
+
         var snapshot = SelectedQueueItems.Count > 0
             ? SelectedQueueItems.ToList()
             : PrintQueue.ToList();
         if (snapshot.Count == 0) return;
+
+        _printInFlight = true;
+        try
+        {
+            await PrintCoreAsync(snapshot);
+        }
+        finally
+        {
+            _printInFlight = false;
+        }
+    }
+
+    private async Task PrintCoreAsync(System.Collections.Generic.List<LabelViewModel> snapshot)
+    {
 
         var labels = snapshot.Select(vm => vm.Label).ToList();
 

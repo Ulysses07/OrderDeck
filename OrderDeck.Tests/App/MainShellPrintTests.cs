@@ -127,7 +127,27 @@ public class MainShellPrintTests
         public void Clear() { }
     }
 
-    private static (MainShellViewModel Vm, FakeLabelPrinter Printer, InMemorySqlite Db) Fx()
+    /// <summary>R7-04: yazıcıda bekleyen baskıyı taklit eder — ilk çağrı
+    /// serbest bırakılana kadar bloklar, böylece "baskı sürerken başka komut"
+    /// senaryosu gerçek ViewModel üzerinde kurulabilir.</summary>
+    private sealed class GatedLabelPrinter : ILabelPrinter
+    {
+        private readonly System.Threading.ManualResetEventSlim _gate = new(false);
+        public System.Threading.ManualResetEventSlim Entered { get; } = new(false);
+        public List<List<Label>> Calls { get; } = new();
+
+        public void Print(IReadOnlyList<Label> labels, IReadOnlySet<string>? recipientPaysLabelIds = null)
+        {
+            lock (Calls) Calls.Add(labels.ToList());
+            Entered.Set();
+            _gate.Wait(TimeSpan.FromSeconds(5));
+        }
+        public void PrintGiftLabels(IReadOnlyList<Label> labels) { }
+        public void Release() => _gate.Set();
+    }
+
+    private static (MainShellViewModel Vm, FakeLabelPrinter Printer, InMemorySqlite Db) Fx(
+        ILabelPrinter? printerOverride = null, FakeDialogService? dialogsOverride = null)
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
@@ -174,10 +194,10 @@ public class MainShellPrintTests
             stockProvider);
 
         var vm = new MainShellViewModel(
-            bus, labelSvc, sessionSvc, printer, customerSvc, customerRepo,
+            bus, labelSvc, sessionSvc, printerOverride ?? printer, customerSvc, customerRepo,
             labelRepo, clock.Object, productCard,
             giveawaySvc, banner, licenseSvc, intakeSync, tempStore,
-            new FakeDialogService());
+            dialogsOverride ?? new FakeDialogService());
 
         return (vm, printer, db);
     }
@@ -198,6 +218,35 @@ public class MainShellPrintTests
         // await edilen bir şey yok — metot baştan sona senkron koşup biter.
         vm.AddChatToQueueAsync(ChatVm(username, $"alıyorum {Guid.NewGuid():N}"))
           .GetAwaiter().GetResult();
+    }
+
+    // R7-04: PrintCommand yalnız KENDİ tekrarını engelliyor. EndStream ise
+    // özel Print() metodunu doğrudan çağırıyor, yani komutun eşzamanlılık
+    // koruması devreye girmiyordu: yazıcı aynı etiketi ikinci kez alıyordu.
+    [Fact]
+    public async Task Yazdirma_surerken_YayiniBitir_ayni_etiketi_ikinci_kez_yazdirmaz()
+    {
+        var gated = new GatedLabelPrinter();
+        var dialogs = new FakeDialogService { ConfirmResult = _ => true };
+        var (vm, _, db) = Fx(gated, dialogs);
+        using var __ = db;
+
+        Enqueue(vm, "@a", 100);
+
+        var print = vm.PrintCommand.ExecuteAsync(null);
+        gated.Entered.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue("baskı yazıcıda beklemeli");
+
+        var end = vm.EndStreamCommand.ExecuteAsync(null);
+        gated.Release();
+        await print;
+        await end;
+
+        gated.Calls.Should().HaveCount(1, "aynı iş iki kez yazıcıya gitmemeli");
+
+        var customers = new CustomerRepository(db);
+        var c = customers.FindByPlatformAndUsername("instagram", "@a")!;
+        c.TotalLabelsPrinted.Should().Be(1);
+        c.TotalAmount.Should().Be(100m);
     }
 
     [Fact]

@@ -94,6 +94,67 @@ public class LabelServiceTests
         customers.FindByPlatformAndUsername("instagram", "@b")!.TotalAmount.Should().Be(150m);
     }
 
+    // ── R7-04: yazdırmanın ekonomik etkisi bir kez ────────────────────
+    //
+    // MarkPrintedAndRecord transaction içinde çalışıyor (atomik), ama aynı
+    // transaction'ın iki kez BAŞARILI olması idempotent olduğu anlamına
+    // gelmiyor. Baskı arka planda beklerken EndStream/ClearQueue gibi başka
+    // komutlar aynı etiketi tekrar gönderebiliyor.
+
+    [Fact]
+    public void MarkPrintedAndRecord_ayni_etiket_ikinci_kez_ciroyu_tekrar_artirmaz()
+    {
+        var (svc, labels, customers, db, sid) = Fx();
+        using var _ = db;
+        var l = svc.Add(sid, Msg(), 100m, null);
+
+        svc.MarkPrintedAndRecord(new[] { l.Id });
+        svc.MarkPrintedAndRecord(new[] { l.Id });
+
+        var c = customers.FindByPlatformAndUsername("instagram", "@ayse_y")!;
+        c.TotalLabelsPrinted.Should().Be(1, "ekonomik tamamlanma etiketin kendisine ait");
+        c.TotalAmount.Should().Be(100m);
+    }
+
+    [Fact]
+    public void MarkPrintedAndRecord_iptal_edilmis_etiketi_ciroya_yazmaz()
+    {
+        var (svc, labels, customers, db, sid) = Fx();
+        using var _ = db;
+        var l = svc.Add(sid, Msg(), 100m, null);
+        svc.Cancel(new[] { l.Id }, CancelReasonCodes.Customer);
+
+        // Kuyruk temizlendikten sonra arka plandaki baskı işi aynı satırı
+        // "basıldı" diye geri yazıyordu: iptal edilmiş etiket hem PrintedAt
+        // hem +100 ciro alıyordu.
+        svc.MarkPrintedAndRecord(new[] { l.Id });
+
+        var c = customers.FindByPlatformAndUsername("instagram", "@ayse_y")!;
+        c.TotalAmount.Should().Be(0m);
+        c.TotalLabelsPrinted.Should().Be(0);
+        labels.GetById(l.Id)!.PrintedAt.Should().BeNull("iptal edilmiş iş basılmış sayılmaz");
+    }
+
+    [Fact] // karışık paket: yalnız uygun satır ilerler, diğerleri paketi bozmaz
+    public void MarkPrintedAndRecord_karisik_pakette_yalniz_taze_etiketi_sayar()
+    {
+        var (svc, labels, customers, db, sid) = Fx();
+        using var _ = db;
+        var basili = svc.Add(sid, Msg(), 100m, null);
+        var iptal = svc.Add(sid, Msg(), 40m, null);
+        var taze = svc.Add(sid, Msg(), 60m, null);
+        svc.MarkPrintedAndRecord(new[] { basili.Id });
+        svc.Cancel(new[] { iptal.Id }, CancelReasonCodes.Customer);
+
+        svc.MarkPrintedAndRecord(new[] { basili.Id, iptal.Id, taze.Id });
+
+        var c = customers.FindByPlatformAndUsername("instagram", "@ayse_y")!;
+        c.TotalAmount.Should().Be(160m, "100 (ilk baskı) + 60 (taze) — iptal ve tekrar hariç");
+        c.TotalLabelsPrinted.Should().Be(2);
+        labels.GetById(taze.Id)!.PrintedAt.Should().NotBeNull();
+        labels.GetById(iptal.Id)!.PrintedAt.Should().BeNull();
+    }
+
     // ── Cancel / Uncancel ─────────────────────────────────────────────
 
     [Fact]

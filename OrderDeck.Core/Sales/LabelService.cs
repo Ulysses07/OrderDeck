@@ -196,17 +196,31 @@ public sealed class LabelService
         if (labelIds.Count == 0) return;
 
         var groupedAmounts = new Dictionary<string, (int Count, decimal Amount)>();
+        var idsToPrint = new List<string>(labelIds.Count);
 
         foreach (var id in labelIds)
         {
             var lbl = _labels.GetById(id);
             if (lbl is null) continue;
+
+            // R7-04: bu metot "işi tamamla" demek, "kâğıdı yeniden çıkar"
+            // değil. Baskı arka planda beklerken EndStream/ClearQueue aynı
+            // etiketi tekrar gönderebiliyordu; transaction atomikti ama iki
+            // kez BAŞARILI olması ciroyu ikinci kez artırıyordu. İptal edilmiş
+            // satır daha da kötüsüydü: Cancel ciroyu düşürdükten sonra baskı
+            // onu geri ekliyor, satır hem iptalli hem basılı kalıyordu.
+            // Ekonomik tamamlanma etiketin kendisine ait — satır zaten
+            // sonuçlanmışsa paketin geri kalanı bundan etkilenmez.
+            if (lbl.PrintedAt.HasValue || lbl.CancelledAt.HasValue) continue;
+
+            idsToPrint.Add(id);
             if (lbl.IsTentativeBackup) continue; // tentative rows: print only, no aggregate
             if (groupedAmounts.TryGetValue(lbl.CustomerId, out var agg))
                 groupedAmounts[lbl.CustomerId] = (agg.Count + 1, agg.Amount + lbl.Price);
             else
                 groupedAmounts[lbl.CustomerId] = (1, lbl.Price);
         }
+        if (idsToPrint.Count == 0) return;
 
         // Bu metot dördü içinde en kötü durumdaydı: telafisi hiç yoktu.
         // Müşteri toplamı patladığında etiketler "basıldı" olarak kalıyor,
@@ -215,7 +229,7 @@ public sealed class LabelService
         // ilkel gerekiyordu. Pakete alınca o ilkele hiç gerek kalmıyor:
         // yazılmamış bir UPDATE'i geri almak gerekmez.
         using var write = DbWrite.Begin(_factory);
-        _labels.MarkPrinted(labelIds, _clock.UnixNow(), write);
+        _labels.MarkPrinted(idsToPrint, _clock.UnixNow(), write);
         foreach (var (customerId, agg) in groupedAmounts)
             _customers.RecordPrintedLabels(customerId, agg.Count, agg.Amount, write);
         write.Commit();
