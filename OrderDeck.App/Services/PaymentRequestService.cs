@@ -175,7 +175,13 @@ public sealed class PaymentRequestService
         decimal appliedBalance = 0m;
         var totalBeforeBalance = totalAmount;
         PaymentJob? deliveryJob = null;   // mesaj müşteriye ulaşınca kapatılacak iş
-        if (totalAmount > 0 && Guid.TryParseExact(customer.Id, "N", out var wpfCustomerId))
+        // S5: sıfır toplam da bakiye akışına girer. Eski kapı (totalAmount > 0)
+        // satıştaki tüm ürünler kaldırıldığında akışı komple atlıyordu; sunucuda
+        // duran düşüm ise yerinde kalıyordu — müşterinin parası, karşılığı olmayan
+        // bir satışta asılı kalırdı. Sıfır tutar bir satışın İPTALİDİR ve iadeyi
+        // hak eder. Düşülecek bir şey yoksa aşağıdaki akış zaten ağa çıkmadan
+        // "bakiye yok" ile kapanır.
+        if (Guid.TryParseExact(customer.Id, "N", out var wpfCustomerId))
         {
             var outcome = await ResolveBalanceAsync(
                 customer, wpfCustomerId, totalAmount, scopeKey, ct);
@@ -438,7 +444,24 @@ public sealed class PaymentRequestService
             if (job.State is PaymentJobState.Applied or PaymentJobState.NoBalance)
                 return new(false, job.AppliedAmount ?? 0m, job);
 
-            // 7) Taze iş: önizleme (bakiye yoksa anahtar hiç yazılmaz) →
+            // 7) S5: satış sıfıra indi. Geri alınacak eski düşüm varsa (5)
+            //    çoktan geri alındı; buradan sonrası için düşülecek bir şey
+            //    yok. Sunucuya apply GÖNDERMİYORUZ — sıfır tutarı zaten
+            //    "nothing-to-apply" ile reddeder; sonucu yerelde kesinleştirip
+            //    boş bir gidiş-dönüşten kaçınıyoruz.
+            if (totalAmount <= 0m)
+            {
+                if (!_jobs.MarkNoBalance(job.Id, job.ApplyKey, job.Revision))
+                {
+                    job = _jobs.Get(job.Id)!;
+                    return job.State is PaymentJobState.Applied or PaymentJobState.NoBalance
+                        ? new(false, job.AppliedAmount ?? 0m, job)
+                        : new(true, 0m, job);
+                }
+                return new(false, 0m, _jobs.Get(job.Id));
+            }
+
+            // 8) Taze iş: önizleme (bakiye yoksa anahtar hiç yazılmaz) →
             //    anahtar diske → apply.
             decimal previewBalance;
             try

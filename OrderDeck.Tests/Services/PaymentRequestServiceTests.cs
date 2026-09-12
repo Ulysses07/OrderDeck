@@ -1453,4 +1453,56 @@ public class PaymentRequestServiceTests : IDisposable
         handler.AppliedBalanceBodies.Should().ContainSingle();
         _jobs.Snapshot.Single().ProductTotal.Should().Be(300m);
     }
+
+    // ── S5: sıfıra inen satış eski düşümü iade eder ──────────────────────
+
+    [Fact] // S5 — satıştaki tüm ürünler kaldırıldı: düşüm müşteriye geri döner
+    public async Task OpenWhatsAppAsync_toplam_sifira_indiginde_eski_dusum_iade_edilir()
+    {
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var key = Guid.NewGuid();
+        SeedJob(customer.Id, PaymentJobState.Applied, 250m, 40m, key);
+
+        (await sut.OpenWhatsAppAsync(customer, 0m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.Opened);
+
+        handler.ReverseCalls.Should().ContainSingle().Which.Should().Be(key);
+        var job = _jobs.Snapshot.Single();
+        job.ProductTotal.Should().Be(0m);
+        job.AppliedAmount.Should().Be(0m);
+        job.State.Should().Be(PaymentJobState.NoBalance);
+    }
+
+    [Fact] // S5 — sıfır tutar için sunucuya apply GİTMEZ
+    public async Task OpenWhatsAppAsync_sifir_toplamda_apply_cagrilmaz()
+    {
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+
+        (await sut.OpenWhatsAppAsync(customer, 0m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.Opened);
+
+        handler.AppliedBalanceBodies.Should().BeEmpty("düşülecek bir şey yok");
+        _jobs.Snapshot.Single().State.Should().Be(PaymentJobState.NoBalance);
+    }
+
+    [Fact] // S5 — iade kesinleşmezse mesaj gitmez (K3)
+    public async Task OpenWhatsAppAsync_sifir_toplamda_iade_kesinlesmezse_mesaj_gonderilmez()
+    {
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        handler.ThrowTimeoutOnReverse = true;
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        SeedJob(customer.Id, PaymentJobState.Applied, 250m, 40m, Guid.NewGuid());
+
+        (await sut.OpenWhatsAppAsync(customer, 0m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.BalanceUncertain);
+
+        _launcher.LaunchedUrls.Should().BeEmpty();
+        _jobs.Snapshot.Single().State.Should().Be(PaymentJobState.ReversePending,
+            "niyet diskte kalır, sonraki tıklamada uzlaştırılır");
+    }
 }
