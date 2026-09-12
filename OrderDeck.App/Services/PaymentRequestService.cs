@@ -461,6 +461,21 @@ public sealed class PaymentRequestService
                 return new(false, 0m, _jobs.Get(job.Id));
             }
 
+            // R6-03: 2. adım geri alma niyetini boşaltmıştı; buraya
+            // reverse_pending ile düşmenin tek yolu araya giren eşzamanlı bir
+            // akışın niyeti O ANDAN SONRA yazmasıdır. Aşağıdaki taze uygulama
+            // diskteki anahtarı yeniden kullanır (BeginApply yarışı kaybeder ve
+            // akış Settle'a düşer) — yani geri alınmak üzere olan düşümü ikinci
+            // kez yazardık. Mesajı engelle; operatörün sıradaki tıklaması
+            // 2. adımdan kaldığı yerden sürdürür.
+            if (job.State == PaymentJobState.ReversePending)
+            {
+                _log?.LogWarning(
+                    "Geri alma beklerken taze düşüm istendi — mesaj engellendi (job={JobId})",
+                    job.Id);
+                return new(true, 0m, job);
+            }
+
             // 8) Taze iş: önizleme (bakiye yoksa anahtar hiç yazılmaz) →
             //    anahtar diske → apply.
             decimal previewBalance;
@@ -583,9 +598,13 @@ public sealed class PaymentRequestService
 
         var key = job.ApplyKey.Value;
         var revision = job.Revision;
+        // R6-03: koşulun tutmamasının iki nedeni var — araya revizyon girmiş
+        // olabilir (R4-01) ya da iş geri alma bekliyor olabilir (R4-02).
+        // İkisini ayırt etmek, sahadan gelen günlükte tek fark yaratan bilgi.
         void LogBayat(string sonuc) => _log?.LogWarning(
-            "Gecikmiş bakiye cevabı yok sayıldı ({Sonuc}) — araya revizyon girdi "
-            + "(job={JobId}, key={Key}, rev={Revision})", sonuc, job.Id, key, revision);
+            "Gecikmiş bakiye cevabı yok sayıldı ({Sonuc}) — iş artık {Durum} "
+            + "(job={JobId}, key={Key}, rev={Revision})",
+            sonuc, _jobs.Get(job.Id)?.State ?? "bilinmiyor", job.Id, key, revision);
 
         try
         {

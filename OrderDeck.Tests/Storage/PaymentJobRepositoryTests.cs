@@ -367,6 +367,81 @@ public sealed class PaymentJobRepositoryTests
         guncel.PendingTotal.Should().BeNull();
     }
 
+    // ── R6-03: geri alma niyeti, gecikmiş cevaplardan korunur ───────────────
+    //
+    // R4-01 "bayatlığı denemenin kimliği belirler" diyor; R4-02 sonradan
+    // reverse_pending aşamasını ekledi ve BeginReversal Revision/ApplyKey'i
+    // BİLEREK koruyor (geri alınacak işlem odur). İkisi kesişince: aynı
+    // denemenin uçuştaki cevabı geri alma niyetini ezebiliyor. Niyet silinince
+    // FinishReversalAsync bir daha çalışmaz, sunucudaki düşüm iade edilmez.
+
+    [Fact]
+    public void MarkApplied_GeriAlmaBeklerken_NiyetiEzemez()
+    {
+        var (_, repo) = Fx();
+        var job = repo.FindOrCreate("c1", "session:s1", 250m);
+        var key = Guid.NewGuid();
+        repo.BeginApply(job.Id, key);
+        repo.MarkApplied(job.Id, key, 0, 250m);
+        repo.BeginReversal(job.Id, 0, key, targetTotal: 50m).Should().BeTrue();
+
+        // Aynı denemenin gecikmiş cevabı serbest kalıyor (Revision + ApplyKey
+        // hâlâ tutuyor, çünkü BeginReversal ikisine de dokunmadı).
+        repo.MarkApplied(job.Id, key, expectedRevision: 0, 250m).Should().BeFalse();
+
+        var guncel = repo.Get(job.Id)!;
+        guncel.State.Should().Be(PaymentJobState.ReversePending,
+            "niyet silinirse iade adımı bir daha çalışmaz");
+        guncel.PendingTotal.Should().Be(50m);
+    }
+
+    [Fact]
+    public void MarkNoBalance_GeriAlmaBeklerken_NiyetiEzemez()
+    {
+        var (_, repo) = Fx();
+        var job = repo.FindOrCreate("c1", "session:s1", 250m);
+        var key = Guid.NewGuid();
+        repo.BeginApply(job.Id, key);
+        repo.MarkApplied(job.Id, key, 0, 250m);
+        repo.BeginReversal(job.Id, 0, key, targetTotal: 50m).Should().BeTrue();
+
+        repo.MarkNoBalance(job.Id, key, expectedRevision: 0).Should().BeFalse();
+
+        var guncel = repo.Get(job.Id)!;
+        guncel.State.Should().Be(PaymentJobState.ReversePending);
+        guncel.AppliedAmount.Should().Be(250m, "iade edilecek tutar korunmalı");
+    }
+
+    [Fact]
+    public void MarkUncertain_GeriAlmaBeklerken_NiyetiEzemez()
+    {
+        var (_, repo) = Fx();
+        var job = repo.FindOrCreate("c1", "session:s1", 250m);
+        var key = Guid.NewGuid();
+        repo.BeginApply(job.Id, key);
+        repo.MarkApplied(job.Id, key, 0, 250m);
+        repo.BeginReversal(job.Id, 0, key, targetTotal: 50m).Should().BeTrue();
+
+        repo.MarkUncertain(job.Id, key, expectedRevision: 0).Should().BeFalse();
+
+        repo.Get(job.Id)!.State.Should().Be(PaymentJobState.ReversePending);
+    }
+
+    [Fact] // R4-01 korunuyor: geri alma YOKKEN replay hâlâ zararsız tekrardır
+    public void MarkApplied_GeriAlmaYokken_ReplayHalaYazar()
+    {
+        var (_, repo) = Fx();
+        var job = repo.FindOrCreate("c1", "session:s1", 250m);
+        var key = Guid.NewGuid();
+        repo.BeginApply(job.Id, key);
+
+        repo.MarkApplied(job.Id, key, 0, 100m).Should().BeTrue();
+        repo.MarkApplied(job.Id, key, 0, 100m).Should().BeTrue();
+        repo.MarkUncertain(job.Id, key, 0).Should().BeTrue();
+        repo.MarkNoBalance(job.Id, key, 0).Should().BeTrue();
+        repo.Get(job.Id)!.State.Should().Be(PaymentJobState.NoBalance);
+    }
+
     // ── R4-03: sunucudaki düşümü benimseme ───────────────────────────────
 
     [Fact]
