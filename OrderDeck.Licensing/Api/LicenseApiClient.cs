@@ -114,7 +114,7 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
 
     /// <summary>Returns null when no config is set yet (404 from server).</summary>
     public Task<IntakeFormConfigDto?> GetIntakeFormAsync(CancellationToken ct = default)
-        => GetExpectingJsonOrNullOn404Async<IntakeFormConfigDto>("/api/v1/me/intake-form", ct);
+        => GetExpectingJsonOrNullAsync<IntakeFormConfigDto>("/api/v1/me/intake-form", ct);
 
     public Task<IntakeFormConfigDto> UpsertIntakeFormAsync(IntakeFormUpsertRequest req, CancellationToken ct = default)
         => PostJsonExpectingJsonAsync<IntakeFormUpsertRequest, IntakeFormConfigDto>(
@@ -371,6 +371,23 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
             ?? new CustomerBalancePreview(wpfCustomerId, 0m, DateTimeOffset.UtcNow);
     }
 
+    /// <summary>R4-03: bu kapsamda sunucuda geri alınmamış bir düşüm var mı?
+    /// <c>null</c> = yok (204), istemci bugünkü akışta kalır.
+    ///
+    /// <para>Neden gerekiyor: satışın yerel kimliği (idempotency anahtarı)
+    /// diskte yaşıyor. Eski bir yedek geri yüklenince o anahtar yok oluyor,
+    /// uzak defter ise düşümü hatırlamaya devam ediyor — anahtarsız istemci
+    /// düşümü oynatamadığı için aynı satışı ikinci kez düşerdi. Kapsam
+    /// sunucuda durduğundan düşüm burada tanınıp benimsenebiliyor.</para></summary>
+    public async Task<CustomerBalanceScope?> GetBalanceScopeAsync(
+        Guid licenseId, Guid wpfCustomerId, string saleScope, CancellationToken ct = default)
+    {
+        var qs = $"?wpfCustomerId={wpfCustomerId:D}&saleScope={Uri.EscapeDataString(saleScope)}";
+        return await GetExpectingJsonOrNullAsync<CustomerBalanceScope>(
+            $"/api/v1/licenses/{licenseId}/customer-balance/scope{qs}", ct,
+            HttpStatusCode.NoContent);
+    }
+
     /// <summary>WPF "Ödeme iste" sonrası bakiye düşüşünü commit eder.
     /// Server min(Amount, balance, productTotal) ile capped uygular.</summary>
     public async Task<CustomerBalanceApplyResponse> ApplyBalanceAsync(
@@ -566,11 +583,15 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
         }
     }
 
-    /// <summary>Refresh-aware GET that maps 404 → null. Used by endpoints like
-    /// /me/intake-form where "not configured yet" is a legitimate state, not
-    /// an error. Mirrors <see cref="GetExpectingJsonAsync{TResp}"/> for the
-    /// 401 retry path so previously-bypass endpoints now honor token rotation.</summary>
-    private async Task<TResp?> GetExpectingJsonOrNullOn404Async<TResp>(string path, CancellationToken ct)
+    /// <summary>Refresh-aware GET where ONE status code means "kayıt yok" and
+    /// becomes <c>null</c> — /me/intake-form'da 404 ("henüz yapılandırılmadı"),
+    /// customer-balance/scope'ta 204. Geri kalan başarısız kodlar hata olarak
+    /// fırlatılır: "yok" ile "sorulamadı" aynı şey değil ve ikincisini sessizce
+    /// yutmak, çağıranı var olmayan bir cevaba göre karar vermeye iter.
+    /// Mirrors <see cref="GetExpectingJsonAsync{TResp}"/> for the 401 retry path
+    /// so previously-bypass endpoints now honor token rotation.</summary>
+    private async Task<TResp?> GetExpectingJsonOrNullAsync<TResp>(
+        string path, CancellationToken ct, HttpStatusCode nullStatus = HttpStatusCode.NotFound)
         where TResp : class
     {
         var canRefresh = OnUnauthorized is not null && !path.StartsWith("/api/v1/auth/");
@@ -590,7 +611,7 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
 
             using (resp)
             {
-                if (resp.StatusCode == HttpStatusCode.NotFound) return null;
+                if (resp.StatusCode == nullStatus) return null;
                 if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
                 return await DeserializeAsync<TResp>(resp, ct);
             }

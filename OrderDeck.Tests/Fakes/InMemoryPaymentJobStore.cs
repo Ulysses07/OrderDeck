@@ -207,4 +207,23 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
             _jobs[legacyId] = legacy with { ClosedAt = legacy.ClosedAt ?? Now(), UpdatedAt = Now() };
         }
     }
+
+    public bool AdoptRemoteResult(
+        string id, Guid transactionId, decimal appliedAmount, decimal productTotal)
+    {
+        lock (_gate)
+        {
+            var j = _jobs[id];
+            if (j.ApplyKey is not null || j.State != PaymentJobState.Created) return false;
+            _jobs[id] = j with
+            {
+                ApplyKey = transactionId,
+                AppliedAmount = appliedAmount,
+                ProductTotal = productTotal,
+                State = PaymentJobState.Applied,
+                UpdatedAt = Now(),
+            };
+            return true;
+        }
+    }
 }

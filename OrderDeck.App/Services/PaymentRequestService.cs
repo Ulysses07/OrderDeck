@@ -385,7 +385,23 @@ public sealed class PaymentRequestService
                     return new(true, 0m, job);
             }
 
-            // 4) Revizyon (K2): kapsam aynı, tutar değişti — eski düşümü geri
+            // 4) R4-03 uzlaştırma: iş hiç denenmemiş görünüyor ama sunucuda bu
+            //    kapsamda geri alınmamış bir düşüm olabilir.
+            //
+            //    Tipik sebep yedek geri yükleme: satışın yerel kimliği (apply
+            //    anahtarı) diskte yaşıyordu ve onunla birlikte yok oldu; uzak
+            //    defter ise düşümü hatırlamaya devam ediyor. Sormadan devam
+            //    etmek aynı satışı ikinci kez düşürür — R4-03'ün ta kendisi.
+            //
+            //    Sıra önemli: geri alma tamamlandıktan (2) ve belirsiz iş
+            //    kesinleştikten (3) SONRA sorulmalı, yoksa az önce geri
+            //    aldığımız satırı benimseyebiliriz. Revizyondan (5) ÖNCE
+            //    olmalı ki tutar karşılaştırması benimsenen gerçek tutara karşı
+            //    yapılsın.
+            if (job.State == PaymentJobState.Created && job.ApplyKey is null)
+                job = await AdoptRemoteScopeAsync(licenseId.Value, wpfCustomerId, job, ct);
+
+            // 5) Revizyon (K2): kapsam aynı, tutar değişti — eski düşümü geri
             //    al, yeni toplam + YENİ anahtarla taze uygula. created işte de
             //    çalışır (geri alınacak şey yoktur, sadece tutar güncellenir).
             if (job.ProductTotal != totalAmount)
@@ -418,11 +434,11 @@ public sealed class PaymentRequestService
                 }
             }
 
-            // 5) Tekrar paylaşım: sonuç kesin, tutar aynı — finansal çağrı YOK.
+            // 6) Tekrar paylaşım: sonuç kesin, tutar aynı — finansal çağrı YOK.
             if (job.State is PaymentJobState.Applied or PaymentJobState.NoBalance)
                 return new(false, job.AppliedAmount ?? 0m, job);
 
-            // 6) Taze iş: önizleme (bakiye yoksa anahtar hiç yazılmaz) →
+            // 7) Taze iş: önizleme (bakiye yoksa anahtar hiç yazılmaz) →
             //    anahtar diske → apply.
             decimal previewBalance;
             try
@@ -470,6 +486,46 @@ public sealed class PaymentRequestService
         }
     }
 
+    /// <summary>R4-03: sunucuda bu kapsamda duran geri alınmamış düşümü işe
+    /// benimsetir. Kayıt yoksa iş olduğu gibi döner ve akış değişmez.
+    ///
+    /// <para>Sorgu başarısız olursa <b>bloklamıyoruz</b>: "yok" ile "sorulamadı"
+    /// aynı şey değil ama ikincisinde de doğru davranış bugünkü akışa düşmek.
+    /// Ağ gerçekten kopuksa zaten sıradaki önizleme/apply duracak; kapsam
+    /// sorgusunda durmak, R4-03 öncesi hiç var olmayan yeni bir blokaj
+    /// yaratırdı (K2'yi çiğnerdi). Sessiz kalmasın diye günlüğe yazılıyor.</para>
+    ///
+    /// <para>Benimseme koşullu: araya giren bir akış işe anahtar yazdıysa
+    /// (false) satır yeniden okunur ve onun bıraktığı durumdan devam edilir.
+    /// Sunucudaki satır o durumda zaten o akışın yazdığı satırdır.</para></summary>
+    private async Task<PaymentJob> AdoptRemoteScopeAsync(
+        Guid licenseId, Guid wpfCustomerId, PaymentJob job, CancellationToken ct)
+    {
+        CustomerBalanceScope? remote;
+        try
+        {
+            remote = await _api.GetBalanceScopeAsync(licenseId, wpfCustomerId, job.ScopeKey, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log?.LogWarning(ex,
+                "Kapsam uzlaştırması yapılamadı — bugünkü akışa düşülüyor (job={JobId}, scope={ScopeKey})",
+                job.Id, job.ScopeKey);
+            return job;
+        }
+
+        if (remote is null) return job;
+
+        _log?.LogInformation(
+            "Sunucuda bu kapsamda düşüm bulundu, benimseniyor "
+            + "(job={JobId}, scope={ScopeKey}, tx={TransactionId}, applied={Applied})",
+            job.Id, job.ScopeKey, remote.TransactionId, remote.AppliedAmount);
+
+        _jobs.AdoptRemoteResult(
+            job.Id, remote.TransactionId, remote.AppliedAmount, remote.ProductTotal);
+        return _jobs.Get(job.Id)!;
+    }
+
     /// <summary>Diskteki anahtarla apply — bir deneme + bir anında tekrar (K3).</summary>
     private async Task<BalanceOutcome> SettleAsync(
         Guid licenseId, Guid wpfCustomerId, PaymentJob job, CancellationToken ct)
@@ -485,6 +541,11 @@ public sealed class PaymentRequestService
     /// <summary>İşin diskteki anahtarıyla apply'ı (yeniden) dener, sonucu işe
     /// yazar. Amount=ProductTotal gönderilir — sunucu bakiyeye/toplama kırpar;
     /// replay'de birebir aynı gövde gittiği için A11 içerik kontrolünden geçer.
+    ///
+    /// R4-03: gövdeye işin <c>ScopeKey</c>'i de eklenir — satışın kalıcı
+    /// kimliği. Sunucu bunu A11 karşılaştırmasının DIŞINDA tutar, yoksa bu
+    /// sürüme yükselen bir kurulumun kapsamsız yazılmış satırı tekrar
+    /// denemesi kalıcı çakışmaya dönerdi.
     ///
     /// R4-01: cevap, GÖNDERİLDİĞİ denemeye aittir. İstek tele çıktıktan sonra
     /// araya bir revizyon girebilir (ağda takılan cevap dakikalarca sürebilir);
@@ -508,7 +569,7 @@ public sealed class PaymentRequestService
             var apply = await _api.ApplyBalanceAsync(
                 licenseId,
                 new CustomerBalanceApplyRequest(
-                    wpfCustomerId, job.ProductTotal, job.ProductTotal, key),
+                    wpfCustomerId, job.ProductTotal, job.ProductTotal, key, job.ScopeKey),
                 ct);
             if (!_jobs.MarkApplied(job.Id, key, revision, apply.AppliedAmount))
                 LogBayat("uygulandı");

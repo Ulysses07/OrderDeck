@@ -131,6 +131,21 @@ public interface IPaymentJobStore
     /// TAZE hedefe kopyalar ve legacy'yi kapatır — tek transaction. Hedef taze
     /// değilse (anahtarı varsa) hedefe dokunmaz, yine de legacy'yi kapatır.</summary>
     void AdoptLegacyResult(string targetId, string legacyId);
+
+    /// <summary>R4-03: sunucuda bu kapsam için duran düşümü TAZE işe benimsetir
+    /// — iş <see cref="PaymentJobState.Applied"/> olur, ApplyKey sunucudaki
+    /// ledger satırının kimliği, AppliedAmount/ProductTotal da sunucunun
+    /// bildiği değerler.
+    ///
+    /// <para>Neden gerekiyor: yedek geri yüklenince satışın yerel kimliği yok
+    /// olur, uzak defter düşümü hatırlamaya devam eder ve aynı satış ikinci kez
+    /// düşülürdü. Benimseme, yereli sunucunun bildiğiyle hizalar; sepet tutarı
+    /// değişmişse normal revizyon dalı (K2) devralır.</para>
+    ///
+    /// <para>Yalnız iş hiç denenmemişse (created + ApplyKey NULL). Anahtarı olan
+    /// bir işi ezmek, hâlâ uçuşta olan bir denemenin cevabını sahipsiz
+    /// bırakırdı. false = yeniden oku.</para></summary>
+    bool AdoptRemoteResult(string id, Guid transactionId, decimal appliedAmount, decimal productTotal);
 }
 
 public sealed class PaymentJobRepository : IPaymentJobStore
@@ -345,6 +360,30 @@ public sealed class PaymentJobRepository : IPaymentJobStore
             new { legacyId, now },
             tx);
         tx.Commit();
+    }
+
+    public bool AdoptRemoteResult(
+        string id, Guid transactionId, decimal appliedAmount, decimal productTotal)
+    {
+        using var conn = _factory.Open();
+        // Revision ARTMIYOR: benimseme yeni bir deneme açmıyor, var olan
+        // sonucu yerele taşıyor. Artırmak, uçuştaki bir cevabı bayatlatırdı —
+        // oysa koşul zaten "hiç deneme yok" (ApplyKey IS NULL) diyor.
+        return conn.Execute(
+            @"UPDATE PaymentJob
+              SET ApplyKey=@key, AppliedAmount=@amt, ProductTotal=@total,
+                  State=@state, UpdatedAt=@now
+              WHERE Id=@id AND ApplyKey IS NULL AND State=@created",
+            new
+            {
+                id,
+                key = transactionId.ToString("N"),
+                amt = Dec(appliedAmount),
+                total = Dec(productTotal),
+                state = PaymentJobState.Applied,
+                created = PaymentJobState.Created,
+                now = Now(),
+            }) == 1;
     }
 
     private const string SelectSql =
