@@ -168,7 +168,11 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
             if (RegisteredOnly)
                 filtered = filtered.Where(c => !string.IsNullOrWhiteSpace(c.Phone));
 
-            foreach (var card in BuildCards(filtered)) Results.Add(card);
+            // R5-02: Kart bir KİŞİ; "son yayında alışveriş yapanlar" listesi ise
+            // SATIR seçiyor. Kişinin başka platformdaki satırı bu listede yoksa
+            // kartın toplamı eksik çıkar — ödeme komutu o toplamı kullanıyor.
+            foreach (var card in BuildCards(_customers.CompleteGroups(filtered.ToList())))
+                Results.Add(card);
             return;
         }
 
@@ -190,8 +194,13 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
             ? _customers.GetRecent(RecentLimit, PlatformFilter, RegisteredOnly)
             : _customers.Search(value.Trim(), SearchLimit, PlatformFilter, RegisteredOnly);
 
+        // Kesme sinyali TAMAMLAMADAN ÖNCE ölçülür: tamamlama satır ekleyebildiği
+        // için sonradan bakmak kesilmemiş listeyi "kesildi" diye işaretlerdi.
         _resultsTruncated = rows.Count >= (string.IsNullOrWhiteSpace(value) ? RecentLimit : SearchLimit);
-        foreach (var card in BuildCards(rows)) Results.Add(card);
+
+        // R5-02: Limit satırı kesiyor, kart ise grubu topluyor. Tamamlamadan
+        // çizilen kart, görünür olmasına rağmen kendi toplamını eksik gösterir.
+        foreach (var card in BuildCards(_customers.CompleteGroups(rows))) Results.Add(card);
     }
 
     /// <summary>Müşteri satırlarını GroupId'ye göre tek karta toplar. GroupId null

@@ -137,6 +137,44 @@ public class CustomerSearchViewModelTests
         finally { if (File.Exists(path)) File.Delete(path); }
     }
 
+    // R5-02: Limit SATIRI kesiyor, kart ise GroupId'ye göre topluyor. Kesilen
+    // üye geri getirilmezse sorun "eski kartın görünmemesi" değil — GÖRÜNEN
+    // kartın kendi toplamı eksiliyor. Ödeme komutu bu toplamı tükettiği için
+    // eksik toplam doğrudan yanlış tutarlı ödeme isteğine dönüşür.
+    [Fact]
+    public void Search_GrubunLimitDisindaKalanUyesiKartToplamindaSayilir()
+    {
+        var (db, customers, _, _, _, _, path, sut) = Setup();
+        try
+        {
+            using var _db = db;
+            // Aynı kişinin iki satırı: yeni instagram (100) + çok eski tiktok (200).
+            customers.Insert(new Customer("g-new", "instagram", "elma_yeni", "Ali Veli", null,
+                1000, 900_000, false, null, null, 1, 100m, null, null, null, GroupId: "grp-1"));
+            customers.Insert(new Customer("g-old", "tiktok", "elma_eski", "Ali Veli", null,
+                1000, 1, false, null, null, 2, 200m, null, null, "+905551112233",
+                GroupId: "grp-1"));
+
+            // 60 dolgu: arada kalıp ilk 50'yi doldururlar, eski üye dışarıda kalır.
+            for (var i = 0; i < 60; i++)
+            {
+                customers.Insert(new Customer($"f{i:D2}", "instagram", $"elma_dolgu{i:D2}", null, null,
+                    1000, 100_000 + i, false, null, null, 0, 0m, null, null, null));
+            }
+
+            sut.Query = "elma";
+
+            var card = sut.Results.Should().ContainSingle(c => c.IsGroup).Subject;
+            card.Members.Should().HaveCount(2);
+            card.TotalAmount.Should().Be(300m);
+            // Birincil üye telefonlu olan: kart iletişimsiz görünmemeli.
+            card.Primary.Id.Should().Be("g-old");
+            card.Phone.Should().Be("+905551112233");
+            card.Platforms.Should().BeEquivalentTo(new[] { "instagram", "tiktok" });
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
     [Fact]
     public async Task OpenWhatsApp_PhoneRequired_ShowsDialogThenRetries()
     {

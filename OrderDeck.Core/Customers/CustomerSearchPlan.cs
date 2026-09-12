@@ -38,9 +38,12 @@ public sealed class CustomerSearchPlan
 
     /// <summary>Her terim trigram alt sınırını aşıyor mu? Aşmıyorsa FTS5 indeksi
     /// KULLANILAMAZ — 3 harften kısa metinde MATCH hata vermeden boş döner
-    /// (bkz. <see cref="CustomerSearch.MinTrigramLength"/>).</summary>
+    /// (bkz. <see cref="CustomerSearch.MinTrigramLength"/>).
+    ///
+    /// <para>Ölçü <see cref="CustomerSearch.CodePointCount"/>, <c>Length</c> değil:
+    /// "a😀" 3 UTF-16 birimi ama 2 kod noktasıdır ve trigram üretemez (R5-01).</para></summary>
     public bool CanUseTrigram => !MatchesNothing && Terms.Count > 0 && Terms.All(t =>
-        t.Folded.Length >= CustomerSearch.MinTrigramLength);
+        CustomerSearch.CodePointCount(t.Folded) >= CustomerSearch.MinTrigramLength);
 
     public static CustomerSearchPlan Build(string query)
     {

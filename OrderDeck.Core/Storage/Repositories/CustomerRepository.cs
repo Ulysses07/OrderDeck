@@ -269,6 +269,46 @@ public sealed class CustomerRepository
         return rows.Select(Map).ToList();
     }
 
+    /// <summary>
+    /// Verilen satırların ait olduğu grupların EKSİK üyelerini tamamlar; hiçbir
+    /// satırı atmaz, yalnızca ekler.
+    ///
+    /// <para><b>R5-02 (2026-09-12) — neden gerekli.</b> <see cref="Search"/> ve
+    /// <see cref="GetRecent"/> SATIR düzeyinde kesiyor, ekrandaki kart ise bir
+    /// KİŞİ: <c>GroupId</c>'ye göre toplanmış satırların toplamı. Limit bir grubu
+    /// ortasından böldüğünde sorun "eski kartların görünmemesi" değil —
+    /// GÖRÜNEN kartın kendi toplamı eksiliyor (3 üyeli 300'lük kişi, 1 üye/100
+    /// olarak çiziliyor). Ödeme komutu kart toplamını tükettiği için bu doğrudan
+    /// yanlış tutarlı ödeme isteğine dönüşebiliyordu.</para>
+    ///
+    /// <para>Tamamlama <b>süzgeçlerden bağımsız</b>: platform/kayıtlı süzgeci
+    /// hangi KİŞİLERİN listeleneceğini seçer, kartın İÇERİĞİNİ değil. Süzgeç
+    /// tamamlamaya da uygulansaydı, telefonu yalnız bir platform satırında olan
+    /// kişinin kartı telefonsuz kalır (birincil üye kaybolur) ve toplam yine
+    /// eksik çıkardı.</para>
+    /// </summary>
+    public IReadOnlyList<Customer> CompleteGroups(IReadOnlyList<Customer> rows)
+    {
+        var groupIds = rows
+            .Where(c => !string.IsNullOrWhiteSpace(c.GroupId))
+            .Select(c => c.GroupId!)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (groupIds.Count == 0) return rows;
+
+        using var conn = _factory.Open();
+        var members = conn.Query<Row>(
+            "SELECT * FROM Customer WHERE GroupId IN @groupIds",
+            new { groupIds }).ToList();
+
+        var seen = rows.Select(c => c.Id).ToHashSet(StringComparer.Ordinal);
+        var completed = rows.ToList();
+        foreach (var m in members)
+            if (seen.Add(m.Id)) completed.Add(Map(m));
+
+        return completed;
+    }
+
     /// <summary>Bir grubun tüm üyelerini gruptan ayırır (GroupId = NULL). Yanlış
     /// birleştirmeyi geri almak için. Kara liste durumuna dokunmaz.</summary>
     public void UnmergeGroup(string groupId)
