@@ -366,4 +366,68 @@ public sealed class PaymentJobRepositoryTests
         guncel.State.Should().Be(PaymentJobState.Applied);
         guncel.PendingTotal.Should().BeNull();
     }
+
+    // ── R4-03: sunucudaki düşümü benimseme ───────────────────────────────
+
+    [Fact]
+    public void AdoptRemoteResult_HicDenenmemisIse_SunucununSonucunuYazar()
+    {
+        var (_, repo) = Fx();
+        var job = repo.FindOrCreate("c1", "cumulative", 250m);
+        var tx = Guid.NewGuid();
+
+        repo.AdoptRemoteResult(job.Id, tx, appliedAmount: 40m, productTotal: 250m)
+            .Should().BeTrue();
+
+        var guncel = repo.Get(job.Id)!;
+        guncel.State.Should().Be(PaymentJobState.Applied);
+        guncel.ApplyKey.Should().Be(tx);        // sunucudaki satırın kimliği
+        guncel.AppliedAmount.Should().Be(40m);
+        guncel.ProductTotal.Should().Be(250m);
+        guncel.Revision.Should().Be(0);          // benimseme yeni deneme AÇMAZ
+    }
+
+    [Fact]
+    public void AdoptRemoteResult_SunucudakiToplamFarkliysa_OnuYazar()
+    {
+        // Yedek geri yüklendikten sonra yereldeki toplam, düşümün yapıldığı
+        // andakinden farklı olabilir; gerçek olan sunucudaki.
+        var (_, repo) = Fx();
+        var job = repo.FindOrCreate("c1", "cumulative", 500m);
+
+        repo.AdoptRemoteResult(job.Id, Guid.NewGuid(), 40m, productTotal: 250m)
+            .Should().BeTrue();
+
+        repo.Get(job.Id)!.ProductTotal.Should().Be(250m);
+    }
+
+    [Fact]
+    public void AdoptRemoteResult_UcusanDenemeVarsa_Reddeder()
+    {
+        var (_, repo) = Fx();
+        var job = repo.FindOrCreate("c1", "cumulative", 250m);
+        var key = Guid.NewGuid();
+        repo.BeginApply(job.Id, key);
+
+        repo.AdoptRemoteResult(job.Id, Guid.NewGuid(), 40m, 250m).Should().BeFalse();
+
+        var guncel = repo.Get(job.Id)!;
+        guncel.ApplyKey.Should().Be(key);       // uçuştaki anahtar KORUNUR
+        guncel.State.Should().Be(PaymentJobState.ApplyUncertain);
+    }
+
+    [Fact]
+    public void AdoptRemoteResult_GeriAlmaBeklerken_Reddeder()
+    {
+        var (_, repo) = Fx();
+        var job = repo.FindOrCreate("c1", "cumulative", 250m);
+        var key = Guid.NewGuid();
+        repo.BeginApply(job.Id, key);
+        repo.MarkApplied(job.Id, key, 0, 40m);
+        repo.BeginReversal(job.Id, 0, key, 100m).Should().BeTrue();
+
+        repo.AdoptRemoteResult(job.Id, Guid.NewGuid(), 40m, 250m).Should().BeFalse();
+
+        repo.Get(job.Id)!.State.Should().Be(PaymentJobState.ReversePending);
+    }
 }

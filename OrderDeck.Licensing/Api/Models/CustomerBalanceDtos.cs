@@ -9,17 +9,31 @@ public sealed record CustomerBalancePreview(
 /// <summary>Bakiye düşüm isteği. <paramref name="IdempotencyKey"/> çağrı başına
 /// bir kez üretilir: dayanıklılık katmanı bu POST'u yeniden denediğinde gövde
 /// (dolayısıyla anahtar) aynı kalır ve sunucu bakiyeyi ikinci kez düşürmez.
-/// Anahtar aynı zamanda oluşan ledger satırının kimliğidir.</summary>
+/// Anahtar aynı zamanda oluşan ledger satırının kimliğidir.
+///
+/// <para>R4-03: <paramref name="SaleScope"/> satışın <b>kalıcı</b> kimliği —
+/// işin <c>ScopeKey</c>'i. Idempotency anahtarı yerel diskte yaşıyor ve yedek
+/// geri yüklenince kayboluyor; kapsam sunucuda kaldığından düşüm sonradan
+/// yine tanınabiliyor.</para></summary>
 public sealed record CustomerBalanceApplyRequest(
     Guid WpfCustomerId,
     decimal Amount,
     decimal ProductTotal,
-    Guid? IdempotencyKey = null);
+    Guid? IdempotencyKey = null,
+    string? SaleScope = null);
 
 public sealed record CustomerBalanceApplyResponse(
     Guid TransactionId,
     decimal AppliedAmount,
     decimal RemainingBalance);
+
+/// <summary>R4-03: bir kapsamda sunucuda duran, geri alınmamış düşüm. Yerel
+/// anahtar kaybolmuş olsa bile satış bununla tanınır.</summary>
+public sealed record CustomerBalanceScope(
+    Guid TransactionId,
+    decimal AppliedAmount,
+    decimal ProductTotal,
+    DateTimeOffset CreatedAt);
 
 // Panel endpoint'leri ile uyumlu DTO'lar (WPF'in /api/panel/customers/{id}/balance
 // kullanması için).

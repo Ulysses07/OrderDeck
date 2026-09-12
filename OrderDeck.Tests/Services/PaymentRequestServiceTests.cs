@@ -103,6 +103,13 @@ public class PaymentRequestServiceTests : IDisposable
         public string? ApplyProblemTitle { get; set; }
         /// <summary>Apply çağrısı ağ hatası fırlatsın (gövde YİNE kaydedilir — istek tele çıktı).</summary>
         public bool ThrowTimeoutOnApply { get; set; }
+        /// <summary>R4-03: kapsam ucuna gelen sorgu dizgileri.</summary>
+        public List<string> ScopeQueries { get; } = new();
+        /// <summary>R4-03: kapsam ucunun döneceği gövde. null → 204 (kayıt yok).</summary>
+        public string? ScopeResponseJson { get; set; }
+        /// <summary>R4-03: kapsam ucu ağ hatası fırlatsın.</summary>
+        public bool ThrowOnScope { get; set; }
+
         /// <summary>Reverse çağrılarında yakalanan transactionId'ler.</summary>
         public List<Guid> ReverseCalls { get; } = new();
         public string? ReverseProblemTitle { get; set; }
@@ -154,6 +161,15 @@ public class PaymentRequestServiceTests : IDisposable
                 var body = await request.Content!.ReadAsStringAsync(cancellationToken);
                 lock (_sync) SentBodies.Add(body);
                 return Json(SendResponseJson, SendStatusCode);
+            }
+
+            if (path.EndsWith("/customer-balance/scope", StringComparison.Ordinal))
+            {
+                lock (_sync) ScopeQueries.Add(request.RequestUri!.Query);
+                if (ThrowOnScope) throw new TaskCanceledException("stub timeout");
+                return ScopeResponseJson is null
+                    ? new HttpResponseMessage(HttpStatusCode.NoContent)
+                    : Json(ScopeResponseJson);
             }
 
             if (path.EndsWith("/customer-balance/preview", StringComparison.Ordinal))
@@ -1332,5 +1348,109 @@ public class PaymentRequestServiceTests : IDisposable
             .Should().Be(PaymentRequestResult.BalanceUncertain);
 
         _launcher.LaunchedUrls.Should().BeEmpty();
+    }
+
+    // ── R4-03: satışın kalıcı kimliği (SaleScope) ────────────────────────
+
+    private static string ScopeJson(Guid tx, decimal applied, decimal total) => $$"""
+        {"transactionId":"{{tx}}",
+         "appliedAmount":{{applied.ToString(System.Globalization.CultureInfo.InvariantCulture)}},
+         "productTotal":{{total.ToString(System.Globalization.CultureInfo.InvariantCulture)}},
+         "createdAt":"2026-09-12T00:00:00+00:00"}
+        """;
+
+    [Fact] // R4-03 — düşüm gövdesi satışın kalıcı kimliğini taşır
+    public async Task OpenWhatsAppAsync_apply_govdesi_kapsam_anahtarini_tasir()
+    {
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+
+        await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1");
+
+        handler.AppliedBalanceBodies.Should().ContainSingle();
+        using var body = JsonDocument.Parse(handler.AppliedBalanceBodies[0]);
+        body.RootElement.GetProperty("saleScope").GetString().Should().Be("session:s1");
+    }
+
+    [Fact] // R4-03 — yedek geri yüklendi: yerel anahtar yok, sunucudaki düşüm benimsenir
+    public async Task OpenWhatsAppAsync_sunucuda_kapsam_dusumu_varsa_benimsenir_ikinci_kez_dusmez()
+    {
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        var tx = Guid.NewGuid();
+        handler.ScopeResponseJson = ScopeJson(tx, applied: 40m, total: 250m);
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.Opened);
+
+        handler.AppliedBalanceBodies.Should().BeEmpty(
+            "sunucu bu satışı zaten düşmüş — ikinci düşüm çifte tahsilat olurdu");
+        var job = _jobs.Snapshot.Single();
+        job.State.Should().Be(PaymentJobState.Applied);
+        job.ApplyKey.Should().Be(tx);
+        job.AppliedAmount.Should().Be(40m);
+    }
+
+    [Fact] // R4-03 — kapsam sorgusu doğru müşteri + kapsamla gider
+    public async Task OpenWhatsAppAsync_kapsam_sorgusu_musteri_ve_kapsami_tasir()
+    {
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+
+        await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1");
+
+        handler.ScopeQueries.Should().ContainSingle();
+        handler.ScopeQueries[0].Should().Contain("saleScope=session%3As1");
+    }
+
+    [Fact] // R4-03 — kapsam sorgusu düşerse akış BLOKLANMAZ (K2)
+    public async Task OpenWhatsAppAsync_kapsam_sorgusu_basarisizsa_bugunku_akis_surer()
+    {
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        handler.ThrowOnScope = true;
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.Opened);
+
+        handler.AppliedBalanceBodies.Should().ContainSingle(
+            "uzlaştırma sorulamadı diye R4-03 ÖNCESİ hiç var olmayan bir tıkanma yaratılmaz");
+        _jobs.Snapshot.Single().State.Should().Be(PaymentJobState.Applied);
+    }
+
+    [Fact] // R4-03 — anahtarı olan iş uzlaştırmaya hiç girmez
+    public async Task OpenWhatsAppAsync_anahtarli_is_kapsam_ucunu_sormaz()
+    {
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        SeedJob(customer.Id, PaymentJobState.Applied, 250m, 40m, Guid.NewGuid());
+
+        await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1");
+
+        handler.ScopeQueries.Should().BeEmpty("sonuç zaten yerelde — sormaya gerek yok");
+    }
+
+    [Fact] // R4-03 — benimsenen tutar, revizyon karşılaştırmasının girdisidir
+    public async Task OpenWhatsAppAsync_benimsenen_isin_toplami_degistiyse_revizyona_girer()
+    {
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        var tx = Guid.NewGuid();
+        handler.ScopeResponseJson = ScopeJson(tx, applied: 40m, total: 250m);
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+
+        // Yerelde 250 değil 300 isteniyor: benimsenen düşüm geri alınıp
+        // yeni tutarla yeniden uygulanmalı.
+        (await sut.OpenWhatsAppAsync(customer, 300m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.Opened);
+
+        handler.ReverseCalls.Should().ContainSingle().Which.Should().Be(tx);
+        handler.AppliedBalanceBodies.Should().ContainSingle();
+        _jobs.Snapshot.Single().ProductTotal.Should().Be(300m);
     }
 }
