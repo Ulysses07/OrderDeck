@@ -7,6 +7,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using OrderDeck.App.Services;
 using OrderDeck.Core.Customers;
+using OrderDeck.Core.Sessions;
 using OrderDeck.Core.Storage.Repositories;
 
 namespace OrderDeck.App.ViewModels;
@@ -102,6 +103,11 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
 
     private readonly Dictionary<string, decimal> _streamAmounts = new();
 
+    /// <summary>Liste kurulurken okunan "son biten yayın" — <see cref="_streamAmounts"/>
+    /// ile AYNI ANDA alınır ve ödeme tıklamasında da bu kullanılır (R4-08).
+    /// Tutar ile kapsam kimliğinin farklı yayınlara ait olması böyle engellenir.</summary>
+    private StreamSession? _listSession;
+
     public CustomerSearchViewModel(
         CustomerRepository customers,
         CustomerService customerService,
@@ -143,10 +149,15 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
         _streamAmounts.Clear();
         _resultsTruncated = false;
 
+        // R4-08: Yayın TEK KEZ, listeyle birlikte okunur. Ödeme tıklaması da
+        // bunu kullanır; ikinci bir GetLatestEnded() çağrısı tutarla kapsamı
+        // farklı yayınlara bağlayabiliyordu.
+        _listSession = _sessions.GetLatestEnded();
+
         if (LastStreamShoppersOnly)
         {
             var shoppers = _customerService.GetLastStreamShoppers();
-            var session = _sessions.GetLatestEnded();
+            var session = _listSession;
             if (session is not null)
             {
                 var top = _labels.GetTopCustomersBySession(session.Id, int.MaxValue);
@@ -264,50 +275,39 @@ public sealed partial class CustomerSearchViewModel : ViewModelBase
             _streamAmounts.TryGetValue(m.Id, out var perStream) ? perStream : 0m);
         var amount = streamSum > 0m ? streamSum : card.TotalAmount;
 
-        var session = _sessions.GetLatestEnded();
+        // R4-08: Yayın, listenin kurulduğu andaki ANLIK GÖRÜNTÜDEN okunur —
+        // burada yeniden GetLatestEnded() çağrılmaz. Eskiden iki ayrı okuma
+        // vardı: _streamAmounts liste kurulurken S1'den dolduruluyor, tıklamada
+        // ise güncel yayın (araya S2 bittiyse S2) okunuyordu. Sonuç, S1'in
+        // tutarının S2 kapsamına yazılmasıydı. Yeni iş kimliği modelinde kapsam
+        // sadece bir etiket değil, finansal işlemin KİMLİĞİ — tutar ve kimlik
+        // aynı kaynaktan gelmek zorunda. İşlem, operatörün ekranda gördüğü
+        // yayına (S1) gider; liste yenilendiğinde anlık görüntü de yenilenir.
+        var session = _listSession;
         var streamDate = session?.EndedAt is long ended
             ? DateTimeOffset.FromUnixTimeSeconds(ended).LocalDateTime
             : DateTime.Now;
 
         var result = await RequestPaymentAsync(customer);
 
+        // R4-07: Telefon diyaloğundan sonraki İKİNCİ çağrının sonucu da aynı
+        // bildirim yolundan geçmeli — eskiden dönüş değeri okunmuyordu ve o
+        // çağrı belirsiz/başarısız dönerse ekranda hiçbir şey olmuyordu.
         if (result == PaymentRequestResult.PhoneRequired)
         {
-            var saved = await _dialogService.ShowPhoneEntryAsync(customer.Id);
-            if (saved)
+            if (!await _dialogService.ShowPhoneEntryAsync(customer.Id)) return;
+
+            var updated = _customers.GetById(customer.Id);
+            if (updated is null)
             {
-                var updated = _customers.GetById(customer.Id);
-                if (updated is not null)
-                    await RequestPaymentAsync(updated);
+                _dialogService.ShowError("Müşteri kaydı bulunamadı.");
+                return;
             }
+
+            result = await RequestPaymentAsync(updated);
         }
-        else if (result == PaymentRequestResult.LaunchFailed)
-        {
-            _dialogService.ShowError("WhatsApp açılamadı. WhatsApp Desktop kurulu mu?");
-        }
-        else if (result == PaymentRequestResult.SendPending)
-        {
-            // Sunucu "aynı gönderim işleniyor" dedi: mesaj gitmiş de olabilir,
-            // hiç gitmemiş de. Sessiz kalırsak operatör gittiğini varsayar;
-            // otomatik wa.me açarsak çift mesaj riski var. Kararı ona bırakıyoruz.
-            _dialogService.ShowInfo(
-                "Gönderim işleniyor — WhatsApp'ta ulaştığını doğrulayın, aksi halde tekrar deneyin.");
-        }
-        else if (result == PaymentRequestResult.BalanceUncertain)
-        {
-            // R2-01..03: düşümün sonucu kesinleşmedi, mesaj GÖNDERİLMEDİ.
-            // Tekrar deneme aynı anahtarla replay yapar — çift düşüm imkânsız.
-            //
-            // Hata değil UYARI: kaybedilmiş bir işlem yok ve operatörün
-            // yapabileceği somut bir şey var. Kırmızı hata diyaloğu "bir şey
-            // bozuldu" izlenimi veriyordu; asıl endişeyi ("bakiye iki kez mi
-            // düştü?") metnin sonundaki güvence kapatıyor.
-            _dialogService.Show(
-                "Sunucudan kesin cevap alınamadı; mesaj gönderilmedi. " +
-                "Bağlantıyı kontrol edip tekrar deneyin — çift düşüm olmaz.",
-                "Bakiye doğrulanamadı",
-                DialogSeverity.Warning);
-        }
+
+        PaymentResultPresenter.Notify(_dialogService, result);
 
         // Kapsam: yayın-içi tutar kullanıldıysa satış o oturuma, değilse
         // müşterinin kümülatif bakiyesine aittir.
