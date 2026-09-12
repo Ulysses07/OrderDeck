@@ -10,6 +10,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Services.Backup;
 using OrderDeck.LicenseServer.Services.Email;
+using OrderDeck.Shared.Backup;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Backup;
@@ -78,7 +79,18 @@ public class BackupRestoreDrillJobTests : IDisposable
         {
             conn.Open();
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = "CREATE TABLE T (Id INTEGER PRIMARY KEY); INSERT INTO T VALUES (1)";
+            // R4-06: "geçerli blob" artık gerçekten geri yüklenebilir bir yedek
+            // olmak zorunda — kökte orderdeck.db girdisi, içinde _meta ve
+            // çekirdek tablolar. Eskiden tek tabloluk yabancı bir dosya da
+            // tatbikatı geçiyordu.
+            cmd.CommandText = @"
+                CREATE TABLE _meta (Id INTEGER PRIMARY KEY CHECK (Id = 1),
+                                    SchemaVersion INTEGER NOT NULL);
+                INSERT INTO _meta (Id, SchemaVersion) VALUES (1, 35);
+                CREATE TABLE Customer (Id TEXT PRIMARY KEY, Username TEXT);
+                CREATE TABLE StreamSession (Id TEXT PRIMARY KEY, Title TEXT);
+                CREATE TABLE Label (Id TEXT PRIMARY KEY, Price NUMERIC);
+                INSERT INTO Customer VALUES ('c1','alice');";
             cmd.ExecuteNonQuery();
         }
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
@@ -87,7 +99,7 @@ public class BackupRestoreDrillJobTests : IDisposable
         if (File.Exists(zipPath)) File.Delete(zipPath);
         using (var zip = ZipFile.Open(zipPath, ZipArchiveMode.Create))
         {
-            zip.CreateEntryFromFile(dbPath, "fixture.db");
+            zip.CreateEntryFromFile(dbPath, BackupArchive.DatabaseEntryName);
         }
         var plaintext = await File.ReadAllBytesAsync(zipPath);
         var (envelope, _) = svc.Encrypt(plaintext);

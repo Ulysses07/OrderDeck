@@ -6,6 +6,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Services.Backup;
+using OrderDeck.Shared.Backup;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Backup;
@@ -52,18 +53,37 @@ public class RestoreDrillCoreTests : IDisposable
             NullLogger<BackupStorageService>.Instance);
     }
 
-    private async Task<string> CreateBlobAsync(BackupStorageService svc, bool includeDb = true)
+    /// <summary>
+    /// Gerçek bir yedek arşivi üretir. <paramref name="entryName"/> ve
+    /// <paramref name="orderDeckSchema"/> ayrı parametreler çünkü R4-06'nın
+    /// ayırdığı iki kusur da bunlar: yanlış ADLA konulmuş dosya ve doğru adla
+    /// konulmuş YABANCI şema.
+    /// </summary>
+    private async Task<string> CreateBlobAsync(
+        BackupStorageService svc,
+        bool includeDb = true,
+        string entryName = BackupArchive.DatabaseEntryName,
+        bool orderDeckSchema = true)
     {
-        // Build a tiny SQLite db, zip it, encrypt the zip → write blob.
+        // Build a SQLite db, zip it, encrypt the zip → write blob.
         var dbPath = Path.Combine(_root, "fixture.db");
         if (includeDb)
         {
+            if (File.Exists(dbPath)) File.Delete(dbPath);
             using (var conn = new Microsoft.Data.Sqlite.SqliteConnection(
                 $"Data Source={dbPath};Pooling=false"))
             {
                 conn.Open();
                 using var cmd = conn.CreateCommand();
-                cmd.CommandText = "CREATE TABLE T (Id INTEGER PRIMARY KEY, V TEXT); INSERT INTO T VALUES (1,'a')";
+                cmd.CommandText = orderDeckSchema
+                    ? @"CREATE TABLE _meta (Id INTEGER PRIMARY KEY CHECK (Id = 1),
+                                            SchemaVersion INTEGER NOT NULL);
+                        INSERT INTO _meta (Id, SchemaVersion) VALUES (1, 35);
+                        CREATE TABLE Customer (Id TEXT PRIMARY KEY, Username TEXT);
+                        CREATE TABLE StreamSession (Id TEXT PRIMARY KEY, Title TEXT);
+                        CREATE TABLE Label (Id TEXT PRIMARY KEY, Price NUMERIC);
+                        INSERT INTO Customer VALUES ('c1','alice');"
+                    : "CREATE TABLE T (Id INTEGER PRIMARY KEY, V TEXT); INSERT INTO T VALUES (1,'a')";
                 cmd.ExecuteNonQuery();
             }
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
@@ -73,7 +93,7 @@ public class RestoreDrillCoreTests : IDisposable
         if (File.Exists(zipPath)) File.Delete(zipPath);
         using (var zip = ZipFile.Open(zipPath, ZipArchiveMode.Create))
         {
-            if (includeDb) zip.CreateEntryFromFile(dbPath, "fixture.db");
+            if (includeDb) zip.CreateEntryFromFile(dbPath, entryName);
             else zip.CreateEntry("placeholder.txt"); // empty entry, valid zip but no .db
         }
         var plaintext = await File.ReadAllBytesAsync(zipPath);
@@ -101,6 +121,51 @@ public class RestoreDrillCoreTests : IDisposable
         result.Steps.Should().Contain(s => s.Name == "ZIP integrity" && s.Ok);
         result.Steps.Should().Contain(s => s.Name == "SQLite open" && s.Ok);
         result.Steps.Should().Contain(s => s.Name == "SQLite integrity_check" && s.Ok);
+        result.Steps.Should().Contain(s => s.Name == "OrderDeck schema" && s.Ok);
+    }
+
+    /// <summary>
+    /// R4-06 sınır deneyi #1: sağlam ama BAŞKA ADLA konulmuş veritabanı.
+    /// Masaüstü geri yüklemesi arşivin kökündeki <c>orderdeck.db</c> girdisini
+    /// arıyor; bulamazsa çöküyor. Drill "ilk *.db"ye baktığı sürece bu yedeği
+    /// yeşil raporluyordu — yani gerçekte geri yüklenemeyen bir yedeğe
+    /// "tatbikat başarılı" deniyordu.
+    /// </summary>
+    [Fact]
+    public async Task RunAsync_with_db_under_wrong_entry_name_fails()
+    {
+        var svc = BuildService();
+        var blob = await CreateBlobAsync(svc, entryName: "foreign.db");
+        var workdir = Path.Combine(_root, "drill");
+        Directory.CreateDirectory(workdir);
+
+        var result = await RestoreDrillCore.RunAsync(svc, blob, keyVersion: 0, workdir);
+
+        result.Passed.Should().BeFalse(
+            "masaüstü kökteki orderdeck.db girdisini arıyor; başka bir sağlam dosya yetmez");
+        result.Steps.Should().Contain(s =>
+            s.Name == "SQLite" && !s.Ok && s.Message.Contains("orderdeck.db"));
+    }
+
+    /// <summary>
+    /// R4-06 sınır deneyi #2: doğru adla konulmuş ama YABANCI şema. Bu, daha
+    /// tehlikeli olanı: <c>PRAGMA integrity_check</c> "ok" diyor, masaüstü de
+    /// eskiden geri yüklemeyi BAŞARILI sayıp aktif veritabanının (Customer
+    /// tablosu dahil) yerine bunu koyuyordu.
+    /// </summary>
+    [Fact]
+    public async Task RunAsync_with_foreign_schema_fails_even_when_sqlite_is_sound()
+    {
+        var svc = BuildService();
+        var blob = await CreateBlobAsync(svc, orderDeckSchema: false);
+        var workdir = Path.Combine(_root, "drill");
+        Directory.CreateDirectory(workdir);
+
+        var result = await RestoreDrillCore.RunAsync(svc, blob, keyVersion: 0, workdir);
+
+        result.Passed.Should().BeFalse("sağlam SQLite, geçerli OrderDeck yedeği demek değil");
+        result.Steps.Should().Contain(s => s.Name == "SQLite integrity_check" && s.Ok);
+        result.Steps.Should().Contain(s => s.Name == "OrderDeck schema" && !s.Ok);
     }
 
     [Fact]
@@ -138,7 +203,8 @@ public class RestoreDrillCoreTests : IDisposable
         var result = await RestoreDrillCore.RunAsync(svc, blob, keyVersion: 0, workdir);
 
         result.Passed.Should().BeFalse("masaüstü bu arşivi restore edemez; drill de geçmemeli");
-        result.Steps.Should().Contain(s => s.Name == "SQLite" && !s.Ok && s.Message.Contains("No .db"));
+        result.Steps.Should().Contain(s =>
+            s.Name == "SQLite" && !s.Ok && s.Message.Contains("orderdeck.db"));
     }
 
     [Fact]

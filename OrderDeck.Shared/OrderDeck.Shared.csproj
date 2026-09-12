@@ -7,4 +7,10 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <WarningsNotAsErrors>CS1591</WarningsNotAsErrors>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Yedek sözleşmesi (BackupArchive) hem masaüstünde hem sunucuda AYNI
+         SQLite dosyasını denetliyor; iki taraf da bu paketi zaten taşıyordu. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+  </ItemGroup>
 </Project>
