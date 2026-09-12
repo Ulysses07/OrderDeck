@@ -18,6 +18,17 @@ public static class PaymentJobState
     public const string Applied = "applied";
     /// <summary>Sunucu kesin cevap verdi: bakiye yok / uygulanacak şey yok. AppliedAmount = 0.</summary>
     public const string NoBalance = "no_balance";
+
+    /// <summary>R4-02: eski düşümü geri alma NİYETİ diske indi, geri almanın
+    /// sonucu KESİNLEŞMEDİ. ApplyKey hâlâ geri alınacak işlemin anahtarıdır;
+    /// PendingTotal, geri alma kesinleşince geçilecek toplamdır.
+    ///
+    /// <para><see cref="ApplyUncertain"/>'den ayrı olmak zorunda: orada anahtar
+    /// replay edilmelidir, burada anahtar ARTIK GEÇERSİZ sayılıp önce geri alma
+    /// uzlaştırılmalıdır. İkisi aynı kutuda olduğu sürece, yeni isteğin toplamı
+    /// eski değere dönerse yarım kalmış geri alma görünmez olur ve geri alınmış
+    /// bir işlemin tutarı geçerli düşüm sayılır.</para></summary>
+    public const string ReversePending = "reverse_pending";
 }
 
 /// <summary>Bir "Ödeme iste" satışının kalıcı kimliği ve düşüm sonucu.
@@ -34,7 +45,10 @@ public sealed record PaymentJob(
     string State,
     long CreatedAt,
     long UpdatedAt,
-    long? ClosedAt);
+    long? ClosedAt,
+    /// <summary>R4-02: yalnız <see cref="PaymentJobState.ReversePending"/>
+    /// durumunda dolu — geri alma kesinleşince geçilecek toplam.</summary>
+    decimal? PendingTotal = null);
 
 /// <summary>R2-01..04: ödeme işi yaşam döngüsünün disk katmanı. Tüm geçişler
 /// koşullu UPDATE'lerle yarışa dayanıklı; servis katmanı false dönüşünde
@@ -85,6 +99,33 @@ public interface IPaymentJobStore
     /// sıfırlanır, durum apply_uncertain. Yalnız Revision == expectedRevision
     /// ise — false = eşzamanlı revizyon kazandı, yeniden oku.</summary>
     bool BeginRevision(string id, decimal newProductTotal, Guid newApplyKey, int expectedRevision);
+
+    /// <summary>R4-02 adım 1: geri alma NİYETİNİ diske indirir — istek tele
+    /// çıkmadan önce. Durum <see cref="PaymentJobState.ReversePending"/> olur,
+    /// <paramref name="targetTotal"/> PendingTotal'a yazılır, ApplyKey
+    /// DEĞİŞMEZ (geri alınacak işlem odur).
+    ///
+    /// <para>Niyetin önce yazılması meselenin tamamıdır: geri alma cevabı
+    /// kaybolsa bile sonraki deneme, isteğin toplamı eski değere dönmüş olsa
+    /// dahi, yarım kalmış geri almayı görür.</para>
+    ///
+    /// <para>Koşul <see cref="MarkApplied"/> ile aynı — bayat bir akış güncel
+    /// bir denemeyi geri almaya sokamaz. false = yeniden oku.</para></summary>
+    bool BeginReversal(string id, int expectedRevision, Guid expectedKey, decimal targetTotal);
+
+    /// <summary>R4-02 adım 2: geri alma KESİNLEŞTİ (200 ya da 409
+    /// already-reversed). İş "taze"ye döner: ProductTotal=PendingTotal,
+    /// Revision+1, ApplyKey=NULL, AppliedAmount=NULL, State=created,
+    /// PendingTotal=NULL, ClosedAt=NULL.
+    ///
+    /// <para>Revision artışı şart: uçuştaki eski apply cevapları R4-01 koşuluyla
+    /// bayatlar. ApplyKey'in NULL'lanması da şart — geri alınmış bir işlemin
+    /// anahtarı bir daha replay edilmemelidir; sunucu onun TARİHSEL sonucunu
+    /// döndürür ve geri alınmış tutar geçerli düşüm sanılır (§8'in ta kendisi).</para>
+    ///
+    /// <para>Yalnız iş hâlâ aynı denemenin reverse_pending'inde ise. false =
+    /// yeniden oku.</para></summary>
+    bool CompleteReversal(string id, int expectedRevision, Guid expectedKey);
 
     /// <summary>Legacy işin sonucunu (ApplyKey/AppliedAmount/State/ProductTotal)
     /// TAZE hedefe kopyalar ve legacy'yi kapatır — tek transaction. Hedef taze
@@ -245,6 +286,45 @@ public sealed class PaymentJobRepository : IPaymentJobStore
             }) == 1;
     }
 
+    public bool BeginReversal(string id, int expectedRevision, Guid expectedKey, decimal targetTotal)
+    {
+        using var conn = _factory.Open();
+        return conn.Execute(
+            "UPDATE PaymentJob SET State=@state, PendingTotal=@pending, UpdatedAt=@now" + StaleGuard,
+            new
+            {
+                id,
+                rev = expectedRevision,
+                key = KeyText(expectedKey),
+                state = PaymentJobState.ReversePending,
+                pending = Dec(targetTotal),
+                now = Now(),
+            }) == 1;
+    }
+
+    public bool CompleteReversal(string id, int expectedRevision, Guid expectedKey)
+    {
+        using var conn = _factory.Open();
+        // COALESCE: PendingTotal'ın boş olması imkânsız (BeginReversal onu yazar),
+        // ama boş olsaydı ProductTotal'ı NULL'lamak satırı okunamaz hâle
+        // getirirdi — eski toplamda kalmak tek güvenli düşüştür.
+        return conn.Execute(
+            @"UPDATE PaymentJob
+              SET ProductTotal=COALESCE(PendingTotal, ProductTotal), Revision=Revision+1,
+                  ApplyKey=NULL, AppliedAmount=NULL, State=@state,
+                  PendingTotal=NULL, ClosedAt=NULL, UpdatedAt=@now
+              WHERE Id=@id AND Revision=@rev AND ApplyKey IS @key AND State=@pending",
+            new
+            {
+                id,
+                rev = expectedRevision,
+                key = KeyText(expectedKey),
+                state = PaymentJobState.Created,
+                pending = PaymentJobState.ReversePending,
+                now = Now(),
+            }) == 1;
+    }
+
     public void AdoptLegacyResult(string targetId, string legacyId)
     {
         using var conn = _factory.Open();
@@ -269,7 +349,7 @@ public sealed class PaymentJobRepository : IPaymentJobStore
 
     private const string SelectSql =
         @"SELECT Id, CustomerId, ScopeKey, ProductTotal, Revision, ApplyKey,
-                 AppliedAmount, State, CreatedAt, UpdatedAt, ClosedAt
+                 AppliedAmount, State, CreatedAt, UpdatedAt, ClosedAt, PendingTotal
           FROM PaymentJob";
 
     private static PaymentJob Map(Row r) => new(
@@ -285,7 +365,10 @@ public sealed class PaymentJobRepository : IPaymentJobStore
         r.State,
         r.CreatedAt,
         r.UpdatedAt,
-        r.ClosedAt);
+        r.ClosedAt,
+        r.PendingTotal is null
+            ? null
+            : decimal.Parse(r.PendingTotal, CultureInfo.InvariantCulture));
 
     private sealed class Row
     {
@@ -300,5 +383,6 @@ public sealed class PaymentJobRepository : IPaymentJobStore
         public long CreatedAt { get; init; }
         public long UpdatedAt { get; init; }
         public long? ClosedAt { get; init; }
+        public string? PendingTotal { get; init; }
     }
 }
