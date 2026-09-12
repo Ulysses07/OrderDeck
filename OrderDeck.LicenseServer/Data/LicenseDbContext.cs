@@ -41,6 +41,7 @@ public class LicenseDbContext : DbContext
     public DbSet<ShopperRefreshToken> ShopperRefreshTokens => Set<ShopperRefreshToken>();
     public DbSet<ShopperSupportRequest> ShopperSupportRequests => Set<ShopperSupportRequest>();
     public DbSet<ShopperDeletionRequest> ShopperDeletionRequests => Set<ShopperDeletionRequest>();
+    public DbSet<OrphanedMediaObject> OrphanedMediaObjects => Set<OrphanedMediaObject>();
     public DbSet<CustomerBalance> CustomerBalances => Set<CustomerBalance>();
     public DbSet<CustomerBalanceTransaction> CustomerBalanceTransactions => Set<CustomerBalanceTransaction>();
     public DbSet<ShopperPasswordResetCode> ShopperPasswordResetCodes => Set<ShopperPasswordResetCode>();
@@ -582,6 +583,20 @@ public class LicenseDbContext : DbContext
             b.HasIndex(r => r.ShopperId)
              .HasFilter("[HandledAt] IS NULL")
              .IsUnique();
+        });
+
+        mb.Entity<OrphanedMediaObject>(b =>
+        {
+            b.HasKey(o => o.Id);
+            b.Property(o => o.ObjectKey).HasMaxLength(512).IsRequired();
+            b.Property(o => o.LastError).HasMaxLength(1024);
+            // Tekil anahtar: aynı nesne için ikinci bir kuyruk satırı açılmaz,
+            // var olan satırın deneme sayacı artar. Aksi hâlde her purge
+            // tekrarı kuyruğa kopya ekler ve "kaç nesne yetim" sorusunun
+            // cevabı şişerdi.
+            b.HasIndex(o => o.ObjectKey).IsUnique();
+            // Temizlik işinin taradığı liste: silinmemişler, en eskiden yeniye.
+            b.HasIndex(o => new { o.DeletedAt, o.LastAttemptAt });
         });
 
         mb.Entity<ShopperPasswordResetCode>(b =>

@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
 
 namespace OrderDeck.LicenseServer.Services.Shoppers;
@@ -9,12 +10,27 @@ public sealed record ShopperPurgeResult(
     int PaymentsScrubbed,
     int PdfsDeleted,
     int ProjectionsScrubbed,
-    int DependentRowsDeleted)
+    int DependentRowsDeleted,
+    int PdfsPending)
 {
-    public string ToNote() =>
-        $"{PaymentsScrubbed} ödeme temizlendi, {PdfsDeleted} dekont silindi, "
-        + $"{ProjectionsScrubbed} yayıncı kopyası temizlendi, "
-        + $"{DependentRowsDeleted} bağlı satır silindi.";
+    /// <summary>
+    /// Kovadaki her nesne gerçekten silindi mi. <c>false</c> ise silme
+    /// KAPANMAMIŞ demektir; yönetim ekranı bunu toplam başarı gibi
+    /// göstermemeli.
+    /// </summary>
+    public bool FullyCompleted => PdfsPending == 0;
+
+    public string ToNote()
+    {
+        var note =
+            $"{PaymentsScrubbed} ödeme temizlendi, {PdfsDeleted} dekont silindi, "
+            + $"{ProjectionsScrubbed} yayıncı kopyası temizlendi, "
+            + $"{DependentRowsDeleted} bağlı satır silindi.";
+        if (PdfsPending > 0)
+            note += $" {PdfsPending} dekont depodan silinemedi, "
+                + "temizlik kuyruğunda yeniden denenecek.";
+        return note;
+    }
 }
 
 /// <summary>
@@ -65,24 +81,74 @@ public sealed class ShopperPurgeService
             .Where(p => p.ShopperId == shopperId)
             .ToListAsync(ct);
 
-        var pdfsDeleted = 0;
+        // R4-05: önceki purge'de silinemeyip kuyruğa alınmış anahtarlar da bu
+        // tura dahil. Eskiden niyet yalnız log'a yazılıyordu; ödemedeki anahtar
+        // koşulsuz boşaltıldığı için purge tekrarlansa bile silinecek bir şey
+        // kalmıyordu — nesne kovada süresiz duruyordu.
+        var queued = await _db.OrphanedMediaObjects
+            .Where(o => o.ShopperId == shopperId && o.DeletedAt == null)
+            .ToListAsync(ct);
+
+        var targets = new Dictionary<string, (Guid? PaymentId, OrphanedMediaObject? Row)>(
+            StringComparer.Ordinal);
         foreach (var p in payments.Where(p => p.MediaObjectKey is not null))
+            targets[p.MediaObjectKey!] = (p.Id, null);
+        foreach (var o in queued)
+            targets[o.ObjectKey] = (
+                targets.TryGetValue(o.ObjectKey, out var t) ? t.PaymentId ?? o.PaymentId : o.PaymentId,
+                o);
+
+        var pdfsDeleted = 0;
+        var pendingRows = new List<OrphanedMediaObject>();
+        foreach (var (key, target) in targets)
         {
+            var row = target.Row;
             try
             {
-                await _storage.DeleteAsync(p.MediaObjectKey!, ct);
+                await _storage.DeleteAsync(key, ct);
                 pdfsDeleted++;
+                if (row is not null)
+                {
+                    row.AttemptCount++;
+                    row.LastAttemptAt = now;
+                    row.LastError = null;
+                    row.DeletedAt = now;   // gerçek silme onayı
+                }
             }
             catch (Exception ex)
             {
                 // Tek bir nesnenin silinememesi tüm purge'ü durdurmamalı;
-                // kalan kişisel veriyi temizlemek daha acil. Yetim nesne
-                // loglanıyor, kovadan elle temizlenebilir.
+                // kalan kişisel veriyi temizlemek daha acil. Ama niyet
+                // kaybolmamalı: anahtar sınırlı erişimli temizlik kuyruğunda
+                // yaşamaya devam ediyor ve OrphanedMediaCleanupJob yeniden
+                // deniyor.
                 _log.LogError(ex,
                     "[ShopperPurge] R2 nesnesi silinemedi: {Key} (shopper {ShopperId})",
-                    p.MediaObjectKey, shopperId);
+                    key, shopperId);
+
+                if (row is null)
+                {
+                    row = new OrphanedMediaObject
+                    {
+                        Id = Guid.NewGuid(),
+                        ObjectKey = key,
+                        ShopperId = shopperId,
+                        PaymentId = target.PaymentId,
+                        CreatedAt = now,
+                    };
+                    _db.OrphanedMediaObjects.Add(row);
+                }
+                row.AttemptCount++;
+                row.LastAttemptAt = now;
+                row.LastError = OrphanedMedia.TruncateError(ex.Message);
+                pendingRows.Add(row);
             }
         }
+
+        var pendingPaymentIds = pendingRows
+            .Where(r => r.PaymentId is not null)
+            .Select(r => r.PaymentId!.Value)
+            .ToHashSet();
 
         // 2. Ödeme satırlarındaki kişisel alanlar. Tutar, tarih, referans no
         //    ve hash'ler kalıyor (sınıf özetindeki gerekçe).
@@ -93,8 +159,13 @@ public sealed class ShopperPurgeService
             p.RecipientName = null;
             p.MediaObjectKey = null;
             p.MediaContentType = null;
-            p.PdfPurgedAt = now;
             p.UpdatedAt = now;
+
+            // Damga YALNIZCA silinecek bir şey kalmadığında. Dosya hâlâ
+            // kovadayken "dekont silindi" demek, kimsenin bir daha
+            // sorgulamayacağı kalıcı bir yalan üretiyordu.
+            if (!pendingPaymentIds.Contains(p.Id))
+                p.PdfPurgedAt = now;
         }
 
         // 3. Yayıncıya açık olan sunucu kopyası. PurgedAt damgası şart:
@@ -191,6 +262,7 @@ public sealed class ShopperPurgeService
             PaymentsScrubbed: payments.Count,
             PdfsDeleted: pdfsDeleted,
             ProjectionsScrubbed: projections.Count,
-            DependentRowsDeleted: dependents);
+            DependentRowsDeleted: dependents,
+            PdfsPending: pendingRows.Count);
     }
 }
