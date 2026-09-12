@@ -45,11 +45,14 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
         lock (_gate) return _jobs.GetValueOrDefault(id);
     }
 
-    public PaymentJob? GetOpenLegacy(string customerId)
+    public IReadOnlyList<PaymentJob> GetOpenLegacies(string customerId)
     {
         lock (_gate)
-            return _jobs.Values.FirstOrDefault(j =>
-                j.CustomerId == customerId && j.ScopeKey == "legacy" && j.ClosedAt is null);
+            return _jobs.Values
+                .Where(j => j.CustomerId == customerId && j.ClosedAt is null
+                            && (j.ScopeKey == "legacy" || j.ScopeKey.StartsWith("legacy:", StringComparison.Ordinal)))
+                .OrderByDescending(j => j.CreatedAt).ThenByDescending(j => j.Id, StringComparer.Ordinal)
+                .ToList();
     }
 
     public bool BeginApply(string id, Guid applyKey)

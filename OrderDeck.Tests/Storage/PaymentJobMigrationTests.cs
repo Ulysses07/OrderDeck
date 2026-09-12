@@ -49,8 +49,12 @@ public sealed class PaymentJobMigrationTests
             new { k = key.ToString("N"), c = customerId, t = total, at = createdAt, r = resolvedAt });
     }
 
+    // R4-04: eskiden müşteri başına yalnız EN YENİ çözülmemiş anahtar taşınıyor,
+    // daha eskileri atılıyordu. Atılan anahtar sunucuda ledger PK olarak durur:
+    // geçmişte fazla düşüm olduysa yerelde İZ KALMAZ ve PendingBalanceApply
+    // hemen DROP edildiği için sonraki bir göç de kurtaramaz. Hepsi taşınmalı.
     [Fact]
-    public void Migration034_CozulmemisEnYeniKayit_LegacyIsineTasinir()
+    public void Migration034_CozulmemisTumKayitlar_AyriLegacyIslerineTasinir()
     {
         var fx = new InMemorySqlite();
         new MigrationRunner(fx, EmbeddedScriptsUpTo(33)).Run();
@@ -60,7 +64,7 @@ public sealed class PaymentJobMigrationTests
         var cozulmusKey = Guid.NewGuid();
         var digerKey = Guid.NewGuid();
         SeedPending(fx, "c1", eskiKey, "100.5", createdAt: 100, resolvedAt: null);
-        SeedPending(fx, "c1", yeniKey, "250.75", createdAt: 200, resolvedAt: null); // en yeni → taşınır
+        SeedPending(fx, "c1", yeniKey, "250.75", createdAt: 200, resolvedAt: null);
         SeedPending(fx, "c1", cozulmusKey, "50", createdAt: 300, resolvedAt: 301);  // çözülmüş → atılır
         SeedPending(fx, "c2", digerKey, "10", createdAt: 150, resolvedAt: null);
 
@@ -70,18 +74,27 @@ public sealed class PaymentJobMigrationTests
         var rows = conn.Query<(string CustomerId, string ScopeKey, string ProductTotal,
                 string? ApplyKey, string State, long CreatedAt)>(
             @"SELECT CustomerId, ScopeKey, ProductTotal, ApplyKey, State, CreatedAt
-              FROM PaymentJob ORDER BY CustomerId").ToList();
+              FROM PaymentJob ORDER BY CustomerId, CreatedAt").ToList();
 
-        rows.Should().HaveCount(2); // müşteri başına EN YENİ çözülmemiş satır
-        var c1 = rows[0];
-        c1.CustomerId.Should().Be("c1");
-        c1.ScopeKey.Should().Be("legacy");
-        c1.ProductTotal.Should().Be("250.75");
-        c1.ApplyKey.Should().Be(yeniKey.ToString("N"));
-        c1.State.Should().Be("apply_uncertain");
-        c1.CreatedAt.Should().Be(200);
-        rows[1].CustomerId.Should().Be("c2");
-        rows[1].ApplyKey.Should().Be(digerKey.ToString("N"));
+        // Çözülmüş kayıt atılır; çözülmemişlerin HEPSİ kalır.
+        rows.Should().HaveCount(3);
+
+        var c1Eski = rows[0];
+        c1Eski.CustomerId.Should().Be("c1");
+        c1Eski.ScopeKey.Should().Be($"legacy:{eskiKey:N}");
+        c1Eski.ProductTotal.Should().Be("100.5");
+        c1Eski.ApplyKey.Should().Be(eskiKey.ToString("N"));
+        c1Eski.State.Should().Be("apply_uncertain");
+        c1Eski.CreatedAt.Should().Be(100);
+
+        var c1Yeni = rows[1];
+        c1Yeni.ScopeKey.Should().Be($"legacy:{yeniKey:N}");
+        c1Yeni.ProductTotal.Should().Be("250.75");
+        c1Yeni.ApplyKey.Should().Be(yeniKey.ToString("N"));
+        c1Yeni.CreatedAt.Should().Be(200);
+
+        rows[2].CustomerId.Should().Be("c2");
+        rows[2].ApplyKey.Should().Be(digerKey.ToString("N"));
 
         // Eski tablo düşmüş olmalı.
         var eskiTablo = conn.ExecuteScalar<long>(

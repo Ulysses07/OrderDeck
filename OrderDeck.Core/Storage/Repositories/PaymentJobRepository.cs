@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using Dapper;
 
 namespace OrderDeck.Core.Storage.Repositories;
@@ -45,8 +47,10 @@ public interface IPaymentJobStore
 
     PaymentJob? Get(string id);
 
-    /// <summary>033'ten taşınan, henüz kapanmamış 'legacy' işi; yoksa null.</summary>
-    PaymentJob? GetOpenLegacy(string customerId);
+    /// <summary>033'ten taşınan, henüz kapanmamış TÜM miras işleri — en yeniden
+    /// eskiye. R4-04: müşteri başına birden fazla olabilir; hepsinin sonucu
+    /// öğrenilmeden yeni satışa geçilemez.</summary>
+    IReadOnlyList<PaymentJob> GetOpenLegacies(string customerId);
 
     /// <summary>Anahtarı diske indirir ve işi apply_uncertain'e geçirir —
     /// yalnız anahtar HENÜZ yoksa. false = yarışı kaybettik; yeniden oku,
@@ -121,13 +125,17 @@ public sealed class PaymentJobRepository : IPaymentJobStore
         return row is null ? null : Map(row);
     }
 
-    public PaymentJob? GetOpenLegacy(string customerId)
+    public IReadOnlyList<PaymentJob> GetOpenLegacies(string customerId)
     {
         using var conn = _factory.Open();
-        var row = conn.QueryFirstOrDefault<Row>(
-            SelectSql + " WHERE CustomerId=@customerId AND ScopeKey='legacy' AND ClosedAt IS NULL",
-            new { customerId });
-        return row is null ? null : Map(row);
+        // 'legacy' (anahtar başına benzersizleştirmeden önce göç edilmiş
+        // geliştirme veritabanları) ve 'legacy:{anahtar}' birlikte taranır.
+        return conn.Query<Row>(
+            SelectSql + @" WHERE CustomerId=@customerId AND ClosedAt IS NULL
+                             AND (ScopeKey='legacy' OR ScopeKey LIKE 'legacy:%')
+                           ORDER BY CreatedAt DESC, Id DESC",
+            new { customerId })
+            .Select(Map).ToList();
     }
 
     public bool BeginApply(string id, Guid applyKey)

@@ -6,7 +6,8 @@
 --
 --   created → apply_uncertain → applied | no_balance ; teslimatta ClosedAt dolar.
 --
--- Kapsam (CustomerId, ScopeKey) UNIQUE: "session:{id}" | "cumulative" | "legacy".
+-- Kapsam (CustomerId, ScopeKey) UNIQUE: "session:{id}" | "cumulative" |
+-- "legacy:{IdempotencyKey}".
 -- INSERT OR IGNORE + bu indeks = atomik find-or-create (R2-04 TOCTOU ölür).
 --
 -- ProductTotal / AppliedAmount TEXT: invariant kültür ondalık — REAL, eşitlik
@@ -28,24 +29,29 @@ CREATE TABLE PaymentJob (
 
 CREATE UNIQUE INDEX UX_PaymentJob_Scope ON PaymentJob(CustomerId, ScopeKey);
 
--- Miras taşıma: her müşterinin EN YENİ çözülmemiş 033 kaydı 'legacy' işine
--- döner. Durum apply_uncertain: anahtar sunucuda kullanılmış olabilir; ilk
--- "Ödeme iste"de replay gerçeği öğrenir (bkz. servis, legacy devralma).
--- Daha eski çözülmemiş kayıtlar bilerek atılır: 033 akışı zaten müşteri başına
--- tek çözülmemiş kayıt vaat ediyordu; birden fazlası ancak yarım kalmış eski
--- denemedir ve anahtarları sunucuda ledger PK olarak duruyor — tekrar
--- kullanılmadıkça zararsız.
+-- Miras taşıma: her çözülmemiş 033 kaydı KENDİ 'legacy:{anahtar}' işine döner.
+-- Durum apply_uncertain: anahtar sunucuda kullanılmış olabilir; ilk "Ödeme
+-- iste"de replay gerçeği öğrenir (bkz. servis, legacy devralma).
+--
+-- R4-04 (2026-09-12): eskiden yalnız EN YENİ çözülmemiş kayıt taşınıyor, daha
+-- eskileri "033 zaten müşteri başına tek kayıt vaat ediyordu" gerekçesiyle
+-- atılıyordu. O vaat tutmuyor — R2-04 aynı müşteride iki anahtar oluşabildiğini
+-- gösterdi. Atılan anahtar sunucuda ledger PK olarak durduğundan geçmişte fazla
+-- düşüm olmuş olabilir ve yerelde İZİ KALMAZ: sonucu öğrenecek, geri alacak ya
+-- da operatöre gösterecek hiçbir kayıt yoktur. Bu tablo hemen aşağıda DROP
+-- ediliyor, yani sonraki bir göç kurtaramaz — koruma burada olmak zorunda.
+--
+-- Kapsam anahtarın kendisiyle benzersizleştiriliyor: UNIQUE (CustomerId,
+-- ScopeKey) indeksi aynı müşterinin iki miras işini ancak böyle yan yana
+-- tutabilir ve kapsam metni, uzlaştırılacak anahtarı doğrudan söyler.
 INSERT INTO PaymentJob
     (Id, CustomerId, ScopeKey, ProductTotal, Revision, ApplyKey, AppliedAmount,
      State, CreatedAt, UpdatedAt, ClosedAt)
-SELECT lower(hex(randomblob(16))), p.CustomerId, 'legacy', p.ProductTotal, 0,
-       p.IdempotencyKey, NULL, 'apply_uncertain', p.CreatedAt, p.CreatedAt, NULL
+SELECT lower(hex(randomblob(16))), p.CustomerId, 'legacy:' || p.IdempotencyKey,
+       p.ProductTotal, 0, p.IdempotencyKey, NULL, 'apply_uncertain',
+       p.CreatedAt, p.CreatedAt, NULL
 FROM PendingBalanceApply p
-WHERE p.ResolvedAt IS NULL
-  AND p.rowid IN (
-      SELECT p2.rowid FROM PendingBalanceApply p2
-      WHERE p2.CustomerId = p.CustomerId AND p2.ResolvedAt IS NULL
-      ORDER BY p2.CreatedAt DESC, p2.rowid DESC LIMIT 1);
+WHERE p.ResolvedAt IS NULL;
 
 DROP TABLE PendingBalanceApply;
 

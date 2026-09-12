@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Linq;
@@ -271,7 +271,7 @@ public sealed class PaymentRequestService
 
         // Açık miras (033→034) iş: anahtarı var, sonucu bilinmiyor. Hangi
         // satışa ait olduğu da belirsiz — kesinleştirmeden devam edilemez.
-        if (_jobs.GetOpenLegacy(customer.Id) is not null)
+        if (_jobs.GetOpenLegacies(customer.Id).Count > 0)
             return new(Uncertain: true, 0m, null);
 
         var job = _jobs.FindOrCreate(customer.Id, scopeKey, totalAmount);
@@ -308,34 +308,52 @@ public sealed class PaymentRequestService
             if (licenseId is null)
                 return OfflineOutcome(customer, totalAmount, scopeKey);
 
-            // 1) Miras (033→034) işi: önce kesinleştir, sonucu bu satışa devret.
-            var legacy = _jobs.GetOpenLegacy(customer.Id);
+            // 1) Miras (033→034) işleri: önce HEPSİNİ kesinleştir, sonra devret.
+            //
+            // R4-04: müşteri başına birden fazla açık miras anahtarı olabilir
+            // (R2-04 bunun oluşabildiğini gösterdi). Her birinin sonucu ayrı
+            // öğrenilmeli; biri bile belirsiz kalırsa akış durur — yoksa
+            // sunucudaki fazla düşümü hiç göremeden yeni satış açmış oluruz.
+            var legacies = _jobs.GetOpenLegacies(customer.Id);
             PaymentJob job;
-            if (legacy is not null)
+            if (legacies.Count > 0)
             {
-                legacy = await ReplayAsync(licenseId.Value, wpfCustomerId, legacy, ct);
-                if (legacy.State == PaymentJobState.ApplyUncertain)
-                    return new(true, 0m, legacy);
+                var resolved = new List<PaymentJob>(legacies.Count);
+                foreach (var l in legacies)
+                {
+                    var r = await ReplayAsync(licenseId.Value, wpfCustomerId, l, ct);
+                    if (r.State == PaymentJobState.ApplyUncertain)
+                        return new(true, 0m, r);
+                    resolved.Add(r);
+                }
 
                 job = _jobs.FindOrCreate(customer.Id, scopeKey, totalAmount);
-                if (job.State == PaymentJobState.Created && job.ApplyKey is null)
+
+                // Devralma en fazla BİR miras işine uygulanabilir: taze hedef
+                // tek bir anahtar taşır. En yenisi seçilir — 033 akışında bu
+                // satışa en yakın olan odur; kalanlar artık düşüm sayılır.
+                var adopted = job.State == PaymentJobState.Created && job.ApplyKey is null
+                    ? resolved[0]
+                    : null;
+                if (adopted is not null)
+                    _jobs.AdoptLegacyResult(job.Id, adopted.Id);
+
+                foreach (var l in resolved)
                 {
-                    // Taze hedef: miras sonucu (anahtar+tutar+durum) devralır;
-                    // tutar farklıysa aşağıdaki revizyon adımı düzeltir.
-                    _jobs.AdoptLegacyResult(job.Id, legacy.Id);
-                }
-                else
-                {
-                    // Hedef iş kendi hayatını yaşıyor — miras düşümü artıksa
-                    // geri al, işi kapat.
-                    if (legacy.AppliedAmount is > 0m
-                        && !await TryReverseAsync(licenseId.Value, legacy.ApplyKey!.Value, ct))
+                    if (adopted is not null && l.Id == adopted.Id) continue;
+
+                    // Devralınmayan miras düşümü artık: geri al, işi kapat.
+                    // Geri alma kesinleşmezse iş AÇIK kalır ve akış durur —
+                    // kapatmak, bilinmeyen bir düşümü sessizce gömmek olurdu.
+                    if (l.AppliedAmount is > 0m
+                        && !await TryReverseAsync(licenseId.Value, l.ApplyKey!.Value, ct))
                     {
-                        _jobs.MarkUncertain(legacy.Id);
-                        return new(true, 0m, legacy);
+                        _jobs.MarkUncertain(l.Id);
+                        return new(true, 0m, l);
                     }
-                    _jobs.Close(legacy.Id);
+                    _jobs.Close(l.Id);
                 }
+
                 job = _jobs.Get(job.Id)!;
             }
             else
