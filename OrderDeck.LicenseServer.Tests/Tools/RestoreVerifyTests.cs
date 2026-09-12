@@ -4,6 +4,7 @@ using System.IO.Compression;
 using System.Threading.Tasks;
 using FluentAssertions;
 using OrderDeck.LicenseServer.Tools;
+using OrderDeck.Shared.Backup;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Tools;
@@ -137,11 +138,13 @@ public class RestoreVerifyTests : IDisposable
         var blobsDir = Path.Combine(_workdir, "blobs");
         Directory.CreateDirectory(blobsDir);
 
-        // 1. Tiny SQLite db with one table + one row, so the integrity check
-        //    has something to look at.
+        // 1. Tiny SQLite db. R4-06: "sağlam SQLite" artık yetmiyor — drill,
+        //    masaüstünün geri yükleyeceği sözleşmeyi arıyor: arşivin KÖKÜNDE
+        //    orderdeck.db girdisi, içinde _meta + çekirdek tablolar.
         var dbPath = Path.Combine(_workdir, "fixture.db");
         if (includeDb)
         {
+            if (File.Exists(dbPath)) File.Delete(dbPath);
             // Pooling=false so we don't keep an OS handle on dbPath after
             // the using block — otherwise the subsequent CreateEntryFromFile
             // call below races against SQLite's pooled connection holding
@@ -150,16 +153,16 @@ public class RestoreVerifyTests : IDisposable
                 $"Data Source={dbPath};Pooling=false"))
             {
                 conn.Open();
-                using (var cmd = conn.CreateCommand())
-                {
-                    cmd.CommandText = "CREATE TABLE Customer (Id INTEGER PRIMARY KEY, Email TEXT)";
-                    cmd.ExecuteNonQuery();
-                }
-                using (var cmd = conn.CreateCommand())
-                {
-                    cmd.CommandText = "INSERT INTO Customer (Id, Email) VALUES (1, 'test@example.com')";
-                    cmd.ExecuteNonQuery();
-                }
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = @"
+                    CREATE TABLE _meta (Id INTEGER PRIMARY KEY CHECK (Id = 1),
+                                        SchemaVersion INTEGER NOT NULL);
+                    INSERT INTO _meta (Id, SchemaVersion) VALUES (1, 35);
+                    CREATE TABLE Customer (Id TEXT PRIMARY KEY, Username TEXT);
+                    CREATE TABLE StreamSession (Id TEXT PRIMARY KEY, Title TEXT);
+                    CREATE TABLE Label (Id TEXT PRIMARY KEY, Price NUMERIC);
+                    INSERT INTO Customer VALUES ('c1','alice');";
+                cmd.ExecuteNonQuery();
             }
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
         }
@@ -169,7 +172,8 @@ public class RestoreVerifyTests : IDisposable
         if (File.Exists(zipPath)) File.Delete(zipPath);
         using (var zip = ZipFile.Open(zipPath, ZipArchiveMode.Create))
         {
-            if (includeDb) zip.CreateEntryFromFile(dbPath, "fixture.db");
+            if (includeDb)
+                zip.CreateEntryFromFile(dbPath, BackupArchive.DatabaseEntryName);
         }
         var plaintext = await File.ReadAllBytesAsync(zipPath);
 
