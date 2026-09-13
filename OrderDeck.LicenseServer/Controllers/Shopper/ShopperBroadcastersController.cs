@@ -101,7 +101,8 @@ public sealed class ShopperBroadcastersController : ControllerBase
                         p.Platform == platformNorm &&
                         p.Username == usernameNorm)
             .ToListAsync(ct);
-        var wpfMatch = WpfCustomerLinkMatcher.FindProven(candidates, shopper.Phone);
+        var wpfMatch = WpfCustomerLinkMatcher.FindProven(
+            candidates, shopper.Phone, shopper.PhoneVerifiedAt);
 
         // 7. Insert new link
         var link = new ShopperBroadcasterLink

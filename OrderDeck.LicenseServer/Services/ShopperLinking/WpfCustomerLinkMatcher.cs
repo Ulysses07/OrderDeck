@@ -43,16 +43,22 @@ public static class WpfCustomerLinkMatcher
     /// </summary>
     public static WpfCustomerProjection? FindProven(
         IEnumerable<WpfCustomerProjection> candidates,
-        string shopperPhone)
-        => candidates.FirstOrDefault(c => PhoneProves(c.Phone, shopperPhone));
+        string shopperPhone,
+        DateTimeOffset? phoneVerifiedAt)
+        => candidates.FirstOrDefault(c => PhoneProves(
+            c.Phone, shopperPhone, phoneVerifiedAt));
 
     /// <summary>
-    /// Kuralın kendisi: yayıncı tarafındaki telefon ile shopper'ın telefonu aynı
-    /// kişiye mi ait? Her iki taraf da boş/geçersiz olabilir; o durumda kanıt
-    /// yoktur (<c>false</c>).
+    /// Kuralın kendisi: shopper telefonunun OTP ile doğrulanmış olması ve
+    /// yayıncı tarafındaki normalize edilmiş telefonla eşleşmesi gerekir.
+    /// Telefonlardan biri boş/geçersizse veya doğrulama yoksa kanıt yoktur.
     /// </summary>
-    public static bool PhoneProves(string? broadcasterSidePhone, string? shopperPhone)
-        => PhoneNormalizer.TryNormalize(shopperPhone, out var shopperNorm)
+    public static bool PhoneProves(
+        string? broadcasterSidePhone,
+        string? shopperPhone,
+        DateTimeOffset? phoneVerifiedAt)
+        => phoneVerifiedAt is not null
+           && PhoneNormalizer.TryNormalize(shopperPhone, out var shopperNorm)
            && PhoneNormalizer.TryNormalize(broadcasterSidePhone, out var candidateNorm)
            && candidateNorm == shopperNorm;
 }

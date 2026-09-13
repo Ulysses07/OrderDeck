@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Sms;
 
 namespace OrderDeck.LicenseServer.Controllers.Panel;
 
@@ -10,9 +11,8 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 /// Yayıncı paneli — shopper destek talepleri (Faz 0b-1: forgot-password).
 /// Shopper "Parolamı unuttum" derse server <see cref="Domain.ShopperSupportRequest"/>
 /// satırı oluşturur (Bağlı her aktif yayıncı için bir tane). Yayıncı bu listeyi
-/// görür, "Geçici parola gönder" der; server random parola üretir, shopper'ın
-/// PasswordHash'ini günceller, plaintext parolayı sadece bu response'ta döner.
-/// Yayıncı parolayı kendi WhatsApp'ından shopper'a mesaj atar.
+/// görür ve doğrulanmış telefon kanalına kurtarma kodu gönderilmesini başlatır.
+/// Yayıncı global shopper parolasını veya normal erişim token'ını alamaz.
 /// </summary>
 [ApiController]
 [Route("api/panel/support-requests")]
@@ -20,15 +20,23 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 public sealed class PanelSupportRequestsController : ControllerBase
 {
     private readonly LicenseDbContext _db;
-    private readonly PasswordHasher _hasher;
+    private readonly PasswordResetCodeService _resetCodes;
     private readonly ShopperRefreshTokenService _refresh;
+    private readonly ISmsSender _sms;
+    private readonly ILogger<PanelSupportRequestsController> _log;
 
     public PanelSupportRequestsController(
-        LicenseDbContext db, PasswordHasher hasher, ShopperRefreshTokenService refresh)
+        LicenseDbContext db,
+        PasswordResetCodeService resetCodes,
+        ShopperRefreshTokenService refresh,
+        ISmsSender sms,
+        ILogger<PanelSupportRequestsController> log)
     {
         _db = db;
-        _hasher = hasher;
+        _resetCodes = resetCodes;
         _refresh = refresh;
+        _sms = sms;
+        _log = log;
     }
 
     public sealed record SupportRequestDto(
@@ -75,9 +83,9 @@ public sealed class PanelSupportRequestsController : ControllerBase
         return Ok(rows);
     }
 
-    // ── POST — geçici parola üret + shopper hash'ini güncelle ───────────────
+    // ── POST — doğrulanmış telefon kanalına kurtarma kodu gönder ────────────
 
-    public sealed record IssueTempPasswordResponse(string TempPassword);
+    public sealed record IssueTempPasswordResponse(string? TempPassword, string Status);
 
     [HttpPost("{id:guid}/issue-temp-password")]
     public async Task<IActionResult> IssueTempPassword(Guid id, CancellationToken ct)
@@ -99,11 +107,31 @@ public sealed class PanelSupportRequestsController : ControllerBase
         if (request.Shopper.DeletedAt is not null)
             return Problem(title: "shopper-deleted", statusCode: 409);
 
-        var tempPassword = GenerateTempPassword();
-        var now = DateTimeOffset.UtcNow;
+        var issued = await _resetCodes.IssueWithHandleAsync(
+            request.Shopper,
+            HttpContext.Connection.RemoteIpAddress?.ToString(),
+            ct);
+        if (issued is null)
+            return Problem(title: "recovery-unavailable", statusCode: 429);
 
-        request.Shopper.PasswordHash = _hasher.Hash(tempPassword);
-        request.Shopper.UpdatedAt = now;
+        var message = $"OrderDeck dogrulama kodunuz: {issued.Code}. Kod 10 dakika gecerli.";
+        try
+        {
+            await _sms.SendAsync(
+                request.Shopper.Phone, message, SmsKind.Transactional, ct);
+        }
+        catch (Exception ex)
+        {
+            await _resetCodes.DiscardAsync(issued.Id, CancellationToken.None);
+            if (ct.IsCancellationRequested)
+                throw;
+            _log.LogWarning(ex,
+                "Support recovery SMS failed for shopper={ShopperId}",
+                request.ShopperId);
+            return Problem(title: "recovery-delivery-failed", statusCode: 503);
+        }
+
+        var now = DateTimeOffset.UtcNow;
 
         // Aynı shopper için aynı yayıncıda bekleyen tüm forgot-password
         // request'lerini birlikte resolved'la — yayıncı zaten parolayı yolladı.
@@ -116,28 +144,11 @@ public sealed class PanelSupportRequestsController : ControllerBase
         foreach (var s in siblings)
             s.ResolvedAt = now;
 
-        // Aktif refresh token'ları iptal et — eski cihazlar otomatik logout
-        // olsun, shopper geçici parolayla giriş yapıp yenisini belirlesin.
         await _refresh.MarkAllRevokedAsync(request.ShopperId, now, ct);
-
         await _db.SaveChangesAsync(ct);
 
-        return Ok(new IssueTempPasswordResponse(tempPassword));
-    }
-
-    /// <summary>
-    /// 10 karakter, alfanumeric (lowercase + digit). Confuse-edici karakterler
-    /// (0/O, 1/l/I) hariç. WhatsApp'ta kolayca yazılabilsin.
-    /// </summary>
-    private static string GenerateTempPassword()
-    {
-        const string alphabet = "abcdefghjkmnpqrstuvwxyz23456789";
-        var rng = System.Security.Cryptography.RandomNumberGenerator.Create();
-        Span<byte> buf = stackalloc byte[10];
-        rng.GetBytes(buf);
-        var sb = new System.Text.StringBuilder(10);
-        for (var i = 0; i < buf.Length; i++)
-            sb.Append(alphabet[buf[i] % alphabet.Length]);
-        return sb.ToString();
+        // Eski istemciler aynı route ve tempPassword alanını deserialize
+        // edebilsin; gerçek bir kimlik bilgisi hiçbir zaman dönmez.
+        return Ok(new IssueTempPasswordResponse(null, "verification-sent"));
     }
 }

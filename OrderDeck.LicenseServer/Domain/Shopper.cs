@@ -11,6 +11,15 @@ public sealed class Shopper
     public Guid Id { get; set; }
     public string FullName { get; set; } = "";
     public string Phone { get; set; } = "";        // E.164, global unique
+    /// <summary>
+    /// Telefon sahipliğinin güvenilen SMS OTP akışıyla doğrulandığı an.
+    /// İstemci beyanıyla veya parola bilgisiyle doldurulmaz.
+    /// </summary>
+    public DateTimeOffset? PhoneVerifiedAt { get; set; }
+    /// <summary>
+    /// Parola değişiminde artırılır; daha eski access token'ları geçersiz kılar.
+    /// </summary>
+    public int AuthVersion { get; set; }
     public string PasswordHash { get; set; } = ""; // bcrypt
     public string Address { get; set; } = "";
     public string? Email { get; set; }

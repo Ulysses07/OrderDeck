@@ -30,7 +30,8 @@ public sealed class ShopperMeController : ControllerBase
         string? Tc,
         NotificationPrefs NotificationPrefs,
         bool SmsConsent,
-        BroadcasterSummary[] Broadcasters);
+        BroadcasterSummary[] Broadcasters,
+        bool PhoneVerified);
 
     public sealed record PatchMeRequest(
         string? FullName,
@@ -65,7 +66,8 @@ public sealed class ShopperMeController : ControllerBase
                 shopper.NotificationsEnabledOrders,
                 shopper.NotificationsEnabledPayments),
             shopper.SmsConsent,
-            broadcasters));
+            broadcasters,
+            shopper.PhoneVerifiedAt is not null));
     }
 
     // ── PATCH /api/v1/shopper/me ──────────────────────────────────────────────
@@ -152,7 +154,8 @@ public sealed class ShopperMeController : ControllerBase
                 shopper.NotificationsEnabledOrders,
                 shopper.NotificationsEnabledPayments),
             shopper.SmsConsent,
-            broadcasters));
+            broadcasters,
+            shopper.PhoneVerifiedAt is not null));
     }
 
     // ── GET /api/v1/shopper/me/broadcasters ──────────────────────────────────

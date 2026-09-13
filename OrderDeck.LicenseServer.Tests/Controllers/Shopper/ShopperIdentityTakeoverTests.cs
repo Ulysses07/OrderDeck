@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -46,6 +47,7 @@ public class ShopperIdentityTakeoverTests : IClassFixture<ApiFactory>
         DateTimeOffset? PrintedAt, DateTimeOffset? CancelledAt, bool IsShippingFee);
 
     private sealed record OrdersResponse(OrderItem[] Items, string? NextCursor);
+    private sealed record ConfirmPhoneRequest(string Code);
 
     private const string Platform = "youtube";
     private const string VictimUsername = "kurban_izleyici";
@@ -132,15 +134,61 @@ public class ShopperIdentityTakeoverTests : IClassFixture<ApiFactory>
         HttpClient client, string code, string phone, string username,
         HttpStatusCode expected = HttpStatusCode.Created)
     {
+        var password = $"register-{Guid.NewGuid():N}";
         var req = new RegisterRequest(
-            code, "Kayıt Olan", phone, "Password1!", "İstanbul", Platform, username);
+            code, "Kayıt Olan", phone, password, "İstanbul", Platform, username);
         var resp = await client.PostAsJsonAsync("/api/v1/shopper/auth/register", req);
         resp.StatusCode.Should().Be(expected);
         var body = await resp.Content.ReadFromJsonAsync<AuthResponse>();
         return (body!.AccessToken, body.ShopperId);
     }
 
+    private async Task VerifyPhoneAsync(HttpClient client, string phone)
+    {
+        var issue = await client.PostAsync(
+            "/api/v1/shopper/auth/phone-verification/request", null);
+        issue.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        var message = _factory.Sms.Sent.Last(m => m.Phone == phone).Text;
+        var code = Regex.Match(message, @"\d{6}").Value;
+        code.Should().HaveLength(6);
+
+        var confirm = await client.PostAsJsonAsync(
+            "/api/v1/shopper/auth/phone-verification/confirm",
+            new ConfirmPhoneRequest(code));
+        confirm.StatusCode.Should().Be(HttpStatusCode.NoContent);
+    }
+
     // ── Saldırı ─────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Telefon_dogrulama_sms_hatasini_bildirir_ve_retryi_kilitlemez()
+    {
+        var client = _factory.CreateClient();
+        var (_, code) = await SeedLicenseAsync();
+        var phone = UniquePhone();
+        var (token, _) = await RegisterAsync(client, code, phone, VictimUsername);
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token);
+
+        HttpResponseMessage failed;
+        _factory.Sms.ThrowOnSend = true;
+        try
+        {
+            failed = await client.PostAsync(
+                "/api/v1/shopper/auth/phone-verification/request", null);
+        }
+        finally
+        {
+            _factory.Sms.ThrowOnSend = false;
+        }
+
+        failed.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+        var retry = await client.PostAsync(
+            "/api/v1/shopper/auth/phone-verification/request", null);
+        retry.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        _factory.Sms.Sent.Should().Contain(m => m.Phone == phone);
+    }
 
     [Fact]
     public async Task Baskasinin_kullanici_adiyla_kaydolan_kurbanin_verisini_goremez()
@@ -186,7 +234,7 @@ public class ShopperIdentityTakeoverTests : IClassFixture<ApiFactory>
     // ── Meşru kullanım ──────────────────────────────────────────────────────
 
     [Fact]
-    public async Task Telefonu_eslesen_gercek_musteri_kendi_verisini_gorur()
+    public async Task Telefonu_eslesen_kayit_dogrulama_olmadan_gecmis_veriyi_goremez()
     {
         var client = _factory.CreateClient();
         var (licenseId, code) = await SeedLicenseAsync();
@@ -195,6 +243,26 @@ public class ShopperIdentityTakeoverTests : IClassFixture<ApiFactory>
 
         var (token, _) = await RegisterAsync(client, code, victimPhone, VictimUsername);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        var orders = await client.GetAsync($"/api/v1/shopper/broadcasters/{licenseId}/orders");
+        var body = await orders.Content.ReadFromJsonAsync<OrdersResponse>();
+        body!.Items.Should().BeEmpty();
+        (await client.GetAsync($"/api/v1/shopper/broadcasters/{licenseId}/balance"))
+            .StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task Telefon_OTP_ile_dogrulaninca_gecmis_veri_acilir()
+    {
+        var client = _factory.CreateClient();
+        var (licenseId, code) = await SeedLicenseAsync();
+        var victimPhone = UniquePhone();
+        await SeedVictimCustomerAsync(licenseId, victimPhone);
+
+        var (token, _) = await RegisterAsync(client, code, victimPhone, VictimUsername);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        await VerifyPhoneAsync(client, victimPhone);
 
         var orders = await client.GetAsync($"/api/v1/shopper/broadcasters/{licenseId}/orders");
         var body = await orders.Content.ReadFromJsonAsync<OrdersResponse>();
@@ -213,6 +281,7 @@ public class ShopperIdentityTakeoverTests : IClassFixture<ApiFactory>
 
         var (token, _) = await RegisterAsync(client, code, $"+9055{digits}", VictimUsername);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        await VerifyPhoneAsync(client, $"+9055{digits}");
 
         var orders = await client.GetAsync($"/api/v1/shopper/broadcasters/{licenseId}/orders");
         var body = await orders.Content.ReadFromJsonAsync<OrdersResponse>();
@@ -234,6 +303,7 @@ public class ShopperIdentityTakeoverTests : IClassFixture<ApiFactory>
         var shopperPhone = UniquePhone();
         var (token, shopperId) = await RegisterAsync(client, code, shopperPhone, VictimUsername);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        await VerifyPhoneAsync(client, shopperPhone);
 
         (await client.GetAsync($"/api/v1/shopper/broadcasters/{licenseId}/balance"))
             .StatusCode.Should().Be(HttpStatusCode.NotFound, "önce beklemede olmalı");
@@ -255,6 +325,22 @@ public class ShopperIdentityTakeoverTests : IClassFixture<ApiFactory>
 
         (await client.GetAsync($"/api/v1/shopper/broadcasters/{licenseId}/balance"))
             .StatusCode.Should().Be(HttpStatusCode.OK, "telefon girildikten sonra bağlantı kurulmalı");
+    }
+
+    [Fact]
+    public async Task Dogrulanmamis_telefon_geriye_donuk_sync_ile_baglanmaz()
+    {
+        var client = _factory.CreateClient();
+        var (licenseId, code) = await SeedLicenseAsync();
+        var wpfId = await SeedVictimCustomerAsync(licenseId, phone: null);
+        var shopperPhone = UniquePhone();
+        var (token, _) = await RegisterAsync(client, code, shopperPhone, VictimUsername);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        await RunRetroactiveMatchAsync(licenseId, wpfId, shopperPhone);
+
+        (await client.GetAsync($"/api/v1/shopper/broadcasters/{licenseId}/balance"))
+            .StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     [Fact]

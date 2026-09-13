@@ -203,10 +203,10 @@ public class ShopperAuthRegisterTests : IClassFixture<ApiFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
-    // ── T7.7: WpfCustomerProjection match → link.WpfCustomerId populated ────
+    // ── T7.7: Existing projection stays pending until phone verification ────
 
     [Fact]
-    public async Task Register_with_matching_wpf_projection_populates_WpfCustomerId()
+    public async Task Register_with_matching_wpf_projection_stays_pending_until_phone_verified()
     {
         var (licenseId, code, _) = await SeedLicenseAsync();
 
@@ -230,7 +230,8 @@ public class ShopperAuthRegisterTests : IClassFixture<ApiFactory>
             await db.SaveChangesAsync();
         }
 
-        var req = new RegisterRequest(code, "WpfUser", phone, "Password1!", "Samsun", "youtube", "wpfmatch");
+        var password = $"register-{Guid.NewGuid():N}";
+        var req = new RegisterRequest(code, "WpfUser", phone, password, "Samsun", "youtube", "wpfmatch");
         var resp = await _factory.CreateClient()
             .PostAsJsonAsync("/api/v1/shopper/auth/register", req);
         resp.StatusCode.Should().Be(HttpStatusCode.Created);
@@ -240,7 +241,7 @@ public class ShopperAuthRegisterTests : IClassFixture<ApiFactory>
         var shopper = await db2.Shoppers.FirstAsync(s => s.Phone == phone);
         var link = await db2.ShopperBroadcasterLinks
             .FirstAsync(l => l.ShopperId == shopper.Id && l.LicenseId == licenseId);
-        link.WpfCustomerId.Should().Be(wpfId);
+        link.WpfCustomerId.Should().BeNull();
     }
 
     // ── T7.8: Same shopper registers again to same broadcaster → 409 ────────
@@ -348,7 +349,8 @@ public class ShopperAuthRegisterTests : IClassFixture<ApiFactory>
             await db.SaveChangesAsync();
         }
 
-        var req = new RegisterRequest(code, "ExistProj User", phone, "Password1!", "Trabzon", "youtube", "existingprojuser");
+        var password = $"register-{Guid.NewGuid():N}";
+        var req = new RegisterRequest(code, "ExistProj User", phone, password, "Trabzon", "youtube", "existingprojuser");
         var resp = await _factory.CreateClient()
             .PostAsJsonAsync("/api/v1/shopper/auth/register", req);
         resp.StatusCode.Should().Be(HttpStatusCode.Created);
@@ -363,10 +365,11 @@ public class ShopperAuthRegisterTests : IClassFixture<ApiFactory>
         projections.Should().HaveCount(1, "no duplicate projection should be created when one already exists");
         projections[0].Id.Should().Be(wpfId, "existing projection id must be reused");
 
-        // Link must point to the pre-existing projection
+        // Önceden var olan projeksiyon çoğaltılmaz ama telefon doğrulanana
+        // kadar tarihsel veri bağı beklemede kalır.
         var shopper = await db2.Shoppers.FirstAsync(s => s.Phone == phone);
         var link = await db2.ShopperBroadcasterLinks
             .FirstAsync(l => l.ShopperId == shopper.Id && l.LicenseId == licenseId);
-        link.WpfCustomerId.Should().Be(wpfId);
+        link.WpfCustomerId.Should().BeNull();
     }
 }
