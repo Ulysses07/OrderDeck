@@ -37,14 +37,4 @@ public partial class SupportRequestsPage : UserControl
         }
     }
 
-    private void OnCopyPassword(object sender, RoutedEventArgs e)
-    {
-        if (sender is FrameworkElement fe &&
-            fe.DataContext is SupportRequestsViewModel.SupportRequestRow row &&
-            !string.IsNullOrEmpty(row.TempPassword))
-        {
-            try { Clipboard.SetText(row.TempPassword); }
-            catch { /* clipboard erişilemezse kullanıcı elle kopyalar */ }
-        }
-    }
 }

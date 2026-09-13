@@ -54,7 +54,7 @@
                                          doldurur, ad/telefon bloğu o olmalı
                                          ki uzun ad düğmeyi itmesin. -->
                                     <Button DockPanel.Dock="Right"
-                                            Content="Geçici parola üret"
+                                            Content="SMS doğrulaması başlat"
                                             Style="{StaticResource OD.Button.Primary}"
                                             VerticalAlignment="Top"
                                             Visibility="{Binding CanIssue, Converter={StaticResource BoolToVisibleConverter}}"
@@ -81,42 +81,18 @@
                                     </StackPanel>
                                 </DockPanel>
 
-                                <!-- Üretilen geçici parola paneli -->
+                                <!-- R7-02: parola paneli KALDIRILDI. Sunucu
+                                     parolayı döndürmüyor; SMS doğrulamasını
+                                     kendisi başlatıyor. Yayıncıya yalnız bilgi
+                                     gösterilir. -->
                                 <Border Background="{StaticResource OD.Brush.Surface2}"
                                         CornerRadius="{StaticResource OD.Radius.Md}"
                                         Padding="{StaticResource OD.Pad.5}"
                                         Margin="{StaticResource OD.Pad.Top5}"
-                                        Visibility="{Binding HasTempPassword, Converter={StaticResource BoolToVisibleConverter}}">
-                                    <StackPanel>
-                                        <TextBlock Text="Geçici parola"
-                                                   Style="{StaticResource OD.Text.Hint}"/>
-                                        <!-- Mono: operatör bu parolayı ekrandan
-                                             okuyup telefona yazıyor, 0/O ve 1/l
-                                             ayrışmalı. -->
-                                        <TextBlock Text="{Binding TempPassword}"
-                                                   Style="{StaticResource OD.Text.Mono}"
-                                                   FontSize="{StaticResource OD.Font.F3}"
-                                                   FontWeight="Bold"
-                                                   Margin="{StaticResource OD.Pad.Top3}"/>
-                                        <StackPanel Orientation="Horizontal"
-                                                    Margin="{StaticResource OD.Pad.Top5}">
-                                            <!-- Yeşil zemin: WhatsApp'a giden tek
-                                                 eylem, birincil mavi ile karışmasın.
-                                                 OD.Button.Primary şablonu zemini
-                                                 TemplateBinding'le alıyor, o yüzden
-                                                 stil değil YALNIZ renk değişiyor. -->
-                                            <Button Content="WhatsApp ile gönder"
-                                                    Style="{StaticResource OD.Button.Primary}"
-                                                    Background="{StaticResource OD.Brush.Success}"
-                                                    Command="{Binding DataContext.SendWhatsAppCommand,
-                                                              RelativeSource={RelativeSource AncestorType=UserControl}}"
-                                                    CommandParameter="{Binding}"/>
-                                            <Button Content="Kopyala"
-                                                    Style="{StaticResource OD.Button.Secondary}"
-                                                    Margin="{StaticResource OD.Pad.X2}"
-                                                    Click="OnCopyPassword"/>
-                                        </StackPanel>
-                                    </StackPanel>
+                                        Visibility="{Binding VerificationSent, Converter={StaticResource BoolToVisibleConverter}}">
+                                    <TextBlock Style="{StaticResource OD.Text.Hint}"
+                                               TextWrapping="Wrap"
+                                               Text="Doğrulama SMS'i gönderildi. Alıcının uygulamada doğrulamayı tamamlaması gerekiyor."/>
                                 </Border>
 
                                 <TextBlock Text="{Binding RowError}"
