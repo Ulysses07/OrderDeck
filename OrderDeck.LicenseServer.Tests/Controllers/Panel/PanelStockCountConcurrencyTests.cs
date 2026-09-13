@@ -142,7 +142,8 @@ public sealed class PanelStockCountConcurrencyTests : IAsyncLifetime
         {
             Id = Guid.NewGuid(),
             CustomerId = customerId,
-            LicenseKey = $"stock-race-{Guid.NewGuid():N}",
+            // LicenseKey HasMaxLength(40) — gerçek SQL'de tam Guid taşar (bkz. CustomerPurgeRelationalTests deseni).
+            LicenseKey = "stock-race-" + Guid.NewGuid().ToString("N")[..12],
             SkuCode = "STD",
             ActivationSlots = 1,
             IssuedAt = now,
@@ -227,7 +228,8 @@ public sealed class PanelStockCountConcurrencyTests : IAsyncLifetime
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var product = NewProduct(
-            licenseId, $"race-{Guid.NewGuid():N}", DateTimeOffset.UtcNow);
+            // Products.Code HasMaxLength(CatalogLimits.ProductCode) — tam Guid gerçek SQL'de taşar.
+            licenseId, "race-" + Guid.NewGuid().ToString("N")[..12], DateTimeOffset.UtcNow);
         db.Products.Add(product);
         await db.SaveChangesAsync();
         return product.Id;

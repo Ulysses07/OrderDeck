@@ -120,7 +120,8 @@ public sealed class WpfCustomerProjectionPurgeConcurrencyTests : IAsyncLifetime
         {
             Id = Guid.NewGuid(),
             CustomerId = customerId,
-            LicenseKey = $"tombstone-{Guid.NewGuid():N}",
+            // LicenseKey HasMaxLength(40) — gerçek SQL'de tam Guid taşar (bkz. CustomerPurgeRelationalTests deseni).
+            LicenseKey = "tombstone-" + Guid.NewGuid().ToString("N")[..12],
             SkuCode = "STD",
             ActivationSlots = 1,
             IssuedAt = now,
