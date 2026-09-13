@@ -1,7 +1,10 @@
 using System.ComponentModel.DataAnnotations;
+using System.Data;
+using System.Globalization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
@@ -175,10 +178,37 @@ public sealed class PanelStockController : ControllerBase
         var target = await ResolveTargetAsync(licenseId.Value, req.ProductId, req.ProductVariantId, ct);
         if (target is null) return NotFound(TargetProblem());
 
+        await using var transaction = _db.Database.IsSqlServer()
+            ? await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct)
+            : null;
+        if (transaction is not null)
+        {
+            var lockCode = await AcquireCountLockAsync(
+                licenseId.Value, req.ProductId, req.ProductVariantId, transaction, ct);
+            if (lockCode is -1 or -3)
+            {
+                await transaction.RollbackAsync(ct);
+                return Problem(
+                    title: "stock-count-conflict",
+                    detail: "Bu stok için başka bir sayım işleniyor; güncel bakiyeyle yeniden deneyin.",
+                    statusCode: StatusCodes.Status409Conflict);
+            }
+            if (lockCode == -2)
+                ct.ThrowIfCancellationRequested();
+            if (lockCode < 0)
+                throw new InvalidOperationException(
+                    $"SQL Server stock-count lock failed with code {lockCode}.");
+        }
+
         var current = await CurrentBalanceAsync(licenseId.Value, req.ProductId, req.ProductVariantId, ct);
         var delta = req.CountedQuantity - current.Quantity;
 
-        if (delta == 0) return Ok(current);
+        if (delta == 0)
+        {
+            if (transaction is not null)
+                await transaction.CommitAsync(ct);
+            return Ok(current);
+        }
 
         var now = DateTimeOffset.UtcNow;
         _db.StockMovements.Add(new StockMovement
@@ -196,8 +226,12 @@ public sealed class PanelStockController : ControllerBase
         });
         await _db.SaveChangesAsync(ct);
 
-        return StatusCode(StatusCodes.Status201Created,
-            await CurrentBalanceAsync(licenseId.Value, req.ProductId, req.ProductVariantId, ct));
+        var result = await CurrentBalanceAsync(
+            licenseId.Value, req.ProductId, req.ProductVariantId, ct);
+        if (transaction is not null)
+            await transaction.CommitAsync(ct);
+
+        return StatusCode(StatusCodes.Status201Created, result);
     }
 
     // ─── yardımcılar ──────────────────────────────────────────────────
@@ -242,6 +276,44 @@ public sealed class PanelStockController : ControllerBase
         var rows = await _balances.GetAsync(licenseId, new[] { productId }, ct);
         var match = rows.FirstOrDefault(b => b.ProductVariantId == variantId);
         return new StockBalanceDto(productId, variantId, match?.Quantity ?? 0);
+    }
+
+    private async Task<int> AcquireCountLockAsync(
+        Guid licenseId,
+        Guid productId,
+        Guid? variantId,
+        IDbContextTransaction transaction,
+        CancellationToken ct)
+    {
+        var variantPart = variantId is null
+            ? "product"
+            : $"variant:{variantId.Value:N}";
+        var resource = $"orderdeck:stock-count:{licenseId:N}:{productId:N}:{variantPart}";
+
+        await using var command = _db.Database.GetDbConnection().CreateCommand();
+        command.Transaction = transaction.GetDbTransaction();
+        command.CommandText = """
+            DECLARE @result int;
+            EXEC @result = sys.sp_getapplock
+                @Resource = @resource,
+                @LockMode = 'Exclusive',
+                @LockOwner = 'Transaction',
+                @LockTimeout = 0;
+            SELECT @result;
+            """;
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = "@resource";
+        parameter.DbType = DbType.String;
+        parameter.Size = 255;
+        parameter.Value = resource;
+        command.Parameters.Add(parameter);
+
+        var raw = await command.ExecuteScalarAsync(ct);
+        if (raw is not int lockCode)
+            throw new InvalidOperationException(
+                $"SQL Server stock-count lock returned an invalid value: " +
+                Convert.ToString(raw, CultureInfo.InvariantCulture));
+        return lockCode;
     }
 
     /// <summary>
