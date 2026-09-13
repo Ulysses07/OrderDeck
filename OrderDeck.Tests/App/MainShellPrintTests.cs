@@ -227,7 +227,8 @@ public class MainShellPrintTests
     public async Task Yazdirma_surerken_YayiniBitir_ayni_etiketi_ikinci_kez_yazdirmaz()
     {
         var gated = new GatedLabelPrinter();
-        var dialogs = new FakeDialogService { ConfirmResult = _ => true };
+        // Kuyruk doluyken EndStream artık üçlü soruyu sorar: Evet=hepsini bas.
+        var dialogs = new FakeDialogService { ThreeWayResult = _ => true };
         var (vm, _, db) = Fx(gated, dialogs);
         using var __ = db;
 
@@ -289,6 +290,273 @@ public class MainShellPrintTests
         vm.PrintQueue.Should().HaveCount(1);
         vm.PrintQueue[0].Username.Should().Be("@b");   // unselected, retained
         vm.SelectedQueueItems.Should().BeEmpty();
+    }
+
+    // ── R7-04 Soru A: yayın kapanışında kısmi seçim (PO-01/PO-02) ────────
+    //
+    // EndStream eskiden Print()'i doğrudan çağırıyordu; Print seçim varsa
+    // YALNIZ seçileni basar. Yayın biterken seçili 1 etiket varsa kalan
+    // etiketler basılmadan oturum kapanıyor ve bir sonraki yayında kuyruk
+    // eski oturumdan yüklenmediği için GÖRÜNMEZ oluyordu (veride duruyor,
+    // ekranda yok). Yeni akış: kuyruk doluysa üç seçenekli açık soru —
+    // Evet=hepsini bas, Hayır=basmadan bitir, Vazgeç=yayına dön.
+
+    [Fact]
+    public async Task YayiniBitir_HepsiniBas_kismi_secime_ragmen_tum_kuyrugu_basar()
+    {
+        var dialogs = new FakeDialogService { ThreeWayResult = _ => true };
+        var (vm, printer, db) = Fx(dialogsOverride: dialogs);
+        using var _ = db;
+
+        Enqueue(vm, "@a", 100);
+        Enqueue(vm, "@b", 200);
+        Enqueue(vm, "@c", 300);
+        vm.SelectedQueueItems.Add(vm.PrintQueue[0]);   // kısmi seçim tuzağı
+
+        await vm.EndStreamCommand.ExecuteAsync(null);
+
+        printer.Calls.Should().HaveCount(1);
+        printer.Calls[0].Should().HaveCount(3, "Evet = HEPSİNİ bas, seçimden bağımsız");
+        vm.PrintQueue.Should().BeEmpty();
+        new SessionRepository(db).GetActive().Should().BeNull("yayın bitmiş olmalı");
+    }
+
+    [Fact]
+    public async Task YayiniBitir_BasmadanBitir_hic_basmaz_ama_yayini_bitirir()
+    {
+        var dialogs = new FakeDialogService { ThreeWayResult = _ => false };
+        var (vm, printer, db) = Fx(dialogsOverride: dialogs);
+        using var _ = db;
+
+        Enqueue(vm, "@a", 100);
+        Enqueue(vm, "@b", 200);
+        var sessionId = new SessionRepository(db).GetActive()!.Id;
+
+        await vm.EndStreamCommand.ExecuteAsync(null);
+
+        printer.Calls.Should().BeEmpty("Hayır = basmadan bitir");
+        new SessionRepository(db).GetActive().Should().BeNull("yayın bitmiş olmalı");
+        // Etiketler kaybolmaz: eski oturumun altında basılmamış olarak durur.
+        new LabelRepository(db).GetUnprintedBySession(sessionId).Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task YayiniBitir_Vazgec_yayini_acik_birakir()
+    {
+        var dialogs = new FakeDialogService { ThreeWayResult = _ => null };
+        var (vm, printer, db) = Fx(dialogsOverride: dialogs);
+        using var _ = db;
+
+        Enqueue(vm, "@a", 100);
+
+        await vm.EndStreamCommand.ExecuteAsync(null);
+
+        printer.Calls.Should().BeEmpty();
+        new SessionRepository(db).GetActive().Should().NotBeNull("Vazgeç yayına döner");
+        vm.PrintQueue.Should().HaveCount(1);
+    }
+
+    [Fact]
+    public async Task YayiniBitir_bos_kuyrukta_eski_ikili_onay_akisi_calisir()
+    {
+        var dialogs = new FakeDialogService { ConfirmResult = _ => true };
+        var (vm, _, db) = Fx(dialogsOverride: dialogs);
+        using var _2 = db;
+
+        await vm.EndStreamCommand.ExecuteAsync(null);
+
+        dialogs.ThreeWayConfirmations.Should().BeEmpty("kuyruk boşken üçlü soru sorulmaz");
+        dialogs.Confirmations.Should().HaveCount(1);
+        new SessionRepository(db).GetActive().Should().BeNull();
+    }
+
+    // PO-02: basılmadan bitirilen etiketler sonraki yayında görünmez.
+    // Salt bilgi uyarısı kurtarılabilirlik sağlamaz (Astra) — StartStream
+    // sorar, operatör isterse etiketler yeni kuyruğa taşınır.
+    [Fact]
+    public async Task YayinBaslat_onceki_yayindan_basilmamis_etiket_varsa_sorar_hayirda_tasimaz()
+    {
+        var dialogs = new FakeDialogService { ThreeWayResult = _ => false };
+        var (vm, _, db) = Fx(dialogsOverride: dialogs);
+        using var _2 = db;
+
+        Enqueue(vm, "@a", 100);
+        Enqueue(vm, "@b", 200);
+        await vm.EndStreamCommand.ExecuteAsync(null);   // basmadan bitir
+
+        vm.StartStreamCommand.Execute(null);            // ConfirmResult: HAYIR
+
+        dialogs.Confirmations.Should().ContainSingle(c => c.Message.Contains("2 basılmamış"),
+            "önceki oturumdan kalan etiket sayısı sorulmalı");
+        vm.PrintQueue.Should().BeEmpty("Hayır = taşıma yok");
+    }
+
+    [Fact]
+    public async Task YayinBaslat_evet_denirse_eski_etiketler_kuyruga_tasinir_ve_basilabilir()
+    {
+        var dialogs = new FakeDialogService { ThreeWayResult = _ => false };
+        var (vm, printer, db) = Fx(dialogsOverride: dialogs);
+        using var _2 = db;
+
+        Enqueue(vm, "@a", 100);
+        Enqueue(vm, "@b", 200);
+        var oldSessionId = new SessionRepository(db).GetActive()!.Id;
+        await vm.EndStreamCommand.ExecuteAsync(null);   // basmadan bitir
+
+        dialogs.ConfirmResult = _ => true;              // taşımayı kabul et
+        vm.StartStreamCommand.Execute(null);
+
+        vm.PrintQueue.Should().HaveCount(2, "eski etiketler görünür olmalı");
+
+        await vm.PrintCommand.ExecuteAsync(null);
+
+        printer.Calls.Should().ContainSingle().Which.Should().HaveCount(2);
+        new LabelRepository(db).GetUnprintedBySession(oldSessionId)
+            .Should().BeEmpty("taşınan etiketler basıldı olarak damgalanmalı");
+    }
+
+    // Astra rafinmanı: yazıcı hatası başarı sayılmaz — yayın AÇIK kalır,
+    // operatör tekrar dener ya da "basmadan bitir"i seçer.
+    private sealed class ThrowingLabelPrinter : ILabelPrinter
+    {
+        public void Print(IReadOnlyList<Label> labels, IReadOnlySet<string>? recipientPaysLabelIds = null)
+            => throw new InvalidOperationException("yazıcı yok");
+        public void PrintGiftLabels(IReadOnlyList<Label> labels) { }
+    }
+
+    [Fact]
+    public async Task YayiniBitir_yazici_hatasi_yayini_acik_birakir()
+    {
+        var dialogs = new FakeDialogService { ThreeWayResult = _ => true };
+        var (vm, _, db) = Fx(new ThrowingLabelPrinter(), dialogs);
+        using var _2 = db;
+
+        Enqueue(vm, "@a", 100);
+
+        await vm.EndStreamCommand.ExecuteAsync(null);
+
+        new SessionRepository(db).GetActive().Should().NotBeNull(
+            "başarısız baskı başarı sayılmaz, yayın açık kalmalı");
+        dialogs.Shown.Should().Contain(s => s.Message.Contains("açık bırakıldı"));
+    }
+
+    // Astra rafinmanı: baskı sürerken sohbetten yeni etiket gelirse kapanış
+    // sorusu tazelenmeli — kapanış sırasında gelen iş sessizce basılmamış
+    // kalmamalı.
+    [Fact]
+    public async Task YayiniBitir_baski_sirasinda_gelen_etiket_icin_soru_tazelenir()
+    {
+        var gated = new GatedLabelPrinter();
+        var answers = new Queue<bool?>(new bool?[] { true, false });
+        var dialogs = new FakeDialogService { ThreeWayResult = _ => answers.Dequeue() };
+        var (vm, _, db) = Fx(gated, dialogs);
+        using var _2 = db;
+
+        Enqueue(vm, "@a", 100);
+        var end = vm.EndStreamCommand.ExecuteAsync(null);   // Evet → baskı başlar
+        gated.Entered.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+
+        Enqueue(vm, "@b", 200);   // kapanış baskısı sürerken yeni sipariş
+        gated.Release();
+        await end;
+
+        dialogs.ThreeWayConfirmations.Should().HaveCount(2,
+            "yeni etiket için soru tazelenmeli");
+        gated.Calls.Should().HaveCount(1, "ikinci cevap 'basmadan bitir'");
+        new SessionRepository(db).GetActive().Should().BeNull();
+    }
+
+    // ── R7-04 Soru B: baskı sürerken kuyruk temizleme ────────────────────
+    //
+    // DB tarafı düzeldi (iptal kazanır, ekonomik etki geri alınır) ama
+    // fiziksel kağıt engellenemez. Kilitlemek yerine izin + uyarı; uyarı
+    // yalnız iptal kümesi uçuştaki baskı snapshot'ıyla KESİŞİYORSA çıkar
+    // ve "şu an yazıcıda" kesinliği kullanılmaz (bayrak kağıdı ölçmez).
+
+    [Fact]
+    public async Task ClearQueue_baski_surerken_onay_metninde_kagit_imha_uyarisi_var()
+    {
+        var gated = new GatedLabelPrinter();
+        var dialogs = new FakeDialogService { ConfirmResult = _ => false };
+        var (vm, _, db) = Fx(gated, dialogs);
+        using var _2 = db;
+
+        Enqueue(vm, "@a", 100);
+        var print = vm.PrintCommand.ExecuteAsync(null);
+        gated.Entered.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+
+        vm.ClearQueueCommand.Execute(null);
+
+        dialogs.Confirmations.Should().ContainSingle(
+            c => c.Message.Contains("1 tanesi devam eden baskı işinde"),
+            "kesişim sayısıyla kağıt imha uyarısı eklenmeli");
+
+        gated.Release();
+        await print;
+    }
+
+    [Fact]
+    public void ClearQueue_baski_yokken_uyari_metni_eklenmez()
+    {
+        var dialogs = new FakeDialogService { ConfirmResult = _ => false };
+        var (vm, _, db) = Fx(dialogsOverride: dialogs);
+        using var _2 = db;
+
+        Enqueue(vm, "@a", 100);
+        vm.ClearQueueCommand.Execute(null);
+
+        dialogs.Confirmations.Should().ContainSingle();
+        dialogs.Confirmations[0].Message.Should().NotContain("baskı işinde");
+    }
+
+    [Fact]
+    public async Task KuyruktanCikar_uzustaki_etiketi_iptal_onaya_baglar_reddedilirse_dokunmaz()
+    {
+        var gated = new GatedLabelPrinter();
+        var dialogs = new FakeDialogService();   // ConfirmResult varsayılan: HAYIR
+        var (vm, _, db) = Fx(gated, dialogs);
+        using var _2 = db;
+
+        Enqueue(vm, "@a", 100);
+        Enqueue(vm, "@b", 200);
+        vm.SelectedQueueItems.Add(vm.PrintQueue[0]);
+        var print = vm.PrintCommand.ExecuteAsync(null);   // @a uçuşta
+        gated.Entered.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+
+        // @a hâlâ seçili ve uçuşta → kesişim 1 → onay sorulur, HAYIR → dokunma.
+        vm.RemoveSelectedFromQueueCommand.Execute(null);
+
+        dialogs.Confirmations.Should().ContainSingle(
+            c => c.Message.Contains("devam eden baskı işinde"));
+        vm.PrintQueue.Should().HaveCount(2, "onay reddedildi, kuyruk dokunulmamış kalmalı");
+
+        gated.Release();
+        await print;
+    }
+
+    [Fact]
+    public async Task KuyruktanCikar_ucusla_kesismeyen_secim_onaysiz_cikar()
+    {
+        var gated = new GatedLabelPrinter();
+        var dialogs = new FakeDialogService();   // onay sorulursa HAYIR → fark ederiz
+        var (vm, _, db) = Fx(gated, dialogs);
+        using var _2 = db;
+
+        Enqueue(vm, "@a", 100);
+        Enqueue(vm, "@b", 200);
+        vm.SelectedQueueItems.Add(vm.PrintQueue[0]);
+        var print = vm.PrintCommand.ExecuteAsync(null);   // @a uçuşta
+        gated.Entered.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+
+        vm.SelectedQueueItems.Clear();
+        vm.SelectedQueueItems.Add(vm.PrintQueue[1]);      // @b uçuşta DEĞİL
+        vm.RemoveSelectedFromQueueCommand.Execute(null);
+
+        dialogs.Confirmations.Should().BeEmpty("kesişim yoksa hızlı akış onaysız");
+        vm.PrintQueue.Should().ContainSingle(i => i.Username == "@a");
+
+        gated.Release();
+        await print;
     }
 
     [Fact]

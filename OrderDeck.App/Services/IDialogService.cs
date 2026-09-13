@@ -31,6 +31,14 @@ public interface IDialogService
     /// olarak false döner — testte yanlışlıkla yıkıcı bir dala girilmesin.</summary>
     bool Confirm(string message, string title);
 
+    /// <summary>Üç seçenekli onay: Evet=true, Hayır=false, Vazgeç=null.
+    /// R7-04 için eklendi — yayın kapanışında "hepsini bas / basmadan bitir /
+    /// yayına dön" üçlemesi iki Confirm'e sıkıştırılamıyor. MessageBox düğme
+    /// yazıları özelleştirilemediğinden seçeneklerin anlamı MESAJIN İÇİNDE
+    /// yazılmalı; çağıran bundan sorumlu. Sahte uygulama varsayılanı Vazgeç
+    /// (null) — test farkında olmadan hiçbir dala girmesin.</summary>
+    bool? ConfirmYesNoCancel(string message, string title);
+
     // ── Çekmece karşılıkları (Faz 2) ────────────────────────────────────
     // Yukarıdaki beş metot MessageBox açıyor; spec §6 "hiçbir şey pop-up
     // değil" diyor. Aşağıdakiler aynı işi kabuğun içindeki çekmecede yapar.

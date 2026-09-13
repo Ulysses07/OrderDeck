@@ -828,13 +828,16 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         PrintQueue.Clear();
         var session = _sessions.GetActive();
         if (session is null) return;
-        var labels = _labels.GetQueue(session.Id);
+        AppendToQueue(_labels.GetQueue(session.Id));
+    }
+
+    private void AppendToQueue(System.Collections.Generic.IReadOnlyList<OrderDeck.Core.Sales.Label> labels)
+    {
+        if (labels.Count == 0) return;
         // Single round-trip for backup counts so each row's chip badge is
         // accurate without N+1 queries.
-        var backupCounts = labels.Count == 0
-            ? new System.Collections.Generic.Dictionary<string, int>()
-            : (System.Collections.Generic.IReadOnlyDictionary<string, int>)
-                _labels.GetBackupCounts(labels.Select(l => l.Id));
+        var backupCounts = (System.Collections.Generic.IReadOnlyDictionary<string, int>)
+            _labels.GetBackupCounts(labels.Select(l => l.Id));
         foreach (var l in labels)
         {
             var customer = _customerRepo.GetById(l.CustomerId);
@@ -853,10 +856,26 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
                 "Yayın aktif");
             return;
         }
-        _sessions.Start("Yeni Yayın", new[] { "instagram", "tiktok" });
+        var started = _sessions.Start("Yeni Yayın", new[] { "instagram", "tiktok" });
         UpdateStreamStatusLabel();
         UpdateGiveawayCanStart();
         ReloadQueueFromActiveSession();
+
+        // R7-04 (PO-02): kuyruk yalnız AKTİF oturumdan yüklenir; önceki
+        // yayından basılmadan kalan etiketler veride durur ama ekranda
+        // görünmez. Salt bilgi uyarısı kurtarılabilirlik sağlamaz (Astra) —
+        // operatör isterse etiketler yeni kuyruğa taşınır. SessionId
+        // değişmez: satış eski yayının, taşınan yalnız görünürlük; baskı
+        // etiket kimliğiyle çalıştığı için oturumdan bağımsız işler.
+        var leftover = _labelRepo.GetUnprintedOutsideSession(started.Id);
+        if (leftover.Count > 0 && _dialogs.Confirm(
+                $"Önceki yayınlardan {leftover.Count} basılmamış etiket var. " +
+                "Yazdırılabilmeleri için yeni kuyruğa eklensin mi?\n\n" +
+                "(Eklemezsen yayın bittikten sonra müşteri geçmişinden ulaşabilirsin.)",
+                "Basılmamış etiketler"))
+        {
+            AppendToQueue(leftover);
+        }
     }
 
     [RelayCommand(CanExecute = nameof(CanWrite))] private async Task EndStream()
@@ -871,16 +890,45 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             return;
         }
 
-        if (!_dialogs.Confirm("Yayını bitirmek istediğinden emin misin?", "Yayını Bitir"))
-            return;
-
-        if (PrintQueue.Count > 0)
+        // R7-04 (PO-01): eski akış Print()'i doğrudan çağırıyordu ve Print
+        // seçim varsa YALNIZ seçileni basar — yayın biterken kısmi seçim
+        // kalan etiketleri sessizce basılmamış bırakıyordu. Kuyruk doluysa
+        // karar operatörün, ve "bas" derse istisnasız HEPSİ basılır.
+        //
+        // Döngü bilinçli: baskı sürerken sohbetten yeni etiket gelebilir —
+        // baskı bitince kuyruk hâlâ doluysa soru tazelenir, kapanış sırasında
+        // gelen iş sessizce basılmamış kalmaz. Başarısız baskı da başarı
+        // sayılmaz: yazıcı hata verirse yayın AÇIK kalır; operatör isterse
+        // tekrar dener, isterse "basmadan bitir"i seçer.
+        if (PrintQueue.Count == 0)
         {
-            try { await Print(); }
-            catch (Exception ex)
+            if (!_dialogs.Confirm("Yayını bitirmek istediğinden emin misin?", "Yayını Bitir"))
+                return;
+        }
+        while (PrintQueue.Count > 0)
+        {
+            var choice = _dialogs.ConfirmYesNoCancel(
+                $"Kuyrukta {PrintQueue.Count} basılmamış etiket var.\n\n" +
+                "Evet: hepsini bas ve yayını bitir\n" +
+                "Hayır: basmadan bitir (etiketler müşteri geçmişinde kalır)\n" +
+                "İptal: yayına dön",
+                "Yayını Bitir");
+            if (choice is null) return;
+            if (choice == false) break;   // basmadan bitir
+
+            // Uçuştaki baskı varsa önce onun sonucunu bekle — erken dönüşü
+            // "basıldı" saymak PO-01'in ta kendisiydi.
+            if (_printTask is { } inFlight) await inFlight;
+
+            // Seçimi temizle ki baskı TÜM kuyruğu alsın (kısmi seçim tuzağı).
+            SelectedQueueItems.Clear();
+            if (!await PrintGuardedAsync())
             {
-                _dialogs.Show($"Yazdırma sırasında hata oluştu, yine de yayını bitiriyorum:\n{ex.Message}",
-                    "Yazdırma hatası", DialogSeverity.Warning);
+                _dialogs.Show(
+                    "Etiketler basılamadı; yayın açık bırakıldı. Yazıcıyı " +
+                    "kontrol edip tekrar dene veya \"basmadan bitir\"i seç.",
+                    "Yayını Bitir", DialogSeverity.Warning);
+                return;
             }
         }
 
@@ -1076,10 +1124,33 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     // sunucu kopyası ömür boyu aktif satış olarak kalır, stok geri gelmez.
     // Cancel(soft-delete) satırı yerinde bırakır, SyncedAt/StockSyncedAt'i
     // düşürür → iptal sunucuya gider, StockLedgerReconciler stoğu iade eder.
+    /// <summary>R7-04 Soru B: iptal edilecek kümenin uçuştaki baskı
+    /// snapshot'ıyla kesişimi. Baskı uçuştayken iptal DB'de kazanır
+    /// (ekonomik etki geri alınır) ama fiziksel kağıt engellenemez —
+    /// operatöre kilitleme yerine açık uyarı veriyoruz. "Şu an yazıcıda"
+    /// DENMEZ: bayrak kağıdın fiziksel durumunu değil uygulamanın baskı
+    /// çağrısını izler, spooler çağrı döndükten sonra da çıktı verebilir.</summary>
+    private int CountInFlight(System.Collections.Generic.IEnumerable<LabelViewModel> toCancel)
+        => _printInFlightIds is null ? 0 : toCancel.Count(vm => _printInFlightIds.Contains(vm.Id));
+
+    private static string InFlightWarning(int count)
+        => $"\n\nİptal edeceğin etiketlerden {count} tanesi devam eden baskı işinde. " +
+           "İptal işlemi yazıcıyı durdurmaz; bu etiketlerden çıkan veya " +
+           "sonradan çıkacak kağıtları imha et.";
+
     [RelayCommand(CanExecute = nameof(CanWrite))]
     private void RemoveSelectedFromQueue()
     {
         if (SelectedQueueItems.Count == 0) return;
+
+        // Kesişim yoksa eskisi gibi onaysız (hızlı akış bozulmasın).
+        var inFlight = CountInFlight(SelectedQueueItems);
+        if (inFlight > 0 && !_dialogs.Confirm(
+            $"Seçili {SelectedQueueItems.Count} etiket iptal edilecek." +
+            InFlightWarning(inFlight) + "\n\nDevam edilsin mi?",
+            "Kuyruktan Çıkar"))
+            return;
+
         var snapshot = SelectedQueueItems.ToList();
         _labels.Cancel(snapshot.Select(vm => vm.Id).ToList(),
             CancelReasonCodes.QueueRemoved);
@@ -1091,8 +1162,14 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
     private void ClearQueue()
     {
         if (PrintQueue.Count == 0) return;
-        if (!_dialogs.Confirm($"Kuyruktaki {PrintQueue.Count} etiket silinecek. Emin misin?",
-            "Hepsini Temizle")) return;
+
+        // R7-04 Soru B: baskı uçuştaysa kağıt-imha uyarısı; bkz. CountInFlight.
+        // "Silinecek" değil "iptal edilecek" — F06'dan beri gerçek işlem
+        // soft-cancel, metin işlemi doğru anlatmalı.
+        var msg = $"Kuyruktaki {PrintQueue.Count} etiket iptal edilecek. Emin misin?";
+        var inFlight = CountInFlight(PrintQueue);
+        if (inFlight > 0) msg += InFlightWarning(inFlight);
+        if (!_dialogs.Confirm(msg, "Hepsini Temizle")) return;
 
         _labels.Cancel(PrintQueue.Select(i => i.Id).ToList(),
             CancelReasonCodes.QueueRemoved);
@@ -1101,32 +1178,47 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
     /// <summary>R7-04: PrintCommand yalnız KENDİ tekrarını engelliyor.
     /// EndStream bu metodu doğrudan çağırdığı için komutun koruması devreye
-    /// girmiyor, yazıcı aynı snapshot'ı ikinci kez alıyordu. Bayrak metodun
-    /// kendisinde: hangi kapıdan gelinirse gelinsin uçuştaki baskı sahibi.</summary>
-    private bool _printInFlight;
+    /// girmiyor, yazıcı aynı snapshot'ı ikinci kez alıyordu. Görev referansı
+    /// metodun kendisinde: hangi kapıdan gelinirse gelinsin uçuştaki baskı
+    /// sahibi. EndStream de bu referansı bekleyerek "baskı sürerken kapandı"
+    /// yarışını kapatıyor.</summary>
+    private Task<bool>? _printTask;
+
+    /// <summary>Uçuştaki baskının etiket kimlikleri — ClearQueue/
+    /// RemoveSelected onay metnindeki "baskı işinde" sayısı bu kümeyle
+    /// kesişimden hesaplanır. Baskı yokken null.</summary>
+    private System.Collections.Generic.IReadOnlySet<string>? _printInFlightIds;
 
     [RelayCommand(CanExecute = nameof(CanWrite))]
-    private async Task Print()
+    private Task Print() => PrintGuardedAsync();
+
+    /// <summary>true = basılacak iş kalmadı (başarıyla basıldı ya da kuyruk
+    /// boştu); false = basılamadı (başka baskı sürüyor ya da yazıcı hatası).
+    /// EndStream bu sonuca bakarak yayını açık bırakır.</summary>
+    private async Task<bool> PrintGuardedAsync()
     {
-        if (_printInFlight) return;
+        if (_printTask is not null) return false;
 
         var snapshot = SelectedQueueItems.Count > 0
             ? SelectedQueueItems.ToList()
             : PrintQueue.ToList();
-        if (snapshot.Count == 0) return;
+        if (snapshot.Count == 0) return true;
 
-        _printInFlight = true;
+        _printInFlightIds = snapshot.Select(vm => vm.Id).ToHashSet();
+        var task = PrintCoreAsync(snapshot);
+        _printTask = task;
         try
         {
-            await PrintCoreAsync(snapshot);
+            return await task;
         }
         finally
         {
-            _printInFlight = false;
+            _printTask = null;
+            _printInFlightIds = null;
         }
     }
 
-    private async Task PrintCoreAsync(System.Collections.Generic.List<LabelViewModel> snapshot)
+    private async Task<bool> PrintCoreAsync(System.Collections.Generic.List<LabelViewModel> snapshot)
     {
 
         var labels = snapshot.Select(vm => vm.Label).ToList();
@@ -1152,7 +1244,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
                 $"Etiket yazdırma başarısız: {ex.Message}\n\n" +
                 "Yazıcı bağlantısını kontrol et veya Ayarlar > Yazıcı'dan farklı bir yazıcı seç.",
                 "Yazdırma Hatası", DialogSeverity.Warning);
-            return;
+            return false;
         }
 
         _labels.MarkPrintedAndRecord(labels.Select(l => l.Id).ToList());
@@ -1160,6 +1252,7 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
         // Sadece yazdırılanları kuyruktan kaldır (smart mode'da kalan seçimsizler korunur).
         foreach (var vm in snapshot) PrintQueue.Remove(vm);
         SelectedQueueItems.Clear();
+        return true;
     }
 
     /// <summary>Kargo PR F: print'lenecek label'lar arasında müşterisi
