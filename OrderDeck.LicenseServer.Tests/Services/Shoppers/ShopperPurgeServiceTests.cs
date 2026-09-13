@@ -357,6 +357,7 @@ public sealed class ShopperPurgeServiceTests
         var shopper = SeedShopper(db, "+905551110000");
         var license = SeedLicense(db);
         var stale = DateTimeOffset.UtcNow.AddDays(-10);
+        var projectionId = Guid.NewGuid();
 
         db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
         {
@@ -365,11 +366,12 @@ public sealed class ShopperPurgeServiceTests
             LicenseId = license.Id,
             Platform = "instagram",
             Username = "ayse_y",
+            WpfCustomerId = projectionId,
             JoinedAt = DateTimeOffset.UtcNow,
         });
         db.WpfCustomerProjections.Add(new WpfCustomerProjection
         {
-            Id = Guid.NewGuid(),
+            Id = projectionId,
             LicenseId = license.Id,
             Platform = "instagram",
             Username = "ayse_y",
@@ -473,6 +475,124 @@ public sealed class ShopperPurgeServiceTests
         audit.IpAddress.Should().BeEmpty();
         audit.UserAgent.Should().BeEmpty();
         audit.PaymentId.Should().Be(paymentId);
+    }
+
+    [Fact]
+    public async Task Tekrar_purge_yalniz_stabil_link_kapsamini_temizler()
+    {
+        using var db = NewDb();
+        var shopper = SeedShopper(
+            db, "+9055" + Random.Shared.Next(10_000_000, 99_999_999));
+        var linkedLicense = SeedLicense(db);
+        var unrelatedLicense = SeedLicense(db);
+        var linkedProjection = new WpfCustomerProjection
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = linkedLicense.Id,
+            Platform = "youtube",
+            Username = "linked-shopper",
+            FullName = "Silinecek kişi",
+            Phone = shopper.Phone,
+            Address = "Silinecek adres",
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+        db.WpfCustomerProjections.Add(linkedProjection);
+        db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+        {
+            Id = Guid.NewGuid(),
+            ShopperId = shopper.Id,
+            LicenseId = linkedLicense.Id,
+            Platform = linkedProjection.Platform,
+            Username = linkedProjection.Username,
+            WpfCustomerId = linkedProjection.Id,
+            JoinedAt = DateTimeOffset.UtcNow,
+        });
+
+        var unrelated = new[]
+        {
+            new WpfCustomerProjection
+            {
+                Id = Guid.NewGuid(), LicenseId = unrelatedLicense.Id,
+                Platform = "youtube", Username = "same-phone",
+                FullName = "Aynı telefonlu ilgisiz kişi", Phone = shopper.Phone,
+                Address = "İlgisiz adres", UpdatedAt = DateTimeOffset.UtcNow,
+            },
+            new WpfCustomerProjection
+            {
+                Id = Guid.NewGuid(), LicenseId = unrelatedLicense.Id,
+                Platform = "youtube", Username = "empty-phone",
+                FullName = "Boş telefonlu ilgisiz kişi", Phone = "",
+                Address = "İlgisiz adres", UpdatedAt = DateTimeOffset.UtcNow,
+            },
+            new WpfCustomerProjection
+            {
+                Id = Guid.NewGuid(), LicenseId = unrelatedLicense.Id,
+                Platform = "youtube", Username = "null-phone",
+                FullName = "Null telefonlu ilgisiz kişi", Phone = null,
+                Address = "İlgisiz adres", UpdatedAt = DateTimeOffset.UtcNow,
+            },
+        };
+        var expectedUnrelated = unrelated.ToDictionary(
+            row => row.Id, row => (row.FullName, row.Address));
+        db.WpfCustomerProjections.AddRange(unrelated);
+        await db.SaveChangesAsync();
+
+        var (service, _) = Build(db);
+        await service.PurgeAsync(shopper.Id, default);
+        await service.PurgeAsync(shopper.Id, default);
+
+        (await db.WpfCustomerProjections.FindAsync(linkedProjection.Id))!
+            .PurgedAt.Should().NotBeNull();
+        foreach (var row in unrelated)
+        {
+            var stored = await db.WpfCustomerProjections.FindAsync(row.Id);
+            stored!.FullName.Should().Be(expectedUnrelated[row.Id].FullName);
+            stored.Address.Should().Be(expectedUnrelated[row.Id].Address);
+            stored.PurgedAt.Should().BeNull();
+        }
+    }
+
+    [Fact]
+    public async Task Kanitsiz_pending_link_projeksiyonu_purge_kapsamina_almaz()
+    {
+        using var db = NewDb();
+        var shopper = SeedShopper(
+            db, "+9055" + Random.Shared.Next(10_000_000, 99_999_999));
+        var license = SeedLicense(db);
+        var projectionPhone =
+            "+9054" + Random.Shared.Next(10_000_000, 99_999_999);
+        var projection = new WpfCustomerProjection
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = license.Id,
+            Platform = "youtube",
+            Username = "public-username",
+            FullName = "Başka kişi",
+            Phone = projectionPhone,
+            Address = "Başka kişinin adresi",
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+        db.WpfCustomerProjections.Add(projection);
+        db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+        {
+            Id = Guid.NewGuid(),
+            ShopperId = shopper.Id,
+            LicenseId = license.Id,
+            Platform = projection.Platform,
+            Username = projection.Username,
+            WpfCustomerId = null,
+            JoinedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+
+        var (service, _) = Build(db);
+        await service.PurgeAsync(shopper.Id, default);
+
+        var stored = await db.WpfCustomerProjections.FindAsync(projection.Id);
+        stored!.FullName.Should().Be("Başka kişi");
+        stored.Phone.Should().Be(projectionPhone);
+        stored.Address.Should().Be("Başka kişinin adresi");
+        stored.PurgedAt.Should().BeNull();
     }
 
     [Fact]
