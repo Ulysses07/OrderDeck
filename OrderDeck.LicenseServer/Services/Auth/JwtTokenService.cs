@@ -68,7 +68,8 @@ public sealed class JwtTokenService
     /// claim'i Bearer-Customer (yayıncı) ve Bearer-Admin'den ayırt eder. `phone`
     /// claim'i sipariş eşleşme join'lerinde okunabilir.
     /// </summary>
-    public (string Token, DateTimeOffset ExpiresAt) IssueShopperToken(Guid shopperId, string phone)
+    public (string Token, DateTimeOffset ExpiresAt) IssueShopperToken(
+        Guid shopperId, string phone, int authVersion)
     {
         var lifetimeMinutes = _options.AccessTokenLifetimeMinutes > 0
             ? _options.AccessTokenLifetimeMinutes
@@ -77,7 +78,8 @@ public sealed class JwtTokenService
         var token = Build(JwtOptions.ShopperAudience, expiresAt,
             new Claim("sub", shopperId.ToString()),
             new Claim("principal", "shopper"),
-            new Claim("phone", phone));
+            new Claim("phone", phone),
+            new Claim(TenantClaims.ShopperAuthVersion, authVersion.ToString()));
         return (token, expiresAt);
     }
 

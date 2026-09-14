@@ -161,6 +161,10 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
         CancellationToken ct)
     {
         if (req.Amount <= 0) return Problem(title: "invalid-amount", statusCode: 400);
+        if (decimal.Round(req.Amount, 2) != req.Amount
+            || decimal.Round(req.ProductTotal, 2) != req.ProductTotal)
+            return Problem(title: "invalid-money-scale", statusCode: 400,
+                detail: "Amount ve ProductTotal kuruş hassasiyetini aşamaz.");
 
         // Boş Guid "anahtar yok" demek DEĞİL: istemci bozuk bir anahtar
         // üretmişse idempotency sessizce kapanır ve para yolunda çift düşüm

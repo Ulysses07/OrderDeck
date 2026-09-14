@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
@@ -50,6 +51,7 @@ public class ShopperOrdersTests : IClassFixture<ApiFactory>
         bool IsShippingFee);
 
     private sealed record OrdersResponse(OrderItem[] Items, string? NextCursor);
+    private sealed record ConfirmPhoneRequest(string Code);
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -117,10 +119,24 @@ public class ShopperOrdersTests : IClassFixture<ApiFactory>
             await db.SaveChangesAsync();
         }
 
-        var req = new RegisterRequest(broadcasterCode, "Orders User", phone, "OrdersPass1!", "Ankara", platform, username);
+        var password = $"orders-{Guid.NewGuid():N}";
+        var req = new RegisterRequest(broadcasterCode, "Orders User", phone, password, "Ankara", platform, username);
         var resp = await client.PostAsJsonAsync("/api/v1/shopper/auth/register", req);
         resp.StatusCode.Should().Be(HttpStatusCode.Created, "registration prerequisite must succeed");
         var body = await resp.Content.ReadFromJsonAsync<AuthResponse>();
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", body!.AccessToken);
+        var issue = await client.PostAsync(
+            "/api/v1/shopper/auth/phone-verification/request", null);
+        issue.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        var message = _factory.Sms.Sent.Last(m => m.Phone == phone).Text;
+        var code = Regex.Match(message, @"\d{6}").Value;
+        var confirm = await client.PostAsJsonAsync(
+            "/api/v1/shopper/auth/phone-verification/confirm",
+            new ConfirmPhoneRequest(code));
+        confirm.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
         return (body!.AccessToken, body.ShopperId, wpfId.ToString("N"));
     }
 

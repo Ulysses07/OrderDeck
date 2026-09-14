@@ -87,6 +87,42 @@ public class BackupRetentionServiceTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Retentiondan_once_iki_satir_varsa_ayin_en_eskisini_milestone_yapar()
+    {
+        var (db, svc, storage, customerId) = await SetupAsync(_factory);
+        var oldest = await InsertBackupAsync(db, storage, customerId,
+            new DateTimeOffset(2026, 4, 5, 10, 0, 0, TimeSpan.Zero));
+        var newest = await InsertBackupAsync(db, storage, customerId,
+            new DateTimeOffset(2026, 4, 20, 12, 0, 0, TimeSpan.Zero));
+
+        await Task.WhenAll(
+            svc.EnforceAfterInsertAsync(customerId, oldest.Id),
+            svc.EnforceAfterInsertAsync(customerId, newest.Id));
+
+        var milestones = await db.CustomerBackups
+            .Where(b => b.CustomerId == customerId && b.IsMonthlyMilestone)
+            .ToListAsync();
+        milestones.Should().ContainSingle().Which.Id.Should().Be(oldest.Id);
+    }
+
+    [Fact]
+    public async Task Ayni_anda_olusan_yedeklerde_en_kucuk_id_milestone_olur()
+    {
+        var (db, svc, storage, customerId) = await SetupAsync(_factory);
+        var createdAt = new DateTimeOffset(2026, 5, 1, 10, 0, 0, TimeSpan.Zero);
+        var first = await InsertBackupAsync(db, storage, customerId, createdAt);
+        var second = await InsertBackupAsync(db, storage, customerId, createdAt);
+        var expectedId = first.Id.CompareTo(second.Id) < 0 ? first.Id : second.Id;
+
+        await svc.EnforceAfterInsertAsync(customerId, second.Id);
+
+        var milestones = await db.CustomerBackups
+            .Where(b => b.CustomerId == customerId && b.IsMonthlyMilestone)
+            .ToListAsync();
+        milestones.Should().ContainSingle().Which.Id.Should().Be(expectedId);
+    }
+
+    [Fact]
     public async Task EnforceAfterInsert_SixthNonMilestone_DeletesOldestNonMilestone()
     {
         var (db, svc, storage, customerId) = await SetupAsync(_factory);

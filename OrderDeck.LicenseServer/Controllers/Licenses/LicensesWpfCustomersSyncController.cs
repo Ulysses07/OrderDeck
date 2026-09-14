@@ -106,7 +106,20 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
             synced++;
         }
 
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // Purge, bu sync'in okumasından sonra tombstone yazmış olabilir.
+            // Bayat kişisel veriyi reload edip tekrar denemek silmeyi geri alır;
+            // istemci güncel satırı okuyup yeni bir paketle karar vermeli.
+            return Problem(
+                title: "sync-conflict",
+                detail: "Müşteri verisi eşzamanlı değişti; güncel durumla yeniden deneyin.",
+                statusCode: StatusCodes.Status409Conflict);
+        }
 
         // Retroactive match: for newly-synced (or updated) projections, find any
         // ShopperBroadcasterLink with matching (LicenseId, Platform, Username) where
@@ -120,22 +133,36 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
         // Bu aynı zamanda kurtarma yolu: yayıncı WPF'te müşterinin telefonunu
         // girdiğinde sync o telefonu buraya taşır ve beklemedeki bağlantı kendiliğinden
         // kurulur — ayrı bir onay ekranı gerekmiyor.
+        // Ham payload'ı burada yeniden kullanma: yukarıda tombstone olduğu için
+        // atlanan öğe hâlâ telefon taşıyabilir. İlk kayıttan sonra yalnız DB'de
+        // gerçekten var olan ve PurgedAt IS NULL satırlar eşleştirmeye adaydır.
+        var matchableProjections = await _db.WpfCustomerProjections
+            .Where(p => p.LicenseId == licenseId
+                && ids.Contains(p.Id)
+                && p.PurgedAt == null)
+            .ToListAsync(ct);
+
         var retroactiveMatches = 0;
-        foreach (var item in req.Customers)
+        foreach (var projection in matchableProjections)
         {
-            var platformLower = item.Platform.ToLowerInvariant();
             var unmatchedLinks = await _db.ShopperBroadcasterLinks
                 .Where(l => l.LicenseId == licenseId
                     && l.WpfCustomerId == null
                     && l.LeftAt == null
-                    && l.Platform == platformLower
-                    && l.Username == item.Username)
-                .Select(l => new { Link = l, l.Shopper!.Phone })
+                    && l.Platform == projection.Platform
+                    && l.Username == projection.Username)
+                .Select(l => new
+                {
+                    Link = l,
+                    l.Shopper!.Phone,
+                    l.Shopper.PhoneVerifiedAt,
+                })
                 .ToListAsync(ct);
             foreach (var row in unmatchedLinks)
             {
-                if (!WpfCustomerLinkMatcher.PhoneProves(item.Phone, row.Phone)) continue;
-                row.Link.WpfCustomerId = item.Id;
+                if (!WpfCustomerLinkMatcher.PhoneProves(
+                        projection.Phone, row.Phone, row.PhoneVerifiedAt)) continue;
+                row.Link.WpfCustomerId = projection.Id;
                 retroactiveMatches++;
             }
         }

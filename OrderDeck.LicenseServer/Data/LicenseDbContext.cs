@@ -513,6 +513,7 @@ public class LicenseDbContext : DbContext
             b.Property(c => c.FullName).HasMaxLength(200);
             b.Property(c => c.Phone).HasMaxLength(20);
             b.Property(c => c.Address).HasMaxLength(500);
+            b.Property(c => c.PurgedAt).IsConcurrencyToken();
             b.HasIndex(c => new { c.LicenseId, c.Platform, c.Username });
         });
 

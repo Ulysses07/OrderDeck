@@ -428,6 +428,33 @@ public class Program
                     ValidateLifetime = true,
                     ClockSkew = TimeSpan.FromSeconds(30)
                 };
+                o.Events = new JwtBearerEvents
+                {
+                    OnTokenValidated = async context =>
+                    {
+                        var shopperId = context.Principal?.GetShopperId();
+                        if (shopperId is null)
+                        {
+                            context.Fail("shopper-id-missing");
+                            return;
+                        }
+
+                        var claim = context.Principal!
+                            .FindFirst(TenantClaims.ShopperAuthVersion)?.Value;
+                        var tokenVersion = int.TryParse(claim, out var parsed)
+                            ? parsed
+                            : 0;
+                        var db = context.HttpContext.RequestServices
+                            .GetRequiredService<LicenseDbContext>();
+                        var currentVersion = await db.Shoppers
+                            .AsNoTracking()
+                            .Where(s => s.Id == shopperId && s.DeletedAt == null)
+                            .Select(s => (int?)s.AuthVersion)
+                            .SingleOrDefaultAsync(context.HttpContext.RequestAborted);
+                        if (currentVersion is null || currentVersion.Value != tokenVersion)
+                            context.Fail("shopper-token-revoked");
+                    }
+                };
             });
 
         builder.Services.AddAuthorization(opt =>

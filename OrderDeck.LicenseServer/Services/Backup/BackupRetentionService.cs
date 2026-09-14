@@ -47,27 +47,39 @@ public sealed class BackupRetentionService
         var newBackup = await _db.CustomerBackups.FindAsync(new object[] { newBackupId }, ct);
         if (newBackup is null) return;
 
-        // Step 1: first-of-month milestone marker
+        // Step 1: month milestone marker. Satırlar retention başlamadan önce
+        // görünür olabilir; bu yüzden "başka satır var mı" diye yeni satıra
+        // karar vermek yerine ayın deterministik en eskisini her turda onar.
         var monthStart = new DateTimeOffset(newBackup.CreatedAt.Year, newBackup.CreatedAt.Month, 1, 0, 0, 0, TimeSpan.Zero);
         var monthEnd = monthStart.AddMonths(1);
-        var existingThisMonth = await _db.CustomerBackups
+        var monthBackups = await _db.CustomerBackups
             .Where(b => b.CustomerId == customerId
                      && b.CreatedAt >= monthStart
-                     && b.CreatedAt < monthEnd
-                     && b.Id != newBackupId)
-            .AnyAsync(ct);
+                     && b.CreatedAt < monthEnd)
+            .OrderBy(b => b.CreatedAt)
+            .ThenBy(b => b.Id)
+            .ToListAsync(ct);
 
-        if (!existingThisMonth)
+        var oldest = monthBackups[0];
+        var milestoneChanged = false;
+        foreach (var backup in monthBackups)
         {
-            newBackup.IsMonthlyMilestone = true;
-            await _db.SaveChangesAsync(ct);
+            var shouldBeMilestone = backup.Id == oldest.Id;
+            if (backup.IsMonthlyMilestone == shouldBeMilestone) continue;
+            backup.IsMonthlyMilestone = shouldBeMilestone;
+            milestoneChanged = true;
         }
-
-        // Step 2: trim non-milestones to MaxNonMilestones most recent
-        var nonMilestones = await _db.CustomerBackups
-            .Where(b => b.CustomerId == customerId && !b.IsMonthlyMilestone)
+        // Step 2: trim non-milestones to MaxNonMilestones most recent. SQL'de
+        // milestone filtresi kullanma: yukarıdaki onarım henüz kaydedilmedi.
+        // Tüm satırları yükleyip tracked güncel değerle filtrelemek milestone
+        // onarımı ile silmeleri tek atomik SaveChanges içinde tutar.
+        var customerBackups = await _db.CustomerBackups
+            .Where(b => b.CustomerId == customerId)
             .OrderByDescending(b => b.CreatedAt)
             .ToListAsync(ct);
+        var nonMilestones = customerBackups
+            .Where(b => !b.IsMonthlyMilestone)
+            .ToList();
 
         if (nonMilestones.Count > MaxNonMilestones)
         {
@@ -82,6 +94,10 @@ public sealed class BackupRetentionService
             foreach (var path in blobPaths) _storage.DeleteBlob(path);
             _log.LogInformation("Retention trimmed {Count} backups for customer {CustomerId}",
                 toDelete.Count, customerId);
+        }
+        else if (milestoneChanged)
+        {
+            await _db.SaveChangesAsync(ct);
         }
     }
 }

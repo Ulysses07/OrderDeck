@@ -144,6 +144,70 @@ public class LicensesCustomerBalanceApplyControllerTests : IClassFixture<ApiFact
     // düşürür ve ledger'a iki düşüm satırı yazar — sessiz para kaybı.
 
     [Fact]
+    public async Task Apply_kurus_alti_amount_reddeder_ve_yan_etki_yapmaz()
+    {
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(100m);
+
+        foreach (var amount in new[] { 0.005m, 0.004m, 1.234m })
+        {
+            var resp = await client.PostAsJsonAsync(
+                $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+                new
+                {
+                    WpfCustomerId = wpfCustomerId,
+                    Amount = amount,
+                    ProductTotal = 100m,
+                    IdempotencyKey = Guid.NewGuid(),
+                });
+
+            resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+            var problem = await resp.Content.ReadFromJsonAsync<ProblemDetailsLite>();
+            problem!.Title.Should().Be("invalid-money-scale");
+        }
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        db.CustomerBalances
+            .Single(b => b.LicenseId == licenseId && b.WpfCustomerId == wpfCustomerId)
+            .Balance.Should().Be(100m);
+        db.CustomerBalanceTransactions
+            .Count(t => t.LicenseId == licenseId && t.Kind == "purchase-deduction")
+            .Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Apply_kurus_alti_product_total_reddeder_ve_yan_etki_yapmaz()
+    {
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(100m);
+
+        foreach (var productTotal in new[] { 0.005m, 0.004m, 1.234m })
+        {
+            var resp = await client.PostAsJsonAsync(
+                $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+                new
+                {
+                    WpfCustomerId = wpfCustomerId,
+                    Amount = 1m,
+                    ProductTotal = productTotal,
+                    IdempotencyKey = Guid.NewGuid(),
+                });
+
+            resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+            var problem = await resp.Content.ReadFromJsonAsync<ProblemDetailsLite>();
+            problem!.Title.Should().Be("invalid-money-scale");
+        }
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        db.CustomerBalances
+            .Single(b => b.LicenseId == licenseId && b.WpfCustomerId == wpfCustomerId)
+            .Balance.Should().Be(100m);
+        db.CustomerBalanceTransactions
+            .Count(t => t.LicenseId == licenseId && t.Kind == "purchase-deduction")
+            .Should().Be(0);
+    }
+
+    [Fact]
     public async Task Apply_same_key_twice_deducts_once()
     {
         var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);

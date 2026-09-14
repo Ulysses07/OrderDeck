@@ -31,6 +31,9 @@ public static class TenantClaims
     /// Ad bilerek "role" değil — JWT handler "role"ü ClaimTypes.Role'e eşliyor.</summary>
     public const string OperatorRole = "oprole";
 
+    /// <summary>Shopper parolası değiştiğinde artırılan access-token sürümü.</summary>
+    public const string ShopperAuthVersion = "shopper_auth_version";
+
     /// <summary>
     /// JWT'den tenant customer id'yi çıkarır. Yeni `tcid` claim'i varsa onu,
     /// yoksa `sub`'a düşer (legacy customer token).

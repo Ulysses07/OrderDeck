@@ -132,11 +132,11 @@ public class BackupWriteOrderingTests
         db.Customers.Add(customer);
         await db.SaveChangesAsync();
 
-        // Kırpma eşiği 5; 6 kilometre taşı olmayan satır bir tanesinin
-        // silinmesini tetikler.
+        // En eski satır aylık kilometre taşı olur. Kalan 6 normal satır,
+        // kırpma eşiği 5'i aştığı için bir silme tetikler.
         var newestId = Guid.Empty;
         var paths = new List<string>();
-        for (var day = 1; day <= 6; day++)
+        for (var day = 1; day <= 7; day++)
         {
             var (envelope, _) = storage.Encrypt(new byte[] { 1, 2, 3 });
             var path = await storage.WriteBlobAsync(customer.Id, envelope);
@@ -159,7 +159,7 @@ public class BackupWriteOrderingTests
         await retention.Invoking(r => r.EnforceAfterInsertAsync(customer.Id, newestId))
             .Should().ThrowAsync<InvalidOperationException>();
 
-        (await db.CustomerBackups.CountAsync(b => b.CustomerId == customer.Id)).Should().Be(6);
+        (await db.CustomerBackups.CountAsync(b => b.CustomerId == customer.Id)).Should().Be(7);
         paths.Should().OnlyContain(p => File.Exists(p),
             "satırlar silinemediyse hiçbir blob silinmemeli — aksi hâlde tek seferde " +
             "birden çok hayalet yedek oluşur");

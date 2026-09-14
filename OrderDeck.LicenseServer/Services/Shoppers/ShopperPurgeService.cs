@@ -72,8 +72,6 @@ public sealed class ShopperPurgeService
         if (shopper is null) return null;
 
         var now = DateTimeOffset.UtcNow;
-        var phone = shopper.Phone;
-
         // 1. R2'deki dekont PDF'leri. Satırdaki anahtarı boşaltmadan ÖNCE
         //    silinmeli; sıra ters olsaydı nesneye giden tek referansı
         //    kaybeder, kovada yetim bırakırdık.
@@ -181,26 +179,35 @@ public sealed class ShopperPurgeService
         //    sürüm yayınıyla sahaya iner.
         var links = await _db.ShopperBroadcasterLinks
             .Where(l => l.ShopperId == shopperId)
-            .Select(l => new { l.LicenseId, l.Platform, l.Username })
+            .Select(l => new
+            {
+                l.LicenseId,
+                l.WpfCustomerId,
+            })
             .ToListAsync(ct);
-        var licenseIds = links.Select(l => l.LicenseId).Distinct().ToList();
 
-        // Üçlü (LicenseId, Platform, Username) eşleşmesini sorguya gömmek
-        // istemedim: yerel listeyle kurulan çok alanlı Any() SQL'e
-        // çevrilemez, EF çalışma anında patlar. Bunun yerine kaba filtreyi
-        // sunucuda (telefon VEYA ilgili lisanslar), kesin eşleşmeyi bellekte
-        // yapıyoruz. Bir yayıncının müşteri listesi elle silme işlemi için
-        // yeterince küçük.
-        var linkKeys = links
-            .Select(l => (l.LicenseId, l.Platform, l.Username))
+        // Yalnız sahipliği daha önce kanıtlanmış WPF kimliği purge kapsamıdır.
+        // Pending linkin platform+kullanıcı adı herkese açık olabilir; onu
+        // fallback kimlik saymak başka bir kişinin projeksiyonunu sildirebilir.
+        // Telefon da purge tarafından boşaltıldığı için retry anahtarı olamaz.
+        var projectionKeys = links
+            .Where(l => l.WpfCustomerId is not null)
+            .Select(l => (
+                LicenseId: l.LicenseId,
+                WpfCustomerId: l.WpfCustomerId!.Value))
             .ToHashSet();
-
-        var projections = (await _db.WpfCustomerProjections
-                .Where(c => c.Phone == phone || licenseIds.Contains(c.LicenseId))
-                .ToListAsync(ct))
-            .Where(c => c.Phone == phone
-                || linkKeys.Contains((c.LicenseId, c.Platform, c.Username)))
+        var licenseIds = projectionKeys
+            .Select(k => k.LicenseId)
+            .Distinct()
             .ToList();
+
+        var projections = licenseIds.Count == 0
+            ? new List<WpfCustomerProjection>()
+            : (await _db.WpfCustomerProjections
+                    .Where(c => licenseIds.Contains(c.LicenseId))
+                    .ToListAsync(ct))
+                .Where(c => projectionKeys.Contains((c.LicenseId, c.Id)))
+                .ToList();
 
         foreach (var c in projections)
         {

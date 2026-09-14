@@ -1,9 +1,11 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.RegularExpressions;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
@@ -57,19 +59,21 @@ public class ShopperAuthResetPasswordTests : IClassFixture<ApiFactory>
     public async Task ResetPassword_happy_path_changes_password_and_revokes_tokens()
     {
         var phone = UniquePhone();
-        await SeedShopperAsync(phone, "OldPass1!");
+        var oldPassword = $"old-{Guid.NewGuid():N}";
+        var newPassword = $"new-{Guid.NewGuid():N}";
+        await SeedShopperAsync(phone, oldPassword);
         var client = _factory.CreateClient();
 
         // Eski oturum (refresh token) al.
         var loginResp = await client.PostAsJsonAsync("/api/v1/shopper/auth/login",
-            new LoginRequest(phone, "OldPass1!"));
+            new LoginRequest(phone, oldPassword));
         loginResp.StatusCode.Should().Be(HttpStatusCode.OK);
         var oldAuth = await loginResp.Content.ReadFromJsonAsync<AuthBody>();
 
         var code = await RequestCodeAsync(client, phone);
 
         var resetResp = await client.PostAsJsonAsync("/api/v1/shopper/auth/reset-password",
-            new ResetPasswordRequest(phone, code, "NewPass1!"));
+            new ResetPasswordRequest(phone, code, newPassword));
         resetResp.StatusCode.Should().Be(HttpStatusCode.NoContent);
 
         // Eski refresh token iptal edildi → 401.
@@ -77,15 +81,106 @@ public class ShopperAuthResetPasswordTests : IClassFixture<ApiFactory>
             new RefreshRequest(oldAuth!.RefreshToken));
         refreshResp.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
 
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", oldAuth.AccessToken);
+        (await client.GetAsync("/api/v1/shopper/me"))
+            .StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        client.DefaultRequestHeaders.Authorization = null;
+
         // Yeni parolayla giriş çalışır.
         var newLogin = await client.PostAsJsonAsync("/api/v1/shopper/auth/login",
-            new LoginRequest(phone, "NewPass1!"));
+            new LoginRequest(phone, newPassword));
         newLogin.StatusCode.Should().Be(HttpStatusCode.OK);
+        var newAuth = await newLogin.Content.ReadFromJsonAsync<AuthBody>();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", newAuth!.AccessToken);
+        (await client.GetAsync("/api/v1/shopper/me"))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        client.DefaultRequestHeaders.Authorization = null;
 
         // Eski parola artık çalışmaz.
         var oldLogin = await client.PostAsJsonAsync("/api/v1/shopper/auth/login",
-            new LoginRequest(phone, "OldPass1!"));
+            new LoginRequest(phone, oldPassword));
         oldLogin.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task ResetPassword_verified_otp_relinks_pending_historical_customer()
+    {
+        var phone = UniquePhone();
+        var oldPassword = $"old-{Guid.NewGuid():N}";
+        var newPassword = $"new-{Guid.NewGuid():N}";
+        var shopperId = Guid.NewGuid();
+        var licenseId = Guid.NewGuid();
+        var projectionId = Guid.NewGuid();
+        var linkId = Guid.NewGuid();
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var hasher = scope.ServiceProvider.GetRequiredService<PasswordHasher>();
+            var now = DateTimeOffset.UtcNow;
+            var customer = new Customer
+            {
+                Id = Guid.NewGuid(),
+                Email = $"reset-{Guid.NewGuid():N}@x.test",
+                Name = "Reset Broadcaster",
+                PasswordHash = $"hash-{Guid.NewGuid():N}",
+                CreatedAt = now,
+            };
+            db.Customers.Add(customer);
+            db.Licenses.Add(new License
+            {
+                Id = licenseId,
+                CustomerId = customer.Id,
+                LicenseKey = $"license-{Guid.NewGuid():N}",
+                SkuCode = "STD",
+                IssuedAt = now,
+                ExpiresAt = now.AddYears(1),
+            });
+            db.Shoppers.Add(new OrderDeck.LicenseServer.Domain.Shopper
+            {
+                Id = shopperId,
+                FullName = "Reset Link Tester",
+                Phone = phone,
+                PasswordHash = hasher.Hash(oldPassword),
+                Address = "Addr",
+                CreatedAt = now,
+                UpdatedAt = now,
+            });
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = projectionId,
+                LicenseId = licenseId,
+                Platform = "youtube",
+                Username = "reset-link-user",
+                Phone = phone,
+                UpdatedAt = now,
+            });
+            db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+            {
+                Id = linkId,
+                ShopperId = shopperId,
+                LicenseId = licenseId,
+                Platform = "youtube",
+                Username = "reset-link-user",
+                JoinedAt = now,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var client = _factory.CreateClient();
+        var code = await RequestCodeAsync(client, phone);
+        var reset = await client.PostAsJsonAsync("/api/v1/shopper/auth/reset-password",
+            new ResetPasswordRequest(phone, code, newPassword));
+        reset.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        using var verifyScope = _factory.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var shopper = await verifyDb.Shoppers.FindAsync(shopperId);
+        var link = await verifyDb.ShopperBroadcasterLinks.FindAsync(linkId);
+        shopper!.PhoneVerifiedAt.Should().NotBeNull();
+        link!.WpfCustomerId.Should().Be(projectionId);
     }
 
     [Fact]

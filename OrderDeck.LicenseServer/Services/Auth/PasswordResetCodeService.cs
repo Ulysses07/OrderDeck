@@ -14,6 +14,8 @@ namespace OrderDeck.LicenseServer.Services.Auth;
 /// </summary>
 public sealed class PasswordResetCodeService
 {
+    public sealed record IssuedCode(Guid Id, string Code);
+
     public const int CodeLength = 6;
     public static readonly TimeSpan Expiry = TimeSpan.FromMinutes(10);
     public static readonly TimeSpan PerPhoneCooldown = TimeSpan.FromSeconds(60);
@@ -42,9 +44,19 @@ public sealed class PasswordResetCodeService
     /// <summary>
     /// Rate-limit + global tavan geçilirse 6 haneli kodu üretir, hash'leyip
     /// satır ekler ve **plaintext kodu döner** (SMS'e gider). Throttle/cap
-    /// durumunda <c>null</c> döner (SMS gönderilmez, çağıran yine 202 verir).
+    /// durumunda <c>null</c> döner. Anonim forgot-password ucu hesap varlığını
+    /// sızdırmamak için yine 202 verir; yetkili uçlar 429 bildirebilir.
     /// </summary>
-    public async Task<string?> IssueAsync(Shopper shopper, string? ip, CancellationToken ct = default)
+    public async Task<string?> IssueAsync(
+        Shopper shopper, string? ip, CancellationToken ct = default)
+        => (await IssueWithHandleAsync(shopper, ip, ct))?.Code;
+
+    /// <summary>
+    /// SMS teslimatı başarısız olursa yalnız bu üretimi geri alabilmek için
+    /// satır kimliğiyle birlikte kodu döndürür.
+    /// </summary>
+    public async Task<IssuedCode?> IssueWithHandleAsync(
+        Shopper shopper, string? ip, CancellationToken ct = default)
     {
         var now = DateTimeOffset.UtcNow;
         var todayStart = new DateTimeOffset(now.UtcDateTime.Date, TimeSpan.Zero);
@@ -85,7 +97,7 @@ public sealed class PasswordResetCodeService
 
         // 4. Kod üret (6 hane, kriptografik), hash'le, satır ekle.
         var code = GenerateCode();
-        _db.ShopperPasswordResetCodes.Add(new ShopperPasswordResetCode
+        var row = new ShopperPasswordResetCode
         {
             Id = Guid.NewGuid(),
             ShopperId = shopper.Id,
@@ -94,9 +106,25 @@ public sealed class PasswordResetCodeService
             CreatedAt = now,
             RequestIp = ip,
             AttemptCount = 0,
-        });
+        };
+        _db.ShopperPasswordResetCodes.Add(row);
         await _db.SaveChangesAsync(ct);
-        return code;
+        return new IssuedCode(row.Id, code);
+    }
+
+    /// <summary>
+    /// Sağlayıcıya teslim edilemeyen kodu kaldırır; cooldown ve günlük kota
+    /// gerçekte gönderilmemiş SMS yüzünden tüketilmez.
+    /// </summary>
+    public async Task DiscardAsync(Guid codeId, CancellationToken ct = default)
+    {
+        var row = await _db.ShopperPasswordResetCodes.FindAsync(
+            new object[] { codeId }, ct);
+        if (row is null)
+            return;
+
+        _db.ShopperPasswordResetCodes.Remove(row);
+        await _db.SaveChangesAsync(ct);
     }
 
     /// <summary>

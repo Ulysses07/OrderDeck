@@ -52,7 +52,7 @@ public class PanelSupportRequestsControllerTests : IClassFixture<ApiFactory>
             Id = shopperId,
             FullName = "Shopper " + shopperId.ToString("N")[..6],
             Phone = "+9055" + Random.Shared.Next(10_000_000, 99_999_999),
-            PasswordHash = "originalhash",
+            PasswordHash = $"hash-{Guid.NewGuid():N}",
             Address = "Addr",
             CreatedAt = now,
             UpdatedAt = now,
@@ -74,7 +74,7 @@ public class PanelSupportRequestsControllerTests : IClassFixture<ApiFactory>
         Guid Id, Guid LicenseId, Guid ShopperId,
         string ShopperName, string ShopperPhone,
         string Kind, DateTimeOffset CreatedAt, DateTimeOffset? ResolvedAt);
-    private sealed record IssueResp(string TempPassword);
+    private sealed record IssueResp(string? TempPassword, string? Status);
 
     [Fact]
     public async Task List_returns_pending_only_by_default()
@@ -117,25 +117,34 @@ public class PanelSupportRequestsControllerTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task IssueTempPassword_returns_temp_password_and_updates_hash()
+    public async Task IssueTempPassword_starts_verified_recovery_without_disclosing_password()
     {
         var (client, _, licenseId) = await SetupAsync();
         var (shopperId, requestId) = await SeedShopperWithRequestAsync(licenseId);
+
+        string originalHash;
+        string phone;
+        using (var beforeScope = _factory.Services.CreateScope())
+        {
+            var beforeDb = beforeScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var before = await beforeDb.Shoppers.FindAsync(shopperId);
+            originalHash = before!.PasswordHash;
+            phone = before.Phone;
+        }
 
         var resp = await client.PostAsync(
             $"/api/panel/support-requests/{requestId}/issue-temp-password", null);
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var body = await resp.Content.ReadFromJsonAsync<IssueResp>();
         body.Should().NotBeNull();
-        body!.TempPassword.Should().NotBeNullOrEmpty();
-        body.TempPassword.Length.Should().Be(10);
+        body!.TempPassword.Should().BeNull();
+        body.Status.Should().Be("verification-sent");
+        _factory.Sms.Sent.Should().Contain(m => m.Phone == phone);
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-        var hasher = scope.ServiceProvider.GetRequiredService<PasswordHasher>();
         var shopper = await db.Shoppers.FindAsync(shopperId);
-        shopper!.PasswordHash.Should().NotBe("originalhash");
-        hasher.Verify(shopper.PasswordHash, body.TempPassword).Should().BeTrue();
+        shopper!.PasswordHash.Should().Be(originalHash);
         var req = await db.ShopperSupportRequests.FindAsync(requestId);
         req!.ResolvedAt.Should().NotBeNull();
     }
@@ -177,7 +186,7 @@ public class PanelSupportRequestsControllerTests : IClassFixture<ApiFactory>
             {
                 Id = Guid.NewGuid(),
                 ShopperId = shopperId,
-                TokenHash = "h1",
+                TokenHash = $"token-hash-{Guid.NewGuid():N}",
                 CreatedAt = DateTimeOffset.UtcNow,
                 ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
             });
@@ -195,5 +204,29 @@ public class PanelSupportRequestsControllerTests : IClassFixture<ApiFactory>
             .ToList();
         tokens.Should().NotBeEmpty();
         tokens.Should().AllSatisfy(t => t.RevokedAt.Should().NotBeNull());
+    }
+
+    [Fact]
+    public async Task IssueTempPassword_sms_hatasindan_sonra_retry_edilebilir()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var (_, requestId) = await SeedShopperWithRequestAsync(licenseId);
+
+        HttpResponseMessage failed;
+        _factory.Sms.ThrowOnSend = true;
+        try
+        {
+            failed = await client.PostAsync(
+                $"/api/panel/support-requests/{requestId}/issue-temp-password", null);
+        }
+        finally
+        {
+            _factory.Sms.ThrowOnSend = false;
+        }
+
+        failed.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+        var retry = await client.PostAsync(
+            $"/api/panel/support-requests/{requestId}/issue-temp-password", null);
+        retry.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 }

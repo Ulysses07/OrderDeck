@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text.Json;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -118,6 +119,22 @@ public class ShopperMeGetTests : IClassFixture<ApiFactory>
         body.NotificationPrefs.Should().NotBeNull();
         body.Broadcasters.Should().HaveCount(1);
         body.Broadcasters[0].LicenseId.Should().Be(licenseId);
+    }
+
+    [Fact]
+    public async Task GetMe_exposes_phone_verification_status()
+    {
+        var client = _factory.CreateClient();
+        var (token, _, _) = await RegisterShopperAsync(client);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        var response = await client.GetAsync("/api/v1/shopper/me");
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        json.RootElement.TryGetProperty("phoneVerified", out var phoneVerified)
+            .Should().BeTrue();
+        phoneVerified.GetBoolean().Should().BeFalse();
     }
 
     // ── T12.2: No Authorization header → 401 ─────────────────────────────────

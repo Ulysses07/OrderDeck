@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -41,6 +42,7 @@ public class ShopperBroadcastersJoinTests : IClassFixture<ApiFactory>
 
     private sealed record JoinRequest(string BroadcasterCode, string Platform, string Username);
     private sealed record JoinResponse(BroadcasterSummaryDto[] Broadcasters);
+    private sealed record ConfirmPhoneRequest(string Code);
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -92,11 +94,26 @@ public class ShopperBroadcastersJoinTests : IClassFixture<ApiFactory>
         HttpClient client, string broadcasterCode)
     {
         var phone = UniquePhone();
-        var req = new RegisterRequest(broadcasterCode, "Join User", phone, "JoinPass1!", "Ankara", "youtube", "joinuser");
+        var password = $"join-{Guid.NewGuid():N}";
+        var req = new RegisterRequest(broadcasterCode, "Join User", phone, password, "Ankara", "youtube", "joinuser");
         var resp = await client.PostAsJsonAsync("/api/v1/shopper/auth/register", req);
         resp.StatusCode.Should().Be(HttpStatusCode.Created, "registration prerequisite must succeed");
         var body = await resp.Content.ReadFromJsonAsync<AuthResponse>();
         return (body!.AccessToken, body.ShopperId, phone);
+    }
+
+    private async Task VerifyPhoneAsync(HttpClient client, string phone)
+    {
+        var issue = await client.PostAsync(
+            "/api/v1/shopper/auth/phone-verification/request", null);
+        issue.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        var message = _factory.Sms.Sent.Last(m => m.Phone == phone).Text;
+        var code = Regex.Match(message, @"\d{6}").Value;
+
+        var confirm = await client.PostAsJsonAsync(
+            "/api/v1/shopper/auth/phone-verification/confirm",
+            new ConfirmPhoneRequest(code));
+        confirm.StatusCode.Should().Be(HttpStatusCode.NoContent);
     }
 
     // ── T1: Happy path — join broadcaster B after registered with A ──────────
@@ -228,6 +245,7 @@ public class ShopperBroadcastersJoinTests : IClassFixture<ApiFactory>
         }
 
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        await VerifyPhoneAsync(client, phone);
         var resp = await client.PostAsJsonAsync(
             "/api/v1/shopper/broadcasters/join",
             new JoinRequest(codeB, "instagram", "wpfmatch"));
@@ -350,6 +368,7 @@ public class ShopperBroadcastersJoinTests : IClassFixture<ApiFactory>
         var link = await db2.ShopperBroadcasterLinks
             .Where(l => l.ShopperId == shopperId && l.LicenseId == licenseIdB && l.LeftAt == null)
             .FirstOrDefaultAsync();
-        link!.WpfCustomerId.Should().Be(wpfId);
+        link!.WpfCustomerId.Should().BeNull(
+            "telefon metni eşit olsa da numara sahipliği doğrulanmadı");
     }
 }

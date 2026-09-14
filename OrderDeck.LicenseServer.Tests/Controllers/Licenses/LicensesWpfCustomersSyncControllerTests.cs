@@ -224,7 +224,8 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
                 Id = Guid.NewGuid(),
                 FullName = "Test Shopper",
                 Phone = phone,
-                PasswordHash = "hash",
+                PhoneVerifiedAt = DateTimeOffset.UtcNow,
+                PasswordHash = $"hash-{Guid.NewGuid():N}",
                 Address = "Some address",
                 CreatedAt = DateTimeOffset.UtcNow,
                 UpdatedAt = DateTimeOffset.UtcNow
@@ -375,6 +376,83 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
         after.FullName.Should().BeNull();
         after.Phone.Should().BeNull();
         after.Address.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Silinmis_projeksiyon_ham_payload_ile_pending_linke_baglanmaz()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var projectionId = Guid.NewGuid();
+        var linkId = Guid.NewGuid();
+        var phone = "+9055" + Random.Shared.Next(10_000_000, 99_999_999);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var shopper = new OrderDeck.LicenseServer.Domain.Shopper
+            {
+                Id = Guid.NewGuid(),
+                FullName = "Doğrulanmış shopper",
+                Phone = phone,
+                PhoneVerifiedAt = DateTimeOffset.UtcNow,
+                PasswordHash = $"hash-{Guid.NewGuid():N}",
+                Address = "Adres",
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            };
+            db.Shoppers.Add(shopper);
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = projectionId,
+                LicenseId = licenseId,
+                Platform = "youtube",
+                Username = "silinmis-link",
+                FullName = null,
+                Phone = null,
+                Address = null,
+                PurgedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+            {
+                Id = linkId,
+                ShopperId = shopper.Id,
+                LicenseId = licenseId,
+                Platform = "youtube",
+                Username = "silinmis-link",
+                WpfCustomerId = null,
+                JoinedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/wpf-customers/sync",
+            new
+            {
+                customers = new[]
+                {
+                    MakeSyncItem(
+                        projectionId,
+                        "youtube",
+                        "silinmis-link",
+                        "Bayat ad",
+                        phone,
+                        "Bayat adres"),
+                }
+            });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await resp.Content.ReadFromJsonAsync<SyncResponse>())!
+            .RetroactiveMatches.Should().Be(0);
+
+        using var verify = _factory.Services.CreateScope();
+        var verifyDb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await verifyDb.ShopperBroadcasterLinks.FindAsync(linkId))!
+            .WpfCustomerId.Should().BeNull();
+        var projection = await verifyDb.WpfCustomerProjections.FindAsync(projectionId);
+        projection!.FullName.Should().BeNull();
+        projection.Phone.Should().BeNull();
+        projection.Address.Should().BeNull();
     }
 
     [Fact]

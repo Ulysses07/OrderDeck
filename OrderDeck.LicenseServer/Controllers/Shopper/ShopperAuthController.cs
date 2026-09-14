@@ -20,7 +20,8 @@ public sealed record AuthResponse(
     string RefreshToken,
     DateTimeOffset RefreshTokenExpiresAt,
     Guid ShopperId,
-    BroadcasterSummary[] Broadcasters);
+    BroadcasterSummary[] Broadcasters,
+    bool PhoneVerified);
 
 public sealed record RefreshResponse(
     string AccessToken,
@@ -191,7 +192,8 @@ public sealed class ShopperAuthController : ControllerBase
                         p.Platform == platformNorm &&
                         p.Username == usernameNorm)
             .ToListAsync(ct);
-        var wpfMatch = WpfCustomerLinkMatcher.FindProven(candidates, shopper.Phone);
+        var wpfMatch = WpfCustomerLinkMatcher.FindProven(
+            candidates, shopper.Phone, shopper.PhoneVerifiedAt);
 
         // 8. Insert link
         var link = new ShopperBroadcasterLink
@@ -235,7 +237,8 @@ public sealed class ShopperAuthController : ControllerBase
         await _db.SaveChangesAsync(ct);
 
         // 9. & 10. Issue tokens
-        var (accessToken, accessExpiresAt) = _jwt.IssueShopperToken(shopper.Id, phone!);
+        var (accessToken, accessExpiresAt) = _jwt.IssueShopperToken(
+            shopper.Id, phone!, shopper.AuthVersion);
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
         var (refreshRaw, refreshExpiresAt) = await _refresh.IssueAsync(shopper.Id, ip, ct);
 
@@ -247,7 +250,8 @@ public sealed class ShopperAuthController : ControllerBase
             accessToken, accessExpiresAt,
             refreshRaw, refreshExpiresAt,
             shopper.Id,
-            broadcasters));
+            broadcasters,
+            shopper.PhoneVerifiedAt is not null));
     }
 
     // ── Login ─────────────────────────────────────────────────────────────────
@@ -274,7 +278,8 @@ public sealed class ShopperAuthController : ControllerBase
             return Problem(title: "invalid-credentials", statusCode: 401);
 
         // 4. Issue tokens
-        var (accessToken, accessExpiresAt) = _jwt.IssueShopperToken(shopper.Id, phone!);
+        var (accessToken, accessExpiresAt) = _jwt.IssueShopperToken(
+            shopper.Id, phone!, shopper.AuthVersion);
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
         var (refreshRaw, refreshExpiresAt) = await _refresh.IssueAsync(shopper.Id, ip, ct);
 
@@ -286,7 +291,8 @@ public sealed class ShopperAuthController : ControllerBase
             accessToken, accessExpiresAt,
             refreshRaw, refreshExpiresAt,
             shopper.Id,
-            broadcasters));
+            broadcasters,
+            shopper.PhoneVerifiedAt is not null));
     }
 
     // ── Refresh ───────────────────────────────────────────────────────────────
@@ -313,12 +319,85 @@ public sealed class ShopperAuthController : ControllerBase
             return Problem(title: "invalid-refresh-token", statusCode: 401);
 
         // 3. Issue new access token
-        var (newAccessToken, newAccessExpiresAt) = _jwt.IssueShopperToken(shopper.Id, shopper.Phone);
+        var (newAccessToken, newAccessExpiresAt) = _jwt.IssueShopperToken(
+            shopper.Id, shopper.Phone, shopper.AuthVersion);
 
         // 4. Return 200 with RefreshResponse
         return Ok(new RefreshResponse(
             newAccessToken, newAccessExpiresAt,
             newRefreshRaw, newRefreshExpiresAt));
+    }
+
+    // ── Phone verification ───────────────────────────────────────────────────
+
+    public sealed record ConfirmPhoneVerificationRequest(string Code);
+
+    [HttpPost("phone-verification/request")]
+    [EnableRateLimiting("shopper-password")]
+    public async Task<IActionResult> RequestPhoneVerification(CancellationToken ct)
+    {
+        var shopperId = User.GetShopperId();
+        if (shopperId is null)
+            return Unauthorized();
+
+        var shopper = await _db.Shoppers
+            .FirstOrDefaultAsync(s => s.Id == shopperId && s.DeletedAt == null, ct);
+        if (shopper is null)
+            return Unauthorized();
+        if (shopper.PhoneVerifiedAt is not null)
+            return NoContent();
+
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+        var issued = await _resetCodes.IssueWithHandleAsync(shopper, ip, ct);
+        if (issued is null)
+            return Problem(title: "verification-unavailable", statusCode: 429);
+
+        var message = $"OrderDeck dogrulama kodunuz: {issued.Code}. Kod 10 dakika gecerli.";
+        try
+        {
+            await _sms.SendAsync(
+                shopper.Phone, message, Services.Sms.SmsKind.Transactional, ct);
+        }
+        catch (Exception ex)
+        {
+            await _resetCodes.DiscardAsync(issued.Id, CancellationToken.None);
+            if (ct.IsCancellationRequested)
+                throw;
+            _log.LogWarning(ex,
+                "Phone-verification SMS send failed for shopper={ShopperId}",
+                shopper.Id);
+            return Problem(title: "verification-delivery-failed", statusCode: 503);
+        }
+
+        return StatusCode(202);
+    }
+
+    [HttpPost("phone-verification/confirm")]
+    [EnableRateLimiting("shopper-password")]
+    public async Task<IActionResult> ConfirmPhoneVerification(
+        [FromBody] ConfirmPhoneVerificationRequest req,
+        CancellationToken ct)
+    {
+        var shopperId = User.GetShopperId();
+        if (shopperId is null)
+            return Unauthorized();
+
+        var shopper = await _db.Shoppers
+            .FirstOrDefaultAsync(s => s.Id == shopperId && s.DeletedAt == null, ct);
+        if (shopper is null)
+            return Unauthorized();
+        if (shopper.PhoneVerifiedAt is not null)
+            return NoContent();
+
+        var ok = await _resetCodes.VerifyAndConsumeAsync(
+            shopper.Id, req.Code ?? string.Empty, ct);
+        if (!ok)
+            return Problem(title: "invalid-code", statusCode: 400);
+
+        shopper.PhoneVerifiedAt = DateTimeOffset.UtcNow;
+        await ResolvePendingLinksAsync(shopper, ct);
+        await _db.SaveChangesAsync(ct);
+        return NoContent();
     }
 
     // ── ForgotPassword ────────────────────────────────────────────────────────
@@ -395,6 +474,9 @@ public sealed class ShopperAuthController : ControllerBase
         var now = DateTimeOffset.UtcNow;
         shopper.PasswordHash = _passwordHasher.Hash(req.NewPassword!);
         shopper.UpdatedAt = now;
+        shopper.AuthVersion++;
+        shopper.PhoneVerifiedAt ??= now;
+        await ResolvePendingLinksAsync(shopper, ct);
 
         // Aktif refresh token'ları iptal et — eski cihazlar otomatik logout.
         await _refresh.MarkAllRevokedAsync(shopper.Id, now, ct);
@@ -516,6 +598,7 @@ public sealed class ShopperAuthController : ControllerBase
         var now = DateTimeOffset.UtcNow;
         shopper.PasswordHash = _passwordHasher.Hash(req.NewPassword);
         shopper.UpdatedAt = now;
+        shopper.AuthVersion++;
 
         // 7. Diğer oturumları düşür. Parola değiştirmenin asıl sebebi çoğu zaman
         // "hesabıma biri girdi" olduğu için, eski refresh token'lar ayakta
@@ -543,5 +626,31 @@ public sealed class ShopperAuthController : ControllerBase
                 l.Platform,
                 l.Username))
             .ToArrayAsync(ct);
+    }
+
+    private async Task ResolvePendingLinksAsync(Domain.Shopper shopper, CancellationToken ct)
+    {
+        if (shopper.PhoneVerifiedAt is null)
+            return;
+
+        var pendingLinks = await _db.ShopperBroadcasterLinks
+            .Where(l => l.ShopperId == shopper.Id
+                && l.LeftAt == null
+                && l.WpfCustomerId == null)
+            .ToListAsync(ct);
+
+        foreach (var link in pendingLinks)
+        {
+            var candidates = await _db.WpfCustomerProjections
+                .Where(p => p.LicenseId == link.LicenseId
+                    && p.Platform == link.Platform
+                    && p.Username == link.Username
+                    && p.PurgedAt == null)
+                .ToListAsync(ct);
+            var match = WpfCustomerLinkMatcher.FindProven(
+                candidates, shopper.Phone, shopper.PhoneVerifiedAt);
+            if (match is not null)
+                link.WpfCustomerId = match.Id;
+        }
     }
 }
