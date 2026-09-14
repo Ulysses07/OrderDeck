@@ -112,18 +112,89 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
     private readonly object _sourceLock = new();
     private readonly Dictionary<string, (object Conn, long LastAcceptedAt)> _activeSources =
         new(StringComparer.OrdinalIgnoreCase);
+    // R7-08 devir görünürlüğü: platformun SON sahibi (kapanışta silinmez).
+    // Yeni bağlantının devralması logda görünsün diye tutulur; platform
+    // sayısı kadar büyür, sınırsız değil.
+    private readonly Dictionary<string, object> _lastOwnerByPlatform =
+        new(StringComparer.OrdinalIgnoreCase);
     private long _passiveSourceDroppedCount;
     public long PassiveSourceDroppedCount => Volatile.Read(ref _passiveSourceDroppedCount);
 
-    /// <summary>Etkin kaynağın kabulü/devri. Kabulde damga tazelenir.</summary>
-    private bool TryAcceptSource(string platform, object connId, out bool tookOverStale)
+    // ── Devir penceresi kopya süzgeci (R7-08 / R9-AC-047-048) ────────────────
+    //
+    // Devir anının açığı: A aynı yorumu ulaştırıp kapanır (veya bayatlar),
+    // B'nin GECİKMİŞ kopyası devirden sonra gelir. externalId sekme-yerel
+    // olduğu için _seen bunu yakalayamaz → aynı sipariş ikinci kez düşerdi
+    // (denetim ölçümü: sent=2, received=2). Çözüm körlemesine metin dedupe'u
+    // DEĞİL (#93: aynı kodu yeniden yazan gerçek müşteriyi yer): yalnız
+    // BAŞKA bağlantının kısa pencere içinde ulaştırdığı birebir (kullanıcı+
+    // metin) süzülür. Aynı bağlantıdan gelen tekrar (gerçek re-buy) hiç
+    // etkilenmez; pencere dışına düşen eski kopya ise bilinçli tasarım sınırı
+    // olarak kalır — pencereyi büyütmek re-buy'ı yeme riskini büyütür.
+    private readonly int _handoverDedupeWindowMs;
+    private const int RecentAcceptLimit = 256;
+    private readonly object _recentLock = new();
+    private readonly Queue<(string Key, object Conn, long At)> _recentAccepts = new();
+    private long _handoverDedupedCount;
+    public long HandoverDedupedCount => Volatile.Read(ref _handoverDedupedCount);
+
+    private static string RecentKey(string platform, string username, string text) =>
+        string.Concat(platform, "\n", username, "\n", text);
+
+    /// <summary>Yayınlanan her mesajın (platform,kullanıcı,metin,bağlantı)
+    /// kaydı — devir penceresi süzgecinin karşılaştırma tabanı.</summary>
+    private void RecordAccept(string platform, string username, string text, object connId)
+    {
+        var entry = (RecentKey(platform, username, text), connId, Environment.TickCount64);
+        lock (_recentLock)
+        {
+            _recentAccepts.Enqueue(entry);
+            while (_recentAccepts.Count > RecentAcceptLimit)
+                _recentAccepts.Dequeue();
+        }
+    }
+
+    /// <summary>BAŞKA bir bağlantının pencere içinde ulaştırdığı birebir aynı
+    /// (platform,kullanıcı,metin) mi? Yalnız devirden hemen sonra tetiklenebilir:
+    /// pasif kaynağın mesajları kaynak kapısında zaten düşer, etkin kaynağın
+    /// kendi kayıtları ise aynı bağlantı olduğu için eşleşmez.</summary>
+    private bool IsHandoverDuplicate(string platform, string username, string text, object connId)
+    {
+        var key = RecentKey(platform, username, text);
+        var now = Environment.TickCount64;
+        lock (_recentLock)
+        {
+            foreach (var e in _recentAccepts)
+            {
+                if (!ReferenceEquals(e.Conn, connId) &&
+                    now - e.At <= _handoverDedupeWindowMs &&
+                    string.Equals(e.Key, key, StringComparison.Ordinal))
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Etkin kaynağın kabulü/devri. Kabulde damga tazelenir.
+    /// <paramref name="tookOverClosed"/>: önceki sahip kapanmış, bu bağlantı
+    /// devraldı (anlık failover) — logda görünür olsun diye ayrıştırılır.</summary>
+    private bool TryAcceptSource(string platform, object connId,
+        out bool tookOverStale, out bool tookOverClosed)
     {
         tookOverStale = false;
+        tookOverClosed = false;
         var now = Environment.TickCount64;
         lock (_sourceLock)
         {
-            if (!_activeSources.TryGetValue(platform, out var active) ||
-                ReferenceEquals(active.Conn, connId))
+            if (!_activeSources.TryGetValue(platform, out var active))
+            {
+                tookOverClosed = _lastOwnerByPlatform.TryGetValue(platform, out var prev) &&
+                                 !ReferenceEquals(prev, connId);
+                _activeSources[platform] = (connId, now);
+                _lastOwnerByPlatform[platform] = connId;
+                return true;
+            }
+            if (ReferenceEquals(active.Conn, connId))
             {
                 _activeSources[platform] = (connId, now);
                 return true;
@@ -131,6 +202,7 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
             if (now - active.LastAcceptedAt > _sourceStaleAfterMs)
             {
                 _activeSources[platform] = (connId, now);
+                _lastOwnerByPlatform[platform] = connId;
                 tookOverStale = true;
                 return true;
             }
@@ -178,7 +250,8 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
         ITrialModeProbe? trialProbe = null,
         SpamFilter? spamFilter = null,
         ViewerCountTracker? viewers = null,
-        int sourceStaleAfterMs = 60_000)
+        int sourceStaleAfterMs = 60_000,
+        int handoverDedupeWindowMs = 10_000)
     {
         _bus = bus;
         _trialProbe = trialProbe;
@@ -189,6 +262,11 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
         // daha kısası, seyrek sohbetli sakin bir yayında gereksiz devir
         // yapabilirdi. Testler kısa eşikle bayatlama yolunu sınar.
         _sourceStaleAfterMs = sourceStaleAfterMs;
+        // Devir penceresi. 10 sn: gecikmiş kopyanın gerçekçi gecikmesi
+        // saniyeler mertebesinde (WS teslim + sekme zamanlayıcı kayması);
+        // daha uzunu aynı kodu bilinçli tekrar yazan müşteriyi yeme
+        // riskini büyütür (#93).
+        _handoverDedupeWindowMs = handoverDedupeWindowMs;
         _log = log ?? NullLogger<ExtensionBridgeServer>.Instance;
         Port = port == 0 ? FindFreePort() : port;
         _listener.Prefixes.Add($"http://localhost:{Port}/");
@@ -509,7 +587,8 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
                     // externalId dedupe'undan ÖNCE, çünkü pasif sekmenin seli
                     // ne spam pencerelerini kirletmeli ne de 20k'lık _seen
                     // FIFO'sunu doldurup gerçek dedupe kayıtlarını itmeli.
-                    if (!TryAcceptSource(msg.Platform, connId, out var tookOverStale))
+                    if (!TryAcceptSource(msg.Platform, connId,
+                            out var tookOverStale, out var tookOverClosed))
                     {
                         Interlocked.Increment(ref _passiveSourceDroppedCount);
                         if (warnedPassivePlatforms.Add(msg.Platform))
@@ -528,6 +607,11 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
                             "R7-08: {Platform} etkin kaynağı {StaleMs}ms'dir suskundu; " +
                             "yeni kaynak devraldı (eski sekme muhtemelen bitmiş yayında açık kalmış)",
                             msg.Platform, _sourceStaleAfterMs);
+                    else if (tookOverClosed)
+                        _log.LogInformation(
+                            "R7-08: {Platform} etkin kaynağı kapanmıştı; yeni bağlantı devraldı — " +
+                            "{WindowMs}ms devir penceresinde kopyalar süzülecek",
+                            msg.Platform, _handoverDedupeWindowMs);
 
                     // Spam filter — runs AFTER trial mode + payload-shape checks
                     // because the cheaper rules (length, links) reject lots of
@@ -559,6 +643,18 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
                         continue;
                     }
 
+                    // R7-08 devir penceresi: BAŞKA bağlantının az önce
+                    // ulaştırdığı birebir aynı (kullanıcı+metin) — devirden
+                    // hemen sonra gelen gecikmiş kopya (AC-047/048).
+                    if (IsHandoverDuplicate(msg.Platform, msg.Username!, msg.Text!, connId))
+                    {
+                        Interlocked.Increment(ref _handoverDedupedCount);
+                        _log.LogWarning(
+                            "R7-08: devir sonrası gecikmiş kopya süzüldü {Platform}:{Username}: {Text}",
+                            msg.Platform, msg.Username, msg.Text);
+                        continue;
+                    }
+
                     _bus.Publish(new ChatMessage(
                         Id: Guid.NewGuid().ToString("N"),
                         Platform: msg.Platform,
@@ -569,6 +665,7 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
                         Text: msg.Text!,
                         ReceivedAt: msg.Timestamp ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                         Badges: Array.Empty<string>()));
+                    RecordAccept(msg.Platform, msg.Username!, msg.Text!, connId);
                 }
                 else if (msg is { Type: "debug-stats", Platform: not null })
                 {

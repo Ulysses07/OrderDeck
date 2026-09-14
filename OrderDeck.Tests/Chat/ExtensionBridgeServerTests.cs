@@ -431,6 +431,114 @@ public class ExtensionBridgeServerTests
         await yeni.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
     }
 
+    // ── Devir penceresi kopya süzgeci (R7-08 / R9-AC-047-048) ────────────────
+    //
+    // Devir anının açığı: eski kaynak yorumu ulaştırıp gider, yeni kaynağın
+    // GECİKMİŞ kopyası devirden sonra gelir — externalId sekme-yerel olduğu
+    // için _seen yakalayamaz. Süzgeç yalnız BAŞKA bağlantının pencere içinde
+    // ulaştırdığı birebir (kullanıcı+metin) çiftini düşürür; aynı bağlantıdan
+    // tekrar (gerçek re-buy, #93) ve pencere dışı aynı metin etkilenmez.
+
+    [Fact]
+    public async Task Devir_sonrasi_gecikmis_kopya_suzulur()
+    {
+        // A yorumu ulaştırır ve KAPANIR; B'nin aynı yoruma ait gecikmiş
+        // kopyası (farklı externalId) devirden sonra gelir → süzülmeli.
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(bus, port: 0);
+        await server.StartAsync(CancellationToken.None);
+
+        var received = new System.Collections.Generic.List<ChatMessage>();
+        using var sub = bus.Subscribe(m => { lock (received) received.Add(m); });
+
+        var sekmeA = await ConnectAsync(server);
+        using var sekmeB = await ConnectAsync(server);
+
+        await SendRaw(sekmeA, SerializeChat("tiktok", "@ali", "AB-25", externalId: "tt-run1-a"));
+        await Task.Delay(200);
+
+        await sekmeA.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+        sekmeA.Dispose();
+        await Task.Delay(300); // sunucu kapanışı işleyip etkin kaynağı bıraksın
+
+        // B devralır ama ilk mesajı A'nın az önce ulaştırdığı yorumun kopyası.
+        await SendRaw(sekmeB, SerializeChat("tiktok", "@ali", "AB-25", externalId: "tt-run2-a"));
+        await Task.Delay(200);
+
+        received.Count.Should().Be(1,
+            because: "devir sonrası gecikmiş kopya ikinci siparişe dönüşmemeli");
+        server.HandoverDedupedCount.Should().Be(1);
+
+        // B'nin YENİ yorumu normal akmalı — süzgeç devri kilitlemez.
+        await SendRaw(sekmeB, SerializeChat("tiktok", "@veli", "CD-10", externalId: "tt-run2-b"));
+        await Task.Delay(200);
+        received.Count.Should().Be(2);
+
+        await sekmeB.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Bayat_devir_sonrasi_gecikmis_kopya_suzulur()
+    {
+        // Bayatlama yoluyla devirde de aynı açık: zombi son yorumu ulaştırdı,
+        // yeni kaynağın o yoruma ait kopyası devir anında gelir → süzülmeli.
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(bus, port: 0, sourceStaleAfterMs: 300);
+        await server.StartAsync(CancellationToken.None);
+
+        var received = new System.Collections.Generic.List<ChatMessage>();
+        using var sub = bus.Subscribe(m => { lock (received) received.Add(m); });
+
+        using var zombi = await ConnectAsync(server);
+        using var yeni = await ConnectAsync(server);
+
+        await SendRaw(zombi, SerializeChat("tiktok", "@ali", "AB-25", externalId: "tt-z-1"));
+        await Task.Delay(500); // bayatlama eşiğinin (300ms) üstünde sessizlik
+
+        await SendRaw(yeni, SerializeChat("tiktok", "@ali", "AB-25", externalId: "tt-y-1"));
+        await Task.Delay(200);
+
+        received.Count.Should().Be(1,
+            because: "bayat devirde de gecikmiş kopya siparişe dönüşmemeli");
+        server.HandoverDedupedCount.Should().Be(1);
+
+        await zombi.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+        await yeni.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Devir_penceresi_disinda_ayni_metin_yeni_siparistir()
+    {
+        // Pencere dolduktan sonra gelen aynı (kullanıcı+metin) gerçek bir
+        // yeniden alım olabilir (#93) — süzülmemeli. Kısa pencereyle sınanır.
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(bus, port: 0,
+            handoverDedupeWindowMs: 300);
+        await server.StartAsync(CancellationToken.None);
+
+        var received = new System.Collections.Generic.List<ChatMessage>();
+        using var sub = bus.Subscribe(m => { lock (received) received.Add(m); });
+
+        var sekmeA = await ConnectAsync(server);
+        using var sekmeB = await ConnectAsync(server);
+
+        await SendRaw(sekmeA, SerializeChat("tiktok", "@ali", "AB-25", externalId: "tt-p1-a"));
+        await Task.Delay(200);
+
+        await sekmeA.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+        sekmeA.Dispose();
+        await Task.Delay(500); // pencere (300ms) dolmuş olsun
+
+        await SendRaw(sekmeB, SerializeChat("tiktok", "@ali", "AB-25", externalId: "tt-p2-a"));
+        await Task.Delay(200);
+
+        received.Count.Should().Be(2,
+            because: "pencere dışı aynı metin gerçek yeniden alım olabilir; süzülmemeli");
+        server.HandoverDedupedCount.Should().Be(0);
+
+        await sekmeB.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
+
     [Fact]
     public async Task Farkli_platformlarin_etkin_kaynaklari_bagimsiz()
     {
