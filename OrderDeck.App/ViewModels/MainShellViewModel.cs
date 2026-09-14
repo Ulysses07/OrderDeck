@@ -916,13 +916,23 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             if (choice is null) return;
             if (choice == false) break;   // basmadan bitir
 
-            // Uçuştaki baskı varsa önce onun sonucunu bekle — erken dönüşü
-            // "basıldı" saymak PO-01'in ta kendisiydi.
-            if (_printTask is { } inFlight) await inFlight;
-
-            // Seçimi temizle ki baskı TÜM kuyruğu alsın (kısmi seçim tuzağı).
-            SelectedQueueItems.Clear();
-            if (!await PrintGuardedAsync())
+            // Uçuştaki baskı varsa SONUCUNU tüket (R8-02A): sonucu atıp
+            // körlemesine yeni baskı başlatmak, başarısızlıkta operatörün
+            // istemediği örtük bir ikinci baskı denemesi; başarıda ise devam
+            // sırasına göre bayat _printTask alanını görüp yanlış
+            // "basılamadı" uyarısıyla yayını açık bırakmaktı.
+            bool basildi;
+            if (_printTask is { } inFlight)
+            {
+                basildi = await inFlight;
+            }
+            else
+            {
+                // Seçimi temizle ki baskı TÜM kuyruğu alsın (kısmi seçim tuzağı).
+                SelectedQueueItems.Clear();
+                basildi = await PrintGuardedAsync();
+            }
+            if (!basildi)
             {
                 _dialogs.Show(
                     "Etiketler basılamadı; yayın açık bırakıldı. Yazıcıyı " +
@@ -1194,7 +1204,16 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
     /// <summary>true = basılacak iş kalmadı (başarıyla basıldı ya da kuyruk
     /// boştu); false = basılamadı (başka baskı sürüyor ya da yazıcı hatası).
-    /// EndStream bu sonuca bakarak yayını açık bırakır.</summary>
+    /// EndStream bu sonuca bakarak yayını açık bırakır.
+    ///
+    /// R8-02A: <see cref="_printTask"/> çekirdek görev DEĞİL, tüm yaşam
+    /// döngüsünü temsil eden kapı. Çekirdek görevi yayınlamak yetmiyordu:
+    /// görevin tamamlanması ile finally'nin alanı temizlemesi aynı olay
+    /// değil, ve Dispatcher üzerinde EndStream'in devamı temizlikten ÖNCE
+    /// koşup dolu alanı görebiliyordu (üç bağımsız STA deneyinde başarılı
+    /// baskıya rağmen "basılamadı; yayın açık bırakıldı"). Kapı ancak
+    /// temizlikten SONRA tamamlandığı için bekleyen hiçbir devam bayat alan
+    /// göremez — devam sırasına bağımlılık kalmadı.</summary>
     private async Task<bool> PrintGuardedAsync()
     {
         if (_printTask is not null) return false;
@@ -1204,17 +1223,22 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             : PrintQueue.ToList();
         if (snapshot.Count == 0) return true;
 
+        var gate = new System.Threading.Tasks.TaskCompletionSource<bool>(
+            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
         _printInFlightIds = snapshot.Select(vm => vm.Id).ToHashSet();
-        var task = PrintCoreAsync(snapshot);
-        _printTask = task;
+        _printTask = gate.Task;
+        var ok = false;
         try
         {
-            return await task;
+            ok = await PrintCoreAsync(snapshot);
+            return ok;
         }
         finally
         {
+            // Sıra önemli: önce alanlar temizlenir, kapı EN SON kapanır.
             _printTask = null;
             _printInFlightIds = null;
+            gate.TrySetResult(ok);
         }
     }
 
@@ -1249,8 +1273,16 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
         _labels.MarkPrintedAndRecord(labels.Select(l => l.Id).ToList());
 
-        // Sadece yazdırılanları kuyruktan kaldır (smart mode'da kalan seçimsizler korunur).
-        foreach (var vm in snapshot) PrintQueue.Remove(vm);
+        // Sadece yazdırılanları kuyruktan kaldır (smart mode'da kalan
+        // seçimsizler korunur). R8-02B: uzlaştırma referansla değil ETİKET
+        // KİMLİĞİYLE — "basmadan bitir" + yeni yayına taşıma aynı etiketi
+        // YENİ bir VM nesnesi olarak kuyruğa koyar; referans eşitliği o
+        // klonu görmez, basılmış etiket kuyrukta hayalet kalır ve ikinci
+        // kez yazıcıya giderdi.
+        var printedIds = labels.Select(l => l.Id).ToHashSet();
+        for (var i = PrintQueue.Count - 1; i >= 0; i--)
+            if (printedIds.Contains(PrintQueue[i].Id))
+                PrintQueue.RemoveAt(i);
         SelectedQueueItems.Clear();
         return true;
     }
