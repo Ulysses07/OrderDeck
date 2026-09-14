@@ -1,6 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Logging;
-using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Licensing.Api;
 using OrderDeck.Licensing.Api.Models;
@@ -16,8 +15,9 @@ namespace OrderDeck.App.Services.Sync;
 /// Watermark: SyncCursor("customer-projection-out", LicenseKey).Seq —
 /// Customer.SyncSeq, tablo geneli kesin artan sayaç (N03-g; göç 036
 /// tetikleyicileri yazar). R6-04: imleç veriyle aynı SQLite dosyasında, lisans
-/// anahtarına bağlı (gerekçe: göç 038). settings.json'daki eski alan yalnız
-/// ilk dokunuşta tohum olarak okunur, sonra temizlenir.
+/// anahtarına bağlı (gerekçe: göç 038). R9-D01: settings.json'daki eski alan
+/// ARTIK tohum olarak da okunmuyor — tek kalıcı kaynak SyncCursor satırı,
+/// satır yoksa tam tarama.
 /// Batch: 500/call. Multi-batch loop until exhausted within a single tick.
 ///
 /// WpfCustomerSyncItem.FullName mapping: Customer.FullName (gerçek ad,
@@ -33,7 +33,6 @@ public sealed class WpfCustomerProjectionSyncService
 
     private readonly LicenseApiClient _api;
     private readonly CustomerRepository _customers;
-    private readonly SettingsStore _settingsStore;
     private readonly SyncCursorRepository _cursors;
     private readonly ICurrentLicenseProvider _licenseProvider;
     private readonly ILogger<WpfCustomerProjectionSyncService> _log;
@@ -44,14 +43,12 @@ public sealed class WpfCustomerProjectionSyncService
     public WpfCustomerProjectionSyncService(
         LicenseApiClient api,
         CustomerRepository customers,
-        SettingsStore settingsStore,
         SyncCursorRepository cursors,
         ICurrentLicenseProvider licenseProvider,
         ILogger<WpfCustomerProjectionSyncService> log)
     {
         _api             = api;
         _customers       = customers;
-        _settingsStore   = settingsStore;
         _cursors         = cursors;
         _licenseProvider = licenseProvider;
         _log             = log;
@@ -78,7 +75,7 @@ public sealed class WpfCustomerProjectionSyncService
     /// <summary>
     /// Single sync tick: runs one or more batches until the repo returns fewer
     /// than BatchSize rows. Returns total customers synced across all batches.
-    /// Watermark is advanced in SettingsStore after each successful batch.
+    /// Watermark is advanced in the SyncCursor table after each successful batch.
     /// On any batch failure the method returns early without advancing further.
     /// </summary>
     public async Task<int> SyncOnceAsync(CancellationToken ct)
@@ -199,28 +196,20 @@ public sealed class WpfCustomerProjectionSyncService
     }
 
     /// <summary>
-    /// R6-04 imleç okuma + tek seferlik tohumlama. Satır varsa o kazanır —
-    /// settings'te ne yazdığı önemsiz (geri yükleme sonrası settings başka
-    /// veri neslinin değerini taşıyor olabilir). Satır yoksa eski settings
-    /// alanından tohumlanır ve alan TEMİZLENİR: temizlenmezse 038-öncesi bir
-    /// yedek geri yüklendiğinde bayat değer yeniden tohum olur ve denetimin
-    /// "watermark 21, veri max 2 → sonsuza dek 0 satır" deneyi geri gelirdi.
-    /// Satır da tohum da yoksa tam tarama: N03-g emsaliyle güvenli (sunucu
-    /// upsert idempotent + PurgedAt kapılı).
+    /// R6-04 imleç okuma. Tek kalıcı kaynak SyncCursor satırı; satır yoksa
+    /// tam tarama (0). R9-D01: eski settings alanı ARTIK tohum OLMUYOR —
+    /// settings dosyası yedeğin dışında yaşadığı için hangi veri nesline ve
+    /// hangi lisansa ait olduğu kanıtlanamıyor. 037 yedeği ilk 038
+    /// çalışmasından ÖNCE geri yüklendiğinde ileri kalmış settings değeri
+    /// satırları sonsuza dek atlatıyordu (denetim: watermark 21, veri max 2);
+    /// lisans değişiminde A'nın ilerlemesi B adına yazılıyordu; iki dosya
+    /// yazısı arasındaki hata da yarım geçiş bırakıyordu. Tam tarama N03-g
+    /// emsaliyle güvenli (sunucu upsert idempotent + PurgedAt kapılı) —
+    /// bedeli bir tur fazla trafik, karşılığı doğrulanamayan neslin sessiz
+    /// atlama riskinin sıfırlanması.
     /// </summary>
     private long LoadWatermark(string licenseKey)
-    {
-        var row = _cursors.Get(CursorName, licenseKey);
-        if (row is not null) return row.Seq ?? 0L;
-
-        var legacy = _settingsStore.Load().LastCustomerProjectionSyncSeq;
-        if (legacy > 0)
-        {
-            _cursors.Upsert(CursorName, licenseKey, seq: legacy);
-            _settingsStore.Update(s => s.LastCustomerProjectionSyncSeq = 0);
-        }
-        return legacy;
-    }
+        => _cursors.Get(CursorName, licenseKey)?.Seq ?? 0L;
 
     // ─── LicenseId resolution (same caching pattern as other sync services) ──
 

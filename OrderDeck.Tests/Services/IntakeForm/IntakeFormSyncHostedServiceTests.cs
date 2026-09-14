@@ -1,6 +1,6 @@
 using FluentAssertions;
 using OrderDeck.App.Services.IntakeForm;
-using OrderDeck.Core.Settings;
+using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
@@ -17,6 +17,13 @@ public sealed class IntakeFormSyncHostedServiceTests
     {
         public long UnixNow() => 1714521600L;
         public DateTimeOffset Now => DateTimeOffset.FromUnixTimeSeconds(1714521600L);
+    }
+
+    /// <summary>R9-D02: servis lisans anahtarı olmadan HTTP'ye hiç çıkmıyor;
+    /// periyodik döngü testleri çağrı sayısını saydığı için anahtar şart.</summary>
+    private sealed class StubLicenseProvider : ICurrentLicenseProvider
+    {
+        public string? CurrentLicenseKey => "LDK-HOSTED-TEST";
     }
 
     // Tests use a deterministic TaskCompletionSource ("twoCallsObserved")
@@ -42,12 +49,10 @@ public sealed class IntakeFormSyncHostedServiceTests
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
         var repo = new CustomerRepository(db);
-        var settingsPath = Path.Combine(Path.GetTempPath(), $"settings-{Guid.NewGuid():N}.json");
-        var store = new SettingsStore(settingsPath);
-        var settings = store.Load();
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
         var api = new LicenseApiClient(http, new OrderDeck.Licensing.Api.LicenseTokenStore());
-        var sync = new IntakeFormSyncService(api, repo, store, settings, new FakeClock(),
+        var sync = new IntakeFormSyncService(api, repo, new SyncCursorRepository(db),
+            new StubLicenseProvider(), new FakeClock(),
             NullLogger<IntakeFormSyncService>.Instance);
         var hosted = new IntakeFormSyncHostedService(sync,
             NullLogger<IntakeFormSyncHostedService>.Instance,
@@ -80,12 +85,10 @@ public sealed class IntakeFormSyncHostedServiceTests
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
         var repo = new CustomerRepository(db);
-        var settingsPath = Path.Combine(Path.GetTempPath(), $"settings-{Guid.NewGuid():N}.json");
-        var store = new SettingsStore(settingsPath);
-        var settings = store.Load();
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
         var api = new LicenseApiClient(http, new OrderDeck.Licensing.Api.LicenseTokenStore());
-        var sync = new IntakeFormSyncService(api, repo, store, settings, new FakeClock(),
+        var sync = new IntakeFormSyncService(api, repo, new SyncCursorRepository(db),
+            new StubLicenseProvider(), new FakeClock(),
             NullLogger<IntakeFormSyncService>.Instance);
         var hosted = new IntakeFormSyncHostedService(sync,
             NullLogger<IntakeFormSyncHostedService>.Instance,

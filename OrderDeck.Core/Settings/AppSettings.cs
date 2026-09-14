@@ -20,33 +20,25 @@ public sealed class AppSettings
     /// <summary>Custom kısayol profili: command id → chord string. Null = henüz custom yok.</summary>
     public System.Collections.Generic.Dictionary<string, string>? CustomShortcuts { get; set; }
 
-    /// <summary>Phase 4f: last intake form submission cursor (max SubmittedAt synced).</summary>
-    public DateTimeOffset? LastIntakeFormSync { get; set; }
-
-    /// <summary>Bkz. <see cref="LastPaymentReverseSyncId"/> — kayıt formu imlecinin
-    /// eşitlik bozucusu. Burada atlanan satır bir müşteri KAYDI: yayıncı formu
-    /// dolduran müşteriyi hiç görmez ve gönderim bir daha güncellenmediği için
-    /// eksik kendiliğinden kapanmaz.</summary>
-    public Guid? LastIntakeFormSyncId { get; set; }
-
-    /// <summary>Payment sync (PR B): server'dan UpdatedAt cursor — bu tarihten
-    /// sonra güncellenen mobile onay/red sonuçlarını çekiyor. İlk run'da null.</summary>
-    public DateTimeOffset? LastPaymentReverseSync { get; set; }
-
-    /// <summary>Bkz. <see cref="LastPaymentReverseSync"/> — imlecin eşitlik
-    /// bozucusu. Sunucu tek push'ta 200 dekontu tek <c>UpdatedAt</c> damgasıyla
-    /// yazıyor; yalnız damga üstünde koşan bir imleç, sayfa o eşitlik kümesinin
-    /// ortasından kesildiğinde kalan satırları bir daha hiç istemez. Damga +
-    /// birincil anahtar çifti sıralamayı toplam yapıyor.</summary>
-    public Guid? LastPaymentReverseSyncId { get; set; }
+    // LastIntakeFormSync(+Id) ve LastPaymentReverseSync(+Id) buradan
+    // KALDIRILDI (R9-D02): imleçler artık veriyle aynı SQLite dosyasındaki
+    // SyncCursor tablosunda ("intake-form-in" / "payment-decision-in", lisans
+    // anahtarına bağlı) — yedek/geri yükleme imleci ve veriyi birlikte taşır.
+    // Eski settings değeri tohum olarak da okunmuyor (R9-D01 sözleşmesi:
+    // settings dosyası yedeğin dışında yaşadığı için hangi veri nesline ait
+    // olduğu kanıtlanamaz). Eski dosyalardaki alanları System.Text.Json
+    // sessizce atlar, ilk Save'de dosyadan düşer.
 
     /// <summary>Shipment sync (PR-D, 2026-05-13): kümülatif kargo reverse-sync
     /// cursor. WPF authoritative olduğu için pull nadiren çalışır, ama
-    /// cursor advance edilir.</summary>
+    /// cursor advance edilir. R9-D02 kapsamı DIŞINDA bilerek bırakıldı:
+    /// sunucu satırları lokale UYGULANMIYOR (WPF otorite), ileri kalmış
+    /// imlecin atlatabileceği karar yok.</summary>
     public DateTimeOffset? LastShipmentReverseSync { get; set; }
 
-    /// <summary>Bkz. <see cref="LastPaymentReverseSyncId"/> — kargo imlecinin
-    /// eşitlik bozucusu.</summary>
+    /// <summary>Bkz. <see cref="LastShipmentReverseSync"/> — kargo imlecinin
+    /// eşitlik bozucusu. Sunucu tek push'ta yüzlerce satırı tek damgayla
+    /// yazabilir; damga + birincil anahtar çifti sıralamayı toplam yapıyor.</summary>
     public Guid? LastShipmentReverseSyncId { get; set; }
 
     /// <summary>Phase 4g: WhatsApp ödeme isteme yapılandırması.</summary>
@@ -118,41 +110,21 @@ public sealed class AppSettings
     /// step in seconds.</summary>
     public bool HasCompletedFirstRun { get; set; } = false;
 
-    /// <summary>Tek seferlik: eski müşteri satırlarındaki boş FullName'i sunucudaki
-    /// form kayıtlarındaki gerçek Ad Soyad ile doldurma tamamlandı mı. FullName
-    /// kolonu (migration 022) öncesi kaydolanlar için geriye dönük düzeltme; bir
-    /// kez çalışır (LastSeenAt/DisplayName'e dokunmadan sadece boş FullName'i yazar).</summary>
-    public bool FullNameBackfillDone { get; set; } = false;
+    // FullNameBackfillDone buradan KALDIRILDI (R9-D03): işaret artık
+    // SyncCursor("intake-fullname-backfill").Seq sürüm numarası — bool dönemi
+    // sürüm 1 sayılır ve satır yokluğu backfill'i yeniden koşturur (eski kod
+    // imleci yanlış sıralayıp işi 599/1000'de bırakırken bool'u true yazmıştı;
+    // kontrollü onarım). İşaret DB'de olduğu için yedekle birlikte taşınır.
 
-    /// <summary><b>Kullanımdan kalktı (R6-04, göç 038)</b> — projeksiyon push
-    /// imleci artık veriyle aynı SQLite dosyasındaki <c>SyncCursor</c>
-    /// tablosunda yaşıyor ("customer-projection-out", lisans anahtarına bağlı).
-    /// Bu alan yalnız <b>bir kez okunuyor</b>: DB satırı yoksa tohum olur,
-    /// ardından buradaki değer 0'lanır. Silme — sahadaki kurulumlar ilk
-    /// tohumlamayı henüz yapmadı.
-    ///
-    /// <para>N03-g tarihi: değer zaman değil, <c>Customer.SyncSeq</c> (göç
-    /// 036'nın tablo geneli kesin artan sayacı). 0'dan tam tarama güvenli:
-    /// sunucu upsert idempotent ve <c>PurgedAt</c> kapılı.</para></summary>
-    public long LastCustomerProjectionSyncSeq { get; set; }
-
-    /// <summary><b>Kullanımdan kalktı</b> — iki kez halef aldı: önce
-    /// <see cref="LastShopperIngestUpdatedAt"/> + <see cref="LastShopperIngestId"/>
-    /// (saniye yuvarlaması sayfa sınırında imleci başa döndürüyordu), sonra
-    /// R6-04 ile <c>SyncCursor</c> tablosu. Yalnız tohumlama zincirinin son
-    /// halkası olarak bir kez okunur, sonra 0'lanır.</summary>
-    public long LastShopperIngestAt { get; set; }
-
-    /// <summary><b>Kullanımdan kalktı (R6-04, göç 038)</b> — ingest imleci artık
-    /// <c>SyncCursor</c> tablosunda ("shopper-ingest-in", lisans anahtarına
-    /// bağlı): imleç, temizlediği/eklediği Customer satırlarıyla aynı dosyada
-    /// yaşamalı ki geri yükleme tombstone'un üstünden atlamış bir imleç
-    /// bırakamasın. Bu alan yalnız tohum olarak bir kez okunur, sonra null'lanır.</summary>
-    public DateTimeOffset? LastShopperIngestUpdatedAt { get; set; }
-
-    /// <summary>Bkz. <see cref="LastShopperIngestUpdatedAt"/> — aynı eski imlecin
-    /// eşitlik bozucusu; onunla birlikte tohumlanıp null'lanır.</summary>
-    public Guid? LastShopperIngestId { get; set; }
+    // LastCustomerProjectionSyncSeq / LastShopperIngestAt /
+    // LastShopperIngestUpdatedAt(+Id) buradan KALDIRILDI (R9-D01): eski
+    // settings imleçleri SyncCursor satırına TOHUM olarak okunuyordu; settings
+    // dosyası yedeğin dışında yaşadığı için hangi veri nesline/lisansa ait
+    // olduğu kanıtlanamıyordu (037 yedeği + ileri settings = tombstone atlama,
+    // lisans değişimi = A'nın ilerlemesi B adına, yarım geçiş = temizlik bir
+    // daha denenmez). Artık tek kalıcı kaynak SyncCursor satırı; satır yoksa
+    // tam tarama (idempotent). Eski dosyalardaki alanları System.Text.Json
+    // sessizce atlar, ilk Save'de dosyadan düşer.
 
     /// <summary>Dönem raporunun e-Fatura sayfası için sabitler + fatura no sayacı.</summary>
     public EInvoiceSettings EInvoice { get; set; } = new();

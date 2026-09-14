@@ -465,23 +465,23 @@ public sealed class AppHost : IDisposable
             () => DateTimeOffset.UtcNow,
             sp.GetRequiredService<ILogger<TrialService>>()));
 
-        // Intake form sync (Phase 4f)
+        // Intake form sync (Phase 4f). R9-D02: imleç SyncCursor tablosunda.
         services.AddSingleton<IntakeFormSyncService>(sp => new IntakeFormSyncService(
             sp.GetRequiredService<LicenseApiClient>(),
             sp.GetRequiredService<CustomerRepository>(),
-            sp.GetRequiredService<SettingsStore>(),
-            sp.GetRequiredService<AppSettings>(),
+            sp.GetRequiredService<SyncCursorRepository>(),
+            sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
             sp.GetRequiredService<IClock>(),
             sp.GetRequiredService<ILogger<IntakeFormSyncService>>()));
         services.AddHostedService<IntakeFormSyncHostedService>();
 
-        // Payment sync (PR B): WPF outbox push + reverse pull (mobile onay/red)
+        // Payment sync (PR B): WPF outbox push + reverse pull (mobile onay/red).
+        // R9-D02: pull imleci SyncCursor tablosunda ("payment-decision-in").
         services.AddSingleton<Services.Sync.ICurrentLicenseProvider, Services.Sync.CurrentLicenseProvider>();
         services.AddSingleton<Services.Sync.PaymentSyncService>(sp => new Services.Sync.PaymentSyncService(
             sp.GetRequiredService<LicenseApiClient>(),
             sp.GetRequiredService<PaymentRepository>(),
-            sp.GetRequiredService<SettingsStore>(),
-            sp.GetRequiredService<AppSettings>(),
+            sp.GetRequiredService<SyncCursorRepository>(),
             sp.GetRequiredService<Services.Sync.ICurrentLicenseProvider>(),
             sp.GetRequiredService<IClock>(),
             sp.GetRequiredService<ILogger<Services.Sync.PaymentSyncService>>()));

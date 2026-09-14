@@ -1,6 +1,5 @@
 using FluentAssertions;
 using OrderDeck.App.Services.Sync;
-using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
@@ -43,12 +42,9 @@ public sealed class PaymentSyncHostedServiceTests
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
         var repo = new PaymentRepository(db);
-        var settingsPath = Path.Combine(Path.GetTempPath(), $"settings-{Guid.NewGuid():N}.json");
-        var store = new SettingsStore(settingsPath);
-        var settings = store.Load();
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
         var api = new LicenseApiClient(http, new OrderDeck.Licensing.Api.LicenseTokenStore());
-        var sync = new PaymentSyncService(api, repo, store, settings,
+        var sync = new PaymentSyncService(api, repo, new SyncCursorRepository(db),
             new StubLicenseProvider(), new FakeClock(),
             NullLogger<PaymentSyncService>.Instance);
         var hosted = new PaymentSyncHostedService(sync,
@@ -80,12 +76,9 @@ public sealed class PaymentSyncHostedServiceTests
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
         var repo = new PaymentRepository(db);
-        var settingsPath = Path.Combine(Path.GetTempPath(), $"settings-{Guid.NewGuid():N}.json");
-        var store = new SettingsStore(settingsPath);
-        var settings = store.Load();
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
         var api = new LicenseApiClient(http, new OrderDeck.Licensing.Api.LicenseTokenStore());
-        var sync = new PaymentSyncService(api, repo, store, settings,
+        var sync = new PaymentSyncService(api, repo, new SyncCursorRepository(db),
             new StubLicenseProvider(), new FakeClock(),
             NullLogger<PaymentSyncService>.Instance);
         var hosted = new PaymentSyncHostedService(sync,

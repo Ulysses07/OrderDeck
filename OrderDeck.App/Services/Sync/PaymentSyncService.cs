@@ -1,5 +1,4 @@
 using OrderDeck.Core.Payments;
-using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
 using OrderDeck.Licensing.Api;
@@ -17,7 +16,11 @@ namespace OrderDeck.App.Services.Sync;
 ///         başarılı dönenleri MarkSynced eder.</item>
 ///   <item><b>Pull</b>: GET .../payments/since?since=cursor ile mobile'ın
 ///         onayladığı/reddetti payment status'larını lokal'e uygular.
-///         Cursor AppSettings.LastPaymentReverseSync.</item>
+///         Cursor SyncCursor("payment-decision-in", LicenseKey) — R9-D02:
+///         imleç veriyle aynı SQLite dosyasında yaşar ki yedek/geri yükleme
+///         ikisini birlikte taşısın. settings.json'daki eski alanlar
+///         (LastPaymentReverseSync/Id) SİLİNDİ ve tohum olarak da okunmuyor;
+///         satır yoksa baştan çekilir (ApplyServerStatus idempotent).</item>
 /// </list>
 ///
 /// LicenseId, LicenseService.CurrentLicense.LicenseKey'den
@@ -27,11 +30,11 @@ public sealed class PaymentSyncService
 {
     private const int PushBatchSize = 50;
     private const int PullPageSize = 200;
+    private const string PullCursorName = "payment-decision-in";
 
     private readonly LicenseApiClient _api;
     private readonly PaymentRepository _payments;
-    private readonly SettingsStore _settingsStore;
-    private readonly AppSettings _settings;
+    private readonly SyncCursorRepository _cursors;
     private readonly ICurrentLicenseProvider _licenseProvider;
     private readonly IClock _clock;
     private readonly ILogger<PaymentSyncService> _log;
@@ -44,16 +47,14 @@ public sealed class PaymentSyncService
     public PaymentSyncService(
         LicenseApiClient api,
         PaymentRepository payments,
-        SettingsStore settingsStore,
-        AppSettings settings,
+        SyncCursorRepository cursors,
         ICurrentLicenseProvider licenseProvider,
         IClock clock,
         ILogger<PaymentSyncService> log)
     {
         _api = api;
         _payments = payments;
-        _settingsStore = settingsStore;
-        _settings = settings;
+        _cursors = cursors;
         _licenseProvider = licenseProvider;
         _clock = clock;
         _log = log;
@@ -63,15 +64,16 @@ public sealed class PaymentSyncService
 
     public async Task<SyncResult> SyncOnceAsync(CancellationToken ct = default)
     {
+        var licenseKey = _licenseProvider.CurrentLicenseKey;
         var licenseId = await ResolveLicenseIdAsync(ct);
-        if (licenseId is null)
+        if (licenseId is null || string.IsNullOrWhiteSpace(licenseKey))
         {
             _log.LogDebug("Payment sync skipped — no active license resolved");
             return default;
         }
 
         int pushed = await PushOutboxAsync(licenseId.Value, ct);
-        int pulled = await PullReverseAsync(licenseId.Value, ct);
+        int pulled = await PullReverseAsync(licenseId.Value, licenseKey, ct);
 
         var result = new SyncResult(pushed, pulled);
         if (pushed > 0 || pulled > 0)
@@ -122,10 +124,22 @@ public sealed class PaymentSyncService
 
     // ─── Pull (reverse sync) ──────────────────────────────────────────
 
-    private async Task<int> PullReverseAsync(Guid licenseId, CancellationToken ct)
+    /// <summary>
+    /// R9-D02 imleç okuma. Tek kalıcı kaynak SyncCursor satırı — imleç,
+    /// tarif ettiği Payment satırlarıyla aynı SQLite dosyasında yaşar;
+    /// yedek/geri yükleme ikisini birlikte taşır. Eski settings.json alanları
+    /// tohum olarak OKUNMUYOR: settings dosyası yedeğin dışında yaşadığı için
+    /// hangi veri nesline/lisansa ait olduğu kanıtlanamaz — geri yüklemeden
+    /// sonra ileri kalmış imleç, mobilde ONAYLANMIŞ kararın (Approved) bir
+    /// daha hiç inmemesine yol açıyordu (push 0 / pull 0 sessiz kilidi).
+    /// Satır yoksa baştan çekim: sayfalar artan sırada işlenir,
+    /// ApplyServerStatus idempotent — bedeli bir kerelik fazla trafik.
+    /// </summary>
+    private async Task<int> PullReverseAsync(Guid licenseId, string licenseKey, CancellationToken ct)
     {
-        var since = _settings.LastPaymentReverseSync ?? DateTimeOffset.MinValue;
-        var sinceId = _settings.LastPaymentReverseSyncId ?? Guid.Empty;
+        var row = _cursors.Get(PullCursorName, licenseKey);
+        var since = row?.UpdatedAt ?? DateTimeOffset.MinValue;
+        var sinceId = row?.LastId ?? Guid.Empty;
 
         List<SyncedPaymentDto> rows;
         try
@@ -149,16 +163,8 @@ public sealed class PaymentSyncService
         foreach (var dto in rows) ApplyDto(dto);
 
         var last = rows[^1];
-        // N04: bellekteki kopya güncel kalsın (imleç okuması buradan); diske
-        // Update ile atomik birleştirme — bütün-nesne Save başka bileşenin bu
-        // arada yazdığı alanı ezerdi.
-        _settings.LastPaymentReverseSync = last.UpdatedAt;
-        _settings.LastPaymentReverseSyncId = last.Id;
-        _settingsStore.Update(s =>
-        {
-            s.LastPaymentReverseSync = last.UpdatedAt;
-            s.LastPaymentReverseSyncId = last.Id;
-        });
+        _cursors.Upsert(PullCursorName, licenseKey,
+            updatedAt: last.UpdatedAt, lastId: last.Id);
         return rows.Count;
     }
 

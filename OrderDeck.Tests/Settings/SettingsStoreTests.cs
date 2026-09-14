@@ -79,13 +79,14 @@ public class SettingsStoreTests
 
         // Bileşen A: yazıcı adını yazar.
         store.Update(s => s.PrinterName = "Zebra ZD220");
-        // Bileşen B: (A'nın yazdığından habersiz) sync imlecini yazar.
-        store.Update(s => s.LastCustomerProjectionSyncSeq = 1234);
+        // Bileşen B: (A'nın yazdığından habersiz) kargo imlecini yazar.
+        var shipAt = new DateTimeOffset(2026, 5, 1, 0, 0, 0, TimeSpan.Zero);
+        store.Update(s => s.LastShipmentReverseSync = shipAt);
 
         var reloaded = store.Load();
         reloaded.PrinterName.Should().Be("Zebra ZD220",
             "ikinci Update birincinin alanını ezmemeli");
-        reloaded.LastCustomerProjectionSyncSeq.Should().Be(1234);
+        reloaded.LastShipmentReverseSync.Should().Be(shipAt);
 
         File.Delete(path);
     }
