@@ -568,12 +568,53 @@ public sealed class PaymentRequestService
     private async Task<BalanceOutcome> SettleAsync(
         Guid licenseId, Guid wpfCustomerId, PaymentJob job, CancellationToken ct)
     {
+        // R6-03: girişteki deneme kimliği. Cevap, gönderildiği denemeye aittir;
+        // yeniden okunan satır başka bir revizyona geçtiyse oradaki terminal
+        // sonuç BU çağrının satışına mal edilemez.
+        var entryKey = job.ApplyKey;
+        var entryRevision = job.Revision;
+
         job = await ReplayAsync(licenseId, wpfCustomerId, job, ct);
         if (job.State == PaymentJobState.ApplyUncertain)
             job = await ReplayAsync(licenseId, wpfCustomerId, job, ct);
-        return job.State == PaymentJobState.ApplyUncertain
-            ? new(true, 0m, job)
-            : new(false, job.AppliedAmount ?? 0m, job);
+        return ClassifySettledJob(job, entryKey, entryRevision);
+    }
+
+    /// <summary>R6-03: para yolunda sonucu üreten SON nokta. Bir sonuç yalnız
+    /// "belirsiz kelimesini taşımadığı" için kesin sayılmaz — kesinlik pozitif
+    /// listeyle verilir: bu denemeye ait, alanları tutarlı <c>Applied</c> veya
+    /// <c>NoBalance</c>. Gerisi (created, apply_uncertain, reverse_pending,
+    /// bilinmeyen gelecek durumlar, AppliedAmount'u boş 'applied') tek
+    /// davranışa düşer: mesaj engellenir, operatörün sıradaki tıklaması
+    /// kaldığı yerden sürdürür (K3).
+    ///
+    /// R8 deneyindeki delik buraydı: repository geri alma beklerken geç apply
+    /// cevabını reddediyor, ama yeniden okunan reverse_pending iş eski
+    /// AppliedAmount'la "kesin" diye mesaja çıkıyordu — mesaj 250 gösterirken
+    /// uzak net düşüm 0'dı.</summary>
+    private BalanceOutcome ClassifySettledJob(PaymentJob job, Guid? entryKey, int entryRevision)
+    {
+        if (job.Revision != entryRevision || job.ApplyKey != entryKey)
+        {
+            _log?.LogWarning(
+                "Settle sonucu başka bir denemeye ait — mesaj engellendi "
+                + "(job={JobId}, girişRev={EntryRevision}, güncelRev={Revision})",
+                job.Id, entryRevision, job.Revision);
+            return new(true, 0m, job);
+        }
+
+        switch (job.State)
+        {
+            case PaymentJobState.Applied when job.AppliedAmount is { } applied:
+                return new(false, applied, job);
+            case PaymentJobState.NoBalance:
+                return new(false, 0m, job);
+            default:
+                _log?.LogWarning(
+                    "Settle kesin sonuca ulaşmadı — mesaj engellendi (job={JobId}, state={State})",
+                    job.Id, job.State);
+                return new(true, 0m, job);
+        }
     }
 
     /// <summary>İşin diskteki anahtarıyla apply'ı (yeniden) dener, sonucu işe

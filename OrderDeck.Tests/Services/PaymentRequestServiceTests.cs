@@ -1223,8 +1223,17 @@ public class PaymentRequestServiceTests : IDisposable
             (await sut.OpenWhatsAppAsync(customer, 50m, T, "session:s1"))
                 .Should().Be(PaymentRequestResult.Opened);      // revizyon: 50 uygulandı
 
-            ilkCevapSerbest.TrySetResult();
-            await ilkTiklama;                                    // gecikmiş 250 cevabı
+            var mesajSayisi = _launcher.LaunchedUrls.Count;
+            ilkCevapSerbest.TrySetResult();                      // gecikmiş 250 cevabı
+
+            // R6-03 kalanı: yeniden okunan sonuç (rev 1, 50) SONRAKİ revizyona
+            // ait — bu çağrının 250'lik satışı için kesin değil. Eski çağrı
+            // yeni bir mesaj/pencere açamaz; operatörün sıradaki tıklaması
+            // güncel sonucu diskten okur.
+            (await ilkTiklama).Should().Be(PaymentRequestResult.BalanceUncertain,
+                "başka revizyonun terminal sonucu bu denemeye mal edilemez");
+            _launcher.LaunchedUrls.Should().HaveCount(mesajSayisi,
+                "eski çağrı yeni mesaj açamaz");
 
             var job = repo.FindOrCreate(customer.Id, "session:s1", 50m);
             job.Revision.Should().Be(1);
@@ -1237,6 +1246,74 @@ public class PaymentRequestServiceTests : IDisposable
                 .Should().Be(PaymentRequestResult.Opened);
             handler.AppliedBalanceBodies.Should().HaveCount(applyAdedi);
             _launcher.LaunchedUrls[^1].Should().Contain("0%2C00").And.NotContain("-200");
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            foreach (var f in new[] { dbPath, dbPath + "-wal", dbPath + "-shm" })
+                if (File.Exists(f)) File.Delete(f);
+        }
+    }
+
+    // ── R6-03 kalanı: geri alma beklerken serbest kalan geç apply cevabı ────
+    //
+    // R8 deneyi: 250'lik apply'ın cevabı yolda takılıyken satış 50'ye revize
+    // edildi; geri alma niyeti diske indi ama sunucu cevabı kayboldu
+    // (reverse_pending). SONRA ilk 250 cevabı serbest kaldı. Repository geç
+    // yazımı reddediyor (ResultGuard: State<>reverse_pending) — fakat
+    // SettleAsync yalnız ApplyUncertain'ı belirsiz saydığı için yeniden okunan
+    // reverse_pending işi "kesin" sınıfına düşüyor ve eski AppliedAmount (250)
+    // mesaja çıkıyordu; o anda uzak net düşüm 0. Sözleşme: yalnız açıkça kesin
+    // durumlar (Applied/NoBalance) mesaj üretebilir; gerisi akışı durdurur (K3).
+    [Fact]
+    public async Task OpenWhatsAppAsync_geri_alma_beklerken_serbest_kalan_gec_apply_cevabi_mesaj_uretmez()
+    {
+        // Yarış hakemi gerçek depo olmalı (R4-01 gecikmiş cevap testiyle aynı
+        // gerekçe): reddi veren şey ResultGuard'ın SQL koşulu.
+        var dbPath = Path.Combine(Path.GetTempPath(), $"odjob-{Guid.NewGuid():N}.db");
+        var factory = new SqliteConnectionFactory(dbPath);
+        try
+        {
+            new MigrationRunner(factory).Run();
+            var repo = new PaymentJobRepository(factory);
+            var (sut, handler) = MakeCloudSut(_store, _launcher, jobs: repo);
+            handler.PreviewBalance = 1000m;
+            handler.CapAppliedToRequest = true;
+            var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+
+            var ilkApplyVardi = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var ilkCevapSerbest = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            handler.OnApplyAsync = async sira =>
+            {
+                if (sira != 1) return;
+                ilkApplyVardi.TrySetResult();
+                await ilkCevapSerbest.Task;
+            };
+
+            var ilkTiklama = Task.Run(() => sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"));
+            await ilkApplyVardi.Task; // 250 sunucuda işlendi, cevap yolda
+
+            (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+                .Should().Be(PaymentRequestResult.Opened);      // replay: 250 öğrenildi
+
+            // Revizyon 50'ye: niyet diske indi, geri alma cevabı kayboldu.
+            handler.ThrowTimeoutOnReverse = true;
+            (await sut.OpenWhatsAppAsync(customer, 50m, T, "session:s1"))
+                .Should().Be(PaymentRequestResult.BalanceUncertain);
+            var mesajSayisi = _launcher.LaunchedUrls.Count;
+
+            ilkCevapSerbest.TrySetResult();                      // gecikmiş 250 cevabı
+            (await ilkTiklama).Should().Be(PaymentRequestResult.BalanceUncertain,
+                "reverse_pending kesin sonuç değildir — mesaj 250 gösterirken uzak net 0 olurdu");
+
+            _launcher.LaunchedUrls.Should().HaveCount(mesajSayisi, "belirsizken mesaj gitmez");
+            var job = repo.FindOrCreate(customer.Id, "session:s1", 50m);
+            job.State.Should().Be(PaymentJobState.ReversePending,
+                "niyet diskte kalır, sonraki tıklama iadeyi kaldığı yerden sürdürür");
+            job.PendingTotal.Should().Be(50m);
+            job.AppliedAmount.Should().Be(250m, "iade edilecek tutar korunmalı");
         }
         finally
         {
