@@ -215,6 +215,27 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
         }
     }
 
+    public bool AdoptExternalReversal(string id, Guid expectedKey, int expectedRevision)
+    {
+        lock (_gate)
+        {
+            var j = _jobs[id];
+            if (Bayat(j, expectedKey, expectedRevision)) return false;
+            if (j.State != PaymentJobState.Applied) return false;
+            _jobs[id] = j with
+            {
+                Revision = j.Revision + 1,
+                ApplyKey = null,
+                AppliedAmount = null,
+                State = PaymentJobState.Created,
+                PendingTotal = null,
+                ClosedAt = null,
+                UpdatedAt = Now(),
+            };
+            return true;
+        }
+    }
+
     public bool AdoptRemoteResult(
         string id, Guid transactionId, decimal appliedAmount, decimal productTotal)
     {

@@ -805,4 +805,109 @@ public class LicensesCustomerBalanceApplyControllerTests : IClassFixture<ApiFact
         var resp = await GetScopeAsync(clientB, licenseA, wpfCustomerA, "cumulative");
         resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
+
+    // ── R6-02: GET transactions/{id} (düşüm durum ucu) ──────────────────────
+    // İstemci Applied bir işi TEKRAR paylaşmadan önce "bu düşüm hâlâ geçerli
+    // mi?" diye burayı sorar. Kapsam ucundan farkı: işlem kimliğiyle sorulur,
+    // bu yüzden kapsamsız yazılmış eski (033 dönemi) satırlar için de doğru
+    // cevap verir — kapsam ucu onlara 204 derdi ve istemci bunu "dışarıdan
+    // iade edildi" sanıp bir SONRAKİ tıklamada ikinci kez düşerdi.
+
+    private sealed record TransactionStatusResponse(
+        Guid TransactionId, decimal AppliedAmount, bool Reversed);
+
+    private async Task<HttpResponseMessage> GetTxStatusAsync(
+        HttpClient client, Guid licenseId, Guid transactionId) =>
+        await client.GetAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/transactions/{transactionId}");
+
+    [Fact]
+    public async Task TxStatus_returns_unreversed_deduction()
+    {
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        var txId = await ApplyWithScopeAsync(client, licenseId, wpfCustomerId, 100m, 2100m, "cumulative");
+
+        var resp = await GetTxStatusAsync(client, licenseId, txId);
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadFromJsonAsync<TransactionStatusResponse>();
+        body!.TransactionId.Should().Be(txId);
+        body.AppliedAmount.Should().Be(100m);   // ledger'da -100 duruyor, uç pozitif döner
+        body.Reversed.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task TxStatus_reports_reversed_after_reverse()
+    {
+        // R6-02'nin çekirdeği: panel iadesi düşümü geri aldıysa istemci aynı
+        // fişi "bakiye düşüldü" diye tekrar paylaşmamalı.
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        var txId = await ApplyWithScopeAsync(client, licenseId, wpfCustomerId, 100m, 2100m, "cumulative");
+        var reverse = await client.PostAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/transactions/{txId}/reverse", null);
+        reverse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var resp = await GetTxStatusAsync(client, licenseId, txId);
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadFromJsonAsync<TransactionStatusResponse>();
+        body!.Reversed.Should().BeTrue();
+        body.AppliedAmount.Should().Be(100m);
+    }
+
+    [Fact]
+    public async Task TxStatus_works_for_scopeless_deduction()
+    {
+        // Kapsam ucunun göremediği 033 dönemi satırları bu uç görmek ZORUNDA;
+        // aksi hâlde eski satışların tekrar paylaşımı yanlış "iade edildi"
+        // cevabı alır.
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+        var txId = await ApplyAndGetTransactionIdAsync(client, licenseId, wpfCustomerId, 100m, 2100m);
+
+        var resp = await GetTxStatusAsync(client, licenseId, txId);
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadFromJsonAsync<TransactionStatusResponse>();
+        body!.TransactionId.Should().Be(txId);
+        body.Reversed.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task TxStatus_unknown_transaction_returns_404()
+    {
+        var (client, licenseId, _) = await SetupWithBalanceAsync(500m);
+
+        var resp = await GetTxStatusAsync(client, licenseId, Guid.NewGuid());
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task TxStatus_foreign_license_returns_404()
+    {
+        var (clientA, licenseA, wpfCustomerA) = await SetupWithBalanceAsync(500m);
+        var txId = await ApplyWithScopeAsync(clientA, licenseA, wpfCustomerA, 100m, 2100m, "cumulative");
+
+        var (clientB, _, _) = await SetupWithBalanceAsync(100m);
+        var resp = await GetTxStatusAsync(clientB, licenseA, txId);
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task TxStatus_non_deduction_kind_returns_404()
+    {
+        // Uç yalnız purchase-deduction satırlarını tanır: iade satırının
+        // kimliğiyle sorulursa "böyle bir düşüm yok" demeli — iade fişini
+        // düşüm sanmak istemciyi yanlış tutar paylaşmaya götürür.
+        var (client, licenseId, wpfCustomerId) = await SetupWithBalanceAsync(500m);
+
+        Guid refundTxId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            refundTxId = db.CustomerBalanceTransactions
+                .Where(t => t.LicenseId == licenseId && t.Kind == "refund-full")
+                .Select(t => t.Id)
+                .Single();
+        }
+
+        var resp = await GetTxStatusAsync(client, licenseId, refundTxId);
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
 }

@@ -146,6 +146,19 @@ public interface IPaymentJobStore
     /// bir işi ezmek, hâlâ uçuşta olan bir denemenin cevabını sahipsiz
     /// bırakırdı. false = yeniden oku.</para></summary>
     bool AdoptRemoteResult(string id, Guid transactionId, decimal appliedAmount, decimal productTotal);
+
+    /// <summary>R6-02: sunucudaki düşüm DIŞARIDAN (panel iadesi ya da sunucu
+    /// tarafı geri yükleme) geçersizleşti — uygulanmış işi taze duruma döndürür:
+    /// State=created, ApplyKey=NULL, AppliedAmount=NULL, Revision+1,
+    /// PendingTotal=NULL, ClosedAt=NULL. <see cref="CompleteReversal"/>'ın
+    /// aynası; farkı, geri almayı bizim değil dışarının yapmış olması —
+    /// ProductTotal bu yüzden DEĞİŞMEZ (hedef toplam diye bir şey yok).
+    ///
+    /// <para>Revision artışı şart: uçuştaki eski cevaplar R4-01 koşuluyla
+    /// bayatlar. Yalnız iş hâlâ aynı denemenin <see cref="PaymentJobState.Applied"/>
+    /// hâlindeyse — reverse_pending'e dokunmak R6-03 niyet korumasını deler.
+    /// false = araya başka akış girdi; yeniden oku.</para></summary>
+    bool AdoptExternalReversal(string id, Guid expectedKey, int expectedRevision);
 }
 
 public sealed class PaymentJobRepository : IPaymentJobStore
@@ -396,6 +409,27 @@ public sealed class PaymentJobRepository : IPaymentJobStore
                 total = Dec(productTotal),
                 state = PaymentJobState.Applied,
                 created = PaymentJobState.Created,
+                now = Now(),
+            }) == 1;
+    }
+
+    public bool AdoptExternalReversal(string id, Guid expectedKey, int expectedRevision)
+    {
+        using var conn = _factory.Open();
+        // ProductTotal korunur: dış iade "toplam değişti" demek değildir —
+        // sıradaki tıklama aynı toplamla taze apply yapar (karar operatörün).
+        return conn.Execute(
+            @"UPDATE PaymentJob
+              SET Revision=Revision+1, ApplyKey=NULL, AppliedAmount=NULL,
+                  State=@created, PendingTotal=NULL, ClosedAt=NULL, UpdatedAt=@now
+              WHERE Id=@id AND Revision=@rev AND ApplyKey IS @key AND State=@applied",
+            new
+            {
+                id,
+                rev = expectedRevision,
+                key = KeyText(expectedKey),
+                created = PaymentJobState.Created,
+                applied = PaymentJobState.Applied,
                 now = Now(),
             }) == 1;
     }
