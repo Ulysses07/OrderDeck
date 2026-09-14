@@ -13,8 +13,11 @@ namespace OrderDeck.App.Services.Sync;
 /// Platform, Username) ile match yapılır — bu match için server-side projection
 /// gerekli. Server retroactive match'i sync endpoint'inde drive-by yapar.
 ///
-/// Watermark: SettingsStore.LastCustomerProjectionSyncSeq — Customer.SyncSeq,
-/// tablo geneli kesin artan sayaç (N03-g; göç 036 tetikleyicileri yazar).
+/// Watermark: SyncCursor("customer-projection-out", LicenseKey).Seq —
+/// Customer.SyncSeq, tablo geneli kesin artan sayaç (N03-g; göç 036
+/// tetikleyicileri yazar). R6-04: imleç veriyle aynı SQLite dosyasında, lisans
+/// anahtarına bağlı (gerekçe: göç 038). settings.json'daki eski alan yalnız
+/// ilk dokunuşta tohum olarak okunur, sonra temizlenir.
 /// Batch: 500/call. Multi-batch loop until exhausted within a single tick.
 ///
 /// WpfCustomerSyncItem.FullName mapping: Customer.FullName (gerçek ad,
@@ -26,10 +29,12 @@ namespace OrderDeck.App.Services.Sync;
 public sealed class WpfCustomerProjectionSyncService
 {
     private const int BatchSize = 500;
+    private const string CursorName = "customer-projection-out";
 
     private readonly LicenseApiClient _api;
     private readonly CustomerRepository _customers;
     private readonly SettingsStore _settingsStore;
+    private readonly SyncCursorRepository _cursors;
     private readonly ICurrentLicenseProvider _licenseProvider;
     private readonly ILogger<WpfCustomerProjectionSyncService> _log;
 
@@ -40,12 +45,14 @@ public sealed class WpfCustomerProjectionSyncService
         LicenseApiClient api,
         CustomerRepository customers,
         SettingsStore settingsStore,
+        SyncCursorRepository cursors,
         ICurrentLicenseProvider licenseProvider,
         ILogger<WpfCustomerProjectionSyncService> log)
     {
         _api             = api;
         _customers       = customers;
         _settingsStore   = settingsStore;
+        _cursors         = cursors;
         _licenseProvider = licenseProvider;
         _log             = log;
     }
@@ -76,15 +83,15 @@ public sealed class WpfCustomerProjectionSyncService
     /// </summary>
     public async Task<int> SyncOnceAsync(CancellationToken ct)
     {
-        var licenseId = await ResolveLicenseIdAsync(ct);
-        if (licenseId is null)
+        var licenseKey = _licenseProvider.CurrentLicenseKey;
+        var licenseId  = await ResolveLicenseIdAsync(ct);
+        if (licenseId is null || string.IsNullOrWhiteSpace(licenseKey))
         {
             _log.LogDebug("Customer projection sync skipped — no active license resolved");
             return 0;
         }
 
-        var settings  = _settingsStore.Load();
-        var watermark = settings.LastCustomerProjectionSyncSeq;
+        var watermark = LoadWatermark(licenseKey);
 
         var totalSynced  = 0;
         var totalMatches = 0;
@@ -144,7 +151,7 @@ public sealed class WpfCustomerProjectionSyncService
             // watermark to prevent an infinite loop, then continue.
             if (items.Count == 0)
             {
-                AdvanceWatermark(batch, ref watermark);
+                AdvanceWatermark(licenseKey, batch, ref watermark);
                 if (batch.Count < BatchSize) break;
                 continue;
             }
@@ -161,7 +168,7 @@ public sealed class WpfCustomerProjectionSyncService
                 return totalSynced; // don't advance watermark on failure
             }
 
-            AdvanceWatermark(batch, ref watermark);
+            AdvanceWatermark(licenseKey, batch, ref watermark);
 
             if (batch.Count < BatchSize) break; // last page — no more rows
         }
@@ -178,16 +185,41 @@ public sealed class WpfCustomerProjectionSyncService
 
     /// <summary>İmleci partinin SON satırına taşır ve kalıcılaştırır. Repo
     /// SyncSeq ASC sıralı döndürdüğü için son satır = partinin en büyük imleci.
-    /// N04: kalıcılaştırma <see cref="SettingsStore.Update"/> ile — döngü
-    /// başında yüklenen kopya bayatlamış olabilir; bütün-nesne Save başka
-    /// bileşenin bu arada yazdığı alanı ezerdi.</summary>
+    /// R6-04: kalıcılaştırma SyncCursor tablosuna — imleç, tarif ettiği
+    /// SyncSeq değerleriyle aynı dosyada yaşamalı ki yedek/geri yükleme
+    /// ikisini birlikte taşısın.</summary>
     private void AdvanceWatermark(
+        string licenseKey,
         IReadOnlyList<Core.Customers.Customer> batch,
         ref long watermark)
     {
         var w = batch[^1].SyncSeq;
         watermark = w;
-        _settingsStore.Update(s => s.LastCustomerProjectionSyncSeq = w);
+        _cursors.Upsert(CursorName, licenseKey, seq: w);
+    }
+
+    /// <summary>
+    /// R6-04 imleç okuma + tek seferlik tohumlama. Satır varsa o kazanır —
+    /// settings'te ne yazdığı önemsiz (geri yükleme sonrası settings başka
+    /// veri neslinin değerini taşıyor olabilir). Satır yoksa eski settings
+    /// alanından tohumlanır ve alan TEMİZLENİR: temizlenmezse 038-öncesi bir
+    /// yedek geri yüklendiğinde bayat değer yeniden tohum olur ve denetimin
+    /// "watermark 21, veri max 2 → sonsuza dek 0 satır" deneyi geri gelirdi.
+    /// Satır da tohum da yoksa tam tarama: N03-g emsaliyle güvenli (sunucu
+    /// upsert idempotent + PurgedAt kapılı).
+    /// </summary>
+    private long LoadWatermark(string licenseKey)
+    {
+        var row = _cursors.Get(CursorName, licenseKey);
+        if (row is not null) return row.Seq ?? 0L;
+
+        var legacy = _settingsStore.Load().LastCustomerProjectionSyncSeq;
+        if (legacy > 0)
+        {
+            _cursors.Upsert(CursorName, licenseKey, seq: legacy);
+            _settingsStore.Update(s => s.LastCustomerProjectionSyncSeq = 0);
+        }
+        return legacy;
     }
 
     // ─── LicenseId resolution (same caching pattern as other sync services) ──
