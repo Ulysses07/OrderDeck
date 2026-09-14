@@ -281,6 +281,10 @@ services:
       - ./panel-out:/srv/panel:ro
       - caddy_data:/data
       - caddy_config:/config
+      # Erişim log'ları (Caddyfile `log` direktifi, R8 §23-8). Host'ta dursun
+      # ki container yeniden yaratılınca kaybolmasın; saklama süresini Caddy
+      # kendisi yönetiyor (roll_keep_for 720h = 30 gün, gizlilik politikası §4).
+      - ./caddy-logs:/var/log/caddy
     networks:
       - web
     # cap_drop: ALL root'tan da NET_BIND_SERVICE'i alır, o olmadan 80/443
