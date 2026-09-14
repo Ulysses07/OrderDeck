@@ -51,7 +51,9 @@ export const landingCopy = {
       { b: '4', s: 'platform, tek pencere' },
       { b: 'Tek tık', s: 'mesajdan termal etikete' },
       { b: '≈%90+', s: 'sahte dekont elenir' },
-      { b: '0', s: 'veri sunucuya gider' },
+      // R7-10: "0 veri sunucuya gider" mutlak iddiası kaldırıldı — sipariş/yedek
+      // verisi sunucuya gidiyor; doğru iddia "sohbet yerelde işlenir".
+      { b: '%100', s: 'sohbet senin makinende işlenir' },
     ],
     sec01: {
       kicker: '01 · YAYIN & SOHBET',
@@ -274,7 +276,9 @@ export const landingCopy = {
       { b: '4', s: 'platforms, one window' },
       { b: 'One click', s: 'from message to label' },
       { b: '≈90%+', s: 'fake receipts caught' },
-      { b: '0', s: 'data sent to servers' },
+      // R7-10: absolute "0 data sent to servers" removed — order/backup data
+      // does reach the server; the true claim is local chat processing.
+      { b: '100%', s: 'chat processed on your machine' },
     ],
     sec01: {
       kicker: '01 · STREAM & CHAT',
