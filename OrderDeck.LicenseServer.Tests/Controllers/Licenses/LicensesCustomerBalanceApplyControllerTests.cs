@@ -870,12 +870,17 @@ public class LicensesCustomerBalanceApplyControllerTests : IClassFixture<ApiFact
     }
 
     [Fact]
-    public async Task TxStatus_unknown_transaction_returns_404()
+    public async Task TxStatus_unknown_transaction_returns_titled_404()
     {
+        // R9-F03: istemci "işlem gerçekten yok"u YALNIZ bu başlıkla kabul
+        // eder; başlıksız 404'ü (rota tanımayan eski sunucu) uç hatası sayar
+        // ve apply anahtarını silmez. Başlık istemci sözleşmesidir.
         var (client, licenseId, _) = await SetupWithBalanceAsync(500m);
 
         var resp = await GetTxStatusAsync(client, licenseId, Guid.NewGuid());
         resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        var problem = await resp.Content.ReadFromJsonAsync<ProblemDetailsLite>();
+        problem!.Title.Should().Be("transaction-not-found");
     }
 
     [Fact]
@@ -887,6 +892,11 @@ public class LicensesCustomerBalanceApplyControllerTests : IClassFixture<ApiFact
         var (clientB, _, _) = await SetupWithBalanceAsync(100m);
         var resp = await GetTxStatusAsync(clientB, licenseA, txId);
         resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        // R9-F03: sahiplik 404'ü transaction-not-found başlığı TAŞIMAZ —
+        // yabancı/yanlış lisansla sorgu, istemcide anahtar sildirmemeli.
+        var body = await resp.Content.ReadAsStringAsync();
+        body.Should().NotContain("transaction-not-found");
     }
 
     [Fact]
@@ -909,5 +919,8 @@ public class LicensesCustomerBalanceApplyControllerTests : IClassFixture<ApiFact
 
         var resp = await GetTxStatusAsync(client, licenseId, refundTxId);
         resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        // R9-F03: bu da "işlem yok" ailesinden — istemci güvenle sıfırlayabilsin.
+        var problem = await resp.Content.ReadFromJsonAsync<ProblemDetailsLite>();
+        problem!.Title.Should().Be("transaction-not-found");
     }
 }

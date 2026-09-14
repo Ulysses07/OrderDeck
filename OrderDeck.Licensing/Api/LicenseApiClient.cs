@@ -396,12 +396,18 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
     /// anahtarı (ledger PK). Kapsam sorgusunun aksine kimlikle sorar: kapsamsız
     /// yazılmış eski satırlar (033 dönemi / legacy devri) için de doğru cevap
     /// verir — o satırlarda kapsam sorgusu 204 döner ve "iade edildi" ile
-    /// "kapsamsız yazıldı" ayırt edilemezdi.</para></summary>
+    /// "kapsamsız yazıldı" ayırt edilemezdi.</para>
+    ///
+    /// <para>R9-F03: <c>null</c> yalnız sunucu 404'ü <c>transaction-not-found</c>
+    /// başlığıyla imzalarsa döner. Gövdesiz/başlıksız 404 (rota olmayan eski
+    /// sunucu, ters proxy) hata olarak fırlatılır — çağıran onu "uç cevap
+    /// veremedi" sayar ve apply anahtarını SİLMEZ. Aksi hâlde eski sunucuya
+    /// karşı iki tıklama aynı satışı iki kez düşürebilirdi.</para></summary>
     public async Task<CustomerBalanceTransactionStatus?> GetBalanceTransactionStatusAsync(
         Guid licenseId, Guid transactionId, CancellationToken ct = default)
         => await GetExpectingJsonOrNullAsync<CustomerBalanceTransactionStatus>(
             $"/api/v1/licenses/{licenseId}/customer-balance/transactions/{transactionId}", ct,
-            HttpStatusCode.NotFound);
+            HttpStatusCode.NotFound, nullRequiresTitle: "transaction-not-found");
 
     /// <summary>WPF "Ödeme iste" sonrası bakiye düşüşünü commit eder.
     /// Server min(Amount, balance, productTotal) ile capped uygular.</summary>
@@ -604,9 +610,16 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
     /// fırlatılır: "yok" ile "sorulamadı" aynı şey değil ve ikincisini sessizce
     /// yutmak, çağıranı var olmayan bir cevaba göre karar vermeye iter.
     /// Mirrors <see cref="GetExpectingJsonAsync{TResp}"/> for the 401 retry path
-    /// so previously-bypass endpoints now honor token rotation.</summary>
+    /// so previously-bypass endpoints now honor token rotation.
+    ///
+    /// <para>R9-F03: <paramref name="nullRequiresTitle"/> verilirse "kayıt yok"
+    /// cevabı yalnız problem+json gövdesi o başlığı taşıdığında <c>null</c>
+    /// sayılır. Başlıksız/yabancı başlıklı aynı statü kodu hataya dönüşür:
+    /// rotayı hiç tanımayan eski sunucunun çıplak 404'ü ile denetimli
+    /// "işlem yok" 404'ü aynı koddur ve ayrımı yalnız başlık yapar.</para></summary>
     private async Task<TResp?> GetExpectingJsonOrNullAsync<TResp>(
-        string path, CancellationToken ct, HttpStatusCode nullStatus = HttpStatusCode.NotFound)
+        string path, CancellationToken ct, HttpStatusCode nullStatus = HttpStatusCode.NotFound,
+        string? nullRequiresTitle = null)
         where TResp : class
     {
         var canRefresh = OnUnauthorized is not null && !path.StartsWith("/api/v1/auth/");
@@ -626,7 +639,26 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
 
             using (resp)
             {
-                if (resp.StatusCode == nullStatus) return null;
+                if (resp.StatusCode == nullStatus)
+                {
+                    if (nullRequiresTitle is null) return null;
+
+                    string? title = null;
+                    try
+                    {
+                        var problem = await resp.Content.ReadFromJsonAsync<ProblemPayload>(JsonOpts, ct);
+                        title = problem?.Title;
+                    }
+                    catch
+                    {
+                        // Gövde problem+json değil — başlıksız say.
+                    }
+                    if (title == nullRequiresTitle) return null;
+                    throw new ValidationException(
+                        title ?? $"http-{(int)resp.StatusCode}",
+                        $"HTTP {(int)resp.StatusCode} '{nullRequiresTitle}' başlığını taşımıyor "
+                        + "— 'kayıt yok' cevabı sayılmadı (R9-F03)");
+                }
                 if (!resp.IsSuccessStatusCode) await ThrowMappedAsync(resp);
                 return await DeserializeAsync<TResp>(resp, ct);
             }

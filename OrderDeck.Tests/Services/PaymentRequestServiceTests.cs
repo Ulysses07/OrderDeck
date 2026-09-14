@@ -117,6 +117,13 @@ public class PaymentRequestServiceTests : IDisposable
         public string? TxStatusResponseJson { get; set; }
         /// <summary>R6-02: durum ucu ağ hatası fırlatsın.</summary>
         public bool ThrowOnTxStatus { get; set; }
+        /// <summary>R9-F03: durum ucu ROTAYI TANIMAYAN eski sunucu gibi çıplak
+        /// (gövdesiz, başlıksız) 404 dönsün. Yeni sözleşmede istemci bunu
+        /// "işlem yok" DEĞİL uç hatası saymalı.</summary>
+        public bool TxStatusBare404 { get; set; }
+        /// <summary>R9-F02: durum ucu cevabı yolda bekletilir — doğrulama
+        /// await'i sırasında araya giren akış senaryosunu kurmak için.</summary>
+        public Func<Task>? OnTxStatusAsync { get; set; }
 
         /// <summary>R8-D01 dersi — taklit, gerçek sunucuyu aynalamalı: gerçek
         /// sunucuda işlem kimliği istemcinin idempotency anahtarıdır. Apply'a
@@ -229,12 +236,16 @@ public class PaymentRequestServiceTests : IDisposable
             {
                 var transactionId = Guid.Parse(path.Split('/')[^1]);
                 lock (_sync) TxStatusQueries.Add(transactionId);
+                if (OnTxStatusAsync is not null) await OnTxStatusAsync();
                 if (ThrowOnTxStatus) throw new TaskCanceledException("stub timeout");
+                if (TxStatusBare404) return new HttpResponseMessage(HttpStatusCode.NotFound);
                 if (TxStatusResponseJson is not null) return Json(TxStatusResponseJson);
                 lock (_sync)
                 {
                     if (!_appliedByKey.TryGetValue(transactionId, out var appliedAmount))
-                        return new HttpResponseMessage(HttpStatusCode.NotFound);
+                        // Gerçek sunucu paritesi (R9-F03): "işlem yok" 404'ü
+                        // problem+json + transaction-not-found başlığı taşır.
+                        return Problem("transaction-not-found", HttpStatusCode.NotFound);
                     var reversed = ReverseCalls.Contains(transactionId) ? "true" : "false";
                     return Json($$"""
                         {"transactionId":"{{transactionId}}","appliedAmount":{{appliedAmount.ToString(System.Globalization.CultureInfo.InvariantCulture)}},
@@ -282,10 +293,11 @@ public class PaymentRequestServiceTests : IDisposable
                 Content = new StringContent(body, Encoding.UTF8, "application/json")
             };
 
-        private static HttpResponseMessage Problem(string title) => new((HttpStatusCode)409)
+        private static HttpResponseMessage Problem(
+            string title, HttpStatusCode status = (HttpStatusCode)409) => new(status)
         {
             Content = new StringContent(
-                $"{{\"title\":\"{title}\",\"status\":409}}",
+                $"{{\"title\":\"{title}\",\"status\":{(int)status}}}",
                 Encoding.UTF8, "application/problem+json"),
         };
     }
@@ -1759,5 +1771,112 @@ public class PaymentRequestServiceTests : IDisposable
         _launcher.LaunchedUrls.Should().BeEmpty();
         _jobs.Snapshot.Single().State.Should().Be(PaymentJobState.ReversePending,
             "niyet diskte kalır, sonraki tıklamada uzlaştırılır");
+    }
+
+    // ── R9-F01/F02/F03: kesinlik sözleşmesi sıkılaştırması ───────────────
+
+    [Fact] // R9-F01 — replay TARİHSEL sonuçtur: dış iade doğrulamada yakalanır
+    public async Task OpenWhatsAppAsync_belirsiz_replay_sonrasi_dis_iade_dogrulamada_yakalanir()
+    {
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+
+        // 1. tıklama: apply cevabı yolda kaybolur — istek tele çıktı, sunucu
+        // defterine işlendi ama iş yerelde belirsiz kaldı.
+        handler.ThrowTimeoutOnApply = true;
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.BalanceUncertain);
+        var key = _jobs.Snapshot.Single().ApplyKey!.Value;
+
+        // Araya panel iadesi girer: sunucudaki düşüm geri alınır.
+        handler.ReverseCalls.Add(key); // türetilmiş durum cevabı artık reversed=true
+
+        // 2. tıklama: replay idempotency kaydından "applied" der (tarihsel),
+        // ama durum ucu güncel gerçeği söyler — mesaj GİTMEZ.
+        handler.ThrowTimeoutOnApply = false;
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.BalanceUncertain);
+
+        handler.TxStatusQueries.Should().ContainSingle().Which.Should().Be(key);
+        _launcher.LaunchedUrls.Should().BeEmpty(
+            "iade edilmiş düşümü 'bakiye düşüldü' diye paylaşmak yalan olur");
+        var job = _jobs.Snapshot.Single();
+        job.State.Should().Be(PaymentJobState.Created);
+        job.ApplyKey.Should().BeNull("iş sıfırlandı — sıradaki tıklama taze karar verir");
+    }
+
+    [Fact] // R9-F01 — mirastan devralınan replay sonucu da güncellik doğrulamasından geçer
+    public async Task OpenWhatsAppAsync_miras_devri_sonrasi_dis_iade_dogrulamada_yakalanir()
+    {
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var key = Guid.NewGuid();
+        SeedJob(customer.Id, PaymentJobState.ApplyUncertain, 250m, null, key,
+            scopeKey: "legacy");
+        // Miras düşümü dışarıdan iade edilmiş: replay yine "applied" diyecek.
+        handler.ReverseCalls.Add(key);
+
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.BalanceUncertain);
+
+        handler.TxStatusQueries.Should().Contain(key,
+            "devralınan sonuç tarihseldir — 6. adım güncelliği sormak zorunda");
+        _launcher.LaunchedUrls.Should().BeEmpty();
+    }
+
+    [Fact] // R9-F02 — doğrulama await'i sırasında iş taşınırsa kesin mesaj verilmez
+    public async Task OpenWhatsAppAsync_dogrulama_beklerken_is_tasinirsa_bloklar()
+    {
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        var key = Guid.NewGuid();
+        handler.TxStatusResponseJson = TxStatusJson(key, applied: 40m, reversed: false);
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var seeded = SeedJob(customer.Id, PaymentJobState.Applied, 250m, 40m, key);
+
+        // Durum cevabı yoldayken eşzamanlı bir akış geri alma niyeti yazar:
+        // sunucunun "geçerli" cevabı await ÖNCESİ duruma ait kalır.
+        handler.OnTxStatusAsync = () =>
+        {
+            _jobs.BeginReversal(seeded.Id, seeded.Revision, key, 250m);
+            return Task.CompletedTask;
+        };
+
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.BalanceUncertain);
+
+        _launcher.LaunchedUrls.Should().BeEmpty("kesin mesaj await SONRASI satırdan verilmeli");
+        _jobs.Snapshot.Single().State.Should().Be(PaymentJobState.ReversePending,
+            "eşzamanlı akışın niyeti ezilmedi — sıradaki tıklama uzlaştırır");
+    }
+
+    [Fact] // R9-F03 — çıplak 404 (rota tanımayan eski sunucu) anahtar SİLDİRMEZ
+    public async Task OpenWhatsAppAsync_ciplak_404_anahtari_silmez_kayitli_sonucla_devam_eder()
+    {
+        // Eski sunucuda durum rotası yok: framework gövdesiz 404 döner. Bunu
+        // "işlem yok" saymak anahtarı sildirir, ikinci tıklama kapsam ucundan
+        // da 204 alınca (kapsamsız eski satır) aynı satışı İKİNCİ kez düşerdi.
+        // Yeni sözleşme: "işlem yok" yalnız transaction-not-found başlığıyla;
+        // çıplak 404 = uç hatası → fırsatçı doğrulama diskteki sonuçla sürer.
+        var (sut, handler) = MakeCloudSut(_store, _launcher);
+        handler.PreviewBalance = 100m;
+        handler.TxStatusBare404 = true;
+        var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+        var key = Guid.NewGuid();
+        SeedJob(customer.Id, PaymentJobState.Applied, 250m, 40m, key);
+
+        (await sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"))
+            .Should().Be(PaymentRequestResult.Opened);
+
+        handler.TxStatusQueries.Should().ContainSingle();
+        handler.AppliedBalanceBodies.Should().BeEmpty("ikinci düşüm yazılMAZ");
+        _launcher.LaunchedUrls.Should().ContainSingle()
+            .Which.Should().Contain("210%2C00", "250 − kayıtlı 40");
+        var job = _jobs.Snapshot.Single();
+        job.State.Should().Be(PaymentJobState.Applied);
+        job.ApplyKey.Should().Be(key,
+            "anahtar korunur — eski sunucuya karşı çifte düşüm kapısı açılmaz");
     }
 }
