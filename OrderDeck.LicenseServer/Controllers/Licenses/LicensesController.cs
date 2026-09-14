@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using OrderDeck.LicenseServer.Services.Licensing;
+using OrderDeck.LicenseServer.Services.Observability;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -12,11 +13,17 @@ public sealed class LicensesController : ControllerBase
 {
     private readonly LicenseValidator _validator;
     private readonly ActivationManager _activations;
+    private readonly OrderDeckMetrics _metrics;
+    private readonly ILogger<LicensesController> _logger;
 
-    public LicensesController(LicenseValidator validator, ActivationManager activations)
+    public LicensesController(
+        LicenseValidator validator, ActivationManager activations,
+        OrderDeckMetrics metrics, ILogger<LicensesController> logger)
     {
         _validator = validator;
         _activations = activations;
+        _metrics = metrics;
+        _logger = logger;
     }
 
     public sealed record LicenseHwRequest(string LicenseKey, string HardwareFingerprint, string? LegacyHardwareFingerprint = null);
@@ -34,10 +41,27 @@ public sealed class LicensesController : ControllerBase
         // BU uca geliyor (LicenseApiClient.HeartbeatAsync üretim kodunda çağrısız).
         // R8 §23-8 ölçümü bunu görünür kıldı — LastSeenAt aylarca bayat kalmıştı.
         // Dönüş değeri bilerek yok sayılıyor: aktivasyonsuz validate meşru
-        // (status=notactivated) ve dokunuşun başarısızlığı cevabı etkilememeli.
-        await _activations.HeartbeatAsync(
-            req.LicenseKey, customerId, req.HardwareFingerprint,
-            req.LegacyHardwareFingerprint, ClientAppVersion(), ct);
+        // (status=notactivated).
+        //
+        // try/catch (R9-OPS03): lisans kararı yukarıda ZATEN hesaplandı;
+        // salt-telemetri yazmasının DB arızası (izin/disk/timeout) başarılı
+        // doğrulamayı 500'e çevirmemeli — istemci 500'ü ağ hatası saymaz ve
+        // offline grace'e DÜŞMEZ (LicenseApiUnknownException). Kayıp sessiz
+        // kalmasın diye sayaç + warning log. catch'i HeartbeatAsync'in içine
+        // koymuyoruz: /heartbeat ucunda dokunuş asıl işin kendisi ve legacy
+        // fingerprint göçü de oradan akıyor — orada hata yutulmamalı.
+        try
+        {
+            await _activations.HeartbeatAsync(
+                req.LicenseKey, customerId, req.HardwareFingerprint,
+                req.LegacyHardwareFingerprint, ClientAppVersion(), ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _metrics.LicenseTelemetryTouchFailures.Add(1);
+            _logger.LogWarning(ex,
+                "Validate sırasında LastSeen/AppVersion dokunuşu başarısız — cevap etkilenmedi (R9-OPS03)");
+        }
 
         return Ok(new
         {
@@ -50,10 +74,7 @@ public sealed class LicensesController : ControllerBase
     }
 
     [HttpPost("activate")]
-    public async Task<IActionResult> Activate(
-        [FromBody] ActivateRequest req,
-        [FromServices] OrderDeck.LicenseServer.Services.Observability.OrderDeckMetrics metrics,
-        CancellationToken ct)
+    public async Task<IActionResult> Activate([FromBody] ActivateRequest req, CancellationToken ct)
     {
         var customerId = GetCustomerId();
         try
@@ -61,12 +82,12 @@ public sealed class LicensesController : ControllerBase
             var act = await _activations.ActivateAsync(
                 req.LicenseKey, customerId, req.HardwareFingerprint, req.MachineName,
                 req.LegacyHardwareFingerprint, ct);
-            metrics.LicensesActivated.Add(1);
+            _metrics.LicensesActivated.Add(1);
             return StatusCode(201, new { activationId = act.Id, expiresAt = act.License?.ExpiresAt });
         }
         catch (ActivationManager.ActivationException ex)
         {
-            metrics.LicenseActivationFailures.Add(1, new KeyValuePair<string, object?>("code", ex.Code));
+            _metrics.LicenseActivationFailures.Add(1, new KeyValuePair<string, object?>("code", ex.Code));
             return Problem(title: ex.Code, detail: ex.Message, statusCode: 409);
         }
     }
