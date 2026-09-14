@@ -36,6 +36,15 @@ public sealed class WpfDialogService : IDialogService
         => MessageBox.Show(message, title, MessageBoxButton.YesNo, MessageBoxImage.Question)
            == MessageBoxResult.Yes;
 
+    public bool? ConfirmYesNoCancel(string message, string title)
+        => MessageBox.Show(message, title, MessageBoxButton.YesNoCancel, MessageBoxImage.Question)
+            switch
+        {
+            MessageBoxResult.Yes => true,
+            MessageBoxResult.No  => false,
+            _                    => null,   // İptal / pencere kapatıldı → vazgeç
+        };
+
     public Task<bool> ConfirmAsync(string message, string title)
         => _drawers.ShowAsync(title, d => MessageDrawer.ForConfirm(d, message));
 

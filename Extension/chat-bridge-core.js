@@ -119,6 +119,26 @@ window.OrderDeckChatBridge = (function () {
         const seenElements = new WeakSet();
         const seenHashes = new Set();
 
+        // R7-08: externalId "olayın kimliği"dir, "işlenme anı" değil. Eskiden
+        // `prefix-Date.now()-hash` idi; aynı tarama milisaniyesinde aynı
+        // kullanıcı+metni taşıyan İKİ AYRI DOM satırı aynı id'yi üretiyordu ve
+        // köprü ikincisini duplicate sayıp atıyordu. Oysa tier-1 tam da o
+        // durumu "iki ayrı sipariş" olarak kabul ediyor (aynı kodu tekrar
+        // yazmak yeni node = yeni satış) — yani kimlik çakışması gerçek bir
+        // siparişi sessizce düşürüyordu.
+        //
+        // runId: sekme/yeniden yükleme başına bir kez üretilir. seq: emit
+        // başına artar. İkisi birlikte id'yi bu sayfa ömrü içinde tekil yapar;
+        // payload bir kez kurulduğu için outbox'tan tekrar gönderim aynı id'yi
+        // korur (kopuk sokette duplicate üretmez).
+        //
+        // BİLEREK çözülmeyen: aynı yorumun iki ayrı sekmede iki ayrı id
+        // alması. Onu kapatmak kaynağın gerçek mesaj kimliğini ister; TikTok
+        // DOM'u vermiyor. Kör metin tekilleştirmesi burada yanlış olur —
+        // meşru tekrar alımı da siler.
+        const runId = Math.random().toString(36).slice(2, 8);
+        let emitSeq = 0;
+
         // Debug instrumentation — measured per 10s window, sent to WPF for log analysis.
         const STATS_INTERVAL_MS = 10_000;
         let stats = freshStats();
@@ -407,7 +427,7 @@ window.OrderDeckChatBridge = (function () {
                     displayName: displayName ?? username,
                     avatarUrl: avatarUrl ?? null,
                     text: text,
-                    externalId: `${adapter.externalIdPrefix}-${Date.now()}-${hash}`,
+                    externalId: `${adapter.externalIdPrefix}-${Date.now()}-${runId}-${(++emitSeq).toString(36)}-${hash}`,
                     timestamp: Date.now()
                 };
 

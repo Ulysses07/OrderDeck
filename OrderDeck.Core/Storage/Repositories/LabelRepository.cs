@@ -79,6 +79,26 @@ public sealed class LabelRepository
         return rows.Select(Map).ToList();
     }
 
+    /// <summary>R7-04 (PO-02): verilen oturum DIŞINDA kalan basılmamış,
+    /// iptal edilmemiş etiketler. Kuyruk yalnız aktif oturumdan yüklendiği
+    /// için önceki yayından basılmadan kalan etiketler ekranda görünmez —
+    /// StartStream bunları operatöre sorar ve isterse yeni kuyruğa taşır
+    /// (SessionId DEĞİŞMEZ: satış hâlâ eski yayının; taşınan yalnız
+    /// görünürlük). Geçici yedekler dahil:
+    /// <see cref="GetUnprintedBySession"/> ile aynı seçim kuralı.</summary>
+    public IReadOnlyList<Label> GetUnprintedOutsideSession(string sessionId)
+    {
+        using var conn = _factory.Open();
+        var rows = conn.Query<Row>(
+            @"SELECT Id, SessionId, CustomerId, Platform, Username, DisplayName, MessageText, Code,
+                     Price, AddedAt, PrintedAt, CancelledAt, CancelReason, IsBackupPromoted, ParentLabelId, IsTentativeBackup, IsShippingFee, ShipmentId, SyncedAt, ProductId, ProductVariantId, Revision
+              FROM Label
+              WHERE SessionId<>@sessionId AND PrintedAt IS NULL AND CancelledAt IS NULL
+              ORDER BY AddedAt",
+            new { sessionId }).ToList();
+        return rows.Select(Map).ToList();
+    }
+
     /// <summary>
     /// Tentative-backup labels for a given parent — used by the
     /// BackupTransferDialog after the parent is cancelled, and by the chip

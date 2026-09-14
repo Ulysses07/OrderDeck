@@ -313,7 +313,7 @@ public class MainShellViewCompositionTests
     }
 
     private static SupportRequestsViewModel BuildSupportRequestsViewModel()
-        => new(BuildLicenseApi(), new WhatsAppMessageBuilder(), new ProcessUrlLauncher());
+        => new(BuildLicenseApi());
 
     private static BulkSmsViewModel BuildBulkSmsViewModel()
         => new(BuildLicenseApi(), new StubLicenseProvider());

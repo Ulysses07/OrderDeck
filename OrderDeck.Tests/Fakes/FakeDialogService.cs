@@ -40,6 +40,19 @@ public sealed class FakeDialogService : IDialogService
         return ConfirmResult(title);
     }
 
+    /// <summary>Sorulan üç seçenekli onaylar: (başlık, mesaj).</summary>
+    public List<(string Title, string Message)> ThreeWayConfirmations { get; } = new();
+
+    /// <summary>Üç seçenekli onayın cevabı. Varsayılan VAZGEÇ (null):
+    /// test farkında olmadan hiçbir dala girmesin.</summary>
+    public Func<string, bool?> ThreeWayResult { get; set; } = _ => null;
+
+    public bool? ConfirmYesNoCancel(string message, string title)
+    {
+        ThreeWayConfirmations.Add((title, message));
+        return ThreeWayResult(title);
+    }
+
     // Çekmece karşılıkları AYNI listelere yazar: bir çağrı yeri senkrondan
     // async'e geçtiğinde testinin assert'ini değiştirmek gerekmesin.
     public Task<bool> ConfirmAsync(string message, string title)

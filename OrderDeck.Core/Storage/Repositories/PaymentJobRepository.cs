@@ -225,13 +225,24 @@ public sealed class PaymentJobRepository : IPaymentJobStore
     // ikinci kez yazmak zararsız tekrardır (replay bunu yapar).
     private const string StaleGuard = " WHERE Id=@id AND Revision=@rev AND ApplyKey IS @key";
 
+    // R6-03: sonucu yazan üç metin için StaleGuard TEK BAŞINA yetmiyor. R4-02
+    // reverse_pending aşamasını ekledi ve BeginReversal, geri alınacak işlemi
+    // adresleyebilmek için Revision/ApplyKey'i bilerek koruyor. Yani aynı
+    // denemenin uçuştaki cevabı geri alma niyetiyle AYNI kimliği taşıyor ve
+    // StaleGuard'ı geçiyordu: niyet 'applied'a eziliyor, FinishReversalAsync
+    // bir daha çalışmıyor, sunucudaki düşüm iade edilmeden kalıyordu. Aşama
+    // koşulu R4-01'i bozmaz — niyet yokken aynı sonucu tekrar yazmak hâlâ
+    // serbest (replay bunu yapar); yalnız geri alma bekleyen iş dokunulmaz
+    // olur. Niyeti kaldırmanın tek yolu CompleteReversal'dır.
+    private const string ResultGuard = StaleGuard + " AND State<>@reversePending";
+
     private static string? KeyText(Guid? key) => key?.ToString("N");
 
     public bool MarkApplied(string id, Guid expectedKey, int expectedRevision, decimal appliedAmount)
     {
         using var conn = _factory.Open();
         return conn.Execute(
-            "UPDATE PaymentJob SET State=@state, AppliedAmount=@amt, UpdatedAt=@now" + StaleGuard,
+            "UPDATE PaymentJob SET State=@state, AppliedAmount=@amt, UpdatedAt=@now" + ResultGuard,
             new
             {
                 id,
@@ -240,6 +251,7 @@ public sealed class PaymentJobRepository : IPaymentJobStore
                 state = PaymentJobState.Applied,
                 amt = Dec(appliedAmount),
                 now = Now(),
+                reversePending = PaymentJobState.ReversePending,
             }) == 1;
     }
 
@@ -247,7 +259,7 @@ public sealed class PaymentJobRepository : IPaymentJobStore
     {
         using var conn = _factory.Open();
         return conn.Execute(
-            "UPDATE PaymentJob SET State=@state, AppliedAmount=@amt, UpdatedAt=@now" + StaleGuard,
+            "UPDATE PaymentJob SET State=@state, AppliedAmount=@amt, UpdatedAt=@now" + ResultGuard,
             new
             {
                 id,
@@ -256,6 +268,7 @@ public sealed class PaymentJobRepository : IPaymentJobStore
                 state = PaymentJobState.NoBalance,
                 amt = Dec(0m),
                 now = Now(),
+                reversePending = PaymentJobState.ReversePending,
             }) == 1;
     }
 
@@ -263,7 +276,7 @@ public sealed class PaymentJobRepository : IPaymentJobStore
     {
         using var conn = _factory.Open();
         return conn.Execute(
-            "UPDATE PaymentJob SET State=@state, UpdatedAt=@now" + StaleGuard,
+            "UPDATE PaymentJob SET State=@state, UpdatedAt=@now" + ResultGuard,
             new
             {
                 id,
@@ -271,6 +284,7 @@ public sealed class PaymentJobRepository : IPaymentJobStore
                 key = KeyText(expectedKey),
                 state = PaymentJobState.ApplyUncertain,
                 now = Now(),
+                reversePending = PaymentJobState.ReversePending,
             }) == 1;
     }
 

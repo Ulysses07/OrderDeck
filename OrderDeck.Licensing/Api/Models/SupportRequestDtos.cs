@@ -14,4 +14,10 @@ public sealed record SupportRequestDto(
     DateTimeOffset CreatedAt,
     DateTimeOffset? ResolvedAt);
 
-public sealed record IssueTempPasswordResponse(string TempPassword);
+/// <summary>
+/// R7-02 sonrası sözleşme: sunucu parolayı ARTIK DÖNDÜRMEZ; kendisi SMS OTP
+/// gönderir ve <c>Status = "verification-sent"</c> döner. TempPassword alanı
+/// yalnız eski sunucuyla karşılaşma ihtimaline karşı nullable duruyor —
+/// istemci başarıyı yalnız Status üzerinden okur.
+/// </summary>
+public sealed record IssueTempPasswordResponse(string? TempPassword, string? Status);
