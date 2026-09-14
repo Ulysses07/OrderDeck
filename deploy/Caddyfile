@@ -64,6 +64,21 @@ license.orderdeckapp.com {
     import security_headers
     encode gzip
 
+    # ─── Erişim log'u (R8 §23-8 telemetri boşluğu, 2026-09-14) ─────────────
+    # JSON satırları `duration` alanı taşıyor → p95/p99 gerçek trafikten
+    # ölçülebilir; ayrıca gizlilik politikası §4'ün "sunucu erişim log'ları
+    # 30 gün içinde silinir" beyanının dayanağı. `roll_keep_for 720h` = 30 gün;
+    # bu süreyi UZATMADAN önce politika metnini güncelle.
+    # Host tarafı: docker-compose.yml'deki ./caddy-logs bind mount'u.
+    log {
+        output file /var/log/caddy/license-access.log {
+            roll_size 50MiB
+            roll_keep 10
+            roll_keep_for 720h
+        }
+        format json
+    }
+
     # Razor yüzeyi. jsdelivr = Bootstrap 5.3.3 (CSS her sayfada, JS bundle'ı
     # yalnız _AdminLayout'ta). yt3.* = YouTube kanal avatarı; IntakeForm
     # `/api/public/verify/youtube` cevabındaki `thumbnail`ı <img> olarak
@@ -132,6 +147,23 @@ orderdeckapp.com {
 
     # Brotli'i enable etmek için xcaddy build gerekiyor — şimdilik gzip+zstd yeterli.
 
+    # ─── Erişim log'u (R8 §23-8, 2026-09-14) ───────────────────────────────
+    # Asıl hedef `/downloads/velopack/*`: Velopack'in User-Agent'ı istemci
+    # sürümünü taşıyor → saha sürüm dağılımı + delta/full indirme kanıtı
+    # başka hiçbir telemetri olmadan buradan okunur.
+    # 30 gün saklama gerekçesi license.* bloğundaki notta.
+    #
+    # DİKKAT: aşağıdaki /facebook/callback handle'ında `log_skip` var ve
+    # KALDIRILMAMALI — o istek query string'inde OAuth `code` taşıyor.
+    log {
+        output file /var/log/caddy/web-access.log {
+            roll_size 50MiB
+            roll_keep 10
+            roll_keep_for 720h
+        }
+        format json
+    }
+
     # Politika site geneli: statik Next çıktısı ile aşağıda proxy'lenen Razor
     # IntakeForm'un BİRLEŞİMİ. Ayrı `handle` blokları içine ayrı `header`
     # koymak yerine tek satır, çünkü aradaki tek fark img-src'deki YouTube
@@ -174,9 +206,12 @@ orderdeckapp.com {
     # ("http://localhost redirects are automatically allowed while in development
     # mode only"). WPF'in OAuth dinleyicisi ise localhost:4849'da. Araya HTTPS bir
     # adres koyuyoruz: Meta buraya döner, Caddy `code` + `state`'i olduğu gibi
-    # masaüstündeki dinleyiciye 302'ler. Hiçbir şey saklanmıyor — bu sitede `log`
-    # direktifi yok, dolayısıyla `code` erişim log'una da düşmüyor.
+    # masaüstündeki dinleyiciye 302'ler. Hiçbir şey saklanmıyor: site geneli
+    # erişim log'u açıldığından beri (2026-09-14) bu istek `log_skip` ile
+    # dışarıda tutuluyor — yoksa OAuth `code`'u query string içinde log'a
+    # düşerdi. Log'u yeniden düzenlerken bu satırı SİLME.
     handle /facebook/callback {
+        log_skip
         redir http://localhost:4849/facebook/callback?{query} 302
     }
 
