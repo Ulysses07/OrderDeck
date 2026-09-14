@@ -324,9 +324,16 @@ public sealed class PaymentRequestService
             var legacies = _jobs.GetOpenLegacies(customer.Id);
             PaymentJob job;
 
-            // R6-02: işin sunucu sonucu BU tıklama içinde sunucudan öğrenildiyse
-            // true — 6. adımdaki tekrar-paylaşım doğrulaması o zaman gereksizdir
-            // (aynı cevabı ikinci kez sormak olurdu).
+            // R6-02: işin sunucu sonucu BU tıklama içinde sunucudan GÜNCEL
+            // geçerlilik taşıyan bir cevapla öğrenildiyse true — 6. adımdaki
+            // tekrar-paylaşım doğrulaması o zaman gereksizdir (aynı cevabı
+            // ikinci kez sormak olurdu).
+            //
+            // R9-F01: replay cevabı bu tanıma GİRMEZ. Sunucu idempotency
+            // kaydından TARİHSEL sonucu döndürür; düşüm panel iadesiyle geri
+            // alınmış olsa da replay "applied" der. Yalnız kapsam benimsemesi
+            // (4. adım) sayılır: /scope sorgusu geri alınmış satırları dışlar,
+            // cevabı güncel gerçektir.
             var remoteConfirmed = false;
 
             if (legacies.Count > 0)
@@ -350,8 +357,9 @@ public sealed class PaymentRequestService
                     : null;
                 if (adopted is not null)
                 {
+                    // R9-F01: remoteConfirmed BİLEREK set edilmiyor — replay
+                    // tarihsel sonuçtur, 6. adım güncelliği ayrıca doğrular.
                     _jobs.AdoptLegacyResult(job.Id, adopted.Id);
-                    remoteConfirmed = true; // sonuç az önce replay'den geldi
                 }
 
                 foreach (var l in resolved)
@@ -393,12 +401,14 @@ public sealed class PaymentRequestService
             }
 
             // 3) Belirsiz iş: bir kez replay (K3) — hâlâ belirsizse blokla.
+            //    R9-F01: replay idempotency kaydının TARİHSEL sonucunu getirir;
+            //    düşüm bu arada dışarıdan geri alındıysa yine "applied" der.
+            //    remoteConfirmed set edilmez — 6. adım güncelliği doğrulasın.
             if (job.State == PaymentJobState.ApplyUncertain)
             {
                 job = await ReplayAsync(licenseId.Value, wpfCustomerId, job, ct);
                 if (job.State == PaymentJobState.ApplyUncertain)
                     return new(true, 0m, job);
-                remoteConfirmed = true; // kesinleşen cevap az önce sunucudan geldi
             }
 
             // 4) R4-03 uzlaştırma: iş hiç denenmemiş görünüyor ama sunucuda bu
@@ -479,6 +489,24 @@ public sealed class PaymentRequestService
                     var blocked = await VerifyAppliedStillStandsAsync(
                         licenseId.Value, job, appliedKey, ct);
                     if (blocked is not null) return blocked;
+
+                    // R9-F02: doğrulama await'i sırasında eşzamanlı bir akış
+                    // satırı taşımış olabilir (geri alma niyeti, revizyon).
+                    // Sunucu cevabı await ÖNCESİ duruma aitti; kesin mesaj
+                    // await SONRASI satırdan verilmeli. Deneme kimliği
+                    // tutmuyorsa bu tıklama durur — sıradaki tıklama satırın
+                    // güncel hâlinden sürdürür (K3, ClassifySettledJob deseni).
+                    var current = _jobs.Get(job.Id)!;
+                    if (current.State != PaymentJobState.Applied
+                        || current.ApplyKey != appliedKey
+                        || current.Revision != job.Revision)
+                    {
+                        _log?.LogWarning(
+                            "Doğrulama sırasında iş taşındı — mesaj engellendi "
+                            + "(job={JobId}, durum={State})", current.Id, current.State);
+                        return new(true, 0m, current);
+                    }
+                    job = current;
                 }
                 return new(false, job.AppliedAmount ?? 0m, job);
             }
