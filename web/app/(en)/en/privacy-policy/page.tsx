@@ -48,6 +48,16 @@ export default function PrivacyEn() {
         <li><strong>Discarded entirely</strong> when the application closes</li>
         <li><strong>Never sent to {BRAND} servers</strong> and never shared with third parties</li>
       </ul>
+      <p>
+        <strong>The one exception:</strong> comments the broadcaster{' '}
+        <strong>converts into an order/label</strong>. The text of such a
+        comment is kept as part of the order record on the broadcaster&apos;s
+        computer and is transferred to {BRAND} servers together with the order
+        data, so the broadcaster can run their business (orders, shipping,
+        dispute tracking). The raw chat stream itself is never sent to our
+        servers in bulk. See the <a href="/en/data-deletion">Data Deletion</a>{' '}
+        page for details.
+      </p>
 
       <h3>1.3. Buyer information collected via the registration form</h3>
       <p>
@@ -184,7 +194,12 @@ export default function PrivacyEn() {
         <li>Buyer information from the registration form: until deleted by the relevant broadcaster</li>
         <li>Server access logs: 30 days</li>
         <li>Security logs: 90 days</li>
-        <li>Live-stream chat messages: only while the application is open</li>
+        <li>
+          Live-stream chat messages: only while the application is open
+          (except the text of comments converted into an order/label — that
+          text is retained as part of the order record, for as long as the
+          order record itself)
+        </li>
         <li>OAuth tokens: until the user revokes consent (stored on user's machine)</li>
       </ul>
 

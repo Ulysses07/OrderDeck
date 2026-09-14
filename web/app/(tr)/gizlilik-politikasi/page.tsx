@@ -50,6 +50,15 @@ export default function PrivacyTr() {
         <li>Uygulama kapatıldığında <strong>tamamen silinir</strong></li>
         <li><strong>{BRAND} sunucularına gönderilmez</strong>, üçüncü kişilerle paylaşılmaz</li>
       </ul>
+      <p>
+        <strong>Tek istisna:</strong> yayıncının <strong>siparişe/etikete
+        dönüştürdüğü</strong> yorumlar. Sipariş kaydına dönüşen yorumun metni,
+        yayıncının işini yürütebilmesi (sipariş, kargo, itiraz takibi) için
+        sipariş kaydının bir parçası olarak yayıncının bilgisayarında saklanır
+        ve sipariş verisiyle birlikte {BRAND} sunucularına aktarılır. Ham chat
+        akışının kendisi hiçbir zaman toplu olarak sunucuya gönderilmez.
+        Ayrıntı için <a href="/veri-silme">Veri Silme</a> sayfasına bakın.
+      </p>
 
       <h3>1.3. Kayıt formu ile toplanan alıcı bilgileri</h3>
       <p>
@@ -183,7 +192,11 @@ export default function PrivacyTr() {
         <li>Kayıt formu ile toplanan alıcı bilgileri: ilgili yayıncı silene kadar</li>
         <li>Sunucu erişim logları: 30 gün</li>
         <li>Güvenlik kayıtları: 90 gün</li>
-        <li>Canlı yayın chat mesajları: yalnızca uygulama açık kaldığı sürece</li>
+        <li>
+          Canlı yayın chat mesajları: yalnızca uygulama açık kaldığı sürece
+          (siparişe/etikete dönüştürülen yorumların metni hariç — o metin,
+          sipariş kaydının parçası olarak sipariş kaydıyla aynı süre saklanır)
+        </li>
         <li>OAuth token: kullanıcı izni iptal edene kadar (kullanıcının makinesinde)</li>
       </ul>
 

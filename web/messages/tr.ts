@@ -132,7 +132,7 @@ export const tr = {
       },
       {
         q: 'Mesajlar bir yerde saklanıyor mu?',
-        a: 'Hayır. Tüm mesajlar yalnızca senin makinende, son 500 mesaja kadar bellek tamponunda tutulur. Uygulama kapandığında silinir. OrderDeck sunucularına gönderilmez.',
+        a: 'Ham chat akışı saklanmaz: mesajlar yalnızca senin makinende, son 500 mesaja kadar bellek tamponunda tutulur ve uygulama kapanınca silinir; toplu olarak OrderDeck sunucularına gönderilmez. Tek istisna, siparişe/etikete dönüştürdüğün yorumlar: o yorumun metni sipariş kaydının parçası olarak saklanır ve sipariş verisiyle birlikte sunucuya aktarılır.',
       },
       {
         q: 'Deneme süresi nasıl çalışıyor?',
