@@ -150,11 +150,12 @@ public sealed class ActivationManager
 
     public Task<bool> HeartbeatAsync(
         string licenseKey, Guid customerId, string hardwareFingerprint, CancellationToken ct = default)
-        => HeartbeatAsync(licenseKey, customerId, hardwareFingerprint, legacyFingerprint: null, ct);
+        => HeartbeatAsync(licenseKey, customerId, hardwareFingerprint, legacyFingerprint: null,
+            appVersion: null, ct);
 
     public async Task<bool> HeartbeatAsync(
         string licenseKey, Guid customerId, string hardwareFingerprint, string? legacyFingerprint,
-        CancellationToken ct = default)
+        string? appVersion = null, CancellationToken ct = default)
     {
         for (var attempt = 0; ; attempt++)
         {
@@ -168,6 +169,7 @@ public sealed class ActivationManager
             if (activation is null) return false;
 
             activation.LastSeenAt = DateTimeOffset.UtcNow;
+            if (appVersion is not null) activation.AppVersion = appVersion;
             try { await _db.SaveChangesAsync(ct); return true; }
             catch (DbUpdateConcurrencyException) when (attempt < MaxConcurrencyRetries)
             {

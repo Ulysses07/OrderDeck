@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Net.Http;
+using System.Reflection;
 using OrderDeck.App.Services;
 using OrderDeck.App.Services.IntakeForm;
 using OrderDeck.Chat.Bridge;
@@ -399,6 +400,10 @@ public sealed class AppHost : IDisposable
             var opt = sp.GetRequiredService<IOptions<LicensingOptions>>().Value;
             http.BaseAddress = new Uri(opt.ServerBaseUrl);
             http.Timeout = TimeSpan.FromSeconds(opt.RequestTimeoutSeconds);
+            // Sunucu bu UA'dan Activations.AppVersion'ı dolduruyor (saha sürüm
+            // dağılımı, R8 §23-8). Deseni değiştirme: LicensesController
+            // "OrderDeck-WPF/<sürüm>" bekliyor.
+            http.DefaultRequestHeaders.UserAgent.ParseAdd($"OrderDeck-WPF/{ClientVersion()}");
         })
         .AddHttpMessageHandler<OrderDeck.Licensing.Api.LicenseAuthHandler>()
         .AddStandardResilienceHandler();  // retry on 5xx/network with exp. backoff; no retry on 4xx
@@ -646,6 +651,20 @@ public sealed class AppHost : IDisposable
     {
         var v = Environment.GetEnvironmentVariable(preferred);
         return !string.IsNullOrWhiteSpace(v) ? v : Environment.GetEnvironmentVariable(legacyFallback);
+    }
+
+    /// <summary>Csproj &lt;Version&gt;'dan gelen sürüm (CI release'te -p:Version
+    /// tag'den basar; lokal build "0.1.0"). "+commit" metadata'sı UA'ya girmesin
+    /// diye kırpılıyor.</summary>
+    private static string ClientVersion()
+    {
+        var info = typeof(AppHost).Assembly
+            .GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion
+            ?? typeof(AppHost).Assembly.GetName().Version?.ToString(3)
+            ?? "0.0.0";
+        var plus = info.IndexOf('+');
+        return plus >= 0 ? info[..plus] : info;
     }
 
     public void Dispose()
