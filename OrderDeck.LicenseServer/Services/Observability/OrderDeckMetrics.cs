@@ -47,6 +47,9 @@ public sealed class OrderDeckMetrics
         RefreshTokenRotationFailures = _meter.CreateCounter<long>(
             "orderdeck.auth.refresh_failures_total",
             description: "Refresh-token rotations that returned 401 (invalid/expired/revoked).");
+        LicenseTelemetryTouchFailures = _meter.CreateCounter<long>(
+            "orderdeck.license.telemetry_touch_failures_total",
+            description: "LastSeen/AppVersion touches from /validate that failed and were swallowed (R9-OPS03).");
     }
 
     public Counter<long> LicensesActivated { get; }
@@ -56,4 +59,5 @@ public sealed class OrderDeckMetrics
     public Counter<long> EmailsSent { get; }
     public Counter<long> RefreshTokensRotated { get; }
     public Counter<long> RefreshTokenRotationFailures { get; }
+    public Counter<long> LicenseTelemetryTouchFailures { get; }
 }
