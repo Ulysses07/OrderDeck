@@ -137,6 +137,49 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
         return row is null ? NoContent() : Ok(row);
     }
 
+    // ── GET transactions/{id} (R6-02 durum ucu) ─────────────────────────────
+
+    public sealed record TransactionStatusResponse(
+        Guid TransactionId,
+        decimal AppliedAmount,
+        bool Reversed);
+
+    /// <summary>
+    /// R6-02: "kayıtlı bu düşüm hâlâ geçerli mi?" — salt okunur.
+    ///
+    /// <para>İstemci <b>Applied</b> bir işi tekrar paylaşmadan önce burayı
+    /// sorar: panel iadesi düşümü geri aldıysa aynı fişi "bakiye düşüldü" diye
+    /// yeniden paylaşmak müşteriye olmayan bir indirimi tekrar yazdırır.</para>
+    ///
+    /// <para>Kapsam ucuyla farkı: işlem kimliğiyle sorulur. Kapsamsız yazılmış
+    /// eski (033 dönemi) satırlar kapsam sorgusunda görünmez; oradan sorulsa
+    /// 204 "dışarıdan iade edilmiş" sanılır ve bir sonraki tıklama ikinci kez
+    /// düşerdi. İşlem kimliği istemcinin idempotency anahtarının kendisi
+    /// olduğundan o satırlar için de doğru cevap verir.</para>
+    ///
+    /// <para>Yalnız <c>purchase-deduction</c> satırları tanınır; iade/yükleme
+    /// satırının kimliğiyle sorulursa <b>404</b> — istemci bunu "sunucu bu
+    /// düşümü tanımıyor" diye okur ve paylaşımı durdurur.</para>
+    /// </summary>
+    [HttpGet("transactions/{transactionId:guid}")]
+    public async Task<IActionResult> TransactionStatus(
+        Guid licenseId, Guid transactionId, CancellationToken ct)
+    {
+        if (!await OwnsLicenseAsync(licenseId, ct)) return NotFound();
+
+        var tx = await _db.CustomerBalanceTransactions
+            .AsNoTracking()
+            .FirstOrDefaultAsync(t => t.Id == transactionId
+                && t.LicenseId == licenseId
+                && t.Kind == KindPurchaseDeduction, ct);
+        if (tx is null) return NotFound();
+
+        var reversed = await _db.CustomerBalanceTransactions
+            .AnyAsync(t => t.ReversesTransactionId == transactionId, ct);
+
+        return Ok(new TransactionStatusResponse(tx.Id, -tx.Amount, reversed));
+    }
+
     // ── POST apply ──────────────────────────────────────────────────────────
 
     /// <param name="SaleScope">R4-03: satışın kalıcı kimliği

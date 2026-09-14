@@ -323,6 +323,12 @@ public sealed class PaymentRequestService
             // sunucudaki fazla düşümü hiç göremeden yeni satış açmış oluruz.
             var legacies = _jobs.GetOpenLegacies(customer.Id);
             PaymentJob job;
+
+            // R6-02: işin sunucu sonucu BU tıklama içinde sunucudan öğrenildiyse
+            // true — 6. adımdaki tekrar-paylaşım doğrulaması o zaman gereksizdir
+            // (aynı cevabı ikinci kez sormak olurdu).
+            var remoteConfirmed = false;
+
             if (legacies.Count > 0)
             {
                 var resolved = new List<PaymentJob>(legacies.Count);
@@ -343,7 +349,10 @@ public sealed class PaymentRequestService
                     ? resolved[0]
                     : null;
                 if (adopted is not null)
+                {
                     _jobs.AdoptLegacyResult(job.Id, adopted.Id);
+                    remoteConfirmed = true; // sonuç az önce replay'den geldi
+                }
 
                 foreach (var l in resolved)
                 {
@@ -389,6 +398,7 @@ public sealed class PaymentRequestService
                 job = await ReplayAsync(licenseId.Value, wpfCustomerId, job, ct);
                 if (job.State == PaymentJobState.ApplyUncertain)
                     return new(true, 0m, job);
+                remoteConfirmed = true; // kesinleşen cevap az önce sunucudan geldi
             }
 
             // 4) R4-03 uzlaştırma: iş hiç denenmemiş görünüyor ama sunucuda bu
@@ -404,8 +414,19 @@ public sealed class PaymentRequestService
             //    aldığımız satırı benimseyebiliriz. Revizyondan (5) ÖNCE
             //    olmalı ki tutar karşılaştırması benimsenen gerçek tutara karşı
             //    yapılsın.
+            //    R6-01: sorgu BAŞARISIZSA (null) mesaj bloklanır. Anahtarsız
+            //    created iş tam da çifte düşüm penceresidir; "sorulamadı"yı
+            //    "yok" saymak, yedeği geri yüklenmiş kurulumda aynı satışı
+            //    ikinci kez düşürür. İş dokunulmamış (created/anahtarsız)
+            //    kaldığı için operatörün sıradaki tıklaması temiz dener.
             if (job.State == PaymentJobState.Created && job.ApplyKey is null)
-                job = await AdoptRemoteScopeAsync(licenseId.Value, wpfCustomerId, job, ct);
+            {
+                var reconciled = await AdoptRemoteScopeAsync(licenseId.Value, wpfCustomerId, job, ct);
+                if (reconciled is null) return new(true, 0m, job);
+                job = reconciled;
+                if (job.ApplyKey is not null)
+                    remoteConfirmed = true; // düşüm az önce sunucudan benimsendi
+            }
 
             // 5) Revizyon (K2): kapsam aynı, tutar değişti — eski düşümü geri
             //    al, yeni toplam + YENİ anahtarla taze uygula. created işte de
@@ -440,9 +461,27 @@ public sealed class PaymentRequestService
                 }
             }
 
-            // 6) Tekrar paylaşım: sonuç kesin, tutar aynı — finansal çağrı YOK.
+            // 6) Tekrar paylaşım: sonuç kesin, tutar aynı — finansal YAZMA yok.
+            //
+            //    R6-02: para düşülmüş görünen iş, paylaşımdan önce sunucudan
+            //    DOĞRULANIR — panel iadesi düşümü geri almış olabilir; eski fişi
+            //    "bakiye düşüldü" diye tekrar paylaşmak müşteriye olmayan bir
+            //    indirimi gösterirdi. Doğrulama fırsatçıdır: uç cevap veremezse
+            //    diskteki kesin sonuçla devam edilir (Applied iş çevrimdışı bile
+            //    paylaşılabiliyor — S3; çevrimiçi tek uç hatası daha katı
+            //    olamaz). no_balance hiç sorulmaz: sunucudan bir şey düşülmedi.
             if (job.State is PaymentJobState.Applied or PaymentJobState.NoBalance)
+            {
+                if (!remoteConfirmed
+                    && job is { State: PaymentJobState.Applied, ApplyKey: { } appliedKey,
+                                AppliedAmount: > 0m })
+                {
+                    var blocked = await VerifyAppliedStillStandsAsync(
+                        licenseId.Value, job, appliedKey, ct);
+                    if (blocked is not null) return blocked;
+                }
                 return new(false, job.AppliedAmount ?? 0m, job);
+            }
 
             // 7) S5: satış sıfıra indi. Geri alınacak eski düşüm varsa (5)
             //    çoktan geri alındı; buradan sonrası için düşülecek bir şey
@@ -525,18 +564,20 @@ public sealed class PaymentRequestService
     }
 
     /// <summary>R4-03: sunucuda bu kapsamda duran geri alınmamış düşümü işe
-    /// benimsetir. Kayıt yoksa iş olduğu gibi döner ve akış değişmez.
+    /// benimsetir. Kayıt yoksa (204) iş olduğu gibi döner ve akış değişmez.
     ///
-    /// <para>Sorgu başarısız olursa <b>bloklamıyoruz</b>: "yok" ile "sorulamadı"
-    /// aynı şey değil ama ikincisinde de doğru davranış bugünkü akışa düşmek.
-    /// Ağ gerçekten kopuksa zaten sıradaki önizleme/apply duracak; kapsam
-    /// sorgusunda durmak, R4-03 öncesi hiç var olmayan yeni bir blokaj
-    /// yaratırdı (K2'yi çiğnerdi). Sessiz kalmasın diye günlüğe yazılıyor.</para>
+    /// <para>R6-01: sorgu <b>başarısız</b> olursa <c>null</c> döner ve çağıran
+    /// mesajı bloklar. "Yok" ile "sorulamadı" aynı şey değil: bu pencerede
+    /// (anahtarsız created iş) sorulamamışken devam etmek, sunucudaki düşümü
+    /// görmeden ikinci kez düşmek demek — denetimin çifte düşüm deneyi tam
+    /// buydu. Eski K2 gerekçesi ("yeni blokaj yaratma") aldatıcıydı: tam ağ
+    /// kesintisinde akış zaten önizlemede duruyor; yalnız bu ucun düştüğü
+    /// kısmi kesintide ise durmamak parayı riske atıyordu.</para>
     ///
     /// <para>Benimseme koşullu: araya giren bir akış işe anahtar yazdıysa
     /// (false) satır yeniden okunur ve onun bıraktığı durumdan devam edilir.
     /// Sunucudaki satır o durumda zaten o akışın yazdığı satırdır.</para></summary>
-    private async Task<PaymentJob> AdoptRemoteScopeAsync(
+    private async Task<PaymentJob?> AdoptRemoteScopeAsync(
         Guid licenseId, Guid wpfCustomerId, PaymentJob job, CancellationToken ct)
     {
         CustomerBalanceScope? remote;
@@ -547,9 +588,9 @@ public sealed class PaymentRequestService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _log?.LogWarning(ex,
-                "Kapsam uzlaştırması yapılamadı — bugünkü akışa düşülüyor (job={JobId}, scope={ScopeKey})",
+                "Kapsam uzlaştırması yapılamadı — mesaj engellendi (job={JobId}, scope={ScopeKey})",
                 job.Id, job.ScopeKey);
-            return job;
+            return null;
         }
 
         if (remote is null) return job;
@@ -562,6 +603,52 @@ public sealed class PaymentRequestService
         _jobs.AdoptRemoteResult(
             job.Id, remote.TransactionId, remote.AppliedAmount, remote.ProductTotal);
         return _jobs.Get(job.Id)!;
+    }
+
+    /// <summary>R6-02: tekrar paylaşımdan önce "kayıtlı düşüm sunucuda hâlâ
+    /// geçerli mi?" Cevaba göre üç yol:
+    ///
+    /// <list type="bullet">
+    /// <item><c>null</c> — düşüm geçerli YA DA uca ulaşılamadı: çağıran
+    /// diskteki kesin sonuçla paylaşır (doğrulama fırsatçıdır, S3).</item>
+    /// <item>Bloklu sonuç — sunucu düşümü geri almış (panel iadesi) ya da hiç
+    /// tanımıyor (404): iş <see cref="IPaymentJobStore.AdoptExternalReversal"/>
+    /// ile anahtarsız created'a döner ve BU tıklama durur. Aynı tıklamada
+    /// sessizce yeniden düşmüyoruz — para hareketi operatör kararıdır (R8-02);
+    /// sıradaki tıklama 4. adımdan itibaren taze akışla ilerler (sunucu bu
+    /// arada yeni bir düşüm yazdıysa kapsam benimsemesi onu bulur).</item>
+    /// </list>
+    ///
+    /// İşlem kimliği = işin apply anahtarı (sunucu idempotency anahtarını
+    /// işlem kimliği yapar); kapsamsız yazılmış eski satırlar için de doğru
+    /// çalışmasının sırrı bu — kapsam sorgusu onları göremezdi.</summary>
+    private async Task<BalanceOutcome?> VerifyAppliedStillStandsAsync(
+        Guid licenseId, PaymentJob job, Guid appliedKey, CancellationToken ct)
+    {
+        CustomerBalanceTransactionStatus? status;
+        try
+        {
+            status = await _api.GetBalanceTransactionStatusAsync(licenseId, appliedKey, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log?.LogWarning(ex,
+                "Düşüm doğrulaması yapılamadı — diskteki sonuçla devam (job={JobId})", job.Id);
+            return null;
+        }
+
+        if (status is { Reversed: false }) return null;
+
+        _log?.LogWarning(
+            "Kayıtlı düşüm sunucuda {Durum} — mesaj engellendi, iş sıfırlandı "
+            + "(job={JobId}, tx={TransactionId})",
+            status is null ? "tanınmıyor" : "geri alınmış", job.Id, appliedKey);
+
+        // false = araya giren akış işi taşıdı (örn. geri alma niyeti yazıldı);
+        // niyet ezilmez, bu tıklama yine durur ve sıradaki tıklama satırın
+        // güncel hâlinden devam eder.
+        _jobs.AdoptExternalReversal(job.Id, appliedKey, job.Revision);
+        return new(true, 0m, _jobs.Get(job.Id));
     }
 
     /// <summary>Diskteki anahtarla apply — bir deneme + bir anında tekrar (K3).</summary>

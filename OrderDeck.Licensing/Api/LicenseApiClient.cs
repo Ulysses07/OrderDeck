@@ -388,6 +388,21 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
             HttpStatusCode.NoContent);
     }
 
+    /// <summary>R6-02: kayıtlı bir düşümün sunucuda hâlâ geçerli olup olmadığı.
+    /// <c>null</c> = sunucu işlemi tanımıyor (404 — ör. sunucu tarafı bir geri
+    /// yükleme onu sildi); çağıran bunu "düşüm artık yok" saymalı.
+    ///
+    /// <para><paramref name="transactionId"/> = apply'da kullanılan idempotency
+    /// anahtarı (ledger PK). Kapsam sorgusunun aksine kimlikle sorar: kapsamsız
+    /// yazılmış eski satırlar (033 dönemi / legacy devri) için de doğru cevap
+    /// verir — o satırlarda kapsam sorgusu 204 döner ve "iade edildi" ile
+    /// "kapsamsız yazıldı" ayırt edilemezdi.</para></summary>
+    public async Task<CustomerBalanceTransactionStatus?> GetBalanceTransactionStatusAsync(
+        Guid licenseId, Guid transactionId, CancellationToken ct = default)
+        => await GetExpectingJsonOrNullAsync<CustomerBalanceTransactionStatus>(
+            $"/api/v1/licenses/{licenseId}/customer-balance/transactions/{transactionId}", ct,
+            HttpStatusCode.NotFound);
+
     /// <summary>WPF "Ödeme iste" sonrası bakiye düşüşünü commit eder.
     /// Server min(Amount, balance, productTotal) ile capped uygular.</summary>
     public async Task<CustomerBalanceApplyResponse> ApplyBalanceAsync(

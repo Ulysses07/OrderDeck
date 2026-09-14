@@ -35,6 +35,15 @@ public sealed record CustomerBalanceScope(
     decimal ProductTotal,
     DateTimeOffset CreatedAt);
 
+/// <summary>R6-02: kayıtlı bir düşümün sunucudaki güncel durumu — tekrar
+/// paylaşımdan önce "bu düşüm hâlâ geçerli mi?" sorusunun cevabı. Kapsam
+/// (SaleScope) sorgusundan farkı: işlem kimliğiyle sorulur, bu yüzden
+/// kapsamsız yazılmış eski (033 dönemi) satırlar için de doğru cevap verir.</summary>
+public sealed record CustomerBalanceTransactionStatus(
+    Guid TransactionId,
+    decimal AppliedAmount,
+    bool Reversed);
+
 // Panel endpoint'leri ile uyumlu DTO'lar (WPF'in /api/panel/customers/{id}/balance
 // kullanması için).
 public sealed record CustomerBalanceDto(
