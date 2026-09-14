@@ -220,4 +220,37 @@ public class ActivationManagerTests : IClassFixture<ApiFactory>
         var row = await db.Activations.FirstAsync(a => a.LicenseId == license.Id && a.DeactivatedAt == null);
         row.HardwareFingerprint.Should().Be("fp-new");
     }
+
+    [Fact]
+    public async Task Heartbeat_stores_app_version_and_keeps_it_when_omitted()
+    {
+        var (customer, license) = await SeedAsync(slots: 1);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var mgr = scope.ServiceProvider.GetRequiredService<ActivationManager>();
+            await mgr.ActivateAsync(license.LicenseKey, customer.Id, "fp-1", "PC");
+        }
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var mgr = scope.ServiceProvider.GetRequiredService<ActivationManager>();
+            var ok = await mgr.HeartbeatAsync(
+                license.LicenseKey, customer.Id, "fp-1", legacyFingerprint: null,
+                appVersion: "9.9.9");
+            ok.Should().BeTrue();
+        }
+
+        // Sürümsüz heartbeat (eski istemci / UA'sız istek) bilineni SİLMEMELİ.
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var mgr = scope.ServiceProvider.GetRequiredService<ActivationManager>();
+            var ok = await mgr.HeartbeatAsync(license.LicenseKey, customer.Id, "fp-1");
+            ok.Should().BeTrue();
+        }
+
+        using var verifyScope = _factory.Services.CreateScope();
+        var db = verifyScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var row = await db.Activations.FirstAsync(a => a.LicenseId == license.Id && a.DeactivatedAt == null);
+        row.AppVersion.Should().Be("9.9.9");
+    }
 }

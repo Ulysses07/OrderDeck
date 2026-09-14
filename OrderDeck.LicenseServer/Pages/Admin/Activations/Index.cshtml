@@ -13,7 +13,7 @@
 else
 {
     <table class="table" data-table="activations">
-        <thead><tr><th>ID</th><th>Cihaz</th><th>HW Fingerprint</th><th>Aktif</th><th>Son Görülme</th><th>Durum</th><th></th></tr></thead>
+        <thead><tr><th>ID</th><th>Cihaz</th><th>HW Fingerprint</th><th>Aktif</th><th>Son Görülme</th><th>Sürüm</th><th>Durum</th><th></th></tr></thead>
         <tbody>
             @foreach (var a in Model.Items)
             {
@@ -23,6 +23,7 @@ else
                     <td><code>@a.HardwareFingerprint</code></td>
                     <td>@a.ActivatedAt.ToString("dd.MM.yyyy HH:mm")</td>
                     <td>@a.LastSeenAt.ToString("dd.MM.yyyy HH:mm")</td>
+                    <td>@(a.AppVersion ?? "—")</td>
                     <td>
                         @if (a.DeactivatedAt is null)
                         {

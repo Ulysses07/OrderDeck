@@ -28,6 +28,17 @@ public sealed class LicensesController : ControllerBase
         var customerId = GetCustomerId();
         var result = await _validator.ValidateAsync(req.LicenseKey, req.HardwareFingerprint, customerId, ct);
         if (result is null) return NotFound();
+
+        // LastSeenAt buradan güncellenir, çünkü sahadaki istemci /heartbeat'i
+        // hiç çağırmıyor: WPF'in HeartbeatHostedService'i RefreshAsync üzerinden
+        // BU uca geliyor (LicenseApiClient.HeartbeatAsync üretim kodunda çağrısız).
+        // R8 §23-8 ölçümü bunu görünür kıldı — LastSeenAt aylarca bayat kalmıştı.
+        // Dönüş değeri bilerek yok sayılıyor: aktivasyonsuz validate meşru
+        // (status=notactivated) ve dokunuşun başarısızlığı cevabı etkilememeli.
+        await _activations.HeartbeatAsync(
+            req.LicenseKey, customerId, req.HardwareFingerprint,
+            req.LegacyHardwareFingerprint, ClientAppVersion(), ct);
+
         return Ok(new
         {
             status = result.Status.ToString().ToLowerInvariant(),
@@ -75,7 +86,8 @@ public sealed class LicensesController : ControllerBase
     {
         var customerId = GetCustomerId();
         var ok = await _activations.HeartbeatAsync(
-            req.LicenseKey, customerId, req.HardwareFingerprint, req.LegacyHardwareFingerprint, ct);
+            req.LicenseKey, customerId, req.HardwareFingerprint, req.LegacyHardwareFingerprint,
+            ClientAppVersion(), ct);
         if (!ok) return Problem(title: "not-activated", statusCode: 404);
 
         // Return basic status for client offline grace handling (4b will need this).
@@ -86,6 +98,20 @@ public sealed class LicensesController : ControllerBase
             expiresAt = result?.ExpiresAt
         });
     }
+
+    /// <summary>User-Agent'tan uygulama sürümünü çeker ("OrderDeck-WPF/0.9.5"
+    /// → "0.9.5"). Desen tutmazsa null — eski istemciler UA göndermiyor ve
+    /// alan null kalmalı, tarayıcı UA'sı gibi başka bir şey yazılmamalı.</summary>
+    private string? ClientAppVersion()
+    {
+        var ua = Request.Headers.UserAgent.ToString();
+        var m = AppVersionPattern.Match(ua);
+        return m.Success ? m.Groups[1].Value : null;
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex AppVersionPattern =
+        new(@"\bOrderDeck-WPF/([0-9A-Za-z.\-]{1,32})",
+            System.Text.RegularExpressions.RegexOptions.Compiled);
 
     private Guid GetCustomerId()
     {

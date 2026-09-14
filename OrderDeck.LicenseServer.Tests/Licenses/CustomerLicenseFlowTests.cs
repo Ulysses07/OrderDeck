@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Microsoft.Extensions.DependencyInjection;
@@ -75,6 +76,53 @@ public class CustomerLicenseFlowTests : IClassFixture<ApiFactory>
         });
         var body = await validateResp.Content.ReadFromJsonAsync<ValidateBody>();
         body!.status.Should().Be("active");
+    }
+
+    [Fact]
+    public async Task Validate_touches_last_seen_and_captures_app_version_from_user_agent()
+    {
+        var (client, key) = await SetupAsync();
+        await client.PostAsJsonAsync("/api/v1/licenses/activate", new
+        {
+            licenseKey = key, hardwareFingerprint = "fp-ua", machineName = "PC-UA"
+        });
+
+        // Sahadaki istemci /heartbeat'i değil bu ucu çağırıyor (RefreshAsync);
+        // LastSeenAt'in canlı kalması validate'e bağlı.
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("OrderDeck-WPF/9.8.7");
+        var before = DateTimeOffset.UtcNow.AddSeconds(-1);
+        var resp = await client.PostAsJsonAsync("/api/v1/licenses/validate", new
+        {
+            licenseKey = key, hardwareFingerprint = "fp-ua"
+        });
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var row = await db.Activations.SingleAsync(a => a.HardwareFingerprint == "fp-ua");
+        row.LastSeenAt.Should().BeOnOrAfter(before);
+        row.AppVersion.Should().Be("9.8.7");
+    }
+
+    [Fact]
+    public async Task Validate_with_foreign_user_agent_leaves_app_version_null()
+    {
+        var (client, key) = await SetupAsync();
+        await client.PostAsJsonAsync("/api/v1/licenses/activate", new
+        {
+            licenseKey = key, hardwareFingerprint = "fp-noua", machineName = "PC"
+        });
+
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0");
+        await client.PostAsJsonAsync("/api/v1/licenses/validate", new
+        {
+            licenseKey = key, hardwareFingerprint = "fp-noua"
+        });
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var row = await db.Activations.SingleAsync(a => a.HardwareFingerprint == "fp-noua");
+        row.AppVersion.Should().BeNull();
     }
 
     [Fact]
