@@ -2,7 +2,6 @@ using System.Text.Json;
 using FluentAssertions;
 using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Payments;
-using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
@@ -29,7 +28,11 @@ public sealed class PaymentSyncServiceTests
     private static readonly Guid TestLicenseId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private const string TestLicenseKey = "LDK-TEST-FIXTURE";
 
-    private static (PaymentSyncService svc, PaymentRepository repo, AppSettings settings,
+    // R9-D02: imleç artık Payment satırlarıyla aynı SQLite dosyasındaki
+    // SyncCursor tablosunda ("payment-decision-in", lisans anahtarına bağlı).
+    private const string PullCursorName = "payment-decision-in";
+
+    private static (PaymentSyncService svc, PaymentRepository repo, SyncCursorRepository cursors,
             StubLicenseProvider licenseProvider, List<(HttpMethod Method, string Path, string? Body)> requests) Build(
         Func<HttpRequestMessage, HttpResponseMessage> responder,
         bool seedLicense = true)
@@ -37,10 +40,7 @@ public sealed class PaymentSyncServiceTests
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
         var repo = new PaymentRepository(db);
-
-        var settingsPath = Path.Combine(Path.GetTempPath(), $"settings-{Guid.NewGuid():N}.json");
-        var store = new SettingsStore(settingsPath);
-        var settings = store.Load();
+        var cursors = new SyncCursorRepository(db);
 
         var requests = new List<(HttpMethod, string, string?)>();
         var handler = new FakeHttpMessageHandler(req =>
@@ -55,9 +55,9 @@ public sealed class PaymentSyncServiceTests
         var licenseProvider = new StubLicenseProvider();
         if (seedLicense) licenseProvider.CurrentLicenseKey = TestLicenseKey;
 
-        var svc = new PaymentSyncService(api, repo, store, settings, licenseProvider,
+        var svc = new PaymentSyncService(api, repo, cursors, licenseProvider,
             new FakeClock(), NullLogger<PaymentSyncService>.Instance);
-        return (svc, repo, settings, licenseProvider, requests);
+        return (svc, repo, cursors, licenseProvider, requests);
     }
 
     private static Payment NewLocalPayment(string id = "p1", string? refNo = null) => new(
@@ -186,7 +186,7 @@ public sealed class PaymentSyncServiceTests
     public async Task SyncOnceAsync_pulls_reverse_sync_updates_and_advances_cursor()
     {
         var paymentId = Guid.NewGuid();
-        var (svc, repo, settings, _, _) = Build(req =>
+        var (svc, repo, cursors, _, _) = Build(req =>
         {
             var path = req.RequestUri!.PathAndQuery;
             if (path.StartsWith("/api/v1/me/licenses"))
@@ -216,7 +216,11 @@ public sealed class PaymentSyncServiceTests
         var stored = repo.FindById(paymentId.ToString())!;
         stored.Status.Should().Be(PaymentStatus.Rejected);
         stored.RejectReason.Should().Be("tutar uyusmuyor");
-        settings.LastPaymentReverseSync.Should().NotBeNull();
+        // R9-D02: imleç veriyle aynı SQLite dosyasındaki SyncCursor satırında.
+        var row = cursors.Get(PullCursorName, TestLicenseKey);
+        row.Should().NotBeNull();
+        row!.UpdatedAt.Should().Be(new DateTimeOffset(2026, 5, 11, 10, 30, 0, TimeSpan.Zero));
+        row.LastId.Should().Be(paymentId);
     }
 
     /// <summary>N08: Sunucu (UpdatedAt, Id) çiftini SQL Server'ın
@@ -233,7 +237,7 @@ public sealed class PaymentSyncServiceTests
         var sqlSmall = Guid.Parse("ffffffff-ffff-ffff-ffff-000000000001"); // SQL: küçük, .NET: büyük
         var sqlBig   = Guid.Parse("00000000-0000-0000-0000-000000000002"); // SQL: büyük, .NET: küçük
 
-        var (svc, repo, settings, _, _) = Build(req =>
+        var (svc, repo, cursors, _, _) = Build(req =>
         {
             var path = req.RequestUri!.PathAndQuery;
             if (path.StartsWith("/api/v1/me/licenses"))
@@ -263,7 +267,7 @@ public sealed class PaymentSyncServiceTests
         var result = await svc.SyncOnceAsync();
 
         result.Pulled.Should().Be(2);
-        settings.LastPaymentReverseSyncId.Should().Be(sqlBig,
+        cursors.Get(PullCursorName, TestLicenseKey)!.LastId.Should().Be(sqlBig,
             "imleç sunucunun teslim ettiği SON satır olmalı — .NET Guid sırasıyla yeniden seçilirse " +
             "sunucu sayfa sınırının gerisine düşer ve aynı satırlar tekrar iner");
     }
@@ -272,7 +276,8 @@ public sealed class PaymentSyncServiceTests
     public async Task SyncOnceAsync_uses_since_cursor_in_pull_request()
     {
         var initial = new DateTimeOffset(2026, 5, 1, 0, 0, 0, TimeSpan.Zero);
-        var (svc, repo, settings, _, requests) = Build(req =>
+        var cursorId = Guid.Parse("00000000-0000-0000-0000-0000000000cc");
+        var (svc, repo, cursors, _, requests) = Build(req =>
         {
             var path = req.RequestUri!.PathAndQuery;
             if (path.StartsWith("/api/v1/me/licenses"))
@@ -280,74 +285,70 @@ public sealed class PaymentSyncServiceTests
             return JsonResp(200, "[]");
         });
 
-        settings.LastPaymentReverseSync = initial;
+        cursors.Upsert(PullCursorName, TestLicenseKey, updatedAt: initial, lastId: cursorId);
         await svc.SyncOnceAsync();
 
         var pullCall = requests.FirstOrDefault(r => r.Path.Contains("/payments/since"));
         pullCall.Path.Should().NotBeNull();
-        pullCall.Path.Should().Contain("since=", "cursor passed");
+        pullCall.Path.Should().Contain("since=2026-05-01", "cursor passed")
+            .And.Contain("sinceId=00000000-0000-0000-0000-0000000000cc");
     }
 
-    /// <summary>
-    /// N04: servis, ayar nesnesini uygulama AÇILIŞINDA yüklenen singleton
-    /// olarak tutuyor. İmleç kaydı bu bayat kopyayı bütün-nesne Save ile
-    /// diske yazarsa, aradan geçen sürede başka bileşenin yazdığı alan
-    /// (burada PrinterName) sessizce eski değerine döner. Doğru davranış:
-    /// imleç, diskteki en güncel hâlin ÜZERİNE alan-kapsamlı birleştirilir.
-    /// Build() yardımcının store'u dışarı vermeyen 5'li tuple'ı bozulmasın
-    /// diye bu test kendi fikstürünü kuruyor.
-    /// </summary>
+    /// <summary>R9-D02 geri yükleme sözleşmesi: SyncCursor satırı yoksa
+    /// (taze kurulum VEYA yedekten dönen DB'de imleç hiç ilerlememiş) pull
+    /// baştan başlar — since=MinValue. Eski settings.json imleci TOHUM OLMAZ:
+    /// settings yedeğin dışında yaşadığı için ileri kalmış değeri, mobilde
+    /// onaylanmış kararın bir daha hiç inmemesine yol açıyordu.</summary>
     [Fact]
-    public async Task SyncOnceAsync_cagri_sirasinda_yazilan_ayari_ezmez()
+    public async Task Pull_imlec_satiri_yoksa_bastan_ceker()
     {
-        var db = new InMemorySqlite();
-        new MigrationRunner(db).Run();
-        var repo = new PaymentRepository(db);
-
-        var settingsPath = Path.Combine(Path.GetTempPath(), $"settings-{Guid.NewGuid():N}.json");
-        var store = new SettingsStore(settingsPath);
-        var settings = store.Load(); // açılış singleton'ı — HTTP sırasında bayatlayacak
-
-        var paymentId = Guid.NewGuid();
-        var handler = new FakeHttpMessageHandler(req =>
+        var (svc, _, _, _, requests) = Build(req =>
         {
             var path = req.RequestUri!.PathAndQuery;
             if (path.StartsWith("/api/v1/me/licenses"))
                 return JsonResp(200, LicensesJson());
-            if (path.Contains("/payments/since"))
-            {
-                // Eşzamanlı yazar: servisin Load'ı ile imleç kaydı ARASINDA
-                // başka bir bileşen kendi alanını diske yazıyor.
-                store.Update(s => s.PrinterName = "SONRADAN-YAZILDI");
-                var sinceJson = $@"[{{
-                    ""id"": ""{paymentId}"",
-                    ""status"": ""rejected"",
-                    ""approvedAt"": null,
-                    ""rejectedAt"": ""2026-05-11T10:30:00Z"",
-                    ""rejectReason"": ""tutar uyusmuyor"",
-                    ""updatedAt"": ""2026-05-11T10:30:00Z""
-                }}]";
-                return JsonResp(200, sinceJson);
-            }
             return JsonResp(200, "[]");
         });
-        var http = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
-        var api = new LicenseApiClient(http, new OrderDeck.Licensing.Api.LicenseTokenStore());
-        var licenseProvider = new StubLicenseProvider { CurrentLicenseKey = TestLicenseKey };
-        var svc = new PaymentSyncService(api, repo, store, settings, licenseProvider,
-            new FakeClock(), NullLogger<PaymentSyncService>.Instance);
 
-        repo.Insert(NewLocalPayment(paymentId.ToString()));
-        repo.MarkSynced(paymentId.ToString(), 1714000000L);
+        await svc.SyncOnceAsync();
 
-        var result = await svc.SyncOnceAsync();
-        result.Pulled.Should().Be(1);
-
-        var saved = store.Load();
-        saved.PrinterName.Should().Be("SONRADAN-YAZILDI",
-            "imleç kaydı, çağrı sırasında yazılan alanı ezmemeli (N04)");
-        saved.LastPaymentReverseSync.Should().NotBeNull("imleç yine de ilerlemeli");
+        var pullCall = requests.First(r => r.Path.Contains("/payments/since"));
+        pullCall.Path.Should().Contain("since=0001-01-01",
+            "satır yokken baştan çekim — ApplyServerStatus idempotent, atlama riski sıfır");
     }
+
+    /// <summary>R9-D02: imleç lisans anahtarına bağlı — anahtar değişince
+    /// A'nın ilerlemesi B adına okunmaz, B kendi (boş) satırıyla baştan başlar.</summary>
+    [Fact]
+    public async Task Pull_imleci_lisans_anahtarina_bagli()
+    {
+        var (svc, _, cursors, licenseProvider, requests) = Build(req =>
+        {
+            var path = req.RequestUri!.PathAndQuery;
+            if (path.StartsWith("/api/v1/me/licenses"))
+                return JsonResp(200,
+                    $@"[{{ ""id"": ""{TestLicenseId}"", ""licenseKey"": ""{TestLicenseKey}"",
+                        ""skuCode"": ""STD"", ""expiresAt"": ""2030-01-01T00:00:00Z"" }},
+                       {{ ""id"": ""22222222-2222-2222-2222-222222222222"", ""licenseKey"": ""LDK-OTHER"",
+                        ""skuCode"": ""STD"", ""expiresAt"": ""2030-01-01T00:00:00Z"" }}]");
+            return JsonResp(200, "[]");
+        });
+
+        // A lisansının imleci ilerlemiş olsun.
+        cursors.Upsert(PullCursorName, TestLicenseKey,
+            updatedAt: new DateTimeOffset(2026, 5, 1, 0, 0, 0, TimeSpan.Zero), lastId: Guid.NewGuid());
+
+        // B lisansına geçiş.
+        licenseProvider.CurrentLicenseKey = "LDK-OTHER";
+        await svc.SyncOnceAsync();
+
+        var pullCall = requests.First(r => r.Path.Contains("/payments/since"));
+        pullCall.Path.Should().Contain("since=0001-01-01",
+            "B lisansı A'nın imlecini devralmamalı");
+    }
+
+    // N04 testi ("çağrı sırasında yazılan ayarı ezmez") SİLİNDİ: servis artık
+    // settings.json'a hiç dokunmuyor (R9-D02) — korunacak davranış kalmadı.
 
     [Fact]
     public async Task SyncOnceAsync_gracefully_handles_5xx_failure()

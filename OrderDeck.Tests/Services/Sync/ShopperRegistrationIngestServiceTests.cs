@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Net.Http;
 using System.Text.Json;
 using System.Threading;
@@ -8,7 +7,6 @@ using System.Threading.Tasks;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.App.Services.Sync;
-using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
@@ -63,12 +61,13 @@ public sealed class ShopperRegistrationIngestServiceTests
     private sealed record Fixture(
         ShopperRegistrationIngestService Svc,
         CustomerRepository Customers,
-        SettingsStore Store,
         SyncCursorRepository Cursors,
         FakeLicenseProvider License,
         InMemorySqlite Db)
     {
-        /// <summary>R6-04: imleç artık SyncCursor tablosunda, lisans anahtarına bağlı.</summary>
+        /// <summary>R6-04: imleç SyncCursor tablosunda, lisans anahtarına bağlı.
+        /// R9-D01: settings.json'daki eski alanlar artık tohum olarak da
+        /// okunmuyor — tek kalıcı kaynak bu satır.</summary>
         public SyncCursor? Cursor(string licenseKey = TestLicenseKey)
             => Cursors.Get(CursorName, licenseKey);
     }
@@ -82,9 +81,6 @@ public sealed class ShopperRegistrationIngestServiceTests
         var customers = new CustomerRepository(db);
         var cursors = new SyncCursorRepository(db);
 
-        var settingsPath = Path.Combine(Path.GetTempPath(), $"ingest-settings-{Guid.NewGuid():N}.json");
-        var store = new SettingsStore(settingsPath);
-
         var handler = new FakeHttpMessageHandler(responder);
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
         var api = new LicenseApiClient(http, new LicenseTokenStore());
@@ -93,11 +89,11 @@ public sealed class ShopperRegistrationIngestServiceTests
         if (seedLicense) licenseProvider.CurrentLicenseKey = TestLicenseKey;
 
         var svc = new ShopperRegistrationIngestService(
-            api, customers, store, cursors, licenseProvider,
+            api, customers, cursors, licenseProvider,
             new FakeClock(),
             NullLogger<ShopperRegistrationIngestService>.Instance);
 
-        return new Fixture(svc, customers, store, cursors, licenseProvider, db);
+        return new Fixture(svc, customers, cursors, licenseProvider, db);
     }
 
     // ── No license → returns 0, no HTTP calls ─────────────────────────────────
@@ -135,19 +131,15 @@ public sealed class ShopperRegistrationIngestServiceTests
         });
         using var _d = fx.Db;
 
-        var settings = fx.Store.Load();
-        settings.LastShopperIngestAt = 999L;
-        fx.Store.Save(settings);
+        var seededAt = DateTimeOffset.FromUnixTimeSeconds(999L);
+        fx.Cursors.Upsert(CursorName, TestLicenseKey, updatedAt: seededAt, lastId: Guid.Empty);
 
         var result = await fx.Svc.IngestOnceAsync(CancellationToken.None);
 
         result.Should().Be(0);
-        // R6-04: eski settings alanı DB imlecine tohumlanır (çağrıdan önce),
-        // boş yanıt imleci İLERLETMEZ — tohumdaki değerde kalır.
-        fx.Cursor()!.UpdatedAt.Should().Be(DateTimeOffset.FromUnixTimeSeconds(999L),
+        // Boş yanıt imleci İLERLETMEZ — olduğu yerde kalır.
+        fx.Cursor()!.UpdatedAt.Should().Be(seededAt,
             "watermark must not change when nothing to ingest");
-        fx.Store.Load().LastShopperIngestAt.Should().Be(0L,
-            "tohumlama sonrası eski alan temizlenmeli (bayat yedek geri yüklemesi yeniden tohumlamasın)");
     }
 
     // ── New shopper registration → inserts Customer + advances watermark ───────
@@ -243,43 +235,8 @@ public sealed class ShopperRegistrationIngestServiceTests
         cursor.LastId.Should().Be(shopperId);
     }
 
-    // ── N04: imleç yazımı başka yazarın alanını ezmemeli ──────────────────────
-
-    [Fact]
-    public async Task IngestOnce_cagri_sirasinda_yazilan_ayari_ezmez()
-    {
-        // R6-04 sonrası imleç SQLite'a yazılıyor; settings'e olağan akışta hiç
-        // dokunulmuyor. Bu test yine de kalıyor: çağrı sırasında başka bir
-        // bileşenin yazdığı ayar, servisin HERHANGİ bir yazımıyla (tohumlama
-        // dahil) geri alınmamalı (N04).
-        var shopperId = Guid.NewGuid();
-        var updatedAt = DateTimeOffset.UtcNow;
-
-        SettingsStore? storeRef = null;
-        var fx = Build(req =>
-        {
-            var path = req.RequestUri!.AbsolutePath;
-            if (path == "/api/v1/me/licenses")
-                return FakeHttpMessageHandler.Json(200, LicensesJson());
-            if (path.Contains("/wpf-customers/since"))
-            {
-                // Tam yarış anı: servis imleci yükledi, henüz kaydetmedi.
-                storeRef!.Update(s => s.PrinterName = "BAŞKA-YAZAR");
-                return FakeHttpMessageHandler.Json(200, PullJson(
-                    (shopperId, "youtube", "raceuser", "Yarış Kullanıcı", null, null, updatedAt)));
-            }
-            return FakeHttpMessageHandler.Empty(404);
-        });
-        storeRef = fx.Store;
-        using var _d = fx.Db;
-
-        await fx.Svc.IngestOnceAsync(CancellationToken.None);
-
-        var saved = fx.Store.Load();
-        saved.PrinterName.Should().Be("BAŞKA-YAZAR",
-            "imleç kaydı başka yazarın bu arada yazdığı alanı ezmemeli (N04)");
-        fx.Cursor()!.LastId.Should().Be(shopperId, "imleç de ilerlemeli");
-    }
+    // N04 testi ("çağrı sırasında yazılan ayarı ezmez") SİLİNDİ: servis artık
+    // settings.json'a hiç dokunmuyor (R9-D01) — korunacak davranış kalmadı.
 
     // ── API failure → returns 0, watermark NOT advanced ───────────────────────
 
@@ -297,16 +254,13 @@ public sealed class ShopperRegistrationIngestServiceTests
         });
         using var _d = fx.Db;
 
-        var settings = fx.Store.Load();
-        settings.LastShopperIngestAt = 123L;
-        fx.Store.Save(settings);
+        var seededAt = DateTimeOffset.FromUnixTimeSeconds(123L);
+        fx.Cursors.Upsert(CursorName, TestLicenseKey, updatedAt: seededAt, lastId: Guid.Empty);
 
         var result = await fx.Svc.IngestOnceAsync(CancellationToken.None);
 
         result.Should().Be(0, "API failure must return 0");
-        // R6-04: tohumlama çağrıdan önce olur (bu kayıp değil — aynı değer),
-        // ama başarısız çağrı imleci tohumun ÖTESİNE taşımamalı.
-        fx.Cursor()!.UpdatedAt.Should().Be(DateTimeOffset.FromUnixTimeSeconds(123L),
+        fx.Cursor()!.UpdatedAt.Should().Be(seededAt,
             "watermark must NOT advance on failure");
     }
 
@@ -516,31 +470,32 @@ public sealed class ShopperRegistrationIngestServiceTests
         });
         using var _d = fx.Db;
 
-        var knownTimestamp = 1_715_000_000L;
-        var settings = fx.Store.Load();
-        settings.LastShopperIngestAt = knownTimestamp;
-        fx.Store.Save(settings);
+        // Aynı saniyeyi paylaşan bir küme ortasında kalmış imleç: milisaniye
+        // hassasiyeti korunmazsa aşağıdaki beklenti tutmaz.
+        var cursor = new DateTimeOffset(2026, 8, 21, 10, 30, 15, 750, TimeSpan.Zero);
+        var cursorId = Guid.Parse("11112222-3333-4444-5555-666677778888");
+        fx.Cursors.Upsert(CursorName, TestLicenseKey, updatedAt: cursor, lastId: cursorId);
 
         await fx.Svc.IngestOnceAsync(CancellationToken.None);
 
         capturedQuery.Should().NotBeNullOrEmpty();
-        // The query string must contain the expected ISO-8601 watermark
-        var expectedDate = DateTimeOffset.FromUnixTimeSeconds(knownTimestamp).ToString("O");
-        capturedQuery!.Should().Contain(Uri.EscapeDataString(expectedDate));
-        capturedQuery.Should().Contain($"sinceId={Guid.Empty:D}",
-            "eski kurulumda id imleci yok — boş Guid ile başlanmalı");
-
-        // R6-04: eski alan bir kez tohum olarak okunur, DB'ye yazılır, sonra temizlenir
-        fx.Cursor()!.UpdatedAt.Should().Be(DateTimeOffset.FromUnixTimeSeconds(knownTimestamp));
-        fx.Store.Load().LastShopperIngestAt.Should().Be(0L,
-            "tohumlama sonrası eski alan temizlenmeli");
+        capturedQuery!.Should().Contain(Uri.EscapeDataString(cursor.ToString("O")),
+            "imleç saniyeye yuvarlanmadan gönderilmeli");
+        capturedQuery.Should().Contain($"sinceId={cursorId:D}");
     }
 
-    // ── Yeni (UpdatedAt, Id) imleci varsa eski Unix alanı yok sayılır ─────────
+    // ── R9-D01: satır yoksa tam okuma — eski settings alanları tohum OLMAZ ────
 
     [Fact]
-    public async Task IngestOnce_prefers_composite_cursor_over_legacy_unix_watermark()
+    public async Task IngestOnce_imlec_satiri_yoksa_tam_okuma_yapar()
     {
+        // Eski davranış: settings.json'daki LastShopperIngest* alanları DB
+        // satırına tohumlanıyordu. Settings yedeğin dışında yaşadığı için
+        // hangi veri nesline/lisansa ait olduğu kanıtlanamıyordu — 037 yedeği
+        // ilk 038 çalışmasından önce geri yüklendiğinde ileri kalmış imleç
+        // KVKK tombstone'larının üstünden atlıyordu. Artık satır yoksa baştan
+        // okuma: temizlik idempotent, mevcut kayıtlar (Platform, Username)
+        // eşleşmesiyle zaten atlanır.
         string? capturedQuery = null;
         var fx = Build(req =>
         {
@@ -556,44 +511,26 @@ public sealed class ShopperRegistrationIngestServiceTests
         });
         using var _d = fx.Db;
 
-        // Aynı saniyeyi paylaşan bir küme ortasında kalmış imleç: milisaniye
-        // hassasiyeti korunmazsa aşağıdaki beklenti tutmaz.
-        var cursor = new DateTimeOffset(2026, 8, 21, 10, 30, 15, 750, TimeSpan.Zero);
-        var cursorId = Guid.Parse("11112222-3333-4444-5555-666677778888");
-
-        var settings = fx.Store.Load();
-        settings.LastShopperIngestAt = 1_715_000_000L; // eski alan — yok sayılmalı
-        settings.LastShopperIngestUpdatedAt = cursor;
-        settings.LastShopperIngestId = cursorId;
-        fx.Store.Save(settings);
-
         await fx.Svc.IngestOnceAsync(CancellationToken.None);
 
         capturedQuery.Should().NotBeNullOrEmpty();
-        capturedQuery!.Should().Contain(Uri.EscapeDataString(cursor.ToString("O")),
-            "imleç saniyeye yuvarlanmadan gönderilmeli");
-        capturedQuery.Should().Contain($"sinceId={cursorId:D}");
-        capturedQuery.Should().NotContain(
-            Uri.EscapeDataString(DateTimeOffset.FromUnixTimeSeconds(1_715_000_000L).ToString("O")),
-            "yeni imleç varken eski Unix alanı kullanılmamalı");
-
-        // R6-04: tohumlama sonrası TÜM eski alanlar temizlenmeli
-        var saved = fx.Store.Load();
-        saved.LastShopperIngestUpdatedAt.Should().BeNull();
-        saved.LastShopperIngestId.Should().BeNull();
-        saved.LastShopperIngestAt.Should().Be(0L);
+        capturedQuery!.Should().Contain($"sinceId={Guid.Empty:D}",
+            "satır yokken tam okuma — hiçbir eski settings değeri tohum olmamalı");
+        capturedQuery.Should().Contain(Uri.EscapeDataString(DateTimeOffset.MinValue.ToString("O")),
+            "since=MinValue ile baştan başlanmalı");
     }
 
-    // ── R6-04: yedek geri yükleme — DB imleci settings'i her zaman yener ──────
+    // ── R9-D01: yedek geri yükleme — DB imleci tek kaynak ─────────────────────
 
     [Fact]
     public async Task IngestOnce_geri_yukleme_sonrasi_db_imleci_kazanir_settings_yok_sayilir()
     {
-        // Senaryo: yedek geri yüklendi. SQLite (veri + imleç) eski nesle döndü,
-        // settings.json ise diskte kaldığı için İLERİDEKİ imleci taşıyor.
-        // Settings kazansaydı: geri yüklenen dönemin tombstone'ları (PurgedAt)
-        // atlanır, KVKK silmesi sahada geri açılmış kalırdı. DB imleci veriyle
-        // aynı dosyada olduğu için ikisi birlikte döner — satır varsa o kazanır.
+        // Senaryo: yedek geri yüklendi. SQLite (veri + imleç) eski nesle döndü.
+        // settings.json diskte kalıp ilerideki bir imleç taşısa bile artık HİÇ
+        // okunmuyor (R9-D01 alanları sildi). Settings kazansaydı: geri
+        // yüklenen dönemin tombstone'ları (PurgedAt) atlanır, KVKK silmesi
+        // sahada geri açılmış kalırdı. DB imleci veriyle aynı dosyada olduğu
+        // için ikisi birlikte döner — satır varsa o kazanır.
         string? capturedQuery = null;
         var fx = Build(req =>
         {
@@ -613,20 +550,12 @@ public sealed class ShopperRegistrationIngestServiceTests
         var dbId = Guid.Parse("aaaa1111-2222-3333-4444-555566667777");
         fx.Cursors.Upsert(CursorName, TestLicenseKey, updatedAt: dbAt, lastId: dbId);
 
-        var staleAt = new DateTimeOffset(2026, 9, 10, 12, 0, 0, TimeSpan.Zero);    // bayat settings — ileride
-        fx.Store.Update(s =>
-        {
-            s.LastShopperIngestUpdatedAt = staleAt;
-            s.LastShopperIngestId = Guid.NewGuid();
-        });
-
         await fx.Svc.IngestOnceAsync(CancellationToken.None);
 
         capturedQuery.Should().NotBeNullOrEmpty();
         capturedQuery!.Should().Contain(Uri.EscapeDataString(dbAt.ToString("O")),
-            "DB imleci varken settings'teki (bayat, ilerideki) değer yok sayılmalı");
+            "geri yüklenen DB'deki imleç neyse ondan devam edilmeli");
         capturedQuery.Should().Contain($"sinceId={dbId:D}");
-        capturedQuery.Should().NotContain(Uri.EscapeDataString(staleAt.ToString("O")));
     }
 
     // ── R6-04: lisans değişince imleç yeni lisans için sıfırdan başlar ────────

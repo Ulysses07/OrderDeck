@@ -124,7 +124,7 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
     /// <paramref name="sinceId"/>). Yalnız zaman damgası gönderilseydi, aynı damgayı
     /// paylaşan kayıtlar sayfa sınırında kesildiğinde kalanları bir daha hiç
     /// dönmezdi ve o satır bir müşteri KAYDI olduğu için kendiliğinden onarılmazdı.
-    /// Cursor WPF tarafında AppSettings.LastIntakeFormSync(+Id)'de.</summary>
+    /// Cursor WPF tarafında SyncCursor("intake-form-in") satırında (R9-D02).</summary>
     public async Task<List<IntakeFormSubmissionDto>> GetFormSubmissionsAsync(
         DateTimeOffset? since, Guid sinceId = default, int limit = 50, CancellationToken ct = default)
     {
@@ -149,7 +149,7 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
     /// Yalnız zaman damgası gönderilseydi, aynı damgayı paylaşan satırlar sayfa
     /// sınırında kesildiğinde kalanları bir daha hiç dönmezdi; damga eşitliği
     /// varsayımsal değil, tek push 200 dekontu tek damgayla yazıyor. Cursor WPF
-    /// tarafında AppSettings.LastPaymentReverseSync(+Id)'de.</summary>
+    /// tarafında SyncCursor("payment-decision-in") satırında (R9-D02).</summary>
     public async Task<List<SyncedPaymentDto>> GetPaymentsSinceAsync(
         Guid licenseId, DateTimeOffset since, Guid sinceId,
         int take = 200, CancellationToken ct = default)

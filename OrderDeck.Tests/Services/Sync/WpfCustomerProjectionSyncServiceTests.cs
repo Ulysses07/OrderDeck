@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
@@ -11,7 +10,6 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Customers;
-using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Licensing.Api;
@@ -57,13 +55,13 @@ public sealed class WpfCustomerProjectionSyncServiceTests
     private sealed record Fixture(
         WpfCustomerProjectionSyncService Svc,
         CustomerRepository Customers,
-        SettingsStore Store,
         SyncCursorRepository Cursors,
         FakeLicenseProvider License,
-        InMemorySqlite Db,
-        string SettingsPath)
+        InMemorySqlite Db)
     {
-        /// <summary>R6-04: imlecin kalıcı evi artık SyncCursor tablosu.</summary>
+        /// <summary>R6-04: imlecin kalıcı evi SyncCursor tablosu.
+        /// R9-D01: settings.json'daki eski alan artık tohum olarak da
+        /// okunmuyor — tek kalıcı kaynak bu satır.</summary>
         public long CursorSeq(string licenseKey = TestLicenseKey) =>
             Cursors.Get("customer-projection-out", licenseKey)?.Seq ?? 0L;
     }
@@ -77,9 +75,6 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         var customers = new CustomerRepository(db);
         var cursors   = new SyncCursorRepository(db);
 
-        var settingsPath = Path.Combine(Path.GetTempPath(), $"cust-settings-{Guid.NewGuid():N}.json");
-        var store = new SettingsStore(settingsPath);
-
         var handler = new FakeHttpMessageHandler(responder);
         var http    = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
         var api     = new LicenseApiClient(http, new LicenseTokenStore());
@@ -88,10 +83,10 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         if (seedLicense) licenseProvider.CurrentLicenseKey = TestLicenseKey;
 
         var svc = new WpfCustomerProjectionSyncService(
-            api, customers, store, cursors, licenseProvider,
+            api, customers, cursors, licenseProvider,
             NullLogger<WpfCustomerProjectionSyncService>.Instance);
 
-        return new Fixture(svc, customers, store, cursors, licenseProvider, db, settingsPath);
+        return new Fixture(svc, customers, cursors, licenseProvider, db);
     }
 
     private static HttpResponseMessage DefaultResponder(HttpRequestMessage req)
@@ -130,17 +125,12 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         });
         using var _d = fx.Db;
 
-        var settingsBefore = fx.Store.Load();
-        settingsBefore.LastCustomerProjectionSyncSeq = 999L;
-        fx.Store.Save(settingsBefore);
+        fx.Cursors.Upsert("customer-projection-out", TestLicenseKey, seq: 999L);
 
         var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
 
         result.Should().Be(0);
-        fx.CursorSeq().Should().Be(999L,
-            "eski settings imleci DB satırına tohumlanır ve boş turda İLERLEMEZ");
-        fx.Store.Load().LastCustomerProjectionSyncSeq.Should().Be(0L,
-            "tohumlanan eski alan temizlenmeli — geri yüklemede yeniden tohum olmasın");
+        fx.CursorSeq().Should().Be(999L, "imleç boş turda İLERLEMEZ");
         // No sync call should have been made (only /me/licenses for resolve)
         apiCallCount.Should().BeLessOrEqualTo(1, "only the license resolution GET is allowed");
     }
@@ -447,15 +437,14 @@ public sealed class WpfCustomerProjectionSyncServiceTests
     }
 
     /// <summary>
-    /// N03-g yükseltme yolu: sahadaki kurulumların ayar dosyasında ESKİ imleç
-    /// alanları var (<c>lastCustomerProjectionSyncAt</c> + <c>...SyncId</c>).
-    /// Yeni alan onlardan tohumlanmıyor — bilerek: eski dünyada imlecin ALTINDA
+    /// R9-D01: settings.json'dan imleç tohumlama TAMAMEN kalktı — SyncCursor
+    /// satırı yoksa tam tarama yapılır. Bilerek: eski dünyada imlecin ALTINDA
     /// kalıp kalıcı kaybedilmiş satırlar ancak tam taramayla kurtulur. Sunucu
     /// upsert'i idempotent ve <c>PurgedAt</c> kapılı olduğu için bir tur fazla
     /// trafikten başka maliyeti yok; silinmiş kişisel veri geri gelmez.
     /// </summary>
     [Fact]
-    public async Task SyncOnce_eski_imlec_alanlari_tohumlanmaz_tam_tarama_yapar()
+    public async Task SyncOnce_imlec_satiri_yoksa_tam_tarama_yapar()
     {
         var postedIds = new List<string>();
         var fx = Build(req =>
@@ -477,14 +466,9 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         using var _d = fx.Db;
 
         // 100'deki satır eski dünyada atlanmış bir satırı temsil ediyor: eski
-        // watermark'ın (500) altında ama sunucuya hiç gitmemiş.
+        // watermark'ın altında ama sunucuya hiç gitmemiş. İmleç satırı YOK →
+        // watermark 0'dan tam tarama, satır kurtulur.
         fx.Customers.Insert(MakeCustomer(100L));
-        // Eski sürümün bıraktığı ayar dosyası — yeni alan yok.
-        File.WriteAllText(fx.SettingsPath,
-            """{"lastCustomerProjectionSyncAt":500,"lastCustomerProjectionSyncId":""}""");
-
-        fx.Store.Load().LastCustomerProjectionSyncSeq.Should().Be(0,
-            "tanınmayan eski alanlar yeni imleci tohumlamamalı");
 
         var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
 
@@ -514,18 +498,13 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         using var _d = fx.Db;
 
         fx.Customers.Insert(MakeCustomer(100L));
-        var settingsBefore = fx.Store.Load();
-        settingsBefore.LastCustomerProjectionSyncSeq = 500L;
-        fx.Store.Save(settingsBefore);
+        fx.Cursors.Upsert("customer-projection-out", TestLicenseKey, seq: 500L);
 
         var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
 
         result.Should().Be(0, "imleç satırın üzerinde — altı yeniden taranmaz");
         syncPosts.Should().Be(0);
-        fx.CursorSeq().Should().Be(500L,
-            "settings'ten tohumlanan imleç DB satırında yaşamaya devam eder");
-        fx.Store.Load().LastCustomerProjectionSyncSeq.Should().Be(0L,
-            "tohumlanan eski alan temizlenmeli");
+        fx.CursorSeq().Should().Be(500L, "boş turda imleç yerinde kalır");
     }
 
     // ─── R6-04: imleç ↔ veri nesli bağı ──────────────────────────────────────
@@ -533,9 +512,9 @@ public sealed class WpfCustomerProjectionSyncServiceTests
     /// <summary>
     /// R6-04'ün asıl senaryosu (denetim deneyi: watermark 21, verideki en
     /// büyük SyncSeq 2 → sonsuza dek 0 satır). Eski yedek geri yüklendiğinde
-    /// veritabanı ESKİ imleci, settings.json ise YENİ dünyanın değerini taşır.
-    /// DB satırı varken settings'in ne dediği yok sayılmalı — imleç veriyle
-    /// birlikte geri yüklenen değerdir, sync kaldığı yerden devam eder.
+    /// imleç veriyle AYNI dosyada döner — sync kaldığı yerden devam eder.
+    /// R9-D01: settings.json artık hiç okunmadığı için diskte kalan bayat-ileri
+    /// değerin kazanma ihtimali yapısal olarak yok.
     /// </summary>
     [Fact]
     public async Task SyncOnce_geri_yukleme_sonrasi_db_imleci_kazanir_settings_yok_sayilir()
@@ -564,12 +543,6 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         fx.Customers.Insert(MakeCustomer(200L));
         fx.Customers.Insert(MakeCustomer(300L));
         fx.Cursors.Upsert("customer-projection-out", TestLicenseKey, seq: 2L);
-
-        // Yeni dünyanın settings dosyası: bayat-ileri watermark (eski davranışta
-        // bu değer kazanır ve sync sonsuza dek 0 satır gönderirdi).
-        var settings = fx.Store.Load();
-        settings.LastCustomerProjectionSyncSeq = 999L;
-        fx.Store.Save(settings);
 
         var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
 

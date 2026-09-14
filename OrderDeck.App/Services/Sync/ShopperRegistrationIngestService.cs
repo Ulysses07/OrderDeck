@@ -1,6 +1,5 @@
 using Microsoft.Extensions.Logging;
 using OrderDeck.Core.Customers;
-using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Core.Time;
 using OrderDeck.Licensing.Api;
@@ -29,7 +28,6 @@ public sealed class ShopperRegistrationIngestService
 
     private readonly LicenseApiClient _api;
     private readonly CustomerRepository _customers;
-    private readonly SettingsStore _settingsStore;
     private readonly SyncCursorRepository _cursors;
     private readonly ICurrentLicenseProvider _licenseProvider;
     private readonly IClock _clock;
@@ -41,7 +39,6 @@ public sealed class ShopperRegistrationIngestService
     public ShopperRegistrationIngestService(
         LicenseApiClient api,
         CustomerRepository customers,
-        SettingsStore settingsStore,
         SyncCursorRepository cursors,
         ICurrentLicenseProvider licenseProvider,
         IClock clock,
@@ -49,7 +46,6 @@ public sealed class ShopperRegistrationIngestService
     {
         _api = api;
         _customers = customers;
-        _settingsStore = settingsStore;
         _cursors = cursors;
         _licenseProvider = licenseProvider;
         _clock = clock;
@@ -149,46 +145,28 @@ public sealed class ShopperRegistrationIngestService
     }
 
     /// <summary>
-    /// R6-04 imleç okuma + tek seferlik tohumlama. Satır varsa o kazanır —
-    /// settings'te ne yazdığı önemsiz (geri yükleme sonrası settings başka
-    /// veri neslinin değerini taşıyor olabilir). Satır yoksa eski settings
-    /// zinciri tohum olur: (UpdatedAt, Id) çifti, o da yoksa saniyeye
-    /// yuvarlanmış Unix damgası (bkz. AppSettings.LastShopperIngestAt). Tohum
-    /// yazıldıktan sonra eski alanlar TEMİZLENİR — temizlenmezse 038-öncesi
-    /// bir yedek geri yüklendiğinde bayat settings imleci yeniden tohum olur
-    /// ve tombstone'ların (PurgedAt) üstünden atlardı: KVKK silmesi sahada
-    /// geri açılmış kalırdı.
+    /// R6-04 imleç okuma. Tek kalıcı kaynak SyncCursor satırı. R9-D01: eski
+    /// settings zinciri ARTIK tohum OLMUYOR — settings dosyası yedeğin dışında
+    /// yaşadığı için hangi veri nesline/lisansa ait olduğu kanıtlanamıyor.
+    /// 037 yedeği ilk 038 çalışmasından ÖNCE geri yüklendiğinde ileri kalmış
+    /// settings imleci tombstone'ların (PurgedAt) üstünden atlıyordu: KVKK
+    /// silmesi sahada geri açılmış kalıyordu. Lisans değişiminde A'nın
+    /// ilerlemesi B adına tohumlanıyordu; SyncCursor yazısı ile settings
+    /// temizliği arasındaki hata da yarım geçiş bırakıyordu (temizlik bir
+    /// daha denenmezdi).
     ///
-    /// Satır da tohum da yoksa baştan okuma: tombstone'lar yeniden işlenir
-    /// (temizlik idempotent), sunucudan gelen kayıtlar (Platform, Username)
+    /// Satır yoksa baştan okuma: tombstone'lar yeniden işlenir (temizlik
+    /// idempotent), sunucudan gelen kayıtlar (Platform, Username)
     /// eşleşmesiyle zaten atlanır. Yalnız bu makinede SİLİNMİŞ eski müşteri
-    /// yeniden inebilir — felaket kurtarma bağlamında kabul edilen bedel;
-    /// KVKK ile silinenler İNMEZ (PurgedAt satırı asla insert edilmez).
+    /// yeniden inebilir — kabul edilen bedel; KVKK ile silinenler İNMEZ
+    /// (PurgedAt satırı asla insert edilmez).
     /// </summary>
     private (DateTimeOffset At, Guid Id) LoadCursor(string licenseKey)
     {
         var row = _cursors.Get(CursorName, licenseKey);
-        if (row is not null)
-            return (row.UpdatedAt ?? DateTimeOffset.MinValue, row.LastId ?? Guid.Empty);
-
-        var settings = _settingsStore.Load();
-        var seededAt = settings.LastShopperIngestUpdatedAt
-            ?? (settings.LastShopperIngestAt > 0
-                ? DateTimeOffset.FromUnixTimeSeconds(settings.LastShopperIngestAt)
-                : (DateTimeOffset?)null);
-        if (seededAt is null) return (DateTimeOffset.MinValue, Guid.Empty);
-
-        var seededId = settings.LastShopperIngestId ?? Guid.Empty;
-        _cursors.Upsert(CursorName, licenseKey, updatedAt: seededAt, lastId: seededId);
-        // N04: Update ile atomik birleştirme — bütün-nesne Save başka
-        // bileşenin bu arada yazdığı alanı ezerdi.
-        _settingsStore.Update(s =>
-        {
-            s.LastShopperIngestUpdatedAt = null;
-            s.LastShopperIngestId = null;
-            s.LastShopperIngestAt = 0;
-        });
-        return (seededAt.Value, seededId);
+        return row is null
+            ? (DateTimeOffset.MinValue, Guid.Empty)
+            : (row.UpdatedAt ?? DateTimeOffset.MinValue, row.LastId ?? Guid.Empty);
     }
 
     // ─── LicenseId resolution (same caching pattern as WpfCustomerProjectionSyncService) ──

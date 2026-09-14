@@ -113,10 +113,12 @@ internal static class MainShellTestHarness
             _ => new HttpResponseMessage(HttpStatusCode.NotFound)))
         { BaseAddress = new Uri("http://localhost/") };
         var stubApi = new LicenseApiClient(stubHttp, new LicenseTokenStore());
-        var tempSettings = new AppSettings();
         var tempStore = new SettingsStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json"));
+        // R9-D02: intake imleci artık SyncCursor tablosunda; lisans anahtarı
+        // yok (NullLicenseProvider) → servis sync'i sessizce atlar.
         var intakeSync = new IntakeFormSyncService(
-            stubApi, customerRepo, tempStore, tempSettings, clock.Object,
+            stubApi, customerRepo, new SyncCursorRepository(db),
+            new PaymentRequestServiceTestHelpers.NullLicenseProvider(), clock.Object,
             NullLogger<IntakeFormSyncService>.Instance);
 
         sessionSvc.Start("Test", new[] { "instagram" });
