@@ -330,6 +330,159 @@ public class ExtensionBridgeServerTests
         await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
     }
 
+    // ── Tek etkin kaynak kapısı (R7-08) ──────────────────────────────────────
+    //
+    // Aynı TikTok yayını iki sekmede açıksa aynı yorum iki AYRI externalId ile
+    // gelir (id sekme-yerel runId içerir) → externalId dedupe ikisini de
+    // geçirir → aynı sipariş iki kez düşer. Uzantı bunu çözemez (sekmeler
+    // birbirinden habersiz); köprü platform başına TEK etkin kaynağı kabul
+    // eder, pasif sekmeler yedek olarak bağlı kalır.
+
+    [Fact]
+    public async Task Ikinci_sekmeden_gelen_ayni_yorum_yayina_dusmez()
+    {
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(bus, port: 0);
+        await server.StartAsync(CancellationToken.None);
+
+        var received = new System.Collections.Generic.List<ChatMessage>();
+        using var sub = bus.Subscribe(m => { lock (received) received.Add(m); });
+
+        using var sekme1 = await ConnectAsync(server);
+        using var sekme2 = await ConnectAsync(server);
+
+        // Aynı yorum, iki sekme, iki FARKLI externalId (sekme-yerel runId).
+        await SendRaw(sekme1, SerializeChat("tiktok", "@ali", "AB-25", externalId: "tt-100-run1-a"));
+        await Task.Delay(200);
+        await SendRaw(sekme2, SerializeChat("tiktok", "@ali", "AB-25", externalId: "tt-100-run2-a"));
+        await Task.Delay(200);
+
+        received.Count.Should().Be(1,
+            because: "aynı yayını gösteren ikinci sekmenin kopyası siparişe dönüşmemeli");
+        server.PassiveSourceDroppedCount.Should().Be(1);
+
+        await sekme1.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+        await sekme2.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Aktif_kaynak_kapaninca_pasif_kaynak_hemen_devralir()
+    {
+        // Sekme kapanır/çöker → bağlantı düşer → pasif sekme İLK mesajında
+        // devralır. Bayatlama süresi beklenmez; kopuş anında failover.
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(bus, port: 0);
+        await server.StartAsync(CancellationToken.None);
+
+        var received = new System.Collections.Generic.List<ChatMessage>();
+        using var sub = bus.Subscribe(m => { lock (received) received.Add(m); });
+
+        var sekme1 = await ConnectAsync(server);
+        using var sekme2 = await ConnectAsync(server);
+
+        await SendRaw(sekme1, SerializeChat("tiktok", "@ali", "AB-25", externalId: "tt-r1-a"));
+        await Task.Delay(200);
+
+        await sekme1.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+        sekme1.Dispose();
+        await Task.Delay(300); // sunucu kapanışı işleyip etkin kaynağı bıraksın
+
+        await SendRaw(sekme2, SerializeChat("tiktok", "@veli", "CD-10", externalId: "tt-r2-b"));
+        await Task.Delay(200);
+
+        received.Count.Should().Be(2,
+            because: "etkin sekme koptuğunda pasif sekme beklemeden devralmalı");
+        received[1].Text.Should().Be("CD-10");
+    }
+
+    [Fact]
+    public async Task Bayat_aktif_kaynak_yeni_kaynaga_devredilir()
+    {
+        // Yayın bitmiş ama sekme açık kalmış (zombi): bağlantı canlı, mesaj yok.
+        // Yeni yayının sekmesi geldiğinde bayatlama eşiği aşılmışsa devralmalı.
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(bus, port: 0, sourceStaleAfterMs: 300);
+        await server.StartAsync(CancellationToken.None);
+
+        var received = new System.Collections.Generic.List<ChatMessage>();
+        using var sub = bus.Subscribe(m => { lock (received) received.Add(m); });
+
+        using var zombi = await ConnectAsync(server);
+        using var yeni = await ConnectAsync(server);
+
+        await SendRaw(zombi, SerializeChat("tiktok", "@ali", "AB-25", externalId: "tt-z-1"));
+        await Task.Delay(500); // bayatlama eşiğinin (300ms) üstünde sessizlik
+
+        await SendRaw(yeni, SerializeChat("tiktok", "@veli", "CD-10", externalId: "tt-y-1"));
+        await Task.Delay(200);
+
+        received.Count.Should().Be(2,
+            because: "susan etkin kaynak bayatlayınca yeni kaynak devralmalı");
+        received[1].Text.Should().Be("CD-10");
+
+        // Devirden sonra eski (zombi) kaynak artık pasif — mesajı düşmemeli.
+        await SendRaw(zombi, SerializeChat("tiktok", "@ayse", "EF-5", externalId: "tt-z-2"));
+        await Task.Delay(200);
+
+        received.Count.Should().Be(2);
+        server.PassiveSourceDroppedCount.Should().Be(1);
+
+        await zombi.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+        await yeni.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Farkli_platformlarin_etkin_kaynaklari_bagimsiz()
+    {
+        // Kapı platform BAŞINA: bir bağlantının tiktok'ta etkin olması başka
+        // bağlantının başka platformda etkin olmasını engellememeli.
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(bus, port: 0);
+        await server.StartAsync(CancellationToken.None);
+
+        var received = new System.Collections.Generic.List<ChatMessage>();
+        using var sub = bus.Subscribe(m => { lock (received) received.Add(m); });
+
+        using var conn1 = await ConnectAsync(server);
+        using var conn2 = await ConnectAsync(server);
+
+        await SendRaw(conn1, SerializeChat("tiktok", "@ali", "AB-25", externalId: "tt-p1"));
+        await Task.Delay(200);
+        await SendRaw(conn2, SerializeChat("instagram", "@veli", "CD-10", externalId: "ig-p1"));
+        await Task.Delay(200);
+
+        received.Count.Should().Be(2,
+            because: "farklı platformların kaynak kapıları birbirinden bağımsız");
+        server.PassiveSourceDroppedCount.Should().Be(0);
+
+        await conn1.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+        await conn2.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Etkin_kaynagin_kendi_mesajlari_akmaya_devam_eder()
+    {
+        // Kapı tek bağlantılı olağan akışı hiç etkilememeli.
+        var bus = new ChatBus(ringBufferSize: 10);
+        await using var server = new ExtensionBridgeServer(bus, port: 0);
+        await server.StartAsync(CancellationToken.None);
+
+        var received = new System.Collections.Generic.List<ChatMessage>();
+        using var sub = bus.Subscribe(m => { lock (received) received.Add(m); });
+
+        using var ws = await ConnectAsync(server);
+
+        await SendRaw(ws, SerializeChat("tiktok", "@ali", "AB-25", externalId: "tt-s1"));
+        await Task.Delay(50);
+        await SendRaw(ws, SerializeChat("tiktok", "@veli", "CD-10", externalId: "tt-s2"));
+        await Task.Delay(200);
+
+        received.Count.Should().Be(2);
+        server.PassiveSourceDroppedCount.Should().Be(0);
+
+        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+    }
+
     // ── Origin kapısı (K-02) ─────────────────────────────────────────────────
     //
     // WebSocket CORS'a tabi değil: tarayıcı Origin'i gönderir ama zorlamaz.

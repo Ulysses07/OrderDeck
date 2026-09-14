@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.WebSockets;
 using System.Text;
@@ -81,6 +83,75 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
         return true;
     }
 
+    // ── Tek etkin kaynak kapısı (R7-08) ──────────────────────────────────────
+    //
+    // Aynı TikTok yayını iki sekmede açıksa aynı yorum iki AYRI externalId ile
+    // gelir: id, sekme-yerel runId + emitSeq'ten türetilir (chat-bridge-core.js)
+    // ve sekmeler birbirinden habersizdir. externalId dedupe bu kopyayı
+    // yakalayamaz → aynı sipariş iki kez düşer. Uzantı tarafında çözüm yok
+    // (TikTok DOM'unda gerçek mesaj id'si yok; körlemesine metin dedupe'u aynı
+    // kodu tekrar yazan gerçek müşteriyi de yerdi — bkz. #93).
+    //
+    // Çözüm: platform başına TEK etkin kaynak. İlk mesajını ulaştıran bağlantı
+    // etkin olur; diğer sekmeler bağlı kalır ama mesajları sayılıp atlanır —
+    // yani pasif sekme kopukluk anında hazır bekleyen bir YEDEK. Devir iki
+    // yoldan olur:
+    //   1. Etkin bağlantı kapanır → kaydı anında silinir, sıradaki mesajını
+    //      ulaştıran devralır (anlık failover, kayıpsız — pasif sekme zaten
+    //      her şeyi gönderiyordu).
+    //   2. Etkin bağlantı açık ama SUSKUN (yayın bitmiş, sekme açık unutulmuş
+    //      "zombi"): son kabul edilen mesajın üstünden _sourceStaleAfterMs
+    //      geçtiyse yeni kaynak devralır. TikTok canlı URL'si her yayında aynı
+    //      (@kullanici/live) olduğu için URL ile ayırt etmek mümkün değil —
+    //      tek güvenilir sinyal sessizlik.
+    //
+    // Sakin yayında flip-flop olmaz: aynı yayının sekmeleri AYNI olayları
+    // gönderdiği için etkin sekmenin her kabulü damgayı tazeler; kopya, damga
+    // taze olduğundan düşer.
+    private readonly int _sourceStaleAfterMs;
+    private readonly object _sourceLock = new();
+    private readonly Dictionary<string, (object Conn, long LastAcceptedAt)> _activeSources =
+        new(StringComparer.OrdinalIgnoreCase);
+    private long _passiveSourceDroppedCount;
+    public long PassiveSourceDroppedCount => Volatile.Read(ref _passiveSourceDroppedCount);
+
+    /// <summary>Etkin kaynağın kabulü/devri. Kabulde damga tazelenir.</summary>
+    private bool TryAcceptSource(string platform, object connId, out bool tookOverStale)
+    {
+        tookOverStale = false;
+        var now = Environment.TickCount64;
+        lock (_sourceLock)
+        {
+            if (!_activeSources.TryGetValue(platform, out var active) ||
+                ReferenceEquals(active.Conn, connId))
+            {
+                _activeSources[platform] = (connId, now);
+                return true;
+            }
+            if (now - active.LastAcceptedAt > _sourceStaleAfterMs)
+            {
+                _activeSources[platform] = (connId, now);
+                tookOverStale = true;
+                return true;
+            }
+            return false;
+        }
+    }
+
+    /// <summary>Bağlantı kapanınca etkin olduğu tüm platformları bırakır —
+    /// pasif sekme bir sonraki mesajında beklemeden devralabilsin.</summary>
+    private void ReleaseSources(object connId)
+    {
+        lock (_sourceLock)
+        {
+            var released = _activeSources
+                .Where(kv => ReferenceEquals(kv.Value.Conn, connId))
+                .Select(kv => kv.Key).ToList();
+            foreach (var platform in released)
+                _activeSources.Remove(platform);
+        }
+    }
+
     /// <summary>Uzantının bağlandığı tek yol; başka yola gelen yükseltme reddedilir.</summary>
     private const string WebSocketPath = "/extension";
 
@@ -106,12 +177,18 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
         ILogger<ExtensionBridgeServer>? log = null,
         ITrialModeProbe? trialProbe = null,
         SpamFilter? spamFilter = null,
-        ViewerCountTracker? viewers = null)
+        ViewerCountTracker? viewers = null,
+        int sourceStaleAfterMs = 60_000)
     {
         _bus = bus;
         _trialProbe = trialProbe;
         _spamFilter = spamFilter;
         _viewers = viewers;
+        // R7-08 bayatlama eşiği. 60 sn: gerçek bir canlı satış yayınında
+        // 60 sn boyunca TEK yorum bile gelmemesi fiilen "yayın bitti" demek;
+        // daha kısası, seyrek sohbetli sakin bir yayında gereksiz devir
+        // yapabilirdi. Testler kısa eşikle bayatlama yolunu sınar.
+        _sourceStaleAfterMs = sourceStaleAfterMs;
         _log = log ?? NullLogger<ExtensionBridgeServer>.Instance;
         Port = port == 0 ? FindFreePort() : port;
         _listener.Prefixes.Add($"http://localhost:{Port}/");
@@ -332,19 +409,29 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
 
     private async Task Handle(WebSocket ws, CancellationToken ct)
     {
+        // R7-08: bağlantının kaynak-kapısı kimliği. Referans eşitliğiyle
+        // karşılaştırılan yalın bir nesne — soketin kendisini sözlükte
+        // tutmamak için ayrı (yaşam süresi bu metotla sınırlı).
+        var connId = new object();
         Interlocked.Increment(ref _activeWebSocketCount);
         try
         {
-            await HandleCore(ws, ct);
+            await HandleCore(ws, connId, ct);
         }
         finally
         {
             Interlocked.Decrement(ref _activeWebSocketCount);
+            // Kopan bağlantı etkin kaynaksa anında bırakır — pasif sekme bir
+            // sonraki mesajında bayatlama beklemeden devralır.
+            ReleaseSources(connId);
         }
     }
 
-    private async Task HandleCore(WebSocket ws, CancellationToken ct)
+    private async Task HandleCore(WebSocket ws, object connId, CancellationToken ct)
     {
+        // R7-08: pasif kaynak uyarısı bağlantı+platform başına BİR kez —
+        // ikinci sekme her yorumda log basarsa yoğun yayında log boğulur.
+        var warnedPassivePlatforms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var buf = new byte[8192];
         var ms = new System.IO.MemoryStream();
         while (ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
@@ -417,6 +504,30 @@ public sealed class ExtensionBridgeServer : IAsyncDisposable
                             msg.Platform, msg.Username);
                         continue;
                     }
+
+                    // R7-08: tek etkin kaynak kapısı. Spam filtresi ve
+                    // externalId dedupe'undan ÖNCE, çünkü pasif sekmenin seli
+                    // ne spam pencerelerini kirletmeli ne de 20k'lık _seen
+                    // FIFO'sunu doldurup gerçek dedupe kayıtlarını itmeli.
+                    if (!TryAcceptSource(msg.Platform, connId, out var tookOverStale))
+                    {
+                        Interlocked.Increment(ref _passiveSourceDroppedCount);
+                        if (warnedPassivePlatforms.Add(msg.Platform))
+                            _log.LogWarning(
+                                "R7-08: {Platform} için ikinci bir kaynak (sekme) mesaj gönderiyor; " +
+                                "etkin kaynak başka bağlantıda — pasif kopyalar atlanacak",
+                                msg.Platform);
+                        else
+                            _log.LogDebug(
+                                "Pasif kaynak mesajı atlandı {Platform}:{Username}: {Text}",
+                                msg.Platform, msg.Username, msg.Text);
+                        continue;
+                    }
+                    if (tookOverStale)
+                        _log.LogWarning(
+                            "R7-08: {Platform} etkin kaynağı {StaleMs}ms'dir suskundu; " +
+                            "yeni kaynak devraldı (eski sekme muhtemelen bitmiş yayında açık kalmış)",
+                            msg.Platform, _sourceStaleAfterMs);
 
                     // Spam filter — runs AFTER trial mode + payload-shape checks
                     // because the cheaper rules (length, links) reject lots of
