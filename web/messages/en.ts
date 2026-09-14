@@ -135,7 +135,7 @@ export const en: Messages = {
       },
       {
         q: 'Are my messages stored anywhere?',
-        a: 'No. All messages live only on your machine, in a memory ring buffer of up to 500 messages. They are dropped when you close the app. Nothing is sent to OrderDeck servers.',
+        a: 'The raw chat stream is not stored: messages live only on your machine, in a memory ring buffer of up to 500 messages, and are dropped when you close the app; the stream is never sent to OrderDeck servers in bulk. The one exception is comments you convert into an order/label: that comment\'s text is kept as part of the order record and transferred to the server together with the order data.',
       },
       {
         q: 'How does the trial work?',
