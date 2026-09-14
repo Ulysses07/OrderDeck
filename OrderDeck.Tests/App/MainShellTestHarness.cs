@@ -80,7 +80,12 @@ internal static class MainShellTestHarness
         }
     }
 
-    public static Harness Build(OrderDeck.App.Services.Drawers.IDrawerService? drawers = null)
+    /// <param name="printerOverride">Verilirse VM bu yazıcıyı kullanır;
+    /// <see cref="Harness.Printer"/> yine de oluşturulur ama devre dışıdır.
+    /// Gated/throwing yazıcı isteyen yaşam döngüsü testleri için.</param>
+    public static Harness Build(
+        OrderDeck.App.Services.Drawers.IDrawerService? drawers = null,
+        ILabelPrinter? printerOverride = null)
     {
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
@@ -131,7 +136,7 @@ internal static class MainShellTestHarness
         var dialogs = new FakeDialogService();
 
         var vm = new MainShellViewModel(
-            bus, labelSvc, sessionSvc, printer, customerSvc, customerRepo,
+            bus, labelSvc, sessionSvc, printerOverride ?? printer, customerSvc, customerRepo,
             labelRepo, clock.Object, productCard,
             giveawaySvc, banner, licenseSvc, intakeSync, tempStore, dialogs,
             drawers: drawers);
