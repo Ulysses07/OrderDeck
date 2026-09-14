@@ -32,6 +32,7 @@ public sealed class ShopperRegistrationIngestServiceTests
 
     private static readonly Guid TestLicenseId = Guid.Parse("aaaabbbb-cccc-dddd-eeee-ffffaaaabbbb");
     private const string TestLicenseKey = "INGEST-TEST-KEY";
+    private const string CursorName = "shopper-ingest-in";
 
     private static string LicensesJson() =>
         $"[{{\"id\":\"{TestLicenseId}\",\"licenseKey\":\"{TestLicenseKey}\"}}]";
@@ -63,8 +64,14 @@ public sealed class ShopperRegistrationIngestServiceTests
         ShopperRegistrationIngestService Svc,
         CustomerRepository Customers,
         SettingsStore Store,
+        SyncCursorRepository Cursors,
         FakeLicenseProvider License,
-        InMemorySqlite Db);
+        InMemorySqlite Db)
+    {
+        /// <summary>R6-04: imleç artık SyncCursor tablosunda, lisans anahtarına bağlı.</summary>
+        public SyncCursor? Cursor(string licenseKey = TestLicenseKey)
+            => Cursors.Get(CursorName, licenseKey);
+    }
 
     private static Fixture Build(
         Func<HttpRequestMessage, HttpResponseMessage> responder,
@@ -73,6 +80,7 @@ public sealed class ShopperRegistrationIngestServiceTests
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
         var customers = new CustomerRepository(db);
+        var cursors = new SyncCursorRepository(db);
 
         var settingsPath = Path.Combine(Path.GetTempPath(), $"ingest-settings-{Guid.NewGuid():N}.json");
         var store = new SettingsStore(settingsPath);
@@ -85,11 +93,11 @@ public sealed class ShopperRegistrationIngestServiceTests
         if (seedLicense) licenseProvider.CurrentLicenseKey = TestLicenseKey;
 
         var svc = new ShopperRegistrationIngestService(
-            api, customers, store, licenseProvider,
+            api, customers, store, cursors, licenseProvider,
             new FakeClock(),
             NullLogger<ShopperRegistrationIngestService>.Instance);
 
-        return new Fixture(svc, customers, store, licenseProvider, db);
+        return new Fixture(svc, customers, store, cursors, licenseProvider, db);
     }
 
     // ── No license → returns 0, no HTTP calls ─────────────────────────────────
@@ -134,7 +142,12 @@ public sealed class ShopperRegistrationIngestServiceTests
         var result = await fx.Svc.IngestOnceAsync(CancellationToken.None);
 
         result.Should().Be(0);
-        fx.Store.Load().LastShopperIngestAt.Should().Be(999L, "watermark must not change when nothing to ingest");
+        // R6-04: eski settings alanı DB imlecine tohumlanır (çağrıdan önce),
+        // boş yanıt imleci İLERLETMEZ — tohumdaki değerde kalır.
+        fx.Cursor()!.UpdatedAt.Should().Be(DateTimeOffset.FromUnixTimeSeconds(999L),
+            "watermark must not change when nothing to ingest");
+        fx.Store.Load().LastShopperIngestAt.Should().Be(0L,
+            "tohumlama sonrası eski alan temizlenmeli (bayat yedek geri yüklemesi yeniden tohumlamasın)");
     }
 
     // ── New shopper registration → inserts Customer + advances watermark ───────
@@ -172,10 +185,12 @@ public sealed class ShopperRegistrationIngestServiceTests
         customer.Username.Should().Be("newuser");
         customer.IsBlacklisted.Should().BeFalse();
 
-        // Watermark advanced — tam hassasiyetle, (UpdatedAt, Id) çifti olarak
-        var saved = fx.Store.Load();
-        saved.LastShopperIngestUpdatedAt.Should().Be(updatedAt);
-        saved.LastShopperIngestId.Should().Be(shopperId);
+        // Watermark advanced — tam hassasiyetle, (UpdatedAt, Id) çifti olarak,
+        // SyncCursor tablosunda (R6-04)
+        var cursor = fx.Cursor();
+        cursor.Should().NotBeNull();
+        cursor!.UpdatedAt.Should().Be(updatedAt);
+        cursor.LastId.Should().Be(shopperId);
     }
 
     // ── Already-exists by (Platform, Username) → skipped, watermark still advances ─
@@ -216,19 +231,16 @@ public sealed class ShopperRegistrationIngestServiceTests
             Address: null,
             Phone: null));
 
-        var settings = fx.Store.Load();
-        settings.LastShopperIngestAt = 0L;
-        fx.Store.Save(settings);
-
         var result = await fx.Svc.IngestOnceAsync(CancellationToken.None);
 
         result.Should().Be(0, "already-existing customer must be skipped");
 
         // Watermark still advances to the item's (UpdatedAt, Id)
-        var saved = fx.Store.Load();
-        saved.LastShopperIngestUpdatedAt.Should().Be(updatedAt,
+        var cursor = fx.Cursor();
+        cursor.Should().NotBeNull();
+        cursor!.UpdatedAt.Should().Be(updatedAt,
             "watermark must advance even when all items were skipped (idempotent)");
-        saved.LastShopperIngestId.Should().Be(shopperId);
+        cursor.LastId.Should().Be(shopperId);
     }
 
     // ── N04: imleç yazımı başka yazarın alanını ezmemeli ──────────────────────
@@ -236,10 +248,10 @@ public sealed class ShopperRegistrationIngestServiceTests
     [Fact]
     public async Task IngestOnce_cagri_sirasinda_yazilan_ayari_ezmez()
     {
-        // Servis döngü başında ayarları yükler, HTTP çağrısından SONRA imleci
-        // kaydeder. Çağrı sırasında başka bir bileşen (ör. ayar ekranı) farklı
-        // bir alanı diske yazarsa, servisin bütün-nesne yazımı o alanı uygulama
-        // açılışındaki (bayat) değerine döndürmemeli.
+        // R6-04 sonrası imleç SQLite'a yazılıyor; settings'e olağan akışta hiç
+        // dokunulmuyor. Bu test yine de kalıyor: çağrı sırasında başka bir
+        // bileşenin yazdığı ayar, servisin HERHANGİ bir yazımıyla (tohumlama
+        // dahil) geri alınmamalı (N04).
         var shopperId = Guid.NewGuid();
         var updatedAt = DateTimeOffset.UtcNow;
 
@@ -251,7 +263,7 @@ public sealed class ShopperRegistrationIngestServiceTests
                 return FakeHttpMessageHandler.Json(200, LicensesJson());
             if (path.Contains("/wpf-customers/since"))
             {
-                // Tam yarış anı: servis Load'ı yaptı, Save'i henüz yapmadı.
+                // Tam yarış anı: servis imleci yükledi, henüz kaydetmedi.
                 storeRef!.Update(s => s.PrinterName = "BAŞKA-YAZAR");
                 return FakeHttpMessageHandler.Json(200, PullJson(
                     (shopperId, "youtube", "raceuser", "Yarış Kullanıcı", null, null, updatedAt)));
@@ -266,7 +278,7 @@ public sealed class ShopperRegistrationIngestServiceTests
         var saved = fx.Store.Load();
         saved.PrinterName.Should().Be("BAŞKA-YAZAR",
             "imleç kaydı başka yazarın bu arada yazdığı alanı ezmemeli (N04)");
-        saved.LastShopperIngestId.Should().Be(shopperId, "imleç de ilerlemeli");
+        fx.Cursor()!.LastId.Should().Be(shopperId, "imleç de ilerlemeli");
     }
 
     // ── API failure → returns 0, watermark NOT advanced ───────────────────────
@@ -292,7 +304,10 @@ public sealed class ShopperRegistrationIngestServiceTests
         var result = await fx.Svc.IngestOnceAsync(CancellationToken.None);
 
         result.Should().Be(0, "API failure must return 0");
-        fx.Store.Load().LastShopperIngestAt.Should().Be(123L, "watermark must NOT advance on failure");
+        // R6-04: tohumlama çağrıdan önce olur (bu kayıp değil — aynı değer),
+        // ama başarısız çağrı imleci tohumun ÖTESİNE taşımamalı.
+        fx.Cursor()!.UpdatedAt.Should().Be(DateTimeOffset.FromUnixTimeSeconds(123L),
+            "watermark must NOT advance on failure");
     }
 
     // ── Multiple items: some new, some skipped ────────────────────────────────
@@ -344,9 +359,10 @@ public sealed class ShopperRegistrationIngestServiceTests
         newCustomer.Should().NotBeNull();
 
         // Watermark advances to the last row in (UpdatedAt, Id) order = (t2, existingId)
-        var saved = fx.Store.Load();
-        saved.LastShopperIngestUpdatedAt.Should().Be(t2);
-        saved.LastShopperIngestId.Should().Be(existingId);
+        var cursor = fx.Cursor();
+        cursor.Should().NotBeNull();
+        cursor!.UpdatedAt.Should().Be(t2);
+        cursor.LastId.Should().Be(existingId);
     }
 
     // ── KVKK silme (Y-13/Y-14 3. katman) ──────────────────────────────────────
@@ -420,8 +436,7 @@ public sealed class ShopperRegistrationIngestServiceTests
         c.LastSeenAt.Should().Be(2000L,
             "LastSeenAt değişseydi satır GetUpdatedSince'e düşüp boşuna sunucuya geri giderdi");
 
-        var saved = fx.Store.Load();
-        saved.LastShopperIngestId.Should().Be(shopperId, "imleç ilerlemeli");
+        fx.Cursor()!.LastId.Should().Be(shopperId, "imleç ilerlemeli");
     }
 
     [Fact]
@@ -476,7 +491,7 @@ public sealed class ShopperRegistrationIngestServiceTests
 
         await fx.Svc.IngestOnceAsync(CancellationToken.None);
 
-        fx.Store.Load().LastShopperIngestId.Should().Be(sqlBig,
+        fx.Cursor()!.LastId.Should().Be(sqlBig,
             "imleç sunucunun teslim ettiği SON satır olmalı — .NET Guid sırasıyla yeniden seçilirse " +
             "sunucu sayfa sınırının gerisine düşer ve aynı satırlar tekrar iner");
     }
@@ -514,6 +529,11 @@ public sealed class ShopperRegistrationIngestServiceTests
         capturedQuery!.Should().Contain(Uri.EscapeDataString(expectedDate));
         capturedQuery.Should().Contain($"sinceId={Guid.Empty:D}",
             "eski kurulumda id imleci yok — boş Guid ile başlanmalı");
+
+        // R6-04: eski alan bir kez tohum olarak okunur, DB'ye yazılır, sonra temizlenir
+        fx.Cursor()!.UpdatedAt.Should().Be(DateTimeOffset.FromUnixTimeSeconds(knownTimestamp));
+        fx.Store.Load().LastShopperIngestAt.Should().Be(0L,
+            "tohumlama sonrası eski alan temizlenmeli");
     }
 
     // ── Yeni (UpdatedAt, Id) imleci varsa eski Unix alanı yok sayılır ─────────
@@ -556,5 +576,107 @@ public sealed class ShopperRegistrationIngestServiceTests
         capturedQuery.Should().NotContain(
             Uri.EscapeDataString(DateTimeOffset.FromUnixTimeSeconds(1_715_000_000L).ToString("O")),
             "yeni imleç varken eski Unix alanı kullanılmamalı");
+
+        // R6-04: tohumlama sonrası TÜM eski alanlar temizlenmeli
+        var saved = fx.Store.Load();
+        saved.LastShopperIngestUpdatedAt.Should().BeNull();
+        saved.LastShopperIngestId.Should().BeNull();
+        saved.LastShopperIngestAt.Should().Be(0L);
+    }
+
+    // ── R6-04: yedek geri yükleme — DB imleci settings'i her zaman yener ──────
+
+    [Fact]
+    public async Task IngestOnce_geri_yukleme_sonrasi_db_imleci_kazanir_settings_yok_sayilir()
+    {
+        // Senaryo: yedek geri yüklendi. SQLite (veri + imleç) eski nesle döndü,
+        // settings.json ise diskte kaldığı için İLERİDEKİ imleci taşıyor.
+        // Settings kazansaydı: geri yüklenen dönemin tombstone'ları (PurgedAt)
+        // atlanır, KVKK silmesi sahada geri açılmış kalırdı. DB imleci veriyle
+        // aynı dosyada olduğu için ikisi birlikte döner — satır varsa o kazanır.
+        string? capturedQuery = null;
+        var fx = Build(req =>
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (path == "/api/v1/me/licenses")
+                return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/wpf-customers/since"))
+            {
+                capturedQuery = req.RequestUri.Query;
+                return FakeHttpMessageHandler.Json(200, "[]");
+            }
+            return FakeHttpMessageHandler.Empty(404);
+        });
+        using var _d = fx.Db;
+
+        var dbAt = new DateTimeOffset(2026, 8, 1, 12, 0, 0, TimeSpan.Zero);       // geri yüklenen nesil
+        var dbId = Guid.Parse("aaaa1111-2222-3333-4444-555566667777");
+        fx.Cursors.Upsert(CursorName, TestLicenseKey, updatedAt: dbAt, lastId: dbId);
+
+        var staleAt = new DateTimeOffset(2026, 9, 10, 12, 0, 0, TimeSpan.Zero);    // bayat settings — ileride
+        fx.Store.Update(s =>
+        {
+            s.LastShopperIngestUpdatedAt = staleAt;
+            s.LastShopperIngestId = Guid.NewGuid();
+        });
+
+        await fx.Svc.IngestOnceAsync(CancellationToken.None);
+
+        capturedQuery.Should().NotBeNullOrEmpty();
+        capturedQuery!.Should().Contain(Uri.EscapeDataString(dbAt.ToString("O")),
+            "DB imleci varken settings'teki (bayat, ilerideki) değer yok sayılmalı");
+        capturedQuery.Should().Contain($"sinceId={dbId:D}");
+        capturedQuery.Should().NotContain(Uri.EscapeDataString(staleAt.ToString("O")));
+    }
+
+    // ── R6-04: lisans değişince imleç yeni lisans için sıfırdan başlar ────────
+
+    [Fact]
+    public async Task IngestOnce_lisans_degisince_imlec_yeni_lisans_icin_sifirdan_baslar()
+    {
+        // İmleç (Name, LicenseKey) anahtarlı: lisans A'nın kaldığı yer lisans
+        // B'nin okumasını atlatmamalı. B'ye geçişte tam okuma başlar; A'nın
+        // imleci de korunur (geri dönerse kaldığı yerden devam eder).
+        var otherId = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
+        const string otherKey = "INGEST-OTHER-KEY";
+        var twoLicensesJson =
+            $"[{{\"id\":\"{TestLicenseId}\",\"licenseKey\":\"{TestLicenseKey}\"}}," +
+            $"{{\"id\":\"{otherId}\",\"licenseKey\":\"{otherKey}\"}}]";
+
+        string? capturedQuery = null;
+        var fx = Build(req =>
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (path == "/api/v1/me/licenses")
+                return FakeHttpMessageHandler.Json(200, twoLicensesJson);
+            if (path.Contains("/wpf-customers/since"))
+            {
+                capturedQuery = req.RequestUri.Query;
+                return FakeHttpMessageHandler.Json(200, "[]");
+            }
+            return FakeHttpMessageHandler.Empty(404);
+        });
+        using var _d = fx.Db;
+
+        // Lisans A'nın ilerlemiş imleci
+        var aAt = new DateTimeOffset(2026, 9, 1, 8, 0, 0, TimeSpan.Zero);
+        var aId = Guid.Parse("bbbb1111-2222-3333-4444-555566667777");
+        fx.Cursors.Upsert(CursorName, TestLicenseKey, updatedAt: aAt, lastId: aId);
+
+        // Lisans B'ye geçiş
+        fx.License.CurrentLicenseKey = otherKey;
+
+        await fx.Svc.IngestOnceAsync(CancellationToken.None);
+
+        capturedQuery.Should().NotBeNullOrEmpty();
+        capturedQuery!.Should().Contain($"sinceId={Guid.Empty:D}",
+            "yeni lisans için imleç yok — tam okuma başlamalı");
+        capturedQuery.Should().NotContain(Uri.EscapeDataString(aAt.ToString("O")),
+            "A lisansının imleci B'nin okumasına sızmamalı");
+
+        // A'nın imleci korunur
+        var aCursor = fx.Cursor(TestLicenseKey);
+        aCursor!.UpdatedAt.Should().Be(aAt);
+        aCursor.LastId.Should().Be(aId);
     }
 }

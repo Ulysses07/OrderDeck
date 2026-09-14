@@ -88,6 +88,8 @@ public sealed class AppHost : IDisposable
         // fotoğrafı önbelleği. Tek yazarı CatalogSyncService.
         services.AddSingleton<CatalogReplicaRepository>();
         services.AddSingleton<StockBalanceRepository>();
+        // R6-04: sync imleçleri veriyle aynı SQLite dosyasında (göç 038).
+        services.AddSingleton<SyncCursorRepository>();
         services.AddSingleton<OrderDeck.Core.Catalog.StockBalanceProvider>();
         // Yayın kodu çözümleyicisi: kod kutusu da sipariş akışı da AYNI örneği
         // kullanmalı, yoksa kartta görünen varyantlarla çekmecede seçilebilen
@@ -513,13 +515,13 @@ public sealed class AppHost : IDisposable
 
         // WPF customer projection sync (Faz 0c-2): lokal Customer tablosunun
         // LicenseServer'a delta sync'i. 60 sn cadence, 500'lük batch, watermark
-        // LastCustomerProjectionSyncAt (AppSettings). Shopper app login match için gerekli.
+        // SyncCursor tablosunda (R6-04). Shopper app login match için gerekli.
         services.AddSingleton<Services.Sync.WpfCustomerProjectionSyncService>();
         services.AddHostedService<Services.Sync.WpfCustomerProjectionSyncHostedService>();
 
         // Shopper registration ingest (Faz 0c-3): server'da shopper register/join
         // sırasında otomatik oluşturulan WpfCustomerProjection kayıtlarını WPF lokal
-        // Customer tablosuna ingest eder. 30 sn cadence, watermark LastShopperIngestAt.
+        // Customer tablosuna ingest eder. 30 sn cadence, imleç SyncCursor tablosunda (R6-04).
         services.AddSingleton<Services.Sync.ShopperRegistrationIngestService>();
         services.AddHostedService<Services.Sync.ShopperRegistrationIngestHostedService>();
 

@@ -25,9 +25,12 @@ namespace OrderDeck.App.Services.Sync;
 /// </summary>
 public sealed class ShopperRegistrationIngestService
 {
+    private const string CursorName = "shopper-ingest-in";
+
     private readonly LicenseApiClient _api;
     private readonly CustomerRepository _customers;
     private readonly SettingsStore _settingsStore;
+    private readonly SyncCursorRepository _cursors;
     private readonly ICurrentLicenseProvider _licenseProvider;
     private readonly IClock _clock;
     private readonly ILogger<ShopperRegistrationIngestService> _log;
@@ -39,6 +42,7 @@ public sealed class ShopperRegistrationIngestService
         LicenseApiClient api,
         CustomerRepository customers,
         SettingsStore settingsStore,
+        SyncCursorRepository cursors,
         ICurrentLicenseProvider licenseProvider,
         IClock clock,
         ILogger<ShopperRegistrationIngestService> log)
@@ -46,6 +50,7 @@ public sealed class ShopperRegistrationIngestService
         _api = api;
         _customers = customers;
         _settingsStore = settingsStore;
+        _cursors = cursors;
         _licenseProvider = licenseProvider;
         _clock = clock;
         _log = log;
@@ -59,14 +64,7 @@ public sealed class ShopperRegistrationIngestService
         var licenseId = await ResolveLicenseIdAsync(licenseKey, ct);
         if (licenseId is null) return 0;
 
-        var settings = _settingsStore.Load();
-        // Eski kurulumlarda imleç saniyeye yuvarlanmış bir Unix damgasıydı; yeni
-        // alan boşsa ondan tohumlanıyor (bkz. AppSettings.LastShopperIngestAt).
-        var watermark = settings.LastShopperIngestUpdatedAt
-            ?? (settings.LastShopperIngestAt > 0
-                ? DateTimeOffset.FromUnixTimeSeconds(settings.LastShopperIngestAt)
-                : DateTimeOffset.MinValue);
-        var watermarkId = settings.LastShopperIngestId ?? Guid.Empty;
+        var (watermark, watermarkId) = LoadCursor(licenseKey);
 
         try
         {
@@ -129,14 +127,11 @@ public sealed class ShopperRegistrationIngestService
             // "son"u seçerse imleç sunucu sayfa sınırının gerisinde kalır ve
             // aynı satırlar tekrar iner.
             var last = items[^1];
-            // N04: Update ile atomik birleştirme — bu metodun başında yüklenen
-            // kopya HTTP çağrısı boyunca bayatlamış olabilir; bütün-nesne Save
-            // başka bileşenin o arada yazdığı alanı ezerdi.
-            _settingsStore.Update(s =>
-            {
-                s.LastShopperIngestUpdatedAt = last.UpdatedAt;
-                s.LastShopperIngestId = last.Id;
-            });
+            // R6-04: imleç, temizlediği/eklediği Customer satırlarıyla aynı
+            // SQLite dosyasına yazılır — yedek/geri yükleme ikisini birlikte
+            // taşır, tombstone'un üstünden atlamış bir imleç geri gelemez.
+            _cursors.Upsert(CursorName, licenseKey,
+                updatedAt: last.UpdatedAt, lastId: last.Id);
 
             if (inserted > 0)
                 _log.LogInformation("Ingested {Count} shopper registrations as new customers", inserted);
@@ -151,6 +146,49 @@ public sealed class ShopperRegistrationIngestService
             _log.LogWarning(ex, "ShopperRegistrationIngest failed; will retry");
             return 0;
         }
+    }
+
+    /// <summary>
+    /// R6-04 imleç okuma + tek seferlik tohumlama. Satır varsa o kazanır —
+    /// settings'te ne yazdığı önemsiz (geri yükleme sonrası settings başka
+    /// veri neslinin değerini taşıyor olabilir). Satır yoksa eski settings
+    /// zinciri tohum olur: (UpdatedAt, Id) çifti, o da yoksa saniyeye
+    /// yuvarlanmış Unix damgası (bkz. AppSettings.LastShopperIngestAt). Tohum
+    /// yazıldıktan sonra eski alanlar TEMİZLENİR — temizlenmezse 038-öncesi
+    /// bir yedek geri yüklendiğinde bayat settings imleci yeniden tohum olur
+    /// ve tombstone'ların (PurgedAt) üstünden atlardı: KVKK silmesi sahada
+    /// geri açılmış kalırdı.
+    ///
+    /// Satır da tohum da yoksa baştan okuma: tombstone'lar yeniden işlenir
+    /// (temizlik idempotent), sunucudan gelen kayıtlar (Platform, Username)
+    /// eşleşmesiyle zaten atlanır. Yalnız bu makinede SİLİNMİŞ eski müşteri
+    /// yeniden inebilir — felaket kurtarma bağlamında kabul edilen bedel;
+    /// KVKK ile silinenler İNMEZ (PurgedAt satırı asla insert edilmez).
+    /// </summary>
+    private (DateTimeOffset At, Guid Id) LoadCursor(string licenseKey)
+    {
+        var row = _cursors.Get(CursorName, licenseKey);
+        if (row is not null)
+            return (row.UpdatedAt ?? DateTimeOffset.MinValue, row.LastId ?? Guid.Empty);
+
+        var settings = _settingsStore.Load();
+        var seededAt = settings.LastShopperIngestUpdatedAt
+            ?? (settings.LastShopperIngestAt > 0
+                ? DateTimeOffset.FromUnixTimeSeconds(settings.LastShopperIngestAt)
+                : (DateTimeOffset?)null);
+        if (seededAt is null) return (DateTimeOffset.MinValue, Guid.Empty);
+
+        var seededId = settings.LastShopperIngestId ?? Guid.Empty;
+        _cursors.Upsert(CursorName, licenseKey, updatedAt: seededAt, lastId: seededId);
+        // N04: Update ile atomik birleştirme — bütün-nesne Save başka
+        // bileşenin bu arada yazdığı alanı ezerdi.
+        _settingsStore.Update(s =>
+        {
+            s.LastShopperIngestUpdatedAt = null;
+            s.LastShopperIngestId = null;
+            s.LastShopperIngestAt = 0;
+        });
+        return (seededAt.Value, seededId);
     }
 
     // ─── LicenseId resolution (same caching pattern as WpfCustomerProjectionSyncService) ──

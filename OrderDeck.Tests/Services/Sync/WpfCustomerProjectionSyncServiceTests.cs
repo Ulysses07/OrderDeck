@@ -58,9 +58,15 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         WpfCustomerProjectionSyncService Svc,
         CustomerRepository Customers,
         SettingsStore Store,
+        SyncCursorRepository Cursors,
         FakeLicenseProvider License,
         InMemorySqlite Db,
-        string SettingsPath);
+        string SettingsPath)
+    {
+        /// <summary>R6-04: imlecin kalıcı evi artık SyncCursor tablosu.</summary>
+        public long CursorSeq(string licenseKey = TestLicenseKey) =>
+            Cursors.Get("customer-projection-out", licenseKey)?.Seq ?? 0L;
+    }
 
     private static Fixture Build(
         Func<HttpRequestMessage, HttpResponseMessage> responder,
@@ -69,6 +75,7 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         var db = new InMemorySqlite();
         new MigrationRunner(db).Run();
         var customers = new CustomerRepository(db);
+        var cursors   = new SyncCursorRepository(db);
 
         var settingsPath = Path.Combine(Path.GetTempPath(), $"cust-settings-{Guid.NewGuid():N}.json");
         var store = new SettingsStore(settingsPath);
@@ -81,10 +88,10 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         if (seedLicense) licenseProvider.CurrentLicenseKey = TestLicenseKey;
 
         var svc = new WpfCustomerProjectionSyncService(
-            api, customers, store, licenseProvider,
+            api, customers, store, cursors, licenseProvider,
             NullLogger<WpfCustomerProjectionSyncService>.Instance);
 
-        return new Fixture(svc, customers, store, licenseProvider, db, settingsPath);
+        return new Fixture(svc, customers, store, cursors, licenseProvider, db, settingsPath);
     }
 
     private static HttpResponseMessage DefaultResponder(HttpRequestMessage req)
@@ -130,8 +137,10 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
 
         result.Should().Be(0);
-        var settingsAfter = fx.Store.Load();
-        settingsAfter.LastCustomerProjectionSyncSeq.Should().Be(999L, "watermark must not change when nothing to sync");
+        fx.CursorSeq().Should().Be(999L,
+            "eski settings imleci DB satırına tohumlanır ve boş turda İLERLEMEZ");
+        fx.Store.Load().LastCustomerProjectionSyncSeq.Should().Be(0L,
+            "tohumlanan eski alan temizlenmeli — geri yüklemede yeniden tohum olmasın");
         // No sync call should have been made (only /me/licenses for resolve)
         apiCallCount.Should().BeLessOrEqualTo(1, "only the license resolution GET is allowed");
     }
@@ -163,8 +172,7 @@ public sealed class WpfCustomerProjectionSyncServiceTests
 
         result.Should().Be(3);
         syncPosts.Should().Be(1, "all 3 fit in one batch");
-        var settings = fx.Store.Load();
-        settings.LastCustomerProjectionSyncSeq.Should().Be(3L, "watermark advances to the batch max SyncSeq");
+        fx.CursorSeq().Should().Be(3L, "watermark advances to the batch max SyncSeq");
     }
 
     [Fact]
@@ -272,7 +280,7 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         capturedIds!.Should().HaveCount(2, "yalnız Username'i boş kayıt elenmeli");
         result.Should().Be(2);
 
-        fx.Store.Load().LastCustomerProjectionSyncSeq.Should().Be(3L,
+        fx.CursorSeq().Should().Be(3L,
             "watermark bozuk satırın ÖTESİNE geçmeli, yoksa kilit ertesi turda geri gelir");
     }
 
@@ -345,15 +353,11 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         using var _d = fx.Db;
 
         fx.Customers.Insert(MakeCustomer(100L));
-        var settingsBefore = fx.Store.Load();
-        settingsBefore.LastCustomerProjectionSyncSeq = 0L;
-        fx.Store.Save(settingsBefore);
 
         var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
 
         result.Should().Be(0, "failed batch returns 0 synced");
-        var settingsAfter = fx.Store.Load();
-        settingsAfter.LastCustomerProjectionSyncSeq.Should().Be(0L,
+        fx.Cursors.Get("customer-projection-out", TestLicenseKey).Should().BeNull(
             "watermark must NOT advance when the API batch fails");
     }
 
@@ -389,8 +393,7 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         result.Should().Be(total, "all 700 customers synced across two batches");
         postBodies.Should().HaveCount(2, "700 customers → batch1=500 + batch2=200");
 
-        var settings = fx.Store.Load();
-        settings.LastCustomerProjectionSyncSeq.Should().Be(total,
+        fx.CursorSeq().Should().Be(total,
             "watermark advances to the last row's SyncSeq after both batches");
     }
 
@@ -439,8 +442,7 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         postedIds.Distinct().Should().HaveCount(total,
             "501 satır → sayfa1=500 + sayfa2=1; eski imleçte 501. satır kayboluyordu");
 
-        var settings = fx.Store.Load();
-        settings.LastCustomerProjectionSyncSeq.Should().Be(total,
+        fx.CursorSeq().Should().Be(total,
             "imleç son satırın SyncSeq'ine oturmalı — bir sonraki tur oradan devam eder");
     }
 
@@ -487,7 +489,7 @@ public sealed class WpfCustomerProjectionSyncServiceTests
         var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
 
         result.Should().Be(1, "tam tarama eski imlecin altındaki kayıp satırı kurtarmalı");
-        fx.Store.Load().LastCustomerProjectionSyncSeq.Should().Be(1L,
+        fx.CursorSeq().Should().Be(1L,
             "tarama sonrası imleç gerçek son satırın SyncSeq'ine oturur");
     }
 
@@ -520,6 +522,99 @@ public sealed class WpfCustomerProjectionSyncServiceTests
 
         result.Should().Be(0, "imleç satırın üzerinde — altı yeniden taranmaz");
         syncPosts.Should().Be(0);
-        fx.Store.Load().LastCustomerProjectionSyncSeq.Should().Be(500L);
+        fx.CursorSeq().Should().Be(500L,
+            "settings'ten tohumlanan imleç DB satırında yaşamaya devam eder");
+        fx.Store.Load().LastCustomerProjectionSyncSeq.Should().Be(0L,
+            "tohumlanan eski alan temizlenmeli");
+    }
+
+    // ─── R6-04: imleç ↔ veri nesli bağı ──────────────────────────────────────
+
+    /// <summary>
+    /// R6-04'ün asıl senaryosu (denetim deneyi: watermark 21, verideki en
+    /// büyük SyncSeq 2 → sonsuza dek 0 satır). Eski yedek geri yüklendiğinde
+    /// veritabanı ESKİ imleci, settings.json ise YENİ dünyanın değerini taşır.
+    /// DB satırı varken settings'in ne dediği yok sayılmalı — imleç veriyle
+    /// birlikte geri yüklenen değerdir, sync kaldığı yerden devam eder.
+    /// </summary>
+    [Fact]
+    public async Task SyncOnce_geri_yukleme_sonrasi_db_imleci_kazanir_settings_yok_sayilir()
+    {
+        var postedIds = new List<string>();
+        var fx = Build(req =>
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (path == "/api/v1/me/licenses")
+                return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/wpf-customers/sync"))
+            {
+                var body = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+                var doc  = JsonDocument.Parse(body);
+                postedIds.AddRange(doc.RootElement.GetProperty("customers")
+                    .EnumerateArray()
+                    .Select(e => e.GetProperty("id").GetString()!));
+                return FakeHttpMessageHandler.Json(200, SyncRespJson(synced: postedIds.Count));
+            }
+            return FakeHttpMessageHandler.Empty(404);
+        });
+        using var _d = fx.Db;
+
+        // Geri yüklenen veritabanı: 3 müşteri (SyncSeq 1..3) + kendi imleci (2).
+        fx.Customers.Insert(MakeCustomer(100L));
+        fx.Customers.Insert(MakeCustomer(200L));
+        fx.Customers.Insert(MakeCustomer(300L));
+        fx.Cursors.Upsert("customer-projection-out", TestLicenseKey, seq: 2L);
+
+        // Yeni dünyanın settings dosyası: bayat-ileri watermark (eski davranışta
+        // bu değer kazanır ve sync sonsuza dek 0 satır gönderirdi).
+        var settings = fx.Store.Load();
+        settings.LastCustomerProjectionSyncSeq = 999L;
+        fx.Store.Save(settings);
+
+        var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
+
+        result.Should().Be(1, "DB imleci 2 → yalnız SyncSeq 3'teki satır gider; " +
+            "settings'teki 999 kazansaydı hiçbir şey gitmezdi (denetim deneyi)");
+        postedIds.Should().HaveCount(1);
+        fx.CursorSeq().Should().Be(3L);
+    }
+
+    /// <summary>R6-04 hedef ekseni: lisans değişince imleç yeni lisans için
+    /// sıfırdan başlar (ilk gönderim atlanamaz), eski lisansın imleci yerinde
+    /// kalır (geri dönüşte kaldığı yerden devam).</summary>
+    [Fact]
+    public async Task SyncOnce_lisans_degisince_imlec_yeni_lisans_icin_sifirdan_baslar()
+    {
+        const string otherKey = "WPF-CUST-OTHER-KEY";
+        var otherId = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
+        var syncedCount = 0;
+        var fx = Build(req =>
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (path == "/api/v1/me/licenses")
+                return FakeHttpMessageHandler.Json(200,
+                    $"[{{\"id\":\"{TestLicenseId}\",\"licenseKey\":\"{TestLicenseKey}\"}}," +
+                    $"{{\"id\":\"{otherId}\",\"licenseKey\":\"{otherKey}\"}}]");
+            if (path.Contains("/wpf-customers/sync"))
+            {
+                Interlocked.Increment(ref syncedCount);
+                return FakeHttpMessageHandler.Json(200, SyncRespJson(synced: 2));
+            }
+            return FakeHttpMessageHandler.Empty(404);
+        });
+        using var _d = fx.Db;
+
+        fx.Customers.Insert(MakeCustomer(100L));
+        fx.Customers.Insert(MakeCustomer(200L));
+        // Eski lisansın imleci her şeyin ötesinde — eski davranışta bu imleç
+        // yeni lisansa da uygulanır ve B'nin ilk gönderimi tamamen atlanırdı.
+        fx.Cursors.Upsert("customer-projection-out", TestLicenseKey, seq: 999L);
+
+        fx.License.CurrentLicenseKey = otherKey;
+        var result = await fx.Svc.SyncOnceAsync(CancellationToken.None);
+
+        result.Should().Be(2, "yeni lisans kendi imleciyle (0) tam tarama yapmalı");
+        fx.CursorSeq(otherKey).Should().Be(2L);
+        fx.CursorSeq(TestLicenseKey).Should().Be(999L, "eski lisansın imleci bozulmamalı");
     }
 }

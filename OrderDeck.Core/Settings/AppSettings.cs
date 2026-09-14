@@ -124,40 +124,34 @@ public sealed class AppSettings
     /// kez çalışır (LastSeenAt/DisplayName'e dokunmadan sadece boş FullName'i yazar).</summary>
     public bool FullNameBackfillDone { get; set; } = false;
 
-    /// <summary>Faz 0c-2 (2026-05-21): yerel Customer kayıtlarının LicenseServer
-    /// <c>WpfCustomerProjection</c>'ına delta sync imleci. 0 = hiç senkronlanmadı.
-    /// Her başarılı partiden sonra ilerler; hatada ilerlemez, böylece sonraki tik
-    /// aynı yerden yeniden dener.
+    /// <summary><b>Kullanımdan kalktı (R6-04, göç 038)</b> — projeksiyon push
+    /// imleci artık veriyle aynı SQLite dosyasındaki <c>SyncCursor</c>
+    /// tablosunda yaşıyor ("customer-projection-out", lisans anahtarına bağlı).
+    /// Bu alan yalnız <b>bir kez okunuyor</b>: DB satırı yoksa tohum olur,
+    /// ardından buradaki değer 0'lanır. Silme — sahadaki kurulumlar ilk
+    /// tohumlamayı henüz yapmadı.
     ///
-    /// <para>N03-g (2026-09-12 denetimi): değer artık zaman değil, <c>Customer.SyncSeq</c>
-    /// — göç 036'daki tetikleyicilerin yazdığı tablo geneli kesin artan sayaç.
-    /// Önceki iki alan (<c>LastCustomerProjectionSyncAt</c> + <c>...SyncId</c>)
-    /// iş zamanını imleç olarak kullanıyordu; imleç GENEL, artış SATIRA ÖZEL
-    /// olduğu için ileri zamanlı tek satır başka satırların güncellemelerini
-    /// kalıcı olarak imlecin altında bırakabiliyordu. Alanlar silindi: yeni imleç
-    /// 0'dan başlar ve her şey bir kez yeniden taranır — geçmişte kaybedilmiş
-    /// satırlar ancak böyle kurtulur, sunucu upsert'i idempotent ve
-    /// <c>PurgedAt</c> kapılı olduğu için güvenli (silinmiş kişisel veri geri
-    /// gelmez). Ters yön etkilenmiyor: bu imleç yalnız istemci→sunucu push'u
-    /// sürer.</para></summary>
+    /// <para>N03-g tarihi: değer zaman değil, <c>Customer.SyncSeq</c> (göç
+    /// 036'nın tablo geneli kesin artan sayacı). 0'dan tam tarama güvenli:
+    /// sunucu upsert idempotent ve <c>PurgedAt</c> kapılı.</para></summary>
     public long LastCustomerProjectionSyncSeq { get; set; }
 
-    /// <summary><b>Kullanımdan kalktı</b> — yerine
-    /// <see cref="LastShopperIngestUpdatedAt"/> + <see cref="LastShopperIngestId"/>.
-    /// Saniyeye yuvarlanmış olduğu için imleç, aynı saniyeyi paylaşan satırların
-    /// ortasında sayfa dolduğunda başladığı yere dönüyor ve hiç ilerlemiyordu.
-    /// Alan yalnız <b>bir kez okunuyor</b>: yeni imleç boşsa ondan tohumlanıyor.
-    /// Silinseydi imleç sıfırlanır, sunucudaki bütün projeksiyonlar yeniden
-    /// çekilir ve yayıncının yerelde <i>sildiği</i> müşteriler geri gelirdi.</summary>
+    /// <summary><b>Kullanımdan kalktı</b> — iki kez halef aldı: önce
+    /// <see cref="LastShopperIngestUpdatedAt"/> + <see cref="LastShopperIngestId"/>
+    /// (saniye yuvarlaması sayfa sınırında imleci başa döndürüyordu), sonra
+    /// R6-04 ile <c>SyncCursor</c> tablosu. Yalnız tohumlama zincirinin son
+    /// halkası olarak bir kez okunur, sonra 0'lanır.</summary>
     public long LastShopperIngestAt { get; set; }
 
-    /// <summary>Shopper kayıt ingest imleci — sayfanın son satırının tam
-    /// hassasiyetli <c>UpdatedAt</c>'i. Null = hiç çekilmedi (bkz.
-    /// <see cref="LastShopperIngestAt"/> tohumlaması).</summary>
+    /// <summary><b>Kullanımdan kalktı (R6-04, göç 038)</b> — ingest imleci artık
+    /// <c>SyncCursor</c> tablosunda ("shopper-ingest-in", lisans anahtarına
+    /// bağlı): imleç, temizlediği/eklediği Customer satırlarıyla aynı dosyada
+    /// yaşamalı ki geri yükleme tombstone'un üstünden atlamış bir imleç
+    /// bırakamasın. Bu alan yalnız tohum olarak bir kez okunur, sonra null'lanır.</summary>
     public DateTimeOffset? LastShopperIngestUpdatedAt { get; set; }
 
-    /// <summary>Bkz. <see cref="LastPaymentReverseSyncId"/> — ingest imlecinin
-    /// eşitlik bozucusu.</summary>
+    /// <summary>Bkz. <see cref="LastShopperIngestUpdatedAt"/> — aynı eski imlecin
+    /// eşitlik bozucusu; onunla birlikte tohumlanıp null'lanır.</summary>
     public Guid? LastShopperIngestId { get; set; }
 
     /// <summary>Dönem raporunun e-Fatura sayfası için sabitler + fatura no sayacı.</summary>
