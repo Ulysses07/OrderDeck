@@ -173,6 +173,34 @@ public class LicensesWpfCatalogPullControllerTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>
+    /// Varyant JSON'unda ölü kod alanları (variantCode/axis1Code/axis2Code)
+    /// bulunmamalı. Kavram sunucudan 920c40c ile silindi; alanlar bir süre
+    /// "geçici uyum kalkanı" olarak telde taşındı. Sürüm arkeolojisi
+    /// (2026-09-14) kalkanın hiçbir saha sürümünü korumadığını gösterdi —
+    /// alanları okuyan replika şeması (SQLite 025) yalnız 027 ile birlikte,
+    /// ilk kez v0.8.0'da çıktı ve o sürümün DTO'sunda alanlar zaten yoktu.
+    /// Geri gelirlerse bu test kırılır ve bu hikâyeyi anlatır.
+    /// </summary>
+    [Fact]
+    public async Task Variant_json_does_not_carry_removed_code_fields()
+    {
+        var (client, licenseId) = await SeedAsync(1);
+
+        var rows = await client.GetFromJsonAsync<List<JsonElement>>(
+            $"/api/v1/licenses/{licenseId}/catalog/products");
+
+        var variant = rows![0].GetProperty("variants")[0];
+        variant.TryGetProperty("variantCode", out _).Should().BeFalse(
+            "uyum kalkanı kaldırıldı — ölü alan tele geri dönmemeli");
+        variant.TryGetProperty("axis1Code", out _).Should().BeFalse();
+        variant.TryGetProperty("axis2Code", out _).Should().BeFalse();
+        // Gerçekten taşınan alanlar yerli yerinde kalmalı:
+        variant.TryGetProperty("axis1Value", out _).Should().BeTrue();
+        variant.TryGetProperty("barcode", out _).Should().BeTrue();
+        variant.TryGetProperty("isActive", out _).Should().BeTrue();
+    }
+
+    /// <summary>
     /// Varyant sırası tel sözleşmesinin parçası: WPF geleni yeniden sıralamıyor,
     /// dizi indeksini SortOrder olarak yazıyor. Bu yüzden sıra veritabanının
     /// collation'ına bağlı olamaz — normalize değer üstünde ORDINAL olmalı.

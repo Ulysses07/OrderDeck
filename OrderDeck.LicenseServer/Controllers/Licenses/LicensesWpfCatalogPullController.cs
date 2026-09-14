@@ -37,11 +37,18 @@ public sealed class LicensesWpfCatalogPullController : ControllerBase
         _log = log;
     }
 
+    // VariantCode/Axis1Code/Axis2Code alanları burada YOKTUR ve geri gelmemeli.
+    // Kavram sunucudan 920c40c ile silindi; bir süre "geçici uyum kalkanı"
+    // olarak telde taşındılar. Sürüm arkeolojisi (2026-09-14) kalkanın hiçbir
+    // saha sürümünü korumadığını gösterdi: bu alanları okuyan replika şeması
+    // (SQLite göç 025, VariantCode NOT NULL) yalnız 026/027 ile birlikte,
+    // ilk kez v0.8.0'da sahaya çıktı — o sürümün DTO'sunda alanlar zaten yok.
+    // v0.7.1 ve öncesinde katalog senkronu hiç yoktu, bu uç hiç çağrılmıyordu.
     public sealed record CatalogVariantDto(
         Guid Id,
-        string? Axis1Value, string? Axis1Code,
-        string? Axis2Value, string? Axis2Code,
-        string VariantCode, string? Barcode,
+        string? Axis1Value,
+        string? Axis2Value,
+        string? Barcode,
         bool IsActive);
 
     /// <summary>
@@ -147,26 +154,12 @@ public sealed class LicensesWpfCatalogPullController : ControllerBase
                 p.Photos.OrderBy(x => x.SortOrder)
                         .Select(x => x.ObjectKey).FirstOrDefault(),
                 null,  // CoverPhotoUrl — ikinci aşamada, materyalizasyondan sonra imzalanarak doldurulur.
-                // GEÇİCİ UYUM KALKANI — plan 2/3'te kaldırılacak.
-                //
-                // Sunucudaki VariantCode/Axis*Code kolonları kalktı ama WPF
-                // replikasında VariantCode hâlâ NOT NULL ve tel modelinde
-                // nullable değil. Alanı ürünün stok koduyla dolduruyoruz:
-                // WPF bu değeri YALNIZ iki eksen değeri de boşken gösteriyor
-                // (CatalogVariantViewModel: Display = label ?? VariantCode) ve
-                // o satırlar zaten BuildAutoVariant ile product.Code taşıyordu
-                // — davranış birebir aynı.
-                //
-                // Axis1Code/Axis2Code artık gönderilmiyor; iki tarafta da
-                // nullable olduğu için JSON'da yoklukları sorunsuz.
                 // Sıralama BİLEREK burada yok — SQL'e çevrilirdi ve sırayı
                 // veritabanının collation'ına bağlardı. Materyalizasyondan
                 // sonra, aşağıdaki döngüde bellekte ordinal sıralanıyor.
                 p.Variants
                     .Select(v => new CatalogVariantDto(
-                        v.Id, v.Axis1Value, null,
-                        v.Axis2Value, null,
-                        p.Code, v.Barcode, v.IsActive))
+                        v.Id, v.Axis1Value, v.Axis2Value, v.Barcode, v.IsActive))
                     .ToList(),
                 // Varyantların aksine bu sıralama SQL'de kalabiliyor: CreatedAt
                 // bir tarih, sırası collation'dan bağımsız. Sıra yine de tel
