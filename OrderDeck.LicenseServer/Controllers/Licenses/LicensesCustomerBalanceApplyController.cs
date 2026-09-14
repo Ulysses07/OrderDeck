@@ -172,7 +172,15 @@ public sealed class LicensesCustomerBalanceApplyController : ControllerBase
             .FirstOrDefaultAsync(t => t.Id == transactionId
                 && t.LicenseId == licenseId
                 && t.Kind == KindPurchaseDeduction, ct);
-        if (tx is null) return NotFound();
+        // R9-F03: başlıklı 404 — istemci "işlem gerçekten yok"u yalnız bu
+        // başlıkla kabul eder. Gövdesiz 404 (eski sunucu, rota yok) anahtar
+        // silmeye yol açmamalı: istemci onu uç-hatası sayar ve diskteki
+        // sonuçla devam eder. Başlığı değiştirme — istemci sözleşmesi.
+        if (tx is null)
+            return Problem(
+                title: "transaction-not-found",
+                detail: "Bu kimlikle kayıtlı bir düşüm işlemi yok.",
+                statusCode: 404);
 
         var reversed = await _db.CustomerBalanceTransactions
             .AnyAsync(t => t.ReversesTransactionId == transactionId, ct);
