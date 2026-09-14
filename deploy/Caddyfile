@@ -69,6 +69,10 @@ license.orderdeckapp.com {
     # ölçülebilir; ayrıca gizlilik politikası §4'ün "sunucu erişim log'ları
     # 30 gün içinde silinir" beyanının dayanağı. `roll_keep_for 720h` = 30 gün;
     # bu süreyi UZATMADAN önce politika metnini güncelle.
+    # DİKKAT (R9-OPS02): roll_keep_for AKTİF dosyayı kapsamaz — az trafikte
+    # satırlar 30 günü aşabilirdi. Satır yaşını asıl sınırlayan, VPS root
+    # cron'undaki `scripts/caddy-log-retention.sh` (günlük; 27 günde döndürür,
+    # 30 günde siler). Bu log bloğunu taşırsan script'teki yolları da güncelle.
     # Host tarafı: docker-compose.yml'deki ./caddy-logs bind mount'u.
     log {
         output file /var/log/caddy/license-access.log {
@@ -76,8 +80,35 @@ license.orderdeckapp.com {
             roll_keep 10
             roll_keep_for 720h
         }
-        format json
+        # Referer silinir (R9-OPS01): /password-reset sayfasından yüklenen
+        # varlıkların isteği, token'lı URL'yi Referer'da taşır — path/query
+        # atlansa da başlıktan sızardı.
+        format filter {
+            wrap json
+            fields {
+                request>headers>Referer delete
+            }
+        }
     }
+
+    # ─── URL'sinde sır taşıyan yollar log DIŞI (R9-OPS01) ──────────────────
+    # /password-reset?token=…       → GET token'ı TÜKETMEZ (tüketim POST'ta);
+    #                                 log'daki kopya canlı bir sırdır. En kritik yol.
+    # /api/v1/auth/confirm-email/…  → token path içinde; query filtresi çözmez.
+    # /musteri-kayit/baglanti-donusu → OAuth code+state query'de. Bu host'a
+    #                                 doğrudan da erişilebilir (ana domain
+    #                                 proxy'sinin aynası aşağıda ayrıca atlanır).
+    # Webhook GET'leri              → hub.verify_token query'de; POST teslimatları
+    #                                 URL'de sır taşımaz ve kanıt değeri var,
+    #                                 o yüzden yalnız GET atlanır.
+    # Bu satırları log'u yeniden düzenlerken SİLME.
+    @secret_urls path /password-reset* /api/v1/auth/confirm-email/* /musteri-kayit/baglanti-donusu*
+    log_skip @secret_urls
+    @webhook_verify {
+        path /api/v1/whatsapp/webhook* /api/v1/instagram/webhook*
+        method GET
+    }
+    log_skip @webhook_verify
 
     # Razor yüzeyi. jsdelivr = Bootstrap 5.3.3 (CSS her sayfada, JS bundle'ı
     # yalnız _AdminLayout'ta). yt3.* = YouTube kanal avatarı; IntakeForm
@@ -161,8 +192,20 @@ orderdeckapp.com {
             roll_keep 10
             roll_keep_for 720h
         }
-        format json
+        # Referer silme gerekçesi license.* bloğundaki notta (R9-OPS01).
+        format filter {
+            wrap json
+            fields {
+                request>headers>Referer delete
+            }
+        }
     }
+
+    # OAuth dönüşünün ana domain'deki aynası da log dışı (R9-OPS01):
+    # /musteri-kayit/* proxy'si baglanti-donusu'nu code+state query'siyle
+    # buradan geçiriyor. log_skip'i SİLME.
+    @intake_oauth_return path /musteri-kayit/baglanti-donusu*
+    log_skip @intake_oauth_return
 
     # Politika site geneli: statik Next çıktısı ile aşağıda proxy'lenen Razor
     # IntakeForm'un BİRLEŞİMİ. Ayrı `handle` blokları içine ayrı `header`
