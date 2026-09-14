@@ -75,12 +75,19 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
     private bool Bayat(PaymentJob j, Guid? expectedKey, int expectedRevision)
         => j.Revision != expectedRevision || j.ApplyKey != expectedKey;
 
+    /// <summary>R8-D01: gerçek deponun ResultGuard'ındaki
+    /// <c>State&lt;&gt;reverse_pending</c> koşulu. Geri alma niyeti üç sonuç
+    /// yazıcısı tarafından ezilemez (R6-03) — sözleşme paritesi
+    /// <see cref="Storage.PaymentJobStoreContractTests"/> ile doğrulanır.</summary>
+    private static bool GeriAlmaBekliyor(PaymentJob j)
+        => j.State == PaymentJobState.ReversePending;
+
     public bool MarkApplied(string id, Guid expectedKey, int expectedRevision, decimal appliedAmount)
     {
         lock (_gate)
         {
             var j = _jobs[id];
-            if (Bayat(j, expectedKey, expectedRevision)) return false;
+            if (Bayat(j, expectedKey, expectedRevision) || GeriAlmaBekliyor(j)) return false;
             _jobs[id] = j with
             {
                 State = PaymentJobState.Applied,
@@ -96,7 +103,7 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
         lock (_gate)
         {
             var j = _jobs[id];
-            if (Bayat(j, expectedKey, expectedRevision)) return false;
+            if (Bayat(j, expectedKey, expectedRevision) || GeriAlmaBekliyor(j)) return false;
             _jobs[id] = j with
             {
                 State = PaymentJobState.NoBalance,
@@ -112,7 +119,7 @@ public sealed class InMemoryPaymentJobStore : IPaymentJobStore
         lock (_gate)
         {
             var j = _jobs[id];
-            if (Bayat(j, expectedKey, expectedRevision)) return false;
+            if (Bayat(j, expectedKey, expectedRevision) || GeriAlmaBekliyor(j)) return false;
             _jobs[id] = j with
             {
                 State = PaymentJobState.ApplyUncertain,
