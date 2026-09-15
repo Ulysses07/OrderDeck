@@ -13,6 +13,28 @@ using OrderDeck.Core.Chat;
 namespace OrderDeck.Chat.Ingestors.Facebook;
 
 /// <summary>
+/// R10-CHAT01: poller'ın NEDEN bittiği. Eskiden her çıkış aynı görünüyordu
+/// ve hosted service "kendi kendine bitti = yayın bitti" sayıp video id'yi
+/// 2 dakika karalisteye alıyordu — 5 ardışık GEÇİCİ ağ hatasıyla çıkışta
+/// bile. Yayın hâlâ canlıyken toparlanan ağ, karaliste yüzünden aynı
+/// yayına geri bağlanamıyordu.
+/// </summary>
+public enum FacebookStreamEndReason
+{
+    /// <summary>Operatör durdurdu / oturum bitti / bekçi kesti.</summary>
+    Cancelled,
+
+    /// <summary>Graph <c>code:100</c> döndü — yayın gerçekten kapandı.
+    /// Yalnız bu durumda id karalisteye alınabilir.</summary>
+    BroadcastEnded,
+
+    /// <summary>Ardışık geçici hata limiti ya da beklenmedik istisna.
+    /// Yayının bittiğine dair KANIT YOK — aynı videoya yeniden
+    /// bağlanmak serbest kalmalı.</summary>
+    TransientFailure,
+}
+
+/// <summary>
 /// Ingests a Page's live-broadcast comments by polling the Graph API
 /// comments edge (<c>graph.facebook.com/{video-id}/comments</c>) and
 /// publishing each new comment to the shared <see cref="IChatBus"/>.
@@ -82,6 +104,11 @@ public sealed class FacebookLiveCommentsStream : IChatIngestor, IDisposable
     /// of pinning <c>Task.Delay(InfiniteTimeSpan)</c>.</summary>
     public Task Completion => _completionTcs.Task;
 
+    /// <summary>Çıkış sebebi (R10-CHAT01). <see cref="Completion"/>
+    /// çözülmeden ÖNCE yazılır; Completion'ı bekleyen okur için günceldir.</summary>
+    public FacebookStreamEndReason EndReason { get; private set; } =
+        FacebookStreamEndReason.Cancelled;
+
     public FacebookLiveCommentsStream(
         string liveVideoId,
         string pageAccessToken,
@@ -132,12 +159,19 @@ public sealed class FacebookLiveCommentsStream : IChatIngestor, IDisposable
             "[FacebookLiveCommentsStream] polling comments for video {VideoId}", _liveVideoId);
 
         int consecutiveErrors = 0;
+        // R10-CHAT01: varsayılan Cancelled — döngüden ct ile çıkılırsa doğru.
+        var reason = FacebookStreamEndReason.Cancelled;
         try
         {
             while (!ct.IsCancellationRequested)
             {
                 var (batch, ended) = await PollOnceAsync(url, ct).ConfigureAwait(false);
-                if (ended) break; // broadcast ended → hosted service re-resolves
+                if (ended)
+                {
+                    // code:100 = yayın GERÇEKTEN bitti; tek kanıtlı çıkış bu.
+                    reason = FacebookStreamEndReason.BroadcastEnded;
+                    break;
+                }
 
                 if (batch is not null)
                 {
@@ -152,6 +186,10 @@ public sealed class FacebookLiveCommentsStream : IChatIngestor, IDisposable
                 }
                 else if (++consecutiveErrors >= MaxConsecutiveErrors)
                 {
+                    // Hata limiti "yayın bitti" DEĞİL — sadece "ben pes
+                    // ettim". Hosted service backoff'la AYNI videoya
+                    // yeniden bağlanmayı dener.
+                    reason = FacebookStreamEndReason.TransientFailure;
                     _log.LogWarning(
                         "[FacebookLiveCommentsStream] giving up video {VideoId} after {Count} errors",
                         _liveVideoId, consecutiveErrors);
@@ -164,11 +202,13 @@ public sealed class FacebookLiveCommentsStream : IChatIngestor, IDisposable
         catch (OperationCanceledException) { /* expected on stop / app shutdown */ }
         catch (Exception ex)
         {
+            reason = FacebookStreamEndReason.TransientFailure;
             _log.LogWarning(ex,
                 "[FacebookLiveCommentsStream] poll loop failed for video {VideoId}", _liveVideoId);
         }
         finally
         {
+            EndReason = reason;
             _completionTcs.TrySetResult();
         }
     }
