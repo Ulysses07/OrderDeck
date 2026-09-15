@@ -93,4 +93,52 @@ public class FacebookChatHostedServiceTests
         FacebookChatHostedService.WatchdogShouldFire("", "video-A", ref streak).Should().BeFalse();
         FacebookChatHostedService.WatchdogShouldFire("", "video-A", ref streak).Should().BeTrue();
     }
+
+    // ---- ClassifyStreamExit: R10-CHAT01 çıkış sınıflandırması ----
+    //
+    // Bağlam: eski kod "kendi kendine çıktı = yayın bitti" sayıyordu ve
+    // 5 ardışık GEÇİCİ ağ hatasında da video id'yi 2 dk karalisteye
+    // alıyordu — ağ toparlanınca hâlâ canlı olan yayına geri bağlanılamıyordu.
+
+    [Fact]
+    public void Gecici_hata_cikisi_karaliste_DEGIL_backoff()
+    {
+        FacebookChatHostedService.ClassifyStreamExit(
+                crashed: false, cancelled: false,
+                FacebookStreamEndReason.TransientFailure)
+            .Should().Be(FacebookChatHostedService.StreamExitAction.Backoff,
+                "geçici hata 'yayın bitti' kanıtı değil — id karalistelenmemeli, " +
+                "aynı canlı videoya backoff sonrası yeniden bağlanılabilmeli");
+    }
+
+    [Fact]
+    public void Kanitli_bitis_karalisteye_alinir()
+    {
+        FacebookChatHostedService.ClassifyStreamExit(
+                crashed: false, cancelled: false,
+                FacebookStreamEndReason.BroadcastEnded)
+            .Should().Be(FacebookChatHostedService.StreamExitAction.StaleThenFastRebind,
+                "code:100 tek kanıtlı bitiş — Meta listede LIVE göstermeye devam " +
+                "edebileceği için id bir süre karalistede kalmalı");
+    }
+
+    [Fact]
+    public void Iptal_hizli_yeniden_baglanma()
+    {
+        FacebookChatHostedService.ClassifyStreamExit(
+                crashed: false, cancelled: true,
+                FacebookStreamEndReason.Cancelled)
+            .Should().Be(FacebookChatHostedService.StreamExitAction.FastRebind);
+    }
+
+    [Fact]
+    public void Cokme_backoff()
+    {
+        // crashed=true her sebebi ezer — Completion normalde fault olmaz ama
+        // olursa karaliste yine yanlış olurdu.
+        FacebookChatHostedService.ClassifyStreamExit(
+                crashed: true, cancelled: false,
+                FacebookStreamEndReason.BroadcastEnded)
+            .Should().Be(FacebookChatHostedService.StreamExitAction.Backoff);
+    }
 }
