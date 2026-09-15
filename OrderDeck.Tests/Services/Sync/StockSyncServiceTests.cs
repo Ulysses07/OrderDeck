@@ -209,6 +209,91 @@ public class StockSyncServiceTests
         repo.GetCursor().Id.Should().Be(Guid.Parse("33333333-3333-3333-3333-333333333333"));
     }
 
+    /// <summary>
+    /// R10-D03: imleç ve replika hedef lisansa bağlı olmalı. Eskiden
+    /// CatalogStockCursor tek global satırdı; A lisansıyla ilerleyen imleç,
+    /// B'ye geçince B'nin daha ESKİ stok geçmişini sunucu filtresinin altında
+    /// bırakıyordu (denetim deneyi: B'nin 7'lik ürünü iki normal turda da
+    /// gelmedi, A'nın bayat bakiyesi yerelde kaldı). Sunucu tarafı kusursuz —
+    /// yanlış imleç meşru olarak gönderiliyordu. Sözleşme: hedef değişince
+    /// kontrollü tam yeniden kurulum (replika sıfırla + imleç başa).
+    /// </summary>
+    [Fact]
+    public async Task Lisans_degisince_replika_yeniden_kurulur_ve_yeni_hedefin_eski_gecmisi_cekilir()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new StockBalanceRepository(db);
+        var provider = new StockBalanceProvider(repo, new LabelRepository(db));
+
+        const string idA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        const string idB = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        const string productA = "11111111111111111111111111111111";
+        const string productB = "22222222222222222222222222222222";
+
+        HttpResponseMessage Respond(HttpRequestMessage req)
+        {
+            var path = req.RequestUri!.PathAndQuery;
+            if (path.Contains("/me/licenses"))
+                return FakeHttpMessageHandler.Json(200,
+                    $$"""
+                    [{"id":"{{idA}}","licenseKey":"LDK-A"},
+                     {"id":"{{idB}}","licenseKey":"LDK-B"}]
+                    """);
+
+            if (path.Contains(idA))
+                // A'nın hareketi "dün": imleci düne taşır.
+                return FakeHttpMessageHandler.Json(200, """
+                    {"balances":[{"productId":"11111111-1111-1111-1111-111111111111",
+                                  "productVariantId":null,"quantity":1}],
+                     "cursorCreatedAt":"2026-09-14T10:00:00+00:00",
+                     "cursorId":"33333333-3333-3333-3333-333333333333",
+                     "hasMore":false}
+                    """);
+
+            // B: sunucu davranışının aynısı — imleç epoch ise eski (2 gün
+            // önceki) hareket görünür, imleç ileride ise sayfa boş döner ve
+            // gelen imleç aynen iade edilir.
+            var query = System.Web.HttpUtility.ParseQueryString(req.RequestUri.Query);
+            var since = DateTimeOffset.Parse(query["since"]!,
+                System.Globalization.CultureInfo.InvariantCulture);
+            if (since == DateTimeOffset.MinValue)
+                return FakeHttpMessageHandler.Json(200, """
+                    {"balances":[{"productId":"22222222-2222-2222-2222-222222222222",
+                                  "productVariantId":null,"quantity":7}],
+                     "cursorCreatedAt":"2026-09-13T10:00:00+00:00",
+                     "cursorId":"66666666-6666-6666-6666-666666666666",
+                     "hasMore":false}
+                    """);
+            return FakeHttpMessageHandler.Json(200,
+                $$"""
+                {"balances":[],
+                 "cursorCreatedAt":"{{query["since"]}}",
+                 "cursorId":"{{query["sinceId"]}}",
+                 "hasMore":false}
+                """);
+        }
+
+        var http = new HttpClient(new FakeHttpMessageHandler(Respond))
+        { BaseAddress = new Uri("https://test.local") };
+        var api = new LicenseApiClient(http, new LicenseTokenStore());
+        var license = new FakeLicenseProvider("LDK-A");
+        var svc = new StockSyncService(api, repo, provider, license,
+            new RecordingLogger<StockSyncService>());
+
+        (await svc.SyncOnceAsync(CancellationToken.None)).Should().Be(1);
+        repo.GetForProduct(productA).Should().ContainSingle();
+
+        license.CurrentLicenseKey = "LDK-B";
+        var writtenForB = await svc.SyncOnceAsync(CancellationToken.None);
+
+        writtenForB.Should().Be(1, "B'nin eski geçmişi A imlecinin altında kalmamalı");
+        repo.GetForProduct(productB)
+            .Should().ContainSingle().Which.Quantity.Should().Be(7);
+        repo.GetForProduct(productA)
+            .Should().BeEmpty("eski hedefin replika satırları yeni hedefe taşınmamalı");
+    }
+
     [Fact]
     public async Task Does_nothing_without_a_license_key()
     {

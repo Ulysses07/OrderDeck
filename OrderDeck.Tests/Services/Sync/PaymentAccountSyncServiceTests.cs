@@ -8,6 +8,8 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.App.Services.Sync;
 using OrderDeck.Core.Settings;
+using OrderDeck.Core.Storage;
+using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Licensing.Api;
 using OrderDeck.Tests.TestHelpers;
 using Xunit;
@@ -32,6 +34,7 @@ public sealed class PaymentAccountSyncServiceTests
         SettingsStore Store,
         AppSettings Settings,
         FakeLicenseProvider License,
+        InMemorySqlite Db,
         List<(HttpMethod Method, string Path, string? Body)> Requests);
 
     private static Fixture Build(
@@ -42,6 +45,36 @@ public sealed class PaymentAccountSyncServiceTests
         var store = new SettingsStore(settingsPath);
         var settings = store.Load();
 
+        var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+
+        var licenseProvider = new FakeLicenseProvider();
+        if (seedLicense) licenseProvider.CurrentLicenseKey = TestLicenseKey;
+
+        var (svc, requests) = NewInstance(responder, store, licenseProvider, db);
+        return new Fixture(svc, store, settings, licenseProvider, db, requests);
+    }
+
+    /// <summary>
+    /// "Uygulama yeniden başladı" simülasyonu: aynı ayar dosyası ve aynı
+    /// kalıcı depo üzerinde, süreç belleği sıfırlanmış TAZE bir servis örneği.
+    /// </summary>
+    private static Fixture Restart(
+        Fixture previous, Func<HttpRequestMessage, HttpResponseMessage> responder)
+    {
+        var licenseProvider = new FakeLicenseProvider
+        {
+            CurrentLicenseKey = previous.License.CurrentLicenseKey
+        };
+        var (svc, requests) = NewInstance(responder, previous.Store, licenseProvider, previous.Db);
+        return previous with { Svc = svc, License = licenseProvider, Requests = requests };
+    }
+
+    private static (PaymentAccountSyncService Svc, List<(HttpMethod, string, string?)> Requests)
+        NewInstance(
+            Func<HttpRequestMessage, HttpResponseMessage> responder,
+            SettingsStore store, FakeLicenseProvider licenseProvider, InMemorySqlite db)
+    {
         var requests = new List<(HttpMethod, string, string?)>();
         var handler = new FakeHttpMessageHandler(req =>
         {
@@ -52,13 +85,10 @@ public sealed class PaymentAccountSyncServiceTests
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://test.local") };
         var api  = new LicenseApiClient(http, new LicenseTokenStore());
 
-        var licenseProvider = new FakeLicenseProvider();
-        if (seedLicense) licenseProvider.CurrentLicenseKey = TestLicenseKey;
-
         var svc = new PaymentAccountSyncService(
-            api, store, licenseProvider, NullLogger<PaymentAccountSyncService>.Instance);
-
-        return new Fixture(svc, store, settings, licenseProvider, requests);
+            api, store, licenseProvider, new PaymentAccountSyncStateRepository(db),
+            NullLogger<PaymentAccountSyncService>.Instance);
+        return (svc, requests);
     }
 
     // Helper: wire responder that serves /me/licenses then 204 for payment-account
@@ -203,6 +233,111 @@ public sealed class PaymentAccountSyncServiceTests
         capturedBody.Should().NotBeNull();
         capturedBody!.Should().Contain("null",
             "whitespace IBAN should be serialised as null in the request body");
+    }
+
+    [Fact]
+    public async Task Lisans_degisince_ayni_degerler_yeni_hedefe_de_gonderilir()
+    {
+        // R10-D03: "değişti mi?" önbelleği yalnız değerlerden oluşuyordu
+        // (_lastSyncedIban/_lastSyncedAccountHolder) — hedef lisans kimliği
+        // içinde yoktu. A lisansına gönderilmiş IBAN, hedef B'ye geçince de
+        // "değişmedi" sayılıyor ve B hiç POST almıyordu. Önbellek kimliği
+        // hedef lisansı da içermeli.
+        var licenseIdB = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        const string licenseKeyB = "PAY-ACCT-TEST-KEY-B";
+        var twoLicensesJson =
+            $"[{{\"id\":\"{TestLicenseId}\",\"licenseKey\":\"{TestLicenseKey}\"}}," +
+            $"{{\"id\":\"{licenseIdB}\",\"licenseKey\":\"{licenseKeyB}\"}}]";
+
+        var fx = Build(req =>
+        {
+            var path = req.RequestUri!.PathAndQuery;
+            if (path.StartsWith("/api/v1/me/licenses"))
+                return FakeHttpMessageHandler.Json(200, twoLicensesJson);
+            if (path.Contains("/payment-account"))
+                return FakeHttpMessageHandler.Empty(204);
+            return FakeHttpMessageHandler.Empty(404);
+        });
+
+        var settings = fx.Store.Load();
+        settings.Payment.Iban          = "TR330006100519786457841326";
+        settings.Payment.AccountHolder = "Ahmet Yıldız";
+        fx.Store.Save(settings);
+
+        // A hedefine ilk gönderim
+        await fx.Svc.SyncIfChangedAsync(CancellationToken.None);
+        fx.Requests.Should().Contain(r =>
+            r.Method == HttpMethod.Post && r.Path.Contains($"/{TestLicenseId}/payment-account"),
+            "ilk tur mevcut hedefe göndermeli");
+
+        // Hedef lisans değişti; değerler aynı
+        fx.License.CurrentLicenseKey = licenseKeyB;
+        await fx.Svc.SyncIfChangedAsync(CancellationToken.None);
+
+        fx.Requests.Should().Contain(r =>
+            r.Method == HttpMethod.Post && r.Path.Contains($"/{licenseIdB}/payment-account"),
+            "yeni hedef B, aynı değerlerle de olsa hesabı almalı — değer önbelleği hedefe bağlı olmalı");
+    }
+
+    [Fact]
+    public async Task Temizleme_niyeti_yeniden_baslatmayi_atlatir()
+    {
+        // R10-D04: operatör IBAN+hesap sahibini boşalttı, 5 dakikalık tur
+        // gelmeden uygulama yeniden başladı. Taze servis örneğinin önbelleği
+        // null/null; ayarlar da null/null → null==null → POST yok, uzaktaki
+        // hesap dolu kalıyordu. "Sunucuyla hiç karşılaştırılmadı" ile "boş
+        // değer başarıyla gönderildi" ayrımı süreç belleğinde yaşayamaz.
+        string? lastBody = null;
+        Func<HttpRequestMessage, HttpResponseMessage> responder = req =>
+        {
+            var path = req.RequestUri!.PathAndQuery;
+            if (path.StartsWith("/api/v1/me/licenses"))
+                return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/payment-account"))
+            {
+                lastBody = req.Content?.ReadAsStringAsync().GetAwaiter().GetResult();
+                return FakeHttpMessageHandler.Empty(204);
+            }
+            return FakeHttpMessageHandler.Empty(404);
+        };
+
+        var fx = Build(responder);
+        var s1 = fx.Store.Load();
+        s1.Payment.Iban          = "TR330006100519786457841326";
+        s1.Payment.AccountHolder = "Ahmet Yıldız";
+        fx.Store.Save(s1);
+        await fx.Svc.SyncIfChangedAsync(CancellationToken.None); // sunucu artık dolu
+
+        // Operatör hesabı boşaltır…
+        var s2 = fx.Store.Load();
+        s2.Payment.Iban          = "";
+        s2.Payment.AccountHolder = "";
+        fx.Store.Save(s2);
+        // …ve tur gelmeden uygulama yeniden başlar.
+        var restarted = Restart(fx, responder);
+
+        await restarted.Svc.SyncIfChangedAsync(CancellationToken.None);
+
+        restarted.Requests.Should().Contain(r =>
+            r.Method == HttpMethod.Post && r.Path.Contains("/payment-account"),
+            "temizleme niyeti kalıcı olmalı — restart onu unutturamaz");
+        lastBody.Should().NotBeNull();
+        lastBody!.Should().Contain("null", "boşaltma sunucuya null olarak gitmeli");
+    }
+
+    [Fact]
+    public async Task Taze_profil_dolu_uzak_hesabi_korlemesine_silmez()
+    {
+        // AC46 (zorunlu karşıt kontrol): hiç yapılandırılmamış taze kurulum —
+        // kalıcı durum kaydı YOK, ayarlar boş — meşru şekilde yapılandırılmış
+        // uzak hesabı null-POST'la silmemeli. "Kayıt yok" ≠ "boşaltıldı".
+        var fx = Build(DefaultResponder);
+
+        await fx.Svc.SyncIfChangedAsync(CancellationToken.None);
+        await fx.Svc.SyncIfChangedAsync(CancellationToken.None);
+
+        fx.Requests.Should().NotContain(r => r.Path.Contains("/payment-account"),
+            "bilinmeyen sunucu durumu + boş yerel değer → dokunma");
     }
 
     [Fact]
