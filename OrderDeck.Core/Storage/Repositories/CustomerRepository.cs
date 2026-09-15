@@ -243,16 +243,21 @@ public sealed class CustomerRepository
             else soloIds.Add(row.Id);
         }
 
+        // R10-D02: "FullName boş" filtresi temizlenmiş satırları da yakalıyordu
+        // (scrub FullName'i NULL'lar) — backfill KVKK silmesini geri dolduruyordu.
+        // Tombstone'lu satırlar bariyerle dışarıda.
         int updated = 0;
         if (groupIds.Count > 0)
             updated += conn.Execute(
                 @"UPDATE Customer SET FullName = @value
-                  WHERE GroupId IN @groups AND (FullName IS NULL OR TRIM(FullName) = '')",
+                  WHERE GroupId IN @groups AND (FullName IS NULL OR TRIM(FullName) = '')
+                    AND PurgedAt IS NULL",
                 new { value, groups = groupIds.ToList() });
         if (soloIds.Count > 0)
             updated += conn.Execute(
                 @"UPDATE Customer SET FullName = @value
-                  WHERE Id IN @ids AND (FullName IS NULL OR TRIM(FullName) = '')",
+                  WHERE Id IN @ids AND (FullName IS NULL OR TRIM(FullName) = '')
+                    AND PurgedAt IS NULL",
                 new { value, ids = soloIds.ToList() });
         return updated;
     }
@@ -552,14 +557,21 @@ public sealed class CustomerRepository
             // ARKASINDA bırakıyordu → telefon/adres sunucuya hiç senkronlanmazdı.
             // MAX(LastSeenAt+1, @nowUnix) satır başına kesin artan (bkz.
             // UpdatePhone'daki N03 düzeltmesi).
-            conn.Execute(@"
+            var affected = conn.Execute(@"
                 UPDATE Customer
                 SET DisplayName = @fullName,
                     Address = @address,
                     Phone = @phone,
                     LastSeenAt = MAX(LastSeenAt + 1, @nowUnix)
-                WHERE Id = @id",
+                WHERE Id = @id
+                  AND PurgedAt IS NULL -- R10-D02: KVKK tombstone'u geç gelen form cevabına yenilmez",
                 new { fullName, address, phone, nowUnix, id = existing.Id });
+
+            // R10-D02: satır tombstone'luysa yazı uygulanmadı — iyimser kopya
+            // dönmek diriltilmiş veriyi çağırana (UI/sync) sızdırırdı; gerçek
+            // (temizlenmiş) satırı olduğu gibi dön.
+            if (affected == 0) return Map(existing);
+
             var newSeen = Math.Max(existing.LastSeenAt + 1, nowUnix);
             var updated = Map(existing);
             return updated with { DisplayName = fullName, Address = address, Phone = phone, LastSeenAt = newSeen };
@@ -653,7 +665,8 @@ public sealed class CustomerRepository
 
                         DisplayName = COALESCE(NULLIF(DisplayName, ''), @displayForRow),
                         FullName = @fullName
-                      WHERE Id = @id",
+                      WHERE Id = @id
+                        AND PurgedAt IS NULL -- R10-D02: KVKK tombstone'u geç gelen form cevabına yenilmez",
                     new
                     {
                         groupId, address, city = cityValue, district = districtValue, phone, email, tckn,
@@ -791,6 +804,16 @@ public sealed class CustomerRepository
     /// <c>GetUpdatedSince</c>'e düşer ve bir sonraki push'ta sunucuya geri
     /// giderdi (orada <c>PurgedAt</c> kapısına takılıp yazılmazdı ama boşuna
     /// tur atardı).</para>
+    ///
+    /// <para><b>R10-D02 (2026-09-15):</b> boşaltma tek başına kalıcı bariyer
+    /// değildi — silmeden önce çekilmiş ama sonra uygulanan bir form cevabı
+    /// (<see cref="UpsertPersonFromIntake"/>) ya da
+    /// <see cref="BackfillFullNameForIdentities"/> alanları geri dolduruyordu
+    /// ve ingest imleci tombstone'un ötesinde olduğu için scrub bir daha
+    /// koşmuyordu. Artık karar <c>PurgedAt</c> damgasıyla satırda yaşar ve
+    /// intake/backfill yazıları <c>AND PurgedAt IS NULL</c> ile kapılıdır.
+    /// <c>COALESCE</c>: tekrarlanan scrub (ör. eski yedek geri yüklenip
+    /// tombstone yeniden okunduğunda) İLK silme tarihini korur.</para>
     /// </summary>
     /// <returns>Güncellenen satır sayısı; bilinmeyen id'de 0.</returns>
     public int ScrubPersonalData(string customerId)
@@ -808,9 +831,10 @@ public sealed class CustomerRepository
                   Tckn            = NULL,
                   AvatarUrl       = NULL,
                   WhatsAppConsent = 0,
-                  SmsConsent      = 0
+                  SmsConsent      = 0,
+                  PurgedAt        = COALESCE(PurgedAt, @now)
               WHERE Id = @id",
-            new { id = customerId });
+            new { id = customerId, now = DateTimeOffset.UtcNow.ToUnixTimeSeconds() });
     }
 
     /// <summary>Phase 4g: WhatsApp E.164 telefonu güncelle. Geçersiz id no-op.
