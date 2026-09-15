@@ -240,7 +240,8 @@ public sealed class ShopperAuthController : ControllerBase
         var (accessToken, accessExpiresAt) = _jwt.IssueShopperToken(
             shopper.Id, phone!, shopper.AuthVersion);
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
-        var (refreshRaw, refreshExpiresAt) = await _refresh.IssueAsync(shopper.Id, ip, ct);
+        var (refreshRaw, refreshExpiresAt) = await _refresh.IssueAsync(
+            shopper.Id, shopper.AuthVersion, ip, ct);
 
         // 11. Load all active links for the shopper
         var broadcasters = await BuildBroadcastersAsync(shopper.Id, ct);
@@ -281,7 +282,8 @@ public sealed class ShopperAuthController : ControllerBase
         var (accessToken, accessExpiresAt) = _jwt.IssueShopperToken(
             shopper.Id, phone!, shopper.AuthVersion);
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
-        var (refreshRaw, refreshExpiresAt) = await _refresh.IssueAsync(shopper.Id, ip, ct);
+        var (refreshRaw, refreshExpiresAt) = await _refresh.IssueAsync(
+            shopper.Id, shopper.AuthVersion, ip, ct);
 
         // 5. Load active links
         var broadcasters = await BuildBroadcastersAsync(shopper.Id, ct);
