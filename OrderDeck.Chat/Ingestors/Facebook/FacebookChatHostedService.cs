@@ -258,7 +258,9 @@ public sealed class FacebookChatHostedService : IHostedService, IDisposable
                 try
                 {
                     await stream.StartAsync(streamCts.Token);
-                    consecutiveCrashes = 0;
+                    // R10-CHAT01: sayaç artık burada SIFIRLANMAZ (StartAsync
+                    // hep başarılı — reset backoff eskalasyonunu öldürüyordu);
+                    // sağlıklı çıkışta (FastRebind) sıfırlanır.
                     watchdog = RunWatchdogAsync(
                         resolver, creds.Value.PageId, creds.Value.PageAccessToken,
                         videoId, streamCts);
@@ -287,26 +289,39 @@ public sealed class FacebookChatHostedService : IHostedService, IDisposable
 
                 if (!ct.IsCancellationRequested)
                 {
+                    // R10-CHAT01: çıkış sınıflandırması artık poller'ın
+                    // bildirdiği SEBEBE bakar. Eski kod "kendi kendine çıktı
+                    // = yayın bitti" sayıp 5 ardışık geçici ağ hatasında da
+                    // id'yi karalisteye alıyordu — yayın hâlâ canlıyken
+                    // toparlanan ağ 2 dakika aynı yayına dönemiyordu.
                     TimeSpan idle;
-                    if (crashed)
+                    switch (ClassifyStreamExit(crashed, cancelled, stream.EndReason))
                     {
-                        idle = ComputeBackoff(consecutiveCrashes);
-                    }
-                    else
-                    {
-                        if (!cancelled)
-                        {
-                            // Kendi kendine bitti (code:100 / hata limiti):
-                            // yayın gerçekten kapandı, ama Meta listede bir
-                            // süre daha LIVE gösterebilir — bu id'ye geri
-                            // bağlanma.
+                        case StreamExitAction.Backoff:
+                            // Çökme ya da geçici hata limiti: yayının
+                            // bittiğine kanıt yok. Karaliste YOK — resolver
+                            // AYNI canlı videoya yeniden bağlanabilir;
+                            // sınırlı backoff fırtınayı engeller.
+                            if (!crashed) consecutiveCrashes++; // çökme yolunu catch saydı
+                            idle = ComputeBackoff(consecutiveCrashes);
+                            break;
+
+                        case StreamExitAction.StaleThenFastRebind:
+                            // code:100 — yayın KANITLI bitti, ama Meta
+                            // listede bir süre daha LIVE gösterebilir; bu
+                            // id'ye geri bağlanma.
                             _staleVideoId = videoId;
                             _staleUntil = DateTimeOffset.UtcNow + StaleWindow;
-                        }
-                        // Her iki durumda da yayıncı büyük olasılıkla yeniden
-                        // yayın açacak → hızlı arama penceresi.
-                        _fastUntil = DateTimeOffset.UtcNow + FastResolveWindow;
-                        idle = FastResolveInterval;
+                            goto case StreamExitAction.FastRebind;
+
+                        case StreamExitAction.FastRebind:
+                        default:
+                            // Yayıncı büyük olasılıkla yeniden yayın açacak
+                            // → hızlı arama penceresi.
+                            consecutiveCrashes = 0;
+                            _fastUntil = DateTimeOffset.UtcNow + FastResolveWindow;
+                            idle = FastResolveInterval;
+                            break;
                     }
                     await IdleAsync(idle, ct);
                 }
@@ -375,6 +390,38 @@ public sealed class FacebookChatHostedService : IHostedService, IDisposable
             return true; // yeni yayın başladı — eskisini bekletme
         nullStreak = 0;
         return false;
+    }
+
+    /// <summary>Akış çıkışında ana döngünün yapacağı iş (R10-CHAT01).</summary>
+    internal enum StreamExitAction
+    {
+        /// <summary>Hızlı arama penceresi + kısa bekleme; sayaç sıfırlanır.</summary>
+        FastRebind,
+        /// <summary>Yayın kanıtlı bitti: id karalisteye, sonra FastRebind.</summary>
+        StaleThenFastRebind,
+        /// <summary>Bitti kanıtı yok: karaliste YOK, sınırlı backoff ile
+        /// AYNI videoya yeniden bağlanılabilir.</summary>
+        Backoff,
+    }
+
+    /// <summary>
+    /// Çıkış sınıflandırma kuralı (saf, test edilebilir): karaliste YALNIZ
+    /// kanıtlı bitişte (<see cref="FacebookStreamEndReason.BroadcastEnded"/> =
+    /// Graph code:100). Geçici hata limiti "yayın bitti" değildir — eski
+    /// davranış onu da karaliste + hızlı-arama sayıp canlı yayına 2 dakika
+    /// geri bağlanamamaya yol açıyordu.
+    /// </summary>
+    internal static StreamExitAction ClassifyStreamExit(
+        bool crashed, bool cancelled, FacebookStreamEndReason endReason)
+    {
+        if (crashed) return StreamExitAction.Backoff;
+        if (cancelled) return StreamExitAction.FastRebind;
+        return endReason switch
+        {
+            FacebookStreamEndReason.BroadcastEnded => StreamExitAction.StaleThenFastRebind,
+            FacebookStreamEndReason.TransientFailure => StreamExitAction.Backoff,
+            _ => StreamExitAction.FastRebind,
+        };
     }
 
     /// <summary>Exponential backoff: 30s × 2^(n-1) capped at 5min. Same

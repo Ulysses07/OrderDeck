@@ -484,6 +484,16 @@ public class LicenseDbContext : DbContext
             // ekranındaki açık onay kutusundan (register SmsConsent=true) gelir.
             b.Property(s => s.SmsConsent).HasDefaultValue(false);
             b.Property(s => s.SmsConsentSource).HasMaxLength(32);
+            // R10-S02: Silme yarışı jetonu. Purge'den ÖNCE okunmuş ama
+            // purge'den SONRA kaydedilen bir PATCH, temizlenmiş
+            // FullName/Address/Email'i geri dolduruyordu — yetki kontrolü
+            // sağlamdı, açık yalnız uçuştaki isteğin geç tamamlanmasıydı.
+            // Jeton UPDATE'e "WHERE DeletedAt = okunan değer" ekler; geç yazan
+            // DbUpdateConcurrencyException alır ve controller 409 döner.
+            // Bilerek rowversion DEĞİL: sorun yalnız silinme yarışı, her
+            // profil güncellemesini last-write-wins'ten çıkarmak kapsam aşımı
+            // olurdu (desen: ShopperRefreshToken.RevokedAt jetonu).
+            b.Property(s => s.DeletedAt).IsConcurrencyToken();
         });
 
         mb.Entity<ShopperBroadcasterLink>(b =>
