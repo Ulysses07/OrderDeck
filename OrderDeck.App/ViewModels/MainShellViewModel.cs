@@ -890,6 +890,18 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
             return;
         }
 
+        // R10-UX01: çekmece modal değil — varyant seçimi açıkken "Yayını
+        // Bitir" (topbar + kısayol) erişilebilir. Kapı olmadan seçim onayı
+        // kapanmış yayına etiket yazardı. Çekiliş kapısıyla aynı desen;
+        // kapının kesemediği yollar için ikinci kemer AddChatToQueueAsync'in
+        // onay dönüşündeki oturum doğrulaması.
+        if (_variantPickerOpen)
+        {
+            _dialogs.Show("Bekleyen varyant seçimi var. Önce seçimi tamamla veya vazgeç.",
+                "Varyant seçimi açık", DialogSeverity.Warning);
+            return;
+        }
+
         // R7-04 (PO-01): eski akış Print()'i doğrudan çağırıyordu ve Print
         // seçim varsa YALNIZ seçileni basar — yayın biterken kısmi seçim
         // kalan etiketleri sessizce basılmamış bırakıyordu. Kuyruk doluysa
@@ -1024,6 +1036,20 @@ public sealed partial class MainShellViewModel : ViewModelBase, IDisposable
 
             // Esc / Vazgeç → HİÇBİR sipariş yazılmaz (kabul kriteri 8).
             if (!confirmed) return;
+
+            // R10-UX01: EndStream kapısı her yolu kesemez (örn. kapanışın
+            // baskı await'i sırasında açılan çekmece). Onay dönüşünde
+            // yakalanan oturum artık aktif olan değilse satır YAZILMAZ:
+            // ne kapanmış yayına yazım ne yeni yayına sessiz göç — operatör
+            // gerekirse yorumu yeni yayında tekrar işler.
+            if (_sessions.GetActive()?.Id != session.Id)
+            {
+                _dialogs.Show(
+                    "Yayın bu seçim sürerken bitti; sipariş yazılmadı. " +
+                    "Gerekirse yorumu yeni yayında tekrar işle.",
+                    "Yayın bitti", DialogSeverity.Warning);
+                return;
+            }
 
             // İşaretlenen her değer AYRI satır (kabul kriteri 9).
             foreach (var value in picker.SelectedValues)
