@@ -91,6 +91,8 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<StockBalanceRepository>();
         // R6-04: sync imleçleri veriyle aynı SQLite dosyasında (göç 038).
         services.AddSingleton<SyncCursorRepository>();
+        // R10-D04: ödeme hesabının son başarılı gönderimi kalıcı (göç 041).
+        services.AddSingleton<PaymentAccountSyncStateRepository>();
         services.AddSingleton<OrderDeck.Core.Catalog.StockBalanceProvider>();
         // Yayın kodu çözümleyicisi: kod kutusu da sipariş akışı da AYNI örneği
         // kullanmalı, yoksa kartta görünen varyantlarla çekmecede seçilebilen
@@ -514,7 +516,8 @@ public sealed class AppHost : IDisposable
         services.AddSingleton<Services.Sync.WhatsAppTemplateSyncService>();
 
         // Payment account sync (Faz 0c-2): IBAN + AccountHolder periyodik push.
-        // 5 dakika cadence — değer değişmezse no-op (in-memory cache).
+        // 5 dakika cadence — değer değişmezse no-op (R10-D04: karşılaştırma
+        // tabanı kalıcı, PaymentAccountSyncStateRepository).
         services.AddSingleton<Services.Sync.PaymentAccountSyncService>();
         services.AddHostedService<Services.Sync.PaymentAccountSyncHostedService>();
 
