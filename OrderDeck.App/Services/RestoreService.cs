@@ -1,5 +1,6 @@
 using System.IO;
 using System.IO.Compression;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using OrderDeck.Core.Storage;
 using OrderDeck.Licensing.Backup;
@@ -103,6 +104,24 @@ public sealed class RestoreService
                 throw new InvalidOperationException(
                     $"Yedek bir OrderDeck veritabanı değil ({contractError}); " +
                     "mevcut veritabanına dokunulmadı.");
+
+            // R10-D01: değiştirmeden ÖNCE kaynak bırakma — restore
+            // protokolünün açık aşaması. SqliteConnectionFactory Pooling=true
+            // çalışır: dispose edilmiş bağlantı bile dosya tanıtıcısını
+            // havuzda açık tutar. Taze açılışta migration'ın açtığı tek
+            // bağlantı dahi aşağıdaki File.Move'u Windows'ta "Access to the
+            // path is denied" ile düşürüyordu — yeni makineye geçişin temel
+            // kurtarma yolu, uygulamanın kendi havuzuna takılıyordu.
+            //
+            // Restore yalnız açılış kapısından erişilebilir (StartupFlow,
+            // arka plan servisleri başlatılmadan önce), yani bu noktada aktif
+            // sorgu yoktur; temizlik boştaki tanıtıcıları bırakır. Başarıda
+            // uygulama zaten yeniden başlar (RequestRestart) — havuz yeni
+            // dosyaya yeni süreçte açılır. Hedefli ClearPool yerine
+            // ClearAllPools bilinçli: havuz bağlantı METNİYLE anahtarlanır,
+            // factory'nin metnini burada yeniden kurmak sessizce ıskalayan
+            // kopya üretirdi; uygulamanın tek veritabanı var, kapsam aynı.
+            SqliteConnection.ClearAllPools();
 
             // Replace db
             File.Move(tempExtract, _databaseFile, overwrite: true);
