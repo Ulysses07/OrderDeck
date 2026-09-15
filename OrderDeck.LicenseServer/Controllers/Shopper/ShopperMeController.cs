@@ -139,7 +139,22 @@ public sealed class ShopperMeController : ControllerBase
         }
 
         shopper.UpdatedAt = DateTimeOffset.UtcNow;
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // Okumamızla yazmamız arasında hesap silindi (DeletedAt jetonu,
+            // bkz. LicenseDbContext Shopper config). Reload edip tekrar
+            // denemek purge'ün temizlediği kişisel veriyi geri doldururdu —
+            // KVKK açısından tam olarak yasak olan şey. İstek reddedilir;
+            // hesap zaten kapandığı için istemcinin yapacağı bir şey yok.
+            return Problem(
+                title: "profile-conflict",
+                detail: "Hesap bu istek sürerken silindi; profil güncellenmedi.",
+                statusCode: StatusCodes.Status409Conflict);
+        }
 
         var broadcasters = await _db.ShopperBroadcasterLinks
             .Where(l => l.ShopperId == shopperId && l.LeftAt == null)
@@ -231,7 +246,18 @@ public sealed class ShopperMeController : ControllerBase
         foreach (var link in activeLinks)
             link.LeftAt = now;
 
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // DeletedAt jetonu: hesap bu istek sürerken zaten silindi (çift
+            // tıklama ya da eşzamanlı purge). Amaç gerçekleşmiş — idempotent
+            // 204. Jeton ayrıca çift tıklamanın iki silme talebi satırı
+            // üretmesini de engeller: kaybeden kaydın TAMAMI geri alınır.
+            return NoContent();
+        }
 
         return NoContent();
     }

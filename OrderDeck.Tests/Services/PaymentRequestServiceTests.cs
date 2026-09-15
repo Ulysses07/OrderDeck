@@ -1384,6 +1384,75 @@ public class PaymentRequestServiceTests : IDisposable
         }
     }
 
+    // ── R10-F01: yarışı kaybeden çağrı kazananın sonucunu KENDİ toplamıyla
+    // mesaja yazamaz ─────────────────────────────────────────────────────────
+    //
+    // Rapor senaryosu: A(250) önizleme await'inde askıdayken B(400) satışı
+    // revize edip uyguladı (BeginRevision yeni anahtar yazar → A'nın BeginApply'ı
+    // yarışı kaybeder). A kazananın satırını yeniden okur: Applied 400. Entry
+    // key/revision denetimi bunu YAKALAYAMAZ — A satırı yeniden okuyup B'nin
+    // kimliğiyle sınıflandırır, kimlik tutar ama bağlam tutmaz: A'nın mesajı
+    // 250 − 400 = −150 olurdu (deftere karşı mesaj yanlış). Sözleşme: kesin
+    // sonuç ancak BU çağrının istediği toplama aitse mesaja çıkar; değilse bu
+    // tıklama durur, kazananın kendi çağrısı doğru mesajı üretir.
+    [Fact]
+    public async Task OpenWhatsAppAsync_yarisi_kaybeden_cagri_kazananin_farkli_toplamli_sonucunu_mesaja_yazmaz()
+    {
+        // Yarış hakemi gerçek depo (A9/R4-01 ile aynı gerekçe: dosya + WAL).
+        var dbPath = Path.Combine(Path.GetTempPath(), $"odjob-{Guid.NewGuid():N}.db");
+        var factory = new SqliteConnectionFactory(dbPath);
+        try
+        {
+            new MigrationRunner(factory).Run();
+            var repo = new PaymentJobRepository(factory);
+            var (sut, handler) = MakeCloudSut(_store, _launcher, jobs: repo);
+            handler.PreviewBalance = 1000m;
+            handler.CapAppliedToRequest = true;
+            var customer = MakeCustomer("+905551234567", id: Guid.NewGuid().ToString("N"));
+
+            // A önizlemeye VARDI ama henüz anahtar yazmadı — burada askıda kalır.
+            // (B önizlemeyi hiç çağırmaz: revizyon dalı BeginRevision→Settle gider.)
+            var aOnizlemede = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var aSerbest = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            handler.OnPreviewAsync = async () =>
+            {
+                aOnizlemede.TrySetResult();
+                await aSerbest.Task;
+            };
+
+            var aTiklama = Task.Run(() => sut.OpenWhatsAppAsync(customer, 250m, T, "session:s1"));
+            await aOnizlemede.Task;
+
+            // B: operatör sepeti 400'e çıkardı — revizyon + taze uygulama.
+            (await sut.OpenWhatsAppAsync(customer, 400m, T, "session:s1"))
+                .Should().Be(PaymentRequestResult.Opened);
+            _launcher.LaunchedUrls[^1].Should().Contain("0%2C00", "B'nin mesajı: 400 − 400");
+            var mesajSayisi = _launcher.LaunchedUrls.Count;
+
+            // A serbest: BeginApply yarışı kaybeder, satırda B'nin Applied 400'ü var.
+            aSerbest.TrySetResult();
+            (await aTiklama).Should().Be(PaymentRequestResult.BalanceUncertain,
+                "kazananın 400'lük sonucu 250'lik çağrının mesajına yazılamaz — net −150 olurdu");
+
+            _launcher.LaunchedUrls.Should().HaveCount(mesajSayisi, "kaybeden mesaj açamaz");
+            _launcher.LaunchedUrls.Should().NotContain(u => u.Contains("-150"));
+
+            // Kazananın satırı dokunulmamış: sıradaki tıklama 250'yi revizyonla yazar.
+            var job = repo.FindOrCreate(customer.Id, "session:s1", 400m);
+            job.State.Should().Be(PaymentJobState.Applied);
+            job.ProductTotal.Should().Be(400m);
+            job.AppliedAmount.Should().Be(400m);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            foreach (var f in new[] { dbPath, dbPath + "-wal", dbPath + "-shm" })
+                if (File.Exists(f)) File.Delete(f);
+        }
+    }
+
     // ── A10: lisans çözülemediğinde blok KARARI yerel iş satırına bakar ──────
     //
     // Lisans id çözümü apply'dan ÖNCE patlar: o tıklamada para adına tek bir
