@@ -65,28 +65,39 @@ public sealed class StockSyncService
         }
 
         int written;
-        try { written = await SyncCoreAsync(ct); }
+        bool rebuilt;
+        try { (written, rebuilt) = await SyncCoreAsync(ct); }
         finally { _gate.Release(); }
 
         // Bildirim KAPININ DIŞINDA: abonesi görünüm modelleri ve fırlatan bir
         // abone kapı tutulurken patlarsa, yazılmış ve kalıcı olmuş bir sayfa
         // "başarısız tur" diye günlüğe düşerdi. Yazma bitti; haber vermek ayrı iş.
-        if (written > 0) _provider.RaiseBalancesChanged();
+        // R10-D03: yeniden kurulumda satır yazılmamış olsa da bildirim şart —
+        // eski hedefin bayat bakiyeleri ekrandan düşmeli.
+        if (written > 0 || rebuilt) _provider.RaiseBalancesChanged();
         return written;
     }
 
-    private async Task<int> SyncCoreAsync(CancellationToken ct)
+    private async Task<(int Written, bool Rebuilt)> SyncCoreAsync(CancellationToken ct)
     {
         var licenseKey = _licenseProvider.CurrentLicenseKey;
-        if (string.IsNullOrEmpty(licenseKey)) return 0;
+        if (string.IsNullOrEmpty(licenseKey)) return (0, false);
+
+        // R10-D03: imleç + replika hedef lisansa bağlanır. Lisans ÇÖZÜMÜNDEN
+        // ÖNCE: çevrimdışıyken anahtar değişse bile eski hedefin bayat
+        // satırları hemen düşmeli — sunucuya ulaşamamak onları meşrulaştırmaz.
+        var (cursor, rebuilt) = _repo.EnsureTarget(licenseKey);
+        if (rebuilt)
+            _log.LogInformation(
+                "Stok replikası yeni hedef için sıfırlandı (eski hedefin bayat satırları "
+              + "atıldı); tam geçmiş yeniden çekilecek");
 
         var licenseId = await ResolveLicenseIdAsync(licenseKey, ct);
-        if (licenseId is null) return 0;
+        if (licenseId is null) return (0, rebuilt);
 
         var written = 0;
         try
         {
-            var cursor = _repo.GetCursor();
             var pages = 0;
             var more = false;
 
@@ -106,7 +117,14 @@ public sealed class StockSyncService
 
                 // Boş sayfada da yazılıyor: sunucu imleci geri sarmadığı için
                 // bu bir no-op, ama imlecin tek yazma yolu bu kalsın.
-                _repo.ApplyPage(balances, cursor);
+                // Sahip koşullu yazım (R10-D03): sayfa uçuştayken hedef
+                // değiştiyse yazım eşleşmez — bayat sayfa yeni hedefe sızamaz.
+                if (!_repo.ApplyPage(balances, cursor, expectedOwner: licenseKey))
+                {
+                    _log.LogWarning(
+                        "Stok sayfası uygulanmadı: replika sahibi bu arada değişti; tur bırakılıyor");
+                    break;
+                }
                 written += balances.Count;
 
                 more = res.HasMore;
@@ -145,7 +163,7 @@ public sealed class StockSyncService
             _log.LogWarning(ex, "Stok senkronu başarısız; sonraki turda yeniden denenecek");
         }
 
-        return written;
+        return (written, rebuilt);
     }
 
     private async Task<Guid?> ResolveLicenseIdAsync(string licenseKey, CancellationToken ct)
