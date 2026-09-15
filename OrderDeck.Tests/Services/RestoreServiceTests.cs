@@ -4,6 +4,7 @@ using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.App.Services;
+using OrderDeck.Core.Storage;
 using OrderDeck.Licensing.Backup;
 using Xunit;
 
@@ -220,6 +221,51 @@ public class RestoreServiceTests : IDisposable
 
         File.Exists(_dbPath + "-wal").Should().BeFalse();
         File.Exists(_dbPath + "-shm").Should().BeFalse();
+    }
+
+    /// <summary>
+    /// R10-D01: taze açılışta (yeni bilgisayar / yeni veri profili) AppHost
+    /// gerçek <see cref="SqliteConnectionFactory"/> ile migration'ları koşar;
+    /// <c>Pooling=true</c> olduğu için dispose edilmiş bağlantı bile dosya
+    /// tanıtıcısını HAVUZDA açık tutar. Kullanıcı hemen ardından restore
+    /// kapısından yedek seçtiğinde <c>File.Move</c> Windows'ta "Access to the
+    /// path is denied" ile düşüyordu — yeni makineye geçişin temel kurtarma
+    /// yolu, uygulamanın kendi havuzuna takılıyordu.
+    ///
+    /// Kabul koşulu (AC32): test yardımcısı restore ÖNCESİ havuz TEMİZLEMEZ —
+    /// o iş ürünün restore protokolünün açık aşamasıdır. Önceki testler
+    /// hedef DB'yi File.WriteAllBytes ile kurduğu için bu yaşam döngüsünü
+    /// hiç görmüyordu.
+    /// </summary>
+    [Fact]
+    public async Task RestoreAsync_havuzda_acik_tanitici_varken_dosyayi_degistirebilmeli()
+    {
+        // AppHost açılışına denk sıra: gerçek factory + gerçek migration,
+        // boş yeni DB. Bağlantı MigrationRunner içinde dispose edildi ama
+        // tanıtıcısı havuzda duruyor.
+        var factory = new SqliteConnectionFactory(_dbPath);
+        try
+        {
+            new MigrationRunner(factory).Run();
+
+            var zip = BuildZip(BuildRealDatabase("NEW-FROM-CLOUD"));
+            var sut = new RestoreService(
+                _dbPath, new FakeBackupClientWithDownload(zip),
+                NullLogger<RestoreService>.Instance);
+
+            var result = await sut.RestoreAsync(Guid.NewGuid());
+
+            result.Success.Should().BeTrue(
+                "ürün restore öncesi kendi havuz tanıtıcılarını bırakmalı; hata: {0}",
+                result.Error);
+            ReadMarker(_dbPath).Should().Be("NEW-FROM-CLOUD");
+        }
+        finally
+        {
+            // Restore SONRASI temizlik: temp dizini silinebilsin diye test
+            // altyapısına ait. Kabul koşulu restore ÖNCESİ temizlik olmamasıdır.
+            SqliteConnection.ClearAllPools();
+        }
     }
 
     [Fact]
