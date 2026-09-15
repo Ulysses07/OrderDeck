@@ -7,6 +7,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
 using OrderDeck.LicenseServer.Services.ShopperLinking;
+using OrderDeck.LicenseServer.Services.Shoppers;
 
 namespace OrderDeck.LicenseServer.Controllers.Shopper;
 
@@ -402,12 +403,15 @@ public sealed class ShopperAuthController : ControllerBase
         {
             await _db.SaveChangesAsync(ct);
         }
-        catch (DbUpdateConcurrencyException)
+        catch (DbUpdateConcurrencyException ex)
         {
-            // DeletedAt jetonu (R10-S02): hesap bu istek sürerken silindi.
-            // Silinmiş hesaba doğrulama damgası yazılmaz; cevap, bu ucun
-            // silinmiş-hesap yolundakiyle aynı (Unauthorized).
-            return Unauthorized();
+            // Shopper jetonu çakıştı. Hesap gerçekten silindiyse doğrulama
+            // damgası yazılmaz; cevap, bu ucun silinmiş-hesap yolundakiyle
+            // aynı (Unauthorized). Silinme dışı çakışmada (örn. eşzamanlı
+            // OTP üretimi) helper kaydı tamamlar — kod TÜKETİLMİŞTİ, burada
+            // reddetmek kullanıcıyı geçerli koduyla çıkmaza sokardı.
+            if (await ShopperSaveConflict.DeletedWonAsync(_db, ex, ct))
+                return Unauthorized();
         }
         return NoContent();
     }
@@ -497,13 +501,16 @@ public sealed class ShopperAuthController : ControllerBase
         {
             await _db.SaveChangesAsync(ct);
         }
-        catch (DbUpdateConcurrencyException)
+        catch (DbUpdateConcurrencyException ex)
         {
-            // DeletedAt jetonu (R10-S02): hesap bu istek sürerken silindi.
-            // Reload edip yeniden denemek purge'ün "PURGED" parolasını
-            // çalışan bir hash'le ezerdi — hesap diriltme. Cevap, bu ucun
-            // silinmiş-hesap yolundakiyle aynı (numaralandırma sızdırmaz).
-            return Problem(title: "invalid-code", statusCode: 400);
+            // Shopper jetonu çakıştı. Hesap gerçekten silindiyse KAYIT
+            // DENENMEZ: purge'ün "PURGED" parolasını çalışan bir hash'le
+            // ezmek hesap diriltme olurdu; cevap silinmiş-hesap yolundakiyle
+            // aynı (numaralandırma sızdırmaz). Silinme dışı çakışmada (örn.
+            // eşzamanlı OTP üretimi) helper kaydı tamamlar — kod save'den
+            // önce TÜKETİLDİ, reddetmek sıfırlamayı çıkmaza sokardı.
+            if (await ShopperSaveConflict.DeletedWonAsync(_db, ex, ct))
+                return Problem(title: "invalid-code", statusCode: 400);
         }
         return NoContent();
     }
@@ -633,12 +640,14 @@ public sealed class ShopperAuthController : ControllerBase
         {
             await _db.SaveChangesAsync(ct);
         }
-        catch (DbUpdateConcurrencyException)
+        catch (DbUpdateConcurrencyException ex)
         {
-            // DeletedAt jetonu (R10-S02): hesap bu istek sürerken silindi.
-            // Purge'ün "PURGED" parolası çalışan bir hash'le ezilmemeli.
-            // Cevap, bu ucun silinmiş-hesap yolundakiyle aynı (401).
-            return Problem(title: "unauthorized", statusCode: 401);
+            // Shopper jetonu çakıştı. Hesap gerçekten silindiyse KAYIT
+            // DENENMEZ: purge'ün "PURGED" parolası çalışan bir hash'le
+            // ezilmemeli; cevap silinmiş-hesap yolundakiyle aynı (401).
+            // Silinme dışı çakışmada helper kaydı tamamlar.
+            if (await ShopperSaveConflict.DeletedWonAsync(_db, ex, ct))
+                return Problem(title: "unauthorized", statusCode: 401);
         }
 
         // 8. Return 204

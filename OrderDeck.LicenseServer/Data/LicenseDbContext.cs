@@ -494,6 +494,14 @@ public class LicenseDbContext : DbContext
             // profil güncellemesini last-write-wins'ten çıkarmak kapsam aşımı
             // olurdu (desen: ShopperRefreshToken.RevokedAt jetonu).
             b.Property(s => s.DeletedAt).IsConcurrencyToken();
+            // R10-S03: OTP üretim yarışı jetonu. IssueWithHandleAsync kontrol
+            // sorguları (cooldown/kota) ile INSERT'i ayrı adımlarda yapıyor;
+            // aynı shopper için iki eşzamanlı üretim ikisi de kontrolleri
+            // geçip iki geçerli kod ekleyebiliyordu. Bu alan kod satırı
+            // eklemesiyle AYNI SaveChanges'ta güncellenir → shopper başına
+            // CAS; kaybeden DbUpdateConcurrencyException alır ve null döner
+            // (throttle semantiği). Kota/cooldown bu alandan OKUNMAZ.
+            b.Property(s => s.LastResetCodeIssuedAt).IsConcurrencyToken();
         });
 
         mb.Entity<ShopperBroadcasterLink>(b =>
