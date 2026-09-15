@@ -467,7 +467,7 @@ public sealed class PaymentRequestService
                 {
                     _jobs.BeginRevision(job.Id, totalAmount, Guid.NewGuid(), job.Revision);
                     job = _jobs.Get(job.Id)!;
-                    return await SettleAsync(licenseId.Value, wpfCustomerId, job, ct);
+                    return await SettleAsync(licenseId.Value, wpfCustomerId, job, totalAmount, ct);
                 }
             }
 
@@ -508,7 +508,7 @@ public sealed class PaymentRequestService
                     }
                     job = current;
                 }
-                return new(false, job.AppliedAmount ?? 0m, job);
+                return DefiniteForCall(job, totalAmount);
             }
 
             // 7) S5: satış sıfıra indi. Geri alınacak eski düşüm varsa (5)
@@ -522,7 +522,7 @@ public sealed class PaymentRequestService
                 {
                     job = _jobs.Get(job.Id)!;
                     return job.State is PaymentJobState.Applied or PaymentJobState.NoBalance
-                        ? new(false, job.AppliedAmount ?? 0m, job)
+                        ? DefiniteForCall(job, totalAmount)
                         : new(true, 0m, job);
                 }
                 return new(false, 0m, _jobs.Get(job.Id));
@@ -565,7 +565,7 @@ public sealed class PaymentRequestService
                     // "bakiye yok" gözlemimiz artık bu denemeye ait değil.
                     job = _jobs.Get(job.Id)!;
                     return job.State is PaymentJobState.Applied or PaymentJobState.NoBalance
-                        ? new(false, job.AppliedAmount ?? 0m, job)
+                        ? DefiniteForCall(job, totalAmount)
                         : new(true, 0m, job);
                 }
                 return new(false, 0m, _jobs.Get(job.Id));
@@ -576,10 +576,10 @@ public sealed class PaymentRequestService
                 // Yarışı kaybettik (R2-04/A9): kazananın anahtarı diskte.
                 job = _jobs.Get(job.Id)!;
                 if (job.State is PaymentJobState.Applied or PaymentJobState.NoBalance)
-                    return new(false, job.AppliedAmount ?? 0m, job);
+                    return DefiniteForCall(job, totalAmount);
             }
             job = _jobs.Get(job.Id)!;
-            return await SettleAsync(licenseId.Value, wpfCustomerId, job, ct);
+            return await SettleAsync(licenseId.Value, wpfCustomerId, job, totalAmount, ct);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
@@ -681,7 +681,8 @@ public sealed class PaymentRequestService
 
     /// <summary>Diskteki anahtarla apply — bir deneme + bir anında tekrar (K3).</summary>
     private async Task<BalanceOutcome> SettleAsync(
-        Guid licenseId, Guid wpfCustomerId, PaymentJob job, CancellationToken ct)
+        Guid licenseId, Guid wpfCustomerId, PaymentJob job, decimal requestedTotal,
+        CancellationToken ct)
     {
         // R6-03: girişteki deneme kimliği. Cevap, gönderildiği denemeye aittir;
         // yeniden okunan satır başka bir revizyona geçtiyse oradaki terminal
@@ -692,7 +693,7 @@ public sealed class PaymentRequestService
         job = await ReplayAsync(licenseId, wpfCustomerId, job, ct);
         if (job.State == PaymentJobState.ApplyUncertain)
             job = await ReplayAsync(licenseId, wpfCustomerId, job, ct);
-        return ClassifySettledJob(job, entryKey, entryRevision);
+        return ClassifySettledJob(job, entryKey, entryRevision, requestedTotal);
     }
 
     /// <summary>R6-03: para yolunda sonucu üreten SON nokta. Bir sonuç yalnız
@@ -707,7 +708,8 @@ public sealed class PaymentRequestService
     /// cevabını reddediyor, ama yeniden okunan reverse_pending iş eski
     /// AppliedAmount'la "kesin" diye mesaja çıkıyordu — mesaj 250 gösterirken
     /// uzak net düşüm 0'dı.</summary>
-    private BalanceOutcome ClassifySettledJob(PaymentJob job, Guid? entryKey, int entryRevision)
+    private BalanceOutcome ClassifySettledJob(
+        PaymentJob job, Guid? entryKey, int entryRevision, decimal requestedTotal)
     {
         if (job.Revision != entryRevision || job.ApplyKey != entryKey)
         {
@@ -720,16 +722,40 @@ public sealed class PaymentRequestService
 
         switch (job.State)
         {
-            case PaymentJobState.Applied when job.AppliedAmount is { } applied:
-                return new(false, applied, job);
+            case PaymentJobState.Applied when job.AppliedAmount is not null:
+                return DefiniteForCall(job, requestedTotal);
             case PaymentJobState.NoBalance:
-                return new(false, 0m, job);
+                return DefiniteForCall(job, requestedTotal);
             default:
                 _log?.LogWarning(
                     "Settle kesin sonuca ulaşmadı — mesaj engellendi (job={JobId}, state={State})",
                     job.Id, job.State);
                 return new(true, 0m, job);
         }
+    }
+
+    /// <summary>R10-F01: kesin bir sonuç mesaja ancak BU çağrının istediği
+    /// toplama aitse çıkabilir. Yarış kaybedilip kazananın satırı devralındığında
+    /// (BeginApply/MarkNoBalance false, ya da BeginApply yarışı kaybedip kazananın
+    /// anahtarını Settle etmek) satır başka bir toplamın sonucunu taşıyor
+    /// olabilir; onu bu satışın mesajına yazmak müşteriye yanlış net tutar
+    /// göstermek olur (250 istenmişken 400 düşülmüş → net −150). Entry key +
+    /// revision denetimi bunu yakalayamaz: kaybeden akış kazananın satırını
+    /// YENİDEN OKUYUP onun kimliğiyle sınıflandırır, kimlik tutar ama bağlam
+    /// (istenen toplam) tutmaz. Toplam eşleşmiyorsa bu tıklama durur —
+    /// kazananın kendi çağrısı doğru mesajı üretir, kaybedenin sıradaki
+    /// tıklaması 5. adımda kendi toplamını revizyonla yazar (K3).</summary>
+    private BalanceOutcome DefiniteForCall(PaymentJob job, decimal requestedTotal)
+    {
+        if (job.ProductTotal != requestedTotal)
+        {
+            _log?.LogWarning(
+                "Kesin sonuç başka bir toplamın satışına ait — mesaj engellendi "
+                + "(job={JobId}, istenen={Requested}, satırdaki={RowTotal})",
+                job.Id, requestedTotal, job.ProductTotal);
+            return new(true, 0m, job);
+        }
+        return new(false, job.AppliedAmount ?? 0m, job);
     }
 
     /// <summary>İşin diskteki anahtarıyla apply'ı (yeniden) dener, sonucu işe
