@@ -31,6 +31,69 @@ public sealed class StockBalanceRepository
     }
 
     /// <summary>
+    /// R10-D03: imleci ve replikayı hedef lisansa bağlar. İmleç satırındaki
+    /// sahip (<c>LicenseKey</c>) verilen anahtardan farklıysa — göç 040
+    /// öncesinden kalan <c>NULL</c> dahil — replika ile imleç <b>tek
+    /// transaction'da</b> sıfırlanır ve sahip yazılır: kontrollü tam yeniden
+    /// kurulum. Yalnız imleci sıfırlamak yetmezdi; eski hedefin bakiye
+    /// satırları yeni hedefinmiş gibi görünmeye devam ederdi.
+    ///
+    /// <para><c>NULL</c> sahip bilerek "bilinmiyor" sayılıyor: 040 öncesi
+    /// imlecin hangi lisansla ilerletildiği kayıtlı değil — D03'ün tarif
+    /// ettiği belirsizliğin ta kendisi. Yeniden kurulum ucuz (replika
+    /// sunucudan türetilebilir), yanlış sahibe güvenmek sessiz veri kaybı.</para>
+    /// </summary>
+    /// <returns>
+    /// Turun başlayacağı imleç + bayat satır atılıp atılmadığı.
+    /// <c>DiscardedStale</c> true ise çağıran, bayat satırlar ekrandan düşsün
+    /// diye bakiye-değişti bildirimini yazılan satır olmasa da tetiklemeli.
+    /// Boş replikayı devralmak (ör. taze kurulumda göç 040 sonrası ilk tur)
+    /// görünür hiçbir şeyi değiştirmediği için false döner — bildirim gereksiz.
+    /// </returns>
+    public (StockCursor Cursor, bool DiscardedStale) EnsureTarget(string licenseKey)
+    {
+        using var conn = _factory.Open();
+        using var tx = conn.BeginTransaction();
+
+        var owner = conn.ExecuteScalar<string?>(
+            "SELECT LicenseKey FROM CatalogStockCursor WHERE Id = 1", transaction: tx);
+
+        if (owner == licenseKey)
+        {
+            var current = ReadCursor(conn, tx);
+            tx.Commit();
+            return (current, false);
+        }
+
+        var discarded = conn.Execute("DELETE FROM CatalogStockBalance", transaction: tx);
+        conn.Execute(
+            "UPDATE CatalogStockCursor SET CursorCreatedAt = @createdAt, CursorId = @id, "
+          + "LicenseKey = @licenseKey WHERE Id = 1",
+            new
+            {
+                // Göç 029'un tohumuyla birebir aynı "her şeyi çek" imleci.
+                createdAt = DateTimeOffset.MinValue.ToString("O"),
+                id = Guid.Empty.ToString("N"),
+                licenseKey
+            }, tx);
+
+        tx.Commit();
+        return (new StockCursor(DateTimeOffset.MinValue, Guid.Empty), discarded > 0);
+    }
+
+    private static StockCursor ReadCursor(
+        System.Data.IDbConnection conn, System.Data.IDbTransaction tx)
+    {
+        var row = conn.QuerySingle<CursorRow>(
+            "SELECT CursorCreatedAt, CursorId FROM CatalogStockCursor WHERE Id = 1",
+            transaction: tx);
+        return new StockCursor(
+            DateTimeOffset.Parse(row.CursorCreatedAt, CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind),
+            Guid.Parse(row.CursorId));
+    }
+
+    /// <summary>
     /// Bir sayfayı yazar ve imleci ilerletir — <b>ikisi tek transaction'da</b>.
     /// Ayrılırlarsa çökme anında ya bakiyesiz ilerlemiş ya da aynı sayfayı
     /// tekrar işleyen bir imleç kalırdı.
@@ -45,11 +108,41 @@ public sealed class StockBalanceRepository
     /// <para>Boş sayfa da imleci yazar. Sunucu boş sayfada imleci geri sarmaz,
     /// aynen iade eder — yani bu bir no-op'tur; ama imlecin tek yazma yolu
     /// olmasını sağlar.</para>
+    ///
+    /// <para>R10-D03: <paramref name="expectedOwner"/> verilirse imleç
+    /// güncellemesi <c>AND LicenseKey = @owner</c> koşulu taşır — sahip bu
+    /// arada değiştiyse (ör. sayfa uçuştayken lisans anahtarı değişti ve yeni
+    /// tur <c>EnsureTarget</c> ile replikayı sıfırladı) hiçbir satır eşleşmez,
+    /// transaction geri alınır ve <c>false</c> döner: bayat sayfa yeni hedefin
+    /// replikasına yazılamaz. Karar D02'deki desenle aynı — üstünlük yazımdan
+    /// önce okumakla değil, UYGULANAN YAZIDA sağlanır. <c>null</c> = sahipsiz
+    /// yazım (testler / eski çağıranlar), davranış değişmez.</para>
     /// </summary>
-    public void ApplyPage(IReadOnlyList<CatalogStockBalance> balances, StockCursor cursor)
+    public bool ApplyPage(
+        IReadOnlyList<CatalogStockBalance> balances, StockCursor cursor,
+        string? expectedOwner = null)
     {
         using var conn = _factory.Open();
         using var tx = conn.BeginTransaction();
+
+        var cursorSql =
+            "UPDATE CatalogStockCursor SET CursorCreatedAt = @createdAt, CursorId = @id "
+          + "WHERE Id = 1"
+          + (expectedOwner is null ? "" : " AND LicenseKey = @owner");
+        var affected = conn.Execute(
+            cursorSql,
+            new
+            {
+                createdAt = cursor.CreatedAt.ToString("O"),
+                id = cursor.Id.ToString("N"),
+                owner = expectedOwner
+            }, tx);
+
+        if (affected == 0)
+        {
+            tx.Rollback();
+            return false;
+        }
 
         foreach (var b in balances)
             conn.Execute(
@@ -66,13 +159,8 @@ public sealed class StockBalanceRepository
                 balances.Select(b => new { b.ProductId, b.ProductVariantId, b.Quantity })
                         .ToList(), tx);
 
-        conn.Execute(
-            "UPDATE CatalogStockCursor SET CursorCreatedAt = @createdAt, CursorId = @id "
-          + "WHERE Id = 1",
-            new { createdAt = cursor.CreatedAt.ToString("O"), id = cursor.Id.ToString("N") },
-            tx);
-
         tx.Commit();
+        return true;
     }
 
     /// <summary>Tek ürünün tüm bakiye satırları (varyantlar + ürün seviyesi).</summary>

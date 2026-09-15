@@ -27,6 +27,10 @@ public sealed class PaymentAccountSyncService
     private Guid? _cachedLicenseId;
     private string? _cachedLicenseKey;
 
+    // R10-D03: "değişti mi?" önbelleğinin kimliği hedef lisansı da içerir.
+    // Yalnız değerlerden oluşsaydı, A hedefine gönderilmiş IBAN hedef B'ye
+    // geçince de "değişmedi" sayılır ve B hiç POST almazdı.
+    private Guid?   _lastSyncedTargetLicenseId;
     private string? _lastSyncedIban;
     private string? _lastSyncedAccountHolder;
 
@@ -56,7 +60,13 @@ public sealed class PaymentAccountSyncService
         var iban   = string.IsNullOrWhiteSpace(settings.Payment.Iban)          ? null : settings.Payment.Iban.Trim();
         var holder = string.IsNullOrWhiteSpace(settings.Payment.AccountHolder) ? null : settings.Payment.AccountHolder.Trim();
 
-        if (iban == _lastSyncedIban && holder == _lastSyncedAccountHolder)
+        // R10-D03: hedef değişimi de "değişiklik"tir — ama yalnız gönderilecek
+        // bir değer VARSA. Boş değerleri sırf hedef değişti diye göndermek,
+        // hiç yapılandırmadığımız uzak hesabı körlemesine silmek olurdu
+        // (AC46'nın yasakladığı davranış; boş/boş ilk-tur no-op'u da korunur).
+        var valuesUnchanged = iban == _lastSyncedIban && holder == _lastSyncedAccountHolder;
+        var targetUnchanged = licenseId == _lastSyncedTargetLicenseId;
+        if (valuesUnchanged && (targetUnchanged || (iban is null && holder is null)))
         {
             _log.LogDebug("PaymentAccount sync skipped — no change since last push");
             return;
@@ -65,8 +75,9 @@ public sealed class PaymentAccountSyncService
         try
         {
             await _api.SyncPaymentAccountAsync(licenseId.Value, iban, holder, ct);
-            _lastSyncedIban           = iban;
-            _lastSyncedAccountHolder  = holder;
+            _lastSyncedTargetLicenseId = licenseId;
+            _lastSyncedIban            = iban;
+            _lastSyncedAccountHolder   = holder;
             _log.LogInformation(
                 "PaymentAccount synced (iban={IbanLen} chars, holder={Holder})",
                 iban?.Length ?? 0, holder is null ? "(null)" : "(set)");
