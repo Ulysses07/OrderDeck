@@ -19,8 +19,17 @@ public sealed class ShopperRefreshTokenService
 
     public ShopperRefreshTokenService(LicenseDbContext db) => _db = db;
 
+    /// <summary>
+    /// R10-S01: <paramref name="authVersion"/> token'a damgalanır — çağıranın
+    /// parolayı DOĞRULADIĞI andaki nesil. Login, eski parolayla parola
+    /// değişikliğine yarışırsa (Verify eski hash'le geçti, değişiklik + iptal
+    /// süpürmesi commit oldu, bu insert süpürmenin SELECT'inden SONRA koştu)
+    /// token ayakta kalır ama bayat nesli taşır; <see cref="RotateAsync"/>
+    /// ilk yenilemede reddeder. Süpürme listeyle, damga nesille yakalar —
+    /// hangi sıralama gerçekleşirse gerçekleşsin biri tutar.
+    /// </summary>
     public async Task<(string Raw, DateTimeOffset ExpiresAt)> IssueAsync(
-        Guid shopperId, string? createdByIp, CancellationToken ct)
+        Guid shopperId, int authVersion, string? createdByIp, CancellationToken ct)
     {
         var raw = GenerateRaw();
         var now = DateTimeOffset.UtcNow;
@@ -30,6 +39,7 @@ public sealed class ShopperRefreshTokenService
             Id = Guid.NewGuid(),
             ShopperId = shopperId,
             TokenHash = Hash(raw),
+            AuthVersion = authVersion,
             CreatedAt = now,
             ExpiresAt = expiresAt,
             CreatedByIp = createdByIp,
@@ -49,6 +59,20 @@ public sealed class ShopperRefreshTokenService
         if (old.RevokedAt is not null) return null;
         if (old.ExpiresAt < DateTimeOffset.UtcNow) return null;
 
+        // R10-S01: token, üretildiği andaki parola nesline bağlıdır. Nesil
+        // ilerlemişse (parola değişti/sıfırlandı) bu token iptal süpürmesinden
+        // kaçmış demektir — login'in insert'i süpürmenin SELECT'inden sonra
+        // koşmuş olabilir. Süpürmenin göremediğini nesil damgası yakalar;
+        // yenisi de ESKİ nesille üretilemez: aşağıdaki insert aynı damgayı
+        // taşısaydı bile bu kontrol onu bir sonraki yenilemede keserdi, biz
+        // hiç üretmeyerek oturumu burada bitiriyoruz.
+        var currentAuthVersion = await _db.Shoppers
+            .Where(s => s.Id == old.ShopperId)
+            .Select(s => (int?)s.AuthVersion)
+            .FirstOrDefaultAsync(ct);
+        if (currentAuthVersion is null || currentAuthVersion != old.AuthVersion)
+            return null;
+
         var newRaw = GenerateRaw();
         var newHash = Hash(newRaw);
         var now = DateTimeOffset.UtcNow;
@@ -62,6 +86,7 @@ public sealed class ShopperRefreshTokenService
             Id = Guid.NewGuid(),
             ShopperId = old.ShopperId,
             TokenHash = newHash,
+            AuthVersion = old.AuthVersion, // == güncel nesil (yukarıda denendi)
             CreatedAt = now,
             ExpiresAt = newExpiresAt,
             CreatedByIp = createdByIp,

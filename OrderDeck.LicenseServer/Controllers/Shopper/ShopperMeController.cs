@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Shoppers;
 
 namespace OrderDeck.LicenseServer.Controllers.Shopper;
 
@@ -139,7 +140,24 @@ public sealed class ShopperMeController : ControllerBase
         }
 
         shopper.UpdatedAt = DateTimeOffset.UtcNow;
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            // Shopper jetonlarından biri çakıştı (DeletedAt — R10-S02,
+            // LastResetCodeIssuedAt — R10-S03). Gerçekten silinmişse istek
+            // reddedilir: reload edip tekrar denemek purge'ün temizlediği
+            // kişisel veriyi geri doldururdu — KVKK açısından tam olarak
+            // yasak olan şey. Silinme DIŞI çakışmada (örn. eşzamanlı OTP
+            // üretimi) helper jetonları tazeleyip kaydı tamamlar.
+            if (await ShopperSaveConflict.DeletedWonAsync(_db, ex, ct))
+                return Problem(
+                    title: "profile-conflict",
+                    detail: "Hesap bu istek sürerken silindi; profil güncellenmedi.",
+                    statusCode: StatusCodes.Status409Conflict);
+        }
 
         var broadcasters = await _db.ShopperBroadcasterLinks
             .Where(l => l.ShopperId == shopperId && l.LeftAt == null)
@@ -231,7 +249,23 @@ public sealed class ShopperMeController : ControllerBase
         foreach (var link in activeLinks)
             link.LeftAt = now;
 
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            // Jeton çakışması iki AYRI anlam taşır ve ayrıştırmak zorunlu:
+            // - Hesap zaten silinmiş (çift tıklama / eşzamanlı purge):
+            //   amaç gerçekleşmiş — idempotent 204. Jeton çift tıklamanın
+            //   iki silme talebi üretmesini de engeller (kaybeden kaydın
+            //   TAMAMI geri alınır).
+            // - Çapraz jeton (örn. eşzamanlı OTP üretimi): burada 204'e
+            //   kestirmeden gitmek YALAN olurdu — hesap açık kalır, KVKK
+            //   silme talebi hiç açılmazdı. Helper kaydı yeniden dener;
+            //   dönüşte silme gerçekten işlenmiştir.
+            _ = await ShopperSaveConflict.DeletedWonAsync(_db, ex, ct);
+        }
 
         return NoContent();
     }
