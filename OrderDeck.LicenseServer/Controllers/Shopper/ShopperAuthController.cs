@@ -240,7 +240,8 @@ public sealed class ShopperAuthController : ControllerBase
         var (accessToken, accessExpiresAt) = _jwt.IssueShopperToken(
             shopper.Id, phone!, shopper.AuthVersion);
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
-        var (refreshRaw, refreshExpiresAt) = await _refresh.IssueAsync(shopper.Id, ip, ct);
+        var (refreshRaw, refreshExpiresAt) = await _refresh.IssueAsync(
+            shopper.Id, shopper.AuthVersion, ip, ct);
 
         // 11. Load all active links for the shopper
         var broadcasters = await BuildBroadcastersAsync(shopper.Id, ct);
@@ -281,7 +282,8 @@ public sealed class ShopperAuthController : ControllerBase
         var (accessToken, accessExpiresAt) = _jwt.IssueShopperToken(
             shopper.Id, phone!, shopper.AuthVersion);
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
-        var (refreshRaw, refreshExpiresAt) = await _refresh.IssueAsync(shopper.Id, ip, ct);
+        var (refreshRaw, refreshExpiresAt) = await _refresh.IssueAsync(
+            shopper.Id, shopper.AuthVersion, ip, ct);
 
         // 5. Load active links
         var broadcasters = await BuildBroadcastersAsync(shopper.Id, ct);
@@ -396,7 +398,17 @@ public sealed class ShopperAuthController : ControllerBase
 
         shopper.PhoneVerifiedAt = DateTimeOffset.UtcNow;
         await ResolvePendingLinksAsync(shopper, ct);
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // DeletedAt jetonu (R10-S02): hesap bu istek sürerken silindi.
+            // Silinmiş hesaba doğrulama damgası yazılmaz; cevap, bu ucun
+            // silinmiş-hesap yolundakiyle aynı (Unauthorized).
+            return Unauthorized();
+        }
         return NoContent();
     }
 
@@ -481,7 +493,18 @@ public sealed class ShopperAuthController : ControllerBase
         // Aktif refresh token'ları iptal et — eski cihazlar otomatik logout.
         await _refresh.MarkAllRevokedAsync(shopper.Id, now, ct);
 
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // DeletedAt jetonu (R10-S02): hesap bu istek sürerken silindi.
+            // Reload edip yeniden denemek purge'ün "PURGED" parolasını
+            // çalışan bir hash'le ezerdi — hesap diriltme. Cevap, bu ucun
+            // silinmiş-hesap yolundakiyle aynı (numaralandırma sızdırmaz).
+            return Problem(title: "invalid-code", statusCode: 400);
+        }
         return NoContent();
     }
 
@@ -606,7 +629,17 @@ public sealed class ShopperAuthController : ControllerBase
         // token yenilemesi istemcide tutulduğu için burada ayıramıyoruz.
         await _refresh.MarkAllRevokedAsync(shopper.Id, now, ct);
 
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // DeletedAt jetonu (R10-S02): hesap bu istek sürerken silindi.
+            // Purge'ün "PURGED" parolası çalışan bir hash'le ezilmemeli.
+            // Cevap, bu ucun silinmiş-hesap yolundakiyle aynı (401).
+            return Problem(title: "unauthorized", statusCode: 401);
+        }
 
         // 8. Return 204
         return NoContent();

@@ -14,6 +14,14 @@ public sealed class ShopperRefreshToken
     /// <summary>SHA-256 of the raw token, lowercase hex (64 chars).</summary>
     public string TokenHash { get; set; } = "";
 
+    /// <summary>
+    /// R10-S01: token üretildiği andaki <see cref="Shopper.AuthVersion"/>.
+    /// Yenilemede shopper'ın güncel nesliyle karşılaştırılır; parola
+    /// değişikliğiyle yarışıp iptal süpürmesinden kaçan token'lar böylece
+    /// ilk yenilemede düşer.
+    /// </summary>
+    public int AuthVersion { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset ExpiresAt { get; set; }
     public DateTimeOffset? RevokedAt { get; set; }
