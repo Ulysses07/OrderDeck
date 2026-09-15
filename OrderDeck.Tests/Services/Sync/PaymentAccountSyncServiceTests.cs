@@ -206,6 +206,50 @@ public sealed class PaymentAccountSyncServiceTests
     }
 
     [Fact]
+    public async Task Lisans_degisince_ayni_degerler_yeni_hedefe_de_gonderilir()
+    {
+        // R10-D03: "değişti mi?" önbelleği yalnız değerlerden oluşuyordu
+        // (_lastSyncedIban/_lastSyncedAccountHolder) — hedef lisans kimliği
+        // içinde yoktu. A lisansına gönderilmiş IBAN, hedef B'ye geçince de
+        // "değişmedi" sayılıyor ve B hiç POST almıyordu. Önbellek kimliği
+        // hedef lisansı da içermeli.
+        var licenseIdB = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        const string licenseKeyB = "PAY-ACCT-TEST-KEY-B";
+        var twoLicensesJson =
+            $"[{{\"id\":\"{TestLicenseId}\",\"licenseKey\":\"{TestLicenseKey}\"}}," +
+            $"{{\"id\":\"{licenseIdB}\",\"licenseKey\":\"{licenseKeyB}\"}}]";
+
+        var fx = Build(req =>
+        {
+            var path = req.RequestUri!.PathAndQuery;
+            if (path.StartsWith("/api/v1/me/licenses"))
+                return FakeHttpMessageHandler.Json(200, twoLicensesJson);
+            if (path.Contains("/payment-account"))
+                return FakeHttpMessageHandler.Empty(204);
+            return FakeHttpMessageHandler.Empty(404);
+        });
+
+        var settings = fx.Store.Load();
+        settings.Payment.Iban          = "TR330006100519786457841326";
+        settings.Payment.AccountHolder = "Ahmet Yıldız";
+        fx.Store.Save(settings);
+
+        // A hedefine ilk gönderim
+        await fx.Svc.SyncIfChangedAsync(CancellationToken.None);
+        fx.Requests.Should().Contain(r =>
+            r.Method == HttpMethod.Post && r.Path.Contains($"/{TestLicenseId}/payment-account"),
+            "ilk tur mevcut hedefe göndermeli");
+
+        // Hedef lisans değişti; değerler aynı
+        fx.License.CurrentLicenseKey = licenseKeyB;
+        await fx.Svc.SyncIfChangedAsync(CancellationToken.None);
+
+        fx.Requests.Should().Contain(r =>
+            r.Method == HttpMethod.Post && r.Path.Contains($"/{licenseIdB}/payment-account"),
+            "yeni hedef B, aynı değerlerle de olsa hesabı almalı — değer önbelleği hedefe bağlı olmalı");
+    }
+
+    [Fact]
     public async Task Sync_api_failure_does_not_throw()
     {
         var fx = Build(req =>
