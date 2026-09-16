@@ -314,7 +314,7 @@ public sealed class ShopperAuthController : ControllerBase
         if (rotated is null)
             return Problem(title: "invalid-refresh-token", statusCode: 401);
 
-        var (shopperId, newRefreshRaw, newRefreshExpiresAt) = rotated.Value;
+        var (shopperId, authVersion, newRefreshRaw, newRefreshExpiresAt) = rotated.Value;
 
         // 2. Get shopper (verify not deleted)
         var shopper = await _db.Shoppers.FirstOrDefaultAsync(s => s.Id == shopperId, ct);
@@ -322,8 +322,15 @@ public sealed class ShopperAuthController : ControllerBase
             return Problem(title: "invalid-refresh-token", statusCode: 401);
 
         // 3. Issue new access token
+        //
+        // Nesil ROTASYONUN doğruladığı değerdir, yukarıdaki satırın o anki hâli
+        // DEĞİL: rotasyon commit'i ile bu okuma arasına bir parola değişikliği
+        // girebilir. Satırdan okunsaydı, parola değişikliğinin kapatması gereken
+        // oturum YENİ nesle ait — yani OnTokenValidated'ın kabul edeceği — bir
+        // access token alır ve hesap ömrü boyunca (≤15 dk) açık kalırdı. Doğru
+        // nesille damgalanan token ilk istekte reddedilir.
         var (newAccessToken, newAccessExpiresAt) = _jwt.IssueShopperToken(
-            shopper.Id, shopper.Phone, shopper.AuthVersion);
+            shopper.Id, shopper.Phone, authVersion);
 
         // 4. Return 200 with RefreshResponse
         return Ok(new RefreshResponse(

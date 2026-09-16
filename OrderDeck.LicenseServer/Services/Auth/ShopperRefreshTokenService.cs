@@ -48,7 +48,14 @@ public sealed class ShopperRefreshTokenService
         return (raw, expiresAt);
     }
 
-    public async Task<(Guid ShopperId, string NewRaw, DateTimeOffset NewExpiresAt)?> RotateAsync(
+    /// <summary>
+    /// Tek kullanımlık rotasyon. Dönüş değerinde <c>AuthVersion</c> da var:
+    /// rotasyonun DOĞRULADIĞI nesil. Çağıran access token'ı bu nesille
+    /// üretmeli — shopper satırını yeniden okumamalı. Aradaki bir parola
+    /// değişikliği satırı ilerletmiş olabilir ve yeniden okuma, iptal edilmesi
+    /// gereken oturuma YENİ nesle ait (yani geçerli) bir token verirdi.
+    /// </summary>
+    public async Task<(Guid ShopperId, int AuthVersion, string NewRaw, DateTimeOffset NewExpiresAt)?> RotateAsync(
         string oldRaw, string? createdByIp, CancellationToken ct)
     {
         var oldHash = Hash(oldRaw);
@@ -108,7 +115,7 @@ public sealed class ShopperRefreshTokenService
             return null;
         }
 
-        return (old.ShopperId, newRaw, newExpiresAt);
+        return (old.ShopperId, old.AuthVersion, newRaw, newExpiresAt);
     }
 
     /// <summary>
