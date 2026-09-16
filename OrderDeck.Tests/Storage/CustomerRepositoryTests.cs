@@ -307,6 +307,49 @@ public class CustomerRepositoryTests
         loaded!.Phone.Should().Be("+905551234567");
     }
 
+    // ── R12-D02 (2026-09-16 denetimi): telefon yazısı da silme kapısına tabi ──
+    //
+    // "Karar, uygulanan yazının WHERE'inde yaşar" sözleşmesi intake ve backfill
+    // yollarında vardı; elle telefon girişi o kapıya sahip değildi. Silme
+    // kararı indikten SONRA gelen bir Save boşaltılmış satırı yeniden
+    // dolduruyordu ve sonraki boş ingest onu temizlemiyordu.
+
+    [Fact]
+    public void UpdatePhone_silinmis_satira_yazmaz()
+    {
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+        repo.Insert(new Customer("id1", "twitch", "alice", "Alice", null,
+            1000, 1000, false, null, null, 0, 0m, null, null, null));
+        repo.RecordPurge("twitch", "alice", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
+        var written = repo.UpdatePhone("id1", "+905551234567");
+
+        written.Should().Be(0, "çağıran hiç satır değişmediğini görebilmeli");
+        repo.GetById("id1")!.Phone.Should().BeNull();
+    }
+
+    [Fact]
+    public void UpdatePhone_silme_oncesi_yazi_normal_calisir()
+    {
+        // Karşı kontrol: kapı, silinmemiş satırdaki meşru yazıyı engellemiyor.
+        using var db = new InMemorySqlite();
+        new MigrationRunner(db).Run();
+        var repo = new CustomerRepository(db);
+        repo.Insert(new Customer("id1", "twitch", "alice", "Alice", null,
+            1000, 1000, false, null, null, 0, 0m, null, null, null));
+
+        var written = repo.UpdatePhone("id1", "+905551234567");
+
+        written.Should().Be(1);
+        repo.GetById("id1")!.Phone.Should().Be("+905551234567");
+
+        // …ve sonradan inen silme onu yine temizliyor (R11-D01 korunuyor).
+        repo.RecordPurge("twitch", "alice", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        repo.GetById("id1")!.Phone.Should().BeNull();
+    }
+
     [Fact]
     public void UpdatePhone_OnNonExistentId_DoesNotThrow()
     {
