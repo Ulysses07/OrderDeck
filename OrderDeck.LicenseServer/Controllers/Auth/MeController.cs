@@ -57,6 +57,12 @@ public sealed class MeController : ControllerBase
         var now = DateTimeOffset.UtcNow;
         c.PasswordHash = _hasher.Hash(req.NewPassword);
 
+        // R11-S01: nesli ilerlet. Aşağıdaki süpürme o anki AKTİF LİSTEYİ
+        // iptal eder; eski parolayla yarı yolda olan bir login'in insert'i
+        // süpürmeden sonra düşerse listeye hiç girmez. Nesil damgası o
+        // kaçağı yakalar.
+        c.AuthVersion++;
+
         // Diğer oturumları düşür. Parola değiştirmenin asıl sebebi çoğu zaman
         // "hesabıma biri girdi" olduğu için, eski refresh token'lar ayakta
         // kalırsa işlem amacını karşılamaz. Bu oturum da yeniden giriş yapar —

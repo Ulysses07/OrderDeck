@@ -113,7 +113,11 @@ public sealed class AuthController : ControllerBase
 
         var (token, expiresAt) = _jwt.IssueCustomerToken(customer.Id, customer.Email);
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
-        var (refreshRaw, refreshExpiresAt, refreshId) = await _refreshTokens.IssueAsync(customer.Id, ip, ct);
+        // R11-S01: damga, parolanın DOĞRULANDIĞI anda okunan nesil. Araya
+        // giren bir parola değişikliği nesli ilerletmişse bu token bayat
+        // damgalanır ve ilk yenilemede düşer.
+        var (refreshRaw, refreshExpiresAt, refreshId) = await _refreshTokens.IssueAsync(
+            customer.Id, customer.AuthVersion, ip, ct);
 
         await _audit.LogCustomerEventAsync(
             customer.Id, customer.Email,

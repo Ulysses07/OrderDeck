@@ -183,6 +183,10 @@ public sealed class AdminCustomersController : ControllerBase
         customer.Email = $"purged-{customer.Id:N}@deleted.invalid";
         customer.Name = "[Deleted]";
         customer.PasswordHash = "PURGED";
+        // R11-S01: purge, yukarıdaki RemoveRange ile token satırlarını siler
+        // ama silmenin SELECT'inden sonra düşen bir login insert'i tabloda
+        // kalırdı. Nesil ilerlemesi o kaçağı da geçersizler.
+        customer.AuthVersion++;
         customer.EmailConfirmedAt = null;
         customer.Unsubscribed = true;
         customer.Notes = null;

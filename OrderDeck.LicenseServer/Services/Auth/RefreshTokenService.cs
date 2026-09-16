@@ -36,9 +36,14 @@ public sealed class RefreshTokenService
     /// Issues a new refresh token for the given customer. Returns the raw token
     /// (shown to the caller exactly once) and its expiry. The DB Id of the new
     /// row is returned for audit logging.
+    ///
+    /// <para>R11-S01: <paramref name="authVersion"/>, parolanın DOĞRULANDIĞI
+    /// anda okunan nesildir — çağıran onu yeniden okumamalı, yoksa araya giren
+    /// parola değişikliği yeni nesille damgalanır ve damganın anlamı kalmaz.
+    /// </para>
     /// </summary>
     public async Task<(string RawToken, DateTimeOffset ExpiresAt, Guid TokenId)> IssueAsync(
-        Guid customerId, string? ip, CancellationToken ct)
+        Guid customerId, int authVersion, string? ip, CancellationToken ct)
     {
         var raw = GenerateRawToken();
         var hash = HashToken(raw);
@@ -49,6 +54,7 @@ public sealed class RefreshTokenService
             Id = Guid.NewGuid(),
             CustomerId = customerId,
             TokenHash = hash,
+            AuthVersion = authVersion,
             CreatedAt = now,
             ExpiresAt = now.AddDays(lifetimeDays),
             CreatedByIp = ip
@@ -82,6 +88,20 @@ public sealed class RefreshTokenService
         if (existing.ExpiresAt <= DateTimeOffset.UtcNow)
             throw new RefreshTokenInvalidException("expired");
 
+        // R11-S01: token, üretildiği andaki parola nesline bağlıdır. Nesil
+        // ilerlemişse (parola değişti/sıfırlandı/hesap purge edildi) bu token
+        // iptal süpürmesinden kaçmış demektir — login'in insert'i süpürmenin
+        // SELECT'inden sonra koşmuş olabilir. Süpürmenin göremediğini nesil
+        // damgası yakalar. Customer satırı hiç yoksa da reddediyoruz:
+        // "bilinmiyor"u "geçerli" saymak, aşağıdaki Customer.Email
+        // dereference'ını da patlatırdı.
+        var currentAuthVersion = await _db.Customers
+            .Where(c => c.Id == existing.CustomerId)
+            .Select(c => (int?)c.AuthVersion)
+            .FirstOrDefaultAsync(ct);
+        if (currentAuthVersion is null || currentAuthVersion != existing.AuthVersion)
+            throw new RefreshTokenInvalidException("stale-generation");
+
         // Issue fresh pair
         var newRaw = GenerateRawToken();
         var newHash = HashToken(newRaw);
@@ -93,6 +113,7 @@ public sealed class RefreshTokenService
             Id = Guid.NewGuid(),
             CustomerId = existing.CustomerId,
             TokenHash = newHash,
+            AuthVersion = existing.AuthVersion, // == güncel nesil (yukarıda denendi)
             CreatedAt = now,
             ExpiresAt = now.AddDays(lifetimeDays),
             CreatedByIp = ip

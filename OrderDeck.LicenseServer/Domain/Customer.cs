@@ -6,6 +6,17 @@ public sealed class Customer
     public string Email { get; set; } = "";
     public string Name { get; set; } = "";
     public string PasswordHash { get; set; } = "";
+
+    /// <summary>
+    /// R11-S01: parola nesli. Kimlik bilgisini geçersiz kılan her olayda
+    /// (parola değişimi, sıfırlama, KVKK purge) artar. Refresh token'lar
+    /// üretildikleri andaki nesli taşır, yenilemede güncel nesille
+    /// karşılaştırılır. İptal süpürmesi (<c>MarkAllRevokedAsync</c>) o anki
+    /// AKTİF LİSTEYLE çalıştığı için kendisiyle yarışan bir login insert'ini
+    /// kaçırabilir; nesil damgası o kaçağı sıralamadan bağımsız yakalar.
+    /// </summary>
+    public int AuthVersion { get; set; }
+
     public DateTimeOffset? EmailConfirmedAt { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public string? Notes { get; set; }
