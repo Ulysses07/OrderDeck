@@ -62,6 +62,9 @@ public class ShopperRefreshTokenServiceTests
 
         var rotateResult = await svc.RotateAsync(oldRaw, "5.6.7.8", default);
         rotateResult.Should().NotBeNull();
+        rotateResult!.Value.AuthVersion.Should().Be(2,
+            "çağıran access token'ı bu nesille üretecek; shopper satırını " +
+            "yeniden okumak, arada değişen bir parolanın neslini kapmak olurdu");
 
         var rows = await db.ShopperRefreshTokens.OrderBy(t => t.CreatedAt).ToListAsync();
         rows.Should().HaveCount(2);
