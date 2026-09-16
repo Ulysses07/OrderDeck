@@ -12,9 +12,52 @@ public sealed class CustomerRepository
     private readonly IDbConnectionFactory _factory;
     public CustomerRepository(IDbConnectionFactory factory) => _factory = factory;
 
+    /// <summary>
+    /// KVKK boşaltma atamaları. Tek metinde tutuluyor çünkü iki yerden
+    /// kullanılıyor (<see cref="ScrubPersonalData"/> ve
+    /// <see cref="ScrubIfTombstonedSql"/>); ikisinin ayrışması, bir yoldan
+    /// açılan satırın öbüründen temizlenmemesi demek olurdu.
+    ///
+    /// Neyin KALDIĞI ve gerekçesi <see cref="ScrubPersonalData"/>'da yazılı.
+    /// </summary>
+    private const string ScrubAssignments = @"
+        DisplayName     = '[Silindi]',
+        FullName        = NULL,
+        Address         = NULL,
+        City            = NULL,
+        District        = NULL,
+        Phone           = NULL,
+        Email           = NULL,
+        Tckn            = NULL,
+        AvatarUrl       = NULL,
+        WhatsAppConsent = 0,
+        SmsConsent      = 0";
+
+    /// <summary>
+    /// R11-D01: "bu satırın kimliği silinmişse temizle." Satır AÇAN her yol,
+    /// açtığı satır için bunu AYNI işlemde koşar.
+    ///
+    /// <para>Karar öncesinde "if purged" okuyup dallanmıyoruz: okuma ile yazma
+    /// arasındaki pencerede inen bir tombstone kaçardı. Karar burada, uygulanan
+    /// yazının <c>WHERE</c>'inde. <c>PurgedAt</c> tombstone'un tarihinden
+    /// alınır — satır yeni açıldığı için silme anı "şimdi" değil, sunucunun
+    /// bildirdiği andır.</para>
+    /// </summary>
+    private const string ScrubIfTombstonedSql = @"
+        UPDATE Customer
+        SET " + ScrubAssignments + @",
+            PurgedAt = COALESCE(PurgedAt, (
+                SELECT t.PurgedAt FROM CustomerPurgeTombstone t
+                WHERE t.Platform = Customer.Platform AND t.Username = Customer.Username))
+        WHERE Id = @id
+          AND EXISTS (
+                SELECT 1 FROM CustomerPurgeTombstone t
+                WHERE t.Platform = Customer.Platform AND t.Username = Customer.Username)";
+
     public void Insert(Customer c)
     {
         using var conn = _factory.Open();
+        using var tx = conn.BeginTransaction();
         conn.Execute(
             @"INSERT INTO Customer
               (Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
@@ -40,7 +83,15 @@ public sealed class CustomerRepository
                 WhatsAppConsent = c.WhatsAppConsent ? 1 : 0,
                 SmsConsent = c.SmsConsent ? 1 : 0,
                 c.FullName, c.City, c.District
-            });
+            }, tx);
+
+        // R11-D01: chat akışı/ingest bu yoldan satır açar. Kimlik KVKK ile
+        // silinmişse satır boş DOĞAR — silinen kişi yayına tek yorum yazdığı
+        // anda takma adı ve avatarıyla geri gelmesin diye. Satırın kendisi
+        // açılıyor çünkü etiket/sipariş ona bağlanacak; bariyer de o satır
+        // (PurgedAt dolu → tüm güncelleme yolları kapalı).
+        conn.Execute(ScrubIfTombstonedSql, new { id = c.Id }, tx);
+        tx.Commit();
     }
 
     /// <summary>Kargo PR F: vendor "Alıcı Ödemeli" seçince true,
@@ -578,16 +629,27 @@ public sealed class CustomerRepository
         }
 
         var id = Guid.NewGuid().ToString("N");
+        using var tx = conn.BeginTransaction();
         conn.Execute(@"
             INSERT INTO Customer (Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
                                   IsBlacklisted, BlacklistReason, Notes, TotalLabelsPrinted, TotalAmount,
                                   BlacklistedAt, Address, Phone)
             VALUES (@id, @platform, @username, @fullName, NULL, @nowUnix, @nowUnix,
                     0, NULL, NULL, 0, 0, NULL, @address, @phone)",
-            new { id, platform, username, fullName, nowUnix, address, phone });
+            new { id, platform, username, fullName, nowUnix, address, phone }, tx);
 
-        return new Customer(id, platform, username, fullName, null, nowUnix, nowUnix,
-            false, null, null, 0, 0m, null, address, phone);
+        // R11-D01: yerelde satır YOKKEN inmiş bir KVKK tombstone'u varsa satır
+        // boş doğar. Yukarıdaki UPDATE dalı zaten kapılıydı; açık olan tek
+        // kapak buydu — silinen kişi, gecikmiş form cevabıyla sıfırdan
+        // diriliyordu.
+        var scrubbed = conn.Execute(ScrubIfTombstonedSql, new { id }, tx) > 0;
+        tx.Commit();
+
+        return scrubbed
+            ? new Customer(id, platform, username, "[Silindi]", null, nowUnix, nowUnix,
+                false, null, null, 0, 0m, null, null, null)
+            : new Customer(id, platform, username, fullName, null, nowUnix, nowUnix,
+                false, null, null, 0, 0m, null, address, phone);
     }
 
     /// <summary>
@@ -676,6 +738,8 @@ public sealed class CustomerRepository
             }
             else
             {
+                var newId = Guid.NewGuid().ToString("N");
+                using var tx = conn.BeginTransaction();
                 conn.Execute(
                     @"INSERT INTO Customer
                       (Id, Platform, Username, DisplayName, AvatarUrl, FirstSeenAt, LastSeenAt,
@@ -691,10 +755,18 @@ public sealed class CustomerRepository
                        @city, @district)",
                     new
                     {
-                        id = Guid.NewGuid().ToString("N"), p, u, displayForRow, now = nowUnix,
+                        id = newId, p, u, displayForRow, now = nowUnix,
                         address, city = cityValue, district = districtValue, phone, groupId, email, tckn,
                         wa = whatsAppConsent ? 1 : 0, sms = smsConsent ? 1 : 0, fullName = fullNameValue
-                    });
+                    }, tx);
+
+                // R11-D01: yukarıdaki UPDATE dalı "AND PurgedAt IS NULL" ile
+                // kapılıydı ama yerelde satırı hiç olmayan silinmiş kimlik bu
+                // dala düşüyor ve formun TÜM kişisel verisini (ad, adres,
+                // telefon, e-posta, TCKN) sıfırdan yazıyordu. Karar artık
+                // kimliğin kendisinde duruyor; satır boş doğuyor.
+                conn.Execute(ScrubIfTombstonedSql, new { id = newId }, tx);
+                tx.Commit();
             }
         }
 
@@ -820,21 +892,55 @@ public sealed class CustomerRepository
     {
         using var conn = _factory.Open();
         return conn.Execute(
-            @"UPDATE Customer
-              SET DisplayName     = '[Silindi]',
-                  FullName        = NULL,
-                  Address         = NULL,
-                  City            = NULL,
-                  District        = NULL,
-                  Phone           = NULL,
-                  Email           = NULL,
-                  Tckn            = NULL,
-                  AvatarUrl       = NULL,
-                  WhatsAppConsent = 0,
-                  SmsConsent      = 0,
+            "UPDATE Customer SET " + ScrubAssignments + @",
                   PurgedAt        = COALESCE(PurgedAt, @now)
               WHERE Id = @id",
             new { id = customerId, now = DateTimeOffset.UtcNow.ToUnixTimeSeconds() });
+    }
+
+    /// <summary>
+    /// R11-D01: KVKK silme kararını kimlik düzeyinde kaydeder ve varsa yerel
+    /// satırı boşaltır. <see cref="ScrubPersonalData"/>'nın yerini alır —
+    /// çünkü <b>silme kararının yerel satırın varlığına bağlı olmaması</b>
+    /// gerekiyor.
+    ///
+    /// <para>Eski davranış: yerelde eşleşen satır yoksa hiçbir şey yazılmıyor,
+    /// ingest imleci ilerliyordu. Karar hiçbir yerde durmadığı için sonradan
+    /// inen bir intake form cevabı (ya da kişinin yayına yazdığı tek bir
+    /// yorum) aynı kimliği sıfırdan, tam kişisel veriyle açıyordu; tombstone
+    /// bir daha inmediği için de ihlal kalıcılaşıyordu.</para>
+    ///
+    /// <para>Tombstone satırı hem varken hem yokken yazılır: satır varsa bile
+    /// yedekten geri yükleme onu geri götürebilir, karar ise kimlik
+    /// tablosunda kalır. <c>MIN</c>: tekrarlanan bildirim İLK silme tarihini
+    /// korur (<see cref="ScrubPersonalData"/>'daki <c>COALESCE</c> ile aynı
+    /// gerekçe — tarih adli kayıt).</para>
+    ///
+    /// <para>Boşaltma <c>Id</c> ile değil <c>(Platform, Username)</c> ile
+    /// yapılıyor: aynı kimlikten birden fazla satır kalmışsa (eski
+    /// birleştirmelerden) hepsi kapsanır.</para>
+    /// </summary>
+    /// <returns>Boşaltılan yerel satır sayısı; satır yoksa 0 — karar yine de yazılmıştır.</returns>
+    public int RecordPurge(string platform, string username, long purgedAtUnix)
+    {
+        using var conn = _factory.Open();
+        using var tx = conn.BeginTransaction();
+
+        conn.Execute(
+            @"INSERT INTO CustomerPurgeTombstone (Platform, Username, PurgedAt)
+              VALUES (@platform, @username, @purgedAtUnix)
+              ON CONFLICT(Platform, Username) DO UPDATE SET
+                  PurgedAt = MIN(CustomerPurgeTombstone.PurgedAt, excluded.PurgedAt)",
+            new { platform, username, purgedAtUnix }, tx);
+
+        var scrubbed = conn.Execute(
+            "UPDATE Customer SET " + ScrubAssignments + @",
+                  PurgedAt        = COALESCE(PurgedAt, @purgedAtUnix)
+              WHERE Platform = @platform AND Username = @username COLLATE NOCASE",
+            new { platform, username, purgedAtUnix }, tx);
+
+        tx.Commit();
+        return scrubbed;
     }
 
     /// <summary>Phase 4g: WhatsApp E.164 telefonu güncelle. Geçersiz id no-op.
