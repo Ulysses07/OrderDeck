@@ -191,7 +191,19 @@ public sealed class AdminCustomersController : ControllerBase
         customer.Unsubscribed = true;
         customer.Notes = null;
 
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // R12-S01: araya giren bir kimlik geçersizleştirmesi bu purge'ü
+            // bayat bırakır. Silmenin yarısını yazıp "tamam" demek yerine
+            // çatışmayı bildiriyoruz: operatör tekrar çağırır, purge
+            // idempotent. Blob silme aşağıda — buraya düşen istek ona hiç
+            // ulaşmaz, yani satırlar dururken dosyalar silinmiş olmaz.
+            return Problem(title: "concurrent-credential-change", statusCode: 409);
+        }
 
         // Rows are gone — now the files. A failure here leaves an orphan blob,
         // which BackupOrphanCleanupJob sweeps; DeleteBlob already logs and

@@ -14,6 +14,15 @@ public sealed class Customer
     /// karşılaştırılır. İptal süpürmesi (<c>MarkAllRevokedAsync</c>) o anki
     /// AKTİF LİSTEYLE çalıştığı için kendisiyle yarışan bir login insert'ini
     /// kaçırabilir; nesil damgası o kaçağı sıralamadan bağımsız yakalar.
+    ///
+    /// <para>R12-S01: aynı zamanda bu satırın EŞZAMANLILIK JETONU
+    /// (<c>LicenseDbContext.OnModelCreating</c>). Düz okuma-artırma-yazma
+    /// altında iki parola değişimi aynı nesli okuyup ikisi de aynı sonraki
+    /// değeri yazabiliyordu: iki "başarılı" geçersizleştirme ama tek nesil —
+    /// yani ikinci değişim, birinci parolayla açılmış oturumu iptal ettiğini
+    /// sanarken iptal etmiyordu. Jeton, kaybeden yazıyı sessizce kabul etmek
+    /// yerine reddettirir; artırmayı atomikleştirip bayat parola gövdesini
+    /// yine de yazmak farklı ve daha kötü bir ürün sonucu olurdu.</para>
     /// </summary>
     public int AuthVersion { get; set; }
 

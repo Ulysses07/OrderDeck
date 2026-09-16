@@ -69,7 +69,19 @@ public sealed class MeController : ControllerBase
         // token yenilemesi istemcide tutulduğu için burada ayıramıyoruz.
         await _refresh.MarkAllRevokedAsync(c.Id, now, ct);
 
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // R12-S01: nesil eşzamanlılık jetonu. Araya başka bir kimlik
+            // geçersizleştirmesi girdiyse bu yazı BAYAT: okuduğu nesli
+            // ilerletemez, dolayısıyla "diğer oturumları düşürdüm" sözünü de
+            // veremez. Sessizce 204 dönmek istemciye tutulmamış bir söz
+            // verirdi; çatışmayı görünür kılıp yeniden denemesini istiyoruz.
+            return Problem(title: "concurrent-credential-change", statusCode: 409);
+        }
         return NoContent();
     }
 
