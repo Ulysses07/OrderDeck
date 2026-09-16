@@ -110,6 +110,19 @@ public sealed class AppSettings
     /// step in seconds.</summary>
     public bool HasCompletedFirstRun { get; set; } = false;
 
+    /// <summary>
+    /// Bu AYAR DOSYASININ kimliği (R12-D03). Yedeğin dışında yaşadığı için
+    /// yeni cihazda, dosya silindiğinde ya da bozulup karantinaya alındığında
+    /// yeniden üretilir — yani "bu dosya taze" olgusunu kanıtlayabilen tek şey.
+    ///
+    /// Kalıcı senkron kayıtları bununla damgalanır: damga tutmayan bir kayıt,
+    /// içeriği doğru olsa bile bu dosya için karşılaştırma tabanı değildir.
+    /// Böylece kurulmamış (varsayılan boş) bir ayar bloğu, sunucudaki değeri
+    /// "boşaltıldı" diye okutamaz. Boş = "henüz üretilmedi"; ilk ihtiyaçta
+    /// yazılır.
+    /// </summary>
+    public string InstallationId { get; set; } = "";
+
     // FullNameBackfillDone buradan KALDIRILDI (R9-D03): işaret artık
     // SyncCursor("intake-fullname-backfill").Seq sürüm numarası — bool dönemi
     // sürüm 1 sayılır ve satır yokluğu backfill'i yeniden koşturur (eski kod

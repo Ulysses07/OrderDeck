@@ -7,13 +7,19 @@ namespace OrderDeck.Core.Storage.Repositories;
 /// Sunucuya gönderilmiş ödeme hesabı değerleri (lisans anahtarı başına bir
 /// satır). <paramref name="PendingSince"/> doluysa değerler DOĞRULANMAMIŞTIR:
 /// gönderim yapıldı, karşılığı görülmedi (R11-D02).
+///
+/// <paramref name="InstallationId"/> satırı YAZAN ayar dosyasının kimliğidir
+/// (R12-D03). Satır yedekle taşınır, ayar dosyası taşınmaz; damga tutmuyorsa
+/// satır bu ayar dosyası için karşılaştırma tabanı sayılamaz. NULL = damgasız
+/// (göç 044 öncesi yazılmış).
 /// </summary>
 public sealed record PaymentAccountSyncState(
     string LicenseKey,
     string? Iban,
     string? AccountHolder,
     DateTimeOffset SyncedAt,
-    DateTimeOffset? PendingSince);
+    DateTimeOffset? PendingSince,
+    string? InstallationId);
 
 /// <summary>
 /// R10-D04: "sunucuyla hiç karşılaştırılmadı" ile "boş değer başarıyla
@@ -37,14 +43,14 @@ public sealed class PaymentAccountSyncStateRepository
     {
         using var conn = _factory.Open();
         var row = conn.QuerySingleOrDefault<Row>(
-            "SELECT LicenseKey, Iban, AccountHolder, SyncedAt, PendingSince "
+            "SELECT LicenseKey, Iban, AccountHolder, SyncedAt, PendingSince, InstallationId "
           + "FROM PaymentAccountSyncState WHERE LicenseKey = @licenseKey",
             new { licenseKey });
         if (row is null) return null;
 
         return new PaymentAccountSyncState(
             row.LicenseKey, row.Iban, row.AccountHolder,
-            Parse(row.SyncedAt)!.Value, Parse(row.PendingSince));
+            Parse(row.SyncedAt)!.Value, Parse(row.PendingSince), row.InstallationId);
     }
 
     /// <summary>
@@ -55,37 +61,56 @@ public sealed class PaymentAccountSyncStateRepository
     /// karar zaten "gönder", karşılaştırma yapılmıyor.
     /// </summary>
     public void MarkPending(string licenseKey, string? iban, string? accountHolder,
-        DateTimeOffset attemptedAt)
+        DateTimeOffset attemptedAt, string installationId)
     {
         using var conn = _factory.Open();
         conn.Execute(
             """
-            INSERT INTO PaymentAccountSyncState (LicenseKey, Iban, AccountHolder, SyncedAt, PendingSince)
-            VALUES (@licenseKey, @iban, @accountHolder, @attemptedAt, @attemptedAt)
+            INSERT INTO PaymentAccountSyncState
+                (LicenseKey, Iban, AccountHolder, SyncedAt, PendingSince, InstallationId)
+            VALUES (@licenseKey, @iban, @accountHolder, @attemptedAt, @attemptedAt, @installationId)
             ON CONFLICT (LicenseKey) DO UPDATE SET
                 Iban = excluded.Iban,
                 AccountHolder = excluded.AccountHolder,
-                PendingSince = COALESCE(PaymentAccountSyncState.PendingSince, excluded.PendingSince)
+                PendingSince = COALESCE(PaymentAccountSyncState.PendingSince, excluded.PendingSince),
+                InstallationId = excluded.InstallationId
             """,
-            new { licenseKey, iban, accountHolder, attemptedAt = attemptedAt.ToString("O") });
+            new { licenseKey, iban, accountHolder, attemptedAt = attemptedAt.ToString("O"), installationId });
     }
 
     /// <summary>Gönderim doğrulandı: değerler kesinleşir, belirsizlik kalkar.</summary>
     public void Upsert(string licenseKey, string? iban, string? accountHolder,
-        DateTimeOffset syncedAt)
+        DateTimeOffset syncedAt, string installationId)
     {
         using var conn = _factory.Open();
         conn.Execute(
             """
-            INSERT INTO PaymentAccountSyncState (LicenseKey, Iban, AccountHolder, SyncedAt, PendingSince)
-            VALUES (@licenseKey, @iban, @accountHolder, @syncedAt, NULL)
+            INSERT INTO PaymentAccountSyncState
+                (LicenseKey, Iban, AccountHolder, SyncedAt, PendingSince, InstallationId)
+            VALUES (@licenseKey, @iban, @accountHolder, @syncedAt, NULL, @installationId)
             ON CONFLICT (LicenseKey) DO UPDATE SET
                 Iban = excluded.Iban,
                 AccountHolder = excluded.AccountHolder,
                 SyncedAt = excluded.SyncedAt,
-                PendingSince = NULL
+                PendingSince = NULL,
+                InstallationId = excluded.InstallationId
             """,
-            new { licenseKey, iban, accountHolder, syncedAt = syncedAt.ToString("O") });
+            new { licenseKey, iban, accountHolder, syncedAt = syncedAt.ToString("O"), installationId });
+    }
+
+    /// <summary>
+    /// R12-D03: satırın DEĞERLERİ doğru ama damgası başka bir ayar dosyasına
+    /// ait (ya da hiç yok). Yerel yapılandırma satırla örtüştüğü için sunucuya
+    /// gidecek bir şey yok; satır yalnız bu ayar dosyası adına sahiplenilir ki
+    /// bundan SONRAKİ bilinçli boşaltma niyet sayılabilsin.
+    /// </summary>
+    public void Adopt(string licenseKey, string installationId)
+    {
+        using var conn = _factory.Open();
+        conn.Execute(
+            "UPDATE PaymentAccountSyncState SET InstallationId = @installationId "
+          + "WHERE LicenseKey = @licenseKey",
+            new { licenseKey, installationId });
     }
 
     private static DateTimeOffset? Parse(string? value) =>
@@ -94,5 +119,5 @@ public sealed class PaymentAccountSyncStateRepository
             DateTimeStyles.RoundtripKind);
 
     private sealed record Row(string LicenseKey, string? Iban, string? AccountHolder,
-        string SyncedAt, string? PendingSince);
+        string SyncedAt, string? PendingSince, string? InstallationId);
 }
