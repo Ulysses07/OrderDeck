@@ -63,4 +63,32 @@ public class PhoneEntryDialogViewModelTests
         sut.ValidationError.Should().NotBeNullOrEmpty();
         closed.Should().BeFalse();
     }
+
+    // ── R12-D02 (2026-09-16 denetimi): pencere açıkken inen silme ──────────
+    //
+    // Telefon toplamak için çekmece açıldıktan SONRA ingest bir KVKK
+    // tombstone'u uyguluyor. Operatör o sırada Kaydet'e basarsa eski Save,
+    // boşaltılmış satıra telefonu geri yazıyordu — üstelik çekmece "kaydedildi"
+    // diye kapanıp operatöre yanlış bilgi veriyordu.
+
+    [Fact]
+    public void Save_silinmis_musteriye_telefon_yazmaz_ve_kapanmaz()
+    {
+        var customers = CreateRepoWithCustomer();
+        var closed = false;
+        var sut = new PhoneEntryDialogViewModel(customers, "c1", () => closed = true);
+        sut.PhoneInput = "5551234567";
+
+        // Çekmece açıkken silme kararı iniyor.
+        customers.RecordPurge("twitch", "alice", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
+        sut.SaveCommand.Execute(null);
+
+        customers.GetById("c1")!.Phone.Should().BeNull(
+            "silme kararı satırda yaşıyor; geç bir Save onu aşamamalı");
+        closed.Should().BeFalse(
+            "hiç satır değişmediyse çekmece 'kaydedildi' diye kapanmamalı");
+        sut.ValidationError.Should().NotBeNullOrEmpty(
+            "operatör numaranın neden kaydedilmediğini görmeli");
+    }
 }

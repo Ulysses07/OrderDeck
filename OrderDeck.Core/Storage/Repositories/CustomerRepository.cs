@@ -949,12 +949,25 @@ public sealed class CustomerRepository
     /// delta imleci (<see cref="GetUpdatedSince"/>) bu sütunu okur; ilerlemezse
     /// telefon sunucuya HİÇ senkronlanmaz (müşteri bir daha chat'e yazana
     /// kadar). <c>MAX(LastSeenAt+1, @now)</c>: satır başına kesin artan, böylece
-    /// aynı saniyedeki ikinci güncelleme de imlecin önüne düşer.</para></summary>
-    public void UpdatePhone(string customerId, string e164Phone)
+    /// aynı saniyedeki ikinci güncelleme de imlecin önüne düşer.</para>
+    ///
+    /// <para><b>R12-D02 (2026-09-16 denetimi):</b> <c>AND PurgedAt IS NULL</c>
+    /// — elle telefon girişi de silme kapısına tabi. Telefon çekmecesi
+    /// açıldıktan SONRA inen bir tombstone'un ardından basılan Kaydet,
+    /// boşaltılmış satıra numarayı geri yazıyordu; sonraki boş ingest de onu
+    /// temizlemiyordu (kararın kendisi <c>PurgedAt</c> ile satırda duruyor,
+    /// tombstone bir daha inmiyor). Kapıyı burada tutmak, "if purged" diye
+    /// önden okuyup dallanmaktan üstün: okuma ile yazma arasındaki pencerede
+    /// inen bir karar kaçardı — <see cref="ScrubIfTombstonedSql"/> ile aynı
+    /// gerekçe.</para></summary>
+    /// <returns>Güncellenen satır sayısı; bilinmeyen ya da silinmiş id'de 0.
+    /// Çağıran 0'ı "kaydedildi" diye göstermemeli.</returns>
+    public int UpdatePhone(string customerId, string e164Phone)
     {
         using var conn = _factory.Open();
-        conn.Execute(
-            "UPDATE Customer SET Phone=@phone, LastSeenAt=MAX(LastSeenAt+1, @now) WHERE Id=@id",
+        return conn.Execute(
+            @"UPDATE Customer SET Phone=@phone, LastSeenAt=MAX(LastSeenAt+1, @now)
+              WHERE Id=@id AND PurgedAt IS NULL",
             new
             {
                 phone = e164Phone,
