@@ -22,11 +22,20 @@
 --
 -- Mevcut satırlar damgasız kalır (NULL). Bir satırın hangi ayar dosyasınca
 -- yazıldığını geriye dönük kanıtlayamayız; damgasız = "tutmuyor" saymak
--- zararların asimetrisine göre doğru taraftır: en kötü ihtimalle yükseltmeden
--- hemen önceki bir boşaltma niyeti bir tur gecikir ve operatör tekrarlar —
--- diğer yönde ise meşru bir uzak hesap sessizce silinir. Sağlıklı kurulumda
--- pencere kendiliğinden kapanır: yerel değer satırla örtüştüğü için ilk turda
--- gönderimsiz damgalanır.
+-- zararların asimetrisine göre doğru taraftır: diğer yönde meşru bir uzak
+-- hesap sessizce silinirdi. Sağlıklı kurulumda pencere kendiliğinden kapanır:
+-- yerel değer satırla örtüştüğü için ilk turda gönderimsiz damgalanır.
+--
+-- BEDELİ (R13-DATA-01 ile düzeltildi — burada önce "bir tur gecikir ve
+-- operatör tekrarlar" yazıyordu, DOĞRU DEĞİL): yükseltme anında yerel ayar
+-- ZATEN boşsa damgalanacak bir örtüşme yoktur, dolayısıyla o satır kendi
+-- başına hiçbir turda damgalanmaz. Boş Save'i tekrarlamak da ilerletmez —
+-- "yerel boş + damga tutmuyor" dalı her seferinde aynı yere düşer ve
+-- operatör Saved=true + sıfır gönderim görür. Bu dalın kapanması için yerel
+-- boşluğun NİYET olduğunun kanıtı gerekir ve o kanıt ancak dolu bir turdan
+-- geçer: bilinen dolu değerleri geri gir → senkron (satır sahiplenilir) →
+-- sonra boşalt. Körlemesine sahiplenmek alternatif değil; ayırt edemediğimiz
+-- şeyi ayırt ediyormuş gibi yapmak, silinen hesabı geri getirmez.
 
 ALTER TABLE PaymentAccountSyncState ADD COLUMN InstallationId TEXT NULL;
 
