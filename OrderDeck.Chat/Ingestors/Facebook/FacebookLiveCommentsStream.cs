@@ -92,10 +92,14 @@ public sealed class FacebookLiveCommentsStream : IChatIngestor, IDisposable
 
     // Dedupe ring — successive polls overlap (reverse_chronological returns
     // the same newest comments until they scroll past the limit), so we drop
-    // ids we've already published. Bounded to keep memory flat.
-    private const int MaxSeenIds = 5000;
-    private readonly HashSet<string> _seenIds = new(MaxSeenIds);
-    private readonly Queue<string> _seenIdsOrder = new(MaxSeenIds);
+    // ids we've already published.
+    //
+    // R11-CHAT01: halka artık DIŞARIDAN verilir. Poller nesnesinin alanıyken
+    // her yeniden bağlanmada sıfırlanıyordu (hosted service her turda yeni bir
+    // poller kuruyor) ve yeni poller'ın ilk anketi son 100 yorumu tekrar
+    // yayımlıyordu. Verilmezse (doğrudan kurulan testler, tek atımlık
+    // kullanım) kendi halkasını açar — eski davranış.
+    private readonly FacebookSeenComments _seen;
 
     public string Platform => "facebook";
 
@@ -115,7 +119,8 @@ public sealed class FacebookLiveCommentsStream : IChatIngestor, IDisposable
         IChatBus bus,
         HttpClient http,
         ILogger<FacebookLiveCommentsStream> log,
-        SpamFilter? spamFilter = null)
+        SpamFilter? spamFilter = null,
+        FacebookSeenComments? seen = null)
     {
         _liveVideoId = liveVideoId;
         _pageAccessToken = pageAccessToken;
@@ -123,6 +128,7 @@ public sealed class FacebookLiveCommentsStream : IChatIngestor, IDisposable
         _http = http;
         _log = log;
         _spamFilter = spamFilter;
+        _seen = seen ?? new FacebookSeenComments();
     }
 
     public Task StartAsync(CancellationToken ct)
@@ -289,16 +295,8 @@ public sealed class FacebookLiveCommentsStream : IChatIngestor, IDisposable
 
     private void TryPublish(ChatMessage msg)
     {
-        // Dedupe by ExternalId — bounded HashSet + FIFO queue → O(1) insert
-        // and eviction. Same semantics as the YouTube scraper.
-        var key = msg.ExternalId ?? msg.Id;
-        if (!_seenIds.Add(key)) return;
-        _seenIdsOrder.Enqueue(key);
-        if (_seenIdsOrder.Count > MaxSeenIds)
-        {
-            var evicted = _seenIdsOrder.Dequeue();
-            _seenIds.Remove(evicted);
-        }
+        // Dedupe by ExternalId. Same semantics as the YouTube scraper.
+        if (!_seen.TryAdd(msg.ExternalId ?? msg.Id)) return;
 
         if (_spamFilter is not null)
         {
