@@ -54,6 +54,18 @@ public sealed class CustomerRepository
                 SELECT 1 FROM CustomerPurgeTombstone t
                 WHERE t.Platform = Customer.Platform AND t.Username = Customer.Username)";
 
+    /// <summary>
+    /// Kimlik başına tek silme kararı. <c>MIN</c>: tekrarlanan bildirim İLK
+    /// silme tarihini korur (tarih adli kayıt). Tek metinde, çünkü
+    /// <see cref="RecordPurge"/> kanonik kimlik ve (R12-D01) YouTube alias'ı
+    /// için aynı ifadeyi koşar.
+    /// </summary>
+    private const string TombstoneUpsertSql = @"
+        INSERT INTO CustomerPurgeTombstone (Platform, Username, PurgedAt)
+        VALUES (@platform, @username, @purgedAtUnix)
+        ON CONFLICT(Platform, Username) DO UPDATE SET
+            PurgedAt = MIN(CustomerPurgeTombstone.PurgedAt, excluded.PurgedAt)";
+
     public void Insert(Customer c)
     {
         using var conn = _factory.Open();
@@ -926,12 +938,38 @@ public sealed class CustomerRepository
         using var conn = _factory.Open();
         using var tx = conn.BeginTransaction();
 
-        conn.Execute(
-            @"INSERT INTO CustomerPurgeTombstone (Platform, Username, PurgedAt)
-              VALUES (@platform, @username, @purgedAtUnix)
-              ON CONFLICT(Platform, Username) DO UPDATE SET
-                  PurgedAt = MIN(CustomerPurgeTombstone.PurgedAt, excluded.PurgedAt)",
-            new { platform, username, purgedAtUnix }, tx);
+        conn.Execute(TombstoneUpsertSql, new { platform, username, purgedAtUnix }, tx);
+
+        // R12-D01: YouTube'da kararın kapsamı, uygulamanın eşleştirmede
+        // GÜVENDİĞİ bağın tamamı olmalı. Boşaltma DisplayName'i de siliyor;
+        // onunla birlikte <see cref="FindExistingForIntake"/>'in handle
+        // köprüsü de kopuyor. Silmeden ÖNCE kabul edilmiş ama SONRA uygulanan
+        // handle-only bir form artık kanal satırını bulamayıp handle adına
+        // YENİ satır açıyordu ve tombstone yalnız channelId'yi tanıdığı için
+        // o satır temizlenmiyordu. Alias, köprü kopmadan ÖNCE okunur ve aynı
+        // kararın ikinci kimliği olarak yazılır.
+        //
+        // Kapsam bilerek dar: yalnız handle-only girdi. Kanonik kanal kimliği
+        // çözülebiliyorsa satır kendi Username'iyle açılır ve bu tombstone'a
+        // takılmaz — yani handle'ı ileride alan BAŞKA biri kaydolabilir.
+        // '[Silindi]' ve alias == Username elenir: tekrarlanan silme, kararı
+        // boşaltma etiketine ya da kendi kimliğine genişletmesin.
+        if (string.Equals(platform, "youtube", StringComparison.OrdinalIgnoreCase))
+        {
+            var aliases = conn.Query<string>(
+                @"SELECT DISTINCT LTRIM(TRIM(DisplayName), '@') AS Alias
+                  FROM Customer
+                  WHERE Platform = @platform AND Username = @username COLLATE NOCASE
+                    AND DisplayName IS NOT NULL
+                    AND TRIM(DisplayName) <> '[Silindi]'
+                    AND LENGTH(LTRIM(TRIM(DisplayName), '@')) > 0
+                    AND LTRIM(TRIM(DisplayName), '@') <> @username COLLATE NOCASE",
+                new { platform, username }, tx);
+
+            foreach (var alias in aliases)
+                conn.Execute(TombstoneUpsertSql,
+                    new { platform, username = alias, purgedAtUnix }, tx);
+        }
 
         var scrubbed = conn.Execute(
             "UPDATE Customer SET " + ScrubAssignments + @",
