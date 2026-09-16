@@ -326,6 +326,102 @@ public sealed class PaymentAccountSyncServiceTests
     }
 
     [Fact]
+    public async Task Yaniti_kaybolan_gonderimden_sonra_bosaltma_niyeti_atlanmaz()
+    {
+        // R11-D02: kayıt yalnız BAŞARIDA yazıldığı için, sunucuya ULAŞAN ama
+        // yanıtı kaybolan ilk gönderimden sonra hiç satır oluşmuyordu. Operatör
+        // sonra hesabı boşaltıp uygulamayı yeniden başlatınca "kayıt yok + yerel
+        // boş" dalına düşülüp ATLANIYOR, kaldırılmak istenen hesap sunucuda
+        // kalıyordu — üstelik dekont fraud kontrolü o hesabı karşılaştırmaya
+        // devam ediyor.
+        //
+        // Gönderimin sonucu BİLİNMİYORSA bu, "hiç denenmedi" ile aynı şey
+        // değildir: denemenin kendisi kalıcılaşmalı ki sonraki tur kararı
+        // atlamak yerine yeniden göndermek olsun.
+        string? lastBody = null;
+        var loseFirstResponse = true;
+        Func<HttpRequestMessage, HttpResponseMessage> responder = req =>
+        {
+            var path = req.RequestUri!.PathAndQuery;
+            if (path.StartsWith("/api/v1/me/licenses"))
+                return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/payment-account"))
+            {
+                if (loseFirstResponse)
+                {
+                    loseFirstResponse = false;
+                    // Sunucu isteği işledi; yanıt dönüş yolunda kayboldu.
+                    throw new HttpRequestException("yanıt kayboldu");
+                }
+                lastBody = req.Content?.ReadAsStringAsync().GetAwaiter().GetResult();
+                return FakeHttpMessageHandler.Empty(204);
+            }
+            return FakeHttpMessageHandler.Empty(404);
+        };
+
+        var fx = Build(responder);
+        var s1 = fx.Store.Load();
+        s1.Payment.Iban          = "TR330006100519786457841326";
+        s1.Payment.AccountHolder = "Ahmet Yıldız";
+        fx.Store.Save(s1);
+        await fx.Svc.SyncIfChangedAsync(CancellationToken.None);
+
+        // Operatör vazgeçip hesabı boşaltır, tur gelmeden uygulama yeniden başlar.
+        var s2 = fx.Store.Load();
+        s2.Payment.Iban          = "";
+        s2.Payment.AccountHolder = "";
+        fx.Store.Save(s2);
+        var restarted = Restart(fx, responder);
+
+        await restarted.Svc.SyncIfChangedAsync(CancellationToken.None);
+
+        restarted.Requests.Should().Contain(r =>
+            r.Method == HttpMethod.Post && r.Path.Contains("/payment-account"),
+            "sonucu bilinmeyen bir gönderimden sonra atlamak, sunucudaki hesabı " +
+            "operatörün niyetine aykırı olarak ayakta bırakır");
+        lastBody.Should().NotBeNull();
+        lastBody!.Should().Contain("null", "boşaltma sunucuya null olarak gitmeli");
+    }
+
+    [Fact]
+    public async Task Yaniti_kaybolan_gonderim_degerler_aynı_kalsa_da_tekrarlanir()
+    {
+        // R11-D02'nin aynası: yanıt kaybolduktan sonra operatör hiçbir şey
+        // değiştirmezse de gönderim tekrarlanmalı. Belirsiz kayıt karşılaştırma
+        // tabanı olarak kullanılırsa (yerel == kaydedilen → "değişiklik yok")
+        // sunucu hesabı HİÇ almaz ve dekont fraud kontrolü karşılaştıracak
+        // hesap bulamaz. Belirsizlikte karar her zaman "yeniden gönder".
+        var postCount = 0;
+        Func<HttpRequestMessage, HttpResponseMessage> responder = req =>
+        {
+            var path = req.RequestUri!.PathAndQuery;
+            if (path.StartsWith("/api/v1/me/licenses"))
+                return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/payment-account"))
+            {
+                Interlocked.Increment(ref postCount);
+                if (postCount == 1) throw new HttpRequestException("yanıt kayboldu");
+                return FakeHttpMessageHandler.Empty(204);
+            }
+            return FakeHttpMessageHandler.Empty(404);
+        };
+
+        var fx = Build(responder);
+        var settings = fx.Store.Load();
+        settings.Payment.Iban          = "TR330006100519786457841326";
+        settings.Payment.AccountHolder = "Ahmet Yıldız";
+        fx.Store.Save(settings);
+
+        await fx.Svc.SyncIfChangedAsync(CancellationToken.None);   // ulaştı mı? bilinmiyor
+        var restarted = Restart(fx, responder);                     // değerler aynı
+        await restarted.Svc.SyncIfChangedAsync(CancellationToken.None);
+
+        postCount.Should().Be(2,
+            "sonucu bilinmeyen gönderim doğrulanmış taban sayılamaz; aynı " +
+            "değerler yeniden gönderilmeli (POST idempotent)");
+    }
+
+    [Fact]
     public async Task Taze_profil_dolu_uzak_hesabi_korlemesine_silmez()
     {
         // AC46 (zorunlu karşıt kontrol): hiç yapılandırılmamış taze kurulum —
