@@ -129,6 +129,12 @@ public class LicenseDbContext : DbContext
             b.HasIndex(c => c.Email).IsUnique();
             b.Property(c => c.Name).HasMaxLength(200).IsRequired();
             b.Property(c => c.PasswordHash).HasMaxLength(256).IsRequired();
+            // R12-S01: nesil, Customer satırının eşzamanlılık jetonu. Yazı
+            // "WHERE ... AND AuthVersion = <okunan>" ile gider; araya giren bir
+            // kimlik geçersizleştirmesi olduysa bayat yazı satırı bulamaz ve
+            // DbUpdateConcurrencyException'a düşer. Böylece iki değişim aynı
+            // nesli okuyup aynı sonraki değeri yazamaz.
+            b.Property(c => c.AuthVersion).IsConcurrencyToken();
         });
 
         mb.Entity<AdminUser>(b =>
