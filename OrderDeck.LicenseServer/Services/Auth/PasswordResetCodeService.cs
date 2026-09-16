@@ -108,7 +108,34 @@ public sealed class PasswordResetCodeService
             AttemptCount = 0,
         };
         _db.ShopperPasswordResetCodes.Add(row);
-        await _db.SaveChangesAsync(ct);
+
+        // R10-S03: shopper başına CAS. Yukarıdaki kontroller ile INSERT ayrı
+        // adımlar; aynı shopper için iki eşzamanlı üretim ikisi de kontrolleri
+        // geçebilir. LastResetCodeIssuedAt eşzamanlılık jetonu (bkz.
+        // LicenseDbContext) kod satırıyla AYNI SaveChanges'ta güncellenir:
+        // kaybedenin TÜM kaydı (kod satırı dahil) geri alınır ve null döneriz —
+        // çağıranlar bunu throttle gibi işler (429/202). Jeton kota/cooldown
+        // hesabına girmez; DiscardAsync'in satır silmesi bu alanı geri almaz.
+        // Global/IP tavanlarındaki yarışlar bilerek yaklaşık bırakıldı
+        // (maliyet tavanı, ±1 kritik değil).
+        shopper.LastResetCodeIssuedAt = now;
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // Kaybeden: eklenmemiş kod satırını bırak, shopper'ı DB'deki
+            // güncel hâline döndür ki scoped context sonraki kayıtlar için
+            // (örn. PanelSupportRequestsController talep kapatma) temiz kalsın.
+            _db.Entry(row).State = EntityState.Detached;
+            await _db.Entry(shopper).ReloadAsync(ct);
+            _log.LogDebug(
+                "Concurrent password-reset issue lost the race for shopper {ShopperId}; treated as throttled.",
+                shopper.Id);
+            return null;
+        }
+
         return new IssuedCode(row.Id, code);
     }
 

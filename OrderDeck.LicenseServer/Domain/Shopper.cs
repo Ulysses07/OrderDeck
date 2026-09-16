@@ -53,6 +53,16 @@ public sealed class Shopper
     /// "opt-out'u ne zaman işledik" ispatı için.</summary>
     public DateTimeOffset? SmsConsentRevokedAt { get; set; }
 
+    /// <summary>
+    /// Son parola-sıfırlama OTP üretiminin anı. YALNIZ eşzamanlılık jetonu
+    /// (R10-S03): kod satırı eklemesiyle aynı SaveChanges'ta yazılır, iki
+    /// paralel üretimden birini düşürür. Cooldown/kota HİÇBİR ZAMAN buradan
+    /// okunmaz — o hesaplar kod satırlarından yapılır (DiscardAsync teslim
+    /// edilemeyen SMS'in kotayı tüketmemesi için satırı siler; bu alan geri
+    /// alınmaz ve alınmamalı).
+    /// </summary>
+    public DateTimeOffset? LastResetCodeIssuedAt { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
     public DateTimeOffset? DeletedAt { get; set; }
