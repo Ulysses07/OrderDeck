@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 using OrderDeck.Core.Settings;
 using OrderDeck.Core.Storage.Repositories;
 using OrderDeck.Licensing.Api;
@@ -27,6 +27,14 @@ namespace OrderDeck.App.Services.Sync;
 /// kesinleşir. Sunucuya ulaşıp yanıtı kaybolan gönderim aksi hâlde hiç iz
 /// bırakmıyor, operatörün sonraki boşaltma niyeti "kayıt yok + yerel boş"
 /// dalında sessizce atlanıyordu.</para>
+///
+/// <para>R12-D03: kayıt, kendisini yazan AYAR DOSYASININ kimliğiyle
+/// damgalanır. Kaydın değeri güvenilirdir ve yedekle taşınması doğrudur;
+/// güvenilmez olan, yerel boşluğun niyet mi yokluk mu olduğu — ve o kanıt
+/// yalnız ayar dosyasında yaşar, yedeğe ise girmez (BackupService sadece
+/// orderdeck.db'yi zipler). Damga tutmuyorsa kayıt bu dosya için
+/// karşılaştırma tabanı değildir: boş yerel değer "boşaltıldı" diye
+/// okunamaz, örtüşen dolu değer ise gönderimsiz sahiplenilir.</para>
 ///
 /// LicenseId resolution: PaymentSyncService ile aynı pattern (key → API /me/licenses
 /// → Guid, cached). ICurrentLicenseProvider.CurrentLicenseKey string döner;
@@ -71,24 +79,34 @@ public sealed class PaymentAccountSyncService
         // Iban + AccountHolder live on the nested PaymentSettings block.
         var iban   = string.IsNullOrWhiteSpace(settings.Payment.Iban)          ? null : settings.Payment.Iban.Trim();
         var holder = string.IsNullOrWhiteSpace(settings.Payment.AccountHolder) ? null : settings.Payment.AccountHolder.Trim();
+        var installationId = EnsureInstallationId(settings);
 
         // R10-D04: karşılaştırma tabanı kalıcı son-başarılı-gönderim kaydı.
         var state = _stateRepo.Get(licenseKey);
-        if (state is null)
+
+        // R12-D03: kaydın DEĞERİ güvenilir (sunucunun bu lisans için ne bildiğini
+        // söyler, yedekle taşınması da doğrudur); güvenilmez olan şey, YEREL
+        // boşluğun niyet mi yoksa yokluk mu olduğu. O kanıt ayar dosyasında
+        // yaşar ve yedeğe girmez — bu yüzden satır, kendisini yazan dosyanın
+        // kimliğiyle damgalanıyor. Damga tutmuyorsa (yedekten dönen DB, silinmiş
+        // ya da bozulup karantinaya alınmış ayar dosyası) bu dosya bu lisans
+        // için hiçbir şey doğrulamamıştır.
+        var ackIsOurs = state is not null
+            && string.Equals(state.InstallationId, installationId, StringComparison.Ordinal);
+
+        if (iban is null && holder is null && !ackIsOurs)
         {
-            // Sunucunun bu lisans için ne bildiği KAYITLI DEĞİL (taze kurulum,
-            // göç 041 öncesi geçmiş ya da hiç görülmemiş hedef — D03). Yerel
-            // değer de boşsa dokunma: "kayıt yok" ≠ "boşaltıldı"; körlemesine
-            // null-POST meşru bir uzak hesabı silerdi (AC46).
-            if (iban is null && holder is null)
-            {
-                _log.LogDebug(
-                    "PaymentAccount sync skipped — server state unknown and local values empty");
-                return;
-            }
+            // Yapılandırılmamış bir ayar bloğu "boşalt" diyemez. "Kayıt yok" bu
+            // kuralın özel hâli (taze kurulum / göç 041 öncesi geçmiş / hiç
+            // görülmemiş hedef — R10-D03); körlemesine null-POST meşru bir uzak
+            // hesabı, üstelik dekont IBAN kontrolünün dayanağını silerdi (AC46).
+            _log.LogDebug(
+                "PaymentAccount sync skipped — local values empty and no ack from this settings file");
+            return;
         }
-        else if (state.PendingSince is null
-              && iban == state.Iban && holder == state.AccountHolder)
+
+        if (ackIsOurs && state!.PendingSince is null
+         && iban == state.Iban && holder == state.AccountHolder)
         {
             // Yalnız DOĞRULANMIŞ bir taban karşılaştırmaya elverir. PendingSince
             // doluysa değerlerin sunucuya işlenip işlenmediğini bilmiyoruz —
@@ -97,19 +115,32 @@ public sealed class PaymentAccountSyncService
             return;
         }
 
+        if (!ackIsOurs && state is { PendingSince: null }
+         && iban == state.Iban && holder == state.AccountHolder)
+        {
+            // Yerel yapılandırma kaydın söylediğiyle örtüşüyor: sunucuya
+            // gidecek bir şey yok, ama satırı sahiplenmeliyiz — yoksa bu
+            // cihazdaki SONRAKİ bilinçli boşaltma "yerel boş + damga tutmuyor"
+            // dalına düşüp sessizce atlanır. Sağlıklı kurulumda göç 044'ün
+            // damgasız satırları da bu turda kapanır.
+            _stateRepo.Adopt(licenseKey, installationId);
+            _log.LogDebug("PaymentAccount ack adopted by this settings file — values already match");
+            return;
+        }
+
         // R11-D02: denemenin kendisi, sonucundan ÖNCE kalıcılaşır. Sunucuya
         // ULAŞIP yanıtı kaybolan bir gönderim aksi hâlde hiç iz bırakmıyordu;
         // operatör sonra hesabı boşaltıp uygulamayı yeniden başlattığında
         // "satır yok + yerel boş" dalına düşülüp atlanıyor, kaldırılmak istenen
         // hesap sunucuda kalıyordu.
-        _stateRepo.MarkPending(licenseKey, iban, holder, DateTimeOffset.UtcNow);
+        _stateRepo.MarkPending(licenseKey, iban, holder, DateTimeOffset.UtcNow, installationId);
 
         try
         {
             await _api.SyncPaymentAccountAsync(licenseId.Value, iban, holder, ct);
             // Değerler yalnız BAŞARIDA kesinleşir (PendingSince NULL'a çekilir);
             // hata yolunda satır belirsiz kalır ve sonraki tur koşulsuz gönderir.
-            _stateRepo.Upsert(licenseKey, iban, holder, DateTimeOffset.UtcNow);
+            _stateRepo.Upsert(licenseKey, iban, holder, DateTimeOffset.UtcNow, installationId);
             _log.LogInformation(
                 "PaymentAccount synced (iban={IbanLen} chars, holder={Holder})",
                 iban?.Length ?? 0, holder is null ? "(null)" : "(set)");
@@ -118,6 +149,21 @@ public sealed class PaymentAccountSyncService
         {
             _log.LogWarning(ex, "PaymentAccount sync failed; will retry on next interval");
         }
+    }
+
+    /// <summary>
+    /// Ayar dosyasının kimliği; yoksa üretilip kalıcılaştırılır. Yedeğin
+    /// dışında yaşadığı için yeni cihazda/silinmiş/karantinaya alınmış dosyada
+    /// yeniden üretilir — R12-D03 kapısının dayandığı olgu tam olarak budur.
+    /// </summary>
+    private string EnsureInstallationId(AppSettings settings)
+    {
+        if (!string.IsNullOrWhiteSpace(settings.InstallationId))
+            return settings.InstallationId;
+
+        var id = Guid.NewGuid().ToString("N");
+        _settingsStore.Update(s => s.InstallationId = id);
+        return id;
     }
 
     // ─── LicenseId resolution (same caching pattern as other sync services) ──

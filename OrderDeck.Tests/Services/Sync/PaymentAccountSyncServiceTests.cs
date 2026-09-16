@@ -70,6 +70,30 @@ public sealed class PaymentAccountSyncServiceTests
         return previous with { Svc = svc, License = licenseProvider, Requests = requests };
     }
 
+    /// <summary>
+    /// "Yedekten yeni cihaza dönüş" simülasyonu: kalıcı DB aynı (yedek onu
+    /// taşır), ayar dosyası ise TAZE. <c>BackupService</c> yalnız
+    /// <c>orderdeck.db</c>'yi zipliyor; settings.json yedeğe girmiyor, yani
+    /// yeni cihazda ödeme bloğu varsayılan (boş) değerlerle açılır.
+    /// Aynı simülasyon, ayar dosyası bozulup karantinaya alındığında da
+    /// geçerlidir — <c>SettingsStore</c> o durumda da varsayılan döner.
+    /// </summary>
+    private static Fixture RestoreToFreshDevice(
+        Fixture previous, Func<HttpRequestMessage, HttpResponseMessage> responder)
+    {
+        var settingsPath = Path.Combine(Path.GetTempPath(), $"pa-settings-{Guid.NewGuid():N}.json");
+        var store = new SettingsStore(settingsPath);
+        var licenseProvider = new FakeLicenseProvider
+        {
+            CurrentLicenseKey = previous.License.CurrentLicenseKey
+        };
+        var (svc, requests) = NewInstance(responder, store, licenseProvider, previous.Db);
+        return previous with
+        {
+            Svc = svc, Store = store, License = licenseProvider, Requests = requests
+        };
+    }
+
     private static (PaymentAccountSyncService Svc, List<(HttpMethod, string, string?)> Requests)
         NewInstance(
             Func<HttpRequestMessage, HttpResponseMessage> responder,
@@ -434,6 +458,185 @@ public sealed class PaymentAccountSyncServiceTests
 
         fx.Requests.Should().NotContain(r => r.Path.Contains("/payment-account"),
             "bilinmeyen sunucu durumu + boş yerel değer → dokunma");
+    }
+
+    // ─── R12-D03: "boş" ile "boşaltıldı" ayrımı ayar dosyasına bağlıdır ────
+    //
+    // Kayıt sunucunun NE BİLDİĞİNİ söyler ve lisans anahtarı başına tutulduğu
+    // için yedekle taşınması doğrudur. Eksik olan başka bir şey: yerel
+    // boşluğun bir NİYET mi yoksa sadece YOKLUK mu olduğunun kanıtı. O kanıt
+    // ayar dosyasında yaşar ve yedeğe girmez.
+    //
+    // Bu yüzden kayıt, kendisini yazan ayar dosyasının kimliğiyle damgalanır.
+    // Damga tutmuyorsa (yedekten gelen DB, karantinaya alınmış/silinmiş ayar
+    // dosyası) o kayıt bu ayar dosyası için karşılaştırma tabanı değildir:
+    // boş yerel değer "boşaltıldı" diye okunamaz. Kural, R10-D04/AC46'nın
+    // "kayıt yok + yerel boş → dokunma" dalının genelleştirilmiş hâlidir —
+    // "kayıt yok" da "bu ayar dosyası hiçbir şey doğrulamadı"nın özel hâli.
+
+    [Fact]
+    public async Task Restore_edilmis_kayit_kurulmamis_ayarla_uzak_hesabi_silmez()
+    {
+        var postCount = 0;
+        Func<HttpRequestMessage, HttpResponseMessage> responder = req =>
+        {
+            var path = req.RequestUri!.PathAndQuery;
+            if (path.StartsWith("/api/v1/me/licenses"))
+                return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/payment-account"))
+            {
+                Interlocked.Increment(ref postCount);
+                return FakeHttpMessageHandler.Empty(204);
+            }
+            return FakeHttpMessageHandler.Empty(404);
+        };
+
+        var fx = Build(responder);
+        var s1 = fx.Store.Load();
+        s1.Payment.Iban          = "TR330006100519786457841326";
+        s1.Payment.AccountHolder = "Ahmet Yıldız";
+        fx.Store.Save(s1);
+        await fx.Svc.SyncIfChangedAsync(CancellationToken.None);
+        postCount.Should().Be(1, "ilk kurulum hesabı sunucuya gönderir");
+
+        // Yedek yeni cihaza açıldı: DB (ve içindeki doğrulanmış kayıt) geldi,
+        // ayar dosyası gelmedi.
+        var restored = RestoreToFreshDevice(fx, responder);
+
+        await restored.Svc.SyncIfChangedAsync(CancellationToken.None);
+        await restored.Svc.SyncIfChangedAsync(CancellationToken.None);
+
+        postCount.Should().Be(1,
+            "yapılandırılmamış bir ayar dosyası 'boşalt' diyemez; taşınan kayıt " +
+            "yerel boşluğu niyete çeviremez — aksi hâlde dekont IBAN kontrolünün " +
+            "dayandığı uzak hesap sessizce silinirdi");
+    }
+
+    [Fact]
+    public async Task Restore_edilmis_kayit_ortusen_ayarla_gereksiz_yere_tekrarlanmaz()
+    {
+        // Karşıt kontrol: operatör yeni cihazda aynı hesabı yeniden girerse,
+        // sunucu bu değerleri zaten biliyor (kayıt öyle diyor). Gönderim yok;
+        // kayıt yalnız bu ayar dosyası adına sahiplenilir.
+        var postCount = 0;
+        Func<HttpRequestMessage, HttpResponseMessage> responder = req =>
+        {
+            var path = req.RequestUri!.PathAndQuery;
+            if (path.StartsWith("/api/v1/me/licenses"))
+                return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/payment-account"))
+            {
+                Interlocked.Increment(ref postCount);
+                return FakeHttpMessageHandler.Empty(204);
+            }
+            return FakeHttpMessageHandler.Empty(404);
+        };
+
+        var fx = Build(responder);
+        var s1 = fx.Store.Load();
+        s1.Payment.Iban          = "TR330006100519786457841326";
+        s1.Payment.AccountHolder = "Ahmet Yıldız";
+        fx.Store.Save(s1);
+        await fx.Svc.SyncIfChangedAsync(CancellationToken.None);
+
+        var restored = RestoreToFreshDevice(fx, responder);
+        var s2 = restored.Store.Load();
+        s2.Payment.Iban          = "TR330006100519786457841326";
+        s2.Payment.AccountHolder = "Ahmet Yıldız";
+        restored.Store.Save(s2);
+
+        await restored.Svc.SyncIfChangedAsync(CancellationToken.None);
+
+        postCount.Should().Be(1, "değerler kaydın söylediğiyle aynı — yeniden yazmaya gerek yok");
+    }
+
+    [Fact]
+    public async Task Sahiplenilen_kayit_sonraki_bilincli_bosaltmayi_tasir()
+    {
+        // Sahiplenme çıkmaz sokak olmamalı: kayıt bu ayar dosyasına geçtikten
+        // sonra, R10-D04'teki "boşalt + yeniden başlat" yolu yine çalışmalı.
+        var postCount = 0;
+        string? lastBody = null;
+        Func<HttpRequestMessage, HttpResponseMessage> responder = req =>
+        {
+            var path = req.RequestUri!.PathAndQuery;
+            if (path.StartsWith("/api/v1/me/licenses"))
+                return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/payment-account"))
+            {
+                Interlocked.Increment(ref postCount);
+                lastBody = req.Content?.ReadAsStringAsync().GetAwaiter().GetResult();
+                return FakeHttpMessageHandler.Empty(204);
+            }
+            return FakeHttpMessageHandler.Empty(404);
+        };
+
+        var fx = Build(responder);
+        var s1 = fx.Store.Load();
+        s1.Payment.Iban          = "TR330006100519786457841326";
+        s1.Payment.AccountHolder = "Ahmet Yıldız";
+        fx.Store.Save(s1);
+        await fx.Svc.SyncIfChangedAsync(CancellationToken.None);
+
+        var restored = RestoreToFreshDevice(fx, responder);
+        var s2 = restored.Store.Load();
+        s2.Payment.Iban          = "TR330006100519786457841326";
+        s2.Payment.AccountHolder = "Ahmet Yıldız";
+        restored.Store.Save(s2);
+        await restored.Svc.SyncIfChangedAsync(CancellationToken.None); // sahiplenme
+
+        // Operatör yeni cihazda hesabı boşaltır ve tur gelmeden kapatır.
+        var s3 = restored.Store.Load();
+        s3.Payment.Iban          = "";
+        s3.Payment.AccountHolder = "";
+        restored.Store.Save(s3);
+        var afterRestart = Restart(restored, responder);
+
+        await afterRestart.Svc.SyncIfChangedAsync(CancellationToken.None);
+
+        postCount.Should().Be(2, "sahiplenilmiş kayıt artık bu ayar dosyasının tabanıdır");
+        lastBody.Should().NotBeNull();
+        lastBody!.Should().Contain("null", "boşaltma sunucuya null olarak gitmeli");
+    }
+
+    [Fact]
+    public async Task Restore_edilmis_kayit_yeni_cihazin_farkli_hesabini_engellemez()
+    {
+        // Kapı yalnız "yerel boş" hâlinde iş görür. Yeni cihazda BAŞKA bir
+        // hesap girildiyse bu apaçık bir niyettir; gönderilmeli.
+        var postCount = 0;
+        string? lastBody = null;
+        Func<HttpRequestMessage, HttpResponseMessage> responder = req =>
+        {
+            var path = req.RequestUri!.PathAndQuery;
+            if (path.StartsWith("/api/v1/me/licenses"))
+                return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/payment-account"))
+            {
+                Interlocked.Increment(ref postCount);
+                lastBody = req.Content?.ReadAsStringAsync().GetAwaiter().GetResult();
+                return FakeHttpMessageHandler.Empty(204);
+            }
+            return FakeHttpMessageHandler.Empty(404);
+        };
+
+        var fx = Build(responder);
+        var s1 = fx.Store.Load();
+        s1.Payment.Iban          = "TR330006100519786457841326";
+        s1.Payment.AccountHolder = "Ahmet Yıldız";
+        fx.Store.Save(s1);
+        await fx.Svc.SyncIfChangedAsync(CancellationToken.None);
+
+        var restored = RestoreToFreshDevice(fx, responder);
+        var s2 = restored.Store.Load();
+        s2.Payment.Iban          = "TR440006100519786457841327";
+        s2.Payment.AccountHolder = "Ayşe Demir";
+        restored.Store.Save(s2);
+
+        await restored.Svc.SyncIfChangedAsync(CancellationToken.None);
+
+        postCount.Should().Be(2, "yeni cihazda girilen farklı hesap sunucuya gitmeli");
+        lastBody!.Should().Contain("TR440006100519786457841327");
     }
 
     [Fact]
