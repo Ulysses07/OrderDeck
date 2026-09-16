@@ -23,6 +23,11 @@ namespace OrderDeck.App.Services.Sync;
 /// yerel değer de boşsa dokunulmaz (AC46: taze profil meşru uzak hesabı
 /// körlemesine silemez).</para>
 ///
+/// <para>R11-D02: kayıt POST'tan ÖNCE "belirsiz" olarak açılır, başarıda
+/// kesinleşir. Sunucuya ulaşıp yanıtı kaybolan gönderim aksi hâlde hiç iz
+/// bırakmıyor, operatörün sonraki boşaltma niyeti "kayıt yok + yerel boş"
+/// dalında sessizce atlanıyordu.</para>
+///
 /// LicenseId resolution: PaymentSyncService ile aynı pattern (key → API /me/licenses
 /// → Guid, cached). ICurrentLicenseProvider.CurrentLicenseKey string döner;
 /// Guid resolve için GetMyLicensesAsync çağrısı yapılır.
@@ -82,17 +87,28 @@ public sealed class PaymentAccountSyncService
                 return;
             }
         }
-        else if (iban == state.Iban && holder == state.AccountHolder)
+        else if (state.PendingSince is null
+              && iban == state.Iban && holder == state.AccountHolder)
         {
+            // Yalnız DOĞRULANMIŞ bir taban karşılaştırmaya elverir. PendingSince
+            // doluysa değerlerin sunucuya işlenip işlenmediğini bilmiyoruz —
+            // karşılaştırmak "atla" demek olurdu (R11-D02).
             _log.LogDebug("PaymentAccount sync skipped — no change since last push");
             return;
         }
 
+        // R11-D02: denemenin kendisi, sonucundan ÖNCE kalıcılaşır. Sunucuya
+        // ULAŞIP yanıtı kaybolan bir gönderim aksi hâlde hiç iz bırakmıyordu;
+        // operatör sonra hesabı boşaltıp uygulamayı yeniden başlattığında
+        // "satır yok + yerel boş" dalına düşülüp atlanıyor, kaldırılmak istenen
+        // hesap sunucuda kalıyordu.
+        _stateRepo.MarkPending(licenseKey, iban, holder, DateTimeOffset.UtcNow);
+
         try
         {
             await _api.SyncPaymentAccountAsync(licenseId.Value, iban, holder, ct);
-            // Kayıt yalnız BAŞARIDA ilerler; hata yolunda eski taban kalır ve
-            // sonraki tur aynı farkı yeniden görür (boşaltma dahil).
+            // Değerler yalnız BAŞARIDA kesinleşir (PendingSince NULL'a çekilir);
+            // hata yolunda satır belirsiz kalır ve sonraki tur koşulsuz gönderir.
             _stateRepo.Upsert(licenseKey, iban, holder, DateTimeOffset.UtcNow);
             _log.LogInformation(
                 "PaymentAccount synced (iban={IbanLen} chars, holder={Holder})",
