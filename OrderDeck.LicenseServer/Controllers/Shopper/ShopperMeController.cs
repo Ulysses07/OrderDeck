@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Shoppers;
 
 namespace OrderDeck.LicenseServer.Controllers.Shopper;
 
@@ -143,17 +144,19 @@ public sealed class ShopperMeController : ControllerBase
         {
             await _db.SaveChangesAsync(ct);
         }
-        catch (DbUpdateConcurrencyException)
+        catch (DbUpdateConcurrencyException ex)
         {
-            // Okumamızla yazmamız arasında hesap silindi (DeletedAt jetonu,
-            // bkz. LicenseDbContext Shopper config). Reload edip tekrar
-            // denemek purge'ün temizlediği kişisel veriyi geri doldururdu —
-            // KVKK açısından tam olarak yasak olan şey. İstek reddedilir;
-            // hesap zaten kapandığı için istemcinin yapacağı bir şey yok.
-            return Problem(
-                title: "profile-conflict",
-                detail: "Hesap bu istek sürerken silindi; profil güncellenmedi.",
-                statusCode: StatusCodes.Status409Conflict);
+            // Shopper jetonlarından biri çakıştı (DeletedAt — R10-S02,
+            // LastResetCodeIssuedAt — R10-S03). Gerçekten silinmişse istek
+            // reddedilir: reload edip tekrar denemek purge'ün temizlediği
+            // kişisel veriyi geri doldururdu — KVKK açısından tam olarak
+            // yasak olan şey. Silinme DIŞI çakışmada (örn. eşzamanlı OTP
+            // üretimi) helper jetonları tazeleyip kaydı tamamlar.
+            if (await ShopperSaveConflict.DeletedWonAsync(_db, ex, ct))
+                return Problem(
+                    title: "profile-conflict",
+                    detail: "Hesap bu istek sürerken silindi; profil güncellenmedi.",
+                    statusCode: StatusCodes.Status409Conflict);
         }
 
         var broadcasters = await _db.ShopperBroadcasterLinks
@@ -250,13 +253,18 @@ public sealed class ShopperMeController : ControllerBase
         {
             await _db.SaveChangesAsync(ct);
         }
-        catch (DbUpdateConcurrencyException)
+        catch (DbUpdateConcurrencyException ex)
         {
-            // DeletedAt jetonu: hesap bu istek sürerken zaten silindi (çift
-            // tıklama ya da eşzamanlı purge). Amaç gerçekleşmiş — idempotent
-            // 204. Jeton ayrıca çift tıklamanın iki silme talebi satırı
-            // üretmesini de engeller: kaybeden kaydın TAMAMI geri alınır.
-            return NoContent();
+            // Jeton çakışması iki AYRI anlam taşır ve ayrıştırmak zorunlu:
+            // - Hesap zaten silinmiş (çift tıklama / eşzamanlı purge):
+            //   amaç gerçekleşmiş — idempotent 204. Jeton çift tıklamanın
+            //   iki silme talebi üretmesini de engeller (kaybeden kaydın
+            //   TAMAMI geri alınır).
+            // - Çapraz jeton (örn. eşzamanlı OTP üretimi): burada 204'e
+            //   kestirmeden gitmek YALAN olurdu — hesap açık kalır, KVKK
+            //   silme talebi hiç açılmazdı. Helper kaydı yeniden dener;
+            //   dönüşte silme gerçekten işlenmiştir.
+            _ = await ShopperSaveConflict.DeletedWonAsync(_db, ex, ct);
         }
 
         return NoContent();
