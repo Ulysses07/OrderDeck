@@ -716,6 +716,84 @@ public class CustomerRepositoryTests
         c.TotalAmount.Should().Be(180m);            // geçmiş korundu
     }
 
+    // ── R12-D01 (2026-09-16 denetimi): silinen kanalın handle köprüsü ──────
+    //
+    // YouTube satırı Username=channelId, DisplayName=@handle ile durur ve
+    // handle-only bir form o satırı DisplayName köprüsüyle bulur
+    // (UpsertPersonFromIntake_youtube_merges_into_channelId_row_via_handle).
+    // Silme DisplayName'i '[Silindi]' yapınca köprü kopuyordu: silmeden ÖNCE
+    // kabul edilmiş ama SONRA uygulanan handle-only form eşleşme bulamayıp
+    // handle adına YENİ, korunmasız bir satır açıyordu. Tombstone yalnız
+    // channelId kimliğini tanıdığı için o satır temizlenmiyordu.
+    //
+    // Sözleşme: uygulamanın eşleştirmede GÜVENDİĞİ bağ (channelId ↔ handle),
+    // silme kararının da kapsamında olmalı. Kapsam handle-only girdiyle
+    // sınırlı — channelId çözülebiliyorsa kanonik kimlik kazanır, yani bu
+    // handle'ı ileride alacak BAŞKA biri kendi kanal kimliğiyle kaydolabilir.
+
+    [Fact]
+    public void RecordPurge_youtube_handle_koprusunu_de_kapsar()
+    {
+        var repo = CreateRepository();
+        repo.Insert(new Customer("yt1", "youtube", "UCabc123channel", "@sibelgelibolu", null,
+            100, 100, false, null, null, 0, 0m, null, null, null));
+
+        // Yetkili silme kanal kimliğiyle iniyor; DisplayName köprüsü kopuyor.
+        repo.RecordPurge("youtube", "UCabc123channel", 4000);
+
+        // Silmeden önce kabul edilmiş, channelId taşımayan form şimdi uygulanıyor.
+        repo.UpsertPersonFromIntake(
+            new (string, string, string?)[] { ("youtube", "SibelGelibolu", null) },
+            "Sibel G", "Ankara", "+905559998877", "s@example.com", null, true, true, 5000);
+
+        var yts = repo.GetRecent(1000).Where(c => c.Platform == "youtube").ToList();
+        yts.Should().OnlyContain(c => c.Phone == null && c.FullName == null && c.Address == null,
+            "silinen kanalın handle'ı adına korunmasız bir PII satırı doğmamalı");
+    }
+
+    [Fact]
+    public void RecordPurge_youtube_silmeden_onceki_koprulemeyi_bozmaz()
+    {
+        // Karşı kontrol 1: silme YOKKEN handle-only form hâlâ kanal satırına
+        // birleşiyor (köprünün kendisi çalışır durumda).
+        var repo = CreateRepository();
+        repo.Insert(new Customer("yt1", "youtube", "UCabc123channel", "@sibelgelibolu", null,
+            100, 100, false, null, null, 0, 0m, null, null, null));
+
+        repo.UpsertPersonFromIntake(
+            new (string, string, string?)[] { ("youtube", "SibelGelibolu", null) },
+            "Sibel G", "Ankara", "+905559998877", null, null, false, true, 5000);
+        repo.RecordPurge("youtube", "UCabc123channel", 6000);
+
+        var yts = repo.GetRecent(1000).Where(c => c.Platform == "youtube").ToList();
+        yts.Should().HaveCount(1);
+        yts[0].Phone.Should().BeNull();
+    }
+
+    [Fact]
+    public void RecordPurge_youtube_baska_handle_ve_baska_kanali_etkilemez()
+    {
+        // Karşı kontrol 2: karar yalnız silinen kimliğin bağını kapsar.
+        var repo = CreateRepository();
+        repo.Insert(new Customer("yt1", "youtube", "UCabc123channel", "@sibelgelibolu", null,
+            100, 100, false, null, null, 0, 0m, null, null, null));
+        repo.RecordPurge("youtube", "UCabc123channel", 4000);
+
+        // (a) Başka bir handle serbest.
+        repo.UpsertPersonFromIntake(
+            new (string, string, string?)[] { ("youtube", "baskakisi", null) },
+            "Başka Kişi", "İzmir", "+905551112233", null, null, false, true, 5000);
+        repo.FindByPlatformAndUsername("youtube", "baskakisi")!.Phone
+            .Should().Be("+905551112233");
+
+        // (b) Aynı görünen adı taşıyan BAŞKA bir kanal kimliği de serbest —
+        //     kanonik kimlik çözülebildiğinde yeniden kayıt yolu açık kalır.
+        repo.Insert(new Customer("yt2", "youtube", "UCxyz999other", "@sibelgelibolu", null,
+            200, 200, false, null, null, 0, 0m, null, null, null));
+        repo.UpdatePhone("yt2", "+905554443322");
+        repo.GetById("yt2")!.Phone.Should().Be("+905554443322");
+    }
+
     [Fact]
     public void CountAll_and_CountRegistered_reflect_phone_presence()
     {
