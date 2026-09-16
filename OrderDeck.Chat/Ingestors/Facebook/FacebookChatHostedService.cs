@@ -86,6 +86,15 @@ public sealed class FacebookChatHostedService : IHostedService, IDisposable
     private string? _staleVideoId;
     private DateTimeOffset _staleUntil;
 
+    /// <summary>
+    /// R11-CHAT01: yayınlanmış yorum hafızası poller'ları AŞAR. Poller'ın
+    /// alanıyken her yeniden bağlanma onu sıfırlıyordu — aşağıdaki döngü her
+    /// turda yeni bir poller kuruyor ve yeni poller'ın ilk anketi son 100
+    /// yorumu tekrar yayımlıyordu. R10-CHAT01 geçici hatada AYNI videoya geri
+    /// bağlanmayı getirdiği için bu yol artık çok daha sık geziliyor.
+    /// </summary>
+    private readonly FacebookSeenComments _seen = new();
+
     public FacebookChatHostedService(
         Func<AppSettings> settingsProvider,
         FacebookOAuthService oauth,
@@ -241,13 +250,18 @@ public sealed class FacebookChatHostedService : IHostedService, IDisposable
                                  ?? new HttpClient();
                 streamHttp.Timeout = Timeout.InfiniteTimeSpan;
 
+                // Video değiştiyse hafızayı temizler, aynı videoya yeniden
+                // bağlanıyorsak hatırlamayı sürdürür (tekrar yayını engeller).
+                _seen.ResetFor(videoId);
+
                 using var stream = new FacebookLiveCommentsStream(
                     videoId,
                     creds.Value.PageAccessToken,
                     _bus,
                     streamHttp,
                     _loggerFactory.CreateLogger<FacebookLiveCommentsStream>(),
-                    _spamFilter);
+                    _spamFilter,
+                    _seen);
 
                 using var streamCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 _streamCts = streamCts;
