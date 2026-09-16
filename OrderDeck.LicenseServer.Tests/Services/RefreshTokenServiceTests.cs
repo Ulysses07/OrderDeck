@@ -28,7 +28,7 @@ public sealed class RefreshTokenServiceTests
         return (db, svc);
     }
 
-    private static async Task<Customer> SeedCustomerAsync(LicenseDbContext db)
+    private static async Task<Customer> SeedCustomerAsync(LicenseDbContext db, int authVersion = 0)
     {
         var c = new Customer
         {
@@ -36,6 +36,7 @@ public sealed class RefreshTokenServiceTests
             Email = $"rt-{Guid.NewGuid():N}@example.com",
             Name = "RT Test",
             PasswordHash = "x",
+            AuthVersion = authVersion,
             EmailConfirmedAt = DateTimeOffset.UtcNow,
             CreatedAt = DateTimeOffset.UtcNow
         };
@@ -50,7 +51,8 @@ public sealed class RefreshTokenServiceTests
         var (db, svc) = Build();
         var customer = await SeedCustomerAsync(db);
 
-        var (raw, expiresAt, id) = await svc.IssueAsync(customer.Id, "10.0.0.1", CancellationToken.None);
+        var (raw, expiresAt, id) = await svc.IssueAsync(
+            customer.Id, customer.AuthVersion, "10.0.0.1", CancellationToken.None);
 
         raw.Should().HaveLength(64);
         expiresAt.Should().BeAfter(DateTimeOffset.UtcNow);
@@ -66,7 +68,7 @@ public sealed class RefreshTokenServiceTests
     {
         var (db, svc) = Build();
         var customer = await SeedCustomerAsync(db);
-        var (raw1, _, id1) = await svc.IssueAsync(customer.Id, null, CancellationToken.None);
+        var (raw1, _, id1) = await svc.IssueAsync(customer.Id, customer.AuthVersion, null, CancellationToken.None);
 
         var result = await svc.RotateAsync(raw1, "10.0.0.2", CancellationToken.None);
 
@@ -88,7 +90,7 @@ public sealed class RefreshTokenServiceTests
     {
         var (db, svc) = Build();
         var customer = await SeedCustomerAsync(db);
-        var (raw1, _, _) = await svc.IssueAsync(customer.Id, null, CancellationToken.None);
+        var (raw1, _, _) = await svc.IssueAsync(customer.Id, customer.AuthVersion, null, CancellationToken.None);
         await svc.RotateAsync(raw1, null, CancellationToken.None);
 
         var act = () => svc.RotateAsync(raw1, null, CancellationToken.None);
@@ -101,7 +103,7 @@ public sealed class RefreshTokenServiceTests
     {
         var (db, svc) = Build();
         var customer = await SeedCustomerAsync(db);
-        var (raw1, _, id1) = await svc.IssueAsync(customer.Id, null, CancellationToken.None);
+        var (raw1, _, id1) = await svc.IssueAsync(customer.Id, customer.AuthVersion, null, CancellationToken.None);
         var r1 = await svc.RotateAsync(raw1, null, CancellationToken.None);
         var r2 = await svc.RotateAsync(r1.RefreshToken, null, CancellationToken.None);
 
@@ -129,7 +131,7 @@ public sealed class RefreshTokenServiceTests
     {
         var (db, svc) = Build();
         var customer = await SeedCustomerAsync(db);
-        var (raw, _, id) = await svc.IssueAsync(customer.Id, null, CancellationToken.None);
+        var (raw, _, id) = await svc.IssueAsync(customer.Id, customer.AuthVersion, null, CancellationToken.None);
 
         // Force expiry via direct DB tweak.
         var row = await db.RefreshTokens.FirstAsync(t => t.Id == id);
@@ -146,7 +148,7 @@ public sealed class RefreshTokenServiceTests
     {
         var (db, svc) = Build();
         var customer = await SeedCustomerAsync(db);
-        var (raw, _, id) = await svc.IssueAsync(customer.Id, null, CancellationToken.None);
+        var (raw, _, id) = await svc.IssueAsync(customer.Id, customer.AuthVersion, null, CancellationToken.None);
 
         var revoke = await svc.RevokeAsync(raw, CancellationToken.None);
         revoke.Revoked.Should().BeTrue();
@@ -164,5 +166,83 @@ public sealed class RefreshTokenServiceTests
         var (_, svc) = Build();
         var result = await svc.RevokeAsync("not-real", CancellationToken.None);
         result.Revoked.Should().BeFalse();
+    }
+
+    // ── R11-S01: parola değişikliğine yarışan login'in oturumu ──────────────
+    //
+    // #445 bu yarışı Shopper kolunda kapattı; yayıncı/Customer kolu aynı
+    // açıkla kaldı. Senaryo: saldırgan ESKİ parolayla login'de — Verify eski
+    // hash'le geçti, tam o anda mağdur parolayı değiştirdi (MarkAllRevoked
+    // commit oldu). Login'in refresh insert'i süpürmenin SELECT'inden SONRA
+    // koştuğu için süpürme bu token'ı hiç görmedi: parola değişmiş ama
+    // saldırganın oturumu 30 gün yenilenebilir kaldı. Nesil damgası
+    // sıralamadan bağımsız yakalar — süpürme listeyle, damga nesille çalışır.
+
+    [Fact]
+    public async Task IssueAsync_stamps_token_with_current_auth_version()
+    {
+        var (db, svc) = Build();
+        var customer = await SeedCustomerAsync(db, authVersion: 3);
+
+        var (_, _, id) = await svc.IssueAsync(
+            customer.Id, customer.AuthVersion, null, CancellationToken.None);
+
+        var row = await db.RefreshTokens.FirstAsync(t => t.Id == id);
+        row.AuthVersion.Should().Be(3, "token üretildiği andaki parola neslini taşır");
+    }
+
+    [Fact]
+    public async Task RotateAsync_throws_when_token_stamped_with_stale_auth_version()
+    {
+        var (db, svc) = Build();
+        var customer = await SeedCustomerAsync(db, authVersion: 0);
+
+        // Parola değişikliği önce commit oldu; süpürme o anki aktifleri
+        // iptal etti — henüz token yok, liste boş.
+        customer.AuthVersion = 1;
+        await db.SaveChangesAsync();
+
+        // Login'in insert'i süpürmeden SONRA koştu; damgası Verify anında
+        // okunan ESKİ nesil.
+        var (staleRaw, _, _) = await svc.IssueAsync(
+            customer.Id, authVersion: 0, null, CancellationToken.None);
+
+        var act = () => svc.RotateAsync(staleRaw, null, CancellationToken.None);
+
+        await act.Should().ThrowAsync<RefreshTokenInvalidException>(
+            "bayat nesille üretilen token ilk yenilemede düşmeli");
+        var rows = await db.RefreshTokens.ToListAsync();
+        rows.Should().ContainSingle("reddedilen yenileme YENİ token üretmemeli");
+    }
+
+    [Fact]
+    public async Task RotateAsync_new_token_inherits_current_auth_version()
+    {
+        var (db, svc) = Build();
+        var customer = await SeedCustomerAsync(db, authVersion: 2);
+        var (raw, _, _) = await svc.IssueAsync(
+            customer.Id, customer.AuthVersion, null, CancellationToken.None);
+
+        var result = await svc.RotateAsync(raw, null, CancellationToken.None);
+
+        var newRow = await db.RefreshTokens.FirstAsync(t => t.Id == result.NewRefreshTokenId);
+        newRow.AuthVersion.Should().Be(2, "yeni token güncel nesli devralır");
+    }
+
+    [Fact]
+    public async Task RotateAsync_throws_when_customer_row_is_gone()
+    {
+        var (db, svc) = Build();
+        var customer = await SeedCustomerAsync(db);
+        var (raw, _, _) = await svc.IssueAsync(
+            customer.Id, customer.AuthVersion, null, CancellationToken.None);
+
+        // Hesap tamamen silindi: "bilinmiyor"u "geçerli" saymıyoruz.
+        db.Customers.Remove(customer);
+        await db.SaveChangesAsync();
+
+        var act = () => svc.RotateAsync(raw, null, CancellationToken.None);
+
+        await act.Should().ThrowAsync<RefreshTokenInvalidException>();
     }
 }

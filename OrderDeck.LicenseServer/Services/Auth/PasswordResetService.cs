@@ -93,6 +93,10 @@ public sealed class PasswordResetService
 
         var now = DateTimeOffset.UtcNow;
         record.Customer.PasswordHash = _hasher.Hash(newPassword);
+        // R11-S01: süpürmenin listesi ile yarışan login insert'ini nesil
+        // damgası yakalar — sıfırlamanın amacı tam olarak eski oturumları
+        // kesmek olduğu için burada kaçak bırakmak akışı anlamsızlaştırırdı.
+        record.Customer.AuthVersion++;
         record.UsedAt = now;
 
         // Bu akışın tamamı "hesabıma erişemiyorum" içindir; eski refresh
