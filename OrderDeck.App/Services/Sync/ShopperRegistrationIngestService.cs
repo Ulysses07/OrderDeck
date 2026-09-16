@@ -17,7 +17,7 @@ namespace OrderDeck.App.Services.Sync;
 /// (idempotent). Aksi halde yeni Customer kaydı insert eder.
 ///
 /// Tek istisna <c>PurgedAt</c>: KVKK silme talebiyle sunucuda temizlenen kişinin
-/// yerel kopyası da boşaltılır (bkz. <c>CustomerRepository.ScrubPersonalData</c>).
+/// yerel kopyası da boşaltılır (bkz. <c>CustomerRepository.RecordPurge</c>).
 /// Kişisel veri üç katmanda duruyor — sunucu Shoppers, sunucu
 /// WpfCustomerProjections ve burası; ilk ikisini <c>ShopperPurgeService</c>
 /// hallediyor, üçüncüsüne ulaşan tek yol bu ingest.
@@ -72,25 +72,32 @@ public sealed class ShopperRegistrationIngestService
             var scrubbed = 0;
             foreach (var item in items)
             {
-                var existing = _customers.FindByPlatformAndUsername(item.Platform, item.Username);
-
                 // KVKK silme talebi (Y-13/Y-14 3. katman). Kişisel verinin
                 // üçüncü kopyası yayıncının kendi diskinde; sunucu onu
                 // silemediği için tek yol bu işaret.
                 //
-                // Var olan satır TEMİZLENİR ama yeni satır AÇILMAZ: silinen
-                // kişinin kaydı bu bilgisayarda hiç yoksa, sunucudan gelen boş
-                // satırı burada oluşturmanın hiçbir faydası yok — sadece adı
-                // "[Silindi]" olan sahte bir müşteri kartı üretirdi.
+                // Yeni satır AÇILMAZ: silinen kişinin kaydı bu bilgisayarda hiç
+                // yoksa, adı "[Silindi]" olan sahte bir müşteri kartı üretmenin
+                // faydası yok.
+                //
+                // R11-D01: ama KARAR yazılır. Eskiden satır yoksa hiçbir şey
+                // yazılmıyor, imleç ilerliyordu — sonradan inen bir intake form
+                // cevabı (ya da kişinin yayına yazdığı tek bir yorum) aynı
+                // kimliği sıfırdan, tam kişisel veriyle açıyordu ve tombstone
+                // bir daha inmediği için ihlal kalıcılaşıyordu. RecordPurge
+                // kararı kimlik düzeyinde bırakır; satır açan yollar ona takılır.
                 if (item.PurgedAt is not null)
                 {
-                    if (existing is not null && _customers.ScrubPersonalData(existing.Id) > 0)
+                    if (_customers.RecordPurge(
+                            item.Platform, item.Username,
+                            item.PurgedAt.Value.ToUnixTimeSeconds()) > 0)
                         scrubbed++;
                     continue;
                 }
 
                 // Idempotent: skip if WPF already has a Customer with this (Platform, Username)
-                if (existing is not null) continue;
+                if (_customers.FindByPlatformAndUsername(item.Platform, item.Username) is not null)
+                    continue;
 
                 var nowUnix = _clock.UnixNow();
                 _customers.Insert(new Customer(
