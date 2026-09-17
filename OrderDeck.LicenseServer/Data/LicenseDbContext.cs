@@ -67,6 +67,8 @@ public class LicenseDbContext : DbContext
     public DbSet<ProductPhoto> ProductPhotos => Set<ProductPhoto>();
     public DbSet<StockMovement> StockMovements => Set<StockMovement>();
     public DbSet<BarcodeCounter> BarcodeCounters => Set<BarcodeCounter>();
+    public DbSet<IysConsent> IysConsents => Set<IysConsent>();
+    public DbSet<IysConsentEvent> IysConsentEvents => Set<IysConsentEvent>();
 
     /// <summary>
     /// Türetilmiş kolonların tazelendiği <b>tek</b> nokta.
@@ -508,6 +510,47 @@ public class LicenseDbContext : DbContext
             // CAS; kaybeden DbUpdateConcurrencyException alır ve null döner
             // (throttle semantiği). Kota/cooldown bu alandan OKUNMAZ.
             b.Property(s => s.LastResetCodeIssuedAt).IsConcurrencyToken();
+        });
+
+        mb.Entity<IysConsent>(b =>
+        {
+            b.HasKey(c => c.Id);
+            b.Property(c => c.BrandCode).HasMaxLength(16).IsRequired();
+            b.Property(c => c.ChannelType).HasMaxLength(16).IsRequired();
+            b.Property(c => c.RecipientType).HasMaxLength(16).IsRequired();
+            b.Property(c => c.Recipient).HasMaxLength(20).IsRequired();
+
+            // Enum'lar STRING olarak saklanır: admin SQL'inde ve yedek
+            // dökümünde "Onay"/"Confirmed" okunur, "1"/"2" değil.
+            b.Property(c => c.Status).HasConversion<string>().HasMaxLength(16);
+            b.Property(c => c.LastVerifiedStatus).HasConversion<string>().HasMaxLength(16);
+            b.Property(c => c.PushState).HasConversion<string>().HasMaxLength(16);
+
+            b.Property(c => c.SourceCode).HasMaxLength(32);
+            b.Property(c => c.LastError).HasMaxLength(500);
+
+            // İYS'nin kendi anahtarı. Aynı numaraya iki eşzamanlı olay
+            // gelirse ikinci INSERT burada patlar — tek satır garantisi.
+            b.HasIndex(c => new { c.BrandCode, c.ChannelType, c.RecipientType, c.Recipient })
+                .IsUnique();
+
+            // Push ve doğrulama işlerinin tarama yolu.
+            b.HasIndex(c => new { c.PushState, c.NextVerifyAt });
+        });
+
+        mb.Entity<IysConsentEvent>(b =>
+        {
+            b.HasKey(e => e.Id);
+            b.Property(e => e.Recipient).HasMaxLength(20).IsRequired();
+            b.Property(e => e.EventType).HasConversion<string>().HasMaxLength(16);
+            b.Property(e => e.Status).HasConversion<string>().HasMaxLength(16);
+            b.Property(e => e.SourceTable).HasMaxLength(64);
+            b.Property(e => e.ProofIp).HasMaxLength(64);
+            b.Property(e => e.ProofUserAgent).HasMaxLength(512);
+            b.Property(e => e.ApiResponseCode).HasMaxLength(16);
+            b.Property(e => e.ApiResponseBody).HasMaxLength(2000);
+            b.Property(e => e.ErrorCode).HasMaxLength(32);
+            b.HasIndex(e => new { e.Recipient, e.OccurredAt });
         });
 
         mb.Entity<ShopperBroadcasterLink>(b =>
