@@ -11,8 +11,13 @@ namespace OrderDeck.LicenseServer.Services.IntakeForm;
 public sealed class IntakeFormService
 {
     private readonly LicenseDbContext _db;
+    private readonly Iys.IysConsentCollector _iys;
 
-    public IntakeFormService(LicenseDbContext db) => _db = db;
+    public IntakeFormService(LicenseDbContext db, Iys.IysConsentCollector iys)
+    {
+        _db = db;
+        _iys = iys;
+    }
 
     public sealed class SlugAlreadyTakenException : Exception
     {
@@ -141,6 +146,19 @@ public sealed class IntakeFormService
             UserAgent = userAgent
         };
         _db.IntakeFormSubmissions.Add(sub);
+
+        // İYS onay boru hattı — aynı transaction. Onay yazılıp İYS kaydı
+        // yazılmazsa o onay üç iş günü içinde bildirilemez ve hukuken geçersiz
+        // olur. İşaretsiz kutu için ÇAĞIRMIYORUZ: 6563'e göre sessizlik ret
+        // değildir, kişi önceki onayını geri çekmiş sayılmaz.
+        if (smsConsent)
+        {
+            await _iys.RecordAsync(
+                phone, consented: true, occurredAt: sub.SubmittedAt,
+                sourceTable: "IntakeFormSubmission", sourceId: sub.Id,
+                ip: ipAddress, userAgent: userAgent, ct: ct);
+        }
+
         await _db.SaveChangesAsync(ct);
         return sub;
     }
