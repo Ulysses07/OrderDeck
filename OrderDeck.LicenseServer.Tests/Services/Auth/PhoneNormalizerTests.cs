@@ -26,6 +26,10 @@ public class PhoneNormalizerTests
     [InlineData("5551112233xx")]
     [InlineData("+15551112233")]
     [InlineData("5551112233444")]
+    [InlineData("0533466482")]     // 9 hane + baştaki 0
+    [InlineData("2125551234")]     // sabit hat
+    [InlineData("+902125551234")]  // sabit hat, E.164
+    [InlineData("03334664821")]    // abone 3 ile başlıyor
     public void Normalize_throws_for_invalid_input(string input)
     {
         Action act = () => PhoneNormalizer.Normalize(input);
