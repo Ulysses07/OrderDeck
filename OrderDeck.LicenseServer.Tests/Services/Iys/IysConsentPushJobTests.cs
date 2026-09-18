@@ -268,11 +268,13 @@ public class IysConsentPushJobTests
     }
 
     [Fact]
-    public async Task Sifresi_cozulemeyen_hesap_Failed_isaretlenir_digeri_itilmeye_devam_eder()
+    public async Task Sifresi_cozulemeyen_hesap_Verified_kalir_turu_atlanir_digeri_itilmeye_devam_eder()
     {
-        // Anahtar döndüyse şifre çözülemez. Fırlatmak diğer yayıncıları
-        // susturur, sessizce atlamak hesabı Verified göstermeye devam ederdi:
-        // hesap görünür biçimde bozulmalı ki yayıncı yeniden bağlansın.
+        // Anahtar döndüyse ya da anahtar dizini bağlanmadıysa şifre çözülemez.
+        // Fırlatmak diğer yayıncıları susturur; hesabı Failed işaretlemek ise
+        // geri alınamaz: Failed → Verified dönen kod yolu yok ve collector
+        // markayı yalnız Verified hesaptan çözdüğü için o yayıncının yeni
+        // onayları satır bile açmaz. Doğru davranış: turu atla, durumu koru.
         using var db = NewDb();
         SeedAccount(db, LicenseA, BrandA);
         SeedAccount(db, LicenseB, BrandB);
@@ -293,8 +295,12 @@ public class IysConsentPushJobTests
         await Job(db, client).RunAsync();
 
         var acct = await db.NetgsmAccounts.SingleAsync(a => a.LicenseId == LicenseA);
-        acct.Status.Should().Be(NetgsmAccountStatus.Failed, "çözülemeyen şifre hesabı kapatmalı");
-        acct.LastError.Should().NotBeNullOrEmpty();
+        acct.Status.Should().Be(NetgsmAccountStatus.Verified,
+            "geçici bir anahtar arızası kalıcı ve geri alınamaz onay kaybına dönüşmemeli: "
+            + "hesap Failed'a düşerse geri döndüren kod yolu yok ve o yayıncı için yeni "
+            + "onaylar hiç kaydedilmez; Verified kalırsa anahtar geri geldiğinde "
+            + "sistem kendiliğinden düzelir");
+        acct.LastError.Should().NotBeNullOrEmpty("arıza panelde görünür olmalı");
 
         var a = await db.IysConsents.SingleAsync(c => c.BrandCode == BrandA);
         var b = await db.IysConsents.SingleAsync(c => c.BrandCode == BrandB);

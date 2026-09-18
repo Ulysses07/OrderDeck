@@ -122,16 +122,30 @@ public sealed class IysConsentPushJob
         var password = _accounts.TryUnprotectPassword(acct.PasswordProtected);
         if (password is null)
         {
-            // Anahtar döndü ya da şifreli metin bozuk. Patlamak diğer
-            // yayıncıları susturur, sessizce atlamak hesabı Verified
-            // göstermeye devam ederdi: hesabı görünür biçimde bozuyoruz ki
-            // yayıncı panelden kimliğini yeniden bağlasın.
-            acct.Status = NetgsmAccountStatus.Failed;
-            acct.LastError = "Kayıtlı şifre çözülemedi; Netgsm bilgilerini yeniden girin.";
+            // Anahtar döndü, veri koruma anahtar dizini bağlanmadı ya da
+            // şifreli metin bozuk. Patlamak diğer yayıncıları susturur —
+            // ama hesabı Failed işaretlemek çok daha pahalıya patlar:
+            //
+            //  1) Failed → Verified'a dönen bir kod yolu YOK; tek çıkış elle
+            //     SQL. Anahtar dizini tek bir açılışta bağlanmazsa
+            //     TÜM doğrulanmış hesaplar tek koşuda kapanırdı.
+            //  2) IysConsentCollector markayı yalnız Verified hesaptan çözer;
+            //     hesap kapandığı an o yayıncının yeni onayları IysConsent
+            //     satırı bile açmaz ve geri doldurulamaz — kişiden yeniden
+            //     onay almak gerekir.
+            //
+            // Bu yüzden Status'e DOKUNULMAZ: anahtar geri geldiğinde sistem
+            // kendiliğinden düzelir, bu arada onaylar toplanmaya devam eder,
+            // satırlar Pending birikir ve gecikme "son tarihe yaklaşanlar"
+            // uyarı yüzeyinden görünür. Yalnız arızayı görünür kılıyoruz.
+            acct.LastError = Truncate(
+                "Kayıtlı şifre çözülemedi (veri koruma anahtarı okunamıyor); "
+                + "anahtar erişimi düzelene kadar İYS bildirimi bekletiliyor.", 500);
             acct.UpdatedAt = DateTimeOffset.UtcNow;
             await _db.SaveChangesAsync(ct);
             _log.LogError(
-                "İYS push: {Brand} markasının şifresi çözülemedi, hesap kapatıldı", acct.BrandCode);
+                "İYS push: {Brand} markasının şifresi çözülemedi, bu tur atlandı "
+                + "(hesap durumu değiştirilmedi)", acct.BrandCode);
             return;
         }
 
