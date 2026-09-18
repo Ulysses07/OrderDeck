@@ -361,6 +361,9 @@ public class IysConsentVerifyJobTests
         row.VerifyAttempts.Should().Be(0,
             "VerifyAttempts İYS cevabını bekleme takvimidir; ağ hatası onu tüketmemeli");
         row.PushState.Should().Be(IysPushState.Pushed);
+        row.UpdatedAt.Should().BeOnOrBefore(DateTimeOffset.UtcNow,
+            "UpdatedAt randevu değil dokunulma damgasıdır; geleceğe yazılırsa "
+            + "satırı zaman aralığına göre süzen her sorgu yanılır");
     }
 
     [Fact]

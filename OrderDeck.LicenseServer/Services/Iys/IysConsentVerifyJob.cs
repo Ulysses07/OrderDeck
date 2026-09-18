@@ -1,4 +1,4 @@
-using Hangfire;
+﻿using Hangfire;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using OrderDeck.LicenseServer.Data;
@@ -163,11 +163,15 @@ public sealed class IysConsentVerifyJob
                 // VerifyAttempts'e DOKUNULMAZ — o sayaç İYS'nin cevabını
                 // bekleme takvimidir; bir ağ hatası onu tüketip kaydı erken
                 // Failed yapmamalı.
-                var retryAt = DateTimeOffset.UtcNow + TransientRetryDelay;
+                var failedAt = DateTimeOffset.UtcNow;
+                var retryAt = failedAt + TransientRetryDelay;
                 foreach (var c in batch)
                 {
                     c.NextVerifyAt = retryAt;
-                    c.UpdatedAt = retryAt;
+                    // UpdatedAt randevu DEĞİL, "en son ne zaman dokunuldu"
+                    // damgası; retryAt yazmak onu geleceğe atardı ve satırı
+                    // zaman aralığına göre süzen her sorguyu yanıltırdı.
+                    c.UpdatedAt = failedAt;
                 }
                 await _db.SaveChangesAsync(ct);
                 _log.LogWarning(ex,
