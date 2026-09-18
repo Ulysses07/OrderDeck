@@ -552,10 +552,17 @@ public class LicenseDbContext : DbContext
             b.Property(e => e.ApiResponseBody).HasMaxLength(2000);
             b.Property(e => e.ErrorCode).HasMaxLength(32);
             b.Property(e => e.BrandCode).HasMaxLength(16);
+            // "Bu numaranın TÜM markalardaki geçmişi" — kiracıdan bağımsız denetim.
             b.HasIndex(e => new { e.Recipient, e.OccurredAt });
 
-            // Denetim sorgusu "şu yayıncının şu numaraya ait olayları" —
-            // kiracı ayrıştırması bu index olmadan tablo taraması olur.
+            // Kiracı kapsamlı denetim: "şu yayıncının şu numaraya ait olayları".
+            // Tarama korkusu değil — üstteki index bu sorguyu da seek'le karşılar
+            // (Recipient yüksek seçicilikte, LicenseId artık filtreye düşer).
+            // Kazanç, artık filtrenin kalkması: okunan her satır zaten doğru
+            // kiracıya ait olur. İki index birbirini gereksiz kılmıyor; ilki
+            // marka-üstü, ikincisi marka-içi sorunun yolu.
+            // Not: alıcısız kiracı taraması (WHERE LicenseId=@l ORDER BY OccurredAt)
+            // kolon sırası yüzünden yine sort yer — o sorgu gerekirse ayrı index ister.
             b.HasIndex(e => new { e.LicenseId, e.Recipient, e.OccurredAt });
         });
 
