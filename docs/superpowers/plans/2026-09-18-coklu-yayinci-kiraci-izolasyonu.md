@@ -597,27 +597,65 @@ Spec §5.1b: `RecordAsync`'e `licenseId` eklemek yetmiyor, **kanıtın kendisi k
 
 ```csharp
     [Fact]
-    public async Task Olay_kiraci_sutunlarini_tasir()
+    public async Task Olay_kiraci_sutunlarini_saklar()
     {
         using var db = NewDb();
-        await RecordAsync(Collector(db), true, DateTimeOffset.UtcNow);
+        var licenseId = Guid.NewGuid();
+        var consentId = Guid.NewGuid();
+
+        db.IysConsentEvents.Add(new IysConsentEvent
+        {
+            Id = Guid.NewGuid(),
+            Recipient = "+905551112233",
+            OccurredAt = DateTimeOffset.UtcNow,
+            EventType = IysConsentEventType.LocalConsent,
+            Status = IysConsentStatus.Onay,
+            LicenseId = licenseId,
+            BrandCode = "731734",
+            IysConsentId = consentId,
+        });
         await db.SaveChangesAsync();
 
         var ev = await db.IysConsentEvents.SingleAsync();
-        var row = await db.IysConsents.SingleAsync();
+        ev.LicenseId.Should().Be(licenseId, "olay hangi yayıncıya ait olduğunu taşımalı");
+        ev.BrandCode.Should().Be("731734",
+            "aynı telefon A markasında ONAY, B'de RET olabilir — denetimde ayrışmalı");
+        ev.IysConsentId.Should().Be(consentId, "olay durum satırına bağlanabilmeli");
+    }
 
-        ev.BrandCode.Should().Be("731734");
-        ev.LicenseId.Should().NotBeNull("olay hangi yayıncıya ait olduğunu taşımalı");
-        ev.IysConsentId.Should().Be(row.Id, "olay durum satırına bağlanabilmeli");
+    [Fact]
+    public async Task Kiraci_sutunlari_null_kabul_eder()
+    {
+        using var db = NewDb();
+        db.IysConsentEvents.Add(new IysConsentEvent
+        {
+            Id = Guid.NewGuid(),
+            Recipient = "+905551112233",
+            OccurredAt = DateTimeOffset.UtcNow,
+            EventType = IysConsentEventType.LocalConsent,
+            Status = IysConsentStatus.Onay,
+        });
+        await db.SaveChangesAsync();
+
+        var ev = await db.IysConsentEvents.SingleAsync();
+        ev.LicenseId.Should().BeNull(
+            "prod'daki eski olaylar geriye dönük doldurulamaz; sütun NOT NULL olsaydı göç düşerdi");
+        ev.BrandCode.Should().BeNull();
+        ev.IysConsentId.Should().BeNull();
     }
 ```
 
-Bu test Task 4 bitene kadar **tam geçmez** (collector henüz `licenseId` almıyor); şimdilik yalnız derlemeyi ve sütunların varlığını sürüyor.
+**Neden toplayıcıya dokunmuyor:** bu görev yalnız şemayı getiriyor. Toplayıcının
+bu sütunları **doldurması** Task 4'ün işi ve orada test ediliyor. Testi
+toplayıcı üzerinden yazmak Task 3'ü kırmızı bir commit'le bitirirdi — o zaman
+Task 4'ün "suite yeşil mi" kapısı kör olurdu.
 
 - [ ] **Step 2: Testi çalıştır, düştüğünü gör**
 
 Çalıştır: `dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --filter IysConsentCollectorTests`
 Beklenen: DERLEME HATASI — `IysConsentEvent` üzerinde `BrandCode` / `LicenseId` / `IysConsentId` yok.
+
+Gerekli ek `using` (dosyada yoksa): `OrderDeck.LicenseServer.Domain;`
 
 - [ ] **Step 3: Entity'ye sütunları ekle**
 
@@ -665,10 +703,14 @@ dotnet ef migrations add AddIysConsentEventTenant \
 
 Üretilen dosyada üç `AddColumn` (`LicenseId` uniqueidentifier null, `BrandCode` nvarchar(16) null, `IysConsentId` uniqueidentifier null) ve bir `CreateIndex` olmalı. **`nullable: true` olduklarını doğrula** — mevcut satırlar geriye dönük doldurulamaz, prod'daki eski olaylar `null` kalacak ve bu kabul edilmiş durum.
 
-- [ ] **Step 6: Derlemeyi doğrula**
+- [ ] **Step 6: Testi çalıştır, geçtiğini gör**
 
 Çalıştır: `dotnet build OrderDeck.LicenseServer/OrderDeck.LicenseServer.csproj`
-Beklenen: başarılı. (Step 1'deki test hâlâ düşüyor — `LicenseId` null geliyor; Task 4 dolduracak.)
+Beklenen: başarılı.
+
+Çalıştır: `dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --filter IysConsentCollectorTests`
+Beklenen: mevcut testlerin hepsi + 2 yeni test PASS, 0 SKIP. **Bu görev yeşil
+bir commit bırakmalı** — Task 4'ün "suite yeşil mi" kapısı buna dayanıyor.
 
 - [ ] **Step 7: Commit**
 
@@ -744,9 +786,28 @@ Mevcut her `[Fact]`'in içinde, `using var db = NewDb();` satırının HEMEN ARD
         SeedAccount(db, LicenseA, BrandA);
 ```
 
-Ardından dosyanın sonuna iki yeni test ekle:
+Ardından dosyanın sonuna üç yeni test ekle:
 
 ```csharp
+    [Fact]
+    public async Task Toplayici_olaya_kiraci_sutunlarini_DOLDURUR()
+    {
+        using var db = NewDb();
+        SeedAccount(db, LicenseA, BrandA);
+
+        await RecordAsync(Collector(db), consented: true, DateTimeOffset.UtcNow);
+        await db.SaveChangesAsync();
+
+        var row = await db.IysConsents.SingleAsync();
+        var ev = await db.IysConsentEvents.SingleAsync();
+
+        ev.LicenseId.Should().Be(LicenseA, "olay hangi yayıncıya ait olduğunu taşımalı");
+        ev.BrandCode.Should().Be(BrandA,
+            "marka artık ayardan değil hesaptan geliyor; denetimde A'nın ONAY'ı " +
+            "B'nin RET'inden ayrışabilmeli");
+        ev.IysConsentId.Should().Be(row.Id, "olay durum satırına bağlanabilmeli");
+    }
+
     [Fact]
     public async Task Hesabi_olmayan_yayincida_satir_ACILMAZ()
     {
