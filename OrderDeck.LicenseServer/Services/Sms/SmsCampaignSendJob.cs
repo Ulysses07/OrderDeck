@@ -1,6 +1,8 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Services.Iys;
 
 namespace OrderDeck.LicenseServer.Services.Sms;
 
@@ -35,17 +37,20 @@ public sealed class SmsCampaignSendJob
     private readonly ISmsSender _sms;
     private readonly LicenseSmsBalanceService _balance;
     private readonly ILogger<SmsCampaignSendJob> _log;
+    private readonly string _iysBrandCode;
 
     public SmsCampaignSendJob(
         LicenseDbContext db,
         ISmsSender sms,
         LicenseSmsBalanceService balance,
+        IOptions<NetgsmOptions> netgsm,
         ILogger<SmsCampaignSendJob> log)
     {
         _db = db;
         _sms = sms;
         _balance = balance;
         _log = log;
+        _iysBrandCode = netgsm.Value.BrandCode;
     }
 
     public async Task RunAsync(Guid campaignId, CancellationToken ct = default)
@@ -94,8 +99,30 @@ public sealed class SmsCampaignSendJob
             .Where(r => r.CampaignId == campaignId && r.Status == "pending")
             .ToListAsync(ct);
 
+        // Kural 7: liste kampanya oluşturulurken donduruldu; gönderim şimdi.
+        // Aradaki geri çekme ya da İYS RET'i burada okunur. Tek sorguyla
+        // çekiliyor — alıcı başına sorgu, bin kişilik kampanyada bin gidiş.
+        var phones = recipients.Select(r => r.Phone).Distinct().ToList();
+        var consents = await _db.IysConsents
+            .Where(c => c.BrandCode == _iysBrandCode && phones.Contains(c.Recipient))
+            .ToDictionaryAsync(c => c.Recipient, ct);
+
         foreach (var r in recipients)
         {
+            consents.TryGetValue(r.Phone, out var consent);
+            if (!IysConsentGate.CanSend(consent))
+            {
+                // "failed" seçilmesi bilinçli: mevcut iade yolu bu durumu
+                // sayıyor, yani gönderilmeyen mesajın kredisi kendiliğinden
+                // yayıncıya dönüyor. Yeni bir durum eklemek o yolu ikizlerdi.
+                r.Status = "failed";
+                r.Error = consent is null ? "iys-consent-missing" : "iys-consent-not-onay";
+                r.SentAt = null;
+                campaign.ClaimedAt = DateTimeOffset.UtcNow;
+                await _db.SaveChangesAsync(ct);
+                continue;
+            }
+
             try
             {
                 // Kampanya = ticari ileti → İYS filtresi "11" (Commercial).

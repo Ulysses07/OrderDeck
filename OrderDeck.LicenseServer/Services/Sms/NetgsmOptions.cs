@@ -26,6 +26,18 @@ public sealed class NetgsmOptions
     /// Boş = GSM-7 (160 hane). OTP mesajı Türkçe karaktersiz olduğundan boş kalır.</summary>
     public string? Encoding { get; set; }
 
+    /// <summary>
+    /// İYS marka kodu (İYS'de "brandCode"). Değer yalnız yapılandırmadan gelir
+    /// (<c>Netgsm__BrandCode</c>) — kodda gömülü marka YOK, çünkü marka ileride
+    /// ORDERDECK olacak ve izinler marka bazında ayrı tutuluyor (aynı numara bir
+    /// markada ONAY, diğerinde RET olabilir).
+    /// Boş bırakılırsa İYS boru hattı kapalıdır.
+    /// </summary>
+    public string BrandCode { get; set; } = "";
+
+    /// <summary>İYS onay kaynağı kodu. Web formu ve mobil kayıt için HS_WEB.</summary>
+    public string IysSourceCode { get; set; } = "HS_WEB";
+
     /// <summary>HTTP timeout (sn). Netgsm asılı kalırsa forgot-password isteğini
     /// bloklamasın diye kısa tutulur.</summary>
     public int TimeoutSeconds { get; set; } = 10;

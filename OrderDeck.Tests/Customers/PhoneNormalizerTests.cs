@@ -27,6 +27,10 @@ public class PhoneNormalizerTests
     [InlineData("123")]            // too short
     [InlineData("12345678901234")] // too long
     [InlineData("+12025551234")]   // non-TR country code
+    [InlineData("0533466482")]     // 9 hane + baştaki 0 → 10 hane sanılıyordu
+    [InlineData("2125551234")]     // sabit hat (2 ile başlar), mobil değil
+    [InlineData("03334664821")]    // 11 hane ama abone 3 ile başlıyor
+    [InlineData("904334664821")]   // 12 hane ama abone 4 ile başlıyor
     public void NormalizeTr_RejectsInvalidInput(string? input)
     {
         PhoneNormalizer.NormalizeTr(input).Should().BeNull();
@@ -37,6 +41,7 @@ public class PhoneNormalizerTests
     [InlineData("+9055512345670", false)]   // 14 chars
     [InlineData("+9055512345", false)]      // 12 chars
     [InlineData("+15551234567", false)]     // not TR
+    [InlineData("+902125551234", false)]   // sabit hat E.164 uzunluğunda
     [InlineData(null, false)]
     [InlineData("", false)]
     public void IsValidTr_ChecksE164TrFormat(string? input, bool expected)

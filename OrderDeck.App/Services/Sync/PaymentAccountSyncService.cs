@@ -100,6 +100,12 @@ public sealed class PaymentAccountSyncService
             // kuralın özel hâli (taze kurulum / göç 041 öncesi geçmiş / hiç
             // görülmemiş hedef — R10-D03); körlemesine null-POST meşru bir uzak
             // hesabı, üstelik dekont IBAN kontrolünün dayanağını silerdi (AC46).
+            //
+            // R13-DATA-01: bu dal KALICI — boş Save'i tekrarlamak buradan
+            // çıkarmaz, çünkü tekrar yeni bir kanıt üretmiyor. Gerçekten
+            // boşaltmak isteyen operatörün yolu dolu bir turdan geçer: bilinen
+            // dolu değerleri geri gir → senkron (aşağıdaki Adopt dalı satırı
+            // sahiplenir) → sonra boşalt. Destek çağrısında verilecek cevap bu.
             _log.LogDebug(
                 "PaymentAccount sync skipped — local values empty and no ack from this settings file");
             return;

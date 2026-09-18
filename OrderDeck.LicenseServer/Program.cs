@@ -175,6 +175,27 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sms.LicenseSmsBalanceService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sms.SmsCampaignSendJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sms.SmsCampaignRecoveryJob>();
+
+        // İYS onay boru hattı. İstemci, SMS sağlayıcısıyla AYNI koşula bağlı:
+        // Netgsm yoksa İYS de yok, çünkü İYS'ye erişim Netgsm aracılığıyla.
+        // Dev/test'te kayıt yine toplanır ve Pending'de bekler — push işi
+        // BrandCode boş olduğu için hiçbir şey göndermez.
+        if (smsProvider == "netgsm")
+        {
+            var iysTimeout = builder.Configuration.GetValue("Netgsm:TimeoutSeconds", 10);
+            builder.Services.AddHttpClient<OrderDeck.LicenseServer.Services.Iys.IIysClient,
+                    OrderDeck.LicenseServer.Services.Iys.NetgsmIysClient>(
+                    c => c.Timeout = TimeSpan.FromSeconds(iysTimeout <= 0 ? 10 : iysTimeout));
+        }
+        else
+        {
+            builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Iys.IIysClient,
+                OrderDeck.LicenseServer.Services.Iys.NullIysClient>();
+        }
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysConsentCollector>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysConsentPushJob>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysConsentVerifyJob>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysConsentRecoveryJob>();
         builder.Services.AddScoped<PasswordResetCodeService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Auth.PasswordResetCodeCleanupJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.WhatsApp.WaSendAttemptCleanupJob>();
@@ -860,6 +881,31 @@ public class Program
                 "sms-campaign-recovery",
                 j => j.RunAsync(CancellationToken.None),
                 "*/5 * * * *");  // 5 dakikada bir
+
+            // İYS onay push — bekleyen kayıtları süpürür. Onay yazan uçlar
+            // ayrıca Enqueue ETMİYOR (spec adım 2'den bilinçli sapma, Task 13):
+            // kaçırılan Enqueue kaydı sessizce kaybeder, süpürme kaybetmez ve
+            // 3 iş günlük pencerede 5 dakikalık gecikme ölçülemez.
+            manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Iys.IysConsentPushJob>(
+                "iys-consent-push",
+                j => j.RunAsync(CancellationToken.None),
+                "*/5 * * * *");  // 5 dakikada bir
+
+            // İYS doğrulama — randevusu gelen kayıtları /iys/search ile sorar.
+            // Randevu takvimi kayıt bazında (15dk → 1sa → 6sa → 24sa); bu
+            // periyot yalnız "randevusu geçmiş var mı" taraması.
+            manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Iys.IysConsentVerifyJob>(
+                "iys-consent-verify",
+                j => j.RunAsync(CancellationToken.None),
+                "*/5 * * * *");  // 5 dakikada bir
+
+            // İYS kurtarma — düşen kayıtları geri alır, son tarihi yaklaşanı
+            // günlüğe yazar. Push'tan seyrek koşar: işi bekleme süresi dolmuş
+            // kayıtları toplamak, aceleye gerek yok.
+            manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Iys.IysConsentRecoveryJob>(
+                "iys-consent-recovery",
+                j => j.RunAsync(CancellationToken.None),
+                "*/15 * * * *");  // 15 dakikada bir
 
             // Ürün fotoğrafı mutabakatı — R2'de kalmış yetim nesneleri süpürür.
             // Ürün silme ucundaki inline silme yetmiyor: Attach edilmeden yüklenen
