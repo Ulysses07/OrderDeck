@@ -143,4 +143,23 @@ public sealed class NetgsmAccountUniqueIndexTests : IAsyncLifetime
             "kayıt çakışır ve marka→hesap araması \"\" ile gerçek bir kiracının " +
             "satırını döndürerek onayı yanlış markaya yazardı");
     }
+
+    [Fact]
+    public async Task Bastan_bosluklu_marka_kodu_reddedilir()
+    {
+        var licenseId = await NewLicenseAsync();
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        db.NetgsmAccounts.Add(Row(licenseId, " 731734"));
+
+        var act = async () => await db.SaveChangesAsync();
+        await act.Should().ThrowAsync<DbUpdateException>(
+            "SQL Server karşılaştırmada SONDAKİ boşluğu yok sayar ama BAŞTAKİNİ " +
+            "saymaz: \" 731734\" tekil index'te \"731734\"ten ayrı bir anahtar " +
+            "olur. Böylece işletme gözüyle aynı marka iki lisansta durabilir ve " +
+            "marka→hesap araması ikisinden yalnız birini görür — index'in var " +
+            "olma sebebi çöker. İYS marka kodları sayısal olduğu için kısıt " +
+            "rakam dışı her karakteri kapıda kesiyor");
+    }
 }

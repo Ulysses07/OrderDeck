@@ -816,7 +816,9 @@ public class LicenseDbContext : DbContext
              .OnDelete(DeleteBehavior.Cascade);
             b.Property(a => a.UserCode).HasMaxLength(32).IsRequired();
             b.Property(a => a.PasswordProtected).HasMaxLength(4000).IsRequired();
-            b.Property(a => a.Header).HasMaxLength(32).IsRequired();
+            // Netgsm'de onaylı gönderici başlığı en fazla 11 karakter olabilir;
+            // kolon gerçeğinden geniş olmasın.
+            b.Property(a => a.Header).HasMaxLength(11).IsRequired();
             // IysConsent.BrandCode ile AYNI uzunluk — ikisi eşleştiriliyor.
             b.Property(a => a.BrandCode).HasMaxLength(16).IsRequired();
             // IysConsent gibi STRING saklanır: admin SQL'inde ve yedek dökümünde
@@ -826,7 +828,17 @@ public class LicenseDbContext : DbContext
             b.Property(a => a.LastError).HasMaxLength(500);
             // Boş marka global tekil index'te bir yer kapar ve marka→hesap
             // araması "" ile gerçek bir kiracının satırını döndürürdü.
-            b.ToTable(t => t.HasCheckConstraint("CK_NetgsmAccounts_BrandCode", "LEN([BrandCode]) > 0"));
+            //
+            // Yalnız "boş değil" yetmiyor: İYS marka kodları sayısal (731734),
+            // ama SQL Server karşılaştırmada SONDAKİ boşluğu yok sayarken BAŞTAKİ
+            // boşluğu saymaz — " 731734" tekil index'te ayrı bir anahtar olur.
+            // İki lisans işletme gözüyle aynı markayı tutabilir ve
+            // BrandCode == "731734" araması ikisinden yalnız birini görür; yani
+            // index'in var olma sebebi ortadan kalkar. Sayısala daraltmak hem
+            // baştaki boşluğu hem de diğer görünmez karakterleri kapatır.
+            b.ToTable(t => t.HasCheckConstraint(
+                "CK_NetgsmAccounts_BrandCode",
+                "LEN([BrandCode]) > 0 AND [BrandCode] NOT LIKE '%[^0-9]%'"));
             // Bir lisans = bir hesap.
             b.HasIndex(a => a.LicenseId).IsUnique();
             // Marka → hesap araması tek satır dönmeli (push/verify işleri).

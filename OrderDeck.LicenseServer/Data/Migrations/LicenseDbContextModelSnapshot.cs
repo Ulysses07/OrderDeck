@@ -1018,8 +1018,8 @@ namespace OrderDeck.LicenseServer.Data.Migrations
 
                     b.Property<string>("Header")
                         .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("nvarchar(32)");
+                        .HasMaxLength(11)
+                        .HasColumnType("nvarchar(11)");
 
                     b.Property<string>("LastError")
                         .HasMaxLength(500)
@@ -1059,7 +1059,7 @@ namespace OrderDeck.LicenseServer.Data.Migrations
 
                     b.ToTable("NetgsmAccounts", t =>
                         {
-                            t.HasCheckConstraint("CK_NetgsmAccounts_BrandCode", "LEN([BrandCode]) > 0");
+                            t.HasCheckConstraint("CK_NetgsmAccounts_BrandCode", "LEN([BrandCode]) > 0 AND [BrandCode] NOT LIKE '%[^0-9]%'");
                         });
                 });
 

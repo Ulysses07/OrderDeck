@@ -19,7 +19,7 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     LicenseId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
                     UserCode = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
                     PasswordProtected = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: false),
-                    Header = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    Header = table.Column<string>(type: "nvarchar(11)", maxLength: 11, nullable: false),
                     BrandCode = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
                     Status = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
                     LastError = table.Column<string>(type: "nvarchar(500)", maxLength: 500, nullable: true),
@@ -30,7 +30,7 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_NetgsmAccounts", x => x.Id);
-                    table.CheckConstraint("CK_NetgsmAccounts_BrandCode", "LEN([BrandCode]) > 0");
+                    table.CheckConstraint("CK_NetgsmAccounts_BrandCode", "LEN([BrandCode]) > 0 AND [BrandCode] NOT LIKE '%[^0-9]%'");
                     table.ForeignKey(
                         name: "FK_NetgsmAccounts_Licenses_LicenseId",
                         column: x => x.LicenseId,

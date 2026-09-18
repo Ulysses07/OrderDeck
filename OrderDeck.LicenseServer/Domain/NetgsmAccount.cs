@@ -10,7 +10,12 @@ namespace OrderDeck.LicenseServer.Domain;
 /// </summary>
 public enum NetgsmAccountStatus
 {
-    /// <summary>Doğrulama denendi ve başarısız — varsayılan. Kapı kapalı.</summary>
+    /// <summary>Doğrulanmamış — varsayılan. Doğrulama <b>ya hiç denenmedi</b>
+    /// (satır kaydedildi, doğrulama sonraya kaldı) <b>ya da denendi ve
+    /// başarısız oldu</b>. İkisini ayırmıyoruz çünkü kapı her iki hâlde de
+    /// kapalı; ayrım yalnız panelde ne yazdığımızı değiştirir, gönderim
+    /// kararını değil. <c>0</c> olması kasıtlı: kimse bir şey atamasa da
+    /// varsayılan kapalı durum budur (fail-closed).</summary>
     Failed = 0,
     /// <summary><c>/iys/search</c> başarılı. Gönderim yalnız bu durumda serbest.</summary>
     Verified = 1,
@@ -70,7 +75,14 @@ public sealed class NetgsmAccount
     /// <see cref="NetgsmAccountStatus.Failed"/>.</summary>
     public NetgsmAccountStatus Status { get; set; } = NetgsmAccountStatus.Failed;
 
-    /// <summary>Panelde gösterilen son hata metni (ör. yanlış şifre).</summary>
+    /// <summary>Panelde gösterilen son hata metni (ör. yanlış şifre).
+    ///
+    /// <para><b>Buraya ham Netgsm istek/yanıt gövdesi YAZILMAZ.</b> İYS
+    /// isteğinin gövdesi Netgsm şifresini taşıyor (bkz.
+    /// <c>NetgsmIysClient.PostAsync</c>); gövdeyi olduğu gibi kopyalamak
+    /// yayıncı panelinde bir kimlik bilgisini açığa çıkarırdı. Bu alan yalnız
+    /// insana dönük, elle yazılmış özet mesaj içerir ve hiçbir koşulda kimlik
+    /// bilgisi barındırmamalıdır.</para></summary>
     public string? LastError { get; set; }
 
     /// <summary>Son başarılı <c>/iys/search</c> doğrulaması.</summary>
