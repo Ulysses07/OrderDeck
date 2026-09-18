@@ -129,3 +129,31 @@ else
         </tbody>
     </table>
 }
+
+<h2 class="h5 mt-4">Markası çözülemeyen onaylar</h2>
+@if (!Model.NoBrands.Any())
+{
+    <p class="text-muted">Markasız onay yok.</p>
+}
+else
+{
+    <p class="text-muted small">
+        Yayıncının <strong>doğrulanmış</strong> Netgsm hesabı olmadığı için kayıt
+        satırı açılmadı. Onay alındı ve ispatı duruyor, ama İYS'ye bildirilemiyor;
+        ilgili yayıncının Netgsm kurulumu tamamlanmalı ve kişiden yeni onay alınmalı.
+    </p>
+    <table class="table table-sm" data-table="iys-no-brand">
+        <thead><tr><th>Alıcı</th><th>Zaman</th><th>Kaynak</th><th>Lisans</th></tr></thead>
+        <tbody>
+        @foreach (var n in Model.NoBrands)
+        {
+            <tr>
+                <td><code>@n.Recipient</code></td>
+                <td>@n.OccurredAt.ToLocalTime().ToString("dd.MM.yyyy HH:mm")</td>
+                <td>@n.SourceTable</td>
+                <td class="text-muted small">@(n.LicenseId?.ToString() ?? "—")</td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}

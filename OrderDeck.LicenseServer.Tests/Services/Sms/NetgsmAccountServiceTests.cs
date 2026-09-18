@@ -20,6 +20,11 @@ public class NetgsmAccountServiceTests
     private static NetgsmAccountService Service(LicenseDbContext db, IDataProtectionProvider protection)
         => new(db, protection);
 
+    /// <summary>Netgsm abone numarası ÜRETİLİR: depo public ve sabit bir değer
+    /// gerçek bir aboneye ait olabilir (bkz. NetgsmAccountUniqueIndexTests).</summary>
+    private static string NewUserCode()
+        => Random.Shared.NextInt64(8_500_000_000, 8_599_999_999).ToString();
+
     private static NetgsmAccount Seed(
         LicenseDbContext db, Guid licenseId, string brandCode, NetgsmAccountStatus status)
     {
@@ -27,7 +32,7 @@ public class NetgsmAccountServiceTests
         {
             Id = Guid.NewGuid(),
             LicenseId = licenseId,
-            UserCode = "8503021111",
+            UserCode = NewUserCode(),
             PasswordProtected = $"pw-{Guid.NewGuid():N}",
             Header = "ORDERDECK",
             BrandCode = brandCode,

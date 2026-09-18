@@ -39,15 +39,18 @@ public class IysConsentEvent
     /// hatası vermeden bozulur. Karar <c>IysConsentEventTenantColumnsTests</c>
     /// içindeki "hiç yabancı anahtar yok" testiyle çivilenmiştir.</para>
     ///
-    /// <para>Bugün <b>tüm</b> satırlarda null: prod'daki eski olaylar geriye dönük
-    /// doldurulamıyor, toplayıcının yazdığı yeni satırlarda da doldurma henüz
-    /// bağlanmadı. Yani <c>LicenseId IS NULL</c> bir hata filtresi DEĞİLDİR.</para>
+    /// <para>Toplayıcı artık bu sütunu DOLDURUYOR. Null kalması yalnız iki hâlde
+    /// normaldir: (a) prod'daki eski olaylar — geriye dönük doldurulamıyorlar,
+    /// (b) çağıranın lisansı çözemediği durum (olay <c>ErrorCode="no-brand"</c>
+    /// ile yazılır). Yani <c>LicenseId IS NULL</c> tek başına bir hata filtresi
+    /// DEĞİLDİR; hata sorgusu <see cref="ErrorCode"/>'a bakmalı.</para>
     /// </summary>
     public Guid? LicenseId { get; set; }
 
-    /// <summary>Olayın ait olduğu İYS markası (Netgsm marka kodu).
-    /// <see cref="LicenseId"/> ile aynı durumda: bugün tüm satırlarda null, çünkü
-    /// eski satırlar geriye dönük doldurulamaz ve yazma yolu henüz bağlanmadı.</summary>
+    /// <summary>Olayın ait olduğu İYS markası (Netgsm marka kodu). Toplayıcı
+    /// bunu yayıncının doğrulanmış Netgsm hesabından çözüp yazıyor; null kalması
+    /// prod'daki eski satırlar ile markanın hiç çözülemediği (<c>no-brand</c>)
+    /// olayları işaretler — ikincisinde kayıt satırı da açılmamıştır.</summary>
     public string? BrandCode { get; set; }
 
     /// <summary>İlgili <see cref="IysConsent"/> durum satırına bağ.
@@ -55,8 +58,8 @@ public class IysConsentEvent
     /// hiç silinmez). Ad EF'in FK konvansiyonuna birebir uyduğu için risk gerçek:
     /// <b>navigasyon özelliği eklemeyin</b>
     /// (ör. <c>public IysConsent? IysConsent { get; set; }</c>) — EF o an sessizce
-    /// cascade'li bir FK kurar. Bugün tüm satırlarda null (bkz.
-    /// <see cref="LicenseId"/>).</summary>
+    /// cascade'li bir FK kurar. Toplayıcı artık dolduruyor; durum satırının hiç
+    /// açılmadığı hâllerde (geçersiz numara, <c>no-brand</c>) null kalır.</summary>
     public Guid? IysConsentId { get; set; }
 
     /// <summary>E.164. <see cref="IysConsent.Recipient"/> ile eşleşir (FK değil — kayıt satırı silinse bile olay kalır).</summary>

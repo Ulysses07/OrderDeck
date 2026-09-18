@@ -39,6 +39,11 @@ public sealed class IysConsentTenantIsolationTests : IAsyncLifetime
         return Task.CompletedTask;
     }
 
+    /// <summary>Netgsm abone numarası ÜRETİLİR: depo public ve sabit bir değer
+    /// gerçek bir aboneye ait olabilir (bkz. NetgsmAccountUniqueIndexTests).</summary>
+    private static string NewUserCode()
+        => Random.Shared.NextInt64(8_500_000_000, 8_599_999_999).ToString();
+
     private async Task<Guid> SeedBroadcasterAsync(string brandCode)
     {
         using var scope = _factory.Services.CreateScope();
@@ -69,7 +74,7 @@ public sealed class IysConsentTenantIsolationTests : IAsyncLifetime
         {
             Id = Guid.NewGuid(),
             LicenseId = licenseId,
-            UserCode = "8503021111",
+            UserCode = NewUserCode(),
             PasswordProtected = $"pw-{Guid.NewGuid():N}",
             Header = "ORDERDECK",
             BrandCode = brandCode,

@@ -30,6 +30,13 @@ public class IndexModel : PageModel
 
     public sealed record BadPhone(string Raw, DateTimeOffset OccurredAt, string? SourceTable);
 
+    /// <summary><see cref="BadPhone"/> ile aynı sınıf kayıp: satır açılmadı, yalnız
+    /// olay var. <c>LicenseId</c> da gösteriliyor çünkü çözüm yayıncıya özel —
+    /// hangi yayıncının Netgsm kurulumunun eksik olduğu görünmeden bu liste
+    /// üzerinde işlem yapılamaz.</summary>
+    public sealed record NoBrand(
+        string Recipient, DateTimeOffset OccurredAt, string? SourceTable, Guid? LicenseId);
+
     public int PendingCount { get; private set; }
     public int PushedCount { get; private set; }
     public int ConfirmedCount { get; private set; }
@@ -39,6 +46,7 @@ public class IndexModel : PageModel
     public List<Row> Urgent { get; private set; } = new();
     public List<Row> Problem { get; private set; } = new();
     public List<BadPhone> BadPhones { get; private set; } = new();
+    public List<NoBrand> NoBrands { get; private set; } = new();
 
     public async Task OnGetAsync(CancellationToken ct)
     {
@@ -89,6 +97,17 @@ public class IndexModel : PageModel
             .OrderByDescending(e => e.OccurredAt)
             .Take(ListSize)
             .Select(e => new BadPhone(e.Recipient, e.OccurredAt, e.SourceTable))
+            .ToListAsync(ct);
+
+        // Markası çözülemeyen onaylar: yayıncının doğrulanmış Netgsm hesabı
+        // olmadığı için kayıt satırı açılmadı. Görünmez bırakılırsa 284 onayı
+        // kaybettiren kör nokta yeni bir biçimde geri gelir — sayaçlarda da
+        // çıkmaz, çünkü sayaçlar IysConsents tablosundan okunuyor.
+        NoBrands = await _db.IysConsentEvents.AsNoTracking()
+            .Where(e => e.ErrorCode == "no-brand")
+            .OrderByDescending(e => e.OccurredAt)
+            .Take(ListSize)
+            .Select(e => new NoBrand(e.Recipient, e.OccurredAt, e.SourceTable, e.LicenseId))
             .ToListAsync(ct);
     }
 }

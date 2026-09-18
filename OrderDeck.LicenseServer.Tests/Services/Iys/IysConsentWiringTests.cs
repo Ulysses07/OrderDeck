@@ -31,12 +31,17 @@ public sealed class IysConsentWiringTests : IClassFixture<ApiFactory>
     private static string NewBrandCode()
         => Random.Shared.Next(100_000, 999_999).ToString();
 
+    /// <summary>Netgsm abone numarası ÜRETİLİR: depo public ve sabit bir değer
+    /// gerçek bir aboneye ait olabilir (bkz. NetgsmAccountUniqueIndexTests).</summary>
+    private static string NewUserCode()
+        => Random.Shared.NextInt64(8_500_000_000, 8_599_999_999).ToString();
+
     private static void SeedNetgsmAccount(LicenseDbContext db, Guid licenseId)
         => db.NetgsmAccounts.Add(new NetgsmAccount
         {
             Id = Guid.NewGuid(),
             LicenseId = licenseId,
-            UserCode = "8503021111",
+            UserCode = NewUserCode(),
             PasswordProtected = $"pw-{Guid.NewGuid():N}",
             Header = "ORDERDECK",
             BrandCode = NewBrandCode(),
@@ -119,6 +124,21 @@ public sealed class IysConsentWiringTests : IClassFixture<ApiFactory>
             UpdatedAt = DateTimeOffset.UtcNow,
         };
         db.IntakeFormConfigs.Add(config);
+
+        // Kurulum onay yolunun AYNISI olmalı: lisans + doğrulanmış hesap yoksa
+        // satır zaten "no-brand" yüzünden açılmaz ve test, kutunun işaretsiz
+        // olmasını değil markanın çözülememesini kanıtlar (yalancı yeşil).
+        var licenseId = Guid.NewGuid();
+        db.Licenses.Add(new License
+        {
+            Id = licenseId,
+            CustomerId = config.CustomerId,
+            SkuCode = "STD",
+            IssuedAt = DateTimeOffset.UtcNow,
+            ExpiresAt = DateTimeOffset.UtcNow.AddYears(1),
+            LicenseKey = $"key-{Guid.NewGuid():N}",
+        });
+        SeedNetgsmAccount(db, licenseId);
         await db.SaveChangesAsync();
 
         await svc.SaveSubmissionAsync(
@@ -131,6 +151,14 @@ public sealed class IysConsentWiringTests : IClassFixture<ApiFactory>
 
         (await db.IysConsents.AnyAsync(c => c.Recipient == phone)).Should().BeFalse(
             "6563: sessizlik ret değildir — işaretsiz kutu geri çekme sayılmaz");
+
+        // Asıl kural satırın yokluğu değil: işaretsiz kutu HİÇBİR ŞEY
+        // kaydettirmez. Olay yazılıyor olsaydı ispat günlüğü kişinin hiç
+        // vermediği bir beyanı taşırdı.
+        (await db.IysConsentEvents.AnyAsync(
+                e => e.Recipient == phone
+                     && e.EventType == IysConsentEventType.LocalConsent))
+            .Should().BeFalse("işaretsiz kutu için toplayıcı hiç çağrılmamalı");
     }
 
     [Fact]

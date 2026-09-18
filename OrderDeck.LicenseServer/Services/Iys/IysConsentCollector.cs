@@ -66,6 +66,11 @@ public sealed class IysConsentCollector
         string? ip, string? userAgent, CancellationToken ct = default)
     {
         var status = consented ? IysConsentStatus.Onay : IysConsentStatus.Ret;
+        // Sütun nullable ve "bilinmiyor"un tek temsili null. Çağıranların bir
+        // kısmı lisansı çözemediğinde Guid.Empty geçiyor (bkz. IntakeFormService:
+        // çağrıyı atlamak ispat olayını da yazmazdı); iki ayrı "bilinmiyor"
+        // değeri admin sorgusunu ve ileriki analizi ikiye bölerdi.
+        Guid? eventLicenseId = licenseId == Guid.Empty ? null : licenseId;
         // Sunucu tarafının kendi normalize edicisi — OrderDeck.Core bu projeden
         // referanslı değil. İki normalize edici aynı kuralı paylaşır (Faz 1'de
         // ikisi de düzeltildi, test kümeleri eşlenik).
@@ -81,7 +86,7 @@ public sealed class IysConsentCollector
             _db.IysConsentEvents.Add(new IysConsentEvent
             {
                 Id = Guid.NewGuid(),
-                LicenseId = licenseId,
+                LicenseId = eventLicenseId,
                 Recipient = Truncate(rawPhone ?? "", 20) ?? "",
                 OccurredAt = occurredAt,
                 EventType = consented ? IysConsentEventType.LocalConsent : IysConsentEventType.LocalRevoke,
@@ -107,7 +112,7 @@ public sealed class IysConsentCollector
         var ev = new IysConsentEvent
         {
             Id = Guid.NewGuid(),
-            LicenseId = licenseId,
+            LicenseId = eventLicenseId,
             BrandCode = brandCode,
             Recipient = phone,
             OccurredAt = occurredAt,
@@ -163,6 +168,8 @@ public sealed class IysConsentCollector
             return;
         }
 
+        var durumDegisti = row.Status != status;
+
         row.Status = status;
         row.LastLocalEventAt = occurredAt;
         row.UpdatedAt = now;
@@ -174,7 +181,19 @@ public sealed class IysConsentCollector
             row.PushDeadline = IysBusinessDays.Add(occurredAt, PushDeadlineBusinessDays);
         }
 
+        if (!durumDegisti && row.PushState is IysPushState.Pushed or IysPushState.Confirmed)
+        {
+            // Aynı beyanın tekrarı İYS'ye YENİ bir şey söylemez. Profil kaydı
+            // kutunun mevcut değerini her seferinde gönderdiği için aynı RET
+            // her kaydetmede yeniden itilirdi; bu hem gereksiz, hem de
+            // VerifyAttempts/LastError'ı sıfırlayarak kalıcı bir gönderim
+            // hatasını görünmez yapardı. Olay yine yazıldı — ispat bozulmadı.
+            return;
+        }
+
         // Yeni olay yeni push penceresi açar — Expired kalıcı yasak değildir.
+        // Pending/Failed/Expired hâlleri kasten dışarıda: beyan İYS'ye henüz
+        // ULAŞMAMIŞ demektir, tekrar da olsa pencerenin açılması doğrudur.
         // Ret de itilir (yasal kayıt), ama gönderim bunu beklemez: kapı
         // Status'u de okuduğu için mesaj zaten kesildi.
         row.PushState = IysPushState.Pending;

@@ -49,6 +49,11 @@ public sealed class ShopperMeConsentRevokeTests : IClassFixture<ApiFactory>
     private static string UniqueCode()
         => ("revoke" + Guid.NewGuid().ToString("N"))[..16];
 
+    /// <summary>Netgsm abone numarası da üretilir — sabit bir değer gerçek bir
+    /// aboneye ait olabilir (bkz. NetgsmAccountUniqueIndexTests).</summary>
+    private static string NewUserCode()
+        => Random.Shared.NextInt64(8_500_000_000, 8_599_999_999).ToString();
+
     /// <summary>Doğrulanmış Netgsm hesabı olan bir yayıncı açar ve
     /// (lisans kimliği, shopper kodu) döner.</summary>
     private async Task<(Guid LicenseId, string ShopperCode)> SeedBroadcasterAsync(string brandCode)
@@ -85,7 +90,7 @@ public sealed class ShopperMeConsentRevokeTests : IClassFixture<ApiFactory>
         {
             Id = Guid.NewGuid(),
             LicenseId = licenseId,
-            UserCode = "8503021111",
+            UserCode = NewUserCode(),
             PasswordProtected = $"pw-{Guid.NewGuid():N}",
             Header = "ORDERDECK",
             BrandCode = brandCode,

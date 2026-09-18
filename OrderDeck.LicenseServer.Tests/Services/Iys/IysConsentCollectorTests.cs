@@ -21,6 +21,11 @@ public class IysConsentCollectorTests
         => new(new DbContextOptionsBuilder<LicenseDbContext>()
             .UseInMemoryDatabase($"iys-{Guid.NewGuid():N}").Options);
 
+    /// <summary>Netgsm abone numarası ÜRETİLİR: depo public ve sabit bir değer
+    /// gerçek bir aboneye ait olabilir (bkz. NetgsmAccountUniqueIndexTests).</summary>
+    private static string NewUserCode()
+        => Random.Shared.NextInt64(8_500_000_000, 8_599_999_999).ToString();
+
     /// <summary>Doğrulanmış bir Netgsm hesabı tohumlar — markanın kaynağı artık bu.</summary>
     private static void SeedAccount(LicenseDbContext db, Guid licenseId, string brandCode)
     {
@@ -28,7 +33,7 @@ public class IysConsentCollectorTests
         {
             Id = Guid.NewGuid(),
             LicenseId = licenseId,
-            UserCode = "8503021111",
+            UserCode = NewUserCode(),
             PasswordProtected = $"pw-{Guid.NewGuid():N}",
             Header = "ORDERDECK",
             BrandCode = brandCode,
@@ -182,6 +187,67 @@ public class IysConsentCollectorTests
     }
 
     [Fact]
+    public async Task Ayni_beyanin_tekrari_push_penceresini_yeniden_ACMAZ()
+    {
+        using var db = NewDb();
+        SeedAccount(db, LicenseA, BrandA);
+        var c = Collector(db);
+
+        await RecordAsync(c, consented: false, new DateTimeOffset(2026, 9, 15, 9, 0, 0, TimeSpan.Zero));
+        await db.SaveChangesAsync();
+
+        // Beyan İYS'ye iletilmiş ve kalıcı bir hata kaydedilmiş gibi işaretle.
+        var row = await db.IysConsents.SingleAsync();
+        row.PushState = IysPushState.Pushed;
+        row.VerifyAttempts = 3;
+        row.LastError = "kalici-hata";
+        await db.SaveChangesAsync();
+
+        // Profil kaydı kutunun MEVCUT değerini gönderiyor: aynı RET tekrar geliyor.
+        await RecordAsync(c, consented: false, new DateTimeOffset(2026, 9, 16, 9, 0, 0, TimeSpan.Zero));
+        await db.SaveChangesAsync();
+
+        row = await db.IysConsents.SingleAsync();
+        row.PushState.Should().Be(IysPushState.Pushed,
+            "aynı beyanın tekrarı İYS'ye yeni bir şey söylemez; her profil kaydında " +
+            "yeniden itmek gereksiz trafik üretir");
+        row.VerifyAttempts.Should().Be(3);
+        row.LastError.Should().Be("kalici-hata",
+            "sıfırlanırsa kalıcı bir gönderim hatası her profil kaydında görünmez olur");
+
+        db.IysConsentEvents.Count().Should().Be(2,
+            "ispat günlüğü ekle-only: beyan tekrar edilse de olay yazılır");
+    }
+
+    [Fact]
+    public async Task Ayni_beyanin_tekrari_Failed_satirda_push_penceresini_ACAR()
+    {
+        using var db = NewDb();
+        SeedAccount(db, LicenseA, BrandA);
+        var c = Collector(db);
+
+        await RecordAsync(c, consented: false, new DateTimeOffset(2026, 9, 15, 9, 0, 0, TimeSpan.Zero));
+        await db.SaveChangesAsync();
+
+        // Gönderim denendi ve DÜŞTÜ: beyan İYS'ye hâlâ ULAŞMADI.
+        var row = await db.IysConsents.SingleAsync();
+        row.PushState = IysPushState.Failed;
+        row.VerifyAttempts = 3;
+        row.LastError = "gecici-hata";
+        await db.SaveChangesAsync();
+
+        await RecordAsync(c, consented: false, new DateTimeOffset(2026, 9, 16, 9, 0, 0, TimeSpan.Zero));
+        await db.SaveChangesAsync();
+
+        row = await db.IysConsents.SingleAsync();
+        row.PushState.Should().Be(IysPushState.Pending,
+            "atlama yalnız Pushed/Confirmed için geçerli; düşmüş bir gönderim " +
+            "yeniden denenebilmeli, yoksa beyan İYS'ye hiç ulaşmaz");
+        row.VerifyAttempts.Should().Be(0);
+        row.LastError.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Toplayici_olaya_kiraci_sutunlarini_DOLDURUR()
     {
         using var db = NewDb();
@@ -227,7 +293,7 @@ public class IysConsentCollectorTests
         {
             Id = Guid.NewGuid(),
             LicenseId = LicenseA,
-            UserCode = "8503021111",
+            UserCode = NewUserCode(),
             PasswordProtected = $"pw-{Guid.NewGuid():N}",
             Header = "ORDERDECK",
             BrandCode = BrandA,
