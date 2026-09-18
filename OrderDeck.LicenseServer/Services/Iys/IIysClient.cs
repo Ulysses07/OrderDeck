@@ -1,0 +1,53 @@
+using OrderDeck.LicenseServer.Domain;
+
+namespace OrderDeck.LicenseServer.Services.Iys;
+
+/// <summary>İYS'ye tek bir izin satırı bildirimi.</summary>
+/// <param name="Recipient">E.164, <c>+905XXXXXXXXX</c>.</param>
+/// <param name="RecipientType">BIREYSEL / TACIR.</param>
+/// <param name="ChannelType">MESAJ / ARAMA / EPOSTA.</param>
+/// <param name="Status">Beyan edilen izin durumu.</param>
+/// <param name="ConsentDate">Onayın alındığı an (TR yerel saate çevrilerek gönderilir).</param>
+/// <param name="SourceCode">HS_WEB / HS_MOBIL.</param>
+/// <param name="RefId">Bizim kayıt kimliğimiz — mükerrer push'u zararsız kılar.</param>
+public sealed record IysConsentRecord(
+    string Recipient,
+    string RecipientType,
+    string ChannelType,
+    IysConsentStatus Status,
+    DateTimeOffset ConsentDate,
+    string SourceCode,
+    string RefId);
+
+/// <summary>
+/// <c>/iys/add</c> yanıtı. <see cref="Queued"/> "kuyruğa alındı" demektir —
+/// <b>kabul edildi demek DEĞİL</b>. Kabul yalnız <c>/iys/search</c> ile
+/// doğrulanır; 2026-09-17'de 284 kaydı bu ayrımı yapmadığımız için kaybettik.
+/// </summary>
+public sealed record IysAddResult(string Code, string RawBody, bool Queued);
+
+/// <summary><c>/iys/search</c> yanıtı; <see cref="Statuses"/> alıcı → İYS durumu.</summary>
+public sealed record IysSearchResult(
+    string Code,
+    string RawBody,
+    IReadOnlyDictionary<string, IysConsentStatus> Statuses);
+
+/// <summary>
+/// Kalıcı <b>yapılandırma</b> hatası: marka kodu (<c>code 60</c>) ya da kimlik
+/// (<c>code 30</c>). Boru hattı durur — sessizce devam etmek bekleyen her
+/// kaydı sırayla harcar, çünkü hepsi aynı hatayla düşer.
+/// </summary>
+public sealed class IysConfigurationException : Exception
+{
+    public string Code { get; }
+    public IysConfigurationException(string code, string message) : base(message) => Code = code;
+}
+
+public interface IIysClient
+{
+    /// <summary>Toplu izin bildirimi. Tek HTTP isteği; <paramref name="items"/> en fazla 20 satır.</summary>
+    Task<IysAddResult> AddAsync(IReadOnlyList<IysConsentRecord> items, CancellationToken ct = default);
+
+    /// <summary>Toplu izin sorgusu. Yanıtta olmayan alıcı <see cref="IysConsentStatus.Unknown"/> sayılır.</summary>
+    Task<IysSearchResult> SearchAsync(IReadOnlyList<string> recipients, CancellationToken ct = default);
+}
