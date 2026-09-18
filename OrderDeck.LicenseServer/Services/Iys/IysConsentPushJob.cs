@@ -86,16 +86,22 @@ public sealed class IysConsentPushJob
 
         if (pending.Count == 0) return;
 
+        // Faz 5 Task 7 bunu marka başına döngüyle değiştiriyor. Şimdilik
+        // global kimlik: davranış bu commit'te birebir aynı kalsın diye.
+        var account = new IysAccountContext(
+            Guid.Empty, _opt.UserCode, _opt.Password, _opt.BrandCode);
+
         var first = true;
         foreach (var batch in pending.Chunk(BatchSize))
         {
             if (!first) await Task.Delay(BatchDelay, ct);
             first = false;
-            await PushBatchAsync(batch, ct);
+            await PushBatchAsync(account, batch, ct);
         }
     }
 
-    private async Task PushBatchAsync(IysConsent[] batch, CancellationToken ct)
+    private async Task PushBatchAsync(
+        IysAccountContext account, IysConsent[] batch, CancellationToken ct)
     {
         var records = batch.Select(c => new IysConsentRecord(
             c.Recipient, c.RecipientType, c.ChannelType, c.Status,
@@ -106,7 +112,7 @@ public sealed class IysConsentPushJob
         IysAddResult result;
         try
         {
-            result = await _client.AddAsync(records, ct);
+            result = await _client.AddAsync(account, records, ct);
         }
         catch (IysConfigurationException cfg)
         {

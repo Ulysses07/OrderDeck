@@ -15,18 +15,24 @@ public class IysConsentPushJobTests
     private sealed class FakeIysClient : IIysClient
     {
         public List<IReadOnlyList<IysConsentRecord>> AddCalls { get; } = new();
+        public List<IysAccountContext> AddAccounts { get; } = new();
         public Func<IReadOnlyList<IysConsentRecord>, IysAddResult>? AddBehavior { get; set; }
         public Exception? ThrowOnAdd { get; set; }
 
-        public Task<IysAddResult> AddAsync(IReadOnlyList<IysConsentRecord> items, CancellationToken ct = default)
+        public Task<IysAddResult> AddAsync(
+            IysAccountContext account, IReadOnlyList<IysConsentRecord> items,
+            CancellationToken ct = default)
         {
+            AddAccounts.Add(account);
             AddCalls.Add(items);
             if (ThrowOnAdd is not null) throw ThrowOnAdd;
             return Task.FromResult(AddBehavior?.Invoke(items)
                 ?? new IysAddResult("0", "{\"code\":\"0\"}", Queued: true));
         }
 
-        public Task<IysSearchResult> SearchAsync(IReadOnlyList<string> recipients, CancellationToken ct = default)
+        public Task<IysSearchResult> SearchAsync(
+            IysAccountContext account, IReadOnlyList<string> recipients,
+            CancellationToken ct = default)
             => Task.FromResult(new IysSearchResult("0", "{}", new Dictionary<string, IysConsentStatus>()));
     }
 

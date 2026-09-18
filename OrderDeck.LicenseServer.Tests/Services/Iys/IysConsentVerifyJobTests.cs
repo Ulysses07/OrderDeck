@@ -18,12 +18,18 @@ public class IysConsentVerifyJobTests
     {
         public Dictionary<string, IysConsentStatus> Answer { get; set; } = new();
         public List<IReadOnlyList<string>> SearchCalls { get; } = new();
+        public List<IysAccountContext> SearchAccounts { get; } = new();
 
-        public Task<IysAddResult> AddAsync(IReadOnlyList<IysConsentRecord> items, CancellationToken ct = default)
+        public Task<IysAddResult> AddAsync(
+            IysAccountContext account, IReadOnlyList<IysConsentRecord> items,
+            CancellationToken ct = default)
             => Task.FromResult(new IysAddResult("0", "{}", true));
 
-        public Task<IysSearchResult> SearchAsync(IReadOnlyList<string> recipients, CancellationToken ct = default)
+        public Task<IysSearchResult> SearchAsync(
+            IysAccountContext account, IReadOnlyList<string> recipients,
+            CancellationToken ct = default)
         {
+            SearchAccounts.Add(account);
             SearchCalls.Add(recipients);
             return Task.FromResult(new IysSearchResult("0", "{\"code\":\"0\"}", Answer));
         }

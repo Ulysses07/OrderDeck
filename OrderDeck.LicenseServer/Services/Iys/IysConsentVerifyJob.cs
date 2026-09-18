@@ -56,12 +56,17 @@ public sealed class IysConsentVerifyJob
 
         if (due.Count == 0) return;
 
+        // Faz 5 Task 8 bunu marka başına döngüyle değiştiriyor.
+        var account = new IysAccountContext(
+            Guid.Empty, _opt.UserCode, _opt.Password, _opt.BrandCode);
+
         foreach (var batch in due.Chunk(BatchSize))
         {
             IysSearchResult result;
             try
             {
-                result = await _client.SearchAsync(batch.Select(c => c.Recipient).ToArray(), ct);
+                result = await _client.SearchAsync(
+                    account, batch.Select(c => c.Recipient).ToArray(), ct);
             }
             catch (IysConfigurationException cfg)
             {
