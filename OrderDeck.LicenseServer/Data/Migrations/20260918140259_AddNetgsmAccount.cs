@@ -30,6 +30,7 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_NetgsmAccounts", x => x.Id);
+                    table.CheckConstraint("CK_NetgsmAccounts_BrandCode", "LEN([BrandCode]) > 0");
                     table.ForeignKey(
                         name: "FK_NetgsmAccounts_Licenses_LicenseId",
                         column: x => x.LicenseId,

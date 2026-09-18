@@ -819,8 +819,14 @@ public class LicenseDbContext : DbContext
             b.Property(a => a.Header).HasMaxLength(32).IsRequired();
             // IysConsent.BrandCode ile AYNI uzunluk — ikisi eşleştiriliyor.
             b.Property(a => a.BrandCode).HasMaxLength(16).IsRequired();
-            b.Property(a => a.Status).HasMaxLength(16).IsRequired();
+            // IysConsent gibi STRING saklanır: admin SQL'inde ve yedek dökümünde
+            // "Verified" okunur, "1" değil. Enum olması şart — gönderim kapısı
+            // fail-closed, serbest metinde bir harf kayması SMS'i sessizce kapatır.
+            b.Property(a => a.Status).HasConversion<string>().HasMaxLength(16).IsRequired();
             b.Property(a => a.LastError).HasMaxLength(500);
+            // Boş marka global tekil index'te bir yer kapar ve marka→hesap
+            // araması "" ile gerçek bir kiracının satırını döndürürdü.
+            b.ToTable(t => t.HasCheckConstraint("CK_NetgsmAccounts_BrandCode", "LEN([BrandCode]) > 0"));
             // Bir lisans = bir hesap.
             b.HasIndex(a => a.LicenseId).IsUnique();
             // Marka → hesap araması tek satır dönmeli (push/verify işleri).

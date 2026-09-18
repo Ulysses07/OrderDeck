@@ -29,15 +29,22 @@ public sealed class NetgsmAccountUniqueIndexTests : IAsyncLifetime
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// <see cref="NetgsmAccount.UserCode"/> ve <see cref="NetgsmAccount.Header"/>
+    /// satır başına ÜRETİLİR (sabit değil): sabit olsalardı marka testi, tekil
+    /// index yanlışlıkla o iki kolona konmuş olsa bile aynı
+    /// <see cref="DbUpdateException"/>'ı alır ve doğru sebeple geçtiğini
+    /// sanardık. Ayrıca repo kuralı: testte sabit kimlik-bilgisi metni yazma.
+    /// </summary>
     private static NetgsmAccount Row(Guid licenseId, string brandCode) => new()
     {
         Id = Guid.NewGuid(),
         LicenseId = licenseId,
-        UserCode = "8503021111",
+        UserCode = Random.Shared.NextInt64(8_500_000_000, 8_599_999_999).ToString(),
         PasswordProtected = $"pw-{Guid.NewGuid():N}",
-        Header = "ORDERDECK",
+        Header = $"OD{Guid.NewGuid():N}"[..11],
         BrandCode = brandCode,
-        Status = "verified",
+        Status = NetgsmAccountStatus.Verified,
         CreatedAt = DateTimeOffset.UtcNow,
         UpdatedAt = DateTimeOffset.UtcNow,
     };
@@ -119,5 +126,21 @@ public sealed class NetgsmAccountUniqueIndexTests : IAsyncLifetime
                 "marka→hesap araması tek satır dönmeli; iki lisans aynı markayı " +
                 "paylaşırsa push işi hangi kimlikle gideceğini bilemez");
         }
+    }
+
+    [Fact]
+    public async Task Bos_marka_kodu_reddedilir()
+    {
+        var licenseId = await NewLicenseAsync();
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        db.NetgsmAccounts.Add(Row(licenseId, ""));
+
+        var act = async () => await db.SaveChangesAsync();
+        await act.Should().ThrowAsync<DbUpdateException>(
+            "boş marka kodu global tekil index'te bir yer kapar; ikinci boş " +
+            "kayıt çakışır ve marka→hesap araması \"\" ile gerçek bir kiracının " +
+            "satırını döndürerek onayı yanlış markaya yazardı");
     }
 }

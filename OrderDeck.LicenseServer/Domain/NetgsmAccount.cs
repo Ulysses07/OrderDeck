@@ -1,6 +1,24 @@
 namespace OrderDeck.LicenseServer.Domain;
 
 /// <summary>
+/// Bir yayıncının Netgsm hesabının kullanılabilirlik durumu.
+///
+/// <para>Gönderim kapısı <b>fail-closed</b>: yalnız <see cref="Verified"/>
+/// onay toplar ve SMS gönderir. Bu yüzden durum serbest metin DEĞİL — bir kod
+/// yolunun yanlış büyük/küçük harfle ("verified" yerine "Verified") yazması
+/// hiçbir yerde istisna fırlatmadan yayıncının SMS'ini sessizce kapatırdı.</para>
+/// </summary>
+public enum NetgsmAccountStatus
+{
+    /// <summary>Doğrulama denendi ve başarısız — varsayılan. Kapı kapalı.</summary>
+    Failed = 0,
+    /// <summary><c>/iys/search</c> başarılı. Gönderim yalnız bu durumda serbest.</summary>
+    Verified = 1,
+    /// <summary>Yayıncı ayrıldı; kimlik bilgileri emekliye ayrıldı.</summary>
+    Disabled = 2
+}
+
+/// <summary>
 /// Bir yayıncının (lisansın) kendi Netgsm aboneliği: abone no, API şifresi,
 /// onaylı gönderici başlığı ve İYS marka kodu.
 ///
@@ -10,8 +28,18 @@ namespace OrderDeck.LicenseServer.Domain;
 /// hukuken sahibi olmayan tarafa yazmak olurdu.</para>
 ///
 /// <para><b>Satırın yokluğu "hiç girilmemiş" demektir</b> — ayrı bir
-/// <c>pending</c> durumu yok. Yayıncı ayrılırsa satır silinmez,
-/// <see cref="Status"/> <c>disabled</c> olur.</para>
+/// <c>pending</c> durumu yok.</para>
+///
+/// <para><b>Satırın iki ayrı çıkış yolu var, ikisi de kasıtlı:</b>
+/// <list type="bullet">
+/// <item><description><b>Yayıncı ayrılır</b> → satır SİLİNMEZ,
+/// <see cref="Status"/> <see cref="NetgsmAccountStatus.Disabled"/> olur.
+/// Geçmiş gönderimlerin hangi kimlikle yapıldığı izlenebilir kalır.</description></item>
+/// <item><description><b>Lisans/müşteri KVKK kapsamında silinir</b> → License
+/// yabancı anahtarı <c>Cascade</c> olduğu için bu satır da gider. Kimlik
+/// bilgileri müşteri kaydıyla birlikte imha edilmelidir; doğru davranış
+/// budur.</description></item>
+/// </list></para>
 /// </summary>
 public sealed class NetgsmAccount
 {
@@ -36,9 +64,11 @@ public sealed class NetgsmAccount
     /// gidileceği belirsizleşir.</summary>
     public string BrandCode { get; set; } = "";
 
-    /// <summary>"verified" | "failed" | "disabled". Yalnız <c>verified</c> hesap
-    /// onay toplar ve SMS gönderir (fail-closed).</summary>
-    public string Status { get; set; } = "failed";
+    /// <summary>Hesabın kullanılabilirlik durumu. Yalnız
+    /// <see cref="NetgsmAccountStatus.Verified"/> hesap onay toplar ve SMS
+    /// gönderir (fail-closed) — bu yüzden varsayılan
+    /// <see cref="NetgsmAccountStatus.Failed"/>.</summary>
+    public NetgsmAccountStatus Status { get; set; } = NetgsmAccountStatus.Failed;
 
     /// <summary>Panelde gösterilen son hata metni (ör. yanlış şifre).</summary>
     public string? LastError { get; set; }

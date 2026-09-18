@@ -12,7 +12,7 @@ using OrderDeck.LicenseServer.Data;
 namespace OrderDeck.LicenseServer.Data.Migrations
 {
     [DbContext(typeof(LicenseDbContext))]
-    [Migration("20260918134034_AddNetgsmAccount")]
+    [Migration("20260918140259_AddNetgsmAccount")]
     partial class AddNetgsmAccount
     {
         /// <inheritdoc />
@@ -1060,7 +1060,10 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.HasIndex("LicenseId")
                         .IsUnique();
 
-                    b.ToTable("NetgsmAccounts");
+                    b.ToTable("NetgsmAccounts", t =>
+                        {
+                            t.HasCheckConstraint("CK_NetgsmAccounts_BrandCode", "LEN([BrandCode]) > 0");
+                        });
                 });
 
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.OperatorUser", b =>
