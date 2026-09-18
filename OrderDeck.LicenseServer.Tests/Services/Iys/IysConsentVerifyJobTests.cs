@@ -1,7 +1,7 @@
 using FluentAssertions;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Iys;
@@ -12,13 +12,14 @@ namespace OrderDeck.LicenseServer.Tests.Services.Iys;
 
 public class IysConsentVerifyJobTests
 {
-    private const string Phone = "+905551112233";
-
     private sealed class FakeIysClient : IIysClient
     {
         public Dictionary<string, IysConsentStatus> Answer { get; set; } = new();
         public List<IReadOnlyList<string>> SearchCalls { get; } = new();
         public List<IysAccountContext> SearchAccounts { get; } = new();
+
+        /// <summary>Marka kodu → o markada fırlatılacak hata.</summary>
+        public Dictionary<string, Exception> ThrowByBrand { get; } = new();
 
         public Task<IysAddResult> AddAsync(
             IysAccountContext account, IReadOnlyList<IysConsentRecord> items,
@@ -31,30 +32,56 @@ public class IysConsentVerifyJobTests
         {
             SearchAccounts.Add(account);
             SearchCalls.Add(recipients);
+            if (ThrowByBrand.TryGetValue(account.BrandCode, out var ex)) throw ex;
             return Task.FromResult(new IysSearchResult("0", "{\"code\":\"0\"}", Answer));
         }
     }
+
+    private const string Phone = "+905551112233";
+    private static readonly Guid LicenseA = Guid.Parse("11111111-1111-1111-1111-111111111111");
+    private static readonly Guid LicenseB = Guid.Parse("22222222-2222-2222-2222-222222222222");
+    private const string BrandA = "731734";
+    private const string BrandB = "763208";
+
+    private static readonly IDataProtectionProvider Protection = new EphemeralDataProtectionProvider();
+
+    private static NetgsmAccountService Accounts(LicenseDbContext db) => new(db, Protection);
 
     private static LicenseDbContext NewDb()
         => new(new DbContextOptionsBuilder<LicenseDbContext>()
             .UseInMemoryDatabase($"iys-verify-{Guid.NewGuid():N}").Options);
 
     private static IysConsentVerifyJob Job(LicenseDbContext db, IIysClient client)
-        => new(db, client, Options.Create(new NetgsmOptions { BrandCode = "731734" }),
-            NullLogger<IysConsentVerifyJob>.Instance);
+        => new(db, client, Accounts(db), NullLogger<IysConsentVerifyJob>.Instance);
 
-    private static async Task<LicenseDbContext> SeedPushedAsync(
-        DateTimeOffset? nextVerifyAt = null, int attempts = 0)
+    private static void SeedAccount(LicenseDbContext db, Guid licenseId, string brandCode)
     {
-        var db = NewDb();
-        var now = DateTimeOffset.UtcNow;
-        db.IysConsents.Add(new IysConsent
+        db.NetgsmAccounts.Add(new NetgsmAccount
         {
             Id = Guid.NewGuid(),
-            BrandCode = "731734",
+            LicenseId = licenseId,
+            UserCode = $"user-{Guid.NewGuid():N}",
+            PasswordProtected = Accounts(db).ProtectPassword($"pw-{Guid.NewGuid():N}"),
+            Header = "ORDERDECK",
+            BrandCode = brandCode,
+            Status = NetgsmAccountStatus.Verified,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        });
+        db.SaveChanges();
+    }
+
+    private static IysConsent Pushed(
+        string phone, string brandCode, DateTimeOffset? nextVerifyAt = null, int attempts = 0)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return new IysConsent
+        {
+            Id = Guid.NewGuid(),
+            BrandCode = brandCode,
             ChannelType = "MESAJ",
             RecipientType = "BIREYSEL",
-            Recipient = Phone,
+            Recipient = phone,
             Status = IysConsentStatus.Onay,
             ConsentDate = now.AddMinutes(-30),
             PushState = IysPushState.Pushed,
@@ -65,7 +92,15 @@ public class IysConsentVerifyJobTests
             LastLocalEventAt = now.AddMinutes(-30),
             CreatedAt = now,
             UpdatedAt = now,
-        });
+        };
+    }
+
+    private static async Task<LicenseDbContext> SeedPushedAsync(
+        DateTimeOffset? nextVerifyAt = null, int attempts = 0)
+    {
+        var db = NewDb();
+        SeedAccount(db, LicenseA, BrandA);
+        db.IysConsents.Add(Pushed(Phone, BrandA, nextVerifyAt, attempts));
         await db.SaveChangesAsync();
         return db;
     }
@@ -151,5 +186,125 @@ public class IysConsentVerifyJobTests
             .SingleAsync(e => e.EventType == IysConsentEventType.SearchResult);
         ev.Status.Should().Be(IysConsentStatus.Onay);
         ev.ApiResponseCode.Should().Be("0");
+        ev.LicenseId.Should().Be(LicenseA, "kanıt kiracıya bağlanabilmeli");
+        ev.BrandCode.Should().Be(BrandA);
+    }
+
+    [Fact]
+    public async Task Bir_markanin_yuz_tikali_kaydi_digerini_ac_birakmaz()
+    {
+        // Spec sözleşme #12. Eski kod sınırı markadan ÖNCE uyguluyordu:
+        // ilk 100 sıra A'nın kayıtlarıyla doluyor, B hiç sıra alamıyordu.
+        using var db = NewDb();
+        SeedAccount(db, LicenseA, BrandA);
+        SeedAccount(db, LicenseB, BrandB);
+
+        var old = DateTimeOffset.UtcNow.AddHours(-2);
+        for (var i = 0; i < 100; i++)
+            db.IysConsents.Add(Pushed($"+90555{i:D7}", BrandA, nextVerifyAt: old));
+        db.IysConsents.Add(Pushed("+905559999999", BrandB));
+        await db.SaveChangesAsync();
+
+        var client = new FakeIysClient();
+
+        await Job(db, client).RunAsync();
+
+        client.SearchAccounts.Select(a => a.BrandCode).Should().Contain(BrandB,
+            "B'nin hazır kaydı A'nın kuyruğunun arkasında beklememeli");
+    }
+
+    [Fact]
+    public async Task Gecici_hata_randevuyu_ILERI_alir_ama_takvimi_tuketmez()
+    {
+        using var db = await SeedPushedAsync();
+        var client = new FakeIysClient();
+        client.ThrowByBrand[BrandA] = new HttpRequestException("ağ");
+
+        await Job(db, client).RunAsync();
+
+        var row = await db.IysConsents.SingleAsync();
+        row.NextVerifyAt.Should().BeAfter(DateTimeOffset.UtcNow,
+            "randevu olduğu yerde kalırsa aynı kayıt her koşuda ilk sırayı kapar");
+        row.VerifyAttempts.Should().Be(0,
+            "VerifyAttempts İYS cevabını bekleme takvimidir; ağ hatası onu tüketmemeli");
+        row.PushState.Should().Be(IysPushState.Pushed);
+    }
+
+    [Fact]
+    public async Task Sorgu_kendi_markasinin_kimligiyle_gider()
+    {
+        using var db = NewDb();
+        SeedAccount(db, LicenseA, BrandA);
+        SeedAccount(db, LicenseB, BrandB);
+        db.IysConsents.Add(Pushed("+905551110001", BrandA));
+        db.IysConsents.Add(Pushed("+905551110002", BrandB));
+        await db.SaveChangesAsync();
+
+        var client = new FakeIysClient();
+
+        await Job(db, client).RunAsync();
+
+        client.SearchAccounts.Should().HaveCount(2);
+        for (var i = 0; i < client.SearchCalls.Count; i++)
+        {
+            var expectedPhone = client.SearchAccounts[i].BrandCode == BrandA
+                ? "+905551110001" : "+905551110002";
+            client.SearchCalls[i].Should().Equal(expectedPhone);
+        }
+    }
+
+    [Fact]
+    public async Task Bir_yayincinin_yapilandirma_hatasi_digerini_durdurmaz()
+    {
+        using var db = NewDb();
+        SeedAccount(db, LicenseA, BrandA);
+        SeedAccount(db, LicenseB, BrandB);
+        db.IysConsents.Add(Pushed("+905551110001", BrandA));
+        db.IysConsents.Add(Pushed("+905551110002", BrandB));
+        await db.SaveChangesAsync();
+
+        var client = new FakeIysClient { Answer = { ["+905551110002"] = IysConsentStatus.Onay } };
+        client.ThrowByBrand[BrandA] = new IysConfigurationException("60", "marka kodu");
+
+        await Job(db, client).RunAsync();
+
+        var b = await db.IysConsents.SingleAsync(c => c.BrandCode == BrandB);
+        b.PushState.Should().Be(IysPushState.Confirmed, "B, A'nın bozuk ayarından etkilenmemeli");
+    }
+
+    [Fact]
+    public async Task Sifresi_cozulemeyen_hesap_Verified_kalir_turu_atlanir_digeri_sorulmaya_devam_eder()
+    {
+        // Push işiyle aynı karar: anahtar arızasında hesabı Failed işaretlemek
+        // geri alınamaz (Failed → Verified dönen kod yolu yok, collector markayı
+        // yalnız Verified hesaptan çözer). Turu atla, durumu koru, arızayı yaz.
+        using var db = NewDb();
+        SeedAccount(db, LicenseA, BrandA);
+        SeedAccount(db, LicenseB, BrandB);
+
+        // Başka bir anahtarla korunan metin: bu sağlayıcı onu çözemez.
+        var foreign = new EphemeralDataProtectionProvider()
+            .CreateProtector("OrderDeck.Netgsm.Password.v1")
+            .Protect($"pw-{Guid.NewGuid():N}");
+        var broken = await db.NetgsmAccounts.SingleAsync(a => a.LicenseId == LicenseA);
+        broken.PasswordProtected = foreign;
+
+        db.IysConsents.Add(Pushed("+905551110001", BrandA));
+        db.IysConsents.Add(Pushed("+905551110002", BrandB));
+        await db.SaveChangesAsync();
+
+        var client = new FakeIysClient { Answer = { ["+905551110002"] = IysConsentStatus.Onay } };
+
+        await Job(db, client).RunAsync();
+
+        var acct = await db.NetgsmAccounts.SingleAsync(a => a.LicenseId == LicenseA);
+        acct.Status.Should().Be(NetgsmAccountStatus.Verified,
+            "geçici anahtar arızası o yayıncının yeni onay toplamasını da durdurmamalı");
+        acct.LastError.Should().NotBeNullOrEmpty("arıza panelde görünür olmalı");
+
+        client.SearchAccounts.Select(a => a.BrandCode).Should().NotContain(BrandA);
+        var b = await db.IysConsents.SingleAsync(c => c.BrandCode == BrandB);
+        b.PushState.Should().Be(IysPushState.Confirmed,
+            "B, A'nın anahtar sorunundan etkilenmemeli");
     }
 }
