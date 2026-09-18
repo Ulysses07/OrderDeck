@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
@@ -119,7 +119,17 @@ public sealed class SmsCampaignSendJob
         var consents = brandCode is null
             ? new Dictionary<string, IysConsent>()
             : await _db.IysConsents
-                .Where(c => c.BrandCode == brandCode && phones.Contains(c.Recipient))
+                // Kanal ve alıcı tipi de süzülüyor: tekil indeks
+                // (BrandCode, ChannelType, RecipientType, Recipient) aynı marka
+                // ve telefon için birden çok satıra izin verir. Süzgeç olmasaydı
+                // ileride doğacak bir EPOSTA/TACIR satırı ya SMS kapısını
+                // e-posta onayıyla açardı, ya da ToDictionaryAsync çift anahtarla
+                // patlardı. Bugün toplayıcı yalnız MESAJ/BIREYSEL yazdığı için
+                // ikisi de görünmez — "kurulum zaten sağlıyor" tuzağı.
+                .Where(c => c.BrandCode == brandCode
+                            && c.ChannelType == "MESAJ"
+                            && c.RecipientType == "BIREYSEL"
+                            && phones.Contains(c.Recipient))
                 .ToDictionaryAsync(c => c.Recipient, ct);
 
         foreach (var r in recipients)

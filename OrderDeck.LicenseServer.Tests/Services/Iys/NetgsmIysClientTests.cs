@@ -60,11 +60,16 @@ public class NetgsmIysClientTests
         "HS_WEB", Guid.NewGuid().ToString("N"));
 
     [Fact]
-    public async Task Istek_markasi_parametreden_gelir_global_configten_DEGIL()
+    public async Task Istek_basliginin_UCU_de_hesap_baglamindan_gelir()
     {
-        // Çok kiracılılığın kalbi: istemci global kimliğe BAKMAZ. Bakarsa,
-        // B yayıncısı için dönülen tur merkezî markaya sorar ve gelen cevap
-        // B'nin satırına yazılır — hiçbir hata fırlatmadan veri bozulur.
+        // Çok kiracılılığın kalbi: marka, kullanıcı ve şifrenin ÜÇÜ de aynı
+        // bağlamdan gelmeli. Biri sabitlenirse B yayıncısı için dönülen tur
+        // yanlış kimlikle sorar ve gelen cevap B'nin satırına yazılır —
+        // hiçbir hata fırlatmadan veri bozulur.
+        //
+        // (Adı eskiden "global configten DEĞİL" idi; Task 9 NetgsmOptions'taki
+        // global BrandCode'u sildiği için o sızıntının bekçiliğini artık
+        // derleyici yapıyor, test değil.)
         var (client, handler) = Build("{\"code\":\"0\"}");
         var account = Account("763208");   // markanın TEK kaynağı bu bağlam
 

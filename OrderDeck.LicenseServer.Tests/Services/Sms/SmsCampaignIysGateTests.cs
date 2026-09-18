@@ -189,6 +189,41 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
         recipient.Status.Should().Be("failed");
         recipient.Error.Should().Be("iys-brand-missing");
         _factory.Sms.Sent.Should().NotContain(m => m.Phone == phone);
+
+        var campaign = await db.SmsCampaigns.AsNoTracking().SingleAsync(c => c.Id == campaignId);
+        campaign.RefundedCredits.Should().BeGreaterThan(0,
+            "kurulumunu bitirmemiş yayıncının bin alıcılık kampanyasında bin "
+            + "kredi (gerçek para) sessizce yanmamalı");
+    }
+
+    [Fact]
+    public async Task Baska_kanalin_onayi_SMS_kapisini_ACMAZ()
+    {
+        // Tekil indeks aynı marka+telefon için kanal başına ayrı satıra izin
+        // verir. E-posta için verilen onay SMS göndermeye yetki vermez; kapı
+        // kanalı süzmezse kişi hiç izin vermediği kanaldan ticari ileti alır.
+        _factory.Sms.Clear();
+        _factory.Sms.ThrowOnSend = false;
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var accounts = scope.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+        var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
+
+        var phone = $"+90555{Random.Shared.Next(1000000, 9999999)}";
+        var (campaignId, brandCode) = await SeedCampaignAsync(db, accounts, phone);
+
+        // Marka ve numara DOĞRU, kanal yanlış.
+        await SeedConsentAsync(db, brandCode, phone,
+            IysConsentStatus.Onay, IysConsentStatus.Onay, channelType: "EPOSTA");
+
+        await job.RunAsync(campaignId);
+
+        var recipient = await db.SmsCampaignRecipients.AsNoTracking()
+            .SingleAsync(r => r.CampaignId == campaignId);
+        recipient.Status.Should().Be("failed");
+        recipient.Error.Should().Be("iys-consent-missing");
+        _factory.Sms.Sent.Should().NotContain(m => m.Phone == phone);
     }
 
     /// <summary>
@@ -197,15 +232,16 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
     /// </summary>
     private static async Task SeedConsentAsync(
         LicenseDbContext db, string brandCode, string phone,
-        IysConsentStatus status, IysConsentStatus? verified)
+        IysConsentStatus status, IysConsentStatus? verified,
+        string channelType = "MESAJ", string recipientType = "BIREYSEL")
     {
         var now = DateTimeOffset.UtcNow;
         db.IysConsents.Add(new IysConsent
         {
             Id = Guid.NewGuid(),
             BrandCode = brandCode,
-            ChannelType = "MESAJ",
-            RecipientType = "BIREYSEL",
+            ChannelType = channelType,
+            RecipientType = recipientType,
             Recipient = phone,
             Status = status,
             LastVerifiedStatus = verified,
