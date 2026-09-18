@@ -149,4 +149,52 @@ public class IysConsentCollectorTests
         ev.ErrorCode.Should().Be("invalid-phone");
         ev.Status.Should().Be(IysConsentStatus.Unknown);
     }
+
+    [Fact]
+    public async Task Olay_kiraci_sutunlarini_saklar()
+    {
+        using var db = NewDb();
+        var licenseId = Guid.NewGuid();
+        var consentId = Guid.NewGuid();
+
+        db.IysConsentEvents.Add(new IysConsentEvent
+        {
+            Id = Guid.NewGuid(),
+            Recipient = "+905551112233",
+            OccurredAt = DateTimeOffset.UtcNow,
+            EventType = IysConsentEventType.LocalConsent,
+            Status = IysConsentStatus.Onay,
+            LicenseId = licenseId,
+            BrandCode = "731734",
+            IysConsentId = consentId,
+        });
+        await db.SaveChangesAsync();
+
+        var ev = await db.IysConsentEvents.SingleAsync();
+        ev.LicenseId.Should().Be(licenseId, "olay hangi yayıncıya ait olduğunu taşımalı");
+        ev.BrandCode.Should().Be("731734",
+            "aynı telefon A markasında ONAY, B'de RET olabilir — denetimde ayrışmalı");
+        ev.IysConsentId.Should().Be(consentId, "olay durum satırına bağlanabilmeli");
+    }
+
+    [Fact]
+    public async Task Kiraci_sutunlari_null_kabul_eder()
+    {
+        using var db = NewDb();
+        db.IysConsentEvents.Add(new IysConsentEvent
+        {
+            Id = Guid.NewGuid(),
+            Recipient = "+905551112233",
+            OccurredAt = DateTimeOffset.UtcNow,
+            EventType = IysConsentEventType.LocalConsent,
+            Status = IysConsentStatus.Onay,
+        });
+        await db.SaveChangesAsync();
+
+        var ev = await db.IysConsentEvents.SingleAsync();
+        ev.LicenseId.Should().BeNull(
+            "prod'daki eski olaylar geriye dönük doldurulamaz; sütun NOT NULL olsaydı göç düşerdi");
+        ev.BrandCode.Should().BeNull();
+        ev.IysConsentId.Should().BeNull();
+    }
 }

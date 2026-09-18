@@ -551,7 +551,12 @@ public class LicenseDbContext : DbContext
             b.Property(e => e.ApiResponseCode).HasMaxLength(16);
             b.Property(e => e.ApiResponseBody).HasMaxLength(2000);
             b.Property(e => e.ErrorCode).HasMaxLength(32);
+            b.Property(e => e.BrandCode).HasMaxLength(16);
             b.HasIndex(e => new { e.Recipient, e.OccurredAt });
+
+            // Denetim sorgusu "şu yayıncının şu numaraya ait olayları" —
+            // kiracı ayrıştırması bu index olmadan tablo taraması olur.
+            b.HasIndex(e => new { e.LicenseId, e.Recipient, e.OccurredAt });
         });
 
         mb.Entity<ShopperBroadcasterLink>(b =>
