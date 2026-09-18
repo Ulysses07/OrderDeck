@@ -348,7 +348,8 @@ public sealed class NetgsmAccount
 ```bash
 dotnet ef migrations add AddNetgsmAccount \
   --project OrderDeck.LicenseServer/OrderDeck.LicenseServer.csproj \
-  --context LicenseDbContext \n  --output-dir Data/Migrations
+  --context LicenseDbContext \
+  --output-dir Data/Migrations
 ```
 
 Üretilen dosyayı aç ve iki `CreateIndex` çağrısının da `unique: true` taşıdığını gözle doğrula.
@@ -658,7 +659,8 @@ ve aynı bloğun sonuna, mevcut index'ten SONRA:
 ```bash
 dotnet ef migrations add AddIysConsentEventTenant \
   --project OrderDeck.LicenseServer/OrderDeck.LicenseServer.csproj \
-  --context LicenseDbContext \n  --output-dir Data/Migrations
+  --context LicenseDbContext \
+  --output-dir Data/Migrations
 ```
 
 Üretilen dosyada üç `AddColumn` (`LicenseId` uniqueidentifier null, `BrandCode` nvarchar(16) null, `IysConsentId` uniqueidentifier null) ve bir `CreateIndex` olmalı. **`nullable: true` olduklarını doğrula** — mevcut satırlar geriye dönük doldurulamaz, prod'daki eski olaylar `null` kalacak ve bu kabul edilmiş durum.
