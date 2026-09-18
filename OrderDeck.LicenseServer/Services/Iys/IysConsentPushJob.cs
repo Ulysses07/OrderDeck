@@ -108,6 +108,14 @@ public sealed class IysConsentPushJob
             }
             catch (Exception ex)
             {
+                // Change tracker'ı BOŞALT: bütün marka turları aynı scoped
+                // DbContext'i paylaşıyor. Düşen turun kirli (Modified/Added)
+                // varlıkları askıda kalırsa SIRADAKİ markanın SaveChangesAsync'i
+                // onları da yazar — A'nın başarısız turu B'nin turunda commit
+                // edilir. Her tur kendi içinde kaydettiği için burada atılacak
+                // bir şey yok: kaydedilmemiş her şey o turun çöpüdür.
+                _db.ChangeTracker.Clear();
+
                 // Marka başına yalıtım (spec §4, sözleşme #3).
                 _log.LogError(ex,
                     "İYS push: {Brand} markası atlandı (lisans {LicenseId})",

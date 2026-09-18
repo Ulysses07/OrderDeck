@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
@@ -37,6 +38,34 @@ public class IysConsentVerifyJobTests
         }
     }
 
+    /// <summary>
+    /// Bir markanın <c>SaveChangesAsync</c>'ini BİR KEZ patlatır: gerçek
+    /// hayatta kirli change tracker'ı bırakan yol budur. Tek kez olması şart —
+    /// sonraki markanın kaydını da patlatsaydı sızıntı zaten oluşamaz, test
+    /// yanlış sebeple yeşil kalırdı.
+    /// </summary>
+    private sealed class FailOnceOnSaveInterceptor : SaveChangesInterceptor
+    {
+        private bool _fired;
+
+        public string? FailBrand { get; set; }
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result,
+            CancellationToken ct = default)
+        {
+            if (!_fired && FailBrand is not null
+                && eventData.Context!.ChangeTracker.Entries<IysConsentEvent>()
+                    .Any(e => e.State == EntityState.Added && e.Entity.BrandCode == FailBrand))
+            {
+                _fired = true;
+                throw new InvalidOperationException("veritabanı yazımı düştü");
+            }
+
+            return base.SavingChangesAsync(eventData, result, ct);
+        }
+    }
+
     private const string Phone = "+905551112233";
     private static readonly Guid LicenseA = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid LicenseB = Guid.Parse("22222222-2222-2222-2222-222222222222");
@@ -47,9 +76,10 @@ public class IysConsentVerifyJobTests
 
     private static NetgsmAccountService Accounts(LicenseDbContext db) => new(db, Protection);
 
-    private static LicenseDbContext NewDb()
+    private static LicenseDbContext NewDb(params IInterceptor[] interceptors)
         => new(new DbContextOptionsBuilder<LicenseDbContext>()
-            .UseInMemoryDatabase($"iys-verify-{Guid.NewGuid():N}").Options);
+            .UseInMemoryDatabase($"iys-verify-{Guid.NewGuid():N}")
+            .AddInterceptors(interceptors).Options);
 
     private static IysConsentVerifyJob Job(LicenseDbContext db, IIysClient client)
         => new(db, client, Accounts(db), NullLogger<IysConsentVerifyJob>.Instance);
@@ -191,26 +221,76 @@ public class IysConsentVerifyJobTests
     }
 
     [Fact]
-    public async Task Bir_markanin_yuz_tikali_kaydi_digerini_ac_birakmaz()
+    public async Task Marka_turu_yalniz_kendi_numaralarini_sorar_ve_kendi_kotasini_alir()
     {
-        // Spec sözleşme #12. Eski kod sınırı markadan ÖNCE uyguluyordu:
-        // ilk 100 sıra A'nın kayıtlarıyla doluyor, B hiç sıra alamıyordu.
+        // Spec sözleşme #12. İki markanın kuyruğu da EŞİT öncelikli (aynı eski
+        // randevu) ve tam kotalık; kayıtlar dönüşümlü ekleniyor ki global sıranın
+        // ilk MaxPerBrandPerRun'ı iki markayı da içersin.
         using var db = NewDb();
         SeedAccount(db, LicenseA, BrandA);
         SeedAccount(db, LicenseB, BrandB);
 
         var old = DateTimeOffset.UtcNow.AddHours(-2);
-        for (var i = 0; i < 100; i++)
-            db.IysConsents.Add(Pushed($"+90555{i:D7}", BrandA, nextVerifyAt: old));
-        db.IysConsents.Add(Pushed("+905559999999", BrandB));
+        var aPhones = new List<string>();
+        var bPhones = new List<string>();
+        for (var i = 0; i < IysConsentVerifyJob.MaxPerBrandPerRun; i++)
+        {
+            aPhones.Add($"+90555{i:D7}");
+            bPhones.Add($"+90666{i:D7}");
+            db.IysConsents.Add(Pushed(aPhones[i], BrandA, nextVerifyAt: old));
+            db.IysConsents.Add(Pushed(bPhones[i], BrandB, nextVerifyAt: old));
+        }
         await db.SaveChangesAsync();
 
         var client = new FakeIysClient();
 
         await Job(db, client).RunAsync();
 
-        client.SearchAccounts.Select(a => a.BrandCode).Should().Contain(BrandB,
-            "B'nin hazır kaydı A'nın kuyruğunun arkasında beklememeli");
+        var askedForA = new List<string>();
+        var askedForB = new List<string>();
+        for (var i = 0; i < client.SearchCalls.Count; i++)
+            (client.SearchAccounts[i].BrandCode == BrandA ? askedForA : askedForB)
+                .AddRange(client.SearchCalls[i]);
+
+        askedForA.Should().OnlyContain(p => aPhones.Contains(p),
+            "onay MARKA bazlıdır: aynı numara A'da ONAY, B'de RET olabilir. "
+            + "B'nin numarası A'nın kimliğiyle sorulursa A'nın cevabı B'nin "
+            + "satırına yazılır — hiçbir hata fırlamaz, sessiz veri bozulması olur");
+        askedForB.Should().OnlyContain(p => bPhones.Contains(p), "aynısı ters yönde");
+
+        askedForA.Should().HaveCount(IysConsentVerifyJob.MaxPerBrandPerRun);
+        askedForB.Should().HaveCount(IysConsentVerifyJob.MaxPerBrandPerRun,
+            "koşu sınırı marka BAŞINA uygulanır; ortak havuz olsaydı B, A'nın "
+            + "kuyruğunun arkasında yarım kotayla kalırdı (hat başı tıkanması)");
+    }
+
+    [Fact]
+    public async Task Dusen_marka_turunun_kirli_kayitlari_sonraki_markayla_yazilmaz()
+    {
+        // Bütün marka turları aynı scoped DbContext'i paylaşıyor. A'nın
+        // SaveChangesAsync'i patlarsa A'nın eklediği olaylar change tracker'da
+        // askıda kalır; temizlenmezse B'nin turu SaveChanges dediğinde onlar da
+        // yazılır — A'nın BAŞARISIZ turu B'nin turunda commit edilmiş olur.
+        var fail = new FailOnceOnSaveInterceptor { FailBrand = BrandA };
+        using var db = NewDb(fail);
+        SeedAccount(db, LicenseA, BrandA);
+        SeedAccount(db, LicenseB, BrandB);
+        db.IysConsents.Add(Pushed("+905551110001", BrandA));
+        db.IysConsents.Add(Pushed("+905551110002", BrandB));
+        await db.SaveChangesAsync();
+
+        var client = new FakeIysClient { Answer = { ["+905551110002"] = IysConsentStatus.Onay } };
+
+        await Job(db, client).RunAsync();
+
+        var leaked = await db.IysConsentEvents.CountAsync(e => e.BrandCode == BrandA);
+        leaked.Should().Be(0,
+            "A'nın kaydedilemeyen doğrulama olayı B'nin SaveChanges'ine binerek "
+            + "veritabanına girmemeli (çapraz kiracı yazma)");
+
+        var b = await db.IysConsents.SingleAsync(c => c.BrandCode == BrandB);
+        b.PushState.Should().Be(IysPushState.Confirmed,
+            "B'nin kendi turu A'nın arızasından bağımsız tamamlanmalı");
     }
 
     [Fact]

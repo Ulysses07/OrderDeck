@@ -69,6 +69,14 @@ public sealed class IysConsentVerifyJob
             }
             catch (Exception ex)
             {
+                // Change tracker'ı BOŞALT: bütün marka turları aynı scoped
+                // DbContext'i paylaşıyor. Düşen turun kirli (Modified/Added)
+                // varlıkları askıda kalırsa SIRADAKİ markanın SaveChangesAsync'i
+                // onları da yazar — A'nın doğrulama olayları B'nin turunda
+                // commit edilir. Her tur kendi içinde kaydettiği için burada
+                // atılacak bir şey yok: kaydedilmemiş her şey o turun çöpüdür.
+                _db.ChangeTracker.Clear();
+
                 // Marka başına yalıtım: A'nın bozuk ayarı B'nin doğrulamasını
                 // durdurmaz. Randevular olduğu yerde kalır; ayar düzeltilince
                 // kaldığı yerden devam eder.
