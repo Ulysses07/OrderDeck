@@ -50,6 +50,7 @@ public class LicenseDbContext : DbContext
     public DbSet<SmsCampaign> SmsCampaigns => Set<SmsCampaign>();
     public DbSet<SmsCampaignRecipient> SmsCampaignRecipients => Set<SmsCampaignRecipient>();
     public DbSet<WhatsAppAccount> WhatsAppAccounts => Set<WhatsAppAccount>();
+    public DbSet<NetgsmAccount> NetgsmAccounts => Set<NetgsmAccount>();
     public DbSet<InstagramAccount> InstagramAccounts => Set<InstagramAccount>();
     public DbSet<WaConversation> WaConversations => Set<WaConversation>();
     public DbSet<WaMessage> WaMessages => Set<WaMessage>();
@@ -806,6 +807,24 @@ public class LicenseDbContext : DbContext
             // Webhook yönlendirmesi bu alandan tenant bulur → global unique.
             b.HasIndex(a => a.PhoneNumberId).IsUnique();
             b.HasIndex(a => a.LicenseId);
+        });
+
+        mb.Entity<NetgsmAccount>(b =>
+        {
+            b.HasKey(a => a.Id);
+            b.HasOne(a => a.License).WithMany().HasForeignKey(a => a.LicenseId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.Property(a => a.UserCode).HasMaxLength(32).IsRequired();
+            b.Property(a => a.PasswordProtected).HasMaxLength(4000).IsRequired();
+            b.Property(a => a.Header).HasMaxLength(32).IsRequired();
+            // IysConsent.BrandCode ile AYNI uzunluk — ikisi eşleştiriliyor.
+            b.Property(a => a.BrandCode).HasMaxLength(16).IsRequired();
+            b.Property(a => a.Status).HasMaxLength(16).IsRequired();
+            b.Property(a => a.LastError).HasMaxLength(500);
+            // Bir lisans = bir hesap.
+            b.HasIndex(a => a.LicenseId).IsUnique();
+            // Marka → hesap araması tek satır dönmeli (push/verify işleri).
+            b.HasIndex(a => a.BrandCode).IsUnique();
         });
 
         mb.Entity<InstagramAccount>(b =>
