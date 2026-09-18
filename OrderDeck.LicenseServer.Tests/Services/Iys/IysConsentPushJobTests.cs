@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
@@ -41,6 +42,34 @@ public class IysConsentPushJobTests
             => Task.FromResult(new IysSearchResult("0", "{}", new Dictionary<string, IysConsentStatus>()));
     }
 
+    /// <summary>
+    /// Bir markanın <c>SaveChangesAsync</c>'ini BİR KEZ patlatır: gerçek
+    /// hayatta kirli change tracker'ı bırakan yol budur. Tek kez olması şart —
+    /// sonraki markanın kaydını da patlatsaydı sızıntı zaten oluşamaz, test
+    /// yanlış sebeple yeşil kalırdı. (Doğrulama işindeki ikizinin aynısı.)
+    /// </summary>
+    private sealed class FailOnceOnSaveInterceptor : SaveChangesInterceptor
+    {
+        private bool _fired;
+
+        public string? FailBrand { get; set; }
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result,
+            CancellationToken ct = default)
+        {
+            if (!_fired && FailBrand is not null
+                && eventData.Context!.ChangeTracker.Entries<IysConsentEvent>()
+                    .Any(e => e.State == EntityState.Added && e.Entity.BrandCode == FailBrand))
+            {
+                _fired = true;
+                throw new InvalidOperationException("veritabanı yazımı düştü");
+            }
+
+            return base.SavingChangesAsync(eventData, result, ct);
+        }
+    }
+
     private static readonly Guid LicenseA = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid LicenseB = Guid.Parse("22222222-2222-2222-2222-222222222222");
     private const string BrandA = "731734";
@@ -52,9 +81,10 @@ public class IysConsentPushJobTests
 
     private static NetgsmAccountService Accounts(LicenseDbContext db) => new(db, Protection);
 
-    private static LicenseDbContext NewDb(string? name = null)
+    private static LicenseDbContext NewDb(string? name = null, params IInterceptor[] interceptors)
         => new(new DbContextOptionsBuilder<LicenseDbContext>()
-            .UseInMemoryDatabase(name ?? $"iys-push-{Guid.NewGuid():N}").Options);
+            .UseInMemoryDatabase(name ?? $"iys-push-{Guid.NewGuid():N}")
+            .AddInterceptors(interceptors).Options);
 
     private static IysConsentPushJob Job(LicenseDbContext db, IIysClient client)
         => new(db, client, Accounts(db), Options.Create(new NetgsmOptions()),
@@ -396,5 +426,33 @@ public class IysConsentPushJobTests
             .SingleAsync(e => e.EventType == IysConsentEventType.PushAttempt);
         ev.LicenseId.Should().Be(LicenseB);
         ev.BrandCode.Should().Be(BrandB);
+    }
+
+    [Fact]
+    public async Task Dusen_marka_turunun_kirli_kayitlari_sonraki_markayla_yazilmaz()
+    {
+        // Doğrulama işindeki ikizinin push tarafı. Bütün marka turları aynı
+        // scoped DbContext'i paylaşıyor: A'nın SaveChangesAsync'i patlarsa
+        // A'nın eklediği olaylar change tracker'da askıda kalır ve
+        // temizlenmezse B'nin turu SaveChanges dediğinde ONLAR DA yazılır.
+        // Sonuç, kaydedilmemesi gereken bir turun başka bir kiracının
+        // işlemine binerek kalıcılaşması — üstelik hiçbir hata fırlatmadan.
+        var fail = new FailOnceOnSaveInterceptor { FailBrand = BrandA };
+        using var db = NewDb(name: null, fail);
+        SeedAccount(db, LicenseA, BrandA, createdAt: DateTimeOffset.UtcNow.AddHours(-1));
+        SeedAccount(db, LicenseB, BrandB);
+        db.IysConsents.Add(Pending("+905551110001", BrandA));
+        db.IysConsents.Add(Pending("+905551110002", BrandB));
+        await db.SaveChangesAsync();
+
+        await Job(db, new FakeIysClient()).RunAsync();
+
+        (await db.IysConsentEvents.CountAsync(e => e.BrandCode == BrandA)).Should().Be(0,
+            "A'nın kaydedilemeyen push olayı B'nin SaveChanges'ine binerek "
+            + "veritabanına girmemeli (çapraz kiracı yazma)");
+
+        var b = await db.IysConsents.SingleAsync(c => c.BrandCode == BrandB);
+        b.PushState.Should().Be(IysPushState.Pushed,
+            "B'nin kendi turu A'nın arızasından bağımsız tamamlanmalı");
     }
 }

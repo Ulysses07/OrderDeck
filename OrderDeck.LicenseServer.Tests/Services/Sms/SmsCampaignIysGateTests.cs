@@ -226,6 +226,39 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
         _factory.Sms.Sent.Should().NotContain(m => m.Phone == phone);
     }
 
+    [Fact]
+    public async Task Baska_alici_tipinin_onayi_SMS_kapisini_ACMAZ()
+    {
+        // Kanal testinin ikiz maddesi: tekil indeks alıcı tipini de taşır,
+        // yani aynı marka+kanal+numara için BIREYSEL ve TACIR ayrı satırlardır.
+        // Tüzel kişi sıfatıyla verilen onay, aynı numaranın bireysel hattına
+        // ticari ileti göndermeye yetki vermez (6563 farklı rejim uygular).
+        // Süzgeç olmasaydı bu satır kapıyı açardı — ve iki satır birden
+        // doğsaydı ToDictionaryAsync çift anahtarla patlardı.
+        _factory.Sms.Clear();
+        _factory.Sms.ThrowOnSend = false;
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var accounts = scope.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+        var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
+
+        var phone = $"+90555{Random.Shared.Next(1000000, 9999999)}";
+        var (campaignId, brandCode) = await SeedCampaignAsync(db, accounts, phone);
+
+        // Marka, numara ve kanal DOĞRU; yalnız alıcı tipi yanlış.
+        await SeedConsentAsync(db, brandCode, phone,
+            IysConsentStatus.Onay, IysConsentStatus.Onay, recipientType: "TACIR");
+
+        await job.RunAsync(campaignId);
+
+        var recipient = await db.SmsCampaignRecipients.AsNoTracking()
+            .SingleAsync(r => r.CampaignId == campaignId);
+        recipient.Status.Should().Be("failed");
+        recipient.Error.Should().Be("iys-consent-missing");
+        _factory.Sms.Sent.Should().NotContain(m => m.Phone == phone);
+    }
+
     /// <summary>
     /// Kapının okuduğu satırı kurar. <c>brandCode</c> kampanyanın lisansına ait
     /// markadır — başka bir markanın satırı bu kampanyayı AÇMAMALI.
