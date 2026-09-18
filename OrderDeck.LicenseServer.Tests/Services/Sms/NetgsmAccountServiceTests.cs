@@ -17,6 +17,9 @@ public class NetgsmAccountServiceTests
     private static NetgsmAccountService Service(LicenseDbContext db)
         => new(db, new EphemeralDataProtectionProvider());
 
+    private static NetgsmAccountService Service(LicenseDbContext db, IDataProtectionProvider protection)
+        => new(db, protection);
+
     private static NetgsmAccount Seed(
         LicenseDbContext db, Guid licenseId, string brandCode, NetgsmAccountStatus status)
     {
@@ -59,6 +62,21 @@ public class NetgsmAccountServiceTests
     }
 
     [Fact]
+    public void Baska_anahtarla_sifrelenmis_metin_null_doner()
+    {
+        using var db = NewDb();
+        // Prod'da korktuğumuz senaryo bozuk girdi değil: anahtar klasörü kaybolur
+        // veya döner, gerçek şifreli metin çözülemez hâle gelir.
+        var eskiAnahtar = new EphemeralDataProtectionProvider();
+        var yeniAnahtar = new EphemeralDataProtectionProvider();
+
+        var protectedPw = Service(db, eskiAnahtar).ProtectPassword($"pw-{Guid.NewGuid():N}");
+
+        Service(db, yeniAnahtar).TryUnprotectPassword(protectedPw)
+            .Should().BeNull("anahtar halkası dönmüşse servis patlamadan null dönmeli");
+    }
+
+    [Fact]
     public async Task Dogrulanmamis_hesabin_markasi_cozulmez()
     {
         using var db = NewDb();
@@ -81,10 +99,16 @@ public class NetgsmAccountServiceTests
     }
 
     [Fact]
-    public async Task Hesabi_olmayan_lisansin_markasi_null()
+    public async Task Baska_lisansin_dogrulanmis_markasi_sizmaz()
     {
         using var db = NewDb();
-        (await Service(db).GetBrandCodeAsync(Guid.NewGuid(), default)).Should().BeNull();
+        Seed(db, Guid.NewGuid(), "731734", NetgsmAccountStatus.Verified);
+
+        (await Service(db).GetBrandCodeAsync(Guid.NewGuid(), default))
+            .Should().BeNull(
+                "İYS onayı markaya bağlıdır: hesabı olmayan bir lisans, başka bir "
+                + "yayıncının doğrulanmış markasıyla onay toplarsa onay o markanın "
+                + "sahibi olmayan tarafa yazılır");
     }
 
     [Fact]
@@ -93,9 +117,14 @@ public class NetgsmAccountServiceTests
         using var db = NewDb();
         Seed(db, Guid.NewGuid(), "731734", NetgsmAccountStatus.Verified);
         Seed(db, Guid.NewGuid(), "763208", NetgsmAccountStatus.Disabled);
+        // Failed = varsayılan durum: henüz doğrulanmamış her hesap burada.
+        // Bu satır olmadan "Status != Disabled" filtresi de testi yeşil geçerdi.
+        Seed(db, Guid.NewGuid(), "999999", NetgsmAccountStatus.Failed);
 
         var rows = await Service(db).ListVerifiedAsync(default);
 
-        rows.Select(r => r.BrandCode).Should().Equal("731734");
+        rows.Should()
+            .ContainSingle("fail-closed: yalnız doğrulanmış hesap SMS gönderebilir")
+            .Which.BrandCode.Should().Be("731734");
     }
 }
