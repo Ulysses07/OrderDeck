@@ -22,6 +22,11 @@ namespace OrderDeck.LicenseServer.Services.Iys;
 /// <c>[DisableConcurrentExecution]</c>. Aynı anda ikinci bir kopya çalışırsa
 /// aynı <c>Pending</c> satırlarını okur ve İYS'ye ikinci kez bildirir — zararsız
 /// ama dakikada 10 isteklik kotayı boşa harcar ve olay tablosunu ikizler.</para>
+///
+/// <para><b>Marka başına yalıtım:</b> döngü doğrulanmış her Netgsm hesabı için
+/// ayrı döner ve her tur kendi <c>try/catch</c>'i içindedir. Bir yayıncının
+/// yanlış marka kodu yalnız kendi turunu bitirir; diğerleri etkilenmez.
+/// Tek kiracıda <c>throw</c> etmek doğruydu — çok kiracıda platformu susturur.</para>
 /// </summary>
 [DisableConcurrentExecution(timeoutInSeconds: 300)]
 [AutomaticRetry(Attempts = 0, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
@@ -30,38 +35,44 @@ public sealed class IysConsentPushJob
     /// <summary>Tek istekte bildirilen kayıt sayısı.</summary>
     public const int BatchSize = 20;
 
+    /// <summary>
+    /// Tek koşuda tek markadan alınacak azami kayıt. Sınır olmazsa 10.000
+    /// bekleyeni olan bir yayıncı, 6 saniyelik parti gecikmesiyle koşuyu
+    /// saatlerce meşgul eder ve sıradaki markalar hiç sıra alamaz.
+    /// 5 dakikada bir × 100 = günde 28.800 kayıt/marka, 3 iş günü penceresine
+    /// rahat sığıyor.
+    /// </summary>
+    public const int MaxPerBrandPerRun = BatchSize * 5;
+
     /// <summary>Netgsm ~10 istek/dk sınırlı; partiler arası bekleme.</summary>
     public static readonly TimeSpan BatchDelay = TimeSpan.FromSeconds(6);
 
     private readonly LicenseDbContext _db;
     private readonly IIysClient _client;
+    private readonly NetgsmAccountService _accounts;
     private readonly NetgsmOptions _opt;
     private readonly ILogger<IysConsentPushJob> _log;
 
     public IysConsentPushJob(
-        LicenseDbContext db, IIysClient client,
+        LicenseDbContext db, IIysClient client, NetgsmAccountService accounts,
         IOptions<NetgsmOptions> opt, ILogger<IysConsentPushJob> log)
     {
         _db = db;
         _client = client;
+        _accounts = accounts;
         _opt = opt.Value;
         _log = log;
     }
 
     public async Task RunAsync(CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(_opt.BrandCode))
-        {
-            _log.LogInformation("İYS push: BrandCode ayarlı değil, boru hattı kapalı");
-            return;
-        }
-
         var now = DateTimeOffset.UtcNow;
 
         // Süresi dolmuş bekleyenler hiç gönderilmez: 3 iş günü geçtiyse
         // İYS zaten H467 ile reddeder (consent_date çok eski) ve kayıt
         // hukuken geçersiz. Sessizce silmiyoruz — Expired damgası admin
-        // listesinde görünür.
+        // listesinde görünür. Bu süpürme marka bağımsız: süre dolmuşsa
+        // hangi yayıncıya ait olduğu sonucu değiştirmez.
         var expired = await _db.IysConsents
             .Where(c => c.PushState == IysPushState.Pending
                         && c.PushDeadline != null && c.PushDeadline < now)
@@ -78,18 +89,64 @@ public sealed class IysConsentPushJob
             _log.LogWarning("İYS push: {Count} kaydın 3 iş günü penceresi doldu", expired.Count);
         }
 
+        var accounts = await _accounts.ListVerifiedAsync(ct);
+        if (accounts.Count == 0)
+        {
+            _log.LogInformation("İYS push: doğrulanmış Netgsm hesabı yok, boru hattı kapalı");
+            return;
+        }
+
+        foreach (var acct in accounts)
+        {
+            try
+            {
+                await PushBrandAsync(acct, now, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;   // koşu iptal edildi; sıradaki markaya geçmek anlamsız
+            }
+            catch (Exception ex)
+            {
+                // Marka başına yalıtım (spec §4, sözleşme #3).
+                _log.LogError(ex,
+                    "İYS push: {Brand} markası atlandı (lisans {LicenseId})",
+                    acct.BrandCode, acct.LicenseId);
+            }
+        }
+    }
+
+    private async Task PushBrandAsync(
+        NetgsmAccount acct, DateTimeOffset now, CancellationToken ct)
+    {
+        var password = _accounts.TryUnprotectPassword(acct.PasswordProtected);
+        if (password is null)
+        {
+            // Anahtar döndü ya da şifreli metin bozuk. Patlamak diğer
+            // yayıncıları susturur, sessizce atlamak hesabı Verified
+            // göstermeye devam ederdi: hesabı görünür biçimde bozuyoruz ki
+            // yayıncı panelden kimliğini yeniden bağlasın.
+            acct.Status = NetgsmAccountStatus.Failed;
+            acct.LastError = "Kayıtlı şifre çözülemedi; Netgsm bilgilerini yeniden girin.";
+            acct.UpdatedAt = DateTimeOffset.UtcNow;
+            await _db.SaveChangesAsync(ct);
+            _log.LogError(
+                "İYS push: {Brand} markasının şifresi çözülemedi, hesap kapatıldı", acct.BrandCode);
+            return;
+        }
+
+        var account = new IysAccountContext(
+            acct.LicenseId, acct.UserCode, password, acct.BrandCode);
+
         var pending = await _db.IysConsents
-            .Where(c => c.PushState == IysPushState.Pending
+            .Where(c => c.BrandCode == acct.BrandCode
+                        && c.PushState == IysPushState.Pending
                         && (c.PushDeadline == null || c.PushDeadline >= now))
             .OrderBy(c => c.CreatedAt)
+            .Take(MaxPerBrandPerRun)
             .ToListAsync(ct);
 
         if (pending.Count == 0) return;
-
-        // Faz 5 Task 7 bunu marka başına döngüyle değiştiriyor. Şimdilik
-        // global kimlik: davranış bu commit'te birebir aynı kalsın diye.
-        var account = new IysAccountContext(
-            Guid.Empty, _opt.UserCode, _opt.Password, _opt.BrandCode);
 
         var first = true;
         foreach (var batch in pending.Chunk(BatchSize))
@@ -116,11 +173,14 @@ public sealed class IysConsentPushJob
         }
         catch (IysConfigurationException cfg)
         {
-            // Kalıcı yapılandırma hatası: her kayıt aynı hatayla düşer.
-            // Devam etmek bekleyenleri sırayla harcar → boru hattı durur.
+            // Kalıcı yapılandırma hatası: bu markanın her kaydı aynı hatayla
+            // düşer, kalan partileri denemek zaman harcar. Fırlatılan istisnayı
+            // RunAsync'teki marka döngüsü yakalar → yalnız BU marka atlanır.
             // Kayıtlara DOKUNULMAZ: Failed yazmak, düzeltilebilir bir ayar
             // hatasını kayıt başına kalıcı yara gibi gösterirdi.
-            _log.LogError(cfg, "İYS yapılandırma hatası ({Code}) — push boru hattı durdu", cfg.Code);
+            _log.LogError(cfg,
+                "İYS yapılandırma hatası ({Code}) — {Brand} markasının turu durdu",
+                cfg.Code, account.BrandCode);
             throw;
         }
         catch (Exception ex)
@@ -131,7 +191,8 @@ public sealed class IysConsentPushJob
                 c.PushState = IysPushState.Failed;
                 c.LastError = Truncate(ex.Message, 500);
                 c.UpdatedAt = now;
-                AddEvent(c, IysConsentEventType.PushAttempt, code: null, body: null, error: ex.GetType().Name);
+                AddEvent(c, account, IysConsentEventType.PushAttempt,
+                    code: null, body: null, error: ex.GetType().Name);
             }
             await _db.SaveChangesAsync(ct);
             _log.LogWarning(ex, "İYS push: {Count} kayıtlık parti başarısız", batch.Length);
@@ -141,7 +202,8 @@ public sealed class IysConsentPushJob
         var stamp = DateTimeOffset.UtcNow;
         foreach (var c in batch)
         {
-            AddEvent(c, IysConsentEventType.PushAttempt, result.Code, result.RawBody, error: null);
+            AddEvent(c, account, IysConsentEventType.PushAttempt,
+                result.Code, result.RawBody, error: null);
 
             if (result.Queued)
             {
@@ -167,10 +229,14 @@ public sealed class IysConsentPushJob
     }
 
     private void AddEvent(
-        IysConsent c, IysConsentEventType type, string? code, string? body, string? error)
+        IysConsent c, IysAccountContext account, IysConsentEventType type,
+        string? code, string? body, string? error)
         => _db.IysConsentEvents.Add(new IysConsentEvent
         {
             Id = Guid.NewGuid(),
+            LicenseId = account.LicenseId,
+            BrandCode = account.BrandCode,
+            IysConsentId = c.Id,
             Recipient = c.Recipient,
             OccurredAt = DateTimeOffset.UtcNow,
             EventType = type,
