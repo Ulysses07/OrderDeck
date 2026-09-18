@@ -18,7 +18,13 @@ namespace OrderDeck.LicenseServer.Controllers.Shopper;
 public sealed class ShopperMeController : ControllerBase
 {
     private readonly LicenseDbContext _db;
-    public ShopperMeController(LicenseDbContext db) => _db = db;
+    private readonly Services.Iys.IysConsentCollector _iys;
+
+    public ShopperMeController(LicenseDbContext db, Services.Iys.IysConsentCollector iys)
+    {
+        _db = db;
+        _iys = iys;
+    }
 
     public sealed record NotificationPrefs(bool Broadcast, bool Orders, bool Payments);
 
@@ -127,16 +133,27 @@ public sealed class ShopperMeController : ControllerBase
         // gönderirse onay/ret anı kaymamalı (ispat tarihi; bkz. Shopper).
         if (req.SmsConsent is not null && req.SmsConsent.Value != shopper.SmsConsent)
         {
+            var consentAt = DateTimeOffset.UtcNow;
             shopper.SmsConsent = req.SmsConsent.Value;
             if (req.SmsConsent.Value)
             {
-                shopper.SmsConsentAt = DateTimeOffset.UtcNow;
+                shopper.SmsConsentAt = consentAt;
                 shopper.SmsConsentSource = "profile";
             }
             else
             {
-                shopper.SmsConsentRevokedAt = DateTimeOffset.UtcNow;
+                shopper.SmsConsentRevokedAt = consentAt;
             }
+
+            // Burada İKİ YÖNDE de bildiriyoruz: profilde kutuyu kaldırmak
+            // kişinin açık geri çekme eylemidir, form kutusunun boş kalması
+            // gibi sessizlik değil. Gönderim kapısı yerel Status'u da okuduğu
+            // için mesaj İYS'yi beklemeden anında kesilir (kural 4).
+            await _iys.RecordAsync(
+                shopper.Phone, consented: req.SmsConsent.Value, occurredAt: consentAt,
+                sourceTable: "Shopper", sourceId: shopper.Id,
+                ip: HttpContext.Connection.RemoteIpAddress?.ToString(),
+                userAgent: Request.Headers.UserAgent.ToString(), ct: ct);
         }
 
         shopper.UpdatedAt = DateTimeOffset.UtcNow;

@@ -61,6 +61,31 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
                 Username = "u-" + Guid.NewGuid().ToString("N")[..8],
                 JoinedAt = DateTimeOffset.UtcNow,
             });
+
+            if (!consent) return;
+
+            // Gönderim kapısı (kural 7) gönderim ANINDA İYS satırını okur:
+            // yerel onay TEK BAŞINA yetmez, İYS'nin de ONAY demiş olması
+            // gerekir. Bu testler gönderimin gerçekleştiğini ölçüyor, o yüzden
+            // izinli shopper'ın doğrulanmış kaydı da kurulmalı. BrandCode
+            // testteki yapılandırma değeriyle (varsayılan boş string) aynı.
+            var now = DateTimeOffset.UtcNow;
+            db.IysConsents.Add(new IysConsent
+            {
+                Id = Guid.NewGuid(),
+                BrandCode = "",
+                ChannelType = "MESAJ",
+                RecipientType = "BIREYSEL",
+                Recipient = shopper.Phone,
+                Status = IysConsentStatus.Onay,
+                LastVerifiedStatus = IysConsentStatus.Onay,
+                LastVerifiedAt = now,
+                PushState = IysPushState.Confirmed,
+                ConsentDate = now,
+                LastLocalEventAt = now,
+                CreatedAt = now,
+                UpdatedAt = now,
+            });
         }
 
         for (var i = 0; i < consenting; i++) AddShopperLink(true);

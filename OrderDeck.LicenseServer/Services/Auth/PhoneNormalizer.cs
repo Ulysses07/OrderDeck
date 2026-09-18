@@ -8,6 +8,7 @@ namespace OrderDeck.LicenseServer.Services.Auth;
 ///   0XXXXXXXXXX  → +90XXXXXXXXXX
 ///   90XXXXXXXXXX → +90XXXXXXXXXX
 ///   XXXXXXXXXX   → +90XXXXXXXXXX (10 hane gönderilirse)
+/// Abone numarası "5" ile başlamalıdır (TR mobil); sabit hatlar reddedilir.
 /// Diğer ülke kodları (örn. +1) reddedilir.
 /// </summary>
 public static class PhoneNormalizer
@@ -50,6 +51,10 @@ public static class PhoneNormalizer
 
         if (cleaned.Length != 10) return false;
         if (!cleaned.All(char.IsDigit)) return false;
+        // TR mobil abone numarası daima 5 ile başlar. Core'daki ikiziyle
+        // (OrderDeck.Core/Customers/PhoneNormalizer.cs) aynı kural — biri
+        // değişip diğeri kalmasın diye test kümeleri de eşleniktir.
+        if (cleaned[0] != '5') return false;
 
         result = "+90" + cleaned;
         return true;

@@ -1,0 +1,131 @@
+@page "/admin/iys"
+@model IndexModel
+@{
+    ViewData["Title"] = "İYS Onayları";
+}
+<h1 class="h3 mb-4">İYS Onay Boru Hattı</h1>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-2">
+        <div class="card text-bg-secondary"><div class="card-body">
+            <h6 class="card-subtitle mb-2 text-white-50">Bekleyen</h6>
+            <p class="card-text display-6" data-stat="iys-pending">@Model.PendingCount</p>
+        </div></div>
+    </div>
+    <div class="col-md-2">
+        <div class="card text-bg-info"><div class="card-body">
+            <h6 class="card-subtitle mb-2 text-white-50">Bildirildi</h6>
+            <p class="card-text display-6" data-stat="iys-pushed">@Model.PushedCount</p>
+        </div></div>
+    </div>
+    <div class="col-md-2">
+        <div class="card text-bg-success"><div class="card-body">
+            <h6 class="card-subtitle mb-2 text-white-50">Onaylandı</h6>
+            <p class="card-text display-6" data-stat="iys-confirmed">@Model.ConfirmedCount</p>
+        </div></div>
+    </div>
+    <div class="col-md-2">
+        <div class="card text-bg-warning"><div class="card-body">
+            <h6 class="card-subtitle mb-2 text-white-50">Düştü</h6>
+            <p class="card-text display-6" data-stat="iys-failed">@Model.FailedCount</p>
+        </div></div>
+    </div>
+    <div class="col-md-2">
+        <div class="card text-bg-danger"><div class="card-body">
+            <h6 class="card-subtitle mb-2 text-white-50">Süresi Doldu</h6>
+            <p class="card-text display-6" data-stat="iys-expired">@Model.ExpiredCount</p>
+        </div></div>
+    </div>
+</div>
+
+<div class="alert alert-secondary">
+    <strong>&quot;Bildirildi&quot; kabul edilmiş demek değildir.</strong>
+    Netgsm'in <code>code 0</code> yanıtı yalnızca &quot;kuyruğa alındı&quot; anlamına
+    gelir. Gönderim yalnız <strong>Onaylandı</strong> sütunundaki kayıtlara açıktır.
+</div>
+
+<h2 class="h5 mt-4">Son tarihi yaklaşanlar (&lt; 24 saat)</h2>
+@if (!Model.Urgent.Any())
+{
+    <p class="text-muted">Son tarihi yaklaşan kayıt yok.</p>
+}
+else
+{
+    <div class="alert alert-danger">
+        Bu kayıtlar üç iş günlük pencereyi kaçırırsa onay <strong>hukuken
+        geçersiz</strong> olur ve kişiden yeniden onay alınması gerekir.
+    </div>
+    <table class="table table-sm table-hover" data-table="iys-urgent">
+        <thead><tr>
+            <th>Alıcı</th><th>Yerel</th><th>Durum</th><th>İYS</th>
+            <th>Son tarih</th><th>Hata</th>
+        </tr></thead>
+        <tbody>
+        @foreach (var r in Model.Urgent)
+        {
+            <tr>
+                <td>@r.Recipient</td>
+                <td>@r.Status</td>
+                <td>@r.PushState</td>
+                <td>@(r.Verified?.ToString() ?? "—")</td>
+                <td>@r.Deadline?.ToLocalTime().ToString("dd.MM.yyyy HH:mm")</td>
+                <td class="text-muted small">@r.LastError</td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}
+
+<h2 class="h5 mt-4">Düşmüş / süresi dolmuş</h2>
+@if (!Model.Problem.Any())
+{
+    <p class="text-muted">Sorunlu kayıt yok.</p>
+}
+else
+{
+    <table class="table table-sm table-hover" data-table="iys-problem">
+        <thead><tr>
+            <th>Alıcı</th><th>Yerel</th><th>Durum</th><th>İYS</th>
+            <th>Son push</th><th>Hata</th>
+        </tr></thead>
+        <tbody>
+        @foreach (var r in Model.Problem)
+        {
+            <tr>
+                <td>@r.Recipient</td>
+                <td>@r.Status</td>
+                <td>@r.PushState</td>
+                <td>@(r.Verified?.ToString() ?? "—")</td>
+                <td>@r.LastPushedAt?.ToLocalTime().ToString("dd.MM.yyyy HH:mm")</td>
+                <td class="text-muted small">@r.LastError</td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}
+
+<h2 class="h5 mt-4">Çevrilemeyen numaralar</h2>
+@if (!Model.BadPhones.Any())
+{
+    <p class="text-muted">Çevrilemeyen numara yok.</p>
+}
+else
+{
+    <p class="text-muted small">
+        E.164'e çevrilemediği için kayıt satırı açılmadı. Onay alınmış ama
+        İYS'ye bildirilemiyor; numaranın kaynakta düzeltilmesi gerekir.
+    </p>
+    <table class="table table-sm" data-table="iys-bad-phones">
+        <thead><tr><th>Ham değer</th><th>Zaman</th><th>Kaynak</th></tr></thead>
+        <tbody>
+        @foreach (var b in Model.BadPhones)
+        {
+            <tr>
+                <td><code>@b.Raw</code></td>
+                <td>@b.OccurredAt.ToLocalTime().ToString("dd.MM.yyyy HH:mm")</td>
+                <td>@b.SourceTable</td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}

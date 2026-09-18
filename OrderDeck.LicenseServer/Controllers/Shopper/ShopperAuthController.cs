@@ -62,6 +62,7 @@ public sealed class ShopperAuthController : ControllerBase
     private readonly Services.Push.INotificationSender _push;
     private readonly PasswordResetCodeService _resetCodes;
     private readonly Services.Sms.ISmsSender _sms;
+    private readonly Services.Iys.IysConsentCollector _iys;
     private readonly ILogger<ShopperAuthController> _log;
 
     public ShopperAuthController(
@@ -72,6 +73,7 @@ public sealed class ShopperAuthController : ControllerBase
         Services.Push.INotificationSender push,
         PasswordResetCodeService resetCodes,
         Services.Sms.ISmsSender sms,
+        Services.Iys.IysConsentCollector iys,
         ILogger<ShopperAuthController> log)
     {
         _db = db;
@@ -81,6 +83,7 @@ public sealed class ShopperAuthController : ControllerBase
         _push = push;
         _resetCodes = resetCodes;
         _sms = sms;
+        _iys = iys;
         _log = log;
     }
 
@@ -174,6 +177,16 @@ public sealed class ShopperAuthController : ControllerBase
                 UpdatedAt = now,
             };
             _db.Shoppers.Add(shopper);
+
+            // Kayıt anındaki onay. İşaretsizse çağrılmaz (sessizlik ret değil).
+            if (req.SmsConsent)
+            {
+                await _iys.RecordAsync(
+                    shopper.Phone, consented: true, occurredAt: now,
+                    sourceTable: "Shopper", sourceId: shopper.Id,
+                    ip: HttpContext.Connection.RemoteIpAddress?.ToString(),
+                    userAgent: Request.Headers.UserAgent.ToString(), ct: ct);
+            }
         }
 
         // 6. Check if an active ShopperBroadcasterLink already exists
