@@ -443,4 +443,32 @@ public class IysConsentVerifyJobTests
         b.PushState.Should().Be(IysPushState.Confirmed,
             "B, A'nın anahtar sorunundan etkilenmemeli");
     }
+
+    [Fact]
+    public async Task Hic_dogrulanmis_hesap_yokken_TEK_bir_sorgu_bile_gitmez()
+    {
+        // Push işinin kardeşi (bkz. IysConsentPushJobTests): boru hattı KAPALI
+        // doğuyor. Bu değişiklik prod'a hiçbir NetgsmAccount satırı yazmadan
+        // çıkıyor; satır elle açılana kadar İYS'ye tek bir istek bile gitmemeli.
+        //
+        // Randevusu GELMİŞ kayıtlar var — yani iş "yapacak iş yok" diye değil,
+        // "kimin kimliğiyle soracağımı bilmiyorum" diye susuyor. Markayı kaydın
+        // kendisinden türeten ("BrandCode zaten satırda yazıyor, hesap turuna ne
+        // gerek var?") her sadeleştirme bu testi kırar: o marka için ONAY/RET
+        // cevabı bir BAŞKA yayıncının kimliğiyle sorulur ve gelen yanlış cevap
+        // hiçbir hata fırlatmadan doğru satıra yazılır.
+        using var db = NewDb();
+        db.IysConsents.Add(Pushed("+905551110001", BrandA));
+        db.IysConsents.Add(Pushed("+905551110002", BrandB));
+        await db.SaveChangesAsync();
+
+        var client = new FakeIysClient();
+
+        await Job(db, client).RunAsync();
+
+        client.SearchCalls.Should().BeEmpty();
+        (await db.IysConsents.AsNoTracking().ToListAsync())
+            .Should().OnlyContain(c => c.PushState == IysPushState.Pushed,
+                "kayıtlar randevusunu koruyarak beklemeli; kurulum bitince sorulacaklar");
+    }
 }

@@ -108,6 +108,31 @@ public class IysConsentPushJobTests
     }
 
     [Fact]
+    public async Task Hic_dogrulanmis_hesap_yokken_TEK_bir_istek_bile_gitmez()
+    {
+        // Boru hattı KAPALI doğuyor: bu değişiklik prod'a hiçbir NetgsmAccount
+        // satırı yazmadan çıkıyor ve satır açılana kadar tek bir İYS isteği bile
+        // olmamalı. Bekleyen kayıtlar VAR — yani iş "yapacak iş yok" diye değil,
+        // "kimin adına konuşacağımı bilmiyorum" diye susuyor. Markayı kaydın
+        // kendisinden (ya da global bir ayardan) türeten her "yardımcı"
+        // değişiklik bu testi kırar; kapıyı açma kararı elle NetgsmAccount
+        // satırı açmaktır.
+        using var db = NewDb();
+        db.IysConsents.Add(Pending("+905551110001", BrandA));
+        db.IysConsents.Add(Pending("+905551110002", BrandB));
+        await db.SaveChangesAsync();
+
+        var client = new FakeIysClient();
+
+        await Job(db, client).RunAsync();
+
+        client.AddCalls.Should().BeEmpty();
+        (await db.IysConsents.AsNoTracking().ToListAsync())
+            .Should().OnlyContain(c => c.PushState == IysPushState.Pending,
+                "kayıtlar olduğu yerde beklemeli; kurulum bitince itilecekler");
+    }
+
+    [Fact]
     public async Task Code_sifir_Confirmed_YAPMAZ_yalnizca_Pushed()
     {
         // 2026-09-17'de 284 kaydı kaybettiren hata tam olarak buydu:
