@@ -1,7 +1,7 @@
 # Çok Yayıncılı SMS + İYS Altyapısı — Tasarım
 
 **Tarih:** 2026-09-18
-**Durum:** Onaylandı (Burak), uygulama planı bekliyor
+**Durum:** Taslak — Astra denetimi işlendi (2026-09-18), yeniden onay bekliyor
 **Önceki spec:** `2026-09-18-iys-onay-boru-hatti-design.md` (tek-tenant boru hattı, master'da)
 
 ---
@@ -89,14 +89,48 @@ Satırın **yokluğu** "hiç girilmemiş" demektir; ayrı `pending` durumu yok.
 `AdminSmsController`, `LicensesSmsBalanceController`, `SmsCampaign.ReservedCredits`,
 `SmsCampaign.RefundedCredits` ve bağlı uçlar/testler.
 
-**Risk düşük:** prod'da `balances=0 tx=0 campaigns=0` — kredi sistemi hiç
+**Veri riski düşük:** prod'da `balances=0 tx=0 campaigns=0` — kredi sistemi hiç
 kullanılmamış. Göç değil, temiz silme. Panel reposunda kredi referansı yok.
+
+**Ama silme "sadece kredi"yi silmiyor — iki taşıyıcı davranış kredi servisinin
+içinde yaşıyor:**
+
+**(a) Kampanya kaydı kredi çağrısının içinde.** Kampanyayı ve alıcı satırlarını
+diske yazan şey `ApplyAndSaveAsync`'in kendisi
+(`LicensesSmsCampaignsController.cs:158` → `LicenseSmsBalanceService.cs:98`);
+koddaki yorum bunu açıkça söylüyor: *"kampanya + alıcı satırları da aynı
+SaveChanges içinde yazılır (atomik)"*. İş sonundaki sonuç kaydı da iade
+çağrısına asılı (`SmsCampaignSendJob.cs:155`). Kredi servisi düşünmeden
+silinirse **kampanya hiç kaydedilmeden kuyruğa girer.** Silme sırasında
+korunacaklar: enqueue öncesi atomik kampanya/alıcı yazımı, mevcut idempotency
+yakalaması, iş sonundaki sonuç yazımı.
+
+**(b) WPF istemcisi krediye bağlı — ve saha sürümleri geride kalır.**
+`BulkSmsViewModel.cs:131` geçmişi yüklemeden **önce** `/sms/balance`'ı
+bekliyor; uç kalkarsa geçmiş listesi de ölür. Daha kötüsü
+`CanSend() => PreviewDone && Sufficient && ...` (`:182`): gönder düğmesi
+`Sufficient` alanına bağlı — alan dolmazsa düğme **kalıcı olarak kapalı** kalır.
+
+Bu, panelden farklı bir sınıf problem: panel web, anında güncellenir; WPF
+**Velopack ile dağıtılıyor ve sahada eski sürümler kalır.** Sunucu ucu
+kaldırıldığı anda güncellemeyi almamış her yayıncının toplu SMS ekranı bozulur.
+Kapsama alınacaklar: WPF ViewModel, ortak DTO/API istemcisi
+(`SmsCampaignDtos.cs`), ve eski istemcilerin geçiş davranışı — uçlar bir sürüm
+boyunca **uyumluluk için sabit değer döndürerek** yaşatılır mı, yoksa silme
+zorunlu WPF sürümüne mi bağlanır; plan aşamasında karara bağlanacak.
 
 ### 1.5 Bakiye artık Netgsm'de
 
-Panelde **salt-okunur** gösterilir. Netgsm bakiyeyi **TL** döndürüyor, "kaç SMS"
-değil; maliyet segment sayısına ve operatöre göre değişiyor. Bu yüzden kesin bir
-"N mesaj hakkın kaldı" sayısı **gösterilmez** — TL + "yaklaşık" damgalı tahmin.
+Panelde **salt-okunur** gösterilir.
+
+Bakiyenin "kaç SMS" karşılığı **doğrudan okunamaz**: maliyet segment sayısına ve
+operatöre göre değişir. Bu yüzden panelde kesin bir "N mesaj hakkın kaldı"
+sayısı **gösterilmez** — ham değer + "yaklaşık" damgalı tahmin.
+
+Daha önce bu bölümde "Netgsm yalnız TL döndürür" yazıyordu; **yanlıştı.**
+Dokümana göre `stip` parametresi yanıtı değiştiriyor: `stip=1/3` paket/SMS
+adedi, `stip=2` kredi bilgisi döndürebiliyor. Hangi `stip` değerinin kullanılacağı
+ve yanıtın tam biçimi §9'da açık madde.
 
 ---
 
@@ -191,8 +225,33 @@ HTTP durumunu; kampanya job'ı her exception'ı `failed` yazıyor. **Bugünkü k
 "bakiye bitti → duraklat" imkânsız.**
 
 Gereken: `NetgsmSmsException(code)`. Bakiye kodunda döngü kırılır, kampanya
-`paused`, dokunulmamış alıcılar `pending` kalır. Diğer kodlarda alıcı `failed`,
-döngü devam eder.
+`paused`, dokunulmamış alıcılar `pending` kalır.
+
+**Ama "diğer tüm kodlarda alıcı `failed`, döngü devam eder" demek kabul
+edilemez** — ilk taslakta öyle yazıyordu, §7 ile de çelişiyordu. Hata üç sınıf,
+ikisi değil:
+
+| sınıf | örnek kod | sonuç |
+|---|---|---|
+| **bakiye** | yetersiz kredi | kampanya `paused`, kalan alıcılar `pending` |
+| **hesap** | şifre geçersiz, başlık reddedildi, abonelik kapalı | kampanya `paused` + hesap `failed`; kalan alıcılar **`pending` korunur** |
+| **alıcı** | numara geçersiz/kara liste | o alıcı `failed`, döngü devam eder |
+
+Hesap sınıfını alıcı sınıfına katmak gerçek bir veri kaybı üretir:
+`SmsCampaignSendJob.cs:134` bugün **her** exception'ı terminal alıcı hatasına
+çeviriyor ve yeniden koşuda yalnız `pending` seçiliyor (`:98`). Doğrulamadan
+sonra dönen bir şifre, böylece tek turda **tüm kitleyi** `failed` yazıp tüketir;
+şifre düzeltilince geri gelecek kimse kalmaz. Hesap hatası kitleyi harcamamalı.
+
+**Bakiye hatası senkron olmayabilir.** `NetgsmSmsSender.cs:97` yalnız başarı
+kodunu okuyor, dönen `jobid`'yi saklamıyor; `SmsCampaignSendJob.cs:129` hemen
+`sent` yazıyor. Netgsm dokümanı bakiye yetersizliğini rapor tarafında da
+tanımlıyor (`/sms/rest/v2/stats` → `notEnoughCredit`, SMS raporunda
+`status=14`). Yani **senkron exception tek başına bu yolu yakalamaya
+yetmeyebilir**; gönderim "başarılı" görünüp mesaj hiç gitmeyebilir. Bu, bakiye
+hatasının *daima* asenkron olduğu anlamına gelmiyor — hangi kodun hangi aşamada
+döndüğü §9'da açık madde. Karara bağlanacak: `jobid` saklanacak mı ve
+raporlanan sonucu izleyen bir takip adımı olacak mı.
 
 `SmsCampaignRecoveryJob` iki düzeltme ister:
 - `paused` kampanyayı **devralmaz** (bayat `ClaimedAt` görüp diriltirse bakiye
@@ -213,6 +272,35 @@ Push ve verify işleri marka başına döner, her marka kendi try/catch'i içind
 Bir marka düşerse yalnız o marka `failed` + `LastError`; diğerleri devam eder.
 "O markayı durdur" anlamı korunur, "herkesi durdur" anlamı kalkar.
 
+**Marka döngüsü tek başına YETMİYOR.** İki şey daha gerekiyor:
+
+### 4.1 İstemci kiracı bağlamı taşımıyor
+
+`IIysClient.AddAsync/SearchAsync` (`IIysClient.cs:47-53`) ne hesap ne marka
+parametresi alıyor; `NetgsmIysClient.cs:110` her isteğe **global** kimlikleri
+gövdeye koyuyor. Bu istemciyle marka başına dönmek sorunu çözmez, gizler:
+B markası için dönülen tur isteği yine **merkezî marka** altında sorar, dönen
+sonuç `IysConsentVerifyJob.cs:86` üzerinden **B'nin satırına** yazılır. Yani
+B'nin onay durumu, hiç sorulmamış bir markanın cevabıyla güncellenir.
+
+Gereken: Add/Search çağrılarının **değişmez bir hesap bağlamı** alması ya da
+hesaba bağlı bir istemci fabrikası. İstek markası ile yazılan satırın markası
+eşleşmeli ve bu **testle kilitlenmeli**. `Program.cs:183` içindeki merkezî
+sağlayıcıya bağlı DI seçimi ve global marka kapıları (`RunAsync` başındaki
+`BrandCode` boşsa dön kontrolleri) de bu dönüşüme dahil.
+
+### 4.2 Doğrulama sınırı markadan önce uygulanıyor
+
+`IysConsentVerifyJob.cs:50` bütün markaların kayıtlarını tek sırada toplayıp
+**önce `Take(BatchSize * 5)`** ile kesiyor. Sorgu hata alınca `continue`
+ediliyor ve randevu (`NextVerifyAt`) **değişmiyor** (`:66-76`). Sonuç: A
+markasının en eski 100 kaydı sürekli hata veriyorsa her turda yine onlar
+seçilir, B'nin kaydı seçim kümesine **hiç girmez** — sonradan eklenen marka
+bazlı catch'e ulaşamaz bile. Klasik hat başı tıkanması.
+
+Sınır **marka başına** uygulanmalı. Test iki kayıtla yetinmemeli: *"A'da 100
+eski hatalı kayıt, B'de bir hazır kayıt → B doğrulanır"* durumu kapsanmalı.
+
 ---
 
 ## 5. Onay toplama
@@ -228,6 +316,22 @@ RET'i A yayıncısının ONAY'ını ezer, hata çıkmaz.
 çözülemezse satır açmaz, yalnız `IysConsentEvent` + `ErrorCode="no-brand"`
 yazar — bozuk telefon için var olan desenin aynısı.
 
+### 5.1b Olay şeması da kiracı taşımalı
+
+`RecordAsync`'e `licenseId` eklemek yetmiyor: **kanıtın kendisi kiracısız.**
+`IysConsentEvent` (`IysConsentEvent.cs:25-45`) yalnız `Recipient` taşıyor —
+`BrandCode` yok, `LicenseId` yok, `IysConsentId` yok. API olaylarında kaynak
+kimliği de yazılmıyor (`IysConsentPushJob.cs:165`, `IysConsentVerifyJob.cs:91`).
+
+Sonuç: aynı telefonun A markasındaki ONAY'ı ile B markasındaki RET'i **aynı
+telefon numarasına asılı iki olay** olarak durur; denetimde hangisinin hangi
+yayıncıya ait olduğu güvenilir biçimde ayrıştırılamaz. Oysa bu tablonun tek
+varlık sebebi ispat: İYS `consentDate` ve `source` alanlarını bize boş
+döndürüyor, "bu kişi izni ne zaman, nereden verdi" sorusunun tek cevabı burası.
+
+Olay şemasına `BrandCode` + `LicenseId` eklenir; API olaylarına kaynak satır
+kimliği yazılır.
+
 ### 5.2 Çok yayıncılı shopper
 
 `ShopperBroadcasterLink` bir shopper'ı birden fazla lisansa bağlıyor, ama
@@ -239,6 +343,30 @@ profildeki `SmsConsent` tek boolean (`ShopperMeController.cs:152`).
 - **Onay verme:** profil kutusundan **yapılmaz**. Onay yalnız toplandığı yerde
   verilir (kayıt formu, o yayıncıya kayıt) — kişi hangi markaya izin verdiğini
   bilerek verir.
+
+**Geri çekme global boolean'a bağlanamaz.** `ShopperMeController.cs:134` olayı
+yalnız istek değeri `Shopper.SmsConsent`'ten **farklıysa** üretiyor. Kaçak şu:
+kişi bir kez geri çeker (`SmsConsent=false`), sonra B yayıncısının kayıt
+formundan yeniden onay verir — `IntakeFormService.cs:154` bu onayı kaydeder ama
+shopper boolean'ını `true`'ya çekmez. Artık kişi profilden açıkça
+`PATCH {smsConsent:false}` gönderse bile değer zaten `false` olduğu için
+**hiçbir RET üretilmez**; B'nin markasındaki ONAY yerinde durur ve gönderim
+yasal olarak sürer. Tam da önlemek istediğimiz şey.
+
+Geri çekmenin işlenmesi boolean'ın *değişmesine* değil, **marka bazlı mevcut
+duruma** bağlanmalı: bağlı markalardan herhangi birinde ONAY varsa geri çekme
+isteği o markalara RET yazar. Idempotency de oradan gelir.
+
+### 5.2b Mevcut shopper ikinci yayıncıya kaydolurken onay kayboluyor
+
+`ShopperAuthController.cs:142` numarayı bulunca mevcut shopper'ı yeniden
+kullanıyor; `RecordAsync` ise **yalnız yeni shopper oluşturulan dalda**
+(`:181`). Yani zaten kayıtlı biri ikinci bir yayıncıya kaydolup onay kutusunu
+işaretlerse bağlantı kurulur ama **onay hiç işlenmez** — o yayıncı, izni olan
+bir kişiye hiç SMS gönderemez.
+
+Onay yazımı shopper *oluşturma* işleminden ayrılıp **o yayıncıya kayıt olma**
+işlemine bağlanmalı. Çok-marka modelinde onayın doğal yeri zaten budur.
 
 Bunun görünür bir sonucu var: Shopper uygulamasındaki kutu bugün iki yönde de
 çalışıyor. Sunucu "açma" yönünü yok sayarsa kullanıcı kutuyu işaretler, kaydeder
@@ -258,8 +386,20 @@ sessizliktir, geri çekme değil). Profil PATCH'i geri çekme yönünde yazar.
 
 1. Ayrılış anında veri **dışa aktarılıp yayıncıya teslim edilir** — müşteri
    listesi onun, kopyası onda olmalı.
-2. **30. günde bizden tamamen silinir** (`NetgsmAccount` + `IysConsent`
-   satırları). Netgsm hesabına **dokunulmaz**.
+2. **30. günde bizden silinir** (`NetgsmAccount` + `IysConsent` satırları).
+   Netgsm hesabına **dokunulmaz**.
+
+   **"Tamamen" demek bu hâliyle doğru değil.** `IysConsentEvent` bilerek FK'siz
+   ve ekle-only ("kayıt satırı silinse bile olay kalır" —
+   `IysConsentEvent.cs:29`). Account + Consent silinince olaylarda **telefon
+   numarası, ispat IP'si, ham API yanıtları** kalır. Bu, ispat yükü için
+   bilinçli bir tasarımdı; ama silme vaadiyle çelişiyor ve KVKK tarafında
+   savunulması gereken şey artık "sildik" değil.
+
+   Karara bağlanacak (plan aşamasında): ayrılan yayıncının olayları da mı
+   silinecek, yoksa telefon/IP anonimleştirilip olay iskeleti mi kalacak?
+   İkisinin de bedeli var — silmek 6563 ispatını yok eder, tutmak "tamamen
+   sildik" diyememek demektir. Aydınlatma metni hangisi seçilirse ona uymalı.
 3. **30 günden sonra dönerse:** onay kaybolmamıştır — İYS yetkili kayıttır ve
    onay onun markası altında yaşamaya devam eder. Yayıncı kendi listesiyle
    döner, `/iys/search` ile onaylar tazelenir.
@@ -317,6 +457,19 @@ Kilitlenecek sözleşmeler:
 8. Geri çekme bağlı **tüm** markalara RET gider
 9. `verified → failed` hem kampanyayı hem onay toplamayı durdurur
 10. `Unprotect` null → hesap `disabled`, sessiz gönderim yok
+11. **İstek markası = yazılan satırın markası.** B için yapılan `Search`, B'nin
+    kimlikleriyle gider; merkezî markanın cevabı B'nin satırına yazılamaz (§4.1)
+12. **Hat başı tıkanması yok:** A'da 100 eski hatalı kayıt varken B'nin tek
+    hazır kaydı yine doğrulanır (§4.2)
+13. **Hesap hatası kitleyi harcamaz:** gönderim ortasında şifre hatası →
+    kampanya `paused`, dokunulmamış alıcılar `pending` kalır (§3.4)
+14. **Olay kiracı taşır:** aynı telefon A'da ONAY + B'de RET → olaylar
+    `BrandCode`/`LicenseId` ile ayrıştırılabilir *(TC)* (§5.1b)
+15. **Geri çekme boolean'a bağlı değil:** shopper `SmsConsent=false` iken B'nin
+    formundan onay vermişse, profilden gelen geri çekme yine RET üretir (§5.2)
+16. **Mevcut shopper ikinci yayıncıya kaydolurken onayı işlenir** (§5.2b)
+17. **Kampanya kaydı krediden bağımsız atomik:** kredi servisi yokken de
+    kampanya + alıcılar enqueue'dan önce tek `SaveChanges` ile yazılır (§1.4a)
 
 7 ve 10 için emsal: `IysAddResult`'ta `Accepted` alanının olmadığını yansımayla
 kilitleyen mevcut test.
@@ -329,22 +482,56 @@ kilitleyen mevcut test.
 
 ## 9. Doğrulanmamış varsayımlar (plan aşamasında kapatılacak)
 
-1. **Netgsm bakiye sorgusu REST v2 yolu.** Ucun var olduğu dokümanda geçiyor,
-   tam yol doğrulanmadı. Panel bakiye göstergesi buna bağlı.
-2. **Onaylı başlık listesi için salt-okunur uç.** Var olduğu **doğrulanmadı**.
-   Yoksa başlık ilk gerçek gönderimde doğrulanır ve hesap `failed`'a düşer —
-   bedeli bir kampanyanın patlaması, veri kaybı değil. `/iys/search` kapısı
-   bundan bağımsız çalışır.
+Aşağıdaki üç madde Netgsm'in resmî dokümanına karşı kontrol edildi
+(<https://www.netgsm.com.tr/dokuman/>). **Hiçbiri canlı hesap çağrısıyla
+sınanmadı** — doğrulama plan aşamasında gerçek çağrıyla yapılacak.
 
-Her ikisi de `/iys/search` zorunlu kapısını **etkilemez**.
+1. **Bakiye sorgusu.** İlk taslakta "REST v2 yolu doğrulanmadı" yazıyordu;
+   dokümanda görünen yol `POST /balance` ve **REST v2 altında değil**. Ayrıca
+   yanıt `stip` parametresine göre değişiyor (`stip=1/3` paket/SMS adedi,
+   `stip=2` kredi bilgisi). Hangi `stip` ile çağrılacağı ve yanıtın panelde
+   nasıl sunulacağı açık (§1.5).
+2. **Onaylı başlık listesi.** `GET /sms/rest/v2/msgheader` **mevcut** — ilk
+   taslaktaki "var olduğu doğrulanmadı" notu düzeltildi. Ancak listenin
+   başlığın **onay durumunu** garanti ettiği doğrulanmadı; liste başlığı
+   içeriyor diye başlık gönderime hazır sayılmamalı.
+3. **Bakiye hatasının kodu ve aşaması.** Dokümanda `/sms/rest/v2/stats` →
+   `notEnoughCredit` ve SMS raporunda `status=14` tanımlı. Bakiye yetersizliği
+   gönderim anında senkron mu döner, rapor aşamasında mı görünür, yoksa
+   ikisi birden mi — belirsiz. §3.4'teki duraklatma mekanizması buna bağlı.
+
+Üçü de `/iys/search` zorunlu kapısını **etkilemez** (§2.2).
 
 ---
 
 ## 10. Geçiş
 
 - **Boru hattını açmak ayrı ve GERİ ALINAMAZ bir adımdır** (`Netgsm__BrandCode`
-  = `731734`). Çok-tenant işini beklemez; bugünkü kod çalışıyor ve `bekleyen=0`
-  olduğu için **şimdi en güvenli an**. Açmadan önce bekleyen sayısı yeniden
+  = `731734`).
+
+  Bu spec'in ilk hâli *"çok-tenant işini beklemez, `bekleyen=0` olduğu için
+  şimdi en güvenli an"* diyordu. **Bu yanlıştı ve tavsiye geri çekilmiştir.**
+
+  `bekleyen=0` yalnız **açılış anını** korur, sonrasını değil. Bugünkü kodda
+  `IntakeFormService.cs:154` **hangi yayıncıdan gelirse gelsin** onayı
+  collector'a veriyor, `IysConsentCollector.cs:109` global markaya yazıyor ve
+  `IysConsentPushJob.cs:81` bekleyenleri **marka filtresi olmadan** seçiyor.
+  Yani marka açıldıktan sonra B yayıncısının kayıt formundan gelen her onay
+  merkezî markaya — hukuken EMAR'ın markasına — bildirilir. Geri alınamaz:
+  İYS'ye giden kayıt geri çağrılamaz ve yanlış marka altında yazılmış onay
+  hem geçersiz hem de temizlenmesi gereken bir kirlilik olur.
+
+  **Açmanın ön koşulu, ikisinden biri:**
+  1. Kiracı izolasyonu (§4.1 + §5.1) önce yayına girer, **veya**
+  2. Boru hattı geçici olarak **merkezî markanın sahibi olan tek lisansla**
+     sınırlanır: collector yalnız o `LicenseId` için satır açar, diğerleri
+     `no-brand` olayına düşer.
+
+  Bugün fiilen tek yayıncı olması bu koşulu karşılamaz — koşul kodda
+  uygulanmalı, sahadaki mevcut duruma güvenilmemeli. İkinci yayıncı ilk
+  kaydını aldığı anda kimse "acaba boru hattı açık mıydı" diye düşünmeyecek.
+
+  Ön koşul sağlandıktan sonra, açmadan hemen önce bekleyen sayısı yeniden
   doğrulanmalıdır — değer yazılır yazılmaz hepsi ilk turda gider.
 - **EMAR tenant #1 olarak tohumlanır**: env'deki değerler `NetgsmAccount`
   satırına taşınır. Bu, çok-tenant sürümü çıktıktan sonra yapılır.
