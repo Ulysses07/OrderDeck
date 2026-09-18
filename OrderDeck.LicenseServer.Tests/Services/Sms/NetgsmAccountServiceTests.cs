@@ -28,7 +28,7 @@ public class NetgsmAccountServiceTests
             Id = Guid.NewGuid(),
             LicenseId = licenseId,
             UserCode = "8503021111",
-            PasswordProtected = "not-a-real-ciphertext",
+            PasswordProtected = $"pw-{Guid.NewGuid():N}",
             Header = "ORDERDECK",
             BrandCode = brandCode,
             Status = status,

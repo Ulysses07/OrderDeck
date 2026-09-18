@@ -3363,6 +3363,14 @@ sahte bir yeşil verir, bu yüzden Testcontainers şart.
 **Commit sıklığı:** her görev sonunda bir commit. Görevler sırayla uygulanmalı —
 Faz 3 Faz 1'in servisine, Faz 5 Faz 4'ün imzasına bağlı.
 
+**`TryUnprotectPassword` `null` dönerse SESSİZ KALINAMAZ.** Servisin yorumu
+"çağıran hesabı `Failed` işaretler" diye söz veriyor ama o davranışın kendisi
+çağıranda — Task 6 ve Task 9'da — yazılmalı. `null` sadece yutulursa
+entegrasyon sessizce susar ve kimse fark etmez; repoda bu dersin bedeli bir
+kez ödendi (`Program.cs:78-81`, WhatsApp). Bu iki görevde çözülemeyen şifre
+**`Status = NetgsmAccountStatus.Failed` + `LastError` yazımına** dönmeli, ham
+istisna ya da sessiz `return` değil.
+
 **Derleme kırılması beklenen yerler:** Task 6 (arayüz imzası) ve Task 9
 (`NetgsmOptions.BrandCode` silinmesi) geniş derleme hatası üretir. İkisinde de
 hata listesi **tam olarak planda sayılan dosyalarla** sınırlı olmalı; fazlası
