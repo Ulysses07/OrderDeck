@@ -38,9 +38,9 @@ public class NetgsmIysClientTests
         UserCode = $"user-{Guid.NewGuid():N}",
         Password = $"pw-{Guid.NewGuid():N}",
         BaseUrl = "https://api.netgsm.com.tr",
-        // Bilerek DOLU: aşağıdaki test bu değerin isteğe SIZMADIĞINI kanıtlıyor.
-        // Faz 6 Task 9 bu özelliği tamamen siler; o zaman bu satır da gider.
-        BrandCode = "731734",
+        // Marka burada YOK: Task 9 NetgsmOptions.BrandCode'u sildi. Global marka
+        // diye bir şey kalmadığı için "isteğe sızma" ihtimali de artık derleme
+        // düzeyinde imkânsız.
     };
 
     private static IysAccountContext Account(string brandCode) => new(
@@ -66,7 +66,7 @@ public class NetgsmIysClientTests
         // B yayıncısı için dönülen tur merkezî markaya sorar ve gelen cevap
         // B'nin satırına yazılır — hiçbir hata fırlatmadan veri bozulur.
         var (client, handler) = Build("{\"code\":\"0\"}");
-        var account = Account("763208");   // Opt().BrandCode = "731734"
+        var account = Account("763208");   // markanın TEK kaynağı bu bağlam
 
         await client.AddAsync(account, new[] { Rec("+905551112233") });
 

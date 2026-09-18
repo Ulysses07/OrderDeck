@@ -58,10 +58,11 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var accounts = scope.ServiceProvider.GetRequiredService<NetgsmAccountService>();
         var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
 
         var phone = $"+90555{Random.Shared.Next(1000000, 9999999)}";
-        var campaignId = await SeedCampaignAsync(db, phone);
+        var (campaignId, _) = await SeedCampaignAsync(db, accounts, phone);
 
         // İYS kaydı yok → kapı kapalı.
         await job.RunAsync(campaignId);
@@ -89,11 +90,12 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var accounts = scope.ServiceProvider.GetRequiredService<NetgsmAccountService>();
         var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
 
         var phone = $"+90555{Random.Shared.Next(1000000, 9999999)}";
-        var campaignId = await SeedCampaignAsync(db, phone);
-        await SeedConsentAsync(db, phone, IysConsentStatus.Onay, IysConsentStatus.Onay);
+        var (campaignId, brandCode) = await SeedCampaignAsync(db, accounts, phone);
+        await SeedConsentAsync(db, brandCode, phone, IysConsentStatus.Onay, IysConsentStatus.Onay);
 
         await job.RunAsync(campaignId);
 
@@ -111,11 +113,12 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var accounts = scope.ServiceProvider.GetRequiredService<NetgsmAccountService>();
         var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
 
         var phone = $"+90555{Random.Shared.Next(1000000, 9999999)}";
-        var campaignId = await SeedCampaignAsync(db, phone);
-        await SeedConsentAsync(db, phone, IysConsentStatus.Onay, IysConsentStatus.Ret);
+        var (campaignId, brandCode) = await SeedCampaignAsync(db, accounts, phone);
+        await SeedConsentAsync(db, brandCode, phone, IysConsentStatus.Onay, IysConsentStatus.Ret);
 
         await job.RunAsync(campaignId);
 
@@ -126,20 +129,81 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
         _factory.Sms.Sent.Should().NotContain(m => m.Phone == phone);
     }
 
+    [Fact]
+    public async Task Baska_yayincinin_onayi_bu_kampanyanin_kapisini_ACMAZ()
+    {
+        // Spec sözleşme #4. İzin marka başına: kişi B yayıncısına onay verdiyse
+        // A'nın kampanyası o onayı kullanamaz. Kullanırsa kişiye hiç izin
+        // vermediği bir yayıncıdan ticari SMS gider — 6563 ihlali.
+        _factory.Sms.Clear();
+        _factory.Sms.ThrowOnSend = false;
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var accounts = scope.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+        var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
+
+        var phone = $"+90555{Random.Shared.Next(1000000, 9999999)}";
+        var (campaignId, _) = await SeedCampaignAsync(db, accounts, phone);
+
+        // Onay BAŞKA bir markaya ait — kampanyanın lisansıyla ilgisi yok.
+        var otherBrand = Random.Shared.Next(100000, 999999).ToString();
+        await SeedConsentAsync(db, otherBrand, phone, IysConsentStatus.Onay, IysConsentStatus.Onay);
+
+        await job.RunAsync(campaignId);
+
+        var recipient = await db.SmsCampaignRecipients.AsNoTracking()
+            .SingleAsync(r => r.CampaignId == campaignId);
+        recipient.Status.Should().Be("failed");
+        recipient.Error.Should().Be("iys-consent-missing");
+        _factory.Sms.Sent.Should().NotContain(m => m.Phone == phone);
+    }
+
+    [Fact]
+    public async Task Dogrulanmis_Netgsm_hesabi_olmayan_lisans_hic_gonderemez()
+    {
+        // Fail-closed: marka çözülemiyorsa hiçbir onay geçerli sayılamaz.
+        // Hata kodu ayrı: "kayıt yok" ile "yayıncı kurulumunu bitirmemiş"
+        // farklı sorunlar, admin ekranında ayrışmalı.
+        _factory.Sms.Clear();
+        _factory.Sms.ThrowOnSend = false;
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var accounts = scope.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+        var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
+
+        var phone = $"+90555{Random.Shared.Next(1000000, 9999999)}";
+        var (campaignId, brandCode) = await SeedCampaignAsync(db, accounts, phone);
+        await SeedConsentAsync(db, brandCode, phone, IysConsentStatus.Onay, IysConsentStatus.Onay);
+
+        // Hesabı doğrulanmamış hâle getir: marka artık çözülmemeli.
+        var account = await db.NetgsmAccounts.SingleAsync(a => a.BrandCode == brandCode);
+        account.Status = NetgsmAccountStatus.Disabled;
+        await db.SaveChangesAsync();
+
+        await job.RunAsync(campaignId);
+
+        var recipient = await db.SmsCampaignRecipients.AsNoTracking()
+            .SingleAsync(r => r.CampaignId == campaignId);
+        recipient.Status.Should().Be("failed");
+        recipient.Error.Should().Be("iys-brand-missing");
+        _factory.Sms.Sent.Should().NotContain(m => m.Phone == phone);
+    }
+
     /// <summary>
-    /// Kapının okuduğu satırı kurar. <c>BrandCode</c> bilerek testteki
-    /// yapılandırma değeriyle (varsayılan boş string) aynı: kapı marka bazında
-    /// filtreliyor, başka bir markanın satırı bu kampanyayı açmamalı.
+    /// Kapının okuduğu satırı kurar. <c>brandCode</c> kampanyanın lisansına ait
+    /// markadır — başka bir markanın satırı bu kampanyayı AÇMAMALI.
     /// </summary>
     private static async Task SeedConsentAsync(
-        LicenseDbContext db, string phone,
+        LicenseDbContext db, string brandCode, string phone,
         IysConsentStatus status, IysConsentStatus? verified)
     {
         var now = DateTimeOffset.UtcNow;
         db.IysConsents.Add(new IysConsent
         {
             Id = Guid.NewGuid(),
-            BrandCode = "",
+            BrandCode = brandCode,
             ChannelType = "MESAJ",
             RecipientType = "BIREYSEL",
             Recipient = phone,
@@ -157,13 +221,18 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>
-    /// Lisans + kredi + kampanya + tek alıcı. (Plan bu yardımcıyı
-    /// <c>SmsCampaignSendJobTests</c>'ten kopyalamayı söylüyordu; o dosya
-    /// repoda yok — gönderim işi <c>Controllers/Licenses/SmsCampaignTests</c>
-    /// üzerinden HTTP ile kuruluyor. Buradaki kurulum doğrudan DB'ye yazıyor:
-    /// kapı sınaması için alıcının telefonunun bilinmesi şart.)
+    /// Lisans + doğrulanmış Netgsm hesabı + kredi + kampanya + tek alıcı.
+    /// Marka kodu lisansa özel üretiliyor: kapı artık kampanyanın lisansından
+    /// markayı çözüyor, global yapılandırmadan DEĞİL.
+    ///
+    /// <para>(Plan bu yardımcıyı <c>SmsCampaignSendJobTests</c>'ten kopyalamayı
+    /// söylüyordu; o dosya repoda yok — gönderim işi
+    /// <c>Controllers/Licenses/SmsCampaignTests</c> üzerinden HTTP ile
+    /// kuruluyor. Buradaki kurulum doğrudan DB'ye yazıyor: kapı sınaması için
+    /// alıcının telefonunun bilinmesi şart.)</para>
     /// </summary>
-    private static async Task<Guid> SeedCampaignAsync(LicenseDbContext db, string phone)
+    private static async Task<(Guid CampaignId, string BrandCode)> SeedCampaignAsync(
+        LicenseDbContext db, NetgsmAccountService accounts, string phone)
     {
         var customer = new Customer
         {
@@ -185,6 +254,20 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
             ExpiresAt = DateTimeOffset.UtcNow.AddDays(30),
         };
         db.Licenses.Add(license);
+
+        var brandCode = Random.Shared.Next(100000, 999999).ToString();
+        db.NetgsmAccounts.Add(new NetgsmAccount
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = license.Id,
+            UserCode = $"user-{Guid.NewGuid():N}",
+            PasswordProtected = accounts.ProtectPassword($"pw-{Guid.NewGuid():N}"),
+            Header = "ORDERDECK",
+            BrandCode = brandCode,
+            Status = NetgsmAccountStatus.Verified,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        });
 
         db.LicenseSmsBalances.Add(new LicenseSmsBalance
         {
@@ -225,6 +308,6 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
         });
 
         await db.SaveChangesAsync();
-        return campaign.Id;
+        return (campaign.Id, brandCode);
     }
 }

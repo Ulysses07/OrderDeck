@@ -178,8 +178,8 @@ public class Program
 
         // İYS onay boru hattı. İstemci, SMS sağlayıcısıyla AYNI koşula bağlı:
         // Netgsm yoksa İYS de yok, çünkü İYS'ye erişim Netgsm aracılığıyla.
-        // Dev/test'te kayıt yine toplanır ve Pending'de bekler — push işi
-        // BrandCode boş olduğu için hiçbir şey göndermez.
+        // Dev/test'te kayıt yine toplanır ve Pending'de bekler — işler
+        // doğrulanmış NetgsmAccount satırı olmadığı için hiçbir şey göndermez.
         if (smsProvider == "netgsm")
         {
             var iysTimeout = builder.Configuration.GetValue("Netgsm:TimeoutSeconds", 10);
