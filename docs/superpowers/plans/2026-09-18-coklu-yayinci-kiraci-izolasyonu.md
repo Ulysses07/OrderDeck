@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-18-coklu-yayinci-sms-iys-design.md` (§1.3, §4, §4.1, §4.2, §5.1, §5.1b, §5.2, §10)
 
-**Bu plan neyi AÇMAZ:** Boru hattı kapalı kalır. Global `Netgsm__BrandCode` ayarı Faz 6'da **tamamen silindiği** için kapıyı artık yapılandırma değil veri tutuyor: `NetgsmAccount` tablosunda `Status = "verified"` bir satır yoksa hiçbir iş bir şey göndermez. Bu plan prod'a **hiç satır yazmaz**. Boru hattını açmak spec §10'a göre ayrı ve geri alınamaz bir adımdır; bu plan onun **ön koşulunu** karşılar, adımı atmaz.
+**Bu plan neyi AÇMAZ:** Boru hattı kapalı kalır. Global `Netgsm__BrandCode` ayarı Faz 6'da **tamamen silindiği** için kapıyı artık yapılandırma değil veri tutuyor: `NetgsmAccount` tablosunda `Status = Verified` bir satır yoksa hiçbir iş bir şey göndermez. Bu plan prod'a **hiç satır yazmaz**. Boru hattını açmak spec §10'a göre ayrı ve geri alınamaz bir adımdır; bu plan onun **ön koşulunu** karşılar, adımı atmaz.
 
 ---
 
@@ -132,7 +132,7 @@ public sealed class NetgsmAccountUniqueIndexTests : IAsyncLifetime
         PasswordProtected = $"pw-{Guid.NewGuid():N}",
         Header = "ORDERDECK",
         BrandCode = brandCode,
-        Status = "verified",
+        Status = NetgsmAccountStatus.Verified,
         CreatedAt = DateTimeOffset.UtcNow,
         UpdatedAt = DateTimeOffset.UtcNow,
     };
@@ -242,9 +242,29 @@ namespace OrderDeck.LicenseServer.Domain;
 /// hukuken sahibi olmayan tarafa yazmak olurdu.</para>
 ///
 /// <para><b>Satırın yokluğu "hiç girilmemiş" demektir</b> — ayrı bir
-/// <c>pending</c> durumu yok. Yayıncı ayrılırsa satır silinmez,
-/// <see cref="Status"/> <c>disabled</c> olur.</para>
+/// <c>pending</c> durumu yok.</para>
+///
+/// <para><b>İki ayrı çıkış yolu var.</b> Yayıncı AYRILIRSA satır durur,
+/// <see cref="Status"/> <see cref="NetgsmAccountStatus.Disabled"/> olur — kimlik
+/// bilgisi geri dönüş için saklanır. Lisans/müşteri KVKK kapsamında SİLİNİRSE
+/// FK üzerindeki cascade bu satırı da götürür; kimlik bilgisini geride bırakmak
+/// zaten yanlış olurdu.</para>
 /// </summary>
+public enum NetgsmAccountStatus
+{
+    /// <summary>Doğrulanmamış: ya hiç denenmedi ya da denendi ve düştü. İki
+    /// hâlde de kapı KAPALI. <c>0</c> olması bilinçli — varsayılan değer
+    /// fail-closed olmalı.</summary>
+    Failed = 0,
+
+    /// <summary>Üç salt-okunur çağrı geçti. Yalnız bu hesap onay toplar ve
+    /// SMS gönderir.</summary>
+    Verified = 1,
+
+    /// <summary>Yayıncı ayrıldı ya da kill switch çekildi.</summary>
+    Disabled = 2,
+}
+
 public sealed class NetgsmAccount
 {
     public Guid Id { get; set; }
@@ -260,7 +280,8 @@ public sealed class NetgsmAccount
     /// asla düz metin dönmez ve asla log'lanmaz.</summary>
     public string PasswordProtected { get; set; } = "";
 
-    /// <summary>Netgsm'de onaylı gönderici başlığı (sender ID).</summary>
+    /// <summary>Netgsm'de onaylı gönderici başlığı (sender ID). Netgsm tarafında
+    /// sınır 11 karakter; sütun da 11.</summary>
     public string Header { get; set; } = "";
 
     /// <summary>İYS marka kodu. <b>Global tekil</b>: push/verify işleri markadan
@@ -268,11 +289,14 @@ public sealed class NetgsmAccount
     /// gidileceği belirsizleşir.</summary>
     public string BrandCode { get; set; } = "";
 
-    /// <summary>"verified" | "failed" | "disabled". Yalnız <c>verified</c> hesap
-    /// onay toplar ve SMS gönderir (fail-closed).</summary>
-    public string Status { get; set; } = "failed";
+    /// <summary>Kapı durumu. Yalnız <see cref="NetgsmAccountStatus.Verified"/>
+    /// hesap onay toplar ve SMS gönderir (fail-closed).</summary>
+    public NetgsmAccountStatus Status { get; set; } = NetgsmAccountStatus.Failed;
 
-    /// <summary>Panelde gösterilen son hata metni (ör. yanlış şifre).</summary>
+    /// <summary>Panelde gösterilen son hata metni (ör. yanlış şifre).
+    /// <b>Ham Netgsm istek/yanıt gövdesi buraya YAZILMAZ</b> — istek gövdesi API
+    /// şifresini taşıyor, kopyalanırsa kimlik bilgisi panele sızar. Yalnız
+    /// sınıflandırılmış, insan okunur mesaj.</summary>
     public string? LastError { get; set; }
 
     /// <summary>Son başarılı <c>/iys/search</c> doğrulaması.</summary>
@@ -301,11 +325,17 @@ public sealed class NetgsmAccount
              .OnDelete(DeleteBehavior.Cascade);
             b.Property(a => a.UserCode).HasMaxLength(32).IsRequired();
             b.Property(a => a.PasswordProtected).HasMaxLength(4000).IsRequired();
-            b.Property(a => a.Header).HasMaxLength(32).IsRequired();
+            // Netgsm onaylı başlık sınırı 11 karakter.
+            b.Property(a => a.Header).HasMaxLength(11).IsRequired();
             // IysConsent.BrandCode ile AYNI uzunluk — ikisi eşleştiriliyor.
             b.Property(a => a.BrandCode).HasMaxLength(16).IsRequired();
-            b.Property(a => a.Status).HasMaxLength(16).IsRequired();
+            // IysConsentStatus ile aynı kalıp: enum, sütunda metin.
+            b.Property(a => a.Status).HasConversion<string>().HasMaxLength(16).IsRequired();
             b.Property(a => a.LastError).HasMaxLength(500);
+            // Boş ya da boşluklu marka kodu tekil index'i deler: " 731734" ile
+            // "731734" FARKLI anahtar, ikisi de kaydolur, arama birini görmez.
+            b.ToTable(t => t.HasCheckConstraint("CK_NetgsmAccounts_BrandCode",
+                "LEN([BrandCode]) > 0 AND [BrandCode] NOT LIKE '%[^0-9]%'"));
             // Bir lisans = bir hesap.
             b.HasIndex(a => a.LicenseId).IsUnique();
             // Marka → hesap araması tek satır dönmeli (push/verify işleri).
@@ -318,7 +348,7 @@ public sealed class NetgsmAccount
 ```bash
 dotnet ef migrations add AddNetgsmAccount \
   --project OrderDeck.LicenseServer/OrderDeck.LicenseServer.csproj \
-  --output-dir Data/Migrations
+  --context LicenseDbContext \n  --output-dir Data/Migrations
 ```
 
 Üretilen dosyayı aç ve iki `CreateIndex` çağrısının da `unique: true` taşıdığını gözle doğrula.
@@ -326,7 +356,7 @@ dotnet ef migrations add AddNetgsmAccount \
 - [ ] **Step 6: Testi çalıştır, geçtiğini gör**
 
 Çalıştır: `dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj --filter NetgsmAccountUniqueIndexTests`
-Beklenen: 2 test PASS.
+Beklenen: 4 test PASS, **0 SKIP**. (SKIP = SQL container hiç kalkmadı, hiçbir şey kanıtlanmadı.)
 
 - [ ] **Step 7: Commit**
 
@@ -370,7 +400,7 @@ public class NetgsmAccountServiceTests
         => new(db, new EphemeralDataProtectionProvider());
 
     private static NetgsmAccount Seed(
-        LicenseDbContext db, Guid licenseId, string brandCode, string status)
+        LicenseDbContext db, Guid licenseId, string brandCode, NetgsmAccountStatus status)
     {
         var row = new NetgsmAccount
         {
@@ -415,7 +445,7 @@ public class NetgsmAccountServiceTests
     {
         using var db = NewDb();
         var licenseId = Guid.NewGuid();
-        Seed(db, licenseId, "731734", status: "failed");
+        Seed(db, licenseId, "731734", status: NetgsmAccountStatus.Failed);
 
         var brand = await Service(db).GetBrandCodeAsync(licenseId, default);
 
@@ -427,7 +457,7 @@ public class NetgsmAccountServiceTests
     {
         using var db = NewDb();
         var licenseId = Guid.NewGuid();
-        Seed(db, licenseId, "731734", status: "verified");
+        Seed(db, licenseId, "731734", status: NetgsmAccountStatus.Verified);
 
         (await Service(db).GetBrandCodeAsync(licenseId, default)).Should().Be("731734");
     }
@@ -443,8 +473,8 @@ public class NetgsmAccountServiceTests
     public async Task ListVerifiedAsync_yalniz_dogrulanmis_hesaplari_doner()
     {
         using var db = NewDb();
-        Seed(db, Guid.NewGuid(), "731734", "verified");
-        Seed(db, Guid.NewGuid(), "763208", "disabled");
+        Seed(db, Guid.NewGuid(), "731734", NetgsmAccountStatus.Verified);
+        Seed(db, Guid.NewGuid(), "763208", NetgsmAccountStatus.Disabled);
 
         var rows = await Service(db).ListVerifiedAsync(default);
 
@@ -478,7 +508,7 @@ namespace OrderDeck.LicenseServer.Services.Sms;
 /// Klasör kaybolursa şifreler çözülemez ve yayıncıların kimliklerini yeniden
 /// girmesi gerekir — bu klasör yedek kapsamında olmalı.</para>
 ///
-/// <para><b>Fail-closed:</b> yalnız <c>Status == "verified"</c> hesap iş yapar.
+/// <para><b>Fail-closed:</b> yalnız <c>Status == Verified</c> hesap iş yapar.
 /// Doğrulanmamış hesap için marka çözülmez → onay satırı açılmaz (spec §5.1).</para>
 /// </summary>
 public sealed class NetgsmAccountService
@@ -507,18 +537,18 @@ public sealed class NetgsmAccountService
 
     public Task<NetgsmAccount?> GetVerifiedByLicenseAsync(Guid licenseId, CancellationToken ct)
         => _db.NetgsmAccounts
-            .FirstOrDefaultAsync(a => a.LicenseId == licenseId && a.Status == "verified", ct);
+            .FirstOrDefaultAsync(a => a.LicenseId == licenseId && a.Status == NetgsmAccountStatus.Verified, ct);
 
     public async Task<IReadOnlyList<NetgsmAccount>> ListVerifiedAsync(CancellationToken ct)
         => await _db.NetgsmAccounts
-            .Where(a => a.Status == "verified")
+            .Where(a => a.Status == NetgsmAccountStatus.Verified)
             .OrderBy(a => a.CreatedAt)
             .ToListAsync(ct);
 
     /// <summary>Onay toplama yolunun ihtiyacı: yalnız marka kodu, şifre değil.</summary>
     public async Task<string?> GetBrandCodeAsync(Guid licenseId, CancellationToken ct)
         => await _db.NetgsmAccounts
-            .Where(a => a.LicenseId == licenseId && a.Status == "verified")
+            .Where(a => a.LicenseId == licenseId && a.Status == NetgsmAccountStatus.Verified)
             .Select(a => a.BrandCode)
             .FirstOrDefaultAsync(ct);
 }
@@ -628,7 +658,7 @@ ve aynı bloğun sonuna, mevcut index'ten SONRA:
 ```bash
 dotnet ef migrations add AddIysConsentEventTenant \
   --project OrderDeck.LicenseServer/OrderDeck.LicenseServer.csproj \
-  --output-dir Data/Migrations
+  --context LicenseDbContext \n  --output-dir Data/Migrations
 ```
 
 Üretilen dosyada üç `AddColumn` (`LicenseId` uniqueidentifier null, `BrandCode` nvarchar(16) null, `IysConsentId` uniqueidentifier null) ve bir `CreateIndex` olmalı. **`nullable: true` olduklarını doğrula** — mevcut satırlar geriye dönük doldurulamaz, prod'daki eski olaylar `null` kalacak ve bu kabul edilmiş durum.
@@ -684,7 +714,7 @@ Spec §5.1: `IysConsent` tekil index'i `(BrandCode, ChannelType, RecipientType, 
             PasswordProtected = $"pw-{Guid.NewGuid():N}",
             Header = "ORDERDECK",
             BrandCode = brandCode,
-            Status = "verified",
+            Status = NetgsmAccountStatus.Verified,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
@@ -746,7 +776,7 @@ Ardından dosyanın sonuna iki yeni test ekle:
             PasswordProtected = $"pw-{Guid.NewGuid():N}",
             Header = "ORDERDECK",
             BrandCode = BrandA,
-            Status = "failed",          // doğrulama düşmüş
+            Status = NetgsmAccountStatus.Failed,   // doğrulama düşmüş
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
@@ -986,7 +1016,7 @@ public sealed class IysConsentTenantIsolationTests : IAsyncLifetime
             PasswordProtected = $"pw-{Guid.NewGuid():N}",
             Header = "ORDERDECK",
             BrandCode = brandCode,
-            Status = "verified",
+            Status = NetgsmAccountStatus.Verified,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
@@ -1200,7 +1230,7 @@ public sealed class ShopperMeConsentRevokeTests : IClassFixture<ApiFactory>
             PasswordProtected = $"pw-{Guid.NewGuid():N}",
             Header = "ORDERDECK",
             BrandCode = brandCode,
-            Status = "verified",
+            Status = NetgsmAccountStatus.Verified,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
@@ -1902,7 +1932,7 @@ Yardımcıları değiştir — `Job` artık `NetgsmAccountService` alıyor ve
             PasswordProtected = Accounts(db).ProtectPassword($"pw-{Guid.NewGuid():N}"),
             Header = "ORDERDECK",
             BrandCode = brandCode,
-            Status = "verified",
+            Status = NetgsmAccountStatus.Verified,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
@@ -2018,7 +2048,7 @@ Mevcut `Yapilandirma_hatasi_boru_hattini_durdurur` testini **sil** ve yerine
     [Fact]
     public async Task Dogrulanmamis_hesabin_kayitlari_itilmez()
     {
-        // Fail-closed: hesap "verified" değilse o markanın adına konuşamayız.
+        // Fail-closed: hesap Verified değilse o markanın adına konuşamayız.
         using var db = NewDb();
         db.NetgsmAccounts.Add(new NetgsmAccount
         {
@@ -2028,7 +2058,7 @@ Mevcut `Yapilandirma_hatasi_boru_hattini_durdurur` testini **sil** ve yerine
             PasswordProtected = Accounts(db).ProtectPassword($"pw-{Guid.NewGuid():N}"),
             Header = "ORDERDECK",
             BrandCode = BrandA,
-            Status = "pending",
+            Status = NetgsmAccountStatus.Failed,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
@@ -2362,7 +2392,7 @@ Yardımcılar — `Job` artık `NetgsmAccountService` alıyor, `IOptions<NetgsmO
             PasswordProtected = Accounts(db).ProtectPassword($"pw-{Guid.NewGuid():N}"),
             Header = "ORDERDECK",
             BrandCode = brandCode,
-            Status = "verified",
+            Status = NetgsmAccountStatus.Verified,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
@@ -2785,7 +2815,7 @@ geri döndürüyor. İmzayı ve gövdenin ilgili kısmını değiştir:
             PasswordProtected = accounts.ProtectPassword($"pw-{Guid.NewGuid():N}"),
             Header = "ORDERDECK",
             BrandCode = brandCode,
-            Status = "verified",
+            Status = NetgsmAccountStatus.Verified,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
@@ -2908,7 +2938,7 @@ bugün her iki satır da aynı (global) markaya yazılır:
 
         // Hesabı doğrulanmamış hâle getir: marka artık çözülmemeli.
         var account = await db.NetgsmAccounts.SingleAsync(a => a.BrandCode == brandCode);
-        account.Status = "disabled";
+        account.Status = NetgsmAccountStatus.Disabled;
         await db.SaveChangesAsync();
 
         await job.RunAsync(campaignId);
@@ -3071,7 +3101,7 @@ görünmez. Yanlış anlaşılan bir ayar, olmayan bir ayardan tehlikelidir.
             PasswordProtected = accounts.ProtectPassword($"pw-{Guid.NewGuid():N}"),
             Header = "ORDERDECK",
             BrandCode = brandCode,
-            Status = "verified",
+            Status = NetgsmAccountStatus.Verified,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
@@ -3296,6 +3326,30 @@ Beklenen: `keys` klasörü dolu ve gecelik `keys` yedeği cron'da mevcut.
   `NetgsmAccount` satırı elle açılır.
 - **Ayrılan yayıncının verisinin silinmesi.** `IysConsentEvent` ekle-only ve
   FK'siz; "tamamen sildik" demek bugün doğru değil — Plan 4.
+
+### Task 1 denetiminden çıkan, sonraki planlara devredilen üç madde
+
+Bunlar Task 1 kapsamı dışında bırakıldı ama **kaybolmamalı**:
+
+1. **Öksüz `IysConsent` satırları — Plan 4.** `NetgsmAccount` lisansa cascade
+   bağlı; müşteri KVKK kapsamında silinince hesap satırı da gider. Ama
+   `IysConsent` hesaba FK ile değil, **`BrandCode` metniyle** bağlı, yani silme
+   onları öksüz bırakır. Task 7/8'in marka→hesap çözümlemesi o markayı `null`
+   bulur. Bugün bu bir kilitlenme değil (işler marka listesini `NetgsmAccount`
+   üzerinden kuruyor, öksüz satır hiç seçilmiyor), ama satırlar sonsuza dek
+   `Pending` kalır. Plan 4'te kural yazılmalı: **markası olmayan onay satırı
+   `Expired`'a çekilir**, sessizce beklemez.
+2. **Markayı kilitleyen `Disabled` satır — Plan 2.** `BrandCode` global tekil;
+   ayrılan yayıncının `Disabled` satırı markayı kalıcı tutuyor. Yayıncı geri
+   dönerse `LicenseIssuer` yeni bir `License` üretir, aynı marka kodu
+   `DbUpdateException` ile düşer. Şema doğru — Plan 2'deki kimlik girişi ekranı
+   bu ihlali **409 + "bu marka kodu başka bir lisansa kayıtlı"** mesajına
+   çevirmeli, ham EF hatası sızmamalı.
+3. **`EnsureCreated()` göçleri hiç çalıştırmıyor.** Test altyapısı şemayı
+   modelden kuruyor, göç dosyaları hiçbir testte yürümüyor. Repo geneli, bu
+   plandan eski, bu planda da çözülmüyor — ama şu sonucu doğuruyor: **bir göç
+   dosyasındaki hata ancak prod deploy'unda görülür.** Task 10'un elle göç
+   provası bu yüzden atlanamaz.
 
 ---
 
