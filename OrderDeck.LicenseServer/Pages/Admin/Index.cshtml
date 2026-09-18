@@ -49,3 +49,14 @@
         <a asp-page="/Admin/Shoppers/DeletionRequests" class="btn btn-sm btn-danger">Görüntüle</a>
     </div>
 }
+
+@if (Model.IysDeadlineWarnings > 0)
+{
+    <div class="alert alert-warning d-flex justify-content-between align-items-center mt-3">
+        <span>
+            <strong data-stat="iys-deadline-warnings">@Model.IysDeadlineWarnings</strong>
+            onayın İYS bildirim penceresine 24 saatten az kaldı.
+        </span>
+        <a asp-page="/Admin/Iys/Index" class="btn btn-sm btn-warning">Görüntüle</a>
+    </div>
+}
