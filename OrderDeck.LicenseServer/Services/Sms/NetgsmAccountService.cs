@@ -40,7 +40,15 @@ public sealed class NetgsmAccountService
     public string ProtectPassword(string rawPassword) => _protector.Protect(rawPassword);
 
     /// <summary>Şifreli metni çözer. Anahtar döndüyse/bozuksa <c>null</c> döner —
-    /// çağıran hesabı <c>disabled</c> işaretler, sessizce göndermez.</summary>
+    /// çağıran o turu ATLAR ve <c>LastError</c> yazar, hesabın <c>Status</c>'üne
+    /// DOKUNMAZ.
+    ///
+    /// <para>Gerekçe: hesabı kapatmak geri alınamaz — <c>Failed → Verified</c>
+    /// dönen bir kod yolu yok ve <c>IysConsentCollector</c> markayı yalnız
+    /// <c>Verified</c> hesaptan çözdüğü için kapatmak o yayıncının YENİ onay
+    /// toplamasını da durdurur; bağlanmamış tek bir anahtar dizini tek koşuda
+    /// bütün hesapları kilitlerdi. Anahtar geri geldiğinde sistem kendiliğinden
+    /// düzelmeli.</para></summary>
     public string? TryUnprotectPassword(string protectedPassword)
     {
         try { return _protector.Unprotect(protectedPassword); }
@@ -51,8 +59,19 @@ public sealed class NetgsmAccountService
         => _db.NetgsmAccounts
             .FirstOrDefaultAsync(a => a.LicenseId == licenseId && a.Status == NetgsmAccountStatus.Verified, ct);
 
+    /// <summary>Marka başına dönen işlerin kiracı listesi.
+    ///
+    /// <para><b><c>AsNoTracking</c> kasıtlı.</b> Çağıranlar (İYS push/verify
+    /// işleri) bu listeyi marka marka dolaşır ve düşen bir turun catch bloğunda
+    /// <c>ChangeTracker.Clear()</c> çağırır — paylaşılan scoped DbContext'te
+    /// A'nın kirli kayıtlarının B'nin <c>SaveChanges</c>'ine binmemesi için.
+    /// Liste tracked dönseydi o temizlik SIRADAKİ markanın hesap nesnesini de
+    /// detach ederdi ve üstüne yapılan yazım hiçbir hata vermeden kaybolurdu:
+    /// sıralamaya bağlı sessiz kayıp. No-tracking o hâli imkânsız kılar —
+    /// buradaki nesneler ZATEN hiç izlenmez, yazmak isteyen taze okur.</para></summary>
     public async Task<IReadOnlyList<NetgsmAccount>> ListVerifiedAsync(CancellationToken ct)
         => await _db.NetgsmAccounts
+            .AsNoTracking()
             .Where(a => a.Status == NetgsmAccountStatus.Verified)
             .OrderBy(a => a.CreatedAt)
             .ToListAsync(ct);

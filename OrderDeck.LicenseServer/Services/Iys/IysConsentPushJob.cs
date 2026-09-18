@@ -146,11 +146,26 @@ public sealed class IysConsentPushJob
             // kendiliğinden düzelir, bu arada onaylar toplanmaya devam eder,
             // satırlar Pending birikir ve gecikme "son tarihe yaklaşanlar"
             // uyarı yüzeyinden görünür. Yalnız arızayı görünür kılıyoruz.
-            acct.LastError = Truncate(
-                "Kayıtlı şifre çözülemedi (veri koruma anahtarı okunamıyor); "
-                + "anahtar erişimi düzelene kadar İYS bildirimi bekletiliyor.", 500);
-            acct.UpdatedAt = DateTimeOffset.UtcNow;
-            await _db.SaveChangesAsync(ct);
+            //
+            // Hesabı VERİTABANINDAN TAZE oku — elimizdeki acct izlenmiyor
+            // (ListVerifiedAsync no-tracking döner) ve bütün marka turları aynı
+            // scoped DbContext'i paylaşıyor. Detached nesneye yazıp SaveChanges
+            // demek hiçbir hata vermeden hiçbir satırı güncellemez; LastError'ın
+            // TEK amacı operatöre görünürlük olduğu için o sessiz kayıp
+            // düzeltmenin kendisini işe yaramaz kılar. "Gereksiz sorgu" diye
+            // sadeleştirilmemeli.
+            var tracked = await _db.NetgsmAccounts
+                .FirstOrDefaultAsync(a => a.Id == acct.Id, ct);
+            if (tracked is not null)
+            {
+                tracked.LastError = Truncate(
+                    "Kayıtlı şifre çözülemedi (veri koruma anahtarı okunamıyor); "
+                    + "anahtar erişimi düzelene kadar İYS bildirimi bekletiliyor.", 500);
+                tracked.UpdatedAt = DateTimeOffset.UtcNow;
+                await _db.SaveChangesAsync(ct);
+            }
+            // Satır yoksa hesap bu koşu sırasında silinmiş (KVKK/lisans iptali);
+            // yazacak yer yok, log yeterli.
             _log.LogError(
                 "İYS push: {Brand} markasının şifresi çözülemedi, bu tur atlandı "
                 + "(hesap durumu değiştirilmedi)", acct.BrandCode);

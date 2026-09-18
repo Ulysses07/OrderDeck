@@ -52,16 +52,19 @@ public class IysConsentPushJobTests
 
     private static NetgsmAccountService Accounts(LicenseDbContext db) => new(db, Protection);
 
-    private static LicenseDbContext NewDb()
+    private static LicenseDbContext NewDb(string? name = null)
         => new(new DbContextOptionsBuilder<LicenseDbContext>()
-            .UseInMemoryDatabase($"iys-push-{Guid.NewGuid():N}").Options);
+            .UseInMemoryDatabase(name ?? $"iys-push-{Guid.NewGuid():N}").Options);
 
     private static IysConsentPushJob Job(LicenseDbContext db, IIysClient client)
         => new(db, client, Accounts(db), Options.Create(new NetgsmOptions()),
             NullLogger<IysConsentPushJob>.Instance);
 
-    private static void SeedAccount(LicenseDbContext db, Guid licenseId, string brandCode)
+    private static void SeedAccount(
+        LicenseDbContext db, Guid licenseId, string brandCode,
+        DateTimeOffset? createdAt = null)
     {
+        var stamp = createdAt ?? DateTimeOffset.UtcNow;
         db.NetgsmAccounts.Add(new NetgsmAccount
         {
             Id = Guid.NewGuid(),
@@ -71,8 +74,8 @@ public class IysConsentPushJobTests
             Header = "ORDERDECK",
             BrandCode = brandCode,
             Status = NetgsmAccountStatus.Verified,
-            CreatedAt = DateTimeOffset.UtcNow,
-            UpdatedAt = DateTimeOffset.UtcNow,
+            CreatedAt = stamp,
+            UpdatedAt = stamp,
         });
         db.SaveChanges();
     }
@@ -306,6 +309,52 @@ public class IysConsentPushJobTests
         var b = await db.IysConsents.SingleAsync(c => c.BrandCode == BrandB);
         a.PushState.Should().Be(IysPushState.Pending, "A itilmedi");
         b.PushState.Should().Be(IysPushState.Pushed, "B, A'nın anahtar sorunundan etkilenmemeli");
+    }
+
+    [Fact]
+    public async Task Onceki_marka_patlasa_bile_cozulemeyen_sifrenin_hatasi_kalici_yazilir()
+    {
+        // SIRALAMAYA BAĞLI sessiz kayıp. A'nın turu düşünce catch bloğu
+        // ChangeTracker.Clear() çağırıyor (çapraz kiracı sızıntısını kapatan
+        // düzeltme). Hesap listesi tracked gelseydi o temizlik SIRADAKİ markanın
+        // hesap nesnesini de detach ederdi; B'nin "şifre çözülemedi" yazımı
+        // hiçbir hata vermeden kaybolur, arıza panelde hiç görünmezdi. Kayıp
+        // yalnız bu sırayla oluşur — sıra ters olsaydı testler yeşil kalırdı.
+        var name = $"iys-push-{Guid.NewGuid():N}";
+        var t0 = DateTimeOffset.UtcNow.AddHours(-1);
+
+        using (var db = NewDb(name))
+        {
+            // A önce dönmeli: sıra CreatedAt'e göre, eşit damgaya güvenmiyoruz.
+            SeedAccount(db, LicenseA, BrandA, createdAt: t0);
+            SeedAccount(db, LicenseB, BrandB, createdAt: t0.AddMinutes(1));
+
+            // B'nin şifresi başka bir anahtarla korunmuş: bu sağlayıcı çözemez.
+            var foreign = new EphemeralDataProtectionProvider()
+                .CreateProtector("OrderDeck.Netgsm.Password.v1")
+                .Protect($"pw-{Guid.NewGuid():N}");
+            var brokenB = await db.NetgsmAccounts.SingleAsync(a => a.LicenseId == LicenseB);
+            brokenB.PasswordProtected = foreign;
+
+            db.IysConsents.Add(Pending("+905551110001", BrandA));
+            db.IysConsents.Add(Pending("+905551110002", BrandB));
+            await db.SaveChangesAsync();
+
+            var client = new FakeIysClient();
+            client.ThrowByBrand[BrandA] = new IysConfigurationException("60", "marka kodu");
+
+            await Job(db, client).RunAsync();
+        }
+
+        // TEMİZ context'ten oku: aynı context'ten okumak EF identity-map
+        // totolojisi olur, bellekteki nesneyi doğrular, satırı değil.
+        using var fresh = NewDb(name);
+        var acct = await fresh.NetgsmAccounts.SingleAsync(a => a.LicenseId == LicenseB);
+        acct.LastError.Should().NotBeNullOrEmpty(
+            "LastError'ın tek amacı arızayı operatöre göstermek; önceki markanın "
+            + "düşmesi bu görünürlüğü sessizce yok edemez");
+        acct.Status.Should().Be(NetgsmAccountStatus.Verified,
+            "anahtar arızası hesabı kapatmaz (yerleşik karar)");
     }
 
     [Fact]

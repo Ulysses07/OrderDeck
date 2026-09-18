@@ -77,15 +77,24 @@ public class IysConsentVerifyJobTests
     private static NetgsmAccountService Accounts(LicenseDbContext db) => new(db, Protection);
 
     private static LicenseDbContext NewDb(params IInterceptor[] interceptors)
+        => NewDb($"iys-verify-{Guid.NewGuid():N}", interceptors);
+
+    /// <summary>Adı verilen InMemory veritabanına ikinci bir context açar —
+    /// yazımın gerçekten kalıcı olduğunu temiz bir context'ten okuyarak
+    /// doğrulamak için (aynı context identity-map yüzünden totoloji olur).</summary>
+    private static LicenseDbContext NewDb(string name, params IInterceptor[] interceptors)
         => new(new DbContextOptionsBuilder<LicenseDbContext>()
-            .UseInMemoryDatabase($"iys-verify-{Guid.NewGuid():N}")
+            .UseInMemoryDatabase(name)
             .AddInterceptors(interceptors).Options);
 
     private static IysConsentVerifyJob Job(LicenseDbContext db, IIysClient client)
         => new(db, client, Accounts(db), NullLogger<IysConsentVerifyJob>.Instance);
 
-    private static void SeedAccount(LicenseDbContext db, Guid licenseId, string brandCode)
+    private static void SeedAccount(
+        LicenseDbContext db, Guid licenseId, string brandCode,
+        DateTimeOffset? createdAt = null)
     {
+        var stamp = createdAt ?? DateTimeOffset.UtcNow;
         db.NetgsmAccounts.Add(new NetgsmAccount
         {
             Id = Guid.NewGuid(),
@@ -95,8 +104,8 @@ public class IysConsentVerifyJobTests
             Header = "ORDERDECK",
             BrandCode = brandCode,
             Status = NetgsmAccountStatus.Verified,
-            CreatedAt = DateTimeOffset.UtcNow,
-            UpdatedAt = DateTimeOffset.UtcNow,
+            CreatedAt = stamp,
+            UpdatedAt = stamp,
         });
         db.SaveChanges();
     }
@@ -291,6 +300,50 @@ public class IysConsentVerifyJobTests
         var b = await db.IysConsents.SingleAsync(c => c.BrandCode == BrandB);
         b.PushState.Should().Be(IysPushState.Confirmed,
             "B'nin kendi turu A'nın arızasından bağımsız tamamlanmalı");
+    }
+
+    [Fact]
+    public async Task Onceki_marka_patlasa_bile_cozulemeyen_sifrenin_hatasi_kalici_yazilir()
+    {
+        // Yukarıdaki Clear() düzeltmesinin doğurduğu SIRALAMAYA BAĞLI sessiz
+        // kayıp. A'nın SaveChanges'i düşünce catch bloğu change tracker'ı
+        // boşaltıyor; hesap listesi tracked gelseydi B'nin hesap nesnesi de
+        // detach olur, "şifre çözülemedi" yazımı hiçbir hata vermeden
+        // kaybolurdu — LastError'ın var olma sebebi olan görünürlük tam da
+        // arıza anında yok olurdu.
+        var name = $"iys-verify-{Guid.NewGuid():N}";
+        var t0 = DateTimeOffset.UtcNow.AddHours(-1);
+        var fail = new FailOnceOnSaveInterceptor { FailBrand = BrandA };
+
+        using (var db = NewDb(name, fail))
+        {
+            // A önce dönmeli: sıra CreatedAt'e göre, eşit damgaya güvenmiyoruz.
+            SeedAccount(db, LicenseA, BrandA, createdAt: t0);
+            SeedAccount(db, LicenseB, BrandB, createdAt: t0.AddMinutes(1));
+
+            // B'nin şifresi başka bir anahtarla korunmuş: bu sağlayıcı çözemez.
+            var foreign = new EphemeralDataProtectionProvider()
+                .CreateProtector("OrderDeck.Netgsm.Password.v1")
+                .Protect($"pw-{Guid.NewGuid():N}");
+            var brokenB = await db.NetgsmAccounts.SingleAsync(a => a.LicenseId == LicenseB);
+            brokenB.PasswordProtected = foreign;
+
+            db.IysConsents.Add(Pushed("+905551110001", BrandA));
+            db.IysConsents.Add(Pushed("+905551110002", BrandB));
+            await db.SaveChangesAsync();
+
+            await Job(db, new FakeIysClient()).RunAsync();
+        }
+
+        // TEMİZ context'ten oku: aynı context'ten okumak EF identity-map
+        // totolojisi olur, bellekteki nesneyi doğrular, satırı değil.
+        using var fresh = NewDb(name);
+        var acct = await fresh.NetgsmAccounts.SingleAsync(a => a.LicenseId == LicenseB);
+        acct.LastError.Should().NotBeNullOrEmpty(
+            "LastError'ın tek amacı arızayı operatöre göstermek; önceki markanın "
+            + "düşmesi bu görünürlüğü sessizce yok edemez");
+        acct.Status.Should().Be(NetgsmAccountStatus.Verified,
+            "anahtar arızası hesabı kapatmaz (yerleşik karar)");
     }
 
     [Fact]
