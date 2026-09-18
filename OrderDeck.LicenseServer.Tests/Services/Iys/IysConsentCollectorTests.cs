@@ -248,6 +248,32 @@ public class IysConsentCollectorTests
     }
 
     [Fact]
+    public async Task Degisen_beyan_Pushed_satirda_push_penceresini_ACAR()
+    {
+        using var db = NewDb();
+        SeedAccount(db, LicenseA, BrandA);
+        var c = Collector(db);
+
+        await RecordAsync(c, consented: true, new DateTimeOffset(2026, 9, 15, 9, 0, 0, TimeSpan.Zero));
+        await db.SaveChangesAsync();
+
+        // Onay İYS'ye iletildi ve orada kayıtlı.
+        var row = await db.IysConsents.SingleAsync();
+        row.PushState = IysPushState.Pushed;
+        await db.SaveChangesAsync();
+
+        // Kişi onayı GERİ ÇEKTİ: İYS'nin bildiği artık yanlış.
+        await RecordAsync(c, consented: false, new DateTimeOffset(2026, 9, 16, 9, 0, 0, TimeSpan.Zero));
+        await db.SaveChangesAsync();
+
+        row = await db.IysConsents.SingleAsync();
+        row.Status.Should().Be(IysConsentStatus.Ret);
+        row.PushState.Should().Be(IysPushState.Pending,
+            "atlama yalnız beyan DEĞİŞMEDİĞİNDE geçerli; geri çekme itilmezse " +
+            "İYS bu kişiyi ONAY'lı görmeye devam eder ve 6563 ihlali doğar");
+    }
+
+    [Fact]
     public async Task Toplayici_olaya_kiraci_sutunlarini_DOLDURUR()
     {
         using var db = NewDb();
