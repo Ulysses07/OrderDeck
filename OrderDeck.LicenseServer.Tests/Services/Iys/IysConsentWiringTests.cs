@@ -25,6 +25,26 @@ public sealed class IysConsentWiringTests : IClassFixture<ApiFactory>
 
     private static string NewPhone() => $"+90555{Random.Shared.Next(1000000, 9999999)}";
 
+    /// <summary>Marka artık yayıncının doğrulanmış Netgsm hesabından çözülüyor;
+    /// hesabı olmayan lisansta toplayıcı satır AÇMIYOR. Bu yüzden onay yolunu
+    /// sınayan her kurulum lisansa bir hesap da tohumlamak zorunda.</summary>
+    private static string NewBrandCode()
+        => Random.Shared.Next(100_000, 999_999).ToString();
+
+    private static void SeedNetgsmAccount(LicenseDbContext db, Guid licenseId)
+        => db.NetgsmAccounts.Add(new NetgsmAccount
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = licenseId,
+            UserCode = "8503021111",
+            PasswordProtected = $"pw-{Guid.NewGuid():N}",
+            Header = "ORDERDECK",
+            BrandCode = NewBrandCode(),
+            Status = NetgsmAccountStatus.Verified,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        });
+
     [Fact]
     public async Task Form_onayi_IysConsent_satiri_uretir()
     {
@@ -44,6 +64,20 @@ public sealed class IysConsentWiringTests : IClassFixture<ApiFactory>
             UpdatedAt = DateTimeOffset.UtcNow,
         };
         db.IntakeFormConfigs.Add(config);
+
+        // Form müşteriye bağlı, marka lisansa: aradaki aktif lisans olmadan
+        // marka çözülemez ve satır açılmaz.
+        var licenseId = Guid.NewGuid();
+        db.Licenses.Add(new License
+        {
+            Id = licenseId,
+            CustomerId = config.CustomerId,
+            SkuCode = "STD",
+            IssuedAt = DateTimeOffset.UtcNow,
+            ExpiresAt = DateTimeOffset.UtcNow.AddYears(1),
+            LicenseKey = $"key-{Guid.NewGuid():N}",
+        });
+        SeedNetgsmAccount(db, licenseId);
         await db.SaveChangesAsync();
 
         await svc.SaveSubmissionAsync(
@@ -147,7 +181,7 @@ public sealed class IysConsentWiringTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task Profilden_acik_onay_Onay_yazar()
+    public async Task Profilden_acik_onay_IYS_e_yazilmaz()
     {
         var phone = NewPhone();
         var client = await RegisterAsync(phone, smsConsent: false);
@@ -158,10 +192,16 @@ public sealed class IysConsentWiringTests : IClassFixture<ApiFactory>
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-        var row = await db.IysConsents.AsNoTracking().SingleAsync(c => c.Recipient == phone);
-        row.Status.Should().Be(IysConsentStatus.Onay);
-        row.ConsentDate.Should().NotBeNull(
-            "ispat tarihi ile durum damgası aynı ana bakmalı");
+
+        // Eski beklenti "profilden onay İYS'ye ONAY yazar"dı. Onay MARKA başına
+        // tutulduğu ve kişi birden fazla yayıncıya bağlı olabildiği için profildeki
+        // tek kutu "hangi yayıncıya izin veriyorum" sorusunu cevaplayamıyor; onay
+        // artık yalnız toplama noktasında (form / kayıt) alınıyor.
+        (await db.IysConsents.AnyAsync(c => c.Recipient == phone)).Should().BeFalse();
+
+        var shopper = await db.Shoppers.AsNoTracking().SingleAsync(s => s.Phone == phone);
+        shopper.SmsConsent.Should().BeTrue("yerel bayrak yine de açılır");
+        shopper.SmsConsentSource.Should().Be("profile");
     }
 
     // ── Kayıt yardımcısı (ShopperMePatchTests'ten kopya; paylaşılan yardımcı
@@ -205,9 +245,10 @@ public sealed class IysConsentWiringTests : IClassFixture<ApiFactory>
                 CreatedAt = DateTimeOffset.UtcNow,
             };
             db.Customers.Add(customer);
+            var licenseId = Guid.NewGuid();
             db.Licenses.Add(new License
             {
-                Id = Guid.NewGuid(),
+                Id = licenseId,
                 CustomerId = customer.Id,
                 SkuCode = "STD",
                 IssuedAt = DateTimeOffset.UtcNow,
@@ -216,6 +257,7 @@ public sealed class IysConsentWiringTests : IClassFixture<ApiFactory>
                 ShopperCode = code,
                 ShopperCodeUpdatedAt = DateTimeOffset.UtcNow,
             });
+            SeedNetgsmAccount(db, licenseId);
             await db.SaveChangesAsync();
         }
 

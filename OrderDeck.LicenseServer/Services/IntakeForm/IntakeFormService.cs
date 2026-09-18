@@ -153,8 +153,19 @@ public sealed class IntakeFormService
         // değildir, kişi önceki onayını geri çekmiş sayılmaz.
         if (smsConsent)
         {
+            // Form müşteriye (CustomerId) bağlı, İYS markası lisansa. Aradaki
+            // eşlemeyi panel tarafındaki mevcut çözümleyici yapıyor; müşterinin
+            // aktif lisansı yoksa marka da yoktur ve collector "no-brand"
+            // olayı yazıp satır açmaz — bu yol bilinçli olarak fail-closed.
+            var config = await _db.IntakeFormConfigs
+                .FirstOrDefaultAsync(c => c.Id == configId, ct)
+                ?? throw new InvalidOperationException($"Intake form config {configId} bulunamadı");
+
+            var licenseId = await Controllers.Panel.PanelLicenseScope.ResolveAsync(
+                _db, config.CustomerId, ct);
+
             await _iys.RecordAsync(
-                phone, consented: true, occurredAt: sub.SubmittedAt,
+                licenseId ?? Guid.Empty, phone, consented: true, occurredAt: sub.SubmittedAt,
                 sourceTable: "IntakeFormSubmission", sourceId: sub.Id,
                 ip: ipAddress, userAgent: userAgent, ct: ct);
         }

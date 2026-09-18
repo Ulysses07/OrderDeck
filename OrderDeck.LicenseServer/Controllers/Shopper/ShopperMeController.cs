@@ -129,31 +129,49 @@ public sealed class ShopperMeController : ControllerBase
             shopper.NotificationsEnabledPayments = req.NotificationPrefs.Payments;
         }
 
-        // Yalnızca DEĞİŞİMDE tarih yaz: idempotent PUT aynı değeri tekrar
-        // gönderirse onay/ret anı kaymamalı (ispat tarihi; bkz. Shopper).
-        if (req.SmsConsent is not null && req.SmsConsent.Value != shopper.SmsConsent)
+        // Onay kutusu tek boolean, ama shopper birden fazla yayıncıya bağlı
+        // olabiliyor (ShopperBroadcasterLink) ve İYS onayı MARKA başına tutuluyor.
+        // Bu yüzden iki yön simetrik DEĞİL:
+        //
+        //  - GERİ ÇEKME: kişinin açık eylemi → bağlı TÜM markalara RET gider.
+        //    Aşırı geniş olması bilinçli; 6563'te fazla susmak hatadır, fazla
+        //    susturmak değil.
+        //  - ONAY VERME: burada YAPILMAZ. Profildeki tek kutu "hangi yayıncıya
+        //    izin veriyorum" sorusunu cevaplayamaz; onay yalnız toplama
+        //    noktasında (kayıt formu / kayıt akışı) alınır.
+        //
+        // Geri çekme boolean'ın DEĞİŞMESİNE de bağlanamaz: kişi profil kutusu
+        // kapalıyken B'nin formundan onay vermiş olabilir. O durumda değer
+        // zaten false'tur, "değişmedi" denip geçilirse RET hiç üretilmez.
+        if (req.SmsConsent is false)
         {
-            var consentAt = DateTimeOffset.UtcNow;
-            shopper.SmsConsent = req.SmsConsent.Value;
-            if (req.SmsConsent.Value)
+            var revokedAt = DateTimeOffset.UtcNow;
+            if (shopper.SmsConsent)
             {
-                shopper.SmsConsentAt = consentAt;
-                shopper.SmsConsentSource = "profile";
-            }
-            else
-            {
-                shopper.SmsConsentRevokedAt = consentAt;
+                shopper.SmsConsent = false;
+                shopper.SmsConsentRevokedAt = revokedAt;
             }
 
-            // Burada İKİ YÖNDE de bildiriyoruz: profilde kutuyu kaldırmak
-            // kişinin açık geri çekme eylemidir, form kutusunun boş kalması
-            // gibi sessizlik değil. Gönderim kapısı yerel Status'u da okuduğu
-            // için mesaj İYS'yi beklemeden anında kesilir (kural 4).
-            await _iys.RecordAsync(
-                shopper.Phone, consented: req.SmsConsent.Value, occurredAt: consentAt,
-                sourceTable: "Shopper", sourceId: shopper.Id,
-                ip: HttpContext.Connection.RemoteIpAddress?.ToString(),
-                userAgent: Request.Headers.UserAgent.ToString(), ct: ct);
+            var linkedLicenseIds = await _db.ShopperBroadcasterLinks
+                .Where(l => l.ShopperId == shopper.Id && l.LeftAt == null)
+                .Select(l => l.LicenseId)
+                .ToListAsync(ct);
+
+            foreach (var licenseId in linkedLicenseIds)
+            {
+                await _iys.RecordAsync(
+                    licenseId, shopper.Phone, consented: false, occurredAt: revokedAt,
+                    sourceTable: "Shopper", sourceId: shopper.Id,
+                    ip: HttpContext.Connection.RemoteIpAddress?.ToString(),
+                    userAgent: Request.Headers.UserAgent.ToString(), ct: ct);
+            }
+        }
+        else if (req.SmsConsent is true && !shopper.SmsConsent)
+        {
+            // Yalnız yerel bayrak ve ispat tarihi. İYS'ye HİÇBİR ONAY gitmez.
+            shopper.SmsConsent = true;
+            shopper.SmsConsentAt = DateTimeOffset.UtcNow;
+            shopper.SmsConsentSource = "profile";
         }
 
         shopper.UpdatedAt = DateTimeOffset.UtcNow;
