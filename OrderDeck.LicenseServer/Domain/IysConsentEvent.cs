@@ -28,9 +28,9 @@ public class IysConsentEvent
     /// tek başına yetmez: aynı telefon A markasında ONAY, B markasında RET olabilir
     /// (2026-09-17'de ölçüldü) ve denetimde ikisi ayrıştırılabilmeli.
     ///
-    /// <para><b>FK DEĞİL ve olmayacak.</b> Bu depoda <c>LicenseId</c> taşıyan diğer
-    /// her varlık <c>HasOne(...).HasForeignKey(...).OnDelete(Cascade)</c> kuruyor;
-    /// buradaki eksiklik unutulmuş değil, bilinçli. FK eklenirse lisans silindiğinde
+    /// <para><b>FK DEĞİL ve olmayacak.</b> Bu depoda <c>LicenseId</c> taşıyan
+    /// varlıkların neredeyse tamamı <c>HasOne(...).HasForeignKey(...).OnDelete(Cascade)</c>
+    /// kuruyor; buradaki eksiklik unutulmuş değil, bilinçli. FK eklenirse lisans silindiğinde
     /// o yayıncının 6563 ispat olayları da silinir — tablo ekle-only olduğu için bu,
     /// kaydın kaybolabileceği TEK yoldur. Lisans ölse bile ispat yaşamalı.
     /// Aynı nedenle <b>navigasyon özelliği de eklemeyin</b>
