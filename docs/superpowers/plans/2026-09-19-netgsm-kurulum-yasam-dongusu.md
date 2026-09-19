@@ -439,7 +439,9 @@ gövdesinin son hâli budur):
         catch (IysConfigurationException ex)
         {
             // ex.Message'ı DEĞİL sabit metni döndürüyoruz: istisna mesajı ileride
-            // ham gövdeyi taşımaya başlarsa şifre LastError'a sızardı.
+            // ham gövdeyi taşımaya başlarsa ham SAĞLAYICI YANITI LastError'a,
+            // oradan da panele düşerdi — gerekçenin tamamı için
+            // `NetgsmVerifyResult.Message` doc'u.
             _log.LogWarning("Netgsm doğrulaması reddedildi: lisans={LicenseId} kod={Code}",
                 account.LicenseId, ex.Code);
             // `_` dalı bugün ERİŞİLEMEZ (`NetgsmIysClient.PostAsync` yalnız
