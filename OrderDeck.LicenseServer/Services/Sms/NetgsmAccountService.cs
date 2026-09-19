@@ -143,10 +143,18 @@ public sealed class NetgsmAccountService
     /// <para><b><c>Disabled</c> kapısı BURADA.</b> Panel controller'ı da erken
     /// bir ön kontrol yapıyor, ama asıl kapı bu: ön kontrol ile yazım arasındaki
     /// pencerede kapatılan hesabı yalnız bu kontrol koruyabilir.</para>
+    ///
+    /// <para><b>Bu metot <c>ChangeTracker</c>'ı TEMİZLEYEBİLİR.</b> Hem retry
+    /// turları hem de fırlatma yolları paylaşılan scoped bağlamda
+    /// <c>ChangeTracker.Clear()</c> çağırıyor; bu da çağıranın ÖNCEDEN stage
+    /// ettiği kaydedilmemiş değişiklikleri iz bırakmadan yutar. Dolayısıyla
+    /// <c>UpsertAsync</c>, bekleyen yazımların üstüne çağrılmaz: önce onları
+    /// kaydet, sonra buraya gel.</para>
     /// </summary>
     /// <exception cref="NetgsmAccountDisabledException">Hesap admin tarafından kapatılmış.</exception>
     /// <exception cref="ArgumentException">İlk kayıtta şifre verilmemiş.</exception>
-    /// <exception cref="DbUpdateConcurrencyException">Hesap satırı yazım sürerken değişti.</exception>
+    /// <exception cref="DbUpdateConcurrencyException">Hesap satırı yazım sürerken
+    /// değişti — ya da kampanya üstlenme yarışı dört turda da kaybedildi.</exception>
     public async Task<NetgsmAccount> UpsertAsync(
         Guid licenseId, string userCode, string? rawPassword,
         string header, string brandCode, CancellationToken ct)
@@ -156,6 +164,10 @@ public sealed class NetgsmAccountService
 
         var originalId = account?.Id;
         var originalVersion = account?.UpdatedAt;
+        // Retry YALNIZ kampanya kalp atışı/tamamlanma yarışı için; hesap satırı
+        // değişmişse ilk turda zaten 409'a düşüyoruz. 4, o yarışın pratik üst
+        // sınırı: işçi bir kampanyayı en çok bir kez üstlenir, aynı lisansta
+        // üst üste dört kaybetmek gerçekçi değil.
         const int maxAttempts = 4;
 
         for (var attempt = 1; ; attempt++)
@@ -180,8 +192,6 @@ public sealed class NetgsmAccountService
                     "Kurulum, kaydetme sürerken değişti.");
             }
 
-            var now = DateTimeOffset.UtcNow;
-
             if (account is null)
             {
                 if (string.IsNullOrWhiteSpace(rawPassword))
@@ -190,6 +200,10 @@ public sealed class NetgsmAccountService
                         "İlk kayıtta Netgsm API şifresi zorunlu.",
                         nameof(rawPassword));
                 }
+
+                // Yalnız YENİ satırın seed damgası. Güncelleme yolunda buraya
+                // hiçbir şey yazılmıyor: jetonu DbContext damgalıyor.
+                var now = DateTimeOffset.UtcNow;
 
                 account = new NetgsmAccount
                 {
@@ -236,6 +250,18 @@ public sealed class NetgsmAccountService
                 // Yalnız kampanya heartbeat/tamamlanma yarışını tekrar dene.
                 // Hesabın özgün sürümü originalVersion olarak korunuyor.
                 _db.ChangeTracker.Clear();
+            }
+            catch (DbUpdateException)
+            {
+                // Buraya tükenen CAS, marka kodu tekil indeks ihlali ve diğer
+                // yazım hataları düşer. Fırlatmadan ÖNCE temizle: aksi hâlde
+                // çağıranın scope'unda yarı-yazılmış hesap + `paused` damgalı
+                // kampanyalar izleniyor kalır ve o scope'ta atılacak SONRAKİ
+                // herhangi bir `SaveChanges` onları kimsenin karar vermediği bir
+                // anda diske basar. Yukarıdaki dalın `Clear()`'ı bir sonraki tur
+                // için; bu çıkış yolunda bir sonraki tur yok.
+                _db.ChangeTracker.Clear();
+                throw;
             }
         }
     }

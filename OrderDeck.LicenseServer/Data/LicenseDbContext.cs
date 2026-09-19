@@ -106,10 +106,6 @@ public class LicenseDbContext : DbContext
         }
     }
 
-    // DİKKAT — parametresiz SaveChanges() ve SaveChangesAsync(ct) aşırı yüklemeleri
-    // BİLEREK override edilmedi: EF'te ikisi de burada override edilen
-    // (bool acceptAllChangesOnSuccess, …) sürümüne yönleniyor. Yani asıl zincir
-    // bu ikisi; dördünü birden override etmek aynı işi iki kez yaptırırdı.
     /// <summary>
     /// <see cref="NetgsmAccount.UpdatedAt"/> bir eşzamanlılık jetonu; her
     /// güncellemede <b>kesin</b> ilerlemesi gerekiyor. Çağıranların
@@ -138,6 +134,10 @@ public class LicenseDbContext : DbContext
         }
     }
 
+    // DİKKAT — parametresiz SaveChanges() ve SaveChangesAsync(ct) aşırı yüklemeleri
+    // BİLEREK override edilmedi: EF'te ikisi de burada override edilen
+    // (bool acceptAllChangesOnSuccess, …) sürümüne yönleniyor. Yani asıl zincir
+    // bu ikisi; dördünü birden override etmek aynı işi iki kez yaptırırdı.
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         SyncDerivedColumns();

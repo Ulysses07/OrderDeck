@@ -229,14 +229,92 @@ public class NetgsmAccountServiceTests
         using var db = NewDb();
         var svc = Service(db);
         var brandCode = NewBrandCode();
+        var userCode = NewUserCode();
 
         var acc = await svc.UpsertAsync(
-            Guid.NewGuid(), $"  {NewUserCode()} ", $"pw-{Guid.NewGuid():N}",
+            Guid.NewGuid(), $"  {userCode} ", $"pw-{Guid.NewGuid():N}",
             " ORDERDECK ", $" {brandCode} ", CancellationToken.None);
 
         acc.BrandCode.Should().Be(brandCode);
         acc.Header.Should().Be("ORDERDECK");
-        acc.UserCode.Should().NotStartWith(" ");
+        acc.UserCode.Should().Be(userCode);
+    }
+
+    [Fact]
+    public async Task Upsert_dogrulanmis_hesabi_kapatir()
+    {
+        // Kimlikler değiştiyse eski doğrulama geçersizdir: Verified korunursa
+        // yanlış kimlikle "açık" duran bir kurulum kalır ve marka çözülmeye
+        // devam eder. Yeni satırda Failed zaten enum varsayılanı (0) — asıl
+        // güvenlik özelliği MEVCUT Verified satırın düşürülmesi, burada ölçülen o.
+        using var db = NewDb();
+        var licenseId = Guid.NewGuid();
+
+        var account = Seed(db, licenseId, NewBrandCode(), NetgsmAccountStatus.Verified);
+        account.LastVerifiedAt = DateTimeOffset.UtcNow.AddMinutes(-5);
+        account.LastError = null;
+        await db.SaveChangesAsync();
+
+        var acc = await Service(db).UpsertAsync(
+            licenseId, NewUserCode(), $"pw-{Guid.NewGuid():N}", "ORDERDECK",
+            NewBrandCode(), CancellationToken.None);
+
+        acc.Status.Should().Be(NetgsmAccountStatus.Failed,
+            "kimlikler değişti: eski doğrulama artık geçerli değil");
+        acc.LastVerifiedAt.Should().BeNull("bayat doğrulama damgası taşınmamalı");
+        acc.LastError.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Upsert_kosan_kampanyalari_duraklatir()
+    {
+        // Hesap Failed olduğu anda marka çözülemez; kampanya açık kalırsa işçi
+        // izinsiz gönderime devam eder. Duraklatma hesap yazımıyla AYNI
+        // SaveChanges içinde olmalı, yoksa arada açık bir pencere kalır.
+        using var db = NewDb();
+        var licenseId = Guid.NewGuid();
+        var otherLicenseId = Guid.NewGuid();
+
+        var pending = SeedCampaign(db, licenseId, "pending");
+        var sending = SeedCampaign(db, licenseId, "sending");
+        var foreignPending = SeedCampaign(db, otherLicenseId, "pending");
+        await db.SaveChangesAsync();
+
+        var pendingClaim = pending.ClaimedAt;
+        var sendingClaim = sending.ClaimedAt;
+
+        await Service(db).UpsertAsync(
+            licenseId, NewUserCode(), $"pw-{Guid.NewGuid():N}", "ORDERDECK",
+            NewBrandCode(), CancellationToken.None);
+
+        pending.Status.Should().Be("paused");
+        sending.Status.Should().Be("paused");
+        foreignPending.Status.Should().Be(
+            "pending", "başka yayıncının kampanyası bu kurulumdan etkilenmemeli");
+
+        pending.ClaimedAt.Should().BeAfter(pendingClaim!.Value,
+            "jeton ilerlemezse kampanyayı zaten okumuş işçi üstlenmeyi kazanır");
+        sending.ClaimedAt.Should().BeAfter(sendingClaim!.Value);
+    }
+
+    private static SmsCampaign SeedCampaign(
+        LicenseDbContext db, Guid licenseId, string status)
+    {
+        var campaign = new SmsCampaign
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = licenseId,
+            MessageBody = "Kurulum testi",
+            SegmentsPerMessage = 1,
+            RecipientCount = 1,
+            ReservedCredits = 1,
+            Status = status,
+            ClaimedAt = DateTimeOffset.UtcNow.AddMinutes(-1),
+            CreatedByCustomerId = Guid.NewGuid(),
+            CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-2),
+        };
+        db.SmsCampaigns.Add(campaign);
+        return campaign;
     }
 
     [Fact]
@@ -249,11 +327,7 @@ public class NetgsmAccountServiceTests
         using var db = NewDb();
         var licenseId = Guid.NewGuid();
 
-        var account = Seed(
-            db,
-            licenseId,
-            Random.Shared.Next(100_000, 999_999).ToString(),
-            NetgsmAccountStatus.Disabled);
+        var account = Seed(db, licenseId, NewBrandCode(), NetgsmAccountStatus.Disabled);
 
         var originalPassword = account.PasswordProtected;
 
