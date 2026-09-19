@@ -62,7 +62,9 @@ public class NetgsmAccountServiceTests
     public void Bozuk_sifreli_metin_null_doner()
     {
         using var db = NewDb();
-        Service(db).TryUnprotectPassword("bu-gecerli-bir-payload-degil")
+        // Girdi ÜRETİLİYOR: sabit bir metin kasten geçersiz olsa bile sır
+        // tarayıcısı fixture'ı gerçek parolandan ayırt edemiyor (depo public).
+        Service(db).TryUnprotectPassword($"gecersiz-{Guid.NewGuid():N}")
             .Should().BeNull("anahtar döndüyse çağıran hesabı disabled yapmalı, patlamamalı");
     }
 
