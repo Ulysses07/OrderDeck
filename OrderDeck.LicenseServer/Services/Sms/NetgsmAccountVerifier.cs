@@ -18,7 +18,11 @@ public enum NetgsmVerifyOutcome
 }
 
 /// <param name="Message">Panelde yayıncıya gösterilecek insan okunur açıklama.
-/// <b>Ham İYS gövdesi buraya yazılmaz</b> — gövde API şifresini taşıyor.</param>
+/// <b>Ham İYS gövdesi buraya yazılmaz.</b> Gerekçe iki ayaklı: API şifresi
+/// <i>istek</i> gövdesinin <c>header</c>'ında gidiyor (bkz.
+/// <c>NetgsmIysClient.PostAsync</c>) — <i>yanıt</i> gövdesinde şifre
+/// beklemiyoruz; ama yanıt gövdesi de ham sağlayıcı verisidir: yayıncıya
+/// gösterilecek bir metin değil ve <c>LastError</c> sütununu taşırır.</param>
 public sealed record NetgsmVerifyResult(NetgsmVerifyOutcome Outcome, string? Message);
 
 /// <summary>
@@ -66,11 +70,25 @@ public sealed class NetgsmAccountVerifier
         try
         {
             var result = await _iys.SearchAsync(account, new[] { ProbeRecipient }, ct);
-            return result.Code == "0"
-                ? new NetgsmVerifyResult(NetgsmVerifyOutcome.Ok, null)
-                : new NetgsmVerifyResult(NetgsmVerifyOutcome.Unavailable,
-                    $"İYS beklenmeyen yanıt kodu döndürdü ({Sanitize(result.Code)}). "
-                    + "Sorun sürerse Netgsm'e danışın.");
+            if (result.Code == "0")
+                return new NetgsmVerifyResult(NetgsmVerifyOutcome.Ok, null);
+
+            // `Rejected` dalıyla simetrik günlük. Bu olmadan EN ZOR teşhis
+            // edilen vaka hiç iz bırakmıyor: geçerli JSON ama `code` alanı yok
+            // → `Sanitize` panele "tanınmayan yanıt" yazar, ham kod hiçbir yere
+            // düşmez ("bütün yayıncılar Unavailable'a düştü, sebep ne?"
+            // sorusu sunucu günlüğünden cevaplanamaz).
+            // Yeni bir sır riski AÇMAZ: sunucu günlüğü yayıncıya gösterilmiyor
+            // ve API şifresi İSTEK gövdesinde, yanıtta değil. Yine de kırpıyoruz
+            // — `Code` sınırsız uzunlukta olabilir, gerekçe için `Sanitize` doc'u.
+            var code = result.Code ?? "";
+            _log.LogWarning(
+                "Netgsm doğrulaması beklenmeyen yanıt: lisans={LicenseId} kod={Code} uzunluk={Length}",
+                account.LicenseId, code.Length > 200 ? code[..200] : code, code.Length);
+
+            return new NetgsmVerifyResult(NetgsmVerifyOutcome.Unavailable,
+                $"İYS beklenmeyen yanıt kodu döndürdü ({Sanitize(result.Code)}). "
+                + "Sorun sürerse Netgsm'e danışın.");
         }
         catch (IysConfigurationException ex)
         {
@@ -78,8 +96,8 @@ public sealed class NetgsmAccountVerifier
             // ham gövdeyi taşımaya başlarsa şifre LastError'a sızardı.
             _log.LogWarning("Netgsm doğrulaması reddedildi: lisans={LicenseId} kod={Code}",
                 account.LicenseId, ex.Code);
-            // `_` dalı bugün ERİŞİLEMEZ (NetgsmIysClient.cs:138 yalnız 30/60'ı
-            // fırlatıyor) ama "kod 30" diye sabitlemiyoruz: oraya üçüncü bir
+            // `_` dalı bugün ERİŞİLEMEZ (`NetgsmIysClient.PostAsync` yalnız
+            // 30/60'ı fırlatıyor) ama "kod 30" diye sabitlemiyoruz: oraya üçüncü bir
             // kod eklendiği gün bu metin yayıncıya YANLIŞ işi yaptırırdı —
             // olmayan bir şifre sorununu kovalar.
             return new NetgsmVerifyResult(NetgsmVerifyOutcome.Rejected, ex.Code switch
@@ -94,18 +112,20 @@ public sealed class NetgsmAccountVerifier
     }
 
     /// <summary>
-    /// <c>result.Code</c> HER ZAMAN kısa bir kod değildir. <c>ReadCode</c>,
-    /// gövdede <c>code</c> alanı bulamazsa <b>bütün gövdeyi</b> kod diye
-    /// döndürüyor (<c>NetgsmIysClient.cs:147-159</c>) — üstelik bunu
-    /// <b>kırpılmamış</b> gövde üzerinde yapıyor (<c>:133</c>); 2000
-    /// karakterlik sınır yalnız <c>RawBody</c>'ye uygulanıyor (<c>:144</c>),
-    /// yani <c>Code</c> sınırsız uzunlukta olabilir. Ağ geçidi bir HTML hata
-    /// sayfası dönerse o HTML aynen <c>LastError</c>'a yazılır: hem 500
-    /// karakterlik sütunu taşırır (<c>DbUpdateException</c>), hem ham
+    /// <c>result.Code</c> HER ZAMAN kısa bir kod değildir.
+    /// <c>NetgsmIysClient.ReadCode</c>, gövdede <c>code</c> alanı bulamazsa
+    /// <b>bütün gövdeyi</b> kod diye döndürüyor — üstelik
+    /// <c>NetgsmIysClient.PostAsync</c> bunu <b>kırpılmamış</b> gövde üzerinde
+    /// çağırıyor; 2000 karakterlik sınır yalnız döndürülen <c>RawBody</c>'ye
+    /// uygulanıyor, yani <c>Code</c> sınırsız uzunlukta olabilir. Ağ geçidi bir
+    /// HTML hata sayfası dönerse o HTML aynen <c>LastError</c>'a yazılır: hem
+    /// 500 karakterlik sütunu taşırır (<c>DbUpdateException</c>), hem ham
     /// sağlayıcı yanıtını yayıncının paneline taşır. Yalnız kısa, rakamsal
-    /// kodları göster.
+    /// kodları göster: uzunluk eşiği rastgele değil — kısa rakamsal kod
+    /// yayıncının Netgsm'e danışırken söyleyeceği tek somut bilgidir, o
+    /// aralığın dışındaki her şey ham gövdedir.
     /// </summary>
-    internal static string Sanitize(string? code)
+    private static string Sanitize(string? code)
         => !string.IsNullOrWhiteSpace(code) && code.Length <= 8 && code.All(char.IsAsciiDigit)
             ? code
             : "tanınmayan yanıt";
