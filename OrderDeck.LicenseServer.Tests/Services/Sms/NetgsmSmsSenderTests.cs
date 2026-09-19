@@ -109,19 +109,30 @@ public class NetgsmSmsSenderTests
     }
 
     [Fact]
-    public async Task SendAsync_commercial_uses_commercial_iysfilter()
+    public async Task SendAsync_commercial_kiraci_gonderici_yokken_reddedilir()
     {
-        // Prod config: IysFilter="0" (OTP), CommercialIysFilter default "11".
-        // Kampanya Commercial gider → Netgsm İYS ret listesine bakar; "0" ile
-        // gitseydi ticari mesaj İYS kontrolsüz çıkardı (mevzuat riski).
+        // Bu gönderici PLATFORMUN hesabından yazıyor. Netgsm ticari iletiyi
+        // gönderen BAŞLIĞIN İYS markasında değerlendirir; onaylar ise
+        // yayıncının kendi markasına itiliyor. İkisi eşleşene kadar
+        // (ITenantSmsSender, Plan 3) ticari yol kapalı — yoksa kişinin hiç
+        // onay vermediği bir marka altında ticari SMS çıkabilir.
         var opt = Opt();
         opt.IysFilter = "0";
         var (sender, handler) = Build(opt);
 
-        await sender.SendAsync("+905551112233", "Kampanya!", SmsKind.Commercial);
+        var act = async () =>
+            await sender.SendAsync("+905551112233", "Kampanya!", SmsKind.Commercial);
 
-        using var doc = JsonDocument.Parse(handler.Body!);
-        doc.RootElement.GetProperty("iysfilter").GetString().Should().Be("11");
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage("iys-tenant-sender-missing",
+                "SmsCampaignSendJob istisnanın mesajını alıcı satırına Error "
+                + "olarak yazıyor; metin diğer İYS kodlarıyla aynı sözleşmenin parçası");
+
+        // Asıl iddia bu: TEK BİR HTTP isteği bile çıkmamalı. Yalnız istisnayı
+        // sınamak, istek Netgsm'e gittikten SONRA atılan bir istisnayla da
+        // yeşil kalırdı — mesaj çoktan yanlış markayla yola çıkmış olurdu.
+        handler.Request.Should().BeNull(
+            "kilit ağ çağrısından önce kapanmalı");
     }
 
     [Fact]
