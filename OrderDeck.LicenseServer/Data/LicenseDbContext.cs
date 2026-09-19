@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.Shared.Text;
 
@@ -110,9 +110,38 @@ public class LicenseDbContext : DbContext
     // BİLEREK override edilmedi: EF'te ikisi de burada override edilen
     // (bool acceptAllChangesOnSuccess, …) sürümüne yönleniyor. Yani asıl zincir
     // bu ikisi; dördünü birden override etmek aynı işi iki kez yaptırırdı.
+    /// <summary>
+    /// <see cref="NetgsmAccount.UpdatedAt"/> bir eşzamanlılık jetonu; her
+    /// güncellemede <b>kesin</b> ilerlemesi gerekiyor. Çağıranların
+    /// <c>UtcNow</c> atamasına güvenemeyiz: atamayı unutan yol jetonu hiç
+    /// ilerletmez, atayan yol da saat geri gittiyse/ilerlemediyse aynı değeri
+    /// yazabilir. <c>max(UtcNow, özgün + 1 tick)</c> ikisini de kapatır — iki
+    /// yazar aynı sonraki değeri üretse bile <c>WHERE UpdatedAt = özgün</c>
+    /// nedeniyle yalnız biri kazanır.
+    /// </summary>
+    private void StampNetgsmAccountVersions()
+    {
+        foreach (var entry in ChangeTracker.Entries<NetgsmAccount>())
+        {
+            if (entry.State != EntityState.Modified)
+                continue;
+
+            var version = entry.Property(a => a.UpdatedAt);
+            var original = version.OriginalValue;
+            var now = DateTimeOffset.UtcNow;
+
+            version.CurrentValue = now > original
+                ? now
+                : original.AddTicks(1);
+
+            version.IsModified = true;
+        }
+    }
+
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         SyncDerivedColumns();
+        StampNetgsmAccountVersions();
         return base.SaveChanges(acceptAllChangesOnSuccess);
     }
 
@@ -120,6 +149,7 @@ public class LicenseDbContext : DbContext
         bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
     {
         SyncDerivedColumns();
+        StampNetgsmAccountVersions();
         return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
     }
 
@@ -824,6 +854,7 @@ public class LicenseDbContext : DbContext
         mb.Entity<NetgsmAccount>(b =>
         {
             b.HasKey(a => a.Id);
+            b.Property(a => a.UpdatedAt).IsConcurrencyToken();
             b.HasOne(a => a.License).WithMany().HasForeignKey(a => a.LicenseId)
              .OnDelete(DeleteBehavior.Cascade);
             b.Property(a => a.UserCode).HasMaxLength(32).IsRequired();

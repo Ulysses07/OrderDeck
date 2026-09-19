@@ -134,4 +134,142 @@ public class NetgsmAccountServiceTests
             .ContainSingle("fail-closed: yalnız doğrulanmış hesap SMS gönderebilir")
             .Which.BrandCode.Should().Be("731734");
     }
+
+    private static string NewBrandCode()
+        => Random.Shared.Next(100_000, 999_999).ToString();
+
+    [Fact]
+    public async Task Upsert_yeni_hesabi_DOGRULANMAMIS_acar()
+    {
+        using var db = NewDb();
+        var svc = Service(db);
+
+        var acc = await svc.UpsertAsync(
+            Guid.NewGuid(), NewUserCode(), $"pw-{Guid.NewGuid():N}", "ORDERDECK",
+            NewBrandCode(), CancellationToken.None);
+
+        acc.Status.Should().Be(NetgsmAccountStatus.Failed,
+            "fail-closed: doğrulama henüz koşmadı, satır kapalı doğar");
+        acc.LastVerifiedAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Upsert_sifreyi_sifreli_saklar()
+    {
+        using var db = NewDb();
+        var svc = Service(db);
+        var raw = $"pw-{Guid.NewGuid():N}";
+
+        var acc = await svc.UpsertAsync(
+            Guid.NewGuid(), NewUserCode(), raw, "ORDERDECK", NewBrandCode(),
+            CancellationToken.None);
+
+        acc.PasswordProtected.Should().NotBe(raw, "düz metin şifre DB'ye yazılmaz");
+        svc.TryUnprotectPassword(acc.PasswordProtected).Should().Be(raw);
+    }
+
+    [Fact]
+    public async Task Upsert_bos_sifreyle_saklanani_korur()
+    {
+        // Panel şifreyi geri GÖSTERMİYOR (yalnız "girildi/girilmedi").
+        // Yayıncı başlığını düzeltmek için formu kaydettiğinde şifre alanı boş
+        // gelir; boşu kaydedersek çalışan kurulumu kendi elimizle bozarız.
+        using var db = NewDb();
+        var svc = Service(db);
+        var licenseId = Guid.NewGuid();
+        var raw = $"pw-{Guid.NewGuid():N}";
+        var userCode = NewUserCode();
+        var brandCode = NewBrandCode();
+
+        await svc.UpsertAsync(licenseId, userCode, raw, "ORDERDECK", brandCode, CancellationToken.None);
+        var acc = await svc.UpsertAsync(
+            licenseId, userCode, null, "YENIBASLIK", brandCode, CancellationToken.None);
+
+        svc.TryUnprotectPassword(acc.PasswordProtected).Should().Be(raw);
+        acc.Header.Should().Be("YENIBASLIK");
+    }
+
+    [Fact]
+    public async Task Upsert_ilk_kayitta_sifre_zorunlu()
+    {
+        using var db = NewDb();
+        var svc = Service(db);
+
+        var act = async () => await svc.UpsertAsync(
+            Guid.NewGuid(), NewUserCode(), null, "ORDERDECK", NewBrandCode(),
+            CancellationToken.None);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task Upsert_lisans_basina_tek_satir_tutar()
+    {
+        using var db = NewDb();
+        var svc = Service(db);
+        var licenseId = Guid.NewGuid();
+
+        var first = await svc.UpsertAsync(
+            licenseId, NewUserCode(), $"pw-{Guid.NewGuid():N}", "ORDERDECK",
+            NewBrandCode(), CancellationToken.None);
+        var second = await svc.UpsertAsync(
+            licenseId, NewUserCode(), $"pw-{Guid.NewGuid():N}", "ORDERDECK",
+            NewBrandCode(), CancellationToken.None);
+
+        second.Id.Should().Be(first.Id, "ikinci kayıt YENİ satır açmamalı");
+        (await db.NetgsmAccounts.CountAsync(a => a.LicenseId == licenseId)).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Upsert_alanlarin_bosluklarini_kirpar()
+    {
+        // Baştaki boşluk marka kodunu tekil indekste AYRI bir anahtar yapıyor
+        // (bkz. NetgsmAccountUniqueIndexTests): " 731734" ile "731734" iki ayrı
+        // satır olarak durabilir ve marka→hesap araması yalnız birini görür.
+        using var db = NewDb();
+        var svc = Service(db);
+        var brandCode = NewBrandCode();
+
+        var acc = await svc.UpsertAsync(
+            Guid.NewGuid(), $"  {NewUserCode()} ", $"pw-{Guid.NewGuid():N}",
+            " ORDERDECK ", $" {brandCode} ", CancellationToken.None);
+
+        acc.BrandCode.Should().Be(brandCode);
+        acc.Header.Should().Be("ORDERDECK");
+        acc.UserCode.Should().NotStartWith(" ");
+    }
+
+    [Fact]
+    public async Task Upsert_disabled_hesabi_acmaz()
+    {
+        // Admin kill switch'i servis katmanında tutuluyor: controller ön kontrolü
+        // yalnız erken ve anlaşılır bir 409 üretmek için var. Kapı burada olmazsa
+        // panelin ön kontrolü ile yazım arasındaki pencerede kapatılan hesap,
+        // yayıncının kaydıyla yeniden açılır.
+        using var db = NewDb();
+        var licenseId = Guid.NewGuid();
+
+        var account = Seed(
+            db,
+            licenseId,
+            Random.Shared.Next(100_000, 999_999).ToString(),
+            NetgsmAccountStatus.Disabled);
+
+        var originalPassword = account.PasswordProtected;
+
+        Func<Task> write = async () =>
+        {
+            await Service(db).UpsertAsync(
+                licenseId,
+                NewUserCode(),
+                $"pw-{Guid.NewGuid():N}",
+                "ORDERDECK",
+                account.BrandCode,
+                CancellationToken.None);
+        };
+
+        await write.Should().ThrowAsync<NetgsmAccountDisabledException>();
+        account.Status.Should().Be(NetgsmAccountStatus.Disabled);
+        account.PasswordProtected.Should().Be(originalPassword);
+    }
 }
