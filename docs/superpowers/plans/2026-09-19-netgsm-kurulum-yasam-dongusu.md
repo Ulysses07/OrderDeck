@@ -2674,9 +2674,15 @@ için ek using gerekmez: `Services.Iys.IysAccountContext` göreli ad
 dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
   --filter "FullyQualifiedName~PanelNetgsmAccount"
 ```
-Beklenen: PASS (**18 test** — Görev 4'ün 8'i + buradaki 10). Bu dosyada 9 test
-ÜYESİ var ama `Panel_kaydi_...` bir `[Theory]` ve iki `[InlineData]` taşıyor,
-yani iki vaka sayılır: 8 + 8 + 2 = 18. (2026-09-19 koşusu: 18/18 PASS.)
+Beklenen: PASS (**25 test** — Görev 4'ün 8'i + buradaki 17). Bu dosyada 13 test
+ÜYESİ var ama ikisi `[Theory]`: `Panel_kaydi_...` iki `[InlineData]`,
+`Kolon_sinirini_asan_alan_400` dört tane taşıyor. Vaka sayısı: 11 `[Fact]` + 2 + 4
+= 17; 8 + 17 = 25. (2026-09-20 koşusu: 25/25 PASS.)
+
+> İlk yazımda bu satır 18 test diyordu (9 üye / 10 vaka). Görev 5 sonrası
+> mutasyon turu dört test daha ekledi — kiracı izolasyonu (PUT), ilk kayıtta
+> şifre zorunluluğu, kolon sınırları (`[Theory]`, dört vaka) ve çözülemeyen
+> şifre dalı — hepsi hayatta kalan mutasyonları öldürmek için.
 
 - [ ] **Adım 5: Commit**
 
@@ -2904,7 +2910,11 @@ Ve sınıfın sonuna yardımcıyı ekle:
 dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
   --filter "FullyQualifiedName~PanelNetgsmAccount"
 ```
-Beklenen: PASS (19 test — Görev 5 sonundaki 17 + buradaki 2).
+Beklenen: PASS (27 test — Görev 5 sonundaki 25 + buradaki 2).
+
+> Bu satır iki kez bayattı: önce "17 + 2 = 19" yazıyordu ama Görev 5 sonundaki
+> gerçek sayı 18'di; ardından Görev 5'in mutasyon turu toplamı 25'e çıkardı.
+> Sayıyı ezberden değil, filtreli koşunun çıktısından oku.
 
 - [ ] **Adım 5: Commit**
 
