@@ -128,7 +128,14 @@ public sealed class PanelNetgsmAccountController : ControllerBase
                 account = await _accounts.UpsertAsync(
                     licenseId.Value, userCode, req.Password, header, brandCode, ct);
             }
-            catch (ArgumentException)
+            // Muhafız DAR: yalnız `rawPassword` parametresini suçlayan istisna
+            // "şifre zorunlu" mesajına çevrilir (`UpsertAsync` bunu `nameof` ile
+            // fırlatıyor, sözleşme o metodun doc'unda). Çıplak `catch
+            // (ArgumentException)` ileride başka bir parametreden — ya da bir
+            // bağımlılıktan — gelen istisnayı da yutar ve yayıncıyı olmayan bir
+            // şifre sorununa yönlendirirdi. Beklenmeyen `ArgumentException`
+            // buradan kaçıp 500 üretsin: fail-closed olan budur.
+            catch (ArgumentException ex) when (ex.ParamName == "rawPassword")
             {
                 return Problem(title: "password-required",
                     detail: "İlk kayıtta Netgsm API şifresi zorunlu.", statusCode: 400);
@@ -173,6 +180,15 @@ public sealed class PanelNetgsmAccountController : ControllerBase
         {
             // Doğruladığımız sürüm artık satırda durmuyor. Sonucu ATIYORUZ —
             // yazmak, yukarıdaki üç zarardan birini üretmek olurdu.
+            //
+            // `Clear()` BUGÜN gözlemlenebilir bir etki üretmiyor ve bu yüzden
+            // testle ölçülemiyor: istek `Problem` ile bitiyor, scoped DbContext
+            // bir daha `SaveChanges` görmüyor. Yine de duruyor, çünkü izlenen
+            // kirli varlığı bağlamda bırakmak sonraki görevlerde tehlikeli olur —
+            // aynı istek içinde ikinci bir yazım yolu açıldığı anda (Görev 6'nın
+            // `Disabled` → 409 dalı, Görev 13'ün devam ettirme yazımı) bu varlık
+            // kimsenin karar vermediği bir anda diske basılır. Kardeşi
+            // `NetgsmAccountService.UpsertAsync`'te aynı gerekçeyle var.
             _db.ChangeTracker.Clear();
             return Problem(title: "verification-superseded",
                 detail: "Kurulum, doğrulama sürerken değişti. Formu tekrar kaydedin.",
