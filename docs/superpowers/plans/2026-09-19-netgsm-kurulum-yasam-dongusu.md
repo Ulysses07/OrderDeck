@@ -3142,7 +3142,19 @@ ikinci bir kopya yazma):
                 await _db.SaveChangesAsync(ct);
                 return paused;
             }
-            catch (DbUpdateConcurrencyException) when (attempt < maxAttempts)
+            catch (DbUpdateConcurrencyException) when (attempt >= maxAttempts)
+            {
+                // Tükendik. Fırlatmadan ÖNCE temizle: aksi hâlde çağıranın
+                // scope'unda (`OnPostDisableAsync`, günlük iş) yarı-yazılmış
+                // hesap + "paused" damgalı kampanyalar izleniyor kalır ve o
+                // scope'ta atılacak SONRAKİ herhangi bir `SaveChanges` onları
+                // kimsenin karar vermediği bir anda diske basar. Döngünün
+                // başındaki `Clear()` bir sonraki tur için; bu çıkış yolunda
+                // bir sonraki tur yok.
+                _db.ChangeTracker.Clear();
+                throw;
+            }
+            catch (DbUpdateConcurrencyException)
             {
                 // Kalp atışı araya girdi, kampanya tam o anda tamamlandı ya da
                 // hesap satırı başkası tarafından yazıldı. Döngü başındaki
@@ -3949,10 +3961,13 @@ public sealed class SmsCampaignPauseTests : IClassFixture<ApiFactory>
     /// `sending` + kendi `ClaimedAt`'ini yazınca duraklatma sessizce geri
     /// alınır ve admin'in kapatma düğmesi yalan söyler.
     ///
-    /// <para><c>futureStamp</c> vakası monotonluğu <b>saate bağlı olmadan</b>
-    /// kanıtlıyor: jeton bir saat ileride tohumlanmışsa ham
-    /// <c>DateTimeOffset.UtcNow</c> ataması jetonu GERİ alır ve bayat işçi
-    /// kazanır. Yalnız <c>max(UtcNow, özgün + 1 tick)</c> geçer.</para>
+    /// <para><c>futureStamp</c> vakası, ileri damgalı bir kampanyada da
+    /// üstlenmenin düştüğünü gösterir — ama damganın <b>değerini</b>
+    /// kanıtlamaz: üstlenme yazımı zaten çakıştığı için atanan damga diske
+    /// hiç inmez ve aşağıdaki <c>BeAfter</c> duraklatmanın damgasını ölçer.
+    /// Monotonluk iddiası
+    /// <see cref="Ileri_tarihli_damgali_kampanya_ustlenilince_jeton_geri_gitmez"/>
+    /// testine aittir; ikisini birbirine karıştırma.</para>
     /// </summary>
     [Theory]
     [InlineData("pending", false)]
@@ -4009,6 +4024,114 @@ public sealed class SmsCampaignPauseTests : IClassFixture<ApiFactory>
         (await vdb.SmsCampaignRecipients.CountAsync(
             r => r.CampaignId == campaignId && r.Status == "pending"))
             .Should().Be(2);
+    }
+
+    /// <summary>
+    /// Üstlenme damgasının monotonluğu — ÇAKIŞMASIZ yolda. Yukarıdaki teori
+    /// bunu kanıtlayamaz: orada üstlenme yazımı zaten çakışmayla düşüyor, yani
+    /// damganın DEĞERİ hiç diske inmiyor ve <c>BeAfter</c> aslında
+    /// duraklatmanın damgasını ölçüyor. Burada karşı yazıcı YOK: kampanya
+    /// bir saat ileri damgalı doğuyor, iş onu sorunsuz üstleniyor ve damganın
+    /// kendi değeri diske iniyor. Ham <c>UtcNow</c> ataması jetonu bir saat
+    /// GERİ alır; bunu yalnız bu test görür.
+    /// </summary>
+    [Fact]
+    public async Task Ileri_tarihli_damgali_kampanya_ustlenilince_jeton_geri_gitmez()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
+        var (campaignId, _, _) = await SeedAsync(db);
+
+        // İleri damga uydurma değil: duraklatma `max(UtcNow, önceki + 1 tick)`
+        // yazıyor, yani saat geri atlayan bir makinede jeton gerçekten
+        // "gelecekte" kalabiliyor. Bir saat, saat çözünürlüğünden bağımsız
+        // olsun diye seçildi — testin flaky olmaması bu farka dayanıyor.
+        var campaign = await db.SmsCampaigns.SingleAsync(c => c.Id == campaignId);
+        campaign.ClaimedAt = DateTimeOffset.UtcNow.AddHours(1);
+        await db.SaveChangesAsync();
+        var previous = campaign.ClaimedAt!.Value;
+
+        await job.RunAsync(campaignId);
+
+        _factory.Sms.Sent.Should().HaveCount(2, "karşı yazıcı yok, koşu bitmeli");
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var after = await vdb.SmsCampaigns.AsNoTracking()
+            .SingleAsync(c => c.Id == campaignId);
+
+        after.Status.Should().Be("completed");
+        after.ClaimedAt.Should().NotBeNull();
+        after.ClaimedAt!.Value.Should().BeAfter(previous,
+            "üstlenme damgası ileri damgayı GERİ alırsa, duraklatmadan önce "
+            + "kampanyayı okumuş bayat bir işçi sahipliği yeniden kazanır");
+    }
+
+    /// <summary>
+    /// Üstlenme çakışmasının <c>return</c>'ü — alıcı listesi BOŞken. Döngü
+    /// başındaki sahiplik yoklaması buradaki tek koruma DEĞİL, hiç koruma
+    /// değil: gönderilecek alıcı kalmadığında döngü bir kez bile dönmez ve
+    /// koşu doğrudan tamamlama + iade bloğuna gider. Üstlenemediğimiz bir
+    /// kampanyanın iadesini yazmak krediyi yoktan var eder.
+    /// </summary>
+    [Fact]
+    public async Task Ustlenme_cakismasi_kampanyayi_tamamlamaz_ve_iade_yazmaz()
+    {
+        using var worker = _factory.Services.CreateScope();
+        var db = worker.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var (campaignId, _, _) = await SeedAsync(db);
+
+        // İki alıcı da sonuçlanmış ("failed") ama iadesi HENÜZ yazılmamış:
+        // `owed - RefundedCredits = 2 - 0 = 2`. Yani tamamlama bloğuna
+        // ulaşılırsa para gerçekten hareket eder.
+        var campaign = await db.SmsCampaigns.SingleAsync(c => c.Id == campaignId);
+        var licenseId = campaign.LicenseId;
+        campaign.RefundedCredits = 0;
+        foreach (var r in await db.SmsCampaignRecipients
+                     .Where(r => r.CampaignId == campaignId).ToListAsync())
+        {
+            r.Status = "failed";
+            r.Error = "provider-rejected";
+        }
+        await db.SaveChangesAsync();
+
+        var creditsBefore = (await db.LicenseSmsBalances.AsNoTracking()
+            .SingleAsync(b => b.LicenseId == licenseId)).CreditsRemaining;
+
+        // İşçi kampanyayı ZATEN okudu (yukarıdaki `campaign` bu scope'ta
+        // izleniyor, jeton özgün değeri null). Şimdi başkası jetonu ilerletiyor
+        // — durumu değiştirmiyor, çünkü test edilen şey durum kapısı değil
+        // üstlenme CAS'ı.
+        using (var rival = _factory.Services.CreateScope())
+        {
+            var rdb = rival.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var c = await rdb.SmsCampaigns.SingleAsync(x => x.Id == campaignId);
+            c.ClaimedAt = DateTimeOffset.UtcNow.AddSeconds(1);
+            await rdb.SaveChangesAsync();
+        }
+
+        await worker.ServiceProvider
+            .GetRequiredService<SmsCampaignSendJob>()
+            .RunAsync(campaignId);
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+        var after = await vdb.SmsCampaigns.AsNoTracking()
+            .SingleAsync(c => c.Id == campaignId);
+        after.Status.Should().Be("pending", "üstlenme düştüyse koşu hiç başlamamıştır");
+        after.CompletedAt.Should().BeNull();
+        after.RefundedCredits.Should().Be(0);
+
+        (await vdb.LicenseSmsBalances.AsNoTracking()
+            .SingleAsync(b => b.LicenseId == licenseId))
+            .CreditsRemaining.Should().Be(creditsBefore,
+                "üstlenemediğimiz kampanyanın iadesini yazmak krediyi yoktan var eder");
+
+        (await vdb.LicenseSmsTransactions.AsNoTracking()
+            .CountAsync(t => t.LicenseId == licenseId && t.Kind == "send-refund"))
+            .Should().Be(0, "bu koşu hiç sahip olmadı, ledger'a dokunmamalı");
     }
 
     [Fact]
@@ -4375,8 +4498,10 @@ Beklenen FAIL —
   durum `completed`.
 - `Gercek_kapatma_yolu_kosan_isi_durdurur`: aynı sebeple 2 SMS gitmiş.
 - `Diriltilen_kampanya_iadeyi_ikinci_kez_yapmaz`: bakiye 2 kredi artmış.
-- `Kapatmadan_once_okunan_kampanya_sonradan_ustlenilemez` (üç `InlineData`'nın
-  hepsi): bayat işçi duraklatmayı ezip kampanyayı `completed` yapmış.
+- `Ileri_tarihli_damgali_kampanya_ustlenilince_jeton_geri_gitmez`: mevcut kod
+  `campaign.ClaimedAt = now;` yazıyor (`SmsCampaignSendJob.cs:78`) ve her alıcıda
+  ham `UtcNow` ile tazeliyor (`:172`) — son damga `UtcNow` civarında kalır,
+  tohumlanan ileri damganın bir saat GERİSİNDE. `BeAfter` patlar.
 - `Kampanya_cakismasi_iadeyi_yeniden_uygulamaz`: beklenen
   `DbUpdateConcurrencyException` HİÇ ÇIKMAZ — mevcut retry onu yutar ve bakiye
   `104` olur (`100 + 2 + 2`, ikinci ekleme reload'suz `amount` tekrarından).
@@ -4386,6 +4511,23 @@ anla:
 - `Paused_kampanya_hic_ustlenilmez`
 - `Paused_kampanya_kurtarma_isiyle_diriltilmez`
 - `Yalniz_bakiye_cakismasi_tamamlanma_ve_iadeyi_korur`
+- `Kapatmadan_once_okunan_kampanya_sonradan_ustlenilemez` (üç `InlineData`'nın
+  hepsi)
+- `Ustlenme_cakismasi_kampanyayi_tamamlamaz_ve_iade_yazmaz`
+
+> **Son iki madde neden KIRMIZI değil?** Üstlenme yazımının çakışma catch'i
+> bugün **zaten var** (`SmsCampaignSendJob.cs:85-90`: log + `return`), ve
+> `ClaimedAt` bugün de eşzamanlılık jetonu (`LicenseDbContext.cs:786`). Görev 3
+> duraklatmayı jetonu ilerletir hâle getirdiği ANDA bayat işçinin üstlenmesi
+> zaten düşüyor — yani Görev 11 bu davranışı **kurmuyor, koruyor**. Bu görevin
+> o blokta yaptığı tek değişiklik `Detached` damgası (kirli kopya sonraki
+> `SaveChanges`'e binmesin diye).
+>
+> Bu iki testi "gereksiz" sayıp atma: ikisi de Adım 8'in mutasyon provasında
+> tek katil. Onlar olmadan mutasyon 2 ve 3 sessizce yeşil kalıyor — ve o
+> sessizlik, üstlenme CAS'ının bir gün fark edilmeden kaldırılabileceği
+> anlamına gelir. **Bir testin kırmızı DOĞMAMASI, hiçbir şeyi kilitlemediği
+> anlamına gelmez; hangi mutasyonu öldürdüğü anlamına gelir.**
 
 > **`SmsBalanceConcurrencyTests` Docker ister** (Testcontainers). Yerelde
 > düşerse PowerShell'den `DOCKER_HOST=npipe://./pipe/dockerDesktopLinuxEngine`
@@ -4685,10 +4827,12 @@ diriltir → Delik 1.
 > **`ClaimedAt` tazelemesinin adanmış testi neden yok?** Delik 2'yi
 > deterministik kanıtlamak için son alıcı kaydı ile tamamlanma yazımı ARASINDA
 > bir kanca gerekirdi; öyle bir nokta yok. Paraya dönüşen sonuç (Delik 1)
-> `Diriltilen_kampanya_iadeyi_ikinci_kez_yapmaz` ile, sahiplik sonucu ise
-> `Kapatmadan_once_okunan_kampanya_sonradan_ustlenilemez`'in `futureStamp`
-> vakasıyla kapanıyor — o vaka monotonluğu saate hiç bakmadan doğruluyor.
-> **Bilinçli karar — "test eksik" diye geri çevirme.**
+> `Diriltilen_kampanya_iadeyi_ikinci_kez_yapmaz` ile, damganın monotonluğu ise
+> `Ileri_tarihli_damgali_kampanya_ustlenilince_jeton_geri_gitmez` ile
+> kapanıyor: o test ileri damgalı kampanyayı çakışmasız üstlendirip koşuyu
+> sonuna kadar götürüyor, yani üstlenme ve alıcı tazelemelerinin ürettiği
+> NİHAİ damgayı ölçüyor — saate hiç bakmadan. Tamamlanmadaki tazelemenin tek
+> başına izole edilmemesi **bilinçli karar; "test eksik" diye geri çevirme.**
 
 - [ ] **Adım 6b: Bakiye retry'ı yalnız kendi satırını yeniden yüklesin**
 
@@ -4798,7 +4942,7 @@ paketleri. Özellikle şu ikisi hâlâ geçmeli:
 - `Yalniz_bakiye_cakismasi_tamamlanma_ve_iadeyi_korur`: meşru bakiye
   çakışmasında retry hâlâ çalışıyor.
 
-- [ ] **Adım 8: Mutasyon provası — dört iddianın da gerçekten kilitli olduğunu gör**
+- [ ] **Adım 8: Mutasyon provası — beş iddianın da gerçekten kilitli olduğunu gör**
 
 Her mutasyonu tek tek uygula, testi koş, **sonra geri al**.
 
@@ -4817,29 +4961,64 @@ Düşmeli: `Gonderim_ortasinda_duraklatilan_kampanya_kalan_aliciya_gitmez`
 > üstlenme çakışması ya da `SaveRecipientResultAsync` yakalıyor. O
 > karşılaştırma Görev 13'ün devam ettirme yolu için var (duraklatılmış
 > kampanya yeniden `pending` yapılınca durum tekrar `sending` olabilir ama
-> sahip değişmiştir) ve mutasyonu **Görev 13 Adım 5b'de** koşulur.
+> sahip değişmiştir) ve mutasyonu **Görev 13 Adım 5b'de** koşulur — orada
+> araya girme noktası `RecordingSmsSender.OnSent` DEĞİL, Görev 12'nin
+> `SaveHookInterceptor.AfterSave` kancasıdır (gerekçe o adımda yazılı:
+> `OnSent` alıcı sonucu kaydedilmeden ÖNCE ateşlendiği için sahiplik
+> kaybı `SaveRecipientResultAsync`'e düşer ve karşılaştırmaya hiç sıra
+> gelmez).
 
 **2) Üstlenme damgası ham `UtcNow` olsun.** `campaign.ClaimedAt =
 NextClaimedAt(campaign.ClaimedAt);` satırını (üstlenme bloğundakini)
 `campaign.ClaimedAt = DateTimeOffset.UtcNow;` yap.
-Düşmeli: `Kapatmadan_once_okunan_kampanya_sonradan_ustlenilemez(pending, true)`
-— ileri tarihli damga geri alınır, `BeAfter` assert'i patlar.
+Düşmeli: `Ileri_tarihli_damgali_kampanya_ustlenilince_jeton_geri_gitmez` —
+tohumlanan damga bir saat ileride, ham `UtcNow` onu geri alır, `BeAfter` patlar.
+
+> **`Kapatmadan_once_okunan_kampanya_sonradan_ustlenilemez(pending, true)` bu
+> mutasyonu ÖLDÜRMEZ** — sanılabileceğinin aksine. O vakada üstlenme yazımı
+> jetonun değeri ne olursa olsun çakışmayla düşüyor, yani atanan damga diske
+> hiç inmiyor; testin `BeAfter` assert'i **duraklatmanın** damgasını ölçüyor.
+> Mutasyonu gören tek test, üstlenmenin ÇAKIŞMASIZ geçtiği yukarıdaki yenidir.
 
 **3) Üstlenme çakışması yutulsun.** Üstlenmedeki `catch
 (DbUpdateConcurrencyException)` bloğunun `return;` satırını sil (detach + log
 kalsın).
-Düşmeli: `Kapatmadan_once_okunan_kampanya_sonradan_ustlenilemez`'in üç vakası
-da — bayat işçi devam eder, kampanya `completed` olur.
+Düşmeli: `Ustlenme_cakismasi_kampanyayi_tamamlamaz_ve_iade_yazmaz` — alıcı
+listesi boş olduğu için döngü hiç dönmez, koşu doğrudan tamamlama bloğuna
+gider ve detached kampanyanın iadesi (`2` kredi + bir `send-refund` satırı)
+gerçekten yazılır.
+
+> **Teori testi bu mutasyonu da ÖLDÜRMEZ.** Orada `return` silinse bile döngü
+> başındaki sahiplik yoklaması diskte `paused` görüp çıkıyor; kampanya
+> `completed` olmuyor ve üç vaka da yeşil kalıyor. Üstlenme CAS'ını gerçekten
+> kilitleyen şey, döngünün hiç dönmediği senaryodur.
 
 **4) İade idempotansı kalksın.** `var refund = owed - campaign.RefundedCredits;`
 → `var refund = owed;`.
 Düşmeli: `Diriltilen_kampanya_iadeyi_ikinci_kez_yapmaz`.
 
-**5) Bakiye retry'ı yine toptan reload etsin.** `ex.Entries.All(e =>
-ReferenceEquals(e.Entity, balance))` koşulunu sil ve gövdeyi
-`foreach (var e in ex.Entries) await e.ReloadAsync(ct);` yap.
+**5) Bakiye retry'ı yine toptan reload etsin.** Catch'i **`:101-111`'deki
+özgün hâline** döndür — `when` filtresinden `ex.Entries` koşullarını çıkar,
+gövdeyi de tamamen değiştir:
+```csharp
+            catch (DbUpdateConcurrencyException ex) when (attempt < maxAttempts)
+            {
+                foreach (var entry in ex.Entries)
+                    await entry.ReloadAsync(ct);
+                balance.CreditsRemaining += amount;
+                balance.UpdatedAt = DateTimeOffset.UtcNow;
+            }
+```
 Düşmeli: `Kampanya_cakismasi_iadeyi_yeniden_uygulamaz` — beklenen istisna
 çıkmaz, bakiye `104` olur.
+
+> **`104` sayısı yukarıdaki gövdenin TAMAMINA bağlı.** Kampanya entry'si
+> reload edilince `completed` + `RefundedCredits` geri alınır, ama bakiye
+> entry'si `ex.Entries`'te olmadığı için hazırlanmış `102` duruyor; `+=
+> amount` onu `104` yapar ve ikinci tur sorunsuz kaydeder. Yalnız `foreach`
+> satırını bırakıp `+= amount`'u silersen bakiye `102` çıkar ve mutasyon
+> **farklı bir sebeple** düşer — prova o zaman iade tekrarını değil, retry'ın
+> varlığını ölçmüş olur. Gövdeyi eksiksiz yaz.
 
 - [ ] **Adım 9: Commit**
 
@@ -4907,7 +5086,122 @@ olduğunda gelir (Görev 13).
 - Create: `OrderDeck.LicenseServer/Pages/Admin/Netgsm/Index.cshtml`
 - Create: `OrderDeck.LicenseServer/Pages/Admin/Netgsm/Index.cshtml.cs`
 - Modify: `OrderDeck.LicenseServer/Services/Audit/AuditEvents.cs`
+- Create: `OrderDeck.LicenseServer.Tests/TestHelpers/SaveHookInterceptor.cs`
+- Create: `OrderDeck.LicenseServer.Tests/TestHelpers/HookedApiFactory.cs`
 - Test: `OrderDeck.LicenseServer.Tests/Pages/Admin/AdminNetgsmPageTests.cs`
+
+- [ ] **Adım 0: Kayıt kancası test altyapısını yaz**
+
+Bu görevdeki iki test ve Görev 13'ün yarış testi, **başka bir yazarın tam
+doğru anda araya girmesini** kurgulamak zorunda. `Task.Run` + gecikme ile
+kurgulanan yarışlar CI'da flaky olur; kancalı bir interceptor deterministik
+olur: yazım noktasında dururuz, araya gireriz, devam ederiz.
+
+`ApiFactory` bunun için **zaten** bir uzatma noktası taşıyor
+(`ApiFactory.cs:55-59`, doc'u birebir "a fault-injecting `SaveChanges`
+interceptor" diyor) — yeni bir genişletme icat etmiyoruz, var olanı
+kullanıyoruz.
+
+`OrderDeck.LicenseServer.Tests/TestHelpers/SaveHookInterceptor.cs`:
+
+```csharp
+using Microsoft.EntityFrameworkCore.Diagnostics;
+
+namespace OrderDeck.LicenseServer.Tests.TestHelpers;
+
+/// <summary>
+/// Test kancası: <c>SaveChangesAsync</c>'in HEMEN ÖNCESİNDE ya da HEMEN
+/// SONRASINDA rastgele bir iş çalıştırır. Amacı, "tam o anda başka biri
+/// yazdı" senaryosunu zamanlamaya değil, SIRAYA dayalı olarak kurmak —
+/// <c>Task.Run</c> + <c>Delay</c> ile kurulan yarışlar CI'da flaky olur.
+///
+/// <para><b>Yeniden girmez.</b> Kanca gövdesi kendi <c>SaveChanges</c>'ini
+/// atıyor (zaten bütün mesele o); bayrak olmasaydı kanca kendini sonsuz
+/// tetiklerdi. Bayrak <b>örnek</b> düzeyinde, <c>static</c> değil: her test
+/// sınıfı kendi fabrikasını kurduğu için paralel sınıflar birbirinin
+/// kancasını kilitlemez.</para>
+///
+/// <para>Kanca <b>her</b> kaydetmede koşar; "yalnız bir kez" isteyen test
+/// gövdenin ilk satırında alanı <c>null</c>'lar. İkisi de gerekiyor:
+/// devam-ettirme yarışı tek seferlik, retry tükenmesi ise tur tur
+/// çakışmak zorunda.</para>
+///
+/// <para>Boş bırakıldığında tamamen şeffaftır — bu interceptor'ı taşıyan
+/// fabrikayı kullanan diğer testlerin davranışı değişmez.</para>
+/// </summary>
+public sealed class SaveHookInterceptor : SaveChangesInterceptor
+{
+    private bool _running;
+
+    /// <summary>Yazım diske inmeden önce koşar.</summary>
+    public Func<Task>? BeforeSave { get; set; }
+
+    /// <summary>Yazım başarıyla indikten sonra koşar.</summary>
+    public Func<Task>? AfterSave { get; set; }
+
+    public void Reset()
+    {
+        BeforeSave = null;
+        AfterSave = null;
+        _running = false;
+    }
+
+    private async Task RunAsync(Func<Task>? hook)
+    {
+        if (hook is null || _running) return;
+        _running = true;
+        try { await hook(); }
+        finally { _running = false; }
+    }
+
+    public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+        DbContextEventData eventData,
+        InterceptionResult<int> result,
+        CancellationToken cancellationToken = default)
+    {
+        await RunAsync(BeforeSave);
+        return result;
+    }
+
+    public override async ValueTask<int> SavedChangesAsync(
+        SaveChangesCompletedEventData eventData,
+        int result,
+        CancellationToken cancellationToken = default)
+    {
+        await RunAsync(AfterSave);
+        return result;
+    }
+}
+```
+
+`OrderDeck.LicenseServer.Tests/TestHelpers/HookedApiFactory.cs`:
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+
+namespace OrderDeck.LicenseServer.Tests.TestHelpers;
+
+/// <summary>
+/// <see cref="ApiFactory"/> + paylaşılan bir <see cref="SaveHookInterceptor"/>.
+/// Kanca dolduruluncaya kadar davranış <see cref="ApiFactory"/> ile
+/// birebir aynıdır, bu yüzden bir test sınıfı bunu fixture olarak alıp
+/// testlerinin yalnız birinde kancayı kullanabilir.
+/// </summary>
+public sealed class HookedApiFactory : ApiFactory
+{
+    public SaveHookInterceptor Hook { get; } = new();
+
+    protected override void ConfigureDbContextOptions(DbContextOptionsBuilder opt)
+        => opt.AddInterceptors(Hook);
+}
+```
+
+> **Neden `AddInterceptors` DbContext seviyesinde?** `ApiFactory` interceptor'ı
+> InMemory sağlayıcı takasıyla **aynı** options builder'a ekliyor
+> (`ApiFactory.cs:113-117`), yani paylaşılan test veritabanı adı korunuyor.
+> Interceptor'ı DI'a `IInterceptor` olarak eklemek de çalışırdı ama
+> `LicenseReadOnlyDbContext`'e de bulaşırdı; burada yalnız yazan bağlamı
+> istiyoruz.
 
 - [ ] **Adım 1: Düşen testi yaz**
 
@@ -4932,10 +5226,19 @@ namespace OrderDeck.LicenseServer.Tests.Pages.Admin;
 /// gerekir: hesabı Disabled yapıp devam eden kampanyayı bırakmak, kararı
 /// iki dakika sonra kurtarma işinin geri almasına izin verir.
 /// </summary>
-public sealed class AdminNetgsmPageTests : IClassFixture<ApiFactory>
+public sealed class AdminNetgsmPageTests : IClassFixture<HookedApiFactory>
 {
-    private readonly ApiFactory _factory;
-    public AdminNetgsmPageTests(ApiFactory factory) => _factory = factory;
+    private readonly HookedApiFactory _factory;
+
+    // Kanca boşken HookedApiFactory, ApiFactory'nin aynısı. Yalnız
+    // "retry tükeniyor" testi dolduruyor; o test de kendi içinde
+    // temizliyor. Burada ek olarak ctor'da sıfırlıyoruz ki sınıf
+    // fixture'ı paylaşan testler birbirinin kancasını miras almasın.
+    public AdminNetgsmPageTests(HookedApiFactory factory)
+    {
+        _factory = factory;
+        _factory.Hook.Reset();
+    }
 
     private static string NewUserCode()
         => Random.Shared.NextInt64(8_500_000_000, 8_599_999_999).ToString();
@@ -5121,8 +5424,111 @@ public sealed class AdminNetgsmPageTests : IClassFixture<ApiFactory>
                  && e.TargetId == accountId.ToString()))
             .Should().Be(1);
     }
+
+    [Fact]
+    public async Task Acma_Disabled_olmayan_hesaba_dokunmaz()
+    {
+        // İki yönetici listeyi hesap Disabled'ken açtı. Biri açtı, yayıncı
+        // panelden kaydedip doğrulattı (Verified). İkincisinin ekranı hâlâ
+        // "Aç" gösteriyor. Eşzamanlılık jetonu bunu YAKALAMAZ: aradaki
+        // yazımlar bittiği için tek yazan biziz, jeton eşleşir, CAS geçer —
+        // ve canlı bir Verified kurulum Failed'a düşer. Failed marka
+        // çözemediği için o yayıncının SMS'i sessizce durur, üstelik "aç"
+        // yolu kampanya duraklatmadığı için rezerve krediler asılı kalır.
+        var (accountId, _) = await SeedAccountAsync(NetgsmAccountStatus.Verified);
+
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+        var resp = await PostAsync(client, "Enable", accountId);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+
+        using var scope = _factory.Services.CreateScope();
+        var vdb = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.NetgsmAccounts.AsNoTracking().SingleAsync(a => a.Id == accountId))
+            .Status.Should().Be(NetgsmAccountStatus.Verified,
+                "\"aç\" yalnız \"kapat\"ın geri alınmasıdır; canlı bir kurulumu "
+                + "Failed'a düşürmek gönderimi sessizce keserdi");
+
+        (await vdb.AuditLogs.AsNoTracking().CountAsync(
+            e => e.EventType == AuditEvents.NetgsmAccountEnable
+                 && e.TargetId == accountId.ToString()))
+            .Should().Be(0, "gerçekleşmemiş bir karar denetime yazılmamalı");
+    }
+
+    [Fact]
+    public async Task Kapatma_retry_tukenirse_500_degil_hata_mesaji_doner()
+    {
+        var (accountId, licenseId) = await SeedAccountAsync();
+        using (var seed = _factory.Services.CreateScope())
+        {
+            var db = seed.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            await SeedCampaignAsync(db, licenseId, "pending");
+        }
+
+        // Kancayı istemci KURULDUKTAN sonra kur: CreateLoggedInAdminClientAsync
+        // kendi SaveChanges'ini atıyor (admin tohumu) ve onu da çakıştırırsak
+        // test kurulumu düşer.
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        // Her kaydetme denemesinden HEMEN ÖNCE hesabı dışarıdan yaz: servis
+        // taze okuduğu satırı kaydetmeye çalıştığında jeton artık eskimiş
+        // olur. Dört tur da böyle düşünce servis DbUpdateConcurrencyException
+        // fırlatır. Yakalanmazsa yönetici 500 görür ve kapatmanın olup
+        // olmadığını bilemez — anahtarın en çok gerektiği an tam da budur.
+        _factory.Hook.BeforeSave = async () =>
+        {
+            using var rival = _factory.Services.CreateScope();
+            var rdb = rival.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var acc = await rdb.NetgsmAccounts.SingleAsync(a => a.Id == accountId);
+            acc.LastError = $"rakip-{Guid.NewGuid():N}";
+            await rdb.SaveChangesAsync();
+        };
+
+        try
+        {
+            var resp = await PostAsync(client, "Disable", accountId);
+
+            resp.StatusCode.Should().Be(HttpStatusCode.Redirect,
+                "tükenme yöneticiye 500 değil, yeniden denenebilir bir mesaj olarak dönmeli");
+        }
+        finally
+        {
+            _factory.Hook.Reset();
+        }
+
+        using var scope = _factory.Services.CreateScope();
+        var vdb = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+        // Çakışan yazım hesap satırıydı, dolayısıyla UYGULANMADI.
+        (await vdb.NetgsmAccounts.AsNoTracking().SingleAsync(a => a.Id == accountId))
+            .Status.Should().Be(NetgsmAccountStatus.Verified);
+
+        // Gerçekleşmemiş bir karar denetime yazılmamalı.
+        (await vdb.AuditLogs.AsNoTracking().CountAsync(
+            e => e.EventType == AuditEvents.NetgsmAccountDisable
+                 && e.TargetId == accountId.ToString()))
+            .Should().Be(0);
+    }
 }
 ```
+
+> **`Kapatma_retry_tukenirse...` neden InMemory'de geçerli.** EF InMemory
+> eşzamanlılık jetonlarını UYGULUYOR (sağlayıcı, `SaveChanges` sırasında
+> jeton özelliklerini depodaki değerle karşılaştırıp uyuşmazlıkta
+> `DbUpdateConcurrencyException` atar). InMemory'nin YAPAMADIĞI şey varlıklar
+> arası işlemsel geri alma, tekil indeks ve check constraint — bu test
+> bunların hiçbirine dayanmıyor, tek bir satırın jetonuna dayanıyor.
+> (`CLAUDE.md:57-59` "InMemory'de eşzamanlılık semantiği yok" diyor; bu ifade
+> ilişkisel yarışlar için doğru, jeton için değil. Jeton gerektiren Görev 11
+> testleri yine de Testcontainers'ta — orada mesele iki **bağlantının** aynı
+> satıra gerçekten aynı anda yazması.)
+>
+> **Kampanyanın `paused` olup olmadığı BİLEREK doğrulanmıyor.** InMemory'de
+> varlıklar arası işlemsel geri alma yok: hesap yazımı jetona takılıp
+> fırlatırken kampanya yazımı uygulanmış olabilir. Gerçek SQL Server'da
+> ikisi tek işlemde geri alınır. Bu testin kanıtlamak istediği şey zaten
+> kampanya değil, **tükenmenin 500 üretmemesi** ve çağırana yarım izlenen
+> nesne bırakmaması.
 
 - [ ] **Adım 2: Testi koş, düştüğünü gör**
 
@@ -5131,6 +5537,13 @@ dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
   --filter FullyQualifiedName~AdminNetgsmPageTests
 ```
 Beklenen: derleme hatası — `AuditEvents.NetgsmAccountDisable` yok.
+
+> **Adım 3-4'ten sonra bu testlerden ikisi HÂLÂ düşmeli.** Sayfa yazıldığında
+> `Acma_Disabled_olmayan_hesaba_dokunmaz` (durum kapısı yoksa 409 yerine 302
+> gelir ve hesap `Failed` olur) ve
+> `Kapatma_retry_tukenirse_500_degil_hata_mesaji_doner` (tükenme dalı yoksa
+> istisna dışarı sızar, 500 gelir) ancak Adım 4'teki kapı + tükenme dalıyla
+> yeşile döner. Bu iki test, aynı görevin iki ayrı kırmızı-yeşil turudur.
 
 - [ ] **Adım 3: Denetim sabitlerini ekle**
 
@@ -5241,9 +5654,26 @@ public class IndexModel : PageModel
         // SaveChanges'te duraklatır; "pending" bırakmak yetmezdi, çünkü
         // SmsCampaignRecoveryJob iki dakika sonra onu kuyruğa alıp kapatma
         // kararını sessizce geri alırdı.
-        var pausedCampaigns = await _accounts.CloseAccountAndPauseCampaignsAsync(
-            AccountId, NetgsmAccountStatus.Disabled,
-            "Yönetici tarafından kapatıldı.", ct);
+        int pausedCampaigns;
+        try
+        {
+            pausedCampaigns = await _accounts.CloseAccountAndPauseCampaignsAsync(
+                AccountId, NetgsmAccountStatus.Disabled,
+                "Yönetici tarafından kapatıldı.", ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // Retry döngüsü dört turda da çakıştı (Görev 8). Yönetici kararı
+            // bilinçli olarak jetonsuz, yani "kaybetmez" — ama sonsuz da
+            // denemez. Buraya düşmek satırın o anda başka bir yazarla
+            // dövüştüğü anlamına gelir; yakalamazsak yöneticiye 500 gider ve
+            // kapatmanın gerçekleşip gerçekleşmediğini bilmez. Servis
+            // fırlatmadan önce ChangeTracker'ı temizliyor, bu scope'ta
+            // yarı-yazılmış bir nesne kalmıyor.
+            TempData["Error"] =
+                "Kurulum şu anda başka bir işlemle güncelleniyor. Tekrar deneyin.";
+            return RedirectToPage();
+        }
 
         await _audit.LogAsync(
             AuditEvents.NetgsmAccountDisable, AuditTargets.NetgsmAccount,
@@ -5260,6 +5690,25 @@ public class IndexModel : PageModel
     {
         var acc = await _db.NetgsmAccounts.FirstOrDefaultAsync(a => a.Id == AccountId, ct);
         if (acc is null) return NotFound();
+
+        // "Aç" YALNIZ "Kapat"ın geri alınmasıdır. Aşağıdaki CAS eşzamanlılığı
+        // koruyor ama bayat SAYFAYI korumuyor: iki yönetici listeyi hesap
+        // Disabled'ken açar, biri açar, kurulum panelden doğrulanıp Verified
+        // olur, sonra ikincisi hâlâ "Aç" düğmesini gösteren ekranından
+        // basarsa TEK yazım olur, jeton eşleşir, CAS geçer — ve canlı bir
+        // Verified kurulum Failed'a düşer. Failed marka çözemediği için o
+        // yayıncının gönderimi sessizce durur, üstelik kampanyalar
+        // duraklatılmadığı için rezerve krediler asılı kalır. Durum kapısı
+        // bunu kapatıyor: Failed ya da Verified bir hesapta "aç" anlamsız.
+        if (acc.Status != NetgsmAccountStatus.Disabled)
+        {
+            _db.ChangeTracker.Clear();
+            return new ConflictObjectResult(new
+            {
+                title = "netgsm-account-not-disabled",
+                detail = "Kurulum zaten açık. Sayfayı yenileyin.",
+            });
+        }
 
         // Verified DEĞİL: yönetici markanın İYS'de hâlâ geçerli olduğunu
         // bilemez. Doğrulama tek yoldan — panel kaydı ya da günlük iş — geçer.
@@ -5300,12 +5749,25 @@ public class IndexModel : PageModel
 }
 ```
 
-> **`OnPostDisableAsync`'e aynı `catch` gerekmiyor.** O yol yazımı
-> `CloseAccountAndPauseCampaignsAsync`'e devrediyor ve orada zaten dört turluk
-> bir retry döngüsü var — üstelik `Disabled` çağrısı `expectedUpdatedAt`
-> TAŞIMIYOR, yani yönetici kararı bilinçli olarak her hâlükârda kazanıyor
-> (Görev 8). "Kapat" hiçbir zaman çakışmayla düşmemeli: anahtarın en çok
-> gerektiği an, kampanyanın aktığı ve satırın en çok yazıldığı andır.
+> **İki yolun `catch`'i neden FARKLI.** "Aç" bayat bir karardır: yönetici
+> sayfayı açtığında gördüğü durum artık geçerli değilse kararı da geçerli
+> değildir → 409, yenile. "Kapat" bayat DEĞİLDİR: hesap hangi durumda olursa
+> olsun yönetici onu kapatmak istiyor, bu yüzden `CloseAccountAndPauseCampaignsAsync`
+> çağrısı `expectedUpdatedAt` TAŞIMIYOR (Görev 8) ve dört turluk retry
+> döngüsüyle ısrar ediyor — anahtarın en çok gerektiği an, kampanyanın aktığı
+> ve satırın en çok yazıldığı andır.
+>
+> Ama **"ısrar eder" ≠ "hiç düşmez".** Dördüncü tur da çakışırsa servis
+> `DbUpdateConcurrencyException`'ı dışarı bırakır; yukarıdaki `catch` onu
+> 500'e dönüşmeden yakalayıp yöneticiye "tekrar deneyin" diyor. Tekrar
+> denemek güvenli: kapatma idempotent (zaten `Disabled` bir hesabı yeniden
+> `Disabled` yazmak, duraklatılacak kampanya bırakmadığı için `0` döner).
+
+> **Tükenmenin `_db.ChangeTracker.Clear()` + `throw` dalı Görev 8'de YAZILDI**
+> (`CloseAccountAndPauseCampaignsAsync`, `when (attempt >= maxAttempts)`
+> süzgeçli `catch`). Burada ikinci bir kopyası yok; bu görev yalnız o
+> istisnayı HTTP yüzeyinde karşılıyor. Görev 8'in kendi testleri etkilenmez —
+> hiçbiri dört tur çakışma kurgulamıyor, dolayısıyla hiçbiri o dala girmiyor.
 
 - [ ] **Adım 5: Sayfayı yaz**
 
@@ -5322,6 +5784,13 @@ public class IndexModel : PageModel
 @if (TempData["Success"] is string ok)
 {
     <div class="alert alert-success">@ok</div>
+}
+
+@* Kapatma retry'ı tükendiğinde buraya düşer. Sessiz bırakılsaydı yönetici
+   yönlendirmeyi başarı sanır ve hesabın hâlâ açık olduğunu fark etmezdi. *@
+@if (TempData["Error"] is string err)
+{
+    <div class="alert alert-danger">@err</div>
 }
 
 <table class="table table-sm align-middle">
@@ -5389,6 +5858,8 @@ Beklenen: PASS (4 yeni test + mevcut admin yetkilendirme paketi).
 
 ```bash
 git add OrderDeck.LicenseServer.Tests/Pages/Admin/AdminNetgsmPageTests.cs \
+        OrderDeck.LicenseServer.Tests/TestHelpers/SaveHookInterceptor.cs \
+        OrderDeck.LicenseServer.Tests/TestHelpers/HookedApiFactory.cs \
         OrderDeck.LicenseServer/Pages/Admin/Netgsm/Index.cshtml \
         OrderDeck.LicenseServer/Pages/Admin/Netgsm/Index.cshtml.cs \
         OrderDeck.LicenseServer/Services/Audit/AuditEvents.cs
@@ -5397,7 +5868,9 @@ feat(admin): Netgsm kurulum kapatma anahtarı
 
 Kapatma hesabı Disabled yapar ve o lisansın pending/sending kampanyalarını
 duraklatır — pending bırakılsaydı kurtarma işi kararı iki dakikada geri alırdı.
-Açma Verified değil Failed yazar: doğrulama normal akıştan geçer.
+Açma Verified değil Failed yazar: doğrulama normal akıştan geçer, ve yalnız
+Disabled bir hesapta çalışır — bayat bir liste sayfasından basılan "aç",
+canlı bir kurulumu Failed'a düşürüp gönderimi sessizce kesiyordu.
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
 EOF
@@ -5412,7 +5885,8 @@ Son halka: doğrulama geri geldiğinde duraklatılmış kampanyalar devam etmeli
 ve yeni sınıflar uygulamaya bağlanmalı.
 
 **Devam ettirme kuyruğa ATMAZ**, yalnız `paused → pending` yazar ve
-`ClaimedAt`'i temizler. Kuyruğa atmayı `SmsCampaignRecoveryJob` yapar (5 dakikada
+`ClaimedAt` jetonunu bir kademe ilerletir (temizlemez — gerekçe Adım 3'te).
+Kuyruğa atmayı `SmsCampaignRecoveryJob` yapar (5 dakikada
 bir, 2 dakikalık `PendingGrace`). Gerekçe `Program.cs`'te İYS push işi için zaten
 yazılı: kaçırılan bir `Enqueue` kaydı sessizce kaybeder, süpürme kaybetmez.
 Burada da aynı: kapatma/açma nadir bir olay, 5 dakikalık gecikmenin bedeli yok;
@@ -5437,7 +5911,8 @@ Devam ettirme `Failed → Verified` geçişinde çağrılır — **tek yer**: pa
   Görev 5 ve Görev 8'de yapıldı, burada yalnız doğrulanıyor)
 - Test: `OrderDeck.LicenseServer.Tests/Services/Sms/NetgsmAccountResumeTests.cs`
 - Test: `OrderDeck.LicenseServer.Tests/Services/Sms/SmsCampaignPauseTests.cs`
-  (Adım 5b — devam ettirme yarışı; Görev 11'de yazılan sınıfa tek test eklenir)
+  (Adım 5b — devam ettirme yarışı; Görev 11'de yazılan sınıfa tek test eklenir
+  ve fixture tipi Görev 12'nin `HookedApiFactory`'sine çevrilir)
 
 - [ ] **Adım 1: Düşen testi yaz**
 
@@ -5505,12 +5980,15 @@ public sealed class NetgsmAccountResumeTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task Devam_ettirme_paused_kampanyayi_pending_yapar_ve_claimi_temizler()
+    public async Task Devam_ettirme_paused_kampanyayi_pending_yapar_ve_jetonu_ilerletir()
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var svc = scope.ServiceProvider.GetRequiredService<NetgsmAccountService>();
         var (licenseId, pausedId, completedId) = await SeedAsync(db);
+
+        var previous = (await db.SmsCampaigns.AsNoTracking()
+            .SingleAsync(c => c.Id == pausedId)).ClaimedAt!.Value;
 
         // Metot kaydetmiyor — çağıranın SaveChanges'ine biniyor. Gerçek
         // çağıran (panel PUT'u) hesabın Verified yazımıyla aynı kayıtta
@@ -5524,8 +6002,11 @@ public sealed class NetgsmAccountResumeTests : IClassFixture<ApiFactory>
         var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var paused = await vdb.SmsCampaigns.AsNoTracking().SingleAsync(c => c.Id == pausedId);
         paused.Status.Should().Be("pending");
-        paused.ClaimedAt.Should().BeNull(
-            "bayat claim kalırsa kurtarma işi devralma kaydı yazar — devir değil, temiz başlangıç");
+        paused.ClaimedAt.Should().NotBeNull();
+        paused.ClaimedAt!.Value.Should().BeAfter(previous,
+            "jeton monoton artmalı; null'a çekmek zinciri koparır ve "
+            + "duraklatmada bir tick ileri itilmiş damganın GERİSİNDE "
+            + "bir değer üretebilir");
         (await vdb.SmsCampaigns.AsNoTracking().SingleAsync(c => c.Id == completedId))
             .Status.Should().Be("completed");
     }
@@ -5607,9 +6088,22 @@ altına ekle:
     /// kaybeder, süpürme kaybetmez. Kapatma/açma nadir bir olay, 5 dakikalık
     /// gecikmenin ölçülebilir bir bedeli yok.</para>
     ///
-    /// <para><c>ClaimedAt</c> temizleniyor: bayat bir claim'le bırakılırsa
-    /// gönderim job'ı bunu "devralınan koşu" sayar ve gereksiz yere uyarı
-    /// yazar. Kampanya duraklatıldı, sahipsiz kalmadı.</para>
+    /// <para><b><c>ClaimedAt</c> TEMİZLENMEZ, ilerletilir.</b> Jetonun tek işi
+    /// monoton artmak: "bu satırı en son kim yazdı" sorusunun cevabı o.
+    /// <c>null</c>'a çekmek zinciri koparır — sonraki üstlenme
+    /// <c>NextClaimedAt(null) = UtcNow</c> üretir ve bu değer, duraklatma
+    /// sırasında bir tick ileri itilmiş eski damganın GERİSİNDE kalabilir.
+    /// O an <c>sending/L → paused/L+1 → pending/null → sending/L</c> dizisi
+    /// mümkün olur ve duraklatmadan önce okumuş bir işçi kendi jetonunu
+    /// yeniden görüp hem sahiplik yoklamasından hem CAS'tan geçer.</para>
+    ///
+    /// <para><c>null</c> gerekmiyor da: <see cref="SmsCampaignRecoveryJob"/>'ın
+    /// <c>pending</c> dalı <c>CreatedAt</c>'e bakıyor
+    /// (<c>SmsCampaignRecoveryJob.cs:51</c>), <c>SmsCampaignSendJob</c>'ın
+    /// üstlenme kapısı da <c>pending</c> için <c>ClaimedAt</c>'e hiç bakmıyor
+    /// (<c>SmsCampaignSendJob.cs:66-74</c>). "Devralınan koşu" uyarısı da
+    /// tetiklenmez: <c>resumed</c> yalnız <c>Status == "sending"</c> iken
+    /// doğru olur.</para>
     /// </summary>
     public async Task<int> StageResumePausedCampaignsAsync(
         Guid licenseId, CancellationToken ct = default)
@@ -5621,7 +6115,7 @@ altına ekle:
         foreach (var c in paused)
         {
             c.Status = "pending";
-            c.ClaimedAt = null;
+            c.ClaimedAt = NextClaimedAt(c.ClaimedAt);
         }
         return paused.Count;
     }
@@ -5708,8 +6202,41 @@ onu yeni bir işçiye veriyor (kampanya yine `sending`, **ama yeni `ClaimedAt`**
 para da harcanır, hukuken de ikinci ticari ileti olur. Jeton karşılaştırması
 bunu görür.
 
-`SmsCampaignPauseTests.cs` — sınıfın sonuna ekle (Görev 11'in `SeedAsync`'i ve
-`OnSent` kancası aynen kullanılıyor):
+**Araya girme ANI kritik — `OnSent` YANLIŞ nokta.** `RecordingSmsSender.OnSent`,
+`SendAsync`'in *içinde*, yani alıcı 1'in sonucu daha kaydedilmeden koşar. Oraya
+konursa `ClaimedAt` sıçraması alıcı 1'in kendi kaydını
+(`SaveRecipientResultAsync`) çakıştırır, metot `false` döner ve `RunAsync`
+**döngünün ikinci turuna hiç girmeden** çıkar. Sonuç `Sent == 1` olur — ama
+yoklama sayesinde değil, kaydetme çakışması sayesinde. Mutasyon o yolu
+etkilemediği için test yeşil kalır ve hiçbir şey kanıtlamaz.
+
+Doğru nokta **alıcı 1'in kaydından hemen SONRASI**: Görev 12'de yazılan
+`SaveHookInterceptor.AfterSave`. Kancayı `OnSent`'in içinde kuruyoruz, çünkü
+`OnSent` koştuğu anda üstlenme kaydı çoktan inmiştir — dolayısıyla "bir
+sonraki `SavedChangesAsync`" tam olarak alıcı 1'in kaydıdır.
+
+Önce **fixture tipini değiştir** (Görev 11'de yazılan sınıfın üç satırı):
+
+```csharp
+public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
+{
+    private readonly HookedApiFactory _factory;
+
+    public SmsCampaignPauseTests(HookedApiFactory factory)
+    {
+        _factory = factory;
+        _factory.Sms.Clear();
+        _factory.Sms.ThrowOnSend = false;
+        _factory.Sms.OnSent = null;
+        _factory.Hook.Reset();
+    }
+```
+
+> Sınıfın gövdesinde başka hiçbir şey değişmiyor: `HookedApiFactory`,
+> `ApiFactory`'den türüyor ve kanca boşken davranışı birebir aynı, dolayısıyla
+> Görev 11'in testleri aynen geçer.
+
+Sonra sınıfın sonuna ekle:
 
 ```csharp
     [Fact]
@@ -5720,38 +6247,50 @@ bunu görür.
         var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
         var (campaignId, accountId, _) = await SeedAsync(db);
 
-        // İlk gönderimden sonra kapat → devam ettir → BAŞKA bir işçi üstlensin.
-        // Üç adım da ayrı scope'ta: bu koşuyu yapan işçi A'nın DbContext'i
-        // hiçbirini görmüyor, elindeki `campaign` nesnesi bayatlıyor.
-        var interleaved = false;
+        // OnSent alıcı 1'in SendAsync'i içinde koşar; oradan yalnız KANCAYI
+        // kuruyoruz. Araya girme, alıcı 1'in sonucu diske indikten sonra
+        // çalışsın ki işçi A gerçekten döngünün ikinci turuna girsin —
+        // test etmek istediğimiz yoklama orada.
         _factory.Sms.OnSent = _ =>
         {
-            if (interleaved) return;
-            interleaved = true;
+            _factory.Sms.OnSent = null;
+            _factory.Hook.AfterSave = InterleaveAsync;
+        };
+
+        // Kapat → devam ettir → BAŞKA bir işçi üstlensin. Üçü de ayrı
+        // scope'ta: işçi A'nın DbContext'i hiçbirini görmüyor, elindeki
+        // `campaign` nesnesi bayatlıyor.
+        async Task InterleaveAsync()
+        {
+            _factory.Hook.AfterSave = null;
 
             using var other = _factory.Services.CreateScope();
             var odb = other.ServiceProvider.GetRequiredService<LicenseDbContext>();
             var accounts = other.ServiceProvider.GetRequiredService<NetgsmAccountService>();
-            var licenseId = odb.NetgsmAccounts.Single(a => a.Id == accountId).LicenseId;
+            var licenseId = (await odb.NetgsmAccounts.AsNoTracking()
+                .SingleAsync(a => a.Id == accountId)).LicenseId;
 
             // 1) Admin kapatması — kampanya paused, ClaimedAt ileri damgalanır.
-            accounts.CloseAccountAndPauseCampaignsAsync(
-                    accountId, NetgsmAccountStatus.Disabled, "Yönetici kapattı.")
-                .GetAwaiter().GetResult();
+            await accounts.CloseAccountAndPauseCampaignsAsync(
+                accountId, NetgsmAccountStatus.Disabled, "Yönetici kapattı.");
 
             // 2) Yayıncı kimlikleri düzeltti, PUT doğrulandı — paused → pending.
-            accounts.StageResumePausedCampaignsAsync(licenseId).GetAwaiter().GetResult();
-            odb.SaveChanges();
+            await accounts.StageResumePausedCampaignsAsync(licenseId);
+            await odb.SaveChangesAsync();
 
             // 3) Kurtarma süpürmesi yeni bir işçiye verdi: taze ClaimedAt.
-            var c = odb.SmsCampaigns.Single(x => x.Id == campaignId);
+            var c = await odb.SmsCampaigns.SingleAsync(x => x.Id == campaignId);
             c.Status = "sending";
             c.ClaimedAt = DateTimeOffset.UtcNow.AddSeconds(1);
-            odb.SaveChanges();
-        };
+            await odb.SaveChangesAsync();
+        }
 
         try { await job.RunAsync(campaignId); }
-        finally { _factory.Sms.OnSent = null; }
+        finally
+        {
+            _factory.Sms.OnSent = null;
+            _factory.Hook.Reset();
+        }
 
         _factory.Sms.Sent.Should().HaveCount(1,
             "işçi A sahipliğini kaybetti; ikinci alıcı artık YENİ işçinin işi. "
@@ -5765,8 +6304,29 @@ bunu görür.
         campaign.CompletedAt.Should().BeNull();
         campaign.RefundedCredits.Should().Be(0,
             "sahipliği kaybeden işçi iade YAPMAZ — kalan alıcı yeni işçide");
+
+        // Alıcı 1'in sonucu KAYBOLMAMALI: SMS gerçekten gitti, kaydı da inmiş
+        // olmalı. Bu satır, araya girmenin doğru noktada olduğunun kanıtı —
+        // OnSent'in içinde yapılsaydı alıcı 1 "pending" kalır ve kampanya
+        // devam ettiğinde aynı kişiye ikinci SMS giderdi.
+        (await vdb.SmsCampaignRecipients.AsNoTracking()
+            .CountAsync(r => r.CampaignId == campaignId && r.Status == "sent"))
+            .Should().Be(1);
     }
 ```
+
+> **Kanca neden `AfterSave`, `BeforeSave` değil?** `BeforeSave` olsaydı araya
+> girme, alıcı 1'in yazımı diske inmeden koşar ve o yazımı çakıştırırdı —
+> `OnSent` ile aynı hataya düşerdik. `AfterSave` yalnız BAŞARILI yazımdan
+> sonra koşar, yani alıcı 1'in sonucu güvende, işçi A'nın `campaign.ClaimedAt`
+> değeri de artık kesinleşmiş: karşılaştırmanın anlamlı olması için gereken
+> tam durum.
+>
+> **Kilitlenme yok:** kanca `async Task`, `.GetAwaiter().GetResult()` yok.
+> Interceptor'ın `_running` bayrağı, kanca içindeki üç `SaveChanges`'in
+> kancayı yeniden tetiklemesini engelliyor (alan zaten ilk satırda
+> `null`'lanıyor — iki katmanlı koruma bilinçli, biri kaldırılırsa diğeri
+> testi flaky değil ölü kılsın).
 
 - [ ] **Adım 5c: Testin gerçekten kırmızı başladığını mutasyonla doğrula**
 
@@ -5784,6 +6344,12 @@ dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
   --filter FullyQualifiedName~Devam_ettirilip_yeniden_ustlenilen_kampanyaya_eski_isci_gondermez
 ```
 Beklenen: **FAIL** — `Sent` 1 değil 2; eski işçi ikinci alıcıya da göndermiş.
+
+Mutasyon bu testi gerçekten düşürür, çünkü araya girme alıcı 1'in kaydından
+SONRA koşuyor: işçi A döngünün ikinci turuna **giriyor** ve yoklamaya
+çarpıyor. Kalan tek kapı `current.Status`, o da devam ettirme+yeniden üstlenme
+sonrası yine `"sending"` — yani jeton karşılaştırması olmadan hiçbir şey
+durdurmuyor.
 
 Mutasyonu geri al (silinen `||` parçasını yerine yaz) ve aynı komutu tekrar
 koş. Beklenen: PASS.
