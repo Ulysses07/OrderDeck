@@ -529,6 +529,36 @@ EOF
     }
 
     [Fact]
+    public async Task Istemci_ici_iptal_Unavailable()
+    {
+        // (a) Neden ATA tip. `IIysClient` bir ARAYÜZ: bir uygulama isteğin
+        //     başına kendi zaman aşımı jetonunu (`CancellationTokenSource`)
+        //     bağlayabilir. O jeton söndüğünde `ThrowIfCancellationRequested`
+        //     ATAYI fırlatır — düz `OperationCanceledException`, alt tipi
+        //     `TaskCanceledException` değil — üstelik ÇAĞIRANIN `ct`'si
+        //     bozulmamıştır. Bu geçici arıza `Unavailable` olmalı, dışarı
+        //     kaçmamalı: kaçarsa doğrulama turu yarıda kalır ve yayıncının
+        //     kurulumu o tur boyunca belirsiz kalır.
+        // (b) `Iptal_istegi_yutulmaz`'dan farkı. O test iptal EDİLMİŞ bir `ct`
+        //     ile çalışır; oradaki iddia iki şeydir — gerçek iptalin yutulmadığı
+        //     ve `ct`'nin istemciye iletildiği. İstisnayı da ilk sıradaki
+        //     `when (ct.IsCancellationRequested)` muhafızı yakalar, yani geniş
+        //     filtrenin TİPİ o yolda hiç devreye girmez. Burada `ct` iptal
+        //     EDİLMEMİŞ (stub'ın `ThrowIfCancellationRequested`'ı bu yüzden
+        //     sessiz kalır, istisna delegate'ten gelir): muhafız elemez ve karar
+        //     tamamen geniş filtrenin tipine kalır. Filtreyi
+        //     `TaskCanceledException`'a daraltan mutasyon ata tipi kaçırır,
+        //     istisna `VerifyAsync`'ten dışarı çıkar ve bu test kırmızıya döner.
+        var client = new StubIysClient((_, _) => throw new OperationCanceledException(
+            "istemci içi zaman aşımı"));
+
+        var result = await Verifier(client).VerifyAsync(NewAccount());
+
+        result.Outcome.Should().Be(NetgsmVerifyOutcome.Unavailable,
+            "çağıranın jetonu sağlamken gelen iptal istisnası geçici bir arızadır");
+    }
+
+    [Fact]
     public async Task Ayristirma_hatasi_Unavailable()
     {
         // Dal SAVUNMA amaçlı: bugünkü `NetgsmIysClient` `JsonException`'ı iki
@@ -596,9 +626,10 @@ EOF
 dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
   --filter FullyQualifiedName~NetgsmAccountVerifierTests
 ```
-Beklenen: `Ag_hatasi_Unavailable`, `Zaman_asimi_Unavailable` ve
-`Ayristirma_hatasi_Unavailable` FAIL (`HttpRequestException` /
-`TaskCanceledException` / `JsonException` yakalanmadan dışarı çıkıyor).
+Beklenen: `Ag_hatasi_Unavailable`, `Zaman_asimi_Unavailable`,
+`Istemci_ici_iptal_Unavailable` ve `Ayristirma_hatasi_Unavailable` FAIL
+(`HttpRequestException` / `TaskCanceledException` /
+`OperationCanceledException` / `JsonException` yakalanmadan dışarı çıkıyor).
 Diğer ikisi zaten geçer — `Iptal_istegi_yutulmaz` bu turda yanıltıcı biçimde
 yeşildir: henüz hiçbir `catch` olmadığı için istisna zaten dışarı çıkıyor.
 Anlamını Adım 3'ten SONRA kazanır (o zaman yutulmadığını kanıtlar).
@@ -655,8 +686,15 @@ bloğunun ALTINA:
 dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
   --filter FullyQualifiedName~NetgsmAccountVerifierTests
 ```
-Beklenen: PASS (14 test — Görev 1'in 9'u + buradaki 5; Görev 1 inceleme
+Beklenen: PASS (15 test — Görev 1'in 9'u + buradaki 6; Görev 1 inceleme
 turlarında iki test daha ve iki durumlu bir `[Theory]` kazandı).
+
+> **`Istemci_ici_iptal_Unavailable` mutasyonla ÖLÇÜLDÜ.** Geniş filtredeki
+> `or OperationCanceledException` elle `or TaskCanceledException`'a
+> daraltıldığında tam olarak bu tek test kırmızıya döndü (1 fail / 14 pass),
+> sonra mutasyon geri alındı. Ata-tip genişletmesini kilitleyen tek test budur:
+> `Iptal_istegi_yutulmaz` aynı mutasyon altında yeşil kalıyor, çünkü iptal
+> edilmiş `ct`'yi ilk sıradaki muhafız yakalıyor.
 
 - [ ] **Adım 5: Commit**
 
