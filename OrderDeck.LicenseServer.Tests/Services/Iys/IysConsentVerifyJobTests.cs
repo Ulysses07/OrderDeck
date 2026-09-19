@@ -135,9 +135,9 @@ public class IysConsentVerifyJobTests
     }
 
     private static async Task<LicenseDbContext> SeedPushedAsync(
-        DateTimeOffset? nextVerifyAt = null, int attempts = 0)
+        DateTimeOffset? nextVerifyAt = null, int attempts = 0, string? name = null)
     {
-        var db = NewDb();
+        var db = NewDb(name ?? $"iys-verify-{Guid.NewGuid():N}");
         SeedAccount(db, LicenseA, BrandA);
         db.IysConsents.Add(Pushed(Phone, BrandA, nextVerifyAt, attempts));
         await db.SaveChangesAsync();
@@ -349,13 +349,23 @@ public class IysConsentVerifyJobTests
     [Fact]
     public async Task Gecici_hata_randevuyu_ILERI_alir_ama_takvimi_tuketmez()
     {
-        using var db = await SeedPushedAsync();
-        var client = new FakeIysClient();
-        client.ThrowByBrand[BrandA] = new HttpRequestException("ağ");
+        // Randevunun DİSKE indiğini doğrulamak zorundayız. İşi koşturan
+        // context'ten okumak identity-map totolojisidir: hata yolundaki
+        // SaveChangesAsync silinse bile bellekteki nesne ileri alınmış
+        // görünür, test yeşil kalır. Oysa gerçek hayatta değer kalıcı
+        // olmazsa SONRAKİ koşu aynı kayıtları yeniden seçer — düzeltmenin
+        // tam olarak önlemek için var olduğu hat başı tıkanması geri gelir.
+        var name = $"iys-verify-{Guid.NewGuid():N}";
+        using (var db = await SeedPushedAsync(name: name))
+        {
+            var client = new FakeIysClient();
+            client.ThrowByBrand[BrandA] = new HttpRequestException("ağ");
 
-        await Job(db, client).RunAsync();
+            await Job(db, client).RunAsync();
+        }
 
-        var row = await db.IysConsents.SingleAsync();
+        using var fresh = NewDb(name);
+        var row = await fresh.IysConsents.AsNoTracking().SingleAsync();
         row.NextVerifyAt.Should().BeAfter(DateTimeOffset.UtcNow,
             "randevu olduğu yerde kalırsa aynı kayıt her koşuda ilk sırayı kapar");
         row.VerifyAttempts.Should().Be(0,
@@ -364,6 +374,14 @@ public class IysConsentVerifyJobTests
         row.UpdatedAt.Should().BeOnOrBefore(DateTimeOffset.UtcNow,
             "UpdatedAt randevu değil dokunulma damgasıdır; geleceğe yazılırsa "
             + "satırı zaman aralığına göre süzen her sorgu yanılır");
+
+        // Gerçek sonucu da sına: ertelenen randevu yüzünden SONRAKİ koşu bu
+        // kaydı hiç sormamalı. İddianın kendisi bu; damga yalnız aracı.
+        using var second = NewDb(name);
+        var again = new FakeIysClient();
+        await Job(second, again).RunAsync();
+        again.SearchCalls.Should().BeEmpty(
+            "ertelenen kayıt bir sonraki koşuda sıra kapmamalı");
     }
 
     [Fact]
