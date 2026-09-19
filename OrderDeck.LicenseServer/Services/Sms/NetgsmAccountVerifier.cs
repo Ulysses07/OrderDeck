@@ -111,14 +111,34 @@ public sealed class NetgsmAccountVerifier
                      + "Abone numarası, API şifresi ve marka kodunu kontrol edin.",
             });
         }
+        // İptal GERÇEKTEN istendiyse yutma: kapanış turu her hesaba
+        // "ulaşılamadı" yazmamalı. Muhafız gövdede değil `when`'de: istisna
+        // filtresi BİRİNCİ GEÇİŞTE, yığın çözülmeden çalışır — `false` dönerse
+        // bu çerçeveye hiç girilmez, `true` dönerse asıl fırlatma noktası
+        // korunur. Gövdeye yazılan `throw;` ise async'te "End of stack trace
+        // from previous location" sınırı ekleyip izi bulandırırdı. Depoda aynı
+        // desen 6 yerde böyle yazılı; en yakını kardeş işler
+        // `IysConsentVerifyJob` ve `IysConsentPushJob`.
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        // `TaskCanceledException` DEĞİL atası. `IIysClient` bir ARAYÜZ:
+        // `ct.ThrowIfCancellationRequested()` çağıran bir uygulama düz
+        // `OperationCanceledException` fırlatır, dar tip onu kaçırırdı. Buradaki
+        // kazanç yalnız ÇAĞIRANIN `ct`'si İPTAL EDİLMEMİŞKEN gelen iptal
+        // istisnasıdır — gerçek iptali yukarıdaki muhafız zaten alıp yeniden
+        // fırlatıyor. Örnek: istemci kendi içinde istek başına zaman aşımı
+        // jetonu bağlarsa, o jeton yandığında çağıranın `ct`'si sağlamdır ve
+        // bu geçici arıza `Unavailable` olmalı, dışarı kaçmamalı. Bugünkü tek
+        // istemcide erişilemez (`HttpClient` zaman aşımı `TaskCanceledException`
+        // atıyor) ama ata tipi yazmanın maliyeti sıfır.
+        // `JsonException` dalı SAVUNMA amaçlı: bugünkü `NetgsmIysClient` onu iki
+        // yerde kendi içinde yutuyor (`SearchAsync` ayrıştırması + `ReadCode`),
+        // geriye yalnız `JsonSerializer.Serialize` kalıyor ve o pratikte
+        // fırlatmaz. Ama arayüzün başka bir uygulaması ayrıştırma hatasını
+        // dışarı verebilir; o gün yayıncının kurulumu kapanmamalı.
         catch (Exception ex) when (ex is HttpRequestException
-                                     or TaskCanceledException
+                                     or OperationCanceledException
                                      or System.Text.Json.JsonException)
         {
-            // İptal GERÇEKTEN istendiyse yutma: kapanış turu her hesaba
-            // "ulaşılamadı" yazmamalı.
-            if (ct.IsCancellationRequested) throw;
-
             _log.LogWarning(ex, "Netgsm doğrulaması ulaşılamadı: lisans={LicenseId}",
                 account.LicenseId);
             return new NetgsmVerifyResult(NetgsmVerifyOutcome.Unavailable,

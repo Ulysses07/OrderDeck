@@ -194,6 +194,24 @@ public sealed class NetgsmAccountVerifierTests
     }
 
     [Fact]
+    public async Task Ayristirma_hatasi_Unavailable()
+    {
+        // Dal SAVUNMA amaçlı: bugünkü `NetgsmIysClient` `JsonException`'ı iki
+        // yerde kendi içinde yutuyor (`SearchAsync` ayrıştırması + `ReadCode`),
+        // dolayısıyla üretimde neredeyse erişilemez. Ama `IIysClient` bir arayüz;
+        // başka bir uygulama ayrıştırma hatasını dışarı verebilir ve o gün
+        // yayıncının kurulumu kapanmamalı. Test olmadan `or JsonException`
+        // satırını silen mutasyon görünmez kalıyordu.
+        var client = new StubIysClient((_, _) => throw new System.Text.Json.JsonException(
+            "beklenmeyen belirteç"));
+
+        var result = await Verifier(client).VerifyAsync(NewAccount());
+
+        result.Outcome.Should().Be(NetgsmVerifyOutcome.Unavailable,
+            "bozuk yanıt gövdesi hesap hakkında HİÇBİR ŞEY söylemez");
+    }
+
+    [Fact]
     public async Task Sistem_hatasi_kodu_Unavailable()
     {
         // İYS "100 = sistem hatası" gibi kodlar da döndürüyor. Bunlar
@@ -214,13 +232,26 @@ public sealed class NetgsmAccountVerifierTests
         // Uygulama kapanırken CancellationToken tetiklenir. Bunu Unavailable'a
         // çevirip yutarsak, kapanış turunda her hesaba "ulaşılamadı" yazar ve
         // LastError'lar gerçek bir sorun varmış gibi görünür.
+        //
+        // Test İKİ şeyi birden kilitliyor. (1) `ct` doğrulayıcıdan istemciye
+        // GERÇEKTEN iletiliyor: delegate iptali değil BAŞARIYI döndürüyor, yani
+        // istisna yalnız stub'ın `ThrowIfCancellationRequested`'ından gelebilir —
+        // çağrı `CancellationToken.None` ile yapılsaydı test `Ok` alıp düşerdi.
+        // (2) Gerçek iptal yutulmuyor: `Unavailable`'a çevrilseydi yine düşerdi.
+        //
+        // Beklenen tip `OperationCanceledException`, çünkü
+        // `ThrowIfCancellationRequested` atayı fırlatır. Dikkat: bu test
+        // doğrulayıcının filtresindeki ata-tip GENİŞLETMESİNİ kanıtlamaz —
+        // iptal edilmiş `ct`'yi `when (ct.IsCancellationRequested)` muhafızı
+        // zaten ilk sırada yakalayıp yeniden fırlatıyor.
         using var cts = new CancellationTokenSource();
         cts.Cancel();
-        var client = new StubIysClient((_, _) => throw new TaskCanceledException("shutdown"));
+        var client = new StubIysClient((_, _) => new IysSearchResult(
+            "0", "{\"code\":\"0\"}", new Dictionary<string, IysConsentStatus>()));
 
         var act = async () => await Verifier(client).VerifyAsync(NewAccount(), cts.Token);
 
-        await act.Should().ThrowAsync<TaskCanceledException>();
+        await act.Should().ThrowAsync<OperationCanceledException>();
     }
 
     private sealed class StubIysClient : IIysClient
@@ -239,6 +270,14 @@ public sealed class NetgsmAccountVerifierTests
         public Task<IysSearchResult> SearchAsync(
             IysAccountContext account, IReadOnlyList<string> recipients,
             CancellationToken ct = default)
-            => Task.FromResult(_search(account, recipients));
+        {
+            // `ct`'yi yok sayarsak, çağrıyı `CancellationToken.None` ile yapan
+            // bir mutasyon TÜM testleri geçer — `Iptal_istegi_yutulmaz` bile,
+            // çünkü muhafız çağıranın `ct`'sine bakıyor. Burada yoklamak o
+            // mutasyonu görünür kılar: doğrulayıcının iptal sözleşmesi ancak
+            // `ct` istemciye iletiliyorsa bir şey ifade eder.
+            ct.ThrowIfCancellationRequested();
+            return Task.FromResult(_search(account, recipients));
+        }
     }
 }

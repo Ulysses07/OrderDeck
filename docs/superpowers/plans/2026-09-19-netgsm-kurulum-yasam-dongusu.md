@@ -292,10 +292,23 @@ public sealed class NetgsmAccountVerifierTests
         public Task<IysSearchResult> SearchAsync(
             IysAccountContext account, IReadOnlyList<string> recipients,
             CancellationToken ct = default)
-            => Task.FromResult(_search(account, recipients));
+        {
+            // `ct`'yi yok sayarsak, çağrıyı `CancellationToken.None` ile yapan
+            // bir mutasyon TÜM testleri geçer — `Iptal_istegi_yutulmaz` bile,
+            // çünkü muhafız çağıranın `ct`'sine bakıyor. Burada yoklamak o
+            // mutasyonu görünür kılar: doğrulayıcının iptal sözleşmesi ancak
+            // `ct` istemciye iletiliyorsa bir şey ifade eder.
+            ct.ThrowIfCancellationRequested();
+            return Task.FromResult(_search(account, recipients));
+        }
     }
 }
 ```
+
+> **Not.** `ct.ThrowIfCancellationRequested()` Görev 2'nin inceleme turunda
+> eklendi: Görev 1'in testleri iptal edilmiş bir jeton kullanmadığı için bu
+> satır o turda davranışı değiştirmez, ama iptal sözleşmesi Görev 2'de
+> doğduğunda stub'ın onu sessizce geçersiz kılmasını engeller.
 
 - [ ] **Adım 2: Düştüğünü gör**
 
@@ -516,6 +529,24 @@ EOF
     }
 
     [Fact]
+    public async Task Ayristirma_hatasi_Unavailable()
+    {
+        // Dal SAVUNMA amaçlı: bugünkü `NetgsmIysClient` `JsonException`'ı iki
+        // yerde kendi içinde yutuyor (`SearchAsync` ayrıştırması + `ReadCode`),
+        // dolayısıyla üretimde neredeyse erişilemez. Ama `IIysClient` bir arayüz;
+        // başka bir uygulama ayrıştırma hatasını dışarı verebilir ve o gün
+        // yayıncının kurulumu kapanmamalı. Test olmadan `or JsonException`
+        // satırını silen mutasyon görünmez kalıyordu.
+        var client = new StubIysClient((_, _) => throw new System.Text.Json.JsonException(
+            "beklenmeyen belirteç"));
+
+        var result = await Verifier(client).VerifyAsync(NewAccount());
+
+        result.Outcome.Should().Be(NetgsmVerifyOutcome.Unavailable,
+            "bozuk yanıt gövdesi hesap hakkında HİÇBİR ŞEY söylemez");
+    }
+
+    [Fact]
     public async Task Sistem_hatasi_kodu_Unavailable()
     {
         // İYS "100 = sistem hatası" gibi kodlar da döndürüyor. Bunlar
@@ -536,13 +567,26 @@ EOF
         // Uygulama kapanırken CancellationToken tetiklenir. Bunu Unavailable'a
         // çevirip yutarsak, kapanış turunda her hesaba "ulaşılamadı" yazar ve
         // LastError'lar gerçek bir sorun varmış gibi görünür.
+        //
+        // Test İKİ şeyi birden kilitliyor. (1) `ct` doğrulayıcıdan istemciye
+        // GERÇEKTEN iletiliyor: delegate iptali değil BAŞARIYI döndürüyor, yani
+        // istisna yalnız stub'ın `ThrowIfCancellationRequested`'ından gelebilir —
+        // çağrı `CancellationToken.None` ile yapılsaydı test `Ok` alıp düşerdi.
+        // (2) Gerçek iptal yutulmuyor: `Unavailable`'a çevrilseydi yine düşerdi.
+        //
+        // Beklenen tip `OperationCanceledException`, çünkü
+        // `ThrowIfCancellationRequested` atayı fırlatır. Dikkat: bu test
+        // doğrulayıcının filtresindeki ata-tip GENİŞLETMESİNİ kanıtlamaz —
+        // iptal edilmiş `ct`'yi `when (ct.IsCancellationRequested)` muhafızı
+        // zaten ilk sırada yakalayıp yeniden fırlatıyor.
         using var cts = new CancellationTokenSource();
         cts.Cancel();
-        var client = new StubIysClient((_, _) => throw new TaskCanceledException("shutdown"));
+        var client = new StubIysClient((_, _) => new IysSearchResult(
+            "0", "{\"code\":\"0\"}", new Dictionary<string, IysConsentStatus>()));
 
         var act = async () => await Verifier(client).VerifyAsync(NewAccount(), cts.Token);
 
-        await act.Should().ThrowAsync<TaskCanceledException>();
+        await act.Should().ThrowAsync<OperationCanceledException>();
     }
 ```
 
@@ -552,9 +596,12 @@ EOF
 dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
   --filter FullyQualifiedName~NetgsmAccountVerifierTests
 ```
-Beklenen: `Ag_hatasi_Unavailable` ve `Zaman_asimi_Unavailable` FAIL
-(`HttpRequestException` / `TaskCanceledException` yakalanmadan dışarı çıkıyor).
-Diğer ikisi zaten geçer.
+Beklenen: `Ag_hatasi_Unavailable`, `Zaman_asimi_Unavailable` ve
+`Ayristirma_hatasi_Unavailable` FAIL (`HttpRequestException` /
+`TaskCanceledException` / `JsonException` yakalanmadan dışarı çıkıyor).
+Diğer ikisi zaten geçer — `Iptal_istegi_yutulmaz` bu turda yanıltıcı biçimde
+yeşildir: henüz hiçbir `catch` olmadığı için istisna zaten dışarı çıkıyor.
+Anlamını Adım 3'ten SONRA kazanır (o zaman yutulmadığını kanıtlar).
 
 - [ ] **Adım 3: En küçük uygulamayı yaz**
 
@@ -562,14 +609,34 @@ Diğer ikisi zaten geçer.
 bloğunun ALTINA:
 
 ```csharp
+        // İptal GERÇEKTEN istendiyse yutma: kapanış turu her hesaba
+        // "ulaşılamadı" yazmamalı. Muhafız gövdede değil `when`'de: istisna
+        // filtresi BİRİNCİ GEÇİŞTE, yığın çözülmeden çalışır — `false` dönerse
+        // bu çerçeveye hiç girilmez, `true` dönerse asıl fırlatma noktası
+        // korunur. Gövdeye yazılan `throw;` ise async'te "End of stack trace
+        // from previous location" sınırı ekleyip izi bulandırırdı. Depoda aynı
+        // desen 6 yerde böyle yazılı; en yakını kardeş işler
+        // `IysConsentVerifyJob` ve `IysConsentPushJob`.
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        // `TaskCanceledException` DEĞİL atası. `IIysClient` bir ARAYÜZ:
+        // `ct.ThrowIfCancellationRequested()` çağıran bir uygulama düz
+        // `OperationCanceledException` fırlatır, dar tip onu kaçırırdı. Buradaki
+        // kazanç yalnız ÇAĞIRANIN `ct`'si İPTAL EDİLMEMİŞKEN gelen iptal
+        // istisnasıdır — gerçek iptali yukarıdaki muhafız zaten alıp yeniden
+        // fırlatıyor. Örnek: istemci kendi içinde istek başına zaman aşımı
+        // jetonu bağlarsa, o jeton yandığında çağıranın `ct`'si sağlamdır ve
+        // bu geçici arıza `Unavailable` olmalı, dışarı kaçmamalı. Bugünkü tek
+        // istemcide erişilemez (`HttpClient` zaman aşımı `TaskCanceledException`
+        // atıyor) ama ata tipi yazmanın maliyeti sıfır.
+        // `JsonException` dalı SAVUNMA amaçlı: bugünkü `NetgsmIysClient` onu iki
+        // yerde kendi içinde yutuyor (`SearchAsync` ayrıştırması + `ReadCode`),
+        // geriye yalnız `JsonSerializer.Serialize` kalıyor ve o pratikte
+        // fırlatmaz. Ama arayüzün başka bir uygulaması ayrıştırma hatasını
+        // dışarı verebilir; o gün yayıncının kurulumu kapanmamalı.
         catch (Exception ex) when (ex is HttpRequestException
-                                     or TaskCanceledException
+                                     or OperationCanceledException
                                      or System.Text.Json.JsonException)
         {
-            // İptal GERÇEKTEN istendiyse yutma: kapanış turu her hesaba
-            // "ulaşılamadı" yazmamalı.
-            if (ct.IsCancellationRequested) throw;
-
             _log.LogWarning(ex, "Netgsm doğrulaması ulaşılamadı: lisans={LicenseId}",
                 account.LicenseId);
             return new NetgsmVerifyResult(NetgsmVerifyOutcome.Unavailable,
@@ -578,13 +645,17 @@ bloğunun ALTINA:
         }
 ```
 
+> **Sıra bağlayıcı.** `catch (IysConfigurationException ex)` en üstte kalmalı:
+> kesin ret kararının önceliği odur. İptal muhafızı geniş filtreden ÖNCE
+> gelmeli, yoksa gerçek iptal `Unavailable`'a çevrilip yutulur.
+
 - [ ] **Adım 4: Testlerin geçtiğini gör**
 
 ```bash
 dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
   --filter FullyQualifiedName~NetgsmAccountVerifierTests
 ```
-Beklenen: PASS (13 test — Görev 1'in 9'u + buradaki 4; Görev 1 inceleme
+Beklenen: PASS (14 test — Görev 1'in 9'u + buradaki 5; Görev 1 inceleme
 turlarında iki test daha ve iki durumlu bir `[Theory]` kazandı).
 
 - [ ] **Adım 5: Commit**
