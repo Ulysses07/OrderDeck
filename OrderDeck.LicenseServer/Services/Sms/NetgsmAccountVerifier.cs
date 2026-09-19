@@ -1,0 +1,103 @@
+using Microsoft.Extensions.Logging;
+using OrderDeck.LicenseServer.Services.Iys;
+
+namespace OrderDeck.LicenseServer.Services.Sms;
+
+/// <summary>Doğrulama sonucu. <b>Üç</b> değer, iki değil — gerekçe için
+/// <see cref="NetgsmAccountVerifier"/>.</summary>
+public enum NetgsmVerifyOutcome
+{
+    /// <summary>Abone no + şifre + marka kodu üçlüsü İYS tarafından kabul edildi.</summary>
+    Ok,
+
+    /// <summary>İYS kimliği/markayı KESİN olarak reddetti (code 30/60).</summary>
+    Rejected,
+
+    /// <summary>Şu an cevap alınamadı. Hesap hakkında hiçbir şey öğrenilmedi.</summary>
+    Unavailable,
+}
+
+/// <param name="Message">Panelde yayıncıya gösterilecek insan okunur açıklama.
+/// <b>Ham İYS gövdesi buraya yazılmaz</b> — gövde API şifresini taşıyor.</param>
+public sealed record NetgsmVerifyResult(NetgsmVerifyOutcome Outcome, string? Message);
+
+/// <summary>
+/// Bir Netgsm/İYS kurulumunu tek <c>/iys/search</c> çağrısıyla doğrular.
+/// Abone no, API şifresi ve marka kodu gövdede birlikte gittiği için tek çağrı
+/// üçünü birden sınar (spec §2.2). <b>Test SMS'i atılmaz.</b>
+///
+/// <para><b>Neden üç sonuç.</b> "Reddedildi" ile "ulaşamadım" aynı kovaya
+/// düşerse, İYS'nin yarım saatlik bir arızası günlük işin o turunda çalışan
+/// BÜTÜN yayıncıları <c>Failed</c>'a çeker: kampanyalar durur, onay toplama
+/// durur ve hiçbiri kendiliğinden geri gelmez (yayıncının panele girip
+/// kaydetmesi gerekir). Yalnız <see cref="IysConfigurationException"/> kesin
+/// karardır; başka her şey <see cref="NetgsmVerifyOutcome.Unavailable"/>'dır
+/// ve hesabın durumuna DOKUNMAZ.</para>
+///
+/// <para><b>Başlık doğrulanmaz.</b> <c>Header</c> bu çağrının payload'ında yok;
+/// Netgsm onaysız başlığı yalnız gönderim anında reddediyor. <c>Verified</c>
+/// "başlık onaylı" anlamına GELMEZ.</para>
+/// </summary>
+public sealed class NetgsmAccountVerifier
+{
+    /// <summary>
+    /// Doğrulama sorgusunun alıcısı. <c>/iys/search</c> en az bir alıcı istiyor
+    /// ama salt-okunur: hiçbir onay oluşturmaz, değiştirmez.
+    ///
+    /// <para>Sabit ve <b>tahsis edilmemiş</b> bir numara seçildi (TR'de 500
+    /// operatör öneki kullanımda değil). Gerçek bir müşterinin numarasını
+    /// kullanmak, o kişiyi ilgisiz bir doğrulama turunun günlüklerine
+    /// düşürürdü — KVKK'da veri minimizasyonunun tam tersi.</para>
+    /// </summary>
+    public const string ProbeRecipient = "+905000000000";
+
+    private readonly IIysClient _iys;
+    private readonly ILogger<NetgsmAccountVerifier> _log;
+
+    public NetgsmAccountVerifier(IIysClient iys, ILogger<NetgsmAccountVerifier> log)
+    {
+        _iys = iys;
+        _log = log;
+    }
+
+    public async Task<NetgsmVerifyResult> VerifyAsync(
+        IysAccountContext account, CancellationToken ct = default)
+    {
+        try
+        {
+            var result = await _iys.SearchAsync(account, new[] { ProbeRecipient }, ct);
+            return result.Code == "0"
+                ? new NetgsmVerifyResult(NetgsmVerifyOutcome.Ok, null)
+                : new NetgsmVerifyResult(NetgsmVerifyOutcome.Unavailable,
+                    $"İYS beklenmeyen yanıt kodu döndürdü ({Sanitize(result.Code)}). "
+                    + "Sorun sürerse Netgsm'e danışın.");
+        }
+        catch (IysConfigurationException ex)
+        {
+            // ex.Message'ı DEĞİL sabit metni döndürüyoruz: istisna mesajı ileride
+            // ham gövdeyi taşımaya başlarsa şifre LastError'a sızardı.
+            _log.LogWarning("Netgsm doğrulaması reddedildi: lisans={LicenseId} kod={Code}",
+                account.LicenseId, ex.Code);
+            return new NetgsmVerifyResult(NetgsmVerifyOutcome.Rejected, ex.Code switch
+            {
+                "60" => "İYS marka kodu bu Netgsm hesabına ait değil (kod 60). "
+                        + "Marka kodunu İYS panelinden kontrol edin.",
+                _ => "Netgsm abone numarası veya API şifresi reddedildi (kod 30).",
+            });
+        }
+    }
+
+    /// <summary>
+    /// <c>result.Code</c> HER ZAMAN kısa bir kod değildir. <c>ReadCode</c>,
+    /// gövdede <c>code</c> alanı bulamazsa <b>bütün gövdeyi</b> kod diye
+    /// döndürüyor (<c>NetgsmIysClient.cs:146-159</c>) ve gövde 2000 karaktere
+    /// kadar kırpılıyor (<c>:143</c>). Ağ geçidi bir HTML hata sayfası
+    /// dönerse o HTML aynen <c>LastError</c>'a yazılır: hem 500 karakterlik
+    /// sütunu taşırır (<c>DbUpdateException</c>), hem ham sağlayıcı yanıtını
+    /// yayıncının paneline taşır. Yalnız kısa, rakamsal kodları göster.
+    /// </summary>
+    internal static string Sanitize(string? code)
+        => !string.IsNullOrWhiteSpace(code) && code.Length <= 8 && code.All(char.IsAsciiDigit)
+            ? code
+            : "tanınmayan yanıt";
+}
