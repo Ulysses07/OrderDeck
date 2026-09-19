@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.Shared.Text;
 
