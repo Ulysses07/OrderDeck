@@ -171,6 +171,58 @@ public sealed class NetgsmAccountVerifierTests
         result.Message.Should().Contain("tanınmayan yanıt").And.NotContain(code);
     }
 
+    [Fact]
+    public async Task Ag_hatasi_Unavailable()
+    {
+        var client = new StubIysClient((_, _) => throw new HttpRequestException("bağlantı yok"));
+
+        var result = await Verifier(client).VerifyAsync(NewAccount());
+
+        result.Outcome.Should().Be(NetgsmVerifyOutcome.Unavailable,
+            "ağ arızası hesap hakkında HİÇBİR ŞEY söylemez; Rejected desek "
+            + "İYS'nin yarım saatlik kesintisi çalışan her yayıncıyı kapatırdı");
+    }
+
+    [Fact]
+    public async Task Zaman_asimi_Unavailable()
+    {
+        var client = new StubIysClient((_, _) => throw new TaskCanceledException("timeout"));
+
+        var result = await Verifier(client).VerifyAsync(NewAccount());
+
+        result.Outcome.Should().Be(NetgsmVerifyOutcome.Unavailable);
+    }
+
+    [Fact]
+    public async Task Sistem_hatasi_kodu_Unavailable()
+    {
+        // İYS "100 = sistem hatası" gibi kodlar da döndürüyor. Bunlar
+        // yapılandırmayla ilgili DEĞİL; NetgsmIysClient yalnız 30/60'ı
+        // IysConfigurationException'a çeviriyor, gerisi buraya düz kod olarak
+        // geliyor ve hesabı düşürmemeli.
+        var client = new StubIysClient((_, _) => new IysSearchResult(
+            "100", "{\"code\":100}", new Dictionary<string, IysConsentStatus>()));
+
+        var result = await Verifier(client).VerifyAsync(NewAccount());
+
+        result.Outcome.Should().Be(NetgsmVerifyOutcome.Unavailable);
+    }
+
+    [Fact]
+    public async Task Iptal_istegi_yutulmaz()
+    {
+        // Uygulama kapanırken CancellationToken tetiklenir. Bunu Unavailable'a
+        // çevirip yutarsak, kapanış turunda her hesaba "ulaşılamadı" yazar ve
+        // LastError'lar gerçek bir sorun varmış gibi görünür.
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var client = new StubIysClient((_, _) => throw new TaskCanceledException("shutdown"));
+
+        var act = async () => await Verifier(client).VerifyAsync(NewAccount(), cts.Token);
+
+        await act.Should().ThrowAsync<TaskCanceledException>();
+    }
+
     private sealed class StubIysClient : IIysClient
     {
         // Delegate `account`'u DA taşıyor: atarsak, doğrulayıcıyı boş ya da

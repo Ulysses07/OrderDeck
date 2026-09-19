@@ -496,7 +496,7 @@ EOF
     [Fact]
     public async Task Ag_hatasi_Unavailable()
     {
-        var client = new StubIysClient(_ => throw new HttpRequestException("bağlantı yok"));
+        var client = new StubIysClient((_, _) => throw new HttpRequestException("bağlantı yok"));
 
         var result = await Verifier(client).VerifyAsync(NewAccount());
 
@@ -508,7 +508,7 @@ EOF
     [Fact]
     public async Task Zaman_asimi_Unavailable()
     {
-        var client = new StubIysClient(_ => throw new TaskCanceledException("timeout"));
+        var client = new StubIysClient((_, _) => throw new TaskCanceledException("timeout"));
 
         var result = await Verifier(client).VerifyAsync(NewAccount());
 
@@ -522,7 +522,7 @@ EOF
         // yapılandırmayla ilgili DEĞİL; NetgsmIysClient yalnız 30/60'ı
         // IysConfigurationException'a çeviriyor, gerisi buraya düz kod olarak
         // geliyor ve hesabı düşürmemeli.
-        var client = new StubIysClient(_ => new IysSearchResult(
+        var client = new StubIysClient((_, _) => new IysSearchResult(
             "100", "{\"code\":100}", new Dictionary<string, IysConsentStatus>()));
 
         var result = await Verifier(client).VerifyAsync(NewAccount());
@@ -538,7 +538,7 @@ EOF
         // LastError'lar gerçek bir sorun varmış gibi görünür.
         using var cts = new CancellationTokenSource();
         cts.Cancel();
-        var client = new StubIysClient(_ => throw new TaskCanceledException("shutdown"));
+        var client = new StubIysClient((_, _) => throw new TaskCanceledException("shutdown"));
 
         var act = async () => await Verifier(client).VerifyAsync(NewAccount(), cts.Token);
 
@@ -584,7 +584,8 @@ bloğunun ALTINA:
 dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
   --filter FullyQualifiedName~NetgsmAccountVerifierTests
 ```
-Beklenen: PASS (11 test — Görev 1'in 7'si + buradaki 4).
+Beklenen: PASS (13 test — Görev 1'in 9'u + buradaki 4; Görev 1 inceleme
+turlarında iki test daha ve iki durumlu bir `[Theory]` kazandı).
 
 - [ ] **Adım 5: Commit**
 

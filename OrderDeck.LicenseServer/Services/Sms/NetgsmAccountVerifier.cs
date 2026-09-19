@@ -111,6 +111,20 @@ public sealed class NetgsmAccountVerifier
                      + "Abone numarası, API şifresi ve marka kodunu kontrol edin.",
             });
         }
+        catch (Exception ex) when (ex is HttpRequestException
+                                     or TaskCanceledException
+                                     or System.Text.Json.JsonException)
+        {
+            // İptal GERÇEKTEN istendiyse yutma: kapanış turu her hesaba
+            // "ulaşılamadı" yazmamalı.
+            if (ct.IsCancellationRequested) throw;
+
+            _log.LogWarning(ex, "Netgsm doğrulaması ulaşılamadı: lisans={LicenseId}",
+                account.LicenseId);
+            return new NetgsmVerifyResult(NetgsmVerifyOutcome.Unavailable,
+                "İYS'ye şu an ulaşılamadı. Kurulumunuz kapatılmadı, doğrulama "
+                + "kendiliğinden tekrar denenecek.");
+        }
     }
 
     /// <summary>
