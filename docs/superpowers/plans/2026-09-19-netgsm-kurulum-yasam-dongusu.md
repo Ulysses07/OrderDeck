@@ -2640,6 +2640,12 @@ da al:
 `DbUpdateConcurrencyException` için `using Microsoft.EntityFrameworkCore;`
 yeterli, zaten using listesinde var. `EntityState`'e artık ihtiyaç yok.
 
+Controller'ın using listesinde `OrderDeck.LicenseServer.Services.Sms` YOK
+(Görev 4 gerektirmiyordu) — `NetgsmAccountService`, `NetgsmAccountVerifier`,
+`NetgsmVerifyResult` ve `NetgsmVerifyOutcome` için eklenmeli. `IysAccountContext`
+için ek using gerekmez: `Services.Iys.IysAccountContext` göreli ad
+`OrderDeck.LicenseServer.Services.Iys`'e çözülüyor.
+
 `NetgsmAccountService`'e sabiti ekle (Görev 9 da kullanacak):
 
 ```csharp
@@ -2658,8 +2664,9 @@ yeterli, zaten using listesinde var. `EntityState`'e artık ihtiyaç yok.
 dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
   --filter "FullyQualifiedName~PanelNetgsmAccount"
 ```
-Beklenen: PASS (17 test — Görev 4'ün 8'i + buradaki 9; `Panel_kaydi_...`
-bir `[Theory]`, iki vaka sayılır).
+Beklenen: PASS (**18 test** — Görev 4'ün 8'i + buradaki 10). Bu dosyada 9 test
+ÜYESİ var ama `Panel_kaydi_...` bir `[Theory]` ve iki `[InlineData]` taşıyor,
+yani iki vaka sayılır: 8 + 8 + 2 = 18. (2026-09-19 koşusu: 18/18 PASS.)
 
 - [ ] **Adım 5: Commit**
 

@@ -28,6 +28,12 @@ public sealed class NetgsmAccountService
     /// yeni bir purpose sabiti tanımlanır.</para></summary>
     private const string PasswordProtectorPurpose = "OrderDeck.Netgsm.Password.v1";
 
+    /// <summary>Şifre çözülemediğinde panelde gösterilen metin. Hesabın
+    /// <c>Status</c>'üne DOKUNULMAZ — gerekçe
+    /// <see cref="TryUnprotectPassword"/> doc'unda.</summary>
+    public const string UndecryptableMessage =
+        "Saklı Netgsm şifresi çözülemedi. Kimlik bilgilerini panelden tekrar girin.";
+
     private readonly LicenseDbContext _db;
     private readonly IDataProtector _protector;
 

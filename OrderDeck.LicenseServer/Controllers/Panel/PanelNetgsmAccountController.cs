@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Sms;
 
 namespace OrderDeck.LicenseServer.Controllers.Panel;
 
@@ -24,8 +25,16 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 public sealed class PanelNetgsmAccountController : ControllerBase
 {
     private readonly LicenseDbContext _db;
+    private readonly NetgsmAccountService _accounts;
+    private readonly NetgsmAccountVerifier _verifier;
 
-    public PanelNetgsmAccountController(LicenseDbContext db) => _db = db;
+    public PanelNetgsmAccountController(
+        LicenseDbContext db, NetgsmAccountService accounts, NetgsmAccountVerifier verifier)
+    {
+        _db = db;
+        _accounts = accounts;
+        _verifier = verifier;
+    }
 
     /// <param name="Status">none | failed | verified | disabled.</param>
     /// <param name="SmsEnabled">Yetki tablosunun (spec §2.1) tek cevabı:
@@ -59,6 +68,116 @@ public sealed class PanelNetgsmAccountController : ControllerBase
             .FirstOrDefaultAsync(a => a.LicenseId == licenseId, ct);
 
         return Ok(ToView(acc));
+    }
+
+    public sealed record SaveRequest(
+        string UserCode, string? Password, string Header, string BrandCode);
+
+    [HttpPut]
+    public async Task<IActionResult> SaveAsync([FromBody] SaveRequest req, CancellationToken ct)
+    {
+        if (OwnerOnly() is { } forbidden) return forbidden;
+
+        var licenseId = await PanelLicenseScope.ResolveAsync(_db, User.GetTenantCustomerId(), ct);
+        if (licenseId is null) return Problem(title: "no-active-license", statusCode: 400);
+
+        var userCode = (req.UserCode ?? "").Trim();
+        var header = (req.Header ?? "").Trim();
+        var brandCode = (req.BrandCode ?? "").Trim();
+
+        if (userCode.Length is 0 or > 32)
+            return Problem(title: "invalid-user-code",
+                detail: "Netgsm abone numarası zorunlu (en fazla 32 karakter).", statusCode: 400);
+        if (header.Length is 0 or > 11)
+            return Problem(title: "invalid-header",
+                detail: "Gönderici başlığı zorunlu (en fazla 11 karakter).", statusCode: 400);
+        // Rakam dışı karakteri kapıda kesiyoruz: DB'deki
+        // CK_NetgsmAccounts_BrandCode aynı kuralı uyguluyor ama oraya varmak
+        // DbUpdateException → 500 demek olurdu.
+        if (brandCode.Length is 0 or > 16 || !brandCode.All(char.IsAsciiDigit))
+            return Problem(title: "invalid-brand-code",
+                detail: "İYS marka kodu yalnız rakamlardan oluşur.", statusCode: 400);
+
+        // --- Doğrulama penceresini KAPAT: SÜRÜM JETONU, reload DEĞİL ---
+        // VerifyAsync bir AĞ çağrısı; saniyeler sürebilir. O aralıkta satır
+        // değişmiş olabilir ve sonucu körlemesine yazmanın üç somut zararı var:
+        //
+        //  1. Admin bu arada hesabı `Disabled` yaptıysa, bizim `Ok`'umuz kapatma
+        //     anahtarını sessizce geri alır — Görev 6'nın "Disabled yapışkan"
+        //     garantisi tam da burada çöker.
+        //  2. Aynı yayıncıdan ikinci bir PUT başka kimlikleri yazdıysa, bizim
+        //     `Ok`'umuz BAŞKASININ doğrulanmamış kimliklerini `Verified` yapar.
+        //     EF yalnız değişen sütunları yazdığı için `UserCode` korunur ama
+        //     satır yine de açılır: fail-closed sözleşmesi delinir.
+        //  3. O ikinci PUT yalnız **parolayı** değiştirdiyse alan karşılaştırması
+        //     bunu göremez: `UserCode` ve `BrandCode` aynı kalır, satır açılır ve
+        //     hiç doğrulanmamış bir parola `Verified` damgası alır.
+        //
+        // Bu yüzden `ReloadAsync` + alan karşılaştırması YAPMIYORUZ. Reload,
+        // EF'in ÖZGÜN değerlerini de tazeler — yani tam da yarışı yakalayacak
+        // kanıtı siler. Onun yerine `UpsertAsync`'ten dönen İZLENEN nesnenin
+        // özgün `UpdatedAt` değeri son yazıma kadar korunur; Görev 3'te eklenen
+        // eşzamanlılık jetonu `WHERE UpdatedAt = @original` üretir. Araya giren
+        // HERHANGİ bir yazım (parola dahil) sürümü ilerletmiş olur ve
+        // `SaveChanges` sıfır satır etkiler → `DbUpdateConcurrencyException`.
+        try
+        {
+            NetgsmAccount account;
+            try
+            {
+                account = await _accounts.UpsertAsync(
+                    licenseId.Value, userCode, req.Password, header, brandCode, ct);
+            }
+            catch (ArgumentException)
+            {
+                return Problem(title: "password-required",
+                    detail: "İlk kayıtta Netgsm API şifresi zorunlu.", statusCode: 400);
+            }
+
+            // Satır şu an Failed: doğrulama düşse bile kapı KAPALI kalır.
+            // Şifre çözülemezse DIŞ ÇAĞRI YAPILMAZ — ama erken `return`
+            // etmiyoruz: `LastError` yazımı da aynı CAS korumasından geçmeli,
+            // yoksa bayat bir istek kapatılmış hesaba hata metni yazabilir.
+            var password = _accounts.TryUnprotectPassword(account.PasswordProtected);
+
+            var result = password is null
+                ? new NetgsmVerifyResult(
+                    NetgsmVerifyOutcome.Unavailable, NetgsmAccountService.UndecryptableMessage)
+                : await _verifier.VerifyAsync(
+                    new Services.Iys.IysAccountContext(
+                        account.LicenseId, account.UserCode, password, account.BrandCode),
+                    ct);
+
+            if (result.Outcome == NetgsmVerifyOutcome.Ok)
+            {
+                account.Status = NetgsmAccountStatus.Verified;
+                account.LastVerifiedAt = DateTimeOffset.UtcNow;
+                account.LastError = null;
+            }
+            else
+            {
+                account.LastError = result.Message;
+            }
+
+            // Sonuç başka hiçbir sütunu değiştirmese bile (örn. `Failed` satıra
+            // AYNI `LastError` yazıldı) bir UPDATE üretilmeli: UPDATE yoksa
+            // `WHERE UpdatedAt = @original` hiç koşmaz ve CAS sessizce atlanır.
+            // `IsModified = true` damgalamayı da tetikler (Görev 3'teki
+            // `StampNetgsmAccountVersions` yalnız `Modified` girdilere bakar).
+            _db.Entry(account).Property(a => a.UpdatedAt).IsModified = true;
+            await _db.SaveChangesAsync(ct);
+
+            return Ok(ToView(account));
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // Doğruladığımız sürüm artık satırda durmuyor. Sonucu ATIYORUZ —
+            // yazmak, yukarıdaki üç zarardan birini üretmek olurdu.
+            _db.ChangeTracker.Clear();
+            return Problem(title: "verification-superseded",
+                detail: "Kurulum, doğrulama sürerken değişti. Formu tekrar kaydedin.",
+                statusCode: 409);
+        }
     }
 
     internal static AccountView ToView(NetgsmAccount? acc) => acc is null
