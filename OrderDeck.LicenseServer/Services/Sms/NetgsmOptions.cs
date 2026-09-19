@@ -3,6 +3,11 @@ namespace OrderDeck.LicenseServer.Services.Sms;
 /// <summary>
 /// Netgsm REST API kimlik bilgileri. Prod'da VPS .env'den bind edilir
 /// (<c>Netgsm__UserCode</c> vb.); dev'de boş kalır ve Sms:Provider=log olur.
+///
+/// <para><b>Burada marka kodu YOKTUR.</b> İYS markası yayıncı başınadır ve
+/// <c>NetgsmAccount.BrandCode</c> sütununda durur. Global bir <c>BrandCode</c>
+/// özelliği, tüm yayıncıların onaylarını tek markaya yazan eski tek kiracılı
+/// davranışı sessizce geri getirirdi.</para>
 /// </summary>
 public sealed class NetgsmOptions
 {
@@ -25,15 +30,6 @@ public sealed class NetgsmOptions
     /// <summary>Mesaj encoding. Türkçe karakter için "TR" (mesaj 70 haneye düşer).
     /// Boş = GSM-7 (160 hane). OTP mesajı Türkçe karaktersiz olduğundan boş kalır.</summary>
     public string? Encoding { get; set; }
-
-    /// <summary>
-    /// İYS marka kodu (İYS'de "brandCode"). Değer yalnız yapılandırmadan gelir
-    /// (<c>Netgsm__BrandCode</c>) — kodda gömülü marka YOK, çünkü marka ileride
-    /// ORDERDECK olacak ve izinler marka bazında ayrı tutuluyor (aynı numara bir
-    /// markada ONAY, diğerinde RET olabilir).
-    /// Boş bırakılırsa İYS boru hattı kapalıdır.
-    /// </summary>
-    public string BrandCode { get; set; } = "";
 
     /// <summary>İYS onay kaynağı kodu. Web formu ve mobil kayıt için HS_WEB.</summary>
     public string IysSourceCode { get; set; } = "HS_WEB";

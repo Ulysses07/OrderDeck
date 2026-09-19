@@ -1,7 +1,7 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Iys;
 
 namespace OrderDeck.LicenseServer.Services.Sms;
@@ -36,21 +36,21 @@ public sealed class SmsCampaignSendJob
     private readonly LicenseDbContext _db;
     private readonly ISmsSender _sms;
     private readonly LicenseSmsBalanceService _balance;
+    private readonly NetgsmAccountService _accounts;
     private readonly ILogger<SmsCampaignSendJob> _log;
-    private readonly string _iysBrandCode;
 
     public SmsCampaignSendJob(
         LicenseDbContext db,
         ISmsSender sms,
         LicenseSmsBalanceService balance,
-        IOptions<NetgsmOptions> netgsm,
+        NetgsmAccountService accounts,
         ILogger<SmsCampaignSendJob> log)
     {
         _db = db;
         _sms = sms;
         _balance = balance;
+        _accounts = accounts;
         _log = log;
-        _iysBrandCode = netgsm.Value.BrandCode;
     }
 
     public async Task RunAsync(Guid campaignId, CancellationToken ct = default)
@@ -103,9 +103,34 @@ public sealed class SmsCampaignSendJob
         // Aradaki geri çekme ya da İYS RET'i burada okunur. Tek sorguyla
         // çekiliyor — alıcı başına sorgu, bin kişilik kampanyada bin gidiş.
         var phones = recipients.Select(r => r.Phone).Distinct().ToList();
-        var consents = await _db.IysConsents
-            .Where(c => c.BrandCode == _iysBrandCode && phones.Contains(c.Recipient))
-            .ToDictionaryAsync(c => c.Recipient, ct);
+
+        // Marka KAMPANYANIN LİSANSINDAN gelir, global yapılandırmadan değil.
+        // İzin marka başına tutulur: başka bir markanın ONAY'ıyla bu kampanyanın
+        // kapısını açmak, kişiye hiç izin vermediği bir yayıncıdan ticari SMS
+        // göndermek demektir (6563 ihlali).
+        var brandCode = await _accounts.GetBrandCodeAsync(campaign.LicenseId, ct);
+        if (brandCode is null)
+        {
+            _log.LogWarning(
+                "SmsCampaignSendJob: campaign {Id} lisansının doğrulanmış İYS markası yok; "
+                + "tüm alıcılar kapıda kalacak", campaignId);
+        }
+
+        var consents = brandCode is null
+            ? new Dictionary<string, IysConsent>()
+            : await _db.IysConsents
+                // Kanal ve alıcı tipi de süzülüyor: tekil indeks
+                // (BrandCode, ChannelType, RecipientType, Recipient) aynı marka
+                // ve telefon için birden çok satıra izin verir. Süzgeç olmasaydı
+                // ileride doğacak bir EPOSTA/TACIR satırı ya SMS kapısını
+                // e-posta onayıyla açardı, ya da ToDictionaryAsync çift anahtarla
+                // patlardı. Bugün toplayıcı yalnız MESAJ/BIREYSEL yazdığı için
+                // ikisi de görünmez — "kurulum zaten sağlıyor" tuzağı.
+                .Where(c => c.BrandCode == brandCode
+                            && c.ChannelType == "MESAJ"
+                            && c.RecipientType == "BIREYSEL"
+                            && phones.Contains(c.Recipient))
+                .ToDictionaryAsync(c => c.Recipient, ct);
 
         foreach (var r in recipients)
         {
@@ -116,7 +141,9 @@ public sealed class SmsCampaignSendJob
                 // sayıyor, yani gönderilmeyen mesajın kredisi kendiliğinden
                 // yayıncıya dönüyor. Yeni bir durum eklemek o yolu ikizlerdi.
                 r.Status = "failed";
-                r.Error = consent is null ? "iys-consent-missing" : "iys-consent-not-onay";
+                r.Error = brandCode is null
+                    ? "iys-brand-missing"
+                    : consent is null ? "iys-consent-missing" : "iys-consent-not-onay";
                 r.SentAt = null;
                 campaign.ClaimedAt = DateTimeOffset.UtcNow;
                 await _db.SaveChangesAsync(ct);

@@ -43,11 +43,41 @@ public sealed class IysConfigurationException : Exception
     public IysConfigurationException(string code, string message) : base(message) => Code = code;
 }
 
+/// <summary>
+/// Tek bir İYS çağrısının <b>hangi yayıncı adına</b> yapıldığı.
+///
+/// <para>İstemci kimliği global config'ten OKUMAZ; çağıran vermek zorundadır.
+/// "Yanlış markaya sorma" hatası böylece derleme zamanında imkânsız olur:
+/// hesabı elde etmenin tek yolu <c>NetgsmAccountService</c>, o da her zaman
+/// tek bir lisansa bağlı satır döner.</para>
+///
+/// <para><see cref="LicenseId"/> çağrının kendisinde kullanılmaz — log ve
+/// olay satırlarının hangi kiracıya ait olduğunu yazabilmek için taşınır.</para>
+/// </summary>
+public sealed record IysAccountContext(
+    Guid LicenseId,
+    string UserCode,
+    string Password,
+    string BrandCode);
+
 public interface IIysClient
 {
-    /// <summary>Toplu izin bildirimi. Tek HTTP isteği; <paramref name="items"/> en fazla 20 satır.</summary>
-    Task<IysAddResult> AddAsync(IReadOnlyList<IysConsentRecord> items, CancellationToken ct = default);
+    /// <summary>
+    /// Toplu izin bildirimi. Tek HTTP isteği; <paramref name="items"/> en fazla 20 satır.
+    /// İstek <paramref name="account"/> markası altında yapılır.
+    /// </summary>
+    Task<IysAddResult> AddAsync(
+        IysAccountContext account,
+        IReadOnlyList<IysConsentRecord> items,
+        CancellationToken ct = default);
 
-    /// <summary>Toplu izin sorgusu. Yanıtta olmayan alıcı <see cref="IysConsentStatus.Unknown"/> sayılır.</summary>
-    Task<IysSearchResult> SearchAsync(IReadOnlyList<string> recipients, CancellationToken ct = default);
+    /// <summary>
+    /// Toplu izin sorgusu. Yanıtta olmayan alıcı <see cref="IysConsentStatus.Unknown"/> sayılır.
+    /// Sorgu <paramref name="account"/> markası altında yapılır — onay marka başına
+    /// tutulduğu için başka markaya sormak anlamsız bir cevap döndürür.
+    /// </summary>
+    Task<IysSearchResult> SearchAsync(
+        IysAccountContext account,
+        IReadOnlyList<string> recipients,
+        CancellationToken ct = default);
 }

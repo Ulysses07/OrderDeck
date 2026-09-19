@@ -27,6 +27,29 @@ public sealed class NetgsmSmsSender : ISmsSender
 
     public async Task SendAsync(string toPhone, string message, SmsKind kind, CancellationToken ct = default)
     {
+        // KİLİT — kiracı başına gönderici (ITenantSmsSender, Plan 3) inene kadar
+        // ticari yol KAPALI. Bu gönderici PLATFORMUN Netgsm hesabından yazıyor
+        // (_opt.Header / _opt.UserCode). Netgsm ticari iletiyi GÖNDEREN BAŞLIĞIN
+        // İYS markasında değerlendirir; onaylar ise yayıncının kendi markasına
+        // itiliyor. İkisi eşleşmediği için ticari SMS, kişinin o markaya hiç
+        // onay vermediği hâlde çıkabilir — 6563 ihlali, üstelik sessiz.
+        //
+        // Kilit burada, kampanya işinde değil: platformun hesabından giden her
+        // yolun boğazı bu metot. Kampanya işine konsaydı yarın eklenecek başka
+        // bir çağıran kilidin yanından geçerdi. Ayrıca markayı UserCode
+        // karşılaştırmasıyla "tahmin etmeye" gerek kalmıyor (Netgsm'in bağladığı
+        // şey başlık, UserCode değil) — yani Task 9'da temizlenen global config
+        // bağımlılığı geri gelmiyor.
+        //
+        // Bugün davranış değişmiyor: boru hattı kapalı, her alıcı zaten İYS
+        // kapısında düşüyor. Kilit, elle Verified satır açıldığı an kapının
+        // yanlış-marka gönderim yolunu da açmasını engelliyor.
+        //
+        // KALDIRMA KOŞULU: gönderim başlığı ve kimlik bilgileri kampanyanın
+        // kendi lisansının NetgsmAccount satırından çözülür hâle geldiğinde.
+        if (kind == SmsKind.Commercial)
+            throw new InvalidOperationException("iys-tenant-sender-missing");
+
         // Netgsm 10 haneli (5XXXXXXXXX) bekler; PhoneNormalizer +90XXXXXXXXXX verir.
         var no = ToNetgsmNo(toPhone);
 

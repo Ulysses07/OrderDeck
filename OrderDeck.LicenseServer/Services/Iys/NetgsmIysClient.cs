@@ -16,6 +16,11 @@ namespace OrderDeck.LicenseServer.Services.Iys;
 ///
 /// <para>Ham yanıt log'a değil çağırana döner; olay tablosuna orada yazılır.
 /// Log'a yalnız maskeli telefon çıkar (KVKK).</para>
+///
+/// <para><b>Kimlik global DEĞİL.</b> Her çağrı bir
+/// <see cref="IysAccountContext"/> alır; <c>_opt</c>'tan yalnız
+/// <see cref="NetgsmOptions.BaseUrl"/> okunur, çünkü Netgsm'in API adresi
+/// tüm yayıncılar için aynıdır.</para>
 /// </summary>
 public sealed class NetgsmIysClient : IIysClient
 {
@@ -34,7 +39,8 @@ public sealed class NetgsmIysClient : IIysClient
     }
 
     public async Task<IysAddResult> AddAsync(
-        IReadOnlyList<IysConsentRecord> items, CancellationToken ct = default)
+        IysAccountContext account, IReadOnlyList<IysConsentRecord> items,
+        CancellationToken ct = default)
     {
         var data = items.Select(i => new Dictionary<string, object?>
         {
@@ -50,12 +56,13 @@ public sealed class NetgsmIysClient : IIysClient
             ["refid"] = i.RefId,
         }).ToArray();
 
-        var (code, body) = await PostAsync("add", data, ct);
+        var (code, body) = await PostAsync(account, "add", data, ct);
         return new IysAddResult(code, body, Queued: code == "0");
     }
 
     public async Task<IysSearchResult> SearchAsync(
-        IReadOnlyList<string> recipients, CancellationToken ct = default)
+        IysAccountContext account, IReadOnlyList<string> recipients,
+        CancellationToken ct = default)
     {
         var data = recipients.Select(r => new Dictionary<string, object?>
         {
@@ -64,7 +71,7 @@ public sealed class NetgsmIysClient : IIysClient
             ["recipientType"] = "BIREYSEL",
         }).ToArray();
 
-        var (code, body) = await PostAsync("search", data, ct);
+        var (code, body) = await PostAsync(account, "search", data, ct);
 
         var statuses = new Dictionary<string, IysConsentStatus>(StringComparer.Ordinal);
         try
@@ -101,15 +108,15 @@ public sealed class NetgsmIysClient : IIysClient
     }
 
     private async Task<(string Code, string Body)> PostAsync(
-        string path, object data, CancellationToken ct)
+        IysAccountContext account, string path, object data, CancellationToken ct)
     {
         var payload = new
         {
             header = new
             {
-                username = _opt.UserCode,
-                password = _opt.Password,
-                brandCode = _opt.BrandCode,
+                username = account.UserCode,
+                password = account.Password,
+                brandCode = account.BrandCode,
             },
             body = new { data },
         };
@@ -126,10 +133,12 @@ public sealed class NetgsmIysClient : IIysClient
         var code = ReadCode(body);
 
         // Kalıcı YAPILANDIRMA hatası: her kayıt aynı hatayla düşer, sırayla
-        // denemek yalnız zaman harcar. Boru hattı durur, alarm çalar.
+        // denemek yalnız zaman harcar. Hangi markanın düştüğü mesaja yazılır:
+        // çok kiracıda "İYS ayarı bozuk" tek başına eyleme geçirilebilir değil.
         if (code is "30" or "60")
             throw new IysConfigurationException(code,
-                $"İYS yapılandırma hatası (code={code}). Marka kodu/kimlik kontrol edilmeli.");
+                $"İYS yapılandırma hatası (code={code}, brand={account.BrandCode}). "
+                + "Marka kodu/kimlik kontrol edilmeli.");
 
         return (code, body.Length > 2000 ? body[..2000] : body);
     }

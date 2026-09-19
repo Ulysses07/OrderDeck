@@ -38,8 +38,13 @@ public class NetgsmIysClientTests
         UserCode = $"user-{Guid.NewGuid():N}",
         Password = $"pw-{Guid.NewGuid():N}",
         BaseUrl = "https://api.netgsm.com.tr",
-        BrandCode = "731734",
+        // Marka burada YOK: Task 9 NetgsmOptions.BrandCode'u sildi. Global marka
+        // diye bir şey kalmadığı için "isteğe sızma" ihtimali de artık derleme
+        // düzeyinde imkânsız.
     };
+
+    private static IysAccountContext Account(string brandCode) => new(
+        Guid.NewGuid(), $"user-{Guid.NewGuid():N}", $"pw-{Guid.NewGuid():N}", brandCode);
 
     private static (NetgsmIysClient Client, CapturingHandler Handler) Build(string respBody)
     {
@@ -55,17 +60,54 @@ public class NetgsmIysClientTests
         "HS_WEB", Guid.NewGuid().ToString("N"));
 
     [Fact]
+    public async Task Istek_basliginin_UCU_de_hesap_baglamindan_gelir()
+    {
+        // Çok kiracılılığın kalbi: marka, kullanıcı ve şifrenin ÜÇÜ de aynı
+        // bağlamdan gelmeli. Biri sabitlenirse B yayıncısı için dönülen tur
+        // yanlış kimlikle sorar ve gelen cevap B'nin satırına yazılır —
+        // hiçbir hata fırlatmadan veri bozulur.
+        //
+        // (Adı eskiden "global configten DEĞİL" idi; Task 9 NetgsmOptions'taki
+        // global BrandCode'u sildiği için o sızıntının bekçiliğini artık
+        // derleyici yapıyor, test değil.)
+        var (client, handler) = Build("{\"code\":\"0\"}");
+        var account = Account("763208");   // markanın TEK kaynağı bu bağlam
+
+        await client.AddAsync(account, new[] { Rec("+905551112233") });
+
+        using var doc = JsonDocument.Parse(handler.Body!);
+        var header = doc.RootElement.GetProperty("header");
+        header.GetProperty("brandCode").GetString().Should().Be("763208");
+        header.GetProperty("username").GetString().Should().Be(account.UserCode);
+        header.GetProperty("password").GetString().Should().Be(account.Password);
+    }
+
+    [Fact]
+    public async Task SearchAsync_de_hesap_baglamini_kullanir()
+    {
+        var (client, handler) = Build("{\"code\":\"0\",\"query\":[]}");
+        var account = Account("763208");
+
+        await client.SearchAsync(account, new[] { "+905551112233" });
+
+        using var doc = JsonDocument.Parse(handler.Body!);
+        doc.RootElement.GetProperty("header").GetProperty("brandCode")
+            .GetString().Should().Be("763208");
+    }
+
+    [Fact]
     public async Task AddAsync_kimligi_govdede_yollar_ve_uca_gider()
     {
         var (client, handler) = Build("{\"code\":\"0\"}");
+        var account = Account("731734");
 
-        await client.AddAsync(new[] { Rec("+905551112233") });
+        await client.AddAsync(account, new[] { Rec("+905551112233") });
 
         handler.Uri!.ToString().Should().Be("https://api.netgsm.com.tr/iys/add");
         using var doc = JsonDocument.Parse(handler.Body!);
         var header = doc.RootElement.GetProperty("header");
         header.GetProperty("brandCode").GetString().Should().Be("731734");
-        header.TryGetProperty("username", out _).Should().BeTrue();
+        header.GetProperty("username").GetString().Should().Be(account.UserCode);
 
         var row = doc.RootElement.GetProperty("body").GetProperty("data")[0];
         row.GetProperty("recipient").GetString().Should().Be("+905551112233");
@@ -84,7 +126,7 @@ public class NetgsmIysClientTests
         // burada verilemez — yalnız /iys/search verebilir.
         var (client, _) = Build("{\"code\":\"0\",\"error\":\"false\"}");
 
-        var result = await client.AddAsync(new[] { Rec("+905551112233") });
+        var result = await client.AddAsync(Account("731734"), new[] { Rec("+905551112233") });
 
         result.Queued.Should().BeTrue();
         result.Code.Should().Be("0");
@@ -104,7 +146,8 @@ public class NetgsmIysClientTests
            "type":"MESAJ","recipient":"+905000000000","transactionId":"6716aee7"}]}
         """);
 
-        var result = await client.SearchAsync(new[] { "+905310826728", "+905000000000" });
+        var result = await client.SearchAsync(
+            Account("731734"), new[] { "+905310826728", "+905000000000" });
 
         result.Statuses["+905310826728"].Should().Be(IysConsentStatus.Onay);
         result.Statuses["+905000000000"].Should().Be(IysConsentStatus.Ret);
@@ -115,7 +158,7 @@ public class NetgsmIysClientTests
     {
         var (client, _) = Build("{\"code\":\"0\",\"query\":[]}");
 
-        var result = await client.SearchAsync(new[] { "+905551112233" });
+        var result = await client.SearchAsync(Account("731734"), new[] { "+905551112233" });
 
         result.Statuses.Should().NotContainKey("+905551112233");
     }
@@ -127,7 +170,8 @@ public class NetgsmIysClientTests
     {
         var (client, _) = Build($"{{\"code\":\"{code}\"}}");
 
-        var act = async () => await client.AddAsync(new[] { Rec("+905551112233") });
+        var act = async () => await client.AddAsync(
+            Account("731734"), new[] { Rec("+905551112233") });
 
         await act.Should().ThrowAsync<IysConfigurationException>();
     }

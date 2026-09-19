@@ -16,14 +16,18 @@ public sealed class NullIysClient : IIysClient
     public NullIysClient(ILogger<NullIysClient> log) => _log = log;
 
     public Task<IysAddResult> AddAsync(
-        IReadOnlyList<IysConsentRecord> items, CancellationToken ct = default)
+        IysAccountContext account, IReadOnlyList<IysConsentRecord> items,
+        CancellationToken ct = default)
     {
-        _log.LogInformation("İYS yapılandırılmamış: {Count} kayıt gönderilmedi", items.Count);
+        _log.LogInformation(
+            "İYS yapılandırılmamış: {Count} kayıt gönderilmedi (brand={Brand})",
+            items.Count, account.BrandCode);
         return Task.FromResult(new IysAddResult("not-configured", "", Queued: false));
     }
 
     public Task<IysSearchResult> SearchAsync(
-        IReadOnlyList<string> recipients, CancellationToken ct = default)
+        IysAccountContext account, IReadOnlyList<string> recipients,
+        CancellationToken ct = default)
         => Task.FromResult(new IysSearchResult(
             "not-configured", "", new Dictionary<string, IysConsentStatus>()));
 }

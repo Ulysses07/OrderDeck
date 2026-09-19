@@ -44,23 +44,33 @@ public sealed class IysConsentCollector
     public const int PushDeadlineBusinessDays = 3;
 
     private readonly LicenseDbContext _db;
+    private readonly NetgsmAccountService _accounts;
     private readonly NetgsmOptions _opt;
     private readonly ILogger<IysConsentCollector> _log;
 
     public IysConsentCollector(
-        LicenseDbContext db, IOptions<NetgsmOptions> opt, ILogger<IysConsentCollector> log)
+        LicenseDbContext db, NetgsmAccountService accounts,
+        IOptions<NetgsmOptions> opt, ILogger<IysConsentCollector> log)
     {
         _db = db;
+        _accounts = accounts;
         _opt = opt.Value;
         _log = log;
     }
 
+    /// <param name="licenseId">Onayın ait olduğu yayıncı. Marka BUNDAN çözülür;
+    /// çözülemezse satır açılmaz (spec §5.1).</param>
     public async Task RecordAsync(
-        string? rawPhone, bool consented, DateTimeOffset occurredAt,
+        Guid licenseId, string? rawPhone, bool consented, DateTimeOffset occurredAt,
         string sourceTable, Guid sourceId,
         string? ip, string? userAgent, CancellationToken ct = default)
     {
         var status = consented ? IysConsentStatus.Onay : IysConsentStatus.Ret;
+        // Sütun nullable ve "bilinmiyor"un tek temsili null. Çağıranların bir
+        // kısmı lisansı çözemediğinde Guid.Empty geçiyor (bkz. IntakeFormService:
+        // çağrıyı atlamak ispat olayını da yazmazdı); iki ayrı "bilinmiyor"
+        // değeri admin sorgusunu ve ileriki analizi ikiye bölerdi.
+        Guid? eventLicenseId = licenseId == Guid.Empty ? null : licenseId;
         // Sunucu tarafının kendi normalize edicisi — OrderDeck.Core bu projeden
         // referanslı değil. İki normalize edici aynı kuralı paylaşır (Faz 1'de
         // ikisi de düzeltildi, test kümeleri eşlenik).
@@ -76,6 +86,7 @@ public sealed class IysConsentCollector
             _db.IysConsentEvents.Add(new IysConsentEvent
             {
                 Id = Guid.NewGuid(),
+                LicenseId = eventLicenseId,
                 Recipient = Truncate(rawPhone ?? "", 20) ?? "",
                 OccurredAt = occurredAt,
                 EventType = consented ? IysConsentEventType.LocalConsent : IysConsentEventType.LocalRevoke,
@@ -92,9 +103,17 @@ public sealed class IysConsentCollector
             return;
         }
 
-        _db.IysConsentEvents.Add(new IysConsentEvent
+        // Marka artık global ayardan değil yayıncının hesabından geliyor.
+        // Çözülemezse satır AÇMIYORUZ: BrandCode="" yazmak, kurulumu bitmemiş
+        // tüm yayıncıların aynı numaraya ait onayını tekil index yüzünden TEK
+        // satıra çakıştırır ve B'nin RET'i A'nın ONAY'ını sessizce ezer.
+        var brandCode = await _accounts.GetBrandCodeAsync(licenseId, ct);
+
+        var ev = new IysConsentEvent
         {
             Id = Guid.NewGuid(),
+            LicenseId = eventLicenseId,
+            BrandCode = brandCode,
             Recipient = phone,
             OccurredAt = occurredAt,
             EventType = consented ? IysConsentEventType.LocalConsent : IysConsentEventType.LocalRevoke,
@@ -103,10 +122,21 @@ public sealed class IysConsentCollector
             SourceId = sourceId,
             ProofIp = ip,
             ProofUserAgent = Truncate(userAgent, 512),
-        });
+        };
+        _db.IysConsentEvents.Add(ev);
+
+        if (brandCode is null)
+        {
+            // Bozuk telefon dalının aynısı: kayıt satırı yok, ispat olayı var.
+            // Yayıncı kurulumunu bitirince bu olaylar admin sayfasında görünür.
+            ev.ErrorCode = "no-brand";
+            _log.LogWarning(
+                "İYS: lisans {LicenseId} için doğrulanmış marka yok, kayıt açılmadı (kaynak={Source})",
+                licenseId, sourceTable);
+            return;
+        }
 
         var now = DateTimeOffset.UtcNow;
-        var brandCode = _opt.BrandCode;
         var row = await _db.IysConsents.FirstOrDefaultAsync(
             c => c.BrandCode == brandCode
                  && c.ChannelType == "MESAJ"
@@ -118,7 +148,7 @@ public sealed class IysConsentCollector
             row = new IysConsent
             {
                 Id = Guid.NewGuid(),
-                BrandCode = _opt.BrandCode,
+                BrandCode = brandCode,
                 ChannelType = "MESAJ",
                 RecipientType = "BIREYSEL",
                 Recipient = phone,
@@ -126,13 +156,19 @@ public sealed class IysConsentCollector
             };
             _db.IysConsents.Add(row);
         }
-        else if (occurredAt <= row.LastLocalEventAt)
+
+        // Olay hangi satıra ait — denetimde ONAY/RET karışmasın diye.
+        ev.IysConsentId = row.Id;
+
+        if (row.LastLocalEventAt != default && occurredAt <= row.LastLocalEventAt)
         {
             // Kural 1: RET kendiliğinden ONAY'a yükselmez. Durum yalnızca
             // LastLocalEventAt'ten DAHA YENİ bir olayla değişir; geç işlenen
             // eski bir onay reddi ezemez. Olay yine de yazıldı (yukarıda).
             return;
         }
+
+        var durumDegisti = row.Status != status;
 
         row.Status = status;
         row.LastLocalEventAt = occurredAt;
@@ -145,7 +181,19 @@ public sealed class IysConsentCollector
             row.PushDeadline = IysBusinessDays.Add(occurredAt, PushDeadlineBusinessDays);
         }
 
+        if (!durumDegisti && row.PushState is IysPushState.Pushed or IysPushState.Confirmed)
+        {
+            // Aynı beyanın tekrarı İYS'ye YENİ bir şey söylemez. Profil kaydı
+            // kutunun mevcut değerini her seferinde gönderdiği için aynı RET
+            // her kaydetmede yeniden itilirdi; bu hem gereksiz, hem de
+            // VerifyAttempts/LastError'ı sıfırlayarak kalıcı bir gönderim
+            // hatasını görünmez yapardı. Olay yine yazıldı — ispat bozulmadı.
+            return;
+        }
+
         // Yeni olay yeni push penceresi açar — Expired kalıcı yasak değildir.
+        // Pending/Failed/Expired hâlleri kasten dışarıda: beyan İYS'ye henüz
+        // ULAŞMAMIŞ demektir, tekrar da olsa pencerenin açılması doğrudur.
         // Ret de itilir (yasal kayıt), ama gönderim bunu beklemez: kapı
         // Status'u de okuduğu için mesaj zaten kesildi.
         row.PushState = IysPushState.Pending;

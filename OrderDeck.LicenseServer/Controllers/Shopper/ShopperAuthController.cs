@@ -182,7 +182,7 @@ public sealed class ShopperAuthController : ControllerBase
             if (req.SmsConsent)
             {
                 await _iys.RecordAsync(
-                    shopper.Phone, consented: true, occurredAt: now,
+                    license.Id, shopper.Phone, consented: true, occurredAt: now,
                     sourceTable: "Shopper", sourceId: shopper.Id,
                     ip: HttpContext.Connection.RemoteIpAddress?.ToString(),
                     userAgent: Request.Headers.UserAgent.ToString(), ct: ct);

@@ -50,6 +50,7 @@ public class LicenseDbContext : DbContext
     public DbSet<SmsCampaign> SmsCampaigns => Set<SmsCampaign>();
     public DbSet<SmsCampaignRecipient> SmsCampaignRecipients => Set<SmsCampaignRecipient>();
     public DbSet<WhatsAppAccount> WhatsAppAccounts => Set<WhatsAppAccount>();
+    public DbSet<NetgsmAccount> NetgsmAccounts => Set<NetgsmAccount>();
     public DbSet<InstagramAccount> InstagramAccounts => Set<InstagramAccount>();
     public DbSet<WaConversation> WaConversations => Set<WaConversation>();
     public DbSet<WaMessage> WaMessages => Set<WaMessage>();
@@ -550,7 +551,19 @@ public class LicenseDbContext : DbContext
             b.Property(e => e.ApiResponseCode).HasMaxLength(16);
             b.Property(e => e.ApiResponseBody).HasMaxLength(2000);
             b.Property(e => e.ErrorCode).HasMaxLength(32);
+            b.Property(e => e.BrandCode).HasMaxLength(16);
+            // "Bu numaranın TÜM markalardaki geçmişi" — kiracıdan bağımsız denetim.
             b.HasIndex(e => new { e.Recipient, e.OccurredAt });
+
+            // Kiracı kapsamlı denetim: "şu yayıncının şu numaraya ait olayları".
+            // Tarama korkusu değil — üstteki index bu sorguyu da seek'le karşılar
+            // (Recipient yüksek seçicilikte, LicenseId artık filtreye düşer).
+            // Kazanç, artık filtrenin kalkması: okunan her satır zaten doğru
+            // kiracıya ait olur. İki index birbirini gereksiz kılmıyor; ilki
+            // marka-üstü, ikincisi marka-içi sorunun yolu.
+            // Not: alıcısız kiracı taraması (WHERE LicenseId=@l ORDER BY OccurredAt)
+            // kolon sırası yüzünden yine sort yer — o sorgu gerekirse ayrı index ister.
+            b.HasIndex(e => new { e.LicenseId, e.Recipient, e.OccurredAt });
         });
 
         mb.Entity<ShopperBroadcasterLink>(b =>
@@ -806,6 +819,42 @@ public class LicenseDbContext : DbContext
             // Webhook yönlendirmesi bu alandan tenant bulur → global unique.
             b.HasIndex(a => a.PhoneNumberId).IsUnique();
             b.HasIndex(a => a.LicenseId);
+        });
+
+        mb.Entity<NetgsmAccount>(b =>
+        {
+            b.HasKey(a => a.Id);
+            b.HasOne(a => a.License).WithMany().HasForeignKey(a => a.LicenseId)
+             .OnDelete(DeleteBehavior.Cascade);
+            b.Property(a => a.UserCode).HasMaxLength(32).IsRequired();
+            b.Property(a => a.PasswordProtected).HasMaxLength(4000).IsRequired();
+            // Netgsm'de onaylı gönderici başlığı en fazla 11 karakter olabilir;
+            // kolon gerçeğinden geniş olmasın.
+            b.Property(a => a.Header).HasMaxLength(11).IsRequired();
+            // IysConsent.BrandCode ile AYNI uzunluk — ikisi eşleştiriliyor.
+            b.Property(a => a.BrandCode).HasMaxLength(16).IsRequired();
+            // IysConsent gibi STRING saklanır: admin SQL'inde ve yedek dökümünde
+            // "Verified" okunur, "1" değil. Enum olması şart — gönderim kapısı
+            // fail-closed, serbest metinde bir harf kayması SMS'i sessizce kapatır.
+            b.Property(a => a.Status).HasConversion<string>().HasMaxLength(16).IsRequired();
+            b.Property(a => a.LastError).HasMaxLength(500);
+            // Boş marka global tekil index'te bir yer kapar ve marka→hesap
+            // araması "" ile gerçek bir kiracının satırını döndürürdü.
+            //
+            // Yalnız "boş değil" yetmiyor: İYS marka kodları sayısal (731734),
+            // ama SQL Server karşılaştırmada SONDAKİ boşluğu yok sayarken BAŞTAKİ
+            // boşluğu saymaz — " 731734" tekil index'te ayrı bir anahtar olur.
+            // İki lisans işletme gözüyle aynı markayı tutabilir ve
+            // BrandCode == "731734" araması ikisinden yalnız birini görür; yani
+            // index'in var olma sebebi ortadan kalkar. Sayısala daraltmak hem
+            // baştaki boşluğu hem de diğer görünmez karakterleri kapatır.
+            b.ToTable(t => t.HasCheckConstraint(
+                "CK_NetgsmAccounts_BrandCode",
+                "LEN([BrandCode]) > 0 AND [BrandCode] NOT LIKE '%[^0-9]%'"));
+            // Bir lisans = bir hesap.
+            b.HasIndex(a => a.LicenseId).IsUnique();
+            // Marka → hesap araması tek satır dönmeli (push/verify işleri).
+            b.HasIndex(a => a.BrandCode).IsUnique();
         });
 
         mb.Entity<InstagramAccount>(b =>

@@ -1,5 +1,7 @@
 using FluentAssertions;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
@@ -15,33 +17,103 @@ public class IysConsentPushJobTests
     private sealed class FakeIysClient : IIysClient
     {
         public List<IReadOnlyList<IysConsentRecord>> AddCalls { get; } = new();
+        public List<IysAccountContext> AddAccounts { get; } = new();
         public Func<IReadOnlyList<IysConsentRecord>, IysAddResult>? AddBehavior { get; set; }
         public Exception? ThrowOnAdd { get; set; }
 
-        public Task<IysAddResult> AddAsync(IReadOnlyList<IysConsentRecord> items, CancellationToken ct = default)
+        /// <summary>Marka kodu → o markada fırlatılacak hata. Marka yalıtımı testleri için.</summary>
+        public Dictionary<string, Exception> ThrowByBrand { get; } = new();
+
+        public Task<IysAddResult> AddAsync(
+            IysAccountContext account, IReadOnlyList<IysConsentRecord> items,
+            CancellationToken ct = default)
         {
+            AddAccounts.Add(account);
             AddCalls.Add(items);
+            if (ThrowByBrand.TryGetValue(account.BrandCode, out var brandEx)) throw brandEx;
             if (ThrowOnAdd is not null) throw ThrowOnAdd;
             return Task.FromResult(AddBehavior?.Invoke(items)
                 ?? new IysAddResult("0", "{\"code\":\"0\"}", Queued: true));
         }
 
-        public Task<IysSearchResult> SearchAsync(IReadOnlyList<string> recipients, CancellationToken ct = default)
+        public Task<IysSearchResult> SearchAsync(
+            IysAccountContext account, IReadOnlyList<string> recipients,
+            CancellationToken ct = default)
             => Task.FromResult(new IysSearchResult("0", "{}", new Dictionary<string, IysConsentStatus>()));
     }
 
-    private static LicenseDbContext NewDb()
+    /// <summary>
+    /// Bir markanın <c>SaveChangesAsync</c>'ini BİR KEZ patlatır: gerçek
+    /// hayatta kirli change tracker'ı bırakan yol budur. Tek kez olması şart —
+    /// sonraki markanın kaydını da patlatsaydı sızıntı zaten oluşamaz, test
+    /// yanlış sebeple yeşil kalırdı. (Doğrulama işindeki ikizinin aynısı.)
+    /// </summary>
+    private sealed class FailOnceOnSaveInterceptor : SaveChangesInterceptor
+    {
+        private bool _fired;
+
+        public string? FailBrand { get; set; }
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result,
+            CancellationToken ct = default)
+        {
+            if (!_fired && FailBrand is not null
+                && eventData.Context!.ChangeTracker.Entries<IysConsentEvent>()
+                    .Any(e => e.State == EntityState.Added && e.Entity.BrandCode == FailBrand))
+            {
+                _fired = true;
+                throw new InvalidOperationException("veritabanı yazımı düştü");
+            }
+
+            return base.SavingChangesAsync(eventData, result, ct);
+        }
+    }
+
+    private static readonly Guid LicenseA = Guid.Parse("11111111-1111-1111-1111-111111111111");
+    private static readonly Guid LicenseB = Guid.Parse("22222222-2222-2222-2222-222222222222");
+    private const string BrandA = "731734";
+    private const string BrandB = "763208";
+
+    // Tek sağlayıcı: ProtectPassword ile korunan metni aynı anahtarla çözebilmek
+    // için testler boyunca paylaşılıyor. Her yeni Ephemeral örneği yeni anahtar üretir.
+    private static readonly IDataProtectionProvider Protection = new EphemeralDataProtectionProvider();
+
+    private static NetgsmAccountService Accounts(LicenseDbContext db) => new(db, Protection);
+
+    private static LicenseDbContext NewDb(string? name = null, params IInterceptor[] interceptors)
         => new(new DbContextOptionsBuilder<LicenseDbContext>()
-            .UseInMemoryDatabase($"iys-push-{Guid.NewGuid():N}").Options);
+            .UseInMemoryDatabase(name ?? $"iys-push-{Guid.NewGuid():N}")
+            .AddInterceptors(interceptors).Options);
 
     private static IysConsentPushJob Job(LicenseDbContext db, IIysClient client)
-        => new(db, client, Options.Create(new NetgsmOptions { BrandCode = "731734" }),
+        => new(db, client, Accounts(db), Options.Create(new NetgsmOptions()),
             NullLogger<IysConsentPushJob>.Instance);
 
-    private static IysConsent Pending(string phone) => new()
+    private static void SeedAccount(
+        LicenseDbContext db, Guid licenseId, string brandCode,
+        DateTimeOffset? createdAt = null)
+    {
+        var stamp = createdAt ?? DateTimeOffset.UtcNow;
+        db.NetgsmAccounts.Add(new NetgsmAccount
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = licenseId,
+            UserCode = $"user-{Guid.NewGuid():N}",
+            PasswordProtected = Accounts(db).ProtectPassword($"pw-{Guid.NewGuid():N}"),
+            Header = "ORDERDECK",
+            BrandCode = brandCode,
+            Status = NetgsmAccountStatus.Verified,
+            CreatedAt = stamp,
+            UpdatedAt = stamp,
+        });
+        db.SaveChanges();
+    }
+
+    private static IysConsent Pending(string phone, string brandCode = BrandA) => new()
     {
         Id = Guid.NewGuid(),
-        BrandCode = "731734",
+        BrandCode = brandCode,
         ChannelType = "MESAJ",
         RecipientType = "BIREYSEL",
         Recipient = phone,
@@ -58,10 +130,36 @@ public class IysConsentPushJobTests
     private static async Task<LicenseDbContext> SeedAsync(int count)
     {
         var db = NewDb();
+        SeedAccount(db, LicenseA, BrandA);
         for (var i = 0; i < count; i++)
             db.IysConsents.Add(Pending($"+90555{i:D7}"));
         await db.SaveChangesAsync();
         return db;
+    }
+
+    [Fact]
+    public async Task Hic_dogrulanmis_hesap_yokken_TEK_bir_istek_bile_gitmez()
+    {
+        // Boru hattı KAPALI doğuyor: bu değişiklik prod'a hiçbir NetgsmAccount
+        // satırı yazmadan çıkıyor ve satır açılana kadar tek bir İYS isteği bile
+        // olmamalı. Bekleyen kayıtlar VAR — yani iş "yapacak iş yok" diye değil,
+        // "kimin adına konuşacağımı bilmiyorum" diye susuyor. Markayı kaydın
+        // kendisinden (ya da global bir ayardan) türeten her "yardımcı"
+        // değişiklik bu testi kırar; kapıyı açma kararı elle NetgsmAccount
+        // satırı açmaktır.
+        using var db = NewDb();
+        db.IysConsents.Add(Pending("+905551110001", BrandA));
+        db.IysConsents.Add(Pending("+905551110002", BrandB));
+        await db.SaveChangesAsync();
+
+        var client = new FakeIysClient();
+
+        await Job(db, client).RunAsync();
+
+        client.AddCalls.Should().BeEmpty();
+        (await db.IysConsents.AsNoTracking().ToListAsync())
+            .Should().OnlyContain(c => c.PushState == IysPushState.Pending,
+                "kayıtlar olduğu yerde beklemeli; kurulum bitince itilecekler");
     }
 
     [Fact]
@@ -123,6 +221,7 @@ public class IysConsentPushJobTests
     public async Task Son_tarihi_gecmis_kayit_itilmez_Expired_olur()
     {
         using var db = NewDb();
+        SeedAccount(db, LicenseA, BrandA);
         var row = Pending("+905551112233");
         row.PushDeadline = DateTimeOffset.UtcNow.AddHours(-1);
         db.IysConsents.Add(row);
@@ -136,17 +235,224 @@ public class IysConsentPushJobTests
     }
 
     [Fact]
-    public async Task Yapilandirma_hatasi_boru_hattini_durdurur()
+    public async Task Yapilandirma_hatasi_yalniz_o_markanin_kalan_partilerini_durdurur()
     {
+        // Tek markanın 45 kaydı: ilk parti yapılandırma hatasıyla düşünce o
+        // markanın kalan partileri denenmez (hepsi aynı hatayla düşecek),
+        // ama iş ARTIK FIRLATMIYOR — döngü diğer markalara devam etmeli.
         using var db = await SeedAsync(45);
-        var client = new FakeIysClient
+        var client = new FakeIysClient();
+        client.ThrowByBrand[BrandA] = new IysConfigurationException("60", "marka kodu");
+
+        await Job(db, client).RunAsync();
+
+        client.AddCalls.Should().HaveCount(1, "ilk partiden sonra bu marka için durmalı");
+        (await db.IysConsents.CountAsync(c => c.PushState == IysPushState.Pending))
+            .Should().Be(45, "ayar hatası kayıt başına kalıcı yara olarak yazılmaz");
+    }
+
+    [Fact]
+    public async Task Bir_yayincinin_bozuk_ayari_digerinin_pushunu_durdurmaz()
+    {
+        // Spec sözleşme #3. Bu test bugünkü davranışın TERSİNİ istiyor.
+        using var db = NewDb();
+        SeedAccount(db, LicenseA, BrandA);
+        SeedAccount(db, LicenseB, BrandB);
+        db.IysConsents.Add(Pending("+905551110001", BrandA));
+        db.IysConsents.Add(Pending("+905551110002", BrandB));
+        await db.SaveChangesAsync();
+
+        var client = new FakeIysClient();
+        client.ThrowByBrand[BrandA] = new IysConfigurationException("60", "marka kodu");
+
+        await Job(db, client).RunAsync();
+
+        var a = await db.IysConsents.SingleAsync(c => c.BrandCode == BrandA);
+        var b = await db.IysConsents.SingleAsync(c => c.BrandCode == BrandB);
+        a.PushState.Should().Be(IysPushState.Pending, "A'nın ayarı bozuk, kaydı bekliyor");
+        b.PushState.Should().Be(IysPushState.Pushed, "B, A'nın hatasından etkilenmemeli");
+    }
+
+    [Fact]
+    public async Task Her_parti_kendi_markasinin_kimligiyle_gider()
+    {
+        // Spec sözleşme #11'in push ucu: istek markası = itilen satırın markası.
+        using var db = NewDb();
+        SeedAccount(db, LicenseA, BrandA);
+        SeedAccount(db, LicenseB, BrandB);
+        db.IysConsents.Add(Pending("+905551110001", BrandA));
+        db.IysConsents.Add(Pending("+905551110002", BrandB));
+        await db.SaveChangesAsync();
+
+        var client = new FakeIysClient();
+
+        await Job(db, client).RunAsync();
+
+        client.AddAccounts.Should().HaveCount(2);
+        for (var i = 0; i < client.AddCalls.Count; i++)
         {
-            ThrowOnAdd = new IysConfigurationException("60", "marka kodu"),
-        };
+            var brand = client.AddAccounts[i].BrandCode;
+            var expectedPhone = brand == BrandA ? "+905551110001" : "+905551110002";
+            client.AddCalls[i].Select(r => r.Recipient).Should().Equal(expectedPhone);
+        }
+    }
 
-        var act = async () => await Job(db, client).RunAsync();
+    [Fact]
+    public async Task Dogrulanmamis_hesabin_kayitlari_itilmez()
+    {
+        // Fail-closed: hesap Verified değilse o markanın adına konuşamayız.
+        using var db = NewDb();
+        db.NetgsmAccounts.Add(new NetgsmAccount
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = LicenseA,
+            UserCode = $"user-{Guid.NewGuid():N}",
+            PasswordProtected = Accounts(db).ProtectPassword($"pw-{Guid.NewGuid():N}"),
+            Header = "ORDERDECK",
+            BrandCode = BrandA,
+            Status = NetgsmAccountStatus.Failed,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        });
+        db.IysConsents.Add(Pending("+905551110001", BrandA));
+        await db.SaveChangesAsync();
 
-        await act.Should().ThrowAsync<IysConfigurationException>();
-        client.AddCalls.Should().HaveCount(1, "ilk partiden sonra durmalı, 45 kaydı harcamamalı");
+        var client = new FakeIysClient();
+
+        await Job(db, client).RunAsync();
+
+        client.AddCalls.Should().BeEmpty();
+        (await db.IysConsents.SingleAsync()).PushState.Should().Be(IysPushState.Pending);
+    }
+
+    [Fact]
+    public async Task Sifresi_cozulemeyen_hesap_Verified_kalir_turu_atlanir_digeri_itilmeye_devam_eder()
+    {
+        // Anahtar döndüyse ya da anahtar dizini bağlanmadıysa şifre çözülemez.
+        // Fırlatmak diğer yayıncıları susturur; hesabı Failed işaretlemek ise
+        // geri alınamaz: Failed → Verified dönen kod yolu yok ve collector
+        // markayı yalnız Verified hesaptan çözdüğü için o yayıncının yeni
+        // onayları satır bile açmaz. Doğru davranış: turu atla, durumu koru.
+        using var db = NewDb();
+        SeedAccount(db, LicenseA, BrandA);
+        SeedAccount(db, LicenseB, BrandB);
+
+        // Başka bir anahtarla korunan metin: bu sağlayıcı onu çözemez.
+        var foreign = new EphemeralDataProtectionProvider()
+            .CreateProtector("OrderDeck.Netgsm.Password.v1")
+            .Protect($"pw-{Guid.NewGuid():N}");
+        var broken = await db.NetgsmAccounts.SingleAsync(a => a.LicenseId == LicenseA);
+        broken.PasswordProtected = foreign;
+
+        db.IysConsents.Add(Pending("+905551110001", BrandA));
+        db.IysConsents.Add(Pending("+905551110002", BrandB));
+        await db.SaveChangesAsync();
+
+        var client = new FakeIysClient();
+
+        await Job(db, client).RunAsync();
+
+        var acct = await db.NetgsmAccounts.SingleAsync(a => a.LicenseId == LicenseA);
+        acct.Status.Should().Be(NetgsmAccountStatus.Verified,
+            "geçici bir anahtar arızası kalıcı ve geri alınamaz onay kaybına dönüşmemeli: "
+            + "hesap Failed'a düşerse geri döndüren kod yolu yok ve o yayıncı için yeni "
+            + "onaylar hiç kaydedilmez; Verified kalırsa anahtar geri geldiğinde "
+            + "sistem kendiliğinden düzelir");
+        acct.LastError.Should().NotBeNullOrEmpty("arıza panelde görünür olmalı");
+
+        var a = await db.IysConsents.SingleAsync(c => c.BrandCode == BrandA);
+        var b = await db.IysConsents.SingleAsync(c => c.BrandCode == BrandB);
+        a.PushState.Should().Be(IysPushState.Pending, "A itilmedi");
+        b.PushState.Should().Be(IysPushState.Pushed, "B, A'nın anahtar sorunundan etkilenmemeli");
+    }
+
+    [Fact]
+    public async Task Onceki_marka_patlasa_bile_cozulemeyen_sifrenin_hatasi_kalici_yazilir()
+    {
+        // SIRALAMAYA BAĞLI sessiz kayıp. A'nın turu düşünce catch bloğu
+        // ChangeTracker.Clear() çağırıyor (çapraz kiracı sızıntısını kapatan
+        // düzeltme). Hesap listesi tracked gelseydi o temizlik SIRADAKİ markanın
+        // hesap nesnesini de detach ederdi; B'nin "şifre çözülemedi" yazımı
+        // hiçbir hata vermeden kaybolur, arıza panelde hiç görünmezdi. Kayıp
+        // yalnız bu sırayla oluşur — sıra ters olsaydı testler yeşil kalırdı.
+        var name = $"iys-push-{Guid.NewGuid():N}";
+        var t0 = DateTimeOffset.UtcNow.AddHours(-1);
+
+        using (var db = NewDb(name))
+        {
+            // A önce dönmeli: sıra CreatedAt'e göre, eşit damgaya güvenmiyoruz.
+            SeedAccount(db, LicenseA, BrandA, createdAt: t0);
+            SeedAccount(db, LicenseB, BrandB, createdAt: t0.AddMinutes(1));
+
+            // B'nin şifresi başka bir anahtarla korunmuş: bu sağlayıcı çözemez.
+            var foreign = new EphemeralDataProtectionProvider()
+                .CreateProtector("OrderDeck.Netgsm.Password.v1")
+                .Protect($"pw-{Guid.NewGuid():N}");
+            var brokenB = await db.NetgsmAccounts.SingleAsync(a => a.LicenseId == LicenseB);
+            brokenB.PasswordProtected = foreign;
+
+            db.IysConsents.Add(Pending("+905551110001", BrandA));
+            db.IysConsents.Add(Pending("+905551110002", BrandB));
+            await db.SaveChangesAsync();
+
+            var client = new FakeIysClient();
+            client.ThrowByBrand[BrandA] = new IysConfigurationException("60", "marka kodu");
+
+            await Job(db, client).RunAsync();
+        }
+
+        // TEMİZ context'ten oku: aynı context'ten okumak EF identity-map
+        // totolojisi olur, bellekteki nesneyi doğrular, satırı değil.
+        using var fresh = NewDb(name);
+        var acct = await fresh.NetgsmAccounts.SingleAsync(a => a.LicenseId == LicenseB);
+        acct.LastError.Should().NotBeNullOrEmpty(
+            "LastError'ın tek amacı arızayı operatöre göstermek; önceki markanın "
+            + "düşmesi bu görünürlüğü sessizce yok edemez");
+        acct.Status.Should().Be(NetgsmAccountStatus.Verified,
+            "anahtar arızası hesabı kapatmaz (yerleşik karar)");
+    }
+
+    [Fact]
+    public async Task Olaya_kiracinin_lisansi_ve_markasi_yazilir()
+    {
+        using var db = NewDb();
+        SeedAccount(db, LicenseB, BrandB);
+        db.IysConsents.Add(Pending("+905551110002", BrandB));
+        await db.SaveChangesAsync();
+
+        await Job(db, new FakeIysClient()).RunAsync();
+
+        var ev = await db.IysConsentEvents
+            .SingleAsync(e => e.EventType == IysConsentEventType.PushAttempt);
+        ev.LicenseId.Should().Be(LicenseB);
+        ev.BrandCode.Should().Be(BrandB);
+    }
+
+    [Fact]
+    public async Task Dusen_marka_turunun_kirli_kayitlari_sonraki_markayla_yazilmaz()
+    {
+        // Doğrulama işindeki ikizinin push tarafı. Bütün marka turları aynı
+        // scoped DbContext'i paylaşıyor: A'nın SaveChangesAsync'i patlarsa
+        // A'nın eklediği olaylar change tracker'da askıda kalır ve
+        // temizlenmezse B'nin turu SaveChanges dediğinde ONLAR DA yazılır.
+        // Sonuç, kaydedilmemesi gereken bir turun başka bir kiracının
+        // işlemine binerek kalıcılaşması — üstelik hiçbir hata fırlatmadan.
+        var fail = new FailOnceOnSaveInterceptor { FailBrand = BrandA };
+        using var db = NewDb(name: null, fail);
+        SeedAccount(db, LicenseA, BrandA, createdAt: DateTimeOffset.UtcNow.AddHours(-1));
+        SeedAccount(db, LicenseB, BrandB);
+        db.IysConsents.Add(Pending("+905551110001", BrandA));
+        db.IysConsents.Add(Pending("+905551110002", BrandB));
+        await db.SaveChangesAsync();
+
+        await Job(db, new FakeIysClient()).RunAsync();
+
+        (await db.IysConsentEvents.CountAsync(e => e.BrandCode == BrandA)).Should().Be(0,
+            "A'nın kaydedilemeyen push olayı B'nin SaveChanges'ine binerek "
+            + "veritabanına girmemeli (çapraz kiracı yazma)");
+
+        var b = await db.IysConsents.SingleAsync(c => c.BrandCode == BrandB);
+        b.PushState.Should().Be(IysPushState.Pushed,
+            "B'nin kendi turu A'nın arızasından bağımsız tamamlanmalı");
     }
 }

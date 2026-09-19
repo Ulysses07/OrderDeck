@@ -38,6 +38,21 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
         db.Licenses.Add(license);
         licenseId = license.Id;
 
+        var accounts = scope.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+        var brandCode = Random.Shared.Next(100000, 999999).ToString();
+        db.NetgsmAccounts.Add(new NetgsmAccount
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = licenseId,
+            UserCode = $"user-{Guid.NewGuid():N}",
+            PasswordProtected = accounts.ProtectPassword($"pw-{Guid.NewGuid():N}"),
+            Header = "ORDERDECK",
+            BrandCode = brandCode,
+            Status = NetgsmAccountStatus.Verified,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        });
+
         void AddShopperLink(bool consent)
         {
             var shopper = new OrderDeck.LicenseServer.Domain.Shopper
@@ -68,12 +83,13 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
             // yerel onay TEK BAŞINA yetmez, İYS'nin de ONAY demiş olması
             // gerekir. Bu testler gönderimin gerçekleştiğini ölçüyor, o yüzden
             // izinli shopper'ın doğrulanmış kaydı da kurulmalı. BrandCode
-            // testteki yapılandırma değeriyle (varsayılan boş string) aynı.
+            // yukarıda bu lisans için üretilen marka — kapı artık kampanyanın
+            // lisansından markayı çözüyor.
             var now = DateTimeOffset.UtcNow;
             db.IysConsents.Add(new IysConsent
             {
                 Id = Guid.NewGuid(),
-                BrandCode = "",
+                BrandCode = brandCode,
                 ChannelType = "MESAJ",
                 RecipientType = "BIREYSEL",
                 Recipient = shopper.Phone,

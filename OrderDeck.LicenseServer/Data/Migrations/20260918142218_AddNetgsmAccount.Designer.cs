@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using OrderDeck.LicenseServer.Data;
 
@@ -11,9 +12,11 @@ using OrderDeck.LicenseServer.Data;
 namespace OrderDeck.LicenseServer.Data.Migrations
 {
     [DbContext(typeof(LicenseDbContext))]
-    partial class LicenseDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260918142218_AddNetgsmAccount")]
+    partial class AddNetgsmAccount
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -823,10 +826,6 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasMaxLength(16)
                         .HasColumnType("nvarchar(16)");
 
-                    b.Property<string>("BrandCode")
-                        .HasMaxLength(16)
-                        .HasColumnType("nvarchar(16)");
-
                     b.Property<string>("ErrorCode")
                         .HasMaxLength(32)
                         .HasColumnType("nvarchar(32)");
@@ -835,12 +834,6 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .IsRequired()
                         .HasMaxLength(16)
                         .HasColumnType("nvarchar(16)");
-
-                    b.Property<Guid?>("IysConsentId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<Guid?>("LicenseId")
-                        .HasColumnType("uniqueidentifier");
 
                     b.Property<DateTimeOffset>("OccurredAt")
                         .HasColumnType("datetimeoffset");
@@ -873,8 +866,6 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("Recipient", "OccurredAt");
-
-                    b.HasIndex("LicenseId", "Recipient", "OccurredAt");
 
                     b.ToTable("IysConsentEvents");
                 });
