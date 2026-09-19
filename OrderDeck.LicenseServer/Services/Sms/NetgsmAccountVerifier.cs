@@ -78,11 +78,17 @@ public sealed class NetgsmAccountVerifier
             // ham gövdeyi taşımaya başlarsa şifre LastError'a sızardı.
             _log.LogWarning("Netgsm doğrulaması reddedildi: lisans={LicenseId} kod={Code}",
                 account.LicenseId, ex.Code);
+            // `_` dalı bugün ERİŞİLEMEZ (NetgsmIysClient.cs:138 yalnız 30/60'ı
+            // fırlatıyor) ama "kod 30" diye sabitlemiyoruz: oraya üçüncü bir
+            // kod eklendiği gün bu metin yayıncıya YANLIŞ işi yaptırırdı —
+            // olmayan bir şifre sorununu kovalar.
             return new NetgsmVerifyResult(NetgsmVerifyOutcome.Rejected, ex.Code switch
             {
                 "60" => "İYS marka kodu bu Netgsm hesabına ait değil (kod 60). "
                         + "Marka kodunu İYS panelinden kontrol edin.",
-                _ => "Netgsm abone numarası veya API şifresi reddedildi (kod 30).",
+                "30" => "Netgsm abone numarası veya API şifresi reddedildi (kod 30).",
+                _ => $"İYS kurulumu reddedildi (kod {Sanitize(ex.Code)}). "
+                     + "Abone numarası, API şifresi ve marka kodunu kontrol edin.",
             });
         }
     }
@@ -90,11 +96,14 @@ public sealed class NetgsmAccountVerifier
     /// <summary>
     /// <c>result.Code</c> HER ZAMAN kısa bir kod değildir. <c>ReadCode</c>,
     /// gövdede <c>code</c> alanı bulamazsa <b>bütün gövdeyi</b> kod diye
-    /// döndürüyor (<c>NetgsmIysClient.cs:146-159</c>) ve gövde 2000 karaktere
-    /// kadar kırpılıyor (<c>:143</c>). Ağ geçidi bir HTML hata sayfası
-    /// dönerse o HTML aynen <c>LastError</c>'a yazılır: hem 500 karakterlik
-    /// sütunu taşırır (<c>DbUpdateException</c>), hem ham sağlayıcı yanıtını
-    /// yayıncının paneline taşır. Yalnız kısa, rakamsal kodları göster.
+    /// döndürüyor (<c>NetgsmIysClient.cs:147-159</c>) — üstelik bunu
+    /// <b>kırpılmamış</b> gövde üzerinde yapıyor (<c>:133</c>); 2000
+    /// karakterlik sınır yalnız <c>RawBody</c>'ye uygulanıyor (<c>:144</c>),
+    /// yani <c>Code</c> sınırsız uzunlukta olabilir. Ağ geçidi bir HTML hata
+    /// sayfası dönerse o HTML aynen <c>LastError</c>'a yazılır: hem 500
+    /// karakterlik sütunu taşırır (<c>DbUpdateException</c>), hem ham
+    /// sağlayıcı yanıtını yayıncının paneline taşır. Yalnız kısa, rakamsal
+    /// kodları göster.
     /// </summary>
     internal static string Sanitize(string? code)
         => !string.IsNullOrWhiteSpace(code) && code.Length <= 8 && code.All(char.IsAsciiDigit)

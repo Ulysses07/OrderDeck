@@ -66,7 +66,11 @@ public sealed class NetgsmAccountVerifierTests
         var result = await Verifier(client).VerifyAsync(NewAccount());
 
         result.Outcome.Should().Be(NetgsmVerifyOutcome.Rejected);
-        result.Message.Should().NotBeNullOrWhiteSpace(
+        // Kodu mesajda ARA: yalnız "boş değil" demek, iki dalın metnini
+        // takas eden ya da switch'i tek mesaja indiren bir mutasyonu
+        // yakalamaz — oysa 30 ile 60 yayıncıya BAŞKA bir iş söylüyor
+        // (birinde kimlik, diğerinde marka kodu düzeltilecek).
+        result.Message.Should().Contain(code,
             "yayıncı panelde ne düzelteceğini okuyabilmeli");
     }
 
@@ -89,7 +93,9 @@ public sealed class NetgsmAccountVerifierTests
     public async Task Beklenmeyen_yanitta_ham_govde_mesaja_girmez()
     {
         // `ReadCode`, gövdede `code` alanı bulamazsa BÜTÜN gövdeyi kod diye
-        // döndürüyor (NetgsmIysClient.cs:146-159) — 2000 karaktere kadar.
+        // döndürüyor (NetgsmIysClient.cs:147-159) ve bunu KIRPILMAMIŞ gövde
+        // üzerinde yapıyor (`:133`) — 2000 karakterlik sınır yalnız `RawBody`
+        // için (`:144`), yani `Code` sınırsız uzunlukta olabilir.
         // Ağ geçidi HTML hata sayfası verdiğinde `result.Code` işte budur.
         // O metin mesaja girerse LastError'ın 500 karakterlik sütununu taşırır
         // ve ham sağlayıcı yanıtı yayıncının paneline düşer.

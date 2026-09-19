@@ -171,7 +171,11 @@ public sealed class NetgsmAccountVerifierTests
         var result = await Verifier(client).VerifyAsync(NewAccount());
 
         result.Outcome.Should().Be(NetgsmVerifyOutcome.Rejected);
-        result.Message.Should().NotBeNullOrWhiteSpace(
+        // Kodu mesajda ARA: yalnız "boş değil" demek, iki dalın metnini
+        // takas eden ya da switch'i tek mesaja indiren bir mutasyonu
+        // yakalamaz — oysa 30 ile 60 yayıncıya BAŞKA bir iş söylüyor
+        // (birinde kimlik, diğerinde marka kodu düzeltilecek).
+        result.Message.Should().Contain(code,
             "yayıncı panelde ne düzelteceğini okuyabilmeli");
     }
 
@@ -194,7 +198,9 @@ public sealed class NetgsmAccountVerifierTests
     public async Task Beklenmeyen_yanitta_ham_govde_mesaja_girmez()
     {
         // `ReadCode`, gövdede `code` alanı bulamazsa BÜTÜN gövdeyi kod diye
-        // döndürüyor (NetgsmIysClient.cs:146-159) — 2000 karaktere kadar.
+        // döndürüyor (NetgsmIysClient.cs:147-159) ve bunu KIRPILMAMIŞ gövde
+        // üzerinde yapıyor (`:133`) — 2000 karakterlik sınır yalnız `RawBody`
+        // için (`:144`), yani `Code` sınırsız uzunlukta olabilir.
         // Ağ geçidi HTML hata sayfası verdiğinde `result.Code` işte budur.
         // O metin mesaja girerse LastError'ın 500 karakterlik sütununu taşırır
         // ve ham sağlayıcı yanıtı yayıncının paneline düşer.
@@ -331,11 +337,14 @@ public sealed class NetgsmAccountVerifier
     /// <summary>
     /// <c>result.Code</c> HER ZAMAN kısa bir kod değildir. <c>ReadCode</c>,
     /// gövdede <c>code</c> alanı bulamazsa <b>bütün gövdeyi</b> kod diye
-    /// döndürüyor (<c>NetgsmIysClient.cs:146-159</c>) ve gövde 2000 karaktere
-    /// kadar kırpılıyor (<c>:143</c>). Ağ geçidi bir HTML hata sayfası
-    /// dönerse o HTML aynen <c>LastError</c>'a yazılır: hem 500 karakterlik
-    /// sütunu taşırır (<c>DbUpdateException</c>), hem ham sağlayıcı yanıtını
-    /// yayıncının paneline taşır. Yalnız kısa, rakamsal kodları göster.
+    /// döndürüyor (<c>NetgsmIysClient.cs:147-159</c>) — üstelik bunu
+    /// <b>kırpılmamış</b> gövde üzerinde yapıyor (<c>:133</c>); 2000
+    /// karakterlik sınır yalnız <c>RawBody</c>'ye uygulanıyor (<c>:144</c>),
+    /// yani <c>Code</c> sınırsız uzunlukta olabilir. Ağ geçidi bir HTML hata
+    /// sayfası dönerse o HTML aynen <c>LastError</c>'a yazılır: hem 500
+    /// karakterlik sütunu taşırır (<c>DbUpdateException</c>), hem ham
+    /// sağlayıcı yanıtını yayıncının paneline taşır. Yalnız kısa, rakamsal
+    /// kodları göster.
     /// </summary>
     internal static string Sanitize(string? code)
         => !string.IsNullOrWhiteSpace(code) && code.Length <= 8 && code.All(char.IsAsciiDigit)
@@ -363,11 +372,17 @@ düşecek. Yakalamayı ekle:
             // ham gövdeyi taşımaya başlarsa şifre LastError'a sızardı.
             _log.LogWarning("Netgsm doğrulaması reddedildi: lisans={LicenseId} kod={Code}",
                 account.LicenseId, ex.Code);
+            // `_` dalı bugün ERİŞİLEMEZ (NetgsmIysClient.cs:138 yalnız 30/60'ı
+            // fırlatıyor) ama "kod 30" diye sabitlemiyoruz: oraya üçüncü bir
+            // kod eklendiği gün bu metin yayıncıya YANLIŞ işi yaptırırdı —
+            // olmayan bir şifre sorununu kovalar.
             return new NetgsmVerifyResult(NetgsmVerifyOutcome.Rejected, ex.Code switch
             {
                 "60" => "İYS marka kodu bu Netgsm hesabına ait değil (kod 60). "
                         + "Marka kodunu İYS panelinden kontrol edin.",
-                _ => "Netgsm abone numarası veya API şifresi reddedildi (kod 30).",
+                "30" => "Netgsm abone numarası veya API şifresi reddedildi (kod 30).",
+                _ => $"İYS kurulumu reddedildi (kod {Sanitize(ex.Code)}). "
+                     + "Abone numarası, API şifresi ve marka kodunu kontrol edin.",
             });
         }
 ```
