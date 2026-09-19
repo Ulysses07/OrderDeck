@@ -4643,9 +4643,18 @@ diriltir → Delik 1.
 kurmuyoruz. Eksik olan iki şey var: (a) damga ham `UtcNow` (`:78`), yani
 duraklatmanın ileri ittiği bir jetonu GERİ alabiliyor ve bayat işçi bir
 sonraki turda üstlenmeyi kazanıyor; (b) çakışmada kampanya detach
-edilmediği için bu bağlamın kirli `sending` kopyası sonraki `SaveChanges`'e
-biniyor — alıcı listesi boş olan koşuda bu, hiç sahip olmadığımız bir
-kampanyanın iadesinin yazılmasına kadar gidiyor.
+edilmediği için bu bağlamın kirli `sending` kopyası izlenmeye devam ediyor
+ve `_db`'de sonradan atılacak herhangi bir `SaveChanges`'e binebiliyor.
+
+> **(b) tek başına iadeyi YAZDIRMAZ** — o sonucu `return` engelliyor
+> (`SmsCampaignSendJob.cs:89`), yani koşu çakışmadan sonra zaten bitiyor.
+> İkisi ayrı sözleşme ve ayrı testleri var: `return` korumasını Adım 2'deki
+> `Ustlenme_cakismasi_kampanyayi_tamamlamaz_ve_iade_yazmaz` kilitliyor
+> (mutasyon 3'ü tek öldüren test), detach'i ise aynı testin
+> "kirli kopya sonraki yazıma binmesin" beklentisi taşıyor. Birini
+> diğerinin gerekçesi olarak yazmak, `return` silindiğinde detach'in
+> koruyacağı yanılgısını yaratır — korumaz, çünkü `ApplyAndSaveAsync`
+> bakiyeyi kendi izlediği satırdan yazıyor.
 
 ```csharp
     public async Task RunAsync(Guid campaignId, CancellationToken ct = default)
@@ -5635,10 +5644,12 @@ Beklenen: derleme hatası — `AuditEvents.NetgsmAccountDisable` yok.
 > `Acma_Disabled_olmayan_hesaba_dokunmaz` (durum kapısı yoksa 409 yerine 302
 > gelir ve hesap `Failed` olur) ve
 > `Kapatma_retry_tukenirse_500_degil_hata_mesaji_doner` (tükenme dalı yoksa
-> istisna dışarı sızar, 500 gelir; dal eklenip şerit basılmazsa da
-> `alert-danger` iddiası düşer) ancak Adım 4'teki kapı + tükenme dalı ve
-> Adım 5'teki şeritle yeşile döner. Bu iki test, aynı görevin iki ayrı
-> kırmızı-yeşil turudur.
+> istisna dışarı sızar, 500 gelir) ancak Adım 4'teki kapı + tükenme dalıyla
+> yeşile döner. Bu iki test, aynı görevin iki ayrı kırmızı-yeşil turudur.
+>
+> Testin aradığı `alert-danger` şeridini Adım 5 BASMIYOR — `_AdminLayout`ın
+> `_ToastPartial`ı zaten basıyor. Yani o iddia `TempData["Error"]` satırını
+> (Adım 4) kilitliyor, sayfayı değil.
 >
 > **`Kapatma_retry_tukenirse_izlenen_nesne_birakmaz` ise kırmızı BAŞLAMAZ** —
 > dosya derlenir derlenmez geçer. Ölçtüğü `ChangeTracker.Clear()` + `throw`
@@ -5883,19 +5894,14 @@ public class IndexModel : PageModel
 @{
     ViewData["Title"] = "Netgsm Kurulumları";
 }
+@* TempData["Success"] / TempData["Error"] şeritleri BU SAYFADA basılmaz:
+   Pages/Admin/_ViewStart.cshtml `_AdminLayout`ı seçiyor, o da
+   `_ToastPartial`ı çağırıyor (_AdminLayout.cshtml:36) ve partial iki şeridi
+   de zaten gösteriyor (_ToastPartial.cshtml:1-14). Burada ikinci bir kopya
+   yazmak mesajı ÇİFT bastırır — TempData aynı istek içinde tekrar okunabilir,
+   silinme istek sonunda olur. Komşu Pages/Admin/Iys/Index.cshtml de aynı
+   şekilde partial'a güveniyor. *@
 <h1 class="h3 mb-4">Netgsm / İYS Kurulumları</h1>
-
-@if (TempData["Success"] is string ok)
-{
-    <div class="alert alert-success">@ok</div>
-}
-
-@* Kapatma retry'ı tükendiğinde buraya düşer. Sessiz bırakılsaydı yönetici
-   yönlendirmeyi başarı sanır ve hesabın hâlâ açık olduğunu fark etmezdi. *@
-@if (TempData["Error"] is string err)
-{
-    <div class="alert alert-danger">@err</div>
-}
 
 <table class="table table-sm align-middle">
     <thead>
