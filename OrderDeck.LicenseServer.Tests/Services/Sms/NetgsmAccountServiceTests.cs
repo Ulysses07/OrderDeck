@@ -10,9 +10,13 @@ namespace OrderDeck.LicenseServer.Tests.Services.Sms;
 
 public class NetgsmAccountServiceTests
 {
-    private static LicenseDbContext NewDb()
+    /// <summary><paramref name="databaseName"/> verilirse AYNI InMemory
+    /// veritabanına ikinci bir bağlam açılabilir — eşzamanlılık yarışını
+    /// kurmak için şart: jetonu "arkadan" kaydıran yazım, test edilen
+    /// bağlamın izlemediği bir yerden gelmeli.</summary>
+    private static LicenseDbContext NewDb(string? databaseName = null)
         => new(new DbContextOptionsBuilder<LicenseDbContext>()
-            .UseInMemoryDatabase($"netgsm-{Guid.NewGuid():N}").Options);
+            .UseInMemoryDatabase(databaseName ?? $"netgsm-{Guid.NewGuid():N}").Options);
 
     private static NetgsmAccountService Service(LicenseDbContext db)
         => new(db, new EphemeralDataProtectionProvider());
@@ -263,6 +267,18 @@ public class NetgsmAccountServiceTests
             "kimlikler değişti: eski doğrulama artık geçerli değil");
         acc.LastVerifiedAt.Should().BeNull("bayat doğrulama damgası taşınmamalı");
         acc.LastError.Should().BeNull();
+
+        // İzlenen nesne üstündeki iddialar yalnız "alan atandı mı"yı ölçer:
+        // servis aynı bağlamı kullandığı için nesneyi bellekte değiştirmesi
+        // yeter. Kalıcı hâli ayrıca oku — `AsNoTracking` InMemory'de saklanan
+        // değerlerden YENİ örnek materyalize ediyor, yani gerçekten diske
+        // ineni görüyoruz.
+        var persisted = await db.NetgsmAccounts.AsNoTracking()
+            .FirstAsync(a => a.LicenseId == licenseId);
+        persisted.Status.Should().Be(NetgsmAccountStatus.Failed,
+            "kapatma kaydedilmeliydi, yalnız bellekte kalmamalı");
+        persisted.LastVerifiedAt.Should().BeNull();
+        persisted.LastError.Should().BeNull();
     }
 
     [Fact]
@@ -295,10 +311,52 @@ public class NetgsmAccountServiceTests
         pending.ClaimedAt.Should().BeAfter(pendingClaim!.Value,
             "jeton ilerlemezse kampanyayı zaten okumuş işçi üstlenmeyi kazanır");
         sending.ClaimedAt.Should().BeAfter(sendingClaim!.Value);
+
+        // Yukarıdaki iddialar İZLENEN örnekler üstünde: servis aynı bağlamı
+        // kullandığı için onları bellekte değiştirmesi yeter ve duraklatma hiç
+        // kaydedilmese bile yeşil kalırlar. Asıl değişmez "aynı SaveChanges'te
+        // indi mi" — onu kalıcı hâlden oku (`AsNoTracking` InMemory'de saklanan
+        // değerlerden yeni örnek materyalize ediyor).
+        var persisted = await db.SmsCampaigns.AsNoTracking()
+            .Where(c => c.LicenseId == licenseId).ToListAsync();
+        persisted.Should().HaveCount(2);
+        persisted.Should().OnlyContain(c => c.Status == "paused",
+            "duraklatma hesap yazımıyla AYNI SaveChanges'te inmeli");
+
+        var persistedForeign = await db.SmsCampaigns.AsNoTracking()
+            .SingleAsync(c => c.LicenseId == otherLicenseId);
+        persistedForeign.Status.Should().Be("pending",
+            "başka yayıncının kampanyası bu kurulumdan etkilenmemeli");
     }
 
+    [Fact]
+    public async Task Upsert_ileri_tarihli_jetonu_geri_almaz()
+    {
+        // `NextClaimedAt`'in monoton muhafızı: `UtcNow` monoton DEĞİL. Jeton
+        // ileri tarihliyken ham `UtcNow` ataması onu GERİ alır ve kapatmadan
+        // ÖNCE kampanyayı okumuş işçi üstlenme yazımını kazanır — yani
+        // duraklatma sessizce delinir.
+        using var db = NewDb();
+        var licenseId = Guid.NewGuid();
+        var originalClaim = DateTimeOffset.UtcNow.AddMinutes(5);
+
+        var campaign = SeedCampaign(db, licenseId, "sending", originalClaim);
+        await db.SaveChangesAsync();
+
+        await Service(db).UpsertAsync(
+            licenseId, NewUserCode(), $"pw-{Guid.NewGuid():N}", "ORDERDECK",
+            NewBrandCode(), CancellationToken.None);
+
+        campaign.ClaimedAt.Should().Be(originalClaim.AddTicks(1),
+            "saat jetonun gerisindeyken tek güvenli sonraki değer özgün + 1 tik");
+    }
+
+    /// <summary><paramref name="claimedAt"/> verilmezse jeton GEÇMİŞTE kalır
+    /// ve <c>NextClaimedAt</c> hep "saat ilerledi" kolunu seçer; ileri tarihli
+    /// jeton veren test monoton muhafızın öbür kolunu koşturur.</summary>
     private static SmsCampaign SeedCampaign(
-        LicenseDbContext db, Guid licenseId, string status)
+        LicenseDbContext db, Guid licenseId, string status,
+        DateTimeOffset? claimedAt = null)
     {
         var campaign = new SmsCampaign
         {
@@ -309,7 +367,7 @@ public class NetgsmAccountServiceTests
             RecipientCount = 1,
             ReservedCredits = 1,
             Status = status,
-            ClaimedAt = DateTimeOffset.UtcNow.AddMinutes(-1),
+            ClaimedAt = claimedAt ?? DateTimeOffset.UtcNow.AddMinutes(-1),
             CreatedByCustomerId = Guid.NewGuid(),
             CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-2),
         };
@@ -345,5 +403,42 @@ public class NetgsmAccountServiceTests
         await write.Should().ThrowAsync<NetgsmAccountDisabledException>();
         account.Status.Should().Be(NetgsmAccountStatus.Disabled);
         account.PasswordProtected.Should().Be(originalPassword);
+    }
+
+    [Fact]
+    public async Task Upsert_cakisma_firlatirken_izlenen_nesne_birakmaz()
+    {
+        // `UpsertAsync` paylaşılan scoped bağlamda çalışıyor. Çakışmayla
+        // fırlarken yarı-yazılmış hesabı izleniyor bırakırsa, o scope'ta
+        // atılacak SONRAKİ herhangi bir `SaveChanges` onu kimsenin karar
+        // vermediği bir anda diske basar. Kardeş metot
+        // `CloseAccountAndPauseCampaignsAsync` için aynı iddia kuruluyor;
+        // simetri burada da ölçülmeli.
+        var databaseName = $"netgsm-{Guid.NewGuid():N}";
+        using var db = NewDb(databaseName);
+        var licenseId = Guid.NewGuid();
+
+        Seed(db, licenseId, NewBrandCode(), NetgsmAccountStatus.Failed);
+
+        // Jetonu ARKADAN kaydır: ikinci bağlam aynı satırı yazıyor, `db`'nin
+        // izlediği kopyanın özgün sürümü bayatlıyor. Yeni jeton değerini
+        // `LicenseDbContext.StampNetgsmAccountVersions()` üretiyor — burada
+        // önemli olan yazımın BAŞKA bir bağlamdan gelmesi.
+        using (var other = NewDb(databaseName))
+        {
+            var row = await other.NetgsmAccounts.SingleAsync(a => a.LicenseId == licenseId);
+            row.UpdatedAt = row.UpdatedAt.AddMinutes(1);
+            await other.SaveChangesAsync();
+        }
+
+        Func<Task> write = async () => await Service(db).UpsertAsync(
+            licenseId, NewUserCode(), $"pw-{Guid.NewGuid():N}", "ORDERDECK",
+            NewBrandCode(), CancellationToken.None);
+
+        await write.Should().ThrowAsync<DbUpdateConcurrencyException>();
+
+        db.ChangeTracker.Entries().Should().BeEmpty(
+            "fırlatmadan önce temizlenmeli: kirli nesne çağıranın sonraki "
+            + "SaveChanges'ine biner");
     }
 }

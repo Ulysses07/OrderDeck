@@ -735,8 +735,8 @@ EOF
 > **Sınıfın gerçek şeklini bozma.** Bu sınıf `IClassFixture` **kullanmıyor** ve
 > `_factory` diye bir alanı **yok**; her test kendi InMemory bağlamını
 > `NewDb()` ile açıp servisi `Service(db)` ile kuruyor
-> (`NetgsmAccountServiceTests.cs:11-21`). `NewUserCode()` ve `Seed()`
-> yardımcıları **zaten tanımlı** (`:25`, `:28`) — yeniden tanımlarsan `CS0111`
+> (`NetgsmAccountServiceTests.cs:17-25`). `NewUserCode()` ve `Seed()`
+> yardımcıları **zaten tanımlı** (`:29`, `:32`) — yeniden tanımlarsan `CS0111`
 > alırsın. Yalnız `NewBrandCode()` ve `SeedCampaign()` yeni.
 >
 > Lisans satırı seed etmeye gerek yok: ne `NetgsmAccount.LicenseId` ne de
@@ -744,13 +744,31 @@ EOF
 > `UpsertAsync` lisansı okumuyor. `Guid.NewGuid()` yeterli — mevcut `Seed()`
 > yardımcısı da böyle çalışıyor.
 >
-> **Son iki test Görev 3'ün iki ana değişmezini mutasyonla öldürüyor.**
+> **Bu testler Görev 3'ün değişmezlerini mutasyonla öldürüyor.**
 > `Upsert_dogrulanmis_hesabi_kapatir` olmadan `account.Status = Failed;`
 > satırı silinse hiçbir test kırılmaz — yeni satır testinde `Failed` zaten
 > enum varsayılanı (0), yani mevcut `Verified` satırın düşürülmesi ölçülmemiş
 > kalır. `Upsert_kosan_kampanyalari_duraklatir` olmadan da
 > `StagePauseActiveCampaignsAsync` çağrısı tamamen silinebilir: bu görevden
 > önce test dosyalarında tek bir `SmsCampaign` satırı yok.
+>
+> **İddiaları İZLENEN örnekte bırakma.** Servis testle aynı `DbContext`'i
+> kullanıyor; `Seed`/`SeedCampaign`'in döndürdüğü nesneyi bellekte değiştirmesi
+> "alan atandı mı"yı yeşil yapar ama "kaydedildi mi"yi hiç ölçmez. Ölçüldü:
+> `StagePauseActiveCampaignsAsync` çağrısı `SaveChangesAsync`'ten SONRAYA
+> taşındığında — yani duraklatma hiç kaydedilmediğinde — yalnız `AsNoTracking`
+> iddiası düşüyor, izlenen-örnek iddiaları yeşil kalıyor. Bu yüzden iki
+> duraklatma/kapatma testi de kalıcı hâli ayrıca okuyor; ikisi birlikte durur.
+>
+> `Upsert_ileri_tarihli_jetonu_geri_almaz` `NextClaimedAt`'in monoton kolunu
+> koşturan TEK test: varsayılan `SeedCampaign` jetonu geçmişte olduğu için
+> `previous.AddTicks(1)` dalı aksi hâlde hiç koşmuyor ve
+> `campaign.ClaimedAt = DateTimeOffset.UtcNow` mutasyonu fark edilmiyordu.
+>
+> `Upsert_cakisma_firlatirken_izlenen_nesne_birakmaz` ise
+> `catch (DbUpdateException)` dalındaki `ChangeTracker.Clear()`'ı koruyor —
+> o satır silindiğinde `Services.Sms|Services.Iys` kümesinin tamamı yeşil
+> kalıyordu.
 
 ```csharp
     private static string NewBrandCode()
@@ -881,6 +899,18 @@ EOF
             "kimlikler değişti: eski doğrulama artık geçerli değil");
         acc.LastVerifiedAt.Should().BeNull("bayat doğrulama damgası taşınmamalı");
         acc.LastError.Should().BeNull();
+
+        // İzlenen nesne üstündeki iddialar yalnız "alan atandı mı"yı ölçer:
+        // servis aynı bağlamı kullandığı için nesneyi bellekte değiştirmesi
+        // yeter. Kalıcı hâli ayrıca oku — `AsNoTracking` InMemory'de saklanan
+        // değerlerden YENİ örnek materyalize ediyor, yani gerçekten diske
+        // ineni görüyoruz.
+        var persisted = await db.NetgsmAccounts.AsNoTracking()
+            .FirstAsync(a => a.LicenseId == licenseId);
+        persisted.Status.Should().Be(NetgsmAccountStatus.Failed,
+            "kapatma kaydedilmeliydi, yalnız bellekte kalmamalı");
+        persisted.LastVerifiedAt.Should().BeNull();
+        persisted.LastError.Should().BeNull();
     }
 
     [Fact]
@@ -913,10 +943,52 @@ EOF
         pending.ClaimedAt.Should().BeAfter(pendingClaim!.Value,
             "jeton ilerlemezse kampanyayı zaten okumuş işçi üstlenmeyi kazanır");
         sending.ClaimedAt.Should().BeAfter(sendingClaim!.Value);
+
+        // Yukarıdaki iddialar İZLENEN örnekler üstünde: servis aynı bağlamı
+        // kullandığı için onları bellekte değiştirmesi yeter ve duraklatma hiç
+        // kaydedilmese bile yeşil kalırlar. Asıl değişmez "aynı SaveChanges'te
+        // indi mi" — onu kalıcı hâlden oku (`AsNoTracking` InMemory'de saklanan
+        // değerlerden yeni örnek materyalize ediyor).
+        var persisted = await db.SmsCampaigns.AsNoTracking()
+            .Where(c => c.LicenseId == licenseId).ToListAsync();
+        persisted.Should().HaveCount(2);
+        persisted.Should().OnlyContain(c => c.Status == "paused",
+            "duraklatma hesap yazımıyla AYNI SaveChanges'te inmeli");
+
+        var persistedForeign = await db.SmsCampaigns.AsNoTracking()
+            .SingleAsync(c => c.LicenseId == otherLicenseId);
+        persistedForeign.Status.Should().Be("pending",
+            "başka yayıncının kampanyası bu kurulumdan etkilenmemeli");
     }
 
+    [Fact]
+    public async Task Upsert_ileri_tarihli_jetonu_geri_almaz()
+    {
+        // `NextClaimedAt`'in monoton muhafızı: `UtcNow` monoton DEĞİL. Jeton
+        // ileri tarihliyken ham `UtcNow` ataması onu GERİ alır ve kapatmadan
+        // ÖNCE kampanyayı okumuş işçi üstlenme yazımını kazanır — yani
+        // duraklatma sessizce delinir.
+        using var db = NewDb();
+        var licenseId = Guid.NewGuid();
+        var originalClaim = DateTimeOffset.UtcNow.AddMinutes(5);
+
+        var campaign = SeedCampaign(db, licenseId, "sending", originalClaim);
+        await db.SaveChangesAsync();
+
+        await Service(db).UpsertAsync(
+            licenseId, NewUserCode(), $"pw-{Guid.NewGuid():N}", "ORDERDECK",
+            NewBrandCode(), CancellationToken.None);
+
+        campaign.ClaimedAt.Should().Be(originalClaim.AddTicks(1),
+            "saat jetonun gerisindeyken tek güvenli sonraki değer özgün + 1 tik");
+    }
+
+    /// <summary><paramref name="claimedAt"/> verilmezse jeton GEÇMİŞTE kalır
+    /// ve <c>NextClaimedAt</c> hep "saat ilerledi" kolunu seçer; ileri tarihli
+    /// jeton veren test monoton muhafızın öbür kolunu koşturur.</summary>
     private static SmsCampaign SeedCampaign(
-        LicenseDbContext db, Guid licenseId, string status)
+        LicenseDbContext db, Guid licenseId, string status,
+        DateTimeOffset? claimedAt = null)
     {
         var campaign = new SmsCampaign
         {
@@ -927,7 +999,7 @@ EOF
             RecipientCount = 1,
             ReservedCredits = 1,
             Status = status,
-            ClaimedAt = DateTimeOffset.UtcNow.AddMinutes(-1),
+            ClaimedAt = claimedAt ?? DateTimeOffset.UtcNow.AddMinutes(-1),
             CreatedByCustomerId = Guid.NewGuid(),
             CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-2),
         };
@@ -964,6 +1036,57 @@ EOF
         account.Status.Should().Be(NetgsmAccountStatus.Disabled);
         account.PasswordProtected.Should().Be(originalPassword);
     }
+
+    [Fact]
+    public async Task Upsert_cakisma_firlatirken_izlenen_nesne_birakmaz()
+    {
+        // `UpsertAsync` paylaşılan scoped bağlamda çalışıyor. Çakışmayla
+        // fırlarken yarı-yazılmış hesabı izleniyor bırakırsa, o scope'ta
+        // atılacak SONRAKİ herhangi bir `SaveChanges` onu kimsenin karar
+        // vermediği bir anda diske basar. Kardeş metot
+        // `CloseAccountAndPauseCampaignsAsync` için aynı iddia kuruluyor;
+        // simetri burada da ölçülmeli.
+        var databaseName = $"netgsm-{Guid.NewGuid():N}";
+        using var db = NewDb(databaseName);
+        var licenseId = Guid.NewGuid();
+
+        Seed(db, licenseId, NewBrandCode(), NetgsmAccountStatus.Failed);
+
+        // Jetonu ARKADAN kaydır: ikinci bağlam aynı satırı yazıyor, `db`'nin
+        // izlediği kopyanın özgün sürümü bayatlıyor. Yeni jeton değerini
+        // `LicenseDbContext.StampNetgsmAccountVersions()` üretiyor — burada
+        // önemli olan yazımın BAŞKA bir bağlamdan gelmesi.
+        using (var other = NewDb(databaseName))
+        {
+            var row = await other.NetgsmAccounts.SingleAsync(a => a.LicenseId == licenseId);
+            row.UpdatedAt = row.UpdatedAt.AddMinutes(1);
+            await other.SaveChangesAsync();
+        }
+
+        Func<Task> write = async () => await Service(db).UpsertAsync(
+            licenseId, NewUserCode(), $"pw-{Guid.NewGuid():N}", "ORDERDECK",
+            NewBrandCode(), CancellationToken.None);
+
+        await write.Should().ThrowAsync<DbUpdateConcurrencyException>();
+
+        db.ChangeTracker.Entries().Should().BeEmpty(
+            "fırlatmadan önce temizlenmeli: kirli nesne çağıranın sonraki "
+            + "SaveChanges'ine biner");
+    }
+```
+
+Son test AYNI InMemory veritabanına ikinci bir bağlam istiyor; mevcut
+`NewDb()` yardımcısına (`NetgsmAccountServiceTests.cs:17`) isteğe bağlı bir
+parametre ekle — varsayılanı bugünkü davranış:
+
+```csharp
+    /// <summary><paramref name="databaseName"/> verilirse AYNI InMemory
+    /// veritabanına ikinci bir bağlam açılabilir — eşzamanlılık yarışını
+    /// kurmak için şart: jetonu "arkadan" kaydıran yazım, test edilen
+    /// bağlamın izlemediği bir yerden gelmeli.</summary>
+    private static LicenseDbContext NewDb(string? databaseName = null)
+        => new(new DbContextOptionsBuilder<LicenseDbContext>()
+            .UseInMemoryDatabase(databaseName ?? $"netgsm-{Guid.NewGuid():N}").Options);
 ```
 
 Dosyanın `using` bloğu zaten `FluentAssertions`,
@@ -1416,10 +1539,17 @@ altına:
 > `Modified` hesap (yeni şifre + `Failed` + damgalanmış `UpdatedAt`) ve
 > `paused` damgalı kampanyalar izleniyor kalır; o scope'ta atılacak sonraki
 > herhangi bir `SaveChanges` onları kimsenin karar vermediği bir anda diske
-> basar. Kardeş metot `CloseAccountAndPauseCampaignsAsync` (Görev 8) aynı şeyi
-> yapıyor — simetri korunmalı. `Clear()` + `throw` güvenli, çünkü Görev 6'nın
-> `IsBrandCodeConflict(ex)` yardımcısı `ex.InnerException`'a bakıyor,
-> `ex.Entries`'e değil.
+> basar. Kardeş metot `CloseAccountAndPauseCampaignsAsync` (Görev 8) da aynı
+> taban `catch (DbUpdateException)` dalını taşıyor — simetri **iki yönlü**:
+> birinden silinirse öbüründen de silinmiş sayılmalı, çünkü ikisi de aynı
+> paylaşılan scoped bağlamda çalışıyor. `Clear()` + `throw` güvenli, çünkü
+> Görev 6'nın `IsBrandCodeConflict(ex)` yardımcısı `ex.InnerException`'a
+> bakıyor, `ex.Entries`'e değil.
+>
+> Bu dalın `Clear()`'ı sessizce geri gelebilecek türden: satır silindiğinde
+> `Services.Sms|Services.Iys` kümesinin tamamı yeşil kalıyordu.
+> `Upsert_cakisma_firlatirken_izlenen_nesne_birakmaz` tam olarak bunu
+> öldürmek için var — **silme.**
 
 - [ ] **Adım 4: Testlerin geçtiğini gör**
 
@@ -1427,7 +1557,7 @@ altına:
 dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
   --filter "FullyQualifiedName~NetgsmAccountServiceTests|FullyQualifiedName~NetgsmAccountVersionTests"
 ```
-Beklenen: PASS — 18 test (`NetgsmAccountServiceTests`'te 16 `[Fact]`,
+Beklenen: PASS — 20 test (`NetgsmAccountServiceTests`'te 18 `[Fact]`,
 `NetgsmAccountVersionTests`'te 2 `[InlineData]`'lı tek `[Theory]`).
 
 Jeton ve damgalama mevcut paketin başka yerlerini bozmadığını doğrulamak için
@@ -3490,9 +3620,28 @@ ikinci bir kopya yazma):
                 // (resurrection yok), değişmiş hesap da sürüm kontrolüne
                 // takılıp `0` döner.
             }
+            catch (DbUpdateException)
+            {
+                // Eşzamanlılık DIŞI yazım hatası (ör. `LastError` sütun taşması,
+                // FK ihlali). Retry anlamsız — aynı veriyle tekrar denemek aynı
+                // hatayı verir. Fırlatmadan ÖNCE temizle: bu metodu günlük iş bir
+                // DÖNGÜ içinden çağırıyor, kirli tracker sıradaki hesabın
+                // `SaveChanges`'ine biner.
+                _db.ChangeTracker.Clear();
+                throw;
+            }
         }
     }
 ```
+
+> **Üç `catch`'in sırası zorunlu.** `DbUpdateConcurrencyException`,
+> `DbUpdateException`'dan TÜREDİĞİ için iki türemiş cümle ÜSTTE, taban ALTTA
+> kalmalı; derleyici tersini zaten kabul etmez. Taban dal olmadan
+> eşzamanlılık dışı bir yazım hatası (bu metot tam olarak `lastError` yazıyor
+> ve `LastError` sütunu 500 karakterle sınırlı) buradan `Clear()` yapılmadan
+> çıkardı — üstelik çağıran bir DÖNGÜ, yani kirli tracker bir controller'daki
+> hâlinden daha tehlikeli: karar verilmemiş bir `Failed` + `paused` seti
+> sıradaki hesabın `SaveChanges`'iyle diske iner.
 
 > **`StagePauseActiveCampaignsAsync` Görev 3'te yazıldı** — burada ikinci bir
 > kopyası yok. Duraklatmanın `ClaimedAt` jetonunu da ilerletmesi oradaki
