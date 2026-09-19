@@ -2632,6 +2632,16 @@ da al:
     }
 ```
 
+> **Ölçüm notu (2026-09-19 mutasyon turu).** `IsModified = true` satırı
+> SİLİNDİĞİNDE bu görevin 10 vakasının **hiçbiri düşmüyor** — satır bugün
+> savunma amaçlı, ölçülmüş değil. Sebebi: `UpsertAsync` her turda
+> `LastError = null` yazıyor, dolayısıyla dönüş yollarının ikisi de mutlaka
+> bir sütun değiştiriyor (`Ok` → `Status`, diğerleri → `LastError` null'dan
+> metne). "Hiçbir sütun değişmedi" hâli bu uçta bugün ÜRETİLEMİYOR. Satır yine
+> de kalmalı: Görev 6/8/13 bu gövdeye yeni dönüş yolları ekliyor ve aynı
+> `LastError`'ı tekrar yazan bir yol eklendiği gün CAS sessizce atlanırdı.
+> Böyle bir yol eklenirse ONU ölçen bir test de eklensin.
+
 > **Görev 6 ve Görev 13 bu gövdeye EKLEME yapar, parça DEĞİŞTİRMEZ.** İkisi de
 > yeni `catch` cümleleri ve tek satırlık eklemeler getiriyor; bir bloğu
 > "tamamen değiştir" diyen bir adım bu metotta YOKTUR. (İlk taslakta Görev 13
