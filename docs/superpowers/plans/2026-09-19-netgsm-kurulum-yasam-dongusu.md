@@ -514,11 +514,22 @@ EOF
 
 ---
 
-## Görev 3: `NetgsmAccountService.UpsertAsync`
+## Görev 3: `NetgsmAccountService.UpsertAsync` + hesap sürüm jetonu
 
 **Files:**
 - Modify: `OrderDeck.LicenseServer/Services/Sms/NetgsmAccountService.cs`
+- Modify: `OrderDeck.LicenseServer/Data/LicenseDbContext.cs:113` (iki `SaveChanges` override'ı) ve `:824` (`NetgsmAccount` eşlemesi)
 - Test: `OrderDeck.LicenseServer.Tests/Services/Sms/NetgsmAccountServiceTests.cs`
+- Create: `OrderDeck.LicenseServer.Tests/Services/Sms/NetgsmAccountVersionTests.cs`
+
+> **Bu görev üç işi birden yapıyor ve bunlar ayrılamaz.** `UpsertAsync` hesabı
+> `Failed`'a düşürüyor; eğer aynı `SaveChanges` içinde lisansın koşan
+> kampanyalarını da duraklatmazsa, marka çözülemez hâle gelirken işçi gönderime
+> devam eder. Duraklatma da tek başına yetmez: işçi kampanyayı zaten okumuşsa
+> `ClaimedAt` jetonu ilerlemedikçe üstlenme yazımını kazanır. Son olarak
+> hesabın kendisinde eşzamanlılık jetonu yoksa, doğrulama sürerken değişen bir
+> satırın üzerine bayat sonuç yazılır. Üçü de aynı dosyalara dokunduğu için tek
+> görevde toplandı.
 
 - [ ] **Adım 1: Düşen testi yaz**
 
@@ -639,6 +650,40 @@ EOF
         acc.Header.Should().Be("ORDERDECK");
         acc.UserCode.Should().NotStartWith(" ");
     }
+
+    [Fact]
+    public async Task Upsert_disabled_hesabi_acmaz()
+    {
+        // Admin kill switch'i servis katmanında tutuluyor: controller ön kontrolü
+        // yalnız erken ve anlaşılır bir 409 üretmek için var. Kapı burada olmazsa
+        // panelin ön kontrolü ile yazım arasındaki pencerede kapatılan hesap,
+        // yayıncının kaydıyla yeniden açılır.
+        using var db = NewDb();
+        var licenseId = Guid.NewGuid();
+
+        var account = Seed(
+            db,
+            licenseId,
+            Random.Shared.Next(100_000, 999_999).ToString(),
+            NetgsmAccountStatus.Disabled);
+
+        var originalPassword = account.PasswordProtected;
+
+        Func<Task> write = async () =>
+        {
+            await Service(db).UpsertAsync(
+                licenseId,
+                NewUserCode(),
+                $"pw-{Guid.NewGuid():N}",
+                "ORDERDECK",
+                account.BrandCode,
+                CancellationToken.None);
+        };
+
+        await write.Should().ThrowAsync<NetgsmAccountDisabledException>();
+        account.Status.Should().Be(NetgsmAccountStatus.Disabled);
+        account.PasswordProtected.Should().Be(originalPassword);
+    }
 ```
 
 Dosyanın `using` bloğu zaten `FluentAssertions`,
@@ -646,71 +691,393 @@ Dosyanın `using` bloğu zaten `FluentAssertions`,
 `OrderDeck.LicenseServer.Domain`, `OrderDeck.LicenseServer.Services.Sms` ve
 `Xunit` içeriyor — yenisine gerek yok.
 
+Ayrıca YENİ dosya
+`OrderDeck.LicenseServer.Tests/Services/Sms/NetgsmAccountVersionTests.cs`:
+
+```csharp
+using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
+using Xunit;
+
+namespace OrderDeck.LicenseServer.Tests.Services.Sms;
+
+public sealed class NetgsmAccountVersionTests
+{
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Parola_yazimi_saat_ilerlemese_bile_bayat_yaziyi_reddeder(
+        bool useAsyncSave)
+    {
+        var options = new DbContextOptionsBuilder<LicenseDbContext>()
+            .UseInMemoryDatabase($"netgsm-version-{Guid.NewGuid():N}")
+            .Options;
+
+        var accountId = Guid.NewGuid();
+        var originalStamp = DateTimeOffset.UtcNow.AddDays(1);
+        var replacement = $"protected-{Guid.NewGuid():N}";
+
+        await using (var seed = new LicenseDbContext(options))
+        {
+            seed.NetgsmAccounts.Add(new NetgsmAccount
+            {
+                Id = accountId,
+                LicenseId = Guid.NewGuid(),
+                UserCode = Random.Shared
+                    .NextInt64(8_500_000_000, 8_599_999_999).ToString(),
+                PasswordProtected = $"protected-{Guid.NewGuid():N}",
+                Header = "ORDERDECK",
+                BrandCode = Random.Shared.Next(100_000, 999_999).ToString(),
+                Status = NetgsmAccountStatus.Failed,
+                CreatedAt = originalStamp,
+                UpdatedAt = originalStamp,
+            });
+
+            await seed.SaveChangesAsync();
+        }
+
+        await using var verifier = new LicenseDbContext(options);
+        await using var writer = new LicenseDbContext(options);
+
+        var stale = await verifier.NetgsmAccounts
+            .SingleAsync(a => a.Id == accountId);
+        var current = await writer.NetgsmAccounts
+            .SingleAsync(a => a.Id == accountId);
+
+        // Yazıcı UpdatedAt atamayı unutsa bile koruma çalışmalı.
+        current.PasswordProtected = replacement;
+
+        if (useAsyncSave)
+            await writer.SaveChangesAsync();
+        else
+            writer.SaveChanges();
+
+        current.UpdatedAt.Should().Be(originalStamp.AddTicks(1));
+        stale.Status = NetgsmAccountStatus.Verified;
+
+        Func<Task> staleWrite = async () =>
+        {
+            if (useAsyncSave)
+                await verifier.SaveChangesAsync();
+            else
+                verifier.SaveChanges();
+        };
+
+        await staleWrite.Should()
+            .ThrowAsync<DbUpdateConcurrencyException>();
+
+        await using var read = new LicenseDbContext(options);
+        var persisted = await read.NetgsmAccounts.AsNoTracking()
+            .SingleAsync(a => a.Id == accountId);
+
+        persisted.PasswordProtected.Should().Be(replacement);
+        persisted.Status.Should().Be(NetgsmAccountStatus.Failed);
+        persisted.UpdatedAt.Should().Be(originalStamp.AddTicks(1));
+    }
+}
+```
+
+> **Neden InMemory yeterli, neden gelecek tarihli damga.** EF InMemory
+> sağlayıcısı eşzamanlılık jetonunu **uyguluyor**: kaydın özgün jeton değerini
+> depodakiyle karşılaştırıp uyuşmazlıkta `DbUpdateConcurrencyException`
+> atıyor. Uygulamadığı tek şey birden çok entity'nin SQL transaction'ıyla
+> birlikte geri alınması — bu testin böyle bir iddiası yok (tek satır).
+> `CLAUDE.md`'deki "InMemory'nin eşzamanlılık semantiği yok" genellemesi bu
+> ayrımı kaçırıyor; **satır-içi jeton reddi InMemory'de kanıtlanabilir**, çok
+> entity'li rollback kanıtlanamaz (o Görev 7'de Testcontainers'a gidiyor).
+>
+> Seed damgası **bir gün ileride**: böylece `DateTimeOffset.UtcNow` mutlaka
+> özgün damgadan küçük kalır ve `max(UtcNow, özgün + 1 tick)` dalının "saat
+> ilerlemedi" kolu deterministik koşar. `Thread.Sleep` ya da saat
+> çözünürlüğüne bağlı flaky bir teste gerek kalmaz.
+
 - [ ] **Adım 2: Düştüğünü gör**
 
 ```bash
 dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
-  --filter FullyQualifiedName~NetgsmAccountServiceTests
+  --filter "FullyQualifiedName~NetgsmAccountServiceTests|FullyQualifiedName~NetgsmAccountVersionTests"
 ```
-Beklenen: derleme hatası — `UpsertAsync` yok.
+Beklenen: derleme hatası — `UpsertAsync` ve `NetgsmAccountDisabledException`
+yok.
 
 - [ ] **Adım 3: En küçük uygulamayı yaz**
 
-`NetgsmAccountService.cs` içine, `GetBrandCodeAsync`'in ÜSTÜNE:
+**3a — Hesaba eşzamanlılık jetonu ver.** `LicenseDbContext.cs:824`'teki
+`NetgsmAccount` eşlemesinin içine, `b.HasKey(a => a.Id);` satırının hemen
+altına:
+
+```csharp
+            b.Property(a => a.UpdatedAt).IsConcurrencyToken();
+```
+
+> **Neden yeni sütun/göç yok.** `NetgsmAccount.UpdatedAt` sütunu **zaten var**
+> (`Domain/NetgsmAccount.cs:92`). `IsConcurrencyToken()` yalnız EF model
+> metadata'sı; üretilen `UPDATE`'e `WHERE ... AND [UpdatedAt] = @özgün`
+> ekletir. Veri göçü gerekmez — ama Görev 7'de oluşturulacak migration'ın
+> **model snapshot'ı bu metadata'yı da içermeli**, yoksa sonraki `dotnet ef
+> migrations add` sahte bir fark üretir.
+>
+> `rowversion` daha güçlü bir mekanizma ama **yeni sütun** ister; koşullu
+> `ExecuteUpdate` ise hesap ile kampanya yazımlarını birleştirmek için açık
+> transaction + etkilenen satır sayısı kontrolü + tracker yönetimi gerektirir,
+> yani daha kısa değil daha uzun. Var olan sütun bu ikisinden ucuz.
+
+**3b — Jetonu her yazımda kesin ilerlet.** Tek başına `IsConcurrencyToken()`
+YETMEZ: `UpdatedAt` atamayı unutan yazım yolları (panelin çözülemeyen şifre
+dalı, entity'yi doğrudan değiştiren mevcut testler) jetonu hiç ilerletmez ve
+koruma sahte olur. Atayan yollar da yalnız `DateTimeOffset.UtcNow` yazıyor —
+`UtcNow` **ne benzersiz ne monoton**, dolayısıyla "farklı sürüm" garantisi
+vermez. Damgalamayı tek merkeze al: `LicenseDbContext.cs:113`'teki iki
+override'ı aşağıdaki gövdelerle değiştir ve yardımcıyı aynı sınıfa ekle.
+`SyncDerivedColumns` aynen korunuyor, `113` üstündeki "dördünü birden override
+etme" yorumu da yerinde kalıyor.
 
 ```csharp
     /// <summary>
-    /// Lisansın Netgsm kurulumunu yazar/günceller ve satırı <b>her zaman</b>
-    /// <see cref="NetgsmAccountStatus.Failed"/> bırakır.
+    /// <see cref="NetgsmAccount.UpdatedAt"/> bir eşzamanlılık jetonu; her
+    /// güncellemede <b>kesin</b> ilerlemesi gerekiyor. Çağıranların
+    /// <c>UtcNow</c> atamasına güvenemeyiz: atamayı unutan yol jetonu hiç
+    /// ilerletmez, atayan yol da saat geri gittiyse/ilerlemediyse aynı değeri
+    /// yazabilir. <c>max(UtcNow, özgün + 1 tick)</c> ikisini de kapatır — iki
+    /// yazar aynı sonraki değeri üretse bile <c>WHERE UpdatedAt = özgün</c>
+    /// nedeniyle yalnız biri kazanır.
+    /// </summary>
+    private void StampNetgsmAccountVersions()
+    {
+        foreach (var entry in ChangeTracker.Entries<NetgsmAccount>())
+        {
+            if (entry.State != EntityState.Modified)
+                continue;
+
+            var version = entry.Property(a => a.UpdatedAt);
+            var original = version.OriginalValue;
+            var now = DateTimeOffset.UtcNow;
+
+            version.CurrentValue = now > original
+                ? now
+                : original.AddTicks(1);
+
+            version.IsModified = true;
+        }
+    }
+
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        SyncDerivedColumns();
+        StampNetgsmAccountVersions();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    public override Task<int> SaveChangesAsync(
+        bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    {
+        SyncDerivedColumns();
+        StampNetgsmAccountVersions();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+```
+
+`EntityState.Added` bilerek dışarıda: yeni satırın seed damgası
+(`CreatedAt == UpdatedAt`) bozulmuyor, `OriginalValue` de henüz anlamlı değil.
+
+> **Mevcut testleri kırar mı?** `UpdatedAt` atamadan `NetgsmAccount`
+> değiştiren şu yollar merkezi damgalamayla kendiliğinden kapsanıyor, teste
+> yapay timestamp eklemek gerekmiyor:
+> `SmsCampaignIysGateTests.cs:181-183`, `IysConsentPushJobTests.cs:344-349` ve
+> `:391-396`, `IysConsentVerifyJobTests.cs:328-333` ve `:443-448`. Jeton
+> yalnız **başka bir bağlamın değiştirdiği** satıra bayat sürümle yazanı
+> reddeder; tek bağlamdan yazan mevcut testler etkilenmez.
+
+**3c — Ortak duraklatma yardımcıları.** `NetgsmAccountService.cs` içine,
+`GetBrandCodeAsync`'in ÜSTÜNE:
+
+```csharp
+    /// <summary>
+    /// Kampanya sahiplik jetonunun (<see cref="SmsCampaign.ClaimedAt"/>) bir
+    /// sonraki değeri. <c>UtcNow</c> monoton olmadığı için ham atama, jetonu
+    /// yerinde bırakabilir ya da geri alabilir; her iki durumda da kapatmadan
+    /// ÖNCE kampanyayı okumuş bir işçi üstlenme yazımını kazanır.
+    /// </summary>
+    private static DateTimeOffset NextClaimedAt(DateTimeOffset? previous)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return previous.HasValue && now <= previous.Value
+            ? previous.Value.AddTicks(1)
+            : now;
+    }
+
+    /// <summary>
+    /// Lisansın koşan/kuyruktaki kampanyalarını <c>paused</c> olarak
+    /// <b>hazırlar</b> — kaydetmez. Çağıran, hesap yazımıyla aynı
+    /// <c>SaveChanges</c> içinde kaydeder; böylece hesap kapanırken kampanya
+    /// açık kalan bir ara durum oluşmaz.
+    ///
+    /// <para>Jetonu ilerletmek işin YARISI değil tamamı: durum yazımı tek
+    /// başına, kampanyayı zaten okumuş işçinin <c>sending</c> yazımını
+    /// engellemez.</para>
+    ///
+    /// <para><b>Kredi iade edilmez</b> — kalan alıcılar <c>pending</c> kalıyor
+    /// ve rezervasyon tam olarak onların karşılığı. İade, kampanya gerçekten
+    /// tamamlandığında (<c>failed</c> alıcı sayısına göre) yapılır.</para>
+    /// </summary>
+    private async Task<int> StagePauseActiveCampaignsAsync(
+        Guid licenseId, CancellationToken ct)
+    {
+        var active = await _db.SmsCampaigns
+            .Where(c => c.LicenseId == licenseId
+                && (c.Status == "pending" || c.Status == "sending"))
+            .ToListAsync(ct);
+
+        foreach (var campaign in active)
+        {
+            campaign.Status = "paused";
+            campaign.ClaimedAt = NextClaimedAt(campaign.ClaimedAt);
+        }
+
+        return active.Count;
+    }
+```
+
+**3d — Admin kill switch'i için exception.** `NetgsmAccountService.cs`
+namespace'i içinde, servis sınıfının DIŞINA:
+
+```csharp
+/// <summary>
+/// Yönetici tarafından kapatılmış (<see cref="NetgsmAccountStatus.Disabled"/>)
+/// bir kuruluma yazma girişimi. Panel bunu 409'a çevirir.
+/// </summary>
+public sealed class NetgsmAccountDisabledException : InvalidOperationException
+{
+    public NetgsmAccountDisabledException()
+        : base("netgsm-account-disabled")
+    {
+    }
+}
+```
+
+**3e — `UpsertAsync`.** `NetgsmAccountService.cs` içine, 3c'deki yardımcıların
+altına:
+
+```csharp
+    /// <summary>
+    /// Lisansın Netgsm kurulumunu yazar/günceller, satırı <b>her zaman</b>
+    /// <see cref="NetgsmAccountStatus.Failed"/> bırakır ve lisansın koşan
+    /// kampanyalarını <b>aynı işlemde</b> duraklatır.
     ///
     /// <para><b>Neden hep Failed.</b> Kimlik bilgileri değiştiyse eski doğrulama
     /// geçersizdir; <c>Verified</c>'ı korumak, yanlış kimlikle "açık" duran bir
     /// kurulum demektir. Satırı kapalı yazıp doğrulamayı ayrı çalıştırmak aynı
     /// zamanda arada süreç ölse bile fail-closed kalmayı garanti eder.</para>
     ///
+    /// <para><b>Neden duraklatma BURADA, doğrulama sonucunda değil.</b> Hesap
+    /// <c>Failed</c> olduğu anda marka çözülemez; ağ çağrısı sürerken (ya da o
+    /// noktada süreç ölürse) kampanya açık kalırsa işçi izinsiz gönderime devam
+    /// eder. Duraklatmayı ilk yazıma bağlamak bu pencereyi kapatır.</para>
+    ///
     /// <para><paramref name="rawPassword"/> boş/null ise saklanan şifre KORUNUR:
     /// panel şifreyi geri göstermediği için yayıncı başlığını düzeltirken alanı
     /// boş bırakır. İlk kayıtta ise zorunludur.</para>
     ///
-    /// <para><b><c>Disabled</c> kontrolü burada DEĞİL.</b> Bu metot admin kill
-    /// switch'ini tanımaz; kapıyı çağıran uç (panel controller) tutar. Gerekçe:
-    /// admin ekranı da aynı metodu kullanabilmeli.</para>
+    /// <para><b><c>Disabled</c> kapısı BURADA.</b> Panel controller'ı da erken
+    /// bir ön kontrol yapıyor, ama asıl kapı bu: ön kontrol ile yazım arasındaki
+    /// pencerede kapatılan hesabı yalnız bu kontrol koruyabilir.</para>
     /// </summary>
+    /// <exception cref="NetgsmAccountDisabledException">Hesap admin tarafından kapatılmış.</exception>
+    /// <exception cref="ArgumentException">İlk kayıtta şifre verilmemiş.</exception>
+    /// <exception cref="DbUpdateConcurrencyException">Hesap satırı yazım sürerken değişti.</exception>
     public async Task<NetgsmAccount> UpsertAsync(
         Guid licenseId, string userCode, string? rawPassword,
         string header, string brandCode, CancellationToken ct)
     {
-        var now = DateTimeOffset.UtcNow;
-        var acc = await _db.NetgsmAccounts.FirstOrDefaultAsync(a => a.LicenseId == licenseId, ct);
+        var account = await _db.NetgsmAccounts
+            .FirstOrDefaultAsync(a => a.LicenseId == licenseId, ct);
 
-        if (acc is null)
+        var originalId = account?.Id;
+        var originalVersion = account?.UpdatedAt;
+        const int maxAttempts = 4;
+
+        for (var attempt = 1; ; attempt++)
         {
-            if (string.IsNullOrWhiteSpace(rawPassword))
-                throw new ArgumentException(
-                    "İlk kayıtta Netgsm API şifresi zorunlu.", nameof(rawPassword));
-
-            acc = new NetgsmAccount
+            if (attempt > 1)
             {
-                Id = Guid.NewGuid(),
-                LicenseId = licenseId,
-                CreatedAt = now,
-            };
-            _db.NetgsmAccounts.Add(acc);
+                account = await _db.NetgsmAccounts
+                    .FirstOrDefaultAsync(a => a.LicenseId == licenseId, ct);
+            }
+
+            if (account?.Status == NetgsmAccountStatus.Disabled)
+                throw new NetgsmAccountDisabledException();
+
+            // Retry yalnız kampanya yarışı içindir. Hesap satırı bu arada
+            // değiştiyse yeni sürümü sessizce sahiplenmeyiz — çağıran 409 alır.
+            if (attempt > 1
+                && (account?.Id != originalId
+                    || account?.UpdatedAt != originalVersion))
+            {
+                _db.ChangeTracker.Clear();
+                throw new DbUpdateConcurrencyException(
+                    "Kurulum, kaydetme sürerken değişti.");
+            }
+
+            var now = DateTimeOffset.UtcNow;
+
+            if (account is null)
+            {
+                if (string.IsNullOrWhiteSpace(rawPassword))
+                {
+                    throw new ArgumentException(
+                        "İlk kayıtta Netgsm API şifresi zorunlu.",
+                        nameof(rawPassword));
+                }
+
+                account = new NetgsmAccount
+                {
+                    Id = Guid.NewGuid(),
+                    LicenseId = licenseId,
+                    CreatedAt = now,
+                    UpdatedAt = now,
+                };
+
+                _db.NetgsmAccounts.Add(account);
+            }
+
+            account.UserCode = userCode.Trim();
+            account.Header = header.Trim();
+            account.BrandCode = brandCode.Trim();
+
+            if (!string.IsNullOrWhiteSpace(rawPassword))
+                account.PasswordProtected = ProtectPassword(rawPassword);
+
+            account.Status = NetgsmAccountStatus.Failed;
+            account.LastError = null;
+            account.LastVerifiedAt = null;
+
+            // Yalnız başlık/marka aynı kalsa bile CAS UPDATE'i üretilmeli:
+            // aksi halde EF hiç UPDATE yazmaz ve jeton kontrolü hiç koşmaz.
+            if (_db.Entry(account).State != EntityState.Added)
+            {
+                _db.Entry(account).Property(a => a.UpdatedAt)
+                    .IsModified = true;
+            }
+
+            await StagePauseActiveCampaignsAsync(licenseId, ct);
+
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+                return account;
+            }
+            catch (DbUpdateConcurrencyException ex) when (
+                attempt < maxAttempts
+                && ex.Entries.Count > 0
+                && ex.Entries.All(e => e.Entity is SmsCampaign))
+            {
+                // Yalnız kampanya heartbeat/tamamlanma yarışını tekrar dene.
+                // Hesabın özgün sürümü originalVersion olarak korunuyor.
+                _db.ChangeTracker.Clear();
+            }
         }
-
-        acc.UserCode = userCode.Trim();
-        acc.Header = header.Trim();
-        acc.BrandCode = brandCode.Trim();
-        if (!string.IsNullOrWhiteSpace(rawPassword))
-            acc.PasswordProtected = ProtectPassword(rawPassword);
-
-        acc.Status = NetgsmAccountStatus.Failed;
-        acc.LastError = null;
-        acc.LastVerifiedAt = null;
-        acc.UpdatedAt = now;
-
-        await _db.SaveChangesAsync(ct);
-        return acc;
     }
 
     /// <summary>
@@ -732,7 +1099,16 @@ Beklenen: derleme hatası — `UpsertAsync` yok.
 
 ```bash
 dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
-  --filter FullyQualifiedName~NetgsmAccountServiceTests
+  --filter "FullyQualifiedName~NetgsmAccountServiceTests|FullyQualifiedName~NetgsmAccountVersionTests"
+```
+Beklenen: PASS.
+
+Jeton ve damgalama mevcut paketin başka yerlerini bozmadığını doğrulamak için
+SMS/İYS kümesini de koş:
+
+```bash
+dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
+  --filter "FullyQualifiedName~Services.Sms|FullyQualifiedName~Services.Iys"
 ```
 Beklenen: PASS.
 
@@ -740,9 +1116,18 @@ Beklenen: PASS.
 
 ```bash
 git add OrderDeck.LicenseServer/Services/Sms/NetgsmAccountService.cs \
-        OrderDeck.LicenseServer.Tests/Services/Sms/NetgsmAccountServiceTests.cs
+        OrderDeck.LicenseServer/Data/LicenseDbContext.cs \
+        OrderDeck.LicenseServer.Tests/Services/Sms/NetgsmAccountServiceTests.cs \
+        OrderDeck.LicenseServer.Tests/Services/Sms/NetgsmAccountVersionTests.cs
 git commit -m "$(cat <<'EOF'
-feat(netgsm): UpsertAsync — kurulum satırı kapalı doğar, boş şifre saklananı korur
+feat(netgsm): UpsertAsync kurulumu kapalı yazar, kampanyayı duraklatır, sürüm jetonu ekler
+
+Kurulum satırı her zaman Failed doğuyor ve aynı SaveChanges içinde lisansın
+koşan kampanyaları paused'a çekiliyor: hesap Failed olduğu anda marka
+çözülemediği için ağ çağrısı sürerken kampanyanın açık kalması izinsiz
+gönderim demekti. UpdatedAt artık eşzamanlılık jetonu ve DbContext her
+güncellemede max(UtcNow, özgün + 1 tick) damgalıyor — UtcNow monoton olmadığı
+için ham atama sahte koruma üretiyordu.
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
 EOF
@@ -1142,6 +1527,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Iys;
+using OrderDeck.LicenseServer.Services.Sms;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
@@ -1359,6 +1745,161 @@ public sealed class PanelNetgsmAccountSaveTests : IDisposable
     }
 
     [Fact]
+    public async Task Dogrulama_sirasinda_yalniz_parola_degisirse_sonuc_uygulanmaz()
+    {
+        // Yukarıdaki testin kardeşi ama ONDAN DAHA SERT: burada `UserCode` ve
+        // `BrandCode` AYNI kalıyor, yalnız parola değişiyor. Alan karşılaştırmasına
+        // dayanan bir CAS bu yarışı GÖREMEZ — "doğruladığım kimlikler duruyor"
+        // der ve satırı açar. Oysa doğrulanan parola artık satırda yok: hiç
+        // sınanmamış bir parola `Verified` damgası alırdı. Sürüm jetonu bunu
+        // alan alan karşılaştırmadan yakalar.
+        var (factory, client, licenseId) = await SeedAsync();
+        var replacementPassword = $"pw-{Guid.NewGuid():N}";
+
+        factory.Iys.OnSearch = () =>
+        {
+            using var scope = factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var accounts = scope.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+
+            var row = db.NetgsmAccounts.Single(a => a.LicenseId == licenseId);
+            row.PasswordProtected = accounts.ProtectPassword(replacementPassword);
+            db.SaveChanges();
+
+            return new IysSearchResult("0", "{}", new Dictionary<string, IysConsentStatus>());
+        };
+
+        var response = await client.PutAsJsonAsync("/api/panel/netgsm/account", NewBody());
+
+        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        body.RootElement.GetProperty("title").GetString()
+            .Should().Be("verification-superseded");
+
+        using var verify = factory.Services.CreateScope();
+        var verifyDb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var verifyAccounts = verify.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+
+        var persisted = await verifyDb.NetgsmAccounts.AsNoTracking()
+            .SingleAsync(a => a.LicenseId == licenseId);
+
+        persisted.Status.Should().Be(NetgsmAccountStatus.Failed);
+        verifyAccounts.TryUnprotectPassword(persisted.PasswordProtected)
+            .Should().Be(replacementPassword, "araya giren PUT'un parolası korunur");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Panel_kaydi_dogrulama_baslamadan_kampanyayi_duraklatir(bool unavailable)
+    {
+        // Kurulum yeniden kaydedildiği AN kapı kapanır. Duraklatmayı doğrulama
+        // sonucuna bağlasaydık, ağ çağrısını beklediğimiz saniyelerde (ya da
+        // süreç tam orada ölürse sonsuza dek) koşan işçi gönderime devam
+        // ederdi — işçi markayı ve onayları çoktan okumuştur, hesabın Failed
+        // olması onu TEK BAŞINA durdurmaz. `unavailable` iki ret biçimini de
+        // sınıyor: İYS'nin "hayır"ı ve İYS'ye hiç ulaşamama.
+        var (factory, client, licenseId) = await SeedAsync();
+
+        (await client.PutAsJsonAsync("/api/panel/netgsm/account", NewBody()))
+            .EnsureSuccessStatusCode();
+
+        var campaignId = Guid.NewGuid();
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+            db.SmsCampaigns.Add(new SmsCampaign
+            {
+                Id = campaignId,
+                LicenseId = licenseId,
+                MessageBody = "Kampanya",
+                Status = "sending",
+                ClaimedAt = DateTimeOffset.UtcNow,
+                SegmentsPerMessage = 1,
+                RecipientCount = 2,
+                ReservedCredits = 2,
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+
+            for (var i = 0; i < 2; i++)
+            {
+                db.SmsCampaignRecipients.Add(new SmsCampaignRecipient
+                {
+                    Id = Guid.NewGuid(),
+                    CampaignId = campaignId,
+                    Phone = $"+90555{Random.Shared.Next(1_000_000, 9_999_999)}",
+                    Status = "pending",
+                });
+            }
+
+            db.LicenseSmsBalances.Add(new LicenseSmsBalance
+            {
+                Id = Guid.NewGuid(),
+                LicenseId = licenseId,
+                CreditsRemaining = 98,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            });
+
+            await db.SaveChangesAsync();
+        }
+
+        var observedPausedBeforeVerification = false;
+
+        factory.Iys.OnSearch = () =>
+        {
+            using var scope = factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+            var account = db.NetgsmAccounts.AsNoTracking()
+                .Single(a => a.LicenseId == licenseId);
+            var campaign = db.SmsCampaigns.AsNoTracking()
+                .Single(c => c.Id == campaignId);
+
+            observedPausedBeforeVerification =
+                account.Status == NetgsmAccountStatus.Failed
+                && campaign.Status == "paused";
+
+            if (unavailable) throw new HttpRequestException("İYS erişilemiyor");
+            throw new IysConfigurationException("30", "kimlik reddedildi");
+        };
+
+        var response = await client.PutAsJsonAsync("/api/panel/netgsm/account", NewBody());
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        observedPausedBeforeVerification.Should().BeTrue(
+            "duraklatma İYS çağrısından ÖNCE, Upsert'in kendi SaveChanges'inde inmeli");
+
+        using var verify = factory.Services.CreateScope();
+        var verifyDb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+        var persisted = await verifyDb.SmsCampaigns.AsNoTracking()
+            .SingleAsync(c => c.Id == campaignId);
+
+        persisted.Status.Should().Be("paused");
+        persisted.CompletedAt.Should().BeNull();
+        persisted.RefundedCredits.Should().Be(0);
+
+        // Duraklatma KREDİ İADE ETMEZ: kalan alıcılar "pending" kalıyor,
+        // rezervasyon tam da onların karşılığı. Devam ettirildiğinde aynı
+        // krediyle gönderilecekler.
+        (await verifyDb.SmsCampaignRecipients.CountAsync(
+            r => r.CampaignId == campaignId && r.Status == "pending"))
+            .Should().Be(2);
+
+        (await verifyDb.LicenseSmsBalances
+            .Where(b => b.LicenseId == licenseId)
+            .Select(b => b.CreditsRemaining)
+            .SingleAsync()).Should().Be(98);
+
+        (await verifyDb.LicenseSmsTransactions.CountAsync(
+            t => t.LicenseId == licenseId && t.Kind == "send-refund"))
+            .Should().Be(0);
+    }
+
+    [Fact]
     public async Task Marka_kodu_rakam_disi_ise_400()
     {
         var (_, client, _) = await SeedAsync();
@@ -1459,33 +2000,9 @@ da al:
             return Problem(title: "invalid-brand-code",
                 detail: "İYS marka kodu yalnız rakamlardan oluşur.", statusCode: 400);
 
-        NetgsmAccount account;
-        try
-        {
-            account = await _accounts.UpsertAsync(
-                licenseId.Value, userCode, req.Password, header, brandCode, ct);
-        }
-        catch (ArgumentException)
-        {
-            return Problem(title: "password-required",
-                detail: "İlk kayıtta Netgsm API şifresi zorunlu.", statusCode: 400);
-        }
-
-        // Satır şu an Failed: doğrulama düşse bile kapı KAPALI kalır.
-        var password = _accounts.TryUnprotectPassword(account.PasswordProtected);
-        if (password is null)
-        {
-            account.LastError = NetgsmAccountService.UndecryptableMessage;
-            await _db.SaveChangesAsync(ct);
-            return Ok(ToView(account));
-        }
-
-        var result = await _verifier.VerifyAsync(
-            new Services.Iys.IysAccountContext(licenseId.Value, userCode, password, brandCode), ct);
-
-        // --- Doğrulama penceresini KAPAT (compare-and-swap) ---
+        // --- Doğrulama penceresini KAPAT: SÜRÜM JETONU, reload DEĞİL ---
         // VerifyAsync bir AĞ çağrısı; saniyeler sürebilir. O aralıkta satır
-        // değişmiş olabilir ve sonucu körlemesine yazmanın iki somut zararı var:
+        // değişmiş olabilir ve sonucu körlemesine yazmanın üç somut zararı var:
         //
         //  1. Admin bu arada hesabı `Disabled` yaptıysa, bizim `Ok`'umuz kapatma
         //     anahtarını sessizce geri alır — Görev 6'nın "Disabled yapışkan"
@@ -1494,47 +2011,85 @@ da al:
         //     `Ok`'umuz BAŞKASININ doğrulanmamış kimliklerini `Verified` yapar.
         //     EF yalnız değişen sütunları yazdığı için `UserCode` korunur ama
         //     satır yine de açılır: fail-closed sözleşmesi delinir.
+        //  3. O ikinci PUT yalnız **parolayı** değiştirdiyse alan karşılaştırması
+        //     bunu göremez: `UserCode` ve `BrandCode` aynı kalır, satır açılır ve
+        //     hiç doğrulanmamış bir parola `Verified` damgası alır.
         //
-        // Bu yüzden satırı diskten tazeleyip, doğruladığımız durumun hâlâ
-        // geçerli olduğunu kanıtlamadan sonucu uygulamıyoruz.
-        var entry = _db.Entry(account);
-        await entry.ReloadAsync(ct);
-
-        var superseded =
-            entry.State == EntityState.Detached          // satır silinmiş
-            || account.Status != NetgsmAccountStatus.Failed  // admin Disabled yaptı ya da başkası Verified etti
-            || !string.Equals(account.UserCode, userCode, StringComparison.Ordinal)
-            || !string.Equals(account.BrandCode, brandCode, StringComparison.Ordinal);
-
-        if (superseded)
+        // Bu yüzden `ReloadAsync` + alan karşılaştırması YAPMIYORUZ. Reload,
+        // EF'in ÖZGÜN değerlerini de tazeler — yani tam da yarışı yakalayacak
+        // kanıtı siler. Onun yerine `UpsertAsync`'ten dönen İZLENEN nesnenin
+        // özgün `UpdatedAt` değeri son yazıma kadar korunur; Görev 3'te eklenen
+        // eşzamanlılık jetonu `WHERE UpdatedAt = @original` üretir. Araya giren
+        // HERHANGİ bir yazım (parola dahil) sürümü ilerletmiş olur ve
+        // `SaveChanges` sıfır satır etkiler → `DbUpdateConcurrencyException`.
+        try
         {
-            // Doğruladığımız şey artık satırda duran şey değil. Sonucu
-            // ATIYORUZ — yazmak, yukarıdaki iki zarardan birini üretmek olurdu.
+            NetgsmAccount account;
+            try
+            {
+                account = await _accounts.UpsertAsync(
+                    licenseId.Value, userCode, req.Password, header, brandCode, ct);
+            }
+            catch (ArgumentException)
+            {
+                return Problem(title: "password-required",
+                    detail: "İlk kayıtta Netgsm API şifresi zorunlu.", statusCode: 400);
+            }
+
+            // Satır şu an Failed: doğrulama düşse bile kapı KAPALI kalır.
+            // Şifre çözülemezse DIŞ ÇAĞRI YAPILMAZ — ama erken `return`
+            // etmiyoruz: `LastError` yazımı da aynı CAS korumasından geçmeli,
+            // yoksa bayat bir istek kapatılmış hesaba hata metni yazabilir.
+            var password = _accounts.TryUnprotectPassword(account.PasswordProtected);
+
+            var result = password is null
+                ? new NetgsmVerifyResult(
+                    NetgsmVerifyOutcome.Unavailable, NetgsmAccountService.UndecryptableMessage)
+                : await _verifier.VerifyAsync(
+                    new Services.Iys.IysAccountContext(
+                        account.LicenseId, account.UserCode, password, account.BrandCode),
+                    ct);
+
+            if (result.Outcome == NetgsmVerifyOutcome.Ok)
+            {
+                account.Status = NetgsmAccountStatus.Verified;
+                account.LastVerifiedAt = DateTimeOffset.UtcNow;
+                account.LastError = null;
+            }
+            else
+            {
+                account.LastError = result.Message;
+            }
+
+            // Sonuç başka hiçbir sütunu değiştirmese bile (örn. `Failed` satıra
+            // AYNI `LastError` yazıldı) bir UPDATE üretilmeli: UPDATE yoksa
+            // `WHERE UpdatedAt = @original` hiç koşmaz ve CAS sessizce atlanır.
+            // `IsModified = true` damgalamayı da tetikler (Görev 3'teki
+            // `StampNetgsmAccountVersions` yalnız `Modified` girdilere bakar).
+            _db.Entry(account).Property(a => a.UpdatedAt).IsModified = true;
+            await _db.SaveChangesAsync(ct);
+
+            return Ok(ToView(account));
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // Doğruladığımız sürüm artık satırda durmuyor. Sonucu ATIYORUZ —
+            // yazmak, yukarıdaki üç zarardan birini üretmek olurdu.
             _db.ChangeTracker.Clear();
             return Problem(title: "verification-superseded",
                 detail: "Kurulum, doğrulama sürerken değişti. Formu tekrar kaydedin.",
                 statusCode: 409);
         }
-
-        if (result.Outcome == NetgsmVerifyOutcome.Ok)
-        {
-            account.Status = NetgsmAccountStatus.Verified;
-            account.LastVerifiedAt = DateTimeOffset.UtcNow;
-            account.LastError = null;
-        }
-        else
-        {
-            account.LastError = result.Message;
-        }
-        account.UpdatedAt = DateTimeOffset.UtcNow;
-        await _db.SaveChangesAsync(ct);
-
-        return Ok(ToView(account));
     }
 ```
 
-`EntityState` için `using Microsoft.EntityFrameworkCore;` yeterli
-(`Microsoft.EntityFrameworkCore.EntityState`), zaten using listesinde var.
+> **Görev 6 ve Görev 13 bu gövdeye EKLEME yapar, parça DEĞİŞTİRMEZ.** İkisi de
+> yeni `catch` cümleleri ve tek satırlık eklemeler getiriyor; bir bloğu
+> "tamamen değiştir" diyen bir adım bu metotta YOKTUR. (İlk taslakta Görev 13
+> böyle yazılmıştı ve Görev 6'nın marka çakışması `catch`'ini sessizce siliyordu.)
+
+`DbUpdateConcurrencyException` için `using Microsoft.EntityFrameworkCore;`
+yeterli, zaten using listesinde var. `EntityState`'e artık ihtiyaç yok.
 
 `NetgsmAccountService`'e sabiti ekle (Görev 9 da kullanacak):
 
@@ -1554,7 +2109,8 @@ da al:
 dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
   --filter "FullyQualifiedName~PanelNetgsmAccount"
 ```
-Beklenen: PASS (12 test — Görev 4'ün 5'i + buradaki 7).
+Beklenen: PASS (14 test — Görev 4'ün 5'i + buradaki 9; `Panel_kaydi_...`
+bir `[Theory]`, iki vaka sayılır).
 
 - [ ] **Adım 5: Commit**
 
@@ -1669,12 +2225,18 @@ EOF
 dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
   --filter FullyQualifiedName~PanelNetgsmAccountSaveTests
 ```
-Beklenen: iki yeni test FAIL — biri 200, öbürü 200/500.
+Beklenen: iki yeni test FAIL — `Disabled_hesap_panelden_yeniden_acilamaz` **500**
+(Görev 3'ün `NetgsmAccountDisabledException`'ı `SaveAsync`'te yakalanmıyor),
+`Baska_lisansin_dogrulanmis_markasi_409` **200** (ön kontrol yok; InMemory tekil
+indeks uygulamadığı için ikinci kayıt da geçiyor).
 
 - [ ] **Adım 3: En küçük uygulamayı yaz**
 
-`SaveAsync` içinde, doğrulama bloklarının ALTINA ve `UpsertAsync` çağrısının
-ÜSTÜNE:
+Bu adım Görev 5'in `SaveAsync`'ine **EKLEME** yapar; hiçbir bloğu silmez.
+İki ekleme yeri var.
+
+**3a — ön kontroller.** `SaveAsync` içinde, `brandCode` doğrulamasının ALTINA
+ve `try {` satırının ÜSTÜNE (ikisi de salt okuma, `try`'ın dışında kalırlar):
 
 ```csharp
         var existing = await _db.NetgsmAccounts.AsNoTracking()
@@ -1698,17 +2260,34 @@ Beklenen: iki yeni test FAIL — biri 200, öbürü 200/500.
                 statusCode: 409);
 ```
 
-Ve `SaveChangesAsync` çağrılarını yarış payı için sar — `Verified`'a yükselten
-blok ile son kayıt arasında başka bir kiracı aynı markayı doğrulamış olabilir:
+**3b — iki yeni `catch` cümlesi.** Görev 5'in yazdığı
+`catch (DbUpdateConcurrencyException)` bloğu YERİNDE KALIR; biri onun üstüne,
+biri altına gelir. Üç `catch`'in son sırası şöyle olmalı:
 
 ```csharp
-        try
+        catch (NetgsmAccountDisabledException)
         {
-            await _db.SaveChangesAsync(ct);
+            // Ön kontrolle `UpsertAsync` arasında admin kapattı: servis
+            // guard'ı (Görev 3) bize haber verdi. Ön kontrol bu yarışı
+            // KAPATMAZ, yalnız tipik durumda anlaşılır cevap verir —
+            // fail-closed garantisi servisteki guard'dan gelir.
+            _db.ChangeTracker.Clear();
+            return Problem(title: "netgsm-account-disabled",
+                detail: "Netgsm kurulumunuz yönetici tarafından kapatıldı. "
+                        + "Yeniden açılması için destekle iletişime geçin.",
+                statusCode: 409);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // (Görev 5'te yazıldı — DOKUNMA.)
+            _db.ChangeTracker.Clear();
+            return Problem(title: "verification-superseded",
+                detail: "Kurulum, doğrulama sürerken değişti. Formu tekrar kaydedin.",
+                statusCode: 409);
         }
         catch (DbUpdateException ex) when (IsBrandCodeConflict(ex))
         {
-            // Ön kontrol ile bu kayıt arasında başka kiracı aynı markayı
+            // Ön kontrol ile kayıt arasında başka kiracı aynı markayı
             // doğruladı. Filtreli tekil indeks kesin kararı verdi; bizimki
             // Failed kalmalı ve yayıncı anlaşılır bir cevap almalı.
             _db.ChangeTracker.Clear();
@@ -1717,6 +2296,12 @@ blok ile son kayıt arasında başka bir kiracı aynı markayı doğrulamış ol
                 statusCode: 409);
         }
 ```
+
+> **Sıra önemli:** `DbUpdateConcurrencyException`, `DbUpdateException`'dan
+> TÜREMİŞTİR. Marka `catch`'i yukarı alınırsa (filtresi tutmasa bile) derleyici
+> sorun çıkarmaz ama okuyan yanılır; daha kötüsü, filtre ileride gevşetilirse
+> eşzamanlılık çatışmaları "marka kodu dolu" diye etiketlenir. Özelden genele
+> sırala.
 
 Ve sınıfın sonuna yardımcıyı ekle:
 
@@ -1753,7 +2338,7 @@ Ve sınıfın sonuna yardımcıyı ekle:
 dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
   --filter "FullyQualifiedName~PanelNetgsmAccount"
 ```
-Beklenen: PASS (14 test — Görev 5 sonundaki 12 + buradaki 2).
+Beklenen: PASS (16 test — Görev 5 sonundaki 14 + buradaki 2).
 
 - [ ] **Adım 5: Commit**
 
@@ -1870,14 +2455,106 @@ Sınıfın sonuna iki test ekle:
 > kurduğu için filtreden SONRA da geçmeye devam etmeli — indeksin hâlâ iş
 > yaptığının kanıtı odur, silme.
 
+Aynı sınıfa üçüncü bir test daha ekle. Bu marka indeksiyle ilgili DEĞİL; bu
+sınıfa konmasının tek nedeni **zaten ilişkisel fixture'a sahip olması** —
+kanıtlanacak şey SQL transaction'ı gerektiriyor. Dosyanın başına ek `using`:
+
+```csharp
+using OrderDeck.LicenseServer.Services.Sms;
+```
+
+```csharp
+    [Fact]
+    public async Task Bayat_hesap_yazimi_kampanya_duraklatmasini_da_geri_alir()
+    {
+        // Görev 3'te `UpsertAsync` hesabı `Failed` yaparken kampanyaları AYNI
+        // `SaveChanges` içinde duraklatıyor. Burada kanıtlanan şey o birliğin
+        // gerçek: hesap yazımı sürüm jetonuna takılıp reddedilirse kampanya
+        // duraklatması da geri alınmalı. Alınmazsa, admin'in kapattığı bir
+        // hesabın kampanyası "paused"a düşer ama hesap `Disabled` kalır —
+        // kimsenin devam ettiremeyeceği, rezerve kredisi asılı bir kampanya.
+        //
+        // InMemory bunu KANITLAYAMAZ: jetonu uygular ama çok-varlıklı yazımı
+        // bir transaction'da geri almaz. Bu yüzden Testcontainers.
+        var licenseId = await NewLicenseAsync();
+        var campaignId = Guid.NewGuid();
+
+        using (var seedScope = _factory.Services.CreateScope())
+        {
+            var db = seedScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.NetgsmAccounts.Add(Row(
+                licenseId, Random.Shared.Next(100_000, 999_999).ToString(),
+                NetgsmAccountStatus.Verified));
+            db.SmsCampaigns.Add(new SmsCampaign
+            {
+                Id = campaignId,
+                LicenseId = licenseId,
+                MessageBody = "Kampanya",
+                Status = "sending",
+                ClaimedAt = DateTimeOffset.UnixEpoch,
+                SegmentsPerMessage = 1,
+                RecipientCount = 1,
+                ReservedCredits = 1,
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        // Yayıncının paneli hesabı okudu (bu sürümü sahipleniyor).
+        using var workerScope = _factory.Services.CreateScope();
+        var workerDb = workerScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var accounts = workerScope.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+        var stale = await workerDb.NetgsmAccounts.SingleAsync(a => a.LicenseId == licenseId);
+
+        // Admin araya girip kapattı — sürüm ilerledi.
+        using (var adminScope = _factory.Services.CreateScope())
+        {
+            var adminDb = adminScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var current = await adminDb.NetgsmAccounts.SingleAsync(a => a.LicenseId == licenseId);
+            current.Status = NetgsmAccountStatus.Disabled;
+            await adminDb.SaveChangesAsync();
+        }
+
+        // Panel bayat sürümle yazmaya çalışıyor. Servisteki `Disabled` guard'ı
+        // bu yarışı GÖREMEZ (izlenen kopya hâlâ Verified); kararı jeton verir.
+        Func<Task> write = async () => await accounts.UpsertAsync(
+            licenseId, stale.UserCode, $"pw-{Guid.NewGuid():N}",
+            stale.Header, stale.BrandCode, CancellationToken.None);
+
+        await write.Should().ThrowAsync<DbUpdateConcurrencyException>();
+
+        using var verifyScope = _factory.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+        (await verifyDb.NetgsmAccounts.AsNoTracking()
+            .SingleAsync(a => a.LicenseId == licenseId))
+            .Status.Should().Be(NetgsmAccountStatus.Disabled,
+                "admin kararı bayat yazımla geri alınamaz");
+
+        var campaign = await verifyDb.SmsCampaigns.AsNoTracking()
+            .SingleAsync(c => c.Id == campaignId);
+        campaign.Status.Should().Be("sending",
+            "hesap yazımı düştüyse duraklatma da geri alınmalı — ya ikisi ya hiçbiri");
+        campaign.ClaimedAt.Should().Be(DateTimeOffset.UnixEpoch);
+    }
+```
+
 - [ ] **Adım 2: Düştüğünü gör**
 
 ```bash
 dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
   --filter FullyQualifiedName~NetgsmAccountUniqueIndexTests
 ```
-Beklenen: iki yeni test FAIL (`DbUpdateException` — filtresiz indeks çakışıyor).
-Docker kapalıysa hepsi düşer; önce Docker'ı başlat.
+Beklenen: ilk iki yeni test FAIL (`DbUpdateException` — filtresiz indeks
+çakışıyor). Docker kapalıysa hepsi düşer; önce Docker'ı başlat.
+
+> **`Bayat_hesap_yazimi_...` burada ZATEN YEŞİL olmalı** — ve bu bilinçli.
+> Görev 3'ün eklediği `IsConcurrencyToken()` saf **model** metadata'sı: yeni
+> sütun ya da DDL istemez, yalnız EF'in ürettiği `UPDATE`'e
+> `WHERE ... AND UpdatedAt = @original` ekler. Yani koruma göç beklemeden
+> gerçek SQL Server'da da yürürlüktedir. Testin buradaki işi kırmızıdan yeşile
+> dönmek değil, **bunu kanıtlamak**: kırmızı görürsen Görev 3'teki eşleme
+> satırı ya hiç uygulanmamıştır ya da yanlış `b` bloğuna yazılmıştır.
 
 - [ ] **Adım 3: Eşlemeyi ve göçü yaz**
 
@@ -1917,13 +2594,21 @@ dotnet ef migrations add NetgsmBrandCodeFilteredUnique \
 
 `Down` bunun tersi (filtresiz yeniden kurar).
 
+> **Snapshot'ı gözden geçir.** Bu, Görev 3'ün model değişikliğinden sonraki
+> İLK göç. `dotnet ef migrations add` snapshot'ı modelin tamamından yeniden
+> üretir, dolayısıyla `NetgsmAccountsSnapshot`'taki `UpdatedAt` özelliği artık
+> `.IsConcurrencyToken()` taşımalı. Üretilen `Up`/`Down` gövdesinde bunun
+> karşılığı **olmamalı** — jeton DDL üretmez. Snapshot'ta jeton yoksa Görev
+> 3'ün eşlemesi uygulanmamıştır; `Up` içinde `AlterColumn` çıktıysa yanlış
+> özelliğe (örn. `CreatedAt`) yazmışsındır.
+
 - [ ] **Adım 4: Testlerin geçtiğini gör**
 
 ```bash
 dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
   --filter FullyQualifiedName~NetgsmAccountUniqueIndexTests
 ```
-Beklenen: PASS (6 test — mevcut 4 + yeni 2).
+Beklenen: PASS (7 test — mevcut 4 + yeni 3).
 
 - [ ] **Adım 5: Commit**
 
@@ -2168,6 +2853,59 @@ public sealed class NetgsmAccountVerifyJobTests : IDisposable
             "kapalı hesabı her gün yoklamak yayıncı adına bedelsiz de olsa "
             + "gereksiz; yeniden açılma yolu panelden kaydetmektir");
     }
+
+    [Theory]
+    [InlineData(NetgsmAccountStatus.Disabled)]
+    [InlineData(NetgsmAccountStatus.Verified)]
+    public async Task Bayat_gunluk_ret_yeni_hesap_surumunu_degistirmez(
+        NetgsmAccountStatus replacementStatus)
+    {
+        // `Failed_hesap_ise_alinmaz` ağ çağrısından ÖNCEKİ durumu koruyor.
+        // Bu test ağ çağrısı SÜRERKEN açılan pencereyi kapatıyor — asıl
+        // tehlike orada:
+        //
+        //  * `Disabled`: admin tam o saniyede kapattı. Ret sonucunu körlemesine
+        //    yazmak hesabı `Failed`'a çeker ve ADMIN KİLİDİNİ KALDIRIR —
+        //    yayıncı panelden kaydete basıp kurulumu geri açabilir hâle gelir.
+        //  * `Verified` + yeni parola: yayıncı doğru kimliği girdi ve panel onu
+        //    doğruladı. Bizim elimizdeki "kod 30" ESKİ parolaya ait; yazarsak
+        //    çalışan bir kurulumu kapatırız.
+        //
+        // İkisini de ayıran şey durum kontrolü DEĞİL, sürümdür: `Verified`
+        // vakasında durum hiç değişmedi. Bu yüzden ret, doğruladığı
+        // `UpdatedAt` sürümünü şart koşar.
+        var factory = NewFactory();
+        var brandCode = await SeedVerifiedAsync(factory);
+        var replacementPassword = $"pw-{Guid.NewGuid():N}";
+        const string currentMessage = "Güncel yönetici notu.";
+
+        factory.Iys.ByBrand[brandCode] = () =>
+        {
+            using var scope = factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var accounts = scope.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+            var current = db.NetgsmAccounts.Single(a => a.BrandCode == brandCode);
+
+            current.Status = replacementStatus;
+            current.PasswordProtected = accounts.ProtectPassword(replacementPassword);
+            current.LastError = currentMessage;
+            db.SaveChanges();
+
+            throw new IysConfigurationException("30", "kimlik reddedildi");
+        };
+
+        await RunAsync(factory);
+
+        var persisted = await ReadAsync(factory, brandCode);
+        persisted.Status.Should().Be(replacementStatus,
+            "bayat ret araya giren kararı EZEMEZ");
+        persisted.LastError.Should().Be(currentMessage);
+
+        using var verify = factory.Services.CreateScope();
+        var verifyAccounts = verify.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+        verifyAccounts.TryUnprotectPassword(persisted.PasswordProtected)
+            .Should().Be(replacementPassword);
+    }
 }
 ```
 
@@ -2251,11 +2989,18 @@ public sealed class NetgsmAccountVerifyJob
         // Liste alındıktan sonra admin kill switch'i çalışmış olabilir.
         if (acc is null || acc.Status != NetgsmAccountStatus.Verified) return;
 
+        // Ağ çağrısından ÖNCE yakala: ret kararını yazarken "hangi sürümü
+        // doğruladım" sorusunun cevabı bu. Çağrı sürerken yayıncı paneli
+        // kaydedip şifreyi değiştirebilir ya da admin hesabı Disabled
+        // yapabilir; o zaman elimizdeki ret ARTIK BAŞKA BİR HESABIN retidir.
+        var expectedUpdatedAt = acc.UpdatedAt;
+        var licenseId = acc.LicenseId;
+
         var password = _accounts.TryUnprotectPassword(acc.PasswordProtected);
         if (password is null)
         {
             acc.LastError = NetgsmAccountService.UndecryptableMessage;
-            acc.UpdatedAt = DateTimeOffset.UtcNow;
+            _db.Entry(acc).Property(a => a.UpdatedAt).IsModified = true;
             await _db.SaveChangesAsync(ct);
             return;
         }
@@ -2263,31 +3008,32 @@ public sealed class NetgsmAccountVerifyJob
         var result = await _verifier.VerifyAsync(
             new IysAccountContext(acc.LicenseId, acc.UserCode, password, acc.BrandCode), ct);
 
-        var now = DateTimeOffset.UtcNow;
         switch (result.Outcome)
         {
             case NetgsmVerifyOutcome.Ok:
-                acc.LastVerifiedAt = now;
+                acc.LastVerifiedAt = DateTimeOffset.UtcNow;
                 acc.LastError = null;
                 break;
 
             case NetgsmVerifyOutcome.Rejected:
                 _log.LogWarning(
                     "NetgsmAccountVerifyJob: lisans {LicenseId} kurulumu düştü — {Message}",
-                    acc.LicenseId, result.Message);
+                    licenseId, result.Message);
                 // Hesabı Failed yapmak TEK BAŞINA yetmiyor: akmakta olan bir
                 // kampanya marka/onayları döngüden ÖNCE okuyor
                 // (SmsCampaignSendJob.cs:111-133), yani kapı kapansa bile
                 // kalan alıcılara gönderim sürer. §2.3 "düşen kurulum
                 // gönderimi durdurur" diyorsa durdurması gereken yer burası.
                 // Kampanyaları da duraklatıyoruz — hesap yazımıyla TEK
-                // SaveChanges'te.
+                // SaveChanges'te. `expectedUpdatedAt` kararı doğruladığımız
+                // sürüme BAĞLAR: araya giren yazım varsa ret sessizce düşer.
                 var paused = await _accounts.CloseAccountAndPauseCampaignsAsync(
-                    acc.Id, NetgsmAccountStatus.Failed, result.Message, ct);
+                    accountId, NetgsmAccountStatus.Failed, result.Message, ct,
+                    expectedUpdatedAt);
                 if (paused > 0)
                     _log.LogWarning(
                         "NetgsmAccountVerifyJob: lisans {LicenseId} için {Count} kampanya duraklatıldı",
-                        acc.LicenseId, paused);
+                        licenseId, paused);
                 return;   // kaydı o metot yaptı; aşağıdaki SaveChanges'e düşme
 
             case NetgsmVerifyOutcome.Unavailable:
@@ -2295,7 +3041,7 @@ public sealed class NetgsmAccountVerifyJob
                 break;
         }
 
-        acc.UpdatedAt = now;
+        _db.Entry(acc).Property(a => a.UpdatedAt).IsModified = true;
         await _db.SaveChangesAsync(ct);
     }
 }
@@ -2303,8 +3049,15 @@ public sealed class NetgsmAccountVerifyJob
 
 > **`CloseAccountAndPauseCampaignsAsync` kendi `SaveChanges`'ini yapıyor** ve
 > izlenen nesneleri tazeleyebiliyor; bu yüzden `Rejected` dalı `break` değil
-> `return` ile çıkıyor. `break` deseydin aşağıdaki `acc.UpdatedAt = now;` +
-> `SaveChangesAsync` ikinci bir yazım turu açardı.
+> `return` ile çıkıyor. `break` deseydin aşağıdaki `SaveChangesAsync` ikinci
+> bir yazım turu açardı.
+
+> **Neden `acc.UpdatedAt = ...` değil `IsModified = true`?** Damgayı Görev
+> 3'teki `LicenseDbContext.StampNetgsmAccountVersions()` merkezî olarak
+> atıyor (`max(UtcNow, özgün + 1 tick)`). Burada elle `UtcNow` yazsaydık saat
+> ilerlemediğinde jeton yerinde kalırdı. `IsModified = true` yalnız girdiyi
+> `Modified` yapıp damgalayıcıyı tetikler — yalnız `LastVerifiedAt`/`LastError`
+> değiştiğinde bile sürümün ilerlemesini garanti eder.
 
 `NetgsmAccountService`'e bu metodu ekle (Görev 12 de aynısını kullanacak —
 ikinci bir kopya yazma):
@@ -2335,43 +3088,82 @@ ikinci bir kopya yazma):
     /// olan yarışı da yakalıyor (Görev 11, "tamamlanmada ClaimedAt
     /// tazelenir"): bayat okumayla tamamlanmış kampanyayı <c>paused</c>'a
     /// geri çevirip yeniden gönderime açamayız.</para>
+    ///
+    /// <para><b><paramref name="expectedUpdatedAt"/> — bayat ret koruması.</b>
+    /// Günlük iş (<c>Failed</c>) hesabı ağ çağrısından ÖNCE okuyor; çağrı
+    /// sürerken admin hesabı <c>Disabled</c> yapmış ya da yayıncı yeni bir
+    /// şifreyle kaydetmiş olabilir. O sürümü doğrulamadık, o sürüme ret
+    /// yazamayız: <c>Disabled</c>'ı <c>Failed</c>'a çevirmek admin kilidini
+    /// kaldırır, değişmiş şifreye ret yazmak da doğrulanmamış bir kimliği
+    /// yanlışlıkla mahkûm eder. Bu yüzden <c>Failed</c> çağrısı sürümü
+    /// TAŞIMAK ZORUNDA ve eşleşmezse <c>0</c> dönüp sessizce çekilir —
+    /// sonraki tur güncel sürümü baştan doğrular.</para>
+    ///
+    /// <para><c>Disabled</c> (admin kill switch, Görev 12) sürüm İSTEMEZ:
+    /// yönetici kararı en güncel karardır ve her hâlükârda kazanmalıdır.</para>
     /// </summary>
     public async Task<int> CloseAccountAndPauseCampaignsAsync(
-        Guid accountId, NetgsmAccountStatus status, string? lastError,
-        CancellationToken ct = default)
+        Guid accountId,
+        NetgsmAccountStatus status,
+        string? lastError,
+        CancellationToken ct = default,
+        DateTimeOffset? expectedUpdatedAt = null)
     {
+        if (status is not (NetgsmAccountStatus.Disabled or NetgsmAccountStatus.Failed))
+            throw new ArgumentOutOfRangeException(nameof(status));
+
+        if (status == NetgsmAccountStatus.Failed && expectedUpdatedAt is null)
+            throw new ArgumentException(
+                "Günlük ret doğrulanan hesap sürümünü taşımalıdır.", nameof(expectedUpdatedAt));
+
         const int maxAttempts = 4;
         for (var attempt = 1; ; attempt++)
         {
-            var acc = await _db.NetgsmAccounts.FirstOrDefaultAsync(a => a.Id == accountId, ct);
-            if (acc is null) return 0;
+            // Her turda TEMİZ oku: çağıranın izlediği bayat nesne bu kararın
+            // içine sızmamalı (günlük iş `acc`'i hâlâ izliyor).
+            _db.ChangeTracker.Clear();
 
-            acc.Status = status;
-            acc.LastError = lastError;
-            acc.UpdatedAt = DateTimeOffset.UtcNow;
+            var account = await _db.NetgsmAccounts.FirstOrDefaultAsync(a => a.Id == accountId, ct);
+            if (account is null) return 0;
 
-            var active = await _db.SmsCampaigns
-                .Where(c => c.LicenseId == acc.LicenseId
-                            && (c.Status == "pending" || c.Status == "sending"))
-                .ToListAsync(ct);
-            foreach (var c in active) c.Status = "paused";
+            if (status == NetgsmAccountStatus.Failed
+                && (account.Status != NetgsmAccountStatus.Verified
+                    || account.UpdatedAt != expectedUpdatedAt!.Value))
+                return 0;   // araya giren karar var — bayat ret düşer
+
+            account.Status = status;
+            account.LastError = lastError;
+            _db.Entry(account).Property(a => a.UpdatedAt).IsModified = true;
+
+            var paused = await StagePauseActiveCampaignsAsync(account.LicenseId, ct);
 
             try
             {
                 await _db.SaveChangesAsync(ct);
-                return active.Count;
+                return paused;
             }
             catch (DbUpdateConcurrencyException) when (attempt < maxAttempts)
             {
-                // Kalp atışı araya girdi ya da kampanya tam o anda tamamlandı.
-                // İzlenen her şeyi at, diskten yeniden oku, kararı GÜNCEL
-                // duruma göre ver. Tamamlanmış kampanya ikinci turda filtreye
-                // girmez — resurrection yok.
-                _db.ChangeTracker.Clear();
+                // Kalp atışı araya girdi, kampanya tam o anda tamamlandı ya da
+                // hesap satırı başkası tarafından yazıldı. Döngü başındaki
+                // `Clear()` + taze okuma kararı GÜNCEL duruma göre yeniden
+                // verir; tamamlanmış kampanya ikinci turda filtreye girmez
+                // (resurrection yok), değişmiş hesap da sürüm kontrolüne
+                // takılıp `0` döner.
             }
         }
     }
 ```
+
+> **`StagePauseActiveCampaignsAsync` Görev 3'te yazıldı** — burada ikinci bir
+> kopyası yok. Duraklatmanın `ClaimedAt` jetonunu da ilerletmesi oradaki
+> ortak yardımcının işi; kapatma yolları (günlük ret, admin kill switch,
+> panelden başarısız kayıt) hepsi aynı gövdeyi çağırıyor.
+
+> **Görev 12 çağrısı değişmiyor.** `Disabled` için `expectedUpdatedAt`
+> verilmez; yeni parametre isteğe bağlı ve varsayılanı `null`. Yalnız
+> `Failed` yolu sürüm taşımak zorunda, bu da `ArgumentException` ile
+> derlenme değil **çalışma zamanında** zorlanıyor — çağıran yalnız günlük iş.
 
 DI: `NetgsmAccountVerifier` zaten Görev 5'te kaydedildi. Burada **yalnız** işi
 ekle — komşularının biçimiyle, `Program.cs:196` civarı:
@@ -2386,12 +3178,18 @@ ekle — komşularının biçimiyle, `Program.cs:196` civarı:
 dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
   --filter FullyQualifiedName~NetgsmAccountVerifyJobTests
 ```
-Beklenen: PASS (5 test).
+Beklenen: PASS (7 test — `Bayat_gunluk_ret_yeni_hesap_surumunu_degistirmez`
+iki `InlineData` ile iki kez sayılır).
 
 - [ ] **Adım 5: Commit**
 
+`NetgsmAccountService.cs` de listede: `CloseAccountAndPauseCampaignsAsync`
+bu görevde imza değiştiriyor (`expectedUpdatedAt`). Unutulursa commit
+derlenmez.
+
 ```bash
 git add OrderDeck.LicenseServer/Services/Sms/NetgsmAccountVerifyJob.cs \
+        OrderDeck.LicenseServer/Services/Sms/NetgsmAccountService.cs \
         OrderDeck.LicenseServer/Program.cs \
         OrderDeck.LicenseServer.Tests/Services/Sms/NetgsmAccountVerifyJobTests.cs
 git commit -m "$(cat <<'EOF'
@@ -2852,8 +3650,19 @@ kullanmalı, ikinci bir durum icat etmemeli.
 **Files:**
 - Modify: `OrderDeck.LicenseServer/Domain/SmsCampaign.cs:32`
 - Modify: `OrderDeck.LicenseServer/Services/Sms/SmsCampaignSendJob.cs`
+- Modify: `OrderDeck.LicenseServer/Services/Sms/LicenseSmsBalanceService.cs:101-111`
 - Modify: `OrderDeck.LicenseServer.Tests/TestHelpers/RecordingSmsSender.cs`
 - Test: `OrderDeck.LicenseServer.Tests/Services/Sms/SmsCampaignPauseTests.cs`
+- Test: `OrderDeck.LicenseServer.Tests/Services/Sms/SmsBalanceConcurrencyTests.cs`
+
+> **Neden bakiye servisi bu göreve dahil?** Görev 3'ün duraklatması
+> `SmsCampaign.ClaimedAt` jetonunu ilerletiyor, bu görev de tamamlanmada
+> tazeliyor. İkisi birlikte **yeni kampanya çakışmaları üretiyor** — ve o
+> çakışma bugün `LicenseSmsBalanceService.ApplyAndSaveAsync`'in retry'ına
+> düşüp paraya dönüşüyor (`:101-111` `ex.Entries`'in TAMAMINI yeniden
+> yüklüyor, hazırlanmış `completed` + `RefundedCredits` siliniyor, sonra
+> `amount` ikinci kez ekleniyor). Duraklatmayı bu düzeltme olmadan
+> göndermek, tamir ettiğimiz deliğin yerine bir kredi sızıntısı koyar.
 
 - [ ] **Adım 1: Test sahtesine gönderim kancası ekle**
 
@@ -3094,8 +3903,8 @@ public sealed class SmsCampaignPauseTests : IClassFixture<ApiFactory>
         _factory.Sms.OnSent = _ =>
         {
             if (pausedCount >= 0) return; // yalnız ilk gönderimde kapat
-            using var s2 = _factory.Services.CreateScope();
-            var accounts = s2.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+            using var closer = _factory.Services.CreateScope();
+            var accounts = closer.ServiceProvider.GetRequiredService<NetgsmAccountService>();
             pausedCount = accounts.CloseAccountAndPauseCampaignsAsync(
                     accountId, NetgsmAccountStatus.Disabled,
                     "Yönetici tarafından kapatıldı.")
@@ -3110,10 +3919,96 @@ public sealed class SmsCampaignPauseTests : IClassFixture<ApiFactory>
 
         using var verify = _factory.Services.CreateScope();
         var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
-        (await vdb.SmsCampaigns.AsNoTracking().SingleAsync(c => c.Id == campaignId))
-            .Status.Should().Be("paused", "job kapatmayı ezmemeli");
+        var campaign = await vdb.SmsCampaigns.AsNoTracking()
+            .SingleAsync(c => c.Id == campaignId);
+
+        campaign.Status.Should().Be("paused", "job kapatmayı ezmemeli");
+        campaign.CompletedAt.Should().BeNull();
+        campaign.RefundedCredits.Should().Be(0);
+
         (await vdb.NetgsmAccounts.AsNoTracking().SingleAsync(a => a.Id == accountId))
             .Status.Should().Be(NetgsmAccountStatus.Disabled);
+
+        // Duraklatma artık ClaimedAt jetonunu da ilerlettiği için, GÖNDERİLMİŞ
+        // ilk alıcının sonuç yazımı çakışmayla karşılaşır. O çakışma yanlış
+        // ele alınırsa (kampanyayı yeniden yazmaya çalışmak ya da istisnayı
+        // dışarı bırakmak) alıcı "pending" kalır: SMS gitmiş ama kayıtta
+        // gitmemiş görünür, kampanya devam ettirildiğinde AYNI KİŞİYE ikinci
+        // kez gider. Bu iki satır, `SaveRecipientResultAsync`'in detach edip
+        // yeniden kaydetme davranışını kilitliyor.
+        var recipients = await vdb.SmsCampaignRecipients.AsNoTracking()
+            .Where(r => r.CampaignId == campaignId).ToListAsync();
+
+        recipients.Count(r => r.Status == "sent").Should().Be(1);
+        recipients.Count(r => r.Status == "pending").Should().Be(1);
+    }
+
+    /// <summary>
+    /// Bulgu 1 — duraklatma, kampanyayı ZATEN OKUMUŞ bir işçiyi de geçersiz
+    /// kılmalı. Durum yazımı tek başına yetmez: işçi elindeki kopyayla
+    /// `sending` + kendi `ClaimedAt`'ini yazınca duraklatma sessizce geri
+    /// alınır ve admin'in kapatma düğmesi yalan söyler.
+    ///
+    /// <para><c>futureStamp</c> vakası monotonluğu <b>saate bağlı olmadan</b>
+    /// kanıtlıyor: jeton bir saat ileride tohumlanmışsa ham
+    /// <c>DateTimeOffset.UtcNow</c> ataması jetonu GERİ alır ve bayat işçi
+    /// kazanır. Yalnız <c>max(UtcNow, özgün + 1 tick)</c> geçer.</para>
+    /// </summary>
+    [Theory]
+    [InlineData("pending", false)]
+    [InlineData("pending", true)]
+    [InlineData("sending", false)]
+    public async Task Kapatmadan_once_okunan_kampanya_sonradan_ustlenilemez(
+        string status, bool futureStamp)
+    {
+        using var worker = _factory.Services.CreateScope();
+        var db = worker.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var (campaignId, accountId, _) = await SeedAsync(db);
+
+        var stale = await db.SmsCampaigns.SingleAsync(c => c.Id == campaignId);
+        stale.Status = status;
+        stale.ClaimedAt = futureStamp
+            ? DateTimeOffset.UtcNow.AddHours(1)
+            : status == "sending"
+                ? DateTimeOffset.UtcNow - SmsCampaignSendJob.ClaimLease - TimeSpan.FromHours(1)
+                : null;
+
+        await db.SaveChangesAsync();
+        var previous = stale.ClaimedAt;
+
+        // `worker` scope'u kampanyayı İZLEMEYE devam ediyor — gerçek işçinin
+        // kapatma anındaki hâli bu.
+        using (var closer = _factory.Services.CreateScope())
+        {
+            var accounts = closer.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+
+            (await accounts.CloseAccountAndPauseCampaignsAsync(
+                accountId, NetgsmAccountStatus.Disabled, "Yönetici tarafından kapatıldı."))
+                .Should().Be(1);
+        }
+
+        await worker.ServiceProvider
+            .GetRequiredService<SmsCampaignSendJob>()
+            .RunAsync(campaignId);
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var campaign = await vdb.SmsCampaigns.AsNoTracking()
+            .SingleAsync(c => c.Id == campaignId);
+
+        campaign.Status.Should().Be("paused");
+        campaign.ClaimedAt.Should().NotBeNull();
+
+        if (previous.HasValue)
+            campaign.ClaimedAt!.Value.Should().BeAfter(previous.Value);
+
+        campaign.CompletedAt.Should().BeNull();
+        campaign.RefundedCredits.Should().Be(0);
+        _factory.Sms.Sent.Should().BeEmpty();
+
+        (await vdb.SmsCampaignRecipients.CountAsync(
+            r => r.CampaignId == campaignId && r.Status == "pending"))
+            .Should().Be(2);
     }
 
     [Fact]
@@ -3235,20 +4130,266 @@ internal sealed class RecordingBackgroundJobClient : IBackgroundJobClient
 }
 ```
 
+**2b — Bakiye retry'ının kampanya çakışmasını yutmadığını kanıtla.**
+
+`OrderDeck.LicenseServer.Tests/Services/Sms/SmsBalanceConcurrencyTests.cs` —
+**mevcut sınıfın içine** ekle. `_factory`, `SeedAsync(int)`, `ReadStateAsync`
+ve ilişkisel fixture (`[Collection(SqlServerCollection.Name)]` +
+`RelationalApiFactory`) zaten var; yeni bir sınıf açma.
+
+> **Bu ikisi neden Testcontainers, yukarıdakiler neden InMemory?** Yukarıdaki
+> kampanya testleri "eski izlenen nesne + jeton reddi" iddiası taşıyor; EF
+> InMemory eşzamanlılık jetonlarını **uyguluyor** (özgün değeri karşılaştırıp
+> `DbUpdateConcurrencyException` atıyor), o yüzden orada yeterli. Buradaki
+> iddia farklı: çakışma anında bakiye `UPDATE`'inin ve ledger `INSERT`'ünün
+> **birlikte** geri alındığı. InMemory çoklu-varlık geri alma sağlamaz —
+> tek `SaveChanges`'in atomikliği yalnız ilişkisel sağlayıcıda kanıtlanır.
+
+```csharp
+    private async Task<Guid> SeedRefundCampaignAsync(Guid licenseId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var campaignId = Guid.NewGuid();
+
+        db.SmsCampaigns.Add(new SmsCampaign
+        {
+            Id = campaignId,
+            LicenseId = licenseId,
+            MessageBody = "Kampanya",
+            Status = "sending",
+            ClaimedAt = DateTimeOffset.UnixEpoch,
+            SegmentsPerMessage = 1,
+            RecipientCount = 2,
+            ReservedCredits = 2,
+            CreatedAt = DateTimeOffset.UnixEpoch,
+        });
+
+        for (var i = 0; i < 2; i++)
+        {
+            db.SmsCampaignRecipients.Add(new SmsCampaignRecipient
+            {
+                Id = Guid.NewGuid(),
+                CampaignId = campaignId,
+                Phone = $"+90555{Random.Shared.Next(1_000_000, 9_999_999)}",
+                Status = "failed",
+                Error = "provider-rejected",
+            });
+        }
+
+        await db.SaveChangesAsync();
+        return campaignId;
+    }
+
+    /// <summary>
+    /// Bulgu 2 — bayat bir tamamlanma+iade, kampanya çakışmasında TOPTAN
+    /// düşmeli. Bugün `ApplyAndSaveAsync` `ex.Entries`'in tamamını yeniden
+    /// yüklüyor: hazırlanmış `completed` + `RefundedCredits` silinip yalnız
+    /// bakiye artışı hayatta kalıyor, yani kampanya "hiç tamamlanmamış" ama
+    /// krediler İADE EDİLMİŞ oluyor. Sonraki koşu iadeyi bir kez daha yazar.
+    /// </summary>
+    [Fact]
+    public async Task Kampanya_cakismasi_iadeyi_yeniden_uygulamaz()
+    {
+        var licenseId = await SeedAsync(initialCredits: 100);
+        var campaignId = await SeedRefundCampaignAsync(licenseId);
+
+        using (var workerScope = _factory.Services.CreateScope())
+        {
+            var workerDb = workerScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var balance = workerScope.ServiceProvider
+                .GetRequiredService<LicenseSmsBalanceService>();
+            var campaign = await workerDb.SmsCampaigns.SingleAsync(c => c.Id == campaignId);
+
+            // İşçi kampanyayı okuduktan SONRA başka biri devam ettiriyor:
+            // ClaimedAt değişti, yani elimizdeki tamamlanma artık bayat.
+            using (var resumeScope = _factory.Services.CreateScope())
+            {
+                var resumeDb = resumeScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+                var resumed = await resumeDb.SmsCampaigns.SingleAsync(c => c.Id == campaignId);
+
+                resumed.Status = "pending";
+                resumed.ClaimedAt = null;
+                await resumeDb.SaveChangesAsync();
+            }
+
+            campaign.Status = "completed";
+            campaign.CompletedAt = DateTimeOffset.UnixEpoch.AddSeconds(1);
+            campaign.ClaimedAt = DateTimeOffset.UnixEpoch.AddSeconds(1);
+            campaign.RefundedCredits = 2;
+
+            Func<Task> staleRefund = async () =>
+            {
+                await balance.ApplyAndSaveAsync(
+                    licenseId, 2, "send-refund",
+                    reason: $"campaign:{campaignId} failed=2",
+                    createdByCustomerId: null,
+                    disallowNegative: false,
+                    CancellationToken.None);
+            };
+
+            await staleRefund.Should().ThrowAsync<DbUpdateConcurrencyException>();
+        }
+
+        using (var verifyScope = _factory.Services.CreateScope())
+        {
+            var db = verifyScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var campaign = await db.SmsCampaigns.AsNoTracking()
+                .SingleAsync(c => c.Id == campaignId);
+
+            campaign.Status.Should().Be("pending");
+            campaign.ClaimedAt.Should().BeNull();
+            campaign.CompletedAt.Should().BeNull();
+            campaign.RefundedCredits.Should().Be(0);
+
+            (await db.LicenseSmsBalances
+                .Where(b => b.LicenseId == licenseId)
+                .Select(b => b.CreditsRemaining)
+                .SingleAsync()).Should().Be(100, "düşen tamamlanma kredi yaratmamalı");
+
+            (await db.LicenseSmsTransactions.CountAsync(
+                t => t.LicenseId == licenseId && t.Kind == "send-refund"))
+                .Should().Be(0, "ledger satırı bakiyeyle birlikte geri alınmalı");
+        }
+
+        // Kampanya gerçekten yeniden koşturulduğunda iade BİR KEZ yazılmalı;
+        // ikinci koşu hiç alıcı bulamayıp doğrudan tamamlamaya gider ve
+        // idempotans farkı sıfır çıkar.
+        using (var retryScope = _factory.Services.CreateScope())
+        {
+            await retryScope.ServiceProvider
+                .GetRequiredService<SmsCampaignSendJob>().RunAsync(campaignId);
+        }
+
+        using (var duplicateScope = _factory.Services.CreateScope())
+        {
+            await duplicateScope.ServiceProvider
+                .GetRequiredService<SmsCampaignSendJob>().RunAsync(campaignId);
+        }
+
+        using (var verifyScope = _factory.Services.CreateScope())
+        {
+            var db = verifyScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var campaign = await db.SmsCampaigns.AsNoTracking()
+                .SingleAsync(c => c.Id == campaignId);
+
+            campaign.Status.Should().Be("completed");
+            campaign.RefundedCredits.Should().Be(2);
+
+            (await db.LicenseSmsBalances
+                .Where(b => b.LicenseId == licenseId)
+                .Select(b => b.CreditsRemaining)
+                .SingleAsync()).Should().Be(102);
+
+            var refunds = await db.LicenseSmsTransactions.AsNoTracking()
+                .Where(t => t.LicenseId == licenseId && t.Kind == "send-refund")
+                .ToListAsync();
+
+            refunds.Should().ContainSingle();
+            refunds.Single().Amount.Should().Be(2);
+        }
+    }
+
+    /// <summary>
+    /// Gerileme koruması: MEŞRU bakiye çakışması (paralel bakiye yüklemesi)
+    /// hâlâ yeniden denenmeli. Retry'ı tamamen kaldıran "düzeltme" bu testi
+    /// kırar — yükleme araya girdiğinde iade 409/500'e dönüşürdü.
+    /// </summary>
+    [Fact]
+    public async Task Yalniz_bakiye_cakismasi_tamamlanma_ve_iadeyi_korur()
+    {
+        var licenseId = await SeedAsync(initialCredits: 100);
+        var campaignId = await SeedRefundCampaignAsync(licenseId);
+
+        using (var workerScope = _factory.Services.CreateScope())
+        {
+            var db = workerScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var service = workerScope.ServiceProvider
+                .GetRequiredService<LicenseSmsBalanceService>();
+
+            var staleBalance = await db.LicenseSmsBalances
+                .SingleAsync(b => b.LicenseId == licenseId);
+            var campaign = await db.SmsCampaigns.SingleAsync(c => c.Id == campaignId);
+
+            using (var topupScope = _factory.Services.CreateScope())
+            {
+                var topupDb = topupScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+                var balance = await topupDb.LicenseSmsBalances
+                    .SingleAsync(b => b.LicenseId == licenseId);
+
+                balance.CreditsRemaining += 50;
+                // Jeton KESİN ilerlemeli: `UtcNow` seed damgasının gerisinde
+                // kalırsa çakışma hiç doğmaz ve test hiçbir şey kanıtlamaz.
+                balance.UpdatedAt = staleBalance.UpdatedAt.AddTicks(1);
+
+                topupDb.LicenseSmsTransactions.Add(new LicenseSmsTransaction
+                {
+                    Id = Guid.NewGuid(),
+                    LicenseId = licenseId,
+                    Amount = 50,
+                    Kind = "purchase",
+                    CreatedAt = DateTimeOffset.UtcNow,
+                });
+
+                await topupDb.SaveChangesAsync();
+            }
+
+            campaign.Status = "completed";
+            campaign.CompletedAt = DateTimeOffset.UnixEpoch.AddSeconds(1);
+            campaign.ClaimedAt = DateTimeOffset.UnixEpoch.AddSeconds(1);
+            campaign.RefundedCredits = 2;
+
+            (await service.ApplyAndSaveAsync(
+                licenseId, 2, "send-refund",
+                reason: $"campaign:{campaignId} failed=2",
+                createdByCustomerId: null,
+                disallowNegative: false,
+                CancellationToken.None)).Should().Be(152);
+        }
+
+        using var verifyScope = _factory.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var completed = await verifyDb.SmsCampaigns.AsNoTracking()
+            .SingleAsync(c => c.Id == campaignId);
+
+        completed.Status.Should().Be("completed", "bakiye retry'ı kampanyayı geri almamalı");
+        completed.RefundedCredits.Should().Be(2);
+
+        var (credits, ledgerSum, txCount) = await ReadStateAsync(licenseId);
+        credits.Should().Be(152);
+        // `ledgerSum` 52: seed başlangıç bakiyesini ledger satırı YAZMADAN
+        // kuruyor, ledger'da yalnız +50 yükleme ve +2 iade var.
+        ledgerSum.Should().Be(52);
+        txCount.Should().Be(2);
+    }
+```
+
 - [ ] **Adım 3: Testi koş, düştüğünü gör**
 
 ```bash
 dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
-  --filter FullyQualifiedName~SmsCampaignPauseTests
+  --filter "FullyQualifiedName~SmsCampaignPauseTests|FullyQualifiedName~SmsBalanceConcurrencyTests"
 ```
-Beklenen: **üç** test FAIL —
+Beklenen FAIL —
 - `Gonderim_ortasinda_duraklatilan_kampanya_kalan_aliciya_gitmez`: 2 SMS gitmiş,
   durum `completed`.
 - `Gercek_kapatma_yolu_kosan_isi_durdurur`: aynı sebeple 2 SMS gitmiş.
 - `Diriltilen_kampanya_iadeyi_ikinci_kez_yapmaz`: bakiye 2 kredi artmış.
+- `Kapatmadan_once_okunan_kampanya_sonradan_ustlenilemez` (üç `InlineData`'nın
+  hepsi): bayat işçi duraklatmayı ezip kampanyayı `completed` yapmış.
+- `Kampanya_cakismasi_iadeyi_yeniden_uygulamaz`: beklenen
+  `DbUpdateConcurrencyException` HİÇ ÇIKMAZ — mevcut retry onu yutar ve bakiye
+  `104` olur (`100 + 2 + 2`, ikinci ekleme reload'suz `amount` tekrarından).
 
-Diğer iki test (`Paused_kampanya_hic_ustlenilmez`,
-`Paused_kampanya_kurtarma_isiyle_diriltilmez`) zaten PASS — gerileme koruması.
+Zaten PASS olması gerekenler — gerileme koruması, kırmızı görürsen ÖNCE onu
+anla:
+- `Paused_kampanya_hic_ustlenilmez`
+- `Paused_kampanya_kurtarma_isiyle_diriltilmez`
+- `Yalniz_bakiye_cakismasi_tamamlanma_ve_iadeyi_korur`
+
+> **`SmsBalanceConcurrencyTests` Docker ister** (Testcontainers). Yerelde
+> düşerse PowerShell'den `DOCKER_HOST=npipe://./pipe/dockerDesktopLinuxEngine`
+> — git-bash bu değeri bozuyor.
 
 - [ ] **Adım 4: Durum sözlüğünü güncelle**
 
@@ -3262,48 +4403,81 @@ Diğer iki test (`Paused_kampanya_hic_ustlenilmez`,
 
 `HasMaxLength(16)` altı harfi taşıyor; şema göçü gerekmiyor.
 
-- [ ] **Adım 5: Döngüye durum yoklaması ekle**
+- [ ] **Adım 5: `SmsCampaignSendJob`'a sahiplik yardımcılarını ekle**
 
-`SmsCampaignSendJob.cs` — `foreach (var r in recipients)` bloğunun İLK satırı
-olarak ekle:
+Duraklatma artık `ClaimedAt` jetonunu ilerletiyor (Görev 3). Bu, job'a iki
+sorumluluk getiriyor: (a) kendi damgasını **monoton** atmak, (b) gönderilmiş
+bir SMS'in alıcı sonucunu çakışmada **kaybetmemek**.
+
+`SmsCampaignSendJob.cs` — sınıfın içine, `RunAsync`'in ÜSTÜNE:
 
 ```csharp
-            // §2.5: kurulum koşu sırasında kapatılabilir. Skaler projeksiyon
-            // bilinçli — `Select(c => c.Status)` kimlik çözümlemesine girmez,
-            // yani bu bağlamda izlenen "sending" kopyasını değil DİSKTEKİ
-            // değeri okur. Entity çekseydik kendi yazdığımızı geri okurduk.
-            var currentStatus = await _db.SmsCampaigns
-                .Where(c => c.Id == campaignId)
-                .Select(c => c.Status)
-                .FirstOrDefaultAsync(ct);
-            if (currentStatus == "paused")
-            {
-                // İade YOK: kalan alıcılar "pending" ve rezervasyon onların
-                // karşılığı. Burada iade edersek kampanya devam ettirildiğinde
-                // aynı krediyi ikinci kez harcarız.
-                _log.LogWarning(
-                    "SmsCampaignSendJob: campaign {Id} paused mid-run, stopping after {Sent} sends",
-                    campaignId, recipients.Count(x => x.Status == "sent"));
-                return;
-            }
+    /// <summary>
+    /// Sahiplik damgasının bir sonraki değeri. Ham <c>UtcNow</c> ataması
+    /// yetmez: saat monoton değil, üstelik duraklatma damgayı ileri
+    /// atabiliyor. Aynı ya da geri giden bir damga, duraklatmadan ÖNCE
+    /// kampanyayı okumuş işçinin üstlenmeyi geri kazanmasına yol açar.
+    ///
+    /// <para><c>NetgsmAccountService</c>'te aynı isimde bir metot var —
+    /// bu AYRI bir sınıfın özel metodu, ortaklaştırılmadı: iki taraf da
+    /// tek satırlık ve birbirine bağımlı değil.</para>
+    /// </summary>
+    private static DateTimeOffset NextClaimedAt(DateTimeOffset? previous)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return previous.HasValue && now <= previous.Value
+            ? previous.Value.AddTicks(1)
+            : now;
+    }
+
+    /// <summary>
+    /// Alıcı sonucunu + kalp atışını kaydeder. Kampanya bu arada başkası
+    /// tarafından yazıldıysa (duraklatma, devam ettirme) <c>false</c> döner
+    /// ve çağıran koşuyu bitirir.
+    ///
+    /// <para><b>Neden detach edip yeniden kaydediyoruz?</b> SMS çağrısının
+    /// dış etkisi GERÇEKLEŞTİ — operatöre gitti, geri alınamaz. Çakışmayı
+    /// olduğu gibi dışarı bıraksaydık alıcı satırı <c>pending</c> kalırdı ve
+    /// kampanya devam ettirildiğinde AYNI KİŞİYE ikinci kez SMS giderdi.
+    /// Kampanyayı detach edip yeniden kaydetmek, karşı tarafın kararına
+    /// (paused/pending) dokunmadan yalnız alıcının sonucunu diske indirir.</para>
+    ///
+    /// <para><c>ReferenceEquals</c> kasıtlı: çakışan tek şey BU kampanya
+    /// nesnesi değilse (ör. alıcı satırı) burası sorumlu değildir, istisna
+    /// dışarı çıkar.</para>
+    /// </summary>
+    private async Task<bool> SaveRecipientResultAsync(
+        SmsCampaign campaign, CancellationToken ct)
+    {
+        campaign.ClaimedAt = NextClaimedAt(campaign.ClaimedAt);
+
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+            return true;
+        }
+        catch (DbUpdateConcurrencyException ex) when (
+            ex.Entries.Count > 0
+            && ex.Entries.All(e => ReferenceEquals(e.Entity, campaign)))
+        {
+            _db.Entry(campaign).State = EntityState.Detached;
+            await _db.SaveChangesAsync(ct);
+            return false;
+        }
+    }
 ```
 
-Not: bu `return` kampanyanın durumunu YAZMAZ. İzlenen `campaign` nesnesinin
-`Status`'ü claim `SaveChanges`'inden beri değişmedi, dolayısıyla EF onu değiştirilmiş
-saymaz ve "sending" geri yazılmaz. Alıcı sonuçları zaten her adımda diske indi.
+- [ ] **Adım 6: `RunAsync`'i birleşik gövdeyle değiştir**
 
-- [ ] **Adım 6: Tamamlanma bloğunu yarışa dayanıklı hâle getir**
-
-Duraklatma yolu açılınca kampanya artık **diriltilebilir** bir nesne oluyor:
-Görev 12 `paused` yazıyor, Görev 13 devam ettirip `pending`'e döndürüyor. Bu iki
-yol bugünkü tamamlanma bloğunda iki delik açıyor.
+`SmsCampaignSendJob.RunAsync`'in **tamamını** aşağıdakiyle değiştir. Üç ayrı
+düzeltme burada birleşiyor; parça parça uygulanırsa birbirini bozarlar.
 
 **Delik 1 — çift iade (P1).** Bugün iade koşulsuz yazılıyor
 (`SmsCampaignSendJob.cs:188-198`): `refund = failedCount × SegmentsPerMessage`.
 `failedCount` DB'den, yani **koşudan bağımsız** okunuyor. Tamamlanmış bir
-kampanya bir kez daha koşarsa (aşağıdaki Delik 2, ya da kurtarma işinin
-herhangi bir tekrarı) hiç alıcı bulunmaz, doğrudan tamamlamaya gidilir ve
-**aynı iade ikinci kez yazılır**. Kredi yoktan var olur.
+kampanya bir kez daha koşarsa (Delik 2, ya da kurtarma işinin herhangi bir
+tekrarı) hiç alıcı bulunmaz, doğrudan tamamlamaya gidilir ve **aynı iade
+ikinci kez yazılır**. Kredi yoktan var olur.
 
 **Delik 2 — tamamlanmış kampanyanın `paused`'a düşmesi.** `ClaimedAt` bir
 eşzamanlılık jetonu (`LicenseDbContext.cs:786`) ve job onu her alıcıda tazeliyor
@@ -3313,31 +4487,171 @@ tamamlanırsa, admin'in `UPDATE ... WHERE ClaimedAt = <son kalp atışı>` koşu
 hâlâ **tutar** ve tamamlanmış kampanya `paused` olur. Sonra Görev 13 onu
 diriltir → Delik 1.
 
-`SmsCampaignSendJob.cs:179-202` — döngüden sonraki bloğun **tamamını** şununla
-değiştir:
+**Delik 3 — bayat işçinin üstlenmeyi geri alması (P1).** Üstlenme yazımı bugün
+çakışma yakalamıyor; duraklatma damgası ilerlemiş olsa bile işçi kendi
+`sending` + `ClaimedAt`'ini yazıp duraklatmayı siliyor.
 
 ```csharp
+    public async Task RunAsync(Guid campaignId, CancellationToken ct = default)
+    {
+        var campaign = await _db.SmsCampaigns
+            .FirstOrDefaultAsync(c => c.Id == campaignId, ct);
+
+        if (campaign is null)
+        {
+            _log.LogWarning("SmsCampaignSendJob: campaign {Id} not found", campaignId);
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var staleSending = campaign.Status == "sending"
+            && (campaign.ClaimedAt is null || now - campaign.ClaimedAt >= ClaimLease);
+
+        // "paused" bu kapıdan zaten geçemez: ne "pending" ne bayat "sending".
+        if (campaign.Status != "pending" && !staleSending)
+        {
+            _log.LogInformation(
+                "SmsCampaignSendJob: campaign {Id} status={Status} claimedAt={ClaimedAt}, skipping",
+                campaignId, campaign.Status, campaign.ClaimedAt);
+            return;
+        }
+
+        var resumed = campaign.Status == "sending";
+        campaign.Status = "sending";
+        campaign.ClaimedAt = NextClaimedAt(campaign.ClaimedAt);
+
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // Delik 3: okuma ile üstlenme arasında biri kampanyayı yazdı
+            // (büyük olasılıkla duraklatma). Elimizdeki karar bayat — SESSİZCE
+            // ÇEKİL. Detach şart: bu bağlamın kirli kopyası sonraki
+            // SaveChanges'e binmemeli.
+            _db.Entry(campaign).State = EntityState.Detached;
+            _log.LogInformation(
+                "SmsCampaignSendJob: campaign {Id} claim changed, skipping", campaignId);
+            return;
+        }
+
+        if (resumed)
+        {
+            _log.LogWarning(
+                "SmsCampaignSendJob: campaign {Id} resumed from stale 'sending' state",
+                campaignId);
+        }
+
+        var recipients = await _db.SmsCampaignRecipients
+            .Where(r => r.CampaignId == campaignId && r.Status == "pending")
+            .ToListAsync(ct);
+
+        var phones = recipients.Select(r => r.Phone).Distinct().ToList();
+        var brandCode = await _accounts.GetBrandCodeAsync(campaign.LicenseId, ct);
+
+        if (brandCode is null)
+        {
+            _log.LogWarning(
+                "SmsCampaignSendJob: campaign {Id} lisansının doğrulanmış İYS markası yok",
+                campaignId);
+        }
+
+        var consents = brandCode is null
+            ? new Dictionary<string, IysConsent>()
+            : await _db.IysConsents
+                .Where(c => c.BrandCode == brandCode
+                    && c.ChannelType == "MESAJ"
+                    && c.RecipientType == "BIREYSEL"
+                    && phones.Contains(c.Recipient))
+                .ToDictionaryAsync(c => c.Recipient, ct);
+
+        foreach (var recipient in recipients)
+        {
+            // §2.5: kurulum koşu sırasında kapatılabilir. Skaler projeksiyon
+            // BİLİNÇLİ — anonim tipe `Select` kimlik çözümlemesine girmez,
+            // yani bu bağlamda izlenen "sending" kopyasını değil DİSKTEKİ
+            // değeri okur. Entity çekseydik kendi yazdığımızı geri okurduk.
+            //
+            // `ClaimedAt` karşılaştırması `Status` kontrolünün üstüne şunu
+            // ekliyor: kampanya duraklatılıp YENİDEN "pending"/"sending"
+            // yapıldıysa (Görev 13 devam ettirme) durum yine "sending"
+            // görünebilir ama sahip ARTIK BİZ DEĞİLİZ. Damga bunu yakalar.
+            var current = await _db.SmsCampaigns
+                .Where(c => c.Id == campaignId)
+                .Select(c => new { c.Status, c.ClaimedAt })
+                .FirstOrDefaultAsync(ct);
+
+            if (current is null
+                || current.Status != "sending"
+                || current.ClaimedAt != campaign.ClaimedAt)
+            {
+                // İade YOK: kalan alıcılar "pending" ve rezervasyon onların
+                // karşılığı. Burada iade edersek kampanya devam ettirildiğinde
+                // aynı krediyi ikinci kez harcarız.
+                _log.LogWarning(
+                    "SmsCampaignSendJob: campaign {Id} ownership lost mid-run, stopping after {Sent} sends",
+                    campaignId, recipients.Count(x => x.Status == "sent"));
+                return;
+            }
+
+            consents.TryGetValue(recipient.Phone, out var consent);
+
+            if (!IysConsentGate.CanSend(consent))
+            {
+                recipient.Status = "failed";
+                recipient.Error = brandCode is null
+                    ? "iys-brand-missing"
+                    : consent is null
+                        ? "iys-consent-missing"
+                        : "iys-consent-not-onay";
+                recipient.SentAt = null;
+
+                if (!await SaveRecipientResultAsync(campaign, ct)) return;
+                continue;
+            }
+
+            try
+            {
+                await _sms.SendAsync(
+                    recipient.Phone, campaign.MessageBody, SmsKind.Commercial, ct);
+
+                recipient.Status = "sent";
+                recipient.SentAt = DateTimeOffset.UtcNow;
+                recipient.Error = null;
+            }
+            catch (Exception ex)
+            {
+                recipient.Status = "failed";
+                recipient.Error = ex.Message.Length > 500 ? ex.Message[..500] : ex.Message;
+
+                _log.LogWarning(ex,
+                    "SmsCampaignSendJob: send failed for campaign {Id} recipient {RecipientId}",
+                    campaignId, recipient.Id);
+            }
+
+            if (!await SaveRecipientResultAsync(campaign, ct)) return;
+        }
+
         // İade, bu koşunun sayacından değil DB'deki toplam failed sayısından:
         // devralınan koşuda önceki koşunun failed'ları da iade edilmeli
         // (önceki koşu tamamlanamadığı için hiç iade yapmamıştı).
         var failedCount = await _db.SmsCampaignRecipients
             .CountAsync(r => r.CampaignId == campaignId && r.Status == "failed", ct);
 
-        var completedAt = DateTimeOffset.UtcNow;
         campaign.Status = "completed";
-        campaign.CompletedAt = completedAt;
-        // Tamamlanmada da lease damgası tazelenir. ClaimedAt eşzamanlılık
-        // jetonu: tazelemezsek, elinde tamamlanma ÖNCESİ kopya tutan bir
-        // "duraklat" yazımı (Görev 12) çakışma ALMAZ ve bitmiş kampanyayı
-        // paused'a çevirir. Tazeleyince o yazım DbUpdateConcurrencyException
-        // alır, yeniden okur ve kampanyayı artık pending/sending listesinde
-        // bulamaz — yani doğru olanı yapar.
-        campaign.ClaimedAt = completedAt;
+        campaign.CompletedAt = DateTimeOffset.UtcNow;
+        // Delik 2: tamamlanmada da damga tazelenir. Tazelemezsek, elinde
+        // tamamlanma ÖNCESİ kopya tutan bir "duraklat" yazımı (Görev 12)
+        // çakışma ALMAZ ve bitmiş kampanyayı paused'a çevirir. Tazeleyince o
+        // yazım DbUpdateConcurrencyException alır, yeniden okur ve kampanyayı
+        // artık pending/sending listesinde bulamaz — doğru olanı yapar.
+        campaign.ClaimedAt = NextClaimedAt(campaign.ClaimedAt);
 
-        // İade İDEMPOTENT: hak edilen toplamın, bugüne dek FİİLEN iade
-        // edilenin üstünde kalan kısmı ödenir. Kampanya duraklatılıp devam
-        // ettirilerek ikinci kez tamamlanırsa failedCount aynı kalır, fark
-        // sıfır çıkar ve ikinci bir iade yazılmaz.
+        // Delik 1 — iade İDEMPOTENT: hak edilen toplamın, bugüne dek FİİLEN
+        // iade edilenin üstünde kalan kısmı ödenir. Kampanya duraklatılıp
+        // devam ettirilerek ikinci kez tamamlanırsa failedCount aynı kalır,
+        // fark sıfır çıkar ve ikinci bir iade yazılmaz.
         var owed = failedCount * campaign.SegmentsPerMessage;
         var refund = owed - campaign.RefundedCredits;
 
@@ -3355,65 +4669,204 @@ değiştir:
         {
             await _db.SaveChangesAsync(ct);
         }
+
+        _log.LogInformation(
+            "SmsCampaignSendJob: campaign {Id} completed — {Sent} sent this run, {Failed} failed total",
+            campaignId, recipients.Count(r => r.Status == "sent"), failedCount);
+    }
 ```
 
-> **`ClaimedAt` tazelemesi neden ayrı bir testi yok?** Delik 2'yi deterministik
-> kanıtlamak için job'ın son alıcı kaydı ile tamamlanma yazımı ARASINDA bir
-> kanca gerekirdi; öyle bir nokta yok ve `DateTimeOffset.UtcNow`'un Windows'taki
-> ~15 ms çözünürlüğü "son kalp atışı < tamamlanma" karşılaştırmasını flake
-> yapar. Yazılabilecek test, testin kendisi yeşil kalırken kusuru kaçırırdı.
-> Paraya dönüşen sonuç (Delik 1) `Diriltilen_kampanya_iadeyi_ikinci_kez_yapmaz`
-> ile tam kapanıyor; tazeleme onun üstünde ikinci savunma katmanı olarak
-> duruyor. **Bilinçli karar — "test eksik" diye geri çevirme.**
+> **Tamamlanma çakışması `SaveRecipientResultAsync`'e GİRMEZ.** Son bloktaki
+> `SaveChangesAsync`/`ApplyAndSaveAsync` doğrudan çağrılıyor: orada çakışma
+> alırsak tamamlanma kararı bayattır ve **düşmesi gerekir** — detach edip
+> yeniden kaydetmek, karşı tarafın devam ettirme kararını silerdi. Bir
+> sonraki adım bu istisnanın bakiye servisinde yutulmadığını garanti ediyor.
+
+> **`ClaimedAt` tazelemesinin adanmış testi neden yok?** Delik 2'yi
+> deterministik kanıtlamak için son alıcı kaydı ile tamamlanma yazımı ARASINDA
+> bir kanca gerekirdi; öyle bir nokta yok. Paraya dönüşen sonuç (Delik 1)
+> `Diriltilen_kampanya_iadeyi_ikinci_kez_yapmaz` ile, sahiplik sonucu ise
+> `Kapatmadan_once_okunan_kampanya_sonradan_ustlenilemez`'in `futureStamp`
+> vakasıyla kapanıyor — o vaka monotonluğu saate hiç bakmadan doğruluyor.
+> **Bilinçli karar — "test eksik" diye geri çevirme.**
+
+- [ ] **Adım 6b: Bakiye retry'ı yalnız kendi satırını yeniden yüklesin**
+
+Yukarıdaki değişiklikler kampanya çakışmalarını **gerçek** hâle getirdi. Bugün
+o çakışma `LicenseSmsBalanceService.ApplyAndSaveAsync`'in retry'ına düşüyor
+(`:101-111`): `ex.Entries`'in TAMAMI yeniden yükleniyor, yani hazırlanmış
+`completed` + `RefundedCredits` siliniyor, sonra `amount` ikinci kez ekleniyor.
+Sonuç: kampanya tamamlanmamış görünürken krediler iade edilmiş oluyor, sonraki
+koşu iadeyi bir kez daha yazıyor.
+
+`LicenseSmsBalanceService.ApplyAndSaveAsync`'in **tamamını** değiştir:
+
+```csharp
+    public async Task<int?> ApplyAndSaveAsync(
+        Guid licenseId,
+        int amount,
+        string kind,
+        string? reason,
+        Guid? createdByCustomerId,
+        bool disallowNegative,
+        CancellationToken ct)
+    {
+        const int maxAttempts = 3;
+        var now = DateTimeOffset.UtcNow;
+
+        _db.LicenseSmsTransactions.Add(new LicenseSmsTransaction
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = licenseId,
+            Amount = amount,
+            Kind = kind,
+            Reason = reason,
+            CreatedByCustomerId = createdByCustomerId,
+            CreatedAt = now,
+        });
+
+        var balance = await _db.LicenseSmsBalances
+            .FirstOrDefaultAsync(b => b.LicenseId == licenseId, ct);
+
+        if (balance is null)
+        {
+            if (disallowNegative && amount < 0) return null;
+
+            balance = new LicenseSmsBalance
+            {
+                Id = Guid.NewGuid(),
+                LicenseId = licenseId,
+                CreditsRemaining = amount,
+                UpdatedAt = now,
+            };
+
+            _db.LicenseSmsBalances.Add(balance);
+            await _db.SaveChangesAsync(ct);
+            return balance.CreditsRemaining;
+        }
+
+        balance.CreditsRemaining += amount;
+        // Jeton KESİN ilerlemeli — `UtcNow` monoton değil.
+        balance.UpdatedAt = now > balance.UpdatedAt ? now : balance.UpdatedAt.AddTicks(1);
+
+        for (var attempt = 1; ; attempt++)
+        {
+            if (disallowNegative && balance.CreditsRemaining < 0) return null;
+
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+                return balance.CreditsRemaining;
+            }
+            catch (DbUpdateConcurrencyException ex) when (
+                attempt < maxAttempts
+                && ex.Entries.Count > 0
+                && ex.Entries.All(e => ReferenceEquals(e.Entity, balance)))
+            {
+                // YALNIZ bakiye satırı. Çağıran bu SaveChanges'e kendi
+                // kararlarını da (kampanya tamamlanması, RefundedCredits)
+                // iliştirmiş olabilir; `ex.Entries`'i toptan reload etmek
+                // onları siler ve `amount`u ikinci kez ekler. Kampanya
+                // çakışması buraya AİT DEĞİLDİR: dışarı çıkar, çağıranın
+                // kararı düşer, iş yeniden koştuğunda taze okunur.
+                await _db.Entry(balance).ReloadAsync(ct);
+
+                // Satır silinmişse tazeleyecek bir şey yok.
+                if (_db.Entry(balance).State == EntityState.Detached) throw;
+
+                balance.CreditsRemaining += amount;
+
+                var retryAt = DateTimeOffset.UtcNow;
+                balance.UpdatedAt = retryAt > balance.UpdatedAt
+                    ? retryAt
+                    : balance.UpdatedAt.AddTicks(1);
+            }
+        }
+    }
+```
 
 - [ ] **Adım 7: Testlerin geçtiğini gör**
 
 ```bash
 dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
-  --filter "FullyQualifiedName~SmsCampaignPauseTests|FullyQualifiedName~SmsCampaignIysGateTests|FullyQualifiedName~SmsCampaignSendJob|FullyQualifiedName~SmsCampaignRecovery"
+  --filter "FullyQualifiedName~SmsCampaignPauseTests|FullyQualifiedName~SmsBalanceConcurrencyTests|FullyQualifiedName~SmsCampaignIysGateTests|FullyQualifiedName~SmsCampaignSendJob|FullyQualifiedName~SmsCampaignRecovery"
 ```
-Beklenen: PASS — hem yeni testler hem mevcut gönderim/kurtarma paketleri.
-Özellikle `SmsCampaignTests.Job_resumes_stale_sending_campaign_without_resending`
-hâlâ geçmeli: orada `RefundedCredits` 0'dan başlıyor, `owed - 0 = 1` ve iade
-aynen yazılıyor.
+Beklenen: PASS — hem yeni testler hem mevcut gönderim/kurtarma/bakiye
+paketleri. Özellikle şu ikisi hâlâ geçmeli:
+- `SmsCampaignTests.Job_resumes_stale_sending_campaign_without_resending`:
+  `RefundedCredits` 0'dan başlıyor, `owed - 0 = 1`, iade aynen yazılıyor.
+- `Yalniz_bakiye_cakismasi_tamamlanma_ve_iadeyi_korur`: meşru bakiye
+  çakışmasında retry hâlâ çalışıyor.
 
-- [ ] **Adım 8: Mutasyon provası — iadenin gerçekten korunduğunu gör**
+- [ ] **Adım 8: Mutasyon provası — dört iddianın da gerçekten kilitli olduğunu gör**
 
-`paused` dalındaki `return;` satırını geçici olarak şununla değiştir:
+Her mutasyonu tek tek uygula, testi koş, **sonra geri al**.
 
+**1) Duraklatma yoklaması kampanyayı tamamlasın.** Döngü başındaki sahiplik
+koşulunun `return;` satırını şununla değiştir:
 ```csharp
                 campaign.Status = "completed";
                 await _db.SaveChangesAsync(ct);
                 return;
 ```
+Düşmeli: `Gonderim_ortasinda_duraklatilan_kampanya_kalan_aliciya_gitmez`
+(`Status` `completed` geldi). Düşmüyorsa assert eksiktir.
 
-Testi koş: `Gonderim_ortasinda_duraklatilan_kampanya_kalan_aliciya_gitmez`
-**düşmeli** (`Status` "completed" geldi). Düşmüyorsa assert eksiktir. Sonra
-değişikliği geri al.
+> Döngü içindeki `current.ClaimedAt != campaign.ClaimedAt` karşılaştırmasının
+> **bu görevde adanmış mutasyonu yok**: buradaki testlerde sahipliği zaten
+> üstlenme çakışması ya da `SaveRecipientResultAsync` yakalıyor. O
+> karşılaştırma Görev 13'ün devam ettirme yolu için var (duraklatılmış
+> kampanya yeniden `pending` yapılınca durum tekrar `sending` olabilir ama
+> sahip değişmiştir) ve mutasyonu **Görev 13 Adım 5b'de** koşulur.
 
-İkinci mutasyon: `var refund = owed - campaign.RefundedCredits;` satırını
-geçici olarak `var refund = owed;` yap. `Diriltilen_kampanya_iadeyi_ikinci_kez_yapmaz`
-**düşmeli**. Sonra geri al.
+**2) Üstlenme damgası ham `UtcNow` olsun.** `campaign.ClaimedAt =
+NextClaimedAt(campaign.ClaimedAt);` satırını (üstlenme bloğundakini)
+`campaign.ClaimedAt = DateTimeOffset.UtcNow;` yap.
+Düşmeli: `Kapatmadan_once_okunan_kampanya_sonradan_ustlenilemez(pending, true)`
+— ileri tarihli damga geri alınır, `BeAfter` assert'i patlar.
+
+**3) Üstlenme çakışması yutulsun.** Üstlenmedeki `catch
+(DbUpdateConcurrencyException)` bloğunun `return;` satırını sil (detach + log
+kalsın).
+Düşmeli: `Kapatmadan_once_okunan_kampanya_sonradan_ustlenilemez`'in üç vakası
+da — bayat işçi devam eder, kampanya `completed` olur.
+
+**4) İade idempotansı kalksın.** `var refund = owed - campaign.RefundedCredits;`
+→ `var refund = owed;`.
+Düşmeli: `Diriltilen_kampanya_iadeyi_ikinci_kez_yapmaz`.
+
+**5) Bakiye retry'ı yine toptan reload etsin.** `ex.Entries.All(e =>
+ReferenceEquals(e.Entity, balance))` koşulunu sil ve gövdeyi
+`foreach (var e in ex.Entries) await e.ReloadAsync(ct);` yap.
+Düşmeli: `Kampanya_cakismasi_iadeyi_yeniden_uygulamaz` — beklenen istisna
+çıkmaz, bakiye `104` olur.
 
 - [ ] **Adım 9: Commit**
 
 ```bash
 git add OrderDeck.LicenseServer.Tests/Services/Sms/SmsCampaignPauseTests.cs \
+        OrderDeck.LicenseServer.Tests/Services/Sms/SmsBalanceConcurrencyTests.cs \
         OrderDeck.LicenseServer.Tests/TestHelpers/RecordingSmsSender.cs \
         OrderDeck.LicenseServer/Domain/SmsCampaign.cs \
-        OrderDeck.LicenseServer/Services/Sms/SmsCampaignSendJob.cs
+        OrderDeck.LicenseServer/Services/Sms/SmsCampaignSendJob.cs \
+        OrderDeck.LicenseServer/Services/Sms/LicenseSmsBalanceService.cs
 git commit -m "$(cat <<'EOF'
 feat(sms): kampanya gönderimi koşu ortasında duraklatılabilir
 
 Kurulum kapatıldığında devam eden kampanya sonuna kadar gidiyordu. Döngü artık
-her alıcıdan önce diskteki durumu okuyor; "paused" görürse iade yapmadan çıkıyor
-(kalan alıcılar pending, rezervasyon onların karşılığı).
+her alıcıdan önce diskteki durumu VE sahiplik damgasını okuyor; sahiplik
+kaybolmuşsa iade yapmadan çıkıyor (kalan alıcılar pending, rezervasyon onların
+karşılığı).
 
-Duraklatma kampanyayı diriltilebilir kıldığı için tamamlanma bloğu da
-sertleştirildi: iade artık RefundedCredits üstünden idempotent (ikinci kez
-tamamlanan kampanya krediyi yoktan var etmiyor) ve ClaimedAt lease damgası
-tamamlanmada da tazeleniyor (bayat "duraklat" yazımı bitmiş kampanyayı
-paused'a çeviremiyor).
+Durum yazmak tek başına yetmiyordu: duraklatmadan önce kampanyayı okumuş bir
+işçi kendi üstlenmesini yazıp kararı siliyordu. ClaimedAt artık hem
+duraklatmada hem üstlenmede hem tamamlanmada monoton ilerliyor ve üstlenme
+çakışması işi sessizce durduruyor. Gönderilmiş SMS'in alıcı sonucu çakışmada
+da korunuyor — yoksa devam ettirmede aynı kişiye ikinci kez giderdi.
+
+İade RefundedCredits üstünden idempotent hâle geldi ve bakiye servisinin retry'ı
+artık yalnız kendi bakiye satırını yeniden yüklüyor: kampanya çakışması oraya
+yutulup krediyi yoktan var edemiyor.
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
 EOF
@@ -3814,8 +5267,28 @@ public class IndexModel : PageModel
         // doğrulamanın başarılı olduğu anda gelir.
         acc.Status = NetgsmAccountStatus.Failed;
         acc.LastError = null;
-        acc.UpdatedAt = DateTimeOffset.UtcNow;
-        await _db.SaveChangesAsync(ct);
+        // Damgayı LicenseDbContext merkezî olarak atıyor (Görev 3); burada
+        // elle UtcNow yazmak, saat ilerlemediğinde jetonu yerinde bırakırdı.
+        _db.Entry(acc).Property(a => a.UpdatedAt).IsModified = true;
+
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // Yönetici sayfayı açtıktan sonra biri hesabı yazmış: yayıncı
+            // panelden kaydetmiş ya da günlük iş sonuç yazmış olabilir.
+            // Ekrandaki "Disabled" artık gerçeği göstermiyor, dolayısıyla
+            // "aç" kararı da bayat — sessizce uygulamak yerine yöneticiye
+            // güncel hâli gösteriyoruz.
+            _db.ChangeTracker.Clear();
+            return new ConflictObjectResult(new
+            {
+                title = "netgsm-account-changed",
+                detail = "Kurulum başka bir işlemle değişti. Sayfayı yenileyin.",
+            });
+        }
 
         await _audit.LogAsync(
             AuditEvents.NetgsmAccountEnable, AuditTargets.NetgsmAccount,
@@ -3826,6 +5299,13 @@ public class IndexModel : PageModel
     }
 }
 ```
+
+> **`OnPostDisableAsync`'e aynı `catch` gerekmiyor.** O yol yazımı
+> `CloseAccountAndPauseCampaignsAsync`'e devrediyor ve orada zaten dört turluk
+> bir retry döngüsü var — üstelik `Disabled` çağrısı `expectedUpdatedAt`
+> TAŞIMIYOR, yani yönetici kararı bilinçli olarak her hâlükârda kazanıyor
+> (Görev 8). "Kapat" hiçbir zaman çakışmayla düşmemeli: anahtarın en çok
+> gerektiği an, kampanyanın aktığı ve satırın en çok yazıldığı andır.
 
 - [ ] **Adım 5: Sayfayı yaz**
 
@@ -3956,6 +5436,8 @@ Devam ettirme `Failed → Verified` geçişinde çağrılır — **tek yer**: pa
 - Modify: `OrderDeck.LicenseServer/Program.cs:908` civarı (cron; DI kayıtları
   Görev 5 ve Görev 8'de yapıldı, burada yalnız doğrulanıyor)
 - Test: `OrderDeck.LicenseServer.Tests/Services/Sms/NetgsmAccountResumeTests.cs`
+- Test: `OrderDeck.LicenseServer.Tests/Services/Sms/SmsCampaignPauseTests.cs`
+  (Adım 5b — devam ettirme yarışı; Görev 11'de yazılan sınıfa tek test eklenir)
 
 - [ ] **Adım 1: Düşen testi yaz**
 
@@ -4164,36 +5646,152 @@ başındaki `acc.Status != Verified → return` kapısı), yani orada böyle bir
 yükselme hiç gerçekleşmez. Oraya devam ettirme çağrısı koymak ölü kod olurdu —
 koyma.
 
-`PanelNetgsmAccountController.cs` — Görev 5'te yazdığın `PUT`'un son bloğunu
-(`if (result.Outcome == NetgsmVerifyOutcome.Ok) { ... }` ile
-`return Ok(ToView(account));` arası) **tamamen** şununla değiştir:
+`PanelNetgsmAccountController.cs` — bu **saf bir EKLEME**. Görev 5'te yazdığın
+`PUT` gövdesinde zaten duran
 
 ```csharp
-        if (result.Outcome == NetgsmVerifyOutcome.Ok)
-        {
-            account.Status = NetgsmAccountStatus.Verified;
-            account.LastVerifiedAt = DateTimeOffset.UtcNow;
-            account.LastError = null;
-
-            // Kurulum geri geldi: admin kapatmasıyla duraklatılmış kampanyalar
-            // devam etsin. Kayıt AŞAĞIDAKİ tek SaveChanges'te — hesabın
-            // Verified'ı ile kampanyaların pending'i ya birlikte iner ya
-            // hiç inmez. Ayrılsalardı aradaki çökme kampanyaları paused'da
-            // bırakırdı ve hiçbir süpürme onları bulmazdı.
-            await _accounts.StageResumePausedCampaignsAsync(account.LicenseId, ct);
-        }
-        else
-        {
-            account.LastError = result.Message;
-        }
-        account.UpdatedAt = DateTimeOffset.UtcNow;
-        await _db.SaveChangesAsync(ct);
-
-        return Ok(ToView(account));
+            if (result.Outcome == NetgsmVerifyOutcome.Ok)
+            {
+                account.Status = NetgsmAccountStatus.Verified;
+                account.LastVerifiedAt = DateTimeOffset.UtcNow;
+                account.LastError = null;
+            }
 ```
+
+bloğunun **içine, `account.LastError = null;` satırının hemen altına** şu çağrıyı
+ekle — blok dışında hiçbir şeye dokunma (blok `try` içinde, girinti 12 boşluk):
+
+```csharp
+                // Kurulum geri geldi: admin kapatmasıyla duraklatılmış
+                // kampanyalar devam etsin. Kayıt AŞAĞIDAKİ tek SaveChanges'te —
+                // hesabın Verified'ı ile kampanyaların pending'i ya birlikte
+                // iner ya hiç inmez. Ayrılsalardı aradaki çökme kampanyaları
+                // paused'da bırakırdı ve hiçbir süpürme onları bulmazdı.
+                await _accounts.StageResumePausedCampaignsAsync(account.LicenseId, ct);
+```
+
+> **Bu bloğun dışındaki HİÇBİR şeyi değiştirme.** Özellikle şunlar Görev 5 ve
+> Görev 6'nın yazdığı hâlde KALIR:
+> - `else { account.LastError = result.Message; }` dalı,
+> - `_db.Entry(account).Property(a => a.UpdatedAt).IsModified = true;` satırı
+>   — burada `account.UpdatedAt = DateTimeOffset.UtcNow;` yazmak Görev 3'ün
+>   merkezî monotonik damgalamasını devre dışı bırakır ve jetonun geri
+>   gitmesine izin verir,
+> - `await _db.SaveChangesAsync(ct);` ve `return Ok(ToView(account));`,
+> - **üç catch bloğunun üçü de**: Görev 5'in `DbUpdateConcurrencyException`'ı
+>   (→409 `verification-superseded`), Görev 6'nın
+>   `NetgsmAccountDisabledException`'ı (→409 `netgsm-account-disabled`) ve
+>   `DbUpdateException ex when IsBrandCodeConflict(ex)`'i (→409
+>   `brand-code-taken`).
+>
+> Bu gövdeyi baştan yazarsan catch'ler düşer ve marka çakışması ile doğrulama
+> yarışı 409 yerine **500** döner — Görev 6'nın `Baska_lisansin_dogrulanmis_markasi_409`
+> ve Görev 5'in `Dogrulama_sirasinda_kimlikler_degisirse_sonuc_UYGULANMAZ` /
+> `Dogrulama_sirasinda_yalniz_parola_degisirse_sonuc_uygulanmaz` testleri
+> kırmızıya döner.
+> Görev 5'in blok alıntısı bunu zaten söylüyor: *"Görev 6 ve Görev 13 bu
+> gövdeye EKLEME yapar, parça DEĞİŞTİRMEZ."*
 
 > **Değişken adı `account`, `acc` değil.** Bu metodun yerelini Görev 5 öyle
 > adlandırdı; `acc` yalnız testlerde ve admin sayfasında geçiyor.
+
+- [ ] **Adım 5b: Devam ettirme yarışının düşen testini yaz**
+
+Görev 11'de döngü içi sahiplik yoklamasının (`current.ClaimedAt !=
+campaign.ClaimedAt`) adanmış testi yoktu; o karşılaştırma **tam olarak bu
+adımda eklenen yol için** var. Senaryo: işçi A kampanyayı üstlenmiş ve ilk
+alıcıya göndermişken admin hesabı kapatıyor (kampanya `paused`), sonra yayıncı
+kimlikleri düzeltip `PUT`'u çağırıyor (kampanya `pending`), kurtarma süpürmesi
+onu yeni bir işçiye veriyor (kampanya yine `sending`, **ama yeni `ClaimedAt`**).
+İşçi A hâlâ döngüsünde. `Status` yoklaması tek başına bakarsa durum yine
+`"sending"` göründüğü için A devam eder ve **aynı kişiye ikinci SMS gider** —
+para da harcanır, hukuken de ikinci ticari ileti olur. Jeton karşılaştırması
+bunu görür.
+
+`SmsCampaignPauseTests.cs` — sınıfın sonuna ekle (Görev 11'in `SeedAsync`'i ve
+`OnSent` kancası aynen kullanılıyor):
+
+```csharp
+    [Fact]
+    public async Task Devam_ettirilip_yeniden_ustlenilen_kampanyaya_eski_isci_gondermez()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
+        var (campaignId, accountId, _) = await SeedAsync(db);
+
+        // İlk gönderimden sonra kapat → devam ettir → BAŞKA bir işçi üstlensin.
+        // Üç adım da ayrı scope'ta: bu koşuyu yapan işçi A'nın DbContext'i
+        // hiçbirini görmüyor, elindeki `campaign` nesnesi bayatlıyor.
+        var interleaved = false;
+        _factory.Sms.OnSent = _ =>
+        {
+            if (interleaved) return;
+            interleaved = true;
+
+            using var other = _factory.Services.CreateScope();
+            var odb = other.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var accounts = other.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+            var licenseId = odb.NetgsmAccounts.Single(a => a.Id == accountId).LicenseId;
+
+            // 1) Admin kapatması — kampanya paused, ClaimedAt ileri damgalanır.
+            accounts.CloseAccountAndPauseCampaignsAsync(
+                    accountId, NetgsmAccountStatus.Disabled, "Yönetici kapattı.")
+                .GetAwaiter().GetResult();
+
+            // 2) Yayıncı kimlikleri düzeltti, PUT doğrulandı — paused → pending.
+            accounts.StageResumePausedCampaignsAsync(licenseId).GetAwaiter().GetResult();
+            odb.SaveChanges();
+
+            // 3) Kurtarma süpürmesi yeni bir işçiye verdi: taze ClaimedAt.
+            var c = odb.SmsCampaigns.Single(x => x.Id == campaignId);
+            c.Status = "sending";
+            c.ClaimedAt = DateTimeOffset.UtcNow.AddSeconds(1);
+            odb.SaveChanges();
+        };
+
+        try { await job.RunAsync(campaignId); }
+        finally { _factory.Sms.OnSent = null; }
+
+        _factory.Sms.Sent.Should().HaveCount(1,
+            "işçi A sahipliğini kaybetti; ikinci alıcı artık YENİ işçinin işi. "
+            + "2 olursa aynı kişiye iki ticari ileti gitmiş demektir");
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var campaign = await vdb.SmsCampaigns.AsNoTracking()
+            .SingleAsync(c => c.Id == campaignId);
+        campaign.Status.Should().Be("sending", "yeni sahibin durumu ezilmemeli");
+        campaign.CompletedAt.Should().BeNull();
+        campaign.RefundedCredits.Should().Be(0,
+            "sahipliği kaybeden işçi iade YAPMAZ — kalan alıcı yeni işçide");
+    }
+```
+
+- [ ] **Adım 5c: Testin gerçekten kırmızı başladığını mutasyonla doğrula**
+
+Test şu anda GEÇİYOR olmalı (Görev 11 yoklamayı zaten yazdı). Kırmızı
+başladığını kanıtlamak için `SmsCampaignSendJob`'ın döngü içi yoklamasından
+
+```csharp
+            if (current.Status != "sending" || current.ClaimedAt != campaign.ClaimedAt)
+```
+
+`|| current.ClaimedAt != campaign.ClaimedAt` kısmını **geçici olarak** sil:
+
+```bash
+dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
+  --filter FullyQualifiedName~Devam_ettirilip_yeniden_ustlenilen_kampanyaya_eski_isci_gondermez
+```
+Beklenen: **FAIL** — `Sent` 1 değil 2; eski işçi ikinci alıcıya da göndermiş.
+
+Mutasyonu geri al (silinen `||` parçasını yerine yaz) ve aynı komutu tekrar
+koş. Beklenen: PASS.
+
+> **`git checkout --` ile geri alma.** Bu dosya Görev 11'de commit edildiği
+> için `git checkout -- OrderDeck.LicenseServer/Services/Sms/SmsCampaignSendJob.cs`
+> güvenlidir — ama bu görevde o dosyada BAŞKA bir değişiklik yapmadığından emin
+> ol, yoksa onu da siler. Şüphedeysen satırı elle geri yaz.
 
 **Neden `_accounts` alanı var:** Görev 4'te controller'a `NetgsmAccountService`
 zaten enjekte edildi (`_accounts.TryUnprotectPassword` çağrısı orada). Yeni bir
@@ -4267,6 +5865,7 @@ gerekirse PowerShell'den `$env:DOCKER_HOST="npipe://./pipe/dockerDesktopLinuxEng
 
 ```bash
 git add OrderDeck.LicenseServer.Tests/Services/Sms/NetgsmAccountResumeTests.cs \
+        OrderDeck.LicenseServer.Tests/Services/Sms/SmsCampaignPauseTests.cs \
         OrderDeck.LicenseServer/Services/Sms/NetgsmAccountService.cs \
         OrderDeck.LicenseServer/Controllers/Panel/PanelNetgsmAccountController.cs \
         OrderDeck.LicenseServer/Pages/Admin/Index.cshtml \
