@@ -386,10 +386,13 @@ else
                 <input asp-for="Input.WhatsAppConsent" type="checkbox" />
                 <span>WhatsApp üzerinden bilgilendirme/kampanya mesajı almayı kabul ediyorum.</span>
             </label>
-            <label class="check">
-                <input asp-for="Input.SmsConsent" type="checkbox" />
-                <span>SMS üzerinden bilgilendirme/kampanya mesajı almayı kabul ediyorum.</span>
-            </label>
+            @if (Model.SmsConsentAvailable)
+            {
+                <label class="check">
+                    <input asp-for="Input.SmsConsent" type="checkbox" />
+                    <span>SMS üzerinden bilgilendirme/kampanya mesajı almayı kabul ediyorum.</span>
+                </label>
+            }
 
             <p class="kvkk">
                 Gönderdiğin bilgiler yalnızca sipariş, kargo ve fatura işlemlerin için yayıncı tarafından
