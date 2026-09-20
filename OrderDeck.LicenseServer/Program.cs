@@ -194,6 +194,7 @@ public class Program
         }
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sms.NetgsmAccountService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sms.NetgsmAccountVerifier>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sms.NetgsmAccountVerifyJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysConsentCollector>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysConsentPushJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysConsentVerifyJob>();

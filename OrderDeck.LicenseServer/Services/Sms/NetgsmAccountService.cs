@@ -272,6 +272,125 @@ public sealed class NetgsmAccountService
         }
     }
 
+    /// <summary>
+    /// Kurulumu kapatır (<paramref name="status"/>) ve o lisansın HENÜZ
+    /// BİTMEMİŞ kampanyalarını <c>paused</c> yapar — <b>tek</b>
+    /// <c>SaveChanges</c>'te, yani ya ikisi de olur ya hiçbiri. Duraklatılan
+    /// kampanya sayısını döndürür.
+    ///
+    /// <para><b><c>pending</c> de duraklatılmak ZORUNDA.</b> Yalnız
+    /// <c>sending</c> duraklatılsaydı <see cref="SmsCampaignRecoveryJob"/>
+    /// iki dakika içinde bekleyeni kuyruğa alır ve kararı sessizce geri
+    /// alırdı (<c>SmsCampaignRecoveryJob.cs:48-53</c>).</para>
+    ///
+    /// <para><b>İade YOK.</b> Kalan alıcılar <c>pending</c> kalır ve
+    /// rezervasyon onların karşılığıdır. Burada iade edersek kampanya devam
+    /// ettirildiğinde aynı kredi ikinci kez harcanır.</para>
+    ///
+    /// <para><b>Neden yeniden deneme var.</b> <c>SmsCampaign.ClaimedAt</c> bir
+    /// concurrency token (<c>LicenseDbContext.cs:816</c>) ve gönderim işi onu
+    /// ALICI BAŞINA tazeliyor (<c>SmsCampaignSendJob.cs:172</c>). Okumamızla
+    /// yazmamız arasına bir kalp atışı girerse
+    /// <see cref="DbUpdateConcurrencyException"/> gelir. Yakalamazsak kapatma
+    /// isteği 500 ile düşer — hem de tam kampanya akarken, yani anahtarın en
+    /// çok gerektiği anda. Aynı token, kampanyanın tam o anda tamamlanmasıyla
+    /// olan yarışı da yakalıyor: bayat okumayla tamamlanmış kampanyayı
+    /// <c>paused</c>'a geri çevirip yeniden gönderime açamayız.</para>
+    ///
+    /// <para><b><paramref name="expectedUpdatedAt"/> — bayat ret koruması.</b>
+    /// Günlük iş (<c>Failed</c>) hesabı ağ çağrısından ÖNCE okuyor; çağrı
+    /// sürerken admin hesabı <c>Disabled</c> yapmış ya da yayıncı yeni bir
+    /// şifreyle kaydetmiş olabilir. O sürümü doğrulamadık, o sürüme ret
+    /// yazamayız: <c>Disabled</c>'ı <c>Failed</c>'a çevirmek admin kilidini
+    /// kaldırır, değişmiş şifreye ret yazmak da doğrulanmamış bir kimliği
+    /// yanlışlıkla mahkûm eder. Bu yüzden <c>Failed</c> çağrısı sürümü
+    /// TAŞIMAK ZORUNDA ve eşleşmezse <c>0</c> dönüp sessizce çekilir —
+    /// sonraki tur güncel sürümü baştan doğrular.</para>
+    ///
+    /// <para><c>Disabled</c> (admin kill switch) sürüm İSTEMEZ: yönetici
+    /// kararı en güncel karardır ve her hâlükârda kazanmalıdır.</para>
+    /// </summary>
+    public async Task<int> CloseAccountAndPauseCampaignsAsync(
+        Guid accountId,
+        NetgsmAccountStatus status,
+        string? lastError,
+        CancellationToken ct = default,
+        DateTimeOffset? expectedUpdatedAt = null)
+    {
+        if (status is not (NetgsmAccountStatus.Disabled or NetgsmAccountStatus.Failed))
+            throw new ArgumentOutOfRangeException(nameof(status));
+
+        if (status == NetgsmAccountStatus.Failed && expectedUpdatedAt is null)
+            throw new ArgumentException(
+                "Günlük ret doğrulanan hesap sürümünü taşımalıdır.", nameof(expectedUpdatedAt));
+
+        const int maxAttempts = 4;
+        for (var attempt = 1; ; attempt++)
+        {
+            // Her turda TEMİZ oku: çağıranın izlediği bayat nesne bu kararın
+            // içine sızmamalı (günlük iş `acc`'i hâlâ izliyor).
+            _db.ChangeTracker.Clear();
+
+            var account = await _db.NetgsmAccounts.FirstOrDefaultAsync(a => a.Id == accountId, ct);
+            if (account is null) return 0;
+
+            if (status == NetgsmAccountStatus.Failed
+                && (account.Status != NetgsmAccountStatus.Verified
+                    || account.UpdatedAt != expectedUpdatedAt!.Value))
+                return 0;   // araya giren karar var — bayat ret düşer
+
+            account.Status = status;
+            account.LastError = lastError;
+            _db.Entry(account).Property(a => a.UpdatedAt).IsModified = true;
+
+            var paused = await StagePauseActiveCampaignsAsync(account.LicenseId, ct);
+
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+                return paused;
+            }
+            catch (DbUpdateConcurrencyException) when (attempt >= maxAttempts)
+            {
+                // Tükendik. Fırlatmadan ÖNCE temizle: aksi hâlde çağıranın
+                // scope'unda (admin kapatma yolu, günlük iş) yarı-yazılmış
+                // hesap + "paused" damgalı kampanyalar izleniyor kalır ve o
+                // scope'ta atılacak SONRAKİ herhangi bir `SaveChanges` onları
+                // kimsenin karar vermediği bir anda diske basar. Döngünün
+                // başındaki `Clear()` bir sonraki tur için; bu çıkış yolunda
+                // bir sonraki tur yok.
+                _db.ChangeTracker.Clear();
+                throw;
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // Kalp atışı araya girdi, kampanya tam o anda tamamlandı ya da
+                // hesap satırı başkası tarafından yazıldı. Döngü başındaki
+                // `Clear()` + taze okuma kararı GÜNCEL duruma göre yeniden
+                // verir; tamamlanmış kampanya ikinci turda filtreye girmez
+                // (resurrection yok), değişmiş hesap da sürüm kontrolüne
+                // takılıp `0` döner.
+            }
+            catch (DbUpdateException)
+            {
+                // Eşzamanlılık DIŞI yazım hatası (ör. `LastError` sütun taşması,
+                // FK ihlali). Retry anlamsız — aynı veriyle tekrar denemek aynı
+                // hatayı verir. Fırlatmadan ÖNCE temizle: bu metodu günlük iş bir
+                // DÖNGÜ içinden çağırıyor, kirli tracker sıradaki hesabın
+                // `SaveChanges`'ine biner.
+                //
+                // Üç `catch`'in SIRASI zorunlu: `DbUpdateConcurrencyException`,
+                // `DbUpdateException`'dan TÜRÜYOR; iki türemiş cümle ÜSTTE, taban
+                // ALTTA kalmalı (derleyici tersini zaten kabul etmez). Taban dal
+                // olmadan eşzamanlılık dışı bir yazım hatası buradan `Clear()`
+                // yapılmadan çıkardı — bu metot tam olarak `lastError` yazıyor ve
+                // `LastError` sütunu 500 karakterle sınırlı.
+                _db.ChangeTracker.Clear();
+                throw;
+            }
+        }
+    }
+
     /// <summary>Onay toplama yolunun ihtiyacı: yalnız marka kodu, şifre değil.</summary>
     public async Task<string?> GetBrandCodeAsync(Guid licenseId, CancellationToken ct)
         => await _db.NetgsmAccounts
