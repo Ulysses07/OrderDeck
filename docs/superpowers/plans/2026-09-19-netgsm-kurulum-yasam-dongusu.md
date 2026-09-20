@@ -5852,6 +5852,9 @@ olduğunda gelir (Görev 13).
 **Files:**
 - Create: `OrderDeck.LicenseServer/Pages/Admin/Netgsm/Index.cshtml`
 - Create: `OrderDeck.LicenseServer/Pages/Admin/Netgsm/Index.cshtml.cs`
+- Modify: `OrderDeck.LicenseServer/Pages/_ViewImports.cshtml` (Adım 5 —
+  `@using OrderDeck.LicenseServer.Domain`; `NetgsmAccountStatus.Disabled`'ı
+  görünüme başka hiçbir şey vermiyor)
 - Modify: `OrderDeck.LicenseServer/Services/Audit/AuditEvents.cs`
 - Create: `OrderDeck.LicenseServer.Tests/TestHelpers/SaveHookInterceptor.cs`
 - Create: `OrderDeck.LicenseServer.Tests/TestHelpers/HookedApiFactory.cs`
@@ -6391,6 +6394,14 @@ Beklenen: derleme hatası — `AuditEvents.NetgsmAccountDisable` yok.
 > istisna dışarı sızar, 500 gelir) ancak Adım 4'teki kapı + tükenme dalıyla
 > yeşile döner. Bu iki test, aynı görevin iki ayrı kırmızı-yeşil turudur.
 >
+> **(2026-09-20 sapma D1 — bu not UYGULAMADA GERÇEKLEŞMEDİ.)** Tarif ettiği
+> ara durum ulaşılamaz: Adım 4'ün kod parçası durum kapısını VE tükenme
+> `catch`'ini zaten içeriyor, yani "Adım 3-4'ten sonra" o iki dal çoktan
+> yazılmış oluyor. İki tur elde etmek isteyen, Adım 4'ü kapı/catch'siz
+> yazıp sonra eklemeli; plan öyle yazılmadığı için tek tur koştu ve Adım 6
+> hepsini birden yeşile çevirdi. Kapıların gerçekten kilitli olduğu
+> mutasyonla ayrıca kanıtlandı (Adım 6 notu).
+>
 > Testin aradığı `alert-danger` şeridini Adım 5 BASMIYOR — `_AdminLayout`ın
 > `_ToastPartial`ı zaten basıyor. Yani o iddia `TempData["Error"]` satırını
 > (Adım 4) kilitliyor, sayfayı değil.
@@ -6709,6 +6720,25 @@ dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
 Beklenen: PASS (`AdminNetgsmPageTests`'in 7 testi + mevcut admin yetkilendirme
 paketi).
 
+> **(2026-09-20 uygulama sonucu.)** Süzgeç 12/12 yeşil (7 `AdminNetgsmPageTests`
+> + 5 `AdminAuthFlowTests`), `~Tests.Pages` 100/100, tüm sunucu takımı
+> **2408/2408**. Üç mutasyon koşturuldu, hayatta kalan YOK:
+> - "aç" `Failed` yerine `Verified` yazarsa → `Acma_Verified_degil_Failed_yazar`,
+>   `AdminNetgsmPageTests.cs:208` (bağımsız olarak ikinci kez doğrulandı).
+> - denetim kaydı silinirse → `:171` ve `:213`.
+> - `StagePauseActiveCampaignsAsync`'teki `c.LicenseId == licenseId` süzgeci
+>   kaldırılırsa → `Kapatma_baska_lisansin_kampanyasina_dokunmaz`, `:192`.
+>
+> **Sapma D2 — kiracı kapısının YERİ.** Bu sayfanın kendi kiracı süzgeci
+> yok; `OnPostDisableAsync` yalnız hesabı bulup servise devrediyor. Dolayısıyla
+> çapraz-kiracı testi aslında **Görev 8'in** servisindeki süzgeci kilitliyor.
+> Sayfaya ikinci bir kapı eklemek istenirse o test bunu fark etmez.
+>
+> **Sapma D3 — `_AdminLayout`'a gezinme bağlantısı EKLENMEDİ** (plan
+> istemiyor). `/admin/netgsm` şimdilik yalnız doğrudan URL ile açılıyor.
+> Anahtarın acil durumda kullanılacağı düşünülürse bağlantı Görev 13'te ya da
+> ayrı bir turda eklenmeli.
+
 - [ ] **Adım 7: Commit**
 
 ```bash
@@ -6717,6 +6747,7 @@ git add OrderDeck.LicenseServer.Tests/Pages/Admin/AdminNetgsmPageTests.cs \
         OrderDeck.LicenseServer.Tests/TestHelpers/HookedApiFactory.cs \
         OrderDeck.LicenseServer/Pages/Admin/Netgsm/Index.cshtml \
         OrderDeck.LicenseServer/Pages/Admin/Netgsm/Index.cshtml.cs \
+        OrderDeck.LicenseServer/Pages/_ViewImports.cshtml \
         OrderDeck.LicenseServer/Services/Audit/AuditEvents.cs
 git commit -m "$(cat <<'EOF'
 feat(admin): Netgsm kurulum kapatma anahtarı
