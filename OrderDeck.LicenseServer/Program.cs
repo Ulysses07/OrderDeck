@@ -910,6 +910,17 @@ public class Program
                 j => j.RunAsync(CancellationToken.None),
                 "*/15 * * * *");  // 15 dakikada bir
 
+            // Netgsm kurulum yeniden doğrulama — günde bir. Kimlik bilgileri
+            // ya da marka kaydı yayıncı tarafında iptal edilirse gönderim
+            // kapısı FAIL-CLOSED hâle gelsin. Günlük yeterli: İYS marka
+            // kaydının bir gün içinde iptal olup aynı gün SMS gönderilmesi
+            // senaryosunda bile kapı /iys/search sonucuna bakmaya devam eder.
+            // Saat 04:35 UTC — yayın penceresinin (TR 20:00-01:00) dışında.
+            manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Sms.NetgsmAccountVerifyJob>(
+                "netgsm-account-verify",
+                j => j.RunAsync(CancellationToken.None),
+                "35 4 * * *");  // günde bir, 04:35 UTC
+
             // Ürün fotoğrafı mutabakatı — R2'de kalmış yetim nesneleri süpürür.
             // Ürün silme ucundaki inline silme yetmiyor: Attach edilmeden yüklenen
             // dosyalar DB'ye hiç yazılmıyor, lisans cascade'i o uçtan geçmiyor.

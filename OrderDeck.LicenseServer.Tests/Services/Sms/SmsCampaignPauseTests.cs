@@ -16,16 +16,17 @@ namespace OrderDeck.LicenseServer.Tests.Services.Sms;
 /// admin'in "kapat" düğmesi yalan söyler: hesap kapalıyken bin SMS daha gider
 /// ve bunların İYS izni artık doğrulanamaz durumdadır.
 /// </summary>
-public sealed class SmsCampaignPauseTests : IClassFixture<ApiFactory>
+public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
 {
-    private readonly ApiFactory _factory;
+    private readonly HookedApiFactory _factory;
 
-    public SmsCampaignPauseTests(ApiFactory factory)
+    public SmsCampaignPauseTests(HookedApiFactory factory)
     {
         _factory = factory;
         _factory.Sms.Clear();
         _factory.Sms.ThrowOnSend = false;
         _factory.Sms.OnSent = null;
+        _factory.Hook.Reset();
     }
 
     private static string NewUserCode()
@@ -508,6 +509,87 @@ public sealed class SmsCampaignPauseTests : IClassFixture<ApiFactory>
         (await vdb.LicenseSmsTransactions.AsNoTracking()
             .CountAsync(t => t.LicenseId == licenseId && t.Kind == "send-refund"))
             .Should().Be(0, "bu koşu yeni bir iade işlemi yazmamalı");
+    }
+
+    [Fact]
+    public async Task Devam_ettirilip_yeniden_ustlenilen_kampanyaya_eski_isci_gondermez()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
+        var (campaignId, accountId, _) = await SeedAsync(db);
+
+        // OnSent alıcı 1'in SendAsync'i içinde koşar; oradan yalnız KANCAYI
+        // kuruyoruz. Araya girme, alıcı 1'in sonucu diske indikten sonra
+        // çalışsın ki işçi A gerçekten döngünün ikinci turuna girsin —
+        // test etmek istediğimiz yoklama orada.
+        _factory.Sms.OnSent = _ =>
+        {
+            _factory.Sms.OnSent = null;
+            _factory.Hook.AfterSave = InterleaveAsync;
+        };
+
+        // Kapat → devam ettir → BAŞKA bir işçi üstlensin. Üçü de ayrı
+        // scope'ta: işçi A'nın DbContext'i hiçbirini görmüyor, elindeki
+        // `campaign` nesnesi bayatlıyor.
+        async Task InterleaveAsync()
+        {
+            _factory.Hook.AfterSave = null;
+
+            using var other = _factory.Services.CreateScope();
+            var odb = other.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var accounts = other.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+            var licenseId = (await odb.NetgsmAccounts.AsNoTracking()
+                .SingleAsync(a => a.Id == accountId)).LicenseId;
+
+            // 1) Admin kapatması — kampanya paused, ClaimedAt ileri damgalanır.
+            await accounts.CloseAccountAndPauseCampaignsAsync(
+                accountId, NetgsmAccountStatus.Disabled, "Yönetici kapattı.");
+
+            // 2) Yayıncı kimlikleri düzeltti, PUT doğrulandı — paused → pending.
+            await accounts.StageResumePausedCampaignsAsync(licenseId);
+            await odb.SaveChangesAsync();
+
+            // 3) Kurtarma süpürmesi yeni bir işçiye verdi: taze ClaimedAt.
+            var c = await odb.SmsCampaigns.SingleAsync(x => x.Id == campaignId);
+            c.Status = "sending";
+            c.ClaimedAt = DateTimeOffset.UtcNow.AddSeconds(1);
+            await odb.SaveChangesAsync();
+        }
+
+        try { await job.RunAsync(campaignId); }
+        finally
+        {
+            _factory.Sms.OnSent = null;
+            _factory.Hook.Reset();
+        }
+
+        _factory.Sms.Sent.Should().HaveCount(1,
+            "işçi A sahipliğini kaybetti; ikinci alıcı artık YENİ işçinin işi. "
+            + "2 olursa aynı kişiye iki ticari ileti gitmiş demektir");
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var campaign = await vdb.SmsCampaigns.AsNoTracking()
+            .SingleAsync(c => c.Id == campaignId);
+        campaign.Status.Should().Be("sending", "yeni sahibin durumu ezilmemeli");
+        campaign.CompletedAt.Should().BeNull();
+        campaign.RefundedCredits.Should().Be(0,
+            "sahipliği kaybeden işçi iade YAPMAZ — kalan alıcı yeni işçide");
+
+        // Alıcı 1'in sonucu KAYBOLMAMALI: SMS gerçekten gitti, kaydı da inmiş
+        // olmalı. Araya girme `OnSent`'in içinde yapılsaydı bu satır YİNE
+        // geçerdi — `SaveRecipientResultAsync` çakışmada kampanyayı detach
+        // edip yeniden kaydediyor, yani alıcı satırı her hâlükârda iniyor.
+        // Fark davranışta değil, KAPSAMDA: `OnSent` ile sahiplik kaybı alıcı
+        // 1'in yazımında yakalanır, koşu oracıkta `return` eder ve döngü
+        // ikinci tura HİÇ girmez — yani Adım 5c'nin öldürmek istediği
+        // `current.ClaimedAt` karşılaştırmasına sıra gelmez. `AfterSave` ile
+        // alıcı 1 temiz kapanır, işçi A ikinci tura girer ve tek kapı o
+        // karşılaştırma olur.
+        (await vdb.SmsCampaignRecipients.AsNoTracking()
+            .CountAsync(r => r.CampaignId == campaignId && r.Status == "sent"))
+            .Should().Be(1);
     }
 }
 

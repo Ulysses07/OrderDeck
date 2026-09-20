@@ -180,6 +180,13 @@ public sealed class PanelNetgsmAccountController : ControllerBase
                 account.Status = NetgsmAccountStatus.Verified;
                 account.LastVerifiedAt = DateTimeOffset.UtcNow;
                 account.LastError = null;
+
+                // Kurulum geri geldi: admin kapatmasıyla duraklatılmış
+                // kampanyalar devam etsin. Kayıt AŞAĞIDAKİ tek SaveChanges'te —
+                // hesabın Verified'ı ile kampanyaların pending'i ya birlikte
+                // iner ya hiç inmez. Ayrılsalardı aradaki çökme kampanyaları
+                // paused'da bırakırdı ve hiçbir süpürme onları bulmazdı.
+                await _accounts.StageResumePausedCampaignsAsync(account.LicenseId, ct);
             }
             else
             {

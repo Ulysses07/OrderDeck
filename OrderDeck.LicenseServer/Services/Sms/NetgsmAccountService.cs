@@ -391,6 +391,58 @@ public sealed class NetgsmAccountService
         }
     }
 
+    /// <summary>
+    /// Kurulum yeniden doğrulandığında duraklatılmış kampanyaları devam
+    /// ettirmeye HAZIRLAR: bellekteki nesneleri "pending" yapar ve devam
+    /// ettirilecek kampanya sayısını döndürür. Geriye kaç kampanyanın
+    /// hazırlandığını döndürür.
+    ///
+    /// <para><b>KAYDETMEZ.</b> Çağıran, hesabı <c>Verified</c> yazan
+    /// <c>SaveChanges</c>'in içine alır — kapatma yolunun
+    /// (<see cref="CloseAccountAndPauseCampaignsAsync"/>) atomikliğinin
+    /// aynası. Ayrı kaydedilseydi aradaki çökme hesabı Verified, kampanyaları
+    /// "paused" bırakırdı; <see cref="SmsCampaignRecoveryJob"/> "paused"a
+    /// bakmadığı için o kampanyalar rezerve kredileriyle birlikte sonsuza dek
+    /// asılı kalırdı.</para>
+    ///
+    /// <para><b>Kuyruğa da ATMAZ.</b> Yalnız "pending" yazılır;
+    /// <see cref="SmsCampaignRecoveryJob"/> 5 dakikada bir süpürüp kuyruğa
+    /// alır. Gerekçe İYS push işiyle aynı: kaçırılan bir Enqueue kaydı sessizce
+    /// kaybeder, süpürme kaybetmez. Kapatma/açma nadir bir olay, 5 dakikalık
+    /// gecikmenin ölçülebilir bir bedeli yok.</para>
+    ///
+    /// <para><b><c>ClaimedAt</c> TEMİZLENMEZ, ilerletilir.</b> Jetonun tek işi
+    /// monoton artmak: "bu satırı en son kim yazdı" sorusunun cevabı o.
+    /// <c>null</c>'a çekmek zinciri koparır — sonraki üstlenme
+    /// <c>NextClaimedAt(null) = UtcNow</c> üretir ve bu değer, duraklatma
+    /// sırasında bir tick ileri itilmiş eski damganın GERİSİNDE kalabilir.
+    /// O an <c>sending/L → paused/L+1 → pending/null → sending/L</c> dizisi
+    /// mümkün olur ve duraklatmadan önce okumuş bir işçi kendi jetonunu
+    /// yeniden görüp hem sahiplik yoklamasından hem CAS'tan geçer.</para>
+    ///
+    /// <para><c>null</c> gerekmiyor da: <see cref="SmsCampaignRecoveryJob"/>'ın
+    /// <c>pending</c> dalı <c>CreatedAt</c>'e bakıyor
+    /// (<c>SmsCampaignRecoveryJob.cs:51</c>), <c>SmsCampaignSendJob</c>'ın
+    /// üstlenme kapısı da <c>pending</c> için <c>ClaimedAt</c>'e hiç bakmıyor
+    /// (<c>SmsCampaignSendJob.cs:66-74</c>). "Devralınan koşu" uyarısı da
+    /// tetiklenmez: <c>resumed</c> yalnız <c>Status == "sending"</c> iken
+    /// doğru olur.</para>
+    /// </summary>
+    public async Task<int> StageResumePausedCampaignsAsync(
+        Guid licenseId, CancellationToken ct = default)
+    {
+        var paused = await _db.SmsCampaigns
+            .Where(c => c.LicenseId == licenseId && c.Status == "paused")
+            .ToListAsync(ct);
+
+        foreach (var c in paused)
+        {
+            c.Status = "pending";
+            c.ClaimedAt = NextClaimedAt(c.ClaimedAt);
+        }
+        return paused.Count;
+    }
+
     /// <summary>Onay toplama yolunun ihtiyacı: yalnız marka kodu, şifre değil.</summary>
     public async Task<string?> GetBrandCodeAsync(Guid licenseId, CancellationToken ct)
         => await _db.NetgsmAccounts
