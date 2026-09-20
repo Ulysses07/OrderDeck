@@ -884,8 +884,13 @@ public class LicenseDbContext : DbContext
                 "LEN([BrandCode]) > 0 AND [BrandCode] NOT LIKE '%[^0-9]%'"));
             // Bir lisans = bir hesap.
             b.HasIndex(a => a.LicenseId).IsUnique();
-            // Marka → hesap araması tek satır dönmeli (push/verify işleri).
-            b.HasIndex(a => a.BrandCode).IsUnique();
+            // Marka kodu YALNIZ doğrulanmış hesaplar arasında tekil. Filtresiz
+            // olsaydı marka kodunu yanlış yazan bir yayıncı o kodu global ve kalıcı
+            // olarak işgal eder, gerçek sahibi kendi kurulumunu hiç tamamlayamazdı.
+            // Güvenli: marka→hesap arayan her sorgu (GetBrandCodeAsync,
+            // GetVerifiedByLicenseAsync, ListVerifiedAsync) zaten Verified süzüyor,
+            // yani indeksin kapsamı aramanın kapsamıyla birebir.
+            b.HasIndex(a => a.BrandCode).IsUnique().HasFilter("[Status] = 'Verified'");
         });
 
         mb.Entity<InstagramAccount>(b =>
