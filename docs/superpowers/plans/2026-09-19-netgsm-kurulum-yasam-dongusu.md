@@ -7916,6 +7916,28 @@ idempotentlik iddiası sırayla değil `LastLocalEventAt` karşılaştırmasıyl
 ilgili; test 3 tam da onu ölçüyor. `OrderBy` yine de duruyor: döngüye RET
 dışında bir olay tipi girdiği gün sıra ANINDA belirleyici olur.
 
+- [x] **Adım 4: Bağımsız doğrulama — bulunan gerçek kusur**
+
+Yukarıdaki üç mutasyon da toplayıcının İÇİNDEYDİ; hiçbiri çağrı yerini
+sınamıyordu. Controller'daki `StageReplayNoBrandRevokesAsync` çağrısını silen
+dördüncü mutasyon 5/5 testi düşürdü — bağlantı gerçekten çivilenmiş.
+
+Asıl bulgu doğrulama sırasında çıktı: **aynı numaraya ait İKİ `no-brand` RET
+olayı varken oynatma iki durum satırı açıyordu.** Döngü bilinçli olarak arada
+`SaveChanges` çağırmıyor (hesabın `Verified` yazımıyla atomik olmalı), bu
+yüzden 2. tur 1. turda `Add` edilmiş satırı sorguyla bulamıyor ve ikinci bir
+satır ekliyordu. `(BrandCode, ChannelType, RecipientType, Recipient)` tekil
+indeksi (`LicenseDbContext.cs:565`) bunu SQL Server'da patlatır: yayıncının
+PUT'u 500 döner ve **kurulum elle müdahale edilene dek bir daha
+doğrulanamaz**. Senaryo uydurma değil — ret→onay→ret dizisi ya da aynı reddi
+iki kez yazan bir kaynak yeter.
+
+Düzeltme `ApplyToRowAsync`'te: satır araması önce `_db.IysConsents.Local`'e
+bakıyor, bulamazsa diske iniyor. Çivi:
+`IysNoBrandReplayTests.Ayni_numaraya_iki_no_brand_ret_tek_satir_acar`
+(düzeltmeden önce kırmızıydı). InMemory tekil indeks uygulamadığı için test
+"tek satır" iddiasını doğrudan sayıyor, istisna beklemiyor.
+
 ---
 
 ## Kapanış

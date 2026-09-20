@@ -224,11 +224,24 @@ public sealed class IysConsentCollector
     {
         var consented = status == IysConsentStatus.Onay;
         var now = DateTimeOffset.UtcNow;
-        var row = await _db.IysConsents.FirstOrDefaultAsync(
-            c => c.BrandCode == brandCode
-                 && c.ChannelType == "MESAJ"
-                 && c.RecipientType == "BIREYSEL"
-                 && c.Recipient == phone, ct);
+
+        // ÖNCE yerel görünüm, SONRA disk. Tekrar oynatma tek SaveChanges'e
+        // yazıyor (hesabın Verified yazımıyla atomik olmak zorunda), yani aynı
+        // numaranın ikinci olayı geldiğinde birinci olayın açtığı satır HENÜZ
+        // DİSKTE YOK — sorgu onu bulamaz, ikinci bir satır açılır ve
+        // (BrandCode, ChannelType, RecipientType, Recipient) tekil indeksi
+        // patlar. O noktada yayıncının PUT'u 500 döner ve kurulumu elle
+        // müdahale edilene dek bir daha doğrulanamaz.
+        var row = _db.IysConsents.Local.FirstOrDefault(
+                      c => c.BrandCode == brandCode
+                           && c.ChannelType == "MESAJ"
+                           && c.RecipientType == "BIREYSEL"
+                           && c.Recipient == phone)
+                  ?? await _db.IysConsents.FirstOrDefaultAsync(
+                      c => c.BrandCode == brandCode
+                           && c.ChannelType == "MESAJ"
+                           && c.RecipientType == "BIREYSEL"
+                           && c.Recipient == phone, ct);
 
         if (row is null)
         {

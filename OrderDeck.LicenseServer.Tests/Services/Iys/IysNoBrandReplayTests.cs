@@ -294,6 +294,54 @@ public sealed class IysNoBrandReplayTests : IDisposable
     }
 
     [Fact]
+    public async Task Ayni_numaraya_iki_no_brand_ret_tek_satir_acar()
+    {
+        // Oynatma TEK SaveChanges'e yazıyor: döngü içinde kaydetmiyoruz
+        // (bilinçli — hesabın Verified yazımıyla atomik olmalı). Ama o yüzden
+        // döngünün 2. turu, 1. turda `Add` edilmiş ama henüz diske inmemiş
+        // satırı sorguyla BULAMAZ. Bulamazsa ikinci bir satır açar ve
+        // (BrandCode, ChannelType, RecipientType, Recipient) tekil indeksi
+        // patlar: yayıncının PUT'u 500 döner ve kurulum ARTIK HİÇ
+        // doğrulanamaz — düzeltilene dek kalıcı kilitlenme.
+        //
+        // Senaryo uydurma değil: kişi reddeder, sonra onaylar, sonra yine
+        // reddeder; ya da tek kaynak reddi iki kez yazar. Kurulum kapalıyken
+        // bunların hepsi `no-brand` RET olarak birikir.
+        var factory = NewFactory();
+        var (client, licenseId) = await SeedTenantAsync(factory);
+        var brandCode = NewBrandCode();
+        var phone = NewPhone();
+        var firstAt = DateTimeOffset.UtcNow.AddDays(-10);
+
+        using (var seed = factory.Services.CreateScope())
+        {
+            var db = seed.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            // Durum satırı YOK: ilk RET onu açacak, ikincisi bulmak zorunda.
+            db.IysConsentEvents.Add(NoBrandEvent(
+                licenseId, phone, IysConsentEventType.LocalRevoke, firstAt));
+            db.IysConsentEvents.Add(NoBrandEvent(
+                licenseId, phone, IysConsentEventType.LocalRevoke, firstAt.AddDays(1)));
+            await db.SaveChangesAsync();
+        }
+
+        (await client.PutAsJsonAsync("/api/panel/netgsm/account",
+            Body(NewUserCode(), brandCode))).EnsureSuccessStatusCode();
+
+        using var verify = factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var rows = await vdb.IysConsents.AsNoTracking()
+            .Where(c => c.BrandCode == brandCode && c.Recipient == phone)
+            .ToListAsync();
+
+        rows.Should().HaveCount(1,
+            "aynı numara için ikinci satır açılamaz — tekil indeks bunu SQL "
+            + "Server'da patlatır, InMemory'de sessizce kopyalar");
+        rows[0].Status.Should().Be(IysConsentStatus.Ret);
+        rows[0].LastLocalEventAt.Should().Be(firstAt.AddDays(1),
+            "son söz en yeni olayın");
+    }
+
+    [Fact]
     public async Task Baska_lisansin_no_brand_reti_bu_markaya_dokunmaz()
     {
         // İzin MARKA BAZINDA ayrıdır — aynı numara A'da ONAY, B'de RET olabilir.
