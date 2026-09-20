@@ -352,4 +352,64 @@ public sealed class NetgsmAccountVerifyJobTests : IDisposable
         verifyAccounts.TryUnprotectPassword(persisted.PasswordProtected)
             .Should().Be(replacementPassword);
     }
+
+    [Fact]
+    public async Task Cozulemeyen_sifre_hesabi_KAPATMAZ()
+    {
+        var factory = NewFactory();
+        var brandCode = await SeedVerifiedAsync(factory);
+
+        // Anahtar halkası kaybını taklit et: şifreli metni bozuk bir değerle
+        // değiştir. Unprotect CryptographicException atar, TryUnprotectPassword
+        // null döner.
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var acc = await db.NetgsmAccounts.SingleAsync(a => a.BrandCode == brandCode);
+            acc.PasswordProtected = $"bozuk-{Guid.NewGuid():N}";
+            await db.SaveChangesAsync();
+        }
+
+        await RunAsync(factory);
+
+        var after = await ReadAsync(factory, brandCode);
+        after.Status.Should().Be(NetgsmAccountStatus.Verified,
+            "spec §2.4'ten bilinçli sapma: Disabled→Verified dönen kod yolu YOK, "
+            + "yani bağlanmamış tek bir anahtar dizini tek koşuda bütün "
+            + "yayıncıları kalıcı olarak kilitlerdi");
+        after.LastError.Should().Be(NetgsmAccountService.UndecryptableMessage,
+            "§2.4'ün asıl talebi sessiz bozulmanın olmaması — panel bunu gösterir");
+        factory.Iys.Asked.Should().NotContain(brandCode,
+            "şifre çözülemeden İYS'ye çağrı yapılmamalı");
+    }
+
+    [Fact]
+    public async Task Cozulemeyen_sifre_panelde_gorunur()
+    {
+        // LastError panele dönmüyorsa "sessiz bozulma yok" kuralı kâğıt üstünde
+        // kalır: yayıncı SMS'lerinin neden gitmediğini hiçbir yerden öğrenemez.
+        var factory = NewFactory();
+        var brandCode = await SeedVerifiedAsync(factory);
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var acc = await db.NetgsmAccounts.SingleAsync(a => a.BrandCode == brandCode);
+            acc.PasswordProtected = $"bozuk-{Guid.NewGuid():N}";
+            await db.SaveChangesAsync();
+        }
+        await RunAsync(factory);
+
+        var licenseId = (await ReadAsync(factory, brandCode)).LicenseId;
+        using var readScope = factory.Services.CreateScope();
+        var readDb = readScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var row = await readDb.NetgsmAccounts.AsNoTracking()
+            .SingleAsync(a => a.LicenseId == licenseId);
+
+        var view = OrderDeck.LicenseServer.Controllers.Panel
+            .PanelNetgsmAccountController.ToView(row);
+        view.LastError.Should().Be(NetgsmAccountService.UndecryptableMessage);
+        view.SmsEnabled.Should().BeTrue(
+            "hesap hâlâ Verified — gönderim ilk denemede düşer ve gerçek "
+            + "sebebi LastError'da yazar; kapatmanın bedeli daha ağır");
+    }
 }

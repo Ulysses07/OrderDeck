@@ -254,7 +254,7 @@ public sealed class PanelNetgsmAccountController : ControllerBase
         && sql.Number is 2601 or 2627
         && sql.Message.Contains("BrandCode", StringComparison.Ordinal);
 
-    internal static AccountView ToView(NetgsmAccount? acc) => acc is null
+    public static AccountView ToView(NetgsmAccount? acc) => acc is null
         ? new AccountView("none", false, null, null, null, false, null, null)
         : new AccountView(
             Status: acc.Status switch
