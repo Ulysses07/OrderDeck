@@ -53,9 +53,72 @@ public sealed class SmsCampaignSendJob
         _log = log;
     }
 
+    /// <summary>
+    /// Sahiplik damgasının bir sonraki değeri. Ham <c>UtcNow</c> ataması
+    /// yetmez: saat monoton değil, üstelik duraklatma damgayı ileri
+    /// atabiliyor. Aynı ya da geri giden bir damga, duraklatmadan ÖNCE
+    /// kampanyayı okumuş işçinin üstlenmeyi geri kazanmasına yol açar.
+    ///
+    /// <para><c>NetgsmAccountService</c>'te aynı isimde bir metot var —
+    /// bu AYRI bir sınıfın özel metodu, ortaklaştırılmadı: iki taraf da
+    /// tek satırlık ve birbirine bağımlı değil.</para>
+    /// </summary>
+    private static DateTimeOffset NextClaimedAt(DateTimeOffset? previous)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return previous.HasValue && now <= previous.Value
+            ? previous.Value.AddTicks(1)
+            : now;
+    }
+
+    /// <summary>
+    /// Alıcı sonucunu + kalp atışını kaydeder. Kampanya bu arada başkası
+    /// tarafından yazıldıysa (duraklatma, devam ettirme) <c>false</c> döner
+    /// ve çağıran koşuyu bitirir.
+    ///
+    /// <para><b>Neden kampanyayı yazımdan düşürüp yeniden kaydediyoruz?</b>
+    /// SMS çağrısının dış etkisi GERÇEKLEŞTİ — operatöre gitti, geri alınamaz.
+    /// Çakışmayı olduğu gibi dışarı bıraksaydık alıcı satırı <c>pending</c>
+    /// kalırdı ve kampanya devam ettirildiğinde AYNI KİŞİYE ikinci kez SMS
+    /// giderdi. Kampanyayı <c>Unchanged</c>'a çekip yeniden kaydetmek, karşı
+    /// tarafın kararına (paused/pending) dokunmadan yalnız alıcının sonucunu
+    /// diske indirir.</para>
+    ///
+    /// <para><b>Neden <c>Detached</c> değil?</b> Alıcı satırının kampanyaya
+    /// zorunlu FK'si var; kampanyayı detach etmek izlenen alıcıları da
+    /// ÇAĞLAYARAK detach eder ve az önce yazdığımız <c>sent</c> sonucu
+    /// sessizce kaybolur (SaveChanges 0 satır yazar). <c>Unchanged</c> ilişkiyi
+    /// koparmadan kampanyayı SaveChanges'in dışında bırakır.</para>
+    ///
+    /// <para><c>ReferenceEquals</c> kasıtlı: çakışan tek şey BU kampanya
+    /// nesnesi değilse (ör. alıcı satırı) burası sorumlu değildir, istisna
+    /// dışarı çıkar.</para>
+    /// </summary>
+    private async Task<bool> SaveRecipientResultAsync(
+        SmsCampaign campaign, CancellationToken ct)
+    {
+        campaign.ClaimedAt = NextClaimedAt(campaign.ClaimedAt);
+
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+            return true;
+        }
+        catch (DbUpdateConcurrencyException ex) when (
+            ex.Entries.Count > 0
+            && ex.Entries.All(e => ReferenceEquals(e.Entity, campaign)))
+        {
+            _db.Entry(campaign).State = EntityState.Unchanged;
+            await _db.SaveChangesAsync(ct);
+            return false;
+        }
+    }
+
     public async Task RunAsync(Guid campaignId, CancellationToken ct = default)
     {
-        var campaign = await _db.SmsCampaigns.FirstOrDefaultAsync(c => c.Id == campaignId, ct);
+        var campaign = await _db.SmsCampaigns
+            .FirstOrDefaultAsync(c => c.Id == campaignId, ct);
+
         if (campaign is null)
         {
             _log.LogWarning("SmsCampaignSendJob: campaign {Id} not found", campaignId);
@@ -65,6 +128,8 @@ public sealed class SmsCampaignSendJob
         var now = DateTimeOffset.UtcNow;
         var staleSending = campaign.Status == "sending"
             && (campaign.ClaimedAt is null || now - campaign.ClaimedAt >= ClaimLease);
+
+        // "paused" bu kapıdan zaten geçemez: ne "pending" ne bayat "sending".
         if (campaign.Status != "pending" && !staleSending)
         {
             _log.LogInformation(
@@ -75,102 +140,119 @@ public sealed class SmsCampaignSendJob
 
         var resumed = campaign.Status == "sending";
         campaign.Status = "sending";
-        campaign.ClaimedAt = now;
+        campaign.ClaimedAt = NextClaimedAt(campaign.ClaimedAt);
+
         try
         {
-            // ClaimedAt concurrency token → bu SaveChanges bir CAS: aynı anda
-            // ikinci bir job da claim'liyorsa yalnız biri geçer.
             await _db.SaveChangesAsync(ct);
         }
         catch (DbUpdateConcurrencyException)
         {
+            // Delik 3: okuma ile üstlenme arasında biri kampanyayı yazdı
+            // (büyük olasılıkla duraklatma). Elimizdeki karar bayat — SESSİZCE
+            // ÇEKİL. Detach şart: bu bağlamın kirli kopyası sonraki
+            // SaveChanges'e binmemeli.
+            _db.Entry(campaign).State = EntityState.Detached;
             _log.LogInformation(
-                "SmsCampaignSendJob: campaign {Id} claimed by another worker, skipping", campaignId);
+                "SmsCampaignSendJob: campaign {Id} claim changed, skipping", campaignId);
             return;
         }
 
         if (resumed)
+        {
             _log.LogWarning(
-                "SmsCampaignSendJob: campaign {Id} resumed from stale 'sending' state", campaignId);
+                "SmsCampaignSendJob: campaign {Id} resumed from stale 'sending' state",
+                campaignId);
+        }
 
-        // Yalnız henüz sonuçlanmamış alıcılar — devralınan koşuda gönderilmiş
-        // SMS tekrarlanmaz.
         var recipients = await _db.SmsCampaignRecipients
             .Where(r => r.CampaignId == campaignId && r.Status == "pending")
             .ToListAsync(ct);
 
-        // Kural 7: liste kampanya oluşturulurken donduruldu; gönderim şimdi.
-        // Aradaki geri çekme ya da İYS RET'i burada okunur. Tek sorguyla
-        // çekiliyor — alıcı başına sorgu, bin kişilik kampanyada bin gidiş.
         var phones = recipients.Select(r => r.Phone).Distinct().ToList();
-
-        // Marka KAMPANYANIN LİSANSINDAN gelir, global yapılandırmadan değil.
-        // İzin marka başına tutulur: başka bir markanın ONAY'ıyla bu kampanyanın
-        // kapısını açmak, kişiye hiç izin vermediği bir yayıncıdan ticari SMS
-        // göndermek demektir (6563 ihlali).
         var brandCode = await _accounts.GetBrandCodeAsync(campaign.LicenseId, ct);
+
         if (brandCode is null)
         {
             _log.LogWarning(
-                "SmsCampaignSendJob: campaign {Id} lisansının doğrulanmış İYS markası yok; "
-                + "tüm alıcılar kapıda kalacak", campaignId);
+                "SmsCampaignSendJob: campaign {Id} lisansının doğrulanmış İYS markası yok",
+                campaignId);
         }
 
         var consents = brandCode is null
             ? new Dictionary<string, IysConsent>()
             : await _db.IysConsents
-                // Kanal ve alıcı tipi de süzülüyor: tekil indeks
-                // (BrandCode, ChannelType, RecipientType, Recipient) aynı marka
-                // ve telefon için birden çok satıra izin verir. Süzgeç olmasaydı
-                // ileride doğacak bir EPOSTA/TACIR satırı ya SMS kapısını
-                // e-posta onayıyla açardı, ya da ToDictionaryAsync çift anahtarla
-                // patlardı. Bugün toplayıcı yalnız MESAJ/BIREYSEL yazdığı için
-                // ikisi de görünmez — "kurulum zaten sağlıyor" tuzağı.
                 .Where(c => c.BrandCode == brandCode
-                            && c.ChannelType == "MESAJ"
-                            && c.RecipientType == "BIREYSEL"
-                            && phones.Contains(c.Recipient))
+                    && c.ChannelType == "MESAJ"
+                    && c.RecipientType == "BIREYSEL"
+                    && phones.Contains(c.Recipient))
                 .ToDictionaryAsync(c => c.Recipient, ct);
 
-        foreach (var r in recipients)
+        foreach (var recipient in recipients)
         {
-            consents.TryGetValue(r.Phone, out var consent);
+            // §2.5: kurulum koşu sırasında kapatılabilir. Skaler projeksiyon
+            // BİLİNÇLİ — anonim tipe `Select` kimlik çözümlemesine girmez,
+            // yani bu bağlamda izlenen "sending" kopyasını değil DİSKTEKİ
+            // değeri okur. Entity çekseydik kendi yazdığımızı geri okurduk.
+            //
+            // `ClaimedAt` karşılaştırması `Status` kontrolünün üstüne şunu
+            // ekliyor: kampanya duraklatılıp YENİDEN "pending"/"sending"
+            // yapıldıysa (Görev 13 devam ettirme) durum yine "sending"
+            // görünebilir ama sahip ARTIK BİZ DEĞİLİZ. Damga bunu yakalar.
+            var current = await _db.SmsCampaigns
+                .Where(c => c.Id == campaignId)
+                .Select(c => new { c.Status, c.ClaimedAt })
+                .FirstOrDefaultAsync(ct);
+
+            if (current is null
+                || current.Status != "sending"
+                || current.ClaimedAt != campaign.ClaimedAt)
+            {
+                // İade YOK: kalan alıcılar "pending" ve rezervasyon onların
+                // karşılığı. Burada iade edersek kampanya devam ettirildiğinde
+                // aynı krediyi ikinci kez harcarız.
+                _log.LogWarning(
+                    "SmsCampaignSendJob: campaign {Id} ownership lost mid-run, stopping after {Sent} sends",
+                    campaignId, recipients.Count(x => x.Status == "sent"));
+                return;
+            }
+
+            consents.TryGetValue(recipient.Phone, out var consent);
+
             if (!IysConsentGate.CanSend(consent))
             {
-                // "failed" seçilmesi bilinçli: mevcut iade yolu bu durumu
-                // sayıyor, yani gönderilmeyen mesajın kredisi kendiliğinden
-                // yayıncıya dönüyor. Yeni bir durum eklemek o yolu ikizlerdi.
-                r.Status = "failed";
-                r.Error = brandCode is null
+                recipient.Status = "failed";
+                recipient.Error = brandCode is null
                     ? "iys-brand-missing"
-                    : consent is null ? "iys-consent-missing" : "iys-consent-not-onay";
-                r.SentAt = null;
-                campaign.ClaimedAt = DateTimeOffset.UtcNow;
-                await _db.SaveChangesAsync(ct);
+                    : consent is null
+                        ? "iys-consent-missing"
+                        : "iys-consent-not-onay";
+                recipient.SentAt = null;
+
+                if (!await SaveRecipientResultAsync(campaign, ct)) return;
                 continue;
             }
 
             try
             {
-                // Kampanya = ticari ileti → İYS filtresi "11" (Commercial).
-                await _sms.SendAsync(r.Phone, campaign.MessageBody, SmsKind.Commercial, ct);
-                r.Status = "sent";
-                r.SentAt = DateTimeOffset.UtcNow;
-                r.Error = null;
+                await _sms.SendAsync(
+                    recipient.Phone, campaign.MessageBody, SmsKind.Commercial, ct);
+
+                recipient.Status = "sent";
+                recipient.SentAt = DateTimeOffset.UtcNow;
+                recipient.Error = null;
             }
             catch (Exception ex)
             {
-                r.Status = "failed";
-                r.Error = ex.Message.Length > 500 ? ex.Message[..500] : ex.Message;
-                _log.LogWarning(ex, "SmsCampaignSendJob: send failed for campaign {Id} recipient {RecipientId}",
-                    campaignId, r.Id);
+                recipient.Status = "failed";
+                recipient.Error = ex.Message.Length > 500 ? ex.Message[..500] : ex.Message;
+
+                _log.LogWarning(ex,
+                    "SmsCampaignSendJob: send failed for campaign {Id} recipient {RecipientId}",
+                    campaignId, recipient.Id);
             }
 
-            // Alıcı sonucu ANINDA diske iner; ClaimedAt tazelenir (kalp atışı).
-            // Süreç burada ölürse kalan alıcılar "pending" kalır ve recovery
-            // job'ı kaldığı yerden devam ettirir.
-            campaign.ClaimedAt = DateTimeOffset.UtcNow;
-            await _db.SaveChangesAsync(ct);
+            if (!await SaveRecipientResultAsync(campaign, ct)) return;
         }
 
         // İade, bu koşunun sayacından değil DB'deki toplam failed sayısından:
@@ -181,16 +263,25 @@ public sealed class SmsCampaignSendJob
 
         campaign.Status = "completed";
         campaign.CompletedAt = DateTimeOffset.UtcNow;
+        // Delik 2: tamamlanmada da damga tazelenir. Tazelemezsek, elinde
+        // tamamlanma ÖNCESİ kopya tutan bir "duraklat" yazımı (Görev 12)
+        // çakışma ALMAZ ve bitmiş kampanyayı paused'a çevirir. Tazeleyince o
+        // yazım DbUpdateConcurrencyException alır, yeniden okur ve kampanyayı
+        // artık pending/sending listesinde bulamaz — doğru olanı yapar.
+        campaign.ClaimedAt = NextClaimedAt(campaign.ClaimedAt);
 
-        // Başarısız alıcılar için kredi iadesi — yalnızca kabul edilen gönderim
-        // ücretlenir. Kampanya sonucu + iade tek SaveChanges'te yazılır:
-        // status güncellemesi ApplyAndSaveAsync'in kaydına biner.
-        if (failedCount > 0)
+        // Delik 1 — iade İDEMPOTENT: hak edilen toplamın, bugüne dek FİİLEN
+        // iade edilenin üstünde kalan kısmı ödenir. Kampanya duraklatılıp
+        // devam ettirilerek ikinci kez tamamlanırsa failedCount aynı kalır,
+        // fark sıfır çıkar ve ikinci bir iade yazılmaz.
+        var owed = failedCount * campaign.SegmentsPerMessage;
+        var refund = owed - campaign.RefundedCredits;
+
+        if (refund > 0)
         {
-            var refund = failedCount * campaign.SegmentsPerMessage;
             // N05: gerçekleşen iade kampanyaya da yazılır — iade tx'iyle aynı
             // SaveChanges'te (atomik), raporlama hesap yerine bunu okur.
-            campaign.RefundedCredits = refund;
+            campaign.RefundedCredits = owed;
             await _balance.ApplyAndSaveAsync(
                 campaign.LicenseId, refund, "send-refund",
                 reason: $"campaign:{campaignId} failed={failedCount}",

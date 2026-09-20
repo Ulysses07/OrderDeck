@@ -29,7 +29,9 @@ public sealed class SmsCampaign
     /// </summary>
     public int RefundedCredits { get; set; }
 
-    /// <summary>"pending" | "sending" | "completed" | "failed".</summary>
+    /// <summary>"pending" | "sending" | "paused" | "completed" | "failed".
+    /// "paused": kurulum admin tarafından kapatıldı; kalan alıcılar "pending"
+    /// kalır, rezervasyon iade EDİLMEZ — kampanya devam ettirilebilir.</summary>
     public string Status { get; set; } = "pending";
 
     /// <summary>

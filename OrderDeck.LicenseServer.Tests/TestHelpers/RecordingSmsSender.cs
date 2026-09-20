@@ -17,6 +17,11 @@ public sealed class RecordingSmsSender : ISmsSender
 
     public bool ThrowOnSend { get; set; }
 
+    /// <summary>Kayıt yapıldıktan sonra çağrılır. Gönderim ortasında durum
+    /// değiştiren testler için — job'a sahte bir gecikme/olay enjekte etmenin
+    /// tek dürüst yolu, gerçek gönderim noktasına bağlanmak.</summary>
+    public Action<Message>? OnSent { get; set; }
+
     public IReadOnlyList<Message> Sent
     {
         get { lock (_lock) return _sent.ToList(); }
@@ -31,7 +36,12 @@ public sealed class RecordingSmsSender : ISmsSender
     {
         if (ThrowOnSend)
             throw new InvalidOperationException("Simulated SMS provider failure.");
-        lock (_lock) _sent.Add(new Message(toPhone, message, kind));
+        var msg = new Message(toPhone, message, kind);
+        lock (_lock) _sent.Add(msg);
+        // Kanca kilidin DIŞINDA çağrılır: testler bu kancanın içinden ayrı bir
+        // scope açıp DB'ye yazıyor. Kilit tutulurken DB'ye gitmek, aynı
+        // fixture'ı paylaşan başka bir testin Sent okumasını bekletirdi.
+        OnSent?.Invoke(msg);
         return Task.CompletedTask;
     }
 }
