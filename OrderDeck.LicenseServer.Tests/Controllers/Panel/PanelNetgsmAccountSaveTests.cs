@@ -663,4 +663,154 @@ public sealed class PanelNetgsmAccountSaveTests : IDisposable
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
         doc.RootElement.GetProperty("title").GetString().Should().Be("brand-code-taken");
     }
+
+    [Fact]
+    public async Task Kendi_dogrulanmis_markasini_tekrar_kaydedebilir()
+    {
+        // İşgal sorgusu KENDİ satırımızı da sayarsa, doğrulanmış bir yayıncı
+        // kendi marka kodu yüzünden kendi kurulumunu bir daha ASLA
+        // güncelleyemez: parola yenileme, başlık değiştirme — hepsi
+        // "brand-code-taken" 409'una çarpar. Marka kodu yayıncının kimliğinin
+        // parçası, her kaydetmede değişmesi beklenmez.
+        var (factory, client, licenseId) = await SeedAsync();
+
+        // Marka kodu İKİ PUT'ta da AYNI: testin ölçtüğü şey tam olarak bu.
+        // `NewBody` her çağrıda rastgele marka kodu ürettiği için bu senaryoyu
+        // ifade edemiyor, yerel bir gövde üreticisi gerekiyor.
+        var brandCode = Random.Shared.Next(100_000, 999_999).ToString();
+        var userCode = Random.Shared.NextInt64(8_500_000_000, 8_599_999_999).ToString();
+        object Body() => new
+        {
+            userCode,
+            password = $"pw-{Guid.NewGuid():N}", // yayıncı parolasını yeniliyor
+            header = "ORDERDECK",
+            brandCode,
+        };
+
+        (await client.PutAsJsonAsync("/api/panel/netgsm/account", Body()))
+            .EnsureSuccessStatusCode();
+
+        var resp = await client.PutAsJsonAsync("/api/panel/netgsm/account", Body());
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK,
+            "kendi doğrulanmış markası yayıncının kendi kurulumunu kilitlememeli");
+
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var acc = await db.NetgsmAccounts.AsNoTracking()
+            .SingleAsync(a => a.LicenseId == licenseId);
+        acc.Status.Should().Be(NetgsmAccountStatus.Verified,
+            "ikinci kayıt da doğrulanıp kapıyı açık bırakmalı");
+    }
+
+    [Fact]
+    public async Task Baska_kiracinin_DOGRULANMAMIS_markasi_engellemez()
+    {
+        // Marka kodunu yanlış yazıp doğrulayamayan bir yayıncı o kodu KALICI
+        // olarak işgal etmemeli: satır `Failed` kaldığı sürece marka onun
+        // değildir. Tekillik yalnız DOĞRULANMIŞ hesaplar arasında geçerli —
+        // Görev 7'nin filtreli (WHERE Status = Verified) tekil indeksinin var
+        // oluş sebebi tam olarak bu.
+        var factory = NewFactory();
+        var a = await SeedTenantAsync(factory);
+        var b = await SeedTenantAsync(factory);
+
+        var brandCode = Random.Shared.Next(100_000, 999_999).ToString();
+
+        using (var seed = factory.Services.CreateScope())
+        {
+            var db = seed.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var accounts = seed.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+            db.NetgsmAccounts.Add(new NetgsmAccount
+            {
+                Id = Guid.NewGuid(),
+                LicenseId = b.LicenseId,
+                UserCode = Random.Shared.NextInt64(8_500_000_000, 8_599_999_999).ToString(),
+                PasswordProtected = accounts.ProtectPassword($"pw-{Guid.NewGuid():N}"),
+                Header = $"OD{Random.Shared.Next(100_000, 999_999)}",
+                BrandCode = brandCode,
+                Status = NetgsmAccountStatus.Failed, // B doğrulayamadı
+                LastError = "İYS marka kodunu tanımadı",
+                CreatedAt = DateTimeOffset.UtcNow.AddDays(-1),
+                UpdatedAt = DateTimeOffset.UtcNow.AddDays(-1),
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await a.Client.PutAsJsonAsync("/api/panel/netgsm/account", new
+        {
+            userCode = Random.Shared.NextInt64(8_500_000_000, 8_599_999_999).ToString(),
+            password = $"pw-{Guid.NewGuid():N}",
+            header = "ORDERDECK",
+            brandCode,
+        });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK,
+            "doğrulanamamış bir satır marka kodunu rehin alamaz");
+
+        using var verify = factory.Services.CreateScope();
+        var verifyDb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var aRow = await verifyDb.NetgsmAccounts.AsNoTracking()
+            .SingleAsync(x => x.LicenseId == a.LicenseId);
+        aRow.Status.Should().Be(NetgsmAccountStatus.Verified,
+            "markanın gerçek sahibi doğrulamayı geçen kiracıdır");
+    }
+
+    [Fact]
+    public async Task Disabled_yaniti_marka_isgalinden_ONCE_gelir()
+    {
+        // İki 409 yolu var ve SIRALARI yayıncı için belirleyici: ön kontrol
+        // düşerse kapatılmış bir yayıncı "marka kodunuz başkasında" cevabını
+        // alır ve var olmayan bir marka sorununu saatlerce kovalar — oysa
+        // gerçek sebep bir ADMIN kararı ve tek çözümü destekle konuşmak.
+        // Bu yüzden assert yalnız 409'a değil, `title` dizgisine bakıyor:
+        // iki yol da 409 döndüğü için durum kodu tek başına ayırt etmez.
+        var factory = NewFactory();
+        var a = await SeedTenantAsync(factory);
+        var b = await SeedTenantAsync(factory);
+
+        var brandCode = Random.Shared.Next(100_000, 999_999).ToString();
+
+        using (var seed = factory.Services.CreateScope())
+        {
+            var db = seed.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var accounts = seed.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+            db.NetgsmAccounts.Add(new NetgsmAccount
+            {
+                Id = Guid.NewGuid(),
+                LicenseId = b.LicenseId,
+                UserCode = Random.Shared.NextInt64(8_500_000_000, 8_599_999_999).ToString(),
+                PasswordProtected = accounts.ProtectPassword($"pw-{Guid.NewGuid():N}"),
+                Header = $"OD{Random.Shared.Next(100_000, 999_999)}",
+                BrandCode = brandCode,
+                Status = NetgsmAccountStatus.Verified, // marka GERÇEKTEN B'de
+                LastVerifiedAt = DateTimeOffset.UtcNow.AddHours(-2),
+                CreatedAt = DateTimeOffset.UtcNow.AddDays(-1),
+                UpdatedAt = DateTimeOffset.UtcNow.AddDays(-1),
+            });
+            await db.SaveChangesAsync();
+        }
+
+        // A'nın önce KENDİ kurulumu olmalı: `Disabled` bir satırın durumudur,
+        // satır yoksa kapatılacak bir şey de yoktur.
+        (await a.Client.PutAsJsonAsync("/api/panel/netgsm/account", NewBody()))
+            .EnsureSuccessStatusCode();
+        await SetStatusAsync(factory, a.LicenseId, NetgsmAccountStatus.Disabled);
+
+        var resp = await a.Client.PutAsJsonAsync("/api/panel/netgsm/account", new
+        {
+            userCode = Random.Shared.NextInt64(8_500_000_000, 8_599_999_999).ToString(),
+            password = $"pw-{Guid.NewGuid():N}",
+            header = "ORDERDECK",
+            brandCode, // B'nin doğrulanmış markası: ikinci 409 yolunu da tetikler
+        });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("title").GetString()
+            .Should().Be("netgsm-account-disabled",
+                "kapatılmış hesap marka işgali kontrolüne HİÇ düşmemeli; "
+                + "yayıncı admin kararını öğrenmeli, yanlış sebebi değil");
+    }
 }
