@@ -3200,7 +3200,18 @@ dotnet ef migrations add NetgsmBrandCodeFilteredUnique \
 dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
   --filter FullyQualifiedName~NetgsmAccountUniqueIndexTests
 ```
-Beklenen: PASS (7 test — mevcut 4 + yeni 3).
+Beklenen: PASS (7 test — mevcut 4 + yeni 3). (2026-09-20 koşusu: 7/7 PASS, 32 s.
+Göç `20260920105445_NetgsmBrandCodeFilteredUnique`; `dotnet ef migrations add`
+komutu `--context LicenseDbContext` istiyor, depoda birden çok DbContext var.)
+
+> **Mutasyon turundan çıkan bir ders.** `LicenseDbContext`'ten `.IsUnique()`'i
+> göçe dokunmadan kaldırmak bu testlerin HEPSİNİ düşürüyor — ama indeks
+> davranışı yüzünden değil: EF'in `PendingModelChangesWarning`'i `Migrate()`
+> sırasında patlıyor ("model has pending changes"). İyi bir ağ (eşlemeyi göçsüz
+> değiştiren CI'dan geçemez) ama şunu ölçmüyor: bu testler `.IsUnique()`'in
+> **anlamını** değil, eşleme ile göç arasındaki **tutarlılığı** sınıyor.
+> İkisini birlikte bozan bir değişikliği yalnız göç filtresini hedefleyen
+> mutasyon yakalar. Görev 12'de `Status`'e dokunurken bunu hatırla.
 
 - [ ] **Adım 5: Commit**
 
