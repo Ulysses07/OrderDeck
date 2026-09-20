@@ -293,13 +293,23 @@ public class SmsCampaignRecoveryJobTests : IClassFixture<ApiFactory>
     ///
     /// <para>Düzeltmeden önce A'nın düşen iadesi izleyicide asılı kalıyordu
     /// (tx <c>Added</c>, bakiye <c>Modified</c>) ve B'nin <c>SaveChanges</c>'ine
-    /// biniyordu; tek çakışma bütün süpürmeyi düşürüyordu.</para>
+    /// biniyordu.</para>
+    ///
+    /// <para><b>Bu testin gördüğü çöküş bir InMemory ARTEFAKTI.</b> Orada
+    /// asılı tx ikinci kez insert edilmeye çalışılıp anahtar çakışmasıyla
+    /// patlıyor, yani süpürme gürültülü biçimde ölüyor. Prod'da (SQL Server)
+    /// aynı senaryo çok daha sessiz ve çok daha kötü: B'nin
+    /// <c>SaveChanges</c>'i BAŞARIR ve A'nın iadesini de öder — A "paused"
+    /// kaldığı için sonraki süpürme onu İKİNCİ kez iade eder. Yani buradaki
+    /// yeşil "süpürme ölmüyor"u kanıtlar, "para doğru"yu değil.</para>
     ///
     /// <para><b>Para tarafı burada ölçülemez:</b> InMemory transactional
     /// değil — A'nın düşen yazımının bir kısmı store'a işlenmiş olabiliyor.
     /// "Düşen karar kuruş oynatmaz" sözleşmesi gerçek SQL Server'da
     /// doğrulanıyor: <c>SmsBalanceConcurrencyTests.Dusen_karar_ayni_contextin_
-    /// sonraki_yazimina_binmez</c>.</para>
+    /// sonraki_yazimina_binmez</c>. Aşağıdaki <c>RefundedCredits</c> iddiası
+    /// istisna: o satırı yazan komut CAS'e takılanın TA KENDİSİ, dolayısıyla
+    /// kısmî uygulama tehlikesi yok.</para>
     /// </summary>
     [Fact]
     public async Task Bir_kampanyanin_cakismasi_digerinin_kurtarilmasini_engellemez()
@@ -326,8 +336,11 @@ public class SmsCampaignRecoveryJobTests : IClassFixture<ApiFactory>
         using var verify = _factory.Services.CreateScope();
         var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
 
-        (await vdb.SmsCampaigns.AsNoTracking().SingleAsync(c => c.Id == campaignA))
-            .Status.Should().Be("paused", "çakışan karar düşmeliydi");
+        var afterA = await vdb.SmsCampaigns.AsNoTracking().SingleAsync(c => c.Id == campaignA);
+        afterA.Status.Should().Be("paused", "çakışan karar düşmeliydi");
+        afterA.RefundedCredits.Should().Be(0,
+            "kampanya hâlâ 'paused': iade edilmiş SAYILIRSA sonraki süpürme "
+            + "onu atlar, iade edilmemiş sayılıp parası çıkmışsa İKİ kez öder");
 
         var afterB = await vdb.SmsCampaigns.AsNoTracking().SingleAsync(c => c.Id == campaignB);
         afterB.Status.Should().Be("completed", "sağlam kampanya çakışmadan etkilenmemeli");

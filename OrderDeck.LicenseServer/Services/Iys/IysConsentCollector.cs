@@ -176,8 +176,10 @@ public sealed class IysConsentCollector
     /// arasında garantili, doğrulanmamış bir hesap başkasının kodunu taşıyabilir
     /// ve B'nin müşterisinin reddi A'nın onayını düşürürdü.</para>
     /// </summary>
-    /// <returns>Yeniden oynatılan olay sayısı. Kaç satırın gerçekten DEĞİŞTİĞİ
-    /// değil — sıra damgasına takılanlar da sayılır.</returns>
+    /// <returns>Oynatma uygulanan NUMARA sayısı — olay sayısı değil (numara
+    /// başına yalnız en yeni olay uygulanıyor, aşağıdaki gerekçeye bakın).
+    /// Kaç satırın gerçekten DEĞİŞTİĞİ de değil: sıra damgasına takılanlar da
+    /// sayılır.</returns>
     public async Task<int> StageReplayNoBrandRevokesAsync(
         Guid licenseId, string brandCode, CancellationToken ct = default)
     {
@@ -194,15 +196,27 @@ public sealed class IysConsentCollector
         // damgada kapanıyor) ama iş sınırsız büyür: profil kaydı onay kutusunun
         // mevcut değerini HER kaydetmede yeniden yazıyor (ShopperMeController —
         // bilinçli, bkz. oradaki gerekçe), yani tek bir müşteri tek başına bu
-        // tabloya yüzlerce satır bırakabilir. Tekrar oynatma tek HTTP PUT'un ve
-        // tek SaveChanges'in içinde koşuyor: N büyüdüğünde istek zaman aşımına
-        // uğrar, HİÇBİR ŞEY commit edilmez — hesabın `Verified` yazımı da dahil.
-        // Olay tablosu EKLE-ONLY olduğu için bir sonraki deneme aynı yükü
-        // çeker ve kurulum kalıcı olarak doğrulanamaz hâle gelir.
+        // tabloya yüzlerce satır bırakabilir.
         //
-        // <b>Tuzak:</b> bu kısayol yukarıdaki filtrenin `LocalRevoke`'a kilitli
-        // olmasına DAYANIYOR. Filtreye başka bir olay tipi girerse ara olaylar
-        // anlam kazanır ve de-duplikasyon ÖNCE kalkmalıdır.
+        // Kesilen maliyet DB turu ya da SaveChanges DEĞİL: ikisi de zaten
+        // numara sayısıyla ölçekleniyordu, çünkü bir numaranın ilk olayı satırı
+        // `Local`'a sokuyor ve sonrakiler diske hiç gitmiyor (aşağıda,
+        // ApplyToRowAsync). Kesilen şey o `Local` taramasının olay×numara
+        // büyümesi ve N kez dönen async döngü. Sonuç aynı yere çıkıyor:
+        // oynatma tek HTTP PUT'un ve tek SaveChanges'in içinde koştuğu için N
+        // büyüdüğünde istek zaman aşımına uğrar, HİÇBİR ŞEY commit edilmez —
+        // hesabın `Verified` yazımı da dahil. Olay tablosu EKLE-ONLY olduğu
+        // için sonraki deneme aynı yükü çeker: kurulum KALICI olarak
+        // doğrulanamaz hâle gelir. Hâlâ açık olan pay, aşağıdaki
+        // `ToListAsync`'in N satırı belleğe çekmesi; gerekirse gruplama SQL'e
+        // indirilebilir.
+        //
+        // <b>Tuzak — İKİ varsayım:</b> (1) yukarıdaki filtre `LocalRevoke`'a
+        // kilitli; başka bir olay tipi girerse ara olaylar anlam kazanır.
+        // (2) `ApplyToRowAsync` çağrı başına BİRİKEN bir yan etki üretmiyor —
+        // bugün yalnız mutlak atama yapıyor. Oraya bir sayaç, giden bir push
+        // satırı ya da denetim kaydı eklenirse atlanan olaylar görünür olur.
+        // İkisinden biri bozulursa de-duplikasyon ÖNCE kalkmalıdır.
         var replay = dropped
             .GroupBy(e => e.Recipient)
             .Select(g => g.MaxBy(e => e.OccurredAt)!)
@@ -222,7 +236,11 @@ public sealed class IysConsentCollector
         if (replay.Count > 0)
         {
             _log.LogInformation(
-                "İYS: lisans {LicenseId} doğrulandı, {Events} no-brand RET olayı {Count} numaraya yeniden oynatıldı",
+                // `{Count}` ADI BİLEREK KULLANILMADI: bu satır eskiden onu OLAY
+                // sayısı için kullanıyordu. Aynı adı numara sayısıyla yeniden
+                // doldurmak, geçmişe bakan bir günlük sorgusunda iki farklı
+                // büyüklüğü tek seriye karıştırırdı — kimse fark etmeden.
+                "İYS: lisans {LicenseId} doğrulandı, {Events} no-brand RET olayı {Recipients} numaraya yeniden oynatıldı",
                 licenseId, dropped.Count, replay.Count);
         }
 
