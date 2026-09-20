@@ -7834,7 +7834,7 @@ doğrulanmış olduğu için kiracı-güvenli.
 - Modify: `OrderDeck.LicenseServer/Controllers/Panel/PanelNetgsmAccountController.cs`
 - Test: `OrderDeck.LicenseServer.Tests/Services/Iys/IysNoBrandReplayTests.cs` (yeni)
 
-- [ ] **Adım 1: Düşen testleri yaz**
+- [x] **Adım 1: Düşen testleri yaz**
 
 1. `Dogrulama_no_brand_retlerini_uygular` — `Onay` durumunda bir `IysConsents`
    satırı + ondan SONRA `OccurredAt` taşıyan `no-brand` bir `LocalRevoke`
@@ -7850,7 +7850,7 @@ doğrulanmış olduğu için kiracı-güvenli.
 4. `Baska_lisansin_no_brand_reti_bu_markaya_dokunmaz` — kiracı sızıntısı
    testi. İki lisans, iki olay; yalnız doğrulanan lisansınki uygulanmalı.
 
-- [ ] **Adım 2: Yeşile geçir**
+- [x] **Adım 2: Yeşile geçir**
 
 `IysConsentCollector`'a yeni public metot:
 
@@ -7868,11 +7868,13 @@ public async Task<int> StageReplayNoBrandRevokesAsync(
 Gövde: `ErrorCode == "no-brand"`, `LicenseId == licenseId`,
 `EventType == IysConsentEventType.LocalRevoke` olan olayları `OccurredAt`
 sırasına göre çek; her biri için mevcut durum-satırı arama + güncelleme
-mantığını uygula. Mantığı `ApplyAsync`'ten **kopyalama** — ortak özel bir
-metoda çıkar, yoksa "RET ONAY'a yükselmez" kuralı iki yerde yaşar ve biri
+mantığını uygula. Mantığı `RecordAsync`'ten **kopyalama** (plan `ApplyAsync`
+diyordu, toplayıcıda öyle bir metot yok) — ortak özel bir metoda çıkar
+(`ApplyToRowAsync`), yoksa "RET ONAY'a yükselmez" kuralı iki yerde yaşar ve biri
 ileride sessizce ayrışır.
 
-Çağrı yeri: `PanelNetgsmAccountController.cs:189` — devam ettirmenin hemen
+Çağrı yeri: `PanelNetgsmAccountController.cs:234` (plan `:189` diyordu; Görev
+14'ün eklediği hata-yüzeyi yorumları satırı aşağı itmiş) — devam ettirmenin hemen
 yanına, aynı `Outcome == Ok` bloğuna, aynı `SaveChanges`'e:
 
 ```csharp
@@ -7882,19 +7884,37 @@ await _consents.StageReplayNoBrandRevokesAsync(
 ```
 
 `IysConsentCollector`'ın controller'a enjekte edilmesi gerekecek; DI kaydını
-`Program.cs`'te doğrula.
+`Program.cs`'te doğrula. **Doğrulandı:** kayıt zaten var
+(`Program.cs:198`, `AddScoped`), yeni kayıt gerekmedi.
 
 > **Neden yalnız panel `PUT`'u.** `Failed → Verified` geçişinin TEK yolu o
 > (Görev 13'ün gerekçesiyle aynı): günlük iş yalnız `Verified` hesapları
 > tarar, admin "Aç" düğmesi `Failed` yazar `Verified` değil (Görev 12).
 
-- [ ] **Adım 3: Mutasyon testi**
+- [x] **Adım 3: Mutasyon testi**
 
 `EventType == LocalRevoke` filtresini kaldır → test 2 kırmızıya düşmeli.
 `LicenseId == licenseId` filtresini kaldır → test 4 kırmızıya düşmeli.
 `OrderBy(OccurredAt)`'ı `OrderByDescending` yap → test 3'ün kırmızıya düşüp
 düşmediğini gözle; düşmüyorsa idempotentlik iddiası sırayla ilgili değil
 demektir, bunu not düş.
+
+**Sonuç (2026-09-20).**
+
+| Mutasyon | Sonuç |
+| --- | --- |
+| `EventType == LocalRevoke` kaldırıldı | ÖLDÜ — test 2 (`Dogrulama_no_brand_onaylarini_uygulamaz`, `IysNoBrandReplayTests.cs:236`) |
+| `LicenseId == licenseId` kaldırıldı | ÖLDÜ — test 4 (`Baska_lisansin_no_brand_reti_bu_markaya_dokunmaz`, `IysNoBrandReplayTests.cs:334`) |
+| `OrderBy` → `OrderByDescending` | **HAYATTA KALDI** (4/4 yeşil) |
+
+Üçüncüsü beklendiği gibi hayatta kaldı ve gerekçesi kodda yazılı: döngünün
+uyguladığı her olay RET, durum sabit `IysConsentStatus.Ret`. Aynı alıcının iki
+olayı hangi sırayla gelirse gelsin satır `Ret`'te ve `LastLocalEventAt` en yeni
+damgada kapanıyor — artan sırada hepsi uygulanır, azalan sırada en yenisi
+uygulanıp kalanı sıra damgasına takılır; **terminal durum aynı**. Yani
+idempotentlik iddiası sırayla değil `LastLocalEventAt` karşılaştırmasıyla
+ilgili; test 3 tam da onu ölçüyor. `OrderBy` yine de duruyor: döngüye RET
+dışında bir olay tipi girdiği gün sıra ANINDA belirleyici olur.
 
 ---
 

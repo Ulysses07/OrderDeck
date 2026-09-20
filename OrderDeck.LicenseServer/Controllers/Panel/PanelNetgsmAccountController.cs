@@ -27,13 +27,16 @@ public sealed class PanelNetgsmAccountController : ControllerBase
     private readonly LicenseDbContext _db;
     private readonly NetgsmAccountService _accounts;
     private readonly NetgsmAccountVerifier _verifier;
+    private readonly Services.Iys.IysConsentCollector _consents;
 
     public PanelNetgsmAccountController(
-        LicenseDbContext db, NetgsmAccountService accounts, NetgsmAccountVerifier verifier)
+        LicenseDbContext db, NetgsmAccountService accounts, NetgsmAccountVerifier verifier,
+        Services.Iys.IysConsentCollector consents)
     {
         _db = db;
         _accounts = accounts;
         _verifier = verifier;
+        _consents = consents;
     }
 
     /// <param name="Status">none | failed | verified | disabled.</param>
@@ -232,6 +235,20 @@ public sealed class PanelNetgsmAccountController : ControllerBase
                 // iner ya hiç inmez. Ayrılsalardı aradaki çökme kampanyaları
                 // paused'da bırakırdı ve hiçbir süpürme onları bulmazdı.
                 await _accounts.StageResumePausedCampaignsAsync(account.LicenseId, ct);
+
+                // Kurulum kapalıyken gelen RET'ler yalnız olay tablosuna
+                // düşmüştü (`ErrorCode="no-brand"`): markası çözülemediği için
+                // durum satırına hiç uygulanmadılar ve satır `Onay` kaldı. Marka
+                // ARTIK doğrulandı — o reddi şimdi uygulamazsak gönderim kapısı
+                // bayat `Onay`'ı kabul eder ve onayını geri çekmiş kişiye ticari
+                // SMS gider (6563 ihlali). Aynı SaveChanges'te olması şart:
+                // ayrılsalardı aradaki çökme hesabı açık, reddi düşmüş bırakırdı.
+                //
+                // Yalnız burada çağrılıyor çünkü `Failed → Verified` geçişinin
+                // TEK yolu bu PUT: günlük iş yalnız `Verified` hesapları tarar,
+                // admin "Aç" düğmesi `Failed` yazar (Görev 12).
+                await _consents.StageReplayNoBrandRevokesAsync(
+                    account.LicenseId, account.BrandCode, ct);
             }
             else
             {
