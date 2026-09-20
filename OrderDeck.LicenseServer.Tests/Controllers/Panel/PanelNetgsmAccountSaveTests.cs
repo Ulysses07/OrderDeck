@@ -116,6 +116,19 @@ public sealed class PanelNetgsmAccountSaveTests : IDisposable
         return (factory, client, licenseId);
     }
 
+    /// <summary>Kurulum satırının durumunu panelin DIŞINDAN değiştirir: admin
+    /// kapatma anahtarının panelde karşılığı yok, o yüzden testin de HTTP değil
+    /// doğrudan DB üzerinden basması gerekiyor.</summary>
+    private static async Task SetStatusAsync(
+        NetgsmApiFactory factory, Guid licenseId, NetgsmAccountStatus status)
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var acc = await db.NetgsmAccounts.SingleAsync(a => a.LicenseId == licenseId);
+        acc.Status = status;
+        await db.SaveChangesAsync();
+    }
+
     [Fact]
     public async Task Iys_kabul_ederse_verified_olur()
     {
@@ -595,5 +608,59 @@ public sealed class PanelNetgsmAccountSaveTests : IDisposable
         doc.RootElement.GetProperty("status").GetString().Should().Be("failed");
         doc.RootElement.GetProperty("lastError").GetString()
             .Should().Be(NetgsmAccountService.UndecryptableMessage);
+    }
+
+    [Fact]
+    public async Task Disabled_hesap_panelden_yeniden_acilamaz()
+    {
+        var (factory, client, licenseId) = await SeedAsync();
+        (await client.PutAsJsonAsync("/api/panel/netgsm/account", NewBody()))
+            .EnsureSuccessStatusCode();
+        await SetStatusAsync(factory, licenseId, NetgsmAccountStatus.Disabled);
+        factory.Iys.OnSearch = () => new IysSearchResult(
+            "0", "{}", new Dictionary<string, IysConsentStatus>());
+        var callsBefore = factory.Iys.SearchCalls;
+
+        var resp = await client.PutAsJsonAsync("/api/panel/netgsm/account", NewBody());
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict,
+            "disabled bir ADMIN kararıdır; yayıncı kaydet'e basarak geri alamaz");
+        factory.Iys.SearchCalls.Should().Be(callsBefore, "kapalı hesap dış çağrı tetiklemez");
+
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var acc = await db.NetgsmAccounts.AsNoTracking().SingleAsync(a => a.LicenseId == licenseId);
+        acc.Status.Should().Be(NetgsmAccountStatus.Disabled);
+    }
+
+    [Fact]
+    public async Task Baska_lisansin_dogrulanmis_markasi_409()
+    {
+        // Marka kodu global tekil. Ön kontrol olmasaydı DbUpdateException →
+        // 500 dönerdi ve yayıncı ne olduğunu anlamazdı.
+        var factory = NewFactory();
+        var a = await SeedTenantAsync(factory);
+        var b = await SeedTenantAsync(factory);
+
+        // Marka kodu İKİ kiracıda da AYNI: çakışma testin ölçtüğü şeyin ta
+        // kendisi. `NewBody` marka kodunu her çağrıda rastgele ürettiği için
+        // bu senaryoyu ifade edemiyor, yerel bir gövde üreticisi gerekiyor.
+        var brandCode = Random.Shared.Next(100_000, 999_999).ToString();
+        object Body() => new
+        {
+            userCode = Random.Shared.NextInt64(8_500_000_000, 8_599_999_999).ToString(),
+            password = $"pw-{Guid.NewGuid():N}",
+            header = "ORDERDECK",
+            brandCode,
+        };
+
+        (await a.Client.PutAsJsonAsync("/api/panel/netgsm/account", Body()))
+            .EnsureSuccessStatusCode();
+
+        var resp = await b.Client.PutAsJsonAsync("/api/panel/netgsm/account", Body());
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("title").GetString().Should().Be("brand-code-taken");
     }
 }

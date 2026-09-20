@@ -98,6 +98,26 @@ public sealed class PanelNetgsmAccountController : ControllerBase
             return Problem(title: "invalid-brand-code",
                 detail: "İYS marka kodu yalnız rakamlardan oluşur.", statusCode: 400);
 
+        var existing = await _db.NetgsmAccounts.AsNoTracking()
+            .FirstOrDefaultAsync(a => a.LicenseId == licenseId, ct);
+        if (existing?.Status == NetgsmAccountStatus.Disabled)
+            return Problem(title: "netgsm-account-disabled",
+                detail: "Netgsm kurulumunuz yönetici tarafından kapatıldı. "
+                        + "Yeniden açılması için destekle iletişime geçin.",
+                statusCode: 409);
+
+        // Marka kodu DOĞRULANMIŞ hesaplar arasında tekil (filtreli indeks,
+        // Görev 7). Dış çağrıdan ÖNCE bakıyoruz: yoksa yayıncının tek
+        // öğreneceği şey bir 500 olurdu.
+        var squatted = await _db.NetgsmAccounts.AsNoTracking().AnyAsync(
+            a => a.BrandCode == brandCode
+                 && a.Status == NetgsmAccountStatus.Verified
+                 && a.LicenseId != licenseId.Value, ct);
+        if (squatted)
+            return Problem(title: "brand-code-taken",
+                detail: "Bu İYS marka kodu başka bir hesapta doğrulanmış durumda.",
+                statusCode: 409);
+
         // --- Doğrulama penceresini KAPAT: SÜRÜM JETONU, reload DEĞİL ---
         // VerifyAsync bir AĞ çağrısı; saniyeler sürebilir. O aralıkta satır
         // değişmiş olabilir ve sonucu körlemesine yazmanın üç somut zararı var:
@@ -176,6 +196,18 @@ public sealed class PanelNetgsmAccountController : ControllerBase
 
             return Ok(ToView(account));
         }
+        catch (NetgsmAccountDisabledException)
+        {
+            // Ön kontrolle `UpsertAsync` arasında admin kapattı: servis
+            // guard'ı (Görev 3) bize haber verdi. Ön kontrol bu yarışı
+            // KAPATMAZ, yalnız tipik durumda anlaşılır cevap verir —
+            // fail-closed garantisi servisteki guard'dan gelir.
+            _db.ChangeTracker.Clear();
+            return Problem(title: "netgsm-account-disabled",
+                detail: "Netgsm kurulumunuz yönetici tarafından kapatıldı. "
+                        + "Yeniden açılması için destekle iletişime geçin.",
+                statusCode: 409);
+        }
         catch (DbUpdateConcurrencyException)
         {
             // Doğruladığımız sürüm artık satırda durmuyor. Sonucu ATIYORUZ —
@@ -194,7 +226,33 @@ public sealed class PanelNetgsmAccountController : ControllerBase
                 detail: "Kurulum, doğrulama sürerken değişti. Formu tekrar kaydedin.",
                 statusCode: 409);
         }
+        catch (DbUpdateException ex) when (IsBrandCodeConflict(ex))
+        {
+            // Ön kontrol ile kayıt arasında başka kiracı aynı markayı
+            // doğruladı. Filtreli tekil indeks kesin kararı verdi; bizimki
+            // Failed kalmalı ve yayıncı anlaşılır bir cevap almalı.
+            _db.ChangeTracker.Clear();
+            return Problem(title: "brand-code-taken",
+                detail: "Bu İYS marka kodu başka bir hesapta doğrulanmış durumda.",
+                statusCode: 409);
+        }
     }
+
+    /// <summary>
+    /// <c>DbUpdateException</c>, marka kodu tekil indeksinin ihlali mi?
+    /// 2601/2627 = unique index/constraint ihlali; indeks adı filtresi, aynı
+    /// hata koduyla gelen BAŞKA yarışların (ve tamamen ilgisiz DB
+    /// arızalarının) "marka kodu dolu" diye yanlış etiketlenmesini önler.
+    /// Filtresiz bir <c>catch (DbUpdateException)</c>, taşan bir
+    /// <c>LastError</c>'ı ya da kopan bir bağlantıyı da yayıncıya "marka
+    /// kodunuz başkasında" diye gösterirdi — yanlış yeri saatlerce aratır.
+    /// Kalıp: <c>PanelCustomerBalanceController.IsDuplicateReversal</c>
+    /// (PanelCustomerBalanceController.cs:335).
+    /// </summary>
+    private static bool IsBrandCodeConflict(DbUpdateException ex) =>
+        ex.InnerException is Microsoft.Data.SqlClient.SqlException sql
+        && sql.Number is 2601 or 2627
+        && sql.Message.Contains("BrandCode", StringComparison.Ordinal);
 
     internal static AccountView ToView(NetgsmAccount? acc) => acc is null
         ? new AccountView("none", false, null, null, null, false, null, null)
