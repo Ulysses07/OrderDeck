@@ -7679,21 +7679,32 @@ yapmadan** `continue`. İki işçi aynı alıcıyı asla gönderemez.
 - Migration: `dotnet ef migrations add SmsCampaignRecipientClaim`
 - Test: `OrderDeck.LicenseServer.Tests/Services/Sms/SmsCampaignRecipientClaimTests.cs` (yeni)
 
-- [ ] **Adım 1: Düşen testi yaz**
+- [x] **Adım 1: Düşen testi yaz**
 
 1. `Alici_gonderimden_once_sending_olarak_talep_edilir` — tek alıcılı kampanya
    koş; sahte `ISmsSender` çağrıldığı ANDA DB'den alıcıyı oku ve
    `Status == "sending"` olduğunu doğrula. Bu, sıralamayı çiviler: talep
-   gönderimden önce diske inmeli, yoksa çökmede koruma yok.
+   gönderimden önce diske inmeli, yoksa çökmede koruma yok. **Kancanın içinde
+   assert YOK** — orada atılan istisnayı gönderim işinin `catch`'i yutar ve
+   alıcıyı `failed` yazar, yani test yalan söylerdi. Değer bir yerel değişkene
+   alınıp koşu bittikten sonra doğrulanıyor.
 2. `Baskasinin_talep_ettigi_alici_gonderilmez` — sahte gönderici ilk çağrıda
    ikinci bir scope açıp 2. alıcıyı `sending` yapsın (CAS'ı ilerleterek).
    Koşu bitince gönderici **bir kez** çağrılmış olmalı ve 2. alıcı ikinci kez
-   gönderilmemeli.
+   gönderilmemeli. Rakip kampanyaya BİLEREK dokunmuyor: kampanya sahipliği
+   kaybolsaydı koşu tur başı yoklamada dururdu ve alıcı jetonu hiç sınanmazdı.
 3. `Sending_kalan_alici_tekrar_gonderilmez_ve_iade_edilmez` — `sending` bir
    alıcı bırakıp kampanyayı tekrar koş: gönderici hiç çağrılmamalı ve
    `RefundedCredits` o alıcıyı KAPSAMAMALI.
 
-- [ ] **Adım 2: Yeşile geçir**
+> **Test 3 uygulamadan ÖNCE de yeşildi** — plan bunu öngörmemişti. Alıcı
+> seçimi zaten `Status == "pending"`, yani `sending` bir satır bugün de
+> dışarıda kalıyor. Testin bütün değeri Adım 3'teki mutasyonda: seçimi
+> genişletirsen kırmızıya düşüyor. Silmek yerine bırakıldı, çünkü çivilediği
+> şey bir davranış değil bir **sözleşme** (`sending` ne gönderilir ne iade
+> edilir) ve bu sözleşmeye ileride dokunacak kişinin bir bekçisi olmalı.
+
+- [x] **Adım 2: Yeşile geçir**
 
 `SmsCampaignRecipient`'a:
 
@@ -7713,33 +7724,55 @@ Gönderim döngüsünde, sahiplik kontrolünden SONRA ve izin kapısından ÖNCE
 ```csharp
 recipient.Status = "sending";
 recipient.ClaimedAt = NextClaimedAt(recipient.ClaimedAt);
-if (!await ClaimRecipientAsync(campaign, recipient, ct)) continue;
+if (!await ClaimRecipientAsync(recipient, ct)) continue;
 ```
 
-`ClaimRecipientAsync`, `SaveRecipientResultAsync`'in kardeşi olmalı ama
-**çakışan varlık farklı**: burada çakışan `recipient`, orada `campaign`.
-`ReferenceEquals(e.Entity, recipient)` filtresi kullan; kampanya çakışırsa
-istisna dışarı çıksın (sahiplik kaybı zaten bir sonraki turda yakalanır).
-Çakışmada `_db.Entry(recipient).State = EntityState.Unchanged` + yeniden
-oku — bellekteki kopya bayat.
+`ClaimRecipientAsync`, `SaveRecipientResultAsync`'in kardeşi ama **çakışan
+varlık farklı**: burada çakışan `recipient`, orada `campaign`. Filtre
+`ReferenceEquals(e.Entity, recipient)`; kampanya çakışırsa istisna dışarı
+çıkıyor (sahiplik kaybı zaten bir sonraki turun yoklamasının işi). Çakışmada
+`_db.Entry(recipient).State = EntityState.Unchanged` + `ReloadAsync` —
+bellekteki kopya bayat, tazelenmezse kirli değerler bir sonraki
+`SaveChanges`'e biner.
 
-İzin kapısı `failed` yazan dal (`:224-233`) artık `sending`'den `failed`'a
-geçiyor; iade matematiği `failed` saydığı için ETKİLENMEZ.
+> **İmza planda `(campaign, recipient, ct)` yazıyordu; `(recipient, ct)`
+> oldu.** `campaign` parametresi kullanılmıyor: talep yazımı kampanyaya hiç
+> dokunmuyor (kalp atışı `SaveRecipientResultAsync`'in işi) ve çakışma filtresi
+> yalnız `recipient`'a bakıyor. Kullanılmayan parametre, ileride birinin
+> "kampanya da mı yazılıyor?" diye düşünmesine sebep olurdu.
 
-- [ ] **Adım 3: Mutasyon testi**
+İzin kapısı `failed` yazan dal artık `sending`'den `failed`'a geçiyor; iade
+matematiği `failed` saydığı için ETKİLENMEZ.
 
-Talep yazımını gönderimden SONRAYA al → test 1 kırmızıya düşmeli.
-`ClaimedAt`'in `.IsConcurrencyToken()` kaydını kaldır → test 2 kırmızıya
-düşmeli. Alıcı seçimini `r.Status == "pending" || r.Status == "sending"`
-yap → test 3 kırmızıya düşmeli.
+- [x] **Adım 3: Mutasyon testi**
 
-- [ ] **Adım 4: Göçü üret ve prod güvenliğini doğrula**
+Talep yazımını gönderimden SONRAYA al → test 1 kırmızı ✅ (bonus: test 2 de
+düştü — talep gönderimden sonra yazılınca rakibin kaptığı satıra gönderim
+zaten yapılmış oluyor). `ClaimedAt`'in `.IsConcurrencyToken()` kaydını
+kaldır → test 2 kırmızı ✅, test 1 yeşil kaldı (doğru: sıralama jetondan
+bağımsız). Alıcı seçimini `r.Status == "pending" || r.Status == "sending"`
+yap → test 3 kırmızı ✅.
 
-`ClaimedAt` **nullable** ekleniyor, varsayılan yok, mevcut satırlar `NULL`
-kalıyor — veri taşıması yok, kilitlenme yok. `NextClaimedAt(null)` `UtcNow`
-döndürüyor, yani mevcut `pending` satırlar ilk talepte doğal olarak
-damgalanıyor. `Down` sütunu düşürüyor; geri dönüşte veri kaybı yalnız talep
-damgalarında, gönderim sonuçlarında değil.
+- [x] **Adım 4: Göçü üret ve prod güvenliğini doğrula**
+
+Göç: `20260920144828_SmsCampaignRecipientClaim`. Üretim komutu **`--context
+LicenseDbContext` istiyor** (depoda birden fazla `DbContext` var; plandaki
+çıplak komut "More than one DbContext was found" ile düşüyor).
+
+`Up` tek bir `AddColumn<DateTimeOffset>(nullable: true)`; varsayılan yok, veri
+taşıması yok, mevcut satırlar `NULL` kalıyor — SQL Server'da metadata-only
+`ALTER TABLE ADD`, uzun kilit yok. `NextClaimedAt(null)` `UtcNow` döndürüyor,
+yani mevcut `pending` satırlar ilk talepte doğal olarak damgalanıyor. `Down`
+sütunu düşürüyor; geri dönüşte veri kaybı yalnız talep damgalarında, gönderim
+sonuçlarında değil. Üretilen dosya bu tarifle **birebir** örtüşüyor.
+
+> **Model anlık görüntüsü bekçisi ayrı bir test DEĞİL.** Depoda
+> `PendingModelChanges` iddia eden bir test yok; bekçi, `Program.cs`'teki
+> `Database.Migrate()` çağrısının ilişkisel fixture'da (Testcontainers, gerçek
+> SQL Server) `PendingModelChangesWarning` fırlatması. Pratikte ilk kırmızı
+> `SmsCampaignIdempotencyConcurrencyTests` oluyor — göç üretilmeden o test
+> host'u hiç ayağa kaldıramıyor. Yani bekçi var ama adı yanıltıcı; göç
+> unutulursa suite yine de kırmızı yanıyor.
 
 ---
 

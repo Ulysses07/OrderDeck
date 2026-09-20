@@ -23,6 +23,14 @@ namespace OrderDeck.LicenseServer.Services.Sms;
 ///   alıcıları gönderir: gönderilmiş SMS tekrarlanmaz.
 /// - İade tutarı bellekteki sayaçtan değil DB'deki failed sayısından
 ///   hesaplanır → devralınan koşuda da doğru.
+///
+/// Görev 16 — alıcı yaşam döngüsü üçe çıktı:
+/// <c>pending → sending (talep) → sent | failed</c>. Satır fiziksel
+/// gönderimden ÖNCE <c>sending</c> olarak talep edilir ve talep yazımı
+/// <see cref="Domain.SmsCampaignRecipient.ClaimedAt"/> jetonuyla CAS'tan
+/// geçer; iki işçi aynı alıcıya asla gönderemez. <c>sending</c>'de takılı
+/// kalan satır BİLİNÇLİ olarak kurtarılmaz ve iade edilmez — gerekçe o
+/// alanın doc'unda.
 /// </summary>
 public sealed class SmsCampaignSendJob
 {
@@ -115,6 +123,54 @@ public sealed class SmsCampaignSendJob
         {
             _db.Entry(campaign).State = EntityState.Unchanged;
             await _db.SaveChangesAsync(ct);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Alıcı satırını fiziksel gönderimden ÖNCE talep eder (CAS). Satır
+    /// başkasınınsa <c>false</c> döner ve çağıran o alıcıyı GÖNDERMEDEN atlar.
+    ///
+    /// <para><b>Neden gerekli.</b> Tur başı sahiplik yoklaması gönderimden
+    /// ÖNCE koşuyor; yarış ise gönderim ile sonuç yazımı ARASINDA. İşçi A
+    /// 1. alıcıya SMS gönderip sonucu henüz yazmamışken kampanya devralınırsa
+    /// (duraklat+devam ettir ya da bayat kira) işçi B o alıcıyı hâlâ
+    /// <c>pending</c> görür ve aynı kişiye ikinci ticari SMS gider. Klasik
+    /// TOCTOU; kapatan tek şey satırın gönderimden önce talep edilmesi.</para>
+    ///
+    /// <para><b>Neden <c>ExecuteUpdateAsync</c> değil.</b> InMemory sağlayıcı
+    /// desteklemiyor ve bu sınıfın testlerinin tamamı InMemory. Jeton +
+    /// <c>SaveChanges</c> kalıbı her iki sağlayıcıda da çalışıyor ve
+    /// <c>SmsCampaign.ClaimedAt</c> kalıbının birebir kardeşi.</para>
+    ///
+    /// <para><b>Çakışan varlık burada ALICI, kampanya değil</b> — kardeşi
+    /// <see cref="SaveRecipientResultAsync"/> ile tek farkı bu. Kampanya
+    /// çakışırsa istisna dışarı çıkar: sahiplik kaybı zaten bir sonraki turun
+    /// yoklamasının işi, burada yutulursa sessizce yanlış yere maskelenir.</para>
+    ///
+    /// <para><c>Detached</c> değil <c>Unchanged</c> + yeniden okuma:
+    /// gerekçe <see cref="SaveRecipientResultAsync"/>'te. Bellekteki kopya
+    /// bayat olduğu için diskten tazelenmeli, yoksa kirli değerler bir sonraki
+    /// <c>SaveChanges</c>'e biner.</para>
+    /// </summary>
+    private async Task<bool> ClaimRecipientAsync(
+        SmsCampaignRecipient recipient, CancellationToken ct)
+    {
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+            return true;
+        }
+        catch (DbUpdateConcurrencyException ex) when (
+            ex.Entries.Count > 0
+            && ex.Entries.All(e => ReferenceEquals(e.Entity, recipient)))
+        {
+            _db.Entry(recipient).State = EntityState.Unchanged;
+            await _db.Entry(recipient).ReloadAsync(ct);
+
+            _log.LogInformation(
+                "SmsCampaignSendJob: recipient {RecipientId} claimed by another worker, skipping",
+                recipient.Id);
             return false;
         }
     }
@@ -221,6 +277,16 @@ public sealed class SmsCampaignSendJob
                     campaignId, recipients.Count(x => x.Status == "sent"));
                 return;
             }
+
+            // Görev 16 — satırı GÖNDERİMDEN ÖNCE talep et. Sıra kutsal:
+            // talep diske inmeden yapılan bir gönderim, çökme anında
+            // "pending" görünen ama fiilen gitmiş bir SMS bırakır.
+            // İzin kapısından da önce: kapı `failed` yazacaksa bile o yazımın
+            // sahibi olduğumuzu bilmemiz gerekir.
+            recipient.Status = "sending";
+            recipient.ClaimedAt = NextClaimedAt(recipient.ClaimedAt);
+
+            if (!await ClaimRecipientAsync(recipient, ct)) continue;
 
             consents.TryGetValue(recipient.Phone, out var consent);
 

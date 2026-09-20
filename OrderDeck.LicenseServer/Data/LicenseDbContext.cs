@@ -830,6 +830,13 @@ public class LicenseDbContext : DbContext
             b.Property(r => r.Phone).HasMaxLength(20).IsRequired();
             b.Property(r => r.Status).HasMaxLength(16).IsRequired();
             b.Property(r => r.Error).HasMaxLength(500);
+            // Görev 16: kampanya düzeyindeki claim (yukarıdaki
+            // SmsCampaign.ClaimedAt) bu yarışı KAPATMIYOR — o yoklama
+            // gönderimden ÖNCE koşuyor, yarış ise gönderim ile sonuç yazımı
+            // ARASINDA. Alıcı satırı da CAS'la talep edilmeli; kaybeden işçi
+            // gönderim yapmadan geçer, yoksa aynı kişiye ikinci ticari SMS
+            // gider (hem para hem 6563).
+            b.Property(r => r.ClaimedAt).IsConcurrencyToken();
             b.HasIndex(r => r.CampaignId);
         });
 
