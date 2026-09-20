@@ -3815,7 +3815,36 @@ dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
 Beklenen: PASS (7 test — `Bayat_gunluk_ret_yeni_hesap_surumunu_degistirmez`
 iki `InlineData` ile iki kez sayılır).
 
+> **Görev 8 sonundaki gerçek sayı 9** (commit `5a21ba81`, 3 s; tüm sunucu
+> takımı 2382/2382, 7 dk 2 sn). Yukarıdaki 7'ye iki test eklendi, çünkü
+> plandaki kadro iki koşulu ölçmüyordu:
+>
+> * `Dusen_turun_KIRLI_KAYDI_siradakine_binmez` — `Bir_hesabin_patlamasi_-
+>   digerini_ETKILEMEZ` turu **ağ çağrısında** patlatıyor, o anda hesap nesnesi
+>   HENÜZ TEMİZ; yani `RunAsync` catch'indeki `ChangeTracker.Clear()` o testte
+>   hiç gerekmiyor. Asıl senaryo turun **`SaveChanges`'te** düşmesi: hesap
+>   `Modified` izleniyor kalır ve bayat yazım sıradaki kiracının
+>   `SaveChanges`'ine biner. Mutasyon (Clear satırını sil) yalnız bu testi
+>   öldürdü, `:237`.
+> * `Tur_SURERKEN_kapanan_hesap_atlanir` — `Failed_hesap_ise_alinmaz` hesabı
+>   tur BAŞLAMADAN kapatıyor, onu zaten `ListVerifiedIdsAsync` süzgeci eliyor;
+>   `VerifyOneAsync`'teki durum kontrolü o testte hiç koşmuyor. Korunan pencere
+>   liste ALINDIKTAN sonrası. Mutasyon (`acc.Status != Verified` koşulunu sil)
+>   `:296`'da öldü.
+>
+> Üçüncü mutasyon — `CloseAccountAndPauseCampaignsAsync` içindeki
+> `account.UpdatedAt != expectedUpdatedAt` karşılaştırmasını silmek — yalnız
+> `Bayat_gunluk_ret...(Verified)` vakasını öldürdü (`:346`). `Disabled` vakası
+> hayatta kaldı, çünkü onu yanındaki durum kontrolü zaten yakalıyor. Sürüm
+> jetonunun tek kanıtı o `Verified` `InlineData`'sı: durum hiç değişmediği
+> hâlde parola değiştiği için ret bayattır.
+
 - [ ] **Adım 5: Commit**
+
+> **Düzeltme:** `CloseAccountAndPauseCampaignsAsync` bu görevde imza
+> değiştirmiyor, **sıfırdan yazılıyor** — Görev 3 yalnız özel
+> `StagePauseActiveCampaignsAsync` yardımcısını bırakmıştı. Dosya yine de
+> commit listesinde, sebebi farklı.
 
 `NetgsmAccountService.cs` de listede: `CloseAccountAndPauseCampaignsAsync`
 bu görevde imza değiştiriyor (`expectedUpdatedAt`). Unutulursa commit
