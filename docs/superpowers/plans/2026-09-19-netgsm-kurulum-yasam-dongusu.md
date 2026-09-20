@@ -7374,6 +7374,445 @@ EOF
 
 ---
 
+---
+
+# Astra denetimi sonrası eklenen görevler (2026-09-20)
+
+Görev 1-13 bittikten sonra `gpt-6-astra` tüm üretim diff'ini denetledi ve beş
+bulgu çıkardı. Beşi de tek tek kodda doğrulandı; **hiçbiri Görev 12/13'ün
+soktuğu bir gerileme değil**, ama beşi de AÇIK. Aşağıdaki dört görev hepsini
+kapatıyor.
+
+Bulgu → görev eşlemesi:
+
+| Bulgu | Ne | Görev |
+|---|---|---|
+| A3 | Doğrulayıcının "kapatılmadı" mesajı panel yolunda yalan | 14 |
+| A4 | `LicenseId` tekil indeks ihlali 409 yerine 500 | 14 |
+| A2 | Tamamlanma anında kapatılan kampanya `paused`'da asılı kalıyor | 15 |
+| A5 | Alıcı listesi talep edilmeden okunuyor → çift SMS penceresi | 16 |
+| A1 | Marka çözülemezken gelen RET kayboluyor → hukuken geçersiz gönderim | 17 |
+
+> **Neden Plan 3'e ertelenmediler.** A1 şu anda **prod'da canlı** (PR #473 ile
+> gitti) — ertelenen şey gelecekteki risk değil, bugün işleyen bir 6563 açığı.
+> A5'i "ticari gönderim kilidi maskeliyor" diye ertelemek ise en kötü
+> sıralama olurdu: Plan 3'ün **tek işi** o kilidi kaldırmak, yani bulguyu onu
+> silaha çevirecek plana devretmek demekti.
+
+---
+
+## Görev 14: Panel hata yüzeyi — yalan mesaj + eksik 409 eşlemesi
+
+İki küçük, bağımsız kusur; ikisi de panel `PUT` yolunda, bu yüzden tek görev.
+
+**A3 — mesaj iki bağlamda kullanılıyor, birinde yalan.**
+`NetgsmAccountVerifier.cs:144-146` geçici arızada şunu döndürüyor:
+
+> "İYS'ye şu an ulaşılamadı. Kurulumunuz kapatılmadı, doğrulama kendiliğinden
+> tekrar denenecek."
+
+Günlük iş bağlamında iki cümle de doğru: iş yalnız `Verified` hesapları tarar,
+`Unavailable` sonucu hesabı düşürmez (Görev 2), ve ertesi gün tekrar dener.
+Panel bağlamında **ikisi de yanlış**: `UpsertAsync` doğrulamadan ÖNCE
+`NetgsmAccountService.cs:232`'de `Failed` yazıyor (fail-closed, bilinçli), ve
+`Failed` satır günlük işin taramasına girmiyor — yani kurulum hem kapandı hem
+kendiliğinden tekrar denenmeyecek. Yayıncı "bekle, düzelir" diye okuyup
+bekliyor; tek çıkış yolu olan "formu tekrar kaydet" adımını atmıyor.
+
+Düzeltme: doğrulayıcının mesajı **günlük işin** mesajı olarak kalsın; panel
+yolu `Unavailable` sonucunu kendi metnine çevirsin. Mesajı doğrulayıcıda
+bağlama göre dallandırmak YANLIŞ olurdu — doğrulayıcı kendisini kimin
+çağırdığını bilmemeli, o bilgi çağıranda.
+
+**A4 — `IsBrandCodeConflict` yalnız marka indeksini tanıyor.**
+`PanelNetgsmAccountController.cs:259-262` `sql.Message.Contains("BrandCode")`
+arıyor. Aynı lisans için iki sekmeden eşzamanlı İLK kayıt yapılırsa kaybeden
+istek `IX_NetgsmAccounts_LicenseId`'den 2601 alır, filtre tutmaz, istisna dışarı
+kaçar ve yayıncı **500** görür. Doğru cevap 409 + "kurulumunuz başka bir sekmede
+kaydedildi, sayfayı yenileyin".
+
+> **Bu testle yakalanamazdı ve yakalanamayacak.** InMemory sağlayıcı tekil
+> indeksleri uygulamıyor, dolayısıyla `SqlException 2601` üretilemiyor. Adım 1
+> bu yüzden `IsBrandCodeConflict`'in kardeşini **saf fonksiyon** olarak test
+> ediyor, HTTP üzerinden değil.
+
+**Files:**
+- Modify: `OrderDeck.LicenseServer/Controllers/Panel/PanelNetgsmAccountController.cs`
+- Test: `OrderDeck.LicenseServer.Tests/Controllers/Panel/PanelNetgsmAccountErrorSurfaceTests.cs` (yeni)
+
+- [ ] **Adım 1: Düşen testleri yaz**
+
+İki test:
+
+1. `Gecici_ariza_panelde_kendi_mesajini_dondurur` — `ApiFactory` içinde
+   doğrulayıcıyı `Unavailable` döndürecek şekilde değiştir (Görev 5'teki
+   `FakeNetgsmVerifier` kalıbı), `PUT` at, 200 gelen `AccountView.LastError`
+   metninde **"kendiliğinden tekrar denenecek" geçmediğini** ve "tekrar
+   kaydedin" geçtiğini doğrula.
+2. `Lisans_tekil_indeks_ihlali_de_catisma_sayilir` — `IsBrandCodeConflict`
+   `internal static` yapılıp `InternalsVisibleTo` ile mi, yoksa `public static`
+   mi test edileceğine uygulama anında karar ver; bu depoda kardeşi
+   (`PanelCustomerBalanceController.IsDuplicateReversal`) `private`, yani
+   **kalıbı bozmamak için** yeni bir `internal static bool IsUniqueIndexConflict(
+   DbUpdateException ex, string indexName)` yardımcı çıkar ve onu test et.
+   `SqlException` elle kurulamaz (ctor'u yok) — test bu yüzden
+   `ex.InnerException` null / yanlış tip / yanlış numara hâllerinin **false**
+   döndüğünü kanıtlar; 2601 + doğru ad hâlini InMemory'de kanıtlayamayız,
+   bunu koda yorum olarak yaz.
+
+- [ ] **Adım 2: Yeşile geçir**
+
+`IsBrandCodeConflict`'i `IsUniqueIndexConflict(ex, "BrandCode")` ve
+`IsUniqueIndexConflict(ex, "LicenseId")` olarak ikiye ayır; ikinci `catch`
+bloğu 409 + `title: "netgsm-account-concurrent-create"` döndürsün ve
+`_db.ChangeTracker.Clear()` çağırsın (kardeş dalların hepsi çağırıyor —
+Görev 5'in gerekçesi `PanelNetgsmAccountController.cs:220-231`'de yazılı).
+
+Panel tarafında `result.Outcome == NetgsmVerifyOutcome.Unavailable` dalı
+`account.LastError`'a doğrulayıcının metnini değil kendi metnini yazsın:
+
+```
+"İYS'ye şu an ulaşılamadı, kurulumunuz doğrulanamadı. Birkaç dakika sonra
+formu tekrar kaydedin."
+```
+
+`UndecryptableMessage` yolu (Görev 9) bu değişimden ETKİLENMEMELİ — o mesaj
+zaten kendi bağlamını anlatıyor. Ayırt etmek için `Outcome`'a değil, sonucu
+üreten dala bak.
+
+- [ ] **Adım 3: Mutasyon testi**
+
+`"kendiliğinden tekrar denenecek"` cümlesini panel metnine geri koy → test 1
+kırmızıya düşmeli. `IsUniqueIndexConflict`'teki ad karşılaştırmasını
+`StringComparison.OrdinalIgnoreCase`'e çevir → test 2 bunu yakalamaz,
+**yakalamaması normal**; asıl mutasyon `sql.Number is 2601 or 2627` şartını
+kaldırmak — test 2 kırmızıya düşmeli.
+
+---
+
+## Görev 15: Tamamlanma anında kapatılan kampanya asılı kalmasın
+
+**Senaryo.** `SmsCampaignSendJob` son alıcının sonucunu yazdı, döngü bitti,
+`SmsCampaignSendJob.cs:258-293`'teki tamamlama + iade bloğuna girdi. Tam o anda
+admin kurulumu kapattı (Görev 12) ve kampanya `paused` oldu. Tamamlama yazımı
+`ClaimedAt` CAS'ından çakışma alıyor, Hangfire işi yeniden deniyor, ama
+`RunAsync` kapısı (`SmsCampaignSendJob.cs:133`) artık `paused` gördüğü için
+çekiliyor.
+
+Sonuç: kampanya `paused`, bekleyen alıcı **sıfır**, `RefundedCredits = 0`.
+Başarısız alıcıların kredisi iade edilmemiş, kampanya "duraklatıldı" görünüyor
+ama devam edecek hiçbir şeyi yok. `SmsCampaignRecoveryJob` yalnız `sending` ve
+`pending` süpürüyor (`SmsCampaignRecoveryJob.cs:48-53`), yani onu da bulmuyor.
+
+**Neden P1 değil.** Kendi kendini iyileştiriyor: admin kurulumu geri açıp
+doğrulanınca Görev 13'ün devam ettirmesi kampanyayı `pending` yapar, süpürme
+kuyruğa alır, iş sıfır alıcıyla tamamlama bloğuna girer ve idempotent iade
+(`owed - RefundedCredits`) doğru tutarı öder. Yani kalıcı para kaybı yok, ledger
+değişmezi bozulmuyor. Ama kurulum hiç geri açılmazsa rezerve kredi süresiz
+asılı kalır — ve bunun olması için yöneticinin bir şey yapması gerekmiyor.
+
+**Düzeltme.** Süpürmeye üçüncü takılma sınıfı: `paused` + bekleyen alıcısı
+olmayan kampanya. Bunu `Enqueue` ile çözemeyiz (gönderim işi `paused`'ı
+reddediyor ve REDDETMELİ — kapatma kararı kutsal). Süpürme kampanyayı
+**doğrudan tamamlasın**: `Status = "completed"`, `CompletedAt`, `ClaimedAt`
+ilerlet, ve iadeyi aynı idempotent formülle yaz.
+
+> **Neden `paused → pending` yapmıyoruz.** Yapsaydık kapatma kararını sessizce
+> geri almış olurduk: kurulum kapalıyken kampanya `pending`'e döner, süpürme
+> onu kuyruğa alır, gönderim işi `Verified` marka bulamayınca kalan alıcıları
+> `iys-brand-missing` ile **failed** yazar. Sıfır bekleyen alıcı olduğu için
+> bugün zararsız görünür, ama sözleşme "kapatma kampanyayı durdurur" — bu yolu
+> açmak Görev 12'nin bütün gerekçesini deler.
+
+> **Neden gönderim işine değil süpürmeye koyuyoruz.** Gönderim işi kapıdan
+> geçemeyen bir kampanyaya dokunmamalı; bu iş bir **kurtarma**, gönderim değil.
+> Süpürme zaten "takılmışı bul ve çöz" sözleşmesine sahip.
+
+**Files:**
+- Modify: `OrderDeck.LicenseServer/Services/Sms/SmsCampaignRecoveryJob.cs`
+- Test: `OrderDeck.LicenseServer.Tests/Services/Sms/SmsCampaignRecoveryTests.cs`
+  (mevcut sınıf — yoksa oluştur)
+
+- [ ] **Adım 1: Düşen testleri yaz**
+
+1. `Bekleyen_alicisi_olmayan_paused_kampanya_tamamlanir_ve_iade_edilir` —
+   `paused`, 2 alıcı (biri `sent` biri `failed`), `SegmentsPerMessage = 2`,
+   `RefundedCredits = 0`. Süpürmeyi koş. Kampanya `completed`, `CompletedAt`
+   dolu, `RefundedCredits == 2`, ve bakiye ledger'ında `+2`'lik
+   `"send-refund"` satırı olmalı.
+2. `Bekleyen_alicisi_olan_paused_kampanyaya_dokunulmaz` — aynı kurulum ama bir
+   alıcı `pending`. Süpürme sonrası kampanya HÂLÂ `paused` ve
+   `RefundedCredits == 0` olmalı. **Bu test görevin kalbi**: duraklatılmış
+   gerçek bir kampanyayı tamamlamak, gitmemiş SMS'leri gitmiş saymak olurdu.
+3. `Ikinci_supurme_ikinci_iade_yazmaz` — 1. testi koştuktan sonra süpürmeyi
+   tekrar koş; kampanya artık `completed` olduğu için sorguya hiç girmemeli ve
+   ledger değişmemeli.
+
+- [ ] **Adım 2: Yeşile geçir**
+
+`RunAsync`'e ikinci bir sorgu (mevcut `stuck` sorgusuna EKLEME — o sorgu
+`Enqueue` ediyor, bu dal etmiyor; tek sorguda birleştirmek iki farklı eylemi
+aynı listeye bindirirdi):
+
+```csharp
+var stranded = await _db.SmsCampaigns
+    .Where(c => c.Status == "paused"
+        && !_db.SmsCampaignRecipients.Any(
+            r => r.CampaignId == c.Id && r.Status == "pending"))
+    .ToListAsync(ct);
+```
+
+Her biri için `failedCount` say, `owed`/`refund` hesapla, alanları yaz ve
+`_balance.ApplyAndSaveAsync(...)` çağır — **gönderim işindeki formülün
+birebir aynısı**, `SmsCampaignSendJob.cs:258-289`. İki kopya formül olacak;
+ortaklaştırmayı uygulama anında değerlendir, ama kopyalarsan iki tarafa da
+"ikizi şurada" yorumu yaz.
+
+`_balance` ve `SegmentsPerMessage` için `SmsCampaignRecoveryJob`'a
+`LicenseSmsBalanceService` enjekte edilmesi gerekecek; DI'da `AddScoped`
+zaten var mı diye `Program.cs`'i kontrol et.
+
+- [ ] **Adım 3: Mutasyon testi**
+
+`!_db.SmsCampaignRecipients.Any(...)` şartını kaldır → test 2 kırmızıya
+düşmeli. `refund = owed - campaign.RefundedCredits` yerine `refund = owed`
+yaz → test 3 kırmızıya düşmeli (ya da ikinci turda ledger değişir).
+
+---
+
+## Görev 16: Alıcı başına atomik talep — çift SMS penceresini kapat
+
+**Senaryo.** İşçi A `SmsCampaignSendJob.cs:168-170`'te bekleyen alıcıların
+TAMAMINI belleğe alıyor. A 1. alıcıya SMS gönderdi ama sonucu henüz diske
+indirmedi. Bu arada kampanya duraklatılıp devam ettirildi (Görev 12+13) ya da
+kira bayatladı ve işçi B kampanyayı devraldı. B kendi `:168` sorgusunu koşuyor
+ve 1. alıcıyı **hâlâ `pending`** görüyor → aynı kişiye ikinci ticari SMS.
+
+A'nın tur başı sahiplik kontrolü (`:202-218`) bunu KAPATMIYOR: kontrol
+gönderimden ÖNCE koşuyor, yarış gönderim ile kayıt ARASINDA. Klasik TOCTOU.
+
+> **Bu sınıf yeni değil.** Bayat kira devralması aynı şekle sahipti; Görev 13'ün
+> devam ettirmesi pencereyi yalnız daha sık ulaşılır kılıyor. Bugün fiziksel
+> gönderim `NetgsmSmsSender`'daki `iys-tenant-sender-missing` kilidiyle
+> engellendiği için sömürülemiyor — **ve kilidi kaldıracak olan Plan 3'tür.**
+> Bu yüzden burada kapatılıyor.
+
+**Düzeltme: alıcı satırını gönderimden ÖNCE talep et.**
+`SmsCampaignRecipient`'a eşzamanlılık jetonu ekle ve yaşam döngüsünü üçe çıkar:
+
+```
+pending  →  sending (talep)  →  sent | failed
+```
+
+Talep yazımı CAS'tan geçer; çakışma alırsak satır BAŞKASININ, **gönderim
+yapmadan** `continue`. İki işçi aynı alıcıyı asla gönderemez.
+
+> **`ExecuteUpdateAsync` ile yapmayın.** InMemory sağlayıcı desteklemiyor;
+> bu sınıfın bütün testleri InMemory. Eşzamanlılık jetonu + `SaveChanges`
+> kalıbı hem InMemory'de uygulanıyor hem de depodaki `SmsCampaign.ClaimedAt`
+> kalıbının birebir kardeşi.
+
+> **`sending`'de takılı kalan alıcı BİLİNÇLİ olarak kurtarılmaz.** Süreç
+> gönderim ile sonuç yazımı arasında ölürse satır `sending` kalır. Onu
+> `pending`'e geri çevirmek, gitmiş olabilecek bir SMS'i ikinci kez göndermek
+> demektir; `failed` saymak ise gitmiş olabilecek bir SMS'in kredisini iade
+> etmek. İkisi de yanlış yönde hata. `sending` = "gitmiş olabilir, bilmiyoruz":
+> bir daha gönderilmez, iade edilmez. Hem para hem hukuk yönünde fail-closed.
+> Bu satırlar admin sayfasında görünür olmalı — kapsam dışı ama not düş.
+
+**Files:**
+- Modify: `OrderDeck.LicenseServer/Domain/SmsCampaignRecipient.cs`
+- Modify: `OrderDeck.LicenseServer/Data/LicenseDbContext.cs` (jeton kaydı)
+- Modify: `OrderDeck.LicenseServer/Services/Sms/SmsCampaignSendJob.cs`
+- Migration: `dotnet ef migrations add SmsCampaignRecipientClaim`
+- Test: `OrderDeck.LicenseServer.Tests/Services/Sms/SmsCampaignRecipientClaimTests.cs` (yeni)
+
+- [ ] **Adım 1: Düşen testi yaz**
+
+1. `Alici_gonderimden_once_sending_olarak_talep_edilir` — tek alıcılı kampanya
+   koş; sahte `ISmsSender` çağrıldığı ANDA DB'den alıcıyı oku ve
+   `Status == "sending"` olduğunu doğrula. Bu, sıralamayı çiviler: talep
+   gönderimden önce diske inmeli, yoksa çökmede koruma yok.
+2. `Baskasinin_talep_ettigi_alici_gonderilmez` — sahte gönderici ilk çağrıda
+   ikinci bir scope açıp 2. alıcıyı `sending` yapsın (CAS'ı ilerleterek).
+   Koşu bitince gönderici **bir kez** çağrılmış olmalı ve 2. alıcı ikinci kez
+   gönderilmemeli.
+3. `Sending_kalan_alici_tekrar_gonderilmez_ve_iade_edilmez` — `sending` bir
+   alıcı bırakıp kampanyayı tekrar koş: gönderici hiç çağrılmamalı ve
+   `RefundedCredits` o alıcıyı KAPSAMAMALI.
+
+- [ ] **Adım 2: Yeşile geçir**
+
+`SmsCampaignRecipient`'a:
+
+```csharp
+/// <summary>Alıcıyı hangi işçi ne zaman talep etti. Eşzamanlılık jetonu —
+/// iki işçi aynı alıcıya gönderemesin diye. Gerekçe: Görev 16.</summary>
+public DateTimeOffset? ClaimedAt { get; set; }
+```
+
+`LicenseDbContext`'te `.IsConcurrencyToken()` (kalıp: `SmsCampaign.ClaimedAt`,
+`LicenseDbContext.cs:816`). Doc yorumundaki `"sent" | "failed" | "skipped"`
+listesi zaten bayat (`pending` yazılı değil) — `"pending" | "sending" | "sent"
+| "failed" | "skipped"` olarak düzelt.
+
+Gönderim döngüsünde, sahiplik kontrolünden SONRA ve izin kapısından ÖNCE:
+
+```csharp
+recipient.Status = "sending";
+recipient.ClaimedAt = NextClaimedAt(recipient.ClaimedAt);
+if (!await ClaimRecipientAsync(campaign, recipient, ct)) continue;
+```
+
+`ClaimRecipientAsync`, `SaveRecipientResultAsync`'in kardeşi olmalı ama
+**çakışan varlık farklı**: burada çakışan `recipient`, orada `campaign`.
+`ReferenceEquals(e.Entity, recipient)` filtresi kullan; kampanya çakışırsa
+istisna dışarı çıksın (sahiplik kaybı zaten bir sonraki turda yakalanır).
+Çakışmada `_db.Entry(recipient).State = EntityState.Unchanged` + yeniden
+oku — bellekteki kopya bayat.
+
+İzin kapısı `failed` yazan dal (`:224-233`) artık `sending`'den `failed`'a
+geçiyor; iade matematiği `failed` saydığı için ETKİLENMEZ.
+
+- [ ] **Adım 3: Mutasyon testi**
+
+Talep yazımını gönderimden SONRAYA al → test 1 kırmızıya düşmeli.
+`ClaimedAt`'in `.IsConcurrencyToken()` kaydını kaldır → test 2 kırmızıya
+düşmeli. Alıcı seçimini `r.Status == "pending" || r.Status == "sending"`
+yap → test 3 kırmızıya düşmeli.
+
+- [ ] **Adım 4: Göçü üret ve prod güvenliğini doğrula**
+
+`ClaimedAt` **nullable** ekleniyor, varsayılan yok, mevcut satırlar `NULL`
+kalıyor — veri taşıması yok, kilitlenme yok. `NextClaimedAt(null)` `UtcNow`
+döndürüyor, yani mevcut `pending` satırlar ilk talepte doğal olarak
+damgalanıyor. `Down` sütunu düşürüyor; geri dönüşte veri kaybı yalnız talep
+damgalarında, gönderim sonuçlarında değil.
+
+---
+
+## Görev 17: Marka çözülemezken gelen RET kaybolmasın
+
+**Senaryo (prod'da CANLI).** Yayıncının kurulumu `Verified` iken müşteri onay
+veriyor; `IysConsents` satırı `Onay` olarak açılıyor. Sonra hesap `Disabled` ya
+da `Failed` oluyor. Müşteri bu arada onayını **geri çekiyor**.
+`IysConsentCollector.cs:110` `GetBrandCodeAsync`'i çağırıyor, o da yalnız
+`Verified` hesaplara baktığı için (`NetgsmAccountService.cs:447-451`) `null`
+dönüyor ve toplayıcı `:128-137`'de olay satırını `ErrorCode = "no-brand"` ile
+yazıp **durum satırına dokunmadan** çıkıyor.
+
+`IysConsents` satırı `Onay` kalıyor. Kurulum geri doğrulandığında gönderim
+kapısı (`IysConsentGate.CanSend`) o bayat `Onay`'ı kabul ediyor ve **onayını
+geri çekmiş kişiye ticari SMS gidiyor**. 6563 kapsamında bu bir ihlal.
+
+> **Dosya bu dalda DEĞİŞMEDİ** — `git diff origin/master...HEAD --
+> OrderDeck.LicenseServer/Services/Iys/IysConsentCollector.cs` boş. Kusur
+> PR #473 ile geldi ve şu an prod'da. Bu dal onu yalnız daha ulaşılabilir
+> kılıyor (Failed/Disabled geçişlerini o ekliyor).
+
+**Reddedilen düzeltme: "RET yönünde markayı `Verified` filtresi olmadan çöz".**
+Cazip, çünkü ret her zaman güvenli yön. Ama filtreli tekil indeks (Görev 7)
+markayı yalnız `Verified` satırlar arasında benzersiz tutuyor — doğrulanmamış
+bir hesap başkasının `BrandCode`'unu yazabilir. O hâlde B'nin müşterisinin
+reddi **A'nın** onay satırını `Ret`'e düşürür: kiracı sızıntısı.
+`IysConsentCollector.cs:106-109`'daki yorumun `BrandCode=""` için uyardığı
+şeyin aynısı, boş string yerine gerçek kodla.
+
+**Seçilen düzeltme: doğrulama anında `no-brand` RET olaylarını tekrar oynat.**
+İspat olayı zaten yazılmış (`OccurredAt`, `EventType`, `Recipient`, `LicenseId`
+hepsi dolu). Hesap `Verified`'a döndüğü anda, o lisansın `no-brand`
+olaylarını **artık doğrulanmış** markaya karşı yeniden uygula. Marka
+doğrulanmış olduğu için kiracı-güvenli.
+
+> **YALNIZ RET oynatılır, ONAY oynatılmaz.** Onay zamana bağlı: 6563'e göre
+> İYS dışında alınan onay üç iş günü içinde kaydedilmezse hukuken geçersiz.
+> Haftalarca `no-brand` bekleyen bir onayı canlandırıp İYS'ye push etmek
+> geçersiz bir onayı kayda geçirmek olur. Düşen onayın bedeli "o kişiye
+> pazarlama yapılamaz" — zarar yok. Düşen reddin bedeli yasa dışı gönderim.
+> Asimetri bilinçli ve fail-closed doktrininin aynısı.
+
+> **İdempotentlik BEDAVA geliyor, yeni sütun GEREKMİYOR.** `IysConsentEvents`
+> tablosu **ekle-only** (entity doc'u: "hiç silinmez, hiç güncellenmez"), yani
+> olayı "oynatıldı" diye işaretleyemeyiz. Gerek de yok: toplayıcının
+> `:163-168`'deki kuralı, `OccurredAt <= row.LastLocalEventAt` olan olayı
+> zaten sessizce atlıyor. İlk oynatma `LastLocalEventAt`'i en yeni olaya
+> taşır; ikinci oynatmada tüm olaylar o damganın altında kalır ve hiçbiri
+> uygulanmaz. Aynı kural, oynatmanın **daha yeni gerçek bir olayı ezmesini**
+> de engelliyor.
+
+> **Oynatma yeni `IysConsentEvent` YAZMAZ.** İspat geçmişini çoğaltmak
+> denetimde "bu kişi kaç kez reddetti" sorusunu bozardı. Orijinal olay
+> `ErrorCode = "no-brand"` ile tarihsel gerçek olarak kalır.
+
+**Files:**
+- Modify: `OrderDeck.LicenseServer/Services/Iys/IysConsentCollector.cs`
+- Modify: `OrderDeck.LicenseServer/Controllers/Panel/PanelNetgsmAccountController.cs`
+- Test: `OrderDeck.LicenseServer.Tests/Services/Iys/IysNoBrandReplayTests.cs` (yeni)
+
+- [ ] **Adım 1: Düşen testleri yaz**
+
+1. `Dogrulama_no_brand_retlerini_uygular` — `Onay` durumunda bir `IysConsents`
+   satırı + ondan SONRA `OccurredAt` taşıyan `no-brand` bir `LocalRevoke`
+   olayı kur. Panel `PUT` ile hesabı `Verified` yap. Satır `Ret` olmalı.
+2. `Dogrulama_no_brand_onaylarini_uygulamaz` — aynı kurulum ama olay
+   `LocalConsent` ve satır yok. `PUT` sonrası `IysConsents` satırı
+   **açılmamış** olmalı.
+3. `Ikinci_dogrulama_daha_yeni_bir_onayi_ezmez` — 1. testten sonra kişi
+   yeniden onay versin (yeni, daha yeni `OccurredAt`), sonra hesabı tekrar
+   doğrula. Satır `Onay` KALMALI — eski RET olayı ikinci kez uygulanmamalı.
+   **Bu test bedava-idempotentlik iddiasını çiviliyor**; düşerse tasarım
+   yanlıştır, testi değil tasarımı değiştir.
+4. `Baska_lisansin_no_brand_reti_bu_markaya_dokunmaz` — kiracı sızıntısı
+   testi. İki lisans, iki olay; yalnız doğrulanan lisansınki uygulanmalı.
+
+- [ ] **Adım 2: Yeşile geçir**
+
+`IysConsentCollector`'a yeni public metot:
+
+```csharp
+/// <summary>
+/// Marka çözülemediği için düşmüş RET'leri, marka artık doğrulanmışken
+/// uygular. <b>KAYDETMEZ</b> — çağıran, hesabın Verified yazımıyla AYNI
+/// SaveChanges'te indirir (kalıp: StageResumePausedCampaignsAsync, Görev 13).
+/// Yalnız RET; gerekçe Görev 17'de.
+/// </summary>
+public async Task<int> StageReplayNoBrandRevokesAsync(
+    Guid licenseId, string brandCode, CancellationToken ct = default)
+```
+
+Gövde: `ErrorCode == "no-brand"`, `LicenseId == licenseId`,
+`EventType == IysConsentEventType.LocalRevoke` olan olayları `OccurredAt`
+sırasına göre çek; her biri için mevcut durum-satırı arama + güncelleme
+mantığını uygula. Mantığı `ApplyAsync`'ten **kopyalama** — ortak özel bir
+metoda çıkar, yoksa "RET ONAY'a yükselmez" kuralı iki yerde yaşar ve biri
+ileride sessizce ayrışır.
+
+Çağrı yeri: `PanelNetgsmAccountController.cs:189` — devam ettirmenin hemen
+yanına, aynı `Outcome == Ok` bloğuna, aynı `SaveChanges`'e:
+
+```csharp
+await _accounts.StageResumePausedCampaignsAsync(account.LicenseId, ct);
+await _consents.StageReplayNoBrandRevokesAsync(
+    account.LicenseId, account.BrandCode, ct);
+```
+
+`IysConsentCollector`'ın controller'a enjekte edilmesi gerekecek; DI kaydını
+`Program.cs`'te doğrula.
+
+> **Neden yalnız panel `PUT`'u.** `Failed → Verified` geçişinin TEK yolu o
+> (Görev 13'ün gerekçesiyle aynı): günlük iş yalnız `Verified` hesapları
+> tarar, admin "Aç" düğmesi `Failed` yazar `Verified` değil (Görev 12).
+
+- [ ] **Adım 3: Mutasyon testi**
+
+`EventType == LocalRevoke` filtresini kaldır → test 2 kırmızıya düşmeli.
+`LicenseId == licenseId` filtresini kaldır → test 4 kırmızıya düşmeli.
+`OrderBy(OccurredAt)`'ı `OrderByDescending` yap → test 3'ün kırmızıya düşüp
+düşmediğini gözle; düşmüyorsa idempotentlik iddiası sırayla ilgili değil
+demektir, bunu not düş.
+
+---
+
 ## Kapanış
 
 - [ ] **Dal bitişi**
