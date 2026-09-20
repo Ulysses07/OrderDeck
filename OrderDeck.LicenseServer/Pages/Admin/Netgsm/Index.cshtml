@@ -1,0 +1,58 @@
+@page "/admin/netgsm"
+@model IndexModel
+@{
+    ViewData["Title"] = "Netgsm Kurulumları";
+}
+@* TempData["Success"] / TempData["Error"] şeritleri BU SAYFADA basılmaz:
+   Pages/Admin/_ViewStart.cshtml `_AdminLayout`ı seçiyor, o da
+   `_ToastPartial`ı çağırıyor (_AdminLayout.cshtml:36) ve partial iki şeridi
+   de zaten gösteriyor (_ToastPartial.cshtml:1-14). Burada ikinci bir kopya
+   yazmak mesajı ÇİFT bastırır — TempData aynı istek içinde tekrar okunabilir,
+   silinme istek sonunda olur. Komşu Pages/Admin/Iys/Index.cshtml de aynı
+   şekilde partial'a güveniyor. *@
+<h1 class="h3 mb-4">Netgsm / İYS Kurulumları</h1>
+
+<table class="table table-sm align-middle">
+    <thead>
+        <tr>
+            <th>Müşteri</th><th>Abone No</th><th>Başlık</th><th>Marka</th>
+            <th>Durum</th><th>Son doğrulama</th><th>Aktif kampanya</th>
+            <th>Son hata</th><th></th>
+        </tr>
+    </thead>
+    <tbody>
+    @foreach (var r in Model.Rows)
+    {
+        <tr data-account="@r.AccountId">
+            <td>@r.CustomerEmail</td>
+            <td>@r.UserCode</td>
+            <td>@r.Header</td>
+            <td>@r.BrandCode</td>
+            <td data-cell="status">@r.Status</td>
+            <td>@(r.LastVerifiedAt?.ToString("yyyy-MM-dd HH:mm") ?? "—")</td>
+            <td>@r.ActiveCampaigns</td>
+            <td class="text-danger small">@r.LastError</td>
+            <td>
+                <form method="post" class="d-inline">
+                    <input type="hidden" name="AccountId" value="@r.AccountId" />
+                    @if (r.Status == NetgsmAccountStatus.Disabled)
+                    {
+                        <button class="btn btn-sm btn-outline-success"
+                                asp-page-handler="Enable">Aç</button>
+                    }
+                    else
+                    {
+                        <button class="btn btn-sm btn-outline-danger"
+                                asp-page-handler="Disable">Kapat</button>
+                    }
+                </form>
+            </td>
+        </tr>
+    }
+    </tbody>
+</table>
+
+@if (Model.Rows.Count == 0)
+{
+    <p class="text-muted">Henüz Netgsm kurulumu yapan yayıncı yok.</p>
+}
