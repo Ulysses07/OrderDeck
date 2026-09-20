@@ -102,7 +102,28 @@ public sealed class SmsBalanceConcurrencyTests : IAsyncLifetime
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var accounts = scope.ServiceProvider.GetRequiredService<NetgsmAccountService>();
         var campaignId = Guid.NewGuid();
+
+        // Gönderim işi artık hesap kapısından geçiyor (§3.2): Verified hesap
+        // yoksa yeniden koşu kampanyayı paused'a çeker ve aşağıdaki retry
+        // bölümü tamamlanmayı hiç göremezdi.
+        db.NetgsmAccounts.Add(new NetgsmAccount
+        {
+            Id = Guid.NewGuid(),
+            LicenseId = licenseId,
+            // Gerçek SQL şema sınırları: UserCode ≤32; BrandCode ≤16 ve
+            // SALT RAKAM (CK_NetgsmAccounts_BrandCode) — InMemory testlerdeki
+            // guid'li kalıplar burada CHECK/truncation'a takılır.
+            UserCode = $"user-{Guid.NewGuid():N}"[..32],
+            PasswordProtected = accounts.ProtectPassword($"pw-{Guid.NewGuid():N}"),
+            Header = "ORDERDECK",
+            BrandCode = Random.Shared.NextInt64(100_000_000_000, 999_999_999_999)
+                .ToString(),
+            Status = NetgsmAccountStatus.Verified,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        });
 
         db.SmsCampaigns.Add(new SmsCampaign
         {
@@ -204,9 +225,10 @@ public sealed class SmsBalanceConcurrencyTests : IAsyncLifetime
                 .Should().Be(0, "ledger satırı bakiyeyle birlikte geri alınmalı");
         }
 
-        // Kampanya gerçekten yeniden koşturulduğunda iade BİR KEZ yazılmalı;
-        // ikinci koşu hiç alıcı bulamayıp doğrudan tamamlamaya gider ve
-        // idempotans farkı sıfır çıkar.
+        // Kampanya gerçekten yeniden koşturulduğunda temiz tamamlanmalı.
+        // Kredi sistemi emekli (Plan 3): iş artık İADE YAZMAZ — bayat
+        // tamamlanmanın düşmesi yeterli, yeniden koşu ledger'a dokunmadan
+        // biter. İkinci koşu completed kampanyada no-op (idempotans).
         using (var retryScope = _factory.Services.CreateScope())
         {
             await retryScope.ServiceProvider
@@ -226,19 +248,16 @@ public sealed class SmsBalanceConcurrencyTests : IAsyncLifetime
                 .SingleAsync(c => c.Id == campaignId);
 
             campaign.Status.Should().Be("completed");
-            campaign.RefundedCredits.Should().Be(2);
+            campaign.RefundedCredits.Should().Be(0, "iş krediye hiç dokunmaz");
 
             (await db.LicenseSmsBalances
                 .Where(b => b.LicenseId == licenseId)
                 .Select(b => b.CreditsRemaining)
-                .SingleAsync()).Should().Be(102);
+                .SingleAsync()).Should().Be(100, "yeniden koşu kredi yaratmamalı");
 
-            var refunds = await db.LicenseSmsTransactions.AsNoTracking()
-                .Where(t => t.LicenseId == licenseId && t.Kind == "send-refund")
-                .ToListAsync();
-
-            refunds.Should().ContainSingle();
-            refunds.Single().Amount.Should().Be(2);
+            (await db.LicenseSmsTransactions.AsNoTracking().CountAsync(
+                t => t.LicenseId == licenseId && t.Kind == "send-refund"))
+                .Should().Be(0, "kredi sistemi emekli — iade satırı hiç doğmamalı");
         }
     }
 

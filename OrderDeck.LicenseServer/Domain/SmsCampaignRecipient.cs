@@ -22,6 +22,11 @@ public sealed class SmsCampaignRecipient
     /// satırı fiziksel gönderimden ÖNCE bu duruma çeker (Görev 16); süreç
     /// gönderim ile sonuç yazımı arasında ölürse satır burada kalır ve
     /// BİLİNÇLİ olarak kurtarılmaz — bkz. <see cref="ClaimedAt"/>.</para>
+    ///
+    /// <para><c>skipped</c> = İYS kapısı eledi (onay yok/ret) — altyapı
+    /// arızası DEĞİL, sistem doğru çalıştı (§3.3). <c>failed</c>'dan ayrı
+    /// tutulur: yayıncıya "47 başarısız" göstermek arıza sandırır; skipped
+    /// oranı ayrıca kötüye kullanımın tek erken göstergesi.</para>
     /// </summary>
     public string Status { get; set; } = "";
 
@@ -46,8 +51,14 @@ public sealed class SmsCampaignRecipient
     /// </summary>
     public DateTimeOffset? ClaimedAt { get; set; }
 
-    /// <summary>Hata mesajı (failed durumunda).</summary>
+    /// <summary>failed VE skipped durumunda sebep; CampaignPause sınıfı bir
+    /// hatada (§3.4) pending'e geri dönen satıra son ret kodu yazılabilir.</summary>
     public string? Error { get; set; }
+
+    /// <summary>Netgsm'in kabul yanıtındaki <c>jobid</c> (§3.4 karar 3).
+    /// Rapor-aşaması mutabakatı bugün YOK (§9.3 doğrulanmamış); sütun ileride
+    /// "gitti mi" sorusuna ham veri bırakır. Gönderim kabul edilmediyse null.</summary>
+    public string? ProviderJobId { get; set; }
 
     public DateTimeOffset? SentAt { get; set; }
 }

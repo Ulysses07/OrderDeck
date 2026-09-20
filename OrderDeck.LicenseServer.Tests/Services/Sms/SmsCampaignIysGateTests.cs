@@ -51,10 +51,9 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
         => IysConsentGate.CanSend(null).Should().BeFalse();
 
     [Fact]
-    public async Task Onayi_geri_cekilmis_alici_gonderilmez_ve_iade_edilir()
+    public async Task Onayi_olmayan_alici_gonderilmez_ve_skipped_yazilir()
     {
-        _factory.Sms.Clear();
-        _factory.Sms.ThrowOnSend = false;
+        _factory.TenantSms.Clear();
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -64,17 +63,17 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
         var phone = $"+90555{Random.Shared.Next(1000000, 9999999)}";
         var (campaignId, _) = await SeedCampaignAsync(db, accounts, phone);
 
-        // İYS kaydı yok → kapı kapalı.
+        // İYS kaydı yok → kapı kapalı. §3.3: eleme "skipped"tır — sistem
+        // doğru çalıştı, arıza ("failed") değil.
         await job.RunAsync(campaignId);
 
         var recipient = await db.SmsCampaignRecipients.AsNoTracking()
             .SingleAsync(r => r.CampaignId == campaignId);
-        recipient.Status.Should().Be("failed");
+        recipient.Status.Should().Be("skipped");
         recipient.Error.Should().Be("iys-consent-missing");
 
         var campaign = await db.SmsCampaigns.AsNoTracking().SingleAsync(c => c.Id == campaignId);
-        campaign.RefundedCredits.Should().BeGreaterThan(0,
-            "gönderilmeyen mesajın kredisi yayıncıda kalmalı");
+        campaign.Status.Should().Be("completed", "eleme kampanyayı asılı bırakmamalı");
     }
 
     /// <summary>
@@ -85,8 +84,7 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Dogrulanmis_onayli_alici_gonderilir()
     {
-        _factory.Sms.Clear();
-        _factory.Sms.ThrowOnSend = false;
+        _factory.TenantSms.Clear();
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -102,14 +100,13 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
         var recipient = await db.SmsCampaignRecipients.AsNoTracking()
             .SingleAsync(r => r.CampaignId == campaignId);
         recipient.Status.Should().Be("sent");
-        _factory.Sms.Sent.Should().ContainSingle(m => m.Phone == phone);
+        _factory.TenantSms.Sent.Should().ContainSingle(m => m.Phone == phone);
     }
 
     [Fact]
     public async Task Iys_RET_derse_gonderilmez()
     {
-        _factory.Sms.Clear();
-        _factory.Sms.ThrowOnSend = false;
+        _factory.TenantSms.Clear();
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -124,9 +121,9 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
 
         var recipient = await db.SmsCampaignRecipients.AsNoTracking()
             .SingleAsync(r => r.CampaignId == campaignId);
-        recipient.Status.Should().Be("failed");
+        recipient.Status.Should().Be("skipped");
         recipient.Error.Should().Be("iys-consent-not-onay");
-        _factory.Sms.Sent.Should().NotContain(m => m.Phone == phone);
+        _factory.TenantSms.Sent.Should().NotContain(m => m.Phone == phone);
     }
 
     [Fact]
@@ -135,8 +132,7 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
         // Spec sözleşme #4. İzin marka başına: kişi B yayıncısına onay verdiyse
         // A'nın kampanyası o onayı kullanamaz. Kullanırsa kişiye hiç izin
         // vermediği bir yayıncıdan ticari SMS gider — 6563 ihlali.
-        _factory.Sms.Clear();
-        _factory.Sms.ThrowOnSend = false;
+        _factory.TenantSms.Clear();
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -154,19 +150,18 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
 
         var recipient = await db.SmsCampaignRecipients.AsNoTracking()
             .SingleAsync(r => r.CampaignId == campaignId);
-        recipient.Status.Should().Be("failed");
+        recipient.Status.Should().Be("skipped");
         recipient.Error.Should().Be("iys-consent-missing");
-        _factory.Sms.Sent.Should().NotContain(m => m.Phone == phone);
+        _factory.TenantSms.Sent.Should().NotContain(m => m.Phone == phone);
     }
 
     [Fact]
     public async Task Dogrulanmis_Netgsm_hesabi_olmayan_lisans_hic_gonderemez()
     {
         // Fail-closed: marka çözülemiyorsa hiçbir onay geçerli sayılamaz.
-        // Hata kodu ayrı: "kayıt yok" ile "yayıncı kurulumunu bitirmemiş"
-        // farklı sorunlar, admin ekranında ayrışmalı.
-        _factory.Sms.Clear();
-        _factory.Sms.ThrowOnSend = false;
+        // §3.2: bu artık alıcı hatası değil KAMPANYA hatası — kitle
+        // harcanmaz, kampanya duraklar; kurulum doğrulanınca devam eder.
+        _factory.TenantSms.Clear();
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -186,14 +181,14 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
 
         var recipient = await db.SmsCampaignRecipients.AsNoTracking()
             .SingleAsync(r => r.CampaignId == campaignId);
-        recipient.Status.Should().Be("failed");
-        recipient.Error.Should().Be("iys-brand-missing");
-        _factory.Sms.Sent.Should().NotContain(m => m.Phone == phone);
+        recipient.Status.Should().Be("pending",
+            "kurulumunu bitirmemiş yayıncının kitlesi harcanmamalı — "
+            + "kampanya devam ettirildiğinde alıcı hâlâ gönderilebilir olmalı");
+        _factory.TenantSms.Sent.Should().NotContain(m => m.Phone == phone);
 
         var campaign = await db.SmsCampaigns.AsNoTracking().SingleAsync(c => c.Id == campaignId);
-        campaign.RefundedCredits.Should().BeGreaterThan(0,
-            "kurulumunu bitirmemiş yayıncının bin alıcılık kampanyasında bin "
-            + "kredi (gerçek para) sessizce yanmamalı");
+        campaign.Status.Should().Be("paused",
+            "hesap yokluğu kampanya düzeyinde bir engel; alıcı başına hata değil");
     }
 
     [Fact]
@@ -202,8 +197,7 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
         // Tekil indeks aynı marka+telefon için kanal başına ayrı satıra izin
         // verir. E-posta için verilen onay SMS göndermeye yetki vermez; kapı
         // kanalı süzmezse kişi hiç izin vermediği kanaldan ticari ileti alır.
-        _factory.Sms.Clear();
-        _factory.Sms.ThrowOnSend = false;
+        _factory.TenantSms.Clear();
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -221,9 +215,9 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
 
         var recipient = await db.SmsCampaignRecipients.AsNoTracking()
             .SingleAsync(r => r.CampaignId == campaignId);
-        recipient.Status.Should().Be("failed");
+        recipient.Status.Should().Be("skipped");
         recipient.Error.Should().Be("iys-consent-missing");
-        _factory.Sms.Sent.Should().NotContain(m => m.Phone == phone);
+        _factory.TenantSms.Sent.Should().NotContain(m => m.Phone == phone);
     }
 
     [Fact]
@@ -235,8 +229,7 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
         // ticari ileti göndermeye yetki vermez (6563 farklı rejim uygular).
         // Süzgeç olmasaydı bu satır kapıyı açardı — ve iki satır birden
         // doğsaydı ToDictionaryAsync çift anahtarla patlardı.
-        _factory.Sms.Clear();
-        _factory.Sms.ThrowOnSend = false;
+        _factory.TenantSms.Clear();
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -254,9 +247,9 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
 
         var recipient = await db.SmsCampaignRecipients.AsNoTracking()
             .SingleAsync(r => r.CampaignId == campaignId);
-        recipient.Status.Should().Be("failed");
+        recipient.Status.Should().Be("skipped");
         recipient.Error.Should().Be("iys-consent-missing");
-        _factory.Sms.Sent.Should().NotContain(m => m.Phone == phone);
+        _factory.TenantSms.Sent.Should().NotContain(m => m.Phone == phone);
     }
 
     /// <summary>
@@ -290,7 +283,7 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>
-    /// Lisans + doğrulanmış Netgsm hesabı + kredi + kampanya + tek alıcı.
+    /// Lisans + doğrulanmış Netgsm hesabı + kampanya + tek alıcı.
     /// Marka kodu lisansa özel üretiliyor: kapı artık kampanyanın lisansından
     /// markayı çözüyor, global yapılandırmadan DEĞİL.
     ///
@@ -338,22 +331,6 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
             UpdatedAt = DateTimeOffset.UtcNow,
         });
 
-        db.LicenseSmsBalances.Add(new LicenseSmsBalance
-        {
-            Id = Guid.NewGuid(),
-            LicenseId = license.Id,
-            CreditsRemaining = 99,
-            UpdatedAt = DateTimeOffset.UtcNow,
-        });
-        db.LicenseSmsTransactions.Add(new LicenseSmsTransaction
-        {
-            Id = Guid.NewGuid(),
-            LicenseId = license.Id,
-            Amount = 99,
-            Kind = "purchase",
-            CreatedAt = DateTimeOffset.UtcNow,
-        });
-
         var campaign = new SmsCampaign
         {
             Id = Guid.NewGuid(),
@@ -361,7 +338,6 @@ public sealed class SmsCampaignIysGateTests : IClassFixture<ApiFactory>
             MessageBody = "Kapi testi",
             SegmentsPerMessage = 1,
             RecipientCount = 1,
-            ReservedCredits = 1,
             Status = "pending",
             CreatedByCustomerId = customer.Id,
             CreatedAt = DateTimeOffset.UtcNow,

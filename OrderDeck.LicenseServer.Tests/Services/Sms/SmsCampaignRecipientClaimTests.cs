@@ -30,9 +30,7 @@ public sealed class SmsCampaignRecipientClaimTests : IClassFixture<ApiFactory>
     public SmsCampaignRecipientClaimTests(ApiFactory factory)
     {
         _factory = factory;
-        _factory.Sms.Clear();
-        _factory.Sms.ThrowOnSend = false;
-        _factory.Sms.OnSent = null;
+        _factory.TenantSms.Clear();
     }
 
     private static string NewPhone()
@@ -49,7 +47,9 @@ public sealed class SmsCampaignRecipientClaimTests : IClassFixture<ApiFactory>
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
-        var (campaignId, _, _) = await SeedAsync(db, recipientCount: 1);
+        var (campaignId, _, _) = await SeedAsync(
+            db, scope.ServiceProvider.GetRequiredService<NetgsmAccountService>(),
+            recipientCount: 1);
 
         // Gözlem AYRI scope'tan: işçinin kendi bağlamından okursak izlenen
         // (henüz kaydedilmemiş olabilecek) kopyayı görürüz, DİSKTEKİNİ değil.
@@ -57,7 +57,7 @@ public sealed class SmsCampaignRecipientClaimTests : IClassFixture<ApiFactory>
         // catch'i yutar ve alıcıyı "failed" yazar, yani test yalan söylerdi.
         string? statusDuringSend = null;
         DateTimeOffset? claimedAtDuringSend = null;
-        _factory.Sms.OnSent = _ =>
+        _factory.TenantSms.OnSent = _ =>
         {
             using var s2 = _factory.Services.CreateScope();
             var db2 = s2.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -68,7 +68,7 @@ public sealed class SmsCampaignRecipientClaimTests : IClassFixture<ApiFactory>
         };
 
         try { await job.RunAsync(campaignId); }
-        finally { _factory.Sms.OnSent = null; }
+        finally { _factory.TenantSms.OnSent = null; }
 
         statusDuringSend.Should().Be("sending",
             "fiziksel gönderim yapıldığı anda satır zaten talep edilmiş olmalı");
@@ -91,13 +91,15 @@ public sealed class SmsCampaignRecipientClaimTests : IClassFixture<ApiFactory>
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
-        var (campaignId, _, phones) = await SeedAsync(db, recipientCount: 2);
+        var (campaignId, _, phones) = await SeedAsync(
+            db, scope.ServiceProvider.GetRequiredService<NetgsmAccountService>(),
+            recipientCount: 2);
 
         // 1. alıcının gönderimi sırasında rakip işçi 2. alıcıyı kapıyor.
         // Kampanyaya DOKUNMUYOR bilerek: kampanya sahipliği kaybolsaydı koşu
         // zaten tur başı yoklamada dururdu ve alıcı jetonunu hiç sınamazdık.
         string? stolenPhone = null;
-        _factory.Sms.OnSent = msg =>
+        _factory.TenantSms.OnSent = msg =>
         {
             if (stolenPhone is not null) return;
             using var rival = _factory.Services.CreateScope();
@@ -111,12 +113,12 @@ public sealed class SmsCampaignRecipientClaimTests : IClassFixture<ApiFactory>
         };
 
         try { await job.RunAsync(campaignId); }
-        finally { _factory.Sms.OnSent = null; }
+        finally { _factory.TenantSms.OnSent = null; }
 
         stolenPhone.Should().NotBeNull("kanca koşmadıysa test hiçbir şey kanıtlamaz");
-        _factory.Sms.Sent.Should().HaveCount(1,
+        _factory.TenantSms.Sent.Should().HaveCount(1,
             "2 olursa aynı alıcıya iki işçi birden göndermiş demektir");
-        _factory.Sms.Sent.Should().NotContain(m => m.Phone == stolenPhone);
+        _factory.TenantSms.Sent.Should().NotContain(m => m.Phone == stolenPhone);
 
         using var verify = _factory.Services.CreateScope();
         var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -134,19 +136,21 @@ public sealed class SmsCampaignRecipientClaimTests : IClassFixture<ApiFactory>
     /// <summary>
     /// <c>sending</c>'de takılı kalan alıcı BİLİNÇLİ olarak kurtarılmaz.
     /// <c>pending</c>'e döndürmek gitmiş olabilecek bir SMS'i ikinci kez
-    /// göndermek, <c>failed</c> saymak ise gitmiş olabilecek bir SMS'in
-    /// kredisini iade etmek olurdu. İkisi de yanlış yönde hata.
+    /// göndermek olurdu; <c>failed</c> saymak ise gitmiş olabilecek bir
+    /// SMS'i arıza gibi göstermek. İkisi de yanlış yönde hata.
     /// </summary>
     [Fact]
-    public async Task Sending_kalan_alici_tekrar_gonderilmez_ve_iade_edilmez()
+    public async Task Sending_kalan_alici_tekrar_gonderilmez()
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
-        var (campaignId, licenseId, phones) = await SeedAsync(db, recipientCount: 2);
+        var (campaignId, _, phones) = await SeedAsync(
+            db, scope.ServiceProvider.GetRequiredService<NetgsmAccountService>(),
+            recipientCount: 2);
 
         // Önceki koşu 1. alıcıya gönderim yaptı ama sonucu yazamadan öldü;
-        // 2. alıcı düzgünce "failed" kapandı ama iade yazılamadı.
+        // 2. alıcı düzgünce "failed" kapandı.
         var recipients = await db.SmsCampaignRecipients
             .Where(r => r.CampaignId == campaignId).ToListAsync();
         var stuck = recipients.Single(r => r.Phone == phones[0]);
@@ -157,12 +161,9 @@ public sealed class SmsCampaignRecipientClaimTests : IClassFixture<ApiFactory>
         failed.Error = "provider-rejected";
         await db.SaveChangesAsync();
 
-        var creditsBefore = (await db.LicenseSmsBalances.AsNoTracking()
-            .SingleAsync(b => b.LicenseId == licenseId)).CreditsRemaining;
-
         await job.RunAsync(campaignId);
 
-        _factory.Sms.Sent.Should().BeEmpty(
+        _factory.TenantSms.Sent.Should().BeEmpty(
             "gitmiş OLABİLECEK bir mesaj ikinci kez gönderilemez");
 
         using var verify = _factory.Services.CreateScope();
@@ -175,22 +176,16 @@ public sealed class SmsCampaignRecipientClaimTests : IClassFixture<ApiFactory>
         var campaign = await vdb.SmsCampaigns.AsNoTracking()
             .SingleAsync(c => c.Id == campaignId);
         campaign.Status.Should().Be("completed");
-        campaign.RefundedCredits.Should().Be(1,
-            "yalnız 'failed' iade edilir — 'sending' satırın kredisi, mesaj "
-            + "gitmiş olabileceği için yayıncıya GERİ VERİLMEZ");
-
-        (await vdb.LicenseSmsBalances.AsNoTracking()
-            .SingleAsync(b => b.LicenseId == licenseId))
-            .CreditsRemaining.Should().Be(creditsBefore + 1);
     }
 
     /// <summary>
-    /// Lisans + doğrulanmış Netgsm hesabı + kredi + onaylı alıcılı kampanya.
+    /// Lisans + doğrulanmış Netgsm hesabı + onaylı alıcılı kampanya.
     /// Kapı (İYS) açık tohumlanıyor: burada sınanan şey talep mekaniği,
-    /// izin kapısı değil.
+    /// izin kapısı değil. Şifre gerçek koruma kalıbıyla yazılır — gönderim
+    /// kapısı artık şifreyi çözüyor, düz metin seed hesabı kapatırdı.
     /// </summary>
     private static async Task<(Guid CampaignId, Guid LicenseId, string[] Phones)> SeedAsync(
-        LicenseDbContext db, int recipientCount)
+        LicenseDbContext db, NetgsmAccountService accounts, int recipientCount)
     {
         var customerId = Guid.NewGuid();
         db.Customers.Add(new Customer
@@ -221,28 +216,12 @@ public sealed class SmsCampaignRecipientClaimTests : IClassFixture<ApiFactory>
             Id = Guid.NewGuid(),
             LicenseId = licenseId,
             UserCode = Random.Shared.NextInt64(8_500_000_000, 8_599_999_999).ToString(),
-            PasswordProtected = $"pw-{Guid.NewGuid():N}",
+            PasswordProtected = accounts.ProtectPassword($"pw-{Guid.NewGuid():N}"),
             Header = "ORDERDECK",
             BrandCode = brandCode,
             Status = NetgsmAccountStatus.Verified,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
-        });
-
-        db.LicenseSmsBalances.Add(new LicenseSmsBalance
-        {
-            Id = Guid.NewGuid(),
-            LicenseId = licenseId,
-            CreditsRemaining = 99,
-            UpdatedAt = DateTimeOffset.UtcNow,
-        });
-        db.LicenseSmsTransactions.Add(new LicenseSmsTransaction
-        {
-            Id = Guid.NewGuid(),
-            LicenseId = licenseId,
-            Amount = 99,
-            Kind = "purchase",
-            CreatedAt = DateTimeOffset.UtcNow,
         });
 
         var phones = Enumerable.Range(0, recipientCount).Select(_ => NewPhone()).ToArray();
@@ -274,7 +253,6 @@ public sealed class SmsCampaignRecipientClaimTests : IClassFixture<ApiFactory>
             Status = "pending",
             SegmentsPerMessage = 1,
             RecipientCount = phones.Length,
-            ReservedCredits = phones.Length,
             CreatedByCustomerId = customerId,
             CreatedAt = DateTimeOffset.UtcNow,
         });

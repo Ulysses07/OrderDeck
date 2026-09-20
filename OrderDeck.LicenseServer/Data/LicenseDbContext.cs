@@ -830,6 +830,7 @@ public class LicenseDbContext : DbContext
             b.Property(r => r.Phone).HasMaxLength(20).IsRequired();
             b.Property(r => r.Status).HasMaxLength(16).IsRequired();
             b.Property(r => r.Error).HasMaxLength(500);
+            b.Property(r => r.ProviderJobId).HasMaxLength(64);
             // Görev 16: kampanya düzeyindeki claim (yukarıdaki
             // SmsCampaign.ClaimedAt) bu yarışı KAPATMIYOR — o yoklama
             // gönderimden ÖNCE koşuyor, yarış ise gönderim ile sonuç yazımı

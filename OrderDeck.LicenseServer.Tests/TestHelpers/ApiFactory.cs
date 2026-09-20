@@ -33,6 +33,8 @@ public class ApiFactory : WebApplicationFactory<Program>
 
     public RecordingSmsSender Sms { get; } = new();
 
+    public FakeTenantSmsSender TenantSms { get; } = new();
+
     public FakeBroadcastMediaStorage BroadcastMedia { get; } = new();
 
     public string BackupRoot => _backupRoot;
@@ -141,6 +143,11 @@ public class ApiFactory : WebApplicationFactory<Program>
             // (gerçek Netgsm çağrısı yok).
             services.RemoveAll<OrderDeck.LicenseServer.Services.Sms.ISmsSender>();
             services.AddSingleton<OrderDeck.LicenseServer.Services.Sms.ISmsSender>(Sms);
+
+            // Kiracı SMS göndericisi override — kampanya gönderimi kiracı
+            // kimlikleriyle gider (§1.2); FakeTenantSmsSender kimlikleri de kaydeder.
+            services.RemoveAll<OrderDeck.LicenseServer.Services.Sms.ITenantSmsSender>();
+            services.AddSingleton<OrderDeck.LicenseServer.Services.Sms.ITenantSmsSender>(TenantSms);
 
             // Broadcast media storage override — FakeBroadcastMediaStorage UploadCalls'ı kaydeder.
             services.RemoveAll<OrderDeck.LicenseServer.Services.BroadcastPosts.IBroadcastMediaStorage>();

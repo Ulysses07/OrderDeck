@@ -224,8 +224,7 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Job_sends_to_all_recipients_on_success()
     {
-        _factory.Sms.Clear();
-        _factory.Sms.ThrowOnSend = false;
+        _factory.TenantSms.Clear();
         var (client, licenseId) = await SetupAsync(consenting: 4, credits: 100);
 
         var create = await (await client.PostAsJsonAsync(
@@ -239,10 +238,8 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
             await job.RunAsync(create!.CampaignId, default);
         }
 
-        _factory.Sms.Sent.Should().HaveCount(4);
-        _factory.Sms.Sent.Should().OnlyContain(m => m.Text == "Indirim!");
-        // Kampanya ticari ileti — İYS filtreli (Commercial) gitmek ZORUNDA.
-        _factory.Sms.Sent.Should().OnlyContain(m => m.Kind == SmsKind.Commercial);
+        _factory.TenantSms.Sent.Should().HaveCount(4);
+        _factory.TenantSms.Sent.Should().OnlyContain(m => m.Text == "Indirim!");
 
         var status = await client.GetFromJsonAsync<StatusResponse>(
             $"/api/v1/licenses/{licenseId}/sms-campaigns/{create.CampaignId}");
@@ -251,7 +248,8 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
         status.Failed.Should().Be(0);
         status.CreditsRefunded.Should().Be(0);
 
-        // Başarıda iade yok: 100 - 4 = 96
+        // Rezervasyon (controller, Görev 4'e kadar yaşıyor) düşmüş kalır;
+        // job artık krediye HİÇ dokunmuyor: 100 - 4 = 96.
         using var verify = _factory.Services.CreateScope();
         var db = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
         (await db.LicenseSmsBalances.FirstAsync(b => b.LicenseId == licenseId))
@@ -259,43 +257,44 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task Job_refunds_credits_when_all_sends_fail()
+    public async Task Job_all_sends_fail_marks_failed_without_refund()
     {
-        _factory.Sms.Clear();
+        _factory.TenantSms.Clear();
         var (client, licenseId) = await SetupAsync(consenting: 4, credits: 100);
 
         var create = await (await client.PostAsJsonAsync(
             $"/api/v1/licenses/{licenseId}/sms-campaigns", new { messageBody = "Selam" }))
             .Content.ReadFromJsonAsync<CreateResponse>();
 
-        _factory.Sms.ThrowOnSend = true;   // tüm gönderimler patlar
+        // Belirsiz (ağ) hata: SMS gitmiş OLABİLİR → failed, döngü sürer (§3.4).
+        _factory.TenantSms.FailAllWith = new HttpRequestException("baglanti koptu");
         try
         {
             using var scope = _factory.Services.CreateScope();
             var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
             await job.RunAsync(create!.CampaignId, default);
         }
-        finally { _factory.Sms.ThrowOnSend = false; }
+        finally { _factory.TenantSms.FailAllWith = null; }
 
         var status = await client.GetFromJsonAsync<StatusResponse>(
             $"/api/v1/licenses/{licenseId}/sms-campaigns/{create!.CampaignId}");
         status!.Status.Should().Be("completed");
         status.Failed.Should().Be(4);
         status.Sent.Should().Be(0);
-        status.CreditsRefunded.Should().Be(4);
+        status.CreditsRefunded.Should().Be(0,
+            "kredi sistemi emekli (Plan 3) — job iade yazmaz, alan eski istemci için sabit");
 
-        // Tüm başarısız → tam iade: 100 - 4 (rezerve) + 4 (iade) = 100
+        // Job krediye dokunmaz: rezervasyon düşük kalır, 100 - 4 = 96.
         using var verify = _factory.Services.CreateScope();
         var db = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
         (await db.LicenseSmsBalances.FirstAsync(b => b.LicenseId == licenseId))
-            .CreditsRemaining.Should().Be(100);
+            .CreditsRemaining.Should().Be(96);
     }
 
     [Fact]
     public async Task Job_is_idempotent_after_completion()
     {
-        _factory.Sms.Clear();
-        _factory.Sms.ThrowOnSend = false;
+        _factory.TenantSms.Clear();
         var (client, licenseId) = await SetupAsync(consenting: 2, credits: 100);
 
         var create = await (await client.PostAsJsonAsync(
@@ -309,7 +308,7 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
             await job.RunAsync(create.CampaignId, default);   // ikinci çağrı no-op olmalı
         }
 
-        _factory.Sms.Sent.Should().HaveCount(2, "ikinci job çağrısı tekrar göndermemeli");
+        _factory.TenantSms.Sent.Should().HaveCount(2, "ikinci job çağrısı tekrar göndermemeli");
     }
 
     // ── F09 (denetim 2026-09-09): Create idempotency ─────────────────────────
@@ -367,8 +366,7 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
         // değil, gerçekleşen iade olmalı. İade yalnız kampanya tamamlanırken
         // yapılır; "sending" sırasında failed'lar birikmişken eski kod daha
         // yapılmamış iadeyi "iade edildi" diye gösteriyordu.
-        _factory.Sms.Clear();
-        _factory.Sms.ThrowOnSend = false;
+        _factory.TenantSms.Clear();
         var (client, licenseId) = await SetupAsync(consenting: 4, credits: 100);
 
         var create = await (await client.PostAsJsonAsync(
@@ -404,8 +402,7 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Job_resumes_stale_sending_campaign_without_resending()
     {
-        _factory.Sms.Clear();
-        _factory.Sms.ThrowOnSend = false;
+        _factory.TenantSms.Clear();
         var (client, licenseId) = await SetupAsync(consenting: 4, credits: 100);
 
         var create = await (await client.PostAsJsonAsync(
@@ -428,7 +425,7 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
             await db.SaveChangesAsync();
         }
 
-        _factory.Sms.Clear();
+        _factory.TenantSms.Clear();
         using (var scope = _factory.Services.CreateScope())
         {
             var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
@@ -436,7 +433,7 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
         }
 
         // Yalnız sıradaki 1 alıcıya gönderildi — gönderilmişler tekrarlanmadı.
-        _factory.Sms.Sent.Should().HaveCount(1,
+        _factory.TenantSms.Sent.Should().HaveCount(1,
             "devralınan koşu yalnız pending alıcıları göndermeli");
 
         var status = await client.GetFromJsonAsync<StatusResponse>(
@@ -444,20 +441,20 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
         status!.Status.Should().Be("completed");
         status.Sent.Should().Be(3);
         status.Failed.Should().Be(1);
-        status.CreditsRefunded.Should().Be(1);
+        status.CreditsRefunded.Should().Be(0,
+            "kredi sistemi emekli (Plan 3) — job iade yazmaz");
 
-        // İade önceki koşunun failed'ını da kapsar: 100 - 4 + 1 = 97
+        // Job krediye dokunmaz: rezervasyon düşük kalır, 100 - 4 = 96.
         using var verify = _factory.Services.CreateScope();
         var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
         (await vdb.LicenseSmsBalances.FirstAsync(b => b.LicenseId == licenseId))
-            .CreditsRemaining.Should().Be(97);
+            .CreditsRemaining.Should().Be(96);
     }
 
     [Fact]
     public async Task Job_does_not_steal_fresh_sending_claim()
     {
-        _factory.Sms.Clear();
-        _factory.Sms.ThrowOnSend = false;
+        _factory.TenantSms.Clear();
         var (client, licenseId) = await SetupAsync(consenting: 2, credits: 100);
 
         var create = await (await client.PostAsJsonAsync(
@@ -474,14 +471,14 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
             await db.SaveChangesAsync();
         }
 
-        _factory.Sms.Clear();
+        _factory.TenantSms.Clear();
         using (var scope = _factory.Services.CreateScope())
         {
             var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
             await job.RunAsync(create!.CampaignId, default);
         }
 
-        _factory.Sms.Sent.Should().BeEmpty("taze claim'li kampanya çalınmamalı");
+        _factory.TenantSms.Sent.Should().BeEmpty("taze claim'li kampanya çalınmamalı");
         using var verify = _factory.Services.CreateScope();
         var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
         (await vdb.SmsCampaigns.FirstAsync(c => c.Id == create!.CampaignId))
@@ -507,8 +504,7 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task List_returns_campaigns_newest_first_with_counts()
     {
-        _factory.Sms.Clear();
-        _factory.Sms.ThrowOnSend = false;
+        _factory.TenantSms.Clear();
         var (client, licenseId) = await SetupAsync(consenting: 3, credits: 100);
 
         // Eski kampanya (gönderilmiş → sent sayıları dolu)
