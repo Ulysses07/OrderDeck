@@ -27,8 +27,8 @@ public sealed class NetgsmSmsSender : ISmsSender
 
     public async Task SendAsync(string toPhone, string message, SmsKind kind, CancellationToken ct = default)
     {
-        // KİLİT — kiracı başına gönderici (ITenantSmsSender, Plan 3) inene kadar
-        // ticari yol KAPALI. Bu gönderici PLATFORMUN Netgsm hesabından yazıyor
+        // KİLİT — ticari yol bu göndericiden GEÇMEZ. Bu gönderici PLATFORMUN
+        // Netgsm hesabından yazıyor
         // (_opt.Header / _opt.UserCode). Netgsm ticari iletiyi GÖNDEREN BAŞLIĞIN
         // İYS markasında değerlendirir; onaylar ise yayıncının kendi markasına
         // itiliyor. İkisi eşleşmediği için ticari SMS, kişinin o markaya hiç
@@ -45,8 +45,9 @@ public sealed class NetgsmSmsSender : ISmsSender
         // kapısında düşüyor. Kilit, elle Verified satır açıldığı an kapının
         // yanlış-marka gönderim yolunu da açmasını engelliyor.
         //
-        // KALDIRMA KOŞULU: gönderim başlığı ve kimlik bilgileri kampanyanın
-        // kendi lisansının NetgsmAccount satırından çözülür hâle geldiğinde.
+        // KALICI: ticari yol ITenantSmsSender'dan gider (Plan 3); bu fırlatma
+        // §1.2'nin yapısal güvencesi — merkezi gönderici hiçbir koşulda
+        // Commercial taşımaz.
         if (kind == SmsKind.Commercial)
             throw new InvalidOperationException("iys-tenant-sender-missing");
 
