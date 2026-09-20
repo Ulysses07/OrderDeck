@@ -62,8 +62,13 @@ public sealed class SmsCampaignSendJob
     /// <para><c>NetgsmAccountService</c>'te aynı isimde bir metot var —
     /// bu AYRI bir sınıfın özel metodu, ortaklaştırılmadı: iki taraf da
     /// tek satırlık ve birbirine bağımlı değil.</para>
+    ///
+    /// <para><c>internal</c>: <see cref="SmsCampaignRecoveryJob"/>'ın asılı
+    /// kalmış kampanyayı doğrudan tamamlayan dalı (Görev 15) AYNI sütunu
+    /// yazıyor. Orada ayrı bir kopya tutmak, monotonluk kuralının iki yerde
+    /// yaşaması ve birinin ileride sessizce ayrışması demek olurdu.</para>
     /// </summary>
-    private static DateTimeOffset NextClaimedAt(DateTimeOffset? previous)
+    internal static DateTimeOffset NextClaimedAt(DateTimeOffset? previous)
     {
         var now = DateTimeOffset.UtcNow;
         return previous.HasValue && now <= previous.Value
@@ -274,6 +279,10 @@ public sealed class SmsCampaignSendJob
         // iade edilenin üstünde kalan kısmı ödenir. Kampanya duraklatılıp
         // devam ettirilerek ikinci kez tamamlanırsa failedCount aynı kalır,
         // fark sıfır çıkar ve ikinci bir iade yazılmaz.
+        //
+        // İKİZİ: SmsCampaignRecoveryJob.CompleteStrandedAsync. Orası asılı
+        // kalmış "paused" kampanyaları tamamlıyor; formül BİREBİR aynı olmak
+        // zorunda, biri değişirse öbürü de değişmeli.
         var owed = failedCount * campaign.SegmentsPerMessage;
         var refund = owed - campaign.RefundedCredits;
 

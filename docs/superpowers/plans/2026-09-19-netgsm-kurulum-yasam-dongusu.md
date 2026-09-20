@@ -7558,25 +7558,33 @@ ilerlet, ve iadeyi aynı idempotent formülle yaz.
 
 **Files:**
 - Modify: `OrderDeck.LicenseServer/Services/Sms/SmsCampaignRecoveryJob.cs`
-- Test: `OrderDeck.LicenseServer.Tests/Services/Sms/SmsCampaignRecoveryTests.cs`
-  (mevcut sınıf — yoksa oluştur)
+- Modify: `OrderDeck.LicenseServer/Services/Sms/SmsCampaignSendJob.cs`
+  (`NextClaimedAt` → `internal static`, + "ikizi şurada" yorumu)
+- Test: `OrderDeck.LicenseServer.Tests/Services/Sms/SmsCampaignRecoveryJobTests.cs`
+  (mevcut sınıf; plan yazılırken adı `SmsCampaignRecoveryTests.cs` sanılmıştı)
 
-- [ ] **Adım 1: Düşen testleri yaz**
+- [x] **Adım 1: Düşen testleri yaz**
 
 1. `Bekleyen_alicisi_olmayan_paused_kampanya_tamamlanir_ve_iade_edilir` —
    `paused`, 2 alıcı (biri `sent` biri `failed`), `SegmentsPerMessage = 2`,
    `RefundedCredits = 0`. Süpürmeyi koş. Kampanya `completed`, `CompletedAt`
-   dolu, `RefundedCredits == 2`, ve bakiye ledger'ında `+2`'lik
-   `"send-refund"` satırı olmalı.
+   dolu, `RefundedCredits == 2`, `ClaimedAt` ilerlemiş, ve bakiye ledger'ında
+   `+2`'lik `"send-refund"` satırı olmalı.
 2. `Bekleyen_alicisi_olan_paused_kampanyaya_dokunulmaz` — aynı kurulum ama bir
    alıcı `pending`. Süpürme sonrası kampanya HÂLÂ `paused` ve
    `RefundedCredits == 0` olmalı. **Bu test görevin kalbi**: duraklatılmış
    gerçek bir kampanyayı tamamlamak, gitmemiş SMS'leri gitmiş saymak olurdu.
-3. `Ikinci_supurme_ikinci_iade_yazmaz` — 1. testi koştuktan sonra süpürmeyi
-   tekrar koş; kampanya artık `completed` olduğu için sorguya hiç girmemeli ve
-   ledger değişmemeli.
+3. `Ikinci_supurme_ikinci_iade_yazmaz` — planın ilk hâli "1. testi koştuktan
+   sonra süpürmeyi tekrar koş" diyordu; **o kurulum idempotentliği
+   kanıtlamıyor**. Kampanya ilk süpürmede `completed` olduğu için ikinci
+   süpürme sorguya hiç girmez, yani `refund = owed` mutasyonu hayatta kalır
+   (ilk turda `RefundedCredits = 0` olduğundan iki formül aynı sonucu verir).
+   Bu yüzden test, borcu ZATEN ÖDENMİŞ bir asılı kampanya kuruyor
+   (`RefundedCredits = 2`, durum hâlâ `paused` — gönderim işi iadeyi yazdı ama
+   tamamlamayı yazamadı) ve süpürmeyi iki kez koşuyor: ne yeni `"send-refund"`
+   satırı ne bakiye değişimi olmalı.
 
-- [ ] **Adım 2: Yeşile geçir**
+- [x] **Adım 2: Yeşile geçir**
 
 `RunAsync`'e ikinci bir sorgu (mevcut `stuck` sorgusuna EKLEME — o sorgu
 `Enqueue` ediyor, bu dal etmiyor; tek sorguda birleştirmek iki farklı eylemi
@@ -7592,19 +7600,35 @@ var stranded = await _db.SmsCampaigns
 
 Her biri için `failedCount` say, `owed`/`refund` hesapla, alanları yaz ve
 `_balance.ApplyAndSaveAsync(...)` çağır — **gönderim işindeki formülün
-birebir aynısı**, `SmsCampaignSendJob.cs:258-289`. İki kopya formül olacak;
-ortaklaştırmayı uygulama anında değerlendir, ama kopyalarsan iki tarafa da
-"ikizi şurada" yorumu yaz.
+birebir aynısı**, `SmsCampaignSendJob.cs:258-289`. Formül kopyalandı ve iki
+tarafa da "İKİZİ: ..." yorumu yazıldı.
 
-`_balance` ve `SegmentsPerMessage` için `SmsCampaignRecoveryJob`'a
-`LicenseSmsBalanceService` enjekte edilmesi gerekecek; DI'da `AddScoped`
-zaten var mı diye `Program.cs`'i kontrol et.
+`ClaimedAt` ilerletmesi için `SmsCampaignSendJob.NextClaimedAt` `private` →
+`internal static` yapıldı ve süpürmeden çağrılıyor: **dördüncü bir kopya
+çıkarılmadı**. İki taraf da aynı sütunu yazdığı için monotonluk kuralının
+tek yerde yaşaması şart (`NetgsmAccountService`'teki üçüncü kopya bu görevin
+kapsamı dışında, dokunulmadı).
 
-- [ ] **Adım 3: Mutasyon testi**
+Döngü `DbUpdateConcurrencyException`'ı yakalayıp kampanyayı `Detached` yapıp
+DEVAM ediyor — planda yoktu ama gerekli: yakalamazsak kirli kopya bir sonraki
+kampanyanın `SaveChanges`'ine biner ve tek çakışma bütün süpürmeyi düşürür.
+Kayıp yok, bir sonraki süpürme taze okumayla yakalar.
+
+`_balance` için `SmsCampaignRecoveryJob`'a `LicenseSmsBalanceService` enjekte
+edildi. **Yeni DI kaydı gerekmedi** — `Program.cs:175` zaten
+`AddScoped<LicenseSmsBalanceService>()` yapıyor. Ama kurucu imzası değiştiği
+için iki test çağrı yeri güncellendi (`SmsCampaignPauseTests.cs`,
+`SmsCampaignRecoveryJobTests.cs`).
+
+- [x] **Adım 3: Mutasyon testi**
 
 `!_db.SmsCampaignRecipients.Any(...)` şartını kaldır → test 2 kırmızıya
-düşmeli. `refund = owed - campaign.RefundedCredits` yerine `refund = owed`
-yaz → test 3 kırmızıya düşmeli (ya da ikinci turda ledger değişir).
+düştü ✅. `refund = owed - campaign.RefundedCredits` yerine `refund = owed`
+yaz → test 3 kırmızıya düştü ✅. Ek olarak `ClaimedAt` ilerletmesini tamamen
+sil → test 1 kırmızıya düştü ✅ (ham `UtcNow` ataması YAKALANMAZ: tohumlanan
+damga `UtcNow` olduğu için ikisi de ileri gider — monotonluğun değerini
+`SmsCampaignPauseTests.Ileri_tarihli_damgali_...` çiviliyor, burada
+ilerlemenin var olduğu kanıtlanıyor).
 
 ---
 
