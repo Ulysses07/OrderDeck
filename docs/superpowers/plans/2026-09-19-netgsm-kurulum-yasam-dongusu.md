@@ -2915,6 +2915,22 @@ Beklenen: PASS (27 test — Görev 5 sonundaki 25 + buradaki 2).
 > Bu satır iki kez bayattı: önce "17 + 2 = 19" yazıyordu ama Görev 5 sonundaki
 > gerçek sayı 18'di; ardından Görev 5'in mutasyon turu toplamı 25'e çıkardı.
 > Sayıyı ezberden değil, filtreli koşunun çıktısından oku.
+>
+> **Görev 6 sonundaki gerçek sayı 30.** Mutasyon turu (commit `da1f2971`) üç
+> test daha ekledi, çünkü buradaki iki test ön kontrollerin üç koşulunu
+> ölçmüyordu: (a) `a.LicenseId != licenseId.Value` — düşerse doğrulanmış
+> yayıncı kendi marka kodu yüzünden kendi kurulumunu bir daha güncelleyemez;
+> (b) `a.Status == Verified` — düşerse başka kiracının DOĞRULANAMAMIŞ satırı
+> marka kodunu kalıcı rehin alır, yani Görev 7'nin filtreli indeksinin tam
+> tersi; (c) `Disabled` ön kontrolünün tamamen silinmesi — servis guard'ı
+> (`UpsertAsync`) yine 409 + aynı `title` ürettiği için
+> `Disabled_hesap_panelden_yeniden_acilamaz` bunu ölçemez.
+>
+> (c)'yi öldüren tek şey **sıra**: kapatılmış bir kiracı işgal edilmiş bir
+> marka kodu gönderdiğinde `netgsm-account-disabled` almalı, `brand-code-taken`
+> değil — yoksa admin kararı yerine olmayan bir marka sorununu kovalar. Bu
+> yüzden o testin assert'i durum koduna değil `title` dizgisine bakıyor: iki
+> yol da 409 döner.
 
 - [ ] **Adım 5: Commit**
 
