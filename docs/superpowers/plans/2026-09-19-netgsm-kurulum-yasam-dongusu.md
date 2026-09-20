@@ -4281,6 +4281,36 @@ dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
 Beklenen: PASS. `IysConsentWiringTests` servisi doğrudan çağırdığı için sayfa
 kapısından etkilenmez; yine de birlikte koşulur çünkü aynı onay yolunu paylaşırlar.
 
+> **Gerçekleşen (commit `f594788c`): 15/15 PASS, 4 s.** Adım 2 planın
+> öngördüğü profille birebir düştü: `Başarısız 4 / Başarılı 1`. Tek geçen test
+> `Dogrulanmis_kurulumda_kutu_gorunur`'du ve **yanlış sebepten** geçiyordu —
+> kutu zaten herkeste görünüyordu. Bu, o testin tek başına hiçbir şey
+> kanıtlamadığının kaydı olsun: değeri yalnız `NotContain` kardeşleriyle
+> birlikte var.
+>
+> Planın form sözlüğü **olduğu gibi çalıştı**, alan eklemek gerekmedi; POST
+> ilk koşuda `302` döndü, yani Adım 2'deki tek başarısızlık gerçekten
+> `sub.SmsConsent == true` iddiasındaydı. Verilen satır numaralarının hepsi
+> tuttu. **Files** başlığındaki `IntakeForm.cshtml:385-392` aralığı WhatsApp
+> kutusunu da kapsıyor gibi duruyor; gerçek SMS bloğu `389-392` (Adım 5 zaten
+> doğrusunu veriyor) ve WhatsApp kutusuna dokunulmadı.
+>
+> `PanelLicenseScope` `internal static`; `IntakeFormService` aynı assembly'de
+> olduğu için `Controllers.Panel.` niteliklendirmesi ek `using` olmadan
+> derlendi.
+>
+> **Mutasyon provası (plan Adım olarak istemiyor, yine de koşuldu).** İki ayrı
+> mutasyon, iki ayrı savunma hattını ayrı ayrı öldürdü — yani ikisi de
+> gereksiz değil:
+> * `if (!SmsConsentAvailable) Input.SmsConsent = false;` satırını sil →
+>   yalnız `Kutu_kapaliyken_elle_gonderilen_onay_yok_sayilir` `:154`. Kutu
+>   gizli kaldığı için görünürlük testleri hâlâ yeşil: sunucu kapısının tek
+>   kanıtı bu test.
+> * `IsSmsConsentEnabledAsync`'teki `a.Status == Verified` süzgecini kaldır →
+>   yalnız `Dogrulanmamis_hesapta_kutu_gorunmez` iki `InlineData`'sı `:118`.
+>   `Hesapsiz_kurulumda_kutu_gorunmez` hayatta kaldı, çünkü satır hiç yok;
+>   `Failed`/`Disabled` ayrımını ölçen tek şey o `[Theory]`.
+
 - [ ] **Adım 7: Commit**
 
 ```bash
