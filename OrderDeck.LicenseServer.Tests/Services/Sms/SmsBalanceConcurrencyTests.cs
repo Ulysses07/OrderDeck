@@ -243,6 +243,117 @@ public sealed class SmsBalanceConcurrencyTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// Sözleşme: <b>düşen bir çağrı izleyicide iz bırakmaz.</b> Kampanya
+    /// çakışmasıyla düşen iadenin ledger satırı <c>Added</c>, bakiyesi
+    /// <c>Modified</c> olarak izleyicide kalırsa, AYNI context'te akan bir
+    /// sonraki yazım onları da diske indirir.
+    ///
+    /// <para>Bu teorik değil: <see cref="SmsCampaignRecoveryJob"/> tek
+    /// context'le birden çok asılı kampanyayı süpürüyor. A'nın çakışması
+    /// artıkları bırakırsa B'nin <c>SaveChanges</c>'i A'nın iadesini de yazar —
+    /// A "paused" kalır ama parası ödenmiştir, sonraki süpürme onu İKİNCİ kez
+    /// iade eder. Ledger invariant'ı (CreditsRemaining = SUM(Amount)) bozulmaz,
+    /// ama kredi yoktan var olur.</para>
+    ///
+    /// <para>Gerçek SQL Server şart: InMemory transactional değil, düşen
+    /// yazımın bir kısmını store'a işliyor ve ölçümü kirletiyor.</para>
+    /// </summary>
+    [Fact]
+    public async Task Dusen_karar_ayni_contextin_sonraki_yazimina_binmez()
+    {
+        var licenseId = await SeedAsync(initialCredits: 100);
+        var campaignId = await SeedRefundCampaignAsync(licenseId);
+
+        using (var workerScope = _factory.Services.CreateScope())
+        {
+            var db = workerScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var balance = workerScope.ServiceProvider
+                .GetRequiredService<LicenseSmsBalanceService>();
+            var campaign = await db.SmsCampaigns.SingleAsync(c => c.Id == campaignId);
+
+            // Rakip kampanyayı yazar: elimizdeki tamamlanma artık bayat.
+            using (var resumeScope = _factory.Services.CreateScope())
+            {
+                var resumeDb = resumeScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+                var resumed = await resumeDb.SmsCampaigns.SingleAsync(c => c.Id == campaignId);
+                resumed.Status = "pending";
+                resumed.ClaimedAt = null;
+                await resumeDb.SaveChangesAsync();
+            }
+
+            campaign.Status = "completed";
+            campaign.CompletedAt = DateTimeOffset.UnixEpoch.AddSeconds(1);
+            campaign.ClaimedAt = DateTimeOffset.UnixEpoch.AddSeconds(1);
+            campaign.RefundedCredits = 2;
+
+            Func<Task> staleRefund = async () => await balance.ApplyAndSaveAsync(
+                licenseId, 2, "send-refund", reason: $"campaign:{campaignId} failed=2",
+                createdByCustomerId: null, disallowNegative: false, CancellationToken.None);
+
+            await staleRefund.Should().ThrowAsync<DbUpdateConcurrencyException>();
+
+            // Süpürmenin yaptığı: düşen kampanyayı bırak, SIRADAKİNE devam et.
+            db.Entry(campaign).State = EntityState.Detached;
+
+            // Sıradaki iş — AYNI context. Düşen iade buraya binmemeli.
+            (await balance.ApplyAndSaveAsync(
+                licenseId, 50, "purchase", reason: null,
+                createdByCustomerId: null, disallowNegative: false,
+                CancellationToken.None)).Should().Be(150,
+                "150 = 100 + 50; 152 görünüyorsa düşen iade bu yazıma binmiş demektir");
+        }
+
+        using var verifyScope = _factory.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+        (await verifyDb.SmsCampaigns.AsNoTracking().SingleAsync(c => c.Id == campaignId))
+            .RefundedCredits.Should().Be(0, "kampanya kararı düşmüştü");
+
+        (await verifyDb.LicenseSmsTransactions.AsNoTracking()
+            .CountAsync(t => t.LicenseId == licenseId && t.Kind == "send-refund"))
+            .Should().Be(0, "düşen iadenin ledger satırı hiç yazılmamalı");
+
+        var (credits, ledgerSum, txCount) = await ReadStateAsync(licenseId);
+        credits.Should().Be(150);
+        txCount.Should().Be(1, "yalnız yükleme yazılmalı");
+        ledgerSum.Should().Be(50);
+    }
+
+    /// <summary>
+    /// Aynı sözleşmenin <c>null</c> dönüş ayağı: kredi yetersizliğinden
+    /// REDDEDİLEN bir rezervin ledger satırı da izleyicide kalmamalı. Kalırsa
+    /// çağıranın bir sonraki yazımı reddedilen hareketi diske indirir ve
+    /// invariant (CreditsRemaining = SUM(Amount)) sessizce bozulur.
+    /// </summary>
+    [Fact]
+    public async Task Reddedilen_rezerv_sonraki_yazima_binmez()
+    {
+        var licenseId = await SeedAsync(initialCredits: 10);
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var balance = scope.ServiceProvider.GetRequiredService<LicenseSmsBalanceService>();
+
+            (await balance.ApplyAndSaveAsync(
+                licenseId, -100, "send-reserve", reason: null,
+                createdByCustomerId: null, disallowNegative: true,
+                CancellationToken.None)).Should().BeNull("10 kredi 100'lük rezervi karşılamaz");
+
+            (await balance.ApplyAndSaveAsync(
+                licenseId, 5, "purchase", reason: null,
+                createdByCustomerId: null, disallowNegative: false,
+                CancellationToken.None)).Should().Be(15,
+                "reddedilen rezerv bakiyeye dokunmamalıydı");
+        }
+
+        var (credits, ledgerSum, txCount) = await ReadStateAsync(licenseId);
+        credits.Should().Be(15);
+        txCount.Should().Be(1, "reddedilen rezervin ledger satırı yazılmamalı");
+        ledgerSum.Should().Be(5);
+        credits.Should().Be(10 + ledgerSum, "invariant: CreditsRemaining = başlangıç + SUM(ledger)");
+    }
+
+    /// <summary>
     /// Gerileme koruması: MEŞRU bakiye çakışması (paralel bakiye yüklemesi)
     /// hâlâ yeniden denenmeli. Retry'ı tamamen kaldıran "düzeltme" bu testi
     /// kırar — yükleme araya girdiğinde iade 409/500'e dönüşürdü.
