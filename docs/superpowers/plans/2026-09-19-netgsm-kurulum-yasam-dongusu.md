@@ -7229,6 +7229,15 @@ başladığını kanıtlamak için `SmsCampaignSendJob`'ın döngü içi yoklama
             if (current.Status != "sending" || current.ClaimedAt != campaign.ClaimedAt)
 ```
 
+> **(2026-09-20 sapma D1.)** Gerçek kod tek satır değil, üç satır —
+> `SmsCampaignSendJob.cs:207-209`:
+> ```csharp
+>             if (current is null
+>                 || current.Status != "sending"
+>                 || current.ClaimedAt != campaign.ClaimedAt)
+> ```
+> Mutasyon **üçüncü satırı** silmek. Davranış tahmini aynen tuttu.
+
 `|| current.ClaimedAt != campaign.ClaimedAt` kısmını **geçici olarak** sil:
 
 ```bash
@@ -7246,10 +7255,12 @@ durdurmuyor.
 Mutasyonu geri al (silinen `||` parçasını yerine yaz) ve aynı komutu tekrar
 koş. Beklenen: PASS.
 
-> **`git checkout --` ile geri alma.** Bu dosya Görev 11'de commit edildiği
-> için `git checkout -- OrderDeck.LicenseServer/Services/Sms/SmsCampaignSendJob.cs`
-> güvenlidir — ama bu görevde o dosyada BAŞKA bir değişiklik yapmadığından emin
-> ol, yoksa onu da siler. Şüphedeysen satırı elle geri yaz.
+> **`git checkout --` ile geri alma — YAPMA.** (2026-09-20 düzeltmesi.) Bu
+> öneri bu planın uygulanması sırasında bir kez iş kaybettirdi: aynı dosyada
+> henüz commit edilmemiş bir metot vardı ve `checkout --` onu da sildi.
+> Mutasyonu **elle, `Edit` ile** geri yaz ve `git diff -- <dosya>`'nın boş
+> döndüğünü gör. Daha güvenlisi: mutasyonu Adım 10'un commit'inden SONRA koş —
+> uygulamada öyle yapıldı (sapma D2).
 
 **Neden `_accounts` alanı var:** Görev 4'te controller'a `NetgsmAccountService`
 zaten enjekte edildi (`_accounts.TryUnprotectPassword` çağrısı orada). Yeni bir
@@ -7318,6 +7329,27 @@ dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj
 ```
 Beklenen: PASS. Testcontainers gerektiren testler için **Docker açık olmalı**;
 gerekirse PowerShell'den `$env:DOCKER_HOST="npipe://./pipe/dockerDesktopLinuxEngine"`.
+
+> **(2026-09-20 uygulama sonucu.)** Tüm sunucu takımı **2412/2412** (Görev 12
+> sonrası 2408 + bu görevin 4 testi: `NetgsmAccountResumeTests` 3 +
+> `SmsCampaignPauseTests`'e eklenen 1). `SmsCampaignPauseTests` fixture'ı
+> `HookedApiFactory`'ye çevrildikten sonra sınıf 11/11 — Görev 11'in testleri
+> (3 vakalı `[Theory]` dahil) aynen geçti, yani "boş kanca şeffaftır" iddiası
+> doğrulandı.
+>
+> **Mutasyonlar, hayatta kalan YOK:**
+> - Adım 5c (`|| current.ClaimedAt != campaign.ClaimedAt` silinir) →
+>   `Devam_ettirilip_yeniden_ustlenilen_kampanyaya_eski_isci_gondermez`,
+>   `SmsCampaignPauseTests.cs:567`, "…but found 2" — yani eski işçi gerçekten
+>   ikinci alıcıya da gönderiyor.
+> - `c.ClaimedAt = NextClaimedAt(c.ClaimedAt)` → `c.ClaimedAt = null` (jeton
+>   zincirini koparan mutasyon; bağımsız olarak koşturuldu) →
+>   `Devam_ettirme_paused_kampanyayi_pending_yapar_ve_jetonu_ilerletir`,
+>   `NetgsmAccountResumeTests.cs:84`, "Expected paused.ClaimedAt to have a
+>   value, but found <null>". Bu sözleşmeyi kilitleyen başka test yok.
+>
+> **Sapma D2 — sıra.** Adım 5c, Adım 9+10'dan (commit) SONRA koşuldu; böylece
+> mutasyon geri alınırken commit edilmemiş iş riski kalmadı.
 
 - [ ] **Adım 10: Commit**
 
