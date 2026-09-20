@@ -103,12 +103,13 @@ public sealed class PanelNetgsmAccountErrorSurfaceTests : IDisposable
     [Fact]
     public async Task Gecici_ariza_panelde_kendi_mesajini_dondurur()
     {
-        // Doğrulayıcının geçici arıza metni GÜNLÜK İŞİN metnidir: "kurulumunuz
-        // kapatılmadı, kendiliğinden tekrar denenecek". Panel yolunda iki cümle
-        // de yalan — `UpsertAsync` doğrulamadan ÖNCE `Failed` yazıyor
-        // (fail-closed, bilinçli) ve günlük iş yalnız `Verified` satırları
-        // tarıyor. Yayıncı "bekle, düzelir" diye okuyup beklerse tek çıkış
-        // yolunu — formu tekrar kaydetmeyi — hiç denemez.
+        // Doğrulayıcı yalnız OLGUYU söylüyor ("İYS'ye ulaşılamadı, kurulumunuz
+        // doğrulanamadı"); "bundan sonra ne olacak" cümlesi ÇAĞIRANA ait.
+        // Günlük işte doğru cevap "kapatılmadı, kendiliğinden tekrar denenecek";
+        // panelde ikisi de yalan olurdu — `UpsertAsync` doğrulamadan ÖNCE
+        // `Failed` yazıyor (fail-closed, bilinçli) ve günlük iş yalnız
+        // `Verified` satırları tarıyor. Yayıncı "bekle, düzelir" diye okuyup
+        // beklerse tek çıkış yolunu — formu tekrar kaydetmeyi — hiç denemez.
         var (factory, client) = await SeedAsync();
         factory.Iys.OnSearch = () => throw new HttpRequestException("bağlantı yok");
 
@@ -123,6 +124,36 @@ public sealed class PanelNetgsmAccountErrorSurfaceTests : IDisposable
             "panel yolunda kendiliğinden tekrar deneyecek HİÇBİR iş yok");
         lastError.Should().Contain("tekrar kaydedin",
             "yayıncının yapması gereken tek şey bu; yazmazsak süresiz bekler");
+    }
+
+    [Fact]
+    public async Task Beklenmeyen_yanit_kodu_panelde_KORUNUR()
+    {
+        // Doğrulayıcı İKİ ayrı `Unavailable` metni üretiyor ve yalnız biri
+        // panelde yanlış. Bu ikincisi: İYS cevap VERDİ ama kodu tanımıyoruz.
+        // Panel dalı sonucun metnini kökten değiştirirse — ilk uygulamada
+        // olduğu gibi — sanitize edilmiş kod da, "Netgsm'e danışın" talimatı da
+        // silinir ve yerine "birkaç dakika bekleyip tekrar kaydedin" yazılır:
+        // bozuk bir yanıt biçimi için YANLIŞ tavsiye, üstelik destek ekibinin
+        // soracağı tek somut bilgi kaybolmuş olur. Bu yüzden panel kendi
+        // cümlesini EKLER, doğrulayıcınınkini ezmez.
+        var (factory, client) = await SeedAsync();
+        factory.Iys.OnSearch = () => new IysSearchResult(
+            "42", "{\"code\":\"42\"}", new Dictionary<string, IysConsentStatus>());
+
+        var resp = await client.PutAsJsonAsync("/api/panel/netgsm/account", NewBody());
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        var lastError = doc.RootElement.GetProperty("lastError").GetString();
+
+        lastError.Should().Contain("beklenmeyen yanıt kodu")
+            .And.Contain("42", "destek ekibinin isteyeceği tek somut bilgi bu kod")
+            .And.Contain("Netgsm'e danışın", "bu arızada doğru adım gerçekten bu");
+        lastError.Should().Contain("tekrar kaydedin",
+            "panel kendi kurtarma adımını EKLER — doğrulayıcının teşhisini "
+            + "silerek değil");
     }
 
     /// <summary>

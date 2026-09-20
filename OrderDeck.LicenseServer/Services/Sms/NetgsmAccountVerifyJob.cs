@@ -22,6 +22,23 @@ namespace OrderDeck.LicenseServer.Services.Sms;
 /// </summary>
 public sealed class NetgsmAccountVerifyJob
 {
+    /// <summary>
+    /// Günlük işin KENDİ sözleşme cümlesi. Doğrulayıcı yalnız olguyu
+    /// ("İYS'ye ulaşılamadı") döndürüyor; "bundan sonra ne olacak" sorusunun
+    /// cevabı yalnız BURADA bu: satır <see cref="NetgsmAccountStatus.Verified"/>
+    /// kaldı ve yarınki tur onu yeniden tarayacak. Aynı cümle panel yolunda
+    /// yalan olurdu (orada satır zaten <c>Failed</c> doğuyor ve tarama dışında
+    /// kalıyor), bu yüzden doğrulayıcıda değil çağıranda duruyor.
+    ///
+    /// <para>Şifre çözülemeyen yol bu cümleyi ALMAZ: o dal
+    /// <c>VerifyOneAsync</c> içinde erken dönüyor ve kendi metnini
+    /// (<c>NetgsmAccountService.UndecryptableMessage</c>) yazıyor — anahtar
+    /// dizini kendiliğinden düzelmeyeceği için "tekrar denenecek" demek
+    /// yayıncıyı sonu gelmeyen bir beklemeye yollardı.</para>
+    /// </summary>
+    private const string RetryContract =
+        "Kurulumunuz kapatılmadı, doğrulama kendiliğinden tekrar denenecek.";
+
     private readonly LicenseDbContext _db;
     private readonly NetgsmAccountService _accounts;
     private readonly NetgsmAccountVerifier _verifier;
@@ -113,7 +130,11 @@ public sealed class NetgsmAccountVerifyJob
                 return;   // kaydı o metot yaptı; aşağıdaki SaveChanges'e düşme
 
             case NetgsmVerifyOutcome.Unavailable:
-                acc.LastError = result.Message;
+                // Doğrulayıcının teşhisini EZMİYORUZ, üstüne ekliyoruz:
+                // `Unavailable`'ın iki biçimi var ve biri sanitize edilmiş
+                // yanıt kodunu taşıyor ("beklenmeyen yanıt kodu (70)") —
+                // yayıncının Netgsm'e danışırken söyleyeceği tek somut bilgi o.
+                acc.LastError = $"{result.Message} {RetryContract}";
                 break;
         }
 

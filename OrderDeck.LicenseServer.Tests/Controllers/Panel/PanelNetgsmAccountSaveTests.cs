@@ -192,8 +192,9 @@ public sealed class PanelNetgsmAccountSaveTests : IDisposable
         // yapması. Geçici bir arıza "abone numaranız reddedildi" diye
         // gösterilirse yayıncı çalışan kimliklerini tekrar tekrar girer —
         // kendisinde olmayan bir sorunu kovalar ve arıza geçtiğinde neyin
-        // düzeldiğini bilmez. Panel yolunda doğru talimat "formu tekrar
-        // kaydet"; metnin tamamı ve neden doğrulayıcınınkinden AYRI olduğu
+        // düzeldiğini bilmez. Burada ölçülen yalnız doğrulayıcının OLGU
+        // cümlesi; panelin kendi kurtarma adımını nasıl EKLEDİĞİ ve
+        // doğrulayıcının teşhisini neden ezmediği
         // `PanelNetgsmAccountErrorSurfaceTests`'te (Görev 14).
         doc.RootElement.GetProperty("lastError").GetString()
             .Should().Contain("ulaşılamadı",

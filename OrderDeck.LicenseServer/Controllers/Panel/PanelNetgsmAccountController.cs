@@ -71,13 +71,15 @@ public sealed class PanelNetgsmAccountController : ControllerBase
     }
 
     /// <summary>
-    /// Kaydetme anında İYS'ye ulaşılamazsa yayıncıya yazılan metin. Doğrulayıcı
-    /// kendi metnini döndürüyor ama o metin günlük işin sözleşmesini anlatıyor;
-    /// panel yolunda geçerli olan tek kurtarma adımı formu tekrar kaydetmek.
+    /// Panel yolunun KENDİ sözleşme cümlesi. Doğrulayıcı yalnız olguyu
+    /// döndürüyor ("İYS'ye ulaşılamadı" / "beklenmeyen yanıt kodu (70)");
+    /// "bundan sonra ne olacak" sorusunun cevabı çağırana göre değişiyor ve
+    /// burada tek doğru cevap bu: satır <c>UpsertAsync</c> tarafından zaten
+    /// <c>Failed</c> yazıldı (fail-closed) ve günlük iş yalnız <c>Verified</c>
+    /// satırları taradığı için bu satıra bir daha uğramayacak — yani kimse
+    /// yayıncı adına tekrar denemeyecek.
     /// </summary>
-    private const string UnavailableOnSaveMessage =
-        "İYS'ye şu an ulaşılamadı, kurulumunuz doğrulanamadı. "
-        + "Birkaç dakika sonra formu tekrar kaydedin.";
+    private const string SaveRetryContract = "Birkaç dakika sonra formu tekrar kaydedin.";
 
     public sealed record SaveRequest(
         string UserCode, string? Password, string Header, string BrandCode);
@@ -181,9 +183,9 @@ public sealed class PanelNetgsmAccountController : ControllerBase
             {
                 // Bu dalın metni KENDİ bağlamını anlatıyor (Görev 9): dış çağrı
                 // hiç yapılmadı, sorun anahtar dizininde. Aşağıdaki panel
-                // metniyle ezilmemeli — "birkaç dakika sonra tekrar kaydedin"
-                // demek, çözülmeyecek bir şeyi yayıncıya tekrar tekrar
-                // denetmek olurdu.
+                // cümlesi buna EKLENMEMELİ — "birkaç dakika sonra tekrar
+                // kaydedin" demek, kaydetmekle çözülmeyecek bir şeyi yayıncıya
+                // tekrar tekrar denetmek olurdu.
                 result = new NetgsmVerifyResult(
                     NetgsmVerifyOutcome.Unavailable, NetgsmAccountService.UndecryptableMessage);
             }
@@ -194,17 +196,28 @@ public sealed class PanelNetgsmAccountController : ControllerBase
                         account.LicenseId, account.UserCode, password, account.BrandCode),
                     ct);
 
-                // Doğrulayıcının geçici arıza metni GÜNLÜK İŞİN metni: "kurulumunuz
-                // kapatılmadı, doğrulama kendiliğinden tekrar denenecek". Orada iki
-                // cümle de doğru; BURADA ikisi de yanlış — `UpsertAsync` doğrulamadan
-                // önce `Failed` yazdı (fail-closed) ve günlük iş yalnız `Verified`
-                // satırları tarıyor, yani bu satıra bir daha uğramayacak. Metni
-                // doğrulayıcıda bağlama göre dallandırmak YANLIŞ olurdu: doğrulayıcı
-                // kendisini kimin çağırdığını bilmemeli, o bilgi çağırandadır.
-                // Ayrımı `Outcome`'a değil DALA bakarak yapıyoruz — şifre çözülemeyen
-                // yol da `Unavailable` üretiyor ama onun metni değişmemeli.
+                // Doğrulayıcının metnini EZMİYORUZ, kendi sözleşme cümlemizi
+                // EKLİYORUZ. Gerekçe: `Unavailable`'ın İKİ biçimi var ve yalnız
+                // biri panelde eksik. "İYS'ye ulaşılamadı" olgusu her iki
+                // bağlamda da doğru ama tek başına yayıncıya ne yapacağını
+                // söylemiyor; "İYS beklenmeyen yanıt kodu döndürdü (70). Sorun
+                // sürerse Netgsm'e danışın" ise HEM doğru HEM de sanitize
+                // edilmiş kodu taşıyor — destek ekibinin isteyeceği tek somut
+                // bilgi o. Toptan değiştirme (ilk uygulama) o teşhisi siliyor ve
+                // bozuk bir yanıt biçimi için "bekle, tekrar kaydet" diye yanlış
+                // tavsiye veriyordu.
+                //
+                // Cümleyi doğrulayıcıda bağlama göre dallandırmak da YANLIŞ
+                // olurdu: doğrulayıcı kendisini kimin çağırdığını bilmemeli, o
+                // bilgi çağırandadır. Kardeşi `NetgsmAccountVerifyJob` aynı yerde
+                // kendi cümlesini ("kapatılmadı, kendiliğinden tekrar denenecek")
+                // ekliyor.
+                //
+                // Ayrımı `Outcome`'a değil DALA bakarak yapıyoruz — şifre
+                // çözülemeyen yol da `Unavailable` üretiyor ama onun metnine bu
+                // cümle EKLENMEMELİ (Görev 9).
                 if (result.Outcome == NetgsmVerifyOutcome.Unavailable)
-                    result = result with { Message = UnavailableOnSaveMessage };
+                    result = result with { Message = $"{result.Message} {SaveRetryContract}" };
             }
 
             if (result.Outcome == NetgsmVerifyOutcome.Ok)

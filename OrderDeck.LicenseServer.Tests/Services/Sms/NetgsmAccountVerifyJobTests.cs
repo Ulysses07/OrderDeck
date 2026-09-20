@@ -181,7 +181,17 @@ public sealed class NetgsmAccountVerifyJobTests : IDisposable
         acc.Status.Should().Be(NetgsmAccountStatus.Verified,
             "İYS'nin yarım saatlik kesintisi bütün yayıncıları kapatmamalı; "
             + "kapanan hesap kendiliğinden geri GELMİYOR");
-        acc.LastError.Should().NotBeNullOrWhiteSpace("sorun görünür olmalı");
+
+        // Metnin İKİ parçası da ölçülüyor. Olgu doğrulayıcıdan geliyor
+        // ("ulaşılamadı"); sözleşme cümlesi İŞİN KENDİSİNE ait, çünkü yalnız
+        // burada doğru: satır `Verified` kaldı ve yarın yeniden taranacak.
+        // Doğrulayıcı bunu söyleyemez — aynı metni panel de kullanıyor ve orada
+        // iki iddia da yalan olurdu. Eksilirse yayıncı, görünürde bozulmuş bir
+        // kurulumun aslında kapanmadığını hiçbir yerden öğrenemez.
+        acc.LastError.Should().Contain("ulaşılamadı", "sorun görünür olmalı")
+            .And.Contain("kendiliğinden tekrar denenecek",
+                "günlük iş gerçekten yarın tekrar deneyecek; bunu yazan tek "
+                + "yer burası");
     }
 
     [Fact]

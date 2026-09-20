@@ -7419,10 +7419,22 @@ Panel bağlamında **ikisi de yanlış**: `UpsertAsync` doğrulamadan ÖNCE
 kendiliğinden tekrar denenmeyecek. Yayıncı "bekle, düzelir" diye okuyup
 bekliyor; tek çıkış yolu olan "formu tekrar kaydet" adımını atmıyor.
 
-Düzeltme: doğrulayıcının mesajı **günlük işin** mesajı olarak kalsın; panel
-yolu `Unavailable` sonucunu kendi metnine çevirsin. Mesajı doğrulayıcıda
-bağlama göre dallandırmak YANLIŞ olurdu — doğrulayıcı kendisini kimin
-çağırdığını bilmemeli, o bilgi çağıranda.
+Düzeltme: **olguyu sözleşmeden ayır.** Doğrulayıcı yalnız ne olduğunu söylesin
+("İYS'ye şu an ulaşılamadı, kurulumunuz doğrulanamadı"); "bundan sonra ne
+olacak" cümlesini her çağıran KENDİSİ eklesin — günlük iş "kapatılmadı,
+kendiliğinden tekrar denenecek", panel "birkaç dakika sonra formu tekrar
+kaydedin". Mesajı doğrulayıcıda bağlama göre dallandırmak YANLIŞ olurdu —
+doğrulayıcı kendisini kimin çağırdığını bilmemeli, o bilgi çağıranda.
+
+> **Neden "ekle", "değiştir" değil — bedeli ödenerek öğrenildi.** İlk uygulama
+> paneli `Unavailable` gören her sonucun metnini toptan kendi metniyle
+> değiştirdi. Ama doğrulayıcı **iki ayrı** `Unavailable` metni üretiyor ve
+> ikincisi (`NetgsmAccountVerifier.cs:89-91`) panelde de DOĞRU:
+> "İYS beklenmeyen yanıt kodu döndürdü (70). Sorun sürerse Netgsm'e danışın."
+> Toptan değiştirme o teşhisi siliyordu: sanitize edilmiş kod — destek ekibinin
+> soracağı tek somut bilgi — kayboluyor, yerine bozuk bir yanıt biçimi için
+> yanlış olan "bekle, tekrar kaydet" tavsiyesi geçiyordu. Olgu/sözleşme
+> ayrımında `(kod)` teşhisi **her iki bağlamda da** yaşıyor.
 
 **A4 — `IsBrandCodeConflict` yalnız marka indeksini tanıyor.**
 `PanelNetgsmAccountController.cs:259-262` `sql.Message.Contains("BrandCode")`
@@ -7438,17 +7450,25 @@ kaydedildi, sayfayı yenileyin".
 
 **Files:**
 - Modify: `OrderDeck.LicenseServer/Controllers/Panel/PanelNetgsmAccountController.cs`
+- Modify: `OrderDeck.LicenseServer/Services/Sms/NetgsmAccountVerifier.cs`
+- Modify: `OrderDeck.LicenseServer/Services/Sms/NetgsmAccountVerifyJob.cs`
 - Test: `OrderDeck.LicenseServer.Tests/Controllers/Panel/PanelNetgsmAccountErrorSurfaceTests.cs` (yeni)
+- Test: `OrderDeck.LicenseServer.Tests/Services/Sms/NetgsmAccountVerifyJobTests.cs`
 
 - [ ] **Adım 1: Düşen testleri yaz**
 
-İki test:
+Üç test:
 
 1. `Gecici_ariza_panelde_kendi_mesajini_dondurur` — `ApiFactory` içinde
    doğrulayıcıyı `Unavailable` döndürecek şekilde değiştir (Görev 5'teki
    `FakeNetgsmVerifier` kalıbı), `PUT` at, 200 gelen `AccountView.LastError`
    metninde **"kendiliğinden tekrar denenecek" geçmediğini** ve "tekrar
    kaydedin" geçtiğini doğrula.
+1b. `Beklenmeyen_yanit_kodu_panelde_KORUNUR` — İYS **cevap versin** ama
+   tanınmayan bir `code` ile (ör. `"42"`). Panel yolundan geçen metin hâlâ
+   "beklenmeyen yanıt kodu", sanitize edilmiş kodu ve "Netgsm'e danışın"
+   talimatını içermeli; üstüne "tekrar kaydedin" EKLENMİŞ olmalı. Bu test
+   yukarıdaki regresyonun geri gelmesini engelliyor.
 2. `Lisans_tekil_indeks_ihlali_de_catisma_sayilir` — `IsBrandCodeConflict`
    `internal static` yapılıp `InternalsVisibleTo` ile mi, yoksa `public static`
    mi test edileceğine uygulama anında karar ver; bu depoda kardeşi
@@ -7468,22 +7488,30 @@ bloğu 409 + `title: "netgsm-account-concurrent-create"` döndürsün ve
 `_db.ChangeTracker.Clear()` çağırsın (kardeş dalların hepsi çağırıyor —
 Görev 5'in gerekçesi `PanelNetgsmAccountController.cs:220-231`'de yazılı).
 
-Panel tarafında `result.Outcome == NetgsmVerifyOutcome.Unavailable` dalı
-`account.LastError`'a doğrulayıcının metnini değil kendi metnini yazsın:
+Mesaj tarafında **üç** dosyaya dokunuluyor (olgu/sözleşme ayrımı):
 
-```
-"İYS'ye şu an ulaşılamadı, kurulumunuz doğrulanamadı. Birkaç dakika sonra
-formu tekrar kaydedin."
-```
+1. `NetgsmAccountVerifier.cs:144-146` yalnız olguyu döndürsün:
+   `"İYS'ye şu an ulaşılamadı, kurulumunuz doğrulanamadı."` Sonrasına dair
+   HİÇBİR söz verilmesin.
+2. `NetgsmAccountVerifyJob.cs`'in `case NetgsmVerifyOutcome.Unavailable` dalı
+   kendi cümlesini EKLESİN:
+   `"Kurulumunuz kapatılmadı, doğrulama kendiliğinden tekrar denenecek."`
+   Şifre çözülemeyen yol bunu almaz — o dal zaten erken dönüyor
+   (`NetgsmAccountVerifyJob.cs:81`) ve kendi metnini yazıyor.
+3. Panel `Unavailable` dalı kendi cümlesini EKLESİN:
+   `"Birkaç dakika sonra formu tekrar kaydedin."`
 
-`UndecryptableMessage` yolu (Görev 9) bu değişimden ETKİLENMEMELİ — o mesaj
-zaten kendi bağlamını anlatıyor. Ayırt etmek için `Outcome`'a değil, sonucu
+Metni **ezmek yok, eklemek var**: gerekçe yukarıdaki kutuda. `UndecryptableMessage`
+yolu (Görev 9) bu değişimden ETKİLENMEMELİ — o mesaj zaten kendi bağlamını
+anlatıyor ve kaydetmekle düzelmiyor. Ayırt etmek için `Outcome`'a değil, sonucu
 üreten dala bak.
 
 - [ ] **Adım 3: Mutasyon testi**
 
-`"kendiliğinden tekrar denenecek"` cümlesini panel metnine geri koy → test 1
-kırmızıya düşmeli. `IsUniqueIndexConflict`'teki ad karşılaştırmasını
+Doğrulayıcının metnine `"kendiliğinden tekrar denenecek"` cümlesini geri koy →
+test 1 kırmızıya düşmeli. Günlük işin EKLEDİĞİ cümleyi sil → `Gecici_ariza_hesabi_DUSURMEZ`
+kırmızıya düşmeli (sözleşme cümlesinin sahibinin gerçekten iş olduğunu kanıtlar).
+`IsUniqueIndexConflict`'teki ad karşılaştırmasını
 `StringComparison.OrdinalIgnoreCase`'e çevir → test 2 bunu yakalamaz,
 **yakalamaması normal**; asıl mutasyon `sql.Number is 2601 or 2627` şartını
 kaldırmak — test 2 kırmızıya düşmeli.

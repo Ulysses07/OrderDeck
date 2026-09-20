@@ -141,9 +141,16 @@ public sealed class NetgsmAccountVerifier
         {
             _log.LogWarning(ex, "Netgsm doğrulaması ulaşılamadı: lisans={LicenseId}",
                 account.LicenseId);
+            // Yalnız OLGU: "ne oldu". "Bundan sonra ne olacak" cümlesi
+            // BİLEREK yok — cevabı çağırana göre değişiyor. Günlük işte satır
+            // `Verified` kalır ve yarın yeniden taranır; panel yolunda
+            // `UpsertAsync` doğrulamadan ÖNCE `Failed` yazmıştır ve o satır bir
+            // daha taranmaz. Sözleşmeyi buraya yazsaydık ikisinden birinde
+            // yayıncıya yalan söylerdik; doğrulayıcı kendisini kimin
+            // çağırdığını bilmemeli, o bilgi çağırandadır. Cümleyi ekleyen
+            // yerler: `NetgsmAccountVerifyJob` ve `PanelNetgsmAccountController`.
             return new NetgsmVerifyResult(NetgsmVerifyOutcome.Unavailable,
-                "İYS'ye şu an ulaşılamadı. Kurulumunuz kapatılmadı, doğrulama "
-                + "kendiliğinden tekrar denenecek.");
+                "İYS'ye şu an ulaşılamadı, kurulumunuz doğrulanamadı.");
         }
     }
 
