@@ -24,6 +24,11 @@ public static class AuditEvents
     // Multi-operator (PR-5 Faz 1+2) — owner Customer'ın staff hesap CRUD'u.
     public const string OperatorInvited = "operator.invited";
     public const string OperatorDeleted = "operator.deleted";
+
+    // Netgsm kurulum kapatma anahtarı (§2.5). Kapatma bir yayıncının tüm
+    // SMS'ini keser; kimin ne zaman kestiği iz bırakmadan olmamalı.
+    public const string NetgsmAccountDisable = "netgsm.account.disable";
+    public const string NetgsmAccountEnable = "netgsm.account.enable";
 }
 
 public static class AuditTargets
@@ -35,4 +40,5 @@ public static class AuditTargets
     public const string RefreshToken = "RefreshToken";
     public const string Operator = "operator";
     public const string Shopper = "shopper";
+    public const string NetgsmAccount = "netgsm-account";
 }

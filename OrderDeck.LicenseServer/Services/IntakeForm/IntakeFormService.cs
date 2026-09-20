@@ -32,6 +32,27 @@ public sealed class IntakeFormService
         _db.IntakeFormConfigs.FirstOrDefaultAsync(c => c.CustomerId == customerId, ct);
 
     /// <summary>
+    /// Bu form SMS onayı toplayabilir mi? Kutu bunu okur, böylece görünürlük
+    /// ile toplayıcının davranışı aynı sorgudan beslenir: ikisi ayrı yazılırsa
+    /// biri değişip diğeri kalır ve "kutu var, onay yok" yalanı geri döner.
+    /// Yalnız <see cref="NetgsmAccountStatus.Verified"/> sayılır — marka ancak
+    /// doğrulanmış hesaptan çözülür.
+    /// </summary>
+    public async Task<bool> IsSmsConsentEnabledAsync(Guid configId, CancellationToken ct = default)
+    {
+        var config = await _db.IntakeFormConfigs.AsNoTracking()
+            .FirstOrDefaultAsync(c => c.Id == configId, ct);
+        if (config is null) return false;
+
+        var licenseId = await Controllers.Panel.PanelLicenseScope.ResolveAsync(
+            _db, config.CustomerId, ct);
+        if (licenseId is null) return false;
+
+        return await _db.NetgsmAccounts.AsNoTracking().AnyAsync(
+            a => a.LicenseId == licenseId && a.Status == NetgsmAccountStatus.Verified, ct);
+    }
+
+    /// <summary>
     /// Returns config only if (a) form IsActive AND (b) customer has an active license
     /// (RevokedAt null AND ExpiresAt &gt; now). Otherwise null — caller treats as 410 Gone.
     /// </summary>

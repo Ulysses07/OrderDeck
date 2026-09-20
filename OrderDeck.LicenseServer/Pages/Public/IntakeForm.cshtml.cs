@@ -55,6 +55,10 @@ public class IntakeFormModel : PageModel
 
     public IntakeFormConfig? Config { get; private set; }
 
+    /// <summary>SMS onay kutusu render edilsin mi. Hem GET hem POST'ta set
+    /// edilir; POST'ta ayrıca gelen değeri EZER (gizleme istemci tarafı).</summary>
+    public bool SmsConsentAvailable { get; private set; }
+
     // Hatalı gönderimden sonra kanal kartını tekrar çizmek için. Kalıcı değil.
     public string? YouTubeChannelTitle { get; private set; }
     public string? YouTubeChannelThumbnail { get; private set; }
@@ -184,6 +188,8 @@ public class IntakeFormModel : PageModel
         Config = await _service.GetActiveBySlugAsync(Slug, ct);
         if (Config is null) return StatusCode(StatusCodes.Status410Gone);
 
+        SmsConsentAvailable = await _service.IsSmsConsentEnabledAsync(Config.Id, ct);
+
         // "!kayıt → DM" linki: token'daki kimlik OAuth kimliğiyle aynı depoya
         // (IntakeLinkStore) yazılır — çip, submit ve unlink akışları tek yoldan
         // işler. Geçersiz/bayat token SESSİZCE yok sayılır: izleyici formu yine
@@ -248,6 +254,12 @@ public class IntakeFormModel : PageModel
 
         Config = await _service.GetActiveBySlugAsync(Slug, ct);
         if (Config is null) return StatusCode(StatusCodes.Status410Gone);
+
+        SmsConsentAvailable = await _service.IsSmsConsentEnabledAsync(Config.Id, ct);
+        // Kutu kapalıyken gelen onay SUNUCUDA düşürülür: gizleme yalnız dürüst
+        // istemciyi bağlar, alan elle eklenebilir. Marka yokken yazılan onay
+        // İYS'ye bildirilemez ve üç iş günü sonra hukuken geçersiz olur.
+        if (!SmsConsentAvailable) Input.SmsConsent = false;
 
         LoadLinkedIdentities();
 

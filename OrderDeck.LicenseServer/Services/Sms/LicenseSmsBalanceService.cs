@@ -70,9 +70,11 @@ public sealed class LicenseSmsBalanceService
 
         var balance = await _db.LicenseSmsBalances
             .FirstOrDefaultAsync(b => b.LicenseId == licenseId, ct);
+
         if (balance is null)
         {
             if (disallowNegative && amount < 0) return null;
+
             balance = new LicenseSmsBalance
             {
                 Id = Guid.NewGuid(),
@@ -80,34 +82,51 @@ public sealed class LicenseSmsBalanceService
                 CreditsRemaining = amount,
                 UpdatedAt = now,
             };
+
             _db.LicenseSmsBalances.Add(balance);
             // Yeni satır insert'i token'la korunmaz; eşzamanlı iki "ilk yazım"
             // unique LicenseId index'ine takılır → gürültülü DbUpdateException.
+            // Aşağıdaki retry döngüsü bu dalı KAPSAMAZ: orası yalnız mevcut
+            // satırın sürüm çakışmasını onarıyor, indeks ihlalini değil.
             await _db.SaveChangesAsync(ct);
             return balance.CreditsRemaining;
         }
 
         balance.CreditsRemaining += amount;
-        balance.UpdatedAt = now;
+        // Jeton KESİN ilerlemeli — `UtcNow` monoton değil.
+        balance.UpdatedAt = now > balance.UpdatedAt ? now : balance.UpdatedAt.AddTicks(1);
 
         for (var attempt = 1; ; attempt++)
         {
             if (disallowNegative && balance.CreditsRemaining < 0) return null;
+
             try
             {
                 await _db.SaveChangesAsync(ct);
                 return balance.CreditsRemaining;
             }
-            catch (DbUpdateConcurrencyException ex) when (attempt < maxAttempts)
+            catch (DbUpdateConcurrencyException ex) when (
+                attempt < maxAttempts
+                && ex.Entries.Count > 0
+                && ex.Entries.All(e => ReferenceEquals(e.Entity, balance)))
             {
-                // Araya başka yazım girdi (topup / rezerv / iade): güncel
-                // değeri yükle, deltayı yeniden uygula. Added durumundaki
-                // satırlar (ledger tx, kampanya, alıcılar) izlenmeye devam
-                // eder ve sonraki SaveChanges'te yazılır.
-                foreach (var entry in ex.Entries)
-                    await entry.ReloadAsync(ct);
+                // YALNIZ bakiye satırı. Çağıran bu SaveChanges'e kendi
+                // kararlarını da (kampanya tamamlanması, RefundedCredits)
+                // iliştirmiş olabilir; `ex.Entries`'i toptan reload etmek
+                // onları siler ve `amount`u ikinci kez ekler. Kampanya
+                // çakışması buraya AİT DEĞİLDİR: dışarı çıkar, çağıranın
+                // kararı düşer, iş yeniden koştuğunda taze okunur.
+                await _db.Entry(balance).ReloadAsync(ct);
+
+                // Satır silinmişse tazeleyecek bir şey yok.
+                if (_db.Entry(balance).State == EntityState.Detached) throw;
+
                 balance.CreditsRemaining += amount;
-                balance.UpdatedAt = DateTimeOffset.UtcNow;
+
+                var retryAt = DateTimeOffset.UtcNow;
+                balance.UpdatedAt = retryAt > balance.UpdatedAt
+                    ? retryAt
+                    : balance.UpdatedAt.AddTicks(1);
             }
         }
     }

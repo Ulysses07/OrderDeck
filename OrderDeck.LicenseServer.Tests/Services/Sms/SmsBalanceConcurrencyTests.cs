@@ -98,6 +98,223 @@ public sealed class SmsBalanceConcurrencyTests : IAsyncLifetime
         ledgerSum.Should().Be(-100);
     }
 
+    private async Task<Guid> SeedRefundCampaignAsync(Guid licenseId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var campaignId = Guid.NewGuid();
+
+        db.SmsCampaigns.Add(new SmsCampaign
+        {
+            Id = campaignId,
+            LicenseId = licenseId,
+            MessageBody = "Kampanya",
+            Status = "sending",
+            ClaimedAt = DateTimeOffset.UnixEpoch,
+            SegmentsPerMessage = 1,
+            RecipientCount = 2,
+            ReservedCredits = 2,
+            CreatedAt = DateTimeOffset.UnixEpoch,
+        });
+
+        for (var i = 0; i < 2; i++)
+        {
+            db.SmsCampaignRecipients.Add(new SmsCampaignRecipient
+            {
+                Id = Guid.NewGuid(),
+                CampaignId = campaignId,
+                Phone = $"+90555{Random.Shared.Next(1_000_000, 9_999_999)}",
+                Status = "failed",
+                Error = "provider-rejected",
+            });
+        }
+
+        await db.SaveChangesAsync();
+        return campaignId;
+    }
+
+    /// <summary>
+    /// Bulgu 2 — bayat bir tamamlanma+iade, kampanya çakışmasında TOPTAN
+    /// düşmeli. Bugün `ApplyAndSaveAsync` `ex.Entries`'in tamamını yeniden
+    /// yüklüyor: hazırlanmış `completed` + `RefundedCredits` silinip yalnız
+    /// bakiye artışı hayatta kalıyor, yani kampanya "hiç tamamlanmamış" ama
+    /// krediler İADE EDİLMİŞ oluyor. Sonraki koşu iadeyi bir kez daha yazar.
+    /// </summary>
+    [Fact]
+    public async Task Kampanya_cakismasi_iadeyi_yeniden_uygulamaz()
+    {
+        var licenseId = await SeedAsync(initialCredits: 100);
+        var campaignId = await SeedRefundCampaignAsync(licenseId);
+
+        using (var workerScope = _factory.Services.CreateScope())
+        {
+            var workerDb = workerScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var balance = workerScope.ServiceProvider
+                .GetRequiredService<LicenseSmsBalanceService>();
+            var campaign = await workerDb.SmsCampaigns.SingleAsync(c => c.Id == campaignId);
+
+            // İşçi kampanyayı okuduktan SONRA başka biri devam ettiriyor:
+            // ClaimedAt değişti, yani elimizdeki tamamlanma artık bayat.
+            using (var resumeScope = _factory.Services.CreateScope())
+            {
+                var resumeDb = resumeScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+                var resumed = await resumeDb.SmsCampaigns.SingleAsync(c => c.Id == campaignId);
+
+                resumed.Status = "pending";
+                resumed.ClaimedAt = null;
+                await resumeDb.SaveChangesAsync();
+            }
+
+            campaign.Status = "completed";
+            campaign.CompletedAt = DateTimeOffset.UnixEpoch.AddSeconds(1);
+            campaign.ClaimedAt = DateTimeOffset.UnixEpoch.AddSeconds(1);
+            campaign.RefundedCredits = 2;
+
+            Func<Task> staleRefund = async () =>
+            {
+                await balance.ApplyAndSaveAsync(
+                    licenseId, 2, "send-refund",
+                    reason: $"campaign:{campaignId} failed=2",
+                    createdByCustomerId: null,
+                    disallowNegative: false,
+                    CancellationToken.None);
+            };
+
+            await staleRefund.Should().ThrowAsync<DbUpdateConcurrencyException>();
+        }
+
+        using (var verifyScope = _factory.Services.CreateScope())
+        {
+            var db = verifyScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var campaign = await db.SmsCampaigns.AsNoTracking()
+                .SingleAsync(c => c.Id == campaignId);
+
+            campaign.Status.Should().Be("pending");
+            campaign.ClaimedAt.Should().BeNull();
+            campaign.CompletedAt.Should().BeNull();
+            campaign.RefundedCredits.Should().Be(0);
+
+            (await db.LicenseSmsBalances
+                .Where(b => b.LicenseId == licenseId)
+                .Select(b => b.CreditsRemaining)
+                .SingleAsync()).Should().Be(100, "düşen tamamlanma kredi yaratmamalı");
+
+            (await db.LicenseSmsTransactions.CountAsync(
+                t => t.LicenseId == licenseId && t.Kind == "send-refund"))
+                .Should().Be(0, "ledger satırı bakiyeyle birlikte geri alınmalı");
+        }
+
+        // Kampanya gerçekten yeniden koşturulduğunda iade BİR KEZ yazılmalı;
+        // ikinci koşu hiç alıcı bulamayıp doğrudan tamamlamaya gider ve
+        // idempotans farkı sıfır çıkar.
+        using (var retryScope = _factory.Services.CreateScope())
+        {
+            await retryScope.ServiceProvider
+                .GetRequiredService<SmsCampaignSendJob>().RunAsync(campaignId);
+        }
+
+        using (var duplicateScope = _factory.Services.CreateScope())
+        {
+            await duplicateScope.ServiceProvider
+                .GetRequiredService<SmsCampaignSendJob>().RunAsync(campaignId);
+        }
+
+        using (var verifyScope = _factory.Services.CreateScope())
+        {
+            var db = verifyScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var campaign = await db.SmsCampaigns.AsNoTracking()
+                .SingleAsync(c => c.Id == campaignId);
+
+            campaign.Status.Should().Be("completed");
+            campaign.RefundedCredits.Should().Be(2);
+
+            (await db.LicenseSmsBalances
+                .Where(b => b.LicenseId == licenseId)
+                .Select(b => b.CreditsRemaining)
+                .SingleAsync()).Should().Be(102);
+
+            var refunds = await db.LicenseSmsTransactions.AsNoTracking()
+                .Where(t => t.LicenseId == licenseId && t.Kind == "send-refund")
+                .ToListAsync();
+
+            refunds.Should().ContainSingle();
+            refunds.Single().Amount.Should().Be(2);
+        }
+    }
+
+    /// <summary>
+    /// Gerileme koruması: MEŞRU bakiye çakışması (paralel bakiye yüklemesi)
+    /// hâlâ yeniden denenmeli. Retry'ı tamamen kaldıran "düzeltme" bu testi
+    /// kırar — yükleme araya girdiğinde iade 409/500'e dönüşürdü.
+    /// </summary>
+    [Fact]
+    public async Task Yalniz_bakiye_cakismasi_tamamlanma_ve_iadeyi_korur()
+    {
+        var licenseId = await SeedAsync(initialCredits: 100);
+        var campaignId = await SeedRefundCampaignAsync(licenseId);
+
+        using (var workerScope = _factory.Services.CreateScope())
+        {
+            var db = workerScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var service = workerScope.ServiceProvider
+                .GetRequiredService<LicenseSmsBalanceService>();
+
+            var staleBalance = await db.LicenseSmsBalances
+                .SingleAsync(b => b.LicenseId == licenseId);
+            var campaign = await db.SmsCampaigns.SingleAsync(c => c.Id == campaignId);
+
+            using (var topupScope = _factory.Services.CreateScope())
+            {
+                var topupDb = topupScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+                var balance = await topupDb.LicenseSmsBalances
+                    .SingleAsync(b => b.LicenseId == licenseId);
+
+                balance.CreditsRemaining += 50;
+                // Jeton KESİN ilerlemeli: `UtcNow` seed damgasının gerisinde
+                // kalırsa çakışma hiç doğmaz ve test hiçbir şey kanıtlamaz.
+                balance.UpdatedAt = staleBalance.UpdatedAt.AddTicks(1);
+
+                topupDb.LicenseSmsTransactions.Add(new LicenseSmsTransaction
+                {
+                    Id = Guid.NewGuid(),
+                    LicenseId = licenseId,
+                    Amount = 50,
+                    Kind = "purchase",
+                    CreatedAt = DateTimeOffset.UtcNow,
+                });
+
+                await topupDb.SaveChangesAsync();
+            }
+
+            campaign.Status = "completed";
+            campaign.CompletedAt = DateTimeOffset.UnixEpoch.AddSeconds(1);
+            campaign.ClaimedAt = DateTimeOffset.UnixEpoch.AddSeconds(1);
+            campaign.RefundedCredits = 2;
+
+            (await service.ApplyAndSaveAsync(
+                licenseId, 2, "send-refund",
+                reason: $"campaign:{campaignId} failed=2",
+                createdByCustomerId: null,
+                disallowNegative: false,
+                CancellationToken.None)).Should().Be(152);
+        }
+
+        using var verifyScope = _factory.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var completed = await verifyDb.SmsCampaigns.AsNoTracking()
+            .SingleAsync(c => c.Id == campaignId);
+
+        completed.Status.Should().Be("completed", "bakiye retry'ı kampanyayı geri almamalı");
+        completed.RefundedCredits.Should().Be(2);
+
+        var (credits, ledgerSum, txCount) = await ReadStateAsync(licenseId);
+        credits.Should().Be(152);
+        // `ledgerSum` 52: seed başlangıç bakiyesini ledger satırı YAZMADAN
+        // kuruyor, ledger'da yalnız +50 yükleme ve +2 iade var.
+        ledgerSum.Should().Be(52);
+        txCount.Should().Be(2);
+    }
+
     private async Task<(int Credits, int LedgerSum, int TxCount)> ReadStateAsync(Guid licenseId)
     {
         using var scope = _factory.Services.CreateScope();

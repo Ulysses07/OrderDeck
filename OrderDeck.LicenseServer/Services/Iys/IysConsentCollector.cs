@@ -136,12 +136,112 @@ public sealed class IysConsentCollector
             return;
         }
 
+        var row = await ApplyToRowAsync(brandCode, phone, status, occurredAt, ct);
+
+        // Olay hangi satıra ait — denetimde ONAY/RET karışmasın diye.
+        // Tekrar oynatma bunu YAPMAZ: olay tablosu ekle-only.
+        ev.IysConsentId = row.Id;
+    }
+
+    /// <summary>
+    /// Marka çözülemediği için düşmüş RET'leri, marka artık doğrulanmışken
+    /// uygular. <b>KAYDETMEZ</b> — çağıran, hesabın <c>Verified</c> yazımıyla
+    /// AYNI <c>SaveChanges</c>'te indirir (kalıp:
+    /// <see cref="Sms.NetgsmAccountService.StageResumePausedCampaignsAsync"/>).
+    /// Ayrılsalardı aradaki çökme RET'leri bir daha kimsenin bulamayacağı
+    /// şekilde düşürürdü.
+    ///
+    /// <para><b>Yalnız RET.</b> Onay zamana bağlı: İYS dışında alınan onay üç
+    /// iş günü içinde kaydedilmezse hukuken geçersiz
+    /// (<see cref="PushDeadlineBusinessDays"/>). Haftalarca <c>no-brand</c>
+    /// beklemiş bir onayı canlandırıp İYS'ye push etmek, geçersiz bir onayı
+    /// kayda geçirmek olurdu. Düşen onayın bedeli "o kişiye pazarlama
+    /// yapılamaz"; düşen reddin bedeli, onayını geri çekmiş kişiye ticari SMS.
+    /// Asimetri bilinçli ve fail-closed doktrininin aynısı.</para>
+    ///
+    /// <para><b>Yeni olay YAZILMAZ, eski olay GÜNCELLENMEZ.</b> İspat geçmişini
+    /// çoğaltmak denetimde "bu kişi kaç kez reddetti" sorusunu bozardı; tablo
+    /// zaten ekle-only. Bu yüzden olaylar <c>AsNoTracking</c> okunuyor —
+    /// yanlışlıkla bile UPDATE üretilemesin.</para>
+    ///
+    /// <para><b>İdempotentlik bedava.</b> Olayı "oynatıldı" diye
+    /// işaretleyemediğimiz için ikinci çağrı aynı olayları yine dolaşır, ama
+    /// <see cref="IysConsent.LastLocalEventAt"/> sıra damgası hepsini atlatır.
+    /// Aynı kural, oynatmanın DAHA YENİ gerçek bir olayı ezmesini de engeller.</para>
+    ///
+    /// <para><b>Marka parametreyle geliyor, burada çözülmüyor.</b> Çağıran onu
+    /// az önce doğrulanmış hesaptan okur. Burada <c>Verified</c> filtresi
+    /// olmadan çözmek — "ret her zaman güvenli yön" diye cazip gelse de —
+    /// kiracı sızıntısı olurdu: marka tekilliği yalnız doğrulanmış satırlar
+    /// arasında garantili, doğrulanmamış bir hesap başkasının kodunu taşıyabilir
+    /// ve B'nin müşterisinin reddi A'nın onayını düşürürdü.</para>
+    /// </summary>
+    /// <returns>Yeniden oynatılan olay sayısı. Kaç satırın gerçekten DEĞİŞTİĞİ
+    /// değil — sıra damgasına takılanlar da sayılır.</returns>
+    public async Task<int> StageReplayNoBrandRevokesAsync(
+        Guid licenseId, string brandCode, CancellationToken ct = default)
+    {
+        var dropped = await _db.IysConsentEvents
+            .AsNoTracking()
+            .Where(e => e.LicenseId == licenseId
+                        && e.ErrorCode == "no-brand"
+                        && e.EventType == IysConsentEventType.LocalRevoke)
+            // Sıra bugün SONUCU değiştirmiyor — hepsi RET olduğu için aynı
+            // alıcının olayları hangi sırayla uygulanırsa uygulansın satır
+            // Ret'te ve en yeni damgada kapanıyor (mutasyon testi bunu
+            // doğruladı: OrderByDescending hiçbir testi düşürmüyor). Yine de
+            // duruyor: gün geldiğinde bu döngüye RET dışında bir olay tipi
+            // girerse sıra ANINDA belirleyici olur, ve deterministik olmayan
+            // bir sıra o hatayı yalnızca prod'da gösterirdi.
+            .OrderBy(e => e.OccurredAt)
+            .ToListAsync(ct);
+
+        foreach (var e in dropped)
+        {
+            await ApplyToRowAsync(
+                brandCode, e.Recipient, IysConsentStatus.Ret, e.OccurredAt, ct);
+        }
+
+        if (dropped.Count > 0)
+        {
+            _log.LogInformation(
+                "İYS: lisans {LicenseId} doğrulandı, {Count} adet no-brand RET yeniden oynatıldı",
+                licenseId, dropped.Count);
+        }
+
+        return dropped.Count;
+    }
+
+    /// <summary>
+    /// Durum satırını bulur/açar ve bir olayı ona uygular. <b>Tek yer</b> —
+    /// "RET kendiliğinden ONAY'a yükselmez" kuralı hem canlı toplama hem
+    /// tekrar oynatma yolunda geçerli; iki kopya ileride sessizce ayrışır ve
+    /// ayrışan kopya yasa dışı gönderime izin verir.
+    /// </summary>
+    private async Task<IysConsent> ApplyToRowAsync(
+        string brandCode, string phone, IysConsentStatus status,
+        DateTimeOffset occurredAt, CancellationToken ct)
+    {
+        var consented = status == IysConsentStatus.Onay;
         var now = DateTimeOffset.UtcNow;
-        var row = await _db.IysConsents.FirstOrDefaultAsync(
-            c => c.BrandCode == brandCode
-                 && c.ChannelType == "MESAJ"
-                 && c.RecipientType == "BIREYSEL"
-                 && c.Recipient == phone, ct);
+
+        // ÖNCE yerel görünüm, SONRA disk. Tekrar oynatma tek SaveChanges'e
+        // yazıyor (hesabın Verified yazımıyla atomik olmak zorunda), yani aynı
+        // numaranın ikinci olayı geldiğinde birinci olayın açtığı satır HENÜZ
+        // DİSKTE YOK — sorgu onu bulamaz, ikinci bir satır açılır ve
+        // (BrandCode, ChannelType, RecipientType, Recipient) tekil indeksi
+        // patlar. O noktada yayıncının PUT'u 500 döner ve kurulumu elle
+        // müdahale edilene dek bir daha doğrulanamaz.
+        var row = _db.IysConsents.Local.FirstOrDefault(
+                      c => c.BrandCode == brandCode
+                           && c.ChannelType == "MESAJ"
+                           && c.RecipientType == "BIREYSEL"
+                           && c.Recipient == phone)
+                  ?? await _db.IysConsents.FirstOrDefaultAsync(
+                      c => c.BrandCode == brandCode
+                           && c.ChannelType == "MESAJ"
+                           && c.RecipientType == "BIREYSEL"
+                           && c.Recipient == phone, ct);
 
         if (row is null)
         {
@@ -157,15 +257,13 @@ public sealed class IysConsentCollector
             _db.IysConsents.Add(row);
         }
 
-        // Olay hangi satıra ait — denetimde ONAY/RET karışmasın diye.
-        ev.IysConsentId = row.Id;
-
         if (row.LastLocalEventAt != default && occurredAt <= row.LastLocalEventAt)
         {
             // Kural 1: RET kendiliğinden ONAY'a yükselmez. Durum yalnızca
             // LastLocalEventAt'ten DAHA YENİ bir olayla değişir; geç işlenen
             // eski bir onay reddi ezemez. Olay yine de yazıldı (yukarıda).
-            return;
+            // Tekrar oynatmanın idempotentliği de BURADAN geliyor.
+            return row;
         }
 
         var durumDegisti = row.Status != status;
@@ -188,7 +286,7 @@ public sealed class IysConsentCollector
             // her kaydetmede yeniden itilirdi; bu hem gereksiz, hem de
             // VerifyAttempts/LastError'ı sıfırlayarak kalıcı bir gönderim
             // hatasını görünmez yapardı. Olay yine yazıldı — ispat bozulmadı.
-            return;
+            return row;
         }
 
         // Yeni olay yeni push penceresi açar — Expired kalıcı yasak değildir.
@@ -200,6 +298,7 @@ public sealed class IysConsentCollector
         row.VerifyAttempts = 0;
         row.NextVerifyAt = null;
         row.LastError = null;
+        return row;
     }
 
     private static string? Truncate(string? s, int max)

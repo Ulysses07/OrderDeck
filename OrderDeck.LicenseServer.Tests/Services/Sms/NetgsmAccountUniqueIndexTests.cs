@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Sms;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
@@ -36,7 +37,9 @@ public sealed class NetgsmAccountUniqueIndexTests : IAsyncLifetime
     /// <see cref="DbUpdateException"/>'ı alır ve doğru sebeple geçtiğini
     /// sanardık. Ayrıca repo kuralı: testte sabit kimlik-bilgisi metni yazma.
     /// </summary>
-    private static NetgsmAccount Row(Guid licenseId, string brandCode) => new()
+    private static NetgsmAccount Row(
+        Guid licenseId, string brandCode,
+        NetgsmAccountStatus status = NetgsmAccountStatus.Verified) => new()
     {
         Id = Guid.NewGuid(),
         LicenseId = licenseId,
@@ -44,7 +47,7 @@ public sealed class NetgsmAccountUniqueIndexTests : IAsyncLifetime
         PasswordProtected = $"pw-{Guid.NewGuid():N}",
         Header = $"OD{Guid.NewGuid():N}"[..11],
         BrandCode = brandCode,
-        Status = NetgsmAccountStatus.Verified,
+        Status = status,
         CreatedAt = DateTimeOffset.UtcNow,
         UpdatedAt = DateTimeOffset.UtcNow,
     };
@@ -161,5 +164,132 @@ public sealed class NetgsmAccountUniqueIndexTests : IAsyncLifetime
             "marka→hesap araması ikisinden yalnız birini görür — index'in var " +
             "olma sebebi çöker. İYS marka kodları sayısal olduğu için kısıt " +
             "rakam dışı her karakteri kapıda kesiyor");
+    }
+
+    [Fact]
+    public async Task Dogrulanmamis_satir_marka_kodunu_ISGAL_ETMEZ()
+    {
+        // Yayıncı A marka kodunu yanlış yazdı (satırı Failed). Filtresiz
+        // indekste bu kod global olarak yanardı ve gerçek sahibi B kendi
+        // kurulumunu ASLA tamamlayamazdı — kendi hatası olmayan, kendi
+        // düzeltemeyeceği kalıcı bir kilit.
+        var a = await NewLicenseAsync();
+        var b = await NewLicenseAsync();
+        var brandCode = Random.Shared.Next(100_000, 999_999).ToString();
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.NetgsmAccounts.Add(Row(a, brandCode, NetgsmAccountStatus.Failed));
+            await db.SaveChangesAsync();
+        }
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.NetgsmAccounts.Add(Row(b, brandCode, NetgsmAccountStatus.Verified));
+            var act = async () => await db.SaveChangesAsync();
+            await act.Should().NotThrowAsync(
+                "yalnız DOĞRULANMIŞ satırlar markayı sahiplenir");
+        }
+    }
+
+    [Fact]
+    public async Task Disabled_satir_marka_kodunu_SERBEST_BIRAKIR()
+    {
+        // Kill switch'le kapatılan yayıncının markası, aynı markayı gerçekten
+        // İYS'de doğrulayabilen bir hesabı engellemeye devam etmemeli.
+        var a = await NewLicenseAsync();
+        var b = await NewLicenseAsync();
+        var brandCode = Random.Shared.Next(100_000, 999_999).ToString();
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.NetgsmAccounts.Add(Row(a, brandCode, NetgsmAccountStatus.Disabled));
+            await db.SaveChangesAsync();
+        }
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.NetgsmAccounts.Add(Row(b, brandCode, NetgsmAccountStatus.Verified));
+            var act = async () => await db.SaveChangesAsync();
+            await act.Should().NotThrowAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Bayat_hesap_yazimi_kampanya_duraklatmasini_da_geri_alir()
+    {
+        // Görev 3'te `UpsertAsync` hesabı `Failed` yaparken kampanyaları AYNI
+        // `SaveChanges` içinde duraklatıyor. Burada kanıtlanan şey o birliğin
+        // gerçek: hesap yazımı sürüm jetonuna takılıp reddedilirse kampanya
+        // duraklatması da geri alınmalı. Alınmazsa, admin'in kapattığı bir
+        // hesabın kampanyası "paused"a düşer ama hesap `Disabled` kalır —
+        // kimsenin devam ettiremeyeceği, rezerve kredisi asılı bir kampanya.
+        //
+        // InMemory bunu KANITLAYAMAZ: jetonu uygular ama çok-varlıklı yazımı
+        // bir transaction'da geri almaz. Bu yüzden Testcontainers.
+        var licenseId = await NewLicenseAsync();
+        var campaignId = Guid.NewGuid();
+
+        using (var seedScope = _factory.Services.CreateScope())
+        {
+            var db = seedScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.NetgsmAccounts.Add(Row(
+                licenseId, Random.Shared.Next(100_000, 999_999).ToString(),
+                NetgsmAccountStatus.Verified));
+            db.SmsCampaigns.Add(new SmsCampaign
+            {
+                Id = campaignId,
+                LicenseId = licenseId,
+                MessageBody = "Kampanya",
+                Status = "sending",
+                ClaimedAt = DateTimeOffset.UnixEpoch,
+                SegmentsPerMessage = 1,
+                RecipientCount = 1,
+                ReservedCredits = 1,
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        // Yayıncının paneli hesabı okudu (bu sürümü sahipleniyor).
+        using var workerScope = _factory.Services.CreateScope();
+        var workerDb = workerScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var accounts = workerScope.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+        var stale = await workerDb.NetgsmAccounts.SingleAsync(a => a.LicenseId == licenseId);
+
+        // Admin araya girip kapattı — sürüm ilerledi.
+        using (var adminScope = _factory.Services.CreateScope())
+        {
+            var adminDb = adminScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var current = await adminDb.NetgsmAccounts.SingleAsync(a => a.LicenseId == licenseId);
+            current.Status = NetgsmAccountStatus.Disabled;
+            await adminDb.SaveChangesAsync();
+        }
+
+        // Panel bayat sürümle yazmaya çalışıyor. Servisteki `Disabled` guard'ı
+        // bu yarışı GÖREMEZ (izlenen kopya hâlâ Verified); kararı jeton verir.
+        Func<Task> write = async () => await accounts.UpsertAsync(
+            licenseId, stale.UserCode, $"pw-{Guid.NewGuid():N}",
+            stale.Header, stale.BrandCode, CancellationToken.None);
+
+        await write.Should().ThrowAsync<DbUpdateConcurrencyException>();
+
+        using var verifyScope = _factory.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+        (await verifyDb.NetgsmAccounts.AsNoTracking()
+            .SingleAsync(a => a.LicenseId == licenseId))
+            .Status.Should().Be(NetgsmAccountStatus.Disabled,
+                "admin kararı bayat yazımla geri alınamaz");
+
+        var campaign = await verifyDb.SmsCampaigns.AsNoTracking()
+            .SingleAsync(c => c.Id == campaignId);
+        campaign.Status.Should().Be("sending",
+            "hesap yazımı düştüyse duraklatma da geri alınmalı — ya ikisi ya hiçbiri");
+        campaign.ClaimedAt.Should().Be(DateTimeOffset.UnixEpoch);
     }
 }
