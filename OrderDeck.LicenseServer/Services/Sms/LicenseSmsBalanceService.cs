@@ -84,6 +84,10 @@ public sealed class LicenseSmsBalanceService
             };
 
             _db.LicenseSmsBalances.Add(balance);
+            // Yeni satır insert'i token'la korunmaz; eşzamanlı iki "ilk yazım"
+            // unique LicenseId index'ine takılır → gürültülü DbUpdateException.
+            // Aşağıdaki retry döngüsü bu dalı KAPSAMAZ: orası yalnız mevcut
+            // satırın sürüm çakışmasını onarıyor, indeks ihlalini değil.
             await _db.SaveChangesAsync(ct);
             return balance.CreditsRemaining;
         }

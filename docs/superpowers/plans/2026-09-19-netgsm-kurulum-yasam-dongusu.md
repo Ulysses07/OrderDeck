@@ -5740,6 +5740,53 @@ Düşmeli: `Kampanya_cakismasi_iadeyi_yeniden_uygulamaz` — beklenen istisna
 > **farklı bir sebeple** düşer — prova o zaman iade tekrarını değil, retry'ın
 > varlığını ölçmüş olur. Gövdeyi eksiksiz yaz.
 
+> ## Görev 11 gerçekleşen (commit `70d000ec`)
+>
+> Adım 3 tabanı: `Başarısız 5 / Başarılı 9 / Toplam 14` — beklenen beş test
+> düştü. Adım 7: **28/28 PASS, 25 s**; geniş `~Sms` süzgeci 146/146; tüm
+> sunucu takımı **2401/2401, 6 dk 56 sn**.
+>
+> **Adım 8: beş mutasyonun beşi de öldü, hayatta kalan yok.**
+> 1. `SmsCampaignPauseTests.cs:167` — `Gonderim_ortasinda_duraklatilan_...`
+> 2. `SmsCampaignPauseTests.cs:345` — `Ileri_tarihli_damgali_kampanya_...`
+> 3. `SmsCampaignPauseTests.cs:406` — `Ustlenme_cakismasi_...` (bakiye 99≠101)
+> 4. `SmsCampaignPauseTests.cs:504` — `Diriltilen_kampanya_iadeyi_...` (99≠101)
+> 5. `SmsBalanceConcurrencyTests.cs:183` — `Kampanya_cakismasi_iadeyi_...`
+>
+> ### Plandan sapmalar
+>
+> * **D1** — `ClaimedAt` concurrency token `LicenseDbContext.cs:816`'da; plan
+>   iki yerde `:786` diyor. Bayat satır numarası.
+> * **D2** — Adım 3'ün `Gercek_kapatma_yolu_kosan_isi_durdurur` için
+>   öngördüğü hata ("aynı sebeple 2 SMS gitmiş") yanlış. Gerçekte
+>   `SmsCampaignSendJob.cs:173`'ten yakalanmamış `DbUpdateConcurrencyException`
+>   çıkıyor, çünkü Görev 3'ün duraklatması `ClaimedAt`'i zaten ilerletiyor.
+> * **D3 — PLAN HATALIYDI, kod plandan saptı.** `SaveRecipientResultAsync`'in
+>   çakışma dalı için plan `_db.Entry(campaign).State = EntityState.Detached;`
+>   yazıyor. Bu **çalışmıyor**: `SmsCampaignRecipient`'ın kampanyaya zorunlu
+>   FK'si var, kampanyayı detach etmek izlenen alıcıları ÇAĞLAYARAK detach
+>   ediyor ve az önce yazılan `sent` sonucu sessizce kayboluyor
+>   (`SaveChanges` 0 satır). Sonuç: devam ettirmede aynı kişiye ikinci SMS.
+>   `EntityState.Unchanged` doğrusu — ilişkiyi koparmadan kampanyayı
+>   `SaveChanges` dışında bırakır. Gerekçe XML dokümana Türkçe işlendi.
+>   Doğrulandı: `Unchanged` → `Detached` mutasyonu
+>   `SmsCampaignPauseTests.cs:233`'te ölüyor.
+>   **`RunAsync`'in üstlenme dalındaki (`:155`) `Detached` DOĞRU** — orada
+>   alıcılar henüz okunmamış, çağlayacak bir şey yok. İki dal aynı görünüp
+>   farklı davranıyor; birini kopyalayıp diğerine yapıştırma.
+> * **D4** — D3 yüzünden `Gercek_kapatma_yolu_kosan_isi_durdurur` yorumundaki
+>   "detach edip yeniden kaydetme" ifadesi "yazımdan düşürüp yeniden kaydetme"
+>   oldu.
+> * **D5** — planın `ApplyAndSaveAsync` toptan değişimi, insert dalındaki
+>   mevcut yorumu ("Yeni satır insert'i token'la korunmaz; ... unique
+>   LicenseId index'ine takılır") sessizce siliyordu. **Geri kondu** ve
+>   retry'ın o dalı kapsamadığı cümlesi eklendi: yeni `ReferenceEquals`
+>   süzgeci artık insert çakışmasını da dışarı bırakıyor, yani yorum
+>   eskisinden daha da gerekli.
+> * **D6** — Adım 8/5'in "bakiye 104 olur" öngörüsü tutmadı; test daha erken,
+>   `ThrowAsync` assert'inde düşüyor. Aynı mutasyonu öldürüyor ama planın
+>   tarif ettiği mekanizmayla değil.
+
 - [ ] **Adım 9: Commit**
 
 ```bash
