@@ -189,12 +189,14 @@ public sealed class PanelNetgsmAccountSaveTests : IDisposable
 
         // Metnin İÇERİĞİ ölçülüyor, yalnız dolu olması değil: verifier'ın
         // `Rejected`/`Unavailable` ayrımının TEK gerekçesi yayıncının doğru işi
-        // yapması. "Ulaşılamadı, kendiliğinden tekrar denenecek" diyen bir arıza
-        // "abone numaranız reddedildi" diye gösterilirse yayıncı çalışan
-        // kimliklerini tekrar tekrar girer — kendisinde olmayan bir sorunu
-        // kovalar ve arıza geçtiğinde neyin düzeldiğini bilmez.
+        // yapması. Geçici bir arıza "abone numaranız reddedildi" diye
+        // gösterilirse yayıncı çalışan kimliklerini tekrar tekrar girer —
+        // kendisinde olmayan bir sorunu kovalar ve arıza geçtiğinde neyin
+        // düzeldiğini bilmez. Panel yolunda doğru talimat "formu tekrar
+        // kaydet"; metnin tamamı ve neden doğrulayıcınınkinden AYRI olduğu
+        // `PanelNetgsmAccountErrorSurfaceTests`'te (Görev 14).
         doc.RootElement.GetProperty("lastError").GetString()
-            .Should().Contain("tekrar denenecek",
+            .Should().Contain("ulaşılamadı",
                 "geçici arıza, yayıncıya 'bekle' demeli; 'kimliklerin yanlış' değil");
     }
 

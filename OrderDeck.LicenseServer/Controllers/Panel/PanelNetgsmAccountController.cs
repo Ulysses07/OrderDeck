@@ -70,6 +70,15 @@ public sealed class PanelNetgsmAccountController : ControllerBase
         return Ok(ToView(acc));
     }
 
+    /// <summary>
+    /// Kaydetme anında İYS'ye ulaşılamazsa yayıncıya yazılan metin. Doğrulayıcı
+    /// kendi metnini döndürüyor ama o metin günlük işin sözleşmesini anlatıyor;
+    /// panel yolunda geçerli olan tek kurtarma adımı formu tekrar kaydetmek.
+    /// </summary>
+    private const string UnavailableOnSaveMessage =
+        "İYS'ye şu an ulaşılamadı, kurulumunuz doğrulanamadı. "
+        + "Birkaç dakika sonra formu tekrar kaydedin.";
+
     public sealed record SaveRequest(
         string UserCode, string? Password, string Header, string BrandCode);
 
@@ -167,13 +176,36 @@ public sealed class PanelNetgsmAccountController : ControllerBase
             // yoksa bayat bir istek kapatılmış hesaba hata metni yazabilir.
             var password = _accounts.TryUnprotectPassword(account.PasswordProtected);
 
-            var result = password is null
-                ? new NetgsmVerifyResult(
-                    NetgsmVerifyOutcome.Unavailable, NetgsmAccountService.UndecryptableMessage)
-                : await _verifier.VerifyAsync(
+            NetgsmVerifyResult result;
+            if (password is null)
+            {
+                // Bu dalın metni KENDİ bağlamını anlatıyor (Görev 9): dış çağrı
+                // hiç yapılmadı, sorun anahtar dizininde. Aşağıdaki panel
+                // metniyle ezilmemeli — "birkaç dakika sonra tekrar kaydedin"
+                // demek, çözülmeyecek bir şeyi yayıncıya tekrar tekrar
+                // denetmek olurdu.
+                result = new NetgsmVerifyResult(
+                    NetgsmVerifyOutcome.Unavailable, NetgsmAccountService.UndecryptableMessage);
+            }
+            else
+            {
+                result = await _verifier.VerifyAsync(
                     new Services.Iys.IysAccountContext(
                         account.LicenseId, account.UserCode, password, account.BrandCode),
                     ct);
+
+                // Doğrulayıcının geçici arıza metni GÜNLÜK İŞİN metni: "kurulumunuz
+                // kapatılmadı, doğrulama kendiliğinden tekrar denenecek". Orada iki
+                // cümle de doğru; BURADA ikisi de yanlış — `UpsertAsync` doğrulamadan
+                // önce `Failed` yazdı (fail-closed) ve günlük iş yalnız `Verified`
+                // satırları tarıyor, yani bu satıra bir daha uğramayacak. Metni
+                // doğrulayıcıda bağlama göre dallandırmak YANLIŞ olurdu: doğrulayıcı
+                // kendisini kimin çağırdığını bilmemeli, o bilgi çağırandadır.
+                // Ayrımı `Outcome`'a değil DALA bakarak yapıyoruz — şifre çözülemeyen
+                // yol da `Unavailable` üretiyor ama onun metni değişmemeli.
+                if (result.Outcome == NetgsmVerifyOutcome.Unavailable)
+                    result = result with { Message = UnavailableOnSaveMessage };
+            }
 
             if (result.Outcome == NetgsmVerifyOutcome.Ok)
             {
@@ -233,7 +265,7 @@ public sealed class PanelNetgsmAccountController : ControllerBase
                 detail: "Kurulum, doğrulama sürerken değişti. Formu tekrar kaydedin.",
                 statusCode: 409);
         }
-        catch (DbUpdateException ex) when (IsBrandCodeConflict(ex))
+        catch (DbUpdateException ex) when (IsUniqueIndexConflict(ex, "BrandCode"))
         {
             // Ön kontrol ile kayıt arasında başka kiracı aynı markayı
             // doğruladı. Filtreli tekil indeks kesin kararı verdi; bizimki
@@ -243,23 +275,55 @@ public sealed class PanelNetgsmAccountController : ControllerBase
                 detail: "Bu İYS marka kodu başka bir hesapta doğrulanmış durumda.",
                 statusCode: 409);
         }
+        catch (DbUpdateException ex) when (IsUniqueIndexConflict(ex, "LicenseId"))
+        {
+            // Aynı lisans için İKİ sekmeden eşzamanlı İLK kayıt: ikisi de
+            // "satır yok" görüp INSERT üretti, kaybeden
+            // `IX_NetgsmAccounts_LicenseId`'den 2601 aldı. Marka indeksiyle
+            // aynı hata kodu ama BAŞKA bir olay — ve yayıncının yapması gereken
+            // şey de başka: markası elinden gitmedi, kurulumu zaten kaydedildi.
+            // Filtre yalnız markayı tanıdığı sürece istisna dışarı kaçıp 500
+            // üretiyordu.
+            //
+            // `DbUpdateConcurrencyException` dalı bu yarışı YAKALAMAZ: orada
+            // var olan bir satırın sürümü kayıyor, burada satır henüz YOK —
+            // CAS'ın koruyacağı bir özgün değer üretilmemiş durumda.
+            _db.ChangeTracker.Clear();
+            return Problem(title: "netgsm-account-concurrent-create",
+                detail: "Kurulumunuz başka bir sekmede kaydedildi. "
+                        + "Sayfayı yenileyip tekrar deneyin.",
+                statusCode: 409);
+        }
     }
 
     /// <summary>
-    /// <c>DbUpdateException</c>, marka kodu tekil indeksinin ihlali mi?
-    /// 2601/2627 = unique index/constraint ihlali; indeks adı filtresi, aynı
-    /// hata koduyla gelen BAŞKA yarışların (ve tamamen ilgisiz DB
-    /// arızalarının) "marka kodu dolu" diye yanlış etiketlenmesini önler.
-    /// Filtresiz bir <c>catch (DbUpdateException)</c>, taşan bir
-    /// <c>LastError</c>'ı ya da kopan bir bağlantıyı da yayıncıya "marka
-    /// kodunuz başkasında" diye gösterirdi — yanlış yeri saatlerce aratır.
-    /// Kalıp: <c>PanelCustomerBalanceController.IsDuplicateReversal</c>
-    /// (PanelCustomerBalanceController.cs:335).
+    /// <c>DbUpdateException</c>, adı <paramref name="indexName"/> geçen tekil
+    /// indeksin ihlali mi? 2601/2627 = unique index/constraint ihlali; indeks
+    /// adı filtresi, aynı hata koduyla gelen BAŞKA yarışların (ve tamamen
+    /// ilgisiz DB arızalarının) yanlış etiketlenmesini önler. Filtresiz bir
+    /// <c>catch (DbUpdateException)</c>, taşan bir <c>LastError</c>'ı ya da
+    /// kopan bir bağlantıyı da yayıncıya "marka kodunuz başkasında" diye
+    /// gösterirdi — yanlış yeri saatlerce aratır.
+    ///
+    /// <para><b>Neden ad parametreli.</b> Bu denetleyicide iki farklı tekil
+    /// indeks ihlali iki farklı cevaba çıkıyor (marka işgali / eşzamanlı ilk
+    /// kayıt); tek bir sabite gömülü ad, ikinci ihlali sessizce 500'e
+    /// düşürüyordu.</para>
+    ///
+    /// <para><b>Neden <c>public</c>.</b> Yarış InMemory'de üretilemiyor (tekil
+    /// indeks uygulanmıyor), yani karar yalnız saf fonksiyon olarak
+    /// sınanabilir. Sunucu projesinde <c>InternalsVisibleTo</c> yok; aynı
+    /// durumda Görev 9 da <c>ToView</c>'u <c>public static</c> yapmıştı —
+    /// kalıbı bozmamak için aynısı. Statik olduğu için MVC bunu eylem
+    /// saymaz.</para>
+    ///
+    /// <para>Kalıp: <c>PanelCustomerBalanceController.IsDuplicateReversal</c>
+    /// (PanelCustomerBalanceController.cs:335).</para>
     /// </summary>
-    private static bool IsBrandCodeConflict(DbUpdateException ex) =>
+    public static bool IsUniqueIndexConflict(DbUpdateException ex, string indexName) =>
         ex.InnerException is Microsoft.Data.SqlClient.SqlException sql
         && sql.Number is 2601 or 2627
-        && sql.Message.Contains("BrandCode", StringComparison.Ordinal);
+        && sql.Message.Contains(indexName, StringComparison.Ordinal);
 
     public static AccountView ToView(NetgsmAccount? acc) => acc is null
         ? new AccountView("none", false, null, null, null, false, null, null)
