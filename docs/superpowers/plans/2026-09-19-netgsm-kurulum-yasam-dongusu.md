@@ -3949,6 +3949,10 @@ sunucu projesine `InternalsVisibleTo` gerekir. `OrderDeck.LicenseServer.csproj`
 zaten test projesine açıksa ek iş yok; değilse `ToView`'u `public static` yap
 (dönen tip `AccountView` zaten public).
 
+> **Gerçekleşen:** sunucu projesinde `InternalsVisibleTo` **yok**, bu yüzden
+> ikinci şık uygulandı — `PanelNetgsmAccountController.cs:257` `internal static`
+> → `public static`. Denetleyicide başka tek satır değişmedi.
+
 - [ ] **Adım 2: Düştüğünü gör**
 
 ```bash
@@ -3972,6 +3976,18 @@ dotnet test OrderDeck.LicenseServer.Tests/OrderDeck.LicenseServer.Tests.csproj \
   --filter FullyQualifiedName~NetgsmAccountVerifyJobTests
 ```
 Beklenen: PASS (7 test).
+
+> **Görev 9 sonundaki gerçek sayı 11** (commit `5c29a7dd`, 3 s): Görev 8'in 9'u
+> + buradaki 2. Adım 2'nin tahmini doğru çıktı — iki test ilk koşuda geçti,
+> yani Görev 8'in `password is null` dalı zaten doğruydu ve üretim kodunda
+> düzeltme gerekmedi.
+>
+> Mutasyon (`password is null` bloğuna `acc.Status = Disabled;` ekle) **iki
+> testi birden** öldürdü: `Cozulemeyen_sifre_hesabi_KAPATMAZ` `:376`
+> (`Verified` beklerken `Disabled`) ve `Cozulemeyen_sifre_panelde_gorunur`
+> `:411` (`SmsEnabled` `True` beklerken `False`). İkincisi asıl bedeli
+> ölçüyor: anahtar kaybı hesabı kapatırsa panel kutusu da kaybolur ve
+> yayıncının dönüş yolu kalmaz — §2.4'ten sapmanın sebebi tam olarak bu.
 
 - [ ] **Adım 5: Commit**
 
