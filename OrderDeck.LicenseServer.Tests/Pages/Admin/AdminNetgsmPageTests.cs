@@ -231,7 +231,18 @@ public sealed class AdminNetgsmPageTests : IClassFixture<HookedApiFactory>
         var client = await _factory.CreateLoggedInAdminClientAsync();
         var resp = await PostAsync(client, "Enable", accountId);
 
-        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect,
+            "burası bir Razor Page: JSON gövde yöneticiyi çıplak bir ekrana "
+            + "düşürür ve hesabın güncel durumunu göremez hâle getirir");
+
+        // Yönlendirmeyi TAKİP ET — "302 döndü" tek başına bir şey kanıtlamaz,
+        // başarı yolu da 302 dönüyor. Şerit yoksa yönetici reddi başarı sanar
+        // ve kurulumu Failed'a düşürdüğünü zanneder.
+        var page = await (await client.GetAsync("/admin/netgsm"))
+            .Content.ReadAsStringAsync();
+        page.Should().Contain("alert-danger");
+        page.Should().Contain("Kurulum zaten açık",
+            "reddin sebebi ekranda yazmazsa yönetici neyi yenileyeceğini bilmez");
 
         using var scope = _factory.Services.CreateScope();
         var vdb = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();

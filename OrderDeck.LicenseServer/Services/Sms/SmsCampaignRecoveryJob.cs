@@ -151,6 +151,13 @@ public sealed class SmsCampaignRecoveryJob
                 // SaveChanges'ine binerse tek çakışma bütün süpürmeyi
                 // sürekli düşürür. Kaybedilen bir şey yok: kampanya gerçekten
                 // asılıysa bir sonraki süpürme taze okumayla yakalar.
+                //
+                // Burada YALNIZ kampanya detach ediliyor, iade tarafı değil:
+                // onu LicenseSmsBalanceService kendi sözleşmesi gereği
+                // (DiscardPending) çoktan geri aldı. O sözleşme olmadan iade
+                // tx'i `Added` kalır, bir sonraki kampanyanın yazımına biner
+                // ve bu kampanya "paused" kaldığı hâlde parası ödenmiş olur —
+                // sonraki süpürme onu İKİNCİ kez iade eder.
                 _db.Entry(campaign).State = EntityState.Detached;
                 _log.LogInformation(
                     "SmsCampaignRecoveryJob: stranded campaign {Id} changed under us, skipping",

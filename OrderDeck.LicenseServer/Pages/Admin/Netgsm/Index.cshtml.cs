@@ -134,11 +134,12 @@ public class IndexModel : PageModel
         if (acc.Status != NetgsmAccountStatus.Disabled)
         {
             _db.ChangeTracker.Clear();
-            return new ConflictObjectResult(new
-            {
-                title = "netgsm-account-not-disabled",
-                detail = "Kurulum zaten açık. Sayfayı yenileyin.",
-            });
+            // Burası bir Razor Page: JSON dönmek yöneticiyi çıplak bir gövdeye
+            // düşürür ve tam da okuması gereken şeyi — hesabın GÜNCEL durumunu —
+            // ekrandan siler. Mesajın kendisi "sayfayı yenileyin" diyor; o
+            // yenilemeyi biz yapıyoruz. Kardeş OnPostDisableAsync de böyle.
+            TempData["Error"] = "Kurulum zaten açık. Sayfayı yenileyin.";
+            return RedirectToPage();
         }
 
         // Verified DEĞİL: yönetici markanın İYS'de hâlâ geçerli olduğunu
@@ -163,11 +164,9 @@ public class IndexModel : PageModel
             // "aç" kararı da bayat — sessizce uygulamak yerine yöneticiye
             // güncel hâli gösteriyoruz.
             _db.ChangeTracker.Clear();
-            return new ConflictObjectResult(new
-            {
-                title = "netgsm-account-changed",
-                detail = "Kurulum başka bir işlemle değişti. Sayfayı yenileyin.",
-            });
+            TempData["Error"] =
+                "Kurulum başka bir işlemle değişti. Sayfayı yenileyin.";
+            return RedirectToPage();
         }
 
 

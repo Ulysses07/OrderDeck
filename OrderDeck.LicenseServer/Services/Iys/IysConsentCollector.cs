@@ -176,8 +176,10 @@ public sealed class IysConsentCollector
     /// arasında garantili, doğrulanmamış bir hesap başkasının kodunu taşıyabilir
     /// ve B'nin müşterisinin reddi A'nın onayını düşürürdü.</para>
     /// </summary>
-    /// <returns>Yeniden oynatılan olay sayısı. Kaç satırın gerçekten DEĞİŞTİĞİ
-    /// değil — sıra damgasına takılanlar da sayılır.</returns>
+    /// <returns>Oynatma uygulanan NUMARA sayısı — olay sayısı değil (numara
+    /// başına yalnız en yeni olay uygulanıyor, aşağıdaki gerekçeye bakın).
+    /// Kaç satırın gerçekten DEĞİŞTİĞİ de değil: sıra damgasına takılanlar da
+    /// sayılır.</returns>
     public async Task<int> StageReplayNoBrandRevokesAsync(
         Guid licenseId, string brandCode, CancellationToken ct = default)
     {
@@ -186,30 +188,63 @@ public sealed class IysConsentCollector
             .Where(e => e.LicenseId == licenseId
                         && e.ErrorCode == "no-brand"
                         && e.EventType == IysConsentEventType.LocalRevoke)
-            // Sıra bugün SONUCU değiştirmiyor — hepsi RET olduğu için aynı
-            // alıcının olayları hangi sırayla uygulanırsa uygulansın satır
-            // Ret'te ve en yeni damgada kapanıyor (mutasyon testi bunu
-            // doğruladı: OrderByDescending hiçbir testi düşürmüyor). Yine de
-            // duruyor: gün geldiğinde bu döngüye RET dışında bir olay tipi
-            // girerse sıra ANINDA belirleyici olur, ve deterministik olmayan
-            // bir sıra o hatayı yalnızca prod'da gösterirdi.
-            .OrderBy(e => e.OccurredAt)
+            .Select(e => new { e.Recipient, e.OccurredAt })
             .ToListAsync(ct);
 
-        foreach (var e in dropped)
+        // Numara başına YALNIZ en yeni olay uygulanır. Eskileri de uygulamak
+        // sonucu DEĞİŞTİRMEZ (hepsi RET; satır her hâlükârda Ret'te ve en yeni
+        // damgada kapanıyor) ama iş sınırsız büyür: profil kaydı onay kutusunun
+        // mevcut değerini HER kaydetmede yeniden yazıyor (ShopperMeController —
+        // bilinçli, bkz. oradaki gerekçe), yani tek bir müşteri tek başına bu
+        // tabloya yüzlerce satır bırakabilir.
+        //
+        // Kesilen maliyet DB turu ya da SaveChanges DEĞİL: ikisi de zaten
+        // numara sayısıyla ölçekleniyordu, çünkü bir numaranın ilk olayı satırı
+        // `Local`'a sokuyor ve sonrakiler diske hiç gitmiyor (aşağıda,
+        // ApplyToRowAsync). Kesilen şey o `Local` taramasının olay×numara
+        // büyümesi ve N kez dönen async döngü. Sonuç aynı yere çıkıyor:
+        // oynatma tek HTTP PUT'un ve tek SaveChanges'in içinde koştuğu için N
+        // büyüdüğünde istek zaman aşımına uğrar, HİÇBİR ŞEY commit edilmez —
+        // hesabın `Verified` yazımı da dahil. Olay tablosu EKLE-ONLY olduğu
+        // için sonraki deneme aynı yükü çeker: kurulum KALICI olarak
+        // doğrulanamaz hâle gelir. Hâlâ açık olan pay, aşağıdaki
+        // `ToListAsync`'in N satırı belleğe çekmesi; gerekirse gruplama SQL'e
+        // indirilebilir.
+        //
+        // <b>Tuzak — İKİ varsayım:</b> (1) yukarıdaki filtre `LocalRevoke`'a
+        // kilitli; başka bir olay tipi girerse ara olaylar anlam kazanır.
+        // (2) `ApplyToRowAsync` çağrı başına BİRİKEN bir yan etki üretmiyor —
+        // bugün yalnız mutlak atama yapıyor. Oraya bir sayaç, giden bir push
+        // satırı ya da denetim kaydı eklenirse atlanan olaylar görünür olur.
+        // İkisinden biri bozulursa de-duplikasyon ÖNCE kalkmalıdır.
+        var replay = dropped
+            .GroupBy(e => e.Recipient)
+            .Select(g => g.MaxBy(e => e.OccurredAt)!)
+            // Sıra bugün SONUCU değiştirmiyor (yukarıdaki gerekçe). Yine de
+            // duruyor: RET dışında bir olay tipi girdiği gün sıra ANINDA
+            // belirleyici olur ve deterministik olmayan bir sıra o hatayı
+            // yalnızca prod'da gösterirdi.
+            .OrderBy(e => e.OccurredAt)
+            .ToList();
+
+        foreach (var e in replay)
         {
             await ApplyToRowAsync(
                 brandCode, e.Recipient, IysConsentStatus.Ret, e.OccurredAt, ct);
         }
 
-        if (dropped.Count > 0)
+        if (replay.Count > 0)
         {
             _log.LogInformation(
-                "İYS: lisans {LicenseId} doğrulandı, {Count} adet no-brand RET yeniden oynatıldı",
-                licenseId, dropped.Count);
+                // `{Count}` ADI BİLEREK KULLANILMADI: bu satır eskiden onu OLAY
+                // sayısı için kullanıyordu. Aynı adı numara sayısıyla yeniden
+                // doldurmak, geçmişe bakan bir günlük sorgusunda iki farklı
+                // büyüklüğü tek seriye karıştırırdı — kimse fark etmeden.
+                "İYS: lisans {LicenseId} doğrulandı, {Events} no-brand RET olayı {Recipients} numaraya yeniden oynatıldı",
+                licenseId, dropped.Count, replay.Count);
         }
 
-        return dropped.Count;
+        return replay.Count;
     }
 
     /// <summary>

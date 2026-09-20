@@ -286,6 +286,70 @@ public class SmsCampaignRecoveryJobTests : IClassFixture<ApiFactory>
             .Should().Be(0);
     }
 
+    /// <summary>
+    /// Süpürme aynı turda İKİ asılı kampanya bulduğunda, birincinin CAS
+    /// çakışması ikincinin kurtarılmasını ENGELLEMEMELİ. Kurulum: A'nın
+    /// izleyicideki kopyası bayat (rakip işçi damgayı ilerletti), B sağlam.
+    ///
+    /// <para>Düzeltmeden önce A'nın düşen iadesi izleyicide asılı kalıyordu
+    /// (tx <c>Added</c>, bakiye <c>Modified</c>) ve B'nin <c>SaveChanges</c>'ine
+    /// biniyordu.</para>
+    ///
+    /// <para><b>Bu testin gördüğü çöküş bir InMemory ARTEFAKTI.</b> Orada
+    /// asılı tx ikinci kez insert edilmeye çalışılıp anahtar çakışmasıyla
+    /// patlıyor, yani süpürme gürültülü biçimde ölüyor. Prod'da (SQL Server)
+    /// aynı senaryo çok daha sessiz ve çok daha kötü: B'nin
+    /// <c>SaveChanges</c>'i BAŞARIR ve A'nın iadesini de öder — A "paused"
+    /// kaldığı için sonraki süpürme onu İKİNCİ kez iade eder. Yani buradaki
+    /// yeşil "süpürme ölmüyor"u kanıtlar, "para doğru"yu değil.</para>
+    ///
+    /// <para><b>Para tarafı burada ölçülemez:</b> InMemory transactional
+    /// değil — A'nın düşen yazımının bir kısmı store'a işlenmiş olabiliyor.
+    /// "Düşen karar kuruş oynatmaz" sözleşmesi gerçek SQL Server'da
+    /// doğrulanıyor: <c>SmsBalanceConcurrencyTests.Dusen_karar_ayni_contextin_
+    /// sonraki_yazimina_binmez</c>. Aşağıdaki <c>RefundedCredits</c> iddiası
+    /// istisna: o satırı yazan komut CAS'e takılanın TA KENDİSİ, dolayısıyla
+    /// kısmî uygulama tehlikesi yok.</para>
+    /// </summary>
+    [Fact]
+    public async Task Bir_kampanyanin_cakismasi_digerinin_kurtarilmasini_engellemez()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+        var (campaignA, _) = await SeedPausedAsync(
+            db, ["sent", "failed"], segmentsPerMessage: 2, refundedCredits: 0);
+        var (campaignB, licenseB) = await SeedPausedAsync(
+            db, ["sent", "failed"], segmentsPerMessage: 2, refundedCredits: 0);
+
+        // Rakip işçi A'yı yazar: `db`'de izlenen kopyanın jetonu artık bayat.
+        using (var rival = _factory.Services.CreateScope())
+        {
+            var rdb = rival.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var row = await rdb.SmsCampaigns.SingleAsync(c => c.Id == campaignA);
+            row.ClaimedAt = row.ClaimedAt!.Value.AddSeconds(5);
+            await rdb.SaveChangesAsync();
+        }
+
+        await NewRecovery(db, new RecordingJobClient()).RunAsync();
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+
+        var afterA = await vdb.SmsCampaigns.AsNoTracking().SingleAsync(c => c.Id == campaignA);
+        afterA.Status.Should().Be("paused", "çakışan karar düşmeliydi");
+        afterA.RefundedCredits.Should().Be(0,
+            "kampanya hâlâ 'paused': iade edilmiş SAYILIRSA sonraki süpürme "
+            + "onu atlar, iade edilmemiş sayılıp parası çıkmışsa İKİ kez öder");
+
+        var afterB = await vdb.SmsCampaigns.AsNoTracking().SingleAsync(c => c.Id == campaignB);
+        afterB.Status.Should().Be("completed", "sağlam kampanya çakışmadan etkilenmemeli");
+        afterB.RefundedCredits.Should().Be(2);
+        (await vdb.LicenseSmsTransactions.AsNoTracking()
+            .CountAsync(t => t.LicenseId == licenseB && t.Kind == "send-refund"))
+            .Should().Be(1, "B'nin iadesi tam olarak bir kez yazılmalı");
+    }
+
     [Fact]
     public async Task Requeues_stale_sending_and_orphan_pending_only()
     {

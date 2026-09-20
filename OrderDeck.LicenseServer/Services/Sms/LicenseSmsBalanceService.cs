@@ -45,6 +45,15 @@ public sealed class LicenseSmsBalanceService
     /// </summary>
     /// <returns>Yeni bakiye; <c>null</c> = işlem bakiyeyi sıfırın altına
     /// düşürürdü, hiçbir şey yazılmadı.</returns>
+    /// <remarks>
+    /// <b>Sözleşme — başarısız çağrı iz bırakmaz.</b> Hem <c>null</c> dönüşte
+    /// hem de dışarı fırlayan her hatada bu metodun izleyiciye eklediği ledger
+    /// satırı atılır ve bakiye satırı orijinal değerlerine döndürülür
+    /// (<see cref="DiscardPending"/>). Aksi hâlde artıklar ÇAĞIRANIN bir
+    /// sonraki <c>SaveChanges</c>'ine biner: reddedilen hareket gerçekleşmiş,
+    /// düşen bir iade ödenmiş olur. İkincisi süpürme döngülerinde çifte iade
+    /// demektir — kampanya "paused" kalır ama parası çıkmıştır.
+    /// </remarks>
     public async Task<int?> ApplyAndSaveAsync(
         Guid licenseId,
         int amount,
@@ -57,7 +66,7 @@ public sealed class LicenseSmsBalanceService
         const int maxAttempts = 3;
         var now = DateTimeOffset.UtcNow;
 
-        _db.LicenseSmsTransactions.Add(new LicenseSmsTransaction
+        var tx = new LicenseSmsTransaction
         {
             Id = Guid.NewGuid(),
             LicenseId = licenseId,
@@ -66,68 +75,127 @@ public sealed class LicenseSmsBalanceService
             Reason = reason,
             CreatedByCustomerId = createdByCustomerId,
             CreatedAt = now,
-        });
+        };
 
-        var balance = await _db.LicenseSmsBalances
-            .FirstOrDefaultAsync(b => b.LicenseId == licenseId, ct);
+        // `balance` dışarıda: aşağıdaki tek `catch`in onu da temizleyebilmesi
+        // gerekiyor, ama daha atanmamışken (bakiye sorgusu patlarsa) `null`.
+        LicenseSmsBalance? balance = null;
 
-        if (balance is null)
+        // TEK sarmalayıcı. Her başarısız çıkış — hangi satırdan fırlarsa
+        // fırlasın — buradan geçer. Temizliği çıkış yollarına tek tek
+        // serpmek denendi ve İKİ kaçak bıraktı: (1) bakiye sorgusu `Add(tx)`
+        // sonrası patlarsa, (2) retry dalındaki `ReloadAsync` patlarsa —
+        // C#'ta bir `catch` bloğundan fırlayan hatayı KARDEŞ `catch`
+        // yakalamaz. İkisi de ledger satırını izleyicide asılı bırakıyordu.
+        try
         {
-            if (disallowNegative && amount < 0) return null;
+            _db.LicenseSmsTransactions.Add(tx);
 
-            balance = new LicenseSmsBalance
+            balance = await _db.LicenseSmsBalances
+                .FirstOrDefaultAsync(b => b.LicenseId == licenseId, ct);
+
+            if (balance is null)
             {
-                Id = Guid.NewGuid(),
-                LicenseId = licenseId,
-                CreditsRemaining = amount,
-                UpdatedAt = now,
-            };
+                if (disallowNegative && amount < 0)
+                {
+                    DiscardPending(tx, balance);
+                    return null;
+                }
 
-            _db.LicenseSmsBalances.Add(balance);
-            // Yeni satır insert'i token'la korunmaz; eşzamanlı iki "ilk yazım"
-            // unique LicenseId index'ine takılır → gürültülü DbUpdateException.
-            // Aşağıdaki retry döngüsü bu dalı KAPSAMAZ: orası yalnız mevcut
-            // satırın sürüm çakışmasını onarıyor, indeks ihlalini değil.
-            await _db.SaveChangesAsync(ct);
-            return balance.CreditsRemaining;
-        }
+                balance = new LicenseSmsBalance
+                {
+                    Id = Guid.NewGuid(),
+                    LicenseId = licenseId,
+                    CreditsRemaining = amount,
+                    UpdatedAt = now,
+                };
 
-        balance.CreditsRemaining += amount;
-        // Jeton KESİN ilerlemeli — `UtcNow` monoton değil.
-        balance.UpdatedAt = now > balance.UpdatedAt ? now : balance.UpdatedAt.AddTicks(1);
-
-        for (var attempt = 1; ; attempt++)
-        {
-            if (disallowNegative && balance.CreditsRemaining < 0) return null;
-
-            try
-            {
+                _db.LicenseSmsBalances.Add(balance);
+                // Yeni satır insert'i token'la korunmaz; eşzamanlı iki "ilk
+                // yazım" unique LicenseId index'ine takılır → gürültülü
+                // DbUpdateException. Aşağıdaki retry döngüsü bu dalı KAPSAMAZ:
+                // orası yalnız mevcut satırın sürüm çakışmasını onarıyor,
+                // indeks ihlalini değil.
                 await _db.SaveChangesAsync(ct);
                 return balance.CreditsRemaining;
             }
-            catch (DbUpdateConcurrencyException ex) when (
-                attempt < maxAttempts
-                && ex.Entries.Count > 0
-                && ex.Entries.All(e => ReferenceEquals(e.Entity, balance)))
+
+            balance.CreditsRemaining += amount;
+            // Jeton KESİN ilerlemeli — `UtcNow` monoton değil.
+            balance.UpdatedAt = now > balance.UpdatedAt ? now : balance.UpdatedAt.AddTicks(1);
+
+            for (var attempt = 1; ; attempt++)
             {
-                // YALNIZ bakiye satırı. Çağıran bu SaveChanges'e kendi
-                // kararlarını da (kampanya tamamlanması, RefundedCredits)
-                // iliştirmiş olabilir; `ex.Entries`'i toptan reload etmek
-                // onları siler ve `amount`u ikinci kez ekler. Kampanya
-                // çakışması buraya AİT DEĞİLDİR: dışarı çıkar, çağıranın
-                // kararı düşer, iş yeniden koştuğunda taze okunur.
-                await _db.Entry(balance).ReloadAsync(ct);
+                if (disallowNegative && balance.CreditsRemaining < 0)
+                {
+                    DiscardPending(tx, balance);
+                    return null;
+                }
 
-                // Satır silinmişse tazeleyecek bir şey yok.
-                if (_db.Entry(balance).State == EntityState.Detached) throw;
+                try
+                {
+                    await _db.SaveChangesAsync(ct);
+                    return balance.CreditsRemaining;
+                }
+                catch (DbUpdateConcurrencyException ex) when (
+                    attempt < maxAttempts
+                    && ex.Entries.Count > 0
+                    && ex.Entries.All(e => ReferenceEquals(e.Entity, balance)))
+                {
+                    // YALNIZ bakiye satırı. Çağıran bu SaveChanges'e kendi
+                    // kararlarını da (kampanya tamamlanması, RefundedCredits)
+                    // iliştirmiş olabilir; `ex.Entries`'i toptan reload etmek
+                    // onları siler ve `amount`u ikinci kez ekler. Kampanya
+                    // çakışması buraya AİT DEĞİLDİR: dışarı çıkar (temizliği
+                    // dıştaki `catch` yapar), çağıranın kararı düşer, iş
+                    // yeniden koştuğunda taze okunur.
+                    await _db.Entry(balance).ReloadAsync(ct);
 
-                balance.CreditsRemaining += amount;
+                    // Satır silinmişse tazeleyecek bir şey yok.
+                    if (_db.Entry(balance).State == EntityState.Detached) throw;
 
-                var retryAt = DateTimeOffset.UtcNow;
-                balance.UpdatedAt = retryAt > balance.UpdatedAt
-                    ? retryAt
-                    : balance.UpdatedAt.AddTicks(1);
+                    balance.CreditsRemaining += amount;
+
+                    var retryAt = DateTimeOffset.UtcNow;
+                    balance.UpdatedAt = retryAt > balance.UpdatedAt
+                        ? retryAt
+                        : balance.UpdatedAt.AddTicks(1);
+                }
             }
         }
+        catch
+        {
+            // Çakışma bize AİT DEĞİL (filtre elemedi — ör. çağıranın
+            // kampanyası), retry tükendi, ya da beklenmedik bir hata. Her
+            // hâlde karar düşüyor; düşen kararın artıkları izleyicide kalırsa
+            // çağıranın bir sonraki SaveChanges'i onları yazar.
+            DiscardPending(tx, balance);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// <see cref="ApplyAndSaveAsync"/>'in izleyiciye bıraktığı izleri siler:
+    /// ledger satırı ve bakiye satırı izlemeden ÇIKARILIR.
+    ///
+    /// <para><b>Neden detach, neden "orijinal değerlere döndür" değil:</b>
+    /// <c>LicenseSmsBalances</c>'a yazan tek üretim kodu bu servis, yani
+    /// çağıranın elinde bir <see cref="LicenseSmsBalance"/> referansı YOK
+    /// (dönüş tipi <c>int?</c>). Satırı izlemede bırakmak tek bir şey yapardı:
+    /// aynı context'te akan bir sonraki çağrının sorgusu, kimlik çözümlemesi
+    /// yüzünden DB'ye gitmek yerine bu kopyayı döndürürdü — bu arada rakip bir
+    /// yazar satırı değiştirdiyse BAYAT bir değer üzerine delta uygulanır.
+    /// Sonuç yine doğru çıkardı (jeton tutmaz, <c>ReloadAsync</c> onarır) ama
+    /// bedeli boşa bir çakışma turu. Detach o turu hiç doğurmuyor.</para>
+    ///
+    /// <para><paramref name="balance"/> <c>null</c> olabilir: bakiye sorgusu
+    /// patlarsa temizlenecek tek şey ledger satırıdır.</para>
+    /// </summary>
+    private void DiscardPending(LicenseSmsTransaction tx, LicenseSmsBalance? balance)
+    {
+        _db.Entry(tx).State = EntityState.Detached;
+
+        if (balance is not null)
+            _db.Entry(balance).State = EntityState.Detached;
     }
 }
