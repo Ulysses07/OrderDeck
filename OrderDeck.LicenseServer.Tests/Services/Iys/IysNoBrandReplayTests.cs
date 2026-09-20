@@ -342,6 +342,63 @@ public sealed class IysNoBrandReplayTests : IDisposable
     }
 
     [Fact]
+    public async Task Ayni_numaranin_eski_retleri_tekrar_tekrar_uygulanmaz()
+    {
+        // Profil kaydı onay kutusunun MEVCUT değerini her kaydetmede yeniden
+        // yazıyor (ShopperMeController — bilinçli), yani tek müşteri tek başına
+        // bu tabloya yüzlerce `no-brand` RET bırakabilir. Oynatma tek HTTP
+        // PUT'un ve tek SaveChanges'in içinde koştuğu için iş listesi
+        // OLAY sayısıyla büyürse istek zaman aşımına uğrar ve hiçbir şey
+        // commit edilmez — hesabın `Verified` yazımı da dahil. Olay tablosu
+        // ekle-only olduğu için bir sonraki deneme aynı yükü çeker: kurulum
+        // kalıcı olarak doğrulanamaz hâle gelir.
+        //
+        // İş listesi bu yüzden NUMARA sayısıyla sınırlı. Sonuç değişmiyor:
+        // hepsi RET, satır zaten Ret'te ve en yeni damgada kapanıyor.
+        var factory = NewFactory();
+        var (_, licenseId) = await SeedTenantAsync(factory);
+        var brandCode = NewBrandCode();
+        var noisyPhone = NewPhone();
+        var otherPhone = NewPhone();
+        var firstAt = DateTimeOffset.UtcNow.AddDays(-10);
+
+        using (var seed = factory.Services.CreateScope())
+        {
+            var db = seed.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            for (var i = 0; i < 5; i++)
+            {
+                db.IysConsentEvents.Add(NoBrandEvent(
+                    licenseId, noisyPhone, IysConsentEventType.LocalRevoke,
+                    firstAt.AddDays(i)));
+            }
+            db.IysConsentEvents.Add(NoBrandEvent(
+                licenseId, otherPhone, IysConsentEventType.LocalRevoke, firstAt));
+            await db.SaveChangesAsync();
+        }
+
+        using (var replay = factory.Services.CreateScope())
+        {
+            var db = replay.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var collector = replay.ServiceProvider.GetRequiredService<IysConsentCollector>();
+
+            (await collector.StageReplayNoBrandRevokesAsync(licenseId, brandCode))
+                .Should().Be(2,
+                    "6 olay iki numaraya ait; iş listesi olay sayısıyla değil "
+                    + "numara sayısıyla büyümeli");
+
+            await db.SaveChangesAsync();
+        }
+
+        var row = await RowAsync(factory, brandCode, noisyPhone);
+        row!.Status.Should().Be(IysConsentStatus.Ret);
+        row.LastLocalEventAt.Should().Be(firstAt.AddDays(4),
+            "uygulanan olay en yenisi olmalı — eskileri atlamak sonucu değiştirmez");
+
+        (await RowAsync(factory, brandCode, otherPhone))!.Status
+            .Should().Be(IysConsentStatus.Ret, "diğer numara atlanmamalı");
+    }
+
+    [Fact]
     public async Task Baska_lisansin_no_brand_reti_bu_markaya_dokunmaz()
     {
         // İzin MARKA BAZINDA ayrıdır — aynı numara A'da ONAY, B'de RET olabilir.
