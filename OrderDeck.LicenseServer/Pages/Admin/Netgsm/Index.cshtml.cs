@@ -193,7 +193,7 @@ public class IndexModel : PageModel
         {
             // Sahiplik kanıtı yok: BrandCode yayıncının yazdığı değerdir, İYS onaylamadan
             // markanın ona ait olduğu bilinmez (kod 60). Başkasının listesi sızmasın.
-            TempData["Error"] = "Bu kurulum İYS'de hiç doğrulanmadı; marka sahipliği kanıtlanmadan liste dışa aktarılamaz.";
+            TempData["Error"] = "Bu kurulum mevcut hâliyle İYS'de doğrulanmadı; marka sahipliği kanıtlanmadan liste dışa aktarılamaz.";
             return RedirectToPage();
         }
 

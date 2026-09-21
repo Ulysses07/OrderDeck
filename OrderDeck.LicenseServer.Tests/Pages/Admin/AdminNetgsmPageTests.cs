@@ -35,7 +35,8 @@ public sealed class AdminNetgsmPageTests : IClassFixture<HookedApiFactory>
         => Random.Shared.NextInt64(8_500_000_000, 8_599_999_999).ToString();
 
     private async Task<(Guid AccountId, Guid LicenseId)> SeedAccountAsync(
-        NetgsmAccountStatus status = NetgsmAccountStatus.Verified)
+        NetgsmAccountStatus status = NetgsmAccountStatus.Verified,
+        bool? verifiedOnce = null)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -74,9 +75,13 @@ public sealed class AdminNetgsmPageTests : IClassFixture<HookedApiFactory>
             BrandCode = Random.Shared.Next(100_000, 999_999).ToString(),
             Status = status,
             DisabledAt = status == NetgsmAccountStatus.Disabled ? DateTimeOffset.UtcNow : null,
-            // Failed = hiç doğrulanmadı ya da doğrulama artık geçerli değil (kanıt yok).
-            // Verified/Disabled ikisi de bir noktada İYS tarafından doğrulanmıştı.
-            LastVerifiedAt = status == NetgsmAccountStatus.Failed ? null : DateTimeOffset.UtcNow,
+            // Seed SADELEŞTİRMESİ, alan değişmezi DEĞİL: varsayılan olarak Failed
+            // = kanıt yok, Verified/Disabled = bir noktada İYS doğrulamıştı. Gerçekte
+            // Disabled + LastVerifiedAt=null da olur (hiç doğrulanmamış hesabın
+            // sistem kapanışı, ya da Upsert damgayı sildikten sonra kapanış);
+            // o kombinasyon `verifiedOnce: false` ile ekilir.
+            LastVerifiedAt = (verifiedOnce ?? status != NetgsmAccountStatus.Failed)
+                ? DateTimeOffset.UtcNow : null,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
@@ -456,8 +461,8 @@ public sealed class AdminNetgsmPageTests : IClassFixture<HookedApiFactory>
             "burası bir Razor Page: JSON gövde yöneticiyi çıplak bir ekrana "
             + "düşürür ve reddin sebebini göremez hâle getirir");
 
-        // Yönlendirmeyi TAKİP ET — "302 döndü" tek başına bir şey kanıtlamaz,
-        // başarı yolu da 302 dönüyor.
+        // Yönlendirmeyi TAKİP ET — "302 döndü" tek başına reddin SEBEBİNİ
+        // kanıtlamaz; banner metni ekranda görünmeli.
         var page = await (await client.GetAsync("/admin/netgsm"))
             .Content.ReadAsStringAsync();
         page.Should().Contain("alert-danger");
@@ -470,6 +475,32 @@ public sealed class AdminNetgsmPageTests : IClassFixture<HookedApiFactory>
             e => e.EventType == AuditEvents.NetgsmAccountExport
                  && e.TargetId == accountId.ToString()))
             .Should().Be(0, "gerçekleşmemiş bir dışa aktarım denetime yazılmamalı");
+    }
+
+    [Fact]
+    public async Task Export_Disabled_ama_hic_dogrulanmamis_hesapta_reddedilir()
+    {
+        // Kapı KANITA (LastVerifiedAt) anahtarlı, DURUMA değil: "Disabled =
+        // ayrıldı, izin ver" diye durum-temelli bir yeniden yazım bu testi kırar.
+        // Kombinasyon gerçek: hiç doğrulanmamış hesabın sistem kapanışı (§2.4).
+        var (accountId, _) = await SeedAccountAsync(
+            NetgsmAccountStatus.Disabled, verifiedOnce: false);
+
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+        var resp = await PostAsync(client, "Export", accountId);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        var page = await (await client.GetAsync("/admin/netgsm"))
+            .Content.ReadAsStringAsync();
+        page.Should().Contain("marka sahipliği kanıtlanmadan liste dışa aktarılamaz",
+            "Disabled olması sahiplik kanıtı DEĞİLDİR");
+
+        using var scope = _factory.Services.CreateScope();
+        var vdb = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.AuditLogs.AsNoTracking().CountAsync(
+            e => e.EventType == AuditEvents.NetgsmAccountExport
+                 && e.TargetId == accountId.ToString()))
+            .Should().Be(0);
     }
 
     [Fact]
