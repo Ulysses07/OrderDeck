@@ -88,7 +88,7 @@ public sealed class PanelNetgsmAccountController : ControllerBase
 
         var acc = await _accounts.GetVerifiedByLicenseAsync(licenseId.Value, ct);
         if (acc is null)
-            return Problem(title: "netgsm-not-verified",
+            return Problem(title: "netgsm-account-not-verified",
                 detail: "Ayna için önce Netgsm kurulumunun doğrulanması gerekir.",
                 statusCode: 409);
 

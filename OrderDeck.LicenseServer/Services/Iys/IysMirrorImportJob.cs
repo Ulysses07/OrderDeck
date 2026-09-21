@@ -23,11 +23,17 @@ namespace OrderDeck.LicenseServer.Services.Iys;
 /// ayna yalnız bir başlangıç noktasıdır. <c>IYS_MIRROR</c> izi
 /// <see cref="IysConsentEvent"/> tablosunda (ekle-only) kalıcı kalır.</para>
 ///
-/// <para>DisableConcurrentExecution YOK: iş idempotent — eş zamanlı iki koşu en
-/// kötü tekil indeks yarışında düşer, sonraki koşu tamamlar. Panelden çift
-/// tıklama iki kopya birden çalıştırabilir; bedeli yalnız kota (Netgsm ~10
-/// istek/dk) — ikinci kopya <c>known</c> kümesi sayesinde zaten yazılmış
-/// numaraları atlar, no-op'a yakındır.</para>
+/// <para><b>Lisans başına eşzamanlılık kilidi.</b> Panelden çift tıklama ya da
+/// iki sekme aynı lisans için işi iki kez kuyruğa atabilir. Kilit OLMASA,
+/// ikisi de aynı anda <c>known</c> kümesini okur, aynı <c>missing</c>
+/// listesini görür ve İKİSİ de /iys/search'e gider — Netgsm kotası (~10
+/// istek/dk) gereksiz yere iki katına çıkar, üstelik kaybeden koşu tekil
+/// indeks yarışında satırı yazamadan ÖNCE o çağrıyı zaten tüketmiş olur.
+/// <c>[DisableConcurrentExecution("iys-mirror:{0}", ...)]</c> ikinci kopyayı
+/// BEKLETİR; sıra ona geldiğinde <c>known</c> kümesi birincinin yazdıklarıyla
+/// güncellenmiş olduğu için <c>missing</c> boş çıkar ve iş sıfır Netgsm
+/// çağrısıyla çıkar — gerçek no-op. Kilit anahtarı lisans bazlı: farklı
+/// lisansların ayna işleri birbirini BEKLEMEZ.</para>
 /// </summary>
 public sealed class IysMirrorImportJob
 {
@@ -62,6 +68,12 @@ public sealed class IysMirrorImportJob
     // yeniden dener. İş idempotent — kaldığı yerden devam eder, `known`
     // kümesi zaten yazılmış numaraları atlar.
     [AutomaticRetry(Attempts = 3, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
+    // Lisans başına kilit: `{0}` Hangfire 1.8'de ilk iş argümanına (licenseId) bağlanır.
+    // İkinci kopya bekler, sonra `known` kümesini yeniden hesaplar ve `missing`
+    // boş olduğu için sıfır Netgsm çağrısıyla çıkar — gerçek no-op. Zaman aşımı
+    // uzun (30 dk): en uzun makul koşu (1000 numara ≈ 5 dk) sığar; kısa tutulsaydı
+    // DistributedLockTimeoutException → sahte Failed üretirdi.
+    [DisableConcurrentExecution("iys-mirror:{0}", 1800)]
     public async Task RunAsync(Guid licenseId, CancellationToken ct)
     {
         var account = await _accounts.GetVerifiedByLicenseAsync(licenseId, ct);
