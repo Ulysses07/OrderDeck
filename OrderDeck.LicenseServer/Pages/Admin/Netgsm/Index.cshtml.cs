@@ -148,6 +148,7 @@ public class IndexModel : PageModel
         // doğrulamanın başarılı olduğu anda gelir.
         acc.Status = NetgsmAccountStatus.Failed;
         acc.LastError = null;
+        acc.DisabledAt = null;
         // Damgayı LicenseDbContext merkezî olarak atıyor (Görev 3); burada
         // elle UtcNow yazmak, saat ilerlemediğinde jetonu yerinde bırakırdı.
         _db.Entry(acc).Property(a => a.UpdatedAt).IsModified = true;

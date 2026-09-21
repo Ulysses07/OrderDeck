@@ -337,6 +337,14 @@ public sealed class NetgsmAccountService
                     || account.UpdatedAt != expectedUpdatedAt!.Value))
                 return 0;   // araya giren karar var — bayat ret düşer
 
+            if (status == NetgsmAccountStatus.Disabled
+                && account.Status != NetgsmAccountStatus.Disabled)
+            {
+                // Saklama saati ayrılış ANINDAN sayılır (§6: 30 gün). Yalnız GEÇİŞTE
+                // damgala: zaten Disabled hesabı tekrar kapatmak saati ilerletirdi.
+                account.DisabledAt = DateTimeOffset.UtcNow;
+            }
+
             account.Status = status;
             account.LastError = lastError;
             _db.Entry(account).Property(a => a.UpdatedAt).IsModified = true;

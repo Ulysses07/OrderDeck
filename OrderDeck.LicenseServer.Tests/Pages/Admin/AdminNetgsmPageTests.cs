@@ -73,6 +73,7 @@ public sealed class AdminNetgsmPageTests : IClassFixture<HookedApiFactory>
             Header = "ORDERDECK",
             BrandCode = Random.Shared.Next(100_000, 999_999).ToString(),
             Status = status,
+            DisabledAt = status == NetgsmAccountStatus.Disabled ? DateTimeOffset.UtcNow : null,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
@@ -154,6 +155,7 @@ public sealed class AdminNetgsmPageTests : IClassFixture<HookedApiFactory>
 
         var acc = await vdb.NetgsmAccounts.AsNoTracking().SingleAsync(a => a.Id == accountId);
         acc.Status.Should().Be(NetgsmAccountStatus.Disabled);
+        acc.DisabledAt.Should().NotBeNull("saklama saati ayrılış anından sayılır (§6)");
         acc.LastError.Should().NotBeNullOrEmpty();
 
         string StatusOf(Guid id) => vdb.SmsCampaigns.AsNoTracking().Single(c => c.Id == id).Status;
@@ -208,6 +210,7 @@ public sealed class AdminNetgsmPageTests : IClassFixture<HookedApiFactory>
             "yönetici markanın İYS'de hâlâ geçerli olduğunu bilemez; "
             + "doğrulama normal akıştan geçmeli");
         acc.LastError.Should().BeNull();
+        acc.DisabledAt.Should().BeNull("admin geri açınca 30 günlük sayaç iptal olur");
 
         (await vdb.AuditLogs.AsNoTracking().CountAsync(
             e => e.EventType == AuditEvents.NetgsmAccountEnable
