@@ -218,13 +218,13 @@ public class ShopperMePatchTests : IClassFixture<ApiFactory>
         body!.SmsConsent.Should().BeFalse("opt-in: onay kutusu işaretlenmeden kayıt → ticari ileti izni yok");
     }
 
-    // ── SMS consent: profilden opt-out (kapat) ve tekrar aç ───────────────────
+    // ── SMS consent: profilden opt-out (kapat) serbest, tekrar açmak DEĞİL (§5.2b)
 
     [Fact]
-    public async Task PatchMe_can_opt_out_and_back_in_of_sms_consent()
+    public async Task PatchMe_can_opt_out_but_not_back_in_of_sms_consent()
     {
         var client = _factory.CreateClient();
-        var (token, shopperId) = await RegisterShopperAsync(client);
+        var (token, shopperId) = await RegisterShopperAsync(client, smsConsent: true);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
         // Opt-out
@@ -239,21 +239,29 @@ public class ShopperMePatchTests : IClassFixture<ApiFactory>
             (await db.Shoppers.FindAsync(shopperId))!.SmsConsent.Should().BeFalse();
         }
 
-        // Tekrar aç
+        // Tekrar açmak profilden MÜMKÜN DEĞİL (§5.2b): onay marka başına tutulur,
+        // yalnız toplama noktasında (kayıt / yayıncının formu) verilebilir.
         var on = await client.PatchAsJsonAsync("/api/v1/shopper/me",
             new PatchMeRequest(SmsConsent: true));
-        (await on.Content.ReadFromJsonAsync<MeResponse>())!.SmsConsent.Should().BeTrue();
+        on.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            (await db.Shoppers.FindAsync(shopperId))!.SmsConsent.Should().BeFalse(
+                "reddedilen istek bayrağı açmaz");
+        }
     }
 
     [Fact]
     public async Task PatchMe_without_smsConsent_leaves_it_unchanged()
     {
         var client = _factory.CreateClient();
-        var (token, shopperId) = await RegisterShopperAsync(client);
+        // İzin toplama noktasında (kayıt) verilir; smsConsent içermeyen patch
+        // onu değiştirmemeli.
+        var (token, shopperId) = await RegisterShopperAsync(client, smsConsent: true);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
-        // Önce izni aç (opt-in); sonra smsConsent içermeyen patch onu değiştirmemeli.
-        await client.PatchAsJsonAsync("/api/v1/shopper/me", new PatchMeRequest(SmsConsent: true));
         await client.PatchAsJsonAsync("/api/v1/shopper/me", new PatchMeRequest(FullName: "X"));
 
         using var scope = _factory.Services.CreateScope();
@@ -294,22 +302,23 @@ public class ShopperMePatchTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task PatchMe_opt_in_sets_consent_at_and_source_profile()
+    public async Task PatchMe_opt_in_via_profile_is_rejected_and_leaves_audit_fields_null()
     {
         var client = _factory.CreateClient();
         var (token, shopperId) = await RegisterShopperAsync(client);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
-        var before = DateTimeOffset.UtcNow;
+        // §5.2b: profilden onay VERİLEMEZ — ispat alanları da dokunulmadan kalır.
         var resp = await client.PatchAsJsonAsync("/api/v1/shopper/me",
             new PatchMeRequest(SmsConsent: true));
-        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var shopper = (await db.Shoppers.FindAsync(shopperId))!;
-        shopper.SmsConsentAt.Should().NotBeNull().And.BeOnOrAfter(before);
-        shopper.SmsConsentSource.Should().Be("profile");
+        shopper.SmsConsent.Should().BeFalse();
+        shopper.SmsConsentAt.Should().BeNull();
+        shopper.SmsConsentSource.Should().BeNull();
     }
 
     [Fact]
