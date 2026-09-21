@@ -461,17 +461,13 @@ public sealed class LicenseApiClient : OrderDeck.Core.Chat.IFacebookOAuthBroker
 
     // ─── Toplu SMS (Bearer-Customer) ──────────────────────────────────
 
-    /// <summary>Yayıncının SMS kredi bakiyesi (salt-okunur; yükleme admin tarafında).</summary>
-    public Task<SmsBalanceResponse> GetSmsBalanceAsync(Guid licenseId, CancellationToken ct = default)
-        => GetExpectingJsonAsync<SmsBalanceResponse>($"/api/v1/licenses/{licenseId}/sms/balance", ct);
-
-    /// <summary>Toplu SMS önizleme — alıcı sayısı, segment ve gerekli kredi.</summary>
+    /// <summary>Toplu SMS önizleme — alıcı sayısı, segment ve tahmini SMS maliyeti.</summary>
     public Task<SmsPreviewResponse> PreviewSmsCampaignAsync(
         Guid licenseId, SmsPreviewRequest req, CancellationToken ct = default)
         => PostJsonExpectingJsonAsync<SmsPreviewRequest, SmsPreviewResponse>(
             $"/api/v1/licenses/{licenseId}/sms-campaigns/preview", req, ct);
 
-    /// <summary>Kampanya oluşturur: kredi rezerve edilir, gönderim arka planda yapılır.</summary>
+    /// <summary>Kampanya oluşturur; gönderim arka planda yapılır (ücret Netgsm tarafında).</summary>
     public Task<SmsCreateResponse> CreateSmsCampaignAsync(
         Guid licenseId, SmsCreateRequest req, CancellationToken ct = default)
         => PostJsonExpectingJsonAsync<SmsCreateRequest, SmsCreateResponse>(

@@ -119,6 +119,11 @@ Kapsama alınacaklar: WPF ViewModel, ortak DTO/API istemcisi
 boyunca **uyumluluk için sabit değer döndürerek** yaşatılır mı, yoksa silme
 zorunlu WPF sürümüne mi bağlanır; plan aşamasında karara bağlanacak.
 
+**Karar (Plan 3, 2026-09-21):** uçlar bir sürüm boyunca sabit değerle
+yaşatılıyor — `/sms/balance` stub (0), `Sufficient` = kurulum doğrulanmış,
+`CreditsRefunded` = 0. Kaldırma koşulu: saha WPF sürümleri kredisiz istemciye
+geçtiğinde.
+
 ### 1.5 Bakiye artık Netgsm'de
 
 Panelde **salt-okunur** gösterilir.
@@ -252,6 +257,10 @@ yetmeyebilir**; gönderim "başarılı" görünüp mesaj hiç gitmeyebilir. Bu, 
 hatasının *daima* asenkron olduğu anlamına gelmiyor — hangi kodun hangi aşamada
 döndüğü §9'da açık madde. Karara bağlanacak: `jobid` saklanacak mı ve
 raporlanan sonucu izleyen bir takip adımı olacak mı.
+
+**Karar (Plan 3):** `jobid` `SmsCampaignRecipient.ProviderJobId`'de saklanıyor;
+rapor-takip adımı kurulmadı (§9.3 doğrulanmadan kurulmayacak). Bilinmeyen
+temiz-ret kodu varsayılanı: kampanya `paused` (kitle korunur).
 
 `SmsCampaignRecoveryJob` iki düzeltme ister:
 - `paused` kampanyayı **devralmaz** (bayat `ClaimedAt` görüp diriltirse bakiye

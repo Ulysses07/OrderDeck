@@ -14,10 +14,11 @@ using OrderDeck.Licensing.Api.Models;
 namespace OrderDeck.App.ViewModels;
 
 /// <summary>
-/// Yayıncı toplu SMS ekranı. Mesaj yaz → Önizle (alıcı/segment/kredi) → Gönder.
-/// Bakiye göstergesi + kampanya geçmişi. Segment/kredi otoritesi server'ın
-/// Preview endpoint'i (SmsSegmentCalculator server-only); CharCount yalnız bilgi.
-/// Gerçek gönderim İYS onayına bağlı (ops); UI hazır, kredi iadesi otomatik.
+/// Yayıncı toplu SMS ekranı. Mesaj yaz → Önizle (alıcı/segment/maliyet) → Gönder.
+/// Kampanya geçmişi. Segment otoritesi server'ın Preview endpoint'i
+/// (SmsSegmentCalculator server-only); CharCount yalnız bilgi.
+/// Gerçek gönderim İYS onayına bağlı (ops); UI hazır.
+/// Ücretlendirme Netgsm tarafında — yayıncı kendi Netgsm bakiyesini kullanır.
 /// </summary>
 public sealed partial class BulkSmsViewModel : ViewModelBase
 {
@@ -34,7 +35,6 @@ public sealed partial class BulkSmsViewModel : ViewModelBase
     private string _messageBody = "";
 
     [ObservableProperty] private int _charCount;
-    [ObservableProperty] private int _creditsRemaining;
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(SendCommand))]
@@ -101,7 +101,7 @@ public sealed partial class BulkSmsViewModel : ViewModelBase
         return _cachedLicenseId;
     }
 
-    /// <summary>Dialog açılışında: lisans çöz, bakiye + geçmiş yükle.</summary>
+    /// <summary>Dialog açılışında: lisans çöz + geçmiş yükle.</summary>
     public async Task LoadAsync()
     {
         IsBusy = true;
@@ -114,7 +114,7 @@ public sealed partial class BulkSmsViewModel : ViewModelBase
                 ErrorMessage = "Aktif lisans bulunamadı. Giriş yapıp lisansı doğrulayın.";
                 return;
             }
-            await ReloadBalanceAndHistoryAsync(licenseId.Value, CancellationToken.None);
+            await ReloadHistoryAsync(licenseId.Value, CancellationToken.None);
         }
         catch (Exception ex)
         {
@@ -126,11 +126,8 @@ public sealed partial class BulkSmsViewModel : ViewModelBase
         }
     }
 
-    private async Task ReloadBalanceAndHistoryAsync(Guid licenseId, CancellationToken ct)
+    private async Task ReloadHistoryAsync(Guid licenseId, CancellationToken ct)
     {
-        var balance = await _api.GetSmsBalanceAsync(licenseId, ct);
-        CreditsRemaining = balance.CreditsRemaining;
-
         var rows = await _api.ListSmsCampaignsAsync(licenseId, take: 50, ct);
         History.Clear();
         foreach (var r in rows)
@@ -157,16 +154,15 @@ public sealed partial class BulkSmsViewModel : ViewModelBase
             RecipientCount = resp.RecipientCount;
             Segments = resp.SegmentsPerMessage;
             TotalCredits = resp.TotalCredits;
-            CreditsRemaining = resp.CreditsRemaining;
             Sufficient = resp.Sufficient;
             PreviewDone = true;
 
             if (resp.RecipientCount == 0)
                 StatusMessage = "SMS izinli, bağlı ve telefonu olan müşteri yok.";
             else if (!resp.Sufficient)
-                StatusMessage = $"Yetersiz kredi: {resp.TotalCredits} gerekli, {resp.CreditsRemaining} mevcut.";
+                StatusMessage = "Netgsm kurulumu doğrulanmamış — panelden Netgsm bilgilerini girip doğrulayın. Gönderim o zamana dek kapalı.";
             else
-                StatusMessage = $"{resp.RecipientCount} alıcı × {resp.SegmentsPerMessage} segment = {resp.TotalCredits} kredi.";
+                StatusMessage = $"{resp.RecipientCount} alıcı × {resp.SegmentsPerMessage} segment = {resp.TotalCredits} SMS.";
         }
         catch (Exception ex)
         {
@@ -186,7 +182,7 @@ public sealed partial class BulkSmsViewModel : ViewModelBase
     {
         var confirm = MessageBox.Show(
             $"{RecipientCount} alıcıya toplu SMS gönderilecek.\n" +
-            $"Tahmini {TotalCredits} kredi kullanılacak.\n\nDevam edilsin mi?",
+            $"Yaklaşık {TotalCredits} SMS (segment) tüketilecek — ücret Netgsm bakiyenden düşer.\n\nDevam edilsin mi?",
             "Toplu SMS Gönder", MessageBoxButton.YesNo, MessageBoxImage.Question);
         if (confirm != MessageBoxResult.Yes) return;
 
@@ -256,8 +252,8 @@ public sealed partial class BulkSmsViewModel : ViewModelBase
                     if (st.Status is "completed" or "failed") break;
                 }
 
-                // Bakiye + geçmiş yenile.
-                await ReloadBalanceAndHistoryAsync(licenseId, CancellationToken.None);
+                // Geçmişi yenile.
+                await ReloadHistoryAsync(licenseId, CancellationToken.None);
             }
             catch (Exception ex)
             {
@@ -282,7 +278,7 @@ public sealed partial class BulkSmsViewModel : ViewModelBase
         {
             var licenseId = await ResolveLicenseIdAsync(CancellationToken.None);
             if (licenseId is null) { ErrorMessage = "Aktif lisans bulunamadı."; return; }
-            await ReloadBalanceAndHistoryAsync(licenseId.Value, CancellationToken.None);
+            await ReloadHistoryAsync(licenseId.Value, CancellationToken.None);
         }
         catch (Exception ex)
         {
@@ -298,6 +294,7 @@ public sealed partial class BulkSmsViewModel : ViewModelBase
     {
         "pending" => "Bekliyor",
         "sending" => "Gönderiliyor",
+        "paused" => "Duraklatıldı",
         "completed" => "Tamamlandı",
         "failed" => "Başarısız",
         _ => status,
@@ -315,7 +312,7 @@ public sealed partial class BulkSmsViewModel : ViewModelBase
             StatusText = StatusLabel(d.Status),
             MessagePreview = d.MessagePreview,
             CountsLabel = $"{d.RecipientCount} alıcı · {d.Sent} gönderildi · {d.Failed} başarısız"
-                          + (d.CreditsRefunded > 0 ? $" · {d.CreditsRefunded} kredi iade" : ""),
+                          + (d.Skipped > 0 ? $" · {d.Skipped} atlandı (İYS)" : ""),
             CreatedAtLabel = d.CreatedAt.LocalDateTime.ToString("dd MMM yyyy HH:mm", Tr),
         };
     }

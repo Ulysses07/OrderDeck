@@ -1,7 +1,7 @@
 namespace OrderDeck.LicenseServer.Services.Sms;
 
 /// <summary>
-/// Bir SMS metninin kaç segmente böleceğini hesaplar (kredi = segment).
+/// Bir SMS metninin kaç segmente böleceğini hesaplar.
 ///
 /// GSM-7 (03.38 temel alfabe): tek mesaj ≤160 septet, çok parçalıda 153/parça
 /// (7 septet UDH başlığa gider). Genişletme tablosu karakterleri (^{}[]~|\€)
@@ -43,7 +43,7 @@ public static class SmsSegmentCalculator
         return new Result(Encoding.Ucs2, Math.Max(1, ucsSegments));
     }
 
-    /// <summary>Yalnızca segment sayısı (kredi hesabı için kısayol).</summary>
+    /// <summary>Yalnızca segment sayısı (önizleme maliyeti için kısayol).</summary>
     public static int Segments(string? message) => Calculate(message).Segments;
 
     private static bool TryCountGsm7Septets(string message, out int septets)

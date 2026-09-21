@@ -8,6 +8,7 @@ using FluentAssertions;
 using OrderDeck.App.Services.Sync;
 using OrderDeck.App.ViewModels;
 using OrderDeck.Licensing.Api;
+using OrderDeck.Licensing.Api.Models;
 using OrderDeck.Tests.TestHelpers;
 using Xunit;
 
@@ -144,10 +145,10 @@ public sealed class BulkSmsViewModelTests
     }
 
     [Fact]
-    public async Task SendCore_basarili_yol_formu_temizler_ve_bakiyeyi_yeniler()
+    public async Task SendCore_basarili_yol_formu_temizler_ve_gecmisi_yeniler()
     {
         var campaignId = Guid.NewGuid();
-        var (vm, _) = Build(req =>
+        var (vm, requests) = Build(req =>
         {
             var path = req.RequestUri!.PathAndQuery;
             if (path.StartsWith("/api/v1/me/licenses"))
@@ -156,9 +157,6 @@ public sealed class BulkSmsViewModelTests
                 return FakeHttpMessageHandler.Json(200, CreateJson(campaignId));
             if (path.Contains($"/sms-campaigns/{campaignId}"))
                 return FakeHttpMessageHandler.Json(200, StatusJson(campaignId, "completed"));
-            if (path.Contains("/sms/balance"))
-                return FakeHttpMessageHandler.Json(200,
-                    @"{ ""creditsRemaining"": 37, ""updatedAt"": ""2026-09-10T10:00:06Z"" }");
             if (path.Contains("/sms-campaigns?"))
                 return FakeHttpMessageHandler.Json(200, "[]");
             return FakeHttpMessageHandler.Json(404, "{}");
@@ -169,6 +167,93 @@ public sealed class BulkSmsViewModelTests
         vm.ErrorMessage.Should().BeNull();
         vm.MessageBody.Should().BeEmpty();
         vm.StatusMessage.Should().Contain("Tamamlandı");
-        vm.CreditsRemaining.Should().Be(37);
+        // Kredi emekli (§1.4b): başarı yolunda bakiye ucu HİÇ çağrılmaz.
+        requests.Should().NotContain(r => r.Path.Contains("/sms/balance"),
+            "kredi sistemi emekli — istemci bakiye ucunu bilmemeli");
     }
+
+    /// <summary>§1.4b: açılış yalnız lisans çözer + geçmişi yükler. Bakiye
+    /// ucu istemciden tamamen söküldü — çağrı listesinde görünmemeli.</summary>
+    [Fact]
+    public async Task LoadAsync_bakiye_cagirmaz_gecmisi_yukler()
+    {
+        var (vm, requests) = Build(req =>
+        {
+            var path = req.RequestUri!.PathAndQuery;
+            if (path.StartsWith("/api/v1/me/licenses"))
+                return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (path.Contains("/sms-campaigns?"))
+                return FakeHttpMessageHandler.Json(200,
+                    $@"[{{ ""campaignId"": ""{Guid.NewGuid()}"", ""status"": ""completed"",
+                        ""messagePreview"": ""selam"", ""recipientCount"": 3, ""sent"": 3,
+                        ""failed"": 0, ""skipped"": 0, ""creditsRefunded"": 0,
+                        ""createdAt"": ""2026-09-10T10:00:00Z"",
+                        ""completedAt"": ""2026-09-10T10:00:05Z"" }}]");
+            return FakeHttpMessageHandler.Json(404, "{}");
+        });
+
+        await vm.LoadAsync();
+
+        vm.ErrorMessage.Should().BeNull();
+        vm.History.Should().HaveCount(1, "geçmiş bakiyesiz de yüklenmeli");
+        requests.Should().NotContain(r => r.Path.Contains("/sms/balance"),
+            "kredi sistemi emekli — açılışta bakiye çağrısı olmamalı");
+    }
+
+    /// <summary>§1.4b: server `Sufficient` alanını "doğrulanmış NetgsmAccount
+    /// var mı" anlamıyla dolduruyor. false → mesaj krediye değil Netgsm
+    /// kurulumuna işaret etmeli ve Gönder kapalı kalmalı. Yanıttaki
+    /// `creditsRemaining` alanı bilinmeyen JSON alanı olarak yok sayılır.</summary>
+    [Fact]
+    public async Task Preview_kurulum_dogrulanmamis_gonderimi_kapatir()
+    {
+        var (vm, _) = Build(req =>
+        {
+            var path = req.RequestUri!.PathAndQuery;
+            if (path.StartsWith("/api/v1/me/licenses"))
+                return FakeHttpMessageHandler.Json(200, LicensesJson());
+            if (req.Method == HttpMethod.Post && path.EndsWith("/sms-campaigns/preview"))
+                return FakeHttpMessageHandler.Json(200,
+                    @"{ ""recipientCount"": 5, ""segmentsPerMessage"": 1,
+                        ""totalCredits"": 5, ""creditsRemaining"": 0, ""sufficient"": false }");
+            return FakeHttpMessageHandler.Json(404, "{}");
+        });
+
+        await vm.PreviewCommand.ExecuteAsync(null);
+
+        vm.StatusMessage.Should().Contain("Netgsm kurulumu doğrulanmamış",
+            "mesaj krediye değil kurulum eksiğine işaret etmeli");
+        vm.SendCommand.CanExecute(null).Should().BeFalse(
+            "kurulum doğrulanmadan gönderim kapalı");
+    }
+
+    /// <summary>§3.3: İYS reddi yüzünden atlanan alıcılar geçmiş satırında
+    /// görünmeli; kredi iadesi etiketi DTO ile birlikte gitti.</summary>
+    [Fact]
+    public void CampaignRow_skipped_varsa_atlandi_etiketi_ekler()
+    {
+        var d = new SmsCampaignListItem(
+            Guid.NewGuid(), "completed", "selam", 10, 7, 1, 2,
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        BulkSmsViewModel.CampaignRow.From(d).CountsLabel
+            .Should().Contain("2 atlandı (İYS)");
+    }
+
+    [Fact]
+    public void CampaignRow_skipped_sifirsa_atlandi_etiketi_yok()
+    {
+        var d = new SmsCampaignListItem(
+            Guid.NewGuid(), "completed", "selam", 10, 10, 0, 0,
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        BulkSmsViewModel.CampaignRow.From(d).CountsLabel
+            .Should().NotContain("atlandı");
+    }
+
+    /// <summary>§3.4: hesap hatasında server kampanyayı `paused` bırakır;
+    /// etiket İngilizce durum kodu yerine Türkçe görünmeli.</summary>
+    [Fact]
+    public void StatusLabel_paused_Duraklatildi()
+        => BulkSmsViewModel.StatusLabel("paused").Should().Be("Duraklatıldı");
 }

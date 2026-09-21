@@ -23,9 +23,7 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
     public SmsCampaignPauseTests(HookedApiFactory factory)
     {
         _factory = factory;
-        _factory.Sms.Clear();
-        _factory.Sms.ThrowOnSend = false;
-        _factory.Sms.OnSent = null;
+        _factory.TenantSms.Clear();
         _factory.Hook.Reset();
     }
 
@@ -35,8 +33,11 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
     private static string NewPhone()
         => $"+90555{Random.Shared.Next(1_000_000, 9_999_999)}";
 
-    /// <summary>Onaylı iki alıcılı bir kampanya tohumlar.</summary>
-    private static async Task<(Guid CampaignId, Guid AccountId, string[] Phones)> SeedAsync(LicenseDbContext db)
+    /// <summary>Onaylı iki alıcılı bir kampanya tohumlar. Şifre gerçek
+    /// koruma kalıbıyla yazılır: gönderim kapısı artık şifreyi ÇÖZÜYOR,
+    /// düz metin seed hesabı Disabled'a düşürürdü.</summary>
+    private static async Task<(Guid CampaignId, Guid AccountId, string[] Phones)> SeedAsync(
+        LicenseDbContext db, NetgsmAccountService accounts)
     {
         var customerId = Guid.NewGuid();
         db.Customers.Add(new Customer
@@ -68,28 +69,12 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
             Id = accountId,
             LicenseId = licenseId,
             UserCode = NewUserCode(),
-            PasswordProtected = $"pw-{Guid.NewGuid():N}",
+            PasswordProtected = accounts.ProtectPassword($"pw-{Guid.NewGuid():N}"),
             Header = "ORDERDECK",
             BrandCode = brandCode,
             Status = NetgsmAccountStatus.Verified,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
-        });
-
-        db.LicenseSmsBalances.Add(new LicenseSmsBalance
-        {
-            Id = Guid.NewGuid(),
-            LicenseId = licenseId,
-            CreditsRemaining = 99,
-            UpdatedAt = DateTimeOffset.UtcNow,
-        });
-        db.LicenseSmsTransactions.Add(new LicenseSmsTransaction
-        {
-            Id = Guid.NewGuid(),
-            LicenseId = licenseId,
-            Amount = 99,
-            Kind = "purchase",
-            CreatedAt = DateTimeOffset.UtcNow,
         });
 
         var phones = new[] { NewPhone(), NewPhone() };
@@ -121,7 +106,6 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
             Status = "pending",
             SegmentsPerMessage = 1,
             RecipientCount = phones.Length,
-            ReservedCredits = phones.Length,
             CreatedAt = DateTimeOffset.UtcNow,
         });
         foreach (var p in phones)
@@ -145,11 +129,12 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
-        var (campaignId, _, _) = await SeedAsync(db);
+        var (campaignId, _, _) = await SeedAsync(
+            db, scope.ServiceProvider.GetRequiredService<NetgsmAccountService>());
 
         // İlk gönderimden hemen sonra, AYRI bir scope'tan duraklat — admin'in
         // yaptığı tam olarak bu: job koşarken başka bir istek durumu yazıyor.
-        _factory.Sms.OnSent = _ =>
+        _factory.TenantSms.OnSent = _ =>
         {
             using var s2 = _factory.Services.CreateScope();
             var db2 = s2.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -158,18 +143,15 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
         };
 
         try { await job.RunAsync(campaignId); }
-        finally { _factory.Sms.OnSent = null; }
+        finally { _factory.TenantSms.OnSent = null; }
 
-        _factory.Sms.Sent.Should().HaveCount(1, "duraklatma ikinci alıcıyı durdurmalı");
+        _factory.TenantSms.Sent.Should().HaveCount(1, "duraklatma ikinci alıcıyı durdurmalı");
 
         using var verify = _factory.Services.CreateScope();
         var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var campaign = await vdb.SmsCampaigns.AsNoTracking().SingleAsync(c => c.Id == campaignId);
         campaign.Status.Should().Be("paused", "job duraklatmayı ezmemeli");
         campaign.CompletedAt.Should().BeNull();
-        campaign.RefundedCredits.Should().Be(0,
-            "kalan alıcılar hâlâ pending — rezervasyon onların karşılığı, iade edilirse "
-            + "kampanya devam ettirildiğinde kredi iki kez harcanmış olur");
 
         var recipients = await vdb.SmsCampaignRecipients.AsNoTracking()
             .Where(r => r.CampaignId == campaignId).ToListAsync();
@@ -183,7 +165,8 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
-        var (campaignId, accountId, _) = await SeedAsync(db);
+        var (campaignId, accountId, _) = await SeedAsync(
+            db, scope.ServiceProvider.GetRequiredService<NetgsmAccountService>());
 
         // Bir öncekinin aksine burada durum ELLE yazılmıyor: Görev 8'in
         // kesin-ret dalının ve Görev 12'nin kapatma düğmesinin ORTAK
@@ -192,7 +175,7 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
         // yazıcının aynı satırda buluştuğu tek testtir; metodun retry
         // döngüsünün var olma sebebi bu senaryo.
         var pausedCount = -1;
-        _factory.Sms.OnSent = _ =>
+        _factory.TenantSms.OnSent = _ =>
         {
             if (pausedCount >= 0) return; // yalnız ilk gönderimde kapat
             using var closer = _factory.Services.CreateScope();
@@ -204,10 +187,10 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
         };
 
         try { await job.RunAsync(campaignId); }
-        finally { _factory.Sms.OnSent = null; }
+        finally { _factory.TenantSms.OnSent = null; }
 
         pausedCount.Should().Be(1, "koşan kampanya kapatma yazımında yakalanmalı");
-        _factory.Sms.Sent.Should().HaveCount(1, "kapatma ikinci alıcıyı durdurmalı");
+        _factory.TenantSms.Sent.Should().HaveCount(1, "kapatma ikinci alıcıyı durdurmalı");
 
         using var verify = _factory.Services.CreateScope();
         var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -216,7 +199,6 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
 
         campaign.Status.Should().Be("paused", "job kapatmayı ezmemeli");
         campaign.CompletedAt.Should().BeNull();
-        campaign.RefundedCredits.Should().Be(0);
 
         (await vdb.NetgsmAccounts.AsNoTracking().SingleAsync(a => a.Id == accountId))
             .Status.Should().Be(NetgsmAccountStatus.Disabled);
@@ -258,7 +240,8 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
     {
         using var worker = _factory.Services.CreateScope();
         var db = worker.ServiceProvider.GetRequiredService<LicenseDbContext>();
-        var (campaignId, accountId, _) = await SeedAsync(db);
+        var (campaignId, accountId, _) = await SeedAsync(
+            db, worker.ServiceProvider.GetRequiredService<NetgsmAccountService>());
 
         var stale = await db.SmsCampaigns.SingleAsync(c => c.Id == campaignId);
         stale.Status = status;
@@ -298,8 +281,7 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
             campaign.ClaimedAt!.Value.Should().BeAfter(previous.Value);
 
         campaign.CompletedAt.Should().BeNull();
-        campaign.RefundedCredits.Should().Be(0);
-        _factory.Sms.Sent.Should().BeEmpty();
+        _factory.TenantSms.Sent.Should().BeEmpty();
 
         (await vdb.SmsCampaignRecipients.CountAsync(
             r => r.CampaignId == campaignId && r.Status == "pending"))
@@ -321,7 +303,8 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
-        var (campaignId, _, _) = await SeedAsync(db);
+        var (campaignId, _, _) = await SeedAsync(
+            db, scope.ServiceProvider.GetRequiredService<NetgsmAccountService>());
 
         // İleri damga uydurma değil: duraklatma `max(UtcNow, önceki + 1 tick)`
         // yazıyor, yani saat geri atlayan bir makinede jeton gerçekten
@@ -334,7 +317,7 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
 
         await job.RunAsync(campaignId);
 
-        _factory.Sms.Sent.Should().HaveCount(2, "karşı yazıcı yok, koşu bitmeli");
+        _factory.TenantSms.Sent.Should().HaveCount(2, "karşı yazıcı yok, koşu bitmeli");
 
         using var verify = _factory.Services.CreateScope();
         var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -352,22 +335,20 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
     /// Üstlenme çakışmasının <c>return</c>'ü — alıcı listesi BOŞken. Döngü
     /// başındaki sahiplik yoklaması buradaki tek koruma DEĞİL, hiç koruma
     /// değil: gönderilecek alıcı kalmadığında döngü bir kez bile dönmez ve
-    /// koşu doğrudan tamamlama + iade bloğuna gider. Üstlenemediğimiz bir
-    /// kampanyanın iadesini yazmak krediyi yoktan var eder.
+    /// koşu doğrudan tamamlama bloğuna gider. Üstlenemediğimiz bir kampanyayı
+    /// "completed" yazmak, yeni sahibin koşusunu bitmiş gösterir.
     /// </summary>
     [Fact]
-    public async Task Ustlenme_cakismasi_kampanyayi_tamamlamaz_ve_iade_yazmaz()
+    public async Task Ustlenme_cakismasi_kampanyayi_tamamlamaz()
     {
         using var worker = _factory.Services.CreateScope();
         var db = worker.ServiceProvider.GetRequiredService<LicenseDbContext>();
-        var (campaignId, _, _) = await SeedAsync(db);
+        var (campaignId, _, _) = await SeedAsync(
+            db, worker.ServiceProvider.GetRequiredService<NetgsmAccountService>());
 
-        // İki alıcı da sonuçlanmış ("failed") ama iadesi HENÜZ yazılmamış:
-        // `owed - RefundedCredits = 2 - 0 = 2`. Yani tamamlama bloğuna
-        // ulaşılırsa para gerçekten hareket eder.
+        // İki alıcı da sonuçlanmış ("failed") — tamamlama bloğuna ulaşılırsa
+        // döngüye hiç girmeden kampanya "completed" yazılır.
         var campaign = await db.SmsCampaigns.SingleAsync(c => c.Id == campaignId);
-        var licenseId = campaign.LicenseId;
-        campaign.RefundedCredits = 0;
         foreach (var r in await db.SmsCampaignRecipients
                      .Where(r => r.CampaignId == campaignId).ToListAsync())
         {
@@ -375,9 +356,6 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
             r.Error = "provider-rejected";
         }
         await db.SaveChangesAsync();
-
-        var creditsBefore = (await db.LicenseSmsBalances.AsNoTracking()
-            .SingleAsync(b => b.LicenseId == licenseId)).CreditsRemaining;
 
         // İşçi kampanyayı ZATEN okudu (yukarıdaki `campaign` bu scope'ta
         // izleniyor, jeton özgün değeri null). Şimdi başkası jetonu ilerletiyor
@@ -402,16 +380,6 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
             .SingleAsync(c => c.Id == campaignId);
         after.Status.Should().Be("pending", "üstlenme düştüyse koşu hiç başlamamıştır");
         after.CompletedAt.Should().BeNull();
-        after.RefundedCredits.Should().Be(0);
-
-        (await vdb.LicenseSmsBalances.AsNoTracking()
-            .SingleAsync(b => b.LicenseId == licenseId))
-            .CreditsRemaining.Should().Be(creditsBefore,
-                "üstlenemediğimiz kampanyanın iadesini yazmak krediyi yoktan var eder");
-
-        (await vdb.LicenseSmsTransactions.AsNoTracking()
-            .CountAsync(t => t.LicenseId == licenseId && t.Kind == "send-refund"))
-            .Should().Be(0, "bu koşu hiç sahip olmadı, ledger'a dokunmamalı");
     }
 
     [Fact]
@@ -420,7 +388,8 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
-        var (campaignId, _, _) = await SeedAsync(db);
+        var (campaignId, _, _) = await SeedAsync(
+            db, scope.ServiceProvider.GetRequiredService<NetgsmAccountService>());
 
         var c = await db.SmsCampaigns.SingleAsync(x => x.Id == campaignId);
         c.Status = "paused";
@@ -428,7 +397,7 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
 
         await job.RunAsync(campaignId);
 
-        _factory.Sms.Sent.Should().BeEmpty();
+        _factory.TenantSms.Sent.Should().BeEmpty();
         using var verify = _factory.Services.CreateScope();
         var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
         (await vdb.SmsCampaigns.AsNoTracking().SingleAsync(x => x.Id == campaignId))
@@ -440,7 +409,8 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-        var (campaignId, _, _) = await SeedAsync(db);
+        var (campaignId, _, _) = await SeedAsync(
+            db, scope.ServiceProvider.GetRequiredService<NetgsmAccountService>());
 
         // Hem bayat claim hem eski CreatedAt: kurtarma işinin İKİ yakalama
         // koşulunu da tetikleyebilecek en kötü hâl.
@@ -454,7 +424,6 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
         var jobs = new RecordingBackgroundJobClient(enqueued);
         var recovery = new SmsCampaignRecoveryJob(
             db, jobs,
-            scope.ServiceProvider.GetRequiredService<LicenseSmsBalanceService>(),
             scope.ServiceProvider.GetRequiredService<
                 Microsoft.Extensions.Logging.ILogger<SmsCampaignRecoveryJob>>());
 
@@ -465,24 +434,21 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
     }
 
     [Fact]
-    public async Task Diriltilen_kampanya_iadeyi_ikinci_kez_yapmaz()
+    public async Task Alicisi_kalmamis_dirilen_kampanya_temiz_tamamlanir()
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
-        var (campaignId, _, _) = await SeedAsync(db);
+        var (campaignId, _, _) = await SeedAsync(
+            db, scope.ServiceProvider.GetRequiredService<NetgsmAccountService>());
 
-        // Tamamlanmış ve iadesi YAPILMIŞ bir kampanyayı, bayat bir "duraklat"
-        // yazımının + devam ettirmenin dirilteceği hâle kur: durum yine
-        // "pending", ama her iki alıcı da sonuçlanmış ve RefundedCredits dolu.
-        // Job bu kampanyayı üstlenip hiç alıcı bulamayacak ve doğrudan
-        // tamamlamaya gidecek — iade orada ikinci kez yazılırsa kredi
-        // yoktan var edilir.
+        // Bayat bir "duraklat" + devam ettirmenin dirilteceği hâl: durum yine
+        // "pending", ama her iki alıcı da zaten sonuçlanmış. Job kampanyayı
+        // üstlenip hiç pending alıcı bulamamalı ve döngüsüz tamamlamalı —
+        // yeniden gönderim yaparsa aynı kişiye ikinci ticari SMS gider.
         var campaign = await db.SmsCampaigns.SingleAsync(x => x.Id == campaignId);
-        var licenseId = campaign.LicenseId;
         campaign.Status = "pending";
         campaign.ClaimedAt = null;
-        campaign.RefundedCredits = 2; // 2 failed × 1 segment — zaten ödendi
         foreach (var r in await db.SmsCampaignRecipients
                      .Where(r => r.CampaignId == campaignId).ToListAsync())
         {
@@ -491,25 +457,17 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
         }
         await db.SaveChangesAsync();
 
-        var creditsBefore = (await db.LicenseSmsBalances.AsNoTracking()
-            .SingleAsync(b => b.LicenseId == licenseId)).CreditsRemaining;
-
         await job.RunAsync(campaignId);
+
+        _factory.TenantSms.Sent.Should().BeEmpty(
+            "sonuçlanmış alıcıya diriliş turunda yeniden gönderim olmaz");
 
         using var verify = _factory.Services.CreateScope();
         var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
 
         var after = await vdb.SmsCampaigns.AsNoTracking().SingleAsync(x => x.Id == campaignId);
         after.Status.Should().Be("completed");
-        after.RefundedCredits.Should().Be(2, "borç zaten ödenmişti, artmamalı");
-
-        (await vdb.LicenseSmsBalances.AsNoTracking().SingleAsync(b => b.LicenseId == licenseId))
-            .CreditsRemaining.Should().Be(creditsBefore,
-                "iade idempotent değilse aynı krediler ikinci kez bakiyeye eklenir");
-
-        (await vdb.LicenseSmsTransactions.AsNoTracking()
-            .CountAsync(t => t.LicenseId == licenseId && t.Kind == "send-refund"))
-            .Should().Be(0, "bu koşu yeni bir iade işlemi yazmamalı");
+        after.CompletedAt.Should().NotBeNull();
     }
 
     [Fact]
@@ -518,15 +476,16 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var job = scope.ServiceProvider.GetRequiredService<SmsCampaignSendJob>();
-        var (campaignId, accountId, _) = await SeedAsync(db);
+        var (campaignId, accountId, _) = await SeedAsync(
+            db, scope.ServiceProvider.GetRequiredService<NetgsmAccountService>());
 
         // OnSent alıcı 1'in SendAsync'i içinde koşar; oradan yalnız KANCAYI
         // kuruyoruz. Araya girme, alıcı 1'in sonucu diske indikten sonra
         // çalışsın ki işçi A gerçekten döngünün ikinci turuna girsin —
         // test etmek istediğimiz yoklama orada.
-        _factory.Sms.OnSent = _ =>
+        _factory.TenantSms.OnSent = _ =>
         {
-            _factory.Sms.OnSent = null;
+            _factory.TenantSms.OnSent = null;
             _factory.Hook.AfterSave = InterleaveAsync;
         };
 
@@ -561,11 +520,11 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
         try { await job.RunAsync(campaignId); }
         finally
         {
-            _factory.Sms.OnSent = null;
+            _factory.TenantSms.OnSent = null;
             _factory.Hook.Reset();
         }
 
-        _factory.Sms.Sent.Should().HaveCount(1,
+        _factory.TenantSms.Sent.Should().HaveCount(1,
             "işçi A sahipliğini kaybetti; ikinci alıcı artık YENİ işçinin işi. "
             + "2 olursa aynı kişiye iki ticari ileti gitmiş demektir");
 
@@ -575,8 +534,6 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
             .SingleAsync(c => c.Id == campaignId);
         campaign.Status.Should().Be("sending", "yeni sahibin durumu ezilmemeli");
         campaign.CompletedAt.Should().BeNull();
-        campaign.RefundedCredits.Should().Be(0,
-            "sahipliği kaybeden işçi iade YAPMAZ — kalan alıcı yeni işçide");
 
         // Alıcı 1'in sonucu KAYBOLMAMALI: SMS gerçekten gitti, kaydı da inmiş
         // olmalı. Araya girme `OnSent`'in içinde yapılsaydı bu satır YİNE

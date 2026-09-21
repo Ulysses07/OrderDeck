@@ -365,7 +365,6 @@ public class NetgsmAccountServiceTests
             MessageBody = "Kurulum testi",
             SegmentsPerMessage = 1,
             RecipientCount = 1,
-            ReservedCredits = 1,
             Status = status,
             ClaimedAt = claimedAt ?? DateTimeOffset.UtcNow.AddMinutes(-1),
             CreatedByCustomerId = Guid.NewGuid(),

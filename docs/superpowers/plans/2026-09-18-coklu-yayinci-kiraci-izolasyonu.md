@@ -19,7 +19,7 @@
 Bu plan yalnız **kiracı izolasyonunu** kapsar. Spec'in geri kalanı üç ayrı plana bırakıldı — her biri kendi başına çalışan yazılım üretir:
 
 - **Plan 2 — kurulum yaşam döngüsü:** panelden kimlik girişi, `/iys/search` doğrulama kapısı, günlük yeniden doğrulama, kill switch, `verified`/`failed`/`disabled` durum→yetki tablosu (spec §2).
-- **Plan 3 — kredi emekliliği + gönderim hataları:** `LicenseSmsBalance*` silinmesi, WPF uyumu, `NetgsmSmsException(code)`, `skipped` durumu, bakiye bitince `paused`, `ITenantSmsSender` (spec §1.1, §1.2, §1.4, §3).
+- **Plan 3 — kredi emekliliği + gönderim hataları:** `LicenseSmsBalance*` silinmesi, WPF uyumu, `NetgsmSmsException(code)`, `skipped` durumu, bakiye bitince `paused`, `ITenantSmsSender` (spec §1.1, §1.2, §1.4, §3). **UYGULANDI 2026-09-21** — plan: `2026-09-21-sms-kredi-emekliligi-kiraci-gonderim.md`, dal `feat/sms-kredi-emekliligi-kiraci-gonderim`.
 - **Plan 4 — onay toplama incelikleri + ayrılış:** shopper çok-marka onay verme yolu (§5.2b), yayıncı ayrılışı/aynalama/30 gün silme (§6).
 
 Bu planda `NetgsmAccount` satırları **elle** (admin SQL) oluşturulur; panel ekranı Plan 2'de gelir.

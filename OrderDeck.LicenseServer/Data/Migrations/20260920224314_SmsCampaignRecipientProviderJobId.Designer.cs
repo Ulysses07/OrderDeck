@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using OrderDeck.LicenseServer.Data;
 
@@ -11,9 +12,11 @@ using OrderDeck.LicenseServer.Data;
 namespace OrderDeck.LicenseServer.Data.Migrations
 {
     [DbContext(typeof(LicenseDbContext))]
-    partial class LicenseDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260920224314_SmsCampaignRecipientProviderJobId")]
+    partial class SmsCampaignRecipientProviderJobId
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -954,6 +957,64 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.HasIndex("SkuCode");
 
                     b.ToTable("Licenses");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.LicenseSmsBalance", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("CreditsRemaining")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("LicenseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .IsConcurrencyToken()
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LicenseId")
+                        .IsUnique();
+
+                    b.ToTable("LicenseSmsBalances");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.LicenseSmsTransaction", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Amount")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid?>("CreatedByCustomerId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<Guid>("LicenseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LicenseId", "CreatedAt");
+
+                    b.ToTable("LicenseSmsTransactions");
                 });
 
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.NetgsmAccount", b =>
@@ -2142,6 +2203,12 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<int>("RecipientCount")
                         .HasColumnType("int");
 
+                    b.Property<int>("RefundedCredits")
+                        .HasColumnType("int");
+
+                    b.Property<int>("ReservedCredits")
+                        .HasColumnType("int");
+
                     b.Property<int>("SegmentsPerMessage")
                         .HasColumnType("int");
 
@@ -3005,6 +3072,28 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Navigation("Customer");
 
                     b.Navigation("Sku");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.LicenseSmsBalance", b =>
+                {
+                    b.HasOne("OrderDeck.LicenseServer.Domain.License", "License")
+                        .WithMany()
+                        .HasForeignKey("LicenseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("License");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.LicenseSmsTransaction", b =>
+                {
+                    b.HasOne("OrderDeck.LicenseServer.Domain.License", "License")
+                        .WithMany()
+                        .HasForeignKey("LicenseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("License");
                 });
 
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.NetgsmAccount", b =>

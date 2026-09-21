@@ -106,9 +106,8 @@ public sealed class NetgsmAccountService
     /// başına, kampanyayı zaten okumuş işçinin <c>sending</c> yazımını
     /// engellemez.</para>
     ///
-    /// <para><b>Kredi iade edilmez</b> — kalan alıcılar <c>pending</c> kalıyor
-    /// ve rezervasyon tam olarak onların karşılığı. İade, kampanya gerçekten
-    /// tamamlandığında (<c>failed</c> alıcı sayısına göre) yapılır.</para>
+    /// <para>Kalan alıcılar <c>pending</c> kalır — kurulum düzelip kampanya
+    /// devam ettirildiğinde kitle kaldığı yerden sürer.</para>
     /// </summary>
     private async Task<int> StagePauseActiveCampaignsAsync(
         Guid licenseId, CancellationToken ct)
@@ -283,9 +282,8 @@ public sealed class NetgsmAccountService
     /// iki dakika içinde bekleyeni kuyruğa alır ve kararı sessizce geri
     /// alırdı (<c>SmsCampaignRecoveryJob.cs:48-53</c>).</para>
     ///
-    /// <para><b>İade YOK.</b> Kalan alıcılar <c>pending</c> kalır ve
-    /// rezervasyon onların karşılığıdır. Burada iade edersek kampanya devam
-    /// ettirildiğinde aynı kredi ikinci kez harcanır.</para>
+    /// <para>Kalan alıcılar <c>pending</c> kalır — kampanya devam
+    /// ettirildiğinde kitle kaldığı yerden sürer.</para>
     ///
     /// <para><b>Neden yeniden deneme var.</b> <c>SmsCampaign.ClaimedAt</c> bir
     /// concurrency token (<c>LicenseDbContext.cs:816</c>) ve gönderim işi onu
@@ -402,8 +400,7 @@ public sealed class NetgsmAccountService
     /// (<see cref="CloseAccountAndPauseCampaignsAsync"/>) atomikliğinin
     /// aynası. Ayrı kaydedilseydi aradaki çökme hesabı Verified, kampanyaları
     /// "paused" bırakırdı; <see cref="SmsCampaignRecoveryJob"/> "paused"a
-    /// bakmadığı için o kampanyalar rezerve kredileriyle birlikte sonsuza dek
-    /// asılı kalırdı.</para>
+    /// bakmadığı için o kampanyalar sonsuza dek asılı kalırdı.</para>
     ///
     /// <para><b>Kuyruğa da ATMAZ.</b> Yalnız "pending" yazılır;
     /// <see cref="SmsCampaignRecoveryJob"/> 5 dakikada bir süpürüp kuyruğa

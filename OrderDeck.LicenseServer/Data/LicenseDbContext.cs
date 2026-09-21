@@ -45,8 +45,6 @@ public class LicenseDbContext : DbContext
     public DbSet<CustomerBalance> CustomerBalances => Set<CustomerBalance>();
     public DbSet<CustomerBalanceTransaction> CustomerBalanceTransactions => Set<CustomerBalanceTransaction>();
     public DbSet<ShopperPasswordResetCode> ShopperPasswordResetCodes => Set<ShopperPasswordResetCode>();
-    public DbSet<LicenseSmsBalance> LicenseSmsBalances => Set<LicenseSmsBalance>();
-    public DbSet<LicenseSmsTransaction> LicenseSmsTransactions => Set<LicenseSmsTransaction>();
     public DbSet<SmsCampaign> SmsCampaigns => Set<SmsCampaign>();
     public DbSet<SmsCampaignRecipient> SmsCampaignRecipients => Set<SmsCampaignRecipient>();
     public DbSet<WhatsAppAccount> WhatsAppAccounts => Set<WhatsAppAccount>();
@@ -782,28 +780,6 @@ public class LicenseDbContext : DbContext
              .HasFilter("[SaleScope] IS NOT NULL");
         });
 
-        mb.Entity<LicenseSmsBalance>(b =>
-        {
-            b.HasKey(s => s.Id);
-            b.HasOne(s => s.License).WithMany().HasForeignKey(s => s.LicenseId)
-             .OnDelete(DeleteBehavior.Cascade);
-            b.HasIndex(s => s.LicenseId).IsUnique();
-            // F03 (2026-09-09 denetimi): CreditsRemaining de okuma-hesapla-yazma —
-            // eşzamanlı topup + kampanya rezervi kredi kaybedebiliyordu.
-            // CustomerBalance ile aynı desen: UpdatedAt token.
-            b.Property(s => s.UpdatedAt).IsConcurrencyToken();
-        });
-
-        mb.Entity<LicenseSmsTransaction>(b =>
-        {
-            b.HasKey(t => t.Id);
-            b.HasOne(t => t.License).WithMany().HasForeignKey(t => t.LicenseId)
-             .OnDelete(DeleteBehavior.Cascade);
-            b.Property(t => t.Kind).HasMaxLength(32).IsRequired();
-            b.Property(t => t.Reason).HasMaxLength(500);
-            b.HasIndex(t => new { t.LicenseId, t.CreatedAt });
-        });
-
         mb.Entity<SmsCampaign>(b =>
         {
             b.HasKey(c => c.Id);
@@ -830,6 +806,7 @@ public class LicenseDbContext : DbContext
             b.Property(r => r.Phone).HasMaxLength(20).IsRequired();
             b.Property(r => r.Status).HasMaxLength(16).IsRequired();
             b.Property(r => r.Error).HasMaxLength(500);
+            b.Property(r => r.ProviderJobId).HasMaxLength(64);
             // Görev 16: kampanya düzeyindeki claim (yukarıdaki
             // SmsCampaign.ClaimedAt) bu yarışı KAPATMIYOR — o yoklama
             // gönderimden ÖNCE koşuyor, yarış ise gönderim ile sonuç yazımı

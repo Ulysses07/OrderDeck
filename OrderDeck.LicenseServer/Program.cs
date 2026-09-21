@@ -168,11 +168,19 @@ public class Program
             builder.Services.AddHttpClient<OrderDeck.LicenseServer.Services.Sms.ISmsSender,
                     OrderDeck.LicenseServer.Services.Sms.NetgsmSmsSender>(
                     c => c.Timeout = TimeSpan.FromSeconds(smsTimeout <= 0 ? 10 : smsTimeout));
+            // Kiracı kimlikli ticari yol (§1.2) — kimlikler çağrı parametresinden,
+            // timeout/BaseUrl merkezî ayardan.
+            builder.Services.AddHttpClient<OrderDeck.LicenseServer.Services.Sms.ITenantSmsSender,
+                    OrderDeck.LicenseServer.Services.Sms.NetgsmTenantSmsSender>(
+                    c => c.Timeout = TimeSpan.FromSeconds(smsTimeout <= 0 ? 10 : smsTimeout));
         }
         else
+        {
             builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Sms.ISmsSender,
                 OrderDeck.LicenseServer.Services.Sms.LogSmsSender>();
-        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sms.LicenseSmsBalanceService>();
+            builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Sms.ITenantSmsSender,
+                OrderDeck.LicenseServer.Services.Sms.LogTenantSmsSender>();
+        }
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sms.SmsCampaignSendJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sms.SmsCampaignRecoveryJob>();
 

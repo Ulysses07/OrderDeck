@@ -2,8 +2,9 @@ namespace OrderDeck.LicenseServer.Domain;
 
 /// <summary>
 /// Yayıncının toplu SMS gönderimi. Oluşturulduğunda alıcılar
-/// (<see cref="SmsCampaignRecipient"/>) snapshot'lanır ve kredi rezerve edilir;
-/// gönderim Hangfire job'ında arka planda yapılır.
+/// (<see cref="SmsCampaignRecipient"/>) snapshot'lanır; gönderim Hangfire
+/// job'ında arka planda, yayıncının kendi Netgsm kimlikleriyle yapılır
+/// (ücretlendirme Netgsm tarafında — dahili kredi yok, §1.4).
 /// </summary>
 public sealed class SmsCampaign
 {
@@ -17,17 +18,6 @@ public sealed class SmsCampaign
     public int SegmentsPerMessage { get; set; }
 
     public int RecipientCount { get; set; }
-
-    /// <summary>Oluşturulurken rezerve edilen kredi (RecipientCount × SegmentsPerMessage).</summary>
-    public int ReservedCredits { get; set; }
-
-    /// <summary>
-    /// N05 (2026-09-10 denetimi): GERÇEKLEŞEN kredi iadesi. Job kampanyayı
-    /// tamamlarken iadeyle aynı SaveChanges içinde yazar; iade yapılmadıysa 0
-    /// kalır. Raporlama bunu okur — "failed × segment" hesabı gönderim
-    /// sürerken daha yapılmamış iadeyi yapılmış gibi gösteriyordu.
-    /// </summary>
-    public int RefundedCredits { get; set; }
 
     /// <summary>"pending" | "sending" | "paused" | "completed" | "failed".
     /// "paused": kurulum admin tarafından kapatıldı; kalan alıcılar "pending"

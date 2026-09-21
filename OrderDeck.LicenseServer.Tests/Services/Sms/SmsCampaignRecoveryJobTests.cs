@@ -16,7 +16,8 @@ namespace OrderDeck.LicenseServer.Tests.Services.Sms;
 /// <summary>
 /// F08/F09 güvenlik ağı: <see cref="SmsCampaignRecoveryJob"/> takılı
 /// kampanyaları (bayat "sending" + kayıp-enqueue "pending") yeniden kuyruğa
-/// almalı; sağlıklı olanlara dokunmamalı.
+/// almalı; sağlıklı olanlara ve devam ettirilmiş (taze damgalı) olanlara
+/// dokunmamalı. Kredi sistemi emekli (Plan 3): kurtarma artık iade YAZMAZ.
 /// </summary>
 public class SmsCampaignRecoveryJobTests : IClassFixture<ApiFactory>
 {
@@ -69,7 +70,6 @@ public class SmsCampaignRecoveryJobTests : IClassFixture<ApiFactory>
             MessageBody = "m",
             SegmentsPerMessage = 1,
             RecipientCount = 1,
-            ReservedCredits = 1,
             Status = status,
             ClaimedAt = claimedAt,
             CreatedByCustomerId = customer.Id,
@@ -82,14 +82,11 @@ public class SmsCampaignRecoveryJobTests : IClassFixture<ApiFactory>
 
     /// <summary>
     /// Görev 15 — "paused" bir kampanya + istenen durumlarda alıcılar tohumlar.
-    /// Bakiye + ledger satırı da açılır: iadenin gerçekten para hareket ettirip
-    /// ettirmediği ancak oradan ölçülebilir.
     /// </summary>
-    private static async Task<(Guid CampaignId, Guid LicenseId)> SeedPausedAsync(
+    private static async Task<Guid> SeedPausedAsync(
         LicenseDbContext db,
         string[] recipientStatuses,
-        int segmentsPerMessage,
-        int refundedCredits)
+        int segmentsPerMessage)
     {
         var customer = new Customer
         {
@@ -112,22 +109,6 @@ public class SmsCampaignRecoveryJobTests : IClassFixture<ApiFactory>
         };
         db.Licenses.Add(license);
 
-        db.LicenseSmsBalances.Add(new LicenseSmsBalance
-        {
-            Id = Guid.NewGuid(),
-            LicenseId = license.Id,
-            CreditsRemaining = 50,
-            UpdatedAt = DateTimeOffset.UtcNow,
-        });
-        db.LicenseSmsTransactions.Add(new LicenseSmsTransaction
-        {
-            Id = Guid.NewGuid(),
-            LicenseId = license.Id,
-            Amount = 50,
-            Kind = "purchase",
-            CreatedAt = DateTimeOffset.UtcNow,
-        });
-
         var campaign = new SmsCampaign
         {
             Id = Guid.NewGuid(),
@@ -135,8 +116,6 @@ public class SmsCampaignRecoveryJobTests : IClassFixture<ApiFactory>
             MessageBody = "m",
             SegmentsPerMessage = segmentsPerMessage,
             RecipientCount = recipientStatuses.Length,
-            ReservedCredits = recipientStatuses.Length * segmentsPerMessage,
-            RefundedCredits = refundedCredits,
             Status = "paused",
             // Duraklatma damgayı ilerletir; kurtarma onu GERİ almamalı.
             ClaimedAt = DateTimeOffset.UtcNow,
@@ -159,35 +138,29 @@ public class SmsCampaignRecoveryJobTests : IClassFixture<ApiFactory>
         }
 
         await db.SaveChangesAsync();
-        return (campaign.Id, license.Id);
+        return campaign.Id;
     }
 
     private static SmsCampaignRecoveryJob NewRecovery(
         LicenseDbContext db, IBackgroundJobClient jobs)
-        => new(
-            db,
-            jobs,
-            new LicenseSmsBalanceService(db),
-            NullLogger<SmsCampaignRecoveryJob>.Instance);
+        => new(db, jobs, NullLogger<SmsCampaignRecoveryJob>.Instance);
 
     /// <summary>
     /// Görev 15 — tamamlanma anında kapatılan kampanya asılı kalmasın.
     /// Gönderim işi son alıcıyı yazdıktan sonra tamamlama bloğuna girdi, tam o
     /// anda admin kurulumu kapattı: tamamlama yazımı <c>ClaimedAt</c> CAS'ından
     /// düştü, yeniden deneme durum kapısında (paused) çekildi. Kampanya
-    /// "duraklatıldı" görünür ama devam edecek hiçbir şeyi yoktur ve
-    /// başarısızların kredisi kimseye iade edilmemiştir.
+    /// "duraklatıldı" görünür ama devam edecek hiçbir şeyi yoktur.
+    /// Plan 3: kredi sistemi emekli — tamamlama İADESİZ olmalı.
     /// </summary>
     [Fact]
-    public async Task Bekleyen_alicisi_olmayan_paused_kampanya_tamamlanir_ve_iade_edilir()
+    public async Task Bekleyen_alicisi_olmayan_paused_kampanya_iadesiz_tamamlanir()
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-        var (campaignId, licenseId) = await SeedPausedAsync(
-            db, ["sent", "failed"], segmentsPerMessage: 2, refundedCredits: 0);
+        var campaignId = await SeedPausedAsync(
+            db, ["sent", "failed"], segmentsPerMessage: 2);
 
-        var before = (await db.LicenseSmsBalances.AsNoTracking()
-            .SingleAsync(b => b.LicenseId == licenseId)).CreditsRemaining;
         var previousClaim = (await db.SmsCampaigns.AsNoTracking()
             .SingleAsync(c => c.Id == campaignId)).ClaimedAt!.Value;
 
@@ -199,35 +172,24 @@ public class SmsCampaignRecoveryJobTests : IClassFixture<ApiFactory>
         var after = await vdb.SmsCampaigns.AsNoTracking().SingleAsync(c => c.Id == campaignId);
         after.Status.Should().Be("completed");
         after.CompletedAt.Should().NotBeNull();
-        after.RefundedCredits.Should().Be(2, "1 failed × 2 segment");
         after.ClaimedAt!.Value.Should().BeAfter(previousClaim,
             "damga ilerlemezse duraklatmadan önce kampanyayı okumuş bayat bir "
             + "işçi sahipliği geri kazanır");
-
-        (await vdb.LicenseSmsBalances.AsNoTracking().SingleAsync(b => b.LicenseId == licenseId))
-            .CreditsRemaining.Should().Be(before + 2);
-
-        var refunds = await vdb.LicenseSmsTransactions.AsNoTracking()
-            .Where(t => t.LicenseId == licenseId && t.Kind == "send-refund").ToListAsync();
-        refunds.Should().ContainSingle().Which.Amount.Should().Be(2);
     }
 
     /// <summary>
-    /// Görevin kalbi: bekleyen alıcısı OLAN duraklatılmış kampanya gerçekten
-    /// duraklatılmıştır. Onu tamamlamak gitmemiş SMS'leri gitmiş saymak,
-    /// rezervasyonu da sahibine geri vermek olurdu — devam ettirildiğinde aynı
-    /// kredi ikinci kez harcanır.
+    /// Sözleşme 6'nın kalbi: bekleyen alıcısı OLAN duraklatılmış kampanya
+    /// gerçekten duraklatılmıştır. Onu tamamlamak gitmemiş SMS'leri gitmiş
+    /// saymak olurdu; kuyruğa almak da admin'in kapatma kararını sessizce
+    /// geri almak olurdu.
     /// </summary>
     [Fact]
     public async Task Bekleyen_alicisi_olan_paused_kampanyaya_dokunulmaz()
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-        var (campaignId, licenseId) = await SeedPausedAsync(
-            db, ["failed", "pending"], segmentsPerMessage: 2, refundedCredits: 0);
-
-        var before = (await db.LicenseSmsBalances.AsNoTracking()
-            .SingleAsync(b => b.LicenseId == licenseId)).CreditsRemaining;
+        var campaignId = await SeedPausedAsync(
+            db, ["failed", "pending"], segmentsPerMessage: 2);
 
         var jobs = new RecordingJobClient();
         await NewRecovery(db, jobs).RunAsync();
@@ -238,78 +200,53 @@ public class SmsCampaignRecoveryJobTests : IClassFixture<ApiFactory>
         var after = await vdb.SmsCampaigns.AsNoTracking().SingleAsync(c => c.Id == campaignId);
         after.Status.Should().Be("paused", "kapatma kararı kutsal");
         after.CompletedAt.Should().BeNull();
-        after.RefundedCredits.Should().Be(0);
 
         jobs.Created.Select(j => (Guid)j.Args[0]!).Should().NotContain(campaignId,
             "kurtarma bu kampanyayı kuyruğa da almamalı");
-
-        (await vdb.LicenseSmsBalances.AsNoTracking().SingleAsync(b => b.LicenseId == licenseId))
-            .CreditsRemaining.Should().Be(before);
-        (await vdb.LicenseSmsTransactions.AsNoTracking()
-            .CountAsync(t => t.LicenseId == licenseId && t.Kind == "send-refund"))
-            .Should().Be(0);
     }
 
     /// <summary>
-    /// İade İDEMPOTENT: borcu zaten ödenmiş bir kampanya süpürmede ikinci kez
-    /// ödenmemeli. Kurulum: gönderim işi iadeyi yazmayı BAŞARDI ama tamamlama
-    /// yazımı çakıştı — <c>RefundedCredits</c> dolu, durum hâlâ "paused".
-    /// Süpürmeyi iki kez koşuyoruz; ikincisi kampanyayı artık "completed"
-    /// gördüğü için sorguya hiç girmemeli.
+    /// §3.4 düzeltme 2: devam ettirilen (paused→pending) kampanyanın damgası
+    /// TAZE olur — <c>StageResumePausedCampaignsAsync</c> damgayı ilerletir.
+    /// Damga filtresi olmadan böyle bir kampanya, <c>CreatedAt</c>'i eski
+    /// olduğu için HER süpürmede yeniden kuyruklanırdı. Taze damgalı pending
+    /// atlanmalı; damgası bayat ya da hiç olmayan pending kurtarılmalı.
     /// </summary>
     [Fact]
-    public async Task Ikinci_supurme_ikinci_iade_yazmaz()
+    public async Task Devam_ettirilen_taze_damgali_pending_yeniden_kuyruklanmaz()
     {
+        var now = DateTimeOffset.UtcNow;
+        var staleClaim = now - SmsCampaignSendJob.ClaimLease - TimeSpan.FromMinutes(1);
+        var oldCreate = now - SmsCampaignRecoveryJob.PendingGrace - TimeSpan.FromMinutes(1);
+
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-        var (campaignId, licenseId) = await SeedPausedAsync(
-            db, ["sent", "failed"], segmentsPerMessage: 2, refundedCredits: 2);
 
-        var before = (await db.LicenseSmsBalances.AsNoTracking()
-            .SingleAsync(b => b.LicenseId == licenseId)).CreditsRemaining;
+        // Devam ettirilmiş: CreatedAt eski ama damga taze — lease sahibi canlı
+        // sayılır; ilk enqueue lease bayatlayınca (≤15 dk) gelir.
+        var resumedPending = await SeedCampaignAsync(db, "pending", now, oldCreate);
+        // Damgası bayatlamış pending — kayıp sayılır, kurtarılmalı.
+        var stalePending = await SeedCampaignAsync(db, "pending", staleClaim, oldCreate);
+        // Hiç damgasız yaşlı pending (F09 kayıp-enqueue) — kurtarılmalı.
+        var orphanPending = await SeedCampaignAsync(db, "pending", null, oldCreate);
 
-        await NewRecovery(db, new RecordingJobClient()).RunAsync();
-        await NewRecovery(db, new RecordingJobClient()).RunAsync();
+        var jobs = new RecordingJobClient();
+        await NewRecovery(db, jobs).RunAsync();
 
-        using var verify = _factory.Services.CreateScope();
-        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
-
-        var after = await vdb.SmsCampaigns.AsNoTracking().SingleAsync(c => c.Id == campaignId);
-        after.Status.Should().Be("completed");
-        after.RefundedCredits.Should().Be(2, "borç zaten ödenmişti, artmamalı");
-
-        (await vdb.LicenseSmsBalances.AsNoTracking().SingleAsync(b => b.LicenseId == licenseId))
-            .CreditsRemaining.Should().Be(before,
-                "hak edilen iade zaten ödenmişti; tekrar ödemek krediyi yoktan var eder");
-        (await vdb.LicenseSmsTransactions.AsNoTracking()
-            .CountAsync(t => t.LicenseId == licenseId && t.Kind == "send-refund"))
-            .Should().Be(0);
+        var enqueued = jobs.Created.Select(j => (Guid)j.Args[0]!).ToList();
+        enqueued.Should().NotContain(resumedPending,
+            "taze damgalı pending'i her süpürmede kuyruklamak devam ettirme "
+            + "akışını enqueue fırtınasına çevirir (§3.4 düzeltme 2)");
+        enqueued.Should().Contain(stalePending);
+        enqueued.Should().Contain(orphanPending);
     }
 
     /// <summary>
     /// Süpürme aynı turda İKİ asılı kampanya bulduğunda, birincinin CAS
     /// çakışması ikincinin kurtarılmasını ENGELLEMEMELİ. Kurulum: A'nın
     /// izleyicideki kopyası bayat (rakip işçi damgayı ilerletti), B sağlam.
-    ///
-    /// <para>Düzeltmeden önce A'nın düşen iadesi izleyicide asılı kalıyordu
-    /// (tx <c>Added</c>, bakiye <c>Modified</c>) ve B'nin <c>SaveChanges</c>'ine
-    /// biniyordu.</para>
-    ///
-    /// <para><b>Bu testin gördüğü çöküş bir InMemory ARTEFAKTI.</b> Orada
-    /// asılı tx ikinci kez insert edilmeye çalışılıp anahtar çakışmasıyla
-    /// patlıyor, yani süpürme gürültülü biçimde ölüyor. Prod'da (SQL Server)
-    /// aynı senaryo çok daha sessiz ve çok daha kötü: B'nin
-    /// <c>SaveChanges</c>'i BAŞARIR ve A'nın iadesini de öder — A "paused"
-    /// kaldığı için sonraki süpürme onu İKİNCİ kez iade eder. Yani buradaki
-    /// yeşil "süpürme ölmüyor"u kanıtlar, "para doğru"yu değil.</para>
-    ///
-    /// <para><b>Para tarafı burada ölçülemez:</b> InMemory transactional
-    /// değil — A'nın düşen yazımının bir kısmı store'a işlenmiş olabiliyor.
-    /// "Düşen karar kuruş oynatmaz" sözleşmesi gerçek SQL Server'da
-    /// doğrulanıyor: <c>SmsBalanceConcurrencyTests.Dusen_karar_ayni_contextin_
-    /// sonraki_yazimina_binmez</c>. Aşağıdaki <c>RefundedCredits</c> iddiası
-    /// istisna: o satırı yazan komut CAS'e takılanın TA KENDİSİ, dolayısıyla
-    /// kısmî uygulama tehlikesi yok.</para>
+    /// Detach şart — kirli kopya bir sonraki kampanyanın SaveChanges'ine
+    /// binerse tek çakışma bütün süpürmeyi sürekli düşürür.
     /// </summary>
     [Fact]
     public async Task Bir_kampanyanin_cakismasi_digerinin_kurtarilmasini_engellemez()
@@ -317,10 +254,10 @@ public class SmsCampaignRecoveryJobTests : IClassFixture<ApiFactory>
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
 
-        var (campaignA, _) = await SeedPausedAsync(
-            db, ["sent", "failed"], segmentsPerMessage: 2, refundedCredits: 0);
-        var (campaignB, licenseB) = await SeedPausedAsync(
-            db, ["sent", "failed"], segmentsPerMessage: 2, refundedCredits: 0);
+        var campaignA = await SeedPausedAsync(
+            db, ["sent", "failed"], segmentsPerMessage: 2);
+        var campaignB = await SeedPausedAsync(
+            db, ["sent", "failed"], segmentsPerMessage: 2);
 
         // Rakip işçi A'yı yazar: `db`'de izlenen kopyanın jetonu artık bayat.
         using (var rival = _factory.Services.CreateScope())
@@ -338,16 +275,9 @@ public class SmsCampaignRecoveryJobTests : IClassFixture<ApiFactory>
 
         var afterA = await vdb.SmsCampaigns.AsNoTracking().SingleAsync(c => c.Id == campaignA);
         afterA.Status.Should().Be("paused", "çakışan karar düşmeliydi");
-        afterA.RefundedCredits.Should().Be(0,
-            "kampanya hâlâ 'paused': iade edilmiş SAYILIRSA sonraki süpürme "
-            + "onu atlar, iade edilmemiş sayılıp parası çıkmışsa İKİ kez öder");
 
         var afterB = await vdb.SmsCampaigns.AsNoTracking().SingleAsync(c => c.Id == campaignB);
         afterB.Status.Should().Be("completed", "sağlam kampanya çakışmadan etkilenmemeli");
-        afterB.RefundedCredits.Should().Be(2);
-        (await vdb.LicenseSmsTransactions.AsNoTracking()
-            .CountAsync(t => t.LicenseId == licenseB && t.Kind == "send-refund"))
-            .Should().Be(1, "B'nin iadesi tam olarak bir kez yazılmalı");
     }
 
     [Fact]
@@ -377,8 +307,16 @@ public class SmsCampaignRecoveryJobTests : IClassFixture<ApiFactory>
         var jobs = new RecordingJobClient();
         await NewRecovery(db, jobs).RunAsync();
 
+        // Store sınıf genelinde paylaşılıyor: diğer testlerin bıraktığı takılı
+        // kampanyalar da süpürmeye girer. İddia bu testin tohumlarıyla sınırlı.
+        var seeded = new[]
+        {
+            staleSending, nullClaimSending, orphanPending,
+            liveSending, freshPending, completed,
+        };
         var enqueued = jobs.Created
             .Select(j => (Guid)j.Args[0]!)
+            .Where(seeded.Contains)
             .ToList();
 
         enqueued.Should().BeEquivalentTo(

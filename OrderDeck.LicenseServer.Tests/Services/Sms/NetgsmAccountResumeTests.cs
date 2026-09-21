@@ -46,7 +46,6 @@ public sealed class NetgsmAccountResumeTests : IClassFixture<ApiFactory>
                 ClaimedAt = claimedAt,
                 SegmentsPerMessage = 1,
                 RecipientCount = 1,
-                ReservedCredits = 1,
                 CreatedAt = DateTimeOffset.UtcNow.AddHours(-1),
             });
             return id;

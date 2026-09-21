@@ -11,9 +11,13 @@ namespace OrderDeck.LicenseServer.Controllers.Licenses;
 
 /// <summary>
 /// Yayıncı toplu SMS kampanyaları. Alıcılar server-side çözülür (lisansın
-/// SMS izinli + telefonu olan müşterileri). Kredi = alıcı × mesaj segment.
-/// Oluşturmada kredi rezerve edilir, gönderim Hangfire job'ında arka planda
-/// yapılır; başarısız alıcılar iade edilir.
+/// SMS izinli + telefonu olan müşterileri). Gönderim Hangfire job'ında arka
+/// planda, yayıncının kendi Netgsm kimlikleriyle yapılır (§1.2).
+///
+/// <para>Kredi sistemi emekli (Plan 3). Kampanya kapısı: doğrulanmış
+/// <see cref="NetgsmAccount"/>. Kredi/bakiye alanları eski WPF istemcileri
+/// için JSON'da sabit değerle yaşar — kaldırma koşulu: saha WPF sürümleri bu
+/// plandaki istemciye geçtiğinde.</para>
 /// </summary>
 [ApiController]
 [Route("api/v1/licenses/{licenseId:guid}/sms-campaigns")]
@@ -23,14 +27,11 @@ public sealed class LicensesSmsCampaignsController : ControllerBase
     private const int MaxMessageLength = 2000;
 
     private readonly LicenseDbContext _db;
-    private readonly LicenseSmsBalanceService _balance;
     private readonly IBackgroundJobClient _jobs;
 
-    public LicensesSmsCampaignsController(
-        LicenseDbContext db, LicenseSmsBalanceService balance, IBackgroundJobClient jobs)
+    public LicensesSmsCampaignsController(LicenseDbContext db, IBackgroundJobClient jobs)
     {
         _db = db;
-        _balance = balance;
         _jobs = jobs;
     }
 
@@ -69,11 +70,17 @@ public sealed class LicensesSmsCampaignsController : ControllerBase
             .Select(r => r.Phone).Distinct().CountAsync(ct);
         var segments = SmsSegmentCalculator.Segments(req.MessageBody);
         var totalCredits = recipientCount * segments;
-        var balance = await _balance.GetAsync(licenseId, ct);
+
+        // Sufficient artık "kurulum hazır mı" demek. Eski WPF CanSend()'i bu
+        // alana bağlı (BulkSmsViewModel.cs:182) — alan false'ken düğme kapalı,
+        // yani doğrulanmamış kurulumda eski istemci de doğru şekilde bloklanır.
+        // CreditsRemaining=0 sabit: eski istemcide yalnız kozmetik rozet.
+        var accountVerified = await _db.NetgsmAccounts.AnyAsync(
+            a => a.LicenseId == licenseId && a.Status == NetgsmAccountStatus.Verified, ct);
 
         return Ok(new PreviewResponse(
             recipientCount, segments, totalCredits,
-            balance.CreditsRemaining, balance.CreditsRemaining >= totalCredits));
+            CreditsRemaining: 0, Sufficient: accountVerified));
     }
 
     public sealed record CreateRequest(string MessageBody, Guid? ClientRequestId = null);
@@ -96,7 +103,10 @@ public sealed class LicensesSmsCampaignsController : ControllerBase
                 c => c.LicenseId == licenseId && c.ClientRequestId == key, ct);
             if (existing is not null)
                 return Ok(new CreateResponse(
-                    existing.Id, existing.RecipientCount, existing.ReservedCredits));
+                    existing.Id, existing.RecipientCount,
+                    // Kredi emekli: rezervasyon alanı silindi, yanıt alanı
+                    // bilgi amaçlı hesaplanır (alıcı × segment).
+                    existing.RecipientCount * existing.SegmentsPerMessage));
         }
 
         var rawRecipients = await ConsentedRecipients(licenseId).ToListAsync(ct);
@@ -112,12 +122,14 @@ public sealed class LicensesSmsCampaignsController : ControllerBase
         var segments = SmsSegmentCalculator.Segments(req.MessageBody);
         var totalCredits = recipients.Count * segments;
 
-        // Ön kontrol yalnız dostane mesaj için; asıl güvence rezervasyondaki
-        // disallowNegative (F03) — yarışta bile kredi eksiye düşemez.
-        var balance = await _balance.GetAsync(licenseId, ct);
-        if (balance.CreditsRemaining < totalCredits)
-            return Problem(title: "insufficient-credits", statusCode: 409,
-                detail: $"Gerekli {totalCredits} kredi, mevcut {balance.CreditsRemaining}.");
+        // §3.2 kapısı burada DA: kampanyayı yaratıp hemen duraklatmak yerine
+        // hiç açmamak — yayıncı hatayı anında görür. Job'daki kapı yine kalır
+        // (yarış: create ile job arasında hesap kapatılabilir).
+        var accountVerified = await _db.NetgsmAccounts.AnyAsync(
+            a => a.LicenseId == licenseId && a.Status == NetgsmAccountStatus.Verified, ct);
+        if (!accountVerified)
+            return Problem(title: "netgsm-account-missing", statusCode: 409,
+                detail: "Netgsm kurulumu doğrulanmamış; kampanya açılamaz. Panelden Netgsm bilgilerini girin.");
 
         var customerId = User.GetTenantCustomerId();
         var now = DateTimeOffset.UtcNow;
@@ -130,7 +142,6 @@ public sealed class LicensesSmsCampaignsController : ControllerBase
             MessageBody = req.MessageBody,
             SegmentsPerMessage = segments,
             RecipientCount = recipients.Count,
-            ReservedCredits = totalCredits,
             Status = "pending",
             ClientRequestId = req.ClientRequestId,
             CreatedByCustomerId = customerId,
@@ -150,34 +161,24 @@ public sealed class LicensesSmsCampaignsController : ControllerBase
             });
         }
 
-        // Krediyi rezerve et — kampanya + alıcı satırları da aynı SaveChanges
-        // içinde yazılır (atomik). null = yarışta kredi yetersiz kaldı.
-        int? reserved;
+        // Sözleşme 17: kampanya + alıcı satırları enqueue'dan ÖNCE tek
+        // SaveChanges ile yazılır. Eskiden bu yazımın taşıyıcısı kredi
+        // servisiydi; kredi öldü, SaveChanges artık burada. F09 unique
+        // index yakalaması aynı kaldı: iki eş istek ön
+        // kontrolü aynı anda geçerse kaybeden (LicenseId, ClientRequestId)
+        // index'ine çarpar ve kazananın yanıtını döndürür.
         try
         {
-            reserved = await _balance.ApplyAndSaveAsync(
-                licenseId, -totalCredits, "send-reserve",
-                reason: $"campaign:{campaignId}", createdByCustomerId: customerId,
-                disallowNegative: true, ct);
+            await _db.SaveChangesAsync(ct);
         }
         catch (DbUpdateException) when (req.ClientRequestId is not null)
         {
-            // F09: iki eş istek ön kontrolü aynı anda geçti — kaybeden
-            // (LicenseId, ClientRequestId) unique index'ine çarptı. SaveChanges
-            // atomik olduğu için kaybedenin rezervi de yazılmadı (çift kredi
-            // düşümü yok). Kazananın kampanyasını döndür; bulunamazsa gerçek
-            // bir hatadır, fırlat.
             var winner = await _db.SmsCampaigns.FirstOrDefaultAsync(
                 c => c.LicenseId == licenseId && c.ClientRequestId == req.ClientRequestId, ct);
             if (winner is null) throw;
             return Ok(new CreateResponse(
-                winner.Id, winner.RecipientCount, winner.ReservedCredits));
-        }
-        if (reserved is null)
-        {
-            var current = await _balance.GetAsync(licenseId, ct);
-            return Problem(title: "insufficient-credits", statusCode: 409,
-                detail: $"Gerekli {totalCredits} kredi, mevcut {current.CreditsRemaining}.");
+                winner.Id, winner.RecipientCount,
+                winner.RecipientCount * winner.SegmentsPerMessage));
         }
 
         _jobs.Enqueue<SmsCampaignSendJob>(j => j.RunAsync(campaignId, CancellationToken.None));
@@ -211,8 +212,8 @@ public sealed class LicensesSmsCampaignsController : ControllerBase
         return Ok(new StatusResponse(
             campaign.Id, campaign.Status, campaign.RecipientCount,
             Sent: Count("sent"), Failed: Count("failed"), Skipped: Count("skipped"),
-            // N05: gerçekleşen iade (job tamamlarken yazar) — hesap değil.
-            CreditsRefunded: campaign.RefundedCredits,
+            // Eski WPF istemcisi bu alanı parse ediyor; kredi emekli, sabit 0.
+            CreditsRefunded: 0,
             campaign.CreatedAt, campaign.CompletedAt));
     }
 
@@ -261,8 +262,8 @@ public sealed class LicensesSmsCampaignsController : ControllerBase
                 MessagePreview: c.MessageBody.Length > 60 ? c.MessageBody[..60] : c.MessageBody,
                 c.RecipientCount,
                 Sent: Count("sent"), Failed: Count("failed"), Skipped: Count("skipped"),
-                // N05: gerçekleşen iade — hesap değil.
-                CreditsRefunded: c.RefundedCredits,
+                // Eski WPF istemcisi bu alanı parse ediyor; kredi emekli, sabit 0.
+                CreditsRefunded: 0,
                 c.CreatedAt, c.CompletedAt);
         }).ToList();
 

@@ -93,7 +93,6 @@ public sealed class AdminNetgsmPageTests : IClassFixture<HookedApiFactory>
             Status = status,
             SegmentsPerMessage = 1,
             RecipientCount = 1,
-            ReservedCredits = 1,
             ClaimedAt = claimedAt,
             CreatedAt = DateTimeOffset.UtcNow,
         });

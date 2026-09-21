@@ -113,9 +113,9 @@ public class NetgsmSmsSenderTests
     {
         // Bu gönderici PLATFORMUN hesabından yazıyor. Netgsm ticari iletiyi
         // gönderen BAŞLIĞIN İYS markasında değerlendirir; onaylar ise
-        // yayıncının kendi markasına itiliyor. İkisi eşleşene kadar
-        // (ITenantSmsSender, Plan 3) ticari yol kapalı — yoksa kişinin hiç
-        // onay vermediği bir marka altında ticari SMS çıkabilir.
+        // yayıncının kendi markasına itiliyor. Ticari yol ITenantSmsSender'dan
+        // gider (Plan 3) ve bu kilit KALICI — yoksa kişinin hiç onay vermediği
+        // bir marka altında ticari SMS çıkabilir (sözleşme 7, §1.2).
         var opt = Opt();
         opt.IysFilter = "0";
         var (sender, handler) = Build(opt);

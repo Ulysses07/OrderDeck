@@ -1,19 +1,18 @@
 namespace OrderDeck.Licensing.Api.Models;
 
 /// <summary>WPF "Toplu SMS" ekranının kullandığı DTO'lar. Server tarafındaki
-/// LicensesSmsBalanceController / LicensesSmsCampaignsController response/request
-/// kayıtlarıyla bire bir (JSON camelCase, LicenseApiClient.JsonOpts ile çözülür).</summary>
-public sealed record SmsBalanceResponse(
-    int CreditsRemaining,
-    DateTimeOffset UpdatedAt);
-
+/// LicensesSmsCampaignsController response/request kayıtlarıyla bire bir
+/// (JSON camelCase, LicenseApiClient.JsonOpts ile çözülür).</summary>
 public sealed record SmsPreviewRequest(string MessageBody);
 
+/// <summary>`Sufficient` = Netgsm kurulumu doğrulanmış mı (server alan adını
+/// eski istemciler için koruyor); `CreditsRemaining` JSON'da hâlâ gelir, artık
+/// parse edilmez (bilinmeyen alanlar yok sayılır). `TotalCredits` = alıcı ×
+/// segment (Netgsm segment başına ücretlendirir; "kaça mal olur" göstergesi).</summary>
 public sealed record SmsPreviewResponse(
     int RecipientCount,
     int SegmentsPerMessage,
     int TotalCredits,
-    int CreditsRemaining,
     bool Sufficient);
 
 /// <summary>ClientRequestId (F09): gönderim eylemi başına üretilen idempotency
@@ -33,7 +32,6 @@ public sealed record SmsCampaignStatusResponse(
     int Sent,
     int Failed,
     int Skipped,
-    int CreditsRefunded,
     DateTimeOffset CreatedAt,
     DateTimeOffset? CompletedAt);
 
@@ -45,6 +43,5 @@ public sealed record SmsCampaignListItem(
     int Sent,
     int Failed,
     int Skipped,
-    int CreditsRefunded,
     DateTimeOffset CreatedAt,
     DateTimeOffset? CompletedAt);

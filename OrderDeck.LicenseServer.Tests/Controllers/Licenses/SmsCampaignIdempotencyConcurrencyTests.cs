@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Sms;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
@@ -13,7 +14,8 @@ namespace OrderDeck.LicenseServer.Tests.Controllers.Licenses;
 
 /// <summary>
 /// F09 (denetim 2026-09-09): aynı ClientRequestId ile eşzamanlı kampanya
-/// Create istekleri TEK kampanya açmalı, krediyi TEK kez rezerve etmeli.
+/// Create istekleri TEK kampanya + TEK alıcı seti yazmalı (kredi sistemi
+/// emekli — çift kredi düşümü iddiası öldü, atomiklik iddiası yaşıyor).
 ///
 /// Gerçek SQL Server şart: koruma (LicenseId, ClientRequestId) filtreli
 /// unique index'ine dayanıyor ve InMemory unique index uygulamaz — ön
@@ -44,7 +46,7 @@ public sealed class SmsCampaignIdempotencyConcurrencyTests : IAsyncLifetime
     public async Task Ayni_anahtarla_eszamanli_istekler_tek_kampanya_acar()
     {
         var (_, customerId, jwt) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
-        var licenseId = await SeedAsync(customerId, credits: 100);
+        var licenseId = await SeedAsync(customerId);
 
         // İstemciler döngüden önce kuruluyor; CreateClient gecikmesi istekleri
         // ayırıp yarış penceresini daraltırdı (bkz. PanelPaymentDecisionConcurrencyTests).
@@ -79,15 +81,14 @@ public sealed class SmsCampaignIdempotencyConcurrencyTests : IAsyncLifetime
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         (await db.SmsCampaigns.CountAsync(c => c.LicenseId == licenseId))
             .Should().Be(1, "yarışta ikinci kampanya satırı açılmamalı");
-        // Kredi TEK kez rezerve edildi: 100 - (2 alıcı × 1 segment) = 98.
-        (await db.LicenseSmsBalances.SingleAsync(b => b.LicenseId == licenseId))
-            .CreditsRemaining.Should().Be(98, "çift rezervasyon kredi kaybettirirdi");
-        (await db.LicenseSmsTransactions.CountAsync(
-            t => t.LicenseId == licenseId && t.Kind == "send-reserve"))
-            .Should().Be(1, "kaybeden isteğin rezerv transaction'ı da geri alınmalı");
+        // Kaybeden isteğin SaveChanges'i atomik geri alındı: alıcı satırları
+        // da yalnız kazanan kampanya için, tek set olarak yazılmış olmalı.
+        var winnerId = bodies[0]!.CampaignId;
+        (await db.SmsCampaignRecipients.CountAsync(r => r.CampaignId == winnerId))
+            .Should().Be(2, "yarışta alıcı seti tek kez yazılmalı");
     }
 
-    private async Task<Guid> SeedAsync(Guid customerId, int credits)
+    private async Task<Guid> SeedAsync(Guid customerId)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -129,11 +130,19 @@ public sealed class SmsCampaignIdempotencyConcurrencyTests : IAsyncLifetime
             });
         }
 
-        db.LicenseSmsBalances.Add(new LicenseSmsBalance
+        // Kampanya kapısı (§3.2): Create doğrulanmış NetgsmAccount ister.
+        var accounts = scope.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+        db.NetgsmAccounts.Add(new NetgsmAccount
         {
             Id = Guid.NewGuid(),
             LicenseId = license.Id,
-            CreditsRemaining = credits,
+            // UserCode kolonu 32 karakter — InMemory yutar, gerçek SQL keser.
+            UserCode = $"user-{Guid.NewGuid():N}"[..32],
+            PasswordProtected = accounts.ProtectPassword($"pw-{Guid.NewGuid():N}"),
+            Header = "ORDERDECK",
+            BrandCode = Random.Shared.Next(100000, 999999).ToString(),
+            Status = NetgsmAccountStatus.Verified,
+            CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
         await db.SaveChangesAsync();
