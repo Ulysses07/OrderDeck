@@ -35,11 +35,14 @@ public enum NetgsmAccountStatus
 /// <para><b>Satırın yokluğu "hiç girilmemiş" demektir</b> — ayrı bir
 /// <c>pending</c> durumu yok.</para>
 ///
-/// <para><b>Satırın iki ayrı çıkış yolu var, ikisi de kasıtlı:</b>
+/// <para><b>Satırın üç ayrı çıkış yolu var, hepsi kasıtlı:</b>
 /// <list type="bullet">
-/// <item><description><b>Yayıncı ayrılır</b> → satır SİLİNMEZ,
+/// <item><description><b>Yayıncı ayrılır</b> → satır hemen silinmez,
 /// <see cref="Status"/> <see cref="NetgsmAccountStatus.Disabled"/> olur.
 /// Geçmiş gönderimlerin hangi kimlikle yapıldığı izlenebilir kalır.</description></item>
+/// <item><description><b>30 gün sonra</b> → Disabled satır 30 gün sonra
+/// <c>IysDepartureRetentionJob</c> tarafından silinir ve
+/// <see cref="NetgsmDeparture"/> takvim kaydı açılır.</description></item>
 /// <item><description><b>Lisans/müşteri KVKK kapsamında silinir</b> → License
 /// yabancı anahtarı <c>Cascade</c> olduğu için bu satır da gider. Kimlik
 /// bilgileri müşteri kaydıyla birlikte imha edilmelidir; doğru davranış
@@ -87,6 +90,11 @@ public sealed class NetgsmAccount
 
     /// <summary>Son başarılı <c>/iys/search</c> doğrulaması.</summary>
     public DateTimeOffset? LastVerifiedAt { get; set; }
+
+    /// <summary>Hesabın Disabled durumuna GEÇTİĞİ an. Saklama işinin saati:
+    /// ayrılıştan 30 gün sonra IysConsent + hesap satırı silinir (§6).
+    /// Yalnız geçişte damgalanır; admin "Aç" geri aldığında temizlenir.</summary>
+    public DateTimeOffset? DisabledAt { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
