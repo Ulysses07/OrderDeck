@@ -1,3 +1,4 @@
+using System.Text;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
@@ -188,24 +189,36 @@ public class IndexModel : PageModel
             .FirstOrDefaultAsync(a => a.Id == AccountId, ct);
         if (acc is null) return NotFound();
 
+        if (acc.LastVerifiedAt is null)
+        {
+            // Sahiplik kanıtı yok: BrandCode yayıncının yazdığı değerdir, İYS onaylamadan
+            // markanın ona ait olduğu bilinmez (kod 60). Başkasının listesi sızmasın.
+            TempData["Error"] = "Bu kurulum İYS'de hiç doğrulanmadı; marka sahipliği kanıtlanmadan liste dışa aktarılamaz.";
+            return RedirectToPage();
+        }
+
         var rows = await _db.IysConsents.AsNoTracking()
             .Where(c => c.BrandCode == acc.BrandCode)
             .OrderBy(c => c.Recipient).ToListAsync(ct);
 
-        // CSV enjeksiyonuna kapalı: alanlar E.164 / enum / ISO-8601 biçimli,
-        // serbest metin sütunu yok.
-        var sb = new System.Text.StringBuilder();
-        sb.AppendLine("Recipient;Status;LastVerifiedStatus;ConsentDate;SourceCode;LastVerifiedAt");
+        // Formül enjeksiyonuna kapalı — güvence sütun kaynaklarından gelir: Recipient
+        // PhoneNormalizer çıktısıdır ('+' + yalnız rakam), Status/PushState/
+        // LastVerifiedStatus enum adı, tarihler ISO-8601 "O", SourceCode operatör
+        // konfigürasyonu (NetgsmOptions). Serbest metin (LastError) BİLİNÇLİ dışarıda.
+        // Dosya makine-okunur: Excel '+90…' değerini sayıya çevirip bozar; hedef
+        // sonraki entegratörün içe aktarımıdır, Excel gidiş-dönüşü değil.
+        var sb = new StringBuilder();
+        sb.Append("Recipient;Status;PushState;LastVerifiedStatus;ConsentDate;SourceCode;LastVerifiedAt\r\n");
         foreach (var c in rows)
-            sb.AppendLine(string.Join(';',
-                c.Recipient, c.Status, c.LastVerifiedStatus?.ToString() ?? "",
+            sb.Append(string.Join(';',
+                c.Recipient, c.Status, c.PushState, c.LastVerifiedStatus?.ToString() ?? "",
                 c.ConsentDate?.ToString("O") ?? "", c.SourceCode ?? "",
-                c.LastVerifiedAt?.ToString("O") ?? ""));
+                c.LastVerifiedAt?.ToString("O") ?? "")).Append("\r\n");
 
         await _audit.LogAsync(AuditEvents.NetgsmAccountExport, AuditTargets.NetgsmAccount,
             AccountId.ToString(), new { acc.LicenseId, acc.BrandCode, rowCount = rows.Count }, ct);
 
-        return File(System.Text.Encoding.UTF8.GetBytes(sb.ToString()), "text/csv",
+        return File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv; charset=utf-8",
             $"iys-consents-{acc.BrandCode}.csv");
     }
 }
