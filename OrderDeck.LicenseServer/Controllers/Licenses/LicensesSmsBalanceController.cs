@@ -3,13 +3,17 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Services.Auth;
-using OrderDeck.LicenseServer.Services.Sms;
 
 namespace OrderDeck.LicenseServer.Controllers.Licenses;
 
 /// <summary>
-/// Yayıncının (WPF) kendi SMS kredi bakiyesini okuması. Yükleme admin tarafında
-/// (<see cref="AdminSmsController"/>); burası salt-okunur.
+/// UYUMLULUK STUB'I — kredi sistemi emekli (Plan 3, §1.4b kararı).
+///
+/// <para>Sahadaki eski WPF istemcileri (Velopack gecikmesi) geçmiş listesini
+/// yüklemeden ÖNCE bu ucu await ediyor (BulkSmsViewModel.ReloadBalanceAndHistoryAsync);
+/// uç 404 dönerse toplu SMS ekranı tamamen ölür. Bu yüzden uç bir sürüm boyunca
+/// sabit değerle yaşar. KALDIRMA KOŞULU: saha WPF sürümleri bakiye çağrısı
+/// yapmayan istemciye (bu planın Görev 8'i) geçtiğinde.</para>
 /// </summary>
 [ApiController]
 [Route("api/v1/licenses/{licenseId:guid}/sms")]
@@ -17,13 +21,7 @@ namespace OrderDeck.LicenseServer.Controllers.Licenses;
 public sealed class LicensesSmsBalanceController : ControllerBase
 {
     private readonly LicenseDbContext _db;
-    private readonly LicenseSmsBalanceService _balance;
-
-    public LicensesSmsBalanceController(LicenseDbContext db, LicenseSmsBalanceService balance)
-    {
-        _db = db;
-        _balance = balance;
-    }
+    public LicensesSmsBalanceController(LicenseDbContext db) => _db = db;
 
     public sealed record BalanceResponse(int CreditsRemaining, DateTimeOffset UpdatedAt);
 
@@ -35,7 +33,8 @@ public sealed class LicensesSmsBalanceController : ControllerBase
             .AnyAsync(l => l.Id == licenseId && l.CustomerId == customerId, ct);
         if (!ownsLicense) return NotFound();
 
-        var info = await _balance.GetAsync(licenseId, ct);
-        return Ok(new BalanceResponse(info.CreditsRemaining, info.UpdatedAt));
+        // Sabit 0: eski istemcide yalnız kozmetik rozet ("Kredi: 0").
+        // Gönderilebilirlik oradan değil Preview.Sufficient'tan geliyor.
+        return Ok(new BalanceResponse(0, DateTimeOffset.UtcNow));
     }
 }
