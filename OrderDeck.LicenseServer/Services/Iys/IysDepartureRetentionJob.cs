@@ -12,8 +12,9 @@ namespace OrderDeck.LicenseServer.Services.Iys;
 /// Faz 1 — 30 günü dolan Disabled hesaplar: marka başka canlı hesapta
 /// yaşamıyorsa IysConsent satırları silinir ve NetgsmDeparture takvim kaydı
 /// açılır; hesap satırı her durumda silinir.
-/// Faz 2 — hesabı hiç kalmamış YETİM markaların onayları: silinir + takvim
-/// kaydı (LicenseId olay izinden best-effort geri kazanılır).
+/// Faz 2 — hesabı hiç kalmamış YETİM markaların onayları: son onay hareketi
+/// üzerinden 30 günlük ödemsiz süre dolunca silinir + takvim kaydı açılır
+/// (LicenseId olay izinden best-effort geri kazanılır).
 /// Faz 3 — ayrılış + 3 yılı dolanlar: DÖNEM ispatı (OccurredAt ≤ DepartedAt
 /// olayları) ve o lisansın dönem kampanyaları imha edilir, PurgedAt damgalanır.
 /// Aydınlatma metni iki kademeyi de söyler; "tamamen sildik" İDDİA EDİLMEZ.
@@ -76,14 +77,18 @@ public sealed class IysDepartureRetentionJob
                     || acc.DisabledAt is null || acc.DisabledAt > threshold)
                     continue; // admin geri açtı ya da saat yeniden başladı — bu koşuda dokunma.
 
-                // I-2: ayrılışla kapanmamış her satır markayı canlı tutar —
-                // sistem kapanışı (§2.4, DisabledAt=null) sahipliği bitirmez;
-                // bedel: zombi sistem-kapalı satır eski ayrılanın onaylarını
-                // fazla saklatır, yanlış silmeye tercih edilir. Faz 2 ile aynı
-                // kural: satır varsa marka sahipli.
+                // I-2 (round 2): ayrılışla kapanmamış her satır markayı canlı
+                // tutar — sistem kapanışı (§2.4, DisabledAt=null) sahipliği
+                // bitirmez. I-2 (round 3): kendi 30 günü dolmamış AYRILMIŞ
+                // kardeş satır da markayı hâlâ canlı tutar — aksi hâlde A'nın
+                // 31. günü B'nin dışa aktarım penceresini 19 gün kısaltırdı.
+                // Bedel: zombi satır eski ayrılanın onaylarını fazla saklatır,
+                // yanlış silmeye tercih edilir. Faz 2 ile aynı kural: satır
+                // varsa (ve kendi penceresi dolmadıysa) marka sahipli.
                 var brandAlive = await _db.NetgsmAccounts.AnyAsync(
                     b => b.Id != acc.Id && b.BrandCode == acc.BrandCode
-                         && (b.Status != NetgsmAccountStatus.Disabled || b.DisabledAt == null), ct);
+                         && (b.Status != NetgsmAccountStatus.Disabled
+                             || b.DisabledAt == null || b.DisabledAt > threshold), ct);
 
                 var consentCount = 0;
                 if (!brandAlive)
@@ -165,6 +170,26 @@ public sealed class IysDepartureRetentionJob
                     _log.LogWarning(
                         "Yetim marka temizliği: boş BrandCode'lu {Count} onay satırı atlandı — "
                         + "#472-#473 arası eski kayıt, elle karar gerekir", blankCount);
+                    continue;
+                }
+
+                // I-1: aydınlatma metnindeki "30 gün" sözü HER silme yolunda
+                // geçerli — yetim marka ayrılış OLMADAN da doğar (broadcaster
+                // BrandCode'u UpsertAsync'te değiştirir, ya da lisans/müşteri
+                // cascade ile silinir). Faz 1'deki aynı ödemsiz süreyi burada
+                // da uyguluyoruz; yoksa ilk prod koşusu (merge'de otomatik
+                // deploy) o ana kadarki HER yetim markayı anında silerdi ve o
+                // satırlar hiç dışa aktarılamazdı. İlk koşu bu yüzden yapısal
+                // olarak no-op: markalı satırların tamamı #473 sonrası,
+                // 30 günden GENÇ.
+                var newest = await _db.IysConsents.AsNoTracking()
+                    .Where(c => c.BrandCode == brand)
+                    .MaxAsync(c => (DateTimeOffset?)c.UpdatedAt, ct);
+                if (newest > now - ConsentRetention)
+                {
+                    _log.LogInformation(
+                        "Yetim marka {Brand}: son onay hareketi {Newest} — 30 günlük "
+                        + "ödemsiz süre dolmadı, bekliyor", brand, newest);
                     continue;
                 }
 

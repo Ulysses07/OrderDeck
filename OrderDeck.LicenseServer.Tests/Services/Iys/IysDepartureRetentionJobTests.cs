@@ -71,9 +71,10 @@ public sealed class IysDepartureRetentionJobTests : IClassFixture<ApiFactory>
         return (licenseId, accountId, brandCode);
     }
 
-    private static void AddConsent(LicenseDbContext db, string brand, string phone)
+    private static void AddConsent(LicenseDbContext db, string brand, string phone,
+        DateTimeOffset? at = null)
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = at ?? DateTimeOffset.UtcNow;
         db.IysConsents.Add(new IysConsent
         {
             Id = Guid.NewGuid(), BrandCode = brand, ChannelType = "MESAJ",
@@ -220,6 +221,39 @@ public sealed class IysDepartureRetentionJobTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Marka_penceresi_dolmamis_ayrilmis_kardeste_onaylar_kalir()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var accounts = scope.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+        var (_, aId, brand) = await SeedDepartedAsync(db, accounts,
+            DateTimeOffset.UtcNow.AddDays(-31));
+        // Aynı markayı taşıyan B: AYRILDI ama kendi 30 günlük penceresi HENÜZ
+        // dolmadı — marka henüz ölmedi, A'nın günü B'nin penceresini kısaltmamalı.
+        var (_, bId, _) = await SeedDepartedAsync(db, accounts,
+            DateTimeOffset.UtcNow.AddDays(-20));
+        var b = await db.NetgsmAccounts.SingleAsync(a => a.Id == bId);
+        b.BrandCode = brand;
+        AddConsent(db, brand, NewPhone());
+        await db.SaveChangesAsync();
+
+        var job = new IysDepartureRetentionJob(db,
+            NullLogger<IysDepartureRetentionJob>.Instance);
+        await job.RunAsync(CancellationToken.None);
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.IysConsents.AnyAsync(c => c.BrandCode == brand))
+            .Should().BeTrue("B'nin kendi penceresi dolmadı — marka henüz ölmedi");
+        (await vdb.NetgsmAccounts.AnyAsync(a => a.Id == aId))
+            .Should().BeFalse("A'nın hesap satırı yine silinir");
+        (await vdb.NetgsmAccounts.AnyAsync(a => a.Id == bId))
+            .Should().BeTrue("B kendi 30 günü dolmadan silinmez");
+        (await vdb.NetgsmDepartures.AnyAsync(d => d.BrandCode == brand))
+            .Should().BeFalse("marka ölmedi — imha takvimi açılmaz");
+    }
+
+    [Fact]
     public async Task Yetim_marka_onaylari_silinir_ve_ayrilis_kaydi_acilir()
     {
         using var scope = _factory.Services.CreateScope();
@@ -227,7 +261,9 @@ public sealed class IysDepartureRetentionJobTests : IClassFixture<ApiFactory>
         var brand = NewBrandCode();
         var licenseId = Guid.NewGuid();
         var phone = NewPhone();
-        AddConsent(db, brand, phone);
+        // I-1: 30 günlük ödemsiz süre yetim markaya da uygulanır — son onay
+        // hareketini eskitmezsek bu satır grace testiyle çakışır.
+        AddConsent(db, brand, phone, DateTimeOffset.UtcNow.AddDays(-31));
         // LicenseId geri kazanımı için olay izi (hesap yok, olay var).
         db.IysConsentEvents.Add(new IysConsentEvent
         {
@@ -266,7 +302,9 @@ public sealed class IysDepartureRetentionJobTests : IClassFixture<ApiFactory>
             DepartedAt = DateTimeOffset.UtcNow.AddDays(-100),
             ConsentsDeletedAt = DateTimeOffset.UtcNow.AddDays(-70),
         });
-        AddConsent(db, brand, NewPhone());
+        // I-1: 30 günlük ödemsiz süre burada da geçerli — eskitmezsek İkinci
+        // yetimleşme testi grace penceresine takılıp yanlış sebeple kırılır.
+        AddConsent(db, brand, NewPhone(), DateTimeOffset.UtcNow.AddDays(-31));
         await db.SaveChangesAsync();
 
         var job = new IysDepartureRetentionJob(db,
@@ -285,6 +323,30 @@ public sealed class IysDepartureRetentionJobTests : IClassFixture<ApiFactory>
         var newest = departures[1];
         newest.DepartedAt.Should().BeCloseTo(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1));
         newest.PurgedAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Yetim_marka_30_gun_dolmadan_silinmez()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var brand = NewBrandCode();
+        // Taze yetim: hesabı hiç yok ama son onay hareketi BUGÜN — broadcaster
+        // BrandCode'u az önce değiştirmiş ya da cascade silme az önce olmuş
+        // olabilir. Aydınlatma metnindeki 30 günlük ödemsiz süre burada da işler.
+        AddConsent(db, brand, NewPhone());
+        await db.SaveChangesAsync();
+
+        var job = new IysDepartureRetentionJob(db,
+            NullLogger<IysDepartureRetentionJob>.Instance);
+        await job.RunAsync(CancellationToken.None);
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.IysConsents.AnyAsync(c => c.BrandCode == brand))
+            .Should().BeTrue("30 günlük ödemsiz süre dolmadan yetim marka silinemez");
+        (await vdb.NetgsmDepartures.AnyAsync(d => d.BrandCode == brand))
+            .Should().BeFalse();
     }
 
     [Fact]

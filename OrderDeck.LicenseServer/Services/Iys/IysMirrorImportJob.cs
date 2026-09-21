@@ -234,6 +234,14 @@ public sealed class IysMirrorImportJob
                     "Ayna: yazım çakışması ({ExceptionType}, SqlError={SqlError}) — "
                     + "idempotent, sonraki koşu tamamlar (marka {Brand})",
                     ex.GetType().Name, sqlError, account.BrandCode);
+
+                // Yalnız tekil indeks yarışı (2601/2627) yutulur — idempotent,
+                // sonraki koşu tamamlar. Başka bir yazım hatası (FK/kesme/
+                // sağlayıcı arızası) DIŞARI ÇIKAR ki [AutomaticRetry] devreye
+                // girsin ve iş sessizce "başarılı" bitmesin. InMemory'de
+                // SqlException yok → sqlError null → bu dal her zaman fırlatır
+                // (testlerde bu yol zaten tetiklenmiyor — bkz. sınıf yorumu).
+                if (sqlError is not (2601 or 2627)) throw;
             }
         }
 
