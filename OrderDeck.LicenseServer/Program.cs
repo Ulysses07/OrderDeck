@@ -181,7 +181,6 @@ public class Program
             builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Sms.ITenantSmsSender,
                 OrderDeck.LicenseServer.Services.Sms.LogTenantSmsSender>();
         }
-        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sms.LicenseSmsBalanceService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sms.SmsCampaignSendJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sms.SmsCampaignRecoveryJob>();
 

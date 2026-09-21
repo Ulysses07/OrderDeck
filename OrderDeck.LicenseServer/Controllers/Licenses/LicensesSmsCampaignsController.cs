@@ -104,7 +104,7 @@ public sealed class LicensesSmsCampaignsController : ControllerBase
             if (existing is not null)
                 return Ok(new CreateResponse(
                     existing.Id, existing.RecipientCount,
-                    // Kredi emekli: ReservedCredits artık yazılmıyor, alan
+                    // Kredi emekli: rezervasyon alanı silindi, yanıt alanı
                     // bilgi amaçlı hesaplanır (alıcı × segment).
                     existing.RecipientCount * existing.SegmentsPerMessage));
         }
@@ -163,8 +163,8 @@ public sealed class LicensesSmsCampaignsController : ControllerBase
 
         // Sözleşme 17: kampanya + alıcı satırları enqueue'dan ÖNCE tek
         // SaveChanges ile yazılır. Eskiden bu yazımın taşıyıcısı kredi
-        // servisinin ApplyAndSaveAsync'iydi; kredi öldü, SaveChanges artık
-        // burada. F09 unique index yakalaması aynı kaldı: iki eş istek ön
+        // servisiydi; kredi öldü, SaveChanges artık burada. F09 unique
+        // index yakalaması aynı kaldı: iki eş istek ön
         // kontrolü aynı anda geçerse kaybeden (LicenseId, ClientRequestId)
         // index'ine çarpar ve kazananın yanıtını döndürür.
         try

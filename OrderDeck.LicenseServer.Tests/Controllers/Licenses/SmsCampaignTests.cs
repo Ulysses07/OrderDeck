@@ -193,7 +193,6 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
             .Should().Be(5);
         var campaign = await db.SmsCampaigns.FirstAsync(c => c.Id == body.CampaignId);
         campaign.Status.Should().Be("pending");
-        campaign.ReservedCredits.Should().Be(0, "kredi emekli — rezervasyon yazılmamalı");
 
         // Hangfire enqueue çağrıldı: testte server koşmadığı için job
         // "enqueued" durumda bekler ve memory storage'dan okunabilir.
@@ -348,8 +347,8 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
 
         retry!.CampaignId.Should().Be(first!.CampaignId,
             "aynı anahtarın tekrarı var olan kampanyayı döndürmeli");
-        // ReservedCredits artık yazılmıyor; tekrar yanıtındaki TotalCredits
-        // alıcı × segment'ten hesaplanmalı (eski istemci alanı bilgi amaçlı okur).
+        // Kredi emekli; tekrar yanıtındaki TotalCredits alıcı × segment'ten
+        // hesaplanmalı (eski istemci alanı bilgi amaçlı okur).
         retry.TotalCredits.Should().Be(retry.RecipientCount * 1,
             "TotalCredits = RecipientCount × SegmentsPerMessage olmalı");
         retry.TotalCredits.Should().Be(first.TotalCredits);
@@ -551,21 +550,12 @@ public class SmsCampaignTests : IClassFixture<ApiFactory>
     public async Task Status_and_list_report_credits_refunded_as_zero()
     {
         // Eski WPF istemcisi CreditsRefunded alanını parse ediyor; kredi
-        // emekli — DB'de geçiş döneminden kalma bir iade değeri olsa bile
-        // JSON'da sabit 0 dönmeli.
+        // emekli — alan DB'den okunmaz, JSON'da sabit 0 dönmeli (§1.4b).
         var (client, licenseId) = await SetupAsync(consenting: 2);
 
         var create = await (await client.PostAsJsonAsync(
             $"/api/v1/licenses/{licenseId}/sms-campaigns", new { messageBody = "Sabit alan" }))
             .Content.ReadFromJsonAsync<CreateResponse>();
-
-        using (var scope = _factory.Services.CreateScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-            var campaign = await db.SmsCampaigns.FirstAsync(c => c.Id == create!.CampaignId);
-            campaign.RefundedCredits = 7;   // eski sistemden kalmış olabilir
-            await db.SaveChangesAsync();
-        }
 
         var status = await client.GetFromJsonAsync<StatusResponse>(
             $"/api/v1/licenses/{licenseId}/sms-campaigns/{create!.CampaignId}");

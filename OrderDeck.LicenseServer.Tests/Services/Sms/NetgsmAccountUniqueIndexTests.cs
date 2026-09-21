@@ -249,7 +249,6 @@ public sealed class NetgsmAccountUniqueIndexTests : IAsyncLifetime
                 ClaimedAt = DateTimeOffset.UnixEpoch,
                 SegmentsPerMessage = 1,
                 RecipientCount = 1,
-                ReservedCredits = 1,
                 CreatedAt = DateTimeOffset.UtcNow,
             });
             await db.SaveChangesAsync();

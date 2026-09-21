@@ -339,7 +339,6 @@ public sealed class PanelNetgsmAccountSaveTests : IDisposable
                 ClaimedAt = DateTimeOffset.UtcNow,
                 SegmentsPerMessage = 1,
                 RecipientCount = 2,
-                ReservedCredits = 2,
                 CreatedAt = DateTimeOffset.UtcNow,
             });
 
@@ -353,14 +352,6 @@ public sealed class PanelNetgsmAccountSaveTests : IDisposable
                     Status = "pending",
                 });
             }
-
-            db.LicenseSmsBalances.Add(new LicenseSmsBalance
-            {
-                Id = Guid.NewGuid(),
-                LicenseId = licenseId,
-                CreditsRemaining = 98,
-                UpdatedAt = DateTimeOffset.UtcNow,
-            });
 
             await db.SaveChangesAsync();
         }
@@ -399,23 +390,12 @@ public sealed class PanelNetgsmAccountSaveTests : IDisposable
 
         persisted.Status.Should().Be("paused");
         persisted.CompletedAt.Should().BeNull();
-        persisted.RefundedCredits.Should().Be(0);
 
-        // Duraklatma KREDİ İADE ETMEZ: kalan alıcılar "pending" kalıyor,
-        // rezervasyon tam da onların karşılığı. Devam ettirildiğinde aynı
-        // krediyle gönderilecekler.
+        // Duraklatma kitleyi HARCAMAZ: kalan alıcılar "pending" kalıyor,
+        // kampanya devam ettirildiğinde kaldığı yerden gönderilecekler.
         (await verifyDb.SmsCampaignRecipients.CountAsync(
             r => r.CampaignId == campaignId && r.Status == "pending"))
             .Should().Be(2);
-
-        (await verifyDb.LicenseSmsBalances
-            .Where(b => b.LicenseId == licenseId)
-            .Select(b => b.CreditsRemaining)
-            .SingleAsync()).Should().Be(98);
-
-        (await verifyDb.LicenseSmsTransactions.CountAsync(
-            t => t.LicenseId == licenseId && t.Kind == "send-refund"))
-            .Should().Be(0);
     }
 
     [Fact]
