@@ -168,10 +168,13 @@ public sealed class ShopperMeController : ControllerBase
         }
         else if (req.SmsConsent is true && !shopper.SmsConsent)
         {
-            // Yalnız yerel bayrak ve ispat tarihi. İYS'ye HİÇBİR ONAY gitmez.
-            shopper.SmsConsent = true;
-            shopper.SmsConsentAt = DateTimeOffset.UtcNow;
-            shopper.SmsConsentSource = "profile";
+            // §5.2b — onay profilden VERİLEMEZ; yalnız toplama noktasında alınır.
+            // true→true no-op koşula takılmaz: idempotent isteği reddetmek istemcileri kırar.
+            return Problem(
+                title: "sms-consent-profile-enable-rejected",
+                detail: "SMS izni profilden açılamaz; izin yalnız kayıt sırasında "
+                      + "veya yayıncının kayıt formundan verilebilir.",
+                statusCode: 400);
         }
 
         shopper.UpdatedAt = DateTimeOffset.UtcNow;

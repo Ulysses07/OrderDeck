@@ -190,33 +190,65 @@ public sealed class ShopperMeConsentRevokeTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task Profilden_onay_ISYS_e_yazilmaz()
+    public async Task Profilden_onay_verilemez_400()
     {
-        var (_, codeA) = await SeedBroadcasterAsync(BrandA);
-
+        var (licenseId, code) = await SeedBroadcasterAsync(BrandA);
         var client = _factory.CreateClient();
         var phone = UniquePhone();
 
+        // Onay İŞARETSİZ kayıt.
         var reg = await client.PostAsJsonAsync("/api/v1/shopper/auth/register",
-            new RegisterRequest(codeA, "Revoke User", phone, NewPassword(),
-                "Ankara", "youtube", "revokeuser", SmsConsent: false));
+            new RegisterRequest(code, "Test Alici", phone, NewPassword(),
+                "Adres 1", "youtube", "revokeuser", SmsConsent: false));
+        reg.EnsureSuccessStatusCode();
         var auth = (await reg.Content.ReadFromJsonAsync<AuthResponse>())!;
+
         client.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Bearer", auth.AccessToken);
-
-        var resp = await client.PatchAsJsonAsync("/api/v1/shopper/me",
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", auth.AccessToken);
+        var patch = await client.PatchAsJsonAsync("/api/v1/shopper/me",
             new PatchMeRequest(SmsConsent: true));
-        resp.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        using var check = _factory.Services.CreateScope();
-        var checkDb = check.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        // §5.2b — onay toplama noktasında alınır; profilden açma REDDEDİLİR.
+        patch.StatusCode.Should().Be(HttpStatusCode.BadRequest);
 
-        (await checkDb.IysConsents.AnyAsync(c => c.Recipient == phone))
-            .Should().BeFalse("profildeki tek kutu 'hangi yayıncıya izin veriyorum' " +
-                              "sorusunu cevaplayamaz; onay yalnız toplama noktasında alınır");
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.IysConsents.AsNoTracking().AnyAsync(c => c.Recipient == phone))
+            .Should().BeFalse("reddedilen istek İYS'ye iz bırakmamalı");
+        var shopper = await db.Shoppers.AsNoTracking().SingleAsync(s => s.Id == auth.ShopperId);
+        shopper.SmsConsent.Should().BeFalse();
+        shopper.SmsConsentSource.Should().BeNull();
+    }
 
-        var shopper = (await checkDb.Shoppers.FindAsync(auth.ShopperId))!;
-        shopper.SmsConsent.Should().BeTrue("yerel bayrak yine de açılır");
-        shopper.SmsConsentSource.Should().Be("profile");
+    [Fact]
+    public async Task Onay_zaten_acikken_true_gondermek_no_op()
+    {
+        var (licenseId, code) = await SeedBroadcasterAsync(BrandA);
+        var client = _factory.CreateClient();
+        var phone = UniquePhone();
+
+        // Onay İŞARETLİ kayıt — meşru toplama noktası.
+        var reg = await client.PostAsJsonAsync("/api/v1/shopper/auth/register",
+            new RegisterRequest(code, "Test Alici", phone, NewPassword(),
+                "Adres 1", "youtube", "revokeuser", SmsConsent: true));
+        reg.EnsureSuccessStatusCode();
+        var auth = (await reg.Content.ReadFromJsonAsync<AuthResponse>())!;
+
+        client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", auth.AccessToken);
+        var patch = await client.PatchAsJsonAsync("/api/v1/shopper/me",
+            new PatchMeRequest(SmsConsent: true));
+
+        // true→true idempotent — istemciyi kırmamak için 200.
+        patch.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var rows = await db.IysConsents.AsNoTracking()
+            .Where(c => c.BrandCode == BrandA && c.Recipient == phone).ToListAsync();
+        rows.Should().HaveCount(1, "no-op yeni İYS kaydı üretmemeli");
+        rows[0].Status.Should().Be(IysConsentStatus.Onay);
+        var shopper = await db.Shoppers.AsNoTracking().SingleAsync(s => s.Id == auth.ShopperId);
+        shopper.SmsConsentSource.Should().Be("register", "profil kaynağa dokunmamalı");
     }
 }
