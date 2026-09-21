@@ -954,12 +954,14 @@ public class Program
                 "20 4 * * *");  // 04:20 UTC daily
 
             // §6 — ayrılış saklama takvimi: 30. günde onay satırları + hesap,
-            // 3. yılda (m.13) dönem ispatı ve kampanya kayıtları. 04:45 UTC —
-            // yayın penceresi (TR 20:00-01:00) dışında.
+            // 3. yılda (m.13) dönem ispatı ve kampanya kayıtları. 04:47 UTC —
+            // yayın penceresi (TR 20:00-01:00) dışında ve 5 dakikalık ızgaranın
+            // DIŞINDA: push/verify/recovery işleri (*/5, */15) IysConsents'i
+            // aynı saniyede süpürmesin (yetim marka silme ↔ süpürme yarışı).
             manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Iys.IysDepartureRetentionJob>(
                 "iys-departure-retention",
                 j => j.RunAsync(CancellationToken.None),
-                "45 4 * * *");
+                "47 4 * * *");  // 04:47 UTC daily
         }
 
         // Ters vekil farkındalığı — pipeline'ın EN BAŞI, çünkü aşağıdaki her

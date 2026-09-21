@@ -42,7 +42,7 @@
 | `OrderDeck.LicenseServer/Services/Iys/IysDepartureRetentionJob.cs` | Görev 6 — YENİ saklama işi (3 faz) |
 | `OrderDeck.LicenseServer/Domain/IysConsentEvent.cs` | Görev 6 — doc düzeltmesi (m.13 istisnası) |
 | `OrderDeck.LicenseServer.Tests/Services/Iys/IysDepartureRetentionJobTests.cs` | Görev 6 — YENİ, 6 test |
-| `OrderDeck.LicenseServer/Program.cs` | Görev 7 — DI + recurring 04:45 UTC |
+| `OrderDeck.LicenseServer/Program.cs` | Görev 7 — DI + recurring 04:47 UTC |
 | `OrderDeck.LicenseServer/Services/Iys/IysMirrorImportJob.cs` | Görev 8 — YENİ ayna işi |
 | `OrderDeck.LicenseServer.Tests/Services/Iys/IysMirrorImportJobTests.cs` | Görev 8 — YENİ, 4 test |
 | `OrderDeck.LicenseServer/Controllers/Panel/PanelNetgsmAccountController.cs` | Görev 9 — `POST iys-mirror` |
@@ -1282,7 +1282,7 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ---
 
-### Görev 7: DI + Hangfire zamanlaması (04:45 UTC)
+### Görev 7: DI + Hangfire zamanlaması (04:47 UTC)
 
 **Dosyalar:**
 - Değiştir: `OrderDeck.LicenseServer/Program.cs` (DI ~209; recurring blok ~950-954)
@@ -1326,15 +1326,17 @@ Recurring — backup-orphan-cleanup bloğundan ("20 4 * * *", satır ~950-953) s
 
 ```csharp
 // §6 — ayrılış saklama takvimi: 30. günde onay satırları + hesap,
-// 3. yılda (m.13) dönem ispatı ve kampanya kayıtları. 04:45 UTC —
-// yayın penceresi (TR 20:00-01:00) dışında.
+// 3. yılda (m.13) dönem ispatı ve kampanya kayıtları. 04:47 UTC —
+// yayın penceresi (TR 20:00-01:00) dışında ve 5 dakikalık ızgaranın
+// DIŞINDA: push/verify/recovery işleri (*/5, */15) IysConsents'i
+// aynı saniyede süpürmesin (yetim marka silme ↔ süpürme yarışı).
 manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Iys.IysDepartureRetentionJob>(
     "iys-departure-retention",
     j => j.RunAsync(CancellationToken.None),
-    "45 4 * * *");
+    "47 4 * * *");  // 04:47 UTC daily
 ```
 
-(Dolu slotlar: 04:00, */5×3, */15, 04:15, 04:20, 04:30 MON, 04:35 — 04:45 boş.)
+(Dolu slotlar: 04:00, 04:15, 04:20, 04:30 MON, 04:35; */5×3 ve */15 işleri her 5 dakikalık ızgara noktasında — 04:45 de ızgarada, bu yüzden ızgara DIŞI 04:47 seçildi. Kod incelemesi 2026-09-21.)
 
 - [ ] **Adım 4: Koştur — YEŞİL**
 
@@ -1344,7 +1346,7 @@ manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Iys.IysDepartureRetentionJo
 
 ```bash
 git add OrderDeck.LicenseServer/Program.cs OrderDeck.LicenseServer.Tests/Services/Iys/IysDepartureRetentionJobTests.cs
-git commit -m "feat(iys): saklama işi DI kaydı + günlük 04:45 UTC zamanlaması
+git commit -m "feat(iys): saklama işi DI kaydı + günlük 04:47 UTC zamanlaması
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 ```
