@@ -236,18 +236,20 @@ public sealed class PanelNetgsmAccountController : ControllerBase
                 // paused'da bırakırdı ve hiçbir süpürme onları bulmazdı.
                 await _accounts.StageResumePausedCampaignsAsync(account.LicenseId, ct);
 
-                // Kurulum kapalıyken gelen RET'ler yalnız olay tablosuna
-                // düşmüştü (`ErrorCode="no-brand"`): markası çözülemediği için
-                // durum satırına hiç uygulanmadılar ve satır `Onay` kaldı. Marka
-                // ARTIK doğrulandı — o reddi şimdi uygulamazsak gönderim kapısı
+                // Kurulum kapalıyken gelen ONAY/RET olayları yalnız olay
+                // tablosuna düşmüştü (`ErrorCode="no-brand"`): markası
+                // çözülemediği için durum satırına hiç uygulanmadılar. Marka
+                // ARTIK doğrulandı — reddi şimdi uygulamazsak gönderim kapısı
                 // bayat `Onay`'ı kabul eder ve onayını geri çekmiş kişiye ticari
-                // SMS gider (6563 ihlali). Aynı SaveChanges'te olması şart:
-                // ayrılsalardı aradaki çökme hesabı açık, reddi düşmüş bırakırdı.
+                // SMS gider (6563 ihlali); penceresi (3 iş günü) hâlâ açık
+                // onayları uygulamazsak kurulum bitmeden toplanan izinler
+                // kaybolur. Aynı SaveChanges'te olması şart: ayrılsalardı
+                // aradaki çökme hesabı açık, olayları düşmüş bırakırdı.
                 //
                 // Yalnız burada çağrılıyor çünkü `Failed → Verified` geçişinin
                 // TEK yolu bu PUT: günlük iş yalnız `Verified` hesapları tarar,
                 // admin "Aç" düğmesi `Failed` yazar (Görev 12).
-                await _consents.StageReplayNoBrandRevokesAsync(
+                await _consents.StageReplayNoBrandEventsAsync(
                     account.LicenseId, account.BrandCode, ct);
             }
             else

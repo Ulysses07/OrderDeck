@@ -22,11 +22,14 @@ namespace OrderDeck.LicenseServer.Tests.Services.Iys;
 /// doğrulandığı an gönderim kapısı o bayat <c>Onay</c>'ı kabul ediyor:
 /// onayını geri çekmiş kişiye ticari SMS. 6563 ihlali.</para>
 ///
-/// <para><b>Yalnız RET oynatılır.</b> Onay zamana bağlı — İYS dışında alınan
-/// onay üç iş günü içinde kaydedilmezse hukuken geçersiz; haftalarca beklemiş
-/// bir onayı canlandırmak geçersiz bir onayı kayda geçirmek olur. Düşen onayın
-/// bedeli "o kişiye pazarlama yapılamaz", düşen reddin bedeli yasa dışı
-/// gönderim. Asimetri bilinçli.</para>
+/// <para><b>RET her zaman, ONAY yalnız penceresi açıkken oynatılır.</b> Onay
+/// zamana bağlı — İYS dışında alınan onay üç iş günü içinde kaydedilmezse
+/// hukuken geçersiz; haftalarca beklemiş bir onayı canlandırmak geçersiz bir
+/// onayı kayda geçirmek olur. Penceresi henüz kapanmamış onay ise orijinal
+/// tarihiyle kuyruğa girer: kurulumunu bitirmeden önce izleyici toplayan
+/// yayıncı o onayları kaybetmez (2026-09-21: 4 onay elle İYS'ye yüklenmek
+/// zorunda kalmıştı). Düşen (süresi dolmuş) onayın bedeli "o kişiye pazarlama
+/// yapılamaz", düşen reddin bedeli yasa dışı gönderim. Asimetri bilinçli.</para>
 /// </summary>
 public sealed class IysNoBrandReplayTests : IDisposable
 {
@@ -202,12 +205,12 @@ public sealed class IysNoBrandReplayTests : IDisposable
     }
 
     [Fact]
-    public async Task Dogrulama_no_brand_onaylarini_uygulamaz()
+    public async Task Dogrulama_penceresi_kapanmis_no_brand_onayini_uygulamaz()
     {
         // Onay zamana bağlı: İYS dışında alınan onay üç iş günü içinde
         // kaydedilmezse hukuken geçersiz (6563 Yönetmelik m.7). Haftalarca
         // `no-brand` bekleyen bir onayı canlandırıp İYS'ye push etmek geçersiz
-        // bir onayı kayda geçirmek olurdu.
+        // bir onayı kayda geçirmek olurdu. 10 gün her takvimde pencereyi aşar.
         var factory = NewFactory();
         var (client, licenseId) = await SeedTenantAsync(factory);
         var brandCode = NewBrandCode();
@@ -236,6 +239,136 @@ public sealed class IysNoBrandReplayTests : IDisposable
         (await RowAsync(factory, brandCode, consentPhone)).Should().BeNull(
             "geçersizleşmiş bir onayı canlandırmak İYS'ye yanlış beyan olurdu; "
             + "düşen onayın bedeli pazarlama erişimi, düşen reddin bedeli yasa dışı gönderim");
+    }
+
+    [Fact]
+    public async Task Dogrulama_penceresi_acik_no_brand_onayini_orijinal_tarihiyle_uygular()
+    {
+        // Kurulumunu bitirmeden izleyici toplayan yayıncı: form onayları
+        // `no-brand` düşmüştü. Marka doğrulandığında penceresi hâlâ açık
+        // olanlar ORİJİNAL tarihiyle kuyruğa girmeli — İYS beyan tarihini
+        // onay anına göre değerlendirir, oynatma anına göre değil.
+        var factory = NewFactory();
+        var (client, licenseId) = await SeedTenantAsync(factory);
+        var brandCode = NewBrandCode();
+        var phone = NewPhone();
+        var at = DateTimeOffset.UtcNow.AddHours(-1);
+
+        using (var seed = factory.Services.CreateScope())
+        {
+            var db = seed.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.IysConsentEvents.Add(NoBrandEvent(
+                licenseId, phone, IysConsentEventType.LocalConsent, at));
+            await db.SaveChangesAsync();
+        }
+
+        (await client.PutAsJsonAsync("/api/panel/netgsm/account",
+            Body(NewUserCode(), brandCode))).EnsureSuccessStatusCode();
+
+        var row = await RowAsync(factory, brandCode, phone);
+        row.Should().NotBeNull("penceresi açık onay kaybolmamalı");
+        row!.Status.Should().Be(IysConsentStatus.Onay);
+        row.PushState.Should().Be(IysPushState.Pending, "push işi bunu İYS'ye taşımalı");
+        row.ConsentDate.Should().Be(at, "beyan tarihi onayın alındığı an — oynatma anı değil");
+        row.LastLocalEventAt.Should().Be(at);
+        row.PushDeadline.Should().Be(
+            IysBusinessDays.Add(at, IysConsentCollector.PushDeadlineBusinessDays),
+            "son tarih de orijinal onay anından sayılır");
+        row.LastVerifiedStatus.Should().BeNull(
+            "kapı İYS doğrulaması gelene kadar kapalı kalır — oynatma bunu açamaz");
+    }
+
+    [Fact]
+    public async Task Pencere_ici_onaydan_sonra_gelen_no_brand_ret_kazanir()
+    {
+        // Aynı numarada iki olay: önce onay, sonra ret. Numara başına en yeni
+        // olay uygulanır; kişi onayını geri çekmişse satır Ret olmalı.
+        var factory = NewFactory();
+        var (client, licenseId) = await SeedTenantAsync(factory);
+        var brandCode = NewBrandCode();
+        var phone = NewPhone();
+        var consentedAt = DateTimeOffset.UtcNow.AddHours(-2);
+        var revokedAt = consentedAt.AddHours(1);
+
+        using (var seed = factory.Services.CreateScope())
+        {
+            var db = seed.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.IysConsentEvents.Add(NoBrandEvent(
+                licenseId, phone, IysConsentEventType.LocalConsent, consentedAt));
+            db.IysConsentEvents.Add(NoBrandEvent(
+                licenseId, phone, IysConsentEventType.LocalRevoke, revokedAt));
+            await db.SaveChangesAsync();
+        }
+
+        (await client.PutAsJsonAsync("/api/panel/netgsm/account",
+            Body(NewUserCode(), brandCode))).EnsureSuccessStatusCode();
+
+        var row = await RowAsync(factory, brandCode, phone);
+        row!.Status.Should().Be(IysConsentStatus.Ret, "son söz kişinin — geri çekti");
+        row.LastLocalEventAt.Should().Be(revokedAt);
+    }
+
+    [Fact]
+    public async Task Retten_sonra_gelen_pencere_ici_no_brand_onay_kazanir()
+    {
+        // Ters sıra: önce ret, sonra (penceresi açık) onay → kişi fikrini
+        // değiştirdi, satır Onay ve İYS'ye beyan edilmeli.
+        var factory = NewFactory();
+        var (client, licenseId) = await SeedTenantAsync(factory);
+        var brandCode = NewBrandCode();
+        var phone = NewPhone();
+        var revokedAt = DateTimeOffset.UtcNow.AddHours(-2);
+        var consentedAt = revokedAt.AddHours(1);
+
+        using (var seed = factory.Services.CreateScope())
+        {
+            var db = seed.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.IysConsentEvents.Add(NoBrandEvent(
+                licenseId, phone, IysConsentEventType.LocalRevoke, revokedAt));
+            db.IysConsentEvents.Add(NoBrandEvent(
+                licenseId, phone, IysConsentEventType.LocalConsent, consentedAt));
+            await db.SaveChangesAsync();
+        }
+
+        (await client.PutAsJsonAsync("/api/panel/netgsm/account",
+            Body(NewUserCode(), brandCode))).EnsureSuccessStatusCode();
+
+        var row = await RowAsync(factory, brandCode, phone);
+        row!.Status.Should().Be(IysConsentStatus.Onay);
+        row.PushState.Should().Be(IysPushState.Pending);
+        row.ConsentDate.Should().Be(consentedAt);
+    }
+
+    [Fact]
+    public async Task Suresi_dolmus_onaydan_eski_ret_yine_uygulanir()
+    {
+        // Numaranın en yeni olayı SÜRESİ DOLMUŞ bir onay: beyan edilemez.
+        // Ondan eski RET ise yaşar — fail-closed: geçerli onay yoksa satır Ret.
+        // (Mevcut davranışla aynı: eski kod da yalnız RET'lere bakıyordu.)
+        var factory = NewFactory();
+        var (client, licenseId) = await SeedTenantAsync(factory);
+        var brandCode = NewBrandCode();
+        var phone = NewPhone();
+        var revokedAt = DateTimeOffset.UtcNow.AddDays(-12);
+        var consentedAt = revokedAt.AddDays(1); // 11 gün önce — pencere kapalı
+
+        using (var seed = factory.Services.CreateScope())
+        {
+            var db = seed.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.IysConsentEvents.Add(NoBrandEvent(
+                licenseId, phone, IysConsentEventType.LocalRevoke, revokedAt));
+            db.IysConsentEvents.Add(NoBrandEvent(
+                licenseId, phone, IysConsentEventType.LocalConsent, consentedAt));
+            await db.SaveChangesAsync();
+        }
+
+        (await client.PutAsJsonAsync("/api/panel/netgsm/account",
+            Body(NewUserCode(), brandCode))).EnsureSuccessStatusCode();
+
+        var row = await RowAsync(factory, brandCode, phone);
+        row!.Status.Should().Be(IysConsentStatus.Ret,
+            "süresi dolmuş onay canlandırılamaz; geriye kalan en yeni geçerli olay RET");
+        row.LastLocalEventAt.Should().Be(revokedAt);
     }
 
     [Fact]
@@ -381,7 +514,7 @@ public sealed class IysNoBrandReplayTests : IDisposable
             var db = replay.ServiceProvider.GetRequiredService<LicenseDbContext>();
             var collector = replay.ServiceProvider.GetRequiredService<IysConsentCollector>();
 
-            (await collector.StageReplayNoBrandRevokesAsync(licenseId, brandCode))
+            (await collector.StageReplayNoBrandEventsAsync(licenseId, brandCode))
                 .Should().Be(2,
                     "6 olay iki numaraya ait; iş listesi olay sayısıyla değil "
                     + "numara sayısıyla büyümeli");
