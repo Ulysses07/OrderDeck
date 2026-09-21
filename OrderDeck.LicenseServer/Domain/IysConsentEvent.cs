@@ -13,7 +13,9 @@ public enum IysConsentEventType
 }
 
 /// <summary>
-/// İzin geçmişi — <b>ekle-only</b>. Hiç silinmez, hiç güncellenmez.
+/// İzin geçmişi — <b>ekle-only</b>. Hiç güncellenmez; tek silinme yolu m.13
+/// imhasıdır — IysDepartureRetentionJob ayrılan markanın DÖNEM olaylarını
+/// (OccurredAt ≤ ayrılış) 3 yıl dolunca imha eder.
 ///
 /// <para>İspat burada yaşamak zorunda: <c>/iys/search</c> bize
 /// <c>consentDate</c> ve <c>source</c> alanlarını BOŞ döndürüyor
