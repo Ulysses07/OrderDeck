@@ -48,7 +48,9 @@ public sealed class IysConsentCollector
     /// takvim penceresi. Kesin karar bellekte, <see cref="IysBusinessDays"/>
     /// ile (iş günü hesabı SQL'e çevrilemez). 3 iş günü + hafta sonu en fazla
     /// 5 takvim günü eder; 14 gün rahat pay bırakır ve ekle-only olay
-    /// tablosunun tamamını taramaz.
+    /// tablosunun tamamını taramaz. Resmî tatiller <see cref="IysBusinessDays"/>'e
+    /// eklenirse bu sayı yeniden türetilmeli (9 günlük bayram köprüsü 3 iş
+    /// gününü ~12 takvim gününe taşır).
     /// </summary>
     public const int ConsentReplayLookbackDays = 14;
 
@@ -153,8 +155,8 @@ public sealed class IysConsentCollector
     }
 
     /// <summary>
-    /// Marka çözülemediği için düşmüş RET'leri, marka artık doğrulanmışken
-    /// uygular. <b>KAYDETMEZ</b> — çağıran, hesabın <c>Verified</c> yazımıyla
+    /// Marka çözülemediği için düşmüş ONAY/RET olaylarını, marka artık
+    /// doğrulanmışken uygular. <b>KAYDETMEZ</b> — çağıran, hesabın <c>Verified</c> yazımıyla
     /// AYNI <c>SaveChanges</c>'te indirir (kalıp:
     /// <see cref="Sms.NetgsmAccountService.StageResumePausedCampaignsAsync"/>).
     /// Ayrılsalardı aradaki çökme RET'leri bir daha kimsenin bulamayacağı
@@ -217,9 +219,9 @@ public sealed class IysConsentCollector
             .ToList();
         var expiredConsents = dropped.Count - candidates.Count;
 
-        // Numara başına YALNIZ en yeni olay uygulanır. Eskileri de uygulamak
-        // sonucu DEĞİŞTİRMEZ (hepsi RET; satır her hâlükârda Ret'te ve en yeni
-        // damgada kapanıyor) ama iş sınırsız büyür: profil kaydı onay kutusunun
+        // Numara başına YALNIZ en yeni ADAY olay uygulanır. Eskileri de uygulamak
+        // sonucu DEĞİŞTİRMEZ (mutlak atama: en yeni aday olay son durumu tek
+        // başına belirler) ama iş sınırsız büyür: profil kaydı onay kutusunun
         // mevcut değerini HER kaydetmede yeniden yazıyor (ShopperMeController —
         // bilinçli, bkz. oradaki gerekçe), yani tek bir müşteri tek başına bu
         // tabloya yüzlerce satır bırakabilir.
@@ -249,7 +251,12 @@ public sealed class IysConsentCollector
         // İkisinden biri bozulursa de-duplikasyon ÖNCE kalkmalıdır.
         var replay = candidates
             .GroupBy(e => e.Recipient)
-            .Select(g => g.MaxBy(e => e.OccurredAt)!)
+            // Aynı ana düşen ONAY ve RET: fail-closed, RET kazanır — MaxBy'ın
+            // DB sırasına bağlı belirsizliği burada bilerek kapatıldı.
+            .Select(g => g
+                .OrderByDescending(e => e.OccurredAt)
+                .ThenByDescending(e => e.EventType == IysConsentEventType.LocalRevoke)
+                .First())
             // Deterministik sıra: aynı numaraya ait olaylar zaten tekil, ama
             // farklı numaraların satır açma sırası `Local` taramasında ve
             // günlükte öngörülebilir kalsın.
@@ -274,9 +281,9 @@ public sealed class IysConsentCollector
                 // doldurmak, geçmişe bakan bir günlük sorgusunda iki farklı
                 // büyüklüğü tek seriye karıştırırdı — kimse fark etmeden.
                 "İYS: lisans {LicenseId} doğrulandı, no-brand oynatma: {Recipients} numara "
-                + "({Consents} ONAY, {Revokes} RET), {ExpiredConsents} onay olayı penceresi kapalı — atlandı",
+                + "({Consents} ONAY, {Revokes} RET), son {LookbackDays} gündeki {ExpiredConsents} onay olayının penceresi kapalı — atlandı",
                 licenseId, replay.Count, replayedConsents, replay.Count - replayedConsents,
-                expiredConsents);
+                ConsentReplayLookbackDays, expiredConsents);
         }
 
         return replay.Count;
