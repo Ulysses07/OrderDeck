@@ -1363,6 +1363,8 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 Geri dönen (veya markası devralınan) yayıncı için: WPF müşteri projeksiyonundaki telefonları `/iys/search` ile sorgula, İYS'de kaydı OLANLARI yerel tabloya AYNA satırı olarak yaz. Ayna satırı: `SourceCode="IYS_MIRROR"`, `PushState=Confirmed` (TERMİNAL — push işi Pending'i, verify işi Pushed'ı tarar; Pending yazılsaydı yeniden beyan edilip consentDate kayardı), `ConsentDate=null` (`/iys/search` consentDate DÖNMÜYOR — 2026-09-17 ölçümü). `Unknown` = İYS'de kayıt yok → satır YAZILMAZ.
 
+> **Kod incelemesi düzeltmesi (2026-09-21):** `NetgsmIysClient` İYS'nin "kayıt yok" ile RET'i AYIRT EDEMEDİĞİNİ belgeler (2026-09-17 ölçümü: kayıtsız numara da `"RET"` döner; `Unknown` yalnız cevapta hiç geçmeyen numara için üretilir). Aşağıdaki kod bloklarındaki "Onay ve Ret yazılır" varsayımı bu yüzden YANLIŞ: RET aynalansaydı "kayıt yok" bizim "reddetti" beyanımız olarak yazılır, `ConfirmedCount` şişer ve m.13 ispatı 3 yıl telefon tutardı. Uygulanan karar: **yalnız ONAY aynalanır**; RET ve Unknown atlanır (satırsız numarada kapı zaten kapalı, kayıp yok). Ayrıca: kapanış iptali yeniden fırlatılır, geçici ağ hatası ve sıfır-dışı kod yeniden fırlatılır (`AutomaticRetry(Attempts=3)` — tek seferlik iş), DbUpdateException logu istisnasız (telefon sızmasın), `DelayAsync` enjekte edilebilir (parti testleri), `LastLocalEventAt` ayna satırında yerel olay sayılmaz.
+
 - [ ] **Adım 1: Testleri yaz (kırmızı — derlenmez)**
 
 `IysMirrorImportJobTests.cs` (yeni dosya):
