@@ -22,6 +22,18 @@
 - Shopper mobil UI'daki onay kutusu ayrı repo (OrderDeck-Shopper) — kapsam dışı, takip işi.
 - `Register`'da atomiklik açığı YOK: `RecordAsync` save etmez, tek `SaveChangesAsync(ct)` (satır ~251) her şeyi birlikte yazar. Bu düzen korunacak.
 
+## Uygulama notu — KOD yetkili kaynaktır (2026-09-21, dal `feat/iys-onay-toplama-ayrilis`)
+
+Aşağıdaki görev metinleri ve kod örnekleri plan anındaki hâldir. Görev başına spec + kod-kalite incelemeleri şu düzeltmeleri ekledi; kodla çeliştiğinde **kod** geçerlidir:
+
+- **Görev 4:** `CloseAccountAndPauseCampaignsAsync(..., departure: bool = false)` — `DisabledAt` yalnız AYRILIŞ kapatmasında (admin "Kapat", `departure: true`) ve yalnız `DisabledAt` hâlâ `null` iken damgalanır; anahtar halkası kaybı (§2.4) kapatması ayrılış değildir, saati başlatmaz; `departure` + Disabled-dışı durum `ArgumentException`.
+- **Görev 5:** dışa aktarım `LastVerifiedAt != null` (marka sahipliği kanıtı) kapısına bağlı — Failed/hiç doğrulanmamış hesapta reddedilir, Disabled+kanıtlı hesapta çalışır; sütunlar `Recipient;Status;PushState;LastVerifiedStatus;ConsentDate;SourceCode;LastVerifiedAt`, CRLF, `text/csv; charset=utf-8`; buton yalnız `LastVerifiedAt` doluyken.
+- **Görev 6:** `brandAlive` = ayrılışla kapanmamış (`Status != Disabled || DisabledAt == null`) ya da kendi 30 günü dolmamış her satır; taze okuma eşiği yeniden kontrol eder; Faz 2 her yetim tespitinde YENİ dönem satırı açar (`hasSchedule` koruması kaldırıldı), boş `BrandCode` satırlarını atlar (uyarı loglar) ve yetim markaya da 30 gün ödemsiz süre uygular; başarı logları; `DbUpdateConcurrencyException` ayrı yakalanır (Information); `AutomaticRetry(Attempts=0)`.
+- **Görev 7:** slot 04:47 UTC (5 dakikalık ızgara dışı).
+- **Görev 8:** yalnız ONAY aynalanır (İYS "kayıt yok"u RET olarak döndürür); `[DisableConcurrentExecution("iys-mirror:{0}", 1800)]` lisans başına kilit (plandaki "kilit YOK" notu geçersiz); `[AutomaticRetry(Attempts=3)]`; kapanış iptali, geçici ağ hatası ve sıfır-dışı kod yeniden fırlatılır; DbUpdateException yalnız 2601/2627 (tekil indeks yarışı) için yutulur; `DelayAsync` enjekte edilebilir; `LastLocalEventAt = default`; toplayıcı, ayna satırına yerel beyan gelince `SourceCode`'u yerelleştirir.
+- **Görev 9:** 409 başlığı `netgsm-account-not-verified`; testler kuyruğa atmayı Hangfire monitoring API ile doğrular; 400 (lisans yok) ve 403 başlık testi eklendi.
+- **Görev 2 yan etkisi:** §5.2b eski davranışı sabitleyen üç test sınıfı (`IysConsentWiringTests`, `ShopperMePatchTests`, `ShopperMeConsentRevokeTests`) yeni sözleşmeye göre yeniden yazıldı.
+
 ## Dosya haritası
 
 | Dosya | İş |
