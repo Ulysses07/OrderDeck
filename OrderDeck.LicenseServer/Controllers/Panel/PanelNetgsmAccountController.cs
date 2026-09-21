@@ -1,3 +1,4 @@
+using Hangfire;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -28,15 +29,17 @@ public sealed class PanelNetgsmAccountController : ControllerBase
     private readonly NetgsmAccountService _accounts;
     private readonly NetgsmAccountVerifier _verifier;
     private readonly Services.Iys.IysConsentCollector _consents;
+    private readonly IBackgroundJobClient _jobs;
 
     public PanelNetgsmAccountController(
         LicenseDbContext db, NetgsmAccountService accounts, NetgsmAccountVerifier verifier,
-        Services.Iys.IysConsentCollector consents)
+        Services.Iys.IysConsentCollector consents, IBackgroundJobClient jobs)
     {
         _db = db;
         _accounts = accounts;
         _verifier = verifier;
         _consents = consents;
+        _jobs = jobs;
     }
 
     /// <param name="Status">none | failed | verified | disabled.</param>
@@ -71,6 +74,27 @@ public sealed class PanelNetgsmAccountController : ControllerBase
             .FirstOrDefaultAsync(a => a.LicenseId == licenseId, ct);
 
         return Ok(ToView(acc));
+    }
+
+    /// <summary>§6 dönüş yolu — İYS ayna içe aktarımını kuyruğa atar.
+    /// Yalnız owner; doğrulanmış Netgsm hesabı şart.</summary>
+    [HttpPost("iys-mirror")]
+    public async Task<IActionResult> StartIysMirrorAsync(CancellationToken ct)
+    {
+        if (OwnerOnly() is { } forbidden) return forbidden;
+
+        var licenseId = await PanelLicenseScope.ResolveAsync(_db, User.GetTenantCustomerId(), ct);
+        if (licenseId is null) return Problem(title: "no-active-license", statusCode: 400);
+
+        var acc = await _accounts.GetVerifiedByLicenseAsync(licenseId.Value, ct);
+        if (acc is null)
+            return Problem(title: "netgsm-not-verified",
+                detail: "Ayna için önce Netgsm kurulumunun doğrulanması gerekir.",
+                statusCode: 409);
+
+        _jobs.Enqueue<Services.Iys.IysMirrorImportJob>(
+            j => j.RunAsync(licenseId.Value, CancellationToken.None));
+        return Accepted();
     }
 
     /// <summary>

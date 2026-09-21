@@ -259,4 +259,41 @@ public sealed class PanelNetgsmAccountControllerTests : IDisposable
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
+
+    [Fact]
+    public async Task Ayna_baslatma_dogrulanmis_hesapta_202()
+    {
+        var factory = NewFactory();
+        var seed = await SeedTenantAsync(factory);
+        await SeedAccountAsync(factory, seed.LicenseId, NetgsmAccountStatus.Verified);
+
+        var resp = await seed.Client.PostAsync("/api/panel/netgsm/account/iys-mirror", null);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Accepted);
+    }
+
+    [Fact]
+    public async Task Ayna_dogrulanmamis_hesapta_409()
+    {
+        var factory = NewFactory();
+        var seed = await SeedTenantAsync(factory);
+        await SeedAccountAsync(factory, seed.LicenseId, NetgsmAccountStatus.Failed);
+
+        var resp = await seed.Client.PostAsync("/api/panel/netgsm/account/iys-mirror", null);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+    }
+
+    [Fact]
+    public async Task Ayna_staff_operatore_kapali_403()
+    {
+        var factory = NewFactory();
+        var seed = await SeedTenantAsync(factory);
+        await SeedAccountAsync(factory, seed.LicenseId, NetgsmAccountStatus.Verified);
+        var staff = await PanelOperatorHelper.StaffClientAsync(factory, seed.Client);
+
+        var resp = await staff.PostAsync("/api/panel/netgsm/account/iys-mirror", null);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
 }
