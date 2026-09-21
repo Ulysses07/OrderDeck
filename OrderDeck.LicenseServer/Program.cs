@@ -207,6 +207,7 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysConsentPushJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysConsentVerifyJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysConsentRecoveryJob>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysDepartureRetentionJob>();
         builder.Services.AddScoped<PasswordResetCodeService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Auth.PasswordResetCodeCleanupJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.WhatsApp.WaSendAttemptCleanupJob>();
@@ -951,6 +952,14 @@ public class Program
                 "backup-orphan-cleanup",
                 j => j.RunAsync(CancellationToken.None),
                 "20 4 * * *");  // 04:20 UTC daily
+
+            // §6 — ayrılış saklama takvimi: 30. günde onay satırları + hesap,
+            // 3. yılda (m.13) dönem ispatı ve kampanya kayıtları. 04:45 UTC —
+            // yayın penceresi (TR 20:00-01:00) dışında.
+            manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Iys.IysDepartureRetentionJob>(
+                "iys-departure-retention",
+                j => j.RunAsync(CancellationToken.None),
+                "45 4 * * *");
         }
 
         // Ters vekil farkındalığı — pipeline'ın EN BAŞI, çünkü aşağıdaki her

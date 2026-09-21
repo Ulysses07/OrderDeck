@@ -461,4 +461,15 @@ public sealed class IysDepartureRetentionJobTests : IClassFixture<ApiFactory>
         (await vdb.NetgsmDepartures.SingleAsync(d => d.BrandCode == brand))
             .PurgedAt.Should().NotBeNull();
     }
+
+    [Fact]
+    public void Job_DI_kapsamindan_cozulur()
+    {
+        using var scope = _factory.Services.CreateScope();
+        scope.ServiceProvider.GetRequiredService<IysDepartureRetentionJob>()
+            .Should().NotBeNull();
+        // Görev 8'de açılacak:
+        // scope.ServiceProvider.GetRequiredService<IysMirrorImportJob>()
+        //     .Should().NotBeNull("Görev 8'in işi de aynı yerde kayıtlı olmalı");
+    }
 }
