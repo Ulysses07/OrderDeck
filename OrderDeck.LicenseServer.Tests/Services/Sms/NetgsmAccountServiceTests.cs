@@ -528,9 +528,13 @@ public class NetgsmAccountServiceTests
         var licenseId = Guid.NewGuid();
         var account = Seed(db, licenseId, NewBrandCode(), NetgsmAccountStatus.Verified);
 
+        // expectedUpdatedAt verilir ki Failed yolunun kendi ArgumentException'ı
+        // devreye girmesin; fırlayan istisna YALNIZ departure sözleşmesinden gelmeli.
         Func<Task> act = async () => await Service(db).CloseAccountAndPauseCampaignsAsync(
-            account.Id, NetgsmAccountStatus.Failed, "x", departure: true);
+            account.Id, NetgsmAccountStatus.Failed, "x",
+            expectedUpdatedAt: account.UpdatedAt, departure: true);
 
-        await act.Should().ThrowAsync<ArgumentException>();
+        (await act.Should().ThrowAsync<ArgumentException>())
+            .WithParameterName("departure");
     }
 }
