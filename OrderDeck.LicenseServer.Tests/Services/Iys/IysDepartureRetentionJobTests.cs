@@ -166,7 +166,7 @@ public sealed class IysDepartureRetentionJobTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task Sistem_kapanisli_hesaba_DisabledAt_bos_31_gun_sonra_da_dokunulmaz()
+    public async Task Sistem_kapanisli_hesaba_DisabledAt_bos_hic_dokunulmaz()
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();

@@ -42,7 +42,6 @@ public sealed class IysDepartureRetentionJob
     }
 
     [DisableConcurrentExecution(timeoutInSeconds: 600)]
-    [AutomaticRetry(Attempts = 0, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
     public async Task RunAsync(CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;
@@ -118,10 +117,10 @@ public sealed class IysDepartureRetentionJob
                         + "hesapta canlı — onaylar korundu",
                         accountId, brandCode);
             }
-            catch (DbUpdateConcurrencyException ex)
+            catch (DbUpdateConcurrencyException)
             {
                 _db.ChangeTracker.Clear();
-                _log.LogInformation(ex,
+                _log.LogInformation(
                     "Ayrılış temizliği: araya giren karar (admin Aç/Kapat) — hesap {AccountId} "
                     + "bu koşuda atlandı, sonraki koşu yeniden değerlendirir", id);
             }
@@ -203,10 +202,10 @@ public sealed class IysDepartureRetentionJob
                     "Yetim marka temizliği: marka {Brand} — {ConsentCount} onay silindi, "
                     + "takvim açıldı", brand, consentCount);
             }
-            catch (DbUpdateConcurrencyException ex)
+            catch (DbUpdateConcurrencyException)
             {
                 _db.ChangeTracker.Clear();
-                _log.LogInformation(ex,
+                _log.LogInformation(
                     "Yetim marka temizliği: araya giren karar — marka {Brand} bu koşuda "
                     + "atlandı, sonraki koşu yeniden değerlendirir", brand);
             }
@@ -271,10 +270,10 @@ public sealed class IysDepartureRetentionJob
                     + "{CampaignCount} kampanya, {RecipientCount} alıcı imha edildi",
                     departureId, brandCode, events.Count, campaignCount, recipientCount);
             }
-            catch (DbUpdateConcurrencyException ex)
+            catch (DbUpdateConcurrencyException)
             {
                 _db.ChangeTracker.Clear();
-                _log.LogInformation(ex,
+                _log.LogInformation(
                     "m.13 imhası: araya giren karar — ayrılış {DepartureId} bu koşuda atlandı, "
                     + "sonraki koşu yeniden değerlendirir", id);
             }
