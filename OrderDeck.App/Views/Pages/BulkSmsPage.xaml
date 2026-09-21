@@ -15,23 +15,9 @@
          mesajlar artık gerçekten çıkıyor. -->
     <DockPanel Margin="{StaticResource OD.Pad.7}">
 
-        <!-- Kredi rozeti. Başlık gittiği için tek başına sağa yaslı. -->
-        <Border DockPanel.Dock="Top"
-                Background="{StaticResource OD.Brush.Surface2}"
-                CornerRadius="{StaticResource OD.Radius.Md}"
-                Padding="{StaticResource OD.Pad.3}"
-                HorizontalAlignment="Right">
-            <StackPanel Orientation="Horizontal">
-                <TextBlock Text="Kredi: " Style="{StaticResource OD.Text.Hint}"
-                           VerticalAlignment="Center"/>
-                <TextBlock Text="{Binding CreditsRemaining}"
-                           Style="{StaticResource OD.Text.Mono}"
-                           FontWeight="Bold" VerticalAlignment="Center"/>
-            </StackPanel>
-        </Border>
-
-        <!-- Mesaj -->
-        <StackPanel DockPanel.Dock="Top" Margin="{StaticResource OD.Pad.Top5}">
+        <!-- Mesaj (kredi rozeti kredi sisteminin emekliliğiyle kalktı —
+             ücretlendirme yayıncının kendi Netgsm bakiyesinde). -->
+        <StackPanel DockPanel.Dock="Top">
             <TextBlock Text="Mesaj" Style="{StaticResource OD.Text.Label}"/>
             <TextBox Text="{Binding MessageBody, UpdateSourceTrigger=PropertyChanged}"
                      Style="{StaticResource OD.TextBox}"
@@ -57,7 +43,7 @@
                        Visibility="{Binding PreviewDone, Converter={StaticResource BoolToVisibleConverter}}">
                 <Run Text="{Binding RecipientCount, Mode=OneWay}"/><Run Text=" alıcı · "/>
                 <Run Text="{Binding Segments, Mode=OneWay}"/><Run Text=" segment · "/>
-                <Run Text="{Binding TotalCredits, Mode=OneWay}"/><Run Text=" kredi"/>
+                <Run Text="{Binding TotalCredits, Mode=OneWay}"/><Run Text=" SMS"/>
             </TextBlock>
         </DockPanel>
 
