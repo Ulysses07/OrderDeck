@@ -381,4 +381,55 @@ public sealed class AdminNetgsmPageTests : IClassFixture<HookedApiFactory>
             "fırlatmadan önce temizlenmezse, bu context'te sonradan atılacak "
             + "herhangi bir SaveChanges yarım kapatmayı diske indirir");
     }
+
+    [Fact]
+    public async Task Export_yalniz_kendi_markasinin_onaylarini_dondurur()
+    {
+        // SeedAccountAsync (Guid AccountId, Guid LicenseId) döndürür.
+        var (accId, _) = await SeedAccountAsync(NetgsmAccountStatus.Verified);
+        var (otherAccId, _) = await SeedAccountAsync(NetgsmAccountStatus.Verified);
+
+        string ownBrand, otherBrand;
+        var ownPhone = "+9055" + Random.Shared.Next(10_000_000, 99_999_999);
+        var otherPhone = "+9055" + Random.Shared.Next(10_000_000, 99_999_999);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            ownBrand = (await db.NetgsmAccounts.AsNoTracking().SingleAsync(a => a.Id == accId)).BrandCode;
+            otherBrand = (await db.NetgsmAccounts.AsNoTracking().SingleAsync(a => a.Id == otherAccId)).BrandCode;
+            var now = DateTimeOffset.UtcNow;
+            db.IysConsents.AddRange(
+                new IysConsent
+                {
+                    Id = Guid.NewGuid(), BrandCode = ownBrand, ChannelType = "MESAJ",
+                    RecipientType = "BIREYSEL", Recipient = ownPhone,
+                    Status = IysConsentStatus.Onay, PushState = IysPushState.Confirmed,
+                    LastLocalEventAt = now, CreatedAt = now, UpdatedAt = now,
+                },
+                new IysConsent
+                {
+                    Id = Guid.NewGuid(), BrandCode = otherBrand, ChannelType = "MESAJ",
+                    RecipientType = "BIREYSEL", Recipient = otherPhone,
+                    Status = IysConsentStatus.Onay, PushState = IysPushState.Confirmed,
+                    LastLocalEventAt = now, CreatedAt = now, UpdatedAt = now,
+                });
+            await db.SaveChangesAsync();
+        }
+
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+        var resp = await PostAsync(client, "Export", accId);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        resp.Content.Headers.ContentType!.MediaType.Should().Be("text/csv");
+        var body = await resp.Content.ReadAsStringAsync();
+        body.Should().Contain(ownPhone, "kendi markasının onayı listede olmalı");
+        body.Should().NotContain(otherPhone, "başka markanın verisi SIZMAMALI");
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.AuditLogs.AsNoTracking()
+                .CountAsync(a => a.EventType == AuditEvents.NetgsmAccountExport
+                                 && a.TargetId == accId.ToString()))
+            .Should().Be(1, "dışa aktarım denetim izine düşmeli");
+    }
 }

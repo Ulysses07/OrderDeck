@@ -178,4 +178,34 @@ public class IndexModel : PageModel
         TempData["Success"] = "Kurulum açıldı — doğrulama bekleniyor.";
         return RedirectToPage();
     }
+
+    // §6 — ayrılan yayıncıya verilecek tek eksiksiz kopya bizdeki tablodur.
+    // İYS bir markanın onay listesini geri VERMEZ; /iys/search yalnız verilen
+    // numara listesinin durumunu döner. Dönüş yolunun taşıyıcısı bu CSV'dir.
+    public async Task<IActionResult> OnPostExportAsync(CancellationToken ct)
+    {
+        var acc = await _db.NetgsmAccounts.AsNoTracking()
+            .FirstOrDefaultAsync(a => a.Id == AccountId, ct);
+        if (acc is null) return NotFound();
+
+        var rows = await _db.IysConsents.AsNoTracking()
+            .Where(c => c.BrandCode == acc.BrandCode)
+            .OrderBy(c => c.Recipient).ToListAsync(ct);
+
+        // CSV enjeksiyonuna kapalı: alanlar E.164 / enum / ISO-8601 biçimli,
+        // serbest metin sütunu yok.
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("Recipient;Status;LastVerifiedStatus;ConsentDate;SourceCode;LastVerifiedAt");
+        foreach (var c in rows)
+            sb.AppendLine(string.Join(';',
+                c.Recipient, c.Status, c.LastVerifiedStatus?.ToString() ?? "",
+                c.ConsentDate?.ToString("O") ?? "", c.SourceCode ?? "",
+                c.LastVerifiedAt?.ToString("O") ?? ""));
+
+        await _audit.LogAsync(AuditEvents.NetgsmAccountExport, AuditTargets.NetgsmAccount,
+            AccountId.ToString(), new { acc.LicenseId, acc.BrandCode, rowCount = rows.Count }, ct);
+
+        return File(System.Text.Encoding.UTF8.GetBytes(sb.ToString()), "text/csv",
+            $"iys-consents-{acc.BrandCode}.csv");
+    }
 }

@@ -29,6 +29,10 @@ public static class AuditEvents
     // SMS'ini keser; kimin ne zaman kestiği iz bırakmadan olmamalı.
     public const string NetgsmAccountDisable = "netgsm.account.disable";
     public const string NetgsmAccountEnable = "netgsm.account.enable";
+
+    // §6 — ayrılışta İYS onay listesi dışa aktarımı. Dönüş yolunun taşıyıcısı:
+    // İYS bir markanın onay listesini vermez, /iys/search numara listesi ister.
+    public const string NetgsmAccountExport = "netgsm.account.export";
 }
 
 public static class AuditTargets
