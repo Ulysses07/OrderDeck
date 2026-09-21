@@ -49,6 +49,7 @@ public class LicenseDbContext : DbContext
     public DbSet<SmsCampaignRecipient> SmsCampaignRecipients => Set<SmsCampaignRecipient>();
     public DbSet<WhatsAppAccount> WhatsAppAccounts => Set<WhatsAppAccount>();
     public DbSet<NetgsmAccount> NetgsmAccounts => Set<NetgsmAccount>();
+    public DbSet<NetgsmDeparture> NetgsmDepartures => Set<NetgsmDeparture>();
     public DbSet<InstagramAccount> InstagramAccounts => Set<InstagramAccount>();
     public DbSet<WaConversation> WaConversations => Set<WaConversation>();
     public DbSet<WaMessage> WaMessages => Set<WaMessage>();
@@ -875,6 +876,16 @@ public class LicenseDbContext : DbContext
             // GetVerifiedByLicenseAsync, ListVerifiedAsync) zaten Verified süzüyor,
             // yani indeksin kapsamı aramanın kapsamıyla birebir.
             b.HasIndex(a => a.BrandCode).IsUnique().HasFilter("[Status] = 'Verified'");
+        });
+
+        mb.Entity<NetgsmDeparture>(b =>
+        {
+            b.HasKey(d => d.Id);
+            // LicenseId bilinçli FK'sız — IysConsentEvent'teki kararın aynısı: lisans
+            // KVKK ile silinse bile 3 yıllık imha randevusu yaşamalı.
+            b.Property(d => d.BrandCode).HasMaxLength(16).IsRequired();
+            b.HasIndex(d => new { d.PurgedAt, d.DepartedAt });
+            b.HasIndex(d => d.BrandCode);
         });
 
         mb.Entity<InstagramAccount>(b =>

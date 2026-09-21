@@ -305,6 +305,10 @@ public sealed class IysConsentCollector
 
         row.Status = status;
         row.LastLocalEventAt = occurredAt;
+        // Ayna satırı (IYS_MIRROR) artık YEREL bir beyan taşıyor: İYS'ye giden
+        // `source` tanımlı bir izin kaynağı olmalı — ayna işareti olaylarda kalır.
+        if (row.SourceCode == IysMirrorImportJob.SourceCodeMirror)
+            row.SourceCode = _opt.IysSourceCode;
         row.UpdatedAt = now;
 
         if (consented)

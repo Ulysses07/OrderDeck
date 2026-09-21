@@ -337,6 +337,8 @@ public sealed class SmsCampaignSendJobErrorClassTests : IClassFixture<ApiFactory
         after.Status.Should().Be(NetgsmAccountStatus.Disabled,
             "anahtar halkası kaybı sessiz bozulma olmaz — kalıcı ve görünür kapanır");
         after.LastError.Should().Be(NetgsmAccountService.UndecryptableMessage);
+        after.DisabledAt.Should().BeNull(
+            "anahtar halkası kaybı ayrılış değildir — saklama saati başlamaz (§2.4)");
 
         (await CampaignAsync(seed.CampaignId)).Status.Should().Be("paused");
         (await RecipientsAsync(seed.CampaignId))

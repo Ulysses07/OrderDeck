@@ -209,27 +209,27 @@ public sealed class IysConsentWiringTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task Profilden_acik_onay_IYS_e_yazilmaz()
+    public async Task Profilden_onay_acma_reddedilir_IYS_e_yazilmaz()
     {
         var phone = NewPhone();
         var client = await RegisterAsync(phone, smsConsent: false);
 
         var resp = await client.PatchAsJsonAsync(
             "/api/v1/shopper/me", new { smsConsent = true });
-        resp.EnsureSuccessStatusCode();
+
+        // §5.2b: onay MARKA başına tutulur ve kişi birden fazla yayıncıya bağlı
+        // olabilir; profildeki tek kutu "hangi yayıncıya izin veriyorum" sorusunu
+        // cevaplayamaz. Onay yalnız toplama noktasında (form / kayıt) alınır;
+        // profilden açma isteği 400 ile reddedilir, yerel bayrak da AÇILMAZ.
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-
-        // Eski beklenti "profilden onay İYS'ye ONAY yazar"dı. Onay MARKA başına
-        // tutulduğu ve kişi birden fazla yayıncıya bağlı olabildiği için profildeki
-        // tek kutu "hangi yayıncıya izin veriyorum" sorusunu cevaplayamıyor; onay
-        // artık yalnız toplama noktasında (form / kayıt) alınıyor.
         (await db.IysConsents.AnyAsync(c => c.Recipient == phone)).Should().BeFalse();
 
         var shopper = await db.Shoppers.AsNoTracking().SingleAsync(s => s.Phone == phone);
-        shopper.SmsConsent.Should().BeTrue("yerel bayrak yine de açılır");
-        shopper.SmsConsentSource.Should().Be("profile");
+        shopper.SmsConsent.Should().BeFalse("reddedilen istek yerel bayrağı da açmaz");
+        shopper.SmsConsentSource.Should().BeNull();
     }
 
     // ── Kayıt yardımcısı (ShopperMePatchTests'ten kopya; paylaşılan yardımcı

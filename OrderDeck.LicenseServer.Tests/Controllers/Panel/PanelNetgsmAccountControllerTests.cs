@@ -4,6 +4,7 @@ using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Iys;
 using OrderDeck.LicenseServer.Services.Sms;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
@@ -105,6 +106,14 @@ public sealed class PanelNetgsmAccountControllerTests : IDisposable
         });
         await db.SaveChangesAsync();
         return seeded;
+    }
+
+    /// <summary>ProblemDetails gövdesinden <c>title</c> alanını okur.
+    /// (Kalıp: <c>PanelWhatsAppAccountControllerTests.TitleAsync</c>.)</summary>
+    private static async Task<string?> TitleAsync(HttpResponseMessage resp)
+    {
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        return doc.RootElement.TryGetProperty("title", out var t) ? t.GetString() : null;
     }
 
     [Fact]
@@ -258,5 +267,78 @@ public sealed class PanelNetgsmAccountControllerTests : IDisposable
         var resp = await client.GetAsync("/api/panel/netgsm/account");
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Ayna_baslatma_dogrulanmis_hesapta_202()
+    {
+        var factory = NewFactory();
+        var seed = await SeedTenantAsync(factory);
+        await SeedAccountAsync(factory, seed.LicenseId, NetgsmAccountStatus.Verified);
+
+        var resp = await seed.Client.PostAsync("/api/panel/netgsm/account/iys-mirror", null);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        // 202 bir vaattir — iş gerçekten Hangfire kuyruğuna girmeli. ApiFactory
+        // MemoryStorage kullanıyor ve sunucu koşmuyor: Enqueue edilen iş
+        // "enqueued" durumda bekler, monitoring API'den okunabilir.
+        var monitoring = factory.Services.GetRequiredService<Hangfire.JobStorage>().GetMonitoringApi();
+        monitoring.EnqueuedJobs("default", 0, 1000).Should().Contain(j =>
+            j.Value.Job.Type == typeof(IysMirrorImportJob)
+            && j.Value.Job.Args.Contains((object)seed.LicenseId),
+            "202 bir vaattir — iş gerçekten kuyruğa girmeli");
+    }
+
+    [Fact]
+    public async Task Ayna_dogrulanmamis_hesapta_409()
+    {
+        var factory = NewFactory();
+        var seed = await SeedTenantAsync(factory);
+        await SeedAccountAsync(factory, seed.LicenseId, NetgsmAccountStatus.Failed);
+
+        var resp = await seed.Client.PostAsync("/api/panel/netgsm/account/iys-mirror", null);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+
+        var monitoring = factory.Services.GetRequiredService<Hangfire.JobStorage>().GetMonitoringApi();
+        monitoring.EnqueuedJobs("default", 0, 1000).Should().NotContain(j =>
+            j.Value.Job.Type == typeof(IysMirrorImportJob)
+            && j.Value.Job.Args.Contains((object)seed.LicenseId),
+            "kapı yalnız status'u değil yan etkiyi de engellemeli");
+    }
+
+    [Fact]
+    public async Task Ayna_staff_operatore_kapali_403()
+    {
+        var factory = NewFactory();
+        var seed = await SeedTenantAsync(factory);
+        await SeedAccountAsync(factory, seed.LicenseId, NetgsmAccountStatus.Verified);
+        var staff = await PanelOperatorHelper.StaffClientAsync(factory, seed.Client);
+
+        var resp = await staff.PostAsync("/api/panel/netgsm/account/iys-mirror", null);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await TitleAsync(resp)).Should().Be("owner-only",
+            "403'ün kaynağı OwnerOnly() olmalı — ileride araya girecek başka bir " +
+            "filtre bu kodu sessizce üstlenmemeli");
+
+        var monitoring = factory.Services.GetRequiredService<Hangfire.JobStorage>().GetMonitoringApi();
+        monitoring.EnqueuedJobs("default", 0, 1000).Should().NotContain(j =>
+            j.Value.Job.Type == typeof(IysMirrorImportJob)
+            && j.Value.Job.Args.Contains((object)seed.LicenseId),
+            "kapı yalnız status'u değil yan etkiyi de engellemeli");
+    }
+
+    [Fact]
+    public async Task Ayna_aktif_lisans_yoksa_400()
+    {
+        var factory = NewFactory();
+        var (client, _, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(factory);
+
+        var resp = await client.PostAsync("/api/panel/netgsm/account/iys-mirror", null);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await TitleAsync(resp)).Should().Be("no-active-license");
     }
 }

@@ -1,3 +1,4 @@
+using System.Text;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
@@ -89,7 +90,7 @@ public class IndexModel : PageModel
         {
             pausedCampaigns = await _accounts.CloseAccountAndPauseCampaignsAsync(
                 AccountId, NetgsmAccountStatus.Disabled,
-                "Yönetici tarafından kapatıldı.", ct);
+                "Yönetici tarafından kapatıldı.", ct, departure: true);
         }
         catch (DbUpdateConcurrencyException)
         {
@@ -148,6 +149,7 @@ public class IndexModel : PageModel
         // doğrulamanın başarılı olduğu anda gelir.
         acc.Status = NetgsmAccountStatus.Failed;
         acc.LastError = null;
+        acc.DisabledAt = null;
         // Damgayı LicenseDbContext merkezî olarak atıyor (Görev 3); burada
         // elle UtcNow yazmak, saat ilerlemediğinde jetonu yerinde bırakırdı.
         _db.Entry(acc).Property(a => a.UpdatedAt).IsModified = true;
@@ -176,5 +178,48 @@ public class IndexModel : PageModel
 
         TempData["Success"] = "Kurulum açıldı — doğrulama bekleniyor.";
         return RedirectToPage();
+    }
+
+    // §6 — ayrılan yayıncıya verilecek tek eksiksiz kopya bizdeki tablodur.
+    // İYS bir markanın onay listesini geri VERMEZ; /iys/search yalnız verilen
+    // numara listesinin durumunu döner. Dönüş yolunun taşıyıcısı bu CSV'dir.
+    public async Task<IActionResult> OnPostExportAsync(CancellationToken ct)
+    {
+        var acc = await _db.NetgsmAccounts.AsNoTracking()
+            .FirstOrDefaultAsync(a => a.Id == AccountId, ct);
+        if (acc is null) return NotFound();
+
+        if (acc.LastVerifiedAt is null)
+        {
+            // Sahiplik kanıtı yok: BrandCode yayıncının yazdığı değerdir, İYS onaylamadan
+            // markanın ona ait olduğu bilinmez (kod 60). Başkasının listesi sızmasın.
+            TempData["Error"] = "Bu kurulum mevcut hâliyle İYS'de doğrulanmadı; marka sahipliği kanıtlanmadan liste dışa aktarılamaz.";
+            return RedirectToPage();
+        }
+
+        var rows = await _db.IysConsents.AsNoTracking()
+            .Where(c => c.BrandCode == acc.BrandCode)
+            .OrderBy(c => c.Recipient).ToListAsync(ct);
+
+        // Formül enjeksiyonuna kapalı — güvence sütun kaynaklarından gelir: Recipient
+        // PhoneNormalizer çıktısıdır ('+' + yalnız rakam), Status/PushState/
+        // LastVerifiedStatus enum adı, tarihler ISO-8601 "O", SourceCode operatör
+        // konfigürasyonu (NetgsmOptions) YA DA IysMirrorImportJob.SourceCodeMirror
+        // sabiti — ikisi de sabit metin. Serbest metin (LastError) BİLİNÇLİ dışarıda.
+        // Dosya makine-okunur: Excel '+90…' değerini sayıya çevirip bozar; hedef
+        // sonraki entegratörün içe aktarımıdır, Excel gidiş-dönüşü değil.
+        var sb = new StringBuilder();
+        sb.Append("Recipient;Status;PushState;LastVerifiedStatus;ConsentDate;SourceCode;LastVerifiedAt\r\n");
+        foreach (var c in rows)
+            sb.Append(string.Join(';',
+                c.Recipient, c.Status, c.PushState, c.LastVerifiedStatus?.ToString() ?? "",
+                c.ConsentDate?.ToString("O") ?? "", c.SourceCode ?? "",
+                c.LastVerifiedAt?.ToString("O") ?? "")).Append("\r\n");
+
+        await _audit.LogAsync(AuditEvents.NetgsmAccountExport, AuditTargets.NetgsmAccount,
+            AccountId.ToString(), new { acc.LicenseId, acc.BrandCode, rowCount = rows.Count }, ct);
+
+        return File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv; charset=utf-8",
+            $"iys-consents-{acc.BrandCode}.csv");
     }
 }

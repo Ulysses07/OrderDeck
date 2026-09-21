@@ -440,4 +440,101 @@ public class NetgsmAccountServiceTests
             "fırlatmadan önce temizlenmeli: kirli nesne çağıranın sonraki "
             + "SaveChanges'ine biner");
     }
+
+    [Fact]
+    public async Task Ayrilis_kapatmasi_DisabledAt_damgalar()
+    {
+        using var db = NewDb();
+        var licenseId = Guid.NewGuid();
+        var account = Seed(db, licenseId, NewBrandCode(), NetgsmAccountStatus.Verified);
+
+        var before = DateTimeOffset.UtcNow;
+
+        await Service(db).CloseAccountAndPauseCampaignsAsync(
+            account.Id, NetgsmAccountStatus.Disabled,
+            "Yönetici tarafından kapatıldı.", CancellationToken.None, departure: true);
+
+        var persisted = await db.NetgsmAccounts.AsNoTracking()
+            .SingleAsync(a => a.Id == account.Id);
+        persisted.DisabledAt.Should().NotBeNull();
+        persisted.DisabledAt!.Value.Should().BeOnOrAfter(before);
+    }
+
+    [Fact]
+    public async Task Zaten_Disabled_hesabi_tekrar_kapatmak_DisabledAt_i_ilerletmez()
+    {
+        using var db = NewDb();
+        var licenseId = Guid.NewGuid();
+        var account = Seed(db, licenseId, NewBrandCode(), NetgsmAccountStatus.Disabled);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        account.DisabledAt = t0;
+        await db.SaveChangesAsync();
+
+        await Service(db).CloseAccountAndPauseCampaignsAsync(
+            account.Id, NetgsmAccountStatus.Disabled,
+            "Yönetici tarafından kapatıldı.", CancellationToken.None, departure: true);
+
+        var persisted = await db.NetgsmAccounts.AsNoTracking()
+            .SingleAsync(a => a.Id == account.Id);
+        persisted.DisabledAt.Should().Be(t0, "saklama saati İLK geçişten sayılır (§6)");
+    }
+
+    [Fact]
+    public async Task Sistem_kaynakli_kapatma_DisabledAt_damgalamaz()
+    {
+        using var db = NewDb();
+        var licenseId = Guid.NewGuid();
+        var account = Seed(db, licenseId, NewBrandCode(), NetgsmAccountStatus.Verified);
+
+        await Service(db).CloseAccountAndPauseCampaignsAsync(
+            account.Id, NetgsmAccountStatus.Disabled,
+            NetgsmAccountService.UndecryptableMessage, CancellationToken.None);
+
+        var persisted = await db.NetgsmAccounts.AsNoTracking()
+            .SingleAsync(a => a.Id == account.Id);
+        persisted.Status.Should().Be(NetgsmAccountStatus.Disabled);
+        persisted.DisabledAt.Should().BeNull(
+            "anahtar halkası kaybı ayrılış değildir — §6 saklama saati başlamaz");
+    }
+
+    [Fact]
+    public async Task Sistem_kapatmasi_sonrasi_ayrilis_karari_saati_baslatir()
+    {
+        // DisabledAt null bırakılıyor: §2.4 anahtar halkası kaybı gibi sistem
+        // kaynaklı bir kapanışı simüle ediyor — Status zaten Disabled ama
+        // saat henüz başlamadı. Anahtar Status DEĞİL DisabledAt olmalı:
+        // sonradan gelen gerçek bir ayrılış kararının önü kesilmemeli.
+        using var db = NewDb();
+        var licenseId = Guid.NewGuid();
+        var account = Seed(db, licenseId, NewBrandCode(), NetgsmAccountStatus.Disabled);
+
+        var before = DateTimeOffset.UtcNow;
+
+        await Service(db).CloseAccountAndPauseCampaignsAsync(
+            account.Id, NetgsmAccountStatus.Disabled,
+            "Yönetici tarafından kapatıldı.", CancellationToken.None, departure: true);
+
+        var persisted = await db.NetgsmAccounts.AsNoTracking()
+            .SingleAsync(a => a.Id == account.Id);
+        persisted.DisabledAt.Should().NotBeNull(
+            "sistem kapanışı ayrılış kararının önünü kesmez");
+        persisted.DisabledAt!.Value.Should().BeOnOrAfter(before);
+    }
+
+    [Fact]
+    public async Task Departure_bayragi_Disabled_disinda_ArgumentException()
+    {
+        using var db = NewDb();
+        var licenseId = Guid.NewGuid();
+        var account = Seed(db, licenseId, NewBrandCode(), NetgsmAccountStatus.Verified);
+
+        // expectedUpdatedAt verilir ki Failed yolunun kendi ArgumentException'ı
+        // devreye girmesin; fırlayan istisna YALNIZ departure sözleşmesinden gelmeli.
+        Func<Task> act = async () => await Service(db).CloseAccountAndPauseCampaignsAsync(
+            account.Id, NetgsmAccountStatus.Failed, "x",
+            expectedUpdatedAt: account.UpdatedAt, departure: true);
+
+        (await act.Should().ThrowAsync<ArgumentException>())
+            .WithParameterName("departure");
+    }
 }

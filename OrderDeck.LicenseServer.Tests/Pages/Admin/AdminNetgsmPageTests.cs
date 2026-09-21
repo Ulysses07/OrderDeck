@@ -35,7 +35,8 @@ public sealed class AdminNetgsmPageTests : IClassFixture<HookedApiFactory>
         => Random.Shared.NextInt64(8_500_000_000, 8_599_999_999).ToString();
 
     private async Task<(Guid AccountId, Guid LicenseId)> SeedAccountAsync(
-        NetgsmAccountStatus status = NetgsmAccountStatus.Verified)
+        NetgsmAccountStatus status = NetgsmAccountStatus.Verified,
+        bool? verifiedOnce = null)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -73,6 +74,14 @@ public sealed class AdminNetgsmPageTests : IClassFixture<HookedApiFactory>
             Header = "ORDERDECK",
             BrandCode = Random.Shared.Next(100_000, 999_999).ToString(),
             Status = status,
+            DisabledAt = status == NetgsmAccountStatus.Disabled ? DateTimeOffset.UtcNow : null,
+            // Seed SADELEŞTİRMESİ, alan değişmezi DEĞİL: varsayılan olarak Failed
+            // = kanıt yok, Verified/Disabled = bir noktada İYS doğrulamıştı. Gerçekte
+            // Disabled + LastVerifiedAt=null da olur (hiç doğrulanmamış hesabın
+            // sistem kapanışı, ya da Upsert damgayı sildikten sonra kapanış);
+            // o kombinasyon `verifiedOnce: false` ile ekilir.
+            LastVerifiedAt = (verifiedOnce ?? status != NetgsmAccountStatus.Failed)
+                ? DateTimeOffset.UtcNow : null,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
@@ -154,6 +163,7 @@ public sealed class AdminNetgsmPageTests : IClassFixture<HookedApiFactory>
 
         var acc = await vdb.NetgsmAccounts.AsNoTracking().SingleAsync(a => a.Id == accountId);
         acc.Status.Should().Be(NetgsmAccountStatus.Disabled);
+        acc.DisabledAt.Should().NotBeNull("saklama saati ayrılış anından sayılır (§6)");
         acc.LastError.Should().NotBeNullOrEmpty();
 
         string StatusOf(Guid id) => vdb.SmsCampaigns.AsNoTracking().Single(c => c.Id == id).Status;
@@ -208,6 +218,7 @@ public sealed class AdminNetgsmPageTests : IClassFixture<HookedApiFactory>
             "yönetici markanın İYS'de hâlâ geçerli olduğunu bilemez; "
             + "doğrulama normal akıştan geçmeli");
         acc.LastError.Should().BeNull();
+        acc.DisabledAt.Should().BeNull("admin geri açınca 30 günlük sayaç iptal olur");
 
         (await vdb.AuditLogs.AsNoTracking().CountAsync(
             e => e.EventType == AuditEvents.NetgsmAccountEnable
@@ -377,5 +388,158 @@ public sealed class AdminNetgsmPageTests : IClassFixture<HookedApiFactory>
         sdb.ChangeTracker.Entries().Should().BeEmpty(
             "fırlatmadan önce temizlenmezse, bu context'te sonradan atılacak "
             + "herhangi bir SaveChanges yarım kapatmayı diske indirir");
+    }
+
+    [Fact]
+    public async Task Export_yalniz_kendi_markasinin_onaylarini_dondurur()
+    {
+        // SeedAccountAsync (Guid AccountId, Guid LicenseId) döndürür.
+        var (accId, _) = await SeedAccountAsync(NetgsmAccountStatus.Verified);
+        var (otherAccId, _) = await SeedAccountAsync(NetgsmAccountStatus.Verified);
+
+        string ownBrand, otherBrand;
+        var ownPhone = "+9055" + Random.Shared.Next(10_000_000, 99_999_999);
+        var otherPhone = "+9055" + Random.Shared.Next(10_000_000, 99_999_999);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            ownBrand = (await db.NetgsmAccounts.AsNoTracking().SingleAsync(a => a.Id == accId)).BrandCode;
+            otherBrand = (await db.NetgsmAccounts.AsNoTracking().SingleAsync(a => a.Id == otherAccId)).BrandCode;
+            var now = DateTimeOffset.UtcNow;
+            db.IysConsents.AddRange(
+                new IysConsent
+                {
+                    Id = Guid.NewGuid(), BrandCode = ownBrand, ChannelType = "MESAJ",
+                    RecipientType = "BIREYSEL", Recipient = ownPhone,
+                    Status = IysConsentStatus.Onay, PushState = IysPushState.Confirmed,
+                    LastLocalEventAt = now, CreatedAt = now, UpdatedAt = now,
+                },
+                new IysConsent
+                {
+                    Id = Guid.NewGuid(), BrandCode = otherBrand, ChannelType = "MESAJ",
+                    RecipientType = "BIREYSEL", Recipient = otherPhone,
+                    Status = IysConsentStatus.Onay, PushState = IysPushState.Confirmed,
+                    LastLocalEventAt = now, CreatedAt = now, UpdatedAt = now,
+                });
+            await db.SaveChangesAsync();
+        }
+
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+        var resp = await PostAsync(client, "Export", accId);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        resp.Content.Headers.ContentType!.MediaType.Should().Be("text/csv");
+        resp.Content.Headers.ContentType!.CharSet.Should().Be("utf-8");
+        var body = await resp.Content.ReadAsStringAsync();
+        body.Should().StartWith(
+            "Recipient;Status;PushState;LastVerifiedStatus;ConsentDate;SourceCode;LastVerifiedAt\r\n");
+        body.Should().Contain(ownPhone + ";Onay;Confirmed;;;;\r\n",
+            "kendi markasının onay satırı beklenen sütun sırasıyla eksiksiz görünmeli");
+        body.Should().Contain(ownPhone, "kendi markasının onayı listede olmalı");
+        body.Should().NotContain(otherPhone, "başka markanın verisi SIZMAMALI");
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.AuditLogs.AsNoTracking()
+                .CountAsync(a => a.EventType == AuditEvents.NetgsmAccountExport
+                                 && a.TargetId == accId.ToString()))
+            .Should().Be(1, "dışa aktarım denetim izine düşmeli");
+    }
+
+    [Fact]
+    public async Task Export_dogrulanmamis_hesapta_reddedilir_ve_denetim_izi_dusmez()
+    {
+        // Failed hesapta LastVerifiedAt boş: BrandCode yayıncının yazdığı
+        // değerdir, İYS onaylamadan markanın ona ait olduğu ispatlanmaz
+        // (kod 60). Sahiplik kanıtsızken dışa aktarım reddedilmeli.
+        var (accountId, _) = await SeedAccountAsync(NetgsmAccountStatus.Failed);
+
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+        var resp = await PostAsync(client, "Export", accountId);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect,
+            "burası bir Razor Page: JSON gövde yöneticiyi çıplak bir ekrana "
+            + "düşürür ve reddin sebebini göremez hâle getirir");
+
+        // Yönlendirmeyi TAKİP ET — "302 döndü" tek başına reddin SEBEBİNİ
+        // kanıtlamaz; banner metni ekranda görünmeli.
+        var page = await (await client.GetAsync("/admin/netgsm"))
+            .Content.ReadAsStringAsync();
+        page.Should().Contain("alert-danger");
+        page.Should().Contain("marka sahipliği kanıtlanmadan liste dışa aktarılamaz",
+            "reddin sebebi ekranda yazmazsa yönetici neyi bekleyeceğini bilmez");
+
+        using var scope = _factory.Services.CreateScope();
+        var vdb = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.AuditLogs.AsNoTracking().CountAsync(
+            e => e.EventType == AuditEvents.NetgsmAccountExport
+                 && e.TargetId == accountId.ToString()))
+            .Should().Be(0, "gerçekleşmemiş bir dışa aktarım denetime yazılmamalı");
+    }
+
+    [Fact]
+    public async Task Export_Disabled_ama_hic_dogrulanmamis_hesapta_reddedilir()
+    {
+        // Kapı KANITA (LastVerifiedAt) anahtarlı, DURUMA değil: "Disabled =
+        // ayrıldı, izin ver" diye durum-temelli bir yeniden yazım bu testi kırar.
+        // Kombinasyon gerçek: hiç doğrulanmamış hesabın sistem kapanışı (§2.4).
+        var (accountId, _) = await SeedAccountAsync(
+            NetgsmAccountStatus.Disabled, verifiedOnce: false);
+
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+        var resp = await PostAsync(client, "Export", accountId);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        var page = await (await client.GetAsync("/admin/netgsm"))
+            .Content.ReadAsStringAsync();
+        page.Should().Contain("marka sahipliği kanıtlanmadan liste dışa aktarılamaz",
+            "Disabled olması sahiplik kanıtı DEĞİLDİR");
+
+        using var scope = _factory.Services.CreateScope();
+        var vdb = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.AuditLogs.AsNoTracking().CountAsync(
+            e => e.EventType == AuditEvents.NetgsmAccountExport
+                 && e.TargetId == accountId.ToString()))
+            .Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Export_Disabled_ama_dogrulanmis_hesapta_calisir()
+    {
+        // §6'nın gerçek ayrılış senaryosu: yayıncı ayrılmış (Disabled) ama
+        // daha önce İYS'de doğrulanmıştı (LastVerifiedAt dolu) — sahiplik
+        // kanıtlı, dışa aktarım çalışmalı.
+        var (accountId, _) = await SeedAccountAsync(NetgsmAccountStatus.Disabled);
+
+        string brand;
+        var phone = "+9055" + Random.Shared.Next(10_000_000, 99_999_999);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            brand = (await db.NetgsmAccounts.AsNoTracking().SingleAsync(a => a.Id == accountId)).BrandCode;
+            var now = DateTimeOffset.UtcNow;
+            db.IysConsents.Add(new IysConsent
+            {
+                Id = Guid.NewGuid(), BrandCode = brand, ChannelType = "MESAJ",
+                RecipientType = "BIREYSEL", Recipient = phone,
+                Status = IysConsentStatus.Onay, PushState = IysPushState.Confirmed,
+                LastLocalEventAt = now, CreatedAt = now, UpdatedAt = now,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+        var resp = await PostAsync(client, "Export", accountId);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadAsStringAsync();
+        body.Should().Contain(phone);
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.AuditLogs.AsNoTracking().CountAsync(
+                a => a.EventType == AuditEvents.NetgsmAccountExport
+                     && a.TargetId == accountId.ToString()))
+            .Should().Be(1, "başarılı dışa aktarım denetim izine düşmeli");
     }
 }
