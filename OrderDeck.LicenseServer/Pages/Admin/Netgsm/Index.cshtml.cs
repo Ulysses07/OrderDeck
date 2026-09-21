@@ -89,7 +89,7 @@ public class IndexModel : PageModel
         {
             pausedCampaigns = await _accounts.CloseAccountAndPauseCampaignsAsync(
                 AccountId, NetgsmAccountStatus.Disabled,
-                "Yönetici tarafından kapatıldı.", ct);
+                "Yönetici tarafından kapatıldı.", ct, departure: true);
         }
         catch (DbUpdateConcurrencyException)
         {

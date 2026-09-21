@@ -267,6 +267,7 @@ public sealed class SmsCampaignSendJob
             _log.LogError(
                 "SmsCampaignSendJob: campaign {Id} hesabının şifresi çözülemedi — hesap kapatılıyor",
                 campaignId);
+            // departure yok: anahtar halkası kaybı ayrılış değildir — §6 saklama saati başlamaz.
             await _accounts.CloseAccountAndPauseCampaignsAsync(
                 account.Id, NetgsmAccountStatus.Disabled,
                 NetgsmAccountService.UndecryptableMessage, ct);

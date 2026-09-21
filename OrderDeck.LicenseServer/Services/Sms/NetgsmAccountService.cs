@@ -307,13 +307,20 @@ public sealed class NetgsmAccountService
     ///
     /// <para><c>Disabled</c> (admin kill switch) sürüm İSTEMEZ: yönetici
     /// kararı en güncel karardır ve her hâlükârda kazanmalıdır.</para>
+    ///
+    /// <para><paramref name="departure"/>=<c>true</c> ile <c>Disabled</c>
+    /// geçişinde <see cref="NetgsmAccount.DisabledAt"/> damgalanır (§6 saklama
+    /// saati) — yalnız GEÇİŞTE. Sistem kaynaklı kapanışlar (ör. anahtar
+    /// halkası kaybı, §2.4) <c>departure=false</c> bırakır ve saati
+    /// BAŞLATMAZ: kimse ayrılmadı, veri silinmemeli.</para>
     /// </summary>
     public async Task<int> CloseAccountAndPauseCampaignsAsync(
         Guid accountId,
         NetgsmAccountStatus status,
         string? lastError,
         CancellationToken ct = default,
-        DateTimeOffset? expectedUpdatedAt = null)
+        DateTimeOffset? expectedUpdatedAt = null,
+        bool departure = false)
     {
         if (status is not (NetgsmAccountStatus.Disabled or NetgsmAccountStatus.Failed))
             throw new ArgumentOutOfRangeException(nameof(status));
@@ -337,11 +344,15 @@ public sealed class NetgsmAccountService
                     || account.UpdatedAt != expectedUpdatedAt!.Value))
                 return 0;   // araya giren karar var — bayat ret düşer
 
-            if (status == NetgsmAccountStatus.Disabled
+            if (departure
+                && status == NetgsmAccountStatus.Disabled
                 && account.Status != NetgsmAccountStatus.Disabled)
             {
                 // Saklama saati ayrılış ANINDAN sayılır (§6: 30 gün). Yalnız GEÇİŞTE
                 // damgala: zaten Disabled hesabı tekrar kapatmak saati ilerletirdi.
+                // `departure` açık bayrak: anahtar halkası kaybı (§2.4, SmsCampaignSendJob)
+                // da hesabı Disabled yapar ama o bir ayrılış DEĞİLDİR — silme saati
+                // orada başlamamalı. Varsayılan false = güvenli yön (unutmak veri SİLMEZ).
                 account.DisabledAt = DateTimeOffset.UtcNow;
             }
 

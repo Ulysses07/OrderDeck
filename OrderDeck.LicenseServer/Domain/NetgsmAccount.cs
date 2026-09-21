@@ -93,7 +93,9 @@ public sealed class NetgsmAccount
 
     /// <summary>Hesabın Disabled durumuna GEÇTİĞİ an. Saklama işinin saati:
     /// ayrılıştan 30 gün sonra IysConsent + hesap satırı silinir (§6).
-    /// Yalnız geçişte damgalanır; admin "Aç" geri aldığında temizlenir.</summary>
+    /// Yalnız AYRILIŞ kapatmasında (admin "Kapat") damgalanır; sistem kaynaklı
+    /// kapanışlar (ör. anahtar halkası kaybı, §2.4) boş bırakır. Admin "Aç"
+    /// geri aldığında temizlenir.</summary>
     public DateTimeOffset? DisabledAt { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }

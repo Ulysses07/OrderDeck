@@ -440,4 +440,60 @@ public class NetgsmAccountServiceTests
             "fırlatmadan önce temizlenmeli: kirli nesne çağıranın sonraki "
             + "SaveChanges'ine biner");
     }
+
+    [Fact]
+    public async Task Ayrilis_kapatmasi_DisabledAt_damgalar()
+    {
+        using var db = NewDb();
+        var licenseId = Guid.NewGuid();
+        var account = Seed(db, licenseId, NewBrandCode(), NetgsmAccountStatus.Verified);
+
+        var before = DateTimeOffset.UtcNow;
+
+        await Service(db).CloseAccountAndPauseCampaignsAsync(
+            account.Id, NetgsmAccountStatus.Disabled,
+            "Yönetici tarafından kapatıldı.", CancellationToken.None, departure: true);
+
+        var persisted = await db.NetgsmAccounts.AsNoTracking()
+            .SingleAsync(a => a.Id == account.Id);
+        persisted.DisabledAt.Should().NotBeNull();
+        persisted.DisabledAt!.Value.Should().BeOnOrAfter(before);
+    }
+
+    [Fact]
+    public async Task Zaten_Disabled_hesabi_tekrar_kapatmak_DisabledAt_i_ilerletmez()
+    {
+        using var db = NewDb();
+        var licenseId = Guid.NewGuid();
+        var account = Seed(db, licenseId, NewBrandCode(), NetgsmAccountStatus.Disabled);
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        account.DisabledAt = t0;
+        await db.SaveChangesAsync();
+
+        await Service(db).CloseAccountAndPauseCampaignsAsync(
+            account.Id, NetgsmAccountStatus.Disabled,
+            "Yönetici tarafından kapatıldı.", CancellationToken.None, departure: true);
+
+        var persisted = await db.NetgsmAccounts.AsNoTracking()
+            .SingleAsync(a => a.Id == account.Id);
+        persisted.DisabledAt.Should().Be(t0, "saklama saati İLK geçişten sayılır (§6)");
+    }
+
+    [Fact]
+    public async Task Sistem_kaynakli_kapatma_DisabledAt_damgalamaz()
+    {
+        using var db = NewDb();
+        var licenseId = Guid.NewGuid();
+        var account = Seed(db, licenseId, NewBrandCode(), NetgsmAccountStatus.Verified);
+
+        await Service(db).CloseAccountAndPauseCampaignsAsync(
+            account.Id, NetgsmAccountStatus.Disabled,
+            NetgsmAccountService.UndecryptableMessage, CancellationToken.None);
+
+        var persisted = await db.NetgsmAccounts.AsNoTracking()
+            .SingleAsync(a => a.Id == account.Id);
+        persisted.Status.Should().Be(NetgsmAccountStatus.Disabled);
+        persisted.DisabledAt.Should().BeNull(
+            "anahtar halkası kaybı ayrılış değildir — §6 saklama saati başlamaz");
+    }
 }
