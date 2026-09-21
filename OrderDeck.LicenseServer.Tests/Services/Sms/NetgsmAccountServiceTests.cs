@@ -496,4 +496,41 @@ public class NetgsmAccountServiceTests
         persisted.DisabledAt.Should().BeNull(
             "anahtar halkası kaybı ayrılış değildir — §6 saklama saati başlamaz");
     }
+
+    [Fact]
+    public async Task Sistem_kapatmasi_sonrasi_ayrilis_karari_saati_baslatir()
+    {
+        // DisabledAt null bırakılıyor: §2.4 anahtar halkası kaybı gibi sistem
+        // kaynaklı bir kapanışı simüle ediyor — Status zaten Disabled ama
+        // saat henüz başlamadı. Anahtar Status DEĞİL DisabledAt olmalı:
+        // sonradan gelen gerçek bir ayrılış kararının önü kesilmemeli.
+        using var db = NewDb();
+        var licenseId = Guid.NewGuid();
+        var account = Seed(db, licenseId, NewBrandCode(), NetgsmAccountStatus.Disabled);
+
+        var before = DateTimeOffset.UtcNow;
+
+        await Service(db).CloseAccountAndPauseCampaignsAsync(
+            account.Id, NetgsmAccountStatus.Disabled,
+            "Yönetici tarafından kapatıldı.", CancellationToken.None, departure: true);
+
+        var persisted = await db.NetgsmAccounts.AsNoTracking()
+            .SingleAsync(a => a.Id == account.Id);
+        persisted.DisabledAt.Should().NotBeNull(
+            "sistem kapanışı ayrılış kararının önünü kesmez");
+        persisted.DisabledAt!.Value.Should().BeOnOrAfter(before);
+    }
+
+    [Fact]
+    public async Task Departure_bayragi_Disabled_disinda_ArgumentException()
+    {
+        using var db = NewDb();
+        var licenseId = Guid.NewGuid();
+        var account = Seed(db, licenseId, NewBrandCode(), NetgsmAccountStatus.Verified);
+
+        Func<Task> act = async () => await Service(db).CloseAccountAndPauseCampaignsAsync(
+            account.Id, NetgsmAccountStatus.Failed, "x", departure: true);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
 }

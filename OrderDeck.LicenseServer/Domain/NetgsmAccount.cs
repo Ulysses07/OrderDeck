@@ -19,7 +19,10 @@ public enum NetgsmAccountStatus
     Failed = 0,
     /// <summary><c>/iys/search</c> başarılı. Gönderim yalnız bu durumda serbest.</summary>
     Verified = 1,
-    /// <summary>Yayıncı ayrıldı; kimlik bilgileri emekliye ayrıldı.</summary>
+    /// <summary>Yayıncı ayrıldı; kimlik bilgileri emekliye ayrıldı. Bu duruma
+    /// hem AYRILIŞLA (admin "Kapat" → <see cref="NetgsmAccount.DisabledAt"/>
+    /// damgalanır) hem SİSTEM KAYNAKLI kapanışla (§2.4, anahtar halkası kaybı
+    /// → <see cref="NetgsmAccount.DisabledAt"/> boş kalır) geçilebilir.</summary>
     Disabled = 2
 }
 
@@ -40,9 +43,11 @@ public enum NetgsmAccountStatus
 /// <item><description><b>Yayıncı ayrılır</b> → satır hemen silinmez,
 /// <see cref="Status"/> <see cref="NetgsmAccountStatus.Disabled"/> olur.
 /// Geçmiş gönderimlerin hangi kimlikle yapıldığı izlenebilir kalır.</description></item>
-/// <item><description><b>30 gün sonra</b> → Disabled satır 30 gün sonra
-/// <c>IysDepartureRetentionJob</c> tarafından silinir ve
-/// <see cref="NetgsmDeparture"/> takvim kaydı açılır.</description></item>
+/// <item><description><b>30 gün sonra</b> → <c>DisabledAt</c> damgalı satır
+/// <c>IysDepartureRetentionJob</c> tarafından silinir; marka başka canlı
+/// hesapta yaşamıyorsa <c>IysConsent</c> satırları da silinir ve
+/// <see cref="NetgsmDeparture"/> takvim kaydı açılır. <c>DisabledAt</c> boş
+/// (sistem kapanışı) satırlar silinmez.</description></item>
 /// <item><description><b>Lisans/müşteri KVKK kapsamında silinir</b> → License
 /// yabancı anahtarı <c>Cascade</c> olduğu için bu satır da gider. Kimlik
 /// bilgileri müşteri kaydıyla birlikte imha edilmelidir; doğru davranış

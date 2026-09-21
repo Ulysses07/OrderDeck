@@ -309,10 +309,14 @@ public sealed class NetgsmAccountService
     /// kararı en güncel karardır ve her hâlükârda kazanmalıdır.</para>
     ///
     /// <para><paramref name="departure"/>=<c>true</c> ile <c>Disabled</c>
-    /// geçişinde <see cref="NetgsmAccount.DisabledAt"/> damgalanır (§6 saklama
-    /// saati) — yalnız GEÇİŞTE. Sistem kaynaklı kapanışlar (ör. anahtar
-    /// halkası kaybı, §2.4) <c>departure=false</c> bırakır ve saati
-    /// BAŞLATMAZ: kimse ayrılmadı, veri silinmemeli.</para>
+    /// kapatması <see cref="NetgsmAccount.DisabledAt"/>'ı damgalar (§6 saklama
+    /// saati) — ama <c>Status</c>'a değil <c>DisabledAt</c>'ın kendisine
+    /// ANAHTARLANMIŞ: yalnız hâlâ <c>null</c>sa yazılır. İLK ayrılış kararı
+    /// saati başlatır ve bir daha İLERLEMEZ; sistem kaynaklı bir kapanış
+    /// (§2.4, anahtar halkası kaybı → <c>Disabled</c> ama <c>DisabledAt</c>
+    /// hâlâ <c>null</c>) sonradan gelen gerçek bir ayrılış kararının önünü
+    /// KESMEZ. <c>departure</c> yalnız <c>Disabled</c> ile birlikte
+    /// anlamlıdır; aksi <see cref="ArgumentException"/> fırlatır.</para>
     /// </summary>
     public async Task<int> CloseAccountAndPauseCampaignsAsync(
         Guid accountId,
@@ -324,6 +328,10 @@ public sealed class NetgsmAccountService
     {
         if (status is not (NetgsmAccountStatus.Disabled or NetgsmAccountStatus.Failed))
             throw new ArgumentOutOfRangeException(nameof(status));
+
+        if (departure && status != NetgsmAccountStatus.Disabled)
+            throw new ArgumentException(
+                "departure yalnız Disabled kapatmasıyla anlamlı.", nameof(departure));
 
         if (status == NetgsmAccountStatus.Failed && expectedUpdatedAt is null)
             throw new ArgumentException(
@@ -346,13 +354,14 @@ public sealed class NetgsmAccountService
 
             if (departure
                 && status == NetgsmAccountStatus.Disabled
-                && account.Status != NetgsmAccountStatus.Disabled)
+                && account.DisabledAt is null)
             {
-                // Saklama saati ayrılış ANINDAN sayılır (§6: 30 gün). Yalnız GEÇİŞTE
-                // damgala: zaten Disabled hesabı tekrar kapatmak saati ilerletirdi.
-                // `departure` açık bayrak: anahtar halkası kaybı (§2.4, SmsCampaignSendJob)
-                // da hesabı Disabled yapar ama o bir ayrılış DEĞİLDİR — silme saati
-                // orada başlamamalı. Varsayılan false = güvenli yön (unutmak veri SİLMEZ).
+                // Saklama saati İLK ayrılış kararından sayılır (§6: 30 gün) ve asla
+                // ilerlemez: zaten damgalı hesabı tekrar kapatmak saati oynatmaz.
+                // Anahtar Status değil DisabledAt: sistem kaynaklı kapanış (§2.4, anahtar
+                // halkası kaybı → Disabled ama DisabledAt=null) sonradan verilen ayrılış
+                // kararının önünü KESMEZ — bayat sayfadan gelen "Kapat" da saati başlatır.
+                // `departure` açık bayrak; varsayılan false = güvenli yön (unutmak veri SİLMEZ).
                 account.DisabledAt = DateTimeOffset.UtcNow;
             }
 
