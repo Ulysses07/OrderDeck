@@ -312,6 +312,41 @@ public class IysConsentCollectorTests
     }
 
     [Fact]
+    public async Task Ayna_satiri_yerel_ret_ile_SourceCode_yerellesir()
+    {
+        using var db = NewDb();
+        SeedAccount(db, LicenseA, BrandA);
+        // IysMirrorImportJob'un yazdığı ayna satırının aynısı: Onay/Confirmed,
+        // SourceCode="IYS_MIRROR", LastLocalEventAt=default (henüz yerel olay yok).
+        var now = DateTimeOffset.UtcNow;
+        db.IysConsents.Add(new IysConsent
+        {
+            Id = Guid.NewGuid(), BrandCode = BrandA, ChannelType = "MESAJ",
+            RecipientType = "BIREYSEL", Recipient = Phone,
+            Status = IysConsentStatus.Onay,
+            SourceCode = IysMirrorImportJob.SourceCodeMirror,
+            PushState = IysPushState.Confirmed,
+            LastLocalEventAt = default, NextVerifyAt = null,
+            CreatedAt = now, UpdatedAt = now,
+        });
+        await db.SaveChangesAsync();
+
+        // Kişi ayna satırındaki onayı geri çekiyor (yerel RET).
+        await RecordAsync(Collector(db), consented: false,
+            new DateTimeOffset(2026, 9, 16, 9, 0, 0, TimeSpan.Zero));
+        await db.SaveChangesAsync();
+
+        var row = await db.IysConsents.SingleAsync();
+        row.Status.Should().Be(IysConsentStatus.Ret,
+            "ayna satırı da geri çekilebilir — yerel RET her zaman kazanır");
+        row.PushState.Should().Be(IysPushState.Pending,
+            "beyan DEĞİŞTİ (Onay→Ret) — İYS'ye bildirilmesi gerekir");
+        row.SourceCode.Should().Be(new NetgsmOptions().IysSourceCode,
+            "İYS'nin `source` alanı tanımlı bir izin kaynağı olmalı — IYS_MIRROR " +
+            "gitmemeli (İYS'de enumerated bir değer değil)");
+    }
+
+    [Fact]
     public async Task Dogrulanmamis_hesap_da_satir_ACMAZ()
     {
         using var db = NewDb();

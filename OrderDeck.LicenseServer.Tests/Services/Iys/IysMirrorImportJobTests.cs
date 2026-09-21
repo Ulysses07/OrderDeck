@@ -264,13 +264,17 @@ public sealed class IysMirrorImportJobTests : IClassFixture<ApiFactory>
 
         var job = new IysMirrorImportJob(db, accounts, fake,
             NullLogger<IysMirrorImportJob>.Instance);
-        job.DelayAsync = (_, _) => Task.CompletedTask; // test 6 sn beklemesin diye
+        var delayCalls = 0;
+        // test 6 sn beklemesin diye — ayrıca kaç kez çağrıldığını sayar (M-D).
+        job.DelayAsync = (_, _) => { delayCalls++; return Task.CompletedTask; };
 
         await job.RunAsync(licenseId, CancellationToken.None);
 
         fake.SearchCalls.Should().HaveCount(2, "21. numara ikinci partiye düşmeli (BatchSize=20)");
         fake.SearchCalls[0].Should().HaveCount(20);
         fake.SearchCalls[1].Should().HaveCount(1);
+        delayCalls.Should().Be(1,
+            "yalnız partiler ARASI beklenir — 2 parti için 1 bekleme (first-bayrağı)");
 
         using var verify = _factory.Services.CreateScope();
         var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -311,7 +315,11 @@ public sealed class IysMirrorImportJobTests : IClassFixture<ApiFactory>
         var (licenseId, brand) = await SeedAsync(db, accounts,
             NetgsmAccountStatus.Verified, phone);
 
-        var fake = new FakeIysClient { Code = "30" };
+        // "30" KULLANILMIYOR: gerçek istemci (NetgsmIysClient) 30/60'ı SearchAsync
+        // hiç dönmeden IysConfigurationException'a çevirir — bu test işin KENDİ
+        // savunmasını (sonucun içindeki Code alanı) sınıyor, o yüzden istemcinin
+        // hiç özel işlemediği bir geçiş kodu (ör. kota/oran sınırı) kullanılıyor.
+        var fake = new FakeIysClient { Code = "70" };
         fake.Statuses[phone] = IysConsentStatus.Onay;
         var job = new IysMirrorImportJob(db, accounts, fake,
             NullLogger<IysMirrorImportJob>.Instance);

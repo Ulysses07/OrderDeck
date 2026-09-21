@@ -18,10 +18,10 @@ namespace OrderDeck.LicenseServer.Services.Iys;
 /// ONAY. Satır hiç açılmazsa gönderim kapısı zaten kapalıdır (fail-closed) —
 /// kayıp yok.</para>
 ///
-/// <para>Yerel gerçek bir onay/ret SONRADAN gelirse <see cref="IysConsentCollector"/>
-/// satırı EZER (SourceCode/ConsentDate yerelleşir) — ayna yalnız bir başlangıç
-/// noktasıdır. <c>IYS_MIRROR</c> izi <see cref="IysConsentEvent"/> tablosunda
-/// (ekle-only) kalıcı kalır.</para>
+/// <para>Yerel bir beyan (onay ya da ret) SONRADAN gelirse
+/// <see cref="IysConsentCollector"/> SourceCode'u yerel kaynağa çevirir —
+/// ayna yalnız bir başlangıç noktasıdır. <c>IYS_MIRROR</c> izi
+/// <see cref="IysConsentEvent"/> tablosunda (ekle-only) kalıcı kalır.</para>
 ///
 /// <para>DisableConcurrentExecution YOK: iş idempotent — eş zamanlı iki koşu en
 /// kötü tekil indeks yarışında düşer, sonraki koşu tamamlar. Panelden çift
@@ -152,6 +152,7 @@ public sealed class IysMirrorImportJob
             }
 
             var now = DateTimeOffset.UtcNow;
+            var mirroredInChunk = 0;
             foreach (var phone in chunk)
             {
                 // İYS "kayıt yok" ile RET'i ayırt edemez (NetgsmIysClient,
@@ -161,7 +162,7 @@ public sealed class IysMirrorImportJob
                     || status != IysConsentStatus.Onay)
                     continue;
 
-                mirroredTotal++;
+                mirroredInChunk++;
                 var consent = new IysConsent
                 {
                     Id = Guid.NewGuid(),
@@ -203,15 +204,24 @@ public sealed class IysMirrorImportJob
             try
             {
                 await _db.SaveChangesAsync(ct);
+                mirroredTotal += mirroredInChunk;
             }
-            catch (DbUpdateException ex)
+            catch (DbUpdateException ex) when (!ct.IsCancellationRequested)
             {
                 _db.ChangeTracker.Clear();
-                // İstisna nesnesi LOGLANMAZ: SQL Server'ın tekil anahtar ihlali
-                // mesajı telefonu taşır (KVKK) — yalnız tür adı yeterli sinyal.
+                // İstisna nesnesi TAMAMEN LOGLANMAZ: SQL Server'ın tekil anahtar
+                // ihlali mesajı telefonu taşır (KVKK) — yalnız tür adı + hata
+                // numarası yeterli sinyal (2601/2627 = tekil indeks yarışı, başka
+                // bir numara kalıcı bir yazım hatasını ayırt eder). InMemory
+                // sağlayıcısında SqlException yok — SqlError alanı null kalır.
+                // `when (!ct.IsCancellationRequested)`: sunucu kapanışı TAM
+                // SaveChanges sürerken bir DbUpdateException'a dönüşürse bunu
+                // zararsız bir yarış SANIP yutmamak için — kapanış dışarı sızmalı.
+                var sqlError = (ex.InnerException as Microsoft.Data.SqlClient.SqlException)?.Number;
                 _log.LogWarning(
-                    "Ayna: yazım çakışması ({ExceptionType}) — idempotent, sonraki "
-                    + "koşu tamamlar (marka {Brand})", ex.GetType().Name, account.BrandCode);
+                    "Ayna: yazım çakışması ({ExceptionType}, SqlError={SqlError}) — "
+                    + "idempotent, sonraki koşu tamamlar (marka {Brand})",
+                    ex.GetType().Name, sqlError, account.BrandCode);
             }
         }
 
