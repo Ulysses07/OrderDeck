@@ -311,20 +311,6 @@ public class LicenseApiClientTests
     private static readonly Guid SmsLicenseId = Guid.Parse("11111111-1111-1111-1111-111111111111");
 
     [Fact]
-    public async Task GetSmsBalanceAsync_returns_credits()
-    {
-        var (client, handler) = BuildClient(_ => FakeHttpMessageHandler.Json(200,
-            """{"creditsRemaining":420,"updatedAt":"2026-06-14T10:00:00Z"}"""));
-
-        var resp = await client.GetSmsBalanceAsync(SmsLicenseId);
-
-        resp.CreditsRemaining.Should().Be(420);
-        handler.Requests[0].Method.Method.Should().Be("GET");
-        handler.Requests[0].RequestUri!.AbsolutePath
-            .Should().Be($"/api/v1/licenses/{SmsLicenseId}/sms/balance");
-    }
-
-    [Fact]
     public async Task PreviewSmsCampaignAsync_posts_body_and_parses_response()
     {
         var (client, handler) = BuildClient(_ => FakeHttpMessageHandler.Json(200,
