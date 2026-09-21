@@ -204,7 +204,8 @@ public class IndexModel : PageModel
         // Formül enjeksiyonuna kapalı — güvence sütun kaynaklarından gelir: Recipient
         // PhoneNormalizer çıktısıdır ('+' + yalnız rakam), Status/PushState/
         // LastVerifiedStatus enum adı, tarihler ISO-8601 "O", SourceCode operatör
-        // konfigürasyonu (NetgsmOptions). Serbest metin (LastError) BİLİNÇLİ dışarıda.
+        // konfigürasyonu (NetgsmOptions) YA DA IysMirrorImportJob.SourceCodeMirror
+        // sabiti — ikisi de sabit metin. Serbest metin (LastError) BİLİNÇLİ dışarıda.
         // Dosya makine-okunur: Excel '+90…' değerini sayıya çevirip bozar; hedef
         // sonraki entegratörün içe aktarımıdır, Excel gidiş-dönüşü değil.
         var sb = new StringBuilder();

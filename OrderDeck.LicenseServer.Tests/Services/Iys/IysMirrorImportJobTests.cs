@@ -14,7 +14,8 @@ namespace OrderDeck.LicenseServer.Tests.Services.Iys;
 /// <summary>
 /// §6 dönüş yolu — İYS'den ayna içe aktarım. Sahte istemcinin AddAsync'i
 /// KASITLI patlar: ayna işi bir OKUMA işidir, beyan (add) ÇAĞIRMAMALI.
-/// Testler ≤20 telefonla tek parça kalır (BatchDelay'e girmez).
+/// Testler çoğunlukla ≤20 telefonla tek parça kalır (BatchDelay'e girmez);
+/// parti bölünmesini sınayan test kendi <c>DelayAsync</c>'ini no-op yapar.
 /// </summary>
 public sealed class IysMirrorImportJobTests : IClassFixture<ApiFactory>
 {
@@ -26,6 +27,12 @@ public sealed class IysMirrorImportJobTests : IClassFixture<ApiFactory>
         public Dictionary<string, IysConsentStatus> Statuses { get; } = new();
         public List<string[]> SearchCalls { get; } = new();
 
+        /// <summary>Doluysa SearchAsync bunu fırlatır — geçici ağ hatası simülasyonu.</summary>
+        public Exception? ThrowOnSearch { get; set; }
+
+        /// <summary>/iys/search yanıt kodu — varsayılan "0" (başarı).</summary>
+        public string Code { get; set; } = "0";
+
         public Task<IysAddResult> AddAsync(IysAccountContext account,
             IReadOnlyList<IysConsentRecord> items, CancellationToken ct = default)
             => throw new NotSupportedException(
@@ -35,10 +42,11 @@ public sealed class IysMirrorImportJobTests : IClassFixture<ApiFactory>
             IReadOnlyList<string> recipients, CancellationToken ct = default)
         {
             SearchCalls.Add(recipients.ToArray());
+            if (ThrowOnSearch is not null) throw ThrowOnSearch;
             var found = recipients
                 .Where(Statuses.ContainsKey)
                 .ToDictionary(r => r, r => Statuses[r]);
-            return Task.FromResult(new IysSearchResult("0", "{}", found));
+            return Task.FromResult(new IysSearchResult(Code, "{}", found));
         }
     }
 
@@ -100,7 +108,7 @@ public sealed class IysMirrorImportJobTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task Onay_ve_ret_terminal_satir_olarak_yazilir_unknown_atlanir()
+    public async Task Yalniz_onay_terminal_satir_olarak_yazilir_ret_ve_unknown_atlanir()
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -124,9 +132,12 @@ public sealed class IysMirrorImportJobTests : IClassFixture<ApiFactory>
         var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var rows = await vdb.IysConsents.AsNoTracking()
             .Where(c => c.BrandCode == brand).ToListAsync();
-        rows.Should().HaveCount(2, "Unknown = İYS'de kayıt yok → satır yazılmaz");
+        rows.Should().HaveCount(1,
+            "İYS 'kayıt yok' ile 'reddetti'yi ayırt edemiyor (NetgsmIysClient, " +
+            "2026-09-17 ölçümü) — RET ve Unknown'ı satıra çevirmek yanlış sinyal olurdu");
 
-        var onay = rows.Single(r => r.Recipient == onayPhone);
+        var onay = rows.Single();
+        onay.Recipient.Should().Be(onayPhone);
         onay.Status.Should().Be(IysConsentStatus.Onay);
         onay.SourceCode.Should().Be(IysMirrorImportJob.SourceCodeMirror);
         onay.PushState.Should().Be(IysPushState.Confirmed,
@@ -134,14 +145,18 @@ public sealed class IysMirrorImportJobTests : IClassFixture<ApiFactory>
         onay.ConsentDate.Should().BeNull("/iys/search consentDate döndürmüyor");
         onay.NextVerifyAt.Should().BeNull("verify işi Pushed'ı tarar — ayna dışında");
         onay.LastVerifiedStatus.Should().Be(IysConsentStatus.Onay);
-
-        rows.Single(r => r.Recipient == retPhone).Status.Should().Be(IysConsentStatus.Ret);
+        onay.LastVerifiedAt.Should().NotBeNull();
+        onay.PushDeadline.Should().BeNull("ayna push penceresine hiç girmez");
 
         var events = await vdb.IysConsentEvents.AsNoTracking()
             .Where(e => e.BrandCode == brand).ToListAsync();
-        events.Should().HaveCount(2);
-        events.Should().OnlyContain(e =>
-            e.EventType == IysConsentEventType.SearchResult && e.LicenseId == licenseId);
+        events.Should().HaveCount(1, "RET/Unknown için olay da yazılmaz — satırsız iz bırakmaz");
+        var ev = events.Single();
+        ev.EventType.Should().Be(IysConsentEventType.SearchResult);
+        ev.LicenseId.Should().Be(licenseId);
+        ev.IysConsentId.Should().Be(onay.Id);
+        ev.ApiResponseBody.Should().BeNull();
+        ev.ApiResponseCode.Should().Be("0");
     }
 
     [Fact]
@@ -232,5 +247,106 @@ public sealed class IysMirrorImportJobTests : IClassFixture<ApiFactory>
         var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
         (await vdb.IysConsents.CountAsync(c => c.BrandCode == brand)).Should().Be(1);
         (await vdb.IysConsentEvents.CountAsync(e => e.BrandCode == brand)).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Yirmi_birinci_numara_ikinci_partiye_duser()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var accounts = scope.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+        var phones = Enumerable.Range(0, 21).Select(_ => NewPhone()).ToArray();
+        var (licenseId, brand) = await SeedAsync(db, accounts,
+            NetgsmAccountStatus.Verified, phones);
+
+        var fake = new FakeIysClient();
+        foreach (var p in phones) fake.Statuses[p] = IysConsentStatus.Onay;
+
+        var job = new IysMirrorImportJob(db, accounts, fake,
+            NullLogger<IysMirrorImportJob>.Instance);
+        job.DelayAsync = (_, _) => Task.CompletedTask; // test 6 sn beklemesin diye
+
+        await job.RunAsync(licenseId, CancellationToken.None);
+
+        fake.SearchCalls.Should().HaveCount(2, "21. numara ikinci partiye düşmeli (BatchSize=20)");
+        fake.SearchCalls[0].Should().HaveCount(20);
+        fake.SearchCalls[1].Should().HaveCount(1);
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.IysConsents.CountAsync(c => c.BrandCode == brand)).Should().Be(21);
+    }
+
+    [Fact]
+    public async Task Gecici_ag_hatasi_satir_yazmaz_ve_yeniden_firlatir()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var accounts = scope.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+        var phone = NewPhone();
+        var (licenseId, brand) = await SeedAsync(db, accounts,
+            NetgsmAccountStatus.Verified, phone);
+
+        var fake = new FakeIysClient { ThrowOnSearch = new HttpRequestException("x") };
+        var job = new IysMirrorImportJob(db, accounts, fake,
+            NullLogger<IysMirrorImportJob>.Instance);
+        var act = async () => await job.RunAsync(licenseId, CancellationToken.None);
+
+        await act.Should().ThrowAsync<HttpRequestException>(
+            "geçici ağ hatası dışarı sızmalı — tek seferlik iş Hangfire'ın yeniden " +
+            "denemesine bağlı, sessizce yutulamaz");
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.IysConsents.AnyAsync(c => c.BrandCode == brand)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Sifir_disi_kod_parti_islemez_ve_firlatir()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var accounts = scope.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+        var phone = NewPhone();
+        var (licenseId, brand) = await SeedAsync(db, accounts,
+            NetgsmAccountStatus.Verified, phone);
+
+        var fake = new FakeIysClient { Code = "30" };
+        fake.Statuses[phone] = IysConsentStatus.Onay;
+        var job = new IysMirrorImportJob(db, accounts, fake,
+            NullLogger<IysMirrorImportJob>.Instance);
+        var act = async () => await job.RunAsync(licenseId, CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>(
+            "sıfır dışı kod güvenilir değil — parti işlenmemeli, Hangfire yeniden denemeli");
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.IysConsents.AnyAsync(c => c.BrandCode == brand)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Baska_lisansin_musterileri_sorgulanmaz()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var accounts = scope.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+        var phoneA = NewPhone();
+        var phoneB = NewPhone();
+        var (licenseAId, _) = await SeedAsync(db, accounts,
+            NetgsmAccountStatus.Verified, phoneA);
+        var (_, _) = await SeedAsync(db, accounts,
+            NetgsmAccountStatus.Verified, phoneB);
+
+        var fake = new FakeIysClient();
+        fake.Statuses[phoneA] = IysConsentStatus.Onay;
+        fake.Statuses[phoneB] = IysConsentStatus.Onay;
+
+        var job = new IysMirrorImportJob(db, accounts, fake,
+            NullLogger<IysMirrorImportJob>.Instance);
+        await job.RunAsync(licenseAId, CancellationToken.None);
+
+        fake.SearchCalls.Should().HaveCount(1);
+        fake.SearchCalls[0].Should().ContainSingle().Which.Should().Be(phoneA);
     }
 }

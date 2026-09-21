@@ -1,3 +1,4 @@
+using Hangfire;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
@@ -7,25 +8,43 @@ namespace OrderDeck.LicenseServer.Services.Iys;
 
 /// <summary>
 /// §6 dönüş yolu — İYS'den AYNA içe aktarım. Geri dönen yayıncının WPF
-/// müşteri telefonlarını /iys/search ile sorgular; İYS'de kaydı OLANLARI
+/// müşteri telefonlarını /iys/search ile sorgular; İYS'de ONAY'ı OLANLARI
 /// terminal ayna satırı olarak yazar. Yerel satırı olan numaraya DOKUNMAZ
-/// (yerel beyan her zaman kazanır). Unknown = İYS'de kayıt yok → satır
-/// yazılmaz ("kayıt yok"u satıra çevirmek yanlış sinyal olur).
-/// DisableConcurrentExecution YOK: iş idempotent — eş zamanlı iki koşu en
-/// kötü tekil indeks yarışında düşer, sonraki koşu tamamlar.
+/// (yerel beyan her zaman kazanır).
+///
+/// <para><b>Yalnız ONAY aynalanır.</b> RET ve Unknown ikisi de ATLANIR: İYS
+/// "kayıt yok" ile "reddetti"yi ayırt EDEMİYOR, ikisine de RET diyor (bkz.
+/// <see cref="NetgsmIysClient"/>, 2026-09-17 ölçümü) — tek güvenilir sinyal
+/// ONAY. Satır hiç açılmazsa gönderim kapısı zaten kapalıdır (fail-closed) —
+/// kayıp yok.</para>
+///
+/// <para>Yerel gerçek bir onay/ret SONRADAN gelirse <see cref="IysConsentCollector"/>
+/// satırı EZER (SourceCode/ConsentDate yerelleşir) — ayna yalnız bir başlangıç
+/// noktasıdır. <c>IYS_MIRROR</c> izi <see cref="IysConsentEvent"/> tablosunda
+/// (ekle-only) kalıcı kalır.</para>
+///
+/// <para>DisableConcurrentExecution YOK: iş idempotent — eş zamanlı iki koşu en
+/// kötü tekil indeks yarışında düşer, sonraki koşu tamamlar. Panelden çift
+/// tıklama iki kopya birden çalıştırabilir; bedeli yalnız kota (Netgsm ~10
+/// istek/dk) — ikinci kopya <c>known</c> kümesi sayesinde zaten yazılmış
+/// numaraları atlar, no-op'a yakındır.</para>
 /// </summary>
 public sealed class IysMirrorImportJob
 {
     public const string SourceCodeMirror = "IYS_MIRROR";
 
-    internal const int BatchSize = 20;
+    public const int BatchSize = 20;
     // Netgsm ~10 istek/dk — partiler arası 6 sn (ilk partide bekleme yok).
-    internal static readonly TimeSpan BatchDelay = TimeSpan.FromSeconds(6);
+    public static readonly TimeSpan BatchDelay = TimeSpan.FromSeconds(6);
 
     private readonly LicenseDbContext _db;
     private readonly NetgsmAccountService _accounts;
     private readonly IIysClient _client;
     private readonly ILogger<IysMirrorImportJob> _log;
+
+    /// <summary>Enjekte edilebilir bekleme — test 6 sn beklemesin diye.</summary>
+    public Func<TimeSpan, CancellationToken, Task> DelayAsync { get; set; }
+        = static (d, c) => Task.Delay(d, c);
 
     public IysMirrorImportJob(LicenseDbContext db, NetgsmAccountService accounts,
         IIysClient client, ILogger<IysMirrorImportJob> log)
@@ -36,6 +55,13 @@ public sealed class IysMirrorImportJob
         _log = log;
     }
 
+    // Kardeşleri (IysConsentPushJob vb.) recurring olduğu için Attempts=0 —
+    // süpürme bir dahaki turda zaten yeniden dener. Bu iş TEK SEFERLİK
+    // (panelden kuyruklanır, zamanlanmış bir sonraki koşusu yok): geçici bir
+    // hata burada sonsuza dek beklemez, Hangfire üç kez üstel gecikmeyle
+    // yeniden dener. İş idempotent — kaldığı yerden devam eder, `known`
+    // kümesi zaten yazılmış numaraları atlar.
+    [AutomaticRetry(Attempts = 3, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
     public async Task RunAsync(Guid licenseId, CancellationToken ct)
     {
         var account = await _accounts.GetVerifiedByLicenseAsync(licenseId, ct);
@@ -77,12 +103,19 @@ public sealed class IysMirrorImportJob
             .ToHashSet();
 
         var missing = phones.Where(p => !known.Contains(p)).ToList();
-        if (missing.Count == 0) return;
+        if (missing.Count == 0)
+        {
+            _log.LogInformation(
+                "Ayna: lisans {LicenseId} için eksik numara yok (marka {Brand})",
+                licenseId, account.BrandCode);
+            return;
+        }
 
+        var mirroredTotal = 0;
         var first = true;
         foreach (var chunk in missing.Chunk(BatchSize))
         {
-            if (!first) await Task.Delay(BatchDelay, ct);
+            if (!first) await DelayAsync(BatchDelay, ct);
             first = false;
 
             IysSearchResult result;
@@ -96,21 +129,39 @@ public sealed class IysMirrorImportJob
                     account.BrandCode);
                 return;
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw; // sunucu kapanıyor — Hangfire yeniden kuyruğa alır
+            }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
             {
                 _log.LogWarning(ex,
                     "Ayna: geçici ağ hatası — kalan partiler sonraki koşuya "
                     + "(marka {Brand})", account.BrandCode);
-                return;
+                throw; // tek seferlik iş: [AutomaticRetry] Hangfire'a yeniden denetir
+            }
+
+            if (result.Code != "0")
+            {
+                // Kota/oran sınırı gibi geçici durumlar da buradan geçer — parti
+                // GÜVENİLİR değil, işlenmeden atlanır ve koşu yeniden dener.
+                _log.LogWarning(
+                    "Ayna: /iys/search kod {Code} döndü (marka {Brand}) — parti işlenmedi",
+                    result.Code, account.BrandCode);
+                throw new InvalidOperationException($"İYS arama kodu {result.Code}");
             }
 
             var now = DateTimeOffset.UtcNow;
             foreach (var phone in chunk)
             {
+                // İYS "kayıt yok" ile RET'i ayırt edemez (NetgsmIysClient,
+                // 2026-09-17 ölçümü) — tek kullanılabilir sinyal ONAY; RET/Unknown
+                // satır yazmaz. Kapı satırsızken zaten kapalı (fail-closed): kayıp yok.
                 if (!result.Statuses.TryGetValue(phone, out var status)
-                    || status == IysConsentStatus.Unknown)
-                    continue; // İYS'de kayıt yok — satır yazılmaz.
+                    || status != IysConsentStatus.Onay)
+                    continue;
 
+                mirroredTotal++;
                 var consent = new IysConsent
                 {
                     Id = Guid.NewGuid(),
@@ -124,7 +175,12 @@ public sealed class IysMirrorImportJob
                     PushState = IysPushState.Confirmed, // TERMİNAL: push Pending'i, verify Pushed'ı tarar
                     LastVerifiedStatus = status,
                     LastVerifiedAt = now,
-                    LastLocalEventAt = now,
+                    // Ayna yerel bir olay DEĞİL — `default` "henüz yerel olay yok"
+                    // sinyalidir (bkz. IysConsentCollector.ApplyToRowAsync:
+                    // `row.LastLocalEventAt != default` koruması). `now` yazsaydık,
+                    // sonradan gelen gerçek (ama daha ESKİ zaman damgalı, ör. yeniden
+                    // oynatılan) bir yerel onay/ret'i bayat SAYDIRIRDI.
+                    LastLocalEventAt = default,
                     NextVerifyAt = null,
                     CreatedAt = now,
                     UpdatedAt = now,
@@ -151,10 +207,17 @@ public sealed class IysMirrorImportJob
             catch (DbUpdateException ex)
             {
                 _db.ChangeTracker.Clear();
-                _log.LogWarning(ex,
-                    "Ayna: yazım çakışması (tekil indeks yarışı) — idempotent, "
-                    + "sonraki koşu tamamlar (marka {Brand})", account.BrandCode);
+                // İstisna nesnesi LOGLANMAZ: SQL Server'ın tekil anahtar ihlali
+                // mesajı telefonu taşır (KVKK) — yalnız tür adı yeterli sinyal.
+                _log.LogWarning(
+                    "Ayna: yazım çakışması ({ExceptionType}) — idempotent, sonraki "
+                    + "koşu tamamlar (marka {Brand})", ex.GetType().Name, account.BrandCode);
             }
         }
+
+        _log.LogInformation(
+            "Ayna: marka {Brand} — {Asked} numara soruldu, {Mirrored} ONAY aynalandı, "
+            + "{Skipped} kayıt yok/RET",
+            account.BrandCode, missing.Count, mirroredTotal, missing.Count - mirroredTotal);
     }
 }
