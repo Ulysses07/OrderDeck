@@ -401,20 +401,19 @@ public sealed class SmsCampaignSendJob
                     }
 
                     // CampaignPause sınıfı (bakiye/limit/bilinmeyen): alıcı
-                    // geri dönüşü + duraklatma TEK SaveChanges'te.
+                    // geri dönüşü + duraklatma TEK SaveChanges'te denenir.
+                    // Kampanya çakışırsa (rakip duraklatma/devralma) kararı ona
+                    // bırakırız ama alıcının "pending" dönüşü KAYBOLMAMALI —
+                    // SaveRecipientResultAsync kampanyayı Unchanged'a çekip
+                    // yalnız alıcıyı yazar. Eski davranış (Detach + return)
+                    // alıcıyı diskte "sending" bırakıyordu: devam ettirilen
+                    // kampanya onu bir daha görmez, kitleden sessizce düşerdi
+                    // (2026-09-21 denetim P2; SmsCampaignPauseRaceRelationalTests).
                     _log.LogWarning(
                         "SmsCampaignSendJob: campaign {Id} duraklatılıyor (code={Code})",
                         campaignId, ex.Code);
                     campaign.Status = "paused";
-                    campaign.ClaimedAt = NextClaimedAt(campaign.ClaimedAt);
-                    try
-                    {
-                        await _db.SaveChangesAsync(ct);
-                    }
-                    catch (DbUpdateConcurrencyException)
-                    {
-                        _db.Entry(campaign).State = EntityState.Detached;
-                    }
+                    await SaveRecipientResultAsync(campaign, ct);
                     return;
                 }
             }

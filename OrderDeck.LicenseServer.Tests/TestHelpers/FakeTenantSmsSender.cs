@@ -30,6 +30,11 @@ public sealed class FakeTenantSmsSender : ITenantSmsSender
     /// <see cref="RecordingSmsSender.OnSent"/>'te.</summary>
     public Action<Message>? OnSent { get; set; }
 
+    /// <summary>Programlanmış istisna fırlatılmadan HEMEN önce çağrılır —
+    /// gönderim ile sonuç yazımı arasına rakip bir yazım sıkıştırmak için
+    /// (yarış testleri).</summary>
+    public Action<string>? OnFailing { get; set; }
+
     public IReadOnlyList<Message> Sent
     {
         get { lock (_lock) return _sent.ToList(); }
@@ -44,6 +49,7 @@ public sealed class FakeTenantSmsSender : ITenantSmsSender
         FailAllWith = null;
         NextJobId = null;
         OnSent = null;
+        OnFailing = null;
     }
 
     public Task<string?> SendAsync(
@@ -51,7 +57,11 @@ public sealed class FakeTenantSmsSender : ITenantSmsSender
         CancellationToken ct = default)
     {
         if (FailAllWith is not null) throw FailAllWith;
-        if (FailWith.TryGetValue(toPhone, out var ex)) throw ex;
+        if (FailWith.TryGetValue(toPhone, out var ex))
+        {
+            OnFailing?.Invoke(toPhone);
+            throw ex;
+        }
 
         var msg = new Message(credentials, toPhone, message);
         lock (_lock) _sent.Add(msg);
