@@ -468,8 +468,7 @@ public sealed class IysDepartureRetentionJobTests : IClassFixture<ApiFactory>
         using var scope = _factory.Services.CreateScope();
         scope.ServiceProvider.GetRequiredService<IysDepartureRetentionJob>()
             .Should().NotBeNull();
-        // Görev 8'de açılacak:
-        // scope.ServiceProvider.GetRequiredService<IysMirrorImportJob>()
-        //     .Should().NotBeNull("Görev 8'in işi de aynı yerde kayıtlı olmalı");
+        scope.ServiceProvider.GetRequiredService<IysMirrorImportJob>()
+            .Should().NotBeNull("Görev 8'in işi de aynı yerde kayıtlı olmalı");
     }
 }

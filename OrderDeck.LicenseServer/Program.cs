@@ -208,6 +208,7 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysConsentVerifyJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysConsentRecoveryJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysDepartureRetentionJob>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysMirrorImportJob>();
         builder.Services.AddScoped<PasswordResetCodeService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Auth.PasswordResetCodeCleanupJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.WhatsApp.WaSendAttemptCleanupJob>();
