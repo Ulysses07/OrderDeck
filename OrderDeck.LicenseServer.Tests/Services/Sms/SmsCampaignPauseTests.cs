@@ -424,7 +424,6 @@ public sealed class SmsCampaignPauseTests : IClassFixture<HookedApiFactory>
         var jobs = new RecordingBackgroundJobClient(enqueued);
         var recovery = new SmsCampaignRecoveryJob(
             db, jobs,
-            scope.ServiceProvider.GetRequiredService<LicenseSmsBalanceService>(),
             scope.ServiceProvider.GetRequiredService<
                 Microsoft.Extensions.Logging.ILogger<SmsCampaignRecoveryJob>>());
 
