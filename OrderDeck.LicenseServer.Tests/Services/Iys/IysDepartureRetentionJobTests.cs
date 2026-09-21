@@ -12,8 +12,11 @@ using Xunit;
 namespace OrderDeck.LicenseServer.Tests.Services.Iys;
 
 /// <summary>
-/// §6 + m.13 saklama takvimi. Paylaşımlı ApiFactory DB'sinde iş bütün
-/// tabloyu tarar — assert'ler KENDİ marka/id'leriyle sınırlı tutulmalı.
+/// §6 + m.13 saklama takvimi. <see cref="ApiFactory"/> bu SINIFA özel bir
+/// InMemory DB açar (bkz. ApiFactory.cs — <c>_dbName</c> kurucuda üretilir);
+/// "paylaşımlı" burada BAŞKA test sınıflarının artığı değil, bu sınıftaki
+/// [Fact]'lerin xunit tarafından SIRALI koşulup aynı DB'yi paylaşması demek —
+/// bu yüzden assert'ler KENDİ marka/id'leriyle sınırlı tutulmalı.
 /// </summary>
 public sealed class IysDepartureRetentionJobTests : IClassFixture<ApiFactory>
 {
@@ -27,7 +30,7 @@ public sealed class IysDepartureRetentionJobTests : IClassFixture<ApiFactory>
 
     private static async Task<(Guid LicenseId, Guid AccountId, string BrandCode)>
         SeedDepartedAsync(LicenseDbContext db, NetgsmAccountService accounts,
-            DateTimeOffset disabledAt)
+            DateTimeOffset? disabledAt)
     {
         var customerId = Guid.NewGuid();
         db.Customers.Add(new Customer
@@ -103,6 +106,8 @@ public sealed class IysDepartureRetentionJobTests : IClassFixture<ApiFactory>
         dep.LicenseId.Should().Be(licenseId);
         dep.DepartedAt.Should().BeCloseTo(disabledAt, TimeSpan.FromSeconds(1),
             "m.13 3 yıl ayrılış ANINDAN sayılır, silme anından değil");
+        dep.ConsentsDeletedAt.Should().BeCloseTo(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(5),
+            "30. gün temizliğinin gerçekleştiği an — koşu anı");
         dep.PurgedAt.Should().BeNull();
     }
 
@@ -161,6 +166,60 @@ public sealed class IysDepartureRetentionJobTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Sistem_kapanisli_hesaba_DisabledAt_bos_31_gun_sonra_da_dokunulmaz()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var accounts = scope.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+        // §2.4 — anahtar halkası kaybı gibi SİSTEM kaynaklı kapanış DisabledAt'i
+        // hiç damgalamaz; 30 günlük sayaç bu satır için hiç başlamamış olur.
+        var (_, accountId, brand) = await SeedDepartedAsync(db, accounts, disabledAt: null);
+        AddConsent(db, brand, NewPhone());
+        await db.SaveChangesAsync();
+
+        var job = new IysDepartureRetentionJob(db,
+            NullLogger<IysDepartureRetentionJob>.Instance);
+        await job.RunAsync(CancellationToken.None);
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.IysConsents.AnyAsync(c => c.BrandCode == brand))
+            .Should().BeTrue("DisabledAt boşsa saklama sayacı hiç başlamamıştır");
+        (await vdb.NetgsmAccounts.AnyAsync(a => a.Id == accountId)).Should().BeTrue();
+        (await vdb.NetgsmDepartures.AnyAsync(d => d.BrandCode == brand)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Marka_sistem_kapanisli_sahipte_yasiyorsa_onaylar_kalir()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var accounts = scope.ServiceProvider.GetRequiredService<NetgsmAccountService>();
+        var (_, accountId, brand) = await SeedDepartedAsync(db, accounts,
+            DateTimeOffset.UtcNow.AddDays(-31));
+        // Aynı markayı taşıyan SİSTEM KAPANIŞLI ikinci hesap (§2.4): Status
+        // Disabled ama DisabledAt boş — ayrılışla kapanmadı, sahipliği sürüyor.
+        var (_, sysClosedAccountId, _) = await SeedDepartedAsync(db, accounts, disabledAt: null);
+        var sysClosed = await db.NetgsmAccounts.SingleAsync(a => a.Id == sysClosedAccountId);
+        sysClosed.BrandCode = brand;
+        AddConsent(db, brand, NewPhone());
+        await db.SaveChangesAsync();
+
+        var job = new IysDepartureRetentionJob(db,
+            NullLogger<IysDepartureRetentionJob>.Instance);
+        await job.RunAsync(CancellationToken.None);
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.IysConsents.AnyAsync(c => c.BrandCode == brand))
+            .Should().BeTrue("sistem kapanışlı satır DisabledAt=null olsa da markanın SAHİBİ kalır");
+        (await vdb.NetgsmAccounts.AnyAsync(a => a.Id == accountId))
+            .Should().BeFalse("ayrılan hesabın satırı yine silinir");
+        (await vdb.NetgsmDepartures.AnyAsync(d => d.BrandCode == brand))
+            .Should().BeFalse("marka ölmedi — imha takvimi açılmaz");
+    }
+
+    [Fact]
     public async Task Yetim_marka_onaylari_silinir_ve_ayrilis_kaydi_acilir()
     {
         using var scope = _factory.Services.CreateScope();
@@ -187,7 +246,68 @@ public sealed class IysDepartureRetentionJobTests : IClassFixture<ApiFactory>
         (await vdb.IysConsents.AnyAsync(c => c.BrandCode == brand)).Should().BeFalse();
         var dep = await vdb.NetgsmDepartures.SingleAsync(d => d.BrandCode == brand);
         dep.LicenseId.Should().Be(licenseId, "olay izinden geri kazanılır");
+        dep.DepartedAt.Should().BeCloseTo(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(5),
+            "gerçek ayrılış anı bilinmiyor — tespit anı kullanılır");
         dep.PurgedAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Ikinci_yetimlesme_yeni_donem_satiri_acar()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var brand = NewBrandCode();
+        // Birinci dönemin İMHA EDİLMEMİŞ takvim kaydı (A ayrıldı, markayı B
+        // devraldı, şimdi B de yetim düştü — bu SATIRI EZMEMELİ).
+        var firstDepartureId = Guid.NewGuid();
+        db.NetgsmDepartures.Add(new NetgsmDeparture
+        {
+            Id = firstDepartureId, LicenseId = null, BrandCode = brand,
+            DepartedAt = DateTimeOffset.UtcNow.AddDays(-100),
+            ConsentsDeletedAt = DateTimeOffset.UtcNow.AddDays(-70),
+        });
+        AddConsent(db, brand, NewPhone());
+        await db.SaveChangesAsync();
+
+        var job = new IysDepartureRetentionJob(db,
+            NullLogger<IysDepartureRetentionJob>.Instance);
+        await job.RunAsync(CancellationToken.None);
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.IysConsents.AnyAsync(c => c.BrandCode == brand)).Should().BeFalse();
+        var departures = await vdb.NetgsmDepartures.Where(d => d.BrandCode == brand)
+            .OrderBy(d => d.DepartedAt).ToListAsync();
+        departures.Should().HaveCount(2,
+            "ikinci yetimleşme KENDİ döneminin takvimini açar — birinci dönemin " +
+            "imha randevusunu EZMEMELİ, yoksa o dönemin ispatı asla imha edilmez");
+        departures[0].Id.Should().Be(firstDepartureId, "eski dönem kaydı olduğu gibi kalmalı");
+        var newest = departures[1];
+        newest.DepartedAt.Should().BeCloseTo(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1));
+        newest.PurgedAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Bos_BrandCode_onay_satirlari_atlanir()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var phone = NewPhone();
+        // #472-#473 dağıtımı arasında BrandCode hiç yazılmadan kaydedilmiş
+        // eski bir onay satırını simüle ediyor — otomatik silinmemeli.
+        AddConsent(db, "", phone);
+        await db.SaveChangesAsync();
+
+        var job = new IysDepartureRetentionJob(db,
+            NullLogger<IysDepartureRetentionJob>.Instance);
+        await job.RunAsync(CancellationToken.None);
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.IysConsents.AnyAsync(c => c.BrandCode == "" && c.Recipient == phone))
+            .Should().BeTrue("boş marka kodu elle karar bekler, otomatik silinmez");
+        (await vdb.NetgsmDepartures.AnyAsync(d => d.BrandCode == ""))
+            .Should().BeFalse("boş marka için imha takvimi AÇILMAMALI");
     }
 
     [Fact]
@@ -229,12 +349,25 @@ public sealed class IysDepartureRetentionJobTests : IClassFixture<ApiFactory>
         db.SmsCampaigns.Add(new SmsCampaign
         {
             Id = campaignId, LicenseId = licenseId, MessageBody = "Eski donem",
-            Status = "sent", SegmentsPerMessage = 1, RecipientCount = 1,
+            Status = "completed", SegmentsPerMessage = 1, RecipientCount = 1,
             CreatedAt = departedAt.AddDays(-20),
         });
         db.SmsCampaignRecipients.Add(new SmsCampaignRecipient
         {
             Id = Guid.NewGuid(), CampaignId = campaignId, Phone = phone, Status = "sent",
+        });
+        // Dönem SONRASI (yeni dönem) kampanya + alıcısı — AYNI lisans ama
+        // ayrılıştan SONRA oluşturulmuş → imha edilmemeli.
+        var newEraCampaignId = Guid.NewGuid();
+        db.SmsCampaigns.Add(new SmsCampaign
+        {
+            Id = newEraCampaignId, LicenseId = licenseId, MessageBody = "Yeni donem",
+            Status = "completed", SegmentsPerMessage = 1, RecipientCount = 1,
+            CreatedAt = departedAt.AddDays(5),
+        });
+        db.SmsCampaignRecipients.Add(new SmsCampaignRecipient
+        {
+            Id = Guid.NewGuid(), CampaignId = newEraCampaignId, Phone = NewPhone(), Status = "sent",
         });
         await db.SaveChangesAsync();
 
@@ -252,6 +385,10 @@ public sealed class IysDepartureRetentionJobTests : IClassFixture<ApiFactory>
         (await vdb.SmsCampaigns.AnyAsync(c => c.Id == campaignId)).Should().BeFalse();
         (await vdb.SmsCampaignRecipients.AnyAsync(r => r.CampaignId == campaignId))
             .Should().BeFalse();
+        (await vdb.SmsCampaigns.AnyAsync(c => c.Id == newEraCampaignId))
+            .Should().BeTrue("ayrılıştan sonraki kampanya yeni dönemindir — imha edilmez");
+        (await vdb.SmsCampaignRecipients.AnyAsync(r => r.CampaignId == newEraCampaignId))
+            .Should().BeTrue("yeni dönem kampanyasının alıcısı da hayatta kalmalı");
         (await vdb.NetgsmDepartures.SingleAsync(d => d.BrandCode == brand))
             .PurgedAt.Should().NotBeNull();
     }
@@ -287,5 +424,41 @@ public sealed class IysDepartureRetentionJobTests : IClassFixture<ApiFactory>
             .Should().BeTrue("m.13: 3 yıl dolmadan ispat İMHA EDİLEMEZ");
         (await vdb.NetgsmDepartures.SingleAsync(d => d.BrandCode == brand))
             .PurgedAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Uc_yil_lisanssiz_ayrilista_yalniz_olaylar_imha_edilir()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var brand = NewBrandCode();
+        var departedAt = DateTimeOffset.UtcNow - (IysDepartureRetentionJob.ProofRetention
+            + TimeSpan.FromDays(1));
+        // LicenseId null — Faz 2'nin geri kazanamadığı ya da lisansı zaten
+        // KVKK ile silinmiş bir ayrılış. Kampanya adımı atlanmalı, PATLAMAMALI.
+        db.NetgsmDepartures.Add(new NetgsmDeparture
+        {
+            Id = Guid.NewGuid(), LicenseId = null, BrandCode = brand,
+            DepartedAt = departedAt, ConsentsDeletedAt = departedAt.AddDays(30),
+        });
+        var eventId = Guid.NewGuid();
+        db.IysConsentEvents.Add(new IysConsentEvent
+        {
+            Id = eventId, LicenseId = null, BrandCode = brand,
+            Recipient = NewPhone(), OccurredAt = departedAt.AddDays(-1),
+            EventType = IysConsentEventType.LocalConsent, Status = IysConsentStatus.Onay,
+        });
+        await db.SaveChangesAsync();
+
+        var job = new IysDepartureRetentionJob(db,
+            NullLogger<IysDepartureRetentionJob>.Instance);
+        var act = async () => await job.RunAsync(CancellationToken.None);
+        await act.Should().NotThrowAsync("lisanssız ayrılışta kampanya adımı atlanmalı, patlamamalı");
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.IysConsentEvents.AnyAsync(e => e.Id == eventId)).Should().BeFalse();
+        (await vdb.NetgsmDepartures.SingleAsync(d => d.BrandCode == brand))
+            .PurgedAt.Should().NotBeNull();
     }
 }
