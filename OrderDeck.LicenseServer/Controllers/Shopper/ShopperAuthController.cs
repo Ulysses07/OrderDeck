@@ -168,25 +168,10 @@ public sealed class ShopperAuthController : ControllerBase
                 Address = req.Address,
                 Email = req.Email,
                 Tc = req.Tc,
-                SmsConsent = req.SmsConsent,
-                // İspat: onay kutusu işaretlendiyse anı ve kaynağı kaydet
-                // (İYS yüklemesi + 6563 ispat yükü; bkz. Shopper.SmsConsentAt).
-                SmsConsentAt = req.SmsConsent ? now : null,
-                SmsConsentSource = req.SmsConsent ? "register" : null,
                 CreatedAt = now,
                 UpdatedAt = now,
             };
             _db.Shoppers.Add(shopper);
-
-            // Kayıt anındaki onay. İşaretsizse çağrılmaz (sessizlik ret değil).
-            if (req.SmsConsent)
-            {
-                await _iys.RecordAsync(
-                    license.Id, shopper.Phone, consented: true, occurredAt: now,
-                    sourceTable: "Shopper", sourceId: shopper.Id,
-                    ip: HttpContext.Connection.RemoteIpAddress?.ToString(),
-                    userAgent: Request.Headers.UserAgent.ToString(), ct: ct);
-            }
         }
 
         // 6. Check if an active ShopperBroadcasterLink already exists
@@ -194,6 +179,27 @@ public sealed class ShopperAuthController : ControllerBase
             .FirstOrDefaultAsync(l => l.ShopperId == shopper.Id && l.LicenseId == license.Id && l.LeftAt == null, ct);
         if (existingLink is not null)
             return Problem(title: "already-linked", statusCode: 409);
+
+        // 6a. Kayıt anındaki SMS onayı — HER İKİ dal için (§5.2b): İYS onayı MARKA
+        // başına tutulur; kişi mevcut bir shopper olsa ve boolean zaten true olsa
+        // bile BU yayıncının markasına ayrıca kayıt düşülmeli. İşaretsizse çağrılmaz
+        // (sessizlik ret değil).
+        if (req.SmsConsent)
+        {
+            var consentAt = DateTimeOffset.UtcNow;
+            if (!shopper.SmsConsent)
+            {
+                shopper.SmsConsent = true;
+                shopper.SmsConsentAt = consentAt;
+                shopper.SmsConsentSource = "register";
+                shopper.UpdatedAt = consentAt;
+            }
+            await _iys.RecordAsync(
+                license.Id, shopper.Phone, consented: true, occurredAt: consentAt,
+                sourceTable: "Shopper", sourceId: shopper.Id,
+                ip: HttpContext.Connection.RemoteIpAddress?.ToString(),
+                userAgent: Request.Headers.UserAgent.ToString(), ct: ct);
+        }
 
         // 7. Match WpfCustomerProjection by (LicenseId, Platform, Username) — ama
         // bağlamak için telefon kanıtı şart. Kullanıcı adı yayın sohbetinde
