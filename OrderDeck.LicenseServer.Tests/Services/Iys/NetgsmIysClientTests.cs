@@ -190,6 +190,19 @@ public class NetgsmIysClientTests
         result.RawBody.Length.Should().BeLessThanOrEqualTo(2000, "tanı kopyası kesik kalır, ayrıştırma değil");
     }
 
+    /// <summary>Sözleşme: ayrıştırılamayan yanıt ASLA "0 + boş liste" olarak dönmez —
+    /// çağıran onu "cevap: ONAY değil" sanıp kapıyı sessizce kapatırdı.</summary>
+    [Fact]
+    public async Task SearchAsync_ayristirilamayan_yanit_code_0_donmez()
+    {
+        var (client, _) = Build("{\"code\":\"0\",\"error\":\"false\",\"query\":[");
+
+        var result = await client.SearchAsync(Account("731734"), new[] { "+905551112233" });
+
+        result.Code.Should().NotBe("0");
+        result.Statuses.Should().BeEmpty();
+    }
+
     [Theory]
     [InlineData("60")]  // marka kodu hatalı
     [InlineData("30")]  // kimlik hatalı

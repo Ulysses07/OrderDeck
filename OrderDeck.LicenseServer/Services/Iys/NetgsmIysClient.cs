@@ -102,6 +102,11 @@ public sealed class NetgsmIysClient : IIysClient
         catch (JsonException ex)
         {
             _log.LogWarning(ex, "İYS search yanıtı ayrıştırılamadı (code={Code})", code);
+            // Tam gövde ayrıştırılamadıysa "0" güvenilir DEĞİL: "0 + boş Statuses"
+            // çağıranda herkes Unknown olur ve kapı sessizce kapanır (2026-09-22
+            // olayı). Bugün erişilemez (ReadCode aynı gövdeyi aynı ayrıştırıcıyla
+            // okuyor) ama bu eşitlik yapısal değil, rastlantısal — burada çivilenir.
+            if (code == "0") code = "parse-error";
         }
 
         return new IysSearchResult(code, Diagnostic(body), statuses);

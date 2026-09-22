@@ -25,9 +25,12 @@ public sealed record IysConsentRecord(
 /// <b>kabul edildi demek DEĞİL</b>. Kabul yalnız <c>/iys/search</c> ile
 /// doğrulanır; 2026-09-17'de 284 kaydı bu ayrımı yapmadığımız için kaybettik.
 /// </summary>
+/// <param name="RawBody">Tanı kopyası, en fazla 2000 karakter — ayrıştırılmaz.</param>
 public sealed record IysAddResult(string Code, string RawBody, bool Queued);
 
 /// <summary><c>/iys/search</c> yanıtı; <see cref="Statuses"/> alıcı → İYS durumu.</summary>
+/// <param name="RawBody">Tanı kopyası, en fazla 2000 karakter — ayrıştırılmaz;
+/// durumlar tam gövdeden çıkar.</param>
 public sealed record IysSearchResult(
     string Code,
     string RawBody,
