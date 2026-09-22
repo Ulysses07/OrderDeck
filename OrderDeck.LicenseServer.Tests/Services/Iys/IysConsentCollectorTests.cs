@@ -156,10 +156,11 @@ public class IysConsentCollectorTests
     [Fact]
     public async Task Ret_kendi_push_penceresini_acar_eski_onayin_penceresi_dolmus_olsa_da()
     {
-        // Onay 10 Eylül'de alınıp İYS'ye ulaşmış; penceresi (13 Eylül) çoktan
-        // dolmuş. Kişi BUGÜN reddediyor. RET'in İYS'ye gitmesi yasal görev
-        // (Yönetmelik: ret 3 iş günü içinde İYS'de işlenir); eski onayın dolmuş
-        // penceresi RET'i push edilmeden Expired'a düşürmemeli.
+        // Onay 10 Eylül (Perşembe) alınıp İYS'ye ulaşmış; penceresi (15 Eylül
+        // Salı) çoktan dolmuş. Kişi BUGÜN reddediyor. RET'in İYS'ye gitmesi
+        // yasal görev (Ticari İletişim Yönetmeliği: ret 3 iş günü içinde İYS'de
+        // işlenir); eski onayın dolmuş penceresi RET'i push edilmeden Expired'a
+        // düşürmemeli.
         using var db = NewDb();
         SeedAccount(db, LicenseA, BrandA);
         var c = Collector(db);
@@ -183,10 +184,13 @@ public class IysConsentCollectorTests
         row.PushDeadline.Should().NotBeNull().And.BeAfter(DateTimeOffset.UtcNow,
             "RET kendi penceresini açar; eski onayın dolmuş penceresi push işinin " +
             "süpürmesinde RET'i Expired'a düşürürdü ve yasal bildirim sessizce kaybolurdu");
-        row.PushDeadline.Should().BeOnOrAfter(
-            IysBusinessDays.Add(retAt, IysConsentCollector.PushDeadlineBusinessDays)
-                .AddSeconds(-1),
-            "pencere işlenme anından 3 iş günü");
+        // Sınırlar takvim günüyle: IysBusinessDays.Add hafta sonu geçişinde
+        // monoton değil (Cuma 23:59 → Çar 23:59, Cumartesi 00:00 → Çar 00:00),
+        // Add ile kurulan bir sınır o gece yarısında yanlışlıkla düşerdi.
+        row.PushDeadline.Should().BeOnOrAfter(retAt.AddDays(3),
+            "3 iş günü en az 3 takvim günü eder");
+        row.PushDeadline.Should().BeOnOrBefore(DateTimeOffset.UtcNow.AddDays(5),
+            "3 iş günü en fazla 5 takvim günü eder (Çar/Per/Cum başlangıcı hafta sonunu aşar)");
         row.ConsentDate.Should().Be(onayAt,
             "ConsentDate onay tarihidir; RET kendi tarihini LastLocalEventAt'te taşır");
         row.LastLocalEventAt.Should().Be(retAt);
@@ -383,6 +387,9 @@ public class IysConsentCollectorTests
         row.SourceCode.Should().Be(new NetgsmOptions().IysSourceCode,
             "İYS'nin `source` alanı tanımlı bir izin kaynağı olmalı — IYS_MIRROR " +
             "gitmemeli (İYS'de enumerated bir değer değil)");
+        row.PushDeadline.Should().NotBeNull(
+            "ayna satırı penceresiz doğar; RET kendi sınırlı penceresini açmalı, " +
+            "yoksa İYS reddettiğinde kurtarma işi sonsuza dek yeniden dener");
     }
 
     [Fact]

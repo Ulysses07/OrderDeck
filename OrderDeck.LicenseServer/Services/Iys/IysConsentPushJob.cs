@@ -70,7 +70,8 @@ public sealed class IysConsentPushJob
 
         // Süresi dolmuş bekleyenler hiç gönderilmez: 3 iş günü geçtiyse
         // İYS zaten H467 ile reddeder (consent_date çok eski) ve kayıt
-        // hukuken geçersiz. Sessizce silmiyoruz — Expired damgası admin
+        // hukuken geçersiz (RET için: sınırlı deneme penceresi doldu, bkz.
+        // IysConsent.PushDeadline). Sessizce silmiyoruz — Expired damgası admin
         // listesinde görünür. Bu süpürme marka bağımsız: süre dolmuşsa
         // hangi yayıncıya ait olduğu sonucu değiştirmez.
         var expired = await _db.IysConsents

@@ -7,7 +7,8 @@ namespace OrderDeck.LicenseServer.Services.Iys;
 /// <param name="RecipientType">BIREYSEL / TACIR.</param>
 /// <param name="ChannelType">MESAJ / ARAMA / EPOSTA.</param>
 /// <param name="Status">Beyan edilen izin durumu.</param>
-/// <param name="ConsentDate">Onayın alındığı an (TR yerel saate çevrilerek gönderilir).</param>
+/// <param name="ConsentDate">Beyan tarihi: ONAY için onayın alındığı an, RET için
+/// reddin anı (TR yerel saate çevrilerek gönderilir).</param>
 /// <param name="SourceCode">HS_WEB / HS_MOBIL.</param>
 /// <param name="RefId">Bizim kayıt kimliğimiz — mükerrer push'u zararsız kılar.</param>
 public sealed record IysConsentRecord(

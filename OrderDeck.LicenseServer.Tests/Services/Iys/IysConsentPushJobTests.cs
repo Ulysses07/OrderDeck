@@ -134,7 +134,7 @@ public class IysConsentPushJobTests
         // "yeni beyanın tarihi mevcut izinden SONRA olmalı" der; RET'i onayın
         // tarihiyle göndermek reddedilir ya da yanlış tarihle kayda geçer.
         // RET'in tarihi LastLocalEventAt'tir.
-        var db = NewDb();
+        using var db = NewDb();
         SeedAccount(db, LicenseA, BrandA);
         var onayAt = DateTimeOffset.UtcNow.AddDays(-5);
         var retAt = DateTimeOffset.UtcNow.AddHours(-1);

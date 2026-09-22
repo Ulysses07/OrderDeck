@@ -361,14 +361,20 @@ public sealed class IysConsentCollector
         }
         else
         {
-            // RET de kendi push penceresini açar. Yönetmelik: ret 3 iş günü
-            // içinde İYS'de işlenir. Eski onayın penceresi devralınsaydı —
-            // dolmuşsa — push işinin süpürmesi RET'i hiç itmeden Expired yazar,
-            // kapı kapalı kalır (Status≠Onay) ama yasal bildirim sessizce
-            // kaybolurdu. Pencere İŞLENME anından sayılır, olay anından değil:
-            // no-brand oynatması haftalık RET'i geç getirir; onu hiç denememek
-            // yerine sınırlı süre denenir, İYS reddederse kurtarma işi pencere
-            // sonunda Expired yazar — sonsuz döngü yok. ConsentDate'e DOKUNULMAZ
+            // RET de kendi push penceresini açar. Ticari İletişim Yönetmeliği:
+            // ret 3 iş günü içinde İYS'de işlenir. Eski onayın penceresi
+            // devralınsaydı — dolmuşsa — push işinin süpürmesi RET'i hiç itmeden
+            // Expired yazar, kapı kapalı kalır (Status≠Onay) ama yasal bildirim
+            // sessizce kaybolurdu. Pencere İŞLENME anından sayılır, olay anından
+            // değil: no-brand oynatması haftalık RET'i geç getirir; onu hiç
+            // denememek yerine sınırlı süre denenir. Pencere dolunca satır
+            // Expired'a düşer — İYS kabul etmiş olsa bile: /iys/search "kayıt
+            // yok" ile RET'i ayıramadığı için doğrulama işi bir RET satırını
+            // Confirmed yapamaz (bkz. IysConsentVerifyJob); sınır yalnız
+            // push→verify→recovery döngüsünü keser, sonsuz döngü yok. Tekrarlanan
+            // RET (profil kaydı kutuyu her seferinde gönderir) pencereyi ve
+            // LastLocalEventAt'i ileri alır; ilk reddin ispatı olay tablosunda
+            // durur, mesaj ilk RET'te zaten kesilmişti. ConsentDate'e DOKUNULMAZ
             // (onay tarihi olarak kalır); RET'in beyan tarihi LastLocalEventAt.
             row.PushDeadline = IysBusinessDays.Add(now, PushDeadlineBusinessDays);
         }
