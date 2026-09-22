@@ -57,7 +57,7 @@ public sealed class NetgsmIysClient : IIysClient
         }).ToArray();
 
         var (code, body) = await PostAsync(account, "add", data, ct);
-        return new IysAddResult(code, body, Queued: code == "0");
+        return new IysAddResult(code, Diagnostic(body), Queued: code == "0");
     }
 
     public async Task<IysSearchResult> SearchAsync(
@@ -102,9 +102,14 @@ public sealed class NetgsmIysClient : IIysClient
         catch (JsonException ex)
         {
             _log.LogWarning(ex, "İYS search yanıtı ayrıştırılamadı (code={Code})", code);
+            // Tam gövde ayrıştırılamadıysa "0" güvenilir DEĞİL: "0 + boş Statuses"
+            // çağıranda herkes Unknown olur ve kapı sessizce kapanır (2026-09-22
+            // olayı). Bugün erişilemez (ReadCode aynı gövdeyi aynı ayrıştırıcıyla
+            // okuyor) ama bu eşitlik yapısal değil, rastlantısal — burada çivilenir.
+            if (code == "0") code = "parse-error";
         }
 
-        return new IysSearchResult(code, body, statuses);
+        return new IysSearchResult(code, Diagnostic(body), statuses);
     }
 
     private async Task<(string Code, string Body)> PostAsync(
@@ -140,8 +145,18 @@ public sealed class NetgsmIysClient : IIysClient
                 $"İYS yapılandırma hatası (code={code}, brand={account.BrandCode}). "
                 + "Marka kodu/kimlik kontrol edilmeli.");
 
-        return (code, body.Length > 2000 ? body[..2000] : body);
+        // Gövde TAM döner; kesme yalnız tanı kopyasına (Diagnostic) uygulanır.
+        // 2026-09-22: burada 2000 karakterde kesilen gövde SearchAsync'te
+        // ayrıştırılamadı (20'lik parti yanıtı sınırı aşıyor), her alıcı Unknown
+        // sayıldı — ayna 614 numarada 0 ONAY yazdı; doğrulama işi de aynı
+        // partiyle hiçbir onayı doğrulayamazdı.
+        return (code, body);
     }
+
+    /// <summary>Log/tanı için kısaltılmış gövde kopyası (RawBody). Ayrıştırma
+    /// ASLA bu kopyadan yapılmaz; İYS 20'lik parti yanıtı 2000 karakteri aşar.</summary>
+    private static string Diagnostic(string body)
+        => body.Length > 2000 ? body[..2000] : body;
 
     // code alanı bazen string ("0"), bazen sayı dönebiliyor; ikisini de kabul et.
     private static string ReadCode(string body)
