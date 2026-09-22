@@ -127,6 +127,36 @@ public class IysConsentPushJobTests
         UpdatedAt = DateTimeOffset.UtcNow,
     };
 
+    [Fact]
+    public async Task Ret_kaydi_kendi_tarihiyle_beyan_edilir_eski_onay_tarihiyle_degil()
+    {
+        // Onaydan sonra gelen RET: satırın ConsentDate'i hâlâ onay tarihi. İYS
+        // "yeni beyanın tarihi mevcut izinden SONRA olmalı" der; RET'i onayın
+        // tarihiyle göndermek reddedilir ya da yanlış tarihle kayda geçer.
+        // RET'in tarihi LastLocalEventAt'tir.
+        using var db = NewDb();
+        SeedAccount(db, LicenseA, BrandA);
+        var onayAt = DateTimeOffset.UtcNow.AddDays(-5);
+        var retAt = DateTimeOffset.UtcNow.AddHours(-1);
+        var row = Pending("+905550000001");
+        row.Status = IysConsentStatus.Ret;
+        row.ConsentDate = onayAt;
+        row.LastLocalEventAt = retAt;
+        row.PushDeadline = DateTimeOffset.UtcNow.AddDays(3);
+        db.IysConsents.Add(row);
+        await db.SaveChangesAsync();
+
+        var fake = new FakeIysClient();
+        await Job(db, fake).RunAsync();
+
+        fake.AddCalls.Should().HaveCount(1);
+        var record = fake.AddCalls[0].Single();
+        record.Status.Should().Be(IysConsentStatus.Ret);
+        record.ConsentDate.Should().Be(retAt,
+            "RET'in beyan tarihi reddin anıdır; onay tarihi gönderilseydi İYS " +
+            "'mevcut izinden sonra olmalı' kuralına takılır ya da yanlış tarih kaydederdi");
+    }
+
     private static async Task<LicenseDbContext> SeedAsync(int count)
     {
         var db = NewDb();

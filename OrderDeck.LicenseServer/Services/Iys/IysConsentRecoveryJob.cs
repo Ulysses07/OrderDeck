@@ -22,8 +22,9 @@ namespace OrderDeck.LicenseServer.Services.Iys;
 /// (çekme) yetmez, günlük de (itme) uyarmalı.</para>
 ///
 /// <para>Son tarihi zaten geçmiş <c>Failed</c> kayıt yeniden denenmez —
-/// <see cref="IysPushState.Expired"/> olur. İYS o kayda <c>H467</c>
-/// ("consent_date 3 günden eski") döndürmekten başka bir şey yapamaz.</para>
+/// <see cref="IysPushState.Expired"/> olur. ONAY için İYS o kayda <c>H467</c>
+/// ("consent_date 3 günden eski") döndürmekten başka bir şey yapamaz; RET için
+/// bu, sınırlı deneme penceresinin dolmasıdır (bkz. <see cref="IysConsent.PushDeadline"/>).</para>
 /// </summary>
 [DisableConcurrentExecution(timeoutInSeconds: 120)]
 [AutomaticRetry(Attempts = 0, OnAttemptsExceeded = AttemptsExceededAction.Fail)]

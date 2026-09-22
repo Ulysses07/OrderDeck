@@ -70,7 +70,8 @@ public sealed class IysConsentPushJob
 
         // Süresi dolmuş bekleyenler hiç gönderilmez: 3 iş günü geçtiyse
         // İYS zaten H467 ile reddeder (consent_date çok eski) ve kayıt
-        // hukuken geçersiz. Sessizce silmiyoruz — Expired damgası admin
+        // hukuken geçersiz (RET için: sınırlı deneme penceresi doldu, bkz.
+        // IysConsent.PushDeadline). Sessizce silmiyoruz — Expired damgası admin
         // listesinde görünür. Bu süpürme marka bağımsız: süre dolmuşsa
         // hangi yayıncıya ait olduğu sonucu değiştirmez.
         var expired = await _db.IysConsents
@@ -197,9 +198,16 @@ public sealed class IysConsentPushJob
     private async Task PushBatchAsync(
         IysAccountContext account, IysConsent[] batch, CancellationToken ct)
     {
+        // Beyan tarihi: ONAY için onay anı (ConsentDate); RET için reddin anı
+        // (LastLocalEventAt). Onaydan sonra gelen RET satırında ConsentDate hâlâ
+        // onay tarihidir — onu göndermek İYS'nin "yeni beyanın tarihi mevcut
+        // izinden SONRA olmalı" kuralına takılır ya da reddi yanlış tarihle
+        // kayda geçirir.
         var records = batch.Select(c => new IysConsentRecord(
             c.Recipient, c.RecipientType, c.ChannelType, c.Status,
-            c.ConsentDate ?? c.LastLocalEventAt,
+            c.Status == IysConsentStatus.Ret
+                ? c.LastLocalEventAt
+                : c.ConsentDate ?? c.LastLocalEventAt,
             c.SourceCode ?? _opt.IysSourceCode,
             c.Id.ToString("N"))).ToArray();
 

@@ -205,6 +205,43 @@ public sealed class IysNoBrandReplayTests : IDisposable
     }
 
     [Fact]
+    public async Task Suresi_gecmis_onay_satirina_gelen_no_brand_ret_yeni_push_penceresi_acar()
+    {
+        // Gerçek hayattaki satır: onay 10 gün önce alınıp İYS'ye gitmiş,
+        // PushDeadline'ı dolmuş. Kurulum kapalıyken kişi reddetmiş (no-brand).
+        // Oynatma RET'i Pending yapar ama pencere yenilenmezse push işinin
+        // süpürmesi satırı Expired'a düşürür: kapı kapalı (Status≠Onay) ama
+        // yasal RET bildirimi sessizce kaybolur.
+        var factory = NewFactory();
+        var (client, licenseId) = await SeedTenantAsync(factory);
+        var brandCode = NewBrandCode();
+        var phone = NewPhone();
+        var consentedAt = DateTimeOffset.UtcNow.AddDays(-10);
+        var revokedAt = consentedAt.AddDays(1);
+
+        using (var seed = factory.Services.CreateScope())
+        {
+            var db = seed.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var stale = ConsentRow(brandCode, phone, consentedAt);
+            stale.PushDeadline = consentedAt.AddDays(3); // dolmuş
+            db.IysConsents.Add(stale);
+            db.IysConsentEvents.Add(NoBrandEvent(
+                licenseId, phone, IysConsentEventType.LocalRevoke, revokedAt));
+            await db.SaveChangesAsync();
+        }
+
+        (await client.PutAsJsonAsync("/api/panel/netgsm/account",
+            Body(NewUserCode(), brandCode))).EnsureSuccessStatusCode();
+
+        var row = await RowAsync(factory, brandCode, phone);
+        row!.Status.Should().Be(IysConsentStatus.Ret);
+        row.PushState.Should().Be(IysPushState.Pending);
+        row.PushDeadline.Should().NotBeNull().And.BeAfter(DateTimeOffset.UtcNow,
+            "RET'in penceresi işlendiği andan sayılır — dolmuş onay penceresi devralınmaz, "
+            + "yoksa push süpürmesi RET'i itmeden Expired yazar");
+    }
+
+    [Fact]
     public async Task Dogrulama_penceresi_kapanmis_no_brand_onayini_uygulamaz()
     {
         // Onay zamana bağlı: İYS dışında alınan onay üç iş günü içinde
