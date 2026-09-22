@@ -43,6 +43,17 @@ public sealed class IysConsentCollector
     /// <summary>Yönetmelik m.7/11-12 — İYS dışı onay için kayıt süresi.</summary>
     public const int PushDeadlineBusinessDays = 3;
 
+    /// <summary>
+    /// Oynatmada <c>no-brand</c> ONAY olaylarının SQL'de kabaca daraltıldığı
+    /// takvim penceresi. Kesin karar bellekte, <see cref="IysBusinessDays"/>
+    /// ile (iş günü hesabı SQL'e çevrilemez). 3 iş günü + hafta sonu en fazla
+    /// 5 takvim günü eder; 14 gün rahat pay bırakır ve ekle-only olay
+    /// tablosunun tamamını taramaz. Resmî tatiller <see cref="IysBusinessDays"/>'e
+    /// eklenirse bu sayı yeniden türetilmeli (9 günlük bayram köprüsü 3 iş
+    /// gününü ~12 takvim gününe taşır).
+    /// </summary>
+    public const int ConsentReplayLookbackDays = 14;
+
     private readonly LicenseDbContext _db;
     private readonly NetgsmAccountService _accounts;
     private readonly NetgsmOptions _opt;
@@ -144,20 +155,26 @@ public sealed class IysConsentCollector
     }
 
     /// <summary>
-    /// Marka çözülemediği için düşmüş RET'leri, marka artık doğrulanmışken
-    /// uygular. <b>KAYDETMEZ</b> — çağıran, hesabın <c>Verified</c> yazımıyla
+    /// Marka çözülemediği için düşmüş ONAY/RET olaylarını, marka artık
+    /// doğrulanmışken uygular. <b>KAYDETMEZ</b> — çağıran, hesabın <c>Verified</c> yazımıyla
     /// AYNI <c>SaveChanges</c>'te indirir (kalıp:
     /// <see cref="Sms.NetgsmAccountService.StageResumePausedCampaignsAsync"/>).
     /// Ayrılsalardı aradaki çökme RET'leri bir daha kimsenin bulamayacağı
     /// şekilde düşürürdü.
     ///
-    /// <para><b>Yalnız RET.</b> Onay zamana bağlı: İYS dışında alınan onay üç
-    /// iş günü içinde kaydedilmezse hukuken geçersiz
-    /// (<see cref="PushDeadlineBusinessDays"/>). Haftalarca <c>no-brand</c>
-    /// beklemiş bir onayı canlandırıp İYS'ye push etmek, geçersiz bir onayı
-    /// kayda geçirmek olurdu. Düşen onayın bedeli "o kişiye pazarlama
-    /// yapılamaz"; düşen reddin bedeli, onayını geri çekmiş kişiye ticari SMS.
-    /// Asimetri bilinçli ve fail-closed doktrininin aynısı.</para>
+    /// <para><b>RET her zaman, ONAY yalnız penceresi açıkken.</b> Onay zamana
+    /// bağlı: İYS dışında alınan onay üç iş günü içinde kaydedilmezse hukuken
+    /// geçersiz (<see cref="PushDeadlineBusinessDays"/>). Haftalarca
+    /// <c>no-brand</c> beklemiş bir onayı canlandırıp İYS'ye push etmek,
+    /// geçersiz bir onayı kayda geçirmek olurdu — o onaylar ATLANIR. Penceresi
+    /// henüz kapanmamış onay ise ORİJİNAL tarihiyle (<c>ConsentDate</c> ve
+    /// <c>PushDeadline</c> onay anından) kuyruğa girer: kurulumunu bitirmeden
+    /// izleyici toplayan yayıncı o onayları kaybetmez (2026-09-21'de 4 onay
+    /// elle İYS'ye yüklenmek zorunda kalmıştı). Düşen (süresi dolmuş) onayın
+    /// bedeli "o kişiye pazarlama yapılamaz"; düşen reddin bedeli, onayını geri
+    /// çekmiş kişiye ticari SMS. Asimetri bilinçli ve fail-closed doktrininin
+    /// aynısı: numaranın en yeni olayı süresi dolmuş bir onaysa, ondan eski RET
+    /// yine uygulanır — geçerli onay yoksa satır Ret.</para>
     ///
     /// <para><b>Yeni olay YAZILMAZ, eski olay GÜNCELLENMEZ.</b> İspat geçmişini
     /// çoğaltmak denetimde "bu kişi kaç kez reddetti" sorusunu bozardı; tablo
@@ -180,20 +197,31 @@ public sealed class IysConsentCollector
     /// başına yalnız en yeni olay uygulanıyor, aşağıdaki gerekçeye bakın).
     /// Kaç satırın gerçekten DEĞİŞTİĞİ de değil: sıra damgasına takılanlar da
     /// sayılır.</returns>
-    public async Task<int> StageReplayNoBrandRevokesAsync(
+    public async Task<int> StageReplayNoBrandEventsAsync(
         Guid licenseId, string brandCode, CancellationToken ct = default)
     {
+        var now = DateTimeOffset.UtcNow;
+        var consentCutoff = now.AddDays(-ConsentReplayLookbackDays);
         var dropped = await _db.IysConsentEvents
             .AsNoTracking()
             .Where(e => e.LicenseId == licenseId
                         && e.ErrorCode == "no-brand"
-                        && e.EventType == IysConsentEventType.LocalRevoke)
-            .Select(e => new { e.Recipient, e.OccurredAt })
+                        && (e.EventType == IysConsentEventType.LocalRevoke
+                            || (e.EventType == IysConsentEventType.LocalConsent
+                                && e.OccurredAt >= consentCutoff)))
+            .Select(e => new { e.Recipient, e.EventType, e.OccurredAt })
             .ToListAsync(ct);
 
-        // Numara başına YALNIZ en yeni olay uygulanır. Eskileri de uygulamak
-        // sonucu DEĞİŞTİRMEZ (hepsi RET; satır her hâlükârda Ret'te ve en yeni
-        // damgada kapanıyor) ama iş sınırsız büyür: profil kaydı onay kutusunun
+        // Kesin pencere kontrolü bellekte: süresi dolmuş onay beyan edilemez.
+        var candidates = dropped
+            .Where(e => e.EventType == IysConsentEventType.LocalRevoke
+                        || IysBusinessDays.Add(e.OccurredAt, PushDeadlineBusinessDays) > now)
+            .ToList();
+        var expiredConsents = dropped.Count - candidates.Count;
+
+        // Numara başına YALNIZ en yeni ADAY olay uygulanır. Eskileri de uygulamak
+        // sonucu DEĞİŞTİRMEZ (mutlak atama: en yeni aday olay son durumu tek
+        // başına belirler) ama iş sınırsız büyür: profil kaydı onay kutusunun
         // mevcut değerini HER kaydetmede yeniden yazıyor (ShopperMeController —
         // bilinçli, bkz. oradaki gerekçe), yani tek bir müşteri tek başına bu
         // tabloya yüzlerce satır bırakabilir.
@@ -211,37 +239,51 @@ public sealed class IysConsentCollector
         // `ToListAsync`'in N satırı belleğe çekmesi; gerekirse gruplama SQL'e
         // indirilebilir.
         //
-        // <b>Tuzak — İKİ varsayım:</b> (1) yukarıdaki filtre `LocalRevoke`'a
-        // kilitli; başka bir olay tipi girerse ara olaylar anlam kazanır.
+        // <b>Tuzak — İKİ varsayım:</b> (1) iki olay tipi var (ONAY/RET) ve her
+        // ikisi de MUTLAK atama: numaranın en yeni ADAY olayı son durumu tek
+        // başına belirler, ara olaylar sonucu değiştirmez. (Süresi dolmuş
+        // onaylar adaylar arasında DEĞİL — bu yüzden "en yeni olay" değil "en
+        // yeni aday" uygulanır; bkz. yukarıdaki pencere filtresi.) Üçüncü bir
+        // olay tipi ya da birikimli bir yan etki girerse bu varsayım bozulur.
         // (2) `ApplyToRowAsync` çağrı başına BİRİKEN bir yan etki üretmiyor —
         // bugün yalnız mutlak atama yapıyor. Oraya bir sayaç, giden bir push
         // satırı ya da denetim kaydı eklenirse atlanan olaylar görünür olur.
         // İkisinden biri bozulursa de-duplikasyon ÖNCE kalkmalıdır.
-        var replay = dropped
+        var replay = candidates
             .GroupBy(e => e.Recipient)
-            .Select(g => g.MaxBy(e => e.OccurredAt)!)
-            // Sıra bugün SONUCU değiştirmiyor (yukarıdaki gerekçe). Yine de
-            // duruyor: RET dışında bir olay tipi girdiği gün sıra ANINDA
-            // belirleyici olur ve deterministik olmayan bir sıra o hatayı
-            // yalnızca prod'da gösterirdi.
+            // Aynı ana düşen ONAY ve RET: fail-closed, RET kazanır — MaxBy'ın
+            // DB sırasına bağlı belirsizliği burada bilerek kapatıldı.
+            .Select(g => g
+                .OrderByDescending(e => e.OccurredAt)
+                .ThenByDescending(e => e.EventType == IysConsentEventType.LocalRevoke)
+                .First())
+            // Deterministik sıra: aynı numaraya ait olaylar zaten tekil, ama
+            // farklı numaraların satır açma sırası `Local` taramasında ve
+            // günlükte öngörülebilir kalsın.
             .OrderBy(e => e.OccurredAt)
             .ToList();
 
+        var replayedConsents = 0;
         foreach (var e in replay)
         {
-            await ApplyToRowAsync(
-                brandCode, e.Recipient, IysConsentStatus.Ret, e.OccurredAt, ct);
+            var status = e.EventType == IysConsentEventType.LocalRevoke
+                ? IysConsentStatus.Ret
+                : IysConsentStatus.Onay;
+            if (status == IysConsentStatus.Onay) replayedConsents++;
+            await ApplyToRowAsync(brandCode, e.Recipient, status, e.OccurredAt, ct);
         }
 
-        if (replay.Count > 0)
+        if (replay.Count > 0 || expiredConsents > 0)
         {
             _log.LogInformation(
                 // `{Count}` ADI BİLEREK KULLANILMADI: bu satır eskiden onu OLAY
                 // sayısı için kullanıyordu. Aynı adı numara sayısıyla yeniden
                 // doldurmak, geçmişe bakan bir günlük sorgusunda iki farklı
                 // büyüklüğü tek seriye karıştırırdı — kimse fark etmeden.
-                "İYS: lisans {LicenseId} doğrulandı, {Events} no-brand RET olayı {Recipients} numaraya yeniden oynatıldı",
-                licenseId, dropped.Count, replay.Count);
+                "İYS: lisans {LicenseId} doğrulandı, no-brand oynatma: {Recipients} numara "
+                + "({Consents} ONAY, {Revokes} RET), son {LookbackDays} gündeki {ExpiredConsents} onay olayının penceresi kapalı — atlandı",
+                licenseId, replay.Count, replayedConsents, replay.Count - replayedConsents,
+                ConsentReplayLookbackDays, expiredConsents);
         }
 
         return replay.Count;
