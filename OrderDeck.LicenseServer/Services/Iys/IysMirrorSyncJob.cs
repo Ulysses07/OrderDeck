@@ -9,10 +9,14 @@ namespace OrderDeck.LicenseServer.Services.Iys;
 /// <see cref="IysMirrorImportJob"/>'u kuyruğa atar. Kendisi ayna KOŞTURMAZ —
 /// lisans başına kilit, yeniden deneme ve Netgsm kota temposu (20'lik parti,
 /// 6 sn) ayna işinde kalır. Maliyet artımlı DEĞİL: ayna yalnız ONAY satırı
-/// yazar, ONAY'sız numaralar her gece yeniden sorulur; günlük yük ≈
-/// (ONAY'sız müşteri sayısı / 20) `/iys/search` çağrısı, yayıncının kendi
-/// Netgsm kotasından. Doğrulama anındaki tetik (PanelNetgsmAccountController)
-/// ilk yüklemeyi yapar; bu iş sonradan İYS'ye başka yoldan giren onayları getirir.
+/// yazar; İYS satırı (yerel beyanı da) olmayan numaralar her gece yeniden
+/// sorulur; günlük yük ≈ (ONAY'sız müşteri sayısı / 20) `/iys/search` çağrısı,
+/// yayıncının kendi Netgsm kotasından (paralel yayıncı sayısı büyüyünce bkz.
+/// spec §5). Doğrulama anındaki tetik (PanelNetgsmAccountController) ilk
+/// yüklemeyi yapar; bu iş sonradan İYS'ye başka yoldan giren onayları getirir.
+/// Döngü ortasında oluşan bir arıza bazı hesapları o gece kuyruğa atılmamış
+/// bırakabilir; ayna eşlemeli (idempotent) olduğundan bunlar ertesi gece
+/// tamamlanır.
 /// Kuyruğa atma arızası bilerek yakalanmaz: recurring koşu Hangfire panosunda
 /// Failed görünsün (AutomaticRetry 0).
 /// </summary>

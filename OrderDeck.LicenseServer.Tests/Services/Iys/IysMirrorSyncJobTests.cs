@@ -33,6 +33,16 @@ public sealed class IysMirrorSyncJobTests
         public bool ChangeState(string jobId, IState state, string expectedState) => true;
     }
 
+    /// <summary>Kuyruk arızasının yutulmadığını doğrulamak için Create'de patlayan
+    /// IBackgroundJobClient (bkz. Kuyruk_arizasi_yutulmaz_kosu_hata_ile_biter).</summary>
+    private sealed class ThrowingJobClient : IBackgroundJobClient
+    {
+        public string Create(Job job, IState state)
+            => throw new InvalidOperationException("Kuyruk arızası simülasyonu");
+
+        public bool ChangeState(string jobId, IState state, string expectedState) => true;
+    }
+
     private static readonly IDataProtectionProvider Protection = new EphemeralDataProtectionProvider();
 
     private static LicenseDbContext NewDb()
@@ -93,5 +103,19 @@ public sealed class IysMirrorSyncJobTests
 
         (await Job(db, jobs).RunAsync()).Should().Be(0);
         jobs.Created.Should().BeEmpty();
+    }
+
+    /// <summary>Kuyruk arızası BİLEREK yutulmaz: recurring koşu Hangfire panosunda
+    /// Failed görünsün (AutomaticRetry 0). Denetleyicideki PUT tam tersini yapar
+    /// (yakalar, loglar) — "tutarlılık" adına buraya try/catch eklemek sessiz
+    /// bir davranış değişikliği olurdu; bu test onu yakalar.</summary>
+    [Fact]
+    public async Task Kuyruk_arizasi_yutulmaz_kosu_hata_ile_biter()
+    {
+        using var db = NewDb();
+        SeedAccount(db, NetgsmAccountStatus.Verified);
+        var job = Job(db, new ThrowingJobClient());
+
+        await job.Invoking(j => j.RunAsync()).Should().ThrowAsync<InvalidOperationException>();
     }
 }
