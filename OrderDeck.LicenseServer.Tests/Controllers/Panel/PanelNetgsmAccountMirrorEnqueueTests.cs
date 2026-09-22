@@ -194,6 +194,9 @@ public sealed class PanelNetgsmAccountMirrorEnqueueTests : IDisposable
         var userCode = NewUserCode();
         var brandA = NewBrandCode();
         var brandB = NewBrandCode();
+        // Bağımsız çekilen iki kod ~1/900k ihtimalle çakışabilir — çakışırsa
+        // test yanlış nedenle (marka hiç DEĞİŞMEDİ) yeşile döner. Yeniden çek.
+        while (brandB == brandA) brandB = NewBrandCode();
 
         (await client.PutAsJsonAsync(
             "/api/panel/netgsm/account", Body(userCode, brandA))).StatusCode
@@ -214,10 +217,18 @@ public sealed class PanelNetgsmAccountMirrorEnqueueTests : IDisposable
     [Fact]
     public async Task Onceden_dogrulanmis_hesabin_basarisiz_yeniden_dogrulamasi_kuyruga_atmaz()
     {
+        // İkinci PUT FARKLI bir marka kodu kullanıyor — bilerek: aynı marka
+        // kalsaydı hesap zaten Verified olduğundan `mirrorNeeded` tek başına
+        // `false` olur ve test hangi denetimin (Outcome mı, mirrorNeeded mı)
+        // kuyruğu durdurduğunu AYIRT EDEMEZDİ. Marka DEĞİŞTİĞİ için geçiş
+        // kuralı burada `true` — testin ölçtüğü şey yalnız `Outcome == Ok`
+        // denetiminin engeli.
         var factory = NewFactory(searchCode: "0");
         var (client, licenseId) = await SeedTenantAsync(factory);
         var userCode = NewUserCode();
         var brandCode = NewBrandCode();
+        var differentBrandCode = NewBrandCode();
+        while (differentBrandCode == brandCode) differentBrandCode = NewBrandCode();
 
         (await client.PutAsJsonAsync(
             "/api/panel/netgsm/account", Body(userCode, brandCode))).StatusCode
@@ -226,7 +237,7 @@ public sealed class PanelNetgsmAccountMirrorEnqueueTests : IDisposable
 
         factory.Iys.SearchCode = "not-configured";
         var resp = await client.PutAsJsonAsync(
-            "/api/panel/netgsm/account", Body(userCode, brandCode));
+            "/api/panel/netgsm/account", Body(userCode, differentBrandCode));
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
@@ -234,6 +245,7 @@ public sealed class PanelNetgsmAccountMirrorEnqueueTests : IDisposable
             "fail-closed: yeniden doğrulama düşerse önceden Verified olan hesap da Failed olur");
 
         MirrorEnqueueCount(factory, licenseId).Should().Be(1,
-            "doğrulama başarısız — outcome Ok değil, GEÇİŞ kuralı hiç devreye girmez");
+            "marka değişti — GEÇİŞ kuralı (mirrorNeeded) sağlanıyor; kuyruklamayı "
+            + "engelleyen TEK ŞEY başarısız doğrulama (Outcome != Ok)");
     }
 }

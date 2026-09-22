@@ -148,7 +148,8 @@ public sealed class PanelNetgsmAccountController : ControllerBase
         // açmamalı — ayna yalnız ONAY satırı yazar, ONAY'sız numaralar her koşuda
         // yeniden sorulur, yani "known kümesi no-op yapar" varsayımı YANLIŞ.
         // `existing` Upsert'ten önce okunmuş bir görüntü: bayat çıkarsa bedeli bir
-        // fazla ya da bir eksik kuyruk — ikisini de §6 düğmesi/günlük eşitleme kapatır.
+        // fazla ya da bir eksik kuyruk — ikisini de `POST …/iys-mirror` ucu (yalnız
+        // destek — panelde düğme yok) ve günlük eşitleme (spec §2.2) telafi eder.
         var mirrorNeeded = existing is null
             || existing.Status != NetgsmAccountStatus.Verified
             || existing.BrandCode != brandCode;
@@ -324,7 +325,8 @@ public sealed class PanelNetgsmAccountController : ControllerBase
                 catch (Exception ex)
                 {
                     // Hesap Verified olarak COMMIT EDİLDİ; kuyruk arızası onu geri almaz,
-                    // 500 göstermek yalan olur. §6 düğmesi ve günlük eşitleme telafi eder.
+                    // 500 göstermek yalan olur. `POST …/iys-mirror` ucu (yalnız destek —
+                    // panelde düğme yok) ve günlük eşitleme (spec §2.2) telafi eder.
                     _log.LogError(ex, "İYS ayna işi kuyruğa alınamadı (lisans {LicenseId})", account.LicenseId);
                 }
             }

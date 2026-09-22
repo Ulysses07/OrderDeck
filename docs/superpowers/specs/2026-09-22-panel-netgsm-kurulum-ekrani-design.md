@@ -25,14 +25,16 @@ ATILMAZ — ayna yalnız ONAY satırı yazar (§2.2), yani "zaten doğrulanmış
 kaydetmek no-op'a yakın" varsayımı YANLIŞ: ONAY'sız numaralar `known` kümesine hiç girmez ve
 koşulsuz tetiklemek yayıncının Netgsm kotasını boşa harcar, tam bir tarama daha açardı.
 Karar, `UpsertAsync`'ten ÖNCE okunmuş `existing` görüntüsüyle verilir (bayat çıkarsa bedeli
-bir fazla ya da bir eksik kuyruk — ikisini de §6 düğmesi/günlük eşitleme kapatır).
+bir fazla ya da bir eksik kuyruk — ikisini de `POST …/iys-mirror` ucu (yalnız destek —
+panelde düğme yok) ve günlük eşitleme (spec §2.2) telafi eder).
 
 Kuyruğa atma SaveChanges'ten SONRA (commit olmamış hesap için iş koşarsa "doğrulanmış hesap
 yok" diye çıkar — zararsız ama boşa çağrı). `Enqueue` kendi try/catch'inde: hesap zaten
 `Verified` olarak COMMIT EDİLMİŞTİR, bir Hangfire depolama arızası (prod'da aynı SQL Server)
 bu satırı geri almaz — hata `ILogger` ile loglanır ve PUT yine 200 döner; 500'e çevirmek
-yayıncıya yalan söylemek olurdu. §6 düğmesi (`POST .../iys-mirror`) ve §2.2'deki günlük iş
-kaçırılan turu telafi eder. Lisans başına `DisableConcurrentExecution("iys-mirror:{0}")`
+yayıncıya yalan söylemek olurdu. `POST …/iys-mirror` ucu (yalnız destek — panelde düğme
+yok) ve günlük eşitleme (spec §2.2) kaçırılan turu telafi eder. Lisans başına
+`DisableConcurrentExecution("iys-mirror:{0}")`
 zaten var.
 
 ### 2.2 Günlük eşitleme işi
@@ -53,7 +55,7 @@ azaltacak) gerekirse AYRI bir iş — bu PR'ın kapsamı dışında.
 kullanım için).
 
 ### 2.3 Testler (sunucu)
-- `PanelNetgsmAccountControllerTests`: doğrulama başarılı PUT sonrası Hangfire monitoring
+- `PanelNetgsmAccountMirrorEnqueueTests`: doğrulama başarılı PUT sonrası Hangfire monitoring
   API'de `IysMirrorImportJob` + `licenseId` argümanlı iş var; doğrulama BAŞARISIZ PUT'ta
   yok.
 - `IysMirrorSyncJobTests`: iki Verified + bir Failed hesap → yalnız iki iş kuyrukta,
