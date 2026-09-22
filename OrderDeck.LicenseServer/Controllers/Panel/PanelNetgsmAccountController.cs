@@ -289,6 +289,18 @@ public sealed class PanelNetgsmAccountController : ControllerBase
             _db.Entry(account).Property(a => a.UpdatedAt).IsModified = true;
             await _db.SaveChangesAsync(ct);
 
+            if (result.Outcome == NetgsmVerifyOutcome.Ok)
+            {
+                // Marka az önce doğrulandı: İYS'de zaten var olan onaylar (başka
+                // sağlayıcıdan geçen, elle yükleyen, geri dönen yayıncı) kimse
+                // düğmeye basmadan yerel tabloya gelsin (spec §2.1). SaveChanges'ten
+                // SONRA: commit olmamış hesap için koşan iş "doğrulanmış hesap
+                // yok" diye çıkardı. Lisans başına kilit ve yeniden deneme işin
+                // kendisinde; mükerrer kayıt `known` kümesi sayesinde no-op'a yakın.
+                _jobs.Enqueue<Services.Iys.IysMirrorImportJob>(
+                    j => j.RunAsync(account.LicenseId, CancellationToken.None));
+            }
+
             return Ok(ToView(account));
         }
         catch (NetgsmAccountDisabledException)
