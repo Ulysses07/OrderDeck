@@ -532,5 +532,7 @@ public sealed class IysDepartureRetentionJobTests : IClassFixture<ApiFactory>
             .Should().NotBeNull();
         scope.ServiceProvider.GetRequiredService<IysMirrorImportJob>()
             .Should().NotBeNull("Görev 8'in işi de aynı yerde kayıtlı olmalı");
+        scope.ServiceProvider.GetRequiredService<IysMirrorSyncJob>()
+            .Should().NotBeNull("günlük eşitleme işi de aynı yerde kayıtlı olmalı");
     }
 }

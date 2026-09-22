@@ -209,6 +209,7 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysConsentRecoveryJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysDepartureRetentionJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysMirrorImportJob>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysMirrorSyncJob>();
         builder.Services.AddScoped<PasswordResetCodeService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Auth.PasswordResetCodeCleanupJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.WhatsApp.WaSendAttemptCleanupJob>();
@@ -963,6 +964,16 @@ public class Program
                 "iys-departure-retention",
                 j => j.RunAsync(CancellationToken.None),
                 "47 4 * * *");  // 04:47 UTC daily
+
+            // Günlük İYS eşitlemesi: doğrulanmış her hesap için ayna işini kuyruğa
+            // atar. Ayna yalnız ONAY satırı yazar; İYS satırı (yerel beyanı da)
+            // olmayan numaralar her gece yeniden sorulur — maliyet artımlı DEĞİL.
+            // 04:52 UTC: 5 dakikalık ızgara dışı, yeniden doğrulama (04:35) ve
+            // saklama (04:47) işlerinden sonra, liste o gecenin son hâli.
+            manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Iys.IysMirrorSyncJob>(
+                "iys-mirror-sync",
+                j => j.RunAsync(CancellationToken.None),
+                "52 4 * * *");  // 04:52 UTC daily
         }
 
         // Ters vekil farkındalığı — pipeline'ın EN BAŞI, çünkü aşağıdaki her
