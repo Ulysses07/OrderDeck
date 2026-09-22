@@ -399,8 +399,11 @@ namespace OrderDeck.LicenseServer.Services.Iys;
 /// Günlük İYS eşitlemesi (spec §2.2): her DOĞRULANMIŞ hesap için
 /// <see cref="IysMirrorImportJob"/>'u kuyruğa atar. Kendisi ayna KOŞTURMAZ —
 /// lisans başına kilit, yeniden deneme ve Netgsm kota temposu (20'lik parti,
-/// 6 sn) ayna işinde kalır. Maliyet artımlı: ayna yalnız yerel satırı olmayan
-/// numaraları sorar; ilk eşitlemeden sonra günlük yük = yeni müşteriler.
+/// 6 sn) ayna işinde kalır. Maliyet artımlı DEĞİL: ayna yalnız ONAY satırı
+/// yazar; İYS satırı (yerel beyanı da) olmayan numaralar her gece yeniden
+/// sorulur; günlük yük ≈ (ONAY'sız müşteri / 20) `/iys/search` çağrısı,
+/// yayıncının kendi Netgsm kotasından. Kuyruğa atma arızası bilerek
+/// yakalanmaz: recurring koşu Hangfire panosunda Failed görünsün.
 /// Doğrulama anındaki tetik (PanelNetgsmAccountController) ilk yüklemeyi
 /// yapar; bu iş sonradan İYS'ye başka yoldan giren onayları getirir.
 /// </summary>
@@ -492,8 +495,9 @@ Recurring — `iys-departure-retention` bloğunun (`"47 4 * * *"`) hemen altına
 
 ```csharp
             // Günlük İYS eşitlemesi: doğrulanmış her hesap için ayna işini kuyruğa
-            // atar (yalnız yerel satırı olmayan numaralar sorulur). 04:52 UTC —
-            // 5 dakikalık ızgara dışı, saklama işinden (04:47) sonra.
+            // atar; ayna yalnız ONAY satırı yazar, İYS satırı olmayan numaralar her
+            // gece yeniden sorulur (maliyet artımlı DEĞİL). 04:52 UTC — 5 dakikalık
+            // ızgara dışı, saklama işinden (04:47) sonra.
             manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Iys.IysMirrorSyncJob>(
                 "iys-mirror-sync",
                 j => j.RunAsync(CancellationToken.None),
@@ -538,9 +542,10 @@ Kalıp: `apps/panel/src/api/whatsappAccount.ts` + `.test.tsx`. Hata yardımcıla
 - [ ] **Adım 1: Dalı aç** (OrderDeck-Mobile kökünde)
 
 ```bash
-git fetch origin master
-git switch -c feat/netgsm-kurulum-ekrani origin/master
+git fetch origin main
+git switch -c feat/netgsm-kurulum-ekrani origin/main
 ```
+(OrderDeck-Mobile'ın varsayılan dalı `main`; LiveDeck'inki `master`.)
 
 - [ ] **Adım 2: Testi yaz (kırmızı — modül yok)**
 
@@ -576,6 +581,9 @@ function axiosError(status: number, data: unknown = {}) {
     response: { status, data },
   });
 }
+
+/** Sabit parola metni yok; her koşuda üretilir. */
+const PASSWORD = `pw-${crypto.randomUUID().replaceAll("-", "")}`;
 
 const VERIFIED: NetgsmAccountView = {
   status: "verified",
@@ -617,7 +625,7 @@ describe("useSaveNetgsmAccount", () => {
     const { result } = renderHook(() => useSaveNetgsmAccount(), { wrapper: makeWrapper(qc) });
     await result.current.mutateAsync({
       userCode: "8501234567",
-      password: "gizli-degil-test",
+      password: PASSWORD,
       header: "ORDERDECK",
       brandCode: "731734",
     });
@@ -823,6 +831,9 @@ function view(overrides: Partial<NetgsmAccountView>): NetgsmAccountView {
   };
 }
 
+/** Sabit parola metni yok; her koşuda üretilir. */
+const PASSWORD = `pw-${crypto.randomUUID().replaceAll("-", "")}`;
+
 const VERIFIED = view({
   status: "verified",
   smsEnabled: true,
@@ -896,13 +907,13 @@ describe("NetgsmKurulumScreen", () => {
   it("kaydet → PUT gövdesi dört alan", async () => {
     const u = userEvent.setup();
     renderScreen();
-    await fillForm(u, "sifre-test-1");
+    await fillForm(u, PASSWORD);
     await u.click(screen.getByRole("button", { name: "Kaydet ve doğrula" }));
 
     await waitFor(() =>
       expect(api.save.mutateAsync).toHaveBeenCalledWith({
         userCode: "8501234567",
-        password: "sifre-test-1",
+        password: PASSWORD,
         header: "ORDERDECK",
         brandCode: "731734",
       }),
@@ -949,7 +960,7 @@ describe("NetgsmKurulumScreen", () => {
     );
     const u = userEvent.setup();
     renderScreen();
-    await fillForm(u, "sifre-test-1");
+    await fillForm(u, PASSWORD);
     await u.click(screen.getByRole("button", { name: "Kaydet ve doğrula" }));
 
     expect(
@@ -1348,8 +1359,8 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
 
 ### Görev 8: Panel tam paket + PR
 
-- [ ] **Adım 1:** `cd apps/panel && npx vitest run && npm run -s typecheck && npm run -s lint` → hepsi temiz.
-- [ ] **Adım 2:** Push + PR (`gh pr create --base master`): ekran görüntüsü yerine durumların listesi, "sunucu #… deploy'undan sonra merge" notu, cihazda doğrulama maddeleri (kapalı/doğrulanmamış/doğrulanmış kart; ilk kayıtta boş şifre hatası; operatörde menü yok).
+- [ ] **Adım 1:** `cd apps/panel && npx vitest run && npm run -s typecheck` → temiz; ardından repo kökünden `npm run -s lint` (`eslint .`; panel paketinde ayrı lint script'i yok) → temiz.
+- [ ] **Adım 2:** Push + PR (`gh pr create --base main`; Mobile'ın varsayılanı `main`): ekran görüntüsü yerine durumların listesi, "sunucu #… deploy'undan sonra merge" notu, cihazda doğrulama maddeleri (kapalı/doğrulanmamış/doğrulanmış kart; ilk kayıtta boş şifre hatası; operatörde menü yok).
 
 ---
 

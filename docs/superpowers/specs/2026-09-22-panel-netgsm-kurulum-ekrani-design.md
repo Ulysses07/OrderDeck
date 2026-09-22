@@ -82,7 +82,9 @@ Hata: `problemMessage(e, fallback)` — sunucunun Türkçe `detail`'i olduğu gi
 `brand-code-taken`, `netgsm-account-disabled`, `verification-superseded`,
 `netgsm-account-concurrent-create`, `no-active-license`). Slug'a göre DAVRANIŞ dallanmaz;
 `verification-superseded`/`concurrent-create`'te ek olarak sorgu invalidate edilir
-(ekran güncel hâli çeker).
+(ekran güncel hâli çeker). Yanıtsız hatada da (ağ/zaman aşımı; istemci 20 sn, PUT senkron
+doğruladığı için sunucu bu sırada `verified`/`failed` yazmış olabilir) sorgu invalidate
+edilir — sonuç belirsizken eski görünüm gösterilmez.
 
 ### 3.2 Ekran — `src/screens/NetgsmKurulumScreen.tsx`, rota `/netgsm-kurulum`
 Başlık "SMS ve İYS Kurulumu", alt metin: "Kampanya SMS'leri senin Netgsm hesabından,
