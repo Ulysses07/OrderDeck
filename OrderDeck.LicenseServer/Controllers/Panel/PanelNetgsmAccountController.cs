@@ -2,6 +2,7 @@ using Hangfire;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
@@ -30,16 +31,19 @@ public sealed class PanelNetgsmAccountController : ControllerBase
     private readonly NetgsmAccountVerifier _verifier;
     private readonly Services.Iys.IysConsentCollector _consents;
     private readonly IBackgroundJobClient _jobs;
+    private readonly ILogger<PanelNetgsmAccountController> _log;
 
     public PanelNetgsmAccountController(
         LicenseDbContext db, NetgsmAccountService accounts, NetgsmAccountVerifier verifier,
-        Services.Iys.IysConsentCollector consents, IBackgroundJobClient jobs)
+        Services.Iys.IysConsentCollector consents, IBackgroundJobClient jobs,
+        ILogger<PanelNetgsmAccountController> log)
     {
         _db = db;
         _accounts = accounts;
         _verifier = verifier;
         _consents = consents;
         _jobs = jobs;
+        _log = log;
     }
 
     /// <param name="Status">none | failed | verified | disabled.</param>
@@ -138,6 +142,17 @@ public sealed class PanelNetgsmAccountController : ControllerBase
 
         var existing = await _db.NetgsmAccounts.AsNoTracking()
             .FirstOrDefaultAsync(a => a.LicenseId == licenseId, ct);
+
+        // Ayna yalnız GEÇİŞTE: ilk kurulum, doğrulanmamış→doğrulanmış, marka değişti.
+        // Zaten doğrulanmış hesabı (örn. yalnız şifre) yeniden kaydetmek tam tarama
+        // açmamalı — ayna yalnız ONAY satırı yazar, ONAY'sız numaralar her koşuda
+        // yeniden sorulur, yani "known kümesi no-op yapar" varsayımı YANLIŞ.
+        // `existing` Upsert'ten önce okunmuş bir görüntü: bayat çıkarsa bedeli bir
+        // fazla ya da bir eksik kuyruk — ikisini de §6 düğmesi/günlük eşitleme kapatır.
+        var mirrorNeeded = existing is null
+            || existing.Status != NetgsmAccountStatus.Verified
+            || existing.BrandCode != brandCode;
+
         if (existing?.Status == NetgsmAccountStatus.Disabled)
             return Problem(title: "netgsm-account-disabled",
                 detail: "Netgsm kurulumunuz yönetici tarafından kapatıldı. "
@@ -289,16 +304,29 @@ public sealed class PanelNetgsmAccountController : ControllerBase
             _db.Entry(account).Property(a => a.UpdatedAt).IsModified = true;
             await _db.SaveChangesAsync(ct);
 
-            if (result.Outcome == NetgsmVerifyOutcome.Ok)
+            if (result.Outcome == NetgsmVerifyOutcome.Ok && mirrorNeeded)
             {
-                // Marka az önce doğrulandı: İYS'de zaten var olan onaylar (başka
-                // sağlayıcıdan geçen, elle yükleyen, geri dönen yayıncı) kimse
-                // düğmeye basmadan yerel tabloya gelsin (spec §2.1). SaveChanges'ten
-                // SONRA: commit olmamış hesap için koşan iş "doğrulanmış hesap
-                // yok" diye çıkardı. Lisans başına kilit ve yeniden deneme işin
-                // kendisinde; mükerrer kayıt `known` kümesi sayesinde no-op'a yakın.
-                _jobs.Enqueue<Services.Iys.IysMirrorImportJob>(
-                    j => j.RunAsync(account.LicenseId, CancellationToken.None));
+                // Marka az önce GEÇİŞ yaptı (yukarıdaki `mirrorNeeded`): ilk kurulum,
+                // doğrulanmamış→doğrulanmış ya da marka değişti. İYS'de zaten var olan
+                // onaylar (başka sağlayıcıdan geçen, elle yükleyen, geri dönen yayıncı)
+                // kimse düğmeye basmadan yerel tabloya gelsin (spec §2.1). Zaten
+                // doğrulanmış bir hesabı (örn. yalnız şifre yenileme) yeniden kaydetmek
+                // BURAYA girmez — ayna yalnız ONAY satırı yazar, ONAY'sız numaralar her
+                // koşuda yeniden sorulur, yani koşulsuz tetiklemek yayıncının Netgsm
+                // kotasını boşa harcardı (bkz. `IysMirrorImportJob` sınıf yorumu).
+                // SaveChanges'ten SONRA: commit olmamış hesap için koşan iş
+                // "doğrulanmış hesap yok" diye çıkardı.
+                try
+                {
+                    _jobs.Enqueue<Services.Iys.IysMirrorImportJob>(
+                        j => j.RunAsync(account.LicenseId, CancellationToken.None));
+                }
+                catch (Exception ex)
+                {
+                    // Hesap Verified olarak COMMIT EDİLDİ; kuyruk arızası onu geri almaz,
+                    // 500 göstermek yalan olur. §6 düğmesi ve günlük eşitleme telafi eder.
+                    _log.LogError(ex, "İYS ayna işi kuyruğa alınamadı (lisans {LicenseId})", account.LicenseId);
+                }
             }
 
             return Ok(ToView(account));

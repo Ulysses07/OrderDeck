@@ -17,18 +17,35 @@ yapılması, kampanya gönderim ekranı.
 
 ### 2.1 Doğrulama başarısında otomatik ayna
 `PanelNetgsmAccountController.SaveAsync`: doğrulama sonucu `Verified` yazıldıktan ve tek
-`SaveChanges` **başarıyla** bittikten sonra `_jobs.Enqueue<IysMirrorImportJob>(j =>
-j.RunAsync(licenseId, CancellationToken.None))`. Kuyruğa atma SaveChanges'ten SONRA
-(commit olmamış hesap için iş koşarsa "doğrulanmış hesap yok" diye çıkar — zararsız ama
-boşa çağrı). Lisans başına `DisableConcurrentExecution("iys-mirror:{0}")` zaten var;
-çift kayıt no-op'a yakın (`known` kümesi).
+`SaveChanges` **başarıyla** bittikten sonra, yalnız **GEÇİŞTE** `_jobs.Enqueue<IysMirrorImportJob>(j =>
+j.RunAsync(licenseId, CancellationToken.None))`. Geçiş üç hâlden biri: ilk kurulum (önceden
+hesap yok), doğrulanmamış→doğrulanmış (`existing` yok ya da `Verified` değildi) ya da marka
+kodu değişti. **Salt şifre yenilemede** (hesap zaten `Verified`, marka aynı) kuyruğa
+ATILMAZ — ayna yalnız ONAY satırı yazar (§2.2), yani "zaten doğrulanmış hesabı yeniden
+kaydetmek no-op'a yakın" varsayımı YANLIŞ: ONAY'sız numaralar `known` kümesine hiç girmez ve
+koşulsuz tetiklemek yayıncının Netgsm kotasını boşa harcar, tam bir tarama daha açardı.
+Karar, `UpsertAsync`'ten ÖNCE okunmuş `existing` görüntüsüyle verilir (bayat çıkarsa bedeli
+bir fazla ya da bir eksik kuyruk — ikisini de §6 düğmesi/günlük eşitleme kapatır).
+
+Kuyruğa atma SaveChanges'ten SONRA (commit olmamış hesap için iş koşarsa "doğrulanmış hesap
+yok" diye çıkar — zararsız ama boşa çağrı). `Enqueue` kendi try/catch'inde: hesap zaten
+`Verified` olarak COMMIT EDİLMİŞTİR, bir Hangfire depolama arızası (prod'da aynı SQL Server)
+bu satırı geri almaz — hata `ILogger` ile loglanır ve PUT yine 200 döner; 500'e çevirmek
+yayıncıya yalan söylemek olurdu. §6 düğmesi (`POST .../iys-mirror`) ve §2.2'deki günlük iş
+kaçırılan turu telafi eder. Lisans başına `DisableConcurrentExecution("iys-mirror:{0}")`
+zaten var.
 
 ### 2.2 Günlük eşitleme işi
 Yeni `IysMirrorSyncJob` (Hangfire recurring `iys-mirror-sync`, `"52 4 * * *"` — 5 dakikalık
 ızgara dışı, 04:47'deki saklama işinden sonra): `NetgsmAccountService.ListVerifiedAsync`
 ile her doğrulanmış hesap için `IysMirrorImportJob` kuyruğa atar (kendisi ayna
-KOŞTURMAZ; kilit ve yeniden deneme lisans başına işte kalır). Maliyet artımlı: ayna yalnız
-yerel satırı olmayan numaraları sorar; ilk eşitlemeden sonra günlük yük = yeni müşteriler.
+KOŞTURMAZ; kilit ve yeniden deneme lisans başına işte kalır). **Maliyet artımlı DEĞİL:**
+ayna yalnız ONAY satırı yazar (RET/Unknown/kayıt-yok satırsız kalır —
+`IysMirrorImportJob` sınıf yorumu), yani ONAY'sız her numara `known` kümesine hiç girmez ve
+HER gece yeniden sorulur. Günlük yük = (yayıncının ONAY'sız müşteri sayısı / 20) adet
+`/iys/search` çağrısı — yayıncının KENDİ Netgsm kotasında (~10 istek/dk) harcanır, 04:52'de
+başka planlı iş koşmazken. 30 günlük "zaten soruldu" hafızası (tekrar sorguyu gerçekten
+azaltacak) gerekirse AYRI bir iş — bu PR'ın kapsamı dışında.
 `[AutomaticRetry(Attempts = 0)]`, `[DisableConcurrentExecution(60)]`. Sınıf-seviyesi
 öznitelikler kardeşlerle aynı.
 

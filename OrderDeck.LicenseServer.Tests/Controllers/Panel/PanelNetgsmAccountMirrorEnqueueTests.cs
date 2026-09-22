@@ -5,7 +5,6 @@ using FluentAssertions;
 using Hangfire;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using OrderDeck.LicenseServer.Data;
@@ -111,11 +110,13 @@ public sealed class PanelNetgsmAccountMirrorEnqueueTests : IDisposable
     }
 
     /// <summary>ApiFactory Hangfire MemoryStorage kullanır: Enqueue çalışır ama iş
-    /// KOŞMAZ — kuyruk monitoring API'den okunabilir.</summary>
-    private static bool MirrorEnqueued(ApiFactory factory, Guid licenseId)
+    /// KOŞMAZ — kuyruk monitoring API'den okunabilir. Sayım döner (bool değil):
+    /// "geçiş yoksa yeniden kuyruklamaz" testleri BİRDEN FAZLA PUT atıyor ve
+    /// ölçtüğü şey tam olarak kaç kez kuyruklandığı.</summary>
+    private static int MirrorEnqueueCount(ApiFactory factory, Guid licenseId)
     {
         var monitoring = factory.Services.GetRequiredService<JobStorage>().GetMonitoringApi();
-        return monitoring.EnqueuedJobs("default", 0, 1000).Any(j =>
+        return monitoring.EnqueuedJobs("default", 0, 1000).Count(j =>
             j.Value.Job.Type == typeof(IysMirrorImportJob)
             && j.Value.Job.Args.Contains((object)licenseId));
     }
@@ -134,7 +135,7 @@ public sealed class PanelNetgsmAccountMirrorEnqueueTests : IDisposable
         doc.RootElement.GetProperty("status").GetString().Should().Be("verified",
             "ön koşul: stub İYS 'code 0' döndürdü, doğrulama başarılı");
 
-        MirrorEnqueued(factory, licenseId).Should().BeTrue(
+        MirrorEnqueueCount(factory, licenseId).Should().Be(1,
             "marka doğrulanınca İYS'deki mevcut onaylar kendiliğinden aynalanmalı — düğme yok");
     }
 
@@ -151,7 +152,88 @@ public sealed class PanelNetgsmAccountMirrorEnqueueTests : IDisposable
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
         doc.RootElement.GetProperty("status").GetString().Should().Be("failed");
 
-        MirrorEnqueued(factory, licenseId).Should().BeFalse(
+        MirrorEnqueueCount(factory, licenseId).Should().Be(0,
             "doğrulanmamış hesap için ayna işi 'hesap yok' diye çıkar — boşa kuyruk");
+    }
+
+    [Fact]
+    public async Task Zaten_dogrulanmis_hesabi_yeniden_kaydetmek_ayna_isini_yeniden_kuyruga_atmaz()
+    {
+        // Ayna yalnız ONAY satırı yazar (IysMirrorImportJob sınıf yorumu):
+        // ONAY'sız numaralar `known` kümesine hiç girmez ve HER koşuda yeniden
+        // sorulur. Zaten doğrulanmış hesabı (örn. yalnız şifre yenileme) her
+        // PUT'ta yeniden kuyruklamak "known no-op yapar" varsayımına dayanırdı
+        // — o varsayım YANLIŞ, gerçekte tam bir tarama daha açar.
+        var factory = NewFactory(searchCode: "0");
+        var (client, licenseId) = await SeedTenantAsync(factory);
+        var userCode = NewUserCode();
+        var brandCode = NewBrandCode();
+
+        (await client.PutAsJsonAsync(
+            "/api/panel/netgsm/account", Body(userCode, brandCode))).StatusCode
+            .Should().Be(HttpStatusCode.OK);
+        MirrorEnqueueCount(factory, licenseId).Should().Be(1, "ilk doğrulama bir GEÇİŞ");
+
+        var resp = await client.PutAsJsonAsync(
+            "/api/panel/netgsm/account", Body(userCode, brandCode));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("status").GetString().Should().Be("verified",
+            "aynı kimlik/marka ile ikinci kayıt da doğrulanmalı");
+
+        MirrorEnqueueCount(factory, licenseId).Should().Be(1,
+            "hesap zaten Verified'tı, marka değişmedi — GEÇİŞ yok, yeniden kuyruklama olmamalı");
+    }
+
+    [Fact]
+    public async Task Marka_kodu_degisince_ayna_isi_yeniden_kuyruga_girer()
+    {
+        var factory = NewFactory(searchCode: "0");
+        var (client, licenseId) = await SeedTenantAsync(factory);
+        var userCode = NewUserCode();
+        var brandA = NewBrandCode();
+        var brandB = NewBrandCode();
+
+        (await client.PutAsJsonAsync(
+            "/api/panel/netgsm/account", Body(userCode, brandA))).StatusCode
+            .Should().Be(HttpStatusCode.OK);
+        MirrorEnqueueCount(factory, licenseId).Should().Be(1);
+
+        var resp = await client.PutAsJsonAsync(
+            "/api/panel/netgsm/account", Body(userCode, brandB));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("status").GetString().Should().Be("verified");
+
+        MirrorEnqueueCount(factory, licenseId).Should().Be(2,
+            "marka kodu değişti — yeni markanın İYS onayları yayıncı için henüz hiç aynalanmadı");
+    }
+
+    [Fact]
+    public async Task Onceden_dogrulanmis_hesabin_basarisiz_yeniden_dogrulamasi_kuyruga_atmaz()
+    {
+        var factory = NewFactory(searchCode: "0");
+        var (client, licenseId) = await SeedTenantAsync(factory);
+        var userCode = NewUserCode();
+        var brandCode = NewBrandCode();
+
+        (await client.PutAsJsonAsync(
+            "/api/panel/netgsm/account", Body(userCode, brandCode))).StatusCode
+            .Should().Be(HttpStatusCode.OK);
+        MirrorEnqueueCount(factory, licenseId).Should().Be(1);
+
+        factory.Iys.SearchCode = "not-configured";
+        var resp = await client.PutAsJsonAsync(
+            "/api/panel/netgsm/account", Body(userCode, brandCode));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("status").GetString().Should().Be("failed",
+            "fail-closed: yeniden doğrulama düşerse önceden Verified olan hesap da Failed olur");
+
+        MirrorEnqueueCount(factory, licenseId).Should().Be(1,
+            "doğrulama başarısız — outcome Ok değil, GEÇİŞ kuralı hiç devreye girmez");
     }
 }
