@@ -197,9 +197,16 @@ public sealed class IysConsentPushJob
     private async Task PushBatchAsync(
         IysAccountContext account, IysConsent[] batch, CancellationToken ct)
     {
+        // Beyan tarihi: ONAY için onay anı (ConsentDate); RET için reddin anı
+        // (LastLocalEventAt). Onaydan sonra gelen RET satırında ConsentDate hâlâ
+        // onay tarihidir — onu göndermek İYS'nin "yeni beyanın tarihi mevcut
+        // izinden SONRA olmalı" kuralına takılır ya da reddi yanlış tarihle
+        // kayda geçirir.
         var records = batch.Select(c => new IysConsentRecord(
             c.Recipient, c.RecipientType, c.ChannelType, c.Status,
-            c.ConsentDate ?? c.LastLocalEventAt,
+            c.Status == IysConsentStatus.Ret
+                ? c.LastLocalEventAt
+                : c.ConsentDate ?? c.LastLocalEventAt,
             c.SourceCode ?? _opt.IysSourceCode,
             c.Id.ToString("N"))).ToArray();
 

@@ -51,7 +51,8 @@ public class IysConsent
     /// <summary>Bizim beyanımız — yerel olaylardan türer.</summary>
     public IysConsentStatus Status { get; set; } = IysConsentStatus.Unknown;
 
-    /// <summary>İYS'ye beyan edilen onay tarihi.</summary>
+    /// <summary>İYS'ye beyan edilen ONAY tarihi. RET satırında eski onayın
+    /// tarihi olarak kalır; reddin beyan tarihi <see cref="LastLocalEventAt"/>.</summary>
     public DateTimeOffset? ConsentDate { get; set; }
 
     /// <summary>İYS onay kaynağı kodu: HS_WEB / HS_MOBIL.</summary>
@@ -59,7 +60,9 @@ public class IysConsent
 
     public IysPushState PushState { get; set; } = IysPushState.Pending;
 
-    /// <summary>Onay anı + 3 iş günü. Bu tarihten sonra kayıt hukuken geçersiz.</summary>
+    /// <summary>ONAY: onay anı + 3 iş günü — sonrası hukuken geçersiz. RET:
+    /// işlenme anı + 3 iş günü — sınırlı deneme penceresi (ret de 3 iş günü
+    /// içinde İYS'de işlenmeli). Dolunca push işi <c>Expired</c> yazar.</summary>
     public DateTimeOffset? PushDeadline { get; set; }
 
     /// <summary>İYS'nin cevabı (/iys/search). Gönderim kapısı BUNU okur.</summary>

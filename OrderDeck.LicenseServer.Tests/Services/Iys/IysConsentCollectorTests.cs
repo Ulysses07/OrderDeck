@@ -154,6 +154,45 @@ public class IysConsentCollectorTests
     }
 
     [Fact]
+    public async Task Ret_kendi_push_penceresini_acar_eski_onayin_penceresi_dolmus_olsa_da()
+    {
+        // Onay 10 Eylül'de alınıp İYS'ye ulaşmış; penceresi (13 Eylül) çoktan
+        // dolmuş. Kişi BUGÜN reddediyor. RET'in İYS'ye gitmesi yasal görev
+        // (Yönetmelik: ret 3 iş günü içinde İYS'de işlenir); eski onayın dolmuş
+        // penceresi RET'i push edilmeden Expired'a düşürmemeli.
+        using var db = NewDb();
+        SeedAccount(db, LicenseA, BrandA);
+        var c = Collector(db);
+        var onayAt = new DateTimeOffset(2026, 9, 10, 9, 0, 0, TimeSpan.Zero);
+        await RecordAsync(c, true, onayAt);
+        await db.SaveChangesAsync();
+
+        var row = await db.IysConsents.SingleAsync();
+        row.LastVerifiedStatus = IysConsentStatus.Onay;
+        row.PushState = IysPushState.Confirmed;
+        await db.SaveChangesAsync();
+        row.PushDeadline.Should().BeBefore(DateTimeOffset.UtcNow, "ön koşul: onay penceresi dolmuş");
+
+        var retAt = DateTimeOffset.UtcNow;
+        await RecordAsync(c, false, retAt);
+        await db.SaveChangesAsync();
+
+        row = await db.IysConsents.SingleAsync();
+        row.Status.Should().Be(IysConsentStatus.Ret);
+        row.PushState.Should().Be(IysPushState.Pending, "RET İYS'ye iletilmeli");
+        row.PushDeadline.Should().NotBeNull().And.BeAfter(DateTimeOffset.UtcNow,
+            "RET kendi penceresini açar; eski onayın dolmuş penceresi push işinin " +
+            "süpürmesinde RET'i Expired'a düşürürdü ve yasal bildirim sessizce kaybolurdu");
+        row.PushDeadline.Should().BeOnOrAfter(
+            IysBusinessDays.Add(retAt, IysConsentCollector.PushDeadlineBusinessDays)
+                .AddSeconds(-1),
+            "pencere işlenme anından 3 iş günü");
+        row.ConsentDate.Should().Be(onayAt,
+            "ConsentDate onay tarihidir; RET kendi tarihini LastLocalEventAt'te taşır");
+        row.LastLocalEventAt.Should().Be(retAt);
+    }
+
+    [Fact]
     public async Task Expired_kayit_yeni_onayla_yeniden_acilir()
     {
         using var db = NewDb();
