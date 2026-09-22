@@ -22,7 +22,7 @@ j.RunAsync(licenseId, CancellationToken.None))`. Geçiş üç hâlden biri: ilk 
 hesap yok), doğrulanmamış→doğrulanmış (`existing` yok ya da `Verified` değildi) ya da marka
 kodu değişti. **Salt şifre yenilemede** (hesap zaten `Verified`, marka aynı) kuyruğa
 ATILMAZ — ayna yalnız ONAY satırı yazar (§2.2), yani "zaten doğrulanmış hesabı yeniden
-kaydetmek no-op'a yakın" varsayımı YANLIŞ: ONAY'sız numaralar `known` kümesine hiç girmez ve
+kaydetmek no-op'a yakın" varsayımı YANLIŞ: İYS satırı (yerel beyanı da) olmayan numaralar `known` kümesine hiç girmez ve
 koşulsuz tetiklemek yayıncının Netgsm kotasını boşa harcar, tam bir tarama daha açardı.
 Karar, `UpsertAsync`'ten ÖNCE okunmuş `existing` görüntüsüyle verilir (bayat çıkarsa bedeli
 bir fazla ya da bir eksik kuyruk — ikisini de `POST …/iys-mirror` ucu (yalnız destek —
@@ -43,8 +43,8 @@ Yeni `IysMirrorSyncJob` (Hangfire recurring `iys-mirror-sync`, `"52 4 * * *"` �
 ile her doğrulanmış hesap için `IysMirrorImportJob` kuyruğa atar (kendisi ayna
 KOŞTURMAZ; kilit ve yeniden deneme lisans başına işte kalır). **Maliyet artımlı DEĞİL:**
 ayna yalnız ONAY satırı yazar (RET/Unknown/kayıt-yok satırsız kalır —
-`IysMirrorImportJob` sınıf yorumu), yani ONAY'sız her numara `known` kümesine hiç girmez ve
-HER gece yeniden sorulur. Günlük yük = (yayıncının ONAY'sız müşteri sayısı / 20) adet
+`IysMirrorImportJob` sınıf yorumu), yani İYS satırı (yerel beyanı da) olmayan her numara `known` kümesine hiç girmez ve
+HER gece yeniden sorulur. Günlük yük = (yayıncının İYS satırı olmayan müşteri sayısı / 20) adet
 `/iys/search` çağrısı — yayıncının KENDİ Netgsm kotasında (~10 istek/dk) harcanır, 04:52'de
 başka planlı iş koşmazken. 30 günlük "zaten soruldu" hafızası (tekrar sorguyu gerçekten
 azaltacak) gerekirse AYRI bir iş — bu PR'ın kapsamı dışında.
