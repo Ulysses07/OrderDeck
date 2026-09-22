@@ -127,7 +127,9 @@ fark etmeden kaybetme biçimimizdi.
    partilenir, partiler arası beklenir. Ham yanıt olay tablosuna yazılır,
    `PushState = Pushed`.
 4. **Doğrulama — ayrı adım.** `/iys/search` çağrılır, dönen cevap
-   `LastVerifiedStatus`/`LastVerifiedAt`'e yazılır. ONAY ise `Confirmed`.
+   `LastVerifiedStatus`/`LastVerifiedAt`'e yazılır. Cevap beyanla eşleşiyorsa
+   (ONAY→ONAY, RET→RET) `Confirmed`; Confirmed bir RET gönderim izni değildir
+   (2026-09-22: yalnız-ONAY kuralı RET beyanını hiç kabul edemiyordu).
    İlk deneme push'tan ~15 dk sonra (İYS işleme anlık değil; hemen sormak
    henüz işlenmemiş kaydı "RET" sanmaya yol açar), sonra artan aralıklarla
    (1 saat, 6 saat, 24 saat) `PushDeadline`'a kadar.

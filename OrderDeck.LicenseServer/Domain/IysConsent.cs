@@ -16,7 +16,9 @@ public enum IysPushState
     Pending = 0,
     /// <summary>/iys/add çağrıldı ve kuyruğa alındı — <b>kabul edildi demek değil</b>.</summary>
     Pushed = 1,
-    /// <summary>/iys/search ONAY döndürdü. Gönderim yalnız bu durumda serbest.</summary>
+    /// <summary>/iys/search beyanımızla aynı durumu döndürdü (ONAY→ONAY, RET→RET).
+    /// Gönderim yalnız <c>Status=Onay</c> + <c>Confirmed</c> ile serbest — Confirmed
+    /// bir RET satırı gönderim izni DEĞİLDİR.</summary>
     Confirmed = 2,
     /// <summary>Geçici hata; recovery deadline içinde yeniden dener.</summary>
     Failed = 3,
