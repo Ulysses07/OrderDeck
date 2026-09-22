@@ -163,6 +163,33 @@ public class NetgsmIysClientTests
         result.Statuses.Should().NotContainKey("+905551112233");
     }
 
+    /// <summary>
+    /// 2026-09-22 prod olayı: 20'lik parti yanıtı 2000 karakteri aşınca gövde
+    /// ayrıştırılmadan ÖNCE kesiliyordu; JSON yarım kaldığı için her alıcı
+    /// Unknown sayıldı — ayna 614 numarada 0 ONAY yazdı, doğrulama işi de aynı
+    /// partiyle hiçbir onayı "doğrulanmış" yapamazdı. Kesme yalnız tanı
+    /// kopyasına (RawBody) uygulanır; durumlar tam gövdeden çıkar.
+    /// </summary>
+    [Fact]
+    public async Task SearchAsync_2000_karakteri_asan_yanitta_tum_alicilari_ayristirir()
+    {
+        var recipients = Enumerable.Range(0, 20).Select(i => $"+9053{i:D8}").ToArray();
+        var rows = string.Join(",", recipients.Select((r, i) =>
+            $$"""{"consentDate":"2026-09-20 10:00:00","source":"HS_WEB","recipientType":"BIREYSEL","status":"{{(i % 2 == 0 ? "ONAY" : "RET")}}","type":"MESAJ","recipient":"{{r}}","transactionId":"6716aee7-{{i:D4}}"}"""));
+        var body = $$"""{"code":"0","error":"false","query":[{{rows}}]}""";
+        body.Length.Should().BeGreaterThan(2000, "test ancak eski kesme sınırını aşan yanıtla anlamlı");
+        var (client, _) = Build(body);
+
+        var result = await client.SearchAsync(Account("731734"), recipients);
+
+        result.Code.Should().Be("0");
+        result.Statuses.Should().HaveCount(20);
+        result.Statuses[recipients[0]].Should().Be(IysConsentStatus.Onay);
+        result.Statuses[recipients[1]].Should().Be(IysConsentStatus.Ret);
+        result.Statuses[recipients[19]].Should().Be(IysConsentStatus.Ret);
+        result.RawBody.Length.Should().BeLessThanOrEqualTo(2000, "tanı kopyası kesik kalır, ayrıştırma değil");
+    }
+
     [Theory]
     [InlineData("60")]  // marka kodu hatalı
     [InlineData("30")]  // kimlik hatalı
