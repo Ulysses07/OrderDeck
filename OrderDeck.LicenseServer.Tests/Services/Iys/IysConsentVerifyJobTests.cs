@@ -160,6 +160,53 @@ public class IysConsentVerifyJobTests
     }
 
     [Fact]
+    public async Task RET_beyani_icin_RET_cevabi_Confirmed_yapar()
+    {
+        // İYS "kayıt yok" ile "reddetti"yi ayıramaz; RET beyanı için ikisi de
+        // aynı sonuca çıkar (gönderim yok). RET satırı Confirmed'a ULAŞABİLMELİ:
+        // aksi hâlde takvim tükenir, Failed olur, kurtarma yeniden iter ve satır
+        // pencere dolana dek admin "sorunlu" listesinde döner — İYS kabul etmişken.
+        using var db = NewDb();
+        SeedAccount(db, LicenseA, BrandA);
+        var row = Pushed(Phone, BrandA);
+        row.Status = IysConsentStatus.Ret;
+        db.IysConsents.Add(row);
+        await db.SaveChangesAsync();
+        var client = new FakeIysClient { Answer = { [Phone] = IysConsentStatus.Ret } };
+
+        await Job(db, client).RunAsync();
+
+        row = await db.IysConsents.SingleAsync();
+        row.LastVerifiedStatus.Should().Be(IysConsentStatus.Ret);
+        row.PushState.Should().Be(IysPushState.Confirmed,
+            "İYS beyanımızla aynı şeyi söylüyor — kabul");
+        row.NextVerifyAt.Should().BeNull("doğrulama bitti, randevu kalmaz");
+        row.LastError.Should().BeNull();
+        IysConsentGate.CanSend(row).Should().BeFalse("Confirmed RET gönderim izni DEĞİLDİR");
+    }
+
+    [Fact]
+    public async Task RET_beyani_icin_ONAY_cevabi_beklemeye_devam_eder()
+    {
+        // İYS reddi henüz işlememiş: hâlâ ONAY diyor. Kabul yok, takvim ilerler.
+        using var db = NewDb();
+        SeedAccount(db, LicenseA, BrandA);
+        var row = Pushed(Phone, BrandA);
+        row.Status = IysConsentStatus.Ret;
+        db.IysConsents.Add(row);
+        await db.SaveChangesAsync();
+        var client = new FakeIysClient { Answer = { [Phone] = IysConsentStatus.Onay } };
+
+        await Job(db, client).RunAsync();
+
+        row = await db.IysConsents.SingleAsync();
+        row.LastVerifiedStatus.Should().Be(IysConsentStatus.Onay, "İYS'nin cevabı olduğu gibi yazılır");
+        row.PushState.Should().Be(IysPushState.Pushed, "beyanla eşleşmedi — kabul yok");
+        row.NextVerifyAt.Should().NotBeNull("bir sonraki randevu alınır");
+        IysConsentGate.CanSend(row).Should().BeFalse("yerel Status Ret — kapı kapalı");
+    }
+
+    [Fact]
     public async Task RET_donerse_yerel_ONAY_ezilmez_ama_gonderim_kesilir()
     {
         using var db = await SeedPushedAsync();

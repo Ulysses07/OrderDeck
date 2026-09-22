@@ -206,7 +206,17 @@ public sealed class IysConsentVerifyJob
                     ApiResponseBody = result.RawBody.Length > 2000 ? result.RawBody[..2000] : result.RawBody,
                 });
 
-                if (status == IysConsentStatus.Onay)
+                // Kabul = İYS BEYANIMIZLA aynı şeyi söylüyor: ONAY beyanı için
+                // ONAY, RET beyanı için RET. Yalnız ONAY'a bakmak iki yönde
+                // yanlıştı: (1) RET beyanı İYS RET dese de hiç Confirmed
+                // olamıyor, takvim tükenip Failed'a düşüyor, kurtarma yeniden
+                // itiyor ve satır pencere dolana dek admin "sorunlu" listesinde
+                // dönüyordu — İYS kabul etmişken; (2) RET beyanı, İYS reddi
+                // henüz İŞLEMEMİŞKEN gelen ONAY cevabıyla "kabul" sayılıyordu.
+                // RET tarafında "kayıt yok" ile "reddetti" ayırt edilemez ama
+                // ikisi de aynı sonuca çıkar: gönderim yok. Confirmed RET
+                // gönderim izni DEĞİLDİR — kapı Status'u da okur (kural 4).
+                if (status != IysConsentStatus.Unknown && status == c.Status)
                 {
                     c.PushState = IysPushState.Confirmed;
                     c.NextVerifyAt = null;
@@ -214,9 +224,9 @@ public sealed class IysConsentVerifyJob
                     continue;
                 }
 
-                // Henüz ONAY değil. "Kayıt yok" ile "reddetti" ayırt
-                // edilemediği için beklemekten başka yapacak bir şey yok;
-                // takvim tükenene kadar tekrar sorulur.
+                // Beyanla henüz eşleşmiyor (ONAY için "kayıt yok/reddetti",
+                // RET için "İYS reddi henüz işlemedi"). Beklemekten başka
+                // yapacak bir şey yok; takvim tükenene kadar tekrar sorulur.
                 var next = IysVerifySchedule.Next(stamp, c.VerifyAttempts);
                 c.NextVerifyAt = next;
                 if (next is null)
@@ -231,7 +241,7 @@ public sealed class IysConsentVerifyJob
 
         var confirmed = due.Count(c => c.PushState == IysPushState.Confirmed);
         _log.LogInformation(
-            "İYS doğrulama ({Brand}): {Total} kayıt soruldu, {Confirmed} ONAY",
+            "İYS doğrulama ({Brand}): {Total} kayıt soruldu, {Confirmed} beyanla eşleşti (kabul)",
             account.BrandCode, due.Count, confirmed);
     }
 
