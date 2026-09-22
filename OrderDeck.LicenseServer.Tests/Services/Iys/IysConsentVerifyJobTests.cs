@@ -203,7 +203,26 @@ public class IysConsentVerifyJobTests
         row.LastVerifiedStatus.Should().Be(IysConsentStatus.Onay, "İYS'nin cevabı olduğu gibi yazılır");
         row.PushState.Should().Be(IysPushState.Pushed, "beyanla eşleşmedi — kabul yok");
         row.NextVerifyAt.Should().NotBeNull("bir sonraki randevu alınır");
+        row.VerifyAttempts.Should().Be(1, "bekleme yolu takvimi ilerletir, no-op değil");
+        row.LastError.Should().BeNull();
         IysConsentGate.CanSend(row).Should().BeFalse("yerel Status Ret — kapı kapalı");
+    }
+
+    [Fact]
+    public async Task Yanitta_gorunmeyen_alici_Unknown_beklemeye_devam_eder()
+    {
+        // Fail-closed: cevapta hiç geçmeyen numara Unknown'dır; Unknown hiçbir
+        // beyanla eşleşmez (guard: status != Unknown), kabul yok, takvim ilerler.
+        using var db = await SeedPushedAsync();
+        var client = new FakeIysClient(); // Answer boş
+
+        await Job(db, client).RunAsync();
+
+        var row = await db.IysConsents.SingleAsync();
+        row.LastVerifiedStatus.Should().Be(IysConsentStatus.Unknown);
+        row.PushState.Should().Be(IysPushState.Pushed);
+        row.NextVerifyAt.Should().NotBeNull();
+        IysConsentGate.CanSend(row).Should().BeFalse();
     }
 
     [Fact]
