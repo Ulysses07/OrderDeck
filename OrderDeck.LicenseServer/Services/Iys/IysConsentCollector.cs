@@ -367,11 +367,10 @@ public sealed class IysConsentCollector
             // Expired yazar, kapı kapalı kalır (Status≠Onay) ama yasal bildirim
             // sessizce kaybolurdu. Pencere İŞLENME anından sayılır, olay anından
             // değil: no-brand oynatması haftalık RET'i geç getirir; onu hiç
-            // denememek yerine sınırlı süre denenir. Pencere dolunca satır
-            // Expired'a düşer — İYS kabul etmiş olsa bile: /iys/search "kayıt
-            // yok" ile RET'i ayıramadığı için doğrulama işi bir RET satırını
-            // Confirmed yapamaz (bkz. IysConsentVerifyJob); sınır yalnız
-            // push→verify→recovery döngüsünü keser, sonsuz döngü yok. Tekrarlanan
+            // denememek yerine sınırlı süre denenir. Doğrulama işi RET beyanına
+            // gelen RET cevabını kabul sayar (Confirmed); İYS hâlâ ONAY diyorsa
+            // (ret işlenmedi ya da düştü) satır pencere dolunca Expired'a düşer —
+            // sınır o döngüyü keser, sonsuz döngü yok. Tekrarlanan
             // RET (profil kaydı kutuyu her seferinde gönderir) pencereyi ve
             // LastLocalEventAt'i ileri alır; ilk reddin ispatı olay tablosunda
             // durur, mesaj ilk RET'te zaten kesilmişti. ConsentDate'e DOKUNULMAZ
