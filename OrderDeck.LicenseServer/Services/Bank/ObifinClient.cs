@@ -45,8 +45,9 @@ public sealed class ObifinClient : IObifinClient
     public async Task<IReadOnlyList<ObifinBankConnectionDto>> ListBankConnectionsAsync(ObifinCredentials creds, CancellationToken ct = default)
     {
         using var doc = await PostAsync(creds, "/webservis/bankaapi/liste/", null, ct);
+        // BankaApiId sessizce 0 olsaydı bağlantı servisi 0'ı gerçek kimlik diye saklar, silme yanlış kaydı bulurdu.
         return ReadList(doc, row => new ObifinBankConnectionDto(
-            BankaApiId: Long(row, "BankaApiId") ?? 0,
+            BankaApiId: Long(row, "BankaApiId") ?? throw new ObifinProtocolException("banka bağlantısı BankaApiId yok"),
             BankaKodu: Str(row, "BankaKodu") ?? "",
             Name: Str(row, "BankaApiAdi"),
             Active: Str(row, "Durum") is null or "1"));
@@ -73,6 +74,7 @@ public sealed class ObifinClient : IObifinClient
         if (toTr.DayNumber - fromTr.DayNumber + 1 > MaxRangeDays)
             throw new ArgumentOutOfRangeException(nameof(toTr), "Obifin tarih aralığı 31 günü aşamaz.");
         if (pageNo < 1) throw new ArgumentOutOfRangeException(nameof(pageNo));
+        if (pageSize < 1) throw new ArgumentOutOfRangeException(nameof(pageSize));
 
         var form = new Dictionary<string, string>
         {
@@ -140,9 +142,10 @@ public sealed class ObifinClient : IObifinClient
             doc.Dispose();
             throw new ObifinProtocolException($"Obifin beklenmeyen JSON kökü {path}");
         }
-        if (doc.RootElement.TryGetProperty("Hata", out var hata) && hata.ValueKind == JsonValueKind.Array && hata.GetArrayLength() > 0)
+        // Doküman `Hata` için dizi anlatır; tek mesajın düz dize ("Hata":"…") geldiği de görüldü.
+        // İkisi de Obifin hatasıdır — dize diye başarı sayılsaydı boş liste "hesap yok" sanılırdı.
+        if (doc.RootElement.TryGetProperty("Hata", out var hata) && ReadHata(hata) is { } msgs)
         {
-            var msgs = hata.EnumerateArray().Select(e => e.ToString()).ToList();
             doc.Dispose();
             throw new ObifinApiException(msgs);
         }
@@ -157,6 +160,14 @@ public sealed class ObifinClient : IObifinClient
         }
         return doc;
     }
+
+    /// <summary>Dolu dizi ya da boş olmayan dize → mesaj listesi; boş dizi / boş dize / null → null (hata yok).</summary>
+    private static List<string>? ReadHata(JsonElement hata) => hata.ValueKind switch
+    {
+        JsonValueKind.Array when hata.GetArrayLength() > 0 => hata.EnumerateArray().Select(e => e.ToString()).ToList(),
+        JsonValueKind.String when !string.IsNullOrWhiteSpace(hata.GetString()) => [hata.GetString()!],
+        _ => null,
+    };
 
     private static IReadOnlyList<T> ReadList<T>(JsonDocument doc, Func<JsonElement, T> map)
     {

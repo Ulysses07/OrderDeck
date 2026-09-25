@@ -199,4 +199,137 @@ public sealed class ObifinClientTests
         h.Last!.RequestUri!.ToString().Should().EndWith("/webservis/bankaapi/ekle/qnb/");
         h.LastForm.Should().Contain("BankaApiAdi=OrderDeck-test").And.Contain("Url=");
     }
+
+    [Fact]
+    public async Task Hata_duz_dize_gelirse_de_Obifin_istisnasi_mesaji_tasir()
+    {
+        // Doküman diziyi anlatır; tek mesajın düz dize ("Hata":"…") gelmesi de Obifin hatasıdır —
+        // dize diye başarı sayılırsa boş liste "hesap yok" sanılır.
+        var (client, _) = Build("""{"Hata":"Kullanici Bilgileri Hatali!"}""");
+
+        var act = () => client.ListAccountsAsync(Creds());
+
+        (await act.Should().ThrowAsync<ObifinApiException>()).Which.Messages
+            .Should().ContainSingle().Which.Should().Be("Kullanici Bilgileri Hatali!");
+    }
+
+    [Fact]
+    public async Task Hata_bos_dize_ise_basari_sayilir()
+    {
+        var (client, _) = Build("""{"Hata":"","Liste":[]}""");
+        var list = await client.ListAccountsAsync(Creds());
+        list.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Otuz_bir_gun_dahil_kabul_otuz_iki_red_ve_tarihler_yyyy_MM_dd_gider()
+    {
+        var (client, h) = Build("""{"Hata":[],"Liste":[]}""");
+
+        // 1 Ocak – 31 Ocak = 31 gün (iki uç dahil): sınırın tam üstü, kabul.
+        await client.ListTransactionsAsync(Creds(), new DateOnly(2022, 1, 1), new DateOnly(2022, 1, 31), null, 1, 1000);
+        h.LastForm.Should().Contain("BaslangicTarihi=2022-01-01").And.Contain("BitisTarihi=2022-01-31");
+
+        // 1 Ocak – 1 Şubat = 32 gün: red, sunucuya gidilmez.
+        var (client2, h2) = Build("""{"Hata":[],"Liste":[]}""");
+        var act = () => client2.ListTransactionsAsync(Creds(), new DateOnly(2022, 1, 1), new DateOnly(2022, 2, 1), null, 1, 1000);
+        await act.Should().ThrowAsync<ArgumentOutOfRangeException>();
+        h2.Last.Should().BeNull("sunucuya hiç gidilmedi");
+    }
+
+    [Fact]
+    public async Task Imlec_yoksa_forma_BaslangicHareketId_yazilmaz()
+    {
+        var (client, h) = Build("""{"Hata":[],"Liste":[]}""");
+
+        await client.ListTransactionsAsync(Creds(), new DateOnly(2022, 10, 1), new DateOnly(2022, 10, 17), sinceId: null, 1, 1000);
+
+        h.LastForm.Should().NotContain("BaslangicHareketId", "ilk çekimde imleç yok; boş/0 göndermek Obifin'de filtre sayılabilir");
+    }
+
+    [Fact]
+    public async Task Sayfa_boyutu_sifir_veya_negatifse_istemcide_reddedilir()
+    {
+        var (client, h) = Build("""{"Hata":[],"Liste":[]}""");
+        var sifir = () => client.ListTransactionsAsync(Creds(), new DateOnly(2022, 10, 1), new DateOnly(2022, 10, 17), null, 1, 0);
+        var eksi = () => client.ListTransactionsAsync(Creds(), new DateOnly(2022, 10, 1), new DateOnly(2022, 10, 17), null, 1, -5);
+
+        await sifir.Should().ThrowAsync<ArgumentOutOfRangeException>();
+        await eksi.Should().ThrowAsync<ArgumentOutOfRangeException>();
+        h.Last.Should().BeNull("sunucuya hiç gidilmedi");
+    }
+
+    [Fact]
+    public async Task Banka_kodu_yol_parcasi_disina_cikamaz()
+    {
+        // bankaKodu URL yoluna giriyor: "qnb/../x" gibi bir değer başka bir uç noktaya sapardı.
+        var (client, h) = Build("""{"Hata":[]}""");
+        var form = new Dictionary<string, string> { ["BankaApiAdi"] = "OrderDeck-test" };
+
+        var act = () => client.AddBankConnectionAsync(Creds(), "qnb/../x", form);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        h.Last.Should().BeNull("sunucuya hiç gidilmedi");
+    }
+
+    [Fact]
+    public async Task Banka_baglanti_listesi_dogru_yola_gider_ve_alanlari_ayristirir()
+    {
+        var (client, h) = Build("""
+        {"Hata":[],"Liste":[{"BankaApiId":"77","BankaKodu":"qnb","BankaApiAdi":"OrderDeck-abc","Durum":"1"}]}
+        """);
+
+        var list = await client.ListBankConnectionsAsync(Creds());
+
+        h.Last!.RequestUri!.ToString().Should().Be("https://example.invalid/webservis/bankaapi/liste/");
+        var c = list.Should().ContainSingle().Subject;
+        c.BankaApiId.Should().Be(77); c.BankaKodu.Should().Be("qnb"); c.Name.Should().Be("OrderDeck-abc"); c.Active.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Banka_baglanti_listesinde_BankaApiId_yoksa_protokol_istisnasi()
+    {
+        // BankaApiId sessizce 0 olsaydı bağlantı servisi 0'ı gerçek kimlik diye saklar, silme/eşleme yanlış kaydı bulurdu.
+        var (client, _) = Build("""{"Hata":[],"Liste":[{"BankaKodu":"qnb","BankaApiAdi":"OrderDeck-abc","Durum":"1"}]}""");
+        var act = () => client.ListBankConnectionsAsync(Creds());
+        await act.Should().ThrowAsync<ObifinProtocolException>();
+    }
+
+    [Fact]
+    public async Task Banka_baglantisi_silme_dogru_yola_BankaApiId_ile_gider()
+    {
+        var (client, h) = Build("""{"Hata":[]}""");
+
+        await client.RemoveBankConnectionAsync(Creds(), 4242);
+
+        h.Last!.RequestUri!.ToString().Should().Be("https://example.invalid/webservis/bankaapi/sil/");
+        h.LastForm.Should().Be("BankaApiId=4242");
+    }
+
+    [Fact]
+    public async Task Json_koku_nesne_degilse_protokol_istisnasi()
+    {
+        var (client, _) = Build("[]");
+        var act = () => client.ListAccountsAsync(Creds());
+        await act.Should().ThrowAsync<ObifinProtocolException>();
+    }
+
+    [Fact]
+    public async Task BaseUrl_bossa_varsayilan_adrese_gidilir()
+    {
+        var creds = new ObifinCredentials("", $"u-{Guid.NewGuid():N}@x", $"pw-{Guid.NewGuid():N}", $"k-{Guid.NewGuid():N}");
+        var (client, h) = Build("""{"Hata":[],"Liste":[]}""");
+
+        await client.ListAccountsAsync(creds);
+
+        h.Last!.RequestUri!.ToString().Should().Be(new ObifinOptions().DefaultBaseUrl.TrimEnd('/') + "/webservis/hesaplar/hesaplistesi/");
+    }
+
+    [Fact]
+    public async Task Bos_istemci_yapilandirilmadi_hatasi_verir()
+    {
+        // Test/dev'de Obifin yok: sessiz boş liste değil, açık "kapalı" mesajı.
+        var act = () => new NullObifinClient().ListAccountsAsync(Creds());
+        (await act.Should().ThrowAsync<ObifinApiException>()).Which.Messages.Should().Contain("obifin-not-configured");
+    }
 }
