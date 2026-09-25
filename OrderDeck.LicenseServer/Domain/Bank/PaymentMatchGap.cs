@@ -7,6 +7,7 @@ public sealed class PaymentMatchGap
 {
     public Guid Id { get; set; }
     public Guid LicenseId { get; set; }
+    public License License { get; set; } = null!;
     public Guid PaymentId { get; set; }
     public PaymentMatchGapReason Reason { get; set; }
     public DateTimeOffset CreatedAt { get; set; }

@@ -8,6 +8,7 @@ public sealed class CustomerIbanMemory
 {
     public Guid Id { get; set; }
     public Guid LicenseId { get; set; }
+    public License License { get; set; } = null!;
     public Guid WpfCustomerId { get; set; }
     public string IbanHash { get; set; } = "";
     public string IbanMasked { get; set; } = "";

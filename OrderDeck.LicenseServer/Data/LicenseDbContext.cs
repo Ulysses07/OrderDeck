@@ -70,13 +70,13 @@ public class LicenseDbContext : DbContext
     public DbSet<BarcodeCounter> BarcodeCounters => Set<BarcodeCounter>();
     public DbSet<IysConsent> IysConsents => Set<IysConsent>();
     public DbSet<IysConsentEvent> IysConsentEvents => Set<IysConsentEvent>();
-    public DbSet<Domain.Bank.ObifinConnection> ObifinConnections => Set<Domain.Bank.ObifinConnection>();
-    public DbSet<Domain.Bank.BankConnection> BankConnections => Set<Domain.Bank.BankConnection>();
-    public DbSet<Domain.Bank.BankAccount> BankAccounts => Set<Domain.Bank.BankAccount>();
-    public DbSet<Domain.Bank.BankTransaction> BankTransactions => Set<Domain.Bank.BankTransaction>();
-    public DbSet<Domain.Bank.PaymentMatch> PaymentMatches => Set<Domain.Bank.PaymentMatch>();
-    public DbSet<Domain.Bank.CustomerIbanMemory> CustomerIbanMemories => Set<Domain.Bank.CustomerIbanMemory>();
-    public DbSet<Domain.Bank.PaymentMatchGap> PaymentMatchGaps => Set<Domain.Bank.PaymentMatchGap>();
+    public DbSet<ObifinConnection> ObifinConnections => Set<ObifinConnection>();
+    public DbSet<BankConnection> BankConnections => Set<BankConnection>();
+    public DbSet<BankAccount> BankAccounts => Set<BankAccount>();
+    public DbSet<BankTransaction> BankTransactions => Set<BankTransaction>();
+    public DbSet<PaymentMatch> PaymentMatches => Set<PaymentMatch>();
+    public DbSet<CustomerIbanMemory> CustomerIbanMemories => Set<CustomerIbanMemory>();
+    public DbSet<PaymentMatchGap> PaymentMatchGaps => Set<PaymentMatchGap>();
 
     /// <summary>
     /// Türetilmiş kolonların tazelendiği <b>tek</b> nokta.
@@ -886,10 +886,19 @@ public class LicenseDbContext : DbContext
             b.HasIndex(a => a.BrandCode).IsUnique().HasFilter("[Status] = 'Verified'");
         });
 
+        // Banka (Obifin) tabloları. Lisansa DOĞRUDAN bağlı olanlar (ObifinConnections,
+        // BankAccounts, BankTransactions, CustomerIbanMemories, PaymentMatchGaps) Licenses'a
+        // Cascade FK taşır: KVKK purge (AdminCustomersController.Purge) lisansı siler ve gerisini
+        // DB kaskadına bırakır — FK'sız bir tablo müşteri silindikten sonra IBAN hash'ini ve karşı
+        // taraf adını yetim tutardı. BankConnections ve PaymentMatches lisansa ebeveynleri
+        // üzerinden kaskadlanır; onlara ikinci bir Licenses FK'sı SQL Server'da çoklu kaskad
+        // yolu (hata 1785) olurdu. Enum'lar NetgsmAccount gibi STRING: admin SQL'inde "Proposed"
+        // okunur, "0" değil.
         mb.Entity<ObifinConnection>(b =>
         {
             b.HasKey(c => c.Id);
             b.HasOne(c => c.License).WithMany().HasForeignKey(c => c.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            // Bir lisans = bir Obifin kimliği + tek çekim imleci.
             b.HasIndex(c => c.LicenseId).IsUnique();
             b.Property(c => c.BaseUrl).HasMaxLength(200).IsRequired();
             b.Property(c => c.UserCode).HasMaxLength(200).IsRequired();
@@ -902,7 +911,10 @@ public class LicenseDbContext : DbContext
         mb.Entity<BankConnection>(b =>
         {
             b.HasKey(c => c.Id);
+            // Licenses FK'sı BİLEREK yok — ObifinConnection üzerinden kaskadlanır (bkz. yukarı).
+            // LicenseId yalnız kiracı süzgeci ve tekil index için.
             b.HasOne(c => c.ObifinConnection).WithMany().HasForeignKey(c => c.ObifinConnectionId).OnDelete(DeleteBehavior.Cascade);
+            // Obifin'deki aynı banka API kaydı lisansta iki satır olamaz.
             b.HasIndex(c => new { c.LicenseId, c.BankaApiId }).IsUnique();
             b.Property(c => c.BankaKodu).HasMaxLength(32).IsRequired();
             b.Property(c => c.Label).HasMaxLength(80).IsRequired();
@@ -913,6 +925,8 @@ public class LicenseDbContext : DbContext
         mb.Entity<BankAccount>(b =>
         {
             b.HasKey(a => a.Id);
+            b.HasOne(a => a.License).WithMany().HasForeignKey(a => a.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            // Hesap tazeleme aynı Obifin hesabını ikinci satır olarak yazamaz.
             b.HasIndex(a => new { a.LicenseId, a.ObifinAccountId }).IsUnique();
             b.Property(a => a.BankaKodu).HasMaxLength(32).IsRequired();
             b.Property(a => a.IbanMasked).HasMaxLength(40).IsRequired();
@@ -924,7 +938,10 @@ public class LicenseDbContext : DbContext
         mb.Entity<BankTransaction>(b =>
         {
             b.HasKey(t => t.Id);
+            b.HasOne(t => t.License).WithMany().HasForeignKey(t => t.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            // Aynı hareket iki kez yazılamaz — imleç geri sarsa bile yazım idempotent kalır.
             b.HasIndex(t => new { t.LicenseId, t.ObifinId }).IsUnique();
+            // Gelen hareketler lisans içinde tarih penceresiyle aranır.
             b.HasIndex(t => new { t.LicenseId, t.Direction, t.OccurredAt });
             b.Property(t => t.BankaKodu).HasMaxLength(32).IsRequired();
             b.Property(t => t.Direction).HasConversion<string>().HasMaxLength(16).IsRequired();
@@ -938,13 +955,28 @@ public class LicenseDbContext : DbContext
             b.Property(t => t.CounterpartyIbanMasked).HasMaxLength(40);
             b.Property(t => t.CounterpartyName).HasMaxLength(160);
             b.Property(t => t.CounterpartyTaxIdHash).HasMaxLength(64);
+            // Hash sütunlarına yalnız 64 karakter hex (HMAC-SHA256) yazılabilir: ham IBAN/VKN'yi
+            // yanlışlıkla buraya yazan bir kod yolu DB'de patlar, sessizce saklanmaz. NULL geçer
+            // (karşı taraf bilgisi olmayan hareket).
+            b.ToTable(tb =>
+            {
+                tb.HasCheckConstraint("CK_BankTransactions_CounterpartyIbanHash_Hex64",
+                    "LEN([CounterpartyIbanHash]) = 64 AND [CounterpartyIbanHash] NOT LIKE '%[^0-9a-f]%'");
+                tb.HasCheckConstraint("CK_BankTransactions_CounterpartyTaxIdHash_Hex64",
+                    "LEN([CounterpartyTaxIdHash]) = 64 AND [CounterpartyTaxIdHash] NOT LIKE '%[^0-9a-f]%'");
+            });
         });
 
         mb.Entity<PaymentMatch>(b =>
         {
             b.HasKey(m => m.Id);
+            // Licenses FK'sı BİLEREK yok — BankTransaction üzerinden kaskadlanır (bkz. yukarı).
             b.HasOne(m => m.BankTransaction).WithMany().HasForeignKey(m => m.BankTransactionId).OnDelete(DeleteBehavior.Cascade);
+            // Hareket başına tek öneri.
             b.HasIndex(m => m.BankTransactionId).IsUnique();
+            // Bir dekont iki harekete bağlanamaz. Filtreli: dekontu henüz belli olmayan (null)
+            // öneriler birbirine çarpmaz.
+            b.HasIndex(m => m.PaymentId).IsUnique().HasFilter("[PaymentId] IS NOT NULL");
             b.HasIndex(m => new { m.LicenseId, m.Status });
             b.Property(m => m.Layer).HasConversion<string>().HasMaxLength(32).IsRequired();
             b.Property(m => m.Status).HasConversion<string>().HasMaxLength(24).IsRequired();
@@ -955,16 +987,23 @@ public class LicenseDbContext : DbContext
         mb.Entity<CustomerIbanMemory>(b =>
         {
             b.HasKey(m => m.Id);
+            b.HasOne(m => m.License).WithMany().HasForeignKey(m => m.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            // Bir IBAN aynı anda tek müşteriye ait olabilir.
             b.HasIndex(m => new { m.LicenseId, m.IbanHash }).IsUnique();
             b.HasIndex(m => new { m.LicenseId, m.WpfCustomerId });
             b.Property(m => m.IbanHash).HasMaxLength(64).IsRequired();
             b.Property(m => m.IbanMasked).HasMaxLength(40).IsRequired();
             b.Property(m => m.LearnedFrom).HasConversion<string>().HasMaxLength(16).IsRequired();
+            // BankTransaction'daki hash kısıtının aynısı: ham IBAN hafızaya yazılamaz.
+            b.ToTable(tb => tb.HasCheckConstraint("CK_CustomerIbanMemories_IbanHash_Hex64",
+                "LEN([IbanHash]) = 64 AND [IbanHash] NOT LIKE '%[^0-9a-f]%'"));
         });
 
         mb.Entity<PaymentMatchGap>(b =>
         {
             b.HasKey(g => g.Id);
+            b.HasOne(g => g.License).WithMany().HasForeignKey(g => g.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            // Ödeme başına tek boşluk kaydı.
             b.HasIndex(g => g.PaymentId).IsUnique();
             b.Property(g => g.Reason).HasConversion<string>().HasMaxLength(24).IsRequired();
         });

@@ -39,9 +39,18 @@ public sealed class BankHasherTests
     public void Maske_yalniz_ilk_dort_ve_son_uc_karakteri_gosterir()
     {
         var iban = TestIban();
-        var masked = BankHasher.MaskIban(iban);
-        masked.Should().StartWith(iban[..4]).And.EndWith(iban[^3..]).And.Contain("…");
-        masked.Length.Should().BeLessThan(iban.Length);
+        BankHasher.MaskIban(iban).Should().Be(iban[..4] + "…" + iban[^3..]);
+    }
+
+    [Fact]
+    public void Maske_bosluklu_kucuk_harfli_girdiyi_normalize_ederek_maskeler()
+    {
+        // Üretilmiş, ardışık rakamlı IBAN biçimi (repo public — gerçek IBAN yazılmaz). Baş ve
+        // son belirgin: yanlış pencere (ör. son 3 yerine son 4'ün ilk 3'ü) yakalanır.
+        var iban = "TR" + string.Concat(Enumerable.Range(1, 24).Select(i => i % 10));
+        var messy = " " + string.Join(" ", iban.Chunk(4).Select(c => new string(c))).ToLowerInvariant() + " ";
+
+        BankHasher.MaskIban(messy).Should().Be("TR12…234");
     }
 
     [Fact]
@@ -54,9 +63,54 @@ public sealed class BankHasherTests
     }
 
     [Fact]
+    public void Maske_ham_girdiyi_asla_dondurmez()
+    {
+        BankHasher.MaskIban(null).Should().Be("");
+        BankHasher.MaskIban("  ").Should().Be("", "boşluk ham hâliyle görünüme çıkmaz");
+        BankHasher.MaskIban(" tr 12 ").Should().Be("TR12", "kısa değer normalize hâliyle döner");
+    }
+
+    [Fact]
     public void Anahtar_bos_ise_hasher_kurulamaz()
     {
         var act = () => new BankHasher(Options.Create(new BankOptions { HashKey = "" }));
         act.Should().Throw<InvalidOperationException>("anahtarsız HMAC = düz SHA, IBAN sözlük saldırısına açık");
+    }
+
+    [Fact]
+    public void Anahtar_32_bayttan_kisaysa_reddedilir_32_bayt_kabul_edilir()
+    {
+        var otuzIkiBayt = Guid.NewGuid().ToString("N"); // 32 ASCII karakter = 32 bayt
+        var kisa = otuzIkiBayt[..31];
+
+        var reddedilen = () => new BankHasher(Options.Create(new BankOptions { HashKey = kisa }));
+        reddedilen.Should().Throw<InvalidOperationException>("spec §7: anahtar 32+ bayt")
+            .Which.Message.Should().NotContain(kisa, "anahtar hata mesajına (ve log'a) girmez");
+
+        var kabul = () => new BankHasher(Options.Create(new BankOptions { HashKey = otuzIkiBayt }));
+        kabul.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Vkn_hashinde_yalniz_rakamlar_sayilir_ayni_vkn_ayni_hash()
+    {
+        var h = NewHasher();
+        var vkn = Random.Shared.NextInt64(1_000_000_000, 9_999_999_999).ToString();
+        var hash = h.HashTaxId(vkn);
+
+        hash.Should().HaveLength(64, "SHA-256 hex");
+        h.HashTaxId(vkn).Should().Be(hash, "aynı VKN aynı hash");
+        h.HashTaxId($" {vkn[..3]} {vkn[3..]} ").Should().Be(hash, "boşluk atılır");
+        h.HashTaxId($"VKN: {vkn}").Should().Be(hash, "harf ve noktalama atılır");
+    }
+
+    [Fact]
+    public void Vkn_bos_veya_rakamsiz_ise_hash_uretmez()
+    {
+        var h = NewHasher();
+        h.HashTaxId(null).Should().BeNull();
+        h.HashTaxId("").Should().BeNull();
+        h.HashTaxId("   ").Should().BeNull();
+        h.HashTaxId("VKN").Should().BeNull();
     }
 }

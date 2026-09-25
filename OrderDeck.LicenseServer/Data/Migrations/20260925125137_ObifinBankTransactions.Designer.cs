@@ -12,7 +12,7 @@ using OrderDeck.LicenseServer.Data;
 namespace OrderDeck.LicenseServer.Data.Migrations
 {
     [DbContext(typeof(LicenseDbContext))]
-    [Migration("20260925121151_ObifinBankTransactions")]
+    [Migration("20260925125137_ObifinBankTransactions")]
     partial class ObifinBankTransactions
     {
         /// <inheritdoc />
@@ -366,7 +366,12 @@ namespace OrderDeck.LicenseServer.Data.Migrations
 
                     b.HasIndex("LicenseId", "Direction", "OccurredAt");
 
-                    b.ToTable("BankTransactions");
+                    b.ToTable("BankTransactions", t =>
+                        {
+                            t.HasCheckConstraint("CK_BankTransactions_CounterpartyIbanHash_Hex64", "LEN([CounterpartyIbanHash]) = 64 AND [CounterpartyIbanHash] NOT LIKE '%[^0-9a-f]%'");
+
+                            t.HasCheckConstraint("CK_BankTransactions_CounterpartyTaxIdHash_Hex64", "LEN([CounterpartyTaxIdHash]) = 64 AND [CounterpartyTaxIdHash] NOT LIKE '%[^0-9a-f]%'");
+                        });
                 });
 
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Bank.CustomerIbanMemory", b =>
@@ -409,7 +414,10 @@ namespace OrderDeck.LicenseServer.Data.Migrations
 
                     b.HasIndex("LicenseId", "WpfCustomerId");
 
-                    b.ToTable("CustomerIbanMemories");
+                    b.ToTable("CustomerIbanMemories", t =>
+                        {
+                            t.HasCheckConstraint("CK_CustomerIbanMemories_IbanHash_Hex64", "LEN([IbanHash]) = 64 AND [IbanHash] NOT LIKE '%[^0-9a-f]%'");
+                        });
                 });
 
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Bank.ObifinConnection", b =>
@@ -529,6 +537,10 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.HasIndex("BankTransactionId")
                         .IsUnique();
 
+                    b.HasIndex("PaymentId")
+                        .IsUnique()
+                        .HasFilter("[PaymentId] IS NOT NULL");
+
                     b.HasIndex("LicenseId", "Status");
 
                     b.ToTable("PaymentMatches");
@@ -561,6 +573,8 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasColumnType("uniqueidentifier");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("LicenseId");
 
                     b.HasIndex("PaymentId")
                         .IsUnique();
@@ -3296,6 +3310,17 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Navigation("Customer");
                 });
 
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Bank.BankAccount", b =>
+                {
+                    b.HasOne("OrderDeck.LicenseServer.Domain.License", "License")
+                        .WithMany()
+                        .HasForeignKey("LicenseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("License");
+                });
+
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Bank.BankConnection", b =>
                 {
                     b.HasOne("OrderDeck.LicenseServer.Domain.Bank.ObifinConnection", "ObifinConnection")
@@ -3305,6 +3330,28 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("ObifinConnection");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Bank.BankTransaction", b =>
+                {
+                    b.HasOne("OrderDeck.LicenseServer.Domain.License", "License")
+                        .WithMany()
+                        .HasForeignKey("LicenseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("License");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Bank.CustomerIbanMemory", b =>
+                {
+                    b.HasOne("OrderDeck.LicenseServer.Domain.License", "License")
+                        .WithMany()
+                        .HasForeignKey("LicenseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("License");
                 });
 
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Bank.ObifinConnection", b =>
@@ -3327,6 +3374,17 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("BankTransaction");
+                });
+
+            modelBuilder.Entity("OrderDeck.LicenseServer.Domain.Bank.PaymentMatchGap", b =>
+                {
+                    b.HasOne("OrderDeck.LicenseServer.Domain.License", "License")
+                        .WithMany()
+                        .HasForeignKey("LicenseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("License");
                 });
 
             modelBuilder.Entity("OrderDeck.LicenseServer.Domain.BroadcastPost", b =>

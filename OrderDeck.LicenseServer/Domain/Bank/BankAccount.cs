@@ -1,9 +1,12 @@
 namespace OrderDeck.LicenseServer.Domain.Bank;
 
+/// <summary>Obifin'deki banka hesabının yerel görüntüsü; Obifin hesap listesinden tazelenir
+/// (<see cref="RefreshedAt"/>). IBAN yalnız hash + maske (spec §7).</summary>
 public sealed class BankAccount
 {
     public Guid Id { get; set; }
     public Guid LicenseId { get; set; }
+    public License License { get; set; } = null!;
     public Guid? BankConnectionId { get; set; }
     public long ObifinAccountId { get; set; }
     public string BankaKodu { get; set; } = "";

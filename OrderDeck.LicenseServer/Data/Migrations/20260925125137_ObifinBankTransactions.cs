@@ -31,6 +31,12 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_BankAccounts", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_BankAccounts_Licenses_LicenseId",
+                        column: x => x.LicenseId,
+                        principalTable: "Licenses",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
                 });
 
             migrationBuilder.CreateTable(
@@ -62,6 +68,14 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_BankTransactions", x => x.Id);
+                    table.CheckConstraint("CK_BankTransactions_CounterpartyIbanHash_Hex64", "LEN([CounterpartyIbanHash]) = 64 AND [CounterpartyIbanHash] NOT LIKE '%[^0-9a-f]%'");
+                    table.CheckConstraint("CK_BankTransactions_CounterpartyTaxIdHash_Hex64", "LEN([CounterpartyTaxIdHash]) = 64 AND [CounterpartyTaxIdHash] NOT LIKE '%[^0-9a-f]%'");
+                    table.ForeignKey(
+                        name: "FK_BankTransactions_Licenses_LicenseId",
+                        column: x => x.LicenseId,
+                        principalTable: "Licenses",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
                 });
 
             migrationBuilder.CreateTable(
@@ -80,6 +94,13 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_CustomerIbanMemories", x => x.Id);
+                    table.CheckConstraint("CK_CustomerIbanMemories_IbanHash_Hex64", "LEN([IbanHash]) = 64 AND [IbanHash] NOT LIKE '%[^0-9a-f]%'");
+                    table.ForeignKey(
+                        name: "FK_CustomerIbanMemories_Licenses_LicenseId",
+                        column: x => x.LicenseId,
+                        principalTable: "Licenses",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
                 });
 
             migrationBuilder.CreateTable(
@@ -127,6 +148,12 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_PaymentMatchGaps", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_PaymentMatchGaps_Licenses_LicenseId",
+                        column: x => x.LicenseId,
+                        principalTable: "Licenses",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
                 });
 
             migrationBuilder.CreateTable(
@@ -238,6 +265,18 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 name: "IX_PaymentMatches_LicenseId_Status",
                 table: "PaymentMatches",
                 columns: new[] { "LicenseId", "Status" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_PaymentMatches_PaymentId",
+                table: "PaymentMatches",
+                column: "PaymentId",
+                unique: true,
+                filter: "[PaymentId] IS NOT NULL");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_PaymentMatchGaps_LicenseId",
+                table: "PaymentMatchGaps",
+                column: "LicenseId");
 
             migrationBuilder.CreateIndex(
                 name: "IX_PaymentMatchGaps_PaymentId",

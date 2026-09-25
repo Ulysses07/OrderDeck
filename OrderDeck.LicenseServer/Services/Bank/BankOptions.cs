@@ -6,7 +6,9 @@ public sealed class BankOptions
 {
     public string HashKey { get; set; } = "";
 
-    /// <summary>Eşleştirme dışı bırakılan işlem kodları (POS tahsilatı vb.). Başlangıç: CCP (QNB demo).</summary>
+    /// <summary>Eşleştirme dışı bırakılan işlem kodları (POS tahsilatı vb.). Başlangıç: CCP (QNB demo).
+    /// <para>Yapılandırma bu listeye EKLER: .NET binder dizi varsayılanının üstüne yazmaz, sonuna
+    /// ekler — varsayılan CCP yapılandırmayla çıkarılamaz. Bilinçli; varsayılan değiştirilmiyor.</para></summary>
     public string[] ExcludedTransactionCodes { get; set; } = ["CCP"];
 
     public int RawJsonRetentionDays { get; set; } = 90;

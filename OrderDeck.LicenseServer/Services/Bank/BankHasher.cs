@@ -16,9 +16,10 @@ public sealed class BankHasher
     public BankHasher(IOptions<BankOptions> opt)
     {
         var key = opt.Value.HashKey;
-        if (string.IsNullOrWhiteSpace(key) || key.Length < 16)
+        // Spec §7: HMAC anahtarı 32+ bayt. Karakter değil BAYT sayılır (UTF-8). Anahtar mesaja girmez.
+        if (string.IsNullOrWhiteSpace(key) || Encoding.UTF8.GetByteCount(key) < 32)
             throw new InvalidOperationException(
-                "OrderDeck:Bank:HashKey boş ya da 16 karakterden kısa — IBAN hash'i güvensiz olur.");
+                "OrderDeck:Bank:HashKey boş ya da 32 bayttan kısa — IBAN hash'i güvensiz olur.");
         _key = Encoding.UTF8.GetBytes(key);
     }
 
@@ -39,17 +40,21 @@ public sealed class BankHasher
     public static string? NormalizeIban(string? iban)
     {
         if (string.IsNullOrWhiteSpace(iban)) return null;
-        var compact = new string(iban.Where(c => !char.IsWhiteSpace(c)).ToArray()).ToUpperInvariant();
+        var compact = Compact(iban);
         return compact.Length < 8 ? null : compact;
     }
 
-    /// <summary>`TR12…345` — yalnız görüntü; 8 karakterden kısa değer olduğu gibi döner.</summary>
+    /// <summary>`TR12…345` — yalnız görüntü. Ham girdi ASLA dönmez: boş/boşluk → "",
+    /// 8 karakterden kısa değer normalize (boşluksuz, büyük harf) hâliyle döner.</summary>
     public static string MaskIban(string? iban)
     {
-        var norm = NormalizeIban(iban);
-        if (norm is null) return iban ?? "";
-        return norm[..4] + "…" + norm[^3..];
+        if (string.IsNullOrWhiteSpace(iban)) return "";
+        var compact = Compact(iban);
+        return compact.Length < 8 ? compact : compact[..4] + "…" + compact[^3..];
     }
+
+    private static string Compact(string value)
+        => new string(value.Where(c => !char.IsWhiteSpace(c)).ToArray()).ToUpperInvariant();
 
     private string Hmac(string value)
     {
