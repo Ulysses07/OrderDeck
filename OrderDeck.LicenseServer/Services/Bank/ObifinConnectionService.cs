@@ -30,6 +30,11 @@ public sealed class ObifinConnectionService
 
     /// <summary>DB sütunu 500 (<c>LicenseDbContext</c>).</summary>
     private const int LastErrorMaxLength = 500;
+    /// <summary><c>BankConnection.Label</c> sütunu 80, <c>BankaKodu</c> 32 (<c>LicenseDbContext</c>). Obifin çağrısından
+    /// ÖNCE denetlenir: SQL Server'da INSERT "truncated" ile patlasaydı Obifin'de banka kimliğiyle açılmış, yerelde
+    /// bilinmeyen bir yetim kayıt kalır, admin'in tekrarı ikincisini açardı.</summary>
+    private const int LabelMaxLength = 80;
+    private const int BankaKoduMaxLength = 32;
 
     // Windows "Turkey Standard Time", Linux "Europe/Istanbul" (PanelStatsController kalıbı).
     public static readonly TimeZoneInfo TrZone = TimeZoneInfo.FindSystemTimeZoneById(
@@ -71,10 +76,16 @@ public sealed class ObifinConnectionService
         if (!IsPrintableAscii(userCode)) throw new ArgumentException(NonAsciiMessage, nameof(userCode));
         if (!string.IsNullOrWhiteSpace(password) && !IsPrintableAscii(password)) throw new ArgumentException(NonAsciiMessage, nameof(password));
         if (!string.IsNullOrWhiteSpace(apiKey) && !IsPrintableAscii(apiKey)) throw new ArgumentException(NonAsciiMessage, nameof(apiKey));
-        var explicitBaseUrl = string.IsNullOrWhiteSpace(baseUrl) ? null : baseUrl.Trim();
-        if (explicitBaseUrl is not null
-            && !(Uri.TryCreate(explicitBaseUrl, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps))
-            throw new ArgumentException(BaseUrlMessage, nameof(baseUrl));
+        string? explicitBaseUrl = null;
+        if (!string.IsNullOrWhiteSpace(baseUrl))
+        {
+            if (!(Uri.TryCreate(baseUrl.Trim(), UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps))
+                throw new ArgumentException(BaseUrlMessage, nameof(baseUrl));
+            // Normalize saklanır ve karşılaştırılır: AbsoluteUri şema + ana makineyi küçük harfe çeker (DNS ve şema
+            // harf duyarsız), boş yola eklediği '/' ile kullanıcının yazdığı sondaki '/' atılır (istemci zaten
+            // TrimEnd('/') yapıyor). Aşağıdaki geri alınamaz gölge veri silmesi kozmetik bir farka bağlanamaz.
+            explicitBaseUrl = uri.AbsoluteUri.TrimEnd('/');
+        }
 
         var conn = await _db.ObifinConnections.FirstOrDefaultAsync(c => c.LicenseId == licenseId, ct);
         var now = DateTimeOffset.UtcNow;
@@ -90,8 +101,9 @@ public sealed class ObifinConnectionService
         {
             // Boş adres "görüş yok"tur, değişiklik sayılmaz: varsayılan adres yapılandırmadan değişse de
             // aynı hesap kalır, veri silinmez.
+            // Saklı adres de kırpılarak karşılaştırılır: yapılandırmadan gelen varsayılan adres '/' ile bitebilir.
             credentialChanged = !string.Equals(conn.UserCode, userCode, StringComparison.Ordinal)
-                || (explicitBaseUrl is not null && !string.Equals(conn.BaseUrl, explicitBaseUrl, StringComparison.Ordinal));
+                || (explicitBaseUrl is not null && !string.Equals(conn.BaseUrl.TrimEnd('/'), explicitBaseUrl, StringComparison.Ordinal));
         }
         conn.BaseUrl = explicitBaseUrl ?? _opt.DefaultBaseUrl;
         conn.UserCode = userCode;
@@ -142,22 +154,28 @@ public sealed class ObifinConnectionService
         // Zaman aşımı iptali (HttpClient.Timeout) ise geçici hata gibi ele alınır.
         catch (Exception ex) when (DescribeClientFailure(ex, ct) is { } msg)
         {
-            // Kimlik bilgisi ne loga ne LastError'a girer; istisna mesajlarında kimlik yok.
-            _log.LogWarning(ex, "Obifin doğrulaması başarısız — lisans={LicenseId}: {Error}", licenseId, msg);
-            conn.Status = ObifinConnectionStatus.Failed; conn.LastError = msg; conn.UpdatedAt = now;
-            await _db.SaveChangesAsync(ct);
+            await MarkFailedAsync(conn, ex, msg, "doğrulaması", now, ct);
             return new ObifinVerifyResult(false, msg, 0);
         }
     }
 
-    /// <summary>Banka kimliklerini Obifin'e iletir, listeden etiketle `BankaApiId`'yi bulur; kimlikleri saklamaz.</summary>
+    /// <summary>Banka kimliklerini Obifin'e iletir, listeden etiketle `BankaApiId`'yi bulur; kimlikleri saklamaz.
+    /// İstemci hatası doğrulamadaki gibi sınıflandırılıp bağlantıya yazılır; dönüş tipi başarısızlık taşıyamadığından
+    /// istisna yine yukarı gider.</summary>
     public async Task<BankConnection> AddBankConnectionAsync(Guid licenseId, string bankaKodu, string label,
         IReadOnlyDictionary<string, string> bankForm, CancellationToken ct)
     {
+        // Yerel sınırlar ağ çağrısından önce (bkz. LabelMaxLength).
+        label = (label ?? "").Trim();
+        if (label.Length > LabelMaxLength)
+            throw new ArgumentException($"Etiket en fazla {LabelMaxLength} karakter olabilir.", nameof(label));
+        bankaKodu = (bankaKodu ?? "").Trim().ToLowerInvariant();
+        if (bankaKodu.Length is 0 or > BankaKoduMaxLength)
+            throw new ArgumentException($"Banka kodu 1–{BankaKoduMaxLength} karakter olmalı.", nameof(bankaKodu));
+
         var conn = await _db.ObifinConnections.FirstOrDefaultAsync(c => c.LicenseId == licenseId, ct)
             ?? throw new InvalidOperationException("Önce Obifin bağlantısı kaydedilmeli.");
         var creds = TryResolveCredentials(conn) ?? throw new InvalidOperationException(UndecryptableMessage);
-        bankaKodu = bankaKodu.Trim().ToLowerInvariant();
         // Obifin tarafında tekil etiket: liste dönüşünde bunu ararız. Dakika damgası tek başına yetmez (aynı
         // dakikada iki ekleme ya da "görünmedi" hatasından sonra hemen tekrar aynı adı üretirdi; ikinci kayıt
         // ilkinin BankaApiId'sini alır, tekil index patlar, Obifin'deki kayıt yetim kalırdı) — rastgele son ek
@@ -165,8 +183,17 @@ public sealed class ObifinConnectionService
         // bu ad saklanır).
         var obifinLabel = $"OrderDeck-{licenseId.ToString("N")[..8]}-{bankaKodu}-{DateTimeOffset.UtcNow:yyyyMMddHHmm}-{Guid.NewGuid().ToString("N")[..8]}";
         var form = new Dictionary<string, string>(bankForm) { ["BankaApiAdi"] = obifinLabel };
-        await _client.AddBankConnectionAsync(creds, bankaKodu, form, ct);
-        var listed = await _client.ListBankConnectionsAsync(creds, ct);
+        IReadOnlyList<ObifinBankConnectionDto> listed;
+        try
+        {
+            await _client.AddBankConnectionAsync(creds, bankaKodu, form, ct);
+            listed = await _client.ListBankConnectionsAsync(creds, ct);
+        }
+        catch (Exception ex) when (DescribeClientFailure(ex, ct) is { } msg)
+        {
+            await MarkFailedAsync(conn, ex, msg, "banka bağlantısı ekleme", DateTimeOffset.UtcNow, ct);
+            throw;
+        }
         // Aynı etiket birden çok satırda görünürse (beklenmez) en büyük BankaApiId = en yeni kayıt.
         var match = listed.Where(x => string.Equals(x.Name, obifinLabel, StringComparison.Ordinal))
                 .OrderByDescending(x => x.BankaApiId).FirstOrDefault()
@@ -174,7 +201,7 @@ public sealed class ObifinConnectionService
         var bc = new BankConnection
         {
             Id = Guid.NewGuid(), LicenseId = licenseId, ObifinConnectionId = conn.Id, BankaKodu = bankaKodu,
-            BankaApiId = match.BankaApiId, Label = string.IsNullOrWhiteSpace(label) ? obifinLabel : label.Trim(),
+            BankaApiId = match.BankaApiId, Label = label.Length == 0 ? obifinLabel : label,
             Status = BankConnectionStatus.Active, CreatedAt = DateTimeOffset.UtcNow,
         };
         _db.BankConnections.Add(bc);
@@ -182,14 +209,35 @@ public sealed class ObifinConnectionService
         return bc;
     }
 
+    /// <summary>Hesap listesini yeniler. İstemci hatası doğrulamadaki gibi sınıflandırılıp bağlantıya yazılır;
+    /// dönüş tipi başarısızlık taşıyamadığından istisna yine yukarı gider.</summary>
     public async Task<int> RefreshAccountsAsync(Guid licenseId, CancellationToken ct)
     {
         var conn = await _db.ObifinConnections.FirstOrDefaultAsync(c => c.LicenseId == licenseId, ct)
             ?? throw new InvalidOperationException("Obifin bağlantısı yok.");
         var creds = TryResolveCredentials(conn) ?? throw new InvalidOperationException(UndecryptableMessage);
-        var accounts = await _client.ListAccountsAsync(creds, ct);
+        IReadOnlyList<ObifinAccountDto> accounts;
+        try
+        {
+            accounts = await _client.ListAccountsAsync(creds, ct);
+        }
+        catch (Exception ex) when (DescribeClientFailure(ex, ct) is { } msg)
+        {
+            await MarkFailedAsync(conn, ex, msg, "hesap yenileme", DateTimeOffset.UtcNow, ct);
+            throw;
+        }
         await UpsertAccountsAsync(conn, accounts, DateTimeOffset.UtcNow, ct);
         return accounts.Count;
+    }
+
+    /// <summary>Sınıflandırılmış istemci hatasını bağlantıya yazar ve kaydeder. Kimlik bilgisi ne loga ne
+    /// LastError'a girer; istisna mesajlarında kimlik yok.</summary>
+    private async Task MarkFailedAsync(ObifinConnection conn, Exception ex, string msg, string operation,
+        DateTimeOffset now, CancellationToken ct)
+    {
+        _log.LogWarning(ex, "Obifin {Operation} başarısız — lisans={LicenseId}: {Error}", operation, conn.LicenseId, msg);
+        conn.Status = ObifinConnectionStatus.Failed; conn.LastError = msg; conn.UpdatedAt = now;
+        await _db.SaveChangesAsync(ct);
     }
 
     private async Task UpsertAccountsAsync(ObifinConnection conn, IReadOnlyList<ObifinAccountDto> accounts,
