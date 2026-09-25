@@ -1,7 +1,13 @@
 namespace OrderDeck.LicenseServer.Services.Bank;
 
-/// <summary>Çağrı başına çözülen kimlik; loglanmaz, saklanmaz.</summary>
-public sealed record ObifinCredentials(string BaseUrl, string UserCode, string Password, string ApiKey);
+/// <summary>Çağrı başına çözülen kimlik; loglanmaz, saklanmaz. Positional record'un üretilmiş
+/// <c>ToString()</c>'i tüm alanları basacağından burada ezilir: parola ve API anahtarı maskelenir ki kayıt
+/// yanlışlıkla loga ya da bir istisna mesajına düşerse sır sızmasın.</summary>
+public sealed record ObifinCredentials(string BaseUrl, string UserCode, string Password, string ApiKey)
+{
+    public override string ToString()
+        => $"ObifinCredentials {{ BaseUrl = {BaseUrl}, UserCode = {UserCode}, Password = ***, ApiKey = *** }}";
+}
 
 public sealed record ObifinAccountDto(
     long Id, string BankaKodu, long? BankaApiId, string? HesapNo, string? Iban, string Currency,

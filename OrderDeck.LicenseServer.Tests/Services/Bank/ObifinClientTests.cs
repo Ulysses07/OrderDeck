@@ -61,6 +61,20 @@ public sealed class ObifinClientTests
     }
 
     [Fact]
+    public void Kimlik_kaydinin_ToString_ciktisi_parola_ve_API_anahtarini_maskeler()
+    {
+        // Positional record'un üretilmiş ToString'i tüm alanları basar. Kayıt yanlışlıkla `{Creds}` diye loglanır
+        // ya da bir istisna/assertion mesajına düşerse parola ve API anahtarı Serilog dosyasına sızmasın.
+        var creds = Creds();
+
+        var text = creds.ToString();
+
+        text.Should().NotContain(creds.Password).And.NotContain(creds.ApiKey);
+        text.Should().Contain(creds.UserCode, "tanı için kullanıcı kodu ve adres görünür kalır")
+            .And.Contain(creds.BaseUrl);
+    }
+
+    [Fact]
     public async Task Hata_listesi_doluysa_istisna_mesajlari_tasir()
     {
         var (client, _) = Build("""{"Hata":["Kullanici Bilgileri Hatali!"]}""");
