@@ -137,14 +137,14 @@ public sealed class ObifinConnectionService
         var now = DateTimeOffset.UtcNow;
         if (creds is null)
         {
-            conn.Status = ObifinConnectionStatus.Failed; conn.LastError = UndecryptableMessage; conn.UpdatedAt = now;
+            MarkFailed(conn, UndecryptableMessage, now);
             await _db.SaveChangesAsync(ct);
             return new ObifinVerifyResult(false, UndecryptableMessage, 0);
         }
         try
         {
             var accounts = await _client.ListAccountsAsync(creds, ct);
-            conn.Status = ObifinConnectionStatus.Verified; conn.LastError = null; conn.LastVerifiedAt = now; conn.UpdatedAt = now;
+            MarkVerified(conn, now);
             // Durum + hesaplar tek SaveChanges'te (UpsertAccountsAsync'in sonunda): hesap yazımı patlarsa
             // Verified de kalıcı olmaz; çekim işi hesabı yazılmamış bir bağlantıyı çekmeye başlamaz.
             await UpsertAccountsAsync(conn, accounts, now, ct);
@@ -161,7 +161,8 @@ public sealed class ObifinConnectionService
 
     /// <summary>Banka kimliklerini Obifin'e iletir, listeden etiketle `BankaApiId`'yi bulur; kimlikleri saklamaz.
     /// İstemci hatası doğrulamadaki gibi sınıflandırılıp bağlantıya yazılır; dönüş tipi başarısızlık taşıyamadığından
-    /// istisna yine yukarı gider.</summary>
+    /// istisna yine yukarı gider. Ekle + liste başarısı da doğrulamadaki gibi kaydedilir (bkz.
+    /// <see cref="MarkVerified"/>).</summary>
     public async Task<BankConnection> AddBankConnectionAsync(Guid licenseId, string bankaKodu, string label,
         IReadOnlyDictionary<string, string> bankForm, CancellationToken ct)
     {
@@ -181,7 +182,8 @@ public sealed class ObifinConnectionService
         // ilkinin BankaApiId'sini alır, tekil index patlar, Obifin'deki kayıt yetim kalırdı) — rastgele son ek
         // ayırır. Uzunluk: 18 + 1 + BankaKodu(≤32) + 1 + 12 + 1 + 8 ≤ 73 < 80 (Label sütunu; etiket verilmezse
         // bu ad saklanır).
-        var obifinLabel = $"OrderDeck-{licenseId.ToString("N")[..8]}-{bankaKodu}-{DateTimeOffset.UtcNow:yyyyMMddHHmm}-{Guid.NewGuid().ToString("N")[..8]}";
+        var now = DateTimeOffset.UtcNow;
+        var obifinLabel = $"OrderDeck-{licenseId.ToString("N")[..8]}-{bankaKodu}-{now:yyyyMMddHHmm}-{Guid.NewGuid().ToString("N")[..8]}";
         var form = new Dictionary<string, string>(bankForm) { ["BankaApiAdi"] = obifinLabel };
         IReadOnlyList<ObifinBankConnectionDto> listed;
         try
@@ -191,9 +193,11 @@ public sealed class ObifinConnectionService
         }
         catch (Exception ex) when (DescribeClientFailure(ex, ct) is { } msg)
         {
-            await MarkFailedAsync(conn, ex, msg, "banka bağlantısı ekleme", DateTimeOffset.UtcNow, ct);
+            await MarkFailedAsync(conn, ex, msg, "banka bağlantısı ekleme", now, ct);
             throw;
         }
+        // İki çağrı da geçti = kimlik çalışıyor; durum + satır aşağıdaki tek SaveChanges'te.
+        MarkVerified(conn, now);
         // Aynı etiket birden çok satırda görünürse (beklenmez) en büyük BankaApiId = en yeni kayıt.
         var match = listed.Where(x => string.Equals(x.Name, obifinLabel, StringComparison.Ordinal))
                 .OrderByDescending(x => x.BankaApiId).FirstOrDefault()
@@ -202,7 +206,7 @@ public sealed class ObifinConnectionService
         {
             Id = Guid.NewGuid(), LicenseId = licenseId, ObifinConnectionId = conn.Id, BankaKodu = bankaKodu,
             BankaApiId = match.BankaApiId, Label = label.Length == 0 ? obifinLabel : label,
-            Status = BankConnectionStatus.Active, CreatedAt = DateTimeOffset.UtcNow,
+            Status = BankConnectionStatus.Active, CreatedAt = now,
         };
         _db.BankConnections.Add(bc);
         await _db.SaveChangesAsync(ct);
@@ -210,12 +214,14 @@ public sealed class ObifinConnectionService
     }
 
     /// <summary>Hesap listesini yeniler. İstemci hatası doğrulamadaki gibi sınıflandırılıp bağlantıya yazılır;
-    /// dönüş tipi başarısızlık taşıyamadığından istisna yine yukarı gider.</summary>
+    /// dönüş tipi başarısızlık taşıyamadığından istisna yine yukarı gider. Başarı da doğrulamadaki gibi
+    /// kaydedilir — aynı uç (<c>hesaplistesi</c>), aynı kanıt (bkz. <see cref="MarkVerified"/>).</summary>
     public async Task<int> RefreshAccountsAsync(Guid licenseId, CancellationToken ct)
     {
         var conn = await _db.ObifinConnections.FirstOrDefaultAsync(c => c.LicenseId == licenseId, ct)
             ?? throw new InvalidOperationException("Obifin bağlantısı yok.");
         var creds = TryResolveCredentials(conn) ?? throw new InvalidOperationException(UndecryptableMessage);
+        var now = DateTimeOffset.UtcNow;
         IReadOnlyList<ObifinAccountDto> accounts;
         try
         {
@@ -223,11 +229,33 @@ public sealed class ObifinConnectionService
         }
         catch (Exception ex) when (DescribeClientFailure(ex, ct) is { } msg)
         {
-            await MarkFailedAsync(conn, ex, msg, "hesap yenileme", DateTimeOffset.UtcNow, ct);
+            await MarkFailedAsync(conn, ex, msg, "hesap yenileme", now, ct);
             throw;
         }
-        await UpsertAccountsAsync(conn, accounts, DateTimeOffset.UtcNow, ct);
+        MarkVerified(conn, now);
+        // Durum + hesaplar tek SaveChanges'te (doğrulamadaki gibi).
+        await UpsertAccountsAsync(conn, accounts, now, ct);
         return accounts.Count;
+    }
+
+    /// <summary>Obifin kanıtını bağlantıya yazar (kaydetmez — çağıranın SaveChanges'i ile). Başarısızlık ile
+    /// toparlanma kanıtı aynı uçtan gelir; yalnız birini kaydetmek yenileme işindeki tek geçici 502'yi insan
+    /// "Doğrula"ya basana kadar yapışkan bir Failed'a çevirirdi.
+    /// <para><see cref="ObifinConnectionStatus.Disabled"/> admin'in anahtarıdır: kanıt (başarı ya da hata) onu
+    /// çevirmez, yalnız açık bir etkinleştirme çevirir. Aksi hâlde yenileme işi kapatılmış bağlantıyı sessizce
+    /// yeniden açardı. Kanıt alanları (<c>LastVerifiedAt</c>, <c>LastError</c>) yine yazılır: admin ekranı
+    /// "kapalı ama kimlik çalışıyor / son hata şu" diyebilsin.</para></summary>
+    private static void MarkVerified(ObifinConnection conn, DateTimeOffset now)
+    {
+        if (conn.Status != ObifinConnectionStatus.Disabled) conn.Status = ObifinConnectionStatus.Verified;
+        conn.LastError = null; conn.LastVerifiedAt = now; conn.UpdatedAt = now;
+    }
+
+    /// <summary><see cref="MarkVerified"/>'ın hata yüzü: Disabled kalır, son hata yazılır.</summary>
+    private static void MarkFailed(ObifinConnection conn, string msg, DateTimeOffset now)
+    {
+        if (conn.Status != ObifinConnectionStatus.Disabled) conn.Status = ObifinConnectionStatus.Failed;
+        conn.LastError = msg; conn.UpdatedAt = now;
     }
 
     /// <summary>Sınıflandırılmış istemci hatasını bağlantıya yazar ve kaydeder. Kimlik bilgisi ne loga ne
@@ -236,7 +264,7 @@ public sealed class ObifinConnectionService
         DateTimeOffset now, CancellationToken ct)
     {
         _log.LogWarning(ex, "Obifin {Operation} başarısız — lisans={LicenseId}: {Error}", operation, conn.LicenseId, msg);
-        conn.Status = ObifinConnectionStatus.Failed; conn.LastError = msg; conn.UpdatedAt = now;
+        MarkFailed(conn, msg, now);
         await _db.SaveChangesAsync(ct);
     }
 

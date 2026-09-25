@@ -673,6 +673,31 @@ public sealed class ObifinConnectionServiceTests
     }
 
     [Fact]
+    public async Task Banka_baglantisi_ekleme_basarisi_Failed_baglantiyi_Verified_yapar_ve_son_hatayi_siler()
+    {
+        // Başarısızlık Failed yazıyorsa başarı da Verified yazmalı: ekle + liste başarısı kimliğin çalıştığının
+        // kanıtıdır; aksi hâlde tek geçici hata insan "Doğrula"ya basana kadar yapışkan kalırdı.
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var stub = new StubObifin { AddBankConnectionError = new HttpRequestException("Name or service not known") };
+        var svc = Svc(db, stub);
+        await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        var form = new Dictionary<string, string> { ["KullaniciAdi"] = "webservis-user", ["Sifre"] = NewPw() };
+        var failing = () => svc.AddBankConnectionAsync(lic, "qnb", "QNB", form, CancellationToken.None);
+        await failing.Should().ThrowAsync<HttpRequestException>();
+        var conn = await db.ObifinConnections.SingleAsync();
+        conn.Status.Should().Be(ObifinConnectionStatus.Failed);
+        stub.AddBankConnectionError = null;
+        var before = DateTimeOffset.UtcNow;
+
+        await svc.AddBankConnectionAsync(lic, "qnb", "QNB", form, CancellationToken.None);
+
+        conn.Status.Should().Be(ObifinConnectionStatus.Verified);
+        conn.LastError.Should().BeNull();
+        conn.LastVerifiedAt.Should().NotBeNull().And.BeOnOrAfter(before);
+        (await db.BankConnections.CountAsync()).Should().Be(1);
+    }
+
+    [Fact]
     public async Task Hesap_yenileme_maskeli_iban_ve_banka_senkron_zamanini_yazar()
     {
         using var db = NewDb(); var lic = SeedLicense(db); var stub = new StubObifin();
@@ -747,5 +772,84 @@ public sealed class ObifinConnectionServiceTests
         var conn = await db.ObifinConnections.SingleAsync();
         conn.Status.Should().Be(ObifinConnectionStatus.Unverified);
         conn.LastError.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Hesap_yenileme_basarisi_Failed_baglantiyi_Verified_yapar_ve_son_hatayi_siler()
+    {
+        // Başarısızlık ve toparlanma kanıtı aynı uçtan (hesaplistesi) gelir: yalnız birini kaydetmek, Görev 4'ün
+        // gece yenileme işindeki tek 502'yi insan "Doğrula"ya basana kadar yapışkan bir Failed'a çevirirdi.
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var stub = new StubObifin { ListAccountsError = new ObifinApiException(new[] { "Kullanici Bilgileri Hatali!" }) };
+        var svc = Svc(db, stub);
+        await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        var failing = () => svc.RefreshAccountsAsync(lic, CancellationToken.None);
+        await failing.Should().ThrowAsync<ObifinApiException>();
+        var conn = await db.ObifinConnections.SingleAsync();
+        conn.Status.Should().Be(ObifinConnectionStatus.Failed);
+        conn.LastVerifiedAt.Should().BeNull();
+        stub.ListAccountsError = null;
+        var before = DateTimeOffset.UtcNow;
+
+        await svc.RefreshAccountsAsync(lic, CancellationToken.None);
+
+        conn.Status.Should().Be(ObifinConnectionStatus.Verified);
+        conn.LastError.Should().BeNull();
+        conn.LastVerifiedAt.Should().NotBeNull().And.BeOnOrAfter(before);
+    }
+
+    [Fact]
+    public async Task Devre_disi_baglanti_basarili_yenilemeyle_acilmaz_kanit_yine_yazilir()
+    {
+        // Disabled admin'in anahtarıdır: Obifin kanıtı onu çevirmez (Görev 6'daki açık etkinleştirme çevirir).
+        // Aksi hâlde yenileme işi kapatılmış bağlantıyı sessizce yeniden açar, çekim işi onu çekmeye başlardı.
+        // Kanıt alanları (son doğrulama, son hata) yine yazılır.
+        using var db = NewDb(); var lic = SeedLicense(db); var stub = new StubObifin();
+        var svc = Svc(db, stub);
+        var conn = await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        conn.Status = ObifinConnectionStatus.Disabled; conn.LastError = "eski hata";
+        await db.SaveChangesAsync();
+
+        await svc.RefreshAccountsAsync(lic, CancellationToken.None);
+
+        conn.Status.Should().Be(ObifinConnectionStatus.Disabled);
+        conn.LastError.Should().BeNull();
+        conn.LastVerifiedAt.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Devre_disi_baglanti_basarisiz_yenilemeyle_Failed_olmaz_son_hata_yine_yazilir()
+    {
+        // Hata da anahtarı çevirmez: Disabled → Failed → (başarı) → Verified zinciri kapatılmış bağlantıyı
+        // arka kapıdan açardı.
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var stub = new StubObifin { ListAccountsError = new HttpRequestException("Name or service not known") };
+        var svc = Svc(db, stub);
+        var conn = await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        conn.Status = ObifinConnectionStatus.Disabled;
+        await db.SaveChangesAsync();
+
+        var act = () => svc.RefreshAccountsAsync(lic, CancellationToken.None);
+
+        await act.Should().ThrowAsync<HttpRequestException>();
+        conn.Status.Should().Be(ObifinConnectionStatus.Disabled);
+        conn.LastError.Should().Be("Obifin'e ulaşılamadı (HttpRequestException)");
+    }
+
+    [Fact]
+    public async Task Devre_disi_baglanti_dogrulama_basarisiyla_acilmaz_sonuc_yine_Ok()
+    {
+        // "Doğrula" kimliğin çalıştığını kanıtlar; admin'in kapatma kararını geri almaz.
+        using var db = NewDb(); var lic = SeedLicense(db); var stub = new StubObifin();
+        var svc = Svc(db, stub);
+        var conn = await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        conn.Status = ObifinConnectionStatus.Disabled;
+        await db.SaveChangesAsync();
+
+        var result = await svc.VerifyAsync(lic, CancellationToken.None);
+
+        result.Ok.Should().BeTrue();
+        conn.Status.Should().Be(ObifinConnectionStatus.Disabled);
+        conn.LastVerifiedAt.Should().NotBeNull();
     }
 }
