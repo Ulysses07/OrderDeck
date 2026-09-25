@@ -27,7 +27,7 @@ ekranları, müşteri uygulamasında IBAN/açıklama yönergesi, Obifin dışı 
 
 - Kimlik: her istekte header `KullaniciAdi` (e-posta), `Sifre`, `APIKey`. Kimlikler **müşteri
   (lisans) başına ayrı web servis**; Obifin elle açar (API'de müşteri oluşturma ucu yok). İstekler
-  yalnız beyaz listedeki IP'den (VPS 72.62.53.86) kabul edilir; yerel geliştirme Obifin'e bağlanamaz.
+  yalnız beyaz listedeki IP'den (prod VPS'in sabit IP'si — repo dışı notlarda) kabul edilir; yerel geliştirme Obifin'e bağlanamaz.
 - Banka bağlama: `POST /webservis/bankaapi/ekle/{bankakodu}/` (34 banka). QNB için `qnb`
   (KullaniciAdi + Sifre + Url = Maestro Core Ekstre servisi) ya da `qnbapi` (ClientId/ClientSecret +
   token). Bankanın **kurumsal web servis kimliği** gerekir; internet bankacılığı şifresi değil.
