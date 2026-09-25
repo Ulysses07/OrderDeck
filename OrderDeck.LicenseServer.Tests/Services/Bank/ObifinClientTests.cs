@@ -15,14 +15,19 @@ public sealed class ObifinClientTests
     private sealed class CapturingHandler : HttpMessageHandler
     {
         private readonly string _body;
+        private readonly HttpStatusCode _status;
         public HttpRequestMessage? Last { get; private set; }
         public string? LastForm { get; private set; }
-        public CapturingHandler(string body) => _body = body;
+        public CapturingHandler(string body, HttpStatusCode status = HttpStatusCode.OK)
+        {
+            _body = body;
+            _status = status;
+        }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage req, CancellationToken ct)
         {
             Last = req;
             LastForm = req.Content is null ? null : await req.Content.ReadAsStringAsync(ct);
-            return new HttpResponseMessage(HttpStatusCode.OK)
+            return new HttpResponseMessage(_status)
             {
                 Content = new StringContent(_body, Encoding.UTF8, "application/json"),
             };
@@ -32,9 +37,9 @@ public sealed class ObifinClientTests
     private static ObifinCredentials Creds() => new(
         "https://example.invalid", $"u-{Guid.NewGuid():N}@x", $"pw-{Guid.NewGuid():N}", $"k-{Guid.NewGuid():N}");
 
-    private static (ObifinClient Client, CapturingHandler Handler) Build(string body)
+    private static (ObifinClient Client, CapturingHandler Handler) Build(string body, HttpStatusCode status = HttpStatusCode.OK)
     {
-        var h = new CapturingHandler(body);
+        var h = new CapturingHandler(body, status);
         var c = new ObifinClient(new HttpClient(h), Options.Create(new ObifinOptions()),
             NullLogger<ObifinClient>.Instance);
         return (c, h);
@@ -72,6 +77,26 @@ public sealed class ObifinClientTests
         var (client, _) = Build("<html>502 Bad Gateway</html>");
         var act = () => client.ListAccountsAsync(Creds());
         await act.Should().ThrowAsync<ObifinProtocolException>();
+    }
+
+    [Fact]
+    public async Task Http_basarisiz_ve_Hata_bos_ise_protokol_istisnasi()
+    {
+        // Vekil/WAF hatası (429/502/503) JSON gövdeyle de gelebilir; "Hata boş" tek başına başarı sayılmaz —
+        // aksi hâlde boş liste döner ve çağıran "yeni hareket yok / hesaplar kayboldu" sanır.
+        var (client, _) = Build("{}", HttpStatusCode.BadGateway);
+        var act = () => client.ListAccountsAsync(Creds());
+        (await act.Should().ThrowAsync<ObifinProtocolException>()).Which.Message.Should().Contain("502");
+    }
+
+    [Fact]
+    public async Task Http_basarisiz_ama_Hata_doluysa_Obifin_mesajlari_one_gecer()
+    {
+        // Obifin'in kendi 4xx'i Hata[] taşıyorsa mesajlar kaybolmasın: Hata denetimi HTTP denetiminden ÖNCE.
+        var (client, _) = Build("""{"Hata":["Kullanici Bilgileri Hatali!"]}""", HttpStatusCode.Unauthorized);
+        var act = () => client.ListAccountsAsync(Creds());
+        (await act.Should().ThrowAsync<ObifinApiException>()).Which.Messages
+            .Should().ContainSingle().Which.Should().Be("Kullanici Bilgileri Hatali!");
     }
 
     [Fact]
@@ -121,6 +146,19 @@ public sealed class ObifinClientTests
         page.Items[0].CounterpartyName.Should().BeNull("JSON null");
         page.Items[0].CounterpartyTaxId.Should().BeNull("boş string null sayılır");
         page.Items[0].RawJson.Should().Contain("\"Id\":\"326404\"");
+    }
+
+    [Fact]
+    public async Task Virgullu_tutar_sessizce_yuz_katina_cikmaz_protokol_istisnasi()
+    {
+        // "10,50" InvariantCulture'da binlik ayracı sayılıp 1050 olurdu (100x). Bu alan SignedAmount'a, oradan
+        // ödeme eşleştirmesine gider — finansal tutarda sessiz hata yerine gürültülü hata.
+        var (client, _) = Build("""
+        {"Hata":[],"Liste":[{"Id":"1","HesapId":"6","IslemZamaniDT":"2022-10-10 12:07:30",
+          "TutarEksiArti":"10,50","Tutar":"10,50","ParaBirimi":"TL","BankaKodu":"garanti"}]}
+        """);
+        var act = () => client.ListTransactionsAsync(Creds(), new DateOnly(2022, 10, 1), new DateOnly(2022, 10, 17), null, 1, 1000);
+        await act.Should().ThrowAsync<ObifinProtocolException>();
     }
 
     [Fact]

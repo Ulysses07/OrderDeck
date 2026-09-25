@@ -25,7 +25,8 @@ public sealed class ObifinApiException : Exception
         : base("Obifin: " + string.Join(" | ", messages)) => Messages = messages;
 }
 
-/// <summary>JSON değil / beklenen şekil değil (ör. vekil 502 HTML).</summary>
+/// <summary>JSON değil / beklenen şekil değil / HTTP 2xx dışı ve `Hata` boş (ör. vekil 502 HTML ya da
+/// JSON gövdeli 503). Obifin'in kendi `Hata[]` mesajları ise <see cref="ObifinApiException"/>.</summary>
 public sealed class ObifinProtocolException : Exception
 {
     public ObifinProtocolException(string message) : base(message) { }

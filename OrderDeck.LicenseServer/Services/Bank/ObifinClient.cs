@@ -146,6 +146,15 @@ public sealed class ObifinClient : IObifinClient
             doc.Dispose();
             throw new ObifinApiException(msgs);
         }
+        // Sözleşmenin ikinci yarısı: Hata boş olsa da HTTP 2xx değilse başarı DEĞİL. Vekil/WAF JSON hatası
+        // (429/502/503), bakım sayfası vb. Liste'siz döner; denetlenmezse boş liste = "yeni hareket yok /
+        // hesaplar kayboldu" sanılır. Hata denetimi ÖNCE: Obifin'in kendi 4xx'i mesajlarını korur.
+        if (!resp.IsSuccessStatusCode)
+        {
+            doc.Dispose();
+            _log.LogWarning("Obifin HTTP {Status} {Path}: {Head}", (int)resp.StatusCode, path, Diagnostic(body));
+            throw new ObifinProtocolException($"Obifin HTTP {(int)resp.StatusCode} {path}");
+        }
         return doc;
     }
 
@@ -169,8 +178,11 @@ public sealed class ObifinClient : IObifinClient
     private static int? Int(JsonElement row, string name)
         => int.TryParse(Str(row, name), NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) ? n : null;
 
+    /// <summary>Yalnız "-10.00" biçimi. Binlik ayracı KABUL EDİLMEZ: `NumberStyles.Number` "10,50"yi
+    /// InvariantCulture'da 1050 (100x) okurdu; tutar alanında sessiz hata yerine null → gürültülü hata.</summary>
     private static decimal? Dec(JsonElement row, string name)
-        => decimal.TryParse(Str(row, name), NumberStyles.Number, CultureInfo.InvariantCulture, out var d) ? d : null;
+        => decimal.TryParse(Str(row, name), NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint,
+            CultureInfo.InvariantCulture, out var d) ? d : null;
 
     private static DateTime? DateTr(JsonElement row, string name)
         => DateTime.TryParseExact(Str(row, name), "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture,
