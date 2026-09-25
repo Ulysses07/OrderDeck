@@ -35,6 +35,15 @@ public sealed class ObifinConnectionService
     /// bilinmeyen bir yetim kayıt kalır, admin'in tekrarı ikincisini açardı.</summary>
     private const int LabelMaxLength = 80;
     private const int BankaKoduMaxLength = 32;
+    /// <summary><c>ObifinConnection.BaseUrl</c> ve <c>UserCode</c> sütunları 200 (<c>LicenseDbContext</c>). Kayıtta
+    /// denetlenir: SQL Server "truncated" hatası admin formuna anlaşılmaz düşerdi.</summary>
+    private const int BaseUrlMaxLength = 200;
+    private const int UserCodeMaxLength = 200;
+    /// <summary><c>BankAccount</c> sütunları (<c>LicenseDbContext</c>): Obifin'den gelen değer kırpılarak yazılır —
+    /// uzun bir bildirim notu başarılı doğrulamayı DbUpdateException'a çevirmesin.</summary>
+    private const int NotificationNoteMaxLength = 500;
+    private const int CurrencyMaxLength = 3;
+    private const int IbanMaskedMaxLength = 40;
 
     // Windows "Turkey Standard Time", Linux "Europe/Istanbul" (PanelStatsController kalıbı).
     public static readonly TimeZoneInfo TrZone = TimeZoneInfo.FindSystemTimeZoneById(
@@ -74,6 +83,8 @@ public sealed class ObifinConnectionService
         // Kimlik HTTP header'ında gider; SocketsHttpHandler ASCII dışı değeri gönderim anında anlaşılmaz bir ağ
         // hatasıyla reddeder. Kayıtta yakalanır, doğrulamada değil.
         if (!IsPrintableAscii(userCode)) throw new ArgumentException(NonAsciiMessage, nameof(userCode));
+        if (userCode.Length > UserCodeMaxLength)
+            throw new ArgumentException($"Kullanıcı adı en fazla {UserCodeMaxLength} karakter olabilir.", nameof(userCode));
         if (!string.IsNullOrWhiteSpace(password) && !IsPrintableAscii(password)) throw new ArgumentException(NonAsciiMessage, nameof(password));
         if (!string.IsNullOrWhiteSpace(apiKey) && !IsPrintableAscii(apiKey)) throw new ArgumentException(NonAsciiMessage, nameof(apiKey));
         string? explicitBaseUrl = null;
@@ -85,6 +96,8 @@ public sealed class ObifinConnectionService
             // harf duyarsız), boş yola eklediği '/' ile kullanıcının yazdığı sondaki '/' atılır (istemci zaten
             // TrimEnd('/') yapıyor). Aşağıdaki geri alınamaz gölge veri silmesi kozmetik bir farka bağlanamaz.
             explicitBaseUrl = uri.AbsoluteUri.TrimEnd('/');
+            if (explicitBaseUrl.Length > BaseUrlMaxLength)
+                throw new ArgumentException($"BaseUrl en fazla {BaseUrlMaxLength} karakter olabilir.", nameof(baseUrl));
         }
 
         var conn = await _db.ObifinConnections.FirstOrDefaultAsync(c => c.LicenseId == licenseId, ct);
@@ -283,13 +296,14 @@ public sealed class ObifinConnectionService
                 existing.Add(row);
             }
             row.BankConnectionId = connections.FirstOrDefault(b => b.BankaApiId == dto.BankaApiId)?.Id;
-            row.BankaKodu = dto.BankaKodu;
-            row.IbanMasked = BankHasher.MaskIban(dto.Iban);
+            // Obifin kaynaklı metinler sütun sınırına kırpılır (bkz. NotificationNoteMaxLength). Hash 64 hex sabittir.
+            row.BankaKodu = Truncate(dto.BankaKodu, BankaKoduMaxLength);
+            row.IbanMasked = Truncate(BankHasher.MaskIban(dto.Iban), IbanMaskedMaxLength);
             row.IbanHash = _hasher.HashIban(dto.Iban);
-            row.Currency = dto.Currency;
+            row.Currency = Truncate(dto.Currency, CurrencyMaxLength);
             row.Active = dto.Active;
             row.LastBankSyncAt = dto.UpdatedAtTr is { } tr ? TrToUtc(tr) : null;
-            row.NotificationNote = dto.NotificationNote;
+            row.NotificationNote = dto.NotificationNote is null ? null : Truncate(dto.NotificationNote, NotificationNoteMaxLength);
             row.RefreshedAt = now;
         }
         await _db.SaveChangesAsync(ct);
@@ -350,4 +364,6 @@ public sealed class ObifinConnectionService
     }
 
     private static bool IsPrintableAscii(string value) => value.All(c => c is >= ' ' and <= '~');
+
+    private static string Truncate(string value, int max) => value.Length > max ? value[..max] : value;
 }

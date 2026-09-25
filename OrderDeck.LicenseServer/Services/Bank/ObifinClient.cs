@@ -161,10 +161,12 @@ public sealed class ObifinClient : IObifinClient
         return doc;
     }
 
-    /// <summary>Dolu dizi ya da boş olmayan dize → mesaj listesi; boş dizi / boş dize / null → null (hata yok).</summary>
+    /// <summary>Dolu dizi, dolu nesne ya da boş olmayan dize → mesaj listesi; boş dizi / boş nesne / boş dize / null →
+    /// null (hata yok). Nesne: PHP anahtarlı diziyi <c>{"Hata":{"0":"…"}}</c> diye basar; mesajlar değerlerdir.</summary>
     private static List<string>? ReadHata(JsonElement hata) => hata.ValueKind switch
     {
         JsonValueKind.Array when hata.GetArrayLength() > 0 => hata.EnumerateArray().Select(e => e.ToString()).ToList(),
+        JsonValueKind.Object when hata.EnumerateObject().Any() => hata.EnumerateObject().Select(p => p.Value.ToString()).ToList(),
         JsonValueKind.String when !string.IsNullOrWhiteSpace(hata.GetString()) => [hata.GetString()!],
         _ => null,
     };

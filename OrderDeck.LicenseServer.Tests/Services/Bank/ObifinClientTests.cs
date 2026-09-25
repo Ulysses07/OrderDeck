@@ -332,4 +332,25 @@ public sealed class ObifinClientTests
         var act = () => new NullObifinClient().ListAccountsAsync(Creds());
         (await act.Should().ThrowAsync<ObifinApiException>()).Which.Messages.Should().Contain("obifin-not-configured");
     }
+
+    [Fact]
+    public async Task Hata_nesne_gelirse_de_Obifin_istisnasi_degerleri_mesaj_olarak_tasir()
+    {
+        // PHP tarafı anahtarlı diziyi JSON nesnesi olarak basar: {"Hata":{"0":"…"}}. Nesne diye başarı
+        // sayılsaydı boş liste "hesap yok" sanılırdı; mesajlar nesnenin değerleridir.
+        var (client, _) = Build("""{"Hata":{"0":"Kullanici Bilgileri Hatali!","1":"Ikinci"}}""");
+
+        var act = () => client.ListAccountsAsync(Creds());
+
+        (await act.Should().ThrowAsync<ObifinApiException>()).Which.Messages
+            .Should().Equal("Kullanici Bilgileri Hatali!", "Ikinci");
+    }
+
+    [Fact]
+    public async Task Hata_bos_nesne_ise_basari_sayilir()
+    {
+        var (client, _) = Build("""{"Hata":{},"Liste":[]}""");
+        var list = await client.ListAccountsAsync(Creds());
+        list.Should().BeEmpty();
+    }
 }

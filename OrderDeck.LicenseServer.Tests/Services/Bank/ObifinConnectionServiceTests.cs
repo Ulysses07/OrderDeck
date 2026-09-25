@@ -852,4 +852,90 @@ public sealed class ObifinConnectionServiceTests
         conn.Status.Should().Be(ObifinConnectionStatus.Disabled);
         conn.LastVerifiedAt.Should().NotBeNull();
     }
+
+    [Fact]
+    public async Task Kullanici_kodu_200_karakteri_asarsa_reddedilir()
+    {
+        // UserCode sütunu 200 (LicenseDbContext). SQL Server'da INSERT "truncated" ile patlardı; admin formu
+        // anlaşılır bir mesaj görsün, kayıt hiç açılmasın.
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var svc = Svc(db, new StubObifin());
+
+        var act = () => svc.UpsertAsync(lic, "", new string('u', 201), NewPw(), NewKey(), CancellationToken.None);
+
+        (await act.Should().ThrowAsync<ArgumentException>()).Which.Message.Should().Contain("200 karakter");
+        (await db.ObifinConnections.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Kullanici_kodu_tam_200_karakter_kabul_edilir()
+    {
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var conn = await Svc(db, new StubObifin()).UpsertAsync(lic, "", " " + new string('u', 200) + " ", NewPw(), NewKey(), CancellationToken.None);
+        conn.UserCode.Should().HaveLength(200, "kırpıldıktan sonra sınır dahil");
+    }
+
+    [Fact]
+    public async Task BaseUrl_200_karakteri_asarsa_reddedilir()
+    {
+        // BaseUrl sütunu 200 (LicenseDbContext); sınır normalize edilmiş adrese uygulanır.
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var svc = Svc(db, new StubObifin());
+        var longUrl = "https://example.invalid/" + new string('a', 200);
+
+        var act = () => svc.UpsertAsync(lic, longUrl, "api@x", NewPw(), NewKey(), CancellationToken.None);
+
+        (await act.Should().ThrowAsync<ArgumentException>()).Which.Message.Should().Contain("200 karakter");
+        (await db.ObifinConnections.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Hesap_yenileme_Obifin_kaynakli_uzun_alanlari_sutun_sinirina_kirpar()
+    {
+        // NotificationNote 500, BankaKodu 32, Currency 3, IbanMasked 40 (LicenseDbContext). Obifin'den gelen
+        // uzun bir değer başarılı doğrulamayı SQL Server'da DbUpdateException'a çevirmesin.
+        using var db = NewDb(); var lic = SeedLicense(db); var stub = new StubObifin();
+        stub.Accounts.Add(new ObifinAccountDto(9298, new string('q', 40), 77, "123", BankHasherTests.TestIban(), "TRYX",
+            10m, null, true, new string('n', 600)));
+        var svc = Svc(db, stub);
+        await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+
+        await svc.RefreshAccountsAsync(lic, CancellationToken.None);
+
+        var acc = await db.BankAccounts.SingleAsync();
+        acc.NotificationNote.Should().HaveLength(500);
+        acc.BankaKodu.Should().HaveLength(32);
+        acc.Currency.Should().Be("TRY");
+        acc.IbanMasked.Length.Should().BeLessThanOrEqualTo(40);
+        (await db.ObifinConnections.SingleAsync()).Status.Should().Be(ObifinConnectionStatus.Verified);
+    }
+
+    [Fact]
+    public async Task Hesap_yenileme_BankaApiId_eslesen_banka_baglantisina_baglar_eslesmeyen_null_kalir()
+    {
+        // Hesabın BankaApiId'si yerel BankConnection'a bağlanır; eşleşme yalnız AYNI lisans içinde aranır —
+        // başka lisansın aynı BankaApiId'li bağlantısı bağ kurmaz.
+        using var db = NewDb(); var stub = new StubObifin();
+        var lic = SeedLicense(db); var other = SeedLicense(db);
+        var svc = Svc(db, stub);
+        var conn = await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        var otherConn = await svc.UpsertAsync(other, "", "api-o@x", NewPw(), NewKey(), CancellationToken.None);
+        var now = DateTimeOffset.UtcNow;
+        var bc = new BankConnection { Id = Guid.NewGuid(), LicenseId = lic, ObifinConnectionId = conn.Id, BankaKodu = "qnb",
+            BankaApiId = 77, Label = "QNB", Status = BankConnectionStatus.Active, CreatedAt = now };
+        db.BankConnections.Add(bc);
+        db.BankConnections.Add(new BankConnection { Id = Guid.NewGuid(), LicenseId = other, ObifinConnectionId = otherConn.Id,
+            BankaKodu = "qnb", BankaApiId = 78, Label = "Başka lisans", Status = BankConnectionStatus.Active, CreatedAt = now });
+        await db.SaveChangesAsync();
+        stub.Accounts.Add(new ObifinAccountDto(9298, "qnb", 77, "1", BankHasherTests.TestIban(), "TL", 0, null, true, null));
+        stub.Accounts.Add(new ObifinAccountDto(9299, "qnb", 78, "2", BankHasherTests.TestIban(), "TL", 0, null, true, null));
+        stub.Accounts.Add(new ObifinAccountDto(9300, "qnb", null, "3", BankHasherTests.TestIban(), "TL", 0, null, true, null));
+
+        await svc.RefreshAccountsAsync(lic, CancellationToken.None);
+
+        (await db.BankAccounts.SingleAsync(a => a.ObifinAccountId == 9298)).BankConnectionId.Should().Be(bc.Id);
+        (await db.BankAccounts.SingleAsync(a => a.ObifinAccountId == 9299)).BankConnectionId
+            .Should().BeNull("BankaApiId 78 yalnız başka lisansta var");
+        (await db.BankAccounts.SingleAsync(a => a.ObifinAccountId == 9300)).BankConnectionId.Should().BeNull("BankaApiId yok");
+    }
 }
