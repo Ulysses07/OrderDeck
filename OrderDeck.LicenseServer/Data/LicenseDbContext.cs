@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.Shared.Text;
 
 namespace OrderDeck.LicenseServer.Data;
@@ -69,6 +70,13 @@ public class LicenseDbContext : DbContext
     public DbSet<BarcodeCounter> BarcodeCounters => Set<BarcodeCounter>();
     public DbSet<IysConsent> IysConsents => Set<IysConsent>();
     public DbSet<IysConsentEvent> IysConsentEvents => Set<IysConsentEvent>();
+    public DbSet<Domain.Bank.ObifinConnection> ObifinConnections => Set<Domain.Bank.ObifinConnection>();
+    public DbSet<Domain.Bank.BankConnection> BankConnections => Set<Domain.Bank.BankConnection>();
+    public DbSet<Domain.Bank.BankAccount> BankAccounts => Set<Domain.Bank.BankAccount>();
+    public DbSet<Domain.Bank.BankTransaction> BankTransactions => Set<Domain.Bank.BankTransaction>();
+    public DbSet<Domain.Bank.PaymentMatch> PaymentMatches => Set<Domain.Bank.PaymentMatch>();
+    public DbSet<Domain.Bank.CustomerIbanMemory> CustomerIbanMemories => Set<Domain.Bank.CustomerIbanMemory>();
+    public DbSet<Domain.Bank.PaymentMatchGap> PaymentMatchGaps => Set<Domain.Bank.PaymentMatchGap>();
 
     /// <summary>
     /// Türetilmiş kolonların tazelendiği <b>tek</b> nokta.
@@ -876,6 +884,89 @@ public class LicenseDbContext : DbContext
             // GetVerifiedByLicenseAsync, ListVerifiedAsync) zaten Verified süzüyor,
             // yani indeksin kapsamı aramanın kapsamıyla birebir.
             b.HasIndex(a => a.BrandCode).IsUnique().HasFilter("[Status] = 'Verified'");
+        });
+
+        mb.Entity<ObifinConnection>(b =>
+        {
+            b.HasKey(c => c.Id);
+            b.HasOne(c => c.License).WithMany().HasForeignKey(c => c.LicenseId).OnDelete(DeleteBehavior.Cascade);
+            b.HasIndex(c => c.LicenseId).IsUnique();
+            b.Property(c => c.BaseUrl).HasMaxLength(200).IsRequired();
+            b.Property(c => c.UserCode).HasMaxLength(200).IsRequired();
+            b.Property(c => c.PasswordProtected).HasMaxLength(4000).IsRequired();
+            b.Property(c => c.ApiKeyProtected).HasMaxLength(4000).IsRequired();
+            b.Property(c => c.Status).HasConversion<string>().HasMaxLength(16).IsRequired();
+            b.Property(c => c.LastError).HasMaxLength(500);
+        });
+
+        mb.Entity<BankConnection>(b =>
+        {
+            b.HasKey(c => c.Id);
+            b.HasOne(c => c.ObifinConnection).WithMany().HasForeignKey(c => c.ObifinConnectionId).OnDelete(DeleteBehavior.Cascade);
+            b.HasIndex(c => new { c.LicenseId, c.BankaApiId }).IsUnique();
+            b.Property(c => c.BankaKodu).HasMaxLength(32).IsRequired();
+            b.Property(c => c.Label).HasMaxLength(80).IsRequired();
+            b.Property(c => c.Status).HasConversion<string>().HasMaxLength(16).IsRequired();
+            b.Property(c => c.LastError).HasMaxLength(500);
+        });
+
+        mb.Entity<BankAccount>(b =>
+        {
+            b.HasKey(a => a.Id);
+            b.HasIndex(a => new { a.LicenseId, a.ObifinAccountId }).IsUnique();
+            b.Property(a => a.BankaKodu).HasMaxLength(32).IsRequired();
+            b.Property(a => a.IbanMasked).HasMaxLength(40).IsRequired();
+            b.Property(a => a.IbanHash).HasMaxLength(64);
+            b.Property(a => a.Currency).HasMaxLength(3).IsRequired();
+            b.Property(a => a.NotificationNote).HasMaxLength(500);
+        });
+
+        mb.Entity<BankTransaction>(b =>
+        {
+            b.HasKey(t => t.Id);
+            b.HasIndex(t => new { t.LicenseId, t.ObifinId }).IsUnique();
+            b.HasIndex(t => new { t.LicenseId, t.Direction, t.OccurredAt });
+            b.Property(t => t.BankaKodu).HasMaxLength(32).IsRequired();
+            b.Property(t => t.Direction).HasConversion<string>().HasMaxLength(16).IsRequired();
+            b.Property(t => t.Amount).HasPrecision(18, 2);
+            b.Property(t => t.Currency).HasMaxLength(3).IsRequired();
+            b.Property(t => t.Description).HasMaxLength(512);
+            b.Property(t => t.TransactionCode).HasMaxLength(32);
+            b.Property(t => t.CommonType).HasMaxLength(64);
+            b.Property(t => t.BankReference).HasMaxLength(64);
+            b.Property(t => t.CounterpartyIbanHash).HasMaxLength(64);
+            b.Property(t => t.CounterpartyIbanMasked).HasMaxLength(40);
+            b.Property(t => t.CounterpartyName).HasMaxLength(160);
+            b.Property(t => t.CounterpartyTaxIdHash).HasMaxLength(64);
+        });
+
+        mb.Entity<PaymentMatch>(b =>
+        {
+            b.HasKey(m => m.Id);
+            b.HasOne(m => m.BankTransaction).WithMany().HasForeignKey(m => m.BankTransactionId).OnDelete(DeleteBehavior.Cascade);
+            b.HasIndex(m => m.BankTransactionId).IsUnique();
+            b.HasIndex(m => new { m.LicenseId, m.Status });
+            b.Property(m => m.Layer).HasConversion<string>().HasMaxLength(32).IsRequired();
+            b.Property(m => m.Status).HasConversion<string>().HasMaxLength(24).IsRequired();
+            b.Property(m => m.Confidence).HasPrecision(4, 3);
+            b.Property(m => m.Evidence).HasMaxLength(500);
+        });
+
+        mb.Entity<CustomerIbanMemory>(b =>
+        {
+            b.HasKey(m => m.Id);
+            b.HasIndex(m => new { m.LicenseId, m.IbanHash }).IsUnique();
+            b.HasIndex(m => new { m.LicenseId, m.WpfCustomerId });
+            b.Property(m => m.IbanHash).HasMaxLength(64).IsRequired();
+            b.Property(m => m.IbanMasked).HasMaxLength(40).IsRequired();
+            b.Property(m => m.LearnedFrom).HasConversion<string>().HasMaxLength(16).IsRequired();
+        });
+
+        mb.Entity<PaymentMatchGap>(b =>
+        {
+            b.HasKey(g => g.Id);
+            b.HasIndex(g => g.PaymentId).IsUnique();
+            b.Property(g => g.Reason).HasConversion<string>().HasMaxLength(24).IsRequired();
         });
 
         mb.Entity<NetgsmDeparture>(b =>
