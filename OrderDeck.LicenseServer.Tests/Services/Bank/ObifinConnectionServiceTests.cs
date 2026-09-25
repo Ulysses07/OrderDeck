@@ -1,6 +1,8 @@
 using FluentAssertions;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
@@ -25,6 +27,8 @@ public sealed class ObifinConnectionServiceTests
         /// <summary>Ayarlıysa hesap listesi çağrısı ÇAĞIRANIN jetonunu iptal edip onunla iptal istisnası fırlatır
         /// (zaman aşımı değil, kullanıcı vazgeçti senaryosu).</summary>
         public CancellationTokenSource? CancelCallerOnListAccounts { get; set; }
+        /// <summary>Her eklemede Obifin'in vereceği sıradaki BankaApiId; eklemeden sonra artar.</summary>
+        public long NextBankaApiId { get; set; } = 4242;
 
         public Task<IReadOnlyList<ObifinAccountDto>> ListAccountsAsync(ObifinCredentials c, CancellationToken ct = default)
         {
@@ -44,7 +48,7 @@ public sealed class ObifinConnectionServiceTests
         {
             Added.Add((b, f));
             // Obifin gerçekte Id döndürmüyor (doküman sessiz): listede etiketle bulunur.
-            Connections.Add(new ObifinBankConnectionDto(4242, b, f["BankaApiAdi"], true));
+            Connections.Add(new ObifinBankConnectionDto(NextBankaApiId++, b, f["BankaApiAdi"], true));
             return Task.CompletedTask;
         }
         public Task RemoveBankConnectionAsync(ObifinCredentials c, long id, CancellationToken ct = default) => Task.CompletedTask;
@@ -54,8 +58,37 @@ public sealed class ObifinConnectionServiceTests
 
     private static readonly IDataProtectionProvider Protection = new EphemeralDataProtectionProvider();
 
-    private static LicenseDbContext NewDb()
-        => new(new DbContextOptionsBuilder<LicenseDbContext>().UseInMemoryDatabase($"obifin-conn-{Guid.NewGuid():N}").Options);
+    /// <summary>Ortak kök: aynı adla açılan ikinci bağlam (taze okuma) kesicili/kesicisiz seçenek farkına
+    /// rağmen aynı bellek deposunu görür.</summary>
+    private static readonly InMemoryDatabaseRoot DbRoot = new();
+
+    private static LicenseDbContext NewDb() => NewDb($"obifin-conn-{Guid.NewGuid():N}");
+
+    private static LicenseDbContext NewDb(string name, IInterceptor? interceptor = null)
+    {
+        var builder = new DbContextOptionsBuilder<LicenseDbContext>().UseInMemoryDatabase(name, DbRoot);
+        if (interceptor is not null) builder.AddInterceptors(interceptor);
+        return new(builder.Options);
+    }
+
+    /// <summary>SaveChanges'i, izleyicide EKLENMİŞ bir <see cref="BankAccount"/> varken patlatır: hesap
+    /// yazımı sırasındaki DB hatası (tekil index yarışı, bağlantı kopması) senaryosu.</summary>
+    private sealed class FailOnBankAccountInsert : SaveChangesInterceptor
+    {
+        public override InterceptionResult<int> SavingChanges(DbContextEventData eventData, InterceptionResult<int> result)
+            => Check(eventData, result);
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData,
+            InterceptionResult<int> result, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(Check(eventData, result));
+
+        private static InterceptionResult<int> Check(DbContextEventData eventData, InterceptionResult<int> result)
+        {
+            if (eventData.Context!.ChangeTracker.Entries<BankAccount>().Any(e => e.State == EntityState.Added))
+                throw new DbUpdateException("Hesap yazımı patladı (test kesicisi).");
+            return result;
+        }
+    }
 
     private static Guid SeedLicense(LicenseDbContext db)
     {
@@ -168,6 +201,30 @@ public sealed class ObifinConnectionServiceTests
         var conn = await db.ObifinConnections.SingleAsync();
         conn.Status.Should().Be(ObifinConnectionStatus.Unverified);
         conn.LastError.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Dogrulama_hesap_yazimi_patlarsa_Verified_kalici_olmaz()
+    {
+        // Durum + hesaplar TEK SaveChanges'te yazılır: ikisi birlikte ya da hiçbiri. Aksi hâlde hesabı hiç
+        // yazılmamış bir bağlantı Verified görünür ve çekim işi onu çekmeye başlardı.
+        var dbName = $"obifin-conn-{Guid.NewGuid():N}";
+        using var db = NewDb(dbName, new FailOnBankAccountInsert());
+        var lic = SeedLicense(db); var stub = new StubObifin();
+        stub.Accounts.Add(new ObifinAccountDto(9298, "qnb", 77, "123", BankHasherTests.TestIban(), "TL", 10m, null, true, ""));
+        var svc = Svc(db, stub);
+        await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+
+        var act = () => svc.VerifyAsync(lic, CancellationToken.None);
+
+        // DB hatası Obifin hatası değildir: sınıflandırılmaz, olduğu gibi yukarı gider.
+        await act.Should().ThrowAsync<DbUpdateException>();
+        // İzlenen varlıkta Verified bellekte kalmış olabilir; kalıcı durum taze bağlamdan okunur.
+        using var fresh = NewDb(dbName);
+        var persisted = await fresh.ObifinConnections.SingleAsync();
+        persisted.Status.Should().Be(ObifinConnectionStatus.Unverified);
+        persisted.LastVerifiedAt.Should().BeNull();
+        (await fresh.BankAccounts.CountAsync()).Should().Be(0);
     }
 
     [Fact]
@@ -307,6 +364,8 @@ public sealed class ObifinConnectionServiceTests
         (await db.BankAccounts.CountAsync()).Should().Be(0);
         (await db.CustomerIbanMemories.CountAsync()).Should().Be(0);
         (await db.PaymentMatchGaps.CountAsync()).Should().Be(0);
+        // BankaApiId'ler ESKİ Obifin hesabının kimlikleridir; yeni hesapta o kayıt yoktur (ya da başkasınındır).
+        (await db.BankConnections.CountAsync()).Should().Be(0, "banka bağlantıları eski hesaba aitti");
     }
 
     [Fact]
@@ -322,6 +381,42 @@ public sealed class ObifinConnectionServiceTests
         conn.LastObifinTransactionId.Should().BeNull();
         (await db.BankTransactions.CountAsync()).Should().Be(0);
         (await db.BankAccounts.CountAsync()).Should().Be(0);
+        (await db.BankConnections.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Kimlik_degisikligi_yalniz_o_lisansin_golge_verisini_siler()
+    {
+        // Bu özellikteki tek toplu silme yolu: kiracı sınırı testle korunur — ileride ExecuteDelete'e ya da
+        // kaskada geçen bir yeniden yazım başka lisansın verisini sessizce götüremesin.
+        using var db = NewDb(); var stub = new StubObifin();
+        var licA = SeedLicense(db); var licB = SeedLicense(db);
+        var svc = Svc(db, stub);
+        var connA = await svc.UpsertAsync(licA, "", "api-a@x", NewPw(), NewKey(), CancellationToken.None);
+        var connB = await svc.UpsertAsync(licB, "", "api-b@x", NewPw(), NewKey(), CancellationToken.None);
+        SeedShadowData(db, connA);
+        SeedShadowData(db, connB);
+        var cursorB = connB.LastObifinTransactionId;
+        var backfillB = connB.BackfillCompletedAt;
+        var polledB = connB.LastPolledAt;
+
+        await svc.UpsertAsync(licA, "", "api-a2@x", password: null, apiKey: null, CancellationToken.None);
+
+        connA.LastObifinTransactionId.Should().BeNull();
+        (await db.BankTransactions.CountAsync(t => t.LicenseId == licA)).Should().Be(0);
+        (await db.BankConnections.CountAsync(b => b.LicenseId == licA)).Should().Be(0);
+
+        connB.LastObifinTransactionId.Should().Be(cursorB);
+        connB.BackfillCompletedAt.Should().Be(backfillB);
+        connB.LastPolledAt.Should().Be(polledB);
+        connB.LastError.Should().Be("eski hata");
+        connB.Status.Should().Be(ObifinConnectionStatus.Unverified);
+        (await db.BankTransactions.CountAsync(t => t.LicenseId == licB)).Should().Be(1);
+        (await db.PaymentMatches.CountAsync(m => m.LicenseId == licB)).Should().Be(1);
+        (await db.BankAccounts.CountAsync(a => a.LicenseId == licB)).Should().Be(1);
+        (await db.CustomerIbanMemories.CountAsync(m => m.LicenseId == licB)).Should().Be(1);
+        (await db.PaymentMatchGaps.CountAsync(g => g.LicenseId == licB)).Should().Be(1);
+        (await db.BankConnections.CountAsync(b => b.LicenseId == licB)).Should().Be(1);
     }
 
     [Fact]
@@ -344,6 +439,7 @@ public sealed class ObifinConnectionServiceTests
         (await db.BankAccounts.CountAsync()).Should().Be(1);
         (await db.CustomerIbanMemories.CountAsync()).Should().Be(1);
         (await db.PaymentMatchGaps.CountAsync()).Should().Be(1);
+        (await db.BankConnections.CountAsync()).Should().Be(1);
     }
 
     private static void SeedShadowData(LicenseDbContext db, ObifinConnection conn)
@@ -354,6 +450,11 @@ public sealed class ObifinConnectionServiceTests
         conn.LastPolledAt = now;
         conn.LastError = "eski hata";
         var hash = NewHasher().HashIban(BankHasherTests.TestIban())!;
+        db.BankConnections.Add(new BankConnection
+        {
+            Id = Guid.NewGuid(), LicenseId = conn.LicenseId, ObifinConnectionId = conn.Id, BankaKodu = "qnb",
+            BankaApiId = 4242, Label = "QNB", Status = BankConnectionStatus.Active, CreatedAt = now,
+        });
         var tx = new BankTransaction
         {
             Id = Guid.NewGuid(), LicenseId = conn.LicenseId, ObifinId = 326404, ObifinAccountId = 9298, BankaKodu = "qnb",
@@ -419,6 +520,28 @@ public sealed class ObifinConnectionServiceTests
 
         bc.BankaKodu.Should().Be("qnb", "banka kodu küçük harfe normalize edilir");
         bc.Label.Should().Be(stub.Added.Single().Form["BankaApiAdi"], "etiket verilmezse Obifin'deki ad görünür");
+        bc.Label.Length.Should().BeLessThanOrEqualTo(80, "Label sütunu 80 karakter");
+    }
+
+    [Fact]
+    public async Task Ayni_dakikada_iki_banka_baglantisi_farkli_etiket_ve_BankaApiId_alir()
+    {
+        // Dakika çözünürlüklü etiket tek başına yetmez: aynı dakikada ikinci ekleme (iki QNB hesabı ya da
+        // "görünmedi" hatasından sonra hemen tekrar) listede İLK kaydın BankaApiId'sini bulur, tekil index
+        // patlar ve ikinci kayıt Obifin'de yetim kalırdı.
+        using var db = NewDb(); var lic = SeedLicense(db); var stub = new StubObifin();
+        var svc = Svc(db, stub);
+        await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        var form = new Dictionary<string, string> { ["KullaniciAdi"] = "webservis-user", ["Sifre"] = NewPw() };
+
+        var first = await svc.AddBankConnectionAsync(lic, "qnb", "QNB 1", form, CancellationToken.None);
+        var second = await svc.AddBankConnectionAsync(lic, "qnb", "QNB 2", form, CancellationToken.None);
+
+        stub.Added.Should().HaveCount(2);
+        stub.Added[0].Form["BankaApiAdi"].Should().NotBe(stub.Added[1].Form["BankaApiAdi"], "Obifin etiketi tekil");
+        first.BankaApiId.Should().Be(4242);
+        second.BankaApiId.Should().Be(4243);
+        (await db.BankConnections.CountAsync()).Should().Be(2);
     }
 
     [Fact]

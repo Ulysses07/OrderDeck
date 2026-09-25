@@ -58,8 +58,9 @@ public sealed class ObifinConnectionService
     /// <summary>Boş <paramref name="password"/>/<paramref name="apiKey"/> = mevcut değeri koru. Boş
     /// <paramref name="baseUrl"/> = varsayılan adres.
     /// <para>Kullanıcı kodu ya da (boş olmayan) adres değişirse eski hesabın imleci ve gölge verisi yeni hesap
-    /// için anlamsızdır: imleç sıfırlanır, hareket/hesap/eşleşme/IBAN hafızası/boşluk satırları silinir.
-    /// Aynı hesaba yeni parola girmek hiçbir şeye dokunmaz.</para></summary>
+    /// için anlamsızdır: imleç sıfırlanır, hareket/hesap/eşleşme/IBAN hafızası/boşluk satırları ve eski hesabın
+    /// <c>BankaApiId</c>'lerini taşıyan banka bağlantıları silinir. Aynı hesaba yeni parola girmek hiçbir şeye
+    /// dokunmaz.</para></summary>
     public async Task<ObifinConnection> UpsertAsync(Guid licenseId, string baseUrl, string userCode,
         string? password, string? apiKey, CancellationToken ct)
     {
@@ -132,7 +133,8 @@ public sealed class ObifinConnectionService
         {
             var accounts = await _client.ListAccountsAsync(creds, ct);
             conn.Status = ObifinConnectionStatus.Verified; conn.LastError = null; conn.LastVerifiedAt = now; conn.UpdatedAt = now;
-            await _db.SaveChangesAsync(ct);
+            // Durum + hesaplar tek SaveChanges'te (UpsertAccountsAsync'in sonunda): hesap yazımı patlarsa
+            // Verified de kalıcı olmaz; çekim işi hesabı yazılmamış bir bağlantıyı çekmeye başlamaz.
             await UpsertAccountsAsync(conn, accounts, now, ct);
             return new ObifinVerifyResult(true, null, accounts.Count);
         }
@@ -156,12 +158,18 @@ public sealed class ObifinConnectionService
             ?? throw new InvalidOperationException("Önce Obifin bağlantısı kaydedilmeli.");
         var creds = TryResolveCredentials(conn) ?? throw new InvalidOperationException(UndecryptableMessage);
         bankaKodu = bankaKodu.Trim().ToLowerInvariant();
-        // Obifin tarafında tekil, tahmin edilemez etiket: liste dönüşünde bunu ararız.
-        var obifinLabel = $"OrderDeck-{licenseId.ToString("N")[..8]}-{bankaKodu}-{DateTimeOffset.UtcNow:yyyyMMddHHmm}";
+        // Obifin tarafında tekil etiket: liste dönüşünde bunu ararız. Dakika damgası tek başına yetmez (aynı
+        // dakikada iki ekleme ya da "görünmedi" hatasından sonra hemen tekrar aynı adı üretirdi; ikinci kayıt
+        // ilkinin BankaApiId'sini alır, tekil index patlar, Obifin'deki kayıt yetim kalırdı) — rastgele son ek
+        // ayırır. Uzunluk: 18 + 1 + BankaKodu(≤32) + 1 + 12 + 1 + 8 ≤ 73 < 80 (Label sütunu; etiket verilmezse
+        // bu ad saklanır).
+        var obifinLabel = $"OrderDeck-{licenseId.ToString("N")[..8]}-{bankaKodu}-{DateTimeOffset.UtcNow:yyyyMMddHHmm}-{Guid.NewGuid().ToString("N")[..8]}";
         var form = new Dictionary<string, string>(bankForm) { ["BankaApiAdi"] = obifinLabel };
         await _client.AddBankConnectionAsync(creds, bankaKodu, form, ct);
         var listed = await _client.ListBankConnectionsAsync(creds, ct);
-        var match = listed.FirstOrDefault(x => string.Equals(x.Name, obifinLabel, StringComparison.Ordinal))
+        // Aynı etiket birden çok satırda görünürse (beklenmez) en büyük BankaApiId = en yeni kayıt.
+        var match = listed.Where(x => string.Equals(x.Name, obifinLabel, StringComparison.Ordinal))
+                .OrderByDescending(x => x.BankaApiId).FirstOrDefault()
             ?? throw new InvalidOperationException("Banka bağlantısı Obifin'de görünmedi; listeyi kontrol edin.");
         var bc = new BankConnection
         {
@@ -213,7 +221,12 @@ public sealed class ObifinConnectionService
 
     /// <summary>Kimlik değişti: imleç alanları null, lisansın gölge satırları silinmek üzere işaretlenir
     /// (kaydetmez — çağıranın SaveChanges'i ile tek işlem). İzlenen <c>RemoveRange</c>, <c>ExecuteDelete</c>
-    /// değil: o hemen ve işlem dışı koşar, InMemory'de de yok. Nadir bir admin işlemi; satır sayısı küçük.</summary>
+    /// değil: o hemen ve işlem dışı koşar, InMemory'de de yok. Nadir bir admin işlemi; satır sayısı küçük.
+    /// <para>Banka bağlantıları da gider: <c>BankaApiId</c> eski Obifin hesabının kimliğidir — yeni hesapta ya
+    /// yoktur ya da başkasının kaydıdır. Kalsalardı "kaldır" yeni kimlikle yabancı bir Id'ye <c>bankaapi/sil</c>
+    /// atar, hesap tazeleme Id çakışmasında yanlış bağlantıya bağlardı ve yeni hesapta aynı Id ile eklenen
+    /// kayıt tekil index'e (LicenseId, BankaApiId) takılırdı. Obifin'deki eski kayıtlara dokunulmaz: o hesabın
+    /// kimliği artık elimizde değil.</para></summary>
     private async Task ResetShadowDataAsync(ObifinConnection conn, CancellationToken ct)
     {
         var licenseId = conn.LicenseId;
@@ -222,11 +235,13 @@ public sealed class ObifinConnectionService
         var accounts = await _db.BankAccounts.Where(a => a.LicenseId == licenseId).ToListAsync(ct);
         var memories = await _db.CustomerIbanMemories.Where(m => m.LicenseId == licenseId).ToListAsync(ct);
         var gaps = await _db.PaymentMatchGaps.Where(g => g.LicenseId == licenseId).ToListAsync(ct);
+        var bankConnections = await _db.BankConnections.Where(b => b.LicenseId == licenseId).ToListAsync(ct);
         _db.PaymentMatches.RemoveRange(matches);
         _db.BankTransactions.RemoveRange(transactions);
         _db.BankAccounts.RemoveRange(accounts);
         _db.CustomerIbanMemories.RemoveRange(memories);
         _db.PaymentMatchGaps.RemoveRange(gaps);
+        _db.BankConnections.RemoveRange(bankConnections);
 
         var hadCursor = conn.LastObifinTransactionId is not null || conn.BackfillCompletedAt is not null || conn.LastPolledAt is not null;
         conn.LastObifinTransactionId = null;
@@ -237,8 +252,10 @@ public sealed class ObifinConnectionService
         // Kimlik bilgisi (kullanıcı kodu dahil) loga girmez; yalnız sayılar.
         _log.LogWarning(
             "Obifin kimliği değişti — lisans={LicenseId}: imleç sıfırlandı (vardı={HadCursor}), gölge veri silindi " +
-            "(hareket={Transactions}, eşleşme={Matches}, hesap={Accounts}, IBAN hafızası={Memories}, boşluk={Gaps})",
-            licenseId, hadCursor, transactions.Count, matches.Count, accounts.Count, memories.Count, gaps.Count);
+            "(hareket={Transactions}, eşleşme={Matches}, hesap={Accounts}, IBAN hafızası={Memories}, boşluk={Gaps}, " +
+            "banka bağlantısı={BankConnections})",
+            licenseId, hadCursor, transactions.Count, matches.Count, accounts.Count, memories.Count, gaps.Count,
+            bankConnections.Count);
     }
 
     /// <summary>İstemci hatasını admin ekranı için sınıflandırır; sınıf dışı istisna (ya da çağıranın kendi
