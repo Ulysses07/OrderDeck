@@ -350,8 +350,9 @@ public sealed class ObifinConnectionService
 
     /// <summary>İstemci hatasını admin ekranı için sınıflandırır; sınıf dışı istisna (ya da çağıranın kendi
     /// iptali) için null → yukarı gider. Obifin'in kendi mesajları aynen; ağ/vekil/zaman aşımı için İngilizce
-    /// ağ metni ya da vekil HTML'i yerine kısa Türkçe metin + tür adı. Kimlik hiçbir dalda yer almaz.</summary>
-    private static string? DescribeClientFailure(Exception ex, CancellationToken callerToken)
+    /// ağ metni ya da vekil HTML'i yerine kısa Türkçe metin + tür adı. Kimlik hiçbir dalda yer almaz.
+    /// Çekim işi (<see cref="ObifinPollJob"/>) de aynı sınıflandırmayı kullanır — LastError metni tek yerden.</summary>
+    public static string? DescribeClientFailure(Exception ex, CancellationToken callerToken)
     {
         var msg = ex switch
         {
