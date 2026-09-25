@@ -105,12 +105,33 @@ public sealed class BankHasherTests
     }
 
     [Fact]
-    public void Vkn_bos_veya_rakamsiz_ise_hash_uretmez()
+    public void Vkn_bos_rakamsiz_veya_kalinti_ise_hash_uretmez()
     {
         var h = NewHasher();
         h.HashTaxId(null).Should().BeNull();
         h.HashTaxId("").Should().BeNull();
         h.HashTaxId("   ").Should().BeNull();
         h.HashTaxId("VKN").Should().BeNull();
+        h.HashTaxId("0").Should().BeNull("tek rakam kimlik değildir; hash'i olsaydı eşleştirici delil sanabilirdi");
+        h.HashTaxId("-").Should().BeNull();
+    }
+
+    /// <summary>VKN 10, TCKN 11 rakamdır. Daha kısa kalıntı (9 rakam) hash'lenmez; aksi hâlde
+    /// bozuk bir alan sonraki eşleştiricide kimlik kanıtı gibi eşleşebilirdi.</summary>
+    [Theory]
+    [InlineData(1, false)]
+    [InlineData(9, false)]
+    [InlineData(10, true)]
+    [InlineData(11, true)]
+    public void Vkn_hashi_yalniz_10_veya_daha_fazla_rakamda_uretilir(int digitCount, bool expectHash)
+    {
+        var h = NewHasher();
+        // Üretilmiş rakam dizisi (repo public — gerçek VKN/TCKN yazılmaz).
+        var value = string.Concat(Enumerable.Range(0, digitCount).Select(_ => Random.Shared.Next(0, 10)));
+
+        var hash = h.HashTaxId(value);
+
+        if (expectHash) hash.Should().MatchRegex("^[0-9a-f]{64}$", "HMAC-SHA256 küçük hex");
+        else hash.Should().BeNull();
     }
 }

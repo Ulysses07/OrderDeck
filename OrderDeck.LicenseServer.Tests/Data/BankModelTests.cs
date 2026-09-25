@@ -104,14 +104,14 @@ public sealed class BankModelTests
     [Theory]
     [InlineData(typeof(PaymentMatch), typeof(BankTransaction))]
     [InlineData(typeof(BankConnection), typeof(ObifinConnection))]
-    public void Ebeveyn_uzerinden_kaskadlanan_tablonun_tek_FKsi_var_lisansa_FKsi_yok(Type entity, Type parent)
+    public void Ebeveyn_uzerinden_kaskadlanan_tablonun_lisansa_FKsi_yok_ebeveyn_FKsi_kaskad(Type entity, Type parent)
     {
         using var db = NewDb();
         var fks = db.Model.FindEntityType(entity)!.GetForeignKeys().ToList();
         fks.Should().NotContain(f => f.PrincipalEntityType.ClrType == typeof(License),
             "ikinci bir Licenses yolu SQL Server'da hata 1785 verir");
-        var fk = fks.Should().ContainSingle().Subject;
-        fk.PrincipalEntityType.ClrType.Should().Be(parent);
+        // Yalnız ebeveyn FK'sı sabitlenir; ileride eklenecek NoAction bir FK bu kararı bozmaz.
+        var fk = fks.Single(f => f.PrincipalEntityType.ClrType == parent);
         fk.DeleteBehavior.Should().Be(DeleteBehavior.Cascade);
     }
 

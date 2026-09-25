@@ -11,6 +11,9 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// </summary>
 public sealed class BankHasher
 {
+    /// <summary>VKN 10 rakam — bundan kısa bir değer vergi kimliği değildir.</summary>
+    public const int MinTaxIdDigits = 10;
+
     private readonly byte[] _key;
 
     public BankHasher(IOptions<BankOptions> opt)
@@ -30,11 +33,14 @@ public sealed class BankHasher
         return norm is null ? null : Hmac(norm);
     }
 
+    /// <summary>Yalnız rakamlar sayılır. VKN 10, TCKN 11 rakamdır; <see cref="MinTaxIdDigits"/>'ten
+    /// kısa kalıntı ("0", "-", 9 rakam) null döner — hash'i olsaydı sonraki eşleştirici onu
+    /// kimlik kanıtı sanabilirdi.</summary>
     public string? HashTaxId(string? taxId)
     {
         if (string.IsNullOrWhiteSpace(taxId)) return null;
         var digits = new string(taxId.Where(char.IsAsciiDigit).ToArray());
-        return digits.Length == 0 ? null : Hmac(digits);
+        return digits.Length < MinTaxIdDigits ? null : Hmac(digits);
     }
 
     public static string? NormalizeIban(string? iban)
