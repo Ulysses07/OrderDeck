@@ -162,6 +162,29 @@ public sealed class ObifinClientTests
         page.Items[0].RawJson.Should().Contain("\"Id\":\"326404\"");
     }
 
+    [Theory]
+    // İstek SayfaBasinaKayitSayisi verdiyse yanıtta DİZE ("50") gelir; toplamlar sayı.
+    [InlineData("""{"SayfaBasinaKayitSayisi":"50","ToplamKayitSayisi":120,"ToplamSayfaSayisi":3,"SayfaNo":2,"Hata":[],"Liste":[]}""", 50, 3, 120, 2)]
+    // Boş pencere: hepsi SAYI, sayfa boyutu sunucunun kendi değeri (1000), ToplamSayfaSayisi 0, SayfaNo yok.
+    [InlineData("""{"SayfaBasinaKayitSayisi":1000,"ToplamKayitSayisi":0,"ToplamSayfaSayisi":0,"Hata":[],"Liste":[]}""", 1000, 0, 0, 7)]
+    // Hepsi dize.
+    [InlineData("""{"SayfaBasinaKayitSayisi":"25","ToplamKayitSayisi":"51","ToplamSayfaSayisi":"3","SayfaNo":"3","Hata":[],"Liste":[]}""", 25, 3, 51, 3)]
+    public async Task Sayfa_meta_verisi_sayi_da_dize_de_gelse_okunur(string body, int pageSize, int totalPages, int totalCount, int pageNo)
+    {
+        // Gerçek Obifin (2026-09-26 ölçümü) aynı alanı yanıttan yanıta farklı JSON türüyle döndürüyor. Tür yüzünden
+        // okunamayan meta sessizce istenene düşseydi döngü yanlış sayfa boyutuna/sayfa sayısına bakardı. İstek bilerek
+        // yanıttakinden farklı (sayfa 7, boyut 999): dönen değerin yanıttan okunduğu görülsün.
+        var (client, _) = Build(body);
+
+        var page = await client.ListTransactionsAsync(Creds(), new DateOnly(2026, 9, 1), new DateOnly(2026, 9, 25), null, 7, 999);
+
+        page.PageSize.Should().Be(pageSize);
+        page.TotalPages.Should().Be(totalPages);
+        page.TotalCount.Should().Be(totalCount);
+        page.PageNo.Should().Be(pageNo, "SayfaNo yoksa istenen sayfa");
+        page.Items.Should().BeEmpty();
+    }
+
     [Fact]
     public async Task Virgullu_tutar_sessizce_yuz_katina_cikmaz_protokol_istisnasi()
     {

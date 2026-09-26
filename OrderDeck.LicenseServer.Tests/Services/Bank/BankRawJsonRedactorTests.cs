@@ -70,7 +70,7 @@ public sealed class BankRawJsonRedactorTests
     [Fact]
     public void Diger_degerlerin_JSON_turu_korunur_Turkce_karakterler_kacislanmaz()
     {
-        // Saklanan kopya insan gözüyle okunur (admin tanısı): "Şükrü" Şükrü diye yazılmaz.
+        // Saklanan kopya insan gözüyle okunur (admin tanısı): "Şükrü", "\u015E\u00FCkr\u00FC" diye kaçışlanarak yazılmaz.
         var json = """{"Sayi":10.5,"Bos":null,"Evet":true,"GonderenAdi":"Şükrü Çağlar Öz"}""";
 
         var redacted = BankRawJsonRedactor.Redact(json);

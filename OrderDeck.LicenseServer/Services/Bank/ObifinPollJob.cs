@@ -17,12 +17,13 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// kendiliğinden düzelmez → Failed + LastError, koşu BAŞARILI biter (admin düzeltip yeniden doğrular; Failed
 /// bağlantı sonraki koşularda atlanır). Ağ/vekil/zaman aşımı geçicidir → LastError yazılır, durum Verified
 /// KALIR, istisna DIŞARI çıkar (Hangfire panosunda Failed; 5 dakika sonraki koşu aynı imleçten dener). İşin
-/// kendi iptali hiçbir şey yazmaz. Bir bağlantının hatası sıradakileri bekletmez (<see cref="RunAsync"/>).</para>
+/// kendi iptali hiçbir şey yazmaz. Sınıf dışı hata (DB, eşleştirici…) geçici gibi ele alınır ama LastError'a yalnız tür
+/// adı yazılır (<see cref="UnexpectedErrorMessage"/>). Bir bağlantının hatası sıradakileri bekletmez (<see cref="RunAsync"/>).</para>
 ///
 /// <para><b>Kimlik değişimi — eşzamanlılık jetonu BİLEREK yok.</b> Admin çekim sürerken kimliği değiştirirse
 /// <see cref="ObifinConnectionService.UpsertAsync"/> imleci sıfırlar, gölge veriyi siler. Eski koşu ne eski
-/// hesabın satırlarını ne eski imleci geri yazmalı: hareket/imleç kaydeden HER SaveChanges'ten önce
-/// UserCode/BaseUrl/UpdatedAt taze okunur, biri değiştiyse koşu kaydetmeden iptal edilir.</para>
+/// hesabın satırlarını ne eski imleci ne eski kimliğin hatasını geri yazmalı: hareket/imleç/hata kaydeden HER
+/// SaveChanges'ten önce UserCode/BaseUrl/UpdatedAt taze okunur, biri değiştiyse kaydedilmez.</para>
 ///
 /// <para><b>Ham JSON</b> saklanmadan önce IBAN/VKN/TCKN alanları redakte edilir
 /// (<see cref="BankRawJsonRedactor"/>); hash + maske DTO'nun ham değerinden üretilir.</para>
@@ -153,22 +154,56 @@ public sealed class ObifinPollJob
         catch (Exception ex) when (ObifinConnectionService.DescribeClientFailure(ex, ct) is { } msg)
         {
             // İmleç DEĞİŞMEDİ: yalnız yukarıdaki başarılı yolda kaydedilir; kaydedilmemiş satırlar atılır.
-            _db.ChangeTracker.Clear();
-            var fresh = await _db.ObifinConnections.FirstAsync(c => c.Id == connectionId, ct);
-            fresh.LastError = msg;
-            fresh.UpdatedAt = DateTimeOffset.UtcNow;
             if (ex is ObifinApiException)
             {
-                // Obifin "hayır" dedi: kendiliğinden düzelmez, admin düzeltir. Disabled admin'in anahtarıdır, çevrilmez.
-                if (fresh.Status != ObifinConnectionStatus.Disabled) fresh.Status = ObifinConnectionStatus.Failed;
-                await _db.SaveChangesAsync(ct);
+                // Obifin "hayır" dedi: kendiliğinden düzelmez, admin düzeltir.
+                await RecordErrorIfIdentityUnchangedAsync(connectionId, identity, msg, markFailed: true, ct);
                 _log.LogWarning("Obifin çekimi Obifin hatasıyla durdu — bağlantı={ConnectionId}: {Error}", connectionId, msg);
                 return;
             }
-            await _db.SaveChangesAsync(ct);
+            await RecordErrorIfIdentityUnchangedAsync(connectionId, identity, msg, markFailed: false, ct);
             _log.LogWarning(ex, "Obifin çekimi geçici hatayla düştü — bağlantı={ConnectionId}: {Error}", connectionId, msg);
             throw;
         }
+        catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
+        {
+            // Sınıf dışı hata (DB, eşleştirici…): admin ekranı "son hata yok" demesin. Mesaj DEĞİL yalnız tür adı —
+            // istisna mesajı veri (IBAN, ad, SQL parametresi) taşıyabilir. Durum çevrilmez: kimlik aleyhine kanıt değil.
+            // Hata kaydı da düşerse (ör. DB tamamen gitti) asıl istisna kaybolmasın: kayıt hatası yalnız loglanır.
+            try
+            {
+                await RecordErrorIfIdentityUnchangedAsync(connectionId, identity, UnexpectedErrorMessage(ex), markFailed: false, ct);
+            }
+            catch (Exception recordEx) when (!(recordEx is OperationCanceledException && ct.IsCancellationRequested))
+            {
+                _log.LogError(recordEx, "Obifin çekimi: beklenmeyen hata bağlantıya yazılamadı — bağlantı={ConnectionId}", connectionId);
+            }
+            throw;
+        }
+    }
+
+    /// <summary>Sınıf dışı hatanın <c>LastError</c> metni: yalnız tür adı.</summary>
+    private static string UnexpectedErrorMessage(Exception ex) => $"Beklenmeyen hata ({ex.GetType().Name})";
+
+    /// <summary>Hata kaydı da kimlik korumalı (bkz. <see cref="SaveIfIdentityUnchangedAsync"/>): koşu sürerken admin kimliği
+    /// değiştirdiyse (<see cref="ObifinConnectionService.UpsertAsync"/> UpdatedAt'i yazar, durumu Unverified'a çeker) eski
+    /// kimliğin hatası yeni kaydın üstüne yazılmaz — düzeltilmiş bağlantı Failed'a düşmez. İzleyici boşaltılır (kaydedilmemiş
+    /// satırlar atılır), bağlantı taze okunur. <paramref name="markFailed"/>: Failed'a çek; Disabled admin'in anahtarıdır,
+    /// çevrilmez.</summary>
+    private async Task RecordErrorIfIdentityUnchangedAsync(Guid connectionId, IdentitySnapshot identity, string error,
+        bool markFailed, CancellationToken ct)
+    {
+        _db.ChangeTracker.Clear();
+        var fresh = await _db.ObifinConnections.FirstOrDefaultAsync(c => c.Id == connectionId, ct);
+        if (fresh is null || !identity.Matches(fresh.UserCode, fresh.BaseUrl, fresh.UpdatedAt))
+        {
+            _log.LogWarning("Obifin çekimi: kimlik değişti, hata kaydı atlandı — bağlantı={ConnectionId}", connectionId);
+            return;
+        }
+        fresh.LastError = error;
+        fresh.UpdatedAt = DateTimeOffset.UtcNow;
+        if (markFailed && fresh.Status != ObifinConnectionStatus.Disabled) fresh.Status = ObifinConnectionStatus.Failed;
+        await _db.SaveChangesAsync(ct);
     }
 
     /// <summary>Pencereyi sayfa sayfa çeker, yazar; (görülen en büyük Id, son sayfa dolu muydu) döner.
@@ -259,7 +294,8 @@ public sealed class ObifinPollJob
         }
         if (fresh.Count == 0) return;
         await SaveIfIdentityUnchangedAsync(conn.Id, identity, ct);
-        foreach (var tx in fresh.Where(t => t.Direction == BankTransactionDirection.Incoming))
+        // Sıfır tutarlı satır (Obifin demo verisinde görüldü: TutarEksiArti "0.00") saklanır ama ödeme olamaz.
+        foreach (var tx in fresh.Where(t => t.Direction == BankTransactionDirection.Incoming && t.Amount != 0))
             await _sink.OnNewIncomingAsync(tx, ct);
         // Kaydedilen satırlar koşu boyunca izleyicide birikmesin: 90 günlük ilk çekim on binlerce satır (ham JSON dahil)
         // tutar, her SaveChanges'in DetectChanges'i büyürdü. Bağlantı (conn) izlenmeye devam eder — imleç onun üzerinde;
@@ -275,10 +311,7 @@ public sealed class ObifinPollJob
             .Where(c => c.Id == connectionId)
             .Select(c => new { c.UserCode, c.BaseUrl, c.UpdatedAt })
             .FirstOrDefaultAsync(ct);
-        if (current is null
-            || !string.Equals(current.UserCode, identity.UserCode, StringComparison.Ordinal)
-            || !string.Equals(current.BaseUrl, identity.BaseUrl, StringComparison.Ordinal)
-            || current.UpdatedAt != identity.UpdatedAt)
+        if (current is null || !identity.Matches(current.UserCode, current.BaseUrl, current.UpdatedAt))
             throw new IdentityChangedException();
         await _db.SaveChangesAsync(ct);
     }
@@ -287,7 +320,13 @@ public sealed class ObifinPollJob
     private static string? Trim(string? s, int max) => s is null ? null : (s.Length > max ? s[..max] : s);
 
     /// <summary>Koşu başında okunan kimlik alanları; her kayıttan önce taze değerle karşılaştırılır.</summary>
-    private readonly record struct IdentitySnapshot(string UserCode, string BaseUrl, DateTimeOffset UpdatedAt);
+    private readonly record struct IdentitySnapshot(string UserCode, string BaseUrl, DateTimeOffset UpdatedAt)
+    {
+        public bool Matches(string userCode, string baseUrl, DateTimeOffset updatedAt)
+            => string.Equals(userCode, UserCode, StringComparison.Ordinal)
+               && string.Equals(baseUrl, BaseUrl, StringComparison.Ordinal)
+               && updatedAt == UpdatedAt;
+    }
 
     /// <summary>Koşu içi kontrol akışı; <see cref="PollConnectionAsync"/> yakalar, dışarı çıkmaz.</summary>
     private sealed class IdentityChangedException : Exception

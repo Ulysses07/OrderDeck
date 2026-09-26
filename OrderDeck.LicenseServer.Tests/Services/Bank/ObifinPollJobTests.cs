@@ -36,6 +36,10 @@ public sealed class ObifinPollJobTests
         /// <summary><see cref="IgnorePageNo"/> iken yanıttaki sayfa numarası: true = gerçekte verilen (1), false = istenen
         /// (sunucu isteği yankılar ya da SayfaNo hiç dönmez, istemci istenene düşer).</summary>
         public bool ReportServedPageNo { get; set; } = true;
+        /// <summary>Gerçek Obifin davranışı (2026-09-26 ölçümü): ToplamSayfaSayisi'nin ötesindeki bir SayfaNo boş sayfa
+        /// DEĞİL, yeniden dolu bir sayfa döndürür (burada ilk sayfanın içeriği, istenen numarayla). Açıkken son sayfanın
+        /// ötesini isteyen döngü yinelenen veri alır.</summary>
+        public bool BeyondLastPageRepeatsFirstPage { get; set; }
 
         public Task<IReadOnlyList<ObifinAccountDto>> ListAccountsAsync(ObifinCredentials c, CancellationToken ct = default)
             => Task.FromResult<IReadOnlyList<ObifinAccountDto>>(Transactions.Select(t => t.AccountId).Distinct()
@@ -61,9 +65,10 @@ public sealed class ObifinPollJobTests
                 .Where(x => DateOnly.FromDateTime(x.OccurredAtTr) >= f && DateOnly.FromDateTime(x.OccurredAtTr) <= t)
                 .Where(x => s is null || x.Id > s)
                 .OrderBy(x => x.Id).ToList();
-            var served = IgnorePageNo ? 1 : p;
+            // Gerçek Obifin: boş pencere ToplamSayfaSayisi 0 döndürür.
+            var pages = (int)Math.Ceiling(all.Count / (double)size);
+            var served = IgnorePageNo || (BeyondLastPageRepeatsFirstPage && p > pages) ? 1 : p;
             var items = all.Skip((served - 1) * size).Take(size).ToList();
-            var pages = Math.Max(1, (int)Math.Ceiling(all.Count / (double)size));
             var reported = IgnorePageNo && ReportServedPageNo ? served : p;
             return new ObifinPage<ObifinTransactionDto>(items, reported, NullTotalPages ? null : pages, NullTotalPages ? null : all.Count, size);
         }
@@ -75,11 +80,13 @@ public sealed class ObifinPollJobTests
         /// <summary>Çağrı anında hareketin izleyicideki durumu — sink kaydedilmiş (Unchanged) varlık almalı.</summary>
         public List<EntityState> StatesAtCall { get; } = new();
         public LicenseDbContext? Db { get; set; }
+        /// <summary>Kayıttan sonra çağrılır: test araya girebilir ya da eşleştirici hatası taklit edebilir.</summary>
+        public Func<BankTransaction, Task>? OnReceive { get; set; }
         public Task OnNewIncomingAsync(BankTransaction tx, CancellationToken ct)
         {
             Received.Add(tx);
             if (Db is not null) StatesAtCall.Add(Db.Entry(tx).State);
-            return Task.CompletedTask;
+            return OnReceive?.Invoke(tx) ?? Task.CompletedTask;
         }
     }
 
@@ -540,5 +547,164 @@ public sealed class ObifinPollJobTests
         await job.RunAsync(CancellationToken.None);
 
         client.Calls.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Sifir_tutarli_hareket_saklanir_ama_eslestiriciye_gitmez()
+    {
+        // Obifin demo verisinde TutarEksiArti "0.00" satırlar var: her satır gibi saklanır (imleç ve tanı için), ama
+        // ödeme olamaz — eşleştiriciye (sink) verilmez.
+        using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
+        var (job, svc, sink) = Build(db, client, today);
+        await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        client.Transactions.Add(Tx(1, new DateTime(2026, 9, 25, 8, 1, 0), 0m));
+        client.Transactions.Add(Tx(2, new DateTime(2026, 9, 25, 8, 2, 0), 25m));
+
+        await job.RunAsync(CancellationToken.None);
+
+        (await db.BankTransactions.CountAsync()).Should().Be(2, "sıfır tutarlı satır da saklanır");
+        (await db.BankTransactions.SingleAsync(t => t.ObifinId == 1)).Amount.Should().Be(0m);
+        sink.Received.Should().ContainSingle().Which.ObifinId.Should().Be(2);
+        (await db.ObifinConnections.SingleAsync()).LastObifinTransactionId.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Toplam_sayfa_sayisi_biliniyorsa_son_sayfanin_otesi_istenmez()
+    {
+        // Gerçek Obifin (2026-09-26 ölçümü): ToplamSayfaSayisi'nin ötesindeki SayfaNo boş değil, yeniden DOLU bir sayfa
+        // döndürür — istenseydi yinelenen veri gelirdi. Son sayfa tam dolu olsa da döngü sayfa sayısını aşmaz; arkadan
+        // gelen olursa imleçli drenaj turu (BaslangicHareketId) alır.
+        using var db = NewDb(); var today = new DateOnly(2026, 9, 25);
+        var client = new ScriptedObifin { PageCap = 2, BeyondLastPageRepeatsFirstPage = true };
+        var (job, svc, _) = Build(db, client, today);
+        await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        for (var i = 1; i <= 4; i++) client.Transactions.Add(Tx(i, new DateTime(2026, 9, 25, 8, i, 0), 10m));
+
+        await job.RunAsync(CancellationToken.None);
+
+        client.Calls.Select(c => (c.Since, c.Page)).Should().Equal((0L, 1), (0L, 2), (4L, 1));
+        (await db.BankTransactions.CountAsync()).Should().Be(4);
+        (await db.ObifinConnections.SingleAsync()).LastObifinTransactionId.Should().Be(4);
+    }
+
+    [Fact]
+    public async Task Bos_pencerede_toplam_sayfa_sifir_tek_cagri_yapilir_satir_yazilmaz()
+    {
+        // Gerçek Obifin: boş pencere HTTP 200, Liste:[], ToplamSayfaSayisi:0 döndürür. 1. sayfadan sonrası istenmez.
+        using var db = NewDb(); var today = new DateOnly(2026, 9, 25);
+        var client = new ScriptedObifin { BeyondLastPageRepeatsFirstPage = true };
+        var (job, svc, _) = Build(db, client, today);
+        var lic = await SeedVerifiedAsync(db, svc, cursor: 50, backfilled: true);
+
+        await job.RunAsync(CancellationToken.None);
+
+        client.Calls.Should().ContainSingle().Which.Page.Should().Be(1);
+        (await db.BankTransactions.CountAsync()).Should().Be(0);
+        var conn = await db.ObifinConnections.SingleAsync(c => c.LicenseId == lic);
+        conn.LastObifinTransactionId.Should().Be(50);
+        conn.LastPolledAt.Should().NotBeNull("boş pencere de başarılı turdur");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Hata_kaydi_da_kimlik_korumali_kimlik_degistiyse_yazilmaz(bool transient)
+    {
+        // Admin çekim sürerken kimliği düzeltti (ör. yanlış parolayı değiştirdi: UpsertAsync UpdatedAt'i yazar, durumu
+        // Unverified'a çeker). Eski kimlikle giden istek hata döndü; bu hata yeni kaydın üstüne yazılsaydı düzeltilmiş
+        // bağlantı Failed'a düşer (Obifin reddi) ya da yabancı bir LastError taşırdı (geçici hata).
+        var dbName = $"obifin-poll-{Guid.NewGuid():N}";
+        using var db = NewDb(dbName); var today = new DateOnly(2026, 9, 25);
+        var client = new ScriptedObifin { FailOnCall = 1 };
+        if (transient) client.FailWith = () => new HttpRequestException("Name or service not known");
+        var (job, svc, _) = Build(db, client, today);
+        var lic = await SeedVerifiedAsync(db, svc, cursor: 200, backfilled: true);
+        client.BeforeCall = async _ =>
+        {
+            using var admin = NewDb(dbName);
+            var c = await admin.ObifinConnections.SingleAsync(x => x.LicenseId == lic);
+            c.UpdatedAt = c.UpdatedAt.AddSeconds(1); c.Status = ObifinConnectionStatus.Unverified;
+            await admin.SaveChangesAsync();
+        };
+
+        var act = () => job.RunAsync(CancellationToken.None);
+
+        if (transient) await act.Should().ThrowAsync<AggregateException>("geçici hata Hangfire panosunda yine görünür");
+        else await act.Should().NotThrowAsync();
+        using var fresh = NewDb(dbName);
+        var conn = await fresh.ObifinConnections.SingleAsync(x => x.LicenseId == lic);
+        conn.Status.Should().Be(ObifinConnectionStatus.Unverified, "admin'in kaydı ezilmedi");
+        conn.LastError.Should().BeNull("eski kimliğin hatası yeni kaydın üstüne yazılmadı");
+        conn.LastObifinTransactionId.Should().Be(200);
+    }
+
+    [Fact]
+    public async Task Beklenmeyen_hatada_LastError_yalniz_tur_adini_tasir_imlec_ilerlemez_kosu_fail_olur()
+    {
+        // Sınıf dışı hata (DB kısıtı, eşleştirici hatası…): admin ekranı sessiz kalmasın diye LastError yazılır, ama
+        // yalnız tür adı — istisna mesajı veri (IBAN, ad) taşıyabilir. Durum Verified kalır: kimlik aleyhine kanıt değil.
+        using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
+        var (job, svc, sink) = Build(db, client, today);
+        var lic = await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        var iban = BankHasherTests.TestIban();
+        sink.OnReceive = _ => throw new DbUpdateException($"kısıt ihlali {iban}");
+        client.Transactions.Add(Tx(1, new DateTime(2026, 9, 25, 8, 1, 0), 10m));
+
+        var act = () => job.RunAsync(CancellationToken.None);
+
+        (await act.Should().ThrowAsync<AggregateException>("Hangfire panosunda Failed görünmeli"))
+            .Which.InnerExceptions.Should().ContainSingle().Which.Should().BeOfType<DbUpdateException>();
+        var conn = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic);
+        conn.LastError.Should().Be("Beklenmeyen hata (DbUpdateException)").And.NotContain(iban);
+        conn.Status.Should().Be(ObifinConnectionStatus.Verified);
+        conn.LastObifinTransactionId.Should().Be(0);
+        conn.LastPolledAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Beklenmeyen_hata_kaydi_da_kimlik_degistiyse_yazilmaz()
+    {
+        var dbName = $"obifin-poll-{Guid.NewGuid():N}";
+        using var db = NewDb(dbName); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
+        var (job, svc, sink) = Build(db, client, today);
+        var lic = await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        sink.OnReceive = async _ =>
+        {
+            using var admin = NewDb(dbName);
+            var c = await admin.ObifinConnections.SingleAsync(x => x.LicenseId == lic);
+            c.UpdatedAt = c.UpdatedAt.AddSeconds(1); c.Status = ObifinConnectionStatus.Unverified;
+            await admin.SaveChangesAsync();
+            throw new InvalidOperationException("eşleştirici düştü");
+        };
+        client.Transactions.Add(Tx(1, new DateTime(2026, 9, 25, 8, 1, 0), 10m));
+
+        var act = () => job.RunAsync(CancellationToken.None);
+
+        (await act.Should().ThrowAsync<AggregateException>())
+            .Which.InnerExceptions.Should().ContainSingle().Which.Should().BeOfType<InvalidOperationException>();
+        using var fresh = NewDb(dbName);
+        var conn = await fresh.ObifinConnections.SingleAsync(x => x.LicenseId == lic);
+        conn.LastError.Should().BeNull("eski koşunun hatası yeni kaydın üstüne yazılmadı");
+        conn.Status.Should().Be(ObifinConnectionStatus.Unverified);
+    }
+
+    [Fact]
+    public async Task Imlec_geri_sarilinca_yeniden_gorulen_hareket_eslestiriciye_ikinci_kez_gitmez()
+    {
+        // Sink sözleşmesi: yalnız YENİ yazılan satır verilir. İmleç geri sarılıp aynı hareket yeniden görülürse satır zaten
+        // var — eşleştirici aynı ödemeyi ikinci kez almaz. İkinci koşunun yeni hareketi ise sink'e ulaşır.
+        using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
+        var (job, svc, sink) = Build(db, client, today);
+        await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        client.Transactions.Add(Tx(1, new DateTime(2026, 9, 25, 8, 1, 0), 10m));
+
+        await job.RunAsync(CancellationToken.None);
+        var conn = await db.ObifinConnections.SingleAsync(); conn.LastObifinTransactionId = 0; await db.SaveChangesAsync(); // imleç geri sarıldı
+        client.Transactions.Add(Tx(2, new DateTime(2026, 9, 25, 8, 2, 0), 20m));
+        await job.RunAsync(CancellationToken.None);
+
+        client.Calls.Should().HaveCount(2).And.OnlyContain(c => c.Since == 0, "ikinci koşu 1 numaralı hareketi yeniden gördü");
+        sink.Received.Select(t => t.ObifinId).Should().Equal(1L, 2L);
+        (await db.BankTransactions.CountAsync()).Should().Be(2);
     }
 }
