@@ -1,4 +1,6 @@
+using System.Reflection;
 using FluentAssertions;
+using Hangfire;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -27,7 +29,14 @@ public sealed class ObifinAccountRefreshJobTests
         public Task<IReadOnlyList<ObifinBankConnectionDto>> ListBankConnectionsAsync(ObifinCredentials c, CancellationToken ct = default) => throw new NotSupportedException();
         public Task AddBankConnectionAsync(ObifinCredentials c, string b, IReadOnlyDictionary<string, string> f, CancellationToken ct = default) => throw new NotSupportedException();
         public Task RemoveBankConnectionAsync(ObifinCredentials c, long id, CancellationToken ct = default) => throw new NotSupportedException();
-        public Task<ObifinPage<ObifinTransactionDto>> ListTransactionsAsync(ObifinCredentials c, DateOnly f, DateOnly t, long? s, int p, int ps, CancellationToken ct = default) => throw new NotSupportedException();
+
+        /// <summary>Hareket sorgusu yapan kullanıcı kodları — çekim işinin bağlantıyı çekip çekmediğini gösterir.</summary>
+        public List<string> TransactionCalls { get; } = new();
+        public Task<ObifinPage<ObifinTransactionDto>> ListTransactionsAsync(ObifinCredentials c, DateOnly f, DateOnly t, long? s, int p, int ps, CancellationToken ct = default)
+        {
+            TransactionCalls.Add(c.UserCode);
+            return Task.FromResult(new ObifinPage<ObifinTransactionDto>(Array.Empty<ObifinTransactionDto>(), p, 1, 0, ps));
+        }
     }
 
     private static readonly IDataProtectionProvider Protection = new EphemeralDataProtectionProvider();
@@ -59,6 +68,50 @@ public sealed class ObifinAccountRefreshJobTests
 
     private static ObifinAccountDto Account(long id)
         => new(id, "qnb", 1, "1", BankHasherTests.TestIban(), "TL", 0, null, true, null);
+
+    private static ObifinPollJob NewPollJob(LicenseDbContext db, IObifinClient client, ObifinConnectionService svc)
+        => new(db, client, svc, new BankHasher(Options.Create(new BankOptions { HashKey = $"k-{Guid.NewGuid():N}{Guid.NewGuid():N}" })),
+            new NoopBankTransactionSink(), Options.Create(new ObifinOptions()), NullLogger<ObifinPollJob>.Instance);
+
+    [Fact]
+    public async Task Gecici_hata_durumu_Verified_birakir_cekim_surer_sonraki_basarili_yenileme_hatayi_siler()
+    {
+        // Ağ/vekil/zaman aşımı kimlik aleyhine kanıt değildir. Failed yazılsaydı hem bu iş hem çekim bağlantıyı atlar,
+        // kendiliğinden Verified'a dönüş olmadığından banka çekimi admin "Doğrula"ya basana dek sessizce dururdu.
+        using var db = NewDb(); var client = new PerUserObifin();
+        var (job, svc) = Build(db, client);
+        var lic = await SeedVerifiedAsync(db, svc, "api-a@x");
+        client.Accounts["api-a@x"] = () => throw new HttpRequestException("Name or service not known");
+
+        (await job.RunAsync(CancellationToken.None)).Should().Be(0);
+
+        var conn = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic);
+        conn.Status.Should().Be(ObifinConnectionStatus.Verified);
+        conn.LastError.Should().Be("Obifin'e ulaşılamadı (HttpRequestException)");
+
+        client.Accounts["api-a@x"] = () => new[] { Account(9298) };
+        (await job.RunAsync(CancellationToken.None)).Should().Be(1);
+
+        conn = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic);
+        conn.Status.Should().Be(ObifinConnectionStatus.Verified);
+        conn.LastError.Should().BeNull();
+
+        await NewPollJob(db, client, svc).RunAsync(CancellationToken.None);
+
+        client.TransactionCalls.Should().NotBeEmpty("bağlantı çekilmeye devam ediyor").And.OnlyContain(u => u == "api-a@x");
+        (await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == lic)).LastPolledAt.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Yenileme_cekimle_ayni_kilidi_paylasir()
+    {
+        // Başarılı yenileme UpdatedAt'i yazar: eşzamanlı bir çekim koşusu bunu kimlik değişimi sanıp boşuna iptal olur,
+        // yer tutucu hesapla gerçek hesap aynı (LicenseId, ObifinAccountId) satırı için yarışırdı.
+        typeof(ObifinAccountRefreshJob).GetCustomAttribute<DisableConcurrentExecutionAttribute>()!.Resource
+            .Should().Be(ObifinPollJob.LockResource);
+        typeof(ObifinPollJob).GetCustomAttribute<DisableConcurrentExecutionAttribute>()!.Resource
+            .Should().Be(ObifinPollJob.LockResource);
+    }
 
     [Fact]
     public async Task Bir_baglantinin_hatasi_digerlerini_durdurmaz_hata_o_baglantiya_yazilir()

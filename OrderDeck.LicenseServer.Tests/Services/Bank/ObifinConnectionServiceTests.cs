@@ -739,22 +739,27 @@ public sealed class ObifinConnectionServiceTests
     [InlineData(typeof(HttpRequestException))]
     [InlineData(typeof(TaskCanceledException))]
     [InlineData(typeof(ObifinProtocolException))]
-    public async Task Hesap_yenileme_gecici_hatada_Failed_ve_kisa_Turkce_mesaj_tur_adiyla(Type exceptionType)
+    public async Task Hesap_yenileme_gecici_hatada_durum_korunur_kisa_Turkce_mesaj_tur_adiyla(Type exceptionType)
     {
+        // Ağ/vekil/zaman aşımı kimlik aleyhine kanıt değildir (çekim işiyle aynı ayrım): Failed yazılsaydı saatlik
+        // yenileme işi de çekim de yalnız Verified bağlantıya baktığından tek bir 502 çekimi admin "Doğrula"ya
+        // basana dek durdururdu. Yalnız son hata yazılır, istisna yine yukarı gider.
         using var db = NewDb(); var lic = SeedLicense(db);
         Exception error = exceptionType == typeof(ObifinProtocolException)
             ? new ObifinProtocolException("Obifin HTTP 502 /webservis/hesaplar/hesaplistesi/")
             : (Exception)Activator.CreateInstance(exceptionType, "Name or service not known")!;
         var stub = new StubObifin { ListAccountsError = error };
         var svc = Svc(db, stub);
-        await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        var conn = await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        conn.Status = ObifinConnectionStatus.Verified;
+        await db.SaveChangesAsync();
 
         var act = () => svc.RefreshAccountsAsync(lic, CancellationToken.None);
 
         (await act.Should().ThrowAsync<Exception>()).Which.Should().BeOfType(exceptionType);
-        var conn = await db.ObifinConnections.SingleAsync();
-        conn.Status.Should().Be(ObifinConnectionStatus.Failed);
-        conn.LastError.Should().Be($"Obifin'e ulaşılamadı ({exceptionType.Name})");
+        var fresh = await db.ObifinConnections.AsNoTracking().SingleAsync();
+        fresh.Status.Should().Be(ObifinConnectionStatus.Verified);
+        fresh.LastError.Should().Be($"Obifin'e ulaşılamadı ({exceptionType.Name})");
     }
 
     [Fact]
@@ -777,8 +782,9 @@ public sealed class ObifinConnectionServiceTests
     [Fact]
     public async Task Hesap_yenileme_basarisi_Failed_baglantiyi_Verified_yapar_ve_son_hatayi_siler()
     {
-        // Başarısızlık ve toparlanma kanıtı aynı uçtan (hesaplistesi) gelir: yalnız birini kaydetmek, Görev 4'ün
-        // gece yenileme işindeki tek 502'yi insan "Doğrula"ya basana kadar yapışkan bir Failed'a çevirirdi.
+        // Başarısızlık ve toparlanma kanıtı aynı uçtan (hesaplistesi) gelir: Obifin'in reddiyle Failed olmuş bağlantı,
+        // aynı uçtan gelen başarıyla (ör. admin'in elle yenilemesi) "Doğrula"ya basılmadan toparlanır. Geçici hata
+        // zaten Failed yazmaz (bkz. Hesap_yenileme_gecici_hatada_durum_korunur...).
         using var db = NewDb(); var lic = SeedLicense(db);
         var stub = new StubObifin { ListAccountsError = new ObifinApiException(new[] { "Kullanici Bilgileri Hatali!" }) };
         var svc = Svc(db, stub);
@@ -817,13 +823,18 @@ public sealed class ObifinConnectionServiceTests
         conn.LastVerifiedAt.Should().NotBeNull();
     }
 
-    [Fact]
-    public async Task Devre_disi_baglanti_basarisiz_yenilemeyle_Failed_olmaz_son_hata_yine_yazilir()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Devre_disi_baglanti_basarisiz_yenilemeyle_Failed_olmaz_son_hata_yine_yazilir(bool obifinRejected)
     {
         // Hata da anahtarı çevirmez: Disabled → Failed → (başarı) → Verified zinciri kapatılmış bağlantıyı
-        // arka kapıdan açardı.
+        // arka kapıdan açardı. Obifin'in reddi (durumu çeviren tek sınıf) ve geçici hata ayrı ayrı.
         using var db = NewDb(); var lic = SeedLicense(db);
-        var stub = new StubObifin { ListAccountsError = new HttpRequestException("Name or service not known") };
+        Exception error = obifinRejected
+            ? new ObifinApiException(new[] { "Kullanici Bilgileri Hatali!" })
+            : new HttpRequestException("Name or service not known");
+        var stub = new StubObifin { ListAccountsError = error };
         var svc = Svc(db, stub);
         var conn = await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
         conn.Status = ObifinConnectionStatus.Disabled;
@@ -831,9 +842,9 @@ public sealed class ObifinConnectionServiceTests
 
         var act = () => svc.RefreshAccountsAsync(lic, CancellationToken.None);
 
-        await act.Should().ThrowAsync<HttpRequestException>();
+        (await act.Should().ThrowAsync<Exception>()).Which.Should().BeSameAs(error);
         conn.Status.Should().Be(ObifinConnectionStatus.Disabled);
-        conn.LastError.Should().Be("Obifin'e ulaşılamadı (HttpRequestException)");
+        conn.LastError.Should().Be(obifinRejected ? "Kullanici Bilgileri Hatali!" : "Obifin'e ulaşılamadı (HttpRequestException)");
     }
 
     [Fact]

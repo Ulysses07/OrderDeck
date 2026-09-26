@@ -17,7 +17,7 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// kendiliğinden düzelmez → Failed + LastError, koşu BAŞARILI biter (admin düzeltip yeniden doğrular; Failed
 /// bağlantı sonraki koşularda atlanır). Ağ/vekil/zaman aşımı geçicidir → LastError yazılır, durum Verified
 /// KALIR, istisna DIŞARI çıkar (Hangfire panosunda Failed; 5 dakika sonraki koşu aynı imleçten dener). İşin
-/// kendi iptali hiçbir şey yazmaz.</para>
+/// kendi iptali hiçbir şey yazmaz. Bir bağlantının hatası sıradakileri bekletmez (<see cref="RunAsync"/>).</para>
 ///
 /// <para><b>Kimlik değişimi — eşzamanlılık jetonu BİLEREK yok.</b> Admin çekim sürerken kimliği değiştirirse
 /// <see cref="ObifinConnectionService.UpsertAsync"/> imleci sıfırlar, gölge veriyi siler. Eski koşu ne eski
@@ -33,11 +33,17 @@ public sealed class ObifinPollJob
 {
     /// <summary>Sabit kilit adı: zamanlanmış <see cref="RunAsync"/> ile admin'in "Şimdi çek"i
     /// (<see cref="PollConnectionAsync"/>) aynı bağlantıyı aynı anda çekip tekil index'te çarpışmasın. Varsayılan
-    /// kaynak adı yöntem başınadır; iki yöntemi birbirinden korumazdı.</summary>
+    /// kaynak adı yöntem başınadır; iki yöntemi birbirinden korumazdı. Saatlik hesap yenileme
+    /// (<see cref="ObifinAccountRefreshJob"/>) da AYNI kilidi tutar: başarısı <c>UpdatedAt</c>'i yazar ve kimlik
+    /// denetimi eşzamanlı çekimi boşuna iptal ederdi; yer tutucu/gerçek hesap satırı da yarışırdı.</summary>
     public const string LockResource = "obifin-poll";
     public const int BackfillDays = 90;
     public const int WindowDays = 31;
     public const int MaxDrainRounds = 10;
+    /// <summary>Tek pencerenin (31 gün) sert sayfa tavanı: 1000'lik sayfayla 100 bin hareket — bu işte anomali. Aşılırsa
+    /// <see cref="ObifinProtocolException"/> (geçici sınıf: imleç yerinde, LastError yazılır, koşu Failed). Sayfa sayısı
+    /// gelmeyen ve hep dolu, hep yeni Id'li sayfa döndüren bir sunucu kilidi sonsuza dek tutamasın.</summary>
+    public const int MaxPagesPerWindow = 100;
 
     /// <summary>Yer tutucu hesabın maskesi; gerçek maske saatlik yenilemeyle gelir.</summary>
     private const string PlaceholderIbanMask = "?";
@@ -60,13 +66,34 @@ public sealed class ObifinPollJob
         _db = db; _client = client; _connections = connections; _hasher = hasher; _sink = sink; _opt = opt.Value; _log = log;
     }
 
+    /// <summary>Tüm Verified bağlantılar. Kiracı yalıtımı: bir bağlantının hatası (geçici ya da beklenmeyen) döngüyü
+    /// kesmez — toplanır, sıradakine geçilir, sonda tek <see cref="AggregateException"/> fırlar (Hangfire koşuyu yine
+    /// Failed gösterir). Aksi hâlde sürekli düşen bir bağlantı, sırada ondan sonra gelen yayıncıları her koşuda aç
+    /// bırakırdı. Yalnız işin kendi iptali döngüyü hemen keser.</summary>
     public async Task RunAsync(CancellationToken ct = default)
     {
         var ids = await _db.ObifinConnections.AsNoTracking()
             .Where(c => c.Status == ObifinConnectionStatus.Verified)
             .Select(c => c.Id).ToListAsync(ct);
+        var failures = new List<Exception>();
         foreach (var id in ids)
-            await PollConnectionAsync(id, ct);
+        {
+            try
+            {
+                await PollConnectionAsync(id, ct);
+            }
+            catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
+            {
+                // Yarım kalmış izleme (kaydedilmemiş satırlar, yer tutucu hesaplar) sıradakinin SaveChanges'ine taşınmasın.
+                _db.ChangeTracker.Clear();
+                // Sınıflandırılmış istemci hatası PollConnectionAsync'te zaten loglandı; burada yalnız beklenmeyenler.
+                if (ObifinConnectionService.DescribeClientFailure(ex, ct) is null)
+                    _log.LogError(ex, "Obifin çekimi beklenmeyen hatayla düştü — bağlantı={ConnectionId}; sıradakine geçiliyor", id);
+                failures.Add(ex);
+            }
+        }
+        if (failures.Count > 0)
+            throw new AggregateException($"Obifin çekimi {failures.Count} bağlantıda düştü.", failures);
     }
 
     /// <summary>Tek bağlantı; admin "Şimdi çek" de bunu kuyruğa atar.</summary>
@@ -146,20 +173,38 @@ public sealed class ObifinPollJob
 
     /// <summary>Pencereyi sayfa sayfa çeker, yazar; (görülen en büyük Id, son sayfa dolu muydu) döner.
     /// Sayfalama sunucunun GERÇEK sayfa boyutuna bakar (istenen değil: Obifin 2000 istenince 1000 döndürür):
-    /// ToplamSayfaSayisi geldiyse o, gelmediyse "sayfa dolu → devam, eksik ya da boş → dur".</summary>
+    /// ToplamSayfaSayisi geldiyse o, gelmediyse "sayfa dolu → devam, eksik ya da boş → dur".
+    /// <para><b>Sonsuz döngü koruması.</b> Sunucu istenen sayfayı vermezse (yanıttaki SayfaNo tutmuyor ya da sayfa bir
+    /// öncekine göre hiç yeni Id getirmiyor — son sayfaya kısma ya da SayfaNo'yu yok sayma) pencere burada biter; son
+    /// dolu sayfa "dolu" kalır, artımlı çekimde <c>BaslangicHareketId</c>'li drenaj turu kalanı yeni imleçle alır. Hep
+    /// dolu, hep yeni Id'li sayfalar <see cref="MaxPagesPerWindow"/>'da <see cref="ObifinProtocolException"/> ile
+    /// kesilir. Böylece hiçbir sunucu davranışı kilidi (<see cref="LockResource"/>) sonsuza dek tutamaz.</para></summary>
     private async Task<(long? MaxId, bool LastPageFull)> FetchWindowWithMetaAsync(ObifinConnection conn, ObifinCredentials creds,
         IdentitySnapshot identity, DateOnly from, DateOnly to, long? sinceId, CancellationToken ct)
     {
         long? maxId = null; var lastPageFull = false;
+        HashSet<long>? previousIds = null;
         for (var page = 1; ; page++)
         {
             var result = await _client.ListTransactionsAsync(creds, from, to, sinceId, page, _opt.PageSize, ct);
             var ordered = result.Items.OrderBy(t => t.Id).ToList();
+            var pageIds = ordered.Select(t => t.Id).ToHashSet();
+            if (previousIds is not null && pageIds.Count > 0 && (result.PageNo != page || previousIds.IsSupersetOf(pageIds)))
+            {
+                _log.LogWarning("Obifin çekimi: sunucu {Requested}. sayfa yerine {Returned}. sayfayı verdi ya da sayfa yeni " +
+                    "hareket getirmedi; pencere ({From:yyyy-MM-dd}–{To:yyyy-MM-dd}) burada bitiriliyor — bağlantı={ConnectionId}",
+                    page, result.PageNo, from, to, conn.Id);
+                break;
+            }
             await UpsertAsync(conn, identity, ordered, ct);
             if (ordered.Count > 0) maxId = Math.Max(maxId ?? 0, ordered[^1].Id);
             lastPageFull = result.PageSize > 0 && result.Items.Count >= result.PageSize;
             var hasMore = result.TotalPages is { } totalPages ? page < totalPages : lastPageFull;
             if (result.Items.Count == 0 || !hasMore) break;
+            if (page >= MaxPagesPerWindow)
+                throw new ObifinProtocolException(
+                    $"Obifin sayfalaması {MaxPagesPerWindow} sayfada bitmedi ({from:yyyy-MM-dd}–{to:yyyy-MM-dd})");
+            previousIds = pageIds;
         }
         return (maxId, lastPageFull);
     }
@@ -216,6 +261,10 @@ public sealed class ObifinPollJob
         await SaveIfIdentityUnchangedAsync(conn.Id, identity, ct);
         foreach (var tx in fresh.Where(t => t.Direction == BankTransactionDirection.Incoming))
             await _sink.OnNewIncomingAsync(tx, ct);
+        // Kaydedilen satırlar koşu boyunca izleyicide birikmesin: 90 günlük ilk çekim on binlerce satır (ham JSON dahil)
+        // tutar, her SaveChanges'in DetectChanges'i büyürdü. Bağlantı (conn) izlenmeye devam eder — imleç onun üzerinde;
+        // az sayıdaki hesap satırı da kalır.
+        foreach (var tx in fresh) _db.Entry(tx).State = EntityState.Detached;
     }
 
     /// <summary>Hareket/imleç kaydeden TEK yol: kimlik alanları taze (izlenmeyen) okunur; biri değiştiyse ya da

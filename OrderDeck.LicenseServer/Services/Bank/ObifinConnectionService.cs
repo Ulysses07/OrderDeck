@@ -228,7 +228,11 @@ public sealed class ObifinConnectionService
 
     /// <summary>Hesap listesini yeniler. İstemci hatası doğrulamadaki gibi sınıflandırılıp bağlantıya yazılır;
     /// dönüş tipi başarısızlık taşıyamadığından istisna yine yukarı gider. Başarı da doğrulamadaki gibi
-    /// kaydedilir — aynı uç (<c>hesaplistesi</c>), aynı kanıt (bkz. <see cref="MarkVerified"/>).</summary>
+    /// kaydedilir — aynı uç (<c>hesaplistesi</c>), aynı kanıt (bkz. <see cref="MarkVerified"/>).
+    /// <para>Yalnız Obifin'in reddi (<see cref="ObifinApiException"/>) durumu Failed'a çevirir; ağ/vekil/zaman aşımı
+    /// kimlik aleyhine kanıt değildir, yalnız son hata yazılır (çekim işindeki ayrımın aynısı). Saatlik yenileme işi
+    /// ve çekim yalnız Verified bağlantıya baktığından, geçici hatada Failed yazmak tek bir 502'yi admin "Doğrula"ya
+    /// basana dek sessizce duran bir banka çekimine çevirirdi.</para></summary>
     public async Task<int> RefreshAccountsAsync(Guid licenseId, CancellationToken ct)
     {
         var conn = await _db.ObifinConnections.FirstOrDefaultAsync(c => c.LicenseId == licenseId, ct)
@@ -242,7 +246,8 @@ public sealed class ObifinConnectionService
         }
         catch (Exception ex) when (DescribeClientFailure(ex, ct) is { } msg)
         {
-            await MarkFailedAsync(conn, ex, msg, "hesap yenileme", now, ct);
+            if (ex is ObifinApiException) await MarkFailedAsync(conn, ex, msg, "hesap yenileme", now, ct);
+            else await RecordTransientFailureAsync(conn, ex, msg, "hesap yenileme", now, ct);
             throw;
         }
         MarkVerified(conn, now);
@@ -252,8 +257,10 @@ public sealed class ObifinConnectionService
     }
 
     /// <summary>Obifin kanıtını bağlantıya yazar (kaydetmez — çağıranın SaveChanges'i ile). Başarısızlık ile
-    /// toparlanma kanıtı aynı uçtan gelir; yalnız birini kaydetmek yenileme işindeki tek geçici 502'yi insan
-    /// "Doğrula"ya basana kadar yapışkan bir Failed'a çevirirdi.
+    /// toparlanma kanıtı aynı uçtan gelir; yalnız başarısızlığı kaydetmek Obifin'in reddiyle Failed olmuş bir
+    /// bağlantıyı, aynı uç yeniden başarı verdiğinde bile (ör. admin'in elle yenilemesi ya da banka eklemesi) insan
+    /// "Doğrula"ya basana kadar yapışkan bir Failed'da bırakırdı. (Geçici hata hesap yenilemede zaten Failed yazmaz —
+    /// bkz. <see cref="RefreshAccountsAsync"/>.)
     /// <para><see cref="ObifinConnectionStatus.Disabled"/> admin'in anahtarıdır: kanıt (başarı ya da hata) onu
     /// çevirmez, yalnız açık bir etkinleştirme çevirir. Aksi hâlde yenileme işi kapatılmış bağlantıyı sessizce
     /// yeniden açardı. Kanıt alanları (<c>LastVerifiedAt</c>, <c>LastError</c>) yine yazılır: admin ekranı
@@ -278,6 +285,17 @@ public sealed class ObifinConnectionService
     {
         _log.LogWarning(ex, "Obifin {Operation} başarısız — lisans={LicenseId}: {Error}", operation, conn.LicenseId, msg);
         MarkFailed(conn, msg, now);
+        await _db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>Geçici istemci hatası (ağ/vekil/zaman aşımı): durum korunur, yalnız son hata yazılır ve kaydedilir.
+    /// Kimlik ne loga ne LastError'a girer.</summary>
+    private async Task RecordTransientFailureAsync(ObifinConnection conn, Exception ex, string msg, string operation,
+        DateTimeOffset now, CancellationToken ct)
+    {
+        _log.LogWarning(ex, "Obifin {Operation} geçici hatayla düştü, durum korunuyor — lisans={LicenseId}: {Error}",
+            operation, conn.LicenseId, msg);
+        conn.LastError = msg; conn.UpdatedAt = now;
         await _db.SaveChangesAsync(ct);
     }
 

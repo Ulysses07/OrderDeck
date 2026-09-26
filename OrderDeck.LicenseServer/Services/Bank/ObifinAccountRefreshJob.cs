@@ -7,10 +7,15 @@ using OrderDeck.LicenseServer.Domain.Bank;
 namespace OrderDeck.LicenseServer.Services.Bank;
 
 /// <summary>Saatte bir hesap listesi (Durum, BildirimNotu, GuncellemeTarihi). Bir bağlantının hatası diğerini
-/// durdurmaz: <see cref="ObifinConnectionService.RefreshAccountsAsync"/> istemci hatasını zaten Failed + LastError
-/// olarak yazıp yeniden fırlatır; burada yalnız loglanır ve sıradakine geçilir. Koşu başarılı sayılır (çekim işi
-/// asıl sinyal). Yalnız işin kendi iptali koşuyu keser.</summary>
-[DisableConcurrentExecution(timeoutInSeconds: 300)]
+/// durdurmaz: <see cref="ObifinConnectionService.RefreshAccountsAsync"/> istemci hatasını zaten bağlantıya yazıp
+/// yeniden fırlatır (Obifin'in reddi Failed + LastError; ağ/vekil/zaman aşımı yalnız LastError, durum Verified kalır —
+/// çekim sürer, sonraki saat yeniden dener); burada yalnız loglanır ve sıradakine geçilir. Koşu başarılı sayılır
+/// (çekim işi asıl sinyal). Yalnız işin kendi iptali koşuyu keser.
+/// <para>Kilit çekimle ORTAK (<see cref="ObifinPollJob.LockResource"/>): başarılı yenileme <c>UpdatedAt</c>'i yazar;
+/// eşzamanlı bir çekim koşusu bunu kimlik değişimi sanıp boşuna iptal olur, yanlış "kimlik değişti" uyarısı
+/// basardı. Çekimin bilinmeyen hesap için açtığı yer tutucu ile buradaki gerçek hesabın aynı
+/// (LicenseId, ObifinAccountId) satırı için tekil index yarışı da böylece kalkar.</para></summary>
+[DisableConcurrentExecution(ObifinPollJob.LockResource, 300)]
 [AutomaticRetry(Attempts = 0, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
 public sealed class ObifinAccountRefreshJob
 {
