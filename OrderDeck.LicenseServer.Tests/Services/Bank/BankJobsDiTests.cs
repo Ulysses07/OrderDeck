@@ -83,7 +83,8 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
         var resolve = () => scope.ServiceProvider.GetRequiredService<ObifinPollJob>();
         resolve.Should().Throw<InvalidOperationException>().WithMessage(BankHasher.DisabledMessage);
         BankHasher.DisabledMessage.Should().Be("Banka modülü kapalı: OrderDeck:Bank:HashKey yok ya da 32 bayttan kısa");
-        factory.Log.Warnings.Count(w => w == BankHasher.DisabledMessage).Should().Be(1, "açılışta tek uyarı");
+        factory.Log.Warnings.Where(w => w.StartsWith(BankHasher.DisabledMessage)).Should().ContainSingle("açılışta tek uyarı")
+            .Which.Should().Contain("bank-data-retention", "operatör saklama işinin anahtarsız da koştuğunu görmeli");
     }
 
     [Fact]
@@ -94,7 +95,7 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
         using var scope = factory.Services.CreateScope();
 
         scope.ServiceProvider.GetRequiredService<BankHasher>().Should().NotBeNull();
-        factory.Log.Warnings.Should().NotContain(BankHasher.DisabledMessage);
+        factory.Log.Warnings.Should().NotContain(w => w.StartsWith(BankHasher.DisabledMessage));
     }
 
     [Fact]
@@ -114,21 +115,38 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
             // tablosuna yazar) ve üç */5 iş daha koşar; */15 ise 04:45 ve 05:00'te.
             ("bank-data-retention", "57 4 * * *"),
         });
+        connection.GetRecurringJobs().Should().OnlyContain(j => j.TimeZoneId == "UTC",
+            "saatler UTC olarak seçildi (04:52 İYS eşitlemesine göre); sunucu saat dilimine kaymamalı");
     }
 
-    [Fact]
-    public void Anahtar_gecersizse_banka_isleri_kaydolmaz_onceden_kayitli_olanlar_silinir()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Anahtar_gecersizse_Obifin_isleri_kaydolmaz_eskileri_silinir_saklama_isi_yine_kaydolur(bool previouslyEnabled)
     {
-        // Önceki açılışta (anahtar varken) kaydolmuş işler anahtar kalkınca Hangfire'da kalıp her 5 dakikada bir
-        // BankHasher hatasıyla düşmesin.
+        // Önceki açılışta (anahtar varken) kaydolmuş Obifin işleri anahtar kalkınca Hangfire'da kalıp her 5 dakikada bir
+        // BankHasher hatasıyla düşmesin. Saklama işi ise BankHasher istemez ve 90/180 günlük silme KVKK yükümlülüğüdür:
+        // anahtar kalksa da zaten saklanmış satırlar için koşmaya devam eder.
         var storage = new MemoryStorage();
         var manager = new RecurringJobManager(storage);
-        Program.ScheduleBankJobs(manager, enabled: true);
+        if (previouslyEnabled) Program.ScheduleBankJobs(manager, enabled: true);
 
         Program.ScheduleBankJobs(manager, enabled: false);
 
         using var connection = storage.GetConnection();
-        connection.GetRecurringJobs().Should().BeEmpty();
+        var job = connection.GetRecurringJobs().Should().ContainSingle().Subject;
+        job.Id.Should().Be("bank-data-retention");
+        job.Cron.Should().Be("57 4 * * *");
+        job.TimeZoneId.Should().Be("UTC");
+    }
+
+    [Fact]
+    public void Varsayilan_dislama_listesi_yalniz_CCP_yapilandirma_yinelemez()
+    {
+        // .NET bağlayıcısı dizi varsayılanının üstüne yazmaz, SONUNA ekler: appsettings.json'da da CCP dursaydı liste
+        // [CCP, CCP] olurdu ve dosya "CCP yapılandırmadan çıkarılabilir" izlenimi verirdi.
+        _factory.Services.GetRequiredService<IOptions<BankOptions>>().Value.ExcludedTransactionCodes
+            .Should().Equal("CCP");
     }
 
     [Theory]

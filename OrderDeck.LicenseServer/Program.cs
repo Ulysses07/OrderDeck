@@ -846,11 +846,14 @@ public class Program
 
         // Banka modülü anahtarsız KAPALI açılır: master merge = otomatik prod deploy, .env'de eksik bir
         // OrderDeck__Bank__HashKey lisans sunucusunu düşürmemeli. Karar tüm yapılandırma kaynakları yüklendikten sonra
-        // (IOptions) verilir; uyarı açılışta tek sefer. Banka işleri zamanlanmaz (ScheduleBankJobs).
+        // (IOptions) verilir; uyarı açılışta tek sefer. Obifin çekimi ve hesap yenileme zamanlanmaz; saklama işi
+        // BankHasher istemez, zaten saklanmış satırlar için yine koşar (ScheduleBankJobs).
         var bankEnabled = OrderDeck.LicenseServer.Services.Bank.BankHasher.IsValidKey(
             app.Services.GetRequiredService<IOptions<OrderDeck.LicenseServer.Services.Bank.BankOptions>>().Value.HashKey);
         if (!bankEnabled)
-            app.Logger.LogWarning(OrderDeck.LicenseServer.Services.Bank.BankHasher.DisabledMessage);
+            app.Logger.LogWarning(
+                "{Reason} — obifin-poll ve obifin-accounts zamanlanmadı; saklama işi (bank-data-retention) yine koşar",
+                OrderDeck.LicenseServer.Services.Bank.BankHasher.DisabledMessage);
 
         // Hangfire recurring jobs — production only (testte ApiFactory MemoryStorage kullanır, recurring tetiklenmesin)
         if (!app.Environment.IsEnvironment("Testing"))
@@ -1010,7 +1013,8 @@ public class Program
                 "52 4 * * *");  // 04:52 UTC daily
 
             // Banka (Obifin): obifin-poll */5, obifin-accounts :02 saatlik, bank-data-retention 04:57 UTC.
-            // Anahtar yoksa kayıtlanmaz, eskileri silinir — takvim ve gerekçeler ScheduleBankJobs'ta.
+            // Anahtar yoksa Obifin işleri kayıtlanmaz, eskileri silinir; saklama işi yine kaydolur — takvim ve
+            // gerekçeler ScheduleBankJobs'ta.
             ScheduleBankJobs(manager, bankEnabled);
         }
 
@@ -1167,8 +1171,10 @@ public class Program
     /// Banka işlerinin Hangfire takvimi (saatler UTC — Hangfire varsayılanı, bu repo saat dilimi vermiyor).
     ///
     /// <para><paramref name="enabled"/> = <see cref="OrderDeck.LicenseServer.Services.Bank.BankHasher.IsValidKey"/>
-    /// (<c>OrderDeck:Bank:HashKey</c>). Anahtar yoksa işler KAYDOLMAZ, önceki bir açılıştan kalan kayıtlar silinir:
-    /// Hangfire kaydı depoda kalıcıdır, anahtar kalkınca bile her 5 dakikada bir BankHasher hatasıyla düşerlerdi.</para>
+    /// (<c>OrderDeck:Bank:HashKey</c>). Anahtar yoksa <c>obifin-poll</c> ve <c>obifin-accounts</c> KAYDOLMAZ, önceki bir
+    /// açılıştan kalan kayıtları silinir: Hangfire kaydı depoda kalıcıdır, anahtar kalkınca bile her 5 dakikada bir
+    /// BankHasher hatasıyla düşerlerdi. <c>bank-data-retention</c> ise anahtardan bağımsız HEP kaydolur: BankHasher
+    /// istemez ve 90/180 günlük silme KVKK yükümlülüğüdür — anahtar kalksa da zaten saklanmış satırlar için koşmalı.</para>
     ///
     /// <para><c>obifin-accounts</c> dakika 2'de: çekimle ORTAK kilit tutar
     /// (<see cref="OrderDeck.LicenseServer.Services.Bank.ObifinPollJob.LockResource"/>); 5 dakikalık ızgarada olsaydı
@@ -1180,11 +1186,17 @@ public class Program
     /// </summary>
     public static void ScheduleBankJobs(IRecurringJobManager manager, bool enabled)
     {
+        // Ham JSON 90 gün, açıklama 180 gün (spec §5). 04:57 UTC: 04:52 eşitlemeden sonra, ızgara dışı (bkz. özet).
+        // Anahtarsız da kaydolur (bkz. özet): BankHasher istemez, KVKK silmesi durmamalı.
+        manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Bank.BankDataRetentionJob>(
+            "bank-data-retention",
+            j => j.RunAsync(CancellationToken.None),
+            "57 4 * * *");
+
         if (!enabled)
         {
             manager.RemoveIfExists("obifin-poll");
             manager.RemoveIfExists("obifin-accounts");
-            manager.RemoveIfExists("bank-data-retention");
             return;
         }
 
@@ -1199,11 +1211,6 @@ public class Program
             "obifin-accounts",
             j => j.RunAsync(CancellationToken.None),
             "2 * * * *");
-        // Ham JSON 90 gün, açıklama 180 gün (spec §5). 04:57 UTC: 04:52 eşitlemeden sonra, ızgara dışı (bkz. özet).
-        manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Bank.BankDataRetentionJob>(
-            "bank-data-retention",
-            j => j.RunAsync(CancellationToken.None),
-            "57 4 * * *");
     }
 
     /// <summary>

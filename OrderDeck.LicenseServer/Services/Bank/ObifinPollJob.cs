@@ -54,7 +54,9 @@ public sealed class ObifinPollJob
     private readonly ObifinConnectionService _connections;
     private readonly BankHasher _hasher;
     private readonly IBankTransactionSink _sink;
-    private readonly ObifinOptions _opt;
+    /// <summary><see cref="ObifinOptions.PageSize"/>; ≤ 0 → <see cref="ObifinOptions.DefaultPageSize"/> (bozuk yapılandırma
+    /// Obifin'e anlamsız bir sayfa boyutu göndermesin — TimeoutSeconds'taki kalıp).</summary>
+    private readonly int _pageSize;
     private readonly ILogger<ObifinPollJob> _log;
 
     /// <summary>Test için: TR takvim günü.</summary>
@@ -64,7 +66,8 @@ public sealed class ObifinPollJob
     public ObifinPollJob(LicenseDbContext db, IObifinClient client, ObifinConnectionService connections,
         BankHasher hasher, IBankTransactionSink sink, IOptions<ObifinOptions> opt, ILogger<ObifinPollJob> log)
     {
-        _db = db; _client = client; _connections = connections; _hasher = hasher; _sink = sink; _opt = opt.Value; _log = log;
+        _db = db; _client = client; _connections = connections; _hasher = hasher; _sink = sink; _log = log;
+        _pageSize = opt.Value.PageSize <= 0 ? ObifinOptions.DefaultPageSize : opt.Value.PageSize;
     }
 
     /// <summary>Tüm Verified bağlantılar. Kiracı yalıtımı: bir bağlantının hatası (geçici ya da beklenmeyen) döngüyü
@@ -154,15 +157,25 @@ public sealed class ObifinPollJob
         catch (Exception ex) when (ObifinConnectionService.DescribeClientFailure(ex, ct) is { } msg)
         {
             // İmleç DEĞİŞMEDİ: yalnız yukarıdaki başarılı yolda kaydedilir; kaydedilmemiş satırlar atılır.
-            if (ex is ObifinApiException)
-            {
-                // Obifin "hayır" dedi: kendiliğinden düzelmez, admin düzeltir.
-                await RecordErrorIfIdentityUnchangedAsync(connectionId, identity, msg, markFailed: true, ct);
+            // Obifin "hayır" dedi: kendiliğinden düzelmez, admin düzeltir (Failed, koşu başarılı biter). Geçici hata:
+            // durum korunur, istisna yukarı gider.
+            var refused = ex is ObifinApiException;
+            // Uyarı kayıttan ÖNCE: kayıt da düşerse hatanın ne olduğu günlükte kalsın.
+            if (refused)
                 _log.LogWarning("Obifin çekimi Obifin hatasıyla durdu — bağlantı={ConnectionId}: {Error}", connectionId, msg);
-                return;
+            else
+                _log.LogWarning(ex, "Obifin çekimi geçici hatayla düştü — bağlantı={ConnectionId}: {Error}", connectionId, msg);
+            // Hata kaydı düşerse (ör. DB o an gitti) asıl istisnanın sınıfı korunur: kayıt hatası yalnız loglanır, Obifin
+            // reddi yine koşuyu düşürmez, geçici hata yine KENDİ türüyle yukarı çıkar (sınıf dışı yoldaki kalıp).
+            try
+            {
+                await RecordErrorIfIdentityUnchangedAsync(connectionId, identity, msg, markFailed: refused, ct);
             }
-            await RecordErrorIfIdentityUnchangedAsync(connectionId, identity, msg, markFailed: false, ct);
-            _log.LogWarning(ex, "Obifin çekimi geçici hatayla düştü — bağlantı={ConnectionId}: {Error}", connectionId, msg);
+            catch (Exception recordEx) when (!(recordEx is OperationCanceledException && ct.IsCancellationRequested))
+            {
+                _log.LogError(recordEx, "Obifin çekimi: hata bağlantıya yazılamadı — bağlantı={ConnectionId}", connectionId);
+            }
+            if (refused) return;
             throw;
         }
         catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
@@ -221,7 +234,7 @@ public sealed class ObifinPollJob
         HashSet<long>? previousIds = null;
         for (var page = 1; ; page++)
         {
-            var result = await _client.ListTransactionsAsync(creds, from, to, sinceId, page, _opt.PageSize, ct);
+            var result = await _client.ListTransactionsAsync(creds, from, to, sinceId, page, _pageSize, ct);
             var ordered = result.Items.OrderBy(t => t.Id).ToList();
             var pageIds = ordered.Select(t => t.Id).ToHashSet();
             if (previousIds is not null && pageIds.Count > 0 && (result.PageNo != page || previousIds.IsSupersetOf(pageIds)))

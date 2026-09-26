@@ -1,13 +1,16 @@
 using FluentAssertions;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Bank;
@@ -20,6 +23,8 @@ public sealed class ObifinPollJobTests
     {
         public List<ObifinTransactionDto> Transactions { get; } = new();
         public List<(DateOnly From, DateOnly To, long? Since, int Page)> Calls { get; } = new();
+        /// <summary>Her hareket sorgusunda istenen sayfa boyutu.</summary>
+        public List<int> RequestedPageSizes { get; } = new();
         public int FailOnCall { get; set; } = -1;
         /// <summary><see cref="FailOnCall"/> sırasındaki çağrının fırlatacağı istisna; varsayılan Obifin'in kendi mesajı.</summary>
         public Func<Exception> FailWith { get; set; } = () => new ObifinApiException(new[] { "Kullanici Bilgileri Hatali!" });
@@ -52,6 +57,7 @@ public sealed class ObifinPollJobTests
         public async Task<ObifinPage<ObifinTransactionDto>> ListTransactionsAsync(ObifinCredentials c, DateOnly f, DateOnly t, long? s, int p, int ps, CancellationToken ct = default)
         {
             Calls.Add((f, t, s, p));
+            RequestedPageSizes.Add(ps);
             if (BeforeCall is { } hook) await hook(Calls.Count);
             if (t.DayNumber - f.DayNumber + 1 > 31) throw new ArgumentOutOfRangeException(nameof(t));
             if (CancelCallerOnCall is { } cts)
@@ -98,6 +104,22 @@ public sealed class ObifinPollJobTests
     private static LicenseDbContext NewDb() => NewDb($"obifin-poll-{Guid.NewGuid():N}");
     private static LicenseDbContext NewDb(string name)
         => new(new DbContextOptionsBuilder<LicenseDbContext>().UseInMemoryDatabase(name, DbRoot).Options);
+    /// <summary>Kaydetme kancalı bağlam: test bir SaveChanges'i düşürebilir.</summary>
+    private static LicenseDbContext NewDb(string name, IInterceptor interceptor)
+        => new(new DbContextOptionsBuilder<LicenseDbContext>().UseInMemoryDatabase(name, DbRoot).AddInterceptors(interceptor).Options);
+
+    /// <summary>Uyarı düzeyindeki günlük satırlarını biçimlenmiş metin olarak toplar.</summary>
+    private sealed class WarningLog : ILogger<ObifinPollJob>
+    {
+        public List<string> Warnings { get; } = new();
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == LogLevel.Warning) Warnings.Add(formatter(state, exception));
+        }
+    }
 
     private static async Task<Guid> SeedVerifiedAsync(LicenseDbContext db, ObifinConnectionService svc, long? cursor = null, bool backfilled = false)
     {
@@ -119,12 +141,14 @@ public sealed class ObifinPollJobTests
     private static ObifinTransactionDto Tx(long id, DateTime whenTr, decimal signed, string desc = "HAVALE test", string? iban = null)
         => new(id, 6, "qnb", whenTr, signed, "TL", desc, "FT", "EFT", $"ref-{id}", iban, null, null, $"{{\"Id\":\"{id}\"}}");
 
-    private static (ObifinPollJob Job, ObifinConnectionService Svc, RecordingSink Sink) Build(LicenseDbContext db, ScriptedObifin client, DateOnly todayTr)
+    private static (ObifinPollJob Job, ObifinConnectionService Svc, RecordingSink Sink) Build(LicenseDbContext db, ScriptedObifin client,
+        DateOnly todayTr, ObifinOptions? jobOptions = null, ILogger<ObifinPollJob>? log = null)
     {
         var hasher = new BankHasher(Options.Create(new BankOptions { HashKey = $"k-{Guid.NewGuid():N}{Guid.NewGuid():N}" }));
         var svc = new ObifinConnectionService(db, client, Protection, hasher, Options.Create(new ObifinOptions()), NullLogger<ObifinConnectionService>.Instance);
         var sink = new RecordingSink();
-        var job = new ObifinPollJob(db, client, svc, hasher, sink, Options.Create(new ObifinOptions()), NullLogger<ObifinPollJob>.Instance)
+        var job = new ObifinPollJob(db, client, svc, hasher, sink, Options.Create(jobOptions ?? new ObifinOptions()),
+            log ?? NullLogger<ObifinPollJob>.Instance)
         { TodayTr = () => todayTr };
         return (job, svc, sink);
     }
@@ -636,6 +660,65 @@ public sealed class ObifinPollJobTests
         conn.Status.Should().Be(ObifinConnectionStatus.Unverified, "admin'in kaydı ezilmedi");
         conn.LastError.Should().BeNull("eski kimliğin hatası yeni kaydın üstüne yazılmadı");
         conn.LastObifinTransactionId.Should().Be(200);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Hata_kaydi_duserse_asil_istisnanin_sinifi_korunur_uyari_kayittan_once_yazilir(bool transient)
+    {
+        // Hata kaydının kendisi düşerse (ör. DB o an gitti) asıl sınıflandırma kaybolmasın: geçici hata yine KENDİ türüyle
+        // yukarı çıkar (Hangfire panosunda Failed), Obifin reddi yine koşuyu düşürmez. Uyarı kayıttan ÖNCE yazılır: kayıt
+        // düşse de hatanın ne olduğu günlükte kalır.
+        var dbName = $"obifin-poll-{Guid.NewGuid():N}";
+        var hook = new SaveHookInterceptor();
+        using var db = NewDb(dbName, hook); var today = new DateOnly(2026, 9, 25);
+        var client = new ScriptedObifin { FailOnCall = 1 };
+        if (transient) client.FailWith = () => new HttpRequestException("Name or service not known");
+        var log = new WarningLog();
+        var (job, svc, _) = Build(db, client, today, log: log);
+        var lic = await SeedVerifiedAsync(db, svc, cursor: 200, backfilled: true);
+        List<string>? warningsAtSave = null;
+        hook.BeforeSave = () =>
+        {
+            warningsAtSave = log.Warnings.ToList();
+            throw new DbUpdateException("hata kaydı düştü");
+        };
+
+        var act = () => job.RunAsync(CancellationToken.None);
+
+        if (transient)
+            (await act.Should().ThrowAsync<AggregateException>())
+                .Which.InnerExceptions.Should().ContainSingle().Which.Should().BeOfType<HttpRequestException>("asıl istisna, kayıt hatası değil");
+        else
+            await act.Should().NotThrowAsync("Obifin reddi koşuyu düşürmez; kayıt hatası bunu değiştirmez");
+        var expected = transient ? "Obifin'e ulaşılamadı (HttpRequestException)" : "Kullanici Bilgileri Hatali!";
+        warningsAtSave.Should().NotBeNull("hata kaydı denendi").And.Contain(w => w.Contains(expected), "uyarı kayıttan önce yazıldı");
+        hook.BeforeSave = null;
+        using var fresh = NewDb(dbName);
+        var conn = await fresh.ObifinConnections.SingleAsync(x => x.LicenseId == lic);
+        conn.Status.Should().Be(ObifinConnectionStatus.Verified, "kayıt düştü, hiçbir şey yazılmadı");
+        conn.LastError.Should().BeNull();
+        conn.LastObifinTransactionId.Should().Be(200);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-5)]
+    public async Task Sayfa_boyutu_sifir_ya_da_negatifse_1000_istenir(int configured)
+    {
+        // Yapılandırma hatası (0/negatif) Obifin'e anlamsız bir sayfa boyutu göndermesin: TimeoutSeconds'taki gibi
+        // varsayılana düşer.
+        using var db = NewDb(); var client = new ScriptedObifin(); var today = new DateOnly(2026, 9, 25);
+        var (job, svc, _) = Build(db, client, today, new ObifinOptions { PageSize = configured });
+        await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        client.Transactions.Add(Tx(1, new DateTime(2026, 9, 25, 8, 1, 0), 10m));
+
+        await job.RunAsync(CancellationToken.None);
+
+        client.RequestedPageSizes.Should().NotBeEmpty().And.OnlyContain(ps => ps == ObifinOptions.DefaultPageSize);
+        ObifinOptions.DefaultPageSize.Should().Be(1000);
+        (await db.BankTransactions.CountAsync()).Should().Be(1);
     }
 
     [Fact]

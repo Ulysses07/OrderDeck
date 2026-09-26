@@ -19,9 +19,9 @@ public sealed class BankHasher
     public const int MinKeyBytes = 32;
 
     /// <summary>Anahtar yok ya da kısa. Sunucu YİNE açılır (master merge = otomatik prod deploy; eksik bir .env satırı
-    /// lisans sunucusunu düşürmemeli): Program.cs açılışta bunu tek bir uyarı olarak loglar ve banka işlerini
-    /// zamanlamaz; <see cref="BankHasher"/>'ı isteyen her çözümleme bu mesajla düşer, admin sayfaları yakalayıp gösterir.
-    /// Anahtar mesaja girmez.</summary>
+    /// lisans sunucusunu düşürmemeli): Program.cs açılışta bunu tek bir uyarı olarak loglar ve Obifin çekim/hesap
+    /// işlerini zamanlamaz (saklama işi BankHasher istemez, yine koşar); <see cref="BankHasher"/>'ı isteyen her
+    /// çözümleme bu mesajla düşer, admin sayfaları yakalayıp gösterir. Anahtar mesaja girmez.</summary>
     public const string DisabledMessage = "Banka modülü kapalı: OrderDeck:Bank:HashKey yok ya da 32 bayttan kısa";
 
     private readonly byte[] _key;
