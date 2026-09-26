@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.Options;
@@ -14,17 +15,28 @@ public sealed class BankHasher
     /// <summary>VKN 10 rakam — bundan kısa bir değer vergi kimliği değildir.</summary>
     public const int MinTaxIdDigits = 10;
 
+    /// <summary>Spec §7: HMAC anahtarı en az bu kadar BAYT (UTF-8) — karakter değil.</summary>
+    public const int MinKeyBytes = 32;
+
+    /// <summary>Anahtar yok ya da kısa. Sunucu YİNE açılır (master merge = otomatik prod deploy; eksik bir .env satırı
+    /// lisans sunucusunu düşürmemeli): Program.cs açılışta bunu tek bir uyarı olarak loglar ve banka işlerini
+    /// zamanlamaz; <see cref="BankHasher"/>'ı isteyen her çözümleme bu mesajla düşer, admin sayfaları yakalayıp gösterir.
+    /// Anahtar mesaja girmez.</summary>
+    public const string DisabledMessage = "Banka modülü kapalı: OrderDeck:Bank:HashKey yok ya da 32 bayttan kısa";
+
     private readonly byte[] _key;
 
     public BankHasher(IOptions<BankOptions> opt)
     {
         var key = opt.Value.HashKey;
-        // Spec §7: HMAC anahtarı 32+ bayt. Karakter değil BAYT sayılır (UTF-8). Anahtar mesaja girmez.
-        if (string.IsNullOrWhiteSpace(key) || Encoding.UTF8.GetByteCount(key) < 32)
-            throw new InvalidOperationException(
-                "OrderDeck:Bank:HashKey boş ya da 32 bayttan kısa — IBAN hash'i güvensiz olur.");
+        if (!IsValidKey(key)) throw new InvalidOperationException(DisabledMessage);
         _key = Encoding.UTF8.GetBytes(key);
     }
+
+    /// <summary>Boş/boşluk değil ve en az <see cref="MinKeyBytes"/> bayt (UTF-8). Kurucu ve Program.cs aynı denetimi
+    /// kullanır: açılışta "banka modülü açık mı" kararı ile hasher'ın kurulabilmesi ayrışmasın.</summary>
+    public static bool IsValidKey([NotNullWhen(true)] string? key)
+        => !string.IsNullOrWhiteSpace(key) && Encoding.UTF8.GetByteCount(key) >= MinKeyBytes;
 
     /// <summary>Boşluk/küçük harf farkı hash'i değiştirmez; boş değer null döner.</summary>
     public string? HashIban(string? iban)

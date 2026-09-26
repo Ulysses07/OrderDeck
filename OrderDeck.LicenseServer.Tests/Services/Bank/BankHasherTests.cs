@@ -92,6 +92,27 @@ public sealed class BankHasherTests
     }
 
     [Fact]
+    public void Anahtar_gecerliligi_bayt_sayar_bos_ve_bosluk_gecersiz()
+    {
+        // Program.cs açılışta aynı denetimle banka modülünü açar/kapatır; kurucu da aynısını kullanır.
+        BankHasher.IsValidKey(null).Should().BeFalse();
+        BankHasher.IsValidKey("").Should().BeFalse();
+        BankHasher.IsValidKey(new string(' ', 40)).Should().BeFalse("boşluk anahtar değildir");
+        BankHasher.IsValidKey(new string('k', 31)).Should().BeFalse();
+        BankHasher.IsValidKey(new string('k', 32)).Should().BeTrue();
+        // 16 karakter × 2 bayt (UTF-8 'ş') = 32 bayt: karakter değil bayt sayılır.
+        BankHasher.IsValidKey(new string((char)0x15F, 16)).Should().BeTrue();
+        BankHasher.IsValidKey(new string((char)0x15F, 15)).Should().BeFalse("15 × 2 = 30 bayt");
+    }
+
+    [Fact]
+    public void Anahtar_gecersizse_kurucu_banka_modulu_kapali_mesajiyla_duser()
+    {
+        var act = () => new BankHasher(Options.Create(new BankOptions { HashKey = new string('k', 31) }));
+        act.Should().Throw<InvalidOperationException>().WithMessage(BankHasher.DisabledMessage);
+    }
+
+    [Fact]
     public void Vkn_hashinde_yalniz_rakamlar_sayilir_ayni_vkn_ayni_hash()
     {
         var h = NewHasher();
