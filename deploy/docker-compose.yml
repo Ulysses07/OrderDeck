@@ -195,6 +195,13 @@ services:
       OrderDeck__Facebook__AppId: "${OrderDeck__Facebook__AppId:-}"
       OrderDeck__Facebook__AppSecret: "${OrderDeck__Facebook__AppSecret:-}"
       OrderDeck__Facebook__LoginConfigId: "${OrderDeck__Facebook__LoginConfigId:-}"
+      # Banka modülü (Obifin hareket çekimi, 2026-09). IBAN/VKN hash'lerinin HMAC
+      # anahtarı, en az 32 bayt; yedeği Bitwarden'da. DEĞİŞTİRME: değişirse var
+      # olan bütün hash'ler (IBAN hafızası, hareket eşleşmeleri) geçersiz olur.
+      # `:?` DEĞİL `:-` bilinçli: boşsa sunucu yine açılır, banka modülü KAPALI
+      # kalır (açılışta tek uyarı, banka işleri zamanlanmaz). `:?` eksik satırda
+      # CI'ın `config -q` kapısını düşürüp HER deploy'u kilitlerdi.
+      OrderDeck__Bank__HashKey: "${OrderDeck__Bank__HashKey:-}"
       # Kayıt formu "hesabınla bağlan" (PR #360, karanlık deploy). Bayraklar
       # yazılmadıkça uçlar 404 — Google doğrulaması ONAYLANMADAN
       # IntakeLogin__YouTubeEnabled açılmaz. Facebook için AYRI Consumer app

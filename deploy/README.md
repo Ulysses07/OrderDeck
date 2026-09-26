@@ -144,6 +144,13 @@ SMS_PROVIDER=netgsm
 OrderDeck__WhatsApp__Provider=cloud
 OrderDeck__BroadcastMedia__Provider=r2
 
+# İsteğe bağlı: banka modülü (Obifin). IBAN/VKN hash'lerinin HMAC anahtarı,
+# en az 32 bayt (aşağıdaki openssl komutuyla üret), yedeği Bitwarden'da.
+# Boşsa sunucu açılır ama banka modülü KAPALI kalır. Bir kez yazıldıktan sonra
+# DEĞİŞTİRME: var olan bütün hash'ler geçersiz olur. docker-compose.yml'de de
+# listeli — orada olmayan anahtar container'a girmez.
+OrderDeck__Bank__HashKey=
+
 # Optional: SMTP (set to real values when email features needed)
 SMTP_HOST=smtp.example.com
 SMTP_PORT=587
@@ -160,6 +167,7 @@ Generate strong values:
 ```bash
 SQL_PASSWORD: openssl rand -base64 24 | tr -d '/+=' | head -c 32
 JWT_SECRET:   openssl rand -base64 48
+OrderDeck__Bank__HashKey: openssl rand -base64 48
 ADMIN_PASSWORD_HASH: see Phase 4a admin bootstrap docs (BCrypt-Net)
 ```
 

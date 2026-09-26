@@ -110,7 +110,9 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
             ("obifin-poll", "*/5 * * * *"),
             // Çekimle ortak kilit: 5 dakikalık ızgaranın dışında, yoksa her seferinde çekimi bekler.
             ("obifin-accounts", "2 * * * *"),
-            ("bank-data-retention", "55 4 * * *"),
+            // 04:52 eşitlemeden sonra ve 5 dakikalık ızgaranın DIŞINDA: 04:55'te obifin-poll (aynı BankTransactions
+            // tablosuna yazar) ve üç */5 iş daha koşar; */15 ise 04:45 ve 05:00'te.
+            ("bank-data-retention", "57 4 * * *"),
         });
     }
 
@@ -135,7 +137,8 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
     public void Obifin_istemcisi_yonlendirme_izlemez_kimlik_basliklarini_loglamaz_zaman_asimi_ayardan(int configured, int expected)
     {
         // Kimlik (KullaniciAdi/Sifre/APIKey) özel başlıkta gider; .NET yönlendirmede yalnız Authorization'ı düşürür,
-        // bunları yönlendirme hedefine taşırdı. Aynı başlıklar HttpClient günlüğüne de düşmemeli.
+        // bunları yönlendirme hedefine taşırdı. Aynı başlıklar HttpClient günlüğüne de düşmemeli. Çerez de tutulmaz:
+        // havuzlanan birincil işleyici tek CookieContainer'ı tüm kiracıların istemcileriyle paylaşır.
         var services = new ServiceCollection();
         services.AddLogging();
         services.Configure<ObifinOptions>(o => o.TimeoutSeconds = configured);
@@ -150,6 +153,8 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
             options.ShouldRedactHeaderValue(header).Should().BeTrue($"{header} günlüğe açık yazılmaz");
         HttpMessageHandler handler = sp.GetRequiredService<IHttpMessageHandlerFactory>().CreateHandler(name);
         while (handler is DelegatingHandler delegating) handler = delegating.InnerHandler!;
-        handler.Should().BeOfType<HttpClientHandler>().Which.AllowAutoRedirect.Should().BeFalse();
+        var primary = handler.Should().BeOfType<HttpClientHandler>().Which;
+        primary.AllowAutoRedirect.Should().BeFalse();
+        primary.UseCookies.Should().BeFalse("bir kiracının oturum çerezi sonraki kiracının isteğine taşınmamalı");
     }
 }

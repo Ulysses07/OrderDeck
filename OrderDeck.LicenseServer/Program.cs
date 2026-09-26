@@ -1009,7 +1009,7 @@ public class Program
                 j => j.RunAsync(CancellationToken.None),
                 "52 4 * * *");  // 04:52 UTC daily
 
-            // Banka (Obifin): obifin-poll */5, obifin-accounts :02 saatlik, bank-data-retention 04:55 UTC.
+            // Banka (Obifin): obifin-poll */5, obifin-accounts :02 saatlik, bank-data-retention 04:57 UTC.
             // Anahtar yoksa kayıtlanmaz, eskileri silinir — takvim ve gerekçeler ScheduleBankJobs'ta.
             ScheduleBankJobs(manager, bankEnabled);
         }
@@ -1173,6 +1173,10 @@ public class Program
     /// <para><c>obifin-accounts</c> dakika 2'de: çekimle ORTAK kilit tutar
     /// (<see cref="OrderDeck.LicenseServer.Services.Bank.ObifinPollJob.LockResource"/>); 5 dakikalık ızgarada olsaydı
     /// her seferinde çekimin bitmesini beklerdi.</para>
+    ///
+    /// <para><c>bank-data-retention</c> 04:57'de: 04:52 İYS eşitlemesinden sonra ve yine ızgara DIŞINDA. 04:55'te
+    /// obifin-poll aynı BankTransactions tablosuna yazar, sms-campaign-recovery / iys-consent-push / iys-consent-verify
+    /// da koşar; */15 04:45 ve 05:00'te. 04:57'de başka hiçbir iş tetiklenmez.</para>
     /// </summary>
     public static void ScheduleBankJobs(IRecurringJobManager manager, bool enabled)
     {
@@ -1195,11 +1199,11 @@ public class Program
             "obifin-accounts",
             j => j.RunAsync(CancellationToken.None),
             "2 * * * *");
-        // Ham JSON 90 gün, açıklama 180 gün (spec §5). 04:55 UTC: 04:52 eşitlemeden sonra, başka günlük iş yok.
+        // Ham JSON 90 gün, açıklama 180 gün (spec §5). 04:57 UTC: 04:52 eşitlemeden sonra, ızgara dışı (bkz. özet).
         manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Bank.BankDataRetentionJob>(
             "bank-data-retention",
             j => j.RunAsync(CancellationToken.None),
-            "55 4 * * *");
+            "57 4 * * *");
     }
 
     /// <summary>
@@ -1210,6 +1214,9 @@ public class Program
     /// Authorization'ı düşürür, bunları yönlendirme hedefine taşırdı. 3xx gövdesi JSON değildir → protokol hatası,
     /// bağlantının LastError'unda görünür.</item>
     /// <item>Aynı başlıklar HttpClient günlüğünde maskelenir.</item>
+    /// <item>Çerez TUTULMAZ: birincil işleyici havuzlanır (~2 dk) ve onunla tek bir CookieContainer tüm kiracıların
+    /// istemcilerince paylaşılırdı; Obifin bir oturum çerezi (ör. PHPSESSID) verirse A kiracısının oturumu aynı
+    /// çekim turunda B kiracısının isteğine taşınırdı. Obifin her isteği başlıklarla doğrular, çereze ihtiyaç yok.</item>
     /// </list>
     /// </summary>
     public static IHttpClientBuilder AddObifinHttpClient(IServiceCollection services) => services
@@ -1220,7 +1227,8 @@ public class Program
                 .Value.TimeoutSeconds;
             c.Timeout = TimeSpan.FromSeconds(seconds <= 0 ? 40 : seconds);
         })
-        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false })
+        // Havuzlanan işleyici = paylaşılan CookieContainer = kiracılar arası oturum sızıntısı → çerez kapalı.
+        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false })
         .RedactLoggedHeaders(new[] { "KullaniciAdi", "Sifre", "APIKey" });
 
     /// <summary>
