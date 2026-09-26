@@ -95,8 +95,14 @@ public class IndexModel : PageModel
         AccountsByLicense = (await _db.BankAccounts.AsNoTracking().Where(a => licenseIds.Contains(a.LicenseId)).ToListAsync(ct))
             .GroupBy(a => a.LicenseId)
             .ToDictionary(g => g.Key, g => g.Select(a => new AccountRow(a.BankaKodu, a.IbanMasked, a.Currency, a.Active, a.LastBankSyncAt, a.NotificationNote)).ToList());
-        Licenses = await _db.Licenses.AsNoTracking().OrderBy(l => l.Customer.Email)
-            .Select(l => new LicenseOption(l.Id, l.Customer.Email + " · " + l.LicenseKey)).Take(200).ToListAsync(ct);
+        // Seçim listesi e-postaya göre ilk 200 lisansla sınırlı; Obifin bağlantısı olan lisanslar ise HER ZAMAN listede
+        // (düzenlenen lisans da: düzenleme ancak bağlantısı olan lisansta açılır). Listede olmayan lisans seçili gelemez;
+        // tarayıcı ilk seçeneği gönderir ve form, gösterdiği kimliği ya da banka kimliğini BAŞKA bir lisansa yazar.
+        var firstPage = _db.Licenses.OrderBy(l => l.Customer.Email).Take(200).Select(l => l.Id);
+        Licenses = await _db.Licenses.AsNoTracking()
+            .Where(l => licenseIds.Contains(l.Id) || firstPage.Contains(l.Id))
+            .OrderBy(l => l.Customer.Email)
+            .Select(l => new LicenseOption(l.Id, l.Customer.Email + " · " + l.LicenseKey)).ToListAsync(ct);
 
         if (license is { } id
             && await _db.ObifinConnections.AsNoTracking().FirstOrDefaultAsync(c => c.LicenseId == id, ct) is { } conn)

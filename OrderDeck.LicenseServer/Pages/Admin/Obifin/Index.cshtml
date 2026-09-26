@@ -49,7 +49,7 @@
             <td>@(r.BackfillCompletedAt?.ToString("yyyy-MM-dd HH:mm") ?? "bekliyor")</td>
             <td>@(r.Cursor?.ToString() ?? "—")</td>
             <td>@r.BankConnections</td><td>@r.Accounts</td><td>@r.Transactions</td>
-            <td class="text-danger small">@r.LastError</td>
+            <td class="text-danger small" data-cell="last-error">@r.LastError</td>
             <td class="text-nowrap">
                 <form method="post" class="d-inline">
                     <input type="hidden" name="LicenseId" value="@r.LicenseId" />

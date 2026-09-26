@@ -69,13 +69,21 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
     {
         using var scope = factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var licenseId = AddLicense(db);
+        await db.SaveChangesAsync();
+        return licenseId;
+    }
+
+    /// <summary>Müşteri + lisans ekler (kaydetmez); e-posta <paramref name="emailPrefix"/> ile başlar — seçim listesi
+    /// e-postaya göre sıralı.</summary>
+    private static Guid AddLicense(LicenseDbContext db, string emailPrefix = "ob")
+    {
         var customerId = Guid.NewGuid();
-        db.Customers.Add(new Customer { Id = customerId, Email = $"ob-{Guid.NewGuid():N}@x", Name = "Ob",
+        db.Customers.Add(new Customer { Id = customerId, Email = $"{emailPrefix}-{Guid.NewGuid():N}@x", Name = "Ob",
             PasswordHash = $"h-{Guid.NewGuid():N}", CreatedAt = DateTimeOffset.UtcNow, EmailConfirmedAt = DateTimeOffset.UtcNow });
         var licenseId = Guid.NewGuid();
         db.Licenses.Add(new License { Id = licenseId, LicenseKey = $"LDK-OB-{Guid.NewGuid():N}", CustomerId = customerId,
             SkuCode = "STD", ActivationSlots = 1, IssuedAt = DateTimeOffset.UtcNow, ExpiresAt = DateTimeOffset.UtcNow.AddDays(30) });
-        await db.SaveChangesAsync();
         return licenseId;
     }
 
@@ -207,9 +215,13 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
 
         await client.PostAsync("/admin/obifin?handler=Verify", await FormAsync(client, "/admin/obifin",
             new Dictionary<string, string> { ["LicenseId"] = licenseId.ToString() }));
+        await client.GetStringAsync("/admin/obifin"); // TempData bildirimi ("Doğrulanamadı: …") burada tüketilir
 
-        var html = await client.GetStringAsync("/admin/obifin");
-        html.Should().Contain("Failed").And.Contain("obifin-not-configured");
+        // Sayfanın tamamına bakmak hiçbir şey kanıtlamaz: yardım satırı her zaman "Failed" der, bildirim de hata metnini
+        // taşır. Kalıcı durum ve son hata bağlantının SATIRINDA görünmeli.
+        var row = (await ParseAsync(await client.GetStringAsync("/admin/obifin"))).QuerySelector($"tr[data-license='{licenseId}']")!;
+        row.QuerySelector("[data-cell='status']")!.TextContent.Should().Be("Failed");
+        row.QuerySelector("[data-cell='last-error']")!.TextContent.Should().Contain("obifin-not-configured");
     }
 
     [Fact]
@@ -381,6 +393,33 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         (await ShadowCountsAsync(licenseId)).Should().Be((1, 1, 1));
         (await PageTextAsync(client)).Contains(ResetConfirmMessage).Should().Be(needsConfirm);
         (await ConnectionAsync(licenseId)).BaseUrl.Should().Be("https://example.invalid");
+    }
+
+    [Fact]
+    public async Task Duzenlenen_lisans_ilk_200_lisansin_disinda_olsa_da_iki_formda_secili_gelir()
+    {
+        // Seçim listesi e-postaya göre ilk 200 lisansla sınırlı. Düzenlenen lisans o pencerenin dışında kalıp seçili
+        // gelemezse tarayıcı İLK seçeneği gönderir: form X'in kimliğini gösterirken başka bir lisansa yazar (onay kutusu
+        // o lisansın verisini siler), banka ekleme formu X'in banka kimliğini başka lisansın Obifin hesabına iletir.
+        using var factory = new ApiFactory();
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            for (var i = 0; i < 200; i++) AddLicense(db, emailPrefix: "0"); // "0-…" e-postaları "ob-…"dan önce sıralanır
+            await db.SaveChangesAsync();
+        }
+        var licenseId = await SeedLicenseAsync(factory);
+        var client = await factory.CreateLoggedInAdminClientAsync();
+        await SaveAsync(client, licenseId, "api@x");
+
+        var doc = await ParseAsync(await client.GetStringAsync($"/admin/obifin?license={licenseId}"));
+
+        foreach (var handler in new[] { "Save", "AddBank" })
+            (doc.QuerySelector($"form[action*='handler={handler}'] select[name='LicenseId'] option[selected]")?.GetAttribute("value"))
+                .Should().Be(licenseId.ToString(), $"{handler} formu düzenlenen lisansa yazmalı");
+        (await ParseAsync(await client.GetStringAsync("/admin/obifin")))
+            .QuerySelector($"form[action*='handler=AddBank'] select[name='LicenseId'] option[value='{licenseId}']")
+            .Should().NotBeNull("Obifin bağlantısı olan lisans banka ekleme listesinde hep bulunur");
     }
 
     [Fact]
