@@ -277,10 +277,10 @@ alır; yukarıdaki bölümlerle çelişkide bu bölüm (ve kod) geçerlidir.
 **Çekim (PR-1)**
 - Ham JSON saklanmadan önce adı `IBAN`, `VKN` ya da `TCKN` içeren her alan (iç içe dahil, harf duyarsız) `[redakte]`
   olur; hash ve maske redaksiyondan önce ham değerden üretilir. Ad alanları kalır.
-- Durum `Failed`'a yalnız şunlarla düşer: Obifin'in reddi (`Hata` dolu) — çekimde ya da saatlik hesap yenilemede;
+- Durum `Failed`'a yalnız şunlarla düşer: Obifin'in reddi (`Hata` dolu) — çekimde ya da hesap yenilemede (saatlik ya da banka eklemesinin ardından);
   çekimin ya da "Doğrula"nın çözemediği saklı kimlik; elle "Doğrula"nın her başarısızlığı. Çekimde ve hesap yenilemede
   ağ/vekil/zaman aşımı yalnız `LastError` yazar, durum `Verified` kalır (çekim koşusu Failed görünür, 5 dk sonra aynı
-  imleçten dener). Banka ekleme hiçbir hatada durumu değiştirmez; sonucu belirsiz ekleme "eklenemedi" denmeden
+  imleçten dener). Banka ekleme hiçbir hatada durumu `Failed`'a çevirmez; sonucu belirsiz ekleme "eklenemedi" denmeden
   Obifin'deki etiketle bildirilir. Başarılı hesap yenilemesi ya da banka eklemesi `Failed`'ı yeniden `Verified`
   yapar; `Disabled`'a kanıt dokunmaz.
 - Kimlik (kullanıcı kodu ya da açıkça girilen adres) değişince imleç sıfırlanır; lisansın gölge verisi (hareket, hesap,
