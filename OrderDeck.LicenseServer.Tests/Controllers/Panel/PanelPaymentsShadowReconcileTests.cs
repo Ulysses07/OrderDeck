@@ -4,6 +4,7 @@ using FluentAssertions;
 using Hangfire;
 using Hangfire.Common;
 using Hangfire.States;
+using Hangfire.Storage.Monitoring;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
@@ -17,8 +18,9 @@ using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Controllers.Panel;
 
-/// <summary>Dekont onayı gölge bağdaştırmayı KUYRUĞA atar, kendisi koşturmaz: onay yolu eşleştirmeyle yavaşlamaz ve onun
-/// hatasıyla düşmez. Ret hiçbir şey kuyruğa atmaz.</summary>
+/// <summary>Dekont onayı gölge bağdaştırmayı GECİKMELİ zamanlar, kendisi koşturmaz: onay yolu eşleştirmeyle yavaşlamaz ve
+/// onun hatasıyla düşmez; iş dekontun kendi hareketinin çekilmesini bekler (bkz. <see cref="PaymentMatchReconcileJob.ApprovalDelay"/>).
+/// Ret hiçbir şey zamanlamaz.</summary>
 public sealed class PanelPaymentsShadowReconcileTests : IClassFixture<ApiFactory>
 {
     private readonly ApiFactory _factory;
@@ -71,27 +73,39 @@ public sealed class PanelPaymentsShadowReconcileTests : IClassFixture<ApiFactory
         => factory.Services.GetRequiredService<JobStorage>().GetMonitoringApi().EnqueuedJobs("default", 0, 1000).Count(j =>
             j.Value.Job.Type == typeof(PaymentMatchReconcileJob) && j.Value.Job.Args.Contains((object)paymentId));
 
+    private static List<ScheduledJobDto> ReconcileSchedules(ApiFactory factory, Guid paymentId)
+        => factory.Services.GetRequiredService<JobStorage>().GetMonitoringApi().ScheduledJobs(0, 1000)
+            .Where(j => j.Value.Job.Type == typeof(PaymentMatchReconcileJob) && j.Value.Job.Args.Contains((object)paymentId))
+            .Select(j => j.Value).ToList();
+
     [Fact]
-    public async Task Onay_golge_bagdastirma_isini_bir_kez_kuyruga_atar()
+    public async Task Onay_golge_bagdastirma_isini_gecikmeli_bir_kez_zamanlar()
     {
         var (client, paymentId) = await SeedAsync(_factory);
+        var before = DateTime.UtcNow;
 
         var resp = await client.PostAsync($"/api/panel/payments/{paymentId}/approve", null);
         var again = await client.PostAsync($"/api/panel/payments/{paymentId}/approve", null);
 
         resp.StatusCode.Should().Be(HttpStatusCode.NoContent);
         again.StatusCode.Should().Be(HttpStatusCode.Conflict);
-        ReconcileEnqueueCount(_factory, paymentId).Should().Be(1, "karar yalnız kazanan onayda bir kez kuyruğa atılır");
+        var scheduled = ReconcileSchedules(_factory, paymentId);
+        scheduled.Should().ContainSingle("karar yalnız kazanan onayda bir kez zamanlanır");
+        scheduled[0].EnqueueAt.Should().BeOnOrAfter(before + PaymentMatchReconcileJob.ApprovalDelay,
+            "dekontun kendi hareketi onay anında çoğu zaman henüz çekilmemiştir");
+        scheduled[0].EnqueueAt.Should().BeBefore(DateTime.UtcNow + PaymentMatchReconcileJob.ApprovalDelay + TimeSpan.FromMinutes(1));
+        ReconcileEnqueueCount(_factory, paymentId).Should().Be(0, "onay anında koşmaz");
     }
 
     [Fact]
-    public async Task Ret_golge_bagdastirma_isini_kuyruga_atmaz()
+    public async Task Ret_golge_bagdastirma_isini_zamanlamaz()
     {
         var (client, paymentId) = await SeedAsync(_factory);
 
         var resp = await client.PostAsJsonAsync($"/api/panel/payments/{paymentId}/reject", new { reason = "okunmuyor" });
 
         resp.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        ReconcileSchedules(_factory, paymentId).Should().BeEmpty("ret öğretmez ve bağlanmaz");
         ReconcileEnqueueCount(_factory, paymentId).Should().Be(0, "ret öğretmez ve bağlanmaz");
     }
 

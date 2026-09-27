@@ -136,7 +136,7 @@ public sealed class PanelPaymentsController : ControllerBase
 
         await ApplyConversationLabelAsync(payment, WaLabelEvent.PaymentApproved, ct);
         await NotifyShopperPaymentDecisionAsync(payment, approved: true, reason: null, ct);
-        EnqueueShadowReconcile(payment.Id);
+        ScheduleShadowReconcile(payment.Id);
         return NoContent();
     }
 
@@ -180,21 +180,24 @@ public sealed class PanelPaymentsController : ControllerBase
     }
 
     /// <summary>
-    /// Gölge banka eşleştirmesi ölçümü (spec §6): onayı gölge öneriyle bağdaştıran işi kuyruğa atar. Onay isteğinde
-    /// KOŞMAZ — eşleştirme onayı yavaşlatmamalı, hatası onayı düşürmemeli. Ödeme SaveChanges'inden SONRA: commit olmamış
-    /// onay için koşan iş "onaylı değil" diye çıkardı. Ret bağlanmaz (spec §6 "ret öğretmez").
+    /// Gölge banka eşleştirmesi ölçümü (spec §6): onayı gölge öneriyle bağdaştıran işi
+    /// <see cref="PaymentMatchReconcileJob.ApprovalDelay"/> sonrasına zamanlar — dekontun kendi havalesi çekilmeden
+    /// koşsaydı aynı tutarlı başka bir havaleyi bağlardı. Onay isteğinde KOŞMAZ: eşleştirme onayı yavaşlatmamalı, hatası
+    /// onayı düşürmemeli. Ödeme SaveChanges'inden SONRA: commit olmamış onay için koşan iş "onaylı değil" diye çıkardı.
+    /// Ret bağlanmaz (spec §6 "ret öğretmez").
     /// </summary>
-    private void EnqueueShadowReconcile(Guid paymentId)
+    private void ScheduleShadowReconcile(Guid paymentId)
     {
         try
         {
-            _jobs.Enqueue<PaymentMatchReconcileJob>(j => j.RunAsync(paymentId, CancellationToken.None));
+            _jobs.Schedule<PaymentMatchReconcileJob>(j => j.RunAsync(paymentId, CancellationToken.None),
+                PaymentMatchReconcileJob.ApprovalDelay);
         }
         catch (Exception ex)
         {
             // Onay COMMIT EDİLDİ; kuyruk arızası onu geri almaz, 500 göstermek yalan olur. Bu onay ölçümden düşer (gap de
             // yazılmaz). Mesaj DEĞİL yalnız tür adı: kuyruk deposunun istisnası bağlantı ayrıntısı taşıyabilir.
-            _log.LogWarning("Gölge eşleştirme işi kuyruğa alınamadı (ödeme {PaymentId}): {ErrorType}",
+            _log.LogWarning("Gölge eşleştirme işi zamanlanamadı (ödeme {PaymentId}): {ErrorType}",
                 paymentId, ex.GetType().Name);
         }
     }

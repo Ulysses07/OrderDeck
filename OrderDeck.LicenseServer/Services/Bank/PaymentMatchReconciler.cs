@@ -9,8 +9,14 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// <summary>
 /// İnsan kararını gölge önerisine bağlar (spec §6). Aday = aynı lisans, gelen, tutar eşit,
 /// ±2 gün, henüz bir dekonta bağlanmamış ve başka bir müşteriye elle verilmemiş. Tek aday → bağla; çoklu → gönderen
-/// adının tüm tokenları açıklamada geçen TEK aday; hâlâ çoklu/yok → PaymentMatchGap. Onay IBAN öğretir; ret hiçbir şey
-/// yapmaz.
+/// adının tüm tokenları açıklamada geçen TEK aday; hâlâ çoklu/yok → PaymentMatchGap. Ret hiçbir şey yapmaz.
+/// <para><b>Onay IBAN'ı yalnız doğrulanmış bağdan öğretir</b>: öneri dekontun müşterisini gösteriyorsa ya da gönderen
+/// adının (≥3 harfli) tüm token'ları hareketin açıklamasında geçiyorsa. Tek aday bağı yalnız tutar ve zamana dayanabilir;
+/// sabit fiyatlı satışta aynı tutarlı başka bir müşterinin havalesi tek aday kalabilir (dekontun kendi havalesi henüz
+/// çekilmemiş, ya da gap'e ilk gelen aynı tutarlı havale). O bağdan öğrenilen IBAN iki müşterinin hafızasını takas eder
+/// ve admin kaldırana dek sonraki havalelere yanlış öneri üretirdi. Doğrulanmamış bağ yine kurulur ve karşılaştırılır
+/// (ölçüm), yalnız öğretmez; günlüğe yalnız kimlikler yazılır. Onay işinin gecikmesi
+/// (<see cref="PaymentMatchReconcileJob.ApprovalDelay"/>) bu tek adayların çoğunu baştan önler.</para>
 /// <para><b>Bir insan kararı ötekini ezmez.</b> Başka müşteriye elle verilmiş hareket onayda aday değildir; aynı müşteriye
 /// verilmişse dekont satıra yalnız iliştirilir, kararın durumu ve anı korunur. Elle eşleme yalnız karara bağlanmamış
 /// (<see cref="PaymentMatch.DecidedAt"/> ve <see cref="PaymentMatch.PaymentId"/> boş) harekete verilir; yeniden karar önce
@@ -120,7 +126,7 @@ public sealed class PaymentMatchReconciler
             return;
         }
 
-        await LinkAsync(candidates[0], payment.Id, wpfCustomerId.Value, ct);
+        await LinkAsync(candidates[0], payment.Id, payment.PayerName, wpfCustomerId.Value, ct);
         await _db.SaveChangesAsync(ct);
     }
 
@@ -150,7 +156,7 @@ public sealed class PaymentMatchReconciler
             wpfCustomerId.Value, ct);
         if (candidates.Count != 1 || candidates[0].Id != tx.Id) return;
         var gap = await _db.PaymentMatchGaps.FirstAsync(g => g.Id == pending.GapId, ct);
-        await LinkAsync(tx, pending.PaymentId, wpfCustomerId.Value, ct);
+        await LinkAsync(tx, pending.PaymentId, pending.PayerName, wpfCustomerId.Value, ct);
         gap.ResolvedBankTransactionId = tx.Id; gap.ResolvedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync(ct);
     }
@@ -241,17 +247,27 @@ public sealed class PaymentMatchReconciler
 
         if (candidates.Count > 1)
         {
-            var payer = BankTextNormalizer.Tokenize(payerName).Tokens.Where(t => t.Length >= 3).ToList();
-            if (payer.Count > 0)
-            {
-                var narrowed = candidates.Where(t => { var d = BankTextNormalizer.Tokenize(t.Description).Tokens; return payer.All(p => d.Contains(p)); }).ToList();
-                if (narrowed.Count == 1) candidates = narrowed;
-            }
+            var payer = PayerTokens(payerName);
+            var narrowed = candidates.Where(t => NamesPayer(payer, t.Description)).ToList();
+            if (narrowed.Count == 1) candidates = narrowed;
         }
         return candidates;
     }
 
-    private async Task LinkAsync(BankTransaction tx, Guid paymentId, Guid wpfCustomerId, CancellationToken ct)
+    /// <summary>Gönderen adının ≥3 harfli token'ları; kısa token (baş harf, "A.") ayırt etmez.</summary>
+    private static List<string> PayerTokens(string? payerName)
+        => BankTextNormalizer.Tokenize(payerName).Tokens.Where(t => t.Length >= 3).ToList();
+
+    /// <summary>Açıklama gönderen adının tüm token'larını taşıyor mu. Token'ı olmayan ad (boş, KVKK'yla silinmiş, yalnız
+    /// kısa token) hiçbir açıklamayı doğrulamaz.</summary>
+    private static bool NamesPayer(List<string> payerTokens, string? description)
+    {
+        if (payerTokens.Count == 0) return false;
+        var d = BankTextNormalizer.Tokenize(description).Tokens;
+        return payerTokens.All(p => d.Contains(p));
+    }
+
+    private async Task LinkAsync(BankTransaction tx, Guid paymentId, string? payerName, Guid wpfCustomerId, CancellationToken ct)
     {
         var match = await _db.PaymentMatches.FirstOrDefaultAsync(m => m.BankTransactionId == tx.Id, ct) ?? await Matcher.MatchAsync(tx, ct);
         // Aday seçimi satırı izlemeden okudu; arada başka bir karara bağlandıysa seçim bayattır, yeniden deneme taze seçer.
@@ -266,7 +282,12 @@ public sealed class PaymentMatchReconciler
         match.ActualWpfCustomerId = wpfCustomerId; match.DecidedAt = now;
         match.Status = match.ProposedWpfCustomerId is null ? PaymentMatchStatus.ManualOnly
             : match.ProposedWpfCustomerId == wpfCustomerId ? PaymentMatchStatus.ConfirmedByHuman : PaymentMatchStatus.Contradicted;
-        await LearnIbanAsync(tx, wpfCustomerId, IbanMemorySource.HumanApproval, ct);
+        // Yalnız doğrulanmış bağ öğretir (sınıf özeti): tutar ve zamandan ibaret bağ başka müşterinin havalesi olabilir.
+        if (match.ProposedWpfCustomerId == wpfCustomerId || NamesPayer(PayerTokens(payerName), tx.Description))
+            await LearnIbanAsync(tx, wpfCustomerId, IbanMemorySource.HumanApproval, ct);
+        else if (tx.CounterpartyIbanHash is not null)
+            _log.LogInformation("Gölge bağdaştırma: hareket {TransactionId} ödeme {PaymentId}'e yalnız tutar ve zamanla bağlandı; "
+                + "IBAN öğrenilmedi", tx.Id, paymentId);
     }
 
     private async Task LearnIbanAsync(BankTransaction tx, Guid wpfCustomerId, IbanMemorySource source, CancellationToken ct)

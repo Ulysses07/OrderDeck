@@ -249,6 +249,71 @@ public sealed class PaymentMatchReconcilerTests
     }
 
     [Fact]
+    public async Task Dogrulanmamis_tek_aday_baglanir_ama_iban_ogretmez()
+    {
+        // A'nın dekontu onaylandığında A'nın havalesi henüz yok; aynı tutarlı başka bir havale tek aday. Bağ yalnız tutar
+        // ve zamana dayanır: öneri A'yı göstermiyor (başka müşteri ya da öneri yok), gönderen adı açıklamada geçmiyor.
+        // Hareketin IBAN'ı A'ya öğretilseydi, bağ yanlışsa, o IBAN'ın sonraki havaleleri A'ya önerilirdi.
+        using var db = NewDb(); var s = SeedShopper(db);
+        OtherCustomer(db, s.LicenseId, "mehmet_k");
+        var when = DateTimeOffset.UtcNow.AddHours(-1);
+        var othersTx = Tx(db, s.LicenseId, 250m, when, "HAVALE mehmet_k", Hasher.HashIban(BankHasherTests.TestIban()));
+        var anonymousTx = Tx(db, s.LicenseId, 260m, when, "EFT GELEN", Hasher.HashIban(BankHasherTests.TestIban()));
+        var recon = Recon(db);
+        await recon.Matcher.MatchAsync(othersTx, CancellationToken.None); await recon.Matcher.MatchAsync(anonymousTx, CancellationToken.None);
+        var p1 = Approved(db, s.LicenseId, s.ShopperId, 250m, when);
+        var p2 = Approved(db, s.LicenseId, s.ShopperId, 260m, when);
+
+        await recon.ReconcileApprovalAsync(p1, CancellationToken.None);
+        await recon.ReconcileApprovalAsync(p2, CancellationToken.None);
+
+        var rows = await db.PaymentMatches.AsNoTracking().ToListAsync();
+        var contradicted = rows.Single(m => m.BankTransactionId == othersTx.Id);
+        contradicted.PaymentId.Should().Be(p1.Id); contradicted.Status.Should().Be(PaymentMatchStatus.Contradicted);
+        var manual = rows.Single(m => m.BankTransactionId == anonymousTx.Id);
+        manual.PaymentId.Should().Be(p2.Id); manual.Status.Should().Be(PaymentMatchStatus.ManualOnly);
+        (await db.CustomerIbanMemories.CountAsync()).Should().Be(0, "doğrulanmamış bağ IBAN öğretmez");
+    }
+
+    [Fact]
+    public async Task Gonderen_adi_aciklamada_gecen_bag_oneri_farkliyken_de_iban_ogretir()
+    {
+        // Açıklama başka müşterinin kullanıcı adını taşıyor (öneri onu gösterir) ama gönderen adı dekonttakiyle aynı: IBAN
+        // dekontun sahibinindir, öğrenilir. Karşılaştırma yine Contradicted.
+        using var db = NewDb(); var s = SeedShopper(db);
+        OtherCustomer(db, s.LicenseId, "mehmet_k");
+        var when = DateTimeOffset.UtcNow.AddHours(-1);
+        var tx = Tx(db, s.LicenseId, 270m, when, "FAST AYSE GUL mehmet_k", Hasher.HashIban(BankHasherTests.TestIban()));
+        var recon = Recon(db); await recon.Matcher.MatchAsync(tx, CancellationToken.None);
+
+        await recon.ReconcileApprovalAsync(Approved(db, s.LicenseId, s.ShopperId, 270m, when, payer: "AYSE GUL"), CancellationToken.None);
+
+        (await db.PaymentMatches.AsNoTracking().SingleAsync()).Status.Should().Be(PaymentMatchStatus.Contradicted);
+        var mem = await db.CustomerIbanMemories.AsNoTracking().SingleAsync();
+        mem.WpfCustomerId.Should().Be(s.WpfCustomerId); mem.LearnedFrom.Should().Be(IbanMemorySource.HumanApproval);
+    }
+
+    [Fact]
+    public async Task Gap_cozumunde_dogrulanmamis_bag_iban_ogretmez()
+    {
+        // Onayda hareket yoktu; sonradan gelen, aynı tutarlı, gönderen adı ve önerisi olmayan tek hareket gap'i çözer ama
+        // IBAN'ı dekontun sahibine öğretmez: başka bir müşterinin havalesi olabilir.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var paidAt = DateTimeOffset.UtcNow.AddHours(-5);
+        var payment = Approved(db, s.LicenseId, s.ShopperId, 280m, paidAt);
+        var recon = Recon(db);
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+        var late = Tx(db, s.LicenseId, 280m, paidAt.AddHours(1), "EFT GELEN", Hasher.HashIban(BankHasherTests.TestIban()));
+
+        await recon.MatchAndResolveGapAsync(late, CancellationToken.None);
+
+        (await db.PaymentMatchGaps.AsNoTracking().SingleAsync()).ResolvedBankTransactionId.Should().Be(late.Id);
+        var m = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        m.PaymentId.Should().Be(payment.Id); m.Status.Should().Be(PaymentMatchStatus.ManualOnly);
+        (await db.CustomerIbanMemories.CountAsync()).Should().Be(0, "doğrulanmamış bağ IBAN öğretmez");
+    }
+
+    [Fact]
     public async Task Elle_baska_musteriye_verilen_hareket_onayda_aday_sayilmaz()
     {
         // Admin hareketi elle X'e verdi; sonra aynı tutarlı, Y'nin dekontu onaylanır. Hareket Y'ye bağlanıp X kararı
