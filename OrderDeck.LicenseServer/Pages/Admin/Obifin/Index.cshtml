@@ -1,0 +1,114 @@
+@page "/admin/obifin"
+@model IndexModel
+@using OrderDeck.LicenseServer.Domain.Bank
+@using OrderDeck.LicenseServer.Services.Bank
+@{
+    ViewData["Title"] = "Obifin Banka Bağlantıları";
+}
+@* TempData["Success"] / TempData["Error"] şeritleri BU SAYFADA basılmaz: _AdminLayout → _ToastPartial zaten basıyor
+   (bkz. Pages/Admin/Netgsm/Index.cshtml). Şifre, API anahtarı ve banka web servis kimliği hiçbir yerde geri basılmaz. *@
+@functions {
+    // Lisans seçimi: ilk seçenek boş yer tutucu (select'te required) — düz GET'te hiçbir lisans seçili gelmez, yoksa
+    // tarayıcı ilk lisansı gönderir ve lisans seçmeyi unutan admin kimliği o lisansa yazar. Yalnız düzenlenen lisans
+    // seçili gelir. Boş değer Guid.Empty'ye bağlanır; işleyiciler onu reddeder. <option> tag helper'ı yüzünden async.
+    async Task LicenseOptionsAsync(IEnumerable<IndexModel.LicenseOption> options)
+    {
+        <option value="">— lisans seçin —</option>
+        foreach (var l in options)
+        {
+            if (l.Id == Model.LicenseId)
+            {
+                <option value="@l.Id" selected>@l.Label</option>
+            }
+            else
+            {
+                <option value="@l.Id">@l.Label</option>
+            }
+        }
+    }
+}
+<h1 class="h3 mb-4">Obifin Banka Bağlantıları (pilot)</h1>
+
+@if (Model.BankDisabled)
+{
+    <div class="alert alert-danger" data-banner="bank-disabled">@BankHasher.DisabledMessage</div>
+}
+
+<p class="small text-muted" data-help="status">
+    Failed = Obifin kimliği reddetti (Doğrula, hesap yenileme ya da çekimde), saklı kimlik çözülemedi ya da elle Doğrula'da Obifin'e ulaşılamadı → düzeltip Doğrula.
+    Çekim, hesap yenileme ve banka eklemedeki geçici hatalar ile Obifin'in banka alanlarını reddetmesi durumu değiştirmez, yalnız son hatayı yazar.
+</p>
+
+<table class="table table-sm align-middle">
+    <thead><tr><th>Müşteri</th><th>Kullanıcı</th><th>Durum</th><th>Son doğrulama (UTC)</th><th>Son başarılı çekim (UTC)</th><th>İlk çekim (90 gün)</th><th>İmleç</th><th>Banka</th><th>Hesap</th><th>Hareket</th><th>Son hata</th><th></th></tr></thead>
+    <tbody>
+    @foreach (var r in Model.Rows)
+    {
+        <tr data-license="@r.LicenseId">
+            <td>@r.CustomerEmail</td><td>@r.UserCode</td>
+            <td data-cell="status">@r.Status</td>
+            <td>@(r.LastVerifiedAt?.ToString("yyyy-MM-dd HH:mm") ?? "—")</td>
+            <td data-cell="last-polled">@(r.LastPolledAt is { } polled ? $"{polled:yyyy-MM-dd HH:mm} ({IndexModel.Age(polled, Model.Now)})" : "—")</td>
+            <td>@(r.BackfillCompletedAt?.ToString("yyyy-MM-dd HH:mm") ?? "bekliyor")</td>
+            <td>@(r.Cursor?.ToString() ?? "—")</td>
+            <td>@r.BankConnections</td><td>@r.Accounts</td><td>@r.Transactions</td>
+            <td class="text-danger small" data-cell="last-error">@r.LastError</td>
+            <td class="text-nowrap">
+                <form method="post" class="d-inline">
+                    <input type="hidden" name="LicenseId" value="@r.LicenseId" />
+                    <button class="btn btn-sm btn-outline-primary" asp-page-handler="Verify">Doğrula</button>
+                    @if (r.Status == ObifinConnectionStatus.Verified)
+                    {
+                        <button class="btn btn-sm btn-outline-secondary" asp-page-handler="PollNow">Şimdi çek</button>
+                    }
+                </form>
+                <a class="btn btn-sm btn-link" asp-page="/Admin/Obifin/Index" asp-route-license="@r.LicenseId">Düzenle</a>
+            </td>
+        </tr>
+        @if (Model.AccountsByLicense.TryGetValue(r.LicenseId, out var accounts) && accounts.Count > 0)
+        {
+            <tr><td colspan="12" class="small text-muted">
+                @foreach (var a in accounts)
+                {
+                    <span class="me-3">@a.BankaKodu @a.IbanMasked (@a.Currency) @(a.Active ? "aktif" : "pasif") · banka senk. @(a.LastBankSyncAt?.ToString("yyyy-MM-dd HH:mm") ?? "—") @(string.IsNullOrEmpty(a.NotificationNote) ? "" : " ⚠ " + a.NotificationNote)</span>
+                }
+            </td></tr>
+        }
+    }
+    </tbody>
+</table>
+
+@if (Model.Rows.Count == 0)
+{
+    <p class="text-muted">Henüz Obifin bağlantısı yok.</p>
+}
+
+<h2 class="h5 mt-4">@(Model.Editing is null ? "Kimlik kaydet" : "Kimlik güncelle")</h2>
+<form method="post" asp-page-handler="Save" class="row g-2" autocomplete="off">
+    <div class="col-md-4"><label class="form-label">Lisans</label>
+        <select name="LicenseId" class="form-select" required>@{ await LicenseOptionsAsync(Model.Licenses); }</select></div>
+    <div class="col-md-4"><label class="form-label">BaseUrl (boş = varsayılan)</label><input name="BaseUrl" class="form-control" value="@Model.BaseUrl" /></div>
+    <div class="col-md-4"><label class="form-label">Kullanıcı (e-posta)</label><input name="UserCode" class="form-control" value="@Model.UserCode" required /></div>
+    <div class="col-md-4"><label class="form-label">Şifre @(Model.Editing?.PasswordStored == true ? "(kayıtlı; boş = değiştirme)" : "(boş = değiştirme)")</label><input name="Password" type="password" class="form-control" autocomplete="new-password" /></div>
+    <div class="col-md-4"><label class="form-label">API anahtarı @(Model.Editing?.ApiKeyStored == true ? "(kayıtlı; boş = değiştirme)" : "(boş = değiştirme)")</label><input name="ApiKey" type="password" class="form-control" autocomplete="new-password" /></div>
+    <div class="col-md-4 align-self-end"><button class="btn btn-primary">Kaydet</button></div>
+    <div class="col-12"><div class="form-check">
+        <input class="form-check-input" type="checkbox" name="ConfirmReset" value="true" id="confirmReset" />
+        <label class="form-check-label text-danger" for="confirmReset">Kullanıcı ya da adres değişirse bu lisansın banka verisi silinir (hareketler, eşleşmeler, IBAN hafızası, hesaplar, banka bağlantıları). Onaylıyorum.</label>
+    </div></div>
+</form>
+
+<h2 class="h5 mt-4">Banka bağlantısı ekle</h2>
+<p class="small text-muted">Bankanın kurumsal web servis kimliği Obifin'e iletilir ve <strong>saklanmaz</strong>. Alanlar bankaya göre: @string.Join(" · ", IndexModel.BankFields.Select(kv => kv.Key + ": " + string.Join("/", kv.Value)))</p>
+<form method="post" asp-page-handler="AddBank" class="row g-2" autocomplete="off">
+    <div class="col-md-3"><label class="form-label">Lisans (Obifin bağlantısı olan)</label>
+        <select name="LicenseId" class="form-select" required>@{ await LicenseOptionsAsync(Model.BankLicenses); }</select></div>
+    <div class="col-md-2"><label class="form-label">Banka kodu</label>
+        <select name="BankaKodu" class="form-select">@foreach (var b in IndexModel.BankFields.Keys) { <option value="@b">@b</option> }</select></div>
+    <div class="col-md-3"><label class="form-label">Etiket</label><input name="Label" class="form-control" placeholder="QNB ana hesap" /></div>
+    @foreach (var f in new[] { "KullaniciAdi", "Sifre", "Url", "FirmaKodu", "FirmaAnahtar", "TanimNumarasi", "ClientId", "ClientSecret", "AccessToken", "RefreshToken", "APIKey", "APISecret" })
+    {
+        <div class="col-md-3"><label class="form-label">@f</label><input name="@("Field_" + f)" class="form-control" type="@(IndexModel.IsMaskedBankField(f) ? "password" : "text")" autocomplete="new-password" /></div>
+    }
+    <div class="col-md-3 align-self-end"><button class="btn btn-outline-primary">Obifin'e ekle</button></div>
+</form>

@@ -57,6 +57,10 @@ public class Program
         builder.Services.Configure<SmtpOptions>(builder.Configuration.GetSection("Smtp"));
         builder.Services.Configure<OrderDeck.LicenseServer.Services.Sms.NetgsmOptions>(
             builder.Configuration.GetSection("Netgsm"));
+        builder.Services.Configure<OrderDeck.LicenseServer.Services.Bank.ObifinOptions>(
+            builder.Configuration.GetSection("Obifin"));
+        builder.Services.Configure<OrderDeck.LicenseServer.Services.Bank.BankOptions>(
+            builder.Configuration.GetSection("OrderDeck:Bank"));
         builder.Services.Configure<BackupOptions>(builder.Configuration.GetSection("Backup"));
         builder.Services.Configure<OrderDeck.LicenseServer.Services.Audit.AuditRetentionOptions>(
             builder.Configuration.GetSection("Audit:Retention"));
@@ -210,6 +214,28 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysDepartureRetentionJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysMirrorImportJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysMirrorSyncJob>();
+
+        // Banka hareketi çekimi (Obifin) — spec docs/superpowers/specs/2026-09-25-obifin-*.md.
+        // Obifin'e yalnız beyaz listedeki VPS IP'sinden ulaşılır; Testing ortamı NullObifinClient ile
+        // "obifin-not-configured" görür, sessizce boş dönmez. İstemci sertleştirmesi: AddObifinHttpClient.
+        if (builder.Environment.IsEnvironment("Testing"))
+        {
+            builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Bank.IObifinClient,
+                OrderDeck.LicenseServer.Services.Bank.NullObifinClient>();
+        }
+        else
+        {
+            AddObifinHttpClient(builder.Services);
+        }
+        // HashKey yoksa/kısaysa kurucu BankHasher.DisabledMessage ile düşer; sunucu yine açılır (bkz. açılıştaki
+        // bankEnabled). Kapsamlılar ortak kapsamlı LicenseDbContext'i paylaşır; işler ChangeTracker.Clear() kullanır.
+        builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Bank.BankHasher>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.ObifinConnectionService>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.IBankTransactionSink,
+            OrderDeck.LicenseServer.Services.Bank.NoopBankTransactionSink>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.ObifinPollJob>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.ObifinAccountRefreshJob>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.BankDataRetentionJob>();
         builder.Services.AddScoped<PasswordResetCodeService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Auth.PasswordResetCodeCleanupJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.WhatsApp.WaSendAttemptCleanupJob>();
@@ -818,6 +844,17 @@ public class Program
             await SeedAdminAsync(db, app.Configuration);
         }
 
+        // Banka modülü anahtarsız KAPALI açılır: master merge = otomatik prod deploy, .env'de eksik bir
+        // OrderDeck__Bank__HashKey lisans sunucusunu düşürmemeli. Karar tüm yapılandırma kaynakları yüklendikten sonra
+        // (IOptions) verilir; uyarı açılışta tek sefer. Obifin çekimi ve hesap yenileme zamanlanmaz; saklama işi
+        // BankHasher istemez, zaten saklanmış satırlar için yine koşar (ScheduleBankJobs).
+        var bankEnabled = OrderDeck.LicenseServer.Services.Bank.BankHasher.IsValidKey(
+            app.Services.GetRequiredService<IOptions<OrderDeck.LicenseServer.Services.Bank.BankOptions>>().Value.HashKey);
+        if (!bankEnabled)
+            app.Logger.LogWarning(
+                "{Reason} — obifin-poll ve obifin-accounts zamanlanmadı; saklama işi (bank-data-retention) yine koşar",
+                OrderDeck.LicenseServer.Services.Bank.BankHasher.DisabledMessage);
+
         // Hangfire recurring jobs — production only (testte ApiFactory MemoryStorage kullanır, recurring tetiklenmesin)
         if (!app.Environment.IsEnvironment("Testing"))
         {
@@ -974,6 +1011,11 @@ public class Program
                 "iys-mirror-sync",
                 j => j.RunAsync(CancellationToken.None),
                 "52 4 * * *");  // 04:52 UTC daily
+
+            // Banka (Obifin): obifin-poll */5, obifin-accounts :02 saatlik, bank-data-retention 04:57 UTC.
+            // Anahtar yoksa Obifin işleri kayıtlanmaz, eskileri silinir; saklama işi yine kaydolur — takvim ve
+            // gerekçeler ScheduleBankJobs'ta.
+            ScheduleBankJobs(manager, bankEnabled);
         }
 
         // Ters vekil farkındalığı — pipeline'ın EN BAŞI, çünkü aşağıdaki her
@@ -1124,6 +1166,77 @@ public class Program
         options.KnownIPNetworks.Add(new System.Net.IPNetwork(IPAddress.IPv6Loopback, 128));
         return options;
     }
+
+    /// <summary>
+    /// Banka işlerinin Hangfire takvimi (saatler UTC — Hangfire varsayılanı, bu repo saat dilimi vermiyor).
+    ///
+    /// <para><paramref name="enabled"/> = <see cref="OrderDeck.LicenseServer.Services.Bank.BankHasher.IsValidKey"/>
+    /// (<c>OrderDeck:Bank:HashKey</c>). Anahtar yoksa <c>obifin-poll</c> ve <c>obifin-accounts</c> KAYDOLMAZ, önceki bir
+    /// açılıştan kalan kayıtları silinir: Hangfire kaydı depoda kalıcıdır, anahtar kalkınca bile her 5 dakikada bir
+    /// BankHasher hatasıyla düşerlerdi. <c>bank-data-retention</c> ise anahtardan bağımsız HEP kaydolur: BankHasher
+    /// istemez ve 90/180 günlük silme KVKK yükümlülüğüdür — anahtar kalksa da zaten saklanmış satırlar için koşmalı.</para>
+    ///
+    /// <para><c>obifin-accounts</c> dakika 2'de: çekimle ORTAK kilit tutar
+    /// (<see cref="OrderDeck.LicenseServer.Services.Bank.ObifinPollJob.LockResource"/>); 5 dakikalık ızgarada olsaydı
+    /// her seferinde çekimin bitmesini beklerdi.</para>
+    ///
+    /// <para><c>bank-data-retention</c> 04:57'de: 04:52 İYS eşitlemesinden sonra ve yine ızgara DIŞINDA. 04:55'te
+    /// obifin-poll aynı BankTransactions tablosuna yazar, sms-campaign-recovery / iys-consent-push / iys-consent-verify
+    /// da koşar; */15 04:45 ve 05:00'te. 04:57'de başka hiçbir iş tetiklenmez.</para>
+    /// </summary>
+    public static void ScheduleBankJobs(IRecurringJobManager manager, bool enabled)
+    {
+        // Ham JSON 90 gün, açıklama 180 gün (spec §5). 04:57 UTC: 04:52 eşitlemeden sonra, ızgara dışı (bkz. özet).
+        // Anahtarsız da kaydolur (bkz. özet): BankHasher istemez, KVKK silmesi durmamalı.
+        manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Bank.BankDataRetentionJob>(
+            "bank-data-retention",
+            j => j.RunAsync(CancellationToken.None),
+            "57 4 * * *");
+
+        if (!enabled)
+        {
+            manager.RemoveIfExists("obifin-poll");
+            manager.RemoveIfExists("obifin-accounts");
+            return;
+        }
+
+        // Obifin banka hareketi çekimi: 5 dakikada bir, bağlantı başına imleçli (spec §5).
+        // Webhook yok; gecikme = 5 dk + Obifin'in bankadan çekme aralığı (hesap listesinde ölçülür).
+        manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Bank.ObifinPollJob>(
+            "obifin-poll",
+            j => j.RunAsync(CancellationToken.None),
+            "*/5 * * * *");
+        // Hesap listesi (Durum/BildirimNotu/GuncellemeTarihi) saatte bir, :02 — ızgara dışı (bkz. özet).
+        manager.AddOrUpdate<OrderDeck.LicenseServer.Services.Bank.ObifinAccountRefreshJob>(
+            "obifin-accounts",
+            j => j.RunAsync(CancellationToken.None),
+            "2 * * * *");
+    }
+
+    /// <summary>
+    /// Obifin tipli istemcisi (Testing dışı; Testing <see cref="OrderDeck.LicenseServer.Services.Bank.NullObifinClient"/>).
+    /// <list type="bullet">
+    /// <item>Zaman aşımı <see cref="OrderDeck.LicenseServer.Services.Bank.ObifinOptions.TimeoutSeconds"/> (≤ 0 → 40 sn).</item>
+    /// <item>Yönlendirme İZLENMEZ: kimlik (KullaniciAdi/Sifre/APIKey) özel başlıkta gider; .NET yönlendirmede yalnız
+    /// Authorization'ı düşürür, bunları yönlendirme hedefine taşırdı. 3xx gövdesi JSON değildir → protokol hatası,
+    /// bağlantının LastError'unda görünür.</item>
+    /// <item>Aynı başlıklar HttpClient günlüğünde maskelenir.</item>
+    /// <item>Çerez TUTULMAZ: birincil işleyici havuzlanır (~2 dk) ve onunla tek bir CookieContainer tüm kiracıların
+    /// istemcilerince paylaşılırdı; Obifin bir oturum çerezi (ör. PHPSESSID) verirse A kiracısının oturumu aynı
+    /// çekim turunda B kiracısının isteğine taşınırdı. Obifin her isteği başlıklarla doğrular, çereze ihtiyaç yok.</item>
+    /// </list>
+    /// </summary>
+    public static IHttpClientBuilder AddObifinHttpClient(IServiceCollection services) => services
+        .AddHttpClient<OrderDeck.LicenseServer.Services.Bank.IObifinClient,
+            OrderDeck.LicenseServer.Services.Bank.ObifinClient>((sp, c) =>
+        {
+            var seconds = sp.GetRequiredService<IOptions<OrderDeck.LicenseServer.Services.Bank.ObifinOptions>>()
+                .Value.TimeoutSeconds;
+            c.Timeout = TimeSpan.FromSeconds(seconds <= 0 ? 40 : seconds);
+        })
+        // Havuzlanan işleyici = paylaşılan CookieContainer = kiracılar arası oturum sızıntısı → çerez kapalı.
+        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false })
+        .RedactLoggedHeaders(new[] { "KullaniciAdi", "Sifre", "APIKey" });
 
     /// <summary>
     /// Anahtar halkası dizininin gerçekten okunup yazılabildiğini AÇILIŞTA doğrular.

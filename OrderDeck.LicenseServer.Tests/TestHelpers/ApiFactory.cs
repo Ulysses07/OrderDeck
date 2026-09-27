@@ -76,6 +76,8 @@ public class ApiFactory : WebApplicationFactory<Program>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
+        // Banka HMAC anahtarı (BankHasher, 32+ bayt): her fabrikaya üretilmiş, repo public — literal anahtar yazılmaz.
+        builder.UseSetting("OrderDeck:Bank:HashKey", $"test-{Guid.NewGuid():N}{Guid.NewGuid():N}");
 
         builder.ConfigureAppConfiguration((ctx, cfg) =>
         {
