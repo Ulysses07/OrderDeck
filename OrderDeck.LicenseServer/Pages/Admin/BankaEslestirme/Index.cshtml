@@ -1,0 +1,110 @@
+@page "/admin/banka-eslestirme"
+@model IndexModel
+@using OrderDeck.LicenseServer.Services.Bank
+@{
+    ViewData["Title"] = "Banka Eşleştirme (gölge)";
+}
+@* TempData["Success"] / TempData["Error"] şeritleri BU SAYFADA basılmaz: _AdminLayout → _ToastPartial zaten basıyor
+   (bkz. Pages/Admin/Netgsm/Index.cshtml). Ham JSON ve IBAN/VKN hash'i görünüme hiç gelmez; karşı IBAN yalnız maskeli. *@
+@functions {
+    static string Rate(decimal? rate) => rate is { } r ? r.ToString("P1") : "—";
+}
+<h1 class="h3 mb-4">Banka Eşleştirme <small class="text-muted">gölge mod — otomatik onay yok</small></h1>
+
+@if (Model.BankDisabled)
+{
+    <div class="alert alert-danger" data-banner="bank-disabled">@BankHasher.DisabledMessage</div>
+}
+
+<form method="get" class="row g-2 mb-3">
+    <div class="col-auto">
+        @* İlk seçenek boş yer tutucu (required): düz GET'te hiçbir lisans seçili gelmez (Obifin sayfasıyla aynı kural). *@
+        <select name="licenseId" class="form-select" required onchange="this.form.submit()">
+            <option value="">— lisans seçin —</option>
+            @foreach (var l in Model.Licenses)
+            {
+                if (l.Id == Model.LicenseId)
+                {
+                    <option value="@l.Id" selected>@l.Label</option>
+                }
+                else
+                {
+                    <option value="@l.Id">@l.Label</option>
+                }
+            }
+        </select>
+    </div>
+</form>
+
+@if (Model.Summary is { } s)
+{
+    <div class="card mb-3" data-box="metrics"><div class="card-body">
+        <h2 class="h5 card-title">Son @IndexModel.WindowDays gün</h2>
+        <div class="row small">
+            <div class="col-md-3">Gelen: <b>@s.Incoming</b><br />Dışlanan (POS vb.): @s.Excluded<br />Öneri üretilen: @s.Proposed</div>
+            <div class="col-md-3">Doğrulandı: <b>@s.Confirmed</b><br />Çelişti: <b>@s.Contradicted</b> <span class="text-muted">(öneriden farklı elle eşleme dahil)</span><br />Elle (öneri yoktu): @s.ManualOnly</div>
+            <div class="col-md-3">Bekleyen öneri: @s.PendingProposals<br />Öneri yok: @s.NoProposal<br />Açık gap (dekont var, hareket yok): @s.OpenGaps</div>
+            <div class="col-md-3">Çelişki oranı: <b>@Rate(s.ContradictionRate)</b><br />
+                Gecikme medyan/maks: @(s.LagMedian?.ToString(@"d\.hh\:mm") ?? "—") / @(s.LagMax?.ToString(@"d\.hh\:mm") ?? "—")
+                <span class="text-muted">(@PaymentMatchMetrics.LagCapDays günü aşanlar sayım dışı)</span></div>
+        </div>
+        <div class="mt-2 small">Katman isabeti:
+            @foreach (var l in s.Layers) { <span class="badge bg-secondary me-1">@l.Layer ✓@l.Confirmed ✗@l.Contradicted</span> }
+        </div>
+        <div class="mt-2 small">Platform (gerçek müşteri; <span class="text-muted">? = bilinmeyen ya da silinmiş</span>):
+            @foreach (var p in s.Platforms)
+            {
+                <span class="badge bg-light text-dark border me-1" data-platform="@p.Platform">@p.Platform ✓@p.Confirmed ✗@p.Contradicted elle @p.ManualOnly · çelişki @Rate(p.ContradictionRate)</span>
+            }
+        </div>
+        <div class="mt-2 small @(s.MeetsPhase2Threshold ? "text-success" : "text-muted")">
+            Faz 2 eşiği: ≥ 200 bağlı, çelişki ≤ %2 — şu an @s.Linked bağlı @if (s.MeetsPhase2Threshold) { <b>✓ eşik sağlandı</b> }
+        </div>
+    </div></div>
+}
+
+@if (Model.LicenseId != Guid.Empty)
+{
+    <table class="table table-sm table-striped">
+        <thead><tr><th>Tarih</th><th>Tutar</th><th>Banka</th><th>Açıklama</th><th>Karşı IBAN</th><th>Öneri</th><th>Durum</th><th>Gerçek</th><th></th></tr></thead>
+        <tbody>
+        @foreach (var r in Model.Rows)
+        {
+            <tr data-tx="@r.TransactionId">
+                <td>@r.OccurredAt.ToOffset(TimeSpan.FromHours(3)).ToString("dd.MM.yyyy HH:mm")</td>
+                <td>@r.Amount.ToString("N2") @r.Currency</td>
+                <td>@r.BankaKodu</td>
+                <td class="small">@r.Description</td>
+                <td class="small" data-cell="iban">@r.CounterpartyIbanMasked</td>
+                <td class="small">
+                    @if (r.ProposedUsername is not null) { <b>@r.ProposedUsername</b> <span class="text-muted">@r.Layer @r.Confidence.ToString("0.00")</span> }
+                    <div class="text-muted">@r.Evidence</div>
+                </td>
+                <td>@(r.Status?.ToString() ?? "—")</td>
+                <td data-cell="actual">@r.ActualUsername @if (r.PaymentId is not null) { <span class="text-muted">(dekont)</span> }</td>
+                <td>
+                    <form method="post" class="d-flex gap-1">
+                        <input type="hidden" name="LicenseId" value="@Model.LicenseId" />
+                        <input type="hidden" name="TransactionId" value="@r.TransactionId" />
+                        <input type="hidden" name="PageNo" value="@Model.PageNo" />
+                        @if (r.IsLinked)
+                        {
+                            <button class="btn btn-sm btn-outline-danger" asp-page-handler="Unmatch">Kaldır</button>
+                        }
+                        else
+                        {
+                            <input name="Username" class="form-control form-control-sm" placeholder="kullanıcı adı" required />
+                            <button class="btn btn-sm btn-outline-primary" asp-page-handler="ManualMatch">Elle eşle</button>
+                        }
+                    </form>
+                </td>
+            </tr>
+        }
+        </tbody>
+    </table>
+
+    <nav>
+        @if (Model.PageNo > 1) { <a class="btn btn-sm btn-light" data-page="prev" asp-page="/Admin/BankaEslestirme/Index" asp-route-licenseId="@Model.LicenseId" asp-route-pageNo="@(Model.PageNo - 1)">‹ Önceki</a> }
+        @if (Model.HasNext) { <a class="btn btn-sm btn-light" data-page="next" asp-page="/Admin/BankaEslestirme/Index" asp-route-licenseId="@Model.LicenseId" asp-route-pageNo="@(Model.PageNo + 1)">Sonraki ›</a> }
+    </nav>
+}

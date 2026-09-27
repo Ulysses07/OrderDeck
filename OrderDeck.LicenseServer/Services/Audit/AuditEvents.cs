@@ -39,6 +39,9 @@ public static class AuditEvents
     public const string ObifinConnectionVerify = "obifin.connection.verify";
     public const string ObifinBankAdd = "obifin.bank.add";
     public const string ObifinPollNow = "obifin.poll.now";
+    // Gölge banka eşleştirmesi (admin/banka-eslestirme). Ayrıntıya yalnız kullanıcı adı girer: açıklama, tutar, IBAN GİRMEZ.
+    public const string BankMatchManual = "bank.match.manual";
+    public const string BankMatchUnmatch = "bank.match.unmatch";
 }
 
 public static class AuditTargets
@@ -52,4 +55,5 @@ public static class AuditTargets
     public const string Shopper = "shopper";
     public const string NetgsmAccount = "netgsm-account";
     public const string ObifinConnection = "obifin-connection";
+    public const string BankTransaction = "bank-transaction";
 }

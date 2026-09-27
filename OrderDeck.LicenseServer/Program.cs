@@ -233,6 +233,7 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.ObifinConnectionService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.PaymentMatcher>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.PaymentMatchReconciler>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.PaymentMatchMetrics>();
         // Dekont onayı bu işi ApprovalDelay sonrasına zamanlar (PanelPaymentsController.Approve); tekrarlayan iş değil.
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.PaymentMatchReconcileJob>();
         // İstisna: sink çekim işinin bağlamını PAYLAŞMAZ — koşu başına kendi alt kapsamını açar (bkz. sınıf özeti).
