@@ -3,6 +3,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Domain.Bank;
+using OrderDeck.LicenseServer.Services.Bank;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
 using OrderDeck.LicenseServer.Services.Shoppers;
 
@@ -395,6 +397,64 @@ public sealed class ShopperPurgeServiceTests
         // veriyi geri yazardı.
         projection.PurgedAt.Should().NotBeNull();
         result!.ProjectionsScrubbed.Should().Be(1);
+    }
+
+    /// <summary>
+    /// Gölge banka eşleştirmesinin izi: "bu IBAN bu kişinin" hafıza satırı silinir; müşteriyi öneren, ona bağlanan ya da
+    /// kullanıcı adı anahtarını çelişki kanıtında taşıyan eşleşmelerin kanıt metni boşaltılır. Eşleşme satırı ölçüm
+    /// kaydıdır, kalır. Başka müşterinin hafızası ve kanıtı dokunulmaz kalır.
+    /// </summary>
+    [Fact]
+    public async Task Golge_eslestirmede_iban_hafizasini_siler_ve_kaniti_bosaltir()
+    {
+        using var db = NewDb();
+        var shopper = SeedShopper(db, $"+9055{Random.Shared.Next(10000000, 99999999)}");
+        var license = SeedLicense(db);
+        var purgedId = Guid.NewGuid();
+        var otherId = Guid.NewGuid();
+        var stale = DateTimeOffset.UtcNow.AddDays(-3);
+        db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+        {
+            Id = Guid.NewGuid(), ShopperId = shopper.Id, LicenseId = license.Id, Platform = "instagram", Username = "ayse_y",
+            WpfCustomerId = purgedId, JoinedAt = DateTimeOffset.UtcNow,
+        });
+        db.WpfCustomerProjections.AddRange(
+            new WpfCustomerProjection { Id = purgedId, LicenseId = license.Id, Platform = "instagram", Username = "ayse_y", UpdatedAt = stale },
+            new WpfCustomerProjection { Id = otherId, LicenseId = license.Id, Platform = "instagram", Username = "mehmet_k", UpdatedAt = stale });
+        CustomerIbanMemory Memory(Guid customer) => new()
+        {
+            Id = Guid.NewGuid(), LicenseId = license.Id, WpfCustomerId = customer, IbanHash = $"{Guid.NewGuid():N}{Guid.NewGuid():N}",
+            IbanMasked = "TR..", LearnedFrom = IbanMemorySource.HumanApproval, CreatedAt = stale,
+        };
+        PaymentMatch Match(string evidence, Guid? proposed = null, Guid? actual = null) => new()
+        {
+            Id = Guid.NewGuid(), LicenseId = license.Id, BankTransactionId = Guid.NewGuid(), ProposedWpfCustomerId = proposed,
+            ActualWpfCustomerId = actual, Evidence = evidence, Status = PaymentMatchStatus.Proposed, CreatedAt = stale, UpdatedAt = stale,
+        };
+        var purgedKey = BankTextNormalizer.UsernameKey("ayse_y");
+        var proposedToPurged = Match($"username={purgedKey}", proposed: purgedId);
+        var linkedToPurged = Match("no-signal", actual: purgedId);
+        var conflictNamingPurged = Match($"conflict:username={purgedKey},iban-memory");
+        var otherCustomers = Match($"username={BankTextNormalizer.UsernameKey("mehmet_k")}", proposed: otherId);
+        var otherMemory = Memory(otherId);
+        db.CustomerIbanMemories.AddRange(Memory(purgedId), otherMemory);
+        db.PaymentMatches.AddRange(proposedToPurged, linkedToPurged, conflictNamingPurged, otherCustomers);
+        await db.SaveChangesAsync();
+
+        var (service, _) = Build(db);
+        var result = await service.PurgeAsync(shopper.Id, default);
+
+        (await db.CustomerIbanMemories.AsNoTracking().SingleAsync()).Id.Should().Be(otherMemory.Id);
+        var matches = await db.PaymentMatches.AsNoTracking().ToDictionaryAsync(m => m.Id);
+        matches.Should().HaveCount(4, "eşleşme satırları ölçüm kaydıdır, silinmez");
+        foreach (var scrubbed in new[] { proposedToPurged, linkedToPurged, conflictNamingPurged })
+        {
+            matches[scrubbed.Id].Evidence.Should().BeNull();
+            matches[scrubbed.Id].UpdatedAt.Should().BeAfter(stale, "her yazan eşzamanlılık jetonunu ilerletir");
+        }
+        matches[otherCustomers.Id].Evidence.Should().Be(otherCustomers.Evidence);
+        matches[otherCustomers.Id].UpdatedAt.Should().Be(stale);
+        result!.DependentRowsDeleted.Should().Be(2, "shopper bağı + IBAN hafızası");
     }
 
     [Fact]

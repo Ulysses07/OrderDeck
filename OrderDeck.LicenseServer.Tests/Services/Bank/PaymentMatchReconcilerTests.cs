@@ -1,0 +1,242 @@
+using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Domain.Bank;
+using OrderDeck.LicenseServer.Services.Bank;
+using Xunit;
+
+namespace OrderDeck.LicenseServer.Tests.Services.Bank;
+
+public sealed class PaymentMatchReconcilerTests
+{
+    /// <summary>Yalnız testte hash üretmek için; bağdaştırıcı hasher istemez (saklı hash'leri karşılaştırır). Anahtar üretilir.</summary>
+    private static readonly BankHasher Hasher = new(Options.Create(new BankOptions { HashKey = $"k-{Guid.NewGuid():N}{Guid.NewGuid():N}" }));
+
+    private static LicenseDbContext NewDb()
+        => new(new DbContextOptionsBuilder<LicenseDbContext>().UseInMemoryDatabase($"recon-{Guid.NewGuid():N}").Options);
+
+    private static PaymentMatchReconciler Recon(LicenseDbContext db)
+        => new(db, new PaymentMatcher(db, Options.Create(new BankOptions()), NullLogger<PaymentMatcher>.Instance),
+            NullLogger<PaymentMatchReconciler>.Instance);
+
+    private sealed record Seed(Guid LicenseId, Guid ShopperId, Guid WpfCustomerId);
+
+    private static Seed SeedShopper(LicenseDbContext db, string username = "ayse_gul34")
+    {
+        var lic = Guid.NewGuid(); var shopperId = Guid.NewGuid();
+        var wpf = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = username, FullName = "Ayse Gul", UpdatedAt = DateTimeOffset.UtcNow };
+        db.WpfCustomerProjections.Add(wpf);
+        db.Shoppers.Add(new Shopper { Id = shopperId, FullName = "Ayse Gul", Phone = $"+9050{Random.Shared.Next(10000000, 99999999)}", PasswordHash = $"h-{Guid.NewGuid():N}", Address = "-" });
+        db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink { Id = Guid.NewGuid(), ShopperId = shopperId, LicenseId = lic, Platform = "youtube", Username = username, WpfCustomerId = wpf.Id, JoinedAt = DateTimeOffset.UtcNow });
+        db.SaveChanges();
+        return new Seed(lic, shopperId, wpf.Id);
+    }
+
+    private static WpfCustomerProjection OtherCustomer(LicenseDbContext db, Guid lic, string username)
+    {
+        var c = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = username, UpdatedAt = DateTimeOffset.UtcNow };
+        db.WpfCustomerProjections.Add(c); db.SaveChanges();
+        return c;
+    }
+
+    private static BankTransaction Tx(LicenseDbContext db, Guid lic, decimal amount, DateTimeOffset when, string desc, string? ibanHash = null)
+    {
+        var t = new BankTransaction { Id = Guid.NewGuid(), LicenseId = lic, ObifinId = Random.Shared.NextInt64(1, 1_000_000_000), ObifinAccountId = 1, BankaKodu = "qnb",
+            Direction = BankTransactionDirection.Incoming, Amount = amount, Currency = "TL", OccurredAt = when, Description = desc, CounterpartyIbanHash = ibanHash, FetchedAt = when };
+        db.BankTransactions.Add(t); db.SaveChanges();
+        return t;
+    }
+
+    private static Payment Approved(LicenseDbContext db, Guid lic, Guid shopperId, decimal amount, DateTimeOffset paidAt, string payer = "AYSE GUL")
+    {
+        var p = new Payment { Id = Guid.NewGuid(), LicenseId = lic, ShopperId = shopperId, PayerName = payer, Amount = amount, PaidAt = paidAt, ReferansNo = $"r-{Guid.NewGuid():N}",
+            Status = PaymentStatus.Approved, ApprovedAt = DateTimeOffset.UtcNow, CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow };
+        db.Payments.Add(p); db.SaveChanges();
+        return p;
+    }
+
+    [Fact]
+    public async Task Oneri_insan_karariyla_ayni_musteriyse_ConfirmedByHuman_ve_iban_ogrenilir()
+    {
+        using var db = NewDb(); var s = SeedShopper(db);
+        var hash = Hasher.HashIban(BankHasherTests.TestIban())!;
+        var when = DateTimeOffset.UtcNow.AddHours(-3);
+        var tx = Tx(db, s.LicenseId, 500m, when, "HAVALE ayse_gul34", hash);
+        var recon = Recon(db);
+        await recon.Matcher.MatchAsync(tx, CancellationToken.None);
+        var payment = Approved(db, s.LicenseId, s.ShopperId, 500m, when.AddMinutes(10));
+
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+
+        var m = await db.PaymentMatches.SingleAsync();
+        m.Status.Should().Be(PaymentMatchStatus.ConfirmedByHuman);
+        m.PaymentId.Should().Be(payment.Id); m.ActualWpfCustomerId.Should().Be(s.WpfCustomerId); m.DecidedAt.Should().NotBeNull();
+        var mem = await db.CustomerIbanMemories.SingleAsync();
+        mem.LearnedFrom.Should().Be(IbanMemorySource.HumanApproval); mem.SourceBankTransactionId.Should().Be(tx.Id);
+    }
+
+    [Fact]
+    public async Task Oneri_farkli_musteriyse_Contradicted()
+    {
+        using var db = NewDb(); var s = SeedShopper(db, "ayse_gul34");
+        OtherCustomer(db, s.LicenseId, "mehmet_k");
+        var when = DateTimeOffset.UtcNow.AddHours(-1);
+        var tx = Tx(db, s.LicenseId, 250m, when, "HAVALE mehmet_k");
+        var recon = Recon(db); await recon.Matcher.MatchAsync(tx, CancellationToken.None);
+        var payment = Approved(db, s.LicenseId, s.ShopperId, 250m, when);
+
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+
+        (await db.PaymentMatches.SingleAsync()).Status.Should().Be(PaymentMatchStatus.Contradicted);
+    }
+
+    [Fact]
+    public async Task Oneri_yokken_insan_eslerse_ManualOnly()
+    {
+        using var db = NewDb(); var s = SeedShopper(db);
+        var when = DateTimeOffset.UtcNow.AddHours(-1);
+        var tx = Tx(db, s.LicenseId, 300m, when, "EFT GELEN aciklamasiz");
+        var recon = Recon(db); await recon.Matcher.MatchAsync(tx, CancellationToken.None);
+        var payment = Approved(db, s.LicenseId, s.ShopperId, 300m, when);
+
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+
+        (await db.PaymentMatches.SingleAsync()).Status.Should().Be(PaymentMatchStatus.ManualOnly);
+    }
+
+    [Fact]
+    public async Task Aday_hareket_yoksa_gap_yazilir_ve_tekrar_cagri_ikinci_gap_yazmaz()
+    {
+        using var db = NewDb(); var s = SeedShopper(db);
+        var payment = Approved(db, s.LicenseId, s.ShopperId, 999m, DateTimeOffset.UtcNow);
+        var recon = Recon(db);
+
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+
+        var gap = await db.PaymentMatchGaps.SingleAsync();
+        gap.PaymentId.Should().Be(payment.Id); gap.Reason.Should().Be(PaymentMatchGapReason.NoCandidate); gap.ResolvedAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Ayni_tutarli_iki_aday_gonderen_adiyla_ayrilir_ayrilamazsa_gap()
+    {
+        using var db = NewDb(); var s = SeedShopper(db);
+        var when = DateTimeOffset.UtcNow.AddHours(-2);
+        var a = Tx(db, s.LicenseId, 100m, when, "HAVALE AYSE GUL odeme");
+        var b = Tx(db, s.LicenseId, 100m, when.AddMinutes(5), "HAVALE MEHMET KAYA odeme");
+        var recon = Recon(db);
+        await recon.Matcher.MatchAsync(a, CancellationToken.None); await recon.Matcher.MatchAsync(b, CancellationToken.None);
+
+        await recon.ReconcileApprovalAsync(Approved(db, s.LicenseId, s.ShopperId, 100m, when, payer: "AYSE GUL"), CancellationToken.None);
+        (await db.PaymentMatches.SingleAsync(m => m.BankTransactionId == a.Id)).PaymentId.Should().NotBeNull();
+        (await db.PaymentMatches.SingleAsync(m => m.BankTransactionId == b.Id)).PaymentId.Should().BeNull();
+
+        var c = Tx(db, s.LicenseId, 200m, when, "EFT 1"); var d = Tx(db, s.LicenseId, 200m, when, "EFT 2");
+        await recon.Matcher.MatchAsync(c, CancellationToken.None); await recon.Matcher.MatchAsync(d, CancellationToken.None);
+        await recon.ReconcileApprovalAsync(Approved(db, s.LicenseId, s.ShopperId, 200m, when, payer: "BILINMEYEN"), CancellationToken.None);
+        (await db.PaymentMatchGaps.SingleAsync()).Reason.Should().Be(PaymentMatchGapReason.AmbiguousCandidates);
+    }
+
+    [Fact]
+    public async Task Gecikmeli_gelen_hareket_acik_gap_i_cozer()
+    {
+        using var db = NewDb(); var s = SeedShopper(db);
+        var paidAt = DateTimeOffset.UtcNow.AddHours(-5);
+        var payment = Approved(db, s.LicenseId, s.ShopperId, 750m, paidAt);
+        var recon = Recon(db);
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+        (await db.PaymentMatchGaps.SingleAsync()).ResolvedAt.Should().BeNull();
+
+        var late = Tx(db, s.LicenseId, 750m, paidAt.AddHours(4), "HAVALE ayse_gul34");
+        await recon.Matcher.MatchAsync(late, CancellationToken.None);
+        await recon.TryResolveGapAsync(late, CancellationToken.None);
+
+        var gap = await db.PaymentMatchGaps.SingleAsync();
+        gap.ResolvedAt.Should().NotBeNull(); gap.ResolvedBankTransactionId.Should().Be(late.Id);
+        var m = await db.PaymentMatches.SingleAsync(x => x.BankTransactionId == late.Id);
+        m.PaymentId.Should().Be(payment.Id); m.Status.Should().Be(PaymentMatchStatus.ConfirmedByHuman);
+    }
+
+    [Fact]
+    public async Task Elle_esleme_ogretir_kaldirma_hafiza_satirini_siler()
+    {
+        using var db = NewDb(); var s = SeedShopper(db);
+        var hash = Hasher.HashIban(BankHasherTests.TestIban())!;
+        var tx = Tx(db, s.LicenseId, 400m, DateTimeOffset.UtcNow, "EFT GELEN", hash);
+        var recon = Recon(db); await recon.Matcher.MatchAsync(tx, CancellationToken.None);
+
+        await recon.ManualMatchAsync(s.LicenseId, tx.Id, s.WpfCustomerId, CancellationToken.None);
+        (await db.PaymentMatches.SingleAsync()).Status.Should().Be(PaymentMatchStatus.ManualOnly);
+        (await db.CustomerIbanMemories.SingleAsync()).LearnedFrom.Should().Be(IbanMemorySource.ManualMatch);
+
+        await recon.UnmatchAsync(s.LicenseId, tx.Id, CancellationToken.None);
+        (await db.CustomerIbanMemories.CountAsync()).Should().Be(0, "geri alma satırı SİLER");
+        var m = await db.PaymentMatches.SingleAsync();
+        m.Status.Should().Be(PaymentMatchStatus.NoProposal); m.ActualWpfCustomerId.Should().BeNull(); m.DecidedAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Baska_musteriye_ait_iban_hafizasi_onayla_ezilmez()
+    {
+        using var db = NewDb(); var s = SeedShopper(db);
+        var other = OtherCustomer(db, s.LicenseId, "mehmet_k");
+        var hash = Hasher.HashIban(BankHasherTests.TestIban())!;
+        db.CustomerIbanMemories.Add(new CustomerIbanMemory { Id = Guid.NewGuid(), LicenseId = s.LicenseId, WpfCustomerId = other.Id, IbanHash = hash, IbanMasked = "TR..", LearnedFrom = IbanMemorySource.ManualMatch, CreatedAt = DateTimeOffset.UtcNow });
+        db.SaveChanges();
+        var when = DateTimeOffset.UtcNow;
+        var tx = Tx(db, s.LicenseId, 50m, when, "EFT GELEN", hash);
+        var recon = Recon(db); await recon.Matcher.MatchAsync(tx, CancellationToken.None);
+
+        await recon.ReconcileApprovalAsync(Approved(db, s.LicenseId, s.ShopperId, 50m, when), CancellationToken.None);
+
+        (await db.CustomerIbanMemories.SingleAsync()).WpfCustomerId.Should().Be(other.Id, "çelişki loglanır, sessizce ezilmez");
+        (await db.PaymentMatches.SingleAsync()).Status.Should().Be(PaymentMatchStatus.Contradicted);
+    }
+
+    [Fact]
+    public async Task Elle_esleme_baska_lisansin_hareketini_ve_musterisini_kabul_etmez()
+    {
+        // Admin sayfası kimlikleri formdan alır: başka lisansın hareketi ya da müşterisi, silinmiş müşteri reddedilir;
+        // mesaj admin'e olduğu gibi gösterilebilir (ObifinValidationException).
+        using var db = NewDb(); var s = SeedShopper(db);
+        var foreign = SeedShopper(db, "baska_yayinci");
+        var tx = Tx(db, s.LicenseId, 400m, DateTimeOffset.UtcNow, "EFT GELEN");
+        var purged = OtherCustomer(db, s.LicenseId, "silinen_musteri");
+        purged.PurgedAt = DateTimeOffset.UtcNow; db.SaveChanges();
+        var recon = Recon(db);
+
+        var wrongLicense = () => recon.ManualMatchAsync(foreign.LicenseId, tx.Id, foreign.WpfCustomerId, CancellationToken.None);
+        var wrongCustomer = () => recon.ManualMatchAsync(s.LicenseId, tx.Id, foreign.WpfCustomerId, CancellationToken.None);
+        var purgedCustomer = () => recon.ManualMatchAsync(s.LicenseId, tx.Id, purged.Id, CancellationToken.None);
+        var unmatchWrongLicense = () => recon.UnmatchAsync(foreign.LicenseId, tx.Id, CancellationToken.None);
+
+        await wrongLicense.Should().ThrowAsync<ObifinValidationException>().WithMessage("Hareket bulunamadı.");
+        await wrongCustomer.Should().ThrowAsync<ObifinValidationException>().WithMessage("Müşteri bulunamadı.");
+        await purgedCustomer.Should().ThrowAsync<ObifinValidationException>().WithMessage("Müşteri bulunamadı.");
+        await unmatchWrongLicense.Should().ThrowAsync<ObifinValidationException>().WithMessage("Hareket bulunamadı.");
+        (await db.PaymentMatches.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Eslestir_ve_gap_coz_tek_cagrida_oneriyi_yazar_ve_acik_gap_i_kapatir()
+    {
+        // Sink ve telafi taramasının ortak yolu: öneri yazılır, sonra aynı tutarlı açık gap çözülür.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var paidAt = DateTimeOffset.UtcNow.AddHours(-2);
+        var payment = Approved(db, s.LicenseId, s.ShopperId, 120m, paidAt);
+        var recon = Recon(db);
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+        var late = Tx(db, s.LicenseId, 120m, paidAt.AddHours(1), "HAVALE ayse_gul34");
+
+        await recon.MatchAndResolveGapAsync(late, CancellationToken.None);
+
+        var m = await db.PaymentMatches.SingleAsync();
+        m.ProposedWpfCustomerId.Should().Be(s.WpfCustomerId);
+        m.PaymentId.Should().Be(payment.Id);
+        (await db.PaymentMatchGaps.SingleAsync()).ResolvedBankTransactionId.Should().Be(late.Id);
+    }
+}

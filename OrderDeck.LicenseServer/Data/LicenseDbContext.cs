@@ -978,6 +978,11 @@ public class LicenseDbContext : DbContext
             // öneriler birbirine çarpmaz.
             b.HasIndex(m => m.PaymentId).IsUnique().HasFilter("[PaymentId] IS NOT NULL");
             b.HasIndex(m => new { m.LicenseId, m.Status });
+            // Yeniden hesap (çekim sink'i, telafi taraması) ile insan kararı (dekont onayı bağdaştırması, admin elle
+            // eşleme) aynı satıra yarışabilir; jeton olmadan önce okuyup sonra yazan insan kararını sessizce ezerdi
+            // (eşleştiricinin insan-kararı kilidi yalnız sıralı çağrıları korur). Her yazan UpdatedAt'i ilerletir
+            // (bkz. NetgsmAccount). Şema değişmez: yalnız UPDATE/DELETE'in WHERE'ine girer.
+            b.Property(m => m.UpdatedAt).IsConcurrencyToken();
             b.Property(m => m.Layer).HasConversion<string>().HasMaxLength(32).IsRequired();
             b.Property(m => m.Status).HasConversion<string>().HasMaxLength(24).IsRequired();
             b.Property(m => m.Confidence).HasPrecision(4, 3);

@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
@@ -18,13 +19,16 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// <para><see cref="BankHasher"/> istemez: hash'ler harekette ve hafızada hazır saklı. Hasher anahtar yokken kurulamaz;
 /// eşleştirici dekont onay yolundan da çözülecek ve orayı hiçbir koşulda düşürmemeli.</para>
 /// <para>Kanıt (<see cref="PaymentMatch.Evidence"/>, 180 gün saklanır) yalnız katman adı ve kullanıcı adı anahtarı
-/// taşır; ham açıklama, IBAN, VKN, hash ya da müşterinin adı yazılmaz. Ad kişisel veridir: KVKK silmesi
-/// (ShopperPurgeService) projeksiyondaki adı siler ama kanıta dokunmaz. Ad katmanı yalnız eşleşen token sayısını
-/// yazar ("name:2"); ad, gerekirse önerilen müşteriden okunur — silinmişse orada da yoktur.</para>
+/// taşır; ham açıklama, IBAN, VKN, hash ya da müşterinin adı yazılmaz. Ad kişisel veridir ve kanıta hiç girmez; ad
+/// katmanı yalnız eşleşen token sayısını yazar ("name:2"), ad gerekirse önerilen müşteriden okunur — silinmişse orada
+/// da yoktur. Kullanıcı adı anahtarı taşıyan kanıtı KVKK silmesi (ShopperPurgeService) boşaltır.</para>
 /// <para>Kapsamının scoped DbContext'inde koşar: sink'in kendi alt kapsamı (çekim işinin bağlamı DEĞİL), tarama işinin
-/// kapsamı, ileride dekont onayı sonrası bağlama işi ya da admin isteği. Kapsamı başkasıyla paylaşabileceği için
-/// kaydedemediği öneriyi izlemede bırakmaz, yoksa kapsamın sonraki her SaveChanges'i onu yeniden dener (bkz.
-/// <see cref="SaveAsync"/>).</para>
+/// kapsamı, dekont onayı sonrası bağdaştırma işi (<see cref="PaymentMatchReconcileJob"/>) ya da admin isteği. Kapsamı
+/// başkasıyla paylaşabileceği için kaydedemediği öneriyi izlemede bırakmaz, yoksa kapsamın sonraki her SaveChanges'i onu
+/// yeniden dener (bkz. <see cref="SaveAsync"/>).</para>
+/// <para><b>Eşzamanlılık.</b> <see cref="PaymentMatch.UpdatedAt"/> jetondur. Satır okunduktan sonra değiştiyse (arada
+/// verilen insan kararı ya da eşzamanlı bir yeniden hesap) kayıt reddedilir; satır taze okunur ve hesap BİR kez yeniden
+/// yapılır: taze satır insan kararıysa dokunulmadan döner. İkinci çakışma çağırana çıkar.</para>
 /// </summary>
 public sealed class PaymentMatcher
 {
@@ -67,6 +71,21 @@ public sealed class PaymentMatcher
     }
 
     public async Task<PaymentMatch> MatchAsync(BankTransaction tx, CancellationToken ct)
+    {
+        try
+        {
+            return await MatchOnceAsync(tx, ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // SaveAsync satırı DB'deki haliyle tazeledi; insan kararıysa MatchOnceAsync onu dokunmadan döner.
+            _log.LogInformation("Gölge eşleştirme: hareket={BankTransactionId} önerisi okunduktan sonra değişti; taze satırla "
+                + "yeniden hesaplanıyor", tx.Id);
+            return await MatchOnceAsync(tx, ct);
+        }
+    }
+
+    private async Task<PaymentMatch> MatchOnceAsync(BankTransaction tx, CancellationToken ct)
     {
         var match = await _db.PaymentMatches.FirstOrDefaultAsync(m => m.BankTransactionId == tx.Id, ct)
             ?? new PaymentMatch { Id = Guid.NewGuid(), LicenseId = tx.LicenseId, BankTransactionId = tx.Id, CreatedAt = DateTimeOffset.UtcNow };
@@ -250,10 +269,11 @@ public sealed class PaymentMatcher
         m.Evidence = evidence.Length > 500 ? evidence[..500] : evidence; m.Status = status; m.UpdatedAt = DateTimeOffset.UtcNow;
     }
 
-    /// <summary>Kaydeder; başarısız kayıt izlemede iz bırakmaz. Eşleştirici paylaşılan scoped DbContext'te koşar:
-    /// öneri Added/Modified kalsaydı kapsamın sonraki her SaveChanges'i (partinin kalan hareketleri, dekont onayının
-    /// kendi yazısı) onu yeniden dener ve düşerdi. Yeni satır, hareket başına tek öneri indeksinde eşzamanlı bir
-    /// çağrıya yenildiyse kazananın satırı döner: iki çağıran tek satırda buluşur.</summary>
+    /// <summary>Kaydeder; başarısız kayıt izlemede iz bırakmaz. Eşleştiricinin kapsamı paylaşılabilir: öneri
+    /// Added/Modified kalsaydı kapsamın sonraki her SaveChanges'i (partinin kalan hareketleri, bağdaştırıcının kendi
+    /// yazısı) onu yeniden dener ve düşerdi. Yeni satır, hareket başına tek öneri indeksinde eşzamanlı bir çağrıya
+    /// yenildiyse kazananın satırı döner: iki çağıran tek satırda buluşur. Var olan satır okunduktan sonra değiştiyse
+    /// (jeton) satır DB'deki haliyle tazelenir ve çakışma <see cref="MatchAsync"/>'e çıkar.</summary>
     private async Task<PaymentMatch> SaveAsync(PaymentMatch m, CancellationToken ct)
     {
         var added = _db.Entry(m).State == EntityState.Detached;
@@ -271,23 +291,38 @@ public sealed class PaymentMatcher
                 m.BankTransactionId);
             return winner;
         }
+        catch (DbUpdateConcurrencyException)
+        {
+            // Tazelenen satır izleyicide DB'deki gibi Unchanged kalır (satır silindiyse ayrılır): bekleyen yazı yok.
+            // Tazeleme de düşerse okunduğu hale döner.
+            var entry = _db.Entry(m);
+            try
+            {
+                await entry.ReloadAsync(ct);
+            }
+            catch
+            {
+                Revert(entry);
+                throw;
+            }
+            throw;
+        }
         catch
         {
             var entry = _db.Entry(m);
-            if (added)
-            {
-                entry.State = EntityState.Detached;
-            }
-            else
-            {
-                // Okunduğu hale döner: izlenen nesne DB'deki satırla aynı kalır, sonraki SaveChanges bir şey yazmaz.
-                entry.CurrentValues.SetValues(entry.OriginalValues);
-                entry.State = EntityState.Unchanged;
-            }
+            if (added) entry.State = EntityState.Detached;
+            else Revert(entry);
             throw;
         }
         _log.LogDebug("Gölge eşleştirme: hareket={BankTransactionId} durum={Status} katman={Layer} güven={Confidence}",
             m.BankTransactionId, m.Status, m.Layer, m.Confidence);
         return m;
+    }
+
+    /// <summary>Okunduğu hale döner: izlenen nesne DB'deki satırla aynı kalır, sonraki SaveChanges bir şey yazmaz.</summary>
+    private static void Revert(EntityEntry entry)
+    {
+        entry.CurrentValues.SetValues(entry.OriginalValues);
+        entry.State = EntityState.Unchanged;
     }
 }

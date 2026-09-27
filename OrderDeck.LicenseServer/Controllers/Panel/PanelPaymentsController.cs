@@ -1,7 +1,9 @@
 using System.Security.Claims;
+using Hangfire;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.Bank;
 using OrderDeck.LicenseServer.Services.Push;
 using OrderDeck.LicenseServer.Services.WhatsApp;
 using Microsoft.AspNetCore.Authorization;
@@ -27,17 +29,20 @@ public sealed class PanelPaymentsController : ControllerBase
     private readonly INotificationSender _push;
     private readonly LabelRuleApplier _labels;
     private readonly ILogger<PanelPaymentsController> _log;
+    private readonly IBackgroundJobClient _jobs;
 
     public PanelPaymentsController(
         LicenseDbContext db,
         INotificationSender push,
         LabelRuleApplier labels,
-        ILogger<PanelPaymentsController> log)
+        ILogger<PanelPaymentsController> log,
+        IBackgroundJobClient jobs)
     {
         _db = db;
         _push = push;
         _labels = labels;
         _log = log;
+        _jobs = jobs;
     }
 
     public sealed record PaymentDto(
@@ -131,6 +136,7 @@ public sealed class PanelPaymentsController : ControllerBase
 
         await ApplyConversationLabelAsync(payment, WaLabelEvent.PaymentApproved, ct);
         await NotifyShopperPaymentDecisionAsync(payment, approved: true, reason: null, ct);
+        EnqueueShadowReconcile(payment.Id);
         return NoContent();
     }
 
@@ -171,6 +177,26 @@ public sealed class PanelPaymentsController : ControllerBase
         await NotifyShopperPaymentDecisionAsync(payment, approved: false,
             reason: payment.RejectReason, ct);
         return NoContent();
+    }
+
+    /// <summary>
+    /// Gölge banka eşleştirmesi ölçümü (spec §6): onayı gölge öneriyle bağdaştıran işi kuyruğa atar. Onay isteğinde
+    /// KOŞMAZ — eşleştirme onayı yavaşlatmamalı, hatası onayı düşürmemeli. Ödeme SaveChanges'inden SONRA: commit olmamış
+    /// onay için koşan iş "onaylı değil" diye çıkardı. Ret bağlanmaz (spec §6 "ret öğretmez").
+    /// </summary>
+    private void EnqueueShadowReconcile(Guid paymentId)
+    {
+        try
+        {
+            _jobs.Enqueue<PaymentMatchReconcileJob>(j => j.RunAsync(paymentId, CancellationToken.None));
+        }
+        catch (Exception ex)
+        {
+            // Onay COMMIT EDİLDİ; kuyruk arızası onu geri almaz, 500 göstermek yalan olur. Bu onay ölçümden düşer (gap de
+            // yazılmaz). Mesaj DEĞİL yalnız tür adı: kuyruk deposunun istisnası bağlantı ayrıntısı taşıyabilir.
+            _log.LogWarning("Gölge eşleştirme işi kuyruğa alınamadı (ödeme {PaymentId}): {ErrorType}",
+                paymentId, ex.GetType().Name);
+        }
     }
 
     /// <summary>

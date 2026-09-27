@@ -1,6 +1,8 @@
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Domain.Bank;
+using OrderDeck.LicenseServer.Services.Bank;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
 
 namespace OrderDeck.LicenseServer.Services.Shoppers;
@@ -218,6 +220,42 @@ public sealed class ShopperPurgeService
             c.UpdatedAt = now;
         }
 
+        // 3b. Gölge banka eşleştirmesinin izi (Obifin). IBAN hafızası "bu IBAN bu
+        //     kişinin" bağıdır: silinir. Eşleşme satırı ölçüm kaydıdır, kalır
+        //     (kişiyi yalnız Id'yle gösterir); kanıt metni kullanıcı adı anahtarı
+        //     taşıyabilir: boşaltılır — müşteriyi öneren ya da ona bağlanan
+        //     satırlarda ve anahtarı önerisiz bir çelişki kanıtında geçen
+        //     satırlarda. Anahtar önek olarak başka bir anahtarın kanıtına da
+        //     uyabilir; fazladan boşaltma zararsız (kanıt 180 günde zaten gider).
+        //     UpdatedAt eşleşmenin eşzamanlılık jetonudur, her yazan ilerletir.
+        var usernames = projections.ToDictionary(c => c.Id, c => c.Username);
+        var ibanMemories = new List<CustomerIbanMemory>();
+        var scrubbedMatches = new HashSet<PaymentMatch>();
+        foreach (var (licenseId, wpfCustomerId) in projectionKeys)
+        {
+            ibanMemories.AddRange(await _db.CustomerIbanMemories
+                .Where(m => m.LicenseId == licenseId && m.WpfCustomerId == wpfCustomerId)
+                .ToListAsync(ct));
+
+            Guid? id = wpfCustomerId;
+            var key = usernames.TryGetValue(wpfCustomerId, out var username)
+                ? BankTextNormalizer.UsernameKey(username)
+                : "";
+            var marker = key.Length > 0 ? "username=" + key : null;
+            scrubbedMatches.UnionWith(await _db.PaymentMatches
+                .Where(m => m.LicenseId == licenseId && m.Evidence != null
+                    && (m.ProposedWpfCustomerId == id
+                        || m.ActualWpfCustomerId == id
+                        || (marker != null && m.Evidence.Contains(marker))))
+                .ToListAsync(ct));
+        }
+        _db.CustomerIbanMemories.RemoveRange(ibanMemories);
+        foreach (var m in scrubbedMatches)
+        {
+            m.Evidence = null;
+            m.UpdatedAt = now;
+        }
+
         // 4. Bağlı satırlar. Hepsi ya doğrudan kişisel veri taşıyor
         //    (kullanıcı adı, cihaz kimliği, IP) ya da yalnızca oturum
         //    açmaya yarıyor; hiçbirinin mali kayıt değeri yok.
@@ -234,7 +272,7 @@ public sealed class ShopperPurgeService
         _db.ShopperBroadcasterLinks.RemoveRange(linkRows);
 
         var dependents = devices.Count + tokens.Count + resetCodes.Count
-            + supportRequests.Count + linkRows.Count;
+            + supportRequests.Count + linkRows.Count + ibanMemories.Count;
 
         // 5. Ödeme denetim kayıtları: satır mali izin parçası, yalnız istemci
         //    parmak izi gidiyor. SecurityDataRetentionJob'ın 90 günde yaptığı

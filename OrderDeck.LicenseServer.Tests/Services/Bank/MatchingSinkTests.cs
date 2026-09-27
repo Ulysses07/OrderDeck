@@ -79,6 +79,7 @@ public sealed class MatchingSinkTests : IClassFixture<ApiFactory>
         });
         services.AddOptions<BankOptions>();
         services.AddScoped<PaymentMatcher>();
+        services.AddScoped<PaymentMatchReconciler>();
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     }
 
@@ -133,6 +134,53 @@ public sealed class MatchingSinkTests : IClassFixture<ApiFactory>
         var match = (await MatchesAsync(sp)).Should().ContainSingle().Subject;
         match.Status.Should().Be(PaymentMatchStatus.Proposed);
         match.ProposedWpfCustomerId.Should().Be(customerId);
+    }
+
+    [Fact]
+    public async Task Sink_gecikmeli_gelen_hareketle_acik_gap_i_cozer()
+    {
+        // Dekont hareketten önce onaylandı (gap NoCandidate); hareket çekimle gelince sink öneriyi yazar ve gap'i çözer.
+        await using var sp = Provider();
+        var (customerId, txs) = await SeedAsync(sp);
+        var tx = txs[0];
+        Guid paymentId;
+        await using (var scope = sp.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var shopperId = Guid.NewGuid();
+            db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+            {
+                Id = Guid.NewGuid(), ShopperId = shopperId, LicenseId = tx.LicenseId, Platform = "youtube", Username = "ayse_gul34",
+                WpfCustomerId = customerId, JoinedAt = DateTimeOffset.UtcNow,
+            });
+            var payment = new Payment
+            {
+                Id = Guid.NewGuid(), LicenseId = tx.LicenseId, ShopperId = shopperId, PayerName = "AYSE GUL", Amount = tx.Amount,
+                PaidAt = tx.OccurredAt.AddHours(-1), ReferansNo = $"r-{Guid.NewGuid():N}", Status = PaymentStatus.Approved,
+                ApprovedAt = DateTimeOffset.UtcNow, CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
+            };
+            db.Payments.Add(payment);
+            db.PaymentMatchGaps.Add(new PaymentMatchGap
+            {
+                Id = Guid.NewGuid(), LicenseId = tx.LicenseId, PaymentId = payment.Id, Reason = PaymentMatchGapReason.NoCandidate,
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+            paymentId = payment.Id;
+        }
+        var scopes = new CountingScopeFactory(sp.GetRequiredService<IServiceScopeFactory>());
+        using var sink = new MatchingBankTransactionSink(scopes, new ErrorRecorder());
+
+        await sink.OnNewIncomingAsync(tx, CancellationToken.None);
+
+        var match = (await MatchesAsync(sp)).Should().ContainSingle().Subject;
+        match.PaymentId.Should().Be(paymentId);
+        match.Status.Should().Be(PaymentMatchStatus.ConfirmedByHuman);
+        await using var verify = sp.CreateAsyncScope();
+        (await verify.ServiceProvider.GetRequiredService<LicenseDbContext>().PaymentMatchGaps.AsNoTracking().SingleAsync())
+            .ResolvedBankTransactionId.Should().Be(tx.Id);
+        scopes.Last!.ServiceProvider.GetRequiredService<LicenseDbContext>().ChangeTracker.Entries()
+            .Should().BeEmpty("gap çözümü de alt bağlamın boşaltılan izleyicisinde koşar");
     }
 
     [Fact]

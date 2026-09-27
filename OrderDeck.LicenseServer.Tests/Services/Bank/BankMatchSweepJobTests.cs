@@ -61,9 +61,11 @@ public sealed class BankMatchSweepJobTests
         return new LicenseDbContext(options.Options);
     }
 
-    /// <summary>Üretimdeki gibi: iş ve eşleştirici aynı kapsamlı bağlamı paylaşır.</summary>
+    /// <summary>Üretimdeki gibi: iş, bağdaştırıcı ve eşleştirici aynı kapsamlı bağlamı paylaşır.</summary>
     private static BankMatchSweepJob Job(LicenseDbContext db, ILogger<BankMatchSweepJob>? log = null)
-        => new(db, new PaymentMatcher(db, Options.Create(new BankOptions()), NullLogger<PaymentMatcher>.Instance),
+        => new(db, new PaymentMatchReconciler(db,
+                new PaymentMatcher(db, Options.Create(new BankOptions()), NullLogger<PaymentMatcher>.Instance),
+                NullLogger<PaymentMatchReconciler>.Instance),
             log ?? NullLogger<BankMatchSweepJob>.Instance);
 
     /// <summary>Obifin bağlantısı olan bir lisans (kaydetmez): tarama yalnız bunların hareketlerine bakar. Kimlik alanı
@@ -247,6 +249,45 @@ public sealed class BankMatchSweepJobTests
         await act.Should().ThrowAsync<OperationCanceledException>("iptal toplanmaz, AggregateException'a gömülmez");
         (await db.PaymentMatches.AsNoTracking().CountAsync()).Should().Be(1, "iptalden sonra sıradaki harekete geçilmez");
         log.Errors.Should().BeEmpty("işin kendi iptali hata değildir");
+    }
+
+    [Fact]
+    public async Task Tarama_eslestirdigi_hareketle_acik_gap_i_cozer()
+    {
+        // Sink'in kaçırdığı hareketi tarama eşleştirir; o hareketi bekleyen onaylı dekontun gap'i de çözülmeli, yoksa
+        // taramanın eşleştirdiği hareket bir daha taranmadığı için gap sonsuza dek açık kalırdı.
+        using var db = NewDb(); var lic = ConnectedLicense(db);
+        var customer = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = "ayse_gul34", UpdatedAt = DateTimeOffset.UtcNow };
+        var shopperId = Guid.NewGuid();
+        var tx = Tx(lic, "HAVALE ayse_gul34", TimeSpan.FromDays(1));
+        var payment = new Payment
+        {
+            Id = Guid.NewGuid(), LicenseId = lic, ShopperId = shopperId, PayerName = "AYSE GUL", Amount = tx.Amount,
+            PaidAt = tx.OccurredAt.AddHours(-2), ReferansNo = $"r-{Guid.NewGuid():N}", Status = PaymentStatus.Approved,
+            ApprovedAt = DateTimeOffset.UtcNow, CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
+        };
+        db.WpfCustomerProjections.Add(customer);
+        db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+        {
+            Id = Guid.NewGuid(), ShopperId = shopperId, LicenseId = lic, Platform = "youtube", Username = "ayse_gul34",
+            WpfCustomerId = customer.Id, JoinedAt = DateTimeOffset.UtcNow,
+        });
+        db.BankTransactions.Add(tx);
+        db.Payments.Add(payment);
+        db.PaymentMatchGaps.Add(new PaymentMatchGap
+        {
+            Id = Guid.NewGuid(), LicenseId = lic, PaymentId = payment.Id, Reason = PaymentMatchGapReason.NoCandidate,
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        (await Job(db).RunAsync(CancellationToken.None)).Should().Be(1);
+
+        var match = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        match.PaymentId.Should().Be(payment.Id);
+        match.Status.Should().Be(PaymentMatchStatus.ConfirmedByHuman);
+        (await db.PaymentMatchGaps.AsNoTracking().SingleAsync()).ResolvedBankTransactionId.Should().Be(tx.Id);
     }
 
     [Fact]

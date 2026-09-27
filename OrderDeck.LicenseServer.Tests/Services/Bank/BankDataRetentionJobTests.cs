@@ -109,6 +109,7 @@ public sealed class BankDataRetentionJobTests
         var o = (await db.PaymentMatches.FindAsync(outside.Id))!;
         o.Evidence.Should().BeNull();
         o.Status.Should().Be(PaymentMatchStatus.Proposed, "yalnız kanıt metni boşaltılır, öneri kalır");
+        o.UpdatedAt.Should().BeCloseTo(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1), "her yazan eşzamanlılık jetonunu ilerletir");
     }
 
     [Fact]

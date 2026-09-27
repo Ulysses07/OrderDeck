@@ -11,7 +11,10 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// hareket sonsuza dek önerisiz kalırdı. Obifin bağlantısı olan lisansların son <see cref="LookbackDays"/> gündeki, tutarı
 /// sıfır olmayan, en az <see cref="FetchGrace"/> önce çekilmiş, hiç <see cref="PaymentMatch"/>'i olmayan GELEN hareketleri en
 /// eskiden başlanarak koşu başına en çok <see cref="MaxPerRun"/> tane eşleştirilir. Eşleştirici her işlenen harekete bir satır
-/// yazar (Proposed ya da dışlanan dahil NoProposal): işlenen hareket bir daha taranmaz.
+/// yazar (Proposed ya da dışlanan dahil NoProposal): işlenen hareket bir daha taranmaz. Sink gibi eşleştirmenin ardından
+/// hareketle açık gap'i de çözmeyi dener (<see cref="PaymentMatchReconciler.MatchAndResolveGapAsync"/>); yoksa taramanın
+/// eşleştirdiği hareketi bekleyen gap hiç çözülmezdi. Öneri yazılıp gap çözümü düşerse hareket bir daha taranmaz, gap açık
+/// kalır.
 /// <para>Lisans süzgeci sorguyu (LicenseId, Direction, OccurredAt) indeksinde lisans başına aramaya çevirir (bağlantısız
 /// lisansın hareketi de gelmez). Tampon süre: uzun bir çekim hareketi kaydedip henüz sink'e vermemişken (çekim :05'te
 /// başlar, tarama :07'de) tarama aynı hareketi kapmasın; sink bir hareketi çekimden saniyeler sonra işler.</para>
@@ -41,12 +44,12 @@ public sealed class BankMatchSweepJob
     public static readonly TimeSpan FetchGrace = TimeSpan.FromMinutes(15);
 
     private readonly LicenseDbContext _db;
-    private readonly PaymentMatcher _matcher;
+    private readonly PaymentMatchReconciler _reconciler;
     private readonly ILogger<BankMatchSweepJob> _log;
 
-    public BankMatchSweepJob(LicenseDbContext db, PaymentMatcher matcher, ILogger<BankMatchSweepJob> log)
+    public BankMatchSweepJob(LicenseDbContext db, PaymentMatchReconciler reconciler, ILogger<BankMatchSweepJob> log)
     {
-        _db = db; _matcher = matcher; _log = log;
+        _db = db; _reconciler = reconciler; _log = log;
     }
 
     /// <summary>Eşleştirilen hareket sayısını döner.</summary>
@@ -74,7 +77,7 @@ public sealed class BankMatchSweepJob
             var tx = missed[i];
             try
             {
-                await _matcher.MatchAsync(tx, ct);
+                await _reconciler.MatchAndResolveGapAsync(tx, ct);
                 matched++;
                 consecutive = 0;
             }

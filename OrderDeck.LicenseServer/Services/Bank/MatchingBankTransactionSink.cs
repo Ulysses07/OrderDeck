@@ -5,17 +5,19 @@ using OrderDeck.LicenseServer.Domain.Bank;
 
 namespace OrderDeck.LicenseServer.Services.Bank;
 
-/// <summary>Çekim işinden gelen her yeni GELEN hareketi eşleştiriciye verir. Eşleştirme hatası çekimi
-/// düşürmez (hareket zaten kaydedildi; sink hareketi bir daha görmez; son <see cref="BankMatchSweepJob.LookbackDays"/>
-/// gündeki hareketi saatlik telafi taraması <see cref="BankMatchSweepJob"/> yeniden dener — daha eski bir hareket, ör. ilk
-/// geriye dönük çekimin başı, önerisiz kalır).
+/// <summary>Çekim işinden gelen her yeni GELEN hareketi eşleştiriciye verir, sonra hareketle açık gap'i (hareketinden önce
+/// onaylanmış dekont) çözmeyi dener (<see cref="PaymentMatchReconciler.MatchAndResolveGapAsync"/>). Hata çekimi
+/// düşürmez (hareket zaten kaydedildi; sink hareketi bir daha görmez; öneri yazılamadıysa son
+/// <see cref="BankMatchSweepJob.LookbackDays"/> gündeki hareketi saatlik telafi taraması <see cref="BankMatchSweepJob"/>
+/// yeniden dener — daha eski bir hareket, ör. ilk geriye dönük çekimin başı, önerisiz kalır; öneri yazılıp gap çözümü
+/// düştüyse tarama hareketi bir daha görmez, gap açık kalır ve ölçümde öyle görünür).
 /// <para><b>Kendi kapsamı.</b> Eşleştirici kaydederken bağlamının bekleyen TÜM değişikliklerini yazar. Çekim işinin bağlamında
 /// koşsaydı işin izlediği bağlantının kaydedilmemiş alanlarını (imleç, hata) işin kimlik denetimini atlayarak yazar, öneri
 /// satırları da işin izleyicisinde birikirdi (90 günlük ilk çekimde her DetectChanges büyürdü). Bu yüzden sink örneği —
-/// çekim işinin kapsamında çözülür, yani bir çekim koşusu — ilk çağrıda TEK alt kapsam açar, eşleştiriciyi ve onun
-/// bağlamını oradan çözer ve koşu boyunca yeniden kullanır (eşleştiricinin lisans başına aday önbelleği sıcak kalır). Her
-/// çağrıdan sonra alt bağlamın izleyicisi boşaltılır; alt kapsam sink ile birlikte, DI kapsamı kapanınca kapanır. Hareket alt
-/// bağlama eklenmez: eşleştirici yalnız Id'sini ve skaler alanlarını okur.</para>
+/// çekim işinin kapsamında çözülür, yani bir çekim koşusu — ilk çağrıda TEK alt kapsam açar, bağdaştırıcıyı (ve onun
+/// eşleştiricisini), bağlamlarını oradan çözer ve koşu boyunca yeniden kullanır (eşleştiricinin lisans başına aday önbelleği
+/// sıcak kalır). Her çağrıdan sonra alt bağlamın izleyicisi boşaltılır; alt kapsam sink ile birlikte, DI kapsamı kapanınca
+/// kapanır. Hareket alt bağlama eklenmez: eşleştirici ve bağdaştırıcı yalnız Id'sini ve skaler alanlarını okur.</para>
 /// <para>Çekim işi sırayla, tek akıştan çağırır; eşzamanlı çağrı için tasarlanmadı.</para>
 /// <para>Yalnız işin kendi iptali yukarı çıkar. Başka her hata (başka bir iptal, ör. komut zaman aşımı, dahil) hareket Id'si
 /// ve istisnayla loglanıp yutulur; açıklama, ad, IBAN ya da tutar loglanmaz.</para></summary>
@@ -25,7 +27,7 @@ public sealed class MatchingBankTransactionSink : IBankTransactionSink, IAsyncDi
     private readonly ILogger<MatchingBankTransactionSink> _log;
     private AsyncServiceScope? _scope;
     private LicenseDbContext? _db;
-    private PaymentMatcher? _matcher;
+    private PaymentMatchReconciler? _reconciler;
     private bool _disposed;
 
     public MatchingBankTransactionSink(IServiceScopeFactory scopes, ILogger<MatchingBankTransactionSink> log)
@@ -39,11 +41,11 @@ public sealed class MatchingBankTransactionSink : IBankTransactionSink, IAsyncDi
         {
             try
             {
-                await Matcher().MatchAsync(tx, ct);
+                await Reconciler().MatchAndResolveGapAsync(tx, ct);
             }
             finally
             {
-                // Öneri satırları koşu boyunca birikmesin; düşen bir çağrının izi de sıradaki harekete taşınmasın.
+                // Öneri ve gap satırları koşu boyunca birikmesin; düşen bir çağrının izi de sıradaki harekete taşınmasın.
                 _db?.ChangeTracker.Clear();
             }
         }
@@ -56,15 +58,15 @@ public sealed class MatchingBankTransactionSink : IBankTransactionSink, IAsyncDi
 
     /// <summary>Alt kapsamı ilk çağrıda açar. Çözümleme düşerse kapsam açık kalır ve sonraki çağrı AYNI kapsamda yeniden
     /// dener: kapsam başına tek açılış, sızıntı yok.</summary>
-    private PaymentMatcher Matcher()
+    private PaymentMatchReconciler Reconciler()
     {
-        if (_matcher is not null) return _matcher;
+        if (_reconciler is not null) return _reconciler;
         ObjectDisposedException.ThrowIf(_disposed, this);
         _scope ??= _scopes.CreateAsyncScope();
         var sp = _scope.Value.ServiceProvider;
         _db = sp.GetRequiredService<LicenseDbContext>();
-        _matcher = sp.GetRequiredService<PaymentMatcher>();
-        return _matcher;
+        _reconciler = sp.GetRequiredService<PaymentMatchReconciler>();
+        return _reconciler;
     }
 
     public ValueTask DisposeAsync() => Release() is { } scope ? scope.DisposeAsync() : ValueTask.CompletedTask;
@@ -75,7 +77,7 @@ public sealed class MatchingBankTransactionSink : IBankTransactionSink, IAsyncDi
     {
         _disposed = true;
         var scope = _scope;
-        _scope = null; _db = null; _matcher = null;
+        _scope = null; _db = null; _reconciler = null;
         return scope;
     }
 }

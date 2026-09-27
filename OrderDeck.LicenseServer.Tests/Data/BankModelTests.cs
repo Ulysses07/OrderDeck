@@ -79,6 +79,14 @@ public sealed class BankModelTests
         index.GetFilter().Should().Be("[PaymentId] IS NOT NULL", "kararsız (null) öneriler birbirine çarpmaz");
     }
 
+    [Fact]
+    public void PaymentMatch_UpdatedAt_eszamanlilik_jetonu()
+    {
+        using var db = NewDb();
+        db.Model.FindEntityType(typeof(PaymentMatch))!.FindProperty(nameof(PaymentMatch.UpdatedAt))!.IsConcurrencyToken
+            .Should().BeTrue("yeniden hesap arada verilen insan kararını sessizce ezmesin (kayıp güncelleme)");
+    }
+
     /// <summary>KVKK purge (<c>AdminCustomersController.Purge</c>) lisansı siler ve gerisini DB
     /// kaskadına bırakır. Lisansa doğrudan bağlı her banka tablosu Cascade FK taşımalı; FK'sız
     /// bir tablo müşteri silindikten sonra IBAN hash'ini ve karşı taraf adını yetim tutardı.</summary>

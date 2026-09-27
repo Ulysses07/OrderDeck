@@ -232,6 +232,9 @@ public class Program
         builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Bank.BankHasher>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.ObifinConnectionService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.PaymentMatcher>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.PaymentMatchReconciler>();
+        // Dekont onayı bu işi kuyruğa atar (PanelPaymentsController.Approve); zamanlanmış değil.
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.PaymentMatchReconcileJob>();
         // İstisna: sink çekim işinin bağlamını PAYLAŞMAZ — koşu başına kendi alt kapsamını açar (bkz. sınıf özeti).
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Bank.IBankTransactionSink,
             OrderDeck.LicenseServer.Services.Bank.MatchingBankTransactionSink>();
