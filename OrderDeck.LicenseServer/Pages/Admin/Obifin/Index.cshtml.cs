@@ -69,6 +69,9 @@ public class IndexModel : PageModel
     public List<ConnectionRow> Rows { get; private set; } = new();
     public Dictionary<Guid, List<AccountRow>> AccountsByLicense { get; private set; } = new();
     public List<LicenseOption> Licenses { get; private set; } = new();
+    /// <summary>Banka ekleme formunun lisansları: yalnız Obifin bağlantısı olanlar — <see cref="ObifinConnectionService.AddBankConnectionAsync"/>
+    /// başkasında çalışmaz.</summary>
+    public List<LicenseOption> BankLicenses { get; private set; } = new();
     public EditTarget? Editing { get; private set; }
     public DateTimeOffset Now { get; } = DateTimeOffset.UtcNow;
 
@@ -103,6 +106,8 @@ public class IndexModel : PageModel
             .Where(l => licenseIds.Contains(l.Id) || firstPage.Contains(l.Id))
             .OrderBy(l => l.Customer.Email)
             .Select(l => new LicenseOption(l.Id, l.Customer.Email + " · " + l.LicenseKey)).ToListAsync(ct);
+        var connected = licenseIds.ToHashSet();
+        BankLicenses = Licenses.Where(l => connected.Contains(l.Id)).ToList(); // Licenses bağlantılıları hep içerir (yukarıda)
 
         if (license is { } id
             && await _db.ObifinConnections.AsNoTracking().FirstOrDefaultAsync(c => c.LicenseId == id, ct) is { } conn)

@@ -423,6 +423,65 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Duz_GET_de_lisans_secili_gelmez_banka_formu_yalniz_bagli_lisanslari_listeler()
+    {
+        // Düz GET'te (?license= yok) hiçbir lisans seçili gelmemeli: yoksa tarayıcı e-postaya göre İLK lisansı gönderir;
+        // admin lisans seçmeyi unutursa kimlik ya da bir yayıncının banka kimliği sessizce o lisansa yazılır. Boş yer
+        // tutucu + required seçimi zorunlu kılar. Banka ekleme yalnız Obifin bağlantısı olan lisansta çalışır; liste de
+        // yalnız onları sunar.
+        using var factory = new ApiFactory();
+        var connected = await SeedLicenseAsync(factory);
+        var unconnected = await SeedLicenseAsync(factory);
+        var client = await factory.CreateLoggedInAdminClientAsync();
+        await SaveAsync(client, connected, "api@x");
+
+        var doc = await ParseAsync(await client.GetStringAsync("/admin/obifin"));
+
+        foreach (var handler in new[] { "Save", "AddBank" })
+        {
+            var select = doc.QuerySelector($"form[action*='handler={handler}'] select[name='LicenseId']")!;
+            select.HasAttribute("required").Should().BeTrue($"{handler} formunda lisans seçimi zorunlu");
+            select.QuerySelector("option")!.GetAttribute("value").Should().BeEmpty($"{handler} formunun ilk seçeneği boş yer tutucu");
+            select.QuerySelectorAll("option[selected]").Select(o => o.GetAttribute("value")).Where(v => !string.IsNullOrEmpty(v))
+                .Should().BeEmpty($"{handler} formunda düz GET'te hiçbir lisans seçili gelmez");
+        }
+        doc.QuerySelectorAll("form[action*='handler=Save'] select[name='LicenseId'] option").Select(o => o.GetAttribute("value"))
+            .Should().Contain(new[] { connected.ToString(), unconnected.ToString() }, "kimlik yeni bir lisansa da kaydedilebilir");
+        doc.QuerySelectorAll("form[action*='handler=AddBank'] select[name='LicenseId'] option").Select(o => o.GetAttribute("value"))
+            .Where(v => !string.IsNullOrEmpty(v))
+            .Should().Equal(new[] { connected.ToString() }, "banka ekleme yalnız Obifin bağlantısı olan lisansta çalışır");
+    }
+
+    [Fact]
+    public async Task Bos_lisans_secimi_hicbir_lisansa_yazmaz()
+    {
+        // required'ı yok sayan istemci boş değer gönderir: Guid.Empty'ye bağlanır, mevcut korumalar yakalar.
+        var licenseId = await SeedLicenseAsync();
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+        await SaveAsync(client, licenseId, "api@x");
+
+        var save = await SaveAsync(client, new Dictionary<string, string>
+        {
+            ["LicenseId"] = "", ["UserCode"] = "api@x", ["Password"] = $"pw-{Guid.NewGuid():N}", ["ApiKey"] = $"k-{Guid.NewGuid():N}",
+        });
+        save.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        (await PageTextAsync(client)).Should().Contain("Lisans bulunamadı.");
+
+        var add = await client.PostAsync("/admin/obifin?handler=AddBank", await FormAsync(client, "/admin/obifin", new Dictionary<string, string>
+        {
+            ["LicenseId"] = "", ["BankaKodu"] = "isbank", ["Label"] = "Is",
+            ["Field_KullaniciAdi"] = $"ws-{Guid.NewGuid():N}", ["Field_Sifre"] = $"pw-{Guid.NewGuid():N}",
+        }));
+        add.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        (await PageTextAsync(client)).Should().Contain("Banka bağlantısı eklenemedi: Önce Obifin bağlantısı kaydedilmeli.");
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.ObifinConnections.CountAsync(c => c.LicenseId == Guid.Empty)).Should().Be(0);
+        (await db.BankConnections.CountAsync(b => b.LicenseId == Guid.Empty || b.LicenseId == licenseId)).Should().Be(0);
+    }
+
+    [Fact]
     public async Task Simdi_cek_Verified_baglantida_cekim_isini_kuyruga_atar()
     {
         var licenseId = await SeedLicenseAsync();

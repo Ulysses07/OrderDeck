@@ -8,10 +8,13 @@
 @* TempData["Success"] / TempData["Error"] şeritleri BU SAYFADA basılmaz: _AdminLayout → _ToastPartial zaten basıyor
    (bkz. Pages/Admin/Netgsm/Index.cshtml). Şifre, API anahtarı ve banka web servis kimliği hiçbir yerde geri basılmaz. *@
 @functions {
-    // Lisans seçimi iki formda aynı; düzenlenen lisans seçili gelir. <option> tag helper'ı yüzünden async.
-    async Task LicenseOptionsAsync()
+    // Lisans seçimi: ilk seçenek boş yer tutucu (select'te required) — düz GET'te hiçbir lisans seçili gelmez, yoksa
+    // tarayıcı ilk lisansı gönderir ve lisans seçmeyi unutan admin kimliği o lisansa yazar. Yalnız düzenlenen lisans
+    // seçili gelir. Boş değer Guid.Empty'ye bağlanır; işleyiciler onu reddeder. <option> tag helper'ı yüzünden async.
+    async Task LicenseOptionsAsync(IEnumerable<IndexModel.LicenseOption> options)
     {
-        foreach (var l in Model.Licenses)
+        <option value="">— lisans seçin —</option>
+        foreach (var l in options)
         {
             if (l.Id == Model.LicenseId)
             {
@@ -83,7 +86,7 @@
 <h2 class="h5 mt-4">@(Model.Editing is null ? "Kimlik kaydet" : "Kimlik güncelle")</h2>
 <form method="post" asp-page-handler="Save" class="row g-2" autocomplete="off">
     <div class="col-md-4"><label class="form-label">Lisans</label>
-        <select name="LicenseId" class="form-select">@{ await LicenseOptionsAsync(); }</select></div>
+        <select name="LicenseId" class="form-select" required>@{ await LicenseOptionsAsync(Model.Licenses); }</select></div>
     <div class="col-md-4"><label class="form-label">BaseUrl (boş = varsayılan)</label><input name="BaseUrl" class="form-control" value="@Model.BaseUrl" /></div>
     <div class="col-md-4"><label class="form-label">Kullanıcı (e-posta)</label><input name="UserCode" class="form-control" value="@Model.UserCode" required /></div>
     <div class="col-md-4"><label class="form-label">Şifre @(Model.Editing?.PasswordStored == true ? "(kayıtlı; boş = değiştirme)" : "")</label><input name="Password" type="password" class="form-control" autocomplete="new-password" /></div>
@@ -98,8 +101,8 @@
 <h2 class="h5 mt-4">Banka bağlantısı ekle</h2>
 <p class="small text-muted">Bankanın kurumsal web servis kimliği Obifin'e iletilir ve <strong>saklanmaz</strong>. Alanlar bankaya göre: @string.Join(" · ", IndexModel.BankFields.Select(kv => kv.Key + ": " + string.Join("/", kv.Value)))</p>
 <form method="post" asp-page-handler="AddBank" class="row g-2" autocomplete="off">
-    <div class="col-md-3"><label class="form-label">Lisans</label>
-        <select name="LicenseId" class="form-select">@{ await LicenseOptionsAsync(); }</select></div>
+    <div class="col-md-3"><label class="form-label">Lisans (Obifin bağlantısı olan)</label>
+        <select name="LicenseId" class="form-select" required>@{ await LicenseOptionsAsync(Model.BankLicenses); }</select></div>
     <div class="col-md-2"><label class="form-label">Banka kodu</label>
         <select name="BankaKodu" class="form-select">@foreach (var b in IndexModel.BankFields.Keys) { <option value="@b">@b</option> }</select></div>
     <div class="col-md-3"><label class="form-label">Etiket</label><input name="Label" class="form-control" placeholder="QNB ana hesap" /></div>
