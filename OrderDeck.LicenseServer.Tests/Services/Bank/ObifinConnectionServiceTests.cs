@@ -751,22 +751,30 @@ public sealed class ObifinConnectionServiceTests
     }
 
     [Fact]
-    public async Task Banka_baglantisi_ekleme_Obifin_hatasinda_Failed_ve_mesaj_saklanir_istisna_yukari_gider()
+    public async Task Banka_baglantisi_ekleme_Obifin_reddinde_durum_korunur_son_hata_saklanir_istisna_yukari_gider()
     {
-        using var db = NewDb(); var lic = SeedLicense(db);
+        // Obifin eklemeyi reddetti (ör. QNB web servis şifresi ya da Url yanlış): red banka alanlarına dairdir, Obifin
+        // kimliğine değil — Obifin isteği header kimliğiyle doğrulamadan değerlendirip reddedemezdi. Failed yazmak tek
+        // bankanın yazım hatasıyla bağlantıdaki çalışan her bankanın çekimini "Doğrula"ya dek durdururdu (çekim ve saatlik
+        // yenileme yalnız Verified'a bakar). Durum korunur; yalnız son hata yazılır ve kaydedilir; yerel satır yok.
+        var name = $"obifin-conn-{Guid.NewGuid():N}";
+        using var db = NewDb(name); var lic = SeedLicense(db);
         var stub = new StubObifin { AddBankConnectionError = new ObifinApiException(new[] { "Banka bilgileri hatali" }) };
         var svc = Svc(db, stub);
-        await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        var conn = await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        conn.Status = ObifinConnectionStatus.Verified;
+        await db.SaveChangesAsync();
         var form = new Dictionary<string, string> { ["KullaniciAdi"] = "webservis-user", ["Sifre"] = NewPw() };
 
         var act = () => svc.AddBankConnectionAsync(lic, "qnb", "QNB", form, CancellationToken.None);
 
-        // Dönüş tipi (BankConnection) başarısızlık taşıyamaz: durum kaydedilir, istisna yine yukarı gider.
-        await act.Should().ThrowAsync<ObifinApiException>();
-        var conn = await db.ObifinConnections.SingleAsync();
-        conn.Status.Should().Be(ObifinConnectionStatus.Failed);
-        conn.LastError.Should().Be("Banka bilgileri hatali");
-        (await db.BankConnections.CountAsync()).Should().Be(0);
+        // Dönüş tipi (BankConnection) başarısızlık taşıyamaz: son hata kaydedilir, istisna yine yukarı gider.
+        (await act.Should().ThrowAsync<ObifinApiException>()).Which.Messages.Should().Equal("Banka bilgileri hatali");
+        using var fresh = NewDb(name); // kaydedildi mi: izleyicisiz taze okuma
+        var saved = await fresh.ObifinConnections.AsNoTracking().SingleAsync();
+        saved.Status.Should().Be(ObifinConnectionStatus.Verified, "banka alanlarının reddi Obifin kimliği aleyhine kanıt değil");
+        saved.LastError.Should().Be("Banka bilgileri hatali");
+        (await fresh.BankConnections.CountAsync()).Should().Be(0);
     }
 
     [Theory]
@@ -777,8 +785,8 @@ public sealed class ObifinConnectionServiceTests
         // Obifin ya da bankanın SOAP hatası gönderilen alanı (web servis kullanıcısı/şifresi) geri yankılayabilir — ham ya da
         // HTML/XML kaçışlı (&amp; &quot; &lt; &gt;, .NET &#39;, PHP &#039;, XML &apos;): LastError'a, loga ve yukarı giden
         // istisnaya yalnız maskeli metin gider. Eşleşme harf duyarsız; 3 karakterden kısa değer maskelenmez (her "ab"yi
-        // gizlemek metni okunmaz yapardı). Asıl istisna iç istisna olarak da taşınmaz. Ekleme reddi Failed yazar; eklemeden
-        // sonraki liste hatası sonucu belirsiz bırakır (durum korunur).
+        // gizlemek metni okunmaz yapardı). Asıl istisna iç istisna olarak da taşınmaz. İki yolda da durum korunur: ekleme
+        // reddi banka alanlarına dairdir (Obifin kimliğine değil), eklemeden sonraki liste hatası sonucu belirsiz bırakır.
         using var db = NewDb(); var lic = SeedLicense(db);
         var bankUser = $"ws-{Guid.NewGuid():N}";
         var bankPw = $"pw&'<>\"-{Guid.NewGuid():N}";
@@ -813,7 +821,7 @@ public sealed class ObifinConnectionServiceTests
         else
         {
             thrown.Should().BeOfType<ObifinApiException>().Which.Messages.Should().Equal(masked);
-            conn.Status.Should().Be(ObifinConnectionStatus.Failed);
+            conn.Status.Should().Be(ObifinConnectionStatus.Unverified, "banka alanlarının reddi Obifin kimliği aleyhine kanıt değil");
             conn.LastError.Should().Be(string.Join(" | ", masked));
         }
         var leaks = new[] { bankUser, bankPw, html, php, xml };
@@ -973,18 +981,16 @@ public sealed class ObifinConnectionServiceTests
     [Fact]
     public async Task Banka_baglantisi_ekleme_basarisi_Failed_baglantiyi_Verified_yapar_ve_son_hatayi_siler()
     {
-        // Başarısızlık Failed yazıyorsa başarı da Verified yazmalı: ekle + liste başarısı kimliğin çalıştığının
-        // kanıtıdır; aksi hâlde tek geçici hata insan "Doğrula"ya basana kadar yapışkan kalırdı.
+        // Obifin'in reddiyle (doğrulama, hesap yenileme ya da çekim) Failed olmuş bağlantı: ekle + liste başarısı kimliğin
+        // çalıştığının kanıtıdır, Verified yazılır; aksi hâlde Failed insan "Doğrula"ya basana kadar yapışkan kalırdı.
         using var db = NewDb(); var lic = SeedLicense(db);
-        var stub = new StubObifin { AddBankConnectionError = new ObifinApiException(new[] { "Banka bilgileri hatali" }) };
+        var stub = new StubObifin();
         var svc = Svc(db, stub);
-        await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        var conn = await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        conn.Status = ObifinConnectionStatus.Failed;
+        conn.LastError = "Kullanici Bilgileri Hatali!";
+        await db.SaveChangesAsync();
         var form = new Dictionary<string, string> { ["KullaniciAdi"] = "webservis-user", ["Sifre"] = NewPw() };
-        var failing = () => svc.AddBankConnectionAsync(lic, "qnb", "QNB", form, CancellationToken.None);
-        await failing.Should().ThrowAsync<ObifinApiException>();
-        var conn = await db.ObifinConnections.SingleAsync();
-        conn.Status.Should().Be(ObifinConnectionStatus.Failed);
-        stub.AddBankConnectionError = null;
         var before = DateTimeOffset.UtcNow;
 
         await svc.AddBankConnectionAsync(lic, "qnb", "QNB", form, CancellationToken.None);

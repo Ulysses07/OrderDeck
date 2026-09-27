@@ -231,9 +231,14 @@ public sealed class ObifinConnectionService
     /// <summary>Banka kimliklerini Obifin'e iletir, listeden etiketle `BankaApiId`'yi bulur; kimlikleri saklamaz.
     /// Ekle + liste başarısı doğrulamadaki gibi kaydedilir (bkz. <see cref="MarkVerified"/>). Dönüş tipi başarısızlık
     /// taşıyamadığından her istemci hatası önce bağlantıya yazılır, sonra istisnayla yukarı gider.
+    /// <para><b>Bu yöntem durumu hiçbir hatada Failed'a çevirmez.</b> Çekim ve saatlik yenileme yalnız Verified bağlantıya bakar
+    /// (bkz. <see cref="RefreshAccountsAsync"/>): tek bir bankanın hatası, bağlantıdaki çalışan her bankanın çekimini admin
+    /// "Doğrula"ya basana dek durdururdu. Obifin kimliği gerçekten bozuksa sıradaki çekim ya da hesap yenileme Failed yazar.</para>
     /// <para><c>bankaapi/ekle</c> idempotent değil; iki çağrının hatası ve listede aranan etiket bu yüzden ayrı ele alınır:</para>
     /// <list type="bullet">
-    /// <item>Obifin eklemeyi REDDETTİ (<see cref="ObifinApiException"/>): kayıt açılmadı. Failed + maskeli mesaj.</item>
+    /// <item>Obifin eklemeyi REDDETTİ (<see cref="ObifinApiException"/>, ör. yanlış web servis şifresi ya da Url): kayıt
+    /// açılmadı, tekrar eklemek güvenli. Durum korunur, yalnız maskeli mesaj son hataya yazılır: red banka alanlarına
+    /// dairdir, Obifin kimliğine değil — Obifin isteği header kimliğiyle doğrulamadan değerlendirip reddedemezdi.</item>
     /// <item>Ekleme çağrısı ağ/vekil/zaman aşımıyla düştü: istek Obifin'e ulaşıp kaydı açmış olabilir, sonuç belirsiz.</item>
     /// <item>Ekleme GEÇTİ ama ardından gelen liste alınamadı (Obifin reddi dahil her sınıf): kayıt Obifin'de açık,
     /// <c>BankaApiId</c> bilinmiyor.</item>
@@ -244,10 +249,9 @@ public sealed class ObifinConnectionService
     /// <para>Son üçünde "eklenemedi" demek admin'i tekrar eklemeye iterdi: Obifin'de banka kimliği taşıyan ikinci bir kayıt
     /// açılır, aynı hesap ve hareketler farklı Obifin Id'leriyle gelir, (LicenseId, ObifinId) tekilliği mükerreri
     /// yakalamaz. Bu yüzden <see cref="ObifinBankAddUncertainException"/> fırlatılır: mesajı Obifin'deki etiketi ve
-    /// uyarıyı taşır, son hataya da o yazılır. Failed YAZILMAZ (hatada durum korunur; etiket bulunamadıysa yukarıdaki
-    /// doğrulama kanıtı yazılır): geçici hata kimlik aleyhine kanıt değildir,
-    /// çekim ve saatlik yenileme yalnız Verified bağlantıya bakar (bkz. <see cref="RefreshAccountsAsync"/>). Yerel satır
-    /// yazılmaz. Etiket sır değildir, günlüğe de düşer: Obifin'deki kayıt sonradan elle eşleştirilebilsin.</para>
+    /// uyarıyı taşır, son hataya da o yazılır. Hatada durum korunur (geçici hata kimlik aleyhine kanıt değildir); etiket
+    /// bulunamadıysa yukarıdaki doğrulama kanıtı yazılır. Yerel satır yazılmaz. Etiket sır değildir, günlüğe de düşer:
+    /// Obifin'deki kayıt sonradan elle eşleştirilebilsin.</para>
     /// <para>Obifin ya da bankanın SOAP hatası gönderilen banka alanını (web servis kullanıcısı/şifresi) ham ya da HTML/XML/
     /// JSON kaçışlı yankılayabilir: <see cref="ObifinApiException"/> mesajları LastError'a, loga ve yukarıya gitmeden önce
     /// her banka alanının <see cref="ObifinRedaction.EchoForms"/> biçimleriyle maskelenir (istemcinin tanı günlüğüyle ortak
@@ -286,12 +290,13 @@ public sealed class ObifinConnectionService
         }
         catch (ObifinApiException api)
         {
-            // Obifin'in açık reddi: kayıt açılmadı, tekrar eklemek güvenli.
+            // Obifin'in açık reddi: kayıt açılmadı, tekrar eklemek güvenli. Red banka alanlarına dairdir, Obifin kimliğine
+            // değil: durum korunur, yalnız maskeli son hata yazılır (bkz. özet).
             var redacted = RedactBankEcho(api, echoes);
             var msg = DescribeClientFailure(redacted, ct)!;
-            _log.LogWarning("Obifin banka bağlantısı ekleme reddedildi ({ExceptionType}) — lisans={LicenseId}: {Error}",
+            _log.LogWarning("Obifin banka bağlantısı ekleme reddedildi ({ExceptionType}), durum korunuyor — lisans={LicenseId}: {Error}",
                 api.GetType().Name, conn.LicenseId, msg);
-            MarkFailed(conn, msg, now);
+            conn.LastError = msg; conn.UpdatedAt = now;
             await _db.SaveChangesAsync(ct);
             throw redacted;
         }

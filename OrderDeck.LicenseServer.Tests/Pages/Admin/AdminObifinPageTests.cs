@@ -461,6 +461,42 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Banka_eklemede_Obifin_reddi_dogrulanmis_baglantiyi_dusurmez_maskeli_mesaji_gosterir()
+    {
+        // Obifin bir bankanın alanlarını reddetti (ör. QNB web servis şifresi ya da Url yanlış): red banka alanlarına dairdir,
+        // Obifin kimliğine değil. Failed yazılsaydı çekim ve saatlik yenileme (yalnız Verified'a bakar) bağlantıdaki çalışan
+        // her bankayı "Doğrula"ya dek durdururdu. Bağlantı Verified kalır; bildirim ve satırın son hatası maskeli Obifin
+        // mesajını taşır.
+        using var factory = new StubObifinApiFactory();
+        var bankUser = $"ws-{Guid.NewGuid():N}"; var bankPw = $"pw-{Guid.NewGuid():N}";
+        factory.Obifin.AddFails = () => new ObifinApiException(new[] { $"Sifre {bankPw} hatali" });
+        var licenseId = await SeedLicenseAsync(factory);
+        var client = await factory.CreateLoggedInAdminClientAsync();
+        await SaveAsync(client, licenseId, "api@x");
+        using (var seed = factory.Services.CreateScope())
+        {
+            var seedDb = seed.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            (await seedDb.ObifinConnections.SingleAsync(c => c.LicenseId == licenseId)).Status = ObifinConnectionStatus.Verified;
+            await seedDb.SaveChangesAsync();
+        }
+
+        var resp = await AddBankAsync(client, licenseId, bankUser, bankPw);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        var doc = await ParseAsync(await client.GetStringAsync("/admin/obifin")); // bildirim burada tüketilir
+        doc.QuerySelector(".alert-danger.alert-dismissible")!.TextContent.Trim()
+            .Should().Be("Banka bağlantısı eklenemedi: Sifre [gizli] hatali");
+        var row = doc.QuerySelector($"tr[data-license='{licenseId}']")!;
+        row.QuerySelector("[data-cell='status']")!.TextContent.Should().Be("Verified");
+        row.QuerySelector("[data-cell='last-error']")!.TextContent.Should().Be("Sifre [gizli] hatali");
+        using var scope = factory.Services.CreateScope();
+        var conn = await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().ObifinConnections.AsNoTracking()
+            .SingleAsync(c => c.LicenseId == licenseId);
+        conn.Status.Should().Be(ObifinConnectionStatus.Verified, "banka alanlarının reddi Obifin kimliği aleyhine kanıt değil");
+        conn.LastError.Should().Be("Sifre [gizli] hatali");
+    }
+
+    [Fact]
     public async Task Banka_eklendi_ama_Obifin_listesi_alinamazsa_eklenemedi_demez_etiketle_tekrar_eklemeyin_der()
     {
         // bankaapi/ekle geçti (kayıt Obifin'de, banka kimliğiyle) ama ardından gelen liste düştü: "eklenemedi" admin'i
@@ -927,7 +963,9 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         row.QuerySelector("[data-cell='status']")!.TextContent.Should().Be("Verified");
         row.QuerySelector("[data-cell='last-polled']")!.TextContent.Should().Contain("5 dk önce");
         row.TextContent.Should().Contain("4242");
-        doc.Body!.TextContent.Should().Contain("Geçici hatalar durumu değiştirmez");
+        // Durum yardımı kodla aynı şeyi söylemeli: banka eklemedeki hata (geçici ya da Obifin reddi) durumu değiştirmez.
+        doc.QuerySelector("[data-help='status']")!.TextContent.Should().Contain("elle Doğrula'da Obifin'e ulaşılamadı")
+            .And.Contain("banka eklemedeki geçici hatalar ile Obifin'in banka alanlarını reddetmesi durumu değiştirmez");
         foreach (var name in new[] { "Password", "ApiKey" })
         {
             var input = doc.QuerySelector($"input[name='{name}']")!;
