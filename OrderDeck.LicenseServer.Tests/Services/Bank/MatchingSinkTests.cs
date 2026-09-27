@@ -122,7 +122,7 @@ public sealed class MatchingSinkTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task Sink_gelen_hareket_icin_PaymentMatch_yazar_ve_hatayi_yutar()
+    public async Task Sink_gelen_hareket_icin_PaymentMatch_yazar()
     {
         await using var sp = Provider();
         var (customerId, txs) = await SeedAsync(sp);

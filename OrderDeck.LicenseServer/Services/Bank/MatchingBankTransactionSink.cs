@@ -6,8 +6,9 @@ using OrderDeck.LicenseServer.Domain.Bank;
 namespace OrderDeck.LicenseServer.Services.Bank;
 
 /// <summary>Çekim işinden gelen her yeni GELEN hareketi eşleştiriciye verir. Eşleştirme hatası çekimi
-/// düşürmez (hareket zaten kaydedildi; sink hareketi bir daha görmez, öneriyi saatlik telafi taraması
-/// <see cref="BankMatchSweepJob"/> üretir).
+/// düşürmez (hareket zaten kaydedildi; sink hareketi bir daha görmez; son <see cref="BankMatchSweepJob.LookbackDays"/>
+/// gündeki hareketi saatlik telafi taraması <see cref="BankMatchSweepJob"/> yeniden dener — daha eski bir hareket, ör. ilk
+/// geriye dönük çekimin başı, önerisiz kalır).
 /// <para><b>Kendi kapsamı.</b> Eşleştirici kaydederken bağlamının bekleyen TÜM değişikliklerini yazar. Çekim işinin bağlamında
 /// koşsaydı işin izlediği bağlantının kaydedilmemiş alanlarını (imleç, hata) işin kimlik denetimini atlayarak yazar, öneri
 /// satırları da işin izleyicisinde birikirdi (90 günlük ilk çekimde her DetectChanges büyürdü). Bu yüzden sink örneği —
@@ -48,8 +49,8 @@ public sealed class MatchingBankTransactionSink : IBankTransactionSink, IAsyncDi
         }
         catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
         {
-            _log.LogError(ex, "Gölge eşleştirme düştü (hareket {TransactionId}); telafi taraması (bank-match-sweep) yeniden dener",
-                tx.Id);
+            _log.LogError(ex, "Gölge eşleştirme düştü (hareket {TransactionId}); telafi taraması (bank-match-sweep) son {LookbackDays} "
+                + "gündeki hareketi yeniden dener", tx.Id, BankMatchSweepJob.LookbackDays);
         }
     }
 

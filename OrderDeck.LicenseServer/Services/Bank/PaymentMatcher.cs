@@ -13,16 +13,18 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// Belirsizlik (çoklu aday) her zaman "öneri yok" — gölge modda yanlış öneri ucuz ama ölçümü kirletir.
 /// <para>Aday yalnız aynı lisansın silinmemiş (<c>PurgedAt == null</c>) müşterisidir; IBAN hafızası da ancak böyle
 /// bir müşteriyi gösteriyorsa sayılır. Aday listesi (anahtar + token'lar) örnek başına lisans başına BİR kez okunup
-/// hesaplanır — eşleştirici scoped'dur (bir çekim koşusu ya da bir istek), partideki her hareket için müşteri tablosu
-/// yeniden okunmaz.</para>
+/// hesaplanır — eşleştirici scoped'dur (sink'in bir çekim koşusu boyunca açık alt kapsamı, bir tarama koşusu ya da bir
+/// istek), partideki her hareket için müşteri tablosu yeniden okunmaz.</para>
 /// <para><see cref="BankHasher"/> istemez: hash'ler harekette ve hafızada hazır saklı. Hasher anahtar yokken kurulamaz;
 /// eşleştirici dekont onay yolundan da çözülecek ve orayı hiçbir koşulda düşürmemeli.</para>
 /// <para>Kanıt (<see cref="PaymentMatch.Evidence"/>, 180 gün saklanır) yalnız katman adı ve kullanıcı adı anahtarı
 /// taşır; ham açıklama, IBAN, VKN, hash ya da müşterinin adı yazılmaz. Ad kişisel veridir: KVKK silmesi
 /// (ShopperPurgeService) projeksiyondaki adı siler ama kanıta dokunmaz. Ad katmanı yalnız eşleşen token sayısını
 /// yazar ("name:2"); ad, gerekirse önerilen müşteriden okunur — silinmişse orada da yoktur.</para>
-/// <para>Paylaşılan scoped DbContext'te koşar (çekim işi, dekont onay isteği): kaydedemediği öneriyi izlemede
-/// bırakmaz, yoksa kapsamın sonraki her SaveChanges'i onu yeniden dener (bkz. <see cref="SaveAsync"/>).</para>
+/// <para>Kapsamının scoped DbContext'inde koşar: sink'in kendi alt kapsamı (çekim işinin bağlamı DEĞİL), tarama işinin
+/// kapsamı, ileride dekont onayı sonrası bağlama işi ya da admin isteği. Kapsamı başkasıyla paylaşabileceği için
+/// kaydedemediği öneriyi izlemede bırakmaz, yoksa kapsamın sonraki her SaveChanges'i onu yeniden dener (bkz.
+/// <see cref="SaveAsync"/>).</para>
 /// </summary>
 public sealed class PaymentMatcher
 {
