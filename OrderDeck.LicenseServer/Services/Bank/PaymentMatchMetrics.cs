@@ -27,7 +27,9 @@ public sealed record PaymentMatchSummary(
     TimeSpan? LagMedian, TimeSpan? LagMax, IReadOnlyList<LayerStat> Layers, IReadOnlyList<PlatformStat> Platforms)
 {
     public int Linked => Confirmed + Contradicted + ManualOnly;
-    public bool MeetsPhase2Threshold => Linked >= 200 && ContradictionRate is { } r && r <= 0.02m;
+    /// <summary>Faz 2 geçiş kararı tam sayılardan: çelişki / (doğrulanan + çelişen) ≤ 1/50. Yuvarlı <see cref="ContradictionRate"/>
+    /// yalnız gösterim içindir; onunla karar verilseydi %2,00–%2,05 arası gerçek oran 0,020'ye yuvarlanıp eşiği geçerdi.</summary>
+    public bool MeetsPhase2Threshold => Linked >= 200 && Confirmed + Contradicted > 0 && Contradicted * 50 <= Confirmed + Contradicted;
 }
 
 /// <summary>Gölge eşleştirmenin ölçümü (spec §9). Salt okur.
@@ -110,7 +112,7 @@ public sealed class PaymentMatchMetrics
             LagMedian: lagMedian, LagMax: lagMax, Layers: layers, Platforms: platforms);
     }
 
-    /// <summary>Oran, üç basamağa yuvarlı; payda sıfırsa null (karar yok, oran yok).</summary>
+    /// <summary>Gösterim oranı, üç basamağa yuvarlı; payda sıfırsa null (karar yok, oran yok). Eşik kararında kullanılmaz.</summary>
     public static decimal? Rate(int part, int whole) => whole == 0 ? null : Math.Round((decimal)part / whole, 3);
 
     /// <summary>Satırın ölçümdeki anlamı. Durumdan farkı: öneriden farklı müşteriye elle eşleme (ManualOnly + öneri) çelişkidir.</summary>

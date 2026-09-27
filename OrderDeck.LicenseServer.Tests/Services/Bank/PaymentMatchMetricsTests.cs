@@ -129,6 +129,57 @@ public sealed class PaymentMatchMetricsTests
     }
 
     [Fact]
+    public async Task Gecikme_medyani_cift_sayida_ortalama_yedi_gunu_asan_ve_negatif_fark_sayim_disi()
+    {
+        // İlk çekim 90 günü geri doldurur: o hareketlerin çekim farkı günlerce sürer ve maksimumu şişirirdi; saat kayması da
+        // negatif fark üretebilir. İkisi de gecikme ölçümünden düşer, gelen sayımında kalır.
+        using var db = NewDb();
+        var lic = Guid.NewGuid(); var allCapped = Guid.NewGuid(); var now = DateTimeOffset.UtcNow;
+        BankTransaction Lag(Guid license, TimeSpan occurredAgo, TimeSpan lag)
+        {
+            var t = T(license, now, 0);
+            t.OccurredAt = now - occurredAgo; t.FetchedAt = t.OccurredAt + lag;
+            return t;
+        }
+        db.BankTransactions.AddRange(
+            Lag(lic, TimeSpan.FromHours(1), TimeSpan.FromHours(1)),
+            Lag(lic, TimeSpan.FromHours(3), TimeSpan.FromHours(3)),
+            Lag(lic, TimeSpan.FromDays(10), TimeSpan.FromDays(10)),
+            Lag(lic, TimeSpan.FromHours(2), TimeSpan.FromHours(-1)),
+            Lag(allCapped, TimeSpan.FromDays(10), TimeSpan.FromDays(10)),
+            Lag(allCapped, TimeSpan.FromHours(2), TimeSpan.FromHours(-1)));
+        await db.SaveChangesAsync();
+
+        var m = await Metrics(db).ComputeAsync(lic, days: 30, CancellationToken.None);
+
+        m.Incoming.Should().Be(4, "sayım dışı gecikmeli hareket yine gelendir");
+        m.LagMedian.Should().Be(TimeSpan.FromHours(2), "çift sayı: 1 sa ile 3 sa ortalaması");
+        m.LagMax.Should().Be(TimeSpan.FromHours(3), "10 günlük geri doldurma farkı maksimuma girmez");
+
+        var capped = await Metrics(db).ComputeAsync(allCapped, days: 30, CancellationToken.None);
+
+        capped.Incoming.Should().Be(2);
+        capped.LagMedian.Should().BeNull("sayılabilecek gecikme yok");
+        capped.LagMax.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(240, 5, 0, false)] // 5 / 245 = %2,04: yuvarlı oran 0,020 olsa da eşik sağlanmaz
+    [InlineData(196, 4, 0, true)]  // 4 / 200 = tam %2
+    [InlineData(195, 3, 1, false)] // oran düşük ama 199 bağlı
+    [InlineData(0, 0, 200, false)] // hiç öneri kararı yok: oran yok, eşik yok
+    public void Faz2_esigi_yuvarlanmis_orandan_degil_tam_sayilardan_karar_verir(int confirmed, int contradicted, int manualOnly, bool expected)
+    {
+        var s = new PaymentMatchSummary(
+            Incoming: confirmed + contradicted + manualOnly, Excluded: 0, Proposed: confirmed + contradicted,
+            Confirmed: confirmed, Contradicted: contradicted, ManualOnly: manualOnly, PendingProposals: 0, NoProposal: 0, OpenGaps: 0,
+            ContradictionRate: PaymentMatchMetrics.Rate(contradicted, confirmed + contradicted),
+            LagMedian: null, LagMax: null, Layers: Array.Empty<LayerStat>(), Platforms: Array.Empty<PlatformStat>());
+
+        s.MeetsPhase2Threshold.Should().Be(expected);
+    }
+
+    [Fact]
     public async Task Platform_kirilimi_gercek_musterinin_platformuna_gore_bilinmeyen_ve_silinen_soru_isareti()
     {
         using var db = NewDb();
