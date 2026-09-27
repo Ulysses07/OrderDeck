@@ -11,7 +11,8 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// ±2 gün, henüz bir dekonta bağlanmamış, başka bir müşteriye elle verilmemiş ve eşleştiricinin dışlamadığı
 /// (<see cref="PaymentMatcher.IsExcluded"/>: POS tahsilatı vb. müşteri havalesi değildir). Tek aday → bağla; çoklu → gönderen
 /// adının tüm tokenları açıklamada geçen TEK aday; hâlâ çoklu/yok → PaymentMatchGap. Ret hiçbir şey yapmaz. Elle eşleme
-/// dışlanan kodlu hareketi de kabul eder: admin'in açık kararıdır.
+/// dışlanan kodlu hareketi de kabul eder: admin'in açık kararıdır. Onun karşı IBAN'ını ise öğretmez: POS mutabakatının
+/// karşı IBAN'ı (varsa) genellikle üye iş yeri havuz hesabıdır, müşterinin değil.
 /// <para><b>Onay IBAN'ı yalnız doğrulanmış bağdan öğretir</b>: öneri dekontun müşterisini gösteriyorsa ya da gönderen
 /// adının (≥3 harfli) tüm token'ları hareketin açıklamasında geçiyorsa. Tek aday bağı yalnız tutar ve zamana dayanabilir;
 /// sabit fiyatlı satışta aynı tutarlı başka bir müşterinin havalesi tek aday kalabilir (dekontun kendi havalesi henüz
@@ -180,7 +181,8 @@ public sealed class PaymentMatchReconciler
         var now = DateTimeOffset.UtcNow;
         match.ActualWpfCustomerId = wpfCustomerId; match.DecidedAt = now; match.UpdatedAt = now;
         match.Status = match.ProposedWpfCustomerId == wpfCustomerId ? PaymentMatchStatus.ConfirmedByHuman : PaymentMatchStatus.ManualOnly;
-        await LearnIbanAsync(tx, wpfCustomerId, IbanMemorySource.ManualMatch, ct);
+        // Dışlanan hareketin (POS tahsilatı vb.) karşı IBAN'ı müşterinin değildir (sınıf özeti): karar yazılır, öğretilmez.
+        if (!Matcher.IsExcluded(tx)) await LearnIbanAsync(tx, wpfCustomerId, IbanMemorySource.ManualMatch, ct);
         await _db.SaveChangesAsync(ct);
     }
 

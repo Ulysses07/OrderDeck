@@ -7,6 +7,7 @@ using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Bank;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Bank;
@@ -245,7 +246,7 @@ public sealed class PaymentMatchReconcilerTests
         db.SaveChanges();
         var when = DateTimeOffset.UtcNow;
         var tx = Tx(db, s.LicenseId, 50m, when, "EFT GELEN AYSE GUL", hash);
-        var log = new PaymentMatchRaceTests.LogRecorder<PaymentMatchReconciler>();
+        var log = new LogRecorder<PaymentMatchReconciler>();
         var recon = Recon(db, log); await recon.Matcher.MatchAsync(tx, CancellationToken.None);
 
         await recon.ReconcileApprovalAsync(Approved(db, s.LicenseId, s.ShopperId, 50m, when, payer: "AYSE GUL"), CancellationToken.None);
@@ -270,7 +271,7 @@ public sealed class PaymentMatchReconcilerTests
         db.CustomerIbanMemories.Add(new CustomerIbanMemory { Id = Guid.NewGuid(), LicenseId = s.LicenseId, WpfCustomerId = other.Id, IbanHash = hash, IbanMasked = "TR..", LearnedFrom = IbanMemorySource.HumanApproval, CreatedAt = DateTimeOffset.UtcNow });
         db.SaveChanges();
         var tx = Tx(db, s.LicenseId, 60m, DateTimeOffset.UtcNow, "EFT GELEN", hash);
-        var log = new PaymentMatchRaceTests.LogRecorder<PaymentMatchReconciler>();
+        var log = new LogRecorder<PaymentMatchReconciler>();
         var recon = Recon(db, log); await recon.Matcher.MatchAsync(tx, CancellationToken.None);
 
         await recon.ManualMatchAsync(s.LicenseId, tx.Id, s.WpfCustomerId, CancellationToken.None);
@@ -563,13 +564,15 @@ public sealed class PaymentMatchReconcilerTests
     public async Task POS_tahsilati_elle_eslenebilir()
     {
         // Dışlama yalnız otomatik aday seçimi içindir; admin'in açık kararı POS tahsilatını da bir müşteriye verebilir.
+        // Karşı IBAN'ı ise öğretilmez: POS mutabakatında o genellikle üye iş yeri havuz hesabıdır, müşterinin değil.
         using var db = NewDb(); var s = SeedShopper(db);
-        var pos = Tx(db, s.LicenseId, 360m, DateTimeOffset.UtcNow, "POS TAHSILAT", code: "CCP");
+        var pos = Tx(db, s.LicenseId, 360m, DateTimeOffset.UtcNow, "POS TAHSILAT", Hasher.HashIban(BankHasherTests.TestIban()), code: "CCP");
         var recon = Recon(db); await recon.Matcher.MatchAsync(pos, CancellationToken.None);
 
         await recon.ManualMatchAsync(s.LicenseId, pos.Id, s.WpfCustomerId, CancellationToken.None);
 
         var m = await db.PaymentMatches.AsNoTracking().SingleAsync();
         m.ActualWpfCustomerId.Should().Be(s.WpfCustomerId); m.Status.Should().Be(PaymentMatchStatus.ManualOnly);
+        (await db.CustomerIbanMemories.CountAsync()).Should().Be(0, "dışlanan hareketin karşı IBAN'ı müşteriye öğretilmez");
     }
 }
