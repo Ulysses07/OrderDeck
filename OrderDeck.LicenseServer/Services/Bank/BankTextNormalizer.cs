@@ -23,9 +23,11 @@ public static class BankTextNormalizer
         var lastSpace = true;
         foreach (var ch in lower)
         {
-            // Birleşik işaret harfin parçasıdır, ayırıcı değil; yumuşak tire görünmezdir, kelimeyi bölmez.
-            if (ch == '\u00AD'
-                || CharUnicodeInfo.GetUnicodeCategory(ch) is UnicodeCategory.NonSpacingMark or UnicodeCategory.EnclosingMark)
+            // Birleşik işaret harfin parçasıdır, ayırıcı değil. Biçim karakteri (Cf) görünmezdir, kelimeyi bölmez:
+            // yumuşak tire U+00AD, sıfır genişlikli boşluk/birleştirici U+200B/U+200D, yön işareti U+200E/F,
+            // sözcük birleştirici U+2060, BOM U+FEFF.
+            if (CharUnicodeInfo.GetUnicodeCategory(ch)
+                is UnicodeCategory.NonSpacingMark or UnicodeCategory.EnclosingMark or UnicodeCategory.Format)
                 continue;
             var c = ch == 'ı' ? 'i' : ch;
             if (c is (>= 'a' and <= 'z') or (>= '0' and <= '9'))

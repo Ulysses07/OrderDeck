@@ -38,6 +38,8 @@ public sealed class BankTextNormalizerTests
     [InlineData("ＡＹＳＥ", "ayse")] // tam genişlikli "AYSE"
     [InlineData("ﬁliz", "filiz")] // "fi" bitişik harfi
     [InlineData("ay\u00ADse", "ayse")] // yumuşak tire (U+00AD) görünmez, kelimeyi bölmez
+    [InlineData("ay\u200Bse\u200Dx", "aysex")] // sıfır genişlikli boşluk (U+200B) ve birleştirici (U+200D) de biçim karakteri
+    [InlineData("ay\u200Ese\u2060x\uFEFFy", "aysexy")] // soldan-sağa işareti (U+200E), sözcük birleştirici (U+2060), BOM (U+FEFF)
     public void Normalize_turkce_disi_aksan_ve_uyumluluk_harflerini_sadelestirir(string input, string expected)
         => BankTextNormalizer.Normalize(input).Should().Be(expected);
 
