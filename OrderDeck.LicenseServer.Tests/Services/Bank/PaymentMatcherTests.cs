@@ -170,6 +170,50 @@ public sealed class PaymentMatcherTests
         m.Layer.Should().Be(PaymentMatchLayer.UsernameInDescription);
     }
 
+    [Theory]
+    [InlineData("123456", "FAST 1.234,56 TL")] // tutar noktalamada bölünür (1,234,56), bitişik token kuralı yeniden birleştirir
+    [InlineData("12032026", "12.03.2026 EFT")] // tarih: 12,03,2026
+    [InlineData("2026", "HAVALE 12.03.2026 siparis")] // tarihin yılı tam token
+    [InlineData("1000", "FAST 1000,00 TL")] // tutarın tam kısmı tam token
+    [InlineData("havale", "HAVALE ayse odeme")] // banka kalıbı: lisansın hemen her açıklamasında geçer
+    [InlineData("fast", "FAST GELEN odeme")]
+    [InlineData("gelen", "EFT GELEN aciklamasiz")]
+    [InlineData("odeme", "HAVALE ODEME")]
+    [InlineData("gelen_havale", "EFT GELEN HAVALE")] // yalnız kalıp kelimelerinden oluşur
+    [InlineData("fast1000", "FAST 1000,00 TL")] // kalıp + rakam: o tutardaki her FAST'a taşardı
+    public async Task Harfsiz_ya_da_yalniz_banka_kalibi_kullanici_adi_katman_bire_girmez(string kullaniciAdi, string aciklama)
+    {
+        // Böyle tek bir müşteri lisansın her ilgili hareketini 0.90 yanlış öneriye çevirirdi.
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        Customer(db, lic, kullaniciAdi);
+
+        var m = await Matcher(db).MatchAsync(Incoming(db, lic, aciklama), CancellationToken.None);
+
+        m.Status.Should().Be(PaymentMatchStatus.NoProposal);
+        m.Evidence.Should().Be("no-signal");
+    }
+
+    [Fact]
+    public async Task Harfsiz_ya_da_kalip_kullanici_adli_musteri_gercek_adayi_gizlemez_iban_hafizasiyla_bulunur()
+    {
+        // Gerçek müşteri de eşleşince böyle bir müşteri satırı belirsizliğe (öneri yok) çevirir, doğru öneriyi gizlerdi.
+        // Katman 1 dışında kalır ama aday listesinde kalır: IBAN hafızası onu yine gösterir.
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        Customer(db, lic, "havale"); var rakam = Customer(db, lic, "123456"); var ayse = Customer(db, lic, "ayse_gul34");
+        var hash = Hasher.HashIban(BankHasherTests.TestIban())!;
+        IbanMemory(db, lic, rakam.Id, hash);
+
+        var gercek = await Matcher(db).MatchAsync(Incoming(db, lic, "HAVALE ayse_gul34 FAST 1.234,56 TL"), CancellationToken.None);
+        var iban = await Matcher(db).MatchAsync(Incoming(db, lic, "HAVALE FAST 1.234,56 TL", hash), CancellationToken.None);
+
+        gercek.Status.Should().Be(PaymentMatchStatus.Proposed);
+        gercek.ProposedWpfCustomerId.Should().Be(ayse.Id);
+        gercek.Evidence.Should().Be("username=aysegul34");
+        iban.ProposedWpfCustomerId.Should().Be(rakam.Id);
+        iban.Layer.Should().Be(PaymentMatchLayer.IbanMemory);
+        iban.Confidence.Should().Be(0.85m);
+    }
+
     [Fact]
     public async Task Birden_fazla_aday_oneri_uretmez()
     {

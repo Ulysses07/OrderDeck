@@ -41,6 +41,15 @@ public sealed class PaymentMatcher
     private const int SubstringMinLength = 6;
     private const int ExactOnlyMaxLength = 3;
 
+    /// <summary>Banka açıklamalarında hemen her harekette geçen kalıp kelimeler (normalize biçimde). Kullanıcı adı
+    /// yalnız bunlardan (ve rakamdan) oluşuyorsa katman 1'e girmez: bkz. <see cref="Candidate.UsernameUsable"/>.
+    /// Gerçek açıklamalar görüldükçe genişletilir.</summary>
+    private static readonly HashSet<string> BoilerplateTokens = new(StringComparer.Ordinal)
+    {
+        "havale", "eft", "fast", "gelen", "giden", "gonderen", "gonderilen", "odeme", "aciklama",
+        "ref", "sorgu", "iban", "tl", "try", "banka", "bankasi", "sube", "subesi", "merkez",
+    };
+
     private readonly LicenseDbContext _db;
     private readonly HashSet<string> _excludedCodes;
     private readonly ILogger<PaymentMatcher> _log;
@@ -83,7 +92,7 @@ public sealed class PaymentMatcher
         var byUsername = new List<Candidate>();
         foreach (var c in candidates)
         {
-            if (c.Key.Length < MinKeyLength) continue;
+            if (!c.UsernameUsable) continue;
             var exactToken = text.Tokens.Contains(c.Key);
             var hit = c.Key.Length <= ExactOnlyMaxLength
                 ? exactToken
@@ -143,7 +152,18 @@ public sealed class PaymentMatcher
 
     /// <summary>Müşterinin eşleştirme biçimi: bitişik anahtar ("aysegul34"), harf/rakam sınırında bölünmüş parçaları
     /// ("ayse","gul","34") ve ad token'ları.</summary>
-    private sealed record Candidate(Guid Id, string Key, IReadOnlyList<string> KeyTokens, IReadOnlyList<string> NameTokens);
+    private sealed record Candidate(Guid Id, string Key, IReadOnlyList<string> KeyTokens, IReadOnlyList<string> NameTokens)
+    {
+        /// <summary>Katman 1'e girer mi: anahtar en az <see cref="MinKeyLength"/> uzun VE en az bir parçası banka
+        /// kalıbı olmayan harf dizisi. Harfsiz anahtar açıklamadaki tutar/tarih/referansa taşar: Tokenize noktalamada
+        /// böler ("1.234,56" → 1,234,56; "12.03.2026" → 12,03,2026), bitişik token kuralı parçaları yeniden birleştirir
+        /// ("123456", "12032026"), kısa olanı tam token olarak bulunur ("2026", "1000"). Yalnız kalıp kelimeli anahtar
+        /// ("havale", "gelen_havale", "fast1000") lisansın hemen her hareketine çarpar. Tek böyle müşteri ilgili her
+        /// hareketi yanlış öneriye, gerçek müşteri de eşleşince belirsizliğe (öneri yok) çevirirdi. Müşteri aday
+        /// listesinde kalır: IBAN hafızası onu yine gösterir.</summary>
+        public bool UsernameUsable { get; } = Key.Length >= MinKeyLength
+            && KeyTokens.Any(t => t.Any(char.IsAsciiLetter) && !BoilerplateTokens.Contains(t));
+    }
 
     private async Task<IReadOnlyList<Candidate>> CandidatesAsync(Guid licenseId, CancellationToken ct)
     {
