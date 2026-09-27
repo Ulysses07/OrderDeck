@@ -68,6 +68,12 @@ public sealed class PaymentMatchRaceTests
     private static bool LinksPayment(DbContext db)
         => db.ChangeTracker.Entries<PaymentMatch>().Any(e => e.State == EntityState.Modified && e.Entity.PaymentId != null);
 
+    /// <summary>Karara bağlı olmayan satırın yeniden hesabı: satır kayıttan önce de sonra da kararsız. Kaldırmanın kendi kaydı
+    /// kararlı satırı kararsıza çevirir, elle eşleme kararsız satıra karar yazar; ikisi de buna uymaz.</summary>
+    private static bool RecomputesUndecided(DbContext db)
+        => db.ChangeTracker.Entries<PaymentMatch>().Any(e => e.State == EntityState.Modified && e.Entity.DecidedAt is null
+            && e.OriginalValues.GetValue<DateTimeOffset?>(nameof(PaymentMatch.DecidedAt)) is null);
+
     private LicenseDbContext Ctx(IInterceptor? interceptor = null)
     {
         var options = new DbContextOptionsBuilder<LicenseDbContext>().UseInMemoryDatabase(_name, _root);
@@ -348,6 +354,41 @@ public sealed class PaymentMatchRaceTests
         row.PaymentId.Should().BeNull();
         row.DecidedAt.Should().BeNull();
         row.Status.Should().Be(PaymentMatchStatus.Proposed, "insan kararı kalkınca öneri yeniden hesaplanır");
+        NoPendingWrites(admin);
+    }
+
+    [Fact]
+    public async Task Kaldirma_kaydedildikten_sonra_yeniden_hesap_iki_kez_carpisirsa_kaldirma_gecerli_kalir()
+    {
+        // Kaldırma kaydedilir; ardından koşan yeniden hesabın iki kaydı da eşzamanlı bir yazıya (kanıt temizliği) takılır.
+        // Kaydedilmiş kaldırma yeniden denenip "çakışma" diye raporlanmaz: geçerli kalır, yeniden hesabın düştüğünü döner,
+        // günlüğe hareket kimliği ve istisna türü yazılır.
+        var s = await SeedAsync();
+        await using (var first = Ctx())
+            await Recon(first).ManualMatchAsync(s.LicenseId, s.Tx.Id, s.WpfCustomerId, CancellationToken.None);
+        var race = new BeforeSave(RecomputesUndecided, async () =>
+        {
+            await using var cleanup = Ctx();
+            var m = await cleanup.PaymentMatches.SingleAsync(x => x.BankTransactionId == s.Tx.Id);
+            // Jeton kesin değişsin diye aynı tick'e düşmeden ilerletilir.
+            m.Evidence = null; m.UpdatedAt = m.UpdatedAt.AddMilliseconds(1);
+            await cleanup.SaveChangesAsync();
+        }, times: 2);
+        await using var admin = Ctx(race);
+        var log = new LogRecorder<PaymentMatchReconciler>();
+
+        var recomputed = await Recon(admin, log).UnmatchAsync(s.LicenseId, s.Tx.Id, CancellationToken.None);
+
+        recomputed.Should().BeFalse("kaldırma kaydedildi, öneri yeniden hesaplanamadı");
+        race.Fired.Should().Be(2, "eşleştirici çakışmada bir kez kendisi yeniden dener");
+        var row = await RowAsync(s.Tx.Id);
+        row.ActualWpfCustomerId.Should().BeNull();
+        row.DecidedAt.Should().BeNull();
+        row.PaymentId.Should().BeNull();
+        row.Status.Should().Be(PaymentMatchStatus.NoProposal, "kaldırmanın yazdığı durum kalır");
+        log.Entries.Should().Contain(e => e.Level == LogLevel.Warning && e.Message.Contains(s.Tx.Id.ToString())
+            && e.Message.Contains(nameof(DbUpdateConcurrencyException)));
+        log.Entries.Should().NotContain(e => e.Message.Contains("yeniden deneniyor"), "kaydedilmiş kaldırma yeniden denenmez");
         NoPendingWrites(admin);
     }
 

@@ -25,9 +25,9 @@ public sealed class PaymentMatchMetricsTests
       Amount = amount, Currency = "TL", OccurredAt = now.AddDays(-daysAgo), FetchedAt = now, TransactionCode = code };
 
     private static PaymentMatch M(BankTransaction t, PaymentMatchStatus s, PaymentMatchLayer layer = PaymentMatchLayer.None, string? evidence = null,
-        Guid? proposed = null, Guid? actual = null) => new()
+        Guid? proposed = null, Guid? actual = null, Guid? payment = null) => new()
     { Id = Guid.NewGuid(), LicenseId = t.LicenseId, BankTransactionId = t.Id, Status = s, Layer = layer, Evidence = evidence,
-      ProposedWpfCustomerId = proposed, ActualWpfCustomerId = actual, CreatedAt = t.OccurredAt, UpdatedAt = t.OccurredAt };
+      ProposedWpfCustomerId = proposed, ActualWpfCustomerId = actual, PaymentId = payment, CreatedAt = t.OccurredAt, UpdatedAt = t.OccurredAt };
 
     [Fact]
     public async Task Son_30_gun_sayimlari_celiski_orani_gecikme_ve_katman()
@@ -164,19 +164,58 @@ public sealed class PaymentMatchMetricsTests
     }
 
     [Theory]
-    [InlineData(240, 5, 0, false)] // 5 / 245 = %2,04: yuvarlı oran 0,020 olsa da eşik sağlanmaz
-    [InlineData(196, 4, 0, true)]  // 4 / 200 = tam %2
-    [InlineData(195, 3, 1, false)] // oran düşük ama 199 bağlı
-    [InlineData(0, 0, 200, false)] // hiç öneri kararı yok: oran yok, eşik yok
-    public void Faz2_esigi_yuvarlanmis_orandan_degil_tam_sayilardan_karar_verir(int confirmed, int contradicted, int manualOnly, bool expected)
+    [InlineData(199, 0, 0, 0, false)]  // 199 dekont onaylı karar: örneklem eksik
+    [InlineData(196, 4, 0, 0, true)]   // 4 / 200 = tam %2
+    [InlineData(195, 5, 0, 0, false)]  // 5 / 200 = %2,5
+    [InlineData(240, 5, 0, 0, false)]  // 5 / 245 = %2,04: yuvarlı oran 0,020 olsa da eşik sağlanmaz
+    [InlineData(0, 0, 1000, 0, false)] // yalnız sayfa kararı: öneriye bakılarak verildi, eşiği hiç sağlamaz
+    [InlineData(150, 0, 60, 0, false)] // sayfa kararları dekont onaylı örneklemi tamamlamaz
+    [InlineData(196, 4, 0, 30, true)]  // sayfa çelişkisi dekont onaylı orana girmez (ayrı gösterilir)
+    public void Faz2_esigi_yalniz_dekont_onayli_kararlarla_tam_sayilardan_karar_verir(int receiptConfirmed, int receiptContradicted,
+        int pageConfirmed, int pageContradicted, bool expected)
     {
+        var confirmed = receiptConfirmed + pageConfirmed; var contradicted = receiptContradicted + pageContradicted;
         var s = new PaymentMatchSummary(
-            Incoming: confirmed + contradicted + manualOnly, Excluded: 0, Proposed: confirmed + contradicted,
-            Confirmed: confirmed, Contradicted: contradicted, ManualOnly: manualOnly, PendingProposals: 0, NoProposal: 0, OpenGaps: 0,
+            Incoming: confirmed + contradicted, Excluded: 0, Proposed: confirmed + contradicted,
+            Confirmed: confirmed, Contradicted: contradicted, ManualOnly: 0,
+            ReceiptConfirmed: receiptConfirmed, ReceiptContradicted: receiptContradicted, PendingProposals: 0, NoProposal: 0, OpenGaps: 0,
             ContradictionRate: PaymentMatchMetrics.Rate(contradicted, confirmed + contradicted),
             LagMedian: null, LagMax: null, Layers: Array.Empty<LayerStat>(), Platforms: Array.Empty<PlatformStat>());
 
         s.MeetsPhase2Threshold.Should().Be(expected);
+        s.ReceiptDecisions.Should().Be(receiptConfirmed + receiptContradicted);
+        (s.PageConfirmed, s.PageContradicted).Should().Be((pageConfirmed, pageContradicted));
+    }
+
+    [Fact]
+    public async Task Oneri_kararlari_dekont_onayli_ve_yalniz_sayfa_olarak_ayrilir()
+    {
+        // Panelde dekont onayı öneri görülmeden verilir: bağımsız kanıttır. Sayfadaki elle eşleme öneriye bakarak verilir.
+        // Satır bir dekonta bağlıysa (PaymentId) karar dekont onaylıdır; aynı müşteriye elle verilmiş karara sonradan
+        // iliştirilen dekont da: dekontun müşterisi satırın gerçek müşterisidir. Önerisiz bağ ve dışlanan hareket öneri
+        // kararı değildir.
+        using var db = NewDb();
+        var lic = Guid.NewGuid(); var now = DateTimeOffset.UtcNow;
+        var a = Guid.NewGuid(); var b = Guid.NewGuid();
+        var txs = Enumerable.Range(1, 6).Select(i => T(lic, now, i)).ToArray();
+        var pos = T(lic, now, 1, code: "CCP");
+        db.BankTransactions.AddRange(txs); db.BankTransactions.Add(pos);
+        db.PaymentMatches.AddRange(
+            M(txs[0], PaymentMatchStatus.ConfirmedByHuman, PaymentMatchLayer.UsernameInDescription, proposed: a, actual: a, payment: Guid.NewGuid()),
+            M(txs[1], PaymentMatchStatus.Contradicted, PaymentMatchLayer.IbanMemory, proposed: a, actual: b, payment: Guid.NewGuid()),
+            M(txs[2], PaymentMatchStatus.ManualOnly, PaymentMatchLayer.NameAmount, proposed: a, actual: b, payment: Guid.NewGuid()),
+            M(txs[3], PaymentMatchStatus.ConfirmedByHuman, PaymentMatchLayer.UsernameInDescription, proposed: a, actual: a),
+            M(txs[4], PaymentMatchStatus.ManualOnly, PaymentMatchLayer.UsernameInDescription, proposed: a, actual: b),
+            M(txs[5], PaymentMatchStatus.ManualOnly, actual: b, payment: Guid.NewGuid()),
+            M(pos, PaymentMatchStatus.ConfirmedByHuman, PaymentMatchLayer.UsernameInDescription, proposed: a, actual: a, payment: Guid.NewGuid()));
+        await db.SaveChangesAsync();
+
+        var m = await Metrics(db).ComputeAsync(lic, days: 30, CancellationToken.None);
+
+        (m.Confirmed, m.Contradicted, m.ManualOnly).Should().Be((2, 3, 1));
+        (m.ReceiptConfirmed, m.ReceiptContradicted).Should().Be((1, 2), "öneriden farklı elle eşlemeye iliştirilen dekont çelişkidir");
+        (m.PageConfirmed, m.PageContradicted).Should().Be((1, 1));
+        m.ReceiptDecisions.Should().Be(3, "önerisiz bağ ve dışlanan hareket öneri kararı değildir");
     }
 
     [Fact]

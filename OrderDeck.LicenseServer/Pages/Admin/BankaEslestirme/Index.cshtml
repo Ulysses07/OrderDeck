@@ -44,7 +44,7 @@
             <div class="col-md-3">Gelen: <b>@s.Incoming</b><br />Dışlanan (POS vb.): @s.Excluded<br />Öneri üretilen: @s.Proposed</div>
             <div class="col-md-3">Doğrulandı: <b>@s.Confirmed</b><br />Çelişti: <b>@s.Contradicted</b> <span class="text-muted">(öneriden farklı elle eşleme dahil)</span><br />Elle (öneri yoktu): @s.ManualOnly</div>
             <div class="col-md-3">Bekleyen öneri: @s.PendingProposals<br />Öneri yok: @s.NoProposal<br />Açık gap (dekont var, hareket yok): @s.OpenGaps</div>
-            <div class="col-md-3">Çelişki oranı: <b>@Rate(s.ContradictionRate)</b><br />
+            <div class="col-md-3">Çelişki oranı: <b>@Rate(s.ContradictionRate)</b> <span data-fraction="overall">(çelişki @s.Contradicted/@(s.Confirmed + s.Contradicted))</span><br />
                 Gecikme medyan/maks: @(s.LagMedian?.ToString(@"d\.hh\:mm") ?? "—") / @(s.LagMax?.ToString(@"d\.hh\:mm") ?? "—")
                 <span class="text-muted">(@PaymentMatchMetrics.LagCapDays günü aşanlar sayım dışı)</span></div>
         </div>
@@ -57,8 +57,13 @@
                 <span class="badge bg-light text-dark border me-1" data-platform="@p.Platform">@p.Platform ✓@p.Confirmed ✗@p.Contradicted elle @p.ManualOnly · çelişki @Rate(p.ContradictionRate)</span>
             }
         </div>
-        <div class="mt-2 small @(s.MeetsPhase2Threshold ? "text-success" : "text-muted")">
-            Faz 2 eşiği: ≥ 200 bağlı, çelişki ≤ %2 — şu an @s.Linked bağlı @if (s.MeetsPhase2Threshold) { <b>✓ eşik sağlandı</b> }
+        @* Eşik yalnız dekont onaylı öneri kararlarından (panelde öneri görülmeden verilir); sayfa kararları öneriye bakarak
+           verilir, ayrı gösterilir. Kesir yuvarlı yüzdenin yanında: P1 tek başına 5/245'i %2,0 gösterir. *@
+        <div class="mt-2 small @(s.MeetsPhase2Threshold ? "text-success" : "text-muted")" data-phase2="gate">
+            Faz 2 (dekont onaylı kararlar): <span data-phase2="receipt">@s.ReceiptDecisions/@(PaymentMatchSummary.Phase2MinReceiptDecisions), çelişki @s.ReceiptContradicted/@s.ReceiptDecisions (@Rate(s.ReceiptContradictionRate))</span>
+            @if (s.MeetsPhase2Threshold) { <b>✓ eşik sağlandı</b> }
+            <div class="text-muted">Eşik: ≥ @(PaymentMatchSummary.Phase2MinReceiptDecisions) dekont onaylı öneri kararı, çelişki ≤ %@(PaymentMatchSummary.Phase2MaxContradictionPercent).
+                Sayfada verilen öneri kararları eşiğe girmez: <span data-phase2="page">✓@s.PageConfirmed ✗@s.PageContradicted</span></div>
         </div>
     </div></div>
 }
@@ -72,11 +77,11 @@
         {
             <tr data-tx="@r.TransactionId">
                 <td>@r.OccurredAt.ToOffset(TimeSpan.FromHours(3)).ToString("dd.MM.yyyy HH:mm")</td>
-                <td>@r.Amount.ToString("N2") @r.Currency</td>
+                <td data-cell="amount">@r.Amount.ToString("N2") @r.Currency</td>
                 <td>@r.BankaKodu</td>
-                <td class="small">@r.Description</td>
+                <td class="small" data-cell="description">@r.Description</td>
                 <td class="small" data-cell="iban">@r.CounterpartyIbanMasked</td>
-                <td class="small">
+                <td class="small" data-cell="proposed">
                     @if (r.ProposedUsername is not null) { <b>@r.ProposedUsername</b> <span class="text-muted">@r.Layer @r.Confidence.ToString("0.00")</span> }
                     <div class="text-muted">@r.Evidence</div>
                 </td>
@@ -89,7 +94,9 @@
                         <input type="hidden" name="PageNo" value="@Model.PageNo" />
                         @if (r.IsLinked)
                         {
-                            <button class="btn btn-sm btn-outline-danger" asp-page-handler="Unmatch">Kaldır</button>
+                            @* Geri alınamaz: dekonta bağlı satırda dekont gap'e döner, öğrenilen IBAN silinir. *@
+                            <button class="btn btn-sm btn-outline-danger" asp-page-handler="Unmatch"
+                                    onclick="return confirm('@(r.PaymentId is not null ? IndexModel.UnmatchReceiptConfirmMessage : IndexModel.UnmatchConfirmMessage)')">Kaldır</button>
                         }
                         else
                         {

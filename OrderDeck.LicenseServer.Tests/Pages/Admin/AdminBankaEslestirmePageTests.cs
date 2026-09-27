@@ -1,9 +1,11 @@
+using System.Globalization;
 using System.Net;
 using System.Security.Cryptography;
 using AngleSharp;
 using AngleSharp.Dom;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
@@ -21,6 +23,9 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
 {
     private const string PagePath = "/admin/banka-eslestirme";
 
+    /// <summary>Sayfa tr-TR'ye sabit (Program.cs): tutar ve oran beklentileri aynı kültürle biçimlenir.</summary>
+    private static readonly CultureInfo Tr = new("tr-TR");
+
     private readonly ApiFactory _factory;
     public AdminBankaEslestirmePageTests(ApiFactory factory) => _factory = factory;
 
@@ -29,6 +34,34 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
     {
         protected override IDictionary<string, string?> ExtraConfig
             => new Dictionary<string, string?> { ["OrderDeck:Bank:HashKey"] = "" };
+    }
+
+    /// <summary>Kaldırmanın ardından koşan yeniden hesabın kaydını düşürür (DB kesintisi benzetimi); yalnız kurulduktan
+    /// (<see cref="RecomputeFailure.Armed"/>) sonra ve bir kez.</summary>
+    private sealed class RecomputeFailingApiFactory : ApiFactory
+    {
+        public RecomputeFailure Failure { get; } = new();
+        protected override void ConfigureDbContextOptions(DbContextOptionsBuilder opt) => opt.AddInterceptors(Failure);
+    }
+
+    /// <summary>Karara bağlı olmayan satırın yeniden hesabını tanır: satır kayıttan önce de sonra da kararsız. Kaldırmanın
+    /// kendi kaydı kararlı satırı kararsıza çevirir, elle eşleme kararsız satıra karar yazar; ikisi de buna uymaz.</summary>
+    private sealed class RecomputeFailure : SaveChangesInterceptor
+    {
+        public bool Armed { get; set; }
+        public int Fired { get; private set; }
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData,
+            InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (Armed && Fired == 0 && eventData.Context!.ChangeTracker.Entries<PaymentMatch>().Any(e => e.State == EntityState.Modified
+                    && e.Entity.DecidedAt is null && e.OriginalValues.GetValue<DateTimeOffset?>(nameof(PaymentMatch.DecidedAt)) is null))
+            {
+                Fired++;
+                throw new DbUpdateException("DB kesintisi benzetimi");
+            }
+            return base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
     }
 
     private static string PathFor(Guid licenseId, int? pageNo = null)
@@ -121,8 +154,11 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
         var client = await _factory.CreateLoggedInAdminClientAsync();
         var path = PathFor(lic);
 
-        var html = await client.GetStringAsync(path);
-        html.Should().Contain("120").And.Contain("EFT GELEN").And.Contain("Faz 2");
+        var list = await PageAsync(client, path);
+        var tr = list.QuerySelector($"tr[data-tx='{txId}']")!;
+        tr.QuerySelector("[data-cell='amount']")!.TextContent.Trim().Should().Be($"{120m.ToString("N2", Tr)} TL");
+        tr.QuerySelector("[data-cell='description']")!.TextContent.Trim().Should().Be("EFT GELEN aciklamasiz");
+        list.QuerySelector("[data-box='metrics'] [data-phase2='receipt']")!.TextContent.Trim().Should().Be("0/200, çelişki 0/0 (—)");
 
         var post = await PostAsync(client, "ManualMatch", lic, txId, "ayse_gul34");
         post.StatusCode.Should().Be(HttpStatusCode.Redirect);
@@ -130,7 +166,10 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
         m.Status.Should().Be(PaymentMatchStatus.ManualOnly); m.ActualWpfCustomerId.Should().Be(wpfId);
         var doc = await PageAsync(client, path);
         doc.QuerySelector($"tr[data-tx='{txId}'] [data-cell='actual']")!.TextContent.Should().Contain("ayse_gul34");
-        doc.QuerySelector("[data-box='metrics'] [data-platform='youtube']").Should().NotBeNull("karar gerçek müşterinin platformunda sayılır");
+        doc.QuerySelector("[data-box='metrics'] [data-platform='youtube']")!.TextContent.Trim()
+            .Should().Be("youtube ✓0 ✗0 elle 1 · çelişki —", "önerisiz karar gerçek müşterinin platformunda elle sayılır");
+        doc.QuerySelector($"tr[data-tx='{txId}'] button[formaction*='Unmatch']")!.GetAttribute("onclick")
+            .Should().Be($"return confirm('{IndexModel.UnmatchConfirmMessage}')", "kaldırma arayüzden geri alınamaz");
 
         // Karara bağlı harekete ikinci elle eşleme: servisin mesajı gösterilir, karar değişmez.
         await PostAsync(client, "ManualMatch", lic, txId, "ayse_gul34");
@@ -140,6 +179,7 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
         await PostAsync(client, "Unmatch", lic, txId);
         m = (await MatchAsync(txId))!;
         m.Status.Should().Be(PaymentMatchStatus.NoProposal); m.ActualWpfCustomerId.Should().BeNull();
+        (await ToastAsync(client, path, "success")).Should().Be(IndexModel.UnmatchedMessage);
 
         // Audit ayrıntısı yalnız kullanıcı adı: açıklama, tutar, IBAN girmez.
         using var scope = _factory.Services.CreateScope();
@@ -160,7 +200,7 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
 
         await PostAsync(client, "ManualMatch", lic, txId, "yok_boyle_biri");
 
-        (await client.GetStringAsync(path)).Should().Contain("bulunamadı");
+        (await ToastAsync(client, path, "danger")).Should().Be(IndexModel.UnknownUsernameMessage);
         using var scope = _factory.Services.CreateScope();
         (await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().PaymentMatches.CountAsync(x => x.BankTransactionId == txId && x.ActualWpfCustomerId != null)).Should().Be(0);
     }
@@ -311,6 +351,140 @@ public sealed class AdminBankaEslestirmePageTests : IClassFixture<ApiFactory>
         var post = await PostAsync(client, "ManualMatch", lic, anyTx, "yok_boyle_biri", pageNo: 2);
         post.StatusCode.Should().Be(HttpStatusCode.Redirect);
         post.Headers.Location!.ToString().Should().Contain($"licenseId={lic}").And.Contain("pageNo=2");
+    }
+
+    [Fact]
+    public async Task Kaldirmadan_sonra_yeniden_hesap_duserse_kaldirma_gecerli_basari_bildirimi_ve_audit_yazilir()
+    {
+        // Kaldırma kaydedildikten sonra öneriyi yeniden hesaplamak düşer (DB kesintisi). Kaydedilmiş kaldırma "çakışma" diye
+        // raporlanmaz, audit'i kaybolmaz: başarı bildirimi yeniden hesabın yapılamadığını söyler.
+        using var factory = new RecomputeFailingApiFactory();
+        var (lic, txId, wpfId) = await SeedAsync(factory);
+        var client = await factory.CreateLoggedInAdminClientAsync();
+        await PostAsync(client, "ManualMatch", lic, txId, "ayse_gul34");
+        using (var scope = factory.Services.CreateScope())
+        {
+            (await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().PaymentMatches.AsNoTracking()
+                .SingleAsync(x => x.BankTransactionId == txId)).ActualWpfCustomerId.Should().Be(wpfId);
+        }
+        factory.Failure.Armed = true;
+
+        var post = await PostAsync(client, "Unmatch", lic, txId);
+
+        post.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        factory.Failure.Fired.Should().Be(1);
+        (await ToastAsync(client, PathFor(lic), "success")).Should().Be(IndexModel.UnmatchedNotRecomputedMessage);
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var m = await db.PaymentMatches.AsNoTracking().SingleAsync(x => x.BankTransactionId == txId);
+            m.ActualWpfCustomerId.Should().BeNull(); m.DecidedAt.Should().BeNull(); m.Status.Should().Be(PaymentMatchStatus.NoProposal);
+            (await db.AuditLogs.CountAsync(a => a.TargetId == txId.ToString() && a.EventType == AuditEvents.BankMatchUnmatch))
+                .Should().Be(1);
+        }
+    }
+
+    [Fact]
+    public async Task Dekonta_bagli_satirin_Kaldir_onayi_dekontu_anar()
+    {
+        var (lic, txId, wpfId) = await SeedAsync();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.PaymentMatches.Add(new PaymentMatch { Id = Guid.NewGuid(), LicenseId = lic, BankTransactionId = txId, PaymentId = Guid.NewGuid(),
+                Status = PaymentMatchStatus.ManualOnly, ActualWpfCustomerId = wpfId, DecidedAt = DateTimeOffset.UtcNow,
+                CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow });
+            await db.SaveChangesAsync();
+        }
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        var doc = await PageAsync(client, PathFor(lic));
+
+        doc.QuerySelector($"tr[data-tx='{txId}'] button[formaction*='Unmatch']")!.GetAttribute("onclick")
+            .Should().Be($"return confirm('{IndexModel.UnmatchReceiptConfirmMessage}')");
+        IndexModel.UnmatchReceiptConfirmMessage.Should().Contain("dekont");
+        // Onay metni tek tırnaklı JS dizesine gömülür: kesme işareti dizeyi kırar.
+        IndexModel.UnmatchReceiptConfirmMessage.Should().NotContain("'");
+        IndexModel.UnmatchConfirmMessage.Should().NotContain("'");
+    }
+
+    [Fact]
+    public async Task Silinmis_musteri_oneri_ve_gercek_hucrede_maskelenir_kullanici_adi_sayfaya_cikmaz()
+    {
+        // KVKK silmesi projeksiyonun kullanıcı adını tutar (ShopperPurgeService yalnız ad/telefon/adresi boşaltır, kanıtı
+        // temizler): sayfa onu göstermemeli.
+        var (lic, _, _) = await SeedAsync();
+        var username = $"silinen_{Guid.NewGuid():N}";
+        var tx = Tx(lic, 90m, "EFT GELEN");
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var purged = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "instagram", Username = username,
+                UpdatedAt = DateTimeOffset.UtcNow, PurgedAt = DateTimeOffset.UtcNow };
+            db.WpfCustomerProjections.Add(purged);
+            db.BankTransactions.Add(tx);
+            db.PaymentMatches.Add(new PaymentMatch { Id = Guid.NewGuid(), LicenseId = lic, BankTransactionId = tx.Id, PaymentId = Guid.NewGuid(),
+                Status = PaymentMatchStatus.ConfirmedByHuman, Layer = PaymentMatchLayer.UsernameInDescription, Confidence = PaymentMatcher.UsernameConfidence,
+                ProposedWpfCustomerId = purged.Id, ActualWpfCustomerId = purged.Id, DecidedAt = DateTimeOffset.UtcNow,
+                CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow });
+            await db.SaveChangesAsync();
+        }
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        var html = await client.GetStringAsync(PathFor(lic));
+
+        html.Should().NotContain(username);
+        var row = (await ParseAsync(html)).QuerySelector($"tr[data-tx='{tx.Id}']")!;
+        row.QuerySelector("[data-cell='proposed'] b")!.TextContent.Trim().Should().Be(IndexModel.PurgedCustomerLabel);
+        row.QuerySelector("[data-cell='actual']")!.TextContent.Should().Contain(IndexModel.PurgedCustomerLabel);
+    }
+
+    [Fact]
+    public async Task Olcum_kutusu_Faz2_satirinda_yalniz_dekont_onayli_kararlari_sayar_sayfa_kararlarini_ayri_gosterir()
+    {
+        var (lic, _, wpfId) = await SeedAsync();
+        var other = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            void Decided(PaymentMatchStatus status, Guid proposed, bool receipt)
+            {
+                var t = Tx(lic, 50m, "EFT GELEN");
+                db.BankTransactions.Add(t);
+                db.PaymentMatches.Add(new PaymentMatch { Id = Guid.NewGuid(), LicenseId = lic, BankTransactionId = t.Id,
+                    PaymentId = receipt ? Guid.NewGuid() : null, Status = status, Layer = PaymentMatchLayer.UsernameInDescription,
+                    ProposedWpfCustomerId = proposed, ActualWpfCustomerId = wpfId, DecidedAt = DateTimeOffset.UtcNow,
+                    CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow });
+            }
+            for (var i = 0; i < 3; i++) Decided(PaymentMatchStatus.ConfirmedByHuman, wpfId, receipt: true);
+            Decided(PaymentMatchStatus.Contradicted, other, receipt: true);
+            for (var i = 0; i < 2; i++) Decided(PaymentMatchStatus.ConfirmedByHuman, wpfId, receipt: false);
+            Decided(PaymentMatchStatus.ManualOnly, other, receipt: false);
+            await db.SaveChangesAsync();
+        }
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        var box = (await PageAsync(client, PathFor(lic))).QuerySelector("[data-box='metrics']")!;
+
+        box.QuerySelector("[data-phase2='receipt']")!.TextContent.Trim()
+            .Should().Be($"4/200, çelişki 1/4 ({PaymentMatchMetrics.Rate(1, 4)!.Value.ToString("P1", Tr)})");
+        box.QuerySelector("[data-phase2='page']")!.TextContent.Trim().Should().Be("✓2 ✗1");
+        box.QuerySelector("[data-fraction='overall']")!.TextContent.Trim().Should().Be("(çelişki 2/7)");
+    }
+
+    [Fact]
+    public async Task Asiri_buyuk_sayfa_numarasi_sinirlanir_sayfa_acilir()
+    {
+        // (PageNo - 1) * 50 int'te taşar; negatif Skip SQL Server'da 500 verirdi.
+        var (lic, _, _) = await SeedAsync();
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        var resp = await client.GetAsync(PathFor(lic, 50_000_000));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var doc = await ParseAsync(await resp.Content.ReadAsStringAsync());
+        doc.QuerySelectorAll("tbody tr[data-tx]").Should().BeEmpty();
+        doc.QuerySelector("a[data-page='prev']")!.GetAttribute("href").Should().Contain($"pageNo={IndexModel.MaxPageNo - 1}");
     }
 
     [Theory]

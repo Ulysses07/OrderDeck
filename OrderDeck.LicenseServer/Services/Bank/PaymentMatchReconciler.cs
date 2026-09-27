@@ -47,6 +47,12 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// denemede kendini ancak taze satırdaki insan kararı (dekont bağı, müşteri, karar anı) ilk denemenin gördüğüyle aynıysa
 /// yeniden uygular; değiştiyse (ör. arada dekont onayı satıra dekontu ekledi) <see cref="ConflictMessage"/> fırlatır:
 /// admin'in görmediği bir bağı ya da kararı kaldırmaz.</para>
+/// <para><b>Kaldırmanın ardından yeniden hesap denemenin parçası değildir.</b> Kaldırma kaydedildikten SONRA, yeniden denenen
+/// denemenin dışında koşar. Düşerse (iptal, eşleştiricinin iki çakışması, DB hatası) kaldırma geri alınmaz ve başarılıdır:
+/// günlüğe hareket kimliği ve istisna türü yazılır, <see cref="UnmatchAsync"/> false döner. Satır insan kararsız, öneri yok
+/// durumunda (önceki öneri alanlarıyla) kalır; telafi taraması yalnız satırı olmayan hareketi taradığı için öneri kendiliğinden
+/// yeniden üretilmez, admin satırı yine elle eşleyebilir. Yeniden hesap denemenin içinde olsaydı kaydedilmiş kaldırma yeniden
+/// denenip "çakışma" diye raporlanır, iptal de sayfanın audit'ini düşürürdü.</para>
 /// <para>Düşen deneme izleyicide iz bırakmaz (bu üç tablonun izlenen satırları ayrılır): kapsamın sonraki SaveChanges'i onu
 /// yeniden denemez. Hareketler izlenmeden okunur.</para>
 /// <para>Günlüğe açıklama, ad ya da IBAN yazılmaz; yalnız kimlikler.</para>
@@ -98,13 +104,31 @@ public sealed class PaymentMatchReconciler
             throw new ObifinValidationException(ConflictMessage);
     }
 
+    /// <returns>true: öneri yeniden hesaplandı (ya da hareketin satırı yoktu); false: kaldırma kaydedildi, yeniden hesap düştü
+    /// (sınıf özeti).</returns>
     /// <exception cref="ObifinValidationException">Hareket bu lisansta yok; iki denemede de çakışma; ya da yeniden denemede
-    /// satırın insan kararı ilk denemenin gördüğünden farklı.</exception>
-    public async Task UnmatchAsync(Guid licenseId, Guid transactionId, CancellationToken ct)
+    /// satırın insan kararı ilk denemenin gördüğünden farklı. Kaldırma kaydedildiyse fırlatılmaz.</exception>
+    public async Task<bool> UnmatchAsync(Guid licenseId, Guid transactionId, CancellationToken ct)
     {
         var attempts = new UnmatchAttempts();
         if (!await RetryOnceAsync(() => UnmatchOnceAsync(licenseId, transactionId, attempts, ct), ct))
             throw new ObifinValidationException(ConflictMessage);
+        if (attempts.Recompute is not { } tx) return true;
+        // Kaldırma kaydedildi. Yalnız eşleştirici: gap çözümü bu hareketle koşsaydı az önce kaldırılan bağı hemen geri kurardı.
+        try
+        {
+            await Matcher.MatchAsync(tx, ct);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            // Eşleştirici kaydedemediğini izlemede bırakmaz; yine de kapsamın sonraki kaydına (audit) iz taşınmasın.
+            Discard();
+            // Mesaj DEĞİL yalnız tür adı: istisna mesajı SQL parametresi taşıyabilir.
+            _log.LogWarning("Gölge bağdaştırma: hareket {TransactionId} eşlemesi kaldırıldı ama öneri yeniden hesaplanamadı "
+                + "({ErrorType}); satır öneri yok durumunda kaldı", tx.Id, ex.GetType().Name);
+            return false;
+        }
     }
 
     private async Task ReconcileApprovalOnceAsync(Payment payment, CancellationToken ct)
@@ -217,12 +241,12 @@ public sealed class PaymentMatchReconciler
                 }
             }
             match.PaymentId = null; match.ActualWpfCustomerId = null; match.DecidedAt = null;
-            match.Status = PaymentMatchStatus.NoProposal; // insan-kararı kilidi kalkar, Matcher yeniden hesaplar
+            match.Status = PaymentMatchStatus.NoProposal; // insan-kararı kilidi kalkar, UnmatchAsync yeniden hesaplatır
             match.UpdatedAt = now;
         }
         await _db.SaveChangesAsync(ct);
-        // Yalnız eşleştirici: gap çözümü bu hareketle koşsaydı az önce kaldırılan bağı hemen geri kurardı.
-        if (match is not null) await Matcher.MatchAsync(tx, ct);
+        // Kaydedildi: yeniden hesap bu denemenin dışında, UnmatchAsync'te koşar (sınıf özeti).
+        attempts.Recompute = match is not null ? tx : null;
     }
 
     private async Task<Guid?> ResolveWpfCustomerAsync(Guid? shopperId, Guid licenseId, CancellationToken ct)
@@ -363,10 +387,12 @@ public sealed class PaymentMatchReconciler
     /// <summary>Satırın insan kararı: dekont bağı, gerçek müşteri, karar anı. Satır yoksa üçü de boş.</summary>
     private readonly record struct HumanDecision(Guid? PaymentId, Guid? ActualWpfCustomerId, DateTimeOffset? DecidedAt);
 
-    /// <summary>Kaldırmanın denemeleri arasında taşınan durum: ilk denemenin gördüğü insan kararı.</summary>
+    /// <summary>Kaldırmanın denemeleri arasında taşınan durum: ilk denemenin gördüğü insan kararı ve kaydedilen denemenin
+    /// yeniden hesaplatacağı hareket (satırı yoksa null).</summary>
     private sealed class UnmatchAttempts
     {
         public HumanDecision? Seen { get; set; }
+        public BankTransaction? Recompute { get; set; }
     }
 
     /// <summary>Seçilen aday, seçim sorgusuyla satırın izlenerek okunması arasında başka bir karara bağlandı. Jetonun

@@ -18,8 +18,11 @@ namespace OrderDeck.LicenseServer.Pages.Admin.BankaEslestirme;
 /// ve istisna türüyle düşer (<see cref="LogHandled"/>).</para>
 /// <para>Görünüme ham JSON ve IBAN/VKN hash'i çıkmaz (satır modeli onları taşımaz, sorgu okumaz); karşı IBAN yalnız
 /// maskeli. Açıklama ve kanıt admin'e gösterilir. KVKK'yla silinmiş müşterinin kullanıcı adı gösterilmez. Audit ayrıntısı
-/// yalnız kullanıcı adıdır (açıklama, tutar, IBAN girmez) ve taahhüt edilmiş kararın ardından
-/// <see cref="CancellationToken.None"/> ile yazılır: istek o anda iptal edilse karar yazılmış, izi kaybolmuş olurdu.</para>
+/// yalnız kullanıcı adıdır (açıklama, tutar, IBAN girmez). Kararı yazan çağrı (elle eşle, kaldır) ve ardından audit
+/// <see cref="CancellationToken.None"/> ile koşar: sınırlı admin işlemleridir; istek karar kaydedildikten sonra iptal edilse
+/// karar yazılmış, izi ya da bildirimi kaybolmuş olurdu.</para>
+/// <para><b>Kaldır</b> onay ister: dekonta bağlı satırda dekontu bağından koparıp açık gap'e döndürür, bu hareketten öğrenilen
+/// IBAN'ı siler; ikisi de arayüzden geri alınamaz.</para>
 /// <para><b>Banka modülü kapalıyken de sayfa açılır</b> (<see cref="BankHasher.IsValidKey"/>): uyarı basılır, veri
 /// gösterilir, her POST <see cref="BankHasher.DisabledMessage"/> ile döner ve hiçbir şey yazmaz. Bağdaştırıcı, eşleştirici
 /// ve ölçüm <see cref="BankHasher"/> istemez; kurucuya enjekte edilmeleri sayfayı düşürmez.</para></summary>
@@ -31,6 +34,18 @@ public class IndexModel : PageModel
     public const string AmbiguousUsernameMessage = "Bu kullanıcı adı bu lisansta birden çok müşteride var; eşlenmedi.";
     /// <summary>KVKK'yla silinmiş müşterinin kullanıcı adı yerine.</summary>
     public const string PurgedCustomerLabel = "(silinmiş müşteri)";
+
+    /// <summary>Sayfa numarasının üst sınırı: (PageNo - 1) * PageSize int'te taşıp negatif Skip üretmesin.</summary>
+    public const int MaxPageNo = 100_000;
+
+    public const string UnmatchedMessage = "Eşleme kaldırıldı: bu hareketten öğrenilen IBAN silindi, bağlı dekont varsa gap'e döndü, öneri yeniden hesaplandı.";
+
+    /// <summary>Kaldırma kaydedildi, öneriyi yeniden hesaplamak düştü (bkz. <see cref="PaymentMatchReconciler.UnmatchAsync"/>).</summary>
+    public const string UnmatchedNotRecomputedMessage = "Eşleme kaldırıldı: bu hareketten öğrenilen IBAN silindi, bağlı dekont varsa gap'e döndü. Öneri yeniden hesaplanamadı; satır öneri yok durumunda kaldı.";
+
+    /// <summary>Kaldır düğmesinin onay metinleri. Tek tırnaklı JS dizesine gömülür: kesme işareti içeremez.</summary>
+    public const string UnmatchConfirmMessage = "Eşleşme kaldırılacak ve bu hareketten öğrenilen IBAN silinecek. Arayüzden geri alınamaz. Emin misiniz?";
+    public const string UnmatchReceiptConfirmMessage = "Dekonta bağlı eşleşme kaldırılacak: dekontun bu hareketle bağı kopar, dekont yeniden açık gap olur ve bu hareketten öğrenilen IBAN silinir. Arayüzden geri alınamaz. Emin misiniz?";
 
     private readonly LicenseDbContext _db;
     private readonly PaymentMatchReconciler _reconciler;
@@ -79,7 +94,7 @@ public class IndexModel : PageModel
             LicenseId = Guid.Empty;
             return;
         }
-        if (PageNo < 1) PageNo = 1;
+        PageNo = Math.Clamp(PageNo, 1, MaxPageNo);
 
         Summary = await _metrics.ComputeAsync(LicenseId, WindowDays, ct);
         var since = DateTimeOffset.UtcNow.AddDays(-WindowDays);
@@ -131,7 +146,7 @@ public class IndexModel : PageModel
         }
         try
         {
-            await _reconciler.ManualMatchAsync(LicenseId, TransactionId, customerIds[0], ct);
+            await _reconciler.ManualMatchAsync(LicenseId, TransactionId, customerIds[0], CancellationToken.None);
         }
         catch (ObifinValidationException ex)
         {
@@ -146,12 +161,13 @@ public class IndexModel : PageModel
         return Back();
     }
 
-    public async Task<IActionResult> OnPostUnmatchAsync(CancellationToken ct)
+    public async Task<IActionResult> OnPostUnmatchAsync()
     {
         if (BankDisabled) return BankDisabledResult();
+        bool recomputed;
         try
         {
-            await _reconciler.UnmatchAsync(LicenseId, TransactionId, ct);
+            recomputed = await _reconciler.UnmatchAsync(LicenseId, TransactionId, CancellationToken.None);
         }
         catch (ObifinValidationException ex)
         {
@@ -162,7 +178,7 @@ public class IndexModel : PageModel
         // Kaldırma kaydedildi: audit istek iptaliyle düşmesin.
         await _audit.LogAsync(AuditEvents.BankMatchUnmatch, AuditTargets.BankTransaction, TransactionId.ToString(), null,
             CancellationToken.None);
-        TempData["Success"] = "Eşleme kaldırıldı: bu hareketten öğrenilen IBAN silindi, bağlı dekont varsa gap'e döndü, öneri yeniden hesaplandı.";
+        TempData["Success"] = recomputed ? UnmatchedMessage : UnmatchedNotRecomputedMessage;
         return Back();
     }
 
