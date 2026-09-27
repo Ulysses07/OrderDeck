@@ -703,6 +703,56 @@ public sealed class ObifinPollJobTests
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Red_hatasinin_dusen_kaydi_siradaki_baglantinin_kaydiyla_yazilmaz(bool adminChangedIdentity)
+    {
+        // Obifin reddinde hata kaydı düşerse (ör. kısa DB kesintisi) koşu yine başarılı sürer; ama düşen kayıt izleyicide
+        // Modified kalırsa sıradaki bağlantının ilk SaveChanges'i onu da yazar — ve o kaydın kimlik denetimi yalnız
+        // SIRADAKİ bağlantıyı sınar. Admin bu arada A'nın kimliğini düzelttiyse (UpdatedAt + Unverified) eski kimliğin
+        // hatası yeni kaydı ezerdi: kiracılar arası, kimlik korumasını atlayan yazım.
+        var dbName = $"obifin-poll-{Guid.NewGuid():N}";
+        var hook = new SaveHookInterceptor();
+        using var db = NewDb(dbName, hook); var today = new DateOnly(2026, 9, 25);
+        var client = new ScriptedObifin { FailOnCall = 1 }; // ilk çekilen bağlantı (A) Obifin reddi alır
+        var (job, svc, _) = Build(db, client, today);
+        await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        await SeedVerifiedAsync(db, svc, cursor: 0, backfilled: true);
+        client.Transactions.Add(Tx(1, new DateTime(2026, 9, 25, 8, 1, 0), 10m));
+        Guid? failedId = null;
+        hook.BeforeSave = async () =>
+        {
+            hook.BeforeSave = null; // yalnız A'nın hata kaydı düşer
+            // Hata kaydı izleyiciyi boşaltıp bağlantıyı taze okur: izlenen tek bağlantı A'dır.
+            failedId = db.ChangeTracker.Entries<ObifinConnection>().Single().Entity.Id;
+            if (adminChangedIdentity)
+            {
+                using var admin = NewDb(dbName);
+                var c = await admin.ObifinConnections.SingleAsync(x => x.Id == failedId);
+                c.UpdatedAt = c.UpdatedAt.AddSeconds(1); c.Status = ObifinConnectionStatus.Unverified;
+                await admin.SaveChangesAsync();
+            }
+            throw new DbUpdateException("hata kaydı düştü");
+        };
+
+        var act = () => job.RunAsync(CancellationToken.None);
+
+        await act.Should().NotThrowAsync("Obifin reddi koşuyu düşürmez; kayıt hatası bunu değiştirmez");
+        failedId.Should().NotBeNull("A'nın hata kaydı denendi");
+        var aId = failedId!.Value;
+        using var fresh = NewDb(dbName);
+        var a = await fresh.ObifinConnections.SingleAsync(c => c.Id == aId);
+        a.Status.Should().Be(adminChangedIdentity ? ObifinConnectionStatus.Unverified : ObifinConnectionStatus.Verified,
+            "düşen hata kaydı sıradaki bağlantının SaveChanges'iyle yeniden yazılmadı");
+        a.LastError.Should().BeNull();
+        a.LastObifinTransactionId.Should().Be(0);
+        var b = await fresh.ObifinConnections.SingleAsync(c => c.Id != aId);
+        b.LastObifinTransactionId.Should().Be(1, "A'dan sonra gelen B yine çekildi");
+        b.LastPolledAt.Should().NotBeNull();
+        b.LastError.Should().BeNull();
+    }
+
+    [Theory]
     [InlineData(0)]
     [InlineData(-5)]
     public async Task Sayfa_boyutu_sifir_ya_da_negatifse_1000_istenir(int configured)

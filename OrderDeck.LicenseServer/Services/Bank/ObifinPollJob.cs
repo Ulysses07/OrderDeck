@@ -173,6 +173,10 @@ public sealed class ObifinPollJob
             }
             catch (Exception recordEx) when (!(recordEx is OperationCanceledException && ct.IsCancellationRequested))
             {
+                // Düşen kayıt izleyicide Modified kalır. Red yolu RunAsync'in catch'ine (orada da temizlenir) ulaşmaz:
+                // temizlenmezse sıradaki bağlantının ilk SaveChanges'i bu Failed/LastError'ı onun kimlik denetimiyle —
+                // yani bu bağlantının kimliği sınanmadan — yazardı.
+                _db.ChangeTracker.Clear();
                 _log.LogError(recordEx, "Obifin çekimi: hata bağlantıya yazılamadı — bağlantı={ConnectionId}", connectionId);
             }
             if (refused) return;
@@ -189,6 +193,8 @@ public sealed class ObifinPollJob
             }
             catch (Exception recordEx) when (!(recordEx is OperationCanceledException && ct.IsCancellationRequested))
             {
+                // Düşen kayıt izleyicide kalmasın (bkz. yukarıdaki yol): başka bir SaveChanges onu sonradan yazmasın.
+                _db.ChangeTracker.Clear();
                 _log.LogError(recordEx, "Obifin çekimi: beklenmeyen hata bağlantıya yazılamadı — bağlantı={ConnectionId}", connectionId);
             }
             throw;
