@@ -134,9 +134,10 @@ public sealed class PanelPaymentsController : ControllerBase
             return Problem(title: "not-pending", detail: "Bu ödeme zaten karara bağlanmış.", statusCode: 409);
         }
 
+        // Onay commit edildi. Ölçüm etiket ve bildirimden ÖNCE zamanlanır (bkz. ScheduleShadowReconcile).
+        ScheduleShadowReconcile(payment.Id);
         await ApplyConversationLabelAsync(payment, WaLabelEvent.PaymentApproved, ct);
         await NotifyShopperPaymentDecisionAsync(payment, approved: true, reason: null, ct);
-        ScheduleShadowReconcile(payment.Id);
         return NoContent();
     }
 
@@ -184,7 +185,9 @@ public sealed class PanelPaymentsController : ControllerBase
     /// <see cref="PaymentMatchReconcileJob.ApprovalDelay"/> sonrasına zamanlar — dekontun kendi havalesi çekilmeden
     /// koşsaydı aynı tutarlı başka bir havaleyi bağlardı. Onay isteğinde KOŞMAZ: eşleştirme onayı yavaşlatmamalı, hatası
     /// onayı düşürmemeli. Ödeme SaveChanges'inden SONRA: commit olmamış onay için koşan iş "onaylı değil" diye çıkardı.
-    /// Ret bağlanmaz (spec §6 "ret öğretmez").
+    /// Etiket ve bildirimden ÖNCE: onlar istek jetonunu kullanır, etiketin telefon sorgusu da try dışında; istemci commit'ten
+    /// sonra koparsa ya da o sorgu atarsa eylem orada biter ve onay Faz 2 ölçümünden sessizce düşerdi (ne iş, ne gap, ne
+    /// günlük). Ret bağlanmaz (spec §6 "ret öğretmez").
     /// </summary>
     private void ScheduleShadowReconcile(Guid paymentId)
     {

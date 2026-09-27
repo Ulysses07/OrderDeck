@@ -393,6 +393,41 @@ public sealed class PaymentMatchRaceTests
     }
 
     [Fact]
+    public async Task Kaldirmadan_sonra_yeniden_hesap_duserse_satirda_bayat_oneri_kalmaz_gunluge_yigin_izi_yazilir()
+    {
+        // Satırın kullanıcı adı önerisi var; admin öneriyi elle onaylar, sonra kaldırır. Kaldırma kaydedilir, ardından koşan
+        // yeniden hesap düşer (DB kesintisi). Satır "öneri yok" durumunda eski önerinin alanlarını taşımaz: eşleştiricinin
+        // hiç yazmadığı bu karışım sonraki dekont bağını ya da elle eşlemeyi bayat öneriye göre sınıflandırırdı. Günlükte
+        // istisnanın mesajı yok (SQL parametresi taşıyabilir), yığın izi var (programlama hatası iz bırakmalı).
+        var s = await SeedAsync();
+        await using (var first = Ctx())
+            await Recon(first).ManualMatchAsync(s.LicenseId, s.Tx.Id, s.WpfCustomerId, CancellationToken.None);
+        (await RowAsync(s.Tx.Id)).ProposedWpfCustomerId.Should().Be(s.WpfCustomerId);
+        var outage = new BeforeSave(RecomputesUndecided, () => Task.CompletedTask,
+            thenThrow: () => new DbUpdateException("DB kesintisi benzetimi"));
+        await using var admin = Ctx(outage);
+        var log = new LogRecorder<PaymentMatchReconciler>();
+
+        var recomputed = await Recon(admin, log).UnmatchAsync(s.LicenseId, s.Tx.Id, CancellationToken.None);
+
+        recomputed.Should().BeFalse("kaldırma kaydedildi, öneri yeniden hesaplanamadı");
+        outage.Fired.Should().Be(1);
+        var row = await RowAsync(s.Tx.Id);
+        row.Status.Should().Be(PaymentMatchStatus.NoProposal);
+        row.ActualWpfCustomerId.Should().BeNull();
+        row.DecidedAt.Should().BeNull();
+        row.ProposedWpfCustomerId.Should().BeNull("öneri yok durumu öneri taşımaz");
+        row.Layer.Should().Be(PaymentMatchLayer.None);
+        row.Confidence.Should().Be(0m);
+        row.Evidence.Should().BeNull();
+        var warning = log.Entries.Should().ContainSingle(e => e.Level == LogLevel.Warning).Subject.Message;
+        warning.Should().Contain(s.Tx.Id.ToString()).And.Contain(nameof(DbUpdateException));
+        warning.Should().Contain(nameof(PaymentMatcher) + ".", "yığın izi hatanın koptuğu yeri gösterir");
+        warning.Should().NotContain("DB kesintisi benzetimi", "istisna mesajı SQL parametresi taşıyabilir");
+        NoPendingWrites(admin);
+    }
+
+    [Fact]
     public async Task Ayni_odemeyi_ikinci_harekete_baglayan_indeks_ihlali_zaten_bagli_sayilir()
     {
         // Aynı dekontun iki bağdaştırma koşusu (ör. Hangfire'ın çift teslimi) DB'yi farklı anlarda okur: biri yalnız s.Tx'i

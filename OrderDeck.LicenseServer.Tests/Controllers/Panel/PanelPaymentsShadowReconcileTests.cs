@@ -8,6 +8,7 @@ using Hangfire.Storage.Monitoring;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using OrderDeck.LicenseServer.Data;
@@ -15,6 +16,7 @@ using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Bank;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
+using DomainShopper = OrderDeck.LicenseServer.Domain.Shopper;
 
 namespace OrderDeck.LicenseServer.Tests.Controllers.Panel;
 
@@ -47,7 +49,34 @@ public sealed class PanelPaymentsShadowReconcileTests : IClassFixture<ApiFactory
         }
     }
 
-    private static async Task<(HttpClient Client, Guid PaymentId)> SeedAsync(ApiFactory factory)
+    /// <summary>Onay kaydı commit edildikten hemen sonra istemci kopar: onayı yazan SaveChanges tamamlanınca istemcinin
+    /// isteğini iptal eder (TestServer bunu isteğin <c>RequestAborted</c>'ına taşır). Bir kez.</summary>
+    private sealed class DisconnectAfterApprovalCommit : SaveChangesInterceptor
+    {
+        public Guid PaymentId { get; set; }
+        public CancellationTokenSource? Client { get; set; }
+
+        public override ValueTask<int> SavedChangesAsync(SaveChangesCompletedEventData eventData, int result,
+            CancellationToken cancellationToken = default)
+        {
+            if (Client is { } client && eventData.Context!.ChangeTracker.Entries<Payment>()
+                    .Any(e => e.Entity.Id == PaymentId && e.Entity.Status == PaymentStatus.Approved))
+            {
+                Client = null;
+                client.Cancel();
+            }
+            return base.SavedChangesAsync(eventData, result, cancellationToken);
+        }
+    }
+
+    private sealed class DisconnectingApiFactory : ApiFactory
+    {
+        public DisconnectAfterApprovalCommit Disconnect { get; } = new();
+        protected override void ConfigureDbContextOptions(DbContextOptionsBuilder opt) => opt.AddInterceptors(Disconnect);
+    }
+
+    /// <param name="withShopper">Dekont bir shopper'dan: onay sonrası etiket adımı telefonu istek jetonuyla sorgular.</param>
+    private static async Task<(HttpClient Client, Guid PaymentId)> SeedAsync(ApiFactory factory, bool withShopper = false)
     {
         var (client, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(factory);
         using var scope = factory.Services.CreateScope();
@@ -58,11 +87,20 @@ public sealed class PanelPaymentsShadowReconcileTests : IClassFixture<ApiFactory
             Id = Guid.NewGuid(), LicenseKey = "LDK-REC-" + Guid.NewGuid().ToString("N"), CustomerId = customerId, SkuCode = "STD",
             ActivationSlots = 1, IssuedAt = now, ExpiresAt = now.AddDays(30),
         };
+        DomainShopper? shopper = withShopper
+            ? new DomainShopper
+            {
+                Id = Guid.NewGuid(), FullName = "Test Payer", Phone = $"+9055{Random.Shared.Next(10000000, 99999999)}",
+                PasswordHash = $"h-{Guid.NewGuid():N}", Address = "-", CreatedAt = now, UpdatedAt = now,
+            }
+            : null;
         var payment = new Payment
         {
-            Id = Guid.NewGuid(), LicenseId = license.Id, PayerName = "Test Payer", Amount = 250.50m, PaidAt = now.AddHours(-1),
-            ReferansNo = Guid.NewGuid().ToString("N"), Status = PaymentStatus.Pending, CreatedAt = now, UpdatedAt = now,
+            Id = Guid.NewGuid(), LicenseId = license.Id, ShopperId = shopper?.Id, PayerName = "Test Payer", Amount = 250.50m,
+            PaidAt = now.AddHours(-1), ReferansNo = Guid.NewGuid().ToString("N"), Status = PaymentStatus.Pending, CreatedAt = now,
+            UpdatedAt = now,
         };
+        if (shopper is not null) db.Shoppers.Add(shopper);
         db.Licenses.Add(license);
         db.Payments.Add(payment);
         await db.SaveChangesAsync();
@@ -121,5 +159,29 @@ public sealed class PanelPaymentsShadowReconcileTests : IClassFixture<ApiFactory
         using var scope = factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         (await db.Payments.AsNoTracking().SingleAsync(p => p.Id == paymentId)).Status.Should().Be(PaymentStatus.Approved);
+    }
+
+    [Fact]
+    public async Task Istemci_onay_kaydindan_hemen_sonra_koparsa_bagdastirma_yine_bir_kez_zamanlanir()
+    {
+        // Onay commit edildi; istemci hemen ardından koptu. Etiket adımının telefon sorgusu istek jetonunu kullanır ve iptali
+        // görür. Zamanlama o adımlara bağlı kalsaydı onay Faz 2 ölçümünden sessizce düşerdi (ne iş ne gap ne günlük).
+        await using var factory = new DisconnectingApiFactory();
+        var (client, paymentId) = await SeedAsync(factory, withShopper: true);
+        using var disconnect = new CancellationTokenSource();
+        factory.Disconnect.PaymentId = paymentId;
+        factory.Disconnect.Client = disconnect;
+
+        var act = () => client.PostAsync($"/api/panel/payments/{paymentId}/approve", null, disconnect.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>("istemci isteği iptal etti");
+        factory.Disconnect.Client.Should().BeNull("onay kaydı commit edildi, ardından istemci koptu");
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            (await db.Payments.AsNoTracking().SingleAsync(p => p.Id == paymentId)).Status.Should().Be(PaymentStatus.Approved);
+        }
+        ReconcileSchedules(factory, paymentId).Should().ContainSingle("ölçüm etiket ve bildirim adımlarının kaderine bağlı değil");
+        ReconcileEnqueueCount(factory, paymentId).Should().Be(0, "onay anında koşmaz");
     }
 }

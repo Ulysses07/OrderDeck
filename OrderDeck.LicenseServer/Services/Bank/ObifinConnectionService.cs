@@ -62,6 +62,10 @@ public sealed class ObifinConnectionService
     public const string BaseUrlMessage = "BaseUrl mutlak bir https adresi olmalı.";
     public const string ResetConfirmMessage =
         "Kimlik değişikliği bu lisansın banka verisini siler (hareketler, eşleşmeler, IBAN hafızası, hesaplar, banka bağlantıları). Onaylamak için kutuyu işaretleyip tekrar kaydedin.";
+    /// <summary>Onaylı sıfırlamanın eşleşme silmesi yeniden denemede de eşzamanlı bir eşleştirme yazısına takıldı; hiçbir
+    /// şey kaydedilmedi.</summary>
+    public const string ConcurrentMatchWriteMessage =
+        "Eşzamanlı bir eşleştirme yazımı nedeniyle işlem tamamlanamadı; yeniden deneyin.";
 
     /// <summary>DB sütunu 500 (<c>LicenseDbContext</c>).</summary>
     private const int LastErrorMaxLength = 500;
@@ -114,7 +118,8 @@ public sealed class ObifinConnectionService
     /// (varsayılan — güvenli olan) HİÇBİR ŞEY değiştirilmeden <see cref="ShadowResetConfirmationRequiredException"/>
     /// fırlatılır; bu karar tablo başına "var mı" sorgularıyla verilir, satırlar (ham JSON dahil) yüklenmez. Satırlar
     /// yalnız izin varken yüklenir ve silinen, yüklenen kümedir. Silinecek satır yoksa onay gerekmez (imleç yine
-    /// sıfırlanır). İki yol da bir anlık görüntüye bakar: denetimden sonra eklenen satırlar için güvence vermez.</para></summary>
+    /// sıfırlanır). İki yol da bir anlık görüntüye bakar: denetimden sonra eklenen satırlar için güvence vermez. Yüklenen bir
+    /// eşleşmeye kayıttan önce eşzamanlı yazılırsa silme bir kez yeniden denenir (bkz. <see cref="SaveAsync"/>).</para></summary>
     public async Task<ObifinConnection> UpsertAsync(Guid licenseId, string baseUrl, string userCode,
         string? password, string? apiKey, CancellationToken ct, bool allowShadowReset = false)
         => (await UpsertWithResultAsync(licenseId, baseUrl, userCode, password, apiKey, ct, allowShadowReset)).Connection;
@@ -183,8 +188,59 @@ public sealed class ObifinConnectionService
             ? ObifinConnectionStatus.Disabled : ObifinConnectionStatus.Unverified;
         conn.UpdatedAt = now;
         // Silme + kimlik yazımı tek SaveChanges = tek işlem: yarım kalmış sıfırlama olmaz.
-        await _db.SaveChangesAsync(ct);
+        await SaveAsync(licenseId, shadow, ct);
         return new ObifinUpsertResult(conn, shadow?.Any ?? false);
+    }
+
+    /// <summary>Kimlik kaydını (ve varsa gölge veri silmesini) tek SaveChanges'te yazar. <see cref="PaymentMatch.UpdatedAt"/>
+    /// eşzamanlılık jetonudur: yüklenen eşleşmenin DELETE'i <c>WHERE UpdatedAt = özgün</c> taşır. Yüklemeden sonra çekimin
+    /// eşleştiricisi, telafi taraması, dekont bağdaştırması ya da admin satıra yazdıysa kayıt DbUpdateConcurrencyException'la
+    /// düşer ve bütün işlem geri alınır. Çakışan girdilerin HEPSİ eşleşmeyse eşleşmelerin jetonu DB'den tazelenir, silme
+    /// BİR kez yeniden denenir; ikinci çakışma admin'e gösterilebilir <see cref="ConcurrentMatchWriteMessage"/> olur ve düşen
+    /// sıfırlama izleyiciden atılır (kapsamın sonraki bir SaveChanges'i onu tamamlamasın). Başka bir varlığın çakışması
+    /// eskisi gibi yukarı gider.</summary>
+    private async Task SaveAsync(Guid licenseId, ShadowRows? shadow, CancellationToken ct)
+    {
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException ex) when (shadow is { Matches.Count: > 0 } && IsMatchConflict(ex))
+        {
+            _log.LogInformation("Obifin kimliği değişti — lisans={LicenseId}: eşleşme silinirken eşzamanlı bir yazıyla çakıştı; "
+                + "jetonlar tazelenip bir kez yeniden deneniyor", licenseId);
+            await RefreshMatchVersionsAsync(licenseId, shadow.Matches, ct);
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateConcurrencyException again) when (IsMatchConflict(again))
+            {
+                _db.ChangeTracker.Clear();
+                throw new ObifinValidationException(ConcurrentMatchWriteMessage);
+            }
+        }
+    }
+
+    private static bool IsMatchConflict(DbUpdateConcurrencyException ex)
+        => ex.Entries.Count > 0 && ex.Entries.All(e => e.Entity is PaymentMatch);
+
+    /// <summary>Silinmek üzere yüklenmiş eşleşmelerin jetonunu DB'deki değere çeker; arada silinmiş satır izleyiciden ayrılır.
+    /// DELETE'in WHERE'ine yalnız anahtar ve jeton girer. Tek sorgu, satır başına Reload değil: lisansın eşleşmesi binlerce
+    /// olabilir. Yalnız çakıştığı bildirilen girdi değil hepsi tazelenir: SQL Server'da EF ilk çakışan komutta durur,
+    /// sonraki çakışan satırı bildirmez.</summary>
+    private async Task RefreshMatchVersionsAsync(Guid licenseId, List<PaymentMatch> matches, CancellationToken ct)
+    {
+        var versions = await _db.PaymentMatches.AsNoTracking()
+            .Where(m => m.LicenseId == licenseId)
+            .Select(m => new { m.Id, m.UpdatedAt })
+            .ToDictionaryAsync(m => m.Id, m => m.UpdatedAt, ct);
+        foreach (var m in matches)
+        {
+            var entry = _db.Entry(m);
+            if (versions.TryGetValue(m.Id, out var version)) entry.Property(p => p.UpdatedAt).OriginalValue = version;
+            else entry.State = EntityState.Detached;
+        }
     }
 
     /// <summary>Şifre çözülemezse null (anahtar halkası kaybı) — çağıran Failed'a çeker.</summary>

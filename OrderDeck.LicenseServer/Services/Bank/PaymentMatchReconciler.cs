@@ -49,10 +49,12 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// admin'in görmediği bir bağı ya da kararı kaldırmaz.</para>
 /// <para><b>Kaldırmanın ardından yeniden hesap denemenin parçası değildir.</b> Kaldırma kaydedildikten SONRA, yeniden denenen
 /// denemenin dışında koşar. Düşerse (iptal, eşleştiricinin iki çakışması, DB hatası) kaldırma geri alınmaz ve başarılıdır:
-/// günlüğe hareket kimliği ve istisna türü yazılır, <see cref="UnmatchAsync"/> false döner. Satır insan kararsız, öneri yok
-/// durumunda (önceki öneri alanlarıyla) kalır; telafi taraması yalnız satırı olmayan hareketi taradığı için öneri kendiliğinden
-/// yeniden üretilmez, admin satırı yine elle eşleyebilir. Yeniden hesap denemenin içinde olsaydı kaydedilmiş kaldırma yeniden
-/// denenip "çakışma" diye raporlanır, iptal de sayfanın audit'ini düşürürdü.</para>
+/// günlüğe hareket kimliği, istisna türü ve yığın izi yazılır, <see cref="UnmatchAsync"/> false döner. Satır insan kararsız,
+/// öneri yok durumunda kalır; öneri alanlarını kaldırma durumla birlikte boşaltmıştır (eşleştiricinin hiç yazmadığı "öneri yok
+/// + eski öneri" karışımı sonraki dekont bağını ya da elle eşlemeyi bayat öneriye göre sınıflandırırdı). Telafi taraması
+/// yalnız satırı olmayan hareketi taradığı için öneri kendiliğinden yeniden üretilmez, admin satırı yine elle eşleyebilir.
+/// Yeniden hesap denemenin içinde olsaydı kaydedilmiş kaldırma yeniden denenip "çakışma" diye raporlanır, iptal de sayfanın
+/// audit'ini düşürürdü.</para>
 /// <para>Düşen deneme izleyicide iz bırakmaz (bu üç tablonun izlenen satırları ayrılır): kapsamın sonraki SaveChanges'i onu
 /// yeniden denemez. Hareketler izlenmeden okunur.</para>
 /// <para>Günlüğe açıklama, ad ya da IBAN yazılmaz; yalnız kimlikler.</para>
@@ -124,9 +126,10 @@ public sealed class PaymentMatchReconciler
         {
             // Eşleştirici kaydedemediğini izlemede bırakmaz; yine de kapsamın sonraki kaydına (audit) iz taşınmasın.
             Discard();
-            // Mesaj DEĞİL yalnız tür adı: istisna mesajı SQL parametresi taşıyabilir.
+            // Mesaj DEĞİL tür adı ve yığın izi: istisna mesajı SQL parametresi taşıyabilir, yığın izi yalnız çağrı yerlerini;
+            // programlama hatası da iz bırakır.
             _log.LogWarning("Gölge bağdaştırma: hareket {TransactionId} eşlemesi kaldırıldı ama öneri yeniden hesaplanamadı "
-                + "({ErrorType}); satır öneri yok durumunda kaldı", tx.Id, ex.GetType().Name);
+                + "({ErrorType}); satır öneri yok durumunda kaldı. Yığın: {StackTrace}", tx.Id, ex.GetType().Name, ex.StackTrace);
             return false;
         }
     }
@@ -242,6 +245,9 @@ public sealed class PaymentMatchReconciler
             }
             match.PaymentId = null; match.ActualWpfCustomerId = null; match.DecidedAt = null;
             match.Status = PaymentMatchStatus.NoProposal; // insan-kararı kilidi kalkar, UnmatchAsync yeniden hesaplatır
+            // Öneri durumla birlikte boşaltılır: yeniden hesap düşerse satır tutarlı "öneri yok" kalır (sınıf özeti).
+            // Başarılı yeniden hesap bunların üstüne yazar.
+            match.ProposedWpfCustomerId = null; match.Layer = PaymentMatchLayer.None; match.Confidence = 0m; match.Evidence = null;
             match.UpdatedAt = now;
         }
         await _db.SaveChangesAsync(ct);
