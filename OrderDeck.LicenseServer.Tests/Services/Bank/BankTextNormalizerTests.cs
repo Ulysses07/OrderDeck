@@ -1,3 +1,4 @@
+using System.Text;
 using FluentAssertions;
 using OrderDeck.LicenseServer.Services.Bank;
 using Xunit;
@@ -16,24 +17,52 @@ public sealed class BankTextNormalizerTests
     [InlineData("ĞÜLÇİN Buğra", "gulcin bugra")]
     [InlineData("Kâzım Hâlâ Îlim Ûmit", "kazim hala ilim umit")]
     [InlineData("IŞIL İSTANBUL ığüşöç ĞÜLÇİN", "isil istanbul igusoc gulcin")]
-    [InlineData("AYSE GUL\tX\r\nY", "ayse gul x y")]
+    [InlineData("AYSE\u00A0GUL\tX\r\nY", "ayse gul x y")] // bölünmez boşluk (U+00A0), sekme, satır sonu
     public void Normalize_turkce_harf_ve_ayiricilari_sadelestirir(string input, string expected)
         => BankTextNormalizer.Normalize(input).Should().Be(expected);
 
+    // Girdiler kaçış dizisiyle: düz yazılırsa bir yapıştırma ya da editör NFC'ye birleştirir ve test sessizce
+    // birleşik harf testine döner, işaret atlamayı kaldıran bir değişiklik fark edilmez.
     [Theory]
-    [InlineData("Şengül", "sengul")] // ayrıştırılmış (NFD) Şengül — macOS kopyala-yapıştır
-    [InlineData("İstanbul", "istanbul")] // ayrıştırılmış (NFD) İstanbul
-    [InlineData("Doğan", "dogan")] // ayrıştırılmış (NFD) Doğan
+    [InlineData("S\u0327engu\u0308l", "sengul")] // ayrıştırılmış (NFD) Şengül — macOS kopyala-yapıştır
+    [InlineData("I\u0307stanbul", "istanbul")] // ayrıştırılmış (NFD) İstanbul
+    [InlineData("Dog\u0306an", "dogan")] // ayrıştırılmış (NFD) Doğan
     public void Normalize_ayristirilmis_birlesik_isareti_ayirici_saymaz(string input, string expected)
-        => BankTextNormalizer.Normalize(input).Should().Be(expected);
+    {
+        input.IsNormalized(NormalizationForm.FormC).Should().BeFalse("girdi ayrıştırılmış (NFD) kalmalı, yoksa test boşa döner");
+        BankTextNormalizer.Normalize(input).Should().Be(expected);
+    }
 
     [Theory]
     [InlineData("José Hélène Rojên", "jose helene rojen")]
     [InlineData("ＡＹＳＥ", "ayse")] // tam genişlikli "AYSE"
     [InlineData("ﬁliz", "filiz")] // "fi" bitişik harfi
-    [InlineData("ay­se", "ayse")] // yumuşak tire görünmez, kelimeyi bölmez
+    [InlineData("ay\u00ADse", "ayse")] // yumuşak tire (U+00AD) görünmez, kelimeyi bölmez
     public void Normalize_turkce_disi_aksan_ve_uyumluluk_harflerini_sadelestirir(string input, string expected)
         => BankTextNormalizer.Normalize(input).Should().Be(expected);
+
+    [Fact]
+    public void Normalize_gecersiz_utf16_birimini_ayirici_sayar_atmaz()
+    {
+        // UTF-16 sınırından kesilmiş emoji (ObifinPollJob.Trim, IntakeForm FB adı [..64]) eşleşmemiş vekil bırakır;
+        // eşleşmemiş vekil ve U+FFFE ayrıştırmayı patlatır. Girdiler bilerek InlineData'da değil: öznitelik dizesi
+        // UTF-8 saklanır, eşleşmemiş vekil orada U+FFFD'ye döner ve test boşa çıkar.
+        (string Girdi, string Beklenen)[] durumlar =
+        [
+            ("Ayşe\uD83C", "ayse"), // sonda yarıya kesilmiş emoji: yalnız yüksek vekil
+            ("ay\uDC00se", "ay se"), // eşleşmemiş düşük vekil
+            ("ay\uFFFEse", "ay se"), // U+FFFE karakter-dışı
+            ("a\uD800\uD83D\uDE00b", "a b"), // eşleşmemiş vekilin yanındaki tam emoji çifti bozulmaz
+        ];
+        foreach (var (girdi, beklenen) in durumlar)
+        {
+            FluentActions.Invoking(() => girdi.Normalize(NormalizationForm.FormKD))
+                .Should().Throw<ArgumentException>("girdi ayrıştırmayı patlatan geçersiz birim içermeli");
+            BankTextNormalizer.Normalize(girdi).Should().Be(beklenen);
+        }
+        BankTextNormalizer.UsernameKey("gül\uD83C").Should().Be("gul");
+        BankTextNormalizer.UsernameTokens("gül\uD83C34").Should().Equal("gul", "34");
+    }
 
     [Fact]
     public void Tokenlar_ve_bitisik_metin()

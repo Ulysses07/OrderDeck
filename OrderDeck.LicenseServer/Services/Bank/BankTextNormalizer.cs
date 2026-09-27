@@ -17,7 +17,7 @@ public static class BankTextNormalizer
         // Önce uyumluluk ayrıştırması (NFKD): "Ş" → "S"+U+0327, "é" → "e"+U+0301, tam genişlikli "Ａ" → "A",
         // "ﬁ" → "fi". Böylece hem ayrıştırılmış (NFD) girdi hem Türkçe dışı aksanlar aynı ASCII harfe iner;
         // elle tutulan tabloda yalnız ayrıştırması olmayan "ı" kalır.
-        var s = input.IsNormalized(NormalizationForm.FormKD) ? input : input.Normalize(NormalizationForm.FormKD);
+        var s = DecomposeKd(input);
         var lower = s.ToLower(Tr); // tr-TR: 'I' → 'ı'; 'İ' zaten "I"+U+0307 olarak ayrıştı
         var sb = new StringBuilder(lower.Length);
         var lastSpace = true;
@@ -39,6 +39,30 @@ public static class BankTextNormalizer
         }
         if (sb.Length > 0 && sb[^1] == ' ') sb.Length--;
         return sb.ToString();
+    }
+
+    /// <summary>NFKD ayrıştırması, hiç atmadan. Eşleşmemiş vekil ya da U+FFFE ayrıştırmayı patlatır
+    /// (ArgumentException); böyle birim UTF-16 sınırından yarıya kesilmiş emojiden gelir (ObifinPollJob.Trim,
+    /// IntakeForm FB adı [..64]). Eşleştirici asla atmamalı: geçersiz birim ayırıcı (boşluk) sayılır, kalanı yine
+    /// ayrıştırılır. Mutlu yol değişmez; temizlik yalnız istisnada, tek dizi ayırarak yapılır.</summary>
+    private static string DecomposeKd(string input)
+    {
+        try
+        {
+            return input.IsNormalized(NormalizationForm.FormKD) ? input : input.Normalize(NormalizationForm.FormKD);
+        }
+        catch (ArgumentException)
+        {
+            var chars = input.ToCharArray();
+            for (var i = 0; i < chars.Length; i++)
+            {
+                if (char.IsHighSurrogate(chars[i]) && i + 1 < chars.Length && char.IsLowSurrogate(chars[i + 1]))
+                    i++; // tam vekil çifti (ör. bütün emoji) geçerlidir, dokunma
+                else if (char.IsSurrogate(chars[i]) || chars[i] == '\uFFFE')
+                    chars[i] = ' ';
+            }
+            return new string(chars).Normalize(NormalizationForm.FormKD);
+        }
     }
 
     public static TokenizedText Tokenize(string? input)
