@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
@@ -113,9 +114,20 @@ public sealed class ObifinConnectionServiceTests
     private static BankHasher NewHasher()
         => new(Options.Create(new BankOptions { HashKey = $"k-{Guid.NewGuid():N}{Guid.NewGuid():N}" }));
 
-    private static ObifinConnectionService Svc(LicenseDbContext db, IObifinClient client)
+    private static ObifinConnectionService Svc(LicenseDbContext db, IObifinClient client, ILogger<ObifinConnectionService>? log = null)
         => new(db, client, Protection, NewHasher(),
-            Options.Create(new ObifinOptions()), NullLogger<ObifinConnectionService>.Instance);
+            Options.Create(new ObifinOptions()), log ?? NullLogger<ObifinConnectionService>.Instance);
+
+    /// <summary>Her günlük satırını biçimlenmiş metin + (varsa) istisnanın tam metniyle toplar: loga ne girdiğini sınamak için.</summary>
+    private sealed class RecordingLog : ILogger<ObifinConnectionService>
+    {
+        public List<string> Entries { get; } = new();
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+            => Entries.Add(formatter(state, exception) + (exception is null ? "" : " " + exception));
+    }
 
     private static string NewPw() => $"pw-{Guid.NewGuid():N}";
     private static string NewKey() => $"k-{Guid.NewGuid():N}";
@@ -360,7 +372,7 @@ public sealed class ObifinConnectionServiceTests
         var conn = await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
         SeedShadowData(db, conn);
 
-        await svc.UpsertAsync(lic, "", "api2@x", password: null, apiKey: null, CancellationToken.None);
+        await svc.UpsertAsync(lic, "", "api2@x", password: null, apiKey: null, CancellationToken.None, allowShadowReset: true);
 
         conn.LastObifinTransactionId.Should().BeNull();
         conn.BackfillCompletedAt.Should().BeNull();
@@ -384,7 +396,8 @@ public sealed class ObifinConnectionServiceTests
         var conn = await svc.UpsertAsync(lic, "https://a.example.invalid", "api@x", NewPw(), NewKey(), CancellationToken.None);
         SeedShadowData(db, conn);
 
-        await svc.UpsertAsync(lic, "https://b.example.invalid", "api@x", password: null, apiKey: null, CancellationToken.None);
+        await svc.UpsertAsync(lic, "https://b.example.invalid", "api@x", password: null, apiKey: null, CancellationToken.None,
+            allowShadowReset: true);
 
         conn.LastObifinTransactionId.Should().BeNull();
         (await db.BankTransactions.CountAsync()).Should().Be(0);
@@ -441,7 +454,7 @@ public sealed class ObifinConnectionServiceTests
         var backfillB = connB.BackfillCompletedAt;
         var polledB = connB.LastPolledAt;
 
-        await svc.UpsertAsync(licA, "", "api-a2@x", password: null, apiKey: null, CancellationToken.None);
+        await svc.UpsertAsync(licA, "", "api-a2@x", password: null, apiKey: null, CancellationToken.None, allowShadowReset: true);
 
         connA.LastObifinTransactionId.Should().BeNull();
         (await db.BankTransactions.CountAsync(t => t.LicenseId == licA)).Should().Be(0);
@@ -469,10 +482,13 @@ public sealed class ObifinConnectionServiceTests
         SeedShadowData(db, conn);
         var cursor = conn.LastObifinTransactionId;
         var backfill = conn.BackfillCompletedAt;
+        var oldProtected = conn.PasswordProtected;
 
-        // Boş BaseUrl "görüş yok" demektir; varsayılan adresle aynı hesap.
+        // Boş BaseUrl "görüş yok" demektir; varsayılan adresle aynı hesap. allowShadowReset verilmedi (varsayılan):
+        // kimlik değişmediği için onay gerekmez, kayıt yapılır.
         await svc.UpsertAsync(lic, "", "api@x", NewPw(), apiKey: null, CancellationToken.None);
 
+        conn.PasswordProtected.Should().NotBe(oldProtected, "yeni parola kaydedildi");
         conn.LastObifinTransactionId.Should().Be(cursor);
         conn.BackfillCompletedAt.Should().Be(backfill);
         (await db.BankTransactions.CountAsync()).Should().Be(1);
@@ -480,6 +496,95 @@ public sealed class ObifinConnectionServiceTests
         (await db.BankAccounts.CountAsync()).Should().Be(1);
         (await db.CustomerIbanMemories.CountAsync()).Should().Be(1);
         (await db.PaymentMatchGaps.CountAsync()).Should().Be(1);
+        (await db.BankConnections.CountAsync()).Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData("api2@x", "https://a.example.invalid")]
+    [InlineData("api@x", "https://b.example.invalid")]
+    public async Task Kimlik_degisikligi_golge_veri_varken_izinsiz_hicbir_seye_dokunmaz_onay_ister(string userCode, string baseUrl)
+    {
+        // Silme kararının TEK yeri: servis, sileceği satır kümesine bakarak karar verir. İzin (allowShadowReset) yoksa
+        // bağlantı da gölge satırlar da olduğu gibi kalır — istisnadan önce izleyicide bekleyen değişiklik bile yok.
+        var dbName = $"obifin-conn-{Guid.NewGuid():N}";
+        using var db = NewDb(dbName); var lic = SeedLicense(db);
+        var svc = Svc(db, new StubObifin());
+        var conn = await svc.UpsertAsync(lic, "https://a.example.invalid", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        SeedShadowData(db, conn);
+        ObifinConnection before;
+        using (var snapshot = NewDb(dbName)) before = await snapshot.ObifinConnections.AsNoTracking().SingleAsync();
+
+        var act = () => svc.UpsertAsync(lic, baseUrl, userCode, NewPw(), NewKey(), CancellationToken.None);
+
+        (await act.Should().ThrowAsync<ShadowResetConfirmationRequiredException>()).Which.Message
+            .Should().Be(ObifinConnectionService.ResetConfirmMessage);
+        db.ChangeTracker.HasChanges().Should().BeFalse("istisnadan önce hiçbir şey değiştirilmedi");
+        using var fresh = NewDb(dbName);
+        var after = await fresh.ObifinConnections.SingleAsync();
+        after.UserCode.Should().Be(before.UserCode);
+        after.BaseUrl.Should().Be(before.BaseUrl);
+        after.PasswordProtected.Should().Be(before.PasswordProtected);
+        after.ApiKeyProtected.Should().Be(before.ApiKeyProtected);
+        after.UpdatedAt.Should().Be(before.UpdatedAt);
+        after.LastObifinTransactionId.Should().Be(before.LastObifinTransactionId);
+        after.LastError.Should().Be(before.LastError);
+        (await fresh.BankTransactions.CountAsync()).Should().Be(1);
+        (await fresh.PaymentMatches.CountAsync()).Should().Be(1);
+        (await fresh.BankAccounts.CountAsync()).Should().Be(1);
+        (await fresh.CustomerIbanMemories.CountAsync()).Should().Be(1);
+        (await fresh.PaymentMatchGaps.CountAsync()).Should().Be(1);
+        (await fresh.BankConnections.CountAsync()).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Kimlik_degisikligi_golge_veri_yokken_onaysiz_kaydedilir()
+    {
+        // Silinecek satır yoksa onay gerekmez. Eski hesabın imleci yine sıfırlanır: yeni hesapta anlamı yok.
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var svc = Svc(db, new StubObifin());
+        var conn = await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        conn.LastObifinTransactionId = 326404; // satırlar saklama işiyle gitmiş, imleç kalmış
+        await db.SaveChangesAsync();
+
+        var result = await svc.UpsertWithResultAsync(lic, "", "api2@x", password: null, apiKey: null, CancellationToken.None);
+
+        result.ShadowDataReset.Should().BeFalse("silinecek satır yoktu");
+        result.Connection.UserCode.Should().Be("api2@x");
+        result.Connection.LastObifinTransactionId.Should().BeNull();
+        (await db.ObifinConnections.AsNoTracking().SingleAsync()).UserCode.Should().Be("api2@x", "kaydedildi");
+    }
+
+    [Fact]
+    public async Task Izinli_kimlik_degisikligi_golge_verinin_silindigini_bildirir()
+    {
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var svc = Svc(db, new StubObifin());
+        var conn = await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        SeedShadowData(db, conn);
+
+        var result = await svc.UpsertWithResultAsync(lic, "", "api2@x", password: null, apiKey: null, CancellationToken.None,
+            allowShadowReset: true);
+
+        result.ShadowDataReset.Should().BeTrue();
+        (await db.BankTransactions.CountAsync()).Should().Be(0);
+        (await db.ObifinConnections.AsNoTracking().SingleAsync()).UserCode.Should().Be("api2@x");
+    }
+
+    [Fact]
+    public async Task Izin_kimlik_degismeden_hicbir_seyi_silmez()
+    {
+        // allowShadowReset bir izin, emir değil: kimlik aynıysa silme yok.
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var svc = Svc(db, new StubObifin());
+        var conn = await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        SeedShadowData(db, conn);
+
+        var result = await svc.UpsertWithResultAsync(lic, "", "api@x", NewPw(), apiKey: null, CancellationToken.None,
+            allowShadowReset: true);
+
+        result.ShadowDataReset.Should().BeFalse();
+        conn.LastObifinTransactionId.Should().Be(326404);
+        (await db.BankTransactions.CountAsync()).Should().Be(1);
         (await db.BankConnections.CountAsync()).Should().Be(1);
     }
 
@@ -652,6 +757,36 @@ public sealed class ObifinConnectionServiceTests
         conn.Status.Should().Be(ObifinConnectionStatus.Failed);
         conn.LastError.Should().Be("Banka bilgileri hatali");
         (await db.BankConnections.CountAsync()).Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Banka_baglantisi_hata_mesaji_gonderilen_banka_alanlarini_yankilarsa_maskelenir(bool failOnList)
+    {
+        // Obifin ya da bankanın SOAP hatası gönderilen alanı (web servis kullanıcısı/şifresi) geri yankılayabilir:
+        // LastError'a, loga ve yukarı giden istisnaya yalnız maskeli metin gider. Eşleşme harf duyarsız; 3 karakterden
+        // kısa değer maskelenmez (her "ab"yi gizlemek metni okunmaz yapardı). Asıl istisna iç istisna olarak da taşınmaz.
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var bankUser = $"ws-{Guid.NewGuid():N}"; var bankPw = NewPw();
+        var echo = new ObifinApiException(new[] { $"Kullanici {bankUser.ToUpperInvariant()} reddedildi", $"Sifre {bankPw}", "Firma ab yok" });
+        var stub = failOnList ? new StubObifin { ListBankConnectionsError = echo } : new StubObifin { AddBankConnectionError = echo };
+        var log = new RecordingLog();
+        var svc = Svc(db, stub, log);
+        await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        var form = new Dictionary<string, string> { ["KullaniciAdi"] = bankUser, ["Sifre"] = bankPw, ["FirmaKodu"] = "ab" };
+
+        var act = () => svc.AddBankConnectionAsync(lic, "garanti", "G", form, CancellationToken.None);
+
+        var thrown = (await act.Should().ThrowAsync<ObifinApiException>()).Which;
+        thrown.Should().NotBeSameAs(echo);
+        thrown.Messages.Should().Equal("Kullanici [gizli] reddedildi", "Sifre [gizli]", "Firma ab yok");
+        thrown.InnerException.Should().BeNull("asıl istisnanın metni banka kimliğini taşır");
+        var conn = await db.ObifinConnections.SingleAsync();
+        conn.Status.Should().Be(ObifinConnectionStatus.Failed);
+        conn.LastError.Should().Be("Kullanici [gizli] reddedildi | Sifre [gizli] | Firma ab yok");
+        log.Entries.Should().NotBeEmpty().And.OnlyContain(e =>
+            !e.Contains(bankUser, StringComparison.OrdinalIgnoreCase) && !e.Contains(bankPw, StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]

@@ -30,15 +30,15 @@ public static class AuditEvents
     public const string NetgsmAccountDisable = "netgsm.account.disable";
     public const string NetgsmAccountEnable = "netgsm.account.enable";
 
+    // §6 — ayrılışta İYS onay listesi dışa aktarımı. Dönüş yolunun taşıyıcısı:
+    // İYS bir markanın onay listesini vermez, /iys/search numara listesi ister.
+    public const string NetgsmAccountExport = "netgsm.account.export";
+
     // Obifin banka hareketi çekimi (admin/obifin). Ayrıntıya şifre, API anahtarı ve banka web servis kimliği GİRMEZ.
     public const string ObifinConnectionSave = "obifin.connection.save";
     public const string ObifinConnectionVerify = "obifin.connection.verify";
     public const string ObifinBankAdd = "obifin.bank.add";
     public const string ObifinPollNow = "obifin.poll.now";
-
-    // §6 — ayrılışta İYS onay listesi dışa aktarımı. Dönüş yolunun taşıyıcısı:
-    // İYS bir markanın onay listesini vermez, /iys/search numara listesi ister.
-    public const string NetgsmAccountExport = "netgsm.account.export";
 }
 
 public static class AuditTargets

@@ -89,8 +89,8 @@
         <select name="LicenseId" class="form-select" required>@{ await LicenseOptionsAsync(Model.Licenses); }</select></div>
     <div class="col-md-4"><label class="form-label">BaseUrl (boş = varsayılan)</label><input name="BaseUrl" class="form-control" value="@Model.BaseUrl" /></div>
     <div class="col-md-4"><label class="form-label">Kullanıcı (e-posta)</label><input name="UserCode" class="form-control" value="@Model.UserCode" required /></div>
-    <div class="col-md-4"><label class="form-label">Şifre @(Model.Editing?.PasswordStored == true ? "(kayıtlı; boş = değiştirme)" : "")</label><input name="Password" type="password" class="form-control" autocomplete="new-password" /></div>
-    <div class="col-md-4"><label class="form-label">API anahtarı @(Model.Editing?.ApiKeyStored == true ? "(kayıtlı; boş = değiştirme)" : "")</label><input name="ApiKey" type="password" class="form-control" autocomplete="new-password" /></div>
+    <div class="col-md-4"><label class="form-label">Şifre @(Model.Editing?.PasswordStored == true ? "(kayıtlı; boş = değiştirme)" : "(boş = değiştirme)")</label><input name="Password" type="password" class="form-control" autocomplete="new-password" /></div>
+    <div class="col-md-4"><label class="form-label">API anahtarı @(Model.Editing?.ApiKeyStored == true ? "(kayıtlı; boş = değiştirme)" : "(boş = değiştirme)")</label><input name="ApiKey" type="password" class="form-control" autocomplete="new-password" /></div>
     <div class="col-md-4 align-self-end"><button class="btn btn-primary">Kaydet</button></div>
     <div class="col-12"><div class="form-check">
         <input class="form-check-input" type="checkbox" name="ConfirmReset" value="true" id="confirmReset" />
@@ -108,7 +108,7 @@
     <div class="col-md-3"><label class="form-label">Etiket</label><input name="Label" class="form-control" placeholder="QNB ana hesap" /></div>
     @foreach (var f in new[] { "KullaniciAdi", "Sifre", "Url", "FirmaKodu", "FirmaAnahtar", "TanimNumarasi", "ClientId", "ClientSecret", "AccessToken", "RefreshToken", "APIKey", "APISecret" })
     {
-        <div class="col-md-3"><label class="form-label">@f</label><input name="@("Field_" + f)" class="form-control" type="@(f is "Sifre" or "ClientSecret" or "APISecret" ? "password" : "text")" autocomplete="new-password" /></div>
+        <div class="col-md-3"><label class="form-label">@f</label><input name="@("Field_" + f)" class="form-control" type="@(IndexModel.IsMaskedBankField(f) ? "password" : "text")" autocomplete="new-password" /></div>
     }
     <div class="col-md-3 align-self-end"><button class="btn btn-outline-primary">Obifin'e ekle</button></div>
 </form>

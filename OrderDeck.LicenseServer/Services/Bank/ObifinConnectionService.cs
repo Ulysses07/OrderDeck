@@ -9,6 +9,17 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 
 public sealed record ObifinVerifyResult(bool Ok, string? Error, int AccountCount);
 
+/// <summary><see cref="ObifinConnectionService.UpsertWithResultAsync"/> sonucu. <see cref="ShadowDataReset"/>: kimlik
+/// değişti ve lisansın gölge satırları silindi (audit ve admin bildirimi için — silme kararı yine servisin).</summary>
+public sealed record ObifinUpsertResult(ObifinConnection Connection, bool ShadowDataReset);
+
+/// <summary>Kimlik (kullanıcı kodu ya da adres) değişimi lisansın gölge verisini silecekti ve çağıran buna izin vermedi
+/// (<c>allowShadowReset</c>). Hiçbir şey değiştirilmemiş, hiçbir şey kaydedilmemiştir.</summary>
+public sealed class ShadowResetConfirmationRequiredException : InvalidOperationException
+{
+    public ShadowResetConfirmationRequiredException() : base(ObifinConnectionService.ResetConfirmMessage) { }
+}
+
 /// <summary>
 /// Lisans başına Obifin bağlantısı: kimlikleri şifreli saklar (DataProtection, Netgsm kalıbı),
 /// doğrular (`hesaplistesi`), banka bağlantısı ekler (banka kimliği SAKLANMAZ — spec §3) ve
@@ -27,6 +38,13 @@ public sealed class ObifinConnectionService
     public const string UndecryptableMessage = "Saklı Obifin kimliği çözülemedi. Kimlik bilgilerini yeniden girin.";
     public const string NonAsciiMessage = "Obifin kimlik bilgileri yalnız ASCII karakter içerebilir.";
     public const string BaseUrlMessage = "BaseUrl mutlak bir https adresi olmalı.";
+    public const string ResetConfirmMessage =
+        "Kimlik değişikliği bu lisansın banka verisini siler (hareketler, eşleşmeler, IBAN hafızası). Onaylamak için kutuyu işaretleyip tekrar kaydedin.";
+    /// <summary>Banka hata metninde gönderilen banka alanının yerine geçer (bkz. <see cref="RedactBankFields"/>).</summary>
+    private const string RedactedMarker = "[gizli]";
+    /// <summary>Bundan kısa banka alanı maskelenmez: iki harflik bir değeri her geçtiği yerde gizlemek metni okunmaz yapar,
+    /// bu uzunlukta bir değer de kimlik sayılmaz.</summary>
+    private const int RedactMinLength = 3;
 
     /// <summary>DB sütunu 500 (<c>LicenseDbContext</c>).</summary>
     private const int LastErrorMaxLength = 500;
@@ -74,9 +92,19 @@ public sealed class ObifinConnectionService
     /// <para>Kullanıcı kodu ya da (boş olmayan) adres değişirse eski hesabın imleci ve gölge verisi yeni hesap
     /// için anlamsızdır: imleç sıfırlanır, hareket/hesap/eşleşme/IBAN hafızası/boşluk satırları ve eski hesabın
     /// <c>BankaApiId</c>'lerini taşıyan banka bağlantıları silinir. Aynı hesaba yeni parola girmek hiçbir şeye
-    /// dokunmaz.</para></summary>
+    /// dokunmaz.</para>
+    /// <para><b>Silme kararının tek yeri burası.</b> Silinecek satır varsa ve <paramref name="allowShadowReset"/> verilmediyse
+    /// (varsayılan — güvenli olan) HİÇBİR ŞEY değiştirilmeden <see cref="ShadowResetConfirmationRequiredException"/>
+    /// fırlatılır. Karar, silinecek satır kümesinin kendisine bakılarak verilir (ayrı bir "var mı" sorgusuyla değil): onaysız
+    /// geçen küme boştur ve silinen de odur. Silinecek satır yoksa onay gerekmez (imleç yine sıfırlanır).</para></summary>
     public async Task<ObifinConnection> UpsertAsync(Guid licenseId, string baseUrl, string userCode,
-        string? password, string? apiKey, CancellationToken ct)
+        string? password, string? apiKey, CancellationToken ct, bool allowShadowReset = false)
+        => (await UpsertWithResultAsync(licenseId, baseUrl, userCode, password, apiKey, ct, allowShadowReset)).Connection;
+
+    /// <summary><see cref="UpsertAsync"/>'in aynısı; gölge verinin silinip silinmediğini de döner (admin sayfasının audit
+    /// kaydı ve bildirimi için — karar burada verilir, çağıran yalnız izni taşır).</summary>
+    public async Task<ObifinUpsertResult> UpsertWithResultAsync(Guid licenseId, string baseUrl, string userCode,
+        string? password, string? apiKey, CancellationToken ct, bool allowShadowReset = false)
     {
         userCode = (userCode ?? "").Trim();
         if (userCode.Length == 0) throw new ArgumentException("Kullanıcı adı boş olamaz.", nameof(userCode));
@@ -103,6 +131,7 @@ public sealed class ObifinConnectionService
         var conn = await _db.ObifinConnections.FirstOrDefaultAsync(c => c.LicenseId == licenseId, ct);
         var now = DateTimeOffset.UtcNow;
         var credentialChanged = false;
+        ShadowRows? shadow = null;
         if (conn is null)
         {
             if (string.IsNullOrWhiteSpace(password) || string.IsNullOrWhiteSpace(apiKey))
@@ -117,18 +146,26 @@ public sealed class ObifinConnectionService
             // Saklı adres de kırpılarak karşılaştırılır: yapılandırmadan gelen varsayılan adres '/' ile bitebilir.
             credentialChanged = !string.Equals(conn.UserCode, userCode, StringComparison.Ordinal)
                 || (explicitBaseUrl is not null && !string.Equals(conn.BaseUrl.TrimEnd('/'), explicitBaseUrl, StringComparison.Ordinal));
+            if (credentialChanged)
+            {
+                // Onay kararı ve silme AYNI yüklenmiş kümeye bakar: yalnız burada görülen satırlar silinir, onaysız geçen
+                // (boş) küme hiçbir şey silmez. Yüklemeden sonra çekim işinin eklediği satır kümede yoktur, silinmez (çekim
+                // işi kimlik değişimini kendi kaydından önce denetler). Bağlantıya henüz dokunulmadı.
+                shadow = await LoadShadowRowsAsync(licenseId, ct);
+                if (shadow.Any && !allowShadowReset) throw new ShadowResetConfirmationRequiredException();
+            }
         }
         conn.BaseUrl = explicitBaseUrl ?? _opt.DefaultBaseUrl;
         conn.UserCode = userCode;
         if (!string.IsNullOrWhiteSpace(password)) conn.PasswordProtected = _passwordProtector.Protect(password);
         if (!string.IsNullOrWhiteSpace(apiKey)) conn.ApiKeyProtected = _apiKeyProtector.Protect(apiKey);
-        if (credentialChanged) await ResetShadowDataAsync(conn, ct);
+        if (shadow is not null) ResetShadowData(conn, shadow);
         conn.Status = conn.Status == ObifinConnectionStatus.Disabled && !credentialChanged
             ? ObifinConnectionStatus.Disabled : ObifinConnectionStatus.Unverified;
         conn.UpdatedAt = now;
         // Silme + kimlik yazımı tek SaveChanges = tek işlem: yarım kalmış sıfırlama olmaz.
         await _db.SaveChangesAsync(ct);
-        return conn;
+        return new ObifinUpsertResult(conn, shadow?.Any ?? false);
     }
 
     /// <summary>Şifre çözülemezse null (anahtar halkası kaybı) — çağıran Failed'a çeker.</summary>
@@ -175,7 +212,11 @@ public sealed class ObifinConnectionService
     /// <summary>Banka kimliklerini Obifin'e iletir, listeden etiketle `BankaApiId`'yi bulur; kimlikleri saklamaz.
     /// İstemci hatası doğrulamadaki gibi sınıflandırılıp bağlantıya yazılır; dönüş tipi başarısızlık taşıyamadığından
     /// istisna yine yukarı gider. Ekle + liste başarısı da doğrulamadaki gibi kaydedilir (bkz.
-    /// <see cref="MarkVerified"/>).</summary>
+    /// <see cref="MarkVerified"/>).
+    /// <para>Obifin ya da bankanın SOAP hatası gönderilen banka alanını (web servis kullanıcısı/şifresi) yankılayabilir:
+    /// <see cref="ObifinApiException"/> mesajları LastError'a, loga ve yukarıya gitmeden önce maskelenir
+    /// (<see cref="RedactBankFields"/>) ve istisna maskeli mesajlarla YENİDEN kurulur — asıl istisna iç istisna olarak da
+    /// taşınmaz. Günlüğe istisna nesnesi değil, yalnız türü ve maskeli metin gider.</para></summary>
     public async Task<BankConnection> AddBankConnectionAsync(Guid licenseId, string bankaKodu, string label,
         IReadOnlyDictionary<string, string> bankForm, CancellationToken ct)
     {
@@ -204,9 +245,18 @@ public sealed class ObifinConnectionService
             await _client.AddBankConnectionAsync(creds, bankaKodu, form, ct);
             listed = await _client.ListBankConnectionsAsync(creds, ct);
         }
-        catch (Exception ex) when (DescribeClientFailure(ex, ct) is { } msg)
+        catch (Exception ex) when (DescribeClientFailure(ex, ct) is not null)
         {
-            await MarkFailedAsync(conn, ex, msg, "banka bağlantısı ekleme", now, ct);
+            // Diğer sınıfların (ağ/vekil/zaman aşımı) kayda geçen metni zaten sabit ("Obifin'e ulaşılamadı (Tür)").
+            var redacted = ex is ObifinApiException api
+                ? new ObifinApiException(api.Messages.Select(m => RedactBankFields(m, bankForm)).ToList())
+                : null;
+            var msg = DescribeClientFailure(redacted ?? ex, ct)!;
+            _log.LogWarning("Obifin banka bağlantısı ekleme başarısız ({ExceptionType}) — lisans={LicenseId}: {Error}",
+                ex.GetType().Name, conn.LicenseId, msg);
+            MarkFailed(conn, msg, now);
+            await _db.SaveChangesAsync(ct);
+            if (redacted is not null) throw redacted;
             throw;
         }
         // İki çağrı da geçti = kimlik çalışıyor; durum + satır aşağıdaki tek SaveChanges'te.
@@ -327,7 +377,25 @@ public sealed class ObifinConnectionService
         await _db.SaveChangesAsync(ct);
     }
 
-    /// <summary>Kimlik değişti: imleç alanları null, lisansın gölge satırları silinmek üzere işaretlenir
+    /// <summary>Kimlik değişiminde silinecek gölge satırlar — onay kararı ve silme bu TEK kümeye bakar.</summary>
+    private sealed record ShadowRows(List<PaymentMatch> Matches, List<BankTransaction> Transactions,
+        List<BankAccount> Accounts, List<CustomerIbanMemory> Memories, List<PaymentMatchGap> Gaps,
+        List<BankConnection> BankConnections)
+    {
+        public bool Any => Matches.Count + Transactions.Count + Accounts.Count + Memories.Count + Gaps.Count
+            + BankConnections.Count > 0;
+    }
+
+    /// <summary>Lisansın gölge satırlarını izlenen olarak yükler; bir şeyi değiştirmez.</summary>
+    private async Task<ShadowRows> LoadShadowRowsAsync(Guid licenseId, CancellationToken ct) => new(
+        await _db.PaymentMatches.Where(m => m.LicenseId == licenseId).ToListAsync(ct),
+        await _db.BankTransactions.Where(t => t.LicenseId == licenseId).ToListAsync(ct),
+        await _db.BankAccounts.Where(a => a.LicenseId == licenseId).ToListAsync(ct),
+        await _db.CustomerIbanMemories.Where(m => m.LicenseId == licenseId).ToListAsync(ct),
+        await _db.PaymentMatchGaps.Where(g => g.LicenseId == licenseId).ToListAsync(ct),
+        await _db.BankConnections.Where(b => b.LicenseId == licenseId).ToListAsync(ct));
+
+    /// <summary>Kimlik değişti: imleç alanları null, yüklenmiş gölge satırlar silinmek üzere işaretlenir
     /// (kaydetmez — çağıranın SaveChanges'i ile tek işlem). İzlenen <c>RemoveRange</c>, <c>ExecuteDelete</c>
     /// değil: o hemen ve işlem dışı koşar, InMemory'de de yok. Nadir bir admin işlemi; satır sayısı küçük.
     /// <para>Banka bağlantıları da gider: <c>BankaApiId</c> eski Obifin hesabının kimliğidir — yeni hesapta ya
@@ -335,15 +403,10 @@ public sealed class ObifinConnectionService
     /// atar, hesap tazeleme Id çakışmasında yanlış bağlantıya bağlardı ve yeni hesapta aynı Id ile eklenen
     /// kayıt tekil index'e (LicenseId, BankaApiId) takılırdı. Obifin'deki eski kayıtlara dokunulmaz: o hesabın
     /// kimliği artık elimizde değil.</para></summary>
-    private async Task ResetShadowDataAsync(ObifinConnection conn, CancellationToken ct)
+    private void ResetShadowData(ObifinConnection conn, ShadowRows shadow)
     {
         var licenseId = conn.LicenseId;
-        var matches = await _db.PaymentMatches.Where(m => m.LicenseId == licenseId).ToListAsync(ct);
-        var transactions = await _db.BankTransactions.Where(t => t.LicenseId == licenseId).ToListAsync(ct);
-        var accounts = await _db.BankAccounts.Where(a => a.LicenseId == licenseId).ToListAsync(ct);
-        var memories = await _db.CustomerIbanMemories.Where(m => m.LicenseId == licenseId).ToListAsync(ct);
-        var gaps = await _db.PaymentMatchGaps.Where(g => g.LicenseId == licenseId).ToListAsync(ct);
-        var bankConnections = await _db.BankConnections.Where(b => b.LicenseId == licenseId).ToListAsync(ct);
+        var (matches, transactions, accounts, memories, gaps, bankConnections) = shadow;
         _db.PaymentMatches.RemoveRange(matches);
         _db.BankTransactions.RemoveRange(transactions);
         _db.BankAccounts.RemoveRange(accounts);
@@ -380,6 +443,16 @@ public sealed class ObifinConnectionService
             _ => null,
         };
         return msg is { Length: > LastErrorMaxLength } ? msg[..LastErrorMaxLength] : msg;
+    }
+
+    /// <summary>Gönderilen her banka alanı değerinin (en az <see cref="RedactMinLength"/> karakter) mesajdaki her geçişini
+    /// <see cref="RedactedMarker"/> yapar — sıralı, harf duyarsız. Uzun değer önce: kısa bir değer uzunun parçasıysa önce
+    /// o değiştirilseydi uzun değerin kalanı açıkta kalırdı.</summary>
+    private static string RedactBankFields(string message, IReadOnlyDictionary<string, string> bankForm)
+    {
+        foreach (var value in bankForm.Values.Where(v => v.Length >= RedactMinLength).OrderByDescending(v => v.Length))
+            message = message.Replace(value, RedactedMarker, StringComparison.OrdinalIgnoreCase);
+        return message;
     }
 
     private static bool IsPrintableAscii(string value) => value.All(c => c is >= ' ' and <= '~');

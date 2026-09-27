@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
@@ -20,8 +21,7 @@ namespace OrderDeck.LicenseServer.Tests.Pages.Admin;
 
 public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
 {
-    private const string ResetConfirmMessage =
-        "Kimlik değişikliği bu lisansın banka verisini siler (hareketler, eşleşmeler, IBAN hafızası). Onaylamak için kutuyu işaretleyip tekrar kaydedin.";
+    private const string ResetConfirmMessage = ObifinConnectionService.ResetConfirmMessage;
 
     private readonly ApiFactory _factory;
     public AdminObifinPageTests(ApiFactory factory) => _factory = factory;
@@ -33,28 +33,65 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
             => new Dictionary<string, string?> { ["OrderDeck:Bank:HashKey"] = "" };
     }
 
-    /// <summary>Banka eklemede istenen istisnayı fırlatan istemci; başka çağrı beklenmez.</summary>
-    private sealed class FailingAddObifin : IObifinClient
+    /// <summary>Betikli istemci: başarılı ekleme kaydı banka bağlantı listesine koyar (BankaApiId rastgele), hesap listesi
+    /// boş döner; ayarlanan çağrı istenen istisnayı fırlatır. Kaldırma/hareket çağrısı beklenmez.</summary>
+    private sealed class PageObifin : IObifinClient
     {
-        public Func<Exception> AddFails { get; set; } = () => new HttpRequestException("ağ");
+        /// <summary>Null = ekleme başarılı.</summary>
+        public Func<Exception>? AddFails { get; set; }
+        /// <summary>Null = hesap listesi boş döner.</summary>
+        public Func<Exception>? ListAccountsFails { get; set; }
+        private readonly List<ObifinBankConnectionDto> _connections = new();
+
         public Task AddBankConnectionAsync(ObifinCredentials c, string b, IReadOnlyDictionary<string, string> f, CancellationToken ct = default)
-            => Task.FromException(AddFails());
+        {
+            if (AddFails is { } fail) return Task.FromException(fail());
+            lock (_connections) _connections.Add(new ObifinBankConnectionDto(Random.Shared.NextInt64(1, 1_000_000), b, f["BankaApiAdi"], true));
+            return Task.CompletedTask;
+        }
         public Task<IReadOnlyList<ObifinAccountDto>> ListAccountsAsync(ObifinCredentials c, CancellationToken ct = default)
-            => throw new NotSupportedException("Bu testte beklenmiyor.");
+            => ListAccountsFails is { } fail
+                ? Task.FromException<IReadOnlyList<ObifinAccountDto>>(fail())
+                : Task.FromResult<IReadOnlyList<ObifinAccountDto>>(Array.Empty<ObifinAccountDto>());
         public Task<IReadOnlyList<ObifinBankConnectionDto>> ListBankConnectionsAsync(ObifinCredentials c, CancellationToken ct = default)
-            => throw new NotSupportedException("Bu testte beklenmiyor.");
+        {
+            lock (_connections) return Task.FromResult<IReadOnlyList<ObifinBankConnectionDto>>(_connections.ToList());
+        }
         public Task RemoveBankConnectionAsync(ObifinCredentials c, long id, CancellationToken ct = default)
             => throw new NotSupportedException("Bu testte beklenmiyor.");
         public Task<ObifinPage<ObifinTransactionDto>> ListTransactionsAsync(ObifinCredentials c, DateOnly f, DateOnly t, long? s, int p, int ps, CancellationToken ct = default)
             => throw new NotSupportedException("Bu testte beklenmiyor.");
     }
 
-    private sealed class FailingAddApiFactory : ApiFactory
+    /// <summary>Uyarı düzeyindeki günlük satırlarını biçimlenmiş metin + (varsa) istisnanın tam metniyle toplar.</summary>
+    private sealed class WarningRecorder : ILoggerProvider
     {
-        public FailingAddObifin Obifin { get; } = new();
+        private readonly List<string> _warnings = new();
+        public List<string> Warnings { get { lock (_warnings) return _warnings.ToList(); } }
+        public ILogger CreateLogger(string categoryName) => new Recorder(this);
+        public void Dispose() { }
+
+        private sealed class Recorder(WarningRecorder owner) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+            public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Warning;
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                Func<TState, Exception?, string> formatter)
+            {
+                if (logLevel < LogLevel.Warning) return;
+                lock (owner._warnings) owner._warnings.Add(formatter(state, exception) + (exception is null ? "" : " " + exception));
+            }
+        }
+    }
+
+    private sealed class StubObifinApiFactory : ApiFactory
+    {
+        public PageObifin Obifin { get; } = new();
+        public WarningRecorder Log { get; } = new();
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             base.ConfigureWebHost(builder);
+            builder.ConfigureLogging(l => l.AddProvider(Log));
             builder.ConfigureTestServices(s =>
             {
                 s.RemoveAll<IObifinClient>();
@@ -163,9 +200,41 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         await db.SaveChangesAsync();
     }
 
-    private int PollEnqueueCount(Guid connectionId)
-        => _factory.Services.GetRequiredService<JobStorage>().GetMonitoringApi().EnqueuedJobs("default", 0, 1000).Count(j =>
-            j.Value.Job.Type == typeof(ObifinPollJob) && j.Value.Job.Args.Contains((object)connectionId));
+    private int PollEnqueueCount(Guid connectionId) => PollEnqueueCount(_factory, connectionId);
+
+    /// <summary><paramref name="connectionId"/> null = tüm çekim işleri.</summary>
+    private static int PollEnqueueCount(ApiFactory factory, Guid? connectionId)
+        => factory.Services.GetRequiredService<JobStorage>().GetMonitoringApi().EnqueuedJobs("default", 0, 1000).Count(j =>
+            j.Value.Job.Type == typeof(ObifinPollJob) && (connectionId is null || j.Value.Job.Args.Contains((object)connectionId.Value)));
+
+    /// <summary>Bağlantıyı servissiz, doğrudan DB'ye yazar (modül kapalıyken servis kurulamaz). Verified: koruma eksik
+    /// olsaydı Doğrula / Şimdi çek ona dokunurdu. Korunan alanlar sahte, üretilmiş metin.</summary>
+    private static async Task<ObifinConnection> SeedRawConnectionAsync(ApiFactory factory, Guid licenseId)
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var now = DateTimeOffset.UtcNow.AddMinutes(-1);
+        var conn = new ObifinConnection { Id = Guid.NewGuid(), LicenseId = licenseId, BaseUrl = "https://example.invalid",
+            UserCode = "api@x", PasswordProtected = $"p-{Guid.NewGuid():N}", ApiKeyProtected = $"a-{Guid.NewGuid():N}",
+            Status = ObifinConnectionStatus.Verified, CreatedAt = now, UpdatedAt = now };
+        db.ObifinConnections.Add(conn);
+        await db.SaveChangesAsync();
+        return conn;
+    }
+
+    private static Task<HttpResponseMessage> AddBankAsync(HttpClient client, Guid licenseId, string bankUser, string bankPw)
+        => PostAsync(client, "AddBank", new Dictionary<string, string>
+        {
+            ["LicenseId"] = licenseId.ToString(), ["BankaKodu"] = "isbank", ["Label"] = "Is",
+            ["Field_KullaniciAdi"] = bankUser, ["Field_Sifre"] = bankPw,
+        });
+
+    private static async Task<HttpResponseMessage> PostAsync(HttpClient client, string handler, Dictionary<string, string> fields)
+        => await client.PostAsync($"/admin/obifin?handler={handler}", await FormAsync(client, "/admin/obifin", fields));
+
+    /// <summary>Sayfanın bildirim şeridi (TempData, _ToastPartial) — kind: "success" | "danger".</summary>
+    private static async Task<string?> ToastAsync(HttpClient client, string kind)
+        => (await ParseAsync(await client.GetStringAsync("/admin/obifin"))).QuerySelector($".alert-{kind}.alert-dismissible")?.TextContent.Trim();
 
     [Fact]
     public async Task Girissiz_istek_login_e_yonlenir()
@@ -266,7 +335,7 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
     {
         // Zaman aşımı (HttpClient.Timeout → TaskCanceledException, isteğin kendi jetonu iptal DEĞİL), ağ ve vekil hataları:
         // sayfa düşmez; ham istisna metni (İngilizce ağ metni, vekil HTML'i) yerine sınıflandırılmış kısa metin görünür.
-        using var factory = new FailingAddApiFactory();
+        using var factory = new StubObifinApiFactory();
         var marker = $"ham-{Guid.NewGuid():N}";
         factory.Obifin.AddFails = () => exceptionType == typeof(ObifinProtocolException)
             ? new ObifinProtocolException(marker)
@@ -295,13 +364,18 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
             .Should().Be(0);
     }
 
-    [Fact]
-    public async Task Banka_modulu_kapaliyken_sayfa_acilir_POST_hicbir_sey_yazmaz()
+    [Theory]
+    [InlineData("Save")]
+    [InlineData("Verify")]
+    [InlineData("AddBank")]
+    [InlineData("PollNow")]
+    public async Task Banka_modulu_kapaliyken_sayfa_acilir_POST_hicbir_sey_yazmaz(string handler)
     {
         // Anahtar yok: BankHasher (ve ona bağlı bağlantı servisi) kurulamaz. Sayfa 500 değil, açık bir uyarı gösterir;
-        // POST'lar aynı mesajla döner, Obifin'e ve DB'ye dokunmaz.
+        // her POST (her işleyicinin kendi koruması var) aynı mesajla döner, Obifin'e, DB'ye ve kuyruğa dokunmaz.
         using var factory = new DisabledBankApiFactory();
         var licenseId = await SeedLicenseAsync(factory);
+        var conn = await SeedRawConnectionAsync(factory, licenseId);
         var client = await factory.CreateLoggedInAdminClientAsync();
 
         var get = await client.GetAsync("/admin/obifin");
@@ -310,17 +384,101 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         var doc = await ParseAsync(await get.Content.ReadAsStringAsync());
         doc.QuerySelector("[data-banner='bank-disabled']")!.TextContent.Trim().Should().Be(BankHasher.DisabledMessage);
 
-        var post = await client.PostAsync("/admin/obifin?handler=Save", await FormAsync(client, "/admin/obifin", new Dictionary<string, string>
+        var fields = new Dictionary<string, string> { ["LicenseId"] = licenseId.ToString() };
+        if (handler == "Save")
         {
-            ["LicenseId"] = licenseId.ToString(), ["UserCode"] = "api@x", ["Password"] = $"pw-{Guid.NewGuid():N}", ["ApiKey"] = $"k-{Guid.NewGuid():N}",
-        }));
+            fields["UserCode"] = $"yeni-{Guid.NewGuid():N}@x";
+            fields["Password"] = $"pw-{Guid.NewGuid():N}";
+            fields["ApiKey"] = $"k-{Guid.NewGuid():N}";
+            fields["ConfirmReset"] = "true";
+        }
+        if (handler == "AddBank")
+        {
+            fields["BankaKodu"] = "isbank"; fields["Label"] = "Is";
+            fields["Field_KullaniciAdi"] = $"ws-{Guid.NewGuid():N}"; fields["Field_Sifre"] = $"pw-{Guid.NewGuid():N}";
+        }
+        var post = await PostAsync(client, handler, fields);
 
         post.StatusCode.Should().Be(HttpStatusCode.Redirect);
-        (await ParseAsync(await client.GetStringAsync("/admin/obifin"))).QuerySelector(".alert-danger.alert-dismissible")!
-            .TextContent.Trim().Should().Be(BankHasher.DisabledMessage, "POST aynı mesajla döner");
+        (await ToastAsync(client, "danger")).Should().Be(BankHasher.DisabledMessage, $"{handler} aynı mesajla döner");
         using var scope = factory.Services.CreateScope();
-        (await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().ObifinConnections.CountAsync(c => c.LicenseId == licenseId))
-            .Should().Be(0);
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var after = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == licenseId);
+        after.UserCode.Should().Be(conn.UserCode);
+        after.Status.Should().Be(conn.Status);
+        after.UpdatedAt.Should().Be(conn.UpdatedAt);
+        after.LastError.Should().BeNull();
+        (await db.BankConnections.CountAsync(b => b.LicenseId == licenseId)).Should().Be(0);
+        PollEnqueueCount(factory, conn.Id).Should().Be(0, "kuyruğa hiçbir şey atılmadı");
+    }
+
+    [Fact]
+    public async Task Banka_eklemede_Obifin_mesaji_banka_kimligini_yankilarsa_hicbir_yerde_gorunmez()
+    {
+        // Obifin ya da bankanın SOAP hatası gönderilen banka alanlarını geri yankılayabilir: son hata, bildirim (TempData),
+        // sayfa ve sunucu günlüğü yalnız maskeli metni görür. Eşleşme harf duyarsız.
+        using var factory = new StubObifinApiFactory();
+        var bankUser = $"ws-{Guid.NewGuid():N}"; var bankPw = $"pw-{Guid.NewGuid():N}";
+        factory.Obifin.AddFails = () => new ObifinApiException(new[] { $"Kullanici {bankUser.ToUpperInvariant()} sifre {bankPw} hatali" });
+        var licenseId = await SeedLicenseAsync(factory);
+        var client = await factory.CreateLoggedInAdminClientAsync();
+        await SaveAsync(client, licenseId, "api@x");
+
+        var resp = await AddBankAsync(client, licenseId, bankUser, bankPw);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        var html = await client.GetStringAsync("/admin/obifin"); // bildirim burada tüketilir
+        html.Should().NotContainEquivalentOf(bankUser).And.NotContainEquivalentOf(bankPw);
+        var doc = await ParseAsync(html);
+        doc.QuerySelector(".alert-danger.alert-dismissible")!.TextContent.Trim()
+            .Should().Be("Banka bağlantısı eklenemedi: Kullanici [gizli] sifre [gizli] hatali");
+        doc.QuerySelector($"tr[data-license='{licenseId}'] [data-cell='last-error']")!.TextContent
+            .Should().Be("Kullanici [gizli] sifre [gizli] hatali");
+        using var scope = factory.Services.CreateScope();
+        (await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().ObifinConnections.AsNoTracking()
+            .SingleAsync(c => c.LicenseId == licenseId)).LastError.Should().Be("Kullanici [gizli] sifre [gizli] hatali");
+        var warnings = factory.Log.Warnings;
+        warnings.Should().OnlyContain(w => !w.Contains(bankUser, StringComparison.OrdinalIgnoreCase)
+            && !w.Contains(bankPw, StringComparison.OrdinalIgnoreCase), "günlüğe banka kimliği girmez");
+        warnings.Should().Contain(w => w.Contains("AddBank") && w.Contains(nameof(ObifinApiException)),
+            "dostça mesaja çevrilen hata sunucu izine tür + işleyici adıyla düşer");
+    }
+
+    [Fact]
+    public async Task Banka_eklendi_ama_hesap_yenileme_duserse_satir_kalir_ve_bunu_soyler()
+    {
+        // Bağlantı Obifin'de ve yerelde AÇILDI: hesap yenilemesi düştü diye "eklenemedi" demek admin'i tekrar eklemeye
+        // iter, Obifin'de ikinci bir kayıt açılırdı.
+        using var factory = new StubObifinApiFactory();
+        factory.Obifin.ListAccountsFails = () => new HttpRequestException($"ham-{Guid.NewGuid():N}");
+        var licenseId = await SeedLicenseAsync(factory);
+        var client = await factory.CreateLoggedInAdminClientAsync();
+        await SaveAsync(client, licenseId, "api@x");
+
+        var resp = await AddBankAsync(client, licenseId, $"ws-{Guid.NewGuid():N}", $"pw-{Guid.NewGuid():N}");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        using var scope = factory.Services.CreateScope();
+        var bc = await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().BankConnections.AsNoTracking()
+            .SingleAsync(b => b.LicenseId == licenseId);
+        (await ToastAsync(client, "danger")).Should().Be(
+            $"Banka bağlantısı eklendi (Obifin #{bc.BankaApiId}) ama hesap listesi yenilenemedi: Obifin'e ulaşılamadı (HttpRequestException). Saatlik yenileme tekrar dener.");
+    }
+
+    [Fact]
+    public async Task Banka_eklemede_programlama_hatasi_dostca_mesaja_cevrilmez_yukari_gider()
+    {
+        // ObjectDisposedException bir InvalidOperationException'dır ama doğrulama/durum hatası değil: admin'e
+        // "eklenemedi: …" diye gösterilmez, istisna olarak yukarı gider (sunucu izi bırakır).
+        using var factory = new StubObifinApiFactory();
+        factory.Obifin.AddFails = () => new ObjectDisposedException($"ham-{Guid.NewGuid():N}");
+        var licenseId = await SeedLicenseAsync(factory);
+        var client = await factory.CreateLoggedInAdminClientAsync();
+        await SaveAsync(client, licenseId, "api@x");
+
+        var act = () => AddBankAsync(client, licenseId, $"ws-{Guid.NewGuid():N}", $"pw-{Guid.NewGuid():N}");
+
+        await act.Should().ThrowAsync<ObjectDisposedException>();
     }
 
     [Fact]
@@ -335,6 +493,7 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         var resp = await SaveAsync(client, licenseId, $"yeni-{Guid.NewGuid():N}@x");
 
         resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        resp.Headers.Location!.ToString().Should().Contain($"license={licenseId}", "düzenleme bağlamı korunur");
         (await PageTextAsync(client)).Should().Contain(ResetConfirmMessage);
         var after = await ConnectionAsync(licenseId);
         after.UserCode.Should().Be("api@x");
@@ -355,6 +514,7 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         var resp = await SaveAsync(client, licenseId, newUser, confirmReset: true);
 
         resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        (await ToastAsync(client, "success")).Should().Be("Obifin kimliği kaydedildi, eski hesabın banka verisi silindi. Şimdi doğrulayın.");
         (await ConnectionAsync(licenseId)).UserCode.Should().Be(newUser);
         (await ShadowCountsAsync(licenseId)).Should().Be((0, 0, 0));
     }
@@ -495,6 +655,22 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
 
         resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
         PollEnqueueCount(connId).Should().Be(1);
+        (await ToastAsync(client, "success")).Should()
+            .Be("Çekim kuyruğa alındı; başka bir çekim sürüyorsa birkaç dakika içinde başlar.");
+    }
+
+    [Fact]
+    public async Task Simdi_cek_baglantisiz_lisansta_hata_bildirir_kuyruga_atmaz()
+    {
+        var licenseId = await SeedLicenseAsync();
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+        var before = PollEnqueueCount(_factory, null);
+
+        var resp = await PostAsync(client, "PollNow", new Dictionary<string, string> { ["LicenseId"] = licenseId.ToString() });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        (await ToastAsync(client, "danger")).Should().Be("Bu lisansın Obifin bağlantısı yok.");
+        PollEnqueueCount(_factory, null).Should().Be(before);
     }
 
     [Fact]
@@ -511,6 +687,30 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
         (await PageTextAsync(client)).Should().Contain("Bağlantı doğrulanmamış; önce Doğrula.");
         PollEnqueueCount(connId).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Gizli_banka_alanlari_parola_kutusunda_bos_birakma_ipucu_hep_gorunur()
+    {
+        // Ekran paylaşımında/omuz üstünden okunmasın: şifre, secret, token, key, anahtar taşıyan her banka alanı parola
+        // kutusu. Obifin şifre/API anahtarı kutularında "(boş = değiştirme)" düzenleme dışında da görünür.
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        var doc = await ParseAsync(await client.GetStringAsync("/admin/obifin"));
+
+        var masked = new[] { "Sifre", "FirmaAnahtar", "ClientSecret", "AccessToken", "RefreshToken", "APIKey", "APISecret" };
+        var plain = new[] { "KullaniciAdi", "Url", "FirmaKodu", "TanimNumarasi", "ClientId" };
+        foreach (var f in masked)
+            doc.QuerySelector($"form[action*='handler=AddBank'] input[name='Field_{f}']")!.GetAttribute("type")
+                .Should().Be("password", $"{f} gizli");
+        foreach (var f in plain)
+            doc.QuerySelector($"form[action*='handler=AddBank'] input[name='Field_{f}']")!.GetAttribute("type")
+                .Should().Be("text", $"{f} gizli değil");
+        foreach (var name in new[] { "Password", "ApiKey" })
+        {
+            var label = doc.QuerySelector($"input[name='{name}']")!.ParentElement!.QuerySelector("label")!.TextContent;
+            label.Should().Contain("boş = değiştirme").And.NotContain("kayıtlı", "düz GET'te saklı değer yok");
+        }
     }
 
     [Fact]
@@ -543,7 +743,9 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         doc.QuerySelector("input[name='BaseUrl']")!.GetAttribute("value").Should().Be("https://example.invalid");
         doc.QuerySelector("form[action*='handler=Save'] select[name='LicenseId'] option[selected]")!
             .GetAttribute("value").Should().Be(licenseId.ToString());
-        doc.QuerySelector("form[action*='handler=Save']")!.TextContent.Should().Contain("kayıtlı");
+        foreach (var name in new[] { "Password", "ApiKey" })
+            doc.QuerySelector($"input[name='{name}']")!.ParentElement!.QuerySelector("label")!.TextContent
+                .Should().Contain("kayıtlı").And.Contain("boş = değiştirme");
         // Banka ekleme formu işleyicinin okuduğu adları (Field_<Ad>) taşımalı; testler POST'u elle kurduğu için ayrıca bakılır.
         foreach (var field in OrderDeck.LicenseServer.Pages.Admin.Obifin.IndexModel.BankFields.Values.SelectMany(f => f).Distinct())
             doc.QuerySelector($"form[action*='handler=AddBank'] input[name='Field_{field}']").Should().NotBeNull($"{field} formda olmalı");
