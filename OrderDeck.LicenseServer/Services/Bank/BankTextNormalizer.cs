@@ -14,17 +14,21 @@ public static class BankTextNormalizer
     public static string Normalize(string? input)
     {
         if (string.IsNullOrWhiteSpace(input)) return "";
-        var lower = input.ToLower(Tr);
+        // Önce uyumluluk ayrıştırması (NFKD): "Ş" → "S"+U+0327, "é" → "e"+U+0301, tam genişlikli "Ａ" → "A",
+        // "ﬁ" → "fi". Böylece hem ayrıştırılmış (NFD) girdi hem Türkçe dışı aksanlar aynı ASCII harfe iner;
+        // elle tutulan tabloda yalnız ayrıştırması olmayan "ı" kalır.
+        var s = input.IsNormalized(NormalizationForm.FormKD) ? input : input.Normalize(NormalizationForm.FormKD);
+        var lower = s.ToLower(Tr); // tr-TR: 'I' → 'ı'; 'İ' zaten "I"+U+0307 olarak ayrıştı
         var sb = new StringBuilder(lower.Length);
         var lastSpace = true;
         foreach (var ch in lower)
         {
-            var c = ch switch
-            {
-                'ı' => 'i', 'i' => 'i', 'ş' => 's', 'ğ' => 'g', 'ü' => 'u', 'ö' => 'o', 'ç' => 'c', 'â' => 'a', 'î' => 'i', 'û' => 'u',
-                _ => ch,
-            };
-            if (char.IsLetterOrDigit(c) && c < 128)
+            // Birleşik işaret harfin parçasıdır, ayırıcı değil; yumuşak tire görünmezdir, kelimeyi bölmez.
+            if (ch == '\u00AD'
+                || CharUnicodeInfo.GetUnicodeCategory(ch) is UnicodeCategory.NonSpacingMark or UnicodeCategory.EnclosingMark)
+                continue;
+            var c = ch == 'ı' ? 'i' : ch;
+            if (c is (>= 'a' and <= 'z') or (>= '0' and <= '9'))
             {
                 sb.Append(c); lastSpace = false;
             }
@@ -33,7 +37,8 @@ public static class BankTextNormalizer
                 sb.Append(' '); lastSpace = true;
             }
         }
-        return sb.ToString().Trim();
+        if (sb.Length > 0 && sb[^1] == ' ') sb.Length--;
+        return sb.ToString();
     }
 
     public static TokenizedText Tokenize(string? input)
