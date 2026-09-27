@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -36,9 +37,13 @@ public sealed class ObifinClientTests
     }
 
     /// <summary>Hata/debug sayfası gibi davranır: isteğin header kimliğini, çözülmüş form alanlarını ve ham (form-urlencoded)
-    /// gövdeyi yanıta geri basar. <paramref name="json"/>: Hata'sız JSON (vekil/WAF), değilse HTML.</summary>
+    /// gövdeyi yanıta geri basar. <paramref name="json"/>: Hata'sız JSON (vekil/WAF), değilse HTML. Gövde tekil bir
+    /// <see cref="Marker"/> taşır: günlükte gövdenin herhangi bir parçası var mı diye bakmak için.</summary>
     private sealed class EchoHandler(HttpStatusCode status, bool json) : HttpMessageHandler
     {
+        public string Marker { get; } = $"govde-{Guid.NewGuid():N}";
+        public string? LastBody { get; private set; }
+
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage req, CancellationToken ct)
         {
             var raw = req.Content is null ? "" : await req.Content.ReadAsStringAsync(ct);
@@ -47,13 +52,48 @@ public sealed class ObifinClientTests
             var headers = string.Join(" ", req.Headers.Select(h => $"{h.Key}: {string.Join(",", h.Value)}"));
             // Elle kurulur: JsonSerializer '+' ve '&' karakterlerini kaçışlardı, ham gövde yankısı bozulurdu.
             var body = json
-                ? $$"""{"error":"bad gateway","headers":"{{headers}}","post":"{{decoded}}","raw":"{{raw}}"}"""
-                : $"<html><body><h1>Whoops</h1><pre>{headers} | {decoded} | {raw}</pre></body></html>";
+                ? $$"""{"error":"bad gateway","marker":"{{Marker}}","headers":"{{headers}}","post":"{{decoded}}","raw":"{{raw}}"}"""
+                : $"<html><body><h1>Whoops</h1><pre>{Marker} {headers} | {decoded} | {raw}</pre></body></html>";
+            LastBody = body;
             return new HttpResponseMessage(status)
             {
                 Content = new StringContent(body, Encoding.UTF8, json ? "application/json" : "text/html"),
             };
         }
+    }
+
+    /// <summary>Hata/debug sayfası gibi davranır ama header kimliğini sayfanın KAÇIŞLARIYLA basar: HTML varlıklı (.NET ve PHP
+    /// <c>htmlspecialchars</c>), JSON dizesi (System.Text.Json ve PHP <c>json_encode</c>); HTML sayfada ham hâliyle de.
+    /// Ham form gövdesi de yankılanır. <paramref name="json"/>: Hata'sız geçerli JSON (vekil/WAF), değilse HTML.</summary>
+    private sealed class EscapingEchoHandler(HttpStatusCode status, bool json) : HttpMessageHandler
+    {
+        public string Marker { get; } = $"govde-{Guid.NewGuid():N}";
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage req, CancellationToken ct)
+        {
+            var raw = req.Content is null ? "" : await req.Content.ReadAsStringAsync(ct);
+            var values = new[] { "KullaniciAdi", "Sifre", "APIKey" }.Select(h => req.Headers.GetValues(h).Single()).ToList();
+            // Ham değer yalnız HTML'de: '"' JSON gövdeyi bozar, yanıt "JSON olmayan" dalına düşerdi.
+            var body = json
+                ? "{\"error\":\"upstream\",\"marker\":\"" + Marker + "\",\"form\":\"" + raw + "\"," + string.Join(",",
+                    values.Select((v, i) =>
+                        $"\"html{i}\":\"{WebUtility.HtmlEncode(v)}\",\"phpHtml{i}\":\"{PhpHtml(v)}\"," +
+                        $"\"json{i}\":{JsonSerializer.Serialize(v)},\"phpJson{i}\":\"{PhpJson(v)}\"")) + "}"
+                : $"<html><body><h1>Whoops</h1><pre>{Marker} form={raw} " + string.Join(" ", values.Select(v =>
+                    $"raw={v} html={WebUtility.HtmlEncode(v)} phpHtml={PhpHtml(v)} json={JsonSerializer.Serialize(v)} phpJson={PhpJson(v)}"))
+                  + "</pre></body></html>";
+            return new HttpResponseMessage(status)
+            {
+                Content = new StringContent(body, Encoding.UTF8, json ? "application/json" : "text/html"),
+            };
+        }
+
+        /// <summary>PHP <c>htmlspecialchars(ENT_QUOTES)</c>: tek tırnak <c>&amp;#039;</c>.</summary>
+        private static string PhpHtml(string v)
+            => v.Replace("&", "&amp;").Replace("\"", "&quot;").Replace("'", "&#039;").Replace("<", "&lt;").Replace(">", "&gt;");
+
+        /// <summary>PHP <c>json_encode</c> (bayraksız): yalnız '\\', '"' ve '/' kaçışlanır.</summary>
+        private static string PhpJson(string v) => v.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("/", "\\/");
     }
 
     /// <summary>Her düzeydeki günlük satırını biçimlenmiş metin + (varsa) istisnanın tam metniyle toplar.</summary>
@@ -69,6 +109,8 @@ public sealed class ObifinClientTests
             lock (_lines) _lines.Add(formatter(state, exception) + (exception is null ? "" : " " + exception));
         }
     }
+
+    private const string ObifinGizli = "[gizli]";
 
     private static ObifinCredentials Creds() => new(
         "https://example.invalid", $"u-{Guid.NewGuid():N}@x", $"pw-{Guid.NewGuid():N}", $"k-{Guid.NewGuid():N}");
@@ -262,30 +304,82 @@ public sealed class ObifinClientTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Hata_sayfasi_gonderilen_kimligi_yankilarsa_gunluge_maskeli_duser(bool json)
+    public async Task Banka_ekleme_hata_sayfasinin_govdesi_gunluge_hic_girmez_yalniz_durum_tur_ve_uzunluk(bool json)
     {
-        // JSON olmayan yanıt (debug/hata sayfası) ya da Hata'sız 2xx dışı JSON (vekil/WAF) tanı için günlüğe düşer. Sayfa
-        // isteği yankılayabilir: header'daki Obifin kimliği ve bankaapi/ekle formundaki banka web servis kullanıcısı/şifresi
-        // (çözülmüş ve form-urlencoded hâliyle) günlüğe girmez; gövdenin geri kalanı tanı için kalır.
+        // bankaapi/ekle formu banka web servis kullanıcısı/şifresini taşır; hata/debug sayfası onu HTML ya da JSON kaçışlı
+        // yankılayabilir ve her kaçışı maskelemeye güvenilmez. Gövdenin hiçbir parçası günlüğe girmez — maskeli hâli de:
+        // yalnız HTTP durumu, içerik türü ve uzunluk.
         var log = new RecordingLogger();
-        var client = new ObifinClient(new HttpClient(new EchoHandler(json ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.BadGateway, json)),
-            Options.Create(new ObifinOptions()), log);
+        var handler = new EchoHandler(json ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.BadGateway, json);
+        var client = new ObifinClient(new HttpClient(handler), Options.Create(new ObifinOptions()), log);
         var creds = Creds();
         var userCore = Guid.NewGuid().ToString("N"); var pwCore = Guid.NewGuid().ToString("N");
         var form = new Dictionary<string, string>
         {
-            // Boşluk ve '/' form-urlencoded biçimini ham değerden ayırır ("+", "%2F").
-            ["KullaniciAdi"] = $"ws {userCore}/x", ["Sifre"] = $"pw-{pwCore}",
+            // Boşluk, '/', '&', tek tırnak ve '<' ham, form-urlencoded ve HTML/JSON kaçışlı biçimleri birbirinden ayırır.
+            ["KullaniciAdi"] = $"ws {userCore}/x", ["Sifre"] = $"pw-{pwCore}&'<>/",
         };
 
         var act = () => client.AddBankConnectionAsync(creds, "isbank", form);
 
         await act.Should().ThrowAsync<ObifinProtocolException>();
-        var lines = log.Lines;
-        lines.Should().Contain(l => l.Contains("[gizli]") && l.Contains(json ? "bad gateway" : "Whoops"),
-            "gövde tanı için günlüğe düşer, gönderilen değerler maskeli");
+        var line = log.Lines.Should().ContainSingle().Subject;
+        line.Should().Contain(json ? "Obifin HTTP 503" : "Obifin JSON olmayan yanıt (502)", "hangi dal yazdı")
+            .And.Contain(json ? "application/json" : "text/html")
+            .And.Contain($"uzunluk={handler.LastBody!.Length}");
+        line.Should().NotContain(handler.Marker, "gövdenin hiçbir parçası günlüğe girmez").And.NotContain(ObifinGizli);
         foreach (var sentValue in new[] { creds.UserCode, creds.Password, creds.ApiKey, userCore, pwCore })
-            lines.Should().OnlyContain(l => !l.Contains(sentValue, StringComparison.OrdinalIgnoreCase), "gönderilen kimlik günlüğe girmez");
+            line.Should().NotContainEquivalentOf(sentValue, "gönderilen kimlik günlüğe girmez");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Liste_cagrisinin_hata_sayfasi_Obifin_kimligini_kacisli_yankilarsa_da_maskelenir_form_degerleri_okunur(bool json)
+    {
+        // JSON olmayan yanıt (debug/hata sayfası) ya da Hata'sız 2xx dışı JSON (vekil/WAF) tanı için günlüğe düşer. Sayfa
+        // header'daki Obifin kimliğini ham değil HTML/JSON kaçışlı basabilir (&amp; &quot; &#39; &#039; \u0026 \" \/): hiçbir
+        // biçimi günlüğe girmez. Form değerleri (tarih, sayfa boyutu, imleç) sır değil, maskelenmez: tanı için okunur kalır.
+        var log = new RecordingLogger();
+        var handler = new EscapingEchoHandler(json ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.BadGateway, json);
+        var client = new ObifinClient(new HttpClient(handler), Options.Create(new ObifinOptions()), log);
+        var userCore = Guid.NewGuid().ToString("N"); var pwCore = Guid.NewGuid().ToString("N"); var keyCore = Guid.NewGuid().ToString("N");
+        var creds = new ObifinCredentials("https://example.invalid", $"u-{userCore}@x", $"pw-{pwCore}&\"/'<>", $"k-{keyCore}/&'\"");
+
+        var act = () => client.ListTransactionsAsync(creds, new DateOnly(2022, 10, 1), new DateOnly(2022, 10, 17),
+            sinceId: 326000, pageNo: 1, pageSize: 1000);
+
+        await act.Should().ThrowAsync<ObifinProtocolException>();
+        var line = log.Lines.Should().ContainSingle(l => l.Contains(handler.Marker), "gövde tanı için günlüğe düşer").Subject;
+        line.Should().Contain(json ? "Obifin HTTP 503" : "Obifin JSON olmayan yanıt (502)", "hangi dal yazdı");
+        line.Should().Contain(ObifinGizli)
+            .And.Contain("BaslangicTarihi=2022-10-01").And.Contain("SayfaBasinaKayitSayisi=1000")
+            .And.Contain("BaslangicHareketId=326000", "form değerleri sır değil, maskelenmez");
+        foreach (var core in new[] { userCore, pwCore, keyCore })
+            log.Lines.Should().OnlyContain(l => !l.Contains(core, StringComparison.OrdinalIgnoreCase),
+                "Obifin kimliğinin hiçbir kaçışlı biçimi günlüğe girmez");
+    }
+
+    [Fact]
+    public async Task Tani_kopyasi_sinira_takilan_kimligin_basini_da_gostermez()
+    {
+        // Gövde yalnız sınır + en uzun değer kadar taranır. Kesme maskeli metnin UZUNLUĞUNA göre yapılsaydı öndeki
+        // maskelemeler metni kısaltır, dilimin sonundaki yarım kimliğin başı sınırın içine kayıp günlüğe düşerdi. Sınırdan
+        // önce başlayan kimlik sınırı aşsa da tamamen maskelenir; sınırdan sonra başlayan hiçbir şey görünmez.
+        var creds = Creds();
+        var cap = ObifinClient.DiagnosticCap;
+        var head = string.Concat(Enumerable.Repeat(creds.Password + " ", 40));
+        var body = head + new string('.', cap - 10 - head.Length) + creds.Password + creds.Password + "SONRASI" + new string('.', 500);
+        var log = new RecordingLogger();
+        var client = new ObifinClient(new HttpClient(new CapturingHandler(body, HttpStatusCode.BadGateway)),
+            Options.Create(new ObifinOptions()), log);
+
+        var act = () => client.ListAccountsAsync(creds);
+
+        await act.Should().ThrowAsync<ObifinProtocolException>();
+        var line = log.Lines.Should().ContainSingle().Subject;
+        line.Should().Contain(ObifinGizli).And.NotContain("SONRASI", "sınırdan sonrası kesilir");
+        line.Should().NotContain(creds.Password[3..9], "sınıra takılan ya da dilimin sonunda yarım kalan kimliğin başı görünmez");
     }
 
     [Fact]

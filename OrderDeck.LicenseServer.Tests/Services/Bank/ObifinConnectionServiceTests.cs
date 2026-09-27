@@ -34,6 +34,8 @@ public sealed class ObifinConnectionServiceTests
         public CancellationTokenSource? CancelCallerOnListAccounts { get; set; }
         /// <summary>Her eklemede Obifin'in vereceği sıradaki BankaApiId; eklemeden sonra artar.</summary>
         public long NextBankaApiId { get; set; } = 4242;
+        /// <summary>Ayarlıysa ekleme başarılı döner ama kayıt banka bağlantı listesinde görünmez.</summary>
+        public bool HideAddedFromList { get; set; }
 
         public Task<IReadOnlyList<ObifinAccountDto>> ListAccountsAsync(ObifinCredentials c, CancellationToken ct = default)
         {
@@ -57,7 +59,7 @@ public sealed class ObifinConnectionServiceTests
             if (AddBankConnectionError is not null) throw AddBankConnectionError;
             Added.Add((b, f));
             // Obifin gerçekte Id döndürmüyor (doküman sessiz): listede etiketle bulunur.
-            Connections.Add(new ObifinBankConnectionDto(NextBankaApiId++, b, f["BankaApiAdi"], true));
+            if (!HideAddedFromList) Connections.Add(new ObifinBankConnectionDto(NextBankaApiId++, b, f["BankaApiAdi"], true));
             return Task.CompletedTask;
         }
         public Task RemoveBankConnectionAsync(ObifinCredentials c, long id, CancellationToken ct = default) => Task.CompletedTask;
@@ -304,7 +306,7 @@ public sealed class ObifinConnectionServiceTests
 
         var act = () => svc.UpsertAsync(lic, "", "api@x", password: null, apiKey: NewKey(), CancellationToken.None);
 
-        await act.Should().ThrowAsync<ArgumentException>();
+        await act.Should().ThrowAsync<ObifinValidationException>();
         (await db.ObifinConnections.CountAsync()).Should().Be(0);
     }
 
@@ -319,7 +321,7 @@ public sealed class ObifinConnectionServiceTests
 
         var act = () => svc.UpsertAsync(lic, baseUrl, "api@x", NewPw(), NewKey(), CancellationToken.None);
 
-        (await act.Should().ThrowAsync<ArgumentException>()).Which.Message.Should().Contain("mutlak bir https adresi");
+        (await act.Should().ThrowAsync<ObifinValidationException>()).Which.Message.Should().Be(ObifinConnectionService.BaseUrlMessage);
         (await db.ObifinConnections.CountAsync()).Should().Be(0);
     }
 
@@ -346,8 +348,8 @@ public sealed class ObifinConnectionServiceTests
 
         var act = () => svc.UpsertAsync(lic, "", userCode, pw, key, CancellationToken.None);
 
-        (await act.Should().ThrowAsync<ArgumentException>()).Which.Message
-            .Should().Contain("Obifin kimlik bilgileri yalnız ASCII karakter içerebilir.");
+        (await act.Should().ThrowAsync<ObifinValidationException>()).Which.Message
+            .Should().Be(ObifinConnectionService.NonAsciiMessage);
         (await db.ObifinConnections.CountAsync()).Should().Be(0);
     }
 
@@ -359,7 +361,7 @@ public sealed class ObifinConnectionServiceTests
 
         var act = () => svc.UpsertAsync(lic, "", "api@x", $"pw-\n{Guid.NewGuid():N}", NewKey(), CancellationToken.None);
 
-        await act.Should().ThrowAsync<ArgumentException>();
+        await act.Should().ThrowAsync<ObifinValidationException>();
     }
 
     /// <summary>Eski hesabın imleci ve hareketleri yeni hesap için anlamsız: kullanıcı kodu değişince
@@ -504,21 +506,25 @@ public sealed class ObifinConnectionServiceTests
     [InlineData("api@x", "https://b.example.invalid")]
     public async Task Kimlik_degisikligi_golge_veri_varken_izinsiz_hicbir_seye_dokunmaz_onay_ister(string userCode, string baseUrl)
     {
-        // Silme kararının TEK yeri: servis, sileceği satır kümesine bakarak karar verir. İzin (allowShadowReset) yoksa
-        // bağlantı da gölge satırlar da olduğu gibi kalır — istisnadan önce izleyicide bekleyen değişiklik bile yok.
+        // Silme kararının TEK yeri servis. İzin (allowShadowReset) yoksa yalnız "var mı" sorulur — satırlar (ham JSON dahil)
+        // yüklenmez; bağlantı da gölge satırlar da olduğu gibi kalır, istisnadan önce izleyicide bekleyen değişiklik bile yok.
         var dbName = $"obifin-conn-{Guid.NewGuid():N}";
         using var db = NewDb(dbName); var lic = SeedLicense(db);
         var svc = Svc(db, new StubObifin());
         var conn = await svc.UpsertAsync(lic, "https://a.example.invalid", "api@x", NewPw(), NewKey(), CancellationToken.None);
         SeedShadowData(db, conn);
+        db.ChangeTracker.Clear(); // tohumlanan satırlar izlenmesin: servisin neyi yüklediği görülsün
         ObifinConnection before;
         using (var snapshot = NewDb(dbName)) before = await snapshot.ObifinConnections.AsNoTracking().SingleAsync();
 
         var act = () => svc.UpsertAsync(lic, baseUrl, userCode, NewPw(), NewKey(), CancellationToken.None);
 
-        (await act.Should().ThrowAsync<ShadowResetConfirmationRequiredException>()).Which.Message
-            .Should().Be(ObifinConnectionService.ResetConfirmMessage);
+        var thrown = (await act.Should().ThrowAsync<ShadowResetConfirmationRequiredException>()).Which;
+        thrown.Message.Should().Be(ObifinConnectionService.ResetConfirmMessage);
+        thrown.Should().BeAssignableTo<ObifinValidationException>("admin'e gösterilen doğrulama mesajı");
         db.ChangeTracker.HasChanges().Should().BeFalse("istisnadan önce hiçbir şey değiştirilmedi");
+        db.ChangeTracker.Entries().Select(e => e.Entity).Should().OnlyContain(e => e is ObifinConnection,
+            "onaysız yolda gölge satırlar yüklenmez");
         using var fresh = NewDb(dbName);
         var after = await fresh.ObifinConnections.SingleAsync();
         after.UserCode.Should().Be(before.UserCode);
@@ -703,7 +709,7 @@ public sealed class ObifinConnectionServiceTests
 
         var act = () => svc.AddBankConnectionAsync(lic, "qnb", new string('e', 81), form, CancellationToken.None);
 
-        (await act.Should().ThrowAsync<ArgumentException>()).Which.Message.Should().Contain("80 karakter");
+        (await act.Should().ThrowAsync<ObifinValidationException>()).Which.Message.Should().Contain("80 karakter");
         stub.Added.Should().BeEmpty("Obifin'e istek gitmedi");
         (await db.BankConnections.CountAsync()).Should().Be(0);
     }
@@ -735,7 +741,7 @@ public sealed class ObifinConnectionServiceTests
 
         var act = () => svc.AddBankConnectionAsync(lic, new string('q', length), "QNB", form, CancellationToken.None);
 
-        (await act.Should().ThrowAsync<ArgumentException>()).Which.ParamName.Should().Be("bankaKodu");
+        (await act.Should().ThrowAsync<ObifinValidationException>()).Which.Message.Should().Be("Banka kodu 1–32 karakter olmalı.");
         stub.Added.Should().BeEmpty("Obifin'e istek gitmedi");
         (await db.BankConnections.CountAsync()).Should().Be(0);
     }
@@ -787,6 +793,57 @@ public sealed class ObifinConnectionServiceTests
         conn.LastError.Should().Be("Kullanici [gizli] reddedildi | Sifre [gizli] | Firma ab yok");
         log.Entries.Should().NotBeEmpty().And.OnlyContain(e =>
             !e.Contains(bankUser, StringComparison.OrdinalIgnoreCase) && !e.Contains(bankPw, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Banka_baglantisi_ekleme_ag_hatasi_gunluge_istisna_nesnesiyle_duser()
+    {
+        // Ağ/vekil/zaman aşımı istisnası banka form değeri taşımaz: tanı için istisna nesnesiyle (mesaj + iz) loglanır.
+        // Yalnız Obifin'in mesajı (banka alanını yankılayabilir) tür + maskeli metinle yazılır (yukarıdaki test).
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var marker = $"ag-{Guid.NewGuid():N}";
+        var stub = new StubObifin { AddBankConnectionError = new HttpRequestException(marker) };
+        var log = new RecordingLog();
+        var svc = Svc(db, stub, log);
+        await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        var form = new Dictionary<string, string> { ["KullaniciAdi"] = $"ws-{Guid.NewGuid():N}", ["Sifre"] = NewPw() };
+
+        var act = () => svc.AddBankConnectionAsync(lic, "qnb", "QNB", form, CancellationToken.None);
+
+        await act.Should().ThrowAsync<HttpRequestException>();
+        log.Entries.Should().ContainSingle(e => e.Contains("banka bağlantısı ekleme başarısız")).Which
+            .Should().Contain(marker, "istisna nesnesi günlükte").And.Contain(nameof(HttpRequestException));
+    }
+
+    [Fact]
+    public async Task Durum_hatalari_admin_mesaji_olarak_ObifinValidationException_firlatir()
+    {
+        // Admin sayfası yalnız ObifinValidationException'ı (ve sınıflandırılmış istemci hatalarını) bildirime çevirir; başka
+        // her InvalidOperationException programlama hatası sayılıp yukarı gider. Servisin admin'e yönelik durum mesajları
+        // bu türle atılmalı.
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var stub = new StubObifin();
+        var svc = Svc(db, stub);
+        var form = new Dictionary<string, string> { ["KullaniciAdi"] = $"ws-{Guid.NewGuid():N}", ["Sifre"] = NewPw() };
+
+        (await FluentActions.Awaiting(() => svc.VerifyAsync(lic, CancellationToken.None))
+            .Should().ThrowAsync<ObifinValidationException>()).Which.Message.Should().Be("Obifin bağlantısı yok.");
+        (await FluentActions.Awaiting(() => svc.RefreshAccountsAsync(lic, CancellationToken.None))
+            .Should().ThrowAsync<ObifinValidationException>()).Which.Message.Should().Be("Obifin bağlantısı yok.");
+        (await FluentActions.Awaiting(() => svc.AddBankConnectionAsync(lic, "qnb", "QNB", form, CancellationToken.None))
+            .Should().ThrowAsync<ObifinValidationException>()).Which.Message.Should().Be("Önce Obifin bağlantısı kaydedilmeli.");
+
+        var conn = await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        stub.HideAddedFromList = true;
+        (await FluentActions.Awaiting(() => svc.AddBankConnectionAsync(lic, "qnb", "QNB", form, CancellationToken.None))
+            .Should().ThrowAsync<ObifinValidationException>()).Which.Message.Should().StartWith("Banka bağlantısı Obifin'de görünmedi");
+
+        conn.PasswordProtected = new EphemeralDataProtectionProvider().CreateProtector("x").Protect(NewPw());
+        await db.SaveChangesAsync();
+        (await FluentActions.Awaiting(() => svc.AddBankConnectionAsync(lic, "qnb", "QNB", form, CancellationToken.None))
+            .Should().ThrowAsync<ObifinValidationException>()).Which.Message.Should().Be(ObifinConnectionService.UndecryptableMessage);
+        (await FluentActions.Awaiting(() => svc.RefreshAccountsAsync(lic, CancellationToken.None))
+            .Should().ThrowAsync<ObifinValidationException>()).Which.Message.Should().Be(ObifinConnectionService.UndecryptableMessage);
     }
 
     [Fact]
@@ -1009,7 +1066,7 @@ public sealed class ObifinConnectionServiceTests
 
         var act = () => svc.UpsertAsync(lic, "", new string('u', 201), NewPw(), NewKey(), CancellationToken.None);
 
-        (await act.Should().ThrowAsync<ArgumentException>()).Which.Message.Should().Contain("200 karakter");
+        (await act.Should().ThrowAsync<ObifinValidationException>()).Which.Message.Should().Contain("200 karakter");
         (await db.ObifinConnections.CountAsync()).Should().Be(0);
     }
 
@@ -1031,7 +1088,7 @@ public sealed class ObifinConnectionServiceTests
 
         var act = () => svc.UpsertAsync(lic, longUrl, "api@x", NewPw(), NewKey(), CancellationToken.None);
 
-        (await act.Should().ThrowAsync<ArgumentException>()).Which.Message.Should().Contain("200 karakter");
+        (await act.Should().ThrowAsync<ObifinValidationException>()).Which.Message.Should().Contain("200 karakter");
         (await db.ObifinConnections.CountAsync()).Should().Be(0);
     }
 

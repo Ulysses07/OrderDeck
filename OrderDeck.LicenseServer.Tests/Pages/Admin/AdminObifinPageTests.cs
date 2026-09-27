@@ -161,10 +161,12 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
             .SingleAsync(c => c.LicenseId == licenseId);
     }
 
+    private Task SeedShadowDataAsync(Guid licenseId) => SeedShadowDataAsync(_factory, licenseId);
+
     /// <summary>Kimlik değişiminde silinecek gölge veri: banka bağlantısı + hesap + hareket.</summary>
-    private async Task SeedShadowDataAsync(Guid licenseId)
+    private static async Task SeedShadowDataAsync(ApiFactory factory, Guid licenseId)
     {
-        using var scope = _factory.Services.CreateScope();
+        using var scope = factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var conn = await db.ObifinConnections.SingleAsync(c => c.LicenseId == licenseId);
         var now = DateTimeOffset.UtcNow;
@@ -467,6 +469,65 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Banka_eklendi_ama_hesap_yenileme_beklenmeyen_hatayla_duserse_de_500_vermez_eklendigini_soyler()
+    {
+        // Sınıflandırılmamış bir hata (ayrıştırma, DB…) da ekleme taahhüt edildikten sonra 500'e dönmemeli: admin "eklenemedi"
+        // sanıp tekrar ekler, Obifin'de ikinci kayıt açılır. Ham istisna metni gösterilmez; günlüğe istisna nesnesiyle düşer.
+        using var factory = new StubObifinApiFactory();
+        var marker = $"ham-{Guid.NewGuid():N}";
+        factory.Obifin.ListAccountsFails = () => new FormatException(marker);
+        var licenseId = await SeedLicenseAsync(factory);
+        var client = await factory.CreateLoggedInAdminClientAsync();
+        await SaveAsync(client, licenseId, "api@x");
+
+        var resp = await AddBankAsync(client, licenseId, $"ws-{Guid.NewGuid():N}", $"pw-{Guid.NewGuid():N}");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        using var scope = factory.Services.CreateScope();
+        var bc = await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().BankConnections.AsNoTracking()
+            .SingleAsync(b => b.LicenseId == licenseId);
+        var html = await client.GetStringAsync("/admin/obifin"); // bildirim burada tüketilir
+        html.Should().NotContain(marker, "ham istisna metni gösterilmez");
+        (await ParseAsync(html)).QuerySelector(".alert-danger.alert-dismissible")!.TextContent.Trim().Should().Be(
+            $"Banka bağlantısı eklendi (Obifin #{bc.BankaApiId}) ama hesap listesi yenilenemedi: beklenmeyen hata (FormatException). Saatlik yenileme tekrar dener.");
+        factory.Log.Warnings.Should().Contain(w => w.Contains("AddBank") && w.Contains(marker),
+            "hata istisna nesnesiyle, tam iziyle günlüğe düşer");
+    }
+
+    [Fact]
+    public async Task Dogrulamada_cerceve_istisnasi_dostca_mesaja_cevrilmez_yukari_gider()
+    {
+        // Yalnız servisin kendi doğrulama mesajları (ObifinValidationException) bildirime çevrilir. Sınıflandırılmamış bir
+        // InvalidOperationException (JSON, EF, DI…) programlama hatasıdır: bildirim olmaz, yukarı gider (500 + tam iz).
+        using var factory = new StubObifinApiFactory();
+        var marker = $"ham-{Guid.NewGuid():N}";
+        factory.Obifin.ListAccountsFails = () => new InvalidOperationException(marker);
+        var licenseId = await SeedLicenseAsync(factory);
+        var client = await factory.CreateLoggedInAdminClientAsync();
+        await SaveAsync(client, licenseId, "api@x");
+
+        var act = () => PostAsync(client, "Verify", new Dictionary<string, string> { ["LicenseId"] = licenseId.ToString() });
+
+        (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Be(marker);
+    }
+
+    [Fact]
+    public async Task Kayit_dogrulama_hatasi_bildirime_servisin_mesajiyla_duser()
+    {
+        // Servisin doğrulama mesajı olduğu gibi gösterilir (parametre adı eki yok).
+        var licenseId = await SeedLicenseAsync();
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        var resp = await SaveAsync(client, licenseId, "api@x", baseUrl: "http://example.invalid");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        (await ToastAsync(client, "danger")).Should().Be(ObifinConnectionService.BaseUrlMessage);
+        using var scope = _factory.Services.CreateScope();
+        (await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().ObifinConnections.CountAsync(c => c.LicenseId == licenseId))
+            .Should().Be(0);
+    }
+
+    [Fact]
     public async Task Banka_eklemede_programlama_hatasi_dostca_mesaja_cevrilmez_yukari_gider()
     {
         // ObjectDisposedException bir InvalidOperationException'dır ama doğrulama/durum hatası değil: admin'e
@@ -513,6 +574,23 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         after.PasswordProtected.Should().Be(before.PasswordProtected, "hiçbir şey kaydedilmedi");
         after.UpdatedAt.Should().Be(before.UpdatedAt);
         (await ShadowCountsAsync(licenseId)).Should().Be((1, 1, 1), "onaysız silme yok");
+    }
+
+    [Fact]
+    public async Task Onay_adimi_uyari_gunlugune_dusmez()
+    {
+        // Kimlik değişikliğinde onay istemek beklenen bir adım, hata değil: her olağan kimlik değişikliğinde Warning basmaz.
+        using var factory = new StubObifinApiFactory();
+        var licenseId = await SeedLicenseAsync(factory);
+        var client = await factory.CreateLoggedInAdminClientAsync();
+        await SaveAsync(client, licenseId, "api@x");
+        await SeedShadowDataAsync(factory, licenseId);
+
+        var resp = await SaveAsync(client, licenseId, $"yeni-{Guid.NewGuid():N}@x");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK, "onay istendi");
+        factory.Log.Warnings.Should().NotContain(w => w.Contains("Obifin admin Save")
+            || w.Contains(nameof(ShadowResetConfirmationRequiredException)));
     }
 
     [Fact]
@@ -585,8 +663,8 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
     [InlineData("https://baska.example.invalid", true)]
     public async Task Adres_degisikligi_normalize_karsilastirilir(string postedBaseUrl, bool needsConfirm)
     {
-        // Sayfanın "değişti mi" kararı servisin silme kararıyla aynı olmalı: kozmetik fark (büyük harf, sondaki '/')
-        // onay istemez ve veri silmez; başka bir adres onay ister.
+        // "Değişti mi" kararını servisin normalize karşılaştırması verir (sayfa yalnız izni taşır): kozmetik fark (büyük
+        // harf, sondaki '/') onay istemez ve veri silmez; başka bir adres onay ister.
         var licenseId = await SeedLicenseAsync();
         var client = await _factory.CreateLoggedInAdminClientAsync();
         await SaveAsync(client, licenseId, "api@x", baseUrl: "https://example.invalid");

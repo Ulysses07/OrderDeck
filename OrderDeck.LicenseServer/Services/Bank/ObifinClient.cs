@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Net;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -9,12 +11,18 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// Obifin web servisi (doküman v1.03.04). Kimlik header'da, gövde form-urlencoded, HTTP 200 +
 /// `Hata:[]` başarı. Sayısal alanlar STRING ("10.00"), tarih "yyyy-MM-dd HH:mm:ss" TR yerel.
 /// Ham gövde yalnız tanı kopyası olarak kesilir — ayrıştırma TAM gövdeden (İYS 2026-09-22 dersi). Tanı kopyası
-/// günlüğe, gönderilen değerler maskelenerek girer (bkz. <see cref="Diagnostic"/>).
+/// günlüğe header kimliği maskelenerek girer (bkz. <see cref="Diagnostic"/>); banka kimliği taşıyan çağrıda
+/// (<c>bankaapi/ekle</c>) gövde hiç yazılmaz.
 /// </summary>
 public sealed class ObifinClient : IObifinClient
 {
     public const int MaxRangeDays = 31;
-    private const int DiagnosticCap = 2000;
+    /// <summary>Günlüğe giden tanı kopyasının üst sınırı (kaynak gövdenin karakteri).</summary>
+    public const int DiagnosticCap = 2000;
+
+    /// <summary>Gövdesi günlüğe alınmayan yanıtın şablon kuyruğu: yalnız içerik türü ve uzunluk.</summary>
+    private const string BodyWithheld =
+        "gövde günlüğe alınmadı (gönderilen banka kimliğini yankılayabilir) — içerik türü={ContentType}, uzunluk={Length}";
 
     private readonly HttpClient _http;
     private readonly ObifinOptions _opt;
@@ -58,7 +66,7 @@ public sealed class ObifinClient : IObifinClient
     {
         if (string.IsNullOrWhiteSpace(bankaKodu) || bankaKodu.Any(c => !char.IsAsciiLetterOrDigit(c)))
             throw new ArgumentException("Banka kodu yalnız harf/rakam olabilir.", nameof(bankaKodu));
-        using var _ = await PostAsync(creds, $"/webservis/bankaapi/ekle/{bankaKodu}/", form, ct);
+        using var _ = await PostAsync(creds, $"/webservis/bankaapi/ekle/{bankaKodu}/", form, ct, formCarriesSecrets: true);
     }
 
     public async Task RemoveBankConnectionAsync(ObifinCredentials creds, long bankaApiId, CancellationToken ct = default)
@@ -117,8 +125,11 @@ public sealed class ObifinClient : IObifinClient
 
     // ---- ortak ----
 
+    /// <summary><paramref name="formCarriesSecrets"/>: form banka web servis kimliği taşıyor (<c>bankaapi/ekle</c>) —
+    /// beklenmeyen yanıtın gövdesi günlüğe hiç yazılmaz, yankılanan bir banka şifresinin HTML/JSON kaçışlı her biçimini
+    /// maskelemeye güvenilmez. Yalnız HTTP durumu, içerik türü ve uzunluk yazılır.</summary>
     private async Task<JsonDocument> PostAsync(ObifinCredentials creds, string path,
-        IReadOnlyDictionary<string, string>? form, CancellationToken ct)
+        IReadOnlyDictionary<string, string>? form, CancellationToken ct, bool formCarriesSecrets = false)
     {
         var baseUrl = string.IsNullOrWhiteSpace(creds.BaseUrl) ? _opt.DefaultBaseUrl : creds.BaseUrl;
         using var req = new HttpRequestMessage(HttpMethod.Post, baseUrl.TrimEnd('/') + path)
@@ -135,7 +146,11 @@ public sealed class ObifinClient : IObifinClient
         try { doc = JsonDocument.Parse(body); }
         catch (JsonException)
         {
-            _log.LogWarning("Obifin JSON olmayan yanıt ({Status}) {Path}: {Head}", (int)resp.StatusCode, path, Diagnostic(body, creds, form));
+            if (formCarriesSecrets)
+                _log.LogWarning("Obifin JSON olmayan yanıt ({Status}) {Path}: " + BodyWithheld,
+                    (int)resp.StatusCode, path, ContentType(resp), body.Length);
+            else
+                _log.LogWarning("Obifin JSON olmayan yanıt ({Status}) {Path}: {Head}", (int)resp.StatusCode, path, Diagnostic(body, creds));
             throw new ObifinProtocolException($"Obifin JSON olmayan yanıt ({(int)resp.StatusCode}) {path}");
         }
         if (doc.RootElement.ValueKind != JsonValueKind.Object)
@@ -156,7 +171,10 @@ public sealed class ObifinClient : IObifinClient
         if (!resp.IsSuccessStatusCode)
         {
             doc.Dispose();
-            _log.LogWarning("Obifin HTTP {Status} {Path}: {Head}", (int)resp.StatusCode, path, Diagnostic(body, creds, form));
+            if (formCarriesSecrets)
+                _log.LogWarning("Obifin HTTP {Status} {Path}: " + BodyWithheld, (int)resp.StatusCode, path, ContentType(resp), body.Length);
+            else
+                _log.LogWarning("Obifin HTTP {Status} {Path}: {Head}", (int)resp.StatusCode, path, Diagnostic(body, creds));
             throw new ObifinProtocolException($"Obifin HTTP {(int)resp.StatusCode} {path}");
         }
         return doc;
@@ -202,21 +220,38 @@ public sealed class ObifinClient : IObifinClient
         => DateTime.TryParseExact(Str(row, name), "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture,
             DateTimeStyles.None, out var d) ? d : null;
 
-    /// <summary>Günlüğe giden tanı kopyası. Debug/hata sayfası ya da vekil yanıtı isteği yankılayabilir: header'daki Obifin
-    /// kimliği ve form alanları (<c>bankaapi/ekle</c>'de banka web servis kullanıcısı/şifresi) — çözülmüş ve telde giden
-    /// form-urlencoded hâliyle — önce TAM gövdede maskelenir, sonra kesilir (kesme önce olsaydı sınırdaki değerin başı
-    /// açıkta kalırdı). Neyin gönderildiğini yalnız istemci bilir; kural servisle ortak (<see cref="ObifinRedaction"/>).</summary>
-    private static string Diagnostic(string body, ObifinCredentials creds, IReadOnlyDictionary<string, string>? form)
+    /// <summary>Günlüğe giden tanı kopyası (banka kimliği taşımayan çağrılar). Debug/hata sayfası ya da vekil yanıtı isteği
+    /// yankılayabilir: header'daki Obifin kimliği (kullanıcı kodu, şifre, API anahtarı) sayfanın basabileceği her biçimde
+    /// maskelenir (<see cref="EchoForms"/>). Form değerleri (tarih, sayfa, imleç, <c>BankaApiId</c>) sır değildir,
+    /// maskelenmez: tanı için okunur kalır. Kesme ve maskeleme <see cref="ObifinRedaction.RedactHead"/>'de: yalnız ilk
+    /// <see cref="DiagnosticCap"/> karakter (+ sınırı aşan değerin kalanı) taranır.</summary>
+    private static string Diagnostic(string body, ObifinCredentials creds)
+        => ObifinRedaction.RedactHead(body,
+            new[] { creds.UserCode, creds.Password, creds.ApiKey }.Where(v => !string.IsNullOrEmpty(v)).SelectMany(EchoForms),
+            DiagnosticCap);
+
+    /// <summary>Bir değerin hata/debug sayfasında görünebileceği biçimler: ham; form-urlencoded; HTML varlıklı (.NET
+    /// <c>&amp;#39;</c> ve PHP <c>htmlspecialchars</c> <c>&amp;#039;</c>); JSON dizesi — System.Text.Json'un <c>\u0022</c>
+    /// kaçışlı hâli ve yalnız <c>\"</c>/<c>\\</c> kaçışlı hâli, ikisi de PHP <c>json_encode</c>'un '/' → '\/' kaçışıyla.</summary>
+    private static IEnumerable<string> EchoForms(string value)
     {
-        var sent = new List<string?> { creds.UserCode, creds.Password, creds.ApiKey };
-        foreach (var value in form?.Values ?? [])
+        yield return value;
+        yield return FormUrlEncode(value);
+        var html = WebUtility.HtmlEncode(value);
+        yield return html;
+        yield return html.Replace("&#39;", "&#039;", StringComparison.Ordinal);
+        foreach (var json in new[]
+                 {
+                     JsonEncodedText.Encode(value).ToString(),
+                     JsonEncodedText.Encode(value, JavaScriptEncoder.UnsafeRelaxedJsonEscaping).ToString(),
+                 })
         {
-            sent.Add(value);
-            sent.Add(FormUrlEncode(value));
+            yield return json;
+            yield return json.Replace("/", "\\/", StringComparison.Ordinal);
         }
-        var redacted = ObifinRedaction.Redact(body, sent);
-        return redacted.Length > DiagnosticCap ? redacted[..DiagnosticCap] : redacted;
     }
+
+    private static string ContentType(HttpResponseMessage resp) => resp.Content.Headers.ContentType?.MediaType ?? "-";
 
     /// <summary><see cref="FormUrlEncodedContent"/>'in teldeki kodlaması: veri kaçışı, boşluk '+'.</summary>
     private static string FormUrlEncode(string value) => Uri.EscapeDataString(value).Replace("%20", "+");

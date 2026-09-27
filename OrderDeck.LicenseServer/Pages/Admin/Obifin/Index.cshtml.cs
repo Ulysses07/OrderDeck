@@ -17,8 +17,13 @@ namespace OrderDeck.LicenseServer.Pages.Admin.Obifin;
 /// singleton; ona bağlı <see cref="ObifinConnectionService"/> kurucuya enjekte edilseydi sayfa 500 verirdi. Servis
 /// yalnız modül açıkken, işleyicinin içinde çözülür; kapalıyken her POST <see cref="BankHasher.DisabledMessage"/> ile
 /// döner ve Obifin'e dokunmaz.</para>
-/// <para>Admin'e dostça metne çevrilen her hata sunucu günlüğüne de düşer (<see cref="LogHandled"/>): yalnız işleyici adı
-/// ve istisna türü — istisna metni (Obifin/banka yankısı taşıyabilir) ve form değerleri asla.</para></summary>
+/// <para>Admin'e yalnız servisin kendi doğrulama mesajları (<see cref="ObifinValidationException"/>) ve sınıflandırılmış
+/// istemci hataları dostça metin olarak gösterilir; başka her istisna (JSON, EF, DI…) programlama hatasıdır, yukarı gider
+/// (500, çerçeve tam iziyle günlüğe yazar). Bildirime çevrilen hata sunucu günlüğüne de düşer (<see cref="LogHandled"/>):
+/// yalnız işleyici adı ve istisna türü — istisna metni (Obifin/banka yankısı taşıyabilir) ve form değerleri asla.</para>
+/// <para>Taahhüt edilmiş bir yazımın (kimlik kaydı — belki geri dönüşsüz gölge veri silmesi —, doğrulama, kuyruğa atma,
+/// banka ekleme) ardındaki audit kaydı istek jetonuyla DEĞİL <see cref="CancellationToken.None"/> ile yazılır: istek o anda
+/// iptal edilse iş yapılmış, izi kaybolmuş olurdu.</para></summary>
 public class IndexModel : PageModel
 {
     public const string NotVerifiedMessage = "Bağlantı doğrulanmamış; önce Doğrula.";
@@ -118,17 +123,25 @@ public class IndexModel : PageModel
         var connected = licenseIds.ToHashSet();
         BankLicenses = Licenses.Where(l => connected.Contains(l.Id)).ToList(); // Licenses bağlantılıları hep içerir (yukarıda)
 
-        if (license is { } id
-            && await _db.ObifinConnections.AsNoTracking().FirstOrDefaultAsync(c => c.LicenseId == id, ct) is { } conn)
+        // Kullanıcı kodu ve adres tablonun satırından (aynı bağlantı, bu istekte yüklendi); "kayıtlı" bayrakları ayrıca.
+        if (license is { } id && Rows.FirstOrDefault(r => r.LicenseId == id) is { } row
+            && await LoadEditingAsync(id, ct) is { } editing)
         {
-            LicenseId = conn.LicenseId; BaseUrl = conn.BaseUrl; UserCode = conn.UserCode;
-            Editing = new EditTarget(conn.PasswordProtected.Length > 0, conn.ApiKeyProtected.Length > 0);
+            LicenseId = id; BaseUrl = row.BaseUrl; UserCode = row.UserCode;
+            Editing = editing;
         }
     }
 
+    /// <summary>Düzenlenen bağlantının "kayıtlı" bayrakları; bağlantı yoksa null. Yalnız bayraklar okunur: şifreli değerler
+    /// sayfa modeline hiç yüklenmez. Bağlı form alanlarına (lisans, kullanıcı kodu, adres) dokunmaz.</summary>
+    private async Task<EditTarget?> LoadEditingAsync(Guid licenseId, CancellationToken ct)
+        => await _db.ObifinConnections.AsNoTracking().Where(c => c.LicenseId == licenseId)
+            .Select(c => new EditTarget(c.PasswordProtected.Length > 0, c.ApiKeyProtected.Length > 0))
+            .FirstOrDefaultAsync(ct);
+
     /// <summary>Kullanıcı kodu ya da adres değişir ve lisansın gölge verisi varsa, <see cref="ConfirmReset"/> işaretli
     /// değilse HİÇBİR ŞEY kaydedilmez: <see cref="ObifinConnectionService.UpsertAsync"/> o veriyi geri dönüşsüz siler.
-    /// Karar yalnız serviste, silmeyle aynı yüklenmiş kümede verilir; sayfa yalnız izni (<see cref="ConfirmReset"/>) taşır.
+    /// Karar yalnız serviste verilir; sayfa yalnız izni (<see cref="ConfirmReset"/>) taşır.
     /// <para>Onay istenirse YÖNLENDİRİLMEZ: sayfa admin'in yazdığı lisans, kullanıcı kodu ve adresle yeniden basılır (şifre
     /// ve API anahtarı asla geri basılmaz, kutu işaretsiz gelir). <c>?license=</c>'e yönlendirmek formu SAKLI kimlikle
     /// doldururdu: bildirimdeki adımı izleyip kutuyu işaretleyen admin eski kimliği gönderir, değişiklik sessizce düşer,
@@ -145,24 +158,25 @@ public class IndexModel : PageModel
         {
             var saved = await Connections.UpsertWithResultAsync(LicenseId, BaseUrl ?? "", UserCode ?? "", Password, ApiKey, ct,
                 allowShadowReset: ConfirmReset);
+            // Kayıt (ve varsa geri dönüşsüz silme) taahhüt edildi: audit istek iptaliyle düşmesin.
             await _audit.LogAsync(AuditEvents.ObifinConnectionSave, AuditTargets.ObifinConnection, LicenseId.ToString(),
-                new { UserCode = UserCode?.Trim(), shadowDataReset = saved.ShadowDataReset }, ct);
+                new { UserCode = UserCode?.Trim(), shadowDataReset = saved.ShadowDataReset }, CancellationToken.None);
             TempData["Success"] = saved.ShadowDataReset
                 ? "Obifin kimliği kaydedildi, eski hesabın banka verisi silindi. Şimdi doğrulayın."
                 : "Obifin kimliği kaydedildi. Şimdi doğrulayın.";
         }
         catch (ShadowResetConfirmationRequiredException ex)
         {
-            LogHandled("Save", ex);
+            // Beklenen onay adımı, hata değil: uyarı düzeyinde gürültü yapmaz.
+            _log.LogInformation("Obifin admin Save: kimlik değişikliği gölge veri silme onayı bekliyor — lisans={LicenseId}", LicenseId);
             // Layout'un bildirimi bu istekte okur ve tüketir: sonraki sayfada yinelenmez.
             TempData["Error"] = ex.Message + " " + ReenterSecretsHint;
             await OnGetAsync(null, ct); // license = null: bağlı LicenseId/BaseUrl/UserCode'a dokunmaz
             // Bağlantı var (kimlik değişimi ancak mevcut bağlantıda onay ister): "kayıtlı; boş = değiştirme" ipuçları için.
-            if (await _db.ObifinConnections.AsNoTracking().FirstOrDefaultAsync(c => c.LicenseId == LicenseId, ct) is { } conn)
-                Editing = new EditTarget(conn.PasswordProtected.Length > 0, conn.ApiKeyProtected.Length > 0);
+            Editing = await LoadEditingAsync(LicenseId, ct);
             return Page();
         }
-        catch (ArgumentException ex)
+        catch (ObifinValidationException ex)
         {
             LogHandled("Save", ex);
             TempData["Error"] = ex.Message;
@@ -178,13 +192,15 @@ public class IndexModel : PageModel
         {
             result = await Connections.VerifyAsync(LicenseId, ct);
         }
-        catch (InvalidOperationException ex) when (ex is not ObjectDisposedException)
+        catch (ObifinValidationException ex)
         {
             LogHandled("Verify", ex);
             TempData["Error"] = ex.Message;
             return RedirectToPage();
         }
-        await _audit.LogAsync(AuditEvents.ObifinConnectionVerify, AuditTargets.ObifinConnection, LicenseId.ToString(), new { result.Ok, result.AccountCount }, ct);
+        // Doğrulama sonucu (durum + hesaplar) kaydedildi: audit istek iptaliyle düşmesin.
+        await _audit.LogAsync(AuditEvents.ObifinConnectionVerify, AuditTargets.ObifinConnection, LicenseId.ToString(),
+            new { result.Ok, result.AccountCount }, CancellationToken.None);
         if (result.Ok) TempData["Success"] = $"Doğrulandı: {result.AccountCount} hesap.";
         else TempData["Error"] = "Doğrulanamadı: " + result.Error;
         return RedirectToPage();
@@ -219,16 +235,20 @@ public class IndexModel : PageModel
             return RedirectToPage();
         }
         await _audit.LogAsync(AuditEvents.ObifinBankAdd, AuditTargets.ObifinConnection, LicenseId.ToString(), new { banka, bc.BankaApiId }, CancellationToken.None);
-        // Bağlantı Obifin'de ve yerelde AÇILDI: hesap yenilemesi düşerse "eklenemedi" demek yanlış olur (admin tekrar
-        // ekler, Obifin'de ikinci kayıt açılır). Saatlik yenileme işi hesapları sonra getirir.
+        // Bağlantı Obifin'de ve yerelde AÇILDI: hesap yenilemesi NE sebeple düşerse düşsün "eklenemedi" demek ya da 500
+        // vermek yanlış olur (admin tekrar ekler, Obifin'de ikinci kayıt açılır). Saatlik yenileme işi hesapları sonra
+        // getirir. Yalnız ObjectDisposedException (programlama hatası) yukarı gider; çağıranın iptali yok (jeton None),
+        // her OperationCanceledException zaman aşımıdır. Bu çağrı banka form değeri taşımaz: istisna nesnesiyle loglanır.
         try
         {
             await connections.RefreshAccountsAsync(LicenseId, CancellationToken.None);
             TempData["Success"] = $"Banka bağlantısı eklendi (Obifin #{bc.BankaApiId}).";
         }
-        catch (Exception ex) when (DescribeFailure(ex, CancellationToken.None) is { } msg)
+        catch (Exception ex) when (ex is not ObjectDisposedException)
         {
-            LogHandled("AddBank", ex);
+            _log.LogWarning(ex, "Obifin admin AddBank: bağlantı eklendi (Obifin #{BankaApiId}) ama hesap yenileme düştü — lisans={LicenseId}",
+                bc.BankaApiId, LicenseId);
+            var msg = DescribeFailure(ex, CancellationToken.None) ?? $"beklenmeyen hata ({ex.GetType().Name})";
             TempData["Error"] = $"Banka bağlantısı eklendi (Obifin #{bc.BankaApiId}) ama hesap listesi yenilenemedi: {msg}. Saatlik yenileme tekrar dener.";
         }
         return RedirectToPage();
@@ -250,7 +270,8 @@ public class IndexModel : PageModel
             return RedirectToPage();
         }
         _jobs.Enqueue<ObifinPollJob>(j => j.PollConnectionAsync(conn.Id, CancellationToken.None));
-        await _audit.LogAsync(AuditEvents.ObifinPollNow, AuditTargets.ObifinConnection, LicenseId.ToString(), null, ct);
+        // İş kuyruğa yazıldı: audit istek iptaliyle düşmesin.
+        await _audit.LogAsync(AuditEvents.ObifinPollNow, AuditTargets.ObifinConnection, LicenseId.ToString(), null, CancellationToken.None);
         // İş, zamanlanmış çekim ve saatlik yenilemeyle aynı kilidi (obifin-poll, 300 sn) bekler: "birkaç saniye" sözü verilmez.
         TempData["Success"] = "Çekim kuyruğa alındı; başka bir çekim sürüyorsa birkaç dakika içinde başlar.";
         return RedirectToPage();
@@ -282,14 +303,14 @@ public class IndexModel : PageModel
     private void LogHandled(string handler, Exception ex)
         => _log.LogWarning("Obifin admin {Handler} hatayı bildirime çevirdi: {ExceptionType}", handler, ex.GetType().Name);
 
-    /// <summary>Admin ekranına düşecek metin; null = beklenmeyen hata, yukarı gider. Yerel doğrulama/durum hataları
-    /// (<see cref="ArgumentException"/>, <see cref="InvalidOperationException"/>) kendi Türkçe mesajlarıyla; istemci
-    /// hataları servisin sınıflandırmasıyla — Obifin'in mesajları (banka eklemede maskeli), ağ/vekil/zaman aşımı için kısa metin (ham
-    /// istisna metni değil). <see cref="ObjectDisposedException"/> bir <see cref="InvalidOperationException"/> ama
-    /// programlama hatasıdır: doğrulama mesajı gibi gösterilmez, yukarı gider. İsteğin kendi iptali sınıflandırılmaz.
-    /// Kimlik hiçbir dalda yer almaz.</summary>
+    /// <summary>Admin ekranına düşecek metin; null = beklenmeyen hata, yukarı gider. Servisin kendi doğrulama/durum mesajları
+    /// (<see cref="ObifinValidationException"/>) olduğu gibi; istemci hataları servisin sınıflandırmasıyla — Obifin'in
+    /// mesajları (banka eklemede maskeli), ağ/vekil/zaman aşımı için kısa metin (ham istisna metni değil). Başka her
+    /// <see cref="InvalidOperationException"/>/<see cref="ArgumentException"/> (ör. <see cref="ObjectDisposedException"/>,
+    /// JSON/EF hataları) programlama hatasıdır: gösterilmez, yukarı gider. İsteğin kendi iptali sınıflandırılmaz. Kimlik
+    /// hiçbir dalda yer almaz.</summary>
     private static string? DescribeFailure(Exception ex, CancellationToken ct)
-        => ex is ArgumentException or InvalidOperationException and not ObjectDisposedException
+        => ex is ObifinValidationException
             ? ex.Message
             : ObifinConnectionService.DescribeClientFailure(ex, ct);
 }
