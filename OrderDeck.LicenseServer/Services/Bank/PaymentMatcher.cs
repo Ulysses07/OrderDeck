@@ -17,8 +17,12 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// yeniden okunmaz.</para>
 /// <para><see cref="BankHasher"/> istemez: hash'ler harekette ve hafızada hazır saklı. Hasher anahtar yokken kurulamaz;
 /// eşleştirici dekont onay yolundan da çözülecek ve orayı hiçbir koşulda düşürmemeli.</para>
-/// <para>Kanıt (<see cref="PaymentMatch.Evidence"/>, 180 gün saklanır) yalnız katman adı ve kullanıcı adı/ad anahtarı
-/// taşır; ham açıklama, IBAN, VKN ya da hash yazılmaz.</para>
+/// <para>Kanıt (<see cref="PaymentMatch.Evidence"/>, 180 gün saklanır) yalnız katman adı ve kullanıcı adı anahtarı
+/// taşır; ham açıklama, IBAN, VKN, hash ya da müşterinin adı yazılmaz. Ad kişisel veridir: KVKK silmesi
+/// (ShopperPurgeService) projeksiyondaki adı siler ama kanıta dokunmaz. Ad katmanı yalnız eşleşen token sayısını
+/// yazar ("name:2"); ad, gerekirse önerilen müşteriden okunur — silinmişse orada da yoktur.</para>
+/// <para>Paylaşılan scoped DbContext'te koşar (çekim işi, dekont onay isteği): kaydedemediği öneriyi izlemede
+/// bırakmaz, yoksa kapsamın sonraki her SaveChanges'i onu yeniden dener (bkz. <see cref="SaveAsync"/>).</para>
 /// </summary>
 public sealed class PaymentMatcher
 {
@@ -31,6 +35,9 @@ public sealed class PaymentMatcher
     /// noktalama) her açıklamanın "içinde" bulunurdu; NFKD sembolleri kısa ASCII'ye iner ("№"→"no", "™"→"tm",
     /// "①"→"1") ve açıklamadaki genel token'lara çarpar.</summary>
     private const int MinKeyLength = 3;
+
+    /// <summary>Bu uzunluktan itibaren anahtar bitişik/ayrık yazım farkıyla da bulunur ("burakyildiz" ↔
+    /// "BURAK YILDIZ"), ama yalnız açıklama token sınırında: bkz. <see cref="ContainsJoinedTokens"/>.</summary>
     private const int SubstringMinLength = 6;
     private const int ExactOnlyMaxLength = 3;
 
@@ -81,7 +88,7 @@ public sealed class PaymentMatcher
             var hit = c.Key.Length <= ExactOnlyMaxLength
                 ? exactToken
                 : exactToken || ContainsAlignedSequence(pieces, c.KeyTokens)
-                    || (c.Key.Length >= SubstringMinLength && text.Joined.Contains(c.Key, StringComparison.Ordinal));
+                    || (c.Key.Length >= SubstringMinLength && ContainsJoinedTokens(text.Tokens, c.Key));
             if (hit) byUsername.Add(c);
         }
 
@@ -125,8 +132,9 @@ public sealed class PaymentMatcher
             .ToList();
         if (nameHits.Count == 1)
         {
+            // Ad kanıta yazılmaz (kişisel veri, silme yolunun dışında kalırdı): yalnız eşleşen token sayısı.
             Set(match, nameHits[0].Id, PaymentMatchLayer.NameAmount, NameConfidence,
-                "name=" + string.Join(' ', nameHits[0].NameTokens), PaymentMatchStatus.Proposed);
+                $"name:{nameHits[0].NameTokens.Count}", PaymentMatchStatus.Proposed);
             return await SaveAsync(match, ct);
         }
         Set(match, null, PaymentMatchLayer.None, 0m, nameHits.Count > 1 ? $"ambiguous-name:{nameHits.Count}" : "no-signal", PaymentMatchStatus.NoProposal);
@@ -180,6 +188,28 @@ public sealed class PaymentMatcher
         return false;
     }
 
+    /// <summary>Bitişik/ayrık yazım: anahtar, açıklamadaki ardışık TAM token'ların birleşimi olmalı — eşleşme bir
+    /// token'ın başında başlar, bir token'ın sonunda biter. "burak yildiz" de "burakyildiz" de "burakyildiz"i bulur;
+    /// sınırsız alt dize ise iki komşu kelimeye yayılır ya da rakama taşardı: "aygul senol" içinde "gulsen",
+    /// "ali canpolat" içinde "alican", "kaya 1234" içinde "kaya12", "99123456" içinde "123456".</summary>
+    private static bool ContainsJoinedTokens(IReadOnlyList<string> tokens, string key)
+    {
+        for (var start = 0; start < tokens.Count; start++)
+        {
+            var length = 0;
+            for (var end = start; end < tokens.Count; end++)
+            {
+                var token = tokens[end];
+                if (length + token.Length > key.Length
+                    || string.CompareOrdinal(key, length, token, 0, token.Length) != 0)
+                    break;
+                length += token.Length;
+                if (length == key.Length) return true;
+            }
+        }
+        return false;
+    }
+
     private static bool ContainsSequence(IReadOnlyList<string> haystack, IReadOnlyList<string> needle)
     {
         if (needle.Count == 0 || haystack.Count < needle.Count) return false;
@@ -198,10 +228,42 @@ public sealed class PaymentMatcher
         m.Evidence = evidence.Length > 500 ? evidence[..500] : evidence; m.Status = status; m.UpdatedAt = DateTimeOffset.UtcNow;
     }
 
+    /// <summary>Kaydeder; başarısız kayıt izlemede iz bırakmaz. Eşleştirici paylaşılan scoped DbContext'te koşar:
+    /// öneri Added/Modified kalsaydı kapsamın sonraki her SaveChanges'i (partinin kalan hareketleri, dekont onayının
+    /// kendi yazısı) onu yeniden dener ve düşerdi. Yeni satır, hareket başına tek öneri indeksinde eşzamanlı bir
+    /// çağrıya yenildiyse kazananın satırı döner: iki çağıran tek satırda buluşur.</summary>
     private async Task<PaymentMatch> SaveAsync(PaymentMatch m, CancellationToken ct)
     {
-        if (_db.Entry(m).State == EntityState.Detached) _db.PaymentMatches.Add(m);
-        await _db.SaveChangesAsync(ct);
+        var added = _db.Entry(m).State == EntityState.Detached;
+        if (added) _db.PaymentMatches.Add(m);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException) when (added)
+        {
+            _db.Entry(m).State = EntityState.Detached;
+            var winner = await _db.PaymentMatches.FirstOrDefaultAsync(x => x.BankTransactionId == m.BankTransactionId, ct);
+            if (winner is null) throw;
+            _log.LogInformation("Gölge eşleştirme: hareket={BankTransactionId} önerisini eşzamanlı başka bir çağrı yazdı; o satır geçerli",
+                m.BankTransactionId);
+            return winner;
+        }
+        catch
+        {
+            var entry = _db.Entry(m);
+            if (added)
+            {
+                entry.State = EntityState.Detached;
+            }
+            else
+            {
+                // Okunduğu hale döner: izlenen nesne DB'deki satırla aynı kalır, sonraki SaveChanges bir şey yazmaz.
+                entry.CurrentValues.SetValues(entry.OriginalValues);
+                entry.State = EntityState.Unchanged;
+            }
+            throw;
+        }
         _log.LogDebug("Gölge eşleştirme: hareket={BankTransactionId} durum={Status} katman={Layer} güven={Confidence}",
             m.BankTransactionId, m.Status, m.Layer, m.Confidence);
         return m;

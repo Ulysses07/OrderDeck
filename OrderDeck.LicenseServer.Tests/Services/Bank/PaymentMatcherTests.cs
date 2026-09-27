@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
@@ -13,8 +14,12 @@ namespace OrderDeck.LicenseServer.Tests.Services.Bank;
 /// <summary>Sentetik açıklamalar demo'daki maskeli kalıplardan türetildi; gerçek ad/IBAN yok.</summary>
 public sealed class PaymentMatcherTests
 {
-    private static LicenseDbContext NewDb()
-        => new(new DbContextOptionsBuilder<LicenseDbContext>().UseInMemoryDatabase($"matcher-{Guid.NewGuid():N}").Options);
+    private static LicenseDbContext NewDb(IInterceptor? interceptor = null)
+    {
+        var options = new DbContextOptionsBuilder<LicenseDbContext>().UseInMemoryDatabase($"matcher-{Guid.NewGuid():N}");
+        if (interceptor is not null) options.AddInterceptors(interceptor);
+        return new(options.Options);
+    }
 
     /// <summary>Yalnız tohum verisinin IBAN hash'ini üretir; eşleştirici hasher istemez (hash'ler hazır saklanır).</summary>
     private static readonly BankHasher Hasher = new(Options.Create(new BankOptions { HashKey = $"k-{Guid.NewGuid():N}{Guid.NewGuid():N}" }));
@@ -129,6 +134,42 @@ public sealed class PaymentMatcherTests
         m.Evidence.Should().Be("no-signal");
     }
 
+    [Theory]
+    [InlineData("gulsen", "HAVALE AYGUL SENOL")] // iki ayrı kelimeye yayılır
+    [InlineData("alican", "FAST VELI ALI CANPOLAT")] // soyadının ortasında biter
+    [InlineData("mehmet", "EFT AHMET MEHMETOGLU")] // soyadının başı
+    [InlineData("aysenur", "HAVALE AYSE NURCAN")]
+    [InlineData("kaya12", "HAVALE SELIN KAYA 1234 TL")] // tutar/referans rakamına taşar
+    [InlineData("ayse34", "HAVALE AYSE 3450")]
+    [InlineData("123456", "FAST REF 99123456")] // referans numarasının içi
+    public async Task Bitisik_yazim_eslesmesi_aciklama_token_sinirinda_baslar_ve_biter(string kullaniciAdi, string aciklama)
+    {
+        // Türkçe adlar kısa hece dizileri; açıklama gönderenin tam adını referans ve tutarın yanında taşır.
+        // Sınırsız alt dize bunları 0.90 öneriye çevirirdi — tam ad eşleşmesinden (0.50) bile yüksek.
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        Customer(db, lic, kullaniciAdi);
+
+        var m = await Matcher(db).MatchAsync(Incoming(db, lic, aciklama), CancellationToken.None);
+
+        m.Status.Should().Be(PaymentMatchStatus.NoProposal);
+        m.Evidence.Should().Be("no-signal");
+    }
+
+    [Theory]
+    [InlineData("burakyildiz", "EFT BURAK YILDIZ odeme")] // kullanıcı adı bitişik, açıklama ayrık
+    [InlineData("aysenur", "HAVALE AYSE NUR odeme")]
+    [InlineData("kaya12", "HAVALE SELIN KAYA 12 TL")]
+    public async Task Bitisik_yazim_ardisik_tam_tokenlarin_birlesimiyse_eslesir(string kullaniciAdi, string aciklama)
+    {
+        using var db = NewDb(); var lic = Guid.NewGuid();
+        var c = Customer(db, lic, kullaniciAdi);
+
+        var m = await Matcher(db).MatchAsync(Incoming(db, lic, aciklama), CancellationToken.None);
+
+        m.ProposedWpfCustomerId.Should().Be(c.Id);
+        m.Layer.Should().Be(PaymentMatchLayer.UsernameInDescription);
+    }
+
     [Fact]
     public async Task Birden_fazla_aday_oneri_uretmez()
     {
@@ -186,6 +227,9 @@ public sealed class PaymentMatcherTests
         m.Layer.Should().Be(PaymentMatchLayer.NameAmount);
         m.ProposedWpfCustomerId.Should().Be(c.Id);
         m.Confidence.Should().Be(0.50m);
+        // Ad kişisel veri: KVKK silmesi projeksiyondaki adı siler, kanıta dokunmaz. Kanıt yalnız katmanı ve
+        // eşleşen token sayısını taşır; ad, admin sayfasında önerilen müşteriden (silinmemişse) okunur.
+        m.Evidence.Should().Be("name:2");
     }
 
     [Fact]
@@ -237,7 +281,7 @@ public sealed class PaymentMatcherTests
     [Fact]
     public async Task Kanit_ham_aciklama_iban_ve_hash_icermez()
     {
-        // Kanıt sütunu 180 gün saklanır ve admin sayfasında görünür: yalnız katman adı + kullanıcı adı/ad taşır.
+        // Kanıt sütunu 180 gün saklanır ve admin sayfasında görünür: yalnız katman adı + kullanıcı adı taşır, ad taşımaz.
         using var db = NewDb(); var lic = Guid.NewGuid();
         Customer(db, lic, "ayse_gul34"); var b = Customer(db, lic, "mehmet_k", fullName: "Selin Kaya");
         var iban = BankHasherTests.TestIban();
@@ -258,6 +302,7 @@ public sealed class PaymentMatcherTests
             m.Evidence.Should().NotBeNullOrEmpty();
             m.Evidence.Should().NotContain(iban).And.NotContain(iban.ToLowerInvariant()).And.NotContain(iban[2..]).And.NotContain(hash);
             m.Evidence.Should().NotContain(BankTextNormalizer.Normalize(aciklama)).And.NotContain(BankTextNormalizer.Tokenize(aciklama).Joined);
+            m.Evidence.Should().NotContain("selin").And.NotContain("kaya");
         }
     }
 
@@ -345,5 +390,66 @@ public sealed class PaymentMatcherTests
         await Matcher(db).MatchAsync(tx, CancellationToken.None);
         await Matcher(db).MatchAsync(tx, CancellationToken.None);
         (await db.PaymentMatches.CountAsync(m => m.BankTransactionId == tx.Id)).Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Kaydedilemeyen_yeni_oneri_izlemede_kalmaz(bool veritabaniHatasi)
+    {
+        // Eşleştirici paylaşılan scoped DbContext'te koşar (çekim işi, dekont onay isteği). Başarısız öneri Added
+        // kalsaydı kapsamın sonraki her SaveChanges'i onu yeniden dener, partinin kalanı ve çağıranın yazısı düşerdi.
+        var hata = new PaymentMatchSaveFailure(EntityState.Added, veritabaniHatasi
+            ? () => new DbUpdateException("sahte kayıt hatası")
+            : () => new InvalidOperationException("sahte kayıt hatası"));
+        using var db = NewDb(hata); var lic = Guid.NewGuid();
+        Customer(db, lic, "ayse_gul34");
+        var ilk = Incoming(db, lic, "HAVALE ayse_gul34");
+        var sonraki = Incoming(db, lic, "HAVALE ayse_gul34 ikinci siparis");
+        var matcher = Matcher(db);
+
+        var act = () => matcher.MatchAsync(ilk, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<Exception>()).Which.Should()
+            .BeOfType(veritabaniHatasi ? typeof(DbUpdateException) : typeof(InvalidOperationException));
+        db.ChangeTracker.Entries<PaymentMatch>().Should().BeEmpty();
+        hata.Active = false;
+        (await matcher.MatchAsync(sonraki, CancellationToken.None)).Status.Should().Be(PaymentMatchStatus.Proposed);
+        (await db.PaymentMatches.AsNoTracking().Select(m => m.BankTransactionId).ToListAsync()).Should().Equal(sonraki.Id);
+    }
+
+    [Fact]
+    public async Task Kaydedilemeyen_guncelleme_satiri_okundugu_haline_dondurur()
+    {
+        var hata = new PaymentMatchSaveFailure(EntityState.Modified, () => new DbUpdateException("sahte kayıt hatası"));
+        using var db = NewDb(hata); var lic = Guid.NewGuid();
+        Customer(db, lic, "ayse_gul34");
+        var tx = Incoming(db, lic, "HAVALE ayse_gul34");
+        var matcher = Matcher(db);
+        var oneri = await matcher.MatchAsync(tx, CancellationToken.None); // yeni satır; hata yalnız güncellemede
+        var okunan = oneri.UpdatedAt;
+        tx.Description = "HAVALE aciklamasiz"; db.SaveChanges();
+
+        var act = () => matcher.MatchAsync(tx, CancellationToken.None);
+
+        await act.Should().ThrowAsync<DbUpdateException>();
+        db.ChangeTracker.HasChanges().Should().BeFalse();
+        db.Entry(oneri).State.Should().Be(EntityState.Unchanged);
+        oneri.Status.Should().Be(PaymentMatchStatus.Proposed);
+        oneri.Evidence.Should().Be("username=aysegul34");
+        oneri.UpdatedAt.Should().Be(okunan);
+    }
+
+    /// <summary>İstenen durumda PaymentMatch taşıyan SaveChanges'ı düşürür (bağlantı kopması, kısıt ihlali yerine).</summary>
+    private sealed class PaymentMatchSaveFailure(EntityState durum, Func<Exception> hata) : SaveChangesInterceptor
+    {
+        public bool Active { get; set; } = true;
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (Active && eventData.Context!.ChangeTracker.Entries<PaymentMatch>().Any(e => e.State == durum)) throw hata();
+            return base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
     }
 }
