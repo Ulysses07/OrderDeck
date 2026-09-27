@@ -14,7 +14,8 @@ public sealed record ObifinVerifyResult(bool Ok, string? Error, int AccountCount
 public sealed record ObifinUpsertResult(ObifinConnection Connection, bool ShadowDataReset);
 
 /// <summary>Servisin admin'e olduğu gibi gösterilebilen Türkçe doğrulama/durum mesajı: ASCII/https/uzunluk sınırları, eksik ya
-/// da çözülemeyen bağlantı, Obifin'de görünmeyen kayıt. Admin sayfası YALNIZ bunu (ve sınıflandırılmış istemci hatalarını,
+/// da çözülemeyen bağlantı, sonucu belirsiz banka eklemesi (<see cref="ObifinBankAddUncertainException"/>). Admin sayfası
+/// YALNIZ bunu (ve sınıflandırılmış istemci hatalarını,
 /// <see cref="ObifinConnectionService.DescribeClientFailure"/>) bildirime çevirir; başka her
 /// <see cref="InvalidOperationException"/>/<see cref="ArgumentException"/> (JSON, EF, DI…) programlama hatasıdır, yukarı
 /// gider ve tam iziyle günlüğe düşer. Mesajda kimlik yer almaz.</summary>
@@ -24,8 +25,9 @@ public class ObifinValidationException : InvalidOperationException
 }
 
 /// <summary>Banka bağlantısı eklemenin sonucu yerelde kesinleşmedi: ya ekleme çağrısı ağ/vekil/zaman aşımıyla düştü (istek
-/// Obifin'e ulaşıp kaydı açmış olabilir) ya da ekleme geçti ama ardından gelen liste alınamadı (kayıt Obifin'de açık,
-/// <c>BankaApiId</c> bilinmiyor). Yerel satır yazılmamıştır. Mesaj Obifin'deki etiketi ve tekrar eklememe uyarısını taşır;
+/// Obifin'e ulaşıp kaydı açmış olabilir) ya da ekleme geçti ama ardından gelen liste alınamadı ya da listede etiket
+/// bulunamadı (kayıt büyük olasılıkla Obifin'de açık, <c>BankaApiId</c> bilinmiyor). Yerel satır yazılmamıştır. Mesaj
+/// Obifin'deki etiketi ve tekrar eklememe uyarısını taşır;
 /// admin'e önek eklenmeden gösterilir: "eklenemedi" demek admin'i tekrar eklemeye, Obifin'de banka kimliği taşıyan ikinci
 /// bir kayıt açmaya iterdi. Mesajda kimlik yer almaz.</summary>
 public sealed class ObifinBankAddUncertainException : ObifinValidationException
@@ -229,17 +231,21 @@ public sealed class ObifinConnectionService
     /// <summary>Banka kimliklerini Obifin'e iletir, listeden etiketle `BankaApiId`'yi bulur; kimlikleri saklamaz.
     /// Ekle + liste başarısı doğrulamadaki gibi kaydedilir (bkz. <see cref="MarkVerified"/>). Dönüş tipi başarısızlık
     /// taşıyamadığından her istemci hatası önce bağlantıya yazılır, sonra istisnayla yukarı gider.
-    /// <para><c>bankaapi/ekle</c> idempotent değil; iki çağrının hatası bu yüzden ayrı ele alınır:</para>
+    /// <para><c>bankaapi/ekle</c> idempotent değil; iki çağrının hatası ve listede aranan etiket bu yüzden ayrı ele alınır:</para>
     /// <list type="bullet">
     /// <item>Obifin eklemeyi REDDETTİ (<see cref="ObifinApiException"/>): kayıt açılmadı. Failed + maskeli mesaj.</item>
     /// <item>Ekleme çağrısı ağ/vekil/zaman aşımıyla düştü: istek Obifin'e ulaşıp kaydı açmış olabilir, sonuç belirsiz.</item>
     /// <item>Ekleme GEÇTİ ama ardından gelen liste alınamadı (Obifin reddi dahil her sınıf): kayıt Obifin'de açık,
     /// <c>BankaApiId</c> bilinmiyor.</item>
+    /// <item>Ekleme ve liste GEÇTİ ama etiket listede yok (Obifin adı kırpar/normalize eder, satırı başka alanla döner ya da
+    /// kaydı eşzamansız açar): kayıt büyük olasılıkla Obifin'de, <c>BankaApiId</c> bilinmiyor. İki çağrı da geçtiği için
+    /// doğrulama kanıtı (<see cref="MarkVerified"/>) son hatayla birlikte kaydedilir.</item>
     /// </list>
-    /// <para>Son ikisinde "eklenemedi" demek admin'i tekrar eklemeye iterdi: Obifin'de banka kimliği taşıyan ikinci bir kayıt
+    /// <para>Son üçünde "eklenemedi" demek admin'i tekrar eklemeye iterdi: Obifin'de banka kimliği taşıyan ikinci bir kayıt
     /// açılır, aynı hesap ve hareketler farklı Obifin Id'leriyle gelir, (LicenseId, ObifinId) tekilliği mükerreri
     /// yakalamaz. Bu yüzden <see cref="ObifinBankAddUncertainException"/> fırlatılır: mesajı Obifin'deki etiketi ve
-    /// uyarıyı taşır, son hataya da o yazılır. Durum KORUNUR (Failed yazılmaz): geçici hata kimlik aleyhine kanıt değildir,
+    /// uyarıyı taşır, son hataya da o yazılır. Failed YAZILMAZ (hatada durum korunur; etiket bulunamadıysa yukarıdaki
+    /// doğrulama kanıtı yazılır): geçici hata kimlik aleyhine kanıt değildir,
     /// çekim ve saatlik yenileme yalnız Verified bağlantıya bakar (bkz. <see cref="RefreshAccountsAsync"/>). Yerel satır
     /// yazılmaz. Etiket sır değildir, günlüğe de düşer: Obifin'deki kayıt sonradan elle eşleştirilebilsin.</para>
     /// <para>Obifin ya da bankanın SOAP hatası gönderilen banka alanını (web servis kullanıcısı/şifresi) ham ya da HTML/XML/
@@ -263,11 +269,12 @@ public sealed class ObifinConnectionService
         var conn = await _db.ObifinConnections.FirstOrDefaultAsync(c => c.LicenseId == licenseId, ct)
             ?? throw new ObifinValidationException("Önce Obifin bağlantısı kaydedilmeli.");
         var creds = TryResolveCredentials(conn) ?? throw new ObifinValidationException(UndecryptableMessage);
-        // Obifin tarafında tekil etiket: liste dönüşünde bunu ararız. Dakika damgası tek başına yetmez (aynı
-        // dakikada iki ekleme ya da "görünmedi" hatasından sonra hemen tekrar aynı adı üretirdi; ikinci kayıt
-        // ilkinin BankaApiId'sini alır, tekil index patlar, Obifin'deki kayıt yetim kalırdı) — rastgele son ek
-        // ayırır. Uzunluk: 18 + 1 + BankaKodu(≤32) + 1 + 12 + 1 + 8 ≤ 73 < 80 (Label sütunu; etiket verilmezse
-        // bu ad saklanır).
+        // Obifin tarafında tekil etiket: liste dönüşünde bunu ararız; sonucu belirsiz kalan bir denemede de admin'in
+        // Obifin'de o kaydı bulacağı tek anahtar budur (mesaja ve günlüğe yazılır). Dakika damgası tek başına yetmez
+        // (aynı dakikada iki ekleme — ör. iki QNB hesabı ya da belirsiz bir denemeden sonra kaydı Obifin'de bulamayan
+        // admin'in tekrarı — aynı adı üretirdi; ikinci kayıt ilkinin BankaApiId'sini alır, tekil index patlar,
+        // Obifin'deki kayıt yetim kalırdı) — rastgele son ek her denemeyi ayırır. Uzunluk: 18 + 1 + BankaKodu(≤32) + 1
+        // + 12 + 1 + 8 ≤ 73 < 80 (Label sütunu; etiket verilmezse bu ad saklanır).
         var now = DateTimeOffset.UtcNow;
         var obifinLabel = $"OrderDeck-{licenseId.ToString("N")[..8]}-{bankaKodu}-{now:yyyyMMddHHmm}-{Guid.NewGuid().ToString("N")[..8]}";
         var form = new Dictionary<string, string>(bankForm) { ["BankaApiAdi"] = obifinLabel };
@@ -310,8 +317,13 @@ public sealed class ObifinConnectionService
         MarkVerified(conn, now);
         // Aynı etiket birden çok satırda görünürse (beklenmez) en büyük BankaApiId = en yeni kayıt.
         var match = listed.Where(x => string.Equals(x.Name, obifinLabel, StringComparison.Ordinal))
-                .OrderByDescending(x => x.BankaApiId).FirstOrDefault()
-            ?? throw new ObifinValidationException("Banka bağlantısı Obifin'de görünmedi; listeyi kontrol edin.");
+            .OrderByDescending(x => x.BankaApiId).FirstOrDefault();
+        // Ekleme hatasız döndü: kayıt büyük olasılıkla Obifin'de, banka kimliğiyle — "eklenemedi" değil, sonucu belirsiz
+        // (bkz. özet). Kaydetme, yukarıdaki doğrulama kanıtını da son hatayla birlikte yazar.
+        if (match is null)
+            throw await RecordUncertainAddAsync(conn, ex: null, obifinLabel, added: true,
+                $"Banka bağlantısı Obifin'e eklendi (etiket '{obifinLabel}') ama listede bulunamadı; TEKRAR EKLEMEYİN. Obifin listesini kontrol edin.",
+                now, ct);
         var bc = new BankConnection
         {
             Id = Guid.NewGuid(), LicenseId = licenseId, ObifinConnectionId = conn.Id, BankaKodu = bankaKodu,
@@ -328,17 +340,18 @@ public sealed class ObifinConnectionService
     private static ObifinApiException RedactBankEcho(ObifinApiException api, IReadOnlyList<string> echoes)
         => new(api.Messages.Select(m => ObifinRedaction.Redact(m, echoes)).ToList());
 
-    /// <summary>Banka eklemenin sonucu kesinleşmedi (bkz. <see cref="AddBankConnectionAsync"/>): durum korunur, son hata
-    /// yazılır ve kaydedilir, Obifin etiketi günlüğe düşer. <see cref="ObifinApiException"/> günlüğe istisna nesnesiyle
+    /// <summary>Banka eklemenin sonucu kesinleşmedi (bkz. <see cref="AddBankConnectionAsync"/>): durum Failed'a çevrilmez, son
+    /// hata yazılır ve kaydedilir, Obifin etiketi günlüğe düşer. <see cref="ObifinApiException"/> günlüğe istisna nesnesiyle
     /// değil yalnız türü ve (maskeli) mesajla girer; diğer sınıflar banka form değeri taşımaz, istisna nesnesiyle girer.
-    /// Fırlatılacak istisnayı döner.</summary>
-    private async Task<ObifinBankAddUncertainException> RecordUncertainAddAsync(ObifinConnection conn, Exception ex,
+    /// <paramref name="ex"/> null = iki çağrı da geçti ama etiket listede yok; çağıranın izlenen bağlantıya yazdığı doğrulama
+    /// kanıtı bu kaydetmeyle birlikte gider. Fırlatılacak istisnayı döner.</summary>
+    private async Task<ObifinBankAddUncertainException> RecordUncertainAddAsync(ObifinConnection conn, Exception? ex,
         string obifinLabel, bool added, string message, DateTimeOffset now, CancellationToken ct)
     {
         _log.LogWarning(ex is ObifinApiException ? null : ex,
             "Obifin banka bağlantısı ekleme sonucu kesinleşmedi ({ExceptionType}, ekleme geçti={Added}), durum korunuyor — " +
             "lisans={LicenseId}, Obifin etiketi={ObifinLabel}: {Error}",
-            ex.GetType().Name, added, conn.LicenseId, obifinLabel, message);
+            ex?.GetType().Name ?? "etiket bulunamadı", added, conn.LicenseId, obifinLabel, message);
         conn.LastError = Truncate(message, LastErrorMaxLength);
         conn.UpdatedAt = now;
         await _db.SaveChangesAsync(ct);

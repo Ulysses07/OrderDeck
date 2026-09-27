@@ -682,9 +682,9 @@ public sealed class ObifinConnectionServiceTests
     [Fact]
     public async Task Ayni_dakikada_iki_banka_baglantisi_farkli_etiket_ve_BankaApiId_alir()
     {
-        // Dakika çözünürlüklü etiket tek başına yetmez: aynı dakikada ikinci ekleme (iki QNB hesabı ya da
-        // "görünmedi" hatasından sonra hemen tekrar) listede İLK kaydın BankaApiId'sini bulur, tekil index
-        // patlar ve ikinci kayıt Obifin'de yetim kalırdı.
+        // Dakika çözünürlüklü etiket tek başına yetmez: aynı dakikada ikinci ekleme (iki QNB hesabı ya da sonucu belirsiz
+        // bir eklemeden sonra kaydı Obifin'de bulamayan admin'in tekrarı) listede İLK kaydın BankaApiId'sini bulur, tekil
+        // index patlar ve ikinci kayıt Obifin'de yetim kalırdı.
         using var db = NewDb(); var lic = SeedLicense(db); var stub = new StubObifin();
         var svc = Svc(db, stub);
         await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
@@ -901,6 +901,42 @@ public sealed class ObifinConnectionServiceTests
     }
 
     [Fact]
+    public async Task Banka_baglantisi_eklendi_ama_etiket_listede_yoksa_etiketle_tekrar_eklemeyin_der_dogrulama_kanitini_kaydeder()
+    {
+        // bankaapi/ekle hatasız döndü, bankaapi/liste de geçti ama üretilen etiket listede yok (Obifin adı kırpar/normalize
+        // eder, satırı başka alanla döner ya da kaydı eşzamansız açar). Kayıt büyük olasılıkla Obifin'de, banka kimliğiyle:
+        // "eklenemedi" admin'i tekrar eklemeye, her denemede banka kimliği taşıyan yeni bir yetim kayıt açmaya iterdi. Sonuç
+        // belirsiz: istisna ve son hata etiketi ve "TEKRAR EKLEMEYİN" uyarısını taşır, etiket günlüğe düşer. İki çağrı da
+        // geçtiği için kimlik çalışıyor: Failed bağlantı Verified olur, doğrulama zamanı yazılır — ikisi de son hatayla
+        // birlikte kaydedilir. Yerel satır yazılmaz (BankaApiId bilinmiyor).
+        var name = $"obifin-conn-{Guid.NewGuid():N}";
+        using var db = NewDb(name); var lic = SeedLicense(db);
+        var stub = new StubObifin { HideAddedFromList = true };
+        var log = new RecordingLog();
+        var svc = Svc(db, stub, log);
+        var conn = await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        conn.Status = ObifinConnectionStatus.Failed;
+        await db.SaveChangesAsync();
+        var before = DateTimeOffset.UtcNow;
+        var form = new Dictionary<string, string> { ["KullaniciAdi"] = $"ws-{Guid.NewGuid():N}", ["Sifre"] = NewPw() };
+
+        var act = () => svc.AddBankConnectionAsync(lic, "qnb", "QNB", form, CancellationToken.None);
+
+        var thrown = (await act.Should().ThrowAsync<ObifinBankAddUncertainException>()).Which;
+        var label = stub.Added.Single().Form["BankaApiAdi"];
+        thrown.Message.Should().Be(
+            $"Banka bağlantısı Obifin'e eklendi (etiket '{label}') ama listede bulunamadı; TEKRAR EKLEMEYİN. Obifin listesini kontrol edin.");
+        using var fresh = NewDb(name); // kaydedildi mi: izleyicisiz taze okuma
+        var saved = await fresh.ObifinConnections.AsNoTracking().SingleAsync();
+        saved.Status.Should().Be(ObifinConnectionStatus.Verified, "ekleme ve liste geçti: kimlik çalışıyor");
+        saved.LastVerifiedAt.Should().NotBeNull().And.BeOnOrAfter(before);
+        saved.LastError.Should().Be(thrown.Message);
+        (await fresh.BankConnections.CountAsync()).Should().Be(0);
+        log.Entries.Should().ContainSingle(e => e.Contains("banka bağlantısı ekleme")).Which
+            .Should().Contain(label).And.Contain("etiket bulunamadı");
+    }
+
+    [Fact]
     public async Task Durum_hatalari_admin_mesaji_olarak_ObifinValidationException_firlatir()
     {
         // Admin sayfası yalnız ObifinValidationException'ı (ve sınıflandırılmış istemci hatalarını) bildirime çevirir; başka
@@ -919,9 +955,12 @@ public sealed class ObifinConnectionServiceTests
             .Should().ThrowAsync<ObifinValidationException>()).Which.Message.Should().Be("Önce Obifin bağlantısı kaydedilmeli.");
 
         var conn = await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        // Ekleme geçti ama etiket listede yok: kayıt büyük olasılıkla Obifin'de — "eklenemedi" değil, sonucu belirsiz ekleme
+        // (ObifinValidationException'ın alt türü); mesaj etiketi ve tekrar eklememe uyarısını taşır.
         stub.HideAddedFromList = true;
         (await FluentActions.Awaiting(() => svc.AddBankConnectionAsync(lic, "qnb", "QNB", form, CancellationToken.None))
-            .Should().ThrowAsync<ObifinValidationException>()).Which.Message.Should().StartWith("Banka bağlantısı Obifin'de görünmedi");
+            .Should().ThrowAsync<ObifinBankAddUncertainException>()).Which.Message.Should()
+            .Contain($"'{stub.AttemptedLabels.Single()}'").And.Contain("TEKRAR EKLEMEYİN").And.NotContain("eklenemedi");
 
         conn.PasswordProtected = new EphemeralDataProtectionProvider().CreateProtector("x").Protect(NewPw());
         await db.SaveChangesAsync();

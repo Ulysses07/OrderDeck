@@ -211,8 +211,8 @@ public class IndexModel : PageModel
     /// ikincisini açardı. Ekleme, ardındaki audit ve hesap yenilemesi sonuna kadar koşar; süreyi HttpClient zaman aşımı
     /// sınırlar (iptal olmadığından her <see cref="OperationCanceledException"/> zaman aşımıdır).
     /// <para>Aynı sebeple sonucu belirsiz ekleme (<see cref="ObifinBankAddUncertainException"/>: ekleme çağrısı ağ/zaman
-    /// aşımıyla düştü ya da geçti ama liste alınamadı) "eklenemedi" diye gösterilmez: servisin mesajı Obifin'deki etiketi ve
-    /// tekrar eklememe uyarısını taşır, önek eklenmeden bildirime düşer.</para></summary>
+    /// aşımıyla düştü, ya da geçti ama liste alınamadı ya da etiket listede bulunamadı) "eklenemedi" diye gösterilmez:
+    /// servisin mesajı Obifin'deki etiketi ve tekrar eklememe uyarısını taşır, önek eklenmeden bildirime düşer.</para></summary>
     public async Task<IActionResult> OnPostAddBankAsync()
     {
         if (BankDisabled) return BankDisabledResult();

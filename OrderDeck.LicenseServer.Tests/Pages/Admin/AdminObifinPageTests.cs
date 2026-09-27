@@ -44,6 +44,8 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         public Func<Exception>? ListAccountsFails { get; set; }
         /// <summary>Null = banka bağlantı listesi eklenenleri döner.</summary>
         public Func<Exception>? ListBankConnectionsFails { get; set; }
+        /// <summary>Ayarlıysa ekleme başarılı döner ama kayıt banka bağlantı listesinde görünmez.</summary>
+        public bool HideAddedFromList { get; set; }
         private readonly List<ObifinBankConnectionDto> _connections = new();
         private readonly List<string> _attemptedLabels = new();
         /// <summary>Her ekleme denemesinin Obifin'e gönderdiği etiket (<c>BankaApiAdi</c>) — başarısızlar dahil.</summary>
@@ -53,7 +55,8 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         {
             lock (_attemptedLabels) _attemptedLabels.Add(f["BankaApiAdi"]);
             if (AddFails is { } fail) return Task.FromException(fail());
-            lock (_connections) _connections.Add(new ObifinBankConnectionDto(Random.Shared.NextInt64(1, 1_000_000), b, f["BankaApiAdi"], true));
+            if (!HideAddedFromList)
+                lock (_connections) _connections.Add(new ObifinBankConnectionDto(Random.Shared.NextInt64(1, 1_000_000), b, f["BankaApiAdi"], true));
             return Task.CompletedTask;
         }
         public Task<IReadOnlyList<ObifinAccountDto>> ListAccountsAsync(ObifinCredentials c, CancellationToken ct = default)
@@ -480,6 +483,34 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         (await db.BankConnections.CountAsync(b => b.LicenseId == licenseId)).Should().Be(0);
         var conn = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == licenseId);
         conn.Status.Should().NotBe(ObifinConnectionStatus.Failed);
+        conn.LastError.Should().Contain(label);
+        factory.Log.Warnings.Should().Contain(w => w.Contains(label), "etiket sunucu günlüğünde (sır değil)");
+    }
+
+    [Fact]
+    public async Task Banka_eklendi_ama_etiket_Obifin_listesinde_yoksa_eklenemedi_demez_etiketle_tekrar_eklemeyin_der()
+    {
+        // bankaapi/ekle ve bankaapi/liste geçti ama üretilen etiket listede yok (Obifin adı kırpar/normalize eder ya da kaydı
+        // eşzamansız açar): kayıt büyük olasılıkla Obifin'de, banka kimliğiyle. "Eklenemedi" admin'i tekrar eklemeye iter, her
+        // tekrar yeni bir yetim kayıt açardı. Bildirim etiketi ve uyarıyı taşır, etiket sunucu günlüğüne düşer; bağlantı Failed
+        // yazılmaz (iki çağrı da geçti: Verified), yerel satır yazılmaz (BankaApiId bilinmiyor). 500 yok.
+        using var factory = new StubObifinApiFactory();
+        factory.Obifin.HideAddedFromList = true;
+        var licenseId = await SeedLicenseAsync(factory);
+        var client = await factory.CreateLoggedInAdminClientAsync();
+        await SaveAsync(client, licenseId, "api@x");
+
+        var resp = await AddBankAsync(client, licenseId, $"ws-{Guid.NewGuid():N}", $"pw-{Guid.NewGuid():N}");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        var label = factory.Obifin.AttemptedLabels.Single();
+        (await ToastAsync(client, "danger")).Should().NotContain("eklenemedi")
+            .And.Contain($"'{label}'").And.Contain("TEKRAR EKLEMEYİN");
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.BankConnections.CountAsync(b => b.LicenseId == licenseId)).Should().Be(0);
+        var conn = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == licenseId);
+        conn.Status.Should().Be(ObifinConnectionStatus.Verified, "ekleme ve liste geçti: kimlik çalışıyor");
         conn.LastError.Should().Contain(label);
         factory.Log.Warnings.Should().Contain(w => w.Contains(label), "etiket sunucu günlüğünde (sır değil)");
     }
