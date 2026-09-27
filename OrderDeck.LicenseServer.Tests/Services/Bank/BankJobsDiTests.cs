@@ -61,6 +61,8 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
         sp.GetRequiredService<ObifinPollJob>().Should().NotBeNull();
         sp.GetRequiredService<ObifinAccountRefreshJob>().Should().NotBeNull();
         sp.GetRequiredService<BankDataRetentionJob>().Should().NotBeNull();
+        sp.GetRequiredService<BankMatchSweepJob>().Should().NotBeNull();
+        sp.GetRequiredService<PaymentMatcher>().Should().NotBeNull();
         sp.GetRequiredService<ObifinConnectionService>().Should().NotBeNull();
         sp.GetRequiredService<BankHasher>().Should().NotBeNull("Testing'de HashKey ApiFactory'den gelir");
         sp.GetRequiredService<IObifinClient>().Should().BeOfType<NullObifinClient>("test ortamı Obifin'e bağlanmaz");
@@ -99,7 +101,7 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public void Anahtar_gecerliyse_uc_banka_isi_UTC_takvimiyle_kaydolur()
+    public void Anahtar_gecerliyse_dort_banka_isi_UTC_takvimiyle_kaydolur()
     {
         var storage = new MemoryStorage();
 
@@ -111,6 +113,8 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
             ("obifin-poll", "*/5 * * * *"),
             // Çekimle ortak kilit: 5 dakikalık ızgaranın dışında, yoksa her seferinde çekimi bekler.
             ("obifin-accounts", "2 * * * *"),
+            // Sink'in kaçırdığı gelen hareketler: saatlik, ızgara ve :02 dışında (hiçbir günlük iş de :07'de koşmaz).
+            ("bank-match-sweep", "7 * * * *"),
             // 04:52 eşitlemeden sonra ve 5 dakikalık ızgaranın DIŞINDA: 04:55'te obifin-poll (aynı BankTransactions
             // tablosuna yazar) ve üç */5 iş daha koşar; */15 ise 04:45 ve 05:00'te.
             ("bank-data-retention", "57 4 * * *"),
@@ -125,8 +129,9 @@ public sealed class BankJobsDiTests : IClassFixture<ApiFactory>
     public void Anahtar_gecersizse_Obifin_isleri_kaydolmaz_eskileri_silinir_saklama_isi_yine_kaydolur(bool previouslyEnabled)
     {
         // Önceki açılışta (anahtar varken) kaydolmuş Obifin işleri anahtar kalkınca Hangfire'da kalıp her 5 dakikada bir
-        // BankHasher hatasıyla düşmesin. Saklama işi ise BankHasher istemez ve 90/180 günlük silme KVKK yükümlülüğüdür:
-        // anahtar kalksa da zaten saklanmış satırlar için koşmaya devam eder.
+        // BankHasher hatasıyla düşmesin; çekim yokken eşleştirme taraması (bank-match-sweep) da kalkar. Saklama işi ise
+        // BankHasher istemez ve 90/180 günlük silme KVKK yükümlülüğüdür: anahtar kalksa da zaten saklanmış satırlar için
+        // koşmaya devam eder.
         var storage = new MemoryStorage();
         var manager = new RecurringJobManager(storage);
         if (previouslyEnabled) Program.ScheduleBankJobs(manager, enabled: true);
