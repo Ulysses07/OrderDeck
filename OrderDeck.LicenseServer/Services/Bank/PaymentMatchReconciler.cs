@@ -16,6 +16,11 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// (<see cref="PaymentMatch.DecidedAt"/> ve <see cref="PaymentMatch.PaymentId"/> boş) harekete verilir; yeniden karar önce
 /// kaldırmadan geçer. Kaldırma hafıza satırını SİLER ve öneriyi yeniden hesaplar. Kimlikler admin formundan gelir: bu
 /// kural serviste uygulanır.</para>
+/// <para><b>Kaldırma dekontu ölçümden düşürmez.</b> Dekonta bağlı satırın kaldırılmasında dekont açık gap'e döner, aynı
+/// SaveChanges'te: gap'i varsa (gap çözümüyle bağlanmışsa) yeniden açılır, yoksa (onayda bağlanmışsa)
+/// <see cref="PaymentMatchGapReason.UnlinkedByAdmin"/> gap'i yazılır. Bu kural olmasaydı dekont ne bağlı ne gap kümesinde
+/// kalırdı, çözülmüş gap de bağı kalkmış hareketi gösterirdi. Kaldırılan hareketle gap çözümü koşulmaz (yalnız eşleştirici yeniden
+/// hesaplar): admin'in kaldırdığı bağ kendiliğinden geri gelmez.</para>
 /// <para>Sonradan gelen hareket açık gap'i ancak dekontun aday seçimi yeniden koşulduğunda TEK aday kendisiyse çözer
 /// (spec §3 ResolvedBankTransactionId). Onaydaki belirsizlik sürüyorsa (iki aday hâlâ bağsız) ya da aynı tutarlı birden
 /// çok hareket geldiyse gap açık kalır: belirsizlik tahminle çözülmez.</para>
@@ -29,7 +34,10 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// başındaki "zaten bağlı / gap var / hafıza var" denetimleri eşzamanlı yazanın sonucunu görür, yani indeks ihlali "zaten
 /// bağlı" olarak sessizce sonuçlanır. İkinci çakışmada vazgeçilir: iş yolları (<see cref="ReconcileApprovalAsync"/>,
 /// <see cref="TryResolveGapAsync"/>) uyarı loglar, admin yolları (<see cref="ManualMatchAsync"/>,
-/// <see cref="UnmatchAsync"/>) admin'e gösterilebilir <see cref="ObifinValidationException"/> fırlatır.</para>
+/// <see cref="UnmatchAsync"/>) admin'e gösterilebilir <see cref="ObifinValidationException"/> fırlatır. Kaldırma yeniden
+/// denemede kendini ancak taze satırdaki insan kararı (dekont bağı, müşteri, karar anı) ilk denemenin gördüğüyle aynıysa
+/// yeniden uygular; değiştiyse (ör. arada dekont onayı satıra dekontu ekledi) <see cref="ConflictMessage"/> fırlatır:
+/// admin'in görmediği bir bağı ya da kararı kaldırmaz.</para>
 /// <para>Düşen deneme izleyicide iz bırakmaz (bu üç tablonun izlenen satırları ayrılır): kapsamın sonraki SaveChanges'i onu
 /// yeniden denemez. Hareketler izlenmeden okunur.</para>
 /// <para>Günlüğe açıklama, ad ya da IBAN yazılmaz; yalnız kimlikler.</para>
@@ -81,10 +89,12 @@ public sealed class PaymentMatchReconciler
             throw new ObifinValidationException(ConflictMessage);
     }
 
-    /// <exception cref="ObifinValidationException">Hareket bu lisansta yok; ya da iki denemede de çakışma.</exception>
+    /// <exception cref="ObifinValidationException">Hareket bu lisansta yok; iki denemede de çakışma; ya da yeniden denemede
+    /// satırın insan kararı ilk denemenin gördüğünden farklı.</exception>
     public async Task UnmatchAsync(Guid licenseId, Guid transactionId, CancellationToken ct)
     {
-        if (!await RetryOnceAsync(() => UnmatchOnceAsync(licenseId, transactionId, ct), ct))
+        var attempts = new UnmatchAttempts();
+        if (!await RetryOnceAsync(() => UnmatchOnceAsync(licenseId, transactionId, attempts, ct), ct))
             throw new ObifinValidationException(ConflictMessage);
     }
 
@@ -165,20 +175,42 @@ public sealed class PaymentMatchReconciler
         await _db.SaveChangesAsync(ct);
     }
 
-    private async Task UnmatchOnceAsync(Guid licenseId, Guid transactionId, CancellationToken ct)
+    private async Task UnmatchOnceAsync(Guid licenseId, Guid transactionId, UnmatchAttempts attempts, CancellationToken ct)
     {
         var tx = await _db.BankTransactions.AsNoTracking().FirstOrDefaultAsync(t => t.Id == transactionId && t.LicenseId == licenseId, ct)
             ?? throw new ObifinValidationException("Hareket bulunamadı.");
+        var match = await _db.PaymentMatches.FirstOrDefaultAsync(m => m.BankTransactionId == tx.Id, ct);
+        // Kaldırma admin'in gördüğü karara yöneliktir. Yeniden denemede karar değiştiyse (arada dekont bağlandı, karar
+        // verildi ya da kaldırıldı) yeniden uygulanmaz: admin'in görmediği bir bağı kaldırıp dekontu yetim bırakırdı.
+        var decision = new HumanDecision(match?.PaymentId, match?.ActualWpfCustomerId, match?.DecidedAt);
+        if (attempts.Seen is null) attempts.Seen = decision;
+        else if (attempts.Seen != decision) throw new ObifinValidationException(ConflictMessage);
+
         var learned = await _db.CustomerIbanMemories.Where(m => m.LicenseId == licenseId && m.SourceBankTransactionId == tx.Id).ToListAsync(ct);
         _db.CustomerIbanMemories.RemoveRange(learned); // spec §3: iptal bayrağı değil, silme
-        var match = await _db.PaymentMatches.FirstOrDefaultAsync(m => m.BankTransactionId == tx.Id, ct);
         if (match is not null)
         {
+            var now = DateTimeOffset.UtcNow;
+            if (match.PaymentId is { } paymentId)
+            {
+                // Dekont ölçümde kalır (sınıf özeti). Ödeme başına tek gap (tekil indeks): varsa yeniden açılır, yoksa yazılır.
+                var gap = await _db.PaymentMatchGaps.FirstOrDefaultAsync(g => g.PaymentId == paymentId, ct);
+                if (gap is null)
+                {
+                    _db.PaymentMatchGaps.Add(new PaymentMatchGap { Id = Guid.NewGuid(), LicenseId = licenseId, PaymentId = paymentId,
+                        Reason = PaymentMatchGapReason.UnlinkedByAdmin, CreatedAt = now });
+                }
+                else
+                {
+                    gap.ResolvedAt = null; gap.ResolvedBankTransactionId = null;
+                }
+            }
             match.PaymentId = null; match.ActualWpfCustomerId = null; match.DecidedAt = null;
             match.Status = PaymentMatchStatus.NoProposal; // insan-kararı kilidi kalkar, Matcher yeniden hesaplar
-            match.UpdatedAt = DateTimeOffset.UtcNow;
+            match.UpdatedAt = now;
         }
         await _db.SaveChangesAsync(ct);
+        // Yalnız eşleştirici: gap çözümü bu hareketle koşsaydı az önce kaldırılan bağı hemen geri kurardı.
         if (match is not null) await Matcher.MatchAsync(tx, ct);
     }
 
@@ -295,6 +327,15 @@ public sealed class PaymentMatchReconciler
         foreach (var entry in _db.ChangeTracker.Entries()
                      .Where(e => e.Entity is PaymentMatch or PaymentMatchGap or CustomerIbanMemory).ToList())
             entry.State = EntityState.Detached;
+    }
+
+    /// <summary>Satırın insan kararı: dekont bağı, gerçek müşteri, karar anı. Satır yoksa üçü de boş.</summary>
+    private readonly record struct HumanDecision(Guid? PaymentId, Guid? ActualWpfCustomerId, DateTimeOffset? DecidedAt);
+
+    /// <summary>Kaldırmanın denemeleri arasında taşınan durum: ilk denemenin gördüğü insan kararı.</summary>
+    private sealed class UnmatchAttempts
+    {
+        public HumanDecision? Seen { get; set; }
     }
 
     /// <summary>Seçilen aday, seçim sorgusuyla satırın izlenerek okunması arasında başka bir karara bağlandı. Jetonun

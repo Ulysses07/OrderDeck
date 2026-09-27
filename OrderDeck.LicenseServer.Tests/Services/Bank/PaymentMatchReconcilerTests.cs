@@ -180,6 +180,57 @@ public sealed class PaymentMatchReconcilerTests
     }
 
     [Fact]
+    public async Task Onayla_baglanan_satir_kaldirilinca_dekont_UnlinkedByAdmin_gap_ine_duser()
+    {
+        // Onay hareketi dekonta bağladı; admin bağı kaldırır (yanlış hareket). Dekont ölçümden sessizce düşmez: açık gap'e
+        // döner. Onayın öğrettiği IBAN silinir; bağdaştırmanın yeniden koşusu (Hangfire tekrarı) hareketi yeniden bağlamaz.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var hash = Hasher.HashIban(BankHasherTests.TestIban())!;
+        var when = DateTimeOffset.UtcNow.AddHours(-2);
+        var tx = Tx(db, s.LicenseId, 410m, when, "HAVALE ayse_gul34", hash);
+        var recon = Recon(db); await recon.Matcher.MatchAsync(tx, CancellationToken.None);
+        var payment = Approved(db, s.LicenseId, s.ShopperId, 410m, when);
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+        (await db.PaymentMatches.AsNoTracking().SingleAsync()).PaymentId.Should().Be(payment.Id);
+
+        await recon.UnmatchAsync(s.LicenseId, tx.Id, CancellationToken.None);
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+
+        var m = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        m.PaymentId.Should().BeNull(); m.ActualWpfCustomerId.Should().BeNull(); m.DecidedAt.Should().BeNull();
+        m.Status.Should().Be(PaymentMatchStatus.Proposed, "insan kararı kalkınca öneri yeniden hesaplanır");
+        var gap = await db.PaymentMatchGaps.AsNoTracking().SingleAsync();
+        gap.PaymentId.Should().Be(payment.Id);
+        gap.Reason.Should().Be(PaymentMatchGapReason.UnlinkedByAdmin);
+        gap.ResolvedAt.Should().BeNull(); gap.ResolvedBankTransactionId.Should().BeNull();
+        (await db.CustomerIbanMemories.CountAsync()).Should().Be(0, "onayın öğrettiği IBAN geri alınır");
+    }
+
+    [Fact]
+    public async Task Gap_cozumuyle_baglanan_satir_kaldirilinca_gap_yeniden_acilir()
+    {
+        // Onayda hareket yoktu (NoCandidate); geç gelen hareket gap'i çözdü. Admin bu bağı kaldırınca çözülmüş gap bağı
+        // kalkmış hareketi göstermeye devam etmez: yeniden açılır, onay anındaki nedeni korunur.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var paidAt = DateTimeOffset.UtcNow.AddHours(-5);
+        var payment = Approved(db, s.LicenseId, s.ShopperId, 760m, paidAt);
+        var recon = Recon(db);
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+        var late = Tx(db, s.LicenseId, 760m, paidAt.AddHours(4), "HAVALE ayse_gul34");
+        await recon.MatchAndResolveGapAsync(late, CancellationToken.None);
+        (await db.PaymentMatchGaps.AsNoTracking().SingleAsync()).ResolvedBankTransactionId.Should().Be(late.Id);
+
+        await recon.UnmatchAsync(s.LicenseId, late.Id, CancellationToken.None);
+
+        var gap = await db.PaymentMatchGaps.AsNoTracking().SingleAsync();
+        gap.PaymentId.Should().Be(payment.Id);
+        gap.ResolvedAt.Should().BeNull(); gap.ResolvedBankTransactionId.Should().BeNull();
+        gap.Reason.Should().Be(PaymentMatchGapReason.NoCandidate, "onay anındaki neden korunur");
+        var m = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        m.PaymentId.Should().BeNull(); m.ActualWpfCustomerId.Should().BeNull(); m.DecidedAt.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Baska_musteriye_ait_iban_hafizasi_onayla_ezilmez()
     {
         using var db = NewDb(); var s = SeedShopper(db);

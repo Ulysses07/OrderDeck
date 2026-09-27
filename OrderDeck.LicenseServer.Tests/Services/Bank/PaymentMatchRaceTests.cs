@@ -299,10 +299,11 @@ public sealed class PaymentMatchRaceTests
     }
 
     [Fact]
-    public async Task Kaldirma_eszamanli_insan_karariyla_carpisinca_bir_kez_yeniden_dener()
+    public async Task Kaldirma_arada_eklenen_dekont_bagini_gormeden_kaldirmaz_admin_mesajiyla_duser()
     {
         // Admin elle eşlemeyi kaldırırken aynı müşterinin dekont onayı satıra dekontu ekler (eşzamanlı insan kararı). Jeton
-        // kaldırmanın kaydını reddeder; kaldırma taze satırla bir kez yeniden dener ve dekont bağını da kaldırır.
+        // kaldırmanın kaydını reddeder; yeniden deneme taze satırda ilk denemenin görmediği dekont bağını bulur. Admin'in
+        // görmediği bağı kaldırıp dekontu ölçümden düşürmek yerine vazgeçer: admin sayfayı yenileyip yeniden karar verir.
         var s = await SeedAsync();
         var payment = await ApprovedAsync(s, s.Tx.Amount);
         await using (var first = Ctx())
@@ -312,10 +313,44 @@ public sealed class PaymentMatchRaceTests
         await using var admin = Ctx(race);
         var log = new LogRecorder<PaymentMatchReconciler>();
 
+        var act = () => Recon(admin, log).UnmatchAsync(s.LicenseId, s.Tx.Id, CancellationToken.None);
+
+        await act.Should().ThrowAsync<ObifinValidationException>().WithMessage(PaymentMatchReconciler.ConflictMessage);
+        race.Fired.Should().Be(1);
+        log.Entries.Should().Contain(e => e.Message.Contains("yeniden deneniyor"), "onay satırı kaldırmanın okumasından sonra değiştirdi");
+        var row = await RowAsync(s.Tx.Id);
+        row.PaymentId.Should().Be(payment.Id, "admin'in görmediği dekont bağı kaldırılmaz");
+        row.ActualWpfCustomerId.Should().Be(s.WpfCustomerId);
+        row.DecidedAt.Should().NotBeNull();
+        row.Status.Should().Be(PaymentMatchStatus.ConfirmedByHuman, "elle verilen karar olduğu gibi kalır");
+        await using var verify = Ctx();
+        (await verify.PaymentMatchGaps.AsNoTracking().CountAsync()).Should().Be(0, "dekont bağlı kalır, gap'e düşmez");
+        NoPendingWrites(admin);
+    }
+
+    [Fact]
+    public async Task Kaldirma_karari_degistirmeyen_eszamanli_yaziyla_carpisinca_bir_kez_yeniden_uygular()
+    {
+        // Kanıt temizliği (saklama işi ya da KVKK silmesi) Evidence'ı boşaltıp jetonu ilerletir, insan kararına dokunmaz.
+        // Kaldırmanın kaydı jetona takılır; taze satırdaki karar ilk denemenin gördüğüyle aynı: kaldırma yeniden uygulanır.
+        var s = await SeedAsync();
+        await using (var first = Ctx())
+            await Recon(first).ManualMatchAsync(s.LicenseId, s.Tx.Id, s.WpfCustomerId, CancellationToken.None);
+        var race = new BeforeSave(ModifiesMatch, async () =>
+        {
+            await using var cleanup = Ctx();
+            var m = await cleanup.PaymentMatches.SingleAsync(x => x.BankTransactionId == s.Tx.Id);
+            // Jeton kesin değişsin diye aynı tick'e düşmeden ilerletilir.
+            m.Evidence = null; m.UpdatedAt = m.UpdatedAt.AddMilliseconds(1);
+            await cleanup.SaveChangesAsync();
+        });
+        await using var admin = Ctx(race);
+        var log = new LogRecorder<PaymentMatchReconciler>();
+
         await Recon(admin, log).UnmatchAsync(s.LicenseId, s.Tx.Id, CancellationToken.None);
 
         race.Fired.Should().Be(1);
-        log.Entries.Should().Contain(e => e.Message.Contains("yeniden deneniyor"), "onay satırı kaldırmanın okumasından sonra değiştirdi");
+        log.Entries.Should().Contain(e => e.Message.Contains("yeniden deneniyor"));
         var row = await RowAsync(s.Tx.Id);
         row.ActualWpfCustomerId.Should().BeNull();
         row.PaymentId.Should().BeNull();
