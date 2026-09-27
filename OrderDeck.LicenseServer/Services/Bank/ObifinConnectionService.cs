@@ -40,11 +40,6 @@ public sealed class ObifinConnectionService
     public const string BaseUrlMessage = "BaseUrl mutlak bir https adresi olmalı.";
     public const string ResetConfirmMessage =
         "Kimlik değişikliği bu lisansın banka verisini siler (hareketler, eşleşmeler, IBAN hafızası). Onaylamak için kutuyu işaretleyip tekrar kaydedin.";
-    /// <summary>Banka hata metninde gönderilen banka alanının yerine geçer (bkz. <see cref="RedactBankFields"/>).</summary>
-    private const string RedactedMarker = "[gizli]";
-    /// <summary>Bundan kısa banka alanı maskelenmez: iki harflik bir değeri her geçtiği yerde gizlemek metni okunmaz yapar,
-    /// bu uzunlukta bir değer de kimlik sayılmaz.</summary>
-    private const int RedactMinLength = 3;
 
     /// <summary>DB sütunu 500 (<c>LicenseDbContext</c>).</summary>
     private const int LastErrorMaxLength = 500;
@@ -215,8 +210,9 @@ public sealed class ObifinConnectionService
     /// <see cref="MarkVerified"/>).
     /// <para>Obifin ya da bankanın SOAP hatası gönderilen banka alanını (web servis kullanıcısı/şifresi) yankılayabilir:
     /// <see cref="ObifinApiException"/> mesajları LastError'a, loga ve yukarıya gitmeden önce maskelenir
-    /// (<see cref="RedactBankFields"/>) ve istisna maskeli mesajlarla YENİDEN kurulur — asıl istisna iç istisna olarak da
-    /// taşınmaz. Günlüğe istisna nesnesi değil, yalnız türü ve maskeli metin gider.</para></summary>
+    /// (<see cref="ObifinRedaction"/>, istemcinin tanı günlüğüyle ortak kural) ve istisna maskeli mesajlarla YENİDEN
+    /// kurulur — asıl istisna iç istisna olarak da taşınmaz. Günlüğe istisna nesnesi değil, yalnız türü ve maskeli metin
+    /// gider.</para></summary>
     public async Task<BankConnection> AddBankConnectionAsync(Guid licenseId, string bankaKodu, string label,
         IReadOnlyDictionary<string, string> bankForm, CancellationToken ct)
     {
@@ -249,7 +245,7 @@ public sealed class ObifinConnectionService
         {
             // Diğer sınıfların (ağ/vekil/zaman aşımı) kayda geçen metni zaten sabit ("Obifin'e ulaşılamadı (Tür)").
             var redacted = ex is ObifinApiException api
-                ? new ObifinApiException(api.Messages.Select(m => RedactBankFields(m, bankForm)).ToList())
+                ? new ObifinApiException(api.Messages.Select(m => ObifinRedaction.Redact(m, bankForm.Values)).ToList())
                 : null;
             var msg = DescribeClientFailure(redacted ?? ex, ct)!;
             _log.LogWarning("Obifin banka bağlantısı ekleme başarısız ({ExceptionType}) — lisans={LicenseId}: {Error}",
@@ -443,16 +439,6 @@ public sealed class ObifinConnectionService
             _ => null,
         };
         return msg is { Length: > LastErrorMaxLength } ? msg[..LastErrorMaxLength] : msg;
-    }
-
-    /// <summary>Gönderilen her banka alanı değerinin (en az <see cref="RedactMinLength"/> karakter) mesajdaki her geçişini
-    /// <see cref="RedactedMarker"/> yapar — sıralı, harf duyarsız. Uzun değer önce: kısa bir değer uzunun parçasıysa önce
-    /// o değiştirilseydi uzun değerin kalanı açıkta kalırdı.</summary>
-    private static string RedactBankFields(string message, IReadOnlyDictionary<string, string> bankForm)
-    {
-        foreach (var value in bankForm.Values.Where(v => v.Length >= RedactMinLength).OrderByDescending(v => v.Length))
-            message = message.Replace(value, RedactedMarker, StringComparison.OrdinalIgnoreCase);
-        return message;
     }
 
     private static bool IsPrintableAscii(string value) => value.All(c => c is >= ' ' and <= '~');

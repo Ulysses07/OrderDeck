@@ -8,7 +8,8 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// <summary>
 /// Obifin web servisi (doküman v1.03.04). Kimlik header'da, gövde form-urlencoded, HTTP 200 +
 /// `Hata:[]` başarı. Sayısal alanlar STRING ("10.00"), tarih "yyyy-MM-dd HH:mm:ss" TR yerel.
-/// Ham gövde yalnız tanı kopyası olarak kesilir — ayrıştırma TAM gövdeden (İYS 2026-09-22 dersi).
+/// Ham gövde yalnız tanı kopyası olarak kesilir — ayrıştırma TAM gövdeden (İYS 2026-09-22 dersi). Tanı kopyası
+/// günlüğe, gönderilen değerler maskelenerek girer (bkz. <see cref="Diagnostic"/>).
 /// </summary>
 public sealed class ObifinClient : IObifinClient
 {
@@ -134,7 +135,7 @@ public sealed class ObifinClient : IObifinClient
         try { doc = JsonDocument.Parse(body); }
         catch (JsonException)
         {
-            _log.LogWarning("Obifin JSON olmayan yanıt ({Status}) {Path}: {Head}", (int)resp.StatusCode, path, Diagnostic(body));
+            _log.LogWarning("Obifin JSON olmayan yanıt ({Status}) {Path}: {Head}", (int)resp.StatusCode, path, Diagnostic(body, creds, form));
             throw new ObifinProtocolException($"Obifin JSON olmayan yanıt ({(int)resp.StatusCode}) {path}");
         }
         if (doc.RootElement.ValueKind != JsonValueKind.Object)
@@ -155,7 +156,7 @@ public sealed class ObifinClient : IObifinClient
         if (!resp.IsSuccessStatusCode)
         {
             doc.Dispose();
-            _log.LogWarning("Obifin HTTP {Status} {Path}: {Head}", (int)resp.StatusCode, path, Diagnostic(body));
+            _log.LogWarning("Obifin HTTP {Status} {Path}: {Head}", (int)resp.StatusCode, path, Diagnostic(body, creds, form));
             throw new ObifinProtocolException($"Obifin HTTP {(int)resp.StatusCode} {path}");
         }
         return doc;
@@ -201,5 +202,22 @@ public sealed class ObifinClient : IObifinClient
         => DateTime.TryParseExact(Str(row, name), "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture,
             DateTimeStyles.None, out var d) ? d : null;
 
-    private static string Diagnostic(string body) => body.Length > DiagnosticCap ? body[..DiagnosticCap] : body;
+    /// <summary>Günlüğe giden tanı kopyası. Debug/hata sayfası ya da vekil yanıtı isteği yankılayabilir: header'daki Obifin
+    /// kimliği ve form alanları (<c>bankaapi/ekle</c>'de banka web servis kullanıcısı/şifresi) — çözülmüş ve telde giden
+    /// form-urlencoded hâliyle — önce TAM gövdede maskelenir, sonra kesilir (kesme önce olsaydı sınırdaki değerin başı
+    /// açıkta kalırdı). Neyin gönderildiğini yalnız istemci bilir; kural servisle ortak (<see cref="ObifinRedaction"/>).</summary>
+    private static string Diagnostic(string body, ObifinCredentials creds, IReadOnlyDictionary<string, string>? form)
+    {
+        var sent = new List<string?> { creds.UserCode, creds.Password, creds.ApiKey };
+        foreach (var value in form?.Values ?? [])
+        {
+            sent.Add(value);
+            sent.Add(FormUrlEncode(value));
+        }
+        var redacted = ObifinRedaction.Redact(body, sent);
+        return redacted.Length > DiagnosticCap ? redacted[..DiagnosticCap] : redacted;
+    }
+
+    /// <summary><see cref="FormUrlEncodedContent"/>'in teldeki kodlaması: veri kaçışı, boşluk '+'.</summary>
+    private static string FormUrlEncode(string value) => Uri.EscapeDataString(value).Replace("%20", "+");
 }
