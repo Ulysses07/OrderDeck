@@ -1,3 +1,4 @@
+using System.Net;
 using FluentAssertions;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
@@ -22,6 +23,8 @@ public sealed class ObifinConnectionServiceTests
         public List<ObifinAccountDto> Accounts { get; } = new();
         public List<ObifinBankConnectionDto> Connections { get; } = new();
         public List<(string Banka, IReadOnlyDictionary<string, string> Form)> Added { get; } = new();
+        /// <summary>Her ekleme denemesinin Obifin'e gönderdiği etiket (<c>BankaApiAdi</c>) — başarısız denemeler dahil.</summary>
+        public List<string> AttemptedLabels { get; } = new();
         public ObifinCredentials? LastCreds { get; private set; }
         public int ListAccountsCalls { get; private set; }
         public Exception? ListAccountsError { get; set; }
@@ -56,6 +59,7 @@ public sealed class ObifinConnectionServiceTests
         }
         public Task AddBankConnectionAsync(ObifinCredentials c, string b, IReadOnlyDictionary<string, string> f, CancellationToken ct = default)
         {
+            AttemptedLabels.Add(f["BankaApiAdi"]);
             if (AddBankConnectionError is not null) throw AddBankConnectionError;
             Added.Add((b, f));
             // Obifin gerçekte Id döndürmüyor (doküman sessiz): listede etiketle bulunur.
@@ -768,14 +772,26 @@ public sealed class ObifinConnectionServiceTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Banka_baglantisi_hata_mesaji_gonderilen_banka_alanlarini_yankilarsa_maskelenir(bool failOnList)
+    public async Task Banka_baglantisi_hata_mesaji_gonderilen_banka_alanlarini_yankilarsa_kacisli_bicimleri_de_maskelenir(bool failOnList)
     {
-        // Obifin ya da bankanın SOAP hatası gönderilen alanı (web servis kullanıcısı/şifresi) geri yankılayabilir:
-        // LastError'a, loga ve yukarı giden istisnaya yalnız maskeli metin gider. Eşleşme harf duyarsız; 3 karakterden
-        // kısa değer maskelenmez (her "ab"yi gizlemek metni okunmaz yapardı). Asıl istisna iç istisna olarak da taşınmaz.
+        // Obifin ya da bankanın SOAP hatası gönderilen alanı (web servis kullanıcısı/şifresi) geri yankılayabilir — ham ya da
+        // HTML/XML kaçışlı (&amp; &quot; &lt; &gt;, .NET &#39;, PHP &#039;, XML &apos;): LastError'a, loga ve yukarı giden
+        // istisnaya yalnız maskeli metin gider. Eşleşme harf duyarsız; 3 karakterden kısa değer maskelenmez (her "ab"yi
+        // gizlemek metni okunmaz yapardı). Asıl istisna iç istisna olarak da taşınmaz. Ekleme reddi Failed yazar; eklemeden
+        // sonraki liste hatası sonucu belirsiz bırakır (durum korunur).
         using var db = NewDb(); var lic = SeedLicense(db);
-        var bankUser = $"ws-{Guid.NewGuid():N}"; var bankPw = NewPw();
-        var echo = new ObifinApiException(new[] { $"Kullanici {bankUser.ToUpperInvariant()} reddedildi", $"Sifre {bankPw}", "Firma ab yok" });
+        var bankUser = $"ws-{Guid.NewGuid():N}";
+        var bankPw = $"pw&'<>\"-{Guid.NewGuid():N}";
+        var html = WebUtility.HtmlEncode(bankPw);
+        var php = html.Replace("&#39;", "&#039;", StringComparison.Ordinal);
+        var xml = html.Replace("&#39;", "&apos;", StringComparison.Ordinal);
+        var echo = new ObifinApiException(new[]
+        {
+            $"Kullanici {bankUser.ToUpperInvariant()} reddedildi", $"Sifre {bankPw}", $"<faultstring>Sifre {html}</faultstring>",
+            $"PHP {php}", $"XML {xml}", "Firma ab yok",
+        });
+        var masked = new[] { "Kullanici [gizli] reddedildi", "Sifre [gizli]", "<faultstring>Sifre [gizli]</faultstring>",
+            "PHP [gizli]", "XML [gizli]", "Firma ab yok" };
         var stub = failOnList ? new StubObifin { ListBankConnectionsError = echo } : new StubObifin { AddBankConnectionError = echo };
         var log = new RecordingLog();
         var svc = Svc(db, stub, log);
@@ -784,35 +800,104 @@ public sealed class ObifinConnectionServiceTests
 
         var act = () => svc.AddBankConnectionAsync(lic, "garanti", "G", form, CancellationToken.None);
 
-        var thrown = (await act.Should().ThrowAsync<ObifinApiException>()).Which;
+        var thrown = (await act.Should().ThrowAsync<Exception>()).Which;
         thrown.Should().NotBeSameAs(echo);
-        thrown.Messages.Should().Equal("Kullanici [gizli] reddedildi", "Sifre [gizli]", "Firma ab yok");
         thrown.InnerException.Should().BeNull("asıl istisnanın metni banka kimliğini taşır");
         var conn = await db.ObifinConnections.SingleAsync();
-        conn.Status.Should().Be(ObifinConnectionStatus.Failed);
-        conn.LastError.Should().Be("Kullanici [gizli] reddedildi | Sifre [gizli] | Firma ab yok");
-        log.Entries.Should().NotBeEmpty().And.OnlyContain(e =>
-            !e.Contains(bankUser, StringComparison.OrdinalIgnoreCase) && !e.Contains(bankPw, StringComparison.OrdinalIgnoreCase));
+        if (failOnList)
+        {
+            thrown.Should().BeOfType<ObifinBankAddUncertainException>().Which.Message.Should().EndWith(string.Join(" | ", masked));
+            conn.Status.Should().Be(ObifinConnectionStatus.Unverified, "ekleme geçti; liste hatası kimlik aleyhine kanıt değil");
+            conn.LastError.Should().Be(thrown.Message);
+        }
+        else
+        {
+            thrown.Should().BeOfType<ObifinApiException>().Which.Messages.Should().Equal(masked);
+            conn.Status.Should().Be(ObifinConnectionStatus.Failed);
+            conn.LastError.Should().Be(string.Join(" | ", masked));
+        }
+        var leaks = new[] { bankUser, bankPw, html, php, xml };
+        log.Entries.Should().NotBeEmpty().And.OnlyContain(e => leaks.All(l => !e.Contains(l, StringComparison.OrdinalIgnoreCase)));
+        leaks.Should().OnlyContain(l => !thrown.Message.Contains(l, StringComparison.OrdinalIgnoreCase)
+            && !conn.LastError!.Contains(l, StringComparison.OrdinalIgnoreCase));
     }
 
-    [Fact]
-    public async Task Banka_baglantisi_ekleme_ag_hatasi_gunluge_istisna_nesnesiyle_duser()
+    /// <summary>Ağ/vekil/zaman aşımı sınıfından bir istemci hatası; mesajı <paramref name="marker"/> (ham metin, gösterilmemeli).</summary>
+    private static Exception NewTransientError(Type exceptionType, string marker)
+        => exceptionType == typeof(ObifinProtocolException)
+            ? new ObifinProtocolException(marker)
+            : (Exception)Activator.CreateInstance(exceptionType, marker)!;
+
+    [Theory]
+    [InlineData(typeof(HttpRequestException))]
+    [InlineData(typeof(TaskCanceledException))]
+    [InlineData(typeof(ObifinProtocolException))]
+    public async Task Banka_baglantisi_ekleme_cagrisi_ag_hatasiyla_duserse_sonuc_belirsiz_Failed_yazilmaz_etiket_soylenir(Type exceptionType)
     {
-        // Ağ/vekil/zaman aşımı istisnası banka form değeri taşımaz: tanı için istisna nesnesiyle (mesaj + iz) loglanır.
-        // Yalnız Obifin'in mesajı (banka alanını yankılayabilir) tür + maskeli metinle yazılır (yukarıdaki test).
+        // Ağ/vekil/zaman aşımı: istek Obifin'e ulaşıp kaydı açmış olabilir. "Eklenemedi" demek admin'i tekrar eklemeye iter
+        // (Obifin'de ikinci kayıt, farklı Id'lerle mükerrer hesap/hareket); Failed yazmak kimlik aleyhine kanıtı olmayan bir
+        // hatayla çekimi "Doğrula"ya dek durdururdu. Durum korunur, son hata ve istisna Obifin etiketini söyler. İstisna banka
+        // form değeri taşımaz: istisna nesnesiyle (mesaj + iz) ve etiketle (sır değil) loglanır; ham metni gösterilmez.
         using var db = NewDb(); var lic = SeedLicense(db);
         var marker = $"ag-{Guid.NewGuid():N}";
-        var stub = new StubObifin { AddBankConnectionError = new HttpRequestException(marker) };
+        var stub = new StubObifin { AddBankConnectionError = NewTransientError(exceptionType, marker) };
         var log = new RecordingLog();
         var svc = Svc(db, stub, log);
-        await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        var conn = await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        conn.Status = ObifinConnectionStatus.Verified;
+        await db.SaveChangesAsync();
         var form = new Dictionary<string, string> { ["KullaniciAdi"] = $"ws-{Guid.NewGuid():N}", ["Sifre"] = NewPw() };
 
         var act = () => svc.AddBankConnectionAsync(lic, "qnb", "QNB", form, CancellationToken.None);
 
-        await act.Should().ThrowAsync<HttpRequestException>();
-        log.Entries.Should().ContainSingle(e => e.Contains("banka bağlantısı ekleme başarısız")).Which
-            .Should().Contain(marker, "istisna nesnesi günlükte").And.Contain(nameof(HttpRequestException));
+        var thrown = (await act.Should().ThrowAsync<ObifinBankAddUncertainException>()).Which;
+        var label = stub.AttemptedLabels.Single();
+        thrown.Message.Should().Contain("belirsiz").And.Contain($"'{label}'")
+            .And.Contain($"Obifin'e ulaşılamadı ({exceptionType.Name})")
+            .And.NotContain(marker, "ham istisna metni gösterilmez").And.NotContain("eklenemedi");
+        conn.Status.Should().Be(ObifinConnectionStatus.Verified, "geçici hata kimlik aleyhine kanıt değil");
+        conn.LastError.Should().Be(thrown.Message);
+        (await db.BankConnections.CountAsync()).Should().Be(0);
+        log.Entries.Should().ContainSingle(e => e.Contains("banka bağlantısı ekleme")).Which
+            .Should().Contain(marker, "istisna nesnesi günlükte").And.Contain(exceptionType.Name).And.Contain(label);
+    }
+
+    [Theory]
+    [InlineData(typeof(HttpRequestException))]
+    [InlineData(typeof(TaskCanceledException))]
+    [InlineData(typeof(ObifinProtocolException))]
+    [InlineData(typeof(ObifinApiException))]
+    public async Task Banka_baglantisi_eklendi_ama_liste_alinamazsa_Failed_yazilmaz_etiketle_tekrar_eklemeyin_der(Type exceptionType)
+    {
+        // bankaapi/ekle Obifin'de kaydı AÇTI; yalnız ardından gelen liste düştü (502, zaman aşımı, BankaApiId'siz satır,
+        // Obifin reddi). "Eklenemedi" + Failed admin'i tekrar eklemeye iter ve çalışan bağlantının çekimini durdururdu.
+        // Durum korunur; son hata ve istisna Obifin etiketini ve "TEKRAR EKLEMEYİN" uyarısını taşır; etiket günlüğe de
+        // düşer (sır değil — sonradan elle eşleştirmek için). Yerel satır yazılmaz: BankaApiId bilinmiyor.
+        using var db = NewDb(); var lic = SeedLicense(db);
+        var marker = $"liste-{Guid.NewGuid():N}";
+        var error = exceptionType == typeof(ObifinApiException)
+            ? new ObifinApiException(new[] { marker })
+            : NewTransientError(exceptionType, marker);
+        var stub = new StubObifin { ListBankConnectionsError = error };
+        var log = new RecordingLog();
+        var svc = Svc(db, stub, log);
+        var conn = await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
+        conn.Status = ObifinConnectionStatus.Verified;
+        await db.SaveChangesAsync();
+        var form = new Dictionary<string, string> { ["KullaniciAdi"] = "webservis-user", ["Sifre"] = NewPw() };
+
+        var act = () => svc.AddBankConnectionAsync(lic, "qnb", "QNB", form, CancellationToken.None);
+
+        var thrown = (await act.Should().ThrowAsync<ObifinBankAddUncertainException>()).Which;
+        var label = stub.Added.Single().Form["BankaApiAdi"];
+        thrown.Message.Should().Contain($"'{label}'").And.Contain("TEKRAR EKLEMEYİN").And.NotContain("eklenemedi");
+        if (error is ObifinApiException) thrown.Message.Should().EndWith(marker, "Obifin'in kendi mesajı gösterilir");
+        else thrown.Message.Should().EndWith($"Obifin'e ulaşılamadı ({exceptionType.Name})").And.NotContain(marker);
+        conn.Status.Should().Be(ObifinConnectionStatus.Verified, "ekleme geçti; liste hatası kimlik aleyhine kanıt değil");
+        conn.LastError.Should().Be(thrown.Message);
+        (await db.BankConnections.CountAsync()).Should().Be(0);
+        log.Entries.Should().ContainSingle(e => e.Contains("banka bağlantısı ekleme")).Which
+            .Should().Contain(label).And.Contain(exceptionType.Name);
     }
 
     [Fact]
@@ -847,35 +932,17 @@ public sealed class ObifinConnectionServiceTests
     }
 
     [Fact]
-    public async Task Banka_baglantisi_liste_hatasinda_Failed_ve_kisa_Turkce_mesaj_satir_yazilmaz()
-    {
-        using var db = NewDb(); var lic = SeedLicense(db);
-        var stub = new StubObifin { ListBankConnectionsError = new HttpRequestException("Name or service not known") };
-        var svc = Svc(db, stub);
-        await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
-        var form = new Dictionary<string, string> { ["KullaniciAdi"] = "webservis-user", ["Sifre"] = NewPw() };
-
-        var act = () => svc.AddBankConnectionAsync(lic, "qnb", "QNB", form, CancellationToken.None);
-
-        await act.Should().ThrowAsync<HttpRequestException>();
-        var conn = await db.ObifinConnections.SingleAsync();
-        conn.Status.Should().Be(ObifinConnectionStatus.Failed);
-        conn.LastError.Should().Be("Obifin'e ulaşılamadı (HttpRequestException)");
-        (await db.BankConnections.CountAsync()).Should().Be(0);
-    }
-
-    [Fact]
     public async Task Banka_baglantisi_ekleme_basarisi_Failed_baglantiyi_Verified_yapar_ve_son_hatayi_siler()
     {
         // Başarısızlık Failed yazıyorsa başarı da Verified yazmalı: ekle + liste başarısı kimliğin çalıştığının
         // kanıtıdır; aksi hâlde tek geçici hata insan "Doğrula"ya basana kadar yapışkan kalırdı.
         using var db = NewDb(); var lic = SeedLicense(db);
-        var stub = new StubObifin { AddBankConnectionError = new HttpRequestException("Name or service not known") };
+        var stub = new StubObifin { AddBankConnectionError = new ObifinApiException(new[] { "Banka bilgileri hatali" }) };
         var svc = Svc(db, stub);
         await svc.UpsertAsync(lic, "", "api@x", NewPw(), NewKey(), CancellationToken.None);
         var form = new Dictionary<string, string> { ["KullaniciAdi"] = "webservis-user", ["Sifre"] = NewPw() };
         var failing = () => svc.AddBankConnectionAsync(lic, "qnb", "QNB", form, CancellationToken.None);
-        await failing.Should().ThrowAsync<HttpRequestException>();
+        await failing.Should().ThrowAsync<ObifinApiException>();
         var conn = await db.ObifinConnections.SingleAsync();
         conn.Status.Should().Be(ObifinConnectionStatus.Failed);
         stub.AddBankConnectionError = null;

@@ -42,10 +42,16 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         public Func<Exception>? AddFails { get; set; }
         /// <summary>Null = hesap listesi boş döner.</summary>
         public Func<Exception>? ListAccountsFails { get; set; }
+        /// <summary>Null = banka bağlantı listesi eklenenleri döner.</summary>
+        public Func<Exception>? ListBankConnectionsFails { get; set; }
         private readonly List<ObifinBankConnectionDto> _connections = new();
+        private readonly List<string> _attemptedLabels = new();
+        /// <summary>Her ekleme denemesinin Obifin'e gönderdiği etiket (<c>BankaApiAdi</c>) — başarısızlar dahil.</summary>
+        public List<string> AttemptedLabels { get { lock (_attemptedLabels) return _attemptedLabels.ToList(); } }
 
         public Task AddBankConnectionAsync(ObifinCredentials c, string b, IReadOnlyDictionary<string, string> f, CancellationToken ct = default)
         {
+            lock (_attemptedLabels) _attemptedLabels.Add(f["BankaApiAdi"]);
             if (AddFails is { } fail) return Task.FromException(fail());
             lock (_connections) _connections.Add(new ObifinBankConnectionDto(Random.Shared.NextInt64(1, 1_000_000), b, f["BankaApiAdi"], true));
             return Task.CompletedTask;
@@ -56,6 +62,7 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
                 : Task.FromResult<IReadOnlyList<ObifinAccountDto>>(Array.Empty<ObifinAccountDto>());
         public Task<IReadOnlyList<ObifinBankConnectionDto>> ListBankConnectionsAsync(ObifinCredentials c, CancellationToken ct = default)
         {
+            if (ListBankConnectionsFails is { } fail) return Task.FromException<IReadOnlyList<ObifinBankConnectionDto>>(fail());
             lock (_connections) return Task.FromResult<IReadOnlyList<ObifinBankConnectionDto>>(_connections.ToList());
         }
         public Task RemoveBankConnectionAsync(ObifinCredentials c, long id, CancellationToken ct = default)
@@ -334,10 +341,11 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
     [InlineData(typeof(TaskCanceledException))]
     [InlineData(typeof(HttpRequestException))]
     [InlineData(typeof(ObifinProtocolException))]
-    public async Task Banka_eklemede_gecici_hata_500_vermez_siniflandirilmis_metni_gosterir(Type exceptionType)
+    public async Task Banka_eklemede_gecici_hata_500_vermez_sonucun_belirsiz_oldugunu_etiketle_soyler(Type exceptionType)
     {
         // Zaman aşımı (HttpClient.Timeout → TaskCanceledException, isteğin kendi jetonu iptal DEĞİL), ağ ve vekil hataları:
         // sayfa düşmez; ham istisna metni (İngilizce ağ metni, vekil HTML'i) yerine sınıflandırılmış kısa metin görünür.
+        // İstek Obifin'e ulaşıp kaydı açmış olabilir: bildirim "eklenemedi" DEMEZ, Obifin'de bakılacak etiketi söyler.
         using var factory = new StubObifinApiFactory();
         var marker = $"ham-{Guid.NewGuid():N}";
         factory.Obifin.AddFails = () => exceptionType == typeof(ObifinProtocolException)
@@ -358,10 +366,12 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         }));
 
         resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
-        var html = await client.GetStringAsync("/admin/obifin");
+        var html = await client.GetStringAsync("/admin/obifin"); // bildirim burada tüketilir
         html.Should().NotContain(marker, "ham istisna metni gösterilmez").And.NotContain(bankPw);
-        (await ParseAsync(html)).Body!.TextContent.Should()
-            .Contain($"Banka bağlantısı eklenemedi: Obifin'e ulaşılamadı ({exceptionType.Name})");
+        var label = factory.Obifin.AttemptedLabels.Single();
+        (await ParseAsync(html)).QuerySelector(".alert-danger.alert-dismissible")!.TextContent.Trim().Should()
+            .Contain("belirsiz").And.Contain($"'{label}'").And.Contain($"Obifin'e ulaşılamadı ({exceptionType.Name})")
+            .And.NotContain("eklenemedi");
         using var scope = factory.Services.CreateScope();
         (await scope.ServiceProvider.GetRequiredService<LicenseDbContext>().BankConnections.CountAsync(b => b.LicenseId == licenseId))
             .Should().Be(0);
@@ -445,6 +455,33 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
             && !w.Contains(bankPw, StringComparison.OrdinalIgnoreCase), "günlüğe banka kimliği girmez");
         warnings.Should().Contain(w => w.Contains("AddBank") && w.Contains(nameof(ObifinApiException)),
             "dostça mesaja çevrilen hata sunucu izine tür + işleyici adıyla düşer");
+    }
+
+    [Fact]
+    public async Task Banka_eklendi_ama_Obifin_listesi_alinamazsa_eklenemedi_demez_etiketle_tekrar_eklemeyin_der()
+    {
+        // bankaapi/ekle geçti (kayıt Obifin'de, banka kimliğiyle) ama ardından gelen liste düştü: "eklenemedi" admin'i
+        // tekrar eklemeye iter, Obifin'de ikinci kayıt açılırdı. Bildirim Obifin etiketini ve uyarıyı taşır; bağlantı Failed
+        // yazılmaz (çekim durmaz); yerel satır yazılmaz (BankaApiId bilinmiyor). 500 yok.
+        using var factory = new StubObifinApiFactory();
+        factory.Obifin.ListBankConnectionsFails = () => new HttpRequestException($"ham-{Guid.NewGuid():N}");
+        var licenseId = await SeedLicenseAsync(factory);
+        var client = await factory.CreateLoggedInAdminClientAsync();
+        await SaveAsync(client, licenseId, "api@x");
+
+        var resp = await AddBankAsync(client, licenseId, $"ws-{Guid.NewGuid():N}", $"pw-{Guid.NewGuid():N}");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        var label = factory.Obifin.AttemptedLabels.Single();
+        (await ToastAsync(client, "danger")).Should().NotContain("eklenemedi")
+            .And.Contain($"'{label}'").And.Contain("TEKRAR EKLEMEYİN");
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.BankConnections.CountAsync(b => b.LicenseId == licenseId)).Should().Be(0);
+        var conn = await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == licenseId);
+        conn.Status.Should().NotBe(ObifinConnectionStatus.Failed);
+        conn.LastError.Should().Contain(label);
+        factory.Log.Warnings.Should().Contain(w => w.Contains(label), "etiket sunucu günlüğünde (sır değil)");
     }
 
     [Fact]

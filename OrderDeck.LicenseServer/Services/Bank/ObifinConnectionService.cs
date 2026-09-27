@@ -23,6 +23,16 @@ public class ObifinValidationException : InvalidOperationException
     public ObifinValidationException(string message) : base(message) { }
 }
 
+/// <summary>Banka bağlantısı eklemenin sonucu yerelde kesinleşmedi: ya ekleme çağrısı ağ/vekil/zaman aşımıyla düştü (istek
+/// Obifin'e ulaşıp kaydı açmış olabilir) ya da ekleme geçti ama ardından gelen liste alınamadı (kayıt Obifin'de açık,
+/// <c>BankaApiId</c> bilinmiyor). Yerel satır yazılmamıştır. Mesaj Obifin'deki etiketi ve tekrar eklememe uyarısını taşır;
+/// admin'e önek eklenmeden gösterilir: "eklenemedi" demek admin'i tekrar eklemeye, Obifin'de banka kimliği taşıyan ikinci
+/// bir kayıt açmaya iterdi. Mesajda kimlik yer almaz.</summary>
+public sealed class ObifinBankAddUncertainException : ObifinValidationException
+{
+    public ObifinBankAddUncertainException(string message) : base(message) { }
+}
+
 /// <summary>Kimlik (kullanıcı kodu ya da adres) değişimi lisansın gölge verisini silecekti ve çağıran buna izin vermedi
 /// (<c>allowShadowReset</c>). Hiçbir şey değiştirilmemiş, hiçbir şey kaydedilmemiştir.</summary>
 public sealed class ShadowResetConfirmationRequiredException : ObifinValidationException
@@ -217,15 +227,28 @@ public sealed class ObifinConnectionService
     }
 
     /// <summary>Banka kimliklerini Obifin'e iletir, listeden etiketle `BankaApiId`'yi bulur; kimlikleri saklamaz.
-    /// İstemci hatası doğrulamadaki gibi sınıflandırılıp bağlantıya yazılır; dönüş tipi başarısızlık taşıyamadığından
-    /// istisna yine yukarı gider. Ekle + liste başarısı da doğrulamadaki gibi kaydedilir (bkz.
-    /// <see cref="MarkVerified"/>).
-    /// <para>Obifin ya da bankanın SOAP hatası gönderilen banka alanını (web servis kullanıcısı/şifresi) yankılayabilir:
-    /// <see cref="ObifinApiException"/> mesajları LastError'a, loga ve yukarıya gitmeden önce maskelenir
-    /// (<see cref="ObifinRedaction"/>, istemcinin tanı günlüğüyle ortak kural) ve istisna maskeli mesajlarla YENİDEN
-    /// kurulur — asıl istisna iç istisna olarak da taşınmaz; günlüğe istisna nesnesi değil, yalnız türü ve maskeli metin
-    /// gider. Diğer sınıflar (ağ/vekil/zaman aşımı, <see cref="ObifinProtocolException"/>) banka form değeri taşımaz:
-    /// istisna nesnesiyle, tam iziyle günlüğe düşer.</para></summary>
+    /// Ekle + liste başarısı doğrulamadaki gibi kaydedilir (bkz. <see cref="MarkVerified"/>). Dönüş tipi başarısızlık
+    /// taşıyamadığından her istemci hatası önce bağlantıya yazılır, sonra istisnayla yukarı gider.
+    /// <para><c>bankaapi/ekle</c> idempotent değil; iki çağrının hatası bu yüzden ayrı ele alınır:</para>
+    /// <list type="bullet">
+    /// <item>Obifin eklemeyi REDDETTİ (<see cref="ObifinApiException"/>): kayıt açılmadı. Failed + maskeli mesaj.</item>
+    /// <item>Ekleme çağrısı ağ/vekil/zaman aşımıyla düştü: istek Obifin'e ulaşıp kaydı açmış olabilir, sonuç belirsiz.</item>
+    /// <item>Ekleme GEÇTİ ama ardından gelen liste alınamadı (Obifin reddi dahil her sınıf): kayıt Obifin'de açık,
+    /// <c>BankaApiId</c> bilinmiyor.</item>
+    /// </list>
+    /// <para>Son ikisinde "eklenemedi" demek admin'i tekrar eklemeye iterdi: Obifin'de banka kimliği taşıyan ikinci bir kayıt
+    /// açılır, aynı hesap ve hareketler farklı Obifin Id'leriyle gelir, (LicenseId, ObifinId) tekilliği mükerreri
+    /// yakalamaz. Bu yüzden <see cref="ObifinBankAddUncertainException"/> fırlatılır: mesajı Obifin'deki etiketi ve
+    /// uyarıyı taşır, son hataya da o yazılır. Durum KORUNUR (Failed yazılmaz): geçici hata kimlik aleyhine kanıt değildir,
+    /// çekim ve saatlik yenileme yalnız Verified bağlantıya bakar (bkz. <see cref="RefreshAccountsAsync"/>). Yerel satır
+    /// yazılmaz. Etiket sır değildir, günlüğe de düşer: Obifin'deki kayıt sonradan elle eşleştirilebilsin.</para>
+    /// <para>Obifin ya da bankanın SOAP hatası gönderilen banka alanını (web servis kullanıcısı/şifresi) ham ya da HTML/XML/
+    /// JSON kaçışlı yankılayabilir: <see cref="ObifinApiException"/> mesajları LastError'a, loga ve yukarıya gitmeden önce
+    /// her banka alanının <see cref="ObifinRedaction.EchoForms"/> biçimleriyle maskelenir (istemcinin tanı günlüğüyle ortak
+    /// kural) ve istisna maskeli mesajlarla YENİDEN kurulur — asıl istisna iç istisna olarak da taşınmaz; günlüğe istisna
+    /// nesnesi değil, yalnız türü ve maskeli metin gider. Diğer sınıflar (ağ/vekil/zaman aşımı,
+    /// <see cref="ObifinProtocolException"/>) banka form değeri taşımaz: istisna nesnesiyle, tam iziyle günlüğe düşer;
+    /// kayda geçen metinleri zaten sabittir ("Obifin'e ulaşılamadı (Tür)").</para></summary>
     public async Task<BankConnection> AddBankConnectionAsync(Guid licenseId, string bankaKodu, string label,
         IReadOnlyDictionary<string, string> bankForm, CancellationToken ct)
     {
@@ -248,28 +271,40 @@ public sealed class ObifinConnectionService
         var now = DateTimeOffset.UtcNow;
         var obifinLabel = $"OrderDeck-{licenseId.ToString("N")[..8]}-{bankaKodu}-{now:yyyyMMddHHmm}-{Guid.NewGuid().ToString("N")[..8]}";
         var form = new Dictionary<string, string>(bankForm) { ["BankaApiAdi"] = obifinLabel };
-        IReadOnlyList<ObifinBankConnectionDto> listed;
+        // Maskelenecek yankılar: her banka alanının ham ve kaçışlı biçimleri (bkz. özet).
+        var echoes = bankForm.Values.SelectMany(ObifinRedaction.EchoForms).ToList();
         try
         {
             await _client.AddBankConnectionAsync(creds, bankaKodu, form, ct);
-            listed = await _client.ListBankConnectionsAsync(creds, ct);
         }
-        catch (Exception ex) when (DescribeClientFailure(ex, ct) is not null)
+        catch (ObifinApiException api)
         {
-            // Diğer sınıfların (ağ/vekil/zaman aşımı) kayda geçen metni zaten sabit ("Obifin'e ulaşılamadı (Tür)").
-            var redacted = ex is ObifinApiException api
-                ? new ObifinApiException(api.Messages.Select(m => ObifinRedaction.Redact(m, bankForm.Values)).ToList())
-                : null;
-            var msg = DescribeClientFailure(redacted ?? ex, ct)!;
-            if (redacted is not null)
-                _log.LogWarning("Obifin banka bağlantısı ekleme başarısız ({ExceptionType}) — lisans={LicenseId}: {Error}",
-                    ex.GetType().Name, conn.LicenseId, msg);
-            else
-                _log.LogWarning(ex, "Obifin banka bağlantısı ekleme başarısız — lisans={LicenseId}: {Error}", conn.LicenseId, msg);
+            // Obifin'in açık reddi: kayıt açılmadı, tekrar eklemek güvenli.
+            var redacted = RedactBankEcho(api, echoes);
+            var msg = DescribeClientFailure(redacted, ct)!;
+            _log.LogWarning("Obifin banka bağlantısı ekleme reddedildi ({ExceptionType}) — lisans={LicenseId}: {Error}",
+                api.GetType().Name, conn.LicenseId, msg);
             MarkFailed(conn, msg, now);
             await _db.SaveChangesAsync(ct);
-            if (redacted is not null) throw redacted;
-            throw;
+            throw redacted;
+        }
+        catch (Exception ex) when (DescribeClientFailure(ex, ct) is { } msg)
+        {
+            throw await RecordUncertainAddAsync(conn, ex, obifinLabel, added: false,
+                "Banka bağlantısı ekleme sonucu belirsiz: Obifin kaydı açmış olabilir. Tekrar eklemeden önce Obifin listesinde " +
+                $"'{obifinLabel}' etiketine bakın. Hata: {msg}", now, ct);
+        }
+        IReadOnlyList<ObifinBankConnectionDto> listed;
+        try
+        {
+            listed = await _client.ListBankConnectionsAsync(creds, ct);
+        }
+        catch (Exception ex) when (DescribeClientFailure(ex, ct) is { } listMsg)
+        {
+            var msg = ex is ObifinApiException api ? DescribeClientFailure(RedactBankEcho(api, echoes), ct)! : listMsg;
+            throw await RecordUncertainAddAsync(conn, ex, obifinLabel, added: true,
+                $"Banka bağlantısı Obifin'e eklendi (etiket '{obifinLabel}') ama liste alınamadı; TEKRAR EKLEMEYİN. Hata: {msg}",
+                now, ct);
         }
         // İki çağrı da geçti = kimlik çalışıyor; durum + satır aşağıdaki tek SaveChanges'te.
         MarkVerified(conn, now);
@@ -286,6 +321,28 @@ public sealed class ObifinConnectionService
         _db.BankConnections.Add(bc);
         await _db.SaveChangesAsync(ct);
         return bc;
+    }
+
+    /// <summary>Obifin mesajlarından gönderilen banka alanlarının yankılarını (<paramref name="echoes"/>) maskeleyip istisnayı
+    /// yeniden kurar; asıl istisna iç istisna olarak taşınmaz (metni banka kimliğini taşıyabilir).</summary>
+    private static ObifinApiException RedactBankEcho(ObifinApiException api, IReadOnlyList<string> echoes)
+        => new(api.Messages.Select(m => ObifinRedaction.Redact(m, echoes)).ToList());
+
+    /// <summary>Banka eklemenin sonucu kesinleşmedi (bkz. <see cref="AddBankConnectionAsync"/>): durum korunur, son hata
+    /// yazılır ve kaydedilir, Obifin etiketi günlüğe düşer. <see cref="ObifinApiException"/> günlüğe istisna nesnesiyle
+    /// değil yalnız türü ve (maskeli) mesajla girer; diğer sınıflar banka form değeri taşımaz, istisna nesnesiyle girer.
+    /// Fırlatılacak istisnayı döner.</summary>
+    private async Task<ObifinBankAddUncertainException> RecordUncertainAddAsync(ObifinConnection conn, Exception ex,
+        string obifinLabel, bool added, string message, DateTimeOffset now, CancellationToken ct)
+    {
+        _log.LogWarning(ex is ObifinApiException ? null : ex,
+            "Obifin banka bağlantısı ekleme sonucu kesinleşmedi ({ExceptionType}, ekleme geçti={Added}), durum korunuyor — " +
+            "lisans={LicenseId}, Obifin etiketi={ObifinLabel}: {Error}",
+            ex.GetType().Name, added, conn.LicenseId, obifinLabel, message);
+        conn.LastError = Truncate(message, LastErrorMaxLength);
+        conn.UpdatedAt = now;
+        await _db.SaveChangesAsync(ct);
+        return new ObifinBankAddUncertainException(message);
     }
 
     /// <summary>Hesap listesini yeniler. İstemci hatası doğrulamadaki gibi sınıflandırılıp bağlantıya yazılır;

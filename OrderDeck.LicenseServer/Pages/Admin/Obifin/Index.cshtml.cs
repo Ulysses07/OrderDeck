@@ -209,7 +209,10 @@ public class IndexModel : PageModel
     /// <summary>İstek jetonu BİLEREK kullanılmaz: <c>bankaapi/ekle</c> idempotent değil. Sekme kapanınca çağrı Obifin kaydı
     /// açtıktan sonra iptal edilseydi yerelde bilinmeyen, banka kimliği taşıyan yetim bir kayıt kalır, admin'in tekrarı
     /// ikincisini açardı. Ekleme, ardındaki audit ve hesap yenilemesi sonuna kadar koşar; süreyi HttpClient zaman aşımı
-    /// sınırlar (iptal olmadığından her <see cref="OperationCanceledException"/> zaman aşımıdır).</summary>
+    /// sınırlar (iptal olmadığından her <see cref="OperationCanceledException"/> zaman aşımıdır).
+    /// <para>Aynı sebeple sonucu belirsiz ekleme (<see cref="ObifinBankAddUncertainException"/>: ekleme çağrısı ağ/zaman
+    /// aşımıyla düştü ya da geçti ama liste alınamadı) "eklenemedi" diye gösterilmez: servisin mesajı Obifin'deki etiketi ve
+    /// tekrar eklememe uyarısını taşır, önek eklenmeden bildirime düşer.</para></summary>
     public async Task<IActionResult> OnPostAddBankAsync()
     {
         if (BankDisabled) return BankDisabledResult();
@@ -227,6 +230,13 @@ public class IndexModel : PageModel
         try
         {
             bc = await connections.AddBankConnectionAsync(LicenseId, banka, Label ?? "", form, CancellationToken.None);
+        }
+        catch (ObifinBankAddUncertainException ex)
+        {
+            // Kayıt Obifin'de açılmış olabilir (ya da açıldı): "eklenemedi" demek admin'i tekrar eklemeye iterdi.
+            LogHandled("AddBank", ex);
+            TempData["Error"] = ex.Message;
+            return RedirectToPage();
         }
         catch (Exception ex) when (DescribeFailure(ex, CancellationToken.None) is { } msg)
         {

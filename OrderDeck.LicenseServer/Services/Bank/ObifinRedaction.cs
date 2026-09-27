@@ -1,9 +1,13 @@
+using System.Net;
 using System.Text;
+using System.Text.Encodings.Web;
+using System.Text.Json;
 
 namespace OrderDeck.LicenseServer.Services.Bank;
 
 /// <summary>Obifin'e gönderilen değerlerin geri yankılandığı metni (Obifin/banka hata mesajı, vekil/debug sayfası gövdesi)
-/// LastError'a, günlüğe ya da ekrana gitmeden önce maskeler. Bağlantı servisi ve istemci aynı kuralı kullanır.</summary>
+/// LastError'a, günlüğe ya da ekrana gitmeden önce maskeler. Bağlantı servisi ve istemci aynı kuralı kullanır: maskelenecek
+/// değer kümesi her değerin <see cref="EchoForms"/>'udur — yankı ham olmak zorunda değil.</summary>
 internal static class ObifinRedaction
 {
     /// <summary>Maskelenen değerin yerine geçer.</summary>
@@ -53,6 +57,32 @@ internal static class ObifinRedaction
             if (rest.StartsWith(v, StringComparison.OrdinalIgnoreCase)) return v;
         return null;
     }
+
+    /// <summary>Bir değerin hata/debug sayfasında ya da yankılanan bir hata metninde görünebileceği biçimler: ham;
+    /// form-urlencoded; HTML varlıklı (.NET <c>&amp;#39;</c>, PHP <c>htmlspecialchars</c> <c>&amp;#039;</c>, XML/SOAP
+    /// <c>&amp;apos;</c>); JSON dizesi — System.Text.Json'un <c>\u0022</c> kaçışlı hâli ve yalnız <c>\"</c>/<c>\\</c> kaçışlı
+    /// hâli, ikisi de PHP <c>json_encode</c>'un '/' → '\/' kaçışıyla.</summary>
+    public static IEnumerable<string> EchoForms(string value)
+    {
+        yield return value;
+        yield return FormUrlEncode(value);
+        var html = WebUtility.HtmlEncode(value);
+        yield return html;
+        yield return html.Replace("&#39;", "&#039;", StringComparison.Ordinal);
+        yield return html.Replace("&#39;", "&apos;", StringComparison.Ordinal);
+        foreach (var json in new[]
+                 {
+                     JsonEncodedText.Encode(value).ToString(),
+                     JsonEncodedText.Encode(value, JavaScriptEncoder.UnsafeRelaxedJsonEscaping).ToString(),
+                 })
+        {
+            yield return json;
+            yield return json.Replace("/", "\\/", StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary><see cref="FormUrlEncodedContent"/>'in teldeki kodlaması: veri kaçışı, boşluk '+'.</summary>
+    private static string FormUrlEncode(string value) => Uri.EscapeDataString(value).Replace("%20", "+");
 
     private static IEnumerable<string> Maskable(IEnumerable<string?> values)
         => values.OfType<string>().Where(v => v.Length >= MinLength)

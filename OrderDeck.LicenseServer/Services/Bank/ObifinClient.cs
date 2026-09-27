@@ -1,6 +1,4 @@
 using System.Globalization;
-using System.Net;
-using System.Text.Encodings.Web;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -222,37 +220,13 @@ public sealed class ObifinClient : IObifinClient
 
     /// <summary>Günlüğe giden tanı kopyası (banka kimliği taşımayan çağrılar). Debug/hata sayfası ya da vekil yanıtı isteği
     /// yankılayabilir: header'daki Obifin kimliği (kullanıcı kodu, şifre, API anahtarı) sayfanın basabileceği her biçimde
-    /// maskelenir (<see cref="EchoForms"/>). Form değerleri (tarih, sayfa, imleç, <c>BankaApiId</c>) sır değildir,
+    /// maskelenir (<see cref="ObifinRedaction.EchoForms"/>). Form değerleri (tarih, sayfa, imleç, <c>BankaApiId</c>) sır değildir,
     /// maskelenmez: tanı için okunur kalır. Kesme ve maskeleme <see cref="ObifinRedaction.RedactHead"/>'de: yalnız ilk
     /// <see cref="DiagnosticCap"/> karakter (+ sınırı aşan değerin kalanı) taranır.</summary>
     private static string Diagnostic(string body, ObifinCredentials creds)
         => ObifinRedaction.RedactHead(body,
-            new[] { creds.UserCode, creds.Password, creds.ApiKey }.Where(v => !string.IsNullOrEmpty(v)).SelectMany(EchoForms),
+            new[] { creds.UserCode, creds.Password, creds.ApiKey }.Where(v => !string.IsNullOrEmpty(v)).SelectMany(ObifinRedaction.EchoForms),
             DiagnosticCap);
 
-    /// <summary>Bir değerin hata/debug sayfasında görünebileceği biçimler: ham; form-urlencoded; HTML varlıklı (.NET
-    /// <c>&amp;#39;</c> ve PHP <c>htmlspecialchars</c> <c>&amp;#039;</c>); JSON dizesi — System.Text.Json'un <c>\u0022</c>
-    /// kaçışlı hâli ve yalnız <c>\"</c>/<c>\\</c> kaçışlı hâli, ikisi de PHP <c>json_encode</c>'un '/' → '\/' kaçışıyla.</summary>
-    private static IEnumerable<string> EchoForms(string value)
-    {
-        yield return value;
-        yield return FormUrlEncode(value);
-        var html = WebUtility.HtmlEncode(value);
-        yield return html;
-        yield return html.Replace("&#39;", "&#039;", StringComparison.Ordinal);
-        foreach (var json in new[]
-                 {
-                     JsonEncodedText.Encode(value).ToString(),
-                     JsonEncodedText.Encode(value, JavaScriptEncoder.UnsafeRelaxedJsonEscaping).ToString(),
-                 })
-        {
-            yield return json;
-            yield return json.Replace("/", "\\/", StringComparison.Ordinal);
-        }
-    }
-
     private static string ContentType(HttpResponseMessage resp) => resp.Content.Headers.ContentType?.MediaType ?? "-";
-
-    /// <summary><see cref="FormUrlEncodedContent"/>'in teldeki kodlaması: veri kaçışı, boşluk '+'.</summary>
-    private static string FormUrlEncode(string value) => Uri.EscapeDataString(value).Replace("%20", "+");
 }
