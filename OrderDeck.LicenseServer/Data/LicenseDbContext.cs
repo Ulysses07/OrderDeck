@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
@@ -122,14 +123,33 @@ public class LicenseDbContext : DbContext
     /// yazar aynı sonraki değeri üretse bile <c>WHERE UpdatedAt = özgün</c>
     /// nedeniyle yalnız biri kazanır.
     /// </summary>
-    private void StampNetgsmAccountVersions()
+    private void StampNetgsmAccountVersions() => StampVersions<NetgsmAccount>(a => a.UpdatedAt);
+
+    /// <summary>
+    /// <see cref="PaymentMatch.UpdatedAt"/> de jeton ve aynı gerekçeyle burada
+    /// damgalanır: satırı eşleştirici, bağdaştırıcının üç yolu (bağ, elle eşleme,
+    /// kaldırma), KVKK silmesi ve saklama işi yazar. Atamayı unutan gelecekteki
+    /// bir yazan kayıp güncelleme korumasını sessizce kapatırdı. Yazanların kendi
+    /// <c>UtcNow</c> atamaları zararsız kalır; damga onların üstüne yazar.
+    /// </summary>
+    private void StampPaymentMatchVersions() => StampVersions<PaymentMatch>(m => m.UpdatedAt);
+
+    /// <summary>
+    /// <typeparamref name="TEntity"/>'nin değişmiş (<see cref="EntityState.Modified"/>)
+    /// her girdisinde sürüm sütununu <c>max(UtcNow, özgün + 1 tick)</c> yapar ve
+    /// değişmiş işaretler. Eklenen satır kendi değeriyle yazılır; silinen satırın
+    /// sürümü yalnız <c>WHERE</c>'de özgün değerle karşılaştırılır — ikisinde de
+    /// damga yok.
+    /// </summary>
+    private void StampVersions<TEntity>(Expression<Func<TEntity, DateTimeOffset>> versionProperty)
+        where TEntity : class
     {
-        foreach (var entry in ChangeTracker.Entries<NetgsmAccount>())
+        foreach (var entry in ChangeTracker.Entries<TEntity>())
         {
             if (entry.State != EntityState.Modified)
                 continue;
 
-            var version = entry.Property(a => a.UpdatedAt);
+            var version = entry.Property(versionProperty);
             var original = version.OriginalValue;
             var now = DateTimeOffset.UtcNow;
 
@@ -149,6 +169,7 @@ public class LicenseDbContext : DbContext
     {
         SyncDerivedColumns();
         StampNetgsmAccountVersions();
+        StampPaymentMatchVersions();
         return base.SaveChanges(acceptAllChangesOnSuccess);
     }
 
@@ -157,6 +178,7 @@ public class LicenseDbContext : DbContext
     {
         SyncDerivedColumns();
         StampNetgsmAccountVersions();
+        StampPaymentMatchVersions();
         return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
     }
 
@@ -980,8 +1002,9 @@ public class LicenseDbContext : DbContext
             b.HasIndex(m => new { m.LicenseId, m.Status });
             // Yeniden hesap (çekim sink'i, telafi taraması) ile insan kararı (dekont onayı bağdaştırması, admin elle
             // eşleme) aynı satıra yarışabilir; jeton olmadan önce okuyup sonra yazan insan kararını sessizce ezerdi
-            // (eşleştiricinin insan-kararı kilidi yalnız sıralı çağrıları korur). Her yazan UpdatedAt'i ilerletir
-            // (bkz. NetgsmAccount). Şema değişmez: yalnız UPDATE/DELETE'in WHERE'ine girer.
+            // (eşleştiricinin insan-kararı kilidi yalnız sıralı çağrıları korur). Jetonu SaveChanges merkezî damgalar
+            // (StampPaymentMatchVersions, bkz. NetgsmAccount): UpdatedAt'i atamayı unutan bir yazan da onu ilerletir.
+            // Şema değişmez: yalnız UPDATE/DELETE'in WHERE'ine girer.
             b.Property(m => m.UpdatedAt).IsConcurrencyToken();
             b.Property(m => m.Layer).HasConversion<string>().HasMaxLength(32).IsRequired();
             b.Property(m => m.Status).HasConversion<string>().HasMaxLength(24).IsRequired();

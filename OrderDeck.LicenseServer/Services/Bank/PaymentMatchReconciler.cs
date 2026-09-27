@@ -8,8 +8,10 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 
 /// <summary>
 /// İnsan kararını gölge önerisine bağlar (spec §6). Aday = aynı lisans, gelen, tutar eşit,
-/// ±2 gün, henüz bir dekonta bağlanmamış ve başka bir müşteriye elle verilmemiş. Tek aday → bağla; çoklu → gönderen
-/// adının tüm tokenları açıklamada geçen TEK aday; hâlâ çoklu/yok → PaymentMatchGap. Ret hiçbir şey yapmaz.
+/// ±2 gün, henüz bir dekonta bağlanmamış, başka bir müşteriye elle verilmemiş ve eşleştiricinin dışlamadığı
+/// (<see cref="PaymentMatcher.IsExcluded"/>: POS tahsilatı vb. müşteri havalesi değildir). Tek aday → bağla; çoklu → gönderen
+/// adının tüm tokenları açıklamada geçen TEK aday; hâlâ çoklu/yok → PaymentMatchGap. Ret hiçbir şey yapmaz. Elle eşleme
+/// dışlanan kodlu hareketi de kabul eder: admin'in açık kararıdır.
 /// <para><b>Onay IBAN'ı yalnız doğrulanmış bağdan öğretir</b>: öneri dekontun müşterisini gösteriyorsa ya da gönderen
 /// adının (≥3 harfli) tüm token'ları hareketin açıklamasında geçiyorsa. Tek aday bağı yalnız tutar ve zamana dayanabilir;
 /// sabit fiyatlı satışta aynı tutarlı başka bir müşterinin havalesi tek aday kalabilir (dekontun kendi havalesi henüz
@@ -31,7 +33,7 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// (spec §3 ResolvedBankTransactionId). Onaydaki belirsizlik sürüyorsa (iki aday hâlâ bağsız) ya da aynı tutarlı birden
 /// çok hareket geldiyse gap açık kalır: belirsizlik tahminle çözülmez.</para>
 /// <para><see cref="BankHasher"/> istemez: yalnız harekette ve hafızada saklı hash'leri karşılaştırır.</para>
-/// <para><b>Eşzamanlılık.</b> <see cref="PaymentMatch.UpdatedAt"/> eşzamanlılık jetonudur ve her yazan onu ilerletir. Bir
+/// <para><b>Eşzamanlılık.</b> <see cref="PaymentMatch.UpdatedAt"/> eşzamanlılık jetonudur; her kayıtta DbContext ilerletir. Bir
 /// işlem okuduğu satır kaydetmeden önce değiştiyse (DbUpdateConcurrencyException: eşleştiricinin yeniden hesabı, başka bir
 /// insan kararı), seçtiği aday seçimle satırın izlenerek okunması arasında başka bir karara bağlandıysa (bayat seçim;
 /// jeton bu pencereyi görmez) ya da tekil bir indekse takıldıysa (DbUpdateException: aynı dekont iki harekete —
@@ -132,7 +134,8 @@ public sealed class PaymentMatchReconciler
 
     private async Task TryResolveGapOnceAsync(BankTransaction tx, CancellationToken ct)
     {
-        if (tx.Direction != BankTransactionDirection.Incoming) return;
+        // Giden, sıfır tutarlı ya da dışlanan kodlu (POS tahsilatı vb.) hareket hiçbir dekontun adayı değildir.
+        if (Matcher.IsExcluded(tx)) return;
         if (await _db.PaymentMatches.AnyAsync(m => m.BankTransactionId == tx.Id && m.PaymentId != null, ct)) return;
         var windowStart = tx.OccurredAt - CandidateWindow; var windowEnd = tx.OccurredAt + CandidateWindow;
         // Bağlı ödemenin açık gap'i (iki eşzamanlı bağdaştırmanın biri gap, biri bağ yazdıysa) aday değildir: onu ikinci bir
@@ -229,7 +232,8 @@ public sealed class PaymentMatchReconciler
     }
 
     /// <summary>Dekontun aday hareketleri (sınıf özeti): aynı lisans, gelen, tutar eşit, ödeme anının ±2 günü; bir dekonta
-    /// bağlanmış ya da başka müşteriye elle verilmiş hareket aday değildir. Birden çok aday kalırsa gönderen adının tüm
+    /// bağlanmış, başka müşteriye elle verilmiş ya da eşleştiricinin dışladığı (<see cref="PaymentMatcher.IsExcluded"/>)
+    /// hareket aday değildir. Birden çok aday kalırsa gönderen adının tüm
     /// token'larını açıklamasında taşıyan TEK aday seçilir; seçilemezse liste olduğu gibi döner. Onay da gap çözümü de bunu
     /// kullanır: ikisi aynı kuralla karar verir.</summary>
     private async Task<List<BankTransaction>> CandidatesAsync(Guid licenseId, decimal amount, DateTimeOffset paidAt,
@@ -240,10 +244,14 @@ public sealed class PaymentMatchReconciler
             .Where(m => m.LicenseId == licenseId
                         && (m.PaymentId != null || (m.ActualWpfCustomerId != null && m.ActualWpfCustomerId != wpfCustomerId)))
             .Select(m => m.BankTransactionId);
-        var candidates = await _db.BankTransactions.AsNoTracking()
-            .Where(t => t.LicenseId == licenseId && t.Direction == BankTransactionDirection.Incoming
-                        && t.Amount == amount && t.OccurredAt >= windowStart && t.OccurredAt <= windowEnd && !taken.Contains(t.Id))
-            .ToListAsync(ct);
+        var candidates = (await _db.BankTransactions.AsNoTracking()
+                .Where(t => t.LicenseId == licenseId && t.Direction == BankTransactionDirection.Incoming
+                            && t.Amount == amount && t.OccurredAt >= windowStart && t.OccurredAt <= windowEnd && !taken.Contains(t.Id))
+                .ToListAsync(ct))
+            // Eşleştiricinin dışladığı hareket (POS tahsilatı vb.) müşteri havalesi değildir. Ad daraltmasından ÖNCE atılır:
+            // aynı tutarlı bir POS tahsilatı havaleyi belirsizliğe düşürmesin, tek başına da dekonta bağlanmasın.
+            .Where(t => !Matcher.IsExcluded(t))
+            .ToList();
 
         if (candidates.Count > 1)
         {

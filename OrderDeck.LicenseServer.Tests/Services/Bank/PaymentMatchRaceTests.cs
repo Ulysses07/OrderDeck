@@ -61,7 +61,7 @@ public sealed class PaymentMatchRaceTests
         }
     }
 
-    private sealed class LogRecorder<T> : ILogger<T>
+    internal sealed class LogRecorder<T> : ILogger<T>
     {
         public List<(LogLevel Level, string Message)> Entries { get; } = new();
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;

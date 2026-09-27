@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OrderDeck.LicenseServer.Data;
@@ -18,9 +19,9 @@ public sealed class PaymentMatchReconcilerTests
     private static LicenseDbContext NewDb()
         => new(new DbContextOptionsBuilder<LicenseDbContext>().UseInMemoryDatabase($"recon-{Guid.NewGuid():N}").Options);
 
-    private static PaymentMatchReconciler Recon(LicenseDbContext db)
+    private static PaymentMatchReconciler Recon(LicenseDbContext db, ILogger<PaymentMatchReconciler>? log = null)
         => new(db, new PaymentMatcher(db, Options.Create(new BankOptions()), NullLogger<PaymentMatcher>.Instance),
-            NullLogger<PaymentMatchReconciler>.Instance);
+            log ?? NullLogger<PaymentMatchReconciler>.Instance);
 
     private sealed record Seed(Guid LicenseId, Guid ShopperId, Guid WpfCustomerId);
 
@@ -42,10 +43,12 @@ public sealed class PaymentMatchReconcilerTests
         return c;
     }
 
-    private static BankTransaction Tx(LicenseDbContext db, Guid lic, decimal amount, DateTimeOffset when, string desc, string? ibanHash = null)
+    private static BankTransaction Tx(LicenseDbContext db, Guid lic, decimal amount, DateTimeOffset when, string desc, string? ibanHash = null,
+        string? code = null)
     {
         var t = new BankTransaction { Id = Guid.NewGuid(), LicenseId = lic, ObifinId = Random.Shared.NextInt64(1, 1_000_000_000), ObifinAccountId = 1, BankaKodu = "qnb",
-            Direction = BankTransactionDirection.Incoming, Amount = amount, Currency = "TL", OccurredAt = when, Description = desc, CounterpartyIbanHash = ibanHash, FetchedAt = when };
+            Direction = BankTransactionDirection.Incoming, Amount = amount, Currency = "TL", OccurredAt = when, Description = desc, CounterpartyIbanHash = ibanHash, FetchedAt = when,
+            TransactionCode = code };
         db.BankTransactions.Add(t); db.SaveChanges();
         return t;
     }
@@ -233,19 +236,52 @@ public sealed class PaymentMatchReconcilerTests
     [Fact]
     public async Task Baska_musteriye_ait_iban_hafizasi_onayla_ezilmez()
     {
+        // Bağ doğrulanmış (gönderen adı açıklamada geçiyor): onay IBAN'ı öğretmeye kalkar, ama o IBAN'ın hafızası başka
+        // müşterinin. Hafıza ezilmez, çelişki uyarıyla loglanır. Öneri hafızadaki müşteriyi gösterir: karşılaştırma çelişti.
         using var db = NewDb(); var s = SeedShopper(db);
         var other = OtherCustomer(db, s.LicenseId, "mehmet_k");
         var hash = Hasher.HashIban(BankHasherTests.TestIban())!;
         db.CustomerIbanMemories.Add(new CustomerIbanMemory { Id = Guid.NewGuid(), LicenseId = s.LicenseId, WpfCustomerId = other.Id, IbanHash = hash, IbanMasked = "TR..", LearnedFrom = IbanMemorySource.ManualMatch, CreatedAt = DateTimeOffset.UtcNow });
         db.SaveChanges();
         var when = DateTimeOffset.UtcNow;
-        var tx = Tx(db, s.LicenseId, 50m, when, "EFT GELEN", hash);
-        var recon = Recon(db); await recon.Matcher.MatchAsync(tx, CancellationToken.None);
+        var tx = Tx(db, s.LicenseId, 50m, when, "EFT GELEN AYSE GUL", hash);
+        var log = new PaymentMatchRaceTests.LogRecorder<PaymentMatchReconciler>();
+        var recon = Recon(db, log); await recon.Matcher.MatchAsync(tx, CancellationToken.None);
 
-        await recon.ReconcileApprovalAsync(Approved(db, s.LicenseId, s.ShopperId, 50m, when), CancellationToken.None);
+        await recon.ReconcileApprovalAsync(Approved(db, s.LicenseId, s.ShopperId, 50m, when, payer: "AYSE GUL"), CancellationToken.None);
 
-        (await db.CustomerIbanMemories.SingleAsync()).WpfCustomerId.Should().Be(other.Id, "çelişki loglanır, sessizce ezilmez");
-        (await db.PaymentMatches.SingleAsync()).Status.Should().Be(PaymentMatchStatus.Contradicted);
+        var mem = await db.CustomerIbanMemories.AsNoTracking().SingleAsync();
+        mem.WpfCustomerId.Should().Be(other.Id, "başka müşterinin hafızası sessizce ezilmez");
+        mem.LearnedFrom.Should().Be(IbanMemorySource.ManualMatch); mem.SourceBankTransactionId.Should().BeNull();
+        var m = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        m.ProposedWpfCustomerId.Should().Be(other.Id); m.Status.Should().Be(PaymentMatchStatus.Contradicted);
+        log.Entries.Where(e => e.Level == LogLevel.Warning).Should().ContainSingle()
+            .Which.Message.Should().Contain("IBAN hafızası çelişkisi");
+    }
+
+    [Fact]
+    public async Task Baska_musteriye_ait_iban_hafizasi_elle_eslemeyle_ezilmez()
+    {
+        // Elle eşleme doğrulama aramadan öğretir; IBAN'ın hafızası başka müşterinin ise yine ezilmez, çelişki loglanır.
+        // Admin'in kararı satıra yazılır.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var other = OtherCustomer(db, s.LicenseId, "mehmet_k");
+        var hash = Hasher.HashIban(BankHasherTests.TestIban())!;
+        db.CustomerIbanMemories.Add(new CustomerIbanMemory { Id = Guid.NewGuid(), LicenseId = s.LicenseId, WpfCustomerId = other.Id, IbanHash = hash, IbanMasked = "TR..", LearnedFrom = IbanMemorySource.HumanApproval, CreatedAt = DateTimeOffset.UtcNow });
+        db.SaveChanges();
+        var tx = Tx(db, s.LicenseId, 60m, DateTimeOffset.UtcNow, "EFT GELEN", hash);
+        var log = new PaymentMatchRaceTests.LogRecorder<PaymentMatchReconciler>();
+        var recon = Recon(db, log); await recon.Matcher.MatchAsync(tx, CancellationToken.None);
+
+        await recon.ManualMatchAsync(s.LicenseId, tx.Id, s.WpfCustomerId, CancellationToken.None);
+
+        var mem = await db.CustomerIbanMemories.AsNoTracking().SingleAsync();
+        mem.WpfCustomerId.Should().Be(other.Id, "başka müşterinin hafızası sessizce ezilmez");
+        mem.LearnedFrom.Should().Be(IbanMemorySource.HumanApproval); mem.SourceBankTransactionId.Should().BeNull();
+        var m = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        m.ActualWpfCustomerId.Should().Be(s.WpfCustomerId); m.Status.Should().Be(PaymentMatchStatus.ManualOnly);
+        log.Entries.Where(e => e.Level == LogLevel.Warning).Should().ContainSingle()
+            .Which.Message.Should().Contain("IBAN hafızası çelişkisi");
     }
 
     [Fact]
@@ -466,5 +502,74 @@ public sealed class PaymentMatchReconcilerTests
         m.ProposedWpfCustomerId.Should().Be(s.WpfCustomerId);
         m.PaymentId.Should().Be(payment.Id);
         (await db.PaymentMatchGaps.SingleAsync()).ResolvedBankTransactionId.Should().Be(late.Id);
+    }
+
+    [Fact]
+    public async Task Ayni_tutarli_POS_tahsilati_tek_basina_aday_sayilmaz_dekont_gap_e_duser()
+    {
+        // POS tahsilatı (varsayılan dışlanan kod CCP) müşteri havalesi değildir; eşleştirici ona öneri üretmez. Bağdaştırıcı
+        // da onu aday saymaz: tek aday kalsaydı yalnız tutar ve zamanla dekonta bağlanır, ölçümü kirletirdi.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var when = DateTimeOffset.UtcNow.AddHours(-1);
+        var pos = Tx(db, s.LicenseId, 330m, when, "POS TAHSILAT", code: "CCP");
+        var recon = Recon(db); await recon.Matcher.MatchAsync(pos, CancellationToken.None);
+        var payment = Approved(db, s.LicenseId, s.ShopperId, 330m, when);
+
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+
+        (await db.PaymentMatches.AsNoTracking().SingleAsync()).PaymentId.Should().BeNull();
+        (await db.PaymentMatchGaps.AsNoTracking().SingleAsync()).Reason.Should().Be(PaymentMatchGapReason.NoCandidate);
+    }
+
+    [Fact]
+    public async Task Havale_ile_ayni_tutarli_POS_tahsilati_varken_havale_gonderen_adi_gerekmeden_baglanir()
+    {
+        // POS tahsilatı aday sayılsaydı iki aday kalır, gönderen adı açıklamada geçmediği için daraltılamaz, dekont
+        // AmbiguousCandidates gap'ine düşerdi.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var when = DateTimeOffset.UtcNow.AddHours(-1);
+        var transfer = Tx(db, s.LicenseId, 340m, when, "EFT GELEN");
+        var pos = Tx(db, s.LicenseId, 340m, when.AddMinutes(5), "POS TAHSILAT", code: "CCP");
+        var recon = Recon(db);
+        await recon.Matcher.MatchAsync(transfer, CancellationToken.None); await recon.Matcher.MatchAsync(pos, CancellationToken.None);
+        var payment = Approved(db, s.LicenseId, s.ShopperId, 340m, when, payer: "BILINMEYEN");
+
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+
+        var rows = await db.PaymentMatches.AsNoTracking().ToListAsync();
+        rows.Single(m => m.BankTransactionId == transfer.Id).PaymentId.Should().Be(payment.Id);
+        rows.Single(m => m.BankTransactionId == pos.Id).PaymentId.Should().BeNull();
+        (await db.PaymentMatchGaps.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Sonradan_gelen_POS_tahsilati_acik_gap_i_cozmez()
+    {
+        using var db = NewDb(); var s = SeedShopper(db);
+        var paidAt = DateTimeOffset.UtcNow.AddHours(-5);
+        var payment = Approved(db, s.LicenseId, s.ShopperId, 350m, paidAt);
+        var recon = Recon(db);
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+        var pos = Tx(db, s.LicenseId, 350m, paidAt.AddHours(1), "POS TAHSILAT", code: "CCP");
+
+        await recon.MatchAndResolveGapAsync(pos, CancellationToken.None);
+
+        var gap = await db.PaymentMatchGaps.AsNoTracking().SingleAsync();
+        gap.ResolvedAt.Should().BeNull(); gap.ResolvedBankTransactionId.Should().BeNull();
+        (await db.PaymentMatches.AsNoTracking().SingleAsync()).PaymentId.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task POS_tahsilati_elle_eslenebilir()
+    {
+        // Dışlama yalnız otomatik aday seçimi içindir; admin'in açık kararı POS tahsilatını da bir müşteriye verebilir.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var pos = Tx(db, s.LicenseId, 360m, DateTimeOffset.UtcNow, "POS TAHSILAT", code: "CCP");
+        var recon = Recon(db); await recon.Matcher.MatchAsync(pos, CancellationToken.None);
+
+        await recon.ManualMatchAsync(s.LicenseId, pos.Id, s.WpfCustomerId, CancellationToken.None);
+
+        var m = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        m.ActualWpfCustomerId.Should().Be(s.WpfCustomerId); m.Status.Should().Be(PaymentMatchStatus.ManualOnly);
     }
 }

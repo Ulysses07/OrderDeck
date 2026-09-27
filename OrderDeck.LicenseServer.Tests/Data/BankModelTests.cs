@@ -87,6 +87,63 @@ public sealed class BankModelTests
             .Should().BeTrue("yeniden hesap arada verilen insan kararını sessizce ezmesin (kayıp güncelleme)");
     }
 
+    /// <summary>Jeton DbContext'te merkezî damgalanır: UpdatedAt'e dokunmayan bir yazan (ör. yalnız kanıtı boşaltan
+    /// temizlik) da onu ilerletir, eşzamanlı yazanın bayat kaydı düşer. Özgün damga gelecekte: saat ilerlemese bile jeton
+    /// özgün + 1 tick olur.</summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PaymentMatch_UpdatedAt_atamayan_yazan_da_jetonu_ilerletir(bool useAsyncSave)
+    {
+        var options = new DbContextOptionsBuilder<LicenseDbContext>()
+            .UseInMemoryDatabase($"bank-model-{Guid.NewGuid():N}").Options;
+        var matchId = Guid.NewGuid();
+        var originalStamp = DateTimeOffset.UtcNow.AddDays(1);
+        await using (var seed = new LicenseDbContext(options))
+        {
+            var lic = Guid.NewGuid();
+            var tx = new BankTransaction
+            {
+                Id = Guid.NewGuid(), LicenseId = lic, ObifinId = Random.Shared.NextInt64(1, 1_000_000_000), ObifinAccountId = 1,
+                BankaKodu = "qnb", Direction = BankTransactionDirection.Incoming, Amount = 100m, Currency = "TL",
+                OccurredAt = DateTimeOffset.UtcNow, FetchedAt = DateTimeOffset.UtcNow,
+            };
+            seed.BankTransactions.Add(tx);
+            seed.PaymentMatches.Add(new PaymentMatch
+            {
+                Id = matchId, LicenseId = lic, BankTransactionId = tx.Id, Layer = PaymentMatchLayer.None,
+                Status = PaymentMatchStatus.NoProposal, Evidence = "no-signal", CreatedAt = originalStamp, UpdatedAt = originalStamp,
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        await using var stale = new LicenseDbContext(options);
+        await using var writer = new LicenseDbContext(options);
+        var staleRow = await stale.PaymentMatches.SingleAsync(m => m.Id == matchId);
+        var row = await writer.PaymentMatches.SingleAsync(m => m.Id == matchId);
+
+        // Yazan UpdatedAt atamayı unutur.
+        row.Evidence = null;
+        if (useAsyncSave) await writer.SaveChangesAsync();
+        else writer.SaveChanges();
+
+        row.UpdatedAt.Should().Be(originalStamp.AddTicks(1));
+        staleRow.ActualWpfCustomerId = Guid.NewGuid(); staleRow.Status = PaymentMatchStatus.ManualOnly;
+        Func<Task> staleWrite = async () =>
+        {
+            if (useAsyncSave) await stale.SaveChangesAsync();
+            else stale.SaveChanges();
+        };
+
+        await staleWrite.Should().ThrowAsync<DbUpdateConcurrencyException>();
+        await using var read = new LicenseDbContext(options);
+        var persisted = await read.PaymentMatches.AsNoTracking().SingleAsync(m => m.Id == matchId);
+        persisted.Evidence.Should().BeNull();
+        persisted.ActualWpfCustomerId.Should().BeNull();
+        persisted.Status.Should().Be(PaymentMatchStatus.NoProposal);
+        persisted.UpdatedAt.Should().Be(originalStamp.AddTicks(1));
+    }
+
     /// <summary>KVKK purge (<c>AdminCustomersController.Purge</c>) lisansı siler ve gerisini DB
     /// kaskadına bırakır. Lisansa doğrudan bağlı her banka tablosu Cascade FK taşımalı; FK'sız
     /// bir tablo müşteri silindikten sonra IBAN hash'ini ve karşı taraf adını yetim tutardı.</summary>

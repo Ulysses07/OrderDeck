@@ -85,6 +85,22 @@ public sealed class PaymentMatcher
         }
     }
 
+    /// <summary>Hareket müşteri havalesi sayılmaz mı: giden, sıfır tutarlı ya da işlem kodu
+    /// <see cref="BankOptions.ExcludedTransactionCodes"/>'ta (POS tahsilatı vb.). Eşleştirici ona öneri üretmez;
+    /// bağdaştırıcı da onu dekontun adayı saymaz. Karar hareketin kendi alanlarından verilir, kanıttan değil (kanıt
+    /// saklama süresinde boşaltılır).</summary>
+    public bool IsExcluded(BankTransaction tx) => ExclusionReason(tx) is not null;
+
+    /// <summary>Dışlama nedeni (kanıta yazılır) ya da null.</summary>
+    private string? ExclusionReason(BankTransaction tx)
+    {
+        var code = (tx.TransactionCode ?? "").Trim();
+        return tx.Direction != BankTransactionDirection.Incoming ? "direction"
+            : tx.Amount == 0 ? "zero"
+            : _excludedCodes.Contains(code) ? code
+            : null;
+    }
+
     private async Task<PaymentMatch> MatchOnceAsync(BankTransaction tx, CancellationToken ct)
     {
         var match = await _db.PaymentMatches.FirstOrDefaultAsync(m => m.BankTransactionId == tx.Id, ct)
@@ -94,11 +110,7 @@ public sealed class PaymentMatcher
             return match;
 
         // Çekim işi giden ve sıfır tutarlı hareketi buraya vermez; yine de gelirse öneri üretilmez.
-        var code = (tx.TransactionCode ?? "").Trim();
-        var exclusion = tx.Direction != BankTransactionDirection.Incoming ? "direction"
-            : tx.Amount == 0 ? "zero"
-            : _excludedCodes.Contains(code) ? code
-            : null;
+        var exclusion = ExclusionReason(tx);
         if (exclusion is not null)
         {
             Set(match, null, PaymentMatchLayer.None, 0m, $"excluded:{exclusion}", PaymentMatchStatus.NoProposal);
