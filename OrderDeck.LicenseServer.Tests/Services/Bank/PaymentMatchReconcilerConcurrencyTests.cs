@@ -14,10 +14,12 @@ using Xunit;
 namespace OrderDeck.LicenseServer.Tests.Services.Bank;
 
 /// <summary>
-/// Tek açık gap'i iki aynı tutarlı hareket aynı anda çözmeye çalışır (sink ile telafi taraması) — GERÇEK SQL Server'da.
-/// InMemory filtreli tekil indeksi uygulamaz; burada <c>PaymentMatches.PaymentId</c> indeksi ikinci bağı reddeder.
-/// Kaybeden bağdaştırıcı denemesinin izini atıp bir kez yeniden dener, gap'i çözülmüş bulur ve sessizce çıkar: dekont tek
-/// harekete bağlanır, iki çağıran da hatasız biter. Testcontainers kullanır; CI ubuntu işinde koşar.
+/// Aynı dekontun iki bağdaştırma koşusu (ör. Hangfire'ın çift teslimi) DB'yi farklı anlarda okuyup dekontu iki ayrı
+/// harekete bağlamaya çalışır — GERÇEK SQL Server'da. InMemory filtreli tekil indeksi uygulamaz; burada
+/// <c>PaymentMatches.PaymentId</c> indeksi ikinci bağı reddeder. Kaybeden bağdaştırıcı denemesinin izini atıp bir kez yeniden
+/// dener, dekontu bağlı bulur ve sessizce çıkar: dekont tek harekete bağlanır, iki çağıran da hatasız biter. (Açık gap'i iki
+/// geç hareketin aynı anda çözmesi artık bu indekse ulaşmaz: gap ancak hareket dekontun TEK adayıysa çözülür.)
+/// Testcontainers kullanır; CI ubuntu işinde koşar.
 /// </summary>
 [Collection(SqlServerCollection.Name)]
 [Trait("Category", "Testcontainers")]
@@ -38,7 +40,7 @@ public sealed class PaymentMatchReconcilerConcurrencyTests : IAsyncLifetime
     public Task DisposeAsync() => Task.CompletedTask;
 
     [Fact]
-    public async Task Tek_acik_gap_i_iki_hareket_ayni_anda_cozerse_dekont_tek_harekete_baglanir()
+    public async Task Ayni_dekontun_iki_bagdastirmasi_farkli_hareket_secerse_dekont_tek_harekete_baglanir()
     {
         Seeded s;
         await using (var seed = NewDb(interceptor: null)) s = await SeedAsync(seed);
@@ -48,22 +50,25 @@ public sealed class PaymentMatchReconcilerConcurrencyTests : IAsyncLifetime
         await using var db2 = NewDb(new LinkBarrier(rendezvous));
         var log = new RetryCounter();
 
-        await Task.WhenAll(
-            Recon(db1, log).TryResolveGapAsync(s.First, CancellationToken.None),
-            Recon(db2, log).TryResolveGapAsync(s.Second, CancellationToken.None));
+        // İlk koşu yalnız ilk hareketi görür (tek aday) ve bağı kaydetmeden önce bekler.
+        var early = Recon(db1, log).ReconcileApprovalAsync(s.Payment, CancellationToken.None);
+        await rendezvous.FirstArrived.WaitAsync(TimeSpan.FromSeconds(30));
+        // Arada gönderen adını taşıyan hareket gelir; ikinci koşu iki aday görür, adla onu seçer.
+        await using (var seed = NewDb(interceptor: null)) await AddNamedAsync(seed, s.Payment);
+        var late = Recon(db2, log).ReconcileApprovalAsync(s.Payment, CancellationToken.None);
+        await Task.WhenAll(early, late);
 
         log.Retries.Should().Be(1, "kaybeden indekse takıldı ve bir kez yeniden denedi");
         await using var verify = NewDb(interceptor: null);
-        var linked = await verify.PaymentMatches.AsNoTracking().Where(m => m.PaymentId == s.PaymentId).ToListAsync();
+        var linked = await verify.PaymentMatches.AsNoTracking().Where(m => m.PaymentId == s.Payment.Id).ToListAsync();
         linked.Should().ContainSingle("bir dekont iki harekete bağlanamaz");
-        var gap = await verify.PaymentMatchGaps.AsNoTracking().SingleAsync();
-        gap.ResolvedBankTransactionId.Should().Be(linked[0].BankTransactionId, "gap'i bağı kazanan hareket çözer");
+        (await verify.PaymentMatchGaps.AsNoTracking().CountAsync()).Should().Be(0, "kaybeden dekontu bağlı bulur, gap yazmaz");
         foreach (var db in new[] { db1, db2 })
             db.ChangeTracker.Entries().Where(e => e.Entity is PaymentMatch or PaymentMatchGap or CustomerIbanMemory)
                 .Should().NotContain(e => e.State != EntityState.Unchanged, "kaybedenin düşen denemesi izde kalmaz");
     }
 
-    private sealed record Seeded(Guid PaymentId, BankTransaction First, BankTransaction Second);
+    private sealed record Seeded(Payment Payment, BankTransaction First);
 
     private LicenseDbContext NewDb(IInterceptor? interceptor)
     {
@@ -89,8 +94,8 @@ public sealed class PaymentMatchReconcilerConcurrencyTests : IAsyncLifetime
         }
     }
 
-    /// <summary>Lisans, müşteri + shopper bağı, onaylı dekont ve onun açık (NoCandidate) gap'i; sonradan gelmiş, aynı
-    /// tutarlı, önerisiz iki hareket. Kimlik alanları üretilir.</summary>
+    /// <summary>Lisans, müşteri + shopper bağı, onaylı dekont ve onunla aynı tutarlı, açıklamasında gönderen adı geçmeyen,
+    /// önerisiz bir hareket. Kimlik alanları üretilir.</summary>
     private static async Task<Seeded> SeedAsync(LicenseDbContext db)
     {
         var now = DateTimeOffset.UtcNow;
@@ -119,13 +124,7 @@ public sealed class PaymentMatchReconcilerConcurrencyTests : IAsyncLifetime
             PaidAt = now.AddHours(-3), ReferansNo = $"r-{Guid.NewGuid():N}", Status = PaymentStatus.Approved, ApprovedAt = now,
             CreatedAt = now, UpdatedAt = now,
         };
-        BankTransaction Incoming() => new()
-        {
-            Id = Guid.NewGuid(), LicenseId = license.Id, ObifinId = Random.Shared.NextInt64(1, 1_000_000_000), ObifinAccountId = 1,
-            BankaKodu = "qnb", Direction = BankTransactionDirection.Incoming, Amount = 450m, Currency = "TL",
-            OccurredAt = now.AddHours(-1), Description = "EFT GELEN", TransactionCode = "FT", FetchedAt = now,
-        };
-        var first = Incoming(); var second = Incoming();
+        var first = Incoming(license.Id, "EFT GELEN");
         db.Customers.Add(customer);
         db.Licenses.Add(license);
         db.Shoppers.Add(shopper);
@@ -136,33 +135,51 @@ public sealed class PaymentMatchReconcilerConcurrencyTests : IAsyncLifetime
             WpfCustomerId = wpf.Id, JoinedAt = now,
         });
         db.Payments.Add(payment);
-        db.PaymentMatchGaps.Add(new PaymentMatchGap
-        {
-            Id = Guid.NewGuid(), LicenseId = license.Id, PaymentId = payment.Id, Reason = PaymentMatchGapReason.NoCandidate,
-            CreatedAt = now,
-        });
-        db.BankTransactions.AddRange(first, second);
+        db.BankTransactions.Add(first);
         await db.SaveChangesAsync();
-        var matcher = new PaymentMatcher(db, Options.Create(new BankOptions()), NullLogger<PaymentMatcher>.Instance);
-        await matcher.MatchAsync(first, CancellationToken.None);
-        await matcher.MatchAsync(second, CancellationToken.None);
-        return new Seeded(payment.Id, first, second);
+        await new PaymentMatcher(db, Options.Create(new BankOptions()), NullLogger<PaymentMatcher>.Instance)
+            .MatchAsync(first, CancellationToken.None);
+        return new Seeded(payment, first);
     }
+
+    /// <summary>Dekontla aynı tutarlı, açıklamasında gönderen adı geçen, sonradan gelmiş hareket ve onun önerisi.</summary>
+    private static async Task AddNamedAsync(LicenseDbContext db, Payment payment)
+    {
+        var named = Incoming(payment.LicenseId, $"HAVALE {payment.PayerName}");
+        db.BankTransactions.Add(named);
+        await db.SaveChangesAsync();
+        await new PaymentMatcher(db, Options.Create(new BankOptions()), NullLogger<PaymentMatcher>.Instance)
+            .MatchAsync(named, CancellationToken.None);
+    }
+
+    private static BankTransaction Incoming(Guid licenseId, string description) => new()
+    {
+        Id = Guid.NewGuid(), LicenseId = licenseId, ObifinId = Random.Shared.NextInt64(1, 1_000_000_000), ObifinAccountId = 1,
+        BankaKodu = "qnb", Direction = BankTransactionDirection.Incoming, Amount = 450m, Currency = "TL",
+        OccurredAt = DateTimeOffset.UtcNow.AddHours(-1), Description = description, TransactionCode = "FT",
+        FetchedAt = DateTimeOffset.UtcNow,
+    };
 
     private sealed class Rendezvous
     {
+        private readonly TaskCompletionSource _first = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource _both = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _arrived;
 
+        /// <summary>İlk taraf bariyere vardı: aday seçimini yapmış, bağı kaydetmek üzere.</summary>
+        public Task FirstArrived => _first.Task;
+
         public async Task ArriveAsync(CancellationToken ct)
         {
-            if (Interlocked.Increment(ref _arrived) >= 2) _both.TrySetResult();
+            var arrived = Interlocked.Increment(ref _arrived);
+            _first.TrySetResult();
+            if (arrived >= 2) _both.TrySetResult();
             await _both.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
         }
     }
 
-    /// <summary>Dekontu bir harekete bağlayan İLK SaveChanges'i iki taraf da gelene kadar tutar: ikisi de açık gap'i ve
-    /// bağsız dekontu görmüş olur, iki UPDATE filtreli PaymentId indeksinde yarışır. Yeniden deneme beklemez.</summary>
+    /// <summary>Dekontu bir harekete bağlayan İLK SaveChanges'i iki taraf da gelene kadar tutar: ikisi de bağsız dekontu
+    /// görmüş olur, iki UPDATE filtreli PaymentId indeksinde yarışır. Yeniden deneme beklemez.</summary>
     private sealed class LinkBarrier(Rendezvous rendezvous) : SaveChangesInterceptor
     {
         private bool _passed;

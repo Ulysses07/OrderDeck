@@ -44,6 +44,23 @@ public sealed class PaymentMatchRaceTests
         }
     }
 
+    /// <summary>Aday seçim sorgusu verilen hareketi okurken (satır henüz izlenerek okunmadan) öteki bağlamın yazısını
+    /// koşturur; bir kez.</summary>
+    private sealed class OnMaterialize(Guid transactionId, Action interleave) : IMaterializationInterceptor
+    {
+        public int Fired { get; private set; }
+
+        public object InitializedInstance(MaterializationInterceptionData materializationData, object entity)
+        {
+            if (Fired == 0 && entity is BankTransaction t && t.Id == transactionId)
+            {
+                Fired++;
+                interleave();
+            }
+            return entity;
+        }
+    }
+
     private sealed class LogRecorder<T> : ILogger<T>
     {
         public List<(LogLevel Level, string Message)> Entries { get; } = new();
@@ -98,6 +115,15 @@ public sealed class PaymentMatchRaceTests
         };
         db.BankTransactions.Add(tx);
         return tx;
+    }
+
+    private async Task<Guid> OtherCustomerAsync(Guid lic)
+    {
+        await using var db = Ctx();
+        var c = new WpfCustomerProjection { Id = Guid.NewGuid(), LicenseId = lic, Platform = "youtube", Username = "mehmet_k", UpdatedAt = DateTimeOffset.UtcNow };
+        db.WpfCustomerProjections.Add(c);
+        await db.SaveChangesAsync();
+        return c.Id;
     }
 
     private async Task<Payment> ApprovedAsync(Seed s, decimal amount)
@@ -200,6 +226,64 @@ public sealed class PaymentMatchRaceTests
     }
 
     [Fact]
+    public async Task Bagdastirici_yeniden_denemede_arada_baska_musteriye_verilen_elle_karari_ezmez()
+    {
+        // Onay işi hareketi okuduktan sonra admin onu elle başka müşteriye verir. Jeton işin kaydını reddeder; yeniden
+        // denemenin aday seçimi o hareketi artık saymaz (başka müşteriye verilmiş karar): dekont gap'e düşer.
+        var s = await SeedAsync();
+        var other = await OtherCustomerAsync(s.LicenseId);
+        var payment = await ApprovedAsync(s, s.Tx.Amount);
+        await using var admin = Ctx();
+        var race = new BeforeSave(LinksPayment,
+            () => Recon(admin).ManualMatchAsync(s.LicenseId, s.Tx.Id, other, CancellationToken.None));
+        await using var job = Ctx(race);
+        var log = new LogRecorder<PaymentMatchReconciler>();
+
+        await Recon(job, log).ReconcileApprovalAsync(payment, CancellationToken.None);
+
+        race.Fired.Should().Be(1);
+        log.Entries.Should().Contain(e => e.Message.Contains("yeniden deneniyor"));
+        var row = await RowAsync(s.Tx.Id);
+        row.ActualWpfCustomerId.Should().Be(other, "admin'in kararı korunur");
+        row.PaymentId.Should().BeNull();
+        row.Status.Should().Be(PaymentMatchStatus.ManualOnly);
+        await using var verify = Ctx();
+        (await verify.PaymentMatchGaps.AsNoTracking().SingleAsync()).Reason.Should().Be(PaymentMatchGapReason.NoCandidate);
+        NoPendingWrites(job);
+    }
+
+    [Fact]
+    public async Task Bagdastirici_secimden_sonra_baska_musteriye_verilen_adaya_dekont_eklemez()
+    {
+        // Aday seçimi satırı izlemeden okur; admin'in elle kararı seçimle satırın izlenerek okunması arasına düşer. Jeton
+        // bu pencereyi görmez (satır karardan SONRA okundu): bağdaştırıcı satırı yeniden denetler, seçimi bayat sayar ve
+        // taze seçimle yeniden dener.
+        var s = await SeedAsync();
+        var other = await OtherCustomerAsync(s.LicenseId);
+        var payment = await ApprovedAsync(s, s.Tx.Amount);
+        var race = new OnMaterialize(s.Tx.Id, () =>
+        {
+            // Admin'in elle kararının yazdığı satır. Materyalizasyon kancası eşzamanlıdır: yazı doğrudan, eşzamanlı yapılır.
+            using var admin = Ctx();
+            var m = admin.PaymentMatches.Single(x => x.BankTransactionId == s.Tx.Id);
+            var now = DateTimeOffset.UtcNow;
+            m.ActualWpfCustomerId = other; m.DecidedAt = now; m.UpdatedAt = now; m.Status = PaymentMatchStatus.ManualOnly;
+            admin.SaveChanges();
+        });
+        await using var job = Ctx(race);
+
+        await Recon(job).ReconcileApprovalAsync(payment, CancellationToken.None);
+
+        race.Fired.Should().Be(1);
+        var row = await RowAsync(s.Tx.Id);
+        row.ActualWpfCustomerId.Should().Be(other);
+        row.PaymentId.Should().BeNull("başka müşteriye verilmiş karara bu dekont eklenmez");
+        await using var verify = Ctx();
+        (await verify.PaymentMatchGaps.AsNoTracking().SingleAsync()).Reason.Should().Be(PaymentMatchGapReason.NoCandidate);
+        NoPendingWrites(job);
+    }
+
+    [Fact]
     public async Task Elle_esleme_iki_carpismada_admin_mesajiyla_duser()
     {
         var s = await SeedAsync();
@@ -217,19 +301,24 @@ public sealed class PaymentMatchRaceTests
     [Fact]
     public async Task Kaldirma_eszamanli_insan_karariyla_carpisinca_bir_kez_yeniden_dener()
     {
+        // Admin elle eşlemeyi kaldırırken aynı müşterinin dekont onayı satıra dekontu ekler (eşzamanlı insan kararı). Jeton
+        // kaldırmanın kaydını reddeder; kaldırma taze satırla bir kez yeniden dener ve dekont bağını da kaldırır.
         var s = await SeedAsync();
+        var payment = await ApprovedAsync(s, s.Tx.Amount);
         await using (var first = Ctx())
             await Recon(first).ManualMatchAsync(s.LicenseId, s.Tx.Id, s.WpfCustomerId, CancellationToken.None);
         await using var other = Ctx();
-        var race = new BeforeSave(ModifiesMatch,
-            () => Recon(other).ManualMatchAsync(s.LicenseId, s.Tx.Id, s.WpfCustomerId, CancellationToken.None));
+        var race = new BeforeSave(ModifiesMatch, () => Recon(other).ReconcileApprovalAsync(payment, CancellationToken.None));
         await using var admin = Ctx(race);
+        var log = new LogRecorder<PaymentMatchReconciler>();
 
-        await Recon(admin).UnmatchAsync(s.LicenseId, s.Tx.Id, CancellationToken.None);
+        await Recon(admin, log).UnmatchAsync(s.LicenseId, s.Tx.Id, CancellationToken.None);
 
         race.Fired.Should().Be(1);
+        log.Entries.Should().Contain(e => e.Message.Contains("yeniden deneniyor"), "onay satırı kaldırmanın okumasından sonra değiştirdi");
         var row = await RowAsync(s.Tx.Id);
         row.ActualWpfCustomerId.Should().BeNull();
+        row.PaymentId.Should().BeNull();
         row.DecidedAt.Should().BeNull();
         row.Status.Should().Be(PaymentMatchStatus.Proposed, "insan kararı kalkınca öneri yeniden hesaplanır");
         NoPendingWrites(admin);
@@ -238,37 +327,34 @@ public sealed class PaymentMatchRaceTests
     [Fact]
     public async Task Ayni_odemeyi_ikinci_harekete_baglayan_indeks_ihlali_zaten_bagli_sayilir()
     {
-        // Tek açık gap'i iki aynı tutarlı hareket aynı anda çözmeye çalışır (sink + telafi taraması). SQL Server'da filtreli
-        // PaymentId indeksi ikinci bağı reddeder; InMemory indeksi uygulamaz, ret burada benzetilir (gerçeği:
-        // PaymentMatchReconcilerConcurrencyTests). Kaybeden yeniden dener, gap'i çözülmüş bulur, sessizce çıkar.
+        // Aynı dekontun iki bağdaştırma koşusu (ör. Hangfire'ın çift teslimi) DB'yi farklı anlarda okur: biri yalnız s.Tx'i
+        // görür; öteki arada gelen, gönderen adını taşıyan hareketi adla seçip bağlar. SQL Server'da filtreli PaymentId
+        // indeksi ikinci bağı reddeder; InMemory indeksi uygulamaz, ret burada benzetilir (gerçeği:
+        // PaymentMatchReconcilerConcurrencyTests). Kaybeden yeniden dener, dekontu bağlı bulur, sessizce çıkar.
         var s = await SeedAsync(amount: 450m);
         var payment = await ApprovedAsync(s, 450m);
-        BankTransaction second;
-        await using (var db = Ctx())
-        {
-            // Onay anında hareket yoktu (NoCandidate); iki hareket sonradan geldi.
-            db.PaymentMatchGaps.Add(new PaymentMatchGap
+        var named = Guid.Empty;
+        await using var other = Ctx();
+        var race = new BeforeSave(LinksPayment, async () =>
             {
-                Id = Guid.NewGuid(), LicenseId = s.LicenseId, PaymentId = payment.Id, Reason = PaymentMatchGapReason.NoCandidate,
-                CreatedAt = DateTimeOffset.UtcNow,
-            });
-            second = Incoming(db, s.LicenseId, 450m, "EFT GELEN");
-            await db.SaveChangesAsync();
-            await Matcher(db).MatchAsync(second, CancellationToken.None);
-        }
-        await using var sink = Ctx();
-        var race = new BeforeSave(LinksPayment, () => Recon(sink).TryResolveGapAsync(s.Tx, CancellationToken.None),
+                await using (var db = Ctx())
+                {
+                    named = Incoming(db, s.LicenseId, 450m, "HAVALE AYSE GUL").Id;
+                    await db.SaveChangesAsync();
+                }
+                await Recon(other).ReconcileApprovalAsync(payment, CancellationToken.None);
+            },
             thenThrow: () => new DbUpdateException("tekil indeks ihlali (PaymentId) benzetimi"));
-        await using var sweep = Ctx(race);
+        await using var job = Ctx(race);
 
-        var act = () => Recon(sweep).TryResolveGapAsync(second, CancellationToken.None);
+        var act = () => Recon(job).ReconcileApprovalAsync(payment, CancellationToken.None);
 
         await act.Should().NotThrowAsync();
         race.Fired.Should().Be(1);
-        (await RowAsync(s.Tx.Id)).PaymentId.Should().Be(payment.Id);
-        (await RowAsync(second.Id)).PaymentId.Should().BeNull("bir dekont iki harekete bağlanamaz");
+        (await RowAsync(named)).PaymentId.Should().Be(payment.Id, "öteki koşu adla daraltıp bunu seçti");
+        (await RowAsync(s.Tx.Id)).PaymentId.Should().BeNull("bir dekont iki harekete bağlanamaz");
         await using var verify = Ctx();
-        (await verify.PaymentMatchGaps.AsNoTracking().SingleAsync()).ResolvedBankTransactionId.Should().Be(s.Tx.Id);
-        NoPendingWrites(sweep);
+        (await verify.PaymentMatchGaps.AsNoTracking().CountAsync()).Should().Be(0, "kaybeden dekontu bağlı bulur, gap yazmaz");
+        NoPendingWrites(job);
     }
 }

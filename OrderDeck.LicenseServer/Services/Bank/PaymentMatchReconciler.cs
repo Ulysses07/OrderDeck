@@ -8,15 +8,24 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 
 /// <summary>
 /// İnsan kararını gölge önerisine bağlar (spec §6). Aday = aynı lisans, gelen, tutar eşit,
-/// ±2 gün, henüz bağlanmamış. Tek aday → bağla; çoklu → gönderen adının tüm tokenları açıklamada
-/// geçen TEK aday; hâlâ çoklu/yok → PaymentMatchGap. Onay IBAN öğretir; ret hiçbir şey yapmaz.
-/// Elle eşleme öğretir; kaldırma hafıza satırını SİLER ve öneriyi yeniden hesaplar.
-/// Sonradan gelen hareket açık gap'i çözer (spec §3 ResolvedBankTransactionId).
+/// ±2 gün, henüz bir dekonta bağlanmamış ve başka bir müşteriye elle verilmemiş. Tek aday → bağla; çoklu → gönderen
+/// adının tüm tokenları açıklamada geçen TEK aday; hâlâ çoklu/yok → PaymentMatchGap. Onay IBAN öğretir; ret hiçbir şey
+/// yapmaz.
+/// <para><b>Bir insan kararı ötekini ezmez.</b> Başka müşteriye elle verilmiş hareket onayda aday değildir; aynı müşteriye
+/// verilmişse dekont satıra yalnız iliştirilir, kararın durumu ve anı korunur. Elle eşleme yalnız karara bağlanmamış
+/// (<see cref="PaymentMatch.DecidedAt"/> ve <see cref="PaymentMatch.PaymentId"/> boş) harekete verilir; yeniden karar önce
+/// kaldırmadan geçer. Kaldırma hafıza satırını SİLER ve öneriyi yeniden hesaplar. Kimlikler admin formundan gelir: bu
+/// kural serviste uygulanır.</para>
+/// <para>Sonradan gelen hareket açık gap'i ancak dekontun aday seçimi yeniden koşulduğunda TEK aday kendisiyse çözer
+/// (spec §3 ResolvedBankTransactionId). Onaydaki belirsizlik sürüyorsa (iki aday hâlâ bağsız) ya da aynı tutarlı birden
+/// çok hareket geldiyse gap açık kalır: belirsizlik tahminle çözülmez.</para>
 /// <para><see cref="BankHasher"/> istemez: yalnız harekette ve hafızada saklı hash'leri karşılaştırır.</para>
 /// <para><b>Eşzamanlılık.</b> <see cref="PaymentMatch.UpdatedAt"/> eşzamanlılık jetonudur ve her yazan onu ilerletir. Bir
 /// işlem okuduğu satır kaydetmeden önce değiştiyse (DbUpdateConcurrencyException: eşleştiricinin yeniden hesabı, başka bir
-/// insan kararı) ya da tekil bir indekse takıldıysa (DbUpdateException: aynı dekont iki harekete — filtreli PaymentId
-/// indeksi —, aynı dekonta ikinci gap, aynı IBAN'a ikinci hafıza satırı) denemenin izi atılır ve işlem BİR kez baştan koşar:
+/// insan kararı), seçtiği aday seçimle satırın izlenerek okunması arasında başka bir karara bağlandıysa (bayat seçim;
+/// jeton bu pencereyi görmez) ya da tekil bir indekse takıldıysa (DbUpdateException: aynı dekont iki harekete —
+/// filtreli PaymentId indeksi —, aynı dekonta ikinci gap, aynı IBAN'a ikinci hafıza satırı) denemenin izi atılır ve işlem
+/// BİR kez baştan koşar:
 /// başındaki "zaten bağlı / gap var / hafıza var" denetimleri eşzamanlı yazanın sonucunu görür, yani indeks ihlali "zaten
 /// bağlı" olarak sessizce sonuçlanır. İkinci çakışmada vazgeçilir: iş yolları (<see cref="ReconcileApprovalAsync"/>,
 /// <see cref="TryResolveGapAsync"/>) uyarı loglar, admin yolları (<see cref="ManualMatchAsync"/>,
@@ -31,6 +40,9 @@ public sealed class PaymentMatchReconciler
 
     /// <summary>Admin yolunda ikinci çakışmanın mesajı.</summary>
     public const string ConflictMessage = "Eşleşme bu sırada başka bir işlemle değişti; sayfayı yenileyip yeniden deneyin.";
+
+    /// <summary>Karara bağlanmış harekete elle eşleme denendi: yeniden karar önce kaldırmadan geçer.</summary>
+    public const string AlreadyDecidedMessage = "Bu hareket zaten bir karara bağlı; önce kaldırın.";
 
     private readonly LicenseDbContext _db;
     private readonly ILogger<PaymentMatchReconciler> _log;
@@ -88,22 +100,8 @@ public sealed class PaymentMatchReconciler
             return;
         }
 
-        var windowStart = payment.PaidAt - CandidateWindow; var windowEnd = payment.PaidAt + CandidateWindow;
-        var linked = _db.PaymentMatches.Where(m => m.LicenseId == payment.LicenseId && m.PaymentId != null).Select(m => m.BankTransactionId);
-        var candidates = await _db.BankTransactions.AsNoTracking()
-            .Where(t => t.LicenseId == payment.LicenseId && t.Direction == BankTransactionDirection.Incoming
-                        && t.Amount == payment.Amount && t.OccurredAt >= windowStart && t.OccurredAt <= windowEnd && !linked.Contains(t.Id))
-            .ToListAsync(ct);
-
-        if (candidates.Count > 1)
-        {
-            var payer = BankTextNormalizer.Tokenize(payment.PayerName).Tokens.Where(t => t.Length >= 3).ToList();
-            if (payer.Count > 0)
-            {
-                var narrowed = candidates.Where(t => { var d = BankTextNormalizer.Tokenize(t.Description).Tokens; return payer.All(p => d.Contains(p)); }).ToList();
-                if (narrowed.Count == 1) candidates = narrowed;
-            }
-        }
+        var candidates = await CandidatesAsync(payment.LicenseId, payment.Amount, payment.PaidAt, payment.PayerName,
+            wpfCustomerId.Value, ct);
         if (candidates.Count != 1)
         {
             _db.PaymentMatchGaps.Add(new PaymentMatchGap { Id = Guid.NewGuid(), LicenseId = payment.LicenseId, PaymentId = payment.Id,
@@ -128,12 +126,21 @@ public sealed class PaymentMatchReconciler
                           where g.LicenseId == tx.LicenseId && g.ResolvedAt == null && p.Status == PaymentStatus.Approved
                                 && p.Amount == tx.Amount && p.PaidAt >= windowStart && p.PaidAt <= windowEnd
                                 && !_db.PaymentMatches.Any(m => m.PaymentId == p.Id)
-                          select new { GapId = g.Id, PaymentId = p.Id, p.ShopperId, p.LicenseId }).ToListAsync(ct);
+                          select new { GapId = g.Id, PaymentId = p.Id, p.ShopperId, p.LicenseId, p.Amount, p.PaidAt, p.PayerName })
+            .ToListAsync(ct);
+        // Pencerede birden çok açık gap: hareketin hangi dekonta ait olduğu tahmin edilmez.
         if (open.Count != 1) return;
-        var wpfCustomerId = await ResolveWpfCustomerAsync(open[0].ShopperId, open[0].LicenseId, ct);
+        var pending = open[0];
+        var wpfCustomerId = await ResolveWpfCustomerAsync(pending.ShopperId, pending.LicenseId, ct);
         if (wpfCustomerId is null) return;
-        var gap = await _db.PaymentMatchGaps.FirstAsync(g => g.Id == open[0].GapId, ct);
-        await LinkAsync(tx, open[0].PaymentId, wpfCustomerId.Value, ct);
+        // Dekontun aday seçimi onaydaki kuralla yeniden koşar; hareket TEK aday değilse gap açık kalır. AmbiguousCandidates'in
+        // adayları hâlâ bağsızsa gerçek hareket büyük olasılıkla onlardan biridir; aynı tutarlı iki geç hareketten ilk
+        // işleneni seçmek de tahmin olurdu.
+        var candidates = await CandidatesAsync(pending.LicenseId, pending.Amount, pending.PaidAt, pending.PayerName,
+            wpfCustomerId.Value, ct);
+        if (candidates.Count != 1 || candidates[0].Id != tx.Id) return;
+        var gap = await _db.PaymentMatchGaps.FirstAsync(g => g.Id == pending.GapId, ct);
+        await LinkAsync(tx, pending.PaymentId, wpfCustomerId.Value, ct);
         gap.ResolvedBankTransactionId = tx.Id; gap.ResolvedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync(ct);
     }
@@ -147,6 +154,10 @@ public sealed class PaymentMatchReconciler
         if (!await _db.WpfCustomerProjections.AnyAsync(c => c.Id == wpfCustomerId && c.LicenseId == licenseId && c.PurgedAt == null, ct))
             throw new ObifinValidationException("Müşteri bulunamadı.");
         var match = await _db.PaymentMatches.FirstOrDefaultAsync(m => m.BankTransactionId == tx.Id, ct) ?? await Matcher.MatchAsync(tx, ct);
+        // Karara bağlanmış satırın üstüne yazılmaz: onayla dekonta bağlı satır "Y'nin ödemesi X'in" derdi, elle verilmiş
+        // karar da sessizce silinirdi. Yeniden karar önce kaldırmadan (UnmatchAsync) geçer.
+        if (match.DecidedAt is not null || match.PaymentId is not null)
+            throw new ObifinValidationException(AlreadyDecidedMessage);
         var now = DateTimeOffset.UtcNow;
         match.ActualWpfCustomerId = wpfCustomerId; match.DecidedAt = now; match.UpdatedAt = now;
         match.Status = match.ProposedWpfCustomerId == wpfCustomerId ? PaymentMatchStatus.ConfirmedByHuman : PaymentMatchStatus.ManualOnly;
@@ -179,11 +190,48 @@ public sealed class PaymentMatchReconciler
             .OrderByDescending(l => l.JoinedAt).Select(l => l.WpfCustomerId).FirstOrDefaultAsync(ct);
     }
 
+    /// <summary>Dekontun aday hareketleri (sınıf özeti): aynı lisans, gelen, tutar eşit, ödeme anının ±2 günü; bir dekonta
+    /// bağlanmış ya da başka müşteriye elle verilmiş hareket aday değildir. Birden çok aday kalırsa gönderen adının tüm
+    /// token'larını açıklamasında taşıyan TEK aday seçilir; seçilemezse liste olduğu gibi döner. Onay da gap çözümü de bunu
+    /// kullanır: ikisi aynı kuralla karar verir.</summary>
+    private async Task<List<BankTransaction>> CandidatesAsync(Guid licenseId, decimal amount, DateTimeOffset paidAt,
+        string payerName, Guid wpfCustomerId, CancellationToken ct)
+    {
+        var windowStart = paidAt - CandidateWindow; var windowEnd = paidAt + CandidateWindow;
+        var taken = _db.PaymentMatches
+            .Where(m => m.LicenseId == licenseId
+                        && (m.PaymentId != null || (m.ActualWpfCustomerId != null && m.ActualWpfCustomerId != wpfCustomerId)))
+            .Select(m => m.BankTransactionId);
+        var candidates = await _db.BankTransactions.AsNoTracking()
+            .Where(t => t.LicenseId == licenseId && t.Direction == BankTransactionDirection.Incoming
+                        && t.Amount == amount && t.OccurredAt >= windowStart && t.OccurredAt <= windowEnd && !taken.Contains(t.Id))
+            .ToListAsync(ct);
+
+        if (candidates.Count > 1)
+        {
+            var payer = BankTextNormalizer.Tokenize(payerName).Tokens.Where(t => t.Length >= 3).ToList();
+            if (payer.Count > 0)
+            {
+                var narrowed = candidates.Where(t => { var d = BankTextNormalizer.Tokenize(t.Description).Tokens; return payer.All(p => d.Contains(p)); }).ToList();
+                if (narrowed.Count == 1) candidates = narrowed;
+            }
+        }
+        return candidates;
+    }
+
     private async Task LinkAsync(BankTransaction tx, Guid paymentId, Guid wpfCustomerId, CancellationToken ct)
     {
         var match = await _db.PaymentMatches.FirstOrDefaultAsync(m => m.BankTransactionId == tx.Id, ct) ?? await Matcher.MatchAsync(tx, ct);
+        // Aday seçimi satırı izlemeden okudu; arada başka bir karara bağlandıysa seçim bayattır, yeniden deneme taze seçer.
+        // Buradan kayda kadarki pencereyi jeton korur.
+        if (match.PaymentId is not null || (match.ActualWpfCustomerId is { } decided && decided != wpfCustomerId))
+            throw new StaleCandidateException();
         var now = DateTimeOffset.UtcNow;
-        match.PaymentId = paymentId; match.ActualWpfCustomerId = wpfCustomerId; match.DecidedAt = now; match.UpdatedAt = now;
+        match.PaymentId = paymentId; match.UpdatedAt = now;
+        // Aynı müşteriye elle verilmiş karar: dekont yalnız iliştirilir. Kararın durumu ve anı admin'inki kalır; IBAN'ı elle
+        // eşleme zaten öğretti.
+        if (match.ActualWpfCustomerId is not null) return;
+        match.ActualWpfCustomerId = wpfCustomerId; match.DecidedAt = now;
         match.Status = match.ProposedWpfCustomerId is null ? PaymentMatchStatus.ManualOnly
             : match.ProposedWpfCustomerId == wpfCustomerId ? PaymentMatchStatus.ConfirmedByHuman : PaymentMatchStatus.Contradicted;
         await LearnIbanAsync(tx, wpfCustomerId, IbanMemorySource.HumanApproval, ct);
@@ -206,9 +254,9 @@ public sealed class PaymentMatchReconciler
         });
     }
 
-    /// <summary>Bir denemeyi koşar; çakışma ya da tekil indeks ihlalinde (bkz. sınıf özeti) izini atıp BİR kez yeniden dener.
-    /// false: iki denemede de satır okunduktan sonra değişti. Başka her hata (ikinci indeks ihlali dahil) izi atılıp
-    /// fırlatılır.</summary>
+    /// <summary>Bir denemeyi koşar; çakışma, bayat seçim ya da tekil indeks ihlalinde (bkz. sınıf özeti) izini atıp BİR kez
+    /// yeniden dener. false: iki denemede de satır okunduktan (ya da seçildikten) sonra değişti. Başka her hata (ikinci
+    /// indeks ihlali dahil) izi atılıp fırlatılır.</summary>
     private async Task<bool> RetryOnceAsync(Func<Task> attempt, CancellationToken ct)
     {
         for (var i = 1; ; i++)
@@ -218,7 +266,7 @@ public sealed class PaymentMatchReconciler
                 await attempt();
                 return true;
             }
-            catch (DbUpdateException ex) when (!ct.IsCancellationRequested)
+            catch (Exception ex) when ((ex is DbUpdateException or StaleCandidateException) && !ct.IsCancellationRequested)
             {
                 Discard();
                 if (i == 1)
@@ -228,7 +276,7 @@ public sealed class PaymentMatchReconciler
                         + "bir kez yeniden deneniyor", ex.GetType().Name);
                     continue;
                 }
-                if (ex is DbUpdateConcurrencyException) return false;
+                if (ex is DbUpdateConcurrencyException or StaleCandidateException) return false;
                 throw;
             }
             catch
@@ -248,4 +296,8 @@ public sealed class PaymentMatchReconciler
                      .Where(e => e.Entity is PaymentMatch or PaymentMatchGap or CustomerIbanMemory).ToList())
             entry.State = EntityState.Detached;
     }
+
+    /// <summary>Seçilen aday, seçim sorgusuyla satırın izlenerek okunması arasında başka bir karara bağlandı. Jetonun
+    /// yakaladığı çakışma gibi işlenir: iz atılır, seçim taze satırlarla bir kez yeniden yapılır.</summary>
+    private sealed class StaleCandidateException() : Exception("Aday hareket seçildikten sonra başka bir karara bağlandı.");
 }

@@ -198,6 +198,118 @@ public sealed class PaymentMatchReconcilerTests
     }
 
     [Fact]
+    public async Task Elle_baska_musteriye_verilen_hareket_onayda_aday_sayilmaz()
+    {
+        // Admin hareketi elle X'e verdi; sonra aynı tutarlı, Y'nin dekontu onaylanır. Hareket Y'ye bağlanıp X kararı
+        // sessizce ezilmez (IBAN hafızası da X'i gösterirdi): aday değildir, dekont gap'e düşer.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var other = OtherCustomer(db, s.LicenseId, "mehmet_k");
+        var when = DateTimeOffset.UtcNow.AddHours(-1);
+        var tx = Tx(db, s.LicenseId, 350m, when, "EFT GELEN");
+        var recon = Recon(db); await recon.Matcher.MatchAsync(tx, CancellationToken.None);
+        await recon.ManualMatchAsync(s.LicenseId, tx.Id, other.Id, CancellationToken.None);
+        var payment = Approved(db, s.LicenseId, s.ShopperId, 350m, when);
+
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+
+        var m = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        m.ActualWpfCustomerId.Should().Be(other.Id, "admin'in kararı korunur");
+        m.PaymentId.Should().BeNull();
+        m.Status.Should().Be(PaymentMatchStatus.ManualOnly);
+        (await db.PaymentMatchGaps.AsNoTracking().SingleAsync()).Reason.Should().Be(PaymentMatchGapReason.NoCandidate);
+    }
+
+    [Fact]
+    public async Task Elle_ayni_musteriye_verilen_harekete_onay_dekontu_ekler_karari_korur()
+    {
+        using var db = NewDb(); var s = SeedShopper(db);
+        var when = DateTimeOffset.UtcNow.AddHours(-1);
+        var tx = Tx(db, s.LicenseId, 360m, when, "EFT GELEN");
+        var recon = Recon(db); await recon.Matcher.MatchAsync(tx, CancellationToken.None);
+        await recon.ManualMatchAsync(s.LicenseId, tx.Id, s.WpfCustomerId, CancellationToken.None);
+        var decidedAt = (await db.PaymentMatches.AsNoTracking().SingleAsync()).DecidedAt;
+        var payment = Approved(db, s.LicenseId, s.ShopperId, 360m, when);
+
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+
+        var m = await db.PaymentMatches.AsNoTracking().SingleAsync();
+        m.PaymentId.Should().Be(payment.Id);
+        m.ActualWpfCustomerId.Should().Be(s.WpfCustomerId);
+        m.Status.Should().Be(PaymentMatchStatus.ManualOnly, "elle verilen kararın durumu korunur");
+        m.DecidedAt.Should().Be(decidedAt, "karar anı admin'inki kalır");
+        (await db.PaymentMatchGaps.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Karara_baglanmis_harekete_elle_esleme_reddedilir()
+    {
+        // Onay hareketi Y'nin dekontuna bağladı: admin onu X'e veremez (satır "Y'nin ödemesi X'in" derdi). Elle verilmiş
+        // karar da üstüne yazılmaz. Yeniden karar önce kaldırmadan geçer.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var other = OtherCustomer(db, s.LicenseId, "mehmet_k");
+        var when = DateTimeOffset.UtcNow.AddHours(-1);
+        var approved = Tx(db, s.LicenseId, 370m, when, "HAVALE ayse_gul34");
+        var manual = Tx(db, s.LicenseId, 380m, when, "EFT GELEN");
+        var recon = Recon(db);
+        await recon.Matcher.MatchAsync(approved, CancellationToken.None); await recon.Matcher.MatchAsync(manual, CancellationToken.None);
+        var payment = Approved(db, s.LicenseId, s.ShopperId, 370m, when);
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+        await recon.ManualMatchAsync(s.LicenseId, manual.Id, s.WpfCustomerId, CancellationToken.None);
+
+        var overApproval = () => recon.ManualMatchAsync(s.LicenseId, approved.Id, other.Id, CancellationToken.None);
+        var overManual = () => recon.ManualMatchAsync(s.LicenseId, manual.Id, other.Id, CancellationToken.None);
+
+        await overApproval.Should().ThrowAsync<ObifinValidationException>().WithMessage(PaymentMatchReconciler.AlreadyDecidedMessage);
+        await overManual.Should().ThrowAsync<ObifinValidationException>().WithMessage(PaymentMatchReconciler.AlreadyDecidedMessage);
+        var rows = await db.PaymentMatches.AsNoTracking().ToListAsync();
+        var a = rows.Single(m => m.BankTransactionId == approved.Id);
+        a.PaymentId.Should().Be(payment.Id); a.ActualWpfCustomerId.Should().Be(s.WpfCustomerId);
+        a.Status.Should().Be(PaymentMatchStatus.ConfirmedByHuman);
+        var b = rows.Single(m => m.BankTransactionId == manual.Id);
+        b.ActualWpfCustomerId.Should().Be(s.WpfCustomerId); b.Status.Should().Be(PaymentMatchStatus.ManualOnly);
+    }
+
+    [Fact]
+    public async Task Belirsiz_gap_sonradan_gelen_ucuncu_hareketle_cozulmez()
+    {
+        // Onayda aynı tutarlı iki bağsız aday vardı (AmbiguousCandidates). Sonradan gelen üçüncü hareket gönderen adını
+        // taşımıyor: gerçek hareket büyük olasılıkla ilk ikisinden biri, belirsizlik tahminle çözülmez.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var when = DateTimeOffset.UtcNow.AddHours(-3);
+        var a = Tx(db, s.LicenseId, 210m, when, "EFT 1"); var b = Tx(db, s.LicenseId, 210m, when.AddMinutes(5), "EFT 2");
+        var recon = Recon(db);
+        await recon.Matcher.MatchAsync(a, CancellationToken.None); await recon.Matcher.MatchAsync(b, CancellationToken.None);
+        await recon.ReconcileApprovalAsync(Approved(db, s.LicenseId, s.ShopperId, 210m, when, payer: "BILINMEYEN"), CancellationToken.None);
+        (await db.PaymentMatchGaps.SingleAsync()).Reason.Should().Be(PaymentMatchGapReason.AmbiguousCandidates);
+        var c = Tx(db, s.LicenseId, 210m, when.AddHours(2), "EFT 3");
+
+        await recon.MatchAndResolveGapAsync(c, CancellationToken.None);
+
+        (await db.PaymentMatchGaps.AsNoTracking().SingleAsync()).ResolvedAt.Should().BeNull();
+        (await db.PaymentMatches.AsNoTracking().CountAsync(m => m.PaymentId != null)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Acik_gap_e_ayni_tutarli_iki_gec_hareket_gelirse_gap_acik_kalir()
+    {
+        // Onayda hareket yoktu (NoCandidate); aynı çekim sayfasında aynı tutarlı iki hareket geldi, ikisi de kayıtlıyken
+        // sink onları sırayla işler. Hangisinin dekontun hareketi olduğu bilinmez: ilk işleneni seçmek tahmin olurdu.
+        using var db = NewDb(); var s = SeedShopper(db);
+        var paidAt = DateTimeOffset.UtcNow.AddHours(-5);
+        var payment = Approved(db, s.LicenseId, s.ShopperId, 220m, paidAt);
+        var recon = Recon(db);
+        await recon.ReconcileApprovalAsync(payment, CancellationToken.None);
+        var c = Tx(db, s.LicenseId, 220m, paidAt.AddHours(1), "EFT GELEN");
+        var d = Tx(db, s.LicenseId, 220m, paidAt.AddHours(2), "EFT GELEN");
+
+        await recon.MatchAndResolveGapAsync(c, CancellationToken.None);
+        await recon.MatchAndResolveGapAsync(d, CancellationToken.None);
+
+        (await db.PaymentMatchGaps.AsNoTracking().SingleAsync()).ResolvedAt.Should().BeNull();
+        (await db.PaymentMatches.AsNoTracking().CountAsync(m => m.PaymentId != null)).Should().Be(0);
+    }
+
+    [Fact]
     public async Task Elle_esleme_baska_lisansin_hareketini_ve_musterisini_kabul_etmez()
     {
         // Admin sayfası kimlikleri formdan alır: başka lisansın hareketi ya da müşterisi, silinmiş müşteri reddedilir;
