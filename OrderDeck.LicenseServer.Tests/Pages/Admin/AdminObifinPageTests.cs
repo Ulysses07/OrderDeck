@@ -22,6 +22,7 @@ namespace OrderDeck.LicenseServer.Tests.Pages.Admin;
 public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
 {
     private const string ResetConfirmMessage = ObifinConnectionService.ResetConfirmMessage;
+    private const string ReenterSecretsHint = OrderDeck.LicenseServer.Pages.Admin.Obifin.IndexModel.ReenterSecretsHint;
 
     private readonly ApiFactory _factory;
     public AdminObifinPageTests(ApiFactory factory) => _factory = factory;
@@ -489,17 +490,60 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         await SaveAsync(client, licenseId, "api@x");
         await SeedShadowDataAsync(licenseId);
         var before = await ConnectionAsync(licenseId);
+        var newUser = $"yeni-{Guid.NewGuid():N}@x";
 
-        var resp = await SaveAsync(client, licenseId, $"yeni-{Guid.NewGuid():N}@x");
+        var resp = await SaveAsync(client, licenseId, newUser);
 
-        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
-        resp.Headers.Location!.ToString().Should().Contain($"license={licenseId}", "düzenleme bağlamı korunur");
-        (await PageTextAsync(client)).Should().Contain(ResetConfirmMessage);
+        // Yönlendirme YOK: form admin'in YAZDIĞI kimlikle yeniden basılır. Saklı kimlikle dolsaydı kutuyu işaretleyip
+        // tekrar kaydeden admin eski kimliği gönderir, değişiklik sessizce düşer ve "kaydedildi" bildirimi alırdı.
+        resp.StatusCode.Should().Be(HttpStatusCode.OK, "onay istenince sayfa yeniden basılır");
+        var doc = await ParseAsync(await resp.Content.ReadAsStringAsync());
+        doc.QuerySelector(".alert-danger.alert-dismissible")!.TextContent.Should().Contain(ResetConfirmMessage)
+            .And.Contain(ReenterSecretsHint);
+        var form = doc.QuerySelector("form[action*='handler=Save']")!;
+        form.QuerySelector("input[name='UserCode']")!.GetAttribute("value").Should().Be(newUser, "yazılan kullanıcı kodu korunur");
+        form.QuerySelector("select[name='LicenseId'] option[selected]")!.GetAttribute("value").Should().Be(licenseId.ToString());
+        form.QuerySelector("input[name='ConfirmReset'][type='checkbox']")!.HasAttribute("checked")
+            .Should().BeFalse("onay her seferinde açıkça verilir");
+        form.QuerySelectorAll("input[type='password']").Should().HaveCount(2)
+            .And.OnlyContain(i => string.IsNullOrEmpty(i.GetAttribute("value")), "şifre ve API anahtarı asla geri basılmaz");
+        (await ToastAsync(client, "danger")).Should().BeNull("bildirim aynı istekte tüketildi, sonraki sayfada yinelenmez");
         var after = await ConnectionAsync(licenseId);
         after.UserCode.Should().Be("api@x");
         after.PasswordProtected.Should().Be(before.PasswordProtected, "hiçbir şey kaydedilmedi");
         after.UpdatedAt.Should().Be(before.UpdatedAt);
         (await ShadowCountsAsync(licenseId)).Should().Be((1, 1, 1), "onaysız silme yok");
+    }
+
+    [Fact]
+    public async Task Onay_adimi_yeniden_basilan_formla_tamamlaninca_yeni_kimlik_kaydedilir()
+    {
+        // Ekrandaki adımı birebir izle: onaysız kaydet → yeniden basılan formu (lisans, kullanıcı, adres; şifre/API
+        // anahtarı boş = değiştirme) kutu işaretli gönder. Yeni kimlik yazılır, eski hesabın gölge verisi silinir.
+        var licenseId = await SeedLicenseAsync();
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+        await SaveAsync(client, licenseId, "api@x", baseUrl: "https://example.invalid");
+        await SeedShadowDataAsync(licenseId);
+        var newUser = $"yeni-{Guid.NewGuid():N}@x";
+        var newBaseUrl = $"https://{Guid.NewGuid():N}.example.invalid";
+        var first = await SaveAsync(client, licenseId, newUser, baseUrl: newBaseUrl);
+        first.StatusCode.Should().Be(HttpStatusCode.OK);
+        var form = (await ParseAsync(await first.Content.ReadAsStringAsync())).QuerySelector("form[action*='handler=Save']")!;
+
+        var resp = await SaveAsync(client, new Dictionary<string, string>
+        {
+            ["LicenseId"] = form.QuerySelector("select[name='LicenseId'] option[selected]")!.GetAttribute("value")!,
+            ["BaseUrl"] = form.QuerySelector("input[name='BaseUrl']")!.GetAttribute("value") ?? "",
+            ["UserCode"] = form.QuerySelector("input[name='UserCode']")!.GetAttribute("value") ?? "",
+            ["Password"] = "", ["ApiKey"] = "",
+        }, confirmReset: true);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        (await ToastAsync(client, "success")).Should().Be("Obifin kimliği kaydedildi, eski hesabın banka verisi silindi. Şimdi doğrulayın.");
+        var conn = await ConnectionAsync(licenseId);
+        conn.UserCode.Should().Be(newUser);
+        conn.BaseUrl.Should().Be(newBaseUrl);
+        (await ShadowCountsAsync(licenseId)).Should().Be((0, 0, 0));
     }
 
     [Fact]
@@ -548,10 +592,15 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         await SaveAsync(client, licenseId, "api@x", baseUrl: "https://example.invalid");
         await SeedShadowDataAsync(licenseId);
 
-        await SaveAsync(client, licenseId, "api@x", baseUrl: postedBaseUrl);
+        var resp = await SaveAsync(client, licenseId, "api@x", baseUrl: postedBaseUrl);
 
         (await ShadowCountsAsync(licenseId)).Should().Be((1, 1, 1));
-        (await PageTextAsync(client)).Contains(ResetConfirmMessage).Should().Be(needsConfirm);
+        // Onay istenirse sayfa yazılan adresle yeniden basılır (200); istenmezse kaydedip yönlendirir.
+        resp.StatusCode.Should().Be(needsConfirm ? HttpStatusCode.OK : HttpStatusCode.Redirect);
+        var doc = await ParseAsync(needsConfirm ? await resp.Content.ReadAsStringAsync() : await client.GetStringAsync("/admin/obifin"));
+        doc.Body!.TextContent.Contains(ResetConfirmMessage).Should().Be(needsConfirm);
+        if (needsConfirm)
+            doc.QuerySelector("form[action*='handler=Save'] input[name='BaseUrl']")!.GetAttribute("value").Should().Be(postedBaseUrl);
         (await ConnectionAsync(licenseId)).BaseUrl.Should().Be("https://example.invalid");
     }
 

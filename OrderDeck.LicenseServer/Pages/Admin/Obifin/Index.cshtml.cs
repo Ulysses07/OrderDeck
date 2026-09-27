@@ -23,6 +23,8 @@ public class IndexModel : PageModel
 {
     public const string NotVerifiedMessage = "Bağlantı doğrulanmamış; önce Doğrula.";
     public const string NoConnectionMessage = "Bu lisansın Obifin bağlantısı yok.";
+    /// <summary>Onay istenince yeniden basılan formun bildirimine eklenir: şifre ve API anahtarı forma geri basılmaz.</summary>
+    public const string ReenterSecretsHint = "Şifre ya da API anahtarını da değiştirdiyseniz yeniden girin; güvenlik gereği forma geri doldurulmaz.";
 
     /// <summary>Banka ekleme formunda parola kutusuna düşen alan adı parçaları (harf duyarsız): ekran paylaşımında ya da
     /// omuz üstünden okunmasınlar.</summary>
@@ -127,7 +129,10 @@ public class IndexModel : PageModel
     /// <summary>Kullanıcı kodu ya da adres değişir ve lisansın gölge verisi varsa, <see cref="ConfirmReset"/> işaretli
     /// değilse HİÇBİR ŞEY kaydedilmez: <see cref="ObifinConnectionService.UpsertAsync"/> o veriyi geri dönüşsüz siler.
     /// Karar yalnız serviste, silmeyle aynı yüklenmiş kümede verilir; sayfa yalnız izni (<see cref="ConfirmReset"/>) taşır.
-    /// Onay istenirse düzenleme bağlamına (<c>?license=</c>) dönülür.</summary>
+    /// <para>Onay istenirse YÖNLENDİRİLMEZ: sayfa admin'in yazdığı lisans, kullanıcı kodu ve adresle yeniden basılır (şifre
+    /// ve API anahtarı asla geri basılmaz, kutu işaretsiz gelir). <c>?license=</c>'e yönlendirmek formu SAKLI kimlikle
+    /// doldururdu: bildirimdeki adımı izleyip kutuyu işaretleyen admin eski kimliği gönderir, değişiklik sessizce düşer,
+    /// Verified bağlantı Unverified'a iner ve "kaydedildi" bildirimi gelirdi.</para></summary>
     public async Task<IActionResult> OnPostSaveAsync(CancellationToken ct)
     {
         if (BankDisabled) return BankDisabledResult();
@@ -149,8 +154,13 @@ public class IndexModel : PageModel
         catch (ShadowResetConfirmationRequiredException ex)
         {
             LogHandled("Save", ex);
-            TempData["Error"] = ex.Message;
-            return RedirectToPage(new { license = LicenseId });
+            // Layout'un bildirimi bu istekte okur ve tüketir: sonraki sayfada yinelenmez.
+            TempData["Error"] = ex.Message + " " + ReenterSecretsHint;
+            await OnGetAsync(null, ct); // license = null: bağlı LicenseId/BaseUrl/UserCode'a dokunmaz
+            // Bağlantı var (kimlik değişimi ancak mevcut bağlantıda onay ister): "kayıtlı; boş = değiştirme" ipuçları için.
+            if (await _db.ObifinConnections.AsNoTracking().FirstOrDefaultAsync(c => c.LicenseId == LicenseId, ct) is { } conn)
+                Editing = new EditTarget(conn.PasswordProtected.Length > 0, conn.ApiKeyProtected.Length > 0);
+            return Page();
         }
         catch (ArgumentException ex)
         {
