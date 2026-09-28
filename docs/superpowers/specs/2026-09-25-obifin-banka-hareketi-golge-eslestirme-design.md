@@ -185,6 +185,8 @@ Bağlanınca: öneri müşterisi == gerçek → `ConfirmedByHuman`; farklı → 
 **Admin "elle eşle":** hareket → müşteri seçimi (`WpfCustomerProjection` arama) → `ManualOnly` +
 IBAN varsa hafızaya (`ManualMatch`); "eşlemeyi kaldır" hafıza satırını **siler**.
 
+Faz 1'in gerçek uygulaması bu bölümden birçok yerde bilinçli olarak ayrılır ya da onu inceltir: bkz. §14.
+
 ## 7. Emniyet ve gizlilik
 
 - IBAN/VKN/TCKN **ham saklanmaz**: `IbanHash = HMAC-SHA256(normalize(IBAN), key)`; `key` =
@@ -266,3 +268,107 @@ oranı açıklanmış. Eşik sağlanmazsa katman kuralları düzeltilir, ölçü
 - QNB'de karşı IBAN gelmezse IBAN hafızası pasif kalır; katman 1 (kullanıcı adı) ana yol; müşteri
   uygulamasına "açıklamaya kullanıcı adını yaz" yönergesi Faz 2'de eklenir (bugün chat/WhatsApp).
 - Demo hesabı 2022 verisi; QNB EFT kalıbı ancak gerçek hesapta görülecek.
+
+## 14. Faz 1 uygulama notları (2026-09-28)
+
+PR-1 (#485) ve PR-2'nin kodu tasarımdan aşağıdaki noktalarda ayrılır ya da onu inceltir. Faz 2 spec'i bu bölümü esas
+alır; yukarıdaki bölümlerle çelişkide bu bölüm (ve kod) geçerlidir.
+
+**Çekim (PR-1)**
+- Ham JSON saklanmadan önce adı `IBAN`, `VKN` ya da `TCKN` içeren her alan (iç içe dahil, harf duyarsız) `[redakte]`
+  olur; hash ve maske redaksiyondan önce ham değerden üretilir. Ad alanları kalır.
+- Durum `Failed`'a yalnız şunlarla düşer: Obifin'in reddi (`Hata` dolu) — çekimde ya da hesap yenilemede (saatlik ya da banka eklemesinin ardından);
+  çekimin ya da "Doğrula"nın çözemediği saklı kimlik; elle "Doğrula"nın her başarısızlığı. Çekimde ve hesap yenilemede
+  ağ/vekil/zaman aşımı yalnız `LastError` yazar, durum `Verified` kalır (çekim koşusu Failed görünür, 5 dk sonra aynı
+  imleçten dener). Banka ekleme hiçbir hatada durumu `Failed`'a çevirmez; sonucu belirsiz ekleme "eklenemedi" denmeden
+  Obifin'deki etiketle bildirilir. Başarılı hesap yenilemesi ya da banka eklemesi `Failed`'ı yeniden `Verified`
+  yapar; `Disabled`'a kanıt dokunmaz.
+- Kimlik (kullanıcı kodu ya da açıkça girilen adres) değişince imleç sıfırlanır; lisansın gölge verisi (hareket, hesap,
+  eşleşme, IBAN hafızası, gap, eski hesabın banka bağlantıları) yalnız admin açıkça onaylarsa silinir. Karar kayıt
+  servisinde verilir; onay yoksa hiçbir şey değişmez. Yalnız parola/API anahtarı değişimi veriye dokunmaz. Çekim her
+  kayıttan önce kimliği taze okur; koşu sürerken değiştiyse hiçbir şey yazmaz.
+- `OrderDeck:Bank:HashKey` yoksa ya da 32 bayttan kısaysa sunucu yine açılır, banka modülü kapalıdır: `obifin-poll`,
+  `obifin-accounts` ve `bank-match-sweep` zamanlanmaz (önceki kayıtları silinir), iki admin sayfası uyarıyla açılır ve
+  hiçbir POST yazmaz. `bank-data-retention` anahtardan bağımsız koşar (KVKK silmesi durmaz).
+- Takvim (hepsi UTC): `obifin-poll` `*/5`, `obifin-accounts` saatte bir :02, `bank-match-sweep` saatte bir :07,
+  `bank-data-retention` 04:57. Çekim ile hesap yenileme tek, sabit bir kilidi paylaşır; bağlantı başına kilit yok.
+- İlk çekim 90 günü (bugün dahil) üç 31 günlük dilimle alır; artımlı çekim `[bugün−30, bugün]` + imleç, en çok 10
+  drenaj turu. Eşleştiriciye yalnız tutarı sıfır olmayan gelen hareket verilir.
+- Ölçülmüş Obifin davranışı (25–26.09): boş pencere `Hata: []`, boş `Liste` ve `ToplamSayfaSayisi: 0` döner; son
+  sayfanın ötesindeki `SayfaNo` boş değil, yeniden DOLU bir sayfa döndürür — döngü `ToplamSayfaSayisi` geldiyse onu hiç
+  aşmaz, gelmediyse "sayfa dolu → devam" der ve yeni `Id` getirmeyen sayfada durur (pencere başına en çok 100 sayfa);
+  `BaslangicHareketId` = `Id > X`; `SayfaBasinaKayitSayisi` ve toplamlar yanıttan yanıta dize ya da sayı gelir, ikisi
+  de okunur; sayfa boyutu istenenden değil yanıttan alınır.
+
+**Eşleştirme**
+- Normalizasyon: NFKD ayrıştırması, ardından birleşik işaretler (NonSpacingMark, EnclosingMark) ve görünmez biçim
+  karakterleri (Format) atlanır; elle yalnız `ı→i`; küçük harf sabit tr-TR ile (ortam kültüründen bağımsız); `a–z` ve
+  `0–9` dışındaki her karakter ayırıcı; geçersiz UTF-16 birimi atmaz, ayırıcı sayılır.
+- Kullanıcı adı katmanı: anahtar en az 3 karakter; 3 karakterlik anahtar yalnız tam token olarak bulunur. Kullanıcı
+  adı harf/rakam sınırında parçalanır ve açıklamada token sınırına hizalı parça dizisi olarak aranır; ≥ 6 karakterli
+  anahtar ayrıca açıklamadaki ardışık TAM token'ların birleşimi olarak bulunur (bitişik/ayrık yazım). Tasarımdaki
+  tam dizi ve sınırsız ≥ 6 alt dize kuralı yerine budur: sınırsız alt dize komşu kelimelere ve rakamlara taşıyordu.
+  `stopwords.tr` yok; yerine banka açıklamalarının kalıp kelimeleri listesi.
+- Kullanıcı adı katman 1'e ancak kalıp olmayan bir harf parçası taşıyorsa girer: salt rakam (Facebook sayısal
+  kimlikleri) ve yalnız kalıp kelimelerden oluşan adlar dışarıda kalır (müşteri IBAN hafızasıyla yine önerilebilir).
+  YouTube satırlarının kullanıcı adı kanal kimliğidir, havale açıklamasında pratikte geçmez: katman 1 fiilen
+  Instagram/TikTok ve kayıt formu kullanıcı adlarında işler.
+- Ad katmanı Jaro-Winkler değil: müşterinin normalize `FullName`'inin (en az iki token) açıklamada ardışık token dizisi
+  olarak geçmesi; kanıta ad değil yalnız `name:N` (token sayısı) yazılır. Aday yalnız lisansın silinmemiş müşterisidir;
+  `Shopper.FullName` yedeği yok.
+- IBAN hafızası yalnız hafızadaki müşteri hâlâ adaysa (silinmemiş) sayılır; kullanıcı adı katmanındaki çoklu adayı
+  çözmez (belirsizlik = öneri yok); tek kullanıcı adı adayıyla çelişirse öneri yok.
+- Tek dışlama kuralı: gelen değil, tutar sıfır ya da `TransactionCode` (kırpılmış, harf duyarsız)
+  `ExcludedTransactionCodes`'ta. Liste yapılandırmayla yalnız genişler (`CCP` çıkarılamaz); `CommonType`'a bakılmaz.
+  Eşleştirici, bağdaştırıcının aday seçimi ve ölçüm aynı kuralı kullanır; dışlama kanıttan değil hareketin
+  alanlarından okunur.
+- Eşleştirici `BankHasher` istemez (saklı hash'leri karşılaştırır). Çekimin eşleştiricisi kendi DI alt kapsamında koşar
+  (çekim işinin bağlamında değil). `bank-match-sweep` yalnız son 30 günün, hiç eşleşme satırı olmayan gelen
+  hareketlerini tarar.
+
+**Bağlama**
+- Bağdaştırma onay isteğinde değil, onaydan 20 dk sonra koşan bir Hangfire işidir; yalnız onayda zamanlanır, onayı ne
+  yavaşlatır ne düşürür (zamanlama hatası yalnız loglanır). İş, ödeme hâlâ onaylıysa ve lisansın Obifin bağlantısı
+  varsa koşar. Ret hiçbir şeye bağlanmaz (reddedilen dekontun gerçek müşterisi yoktur).
+- Aday: aynı lisans, gelen, tutar eşit, `PaidAt ± 2 gün`, dışlanmamış, bir dekonta bağlanmamış ve başka müşteriye elle
+  verilmemiş. Birden çok aday → gönderen adının en az 3 karakterli TÜM token'larını açıklamasında taşıyan TEK aday;
+  seçilemezse `AmbiguousCandidates` gap'i (tasarımdaki "en yüksek benzerlik" yerine). Aday yok → `NoCandidate` gap'i.
+- Gap yalnız tek adayla çözülür: yeni hareketin penceresinde tutarı tutan TEK açık gap varsa o dekontun aday seçimi
+  aynı kuralla yeniden koşar ve tek aday bu hareketse bağlanır (çekim ve tarama).
+- Onay IBAN'ı yalnız doğrulanmış bağdan öğretir (öneri dekontun müşterisini gösteriyorsa ya da gönderen adının tüm
+  token'ları açıklamadaysa); yalnız tutar ve zamana dayanan bağ kurulur, karşılaştırılır ama öğretmez. Hiçbir öğrenme
+  var olan hafıza satırını (başka müşterininki dahil) ezmez.
+- Elle eşleme yalnız karara bağlanmamış gelen harekete verilir ve IBAN öğretir; dışlanan kodlu hareketi kabul eder ama
+  onun IBAN'ını öğretmez. Öneriye eşit elle eşleme `ConfirmedByHuman` sayılır (öneriye bakılarak verilmiş karar; bkz.
+  Ölçüm).
+- Kaldırma (admin onayıyla): bu hareketten öğrenilen IBAN satırı silinir (denetim kopyası tutulmaz); dekonta bağlı
+  satırda dekont açık gap'e döner (`UnlinkedByAdmin` ya da çözülmüş gap'i yeniden açılır); öneri, kaldırma
+  kaydedildikten sonra yeniden hesaplanır.
+- `PaymentMatch.UpdatedAt` eşzamanlılık jetonudur ve kayıtta merkezi damgalanır; çakışmada taze satırla bir kez
+  yeniden denenir, ikincide iş yolu uyarıyla vazgeçer, admin yolu "çakışma" mesajı verir.
+- KVKK silmesi müşterinin IBAN hafızasını siler, ona ait kanıt metinlerini boşaltır; eşleşme satırı ölçüm için kalır.
+
+**Ölçüm**
+- Pencere hareketin anına (`OccurredAt`) göre çizilir, satırın yaratılma anına göre değil; açık gap'ler gap'in
+  yaratılma anına göre.
+- Öneriden farklı müşteriye elle eşleme (`ManualOnly` + öneri) çelişki sayılır; dışlanan hareket yalnız "dışlanan"da
+  sayılır. Katman ve gerçek müşterinin platformu bazında kırılım; silinmiş ya da bilinmeyen müşteri `?`.
+- Gecikme = çekildiği an − işlem anı, medyan ve maks; 7 günü aşan (ilk geri doldurma) ve negatif farklar sayım dışı.
+- Faz 2 eşiği yalnız dekont onaylı öneri kararlarından (satır bir dekonta bağlı): ≥ 200 karar ve çelişki ≤ %2, tam
+  sayılarla (yuvarlı oranla değil). Panelde dekont onayı öneri görülmeden verilir; sayfadaki karar öneriye bakılarak
+  verildiği için ayrı gösterilir, eşiğe girmez. Tasarımdaki "≥ 3 hafta" ve "gap oranı açıklanmış" ölçütleri kodda
+  değil, karar verenin denetiminde.
+
+**Bilinen sınırlar**
+- Katman 1'de kalan yanlış pozitif biçimleri: harf+rakam kullanıcı adının rakam kuyruğu, açıklamada adın hemen
+  ardından gelen tutar/tarih parçasına denk gelebilir ("ayse1000" ↔ "AYSE 1000,00"); ilk ada eşit tek token'lı
+  kullanıcı adı ("ayse") o adı taşıyan her havaleye önerilir; kalıp kelimelerin bitişik yazımı ("gelenhavale") kalıp
+  sayılmaz.
+- `CounterpartyName` (`GonderenAdi`) eşleştirmede kullanılmıyor (demoda hiç dolu değildi); dolu gelen bankalarda Faz 2
+  için ad katmanının kaldıracı.
+- Eşleştiricinin çekim anında düştüğü ve 30 günden eski hareket (ilk 90 günlük geri doldurmanın başı) önerisiz kalır:
+  tarama onu görmez.
+- Kaldırmadan sonraki yeniden hesap düşerse satır "öneri yok" kalır: tarama satırı olan hareketi taramaz; admin yine
+  elle eşleyebilir.
+- Sonucu belirsiz banka eklemesinin audit satırı yok; Obifin'de açılmış bir banka kaydını yerel bağlantıya bağlayan
+  arayüz de yok (etiket günlükte ve bildirimde).

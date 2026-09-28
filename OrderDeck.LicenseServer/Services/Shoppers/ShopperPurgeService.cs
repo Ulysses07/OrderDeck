@@ -1,6 +1,8 @@
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Domain.Bank;
+using OrderDeck.LicenseServer.Services.Bank;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
 
 namespace OrderDeck.LicenseServer.Services.Shoppers;
@@ -218,6 +220,44 @@ public sealed class ShopperPurgeService
             c.UpdatedAt = now;
         }
 
+        // 3b. Gölge banka eşleştirmesinin izi (Obifin). IBAN hafızası "bu IBAN bu
+        //     kişinin" bağıdır: silinir. Eşleşme satırı ölçüm kaydıdır, kalır
+        //     (kişiyi yalnız Id'yle gösterir); kanıt metni kullanıcı adı anahtarı
+        //     taşıyabilir: boşaltılır — müşteriyi öneren ya da ona bağlanan
+        //     satırlarda ve anahtarı önerisiz bir çelişki kanıtında geçen
+        //     satırlarda. Anahtar önek olarak başka bir anahtarın kanıtına da
+        //     uyabilir; fazladan boşaltma zararsız (kanıt 180 günde zaten gider).
+        //     UpdatedAt eşleşmenin eşzamanlılık jetonudur, her yazan ilerletir;
+        //     gölge eşleştirmenin eşzamanlı yazısıyla çakışma SaveAsync'te bir
+        //     kez yeniden denenir.
+        var usernames = projections.ToDictionary(c => c.Id, c => c.Username);
+        var ibanMemories = new List<CustomerIbanMemory>();
+        var scrubbedMatches = new HashSet<PaymentMatch>();
+        foreach (var (licenseId, wpfCustomerId) in projectionKeys)
+        {
+            ibanMemories.AddRange(await _db.CustomerIbanMemories
+                .Where(m => m.LicenseId == licenseId && m.WpfCustomerId == wpfCustomerId)
+                .ToListAsync(ct));
+
+            Guid? id = wpfCustomerId;
+            var key = usernames.TryGetValue(wpfCustomerId, out var username)
+                ? BankTextNormalizer.UsernameKey(username)
+                : "";
+            var marker = key.Length > 0 ? "username=" + key : null;
+            scrubbedMatches.UnionWith(await _db.PaymentMatches
+                .Where(m => m.LicenseId == licenseId && m.Evidence != null
+                    && (m.ProposedWpfCustomerId == id
+                        || m.ActualWpfCustomerId == id
+                        || (marker != null && m.Evidence.Contains(marker))))
+                .ToListAsync(ct));
+        }
+        _db.CustomerIbanMemories.RemoveRange(ibanMemories);
+        foreach (var m in scrubbedMatches)
+        {
+            m.Evidence = null;
+            m.UpdatedAt = now;
+        }
+
         // 4. Bağlı satırlar. Hepsi ya doğrudan kişisel veri taşıyor
         //    (kullanıcı adı, cihaz kimliği, IP) ya da yalnızca oturum
         //    açmaya yarıyor; hiçbirinin mali kayıt değeri yok.
@@ -234,7 +274,7 @@ public sealed class ShopperPurgeService
         _db.ShopperBroadcasterLinks.RemoveRange(linkRows);
 
         var dependents = devices.Count + tokens.Count + resetCodes.Count
-            + supportRequests.Count + linkRows.Count;
+            + supportRequests.Count + linkRows.Count + ibanMemories.Count;
 
         // 5. Ödeme denetim kayıtları: satır mali izin parçası, yalnız istemci
         //    parmak izi gidiyor. SecurityDataRetentionJob'ın 90 günde yaptığı
@@ -263,7 +303,7 @@ public sealed class ShopperPurgeService
         shopper.DeletedAt ??= now;
         shopper.UpdatedAt = now;
 
-        await _db.SaveChangesAsync(ct);
+        await SaveAsync(scrubbedMatches, now, ct);
 
         return new ShopperPurgeResult(
             PaymentsScrubbed: payments.Count,
@@ -271,5 +311,48 @@ public sealed class ShopperPurgeService
             ProjectionsScrubbed: projections.Count,
             DependentRowsDeleted: dependents,
             PdfsPending: pendingRows.Count);
+    }
+
+    /// <summary>
+    /// Silmeyi tek SaveChanges'te kaydeder. <see cref="PaymentMatch.UpdatedAt"/>
+    /// eşzamanlılık jetonudur: kanıt boşaltmasının UPDATE'i
+    /// <c>WHERE UpdatedAt = özgün</c> taşır. Eşleşme okunduktan sonra gölge
+    /// eşleştirme ona yazdıysa (çekimin eşleştiricisi, telafi taraması, dekont
+    /// bağdaştırması, admin kararı) kayıt DbUpdateConcurrencyException'la düşer
+    /// ve bütün silme geri alınır — R2'deki dekontlar ise çoktan silinmiştir.
+    /// Çakışan girdilerin HEPSİ eşleşmeyse boşaltılan eşleşmeler DB'den tazelenir
+    /// (eşzamanlı yazanın değerleri kalır), kanıt yeniden boşaltılır ve BİR kez
+    /// daha kaydedilir; ikinci çakışma yukarı gider. Başka bir varlığın çakışması
+    /// eskisi gibi doğrudan yukarı gider.
+    /// </summary>
+    private async Task SaveAsync(
+        IReadOnlyCollection<PaymentMatch> scrubbedMatches, DateTimeOffset now, CancellationToken ct)
+    {
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException ex) when (scrubbedMatches.Count > 0
+            && ex.Entries.Count > 0
+            && ex.Entries.All(e => e.Entity is PaymentMatch))
+        {
+            _log.LogInformation(
+                "[ShopperPurge] Eşleşme kanıtı boşaltılırken eşzamanlı bir gölge eşleştirme yazısıyla çakıştı; "
+                + "eşleşmeler tazelenip bir kez yeniden deneniyor");
+            // Yalnız bildirilen girdi değil, boşaltılan her eşleşme tazelenir:
+            // SQL Server'da EF ilk çakışan komutta durur, sonraki çakışan satırı
+            // bildirmez. Küme tek kişinin satırları, küçük.
+            foreach (var m in scrubbedMatches)
+            {
+                var entry = _db.Entry(m);
+                await entry.ReloadAsync(ct);
+                // Arada silinmiş (ayrıldı) ya da kanıtı zaten boşaltılmış.
+                if (entry.State == EntityState.Detached || m.Evidence is null)
+                    continue;
+                m.Evidence = null;
+                m.UpdatedAt = now;
+            }
+            await _db.SaveChangesAsync(ct);
+        }
     }
 }

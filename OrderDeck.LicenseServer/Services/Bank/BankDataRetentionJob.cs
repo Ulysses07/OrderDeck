@@ -36,9 +36,10 @@ public sealed class BankDataRetentionJob
         var desc = await PurgeInBatchesAsync(
             _db.BankTransactions.Where(t => t.DescriptionPurgedAt == null && t.FetchedAt < descCutoff).OrderBy(t => t.Id),
             t => { t.Description = null; t.CounterpartyName = null; t.DescriptionPurgedAt = now; }, ct);
+        // UpdatedAt eşzamanlılık jetonudur, her yazan ilerletir: arada okuyup yazan bir bağdaştırma çakışmayı görsün.
         var evidence = await PurgeInBatchesAsync(
             _db.PaymentMatches.Where(m => m.Evidence != null && m.CreatedAt < descCutoff).OrderBy(m => m.Id),
-            m => m.Evidence = null, ct);
+            m => { m.Evidence = null; m.UpdatedAt = now; }, ct);
         if (raw + desc + evidence > 0)
             _log.LogInformation("Banka veri saklama: {Raw} ham JSON, {Desc} açıklama, {Evidence} kanıt metni boşaltıldı",
                 raw, desc, evidence);

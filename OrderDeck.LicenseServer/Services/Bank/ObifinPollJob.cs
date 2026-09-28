@@ -17,8 +17,9 @@ namespace OrderDeck.LicenseServer.Services.Bank;
 /// kendiliğinden düzelmez → Failed + LastError, koşu BAŞARILI biter (admin düzeltip yeniden doğrular; Failed
 /// bağlantı sonraki koşularda atlanır). Ağ/vekil/zaman aşımı geçicidir → LastError yazılır, durum Verified
 /// KALIR, istisna DIŞARI çıkar (Hangfire panosunda Failed; 5 dakika sonraki koşu aynı imleçten dener). İşin
-/// kendi iptali hiçbir şey yazmaz. Sınıf dışı hata (DB, eşleştirici…) geçici gibi ele alınır ama LastError'a yalnız tür
-/// adı yazılır (<see cref="UnexpectedErrorMessage"/>). Bir bağlantının hatası sıradakileri bekletmez (<see cref="RunAsync"/>).</para>
+/// kendi iptali hiçbir şey yazmaz. Sınıf dışı hata (ör. DB; sink işin kendi iptali dışında fırlatmaz) geçici gibi ele
+/// alınır ama LastError'a yalnız tür adı yazılır (<see cref="UnexpectedErrorMessage"/>). Bir bağlantının hatası
+/// sıradakileri bekletmez (<see cref="RunAsync"/>).</para>
 ///
 /// <para><b>Kimlik değişimi — eşzamanlılık jetonu BİLEREK yok.</b> Admin çekim sürerken kimliği değiştirirse
 /// <see cref="ObifinConnectionService.UpsertAsync"/> imleci sıfırlar, gölge veriyi siler. Eski koşu ne eski
@@ -184,7 +185,8 @@ public sealed class ObifinPollJob
         }
         catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
         {
-            // Sınıf dışı hata (DB, eşleştirici…): admin ekranı "son hata yok" demesin. Mesaj DEĞİL yalnız tür adı —
+            // Sınıf dışı hata (ör. DB; sink kendi alt kapsamında eşleştirir, işin kendi iptali dışında fırlatmaz): admin
+            // ekranı "son hata yok" demesin. Mesaj DEĞİL yalnız tür adı —
             // istisna mesajı veri (IBAN, ad, SQL parametresi) taşıyabilir. Durum çevrilmez: kimlik aleyhine kanıt değil.
             // Hata kaydı da düşerse (ör. DB tamamen gitti) asıl istisna kaybolmasın: kayıt hatası yalnız loglanır.
             try

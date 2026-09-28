@@ -1,6 +1,10 @@
 namespace OrderDeck.LicenseServer.Domain.Bank;
 
-public enum PaymentMatchGapReason { NoCandidate = 0, AmbiguousCandidates = 1 }
+/// <summary>Gap'in nedeni. NoCandidate/AmbiguousCandidates onay anındaki aday seçiminden gelir. UnlinkedByAdmin: onayda
+/// harekete bağlanan dekontun bağını admin kaldırdı; dekont ölçümden düşmesin diye açık gap'e döner. Gap çözümüyle
+/// bağlanmış dekontun kaldırılmasında gap'in kendisi yeniden açılır, onay anındaki nedeni korunur. String saklanır: yeni
+/// değer göç istemez.</summary>
+public enum PaymentMatchGapReason { NoCandidate = 0, AmbiguousCandidates = 1, UnlinkedByAdmin = 2 }
 
 /// <summary>İnsan kararı var, banka hareketi bulunamadı (gecikme / başka hesap) — ölçüm (spec §3).</summary>
 public sealed class PaymentMatchGap
