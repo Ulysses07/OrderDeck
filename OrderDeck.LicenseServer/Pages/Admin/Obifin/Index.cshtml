@@ -99,16 +99,60 @@
 </form>
 
 <h2 class="h5 mt-4">Banka bağlantısı ekle</h2>
-<p class="small text-muted">Bankanın kurumsal web servis kimliği Obifin'e iletilir ve <strong>saklanmaz</strong>. Alanlar bankaya göre: @string.Join(" · ", IndexModel.BankFields.Select(kv => kv.Key + ": " + string.Join("/", kv.Value)))</p>
-<form method="post" asp-page-handler="AddBank" class="row g-2" autocomplete="off">
-    <div class="col-md-3"><label class="form-label">Lisans (Obifin bağlantısı olan)</label>
-        <select name="LicenseId" class="form-select" required>@{ await LicenseOptionsAsync(Model.BankLicenses); }</select></div>
-    <div class="col-md-2"><label class="form-label">Banka kodu</label>
-        <select name="BankaKodu" class="form-select">@foreach (var b in IndexModel.BankFields.Keys) { <option value="@b">@b</option> }</select></div>
-    <div class="col-md-3"><label class="form-label">Etiket</label><input name="Label" class="form-control" placeholder="QNB ana hesap" /></div>
-    @foreach (var f in new[] { "KullaniciAdi", "Sifre", "Url", "FirmaKodu", "FirmaAnahtar", "TanimNumarasi", "ClientId", "ClientSecret", "AccessToken", "RefreshToken", "APIKey", "APISecret" })
+<p class="small text-muted">Bankanın verdiği bağlantı bilgileri Obifin'e iletilir ve <strong>saklanmaz</strong>. Önce bankayı seçin: yalnız o bankanın istediği alanlar açılır.</p>
+@* İki adım, JavaScript'siz: seçim GET ?banka= ile, "Seç" düğmesi tek başına yeter. onchange yalnız kısayol — lisans
+   sunucusunun CSP'si (deploy/Caddyfile) script-src'de 'unsafe-inline' taşıyor, Banka Eşleştirme sayfası da aynısını
+   kullanıyor. Düzenlenen lisans (?license=) seçimle taşınır: ekleme formunda seçili gelmeye devam eder. *@
+<form method="get" class="row g-2">
+    @if (Model.Editing is not null)
     {
-        <div class="col-md-3"><label class="form-label">@f</label><input name="@("Field_" + f)" class="form-control" type="@(IndexModel.IsMaskedBankField(f) ? "password" : "text")" autocomplete="new-password" /></div>
+        <input type="hidden" name="license" value="@Model.LicenseId" />
     }
-    <div class="col-md-3 align-self-end"><button class="btn btn-outline-primary">Obifin'e ekle</button></div>
+    <div class="col-md-4"><label class="form-label" for="bankaSecimi">Banka</label>
+        <select id="bankaSecimi" name="banka" class="form-select" onchange="this.form.submit()">
+            <option value="">— banka seçin —</option>
+            @foreach (var t in ObifinBankCatalog.All)
+            {
+                if (t.Code == Model.SelectedBank?.Code)
+                {
+                    <option value="@t.Code" selected>@t.DisplayName</option>
+                }
+                else
+                {
+                    <option value="@t.Code">@t.DisplayName</option>
+                }
+            }
+        </select></div>
+    <div class="col-md-2 align-self-end"><button class="btn btn-outline-secondary">Seç</button></div>
 </form>
+
+@if (Model.SelectedBank is { } bank)
+{
+    <h3 class="h6 mt-3" data-bank-heading>@bank.DisplayName</h3>
+    <p class="small text-muted mb-2" data-help="bank-method">@(bank.Method == ObifinBankCatalog.Api ? IndexModel.ApiHelp : IndexModel.WebServiceHelp)</p>
+    @if (!bank.Fields.Any(f => f.Required))
+    {
+        <p class="small mb-2" data-help="no-required-fields">Obifin bu banka için ek bilgi istemiyor; yalnız isteğe bağlı VKN girilebilir.</p>
+    }
+    @* Alan adları Field_<Obifin anahtarı>: işleyici yalnız bu bankanın anahtarlarını okur. Değerler asla geri basılmaz. *@
+    <form method="post" asp-page-handler="AddBank" class="row g-2" autocomplete="off">
+        <input type="hidden" name="BankaKodu" value="@bank.Code" />
+        <div class="col-md-4"><label class="form-label">Lisans (Obifin bağlantısı olan)</label>
+            <select name="LicenseId" class="form-select" required>@{ await LicenseOptionsAsync(Model.BankLicenses); }</select></div>
+        <div class="col-md-4"><label class="form-label" for="bankaEtiket">Etiket (isteğe bağlı)</label>
+            <input id="bankaEtiket" name="Label" class="form-control" placeholder="ör. ana hesap" /></div>
+        @foreach (var f in bank.Fields)
+        {
+            <div class="col-md-4">
+                <label class="form-label" for="@("bankaAlan_" + f.Key)">@f.Label</label>
+                <input id="@("bankaAlan_" + f.Key)" name="@("Field_" + f.Key)" class="form-control"
+                       type="@(f.Secret ? "password" : "text")" autocomplete="@(f.Secret ? "new-password" : "off")" required="@f.Required" />
+                @if (f.Hint is { } hint)
+                {
+                    <div class="form-text">@hint</div>
+                }
+            </div>
+        }
+        <div class="col-12"><button class="btn btn-outline-primary">Obifin'e ekle</button></div>
+    </form>
+}
