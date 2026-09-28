@@ -16,6 +16,7 @@ using OrderDeck.LicenseServer.Services.Bank;
 using OrderDeck.LicenseServer.Tests.Services.Bank;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
+using ObifinAdminPage = OrderDeck.LicenseServer.Pages.Admin.Obifin.IndexModel;
 
 namespace OrderDeck.LicenseServer.Tests.Pages.Admin;
 
@@ -50,10 +51,22 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         private readonly List<string> _attemptedLabels = new();
         /// <summary>Her ekleme denemesinin Obifin'e gönderdiği etiket (<c>BankaApiAdi</c>) — başarısızlar dahil.</summary>
         public List<string> AttemptedLabels { get { lock (_attemptedLabels) return _attemptedLabels.ToList(); } }
+        /// <summary>Son ekleme denemesinin banka kodu; null = ekleme hiç çağrılmadı.</summary>
+        public string? LastAddBankCode { get { lock (_attemptedLabels) return _lastAddBankCode; } }
+        /// <summary>Son ekleme denemesinin aldığı banka alanlarının YALNIZ ANAHTARLARI (servisin ürettiği <c>BankaApiAdi</c>
+        /// hariç) — değerler hiçbir yerde tutulmaz.</summary>
+        public IReadOnlyList<string>? LastAddFieldKeys { get { lock (_attemptedLabels) return _lastAddFieldKeys; } }
+        private string? _lastAddBankCode;
+        private IReadOnlyList<string>? _lastAddFieldKeys;
 
         public Task AddBankConnectionAsync(ObifinCredentials c, string b, IReadOnlyDictionary<string, string> f, CancellationToken ct = default)
         {
-            lock (_attemptedLabels) _attemptedLabels.Add(f["BankaApiAdi"]);
+            lock (_attemptedLabels)
+            {
+                _attemptedLabels.Add(f["BankaApiAdi"]);
+                _lastAddBankCode = b;
+                _lastAddFieldKeys = f.Keys.Where(k => k != "BankaApiAdi").ToList();
+            }
             if (AddFails is { } fail) return Task.FromException(fail());
             if (!HideAddedFromList)
                 lock (_connections) _connections.Add(new ObifinBankConnectionDto(Random.Shared.NextInt64(1, 1_000_000), b, f["BankaApiAdi"], true));
@@ -248,6 +261,125 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
     /// <summary>Sayfanın bildirim şeridi (TempData, _ToastPartial) — kind: "success" | "danger".</summary>
     private static async Task<string?> ToastAsync(HttpClient client, string kind)
         => (await ParseAsync(await client.GetStringAsync("/admin/obifin"))).QuerySelector($".alert-{kind}.alert-dismissible")?.TextContent.Trim();
+
+    private const string AddBankFormSelector = "form[action*='handler=AddBank']";
+    private const string BankSelectSelector = "form[method='get'] select[name='banka']";
+
+    [Fact]
+    public async Task Banka_secilmeden_yalniz_secici_gorunur_35_banka_hic_alan_kutusu_yok()
+    {
+        // İki adım, JavaScript'siz: önce banka seçilir (GET ?banka=), ancak sonra o bankanın alanları açılır. Her yayıncının
+        // bankası farklı: seçici Obifin'in desteklediği 35 türün tamamını anlaşılır adlarıyla sunar.
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        var doc = await ParseAsync(await client.GetStringAsync("/admin/obifin"));
+
+        var options = doc.QuerySelector(BankSelectSelector)!.QuerySelectorAll("option").ToList();
+        options[0].GetAttribute("value").Should().BeEmpty("ilk seçenek boş yer tutucu");
+        options[0].TextContent.Should().Be("— banka seçin —");
+        options.Skip(1).Select(o => o.GetAttribute("value")).Should().Equal(ObifinBankCatalog.All.Select(t => t.Code));
+        options.Skip(1).Select(o => o.TextContent).Should().Equal(ObifinBankCatalog.All.Select(t => t.DisplayName));
+        options.Should().NotContain(o => o.HasAttribute("selected"));
+        doc.QuerySelector("form[method='get'] button")!.TextContent.Trim().Should().Be("Seç", "seçim JavaScript'siz de çalışır");
+        doc.QuerySelector(AddBankFormSelector).Should().BeNull("banka seçilmeden ekleme formu açılmaz");
+        doc.QuerySelectorAll("input[name^='Field_']").Should().BeEmpty();
+        doc.Body!.TextContent.Should().NotContain("Alanlar bankaya göre");
+
+        var unknown = await ParseAsync(await client.GetStringAsync("/admin/obifin?banka=yok"));
+        unknown.QuerySelector(AddBankFormSelector).Should().BeNull("tanınmayan kodun formu yok");
+        unknown.QuerySelectorAll("input[name^='Field_']").Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task QNB_secilince_yalniz_QNB_alanlari_Turkce_etiketle_zorunlu_ve_gizli_isaretli_basilir()
+    {
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        var doc = await ParseAsync(await client.GetStringAsync("/admin/obifin?banka=qnb"));
+
+        doc.QuerySelector($"{BankSelectSelector} option[selected]")!.GetAttribute("value").Should().Be("qnb");
+        doc.QuerySelector("[data-bank-heading]")!.TextContent.Trim().Should().Be("QNB — web servis");
+        doc.QuerySelector("[data-help='bank-method']")!.TextContent.Trim().Should().Be(ObifinAdminPage.WebServiceHelp);
+        var form = doc.QuerySelector(AddBankFormSelector)!;
+        form.QuerySelector("input[type='hidden'][name='BankaKodu']")!.GetAttribute("value").Should().Be("qnb");
+        var inputs = form.QuerySelectorAll("input[name^='Field_']").ToList();
+        inputs.Select(i => i.GetAttribute("name")).Should().Equal("Field_KullaniciAdi", "Field_Sifre", "Field_Url", "Field_VKN");
+        string LabelOf(IElement i) => form.QuerySelector($"label[for='{i.Id}']")!.TextContent.Trim();
+        inputs.Select(LabelOf).Should().Equal("Kullanıcı adı", "Şifre", "Servis adresi (WSDL)", "Şirket VKN (isteğe bağlı)");
+        inputs.Select(i => i.GetAttribute("type")).Should().Equal("text", "password", "text", "text");
+        inputs.Select(i => i.HasAttribute("required")).Should().Equal(true, true, true, false);
+        inputs[1].GetAttribute("autocomplete").Should().Be("new-password", "tarayıcı banka şifresini kaydetmeye/doldurmaya kalkmaz");
+        form.QuerySelector("select[name='LicenseId']")!.HasAttribute("required").Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Ziraat_formu_Obifinin_istedigi_kurum_kodu_sifre_ve_musteri_numarasini_ister()
+    {
+        // Eski eşleme Ziraat için kullanıcı adı + şifre istiyordu; Obifin KurumKodu, Sifre, MusteriNo ister.
+        var client = await _factory.CreateLoggedInAdminClientAsync();
+
+        var form = (await ParseAsync(await client.GetStringAsync("/admin/obifin?banka=ziraat"))).QuerySelector(AddBankFormSelector)!;
+
+        var inputs = form.QuerySelectorAll("input[name^='Field_']").ToList();
+        inputs.Select(i => i.GetAttribute("name")).Should().Equal("Field_KurumKodu", "Field_Sifre", "Field_MusteriNo", "Field_VKN");
+        inputs.Select(i => i.HasAttribute("required")).Should().Equal(true, true, true, false);
+        form.QuerySelector("input[name='BankaKodu']")!.GetAttribute("value").Should().Be("ziraat");
+    }
+
+    [Fact]
+    public async Task QNB_eklemesi_Obifine_yalniz_QNBnin_dolu_alanlarini_gonderir_ve_QNB_formuna_doner()
+    {
+        using var factory = new StubObifinApiFactory();
+        var licenseId = await SeedLicenseAsync(factory);
+        var client = await factory.CreateLoggedInAdminClientAsync();
+        await SaveAsync(client, licenseId, "api@x");
+
+        var resp = await PostAsync(client, "AddBank", new Dictionary<string, string>
+        {
+            ["LicenseId"] = licenseId.ToString(), ["BankaKodu"] = "qnb", ["Label"] = "QNB",
+            ["Field_KullaniciAdi"] = $"ws-{Guid.NewGuid():N}", ["Field_Sifre"] = $"pw-{Guid.NewGuid():N}",
+            ["Field_Url"] = $"https://{Guid.NewGuid():N}.example.invalid/wsdl", ["Field_VKN"] = "",
+            // Başka bir bankanın alanı: QNB formunda yok, Obifin'e gitmez.
+            ["Field_FirmaKodu"] = $"fk-{Guid.NewGuid():N}",
+        });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        resp.Headers.Location!.ToString().Should().Be("/admin/obifin?banka=qnb", "admin aynı bankanın formuna döner");
+        factory.Obifin.LastAddBankCode.Should().Be("qnb");
+        factory.Obifin.LastAddFieldKeys.Should().BeEquivalentTo(new[] { "KullaniciAdi", "Sifre", "Url" },
+            "boş isteğe bağlı alan ve başka bankanın alanı gönderilmez");
+        (await ToastAsync(client, "success")).Should().StartWith("Banka bağlantısı eklendi (Obifin #");
+    }
+
+    [Fact]
+    public async Task Zorunlu_alan_bossa_Obifine_gidilmez_eksik_alanlar_etiketle_bildirilir()
+    {
+        using var factory = new StubObifinApiFactory();
+        var licenseId = await SeedLicenseAsync(factory);
+        var client = await factory.CreateLoggedInAdminClientAsync();
+        await SaveAsync(client, licenseId, "api@x");
+        var bankUser = $"ws-{Guid.NewGuid():N}";
+
+        // Şifre hiç gönderilmedi, adres yalnız boşluk (tarayıcının required'ı boşluğu geçirir).
+        var resp = await PostAsync(client, "AddBank", new Dictionary<string, string>
+        {
+            ["LicenseId"] = licenseId.ToString(), ["BankaKodu"] = "qnb", ["Label"] = "QNB",
+            ["Field_KullaniciAdi"] = bankUser, ["Field_Url"] = "   ",
+        });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        resp.Headers.Location!.ToString().Should().Be("/admin/obifin?banka=qnb", "admin aynı bankanın formuna döner");
+        var html = await client.GetStringAsync("/admin/obifin?banka=qnb"); // bildirim burada tüketilir
+        html.Should().NotContain(bankUser, "gönderilen değer hiçbir yere geri basılmaz");
+        (await ParseAsync(html)).QuerySelector(".alert-danger.alert-dismissible")!.TextContent.Trim()
+            .Should().Be("Eksik alan: Şifre, Servis adresi (WSDL)");
+        factory.Obifin.AttemptedLabels.Should().BeEmpty("zorunlu alan eksikken Obifin'e gidilmez");
+        factory.Obifin.LastAddBankCode.Should().BeNull();
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.BankConnections.CountAsync(b => b.LicenseId == licenseId)).Should().Be(0);
+        (await db.ObifinConnections.AsNoTracking().SingleAsync(c => c.LicenseId == licenseId)).LastError.Should().BeNull();
+    }
 
     [Fact]
     public async Task Girissiz_istek_login_e_yonlenir()
@@ -803,12 +935,16 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         var client = await factory.CreateLoggedInAdminClientAsync();
         await SaveAsync(client, licenseId, "api@x");
 
-        var doc = await ParseAsync(await client.GetStringAsync($"/admin/obifin?license={licenseId}"));
+        var doc = await ParseAsync(await client.GetStringAsync($"/admin/obifin?license={licenseId}&banka=isbank"));
 
         foreach (var handler in new[] { "Save", "AddBank" })
             (doc.QuerySelector($"form[action*='handler={handler}'] select[name='LicenseId'] option[selected]")?.GetAttribute("value"))
                 .Should().Be(licenseId.ToString(), $"{handler} formu düzenlenen lisansa yazmalı");
-        (await ParseAsync(await client.GetStringAsync("/admin/obifin")))
+        // Banka seçimi (GET) düzenlenen lisansı taşır: "Düzenle"den sonra banka seçen admin lisansı yeniden seçmez.
+        (await ParseAsync(await client.GetStringAsync($"/admin/obifin?license={licenseId}")))
+            .QuerySelector("form[method='get'] input[type='hidden'][name='license']")!.GetAttribute("value")
+            .Should().Be(licenseId.ToString());
+        (await ParseAsync(await client.GetStringAsync("/admin/obifin?banka=isbank")))
             .QuerySelector($"form[action*='handler=AddBank'] select[name='LicenseId'] option[value='{licenseId}']")
             .Should().NotBeNull("Obifin bağlantısı olan lisans banka ekleme listesinde hep bulunur");
     }
@@ -826,7 +962,9 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         var client = await factory.CreateLoggedInAdminClientAsync();
         await SaveAsync(client, connected, "api@x");
 
-        var doc = await ParseAsync(await client.GetStringAsync("/admin/obifin"));
+        // Banka seçili (ekleme formu açık), lisans verilmemiş: iki form da yer tutucuyla gelmeli.
+        var doc = await ParseAsync(await client.GetStringAsync("/admin/obifin?banka=isbank"));
+        doc.QuerySelector("form[method='get'] input[name='license']").Should().BeNull("düzenleme yokken seçici lisans taşımaz");
 
         foreach (var handler in new[] { "Save", "AddBank" })
         {
@@ -923,20 +1061,37 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Gizli_banka_alanlari_parola_kutusunda_bos_birakma_ipucu_hep_gorunur()
     {
-        // Ekran paylaşımında/omuz üstünden okunmasın: şifre, secret, token, key, anahtar taşıyan her banka alanı parola
-        // kutusu. Obifin şifre/API anahtarı kutularında "(boş = değiştirme)" düzenleme dışında da görünür.
+        // 35 banka türünün her biri: formda yalnız kendi alanları (Field_<Anahtar>, katalog sırasıyla — işleyici bu adları
+        // okur), Türkçe etiket ve ipucu, zorunlular required, gizliler (şifre, secret, token, anahtar) parola kutusunda:
+        // ekran paylaşımında/omuz üstünden okunmasınlar. Obifin şifre/API anahtarı kutularında "(boş = değiştirme)"
+        // düzenleme dışında da görünür.
         var client = await _factory.CreateLoggedInAdminClientAsync();
 
-        var doc = await ParseAsync(await client.GetStringAsync("/admin/obifin"));
+        foreach (var type in ObifinBankCatalog.All)
+        {
+            var bankDoc = await ParseAsync(await client.GetStringAsync($"/admin/obifin?banka={type.Code}"));
+            var form = bankDoc.QuerySelector("form[action*='handler=AddBank']");
+            form.Should().NotBeNull($"{type.Code} formu açılır");
+            form!.QuerySelector("input[type='hidden'][name='BankaKodu']")!.GetAttribute("value").Should().Be(type.Code);
+            bankDoc.QuerySelector("[data-bank-heading]")!.TextContent.Trim().Should().Be(type.DisplayName);
+            bankDoc.QuerySelector("[data-help='bank-method']")!.TextContent.Trim().Should().Be(
+                type.Method == ObifinBankCatalog.Api ? ObifinAdminPage.ApiHelp : ObifinAdminPage.WebServiceHelp, type.Code);
+            (bankDoc.QuerySelector("[data-help='no-required-fields']") is not null).Should()
+                .Be(!type.Fields.Any(f => f.Required), $"{type.Code}: zorunlu alanı olmayan banka bunu söyler");
+            var inputs = form.QuerySelectorAll("input[name^='Field_']").ToList();
+            inputs.Select(i => i.GetAttribute("name")).Should().Equal(type.Fields.Select(f => "Field_" + f.Key), type.Code);
+            foreach (var (input, field) in inputs.Zip(type.Fields))
+            {
+                var what = $"{type.Code}.{field.Key}";
+                input.GetAttribute("type").Should().Be(field.Secret ? "password" : "text", what);
+                if (field.Secret) input.GetAttribute("autocomplete").Should().Be("new-password", what);
+                input.HasAttribute("required").Should().Be(field.Required, what);
+                form.QuerySelector($"label[for='{input.Id}']")!.TextContent.Trim().Should().Be(field.Label, what);
+                (input.ParentElement!.QuerySelector(".form-text")?.TextContent.Trim()).Should().Be(field.Hint, what);
+            }
+        }
 
-        var masked = new[] { "Sifre", "FirmaAnahtar", "ClientSecret", "AccessToken", "RefreshToken", "APIKey", "APISecret" };
-        var plain = new[] { "KullaniciAdi", "Url", "FirmaKodu", "TanimNumarasi", "ClientId" };
-        foreach (var f in masked)
-            doc.QuerySelector($"form[action*='handler=AddBank'] input[name='Field_{f}']")!.GetAttribute("type")
-                .Should().Be("password", $"{f} gizli");
-        foreach (var f in plain)
-            doc.QuerySelector($"form[action*='handler=AddBank'] input[name='Field_{f}']")!.GetAttribute("type")
-                .Should().Be("text", $"{f} gizli değil");
+        var doc = await ParseAsync(await client.GetStringAsync("/admin/obifin"));
         foreach (var name in new[] { "Password", "ApiKey" })
         {
             var label = doc.QuerySelector($"input[name='{name}']")!.ParentElement!.QuerySelector("label")!.TextContent;
@@ -979,8 +1134,5 @@ public sealed class AdminObifinPageTests : IClassFixture<ApiFactory>
         foreach (var name in new[] { "Password", "ApiKey" })
             doc.QuerySelector($"input[name='{name}']")!.ParentElement!.QuerySelector("label")!.TextContent
                 .Should().Contain("kayıtlı").And.Contain("boş = değiştirme");
-        // Banka ekleme formu işleyicinin okuduğu adları (Field_<Ad>) taşımalı; testler POST'u elle kurduğu için ayrıca bakılır.
-        foreach (var field in OrderDeck.LicenseServer.Pages.Admin.Obifin.IndexModel.BankFields.Values.SelectMany(f => f).Distinct())
-            doc.QuerySelector($"form[action*='handler=AddBank'] input[name='Field_{field}']").Should().NotBeNull($"{field} formda olmalı");
     }
 }

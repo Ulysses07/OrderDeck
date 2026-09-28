@@ -31,9 +31,9 @@ public class IndexModel : PageModel
     /// <summary>Onay istenince yeniden basılan formun bildirimine eklenir: şifre ve API anahtarı forma geri basılmaz.</summary>
     public const string ReenterSecretsHint = "Şifre ya da API anahtarını da değiştirdiyseniz yeniden girin; güvenlik gereği forma geri doldurulmaz.";
 
-    /// <summary>Banka ekleme formunda parola kutusuna düşen alan adı parçaları (harf duyarsız): ekran paylaşımında ya da
-    /// omuz üstünden okunmasınlar.</summary>
-    private static readonly string[] MaskedInputNameParts = ["Sifre", "Secret", "Token", "Key", "Anahtar"];
+    /// <summary>Banka ekleme formunda seçilen bankanın yöntemine göre tek satırlık "bu bilgiler nereden gelir" açıklaması.</summary>
+    public const string WebServiceHelp = "Bu bilgileri banka, kurumsal internet şubesinden ya da şubeden 'hesap hareketleri web servisi' başvurusuyla verir.";
+    public const string ApiHelp = "Bu bilgiler bankanın API başvurusuyla alınır.";
 
     private readonly LicenseDbContext _db;
     private readonly IServiceProvider _services;
@@ -55,20 +55,6 @@ public class IndexModel : PageModel
     /// <summary>Düzenlenen bağlantı: formda yalnız "kayıtlı" bayrağı — değerler asla geri basılmaz.</summary>
     public sealed record EditTarget(bool PasswordStored, bool ApiKeyStored);
 
-    /// <summary>Banka kodu → Obifin'in `bankaapi/ekle` formunda beklediği alanlar (Postman v1.03.06).</summary>
-    public static readonly IReadOnlyDictionary<string, string[]> BankFields = new Dictionary<string, string[]>
-    {
-        ["qnb"] = ["KullaniciAdi", "Sifre", "Url"],
-        ["qnbapi"] = ["ClientId", "ClientSecret", "AccessToken", "RefreshToken"],
-        ["garanti"] = ["KullaniciAdi", "Sifre", "FirmaKodu"],
-        ["garantibbvaapi"] = ["TanimNumarasi"],
-        ["isbank"] = ["KullaniciAdi", "Sifre"],
-        ["yapikredi"] = ["KullaniciAdi", "Sifre"],
-        ["ziraat"] = ["KullaniciAdi", "Sifre"],
-        ["akbank"] = ["FirmaAnahtar", "KullaniciAdi", "Sifre"],
-        ["papara"] = ["APIKey", "APISecret"],
-    };
-
     [BindProperty] public Guid LicenseId { get; set; }
     [BindProperty] public string? BaseUrl { get; set; }
     [BindProperty] public string? UserCode { get; set; }
@@ -87,6 +73,9 @@ public class IndexModel : PageModel
     /// başkasında çalışmaz.</summary>
     public List<LicenseOption> BankLicenses { get; private set; } = new();
     public EditTarget? Editing { get; private set; }
+    /// <summary>Banka ekleme formu yalnız bu türün alanlarıyla basılır; null = banka seçilmedi (ya da kod tanınmadı), yalnız
+    /// seçici görünür.</summary>
+    public ObifinBankType? SelectedBank { get; private set; }
     public DateTimeOffset Now { get; } = DateTimeOffset.UtcNow;
 
     /// <summary>Açılıştaki kararın aynısı (Program.cs): anahtar yoksa banka modülü kapalı.</summary>
@@ -96,9 +85,11 @@ public class IndexModel : PageModel
     private ObifinConnectionService Connections => _services.GetRequiredService<ObifinConnectionService>();
 
     /// <summary><paramref name="license"/> verilirse kimlik formu o bağlantının kullanıcı kodu ve adresiyle dolar: değişmeden
-    /// kaydedilen form hiçbir zaman gölge veri sıfırlamasına yol açmaz.</summary>
-    public async Task OnGetAsync(Guid? license, CancellationToken ct)
+    /// kaydedilen form hiçbir zaman gölge veri sıfırlamasına yol açmaz. <paramref name="banka"/> (<see cref="ObifinBankCatalog"/>
+    /// kodu, harf duyarsız) verilirse banka ekleme formu o bankanın alanlarıyla açılır.</summary>
+    public async Task OnGetAsync(Guid? license, string? banka, CancellationToken ct)
     {
+        SelectedBank = ObifinBankCatalog.TryGet(banka, out var bank) ? bank : null;
         Rows = await _db.ObifinConnections.AsNoTracking().OrderBy(c => c.CreatedAt)
             .Select(c => new ConnectionRow(c.LicenseId,
                 _db.Licenses.Where(l => l.Id == c.LicenseId).Select(l => l.Customer.Email).FirstOrDefault() ?? "(bilinmiyor)",
@@ -171,7 +162,7 @@ public class IndexModel : PageModel
             _log.LogInformation("Obifin admin Save: kimlik değişikliği gölge veri silme onayı bekliyor — lisans={LicenseId}", LicenseId);
             // Layout'un bildirimi bu istekte okur ve tüketir: sonraki sayfada yinelenmez.
             TempData["Error"] = ex.Message + " " + ReenterSecretsHint;
-            await OnGetAsync(null, ct); // license = null: bağlı LicenseId/BaseUrl/UserCode'a dokunmaz
+            await OnGetAsync(null, null, ct); // license = null: bağlı LicenseId/BaseUrl/UserCode'a dokunmaz
             // Bağlantı var (kimlik değişimi ancak mevcut bağlantıda onay ister): "kayıtlı; boş = değiştirme" ipuçları için.
             Editing = await LoadEditingAsync(LicenseId, ct);
             return Page();
@@ -212,39 +203,57 @@ public class IndexModel : PageModel
     /// sınırlar (iptal olmadığından her <see cref="OperationCanceledException"/> zaman aşımıdır).
     /// <para>Aynı sebeple sonucu belirsiz ekleme (<see cref="ObifinBankAddUncertainException"/>: ekleme çağrısı ağ/zaman
     /// aşımıyla düştü, ya da geçti ama liste alınamadı ya da etiket listede bulunamadı) "eklenemedi" diye gösterilmez:
-    /// servisin mesajı Obifin'deki etiketi ve tekrar eklememe uyarısını taşır, önek eklenmeden bildirime düşer.</para></summary>
+    /// servisin mesajı Obifin'deki etiketi ve tekrar eklememe uyarısını taşır, önek eklenmeden bildirime düşer.</para>
+    /// <para>Alanlar <see cref="ObifinBankCatalog"/>'tan: yalnız seçilen türün <c>Field_&lt;Anahtar&gt;</c> değerleri okunur,
+    /// başka ad yok sayılır. Zorunlu alan boşsa Obifin'e hiç gidilmez; bildirim yalnız eksik alanların ETİKETİNİ taşır,
+    /// gönderilen değerleri asla. Bilinen bir bankanın her dönüşü (hata ya da başarı) o bankanın formuna
+    /// (<c>?banka=</c>): admin bankayı yeniden seçmez. Formun değerleri geri basılmaz, yeniden girilir.</para></summary>
     public async Task<IActionResult> OnPostAddBankAsync()
     {
-        if (BankDisabled) return BankDisabledResult();
-        var banka = (BankaKodu ?? "").Trim().ToLowerInvariant();
-        if (!BankFields.TryGetValue(banka, out var fields)) { TempData["Error"] = "Bilinmeyen banka kodu."; return RedirectToPage(); }
-        // Alanlar Field_<Ad> olarak gelir; yalnız bu isteğin belleğinde yaşar, loglanmaz, saklanmaz.
-        var form = new Dictionary<string, string>();
-        foreach (var f in fields)
+        var bankCode = ObifinBankCatalog.TryGet(BankaKodu, out var type) ? type.Code : null;
+        // Tanınmayan kodun formu yok: düz sayfaya döner.
+        IActionResult BackToForm() => bankCode is null ? RedirectToPage() : RedirectToPage(new { banka = bankCode });
+        if (BankDisabled)
         {
-            var v = Request.Form["Field_" + f].ToString();
-            if (!string.IsNullOrWhiteSpace(v)) form[f] = v.Trim();
+            TempData["Error"] = BankHasher.DisabledMessage;
+            return BackToForm();
+        }
+        if (type is null) { TempData["Error"] = "Bilinmeyen banka kodu."; return BackToForm(); }
+        // Alanlar Field_<Anahtar> olarak gelir; yalnız bu isteğin belleğinde yaşar, loglanmaz, saklanmaz.
+        var form = new Dictionary<string, string>();
+        var missing = new List<string>();
+        foreach (var f in type.Fields)
+        {
+            var v = Request.Form["Field_" + f.Key].ToString();
+            if (!string.IsNullOrWhiteSpace(v)) form[f.Key] = v.Trim();
+            else if (f.Required) missing.Add(f.Label);
+        }
+        if (missing.Count > 0)
+        {
+            TempData["Error"] = "Eksik alan: " + string.Join(", ", missing);
+            return BackToForm();
         }
         var connections = Connections;
         BankConnection bc;
         try
         {
-            bc = await connections.AddBankConnectionAsync(LicenseId, banka, Label ?? "", form, CancellationToken.None);
+            bc = await connections.AddBankConnectionAsync(LicenseId, type.Code, Label ?? "", form, CancellationToken.None);
         }
         catch (ObifinBankAddUncertainException ex)
         {
             // Kayıt Obifin'de açılmış olabilir (ya da açıldı): "eklenemedi" demek admin'i tekrar eklemeye iterdi.
             LogHandled("AddBank", ex);
             TempData["Error"] = ex.Message;
-            return RedirectToPage();
+            return BackToForm();
         }
         catch (Exception ex) when (DescribeFailure(ex, CancellationToken.None) is { } msg)
         {
             LogHandled("AddBank", ex);
             TempData["Error"] = "Banka bağlantısı eklenemedi: " + msg;
-            return RedirectToPage();
+            return BackToForm();
         }
-        await _audit.LogAsync(AuditEvents.ObifinBankAdd, AuditTargets.ObifinConnection, LicenseId.ToString(), new { banka, bc.BankaApiId }, CancellationToken.None);
+        await _audit.LogAsync(AuditEvents.ObifinBankAdd, AuditTargets.ObifinConnection, LicenseId.ToString(),
+            new { banka = type.Code, bc.BankaApiId }, CancellationToken.None);
         // Bağlantı Obifin'de ve yerelde AÇILDI: hesap yenilemesi NE sebeple düşerse düşsün "eklenemedi" demek ya da 500
         // vermek yanlış olur (admin tekrar ekler, Obifin'de ikinci kayıt açılır). Saatlik yenileme işi hesapları sonra
         // getirir. Yalnız ObjectDisposedException (programlama hatası) yukarı gider; çağıranın iptali yok (jeton None),
@@ -261,7 +270,7 @@ public class IndexModel : PageModel
             var msg = DescribeFailure(ex, CancellationToken.None) ?? $"beklenmeyen hata ({ex.GetType().Name})";
             TempData["Error"] = $"Banka bağlantısı eklendi (Obifin #{bc.BankaApiId}) ama hesap listesi yenilenemedi: {msg}. Saatlik yenileme tekrar dener.";
         }
-        return RedirectToPage();
+        return BackToForm();
     }
 
     public async Task<IActionResult> OnPostPollNowAsync(CancellationToken ct)
@@ -296,11 +305,6 @@ public class IndexModel : PageModel
         if (span < TimeSpan.FromDays(2)) return $"{(int)span.TotalHours} sa önce";
         return $"{(int)span.TotalDays} gün önce";
     }
-
-    /// <summary>Banka ekleme formunda alan parola kutusu mu: adında (harf duyarsız) <see cref="MaskedInputNameParts"/>'dan
-    /// biri geçiyor.</summary>
-    public static bool IsMaskedBankField(string name)
-        => MaskedInputNameParts.Any(m => name.Contains(m, StringComparison.OrdinalIgnoreCase));
 
     private IActionResult BankDisabledResult()
     {
