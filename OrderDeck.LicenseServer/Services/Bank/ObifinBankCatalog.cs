@@ -22,7 +22,8 @@ public static class ObifinBankCatalog
 {
     /// <summary>Bankanın hesap hareketleri web servisi (kurumsal internet şubesi / şube başvurusu).</summary>
     public const string WebService = "Web servis";
-    /// <summary>Bankanın API başvurusu. Obifin'de kodu <c>…api</c> ile biten dört tür.</summary>
+    /// <summary>Bankanın API başvurusu: kodu <c>…api</c> ile biten dört tür, ayrıca API anahtarı / client kimliğiyle bağlanan
+    /// Papara ve Türk Ticaret Bankası (tek türleri olduğundan adlarında "— API" eki yok).</summary>
     public const string Api = "API";
 
     /// <summary>Obifin anahtarı → Türkçe etiket. Etiket önde, onu kullanan anahtarlar arkada: birden çok anahtar aynı adı
@@ -99,10 +100,11 @@ public static class ObifinBankCatalog
         Tur("kuveytturk", "Kuveyt Türk — web servis", ["KullaniciAdi", "Sifre"]),
         Tur("kuveytturkapi", "Kuveyt Türk — API", []),
         Tur("odeabank", "Odeabank", ["KullaniciKodu", "Sifre", "MusteriNo"]),
-        Tur("papara", "Papara", ["APIKey", "APISecret"]),
+        Tur("papara", "Papara", ["APIKey", "APISecret"], yontem: Api),
         Tur("turkland", "Turkland Bank", ["KullaniciAdi", "Sifre"],
             ozel: [new("KullaniciAdi", Etiket: "Kullanıcı adı (p1)"), new("Sifre", Etiket: "Şifre (seckod)")]),
-        Tur("turkticaret", "Türk Ticaret Bankası", ["CorporationCode", "APIKey", "Password", "ClientId", "ClientSecret"]),
+        Tur("turkticaret", "Türk Ticaret Bankası", ["CorporationCode", "APIKey", "Password", "ClientId", "ClientSecret"],
+            yontem: Api),
         Tur("qnb", "QNB — web servis", ["KullaniciAdi", "Sifre", "Url"], ozel: [WsdlIpucu]),
         Tur("qnbapi", "QNB — API", ["ClientId", "ClientSecret", "AccessToken", "RefreshToken"]),
         Tur("sekerbank", "Şekerbank", ["KullaniciAdi", "Sifre"]),
@@ -139,9 +141,9 @@ public static class ObifinBankCatalog
     }
 
     /// <summary>Alan sırası: <paramref name="zorunlu"/> (Obifin'in sırasıyla), <paramref name="istegeBagli"/> (etikete
-    /// "(isteğe bağlı)" eklenir), en sonda VKN. Yöntem koddan: <c>…api</c> = API, gerisi web servis.</summary>
+    /// "(isteğe bağlı)" eklenir), en sonda VKN. Yöntem verilmezse koddan: <c>…api</c> = API, gerisi web servis.</summary>
     private static ObifinBankType Tur(string kod, string ad, string[] zorunlu, Ozel[]? ozel = null,
-        string[]? istegeBagli = null, string? istegeBagliIpucu = null)
+        string[]? istegeBagli = null, string? istegeBagliIpucu = null, string? yontem = null)
     {
         var ozelMap = (ozel ?? []).ToDictionary(o => o.Anahtar, StringComparer.Ordinal);
         ObifinBankField Alan(string anahtar, bool zorunluMu, string? ipucu)
@@ -155,6 +157,6 @@ public static class ObifinBankCatalog
             .Concat((istegeBagli ?? []).Select(a => Alan(a, false, istegeBagliIpucu)))
             .Append(Vkn)
             .ToList().AsReadOnly();
-        return new ObifinBankType(kod, ad, kod.EndsWith("api", StringComparison.Ordinal) ? Api : WebService, fields);
+        return new ObifinBankType(kod, ad, yontem ?? (kod.EndsWith("api", StringComparison.Ordinal) ? Api : WebService), fields);
     }
 }

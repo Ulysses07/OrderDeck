@@ -114,12 +114,20 @@ public sealed class ObifinBankCatalogTests
     }
 
     [Fact]
-    public void Yontem_api_kodlarinda_API_digerlerinde_Web_servis()
+    public void Yontem_api_kodlarinda_ve_API_anahtariyla_baglanan_Papara_Turk_Ticarette_API_digerlerinde_Web_servis()
     {
+        // Papara (APIKey/APISecret) ve Türk Ticaret (client kimliği + API anahtarı) API anahtarıyla bağlanır: yardım satırı
+        // "web servisi başvurusu" demesin. hsbc, dunyakatilim, anadolubank İngilizce alan adlarına rağmen web servis.
         ObifinBankCatalog.All.Where(t => t.Method == ObifinBankCatalog.Api).Select(t => t.Code)
-            .Should().BeEquivalentTo("enparaapi", "garantibbvaapi", "kuveytturkapi", "qnbapi");
+            .Should().BeEquivalentTo("enparaapi", "garantibbvaapi", "kuveytturkapi", "qnbapi", "papara", "turkticaret");
+        Tur("papara").Method.Should().Be(ObifinBankCatalog.Api);
+        Tur("turkticaret").Method.Should().Be(ObifinBankCatalog.Api);
+        foreach (var kod in new[] { "hsbc", "dunyakatilim", "anadolubank" })
+            Tur(kod).Method.Should().Be(ObifinBankCatalog.WebService, kod);
         ObifinBankCatalog.All.Where(t => t.Method != ObifinBankCatalog.Api)
-            .Should().OnlyContain(t => t.Method == ObifinBankCatalog.WebService).And.HaveCount(31);
+            .Should().OnlyContain(t => t.Method == ObifinBankCatalog.WebService).And.HaveCount(29);
+        Tur("papara").DisplayName.Should().Be("Papara", "tek türü olan bankada \"— API\" eki yok");
+        Tur("turkticaret").DisplayName.Should().Be("Türk Ticaret Bankası");
         ObifinBankCatalog.Api.Should().Be("API");
         ObifinBankCatalog.WebService.Should().Be("Web servis");
     }
