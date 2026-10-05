@@ -56,7 +56,7 @@ public sealed class TcknProtectorTests
     [Fact]
     public void Rakam_olmayan_eski_duz_metin_de_oldugu_gibi_okunur()
     {
-        var plain = Guid.NewGuid().ToString("N")[..11]; // küçük harf hex: "CfDJ8" ile başlayamaz
+        var plain = "x" + Guid.NewGuid().ToString("N")[..10]; // harf içerir ve "CfDJ8" ile başlayamaz
         New().Unprotect(plain).Should().Be(plain);
     }
 
