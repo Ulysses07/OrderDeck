@@ -46,6 +46,41 @@ public sealed class TcknProtectorTests
         => New().Unprotect("CfDJ8" + Guid.NewGuid().ToString("N")).Should().BeNull();
 
     [Fact]
+    public void Baska_anahtar_halkasinin_sifreli_metni_null_doner_firlatmaz()
+    {
+        // Gerçek anahtar kaybı: geçerli zarf, halkada olmayan anahtar.
+        var foreign = New().Protect(NewDigits())!;
+        New().Unprotect(foreign).Should().BeNull();
+    }
+
+    [Fact]
+    public void Rakam_olmayan_eski_duz_metin_de_oldugu_gibi_okunur()
+    {
+        var plain = Guid.NewGuid().ToString("N")[..11]; // küçük harf hex: "CfDJ8" ile başlayamaz
+        New().Unprotect(plain).Should().Be(plain);
+    }
+
+    [Fact]
+    public void Protect_onekli_girdiyi_de_sifreler_cozme_kahini_olmaz()
+    {
+        // Sızan yedekteki şifreli metin kayıt formuna yapıştırılırsa sunucu onu çözmemeli.
+        var p = New();
+        var leaked = p.Protect(NewDigits())!;
+        p.Unprotect(p.Protect(leaked)).Should().Be(leaked);
+    }
+
+    [Fact]
+    public void Bosluklar_kirpilir_yalniz_bosluk_null()
+    {
+        var p = New();
+        var plain = NewDigits();
+        p.Unprotect(p.Protect($"  {plain} ")).Should().Be(plain);
+        p.Protect("   ").Should().BeNull();
+        p.Unprotect("").Should().BeNull();
+        p.Unprotect("   ").Should().BeNull();
+    }
+
+    [Fact]
     public void On_bir_haneli_olmayan_eski_duz_metin_de_oldugu_gibi_okunur()
     {
         // Kayıt akışı TC'yi doğrulamadan yazıyordu; eski satırda 10 hane de olabilir.
