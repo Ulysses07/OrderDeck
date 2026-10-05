@@ -19,11 +19,14 @@ public sealed class ShopperMeController : ControllerBase
 {
     private readonly LicenseDbContext _db;
     private readonly Services.Iys.IysConsentCollector _iys;
+    private readonly Services.Privacy.TcknProtector _tckn;
 
-    public ShopperMeController(LicenseDbContext db, Services.Iys.IysConsentCollector iys)
+    public ShopperMeController(
+        LicenseDbContext db, Services.Iys.IysConsentCollector iys, Services.Privacy.TcknProtector tckn)
     {
         _db = db;
         _iys = iys;
+        _tckn = tckn;
     }
 
     public sealed record NotificationPrefs(bool Broadcast, bool Orders, bool Payments);
@@ -67,7 +70,7 @@ public sealed class ShopperMeController : ControllerBase
 
         return Ok(new MeResponse(
             shopper.Id, shopper.FullName, shopper.Phone, shopper.Address,
-            shopper.Email, shopper.Tc,
+            shopper.Email, _tckn.Unprotect(shopper.TcProtected),
             new NotificationPrefs(
                 shopper.NotificationsEnabledBroadcast,
                 shopper.NotificationsEnabledOrders,
@@ -119,7 +122,12 @@ public sealed class ShopperMeController : ControllerBase
         {
             if (!IsValidTckn(req.Tc))
                 return Problem(title: "invalid-tc", statusCode: 400);
-            shopper.Tc = req.Tc;
+            // Genişlet adımı (1. sürüm/PR-0a): yazma henüz DÜZ, okuma her iki
+            // biçimi de çözer (bkz. Unprotect çağrıları yukarıda/aşağıda).
+            // Şifreli yazma PR-0b'de (2. sürüm). PR-0b'den PR-0a'ya geri alma
+            // güvenli (şifreliyi de okur); PR-0a'dan PR-0 öncesine geri alma
+            // güvenli (hiç şifreli YAZMAZ).
+            shopper.TcProtected = req.Tc;
         }
 
         if (req.NotificationPrefs is not null)
@@ -204,7 +212,7 @@ public sealed class ShopperMeController : ControllerBase
 
         return Ok(new MeResponse(
             shopper.Id, shopper.FullName, shopper.Phone, shopper.Address,
-            shopper.Email, shopper.Tc,
+            shopper.Email, _tckn.Unprotect(shopper.TcProtected),
             new NotificationPrefs(
                 shopper.NotificationsEnabledBroadcast,
                 shopper.NotificationsEnabledOrders,

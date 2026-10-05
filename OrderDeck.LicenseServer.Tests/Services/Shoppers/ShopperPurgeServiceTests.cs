@@ -7,6 +7,7 @@ using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.LicenseServer.Services.Bank;
 using OrderDeck.LicenseServer.Services.ShopperPayments;
 using OrderDeck.LicenseServer.Services.Shoppers;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 
 namespace OrderDeck.LicenseServer.Tests.Services.Shoppers;
 
@@ -27,7 +28,7 @@ public sealed class ShopperPurgeServiceTests
             PasswordHash = "argon2-hash",
             Address = "Örnek Mah. 1. Sok. No:2 Kadıköy/İstanbul",
             Email = "ayse@example.com",
-            Tc = "12345678901",
+            TcProtected = TestTckn.NewValid(),
             SmsConsent = true,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
@@ -238,7 +239,7 @@ public sealed class ShopperPurgeServiceTests
         purged.FullName.Should().Be("[Silindi]");
         purged.Address.Should().BeEmpty();
         purged.Email.Should().BeNull();
-        purged.Tc.Should().BeNull();
+        purged.TcProtected.Should().BeNull();
         purged.SmsConsent.Should().BeFalse();
         purged.DeletedAt.Should().NotBeNull();
         // Hiçbir doğrulamanın eşleyemeyeceği değer: hesaba bir daha girilemez.

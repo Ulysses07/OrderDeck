@@ -2,6 +2,7 @@ using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
 namespace OrderDeck.LicenseServer.Tests.Domain;
@@ -19,6 +20,7 @@ public class ShopperEntityTests
         await using var db = NewDb();
         var id = Guid.NewGuid();
         var now = DateTimeOffset.UtcNow;
+        var tcDegeri = TestTckn.NewValid();
 
         db.Shoppers.Add(new Shopper
         {
@@ -28,7 +30,7 @@ public class ShopperEntityTests
             PasswordHash = "bcrypt-hash",
             Address = "Bağdat Cd. 1",
             Email = "ali@example.com",
-            Tc = "12345678901",
+            TcProtected = tcDegeri,
             NotificationsEnabledBroadcast = true,
             NotificationsEnabledOrders = true,
             NotificationsEnabledPayments = false,
@@ -42,7 +44,7 @@ public class ShopperEntityTests
         loaded.Phone.Should().Be("+905551112233");
         loaded.PasswordHash.Should().Be("bcrypt-hash");
         loaded.Email.Should().Be("ali@example.com");
-        loaded.Tc.Should().Be("12345678901");
+        loaded.TcProtected.Should().Be(tcDegeri);
         loaded.NotificationsEnabledPayments.Should().BeFalse();
     }
 

@@ -207,9 +207,9 @@ public sealed class ShopperPaymentSubmissionService
         {
             var shopper = await _db.Shoppers
                 .Where(s => s.Id == input.ShopperId)
-                .Select(s => new { s.Tc })
+                .Select(s => new { s.TcProtected })
                 .FirstOrDefaultAsync(ct);
-            if (shopper?.Tc is null)
+            if (shopper?.TcProtected is null)
                 throw new SubmitFailureException(400, "tc-required",
                     "Amount > 9990 TL requires TC kimlik no in profile");
         }

@@ -159,7 +159,13 @@ public sealed class IntakeFormService
             District = district,
             Phone = phone,
             Email = email,
-            Tckn = tckn,
+            // Genişlet adımı (1. sürüm/PR-0a): yazma henüz DÜZ, okuma her iki
+            // biçimi de çözer. Şifreli yazma PR-0b'de (2. sürüm). PR-0b'den
+            // PR-0a'ya geri alma güvenli (şifreliyi de okur); PR-0a'dan PR-0
+            // öncesine geri alma güvenli (hiç şifreli YAZMAZ). Form sayfasının
+            // 11 hane/checksum doğrulaması aynı zamanda çözme kâhini koruması
+            // — bkz. TcknProtector sınıf dokümanı.
+            TcknProtected = tckn,
             WhatsAppConsent = whatsAppConsent,
             SmsConsent = smsConsent,
             SubmittedAt = DateTimeOffset.UtcNow,

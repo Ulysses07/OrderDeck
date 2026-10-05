@@ -320,7 +320,7 @@ public class LicenseDbContext : DbContext
             b.Property(s => s.District).HasMaxLength(50);
             b.Property(s => s.Phone).HasMaxLength(20);
             b.Property(s => s.Email).HasMaxLength(200);
-            b.Property(s => s.Tckn).HasMaxLength(11);
+            b.Property(s => s.TcknProtected).HasColumnName("Tckn").HasMaxLength(Services.Privacy.TcknProtector.ProtectedMaxLength);
             b.Property(s => s.IpAddress).HasMaxLength(64);
             b.Property(s => s.UserAgent).HasMaxLength(500);
             b.HasIndex(s => new { s.IntakeFormConfigId, s.SubmittedAt });
@@ -547,7 +547,7 @@ public class LicenseDbContext : DbContext
             b.Property(s => s.PasswordHash).HasMaxLength(256).IsRequired();
             b.Property(s => s.Address).HasMaxLength(500).IsRequired();
             b.Property(s => s.Email).HasMaxLength(256);
-            b.Property(s => s.Tc).HasMaxLength(11);
+            b.Property(s => s.TcProtected).HasColumnName("Tc").HasMaxLength(Services.Privacy.TcknProtector.ProtectedMaxLength);
             // Opt-in: ticari ileti izni varsayılan kapalı. İzin yalnızca kayıt
             // ekranındaki açık onay kutusundan (register SmsConsent=true) gelir.
             b.Property(s => s.SmsConsent).HasDefaultValue(false);

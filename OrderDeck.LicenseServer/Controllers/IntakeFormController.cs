@@ -18,12 +18,16 @@ public sealed class IntakeFormController : ControllerBase
     private readonly IntakeFormService _service;
     private readonly LicenseDbContext _db;
     private readonly string _publicBaseUrl;
+    private readonly Services.Privacy.TcknProtector _tckn;
 
-    public IntakeFormController(IntakeFormService service, LicenseDbContext db, IConfiguration config)
+    public IntakeFormController(
+        IntakeFormService service, LicenseDbContext db, IConfiguration config,
+        Services.Privacy.TcknProtector tckn)
     {
         _service = service;
         _db = db;
         _publicBaseUrl = config["App:PublicBaseUrl"]?.TrimEnd('/') ?? "https://localhost:5001";
+        _tckn = tckn;
     }
 
     public sealed record IntakeFormBody(
@@ -96,7 +100,7 @@ public sealed class IntakeFormController : ControllerBase
         return Ok(rows.Select(s => new SubmissionBody(
             s.Id, s.Username, s.FullName, s.Address, s.Phone, s.SubmittedAt,
             s.YouTubeUsername, s.InstagramUsername, s.FacebookUsername, s.TikTokUsername,
-            s.Email, s.Tckn, s.WhatsAppConsent, s.SmsConsent, s.YouTubeChannelId,
+            s.Email, _tckn.Unprotect(s.TcknProtected), s.WhatsAppConsent, s.SmsConsent, s.YouTubeChannelId,
             s.City, s.District)));
     }
 

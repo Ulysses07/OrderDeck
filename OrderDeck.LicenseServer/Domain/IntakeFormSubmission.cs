@@ -46,8 +46,11 @@ public sealed class IntakeFormSubmission
 
     /// <summary>Formda zorunlu. DB'de nullable (eski satırlar null).</summary>
     public string? Email { get; set; }
-    /// <summary>Fatura için opsiyonel TCKN (11 hane).</summary>
-    public string? Tckn { get; set; }
+    /// <summary>Fatura için opsiyonel TCKN. Bu sürümde (genişlet adımı) yazma
+    /// hâlâ düz metin; kolon düz metin VEYA şifreli (TcknProtector) tutabilir
+    /// — her okuma Unprotect ile ikisini de çözer. Şifreli yazma bir sonraki
+    /// sürümde (bkz. TcknProtector sınıf dokümanı).</summary>
+    public string? TcknProtected { get; set; }
 
     // Mesaj izinleri — şimdilik yalnız toplanır, gönderim ileride (Faz 4).
     public bool WhatsAppConsent { get; set; }
