@@ -43,12 +43,22 @@ public sealed class TcknProtectorTests
 
     [Fact]
     public void Cozulemeyen_deger_null_doner_firlatmaz()
-        => New().Unprotect("bozuk-sifreli-metin").Should().BeNull();
+        => New().Unprotect("CfDJ8" + Guid.NewGuid().ToString("N")).Should().BeNull();
 
     [Fact]
-    public void IsLegacyPlaintext_yalniz_11_hane()
+    public void On_bir_haneli_olmayan_eski_duz_metin_de_oldugu_gibi_okunur()
+    {
+        // Kayıt akışı TC'yi doğrulamadan yazıyordu; eski satırda 10 hane de olabilir.
+        var plain = NewDigits()[..10];
+        TcknProtector.IsLegacyPlaintext(plain).Should().BeTrue();
+        New().Unprotect(plain).Should().Be(plain);
+    }
+
+    [Fact]
+    public void IsLegacyPlaintext_DataProtection_onekine_bakar()
     {
         TcknProtector.IsLegacyPlaintext(NewDigits()).Should().BeTrue();
         TcknProtector.IsLegacyPlaintext("CfDJ8abc").Should().BeFalse();
+        TcknProtector.IsLegacyPlaintext(New().Protect(NewDigits())!).Should().BeFalse();
     }
 }

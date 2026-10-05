@@ -13,9 +13,9 @@ namespace OrderDeck.LicenseServer.Services.Privacy;
 /// kırılır. Domain özellikleri bu yüzden *Protected adını taşır; her
 /// okuma/yazma yeri bu sınıfı çağırmak zorunda.
 ///
-/// Geçiş dönemi: 11 haneli değer eski düz metindir, olduğu gibi döner
-/// (TcknBackfillHostedService onları şifreler). Düz metin desteği bir sonraki
-/// sürümde kaldırılacak.
+/// Geçiş dönemi: Data Protection öneki (CfDJ8) taşımayan değer eski düz
+/// metindir, olduğu gibi döner (TcknBackfillHostedService onları şifreler).
+/// Düz metin desteği bir sonraki sürümde kaldırılacak.
 ///
 /// Anahtar kaybı: çözülemeyen değer null döner ve uyarı yazılır — TCKN
 /// müşteriden yeniden alınabilir; 500 ile akışı kilitlemek daha kötü.
@@ -53,6 +53,12 @@ public sealed class TcknProtector
         }
     }
 
+    /// <summary>Data Protection yükleri sabit sihirli başlıkla (0x09F0C9F0)
+    /// başlar; base64url'de bu her zaman "CfDJ8". Bu önekle başlamayan her
+    /// değer eski düz metindir — biçimi ne olursa olsun (kayıt akışı TC'yi
+    /// doğrulamadan yazdığı için 11 hane garanti değil).</summary>
+    private const string PayloadPrefix = "CfDJ8";
+
     public static bool IsLegacyPlaintext(string value)
-        => value.Length == 11 && value.All(char.IsAsciiDigit);
+        => !value.StartsWith(PayloadPrefix, StringComparison.Ordinal);
 }
