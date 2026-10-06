@@ -67,12 +67,13 @@ public sealed class CustomerIdentityMergerTests : IClassFixture<ApiFactory>
         (await db.Orders.SingleAsync(o => o.LicenseId == license.Id)).CustomerId.Should().Be(canonical.Id.ToString("N"));
         (await db.Shipments.SingleAsync(s => s.LicenseId == license.Id)).CustomerId.Should().Be(canonical.Id.ToString("N"));
         var balances = await db.CustomerBalances.Where(b => b.LicenseId == license.Id).ToListAsync();
-        balances.Should().ContainSingle().Which.Balance.Should().Be(80);
-        balances[0].WpfCustomerId.Should().Be(canonical.Id);
+        balances.Should().HaveCount(2, "kopyanın bakiye satırı silinmez — tutarı taşınır, satırın kendisi 0'lanır");
+        balances.Single(b => b.WpfCustomerId == canonical.Id).Balance.Should().Be(80);
+        balances.Single(b => b.WpfCustomerId == copy.Id).Balance.Should().Be(0m, "kopyanın tutarı asıl kayda taşındı");
     }
 
     [Fact]
-    public async Task Asil_kayitta_bakiye_yoksa_kopyanin_bakiye_satiri_aynen_tasinir()
+    public async Task Asil_kayitta_bakiye_yoksa_kopya_icin_yeni_satir_acilir_kopyanin_satiri_sifirlanir()
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -91,10 +92,13 @@ public sealed class CustomerIdentityMergerTests : IClassFixture<ApiFactory>
 
         counts.Balances.Should().Be(1);
         var balances = await db.CustomerBalances.Where(b => b.LicenseId == license.Id).ToListAsync();
-        balances.Should().ContainSingle();
-        balances[0].Id.Should().Be(balanceId, "satır silinip yeniden oluşturulmaz, aynı satır repoint edilir");
-        balances[0].WpfCustomerId.Should().Be(canonical.Id);
-        balances[0].Balance.Should().Be(45m, "asıl kayıtta bakiye yoktu — tutar değişmeden taşınır");
+        balances.Should().HaveCount(2, "kopyanın satırı silinmez — asıl kayıt için YENİ bir satır açılır");
+        var canonicalBal = balances.Single(b => b.WpfCustomerId == canonical.Id);
+        canonicalBal.Id.Should().NotBe(balanceId, "asıl kayıt için yeni satır açıldı, kopyanınki repoint edilmedi");
+        canonicalBal.Balance.Should().Be(45m, "asıl kayıtta bakiye yoktu — tutar değişmeden yeni satıra geçer");
+        var copyBal = balances.Single(b => b.Id == balanceId);
+        copyBal.WpfCustomerId.Should().Be(copy.Id, "kopyanın satırı kendi WpfCustomerId'sinde kalır, taşınmaz");
+        copyBal.Balance.Should().Be(0m, "tutar asıl kayda taşındı — kopyanınki sıfırlanır");
     }
 
     [Fact]
@@ -261,7 +265,7 @@ public sealed class CustomerIdentityMergerTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task Siparisin_SyncVersion_u_tasinirken_artar()
+    public async Task Siparisin_SyncVersion_u_tasimada_degismez()
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -283,7 +287,8 @@ public sealed class CustomerIdentityMergerTests : IClassFixture<ApiFactory>
         await merger.RepointReferencesAsync(license.Id, copy.Id, canonical.Id, default);
         await db.SaveChangesAsync();
 
-        (await db.Orders.SingleAsync(o => o.Id == orderId)).SyncVersion.Should().Be(6);
+        (await db.Orders.SingleAsync(o => o.Id == orderId)).SyncVersion.Should().Be(5,
+            "EF jetonu WHERE'e zaten giriyor; artış yalnız eşzamanlı orders/sync partilerini 409'a çevirirdi");
     }
 
     [Fact]

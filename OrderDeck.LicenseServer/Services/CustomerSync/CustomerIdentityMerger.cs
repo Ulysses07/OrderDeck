@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
+using OrderDeck.LicenseServer.Domain;
 
 namespace OrderDeck.LicenseServer.Services.CustomerSync;
 
@@ -15,6 +16,10 @@ namespace OrderDeck.LicenseServer.Services.CustomerSync;
 ///
 /// Bilerek taşınmayan: SmsCampaignRecipient.WpfCustomerId — gönderim anının
 /// denetim kaydı; o an hangi kayda gidildiyse o kalır.
+///
+/// CustomerBalance de bilerek taşınmaz/silinmez (A4 kalite incelemesi,
+/// 2026-10-06): tutar asıl kaydın satırına eklenir (yoksa açılır), kopyanınki
+/// 0'lanır ama satır kalır. Gerekçe RepointReferencesAsync'in bakiye bloğunda.
 /// </summary>
 public sealed class CustomerIdentityMerger
 {
@@ -29,12 +34,11 @@ public sealed class CustomerIdentityMerger
         Guid licenseId, Guid fromId, Guid toId, CancellationToken ct)
     {
         // Yozlaşmış çağrı: kopya ve asıl aynı kayıtsa taşınacak bir şey yok.
-        // Korumasız bırakılsaydı iki gerçek hata oluşurdu: (1) Order.SyncVersion
-        // hiçbir anlamı olmadan artardı (CustomerId zaten toHex'e eşit olsa da
-        // ++ koşulsuz çalışır), (2) CustomerBalance tarafında fromBal/toBal
-        // AYNI satıra düşer ve "toBal var" dalı o satırı KENDİ ÜZERİNE
-        // toplayıp SİLERDİ — bakiye kaybı. Erken çıkış hiçbir satırı okumadan/
-        // izlemeden sıfır sayaçla döner.
+        // Korumasız bırakılsaydı CustomerBalance tarafında fromBal/toBal AYNI
+        // satıra düşerdi: "toBal.Balance += fromBal.Balance" kendi üzerine
+        // toplar (iki katına çıkar), hemen ardından "fromBal.Balance = 0m"
+        // AYNI nesneyi sıfırlar — net sonuç bakiyenin sıfırlanıp kaybolması.
+        // Erken çıkış hiçbir satırı okumadan/izlemeden sıfır sayaçla döner.
         if (fromId == toId)
             return new RepointCounts(0, 0, 0, 0, 0, 0, 0, 0);
 
@@ -48,7 +52,10 @@ public sealed class CustomerIdentityMerger
         {
             o.CustomerId = toHex;
             o.UpdatedAt = now;
-            o.SyncVersion++; // eşzamanlı orders/sync bu satırı ezmesin (Order.SyncVersion)
+            // SyncVersion ARTIRILMAZ: EF jetonu bu UPDATE'in WHERE'ine zaten
+            // koyar; orders/sync güncellemede CustomerId yazmaz. Artış
+            // yalnız eşzamanlı orders/sync partilerini 409'a çevirirdi (A4
+            // kalite incelemesi).
         }
 
         var shipments = await _db.Shipments
@@ -63,26 +70,40 @@ public sealed class CustomerIdentityMerger
             .Where(t => t.LicenseId == licenseId && t.WpfCustomerId == fromId).ToListAsync(ct);
         foreach (var t in txs) t.WpfCustomerId = toId;
 
+        // Bakiye: kopyanın satırı TAŞINMAZ ve SİLİNMEZ — tutarı asıl kaydın
+        // satırına eklenir (yoksa açılır), kopyanınki 0'lanır (A4 kalite
+        // incelemesi). (1) Birleştirme işi bir kişinin birden çok kopyasını tek
+        // kayıt işleminde taşır: taşıma, ikinci kopyada asıl satırı
+        // veritabanında bulamayıp ikinci bir satır açar ve tekil indeksi
+        // (LicenseId, WpfCustomerId) patlatırdı — asıl satır önce izlenen
+        // (henüz kaydedilmemiş) satırlarda aranır. (2) Kopyanın bakiyesine aynı
+        // anda dokunan bir uygulama silinmiş ya da başka kişiye geçmiş satırı
+        // yeniden yükleyip defteri bozardı; 0'lanmış satırda mevcut
+        // yeniden-yükle mantığı temiz bir "bakiye yok" verir.
+        // Kararlaştırıldı (2026-10-05): aynı kişinin kopyalarındaki bakiyeler toplanır.
         var balances = 0;
         var fromBal = await _db.CustomerBalances
             .SingleOrDefaultAsync(b => b.LicenseId == licenseId && b.WpfCustomerId == fromId, ct);
-        if (fromBal is not null)
+        if (fromBal is not null && fromBal.Balance != 0m)
         {
-            var toBal = await _db.CustomerBalances
-                .SingleOrDefaultAsync(b => b.LicenseId == licenseId && b.WpfCustomerId == toId, ct);
+            // DbSet.Local Deleted durumdakileri içermez.
+            var toBal = _db.CustomerBalances.Local
+                            .SingleOrDefault(b => b.LicenseId == licenseId && b.WpfCustomerId == toId)
+                        ?? await _db.CustomerBalances
+                            .SingleOrDefaultAsync(b => b.LicenseId == licenseId && b.WpfCustomerId == toId, ct);
             if (toBal is null)
             {
-                fromBal.WpfCustomerId = toId;
-                fromBal.UpdatedAt = now;
+                toBal = new CustomerBalance
+                {
+                    Id = Guid.NewGuid(), LicenseId = licenseId, WpfCustomerId = toId,
+                    Balance = 0m, UpdatedAt = now,
+                };
+                _db.CustomerBalances.Add(toBal);
             }
-            else
-            {
-                // Kararlaştırıldı (2026-10-05): aynı kişinin kopyalarındaki
-                // bakiyeler toplanır.
-                toBal.Balance += fromBal.Balance;
-                toBal.UpdatedAt = now;
-                _db.CustomerBalances.Remove(fromBal);
-            }
+            toBal.Balance += fromBal.Balance;
+            toBal.UpdatedAt = now;
+            fromBal.Balance = 0m;
+            fromBal.UpdatedAt = now;
             balances = 1;
         }
 
@@ -98,7 +119,7 @@ public sealed class CustomerIdentityMerger
         {
             if (m.ProposedWpfCustomerId == fromId) m.ProposedWpfCustomerId = toId;
             if (m.ActualWpfCustomerId == fromId) m.ActualWpfCustomerId = toId;
-            m.UpdatedAt = now; // PaymentMatch eşzamanlılık jetonu
+            m.UpdatedAt = now; // jeton; SaveChanges'teki StampPaymentMatchVersions zaten yeniden damgalar
         }
 
         var convs = await _db.WaConversations
