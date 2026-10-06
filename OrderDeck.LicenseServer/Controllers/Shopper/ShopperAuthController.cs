@@ -237,16 +237,23 @@ public sealed class ShopperAuthController : ControllerBase
                 userAgent: Request.Headers.UserAgent.ToString(), ct: ct);
         }
 
-        // 7. Match WpfCustomerProjection by (LicenseId, Platform, Username) — ama
-        // bağlamak için telefon kanıtı şart. Kullanıcı adı yayın sohbetinde
+        // 7. Match WpfCustomerProjection by (LicenseId, Platform, kimlik anahtarı) —
+        // ama bağlamak için telefon kanıtı şart. Kullanıcı adı yayın sohbetinde
         // herkese açık olduğu için tek başına sahiplik kanıtı değil; gerekçe
         // WpfCustomerLinkMatcher'da.
+        //
+        // Aday KİMLİK ANAHTARIYLA aranır (A5c), tam kullanıcı adıyla değil:
+        // "irem" kaydı varken "İrem" ile kayıt (CI_AS'de bile N'İrem' ≠
+        // N'irem') adayı kaçırır, aynı kimliğe ikinci bir asıl kayıt açardı —
+        // Bölüm B'nin tekil indeksiyle kayıt 500'e düşerdi. IdentityKey BIN2:
+        // birebir karşılaştırma.
         var platformNorm = req.Platform.Trim().ToLowerInvariant();
         var usernameNorm = req.Username.Trim();
+        var identityKey = WpfCustomerProjection.IdentityKeyOf(usernameNorm);
         var candidates = await _db.WpfCustomerProjections
             .Where(p => p.LicenseId == license.Id &&
                         p.Platform == platformNorm &&
-                        p.Username == usernameNorm)
+                        p.IdentityKey == identityKey)
             .ToListAsync(ct);
         var wpfMatch = WpfCustomerLinkMatcher.FindProven(
             candidates, shopper.Phone, shopper.PhoneVerifiedAt);
@@ -751,10 +758,12 @@ public sealed class ShopperAuthController : ControllerBase
 
         foreach (var link in pendingLinks)
         {
+            // Aday kimlik anahtarıyla (kayıt adımı 7 ile aynı gerekçe).
+            var identityKey = WpfCustomerProjection.IdentityKeyOf(link.Username);
             var candidates = await _db.WpfCustomerProjections
                 .Where(p => p.LicenseId == link.LicenseId
                     && p.Platform == link.Platform
-                    && p.Username == link.Username
+                    && p.IdentityKey == identityKey
                     && p.PurgedAt == null)
                 .ToListAsync(ct);
             var match = WpfCustomerLinkMatcher.FindProven(

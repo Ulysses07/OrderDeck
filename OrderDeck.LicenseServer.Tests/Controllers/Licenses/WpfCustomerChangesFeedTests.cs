@@ -32,7 +32,7 @@ public sealed class WpfCustomerChangesFeedTests : IAsyncLifetime
     public Task DisposeAsync() { _factory.Dispose(); return Task.CompletedTask; }
 
     private sealed record Item(Guid Id, string Platform, string Username, Guid? MergedIntoId,
-        DateTimeOffset? PurgedAt, string? City, string? Tckn, long ChangeSeq);
+        DateTimeOffset? PurgedAt, string? City, string? Tckn, long ChangeSeq, bool CreatedByShopper);
     private sealed record Page(List<Item> Items, long NextAfterSeq, bool CursorReset);
 
     private async Task<(HttpClient Client, Guid LicenseId)> SetupAsync()
@@ -152,8 +152,39 @@ public sealed class WpfCustomerChangesFeedTests : IAsyncLifetime
                 .Balance.Should().Be(30m);
         }
         var page = await GetPageAsync(client, licenseId, afterSeq: 0);
-        page.Items.Should().Contain(i => i.Id == provisionalId && i.MergedIntoId == w);
-        page.Items.Should().Contain(i => i.Id == w && i.MergedIntoId == null);
+        page.Items.Should().Contain(i => i.Id == provisionalId && i.MergedIntoId == w && i.CreatedByShopper,
+            "kopyada bayrak köken olarak kalır ve akışta görünür");
+        page.Items.Should().Contain(i => i.Id == w && i.MergedIntoId == null && !i.CreatedByShopper);
+    }
+
+    /// <summary>
+    /// Akış geçici kökeni (CreatedByShopper) taşır: PR-3 istemcisi Shopper'ın
+    /// açtığı kaydı yayıncının müşterisi gibi indirmesin, kendini koruyabilsin
+    /// (eski ingest beyanı sıradan müşteri olarak indiriyordu). Alan sona eklendi.
+    /// </summary>
+    [Fact]
+    public async Task Akis_gecici_kokeni_tasir()
+    {
+        var (client, licenseId) = await SetupAsync();
+        var provisionalId = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = provisionalId, LicenseId = licenseId, Platform = "tiktok", Username = "shopper-acti",
+                CreatedByShopper = true, UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+        var broadcasterId = Guid.NewGuid();
+        await PushAsync(client, licenseId,
+            new { id = broadcasterId, platform = "tiktok", username = "yayinci-acti", updatedAt = DateTimeOffset.UtcNow, format = 2 });
+
+        var page = await GetPageAsync(client, licenseId, afterSeq: 0);
+
+        page.Items.Single(i => i.Id == provisionalId).CreatedByShopper.Should().BeTrue();
+        page.Items.Single(i => i.Id == broadcasterId).CreatedByShopper.Should().BeFalse();
     }
 
     [Fact]

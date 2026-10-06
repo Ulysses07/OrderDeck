@@ -69,4 +69,46 @@ public sealed record CustomerSyncFields
         BlacklistedAt = p.BlacklistedAt, BlacklistChangedAt = p.BlacklistChangedAt,
         Notes = p.Notes, NotesChangedAt = p.NotesChangedAt,
     };
+
+    /// <summary>Yalnız DAMGALI birimler (yayıncının kararı); damgasız birim —
+    /// Shopper'ın açtığı kayıtta kişinin kendi beyanı — boş/false ve damgasız olur.
+    /// Shopper akışları hiç damga yazmaz; damga yalnız yayıncı gönderiminden gelir.
+    /// Boş/false ve damgasız birimi <see cref="CustomerFieldMerge.Apply"/> hiçbir
+    /// hedefe yazmaz (doldurma kipi boş değerle doldurmaz).</summary>
+    public CustomerSyncFields StampedOnly() => this with
+    {
+        FullName = FullNameChangedAt is null ? null : FullName,
+        DisplayName = DisplayNameChangedAt is null ? null : DisplayName,
+        GroupId = GroupIdChangedAt is null ? null : GroupId,
+        Address = AddressChangedAt is null ? null : Address,
+        City = AddressChangedAt is null ? null : City,
+        District = AddressChangedAt is null ? null : District,
+        RecipientPaysActive = RecipientPaysChangedAt is not null && RecipientPaysActive,
+        Phone = PhoneChangedAt is null ? null : Phone,
+        Email = EmailChangedAt is null ? null : Email,
+        TcknProtected = TcknChangedAt is null ? null : TcknProtected,
+        WhatsAppConsent = WhatsAppConsentChangedAt is not null && WhatsAppConsent,
+        SmsConsent = SmsConsentChangedAt is not null && SmsConsent,
+        IsBlacklisted = BlacklistChangedAt is not null && IsBlacklisted,
+        BlacklistReason = BlacklistChangedAt is null ? null : BlacklistReason,
+        BlacklistedAt = BlacklistChangedAt is null ? null : BlacklistedAt,
+        Notes = NotesChangedAt is null ? null : Notes,
+    };
+
+    /// <summary>ScrubPersonal'ın boşalttığı birimler (ad, takma ad, adres bloğu,
+    /// telefon, e-posta, TCKN, izinler) çıkarılır: silinmiş kaynaktaki "damgalı
+    /// boş" bunlarda bilinçli silme değildir, hedefin verisini silmemeli.
+    /// Kalan: GroupId, alıcı ödemeli, kara liste bloğu, notlar (bkz.
+    /// <see cref="WpfCustomerProjection.ScrubPersonal"/> — aynı liste).</summary>
+    public CustomerSyncFields WithoutScrubbedUnits() => this with
+    {
+        FullName = null, FullNameChangedAt = null,
+        DisplayName = null, DisplayNameChangedAt = null,
+        Address = null, City = null, District = null, AddressChangedAt = null,
+        Phone = null, PhoneChangedAt = null,
+        Email = null, EmailChangedAt = null,
+        TcknProtected = null, TcknChangedAt = null,
+        WhatsAppConsent = false, WhatsAppConsentChangedAt = null,
+        SmsConsent = false, SmsConsentChangedAt = null,
+    };
 }

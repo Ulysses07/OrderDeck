@@ -493,4 +493,87 @@ public sealed class CustomerFieldMergeTests
         p.Address.Should().Be("IŞIK SK. 5");
         p.City.Should().Be("İstanbul");
     }
+
+    // ── kaynak süzgeçleri: geçici ve silinmiş kaynak (A5c) ──────────────
+
+    [Fact]
+    public void StampedOnly_damgasiz_birimi_dusurur_damgaliyi_tutar()
+    {
+        // Shopper'ın açtığı geçici satır: telefon/ad/adres kişinin damgasız
+        // beyanı; kara liste ve not yayıncının damgalı kararı.
+        var source = new WpfCustomerProjection
+        {
+            FullName = "Beyan Adı", Phone = NewPhone(), Address = "Beyan adresi", City = "Kars",
+            SmsConsent = true,
+            IsBlacklisted = true, BlacklistReason = "ödeme yok", BlacklistedAt = T1, BlacklistChangedAt = T1,
+            Notes = "kapıda", NotesChangedAt = T2,
+        };
+
+        var f = CustomerSyncFields.From(source).StampedOnly();
+
+        f.FullName.Should().BeNull();
+        f.Phone.Should().BeNull();
+        f.Address.Should().BeNull();
+        f.City.Should().BeNull();
+        f.SmsConsent.Should().BeFalse();
+        f.IsBlacklisted.Should().BeTrue();
+        f.BlacklistReason.Should().Be("ödeme yok");
+        f.BlacklistChangedAt.Should().Be(T1);
+        f.Notes.Should().Be("kapıda");
+        f.NotesChangedAt.Should().Be(T2);
+    }
+
+    [Fact]
+    public void StampedOnly_kaynak_hedefin_bosunu_damgasiz_beyanla_doldurmaz()
+    {
+        // Boş telefona beyan dolsaydı telefon kanıtı kendiliğinden geçerdi.
+        var target = new WpfCustomerProjection { FullName = "Yayıncının Kaydı" };
+        var source = new WpfCustomerProjection
+        {
+            Phone = NewPhone(), Address = "Beyan adresi", Email = "beyan@example.test",
+            Notes = "damgalı not", NotesChangedAt = T1,
+        };
+
+        CustomerFieldMerge.Apply(target, CustomerSyncFields.From(source).StampedOnly()).Should().BeTrue();
+
+        target.Phone.Should().BeNull();
+        target.Address.Should().BeNull();
+        target.Email.Should().BeNull();
+        target.Notes.Should().Be("damgalı not");
+    }
+
+    [Fact]
+    public void WithoutScrubbedUnits_silinmis_kaynagin_kisisel_birimleri_hedefi_silmez_kararlari_gecer()
+    {
+        // Silinmiş kaynak: ScrubPersonal değerleri boşalttı ama damgaları bıraktı.
+        // O "damgalı boş" bilinçli silme değil; kara liste ve not ise kalır.
+        var source = new WpfCustomerProjection
+        {
+            Phone = NewPhone(), PhoneChangedAt = T3, FullName = "Silinen", FullNameChangedAt = T3,
+            Address = "silinen adres", AddressChangedAt = T3, TcknProtected = NewCipher(), TcknChangedAt = T3,
+            IsBlacklisted = true, BlacklistReason = "iade suistimali", BlacklistedAt = T2, BlacklistChangedAt = T2,
+            Notes = "dikkat", NotesChangedAt = T2,
+        };
+        source.MarkPurged(T3);
+        var phone = NewPhone();
+        var target = new WpfCustomerProjection
+        {
+            Phone = phone, PhoneChangedAt = T1, FullName = "Gerçek Ad", FullNameChangedAt = T1,
+            Address = "gerçek adres", AddressChangedAt = T1,
+        };
+
+        var f = CustomerSyncFields.From(source).WithoutScrubbedUnits();
+
+        f.PhoneChangedAt.Should().BeNull();
+        f.FullNameChangedAt.Should().BeNull();
+        f.AddressChangedAt.Should().BeNull();
+        f.TcknChangedAt.Should().BeNull();
+        CustomerFieldMerge.Apply(target, f).Should().BeTrue();
+        target.Phone.Should().Be(phone);
+        target.FullName.Should().Be("Gerçek Ad");
+        target.Address.Should().Be("gerçek adres");
+        target.IsBlacklisted.Should().BeTrue();
+        target.BlacklistReason.Should().Be("iade suistimali");
+        target.Notes.Should().Be("dikkat");
+    }
 }

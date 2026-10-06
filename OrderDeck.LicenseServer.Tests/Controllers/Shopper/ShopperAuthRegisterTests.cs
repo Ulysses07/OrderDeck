@@ -348,6 +348,78 @@ public class ShopperAuthRegisterTests : IClassFixture<ApiFactory>
         projection.CreatedByShopper.Should().BeTrue();
     }
 
+    // ── A5c: aday araması kimlik anahtarıyla ────────────────────────────────
+
+    private async Task<Guid> SeedBroadcasterProjectionAsync(Guid licenseId, string username, string? phone)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var id = Guid.NewGuid();
+        db.WpfCustomerProjections.Add(new WpfCustomerProjection
+        {
+            Id = id, LicenseId = licenseId, Platform = "tiktok", Username = username,
+            Phone = phone, UpdatedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+        return id;
+    }
+
+    /// <summary>
+    /// "irem" projeksiyonu varken "İrem" ile kayıt adayı KİMLİK ANAHTARIYLA bulur
+    /// ve yeni geçici satır açmaz. Tam kullanıcı adıyla arama (CI_AS'de bile
+    /// N'İrem' ≠ N'irem') adayı kaçırır, aynı kimliğe ikinci bir asıl kayıt
+    /// açardı — Bölüm B'nin tekil indeksiyle kayıt 500'e düşerdi.
+    /// </summary>
+    [Fact]
+    public async Task Register_farkli_yazimli_kullanici_adi_adayi_kimlik_anahtariyla_bulur_yeni_satir_acmaz()
+    {
+        var (licenseId, code, _) = await SeedLicenseAsync();
+        await SeedBroadcasterProjectionAsync(licenseId, "irem", UniquePhone());
+        var phone = UniquePhone();
+
+        var resp = await _factory.CreateClient().PostAsJsonAsync("/api/v1/shopper/auth/register",
+            new RegisterRequest(code, "İrem Kaya", phone, $"kayit-{Guid.NewGuid():N}", "Sivas", "tiktok", "İrem"));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Created);
+        using var check = _factory.Services.CreateScope();
+        var db = check.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.WpfCustomerProjections.IgnoreQueryFilters().CountAsync(p => p.LicenseId == licenseId))
+            .Should().Be(1, "aday bulundu, yeni geçici satır açılmadı");
+        var shopper = await db.Shoppers.SingleAsync(s => s.Phone == phone);
+        (await db.ShopperBroadcasterLinks.SingleAsync(l => l.ShopperId == shopper.Id && l.LicenseId == licenseId))
+            .WpfCustomerId.Should().BeNull("kanıt yok — bağlantı beklemede");
+    }
+
+    /// <summary>Telefon doğrulaması bekleyen bağlantıyı da kimlik anahtarıyla
+    /// çözer: shopper "İrem.K" yazdı, yayıncının kaydı "irem.k" ve telefonu
+    /// shopper'ınki.</summary>
+    [Fact]
+    public async Task Telefon_dogrulamasi_bekleyen_baglantiyi_kimlik_anahtariyla_cozer()
+    {
+        var (licenseId, code, _) = await SeedLicenseAsync();
+        var phone = UniquePhone();
+        var projectionId = await SeedBroadcasterProjectionAsync(licenseId, "irem.k", phone);
+        var client = _factory.CreateClient();
+
+        var resp = await client.PostAsJsonAsync("/api/v1/shopper/auth/register",
+            new RegisterRequest(code, "İrem K", phone, $"kayit-{Guid.NewGuid():N}", "Sivas", "tiktok", "İrem.K"));
+        resp.StatusCode.Should().Be(HttpStatusCode.Created);
+        var body = await resp.Content.ReadFromJsonAsync<AuthResponse>();
+        client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", body!.AccessToken);
+        (await client.PostAsync("/api/v1/shopper/auth/phone-verification/request", null))
+            .StatusCode.Should().Be(HttpStatusCode.Accepted);
+        var gelenKod = System.Text.RegularExpressions.Regex
+            .Match(_factory.Sms.Sent.Last(m => m.Phone == phone).Text, @"\d{6}").Value;
+        (await client.PostAsJsonAsync("/api/v1/shopper/auth/phone-verification/confirm", new ConfirmPhoneRequest(gelenKod)))
+            .StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        using var check = _factory.Services.CreateScope();
+        var db = check.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.ShopperBroadcasterLinks.SingleAsync(l => l.ShopperId == body.ShopperId && l.LicenseId == licenseId))
+            .WpfCustomerId.Should().Be(projectionId);
+    }
+
     // ── A5b: kopya kayıt/eşleştirme adayı değil ─────────────────────────────
 
     private sealed record ConfirmPhoneRequest(string Code);

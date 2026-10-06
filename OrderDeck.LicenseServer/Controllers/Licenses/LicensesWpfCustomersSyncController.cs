@@ -278,8 +278,8 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
                 licenseId, outcome.TakenOver, outcome.LinksUnbound, outcome.UntrustedAliasPushes);
 
         // Retroactive match: for newly-synced (or updated) projections, find any
-        // ShopperBroadcasterLink with matching (LicenseId, Platform, Username) where
-        // WpfCustomerId is null, and set it. Drive-by — avoids needing a cron job.
+        // ShopperBroadcasterLink with matching (LicenseId, Platform, kimlik anahtarı)
+        // where WpfCustomerId is null, and set it. Drive-by — avoids needing a cron job.
         //
         // Burada da telefon kanıtı şart; kural WpfCustomerLinkMatcher'da. Bu üçüncü
         // kopyanın kapısız kalması, kayıt ve katılma akışlarındaki düzeltmeleri
@@ -308,27 +308,35 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
             .ToListAsync(ct);
 
         var retroactiveMatches = 0;
-        foreach (var projection in matchableProjections)
+        if (matchableProjections.Count > 0)
         {
-            var unmatchedLinks = await _db.ShopperBroadcasterLinks
-                .Where(l => l.LicenseId == licenseId
-                    && l.WpfCustomerId == null
-                    && l.LeftAt == null
-                    && l.Platform == projection.Platform
-                    && l.Username == projection.Username)
-                .Select(l => new
-                {
-                    Link = l,
-                    l.Shopper!.Phone,
-                    l.Shopper.PhoneVerifiedAt,
-                })
-                .ToListAsync(ct);
-            foreach (var row in unmatchedLinks)
+            // Bağlantı ↔ projeksiyon eşleşmesi KİMLİK ANAHTARIYLA: shopper kullanıcı
+            // adını kendi yazdığı gibi tutar ("İrem"), yayıncının kaydı kendi
+            // bilgisayarındaki yazımla gelir ("irem"); tam karşılaştırma (CI_AS'de
+            // bile N'İ' ≠ N'i') bekleyen bağlantıyı hiç bağlamazdı. Bağlantı
+            // tablosunda anahtar kolonu yok: aday bağlantılar lisans + platformla
+            // yüklenir, bellekte süzülür.
+            var linkPlatforms = matchableProjections.Select(p => p.Platform).Distinct().ToList();
+            var pendingLinks = (await _db.ShopperBroadcasterLinks
+                    .Where(l => l.LicenseId == licenseId
+                        && l.WpfCustomerId == null
+                        && l.LeftAt == null
+                        && linkPlatforms.Contains(l.Platform))
+                    .Select(l => new { Link = l, l.Shopper.Phone, l.Shopper.PhoneVerifiedAt })
+                    .ToListAsync(ct))
+                .ToLookup(r => (r.Link.Platform, WpfCustomerProjection.IdentityKeyOf(r.Link.Username)));
+            foreach (var projection in matchableProjections)
             {
-                if (!WpfCustomerLinkMatcher.PhoneProves(
-                        projection.Phone, row.Phone, row.PhoneVerifiedAt)) continue;
-                row.Link.WpfCustomerId = projection.Id;
-                retroactiveMatches++;
+                foreach (var row in pendingLinks[(projection.Platform, projection.IdentityKey)])
+                {
+                    // Bu turda başka bir asıl kayda bağlandıysa dokunma (Bölüm B'den
+                    // önce bir kimliğin birden çok asıl kaydı olabilir).
+                    if (row.Link.WpfCustomerId is not null) continue;
+                    if (!WpfCustomerLinkMatcher.PhoneProves(
+                            projection.Phone, row.Phone, row.PhoneVerifiedAt)) continue;
+                    row.Link.WpfCustomerId = projection.Id;
+                    retroactiveMatches++;
+                }
             }
         }
         if (retroactiveMatches > 0)
@@ -433,6 +441,12 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
         //     telefonuna karşı yeniden kanıt ister.
         //   - Silinmiş S de böyle devralınır: silinen shopper'ın beyanıdır,
         //     gerçek müşterinin kaydı değil; yayıncının verisi W'ye iner.
+        //   - S'deki DAMGALI birimler yayıncının kararıdır (geçici satıra kendi
+        //     Id'siyle yazılmış kara liste, not…): S boşaltılmadan ÖNCE W'ye
+        //     taşınır, damgalar W'nin gönderimiyle son-yazan-kazanır yarışır.
+        //     Damgasız birim kişinin kendi beyanıdır — taşınmaz. Silinmiş S'nin
+        //     kişisel birimlerindeki "damgalı boş" bilinçli silme değildir —
+        //     o birimler çıkarılır, W'nin verisini silmez.
         // Döngüden ÖNCE yapılır: aynı partide S'nin kendi Id'si ya da S'nin bir
         // kopyası nerede gelirse gelsin S'yi kopya olarak görsün — sonuç
         // payload sırasına bağlı kalmasın.
@@ -444,6 +458,9 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
             if (!canonicalByKey.TryGetValue(key, out var provisional) || !provisional.CreatedByShopper) continue;
 
             var created = AddCanonical(licenseId, item);
+            var carried = CustomerSyncFields.From(provisional).StampedOnly();
+            if (provisional.PurgedAt is not null) carried = carried.WithoutScrubbedUnits();
+            if (CustomerFieldMerge.Apply(created, carried)) created.UpdatedAt = now;
             provisional.ScrubPersonal();
             provisional.MergedIntoId = created.Id;
             provisional.UpdatedAt = now;
@@ -627,13 +644,22 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
     }
 
     /// <summary>
-    /// Verilen asıl kayıtlara bağlı (ayrılmamış) bağlantılar satırın ŞİMDİKİ
-    /// telefonuna karşı yeniden kanıt ister
+    /// Verilen asıl kayıtlara bağlı HER bağlantı — etkin ya da AYRILMIŞ — satırın
+    /// ŞİMDİKİ telefonuna karşı yeniden kanıt ister
     /// (<see cref="WpfCustomerLinkMatcher.PhoneProves"/>); veremeyen beklemeye
     /// düşer (WpfCustomerId = null). Normal akışlar — geriye dönük eşleştirme,
     /// telefon doğrulaması — yayıncının telefonu eşleşince yeniden bağlar.
     /// SaveChanges ÇAĞIRMAZ: değişiklikler partiyle aynı kayıtta; yeniden
     /// deneme bunu da taze okumayla baştan yapar.
+    ///
+    /// <para><b>Ayrılmış bağlantı da</b> (A5c kalite incelemesi, gerçek SQL
+    /// Server'da doğrulandı): birleştirici ayrılmış bağlantıyı da taşır ve
+    /// ShopperPurgeService shopper'ın AYRILMIŞ bağlantılarından da ulaştığı
+    /// projeksiyonu siler. Önce kaydolup (geçici satır) ayrılan saldırganın
+    /// kanıtsız bağlantısı devralmada gerçek müşterinin kaydına taşınıp bağlı
+    /// kalsaydı, KVKK silme talebi o kaydı silerdi — mezar taşı tüm
+    /// bilgisayarlara iner. Ayrılmış bağlantıyı boşaltmak zararsız: erişim
+    /// vermez, yeniden katılma yeni bağlantı açar.</para>
     /// </summary>
     /// <param name="movedFrom">Bağlantıları bu istekte, henüz kaydedilmeden bu
     /// satırlardan birine taşınan Id'ler (devralınan geçici satırlar). Sorgu
@@ -648,7 +674,7 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
         var byId = rows.ToDictionary(r => r.Id);
         var dbIds = byId.Keys.Concat(movedFrom).Select(id => (Guid?)id).ToList();
         var bound = await _db.ShopperBroadcasterLinks
-            .Where(l => l.LicenseId == licenseId && l.LeftAt == null && dbIds.Contains(l.WpfCustomerId))
+            .Where(l => l.LicenseId == licenseId && dbIds.Contains(l.WpfCustomerId))
             .Select(l => new { Link = l, l.Shopper.Phone, l.Shopper.PhoneVerifiedAt })
             .ToListAsync(ct);
 

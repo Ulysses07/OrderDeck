@@ -99,6 +99,11 @@ public sealed class LicensesWpfCustomersPullController : ControllerBase
     }
 
     /// <param name="Tckn">DÜZ metin — sunucuda şifreli tutulur, burada çözülür.</param>
+    /// <param name="CreatedByShopper">Shopper uygulamasının açtığı GEÇİCİ kayıt
+    /// (kopyada köken): ad/telefon/adres kişinin kendi beyanı. İstemci bunu
+    /// yayıncının müşterisi gibi indirmesin diye taşınır — eski <c>since</c>
+    /// ingest'i beyanı sıradan müşteri olarak indiriyordu. Sona eklendi: eski
+    /// okuyucular yok sayar.</param>
     /// <remarks>Her birimin damgası ayrı (bkz. CustomerSyncFields). FullName
     /// olduğu gibi gider: eski sürümün takma ad yedeğini (R3-02) ayıklamak
     /// istemcinin işi (Bölüm C notu 5).</remarks>
@@ -116,7 +121,8 @@ public sealed class LicensesWpfCustomersPullController : ControllerBase
         bool SmsConsent, DateTimeOffset? SmsConsentChangedAt,
         bool IsBlacklisted, string? BlacklistReason, DateTimeOffset? BlacklistedAt, DateTimeOffset? BlacklistChangedAt,
         string? Notes, DateTimeOffset? NotesChangedAt,
-        long ChangeSeq);
+        long ChangeSeq,
+        bool CreatedByShopper = false);
 
     /// <param name="CursorReset">İstemcinin imleci geçersizdi (eksi ya da
     /// ufkun üstü) ve sayfa BAŞTAN verildi. İstemci tam yeniden indirme yapar
@@ -202,7 +208,8 @@ public sealed class LicensesWpfCustomersPullController : ControllerBase
                 p.SmsConsent, p.SmsConsentChangedAt,
                 p.IsBlacklisted, p.BlacklistReason, p.BlacklistedAt, p.BlacklistChangedAt,
                 p.Notes, p.NotesChangedAt,
-                p.ChangeSeq))
+                p.ChangeSeq,
+                p.CreatedByShopper))
             .ToList();
 
         var next = items.Count == 0 ? afterSeq : items[^1].ChangeSeq;

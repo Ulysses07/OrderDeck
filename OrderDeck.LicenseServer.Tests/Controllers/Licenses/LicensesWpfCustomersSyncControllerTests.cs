@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Privacy;
+using OrderDeck.LicenseServer.Services.Shoppers;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
@@ -1110,7 +1111,7 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
     // bağlantılar yayıncının telefonuna karşı YENİDEN kanıt ister. Geçici
     // kökenli kopyanın gönderimi (eski ingest'in yankısı) asıl kayda yazılmaz.
 
-    private sealed record ProvisionalSeed(Guid ProjectionId, Guid LinkId, string ShopperPhone);
+    private sealed record ProvisionalSeed(Guid ProjectionId, Guid LinkId, string ShopperPhone, Guid ShopperId);
 
     private static OrderDeck.LicenseServer.Domain.Shopper VerifiedShopper(string phone) => new()
     {
@@ -1126,9 +1127,10 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
 
     /// <summary>Shopper kaydının/katılmasının açtığı geçici projeksiyonu kurar
     /// (ShopperAuthController adım 8a ile aynı alanlar): telefonu doğrulanmış
-    /// shopper'ın beyanı, bağlantı S'ye kanıtsız bağlı.</summary>
+    /// shopper'ın beyanı, bağlantı S'ye kanıtsız bağlı. <paramref name="left"/>:
+    /// shopper yayıncıdan ayrılmış (bağlantı ayrılmış ama hâlâ S'ye bağlı).</summary>
     private async Task<ProvisionalSeed> SeedProvisionalAsync(
-        Guid licenseId, string username, DateTimeOffset? updatedAt = null)
+        Guid licenseId, string username, DateTimeOffset? updatedAt = null, bool left = false)
     {
         var phone = NewPhone();
         var projectionId = Guid.NewGuid();
@@ -1147,9 +1149,10 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
         {
             Id = linkId, ShopperId = shopper.Id, LicenseId = licenseId, Platform = "tiktok",
             Username = username, WpfCustomerId = projectionId, JoinedAt = DateTimeOffset.UtcNow,
+            LeftAt = left ? DateTimeOffset.UtcNow : null,
         });
         await db.SaveChangesAsync();
-        return new ProvisionalSeed(projectionId, linkId, phone);
+        return new ProvisionalSeed(projectionId, linkId, phone, shopper.Id);
     }
 
     private async Task<Guid?> LinkTargetAsync(Guid linkId)
@@ -1263,9 +1266,8 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
     /// <summary>
     /// Devralmadan sonra gerçek müşterinin bekleyen bağlantısı (doğrulanmış
     /// telefonu yayıncının telefonu) AYNI istekte yeni asıl kayda (W) bağlanır.
-    /// Kullanıcı adı aynı yazımla: geriye dönük eşleştirme onu veritabanının
-    /// karşılaştırmasıyla eşler (prod'da büyük/küçük harf duyarsız, InMemory'de
-    /// duyarlı).
+    /// W'nin kullanıcı adı yayıncının bilgisayarındaki yazımla gelir, bağlantınınki
+    /// shopper'ın yazdığıyla: eşleşme kimlik anahtarıyla.
     /// </summary>
     [Fact]
     public async Task Devralmadan_sonra_gercek_musterinin_bekleyen_baglantisi_ayni_istekte_W_ye_baglanir()
@@ -1291,11 +1293,160 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
         var w = Guid.NewGuid();
 
         var body = await PostAsync(client, licenseId,
-            BroadcasterItem(2, w, "gercek-kisi", "Gerçek Kişi", realPhone));
+            BroadcasterItem(2, w, "Gercek-Kisi", "Gerçek Kişi", realPhone));
 
         body.RetroactiveMatches.Should().Be(1);
         (await LinkTargetAsync(realLinkId)).Should().Be(w);
         (await LinkTargetAsync(s.LinkId)).Should().BeNull("saldırganın bağlantısı kanıt veremedi");
+    }
+
+    /// <summary>
+    /// Geriye dönük eşleştirme bağlantıyı projeksiyona KİMLİK ANAHTARIYLA eşler:
+    /// shopper "İrem.K" yazdı, yayıncının kaydı "irem.k". Tam kullanıcı adı
+    /// karşılaştırması (CI_AS'de bile N'İ' ≠ N'i') bekleyen bağlantıyı hiç
+    /// bağlamazdı.
+    /// </summary>
+    [Fact]
+    public async Task Geriye_donuk_eslestirme_kullanici_adini_kimlik_anahtariyla_eslestirir()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var phone = NewPhone();
+        var linkId = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var shopper = VerifiedShopper(phone);
+            db.Shoppers.Add(shopper);
+            db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+            {
+                Id = linkId, ShopperId = shopper.Id, LicenseId = licenseId, Platform = "tiktok",
+                Username = "İrem.K", WpfCustomerId = null, JoinedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+        var projectionId = Guid.NewGuid();
+
+        var body = await PostAsync(client, licenseId, MakeSyncItem(projectionId, "tiktok", "irem.k", "İrem K.", phone));
+
+        body.RetroactiveMatches.Should().Be(1);
+        (await LinkTargetAsync(linkId)).Should().Be(projectionId);
+    }
+
+    /// <summary>
+    /// KRİTİK (kalite incelemesi, gerçek SQL Server'da denendi): saldırgan önce
+    /// kaydolur (geçici S), yayıncıdan AYRILIR; yayıncı gerçek müşteriyi W olarak
+    /// gönderir. Birleştirici ayrılmış bağlantıyı da W'ye taşır ve
+    /// ShopperPurgeService shopper'ın ayrılmış bağlantılarından ulaştığı
+    /// projeksiyonu da siler: kanıtsız ayrılmış bağlantı W'ye bağlı kalsaydı
+    /// saldırganın KVKK silme talebi gerçek müşterinin kaydını silerdi (mezar taşı
+    /// tüm bilgisayarlara iner). Ayrılmış bağlantı da yeniden kanıt ister.
+    /// </summary>
+    [Fact]
+    public async Task Devralmada_ayrilmis_kanitsiz_baglanti_da_bosalir_o_shopperin_silinmesi_W_ye_dokunmaz()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var s = await SeedProvisionalAsync(licenseId, "ayrilan", left: true);
+        var w = Guid.NewGuid();
+        var broadcasterPhone = NewPhone();
+
+        var body = await PostAsync(client, licenseId,
+            BroadcasterItem(2, w, "ayrilan", "Gerçek Müşteri", broadcasterPhone));
+
+        body.Redirects.Should().BeEmpty();
+        (await LinkTargetAsync(s.LinkId)).Should().BeNull("ayrılmış bağlantı da telefon kanıtı ister");
+        using (var scope = _factory.Services.CreateScope())
+        {
+            (await scope.ServiceProvider.GetRequiredService<ShopperPurgeService>().PurgeAsync(s.ShopperId, default))
+                .Should().NotBeNull();
+        }
+        var canonical = (await RowsAsync(licenseId)).Single(p => p.Id == w);
+        canonical.PurgedAt.Should().BeNull("saldırganın KVKK silmesi gerçek müşterinin kaydını silmez");
+        canonical.FullName.Should().Be("Gerçek Müşteri");
+        canonical.Phone.Should().Be(broadcasterPhone);
+    }
+
+    /// <summary>Benimseme (kendi Id'siyle damgalı telefon) de ayrılmış
+    /// bağlantıyı yeniden kanıtlar: kanıtsa kalır, değilse boşalır.</summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Benimsemede_ayrilmis_baglanti_kanita_gore_kalir_ya_da_bosalir(bool samePhone)
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var s = await SeedProvisionalAsync(licenseId, "ayrilan-benimseme", left: true);
+        var phone = samePhone ? s.ShopperPhone : NewPhone();
+
+        await PostAsync(client, licenseId, BroadcasterItem(2, s.ProjectionId, "ayrilan-benimseme", null, phone));
+
+        (await RowsAsync(licenseId)).Single(p => p.Id == s.ProjectionId).CreatedByShopper.Should().BeFalse();
+        (await LinkTargetAsync(s.LinkId)).Should().Be(samePhone ? s.ProjectionId : null);
+    }
+
+    /// <summary>
+    /// Devralmada geçici satırdaki DAMGALI kararlar (yayıncının, ör. kara liste ve
+    /// not) W'ye taşınır — S boşaltılmadan önce; damgasız birimler kişinin kendi
+    /// beyanıdır, taşınmaz.
+    /// </summary>
+    [Fact]
+    public async Task Devralmada_gecici_satirin_damgali_kararlari_W_ye_gecer_beyani_gecmez()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var s = await SeedProvisionalAsync(licenseId, "kara-listeli");
+        var t = DateTimeOffset.UtcNow;
+        // Yayıncı geçici satırı kendi Id'siyle kara listeye aldı ve not düştü;
+        // telefon damgasız → benimseme değil, satır geçici kalır.
+        await PostAsync(client, licenseId, new
+        {
+            id = s.ProjectionId, platform = "tiktok", username = "kara-listeli", updatedAt = t, format = 2,
+            isBlacklisted = true, blacklistReason = "ödeme yapmadı", blacklistedAt = t, blacklistChangedAt = t,
+            notes = "kapıda teslim", notesChangedAt = t,
+        });
+        (await RowsAsync(licenseId)).Single(p => p.Id == s.ProjectionId).CreatedByShopper.Should().BeTrue();
+        var w = Guid.NewGuid();
+
+        await PostAsync(client, licenseId, BroadcasterItem(2, w, "kara-listeli", "Yayıncının Kaydı", phone: null));
+
+        var canonical = (await RowsAsync(licenseId)).Single(p => p.Id == w);
+        canonical.IsBlacklisted.Should().BeTrue();
+        canonical.BlacklistReason.Should().Be("ödeme yapmadı");
+        canonical.Notes.Should().Be("kapıda teslim");
+        canonical.Phone.Should().BeNull("shopper'ın damgasız telefonu beyandır, W'ye geçmez");
+        canonical.Address.Should().BeNull();
+        canonical.FullName.Should().Be("Yayıncının Kaydı");
+    }
+
+    /// <summary>Silinmiş geçici satırın kişisel birimlerindeki "damgalı boş"
+    /// bilinçli silme değildir: W'nin telefonunu silmez. Damgalı kararı (kara
+    /// liste) yine geçer.</summary>
+    [Fact]
+    public async Task Devralmada_silinmis_gecici_satirin_damgali_bos_kisisel_birimi_W_yi_silmez()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var s = await SeedProvisionalAsync(licenseId, "silinmis-damgali");
+        var t = DateTimeOffset.UtcNow;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var row = await db.WpfCustomerProjections.SingleAsync(p => p.Id == s.ProjectionId);
+            // W'nin damgasından YENİ telefon damgası: süzülmeseydi boş değer W'yi silerdi.
+            row.PhoneChangedAt = t.AddDays(1);
+            row.IsBlacklisted = true;
+            row.BlacklistReason = "sahte sipariş";
+            row.BlacklistedAt = t;
+            row.BlacklistChangedAt = t;
+            row.MarkPurged(t);
+            await db.SaveChangesAsync();
+        }
+        var w = Guid.NewGuid();
+        var broadcasterPhone = NewPhone();
+
+        await PostAsync(client, licenseId, BroadcasterItem(2, w, "silinmis-damgali", "Yayıncının Kaydı", broadcasterPhone));
+
+        var canonical = (await RowsAsync(licenseId)).Single(p => p.Id == w);
+        canonical.Phone.Should().Be(broadcasterPhone);
+        canonical.IsBlacklisted.Should().BeTrue();
+        canonical.BlacklistReason.Should().Be("sahte sipariş");
+        canonical.PurgedAt.Should().BeNull();
     }
 
     /// <summary>
