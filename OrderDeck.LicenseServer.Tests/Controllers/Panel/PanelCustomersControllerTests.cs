@@ -765,6 +765,59 @@ public class PanelCustomersControllerTests : IClassFixture<ApiFactory>
             .Should().Equal(canonicalId.ToString("N"));
     }
 
+    /// <summary>
+    /// A5b: eski bir yer imi/sekme kopya Id'si taşıyabilir. Id önce asıl kayda
+    /// çözülür (sıfır siparişli yol): kopyanın boş özeti değil, asıl kaydınki döner.
+    /// </summary>
+    [Fact]
+    public async Task Get_kopya_Id_ile_siparissiz_asil_kaydin_ozetini_doner()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var canonicalId = Guid.NewGuid();
+        var aliasId = Guid.NewGuid();
+        await SeedProjectionAsync(licenseId, canonicalId, "Yeni Musteri", "@yeni", "instagram");
+        await SeedAliasAsync(licenseId, aliasId, canonicalId, "@Yeni", "instagram");
+
+        var resp = await client.GetAsync($"/api/panel/customers/{aliasId:N}");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = System.Text.Json.JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        var root = doc.RootElement;
+        root.GetProperty("customerId").GetString().Should().Be(canonicalId.ToString("N"));
+        root.GetProperty("displayName").GetString().Should().Be("Yeni Musteri");
+        root.GetProperty("wpfCustomerProjectionId").GetString().Should().Be(canonicalId.ToString());
+    }
+
+    /// <summary>
+    /// A5b: çözüm en başta yapılır — asıl kaydın siparişleri varsa kopya Id'siyle
+    /// gelen istek de onları görür (sıfır siparişli bir özet değil).
+    /// </summary>
+    [Fact]
+    public async Task Get_kopya_Id_ile_asil_kaydin_siparislerini_doner()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var canonicalId = Guid.NewGuid();
+        var aliasId = Guid.NewGuid();
+        await SeedProjectionAsync(licenseId, canonicalId, "Buyer", "@buyer", "instagram");
+        await SeedAliasAsync(licenseId, aliasId, canonicalId, "@Buyer", "instagram");
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Orders.Add(MakeListOrder(licenseId, canonicalId.ToString("N"), "instagram", "@buyer", "Buyer",
+                100m, DateTimeOffset.UtcNow.AddDays(-1)));
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.GetAsync($"/api/panel/customers/{aliasId:N}");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = System.Text.Json.JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        var root = doc.RootElement;
+        root.GetProperty("customerId").GetString().Should().Be(canonicalId.ToString("N"));
+        root.GetProperty("orderCount").GetInt32().Should().Be(1);
+        root.GetProperty("wpfCustomerProjectionId").GetString().Should().Be(canonicalId.ToString());
+    }
+
     [Fact]
     public async Task Get_zero_order_projection_returns_summary()
     {

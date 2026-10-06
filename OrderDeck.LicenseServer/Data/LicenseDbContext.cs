@@ -709,8 +709,9 @@ public class LicenseDbContext : DbContext
             // filtresiz ~12 okuma yeri kopyayı ya ikinci müşteri ya da "belirsiz"
             // eşleşme sayıyordu). Kopyayı görmesi GEREKEN yerler açıkça
             // IgnoreQueryFilters() ister: sync ucunun Id araması, kimlik anahtarı
-            // onarımı, TCKN bekçisi (kolonun tamamını tarar); ileride değişiklik
-            // akışı ve birleştirme işi.
+            // onarımı, TCKN bekçisi (kolonun tamamını tarar), CustomerIdResolver
+            // (müşteri Id'si kabul eden uçlar kopyayı onunla asıl kayda çözer);
+            // ileride değişiklik akışı ve birleştirme işi.
             b.HasQueryFilter(p => p.MergedIntoId == null);
         });
 

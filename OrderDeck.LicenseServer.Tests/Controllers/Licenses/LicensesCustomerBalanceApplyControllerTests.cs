@@ -1,9 +1,11 @@
 using System.Net;
 using System.Net.Http.Json;
 using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.CustomerSync;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
@@ -922,5 +924,114 @@ public class LicensesCustomerBalanceApplyControllerTests : IClassFixture<ApiFact
         // R9-F03: bu da "işlem yok" ailesinden — istemci güvenle sıfırlayabilsin.
         var problem = await resp.Content.ReadFromJsonAsync<ProblemDetailsLite>();
         problem!.Title.Should().Be("transaction-not-found");
+    }
+
+    // ── A5b: kopya Id'si asıl kayda çözülür ─────────────────────────────────
+    // Eski sürüm birleştirmeden sonra da kopyanın Id'siyle gelir. Bakiye asıl
+    // kayıtta durur (birleştirici kopyanınkini 0'layıp asıl satıra ekler); uç
+    // Id'yi önce çözmezse kopya Id'siyle "no-balance", kapsamda 204 ve
+    // birleştirmeden önceki bir düşümün tekrarında kalıcı content-conflict olurdu.
+
+    private async Task<(HttpClient client, Guid licenseId, Guid canonicalId, Guid aliasId)> SetupWithAliasAsync(
+        decimal canonicalBalance)
+    {
+        var (client, licenseId, canonicalId) = await SetupWithBalanceAsync(canonicalBalance);
+        var aliasId = Guid.NewGuid();
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        db.WpfCustomerProjections.Add(new WpfCustomerProjection
+        {
+            Id = aliasId, LicenseId = licenseId, Platform = "youtube", Username = "U",
+            MergedIntoId = canonicalId, UpdatedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+        return (client, licenseId, canonicalId, aliasId);
+    }
+
+    [Fact]
+    public async Task Apply_kopya_Id_ile_asil_kaydin_bakiyesinden_duser_hareket_asil_kayitta()
+    {
+        var (client, licenseId, canonicalId, aliasId) = await SetupWithAliasAsync(500m);
+
+        var resp = await client.PostAsJsonAsync(
+            $"/api/v1/licenses/{licenseId}/customer-balance/apply",
+            new { WpfCustomerId = aliasId, Amount = 100m, ProductTotal = 2100m, IdempotencyKey = Guid.NewGuid() });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadFromJsonAsync<ApplyResponse>();
+        body!.AppliedAmount.Should().Be(100m);
+        body.RemainingBalance.Should().Be(400m);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        db.CustomerBalanceTransactions.Single(t => t.Id == body.TransactionId)
+            .WpfCustomerId.Should().Be(canonicalId);
+        db.CustomerBalances.Any(b => b.LicenseId == licenseId && b.WpfCustomerId == aliasId)
+            .Should().BeFalse("kopyaya bakiye satırı açılmaz");
+    }
+
+    [Fact]
+    public async Task Preview_kopya_Id_ile_asil_bakiyeyi_doner_istekteki_Idyi_yansitir()
+    {
+        var (client, licenseId, _, aliasId) = await SetupWithAliasAsync(500m);
+
+        var resp = await client.GetFromJsonAsync<PreviewResponse>(
+            $"/api/v1/licenses/{licenseId}/customer-balance/preview?wpfCustomerId={aliasId}");
+
+        resp!.Balance.Should().Be(500m);
+        resp.WpfCustomerId.Should().Be(aliasId, "yanıt istemcinin gönderdiği Id'yi taşır");
+    }
+
+    [Fact]
+    public async Task Scope_kopya_Id_ile_asil_kaydin_dusumunu_bulur()
+    {
+        var (client, licenseId, canonicalId, aliasId) = await SetupWithAliasAsync(500m);
+        var txId = await ApplyWithScopeAsync(client, licenseId, canonicalId, 100m, 2100m, "cumulative");
+
+        var resp = await GetScopeAsync(client, licenseId, aliasId, "cumulative");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await resp.Content.ReadFromJsonAsync<ScopeResponse>())!.TransactionId.Should().Be(txId);
+    }
+
+    /// <summary>
+    /// Birleştirmeden ÖNCE yapılmış bir düşüm, hareketi asıl kayda taşındıktan
+    /// sonra eski sürümün (artık kopya olan) Id'siyle yeniden oynatılır: aynı
+    /// kişi, aynı istek — content-conflict DEĞİL, ilk sonuç döner, ikinci düşüm yok.
+    /// </summary>
+    [Fact]
+    public async Task Apply_birlesmeden_onceki_dusumun_kopya_Idsiyle_tekrari_onceki_sonucu_doner()
+    {
+        var (client, licenseId, oldId) = await SetupWithBalanceAsync(500m);
+        var key = Guid.NewGuid();
+        var request = new { WpfCustomerId = oldId, Amount = 100m, ProductTotal = 2100m, IdempotencyKey = key };
+        (await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/customer-balance/apply", request))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Birleştirme: oldId, canonicalId'nin kopyası olur; hareketleri ve
+        // bakiyesi birleştiriciyle asıl kayda taşınır.
+        var canonicalId = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = canonicalId, LicenseId = licenseId, Platform = "youtube", Username = "u",
+                UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+            await scope.ServiceProvider.GetRequiredService<CustomerIdentityMerger>()
+                .RepointReferencesAsync(licenseId, oldId, canonicalId, CancellationToken.None);
+            (await db.WpfCustomerProjections.SingleAsync(p => p.Id == oldId)).MergedIntoId = canonicalId;
+            await db.SaveChangesAsync();
+        }
+
+        var replay = await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/customer-balance/apply", request);
+
+        replay.StatusCode.Should().Be(HttpStatusCode.OK, "aynı kişinin aynı isteği çelişki değil");
+        var body = await replay.Content.ReadFromJsonAsync<ApplyResponse>();
+        body!.TransactionId.Should().Be(key);
+        body.AppliedAmount.Should().Be(100m);
+        body.RemainingBalance.Should().Be(400m, "bakiye asıl kayıtta ve ikinci düşüm yapılmadı");
     }
 }

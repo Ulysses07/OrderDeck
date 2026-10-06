@@ -238,4 +238,55 @@ public class LicensesSessionsSyncControllerTests : IClassFixture<ApiFactory>
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         (await db.Orders.AnyAsync(o => o.Id == orderId)).Should().BeTrue();
     }
+
+    /// <summary>
+    /// A5b: eski sürüm birleştirmeden sonra da kopyanın Id'sini gönderir. Yeni
+    /// sipariş asıl kaydın hex'iyle saklanır — asıl kayda bağlı Shopper
+    /// siparişi görsün, panel ve etiket kuralı asıl kayda baksın.
+    /// </summary>
+    [Fact]
+    public async Task SyncOrders_kopya_hexiyle_gelen_yeni_siparis_asil_hexle_saklanir()
+    {
+        var (client, licenseId) = await SetupAsync();
+        var canonicalId = Guid.NewGuid();
+        var aliasId = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.WpfCustomerProjections.AddRange(
+                new WpfCustomerProjection
+                {
+                    Id = canonicalId, LicenseId = licenseId, Platform = "instagram",
+                    Username = "@kopya", UpdatedAt = DateTimeOffset.UtcNow,
+                },
+                new WpfCustomerProjection
+                {
+                    Id = aliasId, LicenseId = licenseId, Platform = "instagram",
+                    Username = "@Kopya", MergedIntoId = canonicalId, UpdatedAt = DateTimeOffset.UtcNow,
+                });
+            await db.SaveChangesAsync();
+        }
+        var orderId = Guid.NewGuid();
+
+        var resp = await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/orders/sync", new
+        {
+            orders = new[] { new {
+                id = orderId, sessionId = (Guid?)null,
+                customerId = aliasId.ToString("N"), platform = "instagram",
+                username = "@Kopya", displayName = (string?)null,
+                messageText = "A1", code = (string?)null, price = 100m,
+                addedAt = DateTimeOffset.UtcNow,
+                printedAt = (DateTimeOffset?)null,
+                cancelledAt = (DateTimeOffset?)null,
+                cancelReason = (string?)null,
+                isShippingFee = false, isBackupPromoted = false,
+                isTentativeBackup = false } }
+        });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var check = _factory.Services.CreateScope();
+        var vdb = check.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await vdb.Orders.SingleAsync(o => o.Id == orderId)).CustomerId
+            .Should().Be(canonicalId.ToString("N"));
+    }
 }

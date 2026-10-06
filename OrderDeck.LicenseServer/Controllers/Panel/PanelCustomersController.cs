@@ -2,6 +2,7 @@ using System.Security.Claims;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.CustomerSync;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -24,10 +25,12 @@ namespace OrderDeck.LicenseServer.Controllers.Panel;
 public sealed class PanelCustomersController : ControllerBase
 {
     private readonly LicenseDbContext _db;
+    private readonly CustomerIdResolver _customerIds;
 
-    public PanelCustomersController(LicenseDbContext db)
+    public PanelCustomersController(LicenseDbContext db, CustomerIdResolver customerIds)
     {
         _db = db;
+        _customerIds = customerIds;
     }
 
     public sealed record CustomerSummaryDto(
@@ -398,6 +401,16 @@ public sealed class PanelCustomersController : ControllerBase
             .ToListAsync(ct);
 
         if (licenseIds.Count == 0) return NotFound();
+
+        // Eski yer imi/sekme kopya Id'si taşıyabilir (A5b): Id ÖNCE asıl kayda
+        // çözülür, sipariş/kargo ve sıfır siparişli yol asıl kayıtla çalışır.
+        // Yalnız sıfır siparişli yolda çözülseydi, siparişi olan bir asıl kayıt
+        // kopya Id'siyle "0 sipariş" diye görünürdü. Yanıttaki CustomerId de
+        // asıl kaydınki.
+        if (Guid.TryParseExact(customerId, "N", out var requestedId)
+            && await _customerIds.LocateForTenantAsync(authCustomerId, requestedId, ct) is { } located
+            && located.CanonicalId != requestedId)
+            customerId = located.CanonicalId.ToString("N");
 
         // Müşteri için tüm order'ları — display info için ilkini almaya yetecek
         // kadar projeksiyon.
