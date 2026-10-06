@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
+using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Tests.TestHelpers;
 using Xunit;
 
@@ -110,7 +111,12 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
                 }
             });
 
-        // Update sync — same IDs, different data
+        // Update sync — same IDs, different data. Eski istemci (format 1,
+        // damgasız) kuralı: mevcut Id'nin kullanıcı adı GÜNCELLENMEZ (WPF bir
+        // satırın kullanıcı adını hiç değiştirmiyor; değişseydi kimlik anahtarı
+        // başka bir asıl kaydın üstüne kayabilirdi); ad yalnız boşsa doldurulur
+        // (eski sürüm gerçek ad yoksa takma adı gönderiyor); dolu telefon/adres
+        // son gönderimle yazılır, boş değer silmez.
         var resp = await client.PostAsJsonAsync(
             $"/api/v1/licenses/{licenseId}/wpf-customers/sync",
             new
@@ -131,8 +137,9 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
         var proj1 = await db.WpfCustomerProjections.FirstAsync(p => p.Id == id1);
-        proj1.Username.Should().Be("newuser1");
-        proj1.FullName.Should().Be("New Name");
+        proj1.Username.Should().Be("olduser1"); // mevcut Id'de kullanıcı adı değişmez
+        proj1.FullName.Should().Be("Old Name"); // damgasız ad yalnız boşu doldurur
+        // Telefon boştu: dolu değer yazılır.
         proj1.Phone.Should().Be("+905559998877");
 
         // No duplicate rows
@@ -466,5 +473,261 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
             new { customers = new[] { MakeSyncItem(Guid.NewGuid()) } });
 
         resp.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    // ── format 2: tam alanlar, kimlik araması, yönlendirme ──────────────────
+
+    private sealed record Redirect(Guid Id, Guid CanonicalId);
+    private sealed record SyncResponseV2(int Synced, int RetroactiveMatches, List<Redirect> Redirects);
+
+    private static object V2Item(Guid id, string username, string? fullName = null,
+        string? city = null, DateTimeOffset? addressAt = null, bool blacklisted = false,
+        DateTimeOffset? blacklistAt = null, DateTimeOffset? fullNameAt = null)
+        => new
+        {
+            id, platform = "tiktok", username, fullName, phone = (string?)null, address = (string?)null,
+            updatedAt = DateTimeOffset.UtcNow, format = 2,
+            fullNameChangedAt = fullNameAt,
+            city, addressChangedAt = addressAt,
+            isBlacklisted = blacklisted, blacklistChangedAt = blacklistAt,
+        };
+
+    [Fact]
+    public async Task V2_gonderim_il_ve_kara_listeyi_tasir()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var id = Guid.NewGuid();
+        var t = DateTimeOffset.UtcNow;
+        var resp = await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/wpf-customers/sync",
+            new { customers = new[] { V2Item(id, "ayse", city: "İzmir", addressAt: t, blacklisted: true, blacklistAt: t) } });
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var p = await db.WpfCustomerProjections.SingleAsync(x => x.Id == id);
+        p.City.Should().Be("İzmir");
+        p.IsBlacklisted.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Ayni_kimlik_farkli_Id_ile_gelirse_yonlendirme_doner_ve_kopya_baglanir()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+        var t = DateTimeOffset.UtcNow;
+        await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/wpf-customers/sync",
+            new { customers = new[] { V2Item(a, "ayse", fullName: "Ayşe Kaya", fullNameAt: t) } });
+
+        var resp = await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/wpf-customers/sync",
+            new { customers = new[] { V2Item(b, "AYSE", fullName: null, city: "İzmir", addressAt: t.AddSeconds(5)) } });
+        var body = await resp.Content.ReadFromJsonAsync<SyncResponseV2>();
+
+        body!.Redirects.Should().ContainSingle(r => r.Id == b && r.CanonicalId == a);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var canonical = await db.WpfCustomerProjections.SingleAsync(x => x.Id == a);
+        canonical.FullName.Should().Be("Ayşe Kaya"); // kopyanın boş adı damgasız → dokunmaz
+        canonical.City.Should().Be("İzmir");          // kopyanın damgalı adres birimi yazıldı
+        var alias = await db.WpfCustomerProjections.SingleAsync(x => x.Id == b);
+        alias.MergedIntoId.Should().Be(a);
+        alias.City.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Kopyanin_daha_once_gonderilmis_siparisi_asil_kayda_tasinir()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+        await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/wpf-customers/sync",
+            new { customers = new[] { V2Item(a, "mehmet") } });
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Orders.Add(new Order { Id = Guid.NewGuid(), LicenseId = licenseId, CustomerId = b.ToString("N"), Platform = "tiktok", Username = "mehmet", MessageText = "A1", Price = 10, AddedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow });
+            await db.SaveChangesAsync();
+        }
+
+        await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/wpf-customers/sync",
+            new { customers = new[] { V2Item(b, "mehmet") } });
+
+        using var check = _factory.Services.CreateScope();
+        var db2 = check.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db2.Orders.SingleAsync(o => o.LicenseId == licenseId)).CustomerId.Should().Be(a.ToString("N"));
+    }
+
+    [Fact]
+    public async Task Eski_istemci_yeni_surumun_damgali_adresini_ezemez()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var id = Guid.NewGuid();
+        await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/wpf-customers/sync",
+            new { customers = new[] { new { id, platform = "tiktok", username = "zeynep", fullName = (string?)null, phone = (string?)null, address = "yeni adres", updatedAt = DateTimeOffset.UtcNow, format = 2, addressChangedAt = DateTimeOffset.UtcNow } } });
+
+        await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/wpf-customers/sync",
+            new { customers = new[] { MakeSyncItem(id, "tiktok", "zeynep", address: "eski adres") } });
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.WpfCustomerProjections.SingleAsync(x => x.Id == id)).Address.Should().Be("yeni adres");
+    }
+
+    // ── TCKN: her zaman şifreli, asla kırpılmaz (PR-0 kuralı) ────────────────
+
+    [Fact]
+    public async Task Senkronlanan_TCKN_veritabaninda_sifreli_ve_cozulebilir()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var id = Guid.NewGuid();
+        var tc = TestTckn.NewValid();
+        await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/wpf-customers/sync",
+            new { customers = new[] { new { id, platform = "tiktok", username = "tckn-sifreli", updatedAt = DateTimeOffset.UtcNow, format = 2, tckn = tc, tcknChangedAt = DateTimeOffset.UtcNow } } });
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var stored = (await db.WpfCustomerProjections.SingleAsync(x => x.Id == id)).TcknProtected!;
+        stored.Should().StartWith("CfDJ8").And.NotContain(tc);
+        stored.Length.Should().BeGreaterThan(11); // kırpılmadı
+        scope.ServiceProvider.GetRequiredService<TcknProtector>().Unprotect(stored).Should().Be(tc);
+    }
+
+    [Fact]
+    public async Task On_bir_karakteri_asan_TCKN_mevcut_degeri_silmez()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var id = Guid.NewGuid();
+        var tc = TestTckn.NewValid();
+        var t = DateTimeOffset.UtcNow;
+        await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/wpf-customers/sync",
+            new { customers = new[] { new { id, platform = "tiktok", username = "tckn-koru", updatedAt = t, format = 2, tckn = tc, tcknChangedAt = t } } });
+        var resp = await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/wpf-customers/sync",
+            new { customers = new[] { new { id, platform = "tiktok", username = "tckn-koru", updatedAt = t, format = 2, tckn = tc + tc, tcknChangedAt = t.AddMinutes(1) } } });
+        resp.StatusCode.Should().Be(HttpStatusCode.OK); // parti reddedilmez
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var row = await db.WpfCustomerProjections.SingleAsync(x => x.Id == id);
+        scope.ServiceProvider.GetRequiredService<TcknProtector>().Unprotect(row.TcknProtected).Should().Be(tc);
+        // Bozuk değer birimi HİÇ gelmemiş sayılır: damga da ilerlemez. İlerleseydi
+        // sunucu ile istemci aynı damgada farklı değerde kalır, hiç eşitlenmezdi.
+        row.TcknChangedAt.Should().BeCloseTo(t, TimeSpan.FromMilliseconds(1));
+    }
+
+    // ── kopya ve eski sürüm kuralları (A3 kalite incelemesi) ────────────────
+
+    [Fact]
+    public async Task Bilinen_kopyanin_daha_yeni_damgali_degeri_asil_kayda_yazilir()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var url = $"/api/v1/licenses/{licenseId}/wpf-customers/sync";
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+        var t = DateTimeOffset.UtcNow;
+        await client.PostAsJsonAsync(url, new { customers = new[] { V2Item(a, "ayse", city: "İzmir", addressAt: t) } });
+        await client.PostAsJsonAsync(url, new { customers = new[] { V2Item(b, "Ayse") } }); // b kopya olur
+        await client.PostAsJsonAsync(url, new { customers = new[] { V2Item(b, "Ayse", city: "Ankara", addressAt: t.AddMinutes(1)) } });
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var canonical = await db.WpfCustomerProjections.SingleAsync(x => x.Id == a);
+        canonical.City.Should().Be("Ankara"); // eski FillEmpty bunu yutup yalnız damgayı ilerletirdi
+        canonical.AddressChangedAt.Should().BeCloseTo(t.AddMinutes(1), TimeSpan.FromMilliseconds(1));
+    }
+
+    [Fact]
+    public async Task Eski_surum_takma_ad_ve_bos_alanla_gercek_veriyi_ezmez()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var url = $"/api/v1/licenses/{licenseId}/wpf-customers/sync";
+        var id = Guid.NewGuid();
+        var tel = "+9055" + Random.Shared.Next(10_000_000, 99_999_999);
+        await client.PostAsJsonAsync(url, new { customers = new[] { MakeSyncItem(id, "tiktok", "ayse_tt", "Ayşe Yılmaz", tel, "adres") } });
+        // Eski sürüm gerçek ad yoksa takma adı gönderir; telefon/adres boş.
+        await client.PostAsJsonAsync(url, new { customers = new[] { MakeSyncItem(id, "tiktok", "ayse_tt", "ayse_tt") } });
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var p = await db.WpfCustomerProjections.SingleAsync(x => x.Id == id);
+        p.FullName.Should().Be("Ayşe Yılmaz");
+        p.Phone.Should().Be(tel);
+        p.Address.Should().Be("adres");
+    }
+
+    [Fact]
+    public async Task Iki_eski_surum_telefonu_gidip_getirmez_kopya_yalniz_doldurur()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var url = $"/api/v1/licenses/{licenseId}/wpf-customers/sync";
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+        string Tel() => "+9055" + Random.Shared.Next(10_000_000, 99_999_999);
+        var telA = Tel();
+        await client.PostAsJsonAsync(url, new { customers = new[] { MakeSyncItem(a, "tiktok", "mehmet", null, telA) } });
+        // B bilgisayarı aynı kişiyi kendi Id'siyle gönderir → b kopya olur; telefonu
+        // asıl kaydı EZMEZ (yalnız boşu doldururdu).
+        await client.PostAsJsonAsync(url, new { customers = new[] { MakeSyncItem(b, "tiktok", "Mehmet", null, Tel()) } });
+        await client.PostAsJsonAsync(url, new { customers = new[] { MakeSyncItem(b, "tiktok", "Mehmet", null, Tel()) } });
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            (await db.WpfCustomerProjections.SingleAsync(x => x.Id == a)).Phone.Should().Be(telA);
+        }
+
+        // Asıl kaydın sahibi bilgisayarın yeni dolu telefonu eskisi gibi yazılır.
+        var telA2 = Tel();
+        await client.PostAsJsonAsync(url, new { customers = new[] { MakeSyncItem(a, "tiktok", "mehmet", null, telA2) } });
+        using var check = _factory.Services.CreateScope();
+        var db2 = check.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db2.WpfCustomerProjections.SingleAsync(x => x.Id == a)).Phone.Should().Be(telA2);
+    }
+
+    /// <summary>
+    /// Savunma: bilinen bir kopyanın asıl kaydı bulunamıyorsa (silinmiş satır;
+    /// ya da hedef kendisi bir kopya — zinciri birleştirme işi düzleştirir)
+    /// veri kopya satırına ASLA yazılmaz, yönlendirme de dönmez; öğe yine
+    /// sayılır ki istemcinin imleci ilerlesin.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Asil_kaydi_bulunamayan_kopyaya_veri_yazilmaz(bool chainedTarget)
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var alias = Guid.NewGuid();
+        var middle = Guid.NewGuid();
+        var root = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            WpfCustomerProjection Row(Guid id, Guid? into) => new()
+            {
+                Id = id, LicenseId = licenseId, Platform = "tiktok", Username = "kayip-asil",
+                MergedIntoId = into, UpdatedAt = DateTimeOffset.UtcNow,
+            };
+            if (chainedTarget)
+                db.WpfCustomerProjections.AddRange(Row(root, null), Row(middle, root), Row(alias, middle));
+            else
+                db.WpfCustomerProjections.Add(Row(alias, Guid.NewGuid())); // hedef yok
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/wpf-customers/sync",
+            new { customers = new[] { V2Item(alias, "kayip-asil", fullName: "Gerçek Ad", fullNameAt: DateTimeOffset.UtcNow,
+                city: "İzmir", addressAt: DateTimeOffset.UtcNow) } });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadFromJsonAsync<SyncResponseV2>();
+        body!.Synced.Should().Be(1);
+        body.Redirects.Should().BeEmpty();
+
+        using var check = _factory.Services.CreateScope();
+        var vdb = check.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var rows = await vdb.WpfCustomerProjections.AsNoTracking()
+            .Where(p => p.LicenseId == licenseId).ToListAsync();
+        rows.Should().OnlyContain(p => p.FullName == null && p.City == null,
+            "kopya satırına da, zincirin herhangi bir halkasına da veri yazılmadı");
+        rows.Single(p => p.Id == alias).MergedIntoId.Should().NotBeNull("kopya kopya olarak kalır");
     }
 }

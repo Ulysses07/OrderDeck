@@ -17,8 +17,14 @@ public sealed class WpfCustomerProjectionConcurrencyHandlingTests : IDisposable
 
     public void Dispose() => _factory.Dispose();
 
+    /// <summary>
+    /// Çakışmada parti BİR KEZ taze okumayla yeniden uygulanır (A5); çakışma
+    /// yeniden denemede de sürerse 409 döner — sonsuz döngü yok, üçüncü deneme
+    /// yok. Tek seferlik çakışmanın yeniden denemeyle geçtiği gerçek SQL Server
+    /// testi: <see cref="WpfCustomerSyncRetryTests"/>.
+    /// </summary>
     [Fact]
-    public async Task Sync_yazma_catismasini_retry_etmeden_409_dondurur()
+    public async Task Sync_yazma_catismasi_yeniden_denemede_de_surerse_409_dondurur()
     {
         var (client, customerId, _) =
             await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
@@ -74,10 +80,16 @@ public sealed class WpfCustomerProjectionConcurrencyHandlingTests : IDisposable
 
         response.StatusCode.Should().Be(HttpStatusCode.Conflict);
         (await response.Content.ReadAsStringAsync()).Should().Contain("sync-conflict");
+        _factory.Conflicts.Thrown.Should().Be(2, "ilk deneme + tam bir yeniden deneme");
     }
 
     private sealed class ConflictOnProjectionUpdateInterceptor : SaveChangesInterceptor
     {
+        private int _thrown;
+
+        /// <summary>Fırlatılan çakışma sayısı — her kaydetme denemesi bir tane.</summary>
+        public int Thrown => Volatile.Read(ref _thrown);
+
         public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
             DbContextEventData eventData,
             InterceptionResult<int> result,
@@ -86,6 +98,7 @@ public sealed class WpfCustomerProjectionConcurrencyHandlingTests : IDisposable
             if (eventData.Context?.ChangeTracker.Entries<WpfCustomerProjection>()
                     .Any(e => e.State == EntityState.Modified) == true)
             {
+                Interlocked.Increment(ref _thrown);
                 throw new DbUpdateConcurrencyException("Tombstone yazma yarışı");
             }
 
@@ -96,7 +109,11 @@ public sealed class WpfCustomerProjectionConcurrencyHandlingTests : IDisposable
 
     private sealed class ConflictFactory : ApiFactory
     {
+        // Tek örnek: seçenek yapılandırması kapsam başına koşuyor; sayaç
+        // isteğin kapsamından okunamazdı.
+        public ConflictOnProjectionUpdateInterceptor Conflicts { get; } = new();
+
         protected override void ConfigureDbContextOptions(DbContextOptionsBuilder opt)
-            => opt.AddInterceptors(new ConflictOnProjectionUpdateInterceptor());
+            => opt.AddInterceptors(Conflicts);
     }
 }

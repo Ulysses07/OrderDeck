@@ -4,6 +4,9 @@ using Microsoft.EntityFrameworkCore;
 using OrderDeck.LicenseServer.Data;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Services.Auth;
+using OrderDeck.LicenseServer.Services.CustomerSync;
+using OrderDeck.LicenseServer.Services.IntakeForm;
+using OrderDeck.LicenseServer.Services.Privacy;
 using OrderDeck.LicenseServer.Services.ShopperLinking;
 
 namespace OrderDeck.LicenseServer.Controllers.Licenses;
@@ -14,15 +17,41 @@ namespace OrderDeck.LicenseServer.Controllers.Licenses;
 /// shopper-app kullanıcısı bir yayıncıya bağlanırken (LicenseId, Platform,
 /// Username) ile match yapılır; match retroactive olarak burada da çalıştırılır
 /// (sync sırasında yeni eşleşen link.WpfCustomerId güncellenir).
+///
+/// <para>Çok bilgisayarlı senkron: alanlar birim damgalarıyla
+/// <see cref="CustomerFieldMerge"/> kurallarına göre yazılır. Bu partide yeni
+/// olan bir Id'nin kimliği (platform + <see cref="WpfCustomerProjection.IdentityKey"/>)
+/// başka bir asıl kayıtta zaten varsa Id KOPYA olarak bağlanır, verisi asıl
+/// kayda yazılır ve yanıtta yönlendirme döner; istemci yerel satırını asıl
+/// kaydın Id'sine taşır.</para>
 /// </summary>
 [ApiController]
 [Authorize(AuthenticationSchemes = "Bearer-Customer")]
 [Route("api/v1/licenses/{licenseId:guid}/wpf-customers")]
 public sealed class LicensesWpfCustomersSyncController : ControllerBase
 {
-    private readonly LicenseDbContext _db;
-    public LicensesWpfCustomersSyncController(LicenseDbContext db) => _db = db;
+    /// <summary>Eşzamanlılık çakışmasında partinin en çok kaç kez
+    /// uygulanacağı: ilk deneme + BİR yeniden deneme (bkz. <see cref="Sync"/>).</summary>
+    private const int MaxAttempts = 2;
 
+    private readonly LicenseDbContext _db;
+    private readonly CustomerIdentityMerger _merger;
+    private readonly TcknProtector _tckn;
+    private readonly ILogger<LicensesWpfCustomersSyncController> _logger;
+
+    public LicensesWpfCustomersSyncController(
+        LicenseDbContext db, CustomerIdentityMerger merger, TcknProtector tckn,
+        ILogger<LicensesWpfCustomersSyncController> logger)
+    {
+        _db = db;
+        _merger = merger;
+        _tckn = tckn;
+        _logger = logger;
+    }
+
+    /// <param name="Format">1 = eski istemci (yalnız ilk yedi alan, damgasız).
+    /// 2 = tam alan + BİRİM damgaları (bkz. CustomerSyncFields). Eski istemci
+    /// alanı göndermez → 1.</param>
     public sealed record SyncItem(
         Guid Id,
         string Platform,
@@ -30,11 +59,72 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
         string? FullName,
         string? Phone,
         string? Address,
-        DateTimeOffset UpdatedAt);
+        DateTimeOffset UpdatedAt,
+        int Format = 1,
+        DateTimeOffset? FullNameChangedAt = null,
+        string? DisplayName = null,
+        DateTimeOffset? DisplayNameChangedAt = null,
+        string? GroupId = null,
+        DateTimeOffset? GroupIdChangedAt = null,
+        string? City = null,
+        string? District = null,
+        DateTimeOffset? AddressChangedAt = null,
+        bool RecipientPaysActive = false,
+        DateTimeOffset? RecipientPaysChangedAt = null,
+        DateTimeOffset? PhoneChangedAt = null,
+        string? Email = null,
+        DateTimeOffset? EmailChangedAt = null,
+        string? Tckn = null,
+        DateTimeOffset? TcknChangedAt = null,
+        bool WhatsAppConsent = false,
+        DateTimeOffset? WhatsAppConsentChangedAt = null,
+        bool SmsConsent = false,
+        DateTimeOffset? SmsConsentChangedAt = null,
+        bool IsBlacklisted = false,
+        string? BlacklistReason = null,
+        DateTimeOffset? BlacklistedAt = null,
+        DateTimeOffset? BlacklistChangedAt = null,
+        string? Notes = null,
+        DateTimeOffset? NotesChangedAt = null)
+    {
+        /// <param name="tcknProtected">ŞİFRELİ TCKN — çağıran (<c>FieldsOf</c>)
+        /// üretir. Düz <c>Tckn</c> alanlara asla girmez.</param>
+        public CustomerSyncFields ToFields(string? tcknProtected) => new()
+        {
+            FullName = FullName, FullNameChangedAt = FullNameChangedAt,
+            DisplayName = DisplayName, DisplayNameChangedAt = DisplayNameChangedAt,
+            GroupId = GroupId, GroupIdChangedAt = GroupIdChangedAt,
+            Address = Address, City = City, District = District, AddressChangedAt = AddressChangedAt,
+            RecipientPaysActive = RecipientPaysActive, RecipientPaysChangedAt = RecipientPaysChangedAt,
+            Phone = Phone, PhoneChangedAt = PhoneChangedAt,
+            Email = Email, EmailChangedAt = EmailChangedAt,
+            TcknProtected = tcknProtected, TcknChangedAt = TcknChangedAt,
+            WhatsAppConsent = WhatsAppConsent, WhatsAppConsentChangedAt = WhatsAppConsentChangedAt,
+            SmsConsent = SmsConsent, SmsConsentChangedAt = SmsConsentChangedAt,
+            IsBlacklisted = IsBlacklisted, BlacklistReason = BlacklistReason,
+            BlacklistedAt = BlacklistedAt, BlacklistChangedAt = BlacklistChangedAt,
+            Notes = Notes, NotesChangedAt = NotesChangedAt,
+        };
+
+        /// <summary>Birim damgaları — saat kayması denetimi için.</summary>
+        public IEnumerable<DateTimeOffset?> Stamps() =>
+        [
+            FullNameChangedAt, DisplayNameChangedAt, GroupIdChangedAt, AddressChangedAt,
+            RecipientPaysChangedAt, PhoneChangedAt, EmailChangedAt, TcknChangedAt,
+            WhatsAppConsentChangedAt, SmsConsentChangedAt, BlacklistChangedAt, NotesChangedAt,
+        ];
+    }
 
     public sealed record SyncRequest(List<SyncItem> Customers);
 
-    public sealed record SyncResponse(int Synced, int RetroactiveMatches);
+    /// <summary>Kopya olarak bağlanan her Id için asıl kayıt. İstemci yerel
+    /// satırını bu Id'ye taşır. Eski istemciler alanı yok sayar.</summary>
+    public sealed record SyncRedirect(Guid Id, Guid CanonicalId);
+
+    public sealed record SyncResponse(int Synced, int RetroactiveMatches, List<SyncRedirect> Redirects);
+
+    /// <summary>Bir partinin uygulanma sonucu (kayıt öncesi).</summary>
+    private sealed record BatchOutcome(int Synced, List<SyncRedirect> Redirects);
 
     [HttpPost("sync")]
     public async Task<IActionResult> Sync(Guid licenseId, [FromBody] SyncRequest req, CancellationToken ct)
@@ -45,7 +135,7 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
         if (!ownsLicense) return NotFound();
 
         if (req?.Customers is null || req.Customers.Count == 0)
-            return Ok(new SyncResponse(0, 0));
+            return Ok(new SyncResponse(0, 0, new List<SyncRedirect>()));
 
         if (req.Customers.Count > 500)
             return Problem(title: "batch-too-large", statusCode: 400, detail: "Max 500 customers per batch");
@@ -60,65 +150,61 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
         }
 
         var ids = req.Customers.Select(c => c.Id).ToList();
-        var existing = await _db.WpfCustomerProjections
-            .Where(p => p.LicenseId == licenseId && ids.Contains(p.Id))
-            .ToDictionaryAsync(p => p.Id, ct);
+        var now = DateTimeOffset.UtcNow;
 
-        var synced = 0;
-        foreach (var item in req.Customers)
+        // Saat kayması: damgalar bilgisayar saatidir; ileri saatli bilgisayar,
+        // gerçek zaman yetişene kadar her çakışmayı kazanır. KIRPILMAZ (kırpılsa
+        // sunucu ile istemci damgası farklı kalır, satır gidip gelirdi); yalnız
+        // günlüğe yazılır ki yayıncıya "saatini düzelt" denebilsin.
+        var futureLimit = now.AddMinutes(5);
+        var futureStamps = req.Customers.Where(c => c.Format >= 2)
+            .Sum(c => c.Stamps().Count(st => st > futureLimit));
+        if (futureStamps > 0)
+            _logger.LogWarning(
+                "Müşteri senkronu: {Count} alan damgası sunucu saatinin 5 dakikadan fazla ilerisinde (lisans {LicenseId}) — bilgisayar saati ileri olabilir",
+                futureStamps, licenseId);
+
+        // Eşzamanlılık çakışması (DbUpdateConcurrencyException) partiyi hemen
+        // 409'la reddetmez: değişiklik izleyicisi temizlenir ve parti TAZE
+        // okumayla BAŞTAN bir kez daha uygulanır (ShopperPurgeService.SaveAsync
+        // deseni); ikinci çakışma 409. Çakışmanın tipik kaynağı birleştiricinin
+        // dokunduğu bir sipariş/bakiye satırıdır — 500 müşterilik partiyi bunun
+        // için reddetmek canlı yayında gereksiz gürültü (A4 kalite incelemesi).
+        //
+        // Silmeyi geri ALMAZ: yeniden deneme bayat değerleri yeniden yükleyip
+        // tekrar kaydetmiyor, kuralları taze satıra yeniden uyguluyor. Purge bu
+        // isteğin okumasından sonra tombstone yazdıysa (PurgedAt jetonu
+        // çakışmanın kaynağı), taze okuma PurgedAt'ı görür ve kişisel alanlara
+        // hiçbir şey yazılmaz.
+        BatchOutcome outcome;
+        for (var attempt = 1; ; attempt++)
         {
-            if (existing.TryGetValue(item.Id, out var current))
+            try
             {
-                // Silinmiş kayıt: kişisel alanlara DOKUNMA. Yayıncının kendi
-                // bilgisayarındaki kopya silinmediği için (WPF ingest yalnızca
-                // yeni satır ekliyor, var olanı güncellemiyor) bu satır her
-                // push'ta ad/telefon/adresi geri getirirdi; silme tek bir
-                // yayında yorum yazılmasıyla sessizce geri alınırdı.
-                // Sayılıyor ama yazılmıyor: istemcinin watermark'ı ilerlesin,
-                // aynı parti sonsuza kadar yeniden gönderilmesin.
-                if (current.PurgedAt is not null)
-                {
-                    synced++;
-                    continue;
-                }
-
-                current.Platform = item.Platform.ToLowerInvariant();
-                current.Username = item.Username;
-                current.FullName = item.FullName;
-                current.Phone = item.Phone;
-                current.Address = item.Address;
-                current.UpdatedAt = item.UpdatedAt;
+                outcome = await ApplyBatchAsync(licenseId, req.Customers, ids, now, ct);
+                await _db.SaveChangesAsync(ct);
+                break;
             }
-            else
+            catch (DbUpdateConcurrencyException ex) when (attempt < MaxAttempts)
             {
-                _db.WpfCustomerProjections.Add(new WpfCustomerProjection
-                {
-                    Id = item.Id,
-                    LicenseId = licenseId,
-                    Platform = item.Platform.ToLowerInvariant(),
-                    Username = item.Username,
-                    FullName = item.FullName,
-                    Phone = item.Phone,
-                    Address = item.Address,
-                    UpdatedAt = item.UpdatedAt,
-                });
+                _logger.LogInformation(
+                    "Müşteri senkronu eşzamanlı bir yazımla çakıştı (lisans {LicenseId}, varlık {Entities}); parti taze okumayla bir kez yeniden uygulanıyor",
+                    licenseId, ConflictingEntities(ex));
+                _db.ChangeTracker.Clear();
             }
-            synced++;
-        }
-
-        try
-        {
-            await _db.SaveChangesAsync(ct);
-        }
-        catch (DbUpdateConcurrencyException)
-        {
-            // Purge, bu sync'in okumasından sonra tombstone yazmış olabilir.
-            // Bayat kişisel veriyi reload edip tekrar denemek silmeyi geri alır;
-            // istemci güncel satırı okuyup yeni bir paketle karar vermeli.
-            return Problem(
-                title: "sync-conflict",
-                detail: "Müşteri verisi eşzamanlı değişti; güncel durumla yeniden deneyin.",
-                statusCode: StatusCodes.Status409Conflict);
+            catch (DbUpdateConcurrencyException ex)
+            {
+                // İzleyici boş bırakılır: yarım uygulanmış parti bu istekteki
+                // sonraki bir SaveChanges'le diske inmesin.
+                _db.ChangeTracker.Clear();
+                _logger.LogWarning(
+                    "Müşteri senkronu yeniden denemede de çakıştı (lisans {LicenseId}, varlık {Entities}); 409 dönülüyor",
+                    licenseId, ConflictingEntities(ex));
+                return Problem(
+                    title: "sync-conflict",
+                    detail: "Müşteri verisi eşzamanlı değişti; güncel durumla yeniden deneyin.",
+                    statusCode: StatusCodes.Status409Conflict);
+            }
         }
 
         // Retroactive match: for newly-synced (or updated) projections, find any
@@ -136,10 +222,13 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
         // Ham payload'ı burada yeniden kullanma: yukarıda tombstone olduğu için
         // atlanan öğe hâlâ telefon taşıyabilir. İlk kayıttan sonra yalnız DB'de
         // gerçekten var olan ve PurgedAt IS NULL satırlar eşleştirmeye adaydır.
+        // Kopyalar (MergedIntoId dolu) aday değildir: kişisel alanları boş, bir
+        // bağlantı yalnız asıl kayda bağlanmalı.
         var matchableProjections = await _db.WpfCustomerProjections
             .Where(p => p.LicenseId == licenseId
                 && ids.Contains(p.Id)
-                && p.PurgedAt == null)
+                && p.PurgedAt == null
+                && p.MergedIntoId == null)
             .ToListAsync(ct);
 
         var retroactiveMatches = 0;
@@ -169,6 +258,179 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
         if (retroactiveMatches > 0)
             await _db.SaveChangesAsync(ct);
 
-        return Ok(new SyncResponse(synced, retroactiveMatches));
+        return Ok(new SyncResponse(outcome.Synced, retroactiveMatches, outcome.Redirects));
     }
+
+    /// <summary>
+    /// Partiyi izleyiciye uygular (SaveChanges ÇAĞIRMAZ). Her çağrı satırları
+    /// veritabanından TAZE okur; çakışmadan sonraki yeniden deneme bu yüzden
+    /// izleyici temizlendikten sonra aynen yeniden çağrılabilir.
+    /// </summary>
+    private async Task<BatchOutcome> ApplyBatchAsync(
+        Guid licenseId, List<SyncItem> items, List<Guid> ids, DateTimeOffset now, CancellationToken ct)
+    {
+        var existing = await _db.WpfCustomerProjections
+            .Where(p => p.LicenseId == licenseId && ids.Contains(p.Id))
+            .ToDictionaryAsync(p => p.Id, ct);
+
+        // Kimlik araması: bu partide yeni olan Id'lerin (platform, anahtar)
+        // asıl kayıtları. Bölüm B'deki tekil indeks kurulana kadar bir kimliğin
+        // birden çok asıl kaydı olabilir; en eski UpdatedAt'li olan seçilir
+        // (birleştirme işi sonra hepsini toparlar).
+        var newItems = items.Where(c => !existing.ContainsKey(c.Id)).ToList();
+        var platforms = newItems.Select(c => c.Platform.ToLowerInvariant()).Distinct().ToList();
+        var keys = newItems.Select(c => WpfCustomerProjection.IdentityKeyOf(c.Username)).Distinct().ToList();
+        var canonicalByKey = (await _db.WpfCustomerProjections
+                .Where(p => p.LicenseId == licenseId && p.MergedIntoId == null
+                    && platforms.Contains(p.Platform) && keys.Contains(p.IdentityKey))
+                .ToListAsync(ct))
+            .GroupBy(p => (p.Platform, p.IdentityKey))
+            .ToDictionary(g => g.Key, g => g.OrderBy(p => p.UpdatedAt).First());
+
+        // Yönlendirilmiş Id'lerin asıl kayıtları (bilinen kopya yeniden gönderiyor).
+        // Hedef de bir kopyaysa (zincir — birleştirme işi düzleştirir, olmamalı)
+        // asıl kayıt sayılmaz: kopya satırına asla veri yazılmaz.
+        var mergedTargets = existing.Values.Where(p => p.MergedIntoId is not null)
+            .Select(p => p.MergedIntoId!.Value).Distinct().ToList();
+        var targets = await _db.WpfCustomerProjections
+            .Where(p => p.LicenseId == licenseId && mergedTargets.Contains(p.Id) && p.MergedIntoId == null)
+            .ToDictionaryAsync(p => p.Id, ct);
+
+        var redirects = new List<SyncRedirect>();
+        var newAliases = new List<(Guid From, Guid To)>();
+        var synced = 0;
+
+        foreach (var item in items)
+        {
+            var platform = item.Platform.ToLowerInvariant();
+
+            if (existing.TryGetValue(item.Id, out var current))
+            {
+                if (current.MergedIntoId is { } canonicalId)
+                {
+                    if (targets.TryGetValue(canonicalId, out var target))
+                    {
+                        // Bilinen kopya: istemci henüz yerelde taşımamış. Veri asıl
+                        // kayda aynı birim kurallarıyla yazılır (damgalı yeni değer
+                        // kazanır, damgasız yalnız damgasız boşu doldurur);
+                        // yönlendirme tekrar söylenir.
+                        if (Merge(target, item, viaCopy: true)) target.UpdatedAt = now;
+                        redirects.Add(new SyncRedirect(item.Id, canonicalId));
+                    }
+                    else
+                    {
+                        // Asıl kayıt yok (olmamalı — savunma): kopya satırına ASLA
+                        // yazılmaz, yönlendirme de söylenmez (gösterecek asıl kayıt
+                        // yok). Sayılır ki istemcinin imleci ilerlesin. Günlüğe
+                        // yalnız Id'ler.
+                        _logger.LogWarning(
+                            "Müşteri senkronu: kopya {AliasId} için asıl kayıt {CanonicalId} bulunamadı (lisans {LicenseId}); öğe yazılmadan sayıldı",
+                            item.Id, canonicalId, licenseId);
+                    }
+                    synced++;
+                    continue;
+                }
+
+                // Silinmiş kayıt: kişisel alanlara DOKUNMA. Yayıncının kendi
+                // bilgisayarındaki kopya silinmediği için (WPF ingest yalnızca
+                // yeni satır ekliyor, var olanı güncellemiyor) bu satır her
+                // push'ta ad/telefon/adresi geri getirirdi; silme tek bir
+                // yayında yorum yazılmasıyla sessizce geri alınırdı.
+                // Sayılıyor ama yazılmıyor: istemcinin watermark'ı ilerlesin,
+                // aynı parti sonsuza kadar yeniden gönderilmesin.
+                if (current.PurgedAt is not null)
+                {
+                    synced++;
+                    continue;
+                }
+
+                // Username/Platform mevcut Id'de GÜNCELLENMEZ: WPF bir satırın
+                // kullanıcı adını hiç değiştirmiyor (CustomerRepository'de
+                // `UPDATE … SET Username` yok) ve değişseydi kimlik anahtarı
+                // başka bir asıl kaydın üstüne kayabilirdi.
+                if (Merge(current, item, viaCopy: false)) current.UpdatedAt = item.UpdatedAt;
+                synced++;
+                continue;
+            }
+
+            var key = (platform, WpfCustomerProjection.IdentityKeyOf(item.Username));
+            if (canonicalByKey.TryGetValue(key, out var canonical))
+            {
+                // Aynı kişi başka bilgisayarda zaten var: bu Id kopya olarak
+                // kaydedilir (eski Id'yle geç gelen veri yönlensin diye), veri
+                // asıl kayda aynı birim kurallarıyla yazılır.
+                _db.WpfCustomerProjections.Add(new WpfCustomerProjection
+                {
+                    Id = item.Id,
+                    LicenseId = licenseId,
+                    Platform = platform,
+                    Username = item.Username,
+                    MergedIntoId = canonical.Id,
+                    UpdatedAt = now,
+                });
+                if (Merge(canonical, item, viaCopy: true)) canonical.UpdatedAt = now;
+                redirects.Add(new SyncRedirect(item.Id, canonical.Id));
+                newAliases.Add((item.Id, canonical.Id));
+                synced++;
+                continue;
+            }
+
+            var created = new WpfCustomerProjection
+            {
+                Id = item.Id,
+                LicenseId = licenseId,
+                Platform = platform,
+                Username = item.Username,
+                UpdatedAt = item.UpdatedAt,
+            };
+            Merge(created, item, viaCopy: false);
+            _db.WpfCustomerProjections.Add(created);
+            canonicalByKey[key] = created; // aynı partide ikinci kopya buna bağlansın
+            synced++;
+        }
+
+        // Kopya bu bilgisayardan daha önce sipariş/kargo göndermiş olabilir:
+        // onlar eski Id'yi taşıyor. Aynı kayıt işleminde asıl kayda taşınır.
+        foreach (var (from, to) in newAliases)
+            await _merger.RepointReferencesAsync(licenseId, from, to, ct);
+
+        return new BatchOutcome(synced, redirects);
+    }
+
+    /// <summary>
+    /// Gelen öğenin alanları; düz TCKN burada şifrelenir. Sınır şifrelemeden
+    /// ÖNCE düz metne uygulanır, şifreli metin asla kırpılmaz. 11 karakteri
+    /// aşan değer bozuktur: TCKN birimi HİÇ GELMEMİŞ sayılır — değer de damga da
+    /// düşer. Damga taşınıp değer tutulsaydı sunucu ile istemci aynı damgada
+    /// farklı değerde kalır, bir daha hiç eşitlenmezdi. Tek bozuk alan ne
+    /// partiyi 400'e düşürüp istemcinin kuyruğunu kilitlesin ne geçerli bir
+    /// TCKN'yi silsin.
+    /// </summary>
+    private CustomerSyncFields FieldsOf(SyncItem item)
+    {
+        var plain = TcknValidator.Normalize(item.Tckn);
+        return plain is { Length: > 11 }
+            ? item.ToFields(tcknProtected: null) with { TcknChangedAt = null }
+            : item.ToFields(_tckn.Protect(plain)); // Protect(null/boş) → null
+    }
+
+    /// <summary>Format 2 birim kurallarıyla yazar (hedef kaydın kendisi de
+    /// olabilir, bir kopyanın asıl kaydı da — kural aynı). Format 1: kendi Id'si
+    /// için eski sürüm kuralı (ApplyLegacy: dolu telefon/adres son gönderimle
+    /// güncellenir); KOPYA Id'siyle gelen eski sürüm gönderimi ise yalnız boşu
+    /// doldurur. Yoksa asıl kaydın sahibi bilgisayar da eski sürümse ikisi aynı
+    /// kaydı sırayla ezip telefonu/adresi gidip getirirdi — Shopper telefon
+    /// kanıtı, İYS aynası ve WhatsApp etiket kuralı bu telefona bakıyor (A3
+    /// yeniden incelemesi).</summary>
+    private bool Merge(WpfCustomerProjection target, SyncItem item, bool viaCopy) => item.Format >= 2
+        ? CustomerFieldMerge.Apply(target, FieldsOf(item))
+        : viaCopy
+            ? CustomerFieldMerge.Apply(target, new CustomerSyncFields
+                { FullName = item.FullName, Phone = item.Phone, Address = item.Address })
+            : CustomerFieldMerge.ApplyLegacy(target, item.FullName, item.Phone, item.Address);
+
+    /// <summary>Çakışan varlıkların tür adları — günlük için; kişisel veri
+    /// taşımaz.</summary>
+    private static string ConflictingEntities(DbUpdateConcurrencyException ex)
+        => string.Join(",", ex.Entries.Select(e => e.Metadata.ClrType.Name).Distinct());
 }
