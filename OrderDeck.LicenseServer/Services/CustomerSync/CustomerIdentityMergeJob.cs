@@ -26,13 +26,16 @@ namespace OrderDeck.LicenseServer.Services.CustomerSync;
 /// damga yok; pratikte doldurma kipi: kopyalar UpdatedAt'i en yeniden eskiye
 /// gezilir, asıl kayıtta boş olan alan ilk dolu değerle doldurulur (adres
 /// bloğu bütün olarak; eski sürümün takma ad yedeği kullanıcı adıyla tanınır).
-/// Silinmiş (PurgedAt) kopya alan kaynağı OLMAZ: boşaltılmış alanları
-/// damgalıysa "bilinçli silme" sayılırdı. Geçici kopya da alan kaynağı OLMAZ:
-/// alanları kaydolanın kendi beyanı (boş telefonu doldursa kanıt kendiliğinden
-/// geçerdi). Herhangi bir (geçici olmayan) kopya KVKK ile silinmişse kişinin
-/// tamamı silinmiş sayılır; ilk silme tarihi açıkça en erkeni. Geçici satırın
-/// silinmişliği kişiye YAYILMAZ: sahte bir hesabın KVKK silmesi gerçek
-/// müşterinin asıl kaydını silmesin.</para>
+/// Her kopya alan kaynağıdır, iki süzgeçle: geçici kopyadan yalnız DAMGALI
+/// birimler (<see cref="CustomerSyncFields.StampedOnly"/> — damgasız alanları
+/// kaydolanın kendi beyanı; boş telefonu doldursa kanıt kendiliğinden geçerdi),
+/// silinmiş (PurgedAt) kopyanın boşaltılmış kişisel birimleri hiç
+/// (<see cref="CustomerSyncFields.WithoutScrubbedUnits"/> — oradaki "damgalı
+/// boş" bilinçli silme değil). Kara liste ve iş notu gibi yayıncı kararları
+/// ikisinden de kaybolmaz. Herhangi bir (geçici olmayan) kopya KVKK ile
+/// silinmişse kişinin tamamı silinmiş sayılır; ilk silme tarihi açıkça en
+/// erkeni. Geçici satırın silinmişliği kişiye YAYILMAZ: sahte bir hesabın KVKK
+/// silmesi gerçek müşterinin asıl kaydını silmesin.</para>
 ///
 /// <para><b>Kopya</b> silinmez: kişisel alanları boşaltılır (PurgedAt'e
 /// dokunulmaz — eşzamanlılık jetonu), MergedIntoId = asıl kayıt; geçici
@@ -42,8 +45,10 @@ namespace OrderDeck.LicenseServer.Services.CustomerSync;
 /// taşınır; her kopya DOĞRUDAN asıl kayda (zincirleme birleştirme tek
 /// SaveChanges içinde yapılmaz — birleştiricinin bakiye araması buna dayanır).</para>
 ///
-/// <para><b>Geçici kopyadan taşınan bağlantı</b> (ayrılmamış) asıl kaydın
-/// telefonuyla yeniden kanıt ister
+/// <para><b>Geçici kopyadan taşınan bağlantı</b> — AYRILMIŞ olanı dahil:
+/// ShopperPurgeService ayrılmış bağlantıdan ulaştığı projeksiyonu da siler,
+/// kanıtsız kalsa saldırganın KVKK silme talebi asıl kaydı silerdi — asıl
+/// kaydın telefonuyla yeniden kanıt ister
 /// (<see cref="WpfCustomerLinkMatcher.PhoneProves"/>); veremeyen beklemeye düşer
 /// (asıl kayıt da geçiciyse hepsi) — normal kanıt akışları yeniden bağlar. Kanıt
 /// grubun TÜM kopyaları işlendikten ve silme uygulandıktan SONRA, kaydedilecek
@@ -73,8 +78,8 @@ public sealed class CustomerIdentityMergeJob
     /// <param name="Groups">Bulunan kopyalı kişi sayısı (kuru çalıştırmada ve
     /// uygulamada aynı anlam).</param>
     /// <param name="LinksUnbound">Geçici kopyadan taşınıp telefon kanıtını
-    /// veremediği için beklemeye düşen Shopper bağlantısı; yalnız uygulamada ve
-    /// yalnız kaydedilen gruplardan.</param>
+    /// veremediği için beklemeye düşen Shopper bağlantısı (ayrılmışlar dahil);
+    /// yalnız uygulamada ve yalnız kaydedilen gruplardan.</param>
     public sealed record Report(
         int Groups, int CopyRows, int OrdersToMove, int ShipmentsToMove,
         int LinksToMove, int BalancesToSum, int PurgedGroups, int FailedGroups, int LinksUnbound = 0);
@@ -168,21 +173,31 @@ public sealed class CustomerIdentityMergeJob
             {
                 await using var tx = await _db.Database.BeginTransactionAsync(ct);
                 var now = DateTimeOffset.UtcNow;
-                // Geçici kopyalardan taşınan (ayrılmamış) bağlantılar: kanıt
-                // aşağıda, bütün kopyalar ve silme uygulandıktan SONRA.
+                // Geçici kopyalardan taşınan bağlantılar (ayrılmışlar dahil):
+                // kanıt aşağıda, bütün kopyalar ve silme uygulandıktan SONRA.
                 var provisionalLinks = new List<ShopperBroadcasterLink>();
                 foreach (var copy in others)
                 {
-                    // Silinmiş kopya ve Shopper'ın açtığı geçici kopya alan kaynağı OLMAZ:
-                    // ilkinin damgalı boşları "bilinçli silme" sayılırdı, ikincisinin
-                    // alanları kişinin kendi beyanı (telefon kanıtını kendiliğinden geçirirdi).
-                    if (copy.PurgedAt is null && !copy.CreatedByShopper)
-                        CustomerFieldMerge.Apply(canonical, CustomerSyncFields.From(copy));
+                    // Her kopya alan kaynağıdır, iki süzgeçle: Shopper'ın açtığı
+                    // geçici kopyadan yalnız DAMGALI birimler (yayıncının kararı;
+                    // damgasız birim kaydolanın kendi beyanı — boş telefonu doldursa
+                    // kanıt kendiliğinden geçerdi); silinmiş kopyanın boşaltılmış
+                    // kişisel birimleri hiç (oradaki "damgalı boş" bilinçli silme
+                    // değil). Kara liste ve not gibi yayıncı kararları böylece
+                    // ikisinden de kaybolmaz.
+                    var fields = CustomerSyncFields.From(copy);
+                    if (copy.CreatedByShopper) fields = fields.StampedOnly();
+                    if (copy.PurgedAt is not null) fields = fields.WithoutScrubbedUnits();
+                    CustomerFieldMerge.Apply(canonical, fields);
                     // Taşımadan ÖNCE yüklenir (izlenen örnekler): birleştirici aynı
-                    // örneklerin WpfCustomerId'sini asıl kayda çevirir.
+                    // örneklerin WpfCustomerId'sini asıl kayda çevirir. Ayrılmış
+                    // bağlantılar DAHİL: birleştirici onları da taşır ve
+                    // ShopperPurgeService ayrılmış bağlantıdan ulaştığı projeksiyonu
+                    // da siler — kanıtsız kalsa saldırganın KVKK silme talebi asıl
+                    // kaydı silerdi.
                     if (copy.CreatedByShopper)
                         provisionalLinks.AddRange(await _db.ShopperBroadcasterLinks
-                            .Where(l => l.LicenseId == licenseId && l.WpfCustomerId == copy.Id && l.LeftAt == null)
+                            .Where(l => l.LicenseId == licenseId && l.WpfCustomerId == copy.Id)
                             .Include(l => l.Shopper)
                             .ToListAsync(ct));
                     // Kopyanın boşaltılması silme kararı DEĞİL: PurgedAt'e dokunulmaz

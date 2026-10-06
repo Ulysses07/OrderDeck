@@ -166,8 +166,8 @@ public sealed class WpfCustomerProjection
     /// yalnız DAMGALI birimleri (yayıncının kararları) ona taşınır, damgasız
     /// beyan taşınmaz — bu satır onun kopyasına döner ve bayrak KÖKEN olarak
     /// kalır: geçici kökenli kopyanın gönderimi (eski ingest beyanı geri
-    /// yankılar) asıl kayda yazılmaz. Birleştirme işinde
-    /// geçici kopya alan kaynağı ve silme yayıcısı olmaz. Bkz.
+    /// yankılar) asıl kayda yazılmaz. Birleştirme işinde geçici kopyadan
+    /// yalnız damgalı birimler alınır ve silinmişliği kişiye yayılmaz. Bkz.
     /// LicensesWpfCustomersSyncController, CustomerIdentityMergeJob,
     /// WpfCustomerLinkMatcher.
     /// </summary>
