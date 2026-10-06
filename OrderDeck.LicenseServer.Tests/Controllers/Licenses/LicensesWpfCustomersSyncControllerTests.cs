@@ -837,6 +837,59 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
             .Which.Should().Match<WpfCustomerProjection>(p => p.Id == valid && p.FullName == "Geçerli Müşteri");
     }
 
+    /// <summary>
+    /// Null platform/kullanıcı adı da yalnız kendi öğesini düşürür. Eskiden
+    /// ASP.NET null olmayan referans tipini zorunlu sayıp TÜM partiyi model
+    /// doğrulamasında 400'e düşürüyordu — IsAcceptable hiç çalışmıyor, kuyruk
+    /// kilitleniyordu.
+    /// </summary>
+    [Theory]
+    [InlineData("platform")]
+    [InlineData("username")]
+    public async Task Null_platform_ya_da_kullanici_adi_partiyi_reddetmez_gecerli_oge_yazilir(string nullField)
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var valid = Guid.NewGuid();
+        var broken = Guid.NewGuid();
+
+        var resp = await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/wpf-customers/sync",
+            new { customers = new object[]
+            {
+                new
+                {
+                    id = broken,
+                    platform = nullField == "platform" ? null : "tiktok",
+                    username = nullField == "username" ? null : "nullalanli",
+                    fullName = "Bozuk Öğe", updatedAt = DateTimeOffset.UtcNow,
+                },
+                MakeSyncItem(valid, "tiktok", "gecerli-komsu", "Geçerli Müşteri"),
+            } });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await resp.Content.ReadFromJsonAsync<SyncResponseV2>())!.Synced.Should().Be(2,
+            "null alanlı öğe yazılmadan sayılır, geçerli öğe yazılır");
+        (await RowsAsync(licenseId)).Should().ContainSingle()
+            .Which.Should().Match<WpfCustomerProjection>(p => p.Id == valid && p.FullName == "Geçerli Müşteri");
+    }
+
+    /// <summary>Partide null öğe: eskiden tekilleştirmede NullReferenceException
+    /// → 500 ve kilitli kuyruk. Şimdi ayıklanır; geçerli öğe yazılır.</summary>
+    [Fact]
+    public async Task Partideki_null_oge_partiyi_dusurmez()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var valid = Guid.NewGuid();
+
+        var resp = await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/wpf-customers/sync",
+            new { customers = new object?[] { null, MakeSyncItem(valid, "tiktok", "null-komsusu", "Geçerli Müşteri") } });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await resp.Content.ReadFromJsonAsync<SyncResponseV2>())!.Synced.Should().Be(2,
+            "elenen öğe de yazılmadan sayılır");
+        (await RowsAsync(licenseId)).Should().ContainSingle()
+            .Which.Id.Should().Be(valid);
+    }
+
     // ── silinmiş (KVKK) asıl kayda bağlanan kopya ───────────────────────────
 
     [Fact]

@@ -54,13 +54,18 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
         _logger = logger;
     }
 
+    /// <param name="Platform">Null olabilir (bkz. <see cref="IsAcceptable"/>):
+    /// null olmayan referans tipi ASP.NET'te örtük ZORUNLU sayılır ve tek bir
+    /// null alan model doğrulamasında TÜM partiyi 400'e düşürürdü. Kural tek
+    /// yerde — kabul edilmeyen öğe yalnız kendini düşürür.</param>
+    /// <param name="Username">Platform ile aynı gerekçe.</param>
     /// <param name="Format">1 = eski istemci (yalnız ilk yedi alan, damgasız).
     /// 2 = tam alan + BİRİM damgaları (bkz. CustomerSyncFields). Eski istemci
     /// alanı göndermez → 1.</param>
     public sealed record SyncItem(
         Guid Id,
-        string Platform,
-        string Username,
+        string? Platform,
+        string? Username,
         string? FullName,
         string? Phone,
         string? Address,
@@ -150,22 +155,32 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
         if (req.Customers.Count > 500)
             return Problem(title: "batch-too-large", statusCode: 400, detail: "Max 500 customers per batch");
 
-        // Aşağıdaki üç eleme aynı kuraldan: TEK bir öğe partiyi ASLA düşürmez.
+        // Aşağıdaki elemeler aynı kuraldan: TEK bir öğe partiyi ASLA düşürmez.
         // Düşürseydi aynı hata her denemede tekrarlanır, istemcinin imleci hiç
         // ilerlemez, aynı parti sonsuza kadar yeniden gönderilir ve arkasındaki
         // müşteriler rehin kalırdı (2026-08-14'te sahada 565 müşteri 12 gün
         // böyle bekledi). Elenen öğe yazılmadan SAYILIR; günlüğe yalnız Id'ler.
 
+        // (0) Null öğe: tekilleştirme Id'ye erişirken NullReferenceException →
+        // 500 olurdu. Id'si yok; günlüğe yalnız sayı.
+        var nonNull = req.Customers.Where(c => c is not null).ToList();
+        var nullItems = req.Customers.Count - nonNull.Count;
+        if (nullItems > 0)
+            _logger.LogWarning(
+                "Müşteri senkronu: {Count} null öğe geldi, yazılmadan sayıldı (lisans {LicenseId})",
+                nullItems, licenseId);
+
         // (1) Id'ye göre TEKİLLEŞTİR (orders/sync deseni): aynı Id iki kez
         // gelirse ikinci giriş aynı yeni satırı ikinci kez izlemeye ekler →
         // izleme istisnası → 500. Son giriş kazanır: payload sırası istemcinin
         // niyet sırasıdır.
-        var deduped = req.Customers.GroupBy(c => c.Id).Select(g => g.Last()).ToList();
+        var deduped = nonNull.GroupBy(c => c.Id).Select(g => g.Last()).ToList();
 
-        // (2) Bozuk platform/kullanıcı adı. İstemci bunları göndermeden önce
-        // kendisi de eliyor (WpfCustomerProjectionSyncService); bu, başka bir
-        // istemcinin ya da sürümün kuyruğunu kilitlemesin diye. Öğe zaten
-        // eşleşemezdi — eşleşme platform + kullanıcı adına dayanıyor.
+        // (2) Bozuk (null, boş ya da kolon sınırını aşan) platform/kullanıcı
+        // adı. İstemci bunları göndermeden önce kendisi de eliyor
+        // (WpfCustomerProjectionSyncService); bu, başka bir istemcinin ya da
+        // sürümün kuyruğunu kilitlemesin diye. Öğe zaten eşleşemezdi —
+        // eşleşme platform + kullanıcı adına dayanıyor.
         var invalid = deduped.Where(c => !IsAcceptable(c)).Select(c => c.Id).ToList();
         if (invalid.Count > 0)
             _logger.LogWarning(
@@ -190,7 +205,7 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
                 foreign.Count, licenseId, IdsForLog(foreign));
         var foreignIds = foreign.ToHashSet();
         var items = candidates.Where(c => !foreignIds.Contains(c.Id)).ToList();
-        var skipped = invalid.Count + foreign.Count;
+        var skipped = nullItems + invalid.Count + foreign.Count;
 
         var ids = items.Select(c => c.Id).ToList();
         var now = DateTimeOffset.UtcNow;
@@ -317,9 +332,12 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
             }
             catch (DbUpdateConcurrencyException)
             {
-                // Ana parti YUKARIDA kaydedildi; eşleştirme yan iş. Bağlantı arada
-                // değişti ya da silindi (ör. purge bağlantıları siler): 500 dönmek
-                // istemciye kaydedilmiş partiyi boşuna yeniden gönderttirirdi.
+                // Ana parti YUKARIDA kaydedildi; eşleştirme yan iş. İstisnayı
+                // yalnız arada SİLİNEN bağlantı doğurur (ör. purge bağlantıları
+                // siler: UPDATE 0 satıra düşer) — ShopperBroadcasterLink'te
+                // eşzamanlılık jetonu yok, araya giren bir değişiklik çakışma
+                // sayılmaz. 500 dönmek istemciye kaydedilmiş partiyi boşuna
+                // yeniden gönderttirirdi.
                 // Eşleştirme sonraki bir gönderimde yeniden denenir; sayaç yalnız
                 // gerçekten kaydedileni söyler (kayıt bütün ya da hiç).
                 _logger.LogWarning(
@@ -357,9 +375,10 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
         // asıl kaydı olamaz); sonra en eski UpdatedAt'li olan, eşitlikte küçük
         // Id — sorgu sırasından bağımsız, her istek aynı kaydı seçsin
         // (birleştirme işi sonra hepsini toparlar).
+        // Platform/Username null değil: öğeler IsAcceptable'dan geçti (`!`).
         var newItems = items.Where(c => !existing.ContainsKey(c.Id)).ToList();
-        var platforms = newItems.Select(c => c.Platform.ToLowerInvariant()).Distinct().ToList();
-        var keys = newItems.Select(c => WpfCustomerProjection.IdentityKeyOf(c.Username)).Distinct().ToList();
+        var platforms = newItems.Select(c => c.Platform!.ToLowerInvariant()).Distinct().ToList();
+        var keys = newItems.Select(c => WpfCustomerProjection.IdentityKeyOf(c.Username!)).Distinct().ToList();
         var canonicalByKey = (await _db.WpfCustomerProjections
                 .Where(p => p.LicenseId == licenseId && p.MergedIntoId == null
                     && platforms.Contains(p.Platform) && keys.Contains(p.IdentityKey))
@@ -388,7 +407,7 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
 
         foreach (var item in items)
         {
-            var platform = item.Platform.ToLowerInvariant();
+            var platform = item.Platform!.ToLowerInvariant(); // IsAcceptable'dan geçti
 
             if (existing.TryGetValue(item.Id, out var current))
             {
@@ -444,7 +463,7 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
                 continue;
             }
 
-            var key = (platform, WpfCustomerProjection.IdentityKeyOf(item.Username));
+            var key = (platform, WpfCustomerProjection.IdentityKeyOf(item.Username!));
             if (canonicalByKey.TryGetValue(key, out var canonical))
             {
                 // Aynı kişi başka bilgisayarda zaten var: bu Id kopya olarak
@@ -455,7 +474,7 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
                     Id = item.Id,
                     LicenseId = licenseId,
                     Platform = platform,
-                    Username = item.Username,
+                    Username = item.Username!,
                     MergedIntoId = canonical.Id,
                     UpdatedAt = now,
                 });
@@ -494,7 +513,7 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
                 Id = item.Id,
                 LicenseId = licenseId,
                 Platform = platform,
-                Username = item.Username,
+                Username = item.Username!,
                 UpdatedAt = item.UpdatedAt,
             };
             Merge(created, item, viaCopy: false);
