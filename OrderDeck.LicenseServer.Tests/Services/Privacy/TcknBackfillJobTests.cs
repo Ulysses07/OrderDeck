@@ -464,6 +464,42 @@ public sealed class TcknBackfillJobTests : IAsyncLifetime
             .TcknProtected.Should().BeNull();
     }
 
+    /// <summary>
+    /// A5b: kopya satırlar (MergedIntoId dolu) varsayılan sorgulardan gizli,
+    /// ama bekçi KOLONUN tamamını taramalı: kopyada bulunan düz metin de
+    /// Protect'i atlayan bir yol demektir. Hem tarama hem CAS kopyayı görmeli.
+    /// </summary>
+    [Fact]
+    public async Task Projeksiyon_kopya_satirdaki_duz_metin_TCKN_de_sifrelenir()
+    {
+        Guid aliasId;
+        string plaintextValue;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var licenseId = await SeedLicenseAsync(db);
+            var canonical = NewProjection(licenseId, null);
+            plaintextValue = TestTckn.NewValid();
+            var alias = NewProjection(licenseId, plaintextValue);
+            alias.MergedIntoId = canonical.Id;
+            db.WpfCustomerProjections.AddRange(canonical, alias);
+            await db.SaveChangesAsync();
+            aliasId = alias.Id;
+        }
+
+        using (var scope = _factory.Services.CreateScope())
+            (await scope.ServiceProvider.GetRequiredService<TcknBackfillJob>().RunAsync(CancellationToken.None))
+                .Should().Be(1, "kopya satırdaki düz metin de bulunup şifrelenmeli");
+
+        using var verify = _factory.Services.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var row = await vdb.WpfCustomerProjections.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(p => p.Id == aliasId);
+        row.TcknProtected.Should().StartWith("CfDJ8");
+        verify.ServiceProvider.GetRequiredService<TcknProtector>().Unprotect(row.TcknProtected)
+            .Should().Be(plaintextValue);
+    }
+
     [Fact]
     public async Task Projeksiyon_CAS_arada_purge_edilen_satiri_atlar()
     {

@@ -1,5 +1,6 @@
 using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using OrderDeck.LicenseServer.Domain;
 using OrderDeck.LicenseServer.Domain.Bank;
 using OrderDeck.Shared.Text;
@@ -12,6 +13,25 @@ namespace OrderDeck.LicenseServer.Data;
 public class LicenseDbContext : DbContext
 {
     public LicenseDbContext(DbContextOptions<LicenseDbContext> options) : base(options) { }
+
+    /// <summary>
+    /// Bağlam düzeyindeki seçenekler. Burada, çünkü DI kaydı (Program.cs), test
+    /// fabrikaları ve doğrudan <c>new LicenseDbContext(options)</c> kuran her yer
+    /// buradan geçer — modelin bir özelliği kayıt yerine bağlı kalmasın.
+    /// </summary>
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+    {
+        // WpfCustomerProjection'ın kopya filtresi (MergedIntoId == null) ile
+        // CustomerBalance / CustomerBalanceTransaction'ın ZORUNLU WpfCustomer
+        // gezinmesi EF'in "filtrelenen zorunlu uç" uyarısını doğurur: gezinme
+        // birleşimi (Include / gezinmeyle Select) kopyaya bağlı satırları gizler.
+        // İSTENEN davranış: kopyanın bakiye satırı birleştirmede sıfırlanıp
+        // tutulur, hareketleri asıl kayda taşınır (CustomerIdentityMerger) — o
+        // sıfır satırın gezinme birleşimlerinde görünmemesi doğru. (Bugün bu
+        // gezinmeler hiçbir sorguda kullanılmıyor; yalnız FK eşlemesi.)
+        optionsBuilder.ConfigureWarnings(w =>
+            w.Ignore(CoreEventId.PossibleIncorrectRequiredNavigationWithQueryFilterInteractionWarning));
+    }
 
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<AdminUser> AdminUsers => Set<AdminUser>();
@@ -682,6 +702,16 @@ public class LicenseDbContext : DbContext
             b.HasIndex(c => new { c.LicenseId, c.Platform, c.Username });
             b.HasIndex(c => new { c.LicenseId, c.Platform, c.IdentityKey });
             b.HasIndex(c => new { c.LicenseId, c.ChangeSeq });
+            // Kopya (MergedIntoId dolu) bir YÖNLENDİRMEDİR, müşteri değil: kişisel
+            // alanları boş, kullanıcı adı asıl kayıtla aynı. Varsayılan sorgulardan
+            // GİZLİ — panel listesi, Shopper eşleştirme, banka eşleştirmesi, eski
+            // `since` ucu hep yalnız asıl kaydı görmeli (2026-10-06 taraması:
+            // filtresiz ~12 okuma yeri kopyayı ya ikinci müşteri ya da "belirsiz"
+            // eşleşme sayıyordu). Kopyayı görmesi GEREKEN yerler açıkça
+            // IgnoreQueryFilters() ister: sync ucunun Id araması, kimlik anahtarı
+            // onarımı, TCKN bekçisi (kolonun tamamını tarar); ileride değişiklik
+            // akışı ve birleştirme işi.
+            b.HasQueryFilter(p => p.MergedIntoId == null);
         });
 
         mb.Entity<ShopperPushDevice>(b =>

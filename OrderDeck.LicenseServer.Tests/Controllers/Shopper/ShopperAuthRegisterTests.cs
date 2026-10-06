@@ -326,6 +326,66 @@ public class ShopperAuthRegisterTests : IClassFixture<ApiFactory>
         link.WpfCustomerId.Should().Be(projection.Id);
     }
 
+    // ── A5b: kopya kayıt/eşleştirme adayı değil ─────────────────────────────
+
+    private sealed record ConfirmPhoneRequest(string Code);
+
+    /// <summary>
+    /// A5b: kopya (MergedIntoId dolu) asıl kaydın kullanıcı adını taşır ama
+    /// müşteri değil, yönlendirmedir — kayıtta da (adım 7) bekleyen bağlantı
+    /// çözümünde de (telefon doğrulaması) aday sayılmaz. Bağlantı asıl kayda
+    /// kurulur; kopya varken de yeni projeksiyon açılmaz.
+    ///
+    /// <para>Not: bu test filtre öncesinde de geçer — kopyanın telefonu yok,
+    /// telefon kanıtı onu zaten seçemez. Kuralı sabitlemek için burada.</para>
+    /// </summary>
+    [Fact]
+    public async Task Register_kopya_aday_sayilmaz_dogrulamadan_sonra_asil_kayda_baglanir()
+    {
+        var (licenseId, code, _) = await SeedLicenseAsync();
+        var phone = UniquePhone();
+        var canonicalId = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.WpfCustomerProjections.AddRange(
+                new WpfCustomerProjection
+                {
+                    Id = canonicalId, LicenseId = licenseId, Platform = "youtube",
+                    Username = "kopyali", Phone = phone, UpdatedAt = DateTimeOffset.UtcNow,
+                },
+                new WpfCustomerProjection
+                {
+                    Id = Guid.NewGuid(), LicenseId = licenseId, Platform = "youtube",
+                    Username = "kopyali", MergedIntoId = canonicalId, UpdatedAt = DateTimeOffset.UtcNow,
+                });
+            await db.SaveChangesAsync();
+        }
+
+        var client = _factory.CreateClient();
+        var resp = await client.PostAsJsonAsync("/api/v1/shopper/auth/register",
+            new RegisterRequest(code, "Kopya Testi", phone, $"kayit-{Guid.NewGuid():N}", "Sinop", "youtube", "kopyali"));
+        resp.StatusCode.Should().Be(HttpStatusCode.Created);
+        var body = await resp.Content.ReadFromJsonAsync<AuthResponse>();
+
+        client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", body!.AccessToken);
+        (await client.PostAsync("/api/v1/shopper/auth/phone-verification/request", null))
+            .StatusCode.Should().Be(HttpStatusCode.Accepted);
+        var gelenKod = System.Text.RegularExpressions.Regex
+            .Match(_factory.Sms.Sent.Last(m => m.Phone == phone).Text, @"\d{6}").Value;
+        (await client.PostAsJsonAsync("/api/v1/shopper/auth/phone-verification/confirm", new ConfirmPhoneRequest(gelenKod)))
+            .StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        using var check = _factory.Services.CreateScope();
+        var vdb = check.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var link = await vdb.ShopperBroadcasterLinks
+            .SingleAsync(l => l.ShopperId == body.ShopperId && l.LicenseId == licenseId);
+        link.WpfCustomerId.Should().Be(canonicalId);
+        (await vdb.WpfCustomerProjections.IgnoreQueryFilters().CountAsync(p => p.LicenseId == licenseId))
+            .Should().Be(2, "kopya varken de yeni projeksiyon açılmaz");
+    }
+
     // ── T7.10: Existing WpfProjection → no duplicate created, existing id used ─
 
     [Fact]

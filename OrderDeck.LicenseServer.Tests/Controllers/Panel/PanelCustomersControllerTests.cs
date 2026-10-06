@@ -725,6 +725,46 @@ public class PanelCustomersControllerTests : IClassFixture<ApiFactory>
         customers[0].GetProperty("orderCount").GetInt32().Should().Be(1);
     }
 
+    /// <summary>Kopya satırı (MergedIntoId dolu, kişisel alanları boş) asıl kayda
+    /// yönlendirmedir; A5b'de varsayılan sorgulardan gizli.</summary>
+    private async Task SeedAliasAsync(Guid licenseId, Guid aliasId, Guid canonicalId,
+        string username, string platform)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        db.WpfCustomerProjections.Add(new WpfCustomerProjection
+        {
+            Id = aliasId,
+            LicenseId = licenseId,
+            Platform = platform,
+            Username = username,
+            MergedIntoId = canonicalId,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// A5b: kopya bir yönlendirmedir, müşteri değil — liste onu adı/telefonu boş
+    /// ikinci bir "hayalet" müşteri olarak göstermemeli.
+    /// </summary>
+    [Fact]
+    public async Task List_kopya_hayalet_musteri_olarak_gorunmez()
+    {
+        var (client, licenseId) = await SeedListAsync();
+        var canonicalId = Guid.NewGuid();
+        await SeedProjectionAsync(licenseId, canonicalId, "Ayşe Kaya", "@ayse", "instagram");
+        await SeedAliasAsync(licenseId, Guid.NewGuid(), canonicalId, "@Ayse", "instagram");
+
+        var resp = await client.GetAsync("/api/panel/customers");
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        doc.RootElement.GetProperty("customers").EnumerateArray()
+            .Select(c => c.GetProperty("id").GetString())
+            .Should().Equal(canonicalId.ToString("N"));
+    }
+
     [Fact]
     public async Task Get_zero_order_projection_returns_summary()
     {

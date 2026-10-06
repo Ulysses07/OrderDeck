@@ -206,6 +206,40 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
         items!.Select(i => i.Id).Should().Contain(new[] { id1, id2 });
     }
 
+    /// <summary>
+    /// A5b: kopya (MergedIntoId dolu) asıl kayda yönlendirmedir; öbür
+    /// bilgisayarlara dağıtılmaz — WPF onu kişisel alanları boş ikinci bir
+    /// müşteri olarak eklerdi. Yalnız asıl kayıt gider.
+    /// </summary>
+    [Fact]
+    public async Task Since_kopyayi_dondurmez()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var canonicalId = Guid.NewGuid();
+        await SeedProjectionAsync(licenseId, canonicalId, "tiktok", "ayse");
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = Guid.NewGuid(),
+                LicenseId = licenseId,
+                Platform = "tiktok",
+                Username = "Ayse",
+                MergedIntoId = canonicalId,
+                UpdatedAt = DateTimeOffset.UtcNow.AddMinutes(-1),
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var since = Uri.EscapeDataString(DateTimeOffset.MinValue.ToString("O"));
+        var resp = await client.GetAsync($"/api/v1/licenses/{licenseId}/wpf-customers/since?since={since}");
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var items = await resp.Content.ReadFromJsonAsync<List<WpfCustomerPullItem>>();
+        items!.Select(i => i.Id).Should().Equal(canonicalId);
+    }
+
     // ── Empty result when no new projections ─────────────────────────────────
 
     [Fact]

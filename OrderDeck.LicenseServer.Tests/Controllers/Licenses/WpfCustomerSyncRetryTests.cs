@@ -101,7 +101,8 @@ public sealed class WpfCustomerSyncRetryTests : IAsyncLifetime
         order.CustomerId.Should().Be(a.ToString("N"), "yeniden deneme siparişi asıl kayda taşıdı");
         order.Price.Should().Be(25m, "eşzamanlı yazanın değeri kaldı: taşıma taze satıra uygulandı");
         order.SyncVersion.Should().Be(1, "birleştirici jetonu artırmaz; değer rakibin yazdığı");
-        var rows = await vdb.WpfCustomerProjections.AsNoTracking()
+        // Kopya varsayılan sorgulardan gizli (A5b) — burada açıkça istenir.
+        var rows = await vdb.WpfCustomerProjections.IgnoreQueryFilters().AsNoTracking()
             .Where(p => p.LicenseId == licenseId).ToListAsync();
         rows.Should().HaveCount(2, "ilk denemenin kopya satırı geri alındı, yeniden deneme bir kez ekledi");
         rows.Single(p => p.Id == b).MergedIntoId.Should().Be(a);

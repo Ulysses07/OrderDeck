@@ -529,7 +529,8 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
         var canonical = await db.WpfCustomerProjections.SingleAsync(x => x.Id == a);
         canonical.FullName.Should().Be("Ayşe Kaya"); // kopyanın boş adı damgasız → dokunmaz
         canonical.City.Should().Be("İzmir");          // kopyanın damgalı adres birimi yazıldı
-        var alias = await db.WpfCustomerProjections.SingleAsync(x => x.Id == b);
+        // Kopya varsayılan sorgulardan gizli (A5b) — burada açıkça istenir.
+        var alias = await db.WpfCustomerProjections.IgnoreQueryFilters().SingleAsync(x => x.Id == b);
         alias.MergedIntoId.Should().Be(a);
         alias.City.Should().BeNull();
     }
@@ -724,7 +725,8 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
 
         using var check = _factory.Services.CreateScope();
         var vdb = check.ServiceProvider.GetRequiredService<LicenseDbContext>();
-        var rows = await vdb.WpfCustomerProjections.AsNoTracking()
+        // Kopyalar varsayılan sorgulardan gizli (A5b): zincirin TÜM halkaları görünsün.
+        var rows = await vdb.WpfCustomerProjections.IgnoreQueryFilters().AsNoTracking()
             .Where(p => p.LicenseId == licenseId).ToListAsync();
         rows.Should().OnlyContain(p => p.FullName == null && p.City == null,
             "kopya satırına da, zincirin herhangi bir halkasına da veri yazılmadı");

@@ -269,7 +269,12 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
     private async Task<BatchOutcome> ApplyBatchAsync(
         Guid licenseId, List<SyncItem> items, List<Guid> ids, DateTimeOffset now, CancellationToken ct)
     {
-        var existing = await _db.WpfCustomerProjections
+        // IgnoreQueryFilters ŞART: kopyalar varsayılan sorgulardan gizli (A5b).
+        // Filtreli kalsa eski sürümün kopya Id'siyle gönderimi "yeni satır"
+        // sanılır, aynı birincil anahtarla INSERT denenir → 500 → istemcinin
+        // kuyruğu kilitlenir. Aşağıdaki bilinen-kopya yolu bu satırın
+        // MergedIntoId'sini görüp veriyi asıl kayda yönlendirir.
+        var existing = await _db.WpfCustomerProjections.IgnoreQueryFilters()
             .Where(p => p.LicenseId == licenseId && ids.Contains(p.Id))
             .ToDictionaryAsync(p => p.Id, ct);
 

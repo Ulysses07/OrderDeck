@@ -93,8 +93,10 @@ public sealed class TcknBackfillJob
         // Protect ediyor, geçirilecek eski düz metin yok. Burada SAF bekçi —
         // geri alma senaryosu da yok (eski imajlar bu kolona hiç yazmıyordu),
         // yani sıfırdan farklı sayı Protect'i atlayan bir yazma yolu demektir.
+        // IgnoreQueryFilters: bekçi KOLONUN tamamını tarar — kopyalar (A5b:
+        // varsayılan sorgulardan gizli) dahil; kopyada düz metin de aynı ihlal.
         var projectionCount = 0;
-        var projectionCandidates = await _db.WpfCustomerProjections.AsNoTracking()
+        var projectionCandidates = await _db.WpfCustomerProjections.IgnoreQueryFilters().AsNoTracking()
             .Where(p => p.TcknProtected != null)
             .Select(p => new { p.Id, p.TcknProtected })
             .ToListAsync(ct);
@@ -131,9 +133,10 @@ public sealed class TcknBackfillJob
 
     /// <summary>Aynı CAS deseni, WpfCustomerProjection.Tckn için. Eşzamanlı
     /// yazanlar KVKK silmesi (MarkPurged: null) ve sync ucu (yeni şifreli
-    /// değer); ikisinde de WHERE artık eşleşmez, 0 döner.</summary>
+    /// değer); ikisinde de WHERE artık eşleşmez, 0 döner. Tarama gibi kopya
+    /// satırları da görür (IgnoreQueryFilters).</summary>
     public Task<int> EncryptProjectionIfUnchangedAsync(Guid id, string expectedPlain, CancellationToken ct)
-        => _db.WpfCustomerProjections
+        => _db.WpfCustomerProjections.IgnoreQueryFilters()
             .Where(p => p.Id == id && p.TcknProtected == expectedPlain)
             .ExecuteUpdateAsync(u => u.SetProperty(p => p.TcknProtected, _protector.Protect(expectedPlain)), ct);
 }

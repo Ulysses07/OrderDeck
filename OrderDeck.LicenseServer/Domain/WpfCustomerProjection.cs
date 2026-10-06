@@ -148,8 +148,10 @@ public sealed class WpfCustomerProjection
     /// KVKK silme talebi kapsamında bu satırın kişisel alanları temizlendiyse
     /// dolu. Senkron kapısı olarak kullanılır: WPF hâlâ kendi yerel kopyasını
     /// taşıdığı için, işaret olmasa bir sonraki push kişisel veriyi buraya
-    /// geri yazar (LicensesWpfCustomersSyncController koşulsuz üzerine yazıyor)
-    /// ve silme sessizce geri alınırdı.
+    /// geri yazar (sync ucu CustomerFieldMerge kurallarıyla yazar: boşaltılmış
+    /// alanı eski sürümün damgasız gönderimi doldurur, yeni sürümün daha yeni
+    /// damgalı değeri ezer) ve silme sessizce geri alınırdı. Kapı hem sync
+    /// ucunda hem CustomerFieldMerge'de.
     /// </summary>
     public DateTimeOffset? PurgedAt { get; set; }
 

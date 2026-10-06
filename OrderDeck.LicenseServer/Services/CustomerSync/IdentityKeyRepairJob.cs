@@ -101,7 +101,9 @@ public sealed class IdentityKeyRepairJob
         // bu bir uygulama ayrıntısı, sözleşme değil). Çakışma sonrası diğer
         // satırlarla devam edilmesi (aşağıdaki catch) deterministik test
         // edilebilsin diye tarama sırası burada AÇIKÇA Id'ye sabitleniyor.
-        var rows = await _db.WpfCustomerProjections.AsNoTracking()
+        // IgnoreQueryFilters: kopyalar varsayılan sorgulardan gizli (A5b) ama
+        // onlar da onarılır (bkz. sınıf dokümanı, CAS paragrafı).
+        var rows = await _db.WpfCustomerProjections.IgnoreQueryFilters().AsNoTracking()
             .OrderBy(p => p.Id)
             .Select(p => new { p.Id, p.Username, p.IdentityKey })
             .ToListAsync(ct);
@@ -187,7 +189,9 @@ public sealed class IdentityKeyRepairJob
         // olarak SONDAKİ U+0020'yi hâlâ yok sayar (ANSI dolgu kuralı).
         // Zararsız: IdentityKeyOf zaten Trim() ile U+0020'yi kırpıyor, yani
         // bu kuralın etki edebileceği fark burada hiç oluşmaz.
-        return _db.WpfCustomerProjections
+        // IgnoreQueryFilters: okuma gibi CAS da kopyayı görmeli — filtreli kalsa
+        // kopyanın UPDATE'i sessizce 0 satır etkiler ve "ıskaladı" sayılırdı.
+        return _db.WpfCustomerProjections.IgnoreQueryFilters()
             .Where(p => p.Id == id
                 && EF.Functions.Collate(p.Username, "Latin1_General_100_BIN2") == readUsername
                 && p.IdentityKey == readKey)

@@ -133,7 +133,8 @@ public sealed class IdentityKeyRepairJobTests : IAsyncLifetime
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
-        return await db.WpfCustomerProjections.AsNoTracking()
+        // Kopya satırlar da okunabilsin (A5b: varsayılan sorgulardan gizliler).
+        return await db.WpfCustomerProjections.IgnoreQueryFilters().AsNoTracking()
             .Where(p => p.Id == id).Select(p => p.IdentityKey).SingleAsync();
     }
 
@@ -426,6 +427,41 @@ public sealed class IdentityKeyRepairJobTests : IAsyncLifetime
             "çakışan satırın anahtarı DEĞİŞMEMELİ — kanonikle aynı anahtara düşerdi");
         (await ReadIdentityKeyAsync(unrelatedId)).Should().Be("baskakullanici",
             "ilgisiz satır düzelmeli — çakışma başka bir satırı etkilememeli");
+    }
+
+    /// <summary>
+    /// A5b: kopyalar (MergedIntoId dolu) varsayılan sorgulardan gizli. Sınıf
+    /// dokümanının "kopyalar da onarılır" sözü hem taramada hem CAS'ta
+    /// geçerli kalmalı — biri filtreli kalsa satır ya hiç görülmez ya da CAS
+    /// 0 satır etkileyip "ıskaladı" sayılır.
+    /// </summary>
+    [Fact]
+    public async Task Kopya_satirin_anahtari_da_onarilir()
+    {
+        Guid aliasId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var licenseId = await SeedLicenseAsync(db);
+            var canonical = new WpfCustomerProjection
+            { Id = Guid.NewGuid(), LicenseId = licenseId, Platform = "tiktok", Username = "kopya-onarim", UpdatedAt = DateTimeOffset.UtcNow };
+            var alias = new WpfCustomerProjection
+            {
+                Id = Guid.NewGuid(), LicenseId = licenseId, Platform = "tiktok", Username = "Kopya-Onarim",
+                MergedIntoId = canonical.Id, UpdatedAt = DateTimeOffset.UtcNow,
+            };
+            db.WpfCustomerProjections.AddRange(canonical, alias);
+            await db.SaveChangesAsync();
+            aliasId = alias.Id;
+        }
+        await ForceKeyAsync(_cs, aliasId, "bayat-anahtar");
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            (await scope.ServiceProvider.GetRequiredService<IdentityKeyRepairJob>().RunAsync(CancellationToken.None))
+                .Should().Be(1, "kopya satır da taranır ve CAS ile düzeltilir");
+        }
+        (await ReadIdentityKeyAsync(aliasId)).Should().Be("kopya-onarim");
     }
 
     [Fact]
