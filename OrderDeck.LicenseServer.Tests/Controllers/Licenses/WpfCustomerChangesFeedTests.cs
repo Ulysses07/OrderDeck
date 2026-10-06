@@ -98,6 +98,64 @@ public sealed class WpfCustomerChangesFeedTests : IAsyncLifetime
         page!.Items.Single(i => i.Id == id).Tckn.Should().Be(tc);
     }
 
+    /// <summary>
+    /// A5c devralması gerçek SQL Server'da tek kayıtta iner ve akış onu taşır.
+    /// Yeni asıl kayıt (W) EKLENİRKEN geçici satırın bakiye hareketi zorunlu
+    /// yabancı anahtarıyla W'ye taşınır ve W'ye bakiye satırı açılır: ekleme
+    /// sırası yanlış kurulsa kayıt FK ihlaliyle düşer, istemci aynı partiyi
+    /// sonsuza kadar yeniden gönderirdi (InMemory yabancı anahtar denetlemez).
+    /// Akışta geçici satır W'ye yönlendirme olarak görünür — öbür bilgisayarlar
+    /// yerel satırlarını böyle taşır.
+    /// </summary>
+    [Fact]
+    public async Task Devralma_gercek_veritabaninda_iner_ve_akista_gecici_satir_yonlendirme_olur()
+    {
+        var (client, licenseId) = await SetupAsync();
+        var provisionalId = Guid.NewGuid();
+        var transactionId = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = provisionalId, LicenseId = licenseId, Platform = "tiktok", Username = "devralinan",
+                FullName = "Shopper Beyanı", Phone = "+9055" + Random.Shared.Next(10_000_000, 99_999_999),
+                CreatedByShopper = true, UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            db.CustomerBalances.Add(new CustomerBalance
+            {
+                Id = Guid.NewGuid(), LicenseId = licenseId, WpfCustomerId = provisionalId,
+                Balance = 30m, UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            db.CustomerBalanceTransactions.Add(new CustomerBalanceTransaction
+            {
+                Id = transactionId, LicenseId = licenseId, WpfCustomerId = provisionalId, Amount = 30m,
+                Kind = "manual-adjustment", CreatedByCustomerId = Guid.NewGuid(), CreatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+        var w = Guid.NewGuid();
+
+        await PushAsync(client, licenseId, new
+        {
+            id = w, platform = "tiktok", username = "Devralinan", fullName = "Yayıncının Kaydı",
+            updatedAt = DateTimeOffset.UtcNow, format = 2, fullNameChangedAt = DateTimeOffset.UtcNow,
+        });
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            (await db.CustomerBalanceTransactions.AsNoTracking().SingleAsync(t => t.Id == transactionId))
+                .WpfCustomerId.Should().Be(w);
+            (await db.CustomerBalances.AsNoTracking()
+                    .SingleAsync(b => b.LicenseId == licenseId && b.WpfCustomerId == w))
+                .Balance.Should().Be(30m);
+        }
+        var page = await GetPageAsync(client, licenseId, afterSeq: 0);
+        page.Items.Should().Contain(i => i.Id == provisionalId && i.MergedIntoId == w);
+        page.Items.Should().Contain(i => i.Id == w && i.MergedIntoId == null);
+    }
+
     [Fact]
     public async Task Kopya_yonlendirme_olarak_akista_gorunur()
     {

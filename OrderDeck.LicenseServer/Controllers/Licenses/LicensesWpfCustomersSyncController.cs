@@ -27,8 +27,11 @@ namespace OrderDeck.LicenseServer.Controllers.Licenses;
 ///
 /// <para>Shopper'ın açtığı GEÇİCİ kayıt
 /// (<see cref="WpfCustomerProjection.CreatedByShopper"/>, A5c): birleştirme
-/// telefon kanıtını delemez — yayıncı verisi beyanın yerine geçer, geçici
-/// satıra gelen her yazımda bağlı bağlantılar kanıtı yeniden ister.</para>
+/// telefon kanıtını delemez. Yayıncı kişiyi kendi Id'siyle gönderince
+/// (devralma) yayıncının satırı asıl kayıt olur, geçici satır kopyaya döner ve
+/// taşınan bağlantılar yayıncının telefonuna karşı kanıtı yeniden ister;
+/// geçici kökenli kopyanın gönderimi asıl kayda yazılmaz; hâlâ asıl kayıt olan
+/// geçici satıra gelen her yazımda da bağlantılar kanıtı yeniden ister.</para>
 /// </summary>
 [ApiController]
 [Authorize(AuthenticationSchemes = "Bearer-Customer")]
@@ -133,12 +136,16 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
 
     public sealed record SyncResponse(int Synced, int RetroactiveMatches, List<SyncRedirect> Redirects);
 
-    /// <summary>Bir partinin uygulanma sonucu (kayıt öncesi).</summary>
-    /// <param name="LinksUnbound">Yayıncı yazımı alan geçici (Shopper'ın açtığı)
-    /// kayıtlarda telefon kanıtını yeniden veremeyip beklemeye alınan bağlantı
-    /// sayısı. Günlük kayıttan SONRA yazılır: yeniden denenen ilk denemenin
-    /// sayısı kaydedilmemiş bir şeyi anlatırdı.</param>
-    private sealed record BatchOutcome(int Synced, List<SyncRedirect> Redirects, int LinksUnbound);
+    /// <summary>Bir partinin uygulanma sonucu (kayıt öncesi). Sayaçlar günlüğe
+    /// kayıttan SONRA yazılır: yeniden denenen ilk denemenin sayısı
+    /// kaydedilmemiş bir şeyi anlatırdı.</summary>
+    /// <param name="LinksUnbound">Telefon kanıtını yeniden veremeyip beklemeye
+    /// alınan Shopper bağlantısı sayısı (devralma ya da geçici satıra yazım).</param>
+    /// <param name="TakenOver">Yayıncının satırına devredilen geçici kayıt sayısı.</param>
+    /// <param name="UntrustedAliasPushes">Asıl kayda hiçbir şey yazılmayan
+    /// geçici kökenli kopya gönderimi sayısı.</param>
+    private sealed record BatchOutcome(
+        int Synced, List<SyncRedirect> Redirects, int LinksUnbound, int TakenOver, int UntrustedAliasPushes);
 
     [HttpPost("sync")]
     public async Task<IActionResult> Sync(Guid licenseId, [FromBody] SyncRequest req, CancellationToken ct)
@@ -265,10 +272,10 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
             }
         }
 
-        if (outcome.LinksUnbound > 0)
+        if (outcome.TakenOver + outcome.LinksUnbound + outcome.UntrustedAliasPushes > 0)
             _logger.LogInformation(
-                "Müşteri senkronu: Shopper'ın açtığı geçici kayda yayıncı yazımı geldi; {Count} bağlantı telefon kanıtını yeniden veremediği için beklemeye alındı (lisans {LicenseId})",
-                outcome.LinksUnbound, licenseId);
+                "Müşteri senkronu (lisans {LicenseId}): {TakenOver} geçici kayıt yayıncının satırına devredildi, {LinksUnbound} Shopper bağlantısı telefon kanıtını yeniden veremeyip beklemeye alındı, {Untrusted} geçici kökenli kopya gönderimi asıl kayda yazılmadı",
+                licenseId, outcome.TakenOver, outcome.LinksUnbound, outcome.UntrustedAliasPushes);
 
         // Retroactive match: for newly-synced (or updated) projections, find any
         // ShopperBroadcasterLink with matching (LicenseId, Platform, Username) where
@@ -289,9 +296,9 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
         // bağlantı yalnız asıl kayda bağlanmalı. Bu isteğin yönlendirdiği asıl
         // kayıtlar ise adaydır: kopya gönderimi asıl kaydın telefonunu doldurmuş
         // olabilir — bekleyen bağlantı asıl kaydın kendi bilgisayarının
-        // gönderimini beklemesin. Devralınan geçici kayıt (A5c) da böyle:
-        // gerçek müşterinin bekleyen bağlantısı yayıncının telefonuyla aynı
-        // istekte bağlanır.
+        // gönderimini beklemesin. Devralmada (A5c) asıl kayıt olan yayıncı
+        // satırı zaten bu partinin Id'lerinde: gerçek müşterinin bekleyen
+        // bağlantısı yayıncının telefonuyla aynı istekte bağlanır.
         var matchIds = ids.Concat(outcome.Redirects.Select(r => r.CanonicalId)).Distinct().ToList();
         var matchableProjections = await _db.WpfCustomerProjections
             .Where(p => p.LicenseId == licenseId
@@ -372,13 +379,13 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
         // asıl kayıtları. Bölüm B'deki tekil indeks kurulana kadar bir kimliğin
         // birden çok asıl kaydı olabilir. Yayıncı satırı varken Shopper'ın
         // açtığı GEÇİCİ satır asıl kayıt seçilmez (A5c: beyan, yayıncı verisinin
-        // asıl kaydı olamaz); sonra en eski UpdatedAt'li olan, eşitlikte küçük
-        // Id — sorgu sırasından bağımsız, her istek aynı kaydı seçsin
-        // (birleştirme işi sonra hepsini toparlar).
-        // Platform/Username null değil: öğeler IsAcceptable'dan geçti (`!`).
+        // asıl kaydı olamaz; seçilen geçici satır aşağıda devralınır); sonra en
+        // eski UpdatedAt'li olan, eşitlikte küçük Id — sorgu sırasından
+        // bağımsız, her istek aynı kaydı seçsin (birleştirme işi sonra hepsini
+        // toparlar).
         var newItems = items.Where(c => !existing.ContainsKey(c.Id)).ToList();
-        var platforms = newItems.Select(c => c.Platform!.ToLowerInvariant()).Distinct().ToList();
-        var keys = newItems.Select(c => WpfCustomerProjection.IdentityKeyOf(c.Username!)).Distinct().ToList();
+        var platforms = newItems.Select(c => KeyOf(c).Platform).Distinct().ToList();
+        var keys = newItems.Select(c => KeyOf(c).IdentityKey).Distinct().ToList();
         var canonicalByKey = (await _db.WpfCustomerProjections
                 .Where(p => p.LicenseId == licenseId && p.MergedIntoId == null
                     && platforms.Contains(p.Platform) && keys.Contains(p.IdentityKey))
@@ -399,15 +406,73 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
 
         var redirects = new List<SyncRedirect>();
         var newAliases = new List<(Guid From, Guid To)>();
-        // Yayıncı yazımı alan geçici (Shopper'ın açtığı) satırlar: bağlı
-        // bağlantıları birleştirmeden SONRA yeniden kanıt ister. Id'ye göre —
-        // aynı satıra partide birden çok öğe düşerse kanıt bir kez, son durumla.
+        // Bağlı bağlantıları birleştirmeden SONRA yeniden kanıt isteyen asıl
+        // kayıtlar: devralmada açılan yayıncı satırı ve yayıncı yazımı alan
+        // geçici satırlar. Id'ye göre — aynı satıra partide birden çok öğe
+        // düşerse kanıt bir kez, son durumla.
         var reprove = new Dictionary<Guid, WpfCustomerProjection>();
         var synced = 0;
+        var untrustedAliasPushes = 0;
+
+        // DEVRALMA (A5c) — partinin geri kalanından ÖNCE. Yeni bir Id'nin
+        // kimliğinin asıl kaydı Shopper'ın açtığı GEÇİCİ kayıtsa (S; silinmiş
+        // olsun olmasın): adı/telefonu/adresi kişinin kendi beyanı, bağlantısı
+        // kanıtsız — o adla ilk kaydolan saldırgan olabilir. Yayıncı bu kişiyi
+        // KENDİ Id'siyle (W) gönderdi: W, yeni bir satır gibi ASIL kayıt olur
+        // (yönlendirme yok), S onun kopyasına döner.
+        //   - S'nin beyanı boşaltılır (ScrubPersonal; PurgedAt'e dokunmaz — bu
+        //     bir KVKK silmesi değil) ve bayrağı KÖKEN olarak kalır: S'yi eski
+        //     `since` ingest'iyle indirmiş bilgisayar onu kendi Id'siyle
+        //     yankılamayı sürdürür; geçici kökenli kopyanın gönderimi aşağıda
+        //     asıl kayda hiç yazılmaz. S asıl kayıt kalsaydı o yankı (damgasız
+        //     telefon son gönderimle yazılır) shopper'ın telefonunu geri getirir,
+        //     geriye dönük eşleştirme saldırganı yeniden bağlardı.
+        //   - S'nin siparişleri, bağlantıları, bakiyesi… W'ye taşınır (kayıttan
+        //     önce, RepointReferencesAsync); S'ye yönlenmiş eski kopyalar W'ye
+        //     yönlenir — kopyanın kopyası kalmaz. Taşınan bağlantılar W'nin
+        //     telefonuna karşı yeniden kanıt ister.
+        //   - Silinmiş S de böyle devralınır: silinen shopper'ın beyanıdır,
+        //     gerçek müşterinin kaydı değil; yayıncının verisi W'ye iner.
+        // Döngüden ÖNCE yapılır: aynı partide S'nin kendi Id'si ya da S'nin bir
+        // kopyası nerede gelirse gelsin S'yi kopya olarak görsün — sonuç
+        // payload sırasına bağlı kalmasın.
+        var takenOver = new List<(Guid From, Guid To)>();
+        var takeoverItems = new HashSet<Guid>();
+        foreach (var item in newItems)
+        {
+            var key = KeyOf(item);
+            if (!canonicalByKey.TryGetValue(key, out var provisional) || !provisional.CreatedByShopper) continue;
+
+            var created = AddCanonical(licenseId, item);
+            provisional.ScrubPersonal();
+            provisional.MergedIntoId = created.Id;
+            provisional.UpdatedAt = now;
+            var olderAliases = await _db.WpfCustomerProjections.IgnoreQueryFilters()
+                .Where(p => p.LicenseId == licenseId && p.MergedIntoId == provisional.Id)
+                .ToListAsync(ct);
+            foreach (var alias in olderAliases)
+            {
+                alias.MergedIntoId = created.Id;
+                alias.UpdatedAt = now;
+            }
+
+            canonicalByKey[key] = created; // partide aynı kimliğin sonraki Id'leri W'ye bağlansın
+            targets[created.Id] = created; // S ve eski kopyalar artık W'ye yönlü
+            reprove[created.Id] = created;
+            takenOver.Add((provisional.Id, created.Id));
+            takeoverItems.Add(item.Id);
+        }
 
         foreach (var item in items)
         {
-            var platform = item.Platform!.ToLowerInvariant(); // IsAcceptable'dan geçti
+            // Devralmada asıl kayıt olarak açıldı (yukarıda).
+            if (takeoverItems.Contains(item.Id))
+            {
+                synced++;
+                continue;
+            }
+
+            var key = KeyOf(item);
 
             if (existing.TryGetValue(item.Id, out var current))
             {
@@ -415,15 +480,31 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
                 {
                     if (targets.TryGetValue(canonicalId, out var target))
                     {
-                        // Bilinen kopya: istemci henüz yerelde taşımamış. Veri asıl
-                        // kayda aynı birim kurallarıyla yazılır (damgalı yeni değer
-                        // kazanır, damgasız yalnız damgasız boşu doldurur);
-                        // yönlendirme tekrar söylenir.
-                        if (Merge(target, item, viaCopy: true)) target.UpdatedAt = now;
-                        // Asıl kayıt geçici olabilir (birleştirme işi yalnız geçici
-                        // satırlardan oluşan bir grubu birleştirirse): kural kendi
-                        // Id'siyle yazımdakiyle aynı.
-                        NoteProvisionalWrite(target, item, reprove);
+                        if (current.CreatedByShopper)
+                        {
+                            // GEÇİCİ KÖKENLİ kopya (devralınan ya da birleştirilen
+                            // Shopper satırı): gönderimi güvenilmez — eski `since`
+                            // ingest'i shopper'ın beyanını yayıncı bilgisayarına
+                            // sıradan müşteri olarak indirdi, o bilgisayar onu bu
+                            // Id'yle geri yankılıyor. Asıl kayda HİÇBİR şey yazılmaz
+                            // (boşu doldurmak da yok: boş telefona shopper'ın
+                            // telefonu dolsa sonraki "kanıt" kendiliğinden geçerdi).
+                            // Bedeli: o bilgisayarda bu Id'yle yapılan düzenleme,
+                            // PR-3 satırı yerelde asıl kayda taşıyana kadar
+                            // sunucuya ulaşmaz.
+                            untrustedAliasPushes++;
+                        }
+                        else
+                        {
+                            // Bilinen kopya: istemci henüz yerelde taşımamış. Veri
+                            // asıl kayda aynı birim kurallarıyla yazılır (damgalı
+                            // yeni değer kazanır, damgasız yalnız damgasız boşu
+                            // doldurur). Asıl kayıt geçici olabilir (birleştirme
+                            // işinden sonra): kural kendi Id'siyle yazımdakiyle aynı.
+                            if (Merge(target, item, viaCopy: true)) target.UpdatedAt = now;
+                            NoteProvisionalWrite(target, item, reprove);
+                        }
+                        // Yönlendirme her durumda (yeniden) söylenir.
                         redirects.Add(new SyncRedirect(item.Id, canonicalId));
                     }
                     else
@@ -463,84 +544,79 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
                 continue;
             }
 
-            var key = (platform, WpfCustomerProjection.IdentityKeyOf(item.Username!));
             if (canonicalByKey.TryGetValue(key, out var canonical))
             {
                 // Aynı kişi başka bilgisayarda zaten var: bu Id kopya olarak
                 // kaydedilir (eski Id'yle geç gelen veri yönlensin diye), veri
-                // asıl kayda aynı birim kurallarıyla yazılır.
+                // asıl kayda aynı birim kurallarıyla yazılır. Asıl kayıt burada
+                // geçici OLAMAZ: yeni Id'lerin geçici asıl kayıtları yukarıda
+                // devralındı.
                 _db.WpfCustomerProjections.Add(new WpfCustomerProjection
                 {
                     Id = item.Id,
                     LicenseId = licenseId,
-                    Platform = platform,
+                    Platform = key.Platform,
                     Username = item.Username!,
                     MergedIntoId = canonical.Id,
                     UpdatedAt = now,
                 });
-                if (canonical.CreatedByShopper && canonical.PurgedAt is null)
-                {
-                    // DEVRALMA (A5c): asıl kayıt Shopper'ın açtığı GEÇİCİ kayıt —
-                    // adı/telefonu/adresi kişinin kendi beyanı, bağlantısı
-                    // kanıtsız. Yayıncı bu kişiyi KENDİ Id'siyle gönderdi: verisi
-                    // beyanın YERİNE geçer. Beyan önce boşaltılır (ScrubPersonal;
-                    // PurgedAt'e dokunmaz — bu bir KVKK silmesi değil), yoksa
-                    // damgasız gönderim yalnız boşu doldurur ve beyan yayıncı
-                    // verisi kılığında kalırdı. Satır artık yayıncının kaydı;
-                    // bağlı bağlantılar yayıncının telefonuna karşı yeniden kanıt
-                    // ister — o adla ilk kaydolan (saldırgan olabilir) gerçek
-                    // müşterinin siparişlerini görmesin.
-                    //
-                    // Silinmiş geçici kayıt devralınmaz: silinmiş satıra hiçbir
-                    // kural yazmaz, yayıncı verisi beyanın yerine geçemez; bayrak
-                    // da kalır — silinen shopper'ın beyanıdır, bayrak kalkarsa
-                    // birleştirme işi silinmişliği kişinin tamamına yayardı.
-                    canonical.ScrubPersonal();
-                    Merge(canonical, item, viaCopy: true);
-                    canonical.CreatedByShopper = false;
-                    canonical.UpdatedAt = now;
-                    reprove[canonical.Id] = canonical;
-                }
-                else if (Merge(canonical, item, viaCopy: true)) canonical.UpdatedAt = now;
+                if (Merge(canonical, item, viaCopy: true)) canonical.UpdatedAt = now;
                 redirects.Add(new SyncRedirect(item.Id, canonical.Id));
                 newAliases.Add((item.Id, canonical.Id));
                 synced++;
                 continue;
             }
 
-            var created = new WpfCustomerProjection
-            {
-                Id = item.Id,
-                LicenseId = licenseId,
-                Platform = platform,
-                Username = item.Username!,
-                UpdatedAt = item.UpdatedAt,
-            };
-            Merge(created, item, viaCopy: false);
-            _db.WpfCustomerProjections.Add(created);
-            canonicalByKey[key] = created; // aynı partide ikinci kopya buna bağlansın
+            canonicalByKey[key] = AddCanonical(licenseId, item); // aynı partide ikinci kopya buna bağlansın
             synced++;
         }
 
         // Kopya bu bilgisayardan daha önce sipariş/kargo göndermiş olabilir:
-        // onlar eski Id'yi taşıyor. Aynı kayıt işleminde asıl kayda taşınır.
-        foreach (var (from, to) in newAliases)
+        // onlar eski Id'yi taşıyor. Devralınan geçici satıra bağlı her şey de
+        // (Shopper bağlantısı, eski ingest'le o Id'ye düşmüş siparişler…) yeni
+        // asıl kayda. Aynı kayıt işleminde.
+        foreach (var (from, to) in newAliases.Concat(takenOver))
             await _merger.RepointReferencesAsync(licenseId, from, to, ct);
 
-        var linksUnbound = await ReproveLinksAsync(licenseId, reprove.Values, ct);
+        var linksUnbound = await ReproveLinksAsync(
+            licenseId, reprove.Values, takenOver.Select(t => t.From).ToList(), ct);
 
-        return new BatchOutcome(synced, redirects, linksUnbound);
+        return new BatchOutcome(synced, redirects, linksUnbound, takenOver.Count, untrustedAliasPushes);
+    }
+
+    /// <summary>Kimlik: (küçük harf platform, kimlik anahtarı). Öğe
+    /// IsAcceptable'dan geçti — Platform/Username null değil (`!`).</summary>
+    private static (string Platform, string IdentityKey) KeyOf(SyncItem item)
+        => (item.Platform!.ToLowerInvariant(), WpfCustomerProjection.IdentityKeyOf(item.Username!));
+
+    /// <summary>Öğeden yeni bir ASIL kayıt açar: kimliğin bu lisanstaki ilk
+    /// kaydı ya da devralma (yayıncının satırı geçici kaydın yerine asıl kayıt
+    /// olur). Kendi Id'siyle ilk gönderimin kuralı (viaCopy: false).</summary>
+    private WpfCustomerProjection AddCanonical(Guid licenseId, SyncItem item)
+    {
+        var created = new WpfCustomerProjection
+        {
+            Id = item.Id,
+            LicenseId = licenseId,
+            Platform = KeyOf(item).Platform,
+            Username = item.Username!,
+            UpdatedAt = item.UpdatedAt,
+        };
+        Merge(created, item, viaCopy: false);
+        _db.WpfCustomerProjections.Add(created);
+        return created;
     }
 
     /// <summary>
-    /// Geçici (Shopper'ın açtığı) satıra yayıncıdan gelen yazım — kendi Id'siyle
-    /// ya da bilinen bir kopya üzerinden (devralma ayrı, bkz. ApplyBatchAsync).
-    /// Bağlı bağlantılar her durumda yeniden kanıt ister; aynı telefonun yankısı
-    /// kanıtı değiştirmez. Benimseme (bayrağın kalkması) yalnız DAMGALI telefonla
-    /// (format 2, PhoneChangedAt dolu): eski <c>since</c> ingest'i beyanı yayıncı
-    /// bilgisayarına sıradan müşteri olarak indirip damgasız geri yankılıyor —
-    /// yankı benimseme sayılsaydı beyan yayıncı verisi sayılırdı. Silinmiş
-    /// satıra yazım olmaz: dokunulmaz.
+    /// Hâlâ ASIL kayıt olan geçici (Shopper'ın açtığı) satıra yayıncıdan gelen
+    /// yazım — kendi Id'siyle ya da yayıncı kökenli bir kopya üzerinden
+    /// (devralma ve geçici kökenli kopyanın gönderimi ayrı, bkz.
+    /// ApplyBatchAsync). Bağlı bağlantılar her durumda yeniden kanıt ister; aynı
+    /// telefonun yankısı kanıtı değiştirmez. Benimseme (bayrağın kalkması) yalnız
+    /// DAMGALI telefonla (format 2, PhoneChangedAt dolu): eski <c>since</c>
+    /// ingest'i beyanı yayıncı bilgisayarına sıradan müşteri olarak indirip
+    /// damgasız geri yankılıyor — yankı benimseme sayılsaydı beyan yayıncı
+    /// verisi sayılırdı. Silinmiş satıra yazım olmaz: dokunulmaz.
     /// </summary>
     private static void NoteProvisionalWrite(
         WpfCustomerProjection row, SyncItem item, Dictionary<Guid, WpfCustomerProjection> reprove)
@@ -551,28 +627,35 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
     }
 
     /// <summary>
-    /// Yayıncı yazımı alan geçici satırlara bağlı (ayrılmamış) bağlantılar
-    /// satırın ŞİMDİKİ telefonuna karşı yeniden kanıt ister
+    /// Verilen asıl kayıtlara bağlı (ayrılmamış) bağlantılar satırın ŞİMDİKİ
+    /// telefonuna karşı yeniden kanıt ister
     /// (<see cref="WpfCustomerLinkMatcher.PhoneProves"/>); veremeyen beklemeye
     /// düşer (WpfCustomerId = null). Normal akışlar — geriye dönük eşleştirme,
     /// telefon doğrulaması — yayıncının telefonu eşleşince yeniden bağlar.
     /// SaveChanges ÇAĞIRMAZ: değişiklikler partiyle aynı kayıtta; yeniden
     /// deneme bunu da taze okumayla baştan yapar.
     /// </summary>
+    /// <param name="movedFrom">Bağlantıları bu istekte, henüz kaydedilmeden bu
+    /// satırlardan birine taşınan Id'ler (devralınan geçici satırlar). Sorgu
+    /// veritabanındaki değere bakar ve taşınan bağlantı orada hâlâ eski Id'yi
+    /// taşır: onu da arar; karar bağlantının izleyicideki GÜNCEL değerine
+    /// (yeni asıl kayıt) göre verilir.</param>
     private async Task<int> ReproveLinksAsync(
-        Guid licenseId, IReadOnlyCollection<WpfCustomerProjection> rows, CancellationToken ct)
+        Guid licenseId, IReadOnlyCollection<WpfCustomerProjection> rows,
+        IReadOnlyCollection<Guid> movedFrom, CancellationToken ct)
     {
         if (rows.Count == 0) return 0;
         var byId = rows.ToDictionary(r => r.Id);
-        var rowIds = byId.Keys.Select(id => (Guid?)id).ToList();
+        var dbIds = byId.Keys.Concat(movedFrom).Select(id => (Guid?)id).ToList();
         var bound = await _db.ShopperBroadcasterLinks
-            .Where(l => l.LicenseId == licenseId && l.LeftAt == null && rowIds.Contains(l.WpfCustomerId))
+            .Where(l => l.LicenseId == licenseId && l.LeftAt == null && dbIds.Contains(l.WpfCustomerId))
             .Select(l => new { Link = l, l.Shopper.Phone, l.Shopper.PhoneVerifiedAt })
             .ToListAsync(ct);
 
         var unbound = 0;
         foreach (var row in bound)
         {
+            // İzlenen örnek döner (kimlik çözümü): WpfCustomerId GÜNCEL değer.
             if (row.Link.WpfCustomerId is not { } id || !byId.TryGetValue(id, out var projection)) continue;
             if (WpfCustomerLinkMatcher.PhoneProves(projection.Phone, row.Phone, row.PhoneVerifiedAt)) continue;
             row.Link.WpfCustomerId = null;

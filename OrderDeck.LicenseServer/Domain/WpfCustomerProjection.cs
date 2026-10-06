@@ -158,13 +158,16 @@ public sealed class WpfCustomerProjection
     /// <summary>
     /// Shopper uygulamasının açtığı GEÇİCİ kayıt: kullanıcı adının hiç adayı
     /// yokken açılır, ad/telefon/adres kişinin KENDİ beyanıdır ve bağlantı
-    /// kanıtsız bağlanmıştır. Yayıncıdan gelen her yazımda bağlı bağlantılar
-    /// satırın telefonuna karşı yeniden kanıt ister; yayıncı bu kişiyi başka
-    /// Id'yle gönderdiğinde yayıncı verisi geçici veriyi değiştirir; bayrak
-    /// yalnız yayıncıdan damgalı telefonla kalkar (eski ingest'in yankısı
-    /// benimseme değildir). Birleştirme işinde geçici kopya alan kaynağı ve
-    /// silme yayıcısı olmaz. Bkz. LicensesWpfCustomersSyncController,
-    /// CustomerIdentityMergeJob, WpfCustomerLinkMatcher.
+    /// kanıtsız bağlanmıştır. Asıl kayıtken yayıncıdan gelen her yazımda bağlı
+    /// bağlantılar satırın telefonuna karşı yeniden kanıt ister; bayrak yalnız
+    /// yayıncıdan damgalı telefonla kalkar (eski ingest'in yankısı benimseme
+    /// değildir). Yayıncı bu kişiyi kendi Id'siyle gönderdiğinde (devralma)
+    /// yayıncının satırı asıl kayıt olur, bu satır onun kopyasına döner ve
+    /// bayrak KÖKEN olarak kalır: geçici kökenli kopyanın gönderimi (eski
+    /// ingest beyanı geri yankılar) asıl kayda yazılmaz. Birleştirme işinde
+    /// geçici kopya alan kaynağı ve silme yayıcısı olmaz. Bkz.
+    /// LicensesWpfCustomersSyncController, CustomerIdentityMergeJob,
+    /// WpfCustomerLinkMatcher.
     /// </summary>
     public bool CreatedByShopper { get; set; }
 
