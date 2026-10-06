@@ -125,6 +125,7 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.ShopperPayments.ShopperPaymentSubmissionService>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Shoppers.ShopperPurgeService>();
         builder.Services.AddSingleton<OrderDeck.LicenseServer.Services.Privacy.TcknProtector>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.CustomerIdentityMerger>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Shoppers.OrphanedMediaCleanupJob>();
         builder.Services.AddSingleton<JwtTokenService>();
         builder.Services.AddScoped<RefreshTokenService>();
