@@ -47,7 +47,7 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
 
     private async Task SeedProjectionAsync(Guid licenseId, Guid id, string platform, string username,
         string? fullName = null, string? phone = null, string? address = null, DateTimeOffset? updatedAt = null,
-        DateTimeOffset? purgedAt = null)
+        DateTimeOffset? purgedAt = null, string? displayName = null)
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
@@ -58,6 +58,7 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
             Platform = platform,
             Username = username,
             FullName = fullName,
+            DisplayName = displayName,
             Phone = phone,
             Address = address,
             // Varsayılan damga kararlılık ufkunun gerisinde: uç, son saniyelerde
@@ -238,6 +239,33 @@ public class LicensesWpfCustomersPullControllerTests : IClassFixture<ApiFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var items = await resp.Content.ReadFromJsonAsync<List<WpfCustomerPullItem>>();
         items!.Select(i => i.Id).Should().Equal(canonicalId);
+    }
+
+    /// <summary>
+    /// A6: eski istemci çektiği FullName'i yerel satırın takma adı olarak açar
+    /// (ShopperRegistrationIngestService: <c>DisplayName = item.FullName</c>).
+    /// Yeni istemci takma adı DisplayName'de AYRI gönderdiği için FullName boş
+    /// kalabilir — o zaman takma ad gider, yoksa eski sürümde kişi adsız
+    /// açılırdı. İkisi de doluysa FullName kazanır.
+    /// </summary>
+    [Fact]
+    public async Task Since_FullName_bossa_takma_adi_dondurur()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var nickOnly = Guid.NewGuid();
+        var both = Guid.NewGuid();
+        await SeedProjectionAsync(licenseId, nickOnly, "tiktok", "yalniztakma", displayName: "Ayşe K.");
+        await SeedProjectionAsync(licenseId, both, "tiktok", "ikisidedolu",
+            fullName: "Ayşe Kaya", displayName: "ayşoş");
+
+        var since = Uri.EscapeDataString(DateTimeOffset.MinValue.ToString("O"));
+        var items = (await client.GetFromJsonAsync<List<WpfCustomerPullItem>>(
+            $"/api/v1/licenses/{licenseId}/wpf-customers/since?since={since}"))!;
+
+        items.Single(i => i.Id == nickOnly).FullName.Should().Be("Ayşe K.",
+            "FullName boşken takma ad gitmezse eski istemci kişiyi adsız açar");
+        items.Single(i => i.Id == both).FullName.Should().Be("Ayşe Kaya",
+            "tam ad varsa takma ad onu ezmez");
     }
 
     // ── Empty result when no new projections ─────────────────────────────────
