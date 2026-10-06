@@ -33,7 +33,7 @@ public sealed class WpfCustomerChangesFeedTests : IAsyncLifetime
 
     private sealed record Item(Guid Id, string Platform, string Username, Guid? MergedIntoId,
         DateTimeOffset? PurgedAt, string? City, string? Tckn, long ChangeSeq);
-    private sealed record Page(List<Item> Items, long NextAfterSeq);
+    private sealed record Page(List<Item> Items, long NextAfterSeq, bool CursorReset);
 
     private async Task<(HttpClient Client, Guid LicenseId)> SetupAsync()
     {
@@ -203,6 +203,7 @@ public sealed class WpfCustomerChangesFeedTests : IAsyncLifetime
             var page = await GetPageAsync(client, licenseId, after, take: 1);
             var item = page.Items.Should().ContainSingle().Which;
             page.NextAfterSeq.Should().Be(item.ChangeSeq).And.BeGreaterThan(after);
+            page.CursorReset.Should().BeFalse("geçerli imleç sıfırlanmaz");
             seen.Add(item.Id);
             after = page.NextAfterSeq;
         }
@@ -211,6 +212,40 @@ public sealed class WpfCustomerChangesFeedTests : IAsyncLifetime
         var empty = await GetPageAsync(client, licenseId, after, take: 1);
         empty.Items.Should().BeEmpty();
         empty.NextAfterSeq.Should().Be(after);
+        empty.CursorReset.Should().BeFalse("boş sayfa imleci olduğu yerde bırakır, sıfırlamaz");
+    }
+
+    /// <summary>
+    /// Geçersiz imleç: eksi değer ya da ufkun üstü. Normal işleyişte ikisi de
+    /// olmaz — dönen imleç hep ufkun altında ve ufuk hiç gerilemiyor. Eksi
+    /// long'un büyük-endian baytları her rowversion'dan BÜYÜK karşılaştırılır;
+    /// ufkun üstündeki imleç ise veritabanı değişince (.bak geri yüklemesi
+    /// rowversion sayacını geri sarar, bacpac/kopya hepsini yeniden üretir)
+    /// doğar. İkisinde de her sayfa boş döner ve o bilgisayar haftalarca
+    /// sessizce değişiklik alamaz. Sunucu imleci sıfırlar, baştan verir ve
+    /// bunu açıkça söyler (istemci push imlecini de geri sarabilsin). Baştan
+    /// yeniden indirme güvenli: damga kuralları yeniden uygulamayı etkisiz kılar.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Gecersiz_imlec_sifirlanir_bastan_verilir_ve_bildirilir(bool aboveHorizon)
+    {
+        var (client, licenseId) = await SetupAsync();
+        var id = Guid.NewGuid();
+        await PushAsync(client, licenseId,
+            new { id, platform = "tiktok", username = "sifirlanan", updatedAt = DateTimeOffset.UtcNow, format = 2 });
+        var fromStart = await GetPageAsync(client, licenseId, afterSeq: 0);
+        fromStart.CursorReset.Should().BeFalse();
+        var seq = fromStart.Items.Single(i => i.Id == id).ChangeSeq;
+        // Ufkun çok üstü: bu veritabanında on milyon yazım olmadı.
+        var invalid = aboveHorizon ? seq + 10_000_000 : -1;
+
+        var page = await GetPageAsync(client, licenseId, invalid);
+
+        page.CursorReset.Should().BeTrue();
+        page.Items.Select(i => i.Id).Should().Equal(fromStart.Items.Select(i => i.Id), "baştan verilir");
+        page.NextAfterSeq.Should().Be(fromStart.NextAfterSeq);
     }
 
     /// <summary>

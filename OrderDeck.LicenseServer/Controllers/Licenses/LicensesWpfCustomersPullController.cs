@@ -22,11 +22,14 @@ public sealed class LicensesWpfCustomersPullController : ControllerBase
 {
     private readonly LicenseDbContext _db;
     private readonly TcknProtector _tckn;
+    private readonly ILogger<LicensesWpfCustomersPullController> _logger;
 
-    public LicensesWpfCustomersPullController(LicenseDbContext db, TcknProtector tckn)
+    public LicensesWpfCustomersPullController(
+        LicenseDbContext db, TcknProtector tckn, ILogger<LicensesWpfCustomersPullController> logger)
     {
         _db = db;
         _tckn = tckn;
+        _logger = logger;
     }
 
     /// <param name="FullName">Boşsa takma ad (DisplayName) gider: eski
@@ -115,7 +118,13 @@ public sealed class LicensesWpfCustomersPullController : ControllerBase
         string? Notes, DateTimeOffset? NotesChangedAt,
         long ChangeSeq);
 
-    public sealed record WpfCustomerChangesPage(List<WpfCustomerChangeItem> Items, long NextAfterSeq);
+    /// <param name="CursorReset">İstemcinin imleci geçersizdi (eksi ya da
+    /// ufkun üstü) ve sayfa BAŞTAN verildi. İstemci tam yeniden indirme yapar
+    /// ve push imlecini de geri sarar (veritabanı yedekten dönmüşse sunucu son
+    /// gönderilenleri kaybetmiş olabilir). Sona eklendi: eski okuyucular yok
+    /// sayar.</param>
+    public sealed record WpfCustomerChangesPage(
+        List<WpfCustomerChangeItem> Items, long NextAfterSeq, bool CursorReset = false);
 
     /// <summary>
     /// Çoklu bilgisayar senkronunun değişiklik akışı: asıl kayıtlar tam
@@ -125,6 +134,16 @@ public sealed class LicensesWpfCustomersPullController : ControllerBase
     /// Ufuk <c>MIN_ACTIVE_ROWVERSION()</c>: henüz commit olmamış bir işlem
     /// daha KÜÇÜK bir rowversion almış olabilir. Ufkun üstünü vermek, o işlem
     /// commit olunca imlecin gerisinde kalıp satırın hiç inmemesi demek.
+    ///
+    /// <para><b>Geçersiz imleç sıfırlanır.</b> Normal işleyişte dönen imleç
+    /// hep ufkun altındadır ve ufuk hiç gerilemez; eksi imleç (büyük-endian
+    /// baytları her rowversion'dan BÜYÜK karşılaştırılır) ya da ufkun üstündeki
+    /// imleç (veritabanı değişti: .bak geri yüklemesi rowversion sayacını geri
+    /// sarar, bacpac/kopya hepsini yeniden üretir) her sayfayı boş döndürür ve
+    /// o bilgisayar sessizce değişiklik almayı bırakırdı. Sayfa baştan verilir
+    /// ve <see cref="WpfCustomerChangesPage.CursorReset"/> bunu söyler; baştan
+    /// yeniden indirme güvenli — damga kuralları yeniden uygulamayı etkisiz
+    /// kılar.</para>
     /// </summary>
     [HttpGet("changes")]
     public async Task<IActionResult> Changes(
@@ -142,6 +161,15 @@ public sealed class LicensesWpfCustomersPullController : ControllerBase
         var horizon = await _db.Database
             .SqlQueryRaw<long>("SELECT CAST(MIN_ACTIVE_ROWVERSION() AS bigint) AS [Value]")
             .SingleAsync(ct);
+
+        var cursorReset = afterSeq < 0 || afterSeq >= horizon;
+        if (cursorReset)
+        {
+            _logger.LogWarning(
+                "Müşteri değişiklik akışı: geçersiz imleç {AfterSeq} (ufuk {Horizon}), baştan veriliyor (lisans {LicenseId}) — veritabanı yedekten dönmüş ya da kopyalanmış olabilir",
+                afterSeq, horizon, licenseId);
+            afterSeq = 0;
+        }
 
         // IgnoreQueryFilters ŞART: kopyalar varsayılan sorgulardan gizli (A5b)
         // ama akış onları yönlendirme olarak taşımalı — öbür bilgisayarlar
@@ -178,6 +206,6 @@ public sealed class LicensesWpfCustomersPullController : ControllerBase
             .ToList();
 
         var next = items.Count == 0 ? afterSeq : items[^1].ChangeSeq;
-        return Ok(new WpfCustomerChangesPage(items, next));
+        return Ok(new WpfCustomerChangesPage(items, next, cursorReset));
     }
 }
