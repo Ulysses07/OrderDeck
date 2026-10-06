@@ -649,11 +649,39 @@ public class LicenseDbContext : DbContext
              .OnDelete(DeleteBehavior.Cascade);
             b.Property(c => c.Platform).HasMaxLength(32).IsRequired();
             b.Property(c => c.Username).HasMaxLength(128).IsRequired();
+            // BIN2: varsayılan (CI_AS) collation "ayşe🌸" ile "ayşe"yi EŞİT
+            // sayabiliyor (emoji/tam genişlikli harfler göz ardı edilir) —
+            // C# tarafı (Dictionary, InMemory testleri) ise TAM eşitlik
+            // karşılaştırır. Tekil indeksten ÖNCE bu fark yanlış birleştirmeye,
+            // SONRA ise aynı anahtarda takılıp kalan bir 409 döngüsüne yol
+            // açar. BIN2 bayt-bayt (ordinal) karşılaştırır — SQL Server'ın bu
+            // kolon üzerindeki eşitlik fikri C#'ınkiyle birebir aynı olsun diye.
+            b.Property(c => c.IdentityKey).HasMaxLength(128).IsRequired()
+             .UseCollation("Latin1_General_100_BIN2");
             b.Property(c => c.FullName).HasMaxLength(200);
+            b.Property(c => c.DisplayName).HasMaxLength(200);
+            b.Property(c => c.GroupId).HasMaxLength(64);
             b.Property(c => c.Phone).HasMaxLength(20);
             b.Property(c => c.Address).HasMaxLength(500);
+            b.Property(c => c.City).HasMaxLength(64);
+            b.Property(c => c.District).HasMaxLength(64);
+            b.Property(c => c.Email).HasMaxLength(254);
+            b.Property(c => c.TcknProtected).HasColumnName("Tckn")
+             .HasMaxLength(Services.Privacy.TcknProtector.ProtectedMaxLength);
+            b.Property(c => c.Notes).HasMaxLength(2000);
+            b.Property(c => c.BlacklistReason).HasMaxLength(500);
             b.Property(c => c.PurgedAt).IsConcurrencyToken();
+            // rowversion: değer üreteci SQL Server. Eşzamanlılık jetonu DEĞİL —
+            // bugünkü yazıcıların davranışını değiştirmemek için (jeton yalnız
+            // PurgedAt). NumberToBytesConverter büyük-endian: ikili karşılaştırma
+            // sayısal sırayla aynı, bu yüzden LINQ'taki > / < doğru çevrilir.
+            b.Property(c => c.ChangeSeq)
+             .HasColumnType("rowversion")
+             .HasConversion<byte[]>()
+             .ValueGeneratedOnAddOrUpdate();
             b.HasIndex(c => new { c.LicenseId, c.Platform, c.Username });
+            b.HasIndex(c => new { c.LicenseId, c.Platform, c.IdentityKey });
+            b.HasIndex(c => new { c.LicenseId, c.ChangeSeq });
         });
 
         mb.Entity<ShopperPushDevice>(b =>
