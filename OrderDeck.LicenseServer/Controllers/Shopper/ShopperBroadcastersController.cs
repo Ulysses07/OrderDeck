@@ -123,6 +123,9 @@ public sealed class ShopperBroadcastersController : ControllerBase
         // Koşul "eşleşme yok" değil "aday hiç yok": aday varken kanıt gelmediyse
         // yeni satır açmak, gerçek müşterinin kaydını taklit eden bir kopya
         // üretirdi. Bağlantı beklemede kalır (WpfCustomerId = null).
+        //
+        // Açılan satır GEÇİCİDİR (CreatedByShopper) — kayıt akışındaki gerekçe
+        // (ShopperAuthController.Register adım 8a).
         if (candidates.Count == 0)
         {
             var projectionId = Guid.NewGuid();
@@ -135,6 +138,7 @@ public sealed class ShopperBroadcastersController : ControllerBase
                 FullName = shopper.FullName,
                 Phone = shopper.Phone,
                 Address = shopper.Address,
+                CreatedByShopper = true,
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
             link.WpfCustomerId = projectionId;

@@ -1047,4 +1047,338 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
             .Should().ContainSingle(r => r.Id == n && r.CanonicalId == small,
                 "eşit UpdatedAt'te küçük Id seçilir — her istek aynı asıl kaydı seçmeli");
     }
+
+    // ── A5c: Shopper'ın açtığı geçici kayıt telefon kanıtını delemez ─────────
+    // Shopper uygulaması kullanıcı adının hiç adayı yokken kendi projeksiyonunu
+    // açar: ad/telefon/adres kişinin KENDİ beyanı, bağlantı kanıtsız bağlı.
+    // Kullanıcı adı sohbette herkese açık; o adla ilk kaydolan saldırgan
+    // olabilir. Yayıncının yazımı bu kaydı gerçek müşterinin kaydıyla
+    // buluşturduğunda bağlantı telefona karşı YENİDEN kanıt ister.
+
+    private sealed record ProvisionalSeed(Guid ProjectionId, Guid LinkId, string ShopperPhone);
+
+    private static OrderDeck.LicenseServer.Domain.Shopper VerifiedShopper(string phone) => new()
+    {
+        Id = Guid.NewGuid(),
+        FullName = "Shopper Beyanı",
+        Phone = phone,
+        PhoneVerifiedAt = DateTimeOffset.UtcNow,
+        PasswordHash = $"hash-{Guid.NewGuid():N}",
+        Address = "Shopper adresi",
+        CreatedAt = DateTimeOffset.UtcNow,
+        UpdatedAt = DateTimeOffset.UtcNow,
+    };
+
+    /// <summary>Shopper kaydının/katılmasının açtığı geçici projeksiyonu kurar
+    /// (ShopperAuthController adım 8a ile aynı alanlar): telefonu doğrulanmış
+    /// shopper'ın beyanı, bağlantı S'ye kanıtsız bağlı.</summary>
+    private async Task<ProvisionalSeed> SeedProvisionalAsync(
+        Guid licenseId, string username, DateTimeOffset? updatedAt = null)
+    {
+        var phone = NewPhone();
+        var projectionId = Guid.NewGuid();
+        var linkId = Guid.NewGuid();
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var shopper = VerifiedShopper(phone);
+        db.Shoppers.Add(shopper);
+        db.WpfCustomerProjections.Add(new WpfCustomerProjection
+        {
+            Id = projectionId, LicenseId = licenseId, Platform = "tiktok", Username = username,
+            FullName = "Shopper Beyanı", Phone = phone, Address = "Shopper adresi",
+            CreatedByShopper = true, UpdatedAt = updatedAt ?? DateTimeOffset.UtcNow,
+        });
+        db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+        {
+            Id = linkId, ShopperId = shopper.Id, LicenseId = licenseId, Platform = "tiktok",
+            Username = username, WpfCustomerId = projectionId, JoinedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+        return new ProvisionalSeed(projectionId, linkId, phone);
+    }
+
+    private async Task<Guid?> LinkTargetAsync(Guid linkId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        return (await db.ShopperBroadcasterLinks.AsNoTracking().SingleAsync(l => l.Id == linkId)).WpfCustomerId;
+    }
+
+    /// <summary>Yayıncı bilgisayarının gönderimi: format 2'de ad ve telefon
+    /// damgalı (yayıncı WPF'te girdi), format 1'de damgasız eski sürüm.</summary>
+    private static object BroadcasterItem(int format, Guid id, string username, string? fullName, string? phone)
+    {
+        var t = DateTimeOffset.UtcNow;
+        return format >= 2
+            ? new
+            {
+                id, platform = "tiktok", username, fullName, phone, address = (string?)null,
+                updatedAt = t, format = 2,
+                fullNameChangedAt = fullName is null ? (DateTimeOffset?)null : t,
+                phoneChangedAt = phone is null ? (DateTimeOffset?)null : t,
+            }
+            : MakeSyncItem(id, "tiktok", username, fullName, phone);
+    }
+
+    private async Task<SyncResponseV2> PostAsync(HttpClient client, Guid licenseId, params object[] items)
+    {
+        var resp = await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/wpf-customers/sync",
+            new { customers = items });
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        return (await resp.Content.ReadFromJsonAsync<SyncResponseV2>())!;
+    }
+
+    /// <summary>
+    /// Devralma (saldırgan): yayıncı aynı kimliği KENDİ Id'siyle (W) gönderir.
+    /// Eskiden W geçici kaydın kopyası olur, siparişleri oraya taşınır ve o adla
+    /// ilk kaydolan gerçek müşterinin siparişlerini görürdü. Şimdi: yayıncının
+    /// verisi beyanın YERİNE geçer, kayıt artık geçici değildir, bağlantı
+    /// yayıncının telefonunu kanıtlayamadığı için beklemeye düşer.
+    /// </summary>
+    [Theory]
+    [InlineData(2)]
+    [InlineData(1)]
+    public async Task Devralma_yayinci_verisi_beyanin_yerine_gecer_farkli_telefonda_baglanti_beklemeye_duser(int format)
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var s = await SeedProvisionalAsync(licenseId, "devralinan");
+        var w = Guid.NewGuid();
+        var broadcasterPhone = NewPhone();
+
+        var body = await PostAsync(client, licenseId,
+            BroadcasterItem(format, w, "Devralinan", "Yayıncının Kaydı", broadcasterPhone));
+
+        body.Redirects.Should().ContainSingle(r => r.Id == w && r.CanonicalId == s.ProjectionId);
+        var rows = await RowsAsync(licenseId);
+        var canonical = rows.Single(p => p.Id == s.ProjectionId);
+        canonical.FullName.Should().Be("Yayıncının Kaydı");
+        canonical.Phone.Should().Be(broadcasterPhone);
+        canonical.Address.Should().BeNull("shopper'ın beyanı düştü, yayıncı adres göndermedi");
+        canonical.CreatedByShopper.Should().BeFalse();
+        rows.Single(p => p.Id == w).MergedIntoId.Should().Be(s.ProjectionId);
+        (await LinkTargetAsync(s.LinkId)).Should().BeNull(
+            "yayıncının telefonu shopper'ın doğrulanmış telefonu değil — kanıt yok");
+    }
+
+    /// <summary>Devralma (meşru erken kayıt): müşteri Shopper'a yayıncıdan önce
+    /// kaydolmuş; yayıncının telefonu shopper'ın doğrulanmış telefonu → kanıt
+    /// geçer, bağlantı bağlı kalır.</summary>
+    [Theory]
+    [InlineData(2)]
+    [InlineData(1)]
+    public async Task Devralma_yayincinin_telefonu_shopperinki_ise_baglanti_bagli_kalir(int format)
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var s = await SeedProvisionalAsync(licenseId, "erken-kayit");
+        var w = Guid.NewGuid();
+
+        await PostAsync(client, licenseId, BroadcasterItem(format, w, "erken-kayit", "Yayıncının Kaydı", s.ShopperPhone));
+
+        var canonical = (await RowsAsync(licenseId)).Single(p => p.Id == s.ProjectionId);
+        canonical.CreatedByShopper.Should().BeFalse();
+        canonical.Address.Should().BeNull("beyan yine düşer — yalnız kanıt geçer");
+        (await LinkTargetAsync(s.LinkId)).Should().Be(s.ProjectionId);
+    }
+
+    [Theory]
+    [InlineData(2)]
+    [InlineData(1)]
+    public async Task Devralma_yayinci_telefonu_bilmiyorsa_baglanti_beklemeye_duser(int format)
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var s = await SeedProvisionalAsync(licenseId, "telefonsuz");
+
+        await PostAsync(client, licenseId, BroadcasterItem(format, Guid.NewGuid(), "telefonsuz", "Yayıncının Kaydı", phone: null));
+
+        var canonical = (await RowsAsync(licenseId)).Single(p => p.Id == s.ProjectionId);
+        canonical.Phone.Should().BeNull("shopper'ın beyan ettiği telefon yayıncı verisi değil");
+        canonical.CreatedByShopper.Should().BeFalse();
+        (await LinkTargetAsync(s.LinkId)).Should().BeNull();
+    }
+
+    /// <summary>
+    /// Devralmadan sonra gerçek müşterinin bekleyen bağlantısı (doğrulanmış
+    /// telefonu yayıncının telefonu) AYNI istekte asıl kayda bağlanır —
+    /// geriye dönük eşleştirme yönlendirme hedefini de aday sayıyor.
+    /// </summary>
+    [Fact]
+    public async Task Devralmadan_sonra_gercek_musterinin_bekleyen_baglantisi_ayni_istekte_baglanir()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var s = await SeedProvisionalAsync(licenseId, "gercek-kisi");
+        var realPhone = NewPhone();
+        var realLinkId = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var real = VerifiedShopper(realPhone);
+            db.Shoppers.Add(real);
+            // Aday (geçici S) vardı ama telefonu onunki değildi → beklemede.
+            db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+            {
+                Id = realLinkId, ShopperId = real.Id, LicenseId = licenseId, Platform = "tiktok",
+                Username = "gercek-kisi", WpfCustomerId = null, JoinedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await PostAsync(client, licenseId,
+            BroadcasterItem(2, Guid.NewGuid(), "Gercek-Kisi", "Gerçek Kişi", realPhone));
+
+        body.RetroactiveMatches.Should().Be(1);
+        (await LinkTargetAsync(realLinkId)).Should().Be(s.ProjectionId);
+        (await LinkTargetAsync(s.LinkId)).Should().BeNull("saldırganın bağlantısı kanıt veremedi");
+    }
+
+    /// <summary>Eski ingest'in geri yankısı: geçici S'nin KENDİ Id'siyle, beyanın
+    /// aynısı. Benimseme değildir (bayrak kalır), aynı telefon kanıtı değiştirmez.</summary>
+    [Fact]
+    public async Task Kendi_Id_yanki_bayragi_ve_baglantiyi_degistirmez()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var s = await SeedProvisionalAsync(licenseId, "yanki");
+
+        await PostAsync(client, licenseId,
+            MakeSyncItem(s.ProjectionId, "tiktok", "yanki", "Shopper Beyanı", s.ShopperPhone, "Shopper adresi"));
+
+        var row = (await RowsAsync(licenseId)).Single(p => p.Id == s.ProjectionId);
+        row.CreatedByShopper.Should().BeTrue();
+        row.Phone.Should().Be(s.ShopperPhone);
+        (await LinkTargetAsync(s.LinkId)).Should().Be(s.ProjectionId);
+    }
+
+    /// <summary>Kendi Id'siyle farklı telefon: telefon değiştiyse bağlantı yeni
+    /// telefona karşı kanıt ister. Format 1 damgasızdır — benimseme sayılmaz,
+    /// bayrak kalır; format 2'de telefonu değiştiren ancak damgalı yazım olabilir
+    /// (damgasız birim dolu telefonu ezmez), o da benimsemedir.</summary>
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task Kendi_Id_farkli_telefon_baglantiyi_beklemeye_dusurur(int format)
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var s = await SeedProvisionalAsync(licenseId, "farkli-tel");
+        var otherPhone = NewPhone();
+
+        await PostAsync(client, licenseId, BroadcasterItem(format, s.ProjectionId, "farkli-tel", null, otherPhone));
+
+        var row = (await RowsAsync(licenseId)).Single(p => p.Id == s.ProjectionId);
+        row.Phone.Should().Be(otherPhone);
+        row.CreatedByShopper.Should().Be(format == 1, "yalnız damgalı telefon benimsemedir");
+        (await LinkTargetAsync(s.LinkId)).Should().BeNull();
+    }
+
+    /// <summary>Benimseme: yayıncıdan DAMGALI telefonla gelen yazım (format 2,
+    /// PhoneChangedAt dolu) bayrağı kaldırır; bağlantı bu telefona karşı kanıtlanır.</summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Kendi_Id_damgali_telefon_benimser_baglanti_kanita_gore(bool samePhone)
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var s = await SeedProvisionalAsync(licenseId, "benimseme");
+        var phone = samePhone ? s.ShopperPhone : NewPhone();
+
+        await PostAsync(client, licenseId, BroadcasterItem(2, s.ProjectionId, "benimseme", null, phone));
+
+        var row = (await RowsAsync(licenseId)).Single(p => p.Id == s.ProjectionId);
+        row.CreatedByShopper.Should().BeFalse();
+        row.PhoneChangedAt.Should().NotBeNull();
+        (await LinkTargetAsync(s.LinkId)).Should().Be(samePhone ? s.ProjectionId : null);
+    }
+
+    /// <summary>B1'in tekil indeksinden önce aynı anahtarda hem yayıncı satırı
+    /// hem geçici satır olabilir. Yeni Id yayıncı satırına kopya olur — daha
+    /// eski olsa bile geçici satır asıl kayıt seçilmez.</summary>
+    [Fact]
+    public async Task Ayni_anahtarda_yayinci_satiri_varken_gecici_satir_asil_kayit_secilmez()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var t = DateTimeOffset.UtcNow;
+        var s = await SeedProvisionalAsync(licenseId, "secim", updatedAt: t.AddDays(-1));
+        var x = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = x, LicenseId = licenseId, Platform = "tiktok", Username = "Secim", UpdatedAt = t,
+            });
+            await db.SaveChangesAsync();
+        }
+        var w = Guid.NewGuid();
+
+        var body = await PostAsync(client, licenseId, BroadcasterItem(2, w, "SECIM", "Yayıncının Kaydı", NewPhone()));
+
+        body.Redirects.Should().ContainSingle(r => r.Id == w && r.CanonicalId == x);
+        var provisional = (await RowsAsync(licenseId)).Single(p => p.Id == s.ProjectionId);
+        provisional.CreatedByShopper.Should().BeTrue("geçici satıra dokunulmadı");
+        provisional.FullName.Should().Be("Shopper Beyanı");
+        (await LinkTargetAsync(s.LinkId)).Should().Be(s.ProjectionId);
+    }
+
+    /// <summary>
+    /// Bilinen kopya da geçici asıl kayda yazabilir (A7 yalnız geçici
+    /// satırlardan oluşan bir grubu birleştirirse asıl kayıt geçici kalır;
+    /// kopyanın Id'si eski ingest'le bir bilgisayara inmiş olabilir). Kural aynı:
+    /// geçici satıra her yazımda bağlantı yeniden kanıt ister.
+    /// </summary>
+    [Fact]
+    public async Task Bilinen_kopya_uzerinden_gecici_asil_kayda_yazim_da_yeniden_kanit_ister()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var s = await SeedProvisionalAsync(licenseId, "kopyali-gecici");
+        var alias = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = alias, LicenseId = licenseId, Platform = "tiktok", Username = "Kopyali-Gecici",
+                MergedIntoId = s.ProjectionId, CreatedByShopper = true, UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+        var otherPhone = NewPhone();
+
+        var body = await PostAsync(client, licenseId, MakeSyncItem(alias, "tiktok", "Kopyali-Gecici", null, otherPhone));
+
+        body.Redirects.Should().ContainSingle(r => r.Id == alias && r.CanonicalId == s.ProjectionId);
+        var row = (await RowsAsync(licenseId)).Single(p => p.Id == s.ProjectionId);
+        row.Phone.Should().Be(s.ShopperPhone, "kopya üzerinden damgasız gönderim yalnız boşu doldurur");
+        row.CreatedByShopper.Should().BeTrue("damgasız yazım benimseme değildir");
+        (await LinkTargetAsync(s.LinkId)).Should().Be(s.ProjectionId, "telefon değişmedi, kanıt geçer");
+
+        await PostAsync(client, licenseId, BroadcasterItem(2, alias, "Kopyali-Gecici", null, otherPhone));
+
+        row = (await RowsAsync(licenseId)).Single(p => p.Id == s.ProjectionId);
+        row.Phone.Should().Be(otherPhone);
+        row.CreatedByShopper.Should().BeFalse("damgalı telefon benimsemedir");
+        (await LinkTargetAsync(s.LinkId)).Should().BeNull("yeni telefon shopper'ınkini kanıtlamıyor");
+    }
+
+    /// <summary>
+    /// Silinmiş (KVKK) geçici kayıt devralınmaz: silinmiş satıra hiçbir kural
+    /// yazmaz (yayıncının verisi beyanın yerine geçemez), bayrak da kalır —
+    /// silinmişliği shopper'ın kendi beyanının silinmesidir; bayrak kalkarsa
+    /// birleştirme işi (A7) onu kişinin tamamına yayardı.
+    /// </summary>
+    [Fact]
+    public async Task Silinmis_gecici_asil_kayit_devralinmaz_bayrak_kalir()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var s = await SeedProvisionalAsync(licenseId, "silinmis-gecici");
+        await PurgeAsync(s.ProjectionId);
+        var w = Guid.NewGuid();
+
+        var body = await PostAsync(client, licenseId,
+            BroadcasterItem(2, w, "silinmis-gecici", "Yayıncının Kaydı", NewPhone()));
+
+        body.Redirects.Should().ContainSingle(r => r.Id == w && r.CanonicalId == s.ProjectionId);
+        var row = (await RowsAsync(licenseId)).Single(p => p.Id == s.ProjectionId);
+        row.PurgedAt.Should().NotBeNull();
+        row.FullName.Should().BeNull();
+        row.Phone.Should().BeNull();
+        row.CreatedByShopper.Should().BeTrue();
+    }
 }

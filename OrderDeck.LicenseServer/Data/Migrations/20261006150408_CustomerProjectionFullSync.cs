@@ -53,6 +53,13 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 maxLength: 64,
                 nullable: true);
 
+            migrationBuilder.AddColumn<bool>(
+                name: "CreatedByShopper",
+                table: "WpfCustomerProjections",
+                type: "bit",
+                nullable: false,
+                defaultValue: false);
+
             migrationBuilder.AddColumn<string>(
                 name: "DisplayName",
                 table: "WpfCustomerProjections",
@@ -272,6 +279,10 @@ namespace OrderDeck.LicenseServer.Data.Migrations
 
             migrationBuilder.DropColumn(
                 name: "City",
+                table: "WpfCustomerProjections");
+
+            migrationBuilder.DropColumn(
+                name: "CreatedByShopper",
                 table: "WpfCustomerProjections");
 
             migrationBuilder.DropColumn(

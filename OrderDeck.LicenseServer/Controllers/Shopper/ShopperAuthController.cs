@@ -273,6 +273,11 @@ public sealed class ShopperAuthController : ControllerBase
         // (platform, kullanıcı adı) için ikinci bir kayıt belirir, üstelik
         // kanıtlanmamış kişinin bilgileriyle — gerçek müşterinin kaydını taklit
         // eden bir kopya. Bağlantı beklemede kalır (WpfCustomerId = null).
+        //
+        // Açılan satır GEÇİCİDİR (CreatedByShopper): ad/telefon/adres kişinin
+        // kendi beyanı, bağlantı kanıtsız. Yayıncının yazımı bu kaydı gerçek
+        // müşterinin kaydıyla buluşturduğunda bağlantı telefona karşı yeniden
+        // kanıt ister (LicensesWpfCustomersSyncController).
         if (candidates.Count == 0)
         {
             var projectionId = Guid.NewGuid();
@@ -285,6 +290,7 @@ public sealed class ShopperAuthController : ControllerBase
                 FullName = shopper.FullName,
                 Phone = shopper.Phone,
                 Address = shopper.Address,
+                CreatedByShopper = true,
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
             link.WpfCustomerId = projectionId;

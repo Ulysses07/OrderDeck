@@ -326,6 +326,28 @@ public class ShopperAuthRegisterTests : IClassFixture<ApiFactory>
         link.WpfCustomerId.Should().Be(projection.Id);
     }
 
+    /// <summary>
+    /// A5c: kullanıcı adının hiç adayı yokken açılan projeksiyon GEÇİCİDİR — ad,
+    /// telefon ve adres kişinin kendi beyanı, bağlantı kanıtsız bağlandı. Sync
+    /// ucu bu bayrağa bakarak birleştirmede telefon kanıtını yeniden ister.
+    /// </summary>
+    [Fact]
+    public async Task Register_otomatik_projeksiyon_gecici_olarak_isaretlenir()
+    {
+        var (licenseId, code, _) = await SeedLicenseAsync();
+        var phone = UniquePhone();
+
+        var resp = await _factory.CreateClient().PostAsJsonAsync("/api/v1/shopper/auth/register",
+            new RegisterRequest(code, "Geçici Kayıt", phone, $"kayit-{Guid.NewGuid():N}", "Kars", "tiktok", "gecici-kayit"));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Created);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var projection = await db.WpfCustomerProjections
+            .SingleAsync(p => p.LicenseId == licenseId && p.Username == "gecici-kayit");
+        projection.CreatedByShopper.Should().BeTrue();
+    }
+
     // ── A5b: kopya kayıt/eşleştirme adayı değil ─────────────────────────────
 
     private sealed record ConfirmPhoneRequest(string Code);

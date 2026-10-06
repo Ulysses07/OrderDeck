@@ -156,6 +156,19 @@ public sealed class WpfCustomerProjection
     public DateTimeOffset? PurgedAt { get; set; }
 
     /// <summary>
+    /// Shopper uygulamasının açtığı GEÇİCİ kayıt: kullanıcı adının hiç adayı
+    /// yokken açılır, ad/telefon/adres kişinin KENDİ beyanıdır ve bağlantı
+    /// kanıtsız bağlanmıştır. Yayıncıdan gelen her yazımda bağlı bağlantılar
+    /// satırın telefonuna karşı yeniden kanıt ister; yayıncı bu kişiyi başka
+    /// Id'yle gönderdiğinde yayıncı verisi geçici veriyi değiştirir; bayrak
+    /// yalnız yayıncıdan damgalı telefonla kalkar (eski ingest'in yankısı
+    /// benimseme değildir). Birleştirme işinde geçici kopya alan kaynağı ve
+    /// silme yayıcısı olmaz. Bkz. LicensesWpfCustomersSyncController,
+    /// CustomerIdentityMergeJob, WpfCustomerLinkMatcher.
+    /// </summary>
+    public bool CreatedByShopper { get; set; }
+
+    /// <summary>
     /// Kişisel alanların TEK boşaltma listesi — WPF tarafındaki
     /// <c>OrderDeck.Core.Storage.Repositories.CustomerRepository</c>'nin
     /// <c>ScrubAssignments</c>'ı ile AYNI politikayı uygular (KVKK silme

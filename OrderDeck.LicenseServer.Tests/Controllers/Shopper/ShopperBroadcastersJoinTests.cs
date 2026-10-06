@@ -323,6 +323,30 @@ public class ShopperBroadcastersJoinTests : IClassFixture<ApiFactory>
         link!.WpfCustomerId.Should().Be(projection!.Id);
     }
 
+    /// <summary>
+    /// A5c: katılmada açılan projeksiyon da kaydınki gibi GEÇİCİDİR (kişinin
+    /// kendi beyanı, kanıtsız bağlantı).
+    /// </summary>
+    [Fact]
+    public async Task Join_otomatik_projeksiyon_gecici_olarak_isaretlenir()
+    {
+        var client = _factory.CreateClient();
+        var (_, codeA, _) = await SeedLicenseAsync();
+        var (licenseIdB, codeB, _) = await SeedLicenseAsync();
+        var (token, _, _) = await RegisterShopperAsync(client, codeA);
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        (await client.PostAsJsonAsync("/api/v1/shopper/broadcasters/join",
+                new JoinRequest(codeB, "tiktok", "gecici-katilim")))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var projection = await db.WpfCustomerProjections
+            .SingleAsync(p => p.LicenseId == licenseIdB && p.Username == "gecici-katilim");
+        projection.CreatedByShopper.Should().BeTrue();
+    }
+
     // ── T9: Existing WpfProjection on Join → no duplicate created ───────────
 
     [Fact]

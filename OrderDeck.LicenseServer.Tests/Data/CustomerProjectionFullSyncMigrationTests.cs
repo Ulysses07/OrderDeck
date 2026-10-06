@@ -212,6 +212,10 @@ public sealed class CustomerProjectionFullSyncMigrationTests
         p.Notes.Should().BeNull();
         p.NotesChangedAt.Should().BeNull();
         p.MergedIntoId.Should().BeNull();
+        // A5c: göç öncesi satırların hiçbiri Shopper'ın açtığı geçici kayıt
+        // sayılmaz — hepsi yayıncının kendi verisi (prod 2026-10-06: 0 bağlı
+        // Shopper bağlantısı, geçici projeksiyon yok).
+        p.CreatedByShopper.Should().BeFalse();
     }
 
     private static async Task<string> ColumnCollationAsync(SqlConnection conn, string table, string column)

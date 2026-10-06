@@ -3275,6 +3275,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
 
+                    b.Property<bool>("CreatedByShopper")
+                        .HasColumnType("bit");
+
                     b.Property<string>("DisplayName")
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
