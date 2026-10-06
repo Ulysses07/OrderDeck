@@ -178,8 +178,13 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
+    /// <summary>
+    /// Bozuk öğe partiyi 400'le REDDETMEZ: reddetseydi istemci aynı partiyi
+    /// sonsuza kadar yeniden gönderir, arkasındaki müşteriler rehin kalırdı
+    /// (2026-08-14 olayı). Öğe yazılmadan sayılır ki istemcinin imleci ilerlesin.
+    /// </summary>
     [Fact]
-    public async Task Invalid_platform_returns_400()
+    public async Task Invalid_platform_item_is_counted_but_not_stored()
     {
         var (client, _, licenseId) = await SetupAsync();
 
@@ -195,7 +200,12 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
                 }
             });
 
-        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await resp.Content.ReadFromJsonAsync<SyncResponse>())!.Synced.Should().Be(1);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.WpfCustomerProjections.IgnoreQueryFilters().CountAsync(p => p.LicenseId == licenseId))
+            .Should().Be(0);
     }
 
     [Fact]
@@ -731,5 +741,310 @@ public class LicensesWpfCustomersSyncControllerTests : IClassFixture<ApiFactory>
         rows.Should().OnlyContain(p => p.FullName == null && p.City == null,
             "kopya satırına da, zincirin herhangi bir halkasına da veri yazılmadı");
         rows.Single(p => p.Id == alias).MergedIntoId.Should().NotBeNull("kopya kopya olarak kalır");
+    }
+
+    // ── istemci kuyruğunu kalıcı kilitleyen yollar (A5 kalite incelemesi) ────
+    // Her biri eskiden HER denemede aynı hatayı veriyordu: istemcinin imleci
+    // ilerlemez, aynı parti sonsuza kadar yeniden gönderilir.
+
+    private static string NewPhone() => "+9055" + Random.Shared.Next(10_000_000, 99_999_999);
+
+    private async Task<List<WpfCustomerProjection>> RowsAsync(Guid licenseId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        // Kopyalar varsayılan sorgulardan gizli (A5b) — burada hepsi görünsün.
+        return await db.WpfCustomerProjections.IgnoreQueryFilters().AsNoTracking()
+            .Where(p => p.LicenseId == licenseId).ToListAsync();
+    }
+
+    private async Task PurgeAsync(Guid projectionId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await db.WpfCustomerProjections.SingleAsync(p => p.Id == projectionId)).MarkPurged(DateTimeOffset.UtcNow);
+        await db.SaveChangesAsync();
+    }
+
+    [Fact]
+    public async Task Ayni_Id_partide_iki_kez_gelirse_son_giris_kazanir()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var id = Guid.NewGuid();
+
+        // Eskiden ikinci giriş aynı yeni satırı ikinci kez izlemeye ekliyordu →
+        // izleme istisnası → 500.
+        var resp = await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/wpf-customers/sync",
+            new { customers = new[]
+            {
+                MakeSyncItem(id, "tiktok", "ciftgelen", "İlk Ad"),
+                MakeSyncItem(id, "tiktok", "ciftgelen", "Son Ad"),
+            } });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await resp.Content.ReadFromJsonAsync<SyncResponseV2>())!.Synced.Should().Be(1, "tekilleştirilmiş öğe sayısı");
+        (await RowsAsync(licenseId)).Should().ContainSingle()
+            .Which.FullName.Should().Be("Son Ad", "payload sırası istemcinin niyet sırası — son giriş kazanır");
+    }
+
+    [Fact]
+    public async Task Baska_lisansta_kayitli_Id_yazilmaz_ve_sayilir()
+    {
+        var (clientA, _, licenseA) = await SetupAsync();
+        var (clientB, _, licenseB) = await SetupAsync();
+        var id = Guid.NewGuid();
+        var telA = NewPhone();
+        (await clientA.PostAsJsonAsync($"/api/v1/licenses/{licenseA}/wpf-customers/sync",
+            new { customers = new[] { MakeSyncItem(id, "tiktok", "a-musterisi", "A Müşterisi", telA) } }))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Ör. yeniden verilen bir lisansın bilgisayarı aynı yerel Id'leri yeniden
+        // gönderir. Eskiden lisansa göre aranan Id "yeni" sanılıyor, INSERT
+        // birincil anahtara çarpıp 500 veriyordu.
+        var resp = await clientB.PostAsJsonAsync($"/api/v1/licenses/{licenseB}/wpf-customers/sync",
+            new { customers = new[] { MakeSyncItem(id, "tiktok", "b-musterisi", "B Müşterisi") } });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadFromJsonAsync<SyncResponseV2>();
+        body!.Synced.Should().Be(1, "yazılmadan sayılır — istemcinin imleci ilerlemeli");
+        body.Redirects.Should().BeEmpty();
+        (await RowsAsync(licenseB)).Should().BeEmpty();
+        var row = (await RowsAsync(licenseA)).Should().ContainSingle().Which;
+        row.Id.Should().Be(id);
+        row.Username.Should().Be("a-musterisi");
+        row.FullName.Should().Be("A Müşterisi");
+        row.Phone.Should().Be(telA);
+    }
+
+    [Fact]
+    public async Task Gecersiz_kullanici_adi_partiyi_reddetmez_gecerli_oge_yazilir()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var valid = Guid.NewGuid();
+        var invalid = Guid.NewGuid();
+
+        var resp = await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/wpf-customers/sync",
+            new { customers = new[]
+            {
+                MakeSyncItem(invalid, "tiktok", new string('x', 129), "Uzun Adlı"),
+                MakeSyncItem(valid, "tiktok", "gecerli", "Geçerli Müşteri"),
+            } });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await resp.Content.ReadFromJsonAsync<SyncResponseV2>())!.Synced.Should().Be(2,
+            "bozuk öğe yazılmadan sayılır, geçerli öğe yazılır");
+        (await RowsAsync(licenseId)).Should().ContainSingle()
+            .Which.Should().Match<WpfCustomerProjection>(p => p.Id == valid && p.FullName == "Geçerli Müşteri");
+    }
+
+    // ── silinmiş (KVKK) asıl kayda bağlanan kopya ───────────────────────────
+
+    [Fact]
+    public async Task Yeni_kopya_silinmis_asil_kayda_baglanir_asil_kayda_yazilmaz()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var url = $"/api/v1/licenses/{licenseId}/wpf-customers/sync";
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+        await client.PostAsJsonAsync(url, new { customers = new[] { MakeSyncItem(a, "tiktok", "silinen-kisi", "Silinen Kişi") } });
+        await PurgeAsync(a);
+
+        // Başka bilgisayar aynı kişiyi kendi Id'siyle, damgalı verisiyle gönderir.
+        var t = DateTimeOffset.UtcNow;
+        var resp = await client.PostAsJsonAsync(url, new { customers = new[]
+        {
+            new { id = b, platform = "tiktok", username = "Silinen-Kisi", fullName = "Geri Gelen Ad",
+                  phone = NewPhone(), address = (string?)null, updatedAt = t, format = 2,
+                  fullNameChangedAt = t, phoneChangedAt = t },
+        } });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await resp.Content.ReadFromJsonAsync<SyncResponseV2>())!.Redirects
+            .Should().ContainSingle(r => r.Id == b && r.CanonicalId == a);
+        var rows = await RowsAsync(licenseId);
+        var canonical = rows.Single(p => p.Id == a);
+        canonical.PurgedAt.Should().NotBeNull();
+        canonical.FullName.Should().BeNull("silme bir başka bilgisayarın gönderimiyle geri alınmamalı");
+        canonical.Phone.Should().BeNull();
+        var alias = rows.Single(p => p.Id == b);
+        alias.MergedIntoId.Should().Be(a);
+        alias.FullName.Should().BeNull();
+        alias.Phone.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Bilinen_kopya_silinmis_asil_kayda_hicbir_sey_yazmaz()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var url = $"/api/v1/licenses/{licenseId}/wpf-customers/sync";
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+        await client.PostAsJsonAsync(url, new { customers = new[] { V2Item(a, "silinecek") } });
+        await client.PostAsJsonAsync(url, new { customers = new[] { V2Item(b, "Silinecek") } }); // b kopya olur
+        await PurgeAsync(a);
+
+        var t = DateTimeOffset.UtcNow;
+        var resp = await client.PostAsJsonAsync(url, new { customers = new[]
+        {
+            V2Item(b, "Silinecek", fullName: "Bayat Ad", fullNameAt: t, city: "İzmir", addressAt: t),
+        } });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadFromJsonAsync<SyncResponseV2>();
+        body!.Synced.Should().Be(1);
+        body.Redirects.Should().ContainSingle(r => r.Id == b && r.CanonicalId == a);
+        (await RowsAsync(licenseId)).Should().OnlyContain(p => p.FullName == null && p.City == null,
+            "silinmiş asıl kayda da kopya satırına da hiçbir şey yazılmadı");
+    }
+
+    // ── aynı kişinin tek partideki biçimleri ─────────────────────────────────
+
+    [Fact]
+    public async Task Ayni_partide_bilinen_kopya_ve_asil_kaydin_kendi_ogesi()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var url = $"/api/v1/licenses/{licenseId}/wpf-customers/sync";
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+        var t = DateTimeOffset.UtcNow;
+        await client.PostAsJsonAsync(url, new { customers = new[] { V2Item(a, "hatice") } });
+        await client.PostAsJsonAsync(url, new { customers = new[] { V2Item(b, "Hatice") } }); // b kopya olur
+
+        // Aynı partide asıl kaydın kendi öğesi (daha yeni damga) ÖNCE, kopyanınki
+        // (daha eski damga) SONRA: sıra değil damga kazanır.
+        var resp = await client.PostAsJsonAsync(url, new { customers = new[]
+        {
+            V2Item(a, "hatice", city: "İzmir", addressAt: t.AddMinutes(2)),
+            V2Item(b, "Hatice", city: "Ankara", addressAt: t.AddMinutes(1)),
+        } });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadFromJsonAsync<SyncResponseV2>();
+        body!.Synced.Should().Be(2);
+        body.Redirects.Should().ContainSingle(r => r.Id == b && r.CanonicalId == a);
+        var rows = await RowsAsync(licenseId);
+        rows.Should().HaveCount(2);
+        var canonical = rows.Single(p => p.Id == a);
+        canonical.City.Should().Be("İzmir");
+        canonical.AddressChangedAt.Should().BeCloseTo(t.AddMinutes(2), TimeSpan.FromMilliseconds(1));
+        rows.Single(p => p.Id == b).City.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Ayni_partide_ayni_kimligin_iki_yeni_Idsi_ikincisi_birincinin_kopyasi_olur()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var x = Guid.NewGuid();
+        var y = Guid.NewGuid();
+        var t = DateTimeOffset.UtcNow;
+        // y'nin bu bilgisayardan daha önce gönderilmiş bir siparişi var.
+        var orderId = Guid.NewGuid();
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.Orders.Add(new Order { Id = orderId, LicenseId = licenseId, CustomerId = y.ToString("N"), Platform = "tiktok", Username = "ZEHRA", MessageText = "B7", Price = 10, AddedAt = t, UpdatedAt = t });
+            await db.SaveChangesAsync();
+        }
+
+        var resp = await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/wpf-customers/sync",
+            new { customers = new[] { V2Item(x, "zehra"), V2Item(y, "ZEHRA", city: "Bursa", addressAt: t) } });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadFromJsonAsync<SyncResponseV2>();
+        body!.Synced.Should().Be(2);
+        body.Redirects.Should().ContainSingle(r => r.Id == y && r.CanonicalId == x);
+        var rows = await RowsAsync(licenseId);
+        rows.Single(p => p.Id == x).Should().Match<WpfCustomerProjection>(p => p.MergedIntoId == null && p.City == "Bursa");
+        rows.Single(p => p.Id == y).MergedIntoId.Should().Be(x);
+        using var check = _factory.Services.CreateScope();
+        (await check.ServiceProvider.GetRequiredService<LicenseDbContext>().Orders.SingleAsync(o => o.Id == orderId))
+            .CustomerId.Should().Be(x.ToString("N"), "aynı partide açılan asıl kayda taşındı");
+    }
+
+    // ── geriye dönük eşleştirme yönlendirme hedefinde de çalışır ────────────
+
+    [Fact]
+    public async Task Kopya_gonderimi_asil_kaydin_telefonunu_doldurursa_bekleyen_baglanti_ayni_istekte_kurulur()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var url = $"/api/v1/licenses/{licenseId}/wpf-customers/sync";
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+        var phone = NewPhone();
+        // Asıl kayıt telefonsuz → kanıt yok → bağlantı beklemede.
+        await client.PostAsJsonAsync(url, new { customers = new[] { MakeSyncItem(a, "tiktok", "kemal") } });
+        Guid linkId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var shopper = new OrderDeck.LicenseServer.Domain.Shopper
+            {
+                Id = Guid.NewGuid(),
+                FullName = "Kemal Shopper",
+                Phone = phone,
+                PhoneVerifiedAt = DateTimeOffset.UtcNow,
+                PasswordHash = $"hash-{Guid.NewGuid():N}",
+                Address = "Adres",
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            };
+            db.Shoppers.Add(shopper);
+            var link = new ShopperBroadcasterLink
+            {
+                Id = Guid.NewGuid(),
+                ShopperId = shopper.Id,
+                LicenseId = licenseId,
+                Platform = "tiktok",
+                Username = "kemal",
+                WpfCustomerId = null,
+                JoinedAt = DateTimeOffset.UtcNow,
+            };
+            db.ShopperBroadcasterLinks.Add(link);
+            linkId = link.Id;
+            await db.SaveChangesAsync();
+        }
+
+        // B bilgisayarı aynı kişiyi kendi Id'siyle ve telefonuyla gönderir: b
+        // kopya olur, telefon asıl kayda dolar. Eşleştirme asıl kaydın kendi
+        // bilgisayarının gönderimini beklememeli.
+        var resp = await client.PostAsJsonAsync(url, new { customers = new[] { MakeSyncItem(b, "tiktok", "Kemal", null, phone) } });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadFromJsonAsync<SyncResponseV2>();
+        body!.Redirects.Should().ContainSingle(r => r.Id == b && r.CanonicalId == a);
+        body.RetroactiveMatches.Should().Be(1);
+        using var check = _factory.Services.CreateScope();
+        var cdb = check.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        (await cdb.ShopperBroadcasterLinks.SingleAsync(l => l.Id == linkId)).WpfCustomerId.Should().Be(a);
+    }
+
+    // ── Bölüm B'deki tekil indeksten önce: birden çok asıl kayıt ─────────────
+
+    [Fact]
+    public async Task Ayni_kimligin_birden_cok_asil_kaydi_varsa_secim_belirleyici()
+    {
+        var (client, _, licenseId) = await SetupAsync();
+        var sorted = new[] { Guid.NewGuid(), Guid.NewGuid() }.OrderBy(g => g).ToArray();
+        var (small, large) = (sorted[0], sorted[1]);
+        var t = DateTimeOffset.UtcNow;
+        // Aynı UpdatedAt; BÜYÜK Id önce eklenir — seçim sorgu sırasına kalmasın.
+        foreach (var id in new[] { large, small })
+        {
+            using var scope = _factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            db.WpfCustomerProjections.Add(new WpfCustomerProjection
+            {
+                Id = id, LicenseId = licenseId, Platform = "tiktok", Username = "ikiz", UpdatedAt = t,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var n = Guid.NewGuid();
+        var resp = await client.PostAsJsonAsync($"/api/v1/licenses/{licenseId}/wpf-customers/sync",
+            new { customers = new[] { V2Item(n, "ikiz") } });
+
+        (await resp.Content.ReadFromJsonAsync<SyncResponseV2>())!.Redirects
+            .Should().ContainSingle(r => r.Id == n && r.CanonicalId == small,
+                "eşit UpdatedAt'te küçük Id seçilir — her istek aynı asıl kaydı seçmeli");
     }
 }

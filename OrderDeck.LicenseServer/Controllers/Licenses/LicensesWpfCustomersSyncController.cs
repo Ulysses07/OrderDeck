@@ -137,19 +137,53 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
         if (req?.Customers is null || req.Customers.Count == 0)
             return Ok(new SyncResponse(0, 0, new List<SyncRedirect>()));
 
+        // Parti boyutu istemci hatasıdır (veri değil): 400 kalır.
         if (req.Customers.Count > 500)
             return Problem(title: "batch-too-large", statusCode: 400, detail: "Max 500 customers per batch");
 
-        // Validate input items minimally
-        foreach (var c in req.Customers)
-        {
-            if (string.IsNullOrWhiteSpace(c.Platform) || c.Platform.Length > 32)
-                return Problem(title: "invalid-platform", statusCode: 400);
-            if (string.IsNullOrWhiteSpace(c.Username) || c.Username.Length > 128)
-                return Problem(title: "invalid-username", statusCode: 400);
-        }
+        // Aşağıdaki üç eleme aynı kuraldan: TEK bir öğe partiyi ASLA düşürmez.
+        // Düşürseydi aynı hata her denemede tekrarlanır, istemcinin imleci hiç
+        // ilerlemez, aynı parti sonsuza kadar yeniden gönderilir ve arkasındaki
+        // müşteriler rehin kalırdı (2026-08-14'te sahada 565 müşteri 12 gün
+        // böyle bekledi). Elenen öğe yazılmadan SAYILIR; günlüğe yalnız Id'ler.
 
-        var ids = req.Customers.Select(c => c.Id).ToList();
+        // (1) Id'ye göre TEKİLLEŞTİR (orders/sync deseni): aynı Id iki kez
+        // gelirse ikinci giriş aynı yeni satırı ikinci kez izlemeye ekler →
+        // izleme istisnası → 500. Son giriş kazanır: payload sırası istemcinin
+        // niyet sırasıdır.
+        var deduped = req.Customers.GroupBy(c => c.Id).Select(g => g.Last()).ToList();
+
+        // (2) Bozuk platform/kullanıcı adı. İstemci bunları göndermeden önce
+        // kendisi de eliyor (WpfCustomerProjectionSyncService); bu, başka bir
+        // istemcinin ya da sürümün kuyruğunu kilitlemesin diye. Öğe zaten
+        // eşleşemezdi — eşleşme platform + kullanıcı adına dayanıyor.
+        var invalid = deduped.Where(c => !IsAcceptable(c)).Select(c => c.Id).ToList();
+        if (invalid.Count > 0)
+            _logger.LogWarning(
+                "Müşteri senkronu: {Count} öğe geçersiz platform/kullanıcı adıyla geldi, yazılmadan sayıldı (lisans {LicenseId}): {Ids}",
+                invalid.Count, licenseId, IdsForLog(invalid));
+        var candidates = deduped.Where(IsAcceptable).ToList();
+
+        // (3) Başka bir lisansta kayıtlı Id: lisansa göre aranan satırlar onu
+        // bulamaz, öğe "yeni" sanılır ve INSERT birincil anahtara çarpar (ör.
+        // yeniden verilen bir lisansın bilgisayarı aynı yerel Id'leri yeniden
+        // gönderir). Başka yayıncının satırına ASLA yazılmaz. Kopyalar da
+        // aranır (IgnoreQueryFilters): birincil anahtar onları da kapsar. Yalnız
+        // Id seçilir — o satırın kişisel verisi bu isteğe hiç yüklenmez.
+        var candidateIds = candidates.Select(c => c.Id).ToList();
+        var foreign = await _db.WpfCustomerProjections.IgnoreQueryFilters()
+            .Where(p => p.LicenseId != licenseId && candidateIds.Contains(p.Id))
+            .Select(p => p.Id)
+            .ToListAsync(ct);
+        if (foreign.Count > 0)
+            _logger.LogWarning(
+                "Müşteri senkronu: {Count} öğenin Id'si başka bir lisansta kayıtlı, yazılmadan sayıldı (lisans {LicenseId}): {Ids}",
+                foreign.Count, licenseId, IdsForLog(foreign));
+        var foreignIds = foreign.ToHashSet();
+        var items = candidates.Where(c => !foreignIds.Contains(c.Id)).ToList();
+        var skipped = invalid.Count + foreign.Count;
+
+        var ids = items.Select(c => c.Id).ToList();
         var now = DateTimeOffset.UtcNow;
 
         // Saat kayması: damgalar bilgisayar saatidir; ileri saatli bilgisayar,
@@ -157,7 +191,7 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
         // sunucu ile istemci damgası farklı kalır, satır gidip gelirdi); yalnız
         // günlüğe yazılır ki yayıncıya "saatini düzelt" denebilsin.
         var futureLimit = now.AddMinutes(5);
-        var futureStamps = req.Customers.Where(c => c.Format >= 2)
+        var futureStamps = items.Where(c => c.Format >= 2)
             .Sum(c => c.Stamps().Count(st => st > futureLimit));
         if (futureStamps > 0)
             _logger.LogWarning(
@@ -181,7 +215,7 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
         {
             try
             {
-                outcome = await ApplyBatchAsync(licenseId, req.Customers, ids, now, ct);
+                outcome = await ApplyBatchAsync(licenseId, items, ids, now, ct);
                 await _db.SaveChangesAsync(ct);
                 break;
             }
@@ -223,10 +257,14 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
         // atlanan öğe hâlâ telefon taşıyabilir. İlk kayıttan sonra yalnız DB'de
         // gerçekten var olan ve PurgedAt IS NULL satırlar eşleştirmeye adaydır.
         // Kopyalar (MergedIntoId dolu) aday değildir: kişisel alanları boş, bir
-        // bağlantı yalnız asıl kayda bağlanmalı.
+        // bağlantı yalnız asıl kayda bağlanmalı. Bu isteğin yönlendirdiği asıl
+        // kayıtlar ise adaydır: kopya gönderimi asıl kaydın telefonunu doldurmuş
+        // olabilir — bekleyen bağlantı asıl kaydın kendi bilgisayarının
+        // gönderimini beklemesin.
+        var matchIds = ids.Concat(outcome.Redirects.Select(r => r.CanonicalId)).Distinct().ToList();
         var matchableProjections = await _db.WpfCustomerProjections
             .Where(p => p.LicenseId == licenseId
-                && ids.Contains(p.Id)
+                && matchIds.Contains(p.Id)
                 && p.PurgedAt == null
                 && p.MergedIntoId == null)
             .ToListAsync(ct);
@@ -256,9 +294,27 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
             }
         }
         if (retroactiveMatches > 0)
-            await _db.SaveChangesAsync(ct);
+        {
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // Ana parti YUKARIDA kaydedildi; eşleştirme yan iş. Bağlantı arada
+                // değişti ya da silindi (ör. purge bağlantıları siler): 500 dönmek
+                // istemciye kaydedilmiş partiyi boşuna yeniden gönderttirirdi.
+                // Eşleştirme sonraki bir gönderimde yeniden denenir; sayaç yalnız
+                // gerçekten kaydedileni söyler (kayıt bütün ya da hiç).
+                _logger.LogWarning(
+                    "Müşteri senkronu: {Count} geriye dönük eşleştirme eşzamanlı bir yazımla çakıştı, kaydedilmedi (lisans {LicenseId})",
+                    retroactiveMatches, licenseId);
+                _db.ChangeTracker.Clear();
+                retroactiveMatches = 0;
+            }
+        }
 
-        return Ok(new SyncResponse(outcome.Synced, retroactiveMatches, outcome.Redirects));
+        return Ok(new SyncResponse(outcome.Synced + skipped, retroactiveMatches, outcome.Redirects));
     }
 
     /// <summary>
@@ -280,8 +336,9 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
 
         // Kimlik araması: bu partide yeni olan Id'lerin (platform, anahtar)
         // asıl kayıtları. Bölüm B'deki tekil indeks kurulana kadar bir kimliğin
-        // birden çok asıl kaydı olabilir; en eski UpdatedAt'li olan seçilir
-        // (birleştirme işi sonra hepsini toparlar).
+        // birden çok asıl kaydı olabilir; en eski UpdatedAt'li olan seçilir,
+        // eşitlikte küçük Id — sorgu sırasından bağımsız, her istek aynı kaydı
+        // seçsin (birleştirme işi sonra hepsini toparlar).
         var newItems = items.Where(c => !existing.ContainsKey(c.Id)).ToList();
         var platforms = newItems.Select(c => c.Platform.ToLowerInvariant()).Distinct().ToList();
         var keys = newItems.Select(c => WpfCustomerProjection.IdentityKeyOf(c.Username)).Distinct().ToList();
@@ -290,7 +347,7 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
                     && platforms.Contains(p.Platform) && keys.Contains(p.IdentityKey))
                 .ToListAsync(ct))
             .GroupBy(p => (p.Platform, p.IdentityKey))
-            .ToDictionary(g => g.Key, g => g.OrderBy(p => p.UpdatedAt).First());
+            .ToDictionary(g => g.Key, g => g.OrderBy(p => p.UpdatedAt).ThenBy(p => p.Id).First());
 
         // Yönlendirilmiş Id'lerin asıl kayıtları (bilinen kopya yeniden gönderiyor).
         // Hedef de bir kopyaysa (zincir — birleştirme işi düzleştirir, olmamalı)
@@ -438,4 +495,22 @@ public sealed class LicensesWpfCustomersSyncController : ControllerBase
     /// taşımaz.</summary>
     private static string ConflictingEntities(DbUpdateConcurrencyException ex)
         => string.Join(",", ex.Entries.Select(e => e.Metadata.ClrType.Name).Distinct());
+
+    /// <summary>Sunucunun kabul sınırları = kolon sınırları (Platform 32,
+    /// Username 128). İstemci aynı sınırları göndermeden önce de uygular
+    /// (WpfCustomerProjectionSyncService.IsServerAcceptable).</summary>
+    private static bool IsAcceptable(SyncItem c)
+        => !string.IsNullOrWhiteSpace(c.Platform) && c.Platform.Length <= 32
+        && !string.IsNullOrWhiteSpace(c.Username) && c.Username.Length <= 128;
+
+    /// <summary>Günlüğe yazılan Id sayısının üst sınırı: yeniden verilen bir
+    /// lisansın ilk gönderiminde bir partide 500 Id olabilir.</summary>
+    private const int MaxLoggedIds = 20;
+
+    /// <summary>Günlük için Id listesi (en çok <see cref="MaxLoggedIds"/>, kalanı
+    /// sayıyla) — kişisel veri taşımaz.</summary>
+    private static string IdsForLog(IReadOnlyCollection<Guid> ids)
+        => ids.Count <= MaxLoggedIds
+            ? string.Join(",", ids)
+            : string.Join(",", ids.Take(MaxLoggedIds)) + $" (+{ids.Count - MaxLoggedIds})";
 }
