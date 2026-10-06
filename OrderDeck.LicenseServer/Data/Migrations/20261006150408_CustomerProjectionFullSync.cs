@@ -53,17 +53,17 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 maxLength: 64,
                 nullable: true);
 
-            migrationBuilder.AddColumn<DateTimeOffset>(
-                name: "ContactChangedAt",
-                table: "WpfCustomerProjections",
-                type: "datetimeoffset",
-                nullable: true);
-
             migrationBuilder.AddColumn<string>(
                 name: "DisplayName",
                 table: "WpfCustomerProjections",
                 type: "nvarchar(200)",
                 maxLength: 200,
+                nullable: true);
+
+            migrationBuilder.AddColumn<DateTimeOffset>(
+                name: "DisplayNameChangedAt",
+                table: "WpfCustomerProjections",
+                type: "datetimeoffset",
                 nullable: true);
 
             migrationBuilder.AddColumn<string>(
@@ -80,6 +80,18 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 maxLength: 254,
                 nullable: true);
 
+            migrationBuilder.AddColumn<DateTimeOffset>(
+                name: "EmailChangedAt",
+                table: "WpfCustomerProjections",
+                type: "datetimeoffset",
+                nullable: true);
+
+            migrationBuilder.AddColumn<DateTimeOffset>(
+                name: "FullNameChangedAt",
+                table: "WpfCustomerProjections",
+                type: "datetimeoffset",
+                nullable: true);
+
             migrationBuilder.AddColumn<string>(
                 name: "GroupId",
                 table: "WpfCustomerProjections",
@@ -88,7 +100,7 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 nullable: true);
 
             migrationBuilder.AddColumn<DateTimeOffset>(
-                name: "IdentityChangedAt",
+                name: "GroupIdChangedAt",
                 table: "WpfCustomerProjections",
                 type: "datetimeoffset",
                 nullable: true);
@@ -139,12 +151,24 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 type: "datetimeoffset",
                 nullable: true);
 
+            migrationBuilder.AddColumn<DateTimeOffset>(
+                name: "PhoneChangedAt",
+                table: "WpfCustomerProjections",
+                type: "datetimeoffset",
+                nullable: true);
+
             migrationBuilder.AddColumn<bool>(
                 name: "RecipientPaysActive",
                 table: "WpfCustomerProjections",
                 type: "bit",
                 nullable: false,
                 defaultValue: false);
+
+            migrationBuilder.AddColumn<DateTimeOffset>(
+                name: "RecipientPaysChangedAt",
+                table: "WpfCustomerProjections",
+                type: "datetimeoffset",
+                nullable: true);
 
             migrationBuilder.AddColumn<bool>(
                 name: "SmsConsent",
@@ -153,11 +177,23 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 nullable: false,
                 defaultValue: false);
 
+            migrationBuilder.AddColumn<DateTimeOffset>(
+                name: "SmsConsentChangedAt",
+                table: "WpfCustomerProjections",
+                type: "datetimeoffset",
+                nullable: true);
+
             migrationBuilder.AddColumn<string>(
                 name: "Tckn",
                 table: "WpfCustomerProjections",
                 type: "nvarchar(512)",
                 maxLength: 512,
+                nullable: true);
+
+            migrationBuilder.AddColumn<DateTimeOffset>(
+                name: "TcknChangedAt",
+                table: "WpfCustomerProjections",
+                type: "datetimeoffset",
                 nullable: true);
 
             migrationBuilder.AddColumn<bool>(
@@ -166,6 +202,12 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 type: "bit",
                 nullable: false,
                 defaultValue: false);
+
+            migrationBuilder.AddColumn<DateTimeOffset>(
+                name: "WhatsAppConsentChangedAt",
+                table: "WpfCustomerProjections",
+                type: "datetimeoffset",
+                nullable: true);
 
             // Var olan satırlar: anahtar Username'den SQL ile türetiliyor.
             // SQL LOWER Türkçe büyük 'İ'yi HER collation'da 'i' yapar — bu,
@@ -233,11 +275,11 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 table: "WpfCustomerProjections");
 
             migrationBuilder.DropColumn(
-                name: "ContactChangedAt",
+                name: "DisplayName",
                 table: "WpfCustomerProjections");
 
             migrationBuilder.DropColumn(
-                name: "DisplayName",
+                name: "DisplayNameChangedAt",
                 table: "WpfCustomerProjections");
 
             migrationBuilder.DropColumn(
@@ -249,11 +291,19 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 table: "WpfCustomerProjections");
 
             migrationBuilder.DropColumn(
+                name: "EmailChangedAt",
+                table: "WpfCustomerProjections");
+
+            migrationBuilder.DropColumn(
+                name: "FullNameChangedAt",
+                table: "WpfCustomerProjections");
+
+            migrationBuilder.DropColumn(
                 name: "GroupId",
                 table: "WpfCustomerProjections");
 
             migrationBuilder.DropColumn(
-                name: "IdentityChangedAt",
+                name: "GroupIdChangedAt",
                 table: "WpfCustomerProjections");
 
             migrationBuilder.DropColumn(
@@ -277,7 +327,15 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 table: "WpfCustomerProjections");
 
             migrationBuilder.DropColumn(
+                name: "PhoneChangedAt",
+                table: "WpfCustomerProjections");
+
+            migrationBuilder.DropColumn(
                 name: "RecipientPaysActive",
+                table: "WpfCustomerProjections");
+
+            migrationBuilder.DropColumn(
+                name: "RecipientPaysChangedAt",
                 table: "WpfCustomerProjections");
 
             migrationBuilder.DropColumn(
@@ -285,11 +343,23 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                 table: "WpfCustomerProjections");
 
             migrationBuilder.DropColumn(
+                name: "SmsConsentChangedAt",
+                table: "WpfCustomerProjections");
+
+            migrationBuilder.DropColumn(
                 name: "Tckn",
                 table: "WpfCustomerProjections");
 
             migrationBuilder.DropColumn(
+                name: "TcknChangedAt",
+                table: "WpfCustomerProjections");
+
+            migrationBuilder.DropColumn(
                 name: "WhatsAppConsent",
+                table: "WpfCustomerProjections");
+
+            migrationBuilder.DropColumn(
+                name: "WhatsAppConsentChangedAt",
                 table: "WpfCustomerProjections");
         }
     }

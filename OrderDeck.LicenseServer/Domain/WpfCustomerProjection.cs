@@ -73,27 +73,50 @@ public sealed class WpfCustomerProjection
     public static string IdentityKeyOf(string username)
         => username.Trim().ToLowerInvariant().Replace('İ', 'i');
 
+    // ── Senkronlanan alanlar. Her BİRİMİN kendi damgası var (istemcide
+    //    düzenleme anı); kurallar CustomerFieldMerge'de. Birim = tek alan, ya
+    //    da ayrılırsa anlamsızlaşan blok (adres, kara liste).
+
     public string? FullName { get; set; }
+    public DateTimeOffset? FullNameChangedAt { get; set; }
     /// <summary>Platform takma adı (sohbet). FullName'den ayrı taşınır.</summary>
     public string? DisplayName { get; set; }
+    public DateTimeOffset? DisplayNameChangedAt { get; set; }
+    /// <summary>WPF'in aynı kişinin farklı platform satırlarını bağladığı anahtar.</summary>
     public string? GroupId { get; set; }
-    public DateTimeOffset? IdentityChangedAt { get; set; }
+    public DateTimeOffset? GroupIdChangedAt { get; set; }
 
+    /// <summary>Adres bloğu: Address + City + District tek birim, tek damga
+    /// (<see cref="AddressChangedAt"/>) — başka adresin il/ilçesiyle karışmış
+    /// blok etikete yanlış adres basar.</summary>
     public string? Address { get; set; }
     public string? City { get; set; }
     public string? District { get; set; }
-    public bool RecipientPaysActive { get; set; }
     public DateTimeOffset? AddressChangedAt { get; set; }
+    /// <summary>Kendi damgası var: dekont girilince OTOMATİK açılıyor
+    /// (DekontEkleViewModel). Adresle aynı damgayı paylaşsaydı, güncel adresi
+    /// almamış bir bilgisayar bu otomatik yazımla adresi boşla ezerdi.</summary>
+    public bool RecipientPaysActive { get; set; }
+    public DateTimeOffset? RecipientPaysChangedAt { get; set; }
 
     public string? Phone { get; set; }
+    public DateTimeOffset? PhoneChangedAt { get; set; }
     public string? Email { get; set; }
+    public DateTimeOffset? EmailChangedAt { get; set; }
     /// <summary>TCKN — ŞİFRELİ (TcknProtector; Shopper.TcProtected ve
     /// IntakeFormSubmission.TcknProtected ile aynı amaç). Asla kırpılmaz.</summary>
     public string? TcknProtected { get; set; }
+    public DateTimeOffset? TcknChangedAt { get; set; }
+    /// <summary>İzin bayrakları WPF senkronu ve gösterim içindir; gönderimin
+    /// dayanağı DEĞİLDİR (SMS kampanyası <c>Shopper.SmsConsent</c>'e bakar,
+    /// İYS aynası yetkilidir). Her biri ayrı damgalı: birinin değişmesi
+    /// ötekinin eski değerini geri getirmesin.</summary>
     public bool WhatsAppConsent { get; set; }
+    public DateTimeOffset? WhatsAppConsentChangedAt { get; set; }
     public bool SmsConsent { get; set; }
-    public DateTimeOffset? ContactChangedAt { get; set; }
+    public DateTimeOffset? SmsConsentChangedAt { get; set; }
 
+    /// <summary>Kara liste bloğu: üç alan tek birim (<see cref="BlacklistChangedAt"/>).</summary>
     public bool IsBlacklisted { get; set; }
     public string? BlacklistReason { get; set; }
     public DateTimeOffset? BlacklistedAt { get; set; }

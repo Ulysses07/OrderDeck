@@ -3275,12 +3275,12 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
 
-                    b.Property<DateTimeOffset?>("ContactChangedAt")
-                        .HasColumnType("datetimeoffset");
-
                     b.Property<string>("DisplayName")
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTimeOffset?>("DisplayNameChangedAt")
+                        .HasColumnType("datetimeoffset");
 
                     b.Property<string>("District")
                         .HasMaxLength(64)
@@ -3290,15 +3290,21 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasMaxLength(254)
                         .HasColumnType("nvarchar(254)");
 
+                    b.Property<DateTimeOffset?>("EmailChangedAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<string>("FullName")
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTimeOffset?>("FullNameChangedAt")
+                        .HasColumnType("datetimeoffset");
 
                     b.Property<string>("GroupId")
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
 
-                    b.Property<DateTimeOffset?>("IdentityChangedAt")
+                    b.Property<DateTimeOffset?>("GroupIdChangedAt")
                         .HasColumnType("datetimeoffset");
 
                     b.Property<string>("IdentityKey")
@@ -3327,6 +3333,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                         .HasMaxLength(20)
                         .HasColumnType("nvarchar(20)");
 
+                    b.Property<DateTimeOffset?>("PhoneChangedAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<string>("Platform")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -3339,8 +3348,17 @@ namespace OrderDeck.LicenseServer.Data.Migrations
                     b.Property<bool>("RecipientPaysActive")
                         .HasColumnType("bit");
 
+                    b.Property<DateTimeOffset?>("RecipientPaysChangedAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<bool>("SmsConsent")
                         .HasColumnType("bit");
+
+                    b.Property<DateTimeOffset?>("SmsConsentChangedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset?>("TcknChangedAt")
+                        .HasColumnType("datetimeoffset");
 
                     b.Property<string>("TcknProtected")
                         .HasMaxLength(512)
@@ -3357,6 +3375,9 @@ namespace OrderDeck.LicenseServer.Data.Migrations
 
                     b.Property<bool>("WhatsAppConsent")
                         .HasColumnType("bit");
+
+                    b.Property<DateTimeOffset?>("WhatsAppConsentChangedAt")
+                        .HasColumnType("datetimeoffset");
 
                     b.HasKey("Id");
 

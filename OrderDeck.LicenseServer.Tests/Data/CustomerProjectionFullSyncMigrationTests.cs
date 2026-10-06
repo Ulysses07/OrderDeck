@@ -188,16 +188,23 @@ public sealed class CustomerProjectionFullSyncMigrationTests
     {
         p.DisplayName.Should().BeNull();
         p.GroupId.Should().BeNull();
-        p.IdentityChangedAt.Should().BeNull();
+        p.FullNameChangedAt.Should().BeNull();
+        p.DisplayNameChangedAt.Should().BeNull();
+        p.GroupIdChangedAt.Should().BeNull();
         p.City.Should().BeNull();
         p.District.Should().BeNull();
         p.RecipientPaysActive.Should().BeFalse();
+        p.RecipientPaysChangedAt.Should().BeNull();
         p.AddressChangedAt.Should().BeNull();
         p.Email.Should().BeNull();
         p.TcknProtected.Should().BeNull();
         p.WhatsAppConsent.Should().BeFalse();
         p.SmsConsent.Should().BeFalse();
-        p.ContactChangedAt.Should().BeNull();
+        p.PhoneChangedAt.Should().BeNull();
+        p.EmailChangedAt.Should().BeNull();
+        p.TcknChangedAt.Should().BeNull();
+        p.WhatsAppConsentChangedAt.Should().BeNull();
+        p.SmsConsentChangedAt.Should().BeNull();
         p.IsBlacklisted.Should().BeFalse();
         p.BlacklistReason.Should().BeNull();
         p.BlacklistedAt.Should().BeNull();
