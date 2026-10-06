@@ -209,6 +209,7 @@ public class Program
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sms.NetgsmAccountVerifier>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Sms.NetgsmAccountVerifyJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Privacy.TcknBackfillJob>();
+        builder.Services.AddScoped<OrderDeck.LicenseServer.Services.CustomerSync.IdentityKeyRepairJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysConsentCollector>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysConsentPushJob>();
         builder.Services.AddScoped<OrderDeck.LicenseServer.Services.Iys.IysConsentVerifyJob>();
@@ -987,6 +988,21 @@ public class Program
                 "40 4 * * *");
             scope.ServiceProvider.GetRequiredService<IBackgroundJobClient>()
                 .Enqueue<OrderDeck.LicenseServer.Services.Privacy.TcknBackfillJob>(j => j.RunAsync(CancellationToken.None));
+
+            // IdentityKey onarımı + bekçi — günde bir, 04:45 UTC (yayın
+            // penceresinin dışında). Ayrıca açılışta bir kez kuyruğa alınır:
+            // deploy sonrası (ör. CustomerProjectionFullSync göçünün SQL
+            // backfill'inin .NET'le ayrıştığı satırlar, ya da bir geri alma
+            // penceresinde NEWID ile açılmış satırlar) bir gün beklemesin —
+            // PR-1'in birleştirme işi IdentityKey'e göre gruplayacağı için
+            // yanlış-anahtarlı satırlar o işten ÖNCE düzelmeli.
+            manager.AddOrUpdate<OrderDeck.LicenseServer.Services.CustomerSync.IdentityKeyRepairJob>(
+                "identity-key-repair",
+                j => j.RunAsync(CancellationToken.None),
+                "45 4 * * *");
+            scope.ServiceProvider.GetRequiredService<IBackgroundJobClient>()
+                .Enqueue<OrderDeck.LicenseServer.Services.CustomerSync.IdentityKeyRepairJob>(
+                    j => j.RunAsync(CancellationToken.None));
 
             // Ürün fotoğrafı mutabakatı — R2'de kalmış yetim nesneleri süpürür.
             // Ürün silme ucundaki inline silme yetmiyor: Attach edilmeden yüklenen

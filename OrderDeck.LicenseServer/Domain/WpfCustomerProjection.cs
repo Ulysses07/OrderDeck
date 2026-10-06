@@ -62,11 +62,13 @@ public sealed class WpfCustomerProjection
     /// harfinde eşitler (Ç/Ğ/I/Ö/Ş/Ü zaten invariant altında SQL ile aynı
     /// sonucu veriyor).</para>
     ///
-    /// <para>Çözülmeyen kalanlar: SQL'in <c>RTRIM/LTRIM</c>'i kırpmadığı
-    /// NBSP/TAB gibi boşluk-benzeri karakterler ve Kelvin işareti (K, U+212A)
-    /// gibi "exotic" harfler hâlâ iki taraf arasında ayrışabilir. Burada
-    /// BİLEREK çözülmüyor — sonraki task'taki ayrı bir C# yeniden-anahtarlama
-    /// (re-key) işinin konusu.</para>
+    /// <para>Çözülmeyen kalanlar: kenarlardaki U+0020 DIŞI boşluklar (NBSP,
+    /// TAB, …) — SQL'in <c>RTRIM/LTRIM</c>'i yalnız U+0020'yi kırpar — ve
+    /// Türkçe/Latin-1 dışındaki bazı harfler (Latin Ext-B/D, Yunanca/Kiril
+    /// ekleri, Gürcüce, Cherokee, letterlike semboller, ek düzlem harfleri)
+    /// hâlâ iki taraf arasında ayrışabilir. Burada BİLEREK çözülmüyor —
+    /// <c>IdentityKeyRepairJob</c> (Hangfire: <c>identity-key-repair</c>)
+    /// bu satırları .NET'te yeniden hesaplayıp düzeltir.</para>
     /// </summary>
     public static string IdentityKeyOf(string username)
         => username.Trim().ToLowerInvariant().Replace('İ', 'i');
@@ -105,7 +107,8 @@ public sealed class WpfCustomerProjection
     /// <summary>
     /// Doluysa bu satır bir KOPYADIR ve asıl kayıt bu Id'dir. Kopya silinmez:
     /// eski Id ile geç gelen veri (sipariş, kargo, push) buradan asıl kayda
-    /// yönlendirilir. Kişisel alanları boştur.
+    /// yönlendirilir. Kişisel alanları <see cref="ScrubPersonal"/> ile
+    /// boşaltılmıştır; iş notu ve kara liste kalır (bkz. o metodun dokümanı).
     /// </summary>
     public Guid? MergedIntoId { get; set; }
 

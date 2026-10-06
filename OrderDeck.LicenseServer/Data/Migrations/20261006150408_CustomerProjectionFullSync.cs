@@ -100,9 +100,10 @@ namespace OrderDeck.LicenseServer.Data.Migrations
             // AYNI boş anahtara ('') düşer — birleştirme işi onları birbirine
             // AİT sanıp İLGİSİZ müşterileri tek kimlikte toplardı. NEWID() her
             // satıra BENZERSİZ (ve bu yüzden hiçbir satırla eşleşmeyen) bir
-            // anahtar verir; bu satırlar sonraki task'taki yeniden-anahtarlama
-            // (re-key) işi gerçek IdentityKey'lerini hesaplayana kadar "kendi
-            // başına" kalır — yanlış ama en azından GÜVENLİ (collision yok).
+            // anahtar verir; bu satırlar IdentityKeyRepairJob (Hangfire:
+            // identity-key-repair) gerçek IdentityKey'lerini hesaplayana
+            // kadar "kendi başına" kalır — yanlış ama en azından GÜVENLİ
+            // (collision yok).
             migrationBuilder.AddColumn<string>(
                 name: "IdentityKey",
                 table: "WpfCustomerProjections",
@@ -171,14 +172,17 @@ namespace OrderDeck.LicenseServer.Data.Migrations
             // WpfCustomerProjection.IdentityKeyOf'un Replace('İ','i') ile
             // yaptığıyla ÖRTÜŞÜYOR, yani bu göçten sonra yazılan yeni
             // satırlarla burada geriye dönük doldurulan eski satırlar en
-            // azından 'İ' harfinde aynı anahtara düşer. Kalıcı olarak AÇIK
-            // kalan fark SQL'in RTRIM/LTRIM'inin kırpmadığı NBSP/TAB gibi
-            // boşluk-benzeri karakterler ve Kelvin işareti (K) gibi "exotic"
-            // harfler — bu satırlar NEWID() ile açılmış benzersiz anahtarını
-            // (yukarıdaki AddColumn) burada da KORUYAMAZ, çünkü UPDATE hepsini
-            // Username'den yeniden hesaplar; yanlış eşleşmeleri ayıklamak
-            // sonraki task'taki ayrı bir C# yeniden-anahtarlama (re-key)
-            // işinin konusu.
+            // azından Latin-1 aralığında (her Türkçe harf dahil) aynı
+            // anahtara düşer. Açık kalan fark: kenarlardaki U+0020 DIŞI
+            // boşluklar (SQL'in RTRIM/LTRIM'i yalnız U+0020'yi kırpar) ve
+            // Türkçe/Latin-1 dışındaki bazı harfler (Latin Ext-B/D,
+            // Yunanca/Kiril ekleri, Gürcüce, Cherokee, letterlike semboller,
+            // ek düzlem harfleri) — bu satırlar NEWID() ile açılmış
+            // benzersiz anahtarını (yukarıdaki AddColumn) burada da
+            // KORUYAMAZ, çünkü UPDATE hepsini Username'den yeniden hesaplar;
+            // IdentityKeyRepairJob (Hangfire: identity-key-repair) bu
+            // satırları .NET'te yeniden hesaplayıp düzeltir — SQL backfill'i
+            // tekrar koşturmak aynı ayrışmayı yine üretir.
             migrationBuilder.Sql(
                 "UPDATE WpfCustomerProjections SET IdentityKey = LOWER(LTRIM(RTRIM(Username)));");
 
