@@ -401,6 +401,145 @@ public sealed class ShopperPurgeServiceTests
     }
 
     /// <summary>
+    /// A2: A1'de WpfCustomerProjection'a eklenen yeni kişisel alanlar (City,
+    /// District, Email, DisplayName, TcknProtected, consent'ler) de KVKK
+    /// silmesinde boşalmalı — eski kod yalnız FullName/Phone/Address'i elle
+    /// temizliyordu. Notes ve kara liste alanları politika gereği (bkz.
+    /// <see cref="WpfCustomerProjection.ScrubPersonal"/>) KALMALI.
+    /// </summary>
+    [Fact]
+    public async Task Yayinci_kopyasinin_yeni_kisisel_alanlarini_da_temizler_notu_ve_kara_listeyi_korur()
+    {
+        using var db = NewDb();
+        var shopper = SeedShopper(
+            db, "+9055" + Random.Shared.Next(10_000_000, 99_999_999));
+        var license = SeedLicense(db);
+        var projectionId = Guid.NewGuid();
+        var blacklistedAt = DateTimeOffset.UtcNow.AddDays(-20);
+
+        db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+        {
+            Id = Guid.NewGuid(),
+            ShopperId = shopper.Id,
+            LicenseId = license.Id,
+            Platform = "youtube",
+            Username = "ayse_y2",
+            WpfCustomerId = projectionId,
+            JoinedAt = DateTimeOffset.UtcNow,
+        });
+        db.WpfCustomerProjections.Add(new WpfCustomerProjection
+        {
+            Id = projectionId,
+            LicenseId = license.Id,
+            Platform = "youtube",
+            Username = "ayse_y2",
+            FullName = "Ayşe Yılmaz",
+            DisplayName = "ayse.y",
+            Phone = "+9055" + Random.Shared.Next(10_000_000, 99_999_999),
+            Email = "ayse2@example.com",
+            TcknProtected = "sifreli-x",
+            Address = "Örnek Mah.",
+            City = "İstanbul",
+            District = "Kadıköy",
+            SmsConsent = true,
+            WhatsAppConsent = true,
+            Notes = "VIP müşteri, kargo notu: kapıcıya bırak",
+            IsBlacklisted = true,
+            BlacklistReason = "Sahte dekont denemesi",
+            BlacklistedAt = blacklistedAt,
+            UpdatedAt = DateTimeOffset.UtcNow.AddDays(-20),
+        });
+        await db.SaveChangesAsync();
+
+        var (service, _) = Build(db);
+        var result = await service.PurgeAsync(shopper.Id, default);
+
+        var projection = await db.WpfCustomerProjections.FirstAsync(c => c.Id == projectionId);
+        projection.FullName.Should().BeNull();
+        projection.DisplayName.Should().BeNull();
+        projection.Phone.Should().BeNull();
+        projection.Email.Should().BeNull();
+        projection.TcknProtected.Should().BeNull();
+        projection.Address.Should().BeNull();
+        projection.City.Should().BeNull();
+        projection.District.Should().BeNull();
+        projection.SmsConsent.Should().BeFalse();
+        projection.WhatsAppConsent.Should().BeFalse();
+
+        // Politika gereği kalanlar: işletme notu + kara liste (sahtekârlık
+        // koruması — silme talebi kara listeden çıkmanın yolu olmamalı).
+        projection.Notes.Should().Be("VIP müşteri, kargo notu: kapıcıya bırak");
+        projection.IsBlacklisted.Should().BeTrue();
+        projection.BlacklistReason.Should().Be("Sahte dekont denemesi");
+        projection.BlacklistedAt.Should().Be(blacklistedAt);
+
+        projection.PurgedAt.Should().NotBeNull();
+        result!.ProjectionsScrubbed.Should().Be(1);
+    }
+
+    /// <summary>
+    /// MarkPurged <c>PurgedAt ??= now</c> kullanır: tarih adli kayıt, İLK
+    /// silme tarihini korumalı. ShopperPurgeService'in projeksiyon sorgusu
+    /// (3. adım) PurgedAt'a göre FİLTRELEMİYOR — bağlı link hâlâ duruyorsa
+    /// zaten-purge'lenmiş bir satır da yeniden işleme girer.
+    ///
+    /// <para><b>Not:</b> AYNI shopper için <c>PurgeAsync</c>'i art arda iki kez
+    /// çağırmak bu senaryoyu SINAMAZ — 4. adım o shopper'ın
+    /// <see cref="ShopperBroadcasterLink"/> satırını siliyor, dolayısıyla
+    /// ikinci çağrıda link kalmadığı için projeksiyon kapsama hiç girmiyor
+    /// (doğrulandı: bu test önce iki art arda çağrıyla yazılmıştı ve ESKİ —
+    /// hatalı — kodla da yanlışlıkla geçiyordu). Bunun yerine satır burada
+    /// DAHA ÖNCEDEN purge'lenmiş olarak seed ediliyor; gerçek sistemde bunun
+    /// kaynağı örn. aynı projeksiyona bağlı BAŞKA bir shopper'ın daha önceki
+    /// purge'u olabilir.</para>
+    /// </summary>
+    [Fact]
+    public async Task Daha_once_purge_edilmis_projeksiyonun_PurgedAt_tarihi_degismez()
+    {
+        using var db = NewDb();
+        var shopper = SeedShopper(
+            db, "+9055" + Random.Shared.Next(10_000_000, 99_999_999));
+        var license = SeedLicense(db);
+        var projectionId = Guid.NewGuid();
+        var firstPurge = DateTimeOffset.UtcNow.AddDays(-30);
+
+        db.ShopperBroadcasterLinks.Add(new ShopperBroadcasterLink
+        {
+            Id = Guid.NewGuid(),
+            ShopperId = shopper.Id,
+            LicenseId = license.Id,
+            Platform = "youtube",
+            Username = "ayse_y3",
+            WpfCustomerId = projectionId,
+            JoinedAt = DateTimeOffset.UtcNow,
+        });
+        // Zaten temizlenmiş durumda seed ediliyor: kişisel alanlar boş,
+        // PurgedAt 30 gün önceye damgalı.
+        db.WpfCustomerProjections.Add(new WpfCustomerProjection
+        {
+            Id = projectionId,
+            LicenseId = license.Id,
+            Platform = "youtube",
+            Username = "ayse_y3",
+            FullName = null,
+            Phone = null,
+            Address = null,
+            PurgedAt = firstPurge,
+            UpdatedAt = firstPurge,
+        });
+        await db.SaveChangesAsync();
+
+        var (service, _) = Build(db);
+        await service.PurgeAsync(shopper.Id, default);
+
+        var projection = await db.WpfCustomerProjections.FirstAsync(c => c.Id == projectionId);
+        projection.PurgedAt.Should().Be(firstPurge,
+            "tarih adli kayıt; servis MarkPurged üzerinden çağırdığı için İLK silme tarihini korumalı — üzerine yazmamalı");
+        projection.UpdatedAt.Should().BeAfter(firstPurge,
+            "senkron imleci (UpdatedAt) yine de ilerlemeli");
+    }
+
+    /// <summary>
     /// Gölge banka eşleştirmesinin izi: "bu IBAN bu kişinin" hafıza satırı silinir; müşteriyi öneren, ona bağlanan ya da
     /// kullanıcı adı anahtarını çelişki kanıtında taşıyan eşleşmelerin kanıt metni boşaltılır. Eşleşme satırı ölçüm
     /// kaydıdır, kalır. Başka müşterinin hafızası ve kanıtı dokunulmaz kalır.
