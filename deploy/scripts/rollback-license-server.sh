@@ -13,6 +13,12 @@
 # CI bu dosyayı her deploy'da VPS'e kopyalar (docker-compose.yml gibi), böylece
 # "güvenlik ağı kurulu değildi" diye bir hata sınıfı kalmıyor.
 #
+# --apply yalnız KAYITLI BİR ÖNCEKİ sürüme döner (.rollback'taki tek basamak),
+# o yüzden kendi başına güvenli. Risk burada değil: .env'deki
+# LICENSE_SERVER_TAG'i bunun DIŞINDA elle çok daha eski bir master-<sha>'ya
+# çeviren yol — TCKN şifreleme tabanı (master-d38f710, PR-0a) için sınır
+# deploy/README.md > "Deploy geri alma" bölümünde.
+#
 # Modlar:
 #   --capture --run-id <id> --compose-changed true|false
 #       Deploy .env'i değiştirmeden ÖNCE mevcut durumu `.rollback`'a yazar.

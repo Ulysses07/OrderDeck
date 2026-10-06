@@ -122,12 +122,12 @@ public sealed class ShopperMeController : ControllerBase
         {
             if (!IsValidTckn(req.Tc))
                 return Problem(title: "invalid-tc", statusCode: 400);
-            // Genişlet adımı (1. sürüm/PR-0a): yazma henüz DÜZ, okuma her iki
-            // biçimi de çözer (bkz. Unprotect çağrıları yukarıda/aşağıda).
-            // Şifreli yazma PR-0b'de (2. sürüm). PR-0b'den PR-0a'ya geri alma
-            // güvenli (şifreliyi de okur); PR-0a'dan PR-0 öncesine geri alma
-            // güvenli (hiç şifreli YAZMAZ).
-            shopper.TcProtected = req.Tc;
+            // Daralt adımı (2. sürüm/PR-0b): yazma artık ŞİFRELİ (bkz.
+            // Unprotect çağrıları yukarıda/aşağıda — okuma değişmedi).
+            // TcknBackfillJob var olan düz metin satırları arka planda
+            // şifreler. Bkz. TcknProtector sınıf dokümanı (rollback tablosu
+            // dahil).
+            shopper.TcProtected = _tckn.Protect(req.Tc);
         }
 
         if (req.NotificationPrefs is not null)

@@ -63,6 +63,7 @@ public sealed class ShopperAuthController : ControllerBase
     private readonly PasswordResetCodeService _resetCodes;
     private readonly Services.Sms.ISmsSender _sms;
     private readonly Services.Iys.IysConsentCollector _iys;
+    private readonly Services.Privacy.TcknProtector _tckn;
     private readonly ILogger<ShopperAuthController> _log;
 
     public ShopperAuthController(
@@ -74,6 +75,7 @@ public sealed class ShopperAuthController : ControllerBase
         PasswordResetCodeService resetCodes,
         Services.Sms.ISmsSender sms,
         Services.Iys.IysConsentCollector iys,
+        Services.Privacy.TcknProtector tckn,
         ILogger<ShopperAuthController> log)
     {
         _db = db;
@@ -84,6 +86,7 @@ public sealed class ShopperAuthController : ControllerBase
         _resetCodes = resetCodes;
         _sms = sms;
         _iys = iys;
+        _tckn = tckn;
         _log = log;
     }
 
@@ -126,29 +129,27 @@ public sealed class ShopperAuthController : ControllerBase
         if (req.Password.Length < 8)
             return Problem(title: "weak-password", statusCode: 400);
 
-        // 3b. TC normalize + sınır. Kolon artık şifreli metni de sığdıracak
-        // şekilde büyütüldüğü için (512) — bu sürümde yazma hâlâ düz metin,
-        // şifreleme büyütmesi yok — kontrolsüz bırakılsa 512 karaktere kadar
-        // sessizce kabul edilirdi. Tam checksum doğrulaması hâlâ YOK; 11
-        // hane sınırı TİTİZLİK değil GÜVENLİK sınırıdır. Çözme kâhini
-        // (decryption oracle) kuralı — bkz. TcknProtector sınıf dokümanı:
-        // PR-0a'da yazmalar olduğu gibi saklanır, okumalar CfDJ8 önekli
-        // değeri çözer; yapıştırılmış bir şifreli yükün (en az ~134
-        // karakter) çözdürülmesini engelleyen şey bu girdi sınırıdır. Aynı
-        // sebeple CfDJ8 önekiyle başlayan girdi UZUNLUĞUNDAN BAĞIMSIZ da
-        // reddedilir — sızan bir yedekteki şifreli metnin buraya
-        // yapıştırılıp profil ucundan çözdürülmesini önler (ikinci koşul).
+        // 3b. TC normalize + sınır. Kolon şifreli metni sığdıracak kadar
+        // büyük (512). 2. sürümden (PR-0b) itibaren yazma ŞİFRELİ: Protect
+        // her girdiyi (CfDJ8 önekli görünse bile) HER ZAMAN şifreler, bu
+        // yüzden aşağıdaki sınırlar artık ÇÖZME KÂHİNİ'nin (decryption
+        // oracle) TEK savunması değil — yapıştırılmış bir şifreli yük asla
+        // olduğu gibi saklanıp sonra çözülmüyor, kâhin riski yazma tarafında
+        // kapalı. Tam checksum doğrulaması hâlâ YOK; 11 hane sınırı
+        // TİTİZLİK değil GÜVENLİK sınırıdır, ama artık EK bir savunma
+        // katmanı (bkz. TcknProtector sınıf dokümanı). CfDJ8 önekiyle
+        // başlayan girdi hâlâ UZUNLUĞUNDAN BAĞIMSIZ reddedilir (ikinci koşul).
         //
-        // Dört somut davranış değişikliği: (1) trim sonrası >11 hane artık
-        // 400 invalid-tc döner — eskiden DB kırpma hatasıyla 500 veriyordu;
-        // var olan telefon dalında Tc hiç yazılmadığı için sessizce YOK
-        // SAYILIYORDU, şimdi o dalda da reddediliyor. (2) Baştan/sondan
-        // boşluklu ama trim sonrası ≤11 haneye inen değer artık BAŞARIYLA
-        // kaydediliyor — eskiden ham uzunluk 11'i aşarsa aynı DB kırpma
-        // hatasıyla 500 veriyordu. (3) Yalnız boşluktan oluşan değer artık
-        // NULL saklanıyor — eskiden olduğu gibi (boşluk dizesi)
-        // saklanıyordu. (4) CfDJ8 önekiyle başlayan değer artık 400
-        // invalid-tc döner — YENİ, çözme kâhini koruması. Mobil uygulama
+        // Dört somut davranış değişikliği (PR-0a'da, hâlâ geçerli): (1) trim
+        // sonrası >11 hane artık 400 invalid-tc döner — eskiden DB kırpma
+        // hatasıyla 500 veriyordu; var olan telefon dalında Tc hiç
+        // yazılmadığı için sessizce YOK SAYILIYORDU, şimdi o dalda da
+        // reddediliyor. (2) Baştan/sondan boşluklu ama trim sonrası ≤11
+        // haneye inen değer artık BAŞARIYLA kaydediliyor — eskiden ham
+        // uzunluk 11'i aşarsa aynı DB kırpma hatasıyla 500 veriyordu. (3)
+        // Yalnız boşluktan oluşan değer artık NULL saklanıyor — eskiden
+        // olduğu gibi (boşluk dizesi) saklanıyordu. (4) CfDJ8 önekiyle
+        // başlayan değer artık 400 invalid-tc döner. Mobil uygulama
         // (OnboardingFormScreen.tsx) checksum'suz ^\d{11}$ doğrular ve
         // tc.trim() || undefined gönderir; girdi de istemcide 11 haneye
         // kırpılıyor (yalnız rakam) — yani gerçek uygulama kullanıcıları bu
@@ -198,11 +199,11 @@ public sealed class ShopperAuthController : ControllerBase
                 PasswordHash = _passwordHasher.Hash(req.Password),
                 Address = req.Address,
                 Email = req.Email,
-                // Genişlet adımı (1. sürüm/PR-0a): yazma henüz DÜZ, okuma her iki
-                // biçimi de çözer. Şifreli yazma PR-0b'de (2. sürüm). PR-0b'den
-                // PR-0a'ya geri alma güvenli (şifreliyi de okur); PR-0a'dan PR-0
-                // öncesine geri alma güvenli (hiç şifreli YAZMAZ).
-                TcProtected = tc,
+                // Daralt adımı (2. sürüm/PR-0b): yazma artık ŞİFRELİ.
+                // TcknBackfillJob var olan düz metin satırları arka planda
+                // şifreler; okuma (Unprotect) hâlâ her iki biçimi de çözüyor.
+                // Bkz. TcknProtector sınıf dokümanı (rollback tablosu dahil).
+                TcProtected = _tckn.Protect(tc),
                 CreatedAt = now,
                 UpdatedAt = now,
             };

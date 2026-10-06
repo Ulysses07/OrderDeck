@@ -15,18 +15,20 @@ using Xunit;
 namespace OrderDeck.LicenseServer.Tests.Services.Privacy;
 
 /// <summary>
-/// Genişlet adımının (1. sürüm/PR-0a) okuma-toleransını uçtan uca doğrular:
-/// Shopper.TcProtected ve IntakeFormSubmission.TcknProtected bu sürümde hâlâ
-/// düz metin YAZILIYOR, ama her okuma Unprotect'ten geçtiği için düz metni
-/// VEYA şifreli metni (PR-0b'nin — 2. sürümün — yazacağı biçim) ikisini de
-/// doğru çözüyor. Birim seviyesindeki şifreleme/çözme davranışı
-/// <see cref="TcknProtectorTests"/>'te; burada asıl soru "bu sürüm, henüz
-/// kendisi hiç yazmadığı bir biçimi okuyabiliyor mu".
+/// Daralt adımını (2. sürüm/PR-0b) uçtan uca doğrular: Shopper.TcProtected ve
+/// IntakeFormSubmission.TcknProtected artık ŞİFRELİ yazılıyor (register, PATCH
+/// /me, IntakeFormService.SaveSubmissionAsync — üç yazma yeri de). Okuma hâlâ
+/// Unprotect'ten geçtiği için düz metni VEYA şifreli metni ikisini de doğru
+/// çözüyor — bu, <see cref="TcknBackfillJob"/> satırları şifreleyene kadar
+/// sahada kalacak eski düz metin satırlar için gerekli. Birim seviyesindeki
+/// şifreleme/çözme davranışı <see cref="TcknProtectorTests"/>'te; burada asıl
+/// sorular (a) gerçek yazma yolları artık şifreli mi, (b) eski düz metin
+/// satır hâlâ okunabiliyor mu.
 /// </summary>
-public sealed class TcknReadToleranceTests : IClassFixture<ApiFactory>
+public sealed class TcknAtRestTests : IClassFixture<ApiFactory>
 {
     private readonly ApiFactory _factory;
-    public TcknReadToleranceTests(ApiFactory factory) => _factory = factory;
+    public TcknAtRestTests(ApiFactory factory) => _factory = factory;
 
     // ── DTO'lar (Shopper auth/me) — alan adları PascalCase, System.Text.Json'ın
     // Web varsayılanı (camelCase + case-insensitive) karşıya/karşıdan eşliyor. ──
@@ -112,8 +114,8 @@ public sealed class TcknReadToleranceTests : IClassFixture<ApiFactory>
     }
 
     // ── 1. Şifreli yazılmış bir Shopper satırı → GET /me düz metin döner ─────
-    // (PR-0b'nin yazacağı biçimi taklit eder — bu testin asıl kanıtladığı şey:
-    // bu sürüm henüz kendisi hiç yazmadığı bir biçimi de okuyabiliyor.)
+    // (doğrudan seed — register artık zaten şifreli yazıyor, bkz. test 2;
+    // burada asıl kanıtlanan GET'in okuma tarafının bağımsız doğru çalışması.)
 
     [Fact]
     public async Task Shopper_row_with_ciphertext_is_still_readable_via_get_me()
@@ -134,7 +136,7 @@ public sealed class TcknReadToleranceTests : IClassFixture<ApiFactory>
                 Phone = phone,
                 PasswordHash = $"h-{Guid.NewGuid():N}",
                 Address = "Adres",
-                TcProtected = protector.Protect(plain), // PR-0b'nin yazacağı biçim
+                TcProtected = protector.Protect(plain), // gerçek yazma biçimi (2. sürüm)
                 CreatedAt = DateTimeOffset.UtcNow,
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
@@ -154,11 +156,11 @@ public sealed class TcknReadToleranceTests : IClassFixture<ApiFactory>
         me!.Tc.Should().Be(plain);
     }
 
-    // ── 2. Tc ile kayıt → DB'de de API'de de düz metin (bu sürüm yazmayı
-    // henüz şifrelemiyor; PR-0b bu testi tersine çevirecek) ──────────────────
+    // ── 2. Tc ile kayıt → DB'de şifreli, API'de düz metin (2. sürüm/PR-0b:
+    // yazma artık Protect'ten geçiyor) ───────────────────────────────────────
 
     [Fact]
-    public async Task Register_with_tc_stores_plaintext_and_returns_plaintext_over_api()
+    public async Task Register_with_tc_stores_ciphertext_and_returns_plaintext_over_api()
     {
         var client = _factory.CreateClient();
         var plain = TestTckn.NewValid();
@@ -167,9 +169,12 @@ public sealed class TcknReadToleranceTests : IClassFixture<ApiFactory>
         using (var scope = _factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+            var protector = scope.ServiceProvider.GetRequiredService<TcknProtector>();
             var shopper = await db.Shoppers.FirstAsync(s => s.Id == shopperId);
-            shopper.TcProtected.Should().Be(plain);
-            shopper.TcProtected.Should().NotStartWith("CfDJ8");
+            shopper.TcProtected.Should().StartWith("CfDJ8");
+            shopper.TcProtected.Should().NotBe(plain);
+            shopper.TcProtected.Should().NotContain(plain);
+            protector.Unprotect(shopper.TcProtected).Should().Be(plain);
         }
 
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -177,10 +182,10 @@ public sealed class TcknReadToleranceTests : IClassFixture<ApiFactory>
         me!.Tc.Should().Be(plain);
     }
 
-    // ── 3. PATCH ile geçerli Tc → DB'de de yanıtta da düz metin ──────────────
+    // ── 3. PATCH ile geçerli Tc → DB'de şifreli, yanıtta düz metin ───────────
 
     [Fact]
-    public async Task PatchMe_with_tc_stores_plaintext_and_returns_plaintext()
+    public async Task PatchMe_with_tc_stores_ciphertext_and_returns_plaintext()
     {
         var client = _factory.CreateClient();
         var (token, shopperId) = await RegisterShopperAsync(client, null);
@@ -194,9 +199,11 @@ public sealed class TcknReadToleranceTests : IClassFixture<ApiFactory>
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var protector = scope.ServiceProvider.GetRequiredService<TcknProtector>();
         var shopper = await db.Shoppers.FirstAsync(s => s.Id == shopperId);
-        shopper.TcProtected.Should().Be(plain);
-        shopper.TcProtected.Should().NotStartWith("CfDJ8");
+        shopper.TcProtected.Should().StartWith("CfDJ8");
+        shopper.TcProtected.Should().NotBe(plain);
+        protector.Unprotect(shopper.TcProtected).Should().Be(plain);
     }
 
     // ── 4. PATCH TC'siz (başka bir alan değişir) → var olan şifreli TC'ye
@@ -224,7 +231,7 @@ public sealed class TcknReadToleranceTests : IClassFixture<ApiFactory>
                 Phone = phone,
                 PasswordHash = $"h-{Guid.NewGuid():N}",
                 Address = "Adres",
-                TcProtected = ciphertext, // PR-0b'nin yazacağı biçim
+                TcProtected = ciphertext, // gerçek yazma biçimi (2. sürüm)
                 CreatedAt = DateTimeOffset.UtcNow,
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
@@ -359,14 +366,15 @@ public sealed class TcknReadToleranceTests : IClassFixture<ApiFactory>
         me!.Tc.Should().Be(plain);
     }
 
-    // ── 9. Form gönderimleri: biri PR-0b'nin biçiminde (şifreli) doğrudan
-    // seed edilmiş, öteki GERÇEK IntakeFormService yoluyla (düz metin) —
-    // GET'te ikisi de düz metin döner. Düz-metin satır bilerek SERVİS
-    // ÜZERİNDEN yazılıyor: "PR-0a hiç şifreli yazmaz" iddiasını üretim
-    // koduna bağlar, varsayıma değil ────────────────────────────────────────
+    // ── 9. Form gönderimleri: biri önceden şifrelenmiş bir satırı taklit etmek
+    // için doğrudan seed edilmiş (örn. backfill sonrası ya da daha önceki bir
+    // şifreli yazım), öteki GERÇEK IntakeFormService yoluyla (2. sürüm/PR-0b:
+    // artık ŞİFRELİ) — GET'te ikisi de düz metin döner. Servis satırı bilerek
+    // DB'den doğrudan doğrulanıyor: "IntakeFormService artık şifreli yazar"
+    // iddiasını üretim koduna bağlar, varsayıma değil ────────────────────────
 
     [Fact]
-    public async Task Intake_form_returns_both_encrypted_and_plaintext_submissions_as_plaintext()
+    public async Task Intake_form_returns_both_seeded_and_service_written_ciphertext_as_plaintext()
     {
         var (authedClient, customerId) = await CreateAuthedClientAsync();
         var slug = $"s-{Guid.NewGuid():N}"[..10];
@@ -374,10 +382,10 @@ public sealed class TcknReadToleranceTests : IClassFixture<ApiFactory>
             new { slug, whatsAppPhone = "+905551234567" });
         putResp.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        var encryptedPlain = TestTckn.NewValid();
-        var plaintextPlain = TestTckn.NewValid();
-        Guid encryptedId;
-        Guid plaintextId;
+        var seededPlain = TestTckn.NewValid();
+        var servicePlain = TestTckn.NewValid();
+        Guid seededId;
+        Guid serviceId;
 
         using (var scope = _factory.Services.CreateScope())
         {
@@ -385,51 +393,53 @@ public sealed class TcknReadToleranceTests : IClassFixture<ApiFactory>
             var protector = scope.ServiceProvider.GetRequiredService<TcknProtector>();
             var cfg = await db.IntakeFormConfigs.FirstAsync(c => c.CustomerId == customerId);
 
-            // PR-0b'nin yazacağı biçimi taklit eder — doğrudan seed (bugün
-            // hiçbir üretim kodu şifreli yazmadığı için başka türlü mümkün değil).
-            encryptedId = Guid.NewGuid();
+            // Önceden şifrelenmiş bir satırı taklit eder — doğrudan seed.
+            seededId = Guid.NewGuid();
             db.IntakeFormSubmissions.Add(new IntakeFormSubmission
             {
-                Id = encryptedId,
+                Id = seededId,
                 IntakeFormConfigId = cfg.Id,
                 Username = "sifreliuser" + Guid.NewGuid().ToString("N")[..6],
                 FullName = "Encrypted Form User",
                 Address = "Form Adres",
-                TcknProtected = protector.Protect(encryptedPlain),
+                TcknProtected = protector.Protect(seededPlain),
                 // Kararlılık ufkunun gerisi — GET bu satırı atlamasın (bkz.
                 // ReverseSyncCursor / aynı desen IntakeFormControllerTests'te de var).
                 SubmittedAt = DateTimeOffset.UtcNow.AddMinutes(-1),
             });
             await db.SaveChangesAsync();
 
-            // PR-0a'nın GERÇEK yazma yolu — IntakeFormService üzerinden.
+            // IntakeFormService'in GERÇEK yazma yolu — 2. sürümde (PR-0b)
+            // artık Protect'ten geçiyor.
             var service = scope.ServiceProvider.GetRequiredService<IntakeFormService>();
-            var plaintextSub = await service.SaveSubmissionAsync(
+            var serviceSub = await service.SaveSubmissionAsync(
                 cfg.Id,
                 youTubeUsername: null, instagramUsername: null,
                 facebookUsername: null, tikTokUsername: null,
-                legacyUsername: "duzmetinuser" + Guid.NewGuid().ToString("N")[..6],
-                fullName: "Plaintext Form User", address: "Form Adres",
-                phone: null, email: null, tckn: plaintextPlain,
+                legacyUsername: "sifreliuser2" + Guid.NewGuid().ToString("N")[..6],
+                fullName: "Freshly Encrypted Form User", address: "Form Adres",
+                phone: null, email: null, tckn: servicePlain,
                 whatsAppConsent: false, smsConsent: false,
                 ipAddress: null, userAgent: null);
-            plaintextId = plaintextSub.Id;
+            serviceId = serviceSub.Id;
 
             // Kararlılık ufkunun gerisine çek — GET bu satırı atlamasın.
-            var row = await db.IntakeFormSubmissions.FirstAsync(s => s.Id == plaintextId);
+            var row = await db.IntakeFormSubmissions.FirstAsync(s => s.Id == serviceId);
             row.SubmittedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
             await db.SaveChangesAsync();
 
-            // "PR-0a hiç şifreli yazmaz" iddiasını DB'de doğrudan pinliyor.
-            row.TcknProtected.Should().Be(plaintextPlain);
-            row.TcknProtected.Should().NotStartWith("CfDJ8");
+            // "IntakeFormService artık şifreli yazar" iddiasını DB'de
+            // doğrudan pinliyor.
+            row.TcknProtected.Should().StartWith("CfDJ8");
+            row.TcknProtected.Should().NotBe(servicePlain);
+            protector.Unprotect(row.TcknProtected).Should().Be(servicePlain);
         }
 
         var getResp = await authedClient.GetAsync("/api/v1/me/form-submissions");
         getResp.StatusCode.Should().Be(HttpStatusCode.OK);
         var rows = await getResp.Content.ReadFromJsonAsync<List<SubmissionBody>>();
-        rows!.Single(r => r.id == encryptedId).tckn.Should().Be(encryptedPlain);
-        rows!.Single(r => r.id == plaintextId).tckn.Should().Be(plaintextPlain);
+        rows!.Single(r => r.id == seededId).tckn.Should().Be(seededPlain);
+        rows!.Single(r => r.id == serviceId).tckn.Should().Be(servicePlain);
     }
 
     // ── Form gönderimi yardımcısı — IntakeFormControllerTests.CreateAuthedClientAsync ile aynı desen ──

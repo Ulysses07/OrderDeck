@@ -51,7 +51,7 @@ public class TcknValidatorTests
         => TcknValidator.Normalize("  12345678950 ").Should().Be("12345678950");
 
     // TestTckn üretiminin bu dosyadaki algoritmayla tutarlı kaldığını doğrular
-    // — TcknReadToleranceTests gibi başka yerler üretilen değerin GEÇERLİ
+    // — TcknAtRestTests gibi başka yerler üretilen değerin GEÇERLİ
     // olduğunu varsayıyor. 1000 tekrar genel bir fuzz taraması — negatif-mod
     // dalı gibi nadir bir deseni GÜVENİLİR yakalamaz (p≈1,1e-4 çekiliş
     // başına); o dal aşağıdaki Negatif_mod_dali_dogru_normalize_edilir'de

@@ -107,7 +107,7 @@ public sealed class TcknProtectedColumnsMigrationTests
 
         // Hedef göçü uygula. Bu yalnızca AlterColumn (kolon genişliği); satır
         // taşımıyor, hiçbir değeri şifrelemiyor — şifreleme ayrı bir arka
-        // plan işinin (2. sürümde gelecek TcknBackfillJob) görevi. O yüzden
+        // plan işinin (TcknBackfillJob, 2. sürümde eklendi) görevi. O yüzden
         // eski düz metin, göçten SONRA da aynen durmalı.
         await migrator.MigrateAsync(target);
 

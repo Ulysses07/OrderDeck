@@ -12,11 +12,13 @@ public sealed class IntakeFormService
 {
     private readonly LicenseDbContext _db;
     private readonly Iys.IysConsentCollector _iys;
+    private readonly Privacy.TcknProtector _tckn;
 
-    public IntakeFormService(LicenseDbContext db, Iys.IysConsentCollector iys)
+    public IntakeFormService(LicenseDbContext db, Iys.IysConsentCollector iys, Privacy.TcknProtector tckn)
     {
         _db = db;
         _iys = iys;
+        _tckn = tckn;
     }
 
     public sealed class SlugAlreadyTakenException : Exception
@@ -159,13 +161,13 @@ public sealed class IntakeFormService
             District = district,
             Phone = phone,
             Email = email,
-            // Genişlet adımı (1. sürüm/PR-0a): yazma henüz DÜZ, okuma her iki
-            // biçimi de çözer. Şifreli yazma PR-0b'de (2. sürüm). PR-0b'den
-            // PR-0a'ya geri alma güvenli (şifreliyi de okur); PR-0a'dan PR-0
-            // öncesine geri alma güvenli (hiç şifreli YAZMAZ). Form sayfasının
-            // 11 hane/checksum doğrulaması aynı zamanda çözme kâhini koruması
-            // — bkz. TcknProtector sınıf dokümanı.
-            TcknProtected = tckn,
+            // Daralt adımı (2. sürüm/PR-0b): yazma artık ŞİFRELİ. Var olan düz
+            // metin satırlar TcknBackfillJob tarafından arka planda şifrelenir;
+            // okuma hâlâ her iki biçimi de çözüyor (bu akışta değişmedi). Form
+            // sayfasının 11 hane/checksum doğrulaması artık bir çözme kâhini
+            // koruması değil — Protect zaten her girdiyi şifreliyor — yalnız ek
+            // bir savunma katmanı. Bkz. TcknProtector sınıf dokümanı.
+            TcknProtected = _tckn.Protect(tckn),
             WhatsAppConsent = whatsAppConsent,
             SmsConsent = smsConsent,
             SubmittedAt = DateTimeOffset.UtcNow,
