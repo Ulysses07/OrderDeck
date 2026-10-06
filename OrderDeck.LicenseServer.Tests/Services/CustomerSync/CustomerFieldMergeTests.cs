@@ -440,4 +440,57 @@ public sealed class CustomerFieldMergeTests
         CustomerFieldMerge.Apply(filled, new CustomerSyncFields { TcknProtected = tckn });
         filled.TcknProtected!.Length.Should().Be(600);
     }
+
+    // ── A3-düzeltme 2: kullanıcı adı takma ad sinyali, ortak parçasız adres ──
+
+    [Fact]
+    public void Birlestirmede_kullanici_adiyla_ayni_ad_takma_ad_sayilir()
+    {
+        // E2: sunucuda DisplayName hiç yok (eski sürüm göndermez). Asıl kaydın
+        // adı eski sürümün takma ad yedeği = kullanıcı adı; kopyada gerçek ad.
+        var canonical = new WpfCustomerProjection { Username = "ayse_tt", FullName = "ayse_tt" };
+        var copy = new WpfCustomerProjection { Username = "AYSE_TT", FullName = "Ayşe Yılmaz" };
+        CustomerFieldMerge.Apply(canonical, CustomerSyncFields.From(copy)).Should().BeTrue();
+        canonical.FullName.Should().Be("Ayşe Yılmaz");
+    }
+
+    [Fact]
+    public void Takma_adla_dolan_ad_sonra_gercek_adla_degisir()
+    {
+        var p = new WpfCustomerProjection { Username = "ayse_tt" };
+        CustomerFieldMerge.ApplyLegacy(p, "ayse_tt", null, null);
+        p.FullName.Should().Be("ayse_tt");
+        // Gerçek adı bilen (eski sürüm) bilgisayarın gönderimi takma adın yerine geçer.
+        CustomerFieldMerge.ApplyLegacy(p, "Ayşe Yılmaz", null, null).Should().BeTrue();
+        p.FullName.Should().Be("Ayşe Yılmaz");
+        // Takma ad gerçek adın yerine GEÇMEZ.
+        CustomerFieldMerge.ApplyLegacy(p, "ayse_tt", null, null).Should().BeFalse();
+        p.FullName.Should().Be("Ayşe Yılmaz");
+    }
+
+    [Fact]
+    public void Ortak_parcasi_olmayan_adres_blogu_tamamlanmaz()
+    {
+        var p = new WpfCustomerProjection { Address = "Atatürk Cd. 1" };
+        CustomerFieldMerge.Apply(p, new CustomerSyncFields { City = "Ankara", District = "Çankaya" }).Should().BeFalse();
+        p.City.Should().BeNull();
+        p.District.Should().BeNull();
+    }
+
+    [Fact]
+    public void Eski_surum_il_ilcesi_olan_bloga_adres_satiri_yazmaz()
+    {
+        var p = new WpfCustomerProjection { City = "Ankara", District = "Çankaya" };
+        CustomerFieldMerge.ApplyLegacy(p, null, null, "Atatürk Cd. 1, İzmir").Should().BeFalse();
+        p.Address.Should().BeNull();
+    }
+
+    [Fact]
+    public void Adres_karsilastirmasi_Turkce_I_harflerini_esit_sayar()
+    {
+        var p = new WpfCustomerProjection { Address = "IŞIK SK. 5" };
+        CustomerFieldMerge.Apply(p, new CustomerSyncFields { Address = "ışık sk. 5", City = "İstanbul" }).Should().BeTrue();
+        p.Address.Should().Be("IŞIK SK. 5");
+        p.City.Should().Be("İstanbul");
+    }
 }

@@ -98,32 +98,35 @@ public static class CustomerFieldMerge
     /// O birim yeni sürümce damgalanmışsa hiçbiri yazmaz — eski bir bilgisayar
     /// yeni sürümün girdiğini silemesin.
     ///
-    /// <para><b>Ad yalnız boşsa doldurulur:</b> eski sürüm gerçek ad yoksa
-    /// takma adı gönderir (R3-02, WpfCustomerProjectionSyncService) ve
-    /// birleştirmeden sonra asıl kayıt başka bilgisayarın gerçek adını
-    /// taşıyabilir.</para>
+    /// <para><b>Ad boşsa doldurulur ya da mevcut ad bir takma adsa
+    /// (DisplayName'le ya da kullanıcı adıyla aynı) gelen gerçek adla
+    /// değişir:</b> eski sürüm gerçek ad yoksa takma adı gönderir (R3-02,
+    /// WpfCustomerProjectionSyncService) ve birleştirmeden sonra asıl kayıt
+    /// başka bilgisayarın gerçek adını taşıyabilir; takma ad gerçek adın yerine
+    /// geçmez (bkz. FillFullName).</para>
     ///
     /// <para><b>Telefon/adres eskisi gibi son gönderimle güncellenir ama boş
     /// değer silmez:</b> birleştirmeden sonra asıl kayıt birkaç bilgisayarın
     /// verisini taşır; birinin boşu ötekinin değerini silmesin. Adres satırı
-    /// il/ilçesi dolu bir bloğu değiştirmez, yalnız boşsa doldurur — eski
-    /// sürüm il/ilçe bilmiyor, değiştirseydi etikete karışık adres basılırdı.</para>
+    /// il/ilçesi olan bloğa hiç yazılmaz — ne değiştirir ne boşsa doldurur:
+    /// eski sürüm il/ilçe bilmiyor, yazsaydı etikete karışık adres basılırdı.</para>
     ///
-    /// <para>Bedeli: eski sürümde yapılan ad düzeltmesi yeni sürüme geçilene
-    /// kadar sunucuya yansımaz.</para>
+    /// <para>Bedeli: eski sürümde yapılan ad düzeltmesi (takma addan gerçek
+    /// ada geçiş dışında) yeni sürüme geçilene kadar sunucuya yansımaz.</para>
     /// </summary>
     public static bool ApplyLegacy(WpfCustomerProjection t, string? fullName, string? phone, string? address)
     {
         if (t.PurgedAt is not null) return false;
         var changed = false;
         if (t.FullNameChangedAt is null)
-            changed |= Fill(t.FullName, fullName, NameMax, v => t.FullName = v);
+            changed |= FillOrUpgradeName(t, fullName, incomingDisplayName: null);
         if (t.PhoneChangedAt is null)
             changed |= Overwrite(t.Phone, phone, PhoneMax, v => t.Phone = v);
-        if (t.AddressChangedAt is null)
-            changed |= IsBlank(t.City) && IsBlank(t.District)
-                ? Overwrite(t.Address, address, AddressMax, v => t.Address = v)
-                : Fill(t.Address, address, AddressMax, v => t.Address = v);
+        // Adres satırı yalnız il/ilçesi OLMAYAN bloğa yazılır: eski sürüm il/ilçe
+        // bilmez; il/ilçesi dolu bloğa satır yazmak (değiştirmek de, boşsa
+        // doldurmak da) etikete karışık adres basardı.
+        if (t.AddressChangedAt is null && IsBlank(t.City) && IsBlank(t.District))
+            changed |= Overwrite(t.Address, address, AddressMax, v => t.Address = v);
         return changed;
     }
 
@@ -144,17 +147,27 @@ public static class CustomerFieldMerge
 
     // ── doldurucular (yalnız damgasız hedefte çağrılır) ─────────────────
 
-    /// <summary>Eski sürüm gerçek ad yoksa takma adı FullName diye
-    /// gönderiyordu (R3-02). Hedefteki damgasız ad bilinen bir takma adla
-    /// AYNIYSA aslında takma addır: gelen gerçek ad onun yerine geçer. Yoksa
-    /// birleştirilmiş kaydın takma adı, gerçek adı bilen bilgisayarın
-    /// (damgasız, geçmiş) değerini kalıcı olarak engellerdi.</summary>
+    /// <summary>Eski sürüm (format 1) gerçek ad yoksa takma adı FullName diye
+    /// gönderiyordu (R3-02). Hedefteki damgasız ad bir takma ad İSE — bilinen
+    /// bir DisplayName'le YA DA kullanıcı adıyla aynıysa — gelen gerçek ad onun
+    /// yerine geçer. Kullanıcı adı sinyali şart: eski sürüm DisplayName'i hiç
+    /// göndermediği için birleştirme anında (E2) sunucuda DisplayName yok;
+    /// TikTok'ta takma ad yedeği çoğunlukla kullanıcı adının kendisi
+    /// (eklenti `displayName ?? username`). YouTube'da kullanıcı adı kanal Id'si
+    /// olduğundan orada yalnız DisplayName sinyali çalışır.
+    /// Bilinen, zararsız yanlış pozitif: kullanıcı adı olmadan formdan açılan
+    /// satırda DisplayName = FullName; o adı başka bir damgasız gerçek ad
+    /// değiştirebilir — ikisi de gerçek ad, sonrasında gidip gelme yok.</summary>
     private static bool FillFullName(WpfCustomerProjection t, CustomerSyncFields f)
+        => FillOrUpgradeName(t, f.FullName, f.DisplayName);
+
+    private static bool FillOrUpgradeName(WpfCustomerProjection t, string? incomingName, string? incomingDisplayName)
     {
-        if (Fill(t.FullName, f.FullName, NameMax, v => t.FullName = v)) return true;
-        var incoming = Norm(f.FullName, NameMax);
+        if (Fill(t.FullName, incomingName, NameMax, v => t.FullName = v)) return true;
+        var incoming = Norm(incomingName, NameMax);
         if (incoming is null || SameText(incoming, t.FullName)) return false;
-        bool IsNickname(string? s) => SameText(s, t.DisplayName) || SameText(s, f.DisplayName);
+        bool IsNickname(string? s) =>
+            SameText(s, t.DisplayName) || SameText(s, incomingDisplayName) || SameText(s, t.Username);
         if (!IsNickname(t.FullName) || IsNickname(incoming)) return false;
         t.FullName = incoming;
         return true;
@@ -162,16 +175,27 @@ public static class CustomerFieldMerge
 
     /// <summary>Adres bloğu bütün olarak doldurulur: hedef boşsa gelen blok
     /// tamamen alınır; değilse eksik parçalar yalnız iki tarafta da dolu olan
-    /// parçalar AYNIYSA tamamlanır. Başka bir adresin il/ilçesiyle tamamlanan
-    /// blok etikete karışık adres basar; emin olunamayınca doldurmamak
-    /// karıştırmaktan iyidir.</summary>
+    /// parçalar AYNIYSA ve en az bir ortak dolu parça (iki tarafta da dolu ve
+    /// aynı) varsa tamamlanır — hedefte yalnız satır, gelende yalnız il/ilçe
+    /// varsa aynı adres olduğu bilinemez. Başka bir adresin il/ilçesiyle
+    /// tamamlanan blok etikete karışık adres basar; emin olunamayınca
+    /// doldurmamak karıştırmaktan iyidir.</summary>
     private static bool FillAddressBlock(WpfCustomerProjection t, CustomerSyncFields f)
     {
         var address = Norm(f.Address, AddressMax);
         var city = Norm(f.City, CityMax);
         var district = Norm(f.District, CityMax);
-        if (!Compatible(t.Address, address) || !Compatible(t.City, city) || !Compatible(t.District, district))
-            return false;
+        var targetEmpty = IsBlank(t.Address) && IsBlank(t.City) && IsBlank(t.District);
+        if (!targetEmpty)
+        {
+            if (!Compatible(t.Address, address) || !Compatible(t.City, city) || !Compatible(t.District, district))
+                return false;
+            // En az bir parça İKİ tarafta da dolu ve aynı olmalı: ortak parça
+            // yoksa (hedefte yalnız satır, gelende yalnız il/ilçe) aynı adres
+            // olduğu bilinemez.
+            if (!SameText(t.Address, address) && !SameText(t.City, city) && !SameText(t.District, district))
+                return false;
+        }
         return Fill(t.Address, address, AddressMax, v => t.Address = v)
              | Fill(t.City, city, CityMax, v => t.City = v)
              | Fill(t.District, district, CityMax, v => t.District = v);
