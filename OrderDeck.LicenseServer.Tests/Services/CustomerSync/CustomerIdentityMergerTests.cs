@@ -102,6 +102,35 @@ public sealed class CustomerIdentityMergerTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Kopyanin_bakiyesi_sifirsa_asil_kayda_hicbir_sey_eklenmez_sayilmaz()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LicenseDbContext>();
+        var (_, customerId, _) = await CustomerAuthHelper.CreateAuthenticatedClientAsync(_factory);
+        var license = await SeedLicenseAsync(db, customerId);
+        var canonical = NewProjection(license.Id, "ayse");
+        var copy = NewProjection(license.Id, "Ayse");
+        db.WpfCustomerProjections.AddRange(canonical, copy);
+        var balanceId = Guid.NewGuid();
+        var originalUpdatedAt = DateTimeOffset.UtcNow.AddDays(-1);
+        db.CustomerBalances.Add(new CustomerBalance { Id = balanceId, LicenseId = license.Id, WpfCustomerId = copy.Id, Balance = 0m, UpdatedAt = originalUpdatedAt });
+        await db.SaveChangesAsync();
+
+        var merger = scope.ServiceProvider.GetRequiredService<CustomerIdentityMerger>();
+        var counts = await merger.RepointReferencesAsync(license.Id, copy.Id, canonical.Id, default);
+        await db.SaveChangesAsync();
+
+        counts.Balances.Should().Be(0, "kopyanın bakiyesi zaten 0 — sayılmaz");
+        var balances = await db.CustomerBalances.Where(b => b.LicenseId == license.Id).ToListAsync();
+        balances.Should().ContainSingle("asıl kayıt için satır AÇILMAMALI — eklenecek tutar yok");
+        var copyBal = balances.Single();
+        copyBal.Id.Should().Be(balanceId, "kopyanın satırı dokunulmadan kalır");
+        copyBal.WpfCustomerId.Should().Be(copy.Id);
+        copyBal.Balance.Should().Be(0m);
+        copyBal.UpdatedAt.Should().Be(originalUpdatedAt, "satıra hiç dokunulmamalı — UpdatedAt bile ilerlememeli");
+    }
+
+    [Fact]
     public async Task Bakiye_hareketi_sohbet_iban_hafizasi_ve_odeme_eslesmesi_asil_kayda_tasinir()
     {
         using var scope = _factory.Services.CreateScope();

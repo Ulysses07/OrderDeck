@@ -26,6 +26,12 @@ public sealed class CustomerIdentityMerger
     private readonly LicenseDbContext _db;
     public CustomerIdentityMerger(LicenseDbContext db) => _db = db;
 
+    /// <summary>Taşınan/birleştirilen satır sayıları.</summary>
+    /// <param name="Balances">
+    /// 1 yalnız kopyanın SIFIR OLMAYAN bir bakiyesi asıl kayda eklendiğinde;
+    /// kopyanın bakiye satırı zaten 0'sa sayılmaz, satır olduğu gibi
+    /// (dokunulmadan) bırakılır. A7'nin günlüklediği sayaç budur.
+    /// </param>
     public sealed record RepointCounts(
         int Orders, int Shipments, int Links, int BalanceTransactions,
         int Balances, int IbanMemories, int PaymentMatches, int WaConversations);
@@ -81,6 +87,8 @@ public sealed class CustomerIdentityMerger
         // yeniden yükleyip defteri bozardı; 0'lanmış satırda mevcut
         // yeniden-yükle mantığı temiz bir "bakiye yok" verir.
         // Kararlaştırıldı (2026-10-05): aynı kişinin kopyalarındaki bakiyeler toplanır.
+        // Eksi bakiye oluşabilirse (örn. panelin elle ayarı negatif bırakabilir)
+        // toplama aynen işler — karar tutarın işaretine bakmaz.
         var balances = 0;
         var fromBal = await _db.CustomerBalances
             .SingleOrDefaultAsync(b => b.LicenseId == licenseId && b.WpfCustomerId == fromId, ct);
